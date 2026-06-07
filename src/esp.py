@@ -1,0 +1,291 @@
+"""Skyrim SE ESP/ESM read+write.
+
+Scope: enough of the format to:
+  - Parse a CBBE armor mod's ESP and inspect its ARMOs + ARMAs
+  - Produce a UBE patch ESP that matches the hand-authored UBE pattern
+    (new ARMA records + ARMO overrides adding the new ARMAs)
+
+NOT a full implementation. We don't handle compression on records (none of
+our outputs need it), we don't handle group types other than top-level
+(which is all SE armor mods need), and we don't try to be a generic xEdit
+replacement.
+
+References:
+  - https://en.uesp.net/wiki/Skyrim_Mod:Mod_File_Format
+  - https://en.uesp.net/wiki/Skyrim_Mod:File_Format_Conventions
+"""
+from __future__ import annotations
+
+import struct
+import zlib
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Iterable
+
+
+# ----- subrecord encoding -------------------------------------------------
+
+def encode_subrecord(sig: bytes, data: bytes) -> bytes:
+    """Standard subrecord: 4-byte sig, 2-byte size, data.
+
+    Sizes > 65535 use the XXXX trick (preceding XXXX subrecord with the real
+    size). Not needed for our small ARMA/ARMO data; we error if hit.
+    """
+    if len(sig) != 4:
+        raise ValueError(f"signature must be 4 bytes, got {sig!r}")
+    if len(data) > 0xFFFF:
+        raise NotImplementedError("XXXX-style large subrecords not implemented")
+    return sig + struct.pack("<H", len(data)) + data
+
+
+def encode_zstring(s: str) -> bytes:
+    """zstring: null-terminated UTF-8."""
+    return s.encode("utf-8") + b"\x00"
+
+
+def iter_subrecords(payload: bytes) -> Iterable[tuple[bytes, bytes]]:
+    """Yield (signature, data) for each subrecord in a record payload.
+
+    Handles the XXXX large-size override: if we see XXXX before another
+    subrecord, the next subrecord's 2-byte size field is ignored and the
+    XXXX's 4-byte payload is the real size.
+    """
+    p = 0
+    pending_xxxx = None
+    while p < len(payload):
+        sig = payload[p:p+4]
+        size = struct.unpack_from("<H", payload, p+4)[0]
+        p += 6
+        if sig == b"XXXX":
+            pending_xxxx = struct.unpack_from("<I", payload, p)[0]
+            p += size
+            continue
+        if pending_xxxx is not None:
+            size = pending_xxxx
+            pending_xxxx = None
+        yield sig, payload[p:p+size]
+        p += size
+
+
+# ----- record encoding ----------------------------------------------------
+
+RECORD_HEADER_SIZE = 24
+GRUP_HEADER_SIZE   = 24
+
+FLAG_COMPRESSED = 0x00040000
+
+
+@dataclass
+class Record:
+    """A non-GRUP record. Header + raw payload bytes."""
+    sig: bytes               # 4 bytes (e.g. b"ARMA")
+    flags: int = 0
+    formid: int = 0
+    timestamp_vc: int = 0     # 4 bytes
+    version_unk: int = 0x002C # 4 bytes — Skyrim SE form version 44.
+                              # Skyrim LE was 43 (0x2B); using 43 on an SE
+                              # record gives "file marked as form 43 or
+                              # lower" loader rejection.
+    payload: bytes = b""
+
+    @classmethod
+    def parse(cls, data: bytes, offset: int) -> tuple["Record", int]:
+        sig = data[offset:offset+4]
+        size = struct.unpack_from("<I", data, offset+4)[0]
+        flags = struct.unpack_from("<I", data, offset+8)[0]
+        formid = struct.unpack_from("<I", data, offset+12)[0]
+        timestamp_vc = struct.unpack_from("<I", data, offset+16)[0]
+        version_unk = struct.unpack_from("<I", data, offset+20)[0]
+        payload = data[offset+24:offset+24+size]
+        if flags & FLAG_COMPRESSED:
+            uncomp_size = struct.unpack_from("<I", payload, 0)[0]
+            payload = zlib.decompress(payload[4:])
+            # Clear the compressed flag since we hold the inflated version
+            flags &= ~FLAG_COMPRESSED
+            assert len(payload) == uncomp_size
+        return cls(sig=sig, flags=flags, formid=formid,
+                   timestamp_vc=timestamp_vc, version_unk=version_unk,
+                   payload=payload), offset + 24 + size
+
+    def to_bytes(self) -> bytes:
+        if self.flags & FLAG_COMPRESSED:
+            raise NotImplementedError("output compression not supported; clear the flag")
+        return (self.sig
+                + struct.pack("<I", len(self.payload))
+                + struct.pack("<I", self.flags)
+                + struct.pack("<I", self.formid)
+                + struct.pack("<I", self.timestamp_vc)
+                + struct.pack("<I", self.version_unk)
+                + self.payload)
+
+
+@dataclass
+class Group:
+    """A top-level GRUP. Contains a list of Records (and possibly nested groups,
+    but for top-level ARMO/ARMA groups, just records).
+    """
+    label: bytes              # 4 bytes (e.g. b"ARMO") for top-level groups
+    group_type: int = 0       # 0 = top-level
+    timestamp_vc: int = 0
+    version_unk: int = 0x002C       # Skyrim SE form version 44
+    records: list[Record] = field(default_factory=list)
+
+    @classmethod
+    def parse(cls, data: bytes, offset: int) -> tuple["Group", int]:
+        sig = data[offset:offset+4]
+        assert sig == b"GRUP", f"expected GRUP, got {sig!r}"
+        size = struct.unpack_from("<I", data, offset+4)[0]
+        label = data[offset+8:offset+12]
+        gtype = struct.unpack_from("<i", data, offset+12)[0]
+        timestamp_vc = struct.unpack_from("<I", data, offset+16)[0]
+        version_unk = struct.unpack_from("<I", data, offset+20)[0]
+
+        records: list[Record] = []
+        inner = offset + 24
+        end = offset + size
+        while inner < end:
+            inner_sig = data[inner:inner+4]
+            if inner_sig == b"GRUP":
+                # nested group — for v1 we don't recurse, just skip and warn
+                inner_size = struct.unpack_from("<I", data, inner+4)[0]
+                inner += inner_size
+                continue
+            rec, inner = Record.parse(data, inner)
+            records.append(rec)
+        return cls(label=label, group_type=gtype,
+                   timestamp_vc=timestamp_vc, version_unk=version_unk,
+                   records=records), offset + size
+
+    def to_bytes(self) -> bytes:
+        body = b"".join(r.to_bytes() for r in self.records)
+        size = GRUP_HEADER_SIZE + len(body)
+        return (b"GRUP"
+                + struct.pack("<I", size)
+                + self.label
+                + struct.pack("<i", self.group_type)
+                + struct.pack("<I", self.timestamp_vc)
+                + struct.pack("<I", self.version_unk)
+                + body)
+
+
+# ----- TES4 header --------------------------------------------------------
+
+@dataclass
+class TES4Header:
+    masters: list[str]            # ordered list of master filenames
+    author: str = "cbbe-to-ube"
+    description: str = ""
+    flags: int = 0                # ESM/ESL flags in TES4's record flags (not relevant for our ESP patches)
+    version: float = 1.7          # HEDR version (Skyrim SE = 1.7)
+    num_records: int = 0          # HEDR
+    next_object_id: int = 0x800   # HEDR
+
+    @classmethod
+    def parse_from_record(cls, rec: Record) -> "TES4Header":
+        assert rec.sig == b"TES4"
+        masters: list[str] = []
+        author = ""
+        description = ""
+        version = 1.7
+        num_records = 0
+        next_obj = 0x800
+        pending_mast: str | None = None
+        for sig, sd in iter_subrecords(rec.payload):
+            if sig == b"HEDR":
+                version, num_records, next_obj = struct.unpack("<fIi", sd[:12])
+            elif sig == b"CNAM":
+                author = sd.rstrip(b"\x00").decode("utf-8", errors="ignore")
+            elif sig == b"SNAM":
+                description = sd.rstrip(b"\x00").decode("utf-8", errors="ignore")
+            elif sig == b"MAST":
+                pending_mast = sd.rstrip(b"\x00").decode("utf-8", errors="ignore")
+            elif sig == b"DATA":
+                if pending_mast is not None:
+                    masters.append(pending_mast)
+                    pending_mast = None
+        return cls(masters=masters, author=author, description=description,
+                   flags=rec.flags, version=version,
+                   num_records=num_records, next_object_id=next_obj)
+
+    def to_record(self) -> Record:
+        payload = b""
+        payload += encode_subrecord(
+            b"HEDR",
+            struct.pack("<fIi", self.version, self.num_records, self.next_object_id),
+        )
+        payload += encode_subrecord(b"CNAM", encode_zstring(self.author))
+        if self.description:
+            payload += encode_subrecord(b"SNAM", encode_zstring(self.description))
+        for m in self.masters:
+            payload += encode_subrecord(b"MAST", encode_zstring(m))
+            payload += encode_subrecord(b"DATA", struct.pack("<Q", 0))  # 8-byte master file size (typically 0)
+        return Record(sig=b"TES4", flags=self.flags, formid=0,
+                      version_unk=0x002C, payload=payload)  # SE form 44
+
+
+# ----- ESP file -----------------------------------------------------------
+
+# Read-only parse cache, keyed by (path, mtime, size). A single converter run
+# re-parses the same source ESP many times (source-mod selection, the armour
+# gate, slot-map + alt-texture scans). `ESP.load_cached` serves those callers
+# from this cache so each ESP is parsed once per run. CRITICAL: the cached
+# object is SHARED — callers that MUTATE/emit output (the patcher) must use the
+# plain `ESP.load`, never `load_cached`.
+_LOAD_CACHE: "dict[tuple, ESP]" = {}
+
+
+def clear_load_cache() -> None:
+    """Drop the read-only ESP parse cache (call at the start of a batch)."""
+    _LOAD_CACHE.clear()
+
+
+@dataclass
+class ESP:
+    """A whole ESP/ESM file: TES4 header + a list of top-level GRUPs."""
+    header: TES4Header
+    groups: list[Group] = field(default_factory=list)
+
+    @classmethod
+    def load(cls, path: str | Path) -> "ESP":
+        path = Path(path)
+        data = path.read_bytes()
+        tes4_rec, offset = Record.parse(data, 0)
+        header = TES4Header.parse_from_record(tes4_rec)
+        groups: list[Group] = []
+        while offset < len(data):
+            grp, offset = Group.parse(data, offset)
+            groups.append(grp)
+        return cls(header=header, groups=groups)
+
+    @classmethod
+    def load_cached(cls, path: str | Path) -> "ESP":
+        """READ-ONLY cached `load` (keyed by path+mtime+size). The returned
+        object is shared across callers — do not mutate it. Use plain `load`
+        for any code path that edits records or emits output."""
+        p = Path(path)
+        try:
+            st = p.stat()
+            key = (str(p).lower(), int(st.st_mtime_ns), st.st_size)
+        except OSError:
+            return cls.load(p)
+        cached = _LOAD_CACHE.get(key)
+        if cached is None:
+            cached = cls.load(p)
+            _LOAD_CACHE[key] = cached
+        return cached
+
+    def save(self, path: str | Path) -> None:
+        # Recount records for HEDR — sum of records across all groups.
+        total = sum(len(g.records) for g in self.groups)
+        self.header.num_records = total
+
+        out = self.header.to_record().to_bytes()
+        for g in self.groups:
+            out += g.to_bytes()
+        Path(path).write_bytes(out)
+
+    def group(self, label: bytes) -> Group | None:
+        for g in self.groups:
+            if g.label == label:
+                return g
+        return None

@@ -1,0 +1,17 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Editors
+.vscode/
+.idea/
+
+# PyInstaller work cache (the SHIPPED exe lives in dist/ and IS tracked)
+build/
+
+# Generated data / runtime logs (not source)
+output/
+samples/
+*.log
