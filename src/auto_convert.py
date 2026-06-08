@@ -3019,6 +3019,58 @@ def _cmd_auto(args):
         except Exception as e:
             print(f"  !! mod non-body coverage skipped: {e!r}")
 
+    # Mod-defined BODY coverage (the Requiem-variant class): overhauls add NEW
+    # armor-variant ARMOs (e.g. "Orcish Light Cuirass" = REQ_Light_Orcish_Body)
+    # that REUSE a vanilla armature whose mesh we DID convert, but the variant
+    # ARMO itself was never overridden -> no UBE armature -> invisible on UBE.
+    # This mints a UBE-primary ARMA (model redirected to the converted !UBE mesh)
+    # per such item + a SkyPatcher INI that adds it at runtime. We INCLUDE the
+    # Combined/Vanilla in the scan so armor those already cover is skipped.
+    mbd_esp_generated = False
+    if not getattr(args, "no_modded_nonbody", False):
+        try:
+            _names = paths.active_plugins_ordered(lay)
+            _fidx = paths.plugin_file_index(lay)
+            _ordered = [Path(_fidx[n.lower()]) for n in (_names or [])
+                        if n.lower() in _fidx]
+            _ube_root = output / "meshes" / "!UBE"
+            _conv_rel = set()
+            if _ube_root.is_dir():
+                for _nif in _ube_root.rglob("*.nif"):
+                    _conv_rel.add(_nif.relative_to(_ube_root).as_posix().lower())
+            if _ordered and _conv_rel:
+                mbd_esp = output / "UBE_ModBody_Coverage.esp"
+                _md = _discover_master_data_dirs(sources[0])
+                print(f"\n--- mod BODY UBE coverage -> {mbd_esp.name} "
+                      "(+ SkyPatcher INI) ---")
+                mbd = ube_patcher.generate_modded_body_ube_coverage_patch(
+                    mbd_esp, _ordered, converted_rel_paths=_conv_rel,
+                    exclude_names={mbd_esp.name.lower()},
+                    master_data_dirs=_md)
+                ini_lines = mbd.get("ini_lines") or []
+                if ini_lines and mbd.get('armo_targets'):
+                    ini_path = (output / "SKSE" / "Plugins" / "SkyPatcher"
+                                / "armor" / "UBE_ModBody_Coverage.ini")
+                    ini_path.parent.mkdir(parents=True, exist_ok=True)
+                    ini_path.write_text("\n".join(ini_lines) + "\n",
+                                        encoding="utf-8")
+                print(f"  minted UBE ARMAs: {mbd.get('minted_armas')} "
+                      f"| body items covered: {mbd.get('armo_targets')} "
+                      f"| masters: {mbd.get('masters')} "
+                      f"| ESL: {mbd.get('esl_flagged')}")
+                if mbd_esp.exists() and mbd.get('armo_targets'):
+                    mbd_esp_generated = True
+                    print("  *** IMPORTANT: ENABLE 'UBE_ModBody_Coverage.esp' "
+                          "IN MO2 -- mod-defined body variants (e.g. Requiem "
+                          "'Orcish Light Cuirass') are INVISIBLE on UBE without "
+                          "it. Its SkyPatcher INI ships active in this mod. ***")
+                _vw = [w for w in mbd.get('validation_warnings', [])
+                       if 'missing-nif' not in w]
+                if _vw:
+                    print(f"  !! validator: {_vw[:5]}")
+        except Exception as e:
+            print(f"  !! mod body coverage skipped: {e!r}")
+
     # Pre-flight: the UBE NUDE hands/feet morph (.tri) trap. The converter
     # doesn't build the nude race skin, but a missing hands/feet .tri (build
     # without 'Build Morphs') makes them stay CBBE-shaped while the body
@@ -3032,10 +3084,13 @@ def _cmd_auto(args):
     except Exception:
         pass
 
-    _enable = f"'{output.name}' + its Combined ESP"
+    _enable = f"'{output.name}' + its Combined ESP(s)"
     if mnb_esp_generated:
         _enable += (" + 'UBE_ModNonBody_Coverage.esp' "
                     "(REQUIRED for helmets/non-body — see warning above)")
+    if mbd_esp_generated:
+        _enable += (" + 'UBE_ModBody_Coverage.esp' "
+                    "(REQUIRED for mod-defined body variants — see warning above)")
     print(f"\n=== auto: done — enable {_enable} in MO2. ===")
     return rc
 

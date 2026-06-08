@@ -3923,6 +3923,183 @@ def generate_modded_nonbody_ube_coverage_patch(
     }
 
 
+def generate_modded_body_ube_coverage_patch(
+    output_esp_path: "str | Path",
+    ordered_plugin_paths: "list[Path]",
+    *,
+    converted_rel_paths: "set[str]",
+    ube_allrace_filename: str = "UBE_AllRace.esp",
+    exclude_names: "set[str] | None" = None,
+    master_data_dirs: "list[Path] | None" = None,
+    author: str = "cbbe-to-ube modded body UBE coverage",
+    description: str = "UBE race coverage for mod-defined body armor variants",
+) -> dict:
+    """The BODY counterpart of generate_modded_nonbody_ube_coverage_patch.
+
+    Overhauls (Requiem) add NEW armor-variant ARMO records -- e.g. "Orcish Light
+    Cuirass" (REQ_Light_Orcish_Body) -- that REUSE a vanilla armature whose mesh
+    we DID convert, but the variant ARMO itself was never overridden, so it has
+    no UBE armature -> invisible on UBE actors. The vanilla ARMO got covered; the
+    mod's separate variant ARMO slipped through (it's not vanilla, not a source
+    mod, not non-body).
+
+    For each load-order-WINNING playable body/hands/feet ARMO whose winning
+    armatures all lack UBE coverage, this mints one UBE-primary ARMA per source
+    armature -- with its model REDIRECTED to the converted `!UBE` mesh -- and a
+    SkyPatcher line adds it. Only armatures whose mesh actually has a `!UBE`
+    conversion (`converted_rel_paths`) are minted; pointing an ARMA at an
+    unconverted CBBE mesh on a UBE actor would clip (or crash). Returns stats."""
+    out_path = Path(output_esp_path)
+    exclude = {n.lower() for n in (exclude_names or set())}
+    DEFAULT_RACE = ("skyrim.esm", _DEFAULT_RACE_LOW24)
+    crp = converted_rel_paths or set()
+
+    def _conv_exists(model_path: str) -> bool:
+        if not model_path:
+            return False
+        return model_path.replace("\\", "/").lstrip("/").lower() in crp
+
+    def _arma_models(payload: bytes) -> "list[str]":
+        return [d.rstrip(b"\x00").decode("utf-8", "ignore")
+                for sig, d in esp.iter_subrecords(payload)
+                if sig in (b"MOD2", b"MOD3", b"MOD4", b"MOD5")]
+
+    # ---- Pass 1: load-order winners for ARMA + ARMO (last wins) ----
+    arma_win: dict = {}
+    armo_win: dict = {}
+    for path in ordered_plugin_paths:
+        path = Path(path)
+        if path.name.lower() in exclude:
+            continue
+        try:
+            pe = esp.ESP.load(path)
+        except Exception:
+            continue
+        m = pe.header.masters
+        nm = path.name
+        ag = pe.group(b"ARMA")
+        if ag:
+            for r in ag.records:
+                a = _record_abs_fid(r.formid, m, nm)
+                rnam, is_ube = _summarize_arma(r.payload, m, nm)
+                arma_win[a] = (r.payload, m, nm, rnam, is_ube)
+        og = pe.group(b"ARMO")
+        if og:
+            for r in og.records:
+                a = _record_abs_fid(r.formid, m, nm)
+                arms, rnam, slots, edid = _summarize_armo(r.payload, m, nm)
+                armo_win[a] = (r.payload, m, nm, arms, rnam, slots, edid, r.flags)
+
+    plugin_case = {Path(p).name.lower(): Path(p).name
+                   for p in ordered_plugin_paths}
+
+    # ---- Pass 2: target body/deforming ARMOs lacking UBE coverage whose mesh
+    #      WAS converted ----
+    ARMO_NONPLAYABLE_FLAG = 0x00000004
+    targets = []          # (armo_abs, defining_plugin_case, [arma_abs to mint])
+    mint_set: dict = {}
+    for armo_abs, (apayload, am, an, arms, rnam, slots, edid, aflags) in armo_win.items():
+        if aflags & ARMO_NONPLAYABLE_FLAG:
+            continue
+        if not (slots & _DEFORMING_SLOTS_MASK):
+            continue                       # only body/hands/feet here (the inverse of non-body)
+        if rnam != DEFAULT_RACE:
+            continue                       # beast/custom race -> never UBE-extend
+        if not arms:
+            continue
+        winning = [(x, arma_win.get(x)) for x in arms]
+        winning = [(x, v) for x, v in winning if v is not None]
+        if not winning:
+            continue
+        if any(v[4] for _x, v in winning):
+            continue                       # already has a UBE armature (vanilla ARMO path)
+        # mint only DefaultRace armatures whose mesh we actually converted
+        to_mint = [x for x, v in winning
+                   if v[3] == DEFAULT_RACE
+                   and any(_conv_exists(mp) for mp in _arma_models(v[0]))]
+        if not to_mint:
+            continue
+        targets.append((armo_abs, plugin_case.get(armo_abs[0], armo_abs[0]),
+                        to_mint))
+        for x in to_mint:
+            mint_set.setdefault(x, None)
+
+    # ---- Pass 3: mint ESP (UBE-primary ARMAs, models REDIRECTED to !UBE) ----
+    patch_masters = list(VANILLA_DLC_MASTERS)
+    _add_master_if_missing(patch_masters, ube_allrace_filename)
+    pidx = {m.lower(): i for i, m in enumerate(patch_masters)}
+    own_byte = len(patch_masters)
+    ube_byte = pidx[ube_allrace_filename.lower()]
+    ube_races_patch = [(ube_byte << 24) | f for f in UBE_RACE_FIDS_24]
+    ube_primary_patch = (ube_byte << 24) | UBE_PRIMARY_BRETON_FID_24
+
+    STRIP = {b"SNDD", b"ONAM", b"MO2S", b"MO3S", b"MO4S", b"MO5S",
+             b"MO2T", b"MO3T", b"MO4T", b"MO5T"}
+    new_arma_records: list = []
+    next_id = ESL_OWN_FORMID_MIN
+    mint_name = out_path.with_suffix(".esp").name
+    for arma_abs in mint_set:
+        payload, m2, n2, _rn, _u = arma_win[arma_abs]
+        stripped = b"".join(
+            esp.encode_subrecord(s, d)
+            for s, d in esp.iter_subrecords(payload) if s not in STRIP)
+        minted_payload = rebuild_arma_payload(
+            stripped,
+            new_primary_rnam=ube_primary_patch,
+            new_additional_race_fids=ube_races_patch,
+            converted_nif_exists=_conv_exists,   # redirect model -> !UBE\ where converted
+        )
+        new_fid = (own_byte << 24) | next_id
+        next_id += 1
+        new_edid = "UBE_MBD_{:X}".format(arma_abs[1])
+        minted_payload = replace_arma_edid(minted_payload, new_edid[:90])
+        new_arma_records.append(esp.Record(
+            sig=b"ARMA", flags=0, formid=new_fid, timestamp_vc=0,
+            version_unk=0x002C, payload=minted_payload))
+        mint_set[arma_abs] = new_fid
+
+    as_esl = len(new_arma_records) <= ESL_MAX_OWN_RECORDS
+    tes4_flags = TES4_FLAG_ESL if as_esl else 0
+    out_header = esp.TES4Header(
+        masters=patch_masters, author=author, description=description,
+        flags=tes4_flags, version=1.7, num_records=0,
+        next_object_id=max(0x800, next_id))
+    out_esp = esp.ESP(header=out_header, groups=[])
+    if new_arma_records:
+        out_esp.groups.append(esp.Group(label=b"ARMA", records=new_arma_records))
+    prune_unused_masters(out_esp)
+    out_esp.save(out_path)
+    warnings = validate_patch(out_path, master_data_dirs=master_data_dirs)
+
+    # ---- Pass 4: SkyPatcher INI (add minted ARMA to each target ARMO) ----
+    ini_lines = [
+        "; cbbe-to-ube: UBE race coverage for mod-defined BODY armor variants.",
+        "; Adds a minted UBE-primary ArmorAddon (redirected to the converted",
+        "; !UBE mesh) to each body item whose winning armature lacked UBE races",
+        "; (e.g. Requiem 'Orcish Light Cuirass' reusing the vanilla armature).",
+    ]
+    for armo_abs, defining_plugin, to_mint in targets:
+        addons = [mint_set[x] for x in to_mint if mint_set.get(x) is not None]
+        if not addons:
+            continue
+        adds = ",".join("{}|{:06X}".format(mint_name, (fid & 0xFFFFFF))
+                        for fid in addons)
+        ini_lines.append(
+            "filterByArmors={}|{:06X}:armorAddonsToAdd={}".format(
+                defining_plugin, armo_abs[1], adds))
+
+    return {
+        "output": str(out_path),
+        "ini_lines": ini_lines,
+        "masters": len(out_esp.header.masters),
+        "minted_armas": len(new_arma_records),
+        "armo_targets": len(targets),
+        "esl_flagged": bool(tes4_flags & TES4_FLAG_ESL),
+        "candidates_scanned": len(armo_win),
+        "validation_warnings": warnings,
+    }
+
+
 def merge_patches(
     patch_paths: list[Path],
     output_path: str | Path,
