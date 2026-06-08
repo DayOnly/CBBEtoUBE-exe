@@ -24,7 +24,7 @@ need shape-removal + UBE-body injection, which is the M3 phase 2 problem
 
 Surprising finding from M3 measurement: for armor pieces that don't
 contain inline body, the right transformation is **identity** (just copy
-the NIF). Empirically, across every a hand-authored UBE armor piece tested, the
+the NIF). Empirically, across every hand-authored UBE armor piece tested, the
 CBBE-authored verts are already what the UBE-built mesh has. Position-
 warping based on CBBE-body -> UBE-body deformation introduces more error
 than it fixes, because the conversion via BodySlide doesn't actually warp
@@ -1814,13 +1814,13 @@ _UBE_BASESHAPE_MIN_VERTS = 20_000
 _UBE_VIRTUALBODY_MIN_VERTS = 10_000
 
 # Heuristic thresholds for detecting an inline body shape that's NOT named
-# `3BA` (mods commonly use bespoke names like `_Fuse00_a heavily-boned armor_Body`,
+# `3BA` (mods commonly use bespoke names like `_Fuse00_<ArmorName>_Body`,
 # `OBI_Body`, etc.). A shape spanning almost the full character height
 # AND skinned to many bones is almost certainly a body. Tuned to:
 #   * catch full-body inline meshes (CBBE 3BA spans ~103 Z, full bones)
 #   * NOT catch long armor pieces (capes / coats — high Z, few bones)
-#   * NOT catch accessory shapes covering much of the torso (a heavily-boned armor_Acs:
-#     Z=63.6, bones=59 — fails Z threshold)
+#   * NOT catch accessory shapes covering much of the torso (e.g. an
+#     `_Acs`-suffixed shape: Z=63.6, bones=59 — fails the Z threshold)
 _BODY_HEURISTIC_MIN_Z_RANGE = 70.0
 _BODY_HEURISTIC_MIN_BONES = 40
 # Skirts and other cloth pieces can have lots of bones (one per SMP segment)
@@ -1929,7 +1929,7 @@ def classify_shapes(nif: nif_io.Nif) -> tuple[list[str], list[str]]:
         VirtualBody with vertex-count guards)
       * a generic shape-shape heuristic: spans most of the character's
         vertical extent AND skinned to many bones. Catches custom-named
-        inline bodies (e.g. `_Fuse00_a heavily-boned armor_Body`, mod-specific naming).
+        inline bodies (e.g. `_Fuse00_<ArmorName>_Body`, mod-specific naming).
     """
     body = []
     armor = []
@@ -2158,7 +2158,7 @@ def convert_nif(
             # instead, giving the visible CBBE-fingers-with-armor
             # mismatch. Same logic for boots and `Feet`.
             extremity_slots_to_replace: list[str] = []
-            # HDT-SMP per-vertex soft-body cloth (e.g. a hand-authored UBE armor a soft-body cloth shape)
+            # HDT-SMP per-vertex soft-body cloth (e.g. a soft-body cloth shape on a hand-authored UBE armor)
             # must keep its authored weighting so it can still swing — skip
             # the body-fit reskin for it (see _hdt_softbody_shape_names).
             hdt_softbody_names = _hdt_softbody_shape_names(src_path)
@@ -2801,7 +2801,7 @@ def convert_nif(
                             # `_shape_is_extremity_dominant` exclusion,
                             # which dropped long sleeves whose hand
                             # portion outweighed the sleeve portion (e.g.
-                            # a hand-authored UBE armor a long-sleeve shape at 66% extremity).
+                            # a long-sleeve shape on a hand-authored UBE armor at 66% extremity).
                             # Body-space offset (shape transform) so the morph KNN
                             # matches the right body region for shapes authored in
                             # a shifted space (e.g. elven cuirass top at Z=-49 +
@@ -4214,7 +4214,7 @@ def _slot_aware_reskin_band(biped_slots: int) -> "tuple[float, float]":
 #
 # The base M6 reskin pass (above) only transfers bones to armor verts
 # within RESKIN_FAR_DIST (= 2.0) of the body. Hanging cloth pieces —
-# a mashup armor's a loincloth shape loincloth, draping skirts, robe panels — sit 2-5
+# a mashup armor's loincloth, draping skirts, robe panels — sit 2-5
 # units off the body and never get any scale-bone influence under M6.
 # So they stay rigidly skinned to NPC Pelvis / Thigh / Spine, which the
 # engine does NOT scale with sliders, and the user sees the body bulge
@@ -4472,7 +4472,7 @@ RESKIN_PRESERVE_BONE_KEYWORDS = (
 # shape is skinned to, and adds them FLAT under the root with an IDENTITY
 # node transform. For STANDARD skeleton bones that's fine — the game
 # resolves their real position from the actor's skeleton by name. But
-# ARMOR-SPECIFIC physics bones (a skirt's `a heavily-boned armor_Skirt_Front 00..03` chain,
+# ARMOR-SPECIFIC physics bones (a skirt's `<Armor>_Skirt_Front 00..03` chain,
 # cape/cloak/tail bones, etc.) are NOT in the actor skeleton: the game
 # can't resolve them, so a flattened identity transform pins their verts
 # to the world origin → the skirt collapses straight down through the
@@ -5417,8 +5417,8 @@ CHEST_SYNC_DISTANCE = 2.5
 # attachments (cloak, shoulder pad, strap) have only incidental breast
 # weight. Gating on this stops the sync from rewriting ornaments to the
 # bust garment's breast-heavy weights (the mashup-armor regression). Measured
-# separation is clean: genuine bust cloth >=0.34 (a layered-bust armor the inner bra shape 0.35, the outer fabric shape
-# 0.53; a mashup armor Blouse 0.34), decorative attachments <=0.11 (Cape 0.11,
+# separation is clean: genuine bust cloth >=0.34 (a layered-bust armor's inner bra shape 0.35, its outer fabric shape
+# 0.53; a mashup armor's Blouse 0.34), decorative attachments <=0.11 (Cape 0.11,
 # Shoulders 0.00, Strap 0.01). 0.25 sits in the gap. Tune if needed.
 CHEST_SYNC_MIN_BREAST_FRAC = 0.25
 
@@ -7290,7 +7290,7 @@ def _read_source_hdt_xml_disk(src_nif_path: Path) -> "Path | None":
 
     This is the authoritative armor->XML link (the mod author wrote it),
     far more reliable than keyword-matching filenames — it correctly maps
-    e.g. a heavily-boned armor_Female_Body_0.nif -> Meshes\\Fuse00\\Armor\\a heavily-boned armor\\a heavily-boned armor_Body.xml
+    e.g. <Armor>_Female_Body_0.nif -> Meshes\\Fuse00\\Armor\\<Armor>\\<Armor>_Body.xml
     where the stems don't match. Resolves through the full VFS so an XML that
     ships in a different mod than the (BodySlide-output) NIF is still found.
     Returns the Path or None.
@@ -7834,7 +7834,7 @@ def _reauthor_nif_fresh(dst_path: Path) -> bool:
 
 def _hdt_softbody_shape_names(src_nif_path: Path) -> set:
     """Shape names the armor's HDT-SMP XML drives as PER-VERTEX soft-bodies
-    (free-swinging cloth, e.g. a hand-authored UBE armor's `a soft-body cloth shape`). These must KEEP
+    (free-swinging cloth, e.g. a hand-authored UBE armor's `soft-body cloth shape`). These must KEEP
     their authored skin weighting: the converter's body-fit reskin would
     re-weight every vert firmly to body bones, over-constraining the
     soft-body so it can no longer swing/jiggle. Resolves the source XML via
@@ -8009,7 +8009,7 @@ BODY_SKIN_EXTREMITY_NAMES = BODY_SKIN_HAND_NAMES | BODY_SKIN_FOOT_NAMES
 
 # Detection patterns (broader than the exact-name sets above). Outfit
 # Studio / mod authors frequently suffix a duplicated body-skin hand/foot
-# shape — a mashup armor's gauntlet ships its CBBE hand as "Hands_2", a heavily-boned armor-
+# shape — a mashup armor's gauntlet ships its CBBE hand as "Hands_2", another armor-
 # style boots as "Feet_1", etc. The exact-name sets miss those, so the
 # CBBE hand/foot survived conversion and rendered (the "gloves reset my
 # hands to CBBE" bug). Match "Hands"/"FemaleHands"/"Feet"/"FemaleFeet"

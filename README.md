@@ -51,16 +51,17 @@ together so the in-game weight slider keeps working.
 The built executable is self-contained (`pynifly` + `NiflyDLL.dll` are bundled).
 
 ```
-# full one-click pipeline over the whole modlist
+# graphical front-end (default — what MO2 launches or a double-click opens)
 dist\CBBEtoUBE\CBBEtoUBE.exe
 
-# graphical front-end
-dist\CBBEtoUBE\CBBEtoUBE.exe gui
+# headless one-click pipeline over the whole modlist
+dist\CBBEtoUBE\CBBEtoUBE.exe auto
 ```
 
-Running the exe with **no arguments** runs the full `auto` pipeline — this is
-what an MO2 executable entry invokes. Point MO2 at `CBBEtoUBE.exe` and the tool
-auto-discovers the modlist layout.
+Running the exe with **no arguments** launches the GUI — the default when MO2
+runs it or you double-click it. Run the headless one-click pipeline directly
+with the `auto` subcommand (what the GUI's convert button runs under the hood).
+Point MO2 at `CBBEtoUBE.exe` and the tool auto-discovers the modlist layout.
 
 ## Running from source
 
@@ -68,8 +69,8 @@ auto-discovers the modlist layout.
 python -m venv .venv
 .venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-python cbbe_to_ube_main.py            # = the `auto` full pipeline
-python cbbe_to_ube_main.py gui        # the GUI
+python cbbe_to_ube_main.py            # launches the GUI (default)
+python cbbe_to_ube_main.py auto       # headless full pipeline
 ```
 
 ### Installing pynifly
@@ -86,9 +87,9 @@ repo root (already vendored here), or on `sys.path`.
 
 | Command | Purpose |
 |---|---|
-| *(none)* / `auto` | Full pipeline: convert all candidate mods, merge, add coverage |
+| *(none)* / `gui` | Tkinter front-end — the default when run with no arguments |
+| `auto` | Full headless pipeline: convert all candidate mods, merge, add coverage |
 | `convert` | Convert one or more specific source mod folders |
-| `gui` | Tkinter front-end |
 | `scan` | Pre-flight: list candidate CBBE armor mods without converting |
 | `merge` | Re-merge the per-mod patch ESPs into the combined plugin |
 | `vanilla-compat` | (Re)build the vanilla UBE race-coverage plugin |

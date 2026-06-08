@@ -129,7 +129,7 @@ def classify_bone_threshold(bone_name: str) -> float:
 # margin bumps would otherwise need huge values to fix.
 #
 # Cloth params stay tight (margin=0.1, prenetration=0.1) — that
-# matches the per-vertex-shape convention in both a hand-authored UBE armor XMLs.
+# matches the per-vertex-shape convention in hand-authored UBE armor XMLs.
 
 DEFAULT_CLOTH_MARGIN = 0.1
 DEFAULT_CLOTH_PRENETRATION = 0.1

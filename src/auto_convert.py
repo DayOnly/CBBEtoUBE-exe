@@ -536,10 +536,16 @@ def _find_source_esps(source_dir: Path) -> list[Path]:
     # Dragonborn.esm, Unslaad.esm, Glenmoril.esm, ...). Globbing only *.esp
     # silently skipped them -> their armour was never converted, no UBE armature
     # -> invisible on UBE actors (#179). So scan all three extensions. Vanilla/DLC
-    # master ESMs + Creation Club content are NOT convert sources (the
-    # vanilla-compat path handles vanilla/DLC); exclude them by FILENAME so they
-    # are never picked up even if a "Stock Game"-style folder is scanned. The
-    # existing "ube" path check already excludes our own outputs + UBE_AllRace.
+    # master ESMs are NOT convert sources (the vanilla-compat path handles
+    # vanilla/DLC); exclude them by FILENAME so they are never picked up even if a
+    # "Stock Game"-style folder is scanned. Creation Club ARMOR, however, IS a
+    # valid source: the cc* "Alternative Armors" series (OrcishScaled / Iron /
+    # Steel / Ebony / Dwarven / Elven / ...) ships 3BA BodySlide builds but is NOT
+    # covered by the vanilla path, so name-skipping every cc*.esl/.esm left ~123 CC
+    # armor pieces invisible on UBE (e.g. Requiem's "Orcish Light Cuirass" reuses
+    # the cc OrcishScaled armature). Non-armor CC contributes nothing -- the
+    # armor-mod filter + armor-only conversion drop it. The existing "ube" path
+    # check already excludes our own outputs + UBE_AllRace.
     _MASTER_SKIP = {m.lower() for m in ube_patcher.VANILLA_DLC_MASTERS}
     _MASTER_SKIP.add("_resourcepack.esl")
     candidates = []
@@ -550,9 +556,6 @@ def _find_source_esps(source_dir: Path) -> list[Path]:
             name_lower = p.name.lower()
             if name_lower in _MASTER_SKIP:
                 continue  # vanilla/DLC master -> handled by the vanilla path
-            if (name_lower.startswith("cc")
-                    and name_lower.endswith((".esm", ".esl"))):
-                continue  # Creation Club content -> out of scope
             parts_lower = [s.lower() for s in p.parts]
             if any("backup" in s or "ube" in s for s in parts_lower):
                 continue
