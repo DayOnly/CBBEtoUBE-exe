@@ -13,6 +13,7 @@ This test verifies:
      than any warped variant would be.
   3. (Optional) The opt-in `warp_armor=True` path runs without errors.
 """
+import os
 import sys
 from pathlib import Path
 
@@ -24,8 +25,11 @@ sys.path.insert(0, str(PROJ))
 from src import nif_io, nif_convert
 
 
-CBBE_REF = Path(r"<MODLIST>\mods\CBBE 3BA (3BBB)\meshes\actors\character\character assets\femalebody_1.nif")
-UBE_REF  = Path(r"<MODLIST>\mods\Bodyslide Output\meshes\!UBE\Body\femalebody_tangent_1.nif")
+# Optional warp-mode reference bodies. Set these env vars to a CBBE and a UBE
+# femalebody NIF to exercise the (diagnostic) warp path; left unset, that part
+# of the test is skipped (the is_file() guard below).
+CBBE_REF = Path(os.environ.get("CBBE2UBE_CBBE_REF", ""))
+UBE_REF  = Path(os.environ.get("CBBE2UBE_UBE_REF", ""))
 
 CBBE_SRC = (
     PROJ / "samples" / "m1" / "kozakowy_vampire" / "cbbe"

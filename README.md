@@ -164,3 +164,13 @@ pyinstaller CBBEtoUBE.spec
 
 Produces a self-contained onedir build at `dist/CBBEtoUBE/` (`CBBEtoUBE.exe` +
 `_internal/`).
+
+## License
+
+CBBEtoUBE is licensed under the **GNU General Public License v3.0** — see
+[LICENSE](LICENSE). Copyright (C) 2026 DayOnly.
+
+Bundled third-party components keep their own licenses: `pynifly` /
+`NiflyDLL.dll` (BadDog's PyNifly — confirm its terms upstream before
+redistributing), and numpy / scipy / OpenBLAS / Tcl-Tk inside the PyInstaller
+bundle under `dist/CBBEtoUBE/_internal/`.

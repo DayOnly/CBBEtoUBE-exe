@@ -10,6 +10,7 @@ we don't preserve, or have minor encoding quirks). What we DO check:
 
 This is a real correctness gate before we trust the writer.
 """
+import os
 import sys
 from pathlib import Path
 
@@ -25,8 +26,12 @@ SAMPLES = [
          / "KozakowyVampireArmor UBE patch.esp",
     PROJ / "samples" / "m1" / "eve_sunfire" / "ube"
          / "Obi - Eve's Sunfire Armor UBE patch.esp",
-    Path(r"<MODLIST>\mods\Obi's Druchii Armor UBE conversion\ObiDruchiiArmor UBE patch.esp"),
 ]
+# Optional extra patch ESP to round-trip: set CBBE2UBE_TEST_ESP to any UBE
+# patch ESP path. Skipped (is_file guard below) when unset.
+_extra_esp = os.environ.get("CBBE2UBE_TEST_ESP")
+if _extra_esp:
+    SAMPLES.append(Path(_extra_esp))
 
 
 def subrecord_signature_sequence(payload: bytes) -> list[tuple[bytes, int, bytes]]:
