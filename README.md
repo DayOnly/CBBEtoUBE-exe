@@ -170,7 +170,13 @@ Produces a self-contained onedir build at `dist/CBBEtoUBE/` (`CBBEtoUBE.exe` +
 CBBEtoUBE is licensed under the **GNU General Public License v3.0** — see
 [LICENSE](LICENSE). Copyright (C) 2026 DayOnly.
 
-Bundled third-party components keep their own licenses: `pynifly` /
-`NiflyDLL.dll` (BadDog's PyNifly — confirm its terms upstream before
-redistributing), and numpy / scipy / OpenBLAS / Tcl-Tk inside the PyInstaller
-bundle under `dist/CBBEtoUBE/_internal/`.
+This project uses BadDog's **PyNifly** (the `pyn` package + `NiflyDLL.dll`),
+which is **GPL-3.0** — source: <https://github.com/BadDogSkyrim/PyNifly>.
+Because PyNifly is GPL-3.0 and is included here (vendored in `.pynifly/` and
+frozen into the built exe), CBBEtoUBE as a whole is distributed under GPL-3.0
+to stay license-compatible. `NiflyDLL.dll` is the compiled binary of that
+project; its corresponding source is available at the link above.
+
+Other bundled components — numpy, scipy, OpenBLAS, Tcl/Tk in the PyInstaller
+bundle (`dist/CBBEtoUBE/_internal/`) — are under their own permissive
+(BSD-style) licenses. See [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
