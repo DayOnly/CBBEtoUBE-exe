@@ -9,6 +9,7 @@ not distance to hand-authored. The Druchii hand-authored has a +2.75 Z
 shift that pollutes per-vert distance metrics but isn't relevant to
 clipping avoidance.
 """
+import os
 import sys
 from pathlib import Path
 
@@ -22,13 +23,13 @@ from pyn import pynifly
 from src.correspondence import MeshIndex, project_to_mesh
 
 
-CBBE_BOOTS = Path(r"<MODLIST>\mods\Obi's Druchii Armor MAIN FILE 3Ba"
+CBBE_BOOTS = Path(os.environ.get("CBBE2UBE_MODS_ROOT", "") + r"\mods\Obi's Druchii Armor MAIN FILE 3Ba"
                   r"\meshes\Obicnii\DruchiiArmor\Druchii Boots_1.nif")
-HAND_BOOTS = Path(r"<MODLIST>\mods\Bodyslide Output"
+HAND_BOOTS = Path(os.environ.get("CBBE2UBE_MODS_ROOT", "") + r"\mods\Bodyslide Output"
                   r"\Meshes\!UBE\Obicnii\DruchiiArmor\Druchii Boots_1.nif")
-CBBE_TOP = Path(r"<MODLIST>\mods\Obi's Druchii Armor MAIN FILE 3Ba"
+CBBE_TOP = Path(os.environ.get("CBBE2UBE_MODS_ROOT", "") + r"\mods\Obi's Druchii Armor MAIN FILE 3Ba"
                 r"\meshes\Obicnii\DruchiiArmor\Druchii Top_1.nif")  # has inline 3BA
-UBE_BODY = Path(r"<MODLIST>\mods\Bodyslide Output"
+UBE_BODY = Path(os.environ.get("CBBE2UBE_MODS_ROOT", "") + r"\mods\Bodyslide Output"
                 r"\Meshes\!UBE\Obicnii\DruchiiArmor\Druchii Top_1.nif")  # has BaseShape
 
 

@@ -31,7 +31,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$mo2Root        = "<MODLIST>"
+$mo2Root        = if ($env:CBBE2UBE_MODS_ROOT) { $env:CBBE2UBE_MODS_ROOT } else { "D:\path\to\MO2" }
 $mo2Exe         = Join-Path $mo2Root "ModOrganizer.exe"
 $mo2Ini         = Join-Path $mo2Root "ModOrganizer.ini"
 $sseeditExe     = Join-Path $mo2Root "tools\xEdit\SSEEdit.exe"
@@ -41,10 +41,10 @@ $sourceScript   = Join-Path $projectRoot "scripts\AddUBERaces.pas"
 
 $executableTitle = "xEdit - CBBEtoUBE Patcher"
 # This modlist uses a 'Stock Game' pattern where the real game files
-# live in <MODLIST>\Stock Game\Data\ (separate from the Steam install).
+# live in the MO2 instance's Stock Game\Data\ (separate from the Steam install).
 # xEdit must be told that path via -D: or it will look at the Steam install
 # (where the modlist's plugins don't exist) and fail to load them.
-$stockGameData = "<MODLIST>\Stock Game\Data"
+$stockGameData = Join-Path $mo2Root "Stock Game\Data"
 $executableArgs = '-IKnowWhatImDoing -AutoLoad -script:AddUBERaces ' +
                   '-AllowMasterFilesEdit ' +
                   "-D:`"$stockGameData`""

@@ -12,6 +12,7 @@ Reports per-UBE-race coverage for slots 32 (body) / 33 (hands) /
 37 (feet) and flags every gap + every non-!UBE mesh target.
 """
 from __future__ import annotations
+import os
 import io, struct, sys, glob
 from pathlib import Path
 
@@ -19,8 +20,8 @@ sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="repla
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from src import esp  # noqa: E402
 
-ARR_MODS = Path(r"<MODLIST>\mods")
-ARR_PROFILES = Path(r"<MODLIST>\profiles")
+ARR_MODS = Path(os.environ.get("CBBE2UBE_MODS_ROOT", "") + r"\mods")
+ARR_PROFILES = Path(os.environ.get("CBBE2UBE_MODS_ROOT", "") + r"\profiles")
 
 # biped slot -> bit (slot-30) in BOD2 first u32
 SLOTS = {32: "BODY", 33: "HANDS", 37: "FEET"}
@@ -90,7 +91,7 @@ def find_winning(basename: str, ordered: list[str]):
         mod = Path(p).parent.name
         cands.append((rank.get(mod, 10**9), mod, p))
     # also stock game data
-    for stock in (r"<MODLIST>\Stock Game\Data", r"<MODLIST>\mods\Stock Game\Data"):
+    for stock in (os.environ.get("CBBE2UBE_MODS_ROOT", "") + r"\Stock Game\Data", os.environ.get("CBBE2UBE_MODS_ROOT", "") + r"\mods\Stock Game\Data"):
         sp = Path(stock) / basename
         if sp.is_file():
             cands.append((10**9 + 1, "<stock>", str(sp)))

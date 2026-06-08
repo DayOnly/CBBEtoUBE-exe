@@ -3,9 +3,9 @@
 # executable dropdown.
 #
 # Usage:
-#   .\scripts\install_mo2_entry.ps1 -Mo2Root "<MODLIST>"
-#   .\scripts\install_mo2_entry.ps1 -Mo2Root "<MODLIST>" -InstallTools
-#   .\scripts\install_mo2_entry.ps1 -Mo2Root "<MODLIST>" -ExePath "C:\Tools\CBBEtoUBE\CBBEtoUBE.exe"
+#   .\scripts\install_mo2_entry.ps1 -Mo2Root "D:\path\to\MO2"
+#   .\scripts\install_mo2_entry.ps1 -Mo2Root "D:\path\to\MO2" -InstallTools
+#   .\scripts\install_mo2_entry.ps1 -Mo2Root "D:\path\to\MO2" -ExePath "C:\Tools\CBBEtoUBE\CBBEtoUBE.exe"
 #
 # What it does:
 #   1. (optional, -InstallTools) copies the built dist\CBBEtoUBE bundle into

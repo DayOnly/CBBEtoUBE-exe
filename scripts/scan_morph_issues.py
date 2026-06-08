@@ -30,6 +30,7 @@ Usage:
   python scripts/scan_morph_issues.py --output 'D:\\path\\to\\mod' --max-detail 20
 """
 from __future__ import annotations
+import os
 
 import argparse
 import io
@@ -44,7 +45,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.tri import TriFile  # noqa: E402
 
-DEFAULT_OUTPUT = Path(r"<MODLIST>\mods\CBBEtoUBE Auto")
+DEFAULT_OUTPUT = Path(os.environ.get("CBBE2UBE_MODS_ROOT", "") + r"\mods\CBBEtoUBE Auto")
 
 # Cloth-keyword substrings (lowercased) — if a shape name matches one,
 # we EXPECT it to morph with the body. Missing from TRI → bug.

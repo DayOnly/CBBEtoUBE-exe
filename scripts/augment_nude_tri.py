@@ -21,6 +21,7 @@ Usage:
   python scripts/augment_nude_tri.py --apply     # write augmented .tri
 """
 from __future__ import annotations
+import os
 import io, sys, shutil
 from pathlib import Path
 import numpy as np
@@ -30,7 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from src import nif_io
 from src import tri as tri_mod
 
-BUILD = Path(r"<MODLIST>\mods\Authoria - Bodyslide Output - 3BA\meshes\!UBE")
+BUILD = Path(os.environ.get("CBBE2UBE_MODS_ROOT", "") + r"\mods\Authoria - Bodyslide Output - 3BA\meshes\!UBE")
 BODY_DIR = BUILD / "Body"
 PARTS = {
     "HANDS": (BUILD / "Hands", "femalehands_tangent"),

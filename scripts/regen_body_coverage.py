@@ -2,14 +2,15 @@
 coverage (166 vanilla body ARMAs + ARMO overrides) + humanoid armor
 race-extension, skin-free (hardened guard), beast-free (DefaultRace gate
 + minimal master dirs -> no beast UBE race discovery)."""
+import os
 import io,sys,shutil
 from pathlib import Path
 sys.stdout=io.TextIOWrapper(sys.stdout.buffer,encoding="utf-8",errors="replace")
 sys.path.insert(0,'.')
 from src import ube_patcher as up, vanilla_bsa_armor as vba
-DATA=Path(r"<MODLIST>\Stock Game\Data")
-UBE=Path(r"<MODLIST>\mods\UBE 2.0 U. 0.7")
-OUT=Path(r"<MODLIST>\mods\CBBEtoUBE Auto\Vanilla_UBE_Race_Compat.esp")
+DATA=Path(os.environ.get("CBBE2UBE_MODS_ROOT", "") + r"\Stock Game\Data")
+UBE=Path(os.environ.get("CBBE2UBE_MODS_ROOT", "") + r"\mods\UBE 2.0 U. 0.7")
+OUT=Path(os.environ.get("CBBE2UBE_MODS_ROOT", "") + r"\mods\CBBEtoUBE Auto\Vanilla_UBE_Race_Compat.esp")
 data_dirs=[DATA, UBE]
 m=vba.enumerate_vanilla_body_meshes([DATA])
 conv=set()

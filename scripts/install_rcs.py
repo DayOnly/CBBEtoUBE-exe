@@ -6,9 +6,9 @@ Requires MO2 closed (script does NOT verify; caller verifies).
 import os, sys, shutil, zipfile, py7zr
 from datetime import datetime
 
-DL = r'<HOME>\Downloads'
-MODS = r'<MODLIST>\mods'
-PROFILE = r'<MODLIST>\profiles\Main Profile'
+DL = os.path.expanduser("~") + r'\Downloads'
+MODS = os.environ.get("CBBE2UBE_MODS_ROOT", "") + r'\mods'
+PROFILE = os.environ.get("CBBE2UBE_MODS_ROOT", "") + r'\profiles\Main Profile'
 MODLIST = os.path.join(PROFILE, 'modlist.txt')
 PLUGINS = os.path.join(PROFILE, 'plugins.txt')
 

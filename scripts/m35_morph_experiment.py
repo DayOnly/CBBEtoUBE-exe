@@ -14,6 +14,7 @@ Approaches tested:
   D. Vertex-nearest with K=4
   E. Vertex-nearest with K=16
 """
+import os
 import sys
 from pathlib import Path
 
@@ -29,14 +30,14 @@ from src.correspondence import MeshIndex, project_to_mesh
 
 
 # Test fixture: Druchii Top_1 — its 5FabricTits is the canary
-CBBE_SRC = Path(r"<MODLIST>\mods\Obi's Druchii Armor MAIN FILE 3Ba"
+CBBE_SRC = Path(os.environ.get("CBBE2UBE_MODS_ROOT", "") + r"\mods\Obi's Druchii Armor MAIN FILE 3Ba"
                 r"\meshes\Obicnii\DruchiiArmor\Druchii Top_1.nif")
-HAND_REAL = Path(r"<MODLIST>\mods\Bodyslide Output"
+HAND_REAL = Path(os.environ.get("CBBE2UBE_MODS_ROOT", "") + r"\mods\Bodyslide Output"
                  r"\Meshes\!UBE\Obicnii\DruchiiArmor\Druchii Top_1.nif")
 # Reference bodies — the CBBE template (slider-zero) is inline in CBBE_SRC.
 # User's UBE preset body lives in BodySlide Output.
 CBBE_TEMPLATE_FROM_SRC = True  # use the inline 3BA from CBBE_SRC
-UBE_PRESET_NIF = Path(r"<MODLIST>\mods\Bodyslide Output"
+UBE_PRESET_NIF = Path(os.environ.get("CBBE2UBE_MODS_ROOT", "") + r"\mods\Bodyslide Output"
                       r"\meshes\!UBE\Body\femalebody_tangent_1.nif")
 
 

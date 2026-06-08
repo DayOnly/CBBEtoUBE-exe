@@ -32,6 +32,7 @@ Usage:
   python scripts/integrate_ube_race_skins.py --esp 'D:\\path\\to\\UBE_AllRace.esp'
   python scripts/integrate_ube_race_skins.py --dry-run
 """
+import os
 import argparse
 import io
 import shutil
@@ -44,8 +45,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from src import esp  # noqa: E402
 
 DEFAULT_CANDIDATES = [
-    Path(r"<MODLIST>\mods\UBE_AllRace Newrite Replacement\UBE_AllRace.esp"),
-    Path(r"<MODLIST>\mods\UBE 2.0 U. 0.7\UBE_AllRace.esp"),
+    Path(os.environ.get("CBBE2UBE_MODS_ROOT", "") + r"\mods\UBE_AllRace Newrite Replacement\UBE_AllRace.esp"),
+    Path(os.environ.get("CBBE2UBE_MODS_ROOT", "") + r"\mods\UBE 2.0 U. 0.7\UBE_AllRace.esp"),
 ]
 
 # Source ARMA EDIDs to clone (one per slot). RNAM gets swapped per race.

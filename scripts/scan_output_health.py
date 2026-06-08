@@ -73,7 +73,7 @@ def _parse_combined_arma_meshes(esp_path):
 
 
 def main():
-    out_dir = sys.argv[1] if len(sys.argv) > 1 else r"<MODLIST>\mods\CBBEtoUBE Auto"
+    out_dir = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("CBBE2UBE_MODS_ROOT", "") + r"\mods\CBBEtoUBE Auto"
     meshes = os.path.join(out_dir, "meshes")
     combined = os.path.join(out_dir, "CBBE_to_UBE_Combined.esp")
     print(f"=== HEALTH SCAN: {out_dir} ===")

@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / '.pynifly'))
 from pyn import pynifly
 
-DL    = Path(r'<HOME>\Downloads')
+DL    = Path(os.path.expanduser("~") + r'\Downloads')
 PROJ  = Path(__file__).resolve().parents[1]
 SAMPLES = PROJ / 'samples' / 'm1'
 WINRAR = r'C:\Program Files\WinRAR\Rar.exe'

@@ -5,14 +5,15 @@ Remaps every FormID from the standalone patch's master order into VC's,
 reassigns the new ARMA own-FormIDs into VC's free FE-space, appends the
 54 skin ARMAs + the 00UBE_SkinNaked override, then deletes the standalone.
 """
+import os
 import io, sys, struct
 from pathlib import Path
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from src import esp
 
-PATCH = Path(r"<MODLIST>\mods\CBBEtoUBE Auto\UBE_RaceSkin_Patch.esp")
-VC = Path(r"<MODLIST>\mods\CBBEtoUBE Auto\Vanilla_UBE_Race_Compat.esp")
+PATCH = Path(os.environ.get("CBBE2UBE_MODS_ROOT", "") + r"\mods\CBBEtoUBE Auto\UBE_RaceSkin_Patch.esp")
+VC = Path(os.environ.get("CBBE2UBE_MODS_ROOT", "") + r"\mods\CBBEtoUBE Auto\Vanilla_UBE_Race_Compat.esp")
 FORMID_SIGS = {b"RNAM", b"MODL", b"SNDD", b"ZNAM", b"YNAM", b"ETYP", b"BIDS", b"BAMT"}
 
 def main():

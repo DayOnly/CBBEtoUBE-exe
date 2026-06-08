@@ -25,6 +25,7 @@ Usage:
   python scripts/sanity_check_converted.py
   python scripts/sanity_check_converted.py --output 'D:\\path\\to\\mod' --max 8
 """
+import os
 import argparse
 import io
 import sys
@@ -37,15 +38,15 @@ sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="repla
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from src import nif_io  # noqa: E402
 
-DEFAULT_OUTPUT = Path(r"<MODLIST>\mods\CBBEtoUBE Auto")
+DEFAULT_OUTPUT = Path(os.environ.get("CBBE2UBE_MODS_ROOT", "") + r"\mods\CBBEtoUBE Auto")
 SOURCE_BODY = Path(
-    r"<MODLIST>\mods\Bodyslide Output"
+    os.environ.get("CBBE2UBE_MODS_ROOT", "") + r"\mods\Bodyslide Output"
     r"\meshes\!UBE\Body\femalebody_tangent_1.nif")
 SOURCE_HANDS = Path(
-    r"<MODLIST>\mods\Bodyslide Output"
+    os.environ.get("CBBE2UBE_MODS_ROOT", "") + r"\mods\Bodyslide Output"
     r"\meshes\!UBE\Hands\femalehands_tangent_1.nif")
 SOURCE_FEET = Path(
-    r"<MODLIST>\mods\Bodyslide Output"
+    os.environ.get("CBBE2UBE_MODS_ROOT", "") + r"\mods\Bodyslide Output"
     r"\meshes\!UBE\Feet\femalefeet_tangent_1.nif")
 
 STALE_PLUG_NAMES = {"3BA_Vagina", "3BA_Anus", "3BA"}

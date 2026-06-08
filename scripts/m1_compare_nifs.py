@@ -17,8 +17,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / '.pynifly'))
 from pyn import pynifly
 
 
-CBBE_SRC = r"<MODLIST>\mods\Obi's Druchii Armor MAIN FILE 3Ba\meshes\Obicnii\DruchiiArmor\Druchii Top_1.nif"
-UBE_TGT  = r"<MODLIST>\mods\Bodyslide Output\meshes\!UBE\Obicnii\DruchiiArmor\Druchii Top_1.nif"
+CBBE_SRC = os.environ.get("CBBE2UBE_MODS_ROOT", "") + r"\mods\Obi's Druchii Armor MAIN FILE 3Ba\meshes\Obicnii\DruchiiArmor\Druchii Top_1.nif"
+UBE_TGT  = os.environ.get("CBBE2UBE_MODS_ROOT", "") + r"\mods\Bodyslide Output\meshes\!UBE\Obicnii\DruchiiArmor\Druchii Top_1.nif"
 
 
 def summarize_nif(path):

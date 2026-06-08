@@ -19,6 +19,7 @@ Output: <CBBEtoUBE Auto>/UBE_RaceSkin_Patch.esp
     to the armatures list (engine walks in order -> UBE wins).
   ESL-flagged (own records in FE-space 0x800+). Beast races NOT included.
 """
+import os
 import io, sys, struct
 from pathlib import Path
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
@@ -102,8 +103,8 @@ class _IU:
 
 iu = _IU()
 
-UBE = Path(r"<MODLIST>\mods\UBE 2.0 U. 0.7\UBE_AllRace.esp")
-OUT = Path(r"<MODLIST>\mods\CBBEtoUBE Auto\UBE_RaceSkin_Patch.esp")
+UBE = Path(os.environ.get("CBBE2UBE_MODS_ROOT", "") + r"\mods\UBE 2.0 U. 0.7\UBE_AllRace.esp")
+OUT = Path(os.environ.get("CBBE2UBE_MODS_ROOT", "") + r"\mods\CBBEtoUBE Auto\UBE_RaceSkin_Patch.esp")
 ESL_FLAG = 0x00000200
 
 def main():

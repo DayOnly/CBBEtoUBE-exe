@@ -201,8 +201,8 @@ for pair in ['eve_sunfire', 'kozakowy_vampire']:
 
 # Also re-survey Obi's Druchii from earlier (using the installed mod folder)
 print(f'\n{"="*70}\nPAIR: obi_druchii (from earlier - reference)\n{"="*70}')
-obi_cbbe = Path(r"<MODLIST>\mods\Obi's Druchii Armor MAIN FILE 3Ba")
-obi_ube  = Path(r"<MODLIST>\mods\Bodyslide Output\meshes\!UBE\Obicnii\DruchiiArmor")
+obi_cbbe = Path(os.environ.get("CBBE2UBE_MODS_ROOT", "") + r"\mods\Obi's Druchii Armor MAIN FILE 3Ba")
+obi_ube  = Path(os.environ.get("CBBE2UBE_MODS_ROOT", "") + r"\mods\Bodyslide Output\meshes\!UBE\Obicnii\DruchiiArmor")
 # Use only the .nif we know
 obi_cbbe_nif = obi_cbbe / 'meshes' / 'Obicnii' / 'DruchiiArmor' / 'Druchii Top_1.nif'
 obi_ube_nif  = obi_ube / 'Druchii Top_1.nif'

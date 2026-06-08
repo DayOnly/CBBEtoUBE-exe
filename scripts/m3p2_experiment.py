@@ -3,6 +3,7 @@
 Approach: pynifly has no `deleteBlock` API, so we can't remove the inline
 3BA body from a CBBE NIF. Inverted approach: start from the UBE reference
 body NIF (has BaseShape + VirtualBody), then copy each non-body shape
+import os
 from the CBBE source into it via `createShapeFromData` + manual skin
 transfer.
 
@@ -179,14 +180,14 @@ def main():
                              out_root / "rt_belt.nif")
 
     # 2. Round-trip a body-containing NIF's armor shape (Druchii Top "5FabricTits")
-    druchii_top = Path(r"<MODLIST>\mods\Obi's Druchii Armor MAIN FILE 3Ba"
+    druchii_top = Path(os.environ.get("CBBE2UBE_MODS_ROOT", "") + r"\mods\Obi's Druchii Armor MAIN FILE 3Ba"
                        r"\meshes\Obicnii\DruchiiArmor\Druchii Top_1.nif")
     if druchii_top.is_file():
         round_trip_one_shape(druchii_top, "5FabricTits",
                              out_root / "rt_5fabrictits.nif")
 
     # 3. Full body-swap on Druchii Top
-    ube_ref = Path(r"<MODLIST>\mods\Bodyslide Output"
+    ube_ref = Path(os.environ.get("CBBE2UBE_MODS_ROOT", "") + r"\mods\Bodyslide Output"
                    r"\meshes\!UBE\Body\femalebody_tangent_1.nif")
     if druchii_top.is_file() and ube_ref.is_file():
         full_body_swap(druchii_top, ube_ref, out_root / "DruchiiTop_swapped.nif")

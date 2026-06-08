@@ -8,8 +8,8 @@
 import os, struct, sys
 from pathlib import Path
 
-MODS    = Path(r'<MODLIST>\mods')
-PROFILE = Path(r'<MODLIST>\profiles\Main Profile')
+MODS    = Path(os.environ.get("CBBE2UBE_MODS_ROOT", "") + r'\mods')
+PROFILE = Path(os.environ.get("CBBE2UBE_MODS_ROOT", "") + r'\profiles\Main Profile')
 MODLIST = PROFILE / 'modlist.txt'
 PLUGINS = PROFILE / 'plugins.txt'
 

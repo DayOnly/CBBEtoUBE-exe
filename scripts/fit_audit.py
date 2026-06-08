@@ -38,6 +38,7 @@ Usage:
   python scripts/fit_audit.py --source "D:\\mods\\Templar" "D:\\mods\\Valenwood..."
 """
 from __future__ import annotations
+import os
 
 import argparse
 import io
@@ -54,7 +55,7 @@ from src import nif_io           # noqa: E402
 from src import sliderset_gen    # noqa: E402
 from src.tri import TriFile      # noqa: E402
 
-DEFAULT_OUTPUT = Path(r"<MODLIST>\mods\CBBEtoUBE Auto")
+DEFAULT_OUTPUT = Path(os.environ.get("CBBE2UBE_MODS_ROOT", "") + r"\mods\CBBEtoUBE Auto")
 
 BODY_NAMES = {"BaseShape", "VirtualBody", "VirtualGround",
               "3BA", "3BA_Vagina", "3BA_Anus"}

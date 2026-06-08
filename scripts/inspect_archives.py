@@ -8,7 +8,7 @@ For each archive, identify:
 import os, sys, zipfile, py7zr, subprocess
 from pathlib import Path
 
-DL = Path(r'<HOME>\Downloads')
+DL = Path(os.path.expanduser("~") + r'\Downloads')
 WINRAR_RAR = r'C:\Program Files\WinRAR\Rar.exe'
 
 ARCHIVES = [

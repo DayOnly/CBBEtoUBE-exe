@@ -17,6 +17,7 @@ Three layers of checks:
 This catches the issues NIFSkope and SSEEdit would surface (broken block
 refs, missing shader, malformed records) without booting Skyrim.
 """
+import os
 import sys
 from pathlib import Path
 
@@ -150,7 +151,7 @@ def check_esp_roundtrip(esp_path: Path) -> tuple[bool, list[str]]:
 OUR_DRUCHII = PROJ / "output" / "auto" / "ObiDruchii"
 # Hand-authored UBE mods ship BodySlide shapedata; the *built* game meshes
 # live in the user's Bodyslide Output mod folder.
-REAL_DRUCHII = Path(r"<MODLIST>\mods\Bodyslide Output")
+REAL_DRUCHII = Path(os.environ.get("CBBE2UBE_MODS_ROOT", "") + r"\mods\Bodyslide Output")
 
 
 def main():

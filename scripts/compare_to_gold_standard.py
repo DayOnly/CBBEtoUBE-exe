@@ -14,6 +14,7 @@ The output of this script is a side-by-side table the user can read
 and act on, not a verdict.
 """
 from __future__ import annotations
+import os
 
 import io
 import sys
@@ -26,9 +27,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src import nif_io  # noqa: E402
 
-GOLD = Path(r"<HOME>/Downloads/cbbe-to-ube/_ref_ube_pack/extracted")
-HAND = Path(r"<MODLIST>/mods/Bodyslide Output/Meshes")
-OURS = Path(r"<MODLIST>/mods/CBBEtoUBE Auto/meshes")
+GOLD = Path(os.path.expanduser("~") + r"/Downloads/cbbe-to-ube/_ref_ube_pack/extracted")
+HAND = Path(os.environ.get("CBBE2UBE_MODS_ROOT", "") + r"/mods/Bodyslide Output/Meshes")
+OURS = Path(os.environ.get("CBBE2UBE_MODS_ROOT", "") + r"/mods/CBBEtoUBE Auto/meshes")
 
 SCALE_BONE_KEYS = ("NPC Belly", "NPC L Butt", "NPC R Butt",
                    "FrontThigh", "RearThigh", "RearCalf")
