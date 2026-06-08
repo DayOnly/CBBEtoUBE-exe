@@ -339,38 +339,73 @@ def enabled_mods(lay: "Layout") -> "set[str] | None":
 
 
 def active_plugins_ordered(lay: "Layout") -> "list[str] | None":
-    """Return ACTIVE plugin filenames (e.g. 'Skyrim.esm', 'Requiem.esp') IN
-    LOAD ORDER from `profiles/<selected_profile>/plugins.txt` (a `*Name` line =
-    active). plugins.txt is written top-to-bottom = ascending load order, so the
-    LAST plugin overriding a record is the conflict WINNER. Used by the #132
-    winner-aware ARMO rebase. Returns None if plugins.txt can't be located."""
+    """Return LOADED plugin filenames (e.g. 'Skyrim.esm', 'Requiem.esp') IN
+    LOAD ORDER. The list is written ascending = the LAST plugin overriding a
+    record is the conflict WINNER. Used by the #132 winner-aware ARMO rebase and
+    by the modded-armor UBE coverage passes (armature resolution).
+
+    Source = `profiles/<selected_profile>/`. plugins.txt marks EXPLICITLY active
+    plugins (`*Name`), but it OMITS implicitly-loaded Creation Club / always-on
+    ESLs entirely -- the game loads those regardless (they appear only in
+    loadorder.txt). Earlier we read plugins.txt alone, so ~60 CC ESLs were
+    invisible to the coverage scan: any armor reusing a CC armature (e.g.
+    Requiem's "Orcish Light Cuirass" -> cc OrcishScaled armature) couldn't have
+    its armature resolved and was silently skipped. So now a plugin counts as
+    LOADED iff it is `*`-active in plugins.txt OR present in loadorder.txt but
+    ABSENT from plugins.txt (implicit always-load). A name listed in plugins.txt
+    WITHOUT `*` is explicitly DEACTIVATED and excluded. Returns None if the
+    profile lists can't be located."""
     if lay.instance_dir is None:
         return None
-    candidates = []
+    prof_dirs: "list[Path]" = []
     if lay.selected_profile:
-        candidates.append(lay.instance_dir / "profiles" /
-                          lay.selected_profile / "plugins.txt")
+        prof_dirs.append(lay.instance_dir / "profiles" / lay.selected_profile)
     pdir = lay.instance_dir / "profiles"
     if pdir.is_dir():
         try:
             for d in sorted(pdir.iterdir()):
-                pt = d / "plugins.txt"
-                if pt.is_file() and pt not in candidates:
-                    candidates.append(pt)
+                if d.is_dir() and d not in prof_dirs:
+                    prof_dirs.append(d)
         except OSError:
             pass
-    for pt in candidates:
-        if not pt.is_file():
+    for prof in prof_dirs:
+        plugins_txt = prof / "plugins.txt"
+        loadorder_txt = prof / "loadorder.txt"
+        if not plugins_txt.is_file():
             continue
         try:
-            out: list[str] = []
-            for line in pt.read_text(encoding="utf-8",
-                                     errors="replace").splitlines():
+            active: "set[str]" = set()    # *-marked (explicitly enabled)
+            listed: "set[str]" = set()    # every name appearing in plugins.txt
+            star_order: "list[str]" = []  # *-marked, in plugins.txt order
+            for line in plugins_txt.read_text(
+                    encoding="utf-8", errors="replace").splitlines():
                 line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
                 if line.startswith("*"):
-                    out.append(line[1:].strip())
-            if out:
-                return out
+                    nm = line[1:].strip()
+                    active.add(nm.lower()); listed.add(nm.lower())
+                    star_order.append(nm)
+                else:
+                    listed.add(line.lower())
+            # Prefer loadorder.txt for the ordered set -- it lists EVERY loaded
+            # plugin, including the implicit CC/always-load ESLs that plugins.txt
+            # omits. Include a plugin iff *-active OR (in loadorder AND not listed
+            # in plugins.txt at all = implicit always-load).
+            if loadorder_txt.is_file():
+                ordered: "list[str]" = []
+                for line in loadorder_txt.read_text(
+                        encoding="utf-8", errors="replace").splitlines():
+                    line = line.strip()
+                    if not line or line.startswith("#"):
+                        continue
+                    low = line.lower()
+                    if low in active or low not in listed:
+                        ordered.append(line)
+                if ordered:
+                    return ordered
+            if star_order:
+                return star_order
         except Exception:
             continue
     return None
