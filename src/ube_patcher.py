@@ -4221,6 +4221,170 @@ def merge_patches(
     }
 
 
+def _partition_patches_for_esl(pinfo, cap):
+    """Partition patches into pieces, each holding <= `cap` NEW ARMA records, so
+    every piece can be ESL-flagged. `pinfo` is a list of (path, new_arma_count,
+    abs_armo_id_set).
+
+    Patches that override a SHARED ARMO are kept in the same piece (union-find),
+    so merge_patches' cross-patch armature dedup still applies within a piece.
+    Greedy bin-pack (largest group first). A single connected group whose own
+    ARMAs exceed `cap` becomes its own over-cap piece -- the caller's
+    merge_patches then downgrades just that one piece to a non-ESL ESP; the rest
+    stay ESL. Returns a list of piece patch-path lists."""
+    n = len(pinfo)
+    parent = list(range(n))
+
+    def find(i):
+        r = i
+        while parent[r] != r:
+            r = parent[r]
+        while parent[i] != r:
+            parent[i], i = r, parent[i]
+        return r
+
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    first_owner: dict = {}
+    for i, (_p, _n, ids) in enumerate(pinfo):
+        for aid in ids:
+            owner = first_owner.get(aid)
+            if owner is None:
+                first_owner[aid] = i
+            else:
+                union(i, owner)
+
+    comps: dict = {}
+    for i in range(n):
+        comps.setdefault(find(i), []).append(i)
+    groups = [(members, sum(pinfo[i][1] for i in members))
+              for members in comps.values()]
+    groups.sort(key=lambda g: -g[1])
+
+    pieces: list = []  # each: [list_of_paths, running_new_count]
+    for members, gnew in groups:
+        gpaths = [pinfo[i][0] for i in members]
+        placed = False
+        for piece in pieces:
+            if piece[1] + gnew <= cap:
+                piece[0].extend(gpaths)
+                piece[1] += gnew
+                placed = True
+                break
+        if not placed:
+            pieces.append([list(gpaths), gnew])
+    return [p[0] for p in pieces]
+
+
+def merge_patches_split(
+    patch_paths,
+    output_path,
+    *,
+    esl_flag: bool = True,
+    author: str = "cbbe-to-ube merger",
+    description: str = "Merged UBE compatibility patches",
+    master_data_dirs=None,
+    armo_winner_index=None,
+) -> dict:
+    """Merge UBE patch ESPs while keeping the result ESL-flagged.
+
+    If the total NEW-ARMA count fits one ESL plugin (<= ESL_MAX_OWN_RECORDS),
+    this behaves exactly like merge_patches (a single Combined). Otherwise it
+    SPLITS the patches into multiple ESL-flagged pieces -- `<stem>.esp`,
+    `<stem>2.esp`, `<stem>3.esp`, ... -- each under the cap, instead of
+    downgrading to one non-ESL ESP that costs a load-order slot. Patches sharing
+    an overridden ARMO stay in the same piece (so cross-patch armature dedup is
+    preserved), and each piece restarts its own-FormID space at 0x800, so every
+    piece is independently ESL-clean and they do NOT master each other.
+
+    Returns aggregate stats with `pieces` (file names) + `piece_stats`."""
+    out_path = Path(output_path)
+    plist = [Path(p) for p in patch_paths]
+    for p in plist:
+        if not p.is_file():
+            raise FileNotFoundError(f"patch not found: {p}")
+
+    def _single(esl):
+        s = merge_patches(
+            plist, out_path, esl_flag=esl, author=author,
+            description=description, master_data_dirs=master_data_dirs,
+            armo_winner_index=armo_winner_index)
+        s["pieces"] = [out_path.name]
+        s["split_pieces"] = 1
+        s["piece_stats"] = [s]
+        return s
+
+    if not esl_flag:
+        return _single(False)
+
+    # Quick scan: per-patch new-ARMA count + overridden-ARMO identities.
+    pinfo = []
+    total_new = 0
+    for p in plist:
+        pe = esp.ESP.load(p)
+        own = len(pe.header.masters)
+        n_new = 0
+        armo_ids = set()
+        for grp in pe.groups:
+            if grp.label == b"ARMA":
+                for rec in grp.records:
+                    if ((rec.formid >> 24) & 0xFF) == own:
+                        n_new += 1
+            elif grp.label == b"ARMO":
+                for rec in grp.records:
+                    armo_ids.add(_record_abs_fid(
+                        rec.formid, pe.header.masters, p.name))
+        pinfo.append((p, n_new, armo_ids))
+        total_new += n_new
+
+    if total_new <= ESL_MAX_OWN_RECORDS:
+        return _single(True)
+
+    # Over the cap -> split into ESL pieces.
+    piece_path_lists = _partition_patches_for_esl(pinfo, ESL_MAX_OWN_RECORDS)
+    stem, suffix, parent_dir = out_path.stem, (out_path.suffix or ".esp"), out_path.parent
+    n_pieces = len(piece_path_lists)
+    piece_stats, piece_names = [], []
+    for idx, ppaths in enumerate(piece_path_lists):
+        piece_path = out_path if idx == 0 else parent_dir / f"{stem}{idx + 1}{suffix}"
+        st = merge_patches(
+            ppaths, piece_path, esl_flag=True, author=author,
+            description=f"{description} (part {idx + 1}/{n_pieces})",
+            master_data_dirs=master_data_dirs, armo_winner_index=armo_winner_index)
+        piece_stats.append(st)
+        piece_names.append(piece_path.name)
+
+    # Remove stale pieces left by a prior, larger split (e.g. 3 -> 2 pieces).
+    keep = set(piece_names)
+    for f in parent_dir.glob(f"{stem}*{suffix}"):
+        if f.name not in keep:
+            try:
+                f.unlink()
+            except OSError:
+                pass
+
+    return {
+        "output": str(out_path),
+        "pieces": piece_names,
+        "split_pieces": n_pieces,
+        "merged_patch_count": len(plist),
+        "masters": piece_stats[0].get("masters", []),
+        "total_arma_records": sum(s.get("total_arma_records", 0) for s in piece_stats),
+        "own_arma_records": sum(s.get("own_arma_records", 0) for s in piece_stats),
+        "total_armo_records": sum(s.get("total_armo_records", 0) for s in piece_stats),
+        "armo_duplicates_merged": sum(s.get("armo_duplicates_merged", 0) for s in piece_stats),
+        "esl_flagged": all(s.get("esl_flagged") for s in piece_stats),
+        "all_pieces_esl": all(s.get("esl_flagged") for s in piece_stats),
+        "esl_slots_max": ESL_MAX_OWN_RECORDS,
+        "downgraded_to_full_esp": any(s.get("downgraded_to_full_esp") for s in piece_stats),
+        "winner_rebased_armos": sum(s.get("winner_rebased_armos", 0) for s in piece_stats),
+        "piece_stats": piece_stats,
+    }
+
+
 def _rewrite_payload_for_merge(
     payload: bytes,
     patch_path: Path,

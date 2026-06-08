@@ -1888,13 +1888,17 @@ def _cmd_convert(args):
                         print(f"  !! winner-index build failed (skipping "
                               f"rebase): {e!r}")
                 try:
-                    stats = ube_patcher.merge_patches(
+                    stats = ube_patcher.merge_patches_split(
                         patch_paths, merged_out, esl_flag=True,
                         master_data_dirs=batch_master_data_dirs,
                         armo_winner_index=winner_index,
                     )
                     print(f"  merged ESP: {merged_out}")
                     print(f"  ESL flag  : {stats.get('esl_flagged')}")
+                    if stats.get('split_pieces', 1) > 1:
+                        print(f"  SPLIT     : {stats['split_pieces']} ESL pieces "
+                              f"-> {', '.join(stats.get('pieces', []))} "
+                              "(enable ALL of them)")
                     if stats.get('winner_rebased_armos'):
                         print("  #132 rebased: "
                               f"{stats.get('winner_rebased_armos')} ARMO "
@@ -3070,7 +3074,7 @@ def _cmd_merge(args):
             (_mr / "_") if _mr else patches[0].parent)
     except Exception:
         _mdd = None
-    stats = ube_patcher.merge_patches(
+    stats = ube_patcher.merge_patches_split(
         patches, args.output,
         esl_flag=not args.no_esl_flag,
         author=args.author,
@@ -3079,6 +3083,9 @@ def _cmd_merge(args):
     )
     print(f"  wrote     : {stats.get('output', args.output)}")
     print(f"  ESL flag  : {stats.get('esl_flagged', False)}")
+    if stats.get('split_pieces', 1) > 1:
+        print(f"  SPLIT     : {stats['split_pieces']} ESL pieces "
+              f"-> {', '.join(stats.get('pieces', []))} (enable ALL)")
     masters = stats.get("masters", [])
     print(f"  masters   : {len(masters)}")
     print(f"  ARMA total: {stats.get('total_arma_records', '?')} "
