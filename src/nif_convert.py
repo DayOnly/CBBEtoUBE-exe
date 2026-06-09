@@ -992,6 +992,48 @@ def _cached_cbbe_to_ube_delta(
         return None, None
 
 
+GROOVE_SMOOTH_CLOSE = 6.0   # only smooth verts within this of the UBE body (tight armor)
+GROOVE_SMOOTH_ITERS = 8
+GROOVE_SMOOTH_ROUGH = 0.25  # displacement-deviation (u) above which a vert is "grooved"
+
+
+def _smooth_warp_grooves(src_world, warped, ube_body_verts):
+    """Flatten warp-induced displacement grooves on body-conforming armor.
+
+    The per-vert body-delta warp can introduce localized roughness in the
+    CBBE->UBE displacement field where tight armor stretches over the larger
+    UBE bust — visible as 'indent lines' on the breast/chest. This does a
+    roughness-weighted Laplacian smooth of the DISPLACEMENT (warped - source),
+    gated to verts close to the body, so genuine drape on loose/decorative
+    geometry (far from the body) and already-smooth regions are left alone.
+    Returns the (possibly) smoothed warped verts."""
+    try:
+        from scipy.spatial import cKDTree
+        src = np.asarray(src_world, dtype=np.float64)
+        w = np.asarray(warped, dtype=np.float64)
+        if len(src) != len(w) or len(src) < 12:
+            return warped
+        disp = w - src
+        if ube_body_verts is not None and len(ube_body_verts):
+            d2b, _ = cKDTree(
+                np.asarray(ube_body_verts, dtype=np.float64)).query(w, k=1)
+            active = (d2b < GROOVE_SMOOTH_CLOSE).astype(np.float64)[:, None]
+        else:
+            active = np.ones((len(src), 1), dtype=np.float64)
+        if not active.any():
+            return warped
+        _, idx = cKDTree(src).query(src, k=9)
+        nbr = idx[:, 1:]
+        for _ in range(GROOVE_SMOOTH_ITERS):
+            nm = disp[nbr].mean(axis=1)
+            rough = np.linalg.norm(disp - nm, axis=1)
+            wt = np.clip(rough / GROOVE_SMOOTH_ROUGH, 0.15, 1.0)[:, None]
+            disp = disp + active * (0.6 * wt) * (nm - disp)
+        return src + disp
+    except Exception:
+        return warped
+
+
 def warp_armor_by_body_delta(
     armor_verts: np.ndarray,
     cbbe_body_verts: np.ndarray,
@@ -2363,6 +2405,13 @@ def convert_nif(
                                 )
                             except Exception:
                                 pass
+                        # Groove-smooth: flatten warp-induced displacement
+                        # grooves on body-conforming armor (breast "indent
+                        # lines" where tight armor stretches over the bigger
+                        # UBE bust). Roughness-weighted + gated to near-body
+                        # verts, so loose/decorative shapes are untouched.
+                        snapped = _smooth_warp_grooves(
+                            sv_world, snapped, body_verts_for_fit)
                     else:
                         # Legacy fallback when CBBE base body isn't
                         # available — push inside-body verts outward
@@ -2507,11 +2556,12 @@ def convert_nif(
                         shape_jobs_p1,
                         body_verts=body_verts_for_fit,
                         body_normals=body_normals_for_fit,
+                        cbbe_body_verts=cbbe_verts_for_warp,
                     )
                     if n_abdo:
                         import sys as _sys
-                        print(f"  abdomen depth: stacked {n_abdo} waist-layer "
-                              f"vert(s) for clean separation", file=_sys.stderr)
+                        print(f"  overlay-band lift: raised {n_abdo} band "
+                              f"vert(s) back on top of their under-layer", file=_sys.stderr)
                 except Exception:
                     pass  # best-effort
 
@@ -5597,92 +5647,122 @@ def _separate_chest_layered_cloth_depth(
 # each inner layer behind the union of already-placed outer layers by
 # ABDOMEN_SEP_GAP, clamped to ABDOMEN_SEP_BODY_FLOOR so nothing sinks into the
 # body. Front-center only ((X,Z) pairing can't disambiguate front vs back).
-ABDOMEN_SEP_Z_MIN = 66.0
-ABDOMEN_SEP_Z_MAX = 96.0
-ABDOMEN_SEP_X_BOUND = 22.0
-ABDOMEN_SEP_Y_MIN = -3.0
-ABDOMEN_SEP_GAP = 0.15          # min depth between consecutive overlapping layers
-ABDOMEN_SEP_MAX_PUSH = 0.8      # cap total outward push (avoid runaway puff-out)
-ABDOMEN_SEP_PAIR_XZ = 2.5       # max (X,Z) dist to call two layers "same spot"
+# General overlay-band layering (replaces the old waist-box heuristic). A multi-
+# layer garment is warped one shape at a time, so the warp can SCRAMBLE the
+# stacking order: a decorative band that sits on top of the corset in the source
+# sinks BELOW it after the warp, and the corset then pokes radially through the
+# band (the "belt clips the corset" bug, incl. on the sides at full weight).
+# This pass re-imposes the SOURCE order. For each thin OVERLAY BAND (a small
+# cloth shape that, IN THE SOURCE, sits consistently OUTSIDE another cloth
+# shape), lift it back to a clean clearance above whatever it sank into,
+# everywhere it sank, along the UBE body normal. Only thin bands are lifted
+# (size gate) — never the large body-conforming pieces (bodysuit / breastplate),
+# since pushing those out collapses the bust. Order is classified from the
+# SOURCE (CBBE) clearance, so it's immune to the warp's scrambling.
+OVERLAY_SIZE_FRAC = 0.40   # liftable BAND only if < this x the largest cloth shape's vert count
+OVERLAY_PAIR_R = 3.0       # 3D dist to pair an A vert with the nearest B vert
+OVERLAY_MIN_OVERLAP = 30   # need this many overlapping verts to classify a pair
+OVERLAY_THRESH = 0.20      # A sits OUTSIDE B in source by > this (median clearance diff) = its overlay
+OVERLAY_TARGET = 0.30      # lift the band to sit this far outside the under-layer
+OVERLAY_CAP = 3.0          # per-vert lift cap (runaway guard)
+
+
+def _smooth_overlay_push(vals, pts, iters=4, k=8):
+    """Neighbour-average a per-vertex push field so a band lift has no creases."""
+    if len(pts) < k + 1:
+        return vals
+    from scipy.spatial import cKDTree
+    tree = cKDTree(pts)
+    _, idx = tree.query(pts, k=k)
+    nbr = idx[:, 1:]
+    v = vals.copy()
+    for _ in range(iters):
+        v = 0.5 * v + 0.5 * v[nbr].mean(axis=1)
+    return v
 
 
 def _separate_abdomen_layered_cloth_depth(
         shape_jobs: list,
         body_verts: "np.ndarray | None" = None,
         body_normals: "np.ndarray | None" = None,
+        cbbe_body_verts: "np.ndarray | None" = None,
 ) -> int:
-    """Multi-layer depth separation for the front waist/abdomen. See the block
-    comment above.
-
-    SMOOTH (uniform per-layer) offset — this is the key vs an earlier per-vert
-    version that crumpled the surface: moving only the verts that overlap an
-    inner layer (by varying amounts) makes a contiguous rigid piece (a gold
-    corset) look like crushed foil. Instead, sort the overlapping front-waist
-    cloth layers innermost->outermost, leave the innermost (base) put, and give
-    each successive OVERLAPPING layer a CONSTANT outward offset (level x GAP)
-    applied uniformly to all its band verts along their (smoothly-varying) body
-    normals. A uniform shell offset preserves the layer's shape (no crumple)
-    while still spacing the layers apart so they stop Z-fighting. Layers that
-    don't actually overlap a lower layer are left alone (not lifted off the
-    body). Mutates offset jobs' `verts` in place + sets `verts_modified`."""
-    if body_verts is None or body_normals is None:
+    """Lift thin overlay bands back on top of the layers they sank into during
+    the per-shape warp. `cbbe_body_verts` = the source (CBBE) reference body,
+    used to classify each shape's source clearance (which shape sits OUTSIDE
+    which) — without it we can't recover the intended order, so we no-op.
+    Mutates lifted jobs' `verts` in place + sets `verts_modified`. Returns the
+    number of verts moved. See the block comment above."""
+    if body_verts is None or body_normals is None or cbbe_body_verts is None:
         return 0
     try:
         from scipy.spatial import cKDTree
         bva = np.asarray(body_verts, dtype=np.float64)
         bna = np.asarray(body_normals, dtype=np.float64)
-        btree = cKDTree(bva)
+        ube_tree = cKDTree(bva)
+        cbbe_tree = cKDTree(np.asarray(cbbe_body_verts, dtype=np.float64))
 
-        cands = []
+        jobs = []
         for j in shape_jobs:
             if not j.get("override_skin"):
                 continue  # only reskinned cloth (excludes the injected body)
-            v = j.get("verts")
-            if v is None or len(v) == 0:
+            wv = j.get("verts")
+            src = j.get("src")
+            if wv is None or len(wv) == 0 or src is None:
                 continue
-            v = np.asarray(v, dtype=np.float64)
-            mask = ((v[:, 2] >= ABDOMEN_SEP_Z_MIN) & (v[:, 2] <= ABDOMEN_SEP_Z_MAX)
-                    & (np.abs(v[:, 0]) <= ABDOMEN_SEP_X_BOUND)
-                    & (v[:, 1] >= ABDOMEN_SEP_Y_MIN))
-            if int(mask.sum()) < 5:
-                continue
-            bvm = v[mask]
-            _, bi = btree.query(bvm, k=1)
-            med = float(np.median(((bvm - bva[bi]) * bna[bi]).sum(axis=1)))
-            cands.append({"job": j, "mask": mask, "med": med})
-        if len(cands) < 2:
+            wv = np.asarray(wv, dtype=np.float64)
+            sv = np.asarray(list(src.verts), dtype=np.float64)
+            if len(sv) != len(wv):
+                continue  # topology mismatch (e.g. body-inject) -> skip
+            _, bi = ube_tree.query(wv, k=1)
+            dcb, _ = cbbe_tree.query(sv, k=1)   # source clearance: unsigned dist to CBBE body
+            j["_wv"] = wv
+            j["_sv"] = sv
+            j["_wn"] = bna[bi]
+            j["_scl"] = dcb
+            j["_wtree"] = cKDTree(wv)
+            j["_stree"] = cKDTree(sv)
+            jobs.append(j)
+        if len(jobs) < 2:
             return 0
-        cands.sort(key=lambda c: c["med"])  # innermost (base) first
+        maxv = max(len(j["_wv"]) for j in jobs)
 
-        # `lower_xz` accumulates the (X,Z) of every layer at or below the current
-        # one. `level` = how many overlapping layers we've already offset (the
-        # base is level 0 and never moves).
-        lower_xz = np.asarray(cands[0]["job"]["verts"],
-                              dtype=np.float64)[cands[0]["mask"]][:, [0, 2]]
-        level = 0
         total = 0
-        for c in cands[1:]:
-            job, mask = c["job"], c["mask"]
-            vfull = np.asarray(job["verts"], dtype=np.float64)
-            idx_in_shape = np.where(mask)[0]
-            pts = vfull[mask]
-            # Does this layer meaningfully overlap a lower layer (in X,Z)?
-            tree = cKDTree(lower_xz)
-            dd, _ = tree.query(pts[:, [0, 2]], k=1,
-                               distance_upper_bound=ABDOMEN_SEP_PAIR_XZ)
-            overlap_frac = float((dd < ABDOMEN_SEP_PAIR_XZ).mean())
-            if overlap_frac >= 0.2:
-                level += 1
-                offset = min(level * ABDOMEN_SEP_GAP, ABDOMEN_SEP_MAX_PUSH)
-                _, bi = btree.query(pts, k=1)
-                vfull[idx_in_shape] += offset * bna[bi]   # uniform smooth shell
-                job["verts"] = vfull
-                job["verts_modified"] = True
-                total += len(idx_in_shape)
-            # this layer joins the lower set for subsequent layers
-            lower_xz = np.vstack([lower_xz,
-                                  np.asarray(job["verts"],
-                                             dtype=np.float64)[mask][:, [0, 2]]])
+        for A in jobs:
+            if len(A["_wv"]) >= OVERLAY_SIZE_FRAC * maxv:
+                continue   # large body-conforming piece -> never lift (collapses the bust)
+            push = np.zeros(len(A["_wv"]), dtype=np.float64)
+            for B in jobs:
+                if B is A:
+                    continue
+                # classify in the SOURCE: does A sit consistently OUTSIDE B?
+                dd, ui = B["_stree"].query(
+                    A["_sv"], k=1, distance_upper_bound=OVERLAY_PAIR_R)
+                ov = np.isfinite(dd)
+                if int(ov.sum()) < OVERLAY_MIN_OVERLAP:
+                    continue
+                uis = np.where(ov, ui, 0)
+                med = float(np.median((A["_scl"] - B["_scl"][uis])[ov]))
+                if med < OVERLAY_THRESH:
+                    continue   # A is not an overlay sitting outside B
+                # lift in the UBE frame wherever A sank to within TARGET of B
+                ddw, uiw = B["_wtree"].query(
+                    A["_wv"], k=1, distance_upper_bound=OVERLAY_PAIR_R)
+                vw = np.isfinite(ddw)
+                uiw = np.where(vw, uiw, 0)
+                warp_rel = ((A["_wv"] - B["_wv"][uiw]) * A["_wn"]).sum(axis=1)
+                need = np.where(vw & (warp_rel < OVERLAY_TARGET),
+                                OVERLAY_TARGET - warp_rel, 0.0)
+                push = np.maximum(push, need)
+            push = np.clip(_smooth_overlay_push(push, A["_wv"]), 0.0, OVERLAY_CAP)
+            if (push > 0.05).any():
+                A["verts"] = A["_wv"] + push[:, None] * A["_wn"]
+                A["verts_modified"] = True
+                total += int((push > 0.05).sum())
+
+        for j in jobs:
+            for key in ("_wv", "_sv", "_wn", "_scl", "_wtree", "_stree"):
+                j.pop(key, None)
         return total
     except Exception:
         return 0

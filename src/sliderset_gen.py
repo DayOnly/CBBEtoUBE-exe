@@ -292,6 +292,77 @@ def generate_armor_tri(
                          for i, (d0, d1, d2) in zip(keep, kept_d)],
             ))
 
+    # ---- Overlay-band morph-sync ----
+    # A thin band lifted on top of a larger layer by the pass-8 band-lift must
+    # MORPH IN LOCKSTEP with the layer beneath it, or it re-sinks under body
+    # sliders even though the base mesh is fixed. For each thin band that, in
+    # this (already-lifted) UBE mesh, sits clearly OUTSIDE another cloth shape,
+    # replace its per-slider deltas with the under-layer's nearest-vertex
+    # deltas so the layering gap holds at every slider value. Large body-
+    # conforming pieces keep their own morph. Fully gated: if the band can't be
+    # classified (e.g. verts aren't lifted) it simply no-ops and the base lift
+    # still stands.
+    try:
+        from scipy.spatial import cKDTree as _cKDTree
+        _OM_SIZE_FRAC, _OM_R, _OM_MIN, _OM_THRESH, _OM_SYNC_R = 0.40, 3.0, 30, 0.20, 5.0
+        _names = list(armor_shapes)
+        _maxv = max((len(np.asarray(v)) for v in armor_shapes.values()), default=0)
+        for A in _names:
+            av = np.asarray(armor_shapes[A], dtype=np.float64)
+            if _maxv <= 0 or len(av) >= _OM_SIZE_FRAC * _maxv or A not in shape_knn:
+                continue   # large body-conforming piece -> keep own morph
+            a_nd = shape_knn[A][2]   # A's per-vert clearance to the body
+            under_v, under_tag = [], []
+            for B in _names:
+                if B == A or B not in shape_knn:
+                    continue
+                bv = np.asarray(armor_shapes[B], dtype=np.float64)
+                b_nd = shape_knn[B][2]
+                dd, ui = _cKDTree(bv).query(av, k=1, distance_upper_bound=_OM_R)
+                ov = np.isfinite(dd)
+                if int(ov.sum()) < _OM_MIN:
+                    continue
+                if float(np.median((a_nd - b_nd[np.where(ov, ui, 0)])[ov])) < _OM_THRESH:
+                    continue   # A does not sit clearly outside B
+                under_v.append(bv)
+                under_tag.extend((B, int(i)) for i in range(len(bv)))
+            if not under_v:
+                continue
+            ddu, idu = _cKDTree(np.vstack(under_v)).query(
+                av, k=1, distance_upper_bound=_OM_SYNC_R)
+            okv = np.isfinite(ddu)
+            if not okv.any():
+                continue
+            dense = {}
+            for Bn in {t[0] for t in under_tag}:
+                dB = {}
+                for m in shape_morphs.get(Bn, []):
+                    a2 = np.zeros((len(armor_shapes[Bn]), 3), dtype=np.float64)
+                    for (vi, d0, d1, d2) in m.offsets:
+                        if 0 <= vi < len(a2):
+                            a2[vi] = (d0, d1, d2)
+                    dB[m.name] = a2
+                dense[Bn] = dB
+            new_morphs = []
+            for sl in set().union(*(set(dense[Bn]) for Bn in dense)):
+                arr = np.zeros((len(av), 3), dtype=np.float64)
+                for vi in np.where(okv)[0]:
+                    Bn, Bi = under_tag[idu[vi]]
+                    da = dense.get(Bn, {}).get(sl)
+                    if da is not None:
+                        arr[vi] = da[Bi]
+                mag = np.linalg.norm(arr, axis=1)
+                keep = np.where(mag >= min_delta)[0]
+                if len(keep):
+                    new_morphs.append(TriMorph(
+                        name=sl,
+                        offsets=[(int(i), float(arr[i, 0]), float(arr[i, 1]),
+                                  float(arr[i, 2])) for i in keep]))
+            if new_morphs:
+                shape_morphs[A] = new_morphs
+    except Exception:
+        pass
+
     # Build the shape list with the BODYTRI carrier listed FIRST, then
     # the remaining shapes ordered by MORPH PRIORITY (body-conforming
     # cloth before rigid metal props).
