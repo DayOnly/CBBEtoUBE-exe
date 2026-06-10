@@ -5820,6 +5820,8 @@ OVERLAY_MIN_OVERLAP = 30   # need this many overlapping verts to classify a pair
 OVERLAY_THRESH = 0.20      # A sits OUTSIDE B in source by > this (median clearance diff) = its overlay
 OVERLAY_TARGET = 0.30      # lift the band to sit this far outside the under-layer
 OVERLAY_CAP = 3.0          # per-vert lift cap (runaway guard)
+LAYER_STACK_GAP = 0.15     # ordered multi-layer lift: clearance each layer keeps
+                           # above the OUTERMOST inner layer beneath it (2026-06-10)
 
 
 def _smooth_overlay_push(vals, pts, iters=4, k=8):
@@ -5841,13 +5843,26 @@ def _separate_abdomen_layered_cloth_depth(
         body_verts: "np.ndarray | None" = None,
         body_normals: "np.ndarray | None" = None,
         cbbe_body_verts: "np.ndarray | None" = None,
+        source_body_verts: "np.ndarray | None" = None,
+        source_body_normals: "np.ndarray | None" = None,
 ) -> int:
-    """Lift thin overlay bands back on top of the layers they sank into during
-    the per-shape warp. `cbbe_body_verts` = the source (CBBE) reference body,
-    used to classify each shape's source clearance (which shape sits OUTSIDE
-    which) — without it we can't recover the intended order, so we no-op.
-    Mutates lifted jobs' `verts` in place + sets `verts_modified`. Returns the
-    number of verts moved. See the block comment above."""
+    """Re-impose the SOURCE radial layer order on a multi-layer outfit
+    (corset / top / belts / chest_plate / ...). The per-shape warp's min-standoff
+    clamp pushes every layer to a similar standoff off the (bigger) UBE body,
+    COLLAPSING the author's stacking order (MEASURED on DDV Ruby: a 1.42u source
+    spread squashed to ~0.3u — belts sink into the corset, corset into the top).
+    This pass rebuilds it: classify each layer's depth from the SOURCE (CBBE)
+    clearance, then process INNERMOST -> OUT and lift each layer so every vert
+    clears the OUTERMOST already-placed inner layer beneath it by
+    LAYER_STACK_GAP (the innermost just clears the body FLOOR), along the UBE
+    body normal. ORDERED + re-evaluated after each layer so it can't cascade
+    (the failure mode of a single simultaneous "lift everything" pass). Since it
+    re-orders from the SOURCE classification (not the collapsed warp state) it
+    restores order regardless of what the warp did — runs as the LAST vert pass.
+    A single-layer NIF (one eligible cloth) just gets the innermost FLOOR = an
+    order-preserving anti-sink, a no-op for already-clear armor. `cbbe_body_verts`
+    is REQUIRED (the source-order key); without it we no-op. Mutates jobs'
+    `verts` + sets `verts_modified`. Returns verts moved."""
     if body_verts is None or body_normals is None or cbbe_body_verts is None:
         return 0
     try:
@@ -5855,7 +5870,29 @@ def _separate_abdomen_layered_cloth_depth(
         bva = np.asarray(body_verts, dtype=np.float64)
         bna = np.asarray(body_normals, dtype=np.float64)
         ube_tree = cKDTree(bva)
-        cbbe_tree = cKDTree(np.asarray(cbbe_body_verts, dtype=np.float64))
+        # Layer ORDER key = mean SIGNED clearance to the SOURCE body the armor
+        # was BUILT on (the preset inline body, SAME frame as the source verts).
+        # Two things matter: (1) the SOURCE body (not the slider-zero CBBE base
+        # — wrong frame); (2) SIGNED clearance, not unsigned distance — a big
+        # body-conforming shape (top 13.7k / chest_plate 18.4k verts) has many
+        # far verts that inflate the unsigned MEAN (8u), mis-ranking it as the
+        # OUTERMOST layer so the lift then buries the corset under it. Signed
+        # mean reproduces the author's order [top<chest_plate<corset<belts<metal]
+        # exactly. Needs source body normals; fall back to the CBBE base +
+        # unsigned only when the source body/normals are unavailable.
+        if source_body_verts is not None and source_body_normals is not None:
+            order_v = np.asarray(source_body_verts, dtype=np.float64)
+            order_n = np.asarray(source_body_normals, dtype=np.float64)
+        else:
+            order_v = np.asarray(cbbe_body_verts, dtype=np.float64)
+            order_n = None
+        if order_n is None:
+            # No reliable source-body normals to order the stack (phase 1 / no
+            # inline body). Unsigned-distance ordering mis-ranks big body-
+            # conforming shapes and can INVERT the stack, so the aggressive
+            # multi-layer lift only runs where we have a real signed order.
+            return 0
+        order_tree = cKDTree(order_v)
 
         jobs = []
         for j in shape_jobs:
@@ -5869,55 +5906,58 @@ def _separate_abdomen_layered_cloth_depth(
             sv = np.asarray(list(src.verts), dtype=np.float64)
             if len(sv) != len(wv):
                 continue  # topology mismatch (e.g. body-inject) -> skip
-            _, bi = ube_tree.query(wv, k=1)
-            dcb, _ = cbbe_tree.query(sv, k=1)   # source clearance: unsigned dist to CBBE body
+            dd, ii = order_tree.query(sv, k=1)   # source clearance -> ordering key
+            if order_n is not None:
+                key = float(np.mean(((sv - order_v[ii]) * order_n[ii]).sum(axis=1)))
+            else:
+                key = float(np.mean(dd))   # fallback: unsigned distance
             j["_wv"] = wv
-            j["_sv"] = sv
-            j["_wn"] = bna[bi]
-            j["_scl"] = dcb
-            j["_wtree"] = cKDTree(wv)
-            j["_stree"] = cKDTree(sv)
+            j["_order"] = key
             jobs.append(j)
         if len(jobs) < 2:
+            for j in jobs:
+                j.pop("_wv", None); j.pop("_order", None)
             return 0
-        maxv = max(len(j["_wv"]) for j in jobs)
+        jobs.sort(key=lambda j: j["_order"])   # inner (small clearance) -> outer
+
+        def _signed(v):
+            _, i = ube_tree.query(v, k=1)
+            return ((v - bva[i]) * bna[i]).sum(axis=1), i
 
         total = 0
-        for A in jobs:
-            if len(A["_wv"]) >= OVERLAY_SIZE_FRAC * maxv:
-                continue   # large body-conforming piece -> never lift (collapses the bust)
-            push = np.zeros(len(A["_wv"]), dtype=np.float64)
-            for B in jobs:
-                if B is A:
-                    continue
-                # classify in the SOURCE: does A sit consistently OUTSIDE B?
-                dd, ui = B["_stree"].query(
-                    A["_sv"], k=1, distance_upper_bound=OVERLAY_PAIR_R)
-                ov = np.isfinite(dd)
-                if int(ov.sum()) < OVERLAY_MIN_OVERLAP:
-                    continue
-                uis = np.where(ov, ui, 0)
-                med = float(np.median((A["_scl"] - B["_scl"][uis])[ov]))
-                if med < OVERLAY_THRESH:
-                    continue   # A is not an overlay sitting outside B
-                # lift in the UBE frame wherever A sank to within TARGET of B
-                ddw, uiw = B["_wtree"].query(
-                    A["_wv"], k=1, distance_upper_bound=OVERLAY_PAIR_R)
-                vw = np.isfinite(ddw)
-                uiw = np.where(vw, uiw, 0)
-                warp_rel = ((A["_wv"] - B["_wv"][uiw]) * A["_wn"]).sum(axis=1)
-                need = np.where(vw & (warp_rel < OVERLAY_TARGET),
-                                OVERLAY_TARGET - warp_rel, 0.0)
-                push = np.maximum(push, need)
-            push = np.clip(_smooth_overlay_push(push, A["_wv"]), 0.0, OVERLAY_CAP)
-            if (push > 0.05).any():
-                A["verts"] = A["_wv"] + push[:, None] * A["_wn"]
-                A["verts_modified"] = True
-                total += int((push > 0.05).sum())
+        placed: list = []   # already-positioned inner-layer verts (UBE frame)
+        for j in jobs:
+            v = j["_wv"]
+            c, bi = _signed(v)
+            if not placed:
+                req = np.full(len(v), ARMOR_TO_SKIN_BUFFER)   # innermost -> body floor
+            else:
+                inner = np.vstack(placed)
+                ic, _ = _signed(inner)
+                it = cKDTree(inner)
+                K = min(8, len(inner))
+                dd, ui = it.query(v, k=K, distance_upper_bound=OVERLAY_PAIR_R)
+                if K == 1:
+                    dd = dd[:, None]; ui = ui[:, None]
+                valid = np.isfinite(dd)
+                # clearance of the OUTERMOST nearby inner vert (max over k-NN);
+                # FLOOR where this layer overlaps nothing beneath it.
+                neigh = np.where(valid, ic[np.where(valid, ui, 0)], -np.inf)
+                mx = neigh.max(axis=1)
+                req = np.where(valid.any(axis=1), mx + LAYER_STACK_GAP,
+                               ARMOR_TO_SKIN_BUFFER)
+            push = np.clip(req - c, 0.0, OVERLAY_CAP)
+            push = np.clip(_smooth_overlay_push(push, v), 0.0, OVERLAY_CAP)
+            if (push > 0.02).any():
+                nv = v + push[:, None] * bna[bi]
+                j["verts"] = nv
+                j["verts_modified"] = True
+                j["_wv"] = nv
+                total += int((push > 0.02).sum())
+            placed.append(j["_wv"])
 
         for j in jobs:
-            for key in ("_wv", "_sv", "_wn", "_scl", "_wtree", "_stree"):
-                j.pop(key, None)
+            j.pop("_wv", None); j.pop("_order", None)
         return total
     except Exception:
         return 0
@@ -9103,6 +9143,13 @@ def convert_nif_phase2(
                 body_verts=body_verts_for_p2,
                 body_normals=body_norms_for_p2,
                 cbbe_body_verts=cbbe_verts_for_warp_p2,
+                source_body_verts=src_body_v_p2,
+                # robust normals: the source body's STORED normals are often
+                # zeroed (BodySlide output) -> signed clearance would be 0 for
+                # every layer -> no ordering. Compute from tris.
+                source_body_normals=(
+                    _body_normals_or_compute(cbbe_body_shape)
+                    if cbbe_body_shape is not None else None),
             )
             if n_abdo:
                 import sys as _sys

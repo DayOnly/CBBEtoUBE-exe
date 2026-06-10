@@ -68,7 +68,8 @@ def test_sunk_overlay_band_lifted_above_under_layer():
     A, B = _job(a_src, a_warp), _job(b_src, b_warp)
 
     pushed = nc._separate_abdomen_layered_cloth_depth(
-        [A, B], body_verts=bv, body_normals=bn, cbbe_body_verts=bv)
+        [A, B], body_verts=bv, body_normals=bn, cbbe_body_verts=bv,
+        source_body_verts=bv, source_body_normals=bn)
 
     assert pushed > 0, "the sunk overlay band must be lifted"
     a_y = float(np.median(np.asarray(A["verts"])[:, 1]))
@@ -78,8 +79,7 @@ def test_sunk_overlay_band_lifted_above_under_layer():
 
 
 def test_noop_without_cbbe_body():
-    # The c991d5b algorithm classifies order from the CBBE body; with no CBBE
-    # reference it must safely no-op (this is the bug the phase-2 fix addressed).
+    # No body reference at all -> safe no-op (first-line guard).
     bv, bn = _body_plane()
     a_src, a_warp = _patch(1.5, 1.0, (-4, 4), (78, 90), 10)
     b_src, b_warp = _patch(1.0, 1.0, (-8, 8), (72, 94), 20)
@@ -89,10 +89,24 @@ def test_noop_without_cbbe_body():
     assert A["verts_modified"] is False
 
 
+def test_noop_without_source_normals():
+    # The ordered lift needs SIGNED source-body normals to rank layers; the
+    # unsigned fallback can invert big shapes, so with no source normals the
+    # aggressive multi-layer lift must NOT run (gated to reliable ordering).
+    bv, bn = _body_plane()
+    a_src, a_warp = _patch(1.5, 1.0, (-4, 4), (78, 90), 10)
+    b_src, b_warp = _patch(1.0, 1.0, (-8, 8), (72, 94), 20)
+    A, B = _job(a_src, a_warp), _job(b_src, b_warp)
+    assert nc._separate_abdomen_layered_cloth_depth(
+        [A, B], body_verts=bv, body_normals=bn, cbbe_body_verts=bv) == 0
+    assert A["verts_modified"] is False
+
+
 def test_noop_single_layer():
     bv, bn = _body_plane()
     a_src, a_warp = _patch(1.0, 1.0, (-4, 4), (80, 90), 10)
     A = _job(a_src, a_warp)
     assert nc._separate_abdomen_layered_cloth_depth(
-        [A], body_verts=bv, body_normals=bn, cbbe_body_verts=bv) == 0
+        [A], body_verts=bv, body_normals=bn, cbbe_body_verts=bv,
+        source_body_verts=bv, source_body_normals=bn) == 0
     assert A["verts_modified"] is False
