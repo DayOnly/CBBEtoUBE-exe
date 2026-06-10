@@ -3858,7 +3858,16 @@ def generate_modded_nonbody_ube_coverage_patch(
     # references ONLY UBE_AllRace (races) + its mesh path strings — keeping the
     # mint ESP's master list tiny (no source plugin needed).
     STRIP = {b"SNDD", b"ONAM", b"MO2S", b"MO3S", b"MO4S", b"MO5S",
-             b"MO2T", b"MO3T", b"MO4T", b"MO5T"}
+             b"MO2T", b"MO3T", b"MO4T", b"MO5T",
+             # NAM0/NAM1 = male/female skin-texture TXST FormIDs; NAM2/NAM3 =
+             # male/female texture-swap FLST FormIDs (confirmed via ARMA schema:
+             # SkinTexture + TextureSwapList GenderedItems). When the minted ARMA
+             # is copied from a MOD-override WINNER (USSEP/AOS/Requiem redirecting
+             # skin TXSTs), these FormIDs live in the winner's master space, which
+             # this patch (vanilla DLC + UBE_AllRace only) lacks -> stale/dangling
+             # refs, same crash class as the MO?S/MO?T strip. Stripping falls back
+             # to default skin textures — fine for race-coverage armatures.
+             b"NAM0", b"NAM1", b"NAM2", b"NAM3"}
     new_arma_records: list[esp.Record] = []
     next_id = ESL_OWN_FORMID_MIN
     mint_name = out_path.with_suffix(".esp").name
@@ -4034,7 +4043,16 @@ def generate_modded_body_ube_coverage_patch(
     ube_primary_patch = (ube_byte << 24) | UBE_PRIMARY_BRETON_FID_24
 
     STRIP = {b"SNDD", b"ONAM", b"MO2S", b"MO3S", b"MO4S", b"MO5S",
-             b"MO2T", b"MO3T", b"MO4T", b"MO5T"}
+             b"MO2T", b"MO3T", b"MO4T", b"MO5T",
+             # NAM0/NAM1 = male/female skin-texture TXST FormIDs; NAM2/NAM3 =
+             # male/female texture-swap FLST FormIDs (confirmed via ARMA schema:
+             # SkinTexture + TextureSwapList GenderedItems). When the minted ARMA
+             # is copied from a MOD-override WINNER (USSEP/AOS/Requiem redirecting
+             # skin TXSTs), these FormIDs live in the winner's master space, which
+             # this patch (vanilla DLC + UBE_AllRace only) lacks -> stale/dangling
+             # refs, same crash class as the MO?S/MO?T strip. Stripping falls back
+             # to default skin textures — fine for race-coverage armatures.
+             b"NAM0", b"NAM1", b"NAM2", b"NAM3"}
     new_arma_records: list = []
     next_id = ESL_OWN_FORMID_MIN
     mint_name = out_path.with_suffix(".esp").name

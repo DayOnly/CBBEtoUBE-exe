@@ -4101,9 +4101,17 @@ def sanitize_output_vertex_color_flags(meshes_root, workers: "int | None" = None
             "shapes_fixed": shapes_fixed}
 
 
-def _pick_bodytri_carriers(nif) -> "list[object]":
+def _pick_bodytri_carriers(nif, *, exclude_body: bool = False) -> "list[object]":
     """Pick exactly ONE shape per NIF to receive a BODYTRI extra-data
     block, matching the hand-authored BodySlide UBE convention.
+
+    `exclude_body=True` skips the body-shape preference (BaseShape/3BA) so the
+    result is a CLOTH carrier even on a body-swap NIF. Used by the HDT-XML
+    generator: the body is the kinematic COLLIDER (emitted as a per-triangle
+    shape), never a simulated per-vertex cloth — picking BaseShape there made
+    the injected body flop as soft-body cloth while the real cape got no
+    physics. The default (False) keeps the body-first preference the BODYTRI
+    MORPH carrier wants.
 
     Carrier preference (in order):
       1. BaseShape / 3BA  — body shape, if present. This is what
@@ -4134,9 +4142,10 @@ def _pick_bodytri_carriers(nif) -> "list[object]":
     # VirtualBody is excluded — it's a Hidden physics proxy, not
     # the visible body shape NioOverride wants to morph.
     BODY_CARRIER_NAMES = ("BaseShape", "3BA")
-    for s in nif.shapes:
-        if s.name in BODY_CARRIER_NAMES:
-            return [s]
+    if not exclude_body:
+        for s in nif.shapes:
+            if s.name in BODY_CARRIER_NAMES:
+                return [s]
 
     candidates: list = []
     hand_fallbacks: list = []
@@ -7415,7 +7424,11 @@ def _generate_hdt_xml_for_dst(dst_path: "Path") -> "str | None":
 
     # Reuse the BODYTRI carrier picker as the "cloth shape" classifier:
     # every textured, non-placeholder, non-rigid-prop shape qualifies.
-    carriers = _pick_bodytri_carriers(nf)
+    # exclude_body=True: the body (BaseShape/VirtualBody) is the COLLIDER
+    # (per-triangle, below), NEVER a simulated per-vertex cloth — without this
+    # a body-swap NIF picked its injected BaseShape as the cloth carrier, so
+    # the body flopped as soft-body while the real cape got no physics at all.
+    carriers = _pick_bodytri_carriers(nf, exclude_body=True)
     if not carriers:
         return None
 
@@ -8900,6 +8913,20 @@ def convert_nif_phase2(
                             override, body_verts_for_p2, body_norms_for_p2,
                             ube_body_nipple=body_nipple_for_p2,
                         )
+                    except Exception:
+                        pass
+                # Groove-smooth (phase-1 parity): flatten warp-induced
+                # displacement grooves on body-conforming armor (breast "indent
+                # lines" where tight cloth stretches over the bigger UBE bust).
+                # Roughness-weighted + near-body gated, so loose/decorative
+                # shapes are untouched. Phase 2 (body-swap) was MISSING this —
+                # mirrors the phase-1 call. Same frame as the warp (_sv_body =
+                # source in body space; override = warped in body space).
+                if override is not None and body_verts_for_p2 is not None:
+                    try:
+                        override = _smooth_warp_grooves(
+                            _sv_body, np.asarray(override, dtype=np.float64),
+                            body_verts_for_p2)
                     except Exception:
                         pass
             except Exception as e:
