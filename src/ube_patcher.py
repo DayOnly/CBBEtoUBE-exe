@@ -2160,29 +2160,42 @@ def _iter_formids_in_payload(payload: bytes) -> Iterable[int]:
         elif sig in FORMID_ARRAY_SUBRECORD_SIGS and len(data) % 4 == 0:
             for i in range(0, len(data), 4):
                 yield struct.unpack_from("<I", data, i)[0]
+        elif sig in ALT_TEXTURE_SIGS:
+            # MO?S embedded TXST FormIDs — collect via the alt-texture walker so
+            # prune counts their defining master as USED (else it could drop the
+            # plugin the color TXSTs live in). Side-effect collect; verbatim fid.
+            _txsts: list[int] = []
+            _remap_alt_texture_payload(data, lambda f: (_txsts.append(f) or f))
+            yield from _txsts
 
 
 def _rewrite_formids_in_payload(payload: bytes, remap: dict[int, int]) -> bytes:
     """Rebuild a payload, applying `remap` (old_top_byte -> new_top_byte) to
     every FormID in the known FormID-bearing subrecords. Other subrecords are
     copied verbatim."""
+    def _rt(fid: int) -> int:
+        top = (fid >> 24) & 0xFF
+        return (remap[top] << 24) | (fid & 0xFFFFFF) if top in remap else fid
+
     out = b""
     for sig, data in esp.iter_subrecords(payload):
         if sig in FORMID_SINGLE_SUBRECORD_SIGS and len(data) == 4:
-            fid = struct.unpack("<I", data)[0]
-            top = (fid >> 24) & 0xFF
-            if top in remap:
-                fid = (remap[top] << 24) | (fid & 0xFFFFFF)
-            out += esp.encode_subrecord(sig, struct.pack("<I", fid))
+            out += esp.encode_subrecord(
+                sig, struct.pack("<I", _rt(struct.unpack("<I", data)[0])))
         elif sig in FORMID_ARRAY_SUBRECORD_SIGS and len(data) % 4 == 0:
-            new_data = b""
-            for i in range(0, len(data), 4):
-                fid = struct.unpack_from("<I", data, i)[0]
-                top = (fid >> 24) & 0xFF
-                if top in remap:
-                    fid = (remap[top] << 24) | (fid & 0xFFFFFF)
-                new_data += struct.pack("<I", fid)
+            new_data = b"".join(
+                struct.pack("<I", _rt(struct.unpack_from("<I", data, i)[0]))
+                for i in range(0, len(data), 4))
             out += esp.encode_subrecord(sig, new_data)
+        elif sig in ALT_TEXTURE_SIGS:
+            # MO?S alt-texture sets carry embedded TXST FormIDs in a nested
+            # (name + TXST + index) format the two branches above can't see.
+            # Without remapping them here, dropping/reordering a master (prune,
+            # ESL-split, race-skin fold) leaves the color-variant TXST pointing
+            # at the WRONG, off-by-one master -> all color variants render the
+            # base texture (DDV Ruby / Ballad-of-Bards bug). Reuse the
+            # alt-texture walker with the same top-byte remap.
+            out += esp.encode_subrecord(sig, _remap_alt_texture_payload(data, _rt))
         else:
             out += esp.encode_subrecord(sig, data)
     return out
