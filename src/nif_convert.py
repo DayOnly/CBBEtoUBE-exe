@@ -9066,15 +9066,21 @@ def convert_nif_phase2(
                 print(f"  cleavage depth: pushed {n_pushed} inner-layer "
                       f"vert(s) back for clean separation",
                       file=_sys.stderr)
+            # cbbe_body_verts is REQUIRED since the c991d5b overlay-lift
+            # rewrite (source-clearance classification) — omitting it made
+            # this pass silently no-op for every body-swap outfit (the
+            # multi-layer mashups it exists for). Caught by the stale
+            # abdomen test + the missing "lift" line in conversion logs.
             n_abdo = _separate_abdomen_layered_cloth_depth(
                 shape_jobs,
                 body_verts=body_verts_for_p2,
                 body_normals=body_norms_for_p2,
+                cbbe_body_verts=cbbe_verts_for_warp_p2,
             )
             if n_abdo:
                 import sys as _sys
-                print(f"  abdomen depth: stacked {n_abdo} waist-layer "
-                      f"vert(s) for clean separation", file=_sys.stderr)
+                print(f"  overlay-band lift: raised {n_abdo} band "
+                      f"vert(s) above their under-layer", file=_sys.stderr)
         except Exception:
             pass  # best-effort
 

@@ -14,22 +14,43 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-"""Guard for the multi-layer abdomen/waist depth separation (#abdomen z-fight).
-Three coplanar overlapping waist layers must be re-stacked to DISTINCT depths
-(so they stop Z-fighting), with none pushed below the body-clearance floor."""
+"""Guard for the overlay-band lift (c991d5b) — the per-shape warp can SCRAMBLE a
+multi-layer garment's stacking order: a thin band that sits OUTSIDE another cloth
+in the SOURCE sinks below it after the warp, so the under-layer pokes through the
+band ("the belt clips the corset"). The pass classifies order from the SOURCE
+(CBBE) clearance and lifts a sunk band back outside its under-layer, so it is
+immune to the warp's scrambling.
+
+REGRESSION this also guards (2026-06-10): the new algorithm REQUIRES
+`cbbe_body_verts` and reads each job's `src` shape; the phase-2 call site was
+omitting `cbbe_body_verts`, silently no-opping the lift for every body-swap
+outfit (exactly the multi-layer mashups it exists for)."""
 import numpy as np
 from src import nif_convert as nc
 
 
-def _grid_layer(y, n=12):
-    """A small front-waist patch at clearance `y` (body plane at Y=0, +Y out)."""
-    xs = np.linspace(-4, 4, n)
-    zs = np.linspace(80, 90, n)
-    pts = np.array([[x, y, z] for x in xs for z in zs], dtype=np.float64)
-    return pts
+class _Src:
+    """Stand-in for a pynifly source shape — only `.verts` is read."""
+    def __init__(self, verts):
+        self.verts = verts
 
 
-def _body_plane(n=20):
+def _patch(y_src, y_warp, x_range, z_range, n):
+    """A cloth patch: SOURCE verts at clearance `y_src`, WARP verts at `y_warp`
+    (body plane at Y=0, +Y outward). Same topology/count in both frames."""
+    xs = np.linspace(*x_range, n)
+    zs = np.linspace(*z_range, n)
+    src = np.array([[x, y_src, z] for x in xs for z in zs], dtype=np.float64)
+    warp = np.array([[x, y_warp, z] for x in xs for z in zs], dtype=np.float64)
+    return src, warp
+
+
+def _job(src_v, warp_v):
+    return {"override_skin": {"weights": {"NPC Spine": []}},
+            "src": _Src(src_v), "verts": warp_v, "verts_modified": False}
+
+
+def _body_plane(n=24):
     xs = np.linspace(-10, 10, n)
     zs = np.linspace(70, 96, n)
     bv = np.array([[x, 0.0, z] for x in xs for z in zs], dtype=np.float64)
@@ -37,32 +58,41 @@ def _body_plane(n=20):
     return bv, bn
 
 
-def test_abdomen_depth_sep_stacks_three_coplanar_layers():
+def test_sunk_overlay_band_lifted_above_under_layer():
     bv, bn = _body_plane()
-    # three layers all coplanar at +1.0 (Z-fighting)
-    jobs = []
-    for _ in range(3):
-        jobs.append({"override_skin": {"weights": {"NPC Spine": []}},
-                     "verts": _grid_layer(1.0), "verts_modified": False})
+    # Under-layer B: LARGE, sits at clearance 1.0 in both source and warp.
+    b_src, b_warp = _patch(1.0, 1.0, (-8, 8), (72, 94), 20)   # 400 verts
+    # Overlay band A: SMALL; in the SOURCE it sits OUTSIDE B (1.5), but the warp
+    # SANK it to B's depth (1.0) -> the pass must lift it back outside B.
+    a_src, a_warp = _patch(1.5, 1.0, (-4, 4), (78, 90), 10)   # 100 verts
+    A, B = _job(a_src, a_warp), _job(b_src, b_warp)
+
     pushed = nc._separate_abdomen_layered_cloth_depth(
-        jobs, body_verts=bv, body_normals=bn)
-    assert pushed > 0, "expected verts to be pushed apart"
-    med = sorted(float(np.median(np.asarray(j["verts"])[:, 1])) for j in jobs)
-    # distinct depths now (outward chain), base anchored at its original +1.0
-    # (never pushed inward, so >= the body plane at 0)
-    assert med[0] >= 1.0 - 1e-6, f"base layer must stay anchored: {med}"
-    gaps = [med[i + 1] - med[i] for i in range(len(med) - 1)]
-    assert all(g > 0.1 for g in gaps), f"layers not separated: {med}"
+        [A, B], body_verts=bv, body_normals=bn, cbbe_body_verts=bv)
+
+    assert pushed > 0, "the sunk overlay band must be lifted"
+    a_y = float(np.median(np.asarray(A["verts"])[:, 1]))
+    b_y = float(np.median(np.asarray(B["verts"])[:, 1]))
+    assert B["verts_modified"] is False, "large under-layer must NOT move"
+    assert a_y > b_y + 0.1, f"band must end up outside under-layer: A={a_y} B={b_y}"
 
 
-def test_abdomen_depth_sep_noop_single_layer():
+def test_noop_without_cbbe_body():
+    # The c991d5b algorithm classifies order from the CBBE body; with no CBBE
+    # reference it must safely no-op (this is the bug the phase-2 fix addressed).
     bv, bn = _body_plane()
-    jobs = [{"override_skin": {"weights": {}}, "verts": _grid_layer(1.0),
-             "verts_modified": False}]
-    assert nc._separate_abdomen_layered_cloth_depth(jobs, bv, bn) == 0
-    assert jobs[0]["verts_modified"] is False
+    a_src, a_warp = _patch(1.5, 1.0, (-4, 4), (78, 90), 10)
+    b_src, b_warp = _patch(1.0, 1.0, (-8, 8), (72, 94), 20)
+    A, B = _job(a_src, a_warp), _job(b_src, b_warp)
+    assert nc._separate_abdomen_layered_cloth_depth(
+        [A, B], body_verts=bv, body_normals=bn, cbbe_body_verts=None) == 0
+    assert A["verts_modified"] is False
 
 
-def test_abdomen_depth_sep_noop_without_body():
-    jobs = [{"override_skin": {"weights": {}}, "verts": _grid_layer(1.0)}] * 2
-    assert nc._separate_abdomen_layered_cloth_depth(jobs, None, None) == 0
+def test_noop_single_layer():
+    bv, bn = _body_plane()
+    a_src, a_warp = _patch(1.0, 1.0, (-4, 4), (80, 90), 10)
+    A = _job(a_src, a_warp)
+    assert nc._separate_abdomen_layered_cloth_depth(
+        [A], body_verts=bv, body_normals=bn, cbbe_body_verts=bv) == 0
+    assert A["verts_modified"] is False

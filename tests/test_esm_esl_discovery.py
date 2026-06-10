@@ -20,8 +20,15 @@ incremental filter.
 #179: `_find_source_esps` used to glob `*.esp` ONLY, so bespoke-armour content
 mods shipped as a master (Vigilant.esm, Legacy of the Dragonborn.esm,
 Unslaad.esm, Glenmoril.esm) were never discovered -> never converted -> invisible
-on UBE actors. The fix globs .esp + .esm + .esl while excluding vanilla/DLC/CC
-masters (handled by the vanilla-compat path) and our own outputs.
+on UBE actors. The fix globs .esp + .esm + .esl while excluding only the
+vanilla/DLC master ESMs (handled by the vanilla-compat path) + _ResourcePack and
+our own outputs.
+
+NOTE (a0c8bcd): Creation Club cc*.esl/.esm are NO LONGER name-skipped here — the
+cc "Alternative Armors" series ships 3BA builds the vanilla path doesn't cover
+(Requiem's Orcish Light Cuirass reuses the cc OrcishScaled armature), so dropping
+them left ~123 CC pieces invisible. `_find_source_esps` returns ALL cc*; the
+downstream armor-mod filter discards non-armor CC.
 """
 import sys
 import types
@@ -45,16 +52,17 @@ def test_finds_esm_esl_and_excludes_masters(tmp_path):
     _touch(mod / "Vigilant.esm")              # bespoke-armour .esm -> FOUND (#179)
     _touch(mod / "MyArmor.esp")               # normal .esp        -> FOUND
     _touch(mod / "Cool.esl")                  # .esl               -> FOUND
+    _touch(mod / "ccBGSSSE055-ba.esl")        # CC armor (a0c8bcd) -> FOUND
     _touch(mod / "Skyrim.esm")                # vanilla master     -> skipped
     _touch(mod / "Dawnguard.esm")             # vanilla DLC master -> skipped
-    _touch(mod / "ccBGSSSE001-Fish.esm")      # Creation Club      -> skipped
     _touch(mod / "_ResourcePack.esl")         # CC resource pack   -> skipped
 
     found = {p.name for p in _find_source_esps(mod)}
-    assert {"Vigilant.esm", "MyArmor.esp", "Cool.esl"} <= found
+    # CC armor is a valid source now (a0c8bcd); only vanilla/DLC masters +
+    # _ResourcePack are name-skipped.
+    assert {"Vigilant.esm", "MyArmor.esp", "Cool.esl", "ccBGSSSE055-ba.esl"} <= found
     assert "Skyrim.esm" not in found
     assert "Dawnguard.esm" not in found
-    assert "ccBGSSSE001-Fish.esm" not in found
     assert "_ResourcePack.esl" not in found
 
 
