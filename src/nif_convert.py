@@ -2079,7 +2079,30 @@ def convert_nif(
                 )
             # else: convert normally; transplant the heel at the very end.
 
-    if body_names:
+    # Exposed body skin baked into a body-slot armor (an open-cleavage corset's
+    # breast/cleavage skin slice, etc.): replace it with the injected full UBE
+    # body — drop the partial skin slice and inject the whole UBE BaseShape — so
+    # the exposed skin IS the real body (seamless to the neck, morphing as one
+    # unit) instead of a static CBBE-shaped patch. Routes to the SAME phase-2
+    # body-swap used for full inline bodies; the slice goes in the drop set.
+    # Only for body-slot items (slot 32 hides the actor body, so the armor must
+    # provide it) — or when the slot is unknown (direct convert_nif calls).
+    exposed_skin_names: list[str] = []
+    if (ube_body_ref_path is not None and not body_names
+            and (not biped_slots or (biped_slots & _BODY_SLOT_BIT))):
+        try:
+            _wsuf = next(
+                (x for x in ("_0", "_1") if src_path.stem.endswith(x)), "_1")
+            _cb = _find_cbbe_base_body(weight=_wsuf)
+            _ub = _find_ube_femalebody(weight=_wsuf)
+            if _cb and _ub:
+                _cbbe_v0, _ = _cached_cbbe_to_ube_delta(_cb, _ub)
+                exposed_skin_names = _exposed_body_skin_shape_names(
+                    nif, _cbbe_v0)
+        except Exception:
+            exposed_skin_names = []
+
+    if body_names or exposed_skin_names:
         if ube_body_ref_path is not None:
             matched_ref = _weight_matched_ube_ref(src_path, Path(ube_body_ref_path))
             return convert_nif_phase2(
@@ -2088,6 +2111,7 @@ def convert_nif(
                 cbbe_body_ref_path=cbbe_ref_path,
                 biped_slots=biped_slots,
                 alt_texture_shape_names=alt_texture_shape_names,
+                extra_body_drop_names=tuple(exposed_skin_names),
             )
         return ConvertResult(
             src_path=src_path,
@@ -2483,7 +2507,19 @@ def convert_nif(
                         # for the rare dense suit that overruns the GPU palette;
                         # it ranks by LOCAL dominance so physics/skirt bones are
                         # kept and only thin scale tails drop. [reverts #164/#166]
-                        if ADD_SCALE_BONES_TO_CLOTH:
+                        #
+                        # EXCEPTION — exposed body skin baked into the armor
+                        # (open-cleavage breast/belly/butt skin). It already
+                        # got the body's graduated weights from the M6 blend
+                        # above (it sits ON the body, blend==1), so it co-moves
+                        # with the nude body. Adding scale bones here MAX-
+                        # propagates extra breast/butt weight onto it, making it
+                        # over-inflate vs the real body under a slider and poke
+                        # through the corset. Detect (geometry: ~all verts on
+                        # the body) on the PRE-warp source verts and skip.
+                        if (ADD_SCALE_BONES_TO_CLOTH
+                                and not _is_exposed_body_skin_shape(
+                                    sv_world, cbbe_verts_for_warp)):
                             bones, xforms_map, weights_map = add_scale_bone_weights(
                                 bones, xforms_map, weights_map,
                                 verts_for_reskin, ube_base_for_reskin,
@@ -5199,6 +5235,116 @@ def _shape_is_head_dominant(
         return total > 0 and (head / total) > frac
     except Exception:
         return False
+
+
+# --- Exposed body-skin detection (task: open-cleavage breast clip) ---------
+# Fraction of a shape's verts that must sit within EXPOSED_SKIN_COINCIDE_DIST
+# of the CBBE base body for the shape to BE the body surface (skin baked into
+# the armor) rather than draped cloth. Measured separation on the Witch / Eli
+# Dark-Triss corset (verify-don't-guess): the exposed 'CBBE' breast-skin shape
+# sits 100% within 0.5u of the body (meanD 0.007u); EVERY cloth shape is <=8%
+# within 0.5u (tightest corset meanD 1.10u). 0.9 / 0.5u leaves a wide margin.
+EXPOSED_SKIN_COINCIDE_DIST = 0.5
+EXPOSED_SKIN_COINCIDE_FRAC = 0.9
+
+_CBBE_BODY_TREE_CACHE: dict = {}
+
+
+def _cached_cbbe_body_tree(cbbe_body_verts):
+    """cKDTree over the CBBE warp-basis body verts, cached per array.
+
+    `cbbe_body_verts` is the process-stable cached delta basis (see
+    `_cached_cbbe_to_ube_delta`), so keying by id() is safe; we re-verify
+    identity before reusing to defend against any id reuse."""
+    from scipy.spatial import cKDTree
+    key = id(cbbe_body_verts)
+    hit = _CBBE_BODY_TREE_CACHE.get(key)
+    if hit is not None and hit[0] is cbbe_body_verts:
+        return hit[1]
+    tree = cKDTree(np.asarray(cbbe_body_verts, dtype=np.float64))
+    _CBBE_BODY_TREE_CACHE[key] = (cbbe_body_verts, tree)
+    return tree
+
+
+def _is_exposed_body_skin_shape(src_world_verts, cbbe_body_verts) -> bool:
+    """True if this shape is EXPOSED BODY SKIN baked into the armor — a
+    (near-)copy of the nude body surface — rather than draped cloth.
+
+    Open-cleavage corsets / lingerie often bake a slice of the body's own
+    skin (frequently named 'CBBE'/'3BA'/a body part) so bare skin shows in
+    the opening. Such a shape must morph EXACTLY like the nude body it
+    imitates. `compute_body_blend_skinning` already transplants the body's
+    graduated weights (blend==1 for on-body verts), so the shape co-moves
+    with the body. The subsequent `add_scale_bone_weights` pass then
+    OVER-weights its scale bones via MAX-propagation (measured on Eli's
+    Triss: breast-bone fraction 0.12 -> 0.19), so the baked skin inflates
+    ~55% more than the real body under a bust slider and pokes through the
+    corset. Detecting these shapes lets the caller SKIP that redundant pass
+    so the skin stays a faithful co-mover of the body.
+
+    Pure geometry (no name match) so it generalizes to any body region
+    (breast / belly / butt skin baked into any armor): a shape whose verts
+    overwhelmingly coincide with the CBBE base body surface IS the body.
+    Verts must be in the same (CBBE, world) frame as `cbbe_body_verts`
+    (i.e. the PRE-warp source verts). Returns False when the CBBE basis is
+    unavailable (safe fallback to current behaviour).
+    """
+    if cbbe_body_verts is None or src_world_verts is None:
+        return False
+    v = np.asarray(src_world_verts, dtype=np.float64)
+    if len(v) == 0:
+        return False
+    tree = _cached_cbbe_body_tree(cbbe_body_verts)
+    d, _ = tree.query(v, k=1)
+    return float(
+        (d <= EXPOSED_SKIN_COINCIDE_DIST).mean()) >= EXPOSED_SKIN_COINCIDE_FRAC
+
+
+# Below this a body-skin-textured shape is a small decal / accent, not the
+# exposed-skin slice that should pull in the whole body. The breast/cleavage
+# slices that motivate this (Eli Triss `CBBE` = 1267v) are well above it.
+_EXPOSED_BODY_SKIN_MIN_VERTS = 300
+
+
+def _exposed_body_skin_shape_names(nif, cbbe_body_verts) -> "list[str]":
+    """Names of shapes that are EXPOSED BODY SKIN baked into the armor — a
+    visible slice of the nude body (an open-cleavage corset's breast/cleavage
+    skin etc.) that should be REPLACED by the injected full UBE body, NOT kept
+    as a static patch. Such a slice can't morph or connect to the neck on its
+    own; injecting the whole UBE body in its place makes the exposed skin the
+    real body — seamless to the neck and morphing as one unit (the same
+    body-swap the converter already does for full inline body skins).
+
+    A shape qualifies when ALL hold:
+      * NOT already a full inline body (those route to phase 2 by themselves);
+      * a nude body-skin DIFFUSE (keeps skin-tight CLOTH out — that's cloth to
+        refit, not skin to replace);
+      * substantial geometry (not a tiny skin decal);
+      * geometrically coincident with the CBBE body surface (it IS the body),
+        measured in WORLD frame via the shape's global-to-skin transform.
+
+    Returns [] when the CBBE basis is unavailable (safe fallback: the shape is
+    kept and refit, the prior behaviour).
+    """
+    if cbbe_body_verts is None:
+        return []
+    names: list[str] = []
+    for s in nif.shapes:
+        if _looks_like_inline_body(s):
+            continue
+        if not _shape_diffuse_is_body_skin(s):
+            continue
+        v = np.asarray(s.verts, dtype=np.float64)
+        if len(v) < _EXPOSED_BODY_SKIN_MIN_VERTS:
+            continue
+        try:
+            g2s = _shape_global_to_skin(getattr(s, "_backing", None) or s)
+            world = _verts_skin_to_world(v, g2s)
+        except Exception:
+            world = v
+        if _is_exposed_body_skin_shape(world, cbbe_body_verts):
+            names.append(s.name)
+    return names
 
 
 def compute_body_blend_skinning(
@@ -8259,8 +8405,16 @@ def convert_nif_phase2(
     inject_baseshape: bool = True,
     biped_slots: int = 0,
     alt_texture_shape_names: "set[str] | None" = None,
+    extra_body_drop_names: "tuple[str, ...]" = (),
 ) -> ConvertResult:
     """Phase-2 conversion: swap inline CBBE body shapes for UBE body shapes.
+
+    `extra_body_drop_names`: shape names to treat as body skin to DROP (in
+    addition to the auto-classified inline bodies) and replace with the
+    injected UBE body. Used for EXPOSED body-skin slices baked into an armor
+    (an open-cleavage corset's breast/cleavage skin) that aren't a full inline
+    body but should still be replaced by the whole UBE body so the bare skin is
+    seamless to the neck and morphs as one — see `_exposed_body_skin_shape_names`.
 
     Process:
       1. Open the UBE body reference NIF (must contain BaseShape — and
@@ -8288,6 +8442,14 @@ def convert_nif_phase2(
     # Determine body vs armor shapes in src
     src_wrapped = nif_io.load_nif(src_path)
     body_names, armor_names = classify_shapes(src_wrapped)
+
+    # Fold in any caller-supplied exposed-skin slices: treat them as body
+    # (so the source-shape copy loop DROPS them) and let the injected UBE
+    # body stand in. The drop loop below keys on `body_names`.
+    if extra_body_drop_names:
+        _extra = [n for n in extra_body_drop_names if n not in body_names]
+        body_names = list(body_names) + _extra
+        armor_names = [n for n in armor_names if n not in set(extra_body_drop_names)]
 
     if not body_names:
         # No body shapes to swap — phase 1 (copy) is what you want here.
@@ -8827,7 +8989,14 @@ def convert_nif_phase2(
                     # tracking layer — cloth has no per-shape BODYTRI). The
                     # 78-bone cap is the GPU-palette backstop. See Phase 1
                     # comment. [reverts #164/#166]
-                    if ADD_SCALE_BONES_TO_CLOTH:
+                    #
+                    # EXCEPTION — exposed body skin baked into the armor: skip,
+                    # so it co-moves with the nude body instead of over-
+                    # inflating past the corset (see Phase 1 comment +
+                    # `_is_exposed_body_skin_shape`). Detect on PRE-warp verts.
+                    if (ADD_SCALE_BONES_TO_CLOTH
+                            and not _is_exposed_body_skin_shape(
+                                _sv_body, cbbe_verts_for_warp_p2)):
                         bones, xforms_map, weights_map = add_scale_bone_weights(
                             bones, xforms_map, weights_map,
                             final_verts, ube_basereshape,
