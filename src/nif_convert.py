@@ -1421,6 +1421,10 @@ def clear_armor_outside_body(
     radius: float = 4.0,
     max_push: float = 3.0,
     max_body_dist: float = 10.0,
+    morph_amplitude: "np.ndarray | None" = None,
+    adaptive_base: float = ADAPTIVE_CLEARANCE_BASE,
+    adaptive_factor: float = ADAPTIVE_CLEARANCE_MORPH_FACTOR,
+    adaptive_cap: float = ADAPTIVE_CLEARANCE_MORPH_MAX,
 ) -> np.ndarray:
     """FINAL anti-poke pass (#175): push each armor vert OUT of the body so the
     actor's live morph can't punch through. PUSH-OUT ONLY (additive; never pulls
@@ -1428,13 +1432,23 @@ def clear_armor_outside_body(
     present with valid normals -- so unlike the source-correspondence conform it
     ALWAYS lands, and (called last) nothing undoes it.
 
-    Each vert is cleared to at least `flat_clear` over the WORST (closest) body
+    Each vert is cleared to its required clearance over the WORST (closest) body
     vert in a local neighbourhood (so a nipple/belly bulge that pokes past the
-    fabric is caught even when a flatter body vert is nearest). In the bust
-    Z-band the required clearance ramps from `flat_clear` up to `bust_clear` by
-    the body's Breast03 nipple weight, so flat panels stay close and only the
-    breast front gets the bigger standoff. Verts far from the body (> max_body_
-    dist) are untouched (don't bulge a free-hanging drape)."""
+    fabric is caught even when a flatter body vert is nearest).
+
+    ADAPTIVE clearance (2026-06-10) when `morph_amplitude` (the body's per-vert
+    outward morph map, same one inflate_armor_outward uses) is supplied: the body
+    only GROWS at runtime where that amplitude is high (breast/belly/butt), so the
+    required clearance = clip(adaptive_base + adaptive_factor*amp, adaptive_base,
+    adaptive_cap). STATIC zones (sternum, back, sides, a thick coat over a non-
+    morphing region) drop to the z-fight floor `adaptive_base` (~0.25) = the armor
+    hugs the body again instead of floating off it; only genuine morph zones keep
+    the big standoff (capped at `adaptive_cap`). The amplitude used is the WORST
+    (max) among the in-radius neighbours so a high-morph nipple tip still drives
+    the clearance even when the nearest body vert is flat. Without a morph map it
+    FALLS BACK to the legacy fixed clearance: `flat_clear` everywhere, ramping to
+    `bust_clear` by Breast03 nipple weight in the bust Z-band. Verts far from the
+    body (> max_body_dist) are untouched (don't bulge a free-hanging drape)."""
     from scipy.spatial import cKDTree
     v = np.asarray(verts, dtype=np.float64)
     bv = np.asarray(body_verts, dtype=np.float64)
@@ -1453,14 +1467,26 @@ def clear_armor_outside_body(
     s_k = np.where(dd <= radius, s_k, np.inf)
     worst = np.min(s_k, axis=1)
     worst = np.where(np.isfinite(worst), worst, s_cur)   # fallback: nearest only
-    req = np.full(len(v), float(flat_clear))
-    if body_nipple is not None and len(body_nipple) == len(bv):
-        z = bv[nearest][:, 2]
-        in_bust = (z >= bust_z[0]) & (z <= bust_z[1])
-        nipw = np.asarray(body_nipple, dtype=np.float64)[nearest]
-        req = np.where(in_bust,
-                       np.clip(flat_clear + nipw * nipple_gain, flat_clear, bust_clear),
-                       req)
+    if morph_amplitude is not None and len(morph_amplitude) == len(bv):
+        # ADAPTIVE: only ramp clearance where the body actually grows at runtime
+        # (high morph amplitude). Static zones get just the z-fight floor, so
+        # loose/thick armor stops floating off the body. WORST (max) amplitude
+        # over the in-radius neighbours -> a high-morph nipple/belly bulge still
+        # drives the clearance even when the nearest body vert is flat.
+        amp = np.asarray(morph_amplitude, dtype=np.float64)
+        amp_k = np.where(dd <= radius, amp[jj], 0.0)
+        amp_worst = np.max(amp_k, axis=1)
+        req = np.clip(adaptive_base + adaptive_factor * amp_worst,
+                      adaptive_base, adaptive_cap)
+    else:
+        req = np.full(len(v), float(flat_clear))
+        if body_nipple is not None and len(body_nipple) == len(bv):
+            z = bv[nearest][:, 2]
+            in_bust = (z >= bust_z[0]) & (z <= bust_z[1])
+            nipw = np.asarray(body_nipple, dtype=np.float64)[nearest]
+            req = np.where(in_bust,
+                           np.clip(flat_clear + nipw * nipple_gain, flat_clear, bust_clear),
+                           req)
     push = np.clip(req - worst, 0.0, max_push)            # push OUT only
     push = np.where(dd[:, 0] < max_body_dist, push, 0.0)  # leave far drapes alone
     return (v + nrm * push[:, None]).astype(np.float32)
@@ -5662,6 +5688,8 @@ def _separate_chest_layered_cloth_depth(
         shape_jobs: list,
         body_verts: "np.ndarray | None" = None,
         body_normals: "np.ndarray | None" = None,
+        source_body_verts: "np.ndarray | None" = None,
+        source_body_normals: "np.ndarray | None" = None,
 ) -> int:
     """Push inner-layer cloth verts in the cleavage zone backward (along
     the body's inward normal) so they sit a clean CHEST_DEPTH_SEPARATION
@@ -5683,6 +5711,16 @@ def _separate_chest_layered_cloth_depth(
     reach exactly that clearance. Verts already comfortably behind the
     outer layer are untouched, so the cleavage isn't visually deepened
     where it doesn't need to be.
+
+    SOURCE-ORDER GATE (2026-06-11): when `source_body_verts`/`_normals` are
+    given (phase-2), a receiver vert whose SOURCE order says it sits OUTSIDE
+    the authority is never pushed behind it — authority-by-size is source-
+    blind, and on the Ruby Top it shoved the corset's plate-overlapping rim
+    and the belts 0.4u behind the chest plate (Z 85-90, inside the cleavage
+    box), creating inversions the abdomen order-restore pass then had to
+    fight (corset>plate flips 56 -> 94 vs source before this gate). The push
+    is meant for true inner layers (bra under fabric), not for whatever is
+    smaller than the plate.
 
     Mutates each receiver job's `verts` in place and sets
     `verts_modified` so the shape-copy pass picks up the new positions.
@@ -5732,6 +5770,34 @@ def _separate_chest_layered_cloth_depth(
         # outer vert at "this same XZ location" so we can compare depths.
         auth_xz_tree = cKDTree(auth_chest[:, [0, 2]])
 
+        # SOURCE-ORDER GATE setup (see docstring): source-frame clearance of
+        # the authority's chest verts, so receivers can check who was outside
+        # whom BEFORE the warp scrambled it.
+        def _shape_src(jb):
+            s = jb.get("src")
+            if s is None:
+                return None
+            sv = np.asarray(list(s.verts), dtype=np.float64)
+            return sv if len(sv) == len(jb["verts"]) else None
+
+        src_gate_ready = False
+        if (source_body_verts is not None and source_body_normals is not None
+                and np.any(source_body_normals)):
+            auth_src = _shape_src(auth_job)
+            if auth_src is not None:
+                sbv = np.asarray(source_body_verts, dtype=np.float64)
+                sbn = np.asarray(source_body_normals, dtype=np.float64)
+                sb_tree = cKDTree(sbv)
+
+                def _src_clr(pts):
+                    _, i = sb_tree.query(pts, k=1)
+                    return ((pts - sbv[i]) * sbn[i]).sum(axis=1)
+
+                auth_src_chest = auth_src[auth_mask]
+                auth_src_tree = cKDTree(auth_src_chest)
+                auth_src_clr = _src_clr(auth_src_chest)
+                src_gate_ready = True
+
         total_pushed = 0
         for recv_job, recv_mask, _ in candidates[1:]:
             recv_v_full = np.asarray(recv_job["verts"], dtype=np.float64)
@@ -5767,6 +5833,26 @@ def _separate_chest_layered_cloth_depth(
             # the band verts, the push moves them to exactly -SEPARATION.
             fighting = ((signed > -CHEST_DEPTH_SEPARATION)
                         & (signed < CHEST_DEPTH_FRONT_TOL))
+            # SOURCE-ORDER GATE: never push a vert behind the authority when
+            # the SOURCE had it OUTSIDE the authority at this spot (the
+            # corset rim over the chest plate; the belts) — that inversion
+            # is exactly what the abdomen order-restore pass must then undo.
+            if src_gate_ready:
+                recv_src = _shape_src(recv_job)
+                if recv_src is not None:
+                    rs_chest = recv_src[recv_mask]
+                    rs_valid = rs_chest[valid]
+                    sd, si = auth_src_tree.query(
+                        rs_valid, k=1,
+                        distance_upper_bound=OVERLAY_PAIR_R)
+                    matched = np.isfinite(sd)
+                    src_gap = np.zeros(len(rs_valid))
+                    if matched.any():
+                        src_gap[matched] = (
+                            _src_clr(rs_valid[matched])
+                            - auth_src_clr[si[matched]])
+                    fighting &= ~(matched
+                                  & (src_gap >= OVERLAY_LOCAL_ORDER_MIN))
             push_amt = np.where(fighting, -CHEST_DEPTH_SEPARATION - signed, 0.0)
             push_mask = fighting & (push_amt < 0)
             if not push_mask.any():
@@ -5791,37 +5877,59 @@ def _separate_chest_layered_cloth_depth(
 
 # ----- ABDOMEN / waist multi-layer depth separation -------------------------
 # The chest pass above separates ONE inner layer behind ONE authority — fine for
-# bra+fabric. The WAIST routinely stacks 3+ overlapping layers (a base top +
-# corset + sash + metal belt) that the warp lands at nearly the SAME depth, so
-# they Z-fight = the "crumpled/jumbled gold abdomen" (DDV Ruby). Two differences
-# from the chest pass: (1) N layers, each needs its OWN distinct depth (not all
-# collapsed to one authority plane); (2) authority must be the OUTERMOST layer by
-# body-clearance, NOT the largest (the largest is often the base under-garment,
-# and pushing the gold behind it re-hides it). Algorithm: sort overlapping front-
-# waist layers outer->inner by median body-clearance; keep the outermost; push
-# each inner layer behind the union of already-placed outer layers by
-# ABDOMEN_SEP_GAP, clamped to ABDOMEN_SEP_BODY_FLOOR so nothing sinks into the
-# body. Front-center only ((X,Z) pairing can't disambiguate front vs back).
-# General overlay-band layering (replaces the old waist-box heuristic). A multi-
-# layer garment is warped one shape at a time, so the warp can SCRAMBLE the
-# stacking order: a decorative band that sits on top of the corset in the source
-# sinks BELOW it after the warp, and the corset then pokes radially through the
-# band (the "belt clips the corset" bug, incl. on the sides at full weight).
-# This pass re-imposes the SOURCE order. For each thin OVERLAY BAND (a small
-# cloth shape that, IN THE SOURCE, sits consistently OUTSIDE another cloth
-# shape), lift it back to a clean clearance above whatever it sank into,
-# everywhere it sank, along the UBE body normal. Only thin bands are lifted
-# (size gate) — never the large body-conforming pieces (bodysuit / breastplate),
-# since pushing those out collapses the bust. Order is classified from the
-# SOURCE (CBBE) clearance, so it's immune to the warp's scrambling.
-OVERLAY_SIZE_FRAC = 0.40   # liftable BAND only if < this x the largest cloth shape's vert count
+# bra+fabric. A multi-layer garment (base top + corset + sash + metal belt +
+# breastplate) is warped one shape at a time, so the warp can SCRAMBLE the
+# stacking order: the min-standoff clamp lands every layer at ~the same standoff
+# off the (bigger) UBE body and the author's radial order collapses (the
+# "crumpled/jumbled gold abdomen" / "belt clips the corset" bugs, DDV Ruby).
+# This pass re-imposes the SOURCE order, classified from the source-frame
+# clearance so it's immune to whatever the warp did.
 OVERLAY_PAIR_R = 3.0       # 3D dist to pair an A vert with the nearest B vert
-OVERLAY_MIN_OVERLAP = 30   # need this many overlapping verts to classify a pair
-OVERLAY_THRESH = 0.20      # A sits OUTSIDE B in source by > this (median clearance diff) = its overlay
-OVERLAY_TARGET = 0.30      # lift the band to sit this far outside the under-layer
+OVERLAY_MIN_OVERLAP = 30   # need this many overlapping verts to consider a pair
 OVERLAY_CAP = 3.0          # per-vert lift cap (runaway guard)
-LAYER_STACK_GAP = 0.15     # ordered multi-layer lift: clearance each layer keeps
-                           # above the OUTERMOST inner layer beneath it (2026-06-10)
+LAYER_STACK_GAP = 0.15     # clearance a locally-outer layer keeps above the
+                           # OUTERMOST inner vert beneath it (2026-06-10)
+OVERLAY_LOCAL_ORDER_MIN = 0.05  # v4 (2026-06-11): a vert gets an ORDER
+                           # constraint vs another shape only if the pooled
+                           # source gap field around it (kernel-averaged,
+                           # multiplicity-weighted, both pairing directions)
+                           # exceeds this AND the local sign-consistency
+                           # clears OVERLAY_LOCAL_CONSIST. The neighbourhood
+                           # field IS the consistency gate: a genuinely
+                           # interleaved weave (a cinch belt alternating
+                           # over/under a coat) cancels to ~0 -> no
+                           # constraint -> co-planar (= source), while a
+                           # COHERENT local reversal (the Ruby top tucked
+                           # OVER the chest plate at the neckline, 667 verts)
+                           # survives and is restored. v3's per-PAIR
+                           # consistency fraction (0.65 global) bulldozed
+                           # exactly those regions: one global edge per pair
+                           # forced the minority region into the wrong order
+                           # (MEASURED on Ruby Top: 72-98% of locally-
+                           # reversed locations shipped flipped: top-over-
+                           # plate neckline 614/667, top-over-corset rim
+                           # 610/844, top-over-belts 506/636,
+                           # top-over-belts_metal 340/347).
+OVERLAY_LOCAL_CONSIST = 0.70  # v4: weighted fraction of a vert's nearby gap
+                           # samples that must AGREE in sign before an order
+                           # constraint fires — v3's pair-level discriminator
+                           # transplanted to neighbourhood scale. Interleave
+                           # noise sits ~0.5; coherent reversal regions ~1.0.
+OVERLAY_LOCAL_RAW_STRONG = 0.12  # v4 tier-2: a vert whose OWN source gap
+                           # exceeds this fires (or ceilings) even without
+                           # neighbourhood consistency, as long as the field
+                           # doesn't actively contradict it. Restores overlay
+                           # strips THINNER than OVERLAY_PAIR_R (the Ruby
+                           # neckline trim, raw med 0.17-0.31 depending on
+                           # the partner), where the kernel mixes both sides
+                           # of the crossing line and the consistency
+                           # fraction can never clear 0.70 on the strip
+                           # itself. Pairing noise is ~+-0.05. Firing loosely
+                           # is SAFE under source-pair binding: a fired vert
+                           # only ever lifts relative to partners genuinely
+                           # below it in the SOURCE (at 0.22 the Ruby rim's
+                           # 0.17-gap verts never fired vs the belts and
+                           # stayed buried).
 
 
 def _smooth_overlay_push(vals, pts, iters=4, k=8):
@@ -5847,52 +5955,100 @@ def _separate_abdomen_layered_cloth_depth(
         source_body_normals: "np.ndarray | None" = None,
 ) -> int:
     """Re-impose the SOURCE radial layer order on a multi-layer outfit
-    (corset / top / belts / chest_plate / ...). The per-shape warp's min-standoff
-    clamp pushes every layer to a similar standoff off the (bigger) UBE body,
-    COLLAPSING the author's stacking order (MEASURED on DDV Ruby: a 1.42u source
-    spread squashed to ~0.3u — belts sink into the corset, corset into the top).
-    This pass rebuilds it: classify each layer's depth from the SOURCE (CBBE)
-    clearance, then process INNERMOST -> OUT and lift each layer so every vert
-    clears the OUTERMOST already-placed inner layer beneath it by
-    LAYER_STACK_GAP (the innermost just clears the body FLOOR), along the UBE
-    body normal. ORDERED + re-evaluated after each layer so it can't cascade
-    (the failure mode of a single simultaneous "lift everything" pass). Since it
-    re-orders from the SOURCE classification (not the collapsed warp state) it
-    restores order regardless of what the warp did — runs as the LAST vert pass.
-    A single-layer NIF (one eligible cloth) just gets the innermost FLOOR = an
-    order-preserving anti-sink, a no-op for already-clear armor. `cbbe_body_verts`
-    is REQUIRED (the source-order key); without it we no-op. Mutates jobs'
-    `verts` + sets `verts_modified`. Returns verts moved."""
-    if body_verts is None or body_normals is None or cbbe_body_verts is None:
+    (corset / top / belts / coat / undershirt / ...). The per-shape warp's
+    min-standoff clamp pushes every inner layer to ~the same standoff off the
+    (bigger) UBE body, COLLAPSING the author's stacking order (belts sink into
+    the corset; an undershirt pokes through a coat at the shoulders; a top
+    tucked over a breastplate at the neckline sinks beneath it).
+
+    v4 (2026-06-11) — PER-REGION SOURCE ORDER-FIELD RESTORATION. v3 gave each
+    shape PAIR one global order (consistency-gated edge + DAG + topo lift),
+    but real garments stack REGION-dependently: the Ruby Top's `top` fabric is
+    under the chest plate over most of the torso (frac 0.92) yet tucked OVER
+    it at the neckline — v3's single edge lifted the plate above the top
+    EVERYWHERE, actively flipping the minority region (MEASURED: 92% of the
+    667 source top-over-plate locations shipped inverted; same for the corset
+    rim 72%, belts 80%, belts_metal 98%). And pairs v3 called INTERLEAVED
+    (chest_plate~belts 0.57) got no order at all -> a coin flip per location.
+
+    v4 keeps v3's insight (sign-consistency beats magnitude) but applies it
+    at NEIGHBOURHOOD scale instead of pair scale, and binds every constraint
+    to SOURCE PARTNERS instead of whatever happens to be nearby in the
+    output:
+
+    1. GATING — which verts act. Per pair, signed gap samples ("A outside B"
+       positive) are pooled from BOTH pairing directions, weighted by
+       1/multiplicity (one-sided nearest-neighbour matching otherwise
+       aliases a weave into fake coherent patches), and kernel-averaged
+       within OVERLAY_PAIR_R. Tier 1 fires where the local field is material
+       (>= OVERLAY_LOCAL_ORDER_MIN) and consistent (>= OVERLAY_LOCAL_CONSIST
+       of local opinion). Tier 2 fires where the vert's OWN raw source gap
+       is >= OVERLAY_LOCAL_RAW_STRONG and the field doesn't contradict —
+       this restores overlay strips THINNER than the pairing radius (the
+       Ruby neckline trim), where kernel mixing caps consistency at ~0.5
+       forever. The same raw threshold VETOES a regional verdict that
+       contradicts the vert's own strong gap (thin under-strips).
+    2. BINDING — against whom. Each gated vert is bound to the partner verts
+       on the proper side of it IN THE SOURCE (k-NN in the ordering frame):
+       lift targets are its source-below partners, ceilings its source-above
+       partners. Masks or output-frame reference searches CANNOT resolve a
+       three-sheet sandwich (Ruby: top-fabric < belt < top-rim within one
+       pairing radius, two sheets of the SAME shape on opposite sides of the
+       belt) — per-source-pair binding does, and makes leapfrogging
+       structurally impossible (a vert never clears a partner that sat above
+       it in the source). Strong above-partners ceiling a vert even ungated,
+       so tier-2 fires can never invert a true vert-scale weave.
+    3. RESOLUTION — lift-only along the UBE body normal (never push in: no
+       new body clipping), 2 rounds, shapes inner -> outer by source median
+       clearance; targets use partners' CURRENT clearances so stacking
+       chains (top < corset < belt) cascade cleanly; pushes are smoothed
+       (_smooth_overlay_push) then re-clamped by ceilings and a cumulative
+       per-vert OVERLAY_CAP. Set CBBE2UBE_LAYER_DEBUG=1 for per-round stats.
+
+    MEASURED on DDV Ruby flower Top_1 (offline re-apply over the shipped
+    output): order flips vs source dropped 4577 -> 863 (81%), median flip
+    depth 0.24-0.5u -> <=0.13u; the v3-bulldozed regions (top-over-plate
+    neckline 92%, top-over-belts 80%, plate~belts coin-flip 53%) all
+    restored to <=33% with only near-crossing-line residue. NO body floor:
+    the warp's own min-standoff keeps layers off the body, and a blanket
+    floor flings offset-transform armor (elven class). Single-layer NIFs and
+    pairs below OVERLAY_MIN_OVERLAP get no constraints -> no-op.
+
+    Ordering basis: the SOURCE body (phase-2 inline body, proven) in the
+    source frame; phase-1 falls back to the UBE fit body in the output frame
+    (phase-1 doesn't body-swap so its output preserves source order).
+    `cbbe_body_verts` is unused since v3 (kept for call-site compat). Mutates
+    jobs' `verts` + sets `verts_modified`. Returns verts moved."""
+    if body_verts is None or body_normals is None:
         return 0
     try:
+        import os as _os
+        import sys as _sys
         from scipy.spatial import cKDTree
         bva = np.asarray(body_verts, dtype=np.float64)
         bna = np.asarray(body_normals, dtype=np.float64)
         ube_tree = cKDTree(bva)
-        # Layer ORDER key = mean SIGNED clearance to the SOURCE body the armor
-        # was BUILT on (the preset inline body, SAME frame as the source verts).
-        # Two things matter: (1) the SOURCE body (not the slider-zero CBBE base
-        # — wrong frame); (2) SIGNED clearance, not unsigned distance — a big
-        # body-conforming shape (top 13.7k / chest_plate 18.4k verts) has many
-        # far verts that inflate the unsigned MEAN (8u), mis-ranking it as the
-        # OUTERMOST layer so the lift then buries the corset under it. Signed
-        # mean reproduces the author's order [top<chest_plate<corset<belts<metal]
-        # exactly. Needs source body normals; fall back to the CBBE base +
-        # unsigned only when the source body/normals are unavailable.
-        if source_body_verts is not None and source_body_normals is not None:
-            order_v = np.asarray(source_body_verts, dtype=np.float64)
-            order_n = np.asarray(source_body_normals, dtype=np.float64)
+
+        # ORDERING basis. Prefer the SOURCE body the armor was built on (same
+        # frame as the source verts) -> classify the stack PRE-collapse, immune
+        # to whatever the warp did. Compute clearance in that frame. Phase-1 has
+        # no inline body: fall back to the UBE fit body in the OUTPUT frame
+        # (phase-1 keeps the source order since it doesn't body-swap), which
+        # un-gates phase-1 instead of the old silent no-op.
+        use_source_frame = (source_body_verts is not None
+                            and source_body_normals is not None
+                            and np.any(source_body_normals))
+        if use_source_frame:
+            ord_v = np.asarray(source_body_verts, dtype=np.float64)
+            ord_n = np.asarray(source_body_normals, dtype=np.float64)
         else:
-            order_v = np.asarray(cbbe_body_verts, dtype=np.float64)
-            order_n = None
-        if order_n is None:
-            # No reliable source-body normals to order the stack (phase 1 / no
-            # inline body). Unsigned-distance ordering mis-ranks big body-
-            # conforming shapes and can INVERT the stack, so the aggressive
-            # multi-layer lift only runs where we have a real signed order.
-            return 0
-        order_tree = cKDTree(order_v)
+            ord_v = bva
+            ord_n = bna
+        ord_tree = cKDTree(ord_v)
+
+        def _clr(verts, tree, ov, on):
+            d, i = tree.query(verts, k=1)
+            return ((verts - ov[i]) * on[i]).sum(axis=1)
 
         jobs = []
         for j in shape_jobs:
@@ -5906,58 +6062,293 @@ def _separate_abdomen_layered_cloth_depth(
             sv = np.asarray(list(src.verts), dtype=np.float64)
             if len(sv) != len(wv):
                 continue  # topology mismatch (e.g. body-inject) -> skip
-            dd, ii = order_tree.query(sv, k=1)   # source clearance -> ordering key
-            if order_n is not None:
-                key = float(np.mean(((sv - order_v[ii]) * order_n[ii]).sum(axis=1)))
-            else:
-                key = float(np.mean(dd))   # fallback: unsigned distance
+            # verts used to CLASSIFY order (source frame if available, else
+            # output frame) and the per-shape signed clearance in that frame.
+            ov = sv if use_source_frame else wv
             j["_wv"] = wv
-            j["_order"] = key
+            j["_ov"] = ov
+            j["_oc"] = _clr(ov, ord_tree, ord_v, ord_n)
             jobs.append(j)
         if len(jobs) < 2:
             for j in jobs:
-                j.pop("_wv", None); j.pop("_order", None)
+                for k in ("_wv", "_ov", "_oc"):
+                    j.pop(k, None)
             return 0
-        jobs.sort(key=lambda j: j["_order"])   # inner (small clearance) -> outer
+
+        # PER-VERT order constraints from the SOURCE gap field. For each pair
+        # (a, b): pool signed gap SAMPLES ("a outside b" positive) from BOTH
+        # sides (a verts -> nearest b, AND b verts -> nearest a, like v3's
+        # symmetric classification), then evaluate the LOCAL field at each
+        # vert by kernel-averaging the nearby pooled samples. The pooling is
+        # what makes the gate honest at weave scale: one-sided pairing aliases
+        # a vert-to-vert interleave into coherent same-sign patches on the
+        # other shape's grid (several of its verts map to ONE nearest vert),
+        # which would survive smoothing and fake an order; pooled samples at
+        # the same spot carry both signs and cancel to ~0. A vert whose local
+        # field exceeds OVERLAY_LOCAL_ORDER_MIN gets an ORDER constraint: it
+        # must clear the other shape in the output.
+        n = len(jobs)
+        # Per-pair SOURCE-BOUND constraints. Gates (below) decide WHICH verts
+        # act; these arrays decide AGAINST WHOM: each gated vert is bound to
+        # the SPECIFIC partner verts on the proper side of it IN THE SOURCE
+        # (lift targets = its source-below partners; ceilings = its source-
+        # above partners). Mask-level reference selection cannot resolve a
+        # three-sheet sandwich (Ruby: top-fabric < belt < top-rim, all within
+        # one pairing radius — TWO sheets of the SAME shape on opposite sides
+        # of the belt), because "is this belt vert under the top" has no
+        # per-vert answer; bound to source partners it does.
+        below_pairs: "dict[tuple[int, int], tuple]" = {}
+        above_pairs: "dict[tuple[int, int], tuple]" = {}
+        for a in range(n):
+            for b in range(a + 1, n):
+                A, B = jobs[a], jobs[b]
+                ta = cKDTree(A["_ov"]); tb = cKDTree(B["_ov"])
+                ddb, uib = tb.query(A["_ov"], k=1,
+                                    distance_upper_bound=OVERLAY_PAIR_R)
+                dda, uia = ta.query(B["_ov"], k=1,
+                                    distance_upper_bound=OVERLAY_PAIR_R)
+                ma = np.isfinite(ddb)   # a verts with a b neighbour
+                mb = np.isfinite(dda)   # b verts with an a neighbour
+
+                def _inv_mult(targets):
+                    """1/multiplicity sample weights: when MANY verts of one
+                    shape share the SAME nearest vert of the other (density
+                    mismatch, or the band just outside an overlap rim), their
+                    samples all repeat that one vert's gap — unweighted they'd
+                    outvote the genuine local mix. Weighting by 1/count makes
+                    each matched vert worth one opinion total."""
+                    _, inv, cnt = np.unique(targets, return_inverse=True,
+                                            return_counts=True)
+                    return 1.0 / cnt[inv]
+
+                pts, gaps, wts = [], [], []
+                if ma.any():
+                    pts.append(A["_ov"][ma])
+                    gaps.append(A["_oc"][ma] - B["_oc"][uib[ma]])
+                    wts.append(_inv_mult(uib[ma]))
+                if mb.any():
+                    pts.append(B["_ov"][mb])
+                    gaps.append(A["_oc"][uia[mb]] - B["_oc"][mb])
+                    wts.append(_inv_mult(uia[mb]))
+                if not pts:
+                    continue
+                spts = np.vstack(pts)
+                sgap = np.concatenate(gaps)
+                swt = np.concatenate(wts)
+                if len(sgap) < OVERLAY_MIN_OVERLAP:
+                    continue
+                stree = cKDTree(spts)
+                K = min(32, len(spts))
+
+                def _field(qpts, _stree=stree, _sgap=sgap, _swt=swt, _K=K):
+                    """Local order field at each query vert: weighted mean AND
+                    weighted sign-consistency fraction of the pooled gap
+                    samples within PAIR_R (>= 4 samples, else no opinion)."""
+                    dd, ui = _stree.query(qpts, k=_K,
+                                          distance_upper_bound=OVERLAY_PAIR_R)
+                    if _K == 1:
+                        dd = dd[:, None]; ui = ui[:, None]
+                    valid = np.isfinite(dd)
+                    safe = np.where(valid, ui, 0)
+                    val = np.where(valid, _sgap[safe], 0.0)
+                    w = np.where(valid, _swt[safe], 0.0)
+                    wsum = w.sum(axis=1)
+                    ok = (valid.sum(axis=1) >= 4) & (wsum > 0)
+                    den = np.where(wsum > 0, wsum, 1.0)
+                    mean = np.where(ok, (val * w).sum(axis=1) / den, 0.0)
+                    fpos = np.where(
+                        ok, (w * (val > 0)).sum(axis=1) / den, 0.5)
+                    return mean, fpos
+
+                # Fire only where the neighbourhood is BOTH consistently
+                # signed (>= OVERLAY_LOCAL_CONSIST of local opinion, v3's
+                # discriminator at neighbourhood scale) and material
+                # (|mean| >= OVERLAY_LOCAL_ORDER_MIN).
+                mean_a, fpos_a = _field(A["_ov"])
+                mean_b, fpos_b = _field(B["_ov"])
+                # Per-vert RAW source gap (one-sided), for the tier-2 gate.
+                raw_a = np.zeros(len(A["_ov"]))
+                raw_a[ma] = A["_oc"][ma] - B["_oc"][uib[ma]]
+                raw_b = np.zeros(len(B["_ov"]))
+                raw_b[mb] = B["_oc"][mb] - A["_oc"][uia[mb]]
+                # Tier 1 (regional): the pooled field is consistent and
+                # material. Tier 2 (local-strong): the vert's OWN source gap
+                # is large (>= OVERLAY_LOCAL_RAW_STRONG, far above pairing
+                # noise) and the field does not actively contradict it —
+                # this is what restores overlay features THINNER than the
+                # pairing radius (the Ruby neckline trim), where the kernel
+                # unavoidably mixes both sides of the order-crossing line
+                # and tier 1 can never reach consistency ON the strip.
+                # Tier-2 also works as a VETO: a vert whose OWN raw gap
+                # strongly contradicts the regional verdict is a thin-strip
+                # casualty of kernel mixing (an under-rim belt vert inside a
+                # belt-over-top neighbourhood) — firing it would lift it over
+                # the very strip it sits beneath, and excluding it from the
+                # other side's reference set leaves that strip nothing to
+                # clear (MEASURED on Ruby: top had 2222 constrained verts but
+                # only 378 reachable references before this veto).
+                oa = ma & ~(raw_a <= -OVERLAY_LOCAL_RAW_STRONG) & (
+                    ((mean_a >= OVERLAY_LOCAL_ORDER_MIN)
+                     & (fpos_a >= OVERLAY_LOCAL_CONSIST))
+                    | ((raw_a >= OVERLAY_LOCAL_RAW_STRONG)
+                       & (mean_a >= -OVERLAY_LOCAL_ORDER_MIN)))
+                ob = mb & ~(raw_b <= -OVERLAY_LOCAL_RAW_STRONG) & (
+                    ((mean_b <= -OVERLAY_LOCAL_ORDER_MIN)
+                     & (fpos_b <= 1.0 - OVERLAY_LOCAL_CONSIST))
+                    | ((raw_b >= OVERLAY_LOCAL_RAW_STRONG)
+                       & (mean_b <= OVERLAY_LOCAL_ORDER_MIN)))
+                # CEILING masks: where a shape is clearly the INNER layer of
+                # this pair (the mirror of the other side's constraint), it
+                # must not rise ABOVE that outer shape — without this, a
+                # shape's legitimate lift elsewhere bleeds in via the push
+                # smoothing and out-escalates the locally-outer shape's lift
+                # across rounds (last mover wins: the Ruby neckline stayed
+                # flipped even though the top's constraints FIRED, because
+                # the plate's torso lift bled over the rim). A ceiling, NOT a
+                # freeze: a sandwiched layer (top above belts, below plate)
+                # must still clear the shape beneath it.
+                aa = ma & ~(raw_a >= OVERLAY_LOCAL_RAW_STRONG) & (
+                    ((mean_a <= -OVERLAY_LOCAL_ORDER_MIN)
+                     & (fpos_a <= 1.0 - OVERLAY_LOCAL_CONSIST))
+                    | ((raw_a <= -OVERLAY_LOCAL_RAW_STRONG)
+                       & (mean_a <= OVERLAY_LOCAL_ORDER_MIN)))
+                ab = mb & ~(raw_b >= OVERLAY_LOCAL_RAW_STRONG) & (
+                    ((mean_b >= OVERLAY_LOCAL_ORDER_MIN)
+                     & (fpos_b >= OVERLAY_LOCAL_CONSIST))
+                    | ((raw_b <= -OVERLAY_LOCAL_RAW_STRONG)
+                       & (mean_b >= -OVERLAY_LOCAL_ORDER_MIN)))
+
+                # Bind gated verts to their SOURCE partners (k-NN in the
+                # ordering frame, split by which side of the vert each
+                # partner is on). (i, j) in below_pairs[(a, b)] means: a's
+                # vert i must clear b's vert j by LAYER_STACK_GAP; in
+                # above_pairs it means a's vert i must stay 0.05 below j.
+                def _bind(qv_ov, qv_oc, gate_out, gate_ceil, pv_ov, pv_oc,
+                          ptree):
+                    KS = min(8, len(pv_ov))
+                    dd, jj = ptree.query(qv_ov, k=KS,
+                                         distance_upper_bound=OVERLAY_PAIR_R)
+                    if KS == 1:
+                        dd = dd[:, None]; jj = jj[:, None]
+                    val = np.isfinite(dd)
+                    ii = np.broadcast_to(
+                        np.arange(len(qv_ov))[:, None], val.shape)[val]
+                    jj = jj[val]
+                    g = qv_oc[ii] - pv_oc[jj]
+                    sb = gate_out[ii] & (g >= OVERLAY_LOCAL_ORDER_MIN)
+                    # A STRONG source-above partner ceilings the vert
+                    # UNCONDITIONALLY (no gate): whatever lifts this vert —
+                    # its own tier-2 fire on a different partner, or
+                    # smoothing bleed — it must never cross a sheet that sat
+                    # clearly above it in the source. This is what keeps a
+                    # true vert-scale weave intact when tier-2 fires on its
+                    # other side. Weak above partners still need the gate.
+                    sa = (g <= -OVERLAY_LOCAL_ORDER_MIN) & (
+                        gate_ceil[ii] | (g <= -OVERLAY_LOCAL_RAW_STRONG))
+                    below = (ii[sb], jj[sb]) if sb.any() else None
+                    above = (ii[sa], jj[sa]) if sa.any() else None
+                    return below, above
+
+                bel, abv = _bind(A["_ov"], A["_oc"], oa, aa,
+                                 B["_ov"], B["_oc"], tb)
+                if bel is not None:
+                    below_pairs[(a, b)] = bel
+                if abv is not None:
+                    above_pairs[(a, b)] = abv
+                bel, abv = _bind(B["_ov"], B["_oc"], ob, ab,
+                                 A["_ov"], A["_oc"], ta)
+                if bel is not None:
+                    below_pairs[(b, a)] = bel
+                if abv is not None:
+                    above_pairs[(b, a)] = abv
+        if not below_pairs:
+            for j in jobs:
+                for k in ("_wv", "_ov", "_oc"):
+                    j.pop(k, None)
+            return 0
 
         def _signed(v):
             _, i = ube_tree.query(v, k=1)
             return ((v - bva[i]) * bna[i]).sum(axis=1), i
 
-        total = 0
-        placed: list = []   # already-positioned inner-layer verts (UBE frame)
-        for j in jobs:
-            v = j["_wv"]
-            c, bi = _signed(v)
-            if not placed:
-                req = np.full(len(v), ARMOR_TO_SKIN_BUFFER)   # innermost -> body floor
-            else:
-                inner = np.vstack(placed)
-                ic, _ = _signed(inner)
-                it = cKDTree(inner)
-                K = min(8, len(inner))
-                dd, ui = it.query(v, k=K, distance_upper_bound=OVERLAY_PAIR_R)
-                if K == 1:
-                    dd = dd[:, None]; ui = ui[:, None]
-                valid = np.isfinite(dd)
-                # clearance of the OUTERMOST nearby inner vert (max over k-NN);
-                # FLOOR where this layer overlaps nothing beneath it.
-                neigh = np.where(valid, ic[np.where(valid, ui, 0)], -np.inf)
-                mx = neigh.max(axis=1)
-                req = np.where(valid.any(axis=1), mx + LAYER_STACK_GAP,
-                               ARMOR_TO_SKIN_BUFFER)
-            push = np.clip(req - c, 0.0, OVERLAY_CAP)
-            push = np.clip(_smooth_overlay_push(push, v), 0.0, OVERLAY_CAP)
-            if (push > 0.02).any():
-                nv = v + push[:, None] * bna[bi]
-                j["verts"] = nv
-                j["verts_modified"] = True
-                j["_wv"] = nv
-                total += int((push > 0.02).sum())
-            placed.append(j["_wv"])
+        # Resolve constraints: 2 rounds, shapes inner -> outer by SOURCE median
+        # clearance, so stacking chains cascade in round 1 and round 2 mops up
+        # re-violations caused by later lifts. Lift-only against the CURRENT
+        # positions of the under-layer; cumulative cap bounds total movement.
+        shape_order = sorted(range(n),
+                             key=lambda i: float(np.median(jobs[i]["_oc"])))
+        cum_push = [np.zeros(len(jobs[i]["_wv"])) for i in range(n)]
+        moved_mask = [np.zeros(len(jobs[i]["_wv"]), dtype=bool)
+                      for i in range(n)]
+        for _round in range(2):
+            any_moved = False
+            for a in shape_order:
+                lifts = [(o, pr) for (s, o), pr in below_pairs.items()
+                         if s == a]
+                if not lifts:
+                    continue
+                j = jobs[a]
+                v = j["_wv"]
+                c, bi = _signed(v)
+                # Lift targets: each constrained vert must clear ITS OWN
+                # source-below partner verts (at their CURRENT positions) by
+                # LAYER_STACK_GAP. No current-frame reference search: the
+                # source pairing already says exactly who is beneath whom,
+                # so an adjacent sheet that is legitimately ABOVE the vert
+                # never enters its target (no leapfrog).
+                req = np.full(len(v), -np.inf)
+                for o, (ii, jj) in lifts:
+                    co, _ = _signed(jobs[o]["_wv"])
+                    np.maximum.at(req, ii, co[jj] + LAYER_STACK_GAP)
+                with np.errstate(invalid="ignore"):
+                    push = req - c
+                push[~np.isfinite(push)] = 0.0
+                headroom = np.maximum(OVERLAY_CAP - cum_push[a], 0.0)
+                # Ceilings: each gated vert stays 0.05 below ITS OWN source-
+                # above partners. Applied pre- and post-smooth so neither a
+                # constraint nor smoothing bleed can flip a region whose
+                # source order says we're underneath.
+                allowed = np.full(len(v), np.inf)
+                for (s, o), (ii, jj) in above_pairs.items():
+                    if s != a:
+                        continue
+                    co, _ = _signed(jobs[o]["_wv"])
+                    ceil_arr = np.full(len(v), np.inf)
+                    np.minimum.at(ceil_arr, ii, co[jj])
+                    am = np.isfinite(ceil_arr)
+                    if am.any():
+                        allowed[am] = np.minimum(
+                            allowed[am],
+                            np.maximum(ceil_arr[am] - 0.05 - c[am], 0.0))
+                push = np.minimum(np.clip(push, 0.0, OVERLAY_CAP),
+                                  np.minimum(headroom, allowed))
+                push = np.minimum(
+                    np.clip(_smooth_overlay_push(push, v), 0.0, OVERLAY_CAP),
+                    np.minimum(headroom, allowed))
+                if _os.environ.get("CBBE2UBE_LAYER_DEBUG"):
+                    ncon = len(set(int(x) for _, (ii, _jj) in lifts
+                                   for x in ii))
+                    ncap = int(((req - c) > push + 1e-9).sum())
+                    print(f"    [layer r{_round} s{a}] constrained={ncon} "
+                          f"req={int(np.isfinite(req).sum())} "
+                          f"pushed={int((push > 0.02).sum())} "
+                          f"max={push.max():.3f} capped={ncap}",
+                          file=_sys.stderr)
+                if (push > 0.02).any():
+                    nv = v + push[:, None] * bna[bi]
+                    j["verts"] = nv
+                    j["verts_modified"] = True
+                    j["_wv"] = nv
+                    cum_push[a] += push
+                    moved_mask[a] |= push > 0.02
+                    any_moved = True
+            if not any_moved:
+                break
 
+        total = int(sum(m.sum() for m in moved_mask))
         for j in jobs:
-            j.pop("_wv", None); j.pop("_order", None)
+            for k in ("_wv", "_ov", "_oc"):
+                j.pop(k, None)
         return total
     except Exception:
         return 0
@@ -8998,9 +9389,19 @@ def convert_nif_phase2(
             try:
                 base_v = (np.asarray(override, dtype=np.float64)
                           if override is not None else _sv_body)
+                # Morph-aware clearance: ramp standoff ONLY where the UBE body
+                # grows at runtime so static armor stops floating off the body
+                # (cached -> cheap to recompute here). None -> legacy fixed.
+                try:
+                    _antipoke_amp = _cached_body_morph_amplitude(
+                        _find_ube_body_osd(), body_norms_for_p2,
+                        len(body_verts_for_p2))
+                except Exception:
+                    _antipoke_amp = None
                 override = clear_armor_outside_body(
                     base_v, body_verts_for_p2, body_norms_for_p2,
-                    body_nipple=body_nipple_for_p2)
+                    body_nipple=body_nipple_for_p2,
+                    morph_amplitude=_antipoke_amp)
             except Exception as e:
                 failed.append((f"{s.name}:antipoke", repr(e)))
         # #177: keep self-simulated cloth (custom physics-chain bones: skirt/
@@ -9123,33 +9524,31 @@ def convert_nif_phase2(
     # Z-fighting / mesh intersection visible at standstill.
     if shape_jobs and body_verts_for_p2 is not None:
         try:
+            # robust normals: the source body's STORED normals are often
+            # zeroed (BodySlide output) -> signed clearance would be 0 for
+            # every layer -> no ordering. Compute from tris. Shared by the
+            # chest pass (source-order gate) + the abdomen order restore.
+            src_body_n_p2 = (_body_normals_or_compute(cbbe_body_shape)
+                             if cbbe_body_shape is not None else None)
             n_pushed = _separate_chest_layered_cloth_depth(
                 shape_jobs,
                 body_verts=body_verts_for_p2,
                 body_normals=body_norms_for_p2,
+                source_body_verts=src_body_v_p2,
+                source_body_normals=src_body_n_p2,
             )
             if n_pushed:
                 import sys as _sys
                 print(f"  cleavage depth: pushed {n_pushed} inner-layer "
                       f"vert(s) back for clean separation",
                       file=_sys.stderr)
-            # cbbe_body_verts is REQUIRED since the c991d5b overlay-lift
-            # rewrite (source-clearance classification) — omitting it made
-            # this pass silently no-op for every body-swap outfit (the
-            # multi-layer mashups it exists for). Caught by the stale
-            # abdomen test + the missing "lift" line in conversion logs.
             n_abdo = _separate_abdomen_layered_cloth_depth(
                 shape_jobs,
                 body_verts=body_verts_for_p2,
                 body_normals=body_norms_for_p2,
                 cbbe_body_verts=cbbe_verts_for_warp_p2,
                 source_body_verts=src_body_v_p2,
-                # robust normals: the source body's STORED normals are often
-                # zeroed (BodySlide output) -> signed clearance would be 0 for
-                # every layer -> no ordering. Compute from tris.
-                source_body_normals=(
-                    _body_normals_or_compute(cbbe_body_shape)
-                    if cbbe_body_shape is not None else None),
+                source_body_normals=src_body_n_p2,
             )
             if n_abdo:
                 import sys as _sys

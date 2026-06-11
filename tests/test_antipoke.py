@@ -69,3 +69,49 @@ def test_far_drape_untouched():
     cloth = np.array([[0.0, 0.0, 20.0]])               # free-hanging, far from body
     out = clear_armor_outside_body(cloth, bv, bn, max_body_dist=10.0)
     assert abs(out[0, 2] - 20.0) < 1e-3                # not bulged out
+
+
+# ---- adaptive (morph-aware) clearance: the "armor floats off the breasts" fix --
+from src.nif_convert import (ADAPTIVE_CLEARANCE_BASE as _BASE,
+                             ADAPTIVE_CLEARANCE_MORPH_MAX as _CAP)
+
+
+def test_adaptive_static_zone_hugs_body():
+    # A STATIC zone (zero morph amplitude) must drop to the small z-fight floor,
+    # NOT the old fixed flat_clear -> armor hugs the body instead of floating.
+    bv, bn = _flat_body()
+    amp = np.zeros(len(bv))
+    cloth = np.array([[0.0, 0.0, 0.05]])               # tight/poking
+    out = clear_armor_outside_body(cloth, bv, bn, flat_clear=0.8,
+                                   morph_amplitude=amp)
+    assert out[0, 2] <= _BASE + 0.05, out              # ~adaptive_base (0.25)
+    assert out[0, 2] < 0.8 - 0.2, "must be far tighter than the old flat_clear"
+
+
+def test_adaptive_morph_zone_keeps_clearance():
+    # A high-morph zone (breast/belly) still gets the big standoff, capped.
+    bv, bn = _flat_body()
+    amp = np.full(len(bv), 9.0)                         # large outward growth
+    cloth = np.array([[0.0, 0.0, 0.05]])
+    out = clear_armor_outside_body(cloth, bv, bn, morph_amplitude=amp)
+    assert abs(out[0, 2] - _CAP) < 0.05, out           # ramps up to the cap
+
+
+def test_adaptive_uses_worst_neighbour_amplitude():
+    # A high-morph body vert in the neighbourhood drives the clearance even when
+    # the NEAREST body vert is flat (the #175 nipple-tip case).
+    bv, bn = _flat_body()
+    amp = np.zeros(len(bv))
+    hot = int(np.argmin(np.linalg.norm(bv[:, :2] - np.array([0.6, 0.0]), axis=1)))
+    amp[hot] = 9.0                                      # a nearby (not nearest) hot vert
+    cloth = np.array([[0.0, 0.0, 0.05]])               # nearest body vert is flat (amp 0)
+    out = clear_armor_outside_body(cloth, bv, bn, radius=4.0, morph_amplitude=amp)
+    assert out[0, 2] > _BASE + 0.3, out                # the hot neighbour lifted req
+
+
+def test_adaptive_absent_falls_back_to_legacy_flat_clear():
+    # No morph map -> legacy fixed flat_clear behaviour (unchanged for old callers).
+    bv, bn = _flat_body()
+    cloth = np.array([[0.0, 0.0, 0.05]])
+    out = clear_armor_outside_body(cloth, bv, bn, flat_clear=0.8)
+    assert out[0, 2] >= 0.8 - 1e-3, out                # still pushed to flat_clear

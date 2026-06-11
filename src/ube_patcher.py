@@ -165,6 +165,18 @@ FORMID_SINGLE_SUBRECORD_SIGS = {
     b"RNAM",   # primary race
     b"MODL",   # additional race (in ARMA) / armature ref (in ARMO)
     b"SNDD",   # footstep sound set
+    # ARMA base skin-texture TXST refs (NAM0 male / NAM1 female / NAM2 male-1st
+    # / NAM3 female-1st). 2026-06-10: these are FormIDs but were NOT in this set,
+    # so the merge/ESL-split/prune master-byte remap SKIPPED them -- a sibling of
+    # the bard MO?S bug. MEASURED on the Combined: any NAM ref to a non-index-0
+    # master broke (Kaidan kaiPrisonRags NAM0 UBE_AllRace.esp:000004 -> wrong
+    # DAc0da.esm:000004), so exposed skin rendered the wrong TextureSet. Refs to
+    # Skyrim.esm survived only because it is always master index 0. SAFE to add
+    # globally: in our output NAM0-3 appear ONLY on ARMA and are ALWAYS 4 bytes
+    # (verified), and the len==4 guard on every consumer is a backstop. Fault C
+    # already STRIPS these from minted coverage ARMAs, so only the legit
+    # per-source copies remain here -- which is exactly what must be remapped.
+    b"NAM0", b"NAM1", b"NAM2", b"NAM3",
     # ARMO
     b"ZNAM",   # pickup sound
     b"YNAM",   # putdown sound
@@ -351,6 +363,27 @@ def reconcile_alt_texture_indices(esp_path, meshes_root) -> int:
     if fixed:
         e.save(esp_path)
     return fixed
+
+
+def reconcile_alt_texture_indices_all(primary_esp_path, meshes_root) -> int:
+    """Reconcile alt-texture indices across the primary merged ESP AND every
+    ESL-split overflow piece (`<stem>.esp`, `<stem>2.esp`, `<stem>3.esp`, ...).
+
+    `merge_patches_split` overflows records past the ESL cap into sibling pieces,
+    and those pieces carry alt-texture (MO?S) sets too -- the Ballad-of-Bards
+    color variants land ENTIRELY in the overflow piece. Reconciling only the
+    primary left 174 overflow ARMAs with stale 3D indices (MEASURED 2026-06-10):
+    after the phase-2 BaseShape injection shifts every shape down one, `coat`@2
+    became @3, so the engine applied the coat's colour TXST to the shape now at
+    index 2 (`undershirt`) -> "textures don't line up / stretched, only on the
+    multi-colour variants". Globs the same `<stem>*<suffix>` family the split
+    writer uses. Returns the total ARMA records fixed across all pieces."""
+    from pathlib import Path as _Path
+    p = _Path(primary_esp_path)
+    total = 0
+    for piece in sorted(p.parent.glob(f"{p.stem}*{p.suffix}")):
+        total += reconcile_alt_texture_indices(piece, meshes_root)
+    return total
 
 
 def _remap_alt_texture_payload(data: bytes,

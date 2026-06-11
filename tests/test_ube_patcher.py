@@ -198,6 +198,9 @@ def test_add_slot32_to_bod2_payload():
 def test_promote_slot49_cloth_uses_bodytri_predicate(tmp_path):
     """End-to-end on a synthetic ESP: only ARMAs whose linked NIF is
     flagged by the BODYTRI predicate get promoted."""
+    # The module-level call below passes a fixed dir that may not exist yet;
+    # also lets pytest collect this file (ESP.save needs the dir present).
+    tmp_path.mkdir(parents=True, exist_ok=True)
     from src.ube_patcher import promote_slot49_cloth_to_slot32
     from src import esp as esp_mod
     from src.esp import encode_subrecord, encode_zstring
