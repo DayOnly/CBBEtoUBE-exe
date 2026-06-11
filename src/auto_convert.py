@@ -1924,7 +1924,12 @@ def _cmd_convert(args):
                     # shapes -> variants recolor wrong. Reconcile against the
                     # converted NIFs so color variants land correctly.
                     try:
-                        nfix = ube_patcher.reconcile_alt_texture_indices(
+                        # Reconcile ALL split pieces (Combined.esp, Combined2.esp,
+                        # ...), not just the primary -- overflow records past the
+                        # ESL cap carry alt-texture sets too (the bard color
+                        # variants live entirely in the overflow piece). Doing only
+                        # merged_out left 174 overflow ARMAs with stale 3D indices.
+                        nfix = ube_patcher.reconcile_alt_texture_indices_all(
                             merged_out, output / "meshes")
                         print(f"  alt-texture reconcile: fixed {nfix} ARMA(s)")
                     except Exception as e:

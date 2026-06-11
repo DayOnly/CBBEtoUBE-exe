@@ -25,8 +25,29 @@ kept its STALE master byte -> off-by-one -> the color TextureSet resolved to the
 wrong (adjacent) plugin -> every color variant rendered the base texture.
 """
 import struct
+from pathlib import Path
 
 from src import esp, ube_patcher as up
+
+
+def test_reconcile_runs_on_all_esl_split_pieces(tmp_path, monkeypatch):
+    # The bard color-variant bug: reconcile_alt_texture_indices ran ONLY on the
+    # primary Combined.esp, but merge_patches_split overflows records (incl. their
+    # alt-texture sets) into Combined2.esp/Combined3.esp -- so 174 overflow ARMAs
+    # kept stale 3D indices. The _all wrapper must visit EVERY split piece.
+    stem = "CBBE_to_UBE_Combined"
+    for name in (f"{stem}.esp", f"{stem}2.esp", f"{stem}3.esp"):
+        (tmp_path / name).write_bytes(b"")
+    (tmp_path / "Unrelated.esp").write_bytes(b"")        # must NOT be visited
+
+    visited = []
+    monkeypatch.setattr(up, "reconcile_alt_texture_indices",
+                        lambda p, m: (visited.append(Path(p).name), 1)[1])
+    n = up.reconcile_alt_texture_indices_all(tmp_path / f"{stem}.esp",
+                                             tmp_path / "meshes")
+    assert set(visited) == {f"{stem}.esp", f"{stem}2.esp", f"{stem}3.esp"}, visited
+    assert "Unrelated.esp" not in visited
+    assert n == 3                                         # summed across pieces
 
 
 def _mo2s(name: bytes, txst: int, index: int = 0) -> bytes:

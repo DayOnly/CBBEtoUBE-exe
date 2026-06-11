@@ -54,6 +54,18 @@ from pathlib import Path
 _DONE = object()  # sentinel; the worker pushes (_DONE, exit_code) when finished
 
 
+def mod_name_matches(name: str, query: str) -> bool:
+    """Case-insensitive, multi-token AND match for the checklist Filter box:
+    every whitespace-separated token in `query` must appear in `name` (so
+    "ruby fl" matches "DDV - Ruby Flower"). Empty query matches everything.
+    Module-level (not a closure) so the filter contract is unit-testable."""
+    q = query.strip().lower()
+    if not q:
+        return True
+    low = name.lower()
+    return all(tok in low for tok in q.split())
+
+
 class _QueueWriter:
     """Write-through stream: enqueues every chunk for the UI log AND forwards to
     the original stream so the console / log-file tee keeps working. Unknown
@@ -117,8 +129,11 @@ def launch_gui(argv=None, auto_close_ms=None) -> int:
     dry = tk.BooleanVar(value=False)
     mode = tk.StringVar(value="all")            # "all" | "selected"
     force_vanilla = tk.BooleanVar(value=False)
-    mod_vars: "dict[str, tk.BooleanVar]" = {}    # mod name -> checkbox var
+    mod_vars: "dict[str, tk.BooleanVar]" = {}    # mod name -> checkbox var (PERSISTS across filtering)
     mod_checkboxes: list = []                    # Checkbutton widgets (toggled during a run)
+    mod_cbs: "dict[str, object]" = {}            # mod name -> its Checkbutton (for show/hide on filter)
+    mod_items_all: list = []                     # full unfiltered scan result (master order)
+    search_var = tk.StringVar()                  # live filter text for the checklist
 
     # ---- mode/selection helpers (defined early; reference widgets created
     # below -- resolved at CALL time, never during construction) ----
@@ -128,9 +143,57 @@ def launch_gui(argv=None, auto_close_ms=None) -> int:
         else:
             mods_box.pack_forget()
 
+    _matches = mod_name_matches   # module-level matcher (unit-tested)
+
+    def _update_title():
+        # Reflect filter/selection state in the frame label. Skipped during a run
+        # (the label is commandeered to show "selection locked").
+        if state["running"]:
+            return
+        total = len(mod_items_all)
+        if total == 0:
+            txt = "Mods to reconvert (Refresh, then tick)"
+        else:
+            q = search_var.get()
+            shown = sum(1 for it in mod_items_all if _matches(it["name"], q))
+            ticked = sum(1 for v in mod_vars.values() if v.get())
+            hidden_ticked = sum(
+                1 for it in mod_items_all
+                if mod_vars.get(it["name"]) and mod_vars[it["name"]].get()
+                and not _matches(it["name"], q))
+            txt = f"Mods to reconvert: {shown}/{total} shown, {ticked} ticked"
+            if hidden_ticked:
+                txt += f"  ({hidden_ticked} ticked but hidden by filter)"
+        try:
+            mods_box.configure(text=txt)
+        except Exception:
+            pass
+
+    def _apply_filter():
+        # Show/hide checkbuttons to match the filter WITHOUT touching mod_vars,
+        # so ticks survive filtering. Re-pack matches in master order.
+        q = search_var.get()
+        for cb in mod_cbs.values():
+            cb.pack_forget()
+        for it in mod_items_all:
+            if _matches(it["name"], q):
+                mod_cbs[it["name"]].pack(anchor="w")
+        try:
+            _canvas.configure(scrollregion=_canvas.bbox("all"))
+            _canvas.yview_moveto(0.0)
+        except Exception:
+            pass
+        _update_title()
+
     def _set_all(val):
-        for v in mod_vars.values():
-            v.set(val)
+        # All/None act on the VISIBLE (filtered) set only -- so "kco" + All ticks
+        # just that family. With an empty filter this is every mod, as before.
+        q = search_var.get()
+        for it in mod_items_all:
+            name = it["name"]
+            if _matches(name, q) and name in mod_vars:
+                mod_vars[name].set(val)
+        _update_title()
 
     def _populate_mods(items):
         if state["running"]:
@@ -139,17 +202,19 @@ def launch_gui(argv=None, auto_close_ms=None) -> int:
             w.destroy()
         mod_vars.clear()
         mod_checkboxes.clear()
+        mod_cbs.clear()
+        mod_items_all[:] = items
         for it in items:
             v = tk.BooleanVar(value=False)
             mod_vars[it["name"]] = v
-            cb = ttk.Checkbutton(_inner, variable=v,
+            cb = ttk.Checkbutton(_inner, variable=v, command=_update_title,
                                  text=f'{it["name"]}  ({it["nifs"]} nif)')
-            cb.pack(anchor="w")
+            mod_cbs[it["name"]] = cb
             mod_checkboxes.append(cb)
-        _canvas.configure(scrollregion=_canvas.bbox("all"))
+        _apply_filter()   # packs matches in order + sets scrollregion + title
         if items:
             status.set(f"{len(items)} convertible mods found. "
-                       "Tick the ones to reconvert.")
+                       "Tick the ones to reconvert (or type in Filter to narrow).")
         else:
             status.set("No convertible mods found (or layout not detected).")
 
@@ -226,7 +291,13 @@ def launch_gui(argv=None, auto_close_ms=None) -> int:
     all_btn.pack(side="left")
     none_btn = ttk.Button(_topbar, text="None", width=5, command=lambda: _set_all(False))
     none_btn.pack(side="left", padx=(0, 4))
-    sel_widgets = [refresh_btn, all_btn, none_btn]   # locked while a run is active
+    ttk.Label(_topbar, text="Filter:").pack(side="left", padx=(8, 2))
+    search_entry = ttk.Entry(_topbar, textvariable=search_var, width=20)
+    search_entry.pack(side="left", fill="x", expand=True, padx=(0, 4))
+    search_entry.bind("<Escape>", lambda e: search_var.set(""))   # Esc clears
+    # Live filter as the user types. All/None then act on the visible subset.
+    search_var.trace_add("write", lambda *a: _apply_filter())
+    sel_widgets = [refresh_btn, all_btn, none_btn, search_entry]   # locked while a run is active
     _cwrap = ttk.Frame(mods_box)
     _cwrap.pack(fill="both", expand=True)
     _canvas = tk.Canvas(_cwrap, height=150, highlightthickness=0)
@@ -341,15 +412,12 @@ def launch_gui(argv=None, auto_close_ms=None) -> int:
         state["result"] = rc
         prog.stop()
         run_btn.configure(state="normal")
-        try:
-            mods_box.configure(text="Mods to reconvert (Refresh, then tick)")
-        except Exception:
-            pass
         for w in sel_widgets + mod_checkboxes:
             try:
                 w.configure(state="normal")
             except Exception:
                 pass
+        _update_title()   # restore the "{shown}/{total} shown, {ticked} ticked" label
         od = state.get("output_dir")
         if od and Path(od).is_dir():
             open_out_btn.configure(state="normal", command=lambda p=od: _open_path(p))
