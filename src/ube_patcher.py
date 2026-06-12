@@ -3908,6 +3908,34 @@ def _overlay_winner_stats(
 
 _HAIR_ONLY_SLOTS = 0x802          # biped slots 31 (Hair) | 41 (LongHair)
 _BODY_SLOT_BIT_32 = 1 << 2        # biped slot 32 (Body)
+_ARMORHELMET_KW_LOW24 = 0x06BBD9  # Skyrim.esm ArmorHelmet keyword
+
+
+def _hair_only_armo_is_equippable_headgear(payload, masters) -> bool:
+    """A hair-slot-only ARMO (slots == 31|41) is equippable HEADGEAR (a helmet /
+    hood / headdress / turban that occupies the hair slots to HIDE the actor's
+    hair) rather than a cosmetic wig/hairstyle if it has a gold value > 0 OR
+    carries the ArmorHelmet keyword. Cosmetic hairstyles distributed as ARMO are
+    value-0 with no armor keyword.
+
+    Why this matters: the non-body coverage pass skipped EVERY hair-only ARMO as
+    "hair/wig only — not equippable armor", which wrongly dropped real headgear
+    that hides hair (the Sand Snake headdress: slots 31|41, value 250, ArmorLight
+    + ArmorHelmet). With no coverage its DefaultRace armature never matched a UBE
+    actor's race -> the headdress was INVISIBLE on UBE actors. Detection-driven
+    (value / helmet keyword), so it generalizes to any hair-hiding headgear."""
+    for sig, d in esp.iter_subrecords(payload):
+        if sig == b"DATA" and len(d) >= 4:
+            if struct.unpack_from("<I", d, 0)[0] > 0:
+                return True            # has a gold value -> real equipment
+        elif sig == b"KWDA" and len(d) >= 4:
+            for i in range(len(d) // 4):
+                fid = struct.unpack_from("<I", d, i * 4)[0]
+                mi = fid >> 24
+                if (fid & 0xFFFFFF) == _ARMORHELMET_KW_LOW24 and \
+                        mi < len(masters) and masters[mi].lower() == "skyrim.esm":
+                    return True        # ArmorHelmet keyword -> headgear armor
+    return False
 # Biped slots whose mesh DEFORMS with the UBE body and therefore needs real
 # CBBE->UBE mesh conversion, not just race coverage: 32 body, 33 hands, 34
 # forearms, 37 feet, 38 calves. This pass covers RIGID accessories only
@@ -4013,10 +4041,19 @@ def generate_modded_nonbody_ube_coverage_patch(
             continue                       # NPC-only — no UBE player wears it
         if slots & _DEFORMING_SLOTS_MASK:
             continue                       # body/hands/feet — needs mesh conversion
-        if slots and (slots & _HAIR_ONLY_SLOTS) == slots:
-            continue                       # hair/wig only — not equippable armor
-        if rnam != DEFAULT_RACE:
-            continue                       # beast/custom race — never UBE-extend
+        if slots and (slots & _HAIR_ONLY_SLOTS) == slots and \
+                not _hair_only_armo_is_equippable_headgear(apayload, am):
+            continue                       # cosmetic hair/wig — not equippable armor
+        # NOTE: we intentionally do NOT gate on the ARMO's own RNAM ("armor
+        # race") here. That field is frequently a no-op authoring quirk — e.g.
+        # RB's Sand Snake sets the headdress + vambraces ARMO RNAM to DeerRace
+        # (0CF89B), yet the items are ordinary human-equippable gear whose
+        # ARMATURE is DefaultRace and renders fine on humans. Gating on the ARMO
+        # RNAM dropped such items from coverage -> invisible on UBE actors (the
+        # Sand Snake headdress). The real beast/custom-race guard is the
+        # ARMATURE-level DefaultRace filter below (`to_mint`): a genuinely beast
+        # armature is never minted regardless of the ARMO RNAM, so removing the
+        # ARMO-RNAM gate only ADDS coverage for human gear with a quirky RNAM.
         if not arms:
             continue
         winning = [(x, arma_win.get(x)) for x in arms]
