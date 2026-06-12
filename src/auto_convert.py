@@ -1955,6 +1955,20 @@ def _cmd_convert(args):
                         print(f"  alt-texture reconcile: fixed {nfix} ARMA(s)")
                     except Exception as e:
                         print(f"  !! alt-texture reconcile failed: {e!r}")
+                    # Clear the spurious Hands slot (33) from forearm bracers /
+                    # wrist guards that claim it but ship no hand geometry --
+                    # else they hide the nude hands and draw nothing (invisible
+                    # hands on UBE actors; the Sand Snake vambraces). Mesh-driven
+                    # + fail-safe: a real glove/gauntlet is never touched.
+                    try:
+                        hf = ube_patcher.fix_spurious_hand_slot(
+                            merged_out, output / "meshes")
+                        if hf.get("armos_fixed") or hf.get("armas_fixed"):
+                            print(f"  hands-slot fix: {hf['armos_fixed']} ARMO + "
+                                  f"{hf['armas_fixed']} ARMA un-tagged "
+                                  "(handless forearm armor claiming slot 33)")
+                    except Exception as e:
+                        print(f"  !! hands-slot fix failed: {e!r}")
                 except Exception as e:
                     print(f"!! auto-merge failed: {e!r}")
                     overall_failures += 1
