@@ -479,7 +479,8 @@ def rebuild_arma_payload(source_payload: bytes, *,
                          path_prefix: str = "!UBE\\",
                          alt_texture_fid_remap: "callable[[int], int] | None" = None,
                          converted_nif_exists: "callable[[str], bool] | None" = None,
-                         ensure_female: bool = True) -> bytes:
+                         ensure_female: bool = True,
+                         male_fallback_log: "list | None" = None) -> bytes:
     """Take a source ARMA payload and produce the UBE-targeted variant.
 
     Modifications:
@@ -559,11 +560,21 @@ def rebuild_arma_payload(source_payload: bytes, *,
                 out += esp.encode_subrecord(b"MOD3", esp.encode_zstring(conv_mod2))
                 saw_mod3 = True
                 skip_mo3t = True
+                if male_fallback_log is not None:
+                    # record for the LAST-STEP re-check (#female-model-
+                    # priority): the original female path, so the fallback
+                    # can be undone once ALL mods have converted and the
+                    # female mesh turns out to exist somewhere in the list.
+                    male_fallback_log.append(
+                        {"slot": "MOD3", "orig": path, "to": conv_mod2})
             elif (sig == b"MOD5" and not converted and ensure_female
                     and conv_mod4):
                 out += esp.encode_subrecord(b"MOD5", esp.encode_zstring(conv_mod4))
                 saw_mod5 = True
                 skip_mo5t = True
+                if male_fallback_log is not None:
+                    male_fallback_log.append(
+                        {"slot": "MOD5", "orig": path, "to": conv_mod4})
             else:
                 out += esp.encode_subrecord(sig, esp.encode_zstring(new_path))
                 if sig == b"MOD3":
@@ -603,8 +614,17 @@ def rebuild_arma_payload(source_payload: bytes, *,
     # would CTD. Same for 1st-person (MOD4 -> MOD5). #UBE-female-only-policy.
     if ensure_female and not saw_mod3 and conv_mod2:
         out += esp.encode_subrecord(b"MOD3", esp.encode_zstring(conv_mod2))
+        if male_fallback_log is not None:
+            # orig=None: the armature never had a female model, so there is
+            # no original path to restore — the synth stands unless a later
+            # pass learns better (nothing to re-check for these).
+            male_fallback_log.append(
+                {"slot": "MOD3", "orig": None, "to": conv_mod2})
     if ensure_female and not saw_mod5 and conv_mod4:
         out += esp.encode_subrecord(b"MOD5", esp.encode_zstring(conv_mod4))
+        if male_fallback_log is not None:
+            male_fallback_log.append(
+                {"slot": "MOD5", "orig": None, "to": conv_mod4})
 
     # Append the new additional-race list (canonical position: after the
     # models, before SNDD/ONAM), then the deferred SNDD/ONAM tail.
@@ -965,6 +985,96 @@ def _discover_ube_races(data_dirs: list[Path]) -> list[tuple[str, int, str]]:
     return out
 
 
+def restore_female_models(patches_dir: "str | Path",
+                          output_mod_dir: "str | Path",
+                          path_prefix: str = "!UBE\\") -> dict:
+    """LAST-STEP female-model re-check over every per-mod patch
+    (#female-model-priority).
+
+    generate_ube_patch points an ARMA's FEMALE model (MOD3/MOD5) at the
+    converted MALE mesh when no converted female mesh is visible AT PATCH
+    TIME (#174 / #UBE-female-only-policy) — the right call in isolation
+    (never-invisible), but patches are generated per-mod DURING conversion,
+    so a female mesh converted by ANOTHER mod (or later in the same run) is
+    invisible to that decision and the armature ships with its female model
+    overwritten by the male one. This pass runs once ALL mods have
+    converted: every recorded fallback (the *.male_fallbacks.json sidecars)
+    whose ORIGINAL female mesh now exists converted in the output gets its
+    MOD3/MOD5 re-pointed back at the female mesh. Male fallbacks survive
+    only where NO converted female mesh exists anywhere in the list.
+
+    Safe by construction: only re-points at !UBE meshes verified on disk
+    (exact named file — the deploy-both weight rule means a healthy
+    conversion shipped it). Idempotent: a slot that no longer carries the
+    recorded male path (already restored, or hand-edited) is left alone.
+    Synth entries (orig=None: the armature never had a female model) have
+    nothing to restore and are skipped. Returns
+    {checked, models_restored, patches_changed}."""
+    import json as _json
+    patches_dir = Path(patches_dir)
+    meshes_root = Path(output_mod_dir) / "meshes" / path_prefix.strip("\\/")
+    checked = restored = patches_changed = 0
+    for sidecar in sorted(patches_dir.glob("*.male_fallbacks.json")):
+        patch_path = Path(str(sidecar)[:-len(".male_fallbacks.json")])
+        if not patch_path.is_file():
+            continue
+        try:
+            entries = _json.loads(sidecar.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        # fid -> {slot: (recorded male path, restored female path)} for the
+        # entries whose original female mesh is now on disk.
+        todo: "dict[int, dict[str, tuple[str, str]]]" = {}
+        for e in entries:
+            orig, slot, fid = e.get("orig"), e.get("slot"), e.get("fid")
+            if not orig or slot not in ("MOD3", "MOD5") or fid is None:
+                continue
+            checked += 1
+            rel = orig.replace("\\", "/").lstrip("/")
+            if rel.lower().startswith("meshes/"):
+                rel = rel[len("meshes/"):]
+            if not (meshes_root / rel).is_file():
+                continue  # still no converted female mesh -> fallback stands
+            todo.setdefault(int(fid), {})[slot] = (
+                e.get("to") or "", path_prefix + orig)
+        if not todo:
+            continue
+        try:
+            pe = esp.ESP.load(patch_path)
+        except Exception:
+            continue
+        n_swapped = 0
+        for g in pe.groups:
+            if g.label != b"ARMA":
+                continue
+            for rec in g.records:
+                fixes = todo.get(rec.formid)
+                if not fixes:
+                    continue
+                out = b""
+                rec_changed = False
+                for sig, data in esp.iter_subrecords(rec.payload):
+                    fix = fixes.get(sig.decode("ascii", "ignore"))
+                    if fix is not None:
+                        male_path, female_path = fix
+                        cur = data.rstrip(b"\x00").decode("utf-8", "ignore")
+                        if cur == male_path:
+                            out += esp.encode_subrecord(
+                                sig, esp.encode_zstring(female_path))
+                            rec_changed = True
+                            n_swapped += 1
+                            continue
+                    out += esp.encode_subrecord(sig, data)
+                if rec_changed:
+                    rec.payload = out
+        if n_swapped:
+            pe.save(patch_path)
+            patches_changed += 1
+            restored += n_swapped
+    return {"checked": checked, "models_restored": restored,
+            "patches_changed": patches_changed}
+
+
 def generate_ube_patch(
     source_esp_path: str | Path,
     output_esp_path: str | Path,
@@ -1168,6 +1278,10 @@ def generate_ube_patch(
         return fid
 
     new_arma_records: list[esp.Record] = []
+    # (record, [fallback dicts]) pairs for the male-fallback sidecar — keyed
+    # by the Record OBJECT because prune_unused_masters renumbers FormIDs
+    # before save; final fids are read back at sidecar-write time.
+    male_fallback_records: "list[tuple[esp.Record, list]]" = []
     for src_arma in src_arma_group.records:
         # source ARMA's payload — pull EDID + model paths + race + slots
         edid = None
@@ -1263,12 +1377,14 @@ def generate_ube_patch(
                            and not (slot_bits & _BIPED_SLOT_BODY_BIT))
         _cne_for_arma = ((lambda _p: False) if _hands_only
                          else _converted_nif_exists)
+        _fb: list = []
         new_payload = rebuild_arma_payload(
             src_arma.payload,
             new_primary_rnam=_prim,
             new_additional_race_fids=_additional_for_arma,
             alt_texture_fid_remap=_remap_src_fid_to_patch,
             converted_nif_exists=_cne_for_arma,
+            male_fallback_log=_fb,
         )
         new_payload = replace_arma_edid(new_payload, new_edid)
 
@@ -1281,6 +1397,8 @@ def generate_ube_patch(
             sig=b"ARMA", flags=0, formid=new_fid,
             timestamp_vc=0, version_unk=0x002C, payload=new_payload,
         ))
+        if _fb:
+            male_fallback_records.append((new_arma_records[-1], _fb))
 
     # Now build ARMO overrides: any source ARMO whose MODL list references a
     # source ARMA we converted gets an override with our new ARMA appended.
@@ -1364,10 +1482,12 @@ def generate_ube_patch(
             esp.encode_subrecord(s, d)
             for s, d in esp.iter_subrecords(marec.payload)
             if s not in _STRIP_VANILLA_BODY_ARMA)
+        _fb: list = []
         new_payload = rebuild_arma_payload(
             stripped, new_primary_rnam=ube_primary,
             new_additional_race_fids=ube_additional,
-            converted_nif_exists=_converted_nif_exists)
+            converted_nif_exists=_converted_nif_exists,
+            male_fallback_log=_fb)
         new_payload = replace_arma_edid(
             new_payload,
             (m_edid + "_UBE") if m_edid else f"UBE_XESP_{next_obj_id:X}")
@@ -1376,6 +1496,8 @@ def generate_ube_patch(
         new_arma_records.append(esp.Record(
             sig=b"ARMA", flags=0, formid=nf, timestamp_vc=0,
             version_unk=0x002C, payload=new_payload))
+        if _fb:
+            male_fallback_records.append((new_arma_records[-1], _fb))
         new_arma_fids[ref_fid] = nf
         return nf
 
@@ -1851,6 +1973,27 @@ def generate_ube_patch(
 
     out.save(output_esp_path)
 
+    # Sidecar for the LAST-STEP female-model re-check (#female-model-
+    # priority): every ARMA whose FEMALE model was redirected/synthesised
+    # from the converted MALE mesh, with the ORIGINAL female path. This
+    # patch is generated per-mod DURING conversion, so a female mesh that
+    # another mod (or a later worker) converts is invisible to the redirect
+    # decision above; restore_female_models() re-checks these entries
+    # against the COMPLETE output right before the merge. FormIDs are read
+    # AFTER prune_unused_masters (which renumbers them).
+    sidecar = Path(str(output_esp_path) + ".male_fallbacks.json")
+    fb_entries = [dict(fid=rec.formid, **e)
+                  for rec, fbs in male_fallback_records for e in fbs]
+    try:
+        if fb_entries:
+            import json as _json
+            sidecar.write_text(_json.dumps(fb_entries, indent=1),
+                               encoding="utf-8")
+        elif sidecar.is_file():
+            sidecar.unlink()  # stale sidecar from an older run of this patch
+    except OSError:
+        pass  # sidecar is an optimization; the patch itself is complete
+
     # Post-save structural sanity check. Catches subrecord-ordering bugs
     # (like MODL-after-DATA), broken master ordering, FormID drift, and
     # transitive-master crash hazards BEFORE the user tries the patch
@@ -1864,6 +2007,7 @@ def generate_ube_patch(
         "output": str(output_esp_path),
         "masters": out.header.masters,
         "new_arma_count": len(new_arma_records),
+        "male_fallbacks": len(fb_entries),
         "armo_override_count": len(armo_overrides),
         "master_armo_overrides": len(master_armo_overrides),
         "master_scan_per_esm": master_scan_stats,

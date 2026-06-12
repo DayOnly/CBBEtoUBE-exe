@@ -1869,6 +1869,27 @@ def _cmd_convert(args):
         if patches_dir.is_dir():
             patch_paths = sorted(patches_dir.glob("*UBE patch.esp"))
             if patch_paths:
+                # LAST-STEP female-model re-check (#female-model-priority).
+                # Per-mod patches male-fallback a female model when no
+                # converted female mesh is visible AT PATCH TIME — but now
+                # that EVERY mod's meshes are on disk, re-point any such
+                # ARMA whose female mesh DID convert (in another mod /
+                # later in the run) back at the FEMALE mesh. Must run
+                # BEFORE the merge so the Combined pieces inherit the
+                # corrected models; a male model never overwrites a female
+                # one that exists anywhere in the list.
+                try:
+                    _fmr = ube_patcher.restore_female_models(
+                        patches_dir, output)
+                    if _fmr.get("models_restored"):
+                        print(f"\n--- female-model restore: re-pointed "
+                              f"{_fmr['models_restored']} ARMA model(s) in "
+                              f"{_fmr['patches_changed']} patch(es) to "
+                              "converted FEMALE meshes (male fallback no "
+                              "longer needed) ---")
+                except Exception as e:
+                    print(f"  !! female-model restore failed (continuing "
+                          f"with male fallbacks): {e!r}")
                 merged_out = output / args.merged_name
                 print(f"\n--- auto-merging {len(patch_paths)} patch(es) "
                       f"into {merged_out.name} ---")
