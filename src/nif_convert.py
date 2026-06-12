@@ -4197,7 +4197,27 @@ def _pick_bodytri_carriers(nif, *, exclude_body: bool = False) -> "list[object]"
             continue
         candidates.append(s)
     if not candidates and not hand_fallbacks:
-        return []
+        # Last resort: EVERY textured shape was excluded by the rigid-name
+        # keywords. That happens when a garment's name false-positives on a
+        # prop keyword — e.g. the Sand Snake "shoulder straps" (a leather
+        # chest garment) matches "shoulder", which is meant for pauldrons.
+        # A NIF with no carrier never loads its TRI, so NOTHING in it
+        # morphs — strictly worse than putting BODYTRI on a rigid-named
+        # shape (a truly rigid prop has near-zero deltas in the TRI, so the
+        # morph it gains is harmless). Pick the largest textured shape,
+        # preferring non-extremity ones (extremity-dominant skins keep
+        # body deltas off fingers/toes via the TRI build, same as the
+        # hand_fallbacks path below).
+        rigid_named = [
+            s for s in nif.shapes
+            if (s.textures or {}) and s.name not in BODYTRI_CARRIER_EXCLUDE
+        ]
+        non_ext = [s for s in rigid_named
+                   if not _shape_is_extremity_dominant(s)]
+        pool = non_ext or rigid_named
+        if not pool:
+            return []
+        return [max(pool, key=lambda s: len(s.verts))]
 
     CLOTH_KEYWORDS = (
         "corset", "leather", "fabric", "tabard", "panties", "panty",
