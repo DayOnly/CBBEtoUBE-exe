@@ -386,6 +386,170 @@ def reconcile_alt_texture_indices_all(primary_esp_path, meshes_root) -> int:
     return total
 
 
+# ----- spurious hands-slot fix (invisible hands) --------------------------
+# A forearm bracer / wrist guard whose ARMO claims biped slot 33 (Hands) but
+# whose mesh has NO hand geometry makes the engine hide the actor's nude-hands
+# skin and draw the armor's (non-existent) slot-33 geometry -> invisible hands
+# on UBE actors. Detection is mesh-driven: a real glove/gauntlet carries most of
+# its vertex weight on hand/finger/thumb bones; a bracer carries ~0 (only a thin
+# wrist-blend). Measured: Sand Snake vambraces 1.3-3.7% hand weight; real gloves
+# 71-97%. A 10% threshold separates them with wide margin.
+_HAND_BONE_SUBSTRINGS = ("Finger", "Thumb", "Hand")
+_HAND_WEIGHT_FRAC_CACHE: "dict[str, float | None]" = {}
+
+
+def _nif_max_hand_weight_fraction(nif_path) -> "float | None":
+    """Max over the NIF's shapes of (vertex weight on hand/finger/thumb bones /
+    total vertex weight). ~0 for a forearm bracer, high for a glove/gauntlet.
+    Returns None if the NIF can't be read -- callers treat None as "assume hands
+    present" so a real glove is NEVER stripped on uncertainty. Cached by path."""
+    key = str(nif_path)
+    if key in _HAND_WEIGHT_FRAC_CACHE:
+        return _HAND_WEIGHT_FRAC_CACHE[key]
+    frac: "float | None" = None
+    try:
+        from pyn import pynifly  # type: ignore
+        nf = pynifly.NifFile(filepath=str(nif_path))
+        best = 0.0
+        for s in nf.shapes:
+            bw = getattr(s, "bone_weights", None) or {}
+            total = 0.0
+            hand = 0.0
+            for bone_name, pairs in bw.items():
+                w = sum(float(x) for _, x in pairs)
+                total += w
+                if any(h in bone_name for h in _HAND_BONE_SUBSTRINGS):
+                    hand += w
+            if total > 0:
+                best = max(best, hand / total)
+        frac = best
+    except Exception:
+        frac = None
+    _HAND_WEIGHT_FRAC_CACHE[key] = frac
+    return frac
+
+
+def fix_spurious_hand_slot(primary_esp_path, meshes_root, *,
+                           threshold: float = 0.10) -> dict:
+    """Post-merge pass: clear biped slot 33 (Hands) from any ARMO whose own
+    (local) armatures ALL point at converted meshes with no real hand geometry
+    -- and from those armatures. Fixes "forearm bracer / wrist guard tagged with
+    the hands slot -> hides the nude hands, draws nothing -> invisible hands on
+    UBE actors" (the Sand Snake vambraces). Detection-driven (mesh hand-bone
+    weight), so it generalizes to any mis-tagged armor with no per-armor logic.
+
+    FAIL-SAFE: an ARMO is stripped ONLY when EVERY local armature is positively
+    confirmed hand-less (its mesh resolved and measured < threshold). Any
+    armature whose mesh is hand-bearing, unreadable, or unresolved -> the ARMO
+    is left untouched, so a real glove/gauntlet is never broken. Cross-master
+    (e.g. vanilla) armatures we can't load are ignored for the decision -- only
+    the converted UBE meshes that actually render on UBE actors drive it.
+
+    Runs across the primary merged ESP + every ESL-split piece (mirrors
+    reconcile_alt_texture_indices_all). Returns a stats dict. Mutates only the
+    BOD2 slot u32 of the affected records (same byte length); esp.py round-trips
+    the rest verbatim."""
+    from pathlib import Path as _Path
+    HANDS_BIT = 1 << (33 - 30)   # slot 33
+    BODY_BIT = 1 << (32 - 30)    # slot 32
+    meshes_root = _Path(meshes_root)
+    p = _Path(primary_esp_path)
+    armos_fixed = armas_fixed = pieces_changed = 0
+
+    def _resolve(model: str):
+        if not model:
+            return None
+        rp = meshes_root / model.replace("/", "\\")
+        return rp if rp.is_file() else None
+
+    def _armature_hand_status(models) -> str:
+        """'hands' | 'handless' | 'unknown' for one armature's model list."""
+        saw_handless = False
+        for m in models:
+            rp = _resolve(m)
+            if rp is None:
+                continue
+            frac = _nif_max_hand_weight_fraction(rp)
+            if frac is None:
+                return "unknown"      # unreadable -> assume hands (don't strip)
+            if frac >= threshold:
+                return "hands"        # real glove/gauntlet -> never strip
+            saw_handless = True
+        return "handless" if saw_handless else "unknown"
+
+    for piece in sorted(p.parent.glob(f"{p.stem}*{p.suffix}")):
+        try:
+            e = esp.ESP.load(piece)
+        except Exception:
+            continue
+        arma_by_fid: "dict[int, esp.Record]" = {}
+        arma_models: "dict[int, list[str]]" = {}
+        for g in e.groups:
+            if g.label == b"ARMA":
+                for r in g.records:
+                    arma_by_fid[r.formid] = r
+                    arma_models[r.formid] = [
+                        d.rstrip(b"\x00").decode("utf-8", "ignore")
+                        for sig, d in esp.iter_subrecords(r.payload)
+                        if sig in (b"MOD3", b"MOD2", b"MOD4", b"MOD5")]
+        changed = False
+        for g in e.groups:
+            if g.label != b"ARMO":
+                continue
+            for r in g.records:
+                slots = None
+                arms: list[int] = []
+                for sig, d in esp.iter_subrecords(r.payload):
+                    if sig in (b"BOD2", b"BODT") and len(d) >= 4 and slots is None:
+                        slots = struct.unpack_from("<I", d, 0)[0]
+                    elif sig == ARMO_ARMATURE_SIG and len(d) == 4:
+                        arms.append(struct.unpack("<I", d)[0])
+                if slots is None or not (slots & HANDS_BIT):
+                    continue
+                if slots & BODY_BIT:
+                    # A piece that claims slot 32 (Body) along with Hands is a
+                    # full-body SUIT or SKIN, not a forearm bracer -- the hands
+                    # are covered by the suit/skin (its hand geometry lives in a
+                    # DIFFERENT armature we may not inspect here, e.g. a separate
+                    # hands mesh or the race skin). Stripping slot 33 from those
+                    # would un-cover the hands. A genuine forearm/wrist bracer
+                    # never claims the body slot. This single guard excludes body
+                    # skins (Astrid/zombie/creature), full robes, and animation
+                    # camera-equips -- all of which measured "handless" only
+                    # because the armature we saw was the torso mesh.
+                    continue
+                local = [a for a in arms if a in arma_models]
+                if not local:
+                    continue   # no local armature to inspect -> leave alone
+                # Never touch a race/nude skin armature (its hand mesh IS the
+                # hands). Belt-and-suspenders alongside the slot-32 guard above.
+                if any(_is_nude_skin_model(m)
+                       for a in local for m in arma_models[a]):
+                    continue
+                statuses = [_armature_hand_status(arma_models[a]) for a in local]
+                if not all(s == "handless" for s in statuses):
+                    continue   # any hands/unknown -> never strip (fail-safe)
+                np_, ch = clear_slot33_from_bod2_payload(r.payload)
+                if ch:
+                    r.payload = np_
+                    armos_fixed += 1
+                    changed = True
+                for a in local:
+                    rec = arma_by_fid.get(a)
+                    if rec is None:
+                        continue
+                    np2, ch2 = clear_slot33_from_bod2_payload(rec.payload)
+                    if ch2:
+                        rec.payload = np2
+                        armas_fixed += 1
+                        changed = True
+        if changed:
+            e.save(piece)
+            pieces_changed += 1
+    return {"armos_fixed": armos_fixed, "armas_fixed": armas_fixed,
+            "pieces_changed": pieces_changed}
+
+
 def _remap_alt_texture_payload(data: bytes,
                                remap_fid: "callable[[int], int]") -> bytes:
     """Walk an MO?S subrecord, applying `remap_fid` to each embedded
@@ -768,6 +932,34 @@ def add_slot32_to_bod2_payload(payload: bytes) -> tuple[bytes, bool]:
                 # (BOD2 = u32 slots + u32 armor_type; BODT may have a
                 # third u32 — we don't care, just splice the head).
                 new_data = struct.pack("<I", new_slots) + data[4:]
+                out += esp.encode_subrecord(sig, new_data)
+                changed = True
+                continue
+        out += esp.encode_subrecord(sig, data)
+    return out, changed
+
+
+def clear_slot33_from_bod2_payload(payload: bytes) -> tuple[bytes, bool]:
+    """Clear biped slot 33 (Hands) from an ARMA/ARMO record's BOD2 (or legacy
+    BODT) bipedObjectSlots field, preserving every OTHER slot bit and the rest
+    of the struct verbatim. Returns the new payload and whether it changed.
+    Mirror of add_slot32_to_bod2_payload (opposite direction, different bit).
+
+    Why: a forearm bracer / wrist guard whose ARMO claims slot 33 (Hands) but
+    whose mesh has NO hand geometry makes the engine HIDE the actor's nude-hands
+    skin partition (slot 33) and draw the armor's slot-33 geometry instead --
+    but there is none, so the hands vanish (invisible hands on UBE actors). The
+    fix is to un-claim slot 33 so the nude hands render. See fix_spurious_hand_slot
+    for the policy decision of WHEN to apply this (only when the mesh genuinely
+    lacks hands -- never on a real glove/gauntlet)."""
+    bit = 33 - 30  # slot 33 -> bit 3 of the slots field
+    out = b""
+    changed = False
+    for sig, data in esp.iter_subrecords(payload):
+        if sig in (b"BOD2", b"BODT") and len(data) >= 4:
+            slots = struct.unpack_from("<I", data, 0)[0]
+            if slots & (1 << bit):
+                new_data = struct.pack("<I", slots & ~(1 << bit)) + data[4:]
                 out += esp.encode_subrecord(sig, new_data)
                 changed = True
                 continue
