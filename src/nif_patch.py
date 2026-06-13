@@ -178,6 +178,6 @@ def patch_nif_shapes(
             continue
         data = patch_verts(data, loc, new_verts)
 
-    with open(dst, "wb") as f:
-        f.write(data)
+    from .atomic_io import atomic_write_bytes
+    atomic_write_bytes(dst, data)
     return located

@@ -2289,6 +2289,15 @@ def validate_patch(esp_path: str | Path,
                                  the source masters; warning is skipped
                                  silently when they can't be found.
 
+      "modt-malformed: ..."      An MO?T texture-hash block has a bad
+                                 header (`len != 12*(1+count)`) — the
+                                 headerless-LE-port class the engine
+                                 misreads as a multi-million-entry count
+                                 -> overread CTD at model init. Should be
+                                 0 in output (every emit path routes MO?T
+                                 through normalize_modt); a hit means a
+                                 new emit path skipped normalization.
+
     Args:
       esp_path: the patch ESP to validate.
       meshes_root: optional path to the mod's `meshes/` directory for
@@ -2327,6 +2336,8 @@ def validate_patch(esp_path: str | Path,
     has_zero_fid = False
     out_of_range = 0
     out_of_range_examples: list[str] = []
+    modt_malformed = 0
+    modt_examples: list[str] = []
     for g in e.groups:
         for r in g.records:
             if r.formid == 0:
@@ -2349,6 +2360,31 @@ def validate_patch(esp_path: str | Path,
                         if len(out_of_range_examples) < 3:
                             out_of_range_examples.append(
                                 f"{fid:08X} (in {r.formid:08X})")
+                # KWDA is an ARRAY of 4-byte keyword FormIDs (not in the
+                # single-FormID set above) — range-check each so an out-of-range
+                # keyword ref (master index past the list) is caught, same crash
+                # class as a single-FormID overrun.
+                elif sig == b"KWDA" and len(sd) >= 4 and len(sd) % 4 == 0:
+                    for _off in range(0, len(sd), 4):
+                        fid = struct.unpack_from("<I", sd, _off)[0]
+                        if ((fid >> 24) & 0xFF) > own_byte:
+                            out_of_range += 1
+                            if len(out_of_range_examples) < 3:
+                                out_of_range_examples.append(
+                                    f"{fid:08X} (KWDA in {r.formid:08X})")
+                # MO?T texture-hash structural validity (defense-in-depth for the
+                # headerless-MODT 7.5M-entry overread CTD). normalize_modt is
+                # applied on every emit path, so this should find 0 -- it guards
+                # against a future emit path that forgets to normalize.
+                elif sig in ARMA_MODT_SIGS:
+                    _valid = (len(sd) >= 12
+                              and len(sd) == 12 * (1 + struct.unpack_from(
+                                  "<I", sd, 4)[0]))
+                    if not _valid:
+                        modt_malformed += 1
+                        if len(modt_examples) < 3:
+                            modt_examples.append(
+                                f"{sig.decode()} in {r.formid:08X} (len={len(sd)})")
     if max_own_fid >= (e.header.next_object_id & 0xFFFFFF):
         warnings.append(
             f"next-object-id: TES4.next_object_id 0x{e.header.next_object_id:06X} "
@@ -2363,6 +2399,12 @@ def validate_patch(esp_path: str | Path,
             f"formid-out-of-range: {out_of_range} FormID(s) reference master "
             f"index >= {n_masters} (master list size). Examples: "
             f"{out_of_range_examples}"
+        )
+    if modt_malformed:
+        warnings.append(
+            f"modt-malformed: {modt_malformed} MO?T texture-hash block(s) with a "
+            f"bad header (len != 12*(1+count)) -> 7.5M-entry overread CTD risk. "
+            f"Examples: {modt_examples}. Fix: route the MO?T through normalize_modt."
         )
 
     # ESL flag consistency.

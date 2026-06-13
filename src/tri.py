@@ -266,4 +266,5 @@ class TriFile:
                 buf[:, 0] = idxs.astype(np.uint16)
                 buf[:, 1:4] = q.astype(np.int16).view(np.uint16)
                 out += buf.tobytes()
-        Path(path).write_bytes(bytes(out))
+        from .atomic_io import atomic_write_bytes
+        atomic_write_bytes(path, bytes(out))

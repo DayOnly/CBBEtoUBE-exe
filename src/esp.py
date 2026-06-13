@@ -67,18 +67,32 @@ def iter_subrecords(payload: bytes) -> Iterable[tuple[bytes, bytes]]:
     XXXX's 4-byte payload is the real size.
     """
     p = 0
+    n = len(payload)
     pending_xxxx = None
-    while p < len(payload):
+    # Bounds-checked walk: a truncated/malformed source subrecord (old LE-ported
+    # mods, hand-edited ESPs) must NOT (a) raise struct.error mid-pass, nor (b)
+    # yield a short slice that a verbatim-copy pass re-emits as a corrupt
+    # subrecord whose size header overstates its data — the headerless/garbage-
+    # count crash class, one layer down. On any boundary violation we stop the
+    # walk cleanly (dropping unparseable trailing bytes) rather than yield junk.
+    # For WELL-FORMED payloads this is identical to the old loop (it exits when
+    # p == n), so the 99.9% normal path is unchanged.
+    while p + 6 <= n:                       # need the 6-byte sig+size header
         sig = payload[p:p+4]
         size = struct.unpack_from("<H", payload, p+4)[0]
         p += 6
         if sig == b"XXXX":
+            # XXXX carries a 4-byte real-size override for the NEXT subrecord.
+            if size < 4 or p + size > n:
+                return                      # truncated XXXX -> stop cleanly
             pending_xxxx = struct.unpack_from("<I", payload, p)[0]
             p += size
             continue
         if pending_xxxx is not None:
             size = pending_xxxx
             pending_xxxx = None
+        if p + size > n:
+            return                          # declared data runs past end -> stop
         yield sig, payload[p:p+size]
         p += size
 
@@ -298,7 +312,8 @@ class ESP:
         out = self.header.to_record().to_bytes()
         for g in self.groups:
             out += g.to_bytes()
-        Path(path).write_bytes(out)
+        from .atomic_io import atomic_write_bytes
+        atomic_write_bytes(path, out)
 
     def group(self, label: bytes) -> Group | None:
         for g in self.groups:

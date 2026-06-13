@@ -201,5 +201,6 @@ def transplant_hh_offset(dst_path, value: float) -> bool:
     # validate: must re-parse losslessly AND contain a readable HH_OFFSET float
     if _parse_if_lossless(out) is None or b"HH_OFFSET" not in out:
         return False
-    open(dst_path, "wb").write(out)
+    from .atomic_io import atomic_write_bytes
+    atomic_write_bytes(dst_path, out)
     return True
