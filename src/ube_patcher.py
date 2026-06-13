@@ -387,13 +387,18 @@ def _nif_max_hand_weight_fraction(nif_path) -> "float | None":
 
 def fix_spurious_hand_slot(primary_esp_path, meshes_root, *,
                            threshold: float = 0.10) -> dict:
-    """Post-merge pass: clear biped slot 33 (Hands) from any ARMO whose local
-    armatures ALL have no real hand geometry (and from those armatures).
+    """Post-merge pass: clear biped slot 33 (Hands) from handless forearm armor
+    so it stops hiding the nude hands. Two passes:
+      1. ARMO-level: an ARMO that claims slot 33 whose local armatures ALL have
+         no hand geometry -> clear slot 33 from the ARMO and those armatures.
+      2. ARMA-level: any armature that carries a stray slot-33 bit alongside
+         another slot (e.g. a converted vambrace tagged [33,34]) but whose mesh
+         is handless -> clear slot 33 from that armature, even when the owning
+         ARMO is correctly NOT slot 33 (so pass 1 never reaches it).
 
-    Fail-safe: strip only when EVERY local armature is positively confirmed
-    hand-less (mesh resolved and fraction < threshold). Unreadable or unresolved
-    meshes -> leave the ARMO untouched. Cross-master (vanilla) armatures are
-    ignored for the decision; only converted UBE meshes drive it.
+    Fail-safe: strip only when the mesh is positively confirmed hand-less (mesh
+    resolved and fraction < threshold). Unreadable/unresolved meshes and
+    [33]-only armatures (gloves, nude hand skins) -> left untouched.
 
     Runs across the primary ESP + every ESL-split piece. Returns a stats dict."""
     from pathlib import Path as _Path
@@ -483,6 +488,33 @@ def fix_spurious_hand_slot(primary_esp_path, meshes_root, *,
                         rec.payload = np2
                         armas_fixed += 1
                         changed = True
+        # ARMA-level pass: a stray slot-33 (Hands) bit on an armature whose mesh
+        # has no hand geometry hides the nude hands and draws nothing there --
+        # even when the owning ARMO is correctly NOT a hands item, so the ARMO
+        # loop above never reaches it. Seen on converted vambraces tagged [33,34]
+        # over a slot-34-only source. Only fires for multi-slot armatures
+        # (slot 33 + another slot) with a handless mesh, so [33]-only gloves and
+        # nude hand skins (high hand-weight) are never touched.
+        for fid, rec in arma_by_fid.items():
+            aslots = None
+            for sig, d in esp.iter_subrecords(rec.payload):
+                if sig in (b"BOD2", b"BODT") and len(d) >= 4:
+                    aslots = struct.unpack_from("<I", d, 0)[0]
+                    break
+            if aslots is None or not (aslots & HANDS_BIT) or not (aslots & ~HANDS_BIT):
+                continue
+            if aslots & BODY_BIT:
+                continue   # body suit/skin: hands come from the suit (mirror pass 1)
+            models = arma_models.get(fid, [])
+            if any(_is_nude_skin_model(m) for m in models):
+                continue
+            if _armature_hand_status(models) != "handless":
+                continue   # real hand geometry or unreadable -> never strip
+            np2, ch2 = clear_slot33_from_bod2_payload(rec.payload)
+            if ch2:
+                rec.payload = np2
+                armas_fixed += 1
+                changed = True
         if changed:
             e.save(piece)
             pieces_changed += 1
