@@ -103,16 +103,11 @@ def generate_armor_tri(
     extra_body_osds: "dict[str, OsdFile] | None" = None,
     armor_vert_extremity_fractions: "dict[str, np.ndarray] | None" = None,
 ) -> TriFile:  # noqa: docstring continues below
-    # Perf note: The naive structure (call propagate_slider_deltas
-    # per shape × per morph) was O(S * M) KDTree rebuilds and O(S * M)
-    # K-NN queries, even though K-NN is the same for every morph of a
-    # given shape. For ~10 armor shapes × 202 morphs that's ~2000
-    # KDTree builds per armor NIF. This refactor builds the KDTree
-    # once, queries K-NN per shape once, then for each morph just
-    # does the IDW math via vectorized numpy gather + multiply + sum.
-    # On a typical slot-49 no-body cloth armor conversion this took TRI generation
-    # from ~30s down to ~3s.
     """Build a BODYTRI for the armor by propagating UBE body slider deltas.
+
+    Performance note: KDTree is built once per armor shape and K-NN queried
+    once; per-morph propagation is vectorized numpy (gather + multiply + sum).
+    This is ~10x faster than the naive per-shape-per-morph rebuild.
 
     `armor_shapes`: {shape_name -> verts_array (N, 3)} for armor pieces
                     in the destination NIF. Body deltas get propagated
@@ -153,34 +148,20 @@ def generate_armor_tri(
     body_verts_arr = np.asarray(body_verts, dtype=np.float64)
     body_n = len(body_verts_arr)
 
-    # Build KDTree ONCE for body verts; reused across all shapes.
     tree = cKDTree(body_verts_arr)
 
-    # Defensive de-dup: if a shape appears in both `armor_shapes`
-    # (K-NN propagation candidate) and `extra_body_osds` (verbatim
-    # per-shape OSD), keep ONLY the OSD path — it's the authoritative
-    # source for that shape's morphs. Without this, callers that don't
-    # pre-filter would double-emit the shape's TriShape (one with
-    # propagated body morphs, one with the OSD's own morphs).
+    # If a shape appears in both armor_shapes and extra_body_osds, keep only the
+    # OSD path (authoritative) to avoid double-emitting a TriShape.
     extra_names = set(extra_body_osds.keys()) if extra_body_osds else set()
-    # Remember the original shape set BEFORE filtering, so the extras-
-    # emit pass below still recognizes the shape as "present in dst".
+    # Keep the original set so the extras-emit pass still recognizes "present in dst".
     original_armor_names = set(armor_shapes)
     armor_shapes = {
         name: verts for name, verts in armor_shapes.items()
         if name not in extra_names
     }
 
-    # Precompute per-shape K-NN data — using a HIGH K (= 16) so we
-    # have enough neighbors to choose from per vert based on each
-    # vert's distance from the body. The per-morph propagation step
-    # below uses an adaptive K per vert (K=1 for body-hugging verts,
-    # K=4 for medium standoff, K=16 for far stand-off pieces like
-    # metal ornament strips or hanging tabards). Far stand-off verts
-    # need a wider average of body movement to track the body's
-    # overall reshape rather than just the single nearest vert
-    # (which may sit in a region of body that barely moves for the
-    # active slider).
+    # Precompute per-shape K-NN data with K=16 neighbors. Adaptive K per vert
+    # (1 for body-hugging, up to 16 for far stand-off) is selected during propagation.
     QUERY_K = 16
     qk = min(QUERY_K, body_n)
     shape_knn: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
@@ -195,9 +176,7 @@ def generate_armor_tri(
         nearest_dist = dists[:, 0]
         shape_knn[armor_shape_name] = (neighbors, dists, nearest_dist)
 
-    # Per-morph dense body delta buffer; reused across morphs.
-    # Building it inside this scope rather than inside the per-shape
-    # loop avoids re-allocating (29298, 3) floats per (shape, morph).
+    # Dense body delta buffer reused across morphs (avoids re-allocating per shape×morph).
     morph_delta_buf = np.zeros((body_n, 3), dtype=np.float64)
     # Per-shape morph accumulator.
     shape_morphs: dict[str, list[TriMorph]] = {
@@ -211,9 +190,6 @@ def generate_armor_tri(
                        if body_m.name.startswith(prefix)
                        else body_m.name)
 
-        # Fill the dense body-delta buffer for THIS morph (vectorized).
-        # body_m.offsets is a list of (idx, dx, dy, dz) tuples; we
-        # need a (body_n, 3) array. Vectorize via numpy gather.
         offsets_arr = np.asarray(body_m.offsets, dtype=np.float64)
         idxs = offsets_arr[:, 0].astype(np.int64)
         deltas = offsets_arr[:, 1:4]
@@ -221,60 +197,19 @@ def generate_armor_tri(
         morph_delta_buf.fill(0.0)
         morph_delta_buf[idxs[valid]] = deltas[valid]
 
-        # Adaptive K based on per-vert standoff. The nearest-body
-        # distance controls how much averaging to use:
-        #   * Hugging the body (dist < 0.4):  K=1 — track nearest
-        #     body vert exactly so the armor stays glued to the body
-        #   * Medium (0.4 <= dist < 1.0):    K=4 — small IDW average
-        #     to smooth over CBBE-vs-UBE topology mismatch
-        #   * Far stand-off (dist >= 1.0):   K=16 — wide IDW average
-        #     so metal ornament strips, hanging tabards, etc. track
-        #     the body's overall regional reshape rather than just
-        #     one nearest body vert (which may live in a low-delta
-        #     spot like the center-front sternum even when sides /
-        #     hips are moving heavily under the slider).
-        # This handles both small local sliders and big preset
-        # sliders without the previous magnitude-based threshold.
-        # Stand-off pieces don't need K=1 magnitude fidelity (they
-        # weren't tracking specific body landmarks anyway); they
-        # need to follow the body's bulk motion in the area.
-
-        # Propagate this single morph to every armor shape using
-        # the cached K-NN data — adaptive K per vert.
         for armor_shape_name, (neighbors, dists, nearest_dist) in shape_knn.items():
-            # CONTINUOUS adaptive IDW (no discrete zones). The old scheme
-            # split verts into hug (<0.4, K=4, 1/d^2), medium (0.4-1.0, K=4,
-            # 1/d) and far (>=1.0, K=16, 1/d) buckets. Those hard thresholds
-            # stepped both the neighbor count AND the weighting, so a DRAPING
-            # piece (skirt / tasset) whose verts straddle 0.4 or 1.0 got
-            # discontinuous deltas across the boundary — the surface FOLDED /
-            # creased at those seams as the body morphed (the "skirt folds in
-            # odd areas" report). The big K=4 -> K=16 jump at 1.0 was the
-            # worst offender.
-            #
-            # Now: ALWAYS use all K neighbors, with an inverse-distance weight
-            # whose exponent eases SMOOTHLY from 2 (body-hugging: nearest
-            # dominates, armor stays glued, preserves the earlier waist-shear
-            # fix) down to 1 (stand-off / drape: wide average that follows the
-            # body's bulk reshape). Continuous in both neighbor set and
-            # weighting -> the morph deforms the cloth smoothly with no seam
-            # at any distance threshold.
-            #   p = clip(2 - nearest_dist, 1, 2): d=0 -> p=2 (glued),
-            #   d>=1 -> p=1 (drape), linear in between.
+            # Continuous adaptive IDW: exponent p eases from 2 (body-hugging,
+            # nearest dominates) to 1 (stand-off/drape, wide average). This avoids
+            # the crease artifacts that discrete threshold zones produced at their
+            # boundaries. p = clip(2 - nearest_dist, 1, 2).
             p = np.clip(2.0 - nearest_dist, 1.0, 2.0)
             w = 1.0 / (np.power(dists, p[:, None]) + 1e-9)
             w /= w.sum(axis=1, keepdims=True)
             propagated = (morph_delta_buf[neighbors] * w[..., None]).sum(axis=1)
-            # Per-vert extremity dampening: a long sleeve has its hand portion
-            # rigged to finger/hand bones (extremity fraction ~1) and its
-            # sleeve portion to forearm/upperarm bones (fraction ~0). Scaling
-            # the propagated delta by (1 - fraction) gives the SLEEVE full
-            # body-morph response (so it follows arm-region sliders and
-            # doesn't get clipped through by the morphed arm) while keeping
-            # FINGER verts near-zero (matches the nude actor's separate
-            # Hands mesh, which doesn't body-morph). Smooth blend at the
-            # wrist. Same logic catches thigh-high boots that span
-            # foot/calf/thigh. No-op when fractions weren't supplied.
+            # Extremity dampening: scale propagated deltas by (1 - extremity_fraction)
+            # so sleeve/calf verts get full body-morph response while
+            # finger/toe verts stay near-zero (matching the separate nude Hands/Feet
+            # mesh that doesn't body-morph). No-op when fractions not supplied.
             if armor_vert_extremity_fractions is not None:
                 ef = armor_vert_extremity_fractions.get(armor_shape_name)
                 if ef is not None and len(ef) == len(propagated):
@@ -293,15 +228,11 @@ def generate_armor_tri(
             ))
 
     # ---- Overlay-band morph-sync ----
-    # A thin band lifted on top of a larger layer by the pass-8 band-lift must
-    # MORPH IN LOCKSTEP with the layer beneath it, or it re-sinks under body
-    # sliders even though the base mesh is fixed. For each thin band that, in
-    # this (already-lifted) UBE mesh, sits clearly OUTSIDE another cloth shape,
-    # replace its per-slider deltas with the under-layer's nearest-vertex
-    # deltas so the layering gap holds at every slider value. Large body-
-    # conforming pieces keep their own morph. Fully gated: if the band can't be
-    # classified (e.g. verts aren't lifted) it simply no-ops and the base lift
-    # still stands.
+    # A thin band lifted above a larger cloth layer must morph in lockstep with
+    # that layer; otherwise it re-sinks under body sliders. For each thin band
+    # sitting clearly outside another cloth shape, replace its per-slider deltas
+    # with the under-layer's nearest-vertex deltas. Fully gated: if the band
+    # can't be classified it no-ops and the base lift still stands.
     try:
         from scipy.spatial import cKDTree as _cKDTree
         _OM_SIZE_FRAC, _OM_R, _OM_MIN, _OM_THRESH, _OM_SYNC_R = 0.40, 3.0, 30, 0.20, 5.0
@@ -363,24 +294,9 @@ def generate_armor_tri(
     except Exception:
         pass
 
-    # Build the shape list with the BODYTRI carrier listed FIRST, then
-    # the remaining shapes ordered by MORPH PRIORITY (body-conforming
-    # cloth before rigid metal props).
-    #
-    # Why ordering matters — the per-NIF morph cap. NioOverride/SKEE
-    # only applies BodyMorph deltas to roughly the FIRST ~9 shapes a
-    # TRI lists (verified in-game: a 12-shape a vanilla armor TRI morphed shapes
-    # 1-9 and silently dropped 10-12; reordering moved which shapes got
-    # cut). So whichever shapes land past the cap simply don't morph.
-    #
-    # The fix is to spend the limited early slots on the shapes that
-    # VISIBLY need to track the body — cloth, skirts, leggings, panties —
-    # and push rigid props (pauldrons, armbands, chains, gems, buckles)
-    # to the tail, where the cap drops them harmlessly (they barely
-    # morph anyway). Within the cloth group, bigger movers come first.
-    #
-    # Carrier stays first regardless (hand-authored UBE convention; the
-    # BODYTRI NiStringExtraData lives on it).
+    # Order: carrier first (NiStringExtraData convention), then cloth by
+    # descending morph magnitude, then rigid props, then weapon/jewelry attachments.
+    # If the per-NIF morph cap ever fires, low-impact rigid props are dropped first.
     def _max_morph_mag(name: str) -> float:
         mags = [
             float(np.linalg.norm(
@@ -391,12 +307,6 @@ def generate_armor_tri(
 
     def _priority_key(name: str):
         nlow = name.lower()
-        # Three tiers (ascending): cloth (0) < body-worn rigid (1) <
-        # weapon/jewelry attachment (2). This only decides ORDER; the goal
-        # is for NOTHING to be cut (the merge keeps the total under the
-        # cap). Ordering still matters as a safety net: if a NIF ever does
-        # exceed the cap, the least-morph-needing props drop last. Within a
-        # tier, larger max-morph-magnitude first (negated for ascending).
         if any(kw in nlow for kw in _ATTACHMENT_KEYWORDS):
             tier = 2
         elif any(kw in nlow for kw in _RIGID_PROP_KEYWORDS):
@@ -412,14 +322,6 @@ def generate_armor_tri(
         ordered_names.append(carrier_shape_name)
     ordered_names.extend(non_carrier)
 
-    # (Removed 2026-05-29) The over-cap warning that used to print here
-    # was based on the misdiagnosed "skee per-NIF ~9-shape cap" (#118,
-    # #139). After the PIRT shape-count fix, every cloth shape we list
-    # gets BodyMorph deltas applied in-game — there is nothing to warn
-    # about. Priority ordering above still runs (rigid props to the
-    # tail, big movers first) as a soft authoring convention, but the
-    # ordering no longer determines which shapes morph.
-
     tri_shapes: list[TriShape] = []
     for armor_shape_name in ordered_names:
         morphs = shape_morphs[armor_shape_name]
@@ -427,13 +329,8 @@ def generate_armor_tri(
             tri_shapes.append(TriShape(
                 name=armor_shape_name, morphs=morphs))
 
-    # Optionally include body-region shapes (BaseShape, etc.) verbatim
-    # from the OSD. Critical: only include shapes that the dest NIF
-    # ACTUALLY contains. Hand-built TRIs only list shapes that exist
-    # in the NIF; adding extra body shapes appears to confuse some
-    # NioOverride lookups (e.g. a slot-49 no-body cloth armor whose NIF has no
-    # BaseShape — including BaseShape in the TRI may break the
-    # corset's morph application).
+    # Include body-region shapes verbatim from the OSD only when the dest NIF
+    # actually contains them. Adding a shape the NIF lacks confuses NioOverride lookups.
     body_shape_set: set[str]
     if include_body_shapes is True:
         body_shape_set = {"BaseShape"}
@@ -456,27 +353,17 @@ def generate_armor_tri(
                          for idx, dx, dy, dz in body_m.offsets],
             ))
         if body_morphs:
-            # OSD only has BaseShape data, so we can only emit body
-            # morphs under that name. If caller wants VirtualBody too,
-            # they'd need a separate OSD with VirtualBody morphs.
             if "BaseShape" in body_shape_set:
                 tri_shapes.insert(0, TriShape(
                     name="BaseShape", morphs=body_morphs))
 
-    # Extra body-region OSDs (Hands, Feet — UBE ships these as
-    # separate OSDs because their morphs operate on different
-    # topologies than BaseShape). For each extra OSD, emit a TriShape
-    # named after the destination shape, with morphs renamed to strip
-    # the prefix (so slider lookups still work the same way they do
-    # on the nude actor's Hands/Feet TRI).
+    # Extra body-region OSDs (Hands/Feet): emit a TriShape per shape with morphs
+    # renamed to strip the prefix so slider lookups match the nude actor's TRI.
     if extra_body_osds:
         for shape_name, extra_osd in extra_body_osds.items():
             if (shape_name not in original_armor_names
                     and shape_name not in body_shape_set):
-                # No matching shape in the dst NIF — skip (avoids
-                # NioOverride attempting to morph a non-existent
-                # shape and producing a no-op warning at runtime).
-                continue
+                continue  # no matching shape in the dst NIF
             extra_prefix = shape_name  # OSD morphs prefix == shape name
             extra_morphs: list[TriMorph] = []
             for m in extra_osd.morphs:
@@ -494,9 +381,7 @@ def generate_armor_tri(
                 tri_shapes.append(TriShape(
                     name=shape_name, morphs=extra_morphs))
 
-    # The `version` field on TriFile is misnamed (legacy) — bytes 4-5 of
-    # the PIRT file are actually the SHAPE COUNT, which `TriFile.save()`
-    # writes from `len(self.shapes)` regardless of what we pass here. So
-    # this kwarg is now effectively cosmetic; we leave it for symmetry.
+    # The `version` kwarg is effectively cosmetic: bytes 4-5 are the shape count
+    # written from `len(self.shapes)` by TriFile.save() regardless.
     from .tri import TRI_VERSION
     return TriFile(version=TRI_VERSION, shapes=tri_shapes)

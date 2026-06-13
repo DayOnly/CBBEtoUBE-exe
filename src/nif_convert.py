@@ -80,191 +80,75 @@ _CBBE_UBE_DELTA_CACHE: "dict[tuple[Path, Path], tuple[np.ndarray, np.ndarray]]" 
 
 
 # ---- Single-place tuneable: armor-to-skin buffer ----------------------
-# After body-delta warp, no armor vert is allowed to live closer than
-# this (in world units) to the UBE body surface. Bumping it up adds
-# more clearance — useful when skin pokes through revealing armor
-# (the previous default 0.3u was tuned to "barely visible"; users with
-# very large UBE morphs or sheer cloth may need 0.5–0.7u). Bumping it
-# down lets armor sit flush against the body — risk of z-fighting
-# shimmer when the body morphs under sliders.
-#
-# Reconvert any affected mods after changing this (the buffer is baked
-# into the output NIFs at convert time, not applied at runtime).
-ARMOR_TO_SKIN_BUFFER = 0.15  # global tighten 2026-05-29: armor sat too far
-                              # off the body; halved the static standoff floor
-                              # to pull every piece closer. Raise toward 0.3 if
-                              # body poke-through reappears on big morphs.
-# Briefly bumped 0.3 -> 0.8 to address a mashup armor loincloth
-# clipping into the body at base position. Reverted because
-# in-game the skirt then read as ballooned/detached. Smaller
-# buffer + a per-shape inflation strategy is the correct fix
-# if we revisit this.
+# Minimum world-unit clearance between any armor vert and the UBE body
+# after the body-delta warp. Baked into output NIFs at convert time.
+# Raise toward 0.3 if body poke-through appears on large morphs;
+# lower for a tighter flush fit (risk of z-fight shimmer under sliders).
+ARMOR_TO_SKIN_BUFFER = 0.15
 
 
 # ---- Inflation pass: BodySlide-style safety puff-out ------------------
-# Hand-authored BodySlide-built UBE armor includes a per-vert outward
-# inflation that pushes cloth away from body skin during build time —
-# typically 0.3-0.5u of extra standoff. Our body-delta warp preserves
-# the SOURCE drape exactly (mathematically correct) but matches the
-# CBBE source distance rather than the puffed-out UBE convention.
-#
-# Result: revealing armor (a revealing slot-32 top, lingerie, bikinis) has the
-# minimum drape from source — when the user adjusts body morph
-# sliders at runtime, the body can grow past the cloth surface and
-# nipples/skin punch through.
-#
-# This constant adds a uniform-ish outward inflation after the warp,
-# with linear falloff so verts already far from body don't get
-# bulged unnecessarily. 0 = disable. 0.3-0.5u matches BodySlide's
-# build-time convention.
-#
-# 2026-05-28: bumped 0.8 -> 1.0 as a conservative first pass against
-# breast/butt poke-through (#129/#135) on large presets — adds ~0.2u
-# more standoff to body cloth within the falloff radius. Kept small to
-# avoid over-puffing armors that fit fine. Clipping is iterative: if the
-# chest still pokes through, escalate to a breast/butt-region-targeted
-# standoff rather than bumping this global value further (which risks
-# ballooning tight cloth elsewhere). Knee clipping on tight leg armor is
-# largely the inherent CBBE-leg-flex-on-UBE issue (see M3.5 finding) and
-# inflation only helps the morph-growth component, not the joint flex.
-ARMOR_INFLATION_MAGNITUDE = 0.7  # global tighten 2026-05-29 (was 1.0)
+# After the body-delta warp (which preserves the source CBBE drape exactly),
+# this pass adds a uniform outward inflation with linear falloff so armor
+# retains clearance when body morph sliders grow the mesh at runtime.
+# 0 = disable. Reconvert any affected mod after changing.
+ARMOR_INFLATION_MAGNITUDE = 0.7
 ARMOR_INFLATION_FALLOFF_DISTANCE = 3.0
 
-# Slot-49 (pelvis primary — skirts, loincloths, hip cloth, tassets)
-# routinely sits closer to body skin than slot-32 body armor and clips
-# more aggressively under bigger UBE morphs and dynamic animation. When
-# the caller supplies biped_slots and bit 19 (slot 49) is set, we use
-# this boosted inflation magnitude instead of the default.
-#
-# Falloff stays the same so verts already well away from the body
-# (far-hanging tabard tails, cape edges) aren't over-puffed.
-#
-# History: 1.5 -> 0.8 (2026-05-29). After the PIRT shape-count fix (see
-# #139 / tri.py), slot-49 cloth shapes past TRI position 9 now actually
-# morph in-game, so the inflation no longer needs to carry the entire
-# fit on its own. Drop to a tighter buffer that still clears the body
-# under morph + animation without making skirts look tent-like. Bump
-# back up if loincloths/tassets visibly clip on big presets.
-ARMOR_INFLATION_MAGNITUDE_SLOT49 = 0.5  # global tighten 2026-05-29 (was 0.8)
+# Slot-49 (skirts, loincloths, hip cloth) sit closer to skin than torso
+# armor and clip more under large morphs. Applied when biped_slots bit 19
+# is set. Raise if loincloths/tassets clip on big presets.
+ARMOR_INFLATION_MAGNITUDE_SLOT49 = 0.5
 BIPED_SLOT49_BIT = 1 << 19  # 0x00080000
 
-# Slot 33 (hands) and slot 37 (feet) — gauntlets and boots cling tight
-# to wrist/forearm and calf/foot. They use the user's standard armor
-# slots so they share the convert path with body cloth, but their
-# shapes typically have less per-slider morph response (vert weights
-# dominated by rigid bones like Calf/Foot). Result: body grows under
-# slider changes faster than the boot/gauntlet shell, so the limb
-# pokes through. Boosting their inflation gives a fixed buffer that
-# stays clear of growing body geometry across the slider range.
-# Gauntlets/boots: 1.5 -> 0.5 -> 0.3 (hug tight) -> 0.8 (2026-05-28, user
-# asked to "increase the distance for gauntlets and boots" because the
-# shell still clipped into the forearm/calf under morph + animation). The
-# extremity-fraction falloff (see _extremity_vert_fraction) already shields
-# finger/toe verts from this push, so raising the magnitude only stands the
-# LIMB shell (forearm/calf cuff) further off the body — exactly the region
-# that was clipping — without ballooning the fingers/toes. Tunable: raise
-# further if boots/gauntlets still clip, lower if they look puffy.
-ARMOR_INFLATION_MAGNITUDE_HANDS_FEET = 0.6  # global tighten 2026-05-29 (was 0.8)
+# Gauntlets and boots: limb shell (forearm/calf) gets extra standoff because
+# body grows faster there under sliders than the rigid-bone-dominated shell.
+# The extremity-fraction falloff protects finger/toe verts from this push.
+# Raise if boots/gauntlets still clip; lower if they look puffy.
+ARMOR_INFLATION_MAGNITUDE_HANDS_FEET = 0.6
 BIPED_SLOT32_BIT = 1 << 2  # 0x00000004 — body (torso cuirass)
 BIPED_SLOT33_BIT = 1 << 3  # 0x00000008 — hands
 BIPED_SLOT37_BIT = 1 << 7  # 0x00000080 — feet
 
-# Skirts / hanging hip cloth need MORE standoff than torso cloth — they
-# drape close over the thighs/butt and clip through under morph +
-# walk/run animation. Applied by NAME (shape or diffuse-texture keyword)
-# rather than biped slot, because skirt layers frequently live INSIDE a
-# slot-32 cuirass NIF (e.g. a mashup armor's Tasset/skirt-layer layers) and so
-# never trip the slot-49 path.
-#
-# Was 2.5 while the skirt-folding bug was unsolved — we over-puffed to
-# mask the creasing. Now that the fold is fixed at its real source (the
-# continuous adaptive-IDW morph propagation in sliderset_gen, which
-# removed the zone-boundary delta discontinuities), the big standoff is
-# no longer load-bearing, so shrink it back toward the body for a closer,
-# less tent-like drape.
-#
-# History: 2.5 -> 1.8 -> 1.0 (2026-05-29). After the PIRT shape-count
-# fix (#139), skirts past TRI position 9 morph in-game like everything
-# else, so the static inflation no longer has to fight for clearance on
-# its own. 1.0 matches the slot-32 default — skirts now rely on the
-# morph + scale-bone tracking for the dynamic portion of the fit.
-# Bump back up if visible thigh/butt clipping returns on big presets.
-ARMOR_INFLATION_MAGNITUDE_SKIRT = 0.7  # global tighten 2026-05-29 (was 1.0)
+# Skirt shapes live inside slot-32 NIFs (Tasset, etc.) so they never
+# trip the slot-49 path — detect by name/texture keyword instead.
+# Raise if thigh/butt clipping appears on large presets.
+ARMOR_INFLATION_MAGNITUDE_SKIRT = 0.7
 SKIRT_INFLATION_KEYWORDS = (
     "skirt", "tasset", "loincloth", "apron", "kilt", "aketon",
 )
 
-# Decorative WAIST BELT / SASH overlay pieces sit ON TOP of the waist garment
-# (corset/top fabric), so they must stand off the body MORE than that garment
-# or they Z-fight behind it and read as "merged into the body / not visible"
-# (DDV Ruby Flower: `belts`/`belts_metal` warped to ~+0.55u, the same shell as
-# the `top` at +0.62u -> the belt vanished behind the fabric). The underlying
-# garment gets the default ~0.7 inflation (~+0.6u net), so the belt needs a
-# clearly higher magnitude to ride on top. Detected by NAME / diffuse keyword
-# (these pieces frequently live INSIDE a slot-32 cuirass NIF, so a slot check
-# misses them). Draping sash tails far from the body are unaffected — the
-# inflation falloff zeroes the push beyond ARMOR_INFLATION_FALLOFF_DISTANCE.
+# Belt/sash overlay shapes sit ON TOP of the waist garment and must
+# stand off further than it or they Z-fight behind it and disappear.
+# The falloff zeroes the push on draping tails already far from the body.
+# Detected by name/diffuse keyword (these pieces live inside slot-32 NIFs).
 ARMOR_INFLATION_MAGNITUDE_BELT = 1.5
 BELT_OVERLAY_KEYWORDS = (
     "belt", "sash", "girdle", "buckle", "obi", "waistband", "waistcloth",
 )
 
-# ---- Nipple-aware bust clearance (#175 nipple poke-through) -----------------
-# The bust pass in conform_to_source_standoff USED to shove the entire chest
-# Z-band out to a fixed clearance (`bust_clearance`) measured against only the
-# NEAREST body vert. That was simultaneously:
-#   * too LOOSE on flat chest panels (a sternum / side-of-cuirass plate got the
-#     same standoff as the nipple -> "armor doesn't fit close"), and
-#   * sometimes too WEAK right at the nipple tip, because the nipple is rarely
-#     the nearest body point to the fabric vert sitting over it -> it could
-#     still poke under a big preset / live RaceMenu nipple slider.
-# (And, if the body NIF shipped no vertex normals -- BodySlide outputs often
-#  don't -- the WHOLE pass was a silent no-op: see _body_normals_or_compute.)
-#
-# The replacement is nipple-aware (keyed on the body's own Breast03 tip-bone
-# weight, a clean signal that localizes the breast front / nipple) and
-# neighbourhood-based:
-#   * BUST_FLAT_CLEARANCE -- the small standoff a FLAT chest panel keeps. Close
-#     fit; just clear of Z-fighting. (Scale-bone parity tracking carries the
-#     dynamic growth when the user pushes breast sliders, so the STATIC buffer
-#     can be small.) Cloth already tighter than this is NOT loosened.
-#   * the required clearance ramps from BUST_FLAT_CLEARANCE up to `bust_clearance`
-#     by BUST_NIPPLE_GAIN x (nearest body vert's nipple weight), so ONLY the
-#     breast-front / nipple region gets the full standoff -- the sternum, sides
-#     and upper chest stay close.
-#   * the clearance is enforced over the WORST (closest) body vert within
-#     BUST_NEIGHBORHOOD_RADIUS (BUST_NEIGHBORHOOD_K neighbours) of the fabric
-#     vert, not just the nearest one -> a nipple tip that pokes past the fabric
-#     is caught even when a flatter body vert is closer.
-# Push-OUT-biased in the bust (it only pulls a bust vert IN as far as the general
-# conform already wanted, and never past the clearing floor), so it cannot create
-# new clipping. Lower BUST_FLAT_CLEARANCE for a tighter chest; raise
-# bust_clearance / BUST_NIPPLE_GAIN if a nipple still pokes on a big preset.
+# ---- Nipple-aware bust clearance ----------------------------------------
+# conform_to_source_standoff uses the body's Breast03 tip-bone weight to
+# localize clearance: flat chest panels keep BUST_FLAT_CLEARANCE (close fit),
+# while the breast-front / nipple region ramps up to bust_clearance by
+# BUST_NIPPLE_GAIN * nipple_weight. Enforced over the worst body vert within
+# BUST_NEIGHBORHOOD_RADIUS (not just the nearest) so a peeking nipple tip is
+# caught. Push-out biased: never creates new clipping.
+# Lower BUST_FLAT_CLEARANCE for a tighter chest; raise bust_clearance or
+# BUST_NIPPLE_GAIN if a nipple still pokes on a large preset.
 BUST_FLAT_CLEARANCE = 0.3
 BUST_NIPPLE_GAIN = 1.0
 BUST_NEIGHBORHOOD_K = 6
 BUST_NEIGHBORHOOD_RADIUS = 4.0
-# Body breast-TIP bone keywords -> "nipple weight" used to localize where the
-# bust standoff is spent. Breast03 is the apex/tip bone (peaks right at the
-# nipple); Breast02 contributes partially. Matched on the bone name with spaces
-# stripped (so "R Breast03" / "NPC L Breast03" both hit).
+# Breast03 = nipple apex; Breast02 partial contributor. Matched without spaces.
 NIPPLE_TIP_BONE_WEIGHTS = {"breast03": 1.0, "nipple": 1.0, "breast02": 0.4}
 
-# ---- Final anti-poke pass (#175 nipple/belly/thigh poke-through) ------------
-# After warp/inflate/conform, body-slot armor can still sit only ~0.02u off the
-# body (measured: a vanilla guard cuirass at 0.02u over the nipple), because the
-# source-correspondence conform is gated/silently-skipped on some shapes. The
-# actor's live morph then punches straight through. clear_armor_outside_body()
-# is a FINAL, robust push-OUT pass measured against the (injected) UBE body --
-# which is always present and has valid normals -- so it ALWAYS lands, and it
-# runs last so no later pass undoes it. Flat panels keep ANTIPOKE_FLAT_CLEAR
-# (close fit); the breast front ramps to ANTIPOKE_BUST_CLEAR by the body's
-# Breast03 nipple weight, enforced over the WORST nearby body vert. Tunable:
-# raise ANTIPOKE_FLAT_CLEAR if the body still pokes on big presets (a touch
-# looser everywhere), lower for a tighter fit.
-# Measured on the real vanilla guard cuirass: 0.8 clears the 0.02u nipple to
-# ~0.6 AND lifts belly/thigh from ~0.67/0.78 to ~0.80 (a buffer for the morph),
-# moving only ~7% of verts (max 0.78u -- no ballooning). 1.0 over-pushes (14%).
+# ---- Final anti-poke pass -----------------------------------------------
+# clear_armor_outside_body() runs LAST, after warp/inflate/conform, measured
+# against the injected UBE body (always present, always has valid normals).
+# Flat panels keep ANTIPOKE_FLAT_CLEAR; breast-front ramps to ANTIPOKE_BUST_CLEAR
+# by the Breast03 nipple weight. Raise ANTIPOKE_FLAT_CLEAR if the body still
+# pokes on large presets; lower for a tighter fit.
 ANTIPOKE_FLAT_CLEAR = 0.8
 ANTIPOKE_BUST_CLEAR = 1.0
 ANTIPOKE_NIPPLE_GAIN = 1.5
@@ -388,36 +272,21 @@ def _cached_ube_body_verts(path: Path):
 
 
 # --- Adaptive (morph-aware) armor clearance ----------------------------
-# The inflation pass exists to keep clearance between armor and the body so the
-# body doesn't poke through when the player morphs it BIGGER at runtime (the
-# armor follows the morph via scale bones, but imperfectly). A UNIFORM inflation
-# floats armor ~0.7-1u off the skin EVERYWHERE — including the ~quarter of the
-# body that barely moves under any slider (shoulders, back, upper arms, calves).
-# Instead, scale clearance by how far each body region can actually grow
-# OUTWARD: tight where the body is static, full clearance only in the
-# breast/butt/belly/hip zones. Provably <= the uniform value everywhere, and it
-# only tightens STATIC regions (low clip risk), so it cannot add poke-through.
+# Scales clearance by how far each body region can grow outward at runtime,
+# rather than applying a uniform standoff everywhere. Static regions (shoulders,
+# back, arms) get tight ADAPTIVE_CLEARANCE_BASE; high-morph zones (breast/butt/
+# belly) ramp up to ADAPTIVE_CLEARANCE_MORPH_MAX via per-vert outward amplitude.
+# Always <= uniform inflation; cannot add poke-through.
 ADAPTIVE_CLEARANCE_ENABLED = True
-ADAPTIVE_CLEARANCE_BASE = 0.25       # minimum clearance (z-fight floor) in static zones
+ADAPTIVE_CLEARANCE_BASE = 0.25       # minimum clearance in static zones
 ADAPTIVE_CLEARANCE_MORPH_FACTOR = 0.20  # clearance added per unit of outward body morph
-# Morph-zone clearance CAP. Decoupled from the slot inflation magnitude so the
-# breast/butt/belly can carry MORE clearance than a flat cuirass needs — that's
-# where the body morphs OUTWARD at runtime and pokes through a too-tight cuirass
-# (the guard-cuirass "nipple/stomach clip"). The scale bones make the armor
-# follow ~85% of the morph, so the residual that clearance must absorb is ~15%
-# of the local outward morph; FACTOR=0.20 + this cap covers realistic
-# breast/belly slider ranges. Static zones are unaffected (they sit at BASE,
-# far below this cap). Set == BASE to disable the morph-zone expansion.
-ADAPTIVE_CLEARANCE_MORPH_MAX = 1.1
-# Size/shape sliders the player actually drives (clip risk). Substrings, lowercased.
+ADAPTIVE_CLEARANCE_MORPH_MAX = 1.1   # clearance cap for high-morph zones
+# OSD morph names matched by substring to build the per-vert outward-amplitude map.
 _MORPH_SIZE_KEYWORDS = (
     "breast", "butt", "belly", "cleav", "nipple", "hip", "thigh", "waist",
     "big", "pregn", "chub", "wide", "tummy", "gut", "ass", "pelvis",
-    # "glute" = the anatomical butt: the UBE/3BA OSD names the BUTT size sliders
-    # GluteSize/GluteSpread/GluteHeight/GluteLower/... (~25 of them) which the
-    # "butt"/"ass" keywords MISS, so the buttock morph zone was under-detected
-    # (too little adaptive clip-clearance over the butt). "trochanter" = the hip
-    # bone slider. Both are genuine outward-volume zones (safe to include).
+    # "glute" covers UBE/3BA GluteSize/Spread/Height/... sliders (missed by "butt").
+    # "trochanter" = hip-bone slider. Both are genuine outward-volume zones.
     "glute", "trochanter",
 )
 
@@ -536,28 +405,13 @@ def _find_cbbe_base_body(weight: str = "_1") -> "Path | None":
 def _find_ube_femalebody(weight: str = "_1") -> "Path | None":
     """Locate the UBE body that the CBBE -> UBE warp morphs armor TOWARD.
 
-    PREFER the genuine UBE-topology body output: `!UBE\\Body\\femalebody_
-    tangent{w}.nif` (~29,298-vert UBE BaseShape — the user's BodySlide-built
-    UBE body). That is the ACTUAL UBE shape.
-
-    Why this matters (root cause of "vanilla armor stays CBBE-shaped",
-    2026-05-29): a BodySlide-output mod ALSO ships a same-named CBBE/3BA body
-    at `actors\\character\\character assets\\femalebody{w}.nif` (18,436-vert
-    3BA topology). The OLD logic, which scanned for an 18,436-vert body in a
-    bodyslide-output / UBE-named mod, picked THAT — but it's the user's nude
-    3BA body, NOT a UBE body. The CBBE->UBE delta then came out as
-    3BA - 3BA == ZERO (verified byte-identical on a live modlist), so the
-    warp never reshaped any armor toward UBE; armor only got pushed OUTSIDE
-    the UBE body by the snap/inflate passes while keeping CBBE proportions.
-    Rigid armor (vanilla cuirasses), which relies entirely on the warp,
-    therefore stayed fully CBBE-shaped.
-
-    The 29,298-vert UBE body has a DIFFERENT topology from the 18,436-vert
-    CBBE base, so `_cached_cbbe_to_ube_delta` builds the deformation field by
-    nearest-neighbor correspondence (it no longer requires equal vert counts).
-
-    Fallback (legacy): a UBE-named / bodyslide-output 18,436-vert body, used
-    only if no `!UBE\\Body` output exists. Env override: CBBE2UBE_UBE_BODY_0/_1.
+    Prefers `!UBE\\Body\\femalebody_tangent{w}.nif` (the user's BodySlide-built
+    29,298-vert UBE BaseShape). The fallback 18,436-vert body at the standard
+    character-assets path is a 3BA/CBBE body, not a UBE body; using it would
+    produce a zero CBBE->UBE delta and leave armor CBBE-shaped.
+    `_cached_cbbe_to_ube_delta` uses nearest-neighbor correspondence so topology
+    mismatch between CBBE and UBE bodies is not a problem.
+    Env override: CBBE2UBE_UBE_BODY_0 / _1.
     """
     ck = f"ube{weight}"
     if ck in _BODY_DISCOVERY_CACHE:
@@ -591,16 +445,12 @@ def _find_ube_femalebody(weight: str = "_1") -> "Path | None":
 
 
 # ----- Shape skin-frame reconciliation --------------------------------------
-# A shape stores its verts in SKIN space and carries a global_to_skin transform
-# (world -> skin) so the engine can position it. Most armor has an IDENTITY
-# global_to_skin (skin == world). But some shapes (e.g. the Ebony cuirass, whose
-# g2s is a -64.7u Z translation) store verts far from world position. The fit
-# pipeline compares armor verts against the body in WORLD space, so for an offset
-# shape every vert matches the WRONG body anatomy (the cuirass shoulder matched
-# the body's hip -> the warp sheared the collar, the "ebony breaking at the
-# shoulders" bug). Fix: run the fit in WORLD frame (transform verts skin->world),
-# then transform the result world->skin for output. Identity-g2s shapes are a
-# no-op (byte-identical to before).
+# Shapes store verts in SKIN space with a global_to_skin (world->skin) transform.
+# Most armor has an identity g2s (skin == world), but shapes with a translation
+# (e.g. Ebony cuirass -64.7u Z) store verts far from their body anatomy. The fit
+# pipeline must compare armor verts against the body in WORLD space, or warps
+# match the wrong region. Fix: lift verts to world before warp/inflate/conform,
+# lower back to skin for output. Identity-g2s shapes are a no-op.
 
 def _g2s_is_identity(g2s, eps=1e-4) -> bool:
     try:
@@ -648,19 +498,14 @@ def _verts_world_to_skin(verts_world: np.ndarray, g2s) -> np.ndarray:
 
 
 # ----- Non-identity SHAPE-TRANSFORM bake -------------------------------------
-# A SKINNED mesh must carry an IDENTITY NiAVObject (geometry) transform -- the
-# engine ignores that transform for skinned geometry and positions verts purely
-# from the skin (bones + skin-to-bone). Some source meshes were authored with a
-# SCALE (and/or rotation) baked into the geometry transform instead of the verts
-# -- e.g. Vigilant "Shaokhan" armor at scale 0.0729 (verts ~13.7x too large -> the
-# converted body rendered flung to z~1480, off-screen = "invisible/static"), or
-# "Pelinal" arms at 6.86 (verts ~6.9x too small -> collapsed). The converter
-# previously copied that transform verbatim (createShapeFromData carries it via
-# `props`), so the defect survived conversion. Fix: bake the full transform into
-# the verts/normals, adjust each skin-to-bone by its inverse so the BIND is
-# preserved exactly, and emit an IDENTITY transform. NO-OP for the identity
-# transforms normal armor ships with (so zero risk to working conversions).
-# Math validated on the real meshes (bind invariant STB'@(T@v) == STB@v). #scalebake
+# Skinned meshes must carry an identity NiAVObject (geometry) transform — the
+# engine ignores it for skinned geometry and positions verts from bones only.
+# Source meshes sometimes bake a non-identity SCALE or ROTATION into the geometry
+# transform instead of the verts (e.g. Vigilant "Shaokhan" at scale 0.0729 ->
+# armor flung off-screen; "Pelinal" arms at 6.86 -> collapsed). Fix: bake the
+# transform into the verts/normals, adjust each skin-to-bone by its inverse to
+# preserve the bind exactly, then emit an identity transform. No-op for the
+# identity transforms that normal armor ships. #scalebake
 
 
 def _shape_bake_matrix(shape):
@@ -747,24 +592,17 @@ def _align_scale_bone_stbs_to_verts(xforms_map, g2s_tb, verts, weights_map,
                                     min_off=30.0, min_gain=8.0):
     """Fix the M6 body-blend reskin's scale-bone coordinate-space mismatch.
 
-    ROOT CAUSE (measured 2026-06-06, ebony/elven cuirass breast+sleeve "break"):
-    the M6 reskin grafts the UBE body's BODY-SPACE skin-to-bone transforms for
-    the 3BA scale/morph bones (Breast01-03, Belly, Butt, FrontThigh, RearThigh,
-    RearCalf, Upperarm/ForearmTwist) onto armor whose verts were stored in the
-    source's SHAPE space (g2s-shifted ~60-65 below the body). The render engine
-    IGNORES the shape-level global_to_skin for skinned UBE armor, so every
-    scale-bone-weighted region (breast, butt, belly, sleeves) skins ~60 below
-    its bone -> sag/collapse. The PRIMARY bones (Spine/Pelvis/Thigh/Calf) keep
-    source-consistent STBs so they render fine -> only the soft-body zones break.
+    The M6 reskin grafts the UBE body's BODY-SPACE skin-to-bone transforms for
+    3BA scale/morph bones onto armor whose verts are in a g2s-shifted shape
+    space. The engine ignores the shape-level g2s for skinned UBE armor, so
+    scale-bone-weighted regions sag/collapse. Primary bones keep source STBs
+    and render fine; only the soft-body zones break.
 
     Per bone: if its weighted verts sit far from it (mean |STB @ vert| > min_off)
-    AND baking g2s^-1 into that bone's STB pulls them back (reduces the mean
-    distance by > min_gain), bake it. SELF-VERIFYING: only touches genuinely
-    mismatched bones; a consistent bone where g2s would make things worse (e.g.
-    Spine2: |11|->|75|) is left untouched. Returns (new_xforms_map, baked_any).
-    When baked_any, the caller leaves global_to_skin at identity -- the
-    correction now lives in the per-bone STBs, matching how correctly-authored
-    armor (e.g. the working Ebony Mail) ships (identity g2s, verts hug bones).
+    AND baking g2s^-1 into that bone's STB reduces the distance by > min_gain,
+    bake it. Self-verifying: only touches genuinely mismatched bones.
+    Returns (new_xforms_map, baked_any). When baked_any, caller leaves
+    global_to_skin at identity so the correction lives in the per-bone STBs.
     """
     pyn = _pynifly()
 
@@ -871,18 +709,14 @@ def _install_skin(new_shape, dst_nif, src_shape, bone_names, xforms_map,
     fill. Caller builds/caps `bone_names`/`xforms_map`/`weights_map` first.
     """
     new_shape.skin()
-    # Preserve armor physics-bone chains (skirt/cape/tail) BEFORE add_bone, so
-    # their nodes keep source transforms+parents instead of collapsing to a flat
-    # identity node at the origin.
+    # Preserve physics-bone chains BEFORE add_bone (source transforms+parents).
     try:
         _precreate_custom_bone_chains(dst_nif, src_shape.file, bone_names)
     except Exception:
         pass
     for bn in bone_names:
         new_shape.add_bone(bn)
-    # Fix the M6 reskin scale-bone space mismatch (breast/butt/belly/sleeve sag
-    # ~60 below body): bake g2s^-1 into mismatched scale-bone STBs, leave g2s
-    # identity. See _align_scale_bone_stbs_to_verts. #breast-stb
+    # Fix scale-bone STB space mismatch: bake g2s^-1 into scale-bone STBs.
     g2s_aligned = False
     if bake_T is None and src_shape.has_global_to_skin:
         xforms_map, g2s_aligned = _align_scale_bone_stbs_to_verts(
@@ -894,28 +728,16 @@ def _install_skin(new_shape, dst_nif, src_shape, bone_names, xforms_map,
                 xf = _adjust_skin_to_bone_baked(xf, bake_T)
             new_shape.set_skin_to_bone_xform(bn, xf)
     if src_shape.has_global_to_skin:
-        # ALWAYS preserve the source global_to_skin -- even when the #breast-stb
-        # STB-bake ran (g2s_aligned). The engine IGNORES g2s for skinned RENDER
-        # (the bake fixes render via the per-bone STBs), but it DOES use g2s to
-        # position the shape's bounding sphere in world. The bound is computed
-        # from the stored verts, which for an offset-g2s shape stay in SHAPE space
-        # (elven cuirass top: mean z ~ -18; source g2s lifts the bound +120 to the
-        # torso). Leaving g2s identity left the cull bound ~120u BELOW the rendered
-        # geometry, so the shape -- and the body it covers -- frustum-culls when
-        # the camera zooms in close ("top/armored body invisible up close").
-        # Restoring the source g2s fixes the bound and does NOT move render.
-        # #breast-stb-bound
+        # Preserve source g2s even after STB-bake. The engine ignores g2s for
+        # skinned render but uses it to place the bounding sphere. An identity g2s
+        # on an offset-g2s shape puts the cull bound ~120u below the geometry ->
+        # frustum-culled when the camera zooms in (invisible torso/body up close).
         new_shape.set_global_to_skin(src_shape.global_to_skin)
-    # Genital-anatomy weights resolve to the origin on UBE actors (floor spike) ->
-    # strip them; then fill any now-zero-weight verts so nothing spikes to (0,0,0).
-    # #wolf-greaves #zeroweight
+    # Strip genital weights (spike to origin on UBE), then fill zero-weight verts.
     weights_map = _strip_genital_weights_map(weights_map)
-    # Soft-body jiggle (breast/butt/belly) the converter grafted destabilises
-    # physics garments and collapses rigid leg plates on the UBE actor. On a
-    # physics GARMENT (skirt/cloth chain present) strip the GRAFTED jiggle from
-    # EVERY shape -> reverts to the gold skinning that holds the chain (the dwarven
-    # pull fix); on plain armour strip leg-plates only (keeps torso conformance).
-    # #legplate-jiggle #garment-softbody-strip
+    # Strip jiggle weights (breast/butt/belly) that destabilise physics garments
+    # or collapse rigid leg plates on UBE actors. Full-garment strip for chains;
+    # leg-plates only for plain armour.
     weights_map = _strip_jiggle_weights_map(
         weights_map,
         src_bones=set(src_shape.bone_names or []),
@@ -1427,29 +1249,19 @@ def clear_armor_outside_body(
     adaptive_factor: float = ADAPTIVE_CLEARANCE_MORPH_FACTOR,
     adaptive_cap: float = ADAPTIVE_CLEARANCE_MORPH_MAX,
 ) -> np.ndarray:
-    """FINAL anti-poke pass (#175): push each armor vert OUT of the body so the
-    actor's live morph can't punch through. PUSH-OUT ONLY (additive; never pulls
-    cloth in), measured against the (injected) UBE body -- which is always
-    present with valid normals -- so unlike the source-correspondence conform it
-    ALWAYS lands, and (called last) nothing undoes it.
+    """Final anti-poke pass: push each armor vert out of the body so the
+    actor's live morph can't punch through. Push-out only; never pulls cloth in.
+    Measured against the injected UBE body (always present with valid normals)
+    so it always lands, and called last so nothing undoes it.
 
-    Each vert is cleared to its required clearance over the WORST (closest) body
-    vert in a local neighbourhood (so a nipple/belly bulge that pokes past the
-    fabric is caught even when a flatter body vert is nearest).
+    Each vert is cleared over the WORST body vert in a local neighbourhood so a
+    nipple/belly bulge is caught even when a flatter vert is nearest.
 
-    ADAPTIVE clearance (2026-06-10) when `morph_amplitude` (the body's per-vert
-    outward morph map, same one inflate_armor_outward uses) is supplied: the body
-    only GROWS at runtime where that amplitude is high (breast/belly/butt), so the
-    required clearance = clip(adaptive_base + adaptive_factor*amp, adaptive_base,
-    adaptive_cap). STATIC zones (sternum, back, sides, a thick coat over a non-
-    morphing region) drop to the z-fight floor `adaptive_base` (~0.25) = the armor
-    hugs the body again instead of floating off it; only genuine morph zones keep
-    the big standoff (capped at `adaptive_cap`). The amplitude used is the WORST
-    (max) among the in-radius neighbours so a high-morph nipple tip still drives
-    the clearance even when the nearest body vert is flat. Without a morph map it
-    FALLS BACK to the legacy fixed clearance: `flat_clear` everywhere, ramping to
-    `bust_clear` by Breast03 nipple weight in the bust Z-band. Verts far from the
-    body (> max_body_dist) are untouched (don't bulge a free-hanging drape)."""
+    With `morph_amplitude`: adaptive clearance scales with per-vert outward
+    amplitude — tight in static zones (sternum/back/sides, drops to adaptive_base),
+    full clearance only where the body actually grows at runtime (breast/belly/butt,
+    up to adaptive_cap). Without it, falls back to fixed flat_clear + bust-zone ramp.
+    Verts > max_body_dist from the body are untouched."""
     from scipy.spatial import cKDTree
     v = np.asarray(verts, dtype=np.float64)
     bv = np.asarray(body_verts, dtype=np.float64)
@@ -1674,8 +1486,7 @@ def validate_dst_nif(dst_path: "Path",
 
     name = dst_path.name
 
-    # Per-shape weight / bone-count checks. We iterate each skinned
-    # shape and aggregate per-vert weight stats.
+    # Per-shape weight / bone-count checks.
     for s in nf.shapes:
         bones = s.bone_names or []
         if not bones:
@@ -1692,9 +1503,7 @@ def validate_dst_nif(dst_path: "Path",
                     per_vert_sum[idx] += w
                     per_vert_count[idx] += 1
 
-        # Unweighted verts: skinned shape but specific vert has no
-        # bones with non-zero weight. Those verts render at bone
-        # origin (spike artifacts).
+        # Zero-weight verts render at bone origin (spike artifacts).
         unweighted = int((per_vert_count == 0).sum())
         if unweighted > 0:
             warnings.append(
@@ -1702,9 +1511,7 @@ def validate_dst_nif(dst_path: "Path",
                 f"bone weight (spike risk)"
             )
 
-        # Over-4 influences: Skyrim hard caps at 4 bone weights per
-        # vert. Exceeding this can crash the game or silently drop
-        # weights at load time.
+        # Skyrim hard cap: 4 bone weights per vert.
         over_4 = int((per_vert_count > 4).sum())
         if over_4 > 0:
             warnings.append(
@@ -1724,13 +1531,9 @@ def validate_dst_nif(dst_path: "Path",
                     f"have weight sum != 1.0 (worst delta {worst:.3f})"
                 )
 
-        # Non-identity geometry-transform SCALE on a SKINNED shape: the engine
-        # ignores the NiAVObject transform for skinned meshes, so a leftover
-        # scale renders the shape at the wrong size — flung off-body (invisible/
-        # static) or collapsed. `_copy_shape`'s #scalebake bakes this into the
-        # verts and emits an identity transform; this flags any shape that
-        # slipped through (e.g. a verbatim copy whose re-author failed) so it
-        # shows up in the conversion log instead of only in-game.
+        # Non-identity scale on a skinned shape: the engine ignores NiAVObject
+        # transform for skinned meshes, so it renders at the wrong size.
+        # _copy_shape bakes this; flag any that slipped through.
         try:
             _tscale = float(s.transform.scale)
             if abs(_tscale - 1.0) > 1e-3:
@@ -1805,11 +1608,8 @@ def validate_dst_nif(dst_path: "Path",
     except Exception:
         pass
 
-    # BODYTRI shape-name cross-check: if a BODYTRI is attached, its
-    # TRI's shape entries should match shape names in the NIF.
-    # Entries with no matching shape are ignored by NioOverride at
-    # runtime — usually harmless waste but signals stale/mismatched
-    # TRI data.
+    # BODYTRI cross-check: TRI shapes must match NIF shape names.
+    # Unmatched entries are silently ignored by NioOverride at runtime.
     if tri_path is not None and tri_path.is_file():
         try:
             from .tri import TriFile
@@ -1825,11 +1625,8 @@ def validate_dst_nif(dst_path: "Path",
         except Exception as e:
             warnings.append(f"{name} :: TRI validation failed: {e!r}")
 
-    # HDT-SMP XML cross-check: if the NIF has a `HDT Skinned Mesh
-    # Physics Object` extra-data string, verify the referenced XML
-    # exists, parses, and only references bones that are actually
-    # in the NIF's skeleton. Misconfigured XMLs make HDT-SMP no-op
-    # silently (cloth doesn't follow body, body clips through).
+    # HDT-SMP XML cross-check: verify the referenced XML exists, parses,
+    # and only references bones in the NIF skeleton.
     try:
         hdt_xml_rel: str | None = None
         for ed in nf.rootNode.extra_data():
@@ -2069,17 +1866,11 @@ def convert_nif(
     nif = nif_io.load_nif(src_path)
     body_names, armor_names = classify_shapes(nif)
 
-    # Heeled boots/shoes carry their heel-height as a NiFloatExtraData named
-    # "HH_OFFSET" (NiOverride / HDT High Heels). pynifly CANNOT read
-    # NiFloatExtraData ("Unknown block type") so it silently DROPS it on load —
-    # every mesh we rebuild loses the heel and the boot sinks into the ground.
-    # It's unpreservable through the pynifly pipeline. So for a HEELED, NON-BODY
-    # piece, SKIP mesh conversion entirely: the ESP patcher then keeps the
-    # ORIGINAL mesh (heel data intact) and just adds the UBE races (the
-    # passthrough path). Feet barely differ CBBE<->UBE, so losing morph-scaling
-    # is negligible next to a broken heel. Body-slot items still convert (a heeled
-    # full bodysuit is vanishingly rare, and a CBBE torso on a UBE actor is worse
-    # than a non-scaling foot). Raw byte-scan because pynifly already dropped it.
+    # HH_OFFSET is a NiFloatExtraData that pynifly silently drops on load.
+    # For non-body heeled pieces: skip mesh conversion so the patcher keeps the
+    # original mesh (heel intact) and only adds UBE races. Feet barely differ
+    # CBBE<->UBE so losing morph-scaling is negligible vs a broken heel.
+    # Raw byte-scan because pynifly already dropped the block.
     _BODY_SLOT_BIT = 1 << (32 - 30)
     _hh_transplant_value = None  # heel offset (float) to re-inject after convert
     if not body_names and not (biped_slots & _BODY_SLOT_BIT):
@@ -2089,13 +1880,10 @@ def convert_nif(
         except OSError:
             _heeled = False
         if _heeled:
-            # Heeled boot/shoe: the heel is a NiFloatExtraData "HH_OFFSET" that
-            # pynifly silently drops on load. We CONVERT the boot (UBE-shaped)
-            # and TRANSPLANT the heel block back at the binary level after all
-            # pynifly saves (hh_offset.transplant_hh_offset, called at the very
-            # end of this function). If our binary parser can't read the source
-            # value reliably, fall back to ESP-only: skip conversion + delete any
-            # stale converted mesh so the patcher keeps the original (heeled) one.
+            # Convert the boot normally and transplant the HH_OFFSET block back
+            # at the binary level after all pynifly saves. If the binary parser
+            # can't read the source value, fall back to ESP-only (skip + delete
+            # stale mesh so the patcher keeps the original heeled mesh).
             from . import hh_offset
             _hh_transplant_value = hh_offset.read_hh_offset(src_path)
             if _hh_transplant_value is None:
@@ -2112,14 +1900,10 @@ def convert_nif(
                 )
             # else: convert normally; transplant the heel at the very end.
 
-    # Exposed body skin baked into a body-slot armor (an open-cleavage corset's
-    # breast/cleavage skin slice, etc.): replace it with the injected full UBE
-    # body — drop the partial skin slice and inject the whole UBE BaseShape — so
-    # the exposed skin IS the real body (seamless to the neck, morphing as one
-    # unit) instead of a static CBBE-shaped patch. Routes to the SAME phase-2
-    # body-swap used for full inline bodies; the slice goes in the drop set.
-    # Only for body-slot items (slot 32 hides the actor body, so the armor must
-    # provide it) — or when the slot is unknown (direct convert_nif calls).
+    # Exposed body skin baked into a body-slot armor (open-cleavage breast/belly
+    # skin slice): drop the partial slice and inject the full UBE BaseShape so
+    # exposed skin IS the real body. Routes to phase-2 body-swap; body-slot items
+    # only (slot 32 hides the actor body) or unknown slot (direct calls).
     exposed_skin_names: list[str] = []
     if (ube_body_ref_path is not None and not body_names
             and (not biped_slots or (biped_slots & _BODY_SLOT_BIT))):
@@ -2170,17 +1954,10 @@ def convert_nif(
         # Phase 1 = no inline body shape to swap, so just copy armor
         # shapes through. Two paths:
         #
-        # (a) Body-aware rebuild: if we have a UBE body ref with
-        #     vertex normals, REBUILD each shape via _copy_shape and
-        #     apply snap_armor_outside_body. This fixes static fit
-        #     for CBBE-authored corsets / panties / etc. that would
-        #     otherwise sit inside the larger UBE body and have the
-        #     body skin poke through them. Plus all the same HDT XML
-        #     + BODYTRI + auto-TRI injection as the verbatim path.
-        #
-        # (b) Verbatim file copy (fallback): when no body ref is
-        #     given. Preserves shape data exactly; injects extra-data
-        #     only. Safe but doesn't fix static fit problems.
+        # (a) Body-aware rebuild: if we have a UBE body ref, rebuild each shape
+        #     via _copy_shape with snap_armor_outside_body to fix static fit.
+        # (b) Verbatim file copy (fallback): no body ref; preserves shape data
+        #     exactly but doesn't fix fit.
         body_verts_for_fit = None
         body_normals_for_fit = None
         if ube_body_ref_path is not None:
@@ -2193,19 +1970,13 @@ def convert_nif(
             except Exception:
                 pass
 
-        # Body-delta warp: if we can find a same-weight CBBE base body
-        # + UBE BodySlide-output body with shared 18k topology, prefer
-        # the principled warp over the snap heuristic. The warp moves
-        # each armor vert by the body's local CBBE -> UBE deformation,
-        # preserving the artist's intended drape. Falls back to snap
-        # when the body pair isn't found or topology mismatches.
+        # Body-delta warp: preferred over the snap heuristic when a CBBE+UBE
+        # body pair is available. Moves each vert by the body's CBBE->UBE
+        # deformation, preserving the artist's drape. Falls back to snap.
         cbbe_verts_for_warp = None
         body_delta_for_warp = None
-        # Per-shape recoverable failures (hand/foot warp/inflate raising,
-        # etc.). Defined at this outer scope so it's visible BOTH to the
-        # rebuild-path except handlers below AND the shared return at the
-        # end (reached by the copy path too). Without an outer definition
-        # the handlers would raise NameError and abort the shape loop.
+        # Per-shape recoverable failures. Defined at outer scope so it's
+        # visible to both the rebuild-path handlers and the shared return.
         failed: list[tuple[str, str]] = []
         weight_suf = next(
             (s for s in ("_0", "_1") if src_path.stem.endswith(s)), "_1")
@@ -2236,8 +2007,7 @@ def convert_nif(
             dst_nif_for_fit = pyn_lib.NifFile()
             dst_nif_for_fit.initialize("SKYRIMSE", str(dst_path))
 
-            # Body-ref NIF + its BaseShape pynifly object for reskin
-            # (compute_body_blend_skinning needs a real pynifly shape).
+            # Body-ref NIF's BaseShape object for reskin.
             ube_ref_nif_for_reskin, _, _ = _cached_ube_body_verts(
                 Path(ube_body_ref_path))
             ube_base_for_reskin = next(
@@ -2248,14 +2018,10 @@ def convert_nif(
             # Two-pass conversion so z-fight fixup can run across all
             # final verts (see phase-2 for the same pattern).
             shape_jobs_p1: list[dict] = []
-            # Track which body-skin extremity slots the source NIF
-            # provided, so we can drop the CBBE-topology shape and
-            # inject UBE Hands/Feet in its place after the loop.
-            # Gauntlets typically ship a CBBE-3BA `Hands` body-skin
-            # (~6.3k verts) alongside the cloth — when worn, slot 33
-            # hides the actor's UBE Hands and renders this CBBE one
-            # instead, giving the visible CBBE-fingers-with-armor
-            # mismatch. Same logic for boots and `Feet`.
+            # Track which extremity slots the source NIF provides so we can
+            # drop the CBBE-topology Hands/Feet shape and inject UBE ones.
+            # Gauntlets ship a CBBE Hands body-skin alongside the cloth; slot 33
+            # hides the UBE hands and renders the CBBE shape (finger mismatch).
             extremity_slots_to_replace: list[str] = []
             # HDT-SMP per-vertex soft-body cloth (e.g. a soft-body cloth shape on a hand-authored UBE armor)
             # must keep its authored weighting so it can still swing — skip
@@ -2279,49 +2045,23 @@ def convert_nif(
                     continue
                 if not (s.textures or {}):
                     continue  # collision proxies dropped
-                # Per-shape skin->world reconciliation. A shape with an offset
-                # global_to_skin (ebony cuirass -64.7u; paladin/ashkhan gauntlets
-                # & boots ~120u) stores verts far from world; the fit compares to
-                # the world-frame body, so an un-reconciled shape matches the
-                # WRONG anatomy and shears. Fit in WORLD frame (both branches),
-                # restore to skin at output (pass 2). Identity g2s -> no-op.
+                # Reconcile skin<->world: shapes with an offset global_to_skin
+                # store verts far from world-frame body. Fit in WORLD frame,
+                # restore to skin in pass 2. Identity g2s is a no-op.
                 _shape_g2s = _shape_global_to_skin(s)
-                # CRITICAL: hand/foot/glove/gauntlet shapes get NO vertex
-                # modification. Same guard as in convert_nif_phase2 — see
-                # the comment block there. Without this, the body-delta
-                # warp + inflate ops at the top of pass-1 will displace
-                # finger/hand verts by up to 2.6 units (Iron Gauntlets
-                # Hands shape: 3184 of 6374 verts moved).
+                # Gauntlet/boot shapes with fine animation bones get warp+inflate
+                # but with per-vertex extremity masking to protect fingers/toes.
                 if _shape_has_fine_animation_bones(s):
-                    # Boots / gauntlets / hands shapes. We want these
-                    # fully UBE-SHAPED (not CBBE-shaped) so the shell
-                    # conforms to the larger UBE forearm/calf instead of
-                    # clipping through it. So apply the FULL body-delta
-                    # warp (same as body cloth: min_standoff buffer, no
-                    # distance cap) — the whole piece, fingers included,
-                    # follows the CBBE->UBE deformation. Fingers conform
-                    # to the UBE base hand (near-identical to CBBE, so
-                    # negligible movement there) while the wrist/forearm/
-                    # calf shift out to the UBE limb.
-                    #
-                    # The RUNTIME body-morph response is then split per
-                    # vertex below: limb verts get 3BA scale bones (follow
-                    # body sliders), but finger/toe verts are masked out
-                    # via _extremity_vert_mask so body morphs have ZERO
-                    # effect on them. Their finger/thumb/toe bone weights
-                    # stay intact, so finger morphs still work.
-                    # World frame so the warp/inflate match correct anatomy on
-                    # offset-g2s gauntlets/boots (restored to skin in pass 2).
+                    # Apply the full body-delta warp so the shell conforms to
+                    # the UBE forearm/calf. Limb verts get 3BA scale bones;
+                    # finger/toe verts are masked via _extremity_vert_mask so
+                    # body morphs don't deform digits. World frame (restored in pass 2).
                     hf_orig = _verts_skin_to_world(
                         np.asarray(s.verts, dtype=np.float64), _shape_g2s)
                     hf_verts = hf_orig
                     hf_verts_modified = False
-                    # Per-vertex extremity fraction drives the warp falloff:
-                    # forearm/calf (fraction~0) get the FULL CBBE->UBE warp so
-                    # they conform to the UBE limb; fingers/toes (fraction~1)
-                    # stay put (the UBE ref has no hand/foot mesh, so warping
-                    # digits melts them); the wrist blends. See
-                    # _extremity_vert_fraction.
+                    # Extremity fraction: forearm/calf(~0)=full warp;
+                    # fingers/toes(~1)=no warp (UBE has no digit mesh); wrist blends.
                     hf_ef = _extremity_vert_fraction(s, len(hf_orig))
                     if (cbbe_verts_for_warp is not None
                             and body_delta_for_warp is not None):
@@ -2432,19 +2172,9 @@ def convert_nif(
                             ube_body_normals=body_normals_for_fit,
                             min_standoff=ARMOR_TO_SKIN_BUFFER,
                         )
-                        # Post-warp inflation: replicates BodySlide's
-                        # build-time outward puff-out. Without it,
-                        # revealing armor sits at source CBBE drape
-                        # (typically 1-2u above body) which is the
-                        # minimum-safe distance the SOURCE author
-                        # chose. UBE bodies tend to be morphed bigger
-                        # than CBBE base, so body morphs at runtime
-                        # can grow past that minimum and nipples/skin
-                        # poke through cloth. The inflation adds
-                        # ~0.4u additional standoff (with falloff so
-                        # far-from-body verts don't get pushed). The
-                        # magnitude is slot-aware — see
-                        # `_slot_aware_inflation_magnitude`.
+                        # Post-warp inflation: adds standoff so body morphs don't
+                        # grow past the author's CBBE drape and poke through cloth.
+                        # Magnitude is slot-aware; see _slot_aware_inflation_magnitude.
                         _infl_mag = _slot_aware_inflation_magnitude(
                             biped_slots, shape=s)
                         if _infl_mag > 0 and body_verts_for_fit is not None:
@@ -2462,31 +2192,22 @@ def convert_nif(
                                 )
                             except Exception:
                                 pass
-                        # Groove-smooth: flatten warp-induced displacement
-                        # grooves on body-conforming armor (breast "indent
-                        # lines" where tight armor stretches over the bigger
-                        # UBE bust). Roughness-weighted + gated to near-body
-                        # verts, so loose/decorative shapes are untouched.
+                        # Groove-smooth: flatten warp-induced indent grooves on
+                        # tight bust cloth. Near-body verts only; decorative shapes unaffected.
                         snapped = _smooth_warp_grooves(
                             sv_world, snapped, body_verts_for_fit)
                     else:
-                        # Legacy fallback when CBBE base body isn't
-                        # available — push inside-body verts outward
-                        # along UBE normals.
+                        # Legacy fallback: no CBBE base body; push inside-body verts
+                        # outward along UBE normals.
                         snapped = snap_armor_outside_body(
                             sv_world,
                             body_verts_for_fit,
                             body_normals_for_fit,
                         )
-                    # #177: keep self-simulated cloth (custom physics-chain
-                    # bones: skirt/belt/cape) at its SOURCE position so it stays
-                    # aligned with its chain bones (recreated at source bind).
-                    # The warp/inflate above move the cloth onto UBE while the
-                    # bones stay at source -> cloth offset from its OWN bones ->
-                    # SMP rest pose wrong -> collapse / fall through. Per-vertex
-                    # (chain-weight fraction), so a part-physics part-body shape
-                    # (skirt+chest) keeps the body/chest warped. Pass-1 runs in
-                    # the shape's local space, so the source is s.verts.
+                    # Keep chain-bone cloth (skirt/belt/cape) at SOURCE position so
+                    # it stays aligned with its chain bones; warping it onto UBE
+                    # while bones stay at source breaks the SMP rest pose.
+                    # Per-vertex (chain-weight fraction) so hybrid shapes still work.
                     if snapped is not None:
                         # source_verts must match snapped's frame (world).
                         snapped = _physics_chain_nowarp_blend(s, sv_world, snapped)
@@ -2506,50 +2227,20 @@ def convert_nif(
                         and not _shape_is_head_dominant(s)
                         and not _shape_has_hdt_smp_rigging(s, _body_bone_set)):
                     try:
-                        # World-frame verts so reskin matches correct anatomy.
                         verts_for_reskin = (snapped if snapped is not None
                                             else sv_world)
-                        # Slot-aware conformance band: body-fitted armor
-                        # (slot 32 + legs) tracks the body's skeleton over a
-                        # wider shell so it bends WITH the body during motion
-                        # (no body-poke-through); skirts keep the narrow band.
+                        # Slot-aware conformance band: body-fitted armor (slot 32+legs)
+                        # uses a wider band so it bends WITH the body; skirts keep narrow.
                         _rn_p1, _rf_p1 = _slot_aware_reskin_band(biped_slots)
                         bones, xforms_map, weights_map = compute_body_blend_skinning(
                             verts_for_reskin, s, ube_base_for_reskin,
                             near_dist=_rn_p1, far_dist=_rf_p1,
                         )
-                        # Universal scaling pass: add 3BA scale-bone
-                        # weights so the armor follows body sliders
-                        # even when its verts are too far from the
-                        # body for the M6 blend to reach them. This
-                        # is what makes hanging cloth (loincloths,
-                        # skirts, draped tabards) scale with sliders.
-                        # Slot 49 cloth (hanging hems) gets an extended
-                        # reach so far-hanging hem verts still pick up
-                        # scale weight — see
-                        # `_slot_aware_scale_bone_reach`.
-                        # Add 3BA scale-bone weights to ALL reskinned cloth. The
-                        # cloth shapes carry NO per-shape BODYTRI (single carrier
-                        # is the body shape, #114), so they do NOT morph via the
-                        # per-armor TRI — the scale bones are their ONLY runtime
-                        # body-tracking layer (we don't bake the preset per-cloth
-                        # like a BodySlide build does). Without them the cloth
-                        # sits at the base UBE shape while the body morphs to the
-                        # user's preset = "extremely far from body". The 78-bone
-                        # cap (`_cap_skin_bone_count`) is the universal backstop
-                        # for the rare dense suit that overruns the GPU palette;
-                        # it ranks by LOCAL dominance so physics/skirt bones are
-                        # kept and only thin scale tails drop. [reverts #164/#166]
-                        #
-                        # EXCEPTION — exposed body skin baked into the armor
-                        # (open-cleavage breast/belly/butt skin). It already
-                        # got the body's graduated weights from the M6 blend
-                        # above (it sits ON the body, blend==1), so it co-moves
-                        # with the nude body. Adding scale bones here MAX-
-                        # propagates extra breast/butt weight onto it, making it
-                        # over-inflate vs the real body under a slider and poke
-                        # through the corset. Detect (geometry: ~all verts on
-                        # the body) on the PRE-warp source verts and skip.
+                        # Add 3BA scale-bone weights so cloth follows body sliders.
+                        # Cloth shapes carry no per-shape BODYTRI; scale bones are
+                        # their ONLY runtime body-tracking layer. Skip exposed body-skin
+                        # shapes (already blend==1 from M6; adding scale bones causes
+                        # over-inflation vs the real body under a slider).
                         if (ADD_SCALE_BONES_TO_CLOTH
                                 and not _is_exposed_body_skin_shape(
                                     sv_world, cbbe_verts_for_warp)):
@@ -2571,9 +2262,7 @@ def convert_nif(
 
                 shape_jobs_p1.append({
                     "src": s,
-                    # WORLD-frame verts (so the batch z-fight/cleavage passes,
-                    # which compare to the world-frame body, also match correctly).
-                    # Transformed back to skin in pass 2 via "g2s".
+                    # WORLD-frame verts; transformed back to skin in pass 2 via g2s.
                     "verts": (np.asarray(snapped, dtype=np.float64)
                               if snapped is not None else sv_world),
                     "override_skin": override_skin_p1,
@@ -2634,12 +2323,10 @@ def convert_nif(
                 except Exception:
                     pass  # best-effort
 
-            # Layered-cloth weight sync (re-enabled 2026-05-29, now GATED
-            # by breast-weight fraction so it only touches genuine bust
-            # layers, never decorative attachments — see
-            # _sync_chest_layered_cloth_weights / CHEST_SYNC_MIN_BREAST_FRAC).
+            # Layered-cloth weight sync: gated by breast-weight fraction so
+            # it only touches genuine bust layers (not decorative attachments).
             # Keeps a bra and the fabric over it moving together under
-            # breast-jiggle physics so they don't intersect in motion.
+            # breast-jiggle so they don't intersect in motion.
             if shape_jobs_p1:
                 try:
                     n_synced = _sync_chest_layered_cloth_weights(shape_jobs_p1)
@@ -2672,13 +2359,8 @@ def convert_nif(
                         # DROPPED) instead of swallowing, so the run reports a
                         # partial conversion rather than a clean success.
                         failed.append((s.name, f"DROPPED (copy failed): {_e2!r}"))
-            # Inject UBE Hands/Feet to replace the CBBE-topology body-
-            # skin shapes the source NIF carried (e.g. gauntlet's
-            # 6374-vert `Hands` shape gets replaced by 15500-vert UBE
-            # Hands from the user's preset tangent NIF). Safe because
-            # the gauntlet/boot occupies slot 33/37 → actor's slot
-            # 33/37 ARMA is hidden, no z-fight from the actor's
-            # nude hands rendering alongside.
+            # Inject UBE Hands/Feet to replace the CBBE-topology body-skin shapes.
+            # Safe: slot 33/37 hides the actor's nude hands/feet; no z-fight.
             if extremity_slots_to_replace:
                 weight_suf_for_inj = next(
                     (sx for sx in ("_0", "_1") if src_path.stem.endswith(sx)),
@@ -2692,24 +2374,15 @@ def convert_nif(
                     )
             atomic_nif_save(dst_nif_for_fit, dst_nif_for_fit.filepath)
 
-        # HAND (33) / FOOT (37) slots are RIGID gauntlet/boot armor — NEVER cloth.
-        # Our cloth detector treats a fabric-named shape (e.g. a gauntlet's
-        # "gloves" shape) as a soft-body and generates an HDT-SMP XML for it; at
-        # runtime HDT-SMP then simulates the hand-worn piece as cloth and it
-        # collapses/flies off -> INVISIBLE. The static mesh looks perfectly valid
-        # (which is why this hid through every static check), because the failure
-        # is purely runtime physics. The gold-standard UBE gauntlets AND the
-        # source meshes carry NO HDT XML. So: no cloth physics on hands/feet.
+        # Hand/foot slots are rigid — never cloth. HDT-SMP on gauntlets/boots
+        # collapses them at runtime even though the static mesh looks fine.
+        # Gold-standard UBE gauntlets carry no HDT XML; enforce the same here.
         if biped_slots & (BIPED_SLOT33_BIT | BIPED_SLOT37_BIT):
             hdt_xml = None
         else:
             hdt_xml = _find_hdt_xml_for_armor(src_path)
-            # If the source XML drives physics-CHAIN bones (a physics-chain bone
-            # /Skirt N_NN) our conversion stripped, its reference points HDT-SMP
-            # at bones our NIF lacks -> dead cloth. Regenerate a fresh per-vertex
-            # soft-body XML anchored to the standard body bones we DO have, so
-            # hanging cloth (tabards/skirts) simulates without any BodySlide-
-            # injected chain rig. See _source_hdt_needs_missing_chain_bones.
+            # If source XML references chain bones our conversion stripped, the HDT
+            # cloth goes dead. Regenerate a fresh soft-body XML on standard body bones.
             if hdt_xml is not None:
                 try:
                     _pyn = _pynifly()
@@ -2727,13 +2400,9 @@ def convert_nif(
                             hdt_xml = _regen
                 except Exception:
                     pass
-            # If no source HDT XML was found, generate a minimal one with
-            # cloth↔body collision shapes. Returns None only if the NIF has
-            # no cloth carriers at all (nothing to simulate). A cloth-only
-            # NIF with no body proxy (slot-49 skirt/tabard) still gets a
-            # valid cloth-only soft-body XML — the cloth collides with the
-            # actor body's "body" tag at runtime. See
-            # `_generate_hdt_xml_for_dst` docstring + src/hdt_xml_gen.py.
+            # No source HDT XML: generate a minimal one. Returns None only if the
+            # NIF has no cloth carriers. Slot-49 cloth gets a cloth-only XML that
+            # collides with the actor body's "body" tag at runtime.
             if hdt_xml is None:
                 hdt_xml = _generate_hdt_xml_for_dst(dst_path)
 
@@ -2750,19 +2419,12 @@ def convert_nif(
             pass
         bodytri_path = None
         auto_tri_dst_phase1: Path | None = None
-        # Carrier shape name is set during BODYTRI injection below and
-        # later passed to generate_armor_tri so the TRI lists the
-        # carrier first (matches hand-authored UBE convention).
+        # Carrier shape name is set during BODYTRI injection below and passed to
+        # generate_armor_tri so the TRI lists the carrier first.
         carrier_name_for_tri: str | None = None
-        # HANDS (33) and FEET (37) BOTH get a BODYTRI / auto-TRI so gauntlets and
-        # boots conform to the UBE wrist/forearm + calf/ankle. The old fear was
-        # finger/toe distortion (#127), but the auto-TRI path below dampens
-        # per-vert morph by _extremity_vert_fraction (#147): finger/toe verts get
-        # ~0 morph while wrist/forearm/calf verts follow body sliders. These were
-        # gated off under the since-DISPROVEN "BODYTRI/HDT on hand-foot = invisible"
-        # theory -- the real invisibility cause was a missing _0/_1 weight partner,
-        # NOT the BODYTRI. HDT cloth physics STAYS gated off for both hand+foot
-        # (rigid pieces; the source meshes carry no HDT) via the slot gate above.
+        # Hands/feet slots get BODYTRI + auto-TRI: extremity verts are damped via
+        # _extremity_vert_fraction so fingers/toes don't distort under body morphs.
+        # HDT cloth stays gated off for hand/foot (rigid; no HDT in source) above.
         if armor_relpath is not None and ube_body_ref_path is not None:
             # Always auto-generate the BODYTRI / TRI from CBBE source +
             # UBE target shape — see module-level note above the
@@ -2871,14 +2533,6 @@ def convert_nif(
             except Exception:
                 pass  # injection is best-effort; copy already done
 
-        # (Removed 2026-05-29) Cloth-count reduction was here. It was
-        # built under the wrong premise that skee has a ~9-shape-per-NIF
-        # morph cap. Real cause was our PIRT TRI writer truncating to 9
-        # via the shape-count header field (#139). The merge function
-        # remains DEFINED in this file for now as dead code; once
-        # #141 is acted on it can be ripped entirely. TRI now lists all
-        # of the NIF's shapes verbatim with no truncation.
-
         # M8 phase-1 auto-TRI generation. Runs after NIF copy + BODYTRI
         # injection. Loads the destination NIF, reads armor-shape verts,
         # propagates UBE body OSD deltas via K-NN, writes the TRI at
@@ -2897,39 +2551,18 @@ def convert_nif(
                         dst_check = pyn.NifFile(filepath=str(dst_path))
                         armor_shape_verts: dict[str, np.ndarray] = {}
                         body_in_dst: set[str] = set()
-                        # Per-vert extremity fractions per shape. Long
-                        # sleeves / thigh-high boots that span hand/foot
-                        # AND limb regions need PER-VERT morph dampening
-                        # (finger/toe verts get ~0, limb verts get full
-                        # morph). Without this, the whole shape is either
-                        # excluded (current behavior - sleeve doesn't
-                        # follow body morph, arm clips through) or
-                        # included entirely (fingers deform). #147 fix.
+                        # Per-vert extremity fractions: finger/toe verts get ~0 morph;
+                        # forearm/calf verts get full morph. Handles long sleeves/boots
+                        # that span both regions without deforming digits.
                         armor_vert_ef: dict[str, np.ndarray] = {}
                         for s in dst_check.shapes:
                             if s.name in UBE_BODY_INJECT_NAMES:
                                 body_in_dst.add(s.name)
                                 continue
-                            # Include EVERY armor shape in the TRI. The
-                            # per-vert extremity-fraction dampening below
-                            # scales each vert's propagated morph delta by
-                            # (1 - frac), so finger/toe verts (frac~1)
-                            # get near-zero morph (matching the nude
-                            # actor's separate Hands/Feet meshes) while
-                            # forearm/calf/upper-arm sleeve verts (frac~0)
-                            # get full morph (so long-sleeve gauntlets and
-                            # thigh-high boots actually follow body
-                            # sliders). Replaces the prior all-or-nothing
-                            # `_shape_is_extremity_dominant` exclusion,
-                            # which dropped long sleeves whose hand
-                            # portion outweighed the sleeve portion (e.g.
-                            # a long-sleeve shape on a hand-authored UBE armor at 66% extremity).
-                            # Body-space offset (shape transform) so the morph KNN
-                            # matches the right body region for shapes authored in
-                            # a shifted space (e.g. elven cuirass top at Z=-49 +
-                            # +120 transform -> else "top half doesn't scale").
-                            # BodyMorph is index-based, so the per-vert deltas
-                            # still apply correctly to the local-space mesh.
+                            # Include every armor shape; per-vert extremity fraction
+                            # scales morph delta by (1-frac) so digits get ~0 morph.
+                            # Body-space offset applied so morph KNN matches the right
+                            # body region for shapes with non-identity transforms.
                             armor_shape_verts[s.name] = (
                                 np.asarray(s.verts, dtype=np.float64)
                                 + shape_body_offset(s))
@@ -2960,12 +2593,9 @@ def convert_nif(
                 # rather than swallow, so "armor doesn't conform" is visible.
                 failed.append(("auto-TRI", f"body-morph unavailable: {_e_tri!r}"))
 
-        # Unconditional VirtualBody-hidden pass. Phase 1's verbatim
-        # copy path doesn't enter the HDT/BODYTRI conditional block
-        # above, so source-inherited VirtualBody shapes never had
-        # their Hidden bit set. Catch them here. Cheap no-op when
-        # VirtualBody isn't present in the dst (which is the common
-        # case — body-region NIFs have it, accessory NIFs don't).
+        # Unconditional VirtualBody-hide: the verbatim copy path skips the
+        # HDT/BODYTRI block so source-inherited VirtualBody shapes need a second
+        # chance here. No-op when VirtualBody isn't present.
         try:
             pyn_for_vb = _pynifly()
             nf_for_vb = pyn_for_vb.NifFile(filepath=str(dst_path))
@@ -2974,42 +2604,28 @@ def convert_nif(
         except Exception:
             pass  # best-effort; doesn't break the conversion
 
-        # Multi-partition collapse (post-save reload pass) — see
-        # `_normalize_partitions_on_disk`. Runs after the VirtualBody
-        # save so it operates on the final on-disk NIF.
+        # Multi-partition collapse — see _normalize_partitions_on_disk.
         _normalize_partitions_on_disk(dst_path)
 
-        # FINAL HDT-SMP physics pass — must run LAST so the extra-data
-        # survives (earlier round-trips were dropping it). Prefers the
-        # source armor's authored XML (real skirt/tassel/flap chains).
-        # SKIP for hand/foot slots: gauntlets/boots are rigid, never cloth
-        # (cloth physics on them collapses the piece at runtime). See the
-        # hdt_xml gate above + the gauntlet-invisibility root cause.
+        # FINAL HDT-SMP physics pass — must run LAST so extra-data survives
+        # earlier round-trips. Skip hand/foot: cloth physics collapses them.
         if not (biped_slots & (BIPED_SLOT33_BIT | BIPED_SLOT37_BIT)):
             try:
                 _finalize_hdt_physics(dst_path, src_path)
             except Exception:
                 pass
 
-        # Verbatim-copied NIFs (no body fitting — gauntlets/boots/helmets)
-        # carry the source author's raw block structure, which Skyrim's
-        # renderer can reject on a converted/re-pathed armor (the
-        # "invisible even when worn alone" symptom). Re-author them from
-        # scratch so they get the same clean pynifly-authored structure as
-        # the body shapes that render. See _reauthor_nif_fresh.
+        # Verbatim-copied NIFs carry raw block structure the renderer can reject.
+        # Re-author for a clean pynifly structure identical to body shapes.
         if not use_rebuild:
             try:
                 _reauthor_nif_fresh(dst_path)
             except Exception:
                 pass
 
-        # Optional param-hardening LAST (gated): _reauthor + the finalize
-        # passes above can re-emit the authored XML un-hardened, so re-apply
-        # the param clamp here. Idempotent. NOTE: do NOT re-run
-        # _harden_hdt_xml_for_fsmp here — re-pruning the copy-path armor's XML
-        # caused working cuirasses (dwarven/steel/elven) to regress; the
-        # in-_finalize prune pass is the only one (matches pre-regression
-        # behaviour where _reauthor's re-emit left copy-path XML intact).
+        # Param-hardening LAST (gated, idempotent). Do NOT re-run
+        # _harden_hdt_xml_for_fsmp here — re-pruning copy-path XML caused
+        # cuirass regressions; only the in-_finalize prune runs.
         if HARDEN_AUTHORED_PHYSICS or STATIC_CHAINS:
             try:
                 _hp_stem = dst_path.stem
@@ -3041,12 +2657,9 @@ def convert_nif(
         if val_warnings:
             reason_parts.extend(val_warnings)
 
-        # Heeled boot: re-inject the HH_OFFSET heel block NOW — this must be the
-        # VERY LAST write, after every pynifly save (reauthor / normalize / hdt
-        # all drop NiFloatExtraData). If the binary transplant can't safely run
-        # (parser won't round-trip this NIF), fall back to the original source
-        # mesh so the !UBE path still has a working heeled boot (heel intact,
-        # just CBBE-shaped) rather than a heel-less converted one that sinks.
+        # Heeled boot: re-inject HH_OFFSET as the VERY LAST write — every pynifly
+        # save drops NiFloatExtraData. If transplant fails, fall back to original
+        # source mesh so the boot at least has a working heel (CBBE-shaped).
         if _hh_transplant_value is not None:
             from . import hh_offset
             if hh_offset.transplant_hh_offset(dst_path, _hh_transplant_value):
@@ -3363,18 +2976,11 @@ def inflate_armor_outward(
 
 # ---------- Feminize male-only armor on the female UBE body ---------------
 #
-# BUILT 2026-06-04, NOT YET WIRED into convert_nif (FEMINIZE_MALE_ARMOR=False).
-# Male-only armor (a MOD2 male model with no female MOD3) falls back to the male
-# mesh on a female UBE actor. The existing snap/inflation pushes the FLAT male
-# chest OUT past the breasts (no poke-through — good) but leaves it sitting as a
-# boxy SLAB ~3-5u off the bust (MEASURED on converted male cuirasses), so it
-# isn't form-fitting. This pass pulls the armor IN to HUG the female contour in
-# the feminine zones (breast/butt/belly/waist), using ONLY the female body (no
-# unreliable male-body reference). It only REDUCES clearance (never pushes out ->
-# can't add poke-through) and never below `target_standoff`. Zone weight comes
-# from the body's outward morph amplitude (the same map adaptive clearance uses),
-# so the static shoulders/back/arms — where male and female are alike — are left
-# untouched. Apply AFTER the normal warp/inflate/snap, for male meshes only.
+# NOT YET WIRED (FEMINIZE_MALE_ARMOR=False). Pulls male-mesh armor inward to
+# hug the female contour in breast/butt/belly/waist zones, using the body's
+# outward morph amplitude as zone weight. Only reduces clearance (can't
+# add poke-through); never below FEMINIZE_TARGET_STANDOFF. Apply AFTER
+# normal warp/inflate/snap, for male meshes only.
 FEMINIZE_MALE_ARMOR = False          # master switch — keep OFF until wired+reviewed
 FEMINIZE_TARGET_STANDOFF = 0.7       # hug clearance the bust/curve conforms to
 FEMINIZE_AMP_THRESHOLD = 1.0         # morph amplitude where conform starts ramping
@@ -3626,49 +3232,27 @@ def _reset_morph_flags(shape) -> None:
         pass
 
 
-# BSLightingShaderProperty Shader_Type that BodySlide-built UBE armor
-# uses uniformly: 0 (Default) — plain albedo + normal + metallic.
-# Source CBBE armors typically ship Shader_Type=1 (Environment Map)
-# for a wet/shiny look on leather and metal. Empirical observation
-# on a different-texture mashup armor: shapes with Shader_Type=1 do NOT get morphed
-# by NioOverride at runtime even when the BODYTRI string, TRI shape
-# entries, and morphable flag bits are all correct. Forcing the
-# shader back to Default unblocks runtime morphing. The visual
-# cost is loss of cubemap reflection — leather/metal look slightly
-# less shiny — which is preferable to armor that doesn't track the
-# body.
-#
-# Shader_Flags_1 bit 7 (0x80) is the matching Environment_Mapping
-# flag; we clear that too so the renderer doesn't try to sample an
-# environment map at render time (would produce visual artifacts).
+# UBE armor uses Shader_Type=0 (Default). CBBE armors often ship Shader_Type=1
+# (Environment Map) which blocks NioOverride morphing at runtime even with correct
+# BODYTRI/TRI/flags. Force to Default; also clear the Environment_Mapping flag bit
+# (0x80) to avoid the renderer sampling a missing cubemap.
 SHADER_TYPE_DEFAULT = 0
 SHADER_FLAGS_1_ENV_MAPPING_BIT = 0x80
 
 
-# SkyPartition slot for slot-32 cuirass body. Hand-built UBE NIFs put
-# every shape under this single partition regardless of which body slot
-# the original CBBE source assigned. Multi-partition cloth shapes
-# (e.g. a vanilla armor a vanilla armorLeggings split into SBP_54 + SBP_38) silently
-# fail to morph via NioOverride; collapsing to a single SBP_32_BODY
-# partition unblocks them. See Task #118 sub-fix A.
+# SkyPartition slot for slot-32 cuirass body. Hand-built UBE NIFs use a single
+# SBP_32_BODY partition. Multi-partition shapes (e.g. leggings split across
+# SBP_54 + SBP_38 inside a slot-32 cuirass) silently fail to morph via
+# NioOverride; collapsing to SBP_32_BODY unblocks them.
 SBP_32_BODY_ID = 32
 SBP_32_BODY_NAME = "SBP_32_BODY"
 
-# Standard biped dismember slots that represent a DISTINCT limb / accessory
-# region and must NEVER be merged into the torso (SBP_32_BODY). Two failure
-# modes if collapsed:
-#   * accessory slots (gauntlet=33, boot=37, helmet=30/31, circlet=42, ...) ->
-#     the game renders nothing in that equip region (invisible armour);
-#   * limb slots that carry their OWN skin partition on a body-spanning shape
-#     (forearms=34 on a long-sleeve body suit) -> collapsing the forearm
-#     partition into SBP_32_BODY corrupts the skin partition's bone palette and
-#     the renderer overruns its bone-matrix buffer = hard CTD on equip. Proven
-#     2026-05-31 on Traveling Mage's `_Fuse00_TMage_Body` (CrashLogger: AVX
-#     vmovdqa overrun in BSBatchRenderer drawing that exact shape; source had
-#     SBP_34_FOREARMS+SBP_32_BODY, our output had collapsed them to one).
-# We deliberately do NOT preserve calves (38) or the modder leg slots — those
-# are the leg-region cloth partitions the morph-routing collapse (#118A) was
-# built to fix, and collapsing them has never crashed.
+# Biped dismember slots that must NOT be merged into SBP_32_BODY.
+# Collapsing accessory slots (gauntlet/boot/helmet) renders that equip region
+# invisible. Collapsing limb slots with their own partition (forearms=34) on a
+# body-spanning shape corrupts the bone palette -> CTD on equip.
+# Calves (38) and modder leg slots are NOT preserved; collapsing them fixes
+# leg cloth partitions without known crashes.
 SBP_HEAD_ID = 30
 SBP_HAIR_ID = 31
 SBP_HANDS_ID = 33
@@ -3678,7 +3262,7 @@ PRESERVE_DISMEMBER_SLOTS = frozenset({
     30,  # head
     31,  # hair
     33,  # hands
-    34,  # forearms  (added 2026-05-31 — the Traveling Mage CTD slot)
+    34,  # forearms
     35,  # amulet
     36,  # ring
     37,  # feet
@@ -3946,28 +3530,10 @@ def _strip_alpha_property(shape) -> None:
 
 
 def _normalize_shader_for_morph(shape) -> None:
-    """DISABLED (no-op). Previously cleared the environment-mapping flag
-    (Shader_Flags_1 bit 7) to "unblock" NioOverride body-morph, under the
-    belief that env-mapped (Shader_Type=1) shapes don't morph.
-
-    That belief was a misdiagnosis: the real morph blocker was the per-NIF
-    shape-count cap, now handled by the atlas merge. In-game confirmation:
-    a mashup armor's env-mapped merged shape morphs correctly. So clearing env
-    mapping was never necessary — and it did active harm:
-
-      * It stripped the reflective shine the source leather relies on,
-        leaving armor looking flat and very dark (worst in interiors).
-      * `save_shader_attributes()` (called here to persist the flag clear)
-        TRUNCATES the BSShaderTextureSet and DROPS the EnvMask (slot 5).
-        That removed the per-pixel reflection mask, so the surviving env
-        mapping applied UNIFORMLY — washing out diffuse on back-facing
-        surfaces and dark indoors. It also meant the atlas builder never
-        saw an EnvMask to combine, so the merged shape had none either.
-
-    Keeping the source shader untouched (env mapping + EnvMap + EnvMask
-    intact) matches how the armor renders in its regular, unconverted
-    form, which is the goal. Left as a no-op (rather than removing the
-    call sites) so the morph-readiness cleanup loop is unchanged.
+    """DISABLED (no-op). The env-map flag (Shader_Flags_1 bit 7) does NOT
+    block NioOverride morphing. The former flag-clear also caused
+    save_shader_attributes() to truncate the BSShaderTextureSet and drop
+    the EnvMask (slot 5). Left as a no-op so call sites are unchanged.
     """
     return
 
@@ -4152,26 +3718,14 @@ def _pick_bodytri_carriers(nif, *, exclude_body: bool = False) -> "list[object]"
     MORPH carrier wants.
 
     Carrier preference (in order):
-      1. BaseShape / 3BA  — body shape, if present. This is what
-         88/93 sampled hand-authored UBE slot-32 NIFs use. Empirical
-         finding: when BODYTRI is on a cloth shape (`Panty`,
-         `3LeatherBeltArms`, etc.) instead of the body, the cloth
-         pieces in the same NIF often DON'T morph in-game despite
-         being listed in the TRI with valid per-shape morph deltas.
-         The a vanilla armor leggings failure (a vanilla armorLeggings TRI entry
-         had full 818 Donaught offsets at mean=1.71u, same as
-         BaseShape, yet didn't visually scale in-game) traced back
-         to BODYTRI being on `Panty`. Moving BODYTRI onto the body
-         shape makes NioOverride pick up the TRI via the body and
-         apply per-name morphs to every shape it lists.
-      2. Cloth shape — for body-less NIFs (slot-49 cloth-only
-         armors like a slot-49 no-body cloth armor). Same selection rules as before
-         (cloth-keyword > vert count, exclude rigid props).
+      1. BaseShape / 3BA — body shape, if present. NioOverride morphs
+         all shapes in the TRI when BODYTRI is on the body shape; on
+         a cloth shape NioOverride often skips other shapes.
+      2. Cloth shape — for body-less NIFs (slot-49 cloth-only armors).
       3. Hand/foot fallback — for gauntlet/boot-only NIFs.
 
-    Both regimes use single-carrier. NioOverride opens the TRI once
-    via the BODYTRI reference, iterates every TRI shape entry, and
-    applies morphs to every same-named NIF shape.
+    Single-carrier: NioOverride opens the TRI once via the BODYTRI
+    reference and applies per-name morphs to every shape in the TRI.
 
     Returns a list with 0 or 1 entry.
     """
@@ -4195,31 +3749,19 @@ def _pick_bodytri_carriers(nif, *, exclude_body: bool = False) -> "list[object]"
         nlow = s.name.lower()
         if any(kw in nlow for kw in NON_CLOTH_SHAPE_KEYWORDS):
             continue
-        # Prefer non-extremity shapes as the carrier so the carrier is
-        # always a shape that IS in the body-morph TRI (the TRI excludes
-        # extremity-dominant hand/foot skins — see the TRI build loops).
-        # Use the strict weight-fraction test, NOT the broad
-        # `_shape_has_fine_animation_bones` name/any-bone test: arm-shell
-        # pieces (Bracers/Guards/Armstrap, <1% extremity weight) make
-        # perfectly good carriers and DO morph, while only the actual
-        # hand/foot skin (Hands_2 97%, Gloves_1 71%) is pushed to the
-        # last-resort fallback.
+        # Use strict weight-fraction test: arm-shell pieces (Bracers, Guards,
+        # <1% extremity weight) are good carriers; only actual hand/foot skin
+        # (Hands_2 97%, Gloves_1 71%) goes to the last-resort fallback.
         if _shape_is_extremity_dominant(s):
             hand_fallbacks.append(s)
             continue
         candidates.append(s)
     if not candidates and not hand_fallbacks:
-        # Last resort: EVERY textured shape was excluded by the rigid-name
-        # keywords. That happens when a garment's name false-positives on a
-        # prop keyword — e.g. the Sand Snake "shoulder straps" (a leather
-        # chest garment) matches "shoulder", which is meant for pauldrons.
-        # A NIF with no carrier never loads its TRI, so NOTHING in it
-        # morphs — strictly worse than putting BODYTRI on a rigid-named
-        # shape (a truly rigid prop has near-zero deltas in the TRI, so the
-        # morph it gains is harmless). Pick the largest textured shape,
-        # preferring non-extremity ones (extremity-dominant skins keep
-        # body deltas off fingers/toes via the TRI build, same as the
-        # hand_fallbacks path below).
+        # Every textured shape was excluded by rigid-name keywords (e.g. a
+        # chest garment named "straps" hits the "shoulder" keyword). A NIF
+        # with no carrier never loads its TRI -> nothing morphs. Pick the
+        # largest textured shape as the carrier (a truly rigid prop has near-
+        # zero deltas so the morph is harmless).
         rigid_named = [
             s for s in nif.shapes
             if (s.textures or {}) and s.name not in BODYTRI_CARRIER_EXCLUDE
@@ -4246,90 +3788,42 @@ def _pick_bodytri_carriers(nif, *, exclude_body: bool = False) -> "list[object]"
     if candidates:
         candidates.sort(key=rank_key)
         return [candidates[0]]
-    # Carrier-of-last-resort: NIF contains ONLY hand/foot/glove/boot
-    # cloth shapes (e.g. a separate gauntlets or boots NIF). Without
-    # a carrier, NioOverride never loads the per-armor TRI and the
-    # shapes don't morph at all. Picking the hand/foot shape itself
-    # is safe HERE because the per-armor TRI for these NIFs only
-    # contains the same hand/foot shape's morph entries — no body
-    # deltas to leak onto fingers.
+    # Carrier-of-last-resort: NIF contains only hand/foot shapes. The per-armor
+    # TRI for these NIFs only contains hand/foot morph entries — no body deltas
+    # leak onto fingers — so picking the hand/foot shape is safe.
     hand_fallbacks.sort(key=rank_key)
     return [hand_fallbacks[0]]
 
 
 # ---------- M6: per-vertex proximity-blend re-skin ----------------------
 #
-# Re-skin armor verts to UBE body bones so that body morphs/animations
-# propagate to the armor at runtime. Per-vertex blend keyed on distance
-# to body surface:
-#
-#   dist < RESKIN_NEAR_DIST           -> 100% body weights (full cloth)
-#   RESKIN_NEAR_DIST <= dist < RESKIN_FAR_DIST  -> linear blend
-#   dist >= RESKIN_FAR_DIST           -> 100% original armor weights (rigid)
-#
-# This sidesteps the per-shape "is this cloth or metal?" classification
-# problem. Pauldrons standing off the body stay rigid; chest fabric
-# hugging the body inherits body skinning automatically; belts in the
-# transition zone get partial blend (which is roughly correct — leather
-# does flex with body movement).
-#
-# Implementation:
-#   1. For each armor vert, KDTree-find nearest body vert + K nearest
-#      for IDW body-weight propagation.
-#   2. Per vert: weights = (1 - blend) * original + blend * body_idw.
-#   3. Add any new bones (body bones not in original armor) to the shape,
-#      then redo the full skin setup (add_bone resets bone info, so we
-#      have to set xforms and weights from scratch).
-#
-# The blend math is tuned so that 0.5 / 2.0 / K=4 covers chest fabric
-# (which typically sits 0.1–0.5 units off the body) without touching
-# pauldrons (typically 3+ units off).
+# Re-skin armor verts to UBE body bones so body morphs/animations propagate
+# at runtime. Per-vertex blend keyed on distance to body surface:
+#   dist < NEAR -> 100% body weights; NEAR..FAR -> linear blend;
+#   dist >= FAR -> 100% original armor weights (rigid).
+# Sidesteps the cloth/metal classification problem: pauldrons stay rigid;
+# chest fabric hugging the body inherits body skinning automatically.
 
 RESKIN_NEAR_DIST = 0.5
 RESKIN_FAR_DIST = 2.0
 RESKIN_K = 4
 
-# ROLLBACK FLAG. The M6 body-blend reskin transfers the UBE body's bone weights
-# to nearby armour verts — INCLUDING the 3BA scale bones (NPC L Breast, Butt,
-# etc.). KEEP FALSE.
-#
-# We briefly set this True (#166) on the theory that the transferred scale bones
-# (a) caused the Traveling Mage equip CTD (over the ~80-bone GPU cap) and
-# (b) double-morphed the Forsworn cloth. BOTH were misdiagnoses, proven wrong by
-# the actual converted meshes after the full run:
-#   (a) The CTD is the per-partition bone cap being exceeded — fixed properly and
-#       universally by `_cap_skin_bone_count`, independent of this flag.
-#   (b) The Forsworn "double" was a second BODY-SKIN shape inside the armour,
-#       fixed properly by the body-skin detection that routes it to the phase-2
-#       body-swap (the output now has a single injected BaseShape). The cloth
-#       shapes carry NO per-shape BODYTRI (the single BODYTRI carrier is the body
-#       shape, #114) — so cloth does NOT morph via the TRI; the scale bones are
-#       its ONLY body-tracking layer. Removing them made every cloth piece sit at
-#       the base UBE shape while the body morphed to the user's preset = the
-#       Forsworn "extremely far from body" + Ruby chest + TMage distortion.
-# So scale bones STAY (see ADD_SCALE_BONES_TO_CLOTH). The cap protects the dense
-# suits. Set True only to A/B test a pure-node-scaling-off configuration.
+# ROLLBACK FLAG — keep False. Excluding scale bones leaves cloth shapes with no
+# body-tracking layer (the TRI carries per-shape deltas, but cloth that has no
+# per-shape BODYTRI relies on scale bones alone). The per-partition bone cap
+# (_cap_skin_bone_count) is the correct fix for GPU-cap CTDs, independent of
+# this flag. Set True only to A/B test a configuration without scale bones.
 RESKIN_EXCLUDE_SCALE_BONES = False
 
-# Wider conformance band for BODY-FITTED armor (slot 32 body + leg slots).
-# After the 2026-05-29 global tighten pulled armor closer to the skin, the
-# body began poking through armor DURING MOVEMENT (not at rest). That's a
-# skinning-divergence problem, not a static-gap problem: beyond
-# RESKIN_NEAR_DIST an armor vert blends back toward the SOURCE author's bone
-# weights, so under animation (knee/hip bend, breast/butt jiggle) it deforms
-# differently from the body and the body swings out through it. The larger old
-# static buffer used to mask this; the tighten exposed it. Fix WITHOUT adding
-# standoff: widen the band so a thicker shell of body-fitted armor FULLY adopts
-# the body's bone weights and bends WITH the body. Flowing cloth (slot-49
-# skirts/loincloths) deliberately KEEPS the narrow default via
-# _slot_aware_reskin_band — over-conforming a skirt makes it cling to the legs
-# instead of draping/simulating.
+# Wider conformance band for body-fitted armor (slot 32 + leg slots).
+# A thicker shell fully adopts body bone weights so it bends with the body
+# during animation. Slot-49 flowing cloth keeps the narrow default via
+# _slot_aware_reskin_band — over-conforming a skirt makes it cling, not drape.
 RESKIN_NEAR_DIST_BODYFIT = 1.2
 RESKIN_FAR_DIST_BODYFIT = 3.5
 
 # Body-fitted biped slots: body(32), forearms(34), calves(38), legs(53-58).
-# (Hands/feet/gauntlets/boots take the separate _shape_has_fine_animation_bones
-# path, not this reskin, so they're intentionally absent here.)
+# Hands/feet/gauntlets/boots take _shape_has_fine_animation_bones path instead.
 _RESKIN_BODY_FITTED_BITS = (
     (1 << (32 - 30)) | (1 << (34 - 30)) | (1 << (38 - 30))
     | (1 << (53 - 30)) | (1 << (54 - 30)) | (1 << (55 - 30))
@@ -4349,58 +3843,31 @@ def _slot_aware_reskin_band(biped_slots: int) -> "tuple[float, float]":
 
 # ----- Scale-bone (morph-driven) reskin --------------------------------
 #
-# 3BA / UBE rig their bodies with dedicated SCALE BONES that the engine
-# scales (not just translates) when body sliders move at runtime:
+# 3BA / UBE use dedicated SCALE BONES (Breast01-03, Belly, Butt, FrontThigh,
+# etc.) that the engine scales when body sliders move. Armor verts skinned to
+# these bones automatically follow body-shape changes — same mechanism as
+# BodySlide-built UBE armor, works for any slot.
 #
-#   - L Breast01/02/03, R Breast01/02/03  -- breast morph cascade
-#   - NPC L Butt, NPC R Butt              -- buttock scale
-#   - NPC Belly                           -- belly inflation
-#   - NPC L/R FrontThigh / RearThigh /
-#     RearCalf                            -- thigh and calf size
-#   - Clitoral1, NPC L/R Pussy02, ...     -- anatomy detail
-#
-# Armor verts skinned to these bones automatically follow body shape
-# changes via standard bone-driven skinning — no NioOverride BODYTRI
-# needed. This is the same mechanism BodySlide-built UBE armor uses,
-# and it works regardless of which slot the armor is on or how shapes
-# are attached.
-#
-# The base M6 reskin pass (above) only transfers bones to armor verts
-# within RESKIN_FAR_DIST (= 2.0) of the body. Hanging cloth pieces —
-# a mashup armor's loincloth, draping skirts, robe panels — sit 2-5
-# units off the body and never get any scale-bone influence under M6.
-# So they stay rigidly skinned to NPC Pelvis / Thigh / Spine, which the
-# engine does NOT scale with sliders, and the user sees the body bulge
-# while the cloth stays put.
-#
-# The post-pass below specifically targets the scale bones with an
-# extended reach (8 units default). It's surgical: only those bones are
-# transferred, with small magnitude that DOESN'T overwhelm the armor's
-# existing rigid-skeleton skinning. Pauldrons at 4u standoff get a few
-# percent on the breast scale bone — invisible if the breast slider is
-# at 0, gently follows if the slider goes big.
+# The base M6 reskin only reaches RESKIN_FAR_DIST (2u). Hanging cloth (loincloth,
+# draping skirt panels) sits 2-5u off the body and misses it. This post-pass
+# targets scale bones with an extended reach — surgical (only those bones, small
+# magnitude) so rigid pauldrons/plates are barely touched while loose cloth follows
+# sliders proportionally.
 SCALE_BONE_KEYWORDS = (
     "breast",
     "butt",
     "belly",
     "frontthigh", "rearthigh", "rearcalf",
-    # NOTE (2026-06-05): genital/anatomy bones (clit/pussy/vagina/anus/nipple)
-    # are DELIBERATELY EXCLUDED. They are HDT-SMP PHYSICS bones, not just morph-
-    # scale bones, and are unstable on the UBE race. The proximity transfer in
-    # add_scale_bone_weights was putting up to 57% of a rigid groin plate's
-    # weight onto them (wolf Greaves: source had 0%), so the body's genital/anus
-    # jiggle dragged the "pants" down and they collapsed. Armor must NEVER track
-    # genital anatomy. See project_physics_cloth_collapse.md.
+    # Genital/anatomy bones (clit/pussy/vagina/anus/nipple) DELIBERATELY EXCLUDED.
+    # They are HDT-SMP PHYSICS bones, unstable on the UBE race. Proximity transfer
+    # was putting up to 57% weight on them for rigid groin plates -> jiggle dragged
+    # the "pants" down. Armor must never track genital anatomy.
 )
 
-# The physics-driven (HDT-SMP jiggle) subset of the scale bones. Distinct from
-# the STATIC leg-shape scale bones (frontthigh/rearthigh/rearcalf), which only
-# scale with sliders and carry no physics. On LEG-ENCASING rigid armor
-# (greaves / leggings / pants / boot shafts) these jiggle bones drag the plate
-# with body motion and collapse it on the UBE race -- the SAME failure as the
-# genital bones, one region up (wolf Greaves waist band: up to 48% butt/belly).
-# Suppressed for leg-dominant shapes (see add_scale_bone_weights); the static
-# leg-shape bones are kept so the armor still follows thigh/calf SIZE sliders.
+# HDT-SMP physics-driven subset of the scale bones (breast/butt/belly jiggle).
+# Distinct from the STATIC leg-shape scale bones (frontthigh/rearthigh/rearcalf).
+# Suppressed for leg-encasing rigid armor (greaves/pants) where jiggle drag
+# collapses the plate; static leg-shape bones are kept for SIZE slider tracking.
 PHYSICS_JIGGLE_SCALE_KEYWORDS = ("breast", "butt", "belly")
 
 
@@ -4422,158 +3889,70 @@ def _is_leg_rigid_bone(bone_name: str) -> bool:
     return any(kw in low for kw in LEG_RIGID_BONE_KEYWORDS)
 
 
-# UPPER-body skeleton bones a physics chain can anchor on. A garment chain that
-# hangs off these (cape/backpack/robe off the torso, hair off the head) needs the
-# NESTED source skeleton tree so FSMP tracks torso/limb motion through it; a chain
-# anchored on the lower body (pelvis/thigh) works FLAT (actor-driven). Used to
-# AUTO-SELECT flat vs nested per armor (#flatchain-auto). Confirmed in-game:
-# TMage (bag/book/bottle off the SPINE) needs nested; elven/wolf (pelvis/thigh
-# skirts) need flat.
+# Upper-body anchor bones: a chain hanging off these (cape off spine, etc.)
+# needs a NESTED skeleton tree so FSMP tracks torso/limb motion through it.
+# Chains anchored on the lower body (pelvis/thigh) work FLAT (actor-driven).
 _UPPER_BODY_ANCHOR_KEYWORDS = ("spine", "neck", "head", "clavicle", "shoulder")
 
 
 def _is_upper_body_anchor(bone_name: str) -> bool:
     low = (bone_name or "").lower()
     return any(k in low for k in _UPPER_BODY_ANCHOR_KEYWORDS)
+
+
 # Whether to add 3BA scale-bone weights to cloth shapes during reskin.
-#
-# KEEP TRUE. These weights make cloth follow the body's shape via bone
-# scaling — the body-tracking layer that, together with the per-armor
-# TRI morphs, keeps cloth glued to the body. Briefly set False ("Test 2")
-# on the mistaken theory that scale weights blocked NioOverride morphing
-# and to "match" the gold-standard vanilla pack. That was wrong on both
-# counts: (1) the actual cloth-morph blocker was the per-NIF morph cap
-# (fixed via TRI ordering + merge), and cloth morphed fine WITH scale
-# bones present ("everything except leggings/skirt"); (2) the gold-stand
-# pack achieves fit by BAKING the preset at BodySlide-build time, which
-# our pipeline does NOT do — so our cloth genuinely needs this runtime
-# tracking layer. Removing it regressed fit (a mashup armor + a slot-49 no-body cloth armor
-# clipping). Hands/feet keep their own scale-bone pass regardless.
+# Keep True — scale bones are the runtime body-tracking layer for cloth that
+# has no per-shape BODYTRI. Our pipeline does not bake a preset at build time,
+# so cloth must track body sliders this way. Hands/feet keep their own pass.
 ADD_SCALE_BONES_TO_CLOTH = True
 
-# A/B-test gate (#nosoftscale): when set, add_scale_bone_weights SKIPS the
-# soft-body JIGGLE scale bones (breast/butt/belly -- PHYSICS_JIGGLE_SCALE_KEYWORDS)
-# while keeping the STATIC leg-shape scale bones (frontthigh/rearthigh/rearcalf).
-# Those jiggle bones are what the gold-standard (2026-05-31) build did NOT graft
-# onto rigid plate, and grafting them is the wolf/dwarven-Greaves drag (confirmed
-# by diff: current dwarven Greaves/body carry real breast/butt/belly weight the
-# old build never added). Read at import so it reaches ProcessPool workers.
+# When set, add_scale_bone_weights skips the physics-driven jiggle bones
+# (breast/butt/belly) while keeping static leg-shape bones. Useful for
+# troubleshooting jiggle-drag collapse on rigid leg armor. Env: CBBE2UBE_NO_SOFTBODY_SCALES.
 NO_SOFTBODY_SCALES = (
     os.environ.get("CBBE2UBE_NO_SOFTBODY_SCALES", "").strip().lower()
     in ("1", "true", "yes", "on")
 )
 
-# Inject a fresh UBE Hands/Feet body-skin shape into gauntlets/boots, replacing
-# the source's CBBE-topology one. RE-ENABLED (2026-06-01): it was wrongly blamed
-# for the gauntlet invisibility and disabled -- but the REAL cause was a missing
-# _0/_1 weight partner (see project memory). With the flag OFF the source body-skin
-# `Hands` shape is DROPPED with no replacement (the loop `continue`s), so the bare
-# hand is INVISIBLE under the gauntlet (user-reported). With it ON we drop the
-# CBBE-topology Hands and inject the user's built UBE hand
-# (meshes/!UBE/Hands/femalehands_tangent_{0,1}.nif) so the exposed skin matches the
-# UBE body. Injection no-ops gracefully if that tangent mesh is absent.
+# Inject UBE Hands/Feet into gauntlets/boots, replacing CBBE-topology extremity shapes.
+# Without this, the source body-skin `Hands` shape is dropped with no replacement
+# and the bare hand is invisible under the gauntlet. No-ops gracefully if the
+# tangent mesh is absent.
 INJECT_UBE_EXTREMITY_REPLACEMENT = True
 
-SCALE_BONE_REACH = 12.0   # world units beyond which no scale weight added.
-                          # 12u (vs the 8u that worked for upper-torso cloth)
-                          # lets abdomen-region armor (e.g. corset at Z=92-94)
-                          # reach NPC Belly's body-side weighted verts
-                          # (Z<=87.5).
+# Scale-bone reach: world units beyond which no scale weight is added.
+# 12u covers the torso including the belly-to-corset gap (Z ~92-94 to Z<=87.5).
+SCALE_BONE_REACH = 12.0
 
-# Slot 49 cloth (loincloths, skirts, hanging tabards) typically hangs
-# 15-25u from the body — past the default 12u reach. Without an extended
-# reach those far hem verts pick up zero scale-bone weight and stay
-# static when the user pushes Big Butt / Hip / FrontThigh sliders.
-# Linear falloff applies (verts at the reach get 0%, verts at d=0 get
-# 100%), so close-to-body skirt verts track 1:1 while hem verts get a
-# smaller-but-nonzero share — enough to grow proportionally with body
-# morph.
-#
-# History: 25.0 -> 15.0 (2026-05-29). After the PIRT shape-count fix
-# (#139), every cloth shape — including hanging skirt panels past TRI
-# position 9 — receives BodyMorph deltas in-game, so scale bones no
-# longer have to be the primary morph-tracking path for far hem verts.
-# 15u covers the torso-down-to-mid-thigh reach (where the body actually
-# grows on butt/hip sliders); hem verts beyond that follow via TRI
-# morphs instead. Cuts the cross-region scale-bone bleed that was
-# pulling skirt-front verts toward NPC L/R Butt on bind-pose alignment.
+# Slot-49 cloth hangs 15-25u from the body. 15u covers the torso-to-mid-thigh
+# range where body grows on butt/hip sliders; hem verts further out follow via
+# TRI morphs instead. Keeps scale-bone reach from pulling skirt-front verts
+# toward NPC Butt via cross-region bind-pose bleed.
 SCALE_BONE_REACH_SLOT49 = 15.0
 
-# Hand/foot (gauntlet/boot) shapes use a TIGHTER reach than torso cloth.
-# These pieces are skin-tight: a boot hugs the calf at <1u, a gauntlet
-# hugs the forearm. The default 12u reach is wide enough to pick up
-# body regions the piece merely GRAZES in the bind pose rather than
-# touches — e.g. a gauntlet's forearm sits ~11u from the hip's butt-
-# weighted verts, so at 12u reach the glove wrongly inherits `NPC L/R
-# Butt` scale weight and the forearm verts get yanked toward the butt
-# when that slider moves. An 8u reach keeps the tightly-hugging
-# legitimate region (boot calf -> RearCalf at <1u; thigh-high boot ->
-# thigh) while rejecting the cross-body bind-pose cross-talk (forearm
-# to hip measured at 11.3u on a heavily-boned armor's gauntlet, comfortably dropped).
-# Net effect: a plain gauntlet (forearm only, no 3BA-scaled region)
-# correctly ends up with ZERO body scale bones — it's purely UBE-
-# shaped via the static warp — while boots still follow calf/thigh.
+# Gauntlets/boots: tighter reach so the forearm doesn't inherit butt scale
+# weight from nearby hip-weighted body verts (~11u away in bind pose).
+# A plain gauntlet correctly gets zero body scale bones; boots still follow
+# RearCalf/thigh at <1u.
 SCALE_BONE_REACH_HANDS_FEET = 8.0
 
-SCALE_BONE_K = 8          # K-NN over body verts for IDW
-SCALE_BONE_MAX_TRANSFER = 0.65  # cloth: at d=0, allow up to this fraction of
-                                # armor vert's total weight to become scale-
-                                # bone influence. Hand-built UBE soft-body cloth
-                                # tops out around 0.76 on scale bones, so
-                                # 0.65 sits a hair below the empirical proven
-                                # ceiling — leaves 35% on rigid bones for
-                                # animation and avoids extreme cross-region
-                                # bleed (a torso vert at d=0 from a butt-
-                                # weighted body vert no longer pulls 95% of
-                                # its weight into NPC Butt).
-                                #
-                                # History: 0.95 -> 0.65 (2026-05-29). The
-                                # old 0.95 was set on the (wrong) theory
-                                # that non-carrier cloth had no other
-                                # morph-response path because shapes past
-                                # TRI position 9 didn't morph. After the
-                                # PIRT shape-count fix (#139) every cloth
-                                # shape gets BodyMorph deltas via the TRI;
-                                # scale bones are now just supplementary
-                                # tracking, so they can sit at the proven-
-                                # safe ceiling instead of the maxed-out one.
-                                # Should fix the arm-piece breast/butt
-                                # spike (#133) and chest/knee clip (#135).
+SCALE_BONE_K = 8
+# Max fraction of a vert's total weight that can become scale-bone influence.
+# Hand-built UBE soft-body cloth tops out ~0.76; 0.65 leaves 35% on rigid bones
+# for animation and avoids extreme cross-region bleed.
+SCALE_BONE_MAX_TRANSFER = 0.65
 
-# Torso "parity" falloff (#175 nipple/chest, #129 butt). The chest/belly/butt
-# scale-bone tracking on body-slot pieces was crushed by the LINEAR distance
-# falloff: a guard cuirass whose chest plate sits ~7u off the body tracked the
-# live breast morph at only ~0.38 of the body (measured chest scale-weight 0.06
-# vs body 0.16). So under a big preset the body grows out from under the armor
-# and pokes through (and our nipple-clearance push-out, which adds standoff,
-# made it slightly worse). For these regions on TORSO / lower-body pieces we
-# replace the linear falloff (1 - d/reach) with a steeper power curve
-# (1 - (d/reach)^P, P>1): a 7u-standoff plate now tracks at ~0.96 instead of
-# 0.38, while far cloth still decays to 0 at the reach edge (same reach, so no
-# extra cross-body reach). It is BOUNDED by the body's own per-vert weight (the
-# propagation takes the MAX of the neighbor body weights, then * falloff <= 1),
-# so the armor can at most track the body 1:1 -- it can never balloon past it.
-# Keeping P finite (not infinite) leaves the armor a touch UNDER parity, which
-# is correct: an armor vert sits further from the scale-bone pivot than the body
-# surface vert, so it displaces MORE per unit weight -- matching weight exactly
-# would slightly over-grow. Gated to slot-32 / slot-49 pieces so arm-only
-# bracers (#133) keep the linear falloff and are untouched. Tunable: raise P if
-# big presets still poke at the chest/belly; lower it toward 1.0 to revert.
-# History: 4.0 -> 6.0 (2026-06-02) to close a residual "barely pokes" nipple on
-# guard armor under a big preset; 6.0 ~= 0.96 tracking at a 7u standoff. Still
-# bounded by body weight (falloff <= 1), so it cannot over-grow past the body.
+# Torso-parity falloff: replace linear (1 - d/reach) with a power curve
+# (1 - (d/reach)^P) for breast/belly/butt bones on torso/lower-body pieces.
+# A 7u-standoff cuirass tracks the live morph at ~0.96 vs 0.38 linear —
+# preventing body-poke-through without extra standoff. Bounded by the body's
+# own per-vert weight (never inflates past body). Raise P if big presets
+# still poke at the chest/belly; lower toward 1.0 to revert to linear.
 TORSO_PARITY_FALLOFF_POWER = 6.0
 
-# #133 Valenwood-bracer spike: an ARM/HAND-dominated armor vert must never
-# inherit breast/belly/butt scale weight. A forearm bracer / sleeve sits within
-# scale-bone reach of breast/hip-weighted body verts in the bind pose, so it
-# picks up that cross-talk and gets YANKED into a spike when the slider moves.
-# Hands/feet already use leg_region_only to drop torso bones, but a slot-34
-# forearm piece routes through the CLOTH path where that guard doesn't apply.
-# We suppress torso-region propagation on arm-dominated verts in
-# add_scale_bone_weights regardless of slot/torso_parity -- an arm tracking the
-# breast/butt is cross-talk by definition, so this never removes a legitimate
-# morph. Revert by setting False.
+# Suppress breast/belly/butt scale weight on arm-dominated verts (forearm
+# bracers / sleeves sit within scale-bone reach of hip-weighted body verts
+# and get cross-talk spikes if this is not suppressed). Revert by setting False.
 SUPPRESS_TORSO_SCALE_ON_ARMS = True
 
 
@@ -4859,23 +4238,13 @@ def _strip_jiggle_weights_map(weights_map, src_bones=None, force=False):
     return out
 
 
-# Chain-anchor strategy (#flatchain, 2026-06-07 — the COMPROMISE).
-# Physics-chain HARD-skeleton anchors (Pelvis/Spine/Thigh/...) are recreated FLAT
-# (identity, parent=Scene Root) so the ACTOR's live skeleton drives them at
-# runtime. This is the pre-#177 behavior, CONFIRMED in-game to restore skirt swing
-# on the UBE actor (elven). The #177 change baked the full nested SOURCE skeleton
-# (Spine->COM->Root, Pelvis->COM, Thigh->Pelvis...) STATICALLY into the worn armor;
-# FSMP then anchored the chain to that static copy instead of the live actor
-# skeleton -> the chain didn't follow the body and the cloth sagged off it.
-#
-# CRUCIAL: this only changes the HARD-skeleton anchor. The other two #177 parts
-# are KEPT unconditionally: (a) the multishape bone UNION pre-creation (so a later
-# shape's anchor isn't clobbered flat-at-origin by an earlier add_bone), and
-# (b) the CUSTOM + SOFT-BODY chain recreation at SOURCE bind (so chest/breast-
-# anchored cloth still doesn't collapse). So we revert ONLY the over-reach.
-#
-# `CBBE2UBE_NESTED_CHAIN_ANCHORS=1` restores the full #177 nesting as an opt-in
-# fallback. Read at import so it reaches ProcessPool workers. Default = flat.
+# Chain-anchor strategy: physics-chain hard-skeleton anchors (Pelvis/Spine/...)
+# are recreated FLAT (identity, parent=Scene Root) so the ACTOR's live skeleton
+# drives them at runtime. Nesting them statically into the worn armor caused FSMP
+# to anchor against the static copy rather than the live actor — cloth sagged off.
+# Custom-bone chains (chain-specific bones) and soft-body chain bones are still
+# recreated at SOURCE bind (see _precreate_custom_bone_chains).
+# `CBBE2UBE_NESTED_CHAIN_ANCHORS=1` restores full nesting as an opt-in fallback.
 NESTED_CHAIN_ANCHORS = (
     os.environ.get("CBBE2UBE_NESTED_CHAIN_ANCHORS", "").strip().lower()
     in ("1", "true", "yes", "on")
@@ -4900,15 +4269,9 @@ def _precreate_custom_bone_chains(dst_nif, src_nif, bone_names) -> int:
         return 0
     if not src_nodes:
         return 0
-    # Operate on the UNION of ALL source shapes' bones, not just THIS shape's.
-    # The converter processes shapes one at a time (skin -> _precreate ->
-    # add_bone). A HARD anchor (e.g. NPC Spine for a belt chain that lives on a
-    # LATER shape, or NPC Head for a cape's hair chain) gets added FLAT by an
-    # earlier shape's add_bone before that later shape's _precreate runs -- and
-    # add_node won't overwrite a present node, so the later chain hangs off a
-    # flat anchor and collapses to the origin. Pre-creating EVERY shape's chain
-    # on the FIRST call (before any add_bone) places all anchors at source bind
-    # up front; later per-shape calls find them present and no-op. #177-multishape
+    # Operate on ALL source shapes' bones (union). An anchor added flat by an
+    # earlier shape's add_bone can't be overwritten by a later _precreate call;
+    # pre-creating all chains upfront ensures correct bind placement.
     try:
         _allb = set(bone_names)
         for _sh in src_nif.shapes:
@@ -4916,24 +4279,14 @@ def _precreate_custom_bone_chains(dst_nif, src_nif, bone_names) -> int:
         bone_names = list(_allb)
     except Exception:
         pass
-    # Which bones get their SOURCE bind recreated? Always the CUSTOM (armor-
-    # specific, non-skeleton) bones. For a PHYSICS garment -- one that HAS a
-    # custom chain -- ALSO the soft-body jiggle bones (breast/butt/belly): their
-    # HDT physics is driven by the garment's OWN xml and seeded from the NIF
-    # bind, so a breast bone left flat at the origin (or, for an unskinned parent
-    # like Breast_L01, dropped entirely by add_bone) collapses the CHEST cloth to
-    # the floor -- the same bug as the skirt anchor, one chain over. add_bone
-    # adds only the SKINNED breast tip (Breast_L02) flat and never its parent;
-    # walking the source tree restores the whole chain at chest height. Gated on
-    # a custom chain existing so plain (non-physics) body armour is untouched --
-    # there the actor's live skeleton overrides the flat bind at runtime. #177
+    # Recreate SOURCE bind for CUSTOM (non-skeleton) bones. For physics garments
+    # also restore soft-body jiggle bones (breast/butt/belly): their HDT physics
+    # is seeded from the NIF bind; a flat/missing parent collapses chest cloth.
+    # Gated on a custom chain existing; plain body armour is untouched.
     custom = [b for b in bone_names if not _is_skeleton_bone(b)]
-    # AUTO-SELECT flat vs nested per armor (#flatchain-auto). Decide by where the
-    # GARMENT's OWN physics chains anchor -- EXCLUDING soft-body jiggle bones
-    # (breast/butt/belly are body bones the converter grafts on, NOT garment
-    # chains; including them would make every conforming armor read as spine-
-    # anchored). A chain anchored on the UPPER body -> NESTED; lower-body-only
-    # (pelvis/thigh) -> FLAT. Env CBBE2UBE_NESTED_CHAIN_ANCHORS=1 forces nested.
+    # Auto-select flat vs nested: upper-body chain anchor -> NESTED; lower-body-
+    # only (pelvis/thigh) -> FLAT. CBBE2UBE_NESTED_CHAIN_ANCHORS=1 forces nested.
+    # Jiggle bones excluded from the anchor scan (body bones, not garment chains).
     _garment_chain = [b for b in custom if not _is_soft_body_physics_bone(b)]
     _heur_anchors: set[str] = set()
     for _gb in _garment_chain:
@@ -4954,14 +4307,8 @@ def _precreate_custom_bone_chains(dst_nif, src_nif, bone_names) -> int:
         _is_upper_body_anchor(a) for a in _heur_anchors)
     walk_bones = list(custom)
     if custom and use_nested:
-        # Physics garment -> restore the FULL source skeleton hierarchy for ALL
-        # skinned bones (not just the soft-body jiggle bones), so the converted
-        # bone tree matches the known-good source rig EXACTLY. HDT-SMP walks the
-        # NIF bone tree to build its kinematic chain; the collision bones
-        # (arms/legs/spine) being properly nested -- not flat under Scene Root --
-        # is part of that. Plain (non-physics) armour has no custom chain, so
-        # this whole block is skipped and the flat skeleton is kept (fine there:
-        # the actor's live skeleton drives the skin by name at runtime). #177
+        # Nested mode: restore all skeleton bones so the bone tree matches the
+        # source rig. Plain armour has no custom chain; actor overrides at runtime.
         walk_bones += [b for b in bone_names if _is_skeleton_bone(b)]
     chain: dict[str, tuple] = {}
     anchors: set[str] = set()
@@ -4976,9 +4323,8 @@ def _precreate_custom_bone_chains(dst_nif, src_nif, bone_names) -> int:
             par = n.parent
             par_name = par.name if par is not None else None
             chain[cur] = (n.transform, par_name)
-            # Stop at the first HARD skeleton bone (a soft-body bone is part of
-            # the chain we recreate, not its anchor) -- so e.g. the breast chain
-            # Breast_L02 -> Breast_L01 anchors on Spine2, not on Breast_L01.
+            # Stop at the first hard skeleton bone (soft-body bones are part of
+            # the chain, not the anchor — Breast_L02->L01 anchors on Spine2).
             if par_name is None or (_is_skeleton_bone(par_name)
                                     and not _is_soft_body_physics_bone(par_name)):
                 if par_name:
@@ -4990,34 +4336,16 @@ def _precreate_custom_bone_chains(dst_nif, src_nif, bone_names) -> int:
     pyn = _pynifly()
     existing = set(dst_nif.nodes.keys())
     added = 0
-    # Re-create each anchor's FULL SOURCE ANCESTOR CHAIN (anchor -> parent -> ...
-    # -> root) with source LOCAL transforms + parent links, so the physics
-    # chain's kinematic parent is properly NESTED in the skeleton tree -- NOT a
-    # flat node parented straight to Scene Root. Two reasons the bind global
-    # alone is not enough: (1) a flat anchor still has the right global so the
-    # bind looks fine, but (2) HDT-SMP walks the NIF BONE HIERARCHY to build its
-    # kinematic chain, and an anchor whose parent is Scene Root (instead of
-    # Spine1->Spine->COM...) breaks that chain -> the cloth destabilises/collapses
-    # in-game even though every bone sits at the correct position. The source
-    # skeleton nests Spine2 under Spine1->Spine->COM (and Pelvis under COM, etc.);
-    # reproducing that exactly is what makes the converted NIF behave like the
-    # known-good source rig. Harmless for static armour (actor overrides at
-    # runtime) and only runs for physics garments (custom chain present). #177
+    # Re-create each anchor's full source ancestor chain with source local
+    # transforms + parent links. HDT-SMP walks the NIF hierarchy to build its
+    # kinematic chain; a flat anchor breaks that even if every bone has the
+    # correct global position.
     for a in anchors:
         if not use_nested:
-            # DEFAULT (#flatchain): recreate the anchor AND its full source
-            # ANCESTOR chain (anchor -> parent -> ... -> root), each at its SOURCE
-            # GLOBAL transform but FLAT-parented (parent=Scene Root) -- NOT nested.
-            # WHY both: the #177 NESTED static tree is what breaks elven (FSMP
-            # anchors the chain to the static skeleton copy instead of the live
-            # actor) -> flat parenting fixes that. But recreating ONLY the
-            # immediate anchor flat broke the Traveling Mage robe, whose
-            # accessory chains (bag/book/bottle off the Spine) need the deeper
-            # skeleton bones (COM/Root) to EXIST at the right place -- so we walk
-            # the whole ancestor chain and recreate every bone at its correct
-            # source-global position, flat (each its own root child, actor-driven
-            # by name). Gives nested-needing armor every bone it needs WITHOUT the
-            # static tree that breaks flat-needing armor. #flatchain-complete
+            # Flat mode: recreate full ancestor chain each at its SOURCE GLOBAL
+            # transform but flat-parented (parent=Scene Root). Walking the whole
+            # ancestor chain (not just the immediate anchor) ensures deep skeleton
+            # bones required by accessory chains (bag/book off Spine) are present.
             cur = a
             seen2: set[str] = set()
             while cur and cur not in seen2:
@@ -5120,25 +4448,17 @@ def _shape_has_fine_animation_bones(src_shape) -> bool:
     add body-morph influence, the shape needs to track its parent
     extremity precisely."
 
-    Bone-based check covers shapes properly rigged with hand/finger
-    bones. Name-based check (added 2026-05-25) catches stylized
-    gauntlets that are rigged only to UpperArm or Forearm but should
-    still NOT scale with body sliders.
+    Bone-based check covers shapes rigged with hand/finger bones.
+    Name-based check catches stylized gauntlets rigged only to UpperArm/Forearm.
     """
     # Name-based detection FIRST (independent of skinning) — catches stylized
     # gauntlets / gloves rigged only to UpperArm/Forearm (no hand bones).
     name_low = (getattr(src_shape, "name", "") or "").lower()
     if any(kw in name_low for kw in HAND_FOOT_NAME_KEYWORDS):
         return True
-    # Bone-based detection: the shape must actually CARRY hand/foot geometry,
-    # not merely GRAZE an extremity bone. A floor-length robe/dress weights its
-    # hem to NPC L/R Foot at a fraction of a percent (0 verts actually
-    # controlled by the foot bone); a boot ENCASES the foot (hundreds of foot-
-    # dominant verts). The old "any extremity bone present" test misfired on the
-    # robe and routed a physics-cloth garment down the RIGID hand/foot path
-    # (full warp + no chain-nowarp + leg-only scale bones) -> the skirt chain
-    # collapsed / fell through the floor (#177). So require a real CLUSTER of
-    # verts whose weight is MAJORITY on extremity bones.
+    # Bone-based detection: shape must carry real hand/foot geometry, not merely
+    # graze an extremity bone (e.g. a robe's hem weights NPC Foot at <1%).
+    # Require a cluster of verts with MAJORITY weight on extremity bones.
     ext_bones = {b for b in (src_shape.bone_names or [])
                  if any(kw in b.lower() for kw in RESKIN_PRESERVE_BONE_KEYWORDS)}
     if not ext_bones:
@@ -5167,18 +4487,11 @@ def _shape_has_fine_animation_bones(src_shape) -> bool:
     return dom >= max(8, int(0.01 * n))
 
 
-# Fraction of a shape's total vertex weight that must lie on hand/finger/
-# foot/toe bones for the shape to count as an EXTREMITY SKIN mesh — the
-# actual hand or foot, not an arm/leg shell piece that merely grazes a
-# finger bone. Extremity skins are EXCLUDED from the per-armor body-morph
-# TRI: body sliders (breasts/butt/belly/thighs) must NOT deform fingers
-# or toes. A nude UBE actor's separate Hands/Feet meshes don't body-morph
-# either, so matching that behavior is correct.
-#
-# Empirical separation is wide (a long-sleeve gauntlet NIF):
-#   Hands_2 = 97%, Gloves_1 = 71%   -> excluded (finger meshes)
-#   Bracers = 0.8%, Guards = 0.2%, Armstrap = 0.3%, boots = 21% -> kept
-# so 0.5 sits comfortably in the gap.
+# Fraction of a shape's total vertex weight on hand/finger/foot/toe bones that
+# classifies it as extremity SKIN (the actual hand/foot, not an arm/leg shell).
+# Extremity skins are excluded from the body-morph TRI (body sliders must not
+# deform fingers/toes). Threshold 0.5 sits in a wide empirical gap:
+#   Hands_2 = 97%, Gloves_1 = 71% -> excluded; Bracers = 0.8%, boots = 21% -> kept.
 EXTREMITY_DOMINANT_WEIGHT_FRAC = 0.5
 
 
@@ -5451,16 +4764,10 @@ def compute_body_blend_skinning(
     blend[mid] = 1.0 - (nearest_d[mid] - near_dist) / (far_dist - near_dist)
     # nearest_d >= far_dist stays 0 -> keep original armor weights
 
-    # K-nearest for body-weight propagation. Over-fetch (k * 4) so we
-    # can filter out body verts on the "wrong side" of the armor —
-    # in concave regions like between legs, naive Euclidean K-NN
-    # picks body verts on the OTHER leg, which would mix left-leg
-    # and right-leg body bone weights into the armor vert, causing
-    # the armor to deform with the wrong limb. This is the geodesic-
-    # distance approximation: instead of true surface walking, we
-    # over-fetch candidates and reject those whose body normal
-    # disagrees with the dominant direction from the armor vert
-    # back to the body surface.
+    # K-nearest for body-weight propagation. Over-fetch (k*4) to filter body
+    # verts on the "wrong side" of concave regions (e.g. between the legs
+    # naive K-NN picks verts from the other leg). Reject candidates whose body
+    # normal disagrees >60° with the nearest neighbour's normal.
     body_normals = None
     if hasattr(body_shape, "normals") and body_shape.normals is not None:
         try:
@@ -5473,28 +4780,20 @@ def compute_body_blend_skinning(
 
     k_eff = min(k, body_n)
     if body_normals is not None:
-        # Over-fetch for filtering, then narrow to k_eff valid candidates.
         k_query = min(k * 4, body_n)
         cand_d, cand_idx = tree.query(armor_verts, k=k_query)
         if k_query == 1:
             cand_d = cand_d[:, None]; cand_idx = cand_idx[:, None]
 
-        # For each candidate, compute the body normal's agreement with
-        # the dominant (K=1 nearest) candidate's normal. Reject if it
-        # disagrees by more than ~60° (cos < 0.5) — those are
-        # wrong-side neighbors in concave regions.
-        ref_normal = body_normals[cand_idx[:, 0]]  # (N_armor, 3)
-        cand_normals = body_normals[cand_idx]      # (N_armor, K_query, 3)
-        agree = (cand_normals * ref_normal[:, None, :]).sum(axis=-1)  # (N_armor, K_query)
+        # Reject candidates whose normal disagrees >60° with the nearest
+        # neighbour's normal (wrong-side verts in concave regions).
+        ref_normal = body_normals[cand_idx[:, 0]]
+        cand_normals = body_normals[cand_idx]
+        agree = (cand_normals * ref_normal[:, None, :]).sum(axis=-1)
         valid_mask = agree > 0.5
 
-        # Pick the first k_eff valid candidates per armor vert; if a vert has
-        # fewer than k_eff valid neighbours, fall back to the unfiltered first
-        # k_eff. Vectorized (was a per-vert Python loop — slow on dense shapes):
-        # a STABLE argsort of ~valid_mask brings valid columns to the front in
-        # their original order, so order[:, :k_eff] == valid_i[:k_eff] for rows
-        # with enough valid; rows without fall back to arange(k_eff). Exactly
-        # reproduces the loop (verified byte-identical).
+        # Pick the first k_eff valid candidates; fall back to unfiltered first
+        # k_eff when a vert has fewer than k_eff valid neighbours.
         order = np.argsort(~valid_mask, axis=1, kind="stable")
         valid_count = valid_mask.sum(axis=1)
         fallback = np.arange(k_eff)
@@ -5645,75 +4944,35 @@ def compute_body_blend_skinning(
 
 # ----- Layered-cloth weight sync (cleavage anti-intersection) ----------
 #
-# Layered cloth in the SAME NIF (e.g., bra cup sitting just under an outer
-# halter top in a layered-bust top NIF) follows the body's breast
-# bones via skin weights. After scale-bone reskin the inner and outer
-# layers end up with slightly different bone weight distributions, so
-# under HDT-SMP physics each layer jiggles with a slightly different
-# amplitude and they pass through each other at the cleavage seam (visible
-# as Z-fighting / shimmer / mesh poke-through).
-#
-# Fix: in the upper-chest region, pick the LARGEST cloth shape as the
-# authority and copy its per-vertex bone weights to overlapping nearby
-# verts in every other cloth shape. The layers then have identical weights
-# at the overlap and move identically under physics — no intersection.
-# Verts outside the chest region are untouched, so the rest of the armor
-# (skirt drape, sleeves, hem) keeps its independent motion.
+# After scale-bone reskin, layered cloth in the same NIF (bra under halter top)
+# can end up with slightly different breast-bone weights and jiggle at different
+# amplitudes -> Z-fighting at the cleavage seam. Fix: in the upper-chest region,
+# copy the LARGEST cloth shape's per-vertex weights to overlapping verts in every
+# other cloth shape. Verts outside the chest region are untouched.
 
-# Tuned for upper-chest / cleavage region, anterior only (back of body
-# isn't touched). Z range covers the cup + neckline (UBE breast sits
-# ~90-110 world Z); X bound keeps it within the bust width; Y >= -2 keeps
-# it anterior (front torso).
+# Upper-chest region bounds (UBE breast sits ~Z 90-110, anterior only).
 CHEST_SYNC_Z_MIN = 85.0
 CHEST_SYNC_Z_MAX = 115.0
 CHEST_SYNC_X_BOUND = 15.0
 CHEST_SYNC_Y_MIN = -2.0
 
-# Max distance from receiver vert to authority vert for a sync to fire.
-# Layered cloth typically sits ~0.5-2u apart; cross-piece gaps (e.g., bra
-# vs separate pauldron) are >5u. 2.5u is the sweet spot.
+# Max distance for a sync to fire (layered cloth ~0.5-2u apart;
+# cross-piece gaps >5u).
 CHEST_SYNC_DISTANCE = 2.5
 
-# Minimum breast-bone weight fraction (over a shape's cleavage verts) for
-# the shape to count as a bust LAYER eligible for weight sync. Bust cloth
-# (bra / cup / fabric over the bust) is heavily breast-driven; decorative
-# attachments (cloak, shoulder pad, strap) have only incidental breast
-# weight. Gating on this stops the sync from rewriting ornaments to the
-# bust garment's breast-heavy weights (the mashup-armor regression). Measured
-# separation is clean: genuine bust cloth >=0.34 (a layered-bust armor's inner bra shape 0.35, its outer fabric shape
-# 0.53; a mashup armor's Blouse 0.34), decorative attachments <=0.11 (Cape 0.11,
-# Shoulders 0.00, Strap 0.01). 0.25 sits in the gap. Tune if needed.
+# Min breast-bone weight fraction to qualify as a bust layer. Genuine bust cloth
+# >=0.34; decorative attachments <=0.11. 0.25 sits in the gap.
 CHEST_SYNC_MIN_BREAST_FRAC = 0.25
 
 
-CHEST_DEPTH_SEPARATION = 0.4     # clearance the inner layer is pushed to,
-                                  # bumped 0.15 -> 0.4 (2026-05-29) so the
-                                  # inner bra clears the outer top instead of
-                                  # poking through. Front-tolerance gate below
-                                  # still spares clearly-proud ornaments.
-                                  # (History: 0.5 sank ornaments -> 0.15 was
-                                  # too shallow, bra still poked -> 0.4.)
-CHEST_DEPTH_FRONT_TOL = 0.2      # ONLY push receiver verts within this
-                                  # distance IN FRONT of the authority. A
-                                  # vert that pokes just barely through
-                                  # (e.g. the inner bra layer at +0.17u) is genuine
-                                  # Z-fighting -> push it back. A vert
-                                  # clearly in front (cloak / shoulder pad /
-                                  # strap layered ON TOP of the base, often
-                                  # >0.3u proud) is a legitimate outer piece
-                                  # -> LEAVE IT. Without this cap the pass
-                                  # yanked a mashup armor's on-top ornaments back
-                                  # behind the cuirass cups. The whole push
-                                  # band is therefore (-SEPARATION, +TOL):
-                                  # near-coplanar fighting verts only.
-CHEST_DEPTH_PAIR_XZ_DIST = 3.0   # max (X,Z) distance for "this inner vert
-                                  # is co-located with this outer vert".
-                                  # Larger than typical inter-vert spacing
-                                  # (~1u) so the lookup finds an authority
-                                  # neighbor; smaller than typical cross-
-                                  # piece gap (>5u) so unrelated cloth on
-                                  # the other side of the body doesn't
-                                  # get matched.
+CHEST_DEPTH_SEPARATION = 0.4     # target clearance the inner bust layer is pushed to
+CHEST_DEPTH_FRONT_TOL = 0.2      # only push receiver verts within this distance in FRONT
+                                  # of the authority. Verts clearly in front (ornaments,
+                                  # straps, cloaks) are left alone so the pass doesn't sink
+                                  # legitimate outer pieces. Push band: (-SEPARATION, +TOL).
+CHEST_DEPTH_PAIR_XZ_DIST = 3.0   # max (X,Z) distance to pair an inner vert with an
+                                  # authority vert (larger than inter-vert spacing; smaller
+                                  # than cross-piece gap so opposite-side cloth is ignored).
 
 
 def _separate_chest_layered_cloth_depth(
@@ -5744,15 +5003,11 @@ def _separate_chest_layered_cloth_depth(
     outer layer are untouched, so the cleavage isn't visually deepened
     where it doesn't need to be.
 
-    SOURCE-ORDER GATE (2026-06-11): when `source_body_verts`/`_normals` are
-    given (phase-2), a receiver vert whose SOURCE order says it sits OUTSIDE
-    the authority is never pushed behind it — authority-by-size is source-
-    blind, and on the Ruby Top it shoved the corset's plate-overlapping rim
-    and the belts 0.4u behind the chest plate (Z 85-90, inside the cleavage
-    box), creating inversions the abdomen order-restore pass then had to
-    fight (corset>plate flips 56 -> 94 vs source before this gate). The push
-    is meant for true inner layers (bra under fabric), not for whatever is
-    smaller than the plate.
+    SOURCE-ORDER GATE: when `source_body_verts`/`_normals` are given
+    (phase-2), a receiver vert whose SOURCE order says it sits OUTSIDE the
+    authority is never pushed behind it. Authority-by-size is source-blind
+    and would push corset rim/belt verts behind the chest plate if left
+    ungated. The push is meant for true inner layers (bra under fabric).
 
     Mutates each receiver job's `verts` in place and sets
     `verts_modified` so the shape-copy pass picks up the new positions.
@@ -5917,51 +5172,18 @@ def _separate_chest_layered_cloth_depth(
 # This pass re-imposes the SOURCE order, classified from the source-frame
 # clearance so it's immune to whatever the warp did.
 OVERLAY_PAIR_R = 3.0       # 3D dist to pair an A vert with the nearest B vert
-OVERLAY_MIN_OVERLAP = 30   # need this many overlapping verts to consider a pair
+OVERLAY_MIN_OVERLAP = 30   # minimum overlapping verts to consider a pair
 OVERLAY_CAP = 3.0          # per-vert lift cap (runaway guard)
-LAYER_STACK_GAP = 0.15     # clearance a locally-outer layer keeps above the
-                           # OUTERMOST inner vert beneath it (2026-06-10)
-OVERLAY_LOCAL_ORDER_MIN = 0.05  # v4 (2026-06-11): a vert gets an ORDER
-                           # constraint vs another shape only if the pooled
-                           # source gap field around it (kernel-averaged,
-                           # multiplicity-weighted, both pairing directions)
-                           # exceeds this AND the local sign-consistency
-                           # clears OVERLAY_LOCAL_CONSIST. The neighbourhood
-                           # field IS the consistency gate: a genuinely
-                           # interleaved weave (a cinch belt alternating
-                           # over/under a coat) cancels to ~0 -> no
-                           # constraint -> co-planar (= source), while a
-                           # COHERENT local reversal (the Ruby top tucked
-                           # OVER the chest plate at the neckline, 667 verts)
-                           # survives and is restored. v3's per-PAIR
-                           # consistency fraction (0.65 global) bulldozed
-                           # exactly those regions: one global edge per pair
-                           # forced the minority region into the wrong order
-                           # (MEASURED on Ruby Top: 72-98% of locally-
-                           # reversed locations shipped flipped: top-over-
-                           # plate neckline 614/667, top-over-corset rim
-                           # 610/844, top-over-belts 506/636,
-                           # top-over-belts_metal 340/347).
-OVERLAY_LOCAL_CONSIST = 0.70  # v4: weighted fraction of a vert's nearby gap
-                           # samples that must AGREE in sign before an order
-                           # constraint fires — v3's pair-level discriminator
-                           # transplanted to neighbourhood scale. Interleave
-                           # noise sits ~0.5; coherent reversal regions ~1.0.
-OVERLAY_LOCAL_RAW_STRONG = 0.12  # v4 tier-2: a vert whose OWN source gap
-                           # exceeds this fires (or ceilings) even without
-                           # neighbourhood consistency, as long as the field
-                           # doesn't actively contradict it. Restores overlay
-                           # strips THINNER than OVERLAY_PAIR_R (the Ruby
-                           # neckline trim, raw med 0.17-0.31 depending on
-                           # the partner), where the kernel mixes both sides
-                           # of the crossing line and the consistency
-                           # fraction can never clear 0.70 on the strip
-                           # itself. Pairing noise is ~+-0.05. Firing loosely
-                           # is SAFE under source-pair binding: a fired vert
-                           # only ever lifts relative to partners genuinely
-                           # below it in the SOURCE (at 0.22 the Ruby rim's
-                           # 0.17-gap verts never fired vs the belts and
-                           # stayed buried).
+LAYER_STACK_GAP = 0.15     # clearance a locally-outer layer keeps above the outermost inner vert beneath it
+# v4 gating thresholds for _separate_abdomen_layered_cloth_depth:
+OVERLAY_LOCAL_ORDER_MIN = 0.05  # min kernel-averaged gap field for tier-1 constraint;
+                                # genuinely interleaved weaves cancel to ~0 -> no constraint.
+OVERLAY_LOCAL_CONSIST = 0.70    # fraction of nearby gap samples that must agree in sign;
+                                # interleaved noise ~0.5, coherent reversals ~1.0.
+OVERLAY_LOCAL_RAW_STRONG = 0.12  # tier-2: fires on own raw source gap even without
+                                  # neighbourhood consistency; recovers thin overlay strips
+                                  # narrower than OVERLAY_PAIR_R. Safe under source-pair
+                                  # binding (never lifts past a source-above partner).
 
 
 def _smooth_overlay_push(vals, pts, iters=4, k=8):
@@ -5989,67 +5211,26 @@ def _separate_abdomen_layered_cloth_depth(
     """Re-impose the SOURCE radial layer order on a multi-layer outfit
     (corset / top / belts / coat / undershirt / ...). The per-shape warp's
     min-standoff clamp pushes every inner layer to ~the same standoff off the
-    (bigger) UBE body, COLLAPSING the author's stacking order (belts sink into
-    the corset; an undershirt pokes through a coat at the shoulders; a top
-    tucked over a breastplate at the neckline sinks beneath it).
+    (bigger) UBE body, collapsing the author's stacking order.
 
-    v4 (2026-06-11) — PER-REGION SOURCE ORDER-FIELD RESTORATION. v3 gave each
-    shape PAIR one global order (consistency-gated edge + DAG + topo lift),
-    but real garments stack REGION-dependently: the Ruby Top's `top` fabric is
-    under the chest plate over most of the torso (frac 0.92) yet tucked OVER
-    it at the neckline — v3's single edge lifted the plate above the top
-    EVERYWHERE, actively flipping the minority region (MEASURED: 92% of the
-    667 source top-over-plate locations shipped inverted; same for the corset
-    rim 72%, belts 80%, belts_metal 98%). And pairs v3 called INTERLEAVED
-    (chest_plate~belts 0.57) got no order at all -> a coin flip per location.
+    Per-region source order-field restoration (v4): rather than giving each
+    shape pair a single global order edge (v3), verts are gated and bound
+    region-by-region so minority regions (e.g. a top that is under a plate on
+    the torso but over it at the neckline) are not bulldozed:
+      1. GATING: gap samples are pooled from both directions, 1/multiplicity
+         weighted, and kernel-averaged (OVERLAY_PAIR_R). Tier-1 fires on
+         field >= OVERLAY_LOCAL_ORDER_MIN + consistency >= OVERLAY_LOCAL_CONSIST.
+         Tier-2 fires on own raw gap >= OVERLAY_LOCAL_RAW_STRONG even without
+         neighbourhood agreement (recovers thin overlay strips).
+      2. BINDING: each vert is lifted vs its source-below partners and ceilinged
+         by source-above partners, making leapfrogging structurally impossible.
+      3. RESOLUTION: lift-only along body normal (no new body clipping), 2 rounds
+         inner->outer; pushes are smoothed then re-clamped by ceilings and
+         OVERLAY_CAP. Set CBBE2UBE_LAYER_DEBUG=1 for per-round stats.
 
-    v4 keeps v3's insight (sign-consistency beats magnitude) but applies it
-    at NEIGHBOURHOOD scale instead of pair scale, and binds every constraint
-    to SOURCE PARTNERS instead of whatever happens to be nearby in the
-    output:
-
-    1. GATING — which verts act. Per pair, signed gap samples ("A outside B"
-       positive) are pooled from BOTH pairing directions, weighted by
-       1/multiplicity (one-sided nearest-neighbour matching otherwise
-       aliases a weave into fake coherent patches), and kernel-averaged
-       within OVERLAY_PAIR_R. Tier 1 fires where the local field is material
-       (>= OVERLAY_LOCAL_ORDER_MIN) and consistent (>= OVERLAY_LOCAL_CONSIST
-       of local opinion). Tier 2 fires where the vert's OWN raw source gap
-       is >= OVERLAY_LOCAL_RAW_STRONG and the field doesn't contradict —
-       this restores overlay strips THINNER than the pairing radius (the
-       Ruby neckline trim), where kernel mixing caps consistency at ~0.5
-       forever. The same raw threshold VETOES a regional verdict that
-       contradicts the vert's own strong gap (thin under-strips).
-    2. BINDING — against whom. Each gated vert is bound to the partner verts
-       on the proper side of it IN THE SOURCE (k-NN in the ordering frame):
-       lift targets are its source-below partners, ceilings its source-above
-       partners. Masks or output-frame reference searches CANNOT resolve a
-       three-sheet sandwich (Ruby: top-fabric < belt < top-rim within one
-       pairing radius, two sheets of the SAME shape on opposite sides of the
-       belt) — per-source-pair binding does, and makes leapfrogging
-       structurally impossible (a vert never clears a partner that sat above
-       it in the source). Strong above-partners ceiling a vert even ungated,
-       so tier-2 fires can never invert a true vert-scale weave.
-    3. RESOLUTION — lift-only along the UBE body normal (never push in: no
-       new body clipping), 2 rounds, shapes inner -> outer by source median
-       clearance; targets use partners' CURRENT clearances so stacking
-       chains (top < corset < belt) cascade cleanly; pushes are smoothed
-       (_smooth_overlay_push) then re-clamped by ceilings and a cumulative
-       per-vert OVERLAY_CAP. Set CBBE2UBE_LAYER_DEBUG=1 for per-round stats.
-
-    MEASURED on DDV Ruby flower Top_1 (offline re-apply over the shipped
-    output): order flips vs source dropped 4577 -> 863 (81%), median flip
-    depth 0.24-0.5u -> <=0.13u; the v3-bulldozed regions (top-over-plate
-    neckline 92%, top-over-belts 80%, plate~belts coin-flip 53%) all
-    restored to <=33% with only near-crossing-line residue. NO body floor:
-    the warp's own min-standoff keeps layers off the body, and a blanket
-    floor flings offset-transform armor (elven class). Single-layer NIFs and
-    pairs below OVERLAY_MIN_OVERLAP get no constraints -> no-op.
-
-    Ordering basis: the SOURCE body (phase-2 inline body, proven) in the
-    source frame; phase-1 falls back to the UBE fit body in the output frame
-    (phase-1 doesn't body-swap so its output preserves source order).
-    `cbbe_body_verts` is unused since v3 (kept for call-site compat). Mutates
+    Ordering basis: source body frame (phase-2 inline body) when available;
+    phase-1 falls back to UBE fit body in output frame.
+    `cbbe_body_verts` unused since v3 (kept for call-site compat). Mutates
     jobs' `verts` + sets `verts_modified`. Returns verts moved."""
     if body_verts is None or body_normals is None:
         return 0
@@ -6598,13 +5779,9 @@ def _is_rigid_attachment(weights_by_bone: dict[str, list[tuple[int, float]]]) ->
 # Forsworn double by body-skin detection. Scale bones now go to ALL cloth again.)
 
 
-# Skyrim's GPU skinning supports ~80 bones per skin PARTITION. A densely-rigged
-# converted full-body suit can exceed it — the Fuse00 Traveling Mage body ends
-# up at 82 bones, almost all in its slot-32 partition, so the bone-matrix
-# palette overruns at draw -> EXCEPTION_ACCESS_VIOLATION (vmovdqa) in
-# BSBatchRenderer = equip CTD. Cap BELOW the limit. This is the universal
-# backstop that catches scale bones from ANY source (reskin transfer, the
-# add_scale_bone_weights cloth/extremity paths, dense source rigs). #166
+# Skyrim's GPU skinning supports ~80 bones per skin partition. Exceeding it
+# overruns the bone-matrix palette at draw -> equip CTD. This backstop catches
+# scale bones from any source (reskin transfer, add_scale_bone_weights, dense rigs).
 SKIN_PARTITION_BONE_CAP = 78
 
 
@@ -6735,23 +5912,15 @@ def add_scale_bone_weights(
     armor_verts = np.asarray(armor_verts, dtype=np.float64)
     armor_n = len(armor_verts)
 
-    # Per-bone sparse KD-trees of the body verts weighted to each scale bone.
-    # PER-BONE search (not one K-NN against all body verts) so an armor vert
-    # whose K nearest body verts all LACK a bone still propagates from the
-    # actual nearest bone-weighted vert (the slot-49 corset / NPC Belly case).
-    # These are BODY-derived and CACHED across shapes (see _cached_scale_bone_data).
+    # Per-bone KD-trees (cached): per-bone search ensures propagation from the
+    # actual nearest bone-weighted vert, not from nearby verts that lack the bone.
     scale_bones, bone_data = _cached_scale_bone_data(body_shape, leg_region_only)
     if not bone_data:
         return bone_names, xforms_by_bone, weights_by_bone
 
-    # Existing per-vert total weight (should be ~1.0 if shape was normalized).
-    # While we're iterating, track each vert's DOMINANT authored bone. Used by
-    # (a) the torso-parity boost below, which skips ARM/HAND-dominated verts so
-    # it can't amplify cross-talk, and (b) the #133 suppression, which drops
-    # breast/belly/butt propagation onto arm-dominated verts entirely (a forearm
-    # bracer / sleeve must not track the breast/butt). Always computed (cheap;
-    # one pass we already make) so the #133 guard works on the cloth path too,
-    # where torso_parity is off.
+    # Existing per-vert total weight; also track dominant bone per vert.
+    # Used by: (a) torso-parity boost (skips arm-dominated verts) and
+    # (b) arm-suppression (no breast/belly/butt weight on arm-dominated verts).
     existing_per_vert = np.zeros(armor_n, dtype=np.float64)
     _dom_w = np.zeros(armor_n, dtype=np.float64)
     arm_vert = np.zeros(armor_n, dtype=bool)
@@ -6769,32 +5938,17 @@ def add_scale_bone_weights(
     # Defensive: if any vert has zero existing weight, assume 1.0.
     existing_per_vert[existing_per_vert < 1e-6] = 1.0
     boost_ok = ~arm_vert  # verts eligible for the torso-parity power falloff
-    # LEG-ENCASING ARMOR (greaves / leggings / pants): if the MAJORITY of verts
-    # are dominated by rigid leg bones this is a rigid leg plate. The body's
-    # breast/butt/belly PHYSICS jiggle must not drive it -- it gets dragged down
-    # and collapses on the UBE race (wolf Greaves: source 0% on jiggle bones,
-    # converter put up to 48% on the hip/waist band). Suppress the jiggle scale
-    # bones for the whole shape below; the STATIC leg-shape scale bones
-    # (frontthigh/rearthigh/rearcalf) still apply so it follows size sliders.
-    # Shape-level (not per-vert) on purpose: the collapsing hip/waist band is
-    # PELVIS-dominated, not leg-dominated -- only the shape AS A WHOLE reads as
-    # "leg armor". #physcollapse
+    # Leg-encasing armor: suppress breast/butt/belly jiggle bones on shapes whose
+    # majority of verts are dominated by rigid leg bones. Static leg-shape bones
+    # (frontthigh/rearthigh/rearcalf) still apply for size sliders.
+    # Shape-level check: hip/waist bands are pelvis-dominated, not leg-dominated.
     leg_armor = armor_n > 0 and int(leg_vert.sum()) > 0.5 * armor_n
 
-    # Per-armor-vert proposed scale-bone weights — propagate from each
-    # scale bone's own neighborhood independently. We take the MAX of
-    # the K nearest body verts' weights (then multiply by linear falloff)
-    # rather than IDW-averaging, because IDW dilutes the body's per-vert
-    # weight magnitude — the body's NPC Belly peaks at only 0.183 per
-    # vert, so a K=8 IDW average is ~0.115. Cloth verts at that propagated
-    # magnitude move 60-65% as much as the body when the user pushes
-    # the Belly slider, which causes visible body-poke-through.
-    # Using the MAX preserves the body's actual weight at the cloth
-    # vert: when the nearest bone-weighted body vert has weight 0.18
-    # and the cloth vert is right next to it, the cloth gets 0.18 *
-    # falloff ≈ 0.16, very close to 1:1 with the body. The bone's max
-    # weight in 3BA is bounded (no body vert exceeds ~0.2 for any single
-    # scale bone), so MAX can't pathologically over-weight cloth.
+    # Proposed scale-bone weights: use MAX of K nearest verts' weights (not IDW).
+    # IDW dilutes body weight magnitude (NPC Belly peaks at 0.183; K=8 IDW ~0.115).
+    # MAX preserves the body's actual weight: cloth vert next to a 0.18-weight
+    # body vert gets 0.18*falloff ≈ 0.16 (~1:1). 3BA per-bone weight is bounded
+    # so MAX can't pathologically over-weight.
     proposed_scale: dict[str, np.ndarray] = {}
     for bn, (bone_verts, bone_tree, bone_wts) in bone_data.items():
         if _is_physics_jiggle_scale_bone(bn) and (leg_armor or NO_SOFTBODY_SCALES):
@@ -6814,9 +5968,8 @@ def add_scale_bone_weights(
         # the body's own weight (prop = body_weight * falloff, falloff <= 1).
         nearest = d[:, 0]
         if torso_parity and _is_torso_parity_bone(bn):
-            # Power curve on torso verts; ARM/HAND-dominated verts (sleeve /
-            # gauntlet geometry) keep the original LINEAR curve so the boost
-            # can't strengthen bind-pose arm<->torso cross-talk (#133).
+            # Power curve on torso verts; arm/hand-dominated verts keep linear
+            # to prevent bind-pose arm<->torso cross-talk.
             power = np.clip(
                 1.0 - (nearest / reach) ** TORSO_PARITY_FALLOFF_POWER,
                 0.0, 1.0)
@@ -6832,37 +5985,28 @@ def add_scale_bone_weights(
         neighbor_active = d < reach
         neighbor_wts = np.where(neighbor_active, neighbor_wts, 0.0)
         prop = neighbor_wts.max(axis=1) * falloff
-        # #133: never let an ARM/HAND-dominated vert inherit torso (breast/
-        # belly/butt) scale weight -- that's bind-pose cross-talk that spikes
-        # the piece when the slider moves. Independent of slot/torso_parity.
+        # Never add torso (breast/belly/butt) scale weight to arm-dominated verts.
         if SUPPRESS_TORSO_SCALE_ON_ARMS and _is_torso_parity_bone(bn):
             prop = np.where(arm_vert, 0.0, prop)
         if prop.max() <= 1e-6:
             continue
         proposed_scale[bn] = prop
 
-    # Zero out scale-bone weight on excluded verts (finger/toe geometry on
-    # hand/foot shapes). Done BEFORE the cap/occupy math so those verts keep
-    # keep_fraction == 1.0 — their original finger/thumb/toe skinning is
-    # left fully intact and no body scale bone is injected onto them.
+    # Zero scale-bone weight on excluded verts (finger/toe) before cap math,
+    # so their original skinning is fully preserved.
     if exclude_vert_mask is not None:
         em = np.asarray(exclude_vert_mask, dtype=bool)
         if em.shape[0] == armor_n:
             for bn in list(proposed_scale.keys()):
                 proposed_scale[bn] = np.where(em, 0.0, proposed_scale[bn])
 
-    # Drop any bone that ended up entirely zeroed (e.g. butt weight that
-    # only reached finger verts now masked out) so it isn't added as a
-    # dead bone with no influence.
+    # Drop bones entirely zeroed (e.g. butt weight that only reached masked verts).
     proposed_scale = {bn: p for bn, p in proposed_scale.items()
                       if float(p.max()) > 1e-6}
     if not proposed_scale:
         return bone_names, xforms_by_bone, weights_by_bone
 
-    # Cap the SUM of proposed scale weights per vert at max_transfer
-    # of existing — so we never push more than half the armor vert's
-    # influence onto scale bones (the rest stays on the armor's
-    # rigid skeleton bones).
+    # Cap proposed scale weight sum at max_transfer of existing total.
     proposed_sum = np.zeros(armor_n, dtype=np.float64)
     for prop in proposed_scale.values():
         proposed_sum += prop
@@ -6875,9 +6019,7 @@ def add_scale_bone_weights(
     for bn in proposed_scale:
         proposed_scale[bn] = proposed_scale[bn] * scale_factor
 
-    # Now shrink existing armor weights by the SAME fraction the
-    # proposed scale will occupy. After this, total per vert still
-    # sums to existing_per_vert (typically 1.0).
+    # Shrink existing weights proportionally so per-vert total stays at 1.0.
     occupied = np.minimum(proposed_sum * scale_factor, target_cap)
     keep_fraction = 1.0 - occupied / existing_per_vert  # in [0.5, 1.0]
     weights_by_bone = {
@@ -6898,13 +6040,9 @@ def add_scale_bone_weights(
                 body_xforms[bn] = xf
         except Exception:
             pass
-    # If the shape already references the GPU bone cap, do NOT inject any NEW
-    # scale bone -- adding one forces _cap_skin_bone_count to evict an existing
-    # bone (which can be a body-morph or physics bone the piece needs), making
-    # the armour WORSE. A 3BA-built source already carries its morph bones, so
-    # we still add scale WEIGHT to those (existing) bones below; we only refuse
-    # to grow the bone list past the cap. New scale bones are admitted only
-    # while there is still room under the cap.
+    # At the GPU bone cap: add WEIGHT to existing scale bones but don't inject
+    # new ones (evicting existing bones makes things worse). New scale bones
+    # admitted only while room remains under the cap.
     present = set(bone_names)
     room = SKIN_PARTITION_BONE_CAP - len(present)
     for bn, prop in proposed_scale.items():
@@ -6959,33 +6097,15 @@ HDT_BONE_THRESHOLD = 0.4  # fraction of armor bones unknown to the body
                           # required to classify a shape as HDT-SMP rigged.
 
 
-# --- Chain-cloth -> soft-body conversion (gated option, 2026-06-05) --------
-# Authored HDT-SMP bone-CHAIN cloth (skirts/tassels rigged to custom
-# Skirt_NN / FR_NN chain bones + <generic-constraint> springs) reliably
-# COLLAPSES TO ORIGIN on the UBE race at runtime (wolf, ebony mail, cape —
-# all verified faithful copies; the chain just doesn't survive the UBE
-# actor). Per-vertex soft-body cloth, by contrast, works on UBE (it rides
-# the STANDARD body skeleton + body-physics scale bones, which the UBE race
-# has). This switch converts the former into the latter:
-#
-#   ON  -> every chain-preservation path is neutralized, so chain shapes
-#          fall through to the NORMAL cloth pipeline: body-fit reskin
-#          (compute_body_blend_skinning) + 3BA scale-bone weights
-#          (add_scale_bone_weights) give the cloth body-driven motion +
-#          body-physics jiggle, and `_generate_hdt_xml_for_dst` emits a
-#          collision-only per-vertex XML (no chain). Stable on UBE.
-#   OFF -> authored chains preserved verbatim (today's behaviour).
-#
-# Trade-off: the cloth no longer has its INDEPENDENT authored swing (the
-# chain is gone); it follows the body + jiggles with body physics. That's
-# the price of stability on UBE — keeping the authored chain has failed
-# verification on every test armor. Gated OFF so default output is byte-for-
-# byte unchanged. Toggle at RUNTIME (no rebuild) via the env var
-# CBBE2UBE_CHAIN_TO_SOFTBODY=1 — read at import so it propagates into the
-# ProcessPool conversion workers (they inherit the parent env). Set it
-# before launching the exe to convert affected armor as soft-body; leave it
-# unset for normal output. See the 5 `if CHAIN_TO_SOFTBODY` guards below in:
-# _shape_has_hdt_smp_rigging, _hdt_softbody_shape_names,
+# --- Chain-cloth -> soft-body conversion (gated option) --------------------
+# Authored HDT-SMP bone-chain cloth (Skirt_NN / FR_NN + constraints) can
+# collapse to origin on the UBE race. When set, all chain-preservation paths
+# are disabled and chain shapes fall through to the normal reskin pipeline,
+# producing per-vertex soft-body cloth (stable on UBE). Trade-off: no
+# independent swing — cloth follows the body and jiggles with body physics.
+# Default OFF (byte-for-byte output unchanged). Set CBBE2UBE_CHAIN_TO_SOFTBODY=1
+# before launch to convert affected armor as soft-body.
+# Guards: _shape_has_hdt_smp_rigging, _hdt_softbody_shape_names,
 # _source_hdt_needs_missing_chain_bones, _precreate_custom_bone_chains,
 # _finalize_hdt_physics.
 CHAIN_TO_SOFTBODY = (
@@ -7181,17 +6301,10 @@ def _recompute_vertex_normals(
 
 
 # Pubic-region bbox for the topology-hole closure pass on UBE BaseShape.
-# UBE 2.0 ships BaseShape with 5+ open boundary loops at the pubis (main
-# pubic opening, anus, vagina, and a few small detail features) — UBE
-# was authored expecting a TNG / SoS-style plug-mesh to render on top.
-# Without that plug, the holes are exposed visually under any lighting
-# that doesn't happen to mask them. _close_pubic_holes seals the loops
-# with fan triangulation using ONLY existing boundary verts (no new
-# verts added — injected BaseShape stays vert-identical to nude render).
-# The bounding box must exclude the NECK (Z=60-114 wide loop where
-# FemaleHead plugs in), WRIST (X up to ±28 where Hands plug in), and
-# ANKLE (Z=11-63 where Feet plug in) — those are DESIGNED-open loops
-# that other shapes attach into.
+# UBE ships BaseShape with open boundary loops at the pubis (for TNG/SoS plug-mesh).
+# _close_pubic_holes seals them via fan triangulation (no new verts added).
+# Bounds exclude DESIGNED-open loops: neck (Z=60-114), wrist (X up to +-28),
+# and ankle (Z=11-63) that other mesh shapes attach into.
 PUBIC_HOLE_Z_MIN = 63.0
 PUBIC_HOLE_Z_MAX = 72.0
 PUBIC_HOLE_X_BOUND = 6.0
@@ -7394,19 +6507,13 @@ def _copy_shape(src_shape, dst_nif, parent=None, override_verts=None,
     copy every controller or extra-data block. For typical armor shapes
     that's fine.
     """
-    # createShapeFromData requires verts as a sequence of tuples; numpy
-    # rows (when override_verts is an ndarray) trigger
-    # "expected c_float_Array_3 instance, got numpy.ndarray".
+    # createShapeFromData requires tuple sequences; numpy rows trigger a
+    # "expected c_float_Array_3 instance, got numpy.ndarray" error.
     if override_verts is not None:
         ov = np.asarray(override_verts)
         use_verts = [tuple(float(c) for c in row) for row in ov]
-        # Recompute normals from the new geometry — source normals
-        # are stale relative to snap/inflate-modified vert positions
-        # and produce speckled / noisy shading on the moved verts.
-        # Pass source normals as a sign reference so boundary verts
-        # at topology holes (where the recompute is underdetermined)
-        # don't flip inward and back-face-cull their triangles. See
-        # `_recompute_vertex_normals` boundary-vert fix note.
+        # Recompute normals: source normals are stale after warp/inflate.
+        # Pass source normals as sign reference so boundary verts don't flip.
         if src_shape.normals is not None and src_shape.tris is not None:
             src_n = np.asarray(src_shape.normals, dtype=np.float64)
             new_normals = _recompute_vertex_normals(
@@ -7419,30 +6526,20 @@ def _copy_shape(src_shape, dst_nif, parent=None, override_verts=None,
         use_normals = (list(src_shape.normals)
                        if src_shape.normals is not None else None)
 
-    # Triangle list: use override if provided, else source. With
-    # override_tris we KEEP the source per-vert normals as-is — the
-    # new fill triangles inherit existing vert normals (pointing
-    # outward from the body), giving the sealed surface continuous
-    # shading with the surrounding mesh. No recompute needed because
-    # verts haven't moved.
+    # With override_tris, keep source normals as-is: fill tris inherit existing
+    # normals (outward-pointing, continuous shading). No recompute needed.
     if override_tris is not None:
         ot = np.asarray(override_tris, dtype=np.int64)
         use_tris = [tuple(int(c) for c in row) for row in ot]
     else:
         use_tris = list(src_shape.tris)
 
-    # #scalebake: bake a non-identity GEOMETRY transform (scale/rotation) into
-    # the verts + normals so the output is an identity-transform skinned shape
-    # (skin-to-bone is adjusted below to preserve the bind). No-op for the
-    # identity transforms normal armor ships with.
+    # Bake non-identity geometry transform (scale/rotation) into verts+normals
+    # so the output is an identity-transform skinned shape (skin-to-bone adjusted).
     _bake_T = _shape_bake_matrix(src_shape)
-    # Pure-translation bake (bind-CHANGING, no STB adjust) ONLY on the copy path:
-    # override/rebuild verts are already body-positioned by the warp, so adding
-    # the source translation again would over-lift them. #scalebake-translation
-    # Shapes WITH a global_to_skin go through _align_scale_bone_stbs_to_verts
-    # instead (the real fix for skinned breast/sleeve sag is in the per-bone
-    # STBs, not a whole-shape vert lift) -- skip the vert-lift bake for them so
-    # the two corrections never double-apply. #breast-stb
+    # Pure-translation bake only on the copy path (override verts are already
+    # body-positioned). Shapes with global_to_skin use _align_scale_bone_stbs_to_verts
+    # instead; skip the vert-lift bake so both corrections don't double-apply.
     _bake_trans = (_shape_bake_translation(src_shape)
                    if (_bake_T is None and override_verts is None
                        and not src_shape.has_global_to_skin) else None)
@@ -7458,9 +6555,7 @@ def _copy_shape(src_shape, dst_nif, parent=None, override_verts=None,
             _nb /= (np.linalg.norm(_nb, axis=1, keepdims=True) + 1e-12)
             use_normals = [tuple(float(c) for c in r) for r in _nb]
     elif _bake_trans is not None:
-        # Lift the verts by the engine-ignored shape translation so the skin
-        # renders them at the intended (body) position. Normals are unchanged
-        # (a pure translation does not rotate them).
+        # Lift verts by the engine-ignored translation. Normals unchanged.
         _tx, _ty, _tz = _bake_trans
         use_verts = [(v[0] + _tx, v[1] + _ty, v[2] + _tz) for v in use_verts]
 
@@ -7482,14 +6577,8 @@ def _copy_shape(src_shape, dst_nif, parent=None, override_verts=None,
         except Exception:
             pass
 
-    # Shader: copy known value fields (flags, glossiness, etc.). DO NOT
-    # memcpy the whole struct because source has block-ID fields
-    # (textureSetID, controllerID, nameID, ...) that point at SOURCE-NIF
-    # blocks which don't exist in our destination — carrying them over
-    # produces a NIF the loader rejects.
-    #
-    # The list below is the value fields that affect rendering. Adding to
-    # it is safe as long as we don't include any *ID / count fields.
+    # Shader: copy value fields only (flags, glossiness, etc.). Don't memcpy the
+    # whole struct — block-ID fields point at source-NIF blocks and would break dst.
     _SHADER_VALUE_FIELDS = (
         "Shader_Flags_1", "Shader_Flags_2", "Shader_Type",
         "Alpha", "Emissive_Mult", "Glossiness", "Spec_Str",
@@ -7534,52 +6623,30 @@ def _copy_shape(src_shape, dst_nif, parent=None, override_verts=None,
     except Exception:
         pass
 
-    # Textures — src_shape.textures is a dict {slot_name: path}, NOT a list.
-    # Must be done AFTER shader memcpy because set_texture mutates the
-    # shader's texture slots, but does so on the destination shader buffer.
+    # Textures: must be done after shader copy (set_texture mutates dst shader buf).
     for slot_name, tex_path in (src_shape.textures or {}).items():
         if tex_path:
             new_shape.set_texture(slot_name, tex_path)
 
-    # Skin instance.
-    # IMPORTANT ordering per pynifly's add_bone docstring:
-    #   "This resets all the shape's bone information, so skin-to-bone
-    #    transforms and bone weights will need to be reset. Add all bones
-    #    first, then set transforms and weights."
-    # Previous version passed xform= to add_bone, which got clobbered by
-    # the next add_bone call. That meant all skin-to-bone matrices defaulted
-    # to identity at save time -> in-game the mesh exploded into long
-    # spikes because verts weighted to non-identity bones snapped to bone
-    # origins. Two-pass approach (add then set) fixes that.
-    #
-    # If `override_skin` is provided (= dict with keys 'bones', 'xforms',
-    # 'weights'), use those instead of pulling from src_shape. Used by the
-    # M6 proximity-blend re-skin path to install the blended weights in a
-    # SINGLE skin setup — calling skin()+add_bone again after _copy_shape
-    # corrupts the bone/weight mapping inside pynifly, so the re-skin must
-    # happen in this one pass.
+    # Skin instance. add_bone resets all bone info on each call, so:
+    # add all bones first, then set transforms and weights (two-pass).
+    # override_skin (if provided) installs blended weights in a single pass;
+    # calling skin()+add_bone after _copy_shape corrupts pynifly's mapping.
     if override_skin is not None:
         bone_names = override_skin["bones"]
         xforms_map = override_skin["xforms"]
         weights_map = override_skin["weights"]
-        # Backstop: never exceed Skyrim's per-partition GPU bone cap (render
-        # CTD on equip — Fuse00 Traveling Mage body = 82 bones). #166
+        # Cap to per-partition GPU bone limit to prevent equip CTD.
         bone_names, xforms_map, weights_map = _cap_skin_bone_count(
             bone_names, xforms_map, weights_map)
         _install_skin(new_shape, dst_nif, src_shape, bone_names,
                       xforms_map, weights_map, use_verts, _bake_T)
     elif src_shape.bone_names:
-        # Build the skin maps from source. A VERBATIM-copied source shape can
-        # reference > the per-partition GPU bone cap — dense modded skirts /
-        # dresses / robes ship 79-81 bones (Infantryman/Magecore/vampire/Kreis)
-        # -> palette overrun at draw -> equip CTD. We now KEEP every source bone
-        # and let the post-save `_split_oversize_partition` pass split the shape
-        # into <=cap-bone partitions instead of DROPPING bones (which evicted the
-        # body-morph bones a dress needs -> stopped tracking the morph). The cap
-        # is per-PARTITION, so the same mesh across two partitions is in budget.
-        # EXCEPTION: shapes the post-save pass SKIPS (body-inject / VirtualGround)
-        # can't be split later, so they still get the in-build trim as the CTD
-        # backstop. #177 (split) / #168 (was: trim).
+        # Source shapes can exceed the GPU bone cap (dense skirts ship 79-81).
+        # Keep all bones and let _split_oversize_partition split into partitions
+        # instead of dropping bones (which evicted morph bones). Exception:
+        # body-inject/VirtualGround shapes can't be split; they get the in-build
+        # trim as backstop.
         _vb_bones = list(src_shape.bone_names)
         _vb_x: dict = {}
         for bn in _vb_bones:
@@ -7605,27 +6672,10 @@ def _copy_shape(src_shape, dst_nif, parent=None, override_verts=None,
         _install_skin(new_shape, dst_nif, src_shape, bone_names,
                       xforms_map, weights_map, use_verts, _bake_T)
 
-    # Alpha — Option D / Fix 2.
-    # Previous version called save_alpha_property() without first creating
-    # the dst alpha property. Since pynifly's save only persists if
-    # `_alpha` is set, the call was a silent no-op — destination shapes
-    # ended up with has_alpha_property=False even when source had it
-    # (visible on a heavily-boned armor's Neck_Fur_Shell_1..4 layered transparent fur).
-    #
-    # Correct sequence: assign `has_alpha_property = True` first to make
-    # pynifly construct a fresh NiAlphaProperty on dst, then copy the
-    # value fields (flags, threshold) from src's alpha buf, then save.
-    # Don't memcpy the whole buf — it contains block-ID fields (nameID,
-    # controllerID, extraDataCount) that point at SOURCE-NIF blocks.
-    # Alpha — skip entirely if `skip_alpha=True` (cloth shapes that
-    # should morph via NioOverride BodyMorph). NioOverride empirically
-    # gates morph application on absence of NiAlphaProperty: shapes
-    # with an alpha block stay static even when their per-shape TRI
-    # entry has correct morph data. Hand-authored morphable UBE cloth
-    # ships WITHOUT alpha properties. Skipping the copy means trim
-    # transparency or alpha-tested edges render opaque, but morphs
-    # work. The trade-off is what we want for cloth shapes; for non-
-    # morphable shapes (metals, jewelry), keep the alpha copy.
+    # Alpha: set has_alpha_property=True first (creates dst NiAlphaProperty),
+    # then copy flags/threshold. Don't memcpy the whole buf (contains source
+    # block IDs). skip_alpha=True is for cloth shapes where NioOverride gates
+    # morph application on absence of NiAlphaProperty.
     if src_shape.has_alpha_property and not skip_alpha:
         try:
             new_shape.has_alpha_property = True  # creates dst _alpha
@@ -7648,22 +6698,13 @@ def _copy_shape(src_shape, dst_nif, parent=None, override_verts=None,
             except Exception:
                 pass
 
-    # NOTE: we don't call save_shader_attributes() — that adds a new
-    # shader block, leaving the auto-created one orphaned and (more
-    # importantly) the new block has dangling IDs. The shader property
-    # mutations above are written to the same buf the file mirrors, so
-    # they round-trip correctly via NifFile.save().
+    # Don't call save_shader_attributes() — it adds a new orphaned block with
+    # dangling IDs. Mutations to the existing buf round-trip via NifFile.save().
 
-    # Preserve the SOURCE skin-instance TYPE. createShapeFromData ALWAYS makes a
-    # BSDismemberSkinInstance, but HDT-SMP collision proxies (BodyColSkirt/Cape)
-    # and some cloth pieces (belts) ship with a plain NiSkinInstance in source.
-    # A BSDismemberSkinInstance carries a dismember (body-part slot) partition a
-    # NiSkinInstance does not; forcing it onto an SMP collision/cloth shape
-    # changes how the engine + HDT-SMP treat the shape, which is the long-
-    # standing #177 "NiSkinInstance -> BSDismember" physics-break root cause.
-    # Demote back so the converted shape's skin-instance type matches source
-    # exactly. (Demote drops the dismember partition but keeps bones/weights/
-    # skin-to-bone + the GPU NiSkinPartition.)
+    # Preserve source skin-instance type: createShapeFromData always makes
+    # BSDismemberSkinInstance, but HDT-SMP collision proxies and some cloth
+    # ship plain NiSkinInstance. Demote back if source was NiSkinInstance
+    # (keeps bones/weights/STB + NiSkinPartition; drops dismember partition).
     try:
         if (getattr(src_shape, "skin_instance_name", None) == "NiSkinInstance"
                 and new_shape.has_skin_instance):
@@ -8054,49 +7095,31 @@ def _actor_skeleton_bone_names() -> "set[str]":
     return names
 
 
-# --- Authored-physics param hardening (gated A/B fix, 2026-06-05) ----------
-# Some hand-authored chain rigs swing fine on most actors but COLLAPSE on the
-# UBE actor (wolf, furexarot ebony), while the converter handles them
-# identically to rigs that work (dwarven, same source mod + same copy path +
-# equivalent structure). We could not isolate a single offending field, so
-# this is an EMPIRICAL fix: pull the fragile rig's stability params into the
-# band the robust HDT-SMP-Vanilla-Armors rigs occupy, WITHOUT touching the
-# chain structure (so the cloth keeps swinging — unlike the soft-body switch
-# which removes the swing). Toggle: CBBE2UBE_HARDEN_PHYSICS=1 (default OFF,
-# read at import so it reaches ProcessPool workers). Tune the bounds below.
+# --- Authored-physics param hardening (gated) -------------------------------
+# Clamps fragile chain-rig stability params into the band that robust rigs
+# occupy, WITHOUT touching chain structure (cloth keeps swinging). Toggle:
+# CBBE2UBE_HARDEN_PHYSICS=1 (default OFF).
 HARDEN_AUTHORED_PHYSICS = (
     os.environ.get("CBBE2UBE_HARDEN_PHYSICS", "").strip().lower()
     in ("1", "true", "yes", "on")
 )
-# Mitigation for INCOMPLETE chain rigs (the wolf: missing its front SkirtF 4-7
-# chains, so the chain cloth has no closed cross-link ring and falls). Gated
-# per-mod (CBBE2UBE_STATIC_CHAINS=1): zero every dynamic chain mass so FSMP
-# treats the chain bones as STATIC (kinematic). Static bones hold their bind
-# pose relative to their NIF parent (Pelvis) -> the cloth keeps its authored
-# shape and follows the body instead of free-falling. Trade-off: no swing.
-# XML-only (no mesh reskin) so it can't repeat the cuirass regression, and it
-# only touches the per-armor XML's chain masses (body collision has no <mass>).
-# Apply by `convert`-ing ONLY the affected mod folder with this env set.
+# Zeroes dynamic chain masses so bones become static/kinematic — cloth holds
+# its authored shape and follows Pelvis. Mitigates incomplete rigs (e.g.
+# missing front-chain ring). Trade-off: no swing. XML-only, no mesh reskin.
+# Apply with CBBE2UBE_STATIC_CHAINS=1 on the affected mod folder only.
 STATIC_CHAINS = (
     os.environ.get("CBBE2UBE_STATIC_CHAINS", "").strip().lower()
     in ("1", "true", "yes", "on")
 )
-PHYS_INERTIA_FLOOR = 70.0     # corpus stable inertia 70-150; raise the twitchy lows
-PHYS_ANGDAMP_FLOOR = 0.9      # corpus angular damping 0.95-0.99; raise the under-damped
-PHYS_STIFFNESS_CAP = 50.0     # corpus stiffness mode 20; cap runaway springs (ebony 200)
-# THE measured differentiator (2026-06-05): chain rigs that COLLAPSE on UBE
-# (ebony) allow LINEAR link stretch (linear*Limit = +/-0.1) while every rig
-# that swings fine (bandit, dwarven) uses RIGID links (0). A stretchy heavy
-# chain elongates under gravity + UBE-body collision -> skirt droops to the
-# floor ("floats off / falls through"). Clamping linear limits to ~0 makes
-# the links rigid; the ANGULAR limits (the sway) are left untouched, so the
-# swing is preserved. This is the swing-keeping alternative to soft-body.
-PHYS_LINEAR_LIMIT_MAX = 0.0   # rigid link length (working=0; failing ebony=+/-0.1)
-# Only clamp SMALL accidental stretches (the ebony deviates from its rigid-
-# link SkirtF siblings at +/-0.1..1). LARGE linear limits (>=this) are a
-# deliberate free-flowing design (billowing cloaks/skirts at 15-25) and are
-# LEFT ALONE — a library scan shows 150/228 chain rigs are stretchy, most of
-# them intentionally, so a blanket clamp would stiffen flowing capes.
+PHYS_INERTIA_FLOOR = 70.0     # floor for stable inertia (typical range 70-150)
+PHYS_ANGDAMP_FLOOR = 0.9      # floor for angular damping (typical range 0.95-0.99)
+PHYS_STIFFNESS_CAP = 50.0     # cap for spring stiffness (typical ~20; ebony was 200)
+# Key differentiator: collapsing rigs allow linear link stretch (+/-0.1);
+# working rigs use rigid links (0). Clamp to rigid to prevent skirt droop while
+# leaving angular (sway) limits untouched. Only clamp SMALL stretches
+# (<PHYS_LINEAR_STRETCH_CLAMP_BELOW); large intentional flows (cloaks at 15-25)
+# are left alone.
+PHYS_LINEAR_LIMIT_MAX = 0.0
 PHYS_LINEAR_STRETCH_CLAMP_BELOW = 3.0
 
 
@@ -8187,9 +7210,9 @@ def _harden_physics_params(xml_path: Path) -> None:
 
 
 def _harden_hdt_xml_for_fsmp(xml_path: Path, nif) -> None:
-    """FSMP-compatibility hardening of an output HDT-SMP XML (general
-    hardening, 2026-05-29). Prunes references the engine can't resolve so
-    Faster HDT-SMP never loads a dangling shape/bone:
+    """FSMP-compatibility hardening of an output HDT-SMP XML. Prunes
+    references the engine can't resolve so Faster HDT-SMP never loads
+    a dangling shape/bone:
 
       * `<per-vertex-shape>` / `<per-triangle-shape name="Y">` whose Y is not
         a shape in the converted NIF (after collision-proxy re-import) -> drop
@@ -8305,33 +7328,20 @@ def _finalize_hdt_physics(dst_path: Path, src_nif_path: Path) -> bool:
                 string_value=rel, parent=nf.rootNode)
             dirty = True
 
-        # Collision-proxy preservation: the physics XML lists collision
-        # geometry via <per-triangle-shape>/<per-vertex-shape>. The
-        # converter drops textureless collision proxies (Col_Pants,
-        # Col_Strips, ...), so HDT-SMP has nothing to collide the chains
-        # against and they pass through each other (self-intersection).
-        # Re-import any referenced collision shape that's missing from the
-        # output, copied from the source NIF and flagged Hidden so it acts
-        # as invisible collision geometry (same trick as VirtualBody).
+        # Collision-proxy preservation: the converter drops textureless proxies
+        # (Col_Pants, Col_Strips, ...) so HDT-SMP chains self-intersect.
+        # Re-import missing collision shapes from source, flagged Hidden.
         try:
             xml_text = dst_xml_disk.read_text(errors="ignore")
             col_names = set(re.findall(
                 r'<per-(?:triangle|vertex)-shape\s+name="([^"]+)"', xml_text))
             present = {s.name for s in nf.shapes}
             missing = [n for n in col_names if n not in present]
-            # Physics-FRAMEWORK shapes (e.g. "Stabilizer"): textureless, carry
-            # NO per-triangle/-vertex collision geometry of their own, but are
-            # the ONLY source of certain physics BONES the XML drives (declared
-            # <bone> / referenced in <generic-constraint bodyA|bodyB>). The
-            # body-fit pass drops them as "textureless collision proxies", which
-            # removes their bones from the worn armor's skeleton -> the skirt/
-            # flap constraints anchored to those bones have NO target -> the
-            # cloth falls and never settles (elven cuirass front drape). Restore
-            # any source shape that supplies an XML-driven bone missing from
-            # every surviving shape. Re-imported VERBATIM (no warp): unlike the
-            # collision proxies these are just a vehicle to instantiate the
-            # chain bones (recreated at SOURCE bind by _precreate_custom_bone_
-            # chains via _copy_shape), so their verts must stay source-aligned.
+            # Physics-framework shapes (e.g. "Stabilizer"): textureless, but
+            # carry physics BONES the XML references (<bone>/bodyA/bodyB).
+            # Dropping them removes bones -> chain constraints have no target ->
+            # cloth falls and never settles. Re-imported VERBATIM (no warp) since
+            # their verts must match the chain bones recreated at source bind.
             framework_names: set[str] = set()
             xml_bones = set(re.findall(r'<bone\s+name="([^"]+)"', xml_text))
             xml_bones |= set(re.findall(r'\bbody[AB]="([^"]+)"', xml_text))
@@ -8351,13 +7361,8 @@ def _finalize_hdt_physics(dst_path: Path, src_nif_path: Path) -> bool:
                             missing.append(_ss.name)
                             framework_names.add(_ss.name)
                             needed_bones -= _sb
-                # Warp re-imported collision proxies to the UBE body using the
-                # SAME CBBE->UBE delta the cloth was warped with. Without this
-                # the proxy stays at CBBE size while the cloth wraps the bigger
-                # UBE body: the sim then collides the chains against geometry
-                # that's too small / sits inward, so cloth droops or clips
-                # into the body, and separate chains (straps vs skirt) rest at
-                # mismatched radii and interpenetrate. Matching weight (_0/_1).
+                # Warp collision proxies to match the UBE body; without this the
+                # proxy stays at CBBE size and chains collide at the wrong radius.
                 _col_cbbe_v = _col_delta = None
                 try:
                     _cb = _find_cbbe_base_body(weight_suf)
@@ -8387,8 +7392,7 @@ def _finalize_hdt_physics(dst_path: Path, src_nif_path: Path) -> bool:
                                 _col_ov = None
                         new_col = _copy_shape(src_shape, nf,
                                               override_verts=_col_ov)
-                        # Hide it: HDT reads geometry for collision, the
-                        # renderer skips Hidden (bit 0) shapes.
+                        # Hide (bit 0): HDT reads geometry; renderer skips Hidden.
                         tgt = new_col if new_col is not None else next(
                             (s for s in nf.shapes if s.name == cn), None)
                         if tgt is not None:
@@ -8396,13 +7400,8 @@ def _finalize_hdt_physics(dst_path: Path, src_nif_path: Path) -> bool:
                             tgt.flags = cur | 0x1
                         dirty = True
                     except Exception as _e:
-                        # Do NOT swallow silently: a dropped HDT physics shape
-                        # (collision proxy OR framework like Stabilizer) breaks the
-                        # armor's SMP at runtime (skirt/flap collapse). The big
-                        # parallel run intermittently fails a re-import on a
-                        # transient file lock (AV/MO2 scanning freshly-written
-                        # NIFs) -- when that happens the user must SEE it so they
-                        # can reconvert that NIF, instead of a mystery collapse.
+                        # Surface this: a dropped collision proxy/framework breaks
+                        # SMP at runtime (skirt/flap collapse).
                         import sys as _sys
                         print(f"  WARN: HDT physics shape '{cn}' failed to "
                               f"re-import into {dst_path.name}: {_e!r} -- SMP "
@@ -8414,25 +7413,19 @@ def _finalize_hdt_physics(dst_path: Path, src_nif_path: Path) -> bool:
         if dirty:
             atomic_nif_save(nf, dst_path)
 
-        # FSMP-compatibility hardening: prune the output XML so Faster HDT-SMP
-        # never sees a shape/bone it can't resolve. Runs AFTER the proxy
-        # re-import above so re-imported collision shapes count as present.
-        # Uses the final in-memory nf (which includes any re-imported shapes).
+        # FSMP-compatibility hardening: prune XML so FSMP never sees an unresolved
+        # shape/bone. Runs after proxy re-import so re-imported shapes count.
         try:
             _harden_hdt_xml_for_fsmp(dst_xml_disk, nf)
         except Exception:
             pass
-        # Optional empirical param-hardening (CBBE2UBE_HARDEN_PHYSICS=1):
-        # clamp fragile chain rigs into the stable param band while keeping
-        # their swing. No-op when the env switch is unset.
+        # Optional: clamp chain params (CBBE2UBE_HARDEN_PHYSICS=1).
         try:
             _harden_physics_params(dst_xml_disk)
         except Exception:
             pass
-        # Optional incomplete-rig mitigation (CBBE2UBE_STATIC_CHAINS=1):
-        # make chain bones static so the cloth follows the body instead of
-        # falling. No-op when unset. (Copy-path armor also re-applies this
-        # after _reauthor.)
+        # Optional: make chains static (CBBE2UBE_STATIC_CHAINS=1).
+        # Copy-path armor re-applies this after _reauthor.
         try:
             _make_chains_static(dst_xml_disk)
         except Exception:
@@ -8614,12 +7607,7 @@ def _find_ube_template_body() -> Path | None:
 def _find_ube_body_osd() -> Path | None:
     """Find a UBE body OSD (slider-deltas catalog) for M8 auto-TRI. Scanned
     from any mod's BodySlide ShapeData by name hint. Env override:
-    CBBE2UBE_UBE_OSD.
-
-    CACHED in `_BODY_DISCOVERY_CACHE`: this used to be called once PER NIF and
-    each call iterates every installed mod (3000+ on a big list) twice — it was
-    ~16% of warm convert time on a large modlist (176k stat() calls). The result is stable
-    for the process, so resolve once."""
+    CBBE2UBE_UBE_OSD. Result is cached (stable for the process lifetime)."""
     ck = "ube_osd"
     if ck in _BODY_DISCOVERY_CACHE:
         return _BODY_DISCOVERY_CACHE[ck]
@@ -8735,18 +7723,9 @@ def _is_body_skin_extremity(name: str) -> bool:
 
 
 def _should_drop_shape(name: str) -> bool:
-    """Whether a source shape should be skipped at convert time as a
-    "vestigial mashup leftover" — see call sites at the shape-iter loop
-    in phase 1 (~line 1170) and phase 2 (~line 5439).
-
-    RESTORED 2026-05-29 as no-op stub after accidental removal during
-    the merge-pipeline cleanup (#143). Pre-deletion behavior was
-    consistent with returning False (MaleUnderwearBody:0 was already
-    surviving into output, so the original function — if it filtered at
-    all — had narrow matches that didn't include the obvious
-    UnderwearBody case the comment mentions). Leaving as a no-op keeps
-    current observable behavior intact. Add real drop rules here if a
-    specific vestigial shape needs filtering."""
+    """Whether a source shape should be skipped as a vestigial mashup leftover.
+    Currently a no-op (returns False). Add rules here if a specific shape needs
+    filtering."""
     return False
 
 
@@ -8864,19 +7843,9 @@ def convert_nif_phase2(
     reskin_far_dist: float = RESKIN_FAR_DIST,
     reskin_k: int = RESKIN_K,
     auto_gen_tri: bool = True,
-    # BaseShape injection: ON by default. The injected UBE BaseShape
-    # is what makes the body under the armor a UBE body (proper UBE
-    # silhouette + UBE topology + UBE genital region as bone-driven
-    # geometry). Skyrim's slot-32 mechanic hides the actor's own
-    # femalebody when this armor equips — so without injection the
-    # player would have NO body under the cloth at all.
-    #
-    # Note for CBBE-3BA users: your femalebody.nif has separate
-    # `3BA_Vagina` and `3BA_Anus` mesh shapes that DO get hidden when
-    # this armor equips, replaced by UBE BaseShape's built-in genital
-    # region (driven by Pussy/Anus/Vagina/Clitoral scale bones in
-    # BaseShape's 29298-vert mesh). The geometry is there, just
-    # bone-rigged instead of as separate meshes.
+    # BaseShape injection: ON by default. Without it, a slot-32 armor has
+    # no body under the cloth (slot-32 hides the actor's femalebody). UBE
+    # BaseShape's genital region is bone-driven inside the 29298-vert mesh.
     inject_baseshape: bool = True,
     biped_slots: int = 0,
     alt_texture_shape_names: "set[str] | None" = None,
@@ -8939,13 +7908,8 @@ def convert_nif_phase2(
     dst_nif = pynifly.NifFile()
     dst_nif.initialize("SKYRIMSE", str(dst_path))
 
-    # Determine the BODYTRI path to use. Look for a pre-built armor TRI
-    # in the user's BodySlide output (the hand-authored armor's per-outfit
-    # TRI built by BodySlide with their preset). If found, use its path —
-    # those TRIs have the `_ForOutfits` slider bridges that RaceMenu needs
-    # to apply body morphs to armor shapes at runtime. Otherwise fall back
-    # to the body TRI (less likely to work but at least correctly points
-    # at an existing file).
+    # BODYTRI path: use a pre-built armor TRI if found (has _ForOutfits slider
+    # bridges for RaceMenu), otherwise fall back to the body TRI.
     armor_relpath = None
     try:
         # Compute relative path from a meshes root marker if present
@@ -8976,13 +7940,9 @@ def convert_nif_phase2(
                 body_tri_path = "\\".join(dst_parts[i + 1:])
                 break
 
-    # Pure UBE injection: copy UBE BaseShape (29298v) + VirtualBody from
-    # the UBE template body NIF passed via `ube_body_ref_path` — should
-    # be the user's preset-built `!UBE\Body\femalebody_tangent_1.nif`.
-    # Body under armor is byte-identical to nude; pubic boundary loops
-    # are sealed via fan triangulation (existing verts only). Slider
-    # morphs apply through the per-armor TRI at runtime, identical to
-    # how they apply on the nude body.
+    # Copy UBE BaseShape + VirtualBody from the UBE template NIF (user's
+    # preset femalebody_tangent). Pubic holes sealed by fan triangulation.
+    # Slider morphs apply through the per-armor TRI at runtime.
     injected: list[str] = []
     copy_err = _inject_ube_baseshape(
         ube_nif, dst_nif, body_inject_names, inject_baseshape, injected,
@@ -8995,25 +7955,16 @@ def convert_nif_phase2(
             reason=f"failed to copy UBE shape {shape_name!r}: {exc_repr}",
         )
 
-    # Hands and Feet are NOT injected into the slot-32 body NIF.
-    # Skyrim's biped slot mechanic only hides the actor's slot 32
-    # body when armor covers it — slots 33 (hands) and 37 (feet)
-    # keep rendering the actor's own ARMA-routed NIFs alongside.
-    # `scripts/integrate_ube_race_skins.py` patches UBE_AllRace.esp
-    # to route every UBE race's slot 33/37 to UBE meshes, so those
-    # slots already render UBE topology. Injecting them here too
-    # would duplicate the geometry and produce z-fight artifacts.
+    # Hands/Feet NOT injected: slot 33/37 ARMAs stay live alongside slot 32.
+    # UBE_AllRace.esp already routes those slots to UBE meshes; injecting
+    # them here would duplicate geometry and cause z-fight.
 
     # Disable VirtualBody rendering — see `_hide_virtual_body` docstring.
     _hide_virtual_body(dst_nif)
 
-    # BODYTRI attachment is deferred until AFTER armor shapes are copied —
-    # we attach it to the first armor shape (mirroring hand-authored UBE
-    # conversions which put BODYTRI on an armor shape like 3LeatherBeltArms,
-    # not on BaseShape). NioOverride may use a different code path for
-    # BODYTRI on armor shapes — applies morphs to all shapes in the TRI —
-    # vs BODYTRI on BaseShape — applies only to BaseShape itself.
-    # We'll add it after the source armor shapes are copied below.
+    # BODYTRI attached to the first armor shape (not BaseShape), mirroring
+    # hand-authored UBE NIFs where NioOverride morphs all TRI shapes via
+    # an armor-shape carrier. Added after armor shapes are copied below.
 
     if not injected:
         return ConvertResult(
@@ -9024,16 +7975,10 @@ def convert_nif_phase2(
         )
 
     # Build body MeshIndexes for the armor-fit pass (if enabled + refs available).
-    # CBBE body candidates: inline shape from source (best — author's actual
-    # design surface) or cbbe_body_ref_path (fallback). Detection:
-    #   * named one of 3BA/3BA_Anus/3BA_Vagina, OR
-    #   * heuristic body (>=4000 verts, >=40 bones, Z range >=70).
+    # CBBE body: inline shape from source or cbbe_body_ref_path fallback.
     cbbe_idx = ube_idx = None
-    # Source body verts+normals for the standoff-preserving conform (restores each
-    # cloth vert's original clearance after the warp over-projects onto the larger
-    # UBE breast). Detected UNCONDITIONALLY -- the body-delta warp + this conform
-    # run regardless of `fit_armor` (which gates only the separate fit_armor_to_ube
-    # correspondence step), so this must NOT live inside `if fit_armor:`.
+    # Source body verts+normals for standoff-preserving conform. Detected
+    # unconditionally: the conform runs regardless of `fit_armor`.
     src_body_v_p2 = src_body_n_p2 = None
 
     def _is_body_pynifly_shape(s):
@@ -9161,38 +8106,17 @@ def convert_nif_phase2(
         if not (s.textures or {}):
             skipped_collision.append(s.name)
             continue
-        # CRITICAL: hand/foot/glove/gauntlet shapes get NO vertex
-        # modification. Vertex-warping ops (bake_preset, fit_armor,
-        # body-delta warp, inflate, snap) all move verts based on
-        # CBBE→UBE body delta — but hands/feet bones are identical
-        # between CBBE and UBE skeletons, so the delta is zero where
-        # it should be and noisy elsewhere. Result: finger geometry
-        # gets bent and twisted into broken poses. The Iron Gauntlets
-        # Hands shape (6374 verts) was getting 3184 verts displaced
-        # by up to 2.6 units before this guard was added.
-        # The M6 reskin step also skips these shapes (see further down)
-        # — this just extends the same guard to the vertex-warping
-        # phase above.
+        # Gauntlet/boot shapes: warp + inflate with per-vertex extremity masking
+        # to protect fingers/toes. Body-delta ops use CBBE->UBE delta which is
+        # zero at hand/foot bones but noisy elsewhere, so digits need protection.
         if _shape_has_fine_animation_bones(s):
-            # Hand/foot/glove/gauntlet shape. We want it fully UBE-SHAPED
-            # so the shell conforms to the larger UBE forearm/calf rather
-            # than clipping through it. Apply the FULL body-delta warp
-            # (min_standoff buffer, no distance cap) over the whole piece;
-            # fingers conform to the UBE base hand (near-identical to CBBE,
-            # so negligible movement) while wrist/forearm/calf shift out to
-            # the UBE limb.
-            #
-            # Runtime body-morph response is split per vertex below: limb
-            # verts get 3BA scale bones, but finger/toe verts are masked
-            # out via _extremity_vert_mask so body morphs have ZERO effect
-            # on them (their finger/thumb/toe bone weights stay intact, so
-            # finger morphs still work).
+            # Full body-delta warp: conforms wrist/forearm/calf to UBE;
+            # digits stay via (1-extremity_frac) weighting. Limb verts get
+            # 3BA scale bones; digit verts are masked so body morphs skip them.
             hf_orig = np.asarray(s.verts, dtype=np.float64)
             hf_verts = hf_orig
             hf_verts_modified = False
-            # Extremity-fraction warp falloff: limb conforms to UBE, digits
-            # stay put (the UBE ref has no hand/foot mesh). See phase-1 path
-            # and _extremity_vert_fraction.
+            # Extremity fraction: limb gets full warp; digits stay put (no UBE digit mesh).
             hf_ef = _extremity_vert_fraction(s, len(hf_orig))
 
             # Body-delta warp — limb conforms to UBE shape, digits protected.
@@ -9298,13 +8222,10 @@ def convert_nif_phase2(
             })
             continue
         override = None
-        # Body-space offset: shapes authored in a shifted space (non-identity
-        # transform, e.g. a vanilla elven cuirass top at Z=-49 + a +120 Z
-        # transform) must have their warp/inflate/conform computed in BODY space,
-        # else they match the wrong body region (distortion / "top doesn't scale").
-        # Add it before the math, subtract before storage -> output mesh +
-        # transform unchanged (render identical), warp now correct. Zero for the
-        # identity-transform majority (no effect).
+        # Body-space offset: shapes with non-identity transforms must have
+        # warp/inflate/conform computed in body space or they match the wrong
+        # body region. Applied before math, removed before storage. Zero for
+        # identity-transform shapes (no effect).
         _off_p2 = shape_body_offset(s)
         _sv_body = np.asarray(s.verts, dtype=np.float64) + _off_p2
         if preset_template_verts is not None and preset_user_verts is not None:
@@ -9340,9 +8261,7 @@ def convert_nif_phase2(
                     ube_body_normals=body_norms_for_p2,
                     min_standoff=ARMOR_TO_SKIN_BUFFER,
                 )
-                # BodySlide-style safety inflation (see Phase 1 comment
-                # for full rationale). Slot-aware magnitude — see
-                # `_slot_aware_inflation_magnitude`.
+                # Slot-aware inflation to maintain standoff under body morphs.
                 _infl_mag_p2 = _slot_aware_inflation_magnitude(
                     biped_slots, shape=s)
                 if _infl_mag_p2 > 0 and body_verts_for_p2 is not None:
@@ -9360,12 +8279,8 @@ def convert_nif_phase2(
                         )
                     except Exception:
                         pass
-                # Standoff-preserving conform: the body-delta warp over-projects
-                # fitted layers onto the larger UBE breast (corset hugged at 0.58u
-                # on the 3BA body -> 1.8u off the UBE body = "chest too far out").
-                # Reel each cloth vert back to its OWN source clearance. Safe by
-                # construction (pull-in only, clamped >= min clearance, no-op for
-                # loose/already-tight cloth) -- see conform_to_source_standoff.
+                # Standoff-preserving conform: reel over-projected verts back to
+                # their source clearance (pull-in only, >= min clearance).
                 if (src_body_v_p2 is not None and body_verts_for_p2 is not None
                         and body_norms_for_p2 is not None):
                     try:
@@ -9377,13 +8292,8 @@ def convert_nif_phase2(
                         )
                     except Exception:
                         pass
-                # Groove-smooth (phase-1 parity): flatten warp-induced
-                # displacement grooves on body-conforming armor (breast "indent
-                # lines" where tight cloth stretches over the bigger UBE bust).
-                # Roughness-weighted + near-body gated, so loose/decorative
-                # shapes are untouched. Phase 2 (body-swap) was MISSING this —
-                # mirrors the phase-1 call. Same frame as the warp (_sv_body =
-                # source in body space; override = warped in body space).
+                # Groove-smooth: flatten warp-induced indent grooves on tight
+                # bust cloth. Mirrors phase-1 call; near-body verts only.
                 if override is not None and body_verts_for_p2 is not None:
                     try:
                         override = _smooth_warp_grooves(
@@ -9403,13 +8313,9 @@ def convert_nif_phase2(
                 )
             except Exception as e:
                 failed.append((f"{s.name}:snap", repr(e)))
-        # FINAL anti-poke pass (#175): push body-slot armor clear of the injected
-        # body so the actor's morph can't punch through (nipple/belly/thigh).
-        # Runs LAST (in body space, before the offset is removed) so nothing
-        # undoes it; measured vs the body that's baked into the output, so it
-        # always lands -- unlike the source-correspondence conform. Skips the
-        # body/hand-foot shapes, soft-body cloth, and HDT-SMP physics shapes
-        # (moving their verts would disturb the sim). See clear_armor_outside_body.
+        # FINAL anti-poke: push body-slot armor clear of the injected body.
+        # Runs LAST in body space so nothing undoes it; skips soft-body cloth
+        # and HDT-SMP physics shapes (moving verts would disturb the sim).
         if (body_verts_for_p2 is not None and body_norms_for_p2 is not None
                 and (biped_slots & (BIPED_SLOT32_BIT | BIPED_SLOT49_BIT))
                 and s.name not in RESKIN_SKIP_NAMES
@@ -9420,9 +8326,8 @@ def convert_nif_phase2(
             try:
                 base_v = (np.asarray(override, dtype=np.float64)
                           if override is not None else _sv_body)
-                # Morph-aware clearance: ramp standoff ONLY where the UBE body
-                # grows at runtime so static armor stops floating off the body
-                # (cached -> cheap to recompute here). None -> legacy fixed.
+                # Morph-aware clearance: ramp standoff where the body grows at runtime.
+                # None -> legacy fixed clearance.
                 try:
                     _antipoke_amp = _cached_body_morph_amplitude(
                         _find_ube_body_osd(), body_norms_for_p2,
@@ -9435,20 +8340,13 @@ def convert_nif_phase2(
                     morph_amplitude=_antipoke_amp)
             except Exception as e:
                 failed.append((f"{s.name}:antipoke", repr(e)))
-        # #177: keep self-simulated cloth (custom physics-chain bones: skirt/
-        # belt/cape) at its SOURCE position so it stays aligned with its chain
-        # bones (recreated at source bind). The warp/inflate/conform above move
-        # the cloth onto UBE while the bones stay at source -> the cloth is
-        # offset from its OWN bones -> SMP rest pose wrong -> collapse / fall
-        # through the floor. Per-vertex (by chain-weight fraction), so a part-
-        # physics part-body shape (skirt+chest) keeps the body/chest warped for
-        # the UBE fit while the skirt rides its bones. Runs LAST in body space,
-        # measured vs _sv_body (the source in the same space).
+        # Chain-bone cloth stays at SOURCE position so it aligns with its chain
+        # bones (recreated at source bind). Per-vertex by chain-weight fraction;
+        # hybrid shapes (skirt+chest) keep the chest warped.
         if override is not None:
             override = _physics_chain_nowarp_blend(s, _sv_body, override)
-        # Back to the shape's own (local) space; its transform is unchanged, so
-        # render is identical -- but the warp/inflate/conform above ran in body
-        # space (correct body region). No-op when _off_p2 is zero (identity xf).
+        # Back to local space; transform is unchanged, render identical.
+        # No-op when _off_p2 is zero.
         if override is not None and _off_p2.any():
             override = np.asarray(override, dtype=np.float64) - _off_p2
 
@@ -9484,15 +8382,9 @@ def convert_nif_phase2(
                         far_dist=_rf_p2,
                         k=reskin_k,
                     )
-                    # Add scale bones to ALL reskinned cloth (its only body-
-                    # tracking layer — cloth has no per-shape BODYTRI). The
-                    # 78-bone cap is the GPU-palette backstop. See Phase 1
-                    # comment. [reverts #164/#166]
-                    #
-                    # EXCEPTION — exposed body skin baked into the armor: skip,
-                    # so it co-moves with the nude body instead of over-
-                    # inflating past the corset (see Phase 1 comment +
-                    # `_is_exposed_body_skin_shape`). Detect on PRE-warp verts.
+                    # Add scale bones to reskinned cloth (only body-tracking layer).
+                    # Skip exposed body-skin shapes (already at blend==1; extra
+                    # scale bones over-inflate vs the real body).
                     if (ADD_SCALE_BONES_TO_CLOTH
                             and not _is_exposed_body_skin_shape(
                                 _sv_body, cbbe_verts_for_warp_p2)):
@@ -9521,9 +8413,7 @@ def convert_nif_phase2(
             "verts_modified": override is not None,
         })
 
-    # --- Z-fight auto-offset across all pass-1 verts ---
-    # Push inner-layer verts inward by ~half the z-fight threshold so
-    # the two layers separate. Only runs when we have body normals.
+    # Z-fight auto-offset: push inner-layer verts inward along body normals.
     if body_verts_for_p2 is not None and shape_jobs:
         try:
             from scipy.spatial import cKDTree
@@ -9533,9 +8423,7 @@ def convert_nif_phase2(
             zfight_offsets = detect_zfight_pairs(
                 zfight_map, body_verts_for_p2, body_norms_for_p2,
             )
-            # Convert per-vert scalar offsets to 3D deltas along the
-            # body's outward normal at each armor vert's nearest body
-            # neighbor. Apply to shape verts in-place.
+            # Convert scalar offsets to 3D deltas along nearest body normal.
             body_tree = cKDTree(body_verts_for_p2)
             for j in shape_jobs:
                 name = j["src"].name
@@ -9550,15 +8438,12 @@ def convert_nif_phase2(
         except Exception as e:
             failed.append(("zfight-fix", repr(e)))
 
-    # Cleavage depth separation — push inner-layer cloth verts backward
-    # so they sit a clean clearance behind the outer layer. Fixes static
-    # Z-fighting / mesh intersection visible at standstill.
+    # Cleavage depth separation: push inner-layer cloth verts behind the outer
+    # layer to fix static Z-fighting visible at standstill.
     if shape_jobs and body_verts_for_p2 is not None:
         try:
-            # robust normals: the source body's STORED normals are often
-            # zeroed (BodySlide output) -> signed clearance would be 0 for
-            # every layer -> no ordering. Compute from tris. Shared by the
-            # chest pass (source-order gate) + the abdomen order restore.
+            # Source body normals often zeroed in BodySlide output; compute
+            # from tris. Used by chest pass and abdomen order restore.
             src_body_n_p2 = (_body_normals_or_compute(cbbe_body_shape)
                              if cbbe_body_shape is not None else None)
             n_pushed = _separate_chest_layered_cloth_depth(
@@ -9588,10 +8473,9 @@ def convert_nif_phase2(
         except Exception:
             pass  # best-effort
 
-    # Layered-cloth weight sync (re-enabled 2026-05-29, GATED by breast-
-    # weight fraction so only genuine bust layers are synced — never
-    # decorative attachments). Keeps bra + over-fabric moving together
-    # under breast-jiggle. See _sync_chest_layered_cloth_weights.
+    # Layered-cloth weight sync: gated by breast-weight fraction (genuine
+    # bust layers only). Keeps bra + over-fabric moving together under
+    # breast-jiggle. See _sync_chest_layered_cloth_weights.
     if shape_jobs:
         try:
             n_synced = _sync_chest_layered_cloth_weights(shape_jobs)
@@ -9602,11 +8486,9 @@ def convert_nif_phase2(
         except Exception:
             pass  # best-effort; failure leaves shapes as-is
 
-    # Degenerate-triangle repair (LAST vertex op, after warp/inflate/conform AND
-    # the depth/zfight/sync passes that also move verts). Those passes can pinch
-    # thin fabric/metal tris flat -> they render as black slivers / holes ("dress
-    # mangled"). Restore each collapsed tri to its source-relative shape at the
-    # converted location. Source-degenerate folds are left alone. #177
+    # Degenerate-triangle repair (LAST vertex op): prior passes can pinch thin
+    # tris flat -> black slivers. Restore collapsed tris to source-relative shape.
+    # Source-degenerate folds are left alone.
     if shape_jobs:
         _n_demangle = 0
         _n_shapes_demangle = 0
@@ -9631,11 +8513,8 @@ def convert_nif_phase2(
             print(f"  degenerate-tri repair: un-pinched {_n_demangle} collapsed "
                   f"tri(s) across {_n_shapes_demangle} shape(s)", file=_sys.stderr)
 
-    # --- Pass 2: copy each shape verbatim, alpha preserved. ---
-    # NioOverride morphs alpha-having cloth correctly when bit 19
-    # of NiAVObject flags is set (see _reset_morph_flags). Don't
-    # strip alpha here — it'd kill texture cutout transparency
-    # (gaps between leather strips render as opaque).
+    # Pass 2: copy shapes. Alpha preserved — bit-19 (set by _reset_morph_flags)
+    # enables NioOverride morphs on alpha cloth without stripping transparency.
     first_armor_shape = None
     for j in shape_jobs:
         s = j["src"]
@@ -9656,37 +8535,19 @@ def convert_nif_phase2(
             failed.append((s.name, f"DROPPED (copy failed): {e!r}"))
             continue
 
-    # Attach BODYTRI per the regime chosen by `_pick_bodytri_carriers`:
-    #   * Slot-49 / no-body NIFs (a slot-49 no-body cloth armor class): SINGLE carrier
-    #     on the top-ranked cloth shape (e.g. a corset shape). Matches
-    #     hand-authored BodySlide convention.
-    #   * Slot-32 + BaseShape NIFs (a multi-piece armor Main, a replacer cuirass
-    #     class): MULTI-carrier — every qualifying cloth shape gets
-    #     its own BODYTRI block so NioOverride applies per-shape TRI
-    #     morphs to ALL of them (not just BaseShape).
-    #
-    # Rigid single-bone pieces that NioOverride would skip in
-    # BodyMorph still follow body morphs because M6 proximity-blend
-    # re-skin re-weighted them to multiple body bones — they move
-    # via standard skinning during body deformation, not BodyMorph.
-    # Falls back to first_armor_shape only if the cloth-shape filter
-    # produced an empty set.
+    # Attach BODYTRI via _pick_bodytri_carriers: single carrier for slot-49/no-body
+    # NIFs, multi-carrier for slot-32+BaseShape NIFs so NioOverride morphs all shapes.
+    # Rigid single-bone pieces follow morphs via M6 re-skin (standard skinning).
+    # Falls back to first_armor_shape if the filter returns empty.
     carriers_p2 = _pick_bodytri_carriers(dst_nif)
     if not carriers_p2 and first_armor_shape is not None:
         carriers_p2 = [first_armor_shape]
     if carriers_p2:
         try:
             from pyn.pynifly import NiStringExtraData  # type: ignore
-            # Apply morph-readiness cleanup (flags + shader normalize +
-            # alpha strip-attempt) to EVERY cloth shape in the NIF —
-            # not just the BODYTRI carrier. NioOverride at runtime
-            # walks every shape named in the TRI and applies its per-
-            # shape morphs; if the non-carrier cloth shapes still have
-            # Shader_Type=1 or non-canonical flags, NioOverride skips
-            # morphing them. Concrete failure: a cloak shape was in
-            # the TRI with 73 morphs but didn't move in-game because
-            # its Shader_Type=0/alpha=True/flags=0x8000e blocked
-            # NioOverride from applying the morphs.
+            # Apply morph-readiness cleanup to EVERY cloth shape, not just the
+            # carrier. NioOverride skips shapes with Shader_Type=1 or wrong flags
+            # even when they're listed in the TRI.
             cloth_shapes_to_clean = list(_pick_bodytri_carriers(dst_nif))
             carrier_names = {c.name for c in carriers_p2}
             for s in dst_nif.shapes:
@@ -9703,15 +8564,9 @@ def convert_nif_phase2(
             for s in cloth_shapes_to_clean:
                 _reset_morph_flags(s)
                 _normalize_shader_for_morph(s)
-                # Alpha block KEPT (settled rule): bit-19 (set by
-                # _reset_morph_flags) unblocks morphing on alpha shapes
-                # without stripping alpha. Stripping destroyed cutout
-                # transparency and only partially persisted, which
-                # corrupted the atlas opaque-diffuse detection.
                 _normalize_partitions(s)
 
-            # BODYTRI itself goes on the carrier ONLY (single-carrier
-            # convention).
+            # BODYTRI goes on carriers only.
             for target in carriers_p2:
                 already = False
                 for ed in target.extra_data():
@@ -9736,12 +8591,8 @@ def convert_nif_phase2(
     # this same extra-data on root.
     try:
         hdt_xml_path = _find_hdt_xml_for_armor(src_path)
-        # If the source XML drives physics-CHAIN bones our conversion
-        # stripped (a physics-chain bone /Skirt N_NN), drop the reference so the
-        # post-save generator below builds a fresh per-vertex soft-body
-        # XML on the standard bones we actually have (dst_nif isn't saved
-        # yet, so read its in-memory bone set). See
-        # _source_hdt_needs_missing_chain_bones.
+        # If source XML references chain bones we stripped, clear it so the
+        # post-save generator builds a fresh soft-body XML on standard bones.
         if hdt_xml_path is not None:
             try:
                 _dstbones: set[str] = set()
@@ -9781,19 +8632,10 @@ def convert_nif_phase2(
 
     atomic_nif_save(dst_nif, dst_path)
 
-    # (Removed 2026-05-29) Cloth-count reduction was here — see the
-    # phase-1 removal note above. After #139, every shape in the NIF
-    # gets a TRI entry and morphs in-game, so merging shapes to fit a
-    # fake "cap" was solving a problem that didn't exist. The merge
-    # function definition stays in this file as dead code pending #141
-    # (full retirement of the merge / texture-atlas pipeline).
-
-    # M8 auto-TRI generation. Now that the NIF is saved, build a BODYTRI
-    # file with body-slider deltas propagated to armor verts via K-NN
-    # IDW. Only runs when the BODYTRI logic above couldn't find a
-    # user-built TRI in the BodySlide Output mod. This is what makes
-    # armors without a published UBE sliderset (e.g. a heavily-boned armor) follow body
-    # morphs at runtime — no manual BodySlide step required.
+    # M8 auto-TRI generation. Propagates UBE body OSD deltas to armor verts
+    # via K-NN IDW. Only runs when no user-built BodySlide TRI was found.
+    # Makes armors without a published UBE sliderset follow body morphs at
+    # runtime without a manual BodySlide step.
     if auto_tri_dst is not None:
         try:
             ube_osd_path = _find_ube_body_osd()
@@ -9820,32 +8662,19 @@ def convert_nif_phase2(
                         if s.name in UBE_BODY_INJECT_NAMES:
                             body_in_dst.add(s.name)
                             continue
-                        # Always include; rely on per-vert extremity-frac
-                        # dampening inside generate_armor_tri. Replaces
-                        # the old all-or-nothing extremity-dominant
-                        # exclusion that dropped long sleeves whose hand
-                        # portion outweighed the sleeve portion. #147.
-                        # Body-space offset (shape transform) so the morph KNN
-                        # matches the right body region for shapes authored in a
-                        # shifted space (else "top doesn't scale"). BodyMorph is
-                        # index-based, so the resulting per-vert deltas apply
-                        # correctly to the local-space mesh.
+                        # Include all shapes; per-vert extremity-frac dampening
+                        # inside generate_armor_tri protects digits. Body-space
+                        # offset applied so KNN matches the right body region.
                         armor_shape_verts[s.name] = (
                             np.asarray(s.verts, dtype=np.float64)
                             + shape_body_offset(s))
                         ef = _extremity_vert_fraction(s, len(s.verts))
                         if ef is not None and ef.size:
                             armor_vert_ef[s.name] = ef
-                    # Pick the carrier (where BODYTRI extra-data goes)
-                    # so the generated TRI lists it first — matches
-                    # hand-authored UBE convention. _pick_bodytri_carriers
-                    # returns a single-shape list.
+                    # Carrier-first TRI (hand-authored UBE convention).
                     p2_carriers = _pick_bodytri_carriers(dst_check)
                     p2_carrier_name = p2_carriers[0].name if p2_carriers else None
-                    # Unified TRI: include BaseShape entry so the
-                    # single BODYTRI on the cloth carrier delivers both
-                    # cloth + body morphs. See phase-1 site for the
-                    # rationale (avoids double-BODYTRI shadowing).
+                    # Include BaseShape so one BODYTRI delivers both cloth + body morphs.
                     tri = generate_armor_tri(
                         armor_shape_verts,
                         body_verts_arr,
@@ -9893,9 +8722,7 @@ def convert_nif_phase2(
             result_reason = (result_reason + "; " if result_reason else "") \
                 + f"HDT XML gen failed: {e!r}"
 
-    # Multi-partition collapse (post-save reload pass). Must run AFTER
-    # all other re-saves (HDT XML inject above) so it doesn't clobber
-    # their extra-data. Reloads from disk so partition_tris is live.
+    # Multi-partition collapse (post all re-saves so extra-data isn't clobbered).
     _normalize_partitions_on_disk(dst_path)
 
     # FINAL HDT-SMP physics pass — runs LAST so the extra-data survives

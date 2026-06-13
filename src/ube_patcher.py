@@ -46,19 +46,11 @@ from . import esp
 # --------------------------------------------------------------------------
 # Batch caches (main process only)
 #
-# generate_ube_patch runs once PER SOURCE MOD. Three pieces of work inside it
-# depend only on the master_data_dirs (identical for every mod in a batch),
-# so without caching they were recomputed dozens of times — the dominant
-# wall-clock cost of a big run. These caches make that work happen once.
-#   * _MASTER_ESP_CACHE: parsed master ESMs (Skyrim.esm is 250MB; it was
-#     re-parsed ~2x per mod). Used READ-ONLY (we copy record payloads to build
-#     overrides; we never mutate the loaded master), so sharing one parse is
-#     safe. Keyed by absolute path string.
-#   * _UBE_RACES_CACHE: result of _discover_ube_races (walks every plugin in
-#     the data dirs — thousands on a big modlist). Pure function of the dirs.
-#   * _STRING_RESOLVER_CACHE: the STRINGS resolver per data dir (read-only).
-# Workers never touch these (the ESP-patch step is main-process only), so a
-# plain module-level dict is fine. clear_batch_caches() resets them.
+# generate_ube_patch is called once per source mod; these three caches make
+# expensive work (parsing 250MB Skyrim.esm, walking thousands of plugins for
+# UBE races, building STRINGS resolvers) happen once per batch instead of
+# once per mod. All are read-only after population; workers never touch them.
+# clear_batch_caches() resets them between batches.
 # --------------------------------------------------------------------------
 _MASTER_ESP_CACHE: "dict[str, esp.ESP]" = {}
 _UBE_RACES_CACHE: "dict[tuple, list]" = {}
@@ -81,9 +73,8 @@ def _load_master_cached(master_path: Path) -> "esp.ESP":
     return e
 
 
-# UBE race FormIDs as they appear in UBE_AllRace.esp's own master space
-# (top byte 0x03 — UBE_AllRace has 3 masters: Skyrim.esm, Update.esm, Dawnguard.esm)
-# All entries are 24-bit FormIDs (bottom 3 bytes); we add the master byte at codegen.
+# UBE race FormIDs in UBE_AllRace.esp's own master space (top byte 0x03;
+# 3 masters: Skyrim, Update, Dawnguard). Bottom 24 bits only; master byte added at use.
 UBE_RACE_FIDS_24 = [
     0x005734,  # UBE_BretonRace          [chosen as primary]
     0x005735,  # UBE_BretonRaceVampire
@@ -108,31 +99,25 @@ UBE_PRIMARY_BRETON_FID_24 = 0x005734
 # ARMA model-path subrecord signatures (the ones to prefix with "!UBE\")
 ARMA_MODEL_SIGS = (b"MOD2", b"MOD3", b"MOD4", b"MOD5")
 
-# Texture-hash subrecords that follow each model (MOD2->MO2T, etc.). In SSE
-# these are: u32 version, u32 count, u32 unknown, then count * 12-byte entries
-# {u32 fileHash, char[4] ext, u32 folderHash} => total len == 12 * (1 + count).
+# Texture-hash subrecords that follow each model (MOD2->MO2T, etc.).
+# SSE format: u32 version, u32 count, u32 unknown, then count * 12-byte entries
+# {u32 fileHash, char[4] ext, u32 folderHash}; valid iff len == 12 * (1 + count).
 ARMA_MODT_SIGS = (b"MO2T", b"MO3T", b"MO4T", b"MO5T")
 
-# A valid empty MODT (version=2, count=0). The hand-authored gold UBE armatures
-# all use this; the texture hashes have no runtime rendering effect (the game
-# reads textures from the NIF), so an empty block is always safe.
+# A valid empty MODT (version=2, count=0). Texture hashes have no runtime
+# rendering effect (textures are read from the NIF), so an empty block is safe.
 _EMPTY_MODT = struct.pack("<III", 2, 0, 0)
 
 
 def normalize_modt(data: bytes) -> bytes:
     """Return a structurally valid SSE MODT.
 
-    Some old/LE-ported source mods (Lass Armor, LunarGuard, New Leather,
-    Savior's Hide) ship ARMA models whose MO?T block is HEADERLESS — a raw
-    sequence of 12-byte texture entries with no (version,count,unknown)
-    header. Copied verbatim into our SSE-form-version records, the engine's
-    header-based parser reads the count from offset 4, which lands on the
-    first entry's "dds\\0" extension bytes (0x00736464 = 7,562,340). It then
-    tries to read 7.5M entries from a 24-48 byte buffer -> massive overread ->
-    EXCEPTION_ACCESS_VIOLATION at form/model init (deterministic startup CTD).
-
-    A well-formed MODT satisfies `len == 12 * (1 + count@4)`. If it doesn't,
-    replace it with the empty placeholder (matches the gold standard)."""
+    Old/LE-ported mods ship headerless MO?T blocks (raw 12-byte texture
+    entries, no version/count/unknown prefix). The engine reads the count
+    from offset 4, which lands on the first entry's "dds\\0" extension bytes
+    (0x00736464 = 7,562,340 entries) -> overread -> EXCEPTION_ACCESS_VIOLATION
+    at model init (startup CTD). A valid MODT satisfies len == 12*(1+count@4).
+    If it doesn't, replace with the empty placeholder."""
     if len(data) >= 12:
         count = struct.unpack_from("<I", data, 4)[0]
         if len(data) == 12 * (1 + count):
@@ -140,42 +125,32 @@ def normalize_modt(data: bytes) -> bytes:
     return _EMPTY_MODT
 
 
-# Vanilla Skyrim DLC master ESMs in canonical load order. Included
-# unconditionally in our patches' master lists — every Skyrim install
-# loads these and they serve as transitive masters for nearly every
-# source mod's records. Including them defensively prevents the
-# "FormID misroute through wrong master" startup crash class.
+# Vanilla DLC ESMs in canonical load order. Included unconditionally in
+# every patch's master list: source mods often reference DLC content even
+# when they don't formally list them as masters. Omitting them causes
+# FormID misroutes through the wrong master, which crashes on startup.
 VANILLA_DLC_MASTERS = (
     "Skyrim.esm", "Update.esm", "Dawnguard.esm",
     "HearthFires.esm", "Dragonborn.esm",
 )
 
 
-# ARMA subrecord that stores the additional-race FormIDs (one per occurrence).
-# Confusingly named MODL — same signature as the "model path" string in ARMO,
-# but in ARMA records MODL holds a 4-byte FormID.
+# Additional-race FormIDs in ARMA records use the MODL signature — the same
+# signature ARMO uses for armature refs, but in ARMA it's a 4-byte FormID.
 ARMA_ADDITIONAL_RACE_SIG = b"MODL"
 
 
 # Subrecords whose payload is a single 4-byte FormID. Used by the master-prune
-# pass to know what to renumber. Conservative set: ARMA + ARMO refs we know we
-# carry forward. If we ever copy in other record types we should extend this.
+# pass to know what to renumber. Conservative set: ARMA + ARMO refs we carry.
+# NAM0-3 are ARMA skin-texture TXST FormIDs and must be remapped; omitting them
+# causes exposed skin to reference the wrong TextureSet (the master-byte remap
+# skips everything not in this set). EAMT is u16, not a FormID, and is excluded.
 FORMID_SINGLE_SUBRECORD_SIGS = {
     # ARMA
     b"RNAM",   # primary race
     b"MODL",   # additional race (in ARMA) / armature ref (in ARMO)
     b"SNDD",   # footstep sound set
-    # ARMA base skin-texture TXST refs (NAM0 male / NAM1 female / NAM2 male-1st
-    # / NAM3 female-1st). 2026-06-10: these are FormIDs but were NOT in this set,
-    # so the merge/ESL-split/prune master-byte remap SKIPPED them -- a sibling of
-    # the bard MO?S bug. MEASURED on the Combined: any NAM ref to a non-index-0
-    # master broke (Kaidan kaiPrisonRags NAM0 UBE_AllRace.esp:000004 -> wrong
-    # DAc0da.esm:000004), so exposed skin rendered the wrong TextureSet. Refs to
-    # Skyrim.esm survived only because it is always master index 0. SAFE to add
-    # globally: in our output NAM0-3 appear ONLY on ARMA and are ALWAYS 4 bytes
-    # (verified), and the len==4 guard on every consumer is a backstop. Fault C
-    # already STRIPS these from minted coverage ARMAs, so only the legit
-    # per-source copies remain here -- which is exactly what must be remapped.
+    # ARMA skin-texture TXST refs (male/female 3rd/1st-person).
     b"NAM0", b"NAM1", b"NAM2", b"NAM3",
     # ARMO
     b"ZNAM",   # pickup sound
@@ -185,9 +160,9 @@ FORMID_SINGLE_SUBRECORD_SIGS = {
     b"BAMT",   # alt block material
     b"TNAM",   # template armor
     b"EITM",   # enchantment
-    b"EAMT",   # enchantment amount? (actually u16 — but never a FormID, exclude)
+    b"EAMT",   # enchantment amount -- discarded below (u16, not a FormID)
 }
-# strike EAMT (it's a u16, not a FormID)
+# EAMT is u16, not a FormID
 FORMID_SINGLE_SUBRECORD_SIGS.discard(b"EAMT")
 
 # Subrecords whose payload is an array of 4-byte FormIDs.
@@ -242,34 +217,27 @@ def remap_fid(fid: int, src_masters: list[str], src_filename: str,
 
 # ----- ARMA payload mutation ----------------------------------------------
 
-# ARMO/ARMA alternate-texture subrecords (MO2S/MO3S/MO4S/MO5S) contain
-# embedded TXST FormID references. Format:
-#   count (u32) +
-#   N * { name_len (u32) + name (N bytes) + TXST_FormID (u32) + index (u32) }
-# These FormIDs need master-byte translation just like FormIDs in any
-# FORMID_SINGLE_SUBRECORD_SIGS subrecord, but they're embedded inside
-# the variable-length MO?S payload so the standard remap doesn't reach
-# them. Without remap, color-variant ARMOs (a multi-piece armor Cape_Red,
-# Cape_Blue, etc.) all reference the SAME wrong master's record and
-# render with the same default texture.
+# Alternate-texture subrecords contain embedded TXST FormID references.
+# Format: count(u32) + N * {name_len(u32) + name(N bytes) + TXST_FormID(u32) + index(u32)}.
+# The standard FormID remap can't reach these nested refs; without explicit
+# remapping, all color-variant ARMOs hit the wrong master's TXST and render
+# with the same default texture.
 ALT_TEXTURE_SIGS = (b"MO2S", b"MO3S", b"MO4S", b"MO5S")
 
 
 def _reindex_alt_texture_payload(data: bytes,
                                  shape_index: "dict[str, int]") -> "bytes | None":
-    """Rewrite an MO?S alt-texture set to match a CONVERTED NIF's actual
-    shapes. Each entry is (3D name, TXST FormID, 3D index); the engine applies
-    the TXST to the geometry at that 3D INDEX. After conversion merges/reorders
-    shapes, the source's names+indices are stale, so variants recolor the wrong
-    shapes (or out-of-range indices = no effect). For each entry:
-      * if its name still exists in the NIF -> keep it, set index to the NIF's
-        real index for that name;
-      * if its name was merged away -> DROP it (its geometry now lives inside a
-        surviving shape that keeps its own entry — and within a uniform variant
-        every piece takes the same TXST, so the survivor carries the colour);
+    """Rewrite an MO?S alt-texture set to match a CONVERTED NIF's shapes.
+
+    Each entry is (3D name, TXST FormID, 3D index). After conversion merges
+    or reorders shapes, source indices are stale: variants recolor the wrong
+    shape (or hit an out-of-range index = no effect). For each entry:
+      * name still in NIF -> keep, update index to its real position;
+      * name merged away -> DROP (its geometry lives in a surviving shape that
+        carries the same TXST for that variant);
       * de-dupe by name (one entry per surviving shape).
-    `shape_index` = {shape_name: index} from the converted NIF. Returns the
-    rebuilt payload, or None on parse failure (caller keeps the original)."""
+    `shape_index` = {shape_name: index} from the converted NIF.
+    Returns rebuilt payload, or None on parse failure (caller keeps original)."""
     try:
         n = struct.unpack_from("<I", data, 0)[0]
         p = 4
@@ -301,14 +269,12 @@ def reconcile_alt_texture_indices(esp_path, meshes_root) -> int:
     """Post-conversion pass: fix stale alt-texture (MO2S/MO3S/MO4S/MO5S) 3D
     names+indices in an output ESP so color variants apply to the right shapes.
 
-    WHY: the converter merges/reorders a NIF's shapes (e.g. the morph-cap
-    merge collapses 17 shapes -> 9), but the ESP's alt-texture sets still carry
-    the SOURCE NIF's per-piece names and indices. The engine applies alt-texture
-    TXSTs by 3D index, so the stale indices recolor the wrong shapes or fall
-    out of range (no effect) -> "color variant shows wrong/base colour". This
-    reloads each ARMA's converted model NIF (MO2S->MOD2, MO3S->MOD3, etc.) and
-    rewrites the alt-texture set to the surviving shapes' real names+indices.
-    Returns number of ARMA records fixed. Run AFTER NIF conversion + merge."""
+    The converter merges/reorders NIF shapes but the ESP's alt-texture sets
+    still carry the source NIF's names and indices. Stale indices recolor the
+    wrong shapes or fall out of range (no effect). This reloads each ARMA's
+    converted NIF and rewrites the alt-texture set to the surviving shapes'
+    real names+indices. Returns number of ARMA records fixed.
+    Run AFTER NIF conversion + merge."""
     from pathlib import Path as _Path
     from . import nif_io
     meshes_root = _Path(meshes_root)
@@ -367,17 +333,11 @@ def reconcile_alt_texture_indices(esp_path, meshes_root) -> int:
 
 def reconcile_alt_texture_indices_all(primary_esp_path, meshes_root) -> int:
     """Reconcile alt-texture indices across the primary merged ESP AND every
-    ESL-split overflow piece (`<stem>.esp`, `<stem>2.esp`, `<stem>3.esp`, ...).
+    ESL-split overflow piece (`<stem>.esp`, `<stem>2.esp`, ...).
 
-    `merge_patches_split` overflows records past the ESL cap into sibling pieces,
-    and those pieces carry alt-texture (MO?S) sets too -- the Ballad-of-Bards
-    color variants land ENTIRELY in the overflow piece. Reconciling only the
-    primary left 174 overflow ARMAs with stale 3D indices (MEASURED 2026-06-10):
-    after the phase-2 BaseShape injection shifts every shape down one, `coat`@2
-    became @3, so the engine applied the coat's colour TXST to the shape now at
-    index 2 (`undershirt`) -> "textures don't line up / stretched, only on the
-    multi-colour variants". Globs the same `<stem>*<suffix>` family the split
-    writer uses. Returns the total ARMA records fixed across all pieces."""
+    merge_patches_split may spill records into sibling pieces; those pieces
+    carry alt-texture sets that also need reconciliation. Globs the same
+    `<stem>*<suffix>` family the split writer uses. Returns total records fixed."""
     from pathlib import Path as _Path
     p = _Path(primary_esp_path)
     total = 0
@@ -387,22 +347,18 @@ def reconcile_alt_texture_indices_all(primary_esp_path, meshes_root) -> int:
 
 
 # ----- spurious hands-slot fix (invisible hands) --------------------------
-# A forearm bracer / wrist guard whose ARMO claims biped slot 33 (Hands) but
-# whose mesh has NO hand geometry makes the engine hide the actor's nude-hands
-# skin and draw the armor's (non-existent) slot-33 geometry -> invisible hands
-# on UBE actors. Detection is mesh-driven: a real glove/gauntlet carries most of
-# its vertex weight on hand/finger/thumb bones; a bracer carries ~0 (only a thin
-# wrist-blend). Measured: Sand Snake vambraces 1.3-3.7% hand weight; real gloves
-# 71-97%. A 10% threshold separates them with wide margin.
+# A forearm bracer that claims biped slot 33 (Hands) but has no hand geometry
+# causes the engine to hide the actor's nude-hands skin and draw nothing instead
+# -> invisible hands. Detection: real gloves have 71-97% hand-bone vertex weight;
+# bracers have ~0-4%. A 10% threshold cleanly separates them.
 _HAND_BONE_SUBSTRINGS = ("Finger", "Thumb", "Hand")
 _HAND_WEIGHT_FRAC_CACHE: "dict[str, float | None]" = {}
 
 
 def _nif_max_hand_weight_fraction(nif_path) -> "float | None":
-    """Max over the NIF's shapes of (vertex weight on hand/finger/thumb bones /
-    total vertex weight). ~0 for a forearm bracer, high for a glove/gauntlet.
-    Returns None if the NIF can't be read -- callers treat None as "assume hands
-    present" so a real glove is NEVER stripped on uncertainty. Cached by path."""
+    """Max over the NIF's shapes of (hand/finger/thumb bone weight / total weight).
+    ~0 for a bracer, high for a glove. Returns None if unreadable -- callers treat
+    None as "assume hands present" so a real glove is never stripped. Cached."""
     key = str(nif_path)
     if key in _HAND_WEIGHT_FRAC_CACHE:
         return _HAND_WEIGHT_FRAC_CACHE[key]
@@ -431,24 +387,15 @@ def _nif_max_hand_weight_fraction(nif_path) -> "float | None":
 
 def fix_spurious_hand_slot(primary_esp_path, meshes_root, *,
                            threshold: float = 0.10) -> dict:
-    """Post-merge pass: clear biped slot 33 (Hands) from any ARMO whose own
-    (local) armatures ALL point at converted meshes with no real hand geometry
-    -- and from those armatures. Fixes "forearm bracer / wrist guard tagged with
-    the hands slot -> hides the nude hands, draws nothing -> invisible hands on
-    UBE actors" (the Sand Snake vambraces). Detection-driven (mesh hand-bone
-    weight), so it generalizes to any mis-tagged armor with no per-armor logic.
+    """Post-merge pass: clear biped slot 33 (Hands) from any ARMO whose local
+    armatures ALL have no real hand geometry (and from those armatures).
 
-    FAIL-SAFE: an ARMO is stripped ONLY when EVERY local armature is positively
-    confirmed hand-less (its mesh resolved and measured < threshold). Any
-    armature whose mesh is hand-bearing, unreadable, or unresolved -> the ARMO
-    is left untouched, so a real glove/gauntlet is never broken. Cross-master
-    (e.g. vanilla) armatures we can't load are ignored for the decision -- only
-    the converted UBE meshes that actually render on UBE actors drive it.
+    Fail-safe: strip only when EVERY local armature is positively confirmed
+    hand-less (mesh resolved and fraction < threshold). Unreadable or unresolved
+    meshes -> leave the ARMO untouched. Cross-master (vanilla) armatures are
+    ignored for the decision; only converted UBE meshes drive it.
 
-    Runs across the primary merged ESP + every ESL-split piece (mirrors
-    reconcile_alt_texture_indices_all). Returns a stats dict. Mutates only the
-    BOD2 slot u32 of the affected records (same byte length); esp.py round-trips
-    the rest verbatim."""
+    Runs across the primary ESP + every ESL-split piece. Returns a stats dict."""
     from pathlib import Path as _Path
     HANDS_BIT = 1 << (33 - 30)   # slot 33
     BODY_BIT = 1 << (32 - 30)    # slot 32
@@ -507,22 +454,15 @@ def fix_spurious_hand_slot(primary_esp_path, meshes_root, *,
                 if slots is None or not (slots & HANDS_BIT):
                     continue
                 if slots & BODY_BIT:
-                    # A piece that claims slot 32 (Body) along with Hands is a
-                    # full-body SUIT or SKIN, not a forearm bracer -- the hands
-                    # are covered by the suit/skin (its hand geometry lives in a
-                    # DIFFERENT armature we may not inspect here, e.g. a separate
-                    # hands mesh or the race skin). Stripping slot 33 from those
-                    # would un-cover the hands. A genuine forearm/wrist bracer
-                    # never claims the body slot. This single guard excludes body
-                    # skins (Astrid/zombie/creature), full robes, and animation
-                    # camera-equips -- all of which measured "handless" only
-                    # because the armature we saw was the torso mesh.
+                    # A piece claiming slot 32 (Body) alongside Hands is a
+                    # full-body suit or skin — its hand geometry lives in a
+                    # different armature. A real bracer never claims the body
+                    # slot; this guard excludes body skins and robes.
                     continue
                 local = [a for a in arms if a in arma_models]
                 if not local:
                     continue   # no local armature to inspect -> leave alone
-                # Never touch a race/nude skin armature (its hand mesh IS the
-                # hands). Belt-and-suspenders alongside the slot-32 guard above.
+                # Never touch a nude-skin armature (its hand mesh IS the hands).
                 if any(_is_nude_skin_model(m)
                        for a in local for m in arma_models[a]):
                     continue
@@ -583,12 +523,9 @@ def _remap_alt_texture_payload(data: bytes,
 
 
 def collect_alt_texture_shape_names(esp_paths) -> "set[str]":
-    """Scan ESP(s) for every shape NAME targeted by an ARMO/ARMA alt-texture
-    set (MO?S 3D-name field). Historically used to protect these shapes from
-    the (now-retired) cloth merge so color variants kept working; still kept
-    around because `reconcile_alt_texture_indices` (below) uses the same name
-    set to repair stale MO?S indices after pynifly's NIF copy reorders shapes.
-    General: collects whatever the source author named, no per-armor logic.
+    """Scan ESP(s) for every shape name targeted by an ARMO/ARMA alt-texture
+    set (MO?S 3D-name field). Used by reconcile_alt_texture_indices to repair
+    stale MO?S indices after NIF conversion reorders shapes.
     """
     names: set[str] = set()
     for path in esp_paths:
@@ -624,12 +561,9 @@ def collect_alt_texture_shape_names(esp_paths) -> "set[str]":
 
 
 def _force_female_priority(dnam: bytes) -> bytes:
-    """ARMA DNAM byte 0 = Male Priority, byte 1 = Female Priority. UBE is a
-    female-only body, so ensure the FEMALE priority is at least the male's (and
-    non-zero) -- a 'gender not listed' / male-only armature then actually renders
-    on a female actor instead of being deprioritised to nothing. Every other
-    DNAM field (weight-slider flags, detection sound, weapon adjust) is left
-    untouched. #UBE-female-only-policy."""
+    """ARMA DNAM byte 0 = Male Priority, byte 1 = Female Priority.
+    UBE is female-only: ensure female priority >= male priority and non-zero,
+    so male-only armatures render on female actors. Other DNAM fields untouched."""
     if len(dnam) < 2:
         return dnam
     b = bytearray(dnam)
@@ -667,20 +601,13 @@ def rebuild_arma_payload(source_payload: bytes, *,
     EDID is left untouched here (the caller can post-process).
     """
     out = b""
-    # Canonical ARMA subrecord order (what the CK emits and the engine's
-    # gold-standard UBE armatures use) is:
+    # Canonical ARMA subrecord order:
     #   EDID, BOD2/BODT, RNAM, DNAM, <models: MOD2/MO2T/MOD3/MO3T/MOD4.../NAM0-3>,
     #   <additional races: MODL...>, SNDD (footstep sound), ONAM (art object)
-    # i.e. the additional-race MODL block comes AFTER the models but BEFORE
-    # SNDD/ONAM. The previous code appended the MODL block at the very END,
-    # so on armatures that carry an SNDD (boots/feet) the layout became
-    # ...MOD3, MO3T, SNDD, MODL(races) — SNDD landing BEFORE the race list.
-    # That non-canonical order crashed the engine on load for exactly those
-    # SNDD-bearing armatures (every crash across attempts landed on a boots
-    # ARMA). Same bug class as the ARMO MODL-after-DATA fix. We therefore
-    # DEFER SNDD/ONAM into `trailing` and emit them after the MODL block so
-    # our output matches the gold-standard UBE_AllRace.esp armatures byte-for
-    # -byte in ordering.
+    # The additional-race MODL block must come AFTER models but BEFORE SNDD/ONAM.
+    # Appending the MODL block at the end placed it after SNDD on boot armatures
+    # -> non-canonical order -> engine crash on load. Defer SNDD/ONAM into
+    # `trailing` and emit them after the MODL block.
     trailing = b""
     saw_mod3 = saw_mod5 = False
     conv_mod2 = conv_mod4 = None   # converted (!UBE) male model paths, if produced
@@ -689,46 +616,36 @@ def rebuild_arma_payload(source_payload: bytes, *,
         if sig == b"RNAM":
             out += esp.encode_subrecord(b"RNAM", struct.pack("<I", new_primary_rnam))
         elif sig == ARMA_ADDITIONAL_RACE_SIG:
-            # Drop existing additional-race entries; we'll re-emit at the end
+            # Drop existing additional-race entries; re-emitted below.
             continue
         elif sig in (b"SNDD", b"ONAM"):
-            # Footstep-sound set / art-object: canonically AFTER the race list.
+            # SNDD/ONAM must come after the race list (deferred to `trailing`).
             trailing += esp.encode_subrecord(sig, data)
         elif sig == b"DNAM" and ensure_female:
-            # Force female availability (UBE is female-only). See _force_female_priority.
+            # Ensure female priority >= male priority (UBE is female-only).
             out += esp.encode_subrecord(b"DNAM", _force_female_priority(data))
         elif sig in ARMA_MODEL_SIGS:  # MOD2/MOD3/MOD4/MOD5 model paths
-            # Redirect each model to its converted !UBE\ mesh IF we produced one
-            # (converted_nif_exists). A mesh we DIDN'T convert (vanilla mesh the
-            # mod doesn't ship) keeps its original path so it loads the real mesh
-            # instead of a non-existent !UBE\ NIF (which would CTD on load).
-            # Texture-hash blocks (MO?T) copy through verbatim below.
+            # Redirect to the converted !UBE\ mesh only if we produced one.
+            # Unconverted meshes keep their original path; pointing at a missing
+            # !UBE\ NIF crashes the game on load.
             path = data.rstrip(b"\x00").decode("utf-8", errors="ignore")
             converted = bool(path) and (converted_nif_exists is None
                                         or converted_nif_exists(path))
             new_path = (path_prefix + path) if converted else path
-            # UBE is female-only: the FEMALE model (MOD3/MOD5) is what the actor
-            # renders. If we converted the MALE model (conv_mod2/4 set -> an !UBE
-            # mesh exists) but the female model did NOT convert (it kept an
-            # original path), that female path is either a CBBE-shaped mesh that
-            # won't fit UBE or -- for multi-mod armours whose female mesh name
-            # doesn't match the converted one (e.g. Penitus penitusF vs the
-            # converted ArmorPenitusF) -- a DEAD path, so the female UBE actor
-            # renders NOTHING (invisible). Redirect the female model to the
-            # converted male mesh (same target as the missing-MOD3 synth below)
-            # and drop its now-mismatched texture-hash. Non-body armours
-            # (helmets) never hit this: their MOD2 isn't converted either, so
-            # conv_mod2 stays None and the original female path is kept. #174
+            # UBE is female-only. If the male model was converted but the female
+            # model was NOT (wrong name, not shipped), the female UBE actor renders
+            # nothing. Redirect MOD3/MOD5 to the converted male mesh and drop the
+            # now-mismatched texture-hash. Non-body (helmets) are unaffected
+            # because their MOD2 isn't converted either, so conv_mod2 stays None.
             if (sig == b"MOD3" and not converted and ensure_female
                     and conv_mod2):
                 out += esp.encode_subrecord(b"MOD3", esp.encode_zstring(conv_mod2))
                 saw_mod3 = True
                 skip_mo3t = True
                 if male_fallback_log is not None:
-                    # record for the LAST-STEP re-check (#female-model-
-                    # priority): the original female path, so the fallback
-                    # can be undone once ALL mods have converted and the
-                    # female mesh turns out to exist somewhere in the list.
+                    # Record for the last-step female-model re-check:
+                    # restore_female_models() undoes this fallback when the
+                    # original female mesh is later found in the output.
                     male_fallback_log.append(
                         {"slot": "MOD3", "orig": path, "to": conv_mod2})
             elif (sig == b"MOD5" and not converted and ensure_female
@@ -750,38 +667,31 @@ def rebuild_arma_payload(source_payload: bytes, *,
                 elif sig == b"MOD4" and converted:
                     conv_mod4 = new_path
         elif sig in ALT_TEXTURE_SIGS and alt_texture_fid_remap is not None:
-            # Remap embedded TXST FormIDs from source's master space.
+            # Remap embedded TXST FormIDs from source master space.
             new_data = _remap_alt_texture_payload(data, alt_texture_fid_remap)
             out += esp.encode_subrecord(sig, new_data)
         elif sig in ARMA_MODT_SIGS:
-            # Drop the female texture-hash if we just redirected the female model
-            # to the (different) converted male mesh -- the hash no longer
-            # matches that mesh. #174
+            # Drop the female texture-hash when the female model was redirected
+            # to the converted male mesh -- the hash no longer matches.
             if sig == b"MO3T" and skip_mo3t:
                 skip_mo3t = False
                 continue
             if sig == b"MO5T" and skip_mo5t:
                 skip_mo5t = False
                 continue
-            # Normalize the texture-hash block. Old/LE-ported source mods ship
-            # headerless MO?T blocks that the SSE parser misreads as a 7.5M-entry
-            # array -> overread CTD at model init. See normalize_modt().
+            # Normalize the texture-hash block (headerless LE-ported mods cause
+            # a 7.5M-entry overread CTD). See normalize_modt().
             out += esp.encode_subrecord(sig, normalize_modt(data))
         else:
             out += esp.encode_subrecord(sig, data)
 
-    # UBE female-only policy: if the source armature has a MALE 3rd-person model
-    # (MOD2) but NO female one (MOD3), point the female model at the converted
-    # male mesh so a female UBE actor renders it instead of NOTHING (the
-    # male-only invisibility class). Gated on conv_mod2 being set -- i.e. that
-    # !UBE\ mesh actually exists on disk -- so we never synthesise a model that
-    # would CTD. Same for 1st-person (MOD4 -> MOD5). #UBE-female-only-policy.
+    # If the source has a male model (MOD2) but no female one (MOD3), synthesise
+    # MOD3 from the converted male mesh so a female UBE actor renders it.
+    # Gated on conv_mod2 existing -- never point at a missing !UBE NIF (CTD).
     if ensure_female and not saw_mod3 and conv_mod2:
         out += esp.encode_subrecord(b"MOD3", esp.encode_zstring(conv_mod2))
         if male_fallback_log is not None:
-            # orig=None: the armature never had a female model, so there is
-            # no original path to restore — the synth stands unless a later
-            # pass learns better (nothing to re-check for these).
+            # orig=None: the armature never had a female model; nothing to restore.
             male_fallback_log.append(
                 {"slot": "MOD3", "orig": None, "to": conv_mod2})
     if ensure_female and not saw_mod5 and conv_mod4:
@@ -790,8 +700,7 @@ def rebuild_arma_payload(source_payload: bytes, *,
             male_fallback_log.append(
                 {"slot": "MOD5", "orig": None, "to": conv_mod4})
 
-    # Append the new additional-race list (canonical position: after the
-    # models, before SNDD/ONAM), then the deferred SNDD/ONAM tail.
+    # Emit additional-race list (canonical: after models, before SNDD/ONAM).
     for fid in new_additional_race_fids:
         out += esp.encode_subrecord(ARMA_ADDITIONAL_RACE_SIG, struct.pack("<I", fid))
     out += trailing
@@ -813,32 +722,22 @@ def replace_arma_edid(source_payload: bytes, new_edid: str) -> bytes:
 
 # ----- ARMO override mutation ---------------------------------------------
 
-# In ARMO records, MODL is also overloaded — but with a different meaning.
-# The Armatures list uses subrecord signature MODL (FormID per entry), same
-# as in ARMA's additional-race list. Both are 4-byte FormID-per-occurrence.
+# In ARMO records, MODL encodes armature refs (FormID per entry), the same
+# signature as ARMA's additional-race list — both are 4-byte FormIDs.
 ARMO_ARMATURE_SIG = b"MODL"
 
 
 # ----- EDID -> human name synthesis ---------------------------------------
-# Used when we override an ARMO from a localized master (Skyrim.esm + DLCs)
-# whose FULL subrecord is an LSTRING ref into a `.STRINGS` file. We can't
-# emit the LSTRING in our non-localized patch — the engine would read it
-# as a raw zstring and get garbage. We also don't ship a STRINGS parser.
-# Without a FULL subrecord at all, the inventory UI hides the item (the
-# "any body slot vanilla item doesn't appear in inventory" bug). The
-# compromise: synthesize a readable name from the EDID.
+# When overriding a localized master ARMO (Skyrim.esm + DLCs), the FULL
+# subrecord is a 4-byte LSTRING ref into a .STRINGS file we can't emit in
+# a non-localized patch. Without FULL the inventory UI silently hides the
+# item. Synthesize a readable name from the EDID as a fallback.
 #
-# Strategy: drop common tag prefixes (`DLC1`/`DLC2`/`DLC1n` DLC markers,
-# then `Ench`/`Armor`/`Clothes`/`Armory` type prefixes, recursively),
-# then break CamelCase at upper-to-lower transitions and digit boundaries.
-# Mid-string occurrences of "Armor" are kept since they're usually part
-# of the natural English name (e.g. "Vampire Armor Red").
-# Example:
+# Strategy: strip DLC[N][n] prefix, then Ench/Armor/Clothes/Armory recursively,
+# then split CamelCase at transitions and digit boundaries. Examples:
 #   "ArmorIronCuirass"                     -> "Iron Cuirass"
 #   "EnchArmorDwarvenCuirassDestruction04" -> "Dwarven Cuirass Destruction 04"
 #   "DLC1ArmorVampireArmorGrayLight"       -> "Vampire Armor Gray Light"
-#   "DLC1nVampireBloodMagicRingDrainingClaws" -> "Vampire Blood Magic Ring Draining Claws"
-#   "DLC1EnchClothesVampireRobesDestruction02" -> "Vampire Robes Destruction 02"
 import re as _re
 _EDID_PREFIX_STRIP = (
     "Ench",          # before Armor — enchanted variant prefix
@@ -846,8 +745,7 @@ _EDID_PREFIX_STRIP = (
     "Clothes",
     "Armory",
 )
-# DLC prefix at start, optionally followed by a single lowercase letter
-# (e.g. "DLC1", "DLC2", "DLC1n" for Dawnguard night-variant records).
+# DLC prefix at start, optionally followed by a single lowercase letter.
 _DLC_PREFIX_RE = _re.compile(r"^DLC\d+[a-z]?")
 _CAMEL_SPLIT_RE = _re.compile(
     r"(?<=[a-z])(?=[A-Z])|(?<=[A-Za-z])(?=\d)|(?<=\d)(?=[A-Za-z])"
@@ -855,23 +753,16 @@ _CAMEL_SPLIT_RE = _re.compile(
 
 
 def synthesize_name_from_edid(edid: str) -> str:
-    """Generate a readable item name from an ARMO EDID. Used as a fallback
-    when overriding records whose original FULL was an LSTRING ref we
-    can't resolve.
-
-    Strips leading tag prefixes in order: DLC[N][n]? once, then any of
-    Ench/Armor/Clothes/Armory recursively, then splits CamelCase. Mid-
-    string occurrences of the type-prefix words are kept (they're
-    usually part of the natural item name).
+    """Generate a readable item name from an ARMO EDID (fallback when
+    the original FULL is an LSTRING we can't resolve). Strips DLC prefix,
+    then Ench/Armor/Clothes/Armory recursively, then splits CamelCase.
     """
     s = edid
-    # DLC prefix gets stripped first (single pass — there's never more
-    # than one DLC tag at the start).
+    # DLC prefix first (never more than one).
     m = _DLC_PREFIX_RE.match(s)
     if m and m.end() < len(s):
         s = s[m.end():]
-    # Strip known type prefixes recursively (Ench then Armor handles
-    # `EnchArmor*`; nested cases like `EnchClothes*` likewise unwind).
+    # Strip type prefixes recursively.
     changed = True
     while changed:
         changed = False
@@ -880,7 +771,6 @@ def synthesize_name_from_edid(edid: str) -> str:
                 s = s[len(prefix):]
                 changed = True
                 break
-    # Split CamelCase / digit boundaries.
     parts = _CAMEL_SPLIT_RE.split(s)
     name = " ".join(p for p in parts if p)
     return name or edid  # fall back to raw EDID if synthesis collapsed
@@ -889,36 +779,21 @@ def synthesize_name_from_edid(edid: str) -> str:
 # Body biped slot — slot 32 = chest/body.
 BODY_BIPED_SLOT = 32
 
-# Skyrim.esm DefaultRace FormID (low 24 bits). Every player-equippable
-# humanoid ARMA primary-races (RNAM) to this; beast/custom-race armatures
-# do not. Used to gate which non-body ARMAs are safe to extend to the UBE
-# races (adding human/mer UBE races to a beast armature crashes — see the
-# passthrough guard in generate_ube_patch).
+# Skyrim.esm DefaultRace FormID (low 24 bits). Used to gate non-body ARMA
+# passthrough: adding UBE races to a beast/custom-race armature crashes.
+# Every humanoid player-equippable ARMA's primary RNAM points here.
 _DEFAULT_RACE_LOW24 = 0x000019
 
 
 def add_slot32_to_bod2_payload(payload: bytes) -> tuple[bytes, bool]:
-    """Set biped slot 32 (the chest/body slot) on the ARMA/ARMO record's
-    BOD2 (or legacy BODT) bipedObjectSlots field. Returns the new payload
-    and a bool indicating whether anything actually changed.
+    """Set biped slot 32 (body) on an ARMA/ARMO's BOD2/BODT bipedObjectSlots.
+    Returns (new_payload, changed_bool).
 
-    Why this exists: NioOverride's BodyMorph engine, which applies TRI-
-    driven body-slider deformations to in-game shapes, only walks shapes
-    that belong to ARMAs with slot 32 set. Slot-49-only cloth (corsets,
-    bras, panties, skirts — what CBBE mods typically use for "underwear"
-    layer pieces) inherits zero body-slider deformation no matter how
-    perfectly we author its BODYTRI / TRI.
-
-    Promoting slot-49-only cloth to ALSO cover slot 32 makes those
-    pieces respond to body sliders. The trade-off: slot 32 is the chest
-    slot, so the engine will treat the cloth as a chest piece for
-    equip-conflict purposes (e.g. equipping it unequips a cuirass).
-    This matches behavior seen in hand-authored UBE cloth conversions.
-
-    Caller is responsible for the policy decision of WHEN to apply this
-    (typically only when the linked NIF actually has BODYTRI on cloth
-    shapes we ourselves injected — promoting unconditionally would
-    break jewelry/accessory ARMAs that legitimately want slot 49 only).
+    NioOverride's BodyMorph only deforms shapes on ARMAs with slot 32 set.
+    Slot-49-only cloth (corsets, skirts) never receives body-slider deformation.
+    Promoting to slot 32 enables BodyMorph, at the cost of equip-conflict with
+    cuirasses — matching behaviour of hand-authored UBE cloth conversions.
+    Caller decides when to apply this (typically when the NIF has BODYTRI).
     """
     bit = BODY_BIPED_SLOT - 30  # slot 32 -> bit 2 of the slots field
     out = b""
@@ -928,9 +803,7 @@ def add_slot32_to_bod2_payload(payload: bytes) -> tuple[bytes, bool]:
             slots = struct.unpack_from("<I", data, 0)[0]
             if not (slots & (1 << bit)):
                 new_slots = slots | (1 << bit)
-                # Preserve the rest of the BOD2/BODT struct verbatim
-                # (BOD2 = u32 slots + u32 armor_type; BODT may have a
-                # third u32 — we don't care, just splice the head).
+                # Splice only the first u32 (slot bits); rest is verbatim.
                 new_data = struct.pack("<I", new_slots) + data[4:]
                 out += esp.encode_subrecord(sig, new_data)
                 changed = True
@@ -940,18 +813,12 @@ def add_slot32_to_bod2_payload(payload: bytes) -> tuple[bytes, bool]:
 
 
 def clear_slot33_from_bod2_payload(payload: bytes) -> tuple[bytes, bool]:
-    """Clear biped slot 33 (Hands) from an ARMA/ARMO record's BOD2 (or legacy
-    BODT) bipedObjectSlots field, preserving every OTHER slot bit and the rest
-    of the struct verbatim. Returns the new payload and whether it changed.
-    Mirror of add_slot32_to_bod2_payload (opposite direction, different bit).
+    """Clear biped slot 33 (Hands) from an ARMA/ARMO's BOD2/BODT, preserving
+    all other slot bits. Returns (new_payload, changed_bool).
 
-    Why: a forearm bracer / wrist guard whose ARMO claims slot 33 (Hands) but
-    whose mesh has NO hand geometry makes the engine HIDE the actor's nude-hands
-    skin partition (slot 33) and draw the armor's slot-33 geometry instead --
-    but there is none, so the hands vanish (invisible hands on UBE actors). The
-    fix is to un-claim slot 33 so the nude hands render. See fix_spurious_hand_slot
-    for the policy decision of WHEN to apply this (only when the mesh genuinely
-    lacks hands -- never on a real glove/gauntlet)."""
+    A bracer claiming slot 33 with no hand geometry hides the nude-hands skin
+    and draws nothing -- invisible hands. See fix_spurious_hand_slot for when
+    to apply this (only when the mesh is confirmed hand-less)."""
     bit = 33 - 30  # slot 33 -> bit 3 of the slots field
     out = b""
     changed = False
@@ -970,14 +837,10 @@ def clear_slot33_from_bod2_payload(payload: bytes) -> tuple[bytes, bool]:
 def add_arma_to_armo_payload(source_payload: bytes, new_arma_fid: int) -> bytes:
     """Insert `new_arma_fid` into an ARMO's Armatures list (MODL entries).
 
-    The new MODL goes IMMEDIATELY AFTER the last existing MODL — preserving
-    canonical Skyrim ordering where all MODLs are grouped before DATA. If
-    no MODL exists, splices before DATA. If neither MODL nor DATA exists
-    (atypical), appends at end as a fallback.
-
-    Why position matters: Skyrim's ARMO parser stops reading the armatures
-    list at DATA, so any MODL after DATA is silently ignored — the engine
-    never sees the new armature, and a UBE-race player sees no UBE armor.
+    Inserts immediately after the last existing MODL, before DATA.
+    Skyrim's ARMO parser stops reading armatures at DATA — any MODL after
+    DATA is silently ignored, making the new UBE ARMA invisible to the engine.
+    Falls back to splice-before-DATA or append if no MODL/DATA exists.
     """
     pieces = list(esp.iter_subrecords(source_payload))
     last_modl_index = -1
@@ -1018,28 +881,14 @@ def _scan_master_armos_referencing(
     master_path: Path,
     referenced_arma_fids_in_master_space: set[int],
 ) -> list[esp.Record]:
-    """Walk an ESM and return ARMO records whose armature list contains
-    any FormID in `referenced_arma_fids_in_master_space`. Returns the
-    records verbatim (in the master's own master space — top byte 0x00
-    for self-defined FormIDs).
+    """Walk an ESM and return ARMO records whose armature list references
+    any FormID in `referenced_arma_fids_in_master_space`. Records are returned
+    in the master's own address space.
 
-    Why this exists: replacer mods (a vanilla-replacer mod, vanilla armor
-    replacers in general) commonly override only ARMA records to swap
-    in their custom meshes — the corresponding ARMOs live in Skyrim.esm
-    or another master. When we generate UBE-variant ARMAs of those
-    overridden ARMAs, the original ARMO in the master still points to
-    the master's pre-UBE armature list, so a UBE-race actor equipping
-    the armor finds no race-matching ARMA and renders nothing.
-
-    To fix, the patcher must create override ARMO records in the patch
-    ESP that list both the original ARMA AND our new UBE ARMA. To know
-    WHICH master ARMOs need overriding, we scan ARMO records in the
-    masters listed by the source ESP.
-
-    Performance: our ESP parser doesn't decompress record payloads — it
-    splits records by sig+size headers — so loading Skyrim.esm (250MB,
-    2762 ARMOs) takes ~0.2s. We only check ARMO records and only read
-    their MODL (armature ref) subrecords.
+    Needed because replacer mods often override only ARMA records while the
+    parent ARMOs live in Skyrim.esm. Without an ARMO override the engine finds
+    no UBE-race-matching ARMA and renders nothing for UBE-race actors.
+    Skyrim.esm (250MB, 2762 ARMOs) loads in ~0.2s via header-only parsing.
     """
     try:
         master = _load_master_cached(master_path)
@@ -1080,46 +929,26 @@ def _find_master_path(master_name: str, data_dirs: list[Path]) -> Path | None:
     return None
 
 
-# Substrings (lowercased) that mark a RACE record's EDID as a UBE-targeted
-# race extension — added to the patch's ARMA additional-race list so the
-# new UBE armatures fire for actors using these races.
+# Substrings (lowercased) in a RACE EDID that identify a UBE-targeted race
+# extension — added to each ARMA's additional-race list.
 UBE_RACE_EDID_MARKERS = ("ube",)
 
-# Substrings (lowercased) that EXCLUDE a race even if it matches a marker.
-# Use for unofficial / community UBE race patches that aren't ready for
-# production — their armor weighting / skeleton may not match the official
-# UBE setup, so equipping our converted ARMA on these races can produce
-# worse results than no patch at all. The user explicitly excluded
-# Khajiit-flavored UBE races on 2026-05-25 for this reason.
+# Substrings that EXCLUDE a race even if it matches UBE_RACE_EDID_MARKERS.
+# For unofficial UBE patches whose skeleton/weighting may not match the
+# official UBE setup (equipping our ARMA could be worse than no coverage).
 UBE_RACE_EDID_EXCLUDE = ("khajiit",)
 
 
 def _discover_ube_races(data_dirs: list[Path]) -> list[tuple[str, int, str]]:
     """Walk every plugin in `data_dirs` and return all RACE records whose
-    EDID contains a UBE marker substring.
+    EDID contains a UBE marker substring (excluding UBE_AllRace.esp itself,
+    whose races come from UBE_RACE_FIDS_24). Returns a list of
+    (plugin_filename, race_fid_in_plugin_space, edid) triples.
 
-    Returns a list of (plugin_filename, race_fid_in_plugin_space, edid)
-    triples. The FormID is in the plugin's OWN master space (top byte =
-    len(plugin.masters) for self-defined records); the caller is
-    responsible for remapping when emitting into a patch.
-
-    De-dupes by EDID across plugins (first-seen wins) so an UBE_AllRace
-    base race isn't double-counted when a Khajiit patch redefines it.
-    UBE_AllRace.esp itself is excluded — its races are added separately
-    via UBE_RACE_FIDS_24 to preserve the well-known primary-race choice.
-
-    Why this exists: UBE_AllRace.esp only ships the 8 base human/mer
-    races + their vampire variants (16 total). Khajiit, Argonian, and
-    custom-race players use add-on plugins (KhajiitUBE.esp, custom
-    UBE_*Race patches) that define additional UBE-skeleton races. If
-    our patch's ARMA additional-race list doesn't include those races,
-    Khajiit/Argonian/custom-race players see no UBE armor — they fall
-    back to the vanilla ARMA, which loads the CBBE-shaped NIF on a UBE
-    skeleton (i.e. the bug this whole project exists to fix).
-
-    Memoized by the data-dir set: this walks every plugin in `data_dirs`
-    (thousands on a big modlist, ~3s) and is called once per source mod with
-    the SAME dirs, so without the cache a 79-mod batch repeats it 79 times.
+    UBE_AllRace.esp only covers 8 base races + vampires (16 total). Players
+    using Khajiit/Argonian/custom-race UBE patches need those additional races
+    in our ARMA list or they see no UBE armor. De-duped by EDID (first-seen).
+    Memoized by data-dir set (walking thousands of plugins takes ~3s).
     """
     cache_key = tuple(str(d) for d in data_dirs)
     cached = _UBE_RACES_CACHE.get(cache_key)
@@ -1143,8 +972,7 @@ def _discover_ube_races(data_dirs: list[Path]) -> list[tuple[str, int, str]]:
             if rp in seen_paths:
                 continue
             seen_paths.add(rp)
-            # Skip UBE_AllRace.esp — its races are added via the
-            # hardcoded UBE_RACE_FIDS_24 path with a known primary.
+            # Skip UBE_AllRace.esp — handled via UBE_RACE_FIDS_24.
             if p.name.lower() == "ube_allrace.esp":
                 continue
             try:
@@ -1180,28 +1008,15 @@ def _discover_ube_races(data_dirs: list[Path]) -> list[tuple[str, int, str]]:
 def restore_female_models(patches_dir: "str | Path",
                           output_mod_dir: "str | Path",
                           path_prefix: str = "!UBE\\") -> dict:
-    """LAST-STEP female-model re-check over every per-mod patch
-    (#female-model-priority).
+    """Last-step female-model re-check across every per-mod patch.
 
-    generate_ube_patch points an ARMA's FEMALE model (MOD3/MOD5) at the
-    converted MALE mesh when no converted female mesh is visible AT PATCH
-    TIME (#174 / #UBE-female-only-policy) — the right call in isolation
-    (never-invisible), but patches are generated per-mod DURING conversion,
-    so a female mesh converted by ANOTHER mod (or later in the same run) is
-    invisible to that decision and the armature ships with its female model
-    overwritten by the male one. This pass runs once ALL mods have
-    converted: every recorded fallback (the *.male_fallbacks.json sidecars)
-    whose ORIGINAL female mesh now exists converted in the output gets its
-    MOD3/MOD5 re-pointed back at the female mesh. Male fallbacks survive
-    only where NO converted female mesh exists anywhere in the list.
-
-    Safe by construction: only re-points at !UBE meshes verified on disk
-    (exact named file — the deploy-both weight rule means a healthy
-    conversion shipped it). Idempotent: a slot that no longer carries the
-    recorded male path (already restored, or hand-edited) is left alone.
-    Synth entries (orig=None: the armature never had a female model) have
-    nothing to restore and are skipped. Returns
-    {checked, models_restored, patches_changed}."""
+    generate_ube_patch falls back to pointing MOD3/MOD5 at the converted male
+    mesh when no converted female mesh is available AT PATCH TIME. This pass
+    runs once ALL mods have converted: any recorded fallback
+    (*.male_fallbacks.json sidecars) whose original female mesh NOW exists in
+    the output has its MOD3/MOD5 re-pointed at the female mesh. Fallbacks
+    survive only where no converted female mesh exists anywhere. Idempotent.
+    Returns {checked, models_restored, patches_changed}."""
     import json as _json
     patches_dir = Path(patches_dir)
     meshes_root = Path(output_mod_dir) / "meshes" / path_prefix.strip("\\/")
@@ -1214,8 +1029,8 @@ def restore_female_models(patches_dir: "str | Path",
             entries = _json.loads(sidecar.read_text(encoding="utf-8"))
         except Exception:
             continue
-        # fid -> {slot: (recorded male path, restored female path)} for the
-        # entries whose original female mesh is now on disk.
+        # fid -> {slot: (recorded_male, restored_female)} for entries whose
+        # original female mesh is now present in the output.
         todo: "dict[int, dict[str, tuple[str, str]]]" = {}
         for e in entries:
             orig, slot, fid = e.get("orig"), e.get("slot"), e.get("fid")
@@ -1295,35 +1110,22 @@ def generate_ube_patch(
     src = esp.ESP.load(source_esp_path)
     src_filename = source_esp_path.name
 
-    # Predicate: will we actually produce a converted NIF at the !UBE\ path for
-    # this ARMA model? Only then is it safe to redirect the ARMA there; if not
-    # (vanilla mesh the mod doesn't ship, a male model we never touch, a mesh
-    # the armour filter skipped), keep the original path — pointing an ARMA at
-    # a non-existent !UBE\ NIF CRASHES the game on load. Uses the PLANNED set
-    # (not the filesystem) because the patch is generated before the NIFs are
-    # written. None => legacy always-prefix (callers without conversion ctx).
+    # True iff we will produce a converted NIF at the !UBE\ path for this model.
+    # If not, keep the original path — pointing at a missing !UBE\ NIF crashes
+    # the game on load. Uses the PLANNED set (not filesystem) because the patch
+    # is generated before NIFs are written. None => legacy always-prefix.
     def _converted_nif_exists(model_path: str) -> bool:
         if converted_rel_paths is None:
             return True
         return model_path.replace("\\", "/").lstrip("/").lower() \
             in converted_rel_paths
 
-    # Predicate: does the ARMA's ORIGINAL (un-converted) mesh ship on disk in
-    # this mod? `body_mesh_rel_paths` is every .nif under the mod's meshes/
-    # (relative, lowercased, forward-slash, WITH the _0/_1 weight suffix).
-    # Used by the non-body accessory passthrough below to confirm a mod
-    # genuinely ships the helmet/jewelry mesh before we extend its ARMA to the
-    # UBE races. Matches exact path first, then weight-agnostically (the ARMA
-    # names _1 but a mod may ship only _0, or vice-versa).
+    # True iff the ARMA's original (un-converted) mesh is present in this mod.
+    # Used to confirm a mod ships the helmet/jewelry mesh before extending its
+    # ARMA to UBE races. Checks both loose (body_mesh_rel_paths) and BSA
+    # (bsa_mesh_rel_paths) to cover mods that pack meshes into .bsa archives.
+    # Matches exact path and weight-agnostic variants (_0/_1).
     def _orig_mesh_on_disk(model_path: str) -> bool:
-        # Recognise the mesh if it ships LOOSE (body_mesh_rel_paths) OR is
-        # available via a load-order BSA (bsa_mesh_rel_paths). Vigilant/LOTD/
-        # Unslaad/... pack their meshes inside .bsa, so loose-only checking left
-        # every BSA-shipped accessory (e.g. Vigilant cloaks) failing this gate ->
-        # non-body passthrough skipped them -> invisible on UBE (#4). The
-        # passthrough KEEPS the original mesh path (no !UBE redirect), so the BSA
-        # mesh loads fine -> no crash risk; the DefaultRace gate still excludes
-        # beast races.
         if not model_path:
             return False
         s = model_path.replace("\\", "/").lower().lstrip("/")
@@ -1338,24 +1140,13 @@ def generate_ube_patch(
                 return True
         return False
 
-    # Predicate: is an un-converted ARMA a SAFE non-body accessory to extend to
-    # the UBE races WITHOUT a mesh edit (item 1: helmets/hoods/circlets/jewelry
-    # get UBE tags only)? Three guards, all generic (no per-armor logic):
-    #   1. Non-body biped slot — has a slot but NOT slot 32. Slot-32 body
-    #      armor needs real CBBE->UBE conversion; keeping its CBBE mesh would
-    #      show a CBBE torso on a UBE actor.
-    #   2. Primary race = humanoid DefaultRace in Skyrim.esm. Adding the 16
-    #      human/mer UBE races to a beast/custom-race armature makes it fire
-    #      for human UBE actors and load a wrong-for-them mesh -> crash (the
-    #      Beard Mask Fix class of crash).
-    #   3. The mod actually ships at least one of the ARMA's meshes on disk —
-    #      confirms this is the mod's own accessory, not an incidental override
-    #      of a vanilla ARMA whose mesh this mod doesn't provide.
-    # We keep the ORIGINAL model paths (rebuild_arma_payload only redirects to
-    # !UBE\ when converted_nif_exists is True, which it isn't here), so the
-    # known-good vanilla-fitting mesh loads on UBE actors. This mirrors what
-    # the vanilla-compat patch does for master ARMAs, applied to the mod's own
-    # non-body ARMAs.
+    # True iff an un-converted ARMA is a safe non-body accessory to extend to
+    # UBE races without a mesh edit (helmet/hood/circlet/jewelry).
+    # Three guards: (1) non-body slot (slot 32 needs real CBBE->UBE conversion);
+    # (2) primary race = humanoid DefaultRace in Skyrim.esm (adding UBE races to
+    # a beast armature crashes); (3) mod ships at least one of its meshes (rules
+    # out incidental vanilla-ARMA overrides). Original model paths are kept so
+    # the vanilla-fitting mesh loads on UBE actors.
     def _is_safe_passthrough_accessory(
             rnam: "int | None", slot_bits: int,
             model_paths: "list[str]") -> bool:
@@ -1375,11 +1166,8 @@ def generate_ube_patch(
             return False
         return any(_orig_mesh_on_disk(m) for m in real)
 
-    # Auto-discover additional UBE race plugins (Khajiit, Argonian,
-    # custom races) so their races also get added to our ARMA's
-    # additional-race list. Without this, players using non-base-race
-    # UBE patches see no UBE armor coverage. See _discover_ube_races
-    # for rationale.
+    # Discover additional UBE race plugins so their races are included in ARMA
+    # additional-race lists. Without this, non-base-race UBE players see nothing.
     extra_ube_races: list[tuple[str, int, str]] = []
     if master_data_dirs:
         extra_ube_races = _discover_ube_races(master_data_dirs)
@@ -1389,49 +1177,28 @@ def generate_ube_patch(
             for plugin, _fid, edid in extra_ube_races:
                 print(f"    {edid}  ({plugin})")
 
-    # Build the patch's master list.
-    # Order: Skyrim.esm first, then the always-loaded vanilla DLC ESMs
-    # (Update/Dawnguard/HearthFires/Dragonborn — auto-loaded by every
-    # vanilla Skyrim setup, safe to include unconditionally), then
-    # anything else from source (dedup-preserving), then UBE_AllRace,
-    # then the source ESP itself.
-    #
-    # Why hard-include the vanilla DLCs: source ESPs (and the DLC ESMs
-    # they depend on) frequently reference Update.esm and HearthFires.esm
-    # content even when they don't formally list them as masters — this
-    # is a known Skyrim quirk. Our patch must list them as masters or
-    # those FormID refs silently misroute through whichever master
-    # happens to land on the same top byte in our patch (usually
-    # Dawnguard or Dragonborn). Result: startup crash.
-    # The vanilla DLC ESMs are always loaded by any Skyrim install,
-    # so listing them as masters is zero risk.
+    # Build the patch's master list: vanilla DLC ESMs first (always-loaded,
+    # safe to include unconditionally; omitting them causes FormID misroutes),
+    # then any other source masters, then UBE_AllRace, then the source ESP.
     patch_masters: list[str] = list(VANILLA_DLC_MASTERS)
     for m in src.header.masters:
         _add_master_if_missing(patch_masters, m)
     _add_master_if_missing(patch_masters, ube_allrace_filename)
-    # Add each discovered UBE race plugin as a master so we can reference
-    # its RACE FormIDs in our ARMA list.
+    # Add discovered UBE race plugins as masters (for their RACE FormIDs).
     for plugin_name, _fid, _edid in extra_ube_races:
         _add_master_if_missing(patch_masters, plugin_name)
     _add_master_if_missing(patch_masters, src_filename)
 
-    # The patch ESP's own records use top byte == len(patch_masters)
+    # Patch's own records use top byte == len(patch_masters).
     own_top_byte = len(patch_masters) << 24
 
-    # Compute UBE race FormIDs in patch's address space
+    # UBE race FormIDs in patch address space.
     ube_top = make_master_byte(patch_masters, ube_allrace_filename) << 24
     ube_primary = ube_top | UBE_PRIMARY_BRETON_FID_24
-    # Include the primary race in the additional-race MODL list too. The
-    # gold-standard UBE_AllRace.esp armatures list the primary (UBE_BretonRace
-    # 0x5734) in BOTH RNAM and the MODL block; mirror that exactly rather than
-    # excluding it, so our armatures are structurally identical to the working
-    # reference (full 16-race list, primary first).
+    # Gold-standard UBE_AllRace armatures list UBE_BretonRace in BOTH RNAM and
+    # the MODL block; mirror that exactly (full 16-race list, primary first).
     ube_additional = [ube_top | low for low in UBE_RACE_FIDS_24]
-    # Add discovered Khajiit/Argonian/custom UBE races. Their FormIDs are
-    # in the discovering plugin's own master space (top byte = the
-    # plugin's own_byte = len(plugin.masters)); remap to patch space by
-    # substituting the new top byte for the plugin's index in
-    # patch_masters.
+    # Add discovered extra UBE races; remap their FormIDs to patch space.
     for plugin_name, fid, _edid in extra_ube_races:
         plugin_top = make_master_byte(patch_masters, plugin_name) << 24
         ube_additional.append(plugin_top | (fid & 0xFFFFFF))
@@ -1441,12 +1208,11 @@ def generate_ube_patch(
     if src_arma_group is None:
         raise RuntimeError(f"source ESP has no ARMA group: {source_esp_path}")
 
-    # Map source ARMA FormID -> new ARMA FormID in patch
+    # source ARMA FormID -> new ARMA FormID in patch
     new_arma_fids: dict[int, int] = {}
     next_obj_id = 0x800  # arbitrary starting point; xEdit conventions vary
 
-    # Build a FormID remap function for source -> patch master space.
-    # Each top byte in source space maps to a top byte in patch space.
+    # Build FormID remap: source master space -> patch master space.
     src_to_patch_byte: dict[int, int] = {}
     for i, m in enumerate(src.header.masters):
         try:
@@ -1455,8 +1221,7 @@ def generate_ube_patch(
             src_to_patch_byte[i] = j
         except StopIteration:
             continue
-    # Source ESP's OWN byte (= len(src.header.masters)) maps to its
-    # index in the patch's master list (where it's now a master).
+    # Source ESP's own byte maps to its index in the patch master list.
     src_own_byte = len(src.header.masters)
     src_to_patch_byte[src_own_byte] = make_master_byte(
         patch_masters, src_filename)
@@ -1470,12 +1235,11 @@ def generate_ube_patch(
         return fid
 
     new_arma_records: list[esp.Record] = []
-    # (record, [fallback dicts]) pairs for the male-fallback sidecar — keyed
-    # by the Record OBJECT because prune_unused_masters renumbers FormIDs
-    # before save; final fids are read back at sidecar-write time.
+    # (record, [fallback dicts]) for the male-fallback sidecar. Keyed by
+    # Record object because prune_unused_masters renumbers FormIDs before save.
     male_fallback_records: "list[tuple[esp.Record, list]]" = []
     for src_arma in src_arma_group.records:
-        # source ARMA's payload — pull EDID + model paths + race + slots
+        # Parse EDID, model paths, race, and slot bits.
         edid = None
         model_paths: list[str] = []
         src_rnam: "int | None" = None
@@ -1494,23 +1258,12 @@ def generate_ube_patch(
             elif sig in (b"BOD2", b"BODT") and len(data) >= 4:
                 slot_bits = struct.unpack_from("<I", data, 0)[0]
 
-        # Only emit a UBE ARMA variant if we actually CONVERTED one of its
-        # meshes. A UBE ARMA exists to show a UBE-FITTED mesh on UBE races; if
-        # we converted nothing for it, creating one is normally pure risk:
-        # we'd be adding the 16 human/mer UBE races to (e.g.) an Argonian/
-        # Khajiit beast-variant armature or a vanilla-referenced ARMA, making
-        # it fire for human UBE actors and load a mesh that's wrong-for-them
-        # or absent -> CRASH (the Beard Mask Fix maskless-hood crash).
-        #
-        # EXCEPTION (item 1): a non-body accessory (helmet/hood/circlet/
-        # jewelry) bound to the humanoid player race, whose mesh this mod
-        # ships, is a SAFE passthrough — its vanilla-fitting mesh needs no
-        # CBBE->UBE conversion (UBE only changes the torso), so we keep the
-        # ORIGINAL mesh and just add the UBE races so it renders on UBE
-        # actors. See _is_safe_passthrough_accessory for the guards.
-        #
-        # converted_rel_paths is None for legacy callers (no conversion
-        # context) -> keep old always-emit behavior.
+        # Only emit a UBE ARMA if we converted one of its meshes. Without a
+        # converted mesh, emitting one adds UBE races to a beast/custom-race
+        # armature and loads the wrong mesh -> crash. Exception: safe non-body
+        # accessories (helmets/jewelry) can be passed through with the original
+        # mesh; UBE only changes the torso so those fit fine. See
+        # _is_safe_passthrough_accessory. converted_rel_paths=None -> always emit.
         if converted_rel_paths is not None and model_paths and \
                 not any(_converted_nif_exists(m) for m in model_paths):
             if not _is_safe_passthrough_accessory(
@@ -1695,25 +1448,22 @@ def generate_ube_patch(
 
     if src_armo_group is not None:
         for src_armo in src_armo_group.records:
-            # Find which source ARMAs this ARMO references
+            # Find which source ARMAs this ARMO references.
             referenced_src_armas: list[int] = []
             for sig, data in esp.iter_subrecords(src_armo.payload):
                 if sig == ARMO_ARMATURE_SIG and len(data) == 4:
                     referenced_src_armas.append(struct.unpack("<I", data)[0])
 
-            # Of those, which ones have a new ARMA we created?
-            # The ARMO's Armatures list (src_arma_fid) and the source ARMA
-            # records' own FormIDs are both in source-master-space, so we
-            # look them up in new_arma_fids directly — no remap needed.
+            # ARMOs and source ARMAs are both in source-master-space; look
+            # them up in new_arma_fids directly (no remap needed).
             new_armas_to_add = [
                 new_arma_fids[src_arma_fid]
                 for src_arma_fid in referenced_src_armas
                 if src_arma_fid in new_arma_fids
             ]
-            # Cross-ESP (#176): for any referenced ARMA NOT converted in this
-            # plugin, mint+link a UBE ARMA if its mesh was converted (else skip).
-            # This is what makes an add-on plugin's base-color cloth cloaks
-            # visible on UBE races (their ARMA lives in the base plugin).
+            # Cross-ESP: for any referenced ARMA not converted in this plugin,
+            # mint a UBE ARMA if its mesh was converted (covers add-on plugins
+            # whose ARMA lives in a different base plugin).
             for _ref in referenced_src_armas:
                 if _ref in new_arma_fids and new_arma_fids[_ref] in new_armas_to_add:
                     continue
@@ -1723,23 +1473,13 @@ def generate_ube_patch(
             if not new_armas_to_add:
                 continue
 
-            # Build override payload: ARMO records need their FormID remapped
-            # to the patch's master space (the source's own master_byte stays
-            # because src is now a master in our patch).
+            # Build override payload with FormIDs remapped to patch master space.
             new_armo_fid = remap_fid(
                 src_armo.formid, src.header.masters, src_filename, patch_masters,
             )
-            # Source payload may also have FormID-bearing subrecords referencing the
-            # source's masters; those need remapping too. For an MVP, only remap
-            # the MODL (Armatures) entries — the rest are usually Skyrim.esm refs
-            # (master byte 0) which stays 0 in our patch.
-            #
-            # CRITICAL: insert new MODLs right after the LAST existing MODL,
-            # NOT at end of payload. Skyrim's ARMO parser stops reading the
-            # armature list at DATA — MODLs after DATA/DNAM are silently
-            # ignored, making the new UBE armature invisible to the engine.
-            # See the master-derived override path below for the same fix
-            # and full rationale.
+            # Insert new MODLs right after the LAST existing MODL (before DATA).
+            # Skyrim stops reading the armature list at DATA; MODLs after DATA
+            # are silently ignored, making the new ARMA invisible to the engine.
             src_pieces = list(esp.iter_subrecords(src_armo.payload))
             last_modl_idx = -1
             for i, (sig, data) in enumerate(src_pieces):
@@ -1754,13 +1494,8 @@ def generate_ube_patch(
                     )
                     new_payload += esp.encode_subrecord(sig, struct.pack("<I", remapped))
                 elif sig in ALT_TEXTURE_SIGS:
-                    # Source ARMO's alternate-texture-set subrecords carry
-                    # TXST FormIDs in source's master space. Translate to
-                    # patch's master space (the source ESP is now a master,
-                    # but at a different index). Without this remap, color-
-                    # variant overrides (Cape_Red, Cape_Blue, etc.) all
-                    # point at the wrong record and render with the default
-                    # texture — "all variants the same color" bug.
+                    # Remap embedded TXST FormIDs from source master space;
+                    # without this, all color variants render the default texture.
                     new_data = _remap_alt_texture_payload(
                         data, _remap_src_fid_to_patch)
                     new_payload += esp.encode_subrecord(sig, new_data)
@@ -1796,30 +1531,15 @@ def generate_ube_patch(
             ))
 
     # --- Master ESM ARMO scan ---
-    # For each MASTER ESM that this source ESP depends on, walk its
-    # ARMO records and find any whose armature list references one of
-    # the ARMAs we just converted. Those ARMOs need override entries
-    # in our patch too — otherwise the master's pre-UBE armature list
-    # is what the engine sees, and UBE-race actors won't find a
-    # race-matching mesh. This is what was missing for the vanilla
-    # cuirasses overridden by a vanilla-replacer mod: IronCuirassAA's
-    # ARMO lives in Skyrim.esm, not in the replacer mod's ESP.
-    #
-    # `master_data_dirs` is a search path of `Data/` directories — for
-    # MO2 setups, both the modlist's `Stock Game/Data/` and the active
-    # mods/ overlay. If empty/None, we still try `<source_esp>.parent`
-    # (works for standalone Skyrim installs).
+    # Walk each master ESM to find ARMOs that reference our converted ARMAs.
+    # Those ARMOs need override entries in our patch — otherwise the master's
+    # armature list is what the engine sees and UBE-race actors find no match.
     if master_data_dirs is None:
-        # Try the source ESP's own directory first
         master_data_dirs = [source_esp_path.parent]
 
-    # String resolver for recovering REAL localized names when overriding
-    # localized-master ARMOs (Skyrim.esm + DLCs). The master's FULL is a
-    # 4-byte LSTRING index into a `<plugin>_english.STRINGS` table bundled
-    # inside `Skyrim - Interface.bsa`. Resolving it gives the true in-game
-    # name ("Vampire Armor", "Morag Tong Armor") instead of an EDID-derived
-    # guess ("Vampire Armor Red", "Morag Tong Cuirass"). Built from the
-    # first master_data_dir that actually contains the interface BSA.
+    # String resolver: recover real localized ARMO names from the master's
+    # LSTRING refs in Skyrim - Interface.bsa so FULL shows the true name
+    # (e.g. "Vampire Armor") instead of an EDID-derived guess.
     _string_resolver = None
     try:
         from . import bsa_strings
@@ -1833,23 +1553,14 @@ def generate_ube_patch(
     except Exception:
         _string_resolver = None
 
-    # Build the FormID set we're looking for, in EACH master's space.
-    # new_arma_fids is keyed by source-master-space FormID; for master
-    # ESMs the FormID's top byte is 0x00 (the master itself), which is
-    # also the top byte we see in source. So lookup is direct.
     master_armo_overrides: list[esp.Record] = []
     master_scan_stats: dict[str, int] = {}
-    # Build set of CONVERTED ARMA FormIDs in source-master-space.
-    # new_arma_fids keys are source-space FormIDs (top byte=0 for
-    # Skyrim.esm-defined records, etc.); that's the same byte layout
-    # we'll see in the master ESM itself.
     converted_arma_src_fids = set(new_arma_fids.keys())
     for master_name in src.header.masters:
         master_path = _find_master_path(master_name, master_data_dirs)
         if master_path is None:
             continue
-        # Find master's position in source ESP's master list — used to
-        # decide which converted ARMAs originated from this master.
+        # Master's position in source ESP's master list.
         try:
             master_idx_in_src = next(
                 i for i, m in enumerate(src.header.masters)
@@ -1859,31 +1570,18 @@ def generate_ube_patch(
             continue
         master_byte_in_src = master_idx_in_src
 
-        # Determine the master's OWN byte in its own master space. The
-        # master's records have top byte = len(master.masters). For
-        # Skyrim.esm (no masters) that's 0x00; for Dawnguard.esm (2
-        # masters: Skyrim, Update) it's 0x02; for Dragonborn.esm (3
-        # masters) it's 0x03. We previously hardcoded 0x00 which made
-        # the lookup miss every DLC ARMO.
+        # Master's own byte = len(master.masters). Skyrim.esm -> 0x00,
+        # Dawnguard -> 0x02, Dragonborn -> 0x03. Hardcoding 0x00 missed DLC ARMOs.
         try:
             master_esp = _load_master_cached(master_path)
         except Exception:
             continue
         master_own_byte = len(master_esp.header.masters)
 
-        # CRITICAL: SKIP scanning this master if any of its transitive
-        # masters isn't in our patch's master list. Otherwise we'd copy
-        # ARMO records whose payload contains FormIDs in the master's
-        # transitive-master space (e.g. ccbgssse001-fish.esm references
-        # HearthFires.esm at top byte 3 in fish space) — those FormIDs
-        # would silently misroute through whatever master happens to be
-        # at the same index in OUR patch (often Dragonborn.esm), causing
-        # a guaranteed crash when the engine tries to resolve them. This
-        # is the same bug class the vanilla-compat path already handles
-        # via per-record byte_remap; for generate_ube_patch we take the
-        # simpler approach of skipping the scan entirely. The user loses
-        # coverage for CC-content armors patched by source mods, but the
-        # game starts and the bulk of the patch works.
+        # Skip this master if any of its transitive masters isn't in our
+        # patch's master list. Copying ARMO records with unmappable FormIDs
+        # (e.g. ccbgssse001-fish.esm -> HearthFires.esm) causes silent
+        # misroutes and crashes on load. Simpler to skip than remap per-record.
         patch_masters_lc = {m.lower() for m in patch_masters}
         unmappable_transitive = [
             m for m in master_esp.header.masters
@@ -1895,12 +1593,9 @@ def generate_ube_patch(
             )  # negative marker = skipped
             continue
 
-        # Build the FormID set we're searching for in this master's
-        # own master space (top byte = master_own_byte because that's
-        # how the master refers to its own records).
+        # FormIDs to find in this master's address space, plus reverse map
+        # to source space (to look up our new ARMA FormID).
         lookup_in_master_space = set()
-        # Map back from "master space" -> "source space" so we can
-        # find the new ARMA FormID later.
         master_to_src_fid: dict[int, int] = {}
         for src_fid in converted_arma_src_fids:
             if ((src_fid >> 24) & 0xFF) == master_byte_in_src:
@@ -1908,19 +1603,11 @@ def generate_ube_patch(
                 lookup_in_master_space.add(master_space_fid)
                 master_to_src_fid[master_space_fid] = src_fid
 
-        # --- Mesh-path-driven vanilla BODY coverage (#131) ---
-        # Loose-mesh replacers (HDT-SMP Vanilla) ship vanilla body armor
-        # meshes with NO ESP records, so the source-ARMA scan above found
-        # nothing for them. But the converter DID fit those meshes to !UBE.
-        # Discover this master's OWN body ARMAs whose female mesh (MOD3) we
-        # converted, mint a UBE ARMA (MOD3 -> !UBE, UBE races), and register
-        # it in the same maps a source-defined ARMA would use — so the
-        # master-ARMO override loop below appends it to the parent ARMO.
-        # General: matched by mesh path, so it covers any vanilla armor the
-        # modpack provides a fitted mesh for, with no per-armor logic.
+        # Mesh-path-driven vanilla body coverage: loose-mesh replacers ship
+        # vanilla body meshes with no ESP records. If we converted the mesh
+        # to !UBE, mint a UBE ARMA and register it so the master-ARMO override
+        # loop appends it. Matched purely by mesh path; no per-armor logic.
         if body_mesh_rel_paths:
-            # subrecords to strip when minting a UBE ARMA from a master body
-            # ARMA -> module-level _STRIP_VANILLA_BODY_ARMA (same set).
             m_arma_grp = next(
                 (g for g in master_esp.groups if g.label == b"ARMA"), None)
             for m_arma in (m_arma_grp.records if m_arma_grp else []):
@@ -1941,8 +1628,7 @@ def generate_ube_patch(
                 rel = mod3.replace("\\", "/").lstrip("/").lower()
                 if rel not in body_mesh_rel_paths:
                     continue
-                # Strip stale master-space FormID/texture subrecords, then
-                # rebuild with UBE race targeting + !UBE path prefix.
+                # Strip stale FormID/texture refs, rebuild with UBE races.
                 stripped = b"".join(
                     esp.encode_subrecord(sig, d)
                     for sig, d in esp.iter_subrecords(m_arma.payload)
@@ -2012,32 +1698,18 @@ def generate_ube_patch(
             # Build the override payload: keep all original armatures
             # (FormID-translated to patch space) + append our UBE ARMAs.
             #
-            # CRITICAL: skip FULL/DESC subrecords from localized masters
-            # (Skyrim.esm + the official DLCs). Those subrecords contain
-            # 4-byte LSTRING references into a `.strings` file external
-            # to the ESM — NOT raw zstrings. Copying them verbatim into
-            # our (non-localized) patch makes the engine read those 4
-            # bytes as garbage text, which:
-            #   (a) shows broken names in inventory, and
-            #   (b) appears to make the engine fail-parse the whole
-            #       record on some setups — the armor never registers,
-            #       so equipping it does nothing visible.
-            # Stripping FULL/DESC removes LSTRING refs that we can't
-            # resolve in our non-localized patch. We REPLACE FULL with a
-            # synthetic name derived from EDID so the inventory UI
-            # displays the item — items with no FULL are silently
-            # dropped from inventory display (the "body slot vanilla
-            # item doesn't appear in inventory" bug). DESC is the
-            # tooltip and isn't required for item display; we leave it
-            # stripped.
+            # Skip FULL/DESC from localized masters (Skyrim.esm + DLCs):
+            # those subrecords are 4-byte LSTRING indices into an external
+            # .strings file, not raw zstrings. Copying them verbatim into
+            # our non-localized patch causes garbage inventory names or
+            # silent record-parse failure. We synthesize a FULL from EDID
+            # instead (items with no FULL are dropped from inventory UI).
+            # DESC is tooltip-only; leaving it stripped is fine.
             STRIP_FROM_LOCALIZED_OVERRIDE = {
                 b"FULL", b"DESC", b"ITXT", b"NNAM", b"RDMP",
             }
-            # Recover this ARMO's name for the FULL we'll inject. The
-            # master's own FULL is a 4-byte LSTRING index into its
-            # `<plugin>_english.STRINGS` table — resolve it to the REAL
-            # localized name. Only if that fails (no strings table, or id
-            # missing) do we fall back to synthesizing a name from EDID.
+            # Recover this ARMO's display name: try the STRINGS table first;
+            # fall back to synthesizing from EDID.
             _source_edid = None
             _full_string_id = None
             for _ssig, _sdata in esp.iter_subrecords(m_armo.payload):
@@ -2056,22 +1728,11 @@ def generate_ube_patch(
             _synth_full = _real_full or (
                 synthesize_name_from_edid(_source_edid)
                 if _source_edid else None)
-            # CRITICAL: insert new MODLs (armature FormIDs) right after
-            # the LAST existing MODL, NOT at the end of the payload. The
-            # canonical ARMO subrecord order has all MODL armature
-            # entries grouped together, BEFORE DATA/DNAM. Skyrim's
-            # parser stops reading the armatures list at DATA — if we
-            # put new MODLs after DNAM, the engine never sees them, so
-            # a UBE-race player equipping the armor never finds our new
-            # UBE ARMA and the armor renders invisible. This was the
-            # actual cause of "replacer armor not visible" for every
-            # master-derived ARMO override (a vanilla-replacer mod, HDT-SMP
-            # Vanilla, JS Vanilla Circlets) — fixed 2026-05-25.
-            #
-            # Find the last existing MODL position so we know where to
-            # splice. If the source has no MODL (atypical), fall back
-            # to inserting right before the first non-armature-list
-            # subrecord we know of (DATA).
+            # Insert new MODLs immediately after the LAST existing MODL, not
+            # at the end. Skyrim stops reading armatures at DATA, so any MODL
+            # placed after DATA is silently ignored and the armor renders
+            # invisible on UBE-race characters.
+            # If no existing MODLs, splice before DATA (canonical position).
             pieces = list(esp.iter_subrecords(m_armo.payload))
             last_modl_idx = -1
             for i, (sig, _data) in enumerate(pieces):
@@ -2098,26 +1759,19 @@ def generate_ube_patch(
                     # own index). So no remapping needed for master-
                     # self-FormIDs.
                     new_payload += esp.encode_subrecord(sig, data)
-                # Inject a synthetic FULL right after EDID so the item
-                # shows up in inventory. EDID is canonically the first
-                # subrecord; FULL belongs right after (canonical Skyrim
-                # ARMO layout) and before any model paths.
+                # Inject synthetic FULL right after EDID (canonical position).
                 if (sig == b"EDID" and not _full_inserted and
                         _synth_full is not None):
                     new_payload += esp.encode_subrecord(
                         b"FULL", esp.encode_zstring(_synth_full))
                     _full_inserted = True
-                # Splice our new ARMAs immediately after the LAST
-                # existing MODL — keeps the canonical "MODLs grouped
-                # together before DATA" ordering Skyrim expects.
+                # Splice our new ARMAs after the last existing MODL.
                 if i == last_modl_idx:
                     for nfid in new_armas_to_add:
                         new_payload += esp.encode_subrecord(
                             ARMO_ARMATURE_SIG, struct.pack("<I", nfid))
             if last_modl_idx < 0:
-                # ARMO had no existing armatures — splice ours just
-                # before DATA (canonical position). Fall back to
-                # appending if no DATA either.
+                # No existing armatures — splice before DATA or append.
                 pre_data_payload = b""
                 inserted = False
                 for sig, data in esp.iter_subrecords(new_payload):
@@ -2165,14 +1819,10 @@ def generate_ube_patch(
 
     out.save(output_esp_path)
 
-    # Sidecar for the LAST-STEP female-model re-check (#female-model-
-    # priority): every ARMA whose FEMALE model was redirected/synthesised
-    # from the converted MALE mesh, with the ORIGINAL female path. This
-    # patch is generated per-mod DURING conversion, so a female mesh that
-    # another mod (or a later worker) converts is invisible to the redirect
-    # decision above; restore_female_models() re-checks these entries
-    # against the COMPLETE output right before the merge. FormIDs are read
-    # AFTER prune_unused_masters (which renumbers them).
+    # Sidecar for the female-model re-check: ARMAs whose female model was
+    # redirected to the male mesh at patch time (female NIF not yet converted).
+    # restore_female_models() re-checks these against the complete output
+    # before the merge, using FormIDs as renumbered by prune_unused_masters.
     sidecar = Path(str(output_esp_path) + ".male_fallbacks.json")
     fb_entries = [dict(fid=rec.formid, **e)
                   for rec, fbs in male_fallback_records for e in fbs]
@@ -2215,106 +1865,33 @@ def validate_patch(esp_path: str | Path,
     """Walk a generated patch ESP and return a list of warning strings
     for structural problems. Empty list = clean.
 
-    -- Warning vocabulary (public docs for end users) --------------------
-    Each warning starts with a stable prefix so downstream tooling can
-    grep/filter by category:
-
-      "modl-after-data: ..."     The replacer-invisible bug. Some ARMO
-                                 override has MODL subrecord(s) after DATA;
-                                 Skyrim's parser stops reading armatures
-                                 at DATA so those armatures get silently
-                                 ignored. Equipping the armor renders
-                                 nothing on UBE-race characters. Fix: re-
-                                 generate the patch (the converter's
-                                 splice logic now puts MODL before DATA).
-
-      "master-ordering: ..."     An .esm master appears after a .esp
-                                 master in the patch's master list.
-                                 Skyrim's ESL loader crashes on this.
-                                 Fix: re-generate or fix master order.
-
-      "next-object-id: ..."      The TES4 `next_object_id` field is at or
-                                 below the max own FormID actually used.
-                                 Engine may collide dynamic FormIDs with
-                                 patch records. Fix: re-save.
-
-      "esl-overflow: ..."        ESL flag is set but the patch has more
-                                 than 2048 own records — too many for
-                                 the FE-prefix ESL slot range. Fix:
-                                 unset the ESL flag or split the patch.
-
-      "formid-zero: ..."         A record has FormID 0x00000000, which
-                                 is reserved for the player actor. The
-                                 engine will reject the record. Fix:
-                                 re-generate.
-
-      "formid-out-of-range: ..." A FormID references a master index past
-                                 the end of the master list. Definite
-                                 crash on equip. Fix: re-generate (the
-                                 vanilla-compat path now skips any
-                                 record with an unmappable reference).
-
-      "missing-nif: ..."         An ARMA's MOD3/MOD5 path points to a
-                                 file that doesn't exist on disk under
-                                 the meshes/ folder. Armor renders as
-                                 empty when equipped. Only reported
-                                 when `meshes_root` is provided or can
-                                 be inferred from the ESP location.
-
-      "armo-missing-full: ..."   An ARMO override has no FULL subrecord.
-                                 Skyrim's inventory UI silently HIDES
-                                 items without FULL — `player.additem`
-                                 succeeds but the item never appears.
-                                 Fix: ensure FULL is preserved or
-                                 synthesized when stripping LSTRING
-                                 refs (the master-derived override
-                                 path now does this via
-                                 synthesize_name_from_edid).
-
-      "unmappable-master-ref: ..." A record in this patch overrides a
-                                 master ESM whose payload references
-                                 records from a TRANSITIVE master that
-                                 ISN'T in this patch's master list.
-                                 Those FormIDs silently misroute to
-                                 whatever master happens to share the
-                                 top byte, usually producing a startup
-                                 crash. Cause: CC ESMs (and other
-                                 multi-master mods) declare HearthFires/
-                                 etc. as masters, and our patch carries
-                                 their records without inheriting all
-                                 their masters. Detected by checking
-                                 every override record's master against
-                                 its on-disk master ESP's master list.
-                                 Requires `master_data_dirs` to locate
-                                 the source masters; warning is skipped
-                                 silently when they can't be found.
-
-      "modt-malformed: ..."      An MO?T texture-hash block has a bad
-                                 header (`len != 12*(1+count)`) — the
-                                 headerless-LE-port class the engine
-                                 misreads as a multi-million-entry count
-                                 -> overread CTD at model init. Should be
-                                 0 in output (every emit path routes MO?T
-                                 through normalize_modt); a hit means a
-                                 new emit path skipped normalization.
+    Warning prefixes (stable for downstream grep/filter):
+      "modl-after-data"        ARMO has MODL after DATA; Skyrim stops reading
+                               armatures at DATA, so those are silently ignored.
+      "master-ordering"        ESM master appears after a regular ESP; crash.
+      "next-object-id"         next_object_id <= max own FormID; engine may
+                               collide dynamic FormIDs with patch records.
+      "esl-overflow"           ESL flag set but own record count > 2048.
+      "formid-zero"            Record has FormID 0x00000000 (player-reserved).
+      "formid-out-of-range"    FormID references master index past the list end.
+      "missing-nif"            ARMA MOD3/MOD5 path not found on disk.
+      "armo-missing-full"      ARMO has no FULL; inventory UI silently hides it.
+      "unmappable-master-ref"  Override record references a transitive master
+                               not in this patch's master list; FormID misroutes.
+      "modt-malformed"         MO?T block with bad header (len != 12*(1+count));
+                               engine misreads as millions of entries -> CTD.
 
     Args:
       esp_path: the patch ESP to validate.
       meshes_root: optional path to the mod's `meshes/` directory for
-        NIF-existence checking. If None, tries `esp_path.parent/meshes`.
-        If that doesn't exist, the NIF check is skipped (no warning).
+        NIF-existence checking. Skipped if the directory can't be found.
     """
     warnings: list[str] = []
     esp_path = Path(esp_path)
     e = esp.ESP.load(esp_path)
 
-    # Master ordering: master-TIER plugins must precede regular plugins.
-    # "Master-tier" = TES4 ESM flag (0x1), i.e. .esm/.esl AND ESM-flagged .esp
-    # (USSEP and countless overhauls) — NOT extension alone. Classifying by
-    # `.endswith('.esm')` mislabels every `.esl` (and ESM-flagged `.esp`) as
-    # regular, which both FALSE-POSITIVES on a correctly-ordered list full of
-    # `.esl` masters AND FALSE-NEGATIVES a real `.esp`-before-ESM-flagged-`.esp`
-    # crash. Use the same classifier the merger sorts by (_is_esm_tier_master).
+    # Master ordering: use _is_esm_tier_master (TES4 ESM flag 0x1, not extension)
+    # so .esl and ESM-flagged .esp are classified correctly.
     last_master_tier_idx = -1
     first_regular_idx = -1
     for i, m in enumerate(e.header.masters):
@@ -2360,10 +1937,7 @@ def validate_patch(esp_path: str | Path,
                         if len(out_of_range_examples) < 3:
                             out_of_range_examples.append(
                                 f"{fid:08X} (in {r.formid:08X})")
-                # KWDA is an ARRAY of 4-byte keyword FormIDs (not in the
-                # single-FormID set above) — range-check each so an out-of-range
-                # keyword ref (master index past the list) is caught, same crash
-                # class as a single-FormID overrun.
+                # KWDA is an array of 4-byte FormIDs; range-check each entry.
                 elif sig == b"KWDA" and len(sd) >= 4 and len(sd) % 4 == 0:
                     for _off in range(0, len(sd), 4):
                         fid = struct.unpack_from("<I", sd, _off)[0]
@@ -2372,10 +1946,7 @@ def validate_patch(esp_path: str | Path,
                             if len(out_of_range_examples) < 3:
                                 out_of_range_examples.append(
                                     f"{fid:08X} (KWDA in {r.formid:08X})")
-                # MO?T texture-hash structural validity (defense-in-depth for the
-                # headerless-MODT 7.5M-entry overread CTD). normalize_modt is
-                # applied on every emit path, so this should find 0 -- it guards
-                # against a future emit path that forgets to normalize.
+                # MO?T: validate header (defense against headerless-MODT overread CTD).
                 elif sig in ARMA_MODT_SIGS:
                     _valid = (len(sd) >= 12
                               and len(sd) == 12 * (1 + struct.unpack_from(
@@ -2422,10 +1993,7 @@ def validate_patch(esp_path: str | Path,
                 f"{own_arma_count} > {ESL_MAX_OWN_RECORDS} slot limit"
             )
 
-    # ARMO MODL-before-DATA. Caught the replacer-invisible bug May 2026.
-    # ARMO-missing-FULL. Caught the "body slot vanilla item doesn't
-    # appear in inventory" bug May 2026 — Skyrim's inventory UI
-    # silently filters out items with no FULL subrecord.
+    # ARMO MODL-before-DATA check + ARMO-missing-FULL check.
     armo_grp = next((g for g in e.groups if g.label == b"ARMO"), None)
     if armo_grp:
         bad_armo = 0
@@ -2515,13 +2083,9 @@ def validate_patch(esp_path: str | Path,
                     f"Armor will render empty. Examples: {missing_examples}"
                 )
 
-    # Unmappable transitive-master check. For every override record,
-    # look up the master ESP on disk and verify that EVERY master in
-    # that ESP's own master list is also in our patch's master list.
-    # If not, payloads carrying FormIDs in the unknown master's space
-    # will silently misroute through our patch's master byte that
-    # happens to share the index — crash on startup. This is the bug
-    # class that caused the May 2026 fish.esm + HearthFires.esm crash.
+    # Unmappable transitive-master check: verify every master used by override
+    # records also has its own transitive masters in our patch's master list.
+    # Missing transitive masters cause silent FormID misroute (startup crash).
     if master_data_dirs:
         patch_masters_lc = {m.lower() for m in e.header.masters}
         unmappable_masters: dict[str, set[str]] = {}
@@ -2536,8 +2100,7 @@ def validate_patch(esp_path: str | Path,
                 master_path = _find_master_path(master_name, master_data_dirs)
                 if master_path is None:
                     continue  # can't locate — skip silently
-                # Header-only read: we just need this master's OWN master list,
-                # not a full parse of a multi-MB plugin.
+                # Header-only read to get this master's own master list.
                 m_masters = _read_master_list_only(master_path)
                 missing_trans = {
                     m for m in m_masters
@@ -2572,9 +2135,8 @@ def _iter_formids_in_payload(payload: bytes) -> Iterable[int]:
             for i in range(0, len(data), 4):
                 yield struct.unpack_from("<I", data, i)[0]
         elif sig in ALT_TEXTURE_SIGS:
-            # MO?S embedded TXST FormIDs — collect via the alt-texture walker so
-            # prune counts their defining master as USED (else it could drop the
-            # plugin the color TXSTs live in). Side-effect collect; verbatim fid.
+            # MO?S: collect embedded TXST FormIDs via the alt-texture walker
+            # so prune doesn't drop masters that own color TXSTs.
             _txsts: list[int] = []
             _remap_alt_texture_payload(data, lambda f: (_txsts.append(f) or f))
             yield from _txsts
@@ -2599,8 +2161,7 @@ def _rewrite_formids_in_payload(payload: bytes, remap: dict[int, int]) -> bytes:
                 for i in range(0, len(data), 4))
             out += esp.encode_subrecord(sig, new_data)
         elif sig in ALT_TEXTURE_SIGS:
-            # MO?S alt-texture sets carry embedded TXST FormIDs in a nested
-            # (name + TXST + index) format the two branches above can't see.
+            # MO?S: nested (name + TXST + index) format; remap via alt-texture walker.
             # Without remapping them here, dropping/reordering a master (prune,
             # ESL-split, race-skin fold) leaves the color-variant TXST pointing
             # at the WRONG, off-by-one master -> all color variants render the
@@ -2752,21 +2313,10 @@ def promote_slot49_cloth_to_slot32(
     extra-data entry AND the ARMA's biped slots include 49 but not 32,
     add slot 32 to the slot bitfield and re-save the ESP.
 
-    Why: NioOverride's BodyMorph (the engine that applies body sliders to
-    in-game shapes via TRI files) only acts on shapes whose ARMA covers
-    slot 32. Slot-49-only cloth pieces like a slot-49 corset
-    never receive body-slider deformation — proven by diagnostics on
-    a slot-49 no-body cloth NIF:
-      * a corset shape has BODYTRI -> a slot-49 cloth TRI with 101 morphs
-      * Source ARMA covers slot 49 only
-      * 1751 / 2296 corset verts (76%) have ZERO scale-bone weight
-        because the corset sits in the abdomen (Z=75..94) which 3BA
-        has no scale bones for; torso scaling normally comes from
-        BodyMorph TRI sliders, which the slot-49 ARMA never receives
-    Promoting these ARMAs to slot 32 makes NioOverride morph the shapes
-    they own. Engine consequence: equipping the corset will unequip a
-    slot-32 cuirass (the same trade-off hand-authored BodySlide UBE
-    cloth makes).
+    Why: NioOverride's BodyMorph only morphs shapes whose ARMA covers slot 32.
+    Slot-49-only cloth never receives body-slider deformation. Promoting to
+    slot 32 enables morphs; trade-off is that equipping will unequip a slot-32
+    cuirass (same as hand-authored UBE cloth).
 
     Args:
       esp_path: output UBE-patch ESP to mutate in place
@@ -2797,22 +2347,14 @@ def promote_slot49_cloth_to_slot32(
         for rec in grp.records:
             examined += 1
             slots = _arma_slot_bits(rec.payload)
-            # Already covers slot 32 -> nothing to do.
             if slots & bit32:
                 continue
-            # Doesn't cover slot 49 -> not our target. (Slot 49 is the
-            # canonical "underwear/extras" slot for waist-area cloth.
-            # We intentionally don't promote arbitrary slot-X-only
-            # accessories — only slot 49 has the cloth semantics.)
+            # Only promote slot-49 cloth (waist-area cloth semantics).
             if not (slots & (1 << (49 - 30))):
                 continue
-            # Look at every model path the ARMA points at; if ANY of
-            # them resolves to a NIF with BODYTRI on a shape, promote.
+            # If any model NIF has a BODYTRI shape, promote to slot 32.
             has_bodytri = False
             for path in _arma_model_paths(rec.payload):
-                # Normalize separators. ARMA paths are typically
-                # Windows-style with `\`; on filesystem we use `/`
-                # on POSIX-ish runners but Pathlib handles either.
                 nif_rel = Path(path.replace("\\", "/"))
                 nif_abs = meshes_root / nif_rel
                 if not nif_abs.is_file():
@@ -2885,9 +2427,7 @@ def _default_nif_has_bodytri(nif_path: Path) -> bool:
 TES4_FLAG_ESM = 0x00000001   # Master file (.esm)
 TES4_FLAG_ESL = 0x00000200   # Light plugin (compact form ID range)
 
-# ESL FormID constraints — own records (those defined by THIS plugin) MUST
-# fit in [0x000800, 0x000FFF]. That's 2048 record slots. Records inherited
-# from masters use the master's own FormIDs and don't count.
+# ESL own-record FormID range: 0x800-0xFFF = 2048 slots.
 ESL_OWN_FORMID_MIN = 0x000800
 ESL_OWN_FORMID_MAX = 0x000FFF
 ESL_MAX_OWN_RECORDS = ESL_OWN_FORMID_MAX - ESL_OWN_FORMID_MIN + 1  # 2048
@@ -2897,53 +2437,27 @@ ESL_MAX_OWN_RECORDS = ESL_OWN_FORMID_MAX - ESL_OWN_FORMID_MIN + 1  # 2048
 # slot 30 = bit 0, slot 32 = bit 2.
 _BIPED_SLOT_BODY_BIT = 1 << (32 - 30)
 
-# Slots 33 (hands) + 37 (feet). These armatures carry a HAND/FOOT SKIN shape and
-# the engine matches that skin by the ARMA's PRIMARY race (RNAM), NOT the
-# additional-race list (the documented UBE nude-hands/feet "primary-only" match).
-# So gauntlets/boots must KEEP their source primary (vanilla DefaultRace 0x19,
-# which the UBE races resolve to via RaceCompatibility) instead of having it
-# replaced with the UBE_BretonRace primary — else they're invisible on every
-# non-Breton UBE actor (and the equipped slot hides the real hands -> "hands
-# disappear"). PROVEN: vanilla-converted gauntlets keep DefaultRace primary and
-# render; modded ones had it overwritten to UBE_Breton and went invisible. Body
-# (slot 32) is fine on the UBE primary (its skin is the per-race body routing),
-# so this is hands/feet ONLY.
+# Slots 33 (hands) + 37 (feet). The engine matches nude hand/foot skin by the
+# ARMA's PRIMARY race (RNAM) only, not the additional-race list. Gauntlets/boots
+# must keep their source primary (DefaultRace) so the UBE races resolve to it via
+# RaceCompatibility. Replacing it with UBE_BretonRace makes them invisible on all
+# non-Breton UBE actors. Slot 32 (body) is exempt; its skin is routed per-race.
 _BIPED_SLOT_HANDS_FEET_BITS = (1 << (33 - 30)) | (1 << (37 - 30))
 
-# Slot 33 (hands) ONLY. Modded gauntlets render INVISIBLE on the UBE actor's hand
-# slot even with a structurally-valid converted mesh (valid geometry, hand bones,
-# SBP_33_HANDS partition, correct races + ARMO->ARMA linkage) — user-confirmed
-# across 4 mesh/ESP fixes that all failed. BOOTS (slot 37, same pipeline) render
-# fine, and VANILLA gauntlets via the ESP-only path (Vanilla_UBE_Race_Compat:
-# original mesh + UBE race tags) render. So this is engine-level for the hand
-# slot, NOT our mesh. GUARANTEED-VISIBLE FALLBACK: route slot-33 gauntlets through
-# the SAME ESP-only path — keep the ORIGINAL hand mesh (NO !UBE redirect) and just
-# add the UBE races. Renders like vanilla gauntlets (CBBE-shaped, doesn't scale to
-# the UBE morph yet — a separate, smaller follow-up). Only a PURE gauntlet
-# (slot 33 set, slot 32 NOT) — a body+hands suit still converts its body mesh.
+# Slot 33 (hands) only. Pure gauntlets (slot 33 set, slot 32 NOT) are routed
+# through the ESP-only fallback (original mesh + UBE races) when GAUNTLET_ESP_ONLY
+# is True. Body+hands suits still convert the body mesh normally.
 _BIPED_SLOT_HANDS_BIT = 1 << (33 - 30)
 
-# Gauntlet rendering strategy. ESP-only (keep the original CBBE/3BA hand mesh +
-# UBE race tags) was the guaranteed-visible fallback while the invisibility cause
-# was unknown. Root cause is now believed to be HDT-SMP CLOTH PHYSICS that the
-# converter wrongly generated for fabric gauntlets (collapses the rigid piece at
-# runtime); nif_convert no longer emits HDT/BODYTRI for hand/foot slots. With that
-# removed, the CONVERTED gauntlet should render AND morph AND be UBE-shaped, which
-# is strictly better than ESP-only. So default to CONVERTED (flag False). Flip to
-# True to fall back to the safe ESP-only path if converted gauntlets still vanish.
+# False = use converted gauntlet mesh (renders + morphs).
+# True = ESP-only fallback (original CBBE mesh + UBE races) if converted still vanish.
 GAUNTLET_ESP_ONLY = False
 
-# Weight-agnostic basenames of the NUDE BODY SKIN meshes (hands/feet/body, all
-# genders + 1st-person + beast variants). An ARMA whose model is one of these
-# is a *nude skin* armature that lives in a race's skin (WNAM) ARMO — NOT an
-# equippable accessory. The UBE races already supply their own nude skin via
-# UBE_AllRace's 00UBE_NakedHands/NakedFeet/NakedTorso. If the vanilla-compat
-# patch ALSO extends the vanilla per-race naked hand/feet armatures to the UBE
-# races, the vanilla (CBBE-in-this-load-order) skin armature competes with the
-# UBE one in the nude skin list and WINS (our patch loads last) -> a nude UBE
-# actor renders CBBE hands/feet while the body stays UBE. So we must never
-# extend a nude-skin armature; equippable gauntlets/boots/jewelry (real armor
-# meshes) are unaffected and still get UBE-race visibility.
+# Nude body-skin mesh basenames (all genders, 1st-person, beast variants).
+# We must never extend these armatures to the UBE races: doing so adds a
+# competing skin ARMA to the nude-skin list that wins over UBE_AllRace's own
+# 00UBE_Naked* entries (our patch loads last), causing UBE actors to render
+# CBBE hands/feet while the body stays UBE. Equippable armor is unaffected.
 _NUDE_SKIN_BASENAMES = frozenset({
     "femalebody", "malebody", "femalehands", "malehands",
     "femalefeet", "malefeet",
@@ -2966,12 +2480,8 @@ def _is_nude_skin_model(path: str) -> bool:
     actor renders the wrong nude skin). Matches by weight-stripped basename."""
     if not path:
         return False
-    # Any mesh under an actor "character assets" skin folder is body skin,
-    # not armor (armor lives under meshes\Armor\ or meshes\Clothes\). This
-    # catches child skins (ChildHands/ChildFeet), the DLC vampire-lord
-    # skeleton skin, and any unique-NPC skin whose basename the rules below
-    # would miss -- so the vanilla-compat patch NEVER touches the actual
-    # nude hands/feet/body, only armor.
+    # Meshes under character assets skin folders (catches child skins, DLC
+    # vampire skin, unique-NPC skins) — never treat as equippable armor.
     if "character assets" in path.replace("/", "\\").lower():
         return True
     base = path.replace("\\", "/").rsplit("/", 1)[-1].lower()
@@ -3196,13 +2706,10 @@ def fold_ube_raceskin_skins(vc_path, ube_allrace_path) -> dict:
     if ube_name not in vm:
         return {"folded": 0, "reason": "VC does not master UBE_AllRace"}
 
-    # Full transitive-master closure: VC is about to OVERRIDE a UBE_AllRace
-    # record (00UBE_SkinNaked), so it must declare ALL of UBE_AllRace's masters
-    # or the override misroutes / the validator flags unmappable-master-ref.
-    # UBE_AllRace's masters are ESMs -> insert any missing one before the first
-    # ESP (keeps ESM-before-ESP), then remap every existing record (FormID +
-    # payload) for the shifted master indices, reusing the prune pass's tested
-    # _rewrite_formids_in_payload.
+    # Ensure full transitive-master closure: overriding a UBE_AllRace record
+    # requires all of UBE_AllRace's masters in VC's master list, or FormIDs
+    # misroute. Insert missing ESMs before the first ESP (keeps ESM-before-ESP)
+    # and remap all existing FormIDs for the shifted master indices.
     missing_masters = [m for m in ube.header.masters if m.lower() not in vm]
     if missing_masters:
         old_masters = list(vc.header.masters)
@@ -3343,42 +2850,16 @@ def generate_vanilla_race_compat_patch(
     ube_path_prefix: str = "!UBE\\",
     armo_winner_index: "dict[tuple[str, int], _WinnerRecord] | None" = None,
 ) -> dict:
-    """Emit a standalone ESL-flagged patch that extends vanilla NON-BODY
-    ARMAs (helmet, gauntlets, boots, jewelry — every female ARMA that
-    does NOT cover slot 32) with UBE races in their additional-race
-    list. Fixes invisible vanilla armor for UBE-race players where no
-    CBBE replacer mod provides a body-shape-corrected version.
+    """Emit a patch extending vanilla non-body ARMAs (helmets, gauntlets,
+    boots, jewelry — every female ARMA that does NOT cover slot 32) with
+    UBE races. Non-body vanilla meshes fit the UBE skeleton without
+    re-conversion (UBE only changes the torso), so only the race list
+    needs extending. Body-slot ARMAs and male-only ARMAs are skipped.
 
-    Why this exists:
-      * UBE_AllRace.esp creates new races (UBE_BretonRace, UBE_NordRace,
-        etc.) without skeleton-compatible vanilla ARMA coverage.
-      * Newrite's RaceCompatibilityCondition is supposed to bridge this
-        but doesn't reach every armor record in some setups.
-      * Per-mod patches (generate_ube_patch) only cover ARMAs that the
-        source CBBE mod overrides. Vanilla Dwarven boots/gauntlets/
-        helmet, vanilla jewelry, vanilla circlets etc. don't get
-        replaced by a replacer mod or similar — they stay vanilla and don't
-        fire on UBE races.
-      * Non-body items (slot != 32) use vanilla female meshes that fit
-        a UBE skeleton fine — UBE only changes the torso. So we only
-        need to extend the race list, not convert the mesh.
+    When `converted_rel_paths` is given, also covers slot-32 vanilla
+    body armour whose MOD3 we converted (mints UBE ARMA + ARMO override).
 
-    What this DOES NOT do:
-      * Body-slot (32) ARMAs are SKIPPED. Vanilla CBBE-shaped body
-        meshes on UBE torso look wrong; those need real CBBE→UBE mesh
-        conversion via the main per-mod converter path.
-      * Doesn't extend male-only ARMAs (no MOD3 = no female mesh).
-
-    Args:
-      output_esp_path: where to write the patch ESP.
-      master_data_dirs: directories to search for the master ESM files.
-      masters_to_scan: which masters to walk (default: vanilla DLC trio).
-      include_cc_masters: also walk every ccbgssse*.esm found in the
-        data dirs (Creation Club armor packs).
-      ube_allrace_filename: filename providing the UBE base races.
-
-    Returns: stats dict with `output`, `arma_overrides`, `masters`,
-    `validation_warnings`, etc.
+    Returns: stats dict with `output`, `arma_overrides`, `masters`, etc.
     """
     out_path = Path(output_esp_path)
 
@@ -3401,7 +2882,6 @@ def generate_vanilla_race_compat_patch(
             except (OSError, PermissionError):
                 continue
 
-    # Also need UBE_AllRace.esp for the race FormIDs.
     ube_path = _find_master_path(ube_allrace_filename, master_data_dirs)
     if ube_path is None:
         raise FileNotFoundError(
@@ -3409,19 +2889,10 @@ def generate_vanilla_race_compat_patch(
         )
 
     # ---- Step 2: build the patch's master list ----
-    # Order: vanilla ESMs first (in canonical order), then any CC ESMs,
-    # then UBE_AllRace.esp. (ESMs before ESPs is required by Skyrim's
-    # ESL loader.)
-    #
-    # CRITICAL: we MUST include every transitive master that any scanned
-    # master depends on. Dawnguard.esm and Dragonborn.esm each list
-    # Update.esm as a master, so their ARMAs may carry FormIDs in
-    # Update.esm's space. If Update.esm isn't in OUR patch master list,
-    # the FormID remap falls back to leaving the original top byte —
-    # which in our patch points at the wrong master (the byte we'd
-    # otherwise have assigned to Dawnguard or similar). Game crashes
-    # on load when it tries to resolve a non-existent record.
-    # Pre-load every scanned master so we can read its master list.
+    # Vanilla ESMs first, then CC ESMs, then UBE_AllRace.esp.
+    # Include every transitive master each target depends on: e.g.
+    # Dawnguard/Dragonborn list Update.esm, so their FormIDs need it
+    # in our master list or the remap lands on the wrong master (crash).
     target_esps: dict[str, esp.ESP] = {}
     for name, path in targets:
         try:
@@ -3429,21 +2900,13 @@ def generate_vanilla_race_compat_patch(
         except Exception:
             continue
 
-    # Union every master referenced by every target into our patch's
-    # master list. Vanilla canonical order first to satisfy Skyrim's
-    # ESM-ordering rules.
-    # Vanilla DLC ESMs are always loaded — include them unconditionally
-    # so transitive FormID references through them resolve correctly.
     patch_masters: list[str] = list(VANILLA_DLC_MASTERS)
     referenced_by_targets: set[str] = set()
     for _name, te in target_esps.items():
         for m in te.header.masters:
             referenced_by_targets.add(m)
-    # Any non-canonical transitive masters (e.g. cc-pack ESMs that
-    # depend on other ESMs we didn't scan).
     for name in referenced_by_targets:
         _add_master_if_missing(patch_masters, name)
-    # The targets themselves.
     for name, _ in targets:
         _add_master_if_missing(patch_masters, name)
     _add_master_if_missing(patch_masters, ube_allrace_filename)
@@ -3460,14 +2923,9 @@ def generate_vanilla_race_compat_patch(
     ube_primary_for_patch = ube_top | UBE_PRIMARY_BRETON_FID_24
 
     # ---- Body coverage (optional) ----------------------------------------
-    # When `converted_rel_paths` is given (the standalone vanilla-armor flow),
-    # we ALSO cover slot-32 vanilla BODY armour: for each master body ARMA
-    # whose female mesh (MOD3) we converted to !UBE, mint a UBE ARMA variant
-    # (redirect MOD3 -> !UBE, UBE races) as an OWN record, then override the
-    # master ARMO that references it to append the new ARMA. This is the same
-    # mint+override the per-mod master-scan does; it lets vanilla cuirasses
-    # render UBE-fitted on UBE actors with NO replacer mod required. Without
-    # `converted_rel_paths`, body-slot ARMAs are skipped exactly as before.
+    # When `converted_rel_paths` is given, also cover slot-32 vanilla body
+    # armour: mint a UBE ARMA (MOD3 -> !UBE, UBE races) for each converted
+    # body ARMA and override its parent ARMO to reference it.
     body_arma_records: list[esp.Record] = []
     body_armo_overrides: list[esp.Record] = []
     own_byte = len(patch_masters)          # ESL own-record top byte (FE space)
@@ -3482,15 +2940,9 @@ def generate_vanilla_race_compat_patch(
             s = s[len("meshes/"):]
         return s in converted_rel_paths
 
-    # STRINGS resolver to recover REAL ARMO names for the synthetic FULL.
-    # Created whenever the game Data dir (with Skyrim - Interface.bsa) is on the
-    # search path -- deliberately NOT gated on converted_rel_paths. That gate
-    # (#125 real-name resolution, take 2) left the resolver None on every run
-    # where the standalone vanilla BODY conversion produced nothing (the common
-    # case: converted_rel_paths -> None), so EVERY vanilla ARMO override fell
-    # back to synthesize_name_from_edid -> "MGRobes Archmage 1 Hooded" instead of
-    # "Archmage's Robes". Name resolution does not depend on any mesh
-    # conversion -- only on the master's STRINGS table. #naming
+    # STRINGS resolver for real ARMO display names (fallback: synthesize from EDID).
+    # Not gated on converted_rel_paths: name resolution depends only on the
+    # master's STRINGS table, not on whether any mesh was converted.
     _string_resolver = None
     try:
         from . import bsa_strings
@@ -3526,12 +2978,7 @@ def generate_vanilla_race_compat_patch(
         if arma_grp is None:
             continue
 
-        # Build the master-byte remap from THIS master's address space
-        # into our patch's address space.
-        #   master_own_byte (== len(master.masters)) -> master_idx(master_name)
-        #   for each i, master.masters[i] -> master_idx(master.masters[i])
-        # If we ever fail to map a byte, that's a real problem — skip
-        # the record entirely rather than silently mis-route.
+        # Map master's address space to patch space; unmappable = skip record.
         byte_remap: dict[int, int] = {master_own_byte: master_idx(master_name)}
         unmappable_bytes: set[int] = set()
         for i, m in enumerate(master_esp.header.masters):
@@ -3576,27 +3023,17 @@ def generate_vanilla_race_compat_patch(
                     primary_rnam = struct.unpack("<I", sd)[0]
                     existing_races.add(primary_rnam)
             if not has_mod3:
-                # No female model (MOD3). For BODY armour that means male-only /
-                # needs real CBBE->UBE conversion -> skip. But UNGENDERED
-                # NON-BODY gear (shields incl. guard/StormCloak shields, some
-                # helmets/circlets) legitimately ships MOD2 ONLY; vanilla renders
-                # it on females via the MOD2 fallback, and so does a minted
-                # UBE-primary ARMA (rebuild_arma_payload keeps the ungendered
-                # MOD2 path). The old blanket skip left iron/steel/glass/elven/
-                # imperial/hide/dragonplate/guard shields INVISIBLE on UBE races
-                # (issue #6). Cover non-body MOD2-bearing items; still skip
-                # body-slot or model-less records.
+                # No female model (MOD3). Body-slot or model-less = skip.
+                # Ungendered non-body gear (shields, some helmets) legitimately
+                # ships MOD2 only; vanilla renders it on females via MOD2
+                # fallback, and so does a minted UBE-primary ARMA.
                 if (slots & _BIPED_SLOT_BODY_BIT) or not model_paths:
                     skipped_no_mod3 += 1
                     continue
                 covered_nonbody_mod2_only += 1
-            # HUMANOID ONLY: extend only armatures whose PRIMARY race (RNAM)
-            # is the player DefaultRace (Skyrim.esm 0x19). Beast races
-            # (Argonian/Khajiit) and creature/NPC-specific races bind their
-            # own race and are OUT OF SCOPE -- we never opt into beast-race
-            # coverage, and beast naked-skin armatures otherwise compete with
-            # the UBE nude skin. For Skyrim.esm the DefaultRace ref is its own
-            # 0x00000019; in a DLC it's a Skyrim.esm master ref.
+            # Humanoid only: PRIMARY race (RNAM) must be DefaultRace (0x19 in
+            # Skyrim.esm). Beast/creature races are out of scope; beast
+            # naked-skin armatures would compete with the UBE nude skin.
             _ridx = (primary_rnam >> 24) if primary_rnam is not None else -1
             _rlow = (primary_rnam & 0xFFFFFF) if primary_rnam is not None else -1
             if master_name.lower() == "skyrim.esm":
@@ -3609,11 +3046,7 @@ def generate_vanilla_race_compat_patch(
                 skipped_non_default_race += 1
                 continue
             if slots & _BIPED_SLOT_BODY_BIT:
-                # BODY armour. Standalone vanilla flow: if we converted this
-                # ARMA's female mesh (MOD3) to !UBE, mint a UBE ARMA variant
-                # (redirect MOD3 -> !UBE, UBE races) as an OWN record and queue
-                # it for the ARMO-override pass below. Otherwise skip as before
-                # (a raw vanilla body mesh on a UBE actor would be wrong-shaped).
+                # Body armour: mint UBE ARMA if we converted this MOD3 mesh.
                 if converted_rel_paths and mod3_path and \
                         _vanilla_converted(mod3_path):
                     try:
@@ -3667,18 +3100,10 @@ def generate_vanilla_race_compat_patch(
                 skipped_unknown_master_ref += 1
                 continue
 
-            # #132 helmet fix: a vanilla NON-BODY armature (helmet/circlet/etc.)
-            # only renders on a UBE actor via a UBE-PRIMARY ARMA. Extending the
-            # ORIGINAL ARMA's *additional* races (RNAM stays DefaultRace) does NOT
-            # render -- measured: guard helmet RNAM=DefaultRace invisible, while
-            # the converted body RNAM=UBE_AllRace renders. So MINT a UBE-primary
-            # ARMA pointing at the VANILLA mesh (not converted -> _vanilla_
-            # converted is False -> rebuild keeps the original path) + UBE races,
-            # and link it to the master ARMO via the body-coverage pass below
-            # (master_to_new_body + _build_armo_body_override are slot-agnostic).
-            # The ORIGINAL ARMA is left untouched, so vanilla / male NPCs keep
-            # rendering it -- the ARMO ends up with both. Mirrors the body branch.
-            # On ANY failure, fall through to the legacy race-extension override.
+            # Mint a UBE-primary ARMA pointing at the vanilla mesh (no mesh
+            # conversion needed for non-body slots) + UBE races. Link it to the
+            # master ARMO. The original ARMA is left untouched (vanilla/male NPCs
+            # keep using it). On failure, fall through to race-extension override.
             try:
                 stripped = b"".join(
                     esp.encode_subrecord(s2, d2)
@@ -3717,34 +3142,17 @@ def generate_vanilla_race_compat_patch(
                 skipped_already_ube += 1
                 continue
 
-            # Build override: copy all subrecords, splice new MODL entries
-            # right after the last existing MODL (so all races stay
-            # grouped, matching canonical layout).
-            # CRITICAL: STRIP alt-texture subrecords (MO?S) and texture-
-            # hash subrecords (MO?T) when overriding vanilla ARMAs. These
-            # contain TXST FormIDs and texture-data hashes that USSEP /
-            # Audio Overhaul Skyrim / other vanilla patches frequently
-            # modify. Copying the original Skyrim.esm bytes verbatim
-            # restores stale references that no longer match the loaded
-            # TXST records — engine reads our override, walks the dangling
-            # FormID, dereferences NULL, ACCESS_VIOLATION at startup.
-            # The May 2026 crash on ARMA 0x0010E2DB (MageApprenticeBoots-
-            # Variant1AA) was this exact bug: USSEP redirected MO2S/MO3S
-            # TXST refs to its own fixed TXST records, our override
-            # reverted them.
-            #
-            # By stripping MO?S/MO?T, our override loses the texture-set
-            # alternatives for that armor on UBE-race actors — they'll
-            # render with default (base) textures instead of color
-            # variants. Acceptable trade-off for non-body items that
-            # users wear briefly.
+            # Build override: copy subrecords, splice new MODL entries after
+            # the last existing MODL (keeps canonical grouped layout).
+            # Strip MO?S/MO?T: those TXST FormIDs and texture hashes are
+            # frequently patched by USSEP etc.; copying vanilla bytes verbatim
+            # reverts those patches and causes a dangling-FormID access violation.
+            # Trade-off: UBE-race actors lose texture variants (render base only).
             STRIP_FROM_ARMA_OVERRIDE = {
                 b"MO2S", b"MO3S", b"MO4S", b"MO5S",  # alt textures
                 b"MO2T", b"MO3T", b"MO4T", b"MO5T",  # texture hashes
             }
             pieces = list(esp.iter_subrecords(rec.payload))
-            # Filter out the stripped subrecords first so they don't
-            # appear in the index lookup.
             pieces = [(sig, data) for sig, data in pieces
                       if sig not in STRIP_FROM_ARMA_OVERRIDE]
             last_modl_idx = -1
@@ -3802,10 +3210,8 @@ def generate_vanilla_race_compat_patch(
                         master_name, _string_resolver)
                     if ov is None:
                         continue
-                    # #132: overlay the load-order winner's balance (armor
-                    # rating/keywords/name) onto this vanilla override so
-                    # Requiem/overhaul stats survive (stats-only, no masters
-                    # added — KWDA adopted only when its masters are present).
+                    # Overlay load-order winner stats (armor rating/keywords)
+                    # so Requiem/overhaul balance survives.
                     if armo_winner_index:
                         abs_id = (master_name.lower(),
                                   m_armo.formid & 0xFFFFFF)
@@ -3821,18 +3227,14 @@ def generate_vanilla_race_compat_patch(
         scan_stats[master_name] = hit_count
 
     # ---- Step 4: emit the patch ESP ----
-    # NOT ESL-flagged. This patch now mints a UBE-primary ARMA for every vanilla
-    # NON-BODY armature too (helmet/circlet fix #132), so it carries hundreds of
-    # OWN records plus ~2000 ARMO overrides -- an override-heavy load that the
-    # ESL FE-space compaction mis-resolved in-game (wrong helmet mesh + most
-    # vanilla armor mislabeled, 2026-06-02). Shipping it as a normal full plugin
-    # loads the overrides at the plugin's real load-order slot and resolves the
-    # minted-ARMA refs correctly. (Costs one ESP load-order slot.)
+    # Not ESL-flagged: this patch mints hundreds of own ARMA records plus ~2000
+    # ARMO overrides. ESL FE-space compaction mis-resolved the minted-ARMA refs
+    # in-game. A full plugin loads overrides at the correct load-order slot.
     out_header = esp.TES4Header(
         masters=patch_masters,
         author=author,
         description=description,
-        flags=0,                # was TES4_FLAG_ESL -- see note above (#132)
+        flags=0,                # was TES4_FLAG_ESL — see note above
         version=1.7,
         num_records=0,  # filled by save()
         next_object_id=max(0x800, next_obj_id),
@@ -3882,10 +3284,10 @@ def _read_tes4_flags(esp_path: Path) -> "int | None":
         return None
 
 
-# Cache of ESM-tier verdicts keyed by lowercased plugin name. A plugin's
-# master-tier status is stable within a process, and resolving an ESM-flagged
-# .esp means an `iterdir()` scan of the data dirs via _find_master_path — doing
-# that once per master on a 139-master Combined made validate_patch take >100s.
+# ESM-tier verdict cache keyed by lowercased name. Not cached on lookup failure:
+# narrow per-mod data_dirs could poison the verdict before the later batch merge
+# (with full data_dirs) re-reads the real flag. Stale False causes ESL-flagged
+# .esp to sort after a regular .esp -> master-order crash.
 _ESM_TIER_CACHE: dict[str, bool] = {}
 
 
@@ -3893,11 +3295,8 @@ def clear_esm_tier_cache() -> None:
     _ESM_TIER_CACHE.clear()
 
 
-# Cache of a master plugin's OWN master list, keyed by resolved path string.
-# Reading it means parsing only the TES4 record (the first record), NOT the
-# whole multi-MB plugin — full esp.ESP.load on every distinct referenced master
-# made validate_patch take MINUTES on a big Combined (100+ large masters like
-# Vigilant.esm / LegacyoftheDragonborn.esm / Requiem.esp).
+# Per-master TES4-only master-list cache. Parses only the TES4 record, not
+# the whole multi-MB plugin; full ESP.load per master made validate_patch slow.
 _MASTER_LIST_CACHE: dict[str, list[str]] = {}
 
 
@@ -3928,18 +3327,11 @@ def _read_master_list_only(path: Path) -> "list[str]":
 
 
 def _is_esm_tier_master(name: str, data_dirs: "list[Path] | None") -> bool:
-    """True if `name` is a MASTER-TIER plugin that must precede regular ESPs in
-    a plugin's master list. That's NOT just the `.esm` extension: a plugin is
-    master-tier if it has the TES4 ESM flag (0x1) OR the light/ESL flag (0x200)
-    set — which includes `.esm`, `.esl` (the extension forces ESM+light), the
-    many ESM-flagged `.esp` files (USSEP, lots of overhauls), AND ESL-flagged
-    `.esp` files (ESPFE — the modern compact-plugin standard, extremely common:
-    3BBB, countless armor mods). ESL-flagged `.esp` carry ONLY 0x200, not 0x1,
-    so checking 0x1 alone mislabels them regular and sorts them after a real
-    regular .esp -> master order contradicts the engine's load order and the
-    overrides mis-route / crash on load (especially for ESL-flagged output).
-    Reads the real flag from disk via data_dirs; falls back to the extension if
-    the file can't be located."""
+    """True if `name` must precede regular ESPs in a master list.
+    Master-tier = TES4 flags 0x1 (ESM) or 0x200 (ESL/light), which includes
+    .esm, .esl, ESM-flagged .esp (USSEP), and ESL-flagged .esp (ESPFE).
+    Checking only 0x1 mislabels ESL-flagged .esp as regular -> order crash.
+    Falls back to extension if the file can't be located."""
     low = name.lower()
     if low.endswith(".esm") or low.endswith(".esl"):
         return True
@@ -3951,28 +3343,15 @@ def _is_esm_tier_master(name: str, data_dirs: "list[Path] | None") -> bool:
         if p is not None:
             flags = _read_tes4_flags(p)
             if flags is not None:
-                # 0x1 = ESM (master), 0x200 = light/ESL. BOTH load in the
-                # master block, so either makes the plugin master-tier.
-                result = bool(flags & 0x201)
-                _ESM_TIER_CACHE[low] = result   # cache ONLY a real on-disk read
+                result = bool(flags & 0x201)  # 0x1 = ESM, 0x200 = ESL
+                _ESM_TIER_CACHE[low] = result  # cache only real on-disk reads
                 return result
-    # File not found / unreadable with THESE data_dirs. Return regular for now
-    # but DO NOT cache the failure: an earlier call with a narrow per-mod
-    # data_dirs would otherwise poison the verdict, and the later batch MERGE
-    # (which passes comprehensive data_dirs) would reuse the stale "regular" and
-    # sort an ESL-flagged .esp after a real regular .esp -> the 95-violation
-    # master-order regression. Leaving it uncached lets the merge re-read the
-    # real flag. (Verified: caching here made `then good dirs` return False.)
-    return False
+    return False  # not cached on failure (see _ESM_TIER_CACHE note above)
 
 
-# ----- #132 winner-aware ARMO override rebasing ---------------------------
-#
-# An ARMO we convert may be overridden LATER in the load order by a third-party
-# patch (Requiem balance, Authoria, a replacer). Basing our UBE override on the
-# bare master/source record discards that winner's stats/keywords/armatures. The
-# winner index lets merge_patches rebase the override on the load-order winner
-# and only ADD our _UBE armature, so the winner's content survives.
+# ----- Winner-aware ARMO override rebasing -----------------------------------
+# The winner index lets merge_patches overlay load-order winner stats/keywords
+# onto our override instead of basing it on the bare master record.
 
 class _WinnerRecord:
     __slots__ = ("plugin_name", "plugin_masters", "payload", "is_localized")
@@ -4035,10 +3414,8 @@ def build_armo_winner_index(
     return index
 
 
-# ARMO subrecords carrying the WINNER's balance that have NO FormID, so they can
-# be adopted from a winner without mastering the winner plugin. (Requiem etc.
-# change armor rating/type/name via these.) EDID is an editor label some patchers
-# key on; adopting it keeps those rules matching our now-winning record.
+# ARMO subrecords with no FormID — adoptable from the winner without adding a
+# new master. Covers the balance fields Requiem/overhauls typically change.
 _WINNER_STAT_NOFID_SIGS = (b"EDID", b"OBND", b"FULL", b"BOD2", b"DATA", b"DNAM")
 
 
@@ -4047,18 +3424,10 @@ def _overlay_winner_stats(
     winner: "_WinnerRecord",
     merged_masters: list[str],
 ) -> bytes:
-    """#132 STATS-ONLY rebase. Overlay the load-order winner's balance onto our
-    already-valid base override (which carries the original armatures + our _UBE
-    armature in merged space). We adopt only the winner's NO-FormID stat
-    subrecords (armor rating/type/name) plus KWDA when every keyword resolves to
-    a master ALREADY in the merged list. We KEEP the base's armatures and never
-    reference the winner's own records — so NO new masters are pulled in.
-
-    Why not adopt the winner's ARMATURES too: on a heavily-patched list the
-    winners span 100+ plugins; mastering them all blows past the 254-master plugin
-    limit (measured: +322 masters). Only ~0.3% of winners actually change the
-    armature list, so the armatures stay base-derived. Armor RATING/TYPE/KEYWORDS
-    /NAME — the balance the user cares about — are preserved for 100% of armors."""
+    """Overlay the load-order winner's balance onto the base override.
+    Adopts only no-FormID stat subrecords (armor rating/type/name) plus KWDA
+    when every keyword is already in the merged master list. Armatures stay
+    base-derived (winner armatures would require mastering 100+ plugins)."""
     def _merged_idx(name: str) -> "int | None":
         nl = name.lower()
         for idx, mn in enumerate(merged_masters):
@@ -4066,7 +3435,7 @@ def _overlay_winner_stats(
                 return idx
         return None
 
-    # Winner -> merged byte remap, ONLY for masters already present (no adds).
+    # Remap winner's master bytes to merged space; skip any not present.
     wbr: dict[int, int] = {}
     for i, m in enumerate(winner.plugin_masters):
         j = _merged_idx(m)
@@ -4127,18 +3496,13 @@ def _overlay_winner_stats(
     return out
 
 
-# ----- Mod-defined non-body UBE coverage (the guard-helmet class) ---------
-#
-# vanilla-compat mints UBE-primary ARMAs for VANILLA (Skyrim/DLC) non-body items
-# so they render on UBE-race actors. But an overhaul (Requiem, Sons of Skyrim,
-# Authoria patches) often RE-ARMATURES a vanilla item with its OWN ArmorAddon
-# listing only vanilla races -> invisible on UBE actors (the guard helmet:
-# REQ_ArmorAddon_GuardsHelmet, 19 vanilla races, 0 UBE). vanilla-compat never
-# touches a MOD-defined ARMA, so these slip through. This pass closes the gap
-# for ANY plugin: scan the load order for player-equippable NON-BODY ARMOs whose
-# WINNING armatures all lack UBE coverage, mint a UBE-primary ARMA per missing
-# armature (pointing at the SAME, already-UBE-fitting non-body mesh — UBE only
-# reshapes the torso), and override the winning ARMO to add it. #132 generalized.
+# ----- Mod-defined non-body UBE coverage (the guard-helmet class) ----------
+# vanilla-compat covers vanilla ARMA records; overhaul-defined ARMAs (e.g.
+# Requiem's REQ_GuardsHelmet with 19 vanilla races, 0 UBE) slip through.
+# This pass closes the gap: scan the load order for non-body ARMOs whose
+# winning armatures lack UBE coverage, mint a UBE-primary ARMA per missing
+# armature (same non-body mesh — UBE only reshapes the torso), and override
+# the winning ARMO to include it.
 
 _HAIR_ONLY_SLOTS = 0x802          # biped slots 31 (Hair) | 41 (LongHair)
 _BODY_SLOT_BIT_32 = 1 << 2        # biped slot 32 (Body)
@@ -4146,18 +3510,9 @@ _ARMORHELMET_KW_LOW24 = 0x06BBD9  # Skyrim.esm ArmorHelmet keyword
 
 
 def _hair_only_armo_is_equippable_headgear(payload, masters) -> bool:
-    """A hair-slot-only ARMO (slots == 31|41) is equippable HEADGEAR (a helmet /
-    hood / headdress / turban that occupies the hair slots to HIDE the actor's
-    hair) rather than a cosmetic wig/hairstyle if it has a gold value > 0 OR
-    carries the ArmorHelmet keyword. Cosmetic hairstyles distributed as ARMO are
-    value-0 with no armor keyword.
-
-    Why this matters: the non-body coverage pass skipped EVERY hair-only ARMO as
-    "hair/wig only — not equippable armor", which wrongly dropped real headgear
-    that hides hair (the Sand Snake headdress: slots 31|41, value 250, ArmorLight
-    + ArmorHelmet). With no coverage its DefaultRace armature never matched a UBE
-    actor's race -> the headdress was INVISIBLE on UBE actors. Detection-driven
-    (value / helmet keyword), so it generalizes to any hair-hiding headgear."""
+    """True if a hair-slot-only ARMO is real headgear (hides hair, has gold
+    value or ArmorHelmet keyword) rather than a cosmetic hairstyle ARMO
+    (value 0, no armor keyword)."""
     for sig, d in esp.iter_subrecords(payload):
         if sig == b"DATA" and len(d) >= 4:
             if struct.unpack_from("<I", d, 0)[0] > 0:
@@ -4170,11 +3525,8 @@ def _hair_only_armo_is_equippable_headgear(payload, masters) -> bool:
                         mi < len(masters) and masters[mi].lower() == "skyrim.esm":
                     return True        # ArmorHelmet keyword -> headgear armor
     return False
-# Biped slots whose mesh DEFORMS with the UBE body and therefore needs real
-# CBBE->UBE mesh conversion, not just race coverage: 32 body, 33 hands, 34
-# forearms, 37 feet, 38 calves. This pass covers RIGID accessories only
-# (helmet/circlet/amulet/ring/etc.) — pointing a CBBE-shaped gauntlet at a UBE
-# actor would clip at the wrist/ankle, so those are left to the conversion path.
+# Slots that deform with the UBE body and need mesh conversion, not just race
+# coverage: 32 body, 33 hands, 34 forearms, 37 feet, 38 calves.
 _DEFORMING_SLOTS_MASK = (1 << 2) | (1 << 3) | (1 << 4) | (1 << 7) | (1 << 8)
 
 
@@ -4259,35 +3611,24 @@ def generate_modded_nonbody_ube_coverage_patch(
                    for p in ordered_plugin_paths}
 
     # ---- Pass 2: find target ARMOs + the ARMAs to mint ----
-    # Target = non-body, DefaultRace-primary, non-hair-only ARMO whose winning
-    # armatures ALL lack UBE coverage, with >=1 DefaultRace armature to mint.
-    # Target = PLAYABLE, non-body, DefaultRace-primary, non-hair-only ARMO whose
-    # winning armatures ALL lack UBE coverage, with >=1 DefaultRace armature.
-    # We mint ONE UBE-primary ARMA per unique source armature (dedup), then a
-    # SkyPatcher line adds it to each target ARMO at runtime (no ESP override of
-    # the mod plugin -> no master explosion: the 4092-item set spanned 525
-    # plugins, far over the 254 plugin-master limit).
+    # Targets: playable, non-body, non-hair-only ARMOs whose winning armatures
+    # all lack UBE coverage and have >=1 DefaultRace armature to mint.
+    # We mint one UBE-primary ARMA per unique source armature, then add it via
+    # SkyPatcher (no ESP override -> no master explosion).
+    # ARMO RNAM is not filtered: it's frequently a quirky authoring choice
+    # (e.g. DeerRace on human gear). The real beast-race guard is the
+    # armature-level DefaultRace filter below.
     ARMO_NONPLAYABLE_FLAG = 0x00000004
     targets = []   # (armo_abs, defining_plugin_case, [arma_abs to mint])
     mint_set: dict = {}  # arma_abs -> placeholder (filled with minted fid later)
     for armo_abs, (apayload, am, an, arms, rnam, slots, edid, aflags) in armo_win.items():
         if aflags & ARMO_NONPLAYABLE_FLAG:
-            continue                       # NPC-only — no UBE player wears it
+            continue
         if slots & _DEFORMING_SLOTS_MASK:
-            continue                       # body/hands/feet — needs mesh conversion
+            continue
         if slots and (slots & _HAIR_ONLY_SLOTS) == slots and \
                 not _hair_only_armo_is_equippable_headgear(apayload, am):
-            continue                       # cosmetic hair/wig — not equippable armor
-        # NOTE: we intentionally do NOT gate on the ARMO's own RNAM ("armor
-        # race") here. That field is frequently a no-op authoring quirk — e.g.
-        # RB's Sand Snake sets the headdress + vambraces ARMO RNAM to DeerRace
-        # (0CF89B), yet the items are ordinary human-equippable gear whose
-        # ARMATURE is DefaultRace and renders fine on humans. Gating on the ARMO
-        # RNAM dropped such items from coverage -> invisible on UBE actors (the
-        # Sand Snake headdress). The real beast/custom-race guard is the
-        # ARMATURE-level DefaultRace filter below (`to_mint`): a genuinely beast
-        # armature is never minted regardless of the ARMO RNAM, so removing the
-        # ARMO-RNAM gate only ADDS coverage for human gear with a quirky RNAM.
+            continue
         if not arms:
             continue
         winning = [(x, arma_win.get(x)) for x in arms]
@@ -4295,9 +3636,8 @@ def generate_modded_nonbody_ube_coverage_patch(
         if not winning:
             continue
         if any(v[4] for _x, v in winning):
-            continue                       # already has a UBE armature
-        # Mint only the DefaultRace armatures (human/mer). Adding human UBE races
-        # to a beast armature crashes — skip non-DefaultRace armatures.
+            continue  # already has a UBE armature
+        # Mint only DefaultRace armatures (human/mer); beast armatures crash.
         to_mint = [x for x, v in winning if v[3] == DEFAULT_RACE]
         if not to_mint:
             continue
@@ -4315,19 +3655,11 @@ def generate_modded_nonbody_ube_coverage_patch(
     ube_races_patch = [(ube_byte << 24) | f for f in UBE_RACE_FIDS_24]
     ube_primary_patch = (ube_byte << 24) | UBE_PRIMARY_BRETON_FID_24
 
-    # Drop every source-master FormID ref + texture-hash so the minted ARMA
-    # references ONLY UBE_AllRace (races) + its mesh path strings — keeping the
-    # mint ESP's master list tiny (no source plugin needed).
+    # Drop source-master FormID refs + texture data so the minted ARMA references
+    # only UBE_AllRace (races) + mesh paths; keeps the ESP master list minimal.
+    # NAM0-3 = skin-TXST / texture-swap FormIDs; strip for same reason as MO?S.
     STRIP = {b"SNDD", b"ONAM", b"MO2S", b"MO3S", b"MO4S", b"MO5S",
              b"MO2T", b"MO3T", b"MO4T", b"MO5T",
-             # NAM0/NAM1 = male/female skin-texture TXST FormIDs; NAM2/NAM3 =
-             # male/female texture-swap FLST FormIDs (confirmed via ARMA schema:
-             # SkinTexture + TextureSwapList GenderedItems). When the minted ARMA
-             # is copied from a MOD-override WINNER (USSEP/AOS/Requiem redirecting
-             # skin TXSTs), these FormIDs live in the winner's master space, which
-             # this patch (vanilla DLC + UBE_AllRace only) lacks -> stale/dangling
-             # refs, same crash class as the MO?S/MO?T strip. Stripping falls back
-             # to default skin textures — fine for race-coverage armatures.
              b"NAM0", b"NAM1", b"NAM2", b"NAM3"}
     new_arma_records: list[esp.Record] = []
     next_id = ESL_OWN_FORMID_MIN
@@ -4404,21 +3736,14 @@ def generate_modded_body_ube_coverage_patch(
     author: str = "cbbe-to-ube modded body UBE coverage",
     description: str = "UBE race coverage for mod-defined body armor variants",
 ) -> dict:
-    """The BODY counterpart of generate_modded_nonbody_ube_coverage_patch.
+    """Body-slot counterpart of generate_modded_nonbody_ube_coverage_patch.
 
-    Overhauls (Requiem) add NEW armor-variant ARMO records -- e.g. "Orcish Light
-    Cuirass" (REQ_Light_Orcish_Body) -- that REUSE a vanilla armature whose mesh
-    we DID convert, but the variant ARMO itself was never overridden, so it has
-    no UBE armature -> invisible on UBE actors. The vanilla ARMO got covered; the
-    mod's separate variant ARMO slipped through (it's not vanilla, not a source
-    mod, not non-body).
-
-    For each load-order-WINNING playable body/hands/feet ARMO whose winning
-    armatures all lack UBE coverage, this mints one UBE-primary ARMA per source
-    armature -- with its model REDIRECTED to the converted `!UBE` mesh -- and a
-    SkyPatcher line adds it. Only armatures whose mesh actually has a `!UBE`
-    conversion (`converted_rel_paths`) are minted; pointing an ARMA at an
-    unconverted CBBE mesh on a UBE actor would clip (or crash). Returns stats."""
+    Covers overhaul-added variant ARMOs (e.g. Requiem's "Orcish Light Cuirass")
+    that reuse a vanilla armature whose mesh we converted but whose own ARMO was
+    never patched. Mints a UBE-primary ARMA per source armature with the model
+    redirected to the !UBE mesh; adds it via SkyPatcher. Only armatures with an
+    actual !UBE conversion are minted (unconverted CBBE mesh on UBE would clip).
+    Returns stats."""
     out_path = Path(output_esp_path)
     exclude = {n.lower() for n in (exclude_names or set())}
     DEFAULT_RACE = ("skyrim.esm", _DEFAULT_RACE_LOW24)
@@ -4505,15 +3830,7 @@ def generate_modded_body_ube_coverage_patch(
 
     STRIP = {b"SNDD", b"ONAM", b"MO2S", b"MO3S", b"MO4S", b"MO5S",
              b"MO2T", b"MO3T", b"MO4T", b"MO5T",
-             # NAM0/NAM1 = male/female skin-texture TXST FormIDs; NAM2/NAM3 =
-             # male/female texture-swap FLST FormIDs (confirmed via ARMA schema:
-             # SkinTexture + TextureSwapList GenderedItems). When the minted ARMA
-             # is copied from a MOD-override WINNER (USSEP/AOS/Requiem redirecting
-             # skin TXSTs), these FormIDs live in the winner's master space, which
-             # this patch (vanilla DLC + UBE_AllRace only) lacks -> stale/dangling
-             # refs, same crash class as the MO?S/MO?T strip. Stripping falls back
-             # to default skin textures — fine for race-coverage armatures.
-             b"NAM0", b"NAM1", b"NAM2", b"NAM3"}
+             b"NAM0", b"NAM1", b"NAM2", b"NAM3"}  # NAM0-3: skin TXST refs, same strip reason
     new_arma_records: list = []
     next_id = ESL_OWN_FORMID_MIN
     mint_name = out_path.with_suffix(".esp").name
@@ -4629,14 +3946,10 @@ def merge_patches(
             raise FileNotFoundError(f"patch not found: {p}")
         patches.append((p, esp.ESP.load(p)))
 
-    # ----- Step 0 (#132): resolve winner-rebase targets -----
-    # For each ARMO override we'll emit, compute its absolute identity. If a
-    # DIFFERENT, non-localized plugin wins that ARMO in the load order, rebase
-    # the override on that winner so its stats/keywords/armatures survive. We
-    # skip localized winners (their FULL is an LSTRING index that doesn't
-    # travel) and the bare-master / same-source case (current behaviour already
-    # correct). The winner's plugin + its masters must join the merged master
-    # list so the remapped FormIDs resolve.
+    # ----- Step 0: resolve winner-rebase targets -----
+    # For ARMO overrides where a different, non-localized plugin wins in load
+    # order, rebase onto that winner's stats. Skip localized (LSTRING travels
+    # poorly) and same-source winners (already correct).
     rebase_map: dict[tuple[Path, int], _WinnerRecord] = {}
     rebase_count = 0
     if armo_winner_index:
@@ -4660,24 +3973,12 @@ def merge_patches(
                     rebase_count += 1
 
     # ----- Step 1: union of masters -----
-    # CRITICAL master ordering rule: ALL master-tier plugins must come BEFORE
-    # regular plugins in the master list, or the order contradicts the engine's
-    # load order and FormIDs mis-resolve -> crash on load (especially for the
-    # ESL-flagged output here). "Master-tier" is decided by the TES4 ESM FLAG
-    # (0x1), NOT the file extension: .esm/.esl AND ESM-flagged .esp (USSEP and
-    # countless overhauls) all load in the master block. The previous code
-    # sorted by extension, so an ESM-flagged .esp landed after regular .esps
-    # and crashed any modlist that has one (i.e. almost all of them).
-    #
-    # Within each tier preserve first-seen order across patches (stable sort)
-    # so the output is deterministic.
+    # Master-tier plugins (TES4 flag 0x1 or 0x200: .esm, .esl, ESM-flagged .esp)
+    # must precede regular ESPs or FormIDs mis-resolve on load. Vanilla DLC ESMs
+    # are included unconditionally; remaining masters stable-sorted by tier.
     merged_masters: list[str] = []
-    # Vanilla DLC ESMs first, canonical order — included UNCONDITIONALLY
-    # (always loaded by every Skyrim install; transitive masters for almost
-    # every source mod's records).
     for forced in VANILLA_DLC_MASTERS:
         _add_master_if_missing(merged_masters, forced)
-    # Collect every other master once (first-seen across patches)...
     seen = {m.lower() for m in merged_masters}
     rest: list[str] = []
     for _, pe in patches:
@@ -4685,33 +3986,21 @@ def merge_patches(
             if m.lower() not in seen:
                 seen.add(m.lower())
                 rest.append(m)
-    # ...then stable-sort: ESM-tier (flag 0x1 / .esm / .esl) before regular.
     rest.sort(key=lambda m: 0 if _is_esm_tier_master(m, master_data_dirs) else 1)
     for m in rest:
         _add_master_if_missing(merged_masters, m)
 
     own_byte_merged = len(merged_masters)
 
-    # ----- Step 2 + 3: assign new own-FormIDs to new ARMA records
-    # and build the global FormID remap. -----
-    # Key: (patch_path, old_full_formid) in the patch's space.
-    # Value: new full FormID in merged space.
-    formid_remap: dict[tuple[Path, int], int] = {}
-    # Also: per-patch master_byte_remap: patch_byte -> merged_byte
-    patch_master_remap: dict[Path, dict[int, int]] = {}
+    # ----- Steps 2 + 3: assign merged FormIDs + build remap table -----
+    formid_remap: dict[tuple[Path, int], int] = {}  # (patch_path, old_fid) -> new_fid
+    patch_master_remap: dict[Path, dict[int, int]] = {}  # patch_byte -> merged_byte
 
     next_own_id = ESL_OWN_FORMID_MIN
 
-    # Decide ESL-vs-full BEFORE allocating: an ESL plugin can hold at most
-    # ESL_MAX_OWN_RECORDS new records (own FormIDs 0x800-0xFFF). On a big
-    # modlist the union of all per-source UBE ARMAs blows past that (a large
-    # modlist = ~2700 own ARMAs). The OLD behaviour `raise RuntimeError` aborted the
-    # whole merge -> the caller swallowed it -> a STALE Combined.esp was left
-    # on disk and silently shipped (looked like "patcher didn't override the
-    # player sets"). Instead, when the new records don't fit an ESL, DOWNGRADE
-    # to a regular (non-ESL) ESP: own FormIDs then live in the full 24-bit
-    # range (no 0xFFF ceiling), it costs one load-order slot but can never
-    # overflow. We still prefer ESL when it fits (no slot cost).
+    # Decide ESL-vs-full before allocating. If new ARMAs > 2048 (ESL limit),
+    # downgrade to a full ESP (full 24-bit range; costs one load-order slot).
+    # Previous behaviour raised RuntimeError, leaving a stale Combined.esp on disk.
     total_new_arma = 0
     for _pp, _pe in patches:
         _own = len(_pe.header.masters)
@@ -4727,8 +4016,7 @@ def merge_patches(
     # start (conventional first usable own FormID) in either mode.
     own_id_ceiling = ESL_OWN_FORMID_MAX if as_esl else 0x00FFFFFF
 
-    # Two-pass: first pass to allocate FormIDs for new ARMAs and learn
-    # the patch's own_byte; second pass to do payload remapping.
+    # Two-pass: allocate FormIDs for new ARMAs, then remap payloads.
     new_arma_records: list[esp.Record] = []
     armo_records: list[esp.Record] = []
 
@@ -4793,10 +4081,8 @@ def merge_patches(
                 new_payload = _rewrite_payload_for_merge(
                     rec.payload, patch_path, byte_remap, formid_remap)
 
-                # #132: if a DIFFERENT, non-localized plugin wins this ARMO in
-                # the load order, overlay its balance (armor rating/type/name/
-                # keywords) onto our base override. Stats-only — keeps our base
-                # armatures (+ UBE), adds no masters. See _overlay_winner_stats.
+                # Overlay winner balance (stats/keywords) if a different plugin
+                # wins this ARMO; keeps our armatures, adds no masters.
                 win = rebase_map.get((patch_path, rec.formid)) \
                     if grp.label == b"ARMO" else None
                 if win is not None:
@@ -5047,15 +4333,9 @@ def _rewrite_payload_for_merge(
     byte_remap: dict[int, int],
     formid_remap: dict[tuple[Path, int], int],
 ) -> bytes:
-    """Rewrite all FormID references in a record's payload from one
-    patch's master-space into the merged master space.
-
-    For each FormID subrecord:
-      1. If (patch_path, fid) is in formid_remap, use the new FormID.
-         (This handles new ARMAs that got assigned fresh own-FormIDs
-         in the merged ESL space.)
-      2. Otherwise, remap just the master byte via byte_remap.
-    """
+    """Translate FormID references in a record payload from a patch's
+    master-space into the merged master-space. formid_remap takes priority
+    (handles new ARMAs with fresh ESL FormIDs); byte_remap handles the rest."""
     def _remap_one(fid: int) -> int:
         if (patch_path, fid) in formid_remap:
             return formid_remap[(patch_path, fid)]
@@ -5083,9 +4363,7 @@ def _rewrite_payload_for_merge(
             new_data = _remap_alt_texture_payload(data, _remap_one)
             out += esp.encode_subrecord(sig, new_data)
         elif sig in ARMA_MODT_SIGS:
-            # Final safety net: normalize headerless/old-format MODT so a
-            # re-merge of pre-fix per-source patches can't reintroduce the
-            # 7.5M-entry overread CTD. See normalize_modt().
+            # Normalize MODT: guard against headerless format causing overread CTD.
             out += esp.encode_subrecord(sig, normalize_modt(data))
         else:
             out += esp.encode_subrecord(sig, data)
@@ -5118,12 +4396,8 @@ def _merge_armo_armatures(existing_payload: bytes,
                 seen_fids.add(fid)
                 existing_modls.append(data)
 
-    # Rebuild the payload: copy non-MODL subrecords from existing, but
-    # emit the merged MODLs in the SAME POSITION as the original MODLs
-    # were (canonical ARMO order has them grouped before DATA/DNAM).
-    # Putting MODLs after DATA makes Skyrim's parser silently ignore
-    # them — see add_arma_to_armo_payload and master-override path for
-    # the same fix and full rationale.
+    # Rebuild: emit merged MODLs at the original MODL position (before DATA).
+    # MODLs after DATA are silently ignored by the engine.
     existing_pieces = list(esp.iter_subrecords(existing_payload))
     first_modl_idx = -1
     for i, (sig, data) in enumerate(existing_pieces):
@@ -5134,31 +4408,24 @@ def _merge_armo_armatures(existing_payload: bytes,
 
     out = b""
     if first_modl_idx >= 0:
-        # Emit non-MODL subrecords; when we reach the first original
-        # MODL position, dump ALL merged MODLs there (skipping the
-        # individual original MODLs they replace).
         for i, (sig, data) in enumerate(existing_pieces):
             if sig == ARMO_ARMATURE_SIG and len(data) == 4:
                 if i == first_modl_idx:
                     for modl_data in existing_modls:
-                        out += esp.encode_subrecord(
-                            ARMO_ARMATURE_SIG, modl_data)
-                # else skip — already emitted above
+                        out += esp.encode_subrecord(ARMO_ARMATURE_SIG, modl_data)
+                # else: already emitted
             else:
                 out += esp.encode_subrecord(sig, data)
     else:
-        # Existing payload had no MODL — splice merged MODLs before
-        # DATA. Fall back to appending if no DATA either.
+        # No existing MODL — splice before DATA, or append.
         inserted = False
         for sig, data in existing_pieces:
             if sig == b"DATA" and not inserted:
                 for modl_data in existing_modls:
-                    out += esp.encode_subrecord(
-                        ARMO_ARMATURE_SIG, modl_data)
+                    out += esp.encode_subrecord(ARMO_ARMATURE_SIG, modl_data)
                 inserted = True
             out += esp.encode_subrecord(sig, data)
         if not inserted:
             for modl_data in existing_modls:
-                out += esp.encode_subrecord(
-                    ARMO_ARMATURE_SIG, modl_data)
+                out += esp.encode_subrecord(ARMO_ARMATURE_SIG, modl_data)
     return out

@@ -171,14 +171,10 @@ def transplant_hh_offset(dst_path, value: float) -> bool:
     p["bti"].append(t_idx)
     p["bsizes"].append(8)
     p["num_blocks"] += 1
-    # Link the HH_OFFSET onto the armor's TRI-SHAPE, NOT the file root node.
-    # NiOverride / RaceMenu High Heels reads HH_OFFSET from the BSTriShape, not the
-    # root NiNode -- proven by diffing a WORKING original boot (HH_OFFSET sits on its
-    # BSTriShape `boots`, extraDataList=[HH,BODYTRI]) against our earlier root-attached
-    # transplant, which carried the right value (4.65) but the game ignored it (boot
-    # clipped into the ground). All NiObjectNET blocks share the layout
-    # Name(int@0), NumExtraData(uint@4), ExtraData list(int[]@8). Attach to the first
-    # tri-shape; fall back to the root only if the NIF somehow has no shape.
+    # NiOverride / RaceMenu High Heels reads HH_OFFSET from the BSTriShape,
+    # not the root NiNode. All NiObjectNET blocks share the layout
+    # Name(int@0), NumExtraData(uint@4), ExtraData list(int[]@8).
+    # Attach to the first tri-shape; fall back to root only if none exists.
     _SHAPE_TYPES = (b"BSTriShape", b"BSDynamicTriShape", b"BSSubIndexTriShape",
                     b"NiTriShape", b"NiTriStrips")
     target = 0

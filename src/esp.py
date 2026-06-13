@@ -69,14 +69,8 @@ def iter_subrecords(payload: bytes) -> Iterable[tuple[bytes, bytes]]:
     p = 0
     n = len(payload)
     pending_xxxx = None
-    # Bounds-checked walk: a truncated/malformed source subrecord (old LE-ported
-    # mods, hand-edited ESPs) must NOT (a) raise struct.error mid-pass, nor (b)
-    # yield a short slice that a verbatim-copy pass re-emits as a corrupt
-    # subrecord whose size header overstates its data — the headerless/garbage-
-    # count crash class, one layer down. On any boundary violation we stop the
-    # walk cleanly (dropping unparseable trailing bytes) rather than yield junk.
-    # For WELL-FORMED payloads this is identical to the old loop (it exits when
-    # p == n), so the 99.9% normal path is unchanged.
+    # Bounds-checked walk: stop cleanly (dropping unparseable trailing bytes)
+    # on any size violation rather than raising struct.error or yielding junk.
     while p + 6 <= n:                       # need the 6-byte sig+size header
         sig = payload[p:p+4]
         size = struct.unpack_from("<H", payload, p+4)[0]
@@ -112,10 +106,7 @@ class Record:
     flags: int = 0
     formid: int = 0
     timestamp_vc: int = 0     # 4 bytes
-    version_unk: int = 0x002C # 4 bytes — Skyrim SE form version 44.
-                              # Skyrim LE was 43 (0x2B); using 43 on an SE
-                              # record gives "file marked as form 43 or
-                              # lower" loader rejection.
+    version_unk: int = 0x002C # Skyrim SE form version 44 (LE was 0x2B)
     payload: bytes = b""
 
     @classmethod
@@ -255,12 +246,9 @@ class TES4Header:
 
 # ----- ESP file -----------------------------------------------------------
 
-# Read-only parse cache, keyed by (path, mtime, size). A single converter run
-# re-parses the same source ESP many times (source-mod selection, the armour
-# gate, slot-map + alt-texture scans). `ESP.load_cached` serves those callers
-# from this cache so each ESP is parsed once per run. CRITICAL: the cached
-# object is SHARED — callers that MUTATE/emit output (the patcher) must use the
-# plain `ESP.load`, never `load_cached`.
+# Read-only parse cache, keyed by (path, mtime, size). Each source ESP is
+# parsed once per run. The cached object is shared — callers that mutate or
+# emit output must use plain `ESP.load`, never `load_cached`.
 _LOAD_CACHE: "dict[tuple, ESP]" = {}
 
 

@@ -25,7 +25,7 @@ lives by anchoring on the MO2 instance:
   * the mods/ root               (mod_directory override, or <base>/mods)
   * the game Data folder(s)       (gamePath\\Data, + Stock Game / Game Root)
 
-Everything else (CBBE base body, UBE body + OSD, Texconv, the CBBE/3BA armor
+Everything else (CBBE base body, UBE body + OSD, and the CBBE/3BA armor
 mods to convert) is then discovered by scanning the mods root by CONTENT /
 heuristic — never by a hardcoded mod name.
 
@@ -340,21 +340,14 @@ def enabled_mods(lay: "Layout") -> "set[str] | None":
 
 def active_plugins_ordered(lay: "Layout") -> "list[str] | None":
     """Return LOADED plugin filenames (e.g. 'Skyrim.esm', 'Requiem.esp') IN
-    LOAD ORDER. The list is written ascending = the LAST plugin overriding a
-    record is the conflict WINNER. Used by the #132 winner-aware ARMO rebase and
-    by the modded-armor UBE coverage passes (armature resolution).
+    LOAD ORDER (ascending = last plugin is the conflict WINNER). Used by the
+    winner-aware ARMO rebase and the UBE coverage passes.
 
-    Source = `profiles/<selected_profile>/`. plugins.txt marks EXPLICITLY active
-    plugins (`*Name`), but it OMITS implicitly-loaded Creation Club / always-on
-    ESLs entirely -- the game loads those regardless (they appear only in
-    loadorder.txt). Earlier we read plugins.txt alone, so ~60 CC ESLs were
-    invisible to the coverage scan: any armor reusing a CC armature (e.g.
-    Requiem's "Orcish Light Cuirass" -> cc OrcishScaled armature) couldn't have
-    its armature resolved and was silently skipped. So now a plugin counts as
-    LOADED iff it is `*`-active in plugins.txt OR present in loadorder.txt but
-    ABSENT from plugins.txt (implicit always-load). A name listed in plugins.txt
-    WITHOUT `*` is explicitly DEACTIVATED and excluded. Returns None if the
-    profile lists can't be located."""
+    Source = `profiles/<selected_profile>/`. A plugin counts as LOADED iff it
+    is `*`-active in plugins.txt OR present in loadorder.txt but absent from
+    plugins.txt (implicit always-load CC/ESL). A name in plugins.txt without
+    `*` is explicitly DEACTIVATED and excluded. Returns None if the profile
+    lists can't be located."""
     if lay.instance_dir is None:
         return None
     prof_dirs: "list[Path]" = []
@@ -388,10 +381,8 @@ def active_plugins_ordered(lay: "Layout") -> "list[str] | None":
                     star_order.append(nm)
                 else:
                     listed.add(line.lower())
-            # Prefer loadorder.txt for the ordered set -- it lists EVERY loaded
-            # plugin, including the implicit CC/always-load ESLs that plugins.txt
-            # omits. Include a plugin iff *-active OR (in loadorder AND not listed
-            # in plugins.txt at all = implicit always-load).
+            # loadorder.txt includes implicit CC/always-load ESLs that plugins.txt
+            # omits; prefer it for the ordered set.
             if loadorder_txt.is_file():
                 ordered: "list[str]" = []
                 for line in loadorder_txt.read_text(

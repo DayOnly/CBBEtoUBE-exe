@@ -85,11 +85,8 @@ def _is_default_race(rnam: "int | None", master_masters: "list[str]",
         master_masters[top].lower() == "skyrim.esm"
 
 
-# Path fragments that mark a slot-32 DefaultRace mesh as NOT real player
-# armour even though the engine treats it as worn: visual EFFECT overlays
-# (word-wall burns, fx placeholders) under meshes\effects\... or .../effects/,
-# and CHILDREN's clothing. Verified needed: enumeration otherwise caught
-# fxemptyobject / wordburnedintochestskin (effects) and childrenclothes.
+# Filters out slot-32 DefaultRace meshes that are not real player armour:
+# visual effect overlays (fx placeholders, word-wall burns) and children's clothing.
 def _is_non_armor_path(mesh_rel: str) -> bool:
     s = mesh_rel.lower()
     if s.startswith("meshes/effects/") or "/effects/" in s:
@@ -107,9 +104,8 @@ def _is_nude_skin_basename(mesh_rel: str) -> bool:
         base = base[:-2]
     if base in _NUDE_SKIN_BASENAMES:
         return True
-    # Unique-NPC body-skin variants (femalebodyastrid, femalebodyserana, ...)
-    # live in character assets as slot-32 DefaultRace ARMAs but are nude skin,
-    # not armour. Catch the femalebody*/malebody* prefix.
+    # femalebody*/malebody* covers unique-NPC nude-skin variants that
+    # appear as slot-32 DefaultRace ARMAs (e.g. femalebodyastrid).
     return base.startswith(("femalebody", "malebody"))
 
 # Master ESMs whose armours we cover. Skyrim.esm + the always-loaded DLCs.
