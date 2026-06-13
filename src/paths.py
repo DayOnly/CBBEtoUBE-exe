@@ -339,7 +339,7 @@ def enabled_mods(lay: "Layout") -> "set[str] | None":
 
 
 def active_plugins_ordered(lay: "Layout") -> "list[str] | None":
-    """Return LOADED plugin filenames (e.g. 'Skyrim.esm', 'Requiem.esp') IN
+    """Return LOADED plugin filenames (e.g. 'Skyrim.esm', 'SomeMod.esp') IN
     LOAD ORDER (ascending = last plugin is the conflict WINNER). Used by the
     winner-aware ARMO rebase and the UBE coverage passes.
 
