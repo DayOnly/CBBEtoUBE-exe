@@ -151,16 +151,9 @@ def build_mesh_index(
     skip_mods: "tuple[str, ...] | set[str]" = (),
 ) -> dict[str, Path]:
     """Map each ``meshes\\``-relative NIF path (lowercase, forward-slash, e.g.
-    ``'armor/foo/bar_1.nif'``) to the WINNING provider's absolute file across
-    all enabled mods, in MO2 priority order — the first enabled mod to provide
-    a path wins, matching how the game's VFS resolves it.
-
-    Why this exists: the per-mod converter used to look for an armour's meshes
-    ONLY inside that armour's own mod folder. But in an MO2 modlist the meshes
-    the game actually loads can live in a DIFFERENT mod — most commonly the
-    BodySlide *output* mod (built female meshes), or a mesh/texture replacer,
-    or a patch. Resolving through the full VFS here means the converter finds
-    and refits those armours instead of silently missing them.
+    ``'armor/foo/bar_1.nif'``) to the winning provider's absolute file across
+    all enabled mods in MO2 priority order. Resolves through the full VFS so
+    meshes that live in a replacer or BodySlide output mod are found correctly.
 
     Args:
       mods_root: ``<modlist>/mods``.

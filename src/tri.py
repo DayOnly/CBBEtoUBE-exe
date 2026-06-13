@@ -66,33 +66,13 @@ import numpy as np
 
 
 TRI_MAGIC = b"PIRT"
-# IMPORTANT — the uint16 at bytes 4-5 is NOT a version field; it is the
-# SHAPE COUNT. Old PIRT documentation labeled it "version" (and that's
-# what our dataclass field is still called for back-compat), but
-# inspecting every hand-built UBE .tri on disk shows bytes 4-5 == actual
-# shape count, with zero exceptions: the official UBE collision-body mesh's .tri
-# (12 shapes) writes 0x0c, UBE femalebody_tangent.tri (1 shape) writes
-# 0x01, and BodySlide-built armors all match their on-disk shape count.
-#
-# skee's BodyMorph cache reads it as `trishapeCount` (UInt16 in packed
-# mode) and stops parsing after that many shapes. So if we write a
-# constant value (e.g. 9), skee processes only the first 9 shapes of
-# EVERY armor we produce, no matter how many shapes the .tri actually
-# carries — late-list shapes are silently dropped on equip. That was the
-# real cause of the long-standing "9-shape cap" (Cape onward freezes on
-# a mashup cuirass, late pieces freeze on a multi-piece armor / a color-variant armor, etc.)
-# It was NOT a NioOverride per-NIF shape limit (skee's apply loop has no
-# such cap), and it was NOT solvable by merging shapes to fit under 9.
-#
-# save() below writes `len(self.shapes)` at bytes 4-5; the constant
-# remains only as a default for callers that don't override it on the
-# dataclass (and to keep `version=` named-arg call sites working until
-# they're all updated).
+# IMPORTANT — bytes 4-5 are the SHAPE COUNT, not a version field. skee's
+# BodyMorph reads it as `trishapeCount` and stops after that many shapes, so
+# writing a fixed value silently drops shapes beyond that count on equip.
+# save() writes len(self.shapes); TRI_VERSION is a legacy default kept for
+# back-compat with `version=` call sites.
 TRI_VERSION = 9
-# Hard cap from the on-wire format: bytes 4-5 are uint16, so a .tri
-# can address at most 65535 distinct shapes. Real armors are nowhere
-# near this — typical max is ~20 — but we guard at save time so a bug
-# upstream can't silently truncate.
+# uint16 ceiling for the shape count field.
 TRI_MAX_SHAPES = 0xFFFF
 
 
@@ -188,9 +168,7 @@ class TriFile:
     def save(self, path: str | Path) -> None:
         """Write to disk as the on-wire PIRT format.
 
-        Bytes 4-5 are the SHAPE COUNT (uint16), not a version — see the
-        TRI_VERSION docstring above. Write len(self.shapes), ignoring
-        self.version. Guard against the uint16 ceiling.
+        Bytes 4-5 encode the SHAPE COUNT (uint16); self.version is ignored.
         """
         n_shapes = len(self.shapes)
         if n_shapes > TRI_MAX_SHAPES:
@@ -243,12 +221,8 @@ class TriFile:
                     )
                 out += struct.pack("<H", len(m.offsets))
 
-                # Vectorized quantize + emit. The per-element struct.pack
-                # loop was the slowest part of TRI save for files with
-                # many offsets (the auto-generated a slot-49 no-body cloth armor hits
-                # ~900k offsets across all shapes). numpy gather + a
-                # single tobytes() is roughly 30x faster on the same
-                # data set.
+                # Vectorized quantize: numpy gather + tobytes() is ~30x
+                # faster than per-element struct.pack on large offset tables.
                 inv = 1.0 / mult if mult > 0 else 0.0
                 if len(m.offsets) == 0:
                     continue

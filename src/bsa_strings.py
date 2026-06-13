@@ -65,12 +65,9 @@ class BSAArchive:
 
     def __init__(self, path: str | Path, eager: bool = True):
         self.path = Path(path)
-        # eager=True (default, unchanged for all existing callers): read the whole
-        # archive up front. eager=False: read ONLY the file-table region (header +
-        # folder/file records + name block, all at the START of the file) so
-        # list_files() is cheap on a multi-hundred-MB BSA -- used by the BSA mesh
-        # INDEX, which only lists. read_file() lazily upgrades to a full read if
-        # ever called on a non-eager archive, so it stays correct either way.
+        # eager=True (default): read the full archive up front.
+        # eager=False: read only the file-table region so list_files() is cheap
+        # on large BSAs; read_file() lazily loads the rest on demand.
         self._eager = eager
         self._data = (self.path.read_bytes() if eager
                       else self._read_table_region())
@@ -78,9 +75,9 @@ class BSAArchive:
         self._parse()
 
     def _read_table_region(self) -> bytes:
-        """Read only the bytes _parse() walks (header + folder records + file-
-        record blocks + file-name block) -- the file DATA that follows is left on
-        disk. Returns the whole file if anything looks off, so _parse still works."""
+        """Read only the header+folder+file-record+name-block bytes that _parse()
+        walks; leaves the bulk file data on disk. Falls back to reading the whole
+        file if anything looks off."""
         try:
             with open(self.path, "rb") as f:
                 head = f.read(36)
@@ -205,12 +202,9 @@ class BSAArchive:
             p += 4
             comp = d[p:off + size]
             # Compression algorithm by BSA version: Oldrim (v104) = zlib;
-            # Skyrim SE (v105) = LZ4 *frame* (magic 0x184D2204 == b'\x04"M\x18').
-            # The vanilla SSE Meshes/Textures BSAs are LZ4-frame, so the
-            # frame path is what makes base-game mesh extraction work (the
-            # old code only tried zlib then lz4.BLOCK, both of which fail on
-            # frame data — meshes silently came back as None). lz4.block is
-            # kept as a last-ditch fallback for any non-frame LZ4 BSA.
+            # Skyrim SE (v105) = LZ4 frame (magic 0x184D2204). Vanilla SSE
+            # Meshes/Textures BSAs use LZ4 frame; lz4.block is a fallback for
+            # non-frame LZ4 BSAs.
             if comp[:4] == b"\x04\x22\x4d\x18":
                 try:
                     import lz4.frame  # type: ignore
@@ -345,14 +339,10 @@ if __name__ == "__main__":
     from src import esp  # noqa: E402
     from src import paths as _paths  # noqa: E402
 
-    # Validation entry: auto-discover the game Data + masters (no hardcoded
-    # paths). Optional argv[1] overrides the game Data dir.
     _lay = _paths.discover_layout()
     data_dir = (sys.argv[1] if len(sys.argv) > 1
                 else (str(_lay.game_data_dirs[0]) if _lay.game_data_dirs
                       else "."))
-    # DLC masters: scanned from the mods root (cleaned-masters mod) or the
-    # game Data dir.
     masters_dir = data_dir
     if _lay.mods_root is not None:
         for _m in _lay.mods_root.iterdir() if _lay.mods_root.is_dir() else []:
@@ -366,7 +356,7 @@ if __name__ == "__main__":
     for n in (bsa.list_files("strings/") if bsa else []):
         print("  ", n)
 
-    # Resolve every ARMO FULL in the cleaned DLC masters and show real names.
+    # Show real ARMO names from the cleaned DLC masters.
     for master in ["Dawnguard.esm", "Dragonborn.esm"]:
         path = Path(masters_dir) / master
         if not path.is_file():

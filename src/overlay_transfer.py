@@ -335,9 +335,8 @@ def build_overlay_correspondence(cbbe_path, ube_path,
         ubv, ubuv, ubt = _load(ube_path)
     except Exception:
         return None
-    # CBBE warped into UBE space (anatomical correspondence): each CBBE vert ->
-    # its nearest UBE vert. Identical to the converter's CBBE->UBE body delta
-    # (which is the same NN); computed inline so it works for any region.
+    # Warp CBBE into UBE space via nearest-neighbor; matches the body-delta
+    # correspondence the main converter uses for each region.
     _, nn = cKDTree(ubv).query(cbv, k=1)
     cbbe_in_ube = ubv[nn]
     return OverlayCorrespondence(

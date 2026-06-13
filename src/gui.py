@@ -98,9 +98,8 @@ class _QueueWriter:
 
 
 def launch_gui(argv=None, auto_close_ms=None) -> int:
-    # auto_close_ms: smoke-test hook -- when set, the window auto-destroys after
-    # that many ms (verifies the whole UI constructs + renders without error,
-    # no human needed). None = normal interactive run.
+    # auto_close_ms: test hook -- window auto-destroys after that many ms.
+    # None = normal interactive run.
     import tkinter as tk
     from tkinter import ttk, scrolledtext, filedialog, messagebox
     from . import auto_convert
@@ -347,8 +346,6 @@ def launch_gui(argv=None, auto_close_ms=None) -> int:
         if dry.get():
             a.append("--list-only")
         if mode.get() == "selected":
-            # Reconvert only the ticked mods; _cmd_auto auto-skips the vanilla
-            # coverage steps for an --only-mods run unless --force-vanilla.
             for name, v in mod_vars.items():
                 if v.get():
                     a += ["--only-mods", name]

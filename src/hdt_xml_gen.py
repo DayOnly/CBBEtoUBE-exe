@@ -33,19 +33,11 @@ What we DO emit:
   * One per-vertex-shape per cloth shape, with weight-threshold
     entries derived from the shape's actual NIF skinning.
 
-What we DO NOT emit (deferred, see "Phase D" in the research plan):
+What we DO NOT emit:
 
-  * Custom physics-chain bones (physics-chain bones (prefix_NN) style). Those
-    would give cloth its own secondary jiggle motion. They require
-    inventing rigging (new bones, weight painting, rest poses,
-    constraints between successive chain bones) — substantial work.
-    Skipping them costs the cloth its own swing, but the collision-
-    only XML still solves the most common body-pokes-through-armor
-    complaint.
-
-Format reference: see project_cbbe_to_ube.md and the hand-authored
-examples in the user's modlist (a hand-authored body physics XML for body,
-a hand-authored physics XML for armor).
+  * Custom physics-chain bones. These require inventing new rigging (bones,
+    weight painting, rest poses, inter-bone constraints). The collision-only XML
+    solves the most common body-pokes-through-armor case without them.
 """
 from __future__ import annotations
 
@@ -57,20 +49,11 @@ from typing import Iterable
 
 # -- Bone classification ----------------------------------------------------
 #
-# When emitting <weight-threshold> entries we choose a value based on the
-# kind of bone:
-#
-#   1.0  =  cloth must FULLY track this bone — applies to both the
-#           standard skeleton (Spine, Pelvis, Thigh, ...) and 3BA
-#           scale bones (Breast01-03, Butt, Belly, FrontThigh, ...).
-#           The scale bones are where body physics happens; cloth at
-#           1.0 follows them exactly, which is the entire point of
-#           this XML.
-#   0.3  =  cloth MAY track this bone — secondary / unknown bones,
-#           often custom armor accent bones the source mod adds. A
-#           lower threshold means HDT-SMP treats the binding as
-#           optional; the cloth can detach from the bone if other
-#           higher-threshold bones already constrain it.
+# <weight-threshold> values by bone type:
+#   1.0 = standard skeleton bones and 3BA scale bones (Breast/Butt/Belly/Thigh).
+#         The scale bones drive body physics; cloth at 1.0 follows them exactly.
+#   0.3 = secondary / unknown bones (custom armor accent bones etc.).
+#         HDT-SMP treats these as optional; cloth can detach if other bones constrain it.
 
 SCALE_BONE_PATTERNS = (
     "breast",
@@ -114,22 +97,10 @@ def classify_bone_threshold(bone_name: str) -> float:
 
 # -- Tuning constants -------------------------------------------------------
 #
-# Margin = collision skin thickness around a shape. Verts inside the
-# margin count as colliding.
-#
-# Prenetration = how much surface overlap the engine tolerates before
-# treating it as a collision event. Higher = engine reacts sooner /
-# applies corrective force at smaller overlap.
-#
-# Body params are kept conservative globally. High-velocity regions
-# (breast / butt / belly) get widened collision via per-bone
-# `<margin-multiplier>` overrides — see HIGH_VELOCITY_BONE_PATTERNS
-# below. This avoids puffy-looking cloth on shoulders / arms / legs
-# while still catching the sudden-stop jiggle clip that pure global
-# margin bumps would otherwise need huge values to fix.
-#
-# Cloth params stay tight (margin=0.1, prenetration=0.1) — that
-# matches the per-vertex-shape convention in hand-authored UBE armor XMLs.
+# margin = collision skin thickness. prenetration = overlap before engine reacts.
+# Body params are conservative globally; high-velocity bones (breast/butt/belly/legs)
+# get a per-bone margin-multiplier to catch sudden-stop tunneling without making
+# all cloth puffy. Cloth params stay tight (0.1) matching hand-authored convention.
 
 DEFAULT_CLOTH_MARGIN = 0.1
 DEFAULT_CLOTH_PRENETRATION = 0.1
@@ -139,25 +110,16 @@ DEFAULT_BODY_PRENETRATION = 0.2
 
 # -- Per-bone collision tuning ----------------------------------------------
 #
-# Bones whose verts move at HIGH velocity during normal motion. The
-# body collision constraint can tunnel through cloth between
-# simulation frames during sudden deceleration on these. Emitting a
-# larger margin-multiplier on these bones effectively widens the body
-# collision skin where the velocity spikes live — the engine reacts
-# to imminent contact sooner, no global cloth puffiness elsewhere.
+# Bones that move at high velocity during normal motion. Widening their margin
+# makes the engine react to imminent contact sooner, preventing cloth tunneling
+# between sim frames. Legs are included because skirts/robes tunnel through
+# thighs during walk/run — not covered by the breast/butt/belly set alone.
 HIGH_VELOCITY_BONE_PATTERNS = (
     "breast01", "breast02", "breast03",   # CBBE 3BA breast physics chain
     "l breast", "r breast",
-    "npc l butt", "npc r butt",           # buttock scale bones
-    "npc belly",                          # belly bone
-    # Legs swing fast during walk/run/jump, so a loose skirt/robe/coat tunnels
-    # THROUGH the thigh/calf collision between sim frames -- the #1 "cloth clips
-    # the legs when moving" case, which the breast/butt/belly set above does
-    # nothing for. Widening the leg collision skin makes the body react to
-    # imminent contact sooner. Substring-matched against "NPC L Thigh [LThg]" /
-    # "NPC R Calf [RClf]" (and the FrontThigh/RearCalf scale bones in the same
-    # region, which is harmless -- it reinforces the same leg surface).
-    "thigh", "calf",
+    "npc l butt", "npc r butt",
+    "npc belly",
+    "thigh", "calf",                      # legs swing fast; skirts tunnel through them
 )
 HIGH_VELOCITY_MARGIN_MULTIPLIER = 2.0     # 2x DEFAULT_BODY_MARGIN = ~1u skin
 
@@ -171,32 +133,15 @@ def is_high_velocity_bone(bone_name: str) -> bool:
     return any(p in lower for p in HIGH_VELOCITY_BONE_PATTERNS)
 
 
-# -- Physics chain detection (Escalation A) ---------------------------------
+# -- Physics chain detection ------------------------------------------------
 #
-# HDT-SMP physics chains are sequences of bones with names like
-# "Skirt 1_00", "Skirt 1_01", ..., "Skirt 1_05" — a prefix plus an
-# underscore plus a two-or-three-digit index. The bone with index 00
-# is the static ANCHOR (parented to a real body bone in the NIF
-# skeleton); subsequent bones are dynamic and swing via the engine's
-# constraint-solver simulation.
+# HDT-SMP chains are bone sequences: "Skirt 1_00", "Skirt 1_01", ... — prefix +
+# underscore + 2-3 digit index. Index 00 is the static anchor (parented to a body
+# bone); subsequent bones are dynamic. Source mods that ship these bones already
+# have them in their NIF skeleton. We detect and reuse them rather than emitting
+# XML without constraints (which breaks the mod's hand-rigged cloth physics).
 #
-# Source armor mods that ship with HDT-SMP physics have these bones
-# already in their NIF skeleton + skinned to cloth verts. The
-# original mod's XML defined constraints for them. Our converter
-# would otherwise emit an XML without physics constraints for these
-# bones, breaking the cloth physics that the mod author hand-rigged.
-#
-# This detection lets us REUSE those chains: collect bones grouped
-# by prefix, generate the appropriate <bone-default> + <constraint-
-# group> blocks. We don't add new bones — we just notice the ones
-# already in the NIF and emit XML matching what BodySlide/HDT-SMP
-# expects.
-#
-# Naming patterns covered:
-#   "Skirt 1_00", "Skirt 1_01", ...           (vanilla HDT armor)
-#   "SkirtF 1_00", "SkirtB 2_03", ...         (multi-axis variants)
-#   "a physics-chain bone (prefix_NN)", "a physics-chain bone (prefix_NN)"  (a hand-authored UBE armor)
-#   "Hair 1_00"                               (hair physics chains, just in case)
+# Naming patterns: "Skirt 1_00", "SkirtF 1_00", "SkirtB 2_03", "Hair 1_00", etc.
 
 CHAIN_BONE_PATTERN = re.compile(r"^(.+?)_(\d{1,3})$")
 MIN_CHAIN_LENGTH = 2  # need at least anchor + 1 dynamic to be a chain

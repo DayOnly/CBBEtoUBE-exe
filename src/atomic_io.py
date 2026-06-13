@@ -17,20 +17,16 @@
 """Atomic file output.
 
 Every plugin/mesh this tool emits is loaded by the Skyrim engine. A partial
-write -- from a crash, a killed process (the documented practice of killing the
-converter / housecarl-mcp mid-run), a full disk, or a destination locked by the
-game / Mod Organizer / housecarl-mcp -- leaves a truncated file that the game
-then loads and CTDs on. Writing in place (`Path.write_bytes` / pynifly
-`NifFile.save()` straight onto the destination) is exactly this hazard.
+write (crash, killed process, full disk, or destination locked by the game /
+Mod Organizer) leaves a truncated file that CTDs on load.
 
-The fix is write-to-temp-then-rename: the data goes to a temp file in the SAME
-directory (so `os.replace` is atomic on the volume), and only a fully-written
-temp is swapped into place. The destination is therefore always either the
-complete OLD file or the complete NEW file -- never a corrupt half-write.
+The fix is write-to-temp-then-rename: data goes to a temp file in the SAME
+directory (so `os.replace` is atomic on the volume); only a fully-written
+temp is swapped into place. The destination is always either the complete old
+file or the complete new file.
 
-If the destination is locked, `os.replace` raises and we surface a clear,
-actionable error (`OutputLockedError`) while leaving the existing file intact,
-instead of half-overwriting it.
+If the destination is locked, `os.replace` raises and we surface a clear
+`OutputLockedError` while leaving the existing file intact.
 """
 from __future__ import annotations
 
@@ -111,10 +107,7 @@ def atomic_nif_save(nif, dst_path) -> None:
     temp file in the same directory, let pynifly write that, then os.replace it
     into place. A crash/kill during pynifly's (native) write corrupts only the
     temp -- the destination stays the previous complete file. Raises
-    OutputLockedError if the destination is locked.
-
-    Mirrors the temp-then-os.replace pattern `_reauthor_nif_fresh` already uses;
-    this is the shared form for every other NifFile.save() output site."""
+    OutputLockedError if the destination is locked."""
     dst_path = Path(dst_path)
     dst_path.parent.mkdir(parents=True, exist_ok=True)
     tmp = dst_path.with_name(dst_path.name + ".nifsave.tmp")
