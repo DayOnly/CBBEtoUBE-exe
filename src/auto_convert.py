@@ -502,7 +502,7 @@ def _find_source_esps(source_dir: Path) -> list[Path]:
     # so rglob("*.esp") can match a directory — skip anything under these paths.
     _NON_PLUGIN_PARTS = {"meshes", "textures", "facegendata", "facegeom",
                          "facetint"}
-    # Scan .esm/.esl too: bespoke armor mods (Vigilant.esm, LOTD.esm, ...) ship
+    # Scan .esm/.esl too: bespoke armor mods (quest mods, bespoke-armor masters, ...) ship
     # as masters. Vanilla/DLC ESMs are excluded by filename; CC armor ESLs are
     # valid sources (the cc* "Alternative Armors" series ships 3BA builds).
     _MASTER_SKIP = {m.lower() for m in ube_patcher.VANILLA_DLC_MASTERS}
@@ -769,7 +769,7 @@ def auto_convert_mod(
                 cur_out_name = f"{src_esp.stem} UBE patch.esp"
             out_esp = esp_out_dir / cur_out_name
             # Skip ESPs with no armor addons (no ARMA group) entirely. Big bundle
-            # mods (merged xEdit output, Requiem patch packs) carry many
+            # mods (merged xEdit output, overhaul patch packs) carry many
             # landscape/navmesh/quest/patch ESPs with no armour -- attempting a
             # patch for them only raises "no ARMA group", which would be
             # miscounted as a failure claiming "armor absent / invisible" for
@@ -1077,7 +1077,7 @@ def _build_parser():
     convert.add_argument("--no-winner-rebase", action="store_true",
                          help="Disable the #132 load-order winner rebase. By "
                               "default each merged ARMO adopts the load-order "
-                              "WINNER's balance (Requiem armor rating/keywords/"
+                              "WINNER's balance (armor rating / keywords / "
                               "name) instead of the bare master's; stats-only, "
                               "adds no masters.")
     convert.add_argument("--incremental", action="store_true",
@@ -1213,7 +1213,7 @@ def _build_parser():
     auto_p.add_argument("--no-winner-rebase", action="store_true",
                         help="Disable the #132 load-order winner rebase "
                              "(default ON: merged ARMOs adopt the winner's "
-                             "Requiem/overhaul balance; stats-only, no masters "
+                             "overhaul balance; stats-only, no masters "
                              "added).")
     auto_p.add_argument("--incremental", action="store_true",
                         help="Reuse up-to-date converted NIFs (skip the refit) "
@@ -1504,7 +1504,7 @@ def _cmd_convert(args):
         mesh_vfs_index = None
 
     # BSA fallback: when an armour mesh isn't loose anywhere, extract it from
-    # load-order BSAs (Vigilant.bsa, etc.). Lazy: only scans on an actual miss.
+    # load-order BSAs (bespoke-armor mod BSAs, etc.). Lazy: only scans on an actual miss.
     global _BATCH_BSA_INDEX
     _BATCH_BSA_INDEX = None
     try:
@@ -1700,7 +1700,7 @@ def _cmd_convert(args):
                 print(f"\n--- auto-merging {len(patch_paths)} patch(es) "
                       f"into {merged_out.name} ---")
                 # Winner-rebase: each ARMO override adopts the load-order winner's
-                # stats (Requiem balance etc.) instead of the bare master's. Stats-only.
+                # stats (overhaul balance etc.) instead of the bare master's. Stats-only.
                 winner_index = getattr(args, "armo_winner_index", None)
                 if winner_index is None \
                         and not getattr(args, "no_winner_rebase", False):
@@ -1896,7 +1896,7 @@ def _weight_base_key(rel: str) -> str:
 
 def _meshes_rel(p: Path) -> str:
     """Path under the nearest ``meshes\\`` ancestor, forward-slash, ORIGINAL
-    case (e.g. ``'armory/Ruby flower/DDV - Ruby flower Top_1.nif'``). Falls
+    case (e.g. ``'armor/modname/ArmorPiece_1.nif'``). Falls
     back to the bare filename if no ``meshes`` component is present."""
     parts = p.parts
     for i in range(len(parts) - 1, -1, -1):
@@ -1954,7 +1954,7 @@ _BATCH_BSA_INDEX = None   # set per-batch by _cmd_convert; lazy BSA mesh resolve
 
 class _BsaMeshIndex:
     """Load-order-wide fallback resolver: extracts armour meshes from mod BSAs
-    (Vigilant.bsa, LOTD, ...) when they aren't loose anywhere. Consulted only
+    (bespoke-armor mods, quest mods, ...) when they aren't loose anywhere. Consulted only
     after the VFS + source-local lookups miss. Lazy: BSA scan on first miss only.
     Texture/voice/sound BSAs are skipped. Archive data buffers are released after
     listing; only BSAs with needed meshes are re-opened for extraction."""
@@ -2116,7 +2116,7 @@ def _player_armor_mesh_bases(mod_dir: Path,
         masters = e.header.masters
         # Map which of THIS plugin's ARMAs are referenced by a PLAYABLE ARMO vs
         # only by non-playable one(s). Gore / decapitation / dismemberment /
-        # effect "armors" (Next-Gen Decapitations, etc.) bind real DefaultRace
+        # effect "armors" (gore/decapitation mods, etc.) bind real DefaultRace
         # body-slot ARMAs but flag the ARMO non-playable -- they're applied on
         # death/by script, never equipped. We skip an ARMA whose every
         # referencing ARMO IN THIS PLUGIN is non-playable, so those gore meshes
@@ -2315,8 +2315,8 @@ def _find_armor_mod_dirs_uncached(mods_root: Path,
             return False
         if _is_child_content_mod(mod_dir.name):
             return False  # child clothing — not armour "for the player"
-        # A source plugin can be .esp OR a bespoke-armour master/.esl (Vigilant.esm,
-        # Legacy of the Dragonborn.esm, Unslaad.esm, ...). #179. SINGLE asset-pruned
+        # A source plugin can be .esp OR a bespoke-armour master/.esl (quest mods,
+        # bespoke-armor masters, ...). #179. SINGLE asset-pruned
         # walk (stops at first plugin) -- masters/CC are excluded downstream by
         # _find_source_esps, so a master-only folder still gets dropped.
         if not _has_any_source_plugin(mod_dir):
@@ -2790,9 +2790,9 @@ def _cmd_auto(args):
                 if mbd_esp.exists() and mbd.get('armo_targets'):
                     mbd_esp_generated = True
                     print("  *** IMPORTANT: ENABLE 'UBE_ModBody_Coverage.esp' "
-                          "IN MO2 -- mod-defined body variants (e.g. Requiem "
-                          "'Orcish Light Cuirass') are INVISIBLE on UBE without "
-                          "it. Its SkyPatcher INI ships active in this mod. ***")
+                          "IN MO2 -- mod-defined body-armor variants are "
+                          "INVISIBLE on UBE without it. Its SkyPatcher INI "
+                          "ships active in this mod. ***")
                 _vw = [w for w in mbd.get('validation_warnings', [])
                        if 'missing-nif' not in w]
                 if _vw:

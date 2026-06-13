@@ -25,9 +25,9 @@ Special Edition bundles every plugin's strings there, base game AND DLC).
 When the UBE patcher overrides one of those master ARMO records it can't
 carry the LSTRING ref into its own non-localized patch, so historically it
 *synthesized* a name from the EDID — which produces developer-internal
-names with variant/enchant tags ("Vampire Armor Red", "Vampire Robes
-Destruction 06") instead of the real player-facing name ("Vampire Armor",
-"Vampire Robes"). This module recovers the REAL name by reading the actual
+names with variant/enchant tags (e.g. "ArmorVariant Red", "Robe
+Destruction 06") instead of the real player-facing name (e.g. "Armor
+Variant", "Robe"). This module recovers the REAL name by reading the actual
 strings table out of the BSA.
 
 Two small parsers, no third-party deps:

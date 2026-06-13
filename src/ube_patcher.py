@@ -1387,12 +1387,12 @@ def generate_ube_patch(
     # mod's cloak ARMA). That ARMA isn't in OUR new_arma_fids -- it's only
     # converted while patching its OWN plugin -- so the same-plugin rule below
     # misses the ARMO and it ships with no UBE armature => invisible on UBE
-    # races (the Twilight black/base cloth cloaks). If the referenced master
-    # ARMA's female mesh (MOD3) was converted to !UBE, mint a UBE ARMA for it
-    # HERE (self-contained: a local own-FormID, no cross-patch references) and
-    # link it. Guarded by _converted_nif_exists, so we never point an ARMA at a
-    # non-existent !UBE NIF (which would CTD). Matched purely by mesh path; this
-    # covers ANY base-plugin + add-on-plugin mod, not just Twilight.
+    # races (e.g. a base mod's cloth cloaks referenced by an add-on plugin).
+    # If the referenced master ARMA's female mesh (MOD3) was converted to !UBE,
+    # mint a UBE ARMA for it HERE (self-contained: a local own-FormID, no
+    # cross-patch references) and link it. Guarded by _converted_nif_exists, so
+    # we never point an ARMA at a non-existent !UBE NIF (which would CTD).
+    # Matched purely by mesh path; this covers ANY base-plugin + add-on-plugin mod.
     _xesp_arma_cache: "dict[str, dict[int, esp.Record]]" = {}
 
     def _xesp_master_arma(ref_fid: int) -> "esp.Record | None":
@@ -1449,8 +1449,8 @@ def generate_ube_patch(
             return None  # no converted !UBE mesh -> can't cover (would CTD)
         # Safety: only mint for the humanoid player DefaultRace (Skyrim.esm 0x19,
         # master byte 0). Adding the 16 human/mer UBE races to a beast/custom-
-        # race armature fires it for human UBE actors -> wrong mesh -> CTD (the
-        # Beard Mask Fix crash class, #152). The mesh-converted guard already
+        # race armature fires it for human UBE actors -> wrong mesh -> CTD
+        # (beast-race armature assigned to humanoid, #152). The mesh-converted guard already
         # filters to player armour, but this is the explicit belt-and-braces.
         if rnam is None or (rnam & 0xFFFFFF) != _DEFAULT_RACE_LOW24 \
                 or (rnam >> 24) != 0:
@@ -1612,7 +1612,7 @@ def generate_ube_patch(
 
         # Skip this master if any of its transitive masters isn't in our
         # patch's master list. Copying ARMO records with unmappable FormIDs
-        # (e.g. ccbgssse001-fish.esm -> HearthFires.esm) causes silent
+        # (e.g. a Creation Club .esl/.esm referencing HearthFires.esm) causes silent
         # misroutes and crashes on load. Simpler to skip than remap per-record.
         patch_masters_lc = {m.lower() for m in patch_masters}
         unmappable_transitive = [
@@ -2197,7 +2197,7 @@ def _rewrite_formids_in_payload(payload: bytes, remap: dict[int, int]) -> bytes:
             # Without remapping them here, dropping/reordering a master (prune,
             # ESL-split, race-skin fold) leaves the color-variant TXST pointing
             # at the WRONG, off-by-one master -> all color variants render the
-            # base texture (DDV Ruby / Ballad-of-Bards bug). Reuse the
+            # base texture (multi-layer garment alt-texture bug). Reuse the
             # alt-texture walker with the same top-byte remap.
             out += esp.encode_subrecord(sig, _remap_alt_texture_payload(data, _rt))
         else:
@@ -2524,7 +2524,7 @@ def _is_nude_skin_model(path: str) -> bool:
     if base in _NUDE_SKIN_BASENAMES:
         return True
     # Per-race / unique-NPC nude-skin variants are named femalehands<Race>
-    # (FemaleHandsArgonian, FemaleHandsKhajiit, FemaleHandsAstrid, ...),
+    # (FemaleHandsArgonian, FemaleHandsKhajiit, FemaleHandsUniqueNpc, ...),
     # femalefeet<Race>, femalebody<Race>, + the male / 1st-person forms. The
     # exact-match set above MISSES these (wrong word order vs the
     # 'argonianfemalehands' entries), so beast naked-hand armatures slipped
@@ -3243,7 +3243,7 @@ def generate_vanilla_race_compat_patch(
                     if ov is None:
                         continue
                     # Overlay load-order winner stats (armor rating/keywords)
-                    # so Requiem/overhaul balance survives.
+                    # so overhaul balance survives.
                     if armo_winner_index:
                         abs_id = (master_name.lower(),
                                   m_armo.formid & 0xFFFFFF)
@@ -3447,7 +3447,7 @@ def build_armo_winner_index(
 
 
 # ARMO subrecords with no FormID — adoptable from the winner without adding a
-# new master. Covers the balance fields Requiem/overhauls typically change.
+# new master. Covers the balance fields overhauls typically change.
 _WINNER_STAT_NOFID_SIGS = (b"EDID", b"OBND", b"FULL", b"BOD2", b"DATA", b"DNAM")
 
 
@@ -3530,7 +3530,7 @@ def _overlay_winner_stats(
 
 # ----- Mod-defined non-body UBE coverage (the guard-helmet class) ----------
 # vanilla-compat covers vanilla ARMA records; overhaul-defined ARMAs (e.g.
-# Requiem's REQ_GuardsHelmet with 19 vanilla races, 0 UBE) slip through.
+# an overhaul's re-armored guard helmet with 19 vanilla races, 0 UBE) slip through.
 # This pass closes the gap: scan the load order for non-body ARMOs whose
 # winning armatures lack UBE coverage, mint a UBE-primary ARMA per missing
 # armature (same non-body mesh — UBE only reshapes the torso), and override
@@ -3770,8 +3770,8 @@ def generate_modded_body_ube_coverage_patch(
 ) -> dict:
     """Body-slot counterpart of generate_modded_nonbody_ube_coverage_patch.
 
-    Covers overhaul-added variant ARMOs (e.g. Requiem's "Orcish Light Cuirass")
-    that reuse a vanilla armature whose mesh we converted but whose own ARMO was
+    Covers overhaul-added variant ARMOs (e.g. a mod-defined armor variant
+    that reuses a vanilla armature whose mesh we converted) but whose own ARMO was
     never patched. Mints a UBE-primary ARMA per source armature with the model
     redirected to the !UBE mesh; adds it via SkyPatcher. Only armatures with an
     actual !UBE conversion are minted (unconverted CBBE mesh on UBE would clip).
@@ -3904,7 +3904,7 @@ def generate_modded_body_ube_coverage_patch(
         "; cbbe-to-ube: UBE race coverage for mod-defined BODY armor variants.",
         "; Adds a minted UBE-primary ArmorAddon (redirected to the converted",
         "; !UBE mesh) to each body item whose winning armature lacked UBE races",
-        "; (e.g. Requiem 'Orcish Light Cuirass' reusing the vanilla armature).",
+        "; (e.g. an overhaul's mod-defined armor variant reusing a vanilla armature).",
     ]
     for armo_abs, defining_plugin, to_mint in targets:
         addons = [mint_set[x] for x in to_mint if mint_set.get(x) is not None]

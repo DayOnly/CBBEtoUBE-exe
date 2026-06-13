@@ -501,8 +501,8 @@ def _verts_world_to_skin(verts_world: np.ndarray, g2s) -> np.ndarray:
 # Skinned meshes must carry an identity NiAVObject (geometry) transform — the
 # engine ignores it for skinned geometry and positions verts from bones only.
 # Source meshes sometimes bake a non-identity SCALE or ROTATION into the geometry
-# transform instead of the verts (e.g. Vigilant "Shaokhan" at scale 0.0729 ->
-# armor flung off-screen; "Pelinal" arms at 6.86 -> collapsed). Fix: bake the
+# transform instead of the verts (e.g. a bespoke-armor-mod shape at scale 0.0729 ->
+# armor flung off-screen; another at 6.86 -> collapsed). Fix: bake the
 # transform into the verts/normals, adjust each skin-to-bone by its inverse to
 # preserve the bind exactly, then emit an identity transform. No-op for the
 # identity transforms that normal armor ships. #scalebake
@@ -1135,7 +1135,7 @@ def conform_to_source_standoff(
     verts whose source clearance <= `tight_standoff`) up to 1.0 (for loose/draping
     verts whose source clearance >= `loose_standoff`). Rationale: the source fit
     was authored for the SMALLER 3BA body, so tight pieces need EXTRA room on the
-    bigger UBE body (low blend, no clip = the Ruby corset), while loose pieces just
+    bigger UBE body (low blend, no clip = a tight-fitted corset), while loose pieces just
     need their original drape restored (high blend, no float = the forsworn fur).
     Pass an explicit float to force a uniform blend (tests / overrides).
 
@@ -1178,7 +1178,7 @@ def conform_to_source_standoff(
     if blend is None:
         # ADAPTIVE per-vert blend keyed on the source clearance:
         #  - tight verts (skin-hugging, small s_src) keep ROOM (low blend) so they
-        #    don't clip on the bigger/morphed UBE body (the Ruby corset case);
+        #    don't clip on the bigger/morphed UBE body (tight-corset case);
         #  - loose/draping verts (large s_src, e.g. forsworn fur/feathers) are
         #    reeled most of the way back to their source drape (-> 1.0) so they
         #    don't FLOAT off the body (the forsworn gap). One knob, both symptoms.
@@ -1344,7 +1344,7 @@ def repair_collapsed_tris(cur_verts: np.ndarray, src_verts: np.ndarray,
     The warp / inflate / conform / depth-separation passes apply slightly
     different per-vert displacements to adjacent verts, which pinches thin
     fabric/metal triangles flat (zero area). Those render as black slivers,
-    holes, or flicker -- the "mangled fabric" symptom (measured: Magecore dress
+    holes, or flicker -- the "mangled fabric" symptom (measured: a multi-layer garment
     0 -> 58 collapsed tris, its metal belt 106 -> 253). Source-quality folded
     geometry (e.g. a 3BA_Vagina seam) is degenerate in the SOURCE too; we must
     NOT disturb that, so we only repair a tri whose source area was fine.
@@ -1680,8 +1680,8 @@ _UBE_BASESHAPE_MIN_VERTS = 20_000
 _UBE_VIRTUALBODY_MIN_VERTS = 10_000
 
 # Heuristic thresholds for detecting an inline body shape that's NOT named
-# `3BA` (mods commonly use bespoke names like `_Fuse00_<ArmorName>_Body`,
-# `OBI_Body`, etc.). A shape spanning almost the full character height
+# `3BA` (mods commonly use bespoke names like `<prefix>_<ArmorName>_Body`,
+# `<Name>_Body`, etc.). A shape spanning almost the full character height
 # AND skinned to many bones is almost certainly a body. Tuned to:
 #   * catch full-body inline meshes (CBBE 3BA spans ~103 Z, full bones)
 #   * NOT catch long armor pieces (capes / coats — high Z, few bones)
@@ -1801,7 +1801,7 @@ def classify_shapes(nif: nif_io.Nif) -> tuple[list[str], list[str]]:
         VirtualBody with vertex-count guards)
       * a generic shape-shape heuristic: spans most of the character's
         vertical extent AND skinned to many bones. Catches custom-named
-        inline bodies (e.g. `_Fuse00_<ArmorName>_Body`, mod-specific naming).
+        inline bodies (e.g. `<prefix>_<ArmorName>_Body`, mod-specific naming).
     """
     body = []
     armor = []
@@ -3336,7 +3336,7 @@ def _split_oversize_partition(shape, cap: "int | None" = None) -> int:
     Skyrim's GPU skin-partition bone palette overruns above the cap -> equip
     CTD. The historical fix (_cap_skin_bone_count) dropped the lowest-weight
     bones to fit, but that evicted body-MORPH bones a dense dress needs (the
-    Magecore dress lost NPC Belly + NPC R Butt -> stopped tracking the body).
+    a dense-dress mod lost NPC Belly + NPC R Butt -> stopped tracking the body).
     The GPU limit is PER PARTITION, so the SAME mesh rendered across two
     partitions (measured: 78 + 9 bones) keeps every bone and never overruns.
     Triangles are ordered by centroid Z and greedily packed so each partition's
@@ -3418,7 +3418,7 @@ def _normalize_partitions_on_disk(dst_path: Path) -> int:
                 continue
             # Over-cap shape: SPLIT into <=cap-bone partitions (keeps every bone,
             # CTD-safe) instead of collapsing to one over-budget partition. Dense
-            # dresses/robes that ship 79-81 bones (Magecore) keep their full
+            # dresses/robes that ship 79-81 bones (some armor mods) keep their full
             # morph + physics rig this way. Under-cap shapes collapse as before.
             if len(getattr(s, "bone_names", []) or []) > SKIN_PARTITION_BONE_CAP:
                 if _split_oversize_partition(s) > 1:
@@ -4620,8 +4620,8 @@ def _shape_is_head_dominant(
 # --- Exposed body-skin detection (task: open-cleavage breast clip) ---------
 # Fraction of a shape's verts that must sit within EXPOSED_SKIN_COINCIDE_DIST
 # of the CBBE base body for the shape to BE the body surface (skin baked into
-# the armor) rather than draped cloth. Measured separation on the Witch / Eli
-# Dark-Triss corset (verify-don't-guess): the exposed 'CBBE' breast-skin shape
+# the armor) rather than draped cloth. Measured separation on an open-cleavage
+# corset mod (verify-don't-guess): the exposed 'CBBE' breast-skin shape
 # sits 100% within 0.5u of the body (meanD 0.007u); EVERY cloth shape is <=8%
 # within 0.5u (tightest corset meanD 1.10u). 0.9 / 0.5u leaves a wide margin.
 EXPOSED_SKIN_COINCIDE_DIST = 0.5
@@ -4656,8 +4656,8 @@ def _is_exposed_body_skin_shape(src_world_verts, cbbe_body_verts) -> bool:
     imitates. `compute_body_blend_skinning` already transplants the body's
     graduated weights (blend==1 for on-body verts), so the shape co-moves
     with the body. The subsequent `add_scale_bone_weights` pass then
-    OVER-weights its scale bones via MAX-propagation (measured on Eli's
-    Triss: breast-bone fraction 0.12 -> 0.19), so the baked skin inflates
+    OVER-weights its scale bones via MAX-propagation (measured on an
+    open-cleavage corset mod: breast-bone fraction 0.12 -> 0.19), so the baked skin inflates
     ~55% more than the real body under a bust slider and pokes through the
     corset. Detecting these shapes lets the caller SKIP that redundant pass
     so the skin stays a faithful co-mover of the body.
@@ -4682,7 +4682,7 @@ def _is_exposed_body_skin_shape(src_world_verts, cbbe_body_verts) -> bool:
 
 # Below this a body-skin-textured shape is a small decal / accent, not the
 # exposed-skin slice that should pull in the whole body. The breast/cleavage
-# slices that motivate this (Eli Triss `CBBE` = 1267v) are well above it.
+# slices that motivate this (typical open-cleavage armor `CBBE` shape = 1267v) are well above it.
 _EXPOSED_BODY_SKIN_MIN_VERTS = 300
 
 
@@ -5168,7 +5168,7 @@ def _separate_chest_layered_cloth_depth(
 # breastplate) is warped one shape at a time, so the warp can SCRAMBLE the
 # stacking order: the min-standoff clamp lands every layer at ~the same standoff
 # off the (bigger) UBE body and the author's radial order collapses (the
-# "crumpled/jumbled gold abdomen" / "belt clips the corset" bugs, DDV Ruby).
+# "crumpled/jumbled gold abdomen" / "belt clips the corset" bugs in a multi-layer garment).
 # This pass re-imposes the SOURCE order, classified from the source-frame
 # clearance so it's immune to whatever the warp did.
 OVERLAY_PAIR_R = 3.0       # 3D dist to pair an A vert with the nearest B vert
@@ -5306,7 +5306,7 @@ def _separate_abdomen_layered_cloth_depth(
         # the SPECIFIC partner verts on the proper side of it IN THE SOURCE
         # (lift targets = its source-below partners; ceilings = its source-
         # above partners). Mask-level reference selection cannot resolve a
-        # three-sheet sandwich (Ruby: top-fabric < belt < top-rim, all within
+        # three-sheet sandwich (e.g. top-fabric < belt < top-rim, all within
         # one pairing radius — TWO sheets of the SAME shape on opposite sides
         # of the belt), because "is this belt vert under the top" has no
         # per-vert answer; bound to source partners it does.
@@ -5389,7 +5389,7 @@ def _separate_abdomen_layered_cloth_depth(
                 # is large (>= OVERLAY_LOCAL_RAW_STRONG, far above pairing
                 # noise) and the field does not actively contradict it —
                 # this is what restores overlay features THINNER than the
-                # pairing radius (the Ruby neckline trim), where the kernel
+                # pairing radius (e.g. a narrow neckline trim in a multi-layer garment), where the kernel
                 # unavoidably mixes both sides of the order-crossing line
                 # and tier 1 can never reach consistency ON the strip.
                 # Tier-2 also works as a VETO: a vert whose OWN raw gap
@@ -5398,7 +5398,7 @@ def _separate_abdomen_layered_cloth_depth(
                 # belt-over-top neighbourhood) — firing it would lift it over
                 # the very strip it sits beneath, and excluding it from the
                 # other side's reference set leaves that strip nothing to
-                # clear (MEASURED on Ruby: top had 2222 constrained verts but
+                # clear (MEASURED on a multi-layer garment: top had 2222 constrained verts but
                 # only 378 reachable references before this veto).
                 oa = ma & ~(raw_a <= -OVERLAY_LOCAL_RAW_STRONG) & (
                     ((mean_a >= OVERLAY_LOCAL_ORDER_MIN)
@@ -5415,7 +5415,7 @@ def _separate_abdomen_layered_cloth_depth(
                 # must not rise ABOVE that outer shape — without this, a
                 # shape's legitimate lift elsewhere bleeds in via the push
                 # smoothing and out-escalates the locally-outer shape's lift
-                # across rounds (last mover wins: the Ruby neckline stayed
+                # across rounds (last mover wins: a neckline trim in a multi-layer garment stayed
                 # flipped even though the top's constraints FIRED, because
                 # the plate's torso lift bled over the rim). A ceiling, NOT a
                 # freeze: a sandwiched layer (top above belts, below plate)
@@ -6667,7 +6667,7 @@ def _copy_shape(src_shape, dst_nif, parent=None, override_verts=None,
                 _vb_bones, _vb_x, _vb_w)
         else:
             # split-eligible -> keep ALL source bones; post-save split makes it
-            # CTD-safe without dropping any (Magecore dress: 80 bones -> 78+9).
+            # CTD-safe without dropping any (a dense-dress mod: 80 bones -> 78+9).
             bone_names, xforms_map, weights_map = _vb_bones, _vb_x, _vb_w
         _install_skin(new_shape, dst_nif, src_shape, bone_names,
                       xforms_map, weights_map, use_verts, _bake_T)
@@ -6999,10 +6999,10 @@ def _resolve_data_rel_in_vfs(rel: str, src_nif_path: Path) -> "Path | None":
     AUTHORED physics XML routinely ships in a DIFFERENT mod than the source
     NIF: BodySlide writes the built mesh into its own output mod (e.g.
     "...- Bodyslide Output - 3BA") while the hand-authored chain XML stays in
-    the original armor mod (e.g. "MAGECORE - hdt SMP"). Resolving only against
+    the original armor mod (e.g. an armor mod's "hdt SMP" folder). Resolving only against
     the NIF's own mod root misses it -> the converter falls back to a GENERIC
-    XML that doesn't drive the custom chain (Magecore "pulls to origin", cloak
-    clip, Ruby skirt). Returns the Path or None.
+    XML that doesn't drive the custom chain (cloth "pulls to origin", cloak
+    clip, skirt physics broken). Returns the Path or None.
     """
     if not rel:
         return None
@@ -7033,7 +7033,7 @@ def _read_source_hdt_xml_disk(src_nif_path: Path) -> "Path | None":
 
     This is the authoritative armor->XML link (the mod author wrote it),
     far more reliable than keyword-matching filenames — it correctly maps
-    e.g. <Armor>_Female_Body_0.nif -> Meshes\\Fuse00\\Armor\\<Armor>\\<Armor>_Body.xml
+    e.g. <Armor>_Female_Body_0.nif -> Meshes\\<ModFolder>\\Armor\\<Armor>\\<Armor>_Body.xml
     where the stems don't match. Resolves through the full VFS so an XML that
     ships in a different mod than the (BodySlide-output) NIF is still found.
     Returns the Path or None.

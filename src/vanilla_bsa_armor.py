@@ -105,7 +105,8 @@ def _is_nude_skin_basename(mesh_rel: str) -> bool:
     if base in _NUDE_SKIN_BASENAMES:
         return True
     # femalebody*/malebody* covers unique-NPC nude-skin variants that
-    # appear as slot-32 DefaultRace ARMAs (e.g. femalebodyastrid).
+    # appear as slot-32 DefaultRace ARMAs (e.g. a unique NPC body skin
+    # with a custom femalebody* filename).
     return base.startswith(("femalebody", "malebody"))
 
 # Master ESMs whose armours we cover. Skyrim.esm + the always-loaded DLCs.

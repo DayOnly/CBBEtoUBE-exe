@@ -57,8 +57,9 @@ _DONE = object()  # sentinel; the worker pushes (_DONE, exit_code) when finished
 def mod_name_matches(name: str, query: str) -> bool:
     """Case-insensitive, multi-token AND match for the checklist Filter box:
     every whitespace-separated token in `query` must appear in `name` (so
-    "ruby fl" matches "DDV - Ruby Flower"). Empty query matches everything.
-    Module-level (not a closure) so the filter contract is unit-testable."""
+    typing the first word of a multi-word mod name narrows the list to
+    matching mods). Empty query matches everything. Module-level (not a
+    closure) so the filter contract is unit-testable."""
     q = query.strip().lower()
     if not q:
         return True
