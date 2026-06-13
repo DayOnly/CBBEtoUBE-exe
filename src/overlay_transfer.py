@@ -398,13 +398,19 @@ def classify_overlay(rel_path: str) -> str:
 
 # ---------- discovery + orchestration ---------------------------------------
 
-def discover_overlays(layout, regions=("body", "hands", "feet")) -> "dict[str, dict]":
+def discover_overlays(layout, regions=("body", "hands", "feet"),
+                      skip_mods=()) -> "dict[str, dict]":
     """Find every overlay texture across enabled mods (loose + BSA), in MO2
     priority order so the load-order WINNER is kept per path, bucketed by region.
     Returns {region: {rel_path: source}} where rel_path is `textures/.../x.dds`
     (forward slash, lowercased) and source is ("loose", Path, mod) or ("bsa",
     bsa_path, internal_name, mod). Only the requested regions are kept (head /
-    makeup / unlabeled overlays are never collected)."""
+    makeup / unlabeled overlays are never collected).
+
+    `skip_mods` (mod folder names, case-insensitive) are NOT scanned -- pass our
+    OWN output mod, else a previous run's already-converted UBE-UV overlays (it's
+    the highest-priority mod) win as the "source" and get transferred a SECOND
+    time -> double-warped / garbled overlays in-game."""
     from .bsa_strings import BSAArchive
     mr = _paths.mods_root()
     out: "dict[str, dict]" = {r: {} for r in regions}
@@ -413,6 +419,7 @@ def discover_overlays(layout, regions=("body", "hands", "feet")) -> "dict[str, d
     ordered = _paths.enabled_mods_ordered(layout)
     if ordered is None:
         ordered = sorted(d.name for d in mr.iterdir() if d.is_dir())
+    skip_lower = {s.lower() for s in skip_mods}
     seen: set = set()                   # first (highest-priority) source wins
     rel_root = _OVERLAY_ROOT
     want = set(regions)
@@ -426,6 +433,8 @@ def discover_overlays(layout, regions=("body", "hands", "feet")) -> "dict[str, d
             out[reg][rel] = source
 
     for mod_name in ordered:
+        if mod_name.lower() in skip_lower:
+            continue                    # never read our own output as a source
         mod = mr / mod_name
         if not mod.is_dir():
             continue
@@ -461,7 +470,17 @@ def convert_overlays(output_dir, layout, *, regions=("body", "hands", "feet"),
         log("  !! overlay transfer SKIPPED: texconv not found (set "
             "CBBE2UBE_TEXCONV or install it under the MO2 tools/ folder)")
         return {"converted": 0, "reason": "no-texconv"}
-    by_region = discover_overlays(layout, regions)
+    # Exclude our OWN output mod from the source scan: it's the highest-priority
+    # mod, so a previous run's already-converted UBE-UV overlays would otherwise
+    # win as the "source" and be transferred a SECOND time -> double-warped.
+    skip = set()
+    _mr = _paths.mods_root()
+    if _mr is not None:
+        try:
+            skip.add(Path(output_dir).resolve().relative_to(_mr.resolve()).parts[0])
+        except Exception:
+            skip.add(Path(output_dir).name)
+    by_region = discover_overlays(layout, regions, skip_mods=skip)
     total = sum(len(v) for v in by_region.values())
     if total == 0:
         log("  overlay transfer: no body/hands/feet overlays found")
