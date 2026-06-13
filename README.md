@@ -2,8 +2,9 @@
 
 Batch-converts Skyrim SE armor and clothing built for **CBBE / 3BA** so it fits
 the **UBE** body without clipping, and emits the plugin patches needed for the
-converted meshes to show up in game. Pure-Python pipeline on top of `pynifly`
-+ `numpy` + `scipy`.
+converted meshes to show up in game. It can also (opt-in) re-align CBBE/3BA
+RaceMenu **body / hands / feet overlays** (tattoos, body paints) to the UBE UV
+layout. Pure-Python pipeline on top of `pynifly` + `numpy` + `scipy`.
 
 It is **not** a Synthesis/Mutagen patcher. Clipping is a mesh-geometry problem,
 not a plugin-record problem, so the tool rewrites NIF vertices and bone weights
@@ -16,7 +17,9 @@ Given a Mod Organizer 2 setup, the full pipeline (`auto`):
 
 1. **Discovers** candidate CBBE/3BA armor mods by walking the MO2 mod tree, and
    resolves every armor mesh through the full virtual file system (BodySlide
-   output, BSAs, and loose files all count).
+   output, BSAs, and loose files all count). Only **player-equippable** armor on
+   body slots is selected — non-equippable items (gore / dismemberment effect
+   "armor" flagged non-playable) are skipped.
 2. **Refits** each armor NIF to the UBE body (see *How the refit works*),
    preserving HDT-SMP physics chains, high-heel offsets, and body morphs.
    Armor that bakes exposed body skin (open cleavage, cutouts) is converted via
@@ -33,6 +36,14 @@ Given a Mod Organizer 2 setup, the full pipeline (`auto`):
    defined by other mods — overhaul-rearmatured helmets, circlets, jewelry,
    and mod-defined body variants — still render on UBE races. **Both ESPs must
    be enabled in MO2**, or the covered items are invisible on UBE actors.
+6. **(Opt-in) RaceMenu overlay transfer.** Rebakes CBBE/3BA **body, hands, and
+   feet** overlays (tattoos / body paints) into UBE's UV layout — UBE re-UVs the
+   body, so CBBE-authored overlays otherwise land in the wrong place. The
+   converted DDS are written **loose at their original texture paths** in the
+   output mod, so RaceMenu picks them up by load order with no ESP (the output
+   mod wins because it sits at the end of your load order). Off by default; turn
+   it on with `--convert-overlays` / the GUI checkbox, or `--overlays-only` to
+   refresh just the overlays without the slow armor reconvert.
 
 The result is a self-contained output mod (default name: `CBBEtoUBE Auto`) you
 enable at the end of your load order, plus the two coverage ESPs above.
@@ -158,7 +169,13 @@ Useful `auto` flags:
 - `--list-only` — dry run: list the mods that *would* convert, then stop
 - `--merged-name NAME` — filename of the merged Combined ESP
 - `--no-winner-rebase` — don't rebase merged ARMO stats onto the load-order
-  winner (default on: converted armor keeps Requiem/overhaul balance)
+  winner (default on: converted armor keeps the overhaul's balance)
+- `--convert-overlays` — also rebake CBBE/3BA RaceMenu **body/hands/feet
+  overlays** (tattoos, body paints) into UBE UV space (loose DDS in the output
+  mod; RaceMenu loads them by load order, no ESP)
+- `--overlays-only` — run **only** the overlay rebake, skipping the armor
+  convert/merge entirely (implies `--convert-overlays`) — the fast refresh once
+  armor is already converted
 - `--no-vanilla-compat` / `--no-modded-nonbody` / `--no-vanilla-bodies` —
   skip individual coverage passes
 
@@ -197,7 +214,9 @@ cbbe-to-ube/
     auto_convert.py       # the full MO2-aware pipeline (the exe's main)
     nif_convert.py        # core CBBE/3BA -> UBE NIF conversion (refit, physics, bakes)
     ube_patcher.py        # generate UBE patch ESP from a source armor ESP
+    overlay_transfer.py   # rebake CBBE/3BA RaceMenu overlays (tattoos) to UBE UV
     esp.py                # Skyrim SE ESP/ESM read + write
+    atomic_io.py          # crash-safe atomic writes for all game-loaded output
     hdt_xml_gen.py        # per-armor HDT-SMP collision XML generator
     vanilla_bsa_armor.py  # standalone vanilla body-armor conversion
     discovery.py / paths.py   # MO2 mod-tree discovery + layout auto-detect
