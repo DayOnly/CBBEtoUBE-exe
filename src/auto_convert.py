@@ -1397,6 +1397,12 @@ def _build_parser():
                              "(the base-game/loose vanilla cuirasses refit to "
                              "UBE). Leave ON to cover vanilla armor with no "
                              "replacer mod required.")
+    auto_p.add_argument("--convert-overlays", action="store_true",
+                        help="OPT-IN: rebake CBBE/3BA body overlays (RaceMenu "
+                             "tattoos / body paints) into UBE UV space so they "
+                             "align on the UBE body. Writes loose DDS at the "
+                             "original texture paths (RaceMenu loads them via "
+                             "load order; no ESP). Needs texconv. Off by default.")
     auto_p.add_argument("--list-only", "--dry-run", action="store_true",
                         dest="list_only",
                         help="Discover + print the armor mods that WOULD be "
@@ -3156,6 +3162,23 @@ def _cmd_auto(args):
                     print(f"  !! validator: {_vw[:5]}")
         except Exception as e:
             print(f"  !! mod body coverage skipped: {e!r}")
+
+    # OPT-IN: align CBBE/3BA body overlays (RaceMenu tattoos / body paints) to
+    # the UBE body's UV layout. Writes loose remapped DDS at the original
+    # texture paths -> RaceMenu loads them via load order (no ESP). Off unless
+    # --convert-overlays is given; needs texconv.
+    if getattr(args, "convert_overlays", False):
+        try:
+            from . import overlay_transfer
+            print("\n--- body overlay (tattoo) -> UBE UV transfer ---")
+            ovl = overlay_transfer.convert_body_overlays(output, lay)
+            if ovl.get("converted"):
+                print(f"  *** {ovl['converted']} overlay(s) remapped to UBE UV. "
+                      f"ENABLE '{output.name}' and ensure it WINS over the "
+                      f"overlay mods so the loose textures override their BSAs. "
+                      f"***")
+        except Exception as e:
+            print(f"  !! overlay transfer skipped: {e!r}")
 
     # Pre-flight: the UBE NUDE hands/feet morph (.tri) trap. The converter
     # doesn't build the nude race skin, but a missing hands/feet .tri (build
