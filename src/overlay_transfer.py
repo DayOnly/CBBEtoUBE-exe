@@ -89,8 +89,13 @@ def find_texconv() -> "Path | None":
 
 
 def _run_texconv(texconv, args):
+    # CREATE_NO_WINDOW (Windows): texconv is a console app; when spawned from the
+    # windowed (no-console) GUI exe each call would otherwise flash its own
+    # console window -- 2x per overlay, hundreds of times. Output is captured via
+    # pipes regardless, so nothing is lost by hiding the window.
     r = subprocess.run([str(texconv)] + [str(a) for a in args],
-                       capture_output=True, text=True)
+                       capture_output=True, text=True,
+                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     if r.returncode != 0:
         raise RuntimeError(
             f"texconv failed ({r.returncode}): args={args}\n"
