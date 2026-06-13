@@ -2864,7 +2864,7 @@ def _cmd_auto(args):
     if getattr(args, "overlays_only", False):
         from . import overlay_transfer
         print("\n--- OVERLAYS-ONLY: body overlay (tattoo) -> UBE UV transfer ---")
-        ovl = overlay_transfer.convert_body_overlays(output, lay)
+        ovl = overlay_transfer.convert_overlays(output, lay)
         if ovl.get("converted"):
             print(f"  *** {ovl['converted']} overlay(s) remapped to UBE UV under "
                   f"'{output.name}'. ENABLE it and ensure it WINS over the "
@@ -3190,7 +3190,7 @@ def _cmd_auto(args):
         try:
             from . import overlay_transfer
             print("\n--- body overlay (tattoo) -> UBE UV transfer ---")
-            ovl = overlay_transfer.convert_body_overlays(output, lay)
+            ovl = overlay_transfer.convert_overlays(output, lay)
             if ovl.get("converted"):
                 print(f"  *** {ovl['converted']} overlay(s) remapped to UBE UV. "
                       f"ENABLE '{output.name}' and ensure it WINS over the "
