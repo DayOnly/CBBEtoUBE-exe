@@ -129,6 +129,8 @@ def launch_gui(argv=None, auto_close_ms=None) -> int:
     dry = tk.BooleanVar(value=False)
     mode = tk.StringVar(value="all")            # "all" | "selected"
     force_vanilla = tk.BooleanVar(value=False)
+    convert_overlays = tk.BooleanVar(value=False)   # rebake body overlays to UBE
+    overlays_only = tk.BooleanVar(value=False)      # ONLY overlays, skip armor
     mod_vars: "dict[str, tk.BooleanVar]" = {}    # mod name -> checkbox var (PERSISTS across filtering)
     mod_checkboxes: list = []                    # Checkbutton widgets (toggled during a run)
     mod_cbs: "dict[str, object]" = {}            # mod name -> its Checkbutton (for show/hide on filter)
@@ -270,6 +272,10 @@ def launch_gui(argv=None, auto_close_ms=None) -> int:
                     variable=mode, command=_on_mode).pack(side="left", padx=8)
     ttk.Checkbutton(cfg, text="Also refresh vanilla coverage on selected run (slower)",
                     variable=force_vanilla).grid(row=7, column=1, sticky="w", padx=4)
+    ttk.Checkbutton(cfg, text="Convert body overlays (tattoos / body paints) to UBE",
+                    variable=convert_overlays).grid(row=8, column=1, sticky="w", padx=4)
+    ttk.Checkbutton(cfg, text="    └ Overlays ONLY (skip the armor reconvert)",
+                    variable=overlays_only).grid(row=9, column=1, sticky="w", padx=4)
 
     # ---- action bar + progress ----
     bar = ttk.Frame(root)
@@ -353,6 +359,12 @@ def launch_gui(argv=None, auto_close_ms=None) -> int:
                 a.append("--no-vanilla-compat")
             if skip_vanbody.get():
                 a.append("--no-vanilla-bodies")
+        # Overlay transfer (independent of mode). --overlays-only wins if both
+        # ticked (it early-returns before the armor work).
+        if overlays_only.get():
+            a.append("--overlays-only")
+        elif convert_overlays.get():
+            a.append("--convert-overlays")
         return a
 
     def _worker(argv_run):
