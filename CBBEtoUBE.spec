@@ -37,9 +37,13 @@ from PyInstaller.utils.hooks import collect_submodules
 # pyn is a small, pure-Python package (no submodule imports bpy) — collecting
 # all of it is safe and guarantees pynifly's relative imports resolve.
 hiddenimports = collect_submodules("pyn")
-# scipy.spatial.cKDTree is the only scipy surface we touch; the official scipy
-# hook collects the spatial extensions, but name them explicitly to be safe.
+# scipy.spatial.cKDTree (armor fit + overlay correspondence) and scipy.ndimage
+# (distance_transform_edt -> UV gutter padding in the overlay transfer). The
+# official scipy hook collects the spatial extensions, but name the surfaces we
+# use explicitly so the frozen exe never ships without them (the overlay
+# feature imports scipy.ndimage lazily, exactly the case PyInstaller misses).
 hiddenimports += ["scipy.spatial", "scipy.spatial._ckdtree"]
+hiddenimports += collect_submodules("scipy.ndimage")
 # lz4 (frame) decompresses Skyrim SE BSA (v105) mesh entries so the converter
 # can pull vanilla armor meshes straight from the base-game Skyrim - Meshes
 # BSAs (standalone vanilla-armor coverage, no replacer mod required). It's
