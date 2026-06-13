@@ -2432,10 +2432,37 @@ def _player_armor_mesh_bases(mod_dir: Path,
         except Exception:
             continue
         masters = e.header.masters
+        # Map which of THIS plugin's ARMAs are referenced by a PLAYABLE ARMO vs
+        # only by non-playable one(s). Gore / decapitation / dismemberment /
+        # effect "armors" (Next-Gen Decapitations, etc.) bind real DefaultRace
+        # body-slot ARMAs but flag the ARMO non-playable -- they're applied on
+        # death/by script, never equipped. We skip an ARMA whose every
+        # referencing ARMO IN THIS PLUGIN is non-playable, so those gore meshes
+        # aren't converted. An ARMA referenced by NO same-plugin ARMO (e.g. a
+        # vanilla replacer whose ARMO lives in Skyrim.esm) is left in -- we can't
+        # see the master ARMO's flag here, and those are real armour.
+        _ARMO_NONPLAYABLE = 0x00000004
+        playable_ref: "set[int]" = set()
+        any_ref: "set[int]" = set()
+        for g in e.groups:
+            if g.label != b"ARMO":
+                continue
+            for arec in g.records:
+                _play = not (arec.flags & _ARMO_NONPLAYABLE)
+                for s, d in _esp.iter_subrecords(arec.payload):
+                    if s == b"MODL" and len(d) == 4:
+                        rf = _struct.unpack("<I", d)[0]
+                        any_ref.add(rf)
+                        if _play:
+                            playable_ref.add(rf)
         for g in e.groups:
             if g.label != b"ARMA":
                 continue
             for rec in g.records:
+                # Gore/effect: this ARMA is referenced ONLY by non-playable
+                # ARMO(s) in this plugin -> not player-equippable -> don't convert.
+                if rec.formid in any_ref and rec.formid not in playable_ref:
+                    continue
                 rnam = None
                 slot = 0
                 edid = ""
