@@ -275,39 +275,87 @@ def transfer_overlay(src_rgba: np.ndarray,
     return padded
 
 
-def build_body_overlay_correspondence(weight: str = "_1") -> "OverlayCorrespondence | None":
-    """Build the CBBE<->UBE BODY correspondence from the same body refs the
-    armor converter uses. Returns None if a body ref is missing."""
+# region -> (CBBE-UV skin filename, !UBE tangent rel path under meshes/).
+_REGION_CBBE_FILE = {"hands": "femalehands_1.nif", "feet": "femalefeet_1.nif"}
+_REGION_UBE_REL = {
+    "hands": Path("meshes", "!UBE", "Hands", "femalehands_tangent_1.nif"),
+    "feet": Path("meshes", "!UBE", "Feet", "femalefeet_tangent_1.nif"),
+}
+
+
+def _find_region_meshes(region: str, weight: str = "_1"):
+    """(cbbe_path, ube_path) for a region. body -> the converter's body finders;
+    hands/feet -> scan the mods root for the CBBE-UV skin (a CBBE/3BA-named,
+    non-bodyslide mod's femalehands/femalefeet) + the !UBE tangent."""
+    from . import nif_convert as nc
+    if region == "body":
+        return nc._find_cbbe_base_body(weight), nc._find_ube_femalebody(weight)
+    mr = _paths.mods_root()
+    if mr is None or region not in _REGION_CBBE_FILE:
+        return None, None
+    ube_rel = _REGION_UBE_REL[region]
+    cbbe_file = _REGION_CBBE_FILE[region]
+    try:
+        mods = sorted(d for d in mr.iterdir() if d.is_dir())
+    except OSError:
+        mods = []
+    ube = next((m / ube_rel for m in mods if (m / ube_rel).is_file()), None)
+    cbbe = None
+    for m in mods:
+        nm = m.name.lower()
+        if "bodyslide" in nm or not any(h in nm for h in ("cbbe", "3ba", "3bbb")):
+            continue
+        p = m / "meshes" / "actors" / "character" / "character assets" / cbbe_file
+        if p.is_file():
+            cbbe = p
+            break
+    return cbbe, ube
+
+
+def build_overlay_correspondence(cbbe_path, ube_path,
+                                 prefer_shapes=("BaseShape", "3BA")
+                                 ) -> "OverlayCorrespondence | None":
+    """Generic CBBE<->UBE correspondence for one region from explicit meshes.
+    Returns None if a mesh is missing/unreadable."""
+    if cbbe_path is None or ube_path is None:
+        return None
     from . import nif_convert as nc
     from .correspondence import MeshIndex
     from scipy.spatial import cKDTree
-    cbbe_path = nc._find_cbbe_base_body(weight)
-    ube_path = nc._find_ube_femalebody(weight)
-    if cbbe_path is None or ube_path is None:
-        return None
     pyn = nc._pynifly()
 
-    def _body(path):
+    def _load(path):
         nf = pyn.NifFile(filepath=str(path))
-        s = next((x for x in nf.shapes if x.name in ("BaseShape", "3BA")), None) \
+        s = next((x for x in nf.shapes if x.name in prefer_shapes), None) \
             or max(nf.shapes, key=lambda x: len(x.verts))
         return (np.asarray(s.verts, np.float64), np.asarray(s.uvs, np.float64),
                 np.asarray(s.tris, np.int64))
-    cbv, cbuv, cbt = _body(cbbe_path)
-    ubv, ubuv, ubt = _body(ube_path)
-    # CBBE warped into UBE space (anatomical correspondence): reuse the
-    # converter's CBBE->UBE delta (NN per CBBE vert). Falls back to a local NN
-    # if the cached delta is unavailable.
-    cbv_d, delta = nc._cached_cbbe_to_ube_delta(cbbe_path, ube_path)
-    if cbv_d is not None and delta is not None and len(cbv_d) == len(cbv):
-        cbbe_in_ube = cbv_d + delta
-    else:
-        _, nn = cKDTree(ubv).query(cbv, k=1)
-        cbbe_in_ube = ubv[nn]
+    try:
+        cbv, cbuv, cbt = _load(cbbe_path)
+        ubv, ubuv, ubt = _load(ube_path)
+    except Exception:
+        return None
+    # CBBE warped into UBE space (anatomical correspondence): each CBBE vert ->
+    # its nearest UBE vert. Identical to the converter's CBBE->UBE body delta
+    # (which is the same NN); computed inline so it works for any region.
+    _, nn = cKDTree(ubv).query(cbv, k=1)
+    cbbe_in_ube = ubv[nn]
     return OverlayCorrespondence(
         ube_verts=ubv, ube_uv=ubuv, ube_tris=ubt,
         cbbe_uv=cbuv, cbbe_tris=cbt,
         cbbe_in_ube_mesh=MeshIndex.build(cbbe_in_ube, cbt))
+
+
+def build_region_correspondence(region: str, weight: str = "_1"
+                                ) -> "OverlayCorrespondence | None":
+    cbbe, ube = _find_region_meshes(region, weight)
+    prefer = ("BaseShape", "3BA") if region == "body" else ("BaseShape",)
+    return build_overlay_correspondence(cbbe, ube, prefer)
+
+
+def build_body_overlay_correspondence(weight: str = "_1") -> "OverlayCorrespondence | None":
+    """Back-compat: the BODY correspondence."""
+    return build_region_correspondence("body", weight)
 
 
 def convert_overlay(src_dds, out_dds, corr, texconv, workdir):
@@ -323,9 +371,10 @@ def classify_overlay(rel_path: str) -> str:
     "body" is treated as a body overlay to remap. Everything else (makeup, face
     paint, skin features, warpaints, and any unlabeled overlay) is left ALONE --
     most overlays in a load order are face/makeup using the HEAD UV (which UBE
-    doesn't change, so they're not misaligned), and remapping one through the
-    BODY correspondence would corrupt it. 'hands'/'feet' are body-region but use
-    their OWN UV (a separate transfer, not yet built) so they're skipped too.
+    doesn't change, so they're not misaligned), and remapping one through a body
+    correspondence would corrupt it. 'hands'/'feet' ARE remapped, each via its
+    own region correspondence (UBE hands/feet UV differ from CBBE too). 'head' is
+    never remapped (the head mesh is not a UBE body part).
 
     This catches the standard RaceMenu body-paint convention ("NN body.dds",
     Community Overlays, etc.). Body-paint mods that name files without "body"
@@ -345,21 +394,33 @@ def classify_overlay(rel_path: str) -> str:
 
 # ---------- discovery + orchestration ---------------------------------------
 
-def discover_body_overlays(layout) -> "dict[str, tuple]":
-    """Find every BODY overlay texture across enabled mods (loose + BSA), in
-    MO2 priority order so the load-order WINNER is kept per path. Returns
-    {rel_path: source} where rel_path is `textures/.../x.dds` (forward slash,
-    lowercased) and source is ("loose", Path, mod) or ("bsa", bsa_path,
-    internal_name, mod)."""
+def discover_overlays(layout, regions=("body", "hands", "feet")) -> "dict[str, dict]":
+    """Find every overlay texture across enabled mods (loose + BSA), in MO2
+    priority order so the load-order WINNER is kept per path, bucketed by region.
+    Returns {region: {rel_path: source}} where rel_path is `textures/.../x.dds`
+    (forward slash, lowercased) and source is ("loose", Path, mod) or ("bsa",
+    bsa_path, internal_name, mod). Only the requested regions are kept (head /
+    makeup / unlabeled overlays are never collected)."""
     from .bsa_strings import BSAArchive
     mr = _paths.mods_root()
+    out: "dict[str, dict]" = {r: {} for r in regions}
     if mr is None:
-        return {}
+        return out
     ordered = _paths.enabled_mods_ordered(layout)
     if ordered is None:
         ordered = sorted(d.name for d in mr.iterdir() if d.is_dir())
-    found: "dict[str, tuple]" = {}      # first (highest-priority) source wins
-    rel_root = _OVERLAY_ROOT            # textures/actors/character/overlays
+    seen: set = set()                   # first (highest-priority) source wins
+    rel_root = _OVERLAY_ROOT
+    want = set(regions)
+
+    def _take(rel, source):
+        if rel in seen:
+            return
+        reg = classify_overlay(rel)
+        if reg in want:
+            seen.add(rel)
+            out[reg][rel] = source
+
     for mod_name in ordered:
         mod = mr / mod_name
         if not mod.is_dir():
@@ -367,30 +428,28 @@ def discover_body_overlays(layout) -> "dict[str, tuple]":
         ovl_dir = mod / Path(rel_root)
         if ovl_dir.is_dir():
             for f in ovl_dir.rglob("*.dds"):
-                rel = f.relative_to(mod).as_posix().lower()
-                if rel not in found and classify_overlay(rel) == "body":
-                    found[rel] = ("loose", f, mod_name)
+                _take(f.relative_to(mod).as_posix().lower(),
+                      ("loose", f, mod_name))
         for bsa in mod.glob("*.bsa"):
             try:
-                arc = BSAArchive(bsa, eager=False)   # header only, no whole-file read
-                names = arc.list_files(rel_root)
+                names = BSAArchive(bsa, eager=False).list_files(rel_root)
             except Exception:
                 continue
             for name in names:
                 rel = name.replace("\\", "/").lower()
-                if (rel.endswith(".dds") and rel.startswith(rel_root)
-                        and rel not in found
-                        and classify_overlay(rel) == "body"):
-                    found[rel] = ("bsa", bsa, name, mod_name)
-    return found
+                if rel.endswith(".dds") and rel.startswith(rel_root):
+                    _take(rel, ("bsa", bsa, name, mod_name))
+    return out
 
 
-def convert_body_overlays(output_dir, layout, *, texconv=None, log=print,
-                          limit: int = 0) -> dict:
-    """Discover all body overlays and rebake each into UBE-UV space, writing a
+def convert_overlays(output_dir, layout, *, regions=("body", "hands", "feet"),
+                     texconv=None, log=print, limit: int = 0) -> dict:
+    """Rebake CBBE/3BA overlays into UBE-UV space for each region, writing a
     loose DDS at the original texture path under `output_dir` (RaceMenu loads it
-    via load order; no ESP). Opt-in -- gated by the caller's toggle. Returns a
-    stats dict. `limit` (>0) caps the count for a quick test run."""
+    via load order; no ESP). Opt-in. Builds one correspondence per region (the
+    expensive part, reused across that region's overlays). Returns a stats dict.
+    `limit` (>0) caps the TOTAL count for a quick test run."""
+    import shutil
     import tempfile
     from .bsa_strings import BSAArchive
     texconv = texconv or find_texconv()
@@ -398,46 +457,72 @@ def convert_body_overlays(output_dir, layout, *, texconv=None, log=print,
         log("  !! overlay transfer SKIPPED: texconv not found (set "
             "CBBE2UBE_TEXCONV or install it under the MO2 tools/ folder)")
         return {"converted": 0, "reason": "no-texconv"}
-    corr = build_body_overlay_correspondence()
-    if corr is None:
-        log("  !! overlay transfer SKIPPED: CBBE base or UBE body ref not found")
-        return {"converted": 0, "reason": "no-body-ref"}
-    overlays = discover_body_overlays(layout)
-    if not overlays:
-        log("  overlay transfer: no body overlays found in the load order")
+    by_region = discover_overlays(layout, regions)
+    total = sum(len(v) for v in by_region.values())
+    if total == 0:
+        log("  overlay transfer: no body/hands/feet overlays found")
         return {"converted": 0, "reason": "none-found"}
     out_root = Path(output_dir)
     work = Path(tempfile.mkdtemp(prefix="ube_overlay_"))
+    arc_cache: dict = {}
     n = 0
     failed: list = []
-    arc_cache: dict = {}                            # bsa path -> BSAArchive (lazy)
-    items = list(overlays.items())
-    if limit:
-        items = items[:limit]
-    log(f"  overlay transfer: {len(items)} body overlay(s) "
-        f"(of {len(overlays)} found) -> UBE UV ...")
-    for rel, src in items:
-        try:
-            if src[0] == "loose":
-                src_dds = src[1]
-            else:                                  # bsa -> extract to temp
-                arc = arc_cache.get(src[1])
-                if arc is None:
-                    arc = BSAArchive(src[1], eager=False)
-                    arc_cache[src[1]] = arc
-                data = arc.read_file(src[2])
-                if not data:
-                    raise RuntimeError("BSA extract returned no data")
-                src_dds = work / "src.dds"
-                src_dds.write_bytes(data)
-            out_dds = out_root / rel.replace("/", "\\")
-            convert_overlay(src_dds, out_dds, corr, texconv, work / "w")
-            n += 1
-        except Exception as e:
-            failed.append((rel, repr(e)))
-    import shutil
+    per_region: dict = {}
+    remaining = limit
+    for region in regions:
+        items = list(by_region.get(region, {}).items())
+        if not items:
+            continue
+        if limit:
+            if remaining <= 0:
+                break
+            items = items[:remaining]
+        corr = build_region_correspondence(region)
+        if corr is None:
+            log(f"  !! overlay transfer: SKIP region '{region}' "
+                f"(CBBE/UBE {region} ref not found) -- {len(items)} overlay(s)")
+            continue
+        log(f"  overlay transfer [{region}]: {len(items)} overlay(s) -> UBE UV ...")
+        rn = 0
+        for rel, src in items:
+            try:
+                if src[0] == "loose":
+                    src_dds = src[1]
+                else:
+                    arc = arc_cache.get(src[1])
+                    if arc is None:
+                        arc = BSAArchive(src[1], eager=False)
+                        arc_cache[src[1]] = arc
+                    data = arc.read_file(src[2])
+                    if not data:
+                        raise RuntimeError("BSA extract returned no data")
+                    src_dds = work / "src.dds"
+                    src_dds.write_bytes(data)
+                convert_overlay(src_dds, out_root / rel.replace("/", "\\"),
+                                corr, texconv, work / "w")
+                rn += 1
+                n += 1
+                if limit:
+                    remaining -= 1
+                    if remaining <= 0:
+                        break
+            except Exception as e:
+                failed.append((rel, repr(e)))
+        per_region[region] = rn
     shutil.rmtree(work, ignore_errors=True)
     if failed:
         log(f"  !! overlay transfer: {len(failed)} failed (e.g. {failed[0]})")
-    log(f"  overlay transfer: {n} overlay(s) written under {out_root}")
-    return {"converted": n, "failed": failed, "total": len(overlays)}
+    log(f"  overlay transfer: {n} overlay(s) written under {out_root} "
+        f"({', '.join(f'{r}={c}' for r, c in per_region.items())})")
+    return {"converted": n, "failed": failed, "total": total,
+            "per_region": per_region}
+
+
+def convert_body_overlays(output_dir, layout, **kw) -> dict:
+    """Back-compat: body overlays only."""
+    return convert_overlays(output_dir, layout, regions=("body",), **kw)
+
+
+def discover_body_overlays(layout) -> "dict[str, tuple]":
+    """Back-compat: just the body overlays as {rel: source}."""
+    return discover_overlays(layout, regions=("body",)).get("body", {})
