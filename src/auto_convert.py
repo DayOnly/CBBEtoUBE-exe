@@ -1403,6 +1403,11 @@ def _build_parser():
                              "align on the UBE body. Writes loose DDS at the "
                              "original texture paths (RaceMenu loads them via "
                              "load order; no ESP). Needs texconv. Off by default.")
+    auto_p.add_argument("--overlays-only", action="store_true",
+                        help="Run ONLY the body-overlay -> UBE UV transfer and "
+                             "skip the armor conversion / merge / coverage "
+                             "entirely. Use to refresh overlays without a full "
+                             "(slow) armor reconvert. Implies --convert-overlays.")
     auto_p.add_argument("--list-only", "--dry-run", action="store_true",
                         dest="list_only",
                         help="Discover + print the armor mods that WOULD be "
@@ -2852,6 +2857,20 @@ def _cmd_auto(args):
     if enabled is not None:
         print(f"  active profile: {len(enabled)} mod(s) enabled "
               f"(disabled mods skipped)")
+
+    # OVERLAYS-ONLY: skip the armor convert / merge / coverage entirely and just
+    # rebake body overlays into UBE UV. Lets you refresh overlays without a full
+    # (slow) armor reconvert. Returns right after.
+    if getattr(args, "overlays_only", False):
+        from . import overlay_transfer
+        print("\n--- OVERLAYS-ONLY: body overlay (tattoo) -> UBE UV transfer ---")
+        ovl = overlay_transfer.convert_body_overlays(output, lay)
+        if ovl.get("converted"):
+            print(f"  *** {ovl['converted']} overlay(s) remapped to UBE UV under "
+                  f"'{output.name}'. ENABLE it and ensure it WINS over the "
+                  f"overlay mods so the loose textures override their BSAs. ***")
+        return 0 if (ovl.get("converted")
+                     or ovl.get("reason") == "none-found") else 1
 
     # Exclude the body mods themselves (the CBBE base + UBE body): they're
     # 3BA-rigged so they'd pass the content filter, but they ARE the body,
