@@ -320,6 +320,11 @@ class AutoConvertResult:
     textures_copied: int = 0
     notes: list[str] = field(default_factory=list)
     nif_load_failures: list[Path] = field(default_factory=list)
+    # Source ESPs whose UBE-patch generation RAISED -> that ESP's whole
+    # ARMA/ARMO category is absent from the merge (armor equips invisible).
+    # Tracked separately from `notes` so it counts toward the failure total /
+    # non-zero exit instead of being a silent informational note.
+    esp_gen_failures: list[str] = field(default_factory=list)
     # How many of this mod's armour meshes the VFS resolved from a DIFFERENT
     # mod (BodySlide output / replacer / patch) — i.e. meshes the old
     # source-folder-only walk would have missed. Surfaced in the coverage
@@ -343,6 +348,12 @@ class AutoConvertResult:
     @property
     def nif_error_results(self) -> "list[nif_convert.ConvertResult]":
         return [r for r in self.nif_results if r.status == "error"]
+
+    @property
+    def nif_partial(self) -> int:
+        """NIFs that converted but DROPPED >=1 shape (invisible piece)."""
+        return sum(1 for r in self.nif_results
+                   if getattr(r, "dropped_shapes", None))
 
     @property
     def nif_copy_count(self) -> int:
@@ -428,6 +439,18 @@ class AutoConvertResult:
                 lines.append(f"  - {rel}")
                 for w in r.reason.split("; "):
                     lines.append(f"      ! {w}")
+
+        # PARTIAL conversions: a NIF reported "converted" but a shape failed to
+        # copy into the output -> that piece is ABSENT (invisible) in-game. Give
+        # it its own prominent bucket so it isn't mistaken for a clean success.
+        partial = [r for r in self.nif_results
+                   if getattr(r, "dropped_shapes", None)]
+        if partial:
+            lines.append("")
+            lines.append("PARTIAL conversions (shapes DROPPED -> invisible in-game):")
+            for r in partial:
+                rel = r.src_path.relative_to(self.source_dir) if self.source_dir in r.src_path.parents else r.src_path
+                lines.append(f"  - {rel}   dropped={r.dropped_shapes}")
 
         path.write_text("\n".join(lines), encoding="utf-8")
 
@@ -880,6 +903,7 @@ def auto_convert_mod(
             except Exception as e:
                 result.notes.append(
                     f"ESP generation failed for {src_esp.name}: {e}")
+                result.esp_gen_failures.append(src_esp.name)
 
     # --- NIFs --- (resolved_pairs computed once above; it may be VFS-resolved
     # from OTHER mods, so this no longer requires a source-local meshes/ dir)
@@ -1130,8 +1154,8 @@ def auto_convert_mod(
                     continue
                 try:
                     if _nc._hide_virtual_body(nf_check):
-                        nf_check.filepath = str(dst)
-                        nf_check.save()
+                        from .atomic_io import atomic_nif_save
+                        atomic_nif_save(nf_check, dst)
                 except Exception:
                     pass  # best-effort
         except ImportError:
@@ -1810,6 +1834,24 @@ def _cmd_convert(args):
             for p in r.nif_load_failures:
                 print(f"       {p}")
             overall_failures += 1
+        # ESP-generation failures: a source ESP that raised during patching ->
+        # its whole ARMA/ARMO category is missing from the merge (invisible
+        # armor). Real failure (non-zero exit), surfaced loudly. NOT a
+        # merge_blocker: one failed ESP shouldn't deprive the user of the rest
+        # of the Combined.
+        if r.esp_gen_failures:
+            print(f"    !! ESP GENERATION FAILED for {len(r.esp_gen_failures)} "
+                  f"source ESP(s) -> their armor is ABSENT from the merge "
+                  f"(invisible in-game): {r.esp_gen_failures}")
+            overall_failures += len(r.esp_gen_failures)
+        # Partial conversions: a NIF that converted but dropped a shape -> that
+        # piece is invisible in-game. A real defect; count it + point at the
+        # per-mod coverage report's PARTIAL bucket.
+        if r.nif_partial:
+            print(f"    !! PARTIAL: {r.nif_partial} NIF(s) dropped a shape "
+                  f"(invisible piece in-game) — see the coverage report's "
+                  f"PARTIAL section")
+            overall_failures += r.nif_partial
         # Surface ESP structural validator warnings prominently — these
         # catch malformed output before the user tries it in-game. They
         # are WARNINGS: surfaced loudly, but they neither block the
@@ -2189,7 +2231,8 @@ def _complete_weight_partners(output_dir: "str | Path") -> int:
         if miss.exists():
             continue
         try:
-            shutil.copy2(present, miss)
+            from .atomic_io import atomic_copy
+            atomic_copy(present, miss)
             filled += 1
         except OSError:
             pass

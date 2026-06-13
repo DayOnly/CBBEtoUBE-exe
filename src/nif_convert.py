@@ -53,6 +53,7 @@ from pathlib import Path
 import numpy as np
 
 from . import nif_io, nif_patch
+from .atomic_io import atomic_nif_save, atomic_copy
 from .correspondence import MeshIndex, compute_deformation
 
 
@@ -1987,6 +1988,12 @@ class ConvertResult:
     body_shapes: list[str] = field(default_factory=list)
     armor_shapes: list[str] = field(default_factory=list)
     shape_locations: dict = field(default_factory=dict)  # name -> VertexBlockLocation|None
+    # Shapes that FAILED to copy into the output NIF (both the primary and the
+    # fallback copy raised) -> the piece is silently ABSENT in-game (invisible).
+    # A "converted" result with a non-empty dropped_shapes is really a PARTIAL
+    # conversion; auto_convert surfaces it as its own report bucket so it isn't
+    # mistaken for a clean success.
+    dropped_shapes: list[str] = field(default_factory=list)
 
 
 def classify_shapes(nif: nif_io.Nif) -> tuple[list[str], list[str]]:
@@ -2211,7 +2218,7 @@ def convert_nif(
 
         use_rebuild = body_normals_for_fit is not None
         if not use_rebuild:
-            shutil.copy2(src_path, dst_path)
+            atomic_copy(src_path, dst_path)
         else:
             # Body-aware rebuild path. Open source, create fresh dst,
             # copy each shape with snap-outside + M6 proximity-blend
@@ -2659,8 +2666,12 @@ def convert_nif(
                 except Exception:
                     try:
                         _copy_shape(s, dst_nif_for_fit)
-                    except Exception:
-                        pass
+                    except Exception as _e2:
+                        # BOTH copies failed -> the shape is absent from the
+                        # output = an invisible piece in-game. Record it (tagged
+                        # DROPPED) instead of swallowing, so the run reports a
+                        # partial conversion rather than a clean success.
+                        failed.append((s.name, f"DROPPED (copy failed): {_e2!r}"))
             # Inject UBE Hands/Feet to replace the CBBE-topology body-
             # skin shapes the source NIF carried (e.g. gauntlet's
             # 6374-vert `Hands` shape gets replaced by 15500-vert UBE
@@ -2679,7 +2690,7 @@ def convert_nif(
                         dst_nif_for_fit, weight_suf_for_inj,
                         slot_label, inject_log,
                     )
-            dst_nif_for_fit.save()
+            atomic_nif_save(dst_nif_for_fit, dst_nif_for_fit.filepath)
 
         # HAND (33) / FOOT (37) slots are RIGID gauntlet/boot armor — NEVER cloth.
         # Our cloth detector treats a fabric-named shape (e.g. a gauntlet's
@@ -2856,8 +2867,7 @@ def convert_nif(
                 # copied through verbatim. Same blue-double artifact.
                 _hide_virtual_body(nf)
 
-                nf.filepath = str(dst_path)
-                nf.save()
+                atomic_nif_save(nf, dst_path)
             except Exception:
                 pass  # injection is best-effort; copy already done
 
@@ -2944,8 +2954,11 @@ def convert_nif(
                         auto_tri_dst_phase1.parent.mkdir(
                             parents=True, exist_ok=True)
                         tri.save(auto_tri_dst_phase1)
-            except Exception:
-                pass  # auto-TRI is best-effort; armor still works without
+            except Exception as _e_tri:
+                # The armor still RENDERS without a TRI, but it won't follow
+                # body-morph sliders (static on every OBody preset). Surface it
+                # rather than swallow, so "armor doesn't conform" is visible.
+                failed.append(("auto-TRI", f"body-morph unavailable: {_e_tri!r}"))
 
         # Unconditional VirtualBody-hidden pass. Phase 1's verbatim
         # copy path doesn't enter the HDT/BODYTRI conditional block
@@ -2957,8 +2970,7 @@ def convert_nif(
             pyn_for_vb = _pynifly()
             nf_for_vb = pyn_for_vb.NifFile(filepath=str(dst_path))
             if _hide_virtual_body(nf_for_vb):
-                nf_for_vb.filepath = str(dst_path)
-                nf_for_vb.save()
+                atomic_nif_save(nf_for_vb, dst_path)
         except Exception:
             pass  # best-effort; doesn't break the conversion
 
@@ -3042,7 +3054,7 @@ def convert_nif(
                     f"heel HH_OFFSET={_hh_transplant_value:.3g} transplanted")
             else:
                 try:
-                    shutil.copy2(src_path, dst_path)
+                    atomic_copy(src_path, dst_path)
                     reason_parts.append("heel transplant unsafe — used original mesh")
                 except OSError:
                     pass
@@ -3053,6 +3065,8 @@ def convert_nif(
             status="converted (copy)",
             reason="; ".join(reason_parts),
             armor_shapes=armor_names,
+            dropped_shapes=[n for (n, msg) in failed
+                            if msg.startswith("DROPPED")],
         )
 
     # Experimental position-warp path
@@ -3838,7 +3852,7 @@ def _normalize_partitions_on_disk(dst_path: Path) -> int:
             if _normalize_partitions(s):
                 changed += 1
         if changed:
-            nf.save()
+            atomic_nif_save(nf, dst_path)
         return changed
     except Exception:
         return 0
@@ -4049,8 +4063,7 @@ def _sanitize_one_nif_worker(path_str: str) -> int:
         return 0
     if n:
         try:
-            nif._backing.filepath = path_str
-            nif._backing.save()
+            atomic_nif_save(nif._backing, path_str)
             return n
         except Exception:
             return 0
@@ -4097,8 +4110,7 @@ def sanitize_output_vertex_color_flags(meshes_root, workers: "int | None" = None
                 continue
             if n:
                 try:
-                    nif._backing.filepath = ps
-                    nif._backing.save()
+                    atomic_nif_save(nif._backing, ps)
                     fc += 1
                     sf += n
                 except Exception:
@@ -8265,7 +8277,7 @@ def _finalize_hdt_physics(dst_path: Path, src_nif_path: Path) -> bool:
         src_xml = None if CHAIN_TO_SOFTBODY else _read_source_hdt_xml_disk(src_nif_path)
         if src_xml is not None:
             try:
-                shutil.copyfile(str(src_xml), str(dst_xml_disk))
+                atomic_copy(str(src_xml), str(dst_xml_disk))
             except Exception:
                 pass
         if not dst_xml_disk.is_file():
@@ -8400,8 +8412,7 @@ def _finalize_hdt_physics(dst_path: Path, src_nif_path: Path) -> bool:
             pass
 
         if dirty:
-            nf.filepath = str(dst_path)
-            nf.save()
+            atomic_nif_save(nf, dst_path)
 
         # FSMP-compatibility hardening: prune the output XML so Faster HDT-SMP
         # never sees a shape/bone it can't resolve. Runs AFTER the proxy
@@ -9640,7 +9651,9 @@ def convert_nif_phase2(
             if first_armor_shape is None:
                 first_armor_shape = new_armor
         except Exception as e:
-            failed.append((s.name, repr(e)))
+            # Copy failed -> the shape is absent from the output (invisible
+            # piece). Tag DROPPED so it's reported as a partial conversion.
+            failed.append((s.name, f"DROPPED (copy failed): {e!r}"))
             continue
 
     # Attach BODYTRI per the regime chosen by `_pick_bodytri_carriers`:
@@ -9766,7 +9779,7 @@ def convert_nif_phase2(
     else:
         result_reason = ""
 
-    dst_nif.save()
+    atomic_nif_save(dst_nif, dst_path)
 
     # (Removed 2026-05-29) Cloth-count reduction was here — see the
     # phase-1 removal note above. After #139, every shape in the NIF
@@ -9875,8 +9888,7 @@ def convert_nif_phase2(
                         string_value=generated_xml_path,
                         parent=nf_for_inject.rootNode,
                     )
-                    nf_for_inject.filepath = str(dst_path)
-                    nf_for_inject.save()
+                    atomic_nif_save(nf_for_inject, dst_path)
         except Exception as e:
             result_reason = (result_reason + "; " if result_reason else "") \
                 + f"HDT XML gen failed: {e!r}"
@@ -9910,4 +9922,5 @@ def convert_nif_phase2(
         body_shapes=body_names,
         armor_shapes=copied,
         shape_locations={n: None for n in (injected + copied + [f for f,_ in failed])},
+        dropped_shapes=[n for (n, msg) in failed if msg.startswith("DROPPED")],
     )

@@ -130,4 +130,5 @@ class OsdFile:
                 if idx > 0xFFFF:
                     raise ValueError(f"vert_idx {idx} exceeds uint16 max")
                 out += struct.pack("<H3f", idx, dx, dy, dz)
-        Path(path).write_bytes(bytes(out))
+        from .atomic_io import atomic_write_bytes
+        atomic_write_bytes(path, bytes(out))
