@@ -150,6 +150,50 @@ def test_fix_spurious_hand_slot(tmp_path, monkeypatch):
     assert _arma_slots(combined, 0x803) == _bits(32, 33, 37)
 
 
+def test_fix_spurious_hand_slot_arma_level_vambrace(tmp_path, monkeypatch):
+    # The ARMO is correctly a forearm piece (slot 34, NOT slot 33), but one of
+    # its armatures carries a stray [33,34] over a handless mesh (the converted
+    # Sand Snake vambrace). Pass 1 (ARMO-gated) can't see it; the ARMA-level
+    # pass must strip slot 33 from the armature so the nude hands render.
+    meshes = tmp_path / "meshes"
+    fracs = {}
+
+    def mk(rel, frac):
+        p = meshes / rel.replace("/", "\\")
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(b"\x00")
+        fracs[str(p)] = frac
+        return rel
+
+    vamb = mk("!UBE/Mod/vambraces_1.nif", 0.02)        # handless forearm piece
+    handgaunt = mk("!UBE/Mod/handgauntlet_1.nif", 0.90)  # real hand+forearm glove
+
+    monkeypatch.setattr(ube_patcher, "_nif_max_hand_weight_fraction",
+                        lambda p: fracs.get(str(p)))
+
+    armas = [
+        _arma(0x811, "VambAA", _bits(33, 34), vamb),       # stray 33 -> STRIP
+        _arma(0x812, "GauntAA", _bits(33, 34), handgaunt),  # real hands -> KEEP
+    ]
+    armos = [
+        _armo(0x911, "Vambrace", _bits(34), [0x811]),      # ARMO has NO slot 33
+        _armo(0x912, "HandGauntlet", _bits(34), [0x812]),
+    ]
+    e = esp.ESP(header=esp.TES4Header(masters=["Skyrim.esm"]),
+                groups=[esp.Group(label=b"ARMA", records=armas),
+                        esp.Group(label=b"ARMO", records=armos)])
+    combined = tmp_path / "CBBE_to_UBE_Combined.esp"
+    e.save(combined)
+
+    ube_patcher._HAND_WEIGHT_FRAC_CACHE.clear()
+    stats = ube_patcher.fix_spurious_hand_slot(combined, meshes)
+
+    assert stats["armas_fixed"] == 1
+    assert _arma_slots(combined, 0x811) == _bits(34)        # stray 33 cleared
+    assert _arma_slots(combined, 0x812) == _bits(33, 34)    # real hands kept
+    assert _armo_slots(combined, 0x911) == _bits(34)        # ARMO untouched
+
+
 def test_fix_spurious_hand_slot_failsafe_on_unreadable_mesh(tmp_path, monkeypatch):
     # Mesh exists but can't be measured (frac None) -> assume hands -> never strip.
     meshes = tmp_path / "meshes"
