@@ -61,3 +61,41 @@ def test_write_report_no_partial_bucket_when_clean(tmp_path):
 def test_esp_gen_failures_field_defaults_empty():
     acr = AutoConvertResult(source_dir=Path("."), output_dir=Path("."))
     assert acr.esp_gen_failures == []
+
+
+def test_esp_skipped_no_armor_field_defaults_zero():
+    acr = AutoConvertResult(source_dir=Path("."), output_dir=Path("."))
+    assert acr.esp_skipped_no_armor == 0
+
+
+def test_esp_with_no_arma_group_is_detectable(tmp_path):
+    # The per-ESP pre-filter skips a source ESP when `group(b"ARMA") is None`
+    # (no armor addons -> nothing to convert -> NOT a failure). Confirm that
+    # predicate holds for an armor-free ESP and not for one with armatures.
+    import struct
+    from src import esp
+    from src.esp import encode_subrecord, encode_zstring
+
+    def _armo(fid):
+        payload = (encode_subrecord(b"EDID", encode_zstring("X"))
+                   + encode_subrecord(b"FULL", encode_zstring("X")))
+        return esp.Record(sig=b"ARMO", flags=0, formid=fid, timestamp_vc=0,
+                          version_unk=0x2C, payload=payload)
+
+    def _arma(fid):
+        payload = (encode_subrecord(b"EDID", encode_zstring("XA"))
+                   + encode_subrecord(b"RNAM", struct.pack("<I", 0x19)))
+        return esp.Record(sig=b"ARMA", flags=0, formid=fid, timestamp_vc=0,
+                          version_unk=0x2C, payload=payload)
+
+    no_armor = tmp_path / "patch.esp"        # landscape/quest/patch-like: ARMO only
+    esp.ESP(header=esp.TES4Header(masters=["Skyrim.esm"]),
+            groups=[esp.Group(label=b"ARMO", records=[_armo(0x01000800)])]
+            ).save(no_armor)
+    has_armor = tmp_path / "armor.esp"
+    esp.ESP(header=esp.TES4Header(masters=["Skyrim.esm"]),
+            groups=[esp.Group(label=b"ARMA", records=[_arma(0x01000801)])]
+            ).save(has_armor)
+
+    assert esp.ESP.load_cached(no_armor).group(b"ARMA") is None     # -> skipped
+    assert esp.ESP.load_cached(has_armor).group(b"ARMA") is not None  # -> patched

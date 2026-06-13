@@ -307,6 +307,10 @@ class AutoConvertResult:
     # Source ESPs whose patch generation raised -> their ARMA/ARMO is absent
     # from the merge. Tracked separately so it counts toward the failure total.
     esp_gen_failures: list[str] = field(default_factory=list)
+    # Source ESPs skipped because they have no ARMA group (no armor at all).
+    # Large bundle mods ship many landscape/quest/patch ESPs alongside a few
+    # armour ones; these have nothing to convert and are NOT failures.
+    esp_skipped_no_armor: int = 0
     # Armour meshes resolved from a DIFFERENT mod via the VFS (BodySlide output /
     # replacer / patch). Surfaced in the coverage report.
     vfs_other_mod_count: int = 0
@@ -764,6 +768,19 @@ def auto_convert_mod(
             else:
                 cur_out_name = f"{src_esp.stem} UBE patch.esp"
             out_esp = esp_out_dir / cur_out_name
+            # Skip ESPs with no armor addons (no ARMA group) entirely. Big bundle
+            # mods (merged xEdit output, Requiem patch packs) carry many
+            # landscape/navmesh/quest/patch ESPs with no armour -- attempting a
+            # patch for them only raises "no ARMA group", which would be
+            # miscounted as a failure claiming "armor absent / invisible" for
+            # armour that never existed. A benign skip, not a failure.
+            try:
+                from . import esp as _esp
+                if _esp.ESP.load_cached(src_esp).group(b"ARMA") is None:
+                    result.esp_skipped_no_armor += 1
+                    continue
+            except Exception:
+                pass  # unreadable -> let generate_ube_patch surface the real error
             try:
                 stats = ube_patcher.generate_ube_patch(
                     src_esp, out_esp,
@@ -1609,6 +1626,9 @@ def _cmd_convert(args):
                   f"source ESP(s) -> their armor is ABSENT from the merge "
                   f"(invisible in-game): {r.esp_gen_failures}")
             overall_failures += len(r.esp_gen_failures)
+        if r.esp_skipped_no_armor:
+            print(f"    {r.esp_skipped_no_armor} source ESP(s) skipped: no armor "
+                  f"(landscape/quest/patch ESPs) — not a failure")
         if r.nif_partial:
             print(f"    !! PARTIAL: {r.nif_partial} NIF(s) dropped a shape "
                   f"(invisible piece in-game) — see the coverage report's "
