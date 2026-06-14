@@ -1454,6 +1454,14 @@ BODY_SHAPE_NAME_PREFIXES = (
 )
 
 
+def _is_inline_body_name(name: "str | None") -> bool:
+    """Name-only inline-body test (canonical names + vanilla placeholder
+    prefixes). Lightweight companion to _looks_like_inline_body for code that
+    has a shape NAME but not a full Shape (e.g. HDT re-import from a raw NIF)."""
+    nl = (name or "").lower()
+    return name in BODY_SHAPE_NAMES or nl.startswith(BODY_SHAPE_NAME_PREFIXES)
+
+
 def validate_dst_nif(dst_path: "Path",
                      tri_path: "Path | None" = None,
                      src_path: "Path | None" = None) -> list[str]:
@@ -7268,6 +7276,44 @@ def _harden_hdt_xml_for_fsmp(xml_path: Path, nif) -> None:
             pass
 
 
+def _select_framework_bone_carriers(xml_bones, present_bones, source_shapes, *,
+                                    skel_bones=(), exclude_names=()):
+    """Source shape names to re-import as HDT framework-bone carriers: a shape
+    that holds a CUSTOM (non-skeleton) bone the authored XML drives but no
+    surviving shape provides. Two guards prevent the double-body CTD class:
+
+      * Skeleton bones -- the passed ``skel_bones`` set, or the standard
+        ``NPC `` naming prefix -- resolve against the ACTOR skeleton at runtime,
+        so they never count as "needing" a mesh. A dropped body that merely
+        carried e.g. ``NPC L/R Hand`` is therefore NOT re-imported for them.
+      * DROPPED inline-body shapes (``BODY_SHAPE_NAMES`` / placeholder prefixes)
+        are never carriers: the body has been replaced by the UBE BaseShape, so
+        re-adding it re-creates the double body = HDT-SMP fault on equip.
+
+    ``source_shapes``: iterable of ``(name, bone_names)`` in source-NIF order.
+    ``exclude_names``: shapes already present/queued. Greedy -- each carrier
+    consumes the needed bones it covers; returns carriers in iteration order.
+    """
+    skel_lc = {b.lower() for b in skel_bones}
+    needed = {b for b in (set(xml_bones) - set(present_bones))
+              if b.lower() not in skel_lc and not b.lower().startswith("npc ")}
+    if not needed:
+        return []
+    excl = set(exclude_names)
+    work = set(needed)
+    carriers: list[str] = []
+    for name, bones in source_shapes:
+        if name in excl:
+            continue
+        if _is_inline_body_name(name):
+            continue
+        hit = set(bones or ()) & work
+        if hit:
+            carriers.append(name)
+            work -= hit
+    return carriers
+
+
 def _finalize_hdt_physics(dst_path: Path, src_nif_path: Path) -> bool:
     """FINAL physics pass — runs AFTER every other NIF round-trip (merge,
     VirtualBody-hide, partition-normalize) so the HDT-SMP extra-data can't
@@ -7337,6 +7383,12 @@ def _finalize_hdt_physics(dst_path: Path, src_nif_path: Path) -> bool:
                 r'<per-(?:triangle|vertex)-shape\s+name="([^"]+)"', xml_text))
             present = {s.name for s in nf.shapes}
             missing = [n for n in col_names if n not in present]
+            # Defensive (same bug class as the framework path below): never
+            # re-import a dropped inline body even if the XML names it as a
+            # per-vertex/per-triangle collider -- that re-adds a hidden body =
+            # double body = CTD on equip. Cloth collides with the injected UBE
+            # BaseShape instead; the stale ref is pruned by _harden_hdt_xml_for_fsmp.
+            missing = [n for n in missing if not _is_inline_body_name(n)]
             # Physics-framework shapes (e.g. "Stabilizer"): textureless, but
             # carry physics BONES the XML references (<bone>/bodyA/bodyB).
             # Dropping them removes bones -> chain constraints have no target ->
@@ -7348,19 +7400,20 @@ def _finalize_hdt_physics(dst_path: Path, src_nif_path: Path) -> bool:
             present_bones: set[str] = set()
             for _ps in nf.shapes:
                 present_bones |= set(_ps.bone_names or [])
-            needed_bones = xml_bones - present_bones
-            if missing or needed_bones:
+            if missing or (xml_bones - present_bones):
                 snf = pyn.NifFile(filepath=str(src_nif_path))
                 src_by_name = {s.name: s for s in snf.shapes}
-                if needed_bones:
-                    for _ss in snf.shapes:
-                        if _ss.name in present or _ss.name in missing:
-                            continue
-                        _sb = set(_ss.bone_names or [])
-                        if _sb & needed_bones:
-                            missing.append(_ss.name)
-                            framework_names.add(_ss.name)
-                            needed_bones -= _sb
+                # Re-import shapes that uniquely carry a CUSTOM physics bone the
+                # XML drives. Skeleton bones resolve via the actor skeleton; a
+                # dropped inline body is NEVER a carrier (re-adding it = double
+                # body = CTD on equip). See _select_framework_bone_carriers.
+                for cn in _select_framework_bone_carriers(
+                        xml_bones, present_bones,
+                        [(s.name, list(s.bone_names or [])) for s in snf.shapes],
+                        skel_bones=_actor_skeleton_bone_names(),
+                        exclude_names=set(present) | set(missing)):
+                    missing.append(cn)
+                    framework_names.add(cn)
                 # Warp collision proxies to match the UBE body; without this the
                 # proxy stays at CBBE size and chains collide at the wrong radius.
                 _col_cbbe_v = _col_delta = None
