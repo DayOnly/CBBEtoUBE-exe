@@ -325,8 +325,7 @@ def build_overlay_correspondence(cbbe_path, ube_path,
     if cbbe_path is None or ube_path is None:
         return None
     from . import nif_convert as nc
-    from .correspondence import MeshIndex
-    from scipy.spatial import cKDTree
+    from .correspondence import MeshIndex, project_to_mesh
     pyn = nc._pynifly()
 
     def _load(path):
@@ -340,10 +339,15 @@ def build_overlay_correspondence(cbbe_path, ube_path,
         ubv, ubuv, ubt = _load(ube_path)
     except Exception:
         return None
-    # Warp CBBE into UBE space via nearest-neighbor; matches the body-delta
-    # correspondence the main converter uses for each region.
-    _, nn = cKDTree(ubv).query(cbv, k=1)
-    cbbe_in_ube = ubv[nn]
+    # Warp CBBE into UBE space by projecting each CBBE vert onto the UBE
+    # SURFACE (a continuous closest-point), NOT snapping to the nearest UBE
+    # vertex. Vert-snapping collapsed ~35% of body triangles (a third of CBBE
+    # verts shared one UBE vert) -> a degenerate cbbe_in_ube mesh -> the
+    # transfer's project_to_mesh then landed on collapsed/folded tris -> wrong
+    # CBBE UV -> SMEARED/garbled overlays (worst on thin-line body paint such as
+    # tiger-stripe bodypaint). Surface projection preserves CBBE topology:
+    # measured body bad-tris 35%->12%, folded 1.33%->0.18%.
+    cbbe_in_ube, _, _ = project_to_mesh(cbv, MeshIndex.build(ubv, ubt))
     return OverlayCorrespondence(
         ube_verts=ubv, ube_uv=ubuv, ube_tris=ubt,
         cbbe_uv=cbuv, cbbe_tris=cbt,
