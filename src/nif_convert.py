@@ -2623,6 +2623,13 @@ def convert_nif(
             except Exception:
                 pass
 
+        # Fitted-cloth body conform (gated; skin-tight garments only). Runs after
+        # finalize so it sees final skinning; reauthor/harden below preserve it.
+        try:
+            _conform_fitted_to_body(dst_path, biped_slots)
+        except Exception:
+            pass
+
         # Verbatim-copied NIFs carry raw block structure the renderer can reject.
         # Re-author for a clean pynifly structure identical to body shapes.
         if not use_rebuild:
@@ -4184,9 +4191,13 @@ def _strip_jiggle_weights_map(weights_map, src_bones=None, force=False):
         (pre-graft) skinning that holds the chain, while KEEPING any legitimate
         source jiggle weight (a real chest-cloth shape that physics-drives off a
         breast bone). Soft conformance is sacrificed on garment plates only.
-      * force=False (plain armour): strip ALL jiggle ONLY on a rigid LEG-PLATE shape
-        (majority of verts dominated by rigid leg bones -- greaves/leggings/pants).
-        NO-OP for torso/soft armour -> it KEEPS jiggle for breast/belly conformance.
+      * force=False (plain armour): on a leg-bone-dominant shape (greaves / leggings
+        / pants / stockings) strip only the GRAFTED jiggle bones (absent from
+        `src_bones`) -- so a rigid metal plate the converter grafted breast/butt
+        weight onto reverts (no collapse), while FITTED LEG CLOTH that already had
+        SOURCE butt/belly weight KEEPS it (else a skin-tight pant/stocking goes
+        rigid and the jiggling UBE body clips straight through it). NO-OP for
+        torso/soft armour -> it KEEPS jiggle for breast/belly conformance.
 
     add_scale_bone_weights suppresses leg-plate jiggle up front; the M6 reskin does
     NOT, so this post-pass closes the gap regardless of which path added the weight.
@@ -4210,7 +4221,12 @@ def _strip_jiggle_weights_map(weights_map, src_bones=None, force=False):
         leg_dom = sum(1 for (bn, _w) in dom.values() if _is_leg_rigid_bone(bn))
         if leg_dom <= 0.5 * len(dom):
             return weights_map  # not a rigid leg plate -> keep jiggle (conformance)
-        jset = {b for b in weights_map if _is_physics_jiggle_scale_bone(b)}
+        # Strip only GRAFTED jiggle (absent from source) -- a rigid greave the
+        # converter grafted jiggle onto reverts, but fitted leg CLOTH that had
+        # SOURCE butt/belly jiggle keeps it so it conforms to the jiggling body.
+        _srcb = src_bones or set()
+        jset = {b for b in weights_map
+                if _is_physics_jiggle_scale_bone(b) and b not in _srcb}
     if not jset:
         return weights_map
     other: "dict" = {}
@@ -4244,6 +4260,178 @@ def _strip_jiggle_weights_map(weights_map, src_bones=None, force=False):
         if pairs:
             out[bn] = pairs
     return out
+
+
+# ----- Fitted-cloth body conform --------------------------------------------
+# A skin-tight garment (leggings, pantyhose, bodysuit) must deform WITH the UBE
+# body or the body clips through it where a limb swings most. Measured on a
+# pantyhose: the inner-back-thigh followed the leg-swing bone only ~54% as much
+# as the body itself (~65%) -> bare body skin poked through mid-stride. The
+# converter's body-blend closes the gross mismatch but a residual survives
+# because cosine similarity is blind to a single-bone gap (54 vs 65 still scores
+# ~0.99). This pass conforms the DIVERGENT verts of GARMENT-class shapes to the
+# body's own per-vert skinning, gated by a PER-BONE weight delta so already
+# matched verts are left untouched.
+#
+# "Needs it" is detected, never hardcoded per armor:
+#   (a) the shape carries real soft-body JIGGLE weight (butt/belly/breast) -> it
+#       is a deform-with-body garment. A rigid plate had its grafted jiggle
+#       stripped (_strip_jiggle_weights_map) so it carries none -> excluded and
+#       stays rigid.
+#   (b) it is NOT a physics-chain garment (SMP skirt/cloak collide; they don't
+#       skin-conform) -- low non-body-bone fraction.
+#   (c) it HUGS the body (a flaring skirt/robe sits away from it) -- most verts
+#       within FIT_PROX of the body surface.
+# Per-vert it also skips chain verts (partition safety) and only blends bones the
+# vert ALREADY has toward the body, so the per-vert bone set can only shrink ->
+# partition palettes stay valid. #fitted-conform
+CONFORM_FITTED_CLOTH = (
+    os.environ.get("CBBE2UBE_NO_CONFORM", "").strip().lower()
+    not in ("1", "true", "yes", "on")
+)
+# Tunables (env-overridable). Validated on a pantyhose: 727/3846 verts conformed,
+# inner-back-thigh leg-follow 54% -> 65% (body ~65-71%); a rigid greave: 0 verts.
+_CONFORM_FIT_PROX = float(os.environ.get("CBBE2UBE_CONFORM_FIT_PROX", "2.0"))
+_CONFORM_VERT_PROX = float(os.environ.get("CBBE2UBE_CONFORM_VERT_PROX", "6.0"))
+_CONFORM_DELTA = float(os.environ.get("CBBE2UBE_CONFORM_DELTA", "0.08"))
+_CONFORM_BLEND = float(os.environ.get("CBBE2UBE_CONFORM_BLEND", "0.90"))
+_CONFORM_FIT_FRAC = float(os.environ.get("CBBE2UBE_CONFORM_FIT_FRAC", "0.90"))
+_CONFORM_CHAIN_MAX = float(os.environ.get("CBBE2UBE_CONFORM_CHAIN_MAX", "0.05"))
+_CONFORM_MIN_JIGGLE_VERTS = 8
+_CONFORM_SKIP_NAMES = ("baseshape", "3ba", "virtual", "col", "ground", "ref")
+_BODY_CONFORM_CACHE: "dict" = {}
+
+
+def _body_conform_ref(weight: str):
+    """Lazy (verts_world, per_vert_weights, body_bones, kdtree) for the UBE body
+    at `weight` ('_0'/'_1'); None if the body or scipy is unavailable. Cached."""
+    if weight in _BODY_CONFORM_CACHE:
+        return _BODY_CONFORM_CACHE[weight]
+    out = None
+    try:
+        from scipy.spatial import cKDTree
+        p = _find_ube_femalebody(weight) or _find_ube_femalebody("_1")
+        if p is not None and Path(p).is_file():
+            pyn = _pynifly()
+            nf = pyn.NifFile(filepath=str(p))
+            body = max(nf.shapes, key=lambda s: len(s.verts))
+            g2s = _shape_global_to_skin(body)
+            V = _verts_skin_to_world(np.asarray(body.verts, np.float64), g2s)
+            n = len(V)
+            pv = [dict() for _ in range(n)]
+            for b, pairs in (body.bone_weights or {}).items():
+                for vi, w in pairs:
+                    iv = int(vi)
+                    if 0 <= iv < n:
+                        pv[iv][b] = pv[iv].get(b, 0.0) + float(w)
+            out = (V, pv, set(body.bone_names), cKDTree(V))
+    except Exception:
+        out = None
+    _BODY_CONFORM_CACHE[weight] = out
+    return out
+
+
+def _conform_fitted_to_body(dst_path, biped_slots: int = 0) -> int:
+    """Conform skin-tight GARMENT shapes to the UBE body's per-vert skinning so
+    the body doesn't clip through where a limb swings. On-disk post-pass; returns
+    the number of verts conformed (0 = nothing touched). See CONFORM_FITTED_CLOTH
+    for the detection gates -- rigid plate armor is excluded and stays rigid."""
+    if not CONFORM_FITTED_CLOTH:
+        return 0
+    if biped_slots & (BIPED_SLOT33_BIT | BIPED_SLOT37_BIT):
+        return 0  # hands/feet -- not the clip class, and risky to soften
+    weight = "_0" if str(dst_path).lower().endswith("_0.nif") else "_1"
+    ref = _body_conform_ref(weight)
+    if ref is None:
+        return 0
+    _Vb, body_w, body_bones, tree = ref
+    try:
+        pyn = _pynifly()
+        nf = pyn.NifFile(filepath=str(dst_path))
+    except Exception:
+        return 0
+    total = 0
+    dirty = False
+    for s in nf.shapes:
+        nm = (s.name or "").lower()
+        if any(k in nm for k in _CONFORM_SKIP_NAMES):
+            continue
+        bw = s.bone_weights or {}
+        # (a) CHEAP pre-gate: real soft-body jiggle weight -> deform-with-body
+        # garment. Avoids building per-vert maps for rigid plate armor.
+        jig = 0
+        for b, pairs in bw.items():
+            if _is_physics_jiggle_scale_bone(b):
+                jig += sum(1 for _vi, w in pairs if float(w) > 0.1)
+                if jig >= _CONFORM_MIN_JIGGLE_VERTS:
+                    break
+        if jig < _CONFORM_MIN_JIGGLE_VERTS:
+            continue
+        try:
+            V = np.asarray(s.verts, np.float64)
+        except Exception:
+            continue
+        n = len(V)
+        if n == 0:
+            continue
+        vw = [dict() for _ in range(n)]
+        for b, pairs in bw.items():
+            for vi, w in pairs:
+                iv = int(vi)
+                if 0 <= iv < n:
+                    vw[iv][b] = vw[iv].get(b, 0.0) + float(w)
+        # (b) not a physics-chain garment (SMP skirt/cloak)
+        chain_frac = sum(1 for d in vw
+                         if any(w > 0.1 and b not in body_bones
+                                for b, w in d.items())) / n
+        if chain_frac > _CONFORM_CHAIN_MAX:
+            continue
+        g2s = _shape_global_to_skin(s)
+        Vw = _verts_skin_to_world(V, g2s)
+        d, idx = tree.query(Vw)
+        # (c) HUGS the body (a flaring skirt/robe sits away -> excluded)
+        if float((d < _CONFORM_FIT_PROX).mean()) < _CONFORM_FIT_FRAC:
+            continue
+        touched: "set" = set()
+        conf = 0
+        for i in range(n):
+            if d[i] > _CONFORM_VERT_PROX:
+                continue
+            dv = vw[i]
+            if not dv:
+                continue
+            if any(w > 0.1 and b not in body_bones for b, w in dv.items()):
+                continue  # chain vert -> leave it (partition safety)
+            bd = body_w[idx[i]]
+            shared = set(dv) & set(bd)
+            if not shared:
+                continue
+            if max(abs(dv.get(b, 0.0) - bd.get(b, 0.0))
+                   for b in shared) <= _CONFORM_DELTA:
+                continue  # already matched -> untouched
+            new = {b: (1.0 - _CONFORM_BLEND) * dv[b]
+                   + (_CONFORM_BLEND * bd[b] if b in bd else 0.0)
+                   for b in dv}
+            ss = sum(new.values())
+            if ss <= 0:
+                continue
+            touched |= set(dv)                       # bones that may lose verts
+            vw[i] = {b: w / ss for b, w in new.items() if w / ss > 1e-4}
+            touched |= set(vw[i])
+            conf += 1
+        if conf:
+            dirty = True
+            total += conf
+            for bn in touched:
+                # full rebuild from the complete per-vert map -> removals applied
+                s.setShapeWeights(bn, [(i, vw[i][bn]) for i in range(n)
+                                       if bn in vw[i] and vw[i][bn] > 1e-4])
+    if dirty:
+        try:
+            atomic_nif_save(nf, dst_path)
+        except Exception:
+            return 0
+    return total
 
 
 # Chain-anchor strategy: physics-chain hard-skeleton anchors (Pelvis/Spine/...)
@@ -8783,6 +8971,12 @@ def convert_nif_phase2(
     # authored XML. See _finalize_hdt_physics.
     try:
         _finalize_hdt_physics(dst_path, src_path)
+    except Exception:
+        pass
+
+    # Fitted-cloth body conform (gated; skin-tight garments only).
+    try:
+        _conform_fitted_to_body(dst_path, biped_slots)
     except Exception:
         pass
 
