@@ -4331,6 +4331,26 @@ def _body_conform_ref(weight: str):
     return out
 
 
+def _conform_blend_vert(dv: dict, bd: dict, blend: float, delta: float):
+    """Pure per-vert conform decision (extracted for testability). Blend the
+    vert's weights `dv` toward the body vert's weights `bd` by `blend`, KEEPING
+    the vert's bone set -- it can only SHRINK (no body-only bone is added), so
+    partition bone-palettes stay valid. Returns the renormalized weight dict, or
+    None to leave the vert untouched: no shared bone, already matched (max
+    shared-bone |delta| <= `delta`), or a degenerate (zero-sum) blend."""
+    shared = set(dv) & set(bd)
+    if not shared:
+        return None
+    if max(abs(dv.get(b, 0.0) - bd.get(b, 0.0)) for b in shared) <= delta:
+        return None
+    new = {b: (1.0 - blend) * dv[b] + (blend * bd[b] if b in bd else 0.0)
+           for b in dv}
+    ss = sum(new.values())
+    if ss <= 0:
+        return None
+    return {b: w / ss for b, w in new.items() if w / ss > 1e-4}
+
+
 def _conform_fitted_to_body(dst_path, biped_slots: int = 0) -> int:
     """Conform skin-tight GARMENT shapes to the UBE body's per-vert skinning so
     the body doesn't clip through where a limb swings. On-disk post-pass; returns
@@ -4403,21 +4423,12 @@ def _conform_fitted_to_body(dst_path, biped_slots: int = 0) -> int:
             if any(w > 0.1 and b not in body_bones for b, w in dv.items()):
                 continue  # chain vert -> leave it (partition safety)
             bd = body_w[idx[i]]
-            shared = set(dv) & set(bd)
-            if not shared:
+            new = _conform_blend_vert(dv, bd, _CONFORM_BLEND, _CONFORM_DELTA)
+            if new is None:
                 continue
-            if max(abs(dv.get(b, 0.0) - bd.get(b, 0.0))
-                   for b in shared) <= _CONFORM_DELTA:
-                continue  # already matched -> untouched
-            new = {b: (1.0 - _CONFORM_BLEND) * dv[b]
-                   + (_CONFORM_BLEND * bd[b] if b in bd else 0.0)
-                   for b in dv}
-            ss = sum(new.values())
-            if ss <= 0:
-                continue
-            touched |= set(dv)                       # bones that may lose verts
-            vw[i] = {b: w / ss for b, w in new.items() if w / ss > 1e-4}
-            touched |= set(vw[i])
+            touched |= set(dv)        # bones the vert had (may now lose this vert)
+            vw[i] = new
+            touched |= set(vw[i])     # bones it kept after the blend
             conf += 1
         if conf:
             dirty = True
@@ -5971,7 +5982,7 @@ def _is_rigid_attachment(weights_by_bone: dict[str, list[tuple[int, float]]]) ->
 # (#166 `_needs_bone_driven_scaling` removed: it gated scale bones to few-bone
 # rigid props only, on the misdiagnosis that multi-bone cloth morphs via the TRI.
 # It doesn't — cloth has no per-shape BODYTRI, so scale bones are its only
-# tracking layer. The TMage CTD is handled by `_cap_skin_bone_count`; the
+# tracking layer. The robe-skirt bone-overflow CTD is handled by `_cap_skin_bone_count`; the
 # Forsworn double by body-skin detection. Scale bones now go to ALL cloth again.)
 
 
@@ -5991,12 +6002,12 @@ def _cap_skin_bone_count(bone_names, xforms_map, weights_map,
 
     Rank by max-per-vert weight, NOT total weight: a bone that is the dominant
     influence on even a handful of verts — a robe SKIRT or cape physics chain
-    bone (e.g. `TMage_Skirt_Back 04`, max ~0.75 on its 18 hem verts) — is
+    bone (e.g. `Skirt_Back 04`, max ~0.75 on its 18 hem verts) — is
     locally critical; dropping it collapses those verts (distortion) and kills
     the skirt's HDT-SMP sway (no physics). A scale-bone "tracking" tail
     propagated thinly across the whole shape (max ~0.02) is the safe thing to
     drop. The original total-weight ranking did the exact opposite and evicted
-    the Traveling Mage robe's skirt physics bones. Tie-break by total weight."""
+    a long robe's skirt physics bones. Tie-break by total weight."""
     names = list(bone_names or [])
     if len(names) <= limit:
         return bone_names, xforms_map, weights_map
@@ -6637,7 +6648,7 @@ def _physics_chain_nowarp_blend(src_shape, source_verts, warped_verts):
     The body-delta warp moves the *cloth verts* ~0.5u onto the UBE body but the
     chain bones stay at source -> the cloth is now offset from its own bones ->
     SMP rest pose is wrong -> the chain collapses / falls through the floor in
-    game. Proven decisively: the ORIGINAL (un-warped) Traveling Mage skirt has
+    game. Proven decisively: the ORIGINAL (un-warped) long-robe skirt has
     working physics on the UBE actor, the warped conversion does not (houseCARL
     WorldModel swap, 2026-06-04).
 

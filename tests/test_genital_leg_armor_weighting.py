@@ -168,3 +168,67 @@ def test_conform_missing_file_is_safe(tmp_path):
     # a path that can't be loaded must return 0, never raise
     assert nc._conform_fitted_to_body(
         str(tmp_path / "does_not_exist_1.nif"), biped_slots=0) == 0
+
+
+# ---- the pure per-vert conform decision (_conform_blend_vert) ---------------
+
+def test_conform_blend_skips_already_matched():
+    # weights within the delta of the body -> leave untouched (None)
+    dv = {"NPC L Thigh [LThg]": 0.60, "NPC Pelvis [Pelv]": 0.40}
+    bd = {"NPC L Thigh [LThg]": 0.63, "NPC Pelvis [Pelv]": 0.37}  # max delta 0.03
+    assert nc._conform_blend_vert(dv, bd, blend=0.9, delta=0.08) is None
+
+
+def test_conform_blend_skips_no_shared_bones():
+    dv = {"CustomChainBone": 1.0}
+    bd = {"NPC L Thigh [LThg]": 1.0}
+    assert nc._conform_blend_vert(dv, bd, blend=0.9, delta=0.08) is None
+
+
+def test_conform_blend_moves_toward_body_and_renormalizes():
+    # the inner-back-thigh case: pant 54% thigh, body 65% -> blend closes ~90%
+    dv = {"NPC L Thigh [LThg]": 0.54, "NPC Pelvis [Pelv]": 0.46}
+    bd = {"NPC L Thigh [LThg]": 0.65, "NPC Pelvis [Pelv]": 0.35}
+    out = nc._conform_blend_vert(dv, bd, blend=0.9, delta=0.08)
+    assert out is not None
+    assert abs(sum(out.values()) - 1.0) < 1e-6          # renormalized
+    # moved toward the body but not past it (blend < 1.0)
+    assert 0.54 < out["NPC L Thigh [LThg]"] < 0.65
+
+
+def test_conform_blend_keeps_bone_set_no_body_only_bones_added():
+    # a body-only bone (Pelvis) must NOT be grafted onto the vert; the vert's own
+    # bones can only shrink -> partition palettes stay valid.
+    dv = {"NPC L Thigh [LThg]": 0.80, "GarmentBone": 0.20}
+    bd = {"NPC L Thigh [LThg]": 0.60, "NPC Pelvis [Pelv]": 0.40}
+    out = nc._conform_blend_vert(dv, bd, blend=0.9, delta=0.08)
+    assert out is not None
+    assert "NPC Pelvis [Pelv]" not in out               # body-only bone NOT added
+    assert set(out).issubset(set(dv))                   # bone set only shrinks
+
+
+def test_conform_blend_matches_reference_formula():
+    # spec-lock: the extracted helper must stay byte-identical to the original
+    # inline formula it replaced (guards against silent drift on edits).
+    def _ref(dv, bd, blend, delta):
+        shared = set(dv) & set(bd)
+        if not shared:
+            return None
+        if max(abs(dv.get(b, 0.0) - bd.get(b, 0.0)) for b in shared) <= delta:
+            return None
+        new = {b: (1.0 - blend) * dv[b] + (blend * bd[b] if b in bd else 0.0)
+               for b in dv}
+        ss = sum(new.values())
+        if ss <= 0:
+            return None
+        return {b: w / ss for b, w in new.items() if w / ss > 1e-4}
+
+    cases = [
+        ({"A": 0.5, "B": 0.5}, {"A": 0.5, "B": 0.5}),          # matched
+        ({"A": 0.2, "B": 0.8}, {"A": 0.9, "C": 0.1}),          # partial overlap
+        ({"A": 0.54, "B": 0.46}, {"A": 0.65, "B": 0.35}),      # the residual case
+        ({"X": 1.0}, {"Y": 1.0}),                              # disjoint
+        ({"A": 1e-5, "B": 1.0}, {"A": 0.9, "B": 0.1}),         # tiny bone -> drop
+    ]
+    for dv, bd in cases:
+        assert nc._conform_blend_vert(dv, bd, 0.9, 0.08) == _ref(dv, bd, 0.9, 0.08)
