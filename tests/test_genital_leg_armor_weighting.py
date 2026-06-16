@@ -104,3 +104,67 @@ def test_strip_genital_noop_when_clean():
     clean = {"NPC Spine [Spn0]": [(0, 1.0)]}
     # genital-free map returned unchanged (same object -> zero overhead)
     assert nc._strip_genital_weights_map(clean) is clean
+
+
+def _legdom_wm():
+    # leg-bone-dominant shape (stocking / greave / pant): every vert mostly on
+    # the thigh, with butt/belly jiggle on a subset.
+    return {
+        "NPC L Thigh [LThg]": [(i, 0.8) for i in range(10)],
+        "NPC L Butt": [(i, 0.2) for i in range(5)],
+        "NPC Belly": [(i, 0.2) for i in range(5, 10)],
+    }
+
+
+def test_strip_jiggle_keeps_source_jiggle_on_fitted_leg_cloth():
+    # Skin-tight pant/stocking: butt+belly are SOURCE bones -> kept so the cloth
+    # conforms to the jiggling UBE body. Stripping them (the old bug) made fitted
+    # pants go rigid and the body clipped straight through.
+    out = nc._strip_jiggle_weights_map(
+        _legdom_wm(),
+        src_bones={"NPC L Thigh [LThg]", "NPC L Butt", "NPC Belly"},
+        force=False)
+    assert out.get("NPC L Butt")           # source jiggle kept
+    assert out.get("NPC Belly")            # source jiggle kept
+
+
+def test_strip_jiggle_removes_grafted_jiggle_on_rigid_greave():
+    # Rigid metal greave: the converter GRAFTED butt/belly (absent from source) ->
+    # strip it so the plate reverts and doesn't collapse under physics jiggle.
+    out = nc._strip_jiggle_weights_map(
+        _legdom_wm(),
+        src_bones={"NPC L Thigh [LThg]"},
+        force=False)
+    assert not out.get("NPC L Butt")       # grafted -> stripped
+    assert not out.get("NPC Belly")        # grafted -> stripped
+
+
+# ---- fitted-cloth body conform pass (skin-tight garment clip fix) -----------
+
+def test_conform_gate_constants_present():
+    # the conform tunables exist and have sane defaults
+    assert 0.0 < nc._CONFORM_BLEND <= 1.0
+    assert nc._CONFORM_DELTA > 0.0
+    assert nc._CONFORM_FIT_FRAC > 0.0
+    assert nc._CONFORM_MIN_JIGGLE_VERTS >= 1
+
+
+def test_conform_disabled_by_env(monkeypatch):
+    # CBBE2UBE_NO_CONFORM kill switch -> immediate no-op, no body load
+    monkeypatch.setattr(nc, "CONFORM_FITTED_CLOTH", False)
+    assert nc._conform_fitted_to_body("whatever_1.nif", biped_slots=0) == 0
+
+
+def test_conform_skips_hands_feet():
+    # hands(33)/feet(37) are not the clip class -> never conformed (guard runs
+    # before any body load, so this holds even without the UBE body present)
+    assert nc._conform_fitted_to_body(
+        "x_1.nif", biped_slots=nc.BIPED_SLOT33_BIT) == 0
+    assert nc._conform_fitted_to_body(
+        "x_1.nif", biped_slots=nc.BIPED_SLOT37_BIT) == 0
+
+
+def test_conform_missing_file_is_safe(tmp_path):
+    # a path that can't be loaded must return 0, never raise
+    assert nc._conform_fitted_to_body(
+        str(tmp_path / "does_not_exist_1.nif"), biped_slots=0) == 0
