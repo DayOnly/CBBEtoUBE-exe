@@ -96,6 +96,17 @@ skinned shapes is baked into the verts):
   separated (source-order-gated, so it never buries a layer the source put on
   top) and their bone weights synced so they jiggle identically under
   HDT-SMP instead of intersecting in motion.
+- **Fitted-cloth body conform** — a skin-tight garment (leggings, pantyhose,
+  bodysuit) has to deform *with* the body or the body clips through it where a
+  limb swings most (measured: a pantyhose's inner-back-thigh followed the
+  leg-swing bone only ~54% as much as the body's ~65%). Garment-class shapes —
+  detected, never hardcoded per armor: they carry soft-body jiggle weight, hug
+  the body, and aren't physics chains — have their *divergent* verts conformed
+  to the body's own per-vertex skinning, gated by a per-bone weight delta so
+  already-matched verts are left alone and the per-vert bone set can only shrink
+  (partition-safe). Rigid plate armor carries no jiggle weight / stands off the
+  body, so it's excluded and stays rigid. Disable with `CBBE2UBE_NO_CONFORM=1`;
+  tune the gates via `CBBE2UBE_CONFORM_*`.
 - **Z-fight split, degenerate-triangle repair, normal recompute** — final
   cleanup so moved verts don't shimmer, pinch flat, or shade wrong.
 - **Physics & morphs carried through** — HDT-SMP chains are blended back
