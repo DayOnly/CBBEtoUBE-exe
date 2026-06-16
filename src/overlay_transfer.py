@@ -36,6 +36,7 @@ from __future__ import annotations
 import os
 import struct
 import subprocess
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -43,10 +44,18 @@ import numpy as np
 
 from . import paths as _paths
 
-# Overlay paint coverage below this hand-bone-weight is "body". Body overlays
-# map to the body UV; we only handle body (+ later hands). Head overlays map to
-# the head mesh, which is not a UBE body part -> skipped.
-_OVERLAY_ROOT = "textures/actors/character/overlays"
+# RaceMenu/SKEE body overlays live under one of these roots. The standard is
+# .../character/overlays/, but some packs ship under .../character/character
+# assets/overlays/ (the body/head ASSET tree) and the game loads those too --
+# so BOTH must be scanned. An un-scanned overlay is never remapped, so it shows
+# in its SOURCE UV on the UBE body = lands on the wrong anatomy (this is what
+# made an entire wounds pack misplace). classify_overlay/_overlay_set split on
+# "/overlays/" so they're already root-agnostic; only discovery uses these.
+_OVERLAY_ROOTS = (
+    "textures/actors/character/overlays",
+    "textures/actors/character/character assets/overlays",
+)
+_OVERLAY_ROOT = _OVERLAY_ROOTS[0]      # back-compat (diag scripts, default path)
 
 
 # ---------- texconv locator -------------------------------------------------
@@ -139,18 +148,44 @@ def dds_to_rgba(dds_path, texconv, workdir) -> np.ndarray:
     workdir = Path(workdir)
     workdir.mkdir(parents=True, exist_ok=True)
     _run_texconv(texconv, ["-ft", "tga", "-m", "1", "-y", "-o", workdir, dds_path])
-    return _read_tga_rgba(workdir / (Path(dds_path).stem + ".tga"))
+    tga = workdir / (Path(dds_path).stem + ".tga")
+    try:
+        return _read_tga_rgba(tga)          # numpy copy -> file no longer needed
+    finally:
+        # DELETE the ~16MB intermediate immediately. These have UNIQUE per-source
+        # names, so they accumulate (~16MB each) across an 800+ overlay run and
+        # filled the TEMP drive -> ENOSPC. Bounded now to ~workers files at once.
+        try:
+            tga.unlink()
+        except OSError:
+            pass
 
 
 def rgba_to_dds(arr: np.ndarray, dds_path, texconv, workdir, fmt="BC3_UNORM"):
+    # texconv names its output by the INPUT stem and writes it next to the final
+    # DDS (`-o dds_path.parent`) so the trailing .replace is a same-drive atomic
+    # rename. The intermediate stem is therefore derived from the DESTINATION
+    # (unique within its folder) -- a fixed "_ovl" name collided across threads
+    # converting different overlays in the SAME folder (parallel runs lost files).
     workdir = Path(workdir)
     workdir.mkdir(parents=True, exist_ok=True)
-    tga = workdir / "_ovl.tga"
-    _write_tga_rgba(arr, tga)
     dds_path = Path(dds_path)
     dds_path.parent.mkdir(parents=True, exist_ok=True)
-    _run_texconv(texconv, ["-ft", "dds", "-f", fmt, "-y", "-o", dds_path.parent, tga])
-    (dds_path.parent / "_ovl.dds").replace(dds_path)
+    stem = dds_path.stem + ".__ube_tmp__"
+    tga = workdir / (stem + ".tga")
+    _write_tga_rgba(arr, tga)
+    try:
+        _run_texconv(texconv, ["-ft", "dds", "-f", fmt, "-y",
+                               "-o", dds_path.parent, tga])
+        (dds_path.parent / (stem + ".dds")).replace(dds_path)
+    finally:
+        # DELETE the ~16MB TGA intermediate now -- it has a UNIQUE per-destination
+        # name (so the parallel output dir doesn't collide), which also means it
+        # would otherwise accumulate and fill the TEMP drive on a big run.
+        try:
+            tga.unlink()
+        except OSError:
+            pass
 
 
 # ---------- geometry --------------------------------------------------------
@@ -167,7 +202,8 @@ class OverlayCorrespondence:
     cbbe_uv: np.ndarray
     cbbe_tris: np.ndarray
     cbbe_in_ube_mesh: object          # correspondence.MeshIndex over warped CBBE
-    _map_cache: dict = field(default_factory=dict)   # T -> (ys,xs,su,sv,fy,fx,cov)
+    _map_cache: dict = field(default_factory=dict)   # T -> per-size transfer map
+    _lock: object = field(default_factory=threading.Lock)   # guards _map_cache build
 
 
 def _rasterize_uv_to_3d(uv, verts, tris, T):
@@ -237,30 +273,53 @@ def _barycentric_uv(pts, tri_idx, verts, tris, uv):
             + wc[:, None] * uv[t[:, 2]])
 
 
-def _uv_map_for_size(corr: OverlayCorrespondence, T: int):
-    """Compute (or fetch cached) the per-texel transfer map for a T x T overlay:
-    the covered texels (ys,xs), the source CBBE UV to sample there (su,sv), the
-    gutter-fill indices (fy,fx), and the covered mask. This is the EXPENSIVE,
-    overlay-independent step (rasterize UBE UV -> 3D -> project to CBBE), so it's
-    cached per size and reused across every overlay of that size."""
+def _uv_map_for_size(corr: OverlayCorrespondence, T: int) -> dict:
+    """Compute (or fetch cached) the per-texel transfer map for a T x T overlay.
+    This is the EXPENSIVE, overlay-independent step (rasterize UBE UV -> 3D ->
+    project to CBBE), so it's cached per size and reused across every overlay of
+    that size. Thread-safe: the build is guarded by corr._lock (double-checked)
+    so a parallel run's first overlays of a given size don't race.
+
+    Returns a dict with: covered texels (ys,xs); the source CBBE UV (su,sv); the
+    gutter-fill indices (fy,fx); the covered mask (cov); and the PRECOMPUTED
+    bilinear corner indices (bx0,by0,bx1,by1) + weights (btx,bty) for a T x T
+    source -- those depend only on (su,sv,T), so baking them here turns the
+    per-overlay sample into 4 uint8 gathers + a float32 lerp (no 134MB float64
+    image, no repeated index math)."""
     cached = corr._map_cache.get(T)
     if cached is not None:
         return cached
-    from scipy import ndimage
-    from .correspondence import project_to_mesh
-    pt, cov = _rasterize_uv_to_3d(corr.ube_uv, corr.ube_verts, corr.ube_tris, T)
-    ys, xs = np.where(cov)
-    if len(ys):
-        proj, tri_idx, _ = project_to_mesh(pt[ys, xs], corr.cbbe_in_ube_mesh, k=8)
-        uv = _barycentric_uv(proj, tri_idx, corr.cbbe_in_ube_mesh.verts,
-                             corr.cbbe_tris, corr.cbbe_uv)
-        su, sv = uv[:, 0], uv[:, 1]
-    else:
-        su = sv = np.zeros(0)
-    _, (fy, fx) = ndimage.distance_transform_edt(~cov, return_indices=True)
-    m = (ys, xs, su, sv, fy, fx, cov)
-    corr._map_cache[T] = m
-    return m
+    with corr._lock:
+        cached = corr._map_cache.get(T)
+        if cached is not None:                 # built while we waited for the lock
+            return cached
+        from scipy import ndimage
+        from .correspondence import project_to_mesh
+        pt, cov = _rasterize_uv_to_3d(corr.ube_uv, corr.ube_verts, corr.ube_tris, T)
+        ys, xs = np.where(cov)
+        if len(ys):
+            proj, tri_idx, _ = project_to_mesh(pt[ys, xs], corr.cbbe_in_ube_mesh, k=8)
+            uv = _barycentric_uv(proj, tri_idx, corr.cbbe_in_ube_mesh.verts,
+                                 corr.cbbe_tris, corr.cbbe_uv)
+            su, sv = uv[:, 0], uv[:, 1]
+            fxf = np.clip(su * (T - 1), 0, T - 1)
+            fyf = np.clip(sv * (T - 1), 0, T - 1)
+            bx0 = np.floor(fxf).astype(np.intp)
+            by0 = np.floor(fyf).astype(np.intp)
+            bx1 = np.minimum(bx0 + 1, T - 1)
+            by1 = np.minimum(by0 + 1, T - 1)
+            btx = (fxf - bx0).astype(np.float32)[:, None]
+            bty = (fyf - by0).astype(np.float32)[:, None]
+        else:
+            su = sv = np.zeros(0)
+            bx0 = by0 = bx1 = by1 = np.zeros(0, np.intp)
+            btx = bty = np.zeros((0, 1), np.float32)
+        _, (fy, fx) = ndimage.distance_transform_edt(~cov, return_indices=True)
+        m = {"ys": ys, "xs": xs, "su": su, "sv": sv, "fy": fy, "fx": fx,
+             "cov": cov, "bx0": bx0, "by0": by0, "bx1": bx1, "by1": by1,
+             "btx": btx, "bty": bty}
+        corr._map_cache[T] = m
+        return m
 
 
 def transfer_overlay(src_rgba: np.ndarray,
@@ -270,11 +329,26 @@ def transfer_overlay(src_rgba: np.ndarray,
     per-size UV map, so all but the first overlay of a given size is just a
     bilinear sample + pad."""
     T = src_rgba.shape[0]
-    ys, xs, su, sv, fy, fx, cov = _uv_map_for_size(corr, T)
+    m = _uv_map_for_size(corr, T)
+    ys, xs, fy, fx, cov = m["ys"], m["xs"], m["fy"], m["fx"], m["cov"]
     out = np.zeros((T, T, 4), np.uint8)
     if len(ys):
-        out[ys, xs] = np.clip(_bilinear_sample(src_rgba, su, sv),
-                              0, 255).astype(np.uint8)
+        if src_rgba.shape[1] != T:
+            # non-square source (rare): the baked indices assume T x T, so fall
+            # back to the general sampler using the precomputed CBBE UV.
+            out[ys, xs] = np.clip(_bilinear_sample(src_rgba, m["su"], m["sv"]),
+                                  0, 255).astype(np.uint8)
+        else:
+            bx0, by0, bx1, by1 = m["bx0"], m["by0"], m["bx1"], m["by1"]
+            btx, bty = m["btx"], m["bty"]
+            c00 = src_rgba[by0, bx0].astype(np.float32)
+            c01 = src_rgba[by0, bx1].astype(np.float32)
+            c10 = src_rgba[by1, bx0].astype(np.float32)
+            c11 = src_rgba[by1, bx1].astype(np.float32)
+            top = c00 * (1.0 - btx) + c01 * btx
+            bot = c10 * (1.0 - btx) + c11 * btx
+            out[ys, xs] = np.clip(top * (1.0 - bty) + bot * bty,
+                                  0, 255).astype(np.uint8)
     padded = out[fy, fx]          # gutter <- nearest covered texel
     padded[cov] = out[cov]
     return padded
@@ -373,31 +447,146 @@ def convert_overlay(src_dds, out_dds, corr, texconv, workdir):
     rgba_to_dds(out, out_dds, texconv, workdir)
 
 
-def classify_overlay(rel_path: str) -> str:
-    """Classify an overlay texture by filename -> 'body' | 'hands' | 'feet' |
-    'head' | 'other'. CONSERVATIVE: only an overlay whose name explicitly says
-    "body" is treated as a body overlay to remap. Everything else (makeup, face
-    paint, skin features, warpaints, and any unlabeled overlay) is left ALONE --
-    most overlays in a load order are face/makeup using the HEAD UV (which UBE
-    doesn't change, so they're not misaligned), and remapping one through a body
-    correspondence would corrupt it. 'hands'/'feet' ARE remapped, each via its
-    own region correspondence (UBE hands/feet UV differ from CBBE too). 'head' is
-    never remapped (the head mesh is not a UBE body part).
+# Face/makeup keywords matched anywhere in the overlay's PATH. These ride the
+# HEAD UV, which UBE doesn't change, so they're never remapped. Kept to
+# descriptive, low-false-match terms (the folder names sets actually use:
+# EyeShadow/EyeLiner/Blush/Lips/Contours/Highlights, "Face", warpaint, ...).
+_FACE_KEYWORDS = (
+    "face", "head", "makeup", "warpaint", "blush", "lipstick", "lips",
+    "eyeliner", "eyeshadow", "mascara", "foundation", "contour", "highlight",
+    "eyebrow", "brows", "eyelash",
+)
 
-    This catches the standard RaceMenu body-paint convention ("NN body.dds",
-    Community Overlays, etc.). Body-paint mods that name files without "body"
-    won't be picked up -- a deliberate trade (miss-some > corrupt-makeup); the
-    keyword set can be widened once we can tell them apart reliably."""
-    name = Path(rel_path).name.lower()
-    if "body" in name:
-        return "body"
-    if "hand" in name:
-        return "hands"
-    if "feet" in name or "foot" in name:
-        return "feet"
-    if "head" in name or "face" in name:
+# Body-part names = body paint, but matched as WHOLE words (split on non-letters)
+# so "butt" never grabs "butterfly" nor "arm" -> "armor"/"warm". A file with one
+# of these is body, which also marks its SET as a body-paint set so the set's
+# other unlabeled files resolve to body too (e.g. the 'rx' set names its files
+# rx abs/boob/butt/chest, no "body" keyword anywhere).
+_BODY_PART_TOKENS = frozenset({
+    "abs", "arm", "arms", "boob", "boobs", "breast", "breasts", "butt",
+    "chest", "belly", "stomach", "tummy", "thigh", "thighs", "leg", "legs",
+    "hip", "hips", "navel", "glute", "glutes", "torso", "waist", "abdomen",
+    "pubic", "groin", "cleavage", "nipple", "nipples", "back", "spine",
+    "shoulder", "shoulders", "rib", "ribs", "neck",
+})
+
+# How to resolve an UNLABELED ('ambiguous') overlay that has NO slot/body-part
+# signal anywhere in its path. The conservative set-level guard (False) sends it
+# to body ONLY inside a set that ALSO has a real body/hand/feet overlay (a
+# body-paint set); an all-makeup or all-unlabeled set keeps its ambiguous files
+# as 'head' (skipped, left as the original CBBE DDS).
+#
+# This is deliberately conservative because transferring a FACE overlay through
+# the BODY correspondence DESTROYS it (measured: a sharp eyeliner/lip overlay
+# loses 100% of its placement and most of its ink), whereas skipping a body
+# overlay merely leaves it CBBE-aligned. A blanket ambiguous->body (True) would
+# corrupt every unlabeled makeup set, so it is NOT used. Sets with no path signal
+# at all (e.g. gendered-numeric filenames) are resolved by the user-supplied
+# OVERLAY_SET_OVERRIDES instead -- see _set_override / discover_overlays.
+_OVERLAY_AMBIGUOUS_TO_BODY = False
+
+
+# Optional USER-supplied per-set slot overrides for sets the path can't classify
+# (e.g. an all-unlabeled BSA set with gendered-numeric filenames). The converter
+# ships NONE of these -- the file is the user's, so no third-party set name lives
+# in our code. Resolution beats classification, so it also lets a user correct a
+# mis-detected set. Format: one `set = body|hands|feet|head|skip` per line ('#'
+# comments, blank lines ignored); `set` is the folder under .../overlays/.
+# Source: CBBE2UBE_OVERLAY_SLOTS env (a file path), else `overlay_slots.txt`
+# beside the mods root. 'head'/'skip' both mean "leave as the original CBBE DDS".
+OVERLAY_SLOTS_ENV = "CBBE2UBE_OVERLAY_SLOTS"
+_OVERRIDE_REGIONS = frozenset({"body", "hands", "feet", "head", "skip"})
+_set_overrides_cache: dict = {}      # resolved-path str -> {set: region}
+
+
+def _overlay_slots_path() -> "Path | None":
+    env = os.environ.get(OVERLAY_SLOTS_ENV)
+    if env:
+        return Path(env)
+    mr = _paths.mods_root()
+    return (mr.parent / "overlay_slots.txt") if mr is not None else None
+
+
+def _load_set_overrides() -> dict:
+    """Parse the user's set->slot override file (cached per resolved path, so a
+    different mods root or a newly-created file is picked up). Empty if absent."""
+    path = _overlay_slots_path()
+    key = str(path) if path is not None else ""
+    if key in _set_overrides_cache:
+        return _set_overrides_cache[key]
+    out: dict = {}
+    if path is not None and path.is_file():
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            text = ""
+        for line in text.splitlines():
+            line = line.split("#", 1)[0].strip()
+            if not line or "=" not in line:
+                continue
+            k, _, v = line.partition("=")
+            k = k.strip().lower()
+            v = v.strip().lower()
+            if k and v in _OVERRIDE_REGIONS:
+                out[k] = v
+    _set_overrides_cache[key] = out
+    return out
+
+
+def _set_override(overlay_set: str) -> "str | None":
+    """User-forced region for a set ('skip' -> None == not transferred)."""
+    reg = _load_set_overrides().get(overlay_set.lower())
+    return None if reg == "skip" else reg
+
+
+def _overlay_set(rel_path: str) -> str:
+    """The set folder directly under .../overlays/ (e.g. 'wnb', 'fms'). Used to
+    resolve 'ambiguous' overlays at the set level in discover_overlays."""
+    parts = rel_path.replace("\\", "/").lower().split("/overlays/", 1)
+    return parts[1].split("/", 1)[0] if len(parts) == 2 and parts[1] else ""
+
+
+def classify_overlay(rel_path: str) -> str:
+    """Classify an overlay by its FULL path (folders + filename), not just the
+    filename. Returns 'body' | 'hands' | 'feet' | 'head' | 'ambiguous'.
+
+    Filename-only was too narrow: most sets put the slot in a FOLDER
+    (WNB/Face, WNB/Hand) or a set/paint name (WNB/Arcolis) rather than the
+    filename, so every body paint not literally named "...body.dds" fell through
+    -> not remapped -> the raw CBBE-UV file showed on the UBE body = the design
+    landed on the WRONG BODY PART. Only Community-Overlays-style "NN body.dds"
+    was being caught.
+
+    'head' (face/makeup, head UV) is NEVER remapped. 'ambiguous' (no slot marker
+    anywhere in the path -- e.g. WNB/Arcolis, FMS/Extra) is resolved at the SET
+    level by discover_overlays: a set that ALSO contains body/hand/feet overlays
+    is a body-paint set, so its ambiguous files are 'body'; an all-makeup set
+    (only face + ambiguous) keeps its ambiguous files as 'head' (skipped). Face
+    is tested FIRST so a makeup file inside a body-paint set is never grabbed."""
+    p = rel_path.replace("\\", "/").lower()
+    tail = p.split("/overlays/", 1)
+    p = tail[1] if len(tail) == 2 else p   # ignore the fixed path prefix
+    if any(k in p for k in _FACE_KEYWORDS):
         return "head"
-    return "other"
+    if "hand" in p:
+        return "hands"
+    if "feet" in p or "foot" in p:
+        return "feet"
+    if "body" in p:
+        return "body"
+    raw = "".join(ch if ch.isalpha() else " " for ch in p).split()
+    tokens = set(raw)
+    # Many sets fuse a gender prefix onto the part ("malechest", "femalehip"),
+    # which hides the body-part token from the whole-word match. Peel the
+    # leading male/female off so "malechest" also yields "chest" -> body. (Face
+    # parts like "femalehead" are already caught above by the 'head' keyword.)
+    for t in raw:
+        for pre in ("female", "male"):
+            if t.startswith(pre) and len(t) > len(pre):
+                tokens.add(t[len(pre):])
+    if tokens & _BODY_PART_TOKENS:
+        return "body"
+    return "ambiguous"
 
 
 # ---------- discovery + orchestration ---------------------------------------
@@ -408,8 +597,10 @@ def discover_overlays(layout, regions=("body", "hands", "feet"),
     priority order so the load-order WINNER is kept per path, bucketed by region.
     Returns {region: {rel_path: source}} where rel_path is `textures/.../x.dds`
     (forward slash, lowercased) and source is ("loose", Path, mod) or ("bsa",
-    bsa_path, internal_name, mod). Only the requested regions are kept (head /
-    makeup / unlabeled overlays are never collected).
+    bsa_path, internal_name, mod). Only the requested regions are kept; head/
+    makeup overlays are skipped, and an UNLABELED overlay becomes body only when
+    its set also has body/hand/feet overlays (a body-paint set) -- otherwise it
+    stays face/skipped (see classify_overlay + the set-level pass below).
 
     `skip_mods` (mod folder names, case-insensitive) are NOT scanned -- pass our
     OWN output mod, else a previous run's already-converted UBE-UV overlays (it's
@@ -424,17 +615,22 @@ def discover_overlays(layout, regions=("body", "hands", "feet"),
     if ordered is None:
         ordered = sorted(d.name for d in mr.iterdir() if d.is_dir())
     skip_lower = {s.lower() for s in skip_mods}
-    seen: set = set()                   # first (highest-priority) source wins
-    rel_root = _OVERLAY_ROOT
     want = set(regions)
 
-    def _take(rel, source):
-        if rel in seen:
-            return
-        reg = classify_overlay(rel)
-        if reg in want:
-            seen.add(rel)
-            out[reg][rel] = source
+    # PASS 1: collect every overlay (highest-priority source wins per rel) with
+    # its raw class + set. Track which sets contain a real body/hand/feet slot --
+    # those are body-paint sets, so their 'ambiguous' files resolve to body.
+    collected: "dict[str, tuple]" = {}     # rel -> (source, raw_class, set)
+    sets_with_slot: set = set()
+
+    def _collect(rel, source):
+        if rel in collected:
+            return                      # first (highest-priority) source wins
+        raw = classify_overlay(rel)
+        st = _overlay_set(rel)
+        collected[rel] = (source, raw, st)
+        if raw in ("body", "hands", "feet"):
+            sets_with_slot.add(st)
 
     for mod_name in ordered:
         if mod_name.lower() in skip_lower:
@@ -442,21 +638,80 @@ def discover_overlays(layout, regions=("body", "hands", "feet"),
         mod = mr / mod_name
         if not mod.is_dir():
             continue
-        ovl_dir = mod / Path(rel_root)
-        if ovl_dir.is_dir():
-            for f in ovl_dir.rglob("*.dds"):
-                _take(f.relative_to(mod).as_posix().lower(),
-                      ("loose", f, mod_name))
+        for rel_root in _OVERLAY_ROOTS:
+            ovl_dir = mod / Path(rel_root)
+            if ovl_dir.is_dir():
+                for f in ovl_dir.rglob("*.dds"):
+                    _collect(f.relative_to(mod).as_posix().lower(),
+                             ("loose", f, mod_name))
         for bsa in mod.glob("*.bsa"):
             try:
-                names = BSAArchive(bsa, eager=False).list_files(rel_root)
+                arc = BSAArchive(bsa, eager=False)
             except Exception:
                 continue
-            for name in names:
-                rel = name.replace("\\", "/").lower()
-                if rel.endswith(".dds") and rel.startswith(rel_root):
-                    _take(rel, ("bsa", bsa, name, mod_name))
+            for rel_root in _OVERLAY_ROOTS:
+                try:
+                    names = arc.list_files(rel_root)
+                except Exception:
+                    continue
+                for name in names:
+                    rel = name.replace("\\", "/").lower()
+                    if rel.endswith(".dds") and rel.startswith(rel_root):
+                        _collect(rel, ("bsa", bsa, name, mod_name))
+
+    # PASS 2: resolve each overlay's region the way RaceMenu does. The SCRIPT
+    # slot map (AddWarPaint/BodyPaint/HandPaint/FeetPaint registrations) is the
+    # AUTHORITATIVE source -- it's exactly how RaceMenu identifies an overlay's
+    # slot, no filename guessing. Only when NO script registers a texture do we
+    # fall back to the user override and then the keyword classifier.
+    #   * A texture RaceMenu registers as 'head'/face is skipped (head UV).
+    #   * A texture registered for MULTIPLE slots (e.g. a body paint reused on
+    #     the feet slot) is routed to body here; the feet/secondary-slot output
+    #     is produced separately (it needs its own path + a script repoint).
+    from . import overlay_slots as _oslots
+    slot_map = _oslots.build_script_slot_map(layout)
+    for rel, (source, raw, st) in collected.items():
+        slots = slot_map.get(rel)
+        if slots:
+            reg = _region_from_slots(slots)
+        else:
+            ov = _set_override(st)
+            if ov is not None:
+                reg = ov
+            elif st.lower() in _load_set_overrides():
+                continue                # explicit 'skip' override
+            elif raw == "ambiguous":
+                reg = "body" if (_OVERLAY_AMBIGUOUS_TO_BODY or st in sets_with_slot) else "head"
+            else:
+                reg = raw
+        if reg in want:
+            out[reg][rel] = source
     return out
+
+
+def _region_from_slots(slots) -> str:
+    """Pick the convert region for a texture RaceMenu registers in `slots`.
+    A multi-slot texture (body + feet reuse) routes to BODY for now -- it's the
+    correct body-UV output at the texture's own path; the feet/secondary-slot
+    version is a separate output produced by the multi-slot pass (own UV + a
+    script repoint), not by overwriting this path."""
+    if "body" in slots:
+        return "body"
+    for r in ("hands", "feet", "head"):
+        if r in slots:
+            return r
+    return "head"
+
+
+def _overlay_workers() -> int:
+    """Thread count for the overlay transfer. Defaults to the CPU count capped at
+    16: the numpy gathers AND the texconv subprocess both release the GIL, so
+    threads scale near-linearly (measured ~8x at 8), but each thread can hold a
+    texconv subprocess so we cap it. Override with CBBE2UBE_OVERLAY_WORKERS."""
+    env = os.environ.get("CBBE2UBE_OVERLAY_WORKERS", "")
+    if env.isdigit() and int(env) > 0:
+        return min(int(env), 32)
+    return max(1, min(os.cpu_count() or 4, 16))
 
 
 def convert_overlays(output_dir, layout, *, regions=("body", "hands", "feet"),
@@ -464,8 +719,11 @@ def convert_overlays(output_dir, layout, *, regions=("body", "hands", "feet"),
     """Rebake CBBE/3BA overlays into UBE-UV space for each region, writing a
     loose DDS at the original texture path under `output_dir` (RaceMenu loads it
     via load order; no ESP). Opt-in. Builds one correspondence per region (the
-    expensive part, reused across that region's overlays). Returns a stats dict.
-    `limit` (>0) caps the TOTAL count for a quick test run."""
+    expensive part, reused across that region's overlays). Overlays within a
+    region are transferred in parallel across a thread pool (each is independent;
+    output is identical to serial). Returns a stats dict. `limit` (>0) caps the
+    TOTAL count for a quick test run."""
+    import concurrent.futures as cf
     import shutil
     import tempfile
     from .bsa_strings import BSAArchive
@@ -492,6 +750,18 @@ def convert_overlays(output_dir, layout, *, regions=("body", "hands", "feet"),
     out_root = Path(output_dir)
     work = Path(tempfile.mkdtemp(prefix="ube_overlay_"))
     arc_cache: dict = {}
+    arc_lock = threading.Lock()        # BSA cache + read (not proven thread-safe)
+    tls = threading.local()            # one scratch workdir per worker thread
+    workers = _overlay_workers()
+
+    def _thread_workdir() -> Path:
+        w = getattr(tls, "w", None)
+        if w is None:
+            w = work / f"th{threading.get_ident()}"
+            w.mkdir(parents=True, exist_ok=True)
+            tls.w = w
+        return w
+
     n = 0
     failed: list = []
     per_region: dict = {}
@@ -504,37 +774,45 @@ def convert_overlays(output_dir, layout, *, regions=("body", "hands", "feet"),
             if remaining <= 0:
                 break
             items = items[:remaining]
+            remaining -= len(items)
         corr = build_region_correspondence(region)
         if corr is None:
             log(f"  !! overlay transfer: SKIP region '{region}' "
                 f"(CBBE/UBE {region} ref not found) -- {len(items)} overlay(s)")
             continue
-        log(f"  overlay transfer [{region}]: {len(items)} overlay(s) -> UBE UV ...")
-        rn = 0
-        for rel, src in items:
-            try:
-                if src[0] == "loose":
-                    src_dds = src[1]
-                else:
+        log(f"  overlay transfer [{region}]: {len(items)} overlay(s) -> UBE UV "
+            f"(x{workers}) ...")
+
+        def _do(rel_src, _corr=corr):
+            rel, src = rel_src
+            w = _thread_workdir()
+            if src[0] == "loose":
+                src_dds = src[1]
+            else:
+                with arc_lock:
                     arc = arc_cache.get(src[1])
                     if arc is None:
                         arc = BSAArchive(src[1], eager=False)
                         arc_cache[src[1]] = arc
                     data = arc.read_file(src[2])
-                    if not data:
-                        raise RuntimeError("BSA extract returned no data")
-                    src_dds = work / "src.dds"
-                    src_dds.write_bytes(data)
-                convert_overlay(src_dds, out_root / rel.replace("/", "\\"),
-                                corr, texconv, work / "w")
-                rn += 1
-                n += 1
-                if limit:
-                    remaining -= 1
-                    if remaining <= 0:
-                        break
-            except Exception as e:
-                failed.append((rel, repr(e)))
+                if not data:
+                    raise RuntimeError("BSA extract returned no data")
+                src_dds = w / "src.dds"
+                src_dds.write_bytes(data)
+            convert_overlay(src_dds, out_root / rel.replace("/", "\\"),
+                            _corr, texconv, w)
+            return rel
+
+        rn = 0
+        with cf.ThreadPoolExecutor(max_workers=workers) as ex:
+            futs = {ex.submit(_do, it): it[0] for it in items}
+            for fut in cf.as_completed(futs):
+                try:
+                    fut.result()
+                    rn += 1
+                    n += 1
+                except Exception as e:
+                    failed.append((futs[fut], repr(e)))
         per_region[region] = rn
     shutil.rmtree(work, ignore_errors=True)
     if failed:
