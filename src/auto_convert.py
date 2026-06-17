@@ -712,7 +712,7 @@ def auto_convert_mod(
         _heeled = False
         try:
             with open(_abs, "rb") as _fh:
-                _heeled = b"HH_OFFSET" in _fh.read(262144)
+                _heeled = hh_offset.contains_hh_offset(_fh.read(262144))
         except OSError:
             pass
         if _heeled and hh_offset.read_hh_offset(_abs) is None:

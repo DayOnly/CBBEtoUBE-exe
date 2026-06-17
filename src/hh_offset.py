@@ -30,7 +30,19 @@ the file byte-for-byte; if it doesn't (an unusual header layout we don't fully
 model), we refuse to touch the file and the caller falls back to ESP-only. The
 transplant must run AFTER all pynifly saves (pynifly would drop the block again).
 """
+import re
 import struct
+
+# Boots ship the heel extra-data under several spellings ("HH_OFFSET",
+# "HH_Offset", "hh_offset"); NiOverride High Heels reads it case-insensitively,
+# so the converter must detect EVERY case or the NiFloatExtraData is dropped on
+# the pynifly round-trip and the actor never lifts.
+_HH_NAME_RE = re.compile(rb"HH_OFFSET", re.IGNORECASE)
+
+
+def contains_hh_offset(data: bytes) -> bool:
+    """True if `data` (raw NIF bytes) names an HH_OFFSET extra-data, any case."""
+    return _HH_NAME_RE.search(data) is not None
 
 
 def _parse(data: bytes) -> dict:
@@ -121,7 +133,7 @@ def read_hh_offset(path) -> "float | None":
         data = open(path, "rb").read()
     except OSError:
         return None
-    if b"HH_OFFSET" not in data:
+    if not _HH_NAME_RE.search(data):
         return None
     p = _parse_if_lossless(data)
     if p is None:
@@ -134,7 +146,8 @@ def read_hh_offset(path) -> "float | None":
         if ti != fed_t or len(p["blocks"][bi]) < 8:
             continue
         nm, = struct.unpack_from("<i", p["blocks"][bi], 0)
-        if 0 <= nm < len(p["strings"]) and p["strings"][nm] == b"HH_OFFSET":
+        if (0 <= nm < len(p["strings"])
+                and p["strings"][nm].lower() == b"hh_offset"):
             return struct.unpack_from("<f", p["blocks"][bi], 4)[0]
     return None
 

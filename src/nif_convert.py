@@ -1882,9 +1882,12 @@ def convert_nif(
     _BODY_SLOT_BIT = 1 << (32 - 30)
     _hh_transplant_value = None  # heel offset (float) to re-inject after convert
     if not body_names and not (biped_slots & _BODY_SLOT_BIT):
+        from . import hh_offset
         try:
             with open(src_path, "rb") as _fh:
-                _heeled = b"HH_OFFSET" in _fh.read(262144)  # string table is early
+                # Case-insensitive: boots ship 'HH_Offset' too (NiOverride reads
+                # any case); a case-sensitive scan dropped the heel block.
+                _heeled = hh_offset.contains_hh_offset(_fh.read(262144))
         except OSError:
             _heeled = False
         if _heeled:
@@ -1892,7 +1895,6 @@ def convert_nif(
             # at the binary level after all pynifly saves. If the binary parser
             # can't read the source value, fall back to ESP-only (skip + delete
             # stale mesh so the patcher keeps the original heeled mesh).
-            from . import hh_offset
             _hh_transplant_value = hh_offset.read_hh_offset(src_path)
             if _hh_transplant_value is None:
                 try:
@@ -2035,6 +2037,10 @@ def convert_nif(
             # must keep its authored weighting so it can still swing — skip
             # the body-fit reskin for it (see _hdt_softbody_shape_names).
             hdt_softbody_names = _hdt_softbody_shape_names(src_path)
+            # SMP colliders (per-triangle) likewise skip the reskin -- the graft
+            # over-jiggles them and destabilises the cloth they collide against
+            # (see _hdt_collider_shape_names).
+            hdt_collider_names = _hdt_collider_shape_names(src_path)
             for s in src_nif_for_fit.shapes:
                 if _should_drop_shape(s.name):
                     continue  # vestigial mashup leftover (e.g. MaleUnderwearBody)
@@ -2231,6 +2237,7 @@ def convert_nif(
                         and (s.bone_names or [])
                         and s.name not in RESKIN_SKIP_NAMES
                         and s.name not in hdt_softbody_names
+                        and s.name not in hdt_collider_names
                         and not _shape_has_fine_animation_bones(s)
                         and not _shape_is_head_dominant(s)
                         and not _shape_has_hdt_smp_rigging(s, _body_bone_set)):
@@ -4047,6 +4054,14 @@ def _is_skeleton_bone(name: str) -> bool:
     hierarchy + transforms must be preserved or they collapse to origin."""
     if not name:
         return True
+    # Armor-specific physics-chain bones conventionally carry a mod prefix that
+    # starts with '_' (e.g. '_WiDu_Neck_L_01 02'). A body-part keyword INSIDE
+    # such a name ('neck', 'breast', 'tail'...) must NOT mark it a skeleton bone,
+    # or _precreate_custom_bone_chains skips it and its chain nodes are recreated
+    # flat at the origin -> the cloth rides them through the floor in game. Real
+    # skeleton/animation bones never start with '_'.
+    if name.startswith("_"):
+        return False
     if name.startswith(_SKELETON_BONE_PREFIXES):
         return True
     low = name.lower()
@@ -7788,6 +7803,15 @@ def _hdt_softbody_shape_names(src_nif_path: Path) -> set:
     failure (reskin proceeds as normal)."""
     if CHAIN_TO_SOFTBODY:
         return set()  # soft-body mode: nothing is preserved; reskin all cloth
+    txt = _read_source_hdt_xml_text(src_nif_path)
+    if not txt:
+        return set()
+    return set(re.findall(r'<per-vertex-shape\s+name="([^"]+)"', txt))
+
+
+def _read_source_hdt_xml_text(src_nif_path: Path) -> "str | None":
+    """The armor's authored HDT-SMP XML text, resolved via the NIF's own
+    extra-data first, then a keyword match. None on any failure."""
     try:
         xml_disk = _read_source_hdt_xml_disk(src_nif_path)
         if xml_disk is None:
@@ -7801,11 +7825,26 @@ def _hdt_softbody_shape_names(src_nif_path: Path) -> set:
                             xml_disk = cand
                         break
         if xml_disk is None or not xml_disk.is_file():
-            return set()
-        txt = xml_disk.read_text(errors="ignore")
-        return set(re.findall(r'<per-vertex-shape\s+name="([^"]+)"', txt))
+            return None
+        return xml_disk.read_text(errors="ignore")
     except Exception:
+        return None
+
+
+def _hdt_collider_shape_names(src_nif_path: Path) -> set:
+    """Shape names the armor's HDT-SMP XML uses as PER-TRIANGLE colliders -- the
+    body/ground collision proxies the soft-body cloth bounces off (e.g. a source
+    outfit's own `...Col...` body). Like the soft-bodies, these must KEEP their
+    authored skin weighting: the body-fit reskin's scale-bone / body-blend graft
+    piles excess butt/belly jiggle onto them (measured ~4x the source weight on
+    one outfit's skirt collider), so on UBE the collider deforms violently with
+    the body physics and destabilises the cloth it is meant to be a STABLE
+    collider for (skirt implodes / cloth sinks through the floor). Leave colliders
+    exactly as the source authored them. #smp-collider-graft"""
+    txt = _read_source_hdt_xml_text(src_nif_path)
+    if not txt:
         return set()
+    return set(re.findall(r'<per-triangle-shape\s+name="([^"]+)"', txt))
 
 
 def _glob_first_in_mods(pattern: str,
@@ -8347,6 +8386,10 @@ def convert_nif_phase2(
     # (skip body-fit reskin) so it can still swing — see
     # _hdt_softbody_shape_names.
     hdt_softbody_names = _hdt_softbody_shape_names(src_path)
+    # SMP colliders (per-triangle) likewise skip the reskin/anti-poke -- the
+    # graft over-jiggles them and destabilises the cloth (see
+    # _hdt_collider_shape_names).
+    hdt_collider_names = _hdt_collider_shape_names(src_path)
 
     # --- Pass 1: compute final verts + skin per shape ---
     for s in src_nif.shapes:
@@ -8572,6 +8615,7 @@ def convert_nif_phase2(
                 and (biped_slots & (BIPED_SLOT32_BIT | BIPED_SLOT49_BIT))
                 and s.name not in RESKIN_SKIP_NAMES
                 and s.name not in hdt_softbody_names
+                and s.name not in hdt_collider_names
                 and not _shape_has_hdt_smp_rigging(
                     s, set(ube_base_for_pass1.bone_names or [])
                     if ube_base_for_pass1 is not None else set())):
@@ -8607,6 +8651,7 @@ def convert_nif_phase2(
         if (reskin_armor
                 and s.name not in RESKIN_SKIP_NAMES
                 and s.name not in hdt_softbody_names
+                and s.name not in hdt_collider_names
                 and not _shape_has_fine_animation_bones(s)
                 and not _shape_is_head_dominant(s)):
             try:
