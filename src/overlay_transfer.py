@@ -34,6 +34,7 @@ intermediate (no PIL, so it works in the frozen exe).
 from __future__ import annotations
 
 import os
+import re
 import struct
 import subprocess
 import threading
@@ -815,6 +816,19 @@ def convert_overlays(output_dir, layout, *, regions=("body", "hands", "feet"),
                     failed.append((futs[fut], repr(e)))
         per_region[region] = rn
     shutil.rmtree(work, ignore_errors=True)
+    # Multi-slot feet pass: bake feet-UV variants for body textures reused on the
+    # feet slot + repoint AddFeetPaint. The region pass above only produced
+    # feet-ONLY overlays; this covers the (common) multi-slot ones. Best-effort --
+    # skipped cleanly if the Papyrus toolchain isn't available.
+    if "feet" in regions:
+        try:
+            fn = build_multislot_feet_overlays(layout, out_root, texconv,
+                                               skip_mods=skip, log=log)
+            if fn:
+                per_region["feet"] = per_region.get("feet", 0) + fn
+                n += fn
+        except Exception as e:
+            log(f"  !! multi-slot feet pass failed (skipped): {e!r}")
     if failed:
         log(f"  !! overlay transfer: {len(failed)} failed (e.g. {failed[0]})")
     log(f"  overlay transfer: {n} overlay(s) written under {out_root} "
@@ -831,3 +845,326 @@ def convert_body_overlays(output_dir, layout, **kw) -> dict:
 def discover_body_overlays(layout) -> "dict[str, tuple]":
     """Back-compat: just the body overlays as {rel: source}."""
     return discover_overlays(layout, regions=("body",)).get("body", {})
+
+
+# ---------- multi-slot FEET pass (Papyrus repoint) --------------------------
+# A tattoo registered for BOTH body and feet reuses ONE texture path; the normal
+# region pass bakes it for the BODY UV (it routes multi-slot -> body), which is
+# wrong on the feet slot (feet UV differs). This pass bakes a FEET-UV variant of
+# each such texture to its OWN path under the output mod and recompiles the
+# RaceMenuBase script so its AddFeetPaint points there. Feet-ONLY overlays (their
+# own dedicated texture) are already converted correctly by the region pass, so
+# they are left untouched. Needs the Papyrus compiler; gracefully no-ops without.
+
+_FEET_UV_SUFFIX = "_ubefeet"
+_ADD_FEETPAINT_RE = re.compile(
+    r'(AddFeetPaint\s*\(\s*"[^"]*"\s*,\s*")([^"]+)(")', re.IGNORECASE)
+
+
+def _feet_variant_path(dds_path: str) -> str:
+    """Insert the feet-UV suffix before the .dds extension, preserving the path's
+    slashes (it is rewritten verbatim into the .psc; Windows is case-insensitive
+    so a normalized .dds extension is fine)."""
+    if dds_path[-4:].lower() == ".dds":
+        return dds_path[:-4] + _FEET_UV_SUFFIX + ".dds"
+    return dds_path + _FEET_UV_SUFFIX
+
+
+def _repoint_feet_script(text: str, multislot_rels: set) -> str:
+    """Rewrite every AddFeetPaint whose (normalized) texture rel is in
+    `multislot_rels` to point at its feet-UV variant; feet-only calls are left
+    untouched. Returns the edited script text."""
+    from . import overlay_slots as _osl
+
+    def _sub(mm):
+        if _osl.normalize_script_texpath(mm.group(2)) in multislot_rels:
+            return mm.group(1) + _feet_variant_path(mm.group(2)) + mm.group(3)
+        return mm.group(0)
+    return _ADD_FEETPAINT_RE.sub(_sub, text)
+
+
+def _skyrim_se_install_dirs() -> "list":
+    """Skyrim SE install root(s) from the Bethesda 'Installed Path' registry key
+    (Windows). This is the REAL Steam install (which ships Papyrus Compiler) --
+    needed because a Wabbajack 'Stock Game' copy omits the compiler."""
+    dirs = []
+    try:
+        import winreg
+    except Exception:
+        return dirs
+    for hive, key in (
+        (winreg.HKEY_LOCAL_MACHINE,
+         r"SOFTWARE\WOW6432Node\Bethesda Softworks\Skyrim Special Edition"),
+        (winreg.HKEY_LOCAL_MACHINE,
+         r"SOFTWARE\Bethesda Softworks\Skyrim Special Edition"),
+    ):
+        try:
+            with winreg.OpenKey(hive, key) as k:
+                val, _ = winreg.QueryValueEx(k, "Installed Path")
+            if val:
+                dirs.append(Path(val))
+        except OSError:
+            continue
+    return dirs
+
+
+def find_papyrus_compiler() -> "Path | None":
+    """Locate PapyrusCompiler.exe: env CBBE2UBE_PAPYRUS_COMPILER, then the MO2
+    gamePath / discovered game Data dirs, then the real Skyrim SE install from
+    the registry (a Wabbajack 'Stock Game' copy has no compiler)."""
+    env = os.environ.get("CBBE2UBE_PAPYRUS_COMPILER", "")
+    if env and Path(env).is_file():
+        return Path(env)
+    roots = []
+    try:
+        lay = _paths.discover_layout()
+        if lay.game_path:
+            roots.append(Path(lay.game_path))
+        roots += [Path(d).parent for d in (lay.game_data_dirs or [])]
+    except Exception:
+        pass
+    roots += _skyrim_se_install_dirs()
+    for root in roots:
+        cand = root / "Papyrus Compiler" / "PapyrusCompiler.exe"
+        if cand.is_file():
+            return cand
+    return None
+
+
+def _find_skse_source() -> "Path | None":
+    """The SKSE Scripts/Source dir (extended Utility/Math that must win over the
+    vanilla base). Requires the ARTIFACT, not just a name match -- 'skse' alone
+    also hits e.g. an Address Library mod that ships no sources."""
+    mr = _paths.mods_root()
+    if mr is None:
+        return None
+    cands = []
+    for d in sorted(p for p in mr.iterdir() if p.is_dir()):
+        srcdir = d / "Scripts" / "Source"
+        if srcdir.is_dir() and any(srcdir.glob("*.psc")):
+            cands.append((d.name.lower(), srcdir))
+    for nm, srcdir in cands:
+        if "script extender" in nm:
+            return srcdir
+    for nm, srcdir in cands:                 # fallback: carries SKSE Utility/Math
+        if (srcdir / "Utility.psc").is_file() or (srcdir / "Math.psc").is_file():
+            return srcdir
+    return None
+
+
+def _find_racemenu_bsas() -> "list":
+    """BSAs of the RaceMenu mod (they ship racemenubase/nioverride .psc sources).
+    Requires the .bsa ARTIFACT -- 'racemenu' alone also hits e.g. a 'Racemenu
+    Undress' tweak with no archive. Prefers the shortest matching name (the base
+    'RaceMenu' over longer variants)."""
+    mr = _paths.mods_root()
+    if mr is None:
+        return []
+    cands = [d for d in sorted(p for p in mr.iterdir() if p.is_dir())
+             if "racemenu" in d.name.lower() and list(d.glob("*.bsa"))]
+    cands.sort(key=lambda d: len(d.name))
+    return list(cands[0].glob("*.bsa")) if cands else []
+
+
+def _assemble_papyrus_imports(compiler, work):
+    """Build the Papyrus -import dir: SKSE-extended base (FIRST so it wins over
+    vanilla Utility/Math) + RaceMenu's racemenubase/nioverride, plus the vanilla
+    base extracted from the game's Scripts.zip. Returns (src_dir, base_src_dir)
+    or (None, None) if the base sources can't be assembled."""
+    import zipfile
+    import shutil
+    from .bsa_strings import BSAArchive
+    base = work / "base"
+    src = work / "src"
+    base.mkdir(parents=True, exist_ok=True)
+    src.mkdir(parents=True, exist_ok=True)
+    scripts_zip = Path(compiler).parent.parent / "Data" / "Scripts.zip"
+    if not scripts_zip.is_file():
+        return None, None
+    with zipfile.ZipFile(scripts_zip) as z:
+        z.extractall(base)
+    flg = next(base.rglob("TESV_Papyrus_Flags.flg"), None)
+    if flg is None:
+        return None, None
+    skse_src = _find_skse_source()
+    if skse_src is not None:
+        for f in skse_src.glob("*.psc"):
+            shutil.copy(f, src)
+    for bsa in _find_racemenu_bsas():
+        try:
+            arc = BSAArchive(bsa, eager=False)
+            for n in arc.list_files(""):
+                if n.lower().endswith(".psc") and "source" in n.lower():
+                    (src / Path(n).name).write_bytes(arc.read_file(n))
+        except Exception:
+            continue
+    return src, flg.parent
+
+
+def _compile_psc(compiler, psc_path, src, basesrc, out_dir):
+    """Compile one .psc to .pex in out_dir. Returns (pex_path|None, log)."""
+    import shutil
+    flg = next(Path(basesrc).glob("TESV_Papyrus_Flags.flg"), None)
+    if flg is None:
+        return None, "no flags file"
+    shutil.copy(psc_path, src)               # target joins the import dir
+    r = subprocess.run(
+        [str(compiler), Path(psc_path).stem,
+         "-import=" + str(src) + ";" + str(basesrc),
+         "-output=" + str(out_dir), "-flags=" + str(flg)],
+        capture_output=True, text=True, cwd=str(out_dir),
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    pex = Path(out_dir) / (Path(psc_path).stem + ".pex")
+    return (pex if pex.is_file() else None), (r.stdout + r.stderr)
+
+
+def _build_overlay_source_map(skip_mods=()):
+    """rel_texture (lowered, fwd-slash) -> source rec, to resolve an AddFeetPaint
+    path to its real DDS. Mirrors discover_overlays PASS 1 (loose wins, then BSA;
+    highest-priority mod first)."""
+    from .bsa_strings import BSAArchive
+    out: dict = {}
+    mr = _paths.mods_root()
+    if mr is None:
+        return out
+    skip_lower = {s.lower() for s in skip_mods}
+    for mod in sorted(p for p in mr.iterdir() if p.is_dir()):
+        if mod.name.lower() in skip_lower:
+            continue
+        for root in _OVERLAY_ROOTS:
+            d = mod / Path(root)
+            if d.is_dir():
+                for f in d.rglob("*.dds"):
+                    out.setdefault(f.relative_to(mod).as_posix().lower(),
+                                   ("loose", f))
+        for bsa in mod.glob("*.bsa"):
+            try:
+                arc = BSAArchive(bsa, eager=False)
+            except Exception:
+                continue
+            for root in _OVERLAY_ROOTS:
+                try:
+                    names = arc.list_files(root)
+                except Exception:
+                    continue
+                for n in names:
+                    rel = n.replace("\\", "/").lower()
+                    if rel.endswith(".dds") and rel.startswith(root):
+                        out.setdefault(rel, ("bsa", arc, n))
+    return out
+
+
+def _iter_feetpaint_scripts(skip_mods=()):
+    """Yield (psc_name, text) for every loose/BSA .psc that calls AddFeetPaint."""
+    from .bsa_strings import BSAArchive
+    mr = _paths.mods_root()
+    if mr is None:
+        return
+    skip_lower = {s.lower() for s in skip_mods}
+    for mod in sorted(p for p in mr.iterdir() if p.is_dir()):
+        if mod.name.lower() in skip_lower:
+            continue
+        for f in mod.rglob("*.psc"):
+            try:
+                t = f.read_text("utf-8", "replace")
+            except OSError:
+                continue
+            if "AddFeetPaint" in t:
+                yield f.name, t
+        for bsa in mod.glob("*.bsa"):
+            try:
+                arc = BSAArchive(bsa, eager=False)
+                names = arc.list_files("")
+            except Exception:
+                continue
+            for n in names:
+                if not n.lower().endswith(".psc"):
+                    continue
+                try:
+                    d = arc.read_file(n)
+                except Exception:
+                    continue
+                t = (d.decode("utf-8", "replace")
+                     if isinstance(d, (bytes, bytearray)) else str(d))
+                if "AddFeetPaint" in t:
+                    yield n.rsplit("/", 1)[-1], t
+
+
+def build_multislot_feet_overlays(layout, out_root, texconv, *, skip_mods=(),
+                                  limit: int = 0, log=print) -> int:
+    """Bake feet-UV variants for body-textures reused on the feet slot and
+    recompile their scripts to point AddFeetPaint at them. Returns the number of
+    feet-UV textures written. Best-effort: no-ops (0) if the Papyrus toolchain or
+    feet correspondence is unavailable. See the section header for the why."""
+    import tempfile
+    import shutil
+    from . import overlay_slots as _osl
+    compiler = find_papyrus_compiler()
+    if compiler is None:
+        log("  multi-slot feet pass SKIPPED: PapyrusCompiler.exe not found "
+            "(set CBBE2UBE_PAPYRUS_COMPILER)")
+        return 0
+    feet_corr = build_region_correspondence("feet")
+    if feet_corr is None:
+        log("  multi-slot feet pass SKIPPED: feet CBBE/UBE ref not found")
+        return 0
+    slot_map = _osl.build_script_slot_map(layout)
+    work = Path(tempfile.mkdtemp(prefix="ube_feet_"))
+    try:
+        src, basesrc = _assemble_papyrus_imports(compiler, work)
+        if src is None:
+            log("  multi-slot feet pass SKIPPED: Papyrus base (Scripts.zip) "
+                "not found")
+            return 0
+        srcmap = _build_overlay_source_map(skip_mods=skip_mods)
+        twork = work / "tw"
+        twork.mkdir()
+        pex_out = Path(out_root) / "Scripts"
+        pex_out.mkdir(parents=True, exist_ok=True)
+        n_tex = n_compiled = n_scripts = 0
+        for name, text in _iter_feetpaint_scripts(skip_mods=skip_mods):
+            repoint = {}     # normalized rel -> feet-UV rel
+            for m in _ADD_FEETPAINT_RE.finditer(text):
+                rel = _osl.normalize_script_texpath(m.group(2))
+                if "body" not in (slot_map.get(rel) or set()):
+                    continue                 # feet-only: region pass handles it
+                repoint[rel] = _feet_variant_path(rel)
+            if not repoint:
+                continue
+            for rel, newrel in repoint.items():
+                srcrec = srcmap.get(rel)
+                if not srcrec:
+                    log(f"  !! feet pass: source DDS not found: {rel}")
+                    continue
+                if srcrec[0] == "loose":
+                    src_dds = srcrec[1]
+                else:
+                    src_dds = twork / "s.dds"
+                    src_dds.write_bytes(srcrec[1].read_file(srcrec[2]))
+                outp = Path(out_root) / newrel.replace("/", "\\")
+                try:
+                    rgba = dds_to_rgba(src_dds, texconv, twork)
+                    rgba_to_dds(transfer_overlay(rgba, feet_corr), outp,
+                                texconv, twork)
+                    n_tex += 1
+                except Exception as e:
+                    log(f"  !! feet pass: transfer failed for {rel}: {e!r}")
+            edited = _repoint_feet_script(text, set(repoint))
+            epsc = twork / name
+            # \n only -- write_text would re-translate and double the source CRs;
+            # the compiler rejects bare \r.
+            epsc.write_bytes(edited.replace("\r\n", "\n").replace("\r", "\n")
+                             .encode("utf-8"))
+            pex, clog = _compile_psc(compiler, epsc, src, basesrc, pex_out)
+            n_scripts += 1
+            if pex:
+                n_compiled += 1
+            else:
+                log(f"  !! feet pass: compile FAILED for {name}: {clog[-400:]}")
+            if limit and n_scripts >= limit:
+                break
+        log(f"  multi-slot feet pass: {n_tex} feet-UV texture(s) from "
+            f"{n_compiled}/{n_scripts} recompiled script(s)")
+        return n_tex
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
