@@ -94,6 +94,20 @@ def _nif_convert_worker(item: tuple) -> "nif_convert.ConvertResult":
         )
 
 
+def _drain_result(fut, item) -> "nif_convert.ConvertResult":
+    """`fut.result()`, or a synthetic error ConvertResult if the worker PROCESS
+    died (BrokenProcessPool / native pynifly crash). The worker already catches
+    Python-level exceptions; this guards the un-catchable process death so one
+    bad NIF surfaces as an error result instead of aborting -- and losing the
+    report for -- the whole batch."""
+    try:
+        return fut.result()
+    except Exception as e:
+        return nif_convert.ConvertResult(
+            src_path=item[0], dst_path=None, status="error",
+            reason=f"worker process died: {type(e).__name__}: {e}")
+
+
 def _warmup_worker(barrier, ube_body_ref_path: "str | None") -> "tuple[int, float]":
     """Eagerly load pynifly + UBE refs in this worker so the first
     real NIF doesn't pay the cold-start cost. Called once per worker
@@ -264,6 +278,11 @@ def _find_ube_body_ref(search_roots: list[Path] | None = None) -> Path | None:
                 len(p.parts),
             )
         )
+        if len(candidates) > 1500:
+            print(f"  WARNING: {len(candidates)} body-ref candidates under "
+                  f"{root}; scanning only the first 1500 by priority -- a UBE "
+                  f"body in a deeply-nested non-'ube' path could be missed.",
+                  file=sys.stderr)
         for p in candidates[:1500]:
             r = _check(p)
             if r is None:
@@ -905,10 +924,19 @@ def auto_convert_mod(
 
             def _drain(p):
                 nonlocal done, last_print
-                futures = [p.submit(_nif_convert_worker, item)
-                           for item in work_items]
-                for fut in as_completed(futures):
-                    r = fut.result()
+                try:
+                    fut_to_item = {p.submit(_nif_convert_worker, item): item
+                                   for item in work_items}
+                except Exception as _se:
+                    # Pool already broken (a prior NIF crashed a worker process).
+                    # Record every item as an error rather than aborting silently.
+                    for item in work_items:
+                        result.nif_results.append(nif_convert.ConvertResult(
+                            src_path=item[0], dst_path=None, status="error",
+                            reason=f"worker pool broken before submit: {_se!r}"))
+                    return
+                for fut in as_completed(fut_to_item):
+                    r = _drain_result(fut, fut_to_item[fut])
                     result.nif_results.append(r)
                     done += 1
                     now = time.perf_counter()

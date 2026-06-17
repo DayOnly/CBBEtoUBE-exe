@@ -58,6 +58,36 @@ def test_write_report_no_partial_bucket_when_clean(tmp_path):
     assert "PARTIAL conversions" not in rep.read_text()
 
 
+def test_drain_result_surfaces_dead_worker():
+    # A worker PROCESS death (native pynifly crash -> BrokenProcessPool) must
+    # become a recorded error ConvertResult, not an exception that aborts the
+    # whole batch and loses the report.
+    from src.auto_convert import _drain_result
+    from concurrent.futures.process import BrokenProcessPool
+
+    class _DeadFut:
+        def result(self):
+            raise BrokenProcessPool(
+                "A process in the process pool was terminated abruptly")
+
+    item = ("C:/x/boots_0.nif", "C:/out/boots_0.nif", None, 0)
+    r = _drain_result(_DeadFut(), item)
+    assert r.status == "error"
+    assert r.src_path == item[0]
+    assert "died" in r.reason.lower()
+
+
+def test_drain_result_passthrough_ok():
+    # A normal future result is returned unchanged (happy path untouched).
+    from src.auto_convert import _drain_result
+
+    class _OkFut:
+        def result(self):
+            return _cr("ok")
+
+    assert _drain_result(_OkFut(), ("a", "b", None, 0)).status == "converted (copy)"
+
+
 def test_esp_gen_failures_field_defaults_empty():
     acr = AutoConvertResult(source_dir=Path("."), output_dir=Path("."))
     assert acr.esp_gen_failures == []

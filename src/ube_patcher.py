@@ -2552,7 +2552,7 @@ _STRIP_LOCALIZED_ARMO = {b"FULL", b"DESC", b"ITXT", b"NNAM", b"RDMP"}
 def _build_armo_body_override(
     m_armo: "esp.Record", master_patch_byte: int,
     master_to_new_arma: "dict[int, int]", master_name: str,
-    string_resolver,
+    string_resolver, remap_fid=None,
 ) -> "esp.Record | None":
     """Build an ARMO override appending our minted UBE body ARMAs to a master
     ARMO's armature list. Mirrors generate_ube_patch's proven master-ARMO
@@ -2560,7 +2560,13 @@ def _build_armo_body_override(
     reading armatures at DATA), localized FULL/DESC are stripped (a synthetic
     FULL is re-injected after EDID so the item shows in inventory), and all
     FormIDs are remapped to patch space. Returns None if this ARMO references
-    none of our minted ARMAs. `master_patch_byte` is already << 24."""
+    none of our minted ARMAs. `master_patch_byte` is already << 24.
+
+    `remap_fid` (optional) maps any FormID in the source ARMO to patch space, or
+    None if its master is absent from the patch. When supplied, FormID-bearing
+    subrecords (TNAM/EITM/ETYP/KWDA/...) are remapped rather than copied verbatim
+    with the master's original byte (which would name the WRONG plugin in patch
+    space -> dangling FormID -> possible load CTD); unmappable refs are dropped."""
     new_armas: "list[int]" = []
     for sig, data in esp.iter_subrecords(m_armo.payload):
         if sig == ARMO_ARMATURE_SIG and len(data) == 4:
@@ -2593,13 +2599,40 @@ def _build_armo_body_override(
             last_modl = i
     out = b""
     full_done = False
+
+    def _arma_ref(ref: int) -> int:
+        # Existing armature ref -> patch space. Prefer the full master-byte remap
+        # (correct for a ref into a TRANSITIVE master); fall back to the single-
+        # byte rebase when no remap is supplied / the byte is unmappable.
+        if remap_fid is not None:
+            m = remap_fid(ref)
+            if m is not None:
+                return m
+        return master_patch_byte | (ref & 0xFFFFFF)
+
     for i, (sig, data) in enumerate(pieces):
         if sig == ARMO_ARMATURE_SIG and len(data) == 4:
             ref = struct.unpack("<I", data)[0]
-            out += esp.encode_subrecord(
-                sig, struct.pack("<I", master_patch_byte | (ref & 0xFFFFFF)))
+            out += esp.encode_subrecord(sig, struct.pack("<I", _arma_ref(ref)))
         elif sig in _STRIP_LOCALIZED_ARMO:
             pass  # LSTRING refs we can't resolve in a non-localized patch
+        elif (remap_fid is not None
+              and sig in FORMID_SINGLE_SUBRECORD_SIGS and len(data) == 4):
+            # FormID-bearing subrecord (TNAM/EITM/ETYP/YNAM/ZNAM/BIDS/BAMT):
+            # remap its master byte to patch space. An unmappable ref (transitive
+            # master absent from the patch) is DROPPED -- a dangling TNAM/EITM can
+            # CTD at load, and the old verbatim copy kept the WRONG master byte.
+            _m = remap_fid(struct.unpack("<I", data)[0])
+            if _m is not None:
+                out += esp.encode_subrecord(sig, struct.pack("<I", _m))
+        elif (remap_fid is not None
+              and sig in FORMID_ARRAY_SUBRECORD_SIGS and len(data) % 4 == 0):
+            # KWDA: keep the mappable keywords, drop the unmappable ones.
+            _mapped = [remap_fid(struct.unpack_from("<I", data, j)[0])
+                       for j in range(0, len(data), 4)]
+            _kept = b"".join(struct.pack("<I", v) for v in _mapped if v is not None)
+            if _kept:
+                out += esp.encode_subrecord(sig, _kept)
         else:
             out += esp.encode_subrecord(sig, data)
         if sig == b"EDID" and not full_done and synth_full is not None:
@@ -3239,7 +3272,7 @@ def generate_vanilla_race_compat_patch(
                         _master_path, set(master_to_new_body)):
                     ov = _build_armo_body_override(
                         m_armo, master_patch_byte, master_to_new_body,
-                        master_name, _string_resolver)
+                        master_name, _string_resolver, remap_fid=remap_fid)
                     if ov is None:
                         continue
                     # Overlay load-order winner stats (armor rating/keywords)

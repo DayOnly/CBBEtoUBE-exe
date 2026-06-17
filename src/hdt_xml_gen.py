@@ -46,6 +46,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
 
+from .atomic_io import atomic_write_bytes
+
 
 # -- Bone classification ----------------------------------------------------
 #
@@ -529,7 +531,7 @@ def write_armor_hdt_xml(
     )
     output_xml_path = Path(output_xml_path)
     output_xml_path.parent.mkdir(parents=True, exist_ok=True)
-    output_xml_path.write_text(xml, encoding="utf-8")
+    atomic_write_bytes(output_xml_path, xml.encode("utf-8"))
 
 
 # -- Discovery helpers ------------------------------------------------------
