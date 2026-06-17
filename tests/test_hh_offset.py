@@ -99,3 +99,36 @@ def test_transplant_refuses_unparseable(tmp_path):
     f.write_bytes(b"not a nif file at all" * 10)
     assert H.transplant_hh_offset(f, 4.65) is False
     assert H.read_hh_offset(f) is None
+
+
+def _nif_with_float_xd(name=b"HH_Offset", value=6.5):
+    # Root NiNode (0) + a NiFloatExtraData (1) named `name` = `value`. The float
+    # block is name_index(int32) + float(float32); string table holds `name`.
+    root = struct.pack("<i", -1) + struct.pack("<I", 0) + b"\x00" * 20
+    fxd = struct.pack("<i", 0) + struct.pack("<f", value)
+    p = dict(hdr_string=b"Gamebryo File Format, Version 20.2.0.7\n",
+             version=0x14020007, endian=1, user_version=12, num_blocks=2,
+             bs_version=100, author=b"diag", proc=b"", export=b"",
+             block_types=[b"NiNode", b"NiFloatExtraData"], bti=[0, 1],
+             bsizes=[len(root), len(fxd)],
+             max_str=len(name), strings=[name], num_groups=0, groups=[],
+             blocks=[root, fxd], footer=struct.pack("<I", 1) + struct.pack("<i", 0))
+    return H._serialize(p)
+
+
+def test_contains_hh_offset_is_case_insensitive():
+    # boots ship the name in several cases; all must be detected (NiOverride
+    # reads it case-insensitively, so a case-sensitive scan dropped the heel).
+    assert H.contains_hh_offset(b"....HH_OFFSET....")
+    assert H.contains_hh_offset(b"....HH_Offset....")
+    assert H.contains_hh_offset(b"....hh_offset....")
+    assert not H.contains_hh_offset(b"....no heel data....")
+
+
+def test_read_hh_offset_mixed_case_name(tmp_path):
+    # a 'HH_Offset'-named float (the real Wine Duchess heels spelling) must read
+    f = tmp_path / "heel.nif"
+    f.write_bytes(_nif_with_float_xd(b"HH_Offset", 6.5))
+    assert H.contains_hh_offset(f.read_bytes())
+    v = H.read_hh_offset(f)
+    assert v is not None and abs(v - 6.5) < 1e-4

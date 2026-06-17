@@ -234,6 +234,43 @@ def test_conform_blend_matches_reference_formula():
         assert nc._conform_blend_vert(dv, bd, 0.9, 0.08) == _ref(dv, bd, 0.9, 0.08)
 
 
+def test_is_skeleton_bone_custom_chain_not_misclassified():
+    # a custom physics-chain bone whose mod prefix contains a body-part word
+    # ('neck', 'spine'...) must NOT be classed as a skeleton bone -- else
+    # _precreate_custom_bone_chains skips it and its chain nodes are recreated
+    # flat at the origin (cloth sinks through the floor).
+    assert nc._is_skeleton_bone("_WiDu_Neck_L_01 02") is False
+    assert nc._is_skeleton_bone("_SkirtChain_Spine_03") is False
+    # real skeleton / prefix-less jiggle bones still classify correctly
+    assert nc._is_skeleton_bone("NPC Spine2 [Spn2]") is True
+    assert nc._is_skeleton_bone("L Breast01") is True
+    assert nc._is_skeleton_bone("Clitoral1") is True
+    assert nc._is_skeleton_bone("NPC Neck [Neck]") is True
+
+
+def test_hdt_collider_vs_softbody_split(monkeypatch):
+    # SMP per-triangle shapes are COLLIDERS (must skip the body-fit graft, or it
+    # over-jiggles them and the cloth they collide against implodes/sinks);
+    # per-vertex shapes are the soft-body cloth.
+    xml = ('<system>'
+           '<per-triangle-shape name="WiDu_ColBodySkirt"></per-triangle-shape>'
+           '<per-triangle-shape name="ColGround"></per-triangle-shape>'
+           '<per-vertex-shape name="Skirt_Big"></per-vertex-shape>'
+           '<per-vertex-shape name="Skirt_Short"></per-vertex-shape>'
+           '</system>')
+    monkeypatch.setattr(nc, "_read_source_hdt_xml_text", lambda p: xml)
+    monkeypatch.setattr(nc, "CHAIN_TO_SOFTBODY", False)
+    assert nc._hdt_collider_shape_names(Path("x.nif")) == {
+        "WiDu_ColBodySkirt", "ColGround"}
+    assert nc._hdt_softbody_shape_names(Path("x.nif")) == {
+        "Skirt_Big", "Skirt_Short"}
+
+
+def test_hdt_collider_names_empty_when_no_xml(monkeypatch):
+    monkeypatch.setattr(nc, "_read_source_hdt_xml_text", lambda p: None)
+    assert nc._hdt_collider_shape_names(Path("x.nif")) == set()
+
+
 def test_conform_blend_full_match_at_blend_one():
     # blend=1.0 -> shared bones become EXACTLY the body's (the lever that would
     # close the last inner-back-thigh residual; the QA residual probe relies on
