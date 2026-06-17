@@ -149,10 +149,14 @@ def main():
     nifs = sorted(Path(a.armor_dir).rglob("*.nif"))
     if a.limit:
         nifs = nifs[:a.limit]
+    print(f"body loaded; scanning {len(nifs)} NIFs "
+          f"under {a.armor_dir} ...", file=sys.stderr)
     counts = {"GARMENT": 0, "RIGID": 0, "CHAIN": 0, "LOOSE": 0, "SKIP": 0}
     match_sum = mismatch = strip_suspect = 0
     weak, torso = [], []
-    for p in nifs:
+    for k, p in enumerate(nifs):
+        if k and k % 200 == 0:
+            print(f"  ... {k}/{len(nifs)} NIFs", file=sys.stderr)
         try:
             nf = pynifly.NifFile(filepath=str(p))
         except Exception:
