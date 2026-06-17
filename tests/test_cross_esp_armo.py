@@ -115,6 +115,74 @@ def test_cross_esp_armo_gets_ube_armature(tmp_path):
     assert linked, "cross-ESP ARMO does not link the minted UBE armature"
 
 
+def _override_subs(payload):
+    """All (sig, fid-list) for FormID subrecords in an override payload."""
+    out = {}
+    for sig, d in esp.iter_subrecords(payload):
+        if sig in (b"MODL", b"TNAM", b"EITM", b"KWDA"):
+            out.setdefault(sig, []).append(
+                [struct.unpack_from("<I", d, j)[0] for j in range(0, len(d), 4)])
+    return out
+
+
+def _armo_with_formid_subs():
+    # Master ARMO carrying FormID subrecords pointing at THREE address spaces:
+    #   own byte 0x02 (its own ARMA), transitive master 0x00, unmappable 0x03.
+    OWN = 0x02
+    payload = (
+        encode_subrecord(b"EDID", encode_zstring("Boots"))
+        + encode_subrecord(b"MODL", struct.pack("<I", (OWN << 24) | 0x0800))   # armature (minted)
+        + encode_subrecord(b"TNAM", struct.pack("<I", (0x00 << 24) | 0x1234))  # transitive template
+        + encode_subrecord(b"EITM", struct.pack("<I", (0x03 << 24) | 0x5678))  # UNMAPPABLE enchant
+        + encode_subrecord(b"KWDA", struct.pack("<II",
+                                                (0x00 << 24) | 0x11,           # mappable kw
+                                                (0x03 << 24) | 0x22))          # unmappable kw
+        + encode_subrecord(b"DATA", struct.pack("<If", 100, 1.0))
+    )
+    return esp.Record(sig=b"ARMO", flags=0, formid=(OWN << 24) | 0x0900,
+                      timestamp_vc=0, version_unk=0x002C, payload=payload)
+
+
+def test_armo_body_override_remaps_and_strips_formids():
+    # #H5: FormID-bearing ARMO subrecords must be remapped to patch space (not
+    # copied verbatim with the master's original byte = the WRONG plugin), and an
+    # unmappable ref (transitive master absent from the patch) must be DROPPED
+    # rather than left dangling (load CTD).
+    from src.ube_patcher import _build_armo_body_override
+    byte_remap = {0x02: 0x01, 0x00: 0x05}     # own->0x01, transitive->0x05; 0x03 absent
+
+    def remap_fid(fid):
+        top = (fid >> 24) & 0xFF
+        return (byte_remap[top] << 24) | (fid & 0xFFFFFF) if top in byte_remap else None
+
+    ov = _build_armo_body_override(
+        _armo_with_formid_subs(), 0x01 << 24,
+        {(0x02 << 24) | 0x0800: (0x01 << 24) | 0x0ABC},   # mint a UBE ARMA for the body armature
+        "Dawnguard.esm", None, remap_fid=remap_fid)
+    assert ov is not None
+    subs = _override_subs(ov.payload)
+    assert subs[b"TNAM"] == [[(0x05 << 24) | 0x1234]]      # transitive remapped
+    assert b"EITM" not in subs                              # unmappable -> dropped
+    assert subs[b"KWDA"] == [[(0x05 << 24) | 0x11]]         # kept mappable kw, dropped unmappable
+    modls = {f for lst in subs[b"MODL"] for f in lst}
+    assert (0x01 << 24) | 0x0800 in modls                  # original armature remapped (not blanket-wrong)
+    assert (0x01 << 24) | 0x0ABC in modls                  # minted UBE armature appended
+
+
+def test_armo_body_override_verbatim_without_remap():
+    # Legacy callers (no remap_fid) keep the prior behavior: FormID subrecords are
+    # copied verbatim -- the fix must not change the no-remap path.
+    from src.ube_patcher import _build_armo_body_override
+    ov = _build_armo_body_override(
+        _armo_with_formid_subs(), 0x01 << 24,
+        {(0x02 << 24) | 0x0800: (0x01 << 24) | 0x0ABC},
+        "Dawnguard.esm", None)                              # no remap_fid
+    subs = _override_subs(ov.payload)
+    assert subs[b"TNAM"] == [[(0x00 << 24) | 0x1234]]       # verbatim (unchanged)
+    assert b"EITM" in subs                                  # NOT dropped
+    assert subs[b"KWDA"] == [[(0x00 << 24) | 0x11, (0x03 << 24) | 0x22]]  # verbatim
+
+
 def test_cross_esp_skips_when_mesh_not_converted(tmp_path):
     # Same setup, but the mesh is NOT in the converted set -> must NOT mint/cover
     # (pointing an ARMA at a non-existent !UBE NIF would CTD).

@@ -112,6 +112,21 @@ def test_nif_save_writes_to_temp_then_replaces_and_restores_filepath(tmp_path):
     assert _no_tmp_leftover(tmp_path)               # no leftover temp
 
 
+def test_write_armor_hdt_xml_routes_through_atomic(tmp_path, monkeypatch):
+    # Lock the fix: the deployed game XML write must go through atomic_io, never a
+    # bare write_text -- a truncated HDT-SMP physics XML = FSMP parse failure
+    # (dead cloth / collapse), with the NIF still pointing at it.
+    from src import hdt_xml_gen
+    calls = []
+    monkeypatch.setattr(hdt_xml_gen, "atomic_write_bytes",
+                        lambda p, data: calls.append((Path(p), data)))
+    out = tmp_path / "armor.xml"
+    hdt_xml_gen.write_armor_hdt_xml(out, [("Skirt", ["NPC L Thigh"])])
+    assert calls, "write_armor_hdt_xml must use atomic_write_bytes"
+    assert calls[0][0] == out
+    assert isinstance(calls[0][1], (bytes, bytearray)) and calls[0][1]
+
+
 def test_nif_save_failure_during_write_cleans_temp(tmp_path):
     dst = tmp_path / "armor.nif"
     dst.write_bytes(b"PREVIOUS")

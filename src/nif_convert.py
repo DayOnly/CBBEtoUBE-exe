@@ -53,7 +53,7 @@ from pathlib import Path
 import numpy as np
 
 from . import nif_io, nif_patch
-from .atomic_io import atomic_nif_save, atomic_copy
+from .atomic_io import atomic_nif_save, atomic_copy, atomic_write_bytes
 from .correspondence import MeshIndex, compute_deformation
 
 
@@ -2000,6 +2000,13 @@ def convert_nif(
                     cbbe_body_path_p1, ube_femalebody_path_p1)
 
         use_rebuild = body_normals_for_fit is not None
+        if not use_rebuild and ube_body_ref_path is not None:
+            # A body ref WAS supplied but produced no usable verts (corrupt/locked
+            # ref, pynifly error) -> we'd silently ship the CBBE-shaped source as a
+            # clean "converted (copy)". Record it so the report flags the unfitted
+            # passthrough instead.
+            failed.append(("body-fit", "UBE body-ref present but unusable -> "
+                                       "shipped UNFITTED verbatim copy"))
         if not use_rebuild:
             atomic_copy(src_path, dst_path)
         else:
@@ -3460,6 +3467,10 @@ def _normalize_partitions_on_disk(dst_path: Path) -> int:
             if _normalize_partitions(s):
                 changed += 1
         if changed:
+            # Re-assert the VirtualBody Hidden bit: a pynifly re-save can drop it
+            # (-> blue body double), and on the merge path this can be a terminal
+            # save. Mirrors the conform pass + _finalize_hdt_physics.
+            _hide_virtual_body(nf)
             atomic_nif_save(nf, dst_path)
         return changed
     except Exception:
@@ -7385,7 +7396,7 @@ def _make_chains_static(xml_path: Path) -> None:
     t2 = re.sub(r'<mass>\s*([0-9.]+)\s*</mass>', _zero, t)
     if t2 != t:
         try:
-            Path(xml_path).write_text(t2, encoding="utf-8")
+            atomic_write_bytes(xml_path, t2.encode("utf-8"))
         except Exception:
             pass
 
@@ -7443,7 +7454,7 @@ def _harden_physics_params(xml_path: Path) -> None:
 
     if t != orig:
         try:
-            Path(xml_path).write_text(t, encoding="utf-8")
+            atomic_write_bytes(xml_path, t.encode("utf-8"))
         except Exception:
             pass
 
@@ -7502,7 +7513,7 @@ def _harden_hdt_xml_for_fsmp(xml_path: Path, nif) -> None:
         out.append(line)
     if changed:
         try:
-            Path(xml_path).write_text("\n".join(out) + "\n", encoding="utf-8")
+            atomic_write_bytes(xml_path, ("\n".join(out) + "\n").encode("utf-8"))
         except Exception:
             pass
 
@@ -7695,6 +7706,12 @@ def _finalize_hdt_physics(dst_path: Path, src_nif_path: Path) -> bool:
             pass
 
         if dirty:
+            # Terminal NIF save on the merge/body-swap path: re-assert the
+            # VirtualBody Hidden bit (a pynifly round-trip can drop it -> the
+            # blue body double). The conform pass only re-hides when it actually
+            # conforms verts, so for rigid/flaring/no-jiggle armor THIS is the
+            # last save and must restore it itself.
+            _hide_virtual_body(nf)
             atomic_nif_save(nf, dst_path)
 
         # FSMP-compatibility hardening: prune XML so FSMP never sees an unresolved
@@ -7774,11 +7791,21 @@ def _reauthor_nif_fresh(dst_path: Path) -> bool:
         tmp_path = dst_path.with_suffix(".nif.reauth")
         new = pyn.NifFile()
         new.initialize("SKYRIMSE", str(tmp_path))
+        copy_failed = []
         for s in shapes:
             try:
                 _copy_shape(s, new)
-            except Exception:
-                pass
+            except Exception as _ce:
+                copy_failed.append((s.name, repr(_ce)))
+        if copy_failed:
+            # A re-authored NIF missing a shape would be atomically committed over
+            # the good (verbatim) file = silent partial-mesh loss. Abort instead:
+            # keep the prior complete file, surface the drop, never os.replace.
+            import sys as _sys
+            print(f"  WARN: re-author of {dst_path.name} dropped shape(s) "
+                  f"{[n for n, _ in copy_failed]} -> kept prior file "
+                  f"(no partial commit)", file=_sys.stderr)
+            return False
         for s in new.shapes:
             if s.name in hidden_names:
                 try:
