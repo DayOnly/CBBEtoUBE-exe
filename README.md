@@ -111,8 +111,11 @@ skinned shapes is baked into the verts):
   to the body's own per-vertex skinning, gated by a per-bone weight delta so
   already-matched verts are left alone and the per-vert bone set can only shrink
   (partition-safe). Rigid plate armor carries no jiggle weight / stands off the
-  body, so it's excluded and stays rigid. Disable with `CBBE2UBE_NO_CONFORM=1`;
-  tune the gates via `CBBE2UBE_CONFORM_*`.
+  body, so it's excluded and stays rigid. SMP per-triangle colliders are excluded
+  *precisely* — read from the armor's own HDT-SMP XML, not by name — so the conform
+  can never re-weight a collision proxy (which would re-graft the over-jiggle the
+  reskin pass avoids). Disable with `CBBE2UBE_NO_CONFORM=1`; tune the gates via
+  `CBBE2UBE_CONFORM_*`.
 - **Z-fight split, degenerate-triangle repair, normal recompute** — final
   cleanup so moved verts don't shimmer, pinch flat, or shade wrong.
 - **Physics & morphs carried through** — HDT-SMP chains are blended back

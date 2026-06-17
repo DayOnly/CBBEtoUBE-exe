@@ -4387,11 +4387,18 @@ def _conform_fitted_to_body(dst_path, biped_slots: int = 0) -> int:
         nf = pyn.NifFile(filepath=str(dst_path))
     except Exception:
         return 0
+    # Precise SMP-collider exclusion. The _CONFORM_SKIP_NAMES substring gate below
+    # only catches name-tagged colliders ("...Col..."); re-weighting an UNTAGGED
+    # per-triangle collider would re-introduce the exact over-graft the reskin pass
+    # is careful to avoid (the collider over-jiggles -> the cloth it stabilises
+    # implodes / sinks). Read the collider set straight from the already-open nf so
+    # there is NO second disk parse per armor. #smp-collider-graft
+    collider_names = _hdt_collider_shape_names(dst_path, nif=nf)
     total = 0
     dirty = False
     for s in nf.shapes:
         nm = (s.name or "").lower()
-        if any(k in nm for k in _CONFORM_SKIP_NAMES):
+        if s.name in collider_names or any(k in nm for k in _CONFORM_SKIP_NAMES):
             continue
         bw = s.bone_weights or {}
         # (a) CHEAP pre-gate: real soft-body jiggle weight -> deform-with-body
@@ -4458,6 +4465,9 @@ def _conform_fitted_to_body(dst_path, biped_slots: int = 0) -> int:
                 s.setShapeWeights(bn, [(i, vw[i][bn]) for i in range(n)
                                        if bn in vw[i] and vw[i][bn] > 1e-4])
     if dirty:
+        # A re-save must never silently un-hide an SMP collision proxy (the "blue
+        # body double"); re-assert the VirtualBody Hidden bit, as _reauthor does.
+        _hide_virtual_body(nf)
         try:
             atomic_nif_save(nf, dst_path)
         except Exception:
@@ -7254,7 +7264,7 @@ def _resolve_data_rel_in_vfs(rel: str, src_nif_path: Path) -> "Path | None":
     return None
 
 
-def _read_source_hdt_xml_disk(src_nif_path: Path) -> "Path | None":
+def _read_source_hdt_xml_disk(src_nif_path: Path, nif=None) -> "Path | None":
     """Resolve the source armor NIF's OWN `HDT Skinned Mesh Physics Object`
     extra-data string to a file on disk.
 
@@ -7264,10 +7274,12 @@ def _read_source_hdt_xml_disk(src_nif_path: Path) -> "Path | None":
     where the stems don't match. Resolves through the full VFS so an XML that
     ships in a different mod than the (BodySlide-output) NIF is still found.
     Returns the Path or None.
+
+    Pass `nif` to reuse an ALREADY-LOADED NifFile (the conform does this) so we
+    don't re-parse the same NIF from disk just to read its extra-data.
     """
     try:
-        pyn = _pynifly()
-        snf = pyn.NifFile(filepath=str(src_nif_path))
+        snf = nif if nif is not None else _pynifly().NifFile(filepath=str(src_nif_path))
         rel = None
         for ed in snf.rootNode.extra_data():
             if (getattr(ed, "name", None) == "HDT Skinned Mesh Physics Object"
@@ -7814,11 +7826,12 @@ def _hdt_softbody_shape_names(src_nif_path: Path) -> set:
     return set(re.findall(r'<per-vertex-shape\s+name="([^"]+)"', txt))
 
 
-def _read_source_hdt_xml_text(src_nif_path: Path) -> "str | None":
+def _read_source_hdt_xml_text(src_nif_path: Path, nif=None) -> "str | None":
     """The armor's authored HDT-SMP XML text, resolved via the NIF's own
-    extra-data first, then a keyword match. None on any failure."""
+    extra-data first, then a keyword match. None on any failure.
+    `nif` (optional) reuses an already-loaded NifFile for the extra-data read."""
     try:
-        xml_disk = _read_source_hdt_xml_disk(src_nif_path)
+        xml_disk = _read_source_hdt_xml_disk(src_nif_path, nif=nif)
         if xml_disk is None:
             rel = _find_hdt_xml_for_armor(src_nif_path)
             if rel:
@@ -7836,7 +7849,7 @@ def _read_source_hdt_xml_text(src_nif_path: Path) -> "str | None":
         return None
 
 
-def _hdt_collider_shape_names(src_nif_path: Path) -> set:
+def _hdt_collider_shape_names(src_nif_path: Path, nif=None) -> set:
     """Shape names the armor's HDT-SMP XML uses as PER-TRIANGLE colliders -- the
     body/ground collision proxies the soft-body cloth bounces off (e.g. a source
     outfit's own `...Col...` body). Like the soft-bodies, these must KEEP their
@@ -7846,7 +7859,7 @@ def _hdt_collider_shape_names(src_nif_path: Path) -> set:
     the body physics and destabilises the cloth it is meant to be a STABLE
     collider for (skirt implodes / cloth sinks through the floor). Leave colliders
     exactly as the source authored them. #smp-collider-graft"""
-    txt = _read_source_hdt_xml_text(src_nif_path)
+    txt = _read_source_hdt_xml_text(src_nif_path, nif=nif)
     if not txt:
         return set()
     return set(re.findall(r'<per-triangle-shape\s+name="([^"]+)"', txt))

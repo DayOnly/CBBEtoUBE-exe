@@ -262,7 +262,7 @@ def test_hdt_collider_vs_softbody_split(monkeypatch):
            '<per-vertex-shape name="Skirt_Big"></per-vertex-shape>'
            '<per-vertex-shape name="Skirt_Short"></per-vertex-shape>'
            '</system>')
-    monkeypatch.setattr(nc, "_read_source_hdt_xml_text", lambda p: xml)
+    monkeypatch.setattr(nc, "_read_source_hdt_xml_text", lambda p, nif=None: xml)
     monkeypatch.setattr(nc, "CHAIN_TO_SOFTBODY", False)
     assert nc._hdt_collider_shape_names(Path("x.nif")) == {
         "WiDu_ColBodySkirt", "ColGround"}
@@ -271,8 +271,46 @@ def test_hdt_collider_vs_softbody_split(monkeypatch):
 
 
 def test_hdt_collider_names_empty_when_no_xml(monkeypatch):
-    monkeypatch.setattr(nc, "_read_source_hdt_xml_text", lambda p: None)
+    monkeypatch.setattr(nc, "_read_source_hdt_xml_text", lambda p, nif=None: None)
     assert nc._hdt_collider_shape_names(Path("x.nif")) == set()
+
+
+def test_hdt_collider_reuses_preloaded_nif(monkeypatch, tmp_path):
+    # The conform passes its ALREADY-OPEN NifFile so the collider lookup reads the
+    # HDT extra-data off that object instead of re-parsing the NIF from disk -- a
+    # second full pynifly load per armor across a modlist reconvert. Loading must
+    # NOT happen when a nif is supplied.
+    xmlf = tmp_path / "a.xml"
+    xmlf.write_text('<per-triangle-shape name="BodyProxy"></per-triangle-shape>')
+
+    class _ED:
+        name = "HDT Skinned Mesh Physics Object"
+        string_data = "meshes/x/a.xml"
+
+    class _Root:
+        def extra_data(self):
+            return [_ED()]
+
+    class _Nif:
+        rootNode = _Root()
+
+    def _no_load():
+        raise AssertionError("must not load the NIF from disk when nif= is given")
+
+    monkeypatch.setattr(nc, "_pynifly", _no_load)
+    monkeypatch.setattr(nc, "_resolve_data_rel_in_vfs", lambda rel, p: xmlf)
+    assert nc._hdt_collider_shape_names(Path("x.nif"), nif=_Nif()) == {"BodyProxy"}
+
+
+def test_conform_skip_names_misses_untagged_colliders():
+    # WHY the conform needs the precise per-triangle set, not just the substring
+    # gate: real output colliders ('Proxy','Greaves','3BCA_Breast',...) carry none
+    # of the _CONFORM_SKIP_NAMES tokens, so the substring alone would let the
+    # conform re-weight them (re-grafting the over-jiggle the reskin avoids).
+    for nm in ("Proxy", "Greaves", "3BCA_Breast", "FVOSkirt1", "TopProxy"):
+        assert not any(k in nm.lower() for k in nc._CONFORM_SKIP_NAMES), nm
+    # the legacy-tagged ones the substring DID catch still match (belt + suspenders)
+    assert any(k in "widu_colbodyskirt" for k in nc._CONFORM_SKIP_NAMES)
 
 
 def test_conform_blend_full_match_at_blend_one():
