@@ -232,3 +232,15 @@ def test_conform_blend_matches_reference_formula():
     ]
     for dv, bd in cases:
         assert nc._conform_blend_vert(dv, bd, 0.9, 0.08) == _ref(dv, bd, 0.9, 0.08)
+
+
+def test_conform_blend_full_match_at_blend_one():
+    # blend=1.0 -> shared bones become EXACTLY the body's (the lever that would
+    # close the last inner-back-thigh residual; the QA residual probe relies on
+    # this). Vert-only bones drop out (no body weight to keep them).
+    dv = {"NPC L Thigh [LThg]": 0.54, "NPC Pelvis [Pelv]": 0.46}
+    bd = {"NPC L Thigh [LThg]": 0.65, "NPC Pelvis [Pelv]": 0.35}
+    out = nc._conform_blend_vert(dv, bd, blend=1.0, delta=0.08)
+    assert out is not None
+    assert abs(out["NPC L Thigh [LThg]"] - 0.65) < 1e-6
+    assert abs(out["NPC Pelvis [Pelv]"] - 0.35) < 1e-6
