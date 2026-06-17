@@ -44,6 +44,12 @@ Given a Mod Organizer 2 setup, the full pipeline (`auto`):
    mod wins because it sits at the end of your load order). Off by default; turn
    it on with `--convert-overlays` / the GUI checkbox, or `--overlays-only` to
    refresh just the overlays without the slow armor reconvert.
+   - **Multi-slot feet.** A tattoo that reuses one **body** texture on the **feet**
+     slot can't share a single rebake (the feet need their own UV). For those, the
+     pass bakes a feet-UV variant to a new path and **recompiles the RaceMenuBase
+     script** so its `AddFeetPaint` points there. Needs the Papyrus compiler
+     (auto-located via the registry / MO2 gamePath); cleanly skipped if absent.
+     Feet-only overlays already convert at their own path and are left untouched.
 
 The result is a self-contained output mod (default name: `CBBEtoUBE Auto`) you
 enable at the end of your load order, plus the two coverage ESPs above.
