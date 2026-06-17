@@ -246,6 +246,10 @@ def test_is_skeleton_bone_custom_chain_not_misclassified():
     assert nc._is_skeleton_bone("L Breast01") is True
     assert nc._is_skeleton_bone("Clitoral1") is True
     assert nc._is_skeleton_bone("NPC Neck [Neck]") is True
+    # foot/hand bones are skeleton (the body MESH omits them, but the conform's
+    # chain detector must not treat a long pant's foot weights as an SMP chain)
+    assert nc._is_skeleton_bone("NPC R Foot [Rft ]") is True
+    assert nc._is_skeleton_bone("NPC L Hand [LHnd]") is True
 
 
 def test_hdt_collider_vs_softbody_split(monkeypatch):

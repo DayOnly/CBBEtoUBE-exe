@@ -280,7 +280,9 @@ def _cached_ube_body_verts(path: Path):
 ADAPTIVE_CLEARANCE_ENABLED = True
 ADAPTIVE_CLEARANCE_BASE = 0.25       # minimum clearance in static zones
 ADAPTIVE_CLEARANCE_MORPH_FACTOR = 0.20  # clearance added per unit of outward body morph
-ADAPTIVE_CLEARANCE_MORPH_MAX = 1.1   # clearance cap for high-morph zones
+ADAPTIVE_CLEARANCE_MORPH_MAX = 0.8   # clearance cap for high-morph zones
+# (lowered 1.1 -> 0.8 for a tighter fit at the belly/waist; also tightens
+# breast/butt clearance globally -- accept a little less morph room there.)
 # OSD morph names matched by substring to build the per-vert outward-amplitude map.
 _MORPH_SIZE_KEYWORDS = (
     "breast", "butt", "belly", "cleav", "nipple", "hip", "thigh", "waist",
@@ -4379,7 +4381,7 @@ def _conform_fitted_to_body(dst_path, biped_slots: int = 0) -> int:
     ref = _body_conform_ref(weight)
     if ref is None:
         return 0
-    _Vb, body_w, body_bones, tree = ref
+    _Vb, body_w, _body_bones, tree = ref  # chain test uses _is_skeleton_bone now
     try:
         pyn = _pynifly()
         nf = pyn.NifFile(filepath=str(dst_path))
@@ -4415,9 +4417,12 @@ def _conform_fitted_to_body(dst_path, biped_slots: int = 0) -> int:
                 iv = int(vi)
                 if 0 <= iv < n:
                     vw[iv][b] = vw[iv].get(b, 0.0) + float(w)
-        # (b) not a physics-chain garment (SMP skirt/cloak)
+        # (b) not a physics-chain garment (SMP skirt/cloak). "Chain" = a CUSTOM
+        # (non-skeleton) bone -- test the skeleton, NOT the body-MESH bone set,
+        # which omits Foot/Hand/etc.: a long pant weighted to the foot bones would
+        # otherwise read as a chain (chain_frac just over the gate) and be skipped.
         chain_frac = sum(1 for d in vw
-                         if any(w > 0.1 and b not in body_bones
+                         if any(w > 0.1 and not _is_skeleton_bone(b)
                                 for b, w in d.items())) / n
         if chain_frac > _CONFORM_CHAIN_MAX:
             continue
@@ -4435,8 +4440,8 @@ def _conform_fitted_to_body(dst_path, biped_slots: int = 0) -> int:
             dv = vw[i]
             if not dv:
                 continue
-            if any(w > 0.1 and b not in body_bones for b, w in dv.items()):
-                continue  # chain vert -> leave it (partition safety)
+            if any(w > 0.1 and not _is_skeleton_bone(b) for b, w in dv.items()):
+                continue  # custom-chain vert -> leave it (partition safety)
             bd = body_w[idx[i]]
             new = _conform_blend_vert(dv, bd, _CONFORM_BLEND, _CONFORM_DELTA)
             if new is None:
