@@ -461,8 +461,8 @@ _FACE_KEYWORDS = (
 # Body-part names = body paint, but matched as WHOLE words (split on non-letters)
 # so "butt" never grabs "butterfly" nor "arm" -> "armor"/"warm". A file with one
 # of these is body, which also marks its SET as a body-paint set so the set's
-# other unlabeled files resolve to body too (e.g. the 'rx' set names its files
-# rx abs/boob/butt/chest, no "body" keyword anywhere).
+# other unlabeled files resolve to body too (e.g. a set names its files
+# "abs"/"boob"/"butt"/"chest", with no "body" keyword anywhere).
 _BODY_PART_TOKENS = frozenset({
     "abs", "arm", "arms", "boob", "boobs", "breast", "breasts", "butt",
     "chest", "belly", "stomach", "tummy", "thigh", "thighs", "leg", "legs",
@@ -552,14 +552,14 @@ def classify_overlay(rel_path: str) -> str:
     filename. Returns 'body' | 'hands' | 'feet' | 'head' | 'ambiguous'.
 
     Filename-only was too narrow: most sets put the slot in a FOLDER
-    (WNB/Face, WNB/Hand) or a set/paint name (WNB/Arcolis) rather than the
+    (e.g. .../Face/, .../Hand/) or a bare set/paint subfolder name rather than the
     filename, so every body paint not literally named "...body.dds" fell through
     -> not remapped -> the raw CBBE-UV file showed on the UBE body = the design
-    landed on the WRONG BODY PART. Only Community-Overlays-style "NN body.dds"
-    was being caught.
+    landed on the WRONG BODY PART. Only the literal "NN body.dds" form was being
+    caught.
 
     'head' (face/makeup, head UV) is NEVER remapped. 'ambiguous' (no slot marker
-    anywhere in the path -- e.g. WNB/Arcolis, FMS/Extra) is resolved at the SET
+    anywhere in the path -- e.g. a bare set/paint subfolder) is resolved at the SET
     level by discover_overlays: a set that ALSO contains body/hand/feet overlays
     is a body-paint set, so its ambiguous files are 'body'; an all-makeup set
     (only face + ambiguous) keeps its ambiguous files as 'head' (skipped). Face
@@ -1002,34 +1002,54 @@ def _assemble_papyrus_imports(compiler, work):
 
 
 def _compile_psc(compiler, psc_path, src, basesrc, out_dir):
-    """Compile one .psc to .pex in out_dir. Returns (pex_path|None, log)."""
+    """Compile one .psc to .pex, written ATOMICALLY into out_dir. Compiles into a
+    private temp dir first, then atomic_write_bytes the .pex into out_dir, so a
+    killed/locked compile never leaves a truncated .pex that CTDs RaceMenu.
+    Returns (pex_path|None, log). Treats a non-zero compiler exit as failure
+    (a stale .pex left in out_dir can't masquerade as success)."""
     import shutil
+    import tempfile
+    from .atomic_io import atomic_write_bytes
     flg = next(Path(basesrc).glob("TESV_Papyrus_Flags.flg"), None)
     if flg is None:
         return None, "no flags file"
     shutil.copy(psc_path, src)               # target joins the import dir
-    r = subprocess.run(
-        [str(compiler), Path(psc_path).stem,
-         "-import=" + str(src) + ";" + str(basesrc),
-         "-output=" + str(out_dir), "-flags=" + str(flg)],
-        capture_output=True, text=True, cwd=str(out_dir),
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-    pex = Path(out_dir) / (Path(psc_path).stem + ".pex")
-    return (pex if pex.is_file() else None), (r.stdout + r.stderr)
+    tmp_out = tempfile.mkdtemp(prefix="ube_pex_")
+    try:
+        r = subprocess.run(
+            [str(compiler), Path(psc_path).stem,
+             "-import=" + str(src) + ";" + str(basesrc),
+             "-output=" + tmp_out, "-flags=" + str(flg)],
+            capture_output=True, text=True, cwd=tmp_out,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        pex_tmp = Path(tmp_out) / (Path(psc_path).stem + ".pex")
+        if r.returncode != 0 or not pex_tmp.is_file():
+            return None, (r.stdout + r.stderr)
+        final = Path(out_dir) / (Path(psc_path).stem + ".pex")
+        atomic_write_bytes(final, pex_tmp.read_bytes())
+        return final, (r.stdout + r.stderr)
+    finally:
+        shutil.rmtree(tmp_out, ignore_errors=True)
 
 
-def _build_overlay_source_map(skip_mods=()):
+def _build_overlay_source_map(layout, skip_mods=()):
     """rel_texture (lowered, fwd-slash) -> source rec, to resolve an AddFeetPaint
-    path to its real DDS. Mirrors discover_overlays PASS 1 (loose wins, then BSA;
-    highest-priority mod first)."""
+    path to its real DDS. Mirrors discover_overlays PASS 1 (loose wins, then BSA);
+    iterates in LOAD ORDER so `setdefault` keeps the active (winning) source."""
     from .bsa_strings import BSAArchive
     out: dict = {}
     mr = _paths.mods_root()
     if mr is None:
         return out
     skip_lower = {s.lower() for s in skip_mods}
-    for mod in sorted(p for p in mr.iterdir() if p.is_dir()):
-        if mod.name.lower() in skip_lower:
+    ordered = _paths.enabled_mods_ordered(layout)
+    mod_names = ordered if ordered else sorted(
+        d.name for d in mr.iterdir() if d.is_dir())
+    for mod_name in mod_names:
+        if mod_name.lower() in skip_lower:
+            continue
+        mod = mr / mod_name
+        if not mod.is_dir():
             continue
         for root in _OVERLAY_ROOTS:
             d = mod / Path(root)
@@ -1054,21 +1074,35 @@ def _build_overlay_source_map(skip_mods=()):
     return out
 
 
-def _iter_feetpaint_scripts(skip_mods=()):
-    """Yield (psc_name, text) for every loose/BSA .psc that calls AddFeetPaint."""
+def _iter_feetpaint_scripts(layout, skip_mods=()):
+    """Yield (psc_name, text) for each loose/BSA .psc that calls AddFeetPaint, in
+    LOAD ORDER and DE-DUPED by script name -- only the load-order WINNER of a
+    given name is processed, else a second mod's same-named RaceMenuBase would
+    silently overwrite the first's recompiled .pex."""
     from .bsa_strings import BSAArchive
     mr = _paths.mods_root()
     if mr is None:
         return
     skip_lower = {s.lower() for s in skip_mods}
-    for mod in sorted(p for p in mr.iterdir() if p.is_dir()):
-        if mod.name.lower() in skip_lower:
+    seen: set = set()
+    ordered = _paths.enabled_mods_ordered(layout)
+    mod_names = ordered if ordered else sorted(
+        d.name for d in mr.iterdir() if d.is_dir())
+    for mod_name in mod_names:
+        if mod_name.lower() in skip_lower:
+            continue
+        mod = mr / mod_name
+        if not mod.is_dir():
             continue
         for f in mod.rglob("*.psc"):
+            nm = f.name.lower()
+            if nm in seen:
+                continue
             try:
                 t = f.read_text("utf-8", "replace")
             except OSError:
                 continue
+            seen.add(nm)                 # this name's load-order winner
             if "AddFeetPaint" in t:
                 yield f.name, t
         for bsa in mod.glob("*.bsa"):
@@ -1080,14 +1114,18 @@ def _iter_feetpaint_scripts(skip_mods=()):
             for n in names:
                 if not n.lower().endswith(".psc"):
                     continue
+                base = n.rsplit("/", 1)[-1]
+                if base.lower() in seen:
+                    continue
                 try:
                     d = arc.read_file(n)
                 except Exception:
                     continue
+                seen.add(base.lower())
                 t = (d.decode("utf-8", "replace")
                      if isinstance(d, (bytes, bytearray)) else str(d))
                 if "AddFeetPaint" in t:
-                    yield n.rsplit("/", 1)[-1], t
+                    yield base, t
 
 
 def build_multislot_feet_overlays(layout, out_root, texconv, *, skip_mods=(),
@@ -1116,13 +1154,13 @@ def build_multislot_feet_overlays(layout, out_root, texconv, *, skip_mods=(),
             log("  multi-slot feet pass SKIPPED: Papyrus base (Scripts.zip) "
                 "not found")
             return 0
-        srcmap = _build_overlay_source_map(skip_mods=skip_mods)
+        srcmap = _build_overlay_source_map(layout, skip_mods=skip_mods)
         twork = work / "tw"
         twork.mkdir()
         pex_out = Path(out_root) / "Scripts"
         pex_out.mkdir(parents=True, exist_ok=True)
         n_tex = n_compiled = n_scripts = 0
-        for name, text in _iter_feetpaint_scripts(skip_mods=skip_mods):
+        for name, text in _iter_feetpaint_scripts(layout, skip_mods=skip_mods):
             repoint = {}     # normalized rel -> feet-UV rel
             for m in _ADD_FEETPAINT_RE.finditer(text):
                 rel = _osl.normalize_script_texpath(m.group(2))
@@ -1131,6 +1169,7 @@ def build_multislot_feet_overlays(layout, out_root, texconv, *, skip_mods=(),
                 repoint[rel] = _feet_variant_path(rel)
             if not repoint:
                 continue
+            baked: set = set()   # only repoint paints whose feet-UV DDS wrote
             for rel, newrel in repoint.items():
                 srcrec = srcmap.get(rel)
                 if not srcrec:
@@ -1147,9 +1186,14 @@ def build_multislot_feet_overlays(layout, out_root, texconv, *, skip_mods=(),
                     rgba_to_dds(transfer_overlay(rgba, feet_corr), outp,
                                 texconv, twork)
                     n_tex += 1
+                    baked.add(rel)
                 except Exception as e:
                     log(f"  !! feet pass: transfer failed for {rel}: {e!r}")
-            edited = _repoint_feet_script(text, set(repoint))
+            if not baked:
+                continue     # nothing baked -> don't repoint to a missing DDS
+            # Repoint ONLY paints whose feet-UV texture actually wrote, so the
+            # recompiled script never points AddFeetPaint at a non-existent file.
+            edited = _repoint_feet_script(text, baked)
             epsc = twork / name
             # \n only -- write_text would re-translate and double the source CRs;
             # the compiler rejects bare \r.

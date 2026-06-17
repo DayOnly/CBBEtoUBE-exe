@@ -126,7 +126,7 @@ def test_contains_hh_offset_is_case_insensitive():
 
 
 def test_read_hh_offset_mixed_case_name(tmp_path):
-    # a 'HH_Offset'-named float (the real Wine Duchess heels spelling) must read
+    # a 'HH_Offset'-named float (a real-world mixed-case boot spelling) must read
     f = tmp_path / "heel.nif"
     f.write_bytes(_nif_with_float_xd(b"HH_Offset", 6.5))
     assert H.contains_hh_offset(f.read_bytes())

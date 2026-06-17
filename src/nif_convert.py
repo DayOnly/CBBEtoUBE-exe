@@ -4057,7 +4057,7 @@ def _is_skeleton_bone(name: str) -> bool:
     if not name:
         return True
     # Armor-specific physics-chain bones conventionally carry a mod prefix that
-    # starts with '_' (e.g. '_WiDu_Neck_L_01 02'). A body-part keyword INSIDE
+    # starts with '_' (e.g. '_SomeMod_Neck_L_01 02'). A body-part keyword INSIDE
     # such a name ('neck', 'breast', 'tail'...) must NOT mark it a skeleton bone,
     # or _precreate_custom_bone_chains skips it and its chain nodes are recreated
     # flat at the origin -> the cloth rides them through the floor in game. Real
