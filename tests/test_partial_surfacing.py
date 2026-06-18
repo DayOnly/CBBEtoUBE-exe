@@ -116,6 +116,52 @@ def test_postflight_validate_combined_classifies_ctd(tmp_path):
     assert not pf2["ctd"], pf2
 
 
+def test_nif_invariant_issues_flags_zerovert_and_overcap():
+    # Postflight per-NIF invariants: a zero-vert shape (invisible) and an over-cap
+    # shape left in <=1 partition (split failed -> CTD) are flagged; a properly
+    # split over-cap shape and a small shape are not.
+    from src.auto_convert import _nif_invariant_issues
+
+    class _S:
+        def __init__(self, name, nverts, nbones, nparts):
+            self.name = name
+            self.verts = [0] * nverts
+            self.bone_names = ["b"] * nbones
+            self.partitions = [object()] * nparts
+
+    shapes = [
+        _S("Zero", 0, 4, 1),         # zero-vert -> flagged
+        _S("Overcap", 100, 90, 1),   # 90 bones, 1 partition -> split failed
+        _S("OkSplit", 100, 90, 2),   # 90 bones but 2 partitions -> fine
+        _S("Small", 100, 10, 1),     # under cap -> fine
+    ]
+    issues = _nif_invariant_issues("armor_1.nif", shapes, cap=78)
+    joined = " ".join(issues)
+    assert "Zero" in joined and "ZERO-vertex" in joined
+    assert "Overcap" in joined and "split failed" in joined
+    assert "OkSplit" not in joined
+    assert "Small" not in joined
+    assert len(issues) == 2
+
+
+def test_postflight_missing_weight_partners(tmp_path):
+    # Detect a body mesh with a _0 but no _1 across the whole tree; ignore a
+    # complete pair and a weight-agnostic (no _0/_1) mesh.
+    from src.auto_convert import _postflight_missing_weight_partners
+    d = tmp_path / "meshes" / "armor"
+    d.mkdir(parents=True)
+    (d / "boots_0.nif").write_bytes(b"x")     # _0 only -> missing _1
+    (d / "gloves_0.nif").write_bytes(b"x")    # complete pair
+    (d / "gloves_1.nif").write_bytes(b"x")
+    (d / "helmet.nif").write_bytes(b"x")      # weight-agnostic -> ignored
+    miss = _postflight_missing_weight_partners(tmp_path)
+    joined = " ".join(miss)
+    assert "boots_0.nif" in joined and "_1 MISSING" in joined
+    assert "gloves" not in joined
+    assert "helmet" not in joined
+    assert len(miss) == 1
+
+
 def test_esp_gen_failures_field_defaults_empty():
     acr = AutoConvertResult(source_dir=Path("."), output_dir=Path("."))
     assert acr.esp_gen_failures == []
