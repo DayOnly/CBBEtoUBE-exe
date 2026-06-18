@@ -1889,6 +1889,49 @@ def generate_ube_patch(
     }
 
 
+# Prefixes from validate_patch that are LOAD-BREAKING on the final plugin (CTD /
+# FormID misresolution) vs merely invisible/cosmetic. Used to decide whether a
+# postflight finding fails the build or is only surfaced as a warning.
+_POSTFLIGHT_CTD_PREFIXES = (
+    "master-ordering", "esl-overflow", "formid-out-of-range",
+    "formid-zero", "modt-malformed",
+)
+
+
+def postflight_validate_combined(combined_path, meshes_root=None, *,
+                                 master_data_dirs=None) -> dict:
+    """Re-validate the FINAL merged Combined ESP (and any ESL split pieces) AFTER
+    the merge + winner-rebase + alt-texture reconcile + hands-slot fix have run.
+
+    `validate_patch` runs per-SOURCE at generation time and never sees those
+    post-merge mutations, so a structural break they introduce on the actual
+    loaded plugin (the Combined) is otherwise invisible until an in-game CTD /
+    invisible armor (the historical "stale Combined / ESL overflow / master-order"
+    class). This is the single highest-leverage convert-time guard.
+
+    Returns {"ctd": [(piece, warn)], "soft": [(piece, warn)], "pieces": [name,...]}.
+    CTD = load-breaking (caller should fail the build); soft = invisible/cosmetic
+    (warn only). Globs `<stem>*.esp` so ESL split pieces are all covered."""
+    combined_path = Path(combined_path)
+    pieces = sorted(combined_path.parent.glob(combined_path.stem + "*.esp"))
+    if combined_path.is_file() and combined_path not in pieces:
+        pieces.append(combined_path)
+    ctd: list = []
+    soft: list = []
+    for piece in pieces:
+        try:
+            warns = validate_patch(piece, meshes_root,
+                                   master_data_dirs=master_data_dirs)
+        except Exception as e:
+            soft.append((piece.name, f"postflight-load-error: {e!r}"))
+            continue
+        for w in warns:
+            prefix = w.split(":", 1)[0].strip()
+            (ctd if prefix in _POSTFLIGHT_CTD_PREFIXES else soft).append(
+                (piece.name, w))
+    return {"ctd": ctd, "soft": soft, "pieces": [p.name for p in pieces]}
+
+
 def validate_patch(esp_path: str | Path,
                    meshes_root: str | Path | None = None,
                    *,

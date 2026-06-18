@@ -1555,6 +1555,23 @@ def validate_dst_nif(dst_path: "Path",
         except Exception:
             pass
 
+        # Non-identity TRANSLATION on a skinned shape: same root cause as scale —
+        # the engine ignores the NiAVObject transform for skinned meshes, so a
+        # baked-in translation renders the shape offset / collapsed (the documented
+        # breast-to-floor case). _copy_shape lifts pure translations into the verts;
+        # flag any that slipped through.
+        try:
+            _ttr = np.asarray(s.transform.translation, np.float64)
+            _tmag = float(np.sqrt((_ttr * _ttr).sum()))
+            if _tmag > 1e-2:
+                warnings.append(
+                    f"{name} :: {s.name}: skinned shape has non-identity "
+                    f"transform translation (|t|={_tmag:.3f}) — renders offset/"
+                    f"collapsed (translation not baked into verts)"
+                )
+        except Exception:
+            pass
+
     # Z-fight detection across pairs of shapes. Finds verts in
     # different shapes that are within ~0.05 units of each other
     # — classic setup for shimmering shading at runtime where two

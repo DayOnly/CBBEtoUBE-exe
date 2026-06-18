@@ -88,6 +88,34 @@ def test_drain_result_passthrough_ok():
     assert _drain_result(_OkFut(), ("a", "b", None, 0)).status == "converted (copy)"
 
 
+def test_postflight_validate_combined_classifies_ctd(tmp_path):
+    # The postflight re-validates the FINAL Combined; a load-breaking issue
+    # (formid-zero) must be classed CTD, and a clean plugin must produce no CTD.
+    import struct
+    from src import esp
+    from src.esp import encode_subrecord, encode_zstring
+    from src.ube_patcher import postflight_validate_combined
+
+    def _save(path, fid):
+        payload = (encode_subrecord(b"EDID", encode_zstring("XA"))
+                   + encode_subrecord(b"RNAM", struct.pack("<I", 0x19)))
+        arma = esp.Record(sig=b"ARMA", flags=0, formid=fid, timestamp_vc=0,
+                          version_unk=0x2C, payload=payload)
+        esp.ESP(header=esp.TES4Header(masters=["Skyrim.esm"]),
+                groups=[esp.Group(label=b"ARMA", records=[arma])]).save(path)
+
+    combined = tmp_path / "Combined.esp"
+    _save(combined, 0x00000000)              # FormID 0 -> "formid-zero" (CTD-class)
+    pf = postflight_validate_combined(combined)
+    assert combined.name in pf["pieces"]
+    assert any("formid-zero" in w for _, w in pf["ctd"]), pf
+
+    clean = tmp_path / "Clean.esp"
+    _save(clean, 0x01000800)                 # valid own FormID
+    pf2 = postflight_validate_combined(clean)
+    assert not pf2["ctd"], pf2
+
+
 def test_esp_gen_failures_field_defaults_empty():
     acr = AutoConvertResult(source_dir=Path("."), output_dir=Path("."))
     assert acr.esp_gen_failures == []
