@@ -65,6 +65,23 @@ def test_copy_shape_preserves_geometry(tmp_path):
     assert np.isfinite(np.asarray(out.verts, dtype=np.float64)).all()
 
 
+def test_copy_shape_fitpath_resets_transform_to_identity(tmp_path):
+    # GAP #3: on the FIT path (override_verts = body-positioned verts) a source
+    # translation must NOT survive in the output transform. The verts are already
+    # in final space and the engine ignores the NiAVObject transform for skinned
+    # meshes, so a leftover transform reads as a transform-bake regression. The
+    # output must carry an identity transform with the fitted verts used as-is.
+    build_shape_nif(tmp_path / "src.nif", trans=(0.0, 0.0, 64.0))
+    out = copy_shape_into_fresh(tmp_path / "src.nif", tmp_path / "dst.nif",
+                                override_verts=VERTS)
+    assert abs(out.transform.scale - 1.0) < 1e-4
+    assert max(abs(c) for c in out.transform.translation) < 1e-4, \
+        f"fit-path left a residual transform: {list(out.transform.translation)}"
+    ov = [tuple(v) for v in out.verts]
+    for i, v in enumerate(VERTS):       # fitted verts used as-is (not lifted)
+        assert all(abs(ov[i][k] - v[k]) < 1e-4 for k in range(3)), (i, ov[i])
+
+
 def test_copy_shape_identity_is_noop(tmp_path):
     # An identity-transform shape must round-trip its verts unchanged (no spurious
     # bake) -- guards against a future change baking when it shouldn't.
