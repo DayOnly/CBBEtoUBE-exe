@@ -1020,8 +1020,12 @@ def auto_convert_mod(
                     if _nc._hide_virtual_body(nf_check):
                         from .atomic_io import atomic_nif_save
                         atomic_nif_save(nf_check, dst)
-                except Exception:
-                    pass  # best-effort
+                except Exception as _vbe:
+                    # A failed re-hide/save can leave a VISIBLE VirtualBody (the
+                    # "blue body double"); surface it instead of swallowing.
+                    result.notes.append(
+                        f"!! VirtualBody re-hide failed for {dst.name}: {_vbe!r} "
+                        "(risk of a visible body-double in-game)")
         except ImportError:
             pass
 
@@ -1790,6 +1794,30 @@ def _cmd_convert(args):
                                   "(handless forearm armor claiming slot 33)")
                     except Exception as e:
                         print(f"  !! hands-slot fix failed: {e!r}")
+                    # POSTFLIGHT: re-validate the FINAL Combined (+ ESL split
+                    # pieces) AFTER the merge/winner-rebase/reconcile/hands-fix
+                    # mutations. validate_patch ran per-SOURCE only; a structural
+                    # break those passes introduce on the loaded plugin is
+                    # otherwise invisible until an in-game CTD / invisible armor.
+                    try:
+                        _pf = ube_patcher.postflight_validate_combined(
+                            merged_out, output / "meshes",
+                            master_data_dirs=batch_master_data_dirs)
+                        if _pf["ctd"] or _pf["soft"]:
+                            print(f"  !! POSTFLIGHT: {len(_pf['ctd'])} "
+                                  f"load-breaking + {len(_pf['soft'])} other "
+                                  "issue(s) on the FINAL Combined:")
+                            for _n, _w in _pf["ctd"]:
+                                print(f"       CTD  [{_n}] {_w}")
+                            for _n, _w in _pf["soft"]:
+                                print(f"       warn [{_n}] {_w}")
+                            overall_failures += len(_pf["ctd"])
+                            overall_warnings += len(_pf["soft"])
+                        else:
+                            print(f"  postflight: Combined "
+                                  f"({len(_pf['pieces'])} piece(s)) validated clean")
+                    except Exception as _pfe:
+                        print(f"  !! postflight validation skipped: {_pfe!r}")
                 except Exception as e:
                     print(f"!! auto-merge failed: {e!r}")
                     overall_failures += 1
