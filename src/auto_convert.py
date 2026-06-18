@@ -333,6 +333,9 @@ class AutoConvertResult:
     # Armour meshes resolved from a DIFFERENT mod via the VFS (BodySlide output /
     # replacer / patch). Surfaced in the coverage report.
     vfs_other_mod_count: int = 0
+    # Postflight per-NIF invariant violations on the FINAL output (zero-vertex
+    # shapes; over-cap single-partition shapes). Surfaced + counted as warnings.
+    nif_invariant_warnings: list = field(default_factory=list)
 
     @property
     def nif_converted(self) -> int:
@@ -401,6 +404,11 @@ class AutoConvertResult:
         if self.nif_load_failures:
             lines.append(f"  ! load failures : {len(self.nif_load_failures)} "
                          f"(re-load the output via pynifly failed)")
+        if self.nif_invariant_warnings:
+            lines.append(f"  ! invariant warn: {len(self.nif_invariant_warnings)} "
+                         "(zero-vert / over-cap partition on final output)")
+            for w in self.nif_invariant_warnings:
+                lines.append(f"      {w}")
         lines.append(f"  textures copied : {self.textures_copied}")
         if self.notes:
             lines.append("")
@@ -1026,6 +1034,14 @@ def auto_convert_mod(
                     result.notes.append(
                         f"!! VirtualBody re-hide failed for {dst.name}: {_vbe!r} "
                         "(risk of a visible body-double in-game)")
+                # Postflight per-NIF invariants on the FINAL reloaded bytes.
+                try:
+                    result.nif_invariant_warnings.extend(
+                        _nif_invariant_issues(
+                            dst.name, nf_check.shapes,
+                            _nc.SKIN_PARTITION_BONE_CAP))
+                except Exception:
+                    pass
         except ImportError:
             pass
 
@@ -1651,6 +1667,12 @@ def _cmd_convert(args):
             for p in r.nif_load_failures:
                 print(f"       {p}")
             overall_failures += 1
+        if r.nif_invariant_warnings:
+            print(f"    !! POSTFLIGHT NIF: {len(r.nif_invariant_warnings)} "
+                  "invariant issue(s) (zero-vert / over-cap partition):")
+            for w in r.nif_invariant_warnings:
+                print(f"       {w}")
+            overall_warnings += len(r.nif_invariant_warnings)
         # ESP generation failure: that ESP's ARMA/ARMO absent from merge (invisible).
         # Non-zero exit, but NOT a merge_blocker (one bad ESP shouldn't lose the rest).
         if r.esp_gen_failures:
@@ -1685,6 +1707,19 @@ def _cmd_convert(args):
                     continue
                 print(f"    note: {n}")
     print(f"\n  Combined output mod: {output}")
+
+    # Postflight: scan the WHOLE output tree for body meshes missing a _0/_1
+    # partner (the !UBE fixer above only covers !UBE; general armor is uncovered).
+    try:
+        _wp_miss = _postflight_missing_weight_partners(output)
+        if _wp_miss:
+            print(f"\n!! POSTFLIGHT weight-partners: {len(_wp_miss)} body mesh(es) "
+                  "missing a _0/_1 partner (invisible at one body weight):")
+            for _w in _wp_miss:
+                print(f"     {_w}")
+            overall_warnings += len(_wp_miss)
+    except Exception as _wpe:
+        print(f"  !! postflight weight-partner scan skipped: {_wpe!r}")
 
     # --- Vertex-color shader-flag sanitize ---
     # Clear Vertex_Colors/Vertex_Alpha shader flags on shapes with no color buffer.
@@ -2003,6 +2038,56 @@ def _complete_weight_partners(output_dir: "str | Path") -> int:
         except OSError:
             pass
     return filled
+
+
+def _nif_invariant_issues(nif_name, shapes, cap) -> "list[str]":
+    """Postflight per-NIF invariant violations on the FINAL output: ZERO-vertex
+    shapes (invisible/degenerate) and over-cap shapes left in <=1 partition (the
+    GPU skin-partition split failed -> equip CTD). Returns issue strings. Pure +
+    duck-typed so it's unit-testable without a real NIF."""
+    issues: "list[str]" = []
+    for s in shapes:
+        nm = getattr(s, "name", "?")
+        try:
+            nv = len(s.verts)
+        except Exception:
+            nv = 1
+        if nv == 0:
+            issues.append(f"{nif_name} :: {nm}: ZERO-vertex shape "
+                          "(invisible/degenerate)")
+        nb = len(getattr(s, "bone_names", None) or [])
+        npart = len(getattr(s, "partitions", None) or [])
+        if nb > cap and npart <= 1:
+            issues.append(f"{nif_name} :: {nm}: {nb} bones in {npart} "
+                          f"partition(s) (> {cap}-bone GPU cap; split failed "
+                          "-> equip CTD risk)")
+    return issues
+
+
+def _postflight_missing_weight_partners(output_dir) -> "list[str]":
+    """Postflight: scan the WHOLE output mesh tree for a body-mesh base that has
+    a `_0` but no `_1` (or vice versa). Skyrim derives the absent weight from the
+    present one's PATH, so a missing partner makes the piece vanish at that body
+    weight. DETECT-only (warn): unlike the !UBE fixer we must NOT copy a partner
+    for general armor, where _0/_1 can legitimately differ by weight."""
+    import re as _re
+    meshes = Path(output_dir) / "meshes"
+    if not meshes.is_dir():
+        return []
+    groups: "dict[tuple, set]" = {}
+    for p in meshes.glob("**/*.nif"):
+        m = _re.match(r"(.*)_([01])\.nif$", p.name, _re.IGNORECASE)
+        if m:
+            groups.setdefault((str(p.parent).lower(), m.group(1).lower()),
+                              set()).add(m.group(2))
+    out: "list[str]" = []
+    for (parent, base), have in sorted(groups.items()):
+        if len(have) == 1:
+            present = next(iter(have))
+            miss = "1" if present == "0" else "0"
+            out.append(f"{base}_{present}.nif present but _{miss} MISSING in "
+                       f"{parent} (invisible at body weight {miss})")
+    return out
 
 
 _BATCH_BSA_INDEX = None   # set per-batch by _cmd_convert; lazy BSA mesh resolver
