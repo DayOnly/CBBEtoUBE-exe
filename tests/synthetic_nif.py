@@ -63,13 +63,19 @@ def build_shape_nif(path, *, name="TestShape", scale=1.0,
     return path
 
 
-def copy_shape_into_fresh(src_path, dst_path):
+def copy_shape_into_fresh(src_path, dst_path, override_verts=None):
     """Reload src, run the real `_copy_shape` of its first shape into a fresh NIF,
-    save + reload, and return the resulting shape (final on-disk bytes)."""
+    save + reload, and return the resulting shape (final on-disk bytes).
+
+    Pass `override_verts` to exercise the FIT path (body-positioned verts), as the
+    real body-fit conversion does."""
     pyn = nc._pynifly()
     s = pyn.NifFile(filepath=str(src_path)).shapes[0]
     dst = pyn.NifFile()
     dst.initialize("SKYRIMSE", str(dst_path))
-    nc._copy_shape(s, dst)
+    if override_verts is None:
+        nc._copy_shape(s, dst)
+    else:
+        nc._copy_shape(s, dst, override_verts=list(override_verts))
     dst.save()
     return pyn.NifFile(filepath=str(dst_path)).shapes[0]

@@ -6816,8 +6816,15 @@ def _copy_shape(src_shape, dst_nif, parent=None, override_verts=None,
         props=src_shape.properties,
         parent=parent,
     )
-    if _bake_T is not None or _bake_trans is not None:
-        # props carried the source's non-identity transform -> reset to identity
+    if (_bake_T is not None or _bake_trans is not None
+            or override_verts is not None or src_shape.has_global_to_skin):
+        # The source props carried a (possibly non-identity) NiAVObject transform.
+        # The engine IGNORES that transform for skinned meshes, so the verts must
+        # already be in final space -- baked above, OR body-positioned via
+        # override_verts (the fit path), OR mapped via global_to_skin. Force
+        # identity so a leftover source scale/translation can't read as a
+        # transform-bake regression (flung-off / breast-to-floor) and so
+        # validate_dst_nif's transform check stays a true positive on those paths.
         try:
             _idt = _pynifly().TransformBuf()
             _idt.set_identity()
