@@ -63,6 +63,43 @@ def build_shape_nif(path, *, name="TestShape", scale=1.0,
     return path
 
 
+_DEFAULT_BONES = ("NPC Spine [Spn0]", "NPC L Thigh [LThg]")
+
+
+def build_skinned_shape_nif(path, *, name="SkinShape", scale=1.0,
+                            trans=(0.0, 0.0, 0.0), bones=_DEFAULT_BONES):
+    """Like build_shape_nif but SKINNED, so the shape round-trips as a skinned mesh
+    (bone weights persist). Requires the pynifly sequence skin() -> add_bone (ALL
+    first) -> set_skin_to_bone_xform -> setShapeWeights. Verts are split evenly
+    across the bones (each weight 1.0). Returns `path`."""
+    pyn = nc._pynifly()
+    nif = pyn.NifFile()
+    nif.initialize("SKYRIMSE", str(path))
+    uvs = [(0.0, 0.0)] * len(VERTS)
+    normals = [(0.0, 0.0, 1.0)] * len(VERTS)
+    sh = nif.createShapeFromData(name, VERTS, TRIS, uvs, normals)
+    tb = pyn.TransformBuf()
+    tb.set_identity()
+    tb.scale = scale
+    tb.translation = tuple(trans)
+    sh.transform = tb
+    sh.skin()
+    for bn in bones:
+        sh.add_bone(bn)
+    idt = pyn.TransformBuf()
+    idt.set_identity()
+    for bn in bones:
+        try:
+            sh.set_skin_to_bone_xform(bn, idt)
+        except Exception:
+            pass
+    half = len(VERTS) // 2
+    sh.setShapeWeights(bones[0], [(i, 1.0) for i in range(half)])
+    sh.setShapeWeights(bones[1], [(i, 1.0) for i in range(half, len(VERTS))])
+    nif.save()
+    return path
+
+
 def copy_shape_into_fresh(src_path, dst_path, override_verts=None):
     """Reload src, run the real `_copy_shape` of its first shape into a fresh NIF,
     save + reload, and return the resulting shape (final on-disk bytes).

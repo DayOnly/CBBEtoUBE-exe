@@ -6817,14 +6817,18 @@ def _copy_shape(src_shape, dst_nif, parent=None, override_verts=None,
         parent=parent,
     )
     if (_bake_T is not None or _bake_trans is not None
-            or override_verts is not None or src_shape.has_global_to_skin):
+            or ((override_verts is not None or src_shape.has_global_to_skin)
+                and src_shape.bone_names)):
         # The source props carried a (possibly non-identity) NiAVObject transform.
-        # The engine IGNORES that transform for skinned meshes, so the verts must
-        # already be in final space -- baked above, OR body-positioned via
-        # override_verts (the fit path), OR mapped via global_to_skin. Force
-        # identity so a leftover source scale/translation can't read as a
-        # transform-bake regression (flung-off / breast-to-floor) and so
-        # validate_dst_nif's transform check stays a true positive on those paths.
+        # For SKINNED shapes the engine ignores that transform and the verts are
+        # already in final space -- baked above, OR body-positioned via
+        # override_verts (the fit path), OR mapped via global_to_skin -- so force
+        # identity, else a leftover scale/translation flings the mesh off-body /
+        # collapses it (project_scale_bake_vigilant). GATED on src_shape.bone_names:
+        # a NON-skinned shape's transform IS engine-honored, so it must NOT be
+        # zeroed on the override path (would misposition it). The bake path
+        # (_bake_T/_bake_trans) still resets unconditionally -- it baked the
+        # transform into the verts first, so identity is correct there for any shape.
         try:
             _idt = _pynifly().TransformBuf()
             _idt.set_identity()
