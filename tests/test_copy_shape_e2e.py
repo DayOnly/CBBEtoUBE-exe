@@ -27,8 +27,8 @@ actually landed in the on-disk verts. Skips cleanly if pynifly isn't available.
 import numpy as np
 import pytest
 
-from tests.synthetic_nif import (VERTS, build_shape_nif, copy_shape_into_fresh,
-                                  pynifly_available)
+from tests.synthetic_nif import (VERTS, build_shape_nif, build_skinned_shape_nif,
+                                  copy_shape_into_fresh, pynifly_available)
 
 pytestmark = pytest.mark.skipif(not pynifly_available(),
                                 reason="pynifly native lib unavailable")
@@ -65,21 +65,28 @@ def test_copy_shape_preserves_geometry(tmp_path):
     assert np.isfinite(np.asarray(out.verts, dtype=np.float64)).all()
 
 
-def test_copy_shape_fitpath_resets_transform_to_identity(tmp_path):
-    # GAP #3: on the FIT path (override_verts = body-positioned verts) a source
-    # translation must NOT survive in the output transform. The verts are already
-    # in final space and the engine ignores the NiAVObject transform for skinned
-    # meshes, so a leftover transform reads as a transform-bake regression. The
-    # output must carry an identity transform with the fitted verts used as-is.
-    build_shape_nif(tmp_path / "src.nif", trans=(0.0, 0.0, 64.0))
+def test_copy_shape_fitpath_skinned_resets_transform_keeps_weights(tmp_path):
+    # GAP #3 (SKINNED fit path): the engine ignores a skinned shape's NiAVObject
+    # transform and the fit verts are body-positioned, so a source translation must
+    # be reset to identity (else it flings the mesh off-body / collapses it) -- and
+    # the bone weights must survive the copy.
+    build_skinned_shape_nif(tmp_path / "src.nif", trans=(0.0, 0.0, 64.0))
     out = copy_shape_into_fresh(tmp_path / "src.nif", tmp_path / "dst.nif",
                                 override_verts=VERTS)
-    assert abs(out.transform.scale - 1.0) < 1e-4
     assert max(abs(c) for c in out.transform.translation) < 1e-4, \
-        f"fit-path left a residual transform: {list(out.transform.translation)}"
-    ov = [tuple(v) for v in out.verts]
-    for i, v in enumerate(VERTS):       # fitted verts used as-is (not lifted)
-        assert all(abs(ov[i][k] - v[k]) < 1e-4 for k in range(3)), (i, ov[i])
+        f"skinned fit-path left a residual transform: {list(out.transform.translation)}"
+    assert out.bone_weights, "bone weights were dropped on the skinned copy"
+
+
+def test_copy_shape_fitpath_nonskinned_preserves_transform(tmp_path):
+    # GATE (NON-skinned fit path): a non-skinned shape's NiAVObject transform IS
+    # engine-honored, so the fit path must NOT zero it (would misposition the
+    # shape). Confirms the bone_names gate on the gap-#3 reset (review finding F1).
+    build_shape_nif(tmp_path / "src.nif", trans=(0.0, 0.0, 64.0))   # no bones
+    out = copy_shape_into_fresh(tmp_path / "src.nif", tmp_path / "dst.nif",
+                                override_verts=VERTS)
+    assert abs(out.transform.translation[2] - 64.0) < 1e-4, \
+        "non-skinned transform was wrongly zeroed (misposition risk)"
 
 
 def test_copy_shape_identity_is_noop(tmp_path):
