@@ -88,6 +88,31 @@ def test_drain_result_passthrough_ok():
     assert _drain_result(_OkFut(), ("a", "b", None, 0)).status == "converted (copy)"
 
 
+def test_merge_clears_stale_esm_tier_cache(tmp_path):
+    # The merge must classify masters FRESH: _is_esm_tier_master consults the
+    # cache before the on-disk flag read, so a stale verdict (an ESL-flagged .esp
+    # mis-cached as 'regular' during the per-source phase) would mis-sort it after
+    # a regular master -> ESL-after-regular = load CTD. merge_patches_split clears
+    # the cache at its start so a poisoned entry can't survive into the sort.
+    import struct
+    from src import esp, ube_patcher
+    from src.esp import encode_subrecord, encode_zstring
+
+    ube_patcher.clear_esm_tier_cache()
+    ube_patcher._ESM_TIER_CACHE["poison.esp"] = False    # stale 'regular' verdict
+    arma = esp.Record(sig=b"ARMA", flags=0, formid=0x01000800, timestamp_vc=0,
+                      version_unk=0x2C,
+                      payload=(encode_subrecord(b"EDID", encode_zstring("A"))
+                               + encode_subrecord(b"RNAM", struct.pack("<I", 0x19))))
+    patch = tmp_path / "Mod UBE patch.esp"
+    esp.ESP(header=esp.TES4Header(masters=["Skyrim.esm"]),
+            groups=[esp.Group(label=b"ARMA", records=[arma])]).save(patch)
+    ube_patcher.merge_patches_split([patch], tmp_path / "Combined.esp",
+                                    esl_flag=True)
+    assert "poison.esp" not in ube_patcher._ESM_TIER_CACHE, \
+        "merge_patches_split did not clear the stale ESM-tier cache"
+
+
 def test_postflight_validate_combined_classifies_ctd(tmp_path):
     # The postflight re-validates the FINAL Combined; a load-breaking issue
     # (formid-zero) must be classed CTD, and a clean plugin must produce no CTD.

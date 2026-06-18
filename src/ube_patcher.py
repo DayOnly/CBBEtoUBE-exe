@@ -4351,6 +4351,14 @@ def merge_patches_split(
     piece is independently ESL-clean and they do NOT master each other.
 
     Returns aggregate stats with `pieces` (file names) + `piece_stats`."""
+    # Classify masters FRESH for this merge. _is_esm_tier_master consults the
+    # _ESM_TIER_CACHE BEFORE the on-disk flag read, so a stale verdict cached
+    # during the long per-source phase (e.g. an ESL-flagged .esp resolved via a
+    # narrower/differently-ordered dir set) would mis-sort it AFTER a regular
+    # master -> ESL-after-regular in the master list -> load-order / FormID
+    # resolution CTD. Clearing here forces a re-read against the merge's full
+    # batch dirs. (#postflight caught wilderness_witch.esp mis-sorted in a split.)
+    clear_esm_tier_cache()
     out_path = Path(output_path)
     plist = [Path(p) for p in patch_paths]
     for p in plist:
