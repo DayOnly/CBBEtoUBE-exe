@@ -7750,10 +7750,16 @@ def _finalize_hdt_physics(dst_path: Path, src_nif_path: Path) -> bool:
         return False
 
 
-def _reauthor_nif_fresh(dst_path: Path) -> bool:
+def _reauthor_nif_fresh(dst_path: Path, override_verts_by_name=None) -> bool:
     """Re-author a NIF from scratch into a fresh NifFile — copy every shape
     via _copy_shape (clean pynifly authoring) instead of leaving the
     source-derived bytes produced by the verbatim `shutil.copy2` path.
+
+    `override_verts_by_name`: optional {shape_name -> (N,3) verts} to write NEW
+    vertex positions for those shapes (same count/order). Used by the cross-shape
+    seam-reconciliation pass to commit welded seam verts while reusing this
+    function's skin / BODYTRI / HDT / hidden-flag preservation. Verts must be in
+    the shape's STORED frame (== body space for identity-g2s output shapes).
 
     Why: accessory NIFs (gauntlets/boots/helmets — no body region to fit)
     are copied verbatim then edited in place, so they carry whatever block
@@ -7803,9 +7809,10 @@ def _reauthor_nif_fresh(dst_path: Path) -> bool:
         new = pyn.NifFile()
         new.initialize("SKYRIMSE", str(tmp_path))
         copy_failed = []
+        _ov = override_verts_by_name or {}
         for s in shapes:
             try:
-                _copy_shape(s, new)
+                _copy_shape(s, new, override_verts=_ov.get(s.name))
             except Exception as _ce:
                 copy_failed.append((s.name, repr(_ce)))
         if copy_failed:

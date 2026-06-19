@@ -71,6 +71,15 @@ def iter_paint_calls(text: str):
         yield slot, normalize_script_texpath(m.group(2))
 
 
+def _script_has_paint(text: str) -> bool:
+    """Cheap pre-filter: does this script body contain an AddXPaint call at all?
+    Papyrus identifiers are CASE-INSENSITIVE, so match case-insensitively -- a
+    pack calling `AddBodypaint(` (lowercase 'p', perfectly valid and works
+    in-game) was being skipped by a case-sensitive `"Paint("` test, so its whole
+    overlay set went unregistered."""
+    return "paint(" in text.lower()
+
+
 def _add(mapping: dict, text: str) -> None:
     for slot, rel in iter_paint_calls(text):
         mapping.setdefault(rel, set()).add(slot)
@@ -101,7 +110,7 @@ def build_script_slot_map(layout=None) -> dict:
                     txt = f.read_text("utf-8", "replace")
                 except OSError:
                     continue
-                if "Paint(" in txt:
+                if _script_has_paint(txt):
                     _add(acc, txt)
             for bsa in mod.glob("*.bsa"):
                 try:
@@ -118,7 +127,7 @@ def build_script_slot_map(layout=None) -> dict:
                         continue
                     txt = (data.decode("utf-8", "replace")
                            if isinstance(data, (bytes, bytearray)) else str(data))
-                    if "Paint(" in txt:
+                    if _script_has_paint(txt):
                         _add(acc, txt)
     out = {rel: frozenset(slots) for rel, slots in acc.items()}
     _slot_map_cache[key] = out
