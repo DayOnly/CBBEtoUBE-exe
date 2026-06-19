@@ -618,6 +618,23 @@ def discover_overlays(layout, regions=("body", "hands", "feet"),
     skip_lower = {s.lower() for s in skip_mods}
     want = set(regions)
 
+    # Script-registered overlays are AUTHORITATIVE and a pack may register a
+    # texture at ANY path, not just under _OVERLAY_ROOTS (e.g. a tattoo set under
+    # textures/actors/<mod>/). Build the slot map up front so PASS 1 also COLLECTS
+    # those custom-path textures -- otherwise they're never discovered, stay
+    # CBBE-UV, and land on the wrong anatomy on UBE. Reused for PASS-2 region
+    # classification.
+    from . import overlay_slots as _oslots
+    slot_map = _oslots.build_script_slot_map(layout)
+    registered_nonroot = {
+        rel for rel in slot_map
+        if rel.endswith(".dds")
+        and not any(rel.startswith(r) for r in _OVERLAY_ROOTS)
+    }
+    # Distinct parent dirs of the custom-path overlays -> list only those inside a
+    # BSA (cheap) instead of the whole 'textures' tree.
+    nonroot_prefixes = sorted({rel.rsplit("/", 1)[0] for rel in registered_nonroot})
+
     # PASS 1: collect every overlay (highest-priority source wins per rel) with
     # its raw class + set. Track which sets contain a real body/hand/feet slot --
     # those are body-paint sets, so their 'ambiguous' files resolve to body.
@@ -645,6 +662,10 @@ def discover_overlays(layout, regions=("body", "hands", "feet"),
                 for f in ovl_dir.rglob("*.dds"):
                     _collect(f.relative_to(mod).as_posix().lower(),
                              ("loose", f, mod_name))
+        # Script-registered overlays at a custom (non-root) LOOSE path.
+        for rel in registered_nonroot:
+            if rel not in collected and (mod / rel).is_file():
+                _collect(rel, ("loose", mod / rel, mod_name))
         for bsa in mod.glob("*.bsa"):
             try:
                 arc = BSAArchive(bsa, eager=False)
@@ -659,6 +680,21 @@ def discover_overlays(layout, regions=("body", "hands", "feet"),
                     rel = name.replace("\\", "/").lower()
                     if rel.endswith(".dds") and rel.startswith(rel_root):
                         _collect(rel, ("bsa", bsa, name, mod_name))
+            # Script-registered overlays at a custom (non-root) path INSIDE a BSA
+            # (e.g. a tattoo pack's textures/actors/<mod>/). List only those
+            # specific dirs, and only while such overlays remain uncollected, so
+            # the common case (no custom-path packs) keeps the cheap per-root scan.
+            remaining = registered_nonroot - collected.keys()
+            if remaining:
+                for pref in nonroot_prefixes:
+                    try:
+                        names = arc.list_files(pref)
+                    except Exception:
+                        continue
+                    for name in names:
+                        rel = name.replace("\\", "/").lower()
+                        if rel in remaining:
+                            _collect(rel, ("bsa", bsa, name, mod_name))
 
     # PASS 2: resolve each overlay's region the way RaceMenu does. The SCRIPT
     # slot map (AddWarPaint/BodyPaint/HandPaint/FeetPaint registrations) is the
@@ -669,8 +705,6 @@ def discover_overlays(layout, regions=("body", "hands", "feet"),
     #   * A texture registered for MULTIPLE slots (e.g. a body paint reused on
     #     the feet slot) is routed to body here; the feet/secondary-slot output
     #     is produced separately (it needs its own path + a script repoint).
-    from . import overlay_slots as _oslots
-    slot_map = _oslots.build_script_slot_map(layout)
     for rel, (source, raw, st) in collected.items():
         slots = slot_map.get(rel)
         if slots:
