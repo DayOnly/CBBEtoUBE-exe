@@ -716,14 +716,36 @@ def _install_skin(new_shape, dst_nif, src_shape, bone_names, xforms_map,
         _precreate_custom_bone_chains(dst_nif, src_shape.file, bone_names)
     except Exception:
         pass
-    for bn in bone_names:
-        new_shape.add_bone(bn)
     # Fix scale-bone STB space mismatch: bake g2s^-1 into scale-bone STBs.
+    # (Runs on the pre-strip weights_map, as before -- it only mutates xforms_map.)
     g2s_aligned = False
     if bake_T is None and src_shape.has_global_to_skin:
         xforms_map, g2s_aligned = _align_scale_bone_stbs_to_verts(
             xforms_map, src_shape.global_to_skin, use_verts, weights_map)
-    for bn in bone_names:
+    # Strip genital weights (spike to origin on UBE), then jiggle weights, then
+    # fill zero-weight verts -- ALL BEFORE add_bone, so we add ONLY bones that
+    # still carry weight. CRITICAL: a bone that is add_bone'd but then left
+    # zero-weight (e.g. the genital/anus bones the reskin propagates onto an
+    # armor that doesn't actually use them) STAYS in the shape's bone LIST while
+    # the GPU skin-partition bone palette is built from the WEIGHTED bones only.
+    # The per-vertex bone indices reference the (longer) bone list, so they run
+    # PAST the shorter palette -> out-of-bounds read of the GPU bone-matrix array
+    # on equip -> CTD. Pruning zero-weight bones keeps list == palette. #zeroweight-bone-desync
+    weights_map = _strip_genital_weights_map(weights_map)
+    # Strip jiggle weights (breast/butt/belly) that destabilise physics garments
+    # or collapse rigid leg plates on UBE actors. Full-garment strip for chains;
+    # leg-plates only for plain armour.
+    weights_map = _strip_jiggle_weights_map(
+        weights_map,
+        src_bones=set(src_shape.bone_names or []),
+        force=_nif_has_garment_chain(src_shape.file))
+    weights_map = _fill_zero_weight_verts(weights_map, use_verts)
+    surviving = [bn for bn in bone_names
+                 if weights_map.get(bn)
+                 and any(w > 0.0 for _, w in weights_map[bn])]
+    for bn in surviving:
+        new_shape.add_bone(bn)
+    for bn in surviving:
         xf = xforms_map.get(bn)
         if xf is not None:
             if bake_T is not None:
@@ -735,20 +757,10 @@ def _install_skin(new_shape, dst_nif, src_shape, bone_names, xforms_map,
         # on an offset-g2s shape puts the cull bound ~120u below the geometry ->
         # frustum-culled when the camera zooms in (invisible torso/body up close).
         new_shape.set_global_to_skin(src_shape.global_to_skin)
-    # Strip genital weights (spike to origin on UBE), then fill zero-weight verts.
-    weights_map = _strip_genital_weights_map(weights_map)
-    # Strip jiggle weights (breast/butt/belly) that destabilise physics garments
-    # or collapse rigid leg plates on UBE actors. Full-garment strip for chains;
-    # leg-plates only for plain armour.
-    weights_map = _strip_jiggle_weights_map(
-        weights_map,
-        src_bones=set(src_shape.bone_names or []),
-        force=_nif_has_garment_chain(src_shape.file))
-    weights_map = _fill_zero_weight_verts(weights_map, use_verts)
-    for bn, pairs in weights_map.items():
-        if not pairs:
-            continue
-        new_shape.setShapeWeights(bn, [(int(i), float(w)) for i, w in pairs])
+    for bn in surviving:
+        pairs = weights_map.get(bn)
+        if pairs:
+            new_shape.setShapeWeights(bn, [(int(i), float(w)) for i, w in pairs])
     if src_shape.partitions and src_shape.partition_tris is not None:
         new_shape.set_partitions(src_shape.partitions, src_shape.partition_tris)
 
@@ -3424,6 +3436,55 @@ def _split_oversize_partition(shape, cap: "int | None" = None) -> int:
         return 0
 
 
+def _split_oversize_partition_verts(shape, cap: "int | None" = None) -> int:
+    """Split a shape with MORE than `cap` VERTICES into several skin partitions,
+    each referencing <= cap distinct verts, WITHOUT dropping geometry. Returns
+    the partition count created (0 = no split done / not needed).
+
+    A single huge partition is not safe for the runtime body-morph rebuild
+    (NioOverride reads past the vertex buffer -> equip CTD; measured on a
+    ~31.8k-vert torso). The injected UBE body ships multiple partitions for the
+    same reason. Triangles are ordered by centroid Z and greedily packed so each
+    partition's vertex-union stays under the cap (spatial ordering keeps the sets
+    compact). Mirrors `_split_oversize_partition` but gates on vertex count, not
+    bone count. Best-effort: returns 0 on any failure so the caller is unchanged."""
+    if cap is None:
+        cap = SKIN_PARTITION_VERT_CAP
+    try:
+        verts = np.asarray(shape.verts, dtype=np.float64)
+        tris = np.asarray(shape.tris, dtype=np.int64)
+        if len(verts) <= cap or tris.size == 0:
+            return 0
+        order = np.argsort(verts[tris].mean(axis=1)[:, 2])  # by centroid Z
+        assign = np.zeros(len(tris), dtype=np.int64)
+        cur, cur_set = 0, set()
+        for ti in order:
+            ti = int(ti)
+            t = tris[ti]
+            tri_v = {int(t[0]), int(t[1]), int(t[2])}
+            merged = cur_set | tri_v
+            if len(merged) > cap and cur_set:
+                cur += 1
+                cur_set = set(tri_v)
+            else:
+                cur_set = merged
+            assign[ti] = cur
+        nparts = cur + 1
+        if nparts <= 1:
+            return 0
+        parts0 = list(getattr(shape, "partitions", None) or [])
+        nd = getattr(parts0[0], "namedict", None) if parts0 else None
+        if nd is None:
+            return 0
+        pyn = _pynifly()
+        objs = [pyn.SkyPartition(part_id=SBP_32_BODY_ID, flags=257, namedict=nd)
+                for _ in range(nparts)]
+        shape.set_partitions(objs, assign.tolist())
+        return nparts
+    except Exception:
+        return 0
+
+
 def _normalize_partitions_on_disk(dst_path: Path) -> int:
     """Post-save pass: reload the NIF at `dst_path`, collapse any
     multi-partition cloth shape to a single SBP_32_BODY partition, and
@@ -3463,6 +3524,15 @@ def _normalize_partitions_on_disk(dst_path: Path) -> int:
                           f"{len(s.bone_names)} bones (> {SKIN_PARTITION_BONE_CAP}"
                           f"-bone GPU cap) and could NOT be split into partitions "
                           f"-> may CTD on equip in {dst_path.name}", file=_sys.stderr)
+                continue
+            # Over-VERTEX-cap shape: a single huge partition is unsafe for the
+            # runtime body-morph rebuild (equip CTD; measured on a ~31.8k-vert
+            # torso). Split into vertex-balanced partitions like the injected
+            # body ships -- do NOT collapse to one partition below (that's the
+            # very thing that CTDs). Under-cap shapes fall through and collapse.
+            if len(getattr(s, "verts", []) or []) > SKIN_PARTITION_VERT_CAP:
+                if _split_oversize_partition_verts(s) > 1:
+                    changed += 1
                 continue
             if _normalize_partitions(s):
                 changed += 1
@@ -3849,6 +3919,43 @@ RESKIN_K = 4
 # (_cap_skin_bone_count) is the correct fix for GPU-cap CTDs, independent of
 # this flag. Set True only to A/B test a configuration without scale bones.
 RESKIN_EXCLUDE_SCALE_BONES = False
+
+# When the SOURCE mod ships its OWN BodySlide morph TRI for a shape (the author
+# built RaceMenu morphs), that TRI drives the body-morph at runtime -- so the M6
+# body-bone reskin is REDUNDANT for morphing AND is the source of the equip
+# fly/spike instability (its K-NN body-bone blend is unstable under animation).
+# In that case PREFER the shape's own (stable, well-authored) source skin: the
+# geometry is already UBE-fit, the source TRI morphs it, and the conform +
+# anti-poke clearance passes still run for body-following and de-clip. Shapes
+# with NO source morph TRI keep the reskin (they rely on its scale bones for
+# morph). In-game-confirmed on a dense slot-32 body armor whose reskin
+# CTD'd/exploded but whose source skin + conform + clearance is stable.
+# CBBE2UBE_RESKIN_KEEP=1 reverts to always-reskin (A/B + escape hatch).
+RESKIN_PREFER_SOURCE_WHEN_MORPH_TRI = (
+    os.environ.get("CBBE2UBE_RESKIN_KEEP", "").strip().lower()
+    not in ("1", "true", "yes", "on")
+)
+
+
+def _source_morph_tri_shape_names(src_path: "Path") -> "set[str]":
+    """Shape names covered by the SOURCE mod's own BodySlide morph TRI (it sits
+    next to the source NIF as `<armor-stem>.tri`). These shapes are morphed by
+    that TRI at runtime, so they don't need the M6 reskin's scale-bone morph and
+    are better served by their stable source skin. Empty set if the source ships
+    no such TRI (-> keep the reskin). Best-effort; never raises."""
+    try:
+        stem = src_path.stem
+        for suf in ("_0", "_1"):
+            if stem.endswith(suf):
+                stem = stem[:-len(suf)]
+                break
+        tri = src_path.parent / (stem + ".tri")
+        if not tri.is_file():
+            return set()
+        from .tri import TriFile
+        return {sh.name for sh in TriFile.load(tri).shapes}
+    except Exception:
+        return set()
 
 # Wider conformance band for body-fitted armor (slot 32 + leg slots).
 # A thicker shell fully adopts body bone weights so it bends with the body
@@ -6032,6 +6139,14 @@ def _is_rigid_attachment(weights_by_bone: dict[str, list[tuple[int, float]]]) ->
 # scale bones from any source (reskin transfer, add_scale_bone_weights, dense rigs).
 SKIN_PARTITION_BONE_CAP = 78
 
+# A single skin partition with a very high VERTEX count is not safe for the
+# runtime body-morph rebuild (NioOverride/RaceMenu): measured equip CTD when a
+# ~31.8k-vert torso shape sat in ONE partition (the morph walk read past the
+# vertex buffer at vertex 32768). The injected UBE body itself ships MULTIPLE
+# partitions; we mirror that by splitting any over-cap shape into vertex-balanced
+# partitions (CTD-safe, drops no bone/vert). Distinct from the BONE-count cap.
+SKIN_PARTITION_VERT_CAP = 16000
+
 
 def _cap_skin_bone_count(bone_names, xforms_map, weights_map,
                          limit=SKIN_PARTITION_BONE_CAP):
@@ -7137,17 +7252,43 @@ def _source_hdt_needs_missing_chain_bones(src_path, dst_bone_names) -> bool:
         return False
 
 
+def _is_unconstrained_collision_pair(
+    body_collision_shape_name: "str | None", chains: "list | None"
+) -> bool:
+    """True for the FSMP equip-CTD pattern: a per-vertex cloth paired
+    with a per-triangle body collider but with NO simulated chain (no
+    <generic-constraint>). Such a cloth has zero spring forces, so FSMP
+    lets it diverge to infinity and the collision SIMD then reads out of
+    bounds -> ACCESS_VIOLATION on equip (confirmed in-game on several
+    pieces). Dropping just the collider leaves the same unconstrained
+    cloth, which explodes instead of crashing -- so the caller emits NO
+    physics XML at all and the piece stays kinematic with the converter's
+    baked geometric clearance.
+
+    Mirrors `scripts/disable_unconstrained_smp.is_broken_collision_pair`
+    but at generation time: the per-vertex cloth side is implied (this is
+    only consulted when cloth carriers exist), so the test reduces to
+    "has a body collider AND no chain". Cloth-only NIFs (no collider) and
+    constrained chains (chains present) are stable and are NOT this case.
+    """
+    return body_collision_shape_name is not None and not chains
+
+
 def _generate_hdt_xml_for_dst(dst_path: "Path") -> "str | None":
     """Generate a fresh HDT-SMP cloth-collision XML for the destination
     NIF, write it alongside the NIF, and return the Skyrim-relative
     path string (suitable for the `HDT Skinned Mesh Physics Object`
     root extra-data).
 
-    Returns None only when there's genuinely nothing to simulate:
+    Returns None when there's genuinely nothing to simulate:
       * NIF has no cloth shapes the converter recognizes (use the
         same `_pick_bodytri_carriers` filter as the BODYTRI machinery
         — that's our agreed definition of "cloth that should track
         the body")
+      * the result would be an unconstrained collision pair (cloth +
+        body collider, no chain) — see `_is_unconstrained_collision_pair`;
+        we skip the XML entirely so the piece stays kinematic rather than
+        shipping an FSMP equip-CTD.
 
     A NIF with cloth but NO body collision proxy (VirtualBody /
     BaseShape) — e.g. a slot-49 cloth-only skirt/tabard — still gets a
@@ -7220,6 +7361,15 @@ def _generate_hdt_xml_for_dst(dst_path: "Path") -> "str | None":
     # need to add new bones — they're already in the source mod's
     # skeleton, just unused without this XML.
     chains = hdt_xml_gen.detect_physics_chains(all_bones_seen)
+
+    # Don't emit the FSMP equip-CTD pattern: an unconstrained collision
+    # pair (cloth + per-triangle body collider, no simulated chain). The
+    # unconstrained soft body diverges and the collision SIMD reads out of
+    # bounds -> crash on equip. Skip the XML entirely (the piece stays
+    # kinematic with the baked geometric clearance). Cloth-only NIFs (no
+    # body collider) and constrained chains still emit normally.
+    if _is_unconstrained_collision_pair(body_shape_name, chains):
+        return None
 
     # Where to write. Strip weight suffix from stem so _0.nif and
     # _1.nif share one XML (file is per-armor, not per-weight).
@@ -7750,7 +7900,8 @@ def _finalize_hdt_physics(dst_path: Path, src_nif_path: Path) -> bool:
         return False
 
 
-def _reauthor_nif_fresh(dst_path: Path, override_verts_by_name=None) -> bool:
+def _reauthor_nif_fresh(dst_path: Path, override_verts_by_name=None,
+                        exclude_shapes=None) -> bool:
     """Re-author a NIF from scratch into a fresh NifFile — copy every shape
     via _copy_shape (clean pynifly authoring) instead of leaving the
     source-derived bytes produced by the verbatim `shutil.copy2` path.
@@ -7810,7 +7961,10 @@ def _reauthor_nif_fresh(dst_path: Path, override_verts_by_name=None) -> bool:
         new.initialize("SKYRIMSE", str(tmp_path))
         copy_failed = []
         _ov = override_verts_by_name or {}
+        _excl = exclude_shapes or set()
         for s in shapes:
+            if s.name in _excl:
+                continue                 # drop this shape from the re-author
             try:
                 _copy_shape(s, new, override_verts=_ov.get(s.name))
             except Exception as _ce:
@@ -8297,6 +8451,14 @@ def convert_nif_phase2(
     # Copy UBE BaseShape + VirtualBody from the UBE template NIF (user's
     # preset femalebody_tangent). Pubic holes sealed by fan triangulation.
     # Slider morphs apply through the per-armor TRI at runtime.
+    # Shapes covered by the SOURCE mod's own BodySlide morph TRI -> prefer their
+    # stable source skin over the M6 reskin (the TRI morphs them at runtime; the
+    # reskin's body-bone blend is the equip-fly/CTD instability and is redundant
+    # here). Computed once; consumed in the reskin gate below. See
+    # RESKIN_PREFER_SOURCE_WHEN_MORPH_TRI.
+    src_morph_shapes = (_source_morph_tri_shape_names(src_path)
+                        if RESKIN_PREFER_SOURCE_WHEN_MORPH_TRI else set())
+
     injected: list[str] = []
     copy_err = _inject_ube_baseshape(
         ube_nif, dst_nif, body_inject_names, inject_baseshape, injected,
@@ -8716,7 +8878,8 @@ def convert_nif_phase2(
                 and s.name not in hdt_softbody_names
                 and s.name not in hdt_collider_names
                 and not _shape_has_fine_animation_bones(s)
-                and not _shape_is_head_dominant(s)):
+                and not _shape_is_head_dominant(s)
+                and s.name not in src_morph_shapes):  # source TRI morphs it -> keep its stable source skin
             try:
                 ube_basereshape = ube_base_for_pass1
                 _body_bone_set_p2 = (

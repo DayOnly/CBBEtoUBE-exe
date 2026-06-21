@@ -472,6 +472,25 @@ def test_pick_body_collision_shape_name():
     assert pick_body_collision_shape_name(["Cuirass", "OnlyArmor"]) is None
 
 
+def test_unconstrained_collision_pair_predicate():
+    """The generated-XML gate that prevents the FSMP equip-CTD: a cloth +
+    body collider with NO chain is the crash pattern (skip); cloth-only
+    (no collider) and any constrained chain are stable (emit)."""
+    from src.nif_convert import _is_unconstrained_collision_pair
+    from src.hdt_xml_gen import PhysicsChain
+    # cloth + per-triangle body collider, no chain -> crash pattern (skip)
+    assert _is_unconstrained_collision_pair("VirtualBody", [])
+    assert _is_unconstrained_collision_pair("BaseShape", None)
+    # cloth-only (no body collider) -> no pair to diverge against -> keep
+    assert not _is_unconstrained_collision_pair(None, [])
+    assert not _is_unconstrained_collision_pair(None, None)
+    # constrained chain (even WITH a collider) is properly simulated -> keep
+    chain = [PhysicsChain(prefix="Skirt 1",
+                          bones=["Skirt 1_00", "Skirt 1_01", "Skirt 1_02"])]
+    assert not _is_unconstrained_collision_pair("VirtualBody", chain)
+    assert not _is_unconstrained_collision_pair(None, chain)
+
+
 def test_is_high_velocity_bone():
     """Breast / butt / belly + legs flagged; spine/clavicle/anatomy not."""
     from src.hdt_xml_gen import is_high_velocity_bone
