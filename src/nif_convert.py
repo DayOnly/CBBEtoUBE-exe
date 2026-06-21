@@ -743,6 +743,15 @@ def _install_skin(new_shape, dst_nif, src_shape, bone_names, xforms_map,
     surviving = [bn for bn in bone_names
                  if weights_map.get(bn)
                  and any(w > 0.0 for _, w in weights_map[bn])]
+    # Include any bone the strip/fill injected that was NOT in the caller's list
+    # -- the genital/jiggle fallback "NPC Pelvis [Pelv]" assigned to verts left
+    # genital/jiggle-only. Without this it would be dropped and those verts go
+    # zero-weight -> spike. Preserve caller order; append the extras. #zeroweight-bone-desync
+    _surv_seen = set(surviving)
+    for _bn, _pairs in weights_map.items():
+        if _bn not in _surv_seen and _pairs and any(w > 0.0 for _, w in _pairs):
+            surviving.append(_bn)
+            _surv_seen.add(_bn)
     for bn in surviving:
         new_shape.add_bone(bn)
     for bn in surviving:
@@ -3371,10 +3380,16 @@ def _normalize_partitions(shape) -> bool:
         return False
 
 
-def _split_oversize_partition(shape, cap: "int | None" = None) -> int:
+def _split_oversize_partition(shape, cap: "int | None" = None,
+                              vert_cap: "int | None" = None) -> int:
     """Split a shape that references MORE than `cap` bones into several skin
     partitions, each referencing <= cap distinct bones, WITHOUT dropping any
     bone. Returns the partition count created (0 = no split done).
+
+    If `vert_cap` is given, ALSO start a new partition when a partition's
+    vertex-union would exceed it -- so a dense rig that is over BOTH the bone
+    cap AND the vertex cap stays safe on both (else a bone-split partition could
+    still hold > vert_cap verts and hit the morph-rebuild OOB).
 
     Skyrim's GPU skin-partition bone palette overruns above the cap -> equip
     CTD. The historical fix (_cap_skin_bone_count) dropped the lowest-weight
@@ -3410,15 +3425,21 @@ def _split_oversize_partition(shape, cap: "int | None" = None) -> int:
                      for t in tris]
         order = np.argsort(verts[tris].mean(axis=1)[:, 2])  # by centroid Z
         assign = np.zeros(len(tris), dtype=np.int64)
-        cur, cur_set = 0, set()
+        cur, cur_set, cur_verts = 0, set(), set()
         for ti in order:
             ti = int(ti)
+            t = tris[ti]
+            tri_v = {int(t[0]), int(t[1]), int(t[2])}
             merged = cur_set | tri_bones[ti]
-            if len(merged) > cap and cur_set:
+            merged_v = cur_verts | tri_v
+            if ((len(merged) > cap or (vert_cap and len(merged_v) > vert_cap))
+                    and cur_set):
                 cur += 1
                 cur_set = set(tri_bones[ti])
+                cur_verts = set(tri_v)
             else:
                 cur_set = merged
+                cur_verts = merged_v
             assign[ti] = cur
         nparts = cur + 1
         if nparts <= 1:
@@ -3513,7 +3534,10 @@ def _normalize_partitions_on_disk(dst_path: Path) -> int:
             # dresses/robes that ship 79-81 bones (some armor mods) keep their full
             # morph + physics rig this way. Under-cap shapes collapse as before.
             if len(getattr(s, "bone_names", []) or []) > SKIN_PARTITION_BONE_CAP:
-                if _split_oversize_partition(s) > 1:
+                # Respect BOTH caps: a dense rig that is also high-vert must not
+                # leave a bone-split partition still over the vertex cap.
+                if _split_oversize_partition(
+                        s, vert_cap=SKIN_PARTITION_VERT_CAP) > 1:
                     changed += 1
                 else:
                     # Split failed (no source partition / pynifly error): the
@@ -3533,6 +3557,16 @@ def _normalize_partitions_on_disk(dst_path: Path) -> int:
             if len(getattr(s, "verts", []) or []) > SKIN_PARTITION_VERT_CAP:
                 if _split_oversize_partition_verts(s) > 1:
                     changed += 1
+                else:
+                    # Split failed (no source partition / pynifly error): the
+                    # shape keeps one huge partition -> morph-rebuild equip-CTD
+                    # risk. Surface it loudly, mirroring the bone-cap branch.
+                    import sys as _sys
+                    print(f"  WARNING: {s.name!r} has "
+                          f"{len(s.verts)} verts (> {SKIN_PARTITION_VERT_CAP}"
+                          f"-vert morph-rebuild cap) and could NOT be split into "
+                          f"partitions -> may CTD on equip in {dst_path.name}",
+                          file=_sys.stderr)
                 continue
             if _normalize_partitions(s):
                 changed += 1
