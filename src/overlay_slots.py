@@ -89,7 +89,6 @@ def build_script_slot_map(layout=None) -> dict:
     """Scan every enabled mod's RaceMenuBase scripts (loose + BSA `.psc`) and
     return {rel_texture_path: frozenset(slots)} -- the slots RaceMenu registers
     each overlay texture into. Cached per mods root. Empty if no mods root."""
-    from pathlib import Path
     mr = _paths.mods_root()
     key = str(mr) if mr is not None else ""
     cached = _slot_map_cache.get(key)
@@ -132,9 +131,3 @@ def build_script_slot_map(layout=None) -> dict:
     out = {rel: frozenset(slots) for rel, slots in acc.items()}
     _slot_map_cache[key] = out
     return out
-
-
-def script_slots(rel_path: str, layout=None) -> "frozenset | None":
-    """The slot set RaceMenu registers `rel_path` into, or None if no script
-    registers it (caller should fall back to the keyword classifier)."""
-    return build_script_slot_map(layout).get(rel_path.replace("\\", "/").lower())

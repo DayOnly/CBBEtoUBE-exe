@@ -97,7 +97,6 @@ def generate_armor_tri(
     *,
     body_shape_name: str = "BaseShape",
     include_body_shapes: bool | set[str] = True,
-    k: int = 4,
     min_delta: float = DEFAULT_TRI_MIN_DELTA,
     carrier_shape_name: str | None = None,
     extra_body_osds: "dict[str, OsdFile] | None" = None,

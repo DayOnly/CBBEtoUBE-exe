@@ -442,11 +442,6 @@ def build_region_correspondence(region: str, weight: str = "_1"
     return build_overlay_correspondence(cbbe, ube, prefer)
 
 
-def build_body_overlay_correspondence(weight: str = "_1") -> "OverlayCorrespondence | None":
-    """Back-compat: the BODY correspondence."""
-    return build_region_correspondence("body", weight)
-
-
 def convert_overlay(src_dds, out_dds, corr, texconv, workdir):
     """Read one overlay DDS, transfer it to UBE UV, write the BC3 result."""
     src = dds_to_rgba(src_dds, texconv, workdir)
@@ -879,16 +874,6 @@ def convert_overlays(output_dir, layout, *, regions=("body", "hands", "feet"),
         f"({', '.join(f'{r}={c}' for r, c in per_region.items())})")
     return {"converted": n, "failed": failed, "total": total,
             "per_region": per_region}
-
-
-def convert_body_overlays(output_dir, layout, **kw) -> dict:
-    """Back-compat: body overlays only."""
-    return convert_overlays(output_dir, layout, regions=("body",), **kw)
-
-
-def discover_body_overlays(layout) -> "dict[str, tuple]":
-    """Back-compat: just the body overlays as {rel: source}."""
-    return discover_overlays(layout, regions=("body",)).get("body", {})
 
 
 # ---------- multi-slot FEET pass (Papyrus repoint) --------------------------

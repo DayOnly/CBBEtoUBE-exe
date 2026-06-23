@@ -246,7 +246,7 @@ def _reindex_alt_texture_payload(data: bytes,
             nl = struct.unpack_from("<I", data, p)[0]; p += 4
             name = data[p:p + nl]; p += nl
             txst = struct.unpack_from("<I", data, p)[0]; p += 4
-            _idx = struct.unpack_from("<I", data, p)[0]; p += 4
+            p += 4   # skip the (unused here) 3D-index field
             entries.append((name, txst))
     except Exception:
         return None
@@ -2633,7 +2633,6 @@ def _default_nif_has_bodytri(nif_path: Path) -> bool:
 # --------------------------------------------------------------------------
 
 # TES4 record flags
-TES4_FLAG_ESM = 0x00000001   # Master file (.esm)
 TES4_FLAG_ESL = 0x00000200   # Light plugin (compact form ID range)
 
 # ESL own-record FormID range: 0x800-0xFFF = 2048 slots.
