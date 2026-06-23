@@ -274,14 +274,35 @@ def generate_armor_tri(
                             a2[vi] = (d0, d1, d2)
                     dB[m.name] = a2
                 dense[Bn] = dB
+            # A's OWN propagated per-slider deltas, preserved where A does NOT
+            # overlap an under-layer. A garment caught by the size gate but only
+            # PARTLY overlapping (e.g. a shirt whose sleeves sit over undersleeves
+            # but whose chest has no cloth under-layer) must keep its own
+            # chest/breast morphs -- replacing ALL of them with the (arm-only)
+            # under-layer sync was silently dropping the chest conform.
+            own_dense = {}
+            for m in shape_morphs.get(A, []):
+                a2 = np.zeros((len(av), 3), dtype=np.float64)
+                for (vi, d0, d1, d2) in m.offsets:
+                    if 0 <= vi < len(a2):
+                        a2[vi] = (d0, d1, d2)
+                own_dense[m.name] = a2
+            sync_idx = np.where(okv)[0]
+            all_sliders = set(own_dense)
+            for Bn in dense:
+                all_sliders |= set(dense[Bn])
             new_morphs = []
-            for sl in set().union(*(set(dense[Bn]) for Bn in dense)):
-                arr = np.zeros((len(av), 3), dtype=np.float64)
-                for vi in np.where(okv)[0]:
+            for sl in all_sliders:
+                base_arr = own_dense.get(sl)
+                arr = (base_arr.copy() if base_arr is not None
+                       else np.zeros((len(av), 3), dtype=np.float64))
+                # MERGE: sync ONLY the overlapping verts to the under-layer
+                # (lockstep); a vert whose under-layer lacks this slider follows
+                # it to zero. Non-overlapping verts keep A's own morph.
+                for vi in sync_idx:
                     Bn, Bi = under_tag[idu[vi]]
                     da = dense.get(Bn, {}).get(sl)
-                    if da is not None:
-                        arr[vi] = da[Bi]
+                    arr[vi] = da[Bi] if da is not None else 0.0
                 mag = np.linalg.norm(arr, axis=1)
                 keep = np.where(mag >= min_delta)[0]
                 if len(keep):
