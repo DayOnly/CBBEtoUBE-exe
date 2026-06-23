@@ -1004,6 +1004,12 @@ def auto_convert_mod(
             rel_key = rel.lower()
             slot_bits = nif_slot_map.get(rel_key, 0)
             dst = nif_dst_root / Path(rel)
+            # SECURITY: `rel` can derive from a mod-controlled ARMA model path /
+            # BSA name; refuse `..`/absolute traversal outside the output meshes.
+            if not paths.is_within_dir(nif_dst_root, dst):
+                print(f"  !! refusing traversal output path for {rel!r}",
+                      file=sys.stderr)
+                continue
             # First-writer wins: skip paths already claimed by an earlier source mod.
             if claimed_dst_paths is not None:
                 key = dst.resolve()
@@ -2310,6 +2316,13 @@ class _BsaMeshIndex:
         rel = internal.replace("\\", "/")
         rel = rel[7:] if rel.lower().startswith("meshes/") else rel
         out = self._staging / "meshes" / rel
+        # SECURITY: the BSA internal name is attacker-controlled; refuse any
+        # `..`/absolute traversal that would write outside the staging dir.
+        if not paths.is_within_dir(self._staging / "meshes", out):
+            print(f"  !! BSA extract: refusing traversal path {internal!r}",
+                  file=sys.stderr)
+            self._out[key] = None
+            return None
         try:
             out.parent.mkdir(parents=True, exist_ok=True)
             out.write_bytes(data)

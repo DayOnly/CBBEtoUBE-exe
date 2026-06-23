@@ -130,7 +130,19 @@ class Record:
                 raise ValueError(
                     "compressed record payload too short for its size header")
             uncomp_size = struct.unpack_from("<I", payload, 0)[0]
-            payload = zlib.decompress(payload[4:])
+            # SECURITY: zlib amplifies ~1000x. Cap the declared size AND bound the
+            # actual inflation (decompressobj with max_length) so a crafted record
+            # can't OOM the process before the size check below ever runs.
+            _MAX_DECOMP = 128 * 1024 * 1024
+            if uncomp_size > _MAX_DECOMP:
+                raise ValueError(
+                    f"compressed record declares {uncomp_size} bytes "
+                    f"(> {_MAX_DECOMP} cap)")
+            _dco = zlib.decompressobj()
+            payload = _dco.decompress(payload[4:], uncomp_size + 64)
+            if _dco.unconsumed_tail:
+                raise ValueError(
+                    "compressed record inflates past its declared size")
             # Clear the compressed flag since we hold the inflated version
             flags &= ~FLAG_COMPRESSED
             if len(payload) != uncomp_size:

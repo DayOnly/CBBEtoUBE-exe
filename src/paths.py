@@ -49,6 +49,22 @@ MO2_INI_ENV = "CBBE2UBE_MO2_INI"
 GAME_DATA_ENV = "CBBE2UBE_GAME_DATA"
 
 
+def is_within_dir(base, target) -> bool:
+    """True if `target` resolves to a path inside `base` (or equals it).
+
+    SECURITY: defends against path traversal from UNTRUSTED mod-supplied strings
+    (BSA internal names, ARMA model paths, texture paths). A `..\\..\\` sequence
+    or an absolute path that escapes `base` returns False, so the caller can skip
+    the write instead of clobbering a file outside the output sandbox.
+    `resolve()` normalizes `..` lexically even for not-yet-existing paths."""
+    try:
+        base_r = Path(base).resolve()
+        target_r = Path(target).resolve()
+    except Exception:
+        return False
+    return target_r == base_r or base_r in target_r.parents
+
+
 # --------------------------------------------------------------------------
 # ModOrganizer.ini parsing
 # --------------------------------------------------------------------------

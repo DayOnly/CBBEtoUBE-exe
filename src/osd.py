@@ -95,15 +95,24 @@ class OsdFile:
             raise ValueError(f"not an OSD file (magic={data[:4]!r})")
         version = struct.unpack_from("<I", data, 4)[0]
         morph_count = struct.unpack_from("<I", data, 8)[0]
+        # SECURITY: clamp a crafted morph_count (each morph needs >=3 bytes) so a
+        # tiny file can't drive millions of object allocations -> OOM.
+        morph_count = min(morph_count, len(data) // 3, 100_000)
         p = 12
 
         morphs: list[OsdMorph] = []
         for _ in range(morph_count):
+            if p + 1 > len(data):
+                break
             name_len = data[p]; p += 1
             name = data[p:p + name_len].decode("utf-8", errors="replace")
             p += name_len
+            if p + 2 > len(data):
+                break
             num_offsets = struct.unpack_from("<H", data, p)[0]; p += 2
             # offsets table: 14 bytes per entry (2 uint16 + 12 float32)
+            if p + num_offsets * 14 > len(data):
+                break  # truncated/crafted offsets table -> stop cleanly
             offsets = []
             for _ in range(num_offsets):
                 vert_idx = struct.unpack_from("<H", data, p)[0]

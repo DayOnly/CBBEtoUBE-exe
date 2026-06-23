@@ -119,7 +119,12 @@ class TriFile:
         version = struct.unpack_from("<H", data, 4)[0]
         p = 6
         shapes: list[TriShape] = []
+        # SECURITY: a crafted .tri (each shape can be ~4 bytes) could spawn
+        # millions of objects -> OOM. A real TRI has hundreds of shapes.
+        _MAX_SHAPES = 100_000
         while p < len(data) - 3:
+            if len(shapes) >= _MAX_SHAPES:
+                break
             # Defensive: a valid shape-name-length byte should be 1-255
             # AND followed by printable ASCII. If we see e.g. 02 00 09
             # (the addendum separator pattern), it doesn't parse as a

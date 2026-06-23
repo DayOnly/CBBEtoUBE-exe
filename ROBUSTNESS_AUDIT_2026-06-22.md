@@ -175,3 +175,43 @@ no-physics / no-morph). stale-chain-bone guard left as-is (backstopped by valida
 - nif_errors, nif_load_failures, esp_gen_failures, nif_partial/dropped_shapes, per-source
   raises, merge-blockers all force exit 2. GUI + frozen exe propagate the code.
 - iter_subrecords is bounds-checked.
+
+---
+
+# Security audit (untrusted mod input) - 2026-06-23 (suite -> 366, all green)
+
+Threat model: a malicious/malformed mod the user installs and runs the converter over;
+local execution, user privileges, OUTSIDE the game sandbox. ALL of S1-S6 FIXED.
+No shell injection exists (both subprocess calls use list-arg form); no eval/exec/pickle
+of mod data. Tests: tests/test_security_audit.py (6).
+
+### [x] S1 - BSA "zip-slip" -> arbitrary file write outside the output sandbox  (FIXED) [HIGH]
+A mod's BSA internal name (and ARMA model path) was joined to disk with NO `..`
+sanitization at auto_convert.py:2312 (staging, raw BSA bytes) + :1006 (output NIF) +
+overlay_transfer.py:837 (overlay DDS) -> a crafted name like
+`meshes\..\..\..\Startup\x.bat` writes attacker content outside output_dir (persistence/RCE).
+FIX: new `paths.is_within_dir(base, target)` (resolve + containment); all 3 write sites
+refuse a traversal path (skip + stderr / raise).
+
+### [x] S2 - texconv search-path hijack -> RCE  (FIXED) [HIGH, opt-in]
+overlay_transfer.py find_texconv did `rglob("[Tt]exconv*.exe")` over the mods/ tree and
+executed cands[0] -> a mod planting Texconv*.exe = code execution (overlay feature only).
+FIX: dropped the mods/ scan; only the instance tools/ dir + PATH are searched.
+
+### [x] S3 - ESP record decompression bomb  (FIXED) [MEDIUM DoS]
+esp.py:133 zlib.decompress had no output bound (the uncomp_size check ran AFTER inflation;
+~1000x amplification, 10MB -> 10GB, every source ESP). FIX: cap declared size (128MB) +
+bounded decompressobj(max_length) that rejects inflation past the declared size.
+
+### [x] S4 - TRI shape-count object explosion  (FIXED) [MEDIUM DoS]
+tri.py shape loop built one object per ~4 bytes, no cap (16MB -> 4M objects). Reachable via
+a mod NIF BODYTRI -> crafted .tri. FIX: _MAX_SHAPES=100k cap.
+
+### [x] S5 - HDT-SMP XML "billion laughs"  (FIXED) [LOW-MEDIUM]
+hdt_xml_gen.py:630 ET.parse on a mod's source XML, no entity cap (XXE not exploitable on
+stdlib ET; internal entity expansion is). FIX: reject any XML with DOCTYPE/ENTITY (and
+absurdly large files) before parsing.
+
+### [x] S6 - OSD morph_count bomb  (FIXED, was latent) [LOW]
+osd.py:97 unbounded morph_count loop (only the bundled OSD is parsed today, so latent).
+FIX: clamp morph_count to min(declared, len//3, 100k) + per-iter truncation guards.

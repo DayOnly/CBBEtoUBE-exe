@@ -66,9 +66,14 @@ _TEXCONV_CACHE: "list[Path | None]" = []
 
 def find_texconv() -> "Path | None":
     """Locate texconv(.exe). Order: env CBBE2UBE_TEXCONV, then the MO2 instance
-    tools/ tree, then a bounded scan of the mods root, then PATH. Prefers the
-    x64 build. Cached. Returns None if not found (the caller disables the
-    overlay feature with a clear message -- it's opt-in anyway)."""
+    tools/ tree, then PATH. Prefers the x64 build. Cached. Returns None if not
+    found (the caller disables the overlay feature with a clear message -- it's
+    opt-in anyway).
+
+    SECURITY: deliberately does NOT scan the mods/ tree. A malicious mod could
+    plant a Texconv*.exe there and the rglob would execute it (search-path
+    hijack -> RCE). texconv lives in the instance tools/ dir or on PATH, never
+    inside an installed mod."""
     if _TEXCONV_CACHE:
         return _TEXCONV_CACHE[0]
     found: "Path | None" = None
@@ -79,8 +84,9 @@ def find_texconv() -> "Path | None":
         roots: list[Path] = []
         mr = _paths.mods_root()
         if mr is not None:
-            roots.append(mr.parent / "tools")   # <instance>/tools
-            roots.append(mr)                     # mods/ (some tool mods ship it)
+            roots.append(mr.parent / "tools")   # <instance>/tools (trusted)
+            # NOT mods/: a malicious mod could plant Texconv*.exe there and the
+            # rglob below would execute it (search-path hijack -> RCE).
         for root in roots:
             if found is not None or not root.is_dir():
                 break
@@ -834,8 +840,12 @@ def convert_overlays(output_dir, layout, *, regions=("body", "hands", "feet"),
                     raise RuntimeError("BSA extract returned no data")
                 src_dds = w / "src.dds"
                 src_dds.write_bytes(data)
-            convert_overlay(src_dds, out_root / rel.replace("/", "\\"),
-                            _corr, texconv, w)
+            out_dds = out_root / rel.replace("/", "\\")
+            # SECURITY: `rel` derives from a mod-controlled (BSA) texture name;
+            # refuse `..`/absolute traversal outside the overlay output root.
+            if not _paths.is_within_dir(out_root, out_dds):
+                raise RuntimeError(f"refusing overlay traversal path: {rel!r}")
+            convert_overlay(src_dds, out_dds, _corr, texconv, w)
             return rel
 
         rn = 0
