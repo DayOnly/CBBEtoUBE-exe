@@ -357,6 +357,105 @@ def reconcile_alt_texture_indices_all(primary_esp_path, meshes_root) -> int:
     return total
 
 
+# ----- redundant armature dedup (double body-swap render) -----------------
+# A body-armor ARMO can end up referencing TWO of THIS patch's own UBE ARMAs that
+# carry the SAME primary race (RNAM) AND the SAME male/female meshes (MOD2/MOD3) --
+# e.g. when the armor's source ARMA was overridden by both a master and a patch and
+# each path contributed a mint, and the merge dedups whole ARMO records but not the
+# armature refs WITHIN one. For a UBE-race wearer BOTH resolve, so the engine renders
+# the same body-swap mesh twice, overlapping -> the doubled/blown-out, double-morphed
+# render reads in-game as "the armor doesn't fit the body / doesn't conform".
+
+def _arma_dedup_identity(arma_payload: bytes):
+    """(rnam, mod2_lower, mod3_lower, subrecord_count) for an ARMA payload --
+    the render identity (race + meshes) plus a completeness tiebreak."""
+    rnam = mod2 = mod3 = None
+    n = 0
+    for sig, d in esp.iter_subrecords(arma_payload):
+        n += 1
+        if sig == b"RNAM":
+            rnam = d
+        elif sig == b"MOD2":
+            mod2 = d.rstrip(b"\x00").lower()
+        elif sig == b"MOD3":
+            mod3 = d.rstrip(b"\x00").lower()
+    return (rnam, mod2, mod3, n)
+
+
+def dedup_armo_armature_refs(esp_path) -> int:
+    """In each ARMO, drop redundant armature refs that point at THIS patch's OWN
+    ARMAs sharing the same (RNAM, MOD2, MOD3) -- keeping the most complete one
+    (most subrecords). Vanilla/master armatures are never touched. Returns the
+    number of refs removed. Run AFTER the merge. See the block comment above."""
+    e = esp.ESP.load(esp_path)
+    own_byte = len(e.header.masters)
+    own_arma_identity: "dict[int, tuple]" = {}
+    for g in e.groups:
+        if g.label != b"ARMA":
+            continue
+        for r in g.records:
+            if ((r.formid >> 24) & 0xFF) == own_byte:
+                own_arma_identity[r.formid] = _arma_dedup_identity(r.payload)
+    removed = 0
+    for g in e.groups:
+        if g.label != b"ARMO":
+            continue
+        for r in g.records:
+            refs = [struct.unpack("<I", d)[0]
+                    for sig, d in esp.iter_subrecords(r.payload)
+                    if sig == b"MODL" and len(d) == 4]
+            if len(refs) < 2:
+                continue
+            # group OWN armature refs by render identity; a group with >1 member
+            # is a duplicate -> keep the most-complete fid, drop the rest.
+            by_key: "dict[tuple, list]" = {}
+            for fid in refs:
+                ident = own_arma_identity.get(fid)
+                if ident is None:
+                    continue                 # vanilla/master ARMA -> leave alone
+                by_key.setdefault(ident[:3], []).append((fid, ident[3]))
+            keeper_for: "dict[tuple, int]" = {}
+            for key, members in by_key.items():
+                if len(members) < 2:
+                    continue
+                members.sort(key=lambda m: m[1], reverse=True)   # most complete first
+                keeper_for[key] = members[0][0]
+            if not keeper_for:
+                continue
+            # Rebuild: for a duplicated identity, keep ONLY the keeper fid's FIRST
+            # occurrence (handles the same-fid-listed-twice case: a set-based drop
+            # would remove BOTH and leave the ARMO armature-less -> invisible).
+            emitted: set = set()
+            out = b""
+            for sig, d in esp.iter_subrecords(r.payload):
+                if sig == b"MODL" and len(d) == 4:
+                    fid = struct.unpack("<I", d)[0]
+                    ident = own_arma_identity.get(fid)
+                    if ident is not None and ident[:3] in keeper_for:
+                        key = ident[:3]
+                        if fid == keeper_for[key] and key not in emitted:
+                            emitted.add(key)
+                        else:
+                            removed += 1
+                            continue          # redundant duplicate -> drop
+                out += esp.encode_subrecord(sig, d)
+            r.payload = out
+    if removed:
+        e.save(esp_path)
+    return removed
+
+
+def dedup_armo_armature_refs_all(primary_esp_path) -> int:
+    """Dedup armature refs across the primary merged ESP AND every ESL-split
+    piece (`<stem>.esp`, `<stem>2.esp`, ...). Returns total refs removed."""
+    from pathlib import Path as _Path
+    p = _Path(primary_esp_path)
+    total = 0
+    for piece in sorted(p.parent.glob(f"{p.stem}*{p.suffix}")):
+        total += dedup_armo_armature_refs(piece)
+    return total
+
+
 # ----- spurious hands-slot fix (invisible hands) --------------------------
 # A forearm bracer that claims biped slot 33 (Hands) but has no hand geometry
 # causes the engine to hide the actor's nude-hands skin and draw nothing instead
