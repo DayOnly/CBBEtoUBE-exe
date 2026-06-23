@@ -2085,19 +2085,22 @@ def validate_patch(esp_path: str | Path,
             f"Examples: {modt_examples}. Fix: route the MO?T through normalize_modt."
         )
 
-    # ESL flag consistency.
+    # ESL flag consistency. The light-plugin FormID space (capped at
+    # ESL_MAX_OWN_RECORDS) is consumed by EVERY new own-index record, not just
+    # ARMA. Today the converter only mints own-index ARMA (ARMO overrides keep
+    # their master FormID), so counting ARMA-only gives the same number -- but
+    # counting ALL own-index records is future-proof: a later non-ARMA own-index
+    # mint would otherwise silently under-count and re-open the overflow-CTD class.
     if e.header.flags & TES4_FLAG_ESL:
-        own_arma_count = 0
+        own_new_count = 0
         for g in e.groups:
-            if g.label != b"ARMA":
-                continue
             for r in g.records:
                 if ((r.formid >> 24) & 0xFF) == own_byte:
-                    own_arma_count += 1
-        if own_arma_count > ESL_MAX_OWN_RECORDS:
+                    own_new_count += 1
+        if own_new_count > ESL_MAX_OWN_RECORDS:
             warnings.append(
-                f"esl-overflow: ESL flag set but own ARMA count "
-                f"{own_arma_count} > {ESL_MAX_OWN_RECORDS} slot limit"
+                f"esl-overflow: ESL flag set but own new-record count "
+                f"{own_new_count} > {ESL_MAX_OWN_RECORDS} slot limit"
             )
 
     # ARMO MODL-before-DATA check + ARMO-missing-FULL check.
