@@ -138,7 +138,14 @@ def _warmup_worker(barrier, ube_body_ref_path: "str | None") -> "tuple[int, floa
     except Exception:
         pass
     elapsed = perf_counter() - t0
-    barrier.wait()  # block until every worker has claimed an init task
+    # Block until every worker has claimed an init task -- but WITH a timeout, so
+    # a sibling worker dying mid-warm-up (native crash before it reaches the
+    # barrier) can't wedge the survivors forever. The first waiter to time out
+    # breaks the barrier and releases all the rest with BrokenBarrierError.
+    try:
+        barrier.wait(timeout=300)
+    except Exception:
+        pass  # broken/timed-out barrier: warm-up is best-effort, just proceed
     return (os.getpid(), elapsed)
 
 
@@ -188,6 +195,128 @@ def _prewarm_pool(
               f"(per-worker init avg {sum(init_times)/len(init_times):.1f}s, "
               f"max {max(init_times):.1f}s, "
               f"{len(pids)} distinct worker PID(s))")
+
+
+class _NifPool:
+    """Self-healing wrapper around the batch-shared NIF-conversion process pool.
+
+    A native pynifly C++ crash kills a worker process, which `ProcessPoolExecutor`
+    can't catch -- it marks the WHOLE pool broken, so every later `submit` raises.
+    With one batch-global pool that previously meant a single bad NIF poisoned the
+    rest of its mod AND every subsequent mod (all their meshes erroring out,
+    invisible in-game). This wrapper rebuilds the pool after a break and re-runs
+    the not-yet-completed items in ISOLATION (one at a time) so the true crasher
+    is identified with certainty and dropped, while every innocent NIF still
+    converts. The same object is threaded through the whole batch, so the rebuilt
+    pool carries forward -- no cross-mod cascade.
+    """
+
+    # Stop rebuilding once this many ISOLATED items crash back-to-back: that's a
+    # systemic failure (e.g. a broken pynifly DLL), not one poison NIF, so further
+    # rebuilds are pointless churn -- error the rest and move on.
+    GIVE_UP_AFTER = 5
+
+    def __init__(self, max_workers, ube_body_ref_path=None, *,
+                 pool_factory=None):
+        self.max_workers = max(1, int(max_workers))
+        self._ube_ref = ube_body_ref_path
+        # Injectable for tests; defaults to a real ProcessPoolExecutor.
+        self._factory = pool_factory or (
+            lambda: ProcessPoolExecutor(max_workers=self.max_workers))
+        self.pool = None
+        self.rebuilds = 0
+        self._ensure()
+
+    def _ensure(self):
+        if self.pool is None:
+            self.pool = self._factory()
+
+    def prewarm(self):
+        self._ensure()
+        _prewarm_pool(self.pool, self.max_workers, self._ube_ref)
+
+    def _rebuild(self):
+        old = self.pool
+        self.pool = None
+        if old is not None:
+            try:
+                old.shutdown(wait=False)   # workers already dead; don't block
+            except Exception:
+                pass
+        self.rebuilds += 1
+        self._ensure()
+
+    def shutdown(self):
+        if self.pool is not None:
+            try:
+                self.pool.shutdown(wait=True)
+            except Exception:
+                pass
+            self.pool = None
+
+    def run_batch(self, work_items, on_result, *, fn=None):
+        """Run `fn` (default `_nif_convert_worker`) over every item, calling
+        `on_result(ConvertResult)` exactly once per item. Survives worker process
+        death: the crasher surfaces as an error result, all others convert."""
+        fn = fn or _nif_convert_worker
+        items = list(work_items)
+        if not items:
+            return
+        remaining = self._run_parallel(items, on_result, fn)
+        if remaining:
+            self._run_isolated(remaining, on_result, fn)
+
+    def _run_parallel(self, items, on_result, fn):
+        """Submit all items at once; deliver every result that completed cleanly,
+        and return the items whose futures broke (the crasher + any in-flight
+        bystanders) for isolated recovery. Rebuilds the pool if anything broke."""
+        self._ensure()
+        try:
+            fut_to_item = {self.pool.submit(fn, it): it for it in items}
+        except Exception:
+            # Pool already broken at submit time -> nothing ran; recover all.
+            self._rebuild()
+            return items
+        remaining = []
+        broke = False
+        for fut in as_completed(fut_to_item):
+            it = fut_to_item[fut]
+            try:
+                on_result(fut.result())
+            except Exception:
+                broke = True          # worker death: this item didn't complete
+                remaining.append(it)
+        if broke:
+            self._rebuild()
+        return remaining
+
+    def _run_isolated(self, items, on_result, fn):
+        """Re-run the uncertain items one at a time on a healthy pool. With a
+        single item in flight, a pool break unambiguously blames THAT item, so we
+        error exactly the crasher and rebuild for the next. Bounded by
+        GIVE_UP_AFTER consecutive crashes (systemic failure)."""
+        consec_crashes = 0
+        give_up = False
+        for it in items:
+            if give_up:
+                on_result(nif_convert.ConvertResult(
+                    src_path=it[0], dst_path=None, status="error",
+                    reason="worker pool unrecoverable (systemic crash); "
+                           "NIF not attempted"))
+                continue
+            self._ensure()
+            try:
+                on_result(self.pool.submit(fn, it).result())
+                consec_crashes = 0
+            except Exception as e:
+                on_result(nif_convert.ConvertResult(
+                    src_path=it[0], dst_path=None, status="error",
+                    reason=f"worker process died (isolated convert): "
+                           f"{type(e).__name__}: {e}"))
+                self._rebuild()
+                consec_crashes += 1
+                if consec_crashes >= self.GIVE_UP_AFTER:
+                    give_up = True
 
 
 def _find_ube_body_ref(search_roots: list[Path] | None = None) -> Path | None:
@@ -580,7 +709,7 @@ def auto_convert_mod(
     # destroyed when a pool tears down. Sharing the pool keeps those
     # caches hot, cutting ~1-2s of init cost per worker per mod.
     # If None, a fresh pool is created and torn down within this call.
-    nif_pool: "ProcessPoolExecutor | None" = None,
+    nif_pool: "_NifPool | None" = None,
     # Where to write the per-source UBE patch ESP. Relative to
     # output_dir. Default `_unmerged_patches/` keeps individual
     # patches off MO2's plugin-scanner radar (MO2 only loads .esp
@@ -930,36 +1059,31 @@ def auto_convert_mod(
             done = 0
             last_print = t_start
 
-            def _drain(p):
+            def _on_result(r):
                 nonlocal done, last_print
-                try:
-                    fut_to_item = {p.submit(_nif_convert_worker, item): item
-                                   for item in work_items}
-                except Exception as _se:
-                    # Pool already broken (a prior NIF crashed a worker process).
-                    # Record every item as an error rather than aborting silently.
-                    for item in work_items:
-                        result.nif_results.append(nif_convert.ConvertResult(
-                            src_path=item[0], dst_path=None, status="error",
-                            reason=f"worker pool broken before submit: {_se!r}"))
-                    return
-                for fut in as_completed(fut_to_item):
-                    r = _drain_result(fut, fut_to_item[fut])
-                    result.nif_results.append(r)
-                    done += 1
-                    now = time.perf_counter()
-                    if now - last_print >= 5.0 or done == len(work_items):
-                        rate = done / max(now - t_start, 1e-9)
-                        eta = (len(work_items) - done) / max(rate, 1e-9)
-                        print(f"    [{done}/{len(work_items)}] "
-                              f"{rate:.1f} NIF/s  ETA {eta:.0f}s")
-                        last_print = now
+                result.nif_results.append(r)
+                done += 1
+                now = time.perf_counter()
+                if now - last_print >= 5.0 or done == len(work_items):
+                    rate = done / max(now - t_start, 1e-9)
+                    eta = (len(work_items) - done) / max(rate, 1e-9)
+                    print(f"    [{done}/{len(work_items)}] "
+                          f"{rate:.1f} NIF/s  ETA {eta:.0f}s")
+                    last_print = now
 
-            if nif_pool is not None:
-                _drain(nif_pool)
+            # The pool self-heals: a worker PROCESS death (native pynifly crash ->
+            # BrokenProcessPool) is recovered by rebuilding and re-running the
+            # not-yet-done items in isolation, so only the true crasher is dropped
+            # -- not the rest of this mod, and (because the shared _NifPool
+            # persists) not every subsequent mod in the batch.
+            if isinstance(nif_pool, _NifPool):
+                nif_pool.run_batch(work_items, _on_result)
             else:
-                with ProcessPoolExecutor(max_workers=nif_workers) as pool:
-                    _drain(pool)
+                _local_pool = _NifPool(nif_workers)
+                try:
+                    _local_pool.run_batch(work_items, _on_result)
+                finally:
+                    _local_pool.shutdown()
         elapsed = time.perf_counter() - t_start
         if len(work_items) > 0:
             rate = len(work_items) / max(elapsed, 1e-9)
@@ -991,7 +1115,10 @@ def auto_convert_mod(
                 except OSError:
                     pass  # fall through to copy on any stat failure
                 out.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(f, out)
+                # Atomic: a kill / ENOSPC / locked dst mid-copy must never leave a
+                # truncated DDS (corrupt/garbage texture) in the deployed output.
+                from .atomic_io import atomic_copy
+                atomic_copy(f, out)
                 count += 1
             result.textures_copied = count
             if skipped_current:
@@ -1492,11 +1619,11 @@ def _cmd_convert(args):
         pool_workers = args.workers
         if pool_workers is None:
             pool_workers = max(1, (os.cpu_count() or 4) - 1)
-        shared_pool = ProcessPoolExecutor(max_workers=pool_workers)
+        shared_pool = _NifPool(pool_workers, args.ube_body_ref)
         print(f"  batch worker pool: {pool_workers} workers "
-              f"(shared across all sources)")
+              f"(shared across all sources, self-healing on worker crash)")
         try:
-            _prewarm_pool(shared_pool, pool_workers, args.ube_body_ref)
+            shared_pool.prewarm()
         except Exception as e:
             print(f"  !! pre-warm failed (non-fatal): {e!r}")
 
@@ -1617,7 +1744,7 @@ def _cmd_convert(args):
                 print(f"!! conversion failed: {e!r}")
     finally:
         if shared_pool is not None:
-            shared_pool.shutdown(wait=True)
+            shared_pool.shutdown()
         _BATCH_BSA_INDEX = None   # release BSA archives after the batch
 
     print(f"\n=== batch auto-conversion done ({len(results)} mod(s)) ===")
@@ -1668,11 +1795,15 @@ def _cmd_convert(args):
                 print(f"       {p}")
             overall_failures += 1
         if r.nif_invariant_warnings:
-            print(f"    !! POSTFLIGHT NIF: {len(r.nif_invariant_warnings)} "
-                  "invariant issue(s) (zero-vert / over-cap partition):")
+            # CTD-class, symmetric with the merged-ESP postflight: a zero-vert
+            # shape is invisible and an over-cap shape left in <=1 partition
+            # hard-CTDs on equip. Fail the build, don't just warn.
+            print(f"    !! POSTFLIGHT NIF (CTD-class): "
+                  f"{len(r.nif_invariant_warnings)} invariant issue(s) "
+                  "(zero-vert / over-cap partition -> equip CTD):")
             for w in r.nif_invariant_warnings:
                 print(f"       {w}")
-            overall_warnings += len(r.nif_invariant_warnings)
+            overall_failures += len(r.nif_invariant_warnings)
         # ESP generation failure: that ESP's ARMA/ARMO absent from merge (invisible).
         # Non-zero exit, but NOT a merge_blocker (one bad ESP shouldn't lose the rest).
         if r.esp_gen_failures:
@@ -2765,6 +2896,11 @@ def _cmd_auto(args):
         incremental=getattr(args, "incremental", False),
     )
     rc = _cmd_convert(conv)
+    # The post-merge coverage phases below generate the REQUIRED race-compat /
+    # mod-coverage ESPs, but they run AFTER rc was fixed by the convert above.
+    # Track their failures so an exception there still fails the run instead of
+    # silently exiting 0 with armor that's invisible on UBE races.
+    post_merge_failures = 0
 
     # Vanilla race coverage: non-body items no mod replaces (helmets, jewelry).
     # Vanilla body-slot armor is also covered by the standalone pass below.
@@ -2798,6 +2934,7 @@ def _cmd_auto(args):
                     vanilla_converted = vstats.get("converted_rel_paths", set())
                 except Exception as e:
                     print(f"  !! standalone vanilla body armour skipped: {e!r}")
+                    post_merge_failures += 1
 
             print(f"\n--- vanilla race-compat patch -> {vc_out.name} ---")
             try:
@@ -2839,8 +2976,10 @@ def _cmd_auto(args):
                                   f"{rs.get('reason')}")
                     except Exception as e:
                         print(f"  !! UBE race-skin fold failed: {e!r}")
+                        post_merge_failures += 1
             except Exception as e:
                 print(f"  !! vanilla-compat skipped: {e!r}")
+                post_merge_failures += 1
         else:
             print("  (no master data dirs found — skipping vanilla-compat)")
 
@@ -2870,9 +3009,11 @@ def _cmd_auto(args):
                 if ini_lines:
                     ini_path = (output / "SKSE" / "Plugins" / "SkyPatcher"
                                 / "armor" / "UBE_ModNonBody_Coverage.ini")
-                    ini_path.parent.mkdir(parents=True, exist_ok=True)
-                    ini_path.write_text("\n".join(ini_lines) + "\n",
-                                        encoding="utf-8")
+                    # Atomic: a partially-written SkyPatcher INI silently applies
+                    # only the surviving lines (some covered items stay invisible).
+                    from .atomic_io import atomic_write_bytes
+                    atomic_write_bytes(
+                        ini_path, ("\n".join(ini_lines) + "\n").encode("utf-8"))
                 print(f"  minted UBE ARMAs: {mnb.get('minted_armas')} "
                       f"| items covered: {mnb.get('armo_targets')} "
                       f"| masters: {mnb.get('masters')} "
@@ -2892,6 +3033,7 @@ def _cmd_auto(args):
                     print(f"  !! validator: {_vw[:5]}")
         except Exception as e:
             print(f"  !! mod non-body coverage skipped: {e!r}")
+            post_merge_failures += 1
 
     # Mod-defined body coverage: overhaul ARMOs that reuse a vanilla armature
     # whose mesh was converted, but the variant ARMO was never overridden ->
@@ -2921,9 +3063,11 @@ def _cmd_auto(args):
                 if ini_lines and mbd.get('armo_targets'):
                     ini_path = (output / "SKSE" / "Plugins" / "SkyPatcher"
                                 / "armor" / "UBE_ModBody_Coverage.ini")
-                    ini_path.parent.mkdir(parents=True, exist_ok=True)
-                    ini_path.write_text("\n".join(ini_lines) + "\n",
-                                        encoding="utf-8")
+                    # Atomic: a partially-written SkyPatcher INI silently applies
+                    # only the surviving lines (some covered items stay invisible).
+                    from .atomic_io import atomic_write_bytes
+                    atomic_write_bytes(
+                        ini_path, ("\n".join(ini_lines) + "\n").encode("utf-8"))
                 print(f"  minted UBE ARMAs: {mbd.get('minted_armas')} "
                       f"| body items covered: {mbd.get('armo_targets')} "
                       f"| masters: {mbd.get('masters')} "
@@ -2940,6 +3084,7 @@ def _cmd_auto(args):
                     print(f"  !! validator: {_vw[:5]}")
         except Exception as e:
             print(f"  !! mod body coverage skipped: {e!r}")
+            post_merge_failures += 1
 
     # OPT-IN: remap CBBE/3BA body overlays to UBE UV. Writes loose DDS at the
     # original texture paths so RaceMenu loads them via load order. Needs texconv.
@@ -2974,8 +3119,11 @@ def _cmd_auto(args):
     if mbd_esp_generated:
         _enable += (" + 'UBE_ModBody_Coverage.esp' "
                     "(REQUIRED for mod-defined body variants — see warning above)")
+    if post_merge_failures:
+        print(f"\n  !! {post_merge_failures} post-merge coverage phase(s) FAILED "
+              "-- some armor may be invisible on UBE races (see errors above).")
     print(f"\n=== auto: done — enable {_enable} in MO2. ===")
-    return rc
+    return rc or (2 if post_merge_failures else 0)
 
 
 def _cmd_discover_body_ref(args):
@@ -3029,6 +3177,24 @@ def _cmd_merge(args):
     print(f"  ARMO total: {stats.get('total_armo_records', '?')}"
           f" (dedup: {stats.get('armo_duplicates_merged', 0)} duplicates "
           "merged)")
+    # Postflight the FINAL merged output (+ any ESL split pieces) -- this is the
+    # exact artifact the validator exists to guard (master-ordering / ESL-overflow
+    # / malformed-MODT CTD class). The integrated auto/convert path already does
+    # this; the standalone `merge` subcommand must not skip it.
+    try:
+        _pf = ube_patcher.postflight_validate_combined(
+            Path(stats.get('output', args.output)), master_data_dirs=_mdd)
+        if _pf["ctd"]:
+            print(f"  !! POSTFLIGHT CTD on merged output: {len(_pf['ctd'])} "
+                  "load-breaking issue(s) -- NOT safe to load:")
+            for _piece, _w in _pf["ctd"]:
+                print(f"       {_piece}: {_w}")
+            return 2
+        if _pf["soft"]:
+            print(f"  postflight: {len(_pf['soft'])} soft warning(s) "
+                  "(invisible/cosmetic, non-fatal)")
+    except Exception as _pfe:
+        print(f"  !! postflight validation skipped: {_pfe!r}")
     return 0
 
 

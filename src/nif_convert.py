@@ -9146,6 +9146,8 @@ def convert_nif_phase2(
     # the CBBE bones our fabric is skinned to, keeping the fabric
     # attached to the morphed body. Hand-authored UBE conversions ship
     # this same extra-data on root.
+    hdt_injected = False     # True ONLY after the source XML ref is attached
+    _hdt_inject_err = None    # set if a FOUND source XML failed to attach
     try:
         hdt_xml_path = _find_hdt_xml_for_armor(src_path)
         # If source XML references chain bones we stripped, clear it so the
@@ -9173,8 +9175,14 @@ def convert_nif_phase2(
                 string_value=hdt_xml_path,
                 parent=dst_nif.rootNode,
             )
-    except Exception:
-        pass  # HDT injection is best-effort
+            hdt_injected = True
+    except Exception as _e:
+        # A FOUND source XML that fails to attach must NOT suppress the regen
+        # fallback below: the gate keys on hdt_injected (did we attach a ref?),
+        # not on hdt_xml_path (did we find one?). Capturing the error also lets
+        # us surface it -- otherwise the piece ships with no physics reference
+        # and no signal at all.
+        _hdt_inject_err = _e
 
     if failed:
         # Surface failures via the reason field — auto_convert's CLI
@@ -9186,6 +9194,9 @@ def convert_nif_phase2(
                          f"collision shape(s): {skipped_collision}")
     else:
         result_reason = ""
+    if _hdt_inject_err is not None:
+        result_reason = (result_reason + "; " if result_reason else "") \
+            + f"source HDT inject failed ({_hdt_inject_err!r}); fell back to regen"
 
     atomic_nif_save(dst_nif, dst_path)
 
@@ -9251,9 +9262,10 @@ def convert_nif_phase2(
     # Phase 2 HDT-SMP XML auto-gen. The phase 2 path defers HDT XML
     # injection until after the dst NIF is saved (cloth shapes need
     # to be enumerated from the dst NIF, which doesn't exist on disk
-    # until the save above). If the BLOCK above already injected a
-    # source HDT XML reference, skip auto-gen (we prefer hand-authored).
-    if hdt_xml_path is None:
+    # until the save above). Skip auto-gen only if the block above
+    # actually ATTACHED a source HDT reference (we prefer hand-authored);
+    # if it found one but failed to attach it, fall through and regen.
+    if not hdt_injected:
         try:
             generated_xml_path = _generate_hdt_xml_for_dst(dst_path)
             if generated_xml_path:

@@ -280,6 +280,10 @@ def reconcile_alt_texture_indices(esp_path, meshes_root) -> int:
     meshes_root = _Path(meshes_root)
     e = esp.ESP.load(esp_path)
     _cache: "dict[str, dict | None]" = {}
+    # Converted NIFs that EXIST but won't load: their alt-texture set keeps the
+    # stale source indices (color variants misalign). Distinct from a legitimately
+    # absent path (vanilla mesh the converter doesn't own) -- surface only these.
+    load_failed: "list[str]" = []
 
     def shapes_for(model_path: str):
         key = model_path.lower()
@@ -293,6 +297,7 @@ def reconcile_alt_texture_indices(esp_path, meshes_root) -> int:
                 idx = {s.name: i for i, s in enumerate(nf.shapes)}
         except Exception:
             idx = None
+            load_failed.append(model_path)
         _cache[key] = idx
         return idx
 
@@ -326,6 +331,12 @@ def reconcile_alt_texture_indices(esp_path, meshes_root) -> int:
             if changed:
                 r.payload = new_payload
                 fixed += 1
+    if load_failed:
+        import sys as _s
+        print(f"  !! alt-texture reconcile: {len(load_failed)} converted NIF(s) "
+              f"failed to load -> stale color-variant indices kept (variant "
+              f"textures may misalign): {sorted(set(load_failed))[:5]}",
+              file=_s.stderr)
     if fixed:
         e.save(esp_path)
     return fixed
@@ -1587,10 +1598,16 @@ def generate_ube_patch(
 
     master_armo_overrides: list[esp.Record] = []
     master_scan_stats: dict[str, int] = {}
+    # Masters we expected to scan for UBE-race ARMO coverage but couldn't load
+    # (not found under master_data_dirs, or unreadable). Surfaced as a warning so
+    # a silent coverage gap (armor invisible on UBE races) isn't swallowed.
+    master_scan_skipped: list[str] = []
     converted_arma_src_fids = set(new_arma_fids.keys())
     for master_name in src.header.masters:
         master_path = _find_master_path(master_name, master_data_dirs)
         if master_path is None:
+            if master_data_dirs:
+                master_scan_skipped.append(master_name)
             continue
         # Master's position in source ESP's master list.
         try:
@@ -1607,6 +1624,8 @@ def generate_ube_patch(
         try:
             master_esp = _load_master_cached(master_path)
         except Exception:
+            if master_data_dirs:
+                master_scan_skipped.append(master_name)
             continue
         master_own_byte = len(master_esp.header.masters)
 
@@ -1876,6 +1895,13 @@ def generate_ube_patch(
         output_esp_path,
         master_data_dirs=master_data_dirs,
     )
+    if master_scan_skipped:
+        validation_warnings = list(validation_warnings) + [
+            f"master-coverage-skipped: could not load "
+            f"{len(set(master_scan_skipped))} master(s) for the UBE-race ARMO "
+            f"override scan ({', '.join(sorted(set(master_scan_skipped)))}); "
+            f"armor defined there may be invisible on UBE-race actors"
+        ]
 
     return {
         "output": str(output_esp_path),
@@ -1895,6 +1921,12 @@ def generate_ube_patch(
 _POSTFLIGHT_CTD_PREFIXES = (
     "master-ordering", "esl-overflow", "formid-out-of-range",
     "formid-zero", "modt-malformed",
+    # validate_patch documents this as a silent FormID misroute / startup crash.
+    # Generation skips masters with unmappable transitives, so a hit on the final
+    # Combined means one slipped through -> fail the build. The check only fires
+    # on a master it can LOCATE, so an incomplete master_data_dirs makes it MISS,
+    # never false-positive.
+    "unmappable-master-ref",
 )
 
 
