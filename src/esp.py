@@ -111,6 +111,13 @@ class Record:
 
     @classmethod
     def parse(cls, data: bytes, offset: int) -> tuple["Record", int]:
+        # Defend the validator/loader against a truncated or corrupt input: raise
+        # a clean ValueError (catchable, descriptive) instead of a cryptic
+        # struct.error / an `assert` that `python -O` would strip.
+        if offset + RECORD_HEADER_SIZE > len(data):
+            raise ValueError(
+                f"truncated record header at offset {offset} "
+                f"(need {RECORD_HEADER_SIZE}, have {len(data) - offset})")
         sig = data[offset:offset+4]
         size = struct.unpack_from("<I", data, offset+4)[0]
         flags = struct.unpack_from("<I", data, offset+8)[0]
@@ -119,11 +126,16 @@ class Record:
         version_unk = struct.unpack_from("<I", data, offset+20)[0]
         payload = data[offset+24:offset+24+size]
         if flags & FLAG_COMPRESSED:
+            if len(payload) < 4:
+                raise ValueError(
+                    "compressed record payload too short for its size header")
             uncomp_size = struct.unpack_from("<I", payload, 0)[0]
             payload = zlib.decompress(payload[4:])
             # Clear the compressed flag since we hold the inflated version
             flags &= ~FLAG_COMPRESSED
-            assert len(payload) == uncomp_size
+            if len(payload) != uncomp_size:
+                raise ValueError(
+                    f"decompressed size {len(payload)} != declared {uncomp_size}")
         return cls(sig=sig, flags=flags, formid=formid,
                    timestamp_vc=timestamp_vc, version_unk=version_unk,
                    payload=payload), offset + 24 + size
@@ -153,8 +165,13 @@ class Group:
 
     @classmethod
     def parse(cls, data: bytes, offset: int) -> tuple["Group", int]:
+        if offset + GRUP_HEADER_SIZE > len(data):
+            raise ValueError(
+                f"truncated GRUP header at offset {offset} "
+                f"(need {GRUP_HEADER_SIZE}, have {len(data) - offset})")
         sig = data[offset:offset+4]
-        assert sig == b"GRUP", f"expected GRUP, got {sig!r}"
+        if sig != b"GRUP":
+            raise ValueError(f"expected GRUP at offset {offset}, got {sig!r}")
         size = struct.unpack_from("<I", data, offset+4)[0]
         label = data[offset+8:offset+12]
         gtype = struct.unpack_from("<i", data, offset+12)[0]
@@ -169,6 +186,8 @@ class Group:
             if inner_sig == b"GRUP":
                 # nested group — for v1 we don't recurse, just skip and warn
                 inner_size = struct.unpack_from("<I", data, inner+4)[0]
+                if inner_size < GRUP_HEADER_SIZE:
+                    break  # malformed/zero nested-GRUP size -> stop (no infinite loop)
                 inner += inner_size
                 continue
             rec, inner = Record.parse(data, inner)
