@@ -47,7 +47,6 @@ correctly on UBE characters), which is the realistic M4 in-game test.
 from __future__ import annotations
 
 import os
-import shutil
 import sys
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -92,20 +91,6 @@ def _nif_convert_worker(item: tuple) -> "nif_convert.ConvertResult":
             # Distinct from "skipped" (benign no-op); errors count as failures.
             reason=f"error: {type(e).__name__}: {e}",
         )
-
-
-def _drain_result(fut, item) -> "nif_convert.ConvertResult":
-    """`fut.result()`, or a synthetic error ConvertResult if the worker PROCESS
-    died (BrokenProcessPool / native pynifly crash). The worker already catches
-    Python-level exceptions; this guards the un-catchable process death so one
-    bad NIF surfaces as an error result instead of aborting -- and losing the
-    report for -- the whole batch."""
-    try:
-        return fut.result()
-    except Exception as e:
-        return nif_convert.ConvertResult(
-            src_path=item[0], dst_path=None, status="error",
-            reason=f"worker process died: {type(e).__name__}: {e}")
 
 
 def _warmup_worker(barrier, ube_body_ref_path: "str | None") -> "tuple[int, float]":
@@ -2453,13 +2438,9 @@ def _player_armor_mesh_bases(mod_dir: Path,
                     continue
                 rnam = None
                 slot = 0
-                edid = ""
                 models: list[str] = []
                 for sig, sd in _esp.iter_subrecords(rec.payload):
-                    if sig == b"EDID":
-                        edid = sd.rstrip(b"\x00").decode(
-                            "latin-1", errors="ignore").lower()
-                    elif sig == b"RNAM" and len(sd) == 4:
+                    if sig == b"RNAM" and len(sd) == 4:
                         rnam = _struct.unpack("<I", sd)[0]
                     elif sig in (b"BOD2", b"BODT") and len(sd) >= 4:
                         slot = _struct.unpack_from("<I", sd, 0)[0]

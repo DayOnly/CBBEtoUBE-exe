@@ -45,7 +45,6 @@ from __future__ import annotations
 
 import os
 import re
-import shutil
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -1702,9 +1701,6 @@ def validate_dst_nif(dst_path: "Path",
 # shapes with their canonical large vertex counts qualify (see M1_findings).
 # Smaller "VirtualBody" entries in a CBBE source are skirt/cloth collision
 # proxies and don't disqualify the file.
-UBE_BODY_SHAPE_NAMES = frozenset({
-    "BaseShape",  # canonical UBE body is 29298 verts; mod-specific BaseShapes are rare
-})
 # Vertex count thresholds used to distinguish UBE body shapes from
 # similarly-named collision proxies. UBE BaseShape ~29k, VirtualBody ~14k.
 _UBE_BASESHAPE_MIN_VERTS = 20_000
@@ -3260,10 +3256,6 @@ NON_CLOTH_SHAPE_KEYWORDS = (
 # matches hand-built convention more closely.
 BODYTRI_SHAPE_FLAGS_OPAQUE = 0x0000E   # bits 1, 2, 3 only — alpha-less cloth
 BODYTRI_SHAPE_FLAGS_ALPHA  = 0x8000E   # add bit 19 (alpha-sorter) when alpha is on
-# Back-compat alias for old callers that may still reference the old
-# uniform constant. New callers should use OPAQUE/ALPHA explicitly via
-# `_reset_morph_flags`.
-BODYTRI_SHAPE_FLAGS = BODYTRI_SHAPE_FLAGS_OPAQUE
 
 
 def _reset_morph_flags(shape) -> None:
@@ -3304,7 +3296,6 @@ SHADER_FLAGS_1_ENV_MAPPING_BIT = 0x80
 # SBP_54 + SBP_38 inside a slot-32 cuirass) silently fail to morph via
 # NioOverride; collapsing to SBP_32_BODY unblocks them.
 SBP_32_BODY_ID = 32
-SBP_32_BODY_NAME = "SBP_32_BODY"
 
 # Biped dismember slots that must NOT be merged into SBP_32_BODY.
 # Collapsing accessory slots (gauntlet/boot/helmet) renders that equip region
@@ -3312,11 +3303,6 @@ SBP_32_BODY_NAME = "SBP_32_BODY"
 # body-spanning shape corrupts the bone palette -> CTD on equip.
 # Calves (38) and modder leg slots are NOT preserved; collapsing them fixes
 # leg cloth partitions without known crashes.
-SBP_HEAD_ID = 30
-SBP_HAIR_ID = 31
-SBP_HANDS_ID = 33
-SBP_FOREARMS_ID = 34
-SBP_FEET_ID = 37
 PRESERVE_DISMEMBER_SLOTS = frozenset({
     30,  # head
     31,  # hair
@@ -8243,7 +8229,6 @@ def check_ube_nude_morph_files() -> "list[str]":
 # the phase-1 fit-path call site for the full rationale.
 BODY_SKIN_HAND_NAMES = frozenset({"Hands", "FemaleHands"})
 BODY_SKIN_FOOT_NAMES = frozenset({"Feet", "FemaleFeet"})
-BODY_SKIN_EXTREMITY_NAMES = BODY_SKIN_HAND_NAMES | BODY_SKIN_FOOT_NAMES
 
 # Detection patterns (broader than the exact-name sets above). Outfit
 # Studio / mod authors frequently suffix a duplicated body-skin hand/foot
