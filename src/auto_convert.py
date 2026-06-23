@@ -1976,6 +1976,17 @@ def _cmd_convert(args):
                                   "(handless forearm armor claiming slot 33)")
                     except Exception as e:
                         print(f"  !! hands-slot fix failed: {e!r}")
+                    # Dedup redundant own-ARMA armature refs: a body-armor ARMO that
+                    # ended up with two converter-minted UBE ARMAs of the SAME race +
+                    # meshes renders the body-swap mesh TWICE (doubled / blown-out /
+                    # double-morphed -> "doesn't fit / doesn't conform" in-game).
+                    try:
+                        ndd = ube_patcher.dedup_armo_armature_refs_all(merged_out)
+                        if ndd:
+                            print(f"  armature dedup: removed {ndd} redundant "
+                                  "UBE armature ref(s) (double body-swap render)")
+                    except Exception as e:
+                        print(f"  !! armature dedup failed: {e!r}")
                     # POSTFLIGHT: re-validate the FINAL Combined (+ ESL split
                     # pieces) AFTER the merge/winner-rebase/reconcile/hands-fix
                     # mutations. validate_patch ran per-SOURCE only; a structural
