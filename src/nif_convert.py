@@ -2485,6 +2485,7 @@ def convert_nif(
                     bodytri_path = "\\".join(dst_parts[i + 1:])
                     break
 
+        _inject_err = None
         if hdt_xml or bodytri_path:
             try:
                 pynifly = _pynifly()
@@ -2575,8 +2576,10 @@ def convert_nif(
                 _hide_virtual_body(nf)
 
                 atomic_nif_save(nf, dst_path)
-            except Exception:
-                pass  # injection is best-effort; copy already done
+            except Exception as _e:
+                # Best-effort, but surface it: a swallowed failure here means no
+                # cloth physics (HDT) and/or no body-morph (BODYTRI), no signal.
+                _inject_err = _e
 
         # M8 phase-1 auto-TRI generation. Runs after NIF copy + BODYTRI
         # injection. Loads the destination NIF, reads armor-shape verts,
@@ -2708,6 +2711,10 @@ def convert_nif(
                 + ", ".join(f"{n} ({err})" for n, err in failed))
         if val_warnings:
             reason_parts.extend(val_warnings)
+        if _inject_err is not None:
+            reason_parts.append(
+                f"HDT/BODYTRI injection failed ({_inject_err!r}) -- piece may "
+                "lack cloth physics / body-morph")
 
         # Heeled boot: re-inject HH_OFFSET as the VERY LAST write — every pynifly
         # save drops NiFloatExtraData. If transplant fails, fall back to original
@@ -9096,6 +9103,7 @@ def convert_nif_phase2(
     # NIFs, multi-carrier for slot-32+BaseShape NIFs so NioOverride morphs all shapes.
     # Rigid single-bone pieces follow morphs via M6 re-skin (standard skinning).
     # Falls back to first_armor_shape if the filter returns empty.
+    _bodytri_err = None
     carriers_p2 = _pick_bodytri_carriers(dst_nif)
     if not carriers_p2 and first_armor_shape is not None:
         carriers_p2 = [first_armor_shape]
@@ -9136,8 +9144,10 @@ def convert_nif_phase2(
                         string_value=body_tri_path,
                         parent=target,
                     )
-        except Exception:
-            pass
+        except Exception as _e:
+            # Surface a swallowed BODYTRI injection: failure here = armor doesn't
+            # follow body morphs (static on every preset), otherwise silent.
+            _bodytri_err = _e
 
     # Attach HDT-SMP physics config reference on the root node, matching
     # the source mod's XML. The XML defines bones (CBBE-style AND custom
@@ -9197,6 +9207,9 @@ def convert_nif_phase2(
     if _hdt_inject_err is not None:
         result_reason = (result_reason + "; " if result_reason else "") \
             + f"source HDT inject failed ({_hdt_inject_err!r}); fell back to regen"
+    if _bodytri_err is not None:
+        result_reason = (result_reason + "; " if result_reason else "") \
+            + f"BODYTRI injection failed ({_bodytri_err!r}); armor may not morph"
 
     atomic_nif_save(dst_nif, dst_path)
 

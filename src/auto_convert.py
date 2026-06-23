@@ -465,6 +465,10 @@ class AutoConvertResult:
     # Postflight per-NIF invariant violations on the FINAL output (zero-vertex
     # shapes; over-cap single-partition shapes). Surfaced + counted as warnings.
     nif_invariant_warnings: list = field(default_factory=list)
+    # VirtualBody re-hide failures on the FINAL output: a failed re-hide leaves a
+    # VISIBLE VirtualBody (the "blue body double"). Surfaced + counted as a
+    # warning (a visible defect, not a CTD).
+    virtualbody_rehide_failures: list = field(default_factory=list)
 
     @property
     def nif_converted(self) -> int:
@@ -1157,10 +1161,9 @@ def auto_convert_mod(
                         atomic_nif_save(nf_check, dst)
                 except Exception as _vbe:
                     # A failed re-hide/save can leave a VISIBLE VirtualBody (the
-                    # "blue body double"); surface it instead of swallowing.
-                    result.notes.append(
-                        f"!! VirtualBody re-hide failed for {dst.name}: {_vbe!r} "
-                        "(risk of a visible body-double in-game)")
+                    # "blue body double"); count it as a warning, don't bury it.
+                    result.virtualbody_rehide_failures.append(
+                        f"{dst.name}: {_vbe!r} (risk of a visible body-double)")
                 # Postflight per-NIF invariants on the FINAL reloaded bytes.
                 try:
                     result.nif_invariant_warnings.extend(
@@ -1804,6 +1807,13 @@ def _cmd_convert(args):
             for w in r.nif_invariant_warnings:
                 print(f"       {w}")
             overall_failures += len(r.nif_invariant_warnings)
+        if r.virtualbody_rehide_failures:
+            print(f"    !! VirtualBody re-hide: "
+                  f"{len(r.virtualbody_rehide_failures)} NIF(s) may show a "
+                  "visible body-double:")
+            for w in r.virtualbody_rehide_failures:
+                print(f"       {w}")
+            overall_warnings += len(r.virtualbody_rehide_failures)
         # ESP generation failure: that ESP's ARMA/ARMO absent from merge (invisible).
         # Non-zero exit, but NOT a merge_blocker (one bad ESP shouldn't lose the rest).
         if r.esp_gen_failures:

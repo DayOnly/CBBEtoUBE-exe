@@ -23,7 +23,16 @@ worker crash cascading to the whole batch, and a few fully-silent failure paths.
 
 ---
 
-## Fix log - 2026-06-22 (suite 347 -> 358, all green)
+## Fix log - 2026-06-22 (suite 347 -> 360, all green)
+
+L-tier round 2: L1/L2/L4 FIXED; L3 investigated -> DEFERRED with reasoning.
+- L1  ube_patcher.py - ESL-overflow now counts ALL own-index records, not just ARMA (byte-identical today since only ARMA is minted; future-proof against a non-ARMA own-index mint silently under-counting).
+- L2  auto_convert.py - VirtualBody re-hide failure escalated from a bare `note` to a counted warning (new `virtualbody_rehide_failures` field -> overall_warnings).
+- L4  nif_convert.py - the swallowed phase-1 (HDT+BODYTRI+VirtualBody-hide) AND phase-2 BODYTRI injections now surface into the result reason (was `except: pass`; silent no-physics/no-morph).
+- L3  DEFERRED (not a hand-wave): race-coverage assertion needs the "deeper model" - a naive check false-fails healthy builds (intentionally-uncovered armors, custom races, the converter's own multi-pass coverage), violating the never-falsely-fail rule. Alt-texture-index residual is belt-and-suspenders over the shipped reconcile_alt_texture_indices_all + the M6 surfacing; its only trigger is a reconcile regression (a test's job) and it would add NIF-loading to the validator path for marginal value.
+- Tests: +2 (esl-overflow counts non-ARMA; VB-rehide field default). 13 audit tests total.
+
+
 
 FIXED this pass (no reconvert needed - source-only; exe rebuild needed to ship):
 - H3  auto_convert.py - NEW `_NifPool`: a self-healing wrapper around the batch-shared process pool. A worker process death (native pynifly crash -> BrokenProcessPool) rebuilds the pool and re-runs the not-yet-done items in ISOLATION (one at a time), so only the true crasher is dropped - not the rest of the mod, and (shared pool persists) not every later mod. GIVE_UP_AFTER=5 consecutive crashes = systemic-failure backstop. Proven with a REAL subprocess crash-sim test (worker os._exit -> genuine broken pool -> recovery + pool survives).
@@ -133,20 +142,29 @@ Fix: count/surface the skipped records.
 
 ## Low / latent
 
-### [ ] L1 - ESL-overflow check counts only ARMA (ube_patcher.py:2057-2069)
-Correct today (every own-index mint is ARMA; no TXST minted) but coupled - a future
-non-ARMA own-index mint silently under-counts and re-opens the overflow-CTD class.
+### [x] L1 - ESL-overflow check counts only ARMA  (FIXED)
+Was correct today (every own-index mint is ARMA) but coupled. Now counts ALL own-index
+records across all groups -> future-proof against a non-ARMA own-index mint silently
+under-counting and re-opening the overflow-CTD class. Byte-identical behavior today.
 
-### [ ] L2 - VirtualBody re-hide failure is a `notes` entry only (auto_convert.py:1031-1036)
-Possible visible "blue body-double," exit 0.
+### [x] L2 - VirtualBody re-hide failure is a `notes` entry only  (FIXED)
+Escalated to a counted warning: new `virtualbody_rehide_failures` field surfaced in
+_cmd_convert -> overall_warnings (visible "blue body-double" defect, not a CTD).
 
-### [ ] L3 - Deferred postflight checks absent: race-coverage + alt-texture-index residual
-Known/deferred per project memory. Leaves invisible-on-UBE-race and wrong-texture-variant
-with no last-line check.
+### [ ] L3 - Deferred postflight checks absent: race-coverage + alt-texture-index residual  (INVESTIGATED -> DEFERRED)
+Deliberately deferred after review, NOT overlooked:
+- race-coverage assertion needs a deeper model; a naive "every body ARMO needs a UBE ARMA"
+  false-fails healthy builds (intentionally-uncovered armors, custom races, the converter's
+  own multi-pass coverage) -> violates the never-falsely-fail rule the postflight gate holds.
+- alt-texture-index residual is belt-and-suspenders over the shipped reconcile_*_all + the
+  M6 surfacing; its only trigger is a reconcile regression (a test's job), and it would add
+  NIF-loading to the validator path for marginal runtime value.
 
-### [ ] L4 - Misc swallows
-phase-1 HDT/BODYTRI injection (nif_convert.py:2578), phase-2 BODYTRI (9139),
-stale-chain-bone guard (2446/9160) - mostly partially backstopped by validate_dst_nif.
+### [x] L4 - Misc swallows  (FIXED: phase-1 + phase-2 injection surfaced)
+phase-1 HDT/BODYTRI/VirtualBody-hide injection (was `except: pass`) and phase-2 BODYTRI
+injection now capture the exception and surface it into the result reason (was silent
+no-physics / no-morph). stale-chain-bone guard left as-is (backstopped by validate_dst_nif's
+"HDT XML declares bone X the NIF lacks" warning).
 
 ---
 

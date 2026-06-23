@@ -219,6 +219,37 @@ def test_nifpool_isolated_gives_up_on_systemic_crashes():
     assert len(not_attempted) == 7 - mgr.GIVE_UP_AFTER
 
 
+def test_esl_overflow_counts_nonarma_records(tmp_path):
+    # L1: the ESL-overflow check must count EVERY own-index record, not just ARMA.
+    # Here all overflow records live in a non-ARMA (ARMO) group -- the old
+    # ARMA-only count was 0 (no flag); the fix counts all own-index records.
+    from src import ube_patcher
+    from src.ube_patcher import ESL_MAX_OWN_RECORDS, TES4_FLAG_ESL
+    from src.esp import (ESP, TES4Header, Group, Record,
+                         encode_subrecord, encode_zstring)
+    n = ESL_MAX_OWN_RECORDS + 1
+    recs = [Record(sig=b"ARMO", flags=0, formid=(1 << 24) | (0x800 + i),
+                   timestamp_vc=0, version_unk=0x2C,
+                   payload=(encode_subrecord(b"EDID", encode_zstring(f"X{i}"))
+                            + encode_subrecord(b"FULL", encode_zstring("n"))))
+            for i in range(n)]
+    hdr = TES4Header(masters=["Skyrim.esm"])
+    hdr.flags = TES4_FLAG_ESL
+    p = tmp_path / "esl.esp"
+    ESP(header=hdr, groups=[Group(label=b"ARMO", records=recs)]).save(p)
+    warns = ube_patcher.validate_patch(p, check_nifs=False)
+    assert any("esl-overflow" in w for w in warns), warns
+
+
+def test_virtualbody_rehide_failures_field_defaults_empty():
+    # L2: the re-hide failure now has a structured field so it can be counted as
+    # a warning (was a bare note). Default empty so a clean run stays silent.
+    from src.auto_convert import AutoConvertResult
+    from pathlib import Path
+    acr = AutoConvertResult(source_dir=Path("."), output_dir=Path("."))
+    assert acr.virtualbody_rehide_failures == []
+
+
 def test_nifpool_real_subprocess_crash_recovery():
     # End-to-end with REAL subprocesses: a worker that os._exit()s (genuine
     # BrokenProcessPool) must not lose the innocents, and the SAME pool must
