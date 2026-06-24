@@ -79,7 +79,7 @@ def arma_info(rec):
 
 
 def load_modlist():
-    for prof in ("Authoria - Requiem Reforged", "Authoria"):
+    for prof in filter(None, [os.environ.get("CBBE2UBE_MO2_PROFILE")]):
         ml = ARR_PROFILES / prof / "modlist.txt"
         if ml.is_file():
             out = []

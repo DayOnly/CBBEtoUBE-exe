@@ -47,7 +47,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from src import nif_io
 from src import tri as tri_mod
 
-BUILD = Path(os.environ.get("CBBE2UBE_MODS_ROOT", "") + r"\mods\Authoria - Bodyslide Output - 3BA\meshes\!UBE")
+# Set CBBE2UBE_NUDE_BUILD to your BodySlide output's `meshes\!UBE` directory
+# (the folder containing Body/, Hands/, Feet/).
+BUILD = Path(os.environ.get("CBBE2UBE_NUDE_BUILD", ""))
 BODY_DIR = BUILD / "Body"
 PARTS = {
     "HANDS": (BUILD / "Hands", "femalehands_tangent"),

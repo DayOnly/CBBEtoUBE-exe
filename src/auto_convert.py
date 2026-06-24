@@ -2487,8 +2487,8 @@ def _player_armor_mesh_bases(mod_dir: Path,
                 # refitting it to the female body would be wrong). Two exceptions keep
                 # the male mesh: (1) a MALE-ONLY piece (no female model) -- a female
                 # actor equipping it renders the male mesh, so it needs the UBE refit;
-                # (2) the female model exists but its mesh DOESN'T RESOLVE (a dead path,
-                # e.g. #174 Penitus) -- then the male mesh is the real one the female
+                # (2) the female model exists but its mesh DOESN'T RESOLVE (a dead
+                # path) -- then the male mesh is the real one the female
                 # ARMA gets redirected to, so it must convert. mesh_resolves==None
                 # (callers without VFS context) keeps the legacy "convert both".
                 if not female_models:
