@@ -660,7 +660,7 @@ def _align_scale_bone_stbs_to_verts(xforms_map, g2s_tb, verts, weights_map,
 def _fill_zero_weight_verts(weights_map, verts, eps=1e-4):
     """Verts with ~0 total bone weight skin to the ORIGIN -> a spike/streak to
     (0,0,0). Some source meshes ship verts the author never weighted -- esp.
-    guard-armor reskins (qwib Solitude/Markarth/etc. trim shapes: 18-19% of a
+    guard-armor reskins (some guard-armor trim shapes: 18-19% of a
     sub-shape) + decoration/1st-person shapes -- and the proximity reskin can
     miss verts far from the body. Give each zero-weight vert the bone weights of
     its NEAREST weighted vert so it rides along instead of spiking. No-op when
