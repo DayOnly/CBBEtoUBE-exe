@@ -36,6 +36,48 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 CAP = 78
 
 
+def _max_partition_bone_count(s):
+    """Highest per-PARTITION bone-union for a shape, or None if unreadable.
+
+    The GPU skin-palette cap is PER PARTITION, and the converter's bone-split
+    keeps every bone but spreads a high-bone shape across multiple partitions
+    (e.g. 80 total bones -> partitions of {78, 9}). So only a SINGLE partition
+    over the cap is a real equip-CTD risk; the shape's TOTAL bone count is not
+    (it false-positives on every correctly-split shape). Mirrors
+    nif_convert._split_oversize_partition's own per-partition accounting.
+    """
+    import numpy as np
+    try:
+        raw = getattr(s, "_backing", None)
+        pt = getattr(raw, "partition_tris", None)
+        tris = np.asarray(s.tris, dtype=np.int64)
+        if pt is None:
+            return None
+        pt = np.asarray(pt, dtype=np.int64)
+        if len(tris) == 0 or pt.size != len(tris):
+            return None
+        nverts = len(s.verts)
+        vert_bones = [set() for _ in range(nverts)]
+        for bi, bn in enumerate(s.bone_names or []):
+            pairs = s.bone_weights.get(bn)
+            if pairs is None:
+                continue
+            seq = pairs.tolist() if hasattr(pairs, "tolist") else pairs
+            for vi, _w in seq:
+                vi = int(vi)
+                if 0 <= vi < nverts:
+                    vert_bones[vi].add(bi)
+        part_bones: dict[int, set] = {}
+        for ti, t in enumerate(tris):
+            part_bones.setdefault(int(pt[ti]), set()).update(
+                vert_bones[t[0]] | vert_bones[t[1]] | vert_bones[t[2]])
+        if not part_bones:
+            return None
+        return max(len(b) for b in part_bones.values())
+    except Exception:
+        return None
+
+
 def _scan_nif(path):
     """Worker: returns (path, [issue strings])."""
     import numpy as np
@@ -48,7 +90,15 @@ def _scan_nif(path):
     for s in nif.shapes:
         nb = len(s.bone_names)
         if nb > CAP:
-            issues.append(f"shape '{s.name}': {nb} bones > {CAP} (CTD risk)")
+            # Flag only a genuine single-partition palette overrun, not a high
+            # TOTAL bone count the bone-split has already made CTD-safe.
+            mx = _max_partition_bone_count(s)
+            if mx is None:
+                issues.append(f"shape '{s.name}': {nb} bones > {CAP}, "
+                              f"partitions unreadable (CTD risk)")
+            elif mx > CAP:
+                issues.append(f"shape '{s.name}': partition with {mx} bones "
+                              f"> {CAP} ({nb} total; CTD risk)")
         v = np.asarray(s.verts, dtype=np.float64)
         if v.size == 0:
             issues.append(f"shape '{s.name}': 0 verts")
