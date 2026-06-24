@@ -778,11 +778,34 @@ def auto_convert_mod(
     # NIF conversion step consume it. VFS-resolved so it's valid even for mods
     # whose meshes live in a different mod than their ESP.
     meshes_root = _find_meshes_root(source_dir)
-    # include_candidate_slots: also admit lower-body cloth on ambiguous modder
-    # slots (44/47/...). The crash guard below drops any non-body-skinned ones.
-    armor_bases = _player_armor_mesh_bases(source_dir, include_candidate_slots=True)
     all_nif_paths = (sorted(meshes_root.rglob("*.nif"))
                      if meshes_root is not None else [])
+    # Source-local mesh keys (lowercase meshes-rel) for the female-resolves check.
+    _local_keys = set()
+    if meshes_root is not None:
+        for _p in all_nif_paths:
+            _local_keys.add(_p.relative_to(meshes_root).as_posix().lower())
+
+    def _female_mesh_resolves(base: str) -> bool:
+        # True if any weight variant of `base` exists to convert (full-VFS winner or
+        # source-local). Mirrors _resolve_armor_meshes' lookup so the female-only
+        # selection agrees with what actually converts (skips BSA-only -> conservative,
+        # keeps the male fallback in that rare case).
+        for suf in ("_1", "_0", ""):
+            key = f"{base}{suf}.nif"
+            if mesh_vfs_index is not None and key in mesh_vfs_index:
+                return True
+            if key in _local_keys:
+                return True
+        return False
+
+    # include_candidate_slots: also admit lower-body cloth on ambiguous modder
+    # slots (44/47/...). The crash guard below drops any non-body-skinned ones.
+    # mesh_resolves enables the female-only policy (skip the male mesh when a female
+    # mesh exists; keep male for male-only or dead-female-path pieces).
+    armor_bases = _player_armor_mesh_bases(
+        source_dir, include_candidate_slots=True,
+        mesh_resolves=_female_mesh_resolves)
     # Resolve through the full MO2 VFS so meshes in BodySlide-output / replacer /
     # patch mods are found. Falls back to source-local when no VFS index is given.
     resolved_pairs = _resolve_armor_meshes(
@@ -2384,9 +2407,17 @@ def _resolve_armor_meshes(
 
 
 def _player_armor_mesh_bases(mod_dir: Path,
-                             include_candidate_slots: bool = False) -> "set[str]":
+                             include_candidate_slots: bool = False,
+                             mesh_resolves=None) -> "set[str]":
     """Weight-agnostic rel-path keys of every mesh a DefaultRace ARMA in this mod
     points at as an armor piece (biped slot is not hair-only).
+
+    `mesh_resolves`: optional ``(weight_base_key) -> bool`` predicate (True if that
+    mesh actually exists to convert). Enables the FEMALE-ONLY policy -- with a female
+    model that resolves, the male model is skipped (UBE is a female body; a female
+    actor never renders the male mesh). The male model is kept only for a male-only
+    piece, or when the female model is a dead path (so the female ARMA can redirect to
+    the converted male). ``None`` keeps the legacy "convert every slot".
 
     `include_candidate_slots`: also admit ambiguous modder slots (44/45/47/48/59/61)
     used for body cloth. The crash guard in auto_convert_mod drops any non-body-skinned
@@ -2438,18 +2469,36 @@ def _player_armor_mesh_bases(mod_dir: Path,
                     continue
                 rnam = None
                 slot = 0
-                models: list[str] = []
+                female_models: "list[str]" = []   # MOD3 (world) + MOD5 (1st-person)
+                male_models: "list[str]" = []      # MOD2 (world) + MOD4 (1st-person)
                 for sig, sd in _esp.iter_subrecords(rec.payload):
                     if sig == b"RNAM" and len(sd) == 4:
                         rnam = _struct.unpack("<I", sd)[0]
                     elif sig in (b"BOD2", b"BODT") and len(sd) >= 4:
                         slot = _struct.unpack_from("<I", sd, 0)[0]
-                    elif sig in (b"MOD2", b"MOD3", b"MOD4", b"MOD5"):
-                        # Collect all model slots, not just female (MOD3/MOD5):
-                        # some mods bind their female mesh through MOD2, so
-                        # a MOD3/MOD5-only filter drops real sources.
-                        models.append(sd.rstrip(b"\x00").decode(
+                    elif sig in (b"MOD3", b"MOD5"):
+                        female_models.append(sd.rstrip(b"\x00").decode(
                             "utf-8", errors="ignore"))
+                    elif sig in (b"MOD2", b"MOD4"):
+                        male_models.append(sd.rstrip(b"\x00").decode(
+                            "utf-8", errors="ignore"))
+                # FEMALE-ONLY conversion: UBE is a female body, so convert the FEMALE
+                # model(s) and skip the male mesh (a female actor never renders it, and
+                # refitting it to the female body would be wrong). Two exceptions keep
+                # the male mesh: (1) a MALE-ONLY piece (no female model) -- a female
+                # actor equipping it renders the male mesh, so it needs the UBE refit;
+                # (2) the female model exists but its mesh DOESN'T RESOLVE (a dead path,
+                # e.g. #174 Penitus) -- then the male mesh is the real one the female
+                # ARMA gets redirected to, so it must convert. mesh_resolves==None
+                # (callers without VFS context) keeps the legacy "convert both".
+                if not female_models:
+                    models = male_models
+                elif mesh_resolves is None:
+                    models = female_models + male_models
+                elif any(mesh_resolves(_weight_base_key(m)) for m in female_models):
+                    models = female_models
+                else:
+                    models = female_models + male_models
                 if rnam is None:
                     continue
                 mi = rnam >> 24
