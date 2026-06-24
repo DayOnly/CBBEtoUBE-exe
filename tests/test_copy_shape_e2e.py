@@ -28,7 +28,9 @@ import numpy as np
 import pytest
 
 from tests.synthetic_nif import (VERTS, build_shape_nif, build_skinned_shape_nif,
+                                  build_effect_shader_nif, build_colored_shape_nif,
                                   copy_shape_into_fresh, pynifly_available)
+import src.nif_convert as nc  # noqa: E402
 
 pytestmark = pytest.mark.skipif(not pynifly_available(),
                                 reason="pynifly native lib unavailable")
@@ -97,3 +99,45 @@ def test_copy_shape_identity_is_noop(tmp_path):
     ov = [tuple(v) for v in out.verts]
     for i, v in enumerate(VERTS):
         assert all(abs(ov[i][k] - v[k]) < 1e-4 for k in range(3)), (i, ov[i])
+
+
+def test_copy_shape_preserves_effect_shader(tmp_path):
+    # REGRESSION (Daedric cuirass glow): the red glow is an ANIMATED
+    # BSEffectShaderProperty overlay. createShapeFromData only makes
+    # BSLightingShaderProperty, which would downgrade it (emissive zeroed, greyscale
+    # dropped -> renders white). _copy_shape must transplant the effect shader AND its
+    # animation controller chain (controller -> interpolator -> NiFloatData keys).
+    src = build_effect_shader_nif(tmp_path / "glow_src.nif", controlled_var=8)
+    src_shape = nc._pynifly().NifFile(filepath=str(src)).shapes[0]
+    assert src_shape.shader_block_name == "BSEffectShaderProperty"   # sanity
+    out = copy_shape_into_fresh(src, tmp_path / "glow_out.nif")
+    assert out.shader_block_name == "BSEffectShaderProperty", \
+        "effect shader was downgraded to lighting shader (glow would render white)"
+    # animation transplanted: controller present, targets the shader, keyframes intact
+    ctrl = out.shader.controller
+    assert ctrl is not None, "glow animation controller was not transplanted (static glow)"
+    assert ctrl.properties.controlledVariable == 8, "controlled variable lost"
+    assert ctrl.properties.targetID == out.shader.id, "controller does not target its shader"
+    data = out.file.read_node(id=ctrl.interpolator.properties.dataID)
+    assert len(data.keys) == 2, "animation keyframes lost"
+
+
+def test_copy_shape_preserves_vertex_colors(tmp_path):
+    # REGRESSION (Daedric glow rendered solid red instead of faded): the glow's fade
+    # is a per-vertex ALPHA gradient (SLSF2_Vertex_Colors). createShapeFromData makes
+    # a COLORLESS shape, so _copy_shape must copy the vertex colors -- else the overlay
+    # renders opaque/solid (the alpha gradient is lost).
+    src = build_colored_shape_nif(tmp_path / "c_src.nif", alphas=[0.0, 0.33, 0.66, 1.0])
+    out = copy_shape_into_fresh(src, tmp_path / "c_out.nif")
+    cols = out.colors
+    assert cols is not None and len(cols) == len(VERTS), "vertex colors were dropped"
+    alphas = sorted(round(c[3], 2) for c in cols)
+    assert alphas[0] < 0.05 and alphas[-1] > 0.95, alphas   # alpha gradient preserved
+
+
+def test_copy_shape_lighting_shader_unaffected(tmp_path):
+    # The effect-shader branch must not touch ordinary lighting-shader shapes: a
+    # normal shape still copies as a BSLightingShaderProperty.
+    build_shape_nif(tmp_path / "src.nif")
+    out = copy_shape_into_fresh(tmp_path / "src.nif", tmp_path / "dst.nif")
+    assert out.shader_block_name == "BSLightingShaderProperty"

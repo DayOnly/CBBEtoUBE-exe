@@ -6874,6 +6874,58 @@ def _physics_chain_nowarp_blend(src_shape, source_verts, warped_verts):
     return sv + (wv - sv) * (1.0 - frac)[:, None]
 
 
+def _transplant_effect_controller(src_shader, dst_nif, pyn):
+    """Recreate a BSEffectShaderProperty's animation controller chain
+    (controller -> interpolator -> NiFloatData + keys) in `dst_nif`, so a transplanted
+    glow keeps its animation -- e.g. the Daedric glow's V-offset texture scroll.
+
+    Returns the NEW controller's id (to store in the effect shader's controllerID), or
+    NODEID_NONE when the source shader has no controller, the chain is an unsupported
+    shape, or anything fails (a static glow -- still the right colour, just not moving).
+
+    pynifly can't MODIFY shader/controller blocks after creation (setBlock of those
+    buftypes is NYI), so the chain is built bottom-up and the controller's targetID is
+    set to the PREDICTED effect-shader id. NifFile.save() remaps every block-id ref, so
+    in-memory ids resolve on disk. The CALLER must create the effect shader IMMEDIATELY
+    after this returns (with no intervening add_block), so its id == ctrl.id + 1."""
+    none_id = pyn.NODEID_NONE
+    try:
+        if getattr(src_shader.properties, "controllerID", none_id) == none_id:
+            return none_id
+        src_ctrl = src_shader.controller
+        if src_ctrl is None:
+            return none_id
+        src_interp = src_ctrl.interpolator
+        if src_interp is None:
+            return none_id
+        src_data = src_shader.file.read_node(id=src_interp.properties.dataID)
+        if src_data is None:
+            return none_id
+        src_keys = src_data.keys  # raises on an unsupported key type -> caught below
+
+        def _clone(buf):
+            return type(buf).from_buffer_copy(buf)
+
+        # data + keyframes
+        data = dst_nif.add_block(None, _clone(src_data.properties), parent=None)
+        for k in src_keys:
+            data.keys_add(k)
+        # interpolator -> data
+        interp_buf = _clone(src_interp.properties)
+        interp_buf.dataID = data.id
+        interp = dst_nif.add_block(None, interp_buf, parent=None)
+        # controller -> interpolator; target = the effect shader the caller makes next.
+        # Sequential ids: this controller = interp.id + 1, that shader = interp.id + 2.
+        ctrl_buf = _clone(src_ctrl.properties)
+        ctrl_buf.interpolatorID = interp.id
+        ctrl_buf.nextControllerID = none_id   # only the first controller is transplanted
+        ctrl_buf.targetID = interp.id + 2
+        ctrl = dst_nif.add_block(None, ctrl_buf, parent=None)
+        return ctrl.id
+    except Exception:
+        return none_id
+
+
 def _copy_shape(src_shape, dst_nif, parent=None, override_verts=None,
                 override_skin=None, skip_alpha=False, override_tris=None):
     """Deep-copy a single shape from src NIF to dst NIF via pynifly.
@@ -6958,6 +7010,18 @@ def _copy_shape(src_shape, dst_nif, parent=None, override_verts=None,
         props=src_shape.properties,
         parent=parent,
     )
+    # Preserve per-vertex colors. createShapeFromData makes a COLORLESS shape, but a
+    # shape may carry RGBA (baked AO/tint, or -- with SLSF2_Vertex_Colors -- an ALPHA
+    # GRADIENT that does the actual work). The Daedric glow's fade is exactly this: RGB
+    # white, vertex ALPHA 0..1. Drop it and the overlay renders SOLID (opaque) instead
+    # of faded. Vert count/order is preserved (override_verts is 1:1), so colors map
+    # straight across.
+    try:
+        _src_colors = src_shape.colors
+        if _src_colors is not None and len(_src_colors) == len(use_verts):
+            new_shape.set_colors(list(_src_colors))
+    except Exception:
+        pass
     if (_bake_T is not None or _bake_trans is not None
             or ((override_verts is not None or src_shape.has_global_to_skin)
                 and src_shape.bone_names)):
@@ -6999,28 +7063,75 @@ def _copy_shape(src_shape, dst_nif, parent=None, override_verts=None,
     try:
         src_shader = src_shape.shader
         if src_shader is not None and src_shader.properties is not None:
-            new_shader = new_shape.shader
             src_props = src_shader.properties
-            dst_props = new_shader.properties  # access lazy-loads
-            for fld in _SHADER_VALUE_FIELDS:
-                if hasattr(src_props, fld) and hasattr(dst_props, fld):
+            _pyn = _pynifly()
+            _effect_buftype = getattr(
+                _pyn.PynBufferTypes, "BSEffectShaderPropertyBufType", None)
+            if (_effect_buftype is not None
+                    and getattr(src_props, "bufType", None) == _effect_buftype):
+                # Source uses a BSEffectShaderProperty -- an additive glow/decal shader
+                # (e.g. Daedric's red glow: emissive + greyscale-to-colour gradient).
+                # createShapeFromData only ever makes a BSLightingShaderProperty, which
+                # cannot represent it: the emissive is zeroed and the greyscale texture
+                # dropped, so it renders the bare (pale) overlay texture = WHITE, no
+                # glow. pynifly can't MODIFY a lighting shader into an effect shader
+                # (setBlock of the effect buftype is NYI) but it CAN CREATE one via
+                # add_block -- so transplant the source effect buffer onto the new
+                # shape and re-point the shape's shader reference at it.
+                try:
+                    eff_buf = type(src_props).from_buffer_copy(src_props)  # clone (don't mutate src)
+                except Exception:
+                    eff_buf = src_props
+                # Transplant the glow's animation controller chain (if any) so the glow
+                # keeps MOVING -- e.g. the Daedric glow's V-offset texture scroll. Built
+                # BEFORE the shader so the shader can reference it at creation time (the
+                # shader/controller block buffers can't be modified afterward -- setBlock
+                # of those buftypes is NYI in nifly). Returns the new controller id, or
+                # NODEID_NONE (a static glow -- still red, just not pulsing) when there's
+                # no controller or the transplant fails. The buffer's other block-id
+                # fields point at SOURCE blocks: textureSetID is 0 for effect shaders
+                # (their textures are inline, re-applied by the loop below).
+                try:
+                    eff_buf.controllerID = _transplant_effect_controller(
+                        src_shader, dst_nif, _pyn)
+                except Exception:
                     try:
-                        setattr(dst_props, fld, getattr(src_props, fld))
-                    except (TypeError, AttributeError):
+                        eff_buf.controllerID = _pyn.NODEID_NONE
+                    except Exception:
                         pass
+                try:
+                    eff = dst_nif.add_block(
+                        src_shader.name or "", eff_buf, parent=new_shape)
+                    # Re-point the shape's shader ref (mirrors pynifly's own
+                    # save_shader_attributes: set the id, let NifFile.save() persist
+                    # it -- do NOT write_properties() the freshly-created shape, which
+                    # flushes a stale nameID and blanks the shape's name).
+                    new_shape.properties.shaderPropertyID = eff.id
+                    new_shape._shader = None  # drop cache -> textures bind the new block
+                except Exception:
+                    pass
+            else:
+                new_shader = new_shape.shader
+                dst_props = new_shader.properties  # access lazy-loads
+                for fld in _SHADER_VALUE_FIELDS:
+                    if hasattr(src_props, fld) and hasattr(dst_props, fld):
+                        try:
+                            setattr(dst_props, fld, getattr(src_props, fld))
+                        except (TypeError, AttributeError):
+                            pass
 
-            # NOTE: We previously attempted to force-clear render flags
-            # on textureless (collision) shapes here, but pynifly's
-            # NifFile.save() unconditionally sets Shader_Flags_1 bit 1
-            # (Skinned) on any skinned shape — overriding our write.
-            # The collision-proxy fix now happens upstream in
-            # convert_nif_phase2 by SKIPPING those shapes entirely.
+                # NOTE: We previously attempted to force-clear render flags
+                # on textureless (collision) shapes here, but pynifly's
+                # NifFile.save() unconditionally sets Shader_Flags_1 bit 1
+                # (Skinned) on any skinned shape — overriding our write.
+                # The collision-proxy fix now happens upstream in
+                # convert_nif_phase2 by SKIPPING those shapes entirely.
 
-            # Flush the mutated buf back to the file's shader block.
-            try:
-                new_shader.write_properties()
-            except Exception:
-                pass
+                # Flush the mutated buf back to the file's shader block.
+                try:
+                    new_shader.write_properties()
+                except Exception:
+                    pass
     except Exception:
         pass
 
