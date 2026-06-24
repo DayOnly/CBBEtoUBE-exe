@@ -63,6 +63,86 @@ def build_shape_nif(path, *, name="TestShape", scale=1.0,
     return path
 
 
+def build_effect_shader_nif(path, *, name="GlowShape", controlled_var=8):
+    """Write a SKYRIMSE NIF whose ONE shape carries a BSEffectShaderProperty -- the
+    additive glow/decal shader Daedric armor's red glow uses -- WITH a float-controller
+    animation chain (controller -> interpolator -> NiFloatData + 2 keys), as that glow
+    has. Exercises the converter's effect-shader + controller transplant. Returns
+    `path`."""
+    pyn = nc._pynifly()
+    verts = list(VERTS)
+    tris = list(TRIS)
+    uvs = [(0.0, 0.0)] * len(verts)
+    normals = [(0.0, 0.0, 1.0)] * len(verts)
+    none_id = pyn.NODEID_NONE
+    nif = pyn.NifFile()
+    nif.initialize("SKYRIMSE", str(path))
+    sh = nif.createShapeFromData(name, verts, tris, uvs, normals)
+    tb = pyn.TransformBuf()
+    tb.set_identity()
+    sh.transform = tb
+    # Animation chain (built bottom-up; the effect shader is created last so it can
+    # reference the controller, whose targetID predicts the shader's id -- ids are
+    # sequential and NifFile.save() remaps refs).
+    dbuf = pyn.NiFloatData.getbuf()
+    try:
+        dbuf.keys.interpolation = pyn.NiKeyType.QUADRATIC_KEY
+    except Exception:
+        pass
+    data = nif.add_block(None, dbuf, parent=None)
+
+    class _K:
+        def __init__(self, t, v):
+            self.time = t
+            self.value = v
+            self.forward = 0.0
+            self.backward = 0.0
+
+    data.keys_add(_K(0.0, 1.0))
+    data.keys_add(_K(2.0, 0.0))
+    ibuf = pyn.NiFloatInterpolator.getbuf()
+    ibuf.dataID = data.id
+    interp = nif.add_block(None, ibuf, parent=None)
+    cbuf = pyn.BSEffectShaderPropertyFloatController.getbuf()
+    cbuf.interpolatorID = interp.id
+    cbuf.targetID = interp.id + 2          # the effect shader, created next
+    cbuf.nextControllerID = none_id
+    cbuf.controlledVariable = controlled_var
+    cbuf.flags = 72
+    cbuf.frequency = 1.0
+    cbuf.stopTime = 2.0
+    ctrl = nif.add_block(None, cbuf, parent=None)
+    ebuf = pyn.BSEffectShaderProperty.getbuf()
+    ebuf.controllerID = ctrl.id
+    eff = nif.add_block("", ebuf, parent=sh)
+    sh.properties.shaderPropertyID = eff.id
+    sh._shader = None
+    nif.save()
+    return path
+
+
+def build_colored_shape_nif(path, *, name="ColorShape", alphas=None):
+    """Write a SKYRIMSE NIF whose ONE shape carries per-vertex RGBA (white RGB, the
+    given per-vertex alphas -- an alpha gradient, as the Daedric glow's fade is).
+    Returns `path`."""
+    pyn = nc._pynifly()
+    verts = list(VERTS)
+    tris = list(TRIS)
+    uvs = [(0.0, 0.0)] * len(verts)
+    normals = [(0.0, 0.0, 1.0)] * len(verts)
+    if alphas is None:
+        alphas = [i / (len(verts) - 1) for i in range(len(verts))]
+    nif = pyn.NifFile()
+    nif.initialize("SKYRIMSE", str(path))
+    sh = nif.createShapeFromData(name, verts, tris, uvs, normals)
+    tb = pyn.TransformBuf()
+    tb.set_identity()
+    sh.transform = tb
+    sh.set_colors([(1.0, 1.0, 1.0, float(a)) for a in alphas])
+    nif.save()
+    return path
+
+
 _DEFAULT_BONES = ("NPC Spine [Spn0]", "NPC L Thigh [LThg]")
 
 
