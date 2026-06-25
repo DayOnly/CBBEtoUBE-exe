@@ -99,6 +99,18 @@ def atomic_copy(src, dst) -> None:
     except BaseException:
         _quiet_unlink(tmp)
         raise
+    # Durability: best-effort flush to disk before the rename (matches
+    # atomic_write_bytes -- else a power loss just after os.replace can leave the
+    # directory entry pointing at not-yet-flushed data). fsync needs a WRITABLE
+    # fd on Windows; never let a durability flush failure break the copy itself.
+    try:
+        _fd = os.open(tmp, os.O_RDWR)
+        try:
+            os.fsync(_fd)
+        finally:
+            os.close(_fd)
+    except OSError:
+        pass
     _swap_into_place(tmp, dst)
 
 

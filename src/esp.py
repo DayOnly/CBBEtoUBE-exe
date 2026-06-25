@@ -124,6 +124,11 @@ class Record:
         formid = struct.unpack_from("<I", data, offset+12)[0]
         timestamp_vc = struct.unpack_from("<I", data, offset+16)[0]
         version_unk = struct.unpack_from("<I", data, offset+20)[0]
+        if offset + RECORD_HEADER_SIZE + size > len(data):
+            raise ValueError(
+                f"truncated record payload for {sig!r} at offset {offset} "
+                f"(declared {size}, have "
+                f"{len(data) - offset - RECORD_HEADER_SIZE})")
         payload = data[offset+24:offset+24+size]
         if flags & FLAG_COMPRESSED:
             if len(payload) < 4:
@@ -234,7 +239,10 @@ class TES4Header:
 
     @classmethod
     def parse_from_record(cls, rec: Record) -> "TES4Header":
-        assert rec.sig == b"TES4"
+        # Not an assert: `python -O` strips asserts, and a non-TES4 record here
+        # would parse as a header with empty masters -> wrong master indices.
+        if rec.sig != b"TES4":
+            raise ValueError(f"expected TES4 header record, got {rec.sig!r}")
         masters: list[str] = []
         author = ""
         description = ""
@@ -244,7 +252,8 @@ class TES4Header:
         pending_mast: str | None = None
         for sig, sd in iter_subrecords(rec.payload):
             if sig == b"HEDR":
-                version, num_records, next_obj = struct.unpack("<fIi", sd[:12])
+                if len(sd) >= 12:
+                    version, num_records, next_obj = struct.unpack("<fIi", sd[:12])
             elif sig == b"CNAM":
                 author = sd.rstrip(b"\x00").decode("utf-8", errors="ignore")
             elif sig == b"SNAM":
