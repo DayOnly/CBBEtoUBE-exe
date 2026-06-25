@@ -2985,6 +2985,11 @@ def inflate_armor_outward(
     """
     armor_verts = np.asarray(armor_verts, dtype=np.float64)
     body_verts = np.asarray(body_verts, dtype=np.float64)
+    # Empty input would make cKDTree / idxs.max() raise (caught by callers, but
+    # the shape then silently loses its clearance pass). Match the guard the
+    # sibling clearance functions already have.
+    if len(armor_verts) == 0 or len(body_verts) == 0:
+        return np.asarray(armor_verts, dtype=np.float32)
 
     from scipy.spatial import cKDTree
     tree = cKDTree(body_verts)
@@ -3373,8 +3378,33 @@ def _normalize_partitions(shape) -> bool:
         return False
 
 
+def _preserved_dismember_slot(shape) -> "int | None":
+    """The dismember slot id an over-cap SPLIT must keep so the shape still
+    renders in its equip region, or None for body-region shapes (-> SBP_32_BODY).
+
+    Only returns a slot when EVERY source partition sits on ONE preserved
+    dismember slot (hands/feet/head/...). Mixed-slot shapes -> None: re-slotting
+    them on a Z-rebinned split is ambiguous, so fall back to SBP_32_BODY (the
+    prior behavior) rather than guess. Mirrors `_normalize_partitions`' preserve
+    guard, but for the split path (which can't simply bail -- the cap overrun
+    would CTD). Without this, an over-cap accessory (a dense-boned gauntlet=33 or
+    high-vert helmet=30/31) would be split onto SBP_32_BODY and go invisible.
+    """
+    try:
+        ids = {getattr(p, "id", None)
+               for p in (getattr(shape, "partitions", None) or [])}
+        ids.discard(None)
+        preserved = ids & PRESERVE_DISMEMBER_SLOTS
+        if len(preserved) == 1 and ids == preserved:
+            return next(iter(preserved))
+        return None
+    except Exception:
+        return None
+
+
 def _split_oversize_partition(shape, cap: "int | None" = None,
-                              vert_cap: "int | None" = None) -> int:
+                              vert_cap: "int | None" = None,
+                              part_id: "int | None" = None) -> int:
     """Split a shape that references MORE than `cap` bones into several skin
     partitions, each referencing <= cap distinct bones, WITHOUT dropping any
     bone. Returns the partition count created (0 = no split done).
@@ -3442,7 +3472,8 @@ def _split_oversize_partition(shape, cap: "int | None" = None,
         if nd is None:
             return 0
         pyn = _pynifly()
-        objs = [pyn.SkyPartition(part_id=SBP_32_BODY_ID, flags=257, namedict=nd)
+        pid = SBP_32_BODY_ID if part_id is None else int(part_id)
+        objs = [pyn.SkyPartition(part_id=pid, flags=257, namedict=nd)
                 for _ in range(nparts)]
         shape.set_partitions(objs, assign.tolist())
         return nparts
@@ -3450,7 +3481,8 @@ def _split_oversize_partition(shape, cap: "int | None" = None,
         return 0
 
 
-def _split_oversize_partition_verts(shape, cap: "int | None" = None) -> int:
+def _split_oversize_partition_verts(shape, cap: "int | None" = None,
+                                    part_id: "int | None" = None) -> int:
     """Split a shape with MORE than `cap` VERTICES into several skin partitions,
     each referencing <= cap distinct verts, WITHOUT dropping geometry. Returns
     the partition count created (0 = no split done / not needed).
@@ -3491,7 +3523,8 @@ def _split_oversize_partition_verts(shape, cap: "int | None" = None) -> int:
         if nd is None:
             return 0
         pyn = _pynifly()
-        objs = [pyn.SkyPartition(part_id=SBP_32_BODY_ID, flags=257, namedict=nd)
+        pid = SBP_32_BODY_ID if part_id is None else int(part_id)
+        objs = [pyn.SkyPartition(part_id=pid, flags=257, namedict=nd)
                 for _ in range(nparts)]
         shape.set_partitions(objs, assign.tolist())
         return nparts
@@ -3522,6 +3555,10 @@ def _normalize_partitions_on_disk(dst_path: Path) -> int:
             # blocks NioOverride morph routing.
             if s.name in UBE_BODY_INJECT_NAMES or s.name == "VirtualGround":
                 continue
+            # An over-cap ACCESSORY (gauntlet=33, boot=37, helmet=30/31, ...) must
+            # keep its dismember slot across the split or it goes invisible in its
+            # equip region; body-region shapes -> None -> SBP_32_BODY.
+            keep_slot = _preserved_dismember_slot(s)
             # Over-cap shape: SPLIT into <=cap-bone partitions (keeps every bone,
             # CTD-safe) instead of collapsing to one over-budget partition. Dense
             # dresses/robes that ship 79-81 bones (some armor mods) keep their full
@@ -3530,7 +3567,8 @@ def _normalize_partitions_on_disk(dst_path: Path) -> int:
                 # Respect BOTH caps: a dense rig that is also high-vert must not
                 # leave a bone-split partition still over the vertex cap.
                 if _split_oversize_partition(
-                        s, vert_cap=SKIN_PARTITION_VERT_CAP) > 1:
+                        s, vert_cap=SKIN_PARTITION_VERT_CAP,
+                        part_id=keep_slot) > 1:
                     changed += 1
                 else:
                     # Split failed (no source partition / pynifly error): the
@@ -3548,7 +3586,7 @@ def _normalize_partitions_on_disk(dst_path: Path) -> int:
             # body ships -- do NOT collapse to one partition below (that's the
             # very thing that CTDs). Under-cap shapes fall through and collapse.
             if len(getattr(s, "verts", []) or []) > SKIN_PARTITION_VERT_CAP:
-                if _split_oversize_partition_verts(s) > 1:
+                if _split_oversize_partition_verts(s, part_id=keep_slot) > 1:
                     changed += 1
                 else:
                     # Split failed (no source partition / pynifly error): the

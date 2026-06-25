@@ -116,6 +116,8 @@ class TriFile:
         """
         if data[:4] != TRI_MAGIC:
             raise ValueError(f"not a TRI file (magic={data[:4]!r})")
+        if len(data) < 6:
+            raise ValueError("truncated TRI header (no shape-count field)")
         version = struct.unpack_from("<H", data, 4)[0]
         p = 6
         shapes: list[TriShape] = []

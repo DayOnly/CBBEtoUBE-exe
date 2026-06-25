@@ -67,3 +67,34 @@ def test_preserve_set_excludes_leg_region_collapse_targets():
     assert 54 not in nif_convert.PRESERVE_DISMEMBER_SLOTS
     # Forearms is the slot we added.
     assert 34 in nif_convert.PRESERVE_DISMEMBER_SLOTS
+
+
+# ---- _preserved_dismember_slot: keep an accessory's slot across an OVER-CAP
+# split (the collapse path bails on a preserved slot, but the split path can't --
+# it must re-slot, so it must keep the dismember slot or the accessory goes
+# invisible). -----------------------------------------------------------------
+
+def test_preserved_slot_uniform_accessory_kept():
+    # Every partition on ONE preserved slot -> that slot is carried onto the
+    # split partitions, so an over-cap gauntlet(33)/boot(37)/helmet(30) still
+    # renders in its equip region instead of being rewritten to SBP_32_BODY.
+    assert nif_convert._preserved_dismember_slot(_FakeShape([33, 33])) == 33
+    assert nif_convert._preserved_dismember_slot(_FakeShape([37])) == 37
+    assert nif_convert._preserved_dismember_slot(_FakeShape([30, 30, 30])) == 30
+
+
+def test_preserved_slot_body_region_is_none():
+    # Body-region shapes split onto SBP_32_BODY (the prior behavior).
+    assert nif_convert._preserved_dismember_slot(_FakeShape([32])) is None
+    assert nif_convert._preserved_dismember_slot(_FakeShape([32, 32])) is None
+
+
+def test_preserved_slot_mixed_falls_back_none():
+    # Mixed accessory+body or two preserved slots is ambiguous on a Z-rebinned
+    # split -> None (fall back to SBP_32_BODY rather than guess a slot).
+    assert nif_convert._preserved_dismember_slot(_FakeShape([33, 32])) is None
+    assert nif_convert._preserved_dismember_slot(_FakeShape([33, 37])) is None
+
+
+def test_preserved_slot_no_partitions_none():
+    assert nif_convert._preserved_dismember_slot(_FakeShape([])) is None
