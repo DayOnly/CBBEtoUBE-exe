@@ -2665,6 +2665,12 @@ def convert_nif(
             _conform_fitted_to_body(dst_path, biped_slots)
         except Exception:
             pass
+        # Graft body jiggle onto fitted cloth that hugs a jiggling region but has
+        # none of its own, so it follows the jiggle instead of clipping when moving.
+        try:
+            _transfer_body_jiggle_to_fitted(dst_path, biped_slots)
+        except Exception:
+            pass
 
         # Verbatim-copied NIFs carry raw block structure the renderer can reject.
         # Re-author for a clean pynifly structure identical to body shapes.
@@ -4499,6 +4505,20 @@ _CONFORM_FIT_FRAC = float(os.environ.get("CBBE2UBE_CONFORM_FIT_FRAC", "0.90"))
 _CONFORM_CHAIN_MAX = float(os.environ.get("CBBE2UBE_CONFORM_CHAIN_MAX", "0.05"))
 _CONFORM_MIN_JIGGLE_VERTS = 8
 _CONFORM_SKIP_NAMES = ("baseshape", "3ba", "virtual", "col", "ground", "ref")
+
+# Graft the UBE body's jiggle (butt/belly/breast) skin weight onto a fitted
+# garment that HUGS a jiggling region but carries none of its own, so it follows
+# the body's runtime jiggle instead of staying rigid while the body pokes through
+# (the close-to-body "clip when moving" class). Default ON;
+# CBBE2UBE_NO_JIGGLE_TRANSFER=1 disables. The graft is
+# CBBE2UBE_JIGGLE_TRANSFER_FACTOR (0..1) of the body's local jiggle weight, scaled
+# by how tightly each vert hugs. Inverse of _conform_fitted_to_body's gate: that
+# MATCHES shapes that already jiggle; this ADDS jiggle to fitted cloth that lacks it.
+TRANSFER_BODY_JIGGLE = (
+    os.environ.get("CBBE2UBE_NO_JIGGLE_TRANSFER", "").strip().lower()
+    not in ("1", "true", "yes", "on"))
+_JIGGLE_TRANSFER_FACTOR = float(
+    os.environ.get("CBBE2UBE_JIGGLE_TRANSFER_FACTOR", "0.85"))
 _BODY_CONFORM_CACHE: "dict" = {}
 
 
@@ -4529,6 +4549,84 @@ def _body_conform_ref(weight: str):
         out = None
     _BODY_CONFORM_CACHE[weight] = out
     return out
+
+
+_BODY_JIGGLE_REF_CACHE: dict = {}
+# The body's STB TransformBufs are native references INTO its NifFile; keep the
+# NifFile alive (the read alone would let it be GC'd, leaving the cached STBs
+# dangling -> they set identity -> the grafted bone spikes to the origin).
+_BODY_JIGGLE_NF_KEEPALIVE: list = []
+
+
+def _body_jiggle_ref(weight: str):
+    """({jiggle_bone: skin_to_bone_xform}, body_g2s_is_identity) for the UBE body
+    at `weight`, or None. The jiggle bones (butt/belly/breast) are the body-only
+    bones a fitted garment lacks; their bind transforms let us graft them onto a
+    hugging garment WITHOUT a spike (a bone added with no STB skins to the origin
+    -- the _install_skin / audit-#4 class). Only valid when the body's
+    global-to-skin is identity (then the STB copies straight to an identity-g2s
+    garment); the caller skips the graft otherwise. Cached."""
+    if weight in _BODY_JIGGLE_REF_CACHE:
+        return _BODY_JIGGLE_REF_CACHE[weight]
+    out = None
+    try:
+        p = _find_ube_femalebody(weight) or _find_ube_femalebody("_1")
+        if p is not None and Path(p).is_file():
+            pyn = _pynifly()
+            nf = pyn.NifFile(filepath=str(p))
+            body = max(nf.shapes, key=lambda s: len(s.verts))
+            g2s = _shape_global_to_skin(body)
+            body_ident = (g2s is None) or _g2s_is_identity(g2s)
+            stbs: dict = {}
+            for bn in (body.bone_names or []):
+                if _is_physics_jiggle_scale_bone(bn):
+                    try:
+                        stbs[bn] = body.get_shape_skin_to_bone(bn)
+                    except Exception:
+                        pass
+            _BODY_JIGGLE_NF_KEEPALIVE.append(nf)   # keep native STBs valid
+            out = (stbs, body_ident)
+    except Exception:
+        out = None
+    _BODY_JIGGLE_REF_CACHE[weight] = out
+    return out
+
+
+def _jiggle_transfer_vert(dv: dict, bd_jig: dict, closeness: float,
+                          factor: float):
+    """Pure per-vert jiggle graft (extracted for testability). Give the garment
+    vert a jiggle weight of `factor * closeness * body_weight` on each of the body
+    vert's jiggle bones `bd_jig`, and scale the vert's existing (leg) weight down
+    to fill the remainder so the weights still sum to 1. The grafted jiggle is thus
+    a REAL share of the vert's skinning -- it follows the body's jiggle at a
+    comparable amplitude -- not a token amount renormalization would shrink away.
+    Returns (new_weights, set_of_newly_added_bones), or (None, set()) when nothing
+    new is grafted (no body jiggle here, far vert, or all targets negligible)."""
+    if not bd_jig or closeness <= 0.0:
+        return None, set()
+    targets = {jb: wb * factor * closeness for jb, wb in bd_jig.items()}
+    targets = {jb: t for jb, t in targets.items() if t > 1e-3}
+    added = {jb for jb in targets if jb not in dv}
+    if not added:
+        return None, set()       # only reinforces existing jiggle -> leave it
+    tot = sum(targets.values())
+    if tot >= 0.95:              # never let the graft dominate the vert
+        sc = 0.95 / tot
+        targets = {jb: t * sc for jb, t in targets.items()}
+        tot = sum(targets.values())
+    remain = max(0.0, 1.0 - tot)
+    base_sum = sum(w for b, w in dv.items() if b not in targets)
+    new: dict = {}
+    if base_sum > 0:
+        for b, w in dv.items():
+            if b not in targets:
+                new[b] = w / base_sum * remain
+    for jb, t in targets.items():
+        new[jb] = new.get(jb, 0.0) + t
+    new = {b: w for b, w in new.items() if w > 1e-4}
+    if not new:
+        return None, set()
+    return new, added
 
 
 def _conform_blend_vert(dv: dict, bd: dict, blend: float, delta: float):
@@ -4650,6 +4748,172 @@ def _conform_fitted_to_body(dst_path, biped_slots: int = 0) -> int:
     if dirty:
         # A re-save must never silently un-hide an SMP collision proxy (the "blue
         # body double"); re-assert the VirtualBody Hidden bit, as _reauthor does.
+        _hide_virtual_body(nf)
+        try:
+            atomic_nif_save(nf, dst_path)
+        except Exception:
+            return 0
+    return total
+
+
+def _transfer_body_jiggle_to_fitted(dst_path, biped_slots: int = 0) -> int:
+    """Graft the UBE body's jiggle (butt/belly/breast) weight onto a fitted
+    garment that HUGS a jiggling body region but carries NONE of its own, so the
+    garment follows the body's runtime jiggle instead of staying rigid and letting
+    the body poke through (the close-to-body "clip when moving" class). Returns the
+    number of verts grafted (0 = nothing touched).
+
+    Selectivity is anatomical, not by name: a vert only gets weight if the body
+    vert under it actually jiggles, so leg cloth over the butt/upper-thigh is
+    grafted while a shin greave / arm guard (over a non-jiggling region) is left
+    alone. Armor-only -- the body is never modified. Spike-proof: the grafted bone
+    gets the body's own skin-to-bone transform, valid because both carry an
+    identity global-to-skin (the graft is skipped otherwise, see _body_jiggle_ref).
+    Scoped to leg-dominant garments for now (torso bras/corsets deferred -- breast
+    jiggle on rigid cups is visually riskier; revisit after in-game)."""
+    if not TRANSFER_BODY_JIGGLE:
+        return 0
+    if biped_slots & (BIPED_SLOT33_BIT | BIPED_SLOT37_BIT):
+        return 0  # hands/feet -- not the clip class
+    weight = "_0" if str(dst_path).lower().endswith("_0.nif") else "_1"
+    ref = _body_conform_ref(weight)
+    jref = _body_jiggle_ref(weight)
+    if ref is None or jref is None:
+        return 0
+    _Vb, body_w, _bb, tree = ref
+    jstbs, body_ident = jref
+    if not jstbs or not body_ident:
+        return 0  # no jiggle bones, or skin spaces don't align -> skip (no spike)
+    try:
+        pyn = _pynifly()
+        nf = pyn.NifFile(filepath=str(dst_path))
+    except Exception:
+        return 0
+    collider_names = _hdt_collider_shape_names(dst_path, nif=nf)
+    total = 0
+    dirty = False
+    for s in nf.shapes:
+        nm = (s.name or "").lower()
+        if s.name in collider_names or any(k in nm for k in _CONFORM_SKIP_NAMES):
+            continue
+        # Direct STB copy needs the garment's g2s to match the body's (identity).
+        g2s = _shape_global_to_skin(s)
+        if not (g2s is None or _g2s_is_identity(g2s)):
+            continue
+        existing = set(s.bone_names or [])
+        # Bone-cap headroom: the partition split already ran, so never grow a shape
+        # past the per-shape palette cap. Realistic counts are far under (a pant
+        # ~15 bones + <=9 jiggle); this only guards the pathological edge.
+        if len(existing) + len(jstbs) > SKIN_PARTITION_BONE_CAP:
+            continue
+        bw = s.bone_weights or {}
+        # Only shapes that LACK jiggle (inverse of the conform gate -- a shape that
+        # already jiggles is handled by _conform_fitted_to_body).
+        jig = 0
+        for b, pairs in bw.items():
+            if _is_physics_jiggle_scale_bone(b):
+                jig += sum(1 for _vi, w in pairs if float(w) > 0.1)
+                if jig >= _CONFORM_MIN_JIGGLE_VERTS:
+                    break
+        if jig >= _CONFORM_MIN_JIGGLE_VERTS:
+            continue
+        try:
+            V = np.asarray(s.verts, np.float64)
+        except Exception:
+            continue
+        n = len(V)
+        if n == 0:
+            continue
+        vw = [dict() for _ in range(n)]
+        for b, pairs in bw.items():
+            for vi, w in pairs:
+                iv = int(vi)
+                if 0 <= iv < n:
+                    vw[iv][b] = vw[iv].get(b, 0.0) + float(w)
+        # not a physics-chain garment (custom non-skeleton bones -> SMP cloth)
+        chain_frac = sum(1 for d in vw
+                         if any(w > 0.1 and not _is_skeleton_bone(b)
+                                for b, w in d.items())) / n
+        if chain_frac > _CONFORM_CHAIN_MAX:
+            continue
+        Vw = _verts_skin_to_world(V, g2s)
+        d, idx = tree.query(Vw)
+        # HUGS the body (a loose skirt sits away -> excluded)
+        if float((d < _CONFORM_FIT_PROX).mean()) < _CONFORM_FIT_FRAC:
+            continue
+        # leg-dominant: the measured close-to-body clip population is leg cloth.
+        leg_dom = sum(1 for dd in vw
+                      if dd and _is_leg_rigid_bone(max(dd, key=dd.get))) / n
+        if leg_dom <= 0.5:
+            continue
+        new_bones: dict = {}
+        graft = 0
+        for i in range(n):
+            if d[i] > _CONFORM_VERT_PROX:
+                continue
+            dvi = vw[i]
+            if not dvi:
+                continue
+            if any(w > 0.1 and not _is_skeleton_bone(b) for b, w in dvi.items()):
+                continue  # custom-chain vert -> leave it (partition safety)
+            bd = body_w[idx[i]]
+            bd_jig = {b: w for b, w in bd.items()
+                      if _is_physics_jiggle_scale_bone(b) and w > 1e-3
+                      and b in jstbs}
+            if not bd_jig:
+                continue  # body doesn't jiggle under this vert -> nothing to follow
+            closeness = max(0.0, 1.0 - d[i] / _CONFORM_VERT_PROX)
+            new, added = _jiggle_transfer_vert(
+                dvi, bd_jig, closeness, _JIGGLE_TRANSFER_FACTOR)
+            if new is None:
+                continue
+            for jb in added:
+                if jb not in existing:
+                    new_bones[jb] = jstbs.get(jb)
+            vw[i] = new
+            graft += 1
+        if not graft or not new_bones:
+            continue
+        # Graft each new jiggle bone with the body's bind transform. CRITICAL:
+        # add ALL bones FIRST, THEN set the STBs -- a later add_bone RESETS the
+        # STB of an earlier-added bone (matches _install_skin's add-all-first
+        # order). A bone we can't give a valid STB would skin to the ORIGIN
+        # (spike, audit #4), so DROP its grafted weight rather than ship the spike.
+        addable = [(jb, stb) for jb, stb in new_bones.items() if stb is not None]
+        for jb, _stb in addable:
+            try:
+                s.add_bone(jb)
+            except Exception:
+                pass
+        safe: set = set()
+        for jb, stb in addable:
+            try:
+                s.set_skin_to_bone_xform(jb, stb)
+                safe.add(jb)
+            except Exception:
+                pass
+        unsafe = set(new_bones) - safe
+        if unsafe:
+            for i in range(n):
+                if any(jb in vw[i] for jb in unsafe):
+                    for jb in unsafe:
+                        vw[i].pop(jb, None)
+                    ss = sum(vw[i].values())
+                    if ss > 0:
+                        vw[i] = {b: w / ss for b, w in vw[i].items()}
+        if not safe:
+            continue   # nothing safely grafted -> leave this shape untouched
+        touched: set = set()
+        for i in range(n):
+            touched |= set(vw[i])
+        for bn in touched:
+            s.setShapeWeights(bn, [(i, vw[i][bn]) for i in range(n)
+                                   if bn in vw[i] and vw[i][bn] > 1e-4])
+        dirty = True
+        total += graft
+    if dirty:
+        # Re-assert the VirtualBody Hidden bit (a re-save can drop it -> blue body
+        # double), mirroring _conform_fitted_to_body / _reauthor.
         _hide_virtual_body(nf)
         try:
             atomic_nif_save(nf, dst_path)
@@ -9452,6 +9716,12 @@ def convert_nif_phase2(
     # Fitted-cloth body conform (gated; skin-tight garments only).
     try:
         _conform_fitted_to_body(dst_path, biped_slots)
+    except Exception:
+        pass
+    # Graft body jiggle onto fitted cloth that hugs a jiggling region but has none
+    # of its own, so it follows the jiggle instead of clipping when moving.
+    try:
+        _transfer_body_jiggle_to_fitted(dst_path, biped_slots)
     except Exception:
         pass
 
