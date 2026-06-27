@@ -2490,6 +2490,26 @@ def resort_masters(esp_obj: esp.ESP,
     return True
 
 
+def resort_masters_all(primary_esp_path, master_data_dirs=None) -> int:
+    """Re-sort the master list of the primary merged ESP AND every ESL-split piece
+    (`<stem>.esp`, `<stem>2.esp`, ...) so a master-tier plugin never trails a
+    regular ESP. A no-op on a correctly-ordered piece; self-heals a STALE Combined
+    a prior run left mis-sorted. Globs the same family the split writer uses.
+    Returns the number of pieces re-sorted."""
+    from pathlib import Path as _Path
+    p = _Path(primary_esp_path)
+    changed = 0
+    for piece in sorted(p.parent.glob(f"{p.stem}*{p.suffix}")):
+        try:
+            e = esp.ESP.load(piece)
+            if resort_masters(e, master_data_dirs):
+                e.save(piece)
+                changed += 1
+        except Exception:
+            continue
+    return changed
+
+
 # --------------------------------------------------------------------------
 # Post-conversion ESP patch: promote slot-49 cloth ARMAs to also cover slot 32
 # --------------------------------------------------------------------------
