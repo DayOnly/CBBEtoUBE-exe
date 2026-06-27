@@ -2659,16 +2659,18 @@ def convert_nif(
             except Exception:
                 pass
 
+        # Graft body jiggle onto fitted leg cloth that lacks its own, THEN conform.
+        # ORDER MATTERS: the graft gives a no-jiggle pant the body's butt/belly
+        # jiggle, which lets the conform pass (gated on jiggle) ALSO weight-match it
+        # to the body -- fixing the knee-BEND clip, not just butt-jiggle follow.
+        try:
+            _transfer_body_jiggle_to_fitted(dst_path, biped_slots)
+        except Exception:
+            pass
         # Fitted-cloth body conform (gated; skin-tight garments only). Runs after
         # finalize so it sees final skinning; reauthor/harden below preserve it.
         try:
             _conform_fitted_to_body(dst_path, biped_slots)
-        except Exception:
-            pass
-        # Graft body jiggle onto fitted cloth that hugs a jiggling region but has
-        # none of its own, so it follows the jiggle instead of clipping when moving.
-        try:
-            _transfer_body_jiggle_to_fitted(dst_path, biped_slots)
         except Exception:
             pass
 
@@ -9713,15 +9715,16 @@ def convert_nif_phase2(
     except Exception:
         pass
 
+    # Graft body jiggle onto fitted leg cloth that lacks its own, THEN conform --
+    # the graft lets the jiggle-gated conform ALSO weight-match these pants to the
+    # body, fixing the knee-BEND clip (not just butt-jiggle follow). Order matters.
+    try:
+        _transfer_body_jiggle_to_fitted(dst_path, biped_slots)
+    except Exception:
+        pass
     # Fitted-cloth body conform (gated; skin-tight garments only).
     try:
         _conform_fitted_to_body(dst_path, biped_slots)
-    except Exception:
-        pass
-    # Graft body jiggle onto fitted cloth that hugs a jiggling region but has none
-    # of its own, so it follows the jiggle instead of clipping when moving.
-    try:
-        _transfer_body_jiggle_to_fitted(dst_path, biped_slots)
     except Exception:
         pass
 
