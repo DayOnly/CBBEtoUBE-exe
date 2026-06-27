@@ -91,6 +91,24 @@ def test_copy_shape_fitpath_nonskinned_preserves_transform(tmp_path):
         "non-skinned transform was wrongly zeroed (misposition risk)"
 
 
+def test_copy_shape_skinned_offset_g2s_preserves_transform(tmp_path):
+    # A SKINNED shape with an authored OFFSET global_to_skin and a compensating
+    # NiAVObject transform (furexarot SMP armor, e.g. the elven cuirass) on the
+    # NON-fit copy path must KEEP its transform: the g2s + transform are a matched
+    # pair the engine uses to place the bounding sphere. Zeroing it lands the cull
+    # bound ~g2s-offset below the geometry -> the shape is frustum-culled / invisible
+    # at angles (the regression this guards). Distinct from the FIT path, where the
+    # verts ARE body-positioned and the transform IS reset (test above).
+    src = build_skinned_shape_nif(tmp_path / "src.nif", trans=(0.0, 0.0, 120.3),
+                                  g2s_trans=(0.0, 0.0, -120.3))
+    s = nc._pynifly().NifFile(filepath=str(src)).shapes[0]
+    assert s.has_global_to_skin, "test setup: offset g2s not set"
+    out = copy_shape_into_fresh(src, tmp_path / "dst.nif")   # NO override_verts (not fit)
+    assert abs(out.transform.translation[2] - 120.3) < 1e-3, \
+        f"skinned offset-g2s transform was zeroed (cull-bound regression): " \
+        f"{list(out.transform.translation)}"
+
+
 def test_copy_shape_identity_is_noop(tmp_path):
     # An identity-transform shape must round-trip its verts unchanged (no spurious
     # bake) -- guards against a future change baking when it shouldn't.

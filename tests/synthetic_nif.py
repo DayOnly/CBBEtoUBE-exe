@@ -147,11 +147,13 @@ _DEFAULT_BONES = ("NPC Spine [Spn0]", "NPC L Thigh [LThg]")
 
 
 def build_skinned_shape_nif(path, *, name="SkinShape", scale=1.0,
-                            trans=(0.0, 0.0, 0.0), bones=_DEFAULT_BONES):
+                            trans=(0.0, 0.0, 0.0), bones=_DEFAULT_BONES,
+                            g2s_trans=None):
     """Like build_shape_nif but SKINNED, so the shape round-trips as a skinned mesh
     (bone weights persist). Requires the pynifly sequence skin() -> add_bone (ALL
     first) -> set_skin_to_bone_xform -> setShapeWeights. Verts are split evenly
-    across the bones (each weight 1.0). Returns `path`."""
+    across the bones (each weight 1.0). Pass `g2s_trans` to set a non-identity
+    global-to-skin (the authored furexarot/elven offset-g2s case). Returns `path`."""
     pyn = nc._pynifly()
     nif = pyn.NifFile()
     nif.initialize("SKYRIMSE", str(path))
@@ -176,6 +178,11 @@ def build_skinned_shape_nif(path, *, name="SkinShape", scale=1.0,
     half = len(VERTS) // 2
     sh.setShapeWeights(bones[0], [(i, 1.0) for i in range(half)])
     sh.setShapeWeights(bones[1], [(i, 1.0) for i in range(half, len(VERTS))])
+    if g2s_trans is not None:
+        g = pyn.TransformBuf()
+        g.set_identity()
+        g.translation = tuple(g2s_trans)
+        sh.set_global_to_skin(g)
     nif.save()
     return path
 

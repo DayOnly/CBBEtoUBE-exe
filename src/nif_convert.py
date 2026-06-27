@@ -7338,18 +7338,20 @@ def _copy_shape(src_shape, dst_nif, parent=None, override_verts=None,
     except Exception:
         pass
     if (_bake_T is not None or _bake_trans is not None
-            or ((override_verts is not None or src_shape.has_global_to_skin)
-                and src_shape.bone_names)):
+            or (override_verts is not None and src_shape.bone_names)):
         # The source props carried a (possibly non-identity) NiAVObject transform.
-        # For SKINNED shapes the engine ignores that transform and the verts are
-        # already in final space -- baked above, OR body-positioned via
-        # override_verts (the fit path), OR mapped via global_to_skin -- so force
-        # identity, else a leftover scale/translation flings the mesh off-body /
-        # collapses it (project_scale_bake_vigilant). GATED on src_shape.bone_names:
-        # a NON-skinned shape's transform IS engine-honored, so it must NOT be
-        # zeroed on the override path (would misposition it). The bake path
-        # (_bake_T/_bake_trans) still resets unconditionally -- it baked the
-        # transform into the verts first, so identity is correct there for any shape.
+        # Force identity ONLY when the verts are already in final space WITHOUT it:
+        # baked above, OR body-positioned via override_verts (the fit path) -- else a
+        # leftover scale/translation flings the mesh off-body (project_scale_bake_
+        # vigilant). GATED on src_shape.bone_names: a NON-skinned transform IS
+        # engine-honored, so it must NOT be zeroed on the override path.
+        #
+        # NOT reset (was a bug): a skinned shape with an authored OFFSET
+        # global_to_skin that is NOT on the fit/bake path (furexarot SMP armor, e.g.
+        # the elven cuirass) -- there the source transform COMPENSATES the g2s (a
+        # matched pair the engine uses to place the bounding sphere; createShapeFromData
+        # already inherited it via `props`). Zeroing it lands the cull bound
+        # ~g2s-offset below the geometry -> frustum-culled / invisible at angles.
         try:
             _idt = _pynifly().TransformBuf()
             _idt.set_identity()
