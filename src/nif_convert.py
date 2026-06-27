@@ -2649,7 +2649,7 @@ def convert_nif(
             pass  # best-effort; doesn't break the conversion
 
         # Multi-partition collapse — see _normalize_partitions_on_disk.
-        _normalize_partitions_on_disk(dst_path)
+        _normalize_partitions_on_disk(dst_path, src_path)
 
         # FINAL HDT-SMP physics pass — must run LAST so extra-data survives
         # earlier round-trips. Skip hand/foot: cloth physics collapses them.
@@ -3540,7 +3540,8 @@ def _split_oversize_partition_verts(shape, cap: "int | None" = None,
         return 0
 
 
-def _normalize_partitions_on_disk(dst_path: Path) -> int:
+def _normalize_partitions_on_disk(dst_path: Path,
+                                  src_path: "Path | None" = None) -> int:
     """Post-save pass: reload the NIF at `dst_path`, collapse any
     multi-partition cloth shape to a single SBP_32_BODY partition, and
     re-save IF anything changed. Returns the number of shapes collapsed.
@@ -3554,6 +3555,13 @@ def _normalize_partitions_on_disk(dst_path: Path) -> int:
     try:
         pyn = _pynifly()
         nf = pyn.NifFile(filepath=str(dst_path))
+        # HDT-SMP per-triangle COLLISION shapes (the authored furexarot/skirt
+        # colliders) must KEEP their authored skin partitions: collapsing or
+        # re-slotting them desyncs FSMP's collision build from the XML -> an
+        # out-of-bounds read in Main::Update on equip (CTD -- the elven cuirass
+        # `Greaves` 32+38 -> 32 case). Same collider set the conform pass preserves.
+        collider_names = (_hdt_collider_shape_names(src_path)
+                          if src_path is not None else set())
         changed = 0
         for s in nf.shapes:
             # Body shapes keep their native partitions — they already
@@ -3562,6 +3570,9 @@ def _normalize_partitions_on_disk(dst_path: Path) -> int:
             # partition (e.g. SBP_54 + SBP_38 on a vanilla armor leggings)
             # blocks NioOverride morph routing.
             if s.name in UBE_BODY_INJECT_NAMES or s.name == "VirtualGround":
+                continue
+            # SMP COLLIDER: keep its authored partitions exactly (see above).
+            if s.name in collider_names:
                 continue
             # An over-cap ACCESSORY (gauntlet=33, boot=37, helmet=30/31, ...) must
             # keep its dismember slot across the split or it goes invisible in its
@@ -9705,7 +9716,7 @@ def convert_nif_phase2(
                 + f"HDT XML gen failed: {e!r}"
 
     # Multi-partition collapse (post all re-saves so extra-data isn't clobbered).
-    _normalize_partitions_on_disk(dst_path)
+    _normalize_partitions_on_disk(dst_path, src_path)
 
     # FINAL HDT-SMP physics pass — runs LAST so the extra-data survives
     # (earlier round-trips dropped it). Prefers the source armor's
