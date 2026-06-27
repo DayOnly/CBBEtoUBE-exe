@@ -80,3 +80,25 @@ def test_resort_roundtrips_and_clears_master_ordering_warning(tmp_path):
     assert reloaded.header.masters == ["Skyrim.esm", "AMaster.esm", "ZReg.esp"]
     w = ube_patcher.validate_patch(p, check_nifs=False)
     assert not any(x.startswith("master-ordering") for x in w), w
+
+
+def test_resort_masters_all_globs_and_heals_all_pieces(tmp_path):
+    def _mk(name):
+        e = esp.ESP(header=esp.TES4Header(masters=["Skyrim.esm", "ZReg.esp",
+                                                   "AMaster.esm"],
+                                          next_object_id=0xFFFFFF),
+                    groups=[esp.Group(label=b"ARMO",
+                                      records=[_armo((2 << 24) | 0x800,
+                                                     [(1 << 24) | 0x5])])])
+        e.save(tmp_path / name)
+    _mk("Combined.esp")
+    _mk("Combined2.esp")    # split piece -> globbed by Combined*.esp
+    n = ube_patcher.resort_masters_all(tmp_path / "Combined.esp",
+                                       master_data_dirs=None)
+    assert n == 2
+    for name in ("Combined.esp", "Combined2.esp"):
+        ms = esp.ESP.load(tmp_path / name).header.masters
+        assert ms == ["Skyrim.esm", "AMaster.esm", "ZReg.esp"]
+    # idempotent: a correctly-ordered family is a no-op
+    assert ube_patcher.resort_masters_all(tmp_path / "Combined.esp",
+                                          master_data_dirs=None) == 0

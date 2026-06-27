@@ -1995,6 +1995,18 @@ def _cmd_convert(args):
                                   "UBE armature ref(s) (double body-swap render)")
                     except Exception as e:
                         print(f"  !! armature dedup failed: {e!r}")
+                    # Self-heal a stale/mis-sorted master list (a master-tier
+                    # plugin after a regular ESP = load-order/FormID CTD). No-op on
+                    # a correctly-ordered piece; repairs a stale Combined an earlier
+                    # run left mis-sorted (the merge_esl_overflow recurrence class).
+                    try:
+                        nrs = ube_patcher.resort_masters_all(
+                            merged_out, master_data_dirs=batch_master_data_dirs)
+                        if nrs:
+                            print(f"  master re-sort: repaired {nrs} mis-ordered "
+                                  "Combined piece(s) (master-tier-after-regular)")
+                    except Exception as e:
+                        print(f"  !! master re-sort failed: {e!r}")
                     # POSTFLIGHT: re-validate the FINAL Combined (+ ESL split
                     # pieces) AFTER the merge/winner-rebase/reconcile/hands-fix
                     # mutations. validate_patch ran per-SOURCE only; a structural
@@ -3241,6 +3253,14 @@ def _cmd_merge(args):
     print(f"  ARMO total: {stats.get('total_armo_records', '?')}"
           f" (dedup: {stats.get('armo_duplicates_merged', 0)} duplicates "
           "merged)")
+    # Self-heal a stale/mis-sorted master list before validating (no-op if clean).
+    try:
+        _nrs = ube_patcher.resort_masters_all(
+            Path(stats.get('output', args.output)), master_data_dirs=_mdd)
+        if _nrs:
+            print(f"  master re-sort: repaired {_nrs} mis-ordered piece(s)")
+    except Exception as _e:
+        print(f"  !! master re-sort failed: {_e!r}")
     # Postflight the FINAL merged output (+ any ESL split pieces) -- this is the
     # exact artifact the validator exists to guard (master-ordering / ESL-overflow
     # / malformed-MODT CTD class). The integrated auto/convert path already does
