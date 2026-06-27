@@ -2496,17 +2496,43 @@ def resort_masters_all(primary_esp_path, master_data_dirs=None) -> int:
     regular ESP. A no-op on a correctly-ordered piece; self-heals a STALE Combined
     a prior run left mis-sorted. Globs the same family the split writer uses.
     Returns the number of pieces re-sorted."""
+    import sys as _sys
+    import time as _time
     from pathlib import Path as _Path
+    # Re-classify FRESH: a stale ESM-tier verdict cached during the per-source /
+    # merge phase would mis-classify a .esp ESM-flag and re-introduce the mis-sort
+    # this repairs. (#postflight)
+    clear_esm_tier_cache()
     p = _Path(primary_esp_path)
     changed = 0
     for piece in sorted(p.parent.glob(f"{p.stem}*{p.suffix}")):
         try:
             e = esp.ESP.load(piece)
-            if resort_masters(e, master_data_dirs):
-                e.save(piece)
-                changed += 1
-        except Exception:
+        except Exception as _le:
+            print(f"  !! master re-sort: could not load {piece.name} ({_le!r})",
+                  file=_sys.stderr)
             continue
+        if not resort_masters(e, master_data_dirs):
+            continue
+        # Save with a short retry: a TRANSIENT lock (AV scanning the output) is the
+        # likeliest reason a re-sort silently failed before, leaving the piece
+        # mis-sorted -> equip/load CTD. Surface a persistent failure LOUDLY rather
+        # than swallow it; the postflight then also flags it.
+        saved = False
+        for _attempt in range(4):
+            try:
+                e.save(piece)
+                saved = True
+                break
+            except Exception as _se:
+                if _attempt < 3:
+                    _time.sleep(0.4)
+                else:
+                    print(f"  !! master re-sort COULD NOT SAVE {piece.name} "
+                          f"({_se!r}) -> it stays mis-sorted, re-run the merge",
+                          file=_sys.stderr)
+        if saved:
+            changed += 1
     return changed
 
 
