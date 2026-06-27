@@ -2443,6 +2443,53 @@ def prune_unused_masters(esp_obj: esp.ESP) -> list[str]:
     return dropped
 
 
+def resort_masters(esp_obj: esp.ESP,
+                   master_data_dirs: "list[Path] | None" = None) -> bool:
+    """Re-sort a plugin's master list so master-tier plugins (.esm/.esl/ESM- or
+    ESL-flagged .esp) precede regular ESPs, renumbering every FormID in place.
+
+    A master-tier plugin listed AFTER a regular ESP is a load-order / FormID
+    resolution crash. The merge already tier-sorts (merge_patches), but a STALE
+    Combined left by an earlier run can survive mis-sorted; this repairs one
+    in place WITHOUT a re-merge (reuses prune_unused_masters' exact FormID-remap
+    path -- only the master COUNT is unchanged, so own-record FormIDs are
+    untouched). Vanilla DLC ESMs stay first in their canonical order. Returns True
+    if the order changed. No-op (False) if already correctly ordered."""
+    masters = list(esp_obj.header.masters)
+    n = len(masters)
+    if n <= 1:
+        return False
+    name_to_idx: dict[str, int] = {}
+    for i, m in enumerate(masters):
+        name_to_idx.setdefault(m.lower(), i)
+    # Vanilla DLC first, in canonical order (only those actually present).
+    new_order: list[int] = []
+    used: set[int] = set()
+    for vm in VANILLA_DLC_MASTERS:
+        idx = name_to_idx.get(vm.lower())
+        if idx is not None and idx not in used:
+            new_order.append(idx)
+            used.add(idx)
+    # The rest, STABLE-sorted by tier (master-tier first) -- mirrors merge_patches.
+    rest = [i for i in range(n) if i not in used]
+    rest.sort(key=lambda i: 0 if _is_esm_tier_master(masters[i], master_data_dirs)
+              else 1)
+    new_order.extend(rest)
+    if new_order == list(range(n)):
+        return False  # already correctly ordered
+    # old top byte -> new top byte (count unchanged -> own_byte == n is untouched).
+    remap = {old: new for new, old in enumerate(new_order) if new != old}
+    if remap:
+        for g in esp_obj.groups:
+            for r in g.records:
+                old_top = (r.formid >> 24) & 0xFF
+                if old_top in remap:
+                    r.formid = (remap[old_top] << 24) | (r.formid & 0xFFFFFF)
+                r.payload = _rewrite_formids_in_payload(r.payload, remap)
+    esp_obj.header.masters = [masters[i] for i in new_order]
+    return True
+
+
 # --------------------------------------------------------------------------
 # Post-conversion ESP patch: promote slot-49 cloth ARMAs to also cover slot 32
 # --------------------------------------------------------------------------
