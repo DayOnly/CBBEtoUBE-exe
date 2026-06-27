@@ -102,3 +102,17 @@ def test_resort_masters_all_globs_and_heals_all_pieces(tmp_path):
     # idempotent: a correctly-ordered family is a no-op
     assert ube_patcher.resort_masters_all(tmp_path / "Combined.esp",
                                           master_data_dirs=None) == 0
+
+
+def test_resort_masters_all_clears_stale_tier_cache(tmp_path):
+    # A stale ESM-tier verdict cached during an earlier phase must not survive into
+    # the self-heal (it would mis-classify a .esp ESM-flag and re-sort it wrong).
+    e = esp.ESP(header=esp.TES4Header(masters=["Skyrim.esm", "ZReg.esp",
+                                               "AMaster.esm"],
+                                      next_object_id=0xFFFFFF),
+                groups=[esp.Group(label=b"ARMO",
+                                  records=[_armo((2 << 24) | 0x800, [])])])
+    e.save(tmp_path / "Combined.esp")
+    ube_patcher._ESM_TIER_CACHE["somestale.esp"] = False   # poison
+    ube_patcher.resort_masters_all(tmp_path / "Combined.esp", master_data_dirs=None)
+    assert "somestale.esp" not in ube_patcher._ESM_TIER_CACHE   # cleared fresh
