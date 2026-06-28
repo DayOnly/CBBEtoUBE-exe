@@ -109,6 +109,21 @@ def test_copy_shape_skinned_offset_g2s_preserves_transform(tmp_path):
         f"{list(out.transform.translation)}"
 
 
+def test_copy_shape_fitpath_offset_g2s_preserves_transform(tmp_path):
+    # The FIT path (override_verts) for a SKINNED offset-g2s shape -- the elven
+    # cuirass's ACTUAL path (a phase-1 "copy" still fits verts). The fit clause
+    # `override_verts is not None and bone_names` fires here, so the offset-g2s gate
+    # must SUPPRESS the reset; the non-fit guard above does NOT cover this path.
+    # Zeroing the transform drops the cull bound ~g2s below the geometry ->
+    # frustum-culled / INVISIBLE LEGS on equip (the regression this guards).
+    src = build_skinned_shape_nif(tmp_path / "src.nif", trans=(0.0, 0.0, 120.3),
+                                  g2s_trans=(0.0, 0.0, -120.3))
+    out = copy_shape_into_fresh(src, tmp_path / "dst.nif", override_verts=VERTS)
+    assert abs(out.transform.translation[2] - 120.3) < 1e-3, \
+        f"fit-path offset-g2s transform was zeroed (invisible-legs regression): " \
+        f"{list(out.transform.translation)}"
+
+
 def test_copy_shape_identity_is_noop(tmp_path):
     # An identity-transform shape must round-trip its verts unchanged (no spurious
     # bake) -- guards against a future change baking when it shouldn't.
