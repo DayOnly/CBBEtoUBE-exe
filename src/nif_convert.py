@@ -2682,6 +2682,12 @@ def convert_nif(
             _conform_fitted_to_body(dst_path, biped_slots)
         except Exception:
             pass
+        # Knee-bend conform for RIGID leg plate (the conform above skips it): match
+        # the plate's Thigh:Calf split to the body so it bends with the knee.
+        try:
+            _match_rigid_leg_bend_to_body(dst_path, biped_slots)
+        except Exception:
+            pass
 
         # Verbatim-copied NIFs carry raw block structure the renderer can reject.
         # Re-author for a clean pynifly structure identical to body shapes.
@@ -4545,6 +4551,25 @@ TRANSFER_BODY_JIGGLE = (
     not in ("1", "true", "yes", "on"))
 _JIGGLE_TRANSFER_FACTOR = float(
     os.environ.get("CBBE2UBE_JIGGLE_TRANSFER_FACTOR", "0.85"))
+
+# RIGID leg-plate knee-bend conform. _conform_fitted_to_body is jiggle-gated and
+# SKIPS rigid plate, so a rigid greave / one-piece cuirass-leg that is under-weighted
+# to the Calf bone at the knee LAGS the body's knee bend -> the body knee pokes
+# through past the baked clearance (Orcish heavy #knee-clip; measured armor 91/9
+# Thigh:Calf vs body 76/23). This pass rebalances ONLY each leg vert's Thigh:Calf
+# split to its nearest body vert's so the plate bends WITH the body. It NEVER moves
+# verts (rest pose identical) and NEVER adds a bone or jiggle weight (the plate stays
+# rigid) -- it only re-divides weight the vert already carries between two bones it
+# already has. Default ON; CBBE2UBE_NO_LEG_BEND_MATCH=1 disables.
+MATCH_RIGID_LEG_BEND = (
+    os.environ.get("CBBE2UBE_NO_LEG_BEND_MATCH", "").strip().lower()
+    not in ("1", "true", "yes", "on"))
+_LEG_BEND_PAIRS = (
+    ("NPC L Thigh [LThg]", "NPC L Calf [LClf]"),
+    ("NPC R Thigh [RThg]", "NPC R Calf [RClf]"),
+)
+_LEG_BEND_MASS_MIN = float(os.environ.get("CBBE2UBE_LEG_BEND_MASS_MIN", "0.15"))
+_LEG_BEND_PROX = float(os.environ.get("CBBE2UBE_LEG_BEND_PROX", "3.0"))
 _BODY_CONFORM_CACHE: "dict" = {}
 
 
@@ -4774,6 +4799,124 @@ def _conform_fitted_to_body(dst_path, biped_slots: int = 0) -> int:
     if dirty:
         # A re-save must never silently un-hide an SMP collision proxy (the "blue
         # body double"); re-assert the VirtualBody Hidden bit, as _reauthor does.
+        _hide_virtual_body(nf)
+        try:
+            atomic_nif_save(nf, dst_path)
+        except Exception:
+            return 0
+    return total
+
+
+def _leg_bend_rebalance_vert(dv: dict, bd: dict,
+                             mass_min: float = _LEG_BEND_MASS_MIN) -> "set":
+    """Pure per-vert leg-bend rebalance (extracted for testability). For each
+    (Thigh, Calf) leg pair the vert `dv` carries with combined mass >= mass_min AND
+    whose nearest body vert `bd` is itself a thigh/calf vert, re-divide that mass by
+    the body's Thigh:Calf ratio (MUTATES dv in place). The vert's TOTAL weight and
+    every other bone are untouched -- only the split between the two leg bones the
+    vert already has changes. Returns the set of bone names changed (empty = none)."""
+    touched: "set" = set()
+    for thg, clf in _LEG_BEND_PAIRS:
+        wt = dv.get(thg, 0.0)
+        wc = dv.get(clf, 0.0)
+        mass = wt + wc
+        if mass < mass_min:
+            continue
+        bt = bd.get(thg, 0.0)
+        bc = bd.get(clf, 0.0)
+        if bt + bc < 0.2:
+            continue  # nearest body vert isn't a thigh/calf vert -> skip
+        r = bt / (bt + bc)
+        nt = mass * r
+        if abs(nt - wt) > 1e-3:
+            dv[thg] = nt
+            dv[clf] = mass * (1.0 - r)
+            touched.add(thg)
+            touched.add(clf)
+    return touched
+
+
+def _match_rigid_leg_bend_to_body(dst_path, biped_slots: int = 0) -> int:
+    """Rebalance a RIGID leg armor's Thigh:Calf weight split to the UBE body's so
+    the plate bends WITH the knee instead of lagging it (the body knee poking through
+    -- Orcish heavy #knee-clip). Complements _conform_fitted_to_body, which is
+    jiggle-gated and SKIPS rigid plate; this runs ONLY on the rigid plate it leaves
+    alone. Per leg vert that hugs the body, the vert's (Thigh+Calf) weight mass is
+    re-divided by the NEAREST body vert's Thigh:Calf ratio. It never moves a vert
+    (rest pose identical), never adds a bone or jiggle (the plate stays rigid), and
+    keeps the vert's total weight (only the two leg bones' split changes), so the
+    skin-partition bone palette is untouched. Returns the number of verts rebalanced.
+    """
+    if not MATCH_RIGID_LEG_BEND:
+        return 0
+    if biped_slots & (BIPED_SLOT33_BIT | BIPED_SLOT37_BIT):
+        return 0  # hands/feet -- not the knee-clip class
+    weight = "_0" if str(dst_path).lower().endswith("_0.nif") else "_1"
+    ref = _body_conform_ref(weight)
+    if ref is None:
+        return 0
+    _Vb, body_w, _bones, tree = ref
+    try:
+        pyn = _pynifly()
+        nf = pyn.NifFile(filepath=str(dst_path))
+    except Exception:
+        return 0
+    collider_names = _hdt_collider_shape_names(dst_path, nif=nf)
+    total = 0
+    dirty = False
+    for s in nf.shapes:
+        nm = (s.name or "").lower()
+        if s.name in collider_names or any(k in nm for k in _CONFORM_SKIP_NAMES):
+            continue
+        bw = s.bone_weights or {}
+        # Leg armor only: must carry BOTH thigh and calf of at least one leg.
+        if not any(thg in bw and clf in bw for thg, clf in _LEG_BEND_PAIRS):
+            continue
+        # Skip shapes the jiggle-gated conform already body-matched -- this pass is
+        # ONLY for the rigid plate that pass leaves alone (else we'd re-divide the
+        # Thigh/Calf the conform deliberately blended toward the body's detail bones).
+        jig = 0
+        for b, pairs in bw.items():
+            if _is_physics_jiggle_scale_bone(b):
+                jig += sum(1 for _vi, w in pairs if float(w) > 0.1)
+                if jig >= _CONFORM_MIN_JIGGLE_VERTS:
+                    break
+        if jig >= _CONFORM_MIN_JIGGLE_VERTS:
+            continue
+        try:
+            V = np.asarray(s.verts, np.float64)
+        except Exception:
+            continue
+        n = len(V)
+        if n == 0:
+            continue
+        vw = [dict() for _ in range(n)]
+        for b, pairs in bw.items():
+            for vi, w in pairs:
+                iv = int(vi)
+                if 0 <= iv < n:
+                    vw[iv][b] = vw[iv].get(b, 0.0) + float(w)
+        g2s = _shape_global_to_skin(s)
+        Vw = _verts_skin_to_world(V, g2s)
+        d, idx = tree.query(Vw)
+        touched: "set" = set()
+        conf = 0
+        for i in range(n):
+            if d[i] > _LEG_BEND_PROX:
+                continue  # not hugging the body -> leave it
+            dv = vw[i]
+            t = _leg_bend_rebalance_vert(dv, body_w[idx[i]])
+            if t:
+                touched |= t
+                conf += 1
+        if conf:
+            dirty = True
+            total += conf
+            for bn in touched:
+                s.setShapeWeights(bn, [(i, vw[i][bn]) for i in range(n)
+                                       if bn in vw[i] and vw[i][bn] > 1e-4])
+    if dirty:
+        # A re-save must never silently un-hide an SMP collision proxy.
         _hide_virtual_body(nf)
         try:
             atomic_nif_save(nf, dst_path)
@@ -9781,6 +9924,12 @@ def convert_nif_phase2(
     # Fitted-cloth body conform (gated; skin-tight garments only).
     try:
         _conform_fitted_to_body(dst_path, biped_slots)
+    except Exception:
+        pass
+    # Knee-bend conform for RIGID leg plate (the conform above skips it): match the
+    # plate's Thigh:Calf split to the body so it bends with the knee (Orcish #knee).
+    try:
+        _match_rigid_leg_bend_to_body(dst_path, biped_slots)
     except Exception:
         pass
 
