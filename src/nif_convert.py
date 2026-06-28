@@ -2539,6 +2539,14 @@ def convert_nif(
                         if any(kw in nlow for kw in NON_CLOTH_SHAPE_KEYWORDS):
                             continue
                         cleanup_shapes.append(s)
+                    # HDT-SMP per-triangle COLLIDER shapes must keep their authored
+                    # partitions: collapsing them desyncs FSMP's collision build ->
+                    # equip CTD (the `Greaves` 32+38 -> 32 case). CRITICAL here: this
+                    # phase-1 `nf` was RELOADED from disk above, so partition_tris is
+                    # live and `_normalize_partitions` actually COLLAPSES the collider
+                    # -- BEFORE _normalize_partitions_on_disk runs, so its skip is too
+                    # late. The skip has to be in this inline pass. (#elven Greaves.)
+                    _coll_names_p1 = _hdt_collider_shape_names(src_path)
                     for s in cleanup_shapes:
                         _reset_morph_flags(s)
                         _normalize_shader_for_morph(s)
@@ -2549,7 +2557,8 @@ def convert_nif(
                         # transparency on cloth and (b) persisted only
                         # partially, corrupting the atlas opaque-diffuse
                         # detection (cut-out tiles wrongly forced opaque).
-                        _normalize_partitions(s)
+                        if s.name not in _coll_names_p1:
+                            _normalize_partitions(s)
 
                     # BODYTRI goes on the carrier only.
                     for target_shape in carriers:
@@ -3560,6 +3569,10 @@ def _normalize_partitions_on_disk(dst_path: Path,
         # re-slotting them desyncs FSMP's collision build from the XML -> an
         # out-of-bounds read in Main::Update on equip (CTD -- the elven cuirass
         # `Greaves` 32+38 -> 32 case). Same collider set the conform pass preserves.
+        # NOTE: the phase-1 inline cleanup loop runs this SAME collapse on the
+        # reloaded-from-disk NIF (partition_tris live) BEFORE this pass, so it must
+        # skip colliders too -- by the time we get here the collider is already
+        # collapsed. See the phase-1/phase-2 inline loops.
         collider_names = (_hdt_collider_shape_names(src_path)
                           if src_path is not None else set())
         changed = 0
@@ -7337,21 +7350,29 @@ def _copy_shape(src_shape, dst_nif, parent=None, override_verts=None,
             new_shape.set_colors(list(_src_colors))
     except Exception:
         pass
+    # An authored OFFSET global_to_skin is COMPENSATED by the source NiAVObject
+    # transform (g2s t=-120.3 + transform t=+120.3 = net identity); the engine uses
+    # BOTH to place the bounding/cull sphere, and _install_skin PRESERVES the offset
+    # g2s. Zeroing the transform (even on the fit path, where the fit verts are
+    # lowered BACK to skin space) leaves g2s offset + transform identity -> the cull
+    # bound lands ~g2s-offset below the geometry -> frustum-culled / invisible at
+    # angles (the furexarot SMP elven cuirass). The engine IGNORES a skinned shape's
+    # transform for RENDER, so keeping it can't fling the mesh -- it only restores the
+    # matched pair the cull bound needs. So skip the reset for an offset-g2s skinned
+    # shape; a SCALE/ROTATION bake (_bake_T) still wins (those must land in verts).
+    _g2s = _shape_global_to_skin(src_shape) if src_shape.has_global_to_skin else None
+    _g2s_offset = _g2s is not None and not _g2s_is_identity(_g2s)
     if (_bake_T is not None or _bake_trans is not None
-            or (override_verts is not None and src_shape.bone_names)):
+            or (override_verts is not None and src_shape.bone_names
+                and not _g2s_offset)):
         # The source props carried a (possibly non-identity) NiAVObject transform.
         # Force identity ONLY when the verts are already in final space WITHOUT it:
         # baked above, OR body-positioned via override_verts (the fit path) -- else a
         # leftover scale/translation flings the mesh off-body (project_scale_bake_
         # vigilant). GATED on src_shape.bone_names: a NON-skinned transform IS
-        # engine-honored, so it must NOT be zeroed on the override path.
-        #
-        # NOT reset (was a bug): a skinned shape with an authored OFFSET
-        # global_to_skin that is NOT on the fit/bake path (furexarot SMP armor, e.g.
-        # the elven cuirass) -- there the source transform COMPENSATES the g2s (a
-        # matched pair the engine uses to place the bounding sphere; createShapeFromData
-        # already inherited it via `props`). Zeroing it lands the cull bound
-        # ~g2s-offset below the geometry -> frustum-culled / invisible at angles.
+        # engine-honored, so it must NOT be zeroed on the override path. GATED on
+        # not _g2s_offset: an offset-g2s shape's transform is the cull-bound match
+        # (above) -- keep it.
         try:
             _idt = _pynifly().TransformBuf()
             _idt.set_identity()
@@ -7881,6 +7902,20 @@ def _resolve_data_rel_in_vfs(rel: str, src_nif_path: Path) -> "Path | None":
     # 2) VFS: scan the whole load order for whichever mod ships the file.
     try:
         mroot = _paths.mods_root()
+    except Exception:
+        mroot = None
+    # Fallback: derive the mods root from the source NIF's OWN location (the dir
+    # ABOVE the mod folder that holds 'meshes') when the global mods_root isn't
+    # set in this process. Without it, VFS resolution silently returns None ->
+    # the source HDT XML isn't read -> per-triangle colliders go undetected ->
+    # their partitions get collapsed -> FSMP equip CTD. Belt-and-suspenders so
+    # the collider skip never depends on an env var being present.
+    if mroot is None:
+        for parent in src_nif_path.parents:
+            if parent.name.lower() == "meshes":
+                mroot = parent.parent.parent  # meshes -> mod dir -> mods root
+                break
+    try:
         if mroot is not None and mroot.is_dir():
             for mod in sorted(d for d in mroot.iterdir() if d.is_dir()):
                 cand = mod / norm
@@ -9539,10 +9574,18 @@ def convert_nif_phase2(
                 if any(kw in nlow for kw in NON_CLOTH_SHAPE_KEYWORDS):
                     continue
                 cloth_shapes_to_clean.append(s)
+            # SMP per-triangle COLLIDER shapes keep their authored partitions:
+            # collapsing them desyncs FSMP's collision build -> equip CTD (`Greaves`
+            # 32+38 -> 32). Here in phase-2 the shapes are in-memory (partition_tris
+            # not materialized) so the collapse usually no-ops and the on-disk pass
+            # does the real work -- but skip colliders anyway, belt-and-suspenders to
+            # match phase-1 (where the reloaded-from-disk NIF makes it bite).
+            _coll_names_p2 = _hdt_collider_shape_names(src_path)
             for s in cloth_shapes_to_clean:
                 _reset_morph_flags(s)
                 _normalize_shader_for_morph(s)
-                _normalize_partitions(s)
+                if s.name not in _coll_names_p2:
+                    _normalize_partitions(s)
 
             # BODYTRI goes on carriers only.
             for target in carriers_p2:

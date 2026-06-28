@@ -75,3 +75,15 @@ def test_missing_everywhere_returns_none(tmp_path, monkeypatch):
 def test_empty_rel_returns_none(tmp_path, monkeypatch):
     monkeypatch.setattr(nif_convert._paths, "mods_root", lambda: tmp_path)
     assert nif_convert._resolve_data_rel_in_vfs("", tmp_path / "x.nif") is None
+
+
+def test_vfs_falls_back_to_src_derived_root_when_mods_root_none(tmp_path, monkeypatch):
+    # When mods_root() is None in THIS process (a worker that didn't inherit the env),
+    # the resolver must still find the other-mod XML by deriving the mods root from
+    # the NIF's OWN path (above the mod folder that holds 'meshes'). Without this the
+    # source HDT XML silently fails to resolve -> per-triangle colliders undetected ->
+    # partitions collapsed -> FSMP equip CTD (the elven Greaves regression).
+    mods, nif, xml = _make_layout(tmp_path)
+    monkeypatch.setattr(nif_convert._paths, "mods_root", lambda: None)
+    got = nif_convert._resolve_data_rel_in_vfs(REL, nif)
+    assert got == xml, f"src-derived mods-root fallback failed: {got}"
