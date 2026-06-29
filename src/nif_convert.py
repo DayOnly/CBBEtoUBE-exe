@@ -5059,7 +5059,15 @@ def _match_rigid_leg_bend_to_body(dst_path, biped_slots: int = 0) -> int:
                 conf += 1
         if not conf:
             continue
-        to_add = [b for b in need if b in graft_stb and b not in existing]
+        # Only graft a detail bone that will actually EMIT >=1 weight above the
+        # setShapeWeights 1e-4 threshold: an add_bone'd bone written an EMPTY weight
+        # list is a zero-weight bone left in the list but absent from the regenerated
+        # skin-partition palette -> per-vert index runs past the palette -> equip CTD
+        # (#zeroweight-bone-desync; same guard _install_skin's `surviving` applies).
+        # A detail bone that emits nothing falls through to the fold below (onto its
+        # anchor), so its tiny weight isn't lost. (Review finding #2.)
+        to_add = [b for b in need if b in graft_stb and b not in existing
+                  and any(vw[i].get(b, 0.0) > 1e-4 for i in range(n))]
         # CRITICAL: add_bone (pynifly) RESETS every existing bone's skin-to-bone xform
         # to identity, which would skin the armor's OWN Thigh/Calf-weighted verts (most
         # of the leg) to the origin -> the whole plate explodes (the in-game spike that
@@ -5071,12 +5079,21 @@ def _match_rigid_leg_bend_to_body(dst_path, biped_slots: int = 0) -> int:
                 try:
                     saved_stb[eb] = s.get_shape_skin_to_bone(eb)
                 except Exception:
-                    pass
-            for b in to_add:
-                try:
-                    s.add_bone(b)
-                except Exception:
-                    pass
+                    saved_stb[eb] = None
+            # get_shape_skin_to_bone returns None (not raises) when the xform isn't
+            # found. If ANY existing bone's STB can't be read, we can't restore it
+            # after add_bone zeroes it -> it would be left at identity = origin spike.
+            # Bail the graft for this shape (it gets the safe knee-only fold below)
+            # rather than ship an identity-reset real bone. (Review finding #1.)
+            if any(st is None for st in saved_stb.values()):
+                to_add = []
+                saved_stb = {}
+            else:
+                for b in to_add:
+                    try:
+                        s.add_bone(b)
+                    except Exception:
+                        pass
         unsafe = need - set(existing) - set(to_add)
         if unsafe:
             # Detail bone we couldn't anchor: fold its weight back into the anchor the
