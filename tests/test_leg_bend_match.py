@@ -14,81 +14,62 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-"""_leg_deform_match_vert: the per-vert math behind the rigid leg-plate WHOLE-leg
-conform. A rigid greave / one-piece cuirass-leg keeps the source's leg skinning, so
-on UBE it neither bends the knee right (Orcish armor 91/9 Thigh:Calf vs body 76/23)
-nor flexes the front/back thigh (the body uses FrontThigh/RearThigh detail bones the
-plate lacks). The pass re-divides ONLY the vert's (Thigh+Calf) leg mass across the
-nearest body vert's FULL leg distribution, returning the detail bones the caller must
-graft -- never moving a vert or changing the vert's total weight."""
+"""_leg_bend_rebalance_vert: the per-vert math behind the rigid leg-plate knee-bend
+conform. A rigid greave / one-piece cuirass-leg under-weighted to the Calf at the
+knee LAGS the body's knee bend so the body knee pokes through (Orcish heavy: measured
+armor 91/9 Thigh:Calf vs body 76/23). The pass re-divides ONLY the (Thigh+Calf) mass
+the vert already carries by the nearest body vert's ratio -- never moving a vert,
+adding a bone, or changing the vert's total weight."""
 from src import nif_convert as nc
 
 LT = "NPC L Thigh [LThg]"
 LC = "NPC L Calf [LClf]"
-FRONT_L = "NPC L FrontThigh"
-REAR_L = "NPC L RearThigh"
 RT = "NPC R Thigh [RThg]"
 RC = "NPC R Calf [RClf]"
 
 
-def test_knee_rebalances_thigh_calf_to_body_ratio():
-    # No detail bones at the knee -> behaves like the old Thigh:Calf rebalance.
+def test_rebalances_knee_split_to_body_ratio():
+    # The Orcish case: armor 91/9, body 76/23 -> armor takes the body's split.
     dv = {LT: 0.91, LC: 0.09}
-    touched, added = nc._leg_deform_match_vert(dv, {LT: 0.76, LC: 0.23})
+    touched = nc._leg_bend_rebalance_vert(dv, {LT: 0.76, LC: 0.23})
     assert touched == {LT, LC}
-    assert added == set()
-    assert abs(dv[LT] - 0.76 / 0.99) < 1e-6        # mass(1.0) * body share
-    assert abs(dv[LT] + dv[LC] - 1.0) < 1e-6        # mass preserved
+    r = 0.76 / (0.76 + 0.23)
+    assert abs(dv[LT] - r) < 1e-6            # mass (1.0) * body ratio
+    assert abs(dv[LT] + dv[LC] - 1.0) < 1e-6  # mass preserved
 
 
-def test_thigh_grafts_front_detail_bone():
-    # The thigh case: body uses FrontThigh; the armor (Thigh only) must take it.
-    dv = {LT: 0.99}
-    touched, added = nc._leg_deform_match_vert(dv, {LT: 0.91, FRONT_L: 0.09})
-    assert added == {FRONT_L}                        # caller must bind it
-    assert FRONT_L in touched and LT in touched
-    assert abs(dv[FRONT_L] - 0.99 * 0.09) < 1e-6
-    assert abs(sum(dv.values()) - 0.99) < 1e-6       # leg mass preserved
-
-
-def test_preserves_total_and_non_leg_bones():
+def test_preserves_total_and_other_bones():
+    # Total weight and any non-leg bone (e.g. pelvis) are untouched: only the
+    # Thigh/Calf split changes, so the skin-partition palette is unaffected.
     dv = {LT: 0.8, LC: 0.1, "NPC Pelvis [Pelv]": 0.1}
     before = sum(dv.values())
-    nc._leg_deform_match_vert(dv, {LT: 0.5, LC: 0.3, REAR_L: 0.2})
-    assert abs(sum(dv.values()) - before) < 1e-6     # total weight unchanged
-    assert dv["NPC Pelvis [Pelv]"] == 0.1            # non-leg bone untouched
-    # the 0.9 leg mass spread over the body's 0.5/0.3/0.2 distribution
-    assert abs(dv[REAR_L] - 0.9 * 0.2) < 1e-6
+    nc._leg_bend_rebalance_vert(dv, {LT: 0.5, LC: 0.5})
+    assert abs(sum(dv.values()) - before) < 1e-6
+    assert dv["NPC Pelvis [Pelv]"] == 0.1
+    assert abs(dv[LT] - dv[LC]) < 1e-6        # 50/50 now (mass 0.9 split evenly)
 
 
 def test_skips_below_mass_min():
+    # A vert with only a trace of leg weight (mostly spine) is not a leg-bend vert.
     dv = {LT: 0.05, LC: 0.05, "NPC Spine [Spn0]": 0.9}   # leg mass 0.10 < 0.15
-    touched, added = nc._leg_deform_match_vert(dv, {LT: 0.5, LC: 0.5})
-    assert (touched, added) == (set(), set())
+    assert nc._leg_bend_rebalance_vert(dv, {LT: 0.5, LC: 0.5}) == set()
     assert dv[LT] == 0.05
 
 
 def test_skips_when_nearest_body_vert_is_not_a_leg_vert():
+    # If the nearest body vert is torso/arm (no thigh+calf), don't fabricate a ratio.
     dv = {LT: 0.9, LC: 0.1}
-    touched, added = nc._leg_deform_match_vert(dv, {"NPC Spine [Spn0]": 1.0})
-    assert (touched, added) == (set(), set())
+    assert nc._leg_bend_rebalance_vert(dv, {"NPC Spine [Spn0]": 1.0}) == set()
     assert dv[LT] == 0.9
 
 
 def test_idempotent_when_already_matched():
     dv = {LT: 0.6, LC: 0.4}
-    assert nc._leg_deform_match_vert(dv, {LT: 0.6, LC: 0.4}) == (set(), set())
+    assert nc._leg_bend_rebalance_vert(dv, {LT: 0.6, LC: 0.4}) == set()
 
 
-def test_right_leg_independent():
+def test_right_leg_pair_independent():
     dv = {RT: 0.9, RC: 0.1}
-    touched, added = nc._leg_deform_match_vert(dv, {RT: 0.5, RC: 0.5})
-    assert touched == {RT, RC} and added == set()
+    touched = nc._leg_bend_rebalance_vert(dv, {RT: 0.5, RC: 0.5})
+    assert touched == {RT, RC}
     assert abs(dv[RT] - 0.5) < 1e-6
-
-
-def test_detail_bone_names_resolve():
-    # The graft set must reference real UBE leg-detail bones (typos -> silent no-op).
-    assert FRONT_L in nc._LEG_DETAIL_BONE_NAMES
-    assert REAR_L in nc._LEG_DETAIL_BONE_NAMES
-    assert all("Thigh" in b or "Calf" in b for b in nc._LEG_DETAIL_BONE_NAMES)
