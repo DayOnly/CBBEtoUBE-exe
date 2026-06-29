@@ -4591,6 +4591,13 @@ _LEG_ALL_DEFORM_NAMES = tuple({
     *_LEG_DETAIL_BONE_NAMES})
 _LEG_BEND_MASS_MIN = float(os.environ.get("CBBE2UBE_LEG_BEND_MASS_MIN", "0.15"))
 _LEG_BEND_PROX = float(os.environ.get("CBBE2UBE_LEG_BEND_PROX", "3.0"))
+# World-Z ceiling: only conform verts AT OR BELOW the knee (UBE knee crease ~ world
+# z 30-40; thigh is z 42+). The earlier whole-leg version touched the thigh (knee Calf
+# rebalance up to z 42 + detail-bone graft at z 46-58), which shifted the THIGH in the
+# idle/standing pose -> a static thigh clip that was NOT there originally (regression).
+# Capping at the knee keeps the knee-BEND fix while leaving the thigh exactly as the
+# source authored it. Tunable; raise it to re-include more of the leg.
+_LEG_BEND_MAX_Z = float(os.environ.get("CBBE2UBE_LEG_BEND_MAX_Z", "38.0"))
 _BODY_CONFORM_CACHE: "dict" = {}
 _BODY_LEG_DETAIL_CACHE: "dict" = {}
 
@@ -5052,6 +5059,12 @@ def _match_rigid_leg_bend_to_body(dst_path, biped_slots: int = 0) -> int:
         for i in range(n):
             if d[i] > _LEG_BEND_PROX:
                 continue  # not hugging the body -> leave it
+            if Vw[i, 2] > _LEG_BEND_MAX_Z:
+                continue  # ABOVE the knee crease -> leave the THIGH as authored.
+            # The whole-leg version touched the thigh (knee Calf rebalance to z~42 +
+            # detail-bone graft at z 46-58), which shifted the thigh in the idle pose
+            # -> a static thigh clip that was NOT present originally (regression). The
+            # knee-bend fix only needs the knee joint (UBE knee crease ~ world z 30-40).
             t, added = _leg_deform_match_vert(vw[i], body_w[idx[i]])
             if t:
                 touched |= t
