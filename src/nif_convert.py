@@ -4552,25 +4552,36 @@ TRANSFER_BODY_JIGGLE = (
 _JIGGLE_TRANSFER_FACTOR = float(
     os.environ.get("CBBE2UBE_JIGGLE_TRANSFER_FACTOR", "0.85"))
 
-# RIGID leg-plate knee-bend conform. _conform_fitted_to_body is jiggle-gated and
-# SKIPS rigid plate, so a rigid greave / one-piece cuirass-leg that is under-weighted
-# to the Calf bone at the knee LAGS the body's knee bend -> the body knee pokes
-# through past the baked clearance (Orcish heavy #knee-clip; measured armor 91/9
-# Thigh:Calf vs body 76/23). This pass rebalances ONLY each leg vert's Thigh:Calf
-# split to its nearest body vert's so the plate bends WITH the body. It NEVER moves
-# verts (rest pose identical) and NEVER adds a bone or jiggle weight (the plate stays
-# rigid) -- it only re-divides weight the vert already carries between two bones it
-# already has. Default ON; CBBE2UBE_NO_LEG_BEND_MATCH=1 disables.
+# RIGID leg-plate FULL leg-deformation conform. _conform_fitted_to_body is
+# jiggle-gated and SKIPS rigid plate, so a rigid greave / one-piece cuirass-leg
+# deforms NOTHING like the body's leg: (a) under-weighted to the Calf at the knee it
+# LAGS the knee bend -> the body knee pokes through (Orcish heavy: armor 91/9
+# Thigh:Calf vs body 76/23); (b) it lacks the body's skeleton leg-DETAIL bones
+# (FrontThigh/RearThigh/RearCalf), which flex the FRONT and BACK of the thigh -> when
+# the leg moves the body thigh pokes through the straight plate (measured body front
+# FrontThigh=0.09, back RearThigh=0.07; armor 0). This pass matches each leg vert's
+# leg-bone weight to its nearest body vert's FULL leg-deformation distribution,
+# GRAFTING the detail bones with the body's bind transforms (spike-safe, like the
+# jiggle transfer). It NEVER moves a vert (rest pose identical) and NEVER adds a
+# JIGGLE bone (the plate doesn't go rubbery -- only skeleton deform bones). Default
+# ON; CBBE2UBE_NO_LEG_BEND_MATCH=1 disables.
 MATCH_RIGID_LEG_BEND = (
     os.environ.get("CBBE2UBE_NO_LEG_BEND_MATCH", "").strip().lower()
     not in ("1", "true", "yes", "on"))
-_LEG_BEND_PAIRS = (
-    ("NPC L Thigh [LThg]", "NPC L Calf [LClf]"),
-    ("NPC R Thigh [RThg]", "NPC R Calf [RClf]"),
+# Per leg: the prime bend bones (thigh/calf, already on the armor) and the skeleton
+# DETAIL bones (front/rear thigh, rear calf) that flex the limb -- grafted if absent.
+_LEG_DEFORM_BONES = (
+    {"thigh": "NPC L Thigh [LThg]", "calf": "NPC L Calf [LClf]",
+     "detail": ("NPC L FrontThigh", "NPC L RearThigh", "NPC L RearCalf [LrClf]")},
+    {"thigh": "NPC R Thigh [RThg]", "calf": "NPC R Calf [RClf]",
+     "detail": ("NPC R FrontThigh", "NPC R RearThigh", "NPC R RearCalf [RrClf]")},
 )
+_LEG_DETAIL_BONE_NAMES = tuple(
+    b for leg in _LEG_DEFORM_BONES for b in leg["detail"])
 _LEG_BEND_MASS_MIN = float(os.environ.get("CBBE2UBE_LEG_BEND_MASS_MIN", "0.15"))
 _LEG_BEND_PROX = float(os.environ.get("CBBE2UBE_LEG_BEND_PROX", "3.0"))
 _BODY_CONFORM_CACHE: "dict" = {}
+_BODY_LEG_DETAIL_CACHE: "dict" = {}
 
 
 def _body_conform_ref(weight: str):
@@ -4807,55 +4818,101 @@ def _conform_fitted_to_body(dst_path, biped_slots: int = 0) -> int:
     return total
 
 
-def _leg_bend_rebalance_vert(dv: dict, bd: dict,
-                             mass_min: float = _LEG_BEND_MASS_MIN) -> "set":
-    """Pure per-vert leg-bend rebalance (extracted for testability). For each
-    (Thigh, Calf) leg pair the vert `dv` carries with combined mass >= mass_min AND
-    whose nearest body vert `bd` is itself a thigh/calf vert, re-divide that mass by
-    the body's Thigh:Calf ratio (MUTATES dv in place). The vert's TOTAL weight and
-    every other bone are untouched -- only the split between the two leg bones the
-    vert already has changes. Returns the set of bone names changed (empty = none)."""
+def _body_leg_detail_ref(weight: str):
+    """({detail_bone: skin_to_bone_xform}, body_g2s_is_identity) for the UBE body's
+    skeleton leg-DETAIL bones (front/rear thigh, rear calf) -- the bones a rigid leg
+    plate lacks but needs to flex its front/back like the body. Their bind transforms
+    let us graft them onto the plate WITHOUT a spike (a bone added with no skin-to-
+    bone xform skins to the ORIGIN -- the _install_skin / audit-#4 class). Only valid
+    when the body's global-to-skin is identity (then the STB copies straight to an
+    identity-g2s plate); the caller skips the graft otherwise. Cached; the body
+    NifFile is kept alive (shared keepalive) so the native STBs stay valid."""
+    if weight in _BODY_LEG_DETAIL_CACHE:
+        return _BODY_LEG_DETAIL_CACHE[weight]
+    out = None
+    try:
+        p = _find_ube_femalebody(weight) or _find_ube_femalebody("_1")
+        if p is not None and Path(p).is_file():
+            pyn = _pynifly()
+            nf = pyn.NifFile(filepath=str(p))
+            body = max(nf.shapes, key=lambda s: len(s.verts))
+            g2s = _shape_global_to_skin(body)
+            body_ident = (g2s is None) or _g2s_is_identity(g2s)
+            stbs: dict = {}
+            for bn in (body.bone_names or []):
+                if bn in _LEG_DETAIL_BONE_NAMES:
+                    try:
+                        stbs[bn] = body.get_shape_skin_to_bone(bn)
+                    except Exception:
+                        pass
+            _BODY_JIGGLE_NF_KEEPALIVE.append(nf)   # keep native STBs valid
+            out = (stbs, body_ident)
+    except Exception:
+        out = None
+    _BODY_LEG_DETAIL_CACHE[weight] = out
+    return out
+
+
+def _leg_deform_match_vert(dv: dict, bd: dict,
+                           mass_min: float = _LEG_BEND_MASS_MIN) -> "tuple":
+    """Pure per-vert FULL leg-deformation match (extracted for testability). For each
+    leg the vert `dv` carries (Thigh+Calf mass >= mass_min) whose nearest body vert
+    `bd` is itself a leg vert (its leg-bone mass >= 0.2), REPLACE the vert's weight on
+    that leg's deformation bones -- Thigh, Calf, and the skeleton detail bones
+    FrontThigh/RearThigh/RearCalf -- with the body vert's distribution, scaled to the
+    vert's EXISTING leg mass. So the plate bends (Thigh:Calf) AND flexes its front/
+    back (the detail bones) like the body. MUTATES dv; the vert's TOTAL weight and
+    every NON-leg bone are untouched (only the leg-bone share is redistributed).
+    Returns (touched_bones, detail_bones_added): the detail bones the CALLER must
+    give a body bind transform before they are valid (no-STB bone -> origin spike)."""
     touched: "set" = set()
-    for thg, clf in _LEG_BEND_PAIRS:
-        wt = dv.get(thg, 0.0)
-        wc = dv.get(clf, 0.0)
-        mass = wt + wc
+    added: "set" = set()
+    for leg in _LEG_DEFORM_BONES:
+        thg, clf = leg["thigh"], leg["calf"]
+        mass = dv.get(thg, 0.0) + dv.get(clf, 0.0)
         if mass < mass_min:
             continue
-        bt = bd.get(thg, 0.0)
-        bc = bd.get(clf, 0.0)
-        if bt + bc < 0.2:
-            continue  # nearest body vert isn't a thigh/calf vert -> skip
-        r = bt / (bt + bc)
-        nt = mass * r
-        if abs(nt - wt) > 1e-3:
-            dv[thg] = nt
-            dv[clf] = mass * (1.0 - r)
-            touched.add(thg)
-            touched.add(clf)
-    return touched
+        all_bones = (thg, clf) + leg["detail"]
+        bdist = {b: bd.get(b, 0.0) for b in all_bones if bd.get(b, 0.0) > 1e-3}
+        bmass = sum(bdist.values())
+        if bmass < 0.2:
+            continue  # nearest body vert isn't a leg vert here
+        new = {b: mass * w / bmass for b, w in bdist.items()}
+        before = {b: dv.get(b, 0.0) for b in all_bones if dv.get(b, 0.0) > 1e-4}
+        if (set(new) == set(before)
+                and all(abs(new[b] - before[b]) <= 1e-3 for b in new)):
+            continue  # already matched
+        for b in all_bones:
+            dv.pop(b, None)
+        for b, w in new.items():
+            dv[b] = w
+        touched |= set(before) | set(new)
+        added |= (set(new) & set(leg["detail"]))
+    return touched, added
 
 
 def _match_rigid_leg_bend_to_body(dst_path, biped_slots: int = 0) -> int:
-    """Rebalance a RIGID leg armor's Thigh:Calf weight split to the UBE body's so
-    the plate bends WITH the knee instead of lagging it (the body knee poking through
-    -- Orcish heavy #knee-clip). Complements _conform_fitted_to_body, which is
-    jiggle-gated and SKIPS rigid plate; this runs ONLY on the rigid plate it leaves
-    alone. Per leg vert that hugs the body, the vert's (Thigh+Calf) weight mass is
-    re-divided by the NEAREST body vert's Thigh:Calf ratio. It never moves a vert
-    (rest pose identical), never adds a bone or jiggle (the plate stays rigid), and
-    keeps the vert's total weight (only the two leg bones' split changes), so the
-    skin-partition bone palette is untouched. Returns the number of verts rebalanced.
-    """
+    """Conform a RIGID leg armor's WHOLE-leg deformation to the UBE body so the plate
+    bends with the knee AND flexes its front/back with the thigh, instead of staying
+    straight while the body pokes through (Orcish heavy #knee-clip + #thigh-clip).
+    Complements _conform_fitted_to_body, which is jiggle-gated and SKIPS rigid plate;
+    this runs ONLY on the rigid plate it leaves alone. Per leg vert that hugs the
+    body, the vert's leg-bone weight is matched to its nearest body vert's full
+    leg-deformation distribution, GRAFTING the body's skeleton detail bones
+    (FrontThigh/RearThigh/RearCalf) with the body's bind transforms (spike-safe). It
+    never moves a vert (rest pose identical) and never adds a JIGGLE bone (no rubbery
+    plate -- only skeleton deform bones). Returns the number of verts matched."""
     if not MATCH_RIGID_LEG_BEND:
         return 0
     if biped_slots & (BIPED_SLOT33_BIT | BIPED_SLOT37_BIT):
-        return 0  # hands/feet -- not the knee-clip class
+        return 0  # hands/feet -- not the clip class
     weight = "_0" if str(dst_path).lower().endswith("_0.nif") else "_1"
     ref = _body_conform_ref(weight)
-    if ref is None:
+    dref = _body_leg_detail_ref(weight)
+    if ref is None or dref is None:
         return 0
     _Vb, body_w, _bones, tree = ref
+    detail_stbs, body_ident = dref
     try:
         pyn = _pynifly()
         nf = pyn.NifFile(filepath=str(dst_path))
@@ -4870,11 +4927,16 @@ def _match_rigid_leg_bend_to_body(dst_path, biped_slots: int = 0) -> int:
             continue
         bw = s.bone_weights or {}
         # Leg armor only: must carry BOTH thigh and calf of at least one leg.
-        if not any(thg in bw and clf in bw for thg, clf in _LEG_BEND_PAIRS):
+        if not any(leg["thigh"] in bw and leg["calf"] in bw
+                   for leg in _LEG_DEFORM_BONES):
             continue
+        # Grafting detail bones needs the plate's g2s to match the body's (identity);
+        # skip otherwise so the STB copies straight (no spike). body_ident gates the
+        # body side. A non-identity-g2s plate keeps the knee-only behaviour below.
+        g2s = _shape_global_to_skin(s)
+        garment_ident = (g2s is None or _g2s_is_identity(g2s))
         # Skip shapes the jiggle-gated conform already body-matched -- this pass is
-        # ONLY for the rigid plate that pass leaves alone (else we'd re-divide the
-        # Thigh/Calf the conform deliberately blended toward the body's detail bones).
+        # ONLY for the rigid plate that pass leaves alone.
         jig = 0
         for b, pairs in bw.items():
             if _is_physics_jiggle_scale_bone(b):
@@ -4882,6 +4944,11 @@ def _match_rigid_leg_bend_to_body(dst_path, biped_slots: int = 0) -> int:
                 if jig >= _CONFORM_MIN_JIGGLE_VERTS:
                     break
         if jig >= _CONFORM_MIN_JIGGLE_VERTS:
+            continue
+        existing = set(s.bone_names or [])
+        # Bone-cap headroom (the partition split already ran; realistic plate ~23
+        # bones + <=6 detail is far under -- only guards the pathological edge).
+        if len(existing | set(detail_stbs)) > SKIN_PARTITION_BONE_CAP:
             continue
         try:
             V = np.asarray(s.verts, np.float64)
@@ -4896,25 +4963,63 @@ def _match_rigid_leg_bend_to_body(dst_path, biped_slots: int = 0) -> int:
                 iv = int(vi)
                 if 0 <= iv < n:
                     vw[iv][b] = vw[iv].get(b, 0.0) + float(w)
-        g2s = _shape_global_to_skin(s)
         Vw = _verts_skin_to_world(V, g2s)
         d, idx = tree.query(Vw)
         touched: "set" = set()
+        need: "set" = set()
         conf = 0
         for i in range(n):
             if d[i] > _LEG_BEND_PROX:
                 continue  # not hugging the body -> leave it
-            dv = vw[i]
-            t = _leg_bend_rebalance_vert(dv, body_w[idx[i]])
+            t, added = _leg_deform_match_vert(vw[i], body_w[idx[i]])
             if t:
                 touched |= t
+                need |= added
                 conf += 1
-        if conf:
-            dirty = True
-            total += conf
-            for bn in touched:
-                s.setShapeWeights(bn, [(i, vw[i][bn]) for i in range(n)
-                                       if bn in vw[i] and vw[i][bn] > 1e-4])
+        if not conf:
+            continue
+        # Graft each NEW detail bone with the body's bind transform. add ALL bones
+        # FIRST, THEN set the STBs -- a later add_bone RESETS an earlier bone's STB
+        # (matches _install_skin order). A bone we can't bind would skin to the ORIGIN
+        # (spike) -> DROP its grafted weight instead. Only when both skin spaces are
+        # identity (else the STB wouldn't transfer) -- otherwise drop ALL detail bones
+        # and keep the knee-only Thigh:Calf rebalance the match already applied.
+        can_graft = body_ident and garment_ident
+        to_add = [(b, detail_stbs.get(b)) for b in need
+                  if b not in existing and detail_stbs.get(b) is not None] \
+            if can_graft else []
+        for b, _stb in to_add:
+            try:
+                s.add_bone(b)
+            except Exception:
+                pass
+        safe = set(existing)
+        for b, stb in to_add:
+            try:
+                s.set_skin_to_bone_xform(b, stb)
+                safe.add(b)
+            except Exception:
+                pass
+        unsafe = need - safe
+        if unsafe:
+            # Detail bone we couldn't bind: fold its weight back into the leg's Thigh
+            # so the vert's leg mass is preserved on a bone the plate DOES have (never
+            # leave weight on an origin-skinned bone). Then rebuild every bone touched.
+            thigh_of = {b: leg["thigh"] for leg in _LEG_DEFORM_BONES
+                        for b in leg["detail"]}
+            for i in range(n):
+                hit = [b for b in unsafe if b in vw[i]]
+                if not hit:
+                    continue
+                for b in hit:
+                    vw[i][thigh_of[b]] = vw[i].get(thigh_of[b], 0.0) + vw[i].pop(b)
+                    touched.add(thigh_of[b])
+            touched -= unsafe
+        dirty = True
+        total += conf
+        for bn in touched:
+            s.setShapeWeights(bn, [(i, vw[i][bn]) for i in range(n)
+                                   if bn in vw[i] and vw[i][bn] > 1e-4])
     if dirty:
         # A re-save must never silently un-hide an SMP collision proxy.
         _hide_virtual_body(nf)
