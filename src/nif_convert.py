@@ -5213,6 +5213,19 @@ def _chest_match_vert(dv: dict, bd: dict, strength: float = 1.0,
     return touched, added
 
 
+def _is_fx_overlay_name(name: "str | None") -> bool:
+    """Name heuristic for a glow/decal FX overlay shape ('MaleTorsoGlow', 'TorsoF:FX',
+    'MiscMFx', 'DSkirt Glow'). Belt-and-suspenders for the effect-shader BUFFER check:
+    some armors attach the effect shader to a shape AFTER the conform/jiggle passes run
+    (a sub-shape/finalize path), so the buffer isn't visible at conform time and the graft
+    slips through -> the 'TorsoF:FX' CTD class. The name is stable regardless of WHEN the
+    shader is attached. Skipping a (rare) false positive only forgoes the conform on that
+    shape -- never a crash. Tuned to NOT match legit shapes (ArmF/MiscF/GreaveF end in 'f',
+    not 'fx')."""
+    nm = (name or "").lower()
+    return "glow" in nm or ":fx" in nm or nm.endswith("fx")
+
+
 def _shape_has_effect_shader(shape) -> bool:
     """True if the shape uses a BSEffectShaderProperty (an additive glow/decal overlay,
     e.g. the Daedric red glow). These carry a transplanted effect-shader + animation
@@ -5304,9 +5317,11 @@ def _match_rigid_leg_bend_to_body(dst_path, biped_slots: int = 0) -> int:
         nm = (s.name or "").lower()
         if s.name in collider_names or any(k in nm for k in _CONFORM_SKIP_NAMES):
             continue
-        if _shape_has_effect_shader(s):
+        if _shape_has_effect_shader(s) or _is_fx_overlay_name(s.name):
             continue  # glow/decal overlay -- grafting+re-saving corrupts its effect-shader
                       # controller -> CTD (the Daedric 'MaleTorsoGlow' crash). Not body armor.
+                      # Name check catches shapes whose shader is attached AFTER this pass
+                      # (the 'TorsoF:FX' timing hole the buffer check alone missed).
         bw = s.bone_weights or {}
         # Eligible if it's LEG armor (carries Thigh+Calf -> knee/thigh/butt passes) OR a rigid
         # CHEST plate (carries the Spine2 chest anchor -> breast-jiggle pass). The rigid gate
@@ -5518,9 +5533,10 @@ def _transfer_body_jiggle_to_fitted(dst_path, biped_slots: int = 0) -> int:
         nm = (s.name or "").lower()
         if s.name in collider_names or any(k in nm for k in _CONFORM_SKIP_NAMES):
             continue
-        if _shape_has_effect_shader(s):
+        if _shape_has_effect_shader(s) or _is_fx_overlay_name(s.name):
             continue  # glow/decal overlay -- never graft jiggle onto an effect-shader shape
-                      # (re-save corrupts its controller -> CTD; see _shape_has_effect_shader)
+                      # (re-save corrupts its controller -> CTD; see _shape_has_effect_shader
+                      # / _is_fx_overlay_name for the post-conform-attach timing hole)
         # Direct STB copy needs the garment's g2s to match the body's (identity).
         g2s = _shape_global_to_skin(s)
         if not (g2s is None or _g2s_is_identity(g2s)):
