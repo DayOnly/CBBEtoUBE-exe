@@ -33,6 +33,59 @@ RT = "NPC R Thigh [RThg]"
 RC = "NPC R Calf [RClf]"
 
 
+# ---- _leg_bend_strength: z-tapered conform strength -------------------------
+
+def test_strength_full_through_knee():
+    assert nc._leg_bend_strength(20.0) == 1.0
+    assert nc._leg_bend_strength(nc._LEG_BEND_MAX_Z) == 1.0
+
+
+def test_strength_zero_above_cutoff():
+    assert nc._leg_bend_strength(nc._LEG_BEND_CUTOFF_Z) == 0.0
+    assert nc._leg_bend_strength(nc._LEG_BEND_CUTOFF_Z + 10) == 0.0
+
+
+def test_strength_ramps_down_across_thigh_monotonic():
+    # strictly decreasing from the knee ceiling to the thigh-z, bounded by [min,1]
+    zs = [nc._LEG_BEND_MAX_Z + 1, nc._LEG_BEND_MAX_Z + 5, nc._LEG_BEND_THIGH_Z - 1]
+    ss = [nc._leg_bend_strength(z) for z in zs]
+    assert ss == sorted(ss, reverse=True)
+    assert all(nc._LEG_BEND_THIGH_STRENGTH <= s <= 1.0 for s in ss)
+    assert abs(nc._leg_bend_strength(nc._LEG_BEND_THIGH_Z) - nc._LEG_BEND_THIGH_STRENGTH) < 1e-9
+
+
+# ---- _leg_deform_match_vert strength blend ----------------------------------
+
+def test_strength_zero_is_noop():
+    dv = {LT: 0.91, LC: 0.09}
+    touched, added = nc._leg_deform_match_vert(dv, {LT: 0.5, LC: 0.5}, strength=0.0)
+    assert touched == set() and added == set()
+    assert dv == {LT: 0.91, LC: 0.09}
+
+
+def test_strength_half_blends_toward_body_and_conserves_mass():
+    # body has a detail bone; at strength 0.5 the vert gets HALF the body's detail share
+    # and keeps half its original split, with total leg mass unchanged.
+    dv = {LT: 1.0}
+    before_mass = dv[LT]
+    touched, added = nc._leg_deform_match_vert(dv, {LT: 0.8, FRONT_L: 0.2}, strength=0.5)
+    assert FRONT_L in added
+    # full match would be LT=0.8, FRONT_L=0.2 (scaled to mass 1.0); half-blend:
+    # FRONT_L = 0.5*0 + 0.5*0.2 = 0.10 ; LT = 0.5*1.0 + 0.5*0.8 = 0.90
+    assert abs(dv[FRONT_L] - 0.10) < 1e-6
+    assert abs(dv[LT] - 0.90) < 1e-6
+    assert abs(sum(dv.values()) - before_mass) < 1e-6     # mass conserved
+
+
+def test_strength_partial_is_between_none_and_full():
+    base = {LT: 0.95, LC: 0.05}
+    body = {LT: 0.6, LC: 0.4}
+    half = dict(base); nc._leg_deform_match_vert(half, body, strength=0.5)
+    full = dict(base); nc._leg_deform_match_vert(full, body, strength=1.0)
+    # half-blend Calf sits strictly between the original and the full-match Calf
+    assert base[LC] < half[LC] < full[LC]
+
+
 # ---- _leg_deform_match_vert: per-vert weight redistribution -----------------
 
 def test_knee_rebalances_thigh_calf_to_body_ratio():

@@ -4591,15 +4591,44 @@ _LEG_ALL_DEFORM_NAMES = tuple({
     *_LEG_DETAIL_BONE_NAMES})
 _LEG_BEND_MASS_MIN = float(os.environ.get("CBBE2UBE_LEG_BEND_MASS_MIN", "0.15"))
 _LEG_BEND_PROX = float(os.environ.get("CBBE2UBE_LEG_BEND_PROX", "3.0"))
-# World-Z ceiling: only conform verts AT OR BELOW the knee (UBE knee crease ~ world
-# z 30-40; thigh is z 42+). The earlier whole-leg version touched the thigh (knee Calf
-# rebalance up to z 42 + detail-bone graft at z 46-58), which shifted the THIGH in the
-# idle/standing pose -> a static thigh clip that was NOT there originally (regression).
-# Capping at the knee keeps the knee-BEND fix while leaving the thigh exactly as the
-# source authored it. Tunable; raise it to re-include more of the leg.
-_LEG_BEND_MAX_Z = float(os.environ.get("CBBE2UBE_LEG_BEND_MAX_Z", "38.0"))
+# Z-TAPERED conform strength (UBE knee crease ~ world z 34-40; thigh z 42-64).
+# History: the whole-leg conform at FULL strength shifted the thigh in the idle pose
+# (static clip). A hard z<=38 cap removed that but left the thigh with ZERO flex, so the
+# body's hamstring pokes the rigid plate when MOVING (dynamic) AND a sliver of the knee
+# bend (z 38-40) was lost (slight knee poke). FIX = taper, not cap: conform at FULL
+# strength through the knee (z <= _LEG_BEND_MAX_Z), then RAMP DOWN to a reduced strength
+# (_LEG_BEND_THIGH_STRENGTH) across the thigh (to _LEG_BEND_THIGH_Z), and stop above
+# _LEG_BEND_CUTOFF_Z (don't touch hip/butt). Reduced strength = the SAME principle that
+# kept the knee at 86/14 not the body's 76/23: the plate sits at a LARGER radius than the
+# body, so full body weights OVER-rotate it (overshoot = the static bulge). A partial
+# graft gives the rear thigh enough flex to track the body when moving WITHOUT the
+# overshoot. All tunable.
+_LEG_BEND_MAX_Z = float(os.environ.get("CBBE2UBE_LEG_BEND_MAX_Z", "41.0"))       # full-strength knee ceiling
+_LEG_BEND_THIGH_Z = float(os.environ.get("CBBE2UBE_LEG_BEND_THIGH_Z", "58.0"))   # taper end (reaches min strength)
+_LEG_BEND_THIGH_STRENGTH = float(os.environ.get("CBBE2UBE_LEG_BEND_THIGH_STRENGTH", "0.40"))  # min (thigh) strength
+_LEG_BEND_CUTOFF_Z = float(os.environ.get("CBBE2UBE_LEG_BEND_CUTOFF_Z", "66.0")) # above this: no conform (hip/butt)
 _BODY_CONFORM_CACHE: "dict" = {}
 _BODY_LEG_DETAIL_CACHE: "dict" = {}
+
+
+def _leg_bend_strength(z: float) -> float:
+    """Per-vert conform strength by world Z: 1.0 through the knee (z <= _LEG_BEND_MAX_Z),
+    linearly ramped down to _LEG_BEND_THIGH_STRENGTH across the thigh, and 0.0 above
+    _LEG_BEND_CUTOFF_Z (leave the hip/butt). The reduced thigh strength gives partial
+    rear-thigh flex without the plate-overshoot that a full conform causes (the plate is
+    at a larger radius than the body). Pure; unit-tested."""
+    if z <= _LEG_BEND_MAX_Z:
+        return 1.0
+    if z >= _LEG_BEND_CUTOFF_Z:
+        return 0.0
+    s_min = _LEG_BEND_THIGH_STRENGTH
+    if z >= _LEG_BEND_THIGH_Z:
+        return s_min
+    span = _LEG_BEND_THIGH_Z - _LEG_BEND_MAX_Z
+    if span <= 1e-6:
+        return s_min
+    frac = (z - _LEG_BEND_MAX_Z) / span          # 0 at knee ceiling -> 1 at thigh_z
+    return 1.0 + frac * (s_min - 1.0)            # 1.0 -> s_min
 
 
 def _stb_to_mat4(tb):
@@ -4917,18 +4946,25 @@ def _body_leg_detail_ref(weight: str):
 
 
 def _leg_deform_match_vert(dv: dict, bd: dict,
-                           mass_min: float = _LEG_BEND_MASS_MIN) -> "tuple":
-    """Pure per-vert FULL leg-deformation match (extracted for testability). For each
-    leg the vert `dv` carries (Thigh+Calf mass >= mass_min) whose nearest body vert
-    `bd` is itself a leg vert (its leg-bone mass >= 0.2), REPLACE the vert's weight on
-    that leg's deformation bones -- Thigh, Calf, and the detail bones FrontThigh/
-    RearThigh/RearCalf -- with the body vert's distribution, scaled to the vert's
-    EXISTING leg mass. So the plate bends (Thigh:Calf) AND flexes its front/back (the
-    detail bones) like the body. MUTATES dv; the vert's TOTAL weight and every NON-leg
-    bone are untouched. Returns (touched_bones, detail_bones_added): the detail bones
-    the CALLER must give a re-anchored bind transform before they are valid."""
+                           mass_min: float = _LEG_BEND_MASS_MIN,
+                           strength: float = 1.0) -> "tuple":
+    """Pure per-vert leg-deformation match (extracted for testability). For each leg the
+    vert `dv` carries (Thigh+Calf mass >= mass_min) whose nearest body vert `bd` is itself
+    a leg vert (its leg-bone mass >= 0.2), move the vert's weight on that leg's deformation
+    bones -- Thigh, Calf, and the detail bones FrontThigh/RearThigh/RearCalf -- TOWARD the
+    body vert's distribution (scaled to the vert's EXISTING leg mass). So the plate bends
+    (Thigh:Calf) AND flexes its front/back (the detail bones) like the body. `strength`
+    in [0,1] BLENDS between the vert's current split (0 = unchanged) and the body's full
+    distribution (1 = full match): used to give the THIGH partial flex without the
+    plate-overshoot a full match causes (the plate is at a larger radius than the body).
+    MUTATES dv; the vert's TOTAL leg mass and every NON-leg bone are untouched. Returns
+    (touched_bones, detail_bones_added): the detail bones the CALLER must give a
+    re-anchored bind transform before they are valid."""
     touched: "set" = set()
     added: "set" = set()
+    if strength <= 0.0:
+        return touched, added
+    strength = min(1.0, strength)
     for leg in _LEG_DEFORM_BONES:
         thg, clf = leg["thigh"], leg["calf"]
         mass = dv.get(thg, 0.0) + dv.get(clf, 0.0)
@@ -4939,8 +4975,19 @@ def _leg_deform_match_vert(dv: dict, bd: dict,
         bmass = sum(bdist.values())
         if bmass < 0.2:
             continue  # nearest body vert isn't a leg vert here
-        new = {b: mass * w / bmass for b, w in bdist.items()}
+        full = {b: mass * w / bmass for b, w in bdist.items()}     # full body match
         before = {b: dv.get(b, 0.0) for b in all_bones if dv.get(b, 0.0) > 1e-4}
+        if strength >= 1.0:
+            new = full
+        else:
+            # blend current split -> body match by `strength`; conserves leg mass (both
+            # `before` and `full` sum to `mass`), drops near-zero entries.
+            keys = set(full) | set(before)
+            new = {}
+            for b in keys:
+                w = (1.0 - strength) * before.get(b, 0.0) + strength * full.get(b, 0.0)
+                if w > 1e-4:
+                    new[b] = w
         if (set(new) == set(before)
                 and all(abs(new[b] - before[b]) <= 1e-3 for b in new)):
             continue  # already matched
@@ -5059,13 +5106,14 @@ def _match_rigid_leg_bend_to_body(dst_path, biped_slots: int = 0) -> int:
         for i in range(n):
             if d[i] > _LEG_BEND_PROX:
                 continue  # not hugging the body -> leave it
-            if Vw[i, 2] > _LEG_BEND_MAX_Z:
-                continue  # ABOVE the knee crease -> leave the THIGH as authored.
-            # The whole-leg version touched the thigh (knee Calf rebalance to z~42 +
-            # detail-bone graft at z 46-58), which shifted the thigh in the idle pose
-            # -> a static thigh clip that was NOT present originally (regression). The
-            # knee-bend fix only needs the knee joint (UBE knee crease ~ world z 30-40).
-            t, added = _leg_deform_match_vert(vw[i], body_w[idx[i]])
+            # Z-tapered strength: FULL through the knee, ramped DOWN across the thigh,
+            # 0 above the hip cutoff. Full strength on the thigh over-rotates the plate
+            # (static bulge); 0 leaves it rigid (pokes when moving). The taper threads
+            # both -- see _leg_bend_strength.
+            sgi = _leg_bend_strength(Vw[i, 2])
+            if sgi <= 0.0:
+                continue
+            t, added = _leg_deform_match_vert(vw[i], body_w[idx[i]], strength=sgi)
             if t:
                 touched |= t
                 need |= added
