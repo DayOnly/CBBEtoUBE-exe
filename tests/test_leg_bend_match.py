@@ -189,6 +189,16 @@ def test_thigh_grafts_front_detail_bone():
     assert abs(sum(dv.values()) - 0.99) < 1e-6      # leg mass preserved
 
 
+def test_conserves_mass_when_vert_already_has_native_detail_bones():
+    # An armor whose SOURCE natively carries detail bones (e.g. ebonymail) must NOT lose
+    # that weight on conversion -- mass is computed over ALL leg-deform bones present, not
+    # just Thigh+Calf (the old bug under-weighted ~96 verts on ebonymail Cuirass:1).
+    dv = {LT: 0.6, LC: 0.1, FRONT_L: 0.2, REAR_L: 0.1}
+    before = sum(dv.values())
+    nc._leg_deform_match_vert(dv, {LT: 0.7, FRONT_L: 0.2, REAR_L: 0.1}, strength=1.0)
+    assert abs(sum(dv.values()) - before) < 1e-6     # 1.0 in, 1.0 out (was ~0.7)
+
+
 def test_preserves_total_and_non_leg_bones():
     dv = {LT: 0.8, LC: 0.1, "NPC Pelvis [Pelv]": 0.1}
     before = sum(dv.values())
