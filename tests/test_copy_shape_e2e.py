@@ -135,20 +135,32 @@ def test_copy_shape_identity_is_noop(tmp_path):
 
 
 def test_copy_shape_preserves_effect_shader(tmp_path):
-    # REGRESSION (Daedric cuirass glow): the red glow is an ANIMATED
-    # BSEffectShaderProperty overlay. createShapeFromData only makes
-    # BSLightingShaderProperty, which would downgrade it (emissive zeroed, greyscale
-    # dropped -> renders white). _copy_shape must transplant the effect shader AND its
-    # animation controller chain (controller -> interpolator -> NiFloatData keys).
+    # REGRESSION (Daedric cuirass glow): the red glow is a BSEffectShaderProperty overlay.
+    # createShapeFromData only makes BSLightingShaderProperty, which would downgrade it
+    # (emissive zeroed, greyscale dropped -> renders white). _copy_shape must transplant the
+    # effect shader so the glow keeps its COLOUR. By DEFAULT it is STATIC (no animation
+    # controller): the controller chain doesn't survive the HDT-inject reload+re-save and
+    # crashes the engine on cloth+glow armors (_EFFECT_GLOW_ANIM). The colour still works.
     src = build_effect_shader_nif(tmp_path / "glow_src.nif", controlled_var=8)
     src_shape = nc._pynifly().NifFile(filepath=str(src)).shapes[0]
     assert src_shape.shader_block_name == "BSEffectShaderProperty"   # sanity
     out = copy_shape_into_fresh(src, tmp_path / "glow_out.nif")
     assert out.shader_block_name == "BSEffectShaderProperty", \
         "effect shader was downgraded to lighting shader (glow would render white)"
-    # animation transplanted: controller present, targets the shader, keyframes intact
+    assert out.shader.controller is None, \
+        "default must be a STATIC glow (no controller) -- the animated chain CTDs on re-save"
+
+
+def test_copy_shape_effect_shader_animation_optin(tmp_path, monkeypatch):
+    # With CBBE2UBE_GLOW_ANIM (opt-in), the full animation controller chain is transplanted
+    # (controller -> interpolator -> NiFloatData keys). Safe ONLY on glow armors that are
+    # never reload+re-saved (no SMP), so it's not the default.
+    monkeypatch.setattr(nc, "_EFFECT_GLOW_ANIM", True)
+    src = build_effect_shader_nif(tmp_path / "glow_src.nif", controlled_var=8)
+    out = copy_shape_into_fresh(src, tmp_path / "glow_out.nif")
+    assert out.shader_block_name == "BSEffectShaderProperty"
     ctrl = out.shader.controller
-    assert ctrl is not None, "glow animation controller was not transplanted (static glow)"
+    assert ctrl is not None, "opt-in animation controller was not transplanted"
     assert ctrl.properties.controlledVariable == 8, "controlled variable lost"
     assert ctrl.properties.targetID == out.shader.id, "controller does not target its shader"
     data = out.file.read_node(id=ctrl.interpolator.properties.dataID)
