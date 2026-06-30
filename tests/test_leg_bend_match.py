@@ -169,6 +169,55 @@ def test_butt_jiggle_off_grafts_nothing():
     assert added == set() and BUTT_L not in dv
 
 
+# ---- chest pass: _chest_match_strength + _chest_match_vert ------------------
+
+SP2 = "NPC Spine2 [Spn2]"
+SP1 = "NPC Spine1 [Spn1]"
+BR_L3 = "L Breast03"
+BR_R3 = "R Breast03"
+
+
+def test_chest_strength_band():
+    assert nc._chest_match_strength(nc._CHEST_Z_LO - 1) == 0.0
+    assert nc._chest_match_strength(nc._CHEST_Z_HI + 1) == 0.0
+    mid = 0.5 * (nc._CHEST_Z_LO + nc._CHEST_Z_HI)
+    assert nc._chest_match_strength(mid) > 0.0
+
+
+def test_chest_grafts_capped_breast_from_spine_conserves_mass():
+    dv = {SP2: 0.95, SP1: 0.05}
+    touched, added = nc._chest_match_vert(
+        dv, {SP2: 0.6, BR_L3: 0.2, BR_R3: 0.2}, strength=1.0, cap=0.15)
+    assert added == {BR_L3, BR_R3}
+    assert dv[SP1] == 0.05                                  # other spine untouched
+    assert dv[SP2] < 0.95                                   # drawn from the anchor
+    breast = sum(dv.get(b, 0.0) for b in nc._CHEST_JIGGLE_BONES)
+    assert abs(breast - 0.15) < 1e-6                        # TOTAL capped
+    assert abs(sum(dv.values()) - 1.0) < 1e-6              # mass conserved
+
+
+def test_chest_skips_back_vert_no_breast_weight():
+    # a back/side vert whose nearest body vert has no breast weight grafts nothing
+    dv = {SP2: 0.9, SP1: 0.1}
+    touched, added = nc._chest_match_vert(dv, {SP2: 0.8, SP1: 0.2}, strength=1.0)
+    assert added == set()
+    assert all(b not in dv for b in nc._CHEST_JIGGLE_BONES)
+
+
+def test_chest_skips_without_spine_anchor():
+    # no Spine2 to draw from / anchor to -> no graft (avoids add_bone of an unanchorable bone)
+    dv = {"NPC L Clavicle [LClv]": 1.0}
+    assert nc._chest_match_vert(dv, {SP2: 0.6, BR_L3: 0.4}, strength=1.0) == (set(), set())
+
+
+def test_chest_per_bone_weight_stays_under_jiggle_gate():
+    # the capped graft must keep each breast bone < 0.1 so a re-run's rigid-gate still sees the
+    # plate as rigid (else the whole shape would be skipped on reconvert).
+    dv = {SP2: 1.0}
+    nc._chest_match_vert(dv, {SP2: 0.5, BR_L3: 0.5}, strength=1.0, cap=0.15)
+    assert all(dv.get(b, 0.0) < 0.1 for b in nc._CHEST_JIGGLE_BONES)
+
+
 # ---- _leg_deform_match_vert: per-vert weight redistribution -----------------
 
 def test_knee_rebalances_thigh_calf_to_body_ratio():

@@ -4642,8 +4642,47 @@ _BUTT_JIGGLE_CAP = float(os.environ.get("CBBE2UBE_BUTT_JIGGLE_CAP", "0.15"))  # 
 # the nearest body vert's own ratio), so the wider reach is safe.
 _BUTT_PROX = float(os.environ.get("CBBE2UBE_BUTT_PROX", "5.0"))
 _BUTT_MATCH_BONES = ("NPC L Thigh [LThg]", "NPC R Thigh [RThg]", "NPC Pelvis [Pelv]")
+# CHEST/BREAST-JIGGLE transfer (the upper-body mirror of the butt-jiggle pass). A rigid
+# chest plate over the UBE breasts is Spine2-dominant; the body there carries a LARGE breast
+# jiggle (L/R Breast01/02/03 ~0.37 total) the plate lacks -> the breast bounce pokes through
+# when moving. Same fix shape as the butt: graft the body's breast-jiggle bones onto the
+# plate's chest (anchored to Spine2), MATCHED + CAPPED. CAUTION: the breast jiggle is ~10x
+# the butt's, so a FULL match would make a metal cuirass bounce like flesh -- the cap keeps
+# the plate mostly rigid (partial follow = less poke, not a soft chest). Jiggle-ONLY (no
+# skeletal rebalance: chest is Spine2 on both, no pelvis-style lag). The breast bones are
+# body-weighted ONLY on the FRONT chest, so the graft self-gates to the front (a back vert's
+# nearest body vert has no breast weight -> no graft). DEFAULT ON per user 2026-06-30 ("do
+# the chest extension, with caution"); conservative start.
+_CHEST_JIGGLE = (os.environ.get("CBBE2UBE_NO_CHEST_JIGGLE", "").strip().lower()
+                 not in ("1", "true", "yes", "on"))
+_CHEST_JIGGLE_BONES = ("L Breast01", "L Breast02", "L Breast03",
+                       "R Breast01", "R Breast02", "R Breast03")
+_CHEST_ANCHOR = "NPC Spine2 [Spn2]"                                 # breast graft anchor (plate has it)
+_CHEST_Z_LO = float(os.environ.get("CBBE2UBE_CHEST_Z_LO", "88.0"))   # ramp-in start
+_CHEST_Z_HI = float(os.environ.get("CBBE2UBE_CHEST_Z_HI", "102.0"))  # ramp-out end (above = neck/clav)
+_CHEST_RAMP = float(os.environ.get("CBBE2UBE_CHEST_RAMP", "4.0"))
+_CHEST_JIGGLE_STRENGTH = float(os.environ.get("CBBE2UBE_CHEST_JIGGLE_STRENGTH", "1.0"))
+_CHEST_JIGGLE_CAP = float(os.environ.get("CBBE2UBE_CHEST_JIGGLE_CAP", "0.15"))  # LOW total cap: metal stays rigid
+# Per-bone clamp strictly UNDER the rigid-gate's 0.1 jiggle threshold: a single grafted
+# breast bone must never reach 0.1, or a RE-RUN's rigid-gate would count the plate as
+# "jiggling" and skip the whole shape (non-idempotent). The real body spreads breast weight
+# across 6 bones (~0.04 each at the cap), so this only bites a pathological single-bone body.
+_CHEST_JIGGLE_PERBONE = float(os.environ.get("CBBE2UBE_CHEST_JIGGLE_PERBONE", "0.09"))
+_CHEST_PROX = float(os.environ.get("CBBE2UBE_CHEST_PROX", "5.0"))
 _BODY_CONFORM_CACHE: "dict" = {}
 _BODY_LEG_DETAIL_CACHE: "dict" = {}
+
+
+def _chest_match_strength(z: float) -> float:
+    """Trapezoid chest-graft strength by world Z: 0 outside [_CHEST_Z_LO, _CHEST_Z_HI],
+    ramping in/out over _CHEST_RAMP so the neck/clavicle above and the belly below are never
+    touched. Peak = _CHEST_JIGGLE_STRENGTH. Pure."""
+    if z <= _CHEST_Z_LO or z >= _CHEST_Z_HI:
+        return 0.0
+    r = max(1e-6, _CHEST_RAMP)
+    up = (z - _CHEST_Z_LO) / r
+    down = (_CHEST_Z_HI - z) / r
+    return min(1.0, _CHEST_JIGGLE_STRENGTH) * max(0.0, min(1.0, up, down))
 
 
 def _butt_match_strength(z: float) -> float:
@@ -4978,9 +5017,11 @@ def _body_leg_detail_ref(weight: str):
             body = max(nf.shapes, key=lambda s: len(s.verts))
             g2s = _shape_global_to_skin(body)
             body_ident = (g2s is None) or _g2s_is_identity(g2s)
-            # leg-deform bones (thigh/calf/detail) + the butt-jiggle graft bones and their
-            # Pelvis anchor (for _match_rigid_leg_bend_to_body's butt-jiggle transfer).
-            _want = set(_LEG_ALL_DEFORM_NAMES) | set(_BUTT_JIGGLE_BONES) | {_BUTT_PELVIS}
+            # leg-deform bones (thigh/calf/detail) + the butt- and chest-jiggle graft bones
+            # and their anchors (Pelvis / Spine2) for _match_rigid_leg_bend_to_body's
+            # butt- and chest-jiggle transfers.
+            _want = (set(_LEG_ALL_DEFORM_NAMES) | set(_BUTT_JIGGLE_BONES) | {_BUTT_PELVIS}
+                     | set(_CHEST_JIGGLE_BONES) | {_CHEST_ANCHOR})
             stbs: dict = {}
             for bn in (body.bone_names or []):
                 if bn in _want:
@@ -5117,6 +5158,61 @@ def _butt_match_vert(dv: dict, bd: dict, strength: float = 1.0,
     return touched, added
 
 
+def _chest_match_vert(dv: dict, bd: dict, strength: float = 1.0,
+                      cap: float = _CHEST_JIGGLE_CAP,
+                      anchor: str = _CHEST_ANCHOR) -> "tuple":
+    """Pure per-vert CHEST/BREAST-jiggle graft. Give a rigid chest plate vert (Spine2-
+    dominant) a SMALL share of the body vert `bd`'s breast-jiggle (L/R Breast01/02/03) so it
+    follows the bounce instead of being poked by it. JIGGLE-ONLY (no rebalance): the grafted
+    weight is drawn from the `anchor` (Spine2), the TOTAL is capped at `cap` (the breast
+    jiggle is large -- the cap keeps the metal mostly rigid), mass is conserved, idempotent.
+    Self-gates to the front (a vert whose nearest body vert has no breast weight grafts
+    nothing). Returns (touched, breast_bones_added) -- the grafts the caller must give a
+    Spine2-anchored bind transform."""
+    touched: "set" = set()
+    added: "set" = set()
+    if strength <= 0.0:
+        return touched, added
+    anc_w = dv.get(anchor, 0.0)
+    present = [b for b in _CHEST_JIGGLE_BONES if dv.get(b, 0.0) > 1e-4]
+    if anc_w <= 1e-4 and not present:
+        return touched, added           # no Spine2 to draw from / nothing to manage
+    body = {b: bd.get(b, 0.0) for b in _CHEST_JIGGLE_BONES if bd.get(b, 0.0) > 1e-3}
+    # managed mass = anchor + any breast the vert ALREADY has (idempotent re-run)
+    mass = anc_w + sum(dv.get(b, 0.0) for b in present)
+    if mass < 1e-4:
+        return touched, added
+    bsum = sum(body.values())
+    want = min(bsum * min(1.0, strength), cap, mass) if bsum > 0.0 else 0.0
+    target = {b: want * body[b] / bsum for b in body} if bsum > 0.0 else {}
+    # Per-bone clamp < the 0.1 rigid-gate threshold (re-run safety); the clamped-off weight
+    # stays on the anchor (total just ends up a little lower), never redistributed away.
+    for b in list(target):
+        if target[b] > _CHEST_JIGGLE_PERBONE:
+            target[b] = _CHEST_JIGGLE_PERBONE
+    new_anchor = mass - sum(target.values())
+    cur = {anchor: anc_w}
+    for b in present:
+        cur[b] = dv.get(b, 0.0)
+    new = {anchor: new_anchor}
+    for b in set(present) | set(target):
+        new[b] = target.get(b, 0.0)
+    if all(abs(new.get(k, 0.0) - cur.get(k, 0.0)) <= 1e-3 for k in set(new) | set(cur)):
+        return touched, added           # already matched
+    dv[anchor] = new_anchor
+    touched.add(anchor)
+    for b in set(present) | set(target):
+        v = target.get(b, 0.0)
+        if v > 1e-4:
+            dv[b] = v
+            if b in body:
+                added.add(b)
+        else:
+            dv.pop(b, None)
+        touched.add(b)
+    return touched, added
+
+
 def _match_rigid_leg_bend_to_body(dst_path, biped_slots: int = 0) -> int:
     """Conform a RIGID leg armor's WHOLE-leg deformation to the UBE body so the plate
     bends with the knee AND flexes its front/back with the thigh, instead of staying
@@ -5158,14 +5254,20 @@ def _match_rigid_leg_bend_to_body(dst_path, biped_slots: int = 0) -> int:
         return 0
     collider_names = _hdt_collider_shape_names(dst_path, nif=nf)
     # Bones grafted onto the plate + the EXISTING bone each re-anchors to: leg detail bones
-    # anchor to Thigh/Calf; the butt-jiggle bones anchor to the Pelvis. graft_anchor also
-    # drives the fold-back of any bone we can't safely anchor.
+    # anchor to Thigh/Calf; the butt-jiggle bones to the Pelvis; the breast bones to Spine2.
+    # graft_anchor also drives the fold-back of any bone we can't safely anchor.
     graft_anchor = {b: anc for leg in _LEG_DEFORM_BONES for b, anc in leg["detail"]}
     _do_jiggle = _BUTT_MATCH and _BUTT_JIGGLE and _BUTT_JIGGLE_STRENGTH > 0.0
     if _do_jiggle:
         for jb in _BUTT_JIGGLE_BONES:
             graft_anchor[jb] = _BUTT_PELVIS
-    _graftable = set(_LEG_DETAIL_BONE_NAMES) | (set(_BUTT_JIGGLE_BONES) if _do_jiggle else set())
+    _do_chest = _CHEST_JIGGLE and _CHEST_JIGGLE_STRENGTH > 0.0
+    if _do_chest:
+        for cb in _CHEST_JIGGLE_BONES:
+            graft_anchor[cb] = _CHEST_ANCHOR
+    _graftable = (set(_LEG_DETAIL_BONE_NAMES)
+                  | (set(_BUTT_JIGGLE_BONES) if _do_jiggle else set())
+                  | (set(_CHEST_JIGGLE_BONES) if _do_chest else set()))
     total = 0
     dirty = False
     for s in nf.shapes:
@@ -5173,9 +5275,12 @@ def _match_rigid_leg_bend_to_body(dst_path, biped_slots: int = 0) -> int:
         if s.name in collider_names or any(k in nm for k in _CONFORM_SKIP_NAMES):
             continue
         bw = s.bone_weights or {}
-        # Leg armor only: must carry BOTH thigh and calf of at least one leg.
-        if not any(leg["thigh"] in bw and leg["calf"] in bw
-                   for leg in _LEG_DEFORM_BONES):
+        # Eligible if it's LEG armor (carries Thigh+Calf -> knee/thigh/butt passes) OR a rigid
+        # CHEST plate (carries the Spine2 chest anchor -> breast-jiggle pass). The rigid gate
+        # below still excludes anything that already jiggles.
+        has_leg = any(leg["thigh"] in bw and leg["calf"] in bw for leg in _LEG_DEFORM_BONES)
+        has_chest = _do_chest and (_CHEST_ANCHOR in bw)
+        if not (has_leg or has_chest):
             continue
         # ONLY rigid plate the jiggle-gated conform left alone.
         jig = 0
@@ -5227,19 +5332,21 @@ def _match_rigid_leg_bend_to_body(dst_path, biped_slots: int = 0) -> int:
         touched: "set" = set()
         need: "set" = set()
         conf = 0
+        _max_prox = max(_LEG_BEND_PROX, _BUTT_PROX, _CHEST_PROX)
         for i in range(n):
             di = d[i]
-            if di > _BUTT_PROX:
-                continue  # not hugging the body by either pass -> leave it
+            if di > _max_prox:
+                continue  # not hugging the body by any pass -> leave it
             zi = Vw[i, 2]
-            # Z-tapered LEG strength: FULL through the knee, ramped DOWN across the thigh,
-            # 0 above the cutoff. Full strength on the thigh over-rotates the plate (static
-            # bulge); 0 leaves it rigid (pokes when moving). The taper threads both. The
-            # BUTT pass (above the cutoff) is a separate Thigh<->Pelvis rebalance with its
-            # OWN (wider) prox -- the leg pass stays at _LEG_BEND_PROX (it's correct as-is).
+            # Three independent passes, each with its OWN prox/z-gate (the leg pass stays at
+            # _LEG_BEND_PROX -- correct in-game; butt/chest reach further):
+            #  - LEG: z-tapered Thigh:Calf bend + detail flex (full knee -> partial thigh).
+            #  - BUTT: Thigh<->Pelvis rebalance + matched butt-jiggle graft.
+            #  - CHEST: matched, capped breast-jiggle graft (self-gates to the front).
             sgi = _leg_bend_strength(zi) if di <= _LEG_BEND_PROX else 0.0
             bgi = (_butt_match_strength(zi) if (_BUTT_MATCH and di <= _BUTT_PROX) else 0.0)
-            if sgi <= 0.0 and bgi <= 0.0:
+            cgi = (_chest_match_strength(zi) if (_do_chest and di <= _CHEST_PROX) else 0.0)
+            if sgi <= 0.0 and bgi <= 0.0 and cgi <= 0.0:
                 continue
             t: "set" = set()
             if sgi > 0.0:
@@ -5252,6 +5359,10 @@ def _match_rigid_leg_bend_to_body(dst_path, biped_slots: int = 0) -> int:
                     jiggle=_do_jiggle, jiggle_strength=_BUTT_JIGGLE_STRENGTH)
                 t |= t2
                 need |= jadded
+            if cgi > 0.0:
+                t3, cadded = _chest_match_vert(vw[i], body_w[idx[i]], strength=cgi)
+                t |= t3
+                need |= cadded
             if t:
                 touched |= t
                 conf += 1
