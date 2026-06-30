@@ -169,6 +169,34 @@ def test_butt_jiggle_off_grafts_nothing():
     assert added == set() and BUTT_L not in dv
 
 
+# ---- effect-shader (glow overlay) skip --------------------------------------
+
+class _FakeShaderProps:
+    def __init__(self, buftype): self.bufType = buftype
+
+class _FakeShader:
+    def __init__(self, props): self.properties = props
+
+class _FakeShape:
+    def __init__(self, shader): self.shader = shader
+
+
+def test_effect_shader_detect_handles_missing_shader():
+    # robustness: a shape with no shader / no properties must not raise -> False
+    assert nc._shape_has_effect_shader(_FakeShape(None)) is False
+    assert nc._shape_has_effect_shader(_FakeShape(_FakeShader(None))) is False
+    assert nc._shape_has_effect_shader(object()) is False
+
+
+def test_effect_shader_detect_true_only_for_effect_buftype():
+    import src.nif_convert as _nc
+    eff = getattr(_nc._pynifly().PynBufferTypes, "BSEffectShaderPropertyBufType", None)
+    if eff is None:
+        return  # pynifly build without the enum; detection degrades to False (safe)
+    assert nc._shape_has_effect_shader(_FakeShape(_FakeShader(_FakeShaderProps(eff)))) is True
+    assert nc._shape_has_effect_shader(_FakeShape(_FakeShader(_FakeShaderProps("other")))) is False
+
+
 # ---- chest pass: _chest_match_strength + _chest_match_vert ------------------
 
 SP2 = "NPC Spine2 [Spn2]"

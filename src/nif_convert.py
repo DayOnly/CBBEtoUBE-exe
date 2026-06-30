@@ -5213,6 +5213,25 @@ def _chest_match_vert(dv: dict, bd: dict, strength: float = 1.0,
     return touched, added
 
 
+def _shape_has_effect_shader(shape) -> bool:
+    """True if the shape uses a BSEffectShaderProperty (an additive glow/decal overlay,
+    e.g. the Daedric red glow). These carry a transplanted effect-shader + animation
+    CONTROLLER chain (see _recreate_effect_shader); GRAFTING a bone onto one and re-saving
+    corrupts that controller -> the engine calls a virtual through a dead pointer = CTD
+    (the 'MaleTorsoGlow' BSEffectShaderProperty crash, 2026-06-30). The conform/jiggle passes
+    must NEVER touch a glow overlay -- it isn't body armor and needs no weight conform."""
+    try:
+        sh = getattr(shape, "shader", None)
+        props = getattr(sh, "properties", None) if sh is not None else None
+        if props is None:
+            return False
+        pyn = _pynifly()
+        eff = getattr(pyn.PynBufferTypes, "BSEffectShaderPropertyBufType", None)
+        return eff is not None and getattr(props, "bufType", None) == eff
+    except Exception:
+        return False
+
+
 def _match_rigid_leg_bend_to_body(dst_path, biped_slots: int = 0) -> int:
     """Conform a RIGID plate's deformation to the UBE body so it deforms/bounces WITH the
     body instead of staying stiff while the body pokes through. Complements
@@ -5285,6 +5304,9 @@ def _match_rigid_leg_bend_to_body(dst_path, biped_slots: int = 0) -> int:
         nm = (s.name or "").lower()
         if s.name in collider_names or any(k in nm for k in _CONFORM_SKIP_NAMES):
             continue
+        if _shape_has_effect_shader(s):
+            continue  # glow/decal overlay -- grafting+re-saving corrupts its effect-shader
+                      # controller -> CTD (the Daedric 'MaleTorsoGlow' crash). Not body armor.
         bw = s.bone_weights or {}
         # Eligible if it's LEG armor (carries Thigh+Calf -> knee/thigh/butt passes) OR a rigid
         # CHEST plate (carries the Spine2 chest anchor -> breast-jiggle pass). The rigid gate
@@ -5496,6 +5518,9 @@ def _transfer_body_jiggle_to_fitted(dst_path, biped_slots: int = 0) -> int:
         nm = (s.name or "").lower()
         if s.name in collider_names or any(k in nm for k in _CONFORM_SKIP_NAMES):
             continue
+        if _shape_has_effect_shader(s):
+            continue  # glow/decal overlay -- never graft jiggle onto an effect-shader shape
+                      # (re-save corrupts its controller -> CTD; see _shape_has_effect_shader)
         # Direct STB copy needs the garment's g2s to match the body's (identity).
         g2s = _shape_global_to_skin(s)
         if not (g2s is None or _g2s_is_identity(g2s)):
