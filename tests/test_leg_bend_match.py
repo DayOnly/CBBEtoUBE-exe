@@ -86,6 +86,54 @@ def test_strength_partial_is_between_none_and_full():
     assert base[LC] < half[LC] < full[LC]
 
 
+# ---- butt pass: _butt_match_strength + _butt_match_vert ---------------------
+
+PELV = "NPC Pelvis [Pelv]"
+SPINE = "NPC Spine [Spn0]"
+
+
+def test_butt_strength_zero_outside_band_peak_inside():
+    assert nc._butt_match_strength(nc._BUTT_Z_LO - 1) == 0.0
+    assert nc._butt_match_strength(nc._BUTT_Z_HI + 1) == 0.0
+    mid = 0.5 * (nc._BUTT_Z_LO + nc._BUTT_Z_HI)
+    assert abs(nc._butt_match_strength(mid) - nc._BUTT_STRENGTH) < 1e-9   # flat top
+
+
+def test_butt_strength_ramps_in_and_out():
+    lo_ramp = nc._butt_match_strength(nc._BUTT_Z_LO + nc._BUTT_RAMP * 0.5)
+    hi_ramp = nc._butt_match_strength(nc._BUTT_Z_HI - nc._BUTT_RAMP * 0.5)
+    assert 0.0 < lo_ramp < nc._BUTT_STRENGTH
+    assert 0.0 < hi_ramp < nc._BUTT_STRENGTH
+
+
+def test_butt_rebalances_thigh_toward_pelvis_conserves_mass():
+    dv = {LT: 0.25, PELV: 0.70, SPINE: 0.05}
+    touched = nc._butt_match_vert(dv, {LT: 0.15, PELV: 0.80}, strength=0.4)
+    assert touched == {LT, PELV}
+    assert dv[SPINE] == 0.05                       # non-butt bone untouched
+    assert dv[LT] < 0.25 and dv[PELV] > 0.70       # moved toward the pelvis-heavy body
+    assert abs(sum(dv.values()) - 1.0) < 1e-6      # mass conserved
+
+
+def test_butt_adds_no_bone_when_pelvis_absent():
+    # only thigh present -> can't rebalance Thigh<->Pelvis without ADDING Pelvis; must skip
+    dv = {LT: 0.9, SPINE: 0.1}
+    touched = nc._butt_match_vert(dv, {LT: 0.2, PELV: 0.8}, strength=0.5)
+    assert touched == set()
+    assert PELV not in dv and dv[LT] == 0.9
+
+
+def test_butt_strength_zero_is_noop():
+    dv = {LT: 0.25, PELV: 0.70}
+    assert nc._butt_match_vert(dv, {LT: 0.1, PELV: 0.9}, strength=0.0) == set()
+    assert dv == {LT: 0.25, PELV: 0.70}
+
+
+def test_butt_skips_when_body_vert_not_pelvic():
+    dv = {LT: 0.5, PELV: 0.5}
+    assert nc._butt_match_vert(dv, {SPINE: 1.0}, strength=0.5) == set()
+
+
 # ---- _leg_deform_match_vert: per-vert weight redistribution -----------------
 
 def test_knee_rebalances_thigh_calf_to_body_ratio():
