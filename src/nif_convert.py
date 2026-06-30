@@ -4621,6 +4621,20 @@ _BUTT_Z_LO = float(os.environ.get("CBBE2UBE_BUTT_Z_LO", "60.0"))     # ramp-in s
 _BUTT_Z_HI = float(os.environ.get("CBBE2UBE_BUTT_Z_HI", "78.0"))     # ramp-out end (above = spine/back, left alone)
 _BUTT_RAMP = float(os.environ.get("CBBE2UBE_BUTT_RAMP", "4.0"))      # ramp width at each end
 _BUTT_STRENGTH = float(os.environ.get("CBBE2UBE_BUTT_STRENGTH", "0.80"))  # peak rebalance strength
+# BUTT-JIGGLE transfer: after the skeletal Thigh<->Pelvis rebalance, the body's outer butt
+# still physically JIGGLES (the NPC L/R Butt bones carry ~0.03-0.05 there) while the rigid
+# plate does not -> the bounce grazes through. Graft the body's butt-jiggle weight onto the
+# plate's butt so it bounces WITH the body (matched -> maintains the offset -> no clip AND
+# no rest-float). MATCHED not exaggerated (the plate moves exactly as much as the bare body
+# would there, so it stays subtle), and CAPPED so a high-jiggle source can't make the metal
+# rubbery. Routed through the SAME add_bone save/restore + Pelvis-anchored STB graft as the
+# leg detail bones. User-chosen 2026-06-30 ("jiggle with the body").
+_BUTT_JIGGLE = (os.environ.get("CBBE2UBE_NO_BUTT_JIGGLE", "").strip().lower()
+                not in ("1", "true", "yes", "on"))
+_BUTT_JIGGLE_BONES = ("NPC L Butt", "NPC R Butt")
+_BUTT_PELVIS = "NPC Pelvis [Pelv]"                                  # the jiggle bones' graft anchor
+_BUTT_JIGGLE_STRENGTH = float(os.environ.get("CBBE2UBE_BUTT_JIGGLE_STRENGTH", "1.0"))  # full match -> tracks body
+_BUTT_JIGGLE_CAP = float(os.environ.get("CBBE2UBE_BUTT_JIGGLE_CAP", "0.15"))  # max grafted jiggle/bone (subtle)
 # Butt prox is LARGER than the leg's (_LEG_BEND_PROX 3.0): the outer-butt plate stands
 # off the body further (up to ~5u) than the leg does, so the leg prox skips ~20% of the
 # glute verts. A separate, wider prox reaches them WITHOUT widening the leg pass (which is
@@ -4964,9 +4978,12 @@ def _body_leg_detail_ref(weight: str):
             body = max(nf.shapes, key=lambda s: len(s.verts))
             g2s = _shape_global_to_skin(body)
             body_ident = (g2s is None) or _g2s_is_identity(g2s)
+            # leg-deform bones (thigh/calf/detail) + the butt-jiggle graft bones and their
+            # Pelvis anchor (for _match_rigid_leg_bend_to_body's butt-jiggle transfer).
+            _want = set(_LEG_ALL_DEFORM_NAMES) | set(_BUTT_JIGGLE_BONES) | {_BUTT_PELVIS}
             stbs: dict = {}
             for bn in (body.bone_names or []):
-                if bn in _LEG_ALL_DEFORM_NAMES:
+                if bn in _want:
                     try:
                         stbs[bn] = body.get_shape_skin_to_bone(bn)
                     except Exception:
@@ -5001,10 +5018,14 @@ def _leg_deform_match_vert(dv: dict, bd: dict,
     strength = min(1.0, strength)
     for leg in _LEG_DEFORM_BONES:
         thg, clf = leg["thigh"], leg["calf"]
-        mass = dv.get(thg, 0.0) + dv.get(clf, 0.0)
+        all_bones = (thg, clf) + tuple(b for b, _a in leg["detail"])
+        # mass over ALL of this leg's deform bones the vert has (NOT just Thigh+Calf) so a
+        # re-run -- where the vert already carries grafted detail weight -- redistributes
+        # the SAME total and is idempotent (else the blend toward a Thigh+Calf-only `full`
+        # silently drops the existing detail weight = lost mass).
+        mass = sum(dv.get(b, 0.0) for b in all_bones)
         if mass < mass_min:
             continue
-        all_bones = (thg, clf) + tuple(b for b, _a in leg["detail"])
         bdist = {b: bd.get(b, 0.0) for b in all_bones if bd.get(b, 0.0) > 1e-3}
         bmass = sum(bdist.values())
         if bmass < 0.2:
@@ -5035,40 +5056,65 @@ def _leg_deform_match_vert(dv: dict, bd: dict,
 
 
 def _butt_match_vert(dv: dict, bd: dict, strength: float = 1.0,
-                     mass_min: float = _LEG_BEND_MASS_MIN) -> "set":
-    """Pure per-vert BUTT rebalance: move the vert's split across the bones it ALREADY has
-    among (L Thigh, R Thigh, Pelvis) TOWARD the body vert `bd`'s split over the same bones,
-    blended by `strength` in [0,1]. Fixes a rigid plate whose outer butt is over-weighted
-    to the thigh (lags the pelvis when moving). Adds NO bone (rebalance only -> plate stays
-    rigid, no jiggle), conserves the combined mass, leaves every other bone untouched.
-    Returns the touched-bone set. The body's tiny butt-JIGGLE weight is intentionally
-    excluded (not in _BUTT_MATCH_BONES) so the metal plate never becomes rubbery."""
+                     mass_min: float = _LEG_BEND_MASS_MIN,
+                     jiggle: bool = False, jiggle_strength: float = 1.0,
+                     jiggle_cap: float = _BUTT_JIGGLE_CAP) -> "tuple":
+    """Pure per-vert BUTT match. (1) REBALANCE the vert's split across the (L Thigh, R Thigh,
+    Pelvis) bones it ALREADY has toward the body vert `bd`'s split, blended by `strength` --
+    fixes a rigid plate whose outer butt lags the pelvis when moving (no add_bone). (2) If
+    `jiggle`, also GRAFT the body's butt-JIGGLE bones (NPC L/R Butt) at `jiggle_strength` of
+    the body's weight (capped at `jiggle_cap`) so the plate's butt bounces WITH the body
+    instead of being grazed by it -- matched, so the motion stays as subtle as the bare
+    body's. Conserves the combined mass (jiggle weight is drawn from Thigh/Pelvis), leaves
+    every other bone untouched. Returns (touched_bones, jiggle_bones_added): the grafted
+    bones the CALLER must give a Pelvis-anchored bind transform before they are valid."""
     touched: "set" = set()
+    added: "set" = set()
     if strength <= 0.0:
-        return touched
+        return touched, added
     strength = min(1.0, strength)
-    bones = [b for b in _BUTT_MATCH_BONES if dv.get(b, 0.0) > 1e-4]
-    if len(bones) < 2:
-        return touched  # need >=2 of (thigh/pelvis) present to rebalance; no add_bone
-    mass = sum(dv.get(b, 0.0) for b in bones)
+    base = [b for b in _BUTT_MATCH_BONES if dv.get(b, 0.0) > 1e-4]
+    if len(base) < 2:
+        return touched, added  # need >=2 of (thigh/pelvis) present to anchor + conserve
+    # Process the jiggle bones the body weights here (to graft) AND any the vert ALREADY
+    # carries (so a re-run redistributes the same total = idempotent, never double-counts).
+    jig = sorted(
+        {b for b in _BUTT_JIGGLE_BONES if dv.get(b, 0.0) > 1e-4}
+        | ({b for b in _BUTT_JIGGLE_BONES if bd.get(b, 0.0) > 1e-3}
+           if jiggle and jiggle_strength > 0.0 else set()))
+    allb = base + jig
+    mass = sum(dv.get(b, 0.0) for b in allb)   # incl existing jiggle -> idempotent
     if mass < mass_min:
-        return touched
-    bdist = {b: bd.get(b, 0.0) for b in bones if bd.get(b, 0.0) > 1e-3}
+        return touched, added
+    bdist = {b: bd.get(b, 0.0) for b in allb if bd.get(b, 0.0) > 1e-3}
     bmass = sum(bdist.values())
     if bmass < 0.2:
-        return touched  # nearest body vert isn't a butt/pelvis vert
-    full = {b: mass * bdist.get(b, 0.0) / bmass for b in bones}   # full body match (sums to mass)
-    before = {b: dv.get(b, 0.0) for b in bones}
-    new = {b: (1.0 - strength) * before[b] + strength * full[b] for b in bones}
-    if all(abs(new[b] - before[b]) <= 1e-3 for b in bones):
-        return touched  # already matched
-    for b in bones:
-        if new[b] > 1e-4:
+        return touched, added  # nearest body vert isn't a butt/pelvis vert
+    full = {b: mass * bdist.get(b, 0.0) / bmass for b in allb}    # body match scaled to mass
+    before = {b: dv.get(b, 0.0) for b in allb}
+    new = {}
+    for b in base:
+        new[b] = (1.0 - strength) * before.get(b, 0.0) + strength * full.get(b, 0.0)
+    for b in jig:
+        # grafted from 0; match the body's weight (jiggle_strength), capped subtle
+        new[b] = min(jiggle_cap, min(1.0, jiggle_strength) * full.get(b, 0.0))
+    # Conserve the combined mass: any surplus/deficit (the jiggle drawn in, or rounding)
+    # is taken from / returned to the anchor bones proportionally.
+    deficit = mass - sum(new.values())
+    asum = sum(new.get(b, 0.0) for b in base)
+    if abs(deficit) > 1e-9 and asum > 1e-9:
+        for b in base:
+            new[b] += deficit * new[b] / asum
+    if all(abs(new.get(b, 0.0) - before.get(b, 0.0)) <= 1e-3 for b in allb):
+        return touched, added  # already matched
+    for b in allb:
+        if new.get(b, 0.0) > 1e-4:
             dv[b] = new[b]
         else:
             dv.pop(b, None)
-    touched |= set(bones)
-    return touched
+    touched |= set(allb)
+    added |= {b for b in jig if dv.get(b, 0.0) > 1e-4}
+    return touched, added
 
 
 def _match_rigid_leg_bend_to_body(dst_path, biped_slots: int = 0) -> int:
@@ -5111,7 +5157,15 @@ def _match_rigid_leg_bend_to_body(dst_path, biped_slots: int = 0) -> int:
     except Exception:
         return 0
     collider_names = _hdt_collider_shape_names(dst_path, nif=nf)
-    detail_anchor = {b: anc for leg in _LEG_DEFORM_BONES for b, anc in leg["detail"]}
+    # Bones grafted onto the plate + the EXISTING bone each re-anchors to: leg detail bones
+    # anchor to Thigh/Calf; the butt-jiggle bones anchor to the Pelvis. graft_anchor also
+    # drives the fold-back of any bone we can't safely anchor.
+    graft_anchor = {b: anc for leg in _LEG_DEFORM_BONES for b, anc in leg["detail"]}
+    _do_jiggle = _BUTT_MATCH and _BUTT_JIGGLE and _BUTT_JIGGLE_STRENGTH > 0.0
+    if _do_jiggle:
+        for jb in _BUTT_JIGGLE_BONES:
+            graft_anchor[jb] = _BUTT_PELVIS
+    _graftable = set(_LEG_DETAIL_BONE_NAMES) | (set(_BUTT_JIGGLE_BONES) if _do_jiggle else set())
     total = 0
     dirty = False
     for s in nf.shapes:
@@ -5133,7 +5187,7 @@ def _match_rigid_leg_bend_to_body(dst_path, biped_slots: int = 0) -> int:
         if jig >= _CONFORM_MIN_JIGGLE_VERTS:
             continue
         existing = set(s.bone_names or [])
-        if len(existing | set(_LEG_DETAIL_BONE_NAMES)) > SKIN_PARTITION_BONE_CAP:
+        if len(existing | _graftable) > SKIN_PARTITION_BONE_CAP:
             continue  # bone-cap headroom (realistic plate is far under)
         g2s = _shape_global_to_skin(s)
         # Derive each detail bone's bind transform RE-ANCHORED to the armor's OWN
@@ -5145,8 +5199,7 @@ def _match_rigid_leg_bend_to_body(dst_path, biped_slots: int = 0) -> int:
         # detail bone contributes the SAME as its anchor at bind. The existing anchor
         # STB itself is preserved via the save/restore below (add_bone zeroes it).
         graft_stb: dict = {}
-        for b in _LEG_DETAIL_BONE_NAMES:
-            anc = detail_anchor[b]
+        for b, anc in graft_anchor.items():
             if (anc not in existing or b in existing or b not in body_mat
                     or anc not in body_mat or body_proto is None):
                 continue
@@ -5194,7 +5247,11 @@ def _match_rigid_leg_bend_to_body(dst_path, biped_slots: int = 0) -> int:
                 t |= t1
                 need |= added
             if bgi > 0.0:
-                t |= _butt_match_vert(vw[i], body_w[idx[i]], strength=bgi)
+                t2, jadded = _butt_match_vert(
+                    vw[i], body_w[idx[i]], strength=bgi,
+                    jiggle=_do_jiggle, jiggle_strength=_BUTT_JIGGLE_STRENGTH)
+                t |= t2
+                need |= jadded
             if t:
                 touched |= t
                 conf += 1
@@ -5244,7 +5301,7 @@ def _match_rigid_leg_bend_to_body(dst_path, biped_slots: int = 0) -> int:
                 if not hit:
                     continue
                 for b in hit:
-                    anc = detail_anchor.get(b)
+                    anc = graft_anchor.get(b)
                     w = vw[i].pop(b)
                     if anc:
                         vw[i][anc] = vw[i].get(anc, 0.0) + w

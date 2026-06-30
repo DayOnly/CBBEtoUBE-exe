@@ -106,10 +106,15 @@ def test_butt_strength_ramps_in_and_out():
     assert 0.0 < hi_ramp < nc._BUTT_STRENGTH
 
 
+BUTT_L = "NPC L Butt"
+BUTT_R = "NPC R Butt"
+
+
 def test_butt_rebalances_thigh_toward_pelvis_conserves_mass():
     dv = {LT: 0.25, PELV: 0.70, SPINE: 0.05}
-    touched = nc._butt_match_vert(dv, {LT: 0.15, PELV: 0.80}, strength=0.4)
+    touched, added = nc._butt_match_vert(dv, {LT: 0.15, PELV: 0.80}, strength=0.4)
     assert touched == {LT, PELV}
+    assert added == set()                          # jiggle off by default -> no graft
     assert dv[SPINE] == 0.05                       # non-butt bone untouched
     assert dv[LT] < 0.25 and dv[PELV] > 0.70       # moved toward the pelvis-heavy body
     assert abs(sum(dv.values()) - 1.0) < 1e-6      # mass conserved
@@ -118,20 +123,50 @@ def test_butt_rebalances_thigh_toward_pelvis_conserves_mass():
 def test_butt_adds_no_bone_when_pelvis_absent():
     # only thigh present -> can't rebalance Thigh<->Pelvis without ADDING Pelvis; must skip
     dv = {LT: 0.9, SPINE: 0.1}
-    touched = nc._butt_match_vert(dv, {LT: 0.2, PELV: 0.8}, strength=0.5)
-    assert touched == set()
+    touched, added = nc._butt_match_vert(dv, {LT: 0.2, PELV: 0.8}, strength=0.5)
+    assert touched == set() and added == set()
     assert PELV not in dv and dv[LT] == 0.9
 
 
 def test_butt_strength_zero_is_noop():
     dv = {LT: 0.25, PELV: 0.70}
-    assert nc._butt_match_vert(dv, {LT: 0.1, PELV: 0.9}, strength=0.0) == set()
+    assert nc._butt_match_vert(dv, {LT: 0.1, PELV: 0.9}, strength=0.0) == (set(), set())
     assert dv == {LT: 0.25, PELV: 0.70}
 
 
 def test_butt_skips_when_body_vert_not_pelvic():
     dv = {LT: 0.5, PELV: 0.5}
-    assert nc._butt_match_vert(dv, {SPINE: 1.0}, strength=0.5) == set()
+    assert nc._butt_match_vert(dv, {SPINE: 1.0}, strength=0.5) == (set(), set())
+
+
+def test_butt_jiggle_grafts_matched_weight_conserves_mass():
+    # body has a small butt-jiggle; with jiggle ON the plate grafts it (matched), drawn
+    # from the anchors, total mass unchanged, and reports the graft for STB anchoring.
+    dv = {LT: 0.20, PELV: 0.80}
+    touched, added = nc._butt_match_vert(
+        dv, {LT: 0.15, PELV: 0.81, BUTT_L: 0.04}, strength=0.8,
+        jiggle=True, jiggle_strength=1.0, jiggle_cap=0.15)
+    assert BUTT_L in added and BUTT_L in dv
+    assert 0.0 < dv[BUTT_L] <= 0.05                 # ~matched to the body's 0.04
+    assert abs(sum(dv.values()) - 1.0) < 1e-6       # mass conserved (drawn from anchors)
+
+
+def test_butt_jiggle_capped_stays_subtle():
+    # a high-jiggle source is clamped so the metal plate can't go rubbery
+    dv = {LT: 0.20, PELV: 0.80}
+    _t, added = nc._butt_match_vert(
+        dv, {LT: 0.1, PELV: 0.5, BUTT_L: 0.40}, strength=1.0,
+        jiggle=True, jiggle_strength=1.0, jiggle_cap=0.12)
+    assert BUTT_L in added
+    assert dv[BUTT_L] <= 0.12 + 1e-9                # capped
+    assert abs(sum(dv.values()) - 1.0) < 1e-6
+
+
+def test_butt_jiggle_off_grafts_nothing():
+    dv = {LT: 0.20, PELV: 0.80}
+    _t, added = nc._butt_match_vert(
+        dv, {LT: 0.15, PELV: 0.81, BUTT_L: 0.04}, strength=0.8, jiggle=False)
+    assert added == set() and BUTT_L not in dv
 
 
 # ---- _leg_deform_match_vert: per-vert weight redistribution -----------------
