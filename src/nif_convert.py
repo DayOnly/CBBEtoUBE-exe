@@ -4910,6 +4910,9 @@ def _conform_fitted_to_body(dst_path, biped_slots: int = 0) -> int:
         nf = pyn.NifFile(filepath=str(dst_path))
     except Exception:
         return 0
+    if _nif_has_fx_shape(nf):
+        return 0  # effect-shader/glow NIF: a reload+re-save corrupts its controller -> CTD.
+                  # Leave it exactly as the main conversion wrote it (see _nif_has_fx_shape).
     # Precise SMP-collider exclusion. The _CONFORM_SKIP_NAMES substring gate below
     # only catches name-tagged colliders ("...Col..."); re-weighting an UNTAGGED
     # per-triangle collider would re-introduce the exact over-graft the reskin pass
@@ -5226,6 +5229,24 @@ def _is_fx_overlay_name(name: "str | None") -> bool:
     return "glow" in nm or ":fx" in nm or nm.endswith("fx")
 
 
+def _nif_has_fx_shape(nf) -> bool:
+    """True if ANY shape in the NIF is an effect-shader/glow overlay. The post-conversion
+    re-saving passes (conform/jiggle/leg-bend) must NOT touch such a NIF AT ALL -- not even
+    a legit sibling shape -- because a pynifly RELOAD->modify->RE-SAVE round-trips the
+    transplanted BSEffectShaderProperty CONTROLLER chain (_recreate_effect_shader) through
+    pynifly's lossy controller read-back, corrupting it -> CTD on render, EVEN when the glow
+    shape itself is never grafted (the 2nd 'MaleTorsoGlow' crash: a clean-glow output still
+    crashed because the NIF was re-saved for its Greaves/torso). Leave the whole NIF as the
+    main conversion wrote it."""
+    try:
+        for s in nf.shapes:
+            if _shape_has_effect_shader(s) or _is_fx_overlay_name(s.name):
+                return True
+    except Exception:
+        pass
+    return False
+
+
 def _shape_has_effect_shader(shape) -> bool:
     """True if the shape uses a BSEffectShaderProperty (an additive glow/decal overlay,
     e.g. the Daedric red glow). These carry a transplanted effect-shader + animation
@@ -5295,6 +5316,9 @@ def _match_rigid_leg_bend_to_body(dst_path, biped_slots: int = 0) -> int:
         nf = pyn.NifFile(filepath=str(dst_path))
     except Exception:
         return 0
+    if _nif_has_fx_shape(nf):
+        return 0  # effect-shader/glow NIF: a reload+re-save corrupts its controller -> CTD.
+                  # Leave it exactly as the main conversion wrote it (see _nif_has_fx_shape).
     collider_names = _hdt_collider_shape_names(dst_path, nif=nf)
     # Bones grafted onto the plate + the EXISTING bone each re-anchors to: leg detail bones
     # anchor to Thigh/Calf; the butt-jiggle bones to the Pelvis; the breast bones to Spine2.
@@ -5526,6 +5550,9 @@ def _transfer_body_jiggle_to_fitted(dst_path, biped_slots: int = 0) -> int:
         nf = pyn.NifFile(filepath=str(dst_path))
     except Exception:
         return 0
+    if _nif_has_fx_shape(nf):
+        return 0  # effect-shader/glow NIF: a reload+re-save corrupts its controller -> CTD.
+                  # Leave it exactly as the main conversion wrote it (see _nif_has_fx_shape).
     collider_names = _hdt_collider_shape_names(dst_path, nif=nf)
     total = 0
     dirty = False
