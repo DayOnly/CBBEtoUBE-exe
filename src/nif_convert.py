@@ -7944,6 +7944,19 @@ def _physics_chain_nowarp_blend(src_shape, source_verts, warped_verts):
     return sv + (wv - sv) * (1.0 - frac)[:, None]
 
 
+# Effect-shader glow ANIMATION (the controller chain). DEFAULT OFF (static glow): the
+# add_block'd controller->interpolator->NiFloatData chain does NOT survive a pynifly
+# reload->save round-trip, and the HDT-physics extra-data inject (_finalize_hdt_physics /
+# the generated-XML inject) re-opens+re-saves EVERY cloth armor's NIF after the transplant
+# -> a BROKEN controller ref -> the engine follows a garbage pointer on render = CTD (the
+# 'MaleTorsoGlow' crash on cloth+glow daedric/drgk armors, 2026-06-30). A STATIC effect
+# shader (controllerID = NONE) has NOTHING to corrupt -> the glow keeps its colour/emissive,
+# losing only the subtle texture-scroll. Re-enable the (crash-prone-on-cloth) animation with
+# CBBE2UBE_GLOW_ANIM=1 (safe only on glow armors that are NEVER reload+re-saved, e.g. no SMP).
+_EFFECT_GLOW_ANIM = (os.environ.get("CBBE2UBE_GLOW_ANIM", "").strip().lower()
+                     in ("1", "true", "yes", "on"))
+
+
 def _transplant_effect_controller(src_shader, dst_nif, pyn):
     """Recreate a BSEffectShaderProperty's animation controller chain
     (controller -> interpolator -> NiFloatData + keys) in `dst_nif`, so a transplanted
@@ -8171,9 +8184,15 @@ def _copy_shape(src_shape, dst_nif, parent=None, override_verts=None,
                 # no controller or the transplant fails. The buffer's other block-id
                 # fields point at SOURCE blocks: textureSetID is 0 for effect shaders
                 # (their textures are inline, re-applied by the loop below).
+                # Build a STATIC effect shader (no controller) by default: the controller
+                # chain doesn't survive the HDT inject's reload+re-save -> CTD. See
+                # _EFFECT_GLOW_ANIM. CBBE2UBE_GLOW_ANIM=1 restores the animation.
                 try:
-                    eff_buf.controllerID = _transplant_effect_controller(
-                        src_shader, dst_nif, _pyn)
+                    if _EFFECT_GLOW_ANIM:
+                        eff_buf.controllerID = _transplant_effect_controller(
+                            src_shader, dst_nif, _pyn)
+                    else:
+                        eff_buf.controllerID = _pyn.NODEID_NONE
                 except Exception:
                     try:
                         eff_buf.controllerID = _pyn.NODEID_NONE
