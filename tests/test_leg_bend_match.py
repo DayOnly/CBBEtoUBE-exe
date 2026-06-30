@@ -188,6 +188,18 @@ def test_effect_shader_detect_handles_missing_shader():
     assert nc._shape_has_effect_shader(object()) is False
 
 
+def test_fx_overlay_name_catches_glow_shapes_not_legit():
+    # the real glow/FX shape names from the Daedric + Vigilant-ember crashes must match
+    for nm in ("MaleTorsoGlow", "DSkirt Glow", "TorsoF:FX", "TorsoMFX",
+               "MiscMFx", "ArmMFx", "MiscF:Fx", "ArmF:FX"):
+        assert nc._is_fx_overlay_name(nm) is True, nm
+    # legit body shapes in the SAME armors must NOT match (else they'd lose the conform)
+    for nm in ("ArmF", "TorsoF", "MiscF", "GreaveF", "Greaves", "TorsoLow:0",
+               "torso", "Collision", "Stabilizer", "LegArmrM", "BaseShape"):
+        assert nc._is_fx_overlay_name(nm) is False, nm
+    assert nc._is_fx_overlay_name(None) is False
+
+
 def test_effect_shader_detect_true_only_for_effect_buftype():
     import src.nif_convert as _nc
     eff = getattr(_nc._pynifly().PynBufferTypes, "BSEffectShaderPropertyBufType", None)
