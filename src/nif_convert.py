@@ -4606,9 +4606,43 @@ _LEG_BEND_PROX = float(os.environ.get("CBBE2UBE_LEG_BEND_PROX", "3.0"))
 _LEG_BEND_MAX_Z = float(os.environ.get("CBBE2UBE_LEG_BEND_MAX_Z", "41.0"))       # full-strength knee ceiling
 _LEG_BEND_THIGH_Z = float(os.environ.get("CBBE2UBE_LEG_BEND_THIGH_Z", "58.0"))   # taper end (reaches min strength)
 _LEG_BEND_THIGH_STRENGTH = float(os.environ.get("CBBE2UBE_LEG_BEND_THIGH_STRENGTH", "0.40"))  # min (thigh) strength
-_LEG_BEND_CUTOFF_Z = float(os.environ.get("CBBE2UBE_LEG_BEND_CUTOFF_Z", "66.0")) # above this: no conform (hip/butt)
+_LEG_BEND_CUTOFF_Z = float(os.environ.get("CBBE2UBE_LEG_BEND_CUTOFF_Z", "66.0")) # above this: no LEG conform (handed to the butt pass)
+# BUTT pass: a RIGID one-piece plate covering the glutes (z ~60-78) often weights its
+# outer butt too much to the Thigh and too little to the Pelvis vs the body, so when the
+# pelvis moves the body's butt follows it but the plate lags -> the outer butt pokes
+# through when moving. This is SKELETAL (the body's butt JIGGLE bones carry only ~0.03),
+# so we fix it with a pure Thigh<->Pelvis REBALANCE among bones the plate ALREADY has --
+# NO add_bone, NO jiggle graft (the plate stays rigid). Reduced strength for the same
+# larger-radius overshoot reason as the leg. Trapezoid by world-Z (ramp in/out so no
+# seam, and we never touch the lower back/spine above _BUTT_Z_HI). Tunable.
+_BUTT_MATCH = (os.environ.get("CBBE2UBE_NO_BUTT_MATCH", "").strip().lower()
+               not in ("1", "true", "yes", "on"))
+_BUTT_Z_LO = float(os.environ.get("CBBE2UBE_BUTT_Z_LO", "60.0"))     # ramp-in start
+_BUTT_Z_HI = float(os.environ.get("CBBE2UBE_BUTT_Z_HI", "78.0"))     # ramp-out end (above = spine/back, left alone)
+_BUTT_RAMP = float(os.environ.get("CBBE2UBE_BUTT_RAMP", "4.0"))      # ramp width at each end
+_BUTT_STRENGTH = float(os.environ.get("CBBE2UBE_BUTT_STRENGTH", "0.80"))  # peak rebalance strength
+# Butt prox is LARGER than the leg's (_LEG_BEND_PROX 3.0): the outer-butt plate stands
+# off the body further (up to ~5u) than the leg does, so the leg prox skips ~20% of the
+# glute verts. A separate, wider prox reaches them WITHOUT widening the leg pass (which is
+# already correct in-game). A Pelvis<->Thigh rebalance can't overshoot the body (it matches
+# the nearest body vert's own ratio), so the wider reach is safe.
+_BUTT_PROX = float(os.environ.get("CBBE2UBE_BUTT_PROX", "5.0"))
+_BUTT_MATCH_BONES = ("NPC L Thigh [LThg]", "NPC R Thigh [RThg]", "NPC Pelvis [Pelv]")
 _BODY_CONFORM_CACHE: "dict" = {}
 _BODY_LEG_DETAIL_CACHE: "dict" = {}
+
+
+def _butt_match_strength(z: float) -> float:
+    """Trapezoid butt-rebalance strength by world Z: 0 outside [_BUTT_Z_LO, _BUTT_Z_HI],
+    ramping 0 -> _BUTT_STRENGTH over _BUTT_RAMP at the bottom, flat across the glutes,
+    ramping back to 0 at the top (so the lower back/spine is never touched). Pure."""
+    if z <= _BUTT_Z_LO or z >= _BUTT_Z_HI:
+        return 0.0
+    peak = _BUTT_STRENGTH
+    r = max(1e-6, _BUTT_RAMP)
+    up = (z - _BUTT_Z_LO) / r            # 0..1 over the bottom ramp
+    down = (_BUTT_Z_HI - z) / r          # 0..1 over the top ramp
+    return peak * max(0.0, min(1.0, up, down))
 
 
 def _leg_bend_strength(z: float) -> float:
@@ -5000,6 +5034,43 @@ def _leg_deform_match_vert(dv: dict, bd: dict,
     return touched, added
 
 
+def _butt_match_vert(dv: dict, bd: dict, strength: float = 1.0,
+                     mass_min: float = _LEG_BEND_MASS_MIN) -> "set":
+    """Pure per-vert BUTT rebalance: move the vert's split across the bones it ALREADY has
+    among (L Thigh, R Thigh, Pelvis) TOWARD the body vert `bd`'s split over the same bones,
+    blended by `strength` in [0,1]. Fixes a rigid plate whose outer butt is over-weighted
+    to the thigh (lags the pelvis when moving). Adds NO bone (rebalance only -> plate stays
+    rigid, no jiggle), conserves the combined mass, leaves every other bone untouched.
+    Returns the touched-bone set. The body's tiny butt-JIGGLE weight is intentionally
+    excluded (not in _BUTT_MATCH_BONES) so the metal plate never becomes rubbery."""
+    touched: "set" = set()
+    if strength <= 0.0:
+        return touched
+    strength = min(1.0, strength)
+    bones = [b for b in _BUTT_MATCH_BONES if dv.get(b, 0.0) > 1e-4]
+    if len(bones) < 2:
+        return touched  # need >=2 of (thigh/pelvis) present to rebalance; no add_bone
+    mass = sum(dv.get(b, 0.0) for b in bones)
+    if mass < mass_min:
+        return touched
+    bdist = {b: bd.get(b, 0.0) for b in bones if bd.get(b, 0.0) > 1e-3}
+    bmass = sum(bdist.values())
+    if bmass < 0.2:
+        return touched  # nearest body vert isn't a butt/pelvis vert
+    full = {b: mass * bdist.get(b, 0.0) / bmass for b in bones}   # full body match (sums to mass)
+    before = {b: dv.get(b, 0.0) for b in bones}
+    new = {b: (1.0 - strength) * before[b] + strength * full[b] for b in bones}
+    if all(abs(new[b] - before[b]) <= 1e-3 for b in bones):
+        return touched  # already matched
+    for b in bones:
+        if new[b] > 1e-4:
+            dv[b] = new[b]
+        else:
+            dv.pop(b, None)
+    touched |= set(bones)
+    return touched
+
+
 def _match_rigid_leg_bend_to_body(dst_path, biped_slots: int = 0) -> int:
     """Conform a RIGID leg armor's WHOLE-leg deformation to the UBE body so the plate
     bends with the knee AND flexes its front/back with the thigh, instead of staying
@@ -5104,19 +5175,28 @@ def _match_rigid_leg_bend_to_body(dst_path, biped_slots: int = 0) -> int:
         need: "set" = set()
         conf = 0
         for i in range(n):
-            if d[i] > _LEG_BEND_PROX:
-                continue  # not hugging the body -> leave it
-            # Z-tapered strength: FULL through the knee, ramped DOWN across the thigh,
-            # 0 above the hip cutoff. Full strength on the thigh over-rotates the plate
-            # (static bulge); 0 leaves it rigid (pokes when moving). The taper threads
-            # both -- see _leg_bend_strength.
-            sgi = _leg_bend_strength(Vw[i, 2])
-            if sgi <= 0.0:
+            di = d[i]
+            if di > _BUTT_PROX:
+                continue  # not hugging the body by either pass -> leave it
+            zi = Vw[i, 2]
+            # Z-tapered LEG strength: FULL through the knee, ramped DOWN across the thigh,
+            # 0 above the cutoff. Full strength on the thigh over-rotates the plate (static
+            # bulge); 0 leaves it rigid (pokes when moving). The taper threads both. The
+            # BUTT pass (above the cutoff) is a separate Thigh<->Pelvis rebalance with its
+            # OWN (wider) prox -- the leg pass stays at _LEG_BEND_PROX (it's correct as-is).
+            sgi = _leg_bend_strength(zi) if di <= _LEG_BEND_PROX else 0.0
+            bgi = (_butt_match_strength(zi) if (_BUTT_MATCH and di <= _BUTT_PROX) else 0.0)
+            if sgi <= 0.0 and bgi <= 0.0:
                 continue
-            t, added = _leg_deform_match_vert(vw[i], body_w[idx[i]], strength=sgi)
+            t: "set" = set()
+            if sgi > 0.0:
+                t1, added = _leg_deform_match_vert(vw[i], body_w[idx[i]], strength=sgi)
+                t |= t1
+                need |= added
+            if bgi > 0.0:
+                t |= _butt_match_vert(vw[i], body_w[idx[i]], strength=bgi)
             if t:
                 touched |= t
-                need |= added
                 conf += 1
         if not conf:
             continue
