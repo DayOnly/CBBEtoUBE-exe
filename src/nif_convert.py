@@ -5214,19 +5214,30 @@ def _chest_match_vert(dv: dict, bd: dict, strength: float = 1.0,
 
 
 def _match_rigid_leg_bend_to_body(dst_path, biped_slots: int = 0) -> int:
-    """Conform a RIGID leg armor's WHOLE-leg deformation to the UBE body so the plate
-    bends with the knee AND flexes its front/back with the thigh, instead of staying
-    straight while the body pokes through (Orcish heavy #knee-clip + #thigh-clip).
-    Complements _conform_fitted_to_body (jiggle-gated, SKIPS rigid plate); runs ONLY on
-    the rigid plate it leaves alone. Per leg vert that hugs the body, the vert's
-    leg-bone weight is matched to its nearest body vert's full leg-deformation
-    distribution, GRAFTING the missing detail bones (FrontThigh/RearThigh/RearCalf).
-    Each grafted bone's bind transform is RE-ANCHORED to the armor's OWN Thigh/Calf
-    (_derive_anchored_stb) -- copying the body's absolute STB exploded the armor
-    in-game. add-all-bones-first then set-STBs (a later add_bone resets earlier STBs);
-    a bone we can't anchor has its weight folded back into the anchor (no origin
-    spike). Never moves a vert (rest pose identical), never adds a JIGGLE bone.
-    Returns the number of verts matched."""
+    """Conform a RIGID plate's deformation to the UBE body so it deforms/bounces WITH the
+    body instead of staying stiff while the body pokes through. Complements
+    _conform_fitted_to_body (jiggle-gated, SKIPS rigid plate); runs ONLY on the rigid plate
+    it leaves alone. Four per-vert passes, each prox/world-Z gated (see the per-pass
+    helpers), applied where the vert hugs the body:
+      1. KNEE/THIGH (_leg_deform_match_vert): match the vert's leg-bone split to the body's
+         FULL leg distribution -- Thigh:Calf bend + GRAFT the detail bones FrontThigh/
+         RearThigh/RearCalf -- z-tapered FULL at the knee -> partial in the thigh (a full
+         thigh match over-rotates the larger-radius plate = a static bulge).
+      2. BUTT (_butt_match_vert rebalance): Thigh<->Pelvis rebalance among EXISTING bones so
+         the outer butt tracks the pelvis instead of lagging it when moving.
+      3. BUTT-JIGGLE (_butt_match_vert graft): graft the body's small butt-jiggle (NPC L/R
+         Butt), matched + capped, so the rigid butt bounces with the body.
+      4. CHEST (_chest_match_vert): graft the body's breast-jiggle (L/R Breast01/02/03)
+         onto a rigid chest plate, matched but LOW-capped (the breast jiggle is large; keep
+         the metal mostly rigid). Self-gates to the front via the body's breast weight.
+    Every grafted bone's bind transform is RE-ANCHORED to the armor's OWN anchor bone
+    (Thigh/Calf for detail, Pelvis for butt-jiggle, Spine2 for breast) via
+    _derive_anchored_stb -- copying the body's absolute STB exploded the armor in-game.
+    add-all-bones-first then set-STBs (a later add_bone resets earlier STBs, so save/restore
+    every existing bone's STB); a bone we can't anchor folds its weight back into the anchor
+    (no origin spike). Each pass conserves the managed mass and is idempotent. Never moves a
+    vert (rest pose byte-identical). Eligible shapes: rigid (non-jiggling) leg armor
+    (Thigh+Calf) OR rigid chest plate (Spine2). Returns the number of verts matched."""
     if not MATCH_RIGID_LEG_BEND:
         return 0
     if biped_slots & (BIPED_SLOT33_BIT | BIPED_SLOT37_BIT):
