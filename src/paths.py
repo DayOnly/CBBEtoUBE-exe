@@ -419,25 +419,55 @@ def active_plugins_ordered(lay: "Layout") -> "list[str] | None":
 
 
 def plugin_file_index(lay: "Layout") -> "dict[str, Path]":
-    """Map lowercased plugin filename -> on-disk path, from a SINGLE walk over
-    the mods root, game Data dir(s), and overwrite. First-seen wins (mods are
-    scanned first; VFS conflicts are resolved elsewhere by load order). Used to
-    resolve `active_plugins_ordered` names to files for the winner scan."""
+    """Map lowercased plugin filename -> on-disk path. First-seen wins, with mods
+    scanned before game Data and overwrite.
+
+    Resolving a plugin filename to a physical file is a VFS/mod-PRIORITY question:
+    when the same plugin filename ships in two mods (a mod + its patch/update as
+    separate MO2 mods), the game loads the highest-priority mod's copy. So the
+    mods root is walked in MO2 PRIORITY order (highest first) -- NOT arbitrary
+    os.walk (alphabetical-by-mod-folder) order, which could map the name to a
+    lower-priority LOSER's copy and make the winner scan read the wrong plugin's
+    records. Disabled / unlisted mod folders are indexed LAST (lowest priority)
+    so nothing that used to be found is dropped. Used to resolve
+    `active_plugins_ordered` names to files for the winner scan. #plugin-priority"""
     index: dict[str, Path] = {}
-    roots: list[Path] = []
-    if lay.mods_root is not None:
-        roots.append(lay.mods_root)
-    roots.extend(lay.game_data_dirs or [])
-    if lay.mods_root is not None:
-        ow = lay.mods_root.parent / "overwrite"
-        if ow.is_dir():
-            roots.append(ow)
-    for r in roots:
+
+    def _index_dir(r: "Path | None") -> None:
         if not r or not r.is_dir():
-            continue
+            return
         for root, _dirs, files in os.walk(r):
             for f in files:
                 fl = f.lower()
                 if fl.endswith((".esp", ".esm", ".esl")) and fl not in index:
                     index[fl] = Path(root) / f
+
+    # 1. Mods root FIRST, in MO2 priority order (highest first) so duplicate
+    #    plugin filenames resolve to the load-order winner. #plugin-priority
+    if lay.mods_root is not None and lay.mods_root.is_dir():
+        order = enabled_mods_ordered(lay)   # highest priority first, or None
+        seen_dirs: set[str] = set()
+        mod_dirs: list[Path] = []
+        if order:
+            for name in order:
+                d = lay.mods_root / name
+                if d.is_dir():
+                    mod_dirs.append(d)
+                    seen_dirs.add(name.lower())
+        # Remaining mod folders (disabled / not in the modlist) LAST, lowest
+        # priority. Sorted for a deterministic result when there's no modlist.
+        try:
+            for d in sorted(p for p in lay.mods_root.iterdir() if p.is_dir()):
+                if d.name.lower() not in seen_dirs:
+                    mod_dirs.append(d)
+        except OSError:
+            pass
+        for md in mod_dirs:
+            _index_dir(md)
+
+    # 2. Game Data dir(s), then overwrite (mods already won via first-seen).
+    for r in (lay.game_data_dirs or []):
+        _index_dir(r)
+    if lay.mods_root is not None:
+        _index_dir(lay.mods_root.parent / "overwrite")
     return index

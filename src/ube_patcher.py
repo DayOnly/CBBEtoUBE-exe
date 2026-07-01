@@ -250,11 +250,22 @@ def _reindex_alt_texture_payload(data: bytes,
             entries.append((name, txst))
     except Exception:
         return None
+    # Case-INSENSITIVE shape-name match: alt-texture sets are authored by hand and
+    # frequently disagree in case with the actual NIF shape name (e.g. an entry
+    # named 'hood' for a shape named 'Hood'). The engine applies the recolor by
+    # the 3D INDEX, so a case-only mismatch must NOT drop the entry -- it just
+    # needs its index reconciled. The old case-SENSITIVE get() silently DROPPED
+    # such entries, losing the color variant for that shape (the recolored hood
+    # rendered in its BASE color while its correctly-cased siblings recolored
+    # fine). Keep the original authored name bytes; only fix the index. #alttex-case
+    ci_index: "dict[str, int]" = {}
+    for _k, _v in shape_index.items():
+        ci_index.setdefault(_k.lower(), _v)   # first wins on case-dupes (rare)
     seen: set[str] = set()
     kept = []
     for name, txst in entries:
-        nm = name.split(b"\x00", 1)[0].decode("latin-1", "ignore")
-        new_idx = shape_index.get(nm)
+        nm = name.split(b"\x00", 1)[0].decode("latin-1", "ignore").lower()
+        new_idx = ci_index.get(nm)
         if new_idx is None or nm in seen:
             continue  # shape merged away / duplicate
         seen.add(nm)

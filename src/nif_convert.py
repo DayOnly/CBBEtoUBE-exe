@@ -52,7 +52,8 @@ from pathlib import Path
 import numpy as np
 
 from . import nif_io, nif_patch
-from .atomic_io import atomic_nif_save, atomic_copy, atomic_write_bytes
+from .atomic_io import (
+    atomic_nif_save, atomic_copy, atomic_write_bytes, atomic_tri_save)
 from .correspondence import MeshIndex, compute_deformation
 
 
@@ -2175,6 +2176,9 @@ def convert_nif(
                                 exclude_vert_mask=_extremity_vert_mask(
                                     s, len(hf_verts)),
                                 leg_region_only=True,
+                                exclude_scale_bone_substrings=(
+                                    _boot_far_thigh_scale_exclusions(
+                                        s, biped_slots)),
                             )
                             if bones2 and weights2:
                                 hf_override_skin = {
@@ -2667,9 +2671,7 @@ def convert_nif(
                             carrier_shape_name=carrier_name_for_tri,
                             armor_vert_extremity_fractions=armor_vert_ef,
                         )
-                        auto_tri_dst_phase1.parent.mkdir(
-                            parents=True, exist_ok=True)
-                        tri.save(auto_tri_dst_phase1)
+                        atomic_tri_save(tri, auto_tri_dst_phase1)
             except Exception as _e_tri:
                 # The armor still RENDERS without a TRI, but it won't follow
                 # body-morph sliders (static on every OBody preset). Surface it
@@ -4255,6 +4257,60 @@ def _is_arm_hand_bone(bone_name: str) -> bool:
     return any(kw in b for kw in
                ("forearm", "upperarm", "hand", "finger", "thumb"))
 
+
+# Tall calf/foot boots (slot 37) whose shaft rides the NPC Thigh rigid bone get
+# the body's FAR THIGH scale bones (FrontThigh/RearThigh) grafted onto the shaft
+# by the fine-animation reskin. On a UBE actor this makes the whole boot FADE OUT
+# at camera distance (leg shows through zoomed out; fine up close). Bisect
+# 2026-07-01 isolated the cause-bone class to the far-thigh scale bones -- the
+# boot that DOESN'T fade barely touches the thigh. RearCalf (the calf size morph)
+# is not implicated, and dropping the thighs actually FREES top-4-bones-per-vert
+# budget so RearCalf reaches MORE shaft verts, not fewer (measured). So: exclude
+# the far-thigh scale bones from the graft on calf/foot-dominant footwear while
+# keeping RearCalf. THIGH-DOMINANT footwear (thigh-high boots that genuinely
+# cover the thigh) keep the thigh morph. Default ON; CBBE2UBE_KEEP_BOOT_THIGH_SCALE=1 reverts.
+EXCLUDE_BOOT_FAR_THIGH_SCALE = (
+    os.environ.get("CBBE2UBE_KEEP_BOOT_THIGH_SCALE", "").strip().lower()
+    not in ("1", "true", "yes", "on")
+)
+# The far-thigh scale bones to drop (RearCalf/calf are deliberately NOT here).
+BOOT_FAR_THIGH_SCALE_SUBSTRINGS = ("frontthigh", "rearthigh")
+# A foot-slot shape with at least this fraction of verts dominated by the rigid
+# THIGH bone is a thigh-high boot that really covers the thigh -> keep thigh morph.
+BOOT_THIGH_DOMINANT_FRAC = 0.5
+
+
+def _boot_far_thigh_scale_exclusions(src_shape, biped_slots: int) -> tuple[str, ...]:
+    """Far-thigh scale-bone name substrings to EXCLUDE from the scale-bone graft
+    for this shape, or () to exclude nothing. Non-empty only when the feature is
+    on, the piece is foot-slot (37), and the shape is calf/foot-dominant (i.e. a
+    normal boot, not a thigh-high one). See EXCLUDE_BOOT_FAR_THIGH_SCALE."""
+    if not EXCLUDE_BOOT_FAR_THIGH_SCALE:
+        return ()
+    if not (biped_slots & BIPED_SLOT37_BIT):
+        return ()
+    try:
+        bw = src_shape.bone_weights or {}
+        n = len(src_shape.verts)
+        if n <= 0:
+            return BOOT_FAR_THIGH_SCALE_SUBSTRINGS
+        dom_w = np.zeros(n, dtype=np.float64)
+        thigh_dom = np.zeros(n, dtype=bool)
+        for bn, pairs in bw.items():
+            is_thigh = ("thigh" in bn.lower()) and not _is_scale_bone(bn)
+            pl = pairs.tolist() if hasattr(pairs, "tolist") else pairs
+            for i, w in pl:
+                i = int(i)
+                if 0 <= i < n and w > dom_w[i]:
+                    dom_w[i] = w
+                    thigh_dom[i] = is_thigh
+        if float(thigh_dom.mean()) >= BOOT_THIGH_DOMINANT_FRAC:
+            return ()  # thigh-high boot: keep thigh size morph
+    except Exception:
+        pass
+    return BOOT_FAR_THIGH_SCALE_SUBSTRINGS
+
+
 # Don't re-skin these shapes — they ARE the body / VirtualBody. We inject
 # them from the UBE ref so their skinning is already correct.
 RESKIN_SKIP_NAMES = set(UBE_BODY_INJECT_NAMES)
@@ -4383,14 +4439,26 @@ def _strip_genital_weights_map(weights_map):
     if not affected:
         return {b: p for b, p in weights_map.items() if b not in gset}
     PELVIS = "NPC Pelvis [Pelv]"
+    # Only fall a genital-ONLY vert back to Pelvis when the shape ALREADY carries
+    # Pelvis: _install_skin sets a bone's skin-to-bone xform only for bones the
+    # shape had, so a Pelvis added here on a Pelvis-less shape has no STB -> the
+    # vert skins to the origin (spike). When Pelvis is absent, leave the vert
+    # zero-weight; `_fill_zero_weight_verts` (the very next step in _install_skin)
+    # gives it its nearest weighted vert's bones -- which DO have valid STBs.
+    has_pelvis = PELVIS in weights_map
     norm: "dict" = {}         # affected vert -> {bone: renormalized w}
     for v in affected:
         rest = other.get(v) or {}
         s = sum(rest.values())
-        norm[v] = ({b: w / s for b, w in rest.items()} if s > 1e-6
-                   else {PELVIS: 1.0})
+        if s > 1e-6:
+            norm[v] = {b: w / s for b, w in rest.items()}
+        elif has_pelvis:
+            norm[v] = {PELVIS: 1.0}
+        else:
+            norm[v] = {}      # left for _fill_zero_weight_verts (no-STB spike guard)
     out: "dict" = {}
-    for bn in (set(weights_map) - gset) | {PELVIS}:
+    _bones_iter = (set(weights_map) - gset) | ({PELVIS} if has_pelvis else set())
+    for bn in _bones_iter:
         pairs = [(int(i), float(w)) for i, w in weights_map.get(bn, [])
                  if int(i) not in affected]
         for v in affected:
@@ -7316,12 +7384,19 @@ def _cap_skin_bone_count(bone_names, xforms_map, weights_map,
     return new_names, new_x, new_w
 
 
-def _cached_scale_bone_data(body_shape, leg_region_only: bool):
+def _cached_scale_bone_data(body_shape, leg_region_only: bool,
+                            exclude_substrings: tuple[str, ...] = ()):
     """Build (and cache) the per-scale-bone KD-trees from the BODY. Keyed by the
-    body-shape identity + leg_region_only (the only inputs). Armor-independent,
-    read-only after build, so safe to share across every shape/NIF in a worker.
-    Returns (scale_bones, {bone: (bone_verts, cKDTree, weights)})."""
-    key = (id(body_shape), bool(leg_region_only))
+    body-shape identity + leg_region_only + exclude_substrings (the only inputs).
+    Armor-independent, read-only after build, so safe to share across every
+    shape/NIF in a worker.
+    Returns (scale_bones, {bone: (bone_verts, cKDTree, weights)}).
+
+    `exclude_substrings`: lowercase bone-name substrings to drop entirely (e.g.
+    ("frontthigh","rearthigh") for calf/foot boots, so the fade-inducing far-thigh
+    scale bones are never grafted -- see _boot_far_thigh_scale_exclusions)."""
+    excl = tuple(sorted(exclude_substrings or ()))
+    key = (id(body_shape), bool(leg_region_only), excl)
     cached = _SCALE_BONE_DATA_CACHE.get(key)
     if cached is not None:
         return cached
@@ -7334,6 +7409,9 @@ def _cached_scale_bone_data(body_shape, leg_region_only: bool):
         # calf follows RearCalf); torso bones would be bind-pose cross-talk.
         scale_bones = [b for b in scale_bones
                        if ("thigh" in b.lower() or "calf" in b.lower())]
+    if excl:
+        scale_bones = [b for b in scale_bones
+                       if not any(sub in b.lower() for sub in excl)]
     body_bw = body_shape.bone_weights or {}
     bone_data: dict = {}
     for bn in scale_bones:
@@ -7363,6 +7441,7 @@ def add_scale_bone_weights(
     exclude_vert_mask: "np.ndarray | None" = None,
     leg_region_only: bool = False,
     torso_parity: bool = False,
+    exclude_scale_bone_substrings: tuple[str, ...] = (),
 ) -> tuple[list[str], dict, dict[str, list[tuple[int, float]]]]:
     """Add 3BA scale-bone (Breast / Butt / Belly / Thigh / etc.) weights
     to an armor shape so all of its verts respond to body sliders via
@@ -7389,6 +7468,11 @@ def add_scale_bone_weights(
       True, NO scale-bone weight is added to that vert and its existing
       skinning is left untouched. Used for hand/foot shapes to keep body
       morphs off finger/toe verts (see `_extremity_vert_mask`).
+
+    exclude_scale_bone_substrings: lowercase bone-name substrings whose scale
+      bones are dropped entirely before the graft (never added to any vert).
+      Used for calf/foot boots to drop the far-thigh scale bones that fade the
+      boot at distance while keeping RearCalf (see _boot_far_thigh_scale_exclusions).
     """
     # Auto-detect rigid attachments (dagger, scabbard, pauldron, pouch
     # etc. — single bone holds 85%+ of total weight) and use the low
@@ -7404,7 +7488,8 @@ def add_scale_bone_weights(
 
     # Per-bone KD-trees (cached): per-bone search ensures propagation from the
     # actual nearest bone-weighted vert, not from nearby verts that lack the bone.
-    scale_bones, bone_data = _cached_scale_bone_data(body_shape, leg_region_only)
+    scale_bones, bone_data = _cached_scale_bone_data(
+        body_shape, leg_region_only, exclude_scale_bone_substrings)
     if not bone_data:
         return bone_names, xforms_by_bone, weights_by_bone
 
@@ -7982,6 +8067,21 @@ def _physics_chain_nowarp_blend(src_shape, source_verts, warped_verts):
 _EFFECT_GLOW_ANIM = (os.environ.get("CBBE2UBE_NO_GLOW_ANIM", "").strip().lower()
                      not in ("1", "true", "yes", "on"))
 
+# Effect-shader glow overlays (Daedric red glow etc.) must keep their SOURCE skin.
+# The vanilla decal is skinned to skeleton bones and renders fine; the UBE
+# body-blend RESKIN re-skins it to body bones it never had (e.g. NPC L/R Calf +
+# UpperArm on the Daedric torso glow) and it CTDs on equip (`call [rax+0x28]` on
+# the BSEffectShaderProperty) EVEN after scale bones are dropped -- dropping scale
+# bones was necessary but NOT sufficient (the intent was always "skin to skeleton
+# bones only, MATCHING THE SOURCE", but the drop-scale-bones patch left the
+# reskin's other body bones in place, so the output had 17 bones vs the source's
+# 15). So a glow shape IGNORES its override_skin and copies the source skin
+# verbatim (still minus any scale bones), matching the proven-good source. DEFAULT
+# ON; CBBE2UBE_EFFECT_RESKIN=1 reverts to the reskin-then-drop-scale behaviour.
+EFFECT_SHADER_SOURCE_SKIN = (
+    os.environ.get("CBBE2UBE_EFFECT_RESKIN", "").strip().lower()
+    not in ("1", "true", "yes", "on"))
+
 
 def _drop_scale_bones_from_skin(bone_names, xforms_map, weights_map):
     """Remove SCALE bones (FrontThigh/RearThigh/RearCalf/breast/butt/belly deform bones)
@@ -8306,7 +8406,13 @@ def _copy_shape(src_shape, dst_nif, parent=None, override_verts=None,
     # add all bones first, then set transforms and weights (two-pass).
     # override_skin (if provided) installs blended weights in a single pass;
     # calling skin()+add_bone after _copy_shape corrupts pynifly's mapping.
-    if override_skin is not None:
+    # Effect-shader glow overlays skip the body reskin: they keep their SOURCE
+    # skin (the proven-good vanilla skinning) instead of the override_skin's body
+    # bones, which CTD on equip. Falls through to the verbatim source-skin path
+    # below (which also drops scale bones). See EFFECT_SHADER_SOURCE_SKIN.
+    _use_override = (override_skin is not None
+                     and not (_is_effect_shape and EFFECT_SHADER_SOURCE_SKIN))
+    if _use_override:
         bone_names = override_skin["bones"]
         xforms_map = override_skin["xforms"]
         weights_map = override_skin["weights"]
@@ -10377,6 +10483,8 @@ def convert_nif_phase2(
                         exclude_vert_mask=_extremity_vert_mask(
                             s, len(hf_verts)),
                         leg_region_only=True,
+                        exclude_scale_bone_substrings=(
+                            _boot_far_thigh_scale_exclusions(s, biped_slots)),
                     )
                     if bones2 and weights2:
                         hf_override_skin = {
@@ -10912,8 +11020,7 @@ def convert_nif_phase2(
                         carrier_shape_name=p2_carrier_name,
                         armor_vert_extremity_fractions=armor_vert_ef,
                     )
-                    auto_tri_dst.parent.mkdir(parents=True, exist_ok=True)
-                    tri.save(auto_tri_dst)
+                    atomic_tri_save(tri, auto_tri_dst)
         except Exception as e:
             # Non-fatal — armor still works without morphs.
             result_reason = (result_reason + "; " if result_reason else "") \

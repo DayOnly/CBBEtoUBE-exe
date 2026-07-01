@@ -155,3 +155,29 @@ def test_glow_ride_skips_far_verts():
     assert n == 1  # only the near vert rode
     np.testing.assert_allclose(jg["verts"][0], [0, 0, 1.03], atol=1e-6)
     np.testing.assert_allclose(jg["verts"][1], [0, 0, 50.0], atol=1e-9)
+
+
+# ------------------- effect-shader source-skin (equip CTD) ------------------
+
+def test_effect_shader_source_skin_gate_default_on():
+    # Effect-shader glow overlays must keep their SOURCE skin by default; the UBE
+    # reskin's body bones (Calf/UpperArm) CTD the glow on equip. E2E-validated on
+    # the real Daedric torso: fix -> output glow byte-matches source (15 bones);
+    # revert -> 19 bones w/ Calf+UpperArm. #daedric-glow
+    assert nc.EFFECT_SHADER_SOURCE_SKIN is True
+
+
+def test_drop_scale_bones_still_strips_and_preserves_mass():
+    # The env-revert path (CBBE2UBE_EFFECT_RESKIN=1) still relies on scale-bone
+    # dropping; guard it folds scale weight into the vert's biggest kept bone.
+    bones = ["NPC Spine [Spn0]", "NPC L Breast01", "NPC L RearThigh"]
+    weights = {
+        "NPC Spine [Spn0]": [(0, 0.6)],
+        "NPC L Breast01": [(0, 0.3)],       # scale -> folded into Spine
+        "NPC L RearThigh": [(0, 0.1)],      # scale -> folded into Spine
+    }
+    xf = {b: object() for b in bones}
+    nb, nx, nw = nc._drop_scale_bones_from_skin(bones, xf, weights)
+    assert all(not nc._is_scale_bone(b) for b in nb), "scale bone survived"
+    total = sum(w for prs in nw.values() for _, w in prs)
+    assert abs(total - 1.0) < 1e-6, "per-vert mass not preserved"
