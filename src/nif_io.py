@@ -136,4 +136,17 @@ def save_nif(nif: Nif, out_path: str | os.PathLike) -> None:
             for bn, pairs in s.bone_weights.items():
                 raw.set_bone_weights(bn, [(int(i), float(w)) for i, w in pairs.tolist()])
 
-    nif._backing.save(str(out_path))
+    # Atomic write: save to a temp in the same dir then os.replace, so a crash /
+    # kill / locked destination during pynifly's native write never leaves a
+    # truncated NIF (CTD on load). Matches atomic_nif_save; used by the CLI refit
+    # path (the batch converter already routes through atomic_nif_save).
+    tmp = out_path.with_name(out_path.name + ".nifsave.tmp")
+    try:
+        nif._backing.save(str(tmp))
+    except BaseException:
+        try:
+            os.unlink(str(tmp))
+        except OSError:
+            pass
+        raise
+    os.replace(str(tmp), str(out_path))

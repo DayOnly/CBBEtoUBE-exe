@@ -94,10 +94,24 @@ def test_strip_genital_weights_renormalizes_to_body_bones():
     assert dict(out["NPC L Thigh [LThg]"])[1] == 1.0  # untouched bone preserved
 
 
-def test_strip_genital_only_vert_falls_back_to_pelvis():
-    out = nc._strip_genital_weights_map({"Clitoral1": [(7, 1.0)]})
+def test_strip_genital_only_vert_pelvis_fallback_when_shape_has_pelvis():
+    # Shape ALREADY carries Pelvis (so it has a valid Pelvis skin-to-bone xform):
+    # a genital-only vert safely falls back to Pelvis.
+    out = nc._strip_genital_weights_map({
+        "Clitoral1": [(7, 1.0)],
+        "NPC Pelvis [Pelv]": [(0, 1.0)],
+    })
     assert "Clitoral1" not in out
     assert dict(out["NPC Pelvis [Pelv]"])[7] == 1.0
+
+
+def test_strip_genital_only_vert_left_for_fill_when_no_pelvis():
+    # Shape has NO Pelvis: force-assigning Pelvis would have no skin-to-bone xform
+    # in _install_skin -> the vert skins to the ORIGIN (spike). Leave it zero-weight
+    # so _fill_zero_weight_verts (the next step) borrows a valid-STB neighbor.
+    out = nc._strip_genital_weights_map({"Clitoral1": [(7, 1.0)]})
+    assert "Clitoral1" not in out
+    assert "NPC Pelvis [Pelv]" not in out   # NOT force-assigned a no-STB Pelvis
 
 
 def test_strip_genital_noop_when_clean():

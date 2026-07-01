@@ -810,29 +810,25 @@ def auto_convert_mod(
     # patch mods are found. Falls back to source-local when no VFS index is given.
     resolved_pairs = _resolve_armor_meshes(
         armor_bases, mesh_vfs_index, meshes_root, all_nif_paths)
+    # Single weight-agnostic slot resolver, shared by the crash guard below and
+    # the work-item builder later. Built once from the source ESPs; a `_0` file
+    # the ARMA never named inherits its `_1` partner's slots. #slot0-weight-partner
+    try:
+        _raw_slot_map = ube_patcher.build_nif_slot_map(
+            _find_source_esps(source_dir))
+    except Exception:
+        _raw_slot_map = {}
+    slot_bits_for = _make_slot_resolver(_raw_slot_map)
     # Crash guard for ambiguous modder slots (44/47/...): keep only standard-slot
     # meshes OR those whose NIF is skinned to body-fit bones. Unskinned accessories
     # on these slots given a UBE body race CTD at actor setup. Must run before
     # converted_rel_paths so the patcher never UBE-tags a dropped mesh.
     if resolved_pairs:
-        try:
-            _slot_map = ube_patcher.build_nif_slot_map(
-                _find_source_esps(source_dir))
-        except Exception:
-            _slot_map = {}
         _kept_pairs = []
         _guard_dropped = 0
-        # Weight-agnostic slot lookup: the ARMA names _1; the engine derives _0.
-        # Without folding, _0 fails the body-slot test and gets dropped, leaving
-        # only _1 -> piece invisible (Skyrim needs BOTH weights). Fold to one key.
-        _agnostic_slot: "dict[str, int]" = {}
-        for _k, _v in _slot_map.items():
-            _bk = _weight_base_key(_k)
-            _agnostic_slot[_bk] = _agnostic_slot.get(_bk, 0) | _v
         _nonstd_kept: list[str] = []   # cape/cloak on a non-standard slot
         for _gsrc, _grel in resolved_pairs:
-            _gslot = (_slot_map.get(_grel.lower(), 0)
-                      or _agnostic_slot.get(_weight_base_key(_grel), 0))
+            _gslot = slot_bits_for(_grel)
             if (_gslot & _BODY_SLOT_BITS) != 0 or _nif_has_bodyfit_skin(_gsrc):
                 _kept_pairs.append((_gsrc, _grel))
                 # Surface draping meshes kept on non-standard slots (cape/cloak
@@ -982,10 +978,9 @@ def auto_convert_mod(
         # Scan source ESPs' ARMA records for slot-49 meshes (skirts / hip cloth)
         # so the converter can bump inflation for them. Use source ESPs (pre-rewrite)
         # so paths line up with `rel` in the work items.
-        try:
-            nif_slot_map = ube_patcher.build_nif_slot_map(src_esps)
-        except Exception:
-            nif_slot_map = {}
+        # Slot bits come from the shared weight-agnostic `slot_bits_for` resolver
+        # built once above (so `_0` and `_1` convert with identical slots).
+        # #slot0-weight-partner
 
         if armor_bases:
             print(f"  armour filter: converting {len(resolved_pairs)} ARMA "
@@ -1009,8 +1004,7 @@ def auto_convert_mod(
         skipped_collisions: list[tuple[Path, Path]] = []
         skipped_incremental = 0
         for src, rel in resolved_pairs:
-            rel_key = rel.lower()
-            slot_bits = nif_slot_map.get(rel_key, 0)
+            slot_bits = slot_bits_for(rel)
             dst = nif_dst_root / Path(rel)
             # SECURITY: `rel` can derive from a mod-controlled ARMA model path /
             # BSA name; refuse `..`/absolute traversal outside the output meshes.
@@ -1066,14 +1060,20 @@ def auto_convert_mod(
         nif_workers = max(1, min(nif_workers, len(work_items)))
 
         t_start = time.perf_counter()
-        if nif_workers == 1 or len(work_items) <= 1:
-            # Serial path: simpler for small jobs; avoids ProcessPool overhead.
+        # Serial ONLY when there's no shared pool to isolate crashes: a single-mesh
+        # mod (or forced 1 worker) run in-process gives a native pynifly crash the
+        # power to abort the WHOLE batch. When a warm shared `nif_pool` exists, route
+        # even a single NIF through it so the pool's BrokenProcessPool self-heal
+        # contains the crasher to one worker. #single-mesh-isolation
+        if nif_pool is None and (nif_workers == 1 or len(work_items) <= 1):
+            # No shared pool + tiny job -> serial in-process (avoids pool spin-up).
             for item in work_items:
                 r = _nif_convert_worker(item)
                 result.nif_results.append(r)
         else:
-            print(f"  NIF conversion: {len(work_items)} files across "
-                  f"{nif_workers} workers...")
+            if len(work_items) > 1:
+                print(f"  NIF conversion: {len(work_items)} files across "
+                      f"{nif_workers} workers...")
             done = 0
             last_print = t_start
 
@@ -1082,7 +1082,10 @@ def auto_convert_mod(
                 result.nif_results.append(r)
                 done += 1
                 now = time.perf_counter()
-                if now - last_print >= 5.0 or done == len(work_items):
+                # Progress noise only for real multi-file jobs (single-mesh mods
+                # routed here for isolation stay quiet).
+                if len(work_items) > 1 and (
+                        now - last_print >= 5.0 or done == len(work_items)):
                     rate = done / max(now - t_start, 1e-9)
                     eta = (len(work_items) - done) / max(rate, 1e-9)
                     print(f"    [{done}/{len(work_items)}] "
@@ -1876,6 +1879,26 @@ def _cmd_convert(args):
     except Exception as _wpe:
         print(f"  !! postflight weight-partner scan skipped: {_wpe!r}")
 
+    # Postflight: flag `_0`/`_1` partners whose converted scale-bone set diverges
+    # (per-file metadata leaking to one weight -> the two morph differently; e.g.
+    # the #slot0-weight-partner slot-0 bug). Read-only NIF pass; disable for speed
+    # with CBBE2UBE_NO_WEIGHT_PARITY_CHECK=1.
+    if (os.environ.get("CBBE2UBE_NO_WEIGHT_PARITY_CHECK", "").strip().lower()
+            not in ("1", "true", "yes", "on")):
+        try:
+            _wp_div = _postflight_weight_partner_divergence(output)
+            if _wp_div:
+                print(f"\n!! POSTFLIGHT weight-partner parity: {len(_wp_div)} "
+                      "shape(s) convert differently at _0 vs _1 (per-weight "
+                      "metadata leak; both weights should morph identically):")
+                for _d in _wp_div[:20]:
+                    print(f"     {_d}")
+                if len(_wp_div) > 20:
+                    print(f"     ... and {len(_wp_div) - 20} more")
+                overall_warnings += len(_wp_div)
+        except Exception as _wpe2:
+            print(f"  !! postflight weight-partner parity scan skipped: {_wpe2!r}")
+
     # --- Vertex-color shader-flag sanitize ---
     # Clear Vertex_Colors/Vertex_Alpha shader flags on shapes with no color buffer.
     # Our rebuild path drops source colors but inherits flags; a flag on a missing
@@ -2148,6 +2171,41 @@ _BODY_SKIN_BASENAMES = frozenset({
 })
 
 
+def _weight_agnostic_slot_map(nif_slot_map: "dict[str, int]") -> "dict[str, int]":
+    """Fold a weight-specific NIF->slot-bits map (keyed by exact mesh path, which
+    the ARMA gives only for the `_1` weight) into a weight-agnostic map keyed by
+    `_weight_base_key`, OR-ing the slot bits of any `_0`/`_1` partners. Lets a
+    `_0` file that the ARMA never named recover its slot bits from its `_1`
+    partner, so slot-gated conversion behaves identically at both body weights.
+    #slot0-weight-partner"""
+    out: "dict[str, int]" = {}
+    for k, v in (nif_slot_map or {}).items():
+        bk = _weight_base_key(k)
+        out[bk] = out.get(bk, 0) | int(v)
+    return out
+
+
+def _make_slot_resolver(nif_slot_map: "dict[str, int]"):
+    """Return ``slot_bits_for(rel) -> int``: the exact-path slot bits, falling
+    back to the weight-agnostic (OR'd ``_0``/``_1``) bits so a ``_0`` file the
+    ARMA never named inherits its ``_1`` partner's slots.
+
+    This is the SINGLE source of truth for NIF->slot lookups. Both the ambiguous-
+    slot crash guard and the work-item builder call it, so a `_0` file can never
+    silently convert with ``biped_slots=0`` and diverge from its `_1` partner
+    (which zeroed every slot-gated path -- torso_parity, slot-aware inflation /
+    reskin band / scale reach, the calf/foot-boot far-thigh exclusion). Slots are
+    a per-garment property (Skyrim has no per-weight slots), so folding is
+    correct by construction, not a heuristic. #slot0-weight-partner"""
+    agnostic = _weight_agnostic_slot_map(nif_slot_map)
+
+    def slot_bits_for(rel: str) -> int:
+        return (nif_slot_map.get(rel.lower(), 0)
+                or agnostic.get(_weight_base_key(rel), 0))
+
+    return slot_bits_for
+
+
 def _weight_base_key(rel: str) -> str:
     """Normalize a NIF path to a weight-agnostic key for matching an ARMA's
     model path against a file on disk: lowercase, forward slashes, no leading
@@ -2265,6 +2323,102 @@ def _postflight_missing_weight_partners(output_dir) -> "list[str]":
             miss = "1" if present == "0" else "0"
             out.append(f"{base}_{present}.nif present but _{miss} MISSING in "
                        f"{parent} (invisible at body weight {miss})")
+    return out
+
+
+def _scale_bone_vert_counts(shape, eps: float = 1e-4) -> "dict[str, int]":
+    """Per-scale-bone count of verts weighted above `eps` on a shape.
+    #slot0-weight-partner"""
+    from .nif_convert import _is_scale_bone
+    bw = getattr(shape, "bone_weights", None) or {}
+    out: "dict[str, int]" = {}
+    for bn in getattr(shape, "bone_names", None) or []:
+        if not _is_scale_bone(bn):
+            continue
+        pairs = bw.get(bn) or []
+        pl = pairs.tolist() if hasattr(pairs, "tolist") else pairs
+        n = sum(1 for _, w in pl if w > eps)
+        if n:
+            out[bn] = n
+    return out
+
+
+def _weight_partner_scale_divergence(
+        shapes0, shapes1, base_label: str,
+        present_min: int = 8, absent_max: int = 1) -> "list[str]":
+    """Compare the scale-bone weighting of SAME-NAMED shapes across a `_0`/`_1`
+    pair and report only a true PRESENCE/ABSENCE leak: a bone substantially
+    present (>= `present_min` verts) in one weight and effectively ABSENT
+    (<= `absent_max` verts) in the other. That gross asymmetry is the signature
+    of per-file metadata (slot bits, ...) leaking to ONE weight -- the two are
+    the same garment and must morph identically. Deliberately does NOT flag a
+    smooth slim-vs-curvy gradient (e.g. 7 vs 50 verts): the graft reaches
+    slightly different vert counts at each body weight, which is expected, not a
+    bug. Pure + duck-typed so it's unit-testable without a real NIF.
+    #slot0-weight-partner"""
+    by0 = {getattr(s, "name", None): s for s in shapes0}
+    issues: "list[str]" = []
+    for s1 in shapes1:
+        nm = getattr(s1, "name", None)
+        s0 = by0.get(nm)
+        if s0 is None:
+            continue
+        c0 = _scale_bone_vert_counts(s0)
+        c1 = _scale_bone_vert_counts(s1)
+        only0, only1 = [], []
+        for bn in set(c0) | set(c1):
+            n0, n1 = c0.get(bn, 0), c1.get(bn, 0)
+            if n0 >= present_min and n1 <= absent_max:
+                only0.append(bn)
+            elif n1 >= present_min and n0 <= absent_max:
+                only1.append(bn)
+        if only0 or only1:
+            det = []
+            if only0:
+                det.append(f"_0-only={sorted(only0)}")
+            if only1:
+                det.append(f"_1-only={sorted(only1)}")
+            issues.append(f"{base_label} :: {nm}: scale-bone divergence between "
+                          f"body weights ({'; '.join(det)})")
+    return issues
+
+
+def _postflight_weight_partner_divergence(output_dir) -> "list[str]":
+    """Postflight: for each `_0`/`_1` pair that BOTH exist, flag same-named shapes
+    whose substantial scale-bone set differs between the two weights. Catches
+    per-file metadata (slot bits, ...) leaking to only one weight so the two
+    convert differently -- the class of bug that let GTO `boots_0` keep the
+    fade-inducing far-thigh scale bones while `boots_1` dropped them. DETECT-only
+    (warn). Read-only NIF loads; skipped entirely on any pynifly failure.
+    #slot0-weight-partner"""
+    import re as _re
+    meshes = Path(output_dir) / "meshes"
+    if not meshes.is_dir():
+        return []
+    try:
+        pyn = nif_convert._pynifly()
+    except Exception:
+        return []
+    groups: "dict[tuple, dict]" = {}
+    for p in meshes.glob("**/*.nif"):
+        m = _re.match(r"(.*)_([01])\.nif$", p.name, _re.IGNORECASE)
+        if m:
+            groups.setdefault((str(p.parent), m.group(1)), {})[m.group(2)] = p
+    out: "list[str]" = []
+    for (parent, base), byw in sorted(groups.items()):
+        if "0" not in byw or "1" not in byw:
+            continue
+        try:
+            n0 = pyn.NifFile(filepath=str(byw["0"]))
+            n1 = pyn.NifFile(filepath=str(byw["1"]))
+        except Exception:
+            continue
+        try:
+            label = byw["1"].relative_to(meshes).as_posix()
+        except Exception:
+            label = f"{base}_1.nif"
+        out.extend(_weight_partner_scale_divergence(
+            list(n0.shapes), list(n1.shapes), label))
     return out
 
 

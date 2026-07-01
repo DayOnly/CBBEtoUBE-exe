@@ -97,3 +97,50 @@ def test_iter_formids_sees_mo2s_txst():
     # plugin the color textures live in.
     payload = esp.encode_subrecord(b"MO2S", _mo2s(b"coat", 0x09001234))
     assert 0x09001234 in set(up._iter_formids_in_payload(payload))
+
+
+def _multi_alt_payload(entries) -> bytes:
+    """entries: list of (name_bytes, txst, index) -> raw MO?S payload."""
+    out = struct.pack("<I", len(entries))
+    for name, txst, index in entries:
+        out += struct.pack("<I", len(name)) + name + struct.pack("<II", txst, index)
+    return out
+
+
+def _parse_alt_payload(data: bytes):
+    n = struct.unpack_from("<I", data, 0)[0]; p = 4; out = []
+    for _ in range(n):
+        nl = struct.unpack_from("<I", data, p)[0]; p += 4
+        nm = data[p:p+nl].split(b"\x00", 1)[0].decode("latin-1"); p += nl
+        tx = struct.unpack_from("<I", data, p)[0]; p += 4
+        ix = struct.unpack_from("<I", data, p)[0]; p += 4
+        out.append((nm, tx, ix))
+    return out
+
+
+def test_reindex_alt_texture_case_insensitive_keeps_hood():
+    # The recolor authored the hood entry as 'hood' but the converted NIF shape is
+    # 'Hood'. The old case-SENSITIVE match dropped it (hood rendered base color);
+    # the fix matches case-insensitively and reconciles its index. The correctly-
+    # cased siblings must still reconcile to their new (BaseShape-shifted) indices.
+    # Converted shape order: BaseShape=0, Hood=1, Inner Ribbon=7, Skirt=13.
+    shape_index = {"BaseShape": 0, "Hood": 1, "Inner Ribbon": 7, "Skirt": 13}
+    payload = _multi_alt_payload([
+        (b"hood", 0x0A000001, 0),          # lowercase vs 'Hood' -> was dropped
+        (b"Inner Ribbon", 0x0A000002, 6),  # source index 6 -> should become 7
+        (b"Skirt", 0x0A000003, 13),        # unchanged
+    ])
+    out = up._reindex_alt_texture_payload(payload, shape_index)
+    got = {nm: (tx, ix) for nm, tx, ix in _parse_alt_payload(out)}
+    assert "hood" in got, "case-only mismatch dropped the hood recolor"
+    assert got["hood"] == (0x0A000001, 1), "hood index not reconciled to 'Hood' (1)"
+    assert got["Inner Ribbon"] == (0x0A000002, 7)
+    assert got["Skirt"] == (0x0A000003, 13)
+
+
+def test_reindex_alt_texture_drops_truly_missing_shape():
+    # A shape genuinely absent from the converted NIF is still dropped.
+    shape_index = {"BaseShape": 0, "Hood": 1}
+    payload = _multi_alt_payload([(b"GoneShape", 0x0A000009, 4)])
+    out = up._reindex_alt_texture_payload(payload, shape_index)
+    assert _parse_alt_payload(out) == []
