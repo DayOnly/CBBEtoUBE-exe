@@ -7944,17 +7944,48 @@ def _physics_chain_nowarp_blend(src_shape, source_verts, warped_verts):
     return sv + (wv - sv) * (1.0 - frac)[:, None]
 
 
-# Effect-shader glow ANIMATION (the controller chain). DEFAULT OFF (static glow): the
-# add_block'd controller->interpolator->NiFloatData chain does NOT survive a pynifly
-# reload->save round-trip, and the HDT-physics extra-data inject (_finalize_hdt_physics /
-# the generated-XML inject) re-opens+re-saves EVERY cloth armor's NIF after the transplant
-# -> a BROKEN controller ref -> the engine follows a garbage pointer on render = CTD (the
-# 'MaleTorsoGlow' crash on cloth+glow daedric/drgk armors, 2026-06-30). A STATIC effect
-# shader (controllerID = NONE) has NOTHING to corrupt -> the glow keeps its colour/emissive,
-# losing only the subtle texture-scroll. Re-enable the (crash-prone-on-cloth) animation with
-# CBBE2UBE_GLOW_ANIM=1 (safe only on glow armors that are NEVER reload+re-saved, e.g. no SMP).
-_EFFECT_GLOW_ANIM = (os.environ.get("CBBE2UBE_GLOW_ANIM", "").strip().lower()
-                     in ("1", "true", "yes", "on"))
+# Effect-shader glow ANIMATION (the controller chain). DEFAULT ON. (An earlier theory
+# blamed the controller for the 'MaleTorsoGlow' CTD and made this static -- WRONG: the
+# controller round-trips fine, and the real cause was thigh SCALE bones on the glow's skin,
+# fixed by _drop_scale_bones_from_skin below. Animation is safe.) CBBE2UBE_NO_GLOW_ANIM=1
+# forces a static glow (colour but no texture-scroll) as an escape hatch.
+_EFFECT_GLOW_ANIM = (os.environ.get("CBBE2UBE_NO_GLOW_ANIM", "").strip().lower()
+                     not in ("1", "true", "yes", "on"))
+
+
+def _drop_scale_bones_from_skin(bone_names, xforms_map, weights_map):
+    """Remove SCALE bones (FrontThigh/RearThigh/RearCalf/breast/butt/belly deform bones)
+    from a skin, folding each vertex's scale-bone weight into that vertex's LARGEST kept
+    (skeleton) bone so the total per-vertex weight is preserved and NO bone goes zero-weight.
+
+    WHY (the 'MaleTorsoGlow' CTD, 2026-06-30): the UBE re-skin transfers the body's thigh
+    SCALE bones onto an effect-shader GLOW OVERLAY that hugs the hip/upper-thigh; a scale
+    bone on a skinned effect-shader shape CTDs the engine on render (`call [rax+0x28]`,
+    garbage ptr). PROVEN by swap: the source overlay (skeleton bones only, NO scale bones)
+    renders fine; the converted one (+ L/R FrontThigh/RearThigh) crashes. So for effect-
+    shader shapes we skin to skeleton bones only, matching the source. Returns the filtered
+    (bone_names, xforms_map, weights_map)."""
+    scale = [b for b in bone_names if _is_scale_bone(b)]
+    keep = [b for b in bone_names if b not in scale]
+    if not scale or not keep:
+        return bone_names, xforms_map, weights_map
+    vw: dict = {}   # vi -> {bone: weight} over KEPT bones
+    for b in keep:
+        for vi, w in weights_map.get(b, []):
+            vw.setdefault(int(vi), {})[b] = vw.get(int(vi), {}).get(b, 0.0) + float(w)
+    for b in scale:                        # fold each scale bone into the vert's biggest kept bone
+        for vi, w in weights_map.get(b, []):
+            d = vw.setdefault(int(vi), {})
+            tgt = max(d, key=d.get) if d else keep[0]
+            d[tgt] = d.get(tgt, 0.0) + float(w)
+    new_w: dict = {}
+    for vi, d in vw.items():
+        for b, w in d.items():
+            if w > 1e-6:
+                new_w.setdefault(b, []).append((vi, w))
+    new_w = {b: sorted(lst) for b, lst in new_w.items()}
+    new_x = {b: xforms_map[b] for b in keep if b in xforms_map}
+    return keep, new_x, new_w
 
 
 def _transplant_effect_controller(src_shader, dst_nif, pyn):
@@ -8153,6 +8184,7 @@ def _copy_shape(src_shape, dst_nif, parent=None, override_verts=None,
         "finalExposureMin", "finalExposureMax",
         "envMapScale", "parallaxEnvmapStrength",
     )
+    _is_effect_shape = False
     try:
         src_shader = src_shape.shader
         if src_shader is not None and src_shader.properties is not None:
@@ -8162,6 +8194,7 @@ def _copy_shape(src_shape, dst_nif, parent=None, override_verts=None,
                 _pyn.PynBufferTypes, "BSEffectShaderPropertyBufType", None)
             if (_effect_buftype is not None
                     and getattr(src_props, "bufType", None) == _effect_buftype):
+                _is_effect_shape = True   # -> skin to skeleton bones only (see below)
                 # Source uses a BSEffectShaderProperty -- an additive glow/decal shader
                 # (e.g. Daedric's red glow: emissive + greyscale-to-colour gradient).
                 # createShapeFromData only ever makes a BSLightingShaderProperty, which
@@ -8250,6 +8283,9 @@ def _copy_shape(src_shape, dst_nif, parent=None, override_verts=None,
         # Cap to per-partition GPU bone limit to prevent equip CTD.
         bone_names, xforms_map, weights_map = _cap_skin_bone_count(
             bone_names, xforms_map, weights_map)
+        if _is_effect_shape:   # scale bones on an effect-shader overlay CTD the render
+            bone_names, xforms_map, weights_map = _drop_scale_bones_from_skin(
+                bone_names, xforms_map, weights_map)
         _install_skin(new_shape, dst_nif, src_shape, bone_names,
                       xforms_map, weights_map, use_verts, _bake_T)
     elif src_shape.bone_names:
@@ -8280,6 +8316,9 @@ def _copy_shape(src_shape, dst_nif, parent=None, override_verts=None,
             # split-eligible -> keep ALL source bones; post-save split makes it
             # CTD-safe without dropping any (a dense-dress mod: 80 bones -> 78+9).
             bone_names, xforms_map, weights_map = _vb_bones, _vb_x, _vb_w
+        if _is_effect_shape:   # scale bones on an effect-shader overlay CTD the render
+            bone_names, xforms_map, weights_map = _drop_scale_bones_from_skin(
+                bone_names, xforms_map, weights_map)
         _install_skin(new_shape, dst_nif, src_shape, bone_names,
                       xforms_map, weights_map, use_verts, _bake_T)
 
