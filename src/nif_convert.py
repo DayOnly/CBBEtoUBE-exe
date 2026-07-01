@@ -2378,6 +2378,36 @@ def convert_nif(
                 except Exception:
                     pass  # best-effort; failure leaves shapes as-is
 
+            # Cross-plate seam weld: close gaps where adjacent solid plates
+            # that share a seam drifted apart under independent warp. Runs
+            # BEFORE the glow ride so the glow rides the welded plate.
+            if shape_jobs_p1:
+                try:
+                    n_weld = _weld_cross_shape_seams(shape_jobs_p1)
+                    if n_weld:
+                        import sys as _sys
+                        print(f"  seam weld: closed {n_weld} cross-plate seam "
+                              f"vert(s)", file=_sys.stderr)
+                except Exception:
+                    pass  # best-effort; failure leaves seams as-is
+
+            # Effect-shader decal overlays (Daedric red glow etc.) must RIDE
+            # their underlying plate, not be warped independently -- else the
+            # thin source offset amplifies through the body-fit and the glow
+            # clips through the plate. Runs LAST so it rides the plate's FINAL
+            # position. Frame-safe: identity-g2s only, so the WORLD-frame verts
+            # here match. See _ride_effect_overlays_on_plate.
+            if shape_jobs_p1:
+                try:
+                    n_ride = _ride_effect_overlays_on_plate(shape_jobs_p1)
+                    if n_ride:
+                        import sys as _sys
+                        print(f"  glow overlay ride: re-bound {n_ride} "
+                              f"effect-overlay vert(s) to their plate",
+                              file=_sys.stderr)
+                except Exception:
+                    pass  # best-effort; failure leaves overlays as-is
+
             # Pass 2: actually copy. The fit ran in WORLD frame; transform each
             # shape's verts back to its own SKIN frame before writing (no-op for
             # identity global_to_skin, i.e. almost every shape).
@@ -9626,6 +9656,339 @@ def _inject_ube_baseshape(
     return None
 
 
+# Adjacent solid armor plates that SHARE A SEAM (touching edges modeled flush,
+# e.g. the Daedric upper-torso plate `torso` meeting the lower `TorsoLow:0`) are
+# warped as INDEPENDENT shapes by the per-vertex body-fit passes, so their shared
+# seam ring drifts apart -> a visible gap opens between the plates (MEASURED on
+# the Daedric torso: 60 seam verts, source gap <=0.045u, post-fit 0.31u). Fix:
+# verts COINCIDENT across different plate shapes in the SOURCE were meant to
+# touch; weld each such cross-shape cluster to its centroid AFTER the warp passes
+# so the seam closes. Pure source-coincidence (tight tol) is the gate: a genuine
+# layer (over-fabric above a bra) is NOT coincident in source -- it sits mm above
+# -- so this never re-welds intentional layer separation (which the cleavage /
+# overlay-lift passes create at a LARGER clearance). Normals are NOT gated on:
+# a plate rim where inner+outer surfaces meet flush has OPPOSED normals but is
+# still a real seam. Identity-g2s shapes only (frame-safe in both phases).
+# CBBE2UBE_NO_SEAM_WELD=1 disables it; CBBE2UBE_SEAM_WELD_TOL overrides the tol.
+_SEAM_WELD_TOL = float(os.environ.get("CBBE2UBE_SEAM_WELD_TOL", "0.05") or "0.05")
+
+
+def _weld_cross_shape_seams(shape_jobs, tol: float = _SEAM_WELD_TOL):
+    """Weld source-coincident cross-plate seam verts to their centroid.
+
+    Operates on the pass-1 `shape_jobs` (each {"src", "verts",
+    "verts_modified", ...}). Returns the count of welded verts. Best-effort.
+    """
+    if os.environ.get("CBBE2UBE_NO_SEAM_WELD", "").strip().lower() in (
+            "1", "true", "yes", "on"):
+        return 0
+    try:
+        from scipy.spatial import cKDTree
+    except Exception:
+        return 0
+
+    def _ident_g2s(s):
+        try:
+            if not s.has_global_to_skin:
+                return True
+            g = _shape_global_to_skin(s)
+            return g is None or _g2s_is_identity(g)
+        except Exception:
+            return False
+
+    # Candidate plates: textured, non-effect, identity-g2s (frame match).
+    plates = [j for j in shape_jobs
+              if (j["src"].textures or {})
+              and not _shape_has_effect_shader(j["src"])
+              and _ident_g2s(j["src"])]
+    if len(plates) < 2:
+        return 0
+    src_arrs, fin_arrs, owner = [], [], []  # owner[g] = (plate_idx, local_idx)
+    for pi, pj in enumerate(plates):
+        try:
+            psrc = np.asarray(pj["src"].verts, dtype=np.float64)
+            pfin = np.asarray(pj["verts"], dtype=np.float64).copy()
+        except Exception:
+            src_arrs.append(None); fin_arrs.append(None); continue
+        if psrc.ndim != 2 or psrc.shape != pfin.shape or len(psrc) == 0:
+            src_arrs.append(None); fin_arrs.append(None); continue
+        src_arrs.append(psrc); fin_arrs.append(pfin)
+        owner.extend((pi, li) for li in range(len(psrc)))
+    valid = [a for a in src_arrs if a is not None]
+    if len(valid) < 2:
+        return 0
+    all_src = np.concatenate([a for a in src_arrs if a is not None])
+    tree = cKDTree(all_src)
+    try:
+        pairs = tree.query_pairs(tol, output_type="ndarray")
+    except Exception:
+        return 0
+    if len(pairs) == 0:
+        return 0
+    # Union-find over CROSS-shape coincident pairs only.
+    parent = list(range(len(owner)))
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    for a, b in pairs:
+        a, b = int(a), int(b)
+        if owner[a][0] != owner[b][0]:
+            ra, rb = find(a), find(b)
+            if ra != rb:
+                parent[ra] = rb
+    from collections import defaultdict
+    groups = defaultdict(list)
+    for g in range(len(owner)):
+        groups[find(g)].append(g)
+    n_weld = 0
+    changed = set()
+    seam_clusters = []  # each: [(plate_idx, local_idx), ...] spanning >=2 plates
+    for members in groups.values():
+        if len(members) < 2:
+            continue
+        cluster = [owner[m] for m in members]
+        if len({pi for pi, _ in cluster}) < 2:
+            continue  # single-shape cluster -> not a cross-shape seam
+        centroid = np.mean([fin_arrs[pi][li] for pi, li in cluster], axis=0)
+        for pi, li in cluster:
+            fin_arrs[pi][li] = centroid
+            changed.add(pi)
+            n_weld += 1
+        seam_clusters.append(cluster)
+    for pi in changed:
+        plates[pi]["verts"] = fin_arrs[pi]
+        plates[pi]["verts_modified"] = True
+    # Skin-match: give every vert in a welded seam cluster IDENTICAL weights so
+    # the plates DEFORM together under animation. A position-only weld reopens
+    # when the two plates' seam verts follow different bones (MEASURED: the
+    # Daedric waist seam's cross-plate skin diff went 0.25 in source -> 0.70
+    # after the independent per-shape reskin -> the seam splits when posed).
+    if seam_clusters and os.environ.get(
+            "CBBE2UBE_NO_SEAM_SKIN_MATCH", "").strip().lower() not in (
+            "1", "true", "yes", "on"):
+        try:
+            nsm = _match_seam_skinning(plates, seam_clusters)
+            if os.environ.get("CBBE2UBE_SEAM_DEBUG"):
+                import sys as _sys
+                print("  [seam-dbg] clusters=%d skin-matched verts=%s haveOSK=%s"
+                      % (len(seam_clusters), nsm,
+                         [bool(plates[pi].get("override_skin"))
+                          for pi in {p for c in seam_clusters for p, _ in c}]),
+                      file=_sys.stderr)
+        except Exception as _sm:
+            if os.environ.get("CBBE2UBE_SEAM_DEBUG"):
+                import sys as _sys, traceback as _tb
+                print("  [seam-dbg] EXC %r" % (_sm,), file=_sys.stderr)
+                _tb.print_exc()
+    return n_weld
+
+
+def _set_override_vert_weights(osk, vi, tgt, bone_xform):
+    """Set vert `vi`'s skin weights in an override_skin dict to exactly `tgt`
+    ({bone: weight}). Removes `vi` from every existing bone entry, then adds it
+    to each target bone, creating the bone in the bones list / xforms map as
+    needed (xform pulled from `bone_xform`, the cluster-wide skeleton-global
+    skin-to-bone map)."""
+    weights = osk["weights"]
+    bones = osk.setdefault("bones", list(weights.keys()))
+    xforms = osk.setdefault("xforms", {})
+    for bn in list(weights.keys()):
+        weights[bn] = [(v, w) for (v, w) in weights[bn] if int(v) != vi]
+    for bn, w in tgt.items():
+        if w <= 0:
+            continue
+        weights.setdefault(bn, []).append((vi, float(w)))
+        if bn not in bones:
+            bones.append(bn)
+        if bn not in xforms and bn in bone_xform:
+            xforms[bn] = bone_xform[bn]
+
+
+def _match_seam_skinning(plates, seam_clusters):
+    """Unify skin weights across welded cross-plate seam clusters so both
+    plates deform together. For each cluster: read every member vert's current
+    weights, average them (missing bone = 0), cap to the engine's 4-bone
+    per-vertex limit (top-4 by weight), renormalize, and write that identical
+    weighting onto every member. Rewrites each plate job's override_skin in
+    place. Skips a cluster if any member lacks an override_skin (source-skinned
+    shape -- would need a full skin rebuild). Best-effort. Returns the count of
+    verts whose weights were unified."""
+    def _osk_from_source(src_shape):
+        # Build an override_skin that FAITHFULLY copies the source skin (all
+        # bones/xforms/weights) so a source-skinned member can have just its
+        # seam verts edited. Guard on bone count: the override path caps bones
+        # (a no-op under the GPU limit) where the source path would split, so
+        # only build when capping can't drop a bone (dense shapes -> skip).
+        bones = list(src_shape.bone_names or [])
+        if not bones or len(bones) > 40:
+            return None
+        xforms = {}
+        for bn in bones:
+            try:
+                xf = src_shape.get_shape_skin_to_bone(bn)
+                if xf is not None:
+                    xforms[bn] = xf
+            except Exception:
+                pass
+        weights = {}
+        for bn, pairs in (src_shape.bone_weights or {}).items():
+            weights[bn] = [(int(i), float(w)) for i, w in
+                           (pairs.tolist() if hasattr(pairs, "tolist") else pairs)]
+        return {"bones": bones, "xforms": xforms, "weights": weights}
+
+    n_matched = 0
+    for cluster in seam_clusters:
+        oss = []
+        ok = True
+        for pi, li in cluster:
+            osk = plates[pi].get("override_skin")
+            if not osk or "weights" not in osk:
+                # Source-skinned member: synthesize an override_skin so its
+                # seam verts can be matched (pass 2 then uses it).
+                built = _osk_from_source(plates[pi].get("src"))
+                if not built:
+                    ok = False
+                    break
+                plates[pi]["override_skin"] = built
+                osk = built
+            oss.append(osk)
+        if not ok:
+            continue
+        member_w = []
+        bone_xform = {}  # cluster-wide bone -> skin-to-bone (skeleton-global)
+        for (pi, li), osk in zip(cluster, oss):
+            wd = {}
+            for bn, pairs in osk["weights"].items():
+                for vi, w in pairs:
+                    if int(vi) == li:
+                        wd[bn] = wd.get(bn, 0.0) + float(w)
+            member_w.append(wd)
+            for bn, xf in (osk.get("xforms") or {}).items():
+                bone_xform.setdefault(bn, xf)
+        allb = set().union(*member_w) if member_w else set()
+        if not allb:
+            continue
+        tgt = {bn: sum(wd.get(bn, 0.0) for wd in member_w) / len(member_w)
+               for bn in allb}
+        # Cap to 4 bones per vertex (engine skin-partition limit).
+        if len(tgt) > 4:
+            top = sorted(tgt.items(), key=lambda kv: kv[1], reverse=True)[:4]
+            tgt = dict(top)
+        tot = sum(tgt.values())
+        if tot <= 0:
+            continue
+        tgt = {bn: w / tot for bn, w in tgt.items()}
+        for (pi, li), osk in zip(cluster, oss):
+            _set_override_vert_weights(osk, int(li), tgt, bone_xform)
+            n_matched += 1
+    return n_matched
+
+
+# Effect-shader decal overlays (e.g. the Daedric red glow: MaleTorsoGlow,
+# FemaleBootsGlow) sit ~0.03u off their solid plate as a thin additive shell.
+# They are NOT body-hugging, so the per-vertex body-fit passes (warp / inflate /
+# anti-poke) displace them and their plate by SLIGHTLY different amounts (the
+# glow is marginally farther from the body surface). That amplifies the tiny
+# source offset into a visible gap -> the glow "clips through" / no longer
+# conforms to the plate (MEASURED on the Daedric torso: source glow->plate gap
+# 0.03u, post-fit 0.28u). Fix: after every vertex pass, make each overlay RIDE
+# its plate -- re-derive each overlay vert's final position from the FINAL
+# position of the nearest SOURCE-paired plate vert, preserving the source offset
+# vector. Overlay verts too far from any plate (a free-floating glow, rare) keep
+# their own warp. This is the SOURCE-PAIR binding pattern used by the multi-layer
+# lift; it also fixes any region (hip/skirt) since each vert pairs with its own
+# nearest plate. CBBE2UBE_NO_GLOW_RIDE=1 disables it.
+_GLOW_RIDE_MAX = float(os.environ.get("CBBE2UBE_GLOW_RIDE_MAX", "2.0") or "2.0")
+
+
+def _ride_effect_overlays_on_plate(shape_jobs, ride_max: float = _GLOW_RIDE_MAX):
+    """Re-bind BSEffectShaderProperty decal overlays to ride their solid plate.
+
+    Operates on the pass-1 `shape_jobs` list (each: {"src", "verts",
+    "verts_modified", ...}). For every effect-shader overlay shape, pair each of
+    its SOURCE verts to the nearest SOURCE vert across all NON-effect (plate)
+    shapes, then set the overlay's FINAL vert = that plate's FINAL vert + the
+    source offset vector. Per-vert gated on `ride_max` (world units) so an
+    overlay with no plate beneath it keeps its independently-warped verts.
+    Returns the count of re-bound overlay verts. Best-effort; a caller wraps it.
+    """
+    if os.environ.get("CBBE2UBE_NO_GLOW_RIDE", "").strip().lower() in (
+            "1", "true", "yes", "on"):
+        return 0
+    try:
+        from scipy.spatial import cKDTree
+    except Exception:
+        return 0
+
+    def _ident_g2s(s):
+        # Ride only between identity-global-to-skin shapes so the source verts
+        # (skin frame) and the job's final verts share a frame in BOTH phases
+        # (phase-1 stores WORLD, phase-2 stores SKIN; identical when g2s is
+        # identity). A non-identity-g2s shape keeps its own warp (graceful).
+        try:
+            if not s.has_global_to_skin:
+                return True
+            g = _shape_global_to_skin(s)
+            return g is None or _g2s_is_identity(g)
+        except Exception:
+            return False
+
+    overlays = [j for j in shape_jobs
+                if _shape_has_effect_shader(j["src"]) and _ident_g2s(j["src"])]
+    plates = [j for j in shape_jobs
+              if not _shape_has_effect_shader(j["src"]) and _ident_g2s(j["src"])]
+    if os.environ.get("CBBE2UBE_GLOW_RIDE_DEBUG"):
+        import sys as _sys
+        print("  [ride-dbg] overlays=%r plates=%r" % (
+            [j["src"].name for j in overlays],
+            [j["src"].name for j in plates]), file=_sys.stderr)
+    if not overlays or not plates:
+        return 0
+    # Flat SOURCE + FINAL plate vert arrays (kept in lockstep). A plate whose
+    # final-vert count differs from its source (shouldn't happen: the fit is
+    # 1:1) is skipped so the pairing stays valid.
+    src_flat, fin_flat = [], []
+    for pj in plates:
+        try:
+            psrc = np.asarray(pj["src"].verts, dtype=np.float64)
+            pfin = np.asarray(pj["verts"], dtype=np.float64)
+        except Exception:
+            continue
+        if psrc.ndim != 2 or psrc.shape != pfin.shape or len(psrc) == 0:
+            continue
+        src_flat.append(psrc)
+        fin_flat.append(pfin)
+    if not src_flat:
+        return 0
+    src_flat = np.concatenate(src_flat)
+    fin_flat = np.concatenate(fin_flat)
+    tree = cKDTree(src_flat)
+    n_rebound = 0
+    for oj in overlays:
+        try:
+            gsrc = np.asarray(oj["src"].verts, dtype=np.float64)
+            cur = np.asarray(oj["verts"], dtype=np.float64)
+        except Exception:
+            continue
+        if gsrc.ndim != 2 or cur.shape != gsrc.shape or len(gsrc) == 0:
+            continue
+        d, idx = tree.query(gsrc, k=1)
+        mask = d <= ride_max
+        if not np.any(mask):
+            continue
+        cur = cur.copy()
+        # final = plate_final[nearest] + (glow_src - plate_src[nearest])
+        cur[mask] = fin_flat[idx[mask]] + (gsrc[mask] - src_flat[idx[mask]])
+        oj["verts"] = cur
+        oj["verts_modified"] = True
+        n_rebound += int(mask.sum())
+    return n_rebound
+
+
 def convert_nif_phase2(
     src_path: str | Path,
     dst_path: str | Path,
@@ -10324,6 +10687,34 @@ def convert_nif_phase2(
             import sys as _sys
             print(f"  degenerate-tri repair: un-pinched {_n_demangle} collapsed "
                   f"tri(s) across {_n_shapes_demangle} shape(s)", file=_sys.stderr)
+
+    # Cross-plate seam weld: close gaps where adjacent solid plates that share
+    # a seam drifted apart under independent warp. Runs BEFORE the glow ride so
+    # the glow rides the welded plate. See _weld_cross_shape_seams.
+    if shape_jobs:
+        try:
+            n_weld = _weld_cross_shape_seams(shape_jobs)
+            if n_weld:
+                import sys as _sys
+                print(f"  seam weld: closed {n_weld} cross-plate seam vert(s)",
+                      file=_sys.stderr)
+        except Exception:
+            pass  # best-effort; failure leaves seams as-is
+
+    # Effect-shader decal overlays (Daedric red glow etc.) must RIDE their
+    # underlying plate, not be warped independently -- else the thin source
+    # offset amplifies through the body-fit and the glow clips through the
+    # plate. Runs LAST (after every vertex pass) so the glow rides the plate's
+    # FINAL position. See _ride_effect_overlays_on_plate.
+    if shape_jobs:
+        try:
+            n_ride = _ride_effect_overlays_on_plate(shape_jobs)
+            if n_ride:
+                import sys as _sys
+                print(f"  glow overlay ride: re-bound {n_ride} effect-overlay "
+                      f"vert(s) to their plate", file=_sys.stderr)
+        except Exception:
+            pass  # best-effort; failure leaves overlays as-is
 
     # Pass 2: copy shapes. Alpha preserved — bit-19 (set by _reset_morph_flags)
     # enables NioOverride morphs on alpha cloth without stripping transparency.
