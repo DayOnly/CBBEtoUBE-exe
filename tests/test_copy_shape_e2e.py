@@ -135,36 +135,61 @@ def test_copy_shape_identity_is_noop(tmp_path):
 
 
 def test_copy_shape_preserves_effect_shader(tmp_path):
-    # REGRESSION (Daedric cuirass glow): the red glow is a BSEffectShaderProperty overlay.
-    # createShapeFromData only makes BSLightingShaderProperty, which would downgrade it
-    # (emissive zeroed, greyscale dropped -> renders white). _copy_shape must transplant the
-    # effect shader so the glow keeps its COLOUR. By DEFAULT it is STATIC (no animation
-    # controller): the controller chain doesn't survive the HDT-inject reload+re-save and
-    # crashes the engine on cloth+glow armors (_EFFECT_GLOW_ANIM). The colour still works.
+    # REGRESSION (Daedric cuirass glow): the red glow is an ANIMATED BSEffectShaderProperty
+    # overlay. createShapeFromData only makes BSLightingShaderProperty, which would downgrade
+    # it (emissive zeroed, greyscale dropped -> white). _copy_shape must transplant the effect
+    # shader AND its animation controller chain (controller -> interpolator -> NiFloatData).
+    # (Animation is DEFAULT ON -- an earlier CTD was mis-blamed on the controller; the real
+    # cause was scale bones on the skin, see test_copy_shape_effect_shader_scale_bone_free.)
     src = build_effect_shader_nif(tmp_path / "glow_src.nif", controlled_var=8)
     src_shape = nc._pynifly().NifFile(filepath=str(src)).shapes[0]
     assert src_shape.shader_block_name == "BSEffectShaderProperty"   # sanity
     out = copy_shape_into_fresh(src, tmp_path / "glow_out.nif")
     assert out.shader_block_name == "BSEffectShaderProperty", \
         "effect shader was downgraded to lighting shader (glow would render white)"
-    assert out.shader.controller is None, \
-        "default must be a STATIC glow (no controller) -- the animated chain CTDs on re-save"
-
-
-def test_copy_shape_effect_shader_animation_optin(tmp_path, monkeypatch):
-    # With CBBE2UBE_GLOW_ANIM (opt-in), the full animation controller chain is transplanted
-    # (controller -> interpolator -> NiFloatData keys). Safe ONLY on glow armors that are
-    # never reload+re-saved (no SMP), so it's not the default.
-    monkeypatch.setattr(nc, "_EFFECT_GLOW_ANIM", True)
-    src = build_effect_shader_nif(tmp_path / "glow_src.nif", controlled_var=8)
-    out = copy_shape_into_fresh(src, tmp_path / "glow_out.nif")
-    assert out.shader_block_name == "BSEffectShaderProperty"
     ctrl = out.shader.controller
-    assert ctrl is not None, "opt-in animation controller was not transplanted"
+    assert ctrl is not None, "glow animation controller was not transplanted"
     assert ctrl.properties.controlledVariable == 8, "controlled variable lost"
     assert ctrl.properties.targetID == out.shader.id, "controller does not target its shader"
     data = out.file.read_node(id=ctrl.interpolator.properties.dataID)
     assert len(data.keys) == 2, "animation keyframes lost"
+
+
+def test_copy_shape_effect_shader_static_optout(tmp_path, monkeypatch):
+    # CBBE2UBE_NO_GLOW_ANIM forces a STATIC glow (colour but no controller) as an escape hatch.
+    monkeypatch.setattr(nc, "_EFFECT_GLOW_ANIM", False)
+    src = build_effect_shader_nif(tmp_path / "glow_src.nif", controlled_var=8)
+    out = copy_shape_into_fresh(src, tmp_path / "glow_out.nif")
+    assert out.shader_block_name == "BSEffectShaderProperty"    # colour preserved
+    assert out.shader.controller is None, "opt-out static glow must have NO controller"
+
+
+def test_drop_scale_bones_from_skin_folds_and_conserves():
+    # The 'MaleTorsoGlow' CTD fix: a scale bone on an effect-shader overlay's skin crashes
+    # the render. Strip scale bones, folding each vert's scale weight into its largest kept
+    # (skeleton) bone so per-vertex mass is conserved and no bone goes zero-weight.
+    LT = "NPC L Thigh [LThg]"; FT = "NPC L FrontThigh"; RT = "NPC L RearThigh"
+    SP = "NPC Spine2 [Spn2]"
+    bones = [LT, SP, FT, RT]
+    xf = {LT: "x1", SP: "x2", FT: "x3", RT: "x4"}
+    w = {LT: [(0, 0.5), (1, 0.7)], SP: [(1, 0.1)], FT: [(0, 0.5), (1, 0.1)], RT: [(1, 0.1)]}
+    kb, kx, kw = nc._drop_scale_bones_from_skin(bones, xf, w)
+    assert FT not in kb and RT not in kb, "scale bones must be removed"
+    assert set(kb) == {LT, SP} and set(kx) == {LT, SP}
+    tot = {}
+    for b, lst in kw.items():
+        for vi, ww in lst:
+            tot[vi] = tot.get(vi, 0.0) + ww
+    assert abs(tot[0] - 1.0) < 1e-6 and abs(tot[1] - 1.0) < 1e-6   # mass conserved
+    v0 = {b: dict(kw.get(b, [])) .get(0) for b in kb}
+    assert abs(v0[LT] - 1.0) < 1e-6      # vert0 0.5 Thigh + 0.5 FrontThigh -> 1.0 Thigh
+
+
+def test_drop_scale_bones_noop_without_scale_bones():
+    bones = ["NPC L Thigh [LThg]", "NPC Spine2 [Spn2]"]
+    xf = {b: "x" for b in bones}
+    w = {bones[0]: [(0, 1.0)], bones[1]: [(1, 1.0)]}
+    assert nc._drop_scale_bones_from_skin(bones, xf, w) == (bones, xf, w)
 
 
 def test_copy_shape_preserves_vertex_colors(tmp_path):
