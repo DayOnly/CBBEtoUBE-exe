@@ -167,6 +167,39 @@ def test_effect_shader_source_skin_gate_default_on():
     assert nc.EFFECT_SHADER_SOURCE_SKIN is True
 
 
+class _MockProps:
+    def __init__(self, controllerID, shaderPropertyID):
+        self.controllerID = controllerID
+        self.shaderPropertyID = shaderPropertyID
+
+
+class _MockBackingShape:
+    def __init__(self, name, cid, spid):
+        self.name = name
+        self.properties = _MockProps(cid, spid)
+        self.wrote = False
+
+    def write_properties(self):
+        self.wrote = True
+
+
+class _MockBacking:
+    def __init__(self, shapes):
+        self.shapes = shapes
+
+
+def test_repair_effect_shader_shape_controller_resets_self_reference():
+    NONE = 0xFFFFFFFF
+    glow = _MockBackingShape("MaleTorsoGlow", cid=71, spid=71)   # corrupt: cid==spid
+    clean = _MockBackingShape("Torso", cid=NONE, spid=74)        # normal shape
+    lit = _MockBackingShape("Cape", cid=90, spid=74)             # real controller, cid!=spid
+    n = nc._repair_effect_shader_shape_controllers(_MockBacking([glow, clean, lit]))
+    assert n == 1
+    assert glow.properties.controllerID == NONE and glow.wrote
+    assert clean.properties.controllerID == NONE and not clean.wrote   # untouched
+    assert lit.properties.controllerID == 90 and not lit.wrote         # real ctrl kept
+
+
 def test_drop_scale_bones_still_strips_and_preserves_mass():
     # The env-revert path (CBBE2UBE_EFFECT_RESKIN=1) still relies on scale-bone
     # dropping; guard it folds scale weight into the vert's biggest kept bone.
