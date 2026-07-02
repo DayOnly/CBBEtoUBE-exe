@@ -626,6 +626,22 @@ def validate_armor_hdt_xml(xml_path: "Path",
     if not xml_path.is_file():
         warnings.append(f"HDT XML missing on disk: {xml_path}")
         return warnings
+    # SECURITY: this XML can be a mod's source HDT-SMP file. stdlib ElementTree
+    # expands internal entities with no cap (billion-laughs DoS). Legit HDT XML
+    # has no DOCTYPE/ENTITY, so reject any that does (and any absurdly large file)
+    # before parsing.
+    try:
+        raw = xml_path.read_bytes()
+    except OSError:
+        raw = b""
+    if len(raw) > 16 * 1024 * 1024:
+        warnings.append(f"HDT XML suspiciously large ({len(raw)} bytes); rejected")
+        return warnings
+    _low = raw.lower()
+    if b"<!doctype" in _low or b"<!entity" in _low:
+        warnings.append(
+            "HDT XML declares a DOCTYPE/ENTITY (rejected: entity-expansion DoS)")
+        return warnings
     try:
         tree = ET.parse(xml_path)
     except ET.ParseError as e:

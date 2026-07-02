@@ -246,15 +246,26 @@ def _reindex_alt_texture_payload(data: bytes,
             nl = struct.unpack_from("<I", data, p)[0]; p += 4
             name = data[p:p + nl]; p += nl
             txst = struct.unpack_from("<I", data, p)[0]; p += 4
-            _idx = struct.unpack_from("<I", data, p)[0]; p += 4
+            p += 4   # skip the (unused here) 3D-index field
             entries.append((name, txst))
     except Exception:
         return None
+    # Case-INSENSITIVE shape-name match: alt-texture sets are authored by hand and
+    # frequently disagree in case with the actual NIF shape name (e.g. an entry
+    # named 'hood' for a shape named 'Hood'). The engine applies the recolor by
+    # the 3D INDEX, so a case-only mismatch must NOT drop the entry -- it just
+    # needs its index reconciled. The old case-SENSITIVE get() silently DROPPED
+    # such entries, losing the color variant for that shape (the recolored hood
+    # rendered in its BASE color while its correctly-cased siblings recolored
+    # fine). Keep the original authored name bytes; only fix the index. #alttex-case
+    ci_index: "dict[str, int]" = {}
+    for _k, _v in shape_index.items():
+        ci_index.setdefault(_k.lower(), _v)   # first wins on case-dupes (rare)
     seen: set[str] = set()
     kept = []
     for name, txst in entries:
-        nm = name.split(b"\x00", 1)[0].decode("latin-1", "ignore")
-        new_idx = shape_index.get(nm)
+        nm = name.split(b"\x00", 1)[0].decode("latin-1", "ignore").lower()
+        new_idx = ci_index.get(nm)
         if new_idx is None or nm in seen:
             continue  # shape merged away / duplicate
         seen.add(nm)
@@ -280,6 +291,10 @@ def reconcile_alt_texture_indices(esp_path, meshes_root) -> int:
     meshes_root = _Path(meshes_root)
     e = esp.ESP.load(esp_path)
     _cache: "dict[str, dict | None]" = {}
+    # Converted NIFs that EXIST but won't load: their alt-texture set keeps the
+    # stale source indices (color variants misalign). Distinct from a legitimately
+    # absent path (vanilla mesh the converter doesn't own) -- surface only these.
+    load_failed: "list[str]" = []
 
     def shapes_for(model_path: str):
         key = model_path.lower()
@@ -293,6 +308,7 @@ def reconcile_alt_texture_indices(esp_path, meshes_root) -> int:
                 idx = {s.name: i for i, s in enumerate(nf.shapes)}
         except Exception:
             idx = None
+            load_failed.append(model_path)
         _cache[key] = idx
         return idx
 
@@ -326,6 +342,12 @@ def reconcile_alt_texture_indices(esp_path, meshes_root) -> int:
             if changed:
                 r.payload = new_payload
                 fixed += 1
+    if load_failed:
+        import sys as _s
+        print(f"  !! alt-texture reconcile: {len(load_failed)} converted NIF(s) "
+              f"failed to load -> stale color-variant indices kept (variant "
+              f"textures may misalign): {sorted(set(load_failed))[:5]}",
+              file=_s.stderr)
     if fixed:
         e.save(esp_path)
     return fixed
@@ -343,6 +365,105 @@ def reconcile_alt_texture_indices_all(primary_esp_path, meshes_root) -> int:
     total = 0
     for piece in sorted(p.parent.glob(f"{p.stem}*{p.suffix}")):
         total += reconcile_alt_texture_indices(piece, meshes_root)
+    return total
+
+
+# ----- redundant armature dedup (double body-swap render) -----------------
+# A body-armor ARMO can end up referencing TWO of THIS patch's own UBE ARMAs that
+# carry the SAME primary race (RNAM) AND the SAME male/female meshes (MOD2/MOD3) --
+# e.g. when the armor's source ARMA was overridden by both a master and a patch and
+# each path contributed a mint, and the merge dedups whole ARMO records but not the
+# armature refs WITHIN one. For a UBE-race wearer BOTH resolve, so the engine renders
+# the same body-swap mesh twice, overlapping -> the doubled/blown-out, double-morphed
+# render reads in-game as "the armor doesn't fit the body / doesn't conform".
+
+def _arma_dedup_identity(arma_payload: bytes):
+    """(rnam, mod2_lower, mod3_lower, subrecord_count) for an ARMA payload --
+    the render identity (race + meshes) plus a completeness tiebreak."""
+    rnam = mod2 = mod3 = None
+    n = 0
+    for sig, d in esp.iter_subrecords(arma_payload):
+        n += 1
+        if sig == b"RNAM":
+            rnam = d
+        elif sig == b"MOD2":
+            mod2 = d.rstrip(b"\x00").lower()
+        elif sig == b"MOD3":
+            mod3 = d.rstrip(b"\x00").lower()
+    return (rnam, mod2, mod3, n)
+
+
+def dedup_armo_armature_refs(esp_path) -> int:
+    """In each ARMO, drop redundant armature refs that point at THIS patch's OWN
+    ARMAs sharing the same (RNAM, MOD2, MOD3) -- keeping the most complete one
+    (most subrecords). Vanilla/master armatures are never touched. Returns the
+    number of refs removed. Run AFTER the merge. See the block comment above."""
+    e = esp.ESP.load(esp_path)
+    own_byte = len(e.header.masters)
+    own_arma_identity: "dict[int, tuple]" = {}
+    for g in e.groups:
+        if g.label != b"ARMA":
+            continue
+        for r in g.records:
+            if ((r.formid >> 24) & 0xFF) == own_byte:
+                own_arma_identity[r.formid] = _arma_dedup_identity(r.payload)
+    removed = 0
+    for g in e.groups:
+        if g.label != b"ARMO":
+            continue
+        for r in g.records:
+            refs = [struct.unpack("<I", d)[0]
+                    for sig, d in esp.iter_subrecords(r.payload)
+                    if sig == b"MODL" and len(d) == 4]
+            if len(refs) < 2:
+                continue
+            # group OWN armature refs by render identity; a group with >1 member
+            # is a duplicate -> keep the most-complete fid, drop the rest.
+            by_key: "dict[tuple, list]" = {}
+            for fid in refs:
+                ident = own_arma_identity.get(fid)
+                if ident is None:
+                    continue                 # vanilla/master ARMA -> leave alone
+                by_key.setdefault(ident[:3], []).append((fid, ident[3]))
+            keeper_for: "dict[tuple, int]" = {}
+            for key, members in by_key.items():
+                if len(members) < 2:
+                    continue
+                members.sort(key=lambda m: m[1], reverse=True)   # most complete first
+                keeper_for[key] = members[0][0]
+            if not keeper_for:
+                continue
+            # Rebuild: for a duplicated identity, keep ONLY the keeper fid's FIRST
+            # occurrence (handles the same-fid-listed-twice case: a set-based drop
+            # would remove BOTH and leave the ARMO armature-less -> invisible).
+            emitted: set = set()
+            out = b""
+            for sig, d in esp.iter_subrecords(r.payload):
+                if sig == b"MODL" and len(d) == 4:
+                    fid = struct.unpack("<I", d)[0]
+                    ident = own_arma_identity.get(fid)
+                    if ident is not None and ident[:3] in keeper_for:
+                        key = ident[:3]
+                        if fid == keeper_for[key] and key not in emitted:
+                            emitted.add(key)
+                        else:
+                            removed += 1
+                            continue          # redundant duplicate -> drop
+                out += esp.encode_subrecord(sig, d)
+            r.payload = out
+    if removed:
+        e.save(esp_path)
+    return removed
+
+
+def dedup_armo_armature_refs_all(primary_esp_path) -> int:
+    """Dedup armature refs across the primary merged ESP AND every ESL-split
+    piece (`<stem>.esp`, `<stem>2.esp`, ...). Returns total refs removed."""
+    from pathlib import Path as _Path
+    p = _Path(primary_esp_path)
+    total = 0
+    for piece in sorted(p.parent.glob(f"{p.stem}*{p.suffix}")):
+        total += dedup_armo_armature_refs(piece)
     return total
 
 
@@ -1587,10 +1708,16 @@ def generate_ube_patch(
 
     master_armo_overrides: list[esp.Record] = []
     master_scan_stats: dict[str, int] = {}
+    # Masters we expected to scan for UBE-race ARMO coverage but couldn't load
+    # (not found under master_data_dirs, or unreadable). Surfaced as a warning so
+    # a silent coverage gap (armor invisible on UBE races) isn't swallowed.
+    master_scan_skipped: list[str] = []
     converted_arma_src_fids = set(new_arma_fids.keys())
     for master_name in src.header.masters:
         master_path = _find_master_path(master_name, master_data_dirs)
         if master_path is None:
+            if master_data_dirs:
+                master_scan_skipped.append(master_name)
             continue
         # Master's position in source ESP's master list.
         try:
@@ -1607,6 +1734,8 @@ def generate_ube_patch(
         try:
             master_esp = _load_master_cached(master_path)
         except Exception:
+            if master_data_dirs:
+                master_scan_skipped.append(master_name)
             continue
         master_own_byte = len(master_esp.header.masters)
 
@@ -1876,6 +2005,13 @@ def generate_ube_patch(
         output_esp_path,
         master_data_dirs=master_data_dirs,
     )
+    if master_scan_skipped:
+        validation_warnings = list(validation_warnings) + [
+            f"master-coverage-skipped: could not load "
+            f"{len(set(master_scan_skipped))} master(s) for the UBE-race ARMO "
+            f"override scan ({', '.join(sorted(set(master_scan_skipped)))}); "
+            f"armor defined there may be invisible on UBE-race actors"
+        ]
 
     return {
         "output": str(output_esp_path),
@@ -1895,6 +2031,12 @@ def generate_ube_patch(
 _POSTFLIGHT_CTD_PREFIXES = (
     "master-ordering", "esl-overflow", "formid-out-of-range",
     "formid-zero", "modt-malformed",
+    # validate_patch documents this as a silent FormID misroute / startup crash.
+    # Generation skips masters with unmappable transitives, so a hit on the final
+    # Combined means one slipped through -> fail the build. The check only fires
+    # on a master it can LOCATE, so an incomplete master_data_dirs makes it MISS,
+    # never false-positive.
+    "unmappable-master-ref",
 )
 
 
@@ -2053,19 +2195,22 @@ def validate_patch(esp_path: str | Path,
             f"Examples: {modt_examples}. Fix: route the MO?T through normalize_modt."
         )
 
-    # ESL flag consistency.
+    # ESL flag consistency. The light-plugin FormID space (capped at
+    # ESL_MAX_OWN_RECORDS) is consumed by EVERY new own-index record, not just
+    # ARMA. Today the converter only mints own-index ARMA (ARMO overrides keep
+    # their master FormID), so counting ARMA-only gives the same number -- but
+    # counting ALL own-index records is future-proof: a later non-ARMA own-index
+    # mint would otherwise silently under-count and re-open the overflow-CTD class.
     if e.header.flags & TES4_FLAG_ESL:
-        own_arma_count = 0
+        own_new_count = 0
         for g in e.groups:
-            if g.label != b"ARMA":
-                continue
             for r in g.records:
                 if ((r.formid >> 24) & 0xFF) == own_byte:
-                    own_arma_count += 1
-        if own_arma_count > ESL_MAX_OWN_RECORDS:
+                    own_new_count += 1
+        if own_new_count > ESL_MAX_OWN_RECORDS:
             warnings.append(
-                f"esl-overflow: ESL flag set but own ARMA count "
-                f"{own_arma_count} > {ESL_MAX_OWN_RECORDS} slot limit"
+                f"esl-overflow: ESL flag set but own new-record count "
+                f"{own_new_count} > {ESL_MAX_OWN_RECORDS} slot limit"
             )
 
     # ARMO MODL-before-DATA check + ARMO-missing-FULL check.
@@ -2309,6 +2454,99 @@ def prune_unused_masters(esp_obj: esp.ESP) -> list[str]:
     return dropped
 
 
+def resort_masters(esp_obj: esp.ESP,
+                   master_data_dirs: "list[Path] | None" = None) -> bool:
+    """Re-sort a plugin's master list so master-tier plugins (.esm/.esl/ESM- or
+    ESL-flagged .esp) precede regular ESPs, renumbering every FormID in place.
+
+    A master-tier plugin listed AFTER a regular ESP is a load-order / FormID
+    resolution crash. The merge already tier-sorts (merge_patches), but a STALE
+    Combined left by an earlier run can survive mis-sorted; this repairs one
+    in place WITHOUT a re-merge (reuses prune_unused_masters' exact FormID-remap
+    path -- only the master COUNT is unchanged, so own-record FormIDs are
+    untouched). Vanilla DLC ESMs stay first in their canonical order. Returns True
+    if the order changed. No-op (False) if already correctly ordered."""
+    masters = list(esp_obj.header.masters)
+    n = len(masters)
+    if n <= 1:
+        return False
+    name_to_idx: dict[str, int] = {}
+    for i, m in enumerate(masters):
+        name_to_idx.setdefault(m.lower(), i)
+    # Vanilla DLC first, in canonical order (only those actually present).
+    new_order: list[int] = []
+    used: set[int] = set()
+    for vm in VANILLA_DLC_MASTERS:
+        idx = name_to_idx.get(vm.lower())
+        if idx is not None and idx not in used:
+            new_order.append(idx)
+            used.add(idx)
+    # The rest, STABLE-sorted by tier (master-tier first) -- mirrors merge_patches.
+    rest = [i for i in range(n) if i not in used]
+    rest.sort(key=lambda i: 0 if _is_esm_tier_master(masters[i], master_data_dirs)
+              else 1)
+    new_order.extend(rest)
+    if new_order == list(range(n)):
+        return False  # already correctly ordered
+    # old top byte -> new top byte (count unchanged -> own_byte == n is untouched).
+    remap = {old: new for new, old in enumerate(new_order) if new != old}
+    if remap:
+        for g in esp_obj.groups:
+            for r in g.records:
+                old_top = (r.formid >> 24) & 0xFF
+                if old_top in remap:
+                    r.formid = (remap[old_top] << 24) | (r.formid & 0xFFFFFF)
+                r.payload = _rewrite_formids_in_payload(r.payload, remap)
+    esp_obj.header.masters = [masters[i] for i in new_order]
+    return True
+
+
+def resort_masters_all(primary_esp_path, master_data_dirs=None) -> int:
+    """Re-sort the master list of the primary merged ESP AND every ESL-split piece
+    (`<stem>.esp`, `<stem>2.esp`, ...) so a master-tier plugin never trails a
+    regular ESP. A no-op on a correctly-ordered piece; self-heals a STALE Combined
+    a prior run left mis-sorted. Globs the same family the split writer uses.
+    Returns the number of pieces re-sorted."""
+    import sys as _sys
+    import time as _time
+    from pathlib import Path as _Path
+    # Re-classify FRESH: a stale ESM-tier verdict cached during the per-source /
+    # merge phase would mis-classify a .esp ESM-flag and re-introduce the mis-sort
+    # this repairs. (#postflight)
+    clear_esm_tier_cache()
+    p = _Path(primary_esp_path)
+    changed = 0
+    for piece in sorted(p.parent.glob(f"{p.stem}*{p.suffix}")):
+        try:
+            e = esp.ESP.load(piece)
+        except Exception as _le:
+            print(f"  !! master re-sort: could not load {piece.name} ({_le!r})",
+                  file=_sys.stderr)
+            continue
+        if not resort_masters(e, master_data_dirs):
+            continue
+        # Save with a short retry: a TRANSIENT lock (AV scanning the output) is the
+        # likeliest reason a re-sort silently failed before, leaving the piece
+        # mis-sorted -> equip/load CTD. Surface a persistent failure LOUDLY rather
+        # than swallow it; the postflight then also flags it.
+        saved = False
+        for _attempt in range(4):
+            try:
+                e.save(piece)
+                saved = True
+                break
+            except Exception as _se:
+                if _attempt < 3:
+                    _time.sleep(0.4)
+                else:
+                    print(f"  !! master re-sort COULD NOT SAVE {piece.name} "
+                          f"({_se!r}) -> it stays mis-sorted, re-run the merge",
+                          file=_sys.stderr)
+        if saved:
+            changed += 1
+    return changed
+
+
 # --------------------------------------------------------------------------
 # Post-conversion ESP patch: promote slot-49 cloth ARMAs to also cover slot 32
 # --------------------------------------------------------------------------
@@ -2499,7 +2737,6 @@ def _default_nif_has_bodytri(nif_path: Path) -> bool:
 # --------------------------------------------------------------------------
 
 # TES4 record flags
-TES4_FLAG_ESM = 0x00000001   # Master file (.esm)
 TES4_FLAG_ESL = 0x00000200   # Light plugin (compact form ID range)
 
 # ESL own-record FormID range: 0x800-0xFFF = 2048 slots.

@@ -19,7 +19,10 @@ Given a Mod Organizer 2 setup, the full pipeline (`auto`):
    resolves every armor mesh through the full virtual file system (BodySlide
    output, BSAs, and loose files all count). Only **player-equippable** armor on
    body slots is selected — non-equippable items (gore / dismemberment effect
-   "armor" flagged non-playable) are skipped.
+   "armor" flagged non-playable) are skipped. Because UBE is a female body, only
+   the **female** mesh of each piece is converted; the male mesh is skipped unless
+   the piece is male-only (a female actor falls back to the male mesh, so it still
+   needs the refit).
 2. **Refits** each armor NIF to the UBE body (see *How the refit works*),
    preserving HDT-SMP physics chains, high-heel offsets, and body morphs.
    Armor that bakes exposed body skin (open cleavage, cutouts) is converted via
@@ -66,7 +69,9 @@ For each shape in an armor NIF:
 4. Copy bone weights from the nearest UBE reference vertices (a weighted blend
    across the k nearest neighbours) and renormalize.
 5. Recompute normals + tangents.
-6. Carry through shader, textures, alpha, partitions, and physics rigging.
+6. Carry through shader (including additive glow / effect-shader overlays and
+   their scroll/pulse animation), textures, vertex colors (an overlay's fade is
+   a per-vertex alpha gradient), alpha, partitions, and physics rigging.
 
 `_0.nif` (weight-0 / slim) and `_1.nif` (weight-1 / full) pairs are processed
 together so the in-game weight slider keeps working.
@@ -249,8 +254,8 @@ cbbe-to-ube/
     cli.py / refit.py / correspondence.py / weights.py / nif_io.py
                           # low-level single-armor refit interface
   tests/
-  scripts/                # build + maintenance helpers (incl. diag_ruby_layers.py,
-                          # a layer-order flip diagnostic usable on any converted armor)
+  scripts/                # build + maintenance helpers (exe build, coverage-ESP
+                          # regen, output health / QA checks, install)
   output/                 # local conversion output (gitignored)
   dist/CBBEtoUBE/         # built standalone executable
 ```

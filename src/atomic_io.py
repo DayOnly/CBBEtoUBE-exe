@@ -99,6 +99,18 @@ def atomic_copy(src, dst) -> None:
     except BaseException:
         _quiet_unlink(tmp)
         raise
+    # Durability: best-effort flush to disk before the rename (matches
+    # atomic_write_bytes -- else a power loss just after os.replace can leave the
+    # directory entry pointing at not-yet-flushed data). fsync needs a WRITABLE
+    # fd on Windows; never let a durability flush failure break the copy itself.
+    try:
+        _fd = os.open(tmp, os.O_RDWR)
+        try:
+            os.fsync(_fd)
+        finally:
+            os.close(_fd)
+    except OSError:
+        pass
     _swap_into_place(tmp, dst)
 
 
@@ -124,3 +136,22 @@ def atomic_nif_save(nif, dst_path) -> None:
         nif.filepath = str(dst_path)
     except Exception:
         pass
+
+
+def atomic_tri_save(tri, dst_path) -> None:
+    """Save a pynifly TriFile (auto-generated body-morph TRI) to `dst_path`
+    atomically: write to a temp file in the same directory, then os.replace it
+    into place. A crash/kill during the (native) write corrupts only the temp --
+    the destination stays the previous complete file. A truncated .tri breaks
+    RaceMenu/BodyMorph loading (the armor stops following body sliders, or worse),
+    so this closes the last non-atomic game-loaded-output write. Raises
+    OutputLockedError if the destination is locked."""
+    dst_path = Path(dst_path)
+    dst_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dst_path.with_name(dst_path.name + ".trisave.tmp")
+    try:
+        tri.save(str(tmp))
+    except BaseException:
+        _quiet_unlink(str(tmp))
+        raise
+    _swap_into_place(str(tmp), dst_path)

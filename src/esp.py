@@ -111,19 +111,48 @@ class Record:
 
     @classmethod
     def parse(cls, data: bytes, offset: int) -> tuple["Record", int]:
+        # Defend the validator/loader against a truncated or corrupt input: raise
+        # a clean ValueError (catchable, descriptive) instead of a cryptic
+        # struct.error / an `assert` that `python -O` would strip.
+        if offset + RECORD_HEADER_SIZE > len(data):
+            raise ValueError(
+                f"truncated record header at offset {offset} "
+                f"(need {RECORD_HEADER_SIZE}, have {len(data) - offset})")
         sig = data[offset:offset+4]
         size = struct.unpack_from("<I", data, offset+4)[0]
         flags = struct.unpack_from("<I", data, offset+8)[0]
         formid = struct.unpack_from("<I", data, offset+12)[0]
         timestamp_vc = struct.unpack_from("<I", data, offset+16)[0]
         version_unk = struct.unpack_from("<I", data, offset+20)[0]
+        if offset + RECORD_HEADER_SIZE + size > len(data):
+            raise ValueError(
+                f"truncated record payload for {sig!r} at offset {offset} "
+                f"(declared {size}, have "
+                f"{len(data) - offset - RECORD_HEADER_SIZE})")
         payload = data[offset+24:offset+24+size]
         if flags & FLAG_COMPRESSED:
+            if len(payload) < 4:
+                raise ValueError(
+                    "compressed record payload too short for its size header")
             uncomp_size = struct.unpack_from("<I", payload, 0)[0]
-            payload = zlib.decompress(payload[4:])
+            # SECURITY: zlib amplifies ~1000x. Cap the declared size AND bound the
+            # actual inflation (decompressobj with max_length) so a crafted record
+            # can't OOM the process before the size check below ever runs.
+            _MAX_DECOMP = 128 * 1024 * 1024
+            if uncomp_size > _MAX_DECOMP:
+                raise ValueError(
+                    f"compressed record declares {uncomp_size} bytes "
+                    f"(> {_MAX_DECOMP} cap)")
+            _dco = zlib.decompressobj()
+            payload = _dco.decompress(payload[4:], uncomp_size + 64)
+            if _dco.unconsumed_tail:
+                raise ValueError(
+                    "compressed record inflates past its declared size")
             # Clear the compressed flag since we hold the inflated version
             flags &= ~FLAG_COMPRESSED
-            assert len(payload) == uncomp_size
+            if len(payload) != uncomp_size:
+                raise ValueError(
+                    f"decompressed size {len(payload)} != declared {uncomp_size}")
         return cls(sig=sig, flags=flags, formid=formid,
                    timestamp_vc=timestamp_vc, version_unk=version_unk,
                    payload=payload), offset + 24 + size
@@ -153,8 +182,13 @@ class Group:
 
     @classmethod
     def parse(cls, data: bytes, offset: int) -> tuple["Group", int]:
+        if offset + GRUP_HEADER_SIZE > len(data):
+            raise ValueError(
+                f"truncated GRUP header at offset {offset} "
+                f"(need {GRUP_HEADER_SIZE}, have {len(data) - offset})")
         sig = data[offset:offset+4]
-        assert sig == b"GRUP", f"expected GRUP, got {sig!r}"
+        if sig != b"GRUP":
+            raise ValueError(f"expected GRUP at offset {offset}, got {sig!r}")
         size = struct.unpack_from("<I", data, offset+4)[0]
         label = data[offset+8:offset+12]
         gtype = struct.unpack_from("<i", data, offset+12)[0]
@@ -169,6 +203,8 @@ class Group:
             if inner_sig == b"GRUP":
                 # nested group — for v1 we don't recurse, just skip and warn
                 inner_size = struct.unpack_from("<I", data, inner+4)[0]
+                if inner_size < GRUP_HEADER_SIZE:
+                    break  # malformed/zero nested-GRUP size -> stop (no infinite loop)
                 inner += inner_size
                 continue
             rec, inner = Record.parse(data, inner)
@@ -203,7 +239,10 @@ class TES4Header:
 
     @classmethod
     def parse_from_record(cls, rec: Record) -> "TES4Header":
-        assert rec.sig == b"TES4"
+        # Not an assert: `python -O` strips asserts, and a non-TES4 record here
+        # would parse as a header with empty masters -> wrong master indices.
+        if rec.sig != b"TES4":
+            raise ValueError(f"expected TES4 header record, got {rec.sig!r}")
         masters: list[str] = []
         author = ""
         description = ""
@@ -213,7 +252,8 @@ class TES4Header:
         pending_mast: str | None = None
         for sig, sd in iter_subrecords(rec.payload):
             if sig == b"HEDR":
-                version, num_records, next_obj = struct.unpack("<fIi", sd[:12])
+                if len(sd) >= 12:
+                    version, num_records, next_obj = struct.unpack("<fIi", sd[:12])
             elif sig == b"CNAM":
                 author = sd.rstrip(b"\x00").decode("utf-8", errors="ignore")
             elif sig == b"SNAM":

@@ -45,7 +45,6 @@ from __future__ import annotations
 
 import os
 import re
-import shutil
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -53,7 +52,8 @@ from pathlib import Path
 import numpy as np
 
 from . import nif_io, nif_patch
-from .atomic_io import atomic_nif_save, atomic_copy, atomic_write_bytes
+from .atomic_io import (
+    atomic_nif_save, atomic_copy, atomic_write_bytes, atomic_tri_save)
 from .correspondence import MeshIndex, compute_deformation
 
 
@@ -661,7 +661,7 @@ def _align_scale_bone_stbs_to_verts(xforms_map, g2s_tb, verts, weights_map,
 def _fill_zero_weight_verts(weights_map, verts, eps=1e-4):
     """Verts with ~0 total bone weight skin to the ORIGIN -> a spike/streak to
     (0,0,0). Some source meshes ship verts the author never weighted -- esp.
-    guard-armor reskins (qwib Solitude/Markarth/etc. trim shapes: 18-19% of a
+    guard-armor reskins (some guard-armor trim shapes: 18-19% of a
     sub-shape) + decoration/1st-person shapes -- and the proximity reskin can
     miss verts far from the body. Give each zero-weight vert the bone weights of
     its NEAREST weighted vert so it rides along instead of spiking. No-op when
@@ -1702,9 +1702,6 @@ def validate_dst_nif(dst_path: "Path",
 # shapes with their canonical large vertex counts qualify (see M1_findings).
 # Smaller "VirtualBody" entries in a CBBE source are skirt/cloth collision
 # proxies and don't disqualify the file.
-UBE_BODY_SHAPE_NAMES = frozenset({
-    "BaseShape",  # canonical UBE body is 29298 verts; mod-specific BaseShapes are rare
-})
 # Vertex count thresholds used to distinguish UBE body shapes from
 # similarly-named collision proxies. UBE BaseShape ~29k, VirtualBody ~14k.
 _UBE_BASESHAPE_MIN_VERTS = 20_000
@@ -2179,6 +2176,9 @@ def convert_nif(
                                 exclude_vert_mask=_extremity_vert_mask(
                                     s, len(hf_verts)),
                                 leg_region_only=True,
+                                exclude_scale_bone_substrings=(
+                                    _boot_far_thigh_scale_exclusions(
+                                        s, biped_slots)),
                             )
                             if bones2 and weights2:
                                 hf_override_skin = {
@@ -2382,6 +2382,36 @@ def convert_nif(
                 except Exception:
                     pass  # best-effort; failure leaves shapes as-is
 
+            # Cross-plate seam weld: close gaps where adjacent solid plates
+            # that share a seam drifted apart under independent warp. Runs
+            # BEFORE the glow ride so the glow rides the welded plate.
+            if shape_jobs_p1:
+                try:
+                    n_weld = _weld_cross_shape_seams(shape_jobs_p1)
+                    if n_weld:
+                        import sys as _sys
+                        print(f"  seam weld: closed {n_weld} cross-plate seam "
+                              f"vert(s)", file=_sys.stderr)
+                except Exception:
+                    pass  # best-effort; failure leaves seams as-is
+
+            # Effect-shader decal overlays (Daedric red glow etc.) must RIDE
+            # their underlying plate, not be warped independently -- else the
+            # thin source offset amplifies through the body-fit and the glow
+            # clips through the plate. Runs LAST so it rides the plate's FINAL
+            # position. Frame-safe: identity-g2s only, so the WORLD-frame verts
+            # here match. See _ride_effect_overlays_on_plate.
+            if shape_jobs_p1:
+                try:
+                    n_ride = _ride_effect_overlays_on_plate(shape_jobs_p1)
+                    if n_ride:
+                        import sys as _sys
+                        print(f"  glow overlay ride: re-bound {n_ride} "
+                              f"effect-overlay vert(s) to their plate",
+                              file=_sys.stderr)
+                except Exception:
+                    pass  # best-effort; failure leaves overlays as-is
+
             # Pass 2: actually copy. The fit ran in WORLD frame; transform each
             # shape's verts back to its own SKIN frame before writing (no-op for
             # identity global_to_skin, i.e. almost every shape).
@@ -2485,6 +2515,7 @@ def convert_nif(
                     bodytri_path = "\\".join(dst_parts[i + 1:])
                     break
 
+        _inject_err = None
         if hdt_xml or bodytri_path:
             try:
                 pynifly = _pynifly()
@@ -2542,6 +2573,14 @@ def convert_nif(
                         if any(kw in nlow for kw in NON_CLOTH_SHAPE_KEYWORDS):
                             continue
                         cleanup_shapes.append(s)
+                    # HDT-SMP per-triangle COLLIDER shapes must keep their authored
+                    # partitions: collapsing them desyncs FSMP's collision build ->
+                    # equip CTD (the `Greaves` 32+38 -> 32 case). CRITICAL here: this
+                    # phase-1 `nf` was RELOADED from disk above, so partition_tris is
+                    # live and `_normalize_partitions` actually COLLAPSES the collider
+                    # -- BEFORE _normalize_partitions_on_disk runs, so its skip is too
+                    # late. The skip has to be in this inline pass. (#elven Greaves.)
+                    _coll_names_p1 = _hdt_collider_shape_names(src_path)
                     for s in cleanup_shapes:
                         _reset_morph_flags(s)
                         _normalize_shader_for_morph(s)
@@ -2552,7 +2591,8 @@ def convert_nif(
                         # transparency on cloth and (b) persisted only
                         # partially, corrupting the atlas opaque-diffuse
                         # detection (cut-out tiles wrongly forced opaque).
-                        _normalize_partitions(s)
+                        if s.name not in _coll_names_p1:
+                            _normalize_partitions(s)
 
                     # BODYTRI goes on the carrier only.
                     for target_shape in carriers:
@@ -2575,8 +2615,10 @@ def convert_nif(
                 _hide_virtual_body(nf)
 
                 atomic_nif_save(nf, dst_path)
-            except Exception:
-                pass  # injection is best-effort; copy already done
+            except Exception as _e:
+                # Best-effort, but surface it: a swallowed failure here means no
+                # cloth physics (HDT) and/or no body-morph (BODYTRI), no signal.
+                _inject_err = _e
 
         # M8 phase-1 auto-TRI generation. Runs after NIF copy + BODYTRI
         # injection. Loads the destination NIF, reads armor-shape verts,
@@ -2629,9 +2671,7 @@ def convert_nif(
                             carrier_shape_name=carrier_name_for_tri,
                             armor_vert_extremity_fractions=armor_vert_ef,
                         )
-                        auto_tri_dst_phase1.parent.mkdir(
-                            parents=True, exist_ok=True)
-                        tri.save(auto_tri_dst_phase1)
+                        atomic_tri_save(tri, auto_tri_dst_phase1)
             except Exception as _e_tri:
                 # The armor still RENDERS without a TRI, but it won't follow
                 # body-morph sliders (static on every OBody preset). Surface it
@@ -2650,7 +2690,7 @@ def convert_nif(
             pass  # best-effort; doesn't break the conversion
 
         # Multi-partition collapse — see _normalize_partitions_on_disk.
-        _normalize_partitions_on_disk(dst_path)
+        _normalize_partitions_on_disk(dst_path, src_path)
 
         # FINAL HDT-SMP physics pass — must run LAST so extra-data survives
         # earlier round-trips. Skip hand/foot: cloth physics collapses them.
@@ -2660,10 +2700,24 @@ def convert_nif(
             except Exception:
                 pass
 
+        # Graft body jiggle onto fitted leg cloth that lacks its own, THEN conform.
+        # ORDER MATTERS: the graft gives a no-jiggle pant the body's butt/belly
+        # jiggle, which lets the conform pass (gated on jiggle) ALSO weight-match it
+        # to the body -- fixing the knee-BEND clip, not just butt-jiggle follow.
+        try:
+            _transfer_body_jiggle_to_fitted(dst_path, biped_slots)
+        except Exception:
+            pass
         # Fitted-cloth body conform (gated; skin-tight garments only). Runs after
         # finalize so it sees final skinning; reauthor/harden below preserve it.
         try:
             _conform_fitted_to_body(dst_path, biped_slots)
+        except Exception:
+            pass
+        # Knee-bend conform for RIGID leg plate (the conform above skips it): match
+        # the plate's Thigh:Calf split to the body so it bends with the knee.
+        try:
+            _match_rigid_leg_bend_to_body(dst_path, biped_slots)
         except Exception:
             pass
 
@@ -2708,6 +2762,10 @@ def convert_nif(
                 + ", ".join(f"{n} ({err})" for n, err in failed))
         if val_warnings:
             reason_parts.extend(val_warnings)
+        if _inject_err is not None:
+            reason_parts.append(
+                f"HDT/BODYTRI injection failed ({_inject_err!r}) -- piece may "
+                "lack cloth physics / body-morph")
 
         # Heeled boot: re-inject HH_OFFSET as the VERY LAST write — every pynifly
         # save drops NiFloatExtraData. If transplant fails, fall back to original
@@ -2982,6 +3040,11 @@ def inflate_armor_outward(
     """
     armor_verts = np.asarray(armor_verts, dtype=np.float64)
     body_verts = np.asarray(body_verts, dtype=np.float64)
+    # Empty input would make cKDTree / idxs.max() raise (caught by callers, but
+    # the shape then silently loses its clearance pass). Match the guard the
+    # sibling clearance functions already have.
+    if len(armor_verts) == 0 or len(body_verts) == 0:
+        return np.asarray(armor_verts, dtype=np.float32)
 
     from scipy.spatial import cKDTree
     tree = cKDTree(body_verts)
@@ -3253,10 +3316,6 @@ NON_CLOTH_SHAPE_KEYWORDS = (
 # matches hand-built convention more closely.
 BODYTRI_SHAPE_FLAGS_OPAQUE = 0x0000E   # bits 1, 2, 3 only — alpha-less cloth
 BODYTRI_SHAPE_FLAGS_ALPHA  = 0x8000E   # add bit 19 (alpha-sorter) when alpha is on
-# Back-compat alias for old callers that may still reference the old
-# uniform constant. New callers should use OPAQUE/ALPHA explicitly via
-# `_reset_morph_flags`.
-BODYTRI_SHAPE_FLAGS = BODYTRI_SHAPE_FLAGS_OPAQUE
 
 
 def _reset_morph_flags(shape) -> None:
@@ -3297,7 +3356,6 @@ SHADER_FLAGS_1_ENV_MAPPING_BIT = 0x80
 # SBP_54 + SBP_38 inside a slot-32 cuirass) silently fail to morph via
 # NioOverride; collapsing to SBP_32_BODY unblocks them.
 SBP_32_BODY_ID = 32
-SBP_32_BODY_NAME = "SBP_32_BODY"
 
 # Biped dismember slots that must NOT be merged into SBP_32_BODY.
 # Collapsing accessory slots (gauntlet/boot/helmet) renders that equip region
@@ -3305,11 +3363,6 @@ SBP_32_BODY_NAME = "SBP_32_BODY"
 # body-spanning shape corrupts the bone palette -> CTD on equip.
 # Calves (38) and modder leg slots are NOT preserved; collapsing them fixes
 # leg cloth partitions without known crashes.
-SBP_HEAD_ID = 30
-SBP_HAIR_ID = 31
-SBP_HANDS_ID = 33
-SBP_FOREARMS_ID = 34
-SBP_FEET_ID = 37
 PRESERVE_DISMEMBER_SLOTS = frozenset({
     30,  # head
     31,  # hair
@@ -3380,8 +3433,33 @@ def _normalize_partitions(shape) -> bool:
         return False
 
 
+def _preserved_dismember_slot(shape) -> "int | None":
+    """The dismember slot id an over-cap SPLIT must keep so the shape still
+    renders in its equip region, or None for body-region shapes (-> SBP_32_BODY).
+
+    Only returns a slot when EVERY source partition sits on ONE preserved
+    dismember slot (hands/feet/head/...). Mixed-slot shapes -> None: re-slotting
+    them on a Z-rebinned split is ambiguous, so fall back to SBP_32_BODY (the
+    prior behavior) rather than guess. Mirrors `_normalize_partitions`' preserve
+    guard, but for the split path (which can't simply bail -- the cap overrun
+    would CTD). Without this, an over-cap accessory (a dense-boned gauntlet=33 or
+    high-vert helmet=30/31) would be split onto SBP_32_BODY and go invisible.
+    """
+    try:
+        ids = {getattr(p, "id", None)
+               for p in (getattr(shape, "partitions", None) or [])}
+        ids.discard(None)
+        preserved = ids & PRESERVE_DISMEMBER_SLOTS
+        if len(preserved) == 1 and ids == preserved:
+            return next(iter(preserved))
+        return None
+    except Exception:
+        return None
+
+
 def _split_oversize_partition(shape, cap: "int | None" = None,
-                              vert_cap: "int | None" = None) -> int:
+                              vert_cap: "int | None" = None,
+                              part_id: "int | None" = None) -> int:
     """Split a shape that references MORE than `cap` bones into several skin
     partitions, each referencing <= cap distinct bones, WITHOUT dropping any
     bone. Returns the partition count created (0 = no split done).
@@ -3449,7 +3527,8 @@ def _split_oversize_partition(shape, cap: "int | None" = None,
         if nd is None:
             return 0
         pyn = _pynifly()
-        objs = [pyn.SkyPartition(part_id=SBP_32_BODY_ID, flags=257, namedict=nd)
+        pid = SBP_32_BODY_ID if part_id is None else int(part_id)
+        objs = [pyn.SkyPartition(part_id=pid, flags=257, namedict=nd)
                 for _ in range(nparts)]
         shape.set_partitions(objs, assign.tolist())
         return nparts
@@ -3457,7 +3536,8 @@ def _split_oversize_partition(shape, cap: "int | None" = None,
         return 0
 
 
-def _split_oversize_partition_verts(shape, cap: "int | None" = None) -> int:
+def _split_oversize_partition_verts(shape, cap: "int | None" = None,
+                                    part_id: "int | None" = None) -> int:
     """Split a shape with MORE than `cap` VERTICES into several skin partitions,
     each referencing <= cap distinct verts, WITHOUT dropping geometry. Returns
     the partition count created (0 = no split done / not needed).
@@ -3498,7 +3578,8 @@ def _split_oversize_partition_verts(shape, cap: "int | None" = None) -> int:
         if nd is None:
             return 0
         pyn = _pynifly()
-        objs = [pyn.SkyPartition(part_id=SBP_32_BODY_ID, flags=257, namedict=nd)
+        pid = SBP_32_BODY_ID if part_id is None else int(part_id)
+        objs = [pyn.SkyPartition(part_id=pid, flags=257, namedict=nd)
                 for _ in range(nparts)]
         shape.set_partitions(objs, assign.tolist())
         return nparts
@@ -3506,7 +3587,8 @@ def _split_oversize_partition_verts(shape, cap: "int | None" = None) -> int:
         return 0
 
 
-def _normalize_partitions_on_disk(dst_path: Path) -> int:
+def _normalize_partitions_on_disk(dst_path: Path,
+                                  src_path: "Path | None" = None) -> int:
     """Post-save pass: reload the NIF at `dst_path`, collapse any
     multi-partition cloth shape to a single SBP_32_BODY partition, and
     re-save IF anything changed. Returns the number of shapes collapsed.
@@ -3520,6 +3602,17 @@ def _normalize_partitions_on_disk(dst_path: Path) -> int:
     try:
         pyn = _pynifly()
         nf = pyn.NifFile(filepath=str(dst_path))
+        # HDT-SMP per-triangle COLLISION shapes (the authored furexarot/skirt
+        # colliders) must KEEP their authored skin partitions: collapsing or
+        # re-slotting them desyncs FSMP's collision build from the XML -> an
+        # out-of-bounds read in Main::Update on equip (CTD -- the elven cuirass
+        # `Greaves` 32+38 -> 32 case). Same collider set the conform pass preserves.
+        # NOTE: the phase-1 inline cleanup loop runs this SAME collapse on the
+        # reloaded-from-disk NIF (partition_tris live) BEFORE this pass, so it must
+        # skip colliders too -- by the time we get here the collider is already
+        # collapsed. See the phase-1/phase-2 inline loops.
+        collider_names = (_hdt_collider_shape_names(src_path)
+                          if src_path is not None else set())
         changed = 0
         for s in nf.shapes:
             # Body shapes keep their native partitions — they already
@@ -3529,6 +3622,13 @@ def _normalize_partitions_on_disk(dst_path: Path) -> int:
             # blocks NioOverride morph routing.
             if s.name in UBE_BODY_INJECT_NAMES or s.name == "VirtualGround":
                 continue
+            # SMP COLLIDER: keep its authored partitions exactly (see above).
+            if s.name in collider_names:
+                continue
+            # An over-cap ACCESSORY (gauntlet=33, boot=37, helmet=30/31, ...) must
+            # keep its dismember slot across the split or it goes invisible in its
+            # equip region; body-region shapes -> None -> SBP_32_BODY.
+            keep_slot = _preserved_dismember_slot(s)
             # Over-cap shape: SPLIT into <=cap-bone partitions (keeps every bone,
             # CTD-safe) instead of collapsing to one over-budget partition. Dense
             # dresses/robes that ship 79-81 bones (some armor mods) keep their full
@@ -3537,7 +3637,8 @@ def _normalize_partitions_on_disk(dst_path: Path) -> int:
                 # Respect BOTH caps: a dense rig that is also high-vert must not
                 # leave a bone-split partition still over the vertex cap.
                 if _split_oversize_partition(
-                        s, vert_cap=SKIN_PARTITION_VERT_CAP) > 1:
+                        s, vert_cap=SKIN_PARTITION_VERT_CAP,
+                        part_id=keep_slot) > 1:
                     changed += 1
                 else:
                     # Split failed (no source partition / pynifly error): the
@@ -3555,7 +3656,7 @@ def _normalize_partitions_on_disk(dst_path: Path) -> int:
             # body ships -- do NOT collapse to one partition below (that's the
             # very thing that CTDs). Under-cap shapes fall through and collapse.
             if len(getattr(s, "verts", []) or []) > SKIN_PARTITION_VERT_CAP:
-                if _split_oversize_partition_verts(s) > 1:
+                if _split_oversize_partition_verts(s, part_id=keep_slot) > 1:
                     changed += 1
                 else:
                     # Split failed (no source partition / pynifly error): the
@@ -3751,21 +3852,61 @@ def fix_vertex_color_shader_flags(nif) -> int:
     return fixed
 
 
+def _repair_effect_shader_shape_controllers(nif_backing) -> int:
+    """Reset a SHAPE's shape-level controllerID to NONE when it wrongly points at
+    that same shape's shader property (controllerID == shaderPropertyID).
+
+    A post-conversion re-save path can leave an effect-shader (glow/decal) shape
+    with its shape-level controllerID dangling onto its own BSEffectShaderProperty
+    block. At equip the engine walks the shape's controller chain, finds a
+    BSEffectShaderProperty where a NiTimeController must be, and calls a bad vtable
+    slot -> EXCEPTION_ACCESS_VIOLATION `call [rax+0x28]` CTD (the Daedric
+    MaleTorsoGlow crash). A shape's controller can NEVER validly be its own shader
+    property, so this self-reference is unambiguously corrupt; source glow shapes
+    carry NONE here. Returns the number of shapes repaired. #glow-shape-controller"""
+    try:
+        none_id = _pynifly().NODEID_NONE
+    except Exception:
+        return 0
+    fixed = 0
+    for s in nif_backing.shapes:
+        try:
+            pr = s.properties
+            cid = getattr(pr, "controllerID", none_id)
+            spid = getattr(pr, "shaderPropertyID", none_id)
+            if cid != none_id and cid == spid:
+                pr.controllerID = none_id
+                try:
+                    s.write_properties()
+                except Exception:
+                    pass
+                fixed += 1
+        except Exception:
+            continue
+    return fixed
+
+
 def _sanitize_one_nif_worker(path_str: str) -> int:
     """Worker (picklable for ProcessPoolExecutor): load ONE NIF, clear
-    inconsistent vertex-color/alpha shader flags, save if changed. Returns the
-    number of shapes fixed (0 = nothing changed / unreadable). Each call touches
-    a distinct file, so parallel workers never write-conflict."""
+    inconsistent vertex-color/alpha shader flags AND repair dangling effect-shader
+    shape controllers, save if changed. Returns the number of shapes fixed
+    (0 = nothing changed / unreadable). Each call touches a distinct file, so
+    parallel workers never write-conflict."""
     try:
         from . import nif_io
         from pathlib import Path as _Path
         nif = nif_io.load_nif(_Path(path_str))
     except Exception:
         return 0
+    n = 0
     try:
-        n = fix_vertex_color_shader_flags(nif._backing)
+        n += fix_vertex_color_shader_flags(nif._backing)
     except Exception:
-        return 0
+        pass
+    try:
+        n += _repair_effect_shader_shape_controllers(nif._backing)
+    except Exception:
+        pass
     if n:
         try:
             atomic_nif_save(nif._backing, path_str)
@@ -3809,10 +3950,15 @@ def sanitize_output_vertex_color_flags(meshes_root, workers: "int | None" = None
                 nif = nif_io.load_nif(_Path(ps))
             except Exception:
                 continue
+            n = 0
             try:
-                n = fix_vertex_color_shader_flags(nif._backing)
+                n += fix_vertex_color_shader_flags(nif._backing)
             except Exception:
-                continue
+                pass
+            try:
+                n += _repair_effect_shader_shape_controllers(nif._backing)
+            except Exception:
+                pass
             if n:
                 try:
                     atomic_nif_save(nif._backing, ps)
@@ -4156,6 +4302,60 @@ def _is_arm_hand_bone(bone_name: str) -> bool:
     return any(kw in b for kw in
                ("forearm", "upperarm", "hand", "finger", "thumb"))
 
+
+# Tall calf/foot boots (slot 37) whose shaft rides the NPC Thigh rigid bone get
+# the body's FAR THIGH scale bones (FrontThigh/RearThigh) grafted onto the shaft
+# by the fine-animation reskin. On a UBE actor this makes the whole boot FADE OUT
+# at camera distance (leg shows through zoomed out; fine up close). Bisect
+# 2026-07-01 isolated the cause-bone class to the far-thigh scale bones -- the
+# boot that DOESN'T fade barely touches the thigh. RearCalf (the calf size morph)
+# is not implicated, and dropping the thighs actually FREES top-4-bones-per-vert
+# budget so RearCalf reaches MORE shaft verts, not fewer (measured). So: exclude
+# the far-thigh scale bones from the graft on calf/foot-dominant footwear while
+# keeping RearCalf. THIGH-DOMINANT footwear (thigh-high boots that genuinely
+# cover the thigh) keep the thigh morph. Default ON; CBBE2UBE_KEEP_BOOT_THIGH_SCALE=1 reverts.
+EXCLUDE_BOOT_FAR_THIGH_SCALE = (
+    os.environ.get("CBBE2UBE_KEEP_BOOT_THIGH_SCALE", "").strip().lower()
+    not in ("1", "true", "yes", "on")
+)
+# The far-thigh scale bones to drop (RearCalf/calf are deliberately NOT here).
+BOOT_FAR_THIGH_SCALE_SUBSTRINGS = ("frontthigh", "rearthigh")
+# A foot-slot shape with at least this fraction of verts dominated by the rigid
+# THIGH bone is a thigh-high boot that really covers the thigh -> keep thigh morph.
+BOOT_THIGH_DOMINANT_FRAC = 0.5
+
+
+def _boot_far_thigh_scale_exclusions(src_shape, biped_slots: int) -> tuple[str, ...]:
+    """Far-thigh scale-bone name substrings to EXCLUDE from the scale-bone graft
+    for this shape, or () to exclude nothing. Non-empty only when the feature is
+    on, the piece is foot-slot (37), and the shape is calf/foot-dominant (i.e. a
+    normal boot, not a thigh-high one). See EXCLUDE_BOOT_FAR_THIGH_SCALE."""
+    if not EXCLUDE_BOOT_FAR_THIGH_SCALE:
+        return ()
+    if not (biped_slots & BIPED_SLOT37_BIT):
+        return ()
+    try:
+        bw = src_shape.bone_weights or {}
+        n = len(src_shape.verts)
+        if n <= 0:
+            return BOOT_FAR_THIGH_SCALE_SUBSTRINGS
+        dom_w = np.zeros(n, dtype=np.float64)
+        thigh_dom = np.zeros(n, dtype=bool)
+        for bn, pairs in bw.items():
+            is_thigh = ("thigh" in bn.lower()) and not _is_scale_bone(bn)
+            pl = pairs.tolist() if hasattr(pairs, "tolist") else pairs
+            for i, w in pl:
+                i = int(i)
+                if 0 <= i < n and w > dom_w[i]:
+                    dom_w[i] = w
+                    thigh_dom[i] = is_thigh
+        if float(thigh_dom.mean()) >= BOOT_THIGH_DOMINANT_FRAC:
+            return ()  # thigh-high boot: keep thigh size morph
+    except Exception:
+        pass
+    return BOOT_FAR_THIGH_SCALE_SUBSTRINGS
+
+
 # Don't re-skin these shapes — they ARE the body / VirtualBody. We inject
 # them from the UBE ref so their skinning is already correct.
 RESKIN_SKIP_NAMES = set(UBE_BODY_INJECT_NAMES)
@@ -4284,14 +4484,26 @@ def _strip_genital_weights_map(weights_map):
     if not affected:
         return {b: p for b, p in weights_map.items() if b not in gset}
     PELVIS = "NPC Pelvis [Pelv]"
+    # Only fall a genital-ONLY vert back to Pelvis when the shape ALREADY carries
+    # Pelvis: _install_skin sets a bone's skin-to-bone xform only for bones the
+    # shape had, so a Pelvis added here on a Pelvis-less shape has no STB -> the
+    # vert skins to the origin (spike). When Pelvis is absent, leave the vert
+    # zero-weight; `_fill_zero_weight_verts` (the very next step in _install_skin)
+    # gives it its nearest weighted vert's bones -- which DO have valid STBs.
+    has_pelvis = PELVIS in weights_map
     norm: "dict" = {}         # affected vert -> {bone: renormalized w}
     for v in affected:
         rest = other.get(v) or {}
         s = sum(rest.values())
-        norm[v] = ({b: w / s for b, w in rest.items()} if s > 1e-6
-                   else {PELVIS: 1.0})
+        if s > 1e-6:
+            norm[v] = {b: w / s for b, w in rest.items()}
+        elif has_pelvis:
+            norm[v] = {PELVIS: 1.0}
+        else:
+            norm[v] = {}      # left for _fill_zero_weight_verts (no-STB spike guard)
     out: "dict" = {}
-    for bn in (set(weights_map) - gset) | {PELVIS}:
+    _bones_iter = (set(weights_map) - gset) | ({PELVIS} if has_pelvis else set())
+    for bn in _bones_iter:
         pairs = [(int(i), float(w)) for i, w in weights_map.get(bn, [])
                  if int(i) not in affected]
         for v in affected:
@@ -4468,7 +4680,231 @@ _CONFORM_FIT_FRAC = float(os.environ.get("CBBE2UBE_CONFORM_FIT_FRAC", "0.90"))
 _CONFORM_CHAIN_MAX = float(os.environ.get("CBBE2UBE_CONFORM_CHAIN_MAX", "0.05"))
 _CONFORM_MIN_JIGGLE_VERTS = 8
 _CONFORM_SKIP_NAMES = ("baseshape", "3ba", "virtual", "col", "ground", "ref")
+
+# Graft the UBE body's jiggle (butt/belly/breast) skin weight onto a fitted
+# garment that HUGS a jiggling region but carries none of its own, so it follows
+# the body's runtime jiggle instead of staying rigid while the body pokes through
+# (the close-to-body "clip when moving" class). Default ON;
+# CBBE2UBE_NO_JIGGLE_TRANSFER=1 disables. The graft is
+# CBBE2UBE_JIGGLE_TRANSFER_FACTOR (0..1) of the body's local jiggle weight, scaled
+# by how tightly each vert hugs. Inverse of _conform_fitted_to_body's gate: that
+# MATCHES shapes that already jiggle; this ADDS jiggle to fitted cloth that lacks it.
+TRANSFER_BODY_JIGGLE = (
+    os.environ.get("CBBE2UBE_NO_JIGGLE_TRANSFER", "").strip().lower()
+    not in ("1", "true", "yes", "on"))
+_JIGGLE_TRANSFER_FACTOR = float(
+    os.environ.get("CBBE2UBE_JIGGLE_TRANSFER_FACTOR", "0.85"))
+
+# RIGID leg-plate FULL leg-deformation conform. _conform_fitted_to_body is
+# jiggle-gated and SKIPS rigid plate, so a rigid greave / one-piece cuirass-leg
+# deforms NOTHING like the body's leg: (a) under-weighted to the Calf at the knee it
+# LAGS the knee bend -> body knee pokes through (Orcish: armor 91/9 Thigh:Calf vs body
+# 76/23); (b) it lacks the body's skeleton leg-DETAIL bones (FrontThigh/RearThigh/
+# RearCalf) that flex the FRONT/BACK of the thigh -> the body thigh pokes through the
+# straight plate when the leg moves (body front FrontThigh=0.09, back RearThigh=0.07;
+# armor 0). This pass matches each leg vert's leg-bone weight to its nearest body
+# vert's FULL leg-deformation distribution and GRAFTS the missing detail bones. The
+# grafted bone's skin-to-bone xform is RE-ANCHORED to the armor's OWN Thigh/Calf bind
+# (NOT copied from the body): copying the body's absolute STB onto an armor with a
+# different bind convention (zero-translation leg STBs) tore verts apart -> in-game
+# explosion. It NEVER moves a vert (rest pose identical) and NEVER adds a JIGGLE bone
+# (the plate stays rigid). Default ON; CBBE2UBE_NO_LEG_BEND_MATCH=1 disables.
+MATCH_RIGID_LEG_BEND = (
+    os.environ.get("CBBE2UBE_NO_LEG_BEND_MATCH", "").strip().lower()
+    not in ("1", "true", "yes", "on"))
+# Per leg: the prime bend bones (thigh/calf, already on the armor) and the skeleton
+# DETAIL bones (front/rear thigh, rear calf) -- each paired with the existing leg bone
+# its grafted STB is ANCHORED to (front/rear thigh -> thigh; rear calf -> calf).
+_LEG_DEFORM_BONES = (
+    {"thigh": "NPC L Thigh [LThg]", "calf": "NPC L Calf [LClf]",
+     "detail": (("NPC L FrontThigh", "NPC L Thigh [LThg]"),
+                ("NPC L RearThigh", "NPC L Thigh [LThg]"),
+                ("NPC L RearCalf [LrClf]", "NPC L Calf [LClf]"))},
+    {"thigh": "NPC R Thigh [RThg]", "calf": "NPC R Calf [RClf]",
+     "detail": (("NPC R FrontThigh", "NPC R Thigh [RThg]"),
+                ("NPC R RearThigh", "NPC R Thigh [RThg]"),
+                ("NPC R RearCalf [RrClf]", "NPC R Calf [RClf]"))},
+)
+_LEG_DETAIL_BONE_NAMES = tuple(
+    b for leg in _LEG_DEFORM_BONES for b, _anc in leg["detail"])
+# All leg-deform bone names (thigh+calf+detail) -- the body STBs we cache.
+_LEG_ALL_DEFORM_NAMES = tuple({
+    *(leg["thigh"] for leg in _LEG_DEFORM_BONES),
+    *(leg["calf"] for leg in _LEG_DEFORM_BONES),
+    *_LEG_DETAIL_BONE_NAMES})
+_LEG_BEND_MASS_MIN = float(os.environ.get("CBBE2UBE_LEG_BEND_MASS_MIN", "0.15"))
+_LEG_BEND_PROX = float(os.environ.get("CBBE2UBE_LEG_BEND_PROX", "3.0"))
+# Z-TAPERED conform strength (UBE knee crease ~ world z 34-40; thigh z 42-64).
+# History: the whole-leg conform at FULL strength shifted the thigh in the idle pose
+# (static clip). A hard z<=38 cap removed that but left the thigh with ZERO flex, so the
+# body's hamstring pokes the rigid plate when MOVING (dynamic) AND a sliver of the knee
+# bend (z 38-40) was lost (slight knee poke). FIX = taper, not cap: conform at FULL
+# strength through the knee (z <= _LEG_BEND_MAX_Z), then RAMP DOWN to a reduced strength
+# (_LEG_BEND_THIGH_STRENGTH) across the thigh (to _LEG_BEND_THIGH_Z), and stop above
+# _LEG_BEND_CUTOFF_Z (don't touch hip/butt). Reduced strength = the SAME principle that
+# kept the knee at 86/14 not the body's 76/23: the plate sits at a LARGER radius than the
+# body, so full body weights OVER-rotate it (overshoot = the static bulge). A partial
+# graft gives the rear thigh enough flex to track the body when moving WITHOUT the
+# overshoot. All tunable.
+_LEG_BEND_MAX_Z = float(os.environ.get("CBBE2UBE_LEG_BEND_MAX_Z", "41.0"))       # full-strength knee ceiling
+_LEG_BEND_THIGH_Z = float(os.environ.get("CBBE2UBE_LEG_BEND_THIGH_Z", "58.0"))   # taper end (reaches min strength)
+_LEG_BEND_THIGH_STRENGTH = float(os.environ.get("CBBE2UBE_LEG_BEND_THIGH_STRENGTH", "0.40"))  # min (thigh) strength
+_LEG_BEND_CUTOFF_Z = float(os.environ.get("CBBE2UBE_LEG_BEND_CUTOFF_Z", "66.0")) # above this: no LEG conform (handed to the butt pass)
+# BUTT pass: a RIGID one-piece plate covering the glutes (z ~60-78) often weights its
+# outer butt too much to the Thigh and too little to the Pelvis vs the body, so when the
+# pelvis moves the body's butt follows it but the plate lags -> the outer butt pokes
+# through when moving. This is SKELETAL (the body's butt JIGGLE bones carry only ~0.03),
+# so we fix it with a pure Thigh<->Pelvis REBALANCE among bones the plate ALREADY has --
+# NO add_bone, NO jiggle graft (the plate stays rigid). Reduced strength for the same
+# larger-radius overshoot reason as the leg. Trapezoid by world-Z (ramp in/out so no
+# seam, and we never touch the lower back/spine above _BUTT_Z_HI). Tunable.
+_BUTT_MATCH = (os.environ.get("CBBE2UBE_NO_BUTT_MATCH", "").strip().lower()
+               not in ("1", "true", "yes", "on"))
+_BUTT_Z_LO = float(os.environ.get("CBBE2UBE_BUTT_Z_LO", "60.0"))     # ramp-in start
+_BUTT_Z_HI = float(os.environ.get("CBBE2UBE_BUTT_Z_HI", "78.0"))     # ramp-out end (above = spine/back, left alone)
+_BUTT_RAMP = float(os.environ.get("CBBE2UBE_BUTT_RAMP", "4.0"))      # ramp width at each end
+_BUTT_STRENGTH = float(os.environ.get("CBBE2UBE_BUTT_STRENGTH", "0.80"))  # peak rebalance strength
+# BUTT-JIGGLE transfer: after the skeletal Thigh<->Pelvis rebalance, the body's outer butt
+# still physically JIGGLES (the NPC L/R Butt bones carry ~0.03-0.05 there) while the rigid
+# plate does not -> the bounce grazes through. Graft the body's butt-jiggle weight onto the
+# plate's butt so it bounces WITH the body (matched -> maintains the offset -> no clip AND
+# no rest-float). MATCHED not exaggerated (the plate moves exactly as much as the bare body
+# would there, so it stays subtle), and CAPPED so a high-jiggle source can't make the metal
+# rubbery. Routed through the SAME add_bone save/restore + Pelvis-anchored STB graft as the
+# leg detail bones. User-chosen 2026-06-30 ("jiggle with the body").
+_BUTT_JIGGLE = (os.environ.get("CBBE2UBE_NO_BUTT_JIGGLE", "").strip().lower()
+                not in ("1", "true", "yes", "on"))
+_BUTT_JIGGLE_BONES = ("NPC L Butt", "NPC R Butt")
+_BUTT_PELVIS = "NPC Pelvis [Pelv]"                                  # the jiggle bones' graft anchor
+_BUTT_JIGGLE_STRENGTH = float(os.environ.get("CBBE2UBE_BUTT_JIGGLE_STRENGTH", "1.0"))  # full match -> tracks body
+_BUTT_JIGGLE_CAP = float(os.environ.get("CBBE2UBE_BUTT_JIGGLE_CAP", "0.15"))  # max grafted jiggle/bone (subtle)
+# Butt prox is LARGER than the leg's (_LEG_BEND_PROX 3.0): the outer-butt plate stands
+# off the body further (up to ~5u) than the leg does, so the leg prox skips ~20% of the
+# glute verts. A separate, wider prox reaches them WITHOUT widening the leg pass (which is
+# already correct in-game). A Pelvis<->Thigh rebalance can't overshoot the body (it matches
+# the nearest body vert's own ratio), so the wider reach is safe.
+_BUTT_PROX = float(os.environ.get("CBBE2UBE_BUTT_PROX", "5.0"))
+_BUTT_MATCH_BONES = ("NPC L Thigh [LThg]", "NPC R Thigh [RThg]", "NPC Pelvis [Pelv]")
+# CHEST/BREAST-JIGGLE transfer (the upper-body mirror of the butt-jiggle pass). A rigid
+# chest plate over the UBE breasts is Spine2-dominant; the body there carries a LARGE breast
+# jiggle (L/R Breast01/02/03 ~0.37 total) the plate lacks -> the breast bounce pokes through
+# when moving. Same fix shape as the butt: graft the body's breast-jiggle bones onto the
+# plate's chest (anchored to Spine2), MATCHED + CAPPED. CAUTION: the breast jiggle is ~10x
+# the butt's, so a FULL match would make a metal cuirass bounce like flesh -- the cap keeps
+# the plate mostly rigid (partial follow = less poke, not a soft chest). Jiggle-ONLY (no
+# skeletal rebalance: chest is Spine2 on both, no pelvis-style lag). The breast bones are
+# body-weighted ONLY on the FRONT chest, so the graft self-gates to the front (a back vert's
+# nearest body vert has no breast weight -> no graft). DEFAULT ON per user 2026-06-30 ("do
+# the chest extension, with caution"); conservative start.
+_CHEST_JIGGLE = (os.environ.get("CBBE2UBE_NO_CHEST_JIGGLE", "").strip().lower()
+                 not in ("1", "true", "yes", "on"))
+_CHEST_JIGGLE_BONES = ("L Breast01", "L Breast02", "L Breast03",
+                       "R Breast01", "R Breast02", "R Breast03")
+_CHEST_ANCHOR = "NPC Spine2 [Spn2]"                                 # breast graft anchor (plate has it)
+_CHEST_Z_LO = float(os.environ.get("CBBE2UBE_CHEST_Z_LO", "88.0"))   # ramp-in start
+_CHEST_Z_HI = float(os.environ.get("CBBE2UBE_CHEST_Z_HI", "102.0"))  # ramp-out end (above = neck/clav)
+_CHEST_RAMP = float(os.environ.get("CBBE2UBE_CHEST_RAMP", "4.0"))
+_CHEST_JIGGLE_STRENGTH = float(os.environ.get("CBBE2UBE_CHEST_JIGGLE_STRENGTH", "1.0"))
+_CHEST_JIGGLE_CAP = float(os.environ.get("CBBE2UBE_CHEST_JIGGLE_CAP", "0.15"))  # LOW total cap: metal stays rigid
+# Per-bone clamp strictly UNDER the rigid-gate's 0.1 jiggle threshold: a single grafted
+# breast bone must never reach 0.1, or a RE-RUN's rigid-gate would count the plate as
+# "jiggling" and skip the whole shape (non-idempotent). The real body spreads breast weight
+# across 6 bones (~0.04 each at the cap), so this only bites a pathological single-bone body.
+_CHEST_JIGGLE_PERBONE = float(os.environ.get("CBBE2UBE_CHEST_JIGGLE_PERBONE", "0.09"))
+_CHEST_PROX = float(os.environ.get("CBBE2UBE_CHEST_PROX", "5.0"))
 _BODY_CONFORM_CACHE: "dict" = {}
+_BODY_LEG_DETAIL_CACHE: "dict" = {}
+
+
+def _chest_match_strength(z: float) -> float:
+    """Trapezoid chest-graft strength by world Z: 0 outside [_CHEST_Z_LO, _CHEST_Z_HI],
+    ramping in/out over _CHEST_RAMP so the neck/clavicle above and the belly below are never
+    touched. Peak = _CHEST_JIGGLE_STRENGTH. Pure."""
+    if z <= _CHEST_Z_LO or z >= _CHEST_Z_HI:
+        return 0.0
+    r = max(1e-6, _CHEST_RAMP)
+    up = (z - _CHEST_Z_LO) / r
+    down = (_CHEST_Z_HI - z) / r
+    return min(1.0, _CHEST_JIGGLE_STRENGTH) * max(0.0, min(1.0, up, down))
+
+
+def _butt_match_strength(z: float) -> float:
+    """Trapezoid butt-rebalance strength by world Z: 0 outside [_BUTT_Z_LO, _BUTT_Z_HI],
+    ramping 0 -> _BUTT_STRENGTH over _BUTT_RAMP at the bottom, flat across the glutes,
+    ramping back to 0 at the top (so the lower back/spine is never touched). Pure."""
+    if z <= _BUTT_Z_LO or z >= _BUTT_Z_HI:
+        return 0.0
+    peak = _BUTT_STRENGTH
+    r = max(1e-6, _BUTT_RAMP)
+    up = (z - _BUTT_Z_LO) / r            # 0..1 over the bottom ramp
+    down = (_BUTT_Z_HI - z) / r          # 0..1 over the top ramp
+    return peak * max(0.0, min(1.0, up, down))
+
+
+def _leg_bend_strength(z: float) -> float:
+    """Per-vert conform strength by world Z: 1.0 through the knee (z <= _LEG_BEND_MAX_Z),
+    linearly ramped down to _LEG_BEND_THIGH_STRENGTH across the thigh, and 0.0 above
+    _LEG_BEND_CUTOFF_Z (leave the hip/butt). The reduced thigh strength gives partial
+    rear-thigh flex without the plate-overshoot that a full conform causes (the plate is
+    at a larger radius than the body). Pure; unit-tested."""
+    if z <= _LEG_BEND_MAX_Z:
+        return 1.0
+    if z >= _LEG_BEND_CUTOFF_Z:
+        return 0.0
+    s_min = _LEG_BEND_THIGH_STRENGTH
+    if z >= _LEG_BEND_THIGH_Z:
+        return s_min
+    span = _LEG_BEND_THIGH_Z - _LEG_BEND_MAX_Z
+    if span <= 1e-6:
+        return s_min
+    frac = (z - _LEG_BEND_MAX_Z) / span          # 0 at knee ceiling -> 1 at thigh_z
+    return 1.0 + frac * (s_min - 1.0)            # 1.0 -> s_min
+
+
+def _stb_to_mat4(tb):
+    """4x4 (rotation+translation, scalar scale folded in) for a skin-to-bone
+    TransformBuf + the matrix-proto object for round-tripping via from_matrix.
+    Returns (M, proto) or (None, None). Mirrors _adjust_skin_to_bone_baked."""
+    try:
+        pm = tb.to_matrix()
+        M = np.array(pm.to_matrix()._array if hasattr(pm, "to_matrix") else pm._array,
+                     dtype=np.float64)
+        s = float(tb.scale)
+        if abs(abs(float(np.linalg.det(M[:3, :3]))) - 1.0) < 1e-2:
+            M[:3, :3] = M[:3, :3] * s
+        return M, pm
+    except Exception:
+        return None, None
+
+
+def _reanchor_stb_mat4(m_detail_body, m_anchor_body, m_anchor_armor):
+    """Pure 4x4 re-anchor (extracted for testability):
+        STB_detail_armor = STB_detail_body @ inv(STB_anchor_body) @ STB_anchor_armor
+    Returns the 4x4 np.ndarray, or None if degenerate (non-invertible / non-finite).
+    By construction `result @ inv(m_anchor_armor) == m_detail_body @ inv(m_anchor_body)`
+    -- the detail-relative-to-anchor bind is preserved into the armor's skin space,
+    which is exactly the consistency that prevents the in-game spike (copying the
+    body's ABSOLUTE STB onto an armor with a different bind convention tore verts)."""
+    try:
+        m = m_detail_body @ np.linalg.inv(m_anchor_body) @ m_anchor_armor
+        return m if np.isfinite(m).all() else None
+    except Exception:
+        return None
+
+
+def _derive_anchored_stb(m_detail_body, m_anchor_body, m_anchor_armor, proto):
+    """Re-anchor a grafted detail bone's skin-to-bone xform to the ARMOR's own bind
+    (see _reanchor_stb_mat4) and return it as a TransformBuf, or None if degenerate.
+    So the detail bone contributes the SAME world position as its anchor (Thigh/Calf)
+    at bind in the ARMOR's skin space -- preventing the tear that copying the body's
+    absolute STB caused (the in-game explosion)."""
+    m_new = _reanchor_stb_mat4(m_detail_body, m_anchor_body, m_anchor_armor)
+    if m_new is None:
+        return None
+    try:
+        return _pynifly().TransformBuf.from_matrix(type(proto)(m_new.tolist()))
+    except Exception:
+        return None
 
 
 def _body_conform_ref(weight: str):
@@ -4498,6 +4934,84 @@ def _body_conform_ref(weight: str):
         out = None
     _BODY_CONFORM_CACHE[weight] = out
     return out
+
+
+_BODY_JIGGLE_REF_CACHE: dict = {}
+# The body's STB TransformBufs are native references INTO its NifFile; keep the
+# NifFile alive (the read alone would let it be GC'd, leaving the cached STBs
+# dangling -> they set identity -> the grafted bone spikes to the origin).
+_BODY_JIGGLE_NF_KEEPALIVE: list = []
+
+
+def _body_jiggle_ref(weight: str):
+    """({jiggle_bone: skin_to_bone_xform}, body_g2s_is_identity) for the UBE body
+    at `weight`, or None. The jiggle bones (butt/belly/breast) are the body-only
+    bones a fitted garment lacks; their bind transforms let us graft them onto a
+    hugging garment WITHOUT a spike (a bone added with no STB skins to the origin
+    -- the _install_skin / audit-#4 class). Only valid when the body's
+    global-to-skin is identity (then the STB copies straight to an identity-g2s
+    garment); the caller skips the graft otherwise. Cached."""
+    if weight in _BODY_JIGGLE_REF_CACHE:
+        return _BODY_JIGGLE_REF_CACHE[weight]
+    out = None
+    try:
+        p = _find_ube_femalebody(weight) or _find_ube_femalebody("_1")
+        if p is not None and Path(p).is_file():
+            pyn = _pynifly()
+            nf = pyn.NifFile(filepath=str(p))
+            body = max(nf.shapes, key=lambda s: len(s.verts))
+            g2s = _shape_global_to_skin(body)
+            body_ident = (g2s is None) or _g2s_is_identity(g2s)
+            stbs: dict = {}
+            for bn in (body.bone_names or []):
+                if _is_physics_jiggle_scale_bone(bn):
+                    try:
+                        stbs[bn] = body.get_shape_skin_to_bone(bn)
+                    except Exception:
+                        pass
+            _BODY_JIGGLE_NF_KEEPALIVE.append(nf)   # keep native STBs valid
+            out = (stbs, body_ident)
+    except Exception:
+        out = None
+    _BODY_JIGGLE_REF_CACHE[weight] = out
+    return out
+
+
+def _jiggle_transfer_vert(dv: dict, bd_jig: dict, closeness: float,
+                          factor: float):
+    """Pure per-vert jiggle graft (extracted for testability). Give the garment
+    vert a jiggle weight of `factor * closeness * body_weight` on each of the body
+    vert's jiggle bones `bd_jig`, and scale the vert's existing (leg) weight down
+    to fill the remainder so the weights still sum to 1. The grafted jiggle is thus
+    a REAL share of the vert's skinning -- it follows the body's jiggle at a
+    comparable amplitude -- not a token amount renormalization would shrink away.
+    Returns (new_weights, set_of_newly_added_bones), or (None, set()) when nothing
+    new is grafted (no body jiggle here, far vert, or all targets negligible)."""
+    if not bd_jig or closeness <= 0.0:
+        return None, set()
+    targets = {jb: wb * factor * closeness for jb, wb in bd_jig.items()}
+    targets = {jb: t for jb, t in targets.items() if t > 1e-3}
+    added = {jb for jb in targets if jb not in dv}
+    if not added:
+        return None, set()       # only reinforces existing jiggle -> leave it
+    tot = sum(targets.values())
+    if tot >= 0.95:              # never let the graft dominate the vert
+        sc = 0.95 / tot
+        targets = {jb: t * sc for jb, t in targets.items()}
+        tot = sum(targets.values())
+    remain = max(0.0, 1.0 - tot)
+    base_sum = sum(w for b, w in dv.items() if b not in targets)
+    new: dict = {}
+    if base_sum > 0:
+        for b, w in dv.items():
+            if b not in targets:
+                new[b] = w / base_sum * remain
+    for jb, t in targets.items():
+        new[jb] = new.get(jb, 0.0) + t
+    new = {b: w for b, w in new.items() if w > 1e-4}
+    if not new:
+        return None, set()
+    return new, added
 
 
 def _conform_blend_vert(dv: dict, bd: dict, blend: float, delta: float):
@@ -4539,6 +5053,9 @@ def _conform_fitted_to_body(dst_path, biped_slots: int = 0) -> int:
         nf = pyn.NifFile(filepath=str(dst_path))
     except Exception:
         return 0
+    if _nif_has_fx_shape(nf):
+        return 0  # effect-shader/glow NIF: a reload+re-save corrupts its controller -> CTD.
+                  # Leave it exactly as the main conversion wrote it (see _nif_has_fx_shape).
     # Precise SMP-collider exclusion. The _CONFORM_SKIP_NAMES substring gate below
     # only catches name-tagged colliders ("...Col..."); re-weighting an UNTAGGED
     # per-triangle collider would re-introduce the exact over-graft the reskin pass
@@ -4619,6 +5136,695 @@ def _conform_fitted_to_body(dst_path, biped_slots: int = 0) -> int:
     if dirty:
         # A re-save must never silently un-hide an SMP collision proxy (the "blue
         # body double"); re-assert the VirtualBody Hidden bit, as _reauthor does.
+        _hide_virtual_body(nf)
+        try:
+            atomic_nif_save(nf, dst_path)
+        except Exception:
+            return 0
+    return total
+
+
+def _body_leg_detail_ref(weight: str):
+    """({leg_bone: body skin-to-bone TransformBuf}, body_g2s_is_identity) for the UBE
+    body's leg-deformation bones (thigh, calf, AND the detail bones FrontThigh/
+    RearThigh/RearCalf). The detail STBs + the body's thigh/calf STBs let us
+    RE-ANCHOR a grafted detail bone to the armor's own bind (see _derive_anchored_stb)
+    -- the body STBs are inputs to the derivation, never copied raw onto the armor.
+    Cached; the body NifFile is kept alive (shared keepalive) so the native STBs stay
+    valid."""
+    if weight in _BODY_LEG_DETAIL_CACHE:
+        return _BODY_LEG_DETAIL_CACHE[weight]
+    out = None
+    try:
+        p = _find_ube_femalebody(weight) or _find_ube_femalebody("_1")
+        if p is not None and Path(p).is_file():
+            pyn = _pynifly()
+            nf = pyn.NifFile(filepath=str(p))
+            body = max(nf.shapes, key=lambda s: len(s.verts))
+            g2s = _shape_global_to_skin(body)
+            body_ident = (g2s is None) or _g2s_is_identity(g2s)
+            # leg-deform bones (thigh/calf/detail) + the butt- and chest-jiggle graft bones
+            # and their anchors (Pelvis / Spine2) for _match_rigid_leg_bend_to_body's
+            # butt- and chest-jiggle transfers.
+            _want = (set(_LEG_ALL_DEFORM_NAMES) | set(_BUTT_JIGGLE_BONES) | {_BUTT_PELVIS}
+                     | set(_CHEST_JIGGLE_BONES) | {_CHEST_ANCHOR})
+            stbs: dict = {}
+            for bn in (body.bone_names or []):
+                if bn in _want:
+                    try:
+                        stbs[bn] = body.get_shape_skin_to_bone(bn)
+                    except Exception:
+                        pass
+            _BODY_JIGGLE_NF_KEEPALIVE.append(nf)   # keep native STBs valid
+            out = (stbs, body_ident)
+    except Exception:
+        out = None
+    _BODY_LEG_DETAIL_CACHE[weight] = out
+    return out
+
+
+def _leg_deform_match_vert(dv: dict, bd: dict,
+                           mass_min: float = _LEG_BEND_MASS_MIN,
+                           strength: float = 1.0) -> "tuple":
+    """Pure per-vert leg-deformation match (extracted for testability). For each leg the
+    vert `dv` carries (Thigh+Calf mass >= mass_min) whose nearest body vert `bd` is itself
+    a leg vert (its leg-bone mass >= 0.2), move the vert's weight on that leg's deformation
+    bones -- Thigh, Calf, and the detail bones FrontThigh/RearThigh/RearCalf -- TOWARD the
+    body vert's distribution (scaled to the vert's EXISTING leg mass). So the plate bends
+    (Thigh:Calf) AND flexes its front/back (the detail bones) like the body. `strength`
+    in [0,1] BLENDS between the vert's current split (0 = unchanged) and the body's full
+    distribution (1 = full match): used to give the THIGH partial flex without the
+    plate-overshoot a full match causes (the plate is at a larger radius than the body).
+    MUTATES dv; the vert's TOTAL leg mass and every NON-leg bone are untouched. Returns
+    (touched_bones, detail_bones_added): the detail bones the CALLER must give a
+    re-anchored bind transform before they are valid."""
+    touched: "set" = set()
+    added: "set" = set()
+    if strength <= 0.0:
+        return touched, added
+    strength = min(1.0, strength)
+    for leg in _LEG_DEFORM_BONES:
+        thg, clf = leg["thigh"], leg["calf"]
+        all_bones = (thg, clf) + tuple(b for b, _a in leg["detail"])
+        # mass over ALL of this leg's deform bones the vert has (NOT just Thigh+Calf) so a
+        # re-run -- where the vert already carries grafted detail weight -- redistributes
+        # the SAME total and is idempotent (else the blend toward a Thigh+Calf-only `full`
+        # silently drops the existing detail weight = lost mass).
+        mass = sum(dv.get(b, 0.0) for b in all_bones)
+        if mass < mass_min:
+            continue
+        bdist = {b: bd.get(b, 0.0) for b in all_bones if bd.get(b, 0.0) > 1e-3}
+        bmass = sum(bdist.values())
+        if bmass < 0.2:
+            continue  # nearest body vert isn't a leg vert here
+        full = {b: mass * w / bmass for b, w in bdist.items()}     # full body match
+        before = {b: dv.get(b, 0.0) for b in all_bones if dv.get(b, 0.0) > 1e-4}
+        if strength >= 1.0:
+            new = full
+        else:
+            # blend current split -> body match by `strength`; conserves leg mass (both
+            # `before` and `full` sum to `mass`), drops near-zero entries.
+            keys = set(full) | set(before)
+            new = {}
+            for b in keys:
+                w = (1.0 - strength) * before.get(b, 0.0) + strength * full.get(b, 0.0)
+                if w > 1e-4:
+                    new[b] = w
+        if (set(new) == set(before)
+                and all(abs(new[b] - before[b]) <= 1e-3 for b in new)):
+            continue  # already matched
+        for b in all_bones:
+            dv.pop(b, None)
+        for b, w in new.items():
+            dv[b] = w
+        touched |= set(before) | set(new)
+        added |= {b for b, _a in leg["detail"]} & set(new)
+    return touched, added
+
+
+def _butt_match_vert(dv: dict, bd: dict, strength: float = 1.0,
+                     mass_min: float = _LEG_BEND_MASS_MIN,
+                     jiggle: bool = False, jiggle_strength: float = 1.0,
+                     jiggle_cap: float = _BUTT_JIGGLE_CAP) -> "tuple":
+    """Pure per-vert BUTT match. (1) REBALANCE the vert's split across the (L Thigh, R Thigh,
+    Pelvis) bones it ALREADY has toward the body vert `bd`'s split, blended by `strength` --
+    fixes a rigid plate whose outer butt lags the pelvis when moving (no add_bone). (2) If
+    `jiggle`, also GRAFT the body's butt-JIGGLE bones (NPC L/R Butt) at `jiggle_strength` of
+    the body's weight (capped at `jiggle_cap`) so the plate's butt bounces WITH the body
+    instead of being grazed by it -- matched, so the motion stays as subtle as the bare
+    body's. Conserves the combined mass (jiggle weight is drawn from Thigh/Pelvis), leaves
+    every other bone untouched. Returns (touched_bones, jiggle_bones_added): the grafted
+    bones the CALLER must give a Pelvis-anchored bind transform before they are valid."""
+    touched: "set" = set()
+    added: "set" = set()
+    if strength <= 0.0:
+        return touched, added
+    strength = min(1.0, strength)
+    base = [b for b in _BUTT_MATCH_BONES if dv.get(b, 0.0) > 1e-4]
+    if len(base) < 2:
+        return touched, added  # need >=2 of (thigh/pelvis) present to anchor + conserve
+    # Process the jiggle bones the body weights here (to graft) AND any the vert ALREADY
+    # carries (so a re-run redistributes the same total = idempotent, never double-counts).
+    jig = sorted(
+        {b for b in _BUTT_JIGGLE_BONES if dv.get(b, 0.0) > 1e-4}
+        | ({b for b in _BUTT_JIGGLE_BONES if bd.get(b, 0.0) > 1e-3}
+           if jiggle and jiggle_strength > 0.0 else set()))
+    allb = base + jig
+    mass = sum(dv.get(b, 0.0) for b in allb)   # incl existing jiggle -> idempotent
+    if mass < mass_min:
+        return touched, added
+    bdist = {b: bd.get(b, 0.0) for b in allb if bd.get(b, 0.0) > 1e-3}
+    bmass = sum(bdist.values())
+    if bmass < 0.2:
+        return touched, added  # nearest body vert isn't a butt/pelvis vert
+    full = {b: mass * bdist.get(b, 0.0) / bmass for b in allb}    # body match scaled to mass
+    before = {b: dv.get(b, 0.0) for b in allb}
+    new = {}
+    for b in base:
+        new[b] = (1.0 - strength) * before.get(b, 0.0) + strength * full.get(b, 0.0)
+    for b in jig:
+        # grafted from 0; match the body's weight (jiggle_strength), capped subtle
+        new[b] = min(jiggle_cap, min(1.0, jiggle_strength) * full.get(b, 0.0))
+    # Conserve the combined mass: any surplus/deficit (the jiggle drawn in, or rounding)
+    # is taken from / returned to the anchor bones proportionally.
+    deficit = mass - sum(new.values())
+    asum = sum(new.get(b, 0.0) for b in base)
+    if abs(deficit) > 1e-9 and asum > 1e-9:
+        for b in base:
+            new[b] += deficit * new[b] / asum
+    if all(abs(new.get(b, 0.0) - before.get(b, 0.0)) <= 1e-3 for b in allb):
+        return touched, added  # already matched
+    for b in allb:
+        if new.get(b, 0.0) > 1e-4:
+            dv[b] = new[b]
+        else:
+            dv.pop(b, None)
+    touched |= set(allb)
+    added |= {b for b in jig if dv.get(b, 0.0) > 1e-4}
+    return touched, added
+
+
+def _chest_match_vert(dv: dict, bd: dict, strength: float = 1.0,
+                      cap: float = _CHEST_JIGGLE_CAP,
+                      anchor: str = _CHEST_ANCHOR) -> "tuple":
+    """Pure per-vert CHEST/BREAST-jiggle graft. Give a rigid chest plate vert (Spine2-
+    dominant) a SMALL share of the body vert `bd`'s breast-jiggle (L/R Breast01/02/03) so it
+    follows the bounce instead of being poked by it. JIGGLE-ONLY (no rebalance): the grafted
+    weight is drawn from the `anchor` (Spine2), the TOTAL is capped at `cap` (the breast
+    jiggle is large -- the cap keeps the metal mostly rigid), mass is conserved, idempotent.
+    Self-gates to the front (a vert whose nearest body vert has no breast weight grafts
+    nothing). Returns (touched, breast_bones_added) -- the grafts the caller must give a
+    Spine2-anchored bind transform."""
+    touched: "set" = set()
+    added: "set" = set()
+    if strength <= 0.0:
+        return touched, added
+    anc_w = dv.get(anchor, 0.0)
+    present = [b for b in _CHEST_JIGGLE_BONES if dv.get(b, 0.0) > 1e-4]
+    if anc_w <= 1e-4 and not present:
+        return touched, added           # no Spine2 to draw from / nothing to manage
+    body = {b: bd.get(b, 0.0) for b in _CHEST_JIGGLE_BONES if bd.get(b, 0.0) > 1e-3}
+    # managed mass = anchor + any breast the vert ALREADY has (idempotent re-run)
+    mass = anc_w + sum(dv.get(b, 0.0) for b in present)
+    if mass < 1e-4:
+        return touched, added
+    bsum = sum(body.values())
+    want = min(bsum * min(1.0, strength), cap, mass) if bsum > 0.0 else 0.0
+    target = {b: want * body[b] / bsum for b in body} if bsum > 0.0 else {}
+    # Per-bone clamp < the 0.1 rigid-gate threshold (re-run safety); the clamped-off weight
+    # stays on the anchor (total just ends up a little lower), never redistributed away.
+    for b in list(target):
+        if target[b] > _CHEST_JIGGLE_PERBONE:
+            target[b] = _CHEST_JIGGLE_PERBONE
+    new_anchor = mass - sum(target.values())
+    cur = {anchor: anc_w}
+    for b in present:
+        cur[b] = dv.get(b, 0.0)
+    new = {anchor: new_anchor}
+    for b in set(present) | set(target):
+        new[b] = target.get(b, 0.0)
+    if all(abs(new.get(k, 0.0) - cur.get(k, 0.0)) <= 1e-3 for k in set(new) | set(cur)):
+        return touched, added           # already matched
+    dv[anchor] = new_anchor
+    touched.add(anchor)
+    for b in set(present) | set(target):
+        v = target.get(b, 0.0)
+        if v > 1e-4:
+            dv[b] = v
+            if b in body:
+                added.add(b)
+        else:
+            dv.pop(b, None)
+        touched.add(b)
+    return touched, added
+
+
+def _is_fx_overlay_name(name: "str | None") -> bool:
+    """Name heuristic for a glow/decal FX overlay shape ('MaleTorsoGlow', 'TorsoF:FX',
+    'MiscMFx', 'DSkirt Glow'). Belt-and-suspenders for the effect-shader BUFFER check:
+    some armors attach the effect shader to a shape AFTER the conform/jiggle passes run
+    (a sub-shape/finalize path), so the buffer isn't visible at conform time and the graft
+    slips through -> the 'TorsoF:FX' CTD class. The name is stable regardless of WHEN the
+    shader is attached. Skipping a (rare) false positive only forgoes the conform on that
+    shape -- never a crash. Tuned to NOT match legit shapes (ArmF/MiscF/GreaveF end in 'f',
+    not 'fx')."""
+    nm = (name or "").lower()
+    return "glow" in nm or ":fx" in nm or nm.endswith("fx")
+
+
+def _nif_has_fx_shape(nf) -> bool:
+    """True if ANY shape in the NIF is an effect-shader/glow overlay. The post-conversion
+    re-saving passes (conform/jiggle/leg-bend) must NOT touch such a NIF AT ALL -- not even
+    a legit sibling shape -- because a pynifly RELOAD->modify->RE-SAVE round-trips the
+    transplanted BSEffectShaderProperty CONTROLLER chain (_recreate_effect_shader) through
+    pynifly's lossy controller read-back, corrupting it -> CTD on render, EVEN when the glow
+    shape itself is never grafted (the 2nd 'MaleTorsoGlow' crash: a clean-glow output still
+    crashed because the NIF was re-saved for its Greaves/torso). Leave the whole NIF as the
+    main conversion wrote it."""
+    try:
+        for s in nf.shapes:
+            if _shape_has_effect_shader(s) or _is_fx_overlay_name(s.name):
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def _shape_has_effect_shader(shape) -> bool:
+    """True if the shape uses a BSEffectShaderProperty (an additive glow/decal overlay,
+    e.g. the Daedric red glow). These carry a transplanted effect-shader + animation
+    CONTROLLER chain (see _recreate_effect_shader); GRAFTING a bone onto one and re-saving
+    corrupts that controller -> the engine calls a virtual through a dead pointer = CTD
+    (the 'MaleTorsoGlow' BSEffectShaderProperty crash, 2026-06-30). The conform/jiggle passes
+    must NEVER touch a glow overlay -- it isn't body armor and needs no weight conform."""
+    try:
+        sh = getattr(shape, "shader", None)
+        props = getattr(sh, "properties", None) if sh is not None else None
+        if props is None:
+            return False
+        pyn = _pynifly()
+        eff = getattr(pyn.PynBufferTypes, "BSEffectShaderPropertyBufType", None)
+        return eff is not None and getattr(props, "bufType", None) == eff
+    except Exception:
+        return False
+
+
+def _match_rigid_leg_bend_to_body(dst_path, biped_slots: int = 0) -> int:
+    """Conform a RIGID plate's deformation to the UBE body so it deforms/bounces WITH the
+    body instead of staying stiff while the body pokes through. Complements
+    _conform_fitted_to_body (jiggle-gated, SKIPS rigid plate); runs ONLY on the rigid plate
+    it leaves alone. Four per-vert passes, each prox/world-Z gated (see the per-pass
+    helpers), applied where the vert hugs the body:
+      1. KNEE/THIGH (_leg_deform_match_vert): match the vert's leg-bone split to the body's
+         FULL leg distribution -- Thigh:Calf bend + GRAFT the detail bones FrontThigh/
+         RearThigh/RearCalf -- z-tapered FULL at the knee -> partial in the thigh (a full
+         thigh match over-rotates the larger-radius plate = a static bulge).
+      2. BUTT (_butt_match_vert rebalance): Thigh<->Pelvis rebalance among EXISTING bones so
+         the outer butt tracks the pelvis instead of lagging it when moving.
+      3. BUTT-JIGGLE (_butt_match_vert graft): graft the body's small butt-jiggle (NPC L/R
+         Butt), matched + capped, so the rigid butt bounces with the body.
+      4. CHEST (_chest_match_vert): graft the body's breast-jiggle (L/R Breast01/02/03)
+         onto a rigid chest plate, matched but LOW-capped (the breast jiggle is large; keep
+         the metal mostly rigid). Self-gates to the front via the body's breast weight.
+    Every grafted bone's bind transform is RE-ANCHORED to the armor's OWN anchor bone
+    (Thigh/Calf for detail, Pelvis for butt-jiggle, Spine2 for breast) via
+    _derive_anchored_stb -- copying the body's absolute STB exploded the armor in-game.
+    add-all-bones-first then set-STBs (a later add_bone resets earlier STBs, so save/restore
+    every existing bone's STB); a bone we can't anchor folds its weight back into the anchor
+    (no origin spike). Each pass conserves the managed mass and is idempotent. Never moves a
+    vert (rest pose byte-identical). Eligible shapes: rigid (non-jiggling) leg armor
+    (Thigh+Calf) OR rigid chest plate (Spine2). Returns the number of verts matched."""
+    if not MATCH_RIGID_LEG_BEND:
+        return 0
+    if biped_slots & (BIPED_SLOT33_BIT | BIPED_SLOT37_BIT):
+        return 0  # hands/feet -- not the clip class
+    weight = "_0" if str(dst_path).lower().endswith("_0.nif") else "_1"
+    ref = _body_conform_ref(weight)
+    dref = _body_leg_detail_ref(weight)
+    if ref is None or dref is None:
+        return 0
+    _Vb, body_w, _bones, tree = ref
+    body_stbs, _body_ident = dref
+    # Body leg-bone STB matrices (anchor + detail) -- inputs to the re-anchoring.
+    body_mat: dict = {}
+    body_proto = None
+    for bn, tb in body_stbs.items():
+        m, proto = _stb_to_mat4(tb)
+        if m is not None:
+            body_mat[bn] = m
+            if body_proto is None:
+                body_proto = proto
+    try:
+        pyn = _pynifly()
+        nf = pyn.NifFile(filepath=str(dst_path))
+    except Exception:
+        return 0
+    if _nif_has_fx_shape(nf):
+        return 0  # effect-shader/glow NIF: a reload+re-save corrupts its controller -> CTD.
+                  # Leave it exactly as the main conversion wrote it (see _nif_has_fx_shape).
+    collider_names = _hdt_collider_shape_names(dst_path, nif=nf)
+    # Bones grafted onto the plate + the EXISTING bone each re-anchors to: leg detail bones
+    # anchor to Thigh/Calf; the butt-jiggle bones to the Pelvis; the breast bones to Spine2.
+    # graft_anchor also drives the fold-back of any bone we can't safely anchor.
+    graft_anchor = {b: anc for leg in _LEG_DEFORM_BONES for b, anc in leg["detail"]}
+    _do_jiggle = _BUTT_MATCH and _BUTT_JIGGLE and _BUTT_JIGGLE_STRENGTH > 0.0
+    if _do_jiggle:
+        for jb in _BUTT_JIGGLE_BONES:
+            graft_anchor[jb] = _BUTT_PELVIS
+    _do_chest = _CHEST_JIGGLE and _CHEST_JIGGLE_STRENGTH > 0.0
+    if _do_chest:
+        for cb in _CHEST_JIGGLE_BONES:
+            graft_anchor[cb] = _CHEST_ANCHOR
+    _graftable = (set(_LEG_DETAIL_BONE_NAMES)
+                  | (set(_BUTT_JIGGLE_BONES) if _do_jiggle else set())
+                  | (set(_CHEST_JIGGLE_BONES) if _do_chest else set()))
+    total = 0
+    dirty = False
+    for s in nf.shapes:
+        nm = (s.name or "").lower()
+        if s.name in collider_names or any(k in nm for k in _CONFORM_SKIP_NAMES):
+            continue
+        if _shape_has_effect_shader(s) or _is_fx_overlay_name(s.name):
+            continue  # glow/decal overlay -- grafting+re-saving corrupts its effect-shader
+                      # controller -> CTD (the Daedric 'MaleTorsoGlow' crash). Not body armor.
+                      # Name check catches shapes whose shader is attached AFTER this pass
+                      # (the 'TorsoF:FX' timing hole the buffer check alone missed).
+        bw = s.bone_weights or {}
+        # Eligible if it's LEG armor (carries Thigh+Calf -> knee/thigh/butt passes) OR a rigid
+        # CHEST plate (carries the Spine2 chest anchor -> breast-jiggle pass). The rigid gate
+        # below still excludes anything that already jiggles.
+        has_leg = any(leg["thigh"] in bw and leg["calf"] in bw for leg in _LEG_DEFORM_BONES)
+        has_chest = _do_chest and (_CHEST_ANCHOR in bw)
+        if not (has_leg or has_chest):
+            continue
+        # ONLY rigid plate the jiggle-gated conform left alone.
+        jig = 0
+        for b, pairs in bw.items():
+            if _is_physics_jiggle_scale_bone(b):
+                jig += sum(1 for _vi, w in pairs if float(w) > 0.1)
+                if jig >= _CONFORM_MIN_JIGGLE_VERTS:
+                    break
+        if jig >= _CONFORM_MIN_JIGGLE_VERTS:
+            continue
+        existing = set(s.bone_names or [])
+        if len(existing | _graftable) > SKIN_PARTITION_BONE_CAP:
+            continue  # bone-cap headroom (realistic plate is far under)
+        g2s = _shape_global_to_skin(s)
+        # Derive each detail bone's bind transform RE-ANCHORED to the armor's OWN
+        # current Thigh/Calf STB (read here, BEFORE any add_bone). Every leg armor's
+        # verts are positioned for its existing leg-bone STB (the body's value), so
+        # the detail bone must be consistent with THAT, not the body's absolute on a
+        # mismatched bind nor identity. STB = STB_detail_body @ inv(STB_anchor_body) @
+        # STB_anchor_armor -> detail-relative-to-anchor matches the body's, so the
+        # detail bone contributes the SAME as its anchor at bind. The existing anchor
+        # STB itself is preserved via the save/restore below (add_bone zeroes it).
+        graft_stb: dict = {}
+        for b, anc in graft_anchor.items():
+            if (anc not in existing or b in existing or b not in body_mat
+                    or anc not in body_mat or body_proto is None):
+                continue
+            ma, _p = _stb_to_mat4(s.get_shape_skin_to_bone(anc))
+            if ma is None:
+                continue
+            stb = _derive_anchored_stb(body_mat[b], body_mat[anc], ma, body_proto)
+            if stb is not None:
+                graft_stb[b] = stb
+        try:
+            V = np.asarray(s.verts, np.float64)
+        except Exception:
+            continue
+        n = len(V)
+        if n == 0:
+            continue
+        vw = [dict() for _ in range(n)]
+        for b, pairs in bw.items():
+            for vi, w in pairs:
+                iv = int(vi)
+                if 0 <= iv < n:
+                    vw[iv][b] = vw[iv].get(b, 0.0) + float(w)
+        Vw = _verts_skin_to_world(V, g2s)
+        d, idx = tree.query(Vw)
+        touched: "set" = set()
+        need: "set" = set()
+        conf = 0
+        _max_prox = max(_LEG_BEND_PROX, _BUTT_PROX, _CHEST_PROX)
+        for i in range(n):
+            di = d[i]
+            if di > _max_prox:
+                continue  # not hugging the body by any pass -> leave it
+            zi = Vw[i, 2]
+            # Three independent passes, each with its OWN prox/z-gate (the leg pass stays at
+            # _LEG_BEND_PROX -- correct in-game; butt/chest reach further):
+            #  - LEG: z-tapered Thigh:Calf bend + detail flex (full knee -> partial thigh).
+            #  - BUTT: Thigh<->Pelvis rebalance + matched butt-jiggle graft.
+            #  - CHEST: matched, capped breast-jiggle graft (self-gates to the front).
+            sgi = _leg_bend_strength(zi) if di <= _LEG_BEND_PROX else 0.0
+            bgi = (_butt_match_strength(zi) if (_BUTT_MATCH and di <= _BUTT_PROX) else 0.0)
+            cgi = (_chest_match_strength(zi) if (_do_chest and di <= _CHEST_PROX) else 0.0)
+            if sgi <= 0.0 and bgi <= 0.0 and cgi <= 0.0:
+                continue
+            t: "set" = set()
+            if sgi > 0.0:
+                t1, added = _leg_deform_match_vert(vw[i], body_w[idx[i]], strength=sgi)
+                t |= t1
+                need |= added
+            if bgi > 0.0:
+                t2, jadded = _butt_match_vert(
+                    vw[i], body_w[idx[i]], strength=bgi,
+                    jiggle=_do_jiggle, jiggle_strength=_BUTT_JIGGLE_STRENGTH)
+                t |= t2
+                need |= jadded
+            if cgi > 0.0:
+                t3, cadded = _chest_match_vert(vw[i], body_w[idx[i]], strength=cgi)
+                t |= t3
+                need |= cadded
+            if t:
+                touched |= t
+                conf += 1
+        if not conf:
+            continue
+        # Only graft a detail bone that will actually EMIT >=1 weight above the
+        # setShapeWeights 1e-4 threshold: an add_bone'd bone written an EMPTY weight
+        # list is a zero-weight bone left in the list but absent from the regenerated
+        # skin-partition palette -> per-vert index runs past the palette -> equip CTD
+        # (#zeroweight-bone-desync; same guard _install_skin's `surviving` applies).
+        # A detail bone that emits nothing falls through to the fold below (onto its
+        # anchor), so its tiny weight isn't lost. (Review finding #2.)
+        to_add = [b for b in need if b in graft_stb and b not in existing
+                  and any(vw[i].get(b, 0.0) > 1e-4 for i in range(n))]
+        # CRITICAL: add_bone (pynifly) RESETS every existing bone's skin-to-bone xform
+        # to identity, which would skin the armor's OWN Thigh/Calf-weighted verts (most
+        # of the leg) to the origin -> the whole plate explodes (the in-game spike that
+        # broke the first graft). SAVE the existing STBs first and RESTORE them at the
+        # very end, after add_bone AND setShapeWeights (either may reset them).
+        saved_stb: dict = {}
+        if to_add:
+            for eb in existing:
+                try:
+                    saved_stb[eb] = s.get_shape_skin_to_bone(eb)
+                except Exception:
+                    saved_stb[eb] = None
+            # get_shape_skin_to_bone returns None (not raises) when the xform isn't
+            # found. If ANY existing bone's STB can't be read, we can't restore it
+            # after add_bone zeroes it -> it would be left at identity = origin spike.
+            # Bail the graft for this shape (it gets the safe knee-only fold below)
+            # rather than ship an identity-reset real bone. (Review finding #1.)
+            if any(st is None for st in saved_stb.values()):
+                to_add = []
+                saved_stb = {}
+            else:
+                for b in to_add:
+                    try:
+                        s.add_bone(b)
+                    except Exception:
+                        pass
+        unsafe = need - set(existing) - set(to_add)
+        if unsafe:
+            # Detail bone we couldn't anchor: fold its weight back into the anchor the
+            # plate DOES have (never weight an unbindable bone -> origin spike).
+            for i in range(n):
+                hit = [b for b in unsafe if b in vw[i]]
+                if not hit:
+                    continue
+                for b in hit:
+                    anc = graft_anchor.get(b)
+                    w = vw[i].pop(b)
+                    if anc:
+                        vw[i][anc] = vw[i].get(anc, 0.0) + w
+                        touched.add(anc)
+            touched -= unsafe
+        dirty = True
+        total += conf
+        for bn in touched:
+            s.setShapeWeights(bn, [(i, vw[i][bn]) for i in range(n)
+                                   if bn in vw[i] and vw[i][bn] > 1e-4])
+        # STBs LAST: restore the existing bones' originals (add_bone/setShapeWeights
+        # zeroed them) + set the grafted detail bones'. Nothing after this resets them.
+        for eb, st in saved_stb.items():
+            try:
+                s.set_skin_to_bone_xform(eb, st)
+            except Exception:
+                pass
+        for b in to_add:
+            try:
+                s.set_skin_to_bone_xform(b, graft_stb[b])
+            except Exception:
+                pass
+    if dirty:
+        # A re-save must never silently un-hide an SMP collision proxy.
+        _hide_virtual_body(nf)
+        try:
+            atomic_nif_save(nf, dst_path)
+        except Exception:
+            return 0
+    return total
+
+
+def _transfer_body_jiggle_to_fitted(dst_path, biped_slots: int = 0) -> int:
+    """Graft the UBE body's jiggle (butt/belly/breast) weight onto a fitted
+    garment that HUGS a jiggling body region but carries NONE of its own, so the
+    garment follows the body's runtime jiggle instead of staying rigid and letting
+    the body poke through (the close-to-body "clip when moving" class). Returns the
+    number of verts grafted (0 = nothing touched).
+
+    Selectivity is anatomical, not by name: a vert only gets weight if the body
+    vert under it actually jiggles, so leg cloth over the butt/upper-thigh is
+    grafted while a shin greave / arm guard (over a non-jiggling region) is left
+    alone. Armor-only -- the body is never modified. Spike-proof: the grafted bone
+    gets the body's own skin-to-bone transform, valid because both carry an
+    identity global-to-skin (the graft is skipped otherwise, see _body_jiggle_ref).
+    Scoped to leg-dominant garments for now (torso bras/corsets deferred -- breast
+    jiggle on rigid cups is visually riskier; revisit after in-game)."""
+    if not TRANSFER_BODY_JIGGLE:
+        return 0
+    if biped_slots & (BIPED_SLOT33_BIT | BIPED_SLOT37_BIT):
+        return 0  # hands/feet -- not the clip class
+    weight = "_0" if str(dst_path).lower().endswith("_0.nif") else "_1"
+    ref = _body_conform_ref(weight)
+    jref = _body_jiggle_ref(weight)
+    if ref is None or jref is None:
+        return 0
+    _Vb, body_w, _bb, tree = ref
+    jstbs, body_ident = jref
+    if not jstbs or not body_ident:
+        return 0  # no jiggle bones, or skin spaces don't align -> skip (no spike)
+    try:
+        pyn = _pynifly()
+        nf = pyn.NifFile(filepath=str(dst_path))
+    except Exception:
+        return 0
+    if _nif_has_fx_shape(nf):
+        return 0  # effect-shader/glow NIF: a reload+re-save corrupts its controller -> CTD.
+                  # Leave it exactly as the main conversion wrote it (see _nif_has_fx_shape).
+    collider_names = _hdt_collider_shape_names(dst_path, nif=nf)
+    total = 0
+    dirty = False
+    for s in nf.shapes:
+        nm = (s.name or "").lower()
+        if s.name in collider_names or any(k in nm for k in _CONFORM_SKIP_NAMES):
+            continue
+        if _shape_has_effect_shader(s) or _is_fx_overlay_name(s.name):
+            continue  # glow/decal overlay -- never graft jiggle onto an effect-shader shape
+                      # (re-save corrupts its controller -> CTD; see _shape_has_effect_shader
+                      # / _is_fx_overlay_name for the post-conform-attach timing hole)
+        # Direct STB copy needs the garment's g2s to match the body's (identity).
+        g2s = _shape_global_to_skin(s)
+        if not (g2s is None or _g2s_is_identity(g2s)):
+            continue
+        existing = set(s.bone_names or [])
+        # Bone-cap headroom: the partition split already ran, so never grow a shape
+        # past the per-shape palette cap. Realistic counts are far under (a pant
+        # ~15 bones + <=9 jiggle); this only guards the pathological edge.
+        if len(existing) + len(jstbs) > SKIN_PARTITION_BONE_CAP:
+            continue
+        bw = s.bone_weights or {}
+        # Only shapes that LACK jiggle (inverse of the conform gate -- a shape that
+        # already jiggles is handled by _conform_fitted_to_body).
+        jig = 0
+        for b, pairs in bw.items():
+            if _is_physics_jiggle_scale_bone(b):
+                jig += sum(1 for _vi, w in pairs if float(w) > 0.1)
+                if jig >= _CONFORM_MIN_JIGGLE_VERTS:
+                    break
+        if jig >= _CONFORM_MIN_JIGGLE_VERTS:
+            continue
+        try:
+            V = np.asarray(s.verts, np.float64)
+        except Exception:
+            continue
+        n = len(V)
+        if n == 0:
+            continue
+        vw = [dict() for _ in range(n)]
+        for b, pairs in bw.items():
+            for vi, w in pairs:
+                iv = int(vi)
+                if 0 <= iv < n:
+                    vw[iv][b] = vw[iv].get(b, 0.0) + float(w)
+        # not a physics-chain garment (custom non-skeleton bones -> SMP cloth)
+        chain_frac = sum(1 for d in vw
+                         if any(w > 0.1 and not _is_skeleton_bone(b)
+                                for b, w in d.items())) / n
+        if chain_frac > _CONFORM_CHAIN_MAX:
+            continue
+        Vw = _verts_skin_to_world(V, g2s)
+        d, idx = tree.query(Vw)
+        # HUGS the body (a loose skirt sits away -> excluded)
+        if float((d < _CONFORM_FIT_PROX).mean()) < _CONFORM_FIT_FRAC:
+            continue
+        # leg-dominant: the measured close-to-body clip population is leg cloth.
+        leg_dom = sum(1 for dd in vw
+                      if dd and _is_leg_rigid_bone(max(dd, key=dd.get))) / n
+        if leg_dom <= 0.5:
+            continue
+        new_bones: dict = {}
+        graft = 0
+        for i in range(n):
+            if d[i] > _CONFORM_VERT_PROX:
+                continue
+            dvi = vw[i]
+            if not dvi:
+                continue
+            if any(w > 0.1 and not _is_skeleton_bone(b) for b, w in dvi.items()):
+                continue  # custom-chain vert -> leave it (partition safety)
+            bd = body_w[idx[i]]
+            bd_jig = {b: w for b, w in bd.items()
+                      if _is_physics_jiggle_scale_bone(b) and w > 1e-3
+                      and b in jstbs}
+            if not bd_jig:
+                continue  # body doesn't jiggle under this vert -> nothing to follow
+            closeness = max(0.0, 1.0 - d[i] / _CONFORM_VERT_PROX)
+            new, added = _jiggle_transfer_vert(
+                dvi, bd_jig, closeness, _JIGGLE_TRANSFER_FACTOR)
+            if new is None:
+                continue
+            for jb in added:
+                if jb not in existing:
+                    new_bones[jb] = jstbs.get(jb)
+            vw[i] = new
+            graft += 1
+        if not graft or not new_bones:
+            continue
+        # Graft each new jiggle bone with the body's bind transform. CRITICAL:
+        # add ALL bones FIRST, THEN set the STBs -- a later add_bone RESETS the
+        # STB of an earlier-added bone (matches _install_skin's add-all-first
+        # order). A bone we can't give a valid STB would skin to the ORIGIN
+        # (spike, audit #4), so DROP its grafted weight rather than ship the spike.
+        addable = [(jb, stb) for jb, stb in new_bones.items() if stb is not None]
+        for jb, _stb in addable:
+            try:
+                s.add_bone(jb)
+            except Exception:
+                pass
+        safe: set = set()
+        for jb, stb in addable:
+            try:
+                s.set_skin_to_bone_xform(jb, stb)
+                safe.add(jb)
+            except Exception:
+                pass
+        unsafe = set(new_bones) - safe
+        if unsafe:
+            for i in range(n):
+                if any(jb in vw[i] for jb in unsafe):
+                    for jb in unsafe:
+                        vw[i].pop(jb, None)
+                    ss = sum(vw[i].values())
+                    if ss > 0:
+                        vw[i] = {b: w / ss for b, w in vw[i].items()}
+        if not safe:
+            continue   # nothing safely grafted -> leave this shape untouched
+        touched: set = set()
+        for i in range(n):
+            touched |= set(vw[i])
+        for bn in touched:
+            s.setShapeWeights(bn, [(i, vw[i][bn]) for i in range(n)
+                                   if bn in vw[i] and vw[i][bn] > 1e-4])
+        dirty = True
+        total += graft
+    if dirty:
+        # Re-assert the VirtualBody Hidden bit (a re-save can drop it -> blue body
+        # double), mirroring _conform_fitted_to_body / _reauthor.
         _hide_virtual_body(nf)
         try:
             atomic_nif_save(nf, dst_path)
@@ -6223,12 +7429,19 @@ def _cap_skin_bone_count(bone_names, xforms_map, weights_map,
     return new_names, new_x, new_w
 
 
-def _cached_scale_bone_data(body_shape, leg_region_only: bool):
+def _cached_scale_bone_data(body_shape, leg_region_only: bool,
+                            exclude_substrings: tuple[str, ...] = ()):
     """Build (and cache) the per-scale-bone KD-trees from the BODY. Keyed by the
-    body-shape identity + leg_region_only (the only inputs). Armor-independent,
-    read-only after build, so safe to share across every shape/NIF in a worker.
-    Returns (scale_bones, {bone: (bone_verts, cKDTree, weights)})."""
-    key = (id(body_shape), bool(leg_region_only))
+    body-shape identity + leg_region_only + exclude_substrings (the only inputs).
+    Armor-independent, read-only after build, so safe to share across every
+    shape/NIF in a worker.
+    Returns (scale_bones, {bone: (bone_verts, cKDTree, weights)}).
+
+    `exclude_substrings`: lowercase bone-name substrings to drop entirely (e.g.
+    ("frontthigh","rearthigh") for calf/foot boots, so the fade-inducing far-thigh
+    scale bones are never grafted -- see _boot_far_thigh_scale_exclusions)."""
+    excl = tuple(sorted(exclude_substrings or ()))
+    key = (id(body_shape), bool(leg_region_only), excl)
     cached = _SCALE_BONE_DATA_CACHE.get(key)
     if cached is not None:
         return cached
@@ -6241,6 +7454,9 @@ def _cached_scale_bone_data(body_shape, leg_region_only: bool):
         # calf follows RearCalf); torso bones would be bind-pose cross-talk.
         scale_bones = [b for b in scale_bones
                        if ("thigh" in b.lower() or "calf" in b.lower())]
+    if excl:
+        scale_bones = [b for b in scale_bones
+                       if not any(sub in b.lower() for sub in excl)]
     body_bw = body_shape.bone_weights or {}
     bone_data: dict = {}
     for bn in scale_bones:
@@ -6270,6 +7486,7 @@ def add_scale_bone_weights(
     exclude_vert_mask: "np.ndarray | None" = None,
     leg_region_only: bool = False,
     torso_parity: bool = False,
+    exclude_scale_bone_substrings: tuple[str, ...] = (),
 ) -> tuple[list[str], dict, dict[str, list[tuple[int, float]]]]:
     """Add 3BA scale-bone (Breast / Butt / Belly / Thigh / etc.) weights
     to an armor shape so all of its verts respond to body sliders via
@@ -6296,6 +7513,11 @@ def add_scale_bone_weights(
       True, NO scale-bone weight is added to that vert and its existing
       skinning is left untouched. Used for hand/foot shapes to keep body
       morphs off finger/toe verts (see `_extremity_vert_mask`).
+
+    exclude_scale_bone_substrings: lowercase bone-name substrings whose scale
+      bones are dropped entirely before the graft (never added to any vert).
+      Used for calf/foot boots to drop the far-thigh scale bones that fade the
+      boot at distance while keeping RearCalf (see _boot_far_thigh_scale_exclusions).
     """
     # Auto-detect rigid attachments (dagger, scabbard, pauldron, pouch
     # etc. — single bone holds 85%+ of total weight) and use the low
@@ -6311,7 +7533,8 @@ def add_scale_bone_weights(
 
     # Per-bone KD-trees (cached): per-bone search ensures propagation from the
     # actual nearest bone-weighted vert, not from nearby verts that lack the bone.
-    scale_bones, bone_data = _cached_scale_bone_data(body_shape, leg_region_only)
+    scale_bones, bone_data = _cached_scale_bone_data(
+        body_shape, leg_region_only, exclude_scale_bone_substrings)
     if not bone_data:
         return bone_names, xforms_by_bone, weights_by_bone
 
@@ -6881,6 +8104,117 @@ def _physics_chain_nowarp_blend(src_shape, source_verts, warped_verts):
     return sv + (wv - sv) * (1.0 - frac)[:, None]
 
 
+# Effect-shader glow ANIMATION (the controller chain). DEFAULT ON. (An earlier theory
+# blamed the controller for the 'MaleTorsoGlow' CTD and made this static -- WRONG: the
+# controller round-trips fine, and the real cause was thigh SCALE bones on the glow's skin,
+# fixed by _drop_scale_bones_from_skin below. Animation is safe.) CBBE2UBE_NO_GLOW_ANIM=1
+# forces a static glow (colour but no texture-scroll) as an escape hatch.
+_EFFECT_GLOW_ANIM = (os.environ.get("CBBE2UBE_NO_GLOW_ANIM", "").strip().lower()
+                     not in ("1", "true", "yes", "on"))
+
+# Effect-shader glow overlays (Daedric red glow etc.) must keep their SOURCE skin.
+# The vanilla decal is skinned to skeleton bones and renders fine; the UBE
+# body-blend RESKIN re-skins it to body bones it never had (e.g. NPC L/R Calf +
+# UpperArm on the Daedric torso glow) and it CTDs on equip (`call [rax+0x28]` on
+# the BSEffectShaderProperty) EVEN after scale bones are dropped -- dropping scale
+# bones was necessary but NOT sufficient (the intent was always "skin to skeleton
+# bones only, MATCHING THE SOURCE", but the drop-scale-bones patch left the
+# reskin's other body bones in place, so the output had 17 bones vs the source's
+# 15). So a glow shape IGNORES its override_skin and copies the source skin
+# verbatim (still minus any scale bones), matching the proven-good source. DEFAULT
+# ON; CBBE2UBE_EFFECT_RESKIN=1 reverts to the reskin-then-drop-scale behaviour.
+EFFECT_SHADER_SOURCE_SKIN = (
+    os.environ.get("CBBE2UBE_EFFECT_RESKIN", "").strip().lower()
+    not in ("1", "true", "yes", "on"))
+
+
+def _drop_scale_bones_from_skin(bone_names, xforms_map, weights_map):
+    """Remove SCALE bones (FrontThigh/RearThigh/RearCalf/breast/butt/belly deform bones)
+    from a skin, folding each vertex's scale-bone weight into that vertex's LARGEST kept
+    (skeleton) bone so the total per-vertex weight is preserved and NO bone goes zero-weight.
+
+    WHY (the 'MaleTorsoGlow' CTD, 2026-06-30): the UBE re-skin transfers the body's thigh
+    SCALE bones onto an effect-shader GLOW OVERLAY that hugs the hip/upper-thigh; a scale
+    bone on a skinned effect-shader shape CTDs the engine on render (`call [rax+0x28]`,
+    garbage ptr). PROVEN by swap: the source overlay (skeleton bones only, NO scale bones)
+    renders fine; the converted one (+ L/R FrontThigh/RearThigh) crashes. So for effect-
+    shader shapes we skin to skeleton bones only, matching the source. Returns the filtered
+    (bone_names, xforms_map, weights_map)."""
+    scale = [b for b in bone_names if _is_scale_bone(b)]
+    keep = [b for b in bone_names if b not in scale]
+    if not scale or not keep:
+        return bone_names, xforms_map, weights_map
+    vw: dict = {}   # vi -> {bone: weight} over KEPT bones
+    for b in keep:
+        for vi, w in weights_map.get(b, []):
+            vw.setdefault(int(vi), {})[b] = vw.get(int(vi), {}).get(b, 0.0) + float(w)
+    for b in scale:                        # fold each scale bone into the vert's biggest kept bone
+        for vi, w in weights_map.get(b, []):
+            d = vw.setdefault(int(vi), {})
+            tgt = max(d, key=d.get) if d else keep[0]
+            d[tgt] = d.get(tgt, 0.0) + float(w)
+    new_w: dict = {}
+    for vi, d in vw.items():
+        for b, w in d.items():
+            if w > 1e-6:
+                new_w.setdefault(b, []).append((vi, w))
+    new_w = {b: sorted(lst) for b, lst in new_w.items()}
+    new_x = {b: xforms_map[b] for b in keep if b in xforms_map}
+    return keep, new_x, new_w
+
+
+def _transplant_effect_controller(src_shader, dst_nif, pyn):
+    """Recreate a BSEffectShaderProperty's animation controller chain
+    (controller -> interpolator -> NiFloatData + keys) in `dst_nif`, so a transplanted
+    glow keeps its animation -- e.g. the Daedric glow's V-offset texture scroll.
+
+    Returns the NEW controller's id (to store in the effect shader's controllerID), or
+    NODEID_NONE when the source shader has no controller, the chain is an unsupported
+    shape, or anything fails (a static glow -- still the right colour, just not moving).
+
+    pynifly can't MODIFY shader/controller blocks after creation (setBlock of those
+    buftypes is NYI), so the chain is built bottom-up and the controller's targetID is
+    set to the PREDICTED effect-shader id. NifFile.save() remaps every block-id ref, so
+    in-memory ids resolve on disk. The CALLER must create the effect shader IMMEDIATELY
+    after this returns (with no intervening add_block), so its id == ctrl.id + 1."""
+    none_id = pyn.NODEID_NONE
+    try:
+        if getattr(src_shader.properties, "controllerID", none_id) == none_id:
+            return none_id
+        src_ctrl = src_shader.controller
+        if src_ctrl is None:
+            return none_id
+        src_interp = src_ctrl.interpolator
+        if src_interp is None:
+            return none_id
+        src_data = src_shader.file.read_node(id=src_interp.properties.dataID)
+        if src_data is None:
+            return none_id
+        src_keys = src_data.keys  # raises on an unsupported key type -> caught below
+
+        def _clone(buf):
+            return type(buf).from_buffer_copy(buf)
+
+        # data + keyframes
+        data = dst_nif.add_block(None, _clone(src_data.properties), parent=None)
+        for k in src_keys:
+            data.keys_add(k)
+        # interpolator -> data
+        interp_buf = _clone(src_interp.properties)
+        interp_buf.dataID = data.id
+        interp = dst_nif.add_block(None, interp_buf, parent=None)
+        # controller -> interpolator; target = the effect shader the caller makes next.
+        # Sequential ids: this controller = interp.id + 1, that shader = interp.id + 2.
+        ctrl_buf = _clone(src_ctrl.properties)
+        ctrl_buf.interpolatorID = interp.id
+        ctrl_buf.nextControllerID = none_id   # only the first controller is transplanted
+        ctrl_buf.targetID = interp.id + 2
+        ctrl = dst_nif.add_block(None, ctrl_buf, parent=None)
+        return ctrl.id
+    except Exception:
+        return none_id
+
+
 def _copy_shape(src_shape, dst_nif, parent=None, override_verts=None,
                 override_skin=None, skip_alpha=False, override_tris=None):
     """Deep-copy a single shape from src NIF to dst NIF via pynifly.
@@ -6965,19 +8299,41 @@ def _copy_shape(src_shape, dst_nif, parent=None, override_verts=None,
         props=src_shape.properties,
         parent=parent,
     )
+    # Preserve per-vertex colors. createShapeFromData makes a COLORLESS shape, but a
+    # shape may carry RGBA (baked AO/tint, or -- with SLSF2_Vertex_Colors -- an ALPHA
+    # GRADIENT that does the actual work). The Daedric glow's fade is exactly this: RGB
+    # white, vertex ALPHA 0..1. Drop it and the overlay renders SOLID (opaque) instead
+    # of faded. Vert count/order is preserved (override_verts is 1:1), so colors map
+    # straight across.
+    try:
+        _src_colors = src_shape.colors
+        if _src_colors is not None and len(_src_colors) == len(use_verts):
+            new_shape.set_colors(list(_src_colors))
+    except Exception:
+        pass
+    # An authored OFFSET global_to_skin is COMPENSATED by the source NiAVObject
+    # transform (g2s t=-120.3 + transform t=+120.3 = net identity); the engine uses
+    # BOTH to place the bounding/cull sphere, and _install_skin PRESERVES the offset
+    # g2s. Zeroing the transform (even on the fit path, where the fit verts are
+    # lowered BACK to skin space) leaves g2s offset + transform identity -> the cull
+    # bound lands ~g2s-offset below the geometry -> frustum-culled / invisible at
+    # angles (the furexarot SMP elven cuirass). The engine IGNORES a skinned shape's
+    # transform for RENDER, so keeping it can't fling the mesh -- it only restores the
+    # matched pair the cull bound needs. So skip the reset for an offset-g2s skinned
+    # shape; a SCALE/ROTATION bake (_bake_T) still wins (those must land in verts).
+    _g2s = _shape_global_to_skin(src_shape) if src_shape.has_global_to_skin else None
+    _g2s_offset = _g2s is not None and not _g2s_is_identity(_g2s)
     if (_bake_T is not None or _bake_trans is not None
-            or ((override_verts is not None or src_shape.has_global_to_skin)
-                and src_shape.bone_names)):
+            or (override_verts is not None and src_shape.bone_names
+                and not _g2s_offset)):
         # The source props carried a (possibly non-identity) NiAVObject transform.
-        # For SKINNED shapes the engine ignores that transform and the verts are
-        # already in final space -- baked above, OR body-positioned via
-        # override_verts (the fit path), OR mapped via global_to_skin -- so force
-        # identity, else a leftover scale/translation flings the mesh off-body /
-        # collapses it (project_scale_bake_vigilant). GATED on src_shape.bone_names:
-        # a NON-skinned shape's transform IS engine-honored, so it must NOT be
-        # zeroed on the override path (would misposition it). The bake path
-        # (_bake_T/_bake_trans) still resets unconditionally -- it baked the
-        # transform into the verts first, so identity is correct there for any shape.
+        # Force identity ONLY when the verts are already in final space WITHOUT it:
+        # baked above, OR body-positioned via override_verts (the fit path) -- else a
+        # leftover scale/translation flings the mesh off-body (project_scale_bake_
+        # vigilant). GATED on src_shape.bone_names: a NON-skinned transform IS
+        # engine-honored, so it must NOT be zeroed on the override path. GATED on
+        # not _g2s_offset: an offset-g2s shape's transform is the cull-bound match
+        # (above) -- keep it.
         try:
             _idt = _pynifly().TransformBuf()
             _idt.set_identity()
@@ -7003,31 +8359,86 @@ def _copy_shape(src_shape, dst_nif, parent=None, override_verts=None,
         "finalExposureMin", "finalExposureMax",
         "envMapScale", "parallaxEnvmapStrength",
     )
+    _is_effect_shape = False
     try:
         src_shader = src_shape.shader
         if src_shader is not None and src_shader.properties is not None:
-            new_shader = new_shape.shader
             src_props = src_shader.properties
-            dst_props = new_shader.properties  # access lazy-loads
-            for fld in _SHADER_VALUE_FIELDS:
-                if hasattr(src_props, fld) and hasattr(dst_props, fld):
+            _pyn = _pynifly()
+            _effect_buftype = getattr(
+                _pyn.PynBufferTypes, "BSEffectShaderPropertyBufType", None)
+            if (_effect_buftype is not None
+                    and getattr(src_props, "bufType", None) == _effect_buftype):
+                _is_effect_shape = True   # -> skin to skeleton bones only (see below)
+                # Source uses a BSEffectShaderProperty -- an additive glow/decal shader
+                # (e.g. Daedric's red glow: emissive + greyscale-to-colour gradient).
+                # createShapeFromData only ever makes a BSLightingShaderProperty, which
+                # cannot represent it: the emissive is zeroed and the greyscale texture
+                # dropped, so it renders the bare (pale) overlay texture = WHITE, no
+                # glow. pynifly can't MODIFY a lighting shader into an effect shader
+                # (setBlock of the effect buftype is NYI) but it CAN CREATE one via
+                # add_block -- so transplant the source effect buffer onto the new
+                # shape and re-point the shape's shader reference at it.
+                try:
+                    eff_buf = type(src_props).from_buffer_copy(src_props)  # clone (don't mutate src)
+                except Exception:
+                    eff_buf = src_props
+                # Transplant the glow's animation controller chain (if any) so the glow
+                # keeps MOVING -- e.g. the Daedric glow's V-offset texture scroll. Built
+                # BEFORE the shader so the shader can reference it at creation time (the
+                # shader/controller block buffers can't be modified afterward -- setBlock
+                # of those buftypes is NYI in nifly). Returns the new controller id, or
+                # NODEID_NONE (a static glow -- still red, just not pulsing) when there's
+                # no controller or the transplant fails. The buffer's other block-id
+                # fields point at SOURCE blocks: textureSetID is 0 for effect shaders
+                # (their textures are inline, re-applied by the loop below).
+                # Build a STATIC effect shader (no controller) by default: the controller
+                # chain doesn't survive the HDT inject's reload+re-save -> CTD. See
+                # _EFFECT_GLOW_ANIM. CBBE2UBE_GLOW_ANIM=1 restores the animation.
+                try:
+                    if _EFFECT_GLOW_ANIM:
+                        eff_buf.controllerID = _transplant_effect_controller(
+                            src_shader, dst_nif, _pyn)
+                    else:
+                        eff_buf.controllerID = _pyn.NODEID_NONE
+                except Exception:
                     try:
-                        setattr(dst_props, fld, getattr(src_props, fld))
-                    except (TypeError, AttributeError):
+                        eff_buf.controllerID = _pyn.NODEID_NONE
+                    except Exception:
                         pass
+                try:
+                    eff = dst_nif.add_block(
+                        src_shader.name or "", eff_buf, parent=new_shape)
+                    # Re-point the shape's shader ref (mirrors pynifly's own
+                    # save_shader_attributes: set the id, let NifFile.save() persist
+                    # it -- do NOT write_properties() the freshly-created shape, which
+                    # flushes a stale nameID and blanks the shape's name).
+                    new_shape.properties.shaderPropertyID = eff.id
+                    new_shape._shader = None  # drop cache -> textures bind the new block
+                except Exception:
+                    pass
+            else:
+                new_shader = new_shape.shader
+                dst_props = new_shader.properties  # access lazy-loads
+                for fld in _SHADER_VALUE_FIELDS:
+                    if hasattr(src_props, fld) and hasattr(dst_props, fld):
+                        try:
+                            setattr(dst_props, fld, getattr(src_props, fld))
+                        except (TypeError, AttributeError):
+                            pass
 
-            # NOTE: We previously attempted to force-clear render flags
-            # on textureless (collision) shapes here, but pynifly's
-            # NifFile.save() unconditionally sets Shader_Flags_1 bit 1
-            # (Skinned) on any skinned shape — overriding our write.
-            # The collision-proxy fix now happens upstream in
-            # convert_nif_phase2 by SKIPPING those shapes entirely.
+                # NOTE: We previously attempted to force-clear render flags
+                # on textureless (collision) shapes here, but pynifly's
+                # NifFile.save() unconditionally sets Shader_Flags_1 bit 1
+                # (Skinned) on any skinned shape — overriding our write.
+                # The collision-proxy fix now happens upstream in
+                # convert_nif_phase2 by SKIPPING those shapes entirely.
 
-            # Flush the mutated buf back to the file's shader block.
-            try:
-                new_shader.write_properties()
-            except Exception:
-                pass
+                # Flush the mutated buf back to the file's shader block.
+                try:
+                    new_shader.write_properties()
+                except Exception:
+                    pass
     except Exception:
         pass
 
@@ -7040,13 +8451,22 @@ def _copy_shape(src_shape, dst_nif, parent=None, override_verts=None,
     # add all bones first, then set transforms and weights (two-pass).
     # override_skin (if provided) installs blended weights in a single pass;
     # calling skin()+add_bone after _copy_shape corrupts pynifly's mapping.
-    if override_skin is not None:
+    # Effect-shader glow overlays skip the body reskin: they keep their SOURCE
+    # skin (the proven-good vanilla skinning) instead of the override_skin's body
+    # bones, which CTD on equip. Falls through to the verbatim source-skin path
+    # below (which also drops scale bones). See EFFECT_SHADER_SOURCE_SKIN.
+    _use_override = (override_skin is not None
+                     and not (_is_effect_shape and EFFECT_SHADER_SOURCE_SKIN))
+    if _use_override:
         bone_names = override_skin["bones"]
         xforms_map = override_skin["xforms"]
         weights_map = override_skin["weights"]
         # Cap to per-partition GPU bone limit to prevent equip CTD.
         bone_names, xforms_map, weights_map = _cap_skin_bone_count(
             bone_names, xforms_map, weights_map)
+        if _is_effect_shape:   # scale bones on an effect-shader overlay CTD the render
+            bone_names, xforms_map, weights_map = _drop_scale_bones_from_skin(
+                bone_names, xforms_map, weights_map)
         _install_skin(new_shape, dst_nif, src_shape, bone_names,
                       xforms_map, weights_map, use_verts, _bake_T)
     elif src_shape.bone_names:
@@ -7077,6 +8497,9 @@ def _copy_shape(src_shape, dst_nif, parent=None, override_verts=None,
             # split-eligible -> keep ALL source bones; post-save split makes it
             # CTD-safe without dropping any (a dense-dress mod: 80 bones -> 78+9).
             bone_names, xforms_map, weights_map = _vb_bones, _vb_x, _vb_w
+        if _is_effect_shape:   # scale bones on an effect-shader overlay CTD the render
+            bone_names, xforms_map, weights_map = _drop_scale_bones_from_skin(
+                bone_names, xforms_map, weights_map)
         _install_skin(new_shape, dst_nif, src_shape, bone_names,
                       xforms_map, weights_map, use_verts, _bake_T)
 
@@ -7460,6 +8883,20 @@ def _resolve_data_rel_in_vfs(rel: str, src_nif_path: Path) -> "Path | None":
     # 2) VFS: scan the whole load order for whichever mod ships the file.
     try:
         mroot = _paths.mods_root()
+    except Exception:
+        mroot = None
+    # Fallback: derive the mods root from the source NIF's OWN location (the dir
+    # ABOVE the mod folder that holds 'meshes') when the global mods_root isn't
+    # set in this process. Without it, VFS resolution silently returns None ->
+    # the source HDT XML isn't read -> per-triangle colliders go undetected ->
+    # their partitions get collapsed -> FSMP equip CTD. Belt-and-suspenders so
+    # the collider skip never depends on an env var being present.
+    if mroot is None:
+        for parent in src_nif_path.parents:
+            if parent.name.lower() == "meshes":
+                mroot = parent.parent.parent  # meshes -> mod dir -> mods root
+                break
+    try:
         if mroot is not None and mroot.is_dir():
             for mod in sorted(d for d in mroot.iterdir() if d.is_dir()):
                 cand = mod / norm
@@ -8236,7 +9673,6 @@ def check_ube_nude_morph_files() -> "list[str]":
 # the phase-1 fit-path call site for the full rationale.
 BODY_SKIN_HAND_NAMES = frozenset({"Hands", "FemaleHands"})
 BODY_SKIN_FOOT_NAMES = frozenset({"Feet", "FemaleFeet"})
-BODY_SKIN_EXTREMITY_NAMES = BODY_SKIN_HAND_NAMES | BODY_SKIN_FOOT_NAMES
 
 # Detection patterns (broader than the exact-name sets above). Outfit
 # Studio / mod authors frequently suffix a duplicated body-skin hand/foot
@@ -8369,6 +9805,339 @@ def _inject_ube_baseshape(
         except Exception as e:
             return (s.name, repr(e))
     return None
+
+
+# Adjacent solid armor plates that SHARE A SEAM (touching edges modeled flush,
+# e.g. the Daedric upper-torso plate `torso` meeting the lower `TorsoLow:0`) are
+# warped as INDEPENDENT shapes by the per-vertex body-fit passes, so their shared
+# seam ring drifts apart -> a visible gap opens between the plates (MEASURED on
+# the Daedric torso: 60 seam verts, source gap <=0.045u, post-fit 0.31u). Fix:
+# verts COINCIDENT across different plate shapes in the SOURCE were meant to
+# touch; weld each such cross-shape cluster to its centroid AFTER the warp passes
+# so the seam closes. Pure source-coincidence (tight tol) is the gate: a genuine
+# layer (over-fabric above a bra) is NOT coincident in source -- it sits mm above
+# -- so this never re-welds intentional layer separation (which the cleavage /
+# overlay-lift passes create at a LARGER clearance). Normals are NOT gated on:
+# a plate rim where inner+outer surfaces meet flush has OPPOSED normals but is
+# still a real seam. Identity-g2s shapes only (frame-safe in both phases).
+# CBBE2UBE_NO_SEAM_WELD=1 disables it; CBBE2UBE_SEAM_WELD_TOL overrides the tol.
+_SEAM_WELD_TOL = float(os.environ.get("CBBE2UBE_SEAM_WELD_TOL", "0.05") or "0.05")
+
+
+def _weld_cross_shape_seams(shape_jobs, tol: float = _SEAM_WELD_TOL):
+    """Weld source-coincident cross-plate seam verts to their centroid.
+
+    Operates on the pass-1 `shape_jobs` (each {"src", "verts",
+    "verts_modified", ...}). Returns the count of welded verts. Best-effort.
+    """
+    if os.environ.get("CBBE2UBE_NO_SEAM_WELD", "").strip().lower() in (
+            "1", "true", "yes", "on"):
+        return 0
+    try:
+        from scipy.spatial import cKDTree
+    except Exception:
+        return 0
+
+    def _ident_g2s(s):
+        try:
+            if not s.has_global_to_skin:
+                return True
+            g = _shape_global_to_skin(s)
+            return g is None or _g2s_is_identity(g)
+        except Exception:
+            return False
+
+    # Candidate plates: textured, non-effect, identity-g2s (frame match).
+    plates = [j for j in shape_jobs
+              if (j["src"].textures or {})
+              and not _shape_has_effect_shader(j["src"])
+              and _ident_g2s(j["src"])]
+    if len(plates) < 2:
+        return 0
+    src_arrs, fin_arrs, owner = [], [], []  # owner[g] = (plate_idx, local_idx)
+    for pi, pj in enumerate(plates):
+        try:
+            psrc = np.asarray(pj["src"].verts, dtype=np.float64)
+            pfin = np.asarray(pj["verts"], dtype=np.float64).copy()
+        except Exception:
+            src_arrs.append(None); fin_arrs.append(None); continue
+        if psrc.ndim != 2 or psrc.shape != pfin.shape or len(psrc) == 0:
+            src_arrs.append(None); fin_arrs.append(None); continue
+        src_arrs.append(psrc); fin_arrs.append(pfin)
+        owner.extend((pi, li) for li in range(len(psrc)))
+    valid = [a for a in src_arrs if a is not None]
+    if len(valid) < 2:
+        return 0
+    all_src = np.concatenate([a for a in src_arrs if a is not None])
+    tree = cKDTree(all_src)
+    try:
+        pairs = tree.query_pairs(tol, output_type="ndarray")
+    except Exception:
+        return 0
+    if len(pairs) == 0:
+        return 0
+    # Union-find over CROSS-shape coincident pairs only.
+    parent = list(range(len(owner)))
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    for a, b in pairs:
+        a, b = int(a), int(b)
+        if owner[a][0] != owner[b][0]:
+            ra, rb = find(a), find(b)
+            if ra != rb:
+                parent[ra] = rb
+    from collections import defaultdict
+    groups = defaultdict(list)
+    for g in range(len(owner)):
+        groups[find(g)].append(g)
+    n_weld = 0
+    changed = set()
+    seam_clusters = []  # each: [(plate_idx, local_idx), ...] spanning >=2 plates
+    for members in groups.values():
+        if len(members) < 2:
+            continue
+        cluster = [owner[m] for m in members]
+        if len({pi for pi, _ in cluster}) < 2:
+            continue  # single-shape cluster -> not a cross-shape seam
+        centroid = np.mean([fin_arrs[pi][li] for pi, li in cluster], axis=0)
+        for pi, li in cluster:
+            fin_arrs[pi][li] = centroid
+            changed.add(pi)
+            n_weld += 1
+        seam_clusters.append(cluster)
+    for pi in changed:
+        plates[pi]["verts"] = fin_arrs[pi]
+        plates[pi]["verts_modified"] = True
+    # Skin-match: give every vert in a welded seam cluster IDENTICAL weights so
+    # the plates DEFORM together under animation. A position-only weld reopens
+    # when the two plates' seam verts follow different bones (MEASURED: the
+    # Daedric waist seam's cross-plate skin diff went 0.25 in source -> 0.70
+    # after the independent per-shape reskin -> the seam splits when posed).
+    if seam_clusters and os.environ.get(
+            "CBBE2UBE_NO_SEAM_SKIN_MATCH", "").strip().lower() not in (
+            "1", "true", "yes", "on"):
+        try:
+            nsm = _match_seam_skinning(plates, seam_clusters)
+            if os.environ.get("CBBE2UBE_SEAM_DEBUG"):
+                import sys as _sys
+                print("  [seam-dbg] clusters=%d skin-matched verts=%s haveOSK=%s"
+                      % (len(seam_clusters), nsm,
+                         [bool(plates[pi].get("override_skin"))
+                          for pi in {p for c in seam_clusters for p, _ in c}]),
+                      file=_sys.stderr)
+        except Exception as _sm:
+            if os.environ.get("CBBE2UBE_SEAM_DEBUG"):
+                import sys as _sys, traceback as _tb
+                print("  [seam-dbg] EXC %r" % (_sm,), file=_sys.stderr)
+                _tb.print_exc()
+    return n_weld
+
+
+def _set_override_vert_weights(osk, vi, tgt, bone_xform):
+    """Set vert `vi`'s skin weights in an override_skin dict to exactly `tgt`
+    ({bone: weight}). Removes `vi` from every existing bone entry, then adds it
+    to each target bone, creating the bone in the bones list / xforms map as
+    needed (xform pulled from `bone_xform`, the cluster-wide skeleton-global
+    skin-to-bone map)."""
+    weights = osk["weights"]
+    bones = osk.setdefault("bones", list(weights.keys()))
+    xforms = osk.setdefault("xforms", {})
+    for bn in list(weights.keys()):
+        weights[bn] = [(v, w) for (v, w) in weights[bn] if int(v) != vi]
+    for bn, w in tgt.items():
+        if w <= 0:
+            continue
+        weights.setdefault(bn, []).append((vi, float(w)))
+        if bn not in bones:
+            bones.append(bn)
+        if bn not in xforms and bn in bone_xform:
+            xforms[bn] = bone_xform[bn]
+
+
+def _match_seam_skinning(plates, seam_clusters):
+    """Unify skin weights across welded cross-plate seam clusters so both
+    plates deform together. For each cluster: read every member vert's current
+    weights, average them (missing bone = 0), cap to the engine's 4-bone
+    per-vertex limit (top-4 by weight), renormalize, and write that identical
+    weighting onto every member. Rewrites each plate job's override_skin in
+    place. Skips a cluster if any member lacks an override_skin (source-skinned
+    shape -- would need a full skin rebuild). Best-effort. Returns the count of
+    verts whose weights were unified."""
+    def _osk_from_source(src_shape):
+        # Build an override_skin that FAITHFULLY copies the source skin (all
+        # bones/xforms/weights) so a source-skinned member can have just its
+        # seam verts edited. Guard on bone count: the override path caps bones
+        # (a no-op under the GPU limit) where the source path would split, so
+        # only build when capping can't drop a bone (dense shapes -> skip).
+        bones = list(src_shape.bone_names or [])
+        if not bones or len(bones) > 40:
+            return None
+        xforms = {}
+        for bn in bones:
+            try:
+                xf = src_shape.get_shape_skin_to_bone(bn)
+                if xf is not None:
+                    xforms[bn] = xf
+            except Exception:
+                pass
+        weights = {}
+        for bn, pairs in (src_shape.bone_weights or {}).items():
+            weights[bn] = [(int(i), float(w)) for i, w in
+                           (pairs.tolist() if hasattr(pairs, "tolist") else pairs)]
+        return {"bones": bones, "xforms": xforms, "weights": weights}
+
+    n_matched = 0
+    for cluster in seam_clusters:
+        oss = []
+        ok = True
+        for pi, li in cluster:
+            osk = plates[pi].get("override_skin")
+            if not osk or "weights" not in osk:
+                # Source-skinned member: synthesize an override_skin so its
+                # seam verts can be matched (pass 2 then uses it).
+                built = _osk_from_source(plates[pi].get("src"))
+                if not built:
+                    ok = False
+                    break
+                plates[pi]["override_skin"] = built
+                osk = built
+            oss.append(osk)
+        if not ok:
+            continue
+        member_w = []
+        bone_xform = {}  # cluster-wide bone -> skin-to-bone (skeleton-global)
+        for (pi, li), osk in zip(cluster, oss):
+            wd = {}
+            for bn, pairs in osk["weights"].items():
+                for vi, w in pairs:
+                    if int(vi) == li:
+                        wd[bn] = wd.get(bn, 0.0) + float(w)
+            member_w.append(wd)
+            for bn, xf in (osk.get("xforms") or {}).items():
+                bone_xform.setdefault(bn, xf)
+        allb = set().union(*member_w) if member_w else set()
+        if not allb:
+            continue
+        tgt = {bn: sum(wd.get(bn, 0.0) for wd in member_w) / len(member_w)
+               for bn in allb}
+        # Cap to 4 bones per vertex (engine skin-partition limit).
+        if len(tgt) > 4:
+            top = sorted(tgt.items(), key=lambda kv: kv[1], reverse=True)[:4]
+            tgt = dict(top)
+        tot = sum(tgt.values())
+        if tot <= 0:
+            continue
+        tgt = {bn: w / tot for bn, w in tgt.items()}
+        for (pi, li), osk in zip(cluster, oss):
+            _set_override_vert_weights(osk, int(li), tgt, bone_xform)
+            n_matched += 1
+    return n_matched
+
+
+# Effect-shader decal overlays (e.g. the Daedric red glow: MaleTorsoGlow,
+# FemaleBootsGlow) sit ~0.03u off their solid plate as a thin additive shell.
+# They are NOT body-hugging, so the per-vertex body-fit passes (warp / inflate /
+# anti-poke) displace them and their plate by SLIGHTLY different amounts (the
+# glow is marginally farther from the body surface). That amplifies the tiny
+# source offset into a visible gap -> the glow "clips through" / no longer
+# conforms to the plate (MEASURED on the Daedric torso: source glow->plate gap
+# 0.03u, post-fit 0.28u). Fix: after every vertex pass, make each overlay RIDE
+# its plate -- re-derive each overlay vert's final position from the FINAL
+# position of the nearest SOURCE-paired plate vert, preserving the source offset
+# vector. Overlay verts too far from any plate (a free-floating glow, rare) keep
+# their own warp. This is the SOURCE-PAIR binding pattern used by the multi-layer
+# lift; it also fixes any region (hip/skirt) since each vert pairs with its own
+# nearest plate. CBBE2UBE_NO_GLOW_RIDE=1 disables it.
+_GLOW_RIDE_MAX = float(os.environ.get("CBBE2UBE_GLOW_RIDE_MAX", "2.0") or "2.0")
+
+
+def _ride_effect_overlays_on_plate(shape_jobs, ride_max: float = _GLOW_RIDE_MAX):
+    """Re-bind BSEffectShaderProperty decal overlays to ride their solid plate.
+
+    Operates on the pass-1 `shape_jobs` list (each: {"src", "verts",
+    "verts_modified", ...}). For every effect-shader overlay shape, pair each of
+    its SOURCE verts to the nearest SOURCE vert across all NON-effect (plate)
+    shapes, then set the overlay's FINAL vert = that plate's FINAL vert + the
+    source offset vector. Per-vert gated on `ride_max` (world units) so an
+    overlay with no plate beneath it keeps its independently-warped verts.
+    Returns the count of re-bound overlay verts. Best-effort; a caller wraps it.
+    """
+    if os.environ.get("CBBE2UBE_NO_GLOW_RIDE", "").strip().lower() in (
+            "1", "true", "yes", "on"):
+        return 0
+    try:
+        from scipy.spatial import cKDTree
+    except Exception:
+        return 0
+
+    def _ident_g2s(s):
+        # Ride only between identity-global-to-skin shapes so the source verts
+        # (skin frame) and the job's final verts share a frame in BOTH phases
+        # (phase-1 stores WORLD, phase-2 stores SKIN; identical when g2s is
+        # identity). A non-identity-g2s shape keeps its own warp (graceful).
+        try:
+            if not s.has_global_to_skin:
+                return True
+            g = _shape_global_to_skin(s)
+            return g is None or _g2s_is_identity(g)
+        except Exception:
+            return False
+
+    overlays = [j for j in shape_jobs
+                if _shape_has_effect_shader(j["src"]) and _ident_g2s(j["src"])]
+    plates = [j for j in shape_jobs
+              if not _shape_has_effect_shader(j["src"]) and _ident_g2s(j["src"])]
+    if os.environ.get("CBBE2UBE_GLOW_RIDE_DEBUG"):
+        import sys as _sys
+        print("  [ride-dbg] overlays=%r plates=%r" % (
+            [j["src"].name for j in overlays],
+            [j["src"].name for j in plates]), file=_sys.stderr)
+    if not overlays or not plates:
+        return 0
+    # Flat SOURCE + FINAL plate vert arrays (kept in lockstep). A plate whose
+    # final-vert count differs from its source (shouldn't happen: the fit is
+    # 1:1) is skipped so the pairing stays valid.
+    src_flat, fin_flat = [], []
+    for pj in plates:
+        try:
+            psrc = np.asarray(pj["src"].verts, dtype=np.float64)
+            pfin = np.asarray(pj["verts"], dtype=np.float64)
+        except Exception:
+            continue
+        if psrc.ndim != 2 or psrc.shape != pfin.shape or len(psrc) == 0:
+            continue
+        src_flat.append(psrc)
+        fin_flat.append(pfin)
+    if not src_flat:
+        return 0
+    src_flat = np.concatenate(src_flat)
+    fin_flat = np.concatenate(fin_flat)
+    tree = cKDTree(src_flat)
+    n_rebound = 0
+    for oj in overlays:
+        try:
+            gsrc = np.asarray(oj["src"].verts, dtype=np.float64)
+            cur = np.asarray(oj["verts"], dtype=np.float64)
+        except Exception:
+            continue
+        if gsrc.ndim != 2 or cur.shape != gsrc.shape or len(gsrc) == 0:
+            continue
+        d, idx = tree.query(gsrc, k=1)
+        mask = d <= ride_max
+        if not np.any(mask):
+            continue
+        cur = cur.copy()
+        # final = plate_final[nearest] + (glow_src - plate_src[nearest])
+        cur[mask] = fin_flat[idx[mask]] + (gsrc[mask] - src_flat[idx[mask]])
+        oj["verts"] = cur
+        oj["verts_modified"] = True
+        n_rebound += int(mask.sum())
+    return n_rebound
 
 
 def convert_nif_phase2(
@@ -8759,6 +10528,8 @@ def convert_nif_phase2(
                         exclude_vert_mask=_extremity_vert_mask(
                             s, len(hf_verts)),
                         leg_region_only=True,
+                        exclude_scale_bone_substrings=(
+                            _boot_far_thigh_scale_exclusions(s, biped_slots)),
                     )
                     if bones2 and weights2:
                         hf_override_skin = {
@@ -9070,6 +10841,34 @@ def convert_nif_phase2(
             print(f"  degenerate-tri repair: un-pinched {_n_demangle} collapsed "
                   f"tri(s) across {_n_shapes_demangle} shape(s)", file=_sys.stderr)
 
+    # Cross-plate seam weld: close gaps where adjacent solid plates that share
+    # a seam drifted apart under independent warp. Runs BEFORE the glow ride so
+    # the glow rides the welded plate. See _weld_cross_shape_seams.
+    if shape_jobs:
+        try:
+            n_weld = _weld_cross_shape_seams(shape_jobs)
+            if n_weld:
+                import sys as _sys
+                print(f"  seam weld: closed {n_weld} cross-plate seam vert(s)",
+                      file=_sys.stderr)
+        except Exception:
+            pass  # best-effort; failure leaves seams as-is
+
+    # Effect-shader decal overlays (Daedric red glow etc.) must RIDE their
+    # underlying plate, not be warped independently -- else the thin source
+    # offset amplifies through the body-fit and the glow clips through the
+    # plate. Runs LAST (after every vertex pass) so the glow rides the plate's
+    # FINAL position. See _ride_effect_overlays_on_plate.
+    if shape_jobs:
+        try:
+            n_ride = _ride_effect_overlays_on_plate(shape_jobs)
+            if n_ride:
+                import sys as _sys
+                print(f"  glow overlay ride: re-bound {n_ride} effect-overlay "
+                      f"vert(s) to their plate", file=_sys.stderr)
+        except Exception:
+            pass  # best-effort; failure leaves overlays as-is
+
     # Pass 2: copy shapes. Alpha preserved — bit-19 (set by _reset_morph_flags)
     # enables NioOverride morphs on alpha cloth without stripping transparency.
     first_armor_shape = None
@@ -9096,6 +10895,7 @@ def convert_nif_phase2(
     # NIFs, multi-carrier for slot-32+BaseShape NIFs so NioOverride morphs all shapes.
     # Rigid single-bone pieces follow morphs via M6 re-skin (standard skinning).
     # Falls back to first_armor_shape if the filter returns empty.
+    _bodytri_err = None
     carriers_p2 = _pick_bodytri_carriers(dst_nif)
     if not carriers_p2 and first_armor_shape is not None:
         carriers_p2 = [first_armor_shape]
@@ -9118,10 +10918,18 @@ def convert_nif_phase2(
                 if any(kw in nlow for kw in NON_CLOTH_SHAPE_KEYWORDS):
                     continue
                 cloth_shapes_to_clean.append(s)
+            # SMP per-triangle COLLIDER shapes keep their authored partitions:
+            # collapsing them desyncs FSMP's collision build -> equip CTD (`Greaves`
+            # 32+38 -> 32). Here in phase-2 the shapes are in-memory (partition_tris
+            # not materialized) so the collapse usually no-ops and the on-disk pass
+            # does the real work -- but skip colliders anyway, belt-and-suspenders to
+            # match phase-1 (where the reloaded-from-disk NIF makes it bite).
+            _coll_names_p2 = _hdt_collider_shape_names(src_path)
             for s in cloth_shapes_to_clean:
                 _reset_morph_flags(s)
                 _normalize_shader_for_morph(s)
-                _normalize_partitions(s)
+                if s.name not in _coll_names_p2:
+                    _normalize_partitions(s)
 
             # BODYTRI goes on carriers only.
             for target in carriers_p2:
@@ -9136,8 +10944,10 @@ def convert_nif_phase2(
                         string_value=body_tri_path,
                         parent=target,
                     )
-        except Exception:
-            pass
+        except Exception as _e:
+            # Surface a swallowed BODYTRI injection: failure here = armor doesn't
+            # follow body morphs (static on every preset), otherwise silent.
+            _bodytri_err = _e
 
     # Attach HDT-SMP physics config reference on the root node, matching
     # the source mod's XML. The XML defines bones (CBBE-style AND custom
@@ -9146,6 +10956,8 @@ def convert_nif_phase2(
     # the CBBE bones our fabric is skinned to, keeping the fabric
     # attached to the morphed body. Hand-authored UBE conversions ship
     # this same extra-data on root.
+    hdt_injected = False     # True ONLY after the source XML ref is attached
+    _hdt_inject_err = None    # set if a FOUND source XML failed to attach
     try:
         hdt_xml_path = _find_hdt_xml_for_armor(src_path)
         # If source XML references chain bones we stripped, clear it so the
@@ -9173,8 +10985,14 @@ def convert_nif_phase2(
                 string_value=hdt_xml_path,
                 parent=dst_nif.rootNode,
             )
-    except Exception:
-        pass  # HDT injection is best-effort
+            hdt_injected = True
+    except Exception as _e:
+        # A FOUND source XML that fails to attach must NOT suppress the regen
+        # fallback below: the gate keys on hdt_injected (did we attach a ref?),
+        # not on hdt_xml_path (did we find one?). Capturing the error also lets
+        # us surface it -- otherwise the piece ships with no physics reference
+        # and no signal at all.
+        _hdt_inject_err = _e
 
     if failed:
         # Surface failures via the reason field — auto_convert's CLI
@@ -9186,6 +11004,12 @@ def convert_nif_phase2(
                          f"collision shape(s): {skipped_collision}")
     else:
         result_reason = ""
+    if _hdt_inject_err is not None:
+        result_reason = (result_reason + "; " if result_reason else "") \
+            + f"source HDT inject failed ({_hdt_inject_err!r}); fell back to regen"
+    if _bodytri_err is not None:
+        result_reason = (result_reason + "; " if result_reason else "") \
+            + f"BODYTRI injection failed ({_bodytri_err!r}); armor may not morph"
 
     atomic_nif_save(dst_nif, dst_path)
 
@@ -9241,8 +11065,7 @@ def convert_nif_phase2(
                         carrier_shape_name=p2_carrier_name,
                         armor_vert_extremity_fractions=armor_vert_ef,
                     )
-                    auto_tri_dst.parent.mkdir(parents=True, exist_ok=True)
-                    tri.save(auto_tri_dst)
+                    atomic_tri_save(tri, auto_tri_dst)
         except Exception as e:
             # Non-fatal — armor still works without morphs.
             result_reason = (result_reason + "; " if result_reason else "") \
@@ -9251,9 +11074,10 @@ def convert_nif_phase2(
     # Phase 2 HDT-SMP XML auto-gen. The phase 2 path defers HDT XML
     # injection until after the dst NIF is saved (cloth shapes need
     # to be enumerated from the dst NIF, which doesn't exist on disk
-    # until the save above). If the BLOCK above already injected a
-    # source HDT XML reference, skip auto-gen (we prefer hand-authored).
-    if hdt_xml_path is None:
+    # until the save above). Skip auto-gen only if the block above
+    # actually ATTACHED a source HDT reference (we prefer hand-authored);
+    # if it found one but failed to attach it, fall through and regen.
+    if not hdt_injected:
         try:
             generated_xml_path = _generate_hdt_xml_for_dst(dst_path)
             if generated_xml_path:
@@ -9280,7 +11104,7 @@ def convert_nif_phase2(
                 + f"HDT XML gen failed: {e!r}"
 
     # Multi-partition collapse (post all re-saves so extra-data isn't clobbered).
-    _normalize_partitions_on_disk(dst_path)
+    _normalize_partitions_on_disk(dst_path, src_path)
 
     # FINAL HDT-SMP physics pass — runs LAST so the extra-data survives
     # (earlier round-trips dropped it). Prefers the source armor's
@@ -9290,9 +11114,22 @@ def convert_nif_phase2(
     except Exception:
         pass
 
+    # Graft body jiggle onto fitted leg cloth that lacks its own, THEN conform --
+    # the graft lets the jiggle-gated conform ALSO weight-match these pants to the
+    # body, fixing the knee-BEND clip (not just butt-jiggle follow). Order matters.
+    try:
+        _transfer_body_jiggle_to_fitted(dst_path, biped_slots)
+    except Exception:
+        pass
     # Fitted-cloth body conform (gated; skin-tight garments only).
     try:
         _conform_fitted_to_body(dst_path, biped_slots)
+    except Exception:
+        pass
+    # Knee-bend conform for RIGID leg plate (the conform above skips it): match the
+    # plate's Thigh:Calf split to the body so it bends with the knee (Orcish #knee).
+    try:
+        _match_rigid_leg_bend_to_body(dst_path, biped_slots)
     except Exception:
         pass
 

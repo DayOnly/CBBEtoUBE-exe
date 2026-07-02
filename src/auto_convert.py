@@ -47,7 +47,6 @@ correctly on UBE characters), which is the realistic M4 in-game test.
 from __future__ import annotations
 
 import os
-import shutil
 import sys
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -94,20 +93,6 @@ def _nif_convert_worker(item: tuple) -> "nif_convert.ConvertResult":
         )
 
 
-def _drain_result(fut, item) -> "nif_convert.ConvertResult":
-    """`fut.result()`, or a synthetic error ConvertResult if the worker PROCESS
-    died (BrokenProcessPool / native pynifly crash). The worker already catches
-    Python-level exceptions; this guards the un-catchable process death so one
-    bad NIF surfaces as an error result instead of aborting -- and losing the
-    report for -- the whole batch."""
-    try:
-        return fut.result()
-    except Exception as e:
-        return nif_convert.ConvertResult(
-            src_path=item[0], dst_path=None, status="error",
-            reason=f"worker process died: {type(e).__name__}: {e}")
-
-
 def _warmup_worker(barrier, ube_body_ref_path: "str | None") -> "tuple[int, float]":
     """Eagerly load pynifly + UBE refs in this worker so the first
     real NIF doesn't pay the cold-start cost. Called once per worker
@@ -138,7 +123,14 @@ def _warmup_worker(barrier, ube_body_ref_path: "str | None") -> "tuple[int, floa
     except Exception:
         pass
     elapsed = perf_counter() - t0
-    barrier.wait()  # block until every worker has claimed an init task
+    # Block until every worker has claimed an init task -- but WITH a timeout, so
+    # a sibling worker dying mid-warm-up (native crash before it reaches the
+    # barrier) can't wedge the survivors forever. The first waiter to time out
+    # breaks the barrier and releases all the rest with BrokenBarrierError.
+    try:
+        barrier.wait(timeout=300)
+    except Exception:
+        pass  # broken/timed-out barrier: warm-up is best-effort, just proceed
     return (os.getpid(), elapsed)
 
 
@@ -188,6 +180,128 @@ def _prewarm_pool(
               f"(per-worker init avg {sum(init_times)/len(init_times):.1f}s, "
               f"max {max(init_times):.1f}s, "
               f"{len(pids)} distinct worker PID(s))")
+
+
+class _NifPool:
+    """Self-healing wrapper around the batch-shared NIF-conversion process pool.
+
+    A native pynifly C++ crash kills a worker process, which `ProcessPoolExecutor`
+    can't catch -- it marks the WHOLE pool broken, so every later `submit` raises.
+    With one batch-global pool that previously meant a single bad NIF poisoned the
+    rest of its mod AND every subsequent mod (all their meshes erroring out,
+    invisible in-game). This wrapper rebuilds the pool after a break and re-runs
+    the not-yet-completed items in ISOLATION (one at a time) so the true crasher
+    is identified with certainty and dropped, while every innocent NIF still
+    converts. The same object is threaded through the whole batch, so the rebuilt
+    pool carries forward -- no cross-mod cascade.
+    """
+
+    # Stop rebuilding once this many ISOLATED items crash back-to-back: that's a
+    # systemic failure (e.g. a broken pynifly DLL), not one poison NIF, so further
+    # rebuilds are pointless churn -- error the rest and move on.
+    GIVE_UP_AFTER = 5
+
+    def __init__(self, max_workers, ube_body_ref_path=None, *,
+                 pool_factory=None):
+        self.max_workers = max(1, int(max_workers))
+        self._ube_ref = ube_body_ref_path
+        # Injectable for tests; defaults to a real ProcessPoolExecutor.
+        self._factory = pool_factory or (
+            lambda: ProcessPoolExecutor(max_workers=self.max_workers))
+        self.pool = None
+        self.rebuilds = 0
+        self._ensure()
+
+    def _ensure(self):
+        if self.pool is None:
+            self.pool = self._factory()
+
+    def prewarm(self):
+        self._ensure()
+        _prewarm_pool(self.pool, self.max_workers, self._ube_ref)
+
+    def _rebuild(self):
+        old = self.pool
+        self.pool = None
+        if old is not None:
+            try:
+                old.shutdown(wait=False)   # workers already dead; don't block
+            except Exception:
+                pass
+        self.rebuilds += 1
+        self._ensure()
+
+    def shutdown(self):
+        if self.pool is not None:
+            try:
+                self.pool.shutdown(wait=True)
+            except Exception:
+                pass
+            self.pool = None
+
+    def run_batch(self, work_items, on_result, *, fn=None):
+        """Run `fn` (default `_nif_convert_worker`) over every item, calling
+        `on_result(ConvertResult)` exactly once per item. Survives worker process
+        death: the crasher surfaces as an error result, all others convert."""
+        fn = fn or _nif_convert_worker
+        items = list(work_items)
+        if not items:
+            return
+        remaining = self._run_parallel(items, on_result, fn)
+        if remaining:
+            self._run_isolated(remaining, on_result, fn)
+
+    def _run_parallel(self, items, on_result, fn):
+        """Submit all items at once; deliver every result that completed cleanly,
+        and return the items whose futures broke (the crasher + any in-flight
+        bystanders) for isolated recovery. Rebuilds the pool if anything broke."""
+        self._ensure()
+        try:
+            fut_to_item = {self.pool.submit(fn, it): it for it in items}
+        except Exception:
+            # Pool already broken at submit time -> nothing ran; recover all.
+            self._rebuild()
+            return items
+        remaining = []
+        broke = False
+        for fut in as_completed(fut_to_item):
+            it = fut_to_item[fut]
+            try:
+                on_result(fut.result())
+            except Exception:
+                broke = True          # worker death: this item didn't complete
+                remaining.append(it)
+        if broke:
+            self._rebuild()
+        return remaining
+
+    def _run_isolated(self, items, on_result, fn):
+        """Re-run the uncertain items one at a time on a healthy pool. With a
+        single item in flight, a pool break unambiguously blames THAT item, so we
+        error exactly the crasher and rebuild for the next. Bounded by
+        GIVE_UP_AFTER consecutive crashes (systemic failure)."""
+        consec_crashes = 0
+        give_up = False
+        for it in items:
+            if give_up:
+                on_result(nif_convert.ConvertResult(
+                    src_path=it[0], dst_path=None, status="error",
+                    reason="worker pool unrecoverable (systemic crash); "
+                           "NIF not attempted"))
+                continue
+            self._ensure()
+            try:
+                on_result(self.pool.submit(fn, it).result())
+                consec_crashes = 0
+            except Exception as e:
+                on_result(nif_convert.ConvertResult(
+                    src_path=it[0], dst_path=None, status="error",
+                    reason=f"worker process died (isolated convert): "
+                           f"{type(e).__name__}: {e}"))
+                self._rebuild()
+                consec_crashes += 1
+                if consec_crashes >= self.GIVE_UP_AFTER:
+                    give_up = True
 
 
 def _find_ube_body_ref(search_roots: list[Path] | None = None) -> Path | None:
@@ -336,6 +450,10 @@ class AutoConvertResult:
     # Postflight per-NIF invariant violations on the FINAL output (zero-vertex
     # shapes; over-cap single-partition shapes). Surfaced + counted as warnings.
     nif_invariant_warnings: list = field(default_factory=list)
+    # VirtualBody re-hide failures on the FINAL output: a failed re-hide leaves a
+    # VISIBLE VirtualBody (the "blue body double"). Surfaced + counted as a
+    # warning (a visible defect, not a CTD).
+    virtualbody_rehide_failures: list = field(default_factory=list)
 
     @property
     def nif_converted(self) -> int:
@@ -580,7 +698,7 @@ def auto_convert_mod(
     # destroyed when a pool tears down. Sharing the pool keeps those
     # caches hot, cutting ~1-2s of init cost per worker per mod.
     # If None, a fresh pool is created and torn down within this call.
-    nif_pool: "ProcessPoolExecutor | None" = None,
+    nif_pool: "_NifPool | None" = None,
     # Where to write the per-source UBE patch ESP. Relative to
     # output_dir. Default `_unmerged_patches/` keeps individual
     # patches off MO2's plugin-scanner radar (MO2 only loads .esp
@@ -660,38 +778,57 @@ def auto_convert_mod(
     # NIF conversion step consume it. VFS-resolved so it's valid even for mods
     # whose meshes live in a different mod than their ESP.
     meshes_root = _find_meshes_root(source_dir)
-    # include_candidate_slots: also admit lower-body cloth on ambiguous modder
-    # slots (44/47/...). The crash guard below drops any non-body-skinned ones.
-    armor_bases = _player_armor_mesh_bases(source_dir, include_candidate_slots=True)
     all_nif_paths = (sorted(meshes_root.rglob("*.nif"))
                      if meshes_root is not None else [])
+    # Source-local mesh keys (lowercase meshes-rel) for the female-resolves check.
+    _local_keys = set()
+    if meshes_root is not None:
+        for _p in all_nif_paths:
+            _local_keys.add(_p.relative_to(meshes_root).as_posix().lower())
+
+    def _female_mesh_resolves(base: str) -> bool:
+        # True if any weight variant of `base` exists to convert (full-VFS winner or
+        # source-local). Mirrors _resolve_armor_meshes' lookup so the female-only
+        # selection agrees with what actually converts (skips BSA-only -> conservative,
+        # keeps the male fallback in that rare case).
+        for suf in ("_1", "_0", ""):
+            key = f"{base}{suf}.nif"
+            if mesh_vfs_index is not None and key in mesh_vfs_index:
+                return True
+            if key in _local_keys:
+                return True
+        return False
+
+    # include_candidate_slots: also admit lower-body cloth on ambiguous modder
+    # slots (44/47/...). The crash guard below drops any non-body-skinned ones.
+    # mesh_resolves enables the female-only policy (skip the male mesh when a female
+    # mesh exists; keep male for male-only or dead-female-path pieces).
+    armor_bases = _player_armor_mesh_bases(
+        source_dir, include_candidate_slots=True,
+        mesh_resolves=_female_mesh_resolves)
     # Resolve through the full MO2 VFS so meshes in BodySlide-output / replacer /
     # patch mods are found. Falls back to source-local when no VFS index is given.
     resolved_pairs = _resolve_armor_meshes(
         armor_bases, mesh_vfs_index, meshes_root, all_nif_paths)
+    # Single weight-agnostic slot resolver, shared by the crash guard below and
+    # the work-item builder later. Built once from the source ESPs; a `_0` file
+    # the ARMA never named inherits its `_1` partner's slots. #slot0-weight-partner
+    try:
+        _raw_slot_map = ube_patcher.build_nif_slot_map(
+            _find_source_esps(source_dir))
+    except Exception:
+        _raw_slot_map = {}
+    slot_bits_for = _make_slot_resolver(_raw_slot_map)
     # Crash guard for ambiguous modder slots (44/47/...): keep only standard-slot
     # meshes OR those whose NIF is skinned to body-fit bones. Unskinned accessories
     # on these slots given a UBE body race CTD at actor setup. Must run before
     # converted_rel_paths so the patcher never UBE-tags a dropped mesh.
     if resolved_pairs:
-        try:
-            _slot_map = ube_patcher.build_nif_slot_map(
-                _find_source_esps(source_dir))
-        except Exception:
-            _slot_map = {}
         _kept_pairs = []
         _guard_dropped = 0
-        # Weight-agnostic slot lookup: the ARMA names _1; the engine derives _0.
-        # Without folding, _0 fails the body-slot test and gets dropped, leaving
-        # only _1 -> piece invisible (Skyrim needs BOTH weights). Fold to one key.
-        _agnostic_slot: "dict[str, int]" = {}
-        for _k, _v in _slot_map.items():
-            _bk = _weight_base_key(_k)
-            _agnostic_slot[_bk] = _agnostic_slot.get(_bk, 0) | _v
         _nonstd_kept: list[str] = []   # cape/cloak on a non-standard slot
         for _gsrc, _grel in resolved_pairs:
-            _gslot = (_slot_map.get(_grel.lower(), 0)
-                      or _agnostic_slot.get(_weight_base_key(_grel), 0))
+            _gslot = slot_bits_for(_grel)
             if (_gslot & _BODY_SLOT_BITS) != 0 or _nif_has_bodyfit_skin(_gsrc):
                 _kept_pairs.append((_gsrc, _grel))
                 # Surface draping meshes kept on non-standard slots (cape/cloak
@@ -841,10 +978,9 @@ def auto_convert_mod(
         # Scan source ESPs' ARMA records for slot-49 meshes (skirts / hip cloth)
         # so the converter can bump inflation for them. Use source ESPs (pre-rewrite)
         # so paths line up with `rel` in the work items.
-        try:
-            nif_slot_map = ube_patcher.build_nif_slot_map(src_esps)
-        except Exception:
-            nif_slot_map = {}
+        # Slot bits come from the shared weight-agnostic `slot_bits_for` resolver
+        # built once above (so `_0` and `_1` convert with identical slots).
+        # #slot0-weight-partner
 
         if armor_bases:
             print(f"  armour filter: converting {len(resolved_pairs)} ARMA "
@@ -868,9 +1004,14 @@ def auto_convert_mod(
         skipped_collisions: list[tuple[Path, Path]] = []
         skipped_incremental = 0
         for src, rel in resolved_pairs:
-            rel_key = rel.lower()
-            slot_bits = nif_slot_map.get(rel_key, 0)
+            slot_bits = slot_bits_for(rel)
             dst = nif_dst_root / Path(rel)
+            # SECURITY: `rel` can derive from a mod-controlled ARMA model path /
+            # BSA name; refuse `..`/absolute traversal outside the output meshes.
+            if not paths.is_within_dir(nif_dst_root, dst):
+                print(f"  !! refusing traversal output path for {rel!r}",
+                      file=sys.stderr)
+                continue
             # First-writer wins: skip paths already claimed by an earlier source mod.
             if claimed_dst_paths is not None:
                 key = dst.resolve()
@@ -919,47 +1060,51 @@ def auto_convert_mod(
         nif_workers = max(1, min(nif_workers, len(work_items)))
 
         t_start = time.perf_counter()
-        if nif_workers == 1 or len(work_items) <= 1:
-            # Serial path: simpler for small jobs; avoids ProcessPool overhead.
+        # Serial ONLY when there's no shared pool to isolate crashes: a single-mesh
+        # mod (or forced 1 worker) run in-process gives a native pynifly crash the
+        # power to abort the WHOLE batch. When a warm shared `nif_pool` exists, route
+        # even a single NIF through it so the pool's BrokenProcessPool self-heal
+        # contains the crasher to one worker. #single-mesh-isolation
+        if nif_pool is None and (nif_workers == 1 or len(work_items) <= 1):
+            # No shared pool + tiny job -> serial in-process (avoids pool spin-up).
             for item in work_items:
                 r = _nif_convert_worker(item)
                 result.nif_results.append(r)
         else:
-            print(f"  NIF conversion: {len(work_items)} files across "
-                  f"{nif_workers} workers...")
+            if len(work_items) > 1:
+                print(f"  NIF conversion: {len(work_items)} files across "
+                      f"{nif_workers} workers...")
             done = 0
             last_print = t_start
 
-            def _drain(p):
+            def _on_result(r):
                 nonlocal done, last_print
-                try:
-                    fut_to_item = {p.submit(_nif_convert_worker, item): item
-                                   for item in work_items}
-                except Exception as _se:
-                    # Pool already broken (a prior NIF crashed a worker process).
-                    # Record every item as an error rather than aborting silently.
-                    for item in work_items:
-                        result.nif_results.append(nif_convert.ConvertResult(
-                            src_path=item[0], dst_path=None, status="error",
-                            reason=f"worker pool broken before submit: {_se!r}"))
-                    return
-                for fut in as_completed(fut_to_item):
-                    r = _drain_result(fut, fut_to_item[fut])
-                    result.nif_results.append(r)
-                    done += 1
-                    now = time.perf_counter()
-                    if now - last_print >= 5.0 or done == len(work_items):
-                        rate = done / max(now - t_start, 1e-9)
-                        eta = (len(work_items) - done) / max(rate, 1e-9)
-                        print(f"    [{done}/{len(work_items)}] "
-                              f"{rate:.1f} NIF/s  ETA {eta:.0f}s")
-                        last_print = now
+                result.nif_results.append(r)
+                done += 1
+                now = time.perf_counter()
+                # Progress noise only for real multi-file jobs (single-mesh mods
+                # routed here for isolation stay quiet).
+                if len(work_items) > 1 and (
+                        now - last_print >= 5.0 or done == len(work_items)):
+                    rate = done / max(now - t_start, 1e-9)
+                    eta = (len(work_items) - done) / max(rate, 1e-9)
+                    print(f"    [{done}/{len(work_items)}] "
+                          f"{rate:.1f} NIF/s  ETA {eta:.0f}s")
+                    last_print = now
 
-            if nif_pool is not None:
-                _drain(nif_pool)
+            # The pool self-heals: a worker PROCESS death (native pynifly crash ->
+            # BrokenProcessPool) is recovered by rebuilding and re-running the
+            # not-yet-done items in isolation, so only the true crasher is dropped
+            # -- not the rest of this mod, and (because the shared _NifPool
+            # persists) not every subsequent mod in the batch.
+            if isinstance(nif_pool, _NifPool):
+                nif_pool.run_batch(work_items, _on_result)
             else:
-                with ProcessPoolExecutor(max_workers=nif_workers) as pool:
-                    _drain(pool)
+                _local_pool = _NifPool(nif_workers)
+                try:
+                    _local_pool.run_batch(work_items, _on_result)
+                finally:
+                    _local_pool.shutdown()
         elapsed = time.perf_counter() - t_start
         if len(work_items) > 0:
             rate = len(work_items) / max(elapsed, 1e-9)
@@ -991,7 +1136,10 @@ def auto_convert_mod(
                 except OSError:
                     pass  # fall through to copy on any stat failure
                 out.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(f, out)
+                # Atomic: a kill / ENOSPC / locked dst mid-copy must never leave a
+                # truncated DDS (corrupt/garbage texture) in the deployed output.
+                from .atomic_io import atomic_copy
+                atomic_copy(f, out)
                 count += 1
             result.textures_copied = count
             if skipped_current:
@@ -1030,10 +1178,9 @@ def auto_convert_mod(
                         atomic_nif_save(nf_check, dst)
                 except Exception as _vbe:
                     # A failed re-hide/save can leave a VISIBLE VirtualBody (the
-                    # "blue body double"); surface it instead of swallowing.
-                    result.notes.append(
-                        f"!! VirtualBody re-hide failed for {dst.name}: {_vbe!r} "
-                        "(risk of a visible body-double in-game)")
+                    # "blue body double"); count it as a warning, don't bury it.
+                    result.virtualbody_rehide_failures.append(
+                        f"{dst.name}: {_vbe!r} (risk of a visible body-double)")
                 # Postflight per-NIF invariants on the FINAL reloaded bytes.
                 try:
                     result.nif_invariant_warnings.extend(
@@ -1492,11 +1639,11 @@ def _cmd_convert(args):
         pool_workers = args.workers
         if pool_workers is None:
             pool_workers = max(1, (os.cpu_count() or 4) - 1)
-        shared_pool = ProcessPoolExecutor(max_workers=pool_workers)
+        shared_pool = _NifPool(pool_workers, args.ube_body_ref)
         print(f"  batch worker pool: {pool_workers} workers "
-              f"(shared across all sources)")
+              f"(shared across all sources, self-healing on worker crash)")
         try:
-            _prewarm_pool(shared_pool, pool_workers, args.ube_body_ref)
+            shared_pool.prewarm()
         except Exception as e:
             print(f"  !! pre-warm failed (non-fatal): {e!r}")
 
@@ -1617,7 +1764,7 @@ def _cmd_convert(args):
                 print(f"!! conversion failed: {e!r}")
     finally:
         if shared_pool is not None:
-            shared_pool.shutdown(wait=True)
+            shared_pool.shutdown()
         _BATCH_BSA_INDEX = None   # release BSA archives after the batch
 
     print(f"\n=== batch auto-conversion done ({len(results)} mod(s)) ===")
@@ -1668,11 +1815,22 @@ def _cmd_convert(args):
                 print(f"       {p}")
             overall_failures += 1
         if r.nif_invariant_warnings:
-            print(f"    !! POSTFLIGHT NIF: {len(r.nif_invariant_warnings)} "
-                  "invariant issue(s) (zero-vert / over-cap partition):")
+            # CTD-class, symmetric with the merged-ESP postflight: a zero-vert
+            # shape is invisible and an over-cap shape left in <=1 partition
+            # hard-CTDs on equip. Fail the build, don't just warn.
+            print(f"    !! POSTFLIGHT NIF (CTD-class): "
+                  f"{len(r.nif_invariant_warnings)} invariant issue(s) "
+                  "(zero-vert / over-cap partition -> equip CTD):")
             for w in r.nif_invariant_warnings:
                 print(f"       {w}")
-            overall_warnings += len(r.nif_invariant_warnings)
+            overall_failures += len(r.nif_invariant_warnings)
+        if r.virtualbody_rehide_failures:
+            print(f"    !! VirtualBody re-hide: "
+                  f"{len(r.virtualbody_rehide_failures)} NIF(s) may show a "
+                  "visible body-double:")
+            for w in r.virtualbody_rehide_failures:
+                print(f"       {w}")
+            overall_warnings += len(r.virtualbody_rehide_failures)
         # ESP generation failure: that ESP's ARMA/ARMO absent from merge (invisible).
         # Non-zero exit, but NOT a merge_blocker (one bad ESP shouldn't lose the rest).
         if r.esp_gen_failures:
@@ -1720,6 +1878,26 @@ def _cmd_convert(args):
             overall_warnings += len(_wp_miss)
     except Exception as _wpe:
         print(f"  !! postflight weight-partner scan skipped: {_wpe!r}")
+
+    # Postflight: flag `_0`/`_1` partners whose converted scale-bone set diverges
+    # (per-file metadata leaking to one weight -> the two morph differently; e.g.
+    # the #slot0-weight-partner slot-0 bug). Read-only NIF pass; disable for speed
+    # with CBBE2UBE_NO_WEIGHT_PARITY_CHECK=1.
+    if (os.environ.get("CBBE2UBE_NO_WEIGHT_PARITY_CHECK", "").strip().lower()
+            not in ("1", "true", "yes", "on")):
+        try:
+            _wp_div = _postflight_weight_partner_divergence(output)
+            if _wp_div:
+                print(f"\n!! POSTFLIGHT weight-partner parity: {len(_wp_div)} "
+                      "shape(s) convert differently at _0 vs _1 (per-weight "
+                      "metadata leak; both weights should morph identically):")
+                for _d in _wp_div[:20]:
+                    print(f"     {_d}")
+                if len(_wp_div) > 20:
+                    print(f"     ... and {len(_wp_div) - 20} more")
+                overall_warnings += len(_wp_div)
+        except Exception as _wpe2:
+            print(f"  !! postflight weight-partner parity scan skipped: {_wpe2!r}")
 
     # --- Vertex-color shader-flag sanitize ---
     # Clear Vertex_Colors/Vertex_Alpha shader flags on shapes with no color buffer.
@@ -1829,6 +2007,29 @@ def _cmd_convert(args):
                                   "(handless forearm armor claiming slot 33)")
                     except Exception as e:
                         print(f"  !! hands-slot fix failed: {e!r}")
+                    # Dedup redundant own-ARMA armature refs: a body-armor ARMO that
+                    # ended up with two converter-minted UBE ARMAs of the SAME race +
+                    # meshes renders the body-swap mesh TWICE (doubled / blown-out /
+                    # double-morphed -> "doesn't fit / doesn't conform" in-game).
+                    try:
+                        ndd = ube_patcher.dedup_armo_armature_refs_all(merged_out)
+                        if ndd:
+                            print(f"  armature dedup: removed {ndd} redundant "
+                                  "UBE armature ref(s) (double body-swap render)")
+                    except Exception as e:
+                        print(f"  !! armature dedup failed: {e!r}")
+                    # Self-heal a stale/mis-sorted master list (a master-tier
+                    # plugin after a regular ESP = load-order/FormID CTD). No-op on
+                    # a correctly-ordered piece; repairs a stale Combined an earlier
+                    # run left mis-sorted (the merge_esl_overflow recurrence class).
+                    try:
+                        nrs = ube_patcher.resort_masters_all(
+                            merged_out, master_data_dirs=batch_master_data_dirs)
+                        if nrs:
+                            print(f"  master re-sort: repaired {nrs} mis-ordered "
+                                  "Combined piece(s) (master-tier-after-regular)")
+                    except Exception as e:
+                        print(f"  !! master re-sort failed: {e!r}")
                     # POSTFLIGHT: re-validate the FINAL Combined (+ ESL split
                     # pieces) AFTER the merge/winner-rebase/reconcile/hands-fix
                     # mutations. validate_patch ran per-SOURCE only; a structural
@@ -1970,6 +2171,41 @@ _BODY_SKIN_BASENAMES = frozenset({
 })
 
 
+def _weight_agnostic_slot_map(nif_slot_map: "dict[str, int]") -> "dict[str, int]":
+    """Fold a weight-specific NIF->slot-bits map (keyed by exact mesh path, which
+    the ARMA gives only for the `_1` weight) into a weight-agnostic map keyed by
+    `_weight_base_key`, OR-ing the slot bits of any `_0`/`_1` partners. Lets a
+    `_0` file that the ARMA never named recover its slot bits from its `_1`
+    partner, so slot-gated conversion behaves identically at both body weights.
+    #slot0-weight-partner"""
+    out: "dict[str, int]" = {}
+    for k, v in (nif_slot_map or {}).items():
+        bk = _weight_base_key(k)
+        out[bk] = out.get(bk, 0) | int(v)
+    return out
+
+
+def _make_slot_resolver(nif_slot_map: "dict[str, int]"):
+    """Return ``slot_bits_for(rel) -> int``: the exact-path slot bits, falling
+    back to the weight-agnostic (OR'd ``_0``/``_1``) bits so a ``_0`` file the
+    ARMA never named inherits its ``_1`` partner's slots.
+
+    This is the SINGLE source of truth for NIF->slot lookups. Both the ambiguous-
+    slot crash guard and the work-item builder call it, so a `_0` file can never
+    silently convert with ``biped_slots=0`` and diverge from its `_1` partner
+    (which zeroed every slot-gated path -- torso_parity, slot-aware inflation /
+    reskin band / scale reach, the calf/foot-boot far-thigh exclusion). Slots are
+    a per-garment property (Skyrim has no per-weight slots), so folding is
+    correct by construction, not a heuristic. #slot0-weight-partner"""
+    agnostic = _weight_agnostic_slot_map(nif_slot_map)
+
+    def slot_bits_for(rel: str) -> int:
+        return (nif_slot_map.get(rel.lower(), 0)
+                or agnostic.get(_weight_base_key(rel), 0))
+
+    return slot_bits_for
+
+
 def _weight_base_key(rel: str) -> str:
     """Normalize a NIF path to a weight-agnostic key for matching an ARMA's
     model path against a file on disk: lowercase, forward slashes, no leading
@@ -2090,6 +2326,102 @@ def _postflight_missing_weight_partners(output_dir) -> "list[str]":
     return out
 
 
+def _scale_bone_vert_counts(shape, eps: float = 1e-4) -> "dict[str, int]":
+    """Per-scale-bone count of verts weighted above `eps` on a shape.
+    #slot0-weight-partner"""
+    from .nif_convert import _is_scale_bone
+    bw = getattr(shape, "bone_weights", None) or {}
+    out: "dict[str, int]" = {}
+    for bn in getattr(shape, "bone_names", None) or []:
+        if not _is_scale_bone(bn):
+            continue
+        pairs = bw.get(bn) or []
+        pl = pairs.tolist() if hasattr(pairs, "tolist") else pairs
+        n = sum(1 for _, w in pl if w > eps)
+        if n:
+            out[bn] = n
+    return out
+
+
+def _weight_partner_scale_divergence(
+        shapes0, shapes1, base_label: str,
+        present_min: int = 8, absent_max: int = 1) -> "list[str]":
+    """Compare the scale-bone weighting of SAME-NAMED shapes across a `_0`/`_1`
+    pair and report only a true PRESENCE/ABSENCE leak: a bone substantially
+    present (>= `present_min` verts) in one weight and effectively ABSENT
+    (<= `absent_max` verts) in the other. That gross asymmetry is the signature
+    of per-file metadata (slot bits, ...) leaking to ONE weight -- the two are
+    the same garment and must morph identically. Deliberately does NOT flag a
+    smooth slim-vs-curvy gradient (e.g. 7 vs 50 verts): the graft reaches
+    slightly different vert counts at each body weight, which is expected, not a
+    bug. Pure + duck-typed so it's unit-testable without a real NIF.
+    #slot0-weight-partner"""
+    by0 = {getattr(s, "name", None): s for s in shapes0}
+    issues: "list[str]" = []
+    for s1 in shapes1:
+        nm = getattr(s1, "name", None)
+        s0 = by0.get(nm)
+        if s0 is None:
+            continue
+        c0 = _scale_bone_vert_counts(s0)
+        c1 = _scale_bone_vert_counts(s1)
+        only0, only1 = [], []
+        for bn in set(c0) | set(c1):
+            n0, n1 = c0.get(bn, 0), c1.get(bn, 0)
+            if n0 >= present_min and n1 <= absent_max:
+                only0.append(bn)
+            elif n1 >= present_min and n0 <= absent_max:
+                only1.append(bn)
+        if only0 or only1:
+            det = []
+            if only0:
+                det.append(f"_0-only={sorted(only0)}")
+            if only1:
+                det.append(f"_1-only={sorted(only1)}")
+            issues.append(f"{base_label} :: {nm}: scale-bone divergence between "
+                          f"body weights ({'; '.join(det)})")
+    return issues
+
+
+def _postflight_weight_partner_divergence(output_dir) -> "list[str]":
+    """Postflight: for each `_0`/`_1` pair that BOTH exist, flag same-named shapes
+    whose substantial scale-bone set differs between the two weights. Catches
+    per-file metadata (slot bits, ...) leaking to only one weight so the two
+    convert differently -- the class of bug that let GTO `boots_0` keep the
+    fade-inducing far-thigh scale bones while `boots_1` dropped them. DETECT-only
+    (warn). Read-only NIF loads; skipped entirely on any pynifly failure.
+    #slot0-weight-partner"""
+    import re as _re
+    meshes = Path(output_dir) / "meshes"
+    if not meshes.is_dir():
+        return []
+    try:
+        pyn = nif_convert._pynifly()
+    except Exception:
+        return []
+    groups: "dict[tuple, dict]" = {}
+    for p in meshes.glob("**/*.nif"):
+        m = _re.match(r"(.*)_([01])\.nif$", p.name, _re.IGNORECASE)
+        if m:
+            groups.setdefault((str(p.parent), m.group(1)), {})[m.group(2)] = p
+    out: "list[str]" = []
+    for (parent, base), byw in sorted(groups.items()):
+        if "0" not in byw or "1" not in byw:
+            continue
+        try:
+            n0 = pyn.NifFile(filepath=str(byw["0"]))
+            n1 = pyn.NifFile(filepath=str(byw["1"]))
+        except Exception:
+            continue
+        try:
+            label = byw["1"].relative_to(meshes).as_posix()
+        except Exception:
+            label = f"{base}_1.nif"
+        out.extend(_weight_partner_scale_divergence(
+            list(n0.shapes), list(n1.shapes), label))
+    return out
+
+
 _BATCH_BSA_INDEX = None   # set per-batch by _cmd_convert; lazy BSA mesh resolver
 
 
@@ -2169,6 +2501,13 @@ class _BsaMeshIndex:
         rel = internal.replace("\\", "/")
         rel = rel[7:] if rel.lower().startswith("meshes/") else rel
         out = self._staging / "meshes" / rel
+        # SECURITY: the BSA internal name is attacker-controlled; refuse any
+        # `..`/absolute traversal that would write outside the staging dir.
+        if not paths.is_within_dir(self._staging / "meshes", out):
+            print(f"  !! BSA extract: refusing traversal path {internal!r}",
+                  file=sys.stderr)
+            self._out[key] = None
+            return None
         try:
             out.parent.mkdir(parents=True, exist_ok=True)
             out.write_bytes(data)
@@ -2234,9 +2573,17 @@ def _resolve_armor_meshes(
 
 
 def _player_armor_mesh_bases(mod_dir: Path,
-                             include_candidate_slots: bool = False) -> "set[str]":
+                             include_candidate_slots: bool = False,
+                             mesh_resolves=None) -> "set[str]":
     """Weight-agnostic rel-path keys of every mesh a DefaultRace ARMA in this mod
     points at as an armor piece (biped slot is not hair-only).
+
+    `mesh_resolves`: optional ``(weight_base_key) -> bool`` predicate (True if that
+    mesh actually exists to convert). Enables the FEMALE-ONLY policy -- with a female
+    model that resolves, the male model is skipped (UBE is a female body; a female
+    actor never renders the male mesh). The male model is kept only for a male-only
+    piece, or when the female model is a dead path (so the female ARMA can redirect to
+    the converted male). ``None`` keeps the legacy "convert every slot".
 
     `include_candidate_slots`: also admit ambiguous modder slots (44/45/47/48/59/61)
     used for body cloth. The crash guard in auto_convert_mod drops any non-body-skinned
@@ -2288,22 +2635,36 @@ def _player_armor_mesh_bases(mod_dir: Path,
                     continue
                 rnam = None
                 slot = 0
-                edid = ""
-                models: list[str] = []
+                female_models: "list[str]" = []   # MOD3 (world) + MOD5 (1st-person)
+                male_models: "list[str]" = []      # MOD2 (world) + MOD4 (1st-person)
                 for sig, sd in _esp.iter_subrecords(rec.payload):
-                    if sig == b"EDID":
-                        edid = sd.rstrip(b"\x00").decode(
-                            "latin-1", errors="ignore").lower()
-                    elif sig == b"RNAM" and len(sd) == 4:
+                    if sig == b"RNAM" and len(sd) == 4:
                         rnam = _struct.unpack("<I", sd)[0]
                     elif sig in (b"BOD2", b"BODT") and len(sd) >= 4:
                         slot = _struct.unpack_from("<I", sd, 0)[0]
-                    elif sig in (b"MOD2", b"MOD3", b"MOD4", b"MOD5"):
-                        # Collect all model slots, not just female (MOD3/MOD5):
-                        # some mods bind their female mesh through MOD2, so
-                        # a MOD3/MOD5-only filter drops real sources.
-                        models.append(sd.rstrip(b"\x00").decode(
+                    elif sig in (b"MOD3", b"MOD5"):
+                        female_models.append(sd.rstrip(b"\x00").decode(
                             "utf-8", errors="ignore"))
+                    elif sig in (b"MOD2", b"MOD4"):
+                        male_models.append(sd.rstrip(b"\x00").decode(
+                            "utf-8", errors="ignore"))
+                # FEMALE-ONLY conversion: UBE is a female body, so convert the FEMALE
+                # model(s) and skip the male mesh (a female actor never renders it, and
+                # refitting it to the female body would be wrong). Two exceptions keep
+                # the male mesh: (1) a MALE-ONLY piece (no female model) -- a female
+                # actor equipping it renders the male mesh, so it needs the UBE refit;
+                # (2) the female model exists but its mesh DOESN'T RESOLVE (a dead
+                # path) -- then the male mesh is the real one the female
+                # ARMA gets redirected to, so it must convert. mesh_resolves==None
+                # (callers without VFS context) keeps the legacy "convert both".
+                if not female_models:
+                    models = male_models
+                elif mesh_resolves is None:
+                    models = female_models + male_models
+                elif any(mesh_resolves(_weight_base_key(m)) for m in female_models):
+                    models = female_models
+                else:
+                    models = female_models + male_models
                 if rnam is None:
                     continue
                 mi = rnam >> 24
@@ -2765,6 +3126,11 @@ def _cmd_auto(args):
         incremental=getattr(args, "incremental", False),
     )
     rc = _cmd_convert(conv)
+    # The post-merge coverage phases below generate the REQUIRED race-compat /
+    # mod-coverage ESPs, but they run AFTER rc was fixed by the convert above.
+    # Track their failures so an exception there still fails the run instead of
+    # silently exiting 0 with armor that's invisible on UBE races.
+    post_merge_failures = 0
 
     # Vanilla race coverage: non-body items no mod replaces (helmets, jewelry).
     # Vanilla body-slot armor is also covered by the standalone pass below.
@@ -2798,6 +3164,7 @@ def _cmd_auto(args):
                     vanilla_converted = vstats.get("converted_rel_paths", set())
                 except Exception as e:
                     print(f"  !! standalone vanilla body armour skipped: {e!r}")
+                    post_merge_failures += 1
 
             print(f"\n--- vanilla race-compat patch -> {vc_out.name} ---")
             try:
@@ -2839,8 +3206,10 @@ def _cmd_auto(args):
                                   f"{rs.get('reason')}")
                     except Exception as e:
                         print(f"  !! UBE race-skin fold failed: {e!r}")
+                        post_merge_failures += 1
             except Exception as e:
                 print(f"  !! vanilla-compat skipped: {e!r}")
+                post_merge_failures += 1
         else:
             print("  (no master data dirs found — skipping vanilla-compat)")
 
@@ -2870,9 +3239,11 @@ def _cmd_auto(args):
                 if ini_lines:
                     ini_path = (output / "SKSE" / "Plugins" / "SkyPatcher"
                                 / "armor" / "UBE_ModNonBody_Coverage.ini")
-                    ini_path.parent.mkdir(parents=True, exist_ok=True)
-                    ini_path.write_text("\n".join(ini_lines) + "\n",
-                                        encoding="utf-8")
+                    # Atomic: a partially-written SkyPatcher INI silently applies
+                    # only the surviving lines (some covered items stay invisible).
+                    from .atomic_io import atomic_write_bytes
+                    atomic_write_bytes(
+                        ini_path, ("\n".join(ini_lines) + "\n").encode("utf-8"))
                 print(f"  minted UBE ARMAs: {mnb.get('minted_armas')} "
                       f"| items covered: {mnb.get('armo_targets')} "
                       f"| masters: {mnb.get('masters')} "
@@ -2892,6 +3263,7 @@ def _cmd_auto(args):
                     print(f"  !! validator: {_vw[:5]}")
         except Exception as e:
             print(f"  !! mod non-body coverage skipped: {e!r}")
+            post_merge_failures += 1
 
     # Mod-defined body coverage: overhaul ARMOs that reuse a vanilla armature
     # whose mesh was converted, but the variant ARMO was never overridden ->
@@ -2921,9 +3293,11 @@ def _cmd_auto(args):
                 if ini_lines and mbd.get('armo_targets'):
                     ini_path = (output / "SKSE" / "Plugins" / "SkyPatcher"
                                 / "armor" / "UBE_ModBody_Coverage.ini")
-                    ini_path.parent.mkdir(parents=True, exist_ok=True)
-                    ini_path.write_text("\n".join(ini_lines) + "\n",
-                                        encoding="utf-8")
+                    # Atomic: a partially-written SkyPatcher INI silently applies
+                    # only the surviving lines (some covered items stay invisible).
+                    from .atomic_io import atomic_write_bytes
+                    atomic_write_bytes(
+                        ini_path, ("\n".join(ini_lines) + "\n").encode("utf-8"))
                 print(f"  minted UBE ARMAs: {mbd.get('minted_armas')} "
                       f"| body items covered: {mbd.get('armo_targets')} "
                       f"| masters: {mbd.get('masters')} "
@@ -2940,6 +3314,7 @@ def _cmd_auto(args):
                     print(f"  !! validator: {_vw[:5]}")
         except Exception as e:
             print(f"  !! mod body coverage skipped: {e!r}")
+            post_merge_failures += 1
 
     # OPT-IN: remap CBBE/3BA body overlays to UBE UV. Writes loose DDS at the
     # original texture paths so RaceMenu loads them via load order. Needs texconv.
@@ -2974,8 +3349,11 @@ def _cmd_auto(args):
     if mbd_esp_generated:
         _enable += (" + 'UBE_ModBody_Coverage.esp' "
                     "(REQUIRED for mod-defined body variants — see warning above)")
+    if post_merge_failures:
+        print(f"\n  !! {post_merge_failures} post-merge coverage phase(s) FAILED "
+              "-- some armor may be invisible on UBE races (see errors above).")
     print(f"\n=== auto: done — enable {_enable} in MO2. ===")
-    return rc
+    return rc or (2 if post_merge_failures else 0)
 
 
 def _cmd_discover_body_ref(args):
@@ -3029,6 +3407,32 @@ def _cmd_merge(args):
     print(f"  ARMO total: {stats.get('total_armo_records', '?')}"
           f" (dedup: {stats.get('armo_duplicates_merged', 0)} duplicates "
           "merged)")
+    # Self-heal a stale/mis-sorted master list before validating (no-op if clean).
+    try:
+        _nrs = ube_patcher.resort_masters_all(
+            Path(stats.get('output', args.output)), master_data_dirs=_mdd)
+        if _nrs:
+            print(f"  master re-sort: repaired {_nrs} mis-ordered piece(s)")
+    except Exception as _e:
+        print(f"  !! master re-sort failed: {_e!r}")
+    # Postflight the FINAL merged output (+ any ESL split pieces) -- this is the
+    # exact artifact the validator exists to guard (master-ordering / ESL-overflow
+    # / malformed-MODT CTD class). The integrated auto/convert path already does
+    # this; the standalone `merge` subcommand must not skip it.
+    try:
+        _pf = ube_patcher.postflight_validate_combined(
+            Path(stats.get('output', args.output)), master_data_dirs=_mdd)
+        if _pf["ctd"]:
+            print(f"  !! POSTFLIGHT CTD on merged output: {len(_pf['ctd'])} "
+                  "load-breaking issue(s) -- NOT safe to load:")
+            for _piece, _w in _pf["ctd"]:
+                print(f"       {_piece}: {_w}")
+            return 2
+        if _pf["soft"]:
+            print(f"  postflight: {len(_pf['soft'])} soft warning(s) "
+                  "(invisible/cosmetic, non-fatal)")
+    except Exception as _pfe:
+        print(f"  !! postflight validation skipped: {_pfe!r}")
     return 0
 
 
