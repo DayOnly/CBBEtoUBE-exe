@@ -72,6 +72,18 @@ def test_priority_flips_with_modlist_order(tmp_path):
     assert idx["foo.esp"] == mods / "ModLow" / "Foo.esp"
 
 
+def test_root_level_plugin_still_indexed(tmp_path):
+    # A plugin sitting DIRECTLY in the mods root (no mod folder) was indexed by
+    # the old os.walk; the priority-ordered walk must keep that parity.
+    mods = tmp_path / "mods"
+    _mk(mods / "Loose.esp")
+    _mk(mods / "ModA" / "InMod.esp")
+    lay = paths.Layout(mods_root=mods)
+    idx = paths.plugin_file_index(lay)
+    assert idx["loose.esp"] == mods / "Loose.esp"
+    assert idx["inmod.esp"] == mods / "ModA" / "InMod.esp"
+
+
 def test_no_modlist_still_indexes_all(tmp_path):
     # No instance_dir/modlist -> falls back to a deterministic sorted walk but
     # still finds every plugin (no regression when priority info is absent).

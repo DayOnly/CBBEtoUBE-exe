@@ -3852,21 +3852,61 @@ def fix_vertex_color_shader_flags(nif) -> int:
     return fixed
 
 
+def _repair_effect_shader_shape_controllers(nif_backing) -> int:
+    """Reset a SHAPE's shape-level controllerID to NONE when it wrongly points at
+    that same shape's shader property (controllerID == shaderPropertyID).
+
+    A post-conversion re-save path can leave an effect-shader (glow/decal) shape
+    with its shape-level controllerID dangling onto its own BSEffectShaderProperty
+    block. At equip the engine walks the shape's controller chain, finds a
+    BSEffectShaderProperty where a NiTimeController must be, and calls a bad vtable
+    slot -> EXCEPTION_ACCESS_VIOLATION `call [rax+0x28]` CTD (the Daedric
+    MaleTorsoGlow crash). A shape's controller can NEVER validly be its own shader
+    property, so this self-reference is unambiguously corrupt; source glow shapes
+    carry NONE here. Returns the number of shapes repaired. #glow-shape-controller"""
+    try:
+        none_id = _pynifly().NODEID_NONE
+    except Exception:
+        return 0
+    fixed = 0
+    for s in nif_backing.shapes:
+        try:
+            pr = s.properties
+            cid = getattr(pr, "controllerID", none_id)
+            spid = getattr(pr, "shaderPropertyID", none_id)
+            if cid != none_id and cid == spid:
+                pr.controllerID = none_id
+                try:
+                    s.write_properties()
+                except Exception:
+                    pass
+                fixed += 1
+        except Exception:
+            continue
+    return fixed
+
+
 def _sanitize_one_nif_worker(path_str: str) -> int:
     """Worker (picklable for ProcessPoolExecutor): load ONE NIF, clear
-    inconsistent vertex-color/alpha shader flags, save if changed. Returns the
-    number of shapes fixed (0 = nothing changed / unreadable). Each call touches
-    a distinct file, so parallel workers never write-conflict."""
+    inconsistent vertex-color/alpha shader flags AND repair dangling effect-shader
+    shape controllers, save if changed. Returns the number of shapes fixed
+    (0 = nothing changed / unreadable). Each call touches a distinct file, so
+    parallel workers never write-conflict."""
     try:
         from . import nif_io
         from pathlib import Path as _Path
         nif = nif_io.load_nif(_Path(path_str))
     except Exception:
         return 0
+    n = 0
     try:
-        n = fix_vertex_color_shader_flags(nif._backing)
+        n += fix_vertex_color_shader_flags(nif._backing)
     except Exception:
-        return 0
+        pass
+    try:
+        n += _repair_effect_shader_shape_controllers(nif._backing)
+    except Exception:
+        pass
     if n:
         try:
             atomic_nif_save(nif._backing, path_str)
@@ -3910,10 +3950,15 @@ def sanitize_output_vertex_color_flags(meshes_root, workers: "int | None" = None
                 nif = nif_io.load_nif(_Path(ps))
             except Exception:
                 continue
+            n = 0
             try:
-                n = fix_vertex_color_shader_flags(nif._backing)
+                n += fix_vertex_color_shader_flags(nif._backing)
             except Exception:
-                continue
+                pass
+            try:
+                n += _repair_effect_shader_shape_controllers(nif._backing)
+            except Exception:
+                pass
             if n:
                 try:
                     atomic_nif_save(nif._backing, ps)

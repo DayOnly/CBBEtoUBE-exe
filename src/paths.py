@@ -464,6 +464,17 @@ def plugin_file_index(lay: "Layout") -> "dict[str, Path]":
             pass
         for md in mod_dirs:
             _index_dir(md)
+        # Plugin files sitting DIRECTLY in the mods root (no mod folder) --
+        # unusual, but the old os.walk(mods_root) indexed them, so keep parity.
+        try:
+            for f in lay.mods_root.iterdir():
+                if f.is_file():
+                    fl = f.name.lower()
+                    if (fl.endswith((".esp", ".esm", ".esl"))
+                            and fl not in index):
+                        index[fl] = f
+        except OSError:
+            pass
 
     # 2. Game Data dir(s), then overwrite (mods already won via first-seen).
     for r in (lay.game_data_dirs or []):
