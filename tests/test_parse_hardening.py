@@ -20,7 +20,9 @@ a short slice a verbatim-copy pass would re-emit corrupt), and validate_patch
 must flag the headerless-MODT and out-of-range-KWDA crash classes."""
 import struct
 
-from src import esp, ube_patcher
+import pytest
+
+from src import esp, tri, ube_patcher
 from src.esp import encode_subrecord, encode_zstring, iter_subrecords
 
 
@@ -91,6 +93,44 @@ def test_validate_clean_modt_no_warning(tmp_path):
     p = _save_arma(tmp_path, struct.pack("<III", 2, 0, 0))   # valid empty MODT
     w = ube_patcher.validate_patch(p, check_nifs=False)
     assert not any(x.startswith("modt-malformed") for x in w), w
+
+
+# ---- record / TES4-header / TRI parse hardening ----------------------------
+# These raise a clean, catchable ValueError on truncated/malformed untrusted
+# input instead of a cryptic struct.error or a strip-able assert (the file's
+# stated convention).
+
+def test_record_parse_truncated_payload_raises_valueerror():
+    # Header declares 100 payload bytes but only 4 follow -> ValueError, not a
+    # silently-short payload a verbatim-copy pass would re-emit corrupt.
+    data = (b"ARMO" + struct.pack("<I", 100) + struct.pack("<I", 0)
+            + struct.pack("<I", 0x01000800) + struct.pack("<I", 0)
+            + struct.pack("<I", 0) + b"\x01\x02\x03\x04")
+    with pytest.raises(ValueError):
+        esp.Record.parse(data, 0)
+
+
+def test_tes4header_rejects_non_tes4_record():
+    # Was `assert rec.sig == b"TES4"` -> stripped under `python -O`.
+    rec = esp.Record(sig=b"ARMO", flags=0, formid=0, timestamp_vc=0,
+                     version_unk=0, payload=b"")
+    with pytest.raises(ValueError):
+        esp.TES4Header.parse_from_record(rec)
+
+
+def test_tes4header_short_hedr_keeps_defaults_no_struct_error():
+    # A HEDR with < 12 data bytes must not raise struct.error; defaults stand.
+    rec = esp.Record(sig=b"TES4", flags=0, formid=0, timestamp_vc=0,
+                     version_unk=0,
+                     payload=encode_subrecord(b"HEDR", b"\x00\x00\x00\x00"))
+    h = esp.TES4Header.parse_from_record(rec)   # must not raise
+    assert h.next_object_id == 0x800            # default preserved
+
+
+def test_tri_truncated_header_raises_valueerror():
+    # Valid 4-byte magic with no shape-count field -> ValueError, not struct.error.
+    with pytest.raises(ValueError):
+        tri.TriFile.parse(tri.TRI_MAGIC)
 
 
 def test_validate_flags_out_of_range_kwda(tmp_path):

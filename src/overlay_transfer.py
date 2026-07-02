@@ -66,9 +66,14 @@ _TEXCONV_CACHE: "list[Path | None]" = []
 
 def find_texconv() -> "Path | None":
     """Locate texconv(.exe). Order: env CBBE2UBE_TEXCONV, then the MO2 instance
-    tools/ tree, then a bounded scan of the mods root, then PATH. Prefers the
-    x64 build. Cached. Returns None if not found (the caller disables the
-    overlay feature with a clear message -- it's opt-in anyway)."""
+    tools/ tree, then PATH. Prefers the x64 build. Cached. Returns None if not
+    found (the caller disables the overlay feature with a clear message -- it's
+    opt-in anyway).
+
+    SECURITY: deliberately does NOT scan the mods/ tree. A malicious mod could
+    plant a Texconv*.exe there and the rglob would execute it (search-path
+    hijack -> RCE). texconv lives in the instance tools/ dir or on PATH, never
+    inside an installed mod."""
     if _TEXCONV_CACHE:
         return _TEXCONV_CACHE[0]
     found: "Path | None" = None
@@ -79,8 +84,9 @@ def find_texconv() -> "Path | None":
         roots: list[Path] = []
         mr = _paths.mods_root()
         if mr is not None:
-            roots.append(mr.parent / "tools")   # <instance>/tools
-            roots.append(mr)                     # mods/ (some tool mods ship it)
+            roots.append(mr.parent / "tools")   # <instance>/tools (trusted)
+            # NOT mods/: a malicious mod could plant Texconv*.exe there and the
+            # rglob below would execute it (search-path hijack -> RCE).
         for root in roots:
             if found is not None or not root.is_dir():
                 break
@@ -434,11 +440,6 @@ def build_region_correspondence(region: str, weight: str = "_1"
     cbbe, ube = _find_region_meshes(region, weight)
     prefer = ("BaseShape", "3BA") if region == "body" else ("BaseShape",)
     return build_overlay_correspondence(cbbe, ube, prefer)
-
-
-def build_body_overlay_correspondence(weight: str = "_1") -> "OverlayCorrespondence | None":
-    """Back-compat: the BODY correspondence."""
-    return build_region_correspondence("body", weight)
 
 
 def convert_overlay(src_dds, out_dds, corr, texconv, workdir):
@@ -834,8 +835,12 @@ def convert_overlays(output_dir, layout, *, regions=("body", "hands", "feet"),
                     raise RuntimeError("BSA extract returned no data")
                 src_dds = w / "src.dds"
                 src_dds.write_bytes(data)
-            convert_overlay(src_dds, out_root / rel.replace("/", "\\"),
-                            _corr, texconv, w)
+            out_dds = out_root / rel.replace("/", "\\")
+            # SECURITY: `rel` derives from a mod-controlled (BSA) texture name;
+            # refuse `..`/absolute traversal outside the overlay output root.
+            if not _paths.is_within_dir(out_root, out_dds):
+                raise RuntimeError(f"refusing overlay traversal path: {rel!r}")
+            convert_overlay(src_dds, out_dds, _corr, texconv, w)
             return rel
 
         rn = 0
@@ -869,16 +874,6 @@ def convert_overlays(output_dir, layout, *, regions=("body", "hands", "feet"),
         f"({', '.join(f'{r}={c}' for r, c in per_region.items())})")
     return {"converted": n, "failed": failed, "total": total,
             "per_region": per_region}
-
-
-def convert_body_overlays(output_dir, layout, **kw) -> dict:
-    """Back-compat: body overlays only."""
-    return convert_overlays(output_dir, layout, regions=("body",), **kw)
-
-
-def discover_body_overlays(layout) -> "dict[str, tuple]":
-    """Back-compat: just the body overlays as {rel: source}."""
-    return discover_overlays(layout, regions=("body",)).get("body", {})
 
 
 # ---------- multi-slot FEET pass (Papyrus repoint) --------------------------

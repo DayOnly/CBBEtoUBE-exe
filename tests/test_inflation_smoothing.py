@@ -84,3 +84,15 @@ def test_body_normal_inflation_still_pushes_outward():
     radii = np.linalg.norm(out, axis=1)
     assert radii.min() > 10.0, "inflation must push verts outward"
     assert abs(np.median(radii) - 10.5) < 0.1, "expected ~0.5u outward push"
+
+
+def test_inflate_empty_input_returns_cleanly():
+    # Zero-vert armor (or empty body) must return cleanly rather than raise on
+    # cKDTree / idxs.max() -- the shape would otherwise silently lose clearance.
+    body = np.zeros((3, 3), dtype=np.float64)
+    out = nc.inflate_armor_outward(np.zeros((0, 3), dtype=np.float64), body)
+    assert out.shape[0] == 0                     # empty armor -> empty out
+
+    armor = np.array([[1.0, 0.0, 0.0]], dtype=np.float64)
+    out2 = nc.inflate_armor_outward(armor, np.zeros((0, 3), dtype=np.float64))
+    assert np.allclose(out2, armor)              # empty body -> armor unchanged

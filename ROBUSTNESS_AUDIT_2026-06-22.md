@@ -1,0 +1,217 @@
+# CBBE-to-UBE robustness / failure-handling audit
+
+Branch: `main` == `testing` @ `319f14f`
+Date: 2026-06-22
+Scope: failure-handling robustness (atomic writes, postflight validation, swallowed
+failures, exit-code accounting, worker-pool death handling). NOT a feature/correctness
+audit of the conversion math.
+
+Method: five independent code traces (worker pool, swallowed failures, exit codes,
+postflight completeness, atomic-write coverage). Every High/Medium item below was
+re-read in source and confirmed; line numbers are against the commit above.
+
+Legend: [ ] open  [~] in progress  [x] fixed (with commit)
+
+---
+
+## Overall posture
+
+Detection is strong (atomic writes, a real merged-ESP postflight CTD gate, most
+failures surfaced). The weakness is uniformly in *recovery and escalation*:
+confirmed-broken-output conditions classified as warnings (exit 0), one transient
+worker crash cascading to the whole batch, and a few fully-silent failure paths.
+
+---
+
+## Fix log - 2026-06-22 (suite 347 -> 360, all green)
+
+L-tier round 2: L1/L2/L4 FIXED; L3 investigated -> DEFERRED with reasoning.
+- L1  ube_patcher.py - ESL-overflow now counts ALL own-index records, not just ARMA (byte-identical today since only ARMA is minted; future-proof against a non-ARMA own-index mint silently under-counting).
+- L2  auto_convert.py - VirtualBody re-hide failure escalated from a bare `note` to a counted warning (new `virtualbody_rehide_failures` field -> overall_warnings).
+- L4  nif_convert.py - the swallowed phase-1 (HDT+BODYTRI+VirtualBody-hide) AND phase-2 BODYTRI injections now surface into the result reason (was `except: pass`; silent no-physics/no-morph).
+- L3  DEFERRED (not a hand-wave): race-coverage assertion needs the "deeper model" - a naive check false-fails healthy builds (intentionally-uncovered armors, custom races, the converter's own multi-pass coverage), violating the never-falsely-fail rule. Alt-texture-index residual is belt-and-suspenders over the shipped reconcile_alt_texture_indices_all + the M6 surfacing; its only trigger is a reconcile regression (a test's job) and it would add NIF-loading to the validator path for marginal value.
+- Tests: +2 (esl-overflow counts non-ARMA; VB-rehide field default). 13 audit tests total.
+
+
+
+FIXED this pass (no reconvert needed - source-only; exe rebuild needed to ship):
+- H3  auto_convert.py - NEW `_NifPool`: a self-healing wrapper around the batch-shared process pool. A worker process death (native pynifly crash -> BrokenProcessPool) rebuilds the pool and re-runs the not-yet-done items in ISOLATION (one at a time), so only the true crasher is dropped - not the rest of the mod, and (shared pool persists) not every later mod. GIVE_UP_AFTER=5 consecutive crashes = systemic-failure backstop. Proven with a REAL subprocess crash-sim test (worker os._exit -> genuine broken pool -> recovery + pool survives).
+- H1  auto_convert.py - per-NIF equip-CTD/zero-vert invariants now `overall_failures` (exit 2), symmetric with the merged-ESP gate.
+- H2  auto_convert.py - `_cmd_auto` tracks `post_merge_failures`; an exception in any REQUIRED coverage phase now folds into the return code.
+- H4  nif_convert.py - phase-2 HDT gate keys on a new `hdt_injected` flag (not `hdt_xml_path is None`); a found-but-failed source-XML attach now falls through to regen AND surfaces via result_reason.
+- H5  auto_convert.py - `_warmup_worker` barrier.wait now has a 300s timeout (+ BrokenBarrierError swallow); a worker dying mid-warm-up can't wedge the survivors.
+- M1  ube_patcher.py - unloadable/not-found masters in the UBE-race ARMO scan are collected and surfaced via `validation_warnings` (master-coverage-skipped), gated on master_data_dirs to avoid spam.
+- M2  ube_patcher.py - `unmappable-master-ref` added to `_POSTFLIGHT_CTD_PREFIXES` (it documents itself as a startup crash; can't false-positive since the check only fires on a locatable master).
+- M3  auto_convert.py - standalone `merge` subcommand now runs `postflight_validate_combined` on the merged output and returns 2 on a CTD-class finding.
+- M4  esp.py - Record.parse/Group.parse raise clean ValueErrors (no -O-stripped asserts, no cryptic struct.error) + nested-GRUP zero-size guard (no infinite loop). Happy path byte-identical.
+- M5  auto_convert.py - texture copy + both SkyPatcher coverage INIs routed through atomic_io (no truncated game-loaded files).
+- M6  ube_patcher.py - alt-texture reconcile now surfaces converted NIFs that EXIST but fail to load (stale color-variant indices kept), distinct from a legitimately absent path.
+- Tests: tests/test_robustness_audit_2026_06_22.py (11 new regression tests, incl. a real-subprocess crash-sim) + tests/_crash_worker.py helper.
+
+STILL OPEN (see items below): L1-L4 (low/latent) only. All High + Medium findings fixed.
+
+---
+
+## High severity
+
+### [x] H1 - Equip-CTD NIFs only warn; process exits 0  (FIXED)
+`_nif_invariant_issues` (auto_convert.py:2043) flags over-cap single-partition shapes
+as "split failed -> equip CTD risk" and zero-vert shapes as degenerate, on the final
+reloaded bytes. Caller routes it to `overall_warnings` (auto_convert.py:1675); exit
+code keys only off `overall_failures` (auto_convert.py:1911). A mesh that hard-CTDs on
+equip ships exit 0. Asymmetric with the merged-ESP CTD path, which fails the build.
+Fix: promote these two invariant classes to `overall_failures`.
+
+### [x] H2 - The "REQUIRED" coverage ESPs cannot affect the exit code  (FIXED)
+`_cmd_auto` fixes `rc = _cmd_convert(conv)` (auto_convert.py:2767), then runs vanilla
+race-compat, vanilla bodies, mod non-body/body coverage, overlay, race-skin fold AFTER
+that - each in a try/except that only prints "skipped" (e.g. 2799-2800), returning the
+stale `rc` (2978). Plugins the closing message calls REQUIRED can fail to generate and
+still exit 0.
+Fix: accumulate post-merge phase failures and fold into the return code.
+
+### [x] H3 - One native worker crash cascades to every remaining mod in the batch  (FIXED via _NifPool)
+Single shared ProcessPoolExecutor (auto_convert.py:1495) threaded into every source
+mod. A native pynifly crash marks the whole pool broken. Surfaced (not silent):
+remaining futures drain to "worker process died" (`_drain_result`, 97-108) and later
+mods hit the submit-guard (936-944). But no pool rebuild/retry exists -> all meshes for
+mods #4..N go unconverted (invisible) after a crash in mod #3.
+Fix (larger): detect BrokenProcessPool, rebuild the pool, resubmit remaining items.
+
+### [x] H4 - Silent no-physics chain on the body-swap path  (FIXED)
+nif_convert.py:9150 sets `hdt_xml_path` from source; injection at 9168-9175 is wrapped
+in `except: pass` (9176-9177); regen fallback gated `if hdt_xml_path is None` (9256). A
+source XML found + injection throwing leaves `hdt_xml_path` non-None -> regen skipped ->
+saved NIF has no physics ref, nothing surfaced. Only backstop `_finalize_hdt_physics`
+also swallows (9290-9291). Gate conflates "no source XML" with "injection failed".
+Fix: track injection success separately; run regen if injection failed; surface it.
+
+### [x] H5 - Warm-up barrier can deadlock with no timeout  (FIXED)
+`_warmup_worker` ends with `barrier.wait()` (auto_convert.py:141), no timeout, sized to
+num_workers. A worker dying during prewarm before the barrier wedges survivors forever;
+`as_completed` never yields them; the call site catches raises, not hangs.
+Fix: pass a timeout to barrier.wait() and handle BrokenBarrierError.
+
+---
+
+## Medium severity
+
+### [x] M1 - Master not found/unloadable -> silent missing UBE-race coverage  (FIXED)
+ube_patcher.py:1593-1594 and 1607-1610 skip the master-ARMO override scan without
+recording to `master_scan_stats`. Armors defined in that master get no UBE-race ARMA
+override (invisible on UBE actors), no signal.
+Fix: record the skip into stats and surface it as a warning.
+
+### [x] M2 - `unmappable-master-ref` documented as a crash but classified non-fatal  (FIXED)
+Its comment (ube_patcher.py:2163) and emit text (2195) say "startup crash," but the
+prefix is absent from `_POSTFLIGHT_CTD_PREFIXES` (1895-1898) -> postflight files it
+`soft`/warn. Mitigated by the generation-time skip (1622), but the classification
+contradicts its own stated severity.
+Fix: decide - either add the prefix to the CTD set, or soften the comment/emit text to
+match reality (it is avoided at generation, so warn may be correct). Resolve the
+inconsistency.
+
+### [x] M3 - Standalone `merge` subcommand: no postflight, always exit 0  (FIXED)
+`_cmd_merge` (auto_convert.py:2992-3032) returns 0 unconditionally - never calls
+`postflight_validate_combined`, never inspects `downgraded_to_full_esp`. The exact
+artifact postflight guards is unvalidated on this path.
+Fix: run postflight on the merged output; return non-zero on CTD-class findings.
+
+### [x] M4 - Validators can crash on a malformed source ESP  (FIXED)
+`validate_patch` uses `esp.ESP.load`; `Record.parse` has unguarded struct.unpack,
+zlib.decompress, and `assert len(payload)==uncomp_size` (esp.py:115-126); `Group.parse`
+asserts GRUP and skips nested groups by `inner += inner_size` with no zero/overshoot
+guard (157,171-172). Hardened only at iter_subrecords. Per-source / vanilla-compat call
+sites are unguarded or swallow.
+Fix: harden Record/Group.parse (bounds-check, replace asserts with clean errors).
+
+### [x] M5 - Non-atomic writes of game-loaded artifacts  (FIXED)
+auto_convert.py: texture copy `shutil.copy2(f, out)` (994), and two SkyPatcher coverage
+INIs via raw `write_text` (2874, 2925). `atomic_copy`/`atomic_write_bytes` exist and are
+used elsewhere. Truncated DDS -> garbage texture; truncated INI -> partial silent
+distribution.
+Fix: route all three through atomic_io.
+
+### [x] M6 - Alt-texture reconcile silently skips records whose converted NIF won't load  (FIXED)
+ube_patcher.py:284-297 (`shapes_for` -> None on load failure), consumed 318-319, leaves
+stale source 3D indices -> multi-color variant textures misalign, indistinguishable
+from "no change needed".
+Fix: count/surface the skipped records.
+
+---
+
+## Low / latent
+
+### [x] L1 - ESL-overflow check counts only ARMA  (FIXED)
+Was correct today (every own-index mint is ARMA) but coupled. Now counts ALL own-index
+records across all groups -> future-proof against a non-ARMA own-index mint silently
+under-counting and re-opening the overflow-CTD class. Byte-identical behavior today.
+
+### [x] L2 - VirtualBody re-hide failure is a `notes` entry only  (FIXED)
+Escalated to a counted warning: new `virtualbody_rehide_failures` field surfaced in
+_cmd_convert -> overall_warnings (visible "blue body-double" defect, not a CTD).
+
+### [ ] L3 - Deferred postflight checks absent: race-coverage + alt-texture-index residual  (INVESTIGATED -> DEFERRED)
+Deliberately deferred after review, NOT overlooked:
+- race-coverage assertion needs a deeper model; a naive "every body ARMO needs a UBE ARMA"
+  false-fails healthy builds (intentionally-uncovered armors, custom races, the converter's
+  own multi-pass coverage) -> violates the never-falsely-fail rule the postflight gate holds.
+- alt-texture-index residual is belt-and-suspenders over the shipped reconcile_*_all + the
+  M6 surfacing; its only trigger is a reconcile regression (a test's job), and it would add
+  NIF-loading to the validator path for marginal runtime value.
+
+### [x] L4 - Misc swallows  (FIXED: phase-1 + phase-2 injection surfaced)
+phase-1 HDT/BODYTRI/VirtualBody-hide injection (was `except: pass`) and phase-2 BODYTRI
+injection now capture the exception and surface it into the result reason (was silent
+no-physics / no-morph). stale-chain-bone guard left as-is (backstopped by validate_dst_nif's
+"HDT XML declares bone X the NIF lacks" warning).
+
+---
+
+## What's solid (do not regress)
+- Atomic write coverage for ESP/NIF/TRI/OSD/HDT-XML/PEX is complete.
+- Merged-Combined postflight CTD gate fails the build for master-ordering, ESL-overflow,
+  formid-out-of-range/zero, modt-malformed (auto_convert.py:1849 -> 1911).
+- nif_errors, nif_load_failures, esp_gen_failures, nif_partial/dropped_shapes, per-source
+  raises, merge-blockers all force exit 2. GUI + frozen exe propagate the code.
+- iter_subrecords is bounds-checked.
+
+---
+
+# Security audit (untrusted mod input) - 2026-06-23 (suite -> 366, all green)
+
+Threat model: a malicious/malformed mod the user installs and runs the converter over;
+local execution, user privileges, OUTSIDE the game sandbox. ALL of S1-S6 FIXED.
+No shell injection exists (both subprocess calls use list-arg form); no eval/exec/pickle
+of mod data. Tests: tests/test_security_audit.py (6).
+
+### [x] S1 - BSA "zip-slip" -> arbitrary file write outside the output sandbox  (FIXED) [HIGH]
+A mod's BSA internal name (and ARMA model path) was joined to disk with NO `..`
+sanitization at auto_convert.py:2312 (staging, raw BSA bytes) + :1006 (output NIF) +
+overlay_transfer.py:837 (overlay DDS) -> a crafted name like
+`meshes\..\..\..\Startup\x.bat` writes attacker content outside output_dir (persistence/RCE).
+FIX: new `paths.is_within_dir(base, target)` (resolve + containment); all 3 write sites
+refuse a traversal path (skip + stderr / raise).
+
+### [x] S2 - texconv search-path hijack -> RCE  (FIXED) [HIGH, opt-in]
+overlay_transfer.py find_texconv did `rglob("[Tt]exconv*.exe")` over the mods/ tree and
+executed cands[0] -> a mod planting Texconv*.exe = code execution (overlay feature only).
+FIX: dropped the mods/ scan; only the instance tools/ dir + PATH are searched.
+
+### [x] S3 - ESP record decompression bomb  (FIXED) [MEDIUM DoS]
+esp.py:133 zlib.decompress had no output bound (the uncomp_size check ran AFTER inflation;
+~1000x amplification, 10MB -> 10GB, every source ESP). FIX: cap declared size (128MB) +
+bounded decompressobj(max_length) that rejects inflation past the declared size.
+
+### [x] S4 - TRI shape-count object explosion  (FIXED) [MEDIUM DoS]
+tri.py shape loop built one object per ~4 bytes, no cap (16MB -> 4M objects). Reachable via
+a mod NIF BODYTRI -> crafted .tri. FIX: _MAX_SHAPES=100k cap.
+
+### [x] S5 - HDT-SMP XML "billion laughs"  (FIXED) [LOW-MEDIUM]
+hdt_xml_gen.py:630 ET.parse on a mod's source XML, no entity cap (XXE not exploitable on
+stdlib ET; internal entity expansion is). FIX: reject any XML with DOCTYPE/ENTITY (and
+absurdly large files) before parsing.
+
+### [x] S6 - OSD morph_count bomb  (FIXED, was latent) [LOW]
+osd.py:97 unbounded morph_count loop (only the bundled OSD is parsed today, so latent).
+FIX: clamp morph_count to min(declared, len//3, 100k) + per-iter truncation guards.

@@ -28,7 +28,9 @@ import numpy as np
 import pytest
 
 from tests.synthetic_nif import (VERTS, build_shape_nif, build_skinned_shape_nif,
+                                  build_effect_shader_nif, build_colored_shape_nif,
                                   copy_shape_into_fresh, pynifly_available)
+import src.nif_convert as nc  # noqa: E402
 
 pytestmark = pytest.mark.skipif(not pynifly_available(),
                                 reason="pynifly native lib unavailable")
@@ -89,6 +91,39 @@ def test_copy_shape_fitpath_nonskinned_preserves_transform(tmp_path):
         "non-skinned transform was wrongly zeroed (misposition risk)"
 
 
+def test_copy_shape_skinned_offset_g2s_preserves_transform(tmp_path):
+    # A SKINNED shape with an authored OFFSET global_to_skin and a compensating
+    # NiAVObject transform (furexarot SMP armor, e.g. the elven cuirass) on the
+    # NON-fit copy path must KEEP its transform: the g2s + transform are a matched
+    # pair the engine uses to place the bounding sphere. Zeroing it lands the cull
+    # bound ~g2s-offset below the geometry -> the shape is frustum-culled / invisible
+    # at angles (the regression this guards). Distinct from the FIT path, where the
+    # verts ARE body-positioned and the transform IS reset (test above).
+    src = build_skinned_shape_nif(tmp_path / "src.nif", trans=(0.0, 0.0, 120.3),
+                                  g2s_trans=(0.0, 0.0, -120.3))
+    s = nc._pynifly().NifFile(filepath=str(src)).shapes[0]
+    assert s.has_global_to_skin, "test setup: offset g2s not set"
+    out = copy_shape_into_fresh(src, tmp_path / "dst.nif")   # NO override_verts (not fit)
+    assert abs(out.transform.translation[2] - 120.3) < 1e-3, \
+        f"skinned offset-g2s transform was zeroed (cull-bound regression): " \
+        f"{list(out.transform.translation)}"
+
+
+def test_copy_shape_fitpath_offset_g2s_preserves_transform(tmp_path):
+    # The FIT path (override_verts) for a SKINNED offset-g2s shape -- the elven
+    # cuirass's ACTUAL path (a phase-1 "copy" still fits verts). The fit clause
+    # `override_verts is not None and bone_names` fires here, so the offset-g2s gate
+    # must SUPPRESS the reset; the non-fit guard above does NOT cover this path.
+    # Zeroing the transform drops the cull bound ~g2s below the geometry ->
+    # frustum-culled / INVISIBLE LEGS on equip (the regression this guards).
+    src = build_skinned_shape_nif(tmp_path / "src.nif", trans=(0.0, 0.0, 120.3),
+                                  g2s_trans=(0.0, 0.0, -120.3))
+    out = copy_shape_into_fresh(src, tmp_path / "dst.nif", override_verts=VERTS)
+    assert abs(out.transform.translation[2] - 120.3) < 1e-3, \
+        f"fit-path offset-g2s transform was zeroed (invisible-legs regression): " \
+        f"{list(out.transform.translation)}"
+
+
 def test_copy_shape_identity_is_noop(tmp_path):
     # An identity-transform shape must round-trip its verts unchanged (no spurious
     # bake) -- guards against a future change baking when it shouldn't.
@@ -97,3 +132,82 @@ def test_copy_shape_identity_is_noop(tmp_path):
     ov = [tuple(v) for v in out.verts]
     for i, v in enumerate(VERTS):
         assert all(abs(ov[i][k] - v[k]) < 1e-4 for k in range(3)), (i, ov[i])
+
+
+def test_copy_shape_preserves_effect_shader(tmp_path):
+    # REGRESSION (Daedric cuirass glow): the red glow is an ANIMATED BSEffectShaderProperty
+    # overlay. createShapeFromData only makes BSLightingShaderProperty, which would downgrade
+    # it (emissive zeroed, greyscale dropped -> white). _copy_shape must transplant the effect
+    # shader AND its animation controller chain (controller -> interpolator -> NiFloatData).
+    # (Animation is DEFAULT ON -- an earlier CTD was mis-blamed on the controller; the real
+    # cause was scale bones on the skin, see test_copy_shape_effect_shader_scale_bone_free.)
+    src = build_effect_shader_nif(tmp_path / "glow_src.nif", controlled_var=8)
+    src_shape = nc._pynifly().NifFile(filepath=str(src)).shapes[0]
+    assert src_shape.shader_block_name == "BSEffectShaderProperty"   # sanity
+    out = copy_shape_into_fresh(src, tmp_path / "glow_out.nif")
+    assert out.shader_block_name == "BSEffectShaderProperty", \
+        "effect shader was downgraded to lighting shader (glow would render white)"
+    ctrl = out.shader.controller
+    assert ctrl is not None, "glow animation controller was not transplanted"
+    assert ctrl.properties.controlledVariable == 8, "controlled variable lost"
+    assert ctrl.properties.targetID == out.shader.id, "controller does not target its shader"
+    data = out.file.read_node(id=ctrl.interpolator.properties.dataID)
+    assert len(data.keys) == 2, "animation keyframes lost"
+
+
+def test_copy_shape_effect_shader_static_optout(tmp_path, monkeypatch):
+    # CBBE2UBE_NO_GLOW_ANIM forces a STATIC glow (colour but no controller) as an escape hatch.
+    monkeypatch.setattr(nc, "_EFFECT_GLOW_ANIM", False)
+    src = build_effect_shader_nif(tmp_path / "glow_src.nif", controlled_var=8)
+    out = copy_shape_into_fresh(src, tmp_path / "glow_out.nif")
+    assert out.shader_block_name == "BSEffectShaderProperty"    # colour preserved
+    assert out.shader.controller is None, "opt-out static glow must have NO controller"
+
+
+def test_drop_scale_bones_from_skin_folds_and_conserves():
+    # The 'MaleTorsoGlow' CTD fix: a scale bone on an effect-shader overlay's skin crashes
+    # the render. Strip scale bones, folding each vert's scale weight into its largest kept
+    # (skeleton) bone so per-vertex mass is conserved and no bone goes zero-weight.
+    LT = "NPC L Thigh [LThg]"; FT = "NPC L FrontThigh"; RT = "NPC L RearThigh"
+    SP = "NPC Spine2 [Spn2]"
+    bones = [LT, SP, FT, RT]
+    xf = {LT: "x1", SP: "x2", FT: "x3", RT: "x4"}
+    w = {LT: [(0, 0.5), (1, 0.7)], SP: [(1, 0.1)], FT: [(0, 0.5), (1, 0.1)], RT: [(1, 0.1)]}
+    kb, kx, kw = nc._drop_scale_bones_from_skin(bones, xf, w)
+    assert FT not in kb and RT not in kb, "scale bones must be removed"
+    assert set(kb) == {LT, SP} and set(kx) == {LT, SP}
+    tot = {}
+    for b, lst in kw.items():
+        for vi, ww in lst:
+            tot[vi] = tot.get(vi, 0.0) + ww
+    assert abs(tot[0] - 1.0) < 1e-6 and abs(tot[1] - 1.0) < 1e-6   # mass conserved
+    v0 = {b: dict(kw.get(b, [])) .get(0) for b in kb}
+    assert abs(v0[LT] - 1.0) < 1e-6      # vert0 0.5 Thigh + 0.5 FrontThigh -> 1.0 Thigh
+
+
+def test_drop_scale_bones_noop_without_scale_bones():
+    bones = ["NPC L Thigh [LThg]", "NPC Spine2 [Spn2]"]
+    xf = {b: "x" for b in bones}
+    w = {bones[0]: [(0, 1.0)], bones[1]: [(1, 1.0)]}
+    assert nc._drop_scale_bones_from_skin(bones, xf, w) == (bones, xf, w)
+
+
+def test_copy_shape_preserves_vertex_colors(tmp_path):
+    # REGRESSION (Daedric glow rendered solid red instead of faded): the glow's fade
+    # is a per-vertex ALPHA gradient (SLSF2_Vertex_Colors). createShapeFromData makes
+    # a COLORLESS shape, so _copy_shape must copy the vertex colors -- else the overlay
+    # renders opaque/solid (the alpha gradient is lost).
+    src = build_colored_shape_nif(tmp_path / "c_src.nif", alphas=[0.0, 0.33, 0.66, 1.0])
+    out = copy_shape_into_fresh(src, tmp_path / "c_out.nif")
+    cols = out.colors
+    assert cols is not None and len(cols) == len(VERTS), "vertex colors were dropped"
+    alphas = sorted(round(c[3], 2) for c in cols)
+    assert alphas[0] < 0.05 and alphas[-1] > 0.95, alphas   # alpha gradient preserved
+
+
+def test_copy_shape_lighting_shader_unaffected(tmp_path):
+    # The effect-shader branch must not touch ordinary lighting-shader shapes: a
+    # normal shape still copies as a BSLightingShaderProperty.
+    build_shape_nif(tmp_path / "src.nif")
+    out = copy_shape_into_fresh(tmp_path / "src.nif", tmp_path / "dst.nif")
+    assert out.shader_block_name == "BSLightingShaderProperty"
