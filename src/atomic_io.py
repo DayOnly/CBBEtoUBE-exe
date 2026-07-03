@@ -136,6 +136,42 @@ def atomic_nif_save(nif, dst_path) -> None:
         nif.filepath = str(dst_path)
     except Exception:
         pass
+    _debug_glow_controller_check(nif, dst_path)
+
+
+def _debug_glow_controller_check(nif, dst_path) -> None:
+    """DEBUG (CBBE2UBE_DEBUG_GLOW_CTRL=1): after a save, flag any shape whose
+    shape-level controllerID == its shaderPropertyID (the dangling effect-shader
+    self-reference that CTDs Daedric MaleTorsoGlow on equip) and log the calling
+    pass via a stack trace. Off by default -> zero cost. Names the introducing
+    pass so we can fix it at the source instead of only repairing in postflight."""
+    if os.environ.get("CBBE2UBE_DEBUG_GLOW_CTRL", "").strip().lower() not in (
+            "1", "true", "yes", "on"):
+        return
+    try:
+        hits = []
+        for s in nif.shapes:
+            pr = s.properties
+            cid = getattr(pr, "controllerID", 0xFFFFFFFF)
+            spid = getattr(pr, "shaderPropertyID", 0xFFFFFFFF)
+            if cid != 0xFFFFFFFF and cid == spid:
+                hits.append(getattr(s, "name", "?"))
+        if not hits:
+            return
+        import traceback
+        # Trimmed caller chain (skip this fn + atomic_nif_save), name the pass.
+        frames = traceback.format_stack()[:-2][-10:]
+        log = Path(os.environ.get(
+            "CBBE2UBE_GLOW_LOG",
+            str(Path(tempfile.gettempdir()) / "CBBEtoUBE_glowdebug.log")))
+        with open(log, "a", encoding="utf-8", errors="replace") as f:
+            f.write(f"\n=== CORRUPT glow controller after save: {dst_path}\n")
+            f.write(f"    shapes: {hits}\n")
+            f.write("    call stack (most recent last):\n")
+            for fr in frames:
+                f.write("      " + fr.rstrip().replace("\n", "\n      ") + "\n")
+    except Exception:
+        pass
 
 
 def atomic_tri_save(tri, dst_path) -> None:
