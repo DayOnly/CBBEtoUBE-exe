@@ -81,10 +81,13 @@ def _mk_source(tmp, name, mesh_stem):
 def _gen(tmp, name, mesh_stem, flag):
     src = _mk_source(tmp, name, mesh_stem)
     out = tmp / (name.replace(".esp", "") + " UBE patch.esp")
+    # full SkyPatcher is the product DEFAULT; conftest pins the session to the
+    # legacy path (CBBE2UBE_NO_SKYPATCHER=1), so clear that pin to exercise it.
     if flag:
+        os.environ.pop("CBBE2UBE_NO_SKYPATCHER", None)
         os.environ["CBBE2UBE_FULL_SKYPATCHER"] = "1"
     else:
-        os.environ.pop("CBBE2UBE_FULL_SKYPATCHER", None)
+        os.environ["CBBE2UBE_NO_SKYPATCHER"] = "1"
     try:
         stats = up.generate_ube_patch(
             src, out, master_data_dirs=[tmp],
@@ -92,6 +95,7 @@ def _gen(tmp, name, mesh_stem, flag):
                                  f"armor/{mesh_stem}/helm_0.nif"})
     finally:
         os.environ.pop("CBBE2UBE_FULL_SKYPATCHER", None)
+        os.environ["CBBE2UBE_NO_SKYPATCHER"] = "1"   # restore the conftest pin
     return out, stats
 
 

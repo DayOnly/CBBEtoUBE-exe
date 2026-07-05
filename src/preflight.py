@@ -273,6 +273,26 @@ def run_checks(layout=None, *, want_overlays=False, want_overlay_copy=False,
                      "" if racecompat else "Install RaceCompatibility (the Light "
                      "build carries the RaceDispatcher) — a UBE prerequisite."))
 
+    # SkyPatcher: now the PRIMARY delivery for ALL converted armor (armorAddonsToAdd).
+    # Without it (or with iEnableArmorPatching=0) every converted piece is invisible
+    # in-game. Only checked when the SkyPatcher path is on (the default).
+    try:
+        from .ube_patcher import _full_skypatcher_enabled
+        _fsp_on = _full_skypatcher_enabled()
+    except Exception:
+        _fsp_on = True
+    if _fsp_on:
+        skyp = (_plugin_in_mods(mr, enabled, "SKSE/Plugins/SkyPatcher.dll")
+                or _plugin_in_data(dd, "SKSE/Plugins/SkyPatcher.dll")
+                or _enabled_has(enabled, "skypatcher"))
+        checks.append(_c("skypatcher", "SkyPatcher (armor delivery)",
+                         OK if skyp else WARN,
+                         "found" if skyp else "SkyPatcher not detected.",
+                         "" if skyp else "Install SkyPatcher and set "
+                         "iEnableArmorPatching=1 — it delivers ALL converted armor "
+                         "now; without it converted armor is invisible. (Or untick "
+                         "'Deliver armor via SkyPatcher' to use ESP overrides.)"))
+
     out_dir = Path(mr) / output_name
     if out_dir.is_dir():
         en = (enabled is None) or (output_name in enabled)
