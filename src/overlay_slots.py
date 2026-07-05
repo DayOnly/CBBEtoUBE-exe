@@ -50,7 +50,7 @@ _PAINT_RX = re.compile(
     re.IGNORECASE,
 )
 
-_slot_map_cache: dict = {}      # mods-root str -> {rel_texture_path: frozenset(slots)}
+_slot_map_cache: dict = {}      # (mods-root, enabled-mods) -> {rel_texture_path: frozenset(slots)}
 
 
 def normalize_script_texpath(p: str) -> str:
@@ -90,14 +90,19 @@ def build_script_slot_map(layout=None) -> dict:
     return {rel_texture_path: frozenset(slots)} -- the slots RaceMenu registers
     each overlay texture into. Cached per mods root. Empty if no mods root."""
     mr = _paths.mods_root()
-    key = str(mr) if mr is not None else ""
+    # The result depends on WHICH mods are scanned (enabled_mods_ordered(layout)),
+    # so the enabled-mod list must be part of the cache key -- else a call with a
+    # different `layout` (e.g. enabled-only vs the all-mods fallback) reuses a
+    # stale slot map. Resolve it once and reuse it below. #overlay-slot-cache-key
+    ordered = _paths.enabled_mods_ordered(layout) if mr is not None else None
+    key = (str(mr) if mr is not None else "",
+           tuple(ordered) if ordered is not None else None)
     cached = _slot_map_cache.get(key)
     if cached is not None:
         return cached
     acc: dict = {}
     if mr is not None:
         from .bsa_strings import BSAArchive
-        ordered = _paths.enabled_mods_ordered(layout)
         names = ordered if ordered is not None else sorted(
             d.name for d in mr.iterdir() if d.is_dir())
         for mod_name in names:

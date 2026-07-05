@@ -191,6 +191,18 @@ def _build_surface_frame(normals: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     Uses a robust 'world up' fallback to avoid the degenerate case where
     normal == reference axis.
     """
+    normals = np.asarray(normals, dtype=np.float64)
+    # A degenerate source triangle yields a ZERO normal -> the cross products
+    # below collapse to zero tangents (norm-clip keeps them zero), so the
+    # offset's tangential components get projected onto a zero frame and are
+    # silently dropped, mis-placing the vert. Substitute world-Z for any ~zero
+    # normal so the frame stays orthonormal (a degenerate tri has no meaningful
+    # normal anyway). No-op for well-formed meshes.
+    if normals.size:
+        degenerate = np.linalg.norm(normals, axis=1) < 1e-9
+        if degenerate.any():
+            normals = normals.copy()
+            normals[degenerate] = np.array([0.0, 0.0, 1.0])
     ref = np.tile(np.array([0.0, 0.0, 1.0]), (normals.shape[0], 1))
     # When normal is too close to world-Z, fall back to world-X
     parallel = np.abs(np.einsum("ij,ij->i", normals, ref)) > 0.95
