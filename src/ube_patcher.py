@@ -3827,34 +3827,9 @@ def merge_patches(
             raise FileNotFoundError(f"patch not found: {p}")
         patches.append((p, esp.ESP.load(p)))
 
-    # ----- Step 0: resolve winner-rebase targets -----
-    # For ARMO overrides where a different, non-localized plugin wins in load
-    # order, rebase onto that winner's stats. Skip localized (LSTRING travels
-    # poorly) and same-source winners (already correct).
-    rebase_map: dict[tuple[Path, int], _WinnerRecord] = {}
-    rebase_count = 0
     # (patch_path, pre-merge fid) -> merged Record (for the SkyPatcher-links
     # sidecar pass; final fids read AFTER prune renumbering).
     merged_rec_by_key: "dict[tuple[Path, int], esp.Record]" = {}
-    if armo_winner_index:
-        for patch_path, pe in patches:
-            pmasters = pe.header.masters
-            pname = patch_path.name
-            for grp in pe.groups:
-                if grp.label != b"ARMO":
-                    continue
-                for rec in grp.records:
-                    abs_id = _record_abs_fid(rec.formid, pmasters, pname)
-                    win = armo_winner_index.get(abs_id)
-                    if win is None or win.is_localized:
-                        continue
-                    # Only rebase when a DIFFERENT plugin won (a third-party
-                    # override). If the winner IS the defining master, the
-                    # current base already equals the winner.
-                    if win.plugin_name.lower() == abs_id[0]:
-                        continue
-                    rebase_map[(patch_path, rec.formid)] = win
-                    rebase_count += 1
 
     # ----- Step 1: union of masters -----
     # Master-tier plugins (TES4 flag 0x1 or 0x200: .esm, .esl, ESM-flagged .esp)
@@ -3902,7 +3877,6 @@ def merge_patches(
 
     # Two-pass: allocate FormIDs for new ARMAs, then remap payloads.
     new_arma_records: list[esp.Record] = []
-    armo_records: list[esp.Record] = []
 
     for patch_path, pe in patches:
         # Build master byte remap for this patch
@@ -3949,8 +3923,8 @@ def merge_patches(
         byte_remap = patch_master_remap[patch_path]
 
         for grp in pe.groups:
-            if grp.label not in (b"ARMA", b"ARMO"):
-                continue
+            if grp.label != b"ARMA":
+                continue   # SkyPatcher-only: patches carry minted ARMAs, no ARMO
             for rec in grp.records:
                 old_top = (rec.formid >> 24) & 0xFF
 
@@ -3961,23 +3935,12 @@ def merge_patches(
                     new_top = byte_remap.get(old_top, old_top)
                     new_fid = (new_top << 24) | (rec.formid & 0xFFFFFF)
 
-                # Remap FormIDs inside the payload (always — the base override).
                 new_payload = _rewrite_payload_for_merge(
                     rec.payload, patch_path, byte_remap, formid_remap)
 
-                # Overlay winner balance (stats/keywords) if a different plugin
-                # wins this ARMO; keeps our armatures, adds no masters.
-                win = rebase_map.get((patch_path, rec.formid)) \
-                    if grp.label == b"ARMO" else None
-                if win is not None:
-                    new_payload = _overlay_winner_stats(
-                        new_payload, win, merged_masters)
-
                 new_rec = esp.Record(
                     sig=grp.label,
-                    # Rebased ARMO overrides adopt the WINNER's record flags
-                    # (Non-Playable etc.) along with its stats (#xedit5).
-                    flags=(win.rec_flags if win is not None else rec.flags),
+                    flags=rec.flags,
                     formid=new_fid,
                     timestamp_vc=rec.timestamp_vc,
                     version_unk=rec.version_unk,
@@ -3986,30 +3949,11 @@ def merge_patches(
                 # (patch, pre-merge fid) -> merged Record. Read rec.formid at
                 # the END (prune renumbers) -- used by the SkyPatcher-links pass.
                 merged_rec_by_key[(patch_path, rec.formid)] = new_rec
-                if grp.label == b"ARMA":
-                    new_arma_records.append(new_rec)
-                    if ((new_fid >> 24) & 0xFF) == own_byte_merged:
-                        own_arma_count += 1
-                else:
-                    armo_records.append(new_rec)
+                new_arma_records.append(new_rec)
+                if ((new_fid >> 24) & 0xFF) == own_byte_merged:
+                    own_arma_count += 1
 
     # ----- Step 5: emit merged ESP -----
-    # Detect duplicate FormIDs across ARMO overrides — different patches
-    # may have overridden the same Skyrim.esm record (rare but possible).
-    seen_armo: dict[int, esp.Record] = {}
-    deduped_armo: list[esp.Record] = []
-    armo_dups = 0
-    for rec in armo_records:
-        if rec.formid in seen_armo:
-            # Merge armatures lists from the duplicate into the existing one
-            armo_dups += 1
-            existing = seen_armo[rec.formid]
-            existing.payload = _merge_armo_armatures(
-                existing.payload, rec.payload)
-        else:
-            seen_armo[rec.formid] = rec
-            deduped_armo.append(rec)
-
     # TES4 flags. `as_esl` was decided up-front from the total new-ARMA count
     # (own_arma_count here == total_new_arma); honour that decision so the flag
     # matches the FormID range we actually allocated into.
@@ -4027,8 +3971,7 @@ def merge_patches(
         next_object_id=next_own_id,
     )
     out_esp = esp.ESP(header=out_header, groups=[])
-    if deduped_armo:
-        out_esp.groups.append(esp.Group(label=b"ARMO", records=deduped_armo))
+    # SkyPatcher-only: the Combined is pure minted-ARMA -- no ARMO group at all.
     if new_arma_records:
         out_esp.groups.append(esp.Group(label=b"ARMA", records=new_arma_records))
 
@@ -4085,13 +4028,11 @@ def merge_patches(
         "merged_patch_count": len(patches),
         "total_arma_records": len(new_arma_records),
         "own_arma_records": own_arma_count,
-        "total_armo_records": len(deduped_armo),
-        "armo_duplicates_merged": armo_dups,
+        "total_armo_records": 0,       # SkyPatcher-only: never any ARMO records
         "esl_flagged": bool(tes4_flags & TES4_FLAG_ESL),
         "esl_slots_used": own_arma_count,
         "esl_slots_max": ESL_MAX_OWN_RECORDS,
         "downgraded_to_full_esp": bool(esl_flag and not fits_esl),
-        "winner_rebased_armos": rebase_count,
     }
 
 
