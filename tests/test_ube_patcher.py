@@ -865,7 +865,8 @@ def test_is_esm_tier_master_detects_esl_flagged_esp(tmp_path):
     AFTER UBE_AllRace.esp and corrupted the Combined's master order, misrouting
     their overrides (invisible/static armor on UBE)."""
     import struct
-    from src.ube_patcher import _is_esm_tier_master, _ESM_TIER_CACHE
+    from src.ube_patcher import _is_esm_tier_master, _ESM_TIER_CACHE, \
+        clear_master_path_cache
 
     def make(name, flags):
         # Minimal TES4 head: sig(4) + size(4) + flags(4) is all _read_tes4_flags
@@ -875,11 +876,18 @@ def test_is_esm_tier_master_detects_esl_flagged_esp(tmp_path):
         return name
 
     _ESM_TIER_CACHE.clear()
+    clear_master_path_cache()
     dirs = [tmp_path]
-    assert _is_esm_tier_master(make("esl_only.esp", 0x200), dirs) is True   # ESPFE
-    assert _is_esm_tier_master(make("esm_flag.esp", 0x1), dirs) is True     # USSEP-style
-    assert _is_esm_tier_master(make("both.esp", 0x201), dirs) is True
-    assert _is_esm_tier_master(make("regular.esp", 0x0), dirs) is False
+    # Create ALL master files up front. Real masters exist before a run; the
+    # per-dir file index is built on first lookup, so creating files mid-test
+    # would index a stale, partial directory.
+    for n, f in (("esl_only.esp", 0x200), ("esm_flag.esp", 0x1),
+                 ("both.esp", 0x201), ("regular.esp", 0x0)):
+        make(n, f)
+    assert _is_esm_tier_master("esl_only.esp", dirs) is True   # ESPFE
+    assert _is_esm_tier_master("esm_flag.esp", dirs) is True   # USSEP-style
+    assert _is_esm_tier_master("both.esp", dirs) is True
+    assert _is_esm_tier_master("regular.esp", dirs) is False
     # extension-based classification still holds (no file needed)
     assert _is_esm_tier_master("x.esm", dirs) is True
     assert _is_esm_tier_master("x.esl", dirs) is True

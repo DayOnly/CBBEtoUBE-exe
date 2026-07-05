@@ -23,23 +23,29 @@ from argparse import Namespace
 from pathlib import Path
 
 
-# --- M2: unmappable-master-ref is now CTD-class (fails the build) -----------
+# --- M2: unmappable-master-ref is SOFT, not CTD (revised 2026-07-04) ---------
+# The 2026-06-22 audit made this CTD taking validate_patch's "startup crash" doc
+# literally. Revised: master-LIST incompleteness (a master X whose own master Y
+# isn't in the list) is NOT load-breaking -- a plugin only needs its DIRECT refs
+# resolvable, and Skyrim loads transitive masters via each master's own list. If
+# the patch doesn't master Y it CANNOT encode a ref to Y (no top byte), so no
+# misroute. The real load-break -- an out-of-range top byte -- is "formid-out-of-
+# range" (still CTD). Empirical: on the real modlist this fired on Requiem/Legacy/
+# Asuras with 0/98,972 refs out of range and the game loaded. So: soft, not CTD.
 
-def test_unmappable_master_ref_is_ctd_class():
-    # validate_patch documents unmappable-master-ref as a silent FormID misroute /
-    # startup crash, yet postflight classified it as a soft warning (exit 0). It
-    # must be in the CTD-prefix set so a hit on the final Combined fails the build.
+def test_unmappable_master_ref_is_soft_not_ctd():
     from src.ube_patcher import _POSTFLIGHT_CTD_PREFIXES
-    assert "unmappable-master-ref" in _POSTFLIGHT_CTD_PREFIXES
+    assert "unmappable-master-ref" not in _POSTFLIGHT_CTD_PREFIXES
+    # the genuine load-break (out-of-range ref) stays CTD.
+    assert "formid-out-of-range" in _POSTFLIGHT_CTD_PREFIXES
 
 
-def test_postflight_routes_unmappable_master_ref_to_ctd(tmp_path, monkeypatch):
-    # A validate_patch warning with the unmappable-master-ref prefix must land in
-    # the postflight "ctd" bucket, not "soft".
-    import struct
+def test_postflight_routes_unmappable_master_ref_to_soft(tmp_path, monkeypatch):
+    # An unmappable-master-ref warning must land in "soft" (surfaced, not fatal).
     from src import ube_patcher
     from src.esp import ESP, TES4Header, Group, Record, encode_subrecord, \
         encode_zstring
+    import struct
 
     arma = Record(sig=b"ARMA", flags=0, formid=0x01000800, timestamp_vc=0,
                   version_unk=0x2C,
@@ -49,13 +55,11 @@ def test_postflight_routes_unmappable_master_ref_to_ctd(tmp_path, monkeypatch):
     ESP(header=TES4Header(masters=["Skyrim.esm"]),
         groups=[Group(label=b"ARMA", records=[arma])]).save(combined)
 
-    # Force validate_patch to report an unmappable-master-ref so we exercise the
-    # postflight classification (not the detection, which needs real masters).
     monkeypatch.setattr(ube_patcher, "validate_patch", lambda *a, **k: [
         "unmappable-master-ref: 1 master(s) ... (silent FormID misroute)"])
     pf = ube_patcher.postflight_validate_combined(combined)
-    assert any("unmappable-master-ref" in w for _, w in pf["ctd"]), pf
-    assert not pf["soft"], pf
+    assert any("unmappable-master-ref" in w for _, w in pf["soft"]), pf
+    assert not pf["ctd"], pf
 
 
 # --- M3: the standalone `merge` subcommand now runs postflight + can fail ----

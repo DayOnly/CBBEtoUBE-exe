@@ -53,7 +53,9 @@ hiddenimports += ["lz4", "lz4.frame", "lz4.block"]
 # Optional Tkinter GUI (the `gui` subcommand, src/gui.py). tkinter is imported
 # lazily inside launch_gui(), so name src.gui + the tkinter submodules
 # explicitly or the frozen exe ships without them and `CBBEtoUBE.exe gui` fails.
-hiddenimports += ["src.gui", "tkinter", "tkinter.ttk",
+hiddenimports += ["src.gui", "src.gui_settings", "src.exclusions",
+                  "src.preflight",
+                  "tkinter", "tkinter.ttk",
                   "tkinter.scrolledtext", "tkinter.filedialog",
                   "tkinter.messagebox"]
 

@@ -36,11 +36,36 @@ Output masters: Skyrim.esm, [Dawnguard.esm if needed], UBE_AllRace.esp,
 """
 from __future__ import annotations
 
+import os
 import struct
 from pathlib import Path
 from typing import Iterable
 
 from . import esp
+
+
+def _full_skypatcher_enabled() -> bool:
+    """CBBE2UBE_FULL_SKYPATCHER=1 (default OFF): deliver ALL converted-armor
+    coverage via SkyPatcher armorAddonsToAdd instead of ESP ARMO overrides.
+    The per-source patch still MINTS the same UBE armatures (identical race
+    routing incl. hands/feet source-primary), but emits NO ARMO overrides --
+    it records links (defining plugin + ARMO id -> minted armatures) that the
+    merge turns into INI lines against final Combined FormIDs. The Combined is
+    then pure minted-ARMA: it overrides no third-party records, so the whole
+    override-conflict class (winner rebase, flags, keywords, EITM/VMAD,
+    localized strings) does not exist. Supersedes CBBE2UBE_BODY_SKYPATCHER."""
+    return (os.environ.get("CBBE2UBE_FULL_SKYPATCHER", "").strip().lower()
+            in ("1", "true", "yes", "on"))
+
+
+def _body_skypatcher_enabled() -> bool:
+    """CBBE2UBE_BODY_SKYPATCHER=1 routes converted TORSO (biped slot 32) body
+    armor through SkyPatcher coverage (a minted UBE armature added at runtime via
+    armorAddonsToAdd) instead of an ESP ARMO override. Default OFF. Read at call
+    time so the GUI / auto_convert can toggle it per run. Hands/feet (33/37) keep
+    their source-primary ESP-override routing regardless (nude-hands race match)."""
+    return (os.environ.get("CBBE2UBE_BODY_SKYPATCHER", "").strip().lower()
+            in ("1", "true", "yes", "on"))
 
 
 # --------------------------------------------------------------------------
@@ -724,6 +749,54 @@ def _force_female_priority(dnam: bytes) -> bytes:
     return bytes(b)
 
 
+# ARMA skin-texture swap subrecords (male/female 3rd/1st-person TXST refs).
+# Unlike MO?S, rebuild_arma_payload copies these verbatim, so when the
+# SkyPatcher body-coverage path preserves them it must remap them itself.
+_ARMA_SKIN_TXST_SIGS = (b"NAM0", b"NAM1", b"NAM2", b"NAM3")
+
+
+def _arma_texture_master_names(payload: bytes, src_masters: list[str],
+                               src_filename: str) -> "list[str]":
+    """Master NAMEs referenced by an ARMA's MO?S (alt-texture TXSTs) and NAM0-3
+    (skin-swap TXSTs), resolved in the source ESP's master space (records owned
+    by the source itself resolve to src_filename). The SkyPatcher body-coverage
+    path uses this to declare exactly the masters a preserved texture ref needs.
+    """
+    names: list[str] = []
+    seen: set[str] = set()
+
+    def _add(fid: int) -> int:
+        top = (fid >> 24) & 0xFF
+        nm = src_masters[top] if top < len(src_masters) else src_filename
+        low = nm.lower()
+        if low not in seen:
+            seen.add(low)
+            names.append(nm)
+        return fid
+
+    for sig, data in esp.iter_subrecords(payload):
+        if sig in ALT_TEXTURE_SIGS:
+            _remap_alt_texture_payload(data, _add)      # harvest nested TXSTs
+        elif sig in _ARMA_SKIN_TXST_SIGS and len(data) == 4:
+            _add(struct.unpack("<I", data)[0])
+    return names
+
+
+def _remap_arma_skin_txsts(payload: bytes,
+                           remap_fid: "callable[[int], int]") -> bytes:
+    """Remap NAM0-3 skin-TXST FormIDs in an ARMA payload. rebuild_arma_payload
+    copies NAM0-3 verbatim, so callers that move an ARMA into a new master space
+    must apply this first (MO?S is handled by rebuild_arma_payload itself)."""
+    out = b""
+    for sig, data in esp.iter_subrecords(payload):
+        if sig in _ARMA_SKIN_TXST_SIGS and len(data) == 4:
+            out += esp.encode_subrecord(
+                sig, struct.pack("<I", remap_fid(struct.unpack("<I", data)[0])))
+        else:
+            out += esp.encode_subrecord(sig, data)
+    return out
+
+
 def rebuild_arma_payload(source_payload: bytes, *,
                          new_primary_rnam: int,
                          new_additional_race_fids: Iterable[int],
@@ -1061,25 +1134,59 @@ def _scan_master_armos_referencing(
     return out
 
 
-def _find_master_path(master_name: str, data_dirs: list[Path]) -> Path | None:
-    """Resolve a master filename (e.g. 'Skyrim.esm') to its on-disk path
-    by checking each data directory in order. Returns None if not
-    found anywhere."""
-    for d in data_dirs:
-        if not d.is_dir():
-            continue
-        candidate = d / master_name
-        if candidate.is_file():
-            return candidate
-        # MO2 mods sometimes capitalize differently; do a case-insensitive
-        # match for the filename.
+# Per-directory {lowercase filename -> path} index, built once per dir. The old
+# _find_master_path did a full d.iterdir() for EVERY master that didn't exact-match,
+# so a modlist with thousands of sibling mod dirs (3424 here) cost ~0.14s/master ->
+# tens of seconds across a run (per-source validate + Combined postflight + resort +
+# the preserve_textures source masters). Indexing each dir once makes lookups O(1).
+# Masters/mods are static during a run, so the cache is valid run-long.
+_DIR_FILE_INDEX: "dict[str, dict[str, Path]]" = {}
+# Flattened {lower master name -> path} across a whole data_dirs list, first dir
+# winning. Keyed by id(list) with the list ref held so the id can't be reused;
+# turns _find_master_path into a single O(1) dict lookup instead of iterating
+# thousands of dirs (3424 here) per master.
+_COMBINED_MASTER_INDEX: dict = {}
+
+
+def clear_master_path_cache() -> None:
+    """Drop the master-path indexes. Call when the on-disk file set may have
+    changed between reuses of this module in one process (e.g. a new run)."""
+    _DIR_FILE_INDEX.clear()
+    _COMBINED_MASTER_INDEX.clear()
+
+
+def _dir_file_index(d: Path) -> "dict[str, Path]":
+    key = str(d)
+    idx = _DIR_FILE_INDEX.get(key)
+    if idx is None:
+        idx = {}
         try:
             for p in d.iterdir():
-                if p.name.lower() == master_name.lower() and p.is_file():
-                    return p
+                if p.is_file():
+                    idx.setdefault(p.name.lower(), p)  # first entry wins (iterdir order)
         except (OSError, PermissionError):
-            continue
-    return None
+            idx = {}
+        _DIR_FILE_INDEX[key] = idx
+    return idx
+
+
+def _find_master_path(master_name: str, data_dirs: list[Path]) -> Path | None:
+    """Resolve a master filename (e.g. 'Skyrim.esm') to its on-disk path,
+    case-insensitively, first dir in `data_dirs` winning. Returns None if not
+    found. Assumes the on-disk file set is static for the list's lifetime (true
+    for a conversion run); call clear_master_path_cache() otherwise."""
+    key = id(data_dirs)
+    ent = _COMBINED_MASTER_INDEX.get(key)
+    if ent is None or ent[0] is not data_dirs:
+        merged: "dict[str, Path]" = {}
+        for d in data_dirs:
+            if not d.is_dir():
+                continue
+            for low, p in _dir_file_index(d).items():
+                merged.setdefault(low, p)  # earlier dir wins
+        ent = (data_dirs, merged)          # hold the ref -> id() can't be reused
+        _COMBINED_MASTER_INDEX[key] = ent
+    return ent[1].get(master_name.lower())
 
 
 # Substrings (lowercased) in a RACE EDID that identify a UBE-targeted race
@@ -1387,6 +1494,68 @@ def generate_ube_patch(
             return (src_to_patch_byte[top] << 24) | (fid & 0xFFFFFF)
         return fid
 
+    # CBBE2UBE_BODY_SKYPATCHER: when on, TORSO body (slot 32) DefaultRace
+    # armatures whose mesh we converted are owned by the SkyPatcher body-coverage
+    # pass (cover_all), so DON'T mint an ESP-override ARMA for them here. Their
+    # ARMO overrides then vanish too (the override loops only add minted ARMAs).
+    # Hands/feet + non-body are unaffected -> stay on this ESP-override path.
+    _fsp = _full_skypatcher_enabled()
+    # Full-SkyPatcher supersedes the body-only pivot: the per-source path mints
+    # body armatures again (and LINKS them instead of overriding), so the
+    # body-suppression gates must stand down.
+    _bsp = _body_skypatcher_enabled() and not _fsp
+    # (defining_plugin, armo_low24) -> list of (minted_patch_fid,
+    #  src_arma_defining, src_arma_low24). Written to the .skypatcher.json
+    # sidecar; the merge remaps minted fids to final Combined space and emits
+    # the armorAddonsToAdd INI lines.
+    _sp_links: "dict[tuple[str, int], list]" = {}
+
+    def _rnam_is_default_race(rnam: "int | None", masters: "list[str]",
+                              own_name: str) -> bool:
+        """DefaultRace (Skyrim.esm 0x19) resolved THROUGH the given plugin's
+        master table, EXACTLY like _record_abs_fid. Two traps a raw
+        `(rnam >> 24) == 0` misses, both causing DOUBLE coverage vs the coverage
+        side: (1) Skyrim.esm is not always master index 0 (Requiem patch ESPs list
+        it later); (2) an own-record ref (top byte == len(masters)) -- notably
+        Skyrim.esm's OWN DefaultRace, since Skyrim.esm has an EMPTY master list so
+        its DefaultRace is top byte 0 == own. `masters`+`own_name` MUST belong to
+        the plugin the RNAM lives in (source for same-plugin records, the owning
+        master for cross-ESP / master-scan records)."""
+        if rnam is None or (rnam & 0xFFFFFF) != _DEFAULT_RACE_LOW24:
+            return False
+        top = (rnam >> 24) & 0xFF
+        name = masters[top] if top < len(masters) else own_name
+        return name.lower() == "skyrim.esm"
+
+    def _route_body_to_skypatcher(slot_bits: int, rnam: "int | None",
+                                  models: "list[str]", masters: "list[str]",
+                                  own_name: str) -> bool:
+        return bool(
+            _bsp and (slot_bits & _BIPED_SLOT_BODY_BIT)
+            and _rnam_is_default_race(rnam, masters, own_name)
+            and any(_converted_nif_exists(m) for m in models if m))
+
+    def _armo_routed_to_skypatcher(armo_payload: bytes, masters: "list[str]",
+                                   own_name: str) -> bool:
+        """True if this ARMO is TORSO body (slot 32) + DefaultRace, so the
+        SkyPatcher coverage pass owns it -> DON'T emit an ESP override. Coverage
+        keys on the ARMO's slot, and an ARMO's slot can differ from its ARMA's
+        (e.g. a slot-32 cuirass whose ArmorAddon is registered on slot 49), so
+        the mint-site (ARMA-slot) gate alone would leak the override; gate the
+        override EMISSION on the ARMO slot to guarantee complementarity. `masters`
+        MUST be the master table this ARMO's RNAM lives in."""
+        if not _bsp:
+            return False
+        slots = 0
+        rnam: "int | None" = None
+        for sig, data in esp.iter_subrecords(armo_payload):
+            if sig in (b"BOD2", b"BODT") and len(data) >= 4:
+                slots = struct.unpack_from("<I", data, 0)[0]
+            elif sig == b"RNAM" and len(data) == 4:
+                rnam = struct.unpack("<I", data)[0]
+        return bool((slots & _BIPED_SLOT_BODY_BIT)
+                    and _rnam_is_default_race(rnam, masters, own_name))
+
     new_arma_records: list[esp.Record] = []
     # (record, [fallback dicts]) for the male-fallback sidecar. Keyed by
     # Record object because prune_unused_masters renumbers FormIDs before save.
@@ -1422,6 +1591,11 @@ def generate_ube_patch(
             if not _is_safe_passthrough_accessory(
                     src_rnam, slot_bits, model_paths):
                 continue
+
+        # Full-SkyPatcher: torso body owned by the coverage pass -> don't mint here.
+        if _route_body_to_skypatcher(slot_bits, src_rnam, model_paths,
+                                     src.header.masters, src_filename):
+            continue
 
         new_edid = (edid + "_UBE") if edid else f"UBE_NewARMA_{next_obj_id:X}"
 
@@ -1515,6 +1689,9 @@ def generate_ube_patch(
     # we never point an ARMA at a non-existent !UBE NIF (which would CTD).
     # Matched purely by mesh path; this covers ANY base-plugin + add-on-plugin mod.
     _xesp_arma_cache: "dict[str, dict[int, esp.Record]]" = {}
+    # The owning master plugin's OWN master table (for resolving its RNAM to
+    # DefaultRace in ITS space, not the source patch's space).
+    _xesp_master_masters: "dict[str, list[str]]" = {}
 
     def _xesp_master_arma(ref_fid: int) -> "esp.Record | None":
         """Resolve a referenced ARMA FormID to its record in the owning MASTER
@@ -1525,19 +1702,39 @@ def generate_ube_patch(
         mname = src.header.masters[mbyte]
         if mname not in _xesp_arma_cache:
             amap: "dict[int, esp.Record]" = {}
+            mmasters: "list[str]" = []
             mp = _find_master_path(
                 mname, master_data_dirs or [source_esp_path.parent])
             if mp is not None:
                 try:
                     me = esp.ESP.load_cached(mp)
+                    mmasters = list(me.header.masters)
                     for g in me.groups:
                         if g.label == b"ARMA":
                             for r in g.records:
                                 amap[r.formid & 0xFFFFFF] = r
                 except Exception:
                     amap = {}
+                    mmasters = []
             _xesp_arma_cache[mname] = amap
+            _xesp_master_masters[mname] = mmasters
         return _xesp_arma_cache[mname].get(ref_fid & 0xFFFFFF)
+
+    def _xesp_masters_for(ref_fid: int) -> "list[str]":
+        """Master table of the plugin that OWNS ref_fid (populated by
+        _xesp_master_arma). Empty if unresolved."""
+        mbyte = (ref_fid >> 24) & 0xFF
+        if mbyte >= len(src.header.masters):
+            return []
+        return _xesp_master_masters.get(src.header.masters[mbyte], [])
+
+    def _xesp_owner_name(ref_fid: int) -> str:
+        """Filename of the master plugin that OWNS ref_fid (for own-record RNAM
+        resolution -- e.g. Skyrim.esm's own DefaultRace)."""
+        mbyte = (ref_fid >> 24) & 0xFF
+        if mbyte >= len(src.header.masters):
+            return src_filename
+        return src.header.masters[mbyte]
 
     def _mint_xesp_ube_arma(ref_fid: int) -> "int | None":
         """Mint (once per patch) a UBE ARMA for a cross-ESP master ARMA whose
@@ -1550,6 +1747,7 @@ def generate_ube_patch(
             return None
         mod3 = mod2 = m_edid = None
         rnam = None
+        m_slots = 0
         for sig, d in esp.iter_subrecords(marec.payload):
             if sig == b"MOD3":
                 mod3 = d.rstrip(b"\x00").decode("utf-8", "ignore")
@@ -1559,6 +1757,8 @@ def generate_ube_patch(
                 m_edid = d.rstrip(b"\x00").decode("utf-8", "ignore")
             elif sig == b"RNAM" and len(d) == 4:
                 rnam = struct.unpack("<I", d)[0]
+            elif sig in (b"BOD2", b"BODT") and len(d) >= 4:
+                m_slots = struct.unpack_from("<I", d, 0)[0]
         # UBE is female-only: cover this armature if we converted EITHER its
         # female (MOD3) OR -- for a male-only armature -- its male (MOD2) mesh.
         # rebuild_arma_payload then synthesises the female model from the
@@ -1575,6 +1775,12 @@ def generate_ube_patch(
         # filters to player armour, but this is the explicit belt-and-braces.
         if rnam is None or (rnam & 0xFFFFFF) != _DEFAULT_RACE_LOW24 \
                 or (rnam >> 24) != 0:
+            return None
+        # Full-SkyPatcher: torso body owned by the coverage pass -> don't mint.
+        # RNAM is in the MASTER plugin's space (rnam top byte resolved there).
+        if _route_body_to_skypatcher(m_slots, rnam, [mod3, mod2],
+                                     _xesp_masters_for(ref_fid),
+                                     _xesp_owner_name(ref_fid)):
             return None
         stripped = b"".join(
             esp.encode_subrecord(s, d)
@@ -1599,6 +1805,9 @@ def generate_ube_patch(
         new_arma_fids[ref_fid] = nf
         return nf
 
+    # LOCALIZED source (TES4 flag 0x80): its FULL/DESC are LSTRING ids, not
+    # strings -- see the localized branch in the override loop below (#xedit5).
+    _src_localized = bool(src.header.flags & 0x80)
     if src_armo_group is not None:
         for src_armo in src_armo_group.records:
             # Find which source ARMAs this ARMO references.
@@ -1625,6 +1834,24 @@ def generate_ube_patch(
                     new_armas_to_add.append(_minted)
             if not new_armas_to_add:
                 continue
+            # Full-SkyPatcher: torso body ARMO owned by the coverage pass.
+            if _armo_routed_to_skypatcher(src_armo.payload, src.header.masters,
+                                          src_filename):
+                continue
+            if _fsp:
+                # FULL SKYPATCHER: record the link, emit NO override. The
+                # armature reaches the ARMO at runtime via armorAddonsToAdd,
+                # applied to whatever record actually wins the load order.
+                _armo_abs = _record_abs_fid(
+                    src_armo.formid, src.header.masters, src_filename)
+                _adds = _sp_links.setdefault(_armo_abs, [])
+                for _ref in referenced_src_armas:
+                    _mf = new_arma_fids.get(_ref)
+                    if _mf is not None and _mf in new_armas_to_add:
+                        _sa = _record_abs_fid(
+                            _ref, src.header.masters, src_filename)
+                        _adds.append((_mf, _sa[0], _sa[1]))
+                continue
 
             # Build override payload with FormIDs remapped to patch master space.
             new_armo_fid = remap_fid(
@@ -1635,9 +1862,13 @@ def generate_ube_patch(
             # are silently ignored, making the new ARMA invisible to the engine.
             src_pieces = list(esp.iter_subrecords(src_armo.payload))
             last_modl_idx = -1
+            src_edid_txt = None
             for i, (sig, data) in enumerate(src_pieces):
                 if sig == ARMO_ARMATURE_SIG and len(data) == 4:
                     last_modl_idx = i
+                elif sig == b"EDID" and src_edid_txt is None:
+                    src_edid_txt = data.rstrip(b"\x00").decode(
+                        "utf-8", errors="ignore")
             new_payload = b""
             for i, (sig, data) in enumerate(src_pieces):
                 if sig == ARMO_ARMATURE_SIG and len(data) == 4:
@@ -1654,6 +1885,32 @@ def generate_ube_patch(
                     new_payload += esp.encode_subrecord(sig, new_data)
                 elif sig in ARMA_MODT_SIGS:
                     new_payload += esp.encode_subrecord(sig, normalize_modt(data))
+                elif sig in FORMID_SINGLE_SUBRECORD_SIGS and len(data) == 4:
+                    # Remap EVERY FormID-bearing subrecord (EITM/TNAM/RNAM/ZNAM/
+                    # YNAM/ETYP/BIDS/BAMT...). Verbatim copy left SOURCE-space
+                    # bytes that misroute once the merge renumbers masters --
+                    # #xedit5: a shield's enchantment ref resolving into
+                    # UBE_AllRace.esp (unresolvable garbage in xEdit/engine).
+                    new_payload += esp.encode_subrecord(sig, struct.pack(
+                        "<I",
+                        _remap_src_fid_to_patch(struct.unpack("<I", data)[0])))
+                elif sig in FORMID_ARRAY_SUBRECORD_SIGS and len(data) % 4 == 0:
+                    new_payload += esp.encode_subrecord(sig, b"".join(
+                        struct.pack("<I", _remap_src_fid_to_patch(
+                            struct.unpack_from("<I", data, _o)[0]))
+                        for _o in range(0, len(data), 4)))
+                elif _src_localized and sig in (b"FULL", b"DESC"):
+                    # LOCALIZED source: FULL/DESC are 4-byte LSTRING ids --
+                    # garbage as zstrings in our non-localized patch (xEdit
+                    # "unused data" + wrong names, #xedit5). Synthesize FULL
+                    # from EDID (same policy as the master-scan path); drop
+                    # DESC (tooltip-only).
+                    if sig == b"FULL" and src_edid_txt:
+                        _syn = synthesize_name_from_edid(src_edid_txt)
+                        if _syn:
+                            new_payload += esp.encode_subrecord(
+                                b"FULL", esp.encode_zstring(_syn))
+                    continue
                 else:
                     new_payload += esp.encode_subrecord(sig, data)
                 # Insert our new ARMAs right after the last existing MODL.
@@ -1679,7 +1936,9 @@ def generate_ube_patch(
                 new_payload = pre_data_payload
 
             armo_overrides.append(esp.Record(
-                sig=b"ARMO", flags=0, formid=new_armo_fid,
+                # Carry the SOURCE record's flags: flags=0 dropped Non-Playable
+                # (0x4) etc., making NPC-only armor playable (#xedit5).
+                sig=b"ARMO", flags=src_armo.flags, formid=new_armo_fid,
                 timestamp_vc=0, version_unk=0x002C, payload=new_payload,
             ))
 
@@ -1695,8 +1954,11 @@ def generate_ube_patch(
     # (e.g. "Vampire Armor") instead of an EDID-derived guess.
     _string_resolver = None
     try:
+        # FULL SKYPATCHER: no ARMO overrides are emitted, so the localized-name
+        # resolver (loads Skyrim - Interface.bsa string tables) has no consumer
+        # -- skip the BSA work entirely.
         from . import bsa_strings
-        for _d in (master_data_dirs or []):
+        for _d in (() if _fsp else (master_data_dirs or [])):
             if (Path(_d) / bsa_strings.StringResolver.INTERFACE_BSA).is_file():
                 _key = str(_d)
                 if _key not in _STRING_RESOLVER_CACHE:
@@ -1789,6 +2051,10 @@ def generate_ube_patch(
                 rel = mod3.replace("\\", "/").lstrip("/").lower()
                 if rel not in body_mesh_rel_paths:
                     continue
+                # Full-SkyPatcher: this whole path is torso body + converted
+                # (DefaultRace vanilla body) -> owned by the coverage pass.
+                if _bsp:
+                    continue
                 # Strip stale FormID/texture refs, rebuild with UBE races.
                 stripped = b"".join(
                     esp.encode_subrecord(sig, d)
@@ -1854,6 +2120,35 @@ def generate_ube_patch(
                         src_fid = master_to_src_fid[ref_master_fid]
                         new_armas_to_add.append(new_arma_fids[src_fid])
             if not new_armas_to_add:
+                continue
+            # Full-SkyPatcher: a torso body master ARMO is owned by the coverage
+            # pass -> don't emit an ESP override for it. (Path-2 vanilla-body
+            # mints are already gated above; this catches master body ARMOs whose
+            # armature came from the source-ARMA scan.) Same slot-32 + DefaultRace
+            # criterion coverage uses, so non-DefaultRace body armor is NOT
+            # over-suppressed (coverage wouldn't cover it -> it stays here).
+            if _armo_routed_to_skypatcher(m_armo.payload,
+                                          master_esp.header.masters,
+                                          master_name):
+                continue
+            if _fsp:
+                # FULL SKYPATCHER: link the master ARMO, no override (see the
+                # same-plugin branch above).
+                _armo_abs = _record_abs_fid(
+                    m_armo.formid, master_esp.header.masters, master_name)
+                _adds = _sp_links.setdefault(_armo_abs, [])
+                for _s, _d in esp.iter_subrecords(m_armo.payload):
+                    if _s == ARMO_ARMATURE_SIG and len(_d) == 4:
+                        _rmf = struct.unpack("<I", _d)[0]
+                        _sf = master_to_src_fid.get(_rmf)
+                        if _sf is not None and \
+                                new_arma_fids.get(_sf) in new_armas_to_add:
+                            # identity in the MASTER's space (_rmf): uniform for
+                            # both the source-ARMA-scan and mesh-path mints, so
+                            # cross-patch dedup of the same vanilla armature works.
+                            _sa = _record_abs_fid(
+                                _rmf, master_esp.header.masters, master_name)
+                            _adds.append((new_arma_fids[_sf], _sa[0], _sa[1]))
                 continue
 
             # Build the override payload: keep all original armatures
@@ -1951,7 +2246,8 @@ def generate_ube_patch(
                 new_payload = pre_data_payload
 
             master_armo_overrides.append(esp.Record(
-                sig=b"ARMO", flags=0, formid=new_armo_fid,
+                # Carry the master record's flags (Non-Playable etc., #xedit5).
+                sig=b"ARMO", flags=m_armo.flags, formid=new_armo_fid,
                 timestamp_vc=0, version_unk=0x002C, payload=new_payload,
             ))
 
@@ -1973,12 +2269,44 @@ def generate_ube_patch(
     if new_arma_records:
         out.groups.append(esp.Group(label=b"ARMA", records=new_arma_records))
 
+    # FULL SKYPATCHER links: resolve minted fids to their Record objects BEFORE
+    # prune_unused_masters renumbers FormIDs (same trap the male-fallback
+    # sidecar documents); serialize with the post-prune rec.formid after save.
+    _sp_rec_links: "dict[tuple[str, int], list]" = {}
+    if _fsp and _sp_links:
+        _fid2rec = {r.formid: r for r in new_arma_records}
+        for _abs, _adds in _sp_links.items():
+            _rl = [(_fid2rec[_mf], _d, _l) for _mf, _d, _l in _adds
+                   if _mf in _fid2rec]
+            if _rl:
+                _sp_rec_links[_abs] = _rl
+
     # Prune masters that no FormID actually references. Source ESPs commonly
     # carry Update.esm or other unused masters; hand-authored UBE patches
     # strip those, so we do too.
     prune_unused_masters(out)
 
     out.save(output_esp_path)
+
+    # SkyPatcher-links sidecar (FULL SKYPATCHER): the merge reads this, remaps
+    # the minted fids through its own renumbering, and emits the final
+    # armorAddonsToAdd INI lines. JSON entries: armo defining plugin + local id,
+    # and per added armature its (post-prune) patch fid + the SOURCE armature's
+    # identity (for cross-patch dedup of same-armature adds).
+    _sp_sidecar = Path(str(output_esp_path) + ".skypatcher.json")
+    try:
+        if _sp_rec_links:
+            import json as _json
+            _doc = [{"armo": [d, l],
+                     "adds": [{"fid": rec.formid, "src": [sd, sl]}
+                              for rec, sd, sl in adds]}
+                    for (d, l), adds in _sp_rec_links.items()]
+            _sp_sidecar.write_text(_json.dumps(_doc, indent=1),
+                                   encoding="utf-8")
+        elif _sp_sidecar.is_file():
+            _sp_sidecar.unlink()   # stale sidecar from an older run
+    except OSError:
+        pass
 
     # Sidecar for the female-model re-check: ARMAs whose female model was
     # redirected to the male mesh at patch time (female NIF not yet converted).
@@ -2021,6 +2349,7 @@ def generate_ube_patch(
         "armo_override_count": len(armo_overrides),
         "master_armo_overrides": len(master_armo_overrides),
         "master_scan_per_esm": master_scan_stats,
+        "skypatcher_link_targets": len(_sp_rec_links),
         "validation_warnings": validation_warnings,
     }
 
@@ -2031,13 +2360,16 @@ def generate_ube_patch(
 _POSTFLIGHT_CTD_PREFIXES = (
     "master-ordering", "esl-overflow", "formid-out-of-range",
     "formid-zero", "modt-malformed",
-    # validate_patch documents this as a silent FormID misroute / startup crash.
-    # Generation skips masters with unmappable transitives, so a hit on the final
-    # Combined means one slipped through -> fail the build. The check only fires
-    # on a master it can LOCATE, so an incomplete master_data_dirs makes it MISS,
-    # never false-positive.
-    "unmappable-master-ref",
 )
+# NOTE: "unmappable-master-ref" is deliberately NOT here (soft, not CTD). It flags
+# master-LIST incompleteness (a master X in the list whose own master Y isn't),
+# which is NOT load-breaking: a plugin only needs its DIRECT refs resolvable, and
+# Skyrim loads transitive masters via each master's own master list. If the patch
+# doesn't master Y it CANNOT encode a ref to Y (no top byte), so there's no
+# misroute. The only real misroute mode -- an out-of-range top byte -- is caught
+# by "formid-out-of-range" (which IS CTD above). Empirically confirmed: on the
+# real modlist this fired on Requiem/Legacy/Asuras with 0/98,972 refs out of range
+# and the game loaded fine. Kept as a soft warning so genuine oddities still show.
 
 
 def postflight_validate_combined(combined_path, meshes_root=None, *,
@@ -2514,6 +2846,7 @@ def resort_masters_all(primary_esp_path, master_data_dirs=None) -> int:
     # merge phase would mis-classify a .esp ESM-flag and re-introduce the mis-sort
     # this repairs. (#postflight)
     clear_esm_tier_cache()
+    clear_master_path_cache()
     p = _Path(primary_esp_path)
     changed = 0
     for piece in sorted(p.parent.glob(f"{p.stem}*{p.suffix}")):
@@ -2960,662 +3293,6 @@ def _edid_of_rec(rec) -> str:
     return ""
 
 
-def _swap_arma_rnam(payload: bytes, new_rnam_fid: int) -> bytes:
-    out = b""
-    for sig, d in esp.iter_subrecords(payload):
-        if sig == b"RNAM":
-            d = struct.pack("<I", new_rnam_fid)
-        out += esp.encode_subrecord(sig, d)
-    return out
-
-
-def _prepend_armo_modls(payload: bytes, fids: "list[int]") -> bytes:
-    """Insert MODL(4-byte FormID) armature refs before the first existing MODL
-    (so the engine walks them first). Skips FIDs already present."""
-    existing = set()
-    for sig, d in esp.iter_subrecords(payload):
-        if sig == b"MODL" and len(d) == 4:
-            existing.add(struct.unpack("<I", d)[0])
-    add = [f for f in fids if f not in existing]
-    if not add:
-        return payload
-    block = b"".join(esp.encode_subrecord(b"MODL", struct.pack("<I", f))
-                     for f in add)
-    out = b""
-    inserted = False
-    for sig, d in esp.iter_subrecords(payload):
-        if sig == b"MODL" and not inserted:
-            out += block
-            inserted = True
-        out += esp.encode_subrecord(sig, d)
-    if not inserted:
-        out += block
-    return out
-
-
-def fold_ube_raceskin_skins(vc_path, ube_allrace_path) -> dict:
-    """Fold per-race UBE nude-skin routing INTO an existing Vanilla_UBE_Race_
-    Compat.esp (in place). UBE_AllRace.esp is NOT modified.
-
-    Why: the Skyrim engine matches nude-skin ARMAs to actors by RNAM PRIMARY
-    race only (the ARMA additional-races list is ignored at runtime).
-    UBE_AllRace's 00UBE_SkinNaked has primary UBE skin ARMAs for Breton ONLY,
-    so every other UBE race (Redguard/Nord/Imperial/Orc/elves...) finds no
-    primary match and falls back to the vanilla actor-asset CBBE skin ->
-    CBBE hands/feet on a UBE-ish body. This adds a dedicated PRIMARY-race UBE
-    skin ARMA (Torso/Hands/Feet -> !UBE meshes) for every race UBE intends
-    (derived from the template ARMA's own additional-races list, so it's
-    beast-free and version-agnostic) and overrides 00UBE_SkinNaked to prepend
-    them. The records live entirely in the VC patch.
-
-    Idempotent: no-op if VC already overrides 00UBE_SkinNaked. Returns a dict
-    {folded, races, reason?}.
-    """
-    vc_path = Path(vc_path)
-    ube_allrace_path = Path(ube_allrace_path)
-    ube = esp.ESP.load(ube_allrace_path)
-    vc = esp.ESP.load(vc_path)
-
-    ube_arma = next((g for g in ube.groups if g.label == b"ARMA"), None)
-    ube_armo = next((g for g in ube.groups if g.label == b"ARMO"), None)
-    ube_race = next((g for g in ube.groups if g.label == b"RACE"), None)
-    if ube_arma is None or ube_armo is None:
-        return {"folded": 0, "reason": "UBE_AllRace missing ARMA/ARMO"}
-
-    templates = {}
-    for r in ube_arma.records:
-        e = _edid_of_rec(r)
-        for sl, ed in _UBE_SKIN_TEMPLATE_EDIDS.items():
-            if e == ed:
-                templates[sl] = r
-    skin = next((r for r in ube_armo.records
-                 if _edid_of_rec(r) == _UBE_SKINNAKED_EDID), None)
-    if len(templates) < 3 or skin is None:
-        return {"folded": 0, "reason": "templates/SkinNaked not found"}
-
-    vc_arma = next((g for g in vc.groups if g.label == b"ARMA"), None)
-    vc_armo = next((g for g in vc.groups if g.label == b"ARMO"), None)
-    if vc_arma is None:
-        vc_arma = esp.Group(label=b"ARMA")
-        vc.groups.insert(0, vc_arma)
-    if vc_armo is None:
-        vc_armo = esp.Group(label=b"ARMO")
-        vc.groups.append(vc_armo)
-
-    if any(_edid_of_rec(r) == _UBE_SKINNAKED_EDID for r in vc_armo.records):
-        return {"folded": 0, "reason": "already present"}
-
-    vm = [m.lower() for m in vc.header.masters]
-    um = [m.lower() for m in ube.header.masters]
-    ube_name = ube_allrace_path.name.lower()
-    if ube_name not in vm:
-        return {"folded": 0, "reason": "VC does not master UBE_AllRace"}
-
-    # Ensure full transitive-master closure: overriding a UBE_AllRace record
-    # requires all of UBE_AllRace's masters in VC's master list, or FormIDs
-    # misroute. Insert missing ESMs before the first ESP (keeps ESM-before-ESP)
-    # and remap all existing FormIDs for the shifted master indices.
-    missing_masters = [m for m in ube.header.masters if m.lower() not in vm]
-    if missing_masters:
-        old_masters = list(vc.header.masters)
-        old_own = len(old_masters)
-        first_esp = next((i for i, m in enumerate(old_masters)
-                          if m.lower().endswith(".esp")), len(old_masters))
-        new_masters = (old_masters[:first_esp] + missing_masters
-                       + old_masters[first_esp:])
-        name_to_new = {m.lower(): i for i, m in enumerate(new_masters)}
-        tb_remap = {i: name_to_new[m.lower()] for i, m in enumerate(old_masters)}
-        tb_remap[old_own] = len(new_masters)   # own records shift up
-        for g in vc.groups:
-            for r in g.records:
-                ot = (r.formid >> 24) & 0xFF
-                if ot in tb_remap:
-                    r.formid = (tb_remap[ot] << 24) | (r.formid & 0xFFFFFF)
-                r.payload = _rewrite_formids_in_payload(r.payload, tb_remap)
-        vc.header.masters = new_masters
-        vm = [m.lower() for m in vc.header.masters]
-
-    ube_own = len(ube.header.masters)
-    vc_own = len(vc.header.masters)
-    top_remap = {i: (vm.index(n) if n in vm else None)
-                 for i, n in enumerate(um)}
-    top_remap[ube_own] = vm.index(ube_name)  # UBE-own -> VC's UBE_AllRace idx
-
-    missing = {"hit": False}
-
-    def remap_fid(fid: int) -> int:
-        nt = top_remap.get(fid >> 24)
-        if nt is None:
-            missing["hit"] = True
-            return fid
-        return (nt << 24) | (fid & 0xFFFFFF)
-
-    def remap_payload(payload: bytes) -> bytes:
-        out = b""
-        for sig, d in esp.iter_subrecords(payload):
-            if sig in FORMID_SINGLE_SUBRECORD_SIGS and len(d) == 4:
-                d = struct.pack("<I", remap_fid(struct.unpack("<I", d)[0]))
-            elif sig in FORMID_ARRAY_SUBRECORD_SIGS and d and len(d) % 4 == 0:
-                d = b"".join(
-                    struct.pack("<I", remap_fid(v))
-                    for v in struct.unpack(f"<{len(d) // 4}I", d))
-            out += esp.encode_subrecord(sig, d)
-        return out
-
-    # Races UBE intends for the nude skin = the template's additional-races
-    # (MODL) list -> human UBE races only, no beast.
-    race_fids = [struct.unpack("<I", d)[0]
-                 for sig, d in esp.iter_subrecords(templates["Torso"].payload)
-                 if sig == b"MODL" and len(d) == 4]
-    race_edid = {r.formid: _edid_of_rec(r)
-                 for r in (ube_race.records if ube_race else [])}
-
-    def race_tag(fid: int) -> str:
-        e = race_edid.get(fid, "")
-        if e.startswith("00UBE_"):
-            e = e[len("00UBE_"):]
-        if e.endswith("Race"):
-            e = e[:-4]
-        return e or f"{fid & 0xFFFFFF:06X}"
-
-    max_low = 0x7FF
-    for g in vc.groups:
-        for r in g.records:
-            if (r.formid >> 24) == vc_own:
-                max_low = max(max_low, r.formid & 0xFFFFFF)
-    next_low = max_low + 1
-    # ESL ceiling guard: the VC patch is ESL-flagged, so every own-record
-    # FormID must stay <= 0xFFF. Abort (without writing) if the new skin
-    # ARMAs wouldn't fit, rather than emit a silently-corrupt light plugin.
-    need = len(race_fids) * len(_UBE_SKIN_TEMPLATE_EDIDS)
-    if need and next_low + need - 1 > ESL_OWN_FORMID_MAX:
-        return {"folded": 0, "races": len(race_fids),
-                "reason": (f"ESL FormID space exhausted (need {need} from "
-                           f"0x{next_low:X}, ceiling 0x{ESL_OWN_FORMID_MAX:X})")}
-
-    new_armas: list = []
-    new_fids: list = []
-    used_edids: set = set()
-    for race_fid in race_fids:
-        tag = race_tag(race_fid)
-        for sl, base_edid in _UBE_SKIN_TEMPLATE_EDIDS.items():
-            new_edid = f"{base_edid}_{tag}"
-            n, k = new_edid, 1
-            while n in used_edids:
-                k += 1
-                n = f"{new_edid}{k}"
-            new_edid = n
-            used_edids.add(new_edid)
-            payload = _swap_arma_rnam(templates[sl].payload, race_fid)
-            payload = replace_arma_edid(payload, new_edid)
-            payload = remap_payload(payload)
-            fid = (vc_own << 24) | next_low
-            next_low += 1
-            new_armas.append(esp.Record(
-                sig=b"ARMA", flags=0, formid=fid, timestamp_vc=0,
-                version_unk=0x002C, payload=payload))
-            new_fids.append(fid)
-
-    if not new_fids:
-        # No UBE races in the template's additional-races list -> nothing to
-        # route. Don't write a pointless 00UBE_SkinNaked override.
-        return {"folded": 0, "races": len(race_fids),
-                "reason": "no UBE races in template additional-races"}
-
-    skin_payload = remap_payload(skin.payload)
-    skin_payload = _prepend_armo_modls(skin_payload, new_fids)
-    skin_ovr = esp.Record(sig=b"ARMO", flags=0, formid=remap_fid(skin.formid),
-                          timestamp_vc=0, version_unk=0x002C,
-                          payload=skin_payload)
-
-    if missing["hit"]:
-        return {"folded": 0, "reason": "ref to a master VC lacks (aborted)"}
-
-    vc_arma.records.extend(new_armas)
-    vc_armo.records.append(skin_ovr)
-    if next_low > (vc.header.next_object_id & 0xFFFFFF):
-        vc.header.next_object_id = next_low
-    vc.save(vc_path)
-    return {"folded": len(new_armas), "races": len(race_fids),
-            "skinnaked_fid": skin_ovr.formid}
-
-
-def generate_vanilla_race_compat_patch(
-    output_esp_path: str | Path,
-    master_data_dirs: list[Path],
-    *,
-    masters_to_scan: tuple[str, ...] = (
-        "Skyrim.esm", "Dawnguard.esm", "Dragonborn.esm",
-    ),
-    include_cc_masters: bool = False,
-    ube_allrace_filename: str = "UBE_AllRace.esp",
-    author: str = "cbbe-to-ube vanilla compat",
-    description: str = "Extends vanilla non-body ARMAs to UBE races",
-    converted_rel_paths: "set[str] | None" = None,
-    ube_path_prefix: str = "!UBE\\",
-    armo_winner_index: "dict[tuple[str, int], _WinnerRecord] | None" = None,
-) -> dict:
-    """Emit a patch extending vanilla non-body ARMAs (helmets, gauntlets,
-    boots, jewelry — every female ARMA that does NOT cover slot 32) with
-    UBE races. Non-body vanilla meshes fit the UBE skeleton without
-    re-conversion (UBE only changes the torso), so only the race list
-    needs extending. Body-slot ARMAs and male-only ARMAs are skipped.
-
-    When `converted_rel_paths` is given, also covers slot-32 vanilla
-    body armour whose MOD3 we converted (mints UBE ARMA + ARMO override).
-
-    Returns: stats dict with `output`, `arma_overrides`, `masters`, etc.
-    """
-    out_path = Path(output_esp_path)
-
-    # ---- Step 1: enumerate target masters ----
-    targets: list[tuple[str, Path]] = []
-    for name in masters_to_scan:
-        p = _find_master_path(name, master_data_dirs)
-        if p is not None:
-            targets.append((name, p))
-    if include_cc_masters:
-        seen = {p for _, p in targets}
-        for d in master_data_dirs:
-            if not d.is_dir():
-                continue
-            try:
-                for cc in d.glob("ccbgssse*.esm"):
-                    if cc not in seen:
-                        targets.append((cc.name, cc))
-                        seen.add(cc)
-            except (OSError, PermissionError):
-                continue
-
-    ube_path = _find_master_path(ube_allrace_filename, master_data_dirs)
-    if ube_path is None:
-        raise FileNotFoundError(
-            f"{ube_allrace_filename} not found in any master_data_dirs"
-        )
-
-    # ---- Step 2: build the patch's master list ----
-    # Vanilla ESMs first, then CC ESMs, then UBE_AllRace.esp.
-    # Include every transitive master each target depends on: e.g.
-    # Dawnguard/Dragonborn list Update.esm, so their FormIDs need it
-    # in our master list or the remap lands on the wrong master (crash).
-    target_esps: dict[str, esp.ESP] = {}
-    for name, path in targets:
-        try:
-            target_esps[name] = esp.ESP.load(path)
-        except Exception:
-            continue
-
-    patch_masters: list[str] = list(VANILLA_DLC_MASTERS)
-    referenced_by_targets: set[str] = set()
-    for _name, te in target_esps.items():
-        for m in te.header.masters:
-            referenced_by_targets.add(m)
-    for name in referenced_by_targets:
-        _add_master_if_missing(patch_masters, name)
-    for name, _ in targets:
-        _add_master_if_missing(patch_masters, name)
-    _add_master_if_missing(patch_masters, ube_allrace_filename)
-
-    def master_idx(name: str) -> int:
-        for i, m in enumerate(patch_masters):
-            if m.lower() == name.lower():
-                return i
-        raise KeyError(name)
-
-    # UBE race FormIDs in patch's address space.
-    ube_top = master_idx(ube_allrace_filename) << 24
-    ube_races_for_patch = [ube_top | fid for fid in UBE_RACE_FIDS_24]
-    ube_primary_for_patch = ube_top | UBE_PRIMARY_BRETON_FID_24
-
-    # ---- Body coverage (optional) ----------------------------------------
-    # When `converted_rel_paths` is given, also cover slot-32 vanilla body
-    # armour: mint a UBE ARMA (MOD3 -> !UBE, UBE races) for each converted
-    # body ARMA and override its parent ARMO to reference it.
-    body_arma_records: list[esp.Record] = []
-    body_armo_overrides: list[esp.Record] = []
-    own_byte = len(patch_masters)          # ESL own-record top byte (FE space)
-    next_obj_id = 0x800
-    body_covered = 0
-
-    def _vanilla_converted(model_path: str) -> bool:
-        if not converted_rel_paths or not model_path:
-            return False
-        s = model_path.replace("\\", "/").lstrip("/").lower()
-        if s.startswith("meshes/"):
-            s = s[len("meshes/"):]
-        return s in converted_rel_paths
-
-    # STRINGS resolver for real ARMO display names (fallback: synthesize from EDID).
-    # Not gated on converted_rel_paths: name resolution depends only on the
-    # master's STRINGS table, not on whether any mesh was converted.
-    _string_resolver = None
-    try:
-        from . import bsa_strings
-        for _d in (master_data_dirs or []):
-            if (Path(_d) / bsa_strings.StringResolver.INTERFACE_BSA).is_file():
-                _key = str(_d)
-                if _key not in _STRING_RESOLVER_CACHE:
-                    _STRING_RESOLVER_CACHE[_key] = bsa_strings.StringResolver(_d)
-                _string_resolver = _STRING_RESOLVER_CACHE[_key]
-                break
-    except Exception:
-        _string_resolver = None
-
-    # ---- Step 3: scan each master ESM for non-body ARMAs ----
-    arma_overrides: list[esp.Record] = []
-    skipped_no_mod3 = 0
-    skipped_body_slot = 0
-    skipped_nude_skin = 0
-    skipped_already_ube = 0
-    skipped_unknown_master_ref = 0
-    skipped_non_default_race = 0
-    covered_nonbody_mod2_only = 0
-    winner_rebased = 0
-    scan_stats: dict[str, int] = {}
-    for master_name, _master_path in targets:
-        master_esp = target_esps.get(master_name)
-        if master_esp is None:
-            continue
-        master_own_byte = len(master_esp.header.masters)
-        master_patch_byte = master_idx(master_name) << 24
-        arma_grp = next(
-            (g for g in master_esp.groups if g.label == b"ARMA"), None)
-        if arma_grp is None:
-            continue
-
-        # Map master's address space to patch space; unmappable = skip record.
-        byte_remap: dict[int, int] = {master_own_byte: master_idx(master_name)}
-        unmappable_bytes: set[int] = set()
-        for i, m in enumerate(master_esp.header.masters):
-            try:
-                byte_remap[i] = master_idx(m)
-            except KeyError:
-                unmappable_bytes.add(i)
-
-        def remap_fid(fid: int) -> int | None:
-            """Return remapped FormID in patch space, or None if the
-            top byte references a master we don't have."""
-            top = (fid >> 24) & 0xFF
-            if top in byte_remap:
-                return (byte_remap[top] << 24) | (fid & 0xFFFFFF)
-            return None
-
-        master_to_new_body: dict[int, int] = {}  # master ARMA fid -> new own fid
-        hit_count = 0
-        for rec in arma_grp.records:
-            slots = 0
-            has_mod3 = False
-            edid = None
-            mod3_path = None
-            primary_rnam = None
-            model_paths: list[str] = []
-            existing_races: set[int] = set()
-            for sig, sd in esp.iter_subrecords(rec.payload):
-                if sig in (b"BOD2", b"BODT") and len(sd) >= 4:
-                    slots = struct.unpack_from("<I", sd, 0)[0]
-                elif sig == b"EDID":
-                    edid = sd.rstrip(b"\x00").decode("utf-8", "ignore")
-                elif sig == b"MOD3":  # female 3rd person model
-                    has_mod3 = True
-                    mod3_path = sd.rstrip(b"\x00").decode("latin-1", "ignore")
-                    model_paths.append(mod3_path)
-                elif sig == b"MOD2":  # male model (catch nude skin in MOD2 too)
-                    model_paths.append(
-                        sd.rstrip(b"\x00").decode("latin-1", "ignore"))
-                elif sig == ARMA_ADDITIONAL_RACE_SIG and len(sd) == 4:
-                    existing_races.add(struct.unpack("<I", sd)[0])
-                elif sig == b"RNAM" and len(sd) == 4:
-                    primary_rnam = struct.unpack("<I", sd)[0]
-                    existing_races.add(primary_rnam)
-            if not has_mod3:
-                # No female model (MOD3). Body-slot or model-less = skip.
-                # Ungendered non-body gear (shields, some helmets) legitimately
-                # ships MOD2 only; vanilla renders it on females via MOD2
-                # fallback, and so does a minted UBE-primary ARMA.
-                if (slots & _BIPED_SLOT_BODY_BIT) or not model_paths:
-                    skipped_no_mod3 += 1
-                    continue
-                covered_nonbody_mod2_only += 1
-            # Humanoid only: PRIMARY race (RNAM) must be DefaultRace (0x19 in
-            # Skyrim.esm). Beast/creature races are out of scope; beast
-            # naked-skin armatures would compete with the UBE nude skin.
-            _ridx = (primary_rnam >> 24) if primary_rnam is not None else -1
-            _rlow = (primary_rnam & 0xFFFFFF) if primary_rnam is not None else -1
-            if master_name.lower() == "skyrim.esm":
-                _is_default_race = (_rlow == 0x000019 and _ridx == 0)
-            else:
-                _mm = master_esp.header.masters
-                _is_default_race = (_rlow == 0x000019 and 0 <= _ridx < len(_mm)
-                                    and _mm[_ridx].lower() == "skyrim.esm")
-            if not _is_default_race:
-                skipped_non_default_race += 1
-                continue
-            if slots & _BIPED_SLOT_BODY_BIT:
-                # Body armour: mint UBE ARMA if we converted this MOD3 mesh.
-                if converted_rel_paths and mod3_path and \
-                        _vanilla_converted(mod3_path):
-                    try:
-                        stripped = b"".join(
-                            esp.encode_subrecord(s2, d2)
-                            for s2, d2 in esp.iter_subrecords(rec.payload)
-                            if s2 not in _STRIP_VANILLA_BODY_ARMA)
-                        mp = rebuild_arma_payload(
-                            stripped,
-                            new_primary_rnam=ube_primary_for_patch,
-                            new_additional_race_fids=ube_races_for_patch,
-                            converted_nif_exists=_vanilla_converted,
-                            path_prefix=ube_path_prefix,
-                        )
-                        new_edid = (edid + "_UBE") if edid \
-                            else f"UBE_VanBody_{next_obj_id:X}"
-                        mp = replace_arma_edid(mp, new_edid)
-                        new_fid = (own_byte << 24) | next_obj_id
-                        next_obj_id += 1
-                        body_arma_records.append(esp.Record(
-                            sig=b"ARMA", flags=0, formid=new_fid,
-                            timestamp_vc=0, version_unk=0x002C, payload=mp))
-                        master_to_new_body[rec.formid] = new_fid
-                        body_covered += 1
-                    except Exception:
-                        pass
-                else:
-                    skipped_body_slot += 1
-                continue
-            # Never extend a NUDE SKIN armature (hands/feet/body base mesh).
-            # UBE supplies its own nude skin; extending the vanilla per-race
-            # naked armature makes a competing CBBE skin armature win on nude
-            # UBE actors -> CBBE hands/feet. See _NUDE_SKIN_BASENAMES.
-            if any(_is_nude_skin_model(m) for m in model_paths):
-                skipped_nude_skin += 1
-                continue
-
-            # If any existing FormID in this record references a master
-            # we don't have, skip the record. Better to leave it alone
-            # than emit a broken override that crashes the game.
-            record_unmappable = False
-            for sig, sd in esp.iter_subrecords(rec.payload):
-                if sig in (b"RNAM", ARMA_ADDITIONAL_RACE_SIG, b"SNDD") and \
-                   len(sd) == 4:
-                    fid = struct.unpack("<I", sd)[0]
-                    top = (fid >> 24) & 0xFF
-                    if top not in byte_remap:
-                        record_unmappable = True
-                        break
-            if record_unmappable:
-                skipped_unknown_master_ref += 1
-                continue
-
-            # Mint a UBE-primary ARMA pointing at the vanilla mesh (no mesh
-            # conversion needed for non-body slots) + UBE races. Link it to the
-            # master ARMO. The original ARMA is left untouched (vanilla/male NPCs
-            # keep using it). On failure, fall through to race-extension override.
-            try:
-                stripped = b"".join(
-                    esp.encode_subrecord(s2, d2)
-                    for s2, d2 in esp.iter_subrecords(rec.payload)
-                    if s2 not in _STRIP_VANILLA_BODY_ARMA)
-                mp = rebuild_arma_payload(
-                    stripped,
-                    new_primary_rnam=ube_primary_for_patch,
-                    new_additional_race_fids=ube_races_for_patch,
-                    converted_nif_exists=_vanilla_converted,
-                    path_prefix=ube_path_prefix,
-                )
-                new_edid = (edid + "_UBE") if edid \
-                    else f"UBE_VanGear_{next_obj_id:X}"
-                mp = replace_arma_edid(mp, new_edid)
-                new_fid = (own_byte << 24) | next_obj_id
-                next_obj_id += 1
-                body_arma_records.append(esp.Record(
-                    sig=b"ARMA", flags=0, formid=new_fid,
-                    timestamp_vc=0, version_unk=0x002C, payload=mp))
-                master_to_new_body[rec.formid] = new_fid
-                hit_count += 1
-                continue
-            except Exception:
-                pass  # fall through to legacy race-extension override
-
-            # Translate existing races into patch space for dedupe.
-            existing_in_patch_space: set[int] = set()
-            for fid in existing_races:
-                remapped = remap_fid(fid)
-                if remapped is not None:
-                    existing_in_patch_space.add(remapped)
-            new_races = [r for r in ube_races_for_patch
-                         if r not in existing_in_patch_space]
-            if not new_races:
-                skipped_already_ube += 1
-                continue
-
-            # Build override: copy subrecords, splice new MODL entries after
-            # the last existing MODL (keeps canonical grouped layout).
-            # Strip MO?S/MO?T: those TXST FormIDs and texture hashes are
-            # frequently patched by USSEP etc.; copying vanilla bytes verbatim
-            # reverts those patches and causes a dangling-FormID access violation.
-            # Trade-off: UBE-race actors lose texture variants (render base only).
-            STRIP_FROM_ARMA_OVERRIDE = {
-                b"MO2S", b"MO3S", b"MO4S", b"MO5S",  # alt textures
-                b"MO2T", b"MO3T", b"MO4T", b"MO5T",  # texture hashes
-            }
-            pieces = list(esp.iter_subrecords(rec.payload))
-            pieces = [(sig, data) for sig, data in pieces
-                      if sig not in STRIP_FROM_ARMA_OVERRIDE]
-            last_modl_idx = -1
-            for i, (sig, _data) in enumerate(pieces):
-                if sig == ARMA_ADDITIONAL_RACE_SIG and len(_data) == 4:
-                    last_modl_idx = i
-            new_payload = b""
-            for i, (sig, data) in enumerate(pieces):
-                # Remap FormID-bearing subrecords from master's own space
-                # to patch's master space. ARMA fields carrying FormIDs:
-                # RNAM (race), MODL (additional race), SNDD (sound).
-                if sig in (b"RNAM", ARMA_ADDITIONAL_RACE_SIG, b"SNDD") and \
-                   len(data) == 4:
-                    fid = struct.unpack("<I", data)[0]
-                    remapped = remap_fid(fid)
-                    # We already filtered out records with unmappable
-                    # refs above, so remap_fid must return a value here.
-                    assert remapped is not None
-                    new_payload += esp.encode_subrecord(
-                        sig, struct.pack("<I", remapped))
-                else:
-                    new_payload += esp.encode_subrecord(sig, data)
-                if i == last_modl_idx:
-                    for new_race_fid in new_races:
-                        new_payload += esp.encode_subrecord(
-                            ARMA_ADDITIONAL_RACE_SIG,
-                            struct.pack("<I", new_race_fid))
-            if last_modl_idx < 0:
-                # No existing additional-race entries — append at end
-                # (ARMA's MODL goes at the very end of the record anyway,
-                # no DATA-style trailing subrecord blocks this).
-                for new_race_fid in new_races:
-                    new_payload += esp.encode_subrecord(
-                        ARMA_ADDITIONAL_RACE_SIG,
-                        struct.pack("<I", new_race_fid))
-
-            # Override record: top byte = master's index in patch space,
-            # low 24 bits = master's local FormID.
-            override_fid = master_patch_byte | (rec.formid & 0xFFFFFF)
-            arma_overrides.append(esp.Record(
-                sig=b"ARMA", flags=0, formid=override_fid,
-                timestamp_vc=0, version_unk=0x002C,
-                payload=new_payload,
-            ))
-            hit_count += 1
-
-        # Body coverage: append our minted UBE body ARMAs to the master ARMOs
-        # that reference the original body ARMAs (MODL-before-DATA, etc.).
-        if master_to_new_body:
-            try:
-                for m_armo in _scan_master_armos_referencing(
-                        _master_path, set(master_to_new_body)):
-                    ov = _build_armo_body_override(
-                        m_armo, master_patch_byte, master_to_new_body,
-                        master_name, _string_resolver, remap_fid=remap_fid)
-                    if ov is None:
-                        continue
-                    # Overlay load-order winner stats (armor rating/keywords)
-                    # so overhaul balance survives.
-                    if armo_winner_index:
-                        abs_id = (master_name.lower(),
-                                  m_armo.formid & 0xFFFFFF)
-                        win = armo_winner_index.get(abs_id)
-                        if (win is not None and not win.is_localized
-                                and win.plugin_name.lower() != abs_id[0]):
-                            ov.payload = _overlay_winner_stats(
-                                ov.payload, win, patch_masters)
-                            winner_rebased += 1
-                    body_armo_overrides.append(ov)
-            except Exception:
-                pass
-        scan_stats[master_name] = hit_count
-
-    # ---- Step 4: emit the patch ESP ----
-    # Not ESL-flagged: this patch mints hundreds of own ARMA records plus ~2000
-    # ARMO overrides. ESL FE-space compaction mis-resolved the minted-ARMA refs
-    # in-game. A full plugin loads overrides at the correct load-order slot.
-    out_header = esp.TES4Header(
-        masters=patch_masters,
-        author=author,
-        description=description,
-        flags=0,                # was TES4_FLAG_ESL — see note above
-        version=1.7,
-        num_records=0,  # filled by save()
-        next_object_id=max(0x800, next_obj_id),
-    )
-    out_esp = esp.ESP(header=out_header, groups=[])
-    all_arma = arma_overrides + body_arma_records
-    if all_arma:
-        out_esp.groups.append(esp.Group(label=b"ARMA", records=all_arma))
-    if body_armo_overrides:
-        out_esp.groups.append(esp.Group(label=b"ARMO", records=body_armo_overrides))
-    prune_unused_masters(out_esp)
-    out_esp.save(out_path)
-
-    validation_warnings = validate_patch(out_path,
-                                         master_data_dirs=master_data_dirs)
-
-    return {
-        "output": str(out_path),
-        "masters": out_esp.header.masters,
-        "arma_overrides": len(arma_overrides),
-        "body_arma_minted": len(body_arma_records),
-        "body_armo_overrides": len(body_armo_overrides),
-        "skipped_no_mod3": skipped_no_mod3,
-        "skipped_body_slot": skipped_body_slot,
-        "skipped_nude_skin": skipped_nude_skin,
-        "skipped_already_ube": skipped_already_ube,
-        "skipped_unknown_master_ref": skipped_unknown_master_ref,
-        "skipped_non_default_race": skipped_non_default_race,
-        "covered_nonbody_mod2_only": covered_nonbody_mod2_only,
-        "winner_rebased_armos": winner_rebased,
-        "scan_per_master": scan_stats,
-        "esl_flagged": bool(out_header.flags & TES4_FLAG_ESL),
-        "validation_warnings": validation_warnings,
-    }
-
-
 def _read_tes4_flags(esp_path: Path) -> "int | None":
     """Read just the TES4 record-header flags (cheap — first 12 bytes, no
     full parse). Bit 0x1 = ESM (master), bit 0x200 = ESL/light."""
@@ -3699,13 +3376,18 @@ def _is_esm_tier_master(name: str, data_dirs: "list[Path] | None") -> bool:
 # onto our override instead of basing it on the bare master record.
 
 class _WinnerRecord:
-    __slots__ = ("plugin_name", "plugin_masters", "payload", "is_localized")
+    __slots__ = ("plugin_name", "plugin_masters", "payload", "is_localized",
+                 "rec_flags")
 
-    def __init__(self, plugin_name, plugin_masters, payload, is_localized):
+    def __init__(self, plugin_name, plugin_masters, payload, is_localized,
+                 rec_flags=0):
         self.plugin_name = plugin_name
         self.plugin_masters = plugin_masters
         self.payload = payload
         self.is_localized = is_localized
+        # TES4 record flags (e.g. 0x4 Non-Playable). Overrides must carry the
+        # winner's flags: a flags=0 override made NPC-only armor PLAYABLE (#xedit5).
+        self.rec_flags = rec_flags
 
 
 def _record_abs_fid(formid: int, plugin_masters: list[str],
@@ -3755,7 +3437,8 @@ def build_armo_winner_index(
             abs_id = _record_abs_fid(rec.formid, masters, name)
             if target_abs is not None and abs_id not in target_abs:
                 continue
-            index[abs_id] = _WinnerRecord(name, masters, rec.payload, is_loc)
+            index[abs_id] = _WinnerRecord(name, masters, rec.payload, is_loc,
+                                          rec.flags)
     return index
 
 
@@ -3793,6 +3476,15 @@ def _overlay_winner_stats(
     for sig, data in esp.iter_subrecords(winner.payload):
         if sig in _WINNER_STAT_NOFID_SIGS:
             adopt[sig] = data  # last occurrence wins (canonical: one each)
+        elif sig == b"RNAM" and len(data) == 4:
+            # Adopt the winner's race when it resolves through our master list
+            # (an overhaul re-racing an item to DefaultRace is a real balance/
+            # visibility change; keeping the base race regressed it — #xedit5).
+            fid = struct.unpack("<I", data)[0]
+            top = (fid >> 24) & 0xFF
+            if top != winner_own_byte and top in wbr:
+                adopt[b"RNAM"] = struct.pack(
+                    "<I", (wbr[top] << 24) | (fid & 0xFFFFFF))
         elif sig == b"KWDA" and len(data) % 4 == 0:
             # Adopt keywords only if EVERY one resolves to a present master.
             ok = True
@@ -3806,6 +3498,12 @@ def _overlay_winner_stats(
                 new += struct.pack("<I", (wbr[top] << 24) | (fid & 0xFFFFFF))
             if ok:
                 adopt[b"KWDA"] = new
+    # KSIZ must equal the KWDA entry count. Adopting the winner's KWDA without
+    # updating KSIZ left base-count/winner-array desyncs (KSIZ=6 vs 8 keywords)
+    # -> xEdit garbles the record view and the engine's keyword read is
+    # undefined (#xedit5). Recompute whenever KWDA is adopted.
+    if b"KWDA" in adopt:
+        adopt[b"KSIZ"] = struct.pack("<I", len(adopt[b"KWDA"]) // 4)
 
     if not adopt:
         return base_payload
@@ -3913,6 +3611,7 @@ def generate_modded_nonbody_ube_coverage_patch(
     *,
     ube_allrace_filename: str = "UBE_AllRace.esp",
     exclude_names: "set[str] | None" = None,
+    exclude_armo_abs: "set[tuple[str, int]] | None" = None,
     master_data_dirs: "list[Path] | None" = None,
     author: str = "cbbe-to-ube modded non-body UBE coverage",
     description: str = "UBE race coverage for mod-defined non-body armor",
@@ -3967,6 +3666,13 @@ def generate_modded_nonbody_ube_coverage_patch(
     targets = []   # (armo_abs, defining_plugin_case, [arma_abs to mint])
     mint_set: dict = {}  # arma_abs -> placeholder (filled with minted fid later)
     for armo_abs, (apayload, am, an, arms, rnam, slots, edid, aflags) in armo_win.items():
+        # FULL SKYPATCHER: skip ARMOs the Combined INI already links --
+        # armature lists in ESPs no longer reflect runtime coverage, so
+        # without this the fallback re-covers everything -> DOUBLE
+        # armature (body renders twice = clipping) and UBE-primary
+        # hands mints (invisible gauntlets). #fsp-dedup
+        if exclude_armo_abs and armo_abs in exclude_armo_abs:
+            continue
         if aflags & ARMO_NONPLAYABLE_FLAG:
             continue
         if slots & _DEFORMING_SLOTS_MASK:
@@ -4077,10 +3783,21 @@ def generate_modded_body_ube_coverage_patch(
     converted_rel_paths: "set[str]",
     ube_allrace_filename: str = "UBE_AllRace.esp",
     exclude_names: "set[str] | None" = None,
+    exclude_armo_abs: "set[tuple[str, int]] | None" = None,
     master_data_dirs: "list[Path] | None" = None,
+    cover_all: bool = False,
+    preserve_textures: bool = False,
     author: str = "cbbe-to-ube modded body UBE coverage",
     description: str = "UBE race coverage for mod-defined body armor variants",
 ) -> dict:
+    # cover_all=True makes this the PRIMARY body-armor path (full SkyPatcher):
+    # it no longer defers to ARMOs the ESP-override path already patched, so it
+    # covers EVERY converted body armor. Default False = today's fallback role.
+    # preserve_textures=True keeps each minted armature's alt-textures (MO?S) and
+    # skin swaps (NAM0-3), remapped into this ESP's master space, so recolor
+    # variants keep their look under full SkyPatcher (the ESP-override path did
+    # this via per-source patches; here one ESP unions the needed masters).
+    # Default False = today's minimal-master behavior (strip texture refs).
     """Body-slot counterpart of generate_modded_nonbody_ube_coverage_patch.
 
     Covers overhaul-added variant ARMOs (e.g. a mod-defined armor variant
@@ -4139,10 +3856,34 @@ def generate_modded_body_ube_coverage_patch(
     targets = []          # (armo_abs, defining_plugin_case, [arma_abs to mint])
     mint_set: dict = {}
     for armo_abs, (apayload, am, an, arms, rnam, slots, edid, aflags) in armo_win.items():
-        if aflags & ARMO_NONPLAYABLE_FLAG:
+        # FULL SKYPATCHER: skip ARMOs the Combined INI already links --
+        # armature lists in ESPs no longer reflect runtime coverage, so
+        # without this the fallback re-covers everything -> DOUBLE
+        # armature (body renders twice = clipping) and UBE-primary
+        # hands mints (invisible gauntlets). #fsp-dedup
+        if exclude_armo_abs and armo_abs in exclude_armo_abs:
+            continue
+        # cover_all relaxes two skips ONLY for TORSO body (slot 32) items, because
+        # the full-SkyPatcher path suppresses their ESP ARMO override so coverage
+        # must be their sole path: (1) NON-PLAYABLE armor (the ESP-override path
+        # covered non-playable NPC body armor too -- skipping it here would leave
+        # ~hundreds invisible on UBE NPCs); (2) armatures that ALREADY have a UBE
+        # armature. Hands/feet (33/37) keep both skips (fallback role only) so
+        # they stay on the source-primary ESP-override path.
+        _is_body = bool(slots & _BIPED_SLOT_BODY_BIT)
+        _cover_body = cover_all and _is_body
+        if (aflags & ARMO_NONPLAYABLE_FLAG) and not _cover_body:
             continue
         if not (slots & _DEFORMING_SLOTS_MASK):
             continue                       # only body/hands/feet here (the inverse of non-body)
+        # Full-SkyPatcher PRIMARY role (cover_all) covers TORSO body (slot 32)
+        # ONLY -- the per-source builder suppresses just those. Pure hands/feet
+        # (33/37) stay on the source-primary ESP-override path, so covering them
+        # here would double them up with a UBE-primary armature (the nude-hands
+        # invisibility bug). The fallback role (cover_all=False) still covers the
+        # full deforming mask for items the ESP-override missed.
+        if cover_all and not _is_body:
+            continue
         if rnam != DEFAULT_RACE:
             continue                       # beast/custom race -> never UBE-extend
         if not arms:
@@ -4151,7 +3892,7 @@ def generate_modded_body_ube_coverage_patch(
         winning = [(x, v) for x, v in winning if v is not None]
         if not winning:
             continue
-        if any(v[4] for _x, v in winning):
+        if any(v[4] for _x, v in winning) and not _cover_body:
             continue                       # already has a UBE armature (vanilla ARMO path)
         # mint only DefaultRace armatures whose mesh we actually converted
         to_mint = [x for x, v in winning
@@ -4167,29 +3908,68 @@ def generate_modded_body_ube_coverage_patch(
     # ---- Pass 3: mint ESP (UBE-primary ARMAs, models REDIRECTED to !UBE) ----
     patch_masters = list(VANILLA_DLC_MASTERS)
     _add_master_if_missing(patch_masters, ube_allrace_filename)
+    # preserve_textures: declare the masters each minted armature's alt-textures
+    # (MO?S) / skin swaps (NAM0-3) reference, so the refs can be remapped into
+    # THIS ESP's master space instead of stripped. Capped well below the 255
+    # top-byte limit (own_byte == len(masters)); an armature whose ref needs a
+    # master past the cap simply falls back to the strip path (below).
+    _MASTER_CAP = 250
+    if preserve_textures:
+        for arma_abs in mint_set:
+            _pl, _m2, _n2, _rn, _u = arma_win[arma_abs]
+            for nm in _arma_texture_master_names(_pl, _m2, _n2):
+                if len(patch_masters) < _MASTER_CAP:
+                    _add_master_if_missing(patch_masters, nm)
     pidx = {m.lower(): i for i, m in enumerate(patch_masters)}
     own_byte = len(patch_masters)
     ube_byte = pidx[ube_allrace_filename.lower()]
     ube_races_patch = [(ube_byte << 24) | f for f in UBE_RACE_FIDS_24]
     ube_primary_patch = (ube_byte << 24) | UBE_PRIMARY_BRETON_FID_24
 
-    STRIP = {b"SNDD", b"ONAM", b"MO2S", b"MO3S", b"MO4S", b"MO5S",
-             b"MO2T", b"MO3T", b"MO4T", b"MO5T",
-             b"NAM0", b"NAM1", b"NAM2", b"NAM3"}  # NAM0-3: skin TXST refs, same strip reason
+    # Default (strip) removes every texture-bearing ref so no source master is
+    # needed. preserve_textures keeps them (remapped), stripping only the two
+    # non-texture FormID refs (footstep sound / art object) that would dangle.
+    STRIP_FULL = {b"SNDD", b"ONAM", b"MO2S", b"MO3S", b"MO4S", b"MO5S",
+                  b"MO2T", b"MO3T", b"MO4T", b"MO5T",
+                  b"NAM0", b"NAM1", b"NAM2", b"NAM3"}
+    STRIP_MIN = {b"SNDD", b"ONAM"}
     new_arma_records: list = []
     next_id = ESL_OWN_FORMID_MIN
     mint_name = out_path.with_suffix(".esp").name
+    preserved_count = 0
+    preserve_fallbacks: list = []
     for arma_abs in mint_set:
         payload, m2, n2, _rn, _u = arma_win[arma_abs]
-        stripped = b"".join(
-            esp.encode_subrecord(s, d)
-            for s, d in esp.iter_subrecords(payload) if s not in STRIP)
-        minted_payload = rebuild_arma_payload(
-            stripped,
-            new_primary_rnam=ube_primary_patch,
-            new_additional_race_fids=ube_races_patch,
-            converted_nif_exists=_conv_exists,   # redirect model -> !UBE\ where converted
-        )
+        minted_payload = None
+        if preserve_textures:
+            def _remap(fid: int, _sm=m2, _sn=n2) -> int:
+                return remap_fid(fid, _sm, _sn, patch_masters)
+            try:
+                kept = b"".join(
+                    esp.encode_subrecord(s, d)
+                    for s, d in esp.iter_subrecords(payload) if s not in STRIP_MIN)
+                kept = _remap_arma_skin_txsts(kept, _remap)   # NAM0-3 -> patch space
+                minted_payload = rebuild_arma_payload(
+                    kept,
+                    new_primary_rnam=ube_primary_patch,
+                    new_additional_race_fids=ube_races_patch,
+                    alt_texture_fid_remap=_remap,             # MO?S -> patch space
+                    converted_nif_exists=_conv_exists,
+                )
+                preserved_count += 1
+            except Exception as _e:      # unresolvable master -> strip fallback
+                minted_payload = None
+                preserve_fallbacks.append((arma_abs[0], arma_abs[1], repr(_e)))
+        if minted_payload is None:
+            stripped = b"".join(
+                esp.encode_subrecord(s, d)
+                for s, d in esp.iter_subrecords(payload) if s not in STRIP_FULL)
+            minted_payload = rebuild_arma_payload(
+                stripped,
+                new_primary_rnam=ube_primary_patch,
+                new_additional_race_fids=ube_races_patch,
+                converted_nif_exists=_conv_exists,   # redirect model -> !UBE\ where converted
+            )
         new_fid = (own_byte << 24) | next_id
         next_id += 1
         new_edid = "UBE_MBD_{:X}".format(arma_abs[1])
@@ -4209,6 +3989,11 @@ def generate_modded_body_ube_coverage_patch(
     if new_arma_records:
         out_esp.groups.append(esp.Group(label=b"ARMA", records=new_arma_records))
     prune_unused_masters(out_esp)
+    # preserve_textures unions source masters of varying tiers; tier-sort so a
+    # master-tier plugin never trails a regular ESP (both passes remap nested
+    # MO?S + NAM refs, so this is ref-safe).
+    if preserve_textures:
+        resort_masters(out_esp, master_data_dirs=master_data_dirs)
     out_esp.save(out_path)
     warnings = validate_patch(out_path, master_data_dirs=master_data_dirs)
 
@@ -4238,6 +4023,8 @@ def generate_modded_body_ube_coverage_patch(
         "esl_flagged": bool(tes4_flags & TES4_FLAG_ESL),
         "candidates_scanned": len(armo_win),
         "validation_warnings": warnings,
+        "textures_preserved": preserved_count,
+        "texture_fallbacks": len(preserve_fallbacks),
     }
 
 
@@ -4250,6 +4037,7 @@ def merge_patches(
     description: str = "Merged UBE compatibility patches",
     master_data_dirs: "list[Path] | None" = None,
     armo_winner_index: "dict[tuple[str, int], _WinnerRecord] | None" = None,
+    _sp_seen_pairs: "set | None" = None,
 ) -> dict:
     """Combine multiple UBE patch ESPs into a single ESL-flagged ESP.
 
@@ -4297,6 +4085,9 @@ def merge_patches(
     # poorly) and same-source winners (already correct).
     rebase_map: dict[tuple[Path, int], _WinnerRecord] = {}
     rebase_count = 0
+    # (patch_path, pre-merge fid) -> merged Record (for the SkyPatcher-links
+    # sidecar pass; final fids read AFTER prune renumbering).
+    merged_rec_by_key: "dict[tuple[Path, int], esp.Record]" = {}
     if armo_winner_index:
         for patch_path, pe in patches:
             pmasters = pe.header.masters
@@ -4435,11 +4226,18 @@ def merge_patches(
                         new_payload, win, merged_masters)
 
                 new_rec = esp.Record(
-                    sig=grp.label, flags=rec.flags, formid=new_fid,
+                    sig=grp.label,
+                    # Rebased ARMO overrides adopt the WINNER's record flags
+                    # (Non-Playable etc.) along with its stats (#xedit5).
+                    flags=(win.rec_flags if win is not None else rec.flags),
+                    formid=new_fid,
                     timestamp_vc=rec.timestamp_vc,
                     version_unk=rec.version_unk,
                     payload=new_payload,
                 )
+                # (patch, pre-merge fid) -> merged Record. Read rec.formid at
+                # the END (prune renumbers) -- used by the SkyPatcher-links pass.
+                merged_rec_by_key[(patch_path, rec.formid)] = new_rec
                 if grp.label == b"ARMA":
                     new_arma_records.append(new_rec)
                     if ((new_fid >> 24) & 0xFF) == own_byte_merged:
@@ -4492,9 +4290,50 @@ def merge_patches(
 
     out_esp.save(out_path)
 
+    # ---- FULL SKYPATCHER: per-patch link sidecars -> final INI lines ----
+    # Emitted only when patches carry .skypatcher.json sidecars (the per-source
+    # phase ran with CBBE2UBE_FULL_SKYPATCHER). Dedup by (armo, source-armature)
+    # so the same vanilla armature minted by many patches is added ONCE
+    # (first-writer-wins, mirroring the old ARMO-override dedup). Pass a shared
+    # `_sp_seen_pairs` set across split pieces for cross-piece dedup.
+    sp_ini: "list[str]" = []
+    sp_by_armo: "dict[tuple[str, int], list[int]]" = {}
+    seen_pairs = _sp_seen_pairs if _sp_seen_pairs is not None else set()
+    import json as _json
+    for patch_path, _pe in patches:
+        sc = Path(str(patch_path) + ".skypatcher.json")
+        if not sc.is_file():
+            continue
+        try:
+            doc = _json.loads(sc.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        for ent in doc:
+            try:
+                d, l = ent["armo"][0], int(ent["armo"][1])
+            except Exception:
+                continue
+            for a in ent.get("adds", []):
+                rec = merged_rec_by_key.get((patch_path, int(a.get("fid", -1))))
+                if rec is None:
+                    continue
+                src = a.get("src") or ["", -1]
+                pair = ((str(d), l), (str(src[0]), int(src[1])))
+                if pair in seen_pairs:
+                    continue          # same armature already added elsewhere
+                seen_pairs.add(pair)
+                sp_by_armo.setdefault((str(d), l), []).append(rec.formid)
+    for (d, l), fids in sorted(sp_by_armo.items()):
+        adds = ",".join("{}|{:06X}".format(out_path.name, f & 0xFFFFFF)
+                        for f in fids)
+        sp_ini.append("filterByArmors={}|{:06X}:armorAddonsToAdd={}".format(
+            d, l, adds))
+
     return {
         "output": str(out_path),
         "masters": out_esp.header.masters,
+        "skypatcher_ini_lines": sp_ini,
+        "skypatcher_targets": len(sp_by_armo),
         "merged_patch_count": len(patches),
         "total_arma_records": len(new_arma_records),
         "own_arma_records": own_arma_count,
@@ -4596,17 +4435,20 @@ def merge_patches_split(
     # resolution CTD. Clearing here forces a re-read against the merge's full
     # batch dirs. (#postflight caught wilderness_witch.esp mis-sorted in a split.)
     clear_esm_tier_cache()
+    clear_master_path_cache()
     out_path = Path(output_path)
     plist = [Path(p) for p in patch_paths]
     for p in plist:
         if not p.is_file():
             raise FileNotFoundError(f"patch not found: {p}")
 
+    _sp_seen: set = set()   # cross-piece (armo, src-armature) dedup for links
+
     def _single(esl):
         s = merge_patches(
             plist, out_path, esl_flag=esl, author=author,
             description=description, master_data_dirs=master_data_dirs,
-            armo_winner_index=armo_winner_index)
+            armo_winner_index=armo_winner_index, _sp_seen_pairs=_sp_seen)
         s["pieces"] = [out_path.name]
         s["split_pieces"] = 1
         s["piece_stats"] = [s]
@@ -4648,7 +4490,8 @@ def merge_patches_split(
         st = merge_patches(
             ppaths, piece_path, esl_flag=True, author=author,
             description=f"{description} (part {idx + 1}/{n_pieces})",
-            master_data_dirs=master_data_dirs, armo_winner_index=armo_winner_index)
+            master_data_dirs=master_data_dirs, armo_winner_index=armo_winner_index,
+            _sp_seen_pairs=_sp_seen)
         piece_stats.append(st)
         piece_names.append(piece_path.name)
 
@@ -4676,6 +4519,10 @@ def merge_patches_split(
         "esl_slots_max": ESL_MAX_OWN_RECORDS,
         "downgraded_to_full_esp": any(s.get("downgraded_to_full_esp") for s in piece_stats),
         "winner_rebased_armos": sum(s.get("winner_rebased_armos", 0) for s in piece_stats),
+        "skypatcher_ini_lines": [l for s in piece_stats
+                                 for l in s.get("skypatcher_ini_lines", [])],
+        "skypatcher_targets": sum(s.get("skypatcher_targets", 0)
+                                  for s in piece_stats),
         "piece_stats": piece_stats,
     }
 

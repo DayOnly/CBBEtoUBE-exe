@@ -670,6 +670,173 @@ def _find_source_esps(source_dir: Path) -> list[Path]:
     return candidates
 
 
+def _vanilla_sweep_esps(source_dir: Path) -> "list[Path]":
+    """Vanilla sweep: when the source folder IS the game Data dir (identified
+    by Skyrim.esm at its root), the source plugins are the vanilla/DLC masters
+    themselves, in load order.
+
+    Vanilla armor coverage used to be INCIDENTAL: a vanilla mesh converted only
+    when some mod in the load order happened to carry an override of its ARMA
+    (e.g. a bugfix patch), so any piece nobody overrides was never converted,
+    got no UBE armature, and rendered invisible on UBE actors. Passing the game
+    Data dir as the LAST (lowest-priority) source makes the base game itself a
+    source mod: every deforming DefaultRace ARMA is planned, meshes resolve
+    through the normal VFS -> loose -> BSA chain, and merge-time link dedup
+    keeps the mod-source link wherever both cover the same armor.
+
+    Returns [] for a normal mod folder (no Skyrim.esm at the root).
+    """
+    if not (source_dir / "Skyrim.esm").is_file():
+        return []
+    return [source_dir / m for m in ube_patcher.VANILLA_DLC_MASTERS
+            if (source_dir / m).is_file()]
+
+
+# Structured record of everything that FAILED to convert this run, mirrored
+# from the console summary as it prints. Written to
+# CBBEtoUBE_last_failures.json next to the run log every run (empty list on a
+# clean run so a reader can never see a PREVIOUS run's failures) -- the GUI
+# shows it as an end-of-run popup; CLI users have the same info in the log.
+_RUN_FAILURES: "list[dict]" = []
+
+
+def _record_failure(kind: str, source, item, detail: str = "") -> None:
+    _RUN_FAILURES.append({
+        "kind": str(kind), "source": str(source),
+        "item": str(item), "detail": str(detail)[:400]})
+
+
+def _failures_file_path() -> Path:
+    """Next to the run log: the one location the GUI and the frozen exe agree
+    on (CBBE2UBE_RUN_LOG's dir when a parent pinned it, else exe/repo dir)."""
+    pinned = os.environ.get("CBBE2UBE_RUN_LOG", "").strip()
+    if pinned:
+        return Path(pinned).parent / "CBBEtoUBE_last_failures.json"
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent / "CBBEtoUBE_last_failures.json"
+    return Path(__file__).resolve().parent.parent / "CBBEtoUBE_last_failures.json"
+
+
+def _write_failures_file() -> None:
+    import json as _json
+    try:
+        _failures_file_path().write_text(
+            _json.dumps({"failures": _RUN_FAILURES}, indent=1),
+            encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _preflight_vanilla_sweep(data_dir: Path) -> "tuple[bool, str]":
+    """Cheap viability check for the vanilla sweep, run BEFORE the batch.
+
+    A sweep that would die mid-run must instead be disabled UP FRONT with one
+    clear message: it is source #last, so a late crash costs the user hours of
+    conversion before they learn anything (and on unknown layouts — different
+    mod managers, stock-game variants — the Data dir is the least predictable
+    input we touch). Returns (ok, reason); reason is printable on failure.
+    All work here is reused by the real run via the ESP parse cache.
+    """
+    try:
+        esps = _vanilla_sweep_esps(data_dir)
+        if not esps:
+            return False, f"no Skyrim.esm at {data_dir}"
+        from . import esp as _esp
+        e = _esp.ESP.load_cached(esps[0])
+        if e.group(b"ARMA") is None:
+            return False, f"{esps[0].name} parses but has no ARMA group"
+        bases = _player_armor_mesh_bases(data_dir,
+                                         include_candidate_slots=True)
+        if not bases:
+            return False, ("no DefaultRace armour ARMAs resolved from the "
+                           "vanilla masters")
+        return True, f"{len(esps)} master(s), {len(bases)} armour mesh base(s)"
+    except Exception as e:
+        return False, f"preflight error: {e!r}"
+
+
+def refresh_mod_esp(
+    source_dir: str | Path,
+    output_dir: str | Path,
+    *,
+    output_esp_name: "str | None" = None,
+    unmerged_patch_subdir: str = "_unmerged_patches",
+    master_data_dirs: "list[Path] | None" = None,
+) -> "AutoConvertResult":
+    """ESP-only refresh (`--plugins-only`): regenerate this mod's patch ESP(s)
+    from the `.espgen.json` snapshots the last full run wrote, skipping ALL
+    mesh work. Mirrors auto_convert_mod's ESP-gen tail (kept in sync). Safe
+    under FULL SKYPATCHER: patch content depends only on the source ARMAs +
+    the converted-mesh set, both captured in the snapshot; the runtime INI
+    applies to whatever record wins the load order. Mods without a snapshot
+    (never fully converted) are skipped with a note."""
+    source_dir = Path(source_dir)
+    output_dir = Path(output_dir)
+    result = AutoConvertResult(source_dir=source_dir, output_dir=output_dir)
+    if master_data_dirs is None:
+        master_data_dirs = _discover_master_data_dirs(source_dir)
+    bsa_mesh_rel_paths = None
+    if _BATCH_BSA_INDEX is not None:
+        try:
+            if _BATCH_BSA_INDEX._index is None:
+                _BATCH_BSA_INDEX._scan()
+            bsa_mesh_rel_paths = _BATCH_BSA_INDEX._index
+        except Exception:
+            bsa_mesh_rel_paths = None
+    src_esps = _vanilla_sweep_esps(source_dir) or _find_source_esps(source_dir)
+    if not src_esps:
+        result.notes.append("no source ESP found — skipping ESP generation")
+        return result
+    result.source_esps = src_esps
+    result.source_esp = src_esps[0]
+    esp_out_dir = (output_dir / unmerged_patch_subdir
+                   if unmerged_patch_subdir not in (".", "/")
+                   else output_dir)
+    esp_out_dir.mkdir(parents=True, exist_ok=True)
+    import json as _json
+    for src_esp in src_esps:
+        cur_out_name = (output_esp_name
+                        if output_esp_name is not None and len(src_esps) == 1
+                        else f"{src_esp.stem} UBE patch.esp")
+        out_esp = esp_out_dir / cur_out_name
+        snap_p = Path(str(out_esp) + ".espgen.json")
+        if not snap_p.is_file():
+            result.notes.append(
+                f"plugins-only: no espgen snapshot for {src_esp.name} -> "
+                "skipped (run a full convert first)")
+            continue
+        try:
+            snap = _json.loads(snap_p.read_text(encoding="utf-8"))
+        except Exception as e:
+            result.notes.append(f"plugins-only: bad snapshot for "
+                                f"{src_esp.name}: {e!r} -> skipped")
+            continue
+        try:
+            from . import esp as _esp
+            if _esp.ESP.load_cached(src_esp).group(b"ARMA") is None:
+                result.esp_skipped_no_armor += 1
+                continue
+        except Exception:
+            pass
+        try:
+            stats = ube_patcher.generate_ube_patch(
+                src_esp, out_esp,
+                master_data_dirs=master_data_dirs,
+                body_mesh_rel_paths=set(snap.get("body_mesh_rel_paths") or []) or None,
+                bsa_mesh_rel_paths=bsa_mesh_rel_paths,
+                converted_rel_paths=set(snap.get("converted_rel_paths") or []),
+            )
+            out_path = Path(stats.get("output", out_esp))
+            result.output_esps.append(out_path)
+            result.esp_stats_list.append(stats)
+            if result.output_esp is None:
+                result.output_esp = out_path
+                result.esp_stats = stats
+        except Exception as e:
+            result.esp_gen_failures.append((src_esp.name, repr(e)))
+    return result
+
+
 def auto_convert_mod(
     source_dir: str | Path,
     output_dir: str | Path,
@@ -773,11 +940,28 @@ def auto_convert_mod(
         if master_data_dirs:
             result.notes.append(
                 f"master ESM scan dirs: {[str(d) for d in master_data_dirs]}")
+    # Vanilla sweep source: the game Data dir with the vanilla/DLC masters as
+    # its plugins. All _find_source_esps call sites below must use this list
+    # (that helper deliberately skips vanilla masters for normal mod folders).
+    _sweep_esps = _vanilla_sweep_esps(source_dir)
+    if _sweep_esps:
+        result.notes.append(
+            "vanilla sweep source: game Data dir, plugins = "
+            + ", ".join(p.name for p in _sweep_esps))
     # Resolve the planned NIF set (armour pieces only). Computed once; both the
     # ESP patcher (to gate ARMA redirects on existing converted paths) and the
     # NIF conversion step consume it. VFS-resolved so it's valid even for mods
     # whose meshes live in a different mod than their ESP.
-    meshes_root = _find_meshes_root(source_dir)
+    # Sweep: NEVER scan Data\meshes as "source-local". Launched from MO2 the
+    # exe runs INSIDE the usvfs VFS, so Data\meshes is the merged view of
+    # every enabled mod — enormous, not what the base game ships, and ghost
+    # entries abort the walk with FileNotFoundError (2026-07-04 in-game
+    # round: the Data source died exactly here). Winner meshes come from the
+    # VFS index; vanilla meshes from the BSA fallback.
+    if _sweep_esps:
+        meshes_root = None
+    else:
+        meshes_root = _find_meshes_root(source_dir)
     all_nif_paths = (sorted(meshes_root.rglob("*.nif"))
                      if meshes_root is not None else [])
     # Source-local mesh keys (lowercase meshes-rel) for the female-resolves check.
@@ -787,15 +971,19 @@ def auto_convert_mod(
             _local_keys.add(_p.relative_to(meshes_root).as_posix().lower())
 
     def _female_mesh_resolves(base: str) -> bool:
-        # True if any weight variant of `base` exists to convert (full-VFS winner or
-        # source-local). Mirrors _resolve_armor_meshes' lookup so the female-only
-        # selection agrees with what actually converts (skips BSA-only -> conservative,
-        # keeps the male fallback in that rare case).
+        # True if any weight variant of `base` exists to convert (full-VFS winner,
+        # source-local, or BSA-packed). Mirrors _resolve_armor_meshes' lookup so the
+        # female-only selection agrees with what actually converts: that resolver
+        # extracts from BSAs too, so a BSA-packed female mesh must count here or a
+        # perfectly convertible piece drags its male mesh into the plan (every
+        # vanilla-sweep mesh is BSA-packed).
         for suf in ("_1", "_0", ""):
             key = f"{base}{suf}.nif"
             if mesh_vfs_index is not None and key in mesh_vfs_index:
                 return True
             if key in _local_keys:
+                return True
+            if _BATCH_BSA_INDEX is not None and _BATCH_BSA_INDEX.contains(key):
                 return True
         return False
 
@@ -808,14 +996,22 @@ def auto_convert_mod(
         mesh_resolves=_female_mesh_resolves)
     # Resolve through the full MO2 VFS so meshes in BodySlide-output / replacer /
     # patch mods are found. Falls back to source-local when no VFS index is given.
-    resolved_pairs = _resolve_armor_meshes(
-        armor_bases, mesh_vfs_index, meshes_root, all_nif_paths)
+    # Sweep: NEVER fall into the ESP-less "convert every NIF the folder ships"
+    # path — under the game Data dir that would convert every loose vanilla
+    # mesh (skeletons, clutter, creatures).
+    if _sweep_esps and not armor_bases:
+        resolved_pairs = []
+        result.notes.append(
+            "vanilla sweep: no DefaultRace armour ARMAs resolved — nothing planned")
+    else:
+        resolved_pairs = _resolve_armor_meshes(
+            armor_bases, mesh_vfs_index, meshes_root, all_nif_paths)
     # Single weight-agnostic slot resolver, shared by the crash guard below and
     # the work-item builder later. Built once from the source ESPs; a `_0` file
     # the ARMA never named inherits its `_1` partner's slots. #slot0-weight-partner
     try:
         _raw_slot_map = ube_patcher.build_nif_slot_map(
-            _find_source_esps(source_dir))
+            _sweep_esps or _find_source_esps(source_dir))
     except Exception:
         _raw_slot_map = {}
     slot_bits_for = _make_slot_resolver(_raw_slot_map)
@@ -910,7 +1106,7 @@ def auto_convert_mod(
         except Exception:
             bsa_mesh_rel_paths = None
 
-    src_esps = _find_source_esps(source_dir)
+    src_esps = _sweep_esps or _find_source_esps(source_dir)
     if not src_esps:
         result.notes.append("no source ESP found — skipping ESP generation")
     else:
@@ -956,6 +1152,20 @@ def auto_convert_mod(
                 out_path = Path(stats.get("output", out_esp))
                 result.output_esps.append(out_path)
                 result.esp_stats_list.append(stats)
+                # ESP-refresh snapshot: the per-mod inputs generate_ube_patch
+                # needs besides live master dirs. `--plugins-only` replays the
+                # ESP phase from these in minutes (no NIF work) -- safe under
+                # FULL SKYPATCHER because patch content depends only on source
+                # ARMAs + the converted-mesh set (see refresh_mod_esp).
+                try:
+                    import json as _json
+                    Path(str(out_esp) + ".espgen.json").write_text(_json.dumps({
+                        "source_esp": str(src_esp),
+                        "converted_rel_paths": sorted(converted_rel_paths or []),
+                        "body_mesh_rel_paths": sorted(body_mesh_rel_paths or []),
+                    }), encoding="utf-8")
+                except OSError:
+                    pass
                 # Backward compat: primary fields = first successful patch
                 if result.output_esp is None:
                     result.output_esp = out_path
@@ -991,7 +1201,7 @@ def auto_convert_mod(
         # Shape names targeted by alt-texture sets (color variants). The NIF
         # converter protects these from the morph-cap merge so TXST by name lands.
         try:
-            _alt_src_esps = _find_source_esps(source_dir)
+            _alt_src_esps = _sweep_esps or _find_source_esps(source_dir)
             alt_tex_shape_names = ube_patcher.collect_alt_texture_shape_names(
                 _alt_src_esps) if _alt_src_esps else set()
         except Exception:
@@ -1113,7 +1323,9 @@ def auto_convert_mod(
                 f"{elapsed:.1f}s ({rate:.1f}/s) with {nif_workers} worker(s)")
 
     # --- textures ---
-    if copy_textures:
+    # Sweep: never texture-copy from the Data dir (same usvfs merged-view /
+    # ghost-entry hazard as the meshes scan; vanilla textures load from BSAs).
+    if copy_textures and not _sweep_esps:
         tex_root = _find_textures_root(source_dir)
         if tex_root is not None:
             tex_dst = output_dir / "textures"
@@ -1275,6 +1487,13 @@ def _build_parser():
                               "WINNER's balance (armor rating / keywords / "
                               "name) instead of the bare master's; stats-only, "
                               "adds no masters.")
+    convert.add_argument("--plugins-only", action="store_true",
+                         dest="plugins_only",
+                         help="ESP-only refresh: regenerate patch ESPs + merge "
+                              "+ SkyPatcher INI + coverage from the last full "
+                              "run's espgen snapshots. No mesh work (minutes, "
+                              "not hours). Mods never fully converted are "
+                              "skipped with a note.")
     convert.add_argument("--incremental", action="store_true",
                          help="Reuse already-converted NIFs that are newer than "
                               "their source AND the converter code/body ref "
@@ -1320,35 +1539,6 @@ def _build_parser():
                        help="TES4.CNAM author string (default: 'cbbe-to-ube merger').")
     merge.add_argument("--description", default="Merged UBE compatibility patches",
                        help="TES4.SNAM description string.")
-
-    vc = sub.add_parser(
-        "vanilla-compat",
-        help="emit an ESL patch extending vanilla non-body ARMAs to UBE races",
-        description="Generate a standalone ESL patch that adds UBE races "
-                    "to every vanilla non-body ARMA (helmet, gauntlets, "
-                    "boots, jewelry, etc.). Fixes invisible vanilla armor "
-                    "for UBE-race players — the same fix that per-mod "
-                    "patches apply to CBBE-replaced armors, but for the "
-                    "vanilla items no replacer covers. Skips body-slot "
-                    "(slot 32) ARMAs since those need real CBBE-to-UBE "
-                    "mesh conversion via the main converter path.")
-    vc.add_argument("-o", "--output", type=Path, required=True,
-                    help="Output path for the vanilla-compat patch ESP.")
-    vc.add_argument("--data-dir", type=Path, action="append", default=None,
-                    help="Additional data directory to search for master "
-                         "ESMs and UBE_AllRace.esp. Can be passed multiple "
-                         "times. If omitted, the modlist's Stock Game/Data "
-                         "and sibling mod folders are auto-discovered.")
-    vc.add_argument("--reference-mod", type=Path, default=None,
-                    help="A source mod folder whose parent layout is used "
-                         "to auto-discover master_data_dirs. Ignored if "
-                         "--data-dir is given.")
-    vc.add_argument("--include-cc", action="store_true",
-                    help="Also scan Creation Club ccbgssse*.esm masters. "
-                         "DEFAULT IS OFF — only include CC if you're sure "
-                         "they're enabled in your load order. Declaring a "
-                         "CC ESM as a master without it being loaded "
-                         "crashes the game on startup.")
 
     val = sub.add_parser(
         "validate",
@@ -1405,11 +1595,20 @@ def _build_parser():
                              "~17 GB duplicate and keeping retextures live.")
     auto_p.add_argument("--merged-name", default="CBBE_to_UBE_Combined.esp",
                         help="Filename of the merged Combined ESP.")
+    auto_p.add_argument("--no-auto-merge", dest="auto_merge",
+                        action="store_false", default=True,
+                        help="Do NOT merge the per-source UBE patch ESPs into "
+                             "one Combined ESP; leave them in _unmerged_patches/ "
+                             "for you to merge/load yourself.")
     auto_p.add_argument("--no-winner-rebase", action="store_true",
                         help="Disable the #132 load-order winner rebase "
                              "(default ON: merged ARMOs adopt the winner's "
                              "overhaul balance; stats-only, no masters "
                              "added).")
+    auto_p.add_argument("--plugins-only", action="store_true",
+                        dest="plugins_only",
+                        help="ESP-only refresh from the last full run's espgen "
+                             "snapshots (no mesh work).")
     auto_p.add_argument("--incremental", action="store_true",
                         help="Reuse up-to-date converted NIFs (skip the refit) "
                              "for a fast re-run; a code or body change forces a "
@@ -1436,6 +1635,20 @@ def _build_parser():
                              "skip the armor conversion / merge / coverage "
                              "entirely. Use to refresh overlays without a full "
                              "(slow) armor reconvert. Implies --convert-overlays.")
+    auto_p.add_argument("--overlay-copy", action="store_true",
+                        help="Overlay mode: instead of OVERWRITING each overlay "
+                             "(which changes it for every body), ADD a separate "
+                             "\"UBE <name>\" copy to the RaceMenu list so the "
+                             "original still works on non-UBE races. Needs the "
+                             "Papyrus compiler (CBBE2UBE_PAPYRUS_COMPILER).")
+    auto_p.add_argument("--overlay-skip-male", action="store_true",
+                        help="Skip MALE overlays when converting (converting them "
+                             "to the female UBE UV does not work).")
+    auto_p.add_argument("--overlay-mods", action="append", default=None,
+                        metavar="MOD",
+                        help="Convert overlays ONLY from these mods (repeat the "
+                             "flag or comma-separate). Others keep their original "
+                             "overlays. Omit to convert every mod's overlays.")
     auto_p.add_argument("--list-only", "--dry-run", action="store_true",
                         dest="list_only",
                         help="Discover + print the armor mods that WOULD be "
@@ -1455,6 +1668,16 @@ def _build_parser():
                         help="With --only-mods, ALSO regenerate the vanilla "
                              "race-coverage patch + standalone vanilla bodies "
                              "(otherwise skipped on an incremental run).")
+    auto_p.add_argument("--exclude-mods", action="append", default=None,
+                        metavar="NAME",
+                        help="Never convert these armor mods on an All-mods run "
+                             "(repeat the flag or comma-separate). Use for mods "
+                             "already built for UBE -- converting them would "
+                             "double-convert and break them.")
+    auto_p.add_argument("--overlay-exclude-mods", action="append", default=None,
+                        metavar="MOD",
+                        help="Never convert overlays from these mods (repeat or "
+                             "comma-separate). Their overlays keep their originals.")
 
     # Graphical front-end (Tkinter). Drives the same `auto` pipeline on a
     # background thread; see src/gui.py. No args.
@@ -1560,6 +1783,64 @@ def write_conversion_summary(output_dir: Path, results: list) -> Path | None:
         return None
 
 
+def write_conversion_report_json(output_dir, results,
+                                 weight_warnings=None) -> "Path | None":
+    """Machine-readable sibling of conversion_summary.txt, for the GUI health
+    panel. Same batch stats plus the postflight invisibility-risk signal
+    (weight-partner divergence). Best-effort; never raises."""
+    import json
+    try:
+        ok = [(s, r) for s, r, e in results if r is not None and e is None]
+        failed = [(s, e) for s, r, e in results if e is not None]
+
+        def _collision(r):
+            return any("collision" in n.lower() for n in (r.notes or []))
+        zero_all = [(s, r) for s, r in ok if len(r.nif_results) == 0]
+        zero_dup = [s.name for s, r in zero_all if _collision(r)]
+        zero = [s.name for s, r in zero_all if not _collision(r)]
+        rep = {
+            "output_mod": str(output_dir),
+            "source_mods": len(results),
+            "converted_ok": len(ok),
+            "hard_failures": len(failed),
+            "armor_nifs": sum(len(r.nif_results) for _, r in ok),
+            "esp_patches": sum(len(r.output_esps) for _, r in ok),
+            "nif_errors": sum(r.nif_errors for _, r in ok),
+            "load_failures": sum(len(r.nif_load_failures) for _, r in ok),
+            "vfs_resolved": sum(r.vfs_other_mod_count for _, r in ok),
+            "zero_mesh_mods": zero,
+            "zero_mesh_dup_mods": zero_dup,
+            "failed_mods": [{"name": s.name, "error": repr(e)}
+                            for s, e in failed],
+            "weight_partner_warnings": list(weight_warnings or []),
+        }
+        out = Path(output_dir) / "conversion_report.json"
+        out.write_text(json.dumps(rep, indent=2), encoding="utf-8")
+        return out
+    except Exception:
+        return None
+
+
+def verify_output(output_dir) -> dict:
+    """Re-check an EXISTING output mod without reconverting: read the last
+    conversion_report.json and re-run the weight-partner (invisibility-risk)
+    scan against the current meshes. For the GUI 'Verify output' button."""
+    import json
+    out = Path(output_dir)
+    res: dict = {"output_mod": str(out), "exists": out.is_dir()}
+    try:
+        rj = out / "conversion_report.json"
+        if rj.is_file():
+            res["report"] = json.loads(rj.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    try:
+        res["weight_partner_warnings"] = _postflight_weight_partner_divergence(out)
+    except Exception:
+        res["weight_partner_warnings"] = []
+    return res
+
+
 def _build_armo_winner_index_for_merge(patch_paths, layout, merged_name):
     """Scan active plugins for the ARMOs our patches override, returning each
     ARMO's load-order winner. Returns None if load order can't be read.
@@ -1597,6 +1878,7 @@ def _build_armo_winner_index_for_merge(patch_paths, layout, merged_name):
 
 
 def _cmd_convert(args):
+    _RUN_FAILURES.clear()   # fresh failure record for this run
     # Export discovered layout to env so spawned workers inherit it without re-scanning.
     try:
         _layout = paths.discover_layout()
@@ -1633,7 +1915,11 @@ def _cmd_convert(args):
 
     # One shared pool for the whole batch: per-worker caches (pynifly, body OSD,
     # CBBE->UBE delta) persist across mods instead of being rebuilt per mod.
-    if args.workers is not None and args.workers <= 1:
+    if getattr(args, "plugins_only", False):
+        shared_pool = None  # ESP-only refresh: no NIF work, don't spawn workers
+        print("  --plugins-only: ESP refresh from espgen snapshots "
+              "(no mesh work, no worker pool)")
+    elif args.workers is not None and args.workers <= 1:
         shared_pool = None  # serial path; auto_convert_mod handles it
     else:
         pool_workers = args.workers
@@ -1707,9 +1993,14 @@ def _cmd_convert(args):
         _bord = paths.enabled_mods_ordered(_blay)
         _bmr = paths.mods_root()
         if _bmr is not None and _bord:
+            # Game Data dir(s) LAST: the vanilla mesh archives back the sweep,
+            # but any mod BSA shipping the same path wins (first hit in _scan),
+            # matching MO2 priority.
+            _bsa_dirs = [Path(_bmr) / n for n in _bord]
+            _bsa_dirs += [Path(d) for d in (_blay.game_data_dirs or [])
+                          if Path(d) not in _bsa_dirs]
             _BATCH_BSA_INDEX = _BsaMeshIndex(
-                [Path(_bmr) / n for n in _bord],
-                Path(output) / "_bsa_staging")
+                _bsa_dirs, Path(output) / "_bsa_staging")
     except Exception:
         _BATCH_BSA_INDEX = None
 
@@ -1735,10 +2026,22 @@ def _cmd_convert(args):
     results = []
     try:
         for i, src in enumerate(sources, 1):
-            print(f"\n--- [{i}/{len(sources)}] converting {src.name!r} ---")
-            try:
-                r = auto_convert_mod(
-                    src, output,
+            # Vanilla sweep = its own PASS: distinct header + progress label,
+            # and (below) its failure never blocks the merge -- a dead sweep
+            # just means no vanilla coverage this run, mod armor unaffected.
+            _is_sweep_src = bool(_vanilla_sweep_esps(src))
+            _disp = "Vanilla sweep (base game + DLC)" if _is_sweep_src else src.name
+            # Machine-parseable progress marker for the GUI (determinate bar +
+            # ETA). Format: "[progress] <done> <total> <name>". The GUI hides it
+            # from the visible log; the human line below stays.
+            print(f"[progress] {i} {len(sources)} {_disp}", flush=True)
+            if _is_sweep_src:
+                print("\n=== VANILLA SWEEP pass: base game + DLC as the "
+                      "lowest-priority source ===")
+            print(f"\n--- [{i}/{len(sources)}] converting {_disp!r} ---")
+            def _convert_one(_src, *, _pool, _workers):
+                return auto_convert_mod(
+                    _src, output,
                     output_esp_name=(args.esp_name if len(sources) == 1 else None),
                     # Default: DON'T copy textures. The converted NIFs keep the
                     # original (Data-relative) texture paths, so the engine
@@ -1750,14 +2053,45 @@ def _cmd_convert(args):
                     copy_textures=(bool(getattr(args, "copy_textures", False))
                                    and not bool(getattr(args, "no_textures", False))),
                     ube_body_ref_path=args.ube_body_ref,
-                    nif_workers=args.workers,
-                    nif_pool=shared_pool,
+                    nif_workers=_workers,
+                    nif_pool=_pool,
                     unmerged_patch_subdir=args.unmerged_patch_subdir,
                     claimed_dst_paths=claimed_dst_paths,
                     master_data_dirs=batch_master_data_dirs,
                     mesh_vfs_index=mesh_vfs_index,
                     incremental_floor=incremental_floor,
                 )
+
+            try:
+                if getattr(args, "plugins_only", False):
+                    r = refresh_mod_esp(
+                        src, output,
+                        output_esp_name=(args.esp_name
+                                         if len(sources) == 1 else None))
+                    results.append((src, r, None))
+                    continue
+                # Sweep self-heal: snapshot output-path claims so a crashed
+                # first attempt (claims made, files unwritten) can't make the
+                # retry skip its own meshes as "collisions".
+                _claims_before = (set(claimed_dst_paths)
+                                  if _is_sweep_src else None)
+                try:
+                    r = _convert_one(src, _pool=shared_pool,
+                                     _workers=args.workers)
+                except Exception as _e1:
+                    if not _is_sweep_src:
+                        raise
+                    # The shared worker pool is the one component with known
+                    # environment-sensitive failure modes, and the sweep is
+                    # the LAST source — a slow serial retry delays nothing
+                    # else. A deterministic planning bug just fails again fast.
+                    print(f"!! vanilla sweep failed ({_e1!r}) — retrying "
+                          "SERIALLY (no worker pool; slower, but immune to "
+                          "pool-environment failures)...")
+                    claimed_dst_paths.clear()
+                    claimed_dst_paths.update(_claims_before)
+                    r = _convert_one(src, _pool=None, _workers=1)
+                    print("  vanilla sweep serial retry SUCCEEDED")
                 results.append((src, r, None))
             except Exception as e:
                 results.append((src, None, e))
@@ -1786,10 +2120,27 @@ def _cmd_convert(args):
     overall_failures = 0
     overall_warnings = 0
     for src, r, err in results:
-        print(f"\n  {src.name}")
+        _is_sweep_src = bool(_vanilla_sweep_esps(src))
+        print("\n  " + ("Vanilla sweep (base game + DLC)" if _is_sweep_src
+                        else src.name))
         if err is not None:
-            print(f"    !! FAILED: {err!r}")
-            merge_blockers += 1
+            if _is_sweep_src:
+                # A dead sweep = no vanilla coverage THIS RUN (the pre-sweep
+                # state); the 100+ mod patches are complete and merging them
+                # must not be held hostage. Loud + non-zero exit, not a blocker.
+                print(f"    !! VANILLA SWEEP FAILED: {err!r}")
+                print("       merge proceeds WITHOUT vanilla coverage — mod "
+                      "armor is unaffected. Rerun just the sweep afterwards "
+                      "with --only-mods vanilla (GUI: Select mods -> "
+                      "'vanilla').")
+                _record_failure("vanilla sweep failed",
+                                "Vanilla sweep (base game + DLC)",
+                                "whole source", repr(err))
+            else:
+                print(f"    !! FAILED: {err!r}")
+                merge_blockers += 1
+                _record_failure("source failed", src.name,
+                                "whole source", repr(err))
             overall_failures += 1
             continue
         if r.source_esps:
@@ -1808,11 +2159,14 @@ def _cmd_convert(args):
             print(f"    !! CONVERSION ERRORS on {r.nif_errors} NIF(s):")
             for er in r.nif_error_results:
                 print(f"       {er.src_path.name}: {er.reason}")
+                _record_failure("mesh failed", src.name,
+                                er.src_path.name, er.reason)
             overall_failures += r.nif_errors
         if r.nif_load_failures:
             print(f"    !! LOAD FAILURES on {len(r.nif_load_failures)} output NIFs")
             for p in r.nif_load_failures:
                 print(f"       {p}")
+                _record_failure("output mesh unreadable", src.name, p)
             overall_failures += 1
         if r.nif_invariant_warnings:
             # CTD-class, symmetric with the merged-ESP postflight: a zero-vert
@@ -1823,6 +2177,7 @@ def _cmd_convert(args):
                   "(zero-vert / over-cap partition -> equip CTD):")
             for w in r.nif_invariant_warnings:
                 print(f"       {w}")
+                _record_failure("CTD-class mesh issue", src.name, w)
             overall_failures += len(r.nif_invariant_warnings)
         if r.virtualbody_rehide_failures:
             print(f"    !! VirtualBody re-hide: "
@@ -1837,6 +2192,10 @@ def _cmd_convert(args):
             print(f"    !! ESP GENERATION FAILED for {len(r.esp_gen_failures)} "
                   f"source ESP(s) -> their armor is ABSENT from the merge "
                   f"(invisible in-game): {r.esp_gen_failures}")
+            for _f in r.esp_gen_failures:
+                _name, _why = (_f if isinstance(_f, (list, tuple)) and
+                               len(_f) == 2 else (_f, ""))
+                _record_failure("plugin patch failed", src.name, _name, _why)
             overall_failures += len(r.esp_gen_failures)
         if r.esp_skipped_no_armor:
             print(f"    {r.esp_skipped_no_armor} source ESP(s) skipped: no armor "
@@ -1845,6 +2204,9 @@ def _cmd_convert(args):
             print(f"    !! PARTIAL: {r.nif_partial} NIF(s) dropped a shape "
                   f"(invisible piece in-game) — see the coverage report's "
                   f"PARTIAL section")
+            _record_failure("partial mesh (shape dropped)", src.name,
+                            f"{r.nif_partial} mesh(es)",
+                            "see conversion report, PARTIAL section")
             overall_failures += r.nif_partial
         # Validator warnings: surfaced loudly but don't block the merge or fail exit.
         validator_hits = []
@@ -1883,6 +2245,7 @@ def _cmd_convert(args):
     # (per-file metadata leaking to one weight -> the two morph differently; e.g.
     # the #slot0-weight-partner slot-0 bug). Read-only NIF pass; disable for speed
     # with CBBE2UBE_NO_WEIGHT_PARITY_CHECK=1.
+    _wp_div: "list" = []          # reused by the JSON health report below
     if (os.environ.get("CBBE2UBE_NO_WEIGHT_PARITY_CHECK", "").strip().lower()
             not in ("1", "true", "yes", "on")):
         try:
@@ -1986,6 +2349,63 @@ def _cmd_convert(args):
                     print(f"  ARMO total: {stats.get('total_armo_records')} "
                           f"(dedup: {stats.get('armo_duplicates_merged', 0)} "
                           "duplicates merged)")
+                    # FULL SKYPATCHER: the merge translated the per-patch link
+                    # sidecars into armorAddonsToAdd lines against final
+                    # Combined FormIDs -- write the runtime INI. The Combined
+                    # then carries NO third-party overrides.
+                    _sp_lines = stats.get("skypatcher_ini_lines") or []
+                    if _sp_lines:
+                        _sp_ini_path = (output / "SKSE" / "Plugins"
+                                        / "SkyPatcher" / "armor"
+                                        / (merged_out.stem + ".ini"))
+                        from .atomic_io import atomic_write_bytes
+                        _sp_hdr = [
+                            "; cbbe-to-ube FULL SKYPATCHER: adds each converted",
+                            "; armor's minted UBE armature(s) at runtime to the",
+                            "; LOAD-ORDER-WINNING record -- no ESP overrides.",
+                        ]
+                        atomic_write_bytes(_sp_ini_path, ("\n".join(
+                            _sp_hdr + _sp_lines) + "\n").encode("utf-8"))
+                        print(f"  FULL SKYPATCHER: {stats.get('skypatcher_targets')} "
+                              f"armor record(s) covered via "
+                              f"{_sp_ini_path.name} (no ESP overrides)")
+                        # Vanilla-coverage assertion: crashes are caught by
+                        # the sweep pass's own isolation, but a SILENT hole
+                        # (sweep ran, linked nothing) would only show up as
+                        # invisible armor in-game. Count links whose target
+                        # record lives in a vanilla/DLC master and warn when
+                        # the sweep is enabled yet none landed.
+                        _van = {m.lower() for m in
+                                ube_patcher.VANILLA_DLC_MASTERS}
+                        _van_links = 0
+                        for _l in _sp_lines:
+                            if not _l.startswith("filterByArmors="):
+                                continue
+                            _t = _l.split("=", 1)[1].split("|", 1)[0]
+                            if _t.lower() in _van:
+                                _van_links += 1
+                        print(f"  vanilla coverage: {_van_links} vanilla/DLC "
+                              "armor record(s) linked")
+                        # Precise form: mod-driven links to vanilla records
+                        # (bugfix-patch overrides) would mask a dead sweep in
+                        # the count above, so assert on the SWEEP SOURCE's own
+                        # link contribution when one ran this batch.
+                        _sweep_links = None
+                        for _rsrc, _r, _rerr in results:
+                            if not _vanilla_sweep_esps(_rsrc):
+                                continue
+                            _sweep_links = 0
+                            if _rerr is None and _r is not None:
+                                for _st in (_r.esp_stats_list or []):
+                                    _sweep_links += int(_st.get(
+                                        "skypatcher_link_targets", 0) or 0)
+                        if _sweep_links == 0:
+                            print("  !! the VANILLA SWEEP ran but linked 0 "
+                                  "records — vanilla armor no mod overrides "
+                                  "will be invisible on UBE actors. Check "
+                                  "the VANILLA SWEEP pass above for errors, "
+                                  "or rerun just the sweep (Select mods -> "
+                                  "'vanilla').")
                     # Reconcile alt-texture 3D indices against the converted NIFs.
                     # Shape reordering during the NIF merge shifts MO2S/MO3S indices;
                     # reconcile ALL split pieces (overflow also carries alt-texture sets).
@@ -2056,6 +2476,8 @@ def _cmd_convert(args):
                         print(f"  !! postflight validation skipped: {_pfe!r}")
                 except Exception as e:
                     print(f"!! auto-merge failed: {e!r}")
+                    _record_failure("merge failed", "Combined ESP",
+                                    args.merged_name, repr(e))
                     overall_failures += 1
             else:
                 print(f"\n  (no patches found in {patches_dir} — "
@@ -2064,6 +2486,8 @@ def _cmd_convert(args):
         print(f"\n!! auto-merge SKIPPED: {merge_blockers} mod(s) failed ESP "
               "generation. Fix those before merging — the Combined ESP "
               "would otherwise be built from incomplete patches.")
+        _record_failure("merge skipped", "Combined ESP", args.merged_name,
+                        f"{merge_blockers} source(s) failed ESP generation")
 
     if args.render_previews:
         from . import preview
@@ -2102,6 +2526,7 @@ def _cmd_convert(args):
     summary_path = write_conversion_summary(output, results)
     if summary_path is not None:
         print(f"\n  coverage report: {summary_path}")
+    write_conversion_report_json(output, results, weight_warnings=_wp_div)
 
     if overall_failures or overall_warnings:
         print(f"\n=== {overall_failures} failure(s), "
@@ -2109,6 +2534,9 @@ def _cmd_convert(args):
     else:
         print(f"\n=== all clear ===")
 
+    # Written every run (empty on a clean one) -- the GUI's end-of-run popup
+    # reads it; an empty list means "nothing failed", never "no data".
+    _write_failures_file()
     return 0 if overall_failures == 0 else 2
 
 
@@ -2434,12 +2862,18 @@ class _BsaMeshIndex:
 
     _SKIP_BSA = ("texture", "voice", " sound", "sounds", "- snd", "facegen")
 
-    def __init__(self, enabled_mod_dirs, staging_dir):
+    def __init__(self, enabled_mod_dirs, staging_dir,
+                 bsa_name_prefixes=None):
         self._dirs = list(enabled_mod_dirs)   # MO2 priority order (highest first)
         self._staging = Path(staging_dir)
         self._index = None                    # rel_lower -> (bsa_path, internal_name)
         self._open: dict = {}                 # bsa_path -> BSAArchive (extract cache)
         self._out: dict = {}                  # rel_lower -> (Path, rel) | None
+        # Optional archive-name allowlist (lowercase prefixes). The setup-check
+        # probe uses it to scan ONLY the vanilla archives: under MO2's usvfs
+        # the game Data dir lists EVERY enabled mod's BSAs (330 vs 6 observed).
+        self._name_prefixes = ([p.lower() for p in bsa_name_prefixes]
+                               if bsa_name_prefixes else None)
 
     def _scan(self) -> None:
         from .bsa_strings import BSAArchive
@@ -2453,6 +2887,10 @@ class _BsaMeshIndex:
                 continue
             for bsa in bsas:
                 if any(k in bsa.name.lower() for k in self._SKIP_BSA):
+                    continue
+                if (self._name_prefixes is not None
+                        and not any(bsa.name.lower().startswith(p)
+                                    for p in self._name_prefixes)):
                     continue
                 try:
                     arch = BSAArchive(bsa, eager=False)   # table-only: cheap list
@@ -2469,6 +2907,16 @@ class _BsaMeshIndex:
                 n += 1
         print(f"  BSA fallback index: scanned {n} mesh archive(s) -> "
               f"{len(self._index)} mesh path(s) available", file=_s.stderr)
+
+    def contains(self, key: str) -> bool:
+        """True if `key` (lowercase meshes-rel) is available for extraction.
+        Index lookup only — nothing is extracted."""
+        try:
+            if self._index is None:
+                self._scan()
+            return key in self._index
+        except Exception:
+            return False
 
     def extract(self, key: str):
         """key = lowercase meshes-rel (e.g. 'armor/x/cuirass_1.nif').
@@ -2596,7 +3044,9 @@ def _player_armor_mesh_bases(mod_dir: Path,
     from . import esp as _esp
     import struct as _struct
     bases: "set[str]" = set()
-    for ep in _find_source_esps(mod_dir):
+    # Vanilla sweep: the game Data dir enumerates the vanilla/DLC masters
+    # (_find_source_esps skips those by design for normal mod folders).
+    for ep in (_vanilla_sweep_esps(mod_dir) or _find_source_esps(mod_dir)):
         try:
             e = _esp.ESP.load_cached(ep)  # read-only scan -> cached parse
         except Exception:
@@ -2668,8 +3118,13 @@ def _player_armor_mesh_bases(mod_dir: Path,
                 if rnam is None:
                     continue
                 mi = rnam >> 24
+                # mi == len(masters) is a SELF-defined race: Skyrim.esm has an
+                # EMPTY master list, so its own ARMAs land here and must pass
+                # (the vanilla sweep). Any other plugin's self-defined race is
+                # not DefaultRace. Mirrors ube_patcher._rnam_is_default_race.
+                race_master = masters[mi] if mi < len(masters) else ep.name
                 if (rnam & 0xFFFFFF) != _DEFAULT_RACE_LOW24 or \
-                   mi >= len(masters) or masters[mi].lower() != "skyrim.esm":
+                   race_master.lower() != "skyrim.esm":
                     continue  # not bound to the humanoid player race
                 _accept = _BODY_SLOT_BITS
                 if include_candidate_slots:
@@ -2748,10 +3203,13 @@ def _find_armor_mod_dirs(mods_root: Path,
                          require_arma: bool = False,
                          enabled_ordered: "list[str] | None" = None,
                          index_skip_mods: "set[str] | None" = None,
+                         progress=None,
                          ) -> list[dict]:
     """Memoizing wrapper around _find_armor_mod_dirs_uncached so a GUI Refresh +
     the following Convert (same process, same inputs) reuse ONE scan. Returns a
-    FRESH list on every call (callers, e.g. _cmd_auto, sort it in place)."""
+    FRESH list on every call (callers, e.g. _cmd_auto, sort it in place).
+    `progress` (a callable taking one status string) is NOT part of the cache
+    key — it only matters on a cache miss."""
     _key = (str(mods_root).lower(), bool(require_arma),
             frozenset(n.lower() for n in (extra_exclude_names or set())),
             frozenset(enabled_names or ()),
@@ -2763,7 +3221,8 @@ def _find_armor_mod_dirs(mods_root: Path,
     _result = _find_armor_mod_dirs_uncached(
         mods_root, extra_exclude_names=extra_exclude_names,
         enabled_names=enabled_names, require_arma=require_arma,
-        enabled_ordered=enabled_ordered, index_skip_mods=index_skip_mods)
+        enabled_ordered=enabled_ordered, index_skip_mods=index_skip_mods,
+        progress=progress)
     _ARMOR_MOD_DIRS_CACHE[_key] = list(_result)
     return _result
 
@@ -2774,6 +3233,7 @@ def _find_armor_mod_dirs_uncached(mods_root: Path,
                          require_arma: bool = False,
                          enabled_ordered: "list[str] | None" = None,
                          index_skip_mods: "set[str] | None" = None,
+                         progress=None,
                          ) -> list[dict]:
     """Scan an MO2 mods root for mods that ship player-equippable armor.
 
@@ -2847,12 +3307,22 @@ def _find_armor_mod_dirs_uncached(mods_root: Path,
         candidates.sort(key=lambda c: c["armor_nifs"], reverse=True)
         return candidates
 
+    def _prog(text: str) -> None:
+        if progress is None:
+            return
+        try:
+            progress(text)
+        except Exception:
+            pass
+
     # require_arma: a mod is a source if a DefaultRace ARMA equips an armour-slot
     # mesh. Count own-folder NIFs first (fast); mods whose meshes are BodySlide-
     # built or in another mod resolve via the VFS instead of being dropped.
     pending_vfs: "list[tuple[Path, set]]" = []
     union_all: "set[str]" = set()   # EVERY candidate's armour mesh keys
-    for mod_dir in mod_dirs:
+    for _mi, mod_dir in enumerate(mod_dirs):
+        if _mi % 25 == 0:
+            _prog(f"checking mod folders… {_mi}/{len(mod_dirs)}")
         if not _name_ok(mod_dir):
             continue
         armor_bases = _player_armor_mesh_bases(mod_dir)  # STRICT = eligibility
@@ -2875,6 +3345,21 @@ def _find_armor_mod_dirs_uncached(mods_root: Path,
             pending_vfs.append((mod_dir, cov_bases))
         # else: no modlist to resolve against -> legacy drop.
 
+    # Vanilla sweep keys: the sweep source (game Data dir) is appended by
+    # _cmd_auto AFTER this discovery, so its mesh keys must be indexed HERE or
+    # sweep resolution falls through to the vanilla BSAs even when a loose
+    # replacer (BodySlide-prebuilt vanilla armor at CBBE shape) ships the mesh
+    # — the converter must refit the mesh the game actually loads.
+    if os.environ.get("CBBE2UBE_NO_VANILLA_SWEEP", "") != "1":
+        try:
+            _swlay = paths.discover_layout()
+            for _dd in (_swlay.game_data_dirs or [])[:1]:
+                for b in _player_armor_mesh_bases(
+                        Path(_dd), include_candidate_slots=True):
+                    union_all.update((f"{b}_0.nif", f"{b}_1.nif", f"{b}.nif"))
+        except Exception:
+            pass
+
     # Build the VFS mesh index over ALL candidates so the convert step can reuse
     # it. Skip only the output mod, NOT body/BodySlide mods — those host most
     # armours' built female meshes and must be visible for mesh resolution.
@@ -2882,6 +3367,8 @@ def _find_armor_mod_dirs_uncached(mods_root: Path,
     _index_skip = {n.lower() for n in (index_skip_mods or set())}
     vfs: "dict" = {}
     if enabled_ordered and union_all:
+        _prog(f"locating {len(union_all)} armour mesh path(s) across "
+              f"{len(enabled_ordered)} enabled mods…")
         try:
             vfs = discovery.build_mesh_index(
                 mods_root, enabled_ordered, target_keys=union_all,
@@ -2955,7 +3442,8 @@ def _cmd_scan(args):
     return 0
 
 
-def list_convertible_mods(output_dir: "Path | None" = None) -> list:
+def list_convertible_mods(output_dir: "Path | None" = None,
+                          progress=None) -> list:
     """Discover the armor mods the `auto` pipeline would convert, WITHOUT
     converting — for the GUI selection list. Mirrors `_cmd_auto`'s discovery
     EXACTLY so the names match what `--only-mods` filters against. Returns
@@ -2981,7 +3469,7 @@ def list_convertible_mods(output_dir: "Path | None" = None) -> list:
     cands = _find_armor_mod_dirs(
         mr, extra_exclude_names=exclude, enabled_names=enabled,
         require_arma=True, enabled_ordered=paths.enabled_mods_ordered(lay),
-        index_skip_mods={output.name})
+        index_skip_mods={output.name}, progress=progress)
     prio = paths.enabled_mods_ordered(lay)
     if prio:
         rank = {name: i for i, name in enumerate(prio)}
@@ -2990,7 +3478,217 @@ def list_convertible_mods(output_dir: "Path | None" = None) -> list:
     def _n(c):                       # armor_nifs is a COUNT in _cmd_auto / scan
         v = c.get("armor_nifs", 0)
         return len(v) if isinstance(v, (list, tuple, set)) else int(v or 0)
-    return [{"name": c["name"], "nifs": _n(c)} for c in cands]
+    out = [{"name": c["name"], "nifs": _n(c)} for c in cands]
+    # Vanilla sweep pseudo-source, LAST (mirrors its lowest-priority position
+    # in _cmd_auto). The name must be exactly "vanilla" — that's the token
+    # --only-mods special-cases — so Select-mods runs can rerun just the sweep.
+    if (os.environ.get("CBBE2UBE_NO_VANILLA_SWEEP", "") != "1"
+            and lay.game_data_dirs
+            and _vanilla_sweep_esps(Path(lay.game_data_dirs[0]))):
+        out.append({"name": "vanilla", "nifs": 0})
+    return out
+
+
+def list_overlay_mods() -> list:
+    """Discover the enabled mods that provide convertible body/hands/feet
+    overlays -- for the GUI overlay-mod picker. Returns [{'name': str}] in
+    load-priority order, or [] if the modpack layout can't be located. Names
+    match what `--overlay-mods` filters against. (No broad except: a real error
+    should surface in the caller's log, not masquerade as 'no overlays found'.)"""
+    from . import overlay_transfer          # imported lazily, as elsewhere here
+    lay = paths.discover_layout()
+    paths.export_to_env(lay)
+    mr = paths.mods_root()
+    if mr is None or not mr.is_dir():
+        return []
+    names = overlay_transfer.list_overlay_mods(
+        lay, skip_mods={(mr / "CBBEtoUBE Auto").name})
+    return [{"name": n} for n in names]
+
+
+# UBE detection is SHAPE-based: a source mesh built for UBE hugs the UBE body,
+# a CBBE/3BA mesh hugs the CBBE body -- so the mean nearest-neighbour distance of
+# a mesh to each reference body tells which body it was built for. (Bone names do
+# NOT work: CBBE 3BA physics meshes share UBE's front/rear-thigh scale bones.)
+# The verdict is by RATIO -- one body has to be clearly closer than the other --
+# not absolute distance, since armor sits slightly off the body it was built for.
+_UBE_HUG_DIST = 0.15         # a mesh this close to a body is a decisive fit
+_FIT_RATIO = 1.5             # the far body must be >=1.5x the near body to decide
+_BODY_TREE_CACHE: dict = {}
+
+
+def _largest_shape_verts(path):
+    """Verts of a NIF's body/largest shape as an (N,3) float array, or None."""
+    import numpy as np
+    try:
+        nf = nif_convert._pynifly().NifFile(filepath=str(path))
+    except Exception:
+        return None
+    s = (next((x for x in nf.shapes if x.name in ("BaseShape", "3BA")), None)
+         or max(nf.shapes, key=lambda x: len(x.verts), default=None))
+    if s is None:
+        return None
+    try:
+        return np.asarray(s.verts, dtype=np.float64)
+    except Exception:
+        return None
+
+
+def _body_trees():
+    """(ube_tree, cbbe_tree) KD-trees over the UBE and CBBE reference body verts,
+    cached. (None, None) if either body can't be located/read."""
+    if not _BODY_TREE_CACHE:
+        res = (None, None)
+        try:
+            from scipy.spatial import cKDTree
+            ube_p = nif_convert._find_ube_femalebody("_1")
+            cbbe_p = nif_convert._find_cbbe_base_body("_1")
+            ube_v = (nif_convert._cached_ube_body_verts(ube_p)[1]
+                     if ube_p is not None else None)
+            cbbe_v = _largest_shape_verts(cbbe_p) if cbbe_p is not None else None
+            if (ube_v is not None and cbbe_v is not None
+                    and len(ube_v) and len(cbbe_v)):
+                res = (cKDTree(ube_v), cKDTree(cbbe_v))
+        except Exception:
+            res = (None, None)
+        _BODY_TREE_CACHE["t"] = res
+    return _BODY_TREE_CACHE["t"]
+
+
+# Head/face/hair meshes sit nowhere near the body -> useless (and misleading) for
+# a body-shape fit; drop them from the detector's sample.
+_NONBODY_MESH_HINTS = ("head", "face", "hair", "brow", "eye", "scalp", "mouth",
+                       "teeth", "tongue", "beard", "facegen", "tint")
+
+
+def _mod_armor_nifs(mod_dir, limit: int):
+    """Up to `limit` of a mod's own body/armor NIFs, the body mesh first (it hugs
+    the reference body most tightly). Head/face/1st-person meshes are dropped."""
+    picks: list = []
+    try:
+        for nif in mod_dir.rglob("*.nif"):
+            rel = str(nif.relative_to(mod_dir)).lower().replace("/", "\\")
+            if "meshes\\" not in rel:
+                continue
+            if any(seg in rel for seg in _ENV_PATH_HINTS):
+                continue
+            low = nif.name.lower()
+            if "firstperson" in low or "1stperson" in low:
+                continue        # 1st-person hand meshes -- not body-shaped
+            if any(h in rel for h in _NONBODY_MESH_HINTS):
+                continue        # head/face/hair -- far from the body
+            picks.append(nif)
+    except OSError:
+        return []
+
+    def _tier(p):
+        n = p.name.lower()
+        if "femalebody" in n or n.startswith("body") or "_body" in n:
+            return 0            # the actual body mesh -- most reliable
+        if any(k in n for k in ("cuirass", "dress", "robe", "outfit", "armor",
+                                "greave", "leg", "pant", "skirt", "body")):
+            return 1
+        return 2
+    picks.sort(key=_tier)
+    return picks[:limit]
+
+
+def _mesh_body_fit(nif_path, ube_tree, cbbe_tree):
+    """(dUBE, dCBBE) for the BEST-fitting shape in a NIF -- the one that hugs a
+    body most tightly (min nearest-neighbour distance). Checking every shape,
+    not just the largest, lets a bulky outer garment's tight base/body layer
+    still classify the mod. Verts subsampled for speed. None if unreadable."""
+    import numpy as np
+    try:
+        nf = nif_convert._pynifly().NifFile(filepath=str(nif_path))
+    except Exception:
+        return None
+    best = None            # (dUBE, dCBBE, min)
+    for s in nf.shapes:
+        try:
+            v = np.asarray(s.verts, dtype=np.float64)
+        except Exception:
+            continue
+        if not len(v):
+            continue
+        if len(v) > 3000:
+            v = v[np.linspace(0, len(v) - 1, 3000).astype(int)]
+        du = float(ube_tree.query(v, k=1)[0].mean())
+        dc = float(cbbe_tree.query(v, k=1)[0].mean())
+        w = min(du, dc)
+        if best is None or w < best[2]:
+            best = (du, dc, w)
+    return (best[0], best[1]) if best is not None else None
+
+
+def scan_ube_native(domain: str = "armor", sample_per_mod: int = 6,
+                    progress=None) -> list:
+    """Flag convertible ARMOR mods whose meshes are shaped for UBE (or another
+    non-CBBE body) rather than CBBE/3BA -- converting those would break them.
+    Compares each mod's most body-hugging mesh to the UBE vs CBBE reference body.
+
+    Overlays are textures (no meshes) so they are NOT scanned here -- the GUI
+    keeps the name heuristic for that domain. Returns
+    [{'name', 'verdict': 'ube'|'cbbe'|'unknown', 'confidence': 'high'|'low',
+    'signals': []}] in load-priority order. `progress(done, total, name)` per mod."""
+    if domain != "armor":
+        return []
+    try:
+        mods = list_convertible_mods()      # also exports the layout to env
+    except Exception:
+        return []
+    ube_tree, cbbe_tree = _body_trees()
+    if ube_tree is None or cbbe_tree is None:
+        return []                           # no reference body -> no verdicts
+    mr = paths.mods_root()
+    out: list = []
+    total = len(mods)
+    for i, m in enumerate(mods):
+        name = m["name"]
+        if progress is not None:
+            try:
+                progress(i + 1, total, name)
+            except Exception:
+                pass
+        best = None            # (winner_dist, verdict, dUBE, dCBBE)
+        mod_dir = (mr / name) if mr is not None else None
+        if mod_dir is not None and mod_dir.is_dir():
+            for nif in _mod_armor_nifs(mod_dir, sample_per_mod):
+                fit = _mesh_body_fit(nif, ube_tree, cbbe_tree)
+                if fit is None:
+                    continue
+                du, dc = fit
+                w = min(du, dc)
+                if best is None or w < best[0]:
+                    best = (w, du, dc)
+                if w < _UBE_HUG_DIST:
+                    break       # decisive body hug -> stop early
+        if best is None:
+            verdict, conf, signals = "unknown", "low", ["no readable body mesh"]
+        else:
+            w, du, dc = best
+            # A verdict requires a DECISIVE hug: some shape sits right on one body
+            # (near dist < the hug threshold) AND that body is clearly the closer
+            # one. Bulky/off-body meshes drift toward the larger UBE body, so an
+            # inconclusive fit stays "unknown" -> a CBBE mod is never mislabelled.
+            lo, hi = min(du, dc), max(du, dc)
+            if lo < _UBE_HUG_DIST and hi >= lo * _FIT_RATIO:
+                verdict, conf = ("ube" if du < dc else "cbbe"), "high"
+            else:
+                verdict, conf = "unknown", "low"
+            signals = [f"shape fit: dUBE={du:.2f}, dCBBE={dc:.2f}"]
+        out.append({"name": name, "verdict": verdict,
+                    "confidence": conf, "signals": signals})
+    return out
+
+
+def _split_mod_arg(vals):
+    """Parse a repeatable + comma-separated --*-mods CLI arg into a list of mod
+    names, or None when unset/empty."""
+    if not vals:
+        return None
+    out = [n.strip() for chunk in vals for n in chunk.split(",") if n.strip()]
+    return out or None
 
 
 def _cmd_auto(args):
@@ -3023,7 +3721,13 @@ def _cmd_auto(args):
     if getattr(args, "overlays_only", False):
         from . import overlay_transfer
         print("\n--- OVERLAYS-ONLY: body overlay (tattoo) -> UBE UV transfer ---")
-        ovl = overlay_transfer.convert_overlays(output, lay)
+        ovl = overlay_transfer.convert_overlays(
+            output, lay,
+            overlay_mode=("copy" if getattr(args, "overlay_copy", False)
+                          else "replace"),
+            skip_male=getattr(args, "overlay_skip_male", False),
+            only_mods=_split_mod_arg(getattr(args, "overlay_mods", None)),
+            exclude_mods=_split_mod_arg(getattr(args, "overlay_exclude_mods", None)))
         if ovl.get("converted"):
             print(f"  *** {ovl['converted']} overlay(s) remapped to UBE UV under "
                   f"'{output.name}'. ENABLE it and ensure it WINS over the "
@@ -3043,6 +3747,12 @@ def _cmd_auto(args):
                     mr.resolve()).parts[0])
         except Exception:
             pass
+    # User exclusions (mods already built for UBE, or ones to leave alone).
+    _user_excl = _split_mod_arg(getattr(args, "exclude_mods", None)) or []
+    if _user_excl:
+        exclude |= set(_user_excl)
+        print(f"  --exclude-mods: skipping {len(_user_excl)} mod(s): "
+              + ", ".join(sorted(_user_excl)))
 
     print("  scanning mods for player-equippable armor...")
     candidates = _find_armor_mod_dirs(
@@ -3057,15 +3767,19 @@ def _cmd_auto(args):
     # --only-mods: reconvert a subset. The merge still re-globs ALL patches in
     # _unmerged_patches/ so unselected mods keep their existing patch + meshes.
     only = getattr(args, "only_mods", None)
+    _sweep_only_requested = False
     if only:
         wanted = {n.strip().lower()
                   for chunk in only for n in chunk.split(",") if n.strip()}
+        # "vanilla" selects the vanilla sweep (a pseudo-source, not a mod dir).
+        _sweep_only_requested = "vanilla" in wanted
+        wanted.discard("vanilla")
         before = len(candidates)
         candidates = [c for c in candidates if c["name"].lower() in wanted]
         missing = sorted(wanted - {c["name"].lower() for c in candidates})
         print(f"  --only-mods: {len(candidates)}/{before} mod(s) selected"
               + (f"; NOT FOUND: {missing}" if missing else ""))
-        if not candidates:
+        if not candidates and not _sweep_only_requested:
             print("error: --only-mods matched no discovered armor mods. Run "
                   "`scan` or the GUI 'Refresh mod list' for the exact names.")
             return 2
@@ -3083,6 +3797,36 @@ def _cmd_auto(args):
               "match in-game)")
 
     sources = [c["path"] for c in candidates]
+
+    # VANILLA SWEEP: the base game itself is the LAST (lowest-priority) source.
+    # Vanilla armor coverage used to be incidental — a vanilla mesh converted
+    # only when some mod carried an override of its ARMA — so armor nobody
+    # overrides was never converted and rendered invisible on UBE actors.
+    # The sweep plans every deforming DefaultRace ARMA straight from the game
+    # masters; meshes resolve via the vanilla BSAs, and merge-time link dedup
+    # keeps mod-source links wherever both cover the same armor.
+    # CBBE2UBE_NO_VANILLA_SWEEP=1 disables. Under --only-mods, the sweep runs
+    # only when named explicitly ('vanilla').
+    if (os.environ.get("CBBE2UBE_NO_VANILLA_SWEEP", "") != "1"
+            and lay.game_data_dirs
+            and (not only or _sweep_only_requested)
+            # --exclude-mods vanilla: honored for the sweep too — a control
+            # that silently no-ops is worse than none.
+            and "vanilla" not in {n.lower() for n in (_user_excl or [])}):
+        _sweep_dir = lay.game_data_dirs[0]
+        _sw_ok, _sw_why = _preflight_vanilla_sweep(_sweep_dir)
+        if _sw_ok:
+            sources.append(_sweep_dir)
+            print(f"  + vanilla sweep source (Skyrim + DLC masters): "
+                  f"{_sweep_dir} ({_sw_why})")
+        else:
+            # Fail EARLY and loud: a sweep that can't plan on this layout
+            # would otherwise die as the LAST source, hours in. Mod
+            # conversion is unaffected; vanilla armor stays uncovered.
+            print(f"  !! vanilla sweep DISABLED this run: {_sw_why}")
+            print("     (mod armor converts normally; vanilla armor no mod "
+                  "overrides stays unconverted. Fix the game-Data path or "
+                  "report this if the path looks right.)")
     print(f"\n=== auto: {len(sources)} armor mod(s) to convert ===")
     for c in candidates[:30]:
         print(f"  {c['name']}  ({c['armor_nifs']} NIFs)")
@@ -3097,17 +3841,35 @@ def _cmd_auto(args):
     # Excludes our own outputs so a prior Combined isn't treated as a "winner".
     merged_name = getattr(args, "merged_name", "CBBE_to_UBE_Combined.esp")
     shared_winner_index = None
-    if not getattr(args, "no_winner_rebase", False):
+    # FULL SKYPATCHER: no ARMO overrides exist, so there is nothing to rebase --
+    # skip the (minutes-long) winner-index build entirely.
+    if ube_patcher._full_skypatcher_enabled():
+        print("\nCBBE2UBE_FULL_SKYPATCHER on: armor coverage via "
+              "armorAddonsToAdd; no ESP overrides, winner rebase skipped")
+    elif not getattr(args, "no_winner_rebase", False):
         try:
             ordered_names = paths.active_plugins_ordered(lay)
             if ordered_names:
                 fidx = paths.plugin_file_index(lay)
                 ordered_paths = [fidx[n.lower()] for n in ordered_names
                                  if n.lower() in fidx]
+                # Exclude EVERY converter output: the merged Combined AND all
+                # its ESL-split pieces (<stem>2.esp, ...) by stem prefix, plus
+                # the coverage ESPs. Excluding only the exact merged_name let a
+                # stale Combined2 be picked as the "load-order winner" -> the
+                # rebase adopted our own previous output's records (stale
+                # flags/races/keywords self-perpetuating across runs, #xedit5).
+                _stem = Path(merged_name).stem.lower()
+                _widx_excl = {"vanilla_ube_race_compat.esp",
+                              "ube_modbody_coverage.esp",
+                              "ube_modnonbody_coverage.esp"}
+                for _n in ordered_names:
+                    _nl = _n.lower()
+                    if _nl.startswith(_stem) and _nl.endswith(".esp"):
+                        _widx_excl.add(_nl)
+                _widx_excl.add(merged_name.lower())
                 shared_winner_index = ube_patcher.build_armo_winner_index(
-                    ordered_paths,
-                    exclude_names={merged_name.lower(),
-                                   "vanilla_ube_race_compat.esp"})
+                    ordered_paths, exclude_names=_widx_excl)
                 print(f"\n#132 winner index: {len(shared_winner_index)} "
                       "load-order ARMO winners (shared: merge + vanilla-compat)")
         except Exception as e:
@@ -3118,12 +3880,14 @@ def _cmd_auto(args):
         no_textures=getattr(args, "no_textures", False),
         copy_textures=getattr(args, "copy_textures", False),
         ube_body_ref=None, workers=getattr(args, "workers", None),
-        unmerged_patch_subdir="_unmerged_patches", auto_merge=True,
+        unmerged_patch_subdir="_unmerged_patches",
+        auto_merge=getattr(args, "auto_merge", True),
         merged_name=merged_name,
         render_previews=False, mods_root=mr,
         no_winner_rebase=getattr(args, "no_winner_rebase", False),
         armo_winner_index=shared_winner_index,
         incremental=getattr(args, "incremental", False),
+        plugins_only=getattr(args, "plugins_only", False),
     )
     rc = _cmd_convert(conv)
     # The post-merge coverage phases below generate the REQUIRED race-compat /
@@ -3132,91 +3896,35 @@ def _cmd_auto(args):
     # silently exiting 0 with armor that's invisible on UBE races.
     post_merge_failures = 0
 
-    # Vanilla race coverage: non-body items no mod replaces (helmets, jewelry).
-    # Vanilla body-slot armor is also covered by the standalone pass below.
-    if not getattr(args, "no_vanilla_compat", False):
-        vc_out = output / "Vanilla_UBE_Race_Compat.esp"
-        data_dirs = _discover_master_data_dirs(sources[0])
-        if data_dirs:
-            # Standalone vanilla body armour: refit each vanilla slot-32 female
-            # mesh (loose override wins -> BSA fallback) to UBE. No replacer needed.
-            vanilla_converted: set = set()
-            if not getattr(args, "no_vanilla_bodies", False):
-                try:
-                    from . import vanilla_bsa_armor
-                    prio_names = paths.enabled_mods_ordered(lay) or []
-                    prio_dirs = [
-                        (mr / (p.name if isinstance(p, Path) else p))
-                        for p in prio_names]
-                    prio_dirs = [d for d in prio_dirs if d.is_dir()]
-                    already: set = set()
-                    ube_root = output / "meshes" / "!UBE"
-                    if ube_root.is_dir():
-                        for _f in ube_root.rglob("*.nif"):
-                            already.add(
-                                _f.relative_to(ube_root).as_posix().lower())
-                    print(f"\n--- standalone vanilla body armour -> "
-                          f"{output.name}\\meshes\\!UBE ---")
-                    vstats = vanilla_bsa_armor.convert_vanilla_bodies(
-                        output, data_dirs, prio_dirs,
-                        list(lay.game_data_dirs or []),
-                        _find_ube_body_ref(), already_converted=already)
-                    vanilla_converted = vstats.get("converted_rel_paths", set())
-                except Exception as e:
-                    print(f"  !! standalone vanilla body armour skipped: {e!r}")
-                    post_merge_failures += 1
-
-            print(f"\n--- vanilla race-compat patch -> {vc_out.name} ---")
-            try:
-                stats = ube_patcher.generate_vanilla_race_compat_patch(
-                    vc_out, data_dirs,
-                    converted_rel_paths=(vanilla_converted or None),
-                    armo_winner_index=shared_winner_index)
-                print(f"  ARMA overrides: {stats.get('arma_overrides', 0)}"
-                      f" | vanilla body UBE ARMAs: "
-                      f"{stats.get('body_arma_minted', 0)}"
-                      f" | body ARMO overrides: "
-                      f"{stats.get('body_armo_overrides', 0)}")
-                if stats.get('winner_rebased_armos'):
-                    print(f"  #132 rebased: {stats.get('winner_rebased_armos')}"
-                          " vanilla ARMO override(s) onto winner stats")
-                # Fold per-race UBE nude-skin routing into the same patch so
-                # non-Breton UBE races load the !UBE hands/feet/body. UBE_AllRace.esp is not modified.
-                ube_esp = next(
-                    (Path(d) / "UBE_AllRace.esp" for d in data_dirs
-                     if (Path(d) / "UBE_AllRace.esp").is_file()), None)
-                if ube_esp is not None:
-                    try:
-                        rs = ube_patcher.fold_ube_raceskin_skins(vc_out, ube_esp)
-                        if rs.get("folded"):
-                            print(f"  UBE race-skin routing: +{rs['folded']} "
-                                  f"skin ARMAs for {rs['races']} UBE races "
-                                  f"(non-Breton races -> !UBE hands/feet/body)")
-                            # Re-validate after the fold (fold re-saves after the
-                            # patch's own validate_patch, so this is the backstop).
-                            fold_warns = [
-                                w for w in ube_patcher.validate_patch(
-                                    vc_out, master_data_dirs=data_dirs)
-                                if "missing-nif" not in w]
-                            if fold_warns:
-                                print(f"  !! VC validation after race-skin "
-                                      f"fold: {fold_warns[:5]}")
-                        else:
-                            print(f"  UBE race-skin routing skipped: "
-                                  f"{rs.get('reason')}")
-                    except Exception as e:
-                        print(f"  !! UBE race-skin fold failed: {e!r}")
-                        post_merge_failures += 1
-            except Exception as e:
-                print(f"  !! vanilla-compat skipped: {e!r}")
-                post_merge_failures += 1
-        else:
-            print("  (no master data dirs found — skipping vanilla-compat)")
+    # Vanilla race coverage (Vanilla_UBE_Race_Compat.esp) REMOVED 2026-07-03:
+    # RaceCompatibility SKSE / RaceDispatcher does this race + nude-skin dispatch
+    # at runtime, so the static patch was redundant (and could conflict with the
+    # dispatcher). RaceCompatibility the MOD is still a UBE prereq. Removed code
+    # backed up to Downloads; the generators remain (uncalled) in ube_patcher.py.
 
     # Mod-defined non-body coverage: overhauls re-armature vanilla helmets/jewelry
     # with their own ARMAs listing only vanilla races -> invisible on UBE actors.
     # Vanilla-compat never touches mod-defined ARMAs. Mints a UBE-primary ARMA
     # per item + a SkyPatcher INI that adds it at runtime.
+    # FULL SKYPATCHER: ARMOs the Combined INI already links must be EXCLUDED
+    # from both coverage passes (ESP armature lists no longer reflect runtime
+    # coverage; re-covering doubles the armature -> body renders twice /
+    # UBE-primary hands mints -> invisible gauntlets). #fsp-dedup
+    _fsp_linked_abs: "set[tuple[str, int]]" = set()
+    try:
+        _mstem = Path(getattr(args, "merged_name",
+                              "CBBE_to_UBE_Combined.esp")).stem
+        _comb_ini = (output / "SKSE" / "Plugins" / "SkyPatcher" / "armor"
+                     / (_mstem + ".ini"))
+        if _comb_ini.is_file():
+            for _l in _comb_ini.read_text(encoding="utf-8").splitlines():
+                if _l.startswith("filterByArmors="):
+                    _t = _l.split("=", 1)[1].split(":", 1)[0]
+                    _pl, _lo = _t.rsplit("|", 1)
+                    _fsp_linked_abs.add((_pl.lower(), int(_lo, 16)))
+    except Exception:
+        _fsp_linked_abs = set()
+
     mnb_esp_generated = False
     if not getattr(args, "no_modded_nonbody", False):
         try:
@@ -3231,6 +3939,7 @@ def _cmd_auto(args):
                       "(+ SkyPatcher INI) ---")
                 mnb = ube_patcher.generate_modded_nonbody_ube_coverage_patch(
                     mnb_esp, _ordered,
+                    exclude_armo_abs=_fsp_linked_abs,
                     exclude_names={mnb_esp.name.lower(),
                                    "cbbe_to_ube_combined.esp",
                                    "vanilla_ube_race_compat.esp"},
@@ -3263,6 +3972,8 @@ def _cmd_auto(args):
                     print(f"  !! validator: {_vw[:5]}")
         except Exception as e:
             print(f"  !! mod non-body coverage skipped: {e!r}")
+            _record_failure("coverage pass failed", "UBE_ModNonBody_Coverage",
+                            "helmets / jewelry coverage", repr(e))
             post_merge_failures += 1
 
     # Mod-defined body coverage: overhaul ARMOs that reuse a vanilla armature
@@ -3285,10 +3996,55 @@ def _cmd_auto(args):
                 _md = _discover_master_data_dirs(sources[0])
                 print(f"\n--- mod BODY UBE coverage -> {mbd_esp.name} "
                       "(+ SkyPatcher INI) ---")
+                # CBBE2UBE_BODY_SKYPATCHER: full-SkyPatcher body path. The
+                # per-source builder suppresses torso body ARMO overrides, so
+                # this coverage pass becomes their sole path (cover_all) and must
+                # preserve their alt-textures (preserve_textures).
+                # Full-SkyPatcher supersedes the body-only pivot: body armor is
+                # minted + LINKED per-source there, so this coverage pass
+                # returns to its original gap-filling fallback role.
+                _bsp = (ube_patcher._body_skypatcher_enabled()
+                        and not ube_patcher._full_skypatcher_enabled())
+                if _bsp:
+                    print("  CBBE2UBE_BODY_SKYPATCHER on: body armor routed via "
+                          "SkyPatcher (cover_all + preserve_textures)")
+                _cov_excl = {mbd_esp.name.lower()}
+                if _bsp:
+                    # Full-SkyPatcher: coverage is the PRIMARY body path, so a
+                    # prior Combined (+ every ESL-split piece) must not be scanned
+                    # -- it OVERRIDES source body ARMOs with a UBE armature, which
+                    # hides them from coverage ("already covered") and leaves them
+                    # uncovered once that Combined is replaced (measured 2504 vs
+                    # 3636 targets). Flag OFF KEEPS scanning it: there coverage is
+                    # only the fallback and must defer to the Combined's body
+                    # overrides, so the exclusion stays byte-identical to today.
+                    _cov_excl |= {"ube_modnonbody_coverage.esp",
+                                  "vanilla_ube_race_compat.esp"}
+                    _merged_stem = Path(merged_name).stem.lower()
+                    for _op in _ordered:
+                        _opn = Path(_op).name.lower()
+                        if _opn.startswith(_merged_stem) and _opn.endswith(".esp"):
+                            _cov_excl.add(_opn)
                 mbd = ube_patcher.generate_modded_body_ube_coverage_patch(
                     mbd_esp, _ordered, converted_rel_paths=_conv_rel,
-                    exclude_names={mbd_esp.name.lower()},
-                    master_data_dirs=_md)
+                    exclude_armo_abs=_fsp_linked_abs,
+                    exclude_names=_cov_excl,
+                    master_data_dirs=_md,
+                    cover_all=_bsp, preserve_textures=_bsp)
+                # Fix stale alt-texture (MO?S) 3D indices on the minted armatures.
+                # preserve_textures copies each recolor's set with the SOURCE
+                # mesh's shape order, but the !UBE conversion injects BaseShape +
+                # reorders shapes, so a color variant would paint the WRONG shape
+                # (wrong colors). Same reconcile the merged Combined gets (:2056).
+                if _bsp and mbd_esp.exists():
+                    try:
+                        _nfix = ube_patcher.reconcile_alt_texture_indices_all(
+                            mbd_esp, output / "meshes")
+                        if _nfix:
+                            print(f"  alt-texture reconcile: fixed {_nfix} "
+                                  "minted armature(s)")
+                    except Exception as _e:
+                        print(f"  !! alt-texture reconcile skipped: {_e!r}")
                 ini_lines = mbd.get("ini_lines") or []
                 if ini_lines and mbd.get('armo_targets'):
                     ini_path = (output / "SKSE" / "Plugins" / "SkyPatcher"
@@ -3314,6 +4070,8 @@ def _cmd_auto(args):
                     print(f"  !! validator: {_vw[:5]}")
         except Exception as e:
             print(f"  !! mod body coverage skipped: {e!r}")
+            _record_failure("coverage pass failed", "UBE_ModBody_Coverage",
+                            "body-variant coverage", repr(e))
             post_merge_failures += 1
 
     # OPT-IN: remap CBBE/3BA body overlays to UBE UV. Writes loose DDS at the
@@ -3322,7 +4080,13 @@ def _cmd_auto(args):
         try:
             from . import overlay_transfer
             print("\n--- body overlay (tattoo) -> UBE UV transfer ---")
-            ovl = overlay_transfer.convert_overlays(output, lay)
+            ovl = overlay_transfer.convert_overlays(
+                output, lay,
+                overlay_mode=("copy" if getattr(args, "overlay_copy", False)
+                              else "replace"),
+                skip_male=getattr(args, "overlay_skip_male", False),
+                only_mods=_split_mod_arg(getattr(args, "overlay_mods", None)),
+                exclude_mods=_split_mod_arg(getattr(args, "overlay_exclude_mods", None)))
             if ovl.get("converted"):
                 print(f"  *** {ovl['converted']} overlay(s) remapped to UBE UV. "
                       f"ENABLE '{output.name}' and ensure it WINS over the "
@@ -3352,6 +4116,9 @@ def _cmd_auto(args):
     if post_merge_failures:
         print(f"\n  !! {post_merge_failures} post-merge coverage phase(s) FAILED "
               "-- some armor may be invisible on UBE races (see errors above).")
+    # Re-write with any coverage-phase failures appended (same in-process
+    # _RUN_FAILURES list _cmd_convert already wrote).
+    _write_failures_file()
     print(f"\n=== auto: done — enable {_enable} in MO2. ===")
     return rc or (2 if post_merge_failures else 0)
 
@@ -3407,6 +4174,18 @@ def _cmd_merge(args):
     print(f"  ARMO total: {stats.get('total_armo_records', '?')}"
           f" (dedup: {stats.get('armo_duplicates_merged', 0)} duplicates "
           "merged)")
+    # FULL SKYPATCHER: write the armorAddonsToAdd INI next to the output
+    # (same layout as the integrated path: <modroot>/SKSE/Plugins/SkyPatcher).
+    _sp_lines = stats.get("skypatcher_ini_lines") or []
+    if _sp_lines:
+        _outp = Path(stats.get('output', args.output))
+        _sp_ini_path = (_outp.parent / "SKSE" / "Plugins" / "SkyPatcher"
+                        / "armor" / (_outp.stem + ".ini"))
+        from .atomic_io import atomic_write_bytes
+        atomic_write_bytes(_sp_ini_path,
+                           ("\n".join(_sp_lines) + "\n").encode("utf-8"))
+        print(f"  FULL SKYPATCHER: {stats.get('skypatcher_targets')} armor "
+              f"record(s) -> {_sp_ini_path}")
     # Self-heal a stale/mis-sorted master list before validating (no-op if clean).
     try:
         _nrs = ube_patcher.resort_masters_all(
@@ -3433,48 +4212,6 @@ def _cmd_merge(args):
                   "(invisible/cosmetic, non-fatal)")
     except Exception as _pfe:
         print(f"  !! postflight validation skipped: {_pfe!r}")
-    return 0
-
-
-def _cmd_vanilla_compat(args):
-    if args.data_dir:
-        data_dirs = list(args.data_dir)
-    elif args.reference_mod:
-        data_dirs = _discover_master_data_dirs(Path(args.reference_mod))
-    else:
-        # Auto-discover from the output path's parent (assumes output
-        # is being written into a mod folder under a modlist's mods/).
-        out_parent = Path(args.output).resolve().parent
-        data_dirs = _discover_master_data_dirs(out_parent)
-    if not data_dirs:
-        print("error: no master data dirs found. Pass --data-dir explicitly "
-              "or --reference-mod with a path inside the modlist's mods/.")
-        return 2
-    print(f"scanning {len(data_dirs)} data dir(s) for vanilla ARMAs...")
-    try:
-        stats = ube_patcher.generate_vanilla_race_compat_patch(
-            args.output, data_dirs,
-            include_cc_masters=args.include_cc,
-        )
-    except FileNotFoundError as e:
-        print(f"error: {e}")
-        return 2
-    print(f"  wrote      : {stats.get('output', args.output)}")
-    print(f"  ESL flag   : {stats.get('esl_flagged', True)}")
-    print(f"  masters    : {len(stats.get('masters', []))}")
-    print(f"  ARMA overrides emitted: {stats.get('arma_overrides', 0)}")
-    print(f"    per master:")
-    for m, n in stats.get("scan_per_master", {}).items():
-        print(f"      {m}: {n}")
-    print(f"  skipped no_mod3        : {stats.get('skipped_no_mod3', 0)}")
-    print(f"  skipped body slot      : {stats.get('skipped_body_slot', 0)}")
-    print(f"  skipped already_ube    : {stats.get('skipped_already_ube', 0)}")
-    print(f"  skipped unknown master : {stats.get('skipped_unknown_master_ref', 0)}")
-    warnings = stats.get("validation_warnings", []) or []
-    if warnings:
-        print(f"  !! validator warnings:")
-        for w in warnings:
-            print(f"     {w}")
     return 0
 
 
@@ -3537,8 +4274,6 @@ def main(argv=None):
         return _cmd_discover_body_ref(args)
     if args.cmd == "merge":
         return _cmd_merge(args)
-    if args.cmd == "vanilla-compat":
-        return _cmd_vanilla_compat(args)
     if args.cmd == "validate":
         return _cmd_validate(args)
     if args.cmd == "gui":

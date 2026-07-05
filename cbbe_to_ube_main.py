@@ -95,9 +95,15 @@ def _install_log_tee() -> None:
     """
     global _LOG_FILE, _LOG_PATH
     f = None
-    for base in _log_dir_candidates():
+    # CBBE2UBE_RUN_LOG lets a parent (the GUI, which spawns this as a child
+    # process) pin the log to a known path it can tail -- the reliable way to
+    # capture a windowed-exe run's output, whose stdout is a null sink.
+    _override = os.environ.get("CBBE2UBE_RUN_LOG", "").strip()
+    _paths = ([_override] if _override else [])
+    _paths += [os.path.join(base, "CBBEtoUBE_last_run.log")
+               for base in _log_dir_candidates()]
+    for path in _paths:
         try:
-            path = os.path.join(base, "CBBEtoUBE_last_run.log")
             f = open(path, "w", encoding="utf-8", buffering=1)  # line-buffered
             _LOG_PATH = path
             break

@@ -281,6 +281,53 @@ ADAPTIVE_CLEARANCE_ENABLED = True
 ADAPTIVE_CLEARANCE_BASE = 0.25       # minimum clearance in static zones
 ADAPTIVE_CLEARANCE_MORPH_FACTOR = 0.20  # clearance added per unit of outward body morph
 ADAPTIVE_CLEARANCE_MORPH_MAX = 0.8   # clearance cap for high-morph zones
+
+# Jiggle-amplitude clearance (EXPERIMENTAL, default OFF): the adaptive map above
+# covers STATIC growth (sliders/bodygen morphs), but SMP softbody jiggle swings
+# the breast/butt/belly PAST the rest surface at runtime — cloth cleared only for
+# the static envelope still gets punched through mid-bounce. When enabled, the
+# final anti-poke adds extra clearance proportional to the body's LOCAL jiggle
+# weight (breast/butt/belly bone weights = exactly where the softbody moves),
+# capped by JIGGLE_CLEARANCE_MAX. Zero-weight zones (sternum/back/sides) are
+# untouched, so fit stays tight where nothing jiggles.
+JIGGLE_CLEARANCE_ENABLED = (
+    os.environ.get("CBBE2UBE_JIGGLE_CLEARANCE", "").strip().lower()
+    in ("1", "true", "yes", "on")
+)
+JIGGLE_CLEARANCE_GAIN = 0.5   # extra clearance (units) at full jiggle weight
+JIGGLE_CLEARANCE_MAX = 0.5    # hard cap on the jiggle term
+
+# Anti-poke push-field SMOOTHING (default ON): the final anti-poke pushes each
+# vert independently along its nearest body normal, so adjacent verts get
+# different magnitudes -> faceted/crinkled cloth exactly where clearance was
+# applied. Feather the push scalar over the armor mesh adjacency instead. The
+# smoothed field is FLOORED at the original per-vert requirement, so smoothing
+# can never reopen a poke -- it only spreads the bump. All-zero fields stay
+# all-zero (no pokes -> byte-identical output).
+# DEFAULT OFF (2026-07-04): in-game showed multi-layer garments clipping --
+# feathering raises the INNER layer toward an unpushed outer (GTO Inner->Corset
+# gap collapsed). Opt back in with CBBE2UBE_ANTIPOKE_SMOOTH=1 once the
+# gap-aware increment (outer maintains separation) lands.
+ANTIPOKE_SMOOTH_ENABLED = (
+    os.environ.get("CBBE2UBE_ANTIPOKE_SMOOTH", "").strip().lower()
+    in ("1", "true", "yes", "on")
+)
+ANTIPOKE_SMOOTH_ITERS = 2
+
+# LAYER-AWARE anti-poke floors (default ON): stacked garments (shirt under
+# vest) are anti-poked independently against the SAME clearance map, so where
+# both floors bind (high-morph bust/butt) the layers converge to the same
+# standoff -> coincident surfaces -> inter-layer z-fighting / inner pokes outer.
+# Rank a NIF's body-layer shapes innermost-first by median distance to the body
+# and give layer i an extra +i*EPSILON floor, so bound layers stay separated.
+# Single-layer NIFs get rank 0 = +0.0 -> unchanged.
+# DEFAULT OFF (2026-07-04): same in-game finding as smoothing above.
+LAYERED_ANTIPOKE_ENABLED = (
+    os.environ.get("CBBE2UBE_LAYERED_ANTIPOKE", "").strip().lower()
+    in ("1", "true", "yes", "on")
+)
+LAYERED_ANTIPOKE_EPSILON = 0.15   # per-layer extra floor (units)
+LAYERED_ANTIPOKE_MAX_EXTRA = 0.45  # cap (3+ layers share the top separation)
 # (lowered 1.1 -> 0.8 for a tighter fit at the belly/waist; also tightens
 # breast/butt clearance globally -- accept a little less morph room there.)
 # OSD morph names matched by substring to build the per-vert outward-amplitude map.
@@ -1123,6 +1170,30 @@ def _body_nipple_weight(shape) -> "np.ndarray | None":
     return out if found else None
 
 
+def _body_jiggle_weight(shape) -> "np.ndarray | None":
+    """Per-vertex jiggle weight from the body's softbody bones (breast/butt/
+    belly, PHYSICS_JIGGLE_SCALE_KEYWORDS): max weight over those bones, ~[0,1].
+    This is the map of where SMP jiggle actually moves the body — the dynamic-
+    overshoot clip-risk map for JIGGLE_CLEARANCE. Returns None if the body has
+    no jiggle bones (static body: nothing to overshoot, the pass no-ops)."""
+    try:
+        n = len(shape.verts)
+    except Exception:
+        return None
+    bw = getattr(shape, "bone_weights", None) or {}
+    out = np.zeros(n, dtype=np.float64)
+    found = False
+    for bn, pairs in bw.items():
+        if not _is_physics_jiggle_scale_bone(bn) or pairs is None:
+            continue
+        found = True
+        pl = pairs.tolist() if hasattr(pairs, "tolist") else pairs
+        for i, w in pl:
+            if 0 <= i < n:
+                out[i] = max(out[i], float(w))
+    return np.clip(out, 0.0, 1.0) if found else None
+
+
 def conform_to_source_standoff(
     src_cloth: np.ndarray,
     src_body_verts: np.ndarray,
@@ -1253,6 +1324,80 @@ def conform_to_source_standoff(
     return (cur_cloth + ube_body_normals[ui] * move[:, None]).astype(np.float32)
 
 
+def _rank_body_layers(shapes, body_verts, *, body_names, reskin_skip,
+                      softbody_names, collider_names,
+                      ube_bones: "set[str]",
+                      epsilon: float = LAYERED_ANTIPOKE_EPSILON,
+                      max_extra: float = LAYERED_ANTIPOKE_MAX_EXTRA,
+                      ) -> "dict[str, float]":
+    """LAYERED_ANTIPOKE ranking: {shape name -> extra anti-poke floor}. Ranks a
+    NIF's eligible body-layer shapes innermost-first by median distance to the
+    body, layer i getting min(i*epsilon, max_extra). Eligibility mirrors the
+    anti-poke's own gates (skip body/reskin-skip/softbody/collider/SMP-rigged),
+    plus: <8 verts (decorative) and median>10u (far drape) never rank. Verts are
+    measured in the SAME space as the main loop (skin->world + AVObject offset).
+    Medians are QUANTIZED (0.5u) with name tie-break so the _0/_1 weight
+    partners of one outfit rank identically (a swap would self-inflict weight-
+    slider divergence). <2 eligible shapes -> {} (single layer = unchanged)."""
+    from scipy.spatial import cKDTree
+    tree = cKDTree(np.asarray(body_verts, dtype=np.float64))
+    elig: "list[tuple[float, str]]" = []
+    for ls in shapes:
+        if (ls.name in body_names or ls.name in reskin_skip
+                or ls.name in softbody_names or ls.name in collider_names
+                or _shape_has_hdt_smp_rigging(ls, ube_bones)):
+            continue
+        lv = np.asarray(ls.verts, dtype=np.float64)
+        if len(lv) < 8:
+            continue                      # micro-shapes don't define a layer
+        lv = _verts_skin_to_world(lv, _shape_global_to_skin(ls))
+        lv = lv + shape_body_offset(ls)
+        d, _ = tree.query(lv, k=1)
+        med = float(np.median(d))
+        if med > 10.0:
+            continue                      # far drape: not a body layer
+        elig.append((round(med * 2.0) / 2.0, ls.name))
+    if len(elig) < 2:
+        return {}
+    elig.sort()
+    return {nm: min(rk * epsilon, max_extra)
+            for rk, (_m, nm) in enumerate(elig)}
+
+
+def _smooth_push_field(push: np.ndarray, needed: np.ndarray, tris,
+                       iters: int = ANTIPOKE_SMOOTH_ITERS,
+                       blend: float = 0.5) -> np.ndarray:
+    """Feather an anti-poke push scalar over the armor mesh adjacency (see
+    ANTIPOKE_SMOOTH_ENABLED). Each iteration blends toward the neighbor average
+    then re-floors at `needed` (the original per-vert requirement), so a poke can
+    never reopen; verts with no push near no pushed verts stay exactly 0.
+    Returns `push` unchanged on any failure (never worse than no smoothing)."""
+    try:
+        t = np.asarray(tris, dtype=np.int64)
+        n = len(push)
+        if t.size == 0 or n < 3 or not np.any(push > 0):
+            return push
+        from scipy import sparse
+        e = np.concatenate([t[:, [0, 1]], t[:, [1, 2]], t[:, [2, 0]]])
+        e = np.concatenate([e, e[:, ::-1]])
+        e = e[(e[:, 0] < n) & (e[:, 1] < n) & (e[:, 0] >= 0) & (e[:, 1] >= 0)]
+        if len(e) == 0:
+            return push
+        A = sparse.coo_matrix(
+            (np.ones(len(e)), (e[:, 0], e[:, 1])), shape=(n, n)).tocsr()
+        deg = np.asarray(A.sum(axis=1)).ravel()
+        deg[deg == 0] = 1.0
+        p = np.asarray(push, dtype=np.float64).copy()
+        req = np.asarray(needed, dtype=np.float64)
+        for _ in range(max(1, int(iters))):
+            avg = np.asarray(A @ p).ravel() / deg
+            p = (1.0 - blend) * p + blend * avg
+            p = np.maximum(p, req)        # never reopen a poke
+        return p
+    except Exception:
+        return push
+
+
 def clear_armor_outside_body(
     verts: np.ndarray,
     body_verts: np.ndarray,
@@ -1271,6 +1416,12 @@ def clear_armor_outside_body(
     adaptive_base: float = ADAPTIVE_CLEARANCE_BASE,
     adaptive_factor: float = ADAPTIVE_CLEARANCE_MORPH_FACTOR,
     adaptive_cap: float = ADAPTIVE_CLEARANCE_MORPH_MAX,
+    jiggle_amplitude: "np.ndarray | None" = None,
+    jiggle_gain: float = JIGGLE_CLEARANCE_GAIN,
+    jiggle_cap: float = JIGGLE_CLEARANCE_MAX,
+    req_extra: float = 0.0,
+    tris=None,
+    smooth_iters: int = ANTIPOKE_SMOOTH_ITERS,
 ) -> np.ndarray:
     """Final anti-poke pass: push each armor vert out of the body so the
     actor's live morph can't punch through. Push-out only; never pulls cloth in.
@@ -1323,7 +1474,28 @@ def clear_armor_outside_body(
             req = np.where(in_bust,
                            np.clip(flat_clear + nipw * nipple_gain, flat_clear, bust_clear),
                            req)
+    if jiggle_amplitude is not None and len(jiggle_amplitude) == len(bv):
+        # JIGGLE overshoot term (see JIGGLE_CLEARANCE_ENABLED): SMP softbody
+        # swings past the rest surface, so ADD clearance where the body's jiggle
+        # weight is high. Worst (max) weight over the in-radius neighbours, same
+        # rationale as the morph term. Additive ON TOP of the morph-clipped req:
+        # static growth and dynamic bounce stack at runtime. Bounded by
+        # jiggle_cap; zero-weight zones add exactly 0 (tight fit preserved).
+        jig = np.asarray(jiggle_amplitude, dtype=np.float64)
+        jig_k = np.where(dd <= radius, jig[jj], 0.0)
+        jig_worst = np.max(jig_k, axis=1)
+        req = req + np.clip(jiggle_gain * jig_worst, 0.0, jiggle_cap)
+    if req_extra > 0.0:
+        # Layer-aware floor (LAYERED_ANTIPOKE): outer layers require extra
+        # standoff so stacked garments don't converge to the same surface.
+        # Added AFTER the morph/jiggle clips so the cap can't swallow it.
+        req = req + float(req_extra)
     push = np.clip(req - worst, 0.0, max_push)            # push OUT only
+    if tris is not None and smooth_iters > 0:
+        # Feather the push over the mesh so per-vert normal/magnitude jumps
+        # don't crinkle the cloth; floored at the raw push (never reopens).
+        push = np.clip(_smooth_push_field(push, push, tris, smooth_iters),
+                       0.0, max_push)
     push = np.where(dd[:, 0] < max_body_dist, push, 0.0)  # leave far drapes alone
     return (v + nrm * push[:, None]).astype(np.float32)
 
@@ -8507,7 +8679,17 @@ def _copy_shape(src_shape, dst_nif, parent=None, override_verts=None,
     # then copy flags/threshold. Don't memcpy the whole buf (contains source
     # block IDs). skip_alpha=True is for cloth shapes where NioOverride gates
     # morph application on absence of NiAlphaProperty.
-    if src_shape.has_alpha_property and not skip_alpha:
+    # Fault-isolate the alpha-property READ: on a source with a broken alpha
+    # block reference, pynifly's has_alpha_property getter itself raises
+    # ("getNiAlphaProperty called on invalid node"), and an unguarded read here
+    # failed the whole _copy_shape -> shape DROPPED -> invisible piece in-game
+    # (Steelheart gauntlets class). Copy WITHOUT alpha instead: visible geometry
+    # beats a lost alpha flag on a mesh whose alpha ref was broken anyway.
+    try:
+        _src_has_alpha = bool(src_shape.has_alpha_property)
+    except Exception:
+        _src_has_alpha = False
+    if _src_has_alpha and not skip_alpha:
         try:
             new_shape.has_alpha_property = True  # creates dst _alpha
             src_ap = src_shape.alpha_property
@@ -10419,6 +10601,27 @@ def convert_nif_phase2(
     # _hdt_collider_shape_names).
     hdt_collider_names = _hdt_collider_shape_names(src_path)
 
+    # LAYERED_ANTIPOKE pre-pass: rank this NIF's body-layer shapes innermost-
+    # first (median distance to the body -- relative order is what matters, so
+    # source-space verts vs the UBE body is a valid ranking proxy) and give
+    # layer i an extra +i*EPSILON anti-poke floor. Mirrors the anti-poke's own
+    # eligibility gates so decorative/softbody/collider shapes never rank.
+    _layer_extra: "dict[str, float]" = {}
+    _antipoke_stat_tree = None            # lazy shared tree for clip telemetry
+    if (LAYERED_ANTIPOKE_ENABLED and body_verts_for_p2 is not None
+            and (biped_slots & (BIPED_SLOT32_BIT | BIPED_SLOT49_BIT))):
+        try:
+            _layer_extra = _rank_body_layers(
+                src_nif.shapes, body_verts_for_p2,
+                body_names=set(body_names),
+                reskin_skip=RESKIN_SKIP_NAMES,
+                softbody_names=hdt_softbody_names,
+                collider_names=hdt_collider_names,
+                ube_bones=(set(ube_base_for_pass1.bone_names or [])
+                           if ube_base_for_pass1 is not None else set()))
+        except Exception:
+            _layer_extra = {}
+
     # --- Pass 1: compute final verts + skin per shape ---
     for s in src_nif.shapes:
         if s.name in body_names:
@@ -10660,10 +10863,42 @@ def convert_nif_phase2(
                         len(body_verts_for_p2))
                 except Exception:
                     _antipoke_amp = None
+                # Jiggle-overshoot headroom (default OFF): only rigid/fitted
+                # cloth reaches this pass (softbody/HDT shapes are skipped
+                # above), which is exactly what a bouncing body punches through.
+                _antipoke_jig = None
+                if JIGGLE_CLEARANCE_ENABLED:
+                    try:
+                        _antipoke_jig = _body_jiggle_weight(ube_base_for_pass1)
+                    except Exception:
+                        _antipoke_jig = None
                 override = clear_armor_outside_body(
                     base_v, body_verts_for_p2, body_norms_for_p2,
                     body_nipple=body_nipple_for_p2,
-                    morph_amplitude=_antipoke_amp)
+                    morph_amplitude=_antipoke_amp,
+                    jiggle_amplitude=_antipoke_jig,
+                    req_extra=_layer_extra.get(s.name, 0.0),
+                    tris=(np.asarray(s.tris, dtype=np.int64)
+                          if ANTIPOKE_SMOOTH_ENABLED else None))
+                # Clip-risk telemetry: verts still INSIDE the body after the
+                # final pass (deep verts past max_push, or capped regions) are
+                # the residual in-game clip risk. Greppable in the run log.
+                try:
+                    if _antipoke_stat_tree is None:
+                        from scipy.spatial import cKDTree as _KD_st
+                        _antipoke_stat_tree = _KD_st(body_verts_for_p2)
+                    _fv = np.asarray(override, dtype=np.float64)
+                    _dt, _jt = _antipoke_stat_tree.query(_fv, k=1)
+                    _sgn = ((_fv - body_verts_for_p2[_jt])
+                            * body_norms_for_p2[_jt]).sum(1)
+                    _near = _dt < 10.0
+                    _pen = int(np.sum(_near & (_sgn < -0.05)))
+                    if _pen > max(4, 0.005 * len(_fv)):
+                        print(f"  [clip-risk] {s.name}: {_pen} vert(s) remain "
+                              f"inside the body (min {float(_sgn[_near].min()):.2f}u)"
+                              f" after anti-poke")
+                except Exception:
+                    pass
             except Exception as e:
                 failed.append((f"{s.name}:antipoke", repr(e)))
         # Chain-bone cloth stays at SOURCE position so it aligns with its chain
