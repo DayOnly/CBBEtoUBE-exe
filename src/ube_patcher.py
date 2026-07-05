@@ -1482,11 +1482,8 @@ def generate_ube_patch(
         return fid
 
     # CBBE2UBE_BODY_SKYPATCHER: when on, TORSO body (slot 32) DefaultRace
-    # armatures whose mesh we converted are owned by the SkyPatcher body-coverage
-    # pass (cover_all), so DON'T mint an ESP-override ARMA for them here. Their
-    # ARMO overrides then vanish too (the override loops only add minted ARMAs).
-    # Hands/feet + non-body are unaffected -> stay on this ESP-override path.
-    _fsp = _full_skypatcher_enabled()
+    # Body armatures whose mesh we converted are owned by the SkyPatcher
+    # body-coverage pass (cover_all), so DON'T mint an ARMA for them here.
     # Body-only SkyPatcher pivot removed -- the always-on full path mints + LINKS
     # body armatures, so the body-suppression gates stay down. (Dead `if _bsp`
     # branches below are pruned in a later stage.)
@@ -1659,9 +1656,9 @@ def generate_ube_patch(
         if _fb:
             male_fallback_records.append((new_arma_records[-1], _fb))
 
-    # Now build ARMO overrides: any source ARMO whose MODL list references a
-    # source ARMA we converted gets an override with our new ARMA appended.
-    armo_overrides: list[esp.Record] = []
+    # Link source ARMOs whose MODL list references a source ARMA we converted:
+    # each gets an armorAddonsToAdd entry (recorded in _sp_links) rather than an
+    # ESP override.
 
     # --- Cross-ESP ARMO coverage (#176) -------------------------------------
     # An ARMO in THIS plugin may reference an ARMA defined in a MASTER plugin
@@ -1792,9 +1789,6 @@ def generate_ube_patch(
         new_arma_fids[ref_fid] = nf
         return nf
 
-    # LOCALIZED source (TES4 flag 0x80): its FULL/DESC are LSTRING ids, not
-    # strings -- see the localized branch in the override loop below (#xedit5).
-    _src_localized = bool(src.header.flags & 0x80)
     if src_armo_group is not None:
         for src_armo in src_armo_group.records:
             # Find which source ARMAs this ARMO references.
@@ -1825,109 +1819,18 @@ def generate_ube_patch(
             if _armo_routed_to_skypatcher(src_armo.payload, src.header.masters,
                                           src_filename):
                 continue
-            if _fsp:
-                # FULL SKYPATCHER: record the link, emit NO override. The
-                # armature reaches the ARMO at runtime via armorAddonsToAdd,
-                # applied to whatever record actually wins the load order.
-                _armo_abs = _record_abs_fid(
-                    src_armo.formid, src.header.masters, src_filename)
-                _adds = _sp_links.setdefault(_armo_abs, [])
-                for _ref in referenced_src_armas:
-                    _mf = new_arma_fids.get(_ref)
-                    if _mf is not None and _mf in new_armas_to_add:
-                        _sa = _record_abs_fid(
-                            _ref, src.header.masters, src_filename)
-                        _adds.append((_mf, _sa[0], _sa[1]))
-                continue
-
-            # Build override payload with FormIDs remapped to patch master space.
-            new_armo_fid = remap_fid(
-                src_armo.formid, src.header.masters, src_filename, patch_masters,
-            )
-            # Insert new MODLs right after the LAST existing MODL (before DATA).
-            # Skyrim stops reading the armature list at DATA; MODLs after DATA
-            # are silently ignored, making the new ARMA invisible to the engine.
-            src_pieces = list(esp.iter_subrecords(src_armo.payload))
-            last_modl_idx = -1
-            src_edid_txt = None
-            for i, (sig, data) in enumerate(src_pieces):
-                if sig == ARMO_ARMATURE_SIG and len(data) == 4:
-                    last_modl_idx = i
-                elif sig == b"EDID" and src_edid_txt is None:
-                    src_edid_txt = data.rstrip(b"\x00").decode(
-                        "utf-8", errors="ignore")
-            new_payload = b""
-            for i, (sig, data) in enumerate(src_pieces):
-                if sig == ARMO_ARMATURE_SIG and len(data) == 4:
-                    src_arma_ref = struct.unpack("<I", data)[0]
-                    remapped = remap_fid(
-                        src_arma_ref, src.header.masters, src_filename, patch_masters,
-                    )
-                    new_payload += esp.encode_subrecord(sig, struct.pack("<I", remapped))
-                elif sig in ALT_TEXTURE_SIGS:
-                    # Remap embedded TXST FormIDs from source master space;
-                    # without this, all color variants render the default texture.
-                    new_data = _remap_alt_texture_payload(
-                        data, _remap_src_fid_to_patch)
-                    new_payload += esp.encode_subrecord(sig, new_data)
-                elif sig in ARMA_MODT_SIGS:
-                    new_payload += esp.encode_subrecord(sig, normalize_modt(data))
-                elif sig in FORMID_SINGLE_SUBRECORD_SIGS and len(data) == 4:
-                    # Remap EVERY FormID-bearing subrecord (EITM/TNAM/RNAM/ZNAM/
-                    # YNAM/ETYP/BIDS/BAMT...). Verbatim copy left SOURCE-space
-                    # bytes that misroute once the merge renumbers masters --
-                    # #xedit5: a shield's enchantment ref resolving into
-                    # UBE_AllRace.esp (unresolvable garbage in xEdit/engine).
-                    new_payload += esp.encode_subrecord(sig, struct.pack(
-                        "<I",
-                        _remap_src_fid_to_patch(struct.unpack("<I", data)[0])))
-                elif sig in FORMID_ARRAY_SUBRECORD_SIGS and len(data) % 4 == 0:
-                    new_payload += esp.encode_subrecord(sig, b"".join(
-                        struct.pack("<I", _remap_src_fid_to_patch(
-                            struct.unpack_from("<I", data, _o)[0]))
-                        for _o in range(0, len(data), 4)))
-                elif _src_localized and sig in (b"FULL", b"DESC"):
-                    # LOCALIZED source: FULL/DESC are 4-byte LSTRING ids --
-                    # garbage as zstrings in our non-localized patch (xEdit
-                    # "unused data" + wrong names, #xedit5). Synthesize FULL
-                    # from EDID (same policy as the master-scan path); drop
-                    # DESC (tooltip-only).
-                    if sig == b"FULL" and src_edid_txt:
-                        _syn = synthesize_name_from_edid(src_edid_txt)
-                        if _syn:
-                            new_payload += esp.encode_subrecord(
-                                b"FULL", esp.encode_zstring(_syn))
-                    continue
-                else:
-                    new_payload += esp.encode_subrecord(sig, data)
-                # Insert our new ARMAs right after the last existing MODL.
-                if i == last_modl_idx:
-                    for nfid in new_armas_to_add:
-                        new_payload += esp.encode_subrecord(
-                            ARMO_ARMATURE_SIG, struct.pack("<I", nfid))
-            if last_modl_idx < 0:
-                # ARMO had no existing MODL — splice ours before DATA.
-                pre_data_payload = b""
-                inserted = False
-                for sig, data in esp.iter_subrecords(new_payload):
-                    if sig == b"DATA" and not inserted:
-                        for nfid in new_armas_to_add:
-                            pre_data_payload += esp.encode_subrecord(
-                                ARMO_ARMATURE_SIG, struct.pack("<I", nfid))
-                        inserted = True
-                    pre_data_payload += esp.encode_subrecord(sig, data)
-                if not inserted:
-                    for nfid in new_armas_to_add:
-                        pre_data_payload += esp.encode_subrecord(
-                            ARMO_ARMATURE_SIG, struct.pack("<I", nfid))
-                new_payload = pre_data_payload
-
-            armo_overrides.append(esp.Record(
-                # Carry the SOURCE record's flags: flags=0 dropped Non-Playable
-                # (0x4) etc., making NPC-only armor playable (#xedit5).
-                sig=b"ARMO", flags=src_armo.flags, formid=new_armo_fid,
-                timestamp_vc=0, version_unk=0x002C, payload=new_payload,
-            ))
+            # SkyPatcher: record the link, emit NO override. The armature reaches
+            # the ARMO at runtime via armorAddonsToAdd, applied to whatever record
+            # actually wins the load order.
+            _armo_abs = _record_abs_fid(
+                src_armo.formid, src.header.masters, src_filename)
+            _adds = _sp_links.setdefault(_armo_abs, [])
+            for _ref in referenced_src_armas:
+                _mf = new_arma_fids.get(_ref)
+                if _mf is not None and _mf in new_armas_to_add:
+                    _sa = _record_abs_fid(
+                        _ref, src.header.masters, src_filename)
+                    _adds.append((_mf, _sa[0], _sa[1]))
 
     # --- Master ESM ARMO scan ---
     # Walk each master ESM to find ARMOs that reference our converted ARMAs.
@@ -1936,26 +1839,9 @@ def generate_ube_patch(
     if master_data_dirs is None:
         master_data_dirs = [source_esp_path.parent]
 
-    # String resolver: recover real localized ARMO names from the master's
-    # LSTRING refs in Skyrim - Interface.bsa so FULL shows the true name
-    # (e.g. "Vampire Armor") instead of an EDID-derived guess.
-    _string_resolver = None
-    try:
-        # FULL SKYPATCHER: no ARMO overrides are emitted, so the localized-name
-        # resolver (loads Skyrim - Interface.bsa string tables) has no consumer
-        # -- skip the BSA work entirely.
-        from . import bsa_strings
-        for _d in (() if _fsp else (master_data_dirs or [])):
-            if (Path(_d) / bsa_strings.StringResolver.INTERFACE_BSA).is_file():
-                _key = str(_d)
-                if _key not in _STRING_RESOLVER_CACHE:
-                    _STRING_RESOLVER_CACHE[_key] = bsa_strings.StringResolver(_d)
-                _string_resolver = _STRING_RESOLVER_CACHE[_key]
-                break
-    except Exception:
-        _string_resolver = None
+    # (The localized-name string resolver was only needed to synthesize FULL for
+    # ARMO overrides; SkyPatcher emits no overrides, so it is gone.)
 
-    master_armo_overrides: list[esp.Record] = []
     master_scan_stats: dict[str, int] = {}
     # Masters we expected to scan for UBE-race ARMO coverage but couldn't load
     # (not found under master_data_dirs, or unreadable). Surfaced as a warning so
@@ -2071,38 +1957,18 @@ def generate_ube_patch(
         master_armos = _scan_master_armos_referencing(
             master_path, lookup_in_master_space)
         master_scan_stats[master_name] = len(master_armos)
-        # Don't re-emit override entries for ARMOs the source ESP
-        # already overrode (we handled those above).
-        already_overridden_fids = {r.formid for r in armo_overrides}
-
         for m_armo in master_armos:
-            # Translate this master's ARMO FormID to our patch's
-            # master space. Master's own records have top byte 0x00
-            # in master space; in patch space the top byte is the
-            # master's index in patch_masters.
-            try:
-                master_idx_in_patch = next(
-                    i for i, mn in enumerate(patch_masters)
-                    if mn.lower() == master_name.lower()
-                )
-            except StopIteration:
-                continue
-            patch_master_byte = master_idx_in_patch
-            new_armo_fid = (patch_master_byte << 24) | (m_armo.formid & 0xFFFFFF)
-            if new_armo_fid in already_overridden_fids:
+            # Skip a master not present in our patch's master table -- we can't
+            # emit a valid link identity for it. (Masters we scan normally ARE
+            # patch masters; this guards a theoretical mismatch.)
+            if not any(mn.lower() == master_name.lower() for mn in patch_masters):
                 continue
 
             # Find which converted ARMAs this master ARMO references.
             new_armas_to_add: list[int] = []
-            existing_armatures_remapped: list[int] = []
             for sig, data in esp.iter_subrecords(m_armo.payload):
                 if sig == ARMO_ARMATURE_SIG and len(data) == 4:
                     ref_master_fid = struct.unpack("<I", data)[0]
-                    # Existing armature ref — translate to patch space.
-                    existing_armatures_remapped.append(
-                        (patch_master_byte << 24)
-                        | (ref_master_fid & 0xFFFFFF)
-                    )
                     if ref_master_fid in master_to_src_fid:
                         src_fid = master_to_src_fid[ref_master_fid]
                         new_armas_to_add.append(new_arma_fids[src_fid])
@@ -2118,128 +1984,23 @@ def generate_ube_patch(
                                           master_esp.header.masters,
                                           master_name):
                 continue
-            if _fsp:
-                # FULL SKYPATCHER: link the master ARMO, no override (see the
-                # same-plugin branch above).
-                _armo_abs = _record_abs_fid(
-                    m_armo.formid, master_esp.header.masters, master_name)
-                _adds = _sp_links.setdefault(_armo_abs, [])
-                for _s, _d in esp.iter_subrecords(m_armo.payload):
-                    if _s == ARMO_ARMATURE_SIG and len(_d) == 4:
-                        _rmf = struct.unpack("<I", _d)[0]
-                        _sf = master_to_src_fid.get(_rmf)
-                        if _sf is not None and \
-                                new_arma_fids.get(_sf) in new_armas_to_add:
-                            # identity in the MASTER's space (_rmf): uniform for
-                            # both the source-ARMA-scan and mesh-path mints, so
-                            # cross-patch dedup of the same vanilla armature works.
-                            _sa = _record_abs_fid(
-                                _rmf, master_esp.header.masters, master_name)
-                            _adds.append((new_arma_fids[_sf], _sa[0], _sa[1]))
-                continue
-
-            # Build the override payload: keep all original armatures
-            # (FormID-translated to patch space) + append our UBE ARMAs.
-            #
-            # Skip FULL/DESC from localized masters (Skyrim.esm + DLCs):
-            # those subrecords are 4-byte LSTRING indices into an external
-            # .strings file, not raw zstrings. Copying them verbatim into
-            # our non-localized patch causes garbage inventory names or
-            # silent record-parse failure. We synthesize a FULL from EDID
-            # instead (items with no FULL are dropped from inventory UI).
-            # DESC is tooltip-only; leaving it stripped is fine.
-            STRIP_FROM_LOCALIZED_OVERRIDE = {
-                b"FULL", b"DESC", b"ITXT", b"NNAM", b"RDMP",
-            }
-            # Recover this ARMO's display name: try the STRINGS table first;
-            # fall back to synthesizing from EDID.
-            _source_edid = None
-            _full_string_id = None
-            for _ssig, _sdata in esp.iter_subrecords(m_armo.payload):
-                if _ssig == b"EDID":
-                    _source_edid = _sdata.rstrip(b"\x00").decode(
-                        "utf-8", errors="ignore")
-                elif _ssig == b"FULL" and len(_sdata) == 4:
-                    _full_string_id = struct.unpack("<I", _sdata)[0]
-            _real_full = None
-            if _string_resolver is not None and _full_string_id:
-                try:
-                    _real_full = _string_resolver.resolve(
-                        master_name, _full_string_id)
-                except Exception:
-                    _real_full = None
-            _synth_full = _real_full or (
-                synthesize_name_from_edid(_source_edid)
-                if _source_edid else None)
-            # Insert new MODLs immediately after the LAST existing MODL, not
-            # at the end. Skyrim stops reading armatures at DATA, so any MODL
-            # placed after DATA is silently ignored and the armor renders
-            # invisible on UBE-race characters.
-            # If no existing MODLs, splice before DATA (canonical position).
-            pieces = list(esp.iter_subrecords(m_armo.payload))
-            last_modl_idx = -1
-            for i, (sig, _data) in enumerate(pieces):
-                if sig == ARMO_ARMATURE_SIG and len(_data) == 4:
-                    last_modl_idx = i
-            new_payload = b""
-            _full_inserted = False
-            for i, (sig, data) in enumerate(pieces):
-                if sig == ARMO_ARMATURE_SIG and len(data) == 4:
-                    ref_master_fid = struct.unpack("<I", data)[0]
-                    remapped = (patch_master_byte << 24) | (ref_master_fid & 0xFFFFFF)
-                    new_payload += esp.encode_subrecord(
-                        sig, struct.pack("<I", remapped))
-                elif sig in STRIP_FROM_LOCALIZED_OVERRIDE:
-                    # Skip — would be LSTRING ref against a STRINGS
-                    # file the engine can't resolve in our non-localized
-                    # patch.
-                    pass
-                else:
-                    # Other subrecords may also carry FormIDs (RNAM,
-                    # ETYP, EITM, etc.). The master's own records use
-                    # top byte 0x00 = same byte the master will have
-                    # in our patch (since masters always sit at their
-                    # own index). So no remapping needed for master-
-                    # self-FormIDs.
-                    new_payload += esp.encode_subrecord(sig, data)
-                # Inject synthetic FULL right after EDID (canonical position).
-                if (sig == b"EDID" and not _full_inserted and
-                        _synth_full is not None):
-                    new_payload += esp.encode_subrecord(
-                        b"FULL", esp.encode_zstring(_synth_full))
-                    _full_inserted = True
-                # Splice our new ARMAs after the last existing MODL.
-                if i == last_modl_idx:
-                    for nfid in new_armas_to_add:
-                        new_payload += esp.encode_subrecord(
-                            ARMO_ARMATURE_SIG, struct.pack("<I", nfid))
-            if last_modl_idx < 0:
-                # No existing armatures — splice before DATA or append.
-                pre_data_payload = b""
-                inserted = False
-                for sig, data in esp.iter_subrecords(new_payload):
-                    if sig == b"DATA" and not inserted:
-                        for nfid in new_armas_to_add:
-                            pre_data_payload += esp.encode_subrecord(
-                                ARMO_ARMATURE_SIG,
-                                struct.pack("<I", nfid))
-                        inserted = True
-                    pre_data_payload += esp.encode_subrecord(sig, data)
-                if not inserted:
-                    for nfid in new_armas_to_add:
-                        pre_data_payload += esp.encode_subrecord(
-                            ARMO_ARMATURE_SIG,
-                            struct.pack("<I", nfid))
-                new_payload = pre_data_payload
-
-            master_armo_overrides.append(esp.Record(
-                # Carry the master record's flags (Non-Playable etc., #xedit5).
-                sig=b"ARMO", flags=m_armo.flags, formid=new_armo_fid,
-                timestamp_vc=0, version_unk=0x002C, payload=new_payload,
-            ))
-
-    # Merge master ARMO overrides into the main list.
-    armo_overrides.extend(master_armo_overrides)
+            # SkyPatcher: link the master ARMO, no override (see the same-plugin
+            # branch above).
+            _armo_abs = _record_abs_fid(
+                m_armo.formid, master_esp.header.masters, master_name)
+            _adds = _sp_links.setdefault(_armo_abs, [])
+            for _s, _d in esp.iter_subrecords(m_armo.payload):
+                if _s == ARMO_ARMATURE_SIG and len(_d) == 4:
+                    _rmf = struct.unpack("<I", _d)[0]
+                    _sf = master_to_src_fid.get(_rmf)
+                    if _sf is not None and \
+                            new_arma_fids.get(_sf) in new_armas_to_add:
+                        # identity in the MASTER's space (_rmf): uniform for
+                        # both the source-ARMA-scan and mesh-path mints, so
+                        # cross-patch dedup of the same vanilla armature works.
+                        _sa = _record_abs_fid(
+                            _rmf, master_esp.header.masters, master_name)
+                        _adds.append((new_arma_fids[_sf], _sa[0], _sa[1]))
 
     # Assemble the patch ESP.
     out_header = esp.TES4Header(
@@ -2251,16 +2012,16 @@ def generate_ube_patch(
         next_object_id=next_obj_id,
     )
     out = esp.ESP(header=out_header, groups=[])
-    if armo_overrides:
-        out.groups.append(esp.Group(label=b"ARMO", records=armo_overrides))
+    # SkyPatcher-only: the patch is pure minted-ARMA -- it emits NO ARMO group
+    # (nothing overrides a third-party record); coverage is delivered via links.
     if new_arma_records:
         out.groups.append(esp.Group(label=b"ARMA", records=new_arma_records))
 
-    # FULL SKYPATCHER links: resolve minted fids to their Record objects BEFORE
+    # SkyPatcher links: resolve minted fids to their Record objects BEFORE
     # prune_unused_masters renumbers FormIDs (same trap the male-fallback
     # sidecar documents); serialize with the post-prune rec.formid after save.
     _sp_rec_links: "dict[tuple[str, int], list]" = {}
-    if _fsp and _sp_links:
+    if _sp_links:
         _fid2rec = {r.formid: r for r in new_arma_records}
         for _abs, _adds in _sp_links.items():
             _rl = [(_fid2rec[_mf], _d, _l) for _mf, _d, _l in _adds
@@ -2333,8 +2094,7 @@ def generate_ube_patch(
         "masters": out.header.masters,
         "new_arma_count": len(new_arma_records),
         "male_fallbacks": len(fb_entries),
-        "armo_override_count": len(armo_overrides),
-        "master_armo_overrides": len(master_armo_overrides),
+        "armo_override_count": 0,   # SkyPatcher-only: never any ARMO overrides
         "master_scan_per_esm": master_scan_stats,
         "skypatcher_link_targets": len(_sp_rec_links),
         "validation_warnings": validation_warnings,
