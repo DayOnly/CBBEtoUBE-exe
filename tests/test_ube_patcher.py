@@ -649,7 +649,7 @@ test_merge_downgrades_to_full_esp_on_esl_overflow(
 
 # ---------------------------------------------------------------------------
 # FormID-out-of-range detection in validate_patch. Reproduces the
-# diagnostic that caught the post-CC-removal vanilla-compat patch.
+# diagnostic that first caught a real out-of-range FormID in a generated patch.
 # ---------------------------------------------------------------------------
 
 def test_validate_patch_catches_out_of_range_formid(tmp_path):

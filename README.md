@@ -174,7 +174,6 @@ repo root (already vendored here), or on `sys.path`.
 | `convert` | Convert one or more specific source mod folders |
 | `scan` | Pre-flight: list candidate CBBE armor mods without converting |
 | `merge` | Re-merge the per-mod patch ESPs into the combined plugin |
-| `vanilla-compat` | (Re)build the vanilla UBE race-coverage plugin |
 | `validate` | Re-load and sanity-check converted output |
 | `discover-body-ref` | Locate a usable UBE body reference NIF |
 
@@ -187,8 +186,7 @@ Useful `auto` flags:
 - `--only-mods NAME …` — reconvert **only** the named mod folders (repeat the
   flag or comma-separate). The merge still rebuilds the Combined ESP over
   *all* existing per-mod patches, so everything else keeps its current meshes
-  and records. Needs a prior full run; skips the vanilla coverage passes
-  unless `--force-vanilla` is given. The fast way to iterate on one armor.
+  and records. Needs a prior full run. The fast way to iterate on one armor.
 - `--incremental` — skip mods whose output is already current (a code or body
   change forces a full reconvert automatically)
 - `--list-only` — dry run: list the mods that *would* convert, then stop
@@ -201,8 +199,8 @@ Useful `auto` flags:
 - `--overlays-only` — run **only** the overlay rebake, skipping the armor
   convert/merge entirely (implies `--convert-overlays`) — the fast refresh once
   armor is already converted
-- `--no-vanilla-compat` / `--no-modded-nonbody` / `--no-vanilla-bodies` —
-  skip individual coverage passes
+- `--no-modded-nonbody` — skip the mod-defined non-body UBE coverage pass
+  (overhaul-rearmatured helmets/circlets/jewelry)
 
 ### Discovery overrides
 
@@ -243,7 +241,6 @@ cbbe-to-ube/
     esp.py                # Skyrim SE ESP/ESM read + write
     atomic_io.py          # crash-safe atomic writes for all game-loaded output
     hdt_xml_gen.py        # per-armor HDT-SMP collision XML generator
-    vanilla_bsa_armor.py  # standalone vanilla body-armor conversion
     discovery.py / paths.py   # MO2 mod-tree discovery + layout auto-detect
     bsa_strings.py        # localized ARMO names from .STRINGS tables
     tri.py / osd.py / sliderset_gen.py   # BODYTRI / OutfitStudio / slider data

@@ -1614,9 +1614,9 @@ def generate_ube_patch(
         # hides the real hands). The source ARMA already carries the full
         # vanilla playable-race list (that's how it renders on vanilla races);
         # we must PRESERVE those (remapped into patch master space) and ADD the
-        # UBE races on top -- exactly the 16-UBE + ~23-vanilla list the
-        # gold-standard Vanilla_UBE_Race_Compat gauntlets use. Dropping them was
-        # the modded-gauntlet-invisible bug. Skyrim.esm races remap cleanly
+        # UBE races on top -- exactly the 16-UBE + ~23-vanilla list a correct
+        # coverage armature carries. Dropping them was the
+        # modded-gauntlet-invisible bug. Skyrim.esm races remap cleanly
         # (Skyrim is always a patch master); races whose master isn't a patch
         # master are skipped (can't emit a valid ref) rather than corrupting.
         if slot_bits & _BIPED_SLOT_HANDS_FEET_BITS:
@@ -3119,10 +3119,10 @@ _NUDE_SKIN_BASENAMES = frozenset({
 
 
 def _is_nude_skin_model(path: str) -> bool:
-    """True if a model path is a nude body-skin mesh (body/hands/feet), so the
-    vanilla-compat patch never extends its armature to the UBE races (doing so
-    makes a competing skin armature win over UBE's own 00UBE_Naked* and the
-    actor renders the wrong nude skin). Matches by weight-stripped basename."""
+    """True if a model path is a nude body-skin mesh (body/hands/feet), so a
+    coverage pass never extends its armature to the UBE races (doing so makes a
+    competing skin armature win over UBE's own 00UBE_Naked* and the actor
+    renders the wrong nude skin). Matches by weight-stripped basename."""
     if not path:
         return False
     # Meshes under character assets skin folders (catches child skins, DLC
@@ -3540,8 +3540,9 @@ def _overlay_winner_stats(
 
 
 # ----- Mod-defined non-body UBE coverage (the guard-helmet class) ----------
-# vanilla-compat covers vanilla ARMA records; overhaul-defined ARMAs (e.g.
-# an overhaul's re-armored guard helmet with 19 vanilla races, 0 UBE) slip through.
+# Vanilla ARMA records get UBE races at runtime (RaceCompatibility /
+# RaceDispatcher); overhaul-defined ARMAs (e.g. a re-armored guard helmet with
+# 19 vanilla races, 0 UBE) still slip through.
 # This pass closes the gap: scan the load order for non-body ARMOs whose
 # winning armatures lack UBE coverage, mint a UBE-primary ARMA per missing
 # armature (same non-body mesh — UBE only reshapes the torso), and override

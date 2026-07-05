@@ -19,7 +19,6 @@ skirts the source author rigged), which are stable.
 Dry-run by default (lists what it would do); pass --apply to rename.
 """
 import argparse
-import sys
 from pathlib import Path
 
 SUFFIX = ".nosmp"

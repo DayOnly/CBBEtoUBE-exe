@@ -17,8 +17,8 @@
 """Mod-defined non-body UBE coverage (the guard-helmet class).
 
 An overhaul re-armatures a vanilla helmet with its OWN ArmorAddon listing only
-vanilla races -> invisible on UBE actors, and vanilla-compat never touches a
-mod-defined ARMA. This pass must mint a UBE-PRIMARY ARMA (same mesh) for such an
+vanilla races -> invisible on UBE actors, and runtime race dispatch never
+touches a mod-defined ARMA. This pass must mint a UBE-PRIMARY ARMA (same mesh) for such an
 item and emit a SkyPatcher line adding it to the target ARMO at runtime — with a
 TINY master list (mint ESP masters = vanilla + UBE_AllRace, never the mod).
 """

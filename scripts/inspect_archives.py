@@ -21,7 +21,7 @@ For each archive, identify:
   - .nif files (built meshes vs sliderset source data under CalienteTools/)
   - Top-level folder structure
 """
-import os, sys, zipfile, py7zr, subprocess
+import os, zipfile, py7zr, subprocess
 from pathlib import Path
 
 DL = Path(os.path.expanduser("~") + r'\Downloads')
