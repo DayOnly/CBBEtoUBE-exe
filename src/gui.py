@@ -175,8 +175,10 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
     from . import preflight as pf
     from . import paths as _paths
 
+    from .version import __version__ as _app_version
+
     root = tk.Tk()
-    root.title("CBBE/3BA to UBE Converter")
+    root.title(f"CBBE/3BA to UBE Converter  v{_app_version}")
     root.geometry("860x680")
     root.minsize(680, 520)
 
