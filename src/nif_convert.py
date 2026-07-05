@@ -460,7 +460,8 @@ def _find_ube_femalebody(weight: str = "_1") -> "Path | None":
     produce a zero CBBE->UBE delta and leave armor CBBE-shaped.
     `_cached_cbbe_to_ube_delta` uses nearest-neighbor correspondence so topology
     mismatch between CBBE and UBE bodies is not a problem.
-    Env override: CBBE2UBE_UBE_BODY_0 / _1.
+    Env override: CBBE2UBE_UBE_BODY_0 / _1 (weight-specific), or the single-path
+    CBBE2UBE_UBE_BODY (the GUI picker) from which the weight sibling is derived.
     """
     ck = f"ube{weight}"
     if ck in _BODY_DISCOVERY_CACHE:
@@ -469,6 +470,18 @@ def _find_ube_femalebody(weight: str = "_1") -> "Path | None":
     if env and Path(env).is_file():
         _BODY_DISCOVERY_CACHE[ck] = Path(env)
         return Path(env)
+    # Single-path GUI override: the picker sets one NIF, but BodySlide bodies
+    # ship as a _0/_1 pair -- derive the weight-matching sibling from it (swap a
+    # trailing _0/_1; use as-is if the name isn't weight-suffixed). The
+    # weight-specific vars above still take priority. #ube-body-override
+    bare = os.environ.get("CBBE2UBE_UBE_BODY")
+    if bare:
+        bp = Path(bare)
+        cand = (bp.with_name(bp.stem[:-2] + weight + bp.suffix)
+                if bp.stem.endswith(("_0", "_1")) else bp)
+        if cand.is_file():
+            _BODY_DISCOVERY_CACHE[ck] = cand
+            return cand
     # Preferred: the genuine UBE-topology body output (`!UBE\Body` tangent).
     real = _find_user_preset_body(weight)
     if real is not None and Path(real).is_file():

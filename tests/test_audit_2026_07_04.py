@@ -273,3 +273,37 @@ def test_hdt_softbody_shape_names_accepts_nif_kwarg():
     import inspect
     import src.nif_convert as nc
     assert "nif" in inspect.signature(nc._hdt_softbody_shape_names).parameters
+
+
+# ---------------------------------------------------------------------------
+# GUI 'UBE body reference NIF' override: the picker sets the bare
+# CBBE2UBE_UBE_BODY (one path), so _find_ube_femalebody must derive the _0/_1
+# weight sibling from it -- previously it only read CBBE2UBE_UBE_BODY_0/_1 so the
+# GUI toggle silently did nothing.
+# ---------------------------------------------------------------------------
+def test_ube_body_single_path_override_derives_weight_sibling(monkeypatch, tmp_path):
+    import src.nif_convert as nc
+    b0 = tmp_path / "femalebody_0.nif"
+    b1 = tmp_path / "femalebody_1.nif"
+    b0.write_bytes(b"0")
+    b1.write_bytes(b"1")
+    monkeypatch.setattr(nc, "_BODY_DISCOVERY_CACHE", {})
+    monkeypatch.delenv("CBBE2UBE_UBE_BODY_0", raising=False)
+    monkeypatch.delenv("CBBE2UBE_UBE_BODY_1", raising=False)
+    # User picks the _1 body; both weights must resolve to their own sibling.
+    monkeypatch.setenv("CBBE2UBE_UBE_BODY", str(b1))
+    assert nc._find_ube_femalebody("_1") == b1
+    monkeypatch.setattr(nc, "_BODY_DISCOVERY_CACHE", {})
+    assert nc._find_ube_femalebody("_0") == b0
+
+
+def test_ube_body_weight_specific_env_takes_priority(monkeypatch, tmp_path):
+    import src.nif_convert as nc
+    specific = tmp_path / "explicit_0.nif"
+    generic = tmp_path / "femalebody_0.nif"
+    specific.write_bytes(b"s")
+    generic.write_bytes(b"g")
+    monkeypatch.setattr(nc, "_BODY_DISCOVERY_CACHE", {})
+    monkeypatch.setenv("CBBE2UBE_UBE_BODY_0", str(specific))
+    monkeypatch.setenv("CBBE2UBE_UBE_BODY", str(generic))
+    assert nc._find_ube_femalebody("_0") == specific   # suffixed var wins
