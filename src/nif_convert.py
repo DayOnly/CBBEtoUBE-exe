@@ -9430,9 +9430,15 @@ def _ensure_cloth_body_collider(xml_path: Path, nif) -> bool:
     body (breast/belly/butt) -- exactly what the XML GENERATOR already emits for
     cloth-only NIFs (`pick_body_collision_shape_name`). No NEW geometry is added
     (BaseShape is already the visible body), so there is no double-body/equip-CTD
-    risk. Off switch: CBBE2UBE_NO_BODY_COLLIDER=1. Returns True if it patched.
-    #breast-collider"""
-    if os.environ.get("CBBE2UBE_NO_BODY_COLLIDER", "").strip().lower() in (
+    risk.
+
+    DEFAULT OFF (opt-in `CBBE2UBE_BODY_COLLIDER=1`): in-game this DESTABILISED the
+    sim -- the Ancient Falmer body (head/chest/butt) collapsed to the floor. A
+    full-body per-triangle collider paired with cloth that is ALSO skinned +
+    weight-pinned to that same body diverges in FSMP. A chest-only KINEMATIC
+    sub-mesh collider is the next approach; until proven in-game this stays off.
+    Returns True if it patched. #breast-collider"""
+    if os.environ.get("CBBE2UBE_BODY_COLLIDER", "").strip().lower() not in (
             "1", "true", "yes", "on"):
         return False
     try:
