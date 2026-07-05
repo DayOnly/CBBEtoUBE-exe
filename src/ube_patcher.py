@@ -3118,24 +3118,6 @@ def _is_esm_tier_master(name: str, data_dirs: "list[Path] | None") -> bool:
     return False  # not cached on failure (see _ESM_TIER_CACHE note above)
 
 
-# ----- Winner-aware ARMO override rebasing -----------------------------------
-# The winner index lets merge_patches overlay load-order winner stats/keywords
-# onto our override instead of basing it on the bare master record.
-
-class _WinnerRecord:
-    __slots__ = ("plugin_name", "plugin_masters", "payload", "is_localized",
-                 "rec_flags")
-
-    def __init__(self, plugin_name, plugin_masters, payload, is_localized,
-                 rec_flags=0):
-        self.plugin_name = plugin_name
-        self.plugin_masters = plugin_masters
-        self.payload = payload
-        self.is_localized = is_localized
-        # TES4 record flags (e.g. 0x4 Non-Playable). Overrides must carry the
-        # winner's flags: a flags=0 override made NPC-only armor PLAYABLE (#xedit5).
-        self.rec_flags = rec_flags
-
 
 def _record_abs_fid(formid: int, plugin_masters: list[str],
                     plugin_own_name: str) -> "tuple[str, int]":
@@ -3150,140 +3132,12 @@ def _record_abs_fid(formid: int, plugin_masters: list[str],
     return (defining.lower(), formid & 0xFFFFFF)
 
 
-def build_armo_winner_index(
-    ordered_plugin_paths: "list[Path]",
-    *,
-    exclude_names: "set[str] | None" = None,
-    target_abs: "set[tuple[str, int]] | None" = None,
-) -> "dict[tuple[str, int], _WinnerRecord]":
-    """Scan plugins IN LOAD ORDER (ascending — later wins) and return, for each
-    ARMO's absolute identity, the highest-priority overriding record.
-
-    `ordered_plugin_paths` must be in load order (plugins.txt order). The last
-    plugin that overrides a given ARMO wins, so we simply overwrite the entry as
-    we go. `exclude_names` (lowercased filenames) skips our own outputs (the
-    Combined + per-mod UBE patches). `target_abs`, if given, restricts indexing
-    to those identities (a big perf win — only the ARMOs we actually convert)."""
-    exclude = {n.lower() for n in (exclude_names or set())}
-    index: dict[tuple[str, int], _WinnerRecord] = {}
-    for path in ordered_plugin_paths:
-        path = Path(path)
-        name = path.name
-        if name.lower() in exclude:
-            continue
-        try:
-            pe = esp.ESP.load(path)
-        except Exception:
-            continue
-        armo_grp = next((g for g in pe.groups if g.label == b"ARMO"), None)
-        if armo_grp is None:
-            continue
-        masters = pe.header.masters
-        is_loc = bool(pe.header.flags & 0x80)
-        for rec in armo_grp.records:
-            abs_id = _record_abs_fid(rec.formid, masters, name)
-            if target_abs is not None and abs_id not in target_abs:
-                continue
-            index[abs_id] = _WinnerRecord(name, masters, rec.payload, is_loc,
-                                          rec.flags)
-    return index
 
 
 # ARMO subrecords with no FormID — adoptable from the winner without adding a
 # new master. Covers the balance fields overhauls typically change.
-_WINNER_STAT_NOFID_SIGS = (b"EDID", b"OBND", b"FULL", b"BOD2", b"DATA", b"DNAM")
 
 
-def _overlay_winner_stats(
-    base_payload: bytes,
-    winner: "_WinnerRecord",
-    merged_masters: list[str],
-) -> bytes:
-    """Overlay the load-order winner's balance onto the base override.
-    Adopts only no-FormID stat subrecords (armor rating/type/name) plus KWDA
-    when every keyword is already in the merged master list. Armatures stay
-    base-derived (winner armatures would require mastering 100+ plugins)."""
-    def _merged_idx(name: str) -> "int | None":
-        nl = name.lower()
-        for idx, mn in enumerate(merged_masters):
-            if mn.lower() == nl:
-                return idx
-        return None
-
-    # Remap winner's master bytes to merged space; skip any not present.
-    wbr: dict[int, int] = {}
-    for i, m in enumerate(winner.plugin_masters):
-        j = _merged_idx(m)
-        if j is not None:
-            wbr[i] = j
-    winner_own_byte = len(winner.plugin_masters)
-
-    # Collect the winner subrecords we'll adopt.
-    adopt: dict[bytes, bytes] = {}
-    for sig, data in esp.iter_subrecords(winner.payload):
-        if sig in _WINNER_STAT_NOFID_SIGS:
-            adopt[sig] = data  # last occurrence wins (canonical: one each)
-        elif sig == b"RNAM" and len(data) == 4:
-            # Adopt the winner's race when it resolves through our master list
-            # (an overhaul re-racing an item to DefaultRace is a real balance/
-            # visibility change; keeping the base race regressed it — #xedit5).
-            fid = struct.unpack("<I", data)[0]
-            top = (fid >> 24) & 0xFF
-            if top != winner_own_byte and top in wbr:
-                adopt[b"RNAM"] = struct.pack(
-                    "<I", (wbr[top] << 24) | (fid & 0xFFFFFF))
-        elif sig == b"KWDA" and len(data) % 4 == 0:
-            # Adopt keywords only if EVERY one resolves to a present master.
-            ok = True
-            new = b""
-            for off in range(0, len(data), 4):
-                fid = struct.unpack_from("<I", data, off)[0]
-                top = (fid >> 24) & 0xFF
-                if top == winner_own_byte or top not in wbr:
-                    ok = False
-                    break
-                new += struct.pack("<I", (wbr[top] << 24) | (fid & 0xFFFFFF))
-            if ok:
-                adopt[b"KWDA"] = new
-    # KSIZ must equal the KWDA entry count. Adopting the winner's KWDA without
-    # updating KSIZ left base-count/winner-array desyncs (KSIZ=6 vs 8 keywords)
-    # -> xEdit garbles the record view and the engine's keyword read is
-    # undefined (#xedit5). Recompute whenever KWDA is adopted.
-    if b"KWDA" in adopt:
-        adopt[b"KSIZ"] = struct.pack("<I", len(adopt[b"KWDA"]) // 4)
-
-    if not adopt:
-        return base_payload
-
-    # Rebuild base, replacing adopted subrecords in place; insert any the base
-    # lacks right after EDID (safe — only MODL-after-DATA ordering is critical,
-    # and we never move MODL/DATA).
-    pieces = list(esp.iter_subrecords(base_payload))
-    consumed: set[bytes] = set()
-    out = b""
-    edid_idx = -1
-    for i, (sig, data) in enumerate(pieces):
-        if sig == b"EDID":
-            edid_idx = i
-        if sig in adopt:
-            out += esp.encode_subrecord(sig, adopt[sig])
-            consumed.add(sig)
-        else:
-            out += esp.encode_subrecord(sig, data)
-    leftover = [s for s in adopt if s not in consumed]
-    if leftover:
-        # Re-emit, inserting leftovers right after EDID.
-        out = b""
-        for i, (sig, data) in enumerate(pieces):
-            emit = adopt[sig] if sig in adopt else data
-            out += esp.encode_subrecord(sig, emit)
-            if i == edid_idx:
-                for s in leftover:
-                    out += esp.encode_subrecord(s, adopt[s])
-        if edid_idx < 0:  # no EDID (atypical) — prepend leftovers
-            pre = b"".join(esp.encode_subrecord(s, adopt[s]) for s in leftover)
-            out = pre + out
-    return out
 
 
 # ----- Mod-defined non-body UBE coverage (the guard-helmet class) ----------
@@ -3784,7 +3638,6 @@ def merge_patches(
     author: str = "cbbe-to-ube merger",
     description: str = "Merged UBE compatibility patches",
     master_data_dirs: "list[Path] | None" = None,
-    armo_winner_index: "dict[tuple[str, int], _WinnerRecord] | None" = None,
     _sp_seen_pairs: "set | None" = None,
 ) -> dict:
     """Combine multiple UBE patch ESPs into a single ESL-flagged ESP.
@@ -4102,7 +3955,6 @@ def merge_patches_split(
     author: str = "cbbe-to-ube merger",
     description: str = "Merged UBE compatibility patches",
     master_data_dirs=None,
-    armo_winner_index=None,
 ) -> dict:
     """Merge UBE patch ESPs while keeping the result ESL-flagged.
 
@@ -4137,7 +3989,7 @@ def merge_patches_split(
         s = merge_patches(
             plist, out_path, esl_flag=esl, author=author,
             description=description, master_data_dirs=master_data_dirs,
-            armo_winner_index=armo_winner_index, _sp_seen_pairs=_sp_seen)
+            _sp_seen_pairs=_sp_seen)
         s["pieces"] = [out_path.name]
         s["split_pieces"] = 1
         s["piece_stats"] = [s]
@@ -4179,7 +4031,7 @@ def merge_patches_split(
         st = merge_patches(
             ppaths, piece_path, esl_flag=True, author=author,
             description=f"{description} (part {idx + 1}/{n_pieces})",
-            master_data_dirs=master_data_dirs, armo_winner_index=armo_winner_index,
+            master_data_dirs=master_data_dirs,
             _sp_seen_pairs=_sp_seen)
         piece_stats.append(st)
         piece_names.append(piece_path.name)

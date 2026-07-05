@@ -53,7 +53,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import ube_patcher, nif_convert, paths, discovery, esp
+from . import ube_patcher, nif_convert, paths, discovery
 
 
 # ---------- Multiprocessing worker -------------------------------------
@@ -1872,42 +1872,6 @@ def verify_output(output_dir) -> dict:
     return res
 
 
-def _build_armo_winner_index_for_merge(patch_paths, layout, merged_name):
-    """Scan active plugins for the ARMOs our patches override, returning each
-    ARMO's load-order winner. Returns None if load order can't be read.
-    Scoped to our target ARMOs for speed (~1-2 s)."""
-    ordered_names = paths.active_plugins_ordered(layout)
-    if not ordered_names:
-        return None
-    file_index = paths.plugin_file_index(layout)
-    ordered_paths = [file_index[n.lower()] for n in ordered_names
-                     if n.lower() in file_index]
-    if not ordered_paths:
-        return None
-
-    target_abs: set[tuple[str, int]] = set()
-    our_names: set[str] = {merged_name.lower(),
-                           "vanilla_ube_race_compat.esp"}
-    for pp in patch_paths:
-        pp = Path(pp)
-        our_names.add(pp.name.lower())
-        try:
-            pe = esp.ESP.load(pp)
-        except Exception:
-            continue
-        grp = next((g for g in pe.groups if g.label == b"ARMO"), None)
-        if not grp:
-            continue
-        pm = pe.header.masters
-        for rec in grp.records:
-            target_abs.add(
-                ube_patcher._record_abs_fid(rec.formid, pm, pp.name))
-    if not target_abs:
-        return None
-    return ube_patcher.build_armo_winner_index(
-        ordered_paths, exclude_names=our_names, target_abs=target_abs)
-
-
 def _cmd_convert(args):
     _RUN_FAILURES.clear()   # fresh failure record for this run
     # Export discovered layout to env so spawned workers inherit it without re-scanning.
@@ -2336,25 +2300,10 @@ def _cmd_convert(args):
                 merged_out = output / args.merged_name
                 print(f"\n--- auto-merging {len(patch_paths)} patch(es) "
                       f"into {merged_out.name} ---")
-                # Winner-rebase: each ARMO override adopts the load-order winner's
-                # stats (overhaul balance etc.) instead of the bare master's. Stats-only.
-                winner_index = getattr(args, "armo_winner_index", None)
-                if winner_index is None \
-                        and not getattr(args, "no_winner_rebase", False):
-                    try:
-                        winner_index = _build_armo_winner_index_for_merge(
-                            patch_paths, _layout, merged_out.name)
-                        if winner_index:
-                            print(f"  winner index: {len(winner_index)} "
-                                  "load-order winners")
-                    except Exception as e:
-                        print(f"  !! winner-index build failed (skipping "
-                              f"rebase): {e!r}")
                 try:
                     stats = ube_patcher.merge_patches_split(
                         patch_paths, merged_out, esl_flag=True,
                         master_data_dirs=batch_master_data_dirs,
-                        armo_winner_index=winner_index,
                     )
                     print(f"  merged ESP: {merged_out}")
                     print(f"  ESL flag  : {stats.get('esl_flagged')}")
@@ -3868,43 +3817,9 @@ def _cmd_auto(args):
         print("\n--list-only: no conversion performed.")
         return 0
 
-    # Build the winner index used by the merge (ARMO stat rebase onto the
-    # load-order winner). Excludes our own outputs so a prior Combined isn't
-    # treated as a "winner".
+    # SkyPatcher-only: the Combined overrides no third-party records, so there is
+    # no ARMO winner-rebase step (the whole winner-index build is gone).
     merged_name = getattr(args, "merged_name", "CBBE_to_UBE_Combined.esp")
-    shared_winner_index = None
-    # FULL SKYPATCHER: no ARMO overrides exist, so there is nothing to rebase --
-    # skip the (minutes-long) winner-index build entirely.
-    if ube_patcher._full_skypatcher_enabled():
-        print("\nCBBE2UBE_FULL_SKYPATCHER on: armor coverage via "
-              "armorAddonsToAdd; no ESP overrides, winner rebase skipped")
-    elif not getattr(args, "no_winner_rebase", False):
-        try:
-            ordered_names = paths.active_plugins_ordered(lay)
-            if ordered_names:
-                fidx = paths.plugin_file_index(lay)
-                ordered_paths = [fidx[n.lower()] for n in ordered_names
-                                 if n.lower() in fidx]
-                # Exclude EVERY converter output: the merged Combined AND all
-                # its ESL-split pieces (<stem>2.esp, ...) by stem prefix, plus
-                # the coverage ESPs. Excluding only the exact merged_name let a
-                # stale Combined2 be picked as the "load-order winner" -> the
-                # rebase adopted our own previous output's records (stale
-                # flags/races/keywords self-perpetuating across runs, #xedit5).
-                # Keep excluding the removed Vanilla_UBE_Race_Compat.esp: the
-                # tool no longer generates it, but a LEFTOVER copy from a
-                # pre-2026-07-03 run may still sit in the output mod, and it must
-                # never be adopted as a load-order "winner" (#xedit5).
-                _widx_excl = {"vanilla_ube_race_compat.esp",
-                              "ube_modbody_coverage.esp",
-                              "ube_modnonbody_coverage.esp"}
-                _widx_excl |= _combined_output_names(merged_name, ordered_names)
-                shared_winner_index = ube_patcher.build_armo_winner_index(
-                    ordered_paths, exclude_names=_widx_excl)
-                print(f"\n#132 winner index: {len(shared_winner_index)} "
-                      "load-order ARMO winners (merge rebase)")
-        except Exception as e:
-            print(f"!! winner index build failed (rebase disabled): {e!r}")
 
     conv = _ap.Namespace(
         sources=sources, output=output, esp_name=None,
@@ -3915,8 +3830,6 @@ def _cmd_auto(args):
         auto_merge=getattr(args, "auto_merge", True),
         merged_name=merged_name,
         render_previews=False, mods_root=mr,
-        no_winner_rebase=getattr(args, "no_winner_rebase", False),
-        armo_winner_index=shared_winner_index,
         incremental=getattr(args, "incremental", False),
         plugins_only=getattr(args, "plugins_only", False),
     )
