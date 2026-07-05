@@ -197,11 +197,16 @@ class Group:
 
         records: list[Record] = []
         inner = offset + 24
-        end = offset + size
-        while inner < end:
+        # Clamp to the buffer: a file-supplied `size` must not drive the walk
+        # past EOF (a crafted oversized GRUP + a stray b"GRUP" near EOF would
+        # otherwise OOB-unpack the nested size). Keeps the clean-error contract.
+        end = min(offset + size, len(data))
+        while inner + 4 <= end:
             inner_sig = data[inner:inner+4]
             if inner_sig == b"GRUP":
                 # nested group — for v1 we don't recurse, just skip and warn
+                if inner + 8 > len(data):
+                    break  # truncated nested-GRUP header
                 inner_size = struct.unpack_from("<I", data, inner+4)[0]
                 if inner_size < GRUP_HEADER_SIZE:
                     break  # malformed/zero nested-GRUP size -> stop (no infinite loop)

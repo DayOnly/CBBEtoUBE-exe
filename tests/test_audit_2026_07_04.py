@@ -307,3 +307,40 @@ def test_ube_body_weight_specific_env_takes_priority(monkeypatch, tmp_path):
     monkeypatch.setenv("CBBE2UBE_UBE_BODY_0", str(specific))
     monkeypatch.setenv("CBBE2UBE_UBE_BODY", str(generic))
     assert nc._find_ube_femalebody("_0") == specific   # suffixed var wins
+
+
+# ---------------------------------------------------------------------------
+# Old-code audit 2026-07-05 (parsers + legacy CLI).
+# ---------------------------------------------------------------------------
+def test_tri_parse_long_morph_name_breaks_clean():
+    # A morph whose name-length byte runs past EOF must break cleanly, not
+    # OOB-unpack the mult/noff fields (the p+7 guard assumed a zero-len name).
+    import struct
+    from src import tri
+    data = (tri.TRI_MAGIC + b"\x00\x00"          # magic + version/count
+            + b"\x01A" + struct.pack("<H", 1)    # 1 shape "A", 1 morph
+            + b"\xc8" + b"\x00" * 6)             # mname_len=200 but only 6 bytes
+    parsed = tri.TriFile.parse(data)             # must NOT raise struct.error
+    assert parsed is not None
+
+
+def test_esp_group_parse_oversized_grup_no_oob():
+    # A GRUP declaring a huge size + a stray b"GRUP" at EOF must not OOB-unpack
+    # the nested-group size (end must clamp to the buffer).
+    import struct
+    from src import esp
+    data = (b"GRUP" + struct.pack("<I", 0xFFFFFF) + b"TES4"
+            + struct.pack("<iII", 0, 0, 0) + b"GRUP")
+    grp, _off = esp.Group.parse(data, 0)         # must NOT raise struct.error
+    assert grp is not None
+
+
+def test_refit_iter_armor_pairs_keeps_solo_with_weighted_sibling(tmp_path):
+    # A solo NIF sharing a base with a _0/_1 sibling is a distinct file and must
+    # still be yielded, not silently dropped.
+    from src import refit
+    for n in ("armor.nif", "armor_0.nif", "armor_1.nif"):
+        (tmp_path / n).write_bytes(b"")
+    seen = {p.name for pair in refit.iter_armor_pairs(tmp_path)
+            for p in pair if p is not None}
+    assert {"armor.nif", "armor_0.nif", "armor_1.nif"} <= seen

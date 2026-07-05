@@ -366,7 +366,7 @@ def generate_armor_hdt_xml(
 
     # 1b. Physics-chain bones (Escalation A: chains already in the
     # source NIF skeleton). Anchor = mass 0 (static; moves with its
-    # NIF-skeleton parent body bone). Dynamic = mass 0.25 (swings).
+    # NIF-skeleton parent body bone). Dynamic = mass CHAIN_DYNAMIC_MASS (swings).
     # The constraint groups in section 4 connect successive bones.
     if chains:
         lines.append("\t<!-- physics chains (anchors static, others dynamic) -->")
