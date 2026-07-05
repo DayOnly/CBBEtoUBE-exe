@@ -451,6 +451,26 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
     except Exception:
         pass
 
+    # ---- top header: "Support me on Ko-fi" link, anchored top-right ----
+    try:
+        _header = ttk.Frame(root)
+        _header.pack(side="top", fill="x", padx=8, pady=(6, 0))
+        _kofi = ttk.Label(
+            _header, text="Support me on Ko-fi", cursor="hand2",
+            foreground="#29abe0",
+            font=(_BASE_FONT[0], _BASE_FONT[1], "underline"))
+        _kofi.pack(side="right")
+
+        def _open_kofi(_e=None):
+            import webbrowser
+            try:
+                webbrowser.open("https://ko-fi.com/daymodding")
+            except Exception:
+                pass
+        _kofi.bind("<Button-1>", _open_kofi)
+    except Exception:
+        pass  # a header hiccup must never block the converter window
+
     # ---- notebook (tabs) + persistent bottom strip ----
     nb = ttk.Notebook(root)
     nb.pack(side="top", fill="both", expand=True, padx=8, pady=(8, 0))
