@@ -96,8 +96,12 @@ def save(state: dict, path=None) -> bool:
     out = {d: state.get(d, {}) for d in DOMAINS}
     p = Path(path) if path is not None else config_path()
     try:
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps(out, indent=2, sort_keys=True), encoding="utf-8")
+        # Atomic (temp+rename): a torn write here would leave a truncated JSON
+        # that load() degrades to empty() -> silently dropping EVERY saved
+        # exclusion (which exist to stop re-converting already-UBE mods).
+        from .atomic_io import atomic_write_bytes
+        atomic_write_bytes(
+            p, json.dumps(out, indent=2, sort_keys=True).encode("utf-8"))
         return True
     except Exception:
         return False
