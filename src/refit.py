@@ -140,5 +140,8 @@ def iter_armor_pairs(root: Path) -> Iterable[tuple[Path, Path | None]]:
     for base, slots in by_stem.items():
         if "0" in slots or "1" in slots:
             yield slots.get("0"), slots.get("1")
-        else:
+        # A solo NIF that shares a base with a _0/_1 sibling is a DISTINCT file
+        # (e.g. armor.nif alongside armor_0.nif) -- yield it too rather than
+        # silently dropping it. Normal folders have only one of the two forms.
+        if "solo" in slots:
             yield slots["solo"], None

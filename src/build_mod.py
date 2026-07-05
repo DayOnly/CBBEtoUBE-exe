@@ -18,13 +18,12 @@
 MO2-installable mod folder.
 
 Workflow:
-  1. Load CBBE + UBE reference body NIFs, build the morph field.
+  1. Load CBBE + UBE reference body NIFs into closest-point MeshIndex structures.
   2. For each input armor NIF path:
      a. Load via pynifly to get current shape verts (in memory).
-     b. For each shape, compute new verts:
-        - body shapes (3BA, 3BA_Anus, 3BA_Vagina, Panty) -> direct replace
-          with the corresponding shape's UBE verts (same topology)
-        - armor shapes -> refit_armor_verts with morph + falloff
+     b. For each shape, compute new verts via the CBBE->UBE surface-correspondence
+        warp (_compute_new_verts_for_shape) -- the SAME treatment for inline body
+        shapes as for armor pieces (no separate body/armor branch).
      c. Open the source file as bytes; for each shape locate-and-patch in
         place via nif_patch (preserves skin / shader / materials / partitions).
      d. Write the patched bytes to the output mod folder, preserving the

@@ -153,6 +153,10 @@ class TriFile:
                 mname_len = data[p]; p += 1
                 mname = data[p:p + mname_len].decode("ascii", errors="replace")
                 p += mname_len
+                # The p+7 guard above assumed a zero-length name; a long name can
+                # push the mult(4)+noff(2) fields past EOF. Re-check before unpack.
+                if p + 6 > len(data):
+                    break  # truncated: name ran into the mult/noff fields
                 mult = struct.unpack_from("<f", data, p)[0]; p += 4
                 noff = struct.unpack_from("<H", data, p)[0]; p += 2
                 if p + noff * 8 > len(data):
