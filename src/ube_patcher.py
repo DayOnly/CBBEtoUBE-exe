@@ -45,17 +45,27 @@ from . import esp
 
 
 def _full_skypatcher_enabled() -> bool:
-    """CBBE2UBE_FULL_SKYPATCHER=1 (default OFF): deliver ALL converted-armor
-    coverage via SkyPatcher armorAddonsToAdd instead of ESP ARMO overrides.
-    The per-source patch still MINTS the same UBE armatures (identical race
-    routing incl. hands/feet source-primary), but emits NO ARMO overrides --
-    it records links (defining plugin + ARMO id -> minted armatures) that the
-    merge turns into INI lines against final Combined FormIDs. The Combined is
-    then pure minted-ARMA: it overrides no third-party records, so the whole
-    override-conflict class (winner rebase, flags, keywords, EITM/VMAD,
-    localized strings) does not exist. Supersedes CBBE2UBE_BODY_SKYPATCHER."""
-    return (os.environ.get("CBBE2UBE_FULL_SKYPATCHER", "").strip().lower()
-            in ("1", "true", "yes", "on"))
+    """SkyPatcher is the PRIMARY armor-delivery mechanism (default ON): deliver
+    ALL converted-armor coverage via SkyPatcher armorAddonsToAdd instead of ESP
+    ARMO overrides. The per-source patch still MINTS the same UBE armatures
+    (identical race routing incl. hands/feet source-primary), but emits NO ARMO
+    overrides -- it records links (defining plugin + ARMO id -> minted armatures)
+    that the merge turns into INI lines against final Combined FormIDs. The
+    Combined is then pure minted-ARMA: it overrides no third-party records, so
+    the whole override-conflict class (winner rebase, flags, keywords, EITM/VMAD,
+    localized strings) does not exist.
+
+    Escape hatch to the legacy ESP-override path: CBBE2UBE_NO_SKYPATCHER=1 (or
+    the old CBBE2UBE_FULL_SKYPATCHER=0). Requires SkyPatcher.dll +
+    iEnableArmorPatching=1 in the load order -- a HARD runtime dependency for all
+    armor coverage. Supersedes CBBE2UBE_BODY_SKYPATCHER. #skypatcher-default"""
+    _on = ("1", "true", "yes", "on")
+    _off = ("0", "false", "no", "off")
+    if os.environ.get("CBBE2UBE_NO_SKYPATCHER", "").strip().lower() in _on:
+        return False
+    if os.environ.get("CBBE2UBE_FULL_SKYPATCHER", "").strip().lower() in _off:
+        return False
+    return True
 
 
 def _body_skypatcher_enabled() -> bool:
