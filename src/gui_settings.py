@@ -162,25 +162,9 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "this, vanilla armor no mod overrides is never converted "
                     "and renders invisible on UBE actors. Mod sources still "
                     "win wherever they cover the same piece."),
-    # ---- Armor: armor delivery --------------------------------------
-    Setting("full_skypatcher", "Deliver armor via SkyPatcher (recommended)",
-            "Armor", "Armor delivery", default=True,
-            env="CBBE2UBE_NO_SKYPATCHER", invert=True,
-            tooltip="PRIMARY delivery: every converted armor's UBE armature is "
-                    "added at runtime via SkyPatcher instead of ESP overrides. "
-                    "The Combined ESP then overrides no other mod's records (no "
-                    "conflicts, no xEdit errors); values/keywords/flags always "
-                    "come from the real load-order winner. Requires SkyPatcher "
-                    "(iEnableArmorPatching=1). Untick to fall back to the legacy "
-                    "ESP-override path."),
-    Setting("body_skypatcher", "Body-only SkyPatcher (legacy path)",
-            "Armor", "Armor delivery", default=False,
-            env="CBBE2UBE_BODY_SKYPATCHER", invert=False,
-            tooltip="Only used when the SkyPatcher delivery above is OFF: routes "
-                    "just the converted TORSO body armor through SkyPatcher, "
-                    "leaving hands/feet/accessories as ESP overrides. Superseded "
-                    "by the full SkyPatcher option -- has no effect while that is "
-                    "on (the default)."),
+    # ---- Armor delivery: SkyPatcher is the only path (no toggle -- the legacy
+    #      ESP-override machinery was removed once SkyPatcher was proven). The
+    #      preflight 'SkyPatcher (armor delivery)' check enforces the runtime dep.
 
     # ---- Armor: advanced numeric knobs (nest under the feature they tune) ---
     Setting("jiggle_transfer_factor", "Jiggle transfer factor",

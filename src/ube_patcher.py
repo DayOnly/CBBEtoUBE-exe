@@ -36,7 +36,6 @@ Output masters: Skyrim.esm, [Dawnguard.esm if needed], UBE_AllRace.esp,
 """
 from __future__ import annotations
 
-import os
 import struct
 from pathlib import Path
 from typing import Iterable
@@ -45,37 +44,15 @@ from . import esp
 
 
 def _full_skypatcher_enabled() -> bool:
-    """SkyPatcher is the PRIMARY armor-delivery mechanism (default ON): deliver
-    ALL converted-armor coverage via SkyPatcher armorAddonsToAdd instead of ESP
-    ARMO overrides. The per-source patch still MINTS the same UBE armatures
-    (identical race routing incl. hands/feet source-primary), but emits NO ARMO
-    overrides -- it records links (defining plugin + ARMO id -> minted armatures)
-    that the merge turns into INI lines against final Combined FormIDs. The
-    Combined is then pure minted-ARMA: it overrides no third-party records, so
-    the whole override-conflict class (winner rebase, flags, keywords, EITM/VMAD,
-    localized strings) does not exist.
-
-    Escape hatch to the legacy ESP-override path: CBBE2UBE_NO_SKYPATCHER=1 (or
-    the old CBBE2UBE_FULL_SKYPATCHER=0). Requires SkyPatcher.dll +
-    iEnableArmorPatching=1 in the load order -- a HARD runtime dependency for all
-    armor coverage. Supersedes CBBE2UBE_BODY_SKYPATCHER. #skypatcher-default"""
-    _on = ("1", "true", "yes", "on")
-    _off = ("0", "false", "no", "off")
-    if os.environ.get("CBBE2UBE_NO_SKYPATCHER", "").strip().lower() in _on:
-        return False
-    if os.environ.get("CBBE2UBE_FULL_SKYPATCHER", "").strip().lower() in _off:
-        return False
+    """SkyPatcher (armorAddonsToAdd) is the ONLY armor-delivery path (the legacy
+    ESP ARMO-override machinery was removed once SkyPatcher was proven in-game).
+    Every converted armor is delivered as minted UBE ARMAs + per-armo INI links;
+    the Combined ESP overrides no third-party records, so the whole override-
+    conflict class (winner rebase, flags, keywords, EITM/VMAD, localized strings)
+    does not exist. Requires SkyPatcher.dll + iEnableArmorPatching=1 -- a HARD
+    runtime dependency for all armor coverage. Retained as a function (always
+    True) while the remaining `if _fsp` call sites are inlined. #skypatcher-only"""
     return True
-
-
-def _body_skypatcher_enabled() -> bool:
-    """CBBE2UBE_BODY_SKYPATCHER=1 routes converted TORSO (biped slot 32) body
-    armor through SkyPatcher coverage (a minted UBE armature added at runtime via
-    armorAddonsToAdd) instead of an ESP ARMO override. Default OFF. Read at call
-    time so the GUI / auto_convert can toggle it per run. Hands/feet (33/37) keep
-    their source-primary ESP-override routing regardless (nude-hands race match)."""
-    return (os.environ.get("CBBE2UBE_BODY_SKYPATCHER", "").strip().lower()
-            in ("1", "true", "yes", "on"))
 
 
 # --------------------------------------------------------------------------
@@ -1510,10 +1487,10 @@ def generate_ube_patch(
     # ARMO overrides then vanish too (the override loops only add minted ARMAs).
     # Hands/feet + non-body are unaffected -> stay on this ESP-override path.
     _fsp = _full_skypatcher_enabled()
-    # Full-SkyPatcher supersedes the body-only pivot: the per-source path mints
-    # body armatures again (and LINKS them instead of overriding), so the
-    # body-suppression gates must stand down.
-    _bsp = _body_skypatcher_enabled() and not _fsp
+    # Body-only SkyPatcher pivot removed -- the always-on full path mints + LINKS
+    # body armatures, so the body-suppression gates stay down. (Dead `if _bsp`
+    # branches below are pruned in a later stage.)
+    _bsp = False
     # (defining_plugin, armo_low24) -> list of (minted_patch_fid,
     #  src_arma_defining, src_arma_low24). Written to the .skypatcher.json
     # sidecar; the merge remaps minted fids to final Combined space and emits

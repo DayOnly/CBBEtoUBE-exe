@@ -4048,8 +4048,7 @@ def _cmd_auto(args):
                 # Full-SkyPatcher supersedes the body-only pivot: body armor is
                 # minted + LINKED per-source there, so this coverage pass
                 # returns to its original gap-filling fallback role.
-                _bsp = (ube_patcher._body_skypatcher_enabled()
-                        and not ube_patcher._full_skypatcher_enabled())
+                _bsp = False   # body-only SkyPatcher pivot removed (full path is always on)
                 if _bsp:
                     print("  CBBE2UBE_BODY_SKYPATCHER on: body armor routed via "
                           "SkyPatcher (cover_all + preserve_textures)")
