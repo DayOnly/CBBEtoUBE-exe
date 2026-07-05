@@ -4187,6 +4187,39 @@ def sanitize_output_vertex_color_flags(meshes_root, workers: "int | None" = None
             "shapes_fixed": shapes_fixed}
 
 
+# Upper-torso RIGID skeleton bones. A shape dominated by these ARMORS the chest
+# and shoulders -- it is body-fitted plate, not free hanging cloth. Free cloth
+# (skirt / cape / tabard) hangs off pelvis/thigh + chain bones and barely weights
+# these. Used to keep the GENERATED per-vertex soft-body off rigid torso armour.
+_UPPER_TORSO_RIGID_BONE_KEYS = (
+    "Clavicle", "UpperArm", "Pauldron", "Spine2", "Spine1", "Neck", "Breast",
+)
+
+
+def _shape_is_rigid_torso_armor(shape, threshold: float = 0.35) -> bool:
+    """True if `shape` is a body-fitted TORSO cuirass rather than free hanging
+    cloth: at least `threshold` of its total skin weight sits on the upper-torso
+    rigid bones (clavicle / upperarm / pauldron / upper-spine). Such a shape must
+    never be turned into a GENERATED per-vertex soft-body -- with no authored
+    chain it becomes free cloth1 and the whole armour flops / disjoints. The
+    measured separation is wide (a real skirt ~2%, a cuirass ~54%), so a mid
+    threshold cleanly splits them. #softbody-rigid-gate"""
+    try:
+        wpb = shape.bone_weights
+    except Exception:
+        return False
+    if not wpb:
+        return False
+    total = 0.0
+    upper = 0.0
+    for b, lst in wpb.items():
+        w = sum(x[1] for x in lst)
+        total += w
+        if any(k in b for k in _UPPER_TORSO_RIGID_BONE_KEYS):
+            upper += w
+    return total > 0.0 and (upper / total) >= threshold
+
+
 def _pick_bodytri_carriers(nif, *, exclude_body: bool = False) -> "list[object]":
     """Pick exactly ONE shape per NIF to receive a BODYTRI extra-data
     block, matching the hand-authored BodySlide UBE convention.
@@ -9040,6 +9073,14 @@ def _generate_hdt_xml_for_dst(dst_path: "Path") -> "str | None":
     # a body-swap NIF picked its injected BaseShape as the cloth carrier, so
     # the body flopped as soft-body while the real cape got no physics at all.
     carriers = _pick_bodytri_carriers(nf, exclude_body=True)
+    # A GENERATED per-vertex soft-body is only ever right for free HANGING cloth
+    # (a slot-49 skirt / cape / tabard). A rigid TORSO cuirass shape must never be
+    # turned into cloth: with no authored chain it becomes free cloth1 and the
+    # whole armour flops / disjoints from the body. Free cloth barely touches the
+    # upper-torso rigid bones (clavicle / upperarm / pauldron / spine2); a cuirass
+    # is dominated by them. Drop torso-armour carriers -- they stay kinematic
+    # (the acceptable "static" state) instead of flopping. #softbody-rigid-gate
+    carriers = [c for c in carriers if not _shape_is_rigid_torso_armor(c)]
     if not carriers:
         return None
 
