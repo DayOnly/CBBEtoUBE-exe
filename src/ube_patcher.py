@@ -1481,9 +1481,8 @@ def generate_ube_patch(
             return (src_to_patch_byte[top] << 24) | (fid & 0xFFFFFF)
         return fid
 
-    # CBBE2UBE_BODY_SKYPATCHER: when on, TORSO body (slot 32) DefaultRace
     # Body armatures whose mesh we converted are owned by the SkyPatcher
-    # body-coverage pass (cover_all), so DON'T mint an ARMA for them here.
+    # body-coverage pass, so DON'T mint an ARMA for them here.
     # Body-only SkyPatcher pivot removed -- the always-on full path mints + LINKS
     # body armatures, so the body-suppression gates stay down. (Dead `if _bsp`
     # branches below are pruned in a later stage.)
@@ -3834,11 +3833,10 @@ def merge_patches(
 
     out_esp.save(out_path)
 
-    # ---- FULL SKYPATCHER: per-patch link sidecars -> final INI lines ----
-    # Emitted only when patches carry .skypatcher.json sidecars (the per-source
-    # phase ran with CBBE2UBE_FULL_SKYPATCHER). Dedup by (armo, source-armature)
-    # so the same vanilla armature minted by many patches is added ONCE
-    # (first-writer-wins, mirroring the old ARMO-override dedup). Pass a shared
+    # ---- SkyPatcher: per-patch link sidecars -> final INI lines ----
+    # Emitted from the .skypatcher.json sidecars each patch carries. Dedup by
+    # (armo, source-armature) so the same vanilla armature minted by many patches
+    # is added ONCE (first-writer-wins). Pass a shared
     # `_sp_seen_pairs` set across split pieces for cross-piece dedup.
     sp_ini: "list[str]" = []
     sp_by_armo: "dict[tuple[str, int], list[int]]" = {}
@@ -4054,12 +4052,10 @@ def merge_patches_split(
         "total_arma_records": sum(s.get("total_arma_records", 0) for s in piece_stats),
         "own_arma_records": sum(s.get("own_arma_records", 0) for s in piece_stats),
         "total_armo_records": sum(s.get("total_armo_records", 0) for s in piece_stats),
-        "armo_duplicates_merged": sum(s.get("armo_duplicates_merged", 0) for s in piece_stats),
         "esl_flagged": all(s.get("esl_flagged") for s in piece_stats),
         "all_pieces_esl": all(s.get("esl_flagged") for s in piece_stats),
         "esl_slots_max": ESL_MAX_OWN_RECORDS,
         "downgraded_to_full_esp": any(s.get("downgraded_to_full_esp") for s in piece_stats),
-        "winner_rebased_armos": sum(s.get("winner_rebased_armos", 0) for s in piece_stats),
         "skypatcher_ini_lines": [l for s in piece_stats
                                  for l in s.get("skypatcher_ini_lines", [])],
         "skypatcher_targets": sum(s.get("skypatcher_targets", 0)
