@@ -6084,6 +6084,25 @@ def _precreate_custom_bone_chains(dst_nif, src_nif, bone_names) -> int:
         _allb = set(bone_names)
         for _sh in src_nif.shapes:
             _allb |= set(_sh.bone_names)
+        # Seed from the physics XML's <bone> list too. Pure CONSTRAINT bones --
+        # the skirt/flap chains a bone-driven SMP garment hangs from (SkirtFBone,
+        # HDT_FS, ...) -- carry ZERO skin weight, so they appear in NO shape's
+        # bone list and the shape-driven copy never recreates their NODES. But
+        # HDT-SMP walks the NIF hierarchy to build its kinematic chain; with the
+        # chain's parent nodes gone it has nothing to hang from and the garment
+        # free-falls to the ground. Add the XML's own custom bones that exist in
+        # the source rig so the chain (below) recreates them at source bind.
+        # #smp-constraint-bones
+        try:
+            _sp = getattr(src_nif, "filepath", None)
+            if _sp:
+                _xt = _read_source_hdt_xml_text(Path(_sp), nif=src_nif)
+                if _xt:
+                    for _xb in re.findall(r'<bone\s+name="([^"]+)"', _xt):
+                        if _xb in src_nodes and not _is_skeleton_bone(_xb):
+                            _allb.add(_xb)
+        except Exception:
+            pass
         bone_names = list(_allb)
     except Exception:
         pass
