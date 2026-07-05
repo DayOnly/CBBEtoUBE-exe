@@ -211,3 +211,38 @@ def test_copy_shape_lighting_shader_unaffected(tmp_path):
     build_shape_nif(tmp_path / "src.nif")
     out = copy_shape_into_fresh(tmp_path / "src.nif", tmp_path / "dst.nif")
     assert out.shader_block_name == "BSLightingShaderProperty"
+
+
+# --- HDT-SMP collider skin preservation (#smp-collider-skin-preserve) --------
+# A per-triangle collider re-imported by _finalize_hdt_physics must keep its
+# AUTHORED skin verbatim. The default reskin strips genital bones (correct for
+# render body shapes); doing so to a self-contained collider desyncs the skin
+# palette FSMP reads -> out-of-bounds read in Main::Update on equip (CTD) + the
+# collider deforms wrong (invisible piece). Regression for the travel-outfit
+# crash where `collision body` went 49 -> 41 bones.
+_GENITAL_BONE = "NPC L Pussy02"
+_NORMAL_BONE = "NPC Spine [Spn0]"
+
+
+def _copy_with_flag(tmp_path, preserve):
+    build_skinned_shape_nif(tmp_path / "src.nif",
+                            bones=[_GENITAL_BONE, _NORMAL_BONE])
+    src = nc._pynifly().NifFile(filepath=str(tmp_path / "src.nif")).shapes[0]
+    dst = nc._pynifly().NifFile()
+    dst.initialize("SKYRIMSE", str(tmp_path / "dst.nif"))
+    out = nc._copy_shape(src, dst, preserve_authored_skin=preserve)
+    return set(out.bone_names)
+
+
+def test_copy_shape_default_strips_genital_bones(tmp_path):
+    # Default behavior UNCHANGED: render shapes still get the genital strip.
+    bones = _copy_with_flag(tmp_path, preserve=False)
+    assert _GENITAL_BONE not in bones, "default copy must still strip genital bones"
+
+
+def test_copy_shape_preserve_authored_skin_keeps_collider_bones(tmp_path):
+    # The fix: colliders/framework carriers keep every authored bone verbatim,
+    # so the skin palette stays consistent and FSMP doesn't OOB-read on equip.
+    bones = _copy_with_flag(tmp_path, preserve=True)
+    assert _GENITAL_BONE in bones, "collider copy must preserve authored genital bone"
+    assert _NORMAL_BONE in bones

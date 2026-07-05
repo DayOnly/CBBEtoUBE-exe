@@ -747,10 +747,18 @@ def _fill_zero_weight_verts(weights_map, verts, eps=1e-4):
 
 
 def _install_skin(new_shape, dst_nif, src_shape, bone_names, xforms_map,
-                  weights_map, use_verts, bake_T):
+                  weights_map, use_verts, bake_T, preserve_authored_skin=False):
     """Install the skin onto a freshly-created shape: bones, skin-to-bone xforms,
     global-to-skin, per-bone weights, and partitions. Shared by both _copy_shape
     skin paths (the M6 override-skin reskin and the verbatim source copy).
+
+    `preserve_authored_skin` keeps the source weighting VERBATIM -- no genital or
+    jiggle strip. Set for HDT-SMP per-triangle COLLIDERS / framework carriers
+    re-imported by `_finalize_hdt_physics`: their authored skin is internally
+    consistent (worked on the source body) and self-contained, so stripping
+    bones from it desyncs the skin partition palette FSMP reads -> out-of-bounds
+    read in Main::Update on equip (CTD) + the collider deforms wrong (invisible
+    piece). #smp-collider-skin-preserve
 
     add_bone order matters (pynifly: add ALL bones first, THEN set transforms +
     weights, else they default to identity@origin -> spikes). Applies the
@@ -778,14 +786,18 @@ def _install_skin(new_shape, dst_nif, src_shape, bone_names, xforms_map,
     # The per-vertex bone indices reference the (longer) bone list, so they run
     # PAST the shorter palette -> out-of-bounds read of the GPU bone-matrix array
     # on equip -> CTD. Pruning zero-weight bones keeps list == palette. #zeroweight-bone-desync
-    weights_map = _strip_genital_weights_map(weights_map)
-    # Strip jiggle weights (breast/butt/belly) that destabilise physics garments
-    # or collapse rigid leg plates on UBE actors. Full-garment strip for chains;
-    # leg-plates only for plain armour.
-    weights_map = _strip_jiggle_weights_map(
-        weights_map,
-        src_bones=set(src_shape.bone_names or []),
-        force=_nif_has_garment_chain(src_shape.file))
+    # Authored SMP colliders/framework carriers keep their source skin verbatim
+    # (see preserve_authored_skin): stripping bones from a self-contained,
+    # already-consistent collider skin is what desyncs the palette -> CTD.
+    if not preserve_authored_skin:
+        weights_map = _strip_genital_weights_map(weights_map)
+        # Strip jiggle weights (breast/butt/belly) that destabilise physics
+        # garments or collapse rigid leg plates on UBE actors. Full-garment strip
+        # for chains; leg-plates only for plain armour.
+        weights_map = _strip_jiggle_weights_map(
+            weights_map,
+            src_bones=set(src_shape.bone_names or []),
+            force=_nif_has_garment_chain(src_shape.file))
     weights_map = _fill_zero_weight_verts(weights_map, use_verts)
     surviving = [bn for bn in bone_names
                  if weights_map.get(bn)
@@ -8398,7 +8410,8 @@ def _transplant_effect_controller(src_shader, dst_nif, pyn):
 
 
 def _copy_shape(src_shape, dst_nif, parent=None, override_verts=None,
-                override_skin=None, skip_alpha=False, override_tris=None):
+                override_skin=None, skip_alpha=False, override_tris=None,
+                preserve_authored_skin=False):
     """Deep-copy a single shape from src NIF to dst NIF via pynifly.
 
     Carries through: geometry (verts/tris/uvs/normals), shape properties
@@ -8650,7 +8663,8 @@ def _copy_shape(src_shape, dst_nif, parent=None, override_verts=None,
             bone_names, xforms_map, weights_map = _drop_scale_bones_from_skin(
                 bone_names, xforms_map, weights_map)
         _install_skin(new_shape, dst_nif, src_shape, bone_names,
-                      xforms_map, weights_map, use_verts, _bake_T)
+                      xforms_map, weights_map, use_verts, _bake_T,
+                      preserve_authored_skin=preserve_authored_skin)
     elif src_shape.bone_names:
         # Source shapes can exceed the GPU bone cap (dense skirts ship 79-81).
         # Keep all bones and let _split_oversize_partition split into partitions
@@ -8683,7 +8697,8 @@ def _copy_shape(src_shape, dst_nif, parent=None, override_verts=None,
             bone_names, xforms_map, weights_map = _drop_scale_bones_from_skin(
                 bone_names, xforms_map, weights_map)
         _install_skin(new_shape, dst_nif, src_shape, bone_names,
-                      xforms_map, weights_map, use_verts, _bake_T)
+                      xforms_map, weights_map, use_verts, _bake_T,
+                      preserve_authored_skin=preserve_authored_skin)
 
     # Alpha: set has_alpha_property=True first (creates dst NiAlphaProperty),
     # then copy flags/threshold. Don't memcpy the whole buf (contains source
@@ -9509,8 +9524,15 @@ def _finalize_hdt_physics(dst_path: Path, src_nif_path: Path) -> bool:
                                 )
                             except Exception:
                                 _col_ov = None
+                        # Preserve the authored collider/framework skin VERBATIM
+                        # -- no genital/jiggle strip. These SMP shapes are
+                        # self-contained and internally consistent; stripping
+                        # bones desyncs the skin palette FSMP reads -> equip CTD
+                        # + the collider deforms wrong. Only the VERTS are warped
+                        # (override_verts) to the UBE body radius. #smp-collider-skin-preserve
                         new_col = _copy_shape(src_shape, nf,
-                                              override_verts=_col_ov)
+                                              override_verts=_col_ov,
+                                              preserve_authored_skin=True)
                         # Hide (bit 0): HDT reads geometry; renderer skips Hidden.
                         tgt = new_col if new_col is not None else next(
                             (s for s in nf.shapes if s.name == cn), None)
