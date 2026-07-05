@@ -7635,10 +7635,15 @@ def _cached_scale_bone_data(body_shape, leg_region_only: bool,
     ("frontthigh","rearthigh") for calf/foot boots, so the fade-inducing far-thigh
     scale bones are never grafted -- see _boot_far_thigh_scale_exclusions)."""
     excl = tuple(sorted(exclude_substrings or ()))
+    # Key on id(body_shape) BUT keep a strong ref to the body in the cache value:
+    # Python recycles an object's id() after it is GC'd, so a bare id key can
+    # return a DIFFERENT (now-dead-and-replaced) body's KD-trees -> wrong scale
+    # weights. Holding the body alive keeps its id stable; the `is` guard is a
+    # belt-and-suspenders miss if an id somehow still collides. #idreuse-cache
     key = (id(body_shape), bool(leg_region_only), excl)
     cached = _SCALE_BONE_DATA_CACHE.get(key)
-    if cached is not None:
-        return cached
+    if cached is not None and cached[0] is body_shape:
+        return cached[1], cached[2]
     from scipy.spatial import cKDTree
     body_verts = np.asarray(body_shape.verts, dtype=np.float64)
     body_n = len(body_verts)
@@ -7663,7 +7668,7 @@ def _cached_scale_bone_data(body_shape, leg_region_only: bool,
             continue
         bone_verts = body_verts[idxs_w]
         bone_data[bn] = (bone_verts, cKDTree(bone_verts), wts)
-    _SCALE_BONE_DATA_CACHE[key] = (scale_bones, bone_data)
+    _SCALE_BONE_DATA_CACHE[key] = (body_shape, scale_bones, bone_data)
     return scale_bones, bone_data
 
 
