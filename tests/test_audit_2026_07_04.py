@@ -344,3 +344,31 @@ def test_refit_iter_armor_pairs_keeps_solo_with_weighted_sibling(tmp_path):
     seen = {p.name for pair in refit.iter_armor_pairs(tmp_path)
             for p in pair if p is not None}
     assert {"armor.nif", "armor_0.nif", "armor_1.nif"} <= seen
+
+
+def test_overlay_slot_map_cache_keys_on_enabled_mods(monkeypatch, tmp_path):
+    # The slot map depends on which mods are scanned, so different enabled-mod
+    # sets (different layouts) must cache separately, not reuse a stale map.
+    from src import overlay_slots as ovs
+    monkeypatch.setattr(ovs, "_slot_map_cache", {})
+    monkeypatch.setattr(ovs._paths, "mods_root", lambda: tmp_path)   # empty -> no .psc
+    monkeypatch.setattr(ovs._paths, "enabled_mods_ordered", lambda layout: list(layout))
+    ovs.build_script_slot_map(["ModA"])
+    ovs.build_script_slot_map(["ModA", "ModB"])          # different enabled set
+    assert len(ovs._slot_map_cache) == 2, "distinct enabled-mod sets must key apart"
+    ovs.build_script_slot_map(["ModA"])                  # same set -> cache hit
+    assert len(ovs._slot_map_cache) == 2
+
+
+def test_surface_frame_degenerate_normal_stays_orthonormal():
+    # A zero normal (degenerate source triangle) must still yield a valid
+    # orthonormal tangent frame, not a collapsed zero frame.
+    import numpy as np
+    from src import correspondence as corr
+    normals = np.array([[0.0, 0.0, 0.0],       # degenerate
+                        [0.0, 0.0, 1.0]])       # normal
+    t1, t2 = corr._build_surface_frame(normals)
+    for i in (0, 1):
+        assert np.linalg.norm(t1[i]) > 0.5, f"t1[{i}] collapsed"
+        assert np.linalg.norm(t2[i]) > 0.5, f"t2[{i}] collapsed"
+        assert abs(float(np.dot(t1[i], t2[i]))) < 1e-6, "t1/t2 not orthogonal"
