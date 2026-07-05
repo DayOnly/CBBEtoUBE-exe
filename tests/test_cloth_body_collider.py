@@ -33,6 +33,12 @@ pytestmark = pytest.mark.skipif(not pynifly_available(),
 TRIS = [(0, 1, 2), (0, 2, 3), (0, 1, 3), (1, 2, 3)]
 
 
+@pytest.fixture(autouse=True)
+def _enable_collider(monkeypatch):
+    # DEFAULT is OFF (it collapsed a body in-game); opt-in for these unit tests.
+    monkeypatch.setenv("CBBE2UBE_BODY_COLLIDER", "1")
+
+
 def _mk_nif(tmp_path, shapes):
     """shapes: list of (name, zlo, zhi) -> a NIF with those shapes at that z-band."""
     pyn = nc._pynifly()
@@ -113,8 +119,10 @@ def test_no_patch_when_cloth_only_hits_ground(tmp_path):
     assert patched is False
 
 
-def test_off_switch(tmp_path, monkeypatch):
-    monkeypatch.setenv("CBBE2UBE_NO_BODY_COLLIDER", "1")
+def test_default_off(tmp_path, monkeypatch):
+    # Without the opt-in env, the collider is NOT registered (default off, since
+    # the full-body collider collapsed the Ancient Falmer body in-game).
+    monkeypatch.delenv("CBBE2UBE_BODY_COLLIDER", raising=False)
     patched, out = _run(tmp_path, _XML_GAP,
                         [("Greaves", 30.0, 45.0), ("BaseShape", 95.0, 112.0)])
     assert patched is False
