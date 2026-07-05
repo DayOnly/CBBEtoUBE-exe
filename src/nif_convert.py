@@ -9382,6 +9382,87 @@ def _harden_physics_params(xml_path: Path) -> None:
             pass
 
 
+def _ensure_cloth_body_collider(xml_path: Path, nif) -> bool:
+    """Give a simulated cloth the body collider it needs at the CHEST.
+
+    Authored HDT-SMP XMLs sometimes give a per-vertex (simulated) cloth a body-
+    collision tag (e.g. `ColBody`) but only supply a LOWER-body collider for it
+    (a skirt-level `Greaves`/`Col*` proxy at the hips). On UBE the larger breast
+    then pokes through the cloth with nothing at the chest to hold it out (the
+    UBE nude body ships no HDT-SMP collider of its own). Register the body shape
+    ALREADY PRESENT in the NIF (BaseShape) as a per-triangle collider carrying the
+    tag the cloth collides with, so the simulated cloth rests on the whole UBE
+    body (breast/belly/butt) -- exactly what the XML GENERATOR already emits for
+    cloth-only NIFs (`pick_body_collision_shape_name`). No NEW geometry is added
+    (BaseShape is already the visible body), so there is no double-body/equip-CTD
+    risk. Off switch: CBBE2UBE_NO_BODY_COLLIDER=1. Returns True if it patched.
+    #breast-collider"""
+    if os.environ.get("CBBE2UBE_NO_BODY_COLLIDER", "").strip().lower() in (
+            "1", "true", "yes", "on"):
+        return False
+    try:
+        from . import hdt_xml_gen
+        text = Path(xml_path).read_text(errors="ignore")
+    except Exception:
+        return False
+    shape_names = {s.name for s in nif.shapes}
+    body_name = hdt_xml_gen.pick_body_collision_shape_name(shape_names)
+    if not body_name or body_name not in shape_names:
+        return False
+    # Body tags some SIMULATED cloth wants to collide with (ignore 'ground').
+    cloth_body_tags: set[str] = set()
+    for m in re.finditer(r'<per-vertex-shape\b.*?</per-vertex-shape>', text,
+                         re.S):
+        for t in re.findall(r'<can-collide-with-tag>([^<]+)</can-collide-with-tag>',
+                            m.group(0)):
+            t = t.strip()
+            if t and t.lower() != "ground":
+                cloth_body_tags.add(t)
+    if not cloth_body_tags:
+        return False
+    # Cloth tags (so the collider can name them back in can-collide-with).
+    cloth_tags: set[str] = set()
+    for m in re.finditer(r'<per-vertex-shape\b.*?</per-vertex-shape>', text,
+                         re.S):
+        for t in re.findall(r'<tag>([^<]+)</tag>', m.group(0)):
+            if t.strip():
+                cloth_tags.add(t.strip())
+    # Already-registered per-triangle colliders: which body tags cover the chest?
+    registered = set(re.findall(r'<per-triangle-shape\s+name="([^"]+)"', text))
+    if body_name in registered:
+        return False  # body already a collider
+    chest_covered_tags: set[str] = set()
+    for m in re.finditer(
+            r'<per-triangle-shape\s+name="([^"]+)">(.*?)</per-triangle-shape>',
+            text, re.S):
+        cname, cblock = m.group(1), m.group(2)
+        sh = next((s for s in nif.shapes if s.name == cname), None)
+        if sh is None or len(sh.verts) == 0:
+            continue
+        zmax = max(v[2] for v in sh.verts)
+        if zmax >= 90.0:  # this collider reaches the chest
+            chest_covered_tags |= {t.strip()
+                                   for t in re.findall(r'<tag>([^<]+)</tag>', cblock)}
+    need = cloth_body_tags - chest_covered_tags
+    if not need or "</system>" not in text:
+        return False
+    tag = sorted(need)[0]
+    block = (f'\t<per-triangle-shape name="{body_name}">\n'
+             f'\t\t<margin>0.1</margin>\n'
+             f'\t\t<penetration>0.15</penetration>\n'
+             f'\t\t<shared>private</shared>\n'
+             f'\t\t<tag>{tag}</tag>\n'
+             + ''.join(f'\t\t<can-collide-with-tag>{ct}</can-collide-with-tag>\n'
+                       for ct in sorted(cloth_tags or {"Fabric"}))
+             + '\t</per-triangle-shape>\n')
+    try:
+        Path(xml_path).write_text(
+            text.replace("</system>", block + "</system>", 1))
+        return True
+    except Exception:
+        return False
+
+
 def _harden_hdt_xml_for_fsmp(xml_path: Path, nif) -> None:
     """FSMP-compatibility hardening of an output HDT-SMP XML. Prunes
     references the engine can't resolve so Faster HDT-SMP never loads
@@ -9644,6 +9725,14 @@ def _finalize_hdt_physics(dst_path: Path, src_nif_path: Path) -> bool:
             _hide_virtual_body(nf)
             atomic_nif_save(nf, dst_path)
 
+        # Give a simulated cloth the CHEST body collider it lacks (authored XMLs
+        # that only ship a lower-body collider let the UBE breast poke through).
+        # Runs BEFORE harden so the added BaseShape block is validated (kept:
+        # BaseShape is in the NIF).
+        try:
+            _ensure_cloth_body_collider(dst_xml_disk, nf)
+        except Exception:
+            pass
         # FSMP-compatibility hardening: prune XML so FSMP never sees an unresolved
         # shape/bone. Runs after proxy re-import so re-imported shapes count.
         try:
