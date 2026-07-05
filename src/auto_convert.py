@@ -3958,46 +3958,16 @@ def _cmd_auto(args):
                 # per-source builder suppresses torso body ARMO overrides, so
                 # this coverage pass becomes their sole path (cover_all) and must
                 # preserve their alt-textures (preserve_textures).
-                # Full-SkyPatcher supersedes the body-only pivot: body armor is
-                # minted + LINKED per-source there, so this coverage pass
-                # returns to its original gap-filling fallback role.
-                _bsp = False   # body-only SkyPatcher pivot removed (full path is always on)
-                if _bsp:
-                    print("  CBBE2UBE_BODY_SKYPATCHER on: body armor routed via "
-                          "SkyPatcher (cover_all + preserve_textures)")
+                # Body coverage is the gap-filling FALLBACK: the Combined links
+                # body ARMOs per-source (exclude_armo_abs=_fsp_linked_abs dedups
+                # those), so this covers only body armor the Combined didn't.
                 _cov_excl = {mbd_esp.name.lower()}
-                if _bsp:
-                    # Full-SkyPatcher: coverage is the PRIMARY body path, so a
-                    # prior Combined (+ every ESL-split piece) must not be scanned
-                    # -- it OVERRIDES source body ARMOs with a UBE armature, which
-                    # hides them from coverage ("already covered") and leaves them
-                    # uncovered once that Combined is replaced (measured 2504 vs
-                    # 3636 targets). Flag OFF KEEPS scanning it: there coverage is
-                    # only the fallback and must defer to the Combined's body
-                    # overrides, so the exclusion stays byte-identical to today.
-                    _cov_excl |= {"ube_modnonbody_coverage.esp",
-                                  "vanilla_ube_race_compat.esp"}
-                    _cov_excl |= _combined_output_names(merged_name, _ordered)
                 mbd = ube_patcher.generate_modded_body_ube_coverage_patch(
                     mbd_esp, _ordered, converted_rel_paths=_conv_rel,
                     exclude_armo_abs=_fsp_linked_abs,
                     exclude_names=_cov_excl,
                     master_data_dirs=_md,
-                    cover_all=_bsp, preserve_textures=_bsp)
-                # Fix stale alt-texture (MO?S) 3D indices on the minted armatures.
-                # preserve_textures copies each recolor's set with the SOURCE
-                # mesh's shape order, but the !UBE conversion injects BaseShape +
-                # reorders shapes, so a color variant would paint the WRONG shape
-                # (wrong colors). Same reconcile the merged Combined gets (:2056).
-                if _bsp and mbd_esp.exists():
-                    try:
-                        _nfix = ube_patcher.reconcile_alt_texture_indices_all(
-                            mbd_esp, output / "meshes")
-                        if _nfix:
-                            print(f"  alt-texture reconcile: fixed {_nfix} "
-                                  "minted armature(s)")
-                    except Exception as _e:
-                        print(f"  !! alt-texture reconcile skipped: {_e!r}")
+                    cover_all=False, preserve_textures=False)
                 ini_lines = mbd.get("ini_lines") or []
                 if ini_lines and mbd.get('armo_targets'):
                     ini_path = (output / "SKSE" / "Plugins" / "SkyPatcher"
