@@ -290,8 +290,7 @@ def run_checks(layout=None, *, want_overlays=False, want_overlay_copy=False,
                          "found" if skyp else "SkyPatcher not detected.",
                          "" if skyp else "Install SkyPatcher and set "
                          "iEnableArmorPatching=1 — it delivers ALL converted armor "
-                         "now; without it converted armor is invisible. (Or untick "
-                         "'Deliver armor via SkyPatcher' to use ESP overrides.)"))
+                         "now; without it converted armor is invisible."))
 
     out_dir = Path(mr) / output_name
     if out_dir.is_dir():
