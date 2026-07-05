@@ -2311,10 +2311,6 @@ def _cmd_convert(args):
                         print(f"  SPLIT     : {stats['split_pieces']} ESL pieces "
                               f"-> {', '.join(stats.get('pieces', []))} "
                               "(enable ALL of them)")
-                    if stats.get('winner_rebased_armos'):
-                        print("  #132 rebased: "
-                              f"{stats.get('winner_rebased_armos')} ARMO "
-                              "override(s) onto load-order winner stats")
                     if stats.get('downgraded_to_full_esp'):
                         print(f"  !! {stats.get('own_arma_records')} new ARMAs "
                               f"exceed the {stats.get('esl_slots_max')}-record "
@@ -3954,10 +3950,6 @@ def _cmd_auto(args):
                 _md = _discover_master_data_dirs(sources[0])
                 print(f"\n--- mod BODY UBE coverage -> {mbd_esp.name} "
                       "(+ SkyPatcher INI) ---")
-                # CBBE2UBE_BODY_SKYPATCHER: full-SkyPatcher body path. The
-                # per-source builder suppresses torso body ARMO overrides, so
-                # this coverage pass becomes their sole path (cover_all) and must
-                # preserve their alt-textures (preserve_textures).
                 # Body coverage is the gap-filling FALLBACK: the Combined links
                 # body ARMOs per-source (exclude_armo_abs=_fsp_linked_abs dedups
                 # those), so this covers only body armor the Combined didn't.
