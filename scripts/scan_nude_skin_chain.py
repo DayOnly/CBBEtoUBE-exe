@@ -227,37 +227,12 @@ def main():
                     cells.append("CBBE!!")
             print(f"{rlabel:30s} {cells[0]:10s} {cells[1]:10s} {cells[2]:10s}")
 
-    # Did integrate_ube_race_skins run? look for per-race suffixed EDIDs
+    # Per-race suffixed skin ARMA EDIDs present? (base names vs <base>_<race>)
     print("\n===== per-race skin ARMA EDIDs present? =====")
     for base in ("00UBE_NakedTorso", "00UBE_NakedHands", "00UBE_NakedFeet"):
         variants = [v[1]["edid"] for v in arma_by_low.values()
                     if v[1]["edid"] == base or v[1]["edid"].startswith(base + "_")]
         print(f"  {base}: {len(variants)} variant(s) -> {sorted(variants)[:6]}{'...' if len(variants)>6 else ''}")
-
-    # Does our Vanilla_UBE_Race_Compat override SkinNaked or add competing skin ARMAs?
-    print("\n===== Vanilla_UBE_Race_Compat.esp interaction =====")
-    vc, _ = find_winning("Vanilla_UBE_Race_Compat.esp", ordered)
-    if vc is None:
-        print("  not found on disk")
-    else:
-        ve = esp.ESP.load(vc[2])
-        v_armo = next((g for g in ve.groups if g.label == b"ARMO"), None)
-        v_arma = next((g for g in ve.groups if g.label == b"ARMA"), None)
-        overrides_skin = False
-        if v_armo:
-            for r in v_armo.records:
-                if edid_of(r) == "00UBE_SkinNaked":
-                    overrides_skin = True
-        nude_arma = 0
-        if v_arma:
-            for r in v_arma.records:
-                info = arma_info(r)
-                if (info["slots"] & {33, 37}):
-                    mesh = next((m for m in info["meshes"] if m), "").lower()
-                    if mesh and not (mesh.startswith("!ube") or "\\!ube\\" in "\\"+mesh.replace("/","\\")):
-                        nude_arma += 1
-        print(f"  overrides 00UBE_SkinNaked: {overrides_skin}")
-        print(f"  hands/feet ARMAs w/ non-!UBE mesh (CBBE/beast competitors): {nude_arma}")
 
 
 if __name__ == "__main__":

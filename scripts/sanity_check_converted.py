@@ -67,8 +67,8 @@ SOURCE_FEET = Path(
 
 STALE_PLUG_NAMES = {"3BA_Vagina", "3BA_Anus", "3BA"}
 # Hands/Feet are NO LONGER injected into body NIFs — they render via
-# the actor's slot 33/37 ARMA routing (see
-# scripts/integrate_ube_race_skins.py). Body NIFs only inject BaseShape.
+# the actor's slot 33/37 ARMA routing (RaceCompatibility / RaceDispatcher at
+# runtime). Body NIFs only inject BaseShape.
 EXPECTED_INJECTED = {"BaseShape"}
 
 

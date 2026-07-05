@@ -19,7 +19,7 @@
 Idempotent: re-running overwrites mod folders and re-adds entries cleanly.
 Requires MO2 closed (script does NOT verify; caller verifies).
 """
-import os, sys, shutil, zipfile, py7zr
+import os, shutil, zipfile, py7zr
 from datetime import datetime
 
 DL = os.path.expanduser("~") + r'\Downloads'

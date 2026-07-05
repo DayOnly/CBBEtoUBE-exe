@@ -18,8 +18,8 @@
 
 This is the script PyInstaller freezes into CBBEtoUBE.exe (see CBBEtoUBE.spec).
 Run with no arguments it performs the one-click `auto` pipeline; it also
-forwards any CLI subcommand (auto/convert/scan/merge/vanilla-compat/validate)
-straight through to src.auto_convert.main().
+forwards any CLI subcommand (auto/convert/scan/discover-body-ref/merge/
+validate/gui) straight through to src.auto_convert.main().
 
 Two things here exist ONLY for the frozen build:
 

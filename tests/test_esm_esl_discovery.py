@@ -21,8 +21,8 @@ incremental filter.
 mods shipped as a master (Vigilant.esm, Legacy of the Dragonborn.esm,
 Unslaad.esm, Glenmoril.esm) were never discovered -> never converted -> invisible
 on UBE actors. The fix globs .esp + .esm + .esl while excluding only the
-vanilla/DLC master ESMs (handled by the vanilla-compat path) + _ResourcePack and
-our own outputs.
+vanilla/DLC master ESMs (their armor is covered by runtime race dispatch) +
+_ResourcePack and our own outputs.
 
 NOTE (a0c8bcd): Creation Club cc*.esl/.esm are NO LONGER name-skipped here — the
 cc "Alternative Armors" series ships 3BA builds the vanilla path doesn't cover
@@ -110,8 +110,8 @@ def test_only_mods_filters_sources_and_skips_vanilla(monkeypatch, tmp_path):
 
     args = argparse.Namespace(
         output=tmp_path / "out", workers=1, no_textures=False,
-        merged_name="C.esp", no_vanilla_compat=False, no_vanilla_bodies=False,
-        list_only=False, only_mods=["ModA", "ModC"], force_vanilla=False)
+        merged_name="C.esp",
+        list_only=False, only_mods=["ModA", "ModC"])
     try:
         ac._cmd_auto(args)
     except _Stop:
@@ -119,11 +119,9 @@ def test_only_mods_filters_sources_and_skips_vanilla(monkeypatch, tmp_path):
 
     names = {Path(s).name for s in captured["sources"]}
     assert names == {"ModA", "ModC"}             # only the selected subset
-    assert args.no_vanilla_compat is True        # incremental auto-skips vanilla
-    assert args.no_vanilla_bodies is True
 
 
-def test_only_mods_comma_split_and_force_vanilla(monkeypatch, tmp_path):
+def test_only_mods_comma_split(monkeypatch, tmp_path):
     monkeypatch.setattr(ac.paths, "discover_layout",
                         lambda: types.SimpleNamespace(game_data_dirs=[]))
     monkeypatch.setattr(ac.paths, "export_to_env", lambda lay: None)
@@ -145,19 +143,17 @@ def test_only_mods_comma_split_and_force_vanilla(monkeypatch, tmp_path):
 
     monkeypatch.setattr(ac, "_cmd_convert", fake_convert)
 
-    # one flag, comma-separated value (case-insensitive) + --force-vanilla
+    # one flag, comma-separated value (case-insensitive)
     args = argparse.Namespace(
         output=tmp_path / "out", workers=1, no_textures=False,
-        merged_name="C.esp", no_vanilla_compat=False, no_vanilla_bodies=False,
-        list_only=False, only_mods=["moda,modb"], force_vanilla=True)
+        merged_name="C.esp",
+        list_only=False, only_mods=["moda,modb"])
     try:
         ac._cmd_auto(args)
     except _Stop:
         pass
 
     assert {Path(s).name for s in captured["sources"]} == {"ModA", "ModB"}
-    assert args.no_vanilla_compat is False       # --force-vanilla keeps vanilla
-    assert args.no_vanilla_bodies is False
 
 
 def test_has_any_source_plugin(tmp_path):

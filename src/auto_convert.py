@@ -1638,17 +1638,10 @@ def _build_parser():
                         help="Reuse up-to-date converted NIFs (skip the refit) "
                              "for a fast re-run; a code or body change forces a "
                              "full re-convert automatically.")
-    auto_p.add_argument("--no-vanilla-compat", action="store_true",
-                        help="Skip the vanilla non-body race-coverage patch.")
     auto_p.add_argument("--no-modded-nonbody", action="store_true",
                         help="Skip the mod-defined non-body UBE coverage pass "
                              "(mint ESP + SkyPatcher INI for overhaul-"
                              "rearmatured helmets/circlets/jewelry).")
-    auto_p.add_argument("--no-vanilla-bodies", action="store_true",
-                        help="Skip standalone vanilla BODY armour conversion "
-                             "(the base-game/loose vanilla cuirasses refit to "
-                             "UBE). Leave ON to cover vanilla armor with no "
-                             "replacer mod required.")
     auto_p.add_argument("--convert-overlays", action="store_true",
                         help="OPT-IN: rebake CBBE/3BA body overlays (RaceMenu "
                              "tattoos / body paints) into UBE UV space so they "
@@ -1686,13 +1679,7 @@ def _build_parser():
                              "still rebuilds the Combined ESP over ALL patches in "
                              "_unmerged_patches/, so unselected mods keep their "
                              "existing patch + meshes. Requires a prior full run "
-                             "to have populated _unmerged_patches/. Implies "
-                             "skipping the vanilla-compat + vanilla-body steps "
-                             "unless --force-vanilla is given.")
-    auto_p.add_argument("--force-vanilla", action="store_true",
-                        help="With --only-mods, ALSO regenerate the vanilla "
-                             "race-coverage patch + standalone vanilla bodies "
-                             "(otherwise skipped on an incremental run).")
+                             "to have populated _unmerged_patches/.")
     auto_p.add_argument("--exclude-mods", action="append", default=None,
                         metavar="NAME",
                         help="Never convert these armor mods on an All-mods run "
@@ -3811,9 +3798,6 @@ def _cmd_auto(args):
             print("error: --only-mods matched no discovered armor mods. Run "
                   "`scan` or the GUI 'Refresh mod list' for the exact names.")
             return 2
-        if not getattr(args, "force_vanilla", False):
-            args.no_vanilla_compat = True
-            args.no_vanilla_bodies = True
 
     # Order by MO2 load priority (highest first) so the first-writer-wins collision
     # guard picks the same mesh the game would load.
@@ -3865,8 +3849,9 @@ def _cmd_auto(args):
         print("\n--list-only: no conversion performed.")
         return 0
 
-    # Build one winner index shared across both the merge and vanilla-compat pass.
-    # Excludes our own outputs so a prior Combined isn't treated as a "winner".
+    # Build the winner index used by the merge (ARMO stat rebase onto the
+    # load-order winner). Excludes our own outputs so a prior Combined isn't
+    # treated as a "winner".
     merged_name = getattr(args, "merged_name", "CBBE_to_UBE_Combined.esp")
     shared_winner_index = None
     # FULL SKYPATCHER: no ARMO overrides exist, so there is nothing to rebase --
@@ -3888,6 +3873,10 @@ def _cmd_auto(args):
                 # rebase adopted our own previous output's records (stale
                 # flags/races/keywords self-perpetuating across runs, #xedit5).
                 _stem = Path(merged_name).stem.lower()
+                # Keep excluding the removed Vanilla_UBE_Race_Compat.esp: the
+                # tool no longer generates it, but a LEFTOVER copy from a
+                # pre-2026-07-03 run may still sit in the output mod, and it must
+                # never be adopted as a load-order "winner" (#xedit5).
                 _widx_excl = {"vanilla_ube_race_compat.esp",
                               "ube_modbody_coverage.esp",
                               "ube_modnonbody_coverage.esp"}
@@ -3899,7 +3888,7 @@ def _cmd_auto(args):
                 shared_winner_index = ube_patcher.build_armo_winner_index(
                     ordered_paths, exclude_names=_widx_excl)
                 print(f"\n#132 winner index: {len(shared_winner_index)} "
-                      "load-order ARMO winners (shared: merge + vanilla-compat)")
+                      "load-order ARMO winners (merge rebase)")
         except Exception as e:
             print(f"!! winner index build failed (rebase disabled): {e!r}")
 
@@ -3927,13 +3916,13 @@ def _cmd_auto(args):
     # Vanilla race coverage (Vanilla_UBE_Race_Compat.esp) REMOVED 2026-07-03:
     # RaceCompatibility SKSE / RaceDispatcher does this race + nude-skin dispatch
     # at runtime, so the static patch was redundant (and could conflict with the
-    # dispatcher). RaceCompatibility the MOD is still a UBE prereq. Removed code
-    # backed up to Downloads; the generators remain (uncalled) in ube_patcher.py.
+    # dispatcher). RaceCompatibility the MOD is still a UBE prereq. The patch and
+    # its generators have been removed.
 
     # Mod-defined non-body coverage: overhauls re-armature vanilla helmets/jewelry
     # with their own ARMAs listing only vanilla races -> invisible on UBE actors.
-    # Vanilla-compat never touches mod-defined ARMAs. Mints a UBE-primary ARMA
-    # per item + a SkyPatcher INI that adds it at runtime.
+    # Runtime race dispatch only covers vanilla ARMAs, not these mod-defined ones.
+    # Mints a UBE-primary ARMA per item + a SkyPatcher INI that adds it at runtime.
     # FULL SKYPATCHER: ARMOs the Combined INI already links must be EXCLUDED
     # from both coverage passes (ESP armature lists no longer reflect runtime
     # coverage; re-covering doubles the armature -> body renders twice /

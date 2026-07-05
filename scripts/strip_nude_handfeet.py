@@ -15,8 +15,8 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 """Surgically remove nude/actor-skin hand/feet (and any body-skin) ARMAs
-from a deployed Vanilla_UBE_Race_Compat.esp, plus any ARMO armature (MODL)
-refs to them. Keeps all armor gauntlet/boot ARMAs and body coverage.
+from a deployed ESP, plus any ARMO armature (MODL) refs to them. Keeps all
+armor gauntlet/boot ARMAs and body coverage.
 
 Usage: python scripts/strip_nude_handfeet.py <path-to-esp> [--apply]
 Without --apply: dry run (reports what would change).
