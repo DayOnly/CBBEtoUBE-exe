@@ -8898,30 +8898,44 @@ def _find_hdt_xml_for_armor(armor_nif_path: Path,
             nif_stem = nif_stem[:-len(s)]
             break
 
-    # Score each XML against the NIF's stem. Require a NIF↔XML KEYWORD
-    # match — directory proximity alone isn't enough (boots
-    # shouldn't pick up the breast physics XML just because they share
-    # a folder).
     best_xml = None
-    best_score = 0
-    for xml in xmls:
-        xml_stem = xml.stem.lower()
-        keyword_score = 0
-        for xml_kw, nif_kws in HDT_XML_KEYWORDS.items():
-            if xml_kw in xml_stem:
-                for nif_kw in nif_kws:
-                    if nif_kw in nif_stem:
-                        keyword_score = 10
+
+    # HIGHEST confidence: an XML whose stem EXACTLY matches the NIF stem is the
+    # armour's own config (e.g. `ThorHair_1.nif` <-> `ThorHair.xml`), no matter
+    # whether the name contains a region keyword. Prefer one in the SAME folder;
+    # else a UNIQUE same-stem match anywhere in the mod. Catches authored configs
+    # the small keyword map misses -- without it they fall back to a GENERATED
+    # XML (worse physics than the hand-authored one). #xml-stem-match
+    exact = [x for x in xmls if x.stem.lower() == nif_stem]
+    same_dir_exact = [x for x in exact if x.parent == armor_nif_path.parent]
+    if same_dir_exact:
+        best_xml = same_dir_exact[0]
+    elif len(exact) == 1:
+        best_xml = exact[0]
+
+    # Else score each XML by a NIF↔XML KEYWORD match — directory proximity alone
+    # isn't enough (boots shouldn't pick up the breast physics XML just because
+    # they share a folder).
+    if best_xml is None:
+        best_score = 0
+        for xml in xmls:
+            xml_stem = xml.stem.lower()
+            keyword_score = 0
+            for xml_kw, nif_kws in HDT_XML_KEYWORDS.items():
+                if xml_kw in xml_stem:
+                    for nif_kw in nif_kws:
+                        if nif_kw in nif_stem:
+                            keyword_score = 10
+                            break
+                    if keyword_score:
                         break
-                if keyword_score:
-                    break
-        if keyword_score == 0:
-            continue  # XML keyword doesn't match this NIF's region — skip
-        dir_bonus = 5 if xml.parent == armor_nif_path.parent else 0
-        score = keyword_score + dir_bonus
-        if score > best_score:
-            best_score = score
-            best_xml = xml
+            if keyword_score == 0:
+                continue  # XML keyword doesn't match this NIF's region — skip
+            dir_bonus = 5 if xml.parent == armor_nif_path.parent else 0
+            score = keyword_score + dir_bonus
+            if score > best_score:
+                best_score = score
+                best_xml = xml
     if best_xml is None:
         return None
 
