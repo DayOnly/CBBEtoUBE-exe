@@ -594,7 +594,7 @@ def classify_overlay(rel_path: str) -> str:
 # ---------- discovery + orchestration ---------------------------------------
 
 def discover_overlays(layout, regions=("body", "hands", "feet"),
-                      skip_mods=()) -> "dict[str, dict]":
+                      skip_mods=(), only_mods=None) -> "dict[str, dict]":
     """Find every overlay texture across enabled mods (loose + BSA), in MO2
     priority order so the load-order WINNER is kept per path, bucketed by region.
     Returns {region: {rel_path: source}} where rel_path is `textures/.../x.dds`
@@ -617,6 +617,7 @@ def discover_overlays(layout, regions=("body", "hands", "feet"),
     if ordered is None:
         ordered = sorted(d.name for d in mr.iterdir() if d.is_dir())
     skip_lower = {s.lower() for s in skip_mods}
+    only_lower = {s.lower() for s in only_mods} if only_mods else None
     want = set(regions)
 
     # Script-registered overlays are AUTHORITATIVE and a pack may register a
@@ -652,6 +653,8 @@ def discover_overlays(layout, regions=("body", "hands", "feet"),
             sets_with_slot.add(st)
 
     for mod_name in ordered:
+        if only_lower is not None and mod_name.lower() not in only_lower:
+            continue
         if mod_name.lower() in skip_lower:
             continue                    # never read our own output as a source
         mod = mr / mod_name
@@ -750,15 +753,34 @@ def _overlay_workers() -> int:
     return max(1, min(os.cpu_count() or 4, 16))
 
 
+def list_overlay_mods(layout, regions=("body", "hands", "feet"),
+                      skip_mods=()) -> "list[str]":
+    """Enabled mods (MO2 priority order) that provide at least one convertible
+    body/hands/feet overlay -- for a UI to choose WHICH mods' overlays to convert
+    (unpicked mods keep their originals, so they still work on non-UBE races)."""
+    by_region = discover_overlays(layout, regions, skip_mods=skip_mods)
+    seen: "dict[str, int]" = {}         # ordered set (discovery = priority order)
+    for region in by_region.values():
+        for src in region.values():
+            mod = (src[-1] if isinstance(src, (tuple, list)) and len(src) >= 3
+                   else None)
+            if mod and mod not in seen:
+                seen[mod] = 1
+    return list(seen)
+
+
 def convert_overlays(output_dir, layout, *, regions=("body", "hands", "feet"),
-                     texconv=None, log=print, limit: int = 0) -> dict:
+                     texconv=None, log=print, limit: int = 0,
+                     overlay_mode="replace", skip_male=False,
+                     only_mods=None, exclude_mods=None) -> dict:
     """Rebake CBBE/3BA overlays into UBE-UV space for each region, writing a
     loose DDS at the original texture path under `output_dir` (RaceMenu loads it
     via load order; no ESP). Opt-in. Builds one correspondence per region (the
     expensive part, reused across that region's overlays). Overlays within a
     region are transferred in parallel across a thread pool (each is independent;
     output is identical to serial). Returns a stats dict. `limit` (>0) caps the
-    TOTAL count for a quick test run."""
+    TOTAL count for a quick test run. `exclude_mods` names are never read as a
+    source (their overlays keep their originals)."""
     import concurrent.futures as cf
     import shutil
     import tempfile
@@ -771,14 +793,26 @@ def convert_overlays(output_dir, layout, *, regions=("body", "hands", "feet"),
     # Exclude our OWN output mod from the source scan: it's the highest-priority
     # mod, so a previous run's already-converted UBE-UV overlays would otherwise
     # win as the "source" and be transferred a SECOND time -> double-warped.
-    skip = set()
+    skip = set(exclude_mods or ())          # user exclusions (e.g. UBE-native)
     _mr = _paths.mods_root()
     if _mr is not None:
         try:
             skip.add(Path(output_dir).resolve().relative_to(_mr.resolve()).parts[0])
         except Exception:
             skip.add(Path(output_dir).name)
-    by_region = discover_overlays(layout, regions, skip_mods=skip)
+    # "Add UBE copy" mode: keep every original overlay and add a `UBE <name>`
+    # variant per registered overlay (needs the Papyrus toolchain). Distinct code
+    # path -- returns its own stats.
+    if str(overlay_mode).lower() == "copy":
+        return add_ube_overlay_copies(
+            layout, output_dir, texconv, regions=regions, skip_mods=skip,
+            only_mods=only_mods, skip_male=skip_male, limit=limit, log=log)
+    by_region = discover_overlays(layout, regions, skip_mods=skip,
+                                  only_mods=only_mods)
+    if skip_male:
+        for _r in by_region:
+            by_region[_r] = {rel: s for rel, s in by_region[_r].items()
+                             if not _is_male_overlay(rel)}
     total = sum(len(v) for v in by_region.values())
     if total == 0:
         log("  overlay transfer: no body/hands/feet overlays found")
@@ -910,6 +944,61 @@ def _repoint_feet_script(text: str, multislot_rels: set) -> str:
             return mm.group(1) + _feet_variant_path(mm.group(2)) + mm.group(3)
         return mm.group(0)
     return _ADD_FEETPAINT_RE.sub(_sub, text)
+
+
+# ---- "Add UBE copy" overlay mode ------------------------------------------
+# Overwrite mode (default) writes the converted DDS at the ORIGINAL path so the
+# output mod overrides the overlay for EVERY body -- which breaks it on non-UBE
+# races. Copy mode instead writes the converted DDS to a `ube/` subfolder and
+# inserts a DUPLICATE `AddXPaint("UBE <name>", <ube path>)` into the mod's
+# RaceMenu script, so the list shows BOTH the untouched original (correct on
+# CBBE) and the UBE-fit copy. Full call captured (name + texture + any trailing
+# args) so the inserted line matches the original's signature.
+_FULL_PAINT_RX = re.compile(
+    r'(Add(?:War|Body|Hand|Feet)Paint\s*\(\s*")([^"]*)("\s*,\s*")([^"]+)("[^)]*\))',
+    re.IGNORECASE)
+
+
+def _ube_variant_rel(rel: str) -> str:
+    """Forward-slash overlay rel -> the UBE-copy output rel: a `ube/` folder
+    before the filename. 'textures/a/b/x.dds' -> 'textures/a/b/ube/x.dds'."""
+    i = rel.rfind("/")
+    return (rel[:i] + "/ube" + rel[i:]) if i >= 0 else ("ube/" + rel)
+
+
+def _ube_variant_scriptpath(sp: str) -> str:
+    """Script-literal texture path -> the UBE-copy variant, inserting a `UBE`
+    folder before the filename and preserving the literal's separator style
+    (RaceMenu .psc literals usually double their backslashes)."""
+    for sep in ("\\\\", "\\", "/"):
+        i = sp.rfind(sep)
+        if i >= 0:
+            return sp[:i] + sep + "UBE" + sep + sp[i + len(sep):]
+    return "UBE\\\\" + sp
+
+
+def add_ube_paint_lines(text: str, baked_norm_rels) -> "tuple[str, int]":
+    """Insert a `UBE <name>` duplicate AddXPaint call after every call whose
+    (normalized) texture rel is in `baked_norm_rels`. Line-based so the original
+    indentation is kept and multiple calls per line are handled. Returns
+    (new_text, inserted_count). Pure -> unit-tested without a compiler."""
+    from . import overlay_slots as _osl
+    baked = set(baked_norm_rels)
+    added = 0
+    out_lines: list = []
+    for line in text.split("\n"):
+        out_lines.append(line)
+        inserts: list = []
+        for m in _FULL_PAINT_RX.finditer(line):
+            if _osl.normalize_script_texpath(m.group(4)) not in baked:
+                continue
+            indent = line[:len(line) - len(line.lstrip())]
+            inserts.append(indent + m.group(1) + "UBE " + m.group(2)
+                           + m.group(3) + _ube_variant_scriptpath(m.group(4))
+                           + m.group(5))
+        out_lines.extend(inserts)
+        added += len(inserts)
+    return "\n".join(out_lines), added
 
 
 def _skyrim_se_install_dirs() -> "list":
@@ -1239,5 +1328,170 @@ def build_multislot_feet_overlays(layout, out_root, texconv, *, skip_mods=(),
         log(f"  multi-slot feet pass: {n_tex} feet-UV texture(s) from "
             f"{n_compiled}/{n_scripts} recompiled script(s)")
         return n_tex
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def _is_male_overlay(rel: str) -> bool:
+    """True if an overlay path looks MALE (a 'male' marker that is NOT part of
+    'female'). Converting male overlays to the (female) UBE UV does not work, so
+    they can be skipped."""
+    low = rel.replace("\\", "/").lower()
+    low = low.split("/overlays/", 1)[-1]        # ignore the fixed path prefix
+    return "male" in low.replace("female", "")
+
+
+def _iter_paint_scripts(layout, skip_mods=(), only_mods=None):
+    """Yield (mod_name, psc_name, text) for each loose/BSA .psc registering ANY
+    AddXPaint overlay, in load order, de-duped by script name (load-order winner
+    only). `only_mods` (case-insensitive names) limits to those mods."""
+    from .bsa_strings import BSAArchive
+    from . import overlay_slots as _osl
+    mr = _paths.mods_root()
+    if mr is None:
+        return
+    skip_lower = {s.lower() for s in skip_mods}
+    only_lower = {s.lower() for s in only_mods} if only_mods else None
+    seen: set = set()
+    ordered = _paths.enabled_mods_ordered(layout)
+    mod_names = ordered if ordered else sorted(
+        d.name for d in mr.iterdir() if d.is_dir())
+    for mod_name in mod_names:
+        if mod_name.lower() in skip_lower:
+            continue
+        if only_lower is not None and mod_name.lower() not in only_lower:
+            continue
+        mod = mr / mod_name
+        if not mod.is_dir():
+            continue
+        for f in mod.rglob("*.psc"):
+            nm = f.name.lower()
+            if nm in seen:
+                continue
+            try:
+                t = f.read_text("utf-8", "replace")
+            except OSError:
+                continue
+            seen.add(nm)
+            if _osl._script_has_paint(t):
+                yield mod_name, f.name, t
+        for bsa in mod.glob("*.bsa"):
+            try:
+                arc = BSAArchive(bsa, eager=False)
+                names = arc.list_files("")
+            except Exception:
+                continue
+            for n in names:
+                if not n.lower().endswith(".psc"):
+                    continue
+                base = n.rsplit("/", 1)[-1]
+                if base.lower() in seen:
+                    continue
+                try:
+                    d = arc.read_file(n)
+                except Exception:
+                    continue
+                seen.add(base.lower())
+                t = (d.decode("utf-8", "replace")
+                     if isinstance(d, (bytes, bytearray)) else str(d))
+                if _osl._script_has_paint(t):
+                    yield mod_name, base, t
+
+
+def add_ube_overlay_copies(layout, out_root, texconv, *,
+                           regions=("body", "hands", "feet"),
+                           skip_mods=(), only_mods=None, skip_male=False,
+                           limit: int = 0, log=print) -> dict:
+    """'Add UBE copy' overlay mode: for each registered overlay, bake a UBE-UV
+    variant to a `ube/` path AND splice `AddXPaint("UBE <name>", <ube path>)` into
+    its RaceMenu script, then recompile -- so the list shows BOTH the untouched
+    original (correct on non-UBE bodies) and the UBE-fit copy. Requires the Papyrus
+    toolchain; no-ops (returns reason) if texconv/compiler/base are missing."""
+    import shutil
+    import tempfile
+    from . import overlay_slots as _osl
+    texconv = texconv or find_texconv()
+    if texconv is None:
+        log("  overlay UBE-copy SKIPPED: texconv not found (set CBBE2UBE_TEXCONV)")
+        return {"copies": 0, "reason": "no-texconv"}
+    compiler = find_papyrus_compiler()
+    if compiler is None:
+        log("  overlay UBE-copy SKIPPED: PapyrusCompiler.exe not found "
+            "(set CBBE2UBE_PAPYRUS_COMPILER)")
+        return {"copies": 0, "reason": "no-compiler"}
+    corr_cache: dict = {}
+
+    def _corr(region):
+        if region not in corr_cache:
+            corr_cache[region] = build_region_correspondence(region)
+        return corr_cache[region]
+
+    work = Path(tempfile.mkdtemp(prefix="ube_ovcopy_"))
+    try:
+        src, basesrc = _assemble_papyrus_imports(compiler, work)
+        if src is None:
+            log("  overlay UBE-copy SKIPPED: Papyrus base (Scripts.zip) not found")
+            return {"copies": 0, "reason": "no-papyrus-base"}
+        srcmap = _build_overlay_source_map(layout, skip_mods=skip_mods)
+        twork = work / "tw"
+        twork.mkdir()
+        pex_out = Path(out_root) / "Scripts"
+        pex_out.mkdir(parents=True, exist_ok=True)
+        n_tex = n_scripts = n_compiled = 0
+        remaining = limit
+        for mod_name, name, text in _iter_paint_scripts(
+                layout, skip_mods=skip_mods, only_mods=only_mods):
+            baked: set = set()      # normalized rels a UBE variant was written for
+            for slot, rel in _osl.iter_paint_calls(text):
+                if slot not in regions:         # head/warpaint -> never remapped
+                    continue
+                if skip_male and _is_male_overlay(rel):
+                    continue
+                if limit and remaining <= 0:
+                    break
+                srcrec = srcmap.get(rel)
+                if not srcrec:
+                    continue
+                corr = _corr(slot)
+                if corr is None:
+                    continue
+                if srcrec[0] == "loose":
+                    src_dds = srcrec[1]
+                else:
+                    src_dds = twork / "s.dds"
+                    try:
+                        src_dds.write_bytes(srcrec[1].read_file(srcrec[2]))
+                    except Exception:
+                        continue
+                outp = Path(out_root) / _ube_variant_rel(rel).replace("/", "\\")
+                if not _paths.is_within_dir(Path(out_root), outp):
+                    continue
+                try:
+                    rgba = dds_to_rgba(src_dds, texconv, twork)
+                    rgba_to_dds(transfer_overlay(rgba, corr), outp, texconv, twork)
+                    baked.add(rel)
+                    n_tex += 1
+                    if limit:
+                        remaining -= 1
+                except Exception as e:
+                    log(f"  !! overlay UBE-copy: transfer failed for {rel}: {e!r}")
+            if not baked:
+                continue
+            edited, added = add_ube_paint_lines(text, baked)
+            if not added:
+                continue
+            epsc = twork / name
+            epsc.write_bytes(edited.replace("\r\n", "\n").replace("\r", "\n")
+                             .encode("utf-8"))
+            pex, clog = _compile_psc(compiler, epsc, src, basesrc, pex_out)
+            n_scripts += 1
+            if pex:
+                n_compiled += 1
+            else:
+                log(f"  !! overlay UBE-copy: compile FAILED for {name}: "
+                    f"{(clog or '')[-300:]}")
+        log(f"  overlay UBE-copy: {n_tex} UBE texture(s) added from "
+            f"{n_compiled}/{n_scripts} recompiled script(s)")
+        return {"copies": n_tex, "scripts": n_scripts, "compiled": n_compiled}
     finally:
         shutil.rmtree(work, ignore_errors=True)
