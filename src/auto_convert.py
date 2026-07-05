@@ -525,8 +525,9 @@ class AutoConvertResult:
         return sum(1 for r in self.nif_results if r.status == "converted (body-swap)")
 
     def write_report(self, path: Path) -> None:
+        from .version import __version__ as _app_version
         lines = [
-            f"CBBE-to-UBE auto-conversion report",
+            f"CBBE-to-UBE auto-conversion report (v{_app_version})",
             f"source : {self.source_dir}",
             f"output : {self.output_dir}",
             f"",
