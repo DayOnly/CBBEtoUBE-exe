@@ -304,6 +304,25 @@ class _NifPool:
                     give_up = True
 
 
+def _incremental_code_mtime() -> float:
+    """Newest mtime of the converter's own code -- the `--incremental` reuse
+    floor (a code change must invalidate every cached output).
+
+    In a frozen onedir build the `src/*.py` sources are compiled into the PYZ
+    and are NOT present on disk, so `glob('*.py')` yields nothing and the floor
+    would silently collapse to the body-ref mtime alone -- letting a redeployed
+    exe reuse meshes built by the OLD logic. Stat the executable instead: its
+    mtime moves on every redeploy, which is exactly the 'code changed' signal.
+    """
+    if getattr(sys, "frozen", False):
+        try:
+            return Path(sys.executable).stat().st_mtime
+        except OSError:
+            return 0.0
+    return max((p.stat().st_mtime for p in Path(__file__).parent.glob("*.py")),
+               default=0.0)
+
+
 def _find_ube_body_ref(search_roots: list[Path] | None = None) -> Path | None:
     """Scan MO2 mods folders for the best UBE body reference NIF —
     preferring sources that DON'T have the user's BodySlide preset
@@ -1159,11 +1178,17 @@ def auto_convert_mod(
                 # ARMAs + the converted-mesh set (see refresh_mod_esp).
                 try:
                     import json as _json
-                    Path(str(out_esp) + ".espgen.json").write_text(_json.dumps({
-                        "source_esp": str(src_esp),
-                        "converted_rel_paths": sorted(converted_rel_paths or []),
-                        "body_mesh_rel_paths": sorted(body_mesh_rel_paths or []),
-                    }), encoding="utf-8")
+                    from .atomic_io import atomic_write_bytes
+                    # Atomic so a crash/kill mid-write can't leave a torn snapshot
+                    # that a later --plugins-only refresh would silently skip
+                    # (dropping that source's armor from the re-merge).
+                    atomic_write_bytes(
+                        Path(str(out_esp) + ".espgen.json"),
+                        _json.dumps({
+                            "source_esp": str(src_esp),
+                            "converted_rel_paths": sorted(converted_rel_paths or []),
+                            "body_mesh_rel_paths": sorted(body_mesh_rel_paths or []),
+                        }).encode("utf-8"))
                 except OSError:
                     pass
                 # Backward compat: primary fields = first successful patch
@@ -2009,9 +2034,7 @@ def _cmd_convert(args):
     incremental_floor = None
     if getattr(args, "incremental", False):
         try:
-            code_mtime = max(
-                (p.stat().st_mtime for p in Path(__file__).parent.glob("*.py")),
-                default=0.0)
+            code_mtime = _incremental_code_mtime()
             ref_mtime = 0.0
             _ref = args.ube_body_ref or _find_ube_body_ref()
             if _ref and Path(_ref).is_file():
@@ -3214,7 +3237,12 @@ def _find_armor_mod_dirs(mods_root: Path,
             frozenset(n.lower() for n in (extra_exclude_names or set())),
             frozenset(enabled_names or ()),
             tuple(enabled_ordered or ()),
-            frozenset(n.lower() for n in (index_skip_mods or set())))
+            frozenset(n.lower() for n in (index_skip_mods or set())),
+            # The vanilla-sweep toggle changes which mesh keys get indexed into
+            # the returned candidate set (see the union_all sweep branch), so it
+            # must be part of the memo key or a mid-process toggle returns a
+            # stale list.
+            os.environ.get("CBBE2UBE_NO_VANILLA_SWEEP", "") == "1")
     _cached = _ARMOR_MOD_DIRS_CACHE.get(_key)
     if _cached is not None:
         return list(_cached)
@@ -3918,10 +3946,18 @@ def _cmd_auto(args):
                      / (_mstem + ".ini"))
         if _comb_ini.is_file():
             for _l in _comb_ini.read_text(encoding="utf-8").splitlines():
-                if _l.startswith("filterByArmors="):
+                if not _l.startswith("filterByArmors="):
+                    continue
+                # Parse each line in ISOLATION: one malformed line must not wipe
+                # the whole exclude set. An empty set re-enables double-coverage
+                # mod-wide (double body render / UBE-primary hands -> invisible
+                # gauntlets), so a single bad line is skipped, not fatal. #fsp-dedup
+                try:
                     _t = _l.split("=", 1)[1].split(":", 1)[0]
                     _pl, _lo = _t.rsplit("|", 1)
                     _fsp_linked_abs.add((_pl.lower(), int(_lo, 16)))
+                except Exception:
+                    continue
     except Exception:
         _fsp_linked_abs = set()
 

@@ -116,6 +116,12 @@ class BSAArchive:
         # pad:4 offset:8).
         off = folder_rec_off
         folders: list[tuple[int, int]] = []  # (file_count, block_offset)
+        # Reject an absurd folder_count / out-of-range table offset from a
+        # malformed header before it drives an OOB struct.unpack or a huge loop.
+        _frec_sz = 24 if version >= 105 else 16
+        if off < 0 or folder_count < 0 or off + folder_count * _frec_sz > len(d):
+            raise ValueError(f"{self.path.name}: bad BSA folder table "
+                             f"(count={folder_count}, off={off})")
         for _ in range(folder_count):
             if version >= 105:
                 _hash, count, _pad, blk_off = struct.unpack_from("<QIIQ", d, off)
@@ -132,6 +138,13 @@ class BSAArchive:
         file_records: list[list[tuple[int, int]]] = []  # per folder: [(size_field, off)]
         for (count, blk_off) in folders:
             p = blk_off
+            # A malformed header can make blk_off negative (huge
+            # total_file_name_len) or past EOF; skip the folder rather than
+            # negative-index-wrap into the buffer or OOB-unpack.
+            if p < 0 or p >= len(d):
+                folder_names.append("")
+                file_records.append([])
+                continue
             fname = ""
             if archive_flags & _ARCHIVE_FLAG_DIRNAMES:
                 strlen = d[p]
@@ -140,6 +153,10 @@ class BSAArchive:
                     "latin-1", "ignore")
                 p += strlen
             recs = []
+            # Clamp the per-folder file count to what actually fits (16 bytes
+            # each) so a crafted count can't OOB-unpack or spin.
+            if count < 0 or p + count * 16 > len(d):
+                count = max(0, (len(d) - p) // 16)
             for _ in range(count):
                 _fh, size_field, file_off = struct.unpack_from("<QII", d, p)
                 p += 16
@@ -192,12 +209,22 @@ class BSAArchive:
             self._data = self.path.read_bytes()
             self._eager = True
         d = self._data
+        # Bounds-check the file-supplied offset/size UNCONDITIONALLY (not only on
+        # the non-eager branch): a malformed BSA whose record offset points past
+        # EOF must return None, never OOB-read (IndexError / struct.error) from a
+        # crafted archive.
+        if off < 0 or size < 0 or off + size > len(d):
+            return None
         p = off
         if self._embed_names:
             # bstring (uint8 length + chars, no null) prefix to skip.
+            if p >= len(d):
+                return None
             blen = d[p]
             p += 1 + blen
         if compressed:
+            if p + 4 > len(d):
+                return None
             orig_size = struct.unpack_from("<I", d, p)[0]
             p += 4
             comp = d[p:off + size]
@@ -242,6 +269,13 @@ def parse_strings_table(data: bytes, lengthprefixed: bool) -> dict[int, str]:
         return out
     count, _data_size = struct.unpack_from("<II", data, 0)
     dir_off = 8
+    # Bound the file-supplied count against the buffer: each directory entry is
+    # 8 bytes and must sit inside the file, so at most (len-8)//8 entries can be
+    # real. Without this a crafted count (e.g. 0xFFFFFFFF) either spins for
+    # billions of iterations (DoS) or raises a raw struct.error past the buffer.
+    max_entries = max(0, (len(data) - dir_off) // 8)
+    if count > max_entries:
+        count = max_entries
     data_block = dir_off + count * 8
     for i in range(count):
         sid, soff = struct.unpack_from("<II", data, dir_off + i * 8)
