@@ -14,19 +14,13 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-"""Generate a UBE patch ESP and compare against the real hand-authored one.
+"""ube_patcher unit tests (SkyPatcher-only delivery).
 
-We don't require byte-identity (different authors will pick different EDID
-suffixes, FormID assignments, etc.). What we check:
-
-  * Same master set (Skyrim.esm, ?Dawnguard.esm, UBE_AllRace.esp, source.esp)
-  * Same number of new ARMAs
-  * Each new ARMA has:
-      - primary RNAM pointing to UBE_BretonRace
-      - 15 additional MODL entries (all UBE races except primary)
-      - MOD2/MOD3/MOD4/MOD5 paths all start with "!UBE\\"
-  * Same number of ARMO overrides
-  * Each ARMO override has at least one new ARMA in its Armatures list
+Covers the still-live pieces of the patch pipeline: ARMA rebuild + additional-
+race lists, slot-49->32 promotion, ESL split/downgrade on the merge, ESM-tier
+master ordering, EDID name synthesis, and patch validation. The legacy ARMO-
+override generation + its real-patch A/B comparison were removed with the
+override machinery.
 """
 import sys, struct
 from pathlib import Path
@@ -35,112 +29,13 @@ PROJ = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJ))
 
 from src import esp
-from src.ube_patcher import (
-    generate_ube_patch, UBE_RACE_FIDS_24, UBE_PRIMARY_BRETON_FID_24,
-    make_master_byte, ARMA_ADDITIONAL_RACE_SIG, ARMA_MODEL_SIGS,
-)
 
 
-CASES = [
-    {
-        "name": "eve_sunfire",
-        "source": PROJ / "samples" / "m1" / "eve_sunfire" / "cbbe"
-                 / "Obi - Eve's Sunfire Armor.esp",
-        "real_patch": PROJ / "samples" / "m1" / "eve_sunfire" / "ube"
-                 / "Obi - Eve's Sunfire Armor UBE patch.esp",
-    },
-    {
-        "name": "kozakowy_vampire",
-        "source": PROJ / "samples" / "m1" / "kozakowy_vampire" / "cbbe"
-                 / "[TOTOxKozakowy] Kozakowy's Vampire Armor 3BA"
-                 / "KozakowyVampireArmor.esp",
-        "real_patch": PROJ / "samples" / "m1" / "kozakowy_vampire" / "ube"
-                 / "[TOTOxKozakowy] Kozakowy's Vampire Armor UBE v1.0"
-                 / "KozakowyVampireArmor UBE patch.esp",
-    },
-]
-
-
-def check_case(case: dict) -> None:
-    print(f"\n>>> {case['name']}")
-    if not case["source"].is_file():
-        print(f"  SKIP — source missing: {case['source']}"); return
-    if not case["real_patch"].is_file():
-        print(f"  SKIP — real patch missing: {case['real_patch']}"); return
-
-    out_path = PROJ / "output" / f"{case['name']}_AUTO_UBE_patch.esp"
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-
-    stats = generate_ube_patch(case["source"], out_path)
-    print(f"  generated: {stats['output']}")
-    print(f"    masters: {stats['masters']}")
-    print(f"    new ARMA records: {stats['new_arma_count']}")
-    print(f"    ARMO overrides:   {stats['armo_override_count']}")
-
-    # Load both for comparison
-    ours = esp.ESP.load(out_path)
-    real = esp.ESP.load(case["real_patch"])
-
-    print(f"\n  comparison: our patch vs real patch")
-    print(f"    masters     : ours={ours.header.masters}")
-    print(f"                  real={real.header.masters}")
-    print(f"    ARMA count  : ours={len(ours.group(b'ARMA').records) if ours.group(b'ARMA') else 0}"
-          f"  real={len(real.group(b'ARMA').records) if real.group(b'ARMA') else 0}")
-    print(f"    ARMO count  : ours={len(ours.group(b'ARMO').records) if ours.group(b'ARMO') else 0}"
-          f"  real={len(real.group(b'ARMO').records) if real.group(b'ARMO') else 0}")
-
-    # Check each of our new ARMAs has the right race structure
-    ours_arma = ours.group(b"ARMA")
-    if ours_arma is None:
-        print("  no ARMA group in output"); return
-    ube_top = make_master_byte(ours.header.masters, "UBE_AllRace.esp") << 24
-    expected_primary = ube_top | UBE_PRIMARY_BRETON_FID_24
-
-    arma_ok = 0
-    arma_problems = []
-    for rec in ours_arma.records:
-        primary = None
-        additional = []
-        model_paths = []
-        for sig, data in esp.iter_subrecords(rec.payload):
-            if sig == b"RNAM" and len(data) == 4:
-                primary = struct.unpack("<I", data)[0]
-            elif sig == ARMA_ADDITIONAL_RACE_SIG and len(data) == 4:
-                additional.append(struct.unpack("<I", data)[0])
-            elif sig in ARMA_MODEL_SIGS:
-                model_paths.append(data.rstrip(b"\x00").decode("utf-8", errors="ignore"))
-        problems = []
-        if primary != expected_primary:
-            problems.append(f"RNAM={primary:#010x} expected {expected_primary:#010x}")
-        if len(additional) != 15:
-            problems.append(f"additional count={len(additional)} expected 15")
-        for mp in model_paths:
-            if not mp.startswith("!UBE\\"):
-                problems.append(f"path '{mp}' missing !UBE\\ prefix")
-        if not problems:
-            arma_ok += 1
-        else:
-            arma_problems.append((rec.formid, problems))
-
-    print(f"\n  ARMA validation: {arma_ok}/{len(ours_arma.records)} pass")
-    for fid, probs in arma_problems[:5]:
-        print(f"    {fid:#010x}: {probs}")
-
-    # Sanity-check round-trip on the generated patch
-    print(f"\n  round-trip check on generated patch:")
-    rt_path = PROJ / "output" / f"{case['name']}_AUTO_UBE_patch.rt-tmp.esp"
-    ours.save(rt_path)
-    rt = esp.ESP.load(rt_path)
-    assert rt.header.masters == ours.header.masters
-    assert len(rt.groups) == len(ours.groups)
-    print(f"    OK (saved and reloaded cleanly)")
-    rt_path.unlink()
-
-
-for case in CASES:
-    check_case(case)
-
-print("\n=== M2.1 done ===")
+# NOTE: SkyPatcher is the only delivery path; the legacy ARMO-override
+# comparison cases (and the sample-based real-patch A/B) were removed with the
+# override machinery. The tests below cover the still-live pieces: ARMA
+# rebuild/race lists, slot promotion, ESL split/downgrade, master-order, and
+# patch validation.
 
 
 # ---------------------------------------------------------------------------
@@ -198,11 +93,8 @@ def test_add_slot32_to_bod2_payload():
 def test_promote_slot49_cloth_uses_bodytri_predicate(tmp_path):
     """End-to-end on a synthetic ESP: only ARMAs whose linked NIF is
     flagged by the BODYTRI predicate get promoted."""
-    # The module-level call below passes a fixed dir that may not exist yet;
-    # also lets pytest collect this file (ESP.save needs the dir present).
     tmp_path.mkdir(parents=True, exist_ok=True)
     from src.ube_patcher import promote_slot49_cloth_to_slot32
-    from src import esp as esp_mod
     from src.esp import encode_subrecord, encode_zstring
 
     bit49 = 1 << (49 - 30)
@@ -279,12 +171,7 @@ def test_promote_slot49_cloth_uses_bodytri_predicate(tmp_path):
     print("  test_promote_slot49_cloth_uses_bodytri_predicate OK")
 
 
-test_add_slot32_to_bod2_payload()
-test_promote_slot49_cloth_uses_bodytri_predicate(
-    Path(__file__).resolve().parent / "_tmp_slot32_promote"
-)
 
-print("\n=== slot-32 promotion tests done ===")
 
 
 # ---------------------------------------------------------------------------
@@ -311,85 +198,6 @@ def _armo_modl_positions(payload: bytes) -> tuple[list[int], int]:
     return modl_idxs, data_idx
 
 
-def test_armo_override_modls_grouped_before_data():
-    """Every ARMO override the patcher emits must have ALL MODL armature
-    subrecords grouped before DATA (canonical Skyrim ordering). If a MODL
-    lands after DATA, Skyrim's parser ignores it.
-    """
-    from src.ube_patcher import (
-        rebuild_arma_payload, ARMO_ARMATURE_SIG, _merge_armo_armatures,
-    )
-    from src.esp import encode_subrecord, encode_zstring
-
-    # ---- Case A: source override path (add_arma_to_armo_payload) ----
-    # A typical ARMO has its existing MODL BEFORE DATA. Appending a new
-    # MODL must NOT push it past DATA.
-    payload_existing_modl = (
-        encode_subrecord(b"EDID", encode_zstring("TestArmor"))
-        + encode_subrecord(b"BOD2", struct.pack("<II", 0x4, 4))
-        + encode_subrecord(b"RNAM", struct.pack("<I", 0x00000019))
-        + encode_subrecord(b"MODL", struct.pack("<I", 0x00012E48))
-        + encode_subrecord(b"DATA", struct.pack("<II", 100, 5))
-        + encode_subrecord(b"DNAM", struct.pack("<I", 0))
-    )
-    from src.ube_patcher import add_arma_to_armo_payload
-    out = add_arma_to_armo_payload(payload_existing_modl, 0x06000800)
-    modls, data = _armo_modl_positions(out)
-    assert len(modls) == 2, f"expected 2 MODLs, got {len(modls)}"
-    assert data > 0, "DATA subrecord missing"
-    for m in modls:
-        assert m < data, (
-            f"MODL at idx {m} is AFTER DATA at idx {data} — "
-            "Skyrim parser will silently ignore it"
-        )
-
-    # ---- Case B: ARMO with NO existing MODL ----
-    # Splice point should be just before DATA.
-    payload_no_modl = (
-        encode_subrecord(b"EDID", encode_zstring("TestArmor2"))
-        + encode_subrecord(b"BOD2", struct.pack("<II", 0x4, 4))
-        + encode_subrecord(b"DATA", struct.pack("<II", 100, 5))
-        + encode_subrecord(b"DNAM", struct.pack("<I", 0))
-    )
-    out2 = add_arma_to_armo_payload(payload_no_modl, 0x06000800)
-    modls2, data2 = _armo_modl_positions(out2)
-    assert len(modls2) == 1, f"expected 1 MODL, got {len(modls2)}"
-    assert data2 > 0, "no-MODL payload lost DATA on insert"
-    assert modls2[0] < data2, (
-        f"add_arma_to_armo_payload with no existing MODL emitted MODL "
-        f"at idx {modls2[0]} AFTER DATA at idx {data2}"
-    )
-
-    # ---- Case C: merger path (_merge_armo_armatures) ----
-    # Two patches override the same ARMO with different new UBE ARMAs;
-    # the merger should produce both MODLs grouped before DATA.
-    a_payload = (
-        encode_subrecord(b"EDID", encode_zstring("TestArmor3"))
-        + encode_subrecord(b"MODL", struct.pack("<I", 0x00012E48))
-        + encode_subrecord(b"MODL", struct.pack("<I", 0x06000800))
-        + encode_subrecord(b"DATA", struct.pack("<II", 100, 5))
-        + encode_subrecord(b"DNAM", struct.pack("<I", 0))
-    )
-    b_payload = (
-        encode_subrecord(b"EDID", encode_zstring("TestArmor3"))
-        + encode_subrecord(b"MODL", struct.pack("<I", 0x00012E48))
-        + encode_subrecord(b"MODL", struct.pack("<I", 0x07000800))
-        + encode_subrecord(b"DATA", struct.pack("<II", 100, 5))
-        + encode_subrecord(b"DNAM", struct.pack("<I", 0))
-    )
-    merged = _merge_armo_armatures(a_payload, b_payload)
-    modls3, data3 = _armo_modl_positions(merged)
-    assert len(modls3) == 3, (
-        f"merger should produce 3 deduped MODLs (vanilla + 2 UBE), "
-        f"got {len(modls3)}"
-    )
-    assert data3 > 0, "merger lost DATA subrecord"
-    for m in modls3:
-        assert m < data3, (
-            f"merger emitted MODL at idx {m} AFTER DATA at idx {data3}"
-        )
-
-    print("  test_armo_override_modls_grouped_before_data OK")
 
 
 def test_rebuild_arma_emits_full_additional_race_list_before_sndd():
@@ -436,9 +244,7 @@ def test_rebuild_arma_emits_full_additional_race_list_before_sndd():
     print("  test_rebuild_arma_emits_full_additional_race_list_before_sndd OK")
 
 
-test_armo_override_modls_grouped_before_data()
 
-print("\n=== ARMO MODL-ordering test done ===")
 
 
 def test_validate_patch_catches_modl_after_data(tmp_path):
@@ -479,11 +285,7 @@ def test_validate_patch_catches_modl_after_data(tmp_path):
     print("  test_validate_patch_catches_modl_after_data OK")
 
 
-test_validate_patch_catches_modl_after_data(
-    Path(__file__).resolve().parent / "_tmp_validator"
-)
 
-print("\n=== validate_patch test done ===")
 
 
 # ---------------------------------------------------------------------------
@@ -492,91 +294,8 @@ print("\n=== validate_patch test done ===")
 # diagnostic we ran by hand on the user's HDT-SMP + Remodeled overlap.
 # ---------------------------------------------------------------------------
 
-def test_merge_combines_armo_armatures_from_multiple_patches(tmp_path):
-    from src.ube_patcher import merge_patches
-    from src.esp import ESP, TES4Header, Group, Record, encode_subrecord, \
-        encode_zstring, iter_subrecords
-
-    # Two patch ESPs, both override the same Skyrim.esm ARMO 0x00012E49
-    # (ArmorIronCuirass). Each adds its own UBE ARMA into the armatures
-    # list. The merger must produce a single ARMO record carrying BOTH
-    # new UBE armatures (plus the original).
-    def make_armo_override(own_arma_fid: int) -> Record:
-        payload = (
-            encode_subrecord(b"EDID", encode_zstring("ArmorIronCuirass"))
-            + encode_subrecord(b"BOD2", struct.pack("<II", 0x4, 4))
-            + encode_subrecord(b"RNAM", struct.pack("<I", 0x00000019))
-            + encode_subrecord(b"MODL", struct.pack("<I", 0x00012E48))
-            + encode_subrecord(b"MODL", struct.pack("<I", own_arma_fid))
-            + encode_subrecord(b"DATA", struct.pack("<II", 100, 5))
-            + encode_subrecord(b"DNAM", struct.pack("<I", 0))
-        )
-        return Record(
-            sig=b"ARMO", flags=0, formid=0x00012E49, timestamp_vc=0,
-            version_unk=0x002C, payload=payload,
-        )
-
-    def make_arma_record(own_fid: int) -> Record:
-        # Minimal ARMA: just EDID + RNAM, our merger doesn't need more.
-        payload = (
-            encode_subrecord(b"EDID", encode_zstring(f"ARMA_{own_fid:X}"))
-            + encode_subrecord(b"BOD2", struct.pack("<II", 0x4, 4))
-            + encode_subrecord(b"RNAM", struct.pack("<I", 0x02005734))
-            + encode_subrecord(b"DNAM",
-                struct.pack("<IIf", 0x05050202, 0, 0.2))
-            + encode_subrecord(b"MOD3", encode_zstring("Armor/test.nif"))
-        )
-        return Record(
-            sig=b"ARMA", flags=0, formid=own_fid, timestamp_vc=0,
-            version_unk=0x002C, payload=payload,
-        )
-
-    def make_patch(path: Path, own_arma_local: int) -> Path:
-        masters = ["Skyrim.esm", "UBE_AllRace.esp"]
-        own_byte = len(masters)
-        own_arma_fid = (own_byte << 24) | own_arma_local
-        armo = make_armo_override(own_arma_fid)
-        arma = make_arma_record(own_arma_fid)
-        esp_obj = ESP(
-            header=TES4Header(masters=masters, num_records=0,
-                              next_object_id=own_arma_local + 1,
-                              version=1.7),
-            groups=[Group(label=b"ARMO", records=[armo]),
-                    Group(label=b"ARMA", records=[arma])],
-        )
-        esp_obj.save(path)
-        return path
-
-    tmp_path.mkdir(parents=True, exist_ok=True)
-    p1 = make_patch(tmp_path / "patch_a.esp", 0x800)
-    p2 = make_patch(tmp_path / "patch_b.esp", 0x801)
-    out = tmp_path / "merged.esp"
-    stats = merge_patches([p1, p2], out, esl_flag=True)
-
-    assert stats["armo_duplicates_merged"] == 1, \
-        f"expected 1 duplicate ARMO merge, got {stats['armo_duplicates_merged']}"
-    assert stats["total_armo_records"] == 1, \
-        "merged ARMO should appear exactly once after dedup"
-
-    # Reload + count armatures on the merged ARMO.
-    merged = ESP.load(out)
-    armo_grp = next(g for g in merged.groups if g.label == b"ARMO")
-    armatures = []
-    for sig, sd in iter_subrecords(armo_grp.records[0].payload):
-        if sig == b"MODL" and len(sd) == 4:
-            armatures.append(struct.unpack("<I", sd)[0])
-    # Expected: 0x00012E48 (vanilla) + 2 new UBE ARMAs from both patches.
-    assert len(armatures) == 3, \
-        f"merged ARMO should have 3 armatures, got {len(armatures)}: " \
-        f"{[f'{a:08X}' for a in armatures]}"
-    assert 0x00012E48 in armatures, "vanilla armature dropped"
-
-    print("  test_merge_combines_armo_armatures_from_multiple_patches OK")
 
 
-test_merge_combines_armo_armatures_from_multiple_patches(
-    Path(__file__).resolve().parent / "_tmp_armo_merge"
-)
 
 
 # ---------------------------------------------------------------------------
@@ -642,9 +361,6 @@ def test_merge_downgrades_to_full_esp_on_esl_overflow(tmp_path):
     print("  test_merge_downgrades_to_full_esp_on_esl_overflow OK")
 
 
-test_merge_downgrades_to_full_esp_on_esl_overflow(
-    Path(__file__).resolve().parent / "_tmp_esl_overflow"
-)
 
 
 # ---------------------------------------------------------------------------
@@ -688,9 +404,6 @@ def test_validate_patch_catches_out_of_range_formid(tmp_path):
     print("  test_validate_patch_catches_out_of_range_formid OK")
 
 
-test_validate_patch_catches_out_of_range_formid(
-    Path(__file__).resolve().parent / "_tmp_oor"
-)
 
 
 # ---------------------------------------------------------------------------
@@ -749,9 +462,6 @@ def test_validate_patch_catches_missing_nif(tmp_path):
     print("  test_validate_patch_catches_missing_nif OK")
 
 
-test_validate_patch_catches_missing_nif(
-    Path(__file__).resolve().parent / "_tmp_missing_nif"
-)
 
 
 # ---------------------------------------------------------------------------
@@ -811,9 +521,6 @@ def test_validate_patch_catches_unmappable_transitive_master(tmp_path):
     print("  test_validate_patch_catches_unmappable_transitive_master OK")
 
 
-test_validate_patch_catches_unmappable_transitive_master(
-    Path(__file__).resolve().parent / "_tmp_unmappable_master"
-)
 
 
 # ---------------------------------------------------------------------------
@@ -854,7 +561,6 @@ def test_synthesize_name_from_edid():
     print("  test_synthesize_name_from_edid OK")
 
 
-test_synthesize_name_from_edid()
 
 
 def test_is_esm_tier_master_detects_esl_flagged_esp(tmp_path):
@@ -895,191 +601,12 @@ def test_is_esm_tier_master_detects_esl_flagged_esp(tmp_path):
     print("  test_is_esm_tier_master_detects_esl_flagged_esp OK")
 
 
-def test_master_armo_override_emits_full_when_source_lacks_it(tmp_path):
-    """When generate_ube_patch's master-ARMO scan copies a localized-master
-    ARMO whose FULL is an LSTRING ref, the override emits a synthesized
-    FULL derived from EDID instead of nothing. Skyrim's inventory UI
-    requires FULL to display the item.
-    """
-    from src.ube_patcher import generate_ube_patch
-    from src.esp import (
-        ESP, TES4Header, Group, Record, encode_subrecord, encode_zstring,
-        iter_subrecords,
-    )
-
-    tmp_path.mkdir(parents=True, exist_ok=True)
-
-    # Synthetic Skyrim.esm with one ARMA + one ARMO that references it,
-    # where the ARMO's FULL is an LSTRING-style 4-byte ref. The ARMO
-    # also has KSIZ/KWDA/DATA/DNAM to look complete.
-    arma_payload = (
-        encode_subrecord(b"EDID", encode_zstring("TestARMA"))
-        + encode_subrecord(b"BOD2", struct.pack("<II", 0x4, 4))
-        + encode_subrecord(b"RNAM", struct.pack("<I", 0x00000019))
-        + encode_subrecord(b"DNAM", struct.pack("<IIf", 0x05050202, 0, 0.2))
-        + encode_subrecord(b"MOD3", encode_zstring("Armor\\Test\\test.nif"))
-    )
-    armo_payload = (
-        encode_subrecord(b"EDID", encode_zstring("ArmorTestCuirass"))
-        + encode_subrecord(b"OBND", b"\x00" * 12)
-        + encode_subrecord(b"FULL", struct.pack("<I", 0x12345678))  # LSTRING ref
-        + encode_subrecord(b"BOD2", struct.pack("<II", 0x4, 4))
-        + encode_subrecord(b"RNAM", struct.pack("<I", 0x00000019))
-        + encode_subrecord(b"MODL", struct.pack("<I", 0x00000100))  # arma ref
-        + encode_subrecord(b"DATA", struct.pack("<II", 100, 5))
-        + encode_subrecord(b"DNAM", struct.pack("<I", 0))
-    )
-    arma_rec = Record(sig=b"ARMA", flags=0, formid=0x00000100,
-                      timestamp_vc=0, version_unk=0x002C, payload=arma_payload)
-    armo_rec = Record(sig=b"ARMO", flags=0, formid=0x00000200,
-                      timestamp_vc=0, version_unk=0x002C, payload=armo_payload)
-    fake_master = ESP(
-        header=TES4Header(masters=[], num_records=0, next_object_id=0x300,
-                          version=1.7),
-        groups=[Group(label=b"ARMO", records=[armo_rec]),
-                Group(label=b"ARMA", records=[arma_rec])],
-    )
-    fake_master_path = tmp_path / "Skyrim.esm"  # mimic vanilla master name
-    fake_master.save(fake_master_path)
-
-    # Source ESP that overrides the ARMA (CBBE-style replacer). Master
-    # ARMO scan will then find the ARMO in fake_master and emit override.
-    src_arma_payload = (
-        encode_subrecord(b"EDID", encode_zstring("TestARMA"))
-        + encode_subrecord(b"BOD2", struct.pack("<II", 0x4, 4))
-        + encode_subrecord(b"RNAM", struct.pack("<I", 0x00000019))
-        + encode_subrecord(b"DNAM", struct.pack("<IIf", 0x05050202, 0, 0.2))
-        + encode_subrecord(b"MOD3", encode_zstring("CBBE\\Test\\test.nif"))
-    )
-    # Override Skyrim's ARMA 0x00000100 — that's the trigger that makes
-    # the master ARMO scan pick up its referencing ARMO.
-    src_arma_rec = Record(sig=b"ARMA", flags=0, formid=0x00000100,
-                          timestamp_vc=0, version_unk=0x002C,
-                          payload=src_arma_payload)
-    src_esp = ESP(
-        header=TES4Header(masters=["Skyrim.esm"], num_records=0,
-                          next_object_id=0x101, version=1.7),
-        groups=[Group(label=b"ARMA", records=[src_arma_rec])],
-    )
-    src_esp_path = tmp_path / "Source.esp"
-    src_esp.save(src_esp_path)
-
-    # We also need a UBE_AllRace.esp file so master discovery works.
-    ube_payload = b""
-    ube_esp = ESP(
-        header=TES4Header(masters=["Skyrim.esm"], num_records=0,
-                          next_object_id=0x800, version=1.7),
-        groups=[],
-    )
-    ube_esp.save(tmp_path / "UBE_AllRace.esp")
-
-    # Run generator.
-    out = tmp_path / "out.esp"
-    generate_ube_patch(src_esp_path, out, master_data_dirs=[tmp_path])
-
-    # Reload + find the override of our ARMO (FormID 0x00000200 in
-    # Skyrim's space, byte 0 in our patch).
-    result = ESP.load(out)
-    armo_grp = next((g for g in result.groups if g.label == b"ARMO"), None)
-    assert armo_grp is not None, "patch has no ARMO group"
-    override = next((r for r in armo_grp.records
-                     if (r.formid & 0xFFFFFF) == 0x000200), None)
-    assert override is not None, "ARMO override missing from generated patch"
-
-    full_value = None
-    for sig, data in iter_subrecords(override.payload):
-        if sig == b"FULL":
-            full_value = data.rstrip(b"\x00").decode("latin1", errors="ignore")
-            break
-    assert full_value is not None, (
-        "FULL subrecord missing from override — inventory UI will hide "
-        "the item"
-    )
-    # The synthesized name should be derived from EDID, NOT the raw LSTRING.
-    assert full_value == "Test Cuirass", (
-        f"expected synthesized FULL 'Test Cuirass', got {full_value!r}"
-    )
-
-    print("  test_master_armo_override_emits_full_when_source_lacks_it OK")
 
 
-test_master_armo_override_emits_full_when_source_lacks_it(
-    Path(__file__).resolve().parent / "_tmp_full_synth"
-)
 
 
-def test_validate_patch_catches_armo_missing_full(tmp_path):
-    """validate_patch must flag ARMO overrides that have no FULL
-    subrecord — Skyrim's inventory UI silently hides them.
-    """
-    from src.ube_patcher import validate_patch
-    from src.esp import (
-        ESP, TES4Header, Group, Record, encode_subrecord, encode_zstring,
-    )
-
-    tmp_path.mkdir(parents=True, exist_ok=True)
-
-    # ARMO override deliberately missing FULL.
-    armo_no_full = (
-        encode_subrecord(b"EDID", encode_zstring("ArmorNoFull"))
-        + encode_subrecord(b"OBND", b"\x00" * 12)
-        + encode_subrecord(b"MOD2", encode_zstring("foo.nif"))
-        + encode_subrecord(b"BOD2", struct.pack("<II", 0x4, 4))
-        + encode_subrecord(b"RNAM", struct.pack("<I", 0x00000019))
-        + encode_subrecord(b"MODL", struct.pack("<I", 0x00012E48))
-        + encode_subrecord(b"DATA", struct.pack("<II", 100, 5))
-        + encode_subrecord(b"DNAM", struct.pack("<I", 0))
-    )
-    rec = Record(sig=b"ARMO", flags=0, formid=0x00012E49, timestamp_vc=0,
-                 version_unk=0x002C, payload=armo_no_full)
-    bad_esp = ESP(
-        header=TES4Header(masters=["Skyrim.esm"], num_records=0,
-                          next_object_id=0x801, version=1.7),
-        groups=[Group(label=b"ARMO", records=[rec])],
-    )
-    out_path = tmp_path / "no_full.esp"
-    bad_esp.save(out_path)
-
-    warnings = validate_patch(out_path, check_nifs=False)
-    matched = [w for w in warnings if w.startswith("armo-missing-full")]
-    assert matched, (
-        f"validate_patch did NOT catch ARMO missing FULL: {warnings}"
-    )
-
-    # Now add FULL — warning should disappear.
-    armo_with_full = (
-        encode_subrecord(b"EDID", encode_zstring("ArmorNoFull"))
-        + encode_subrecord(b"OBND", b"\x00" * 12)
-        + encode_subrecord(b"FULL", encode_zstring("Some Armor"))
-        + encode_subrecord(b"MOD2", encode_zstring("foo.nif"))
-        + encode_subrecord(b"BOD2", struct.pack("<II", 0x4, 4))
-        + encode_subrecord(b"RNAM", struct.pack("<I", 0x00000019))
-        + encode_subrecord(b"MODL", struct.pack("<I", 0x00012E48))
-        + encode_subrecord(b"DATA", struct.pack("<II", 100, 5))
-        + encode_subrecord(b"DNAM", struct.pack("<I", 0))
-    )
-    rec2 = Record(sig=b"ARMO", flags=0, formid=0x00012E49, timestamp_vc=0,
-                  version_unk=0x002C, payload=armo_with_full)
-    good_esp = ESP(
-        header=TES4Header(masters=["Skyrim.esm"], num_records=0,
-                          next_object_id=0x801, version=1.7),
-        groups=[Group(label=b"ARMO", records=[rec2])],
-    )
-    out_path2 = tmp_path / "with_full.esp"
-    good_esp.save(out_path2)
-    warnings2 = validate_patch(out_path2, check_nifs=False)
-    matched2 = [w for w in warnings2 if w.startswith("armo-missing-full")]
-    assert not matched2, (
-        f"validate_patch flagged armo-missing-full when FULL IS present: "
-        f"{warnings2}"
-    )
-
-    print("  test_validate_patch_catches_armo_missing_full OK")
 
 
-test_validate_patch_catches_armo_missing_full(
-    Path(__file__).resolve().parent / "_tmp_armo_full"
-)
 
 
 def test_build_nif_slot_map(tmp_path):
@@ -1137,8 +664,4 @@ def test_build_nif_slot_map(tmp_path):
     print("  test_build_nif_slot_map OK")
 
 
-test_build_nif_slot_map(
-    Path(__file__).resolve().parent / "_tmp_slot_map"
-)
 
-print("\n=== validator extended tests done ===")
