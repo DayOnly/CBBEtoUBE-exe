@@ -249,3 +249,27 @@ def test_combined_output_names_accepts_paths():
     ordered = [_P("x/CBBE_to_UBE_Combined.esp"), _P("y/CBBE_to_UBE_Combined2.esp")]
     got = auto_convert._combined_output_names("CBBE_to_UBE_Combined.esp", ordered)
     assert got == {"cbbe_to_ube_combined.esp", "cbbe_to_ube_combined2.esp"}
+
+
+# ---------------------------------------------------------------------------
+# HDT-SMP per-vertex softbody drift: the post-pass jiggle/chest/butt grafts must
+# SKIP authored soft-body cloth. Grafting body jiggle bones the XML has no
+# weight-threshold anchor for un-anchors those verts in the FSMP sim, so the
+# chest/butt drift away from the actor (the Ancient Falmer / ivory cuirass case).
+# The passes already skip colliders; they must skip softbody the same way.
+# ---------------------------------------------------------------------------
+def test_graft_post_passes_skip_hdt_softbody():
+    import inspect
+    import src.nif_convert as nc
+    for fn in (nc._conform_fitted_to_body, nc._match_rigid_leg_bend_to_body,
+               nc._transfer_body_jiggle_to_fitted):
+        src = inspect.getsource(fn)
+        assert "softbody_names" in src and "_hdt_softbody_shape_names" in src, (
+            f"{fn.__name__} must skip HDT-SMP softbody shapes (else jiggle graft "
+            f"-> drift)")
+
+
+def test_hdt_softbody_shape_names_accepts_nif_kwarg():
+    import inspect
+    import src.nif_convert as nc
+    assert "nif" in inspect.signature(nc._hdt_softbody_shape_names).parameters
