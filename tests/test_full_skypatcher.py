@@ -14,21 +14,19 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-"""CBBE2UBE_FULL_SKYPATCHER (Tier 2): the per-source patch mints the SAME
+"""SkyPatcher delivery (the only path): the per-source patch mints the SAME
 armatures but emits NO ARMO overrides -- links go to a .skypatcher.json sidecar,
 and the merge turns them into armorAddonsToAdd INI lines against final Combined
-FormIDs. Flag OFF stays byte-identical (ARMO overrides as before)."""
+FormIDs."""
 import json
-import os
 import struct
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from src import esp
 from src.esp import ESP, TES4Header, Group, Record, encode_subrecord, \
-    encode_zstring, iter_subrecords
+    encode_zstring
 from src import ube_patcher as up
 
 DEFAULT = 0x00000019
@@ -78,32 +76,21 @@ def _mk_source(tmp, name, mesh_stem):
     return tmp / name
 
 
-def _gen(tmp, name, mesh_stem, flag):
+def _gen(tmp, name, mesh_stem):
     src = _mk_source(tmp, name, mesh_stem)
     out = tmp / (name.replace(".esp", "") + " UBE patch.esp")
-    # full SkyPatcher is the product DEFAULT; conftest pins the session to the
-    # legacy path (CBBE2UBE_NO_SKYPATCHER=1), so clear that pin to exercise it.
-    if flag:
-        os.environ.pop("CBBE2UBE_NO_SKYPATCHER", None)
-        os.environ["CBBE2UBE_FULL_SKYPATCHER"] = "1"
-    else:
-        os.environ["CBBE2UBE_NO_SKYPATCHER"] = "1"
-    try:
-        stats = up.generate_ube_patch(
-            src, out, master_data_dirs=[tmp],
-            converted_rel_paths={f"armor/{mesh_stem}/body_0.nif",
-                                 f"armor/{mesh_stem}/helm_0.nif"})
-    finally:
-        os.environ.pop("CBBE2UBE_FULL_SKYPATCHER", None)
-        os.environ["CBBE2UBE_NO_SKYPATCHER"] = "1"   # restore the conftest pin
+    stats = up.generate_ube_patch(
+        src, out, master_data_dirs=[tmp],
+        converted_rel_paths={f"armor/{mesh_stem}/body_0.nif",
+                             f"armor/{mesh_stem}/helm_0.nif"})
     return out, stats
 
 
-def test_flag_on_no_overrides_sidecar_links(tmp_path):
+def test_no_overrides_sidecar_links(tmp_path):
     _mk_env(tmp_path)
-    out, stats = _gen(tmp_path, "ModA.esp", "a", flag=True)
+    out, stats = _gen(tmp_path, "ModA.esp", "a")
     e = ESP.load(out)
-    assert e.group(b"ARMO") is None, "full-SP patch must carry NO ARMO overrides"
+    assert e.group(b"ARMO") is None, "patch must carry NO ARMO overrides"
     assert e.group(b"ARMA") is not None and len(e.group(b"ARMA").records) >= 2
     assert stats["armo_override_count"] == 0
     assert stats["skypatcher_link_targets"] == 2          # Body + Helm ARMOs
@@ -115,26 +102,12 @@ def test_flag_on_no_overrides_sidecar_links(tmp_path):
     for x in sc:
         for a in x["adds"]:
             assert a["fid"] in fids, "sidecar fid must match post-prune records"
-    print("  test_flag_on_no_overrides_sidecar_links OK")
-
-
-def test_flag_off_unchanged_and_clears_stale_sidecar(tmp_path):
-    _mk_env(tmp_path)
-    out, _ = _gen(tmp_path, "ModB.esp", "b", flag=True)     # writes sidecar
-    assert Path(str(out) + ".skypatcher.json").is_file()
-    out2, stats = _gen(tmp_path, "ModB.esp", "b", flag=False)
-    e = ESP.load(out2)
-    assert e.group(b"ARMO") is not None, "flag OFF must emit overrides as before"
-    assert stats["armo_override_count"] >= 2
-    assert not Path(str(out2) + ".skypatcher.json").is_file(), \
-        "stale sidecar must be removed on a flag-OFF re-run"
-    print("  test_flag_off_unchanged_and_clears_stale_sidecar OK")
 
 
 def test_merge_emits_final_ini_lines(tmp_path):
     _mk_env(tmp_path)
-    p1, _ = _gen(tmp_path, "ModA.esp", "a", flag=True)
-    p2, _ = _gen(tmp_path, "ModB.esp", "b", flag=True)
+    p1, _ = _gen(tmp_path, "ModA.esp", "a")
+    p2, _ = _gen(tmp_path, "ModB.esp", "b")
     comb = tmp_path / "Combined.esp"
     stats = up.merge_patches_split([p1, p2], comb, master_data_dirs=[tmp_path])
     lines = stats.get("skypatcher_ini_lines") or []
