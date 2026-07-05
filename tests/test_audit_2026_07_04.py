@@ -213,3 +213,39 @@ def test_bsa_parse_absurd_folder_count_raises_clean(tmp_path):
     p.write_bytes(hdr + b"\x00" * 128)
     with pytest.raises(ValueError):
         bs.BSAArchive(p)
+
+
+# ---------------------------------------------------------------------------
+# Coverage/winner exclusion must use the REAL --merged-name (not a hardcoded
+# "cbbe_to_ube_combined.esp") and cover every ESL-split piece -- else the
+# non-body coverage pass reads a custom-named Combined's own overrides as
+# load-order winners and mis-covers.
+# ---------------------------------------------------------------------------
+def test_combined_output_names_default_no_split():
+    got = auto_convert._combined_output_names("CBBE_to_UBE_Combined.esp", [])
+    assert got == {"cbbe_to_ube_combined.esp"}
+
+
+def test_combined_output_names_includes_split_pieces():
+    ordered = ["Skyrim.esm", "CBBE_to_UBE_Combined.esp",
+               "CBBE_to_UBE_Combined2.esp", "CBBE_to_UBE_Combined3.esp",
+               "SomeMod.esp"]
+    got = auto_convert._combined_output_names("CBBE_to_UBE_Combined.esp", ordered)
+    assert got == {"cbbe_to_ube_combined.esp", "cbbe_to_ube_combined2.esp",
+                   "cbbe_to_ube_combined3.esp"}
+    assert "somemod.esp" not in got and "skyrim.esm" not in got
+
+
+def test_combined_output_names_custom_merged_name():
+    # The bug: a hardcoded "cbbe_to_ube_combined.esp" would MISS a custom name.
+    ordered = ["MyUBE.esp", "MyUBE2.esp", "Unrelated.esp"]
+    got = auto_convert._combined_output_names("MyUBE.esp", ordered)
+    assert got == {"myube.esp", "myube2.esp"}
+    assert "unrelated.esp" not in got
+
+
+def test_combined_output_names_accepts_paths():
+    from pathlib import Path as _P
+    ordered = [_P("x/CBBE_to_UBE_Combined.esp"), _P("y/CBBE_to_UBE_Combined2.esp")]
+    got = auto_convert._combined_output_names("CBBE_to_UBE_Combined.esp", ordered)
+    assert got == {"cbbe_to_ube_combined.esp", "cbbe_to_ube_combined2.esp"}

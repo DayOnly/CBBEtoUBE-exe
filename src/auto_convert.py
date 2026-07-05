@@ -323,6 +323,25 @@ def _incremental_code_mtime() -> float:
                default=0.0)
 
 
+def _combined_output_names(merged_name: str, plugin_names_or_paths) -> "set[str]":
+    """Lower-cased names of ALL our merged-Combined outputs to exclude from a
+    load-order winner scan: the base `--merged-name` plus every ESL-split piece
+    (`<stem>2.esp`, `<stem>3.esp`, ...) present in the given plugin list.
+
+    Uses the REAL merged name (never a hardcoded default) so a custom
+    `--merged-name` and its split pieces are still excluded -- otherwise a
+    coverage/winner pass reads the Combined's own overrides as load-order
+    winners and mis-covers. Accepts an iterable of plugin names or Paths.
+    """
+    stem = Path(merged_name).stem.lower()
+    names = {merged_name.lower()}
+    for n in plugin_names_or_paths:
+        nl = Path(n).name.lower()
+        if nl.startswith(stem) and nl.endswith(".esp"):
+            names.add(nl)
+    return names
+
+
 def _find_ube_body_ref(search_roots: list[Path] | None = None) -> Path | None:
     """Scan MO2 mods folders for the best UBE body reference NIF —
     preferring sources that DON'T have the user's BodySlide preset
@@ -3872,7 +3891,6 @@ def _cmd_auto(args):
                 # stale Combined2 be picked as the "load-order winner" -> the
                 # rebase adopted our own previous output's records (stale
                 # flags/races/keywords self-perpetuating across runs, #xedit5).
-                _stem = Path(merged_name).stem.lower()
                 # Keep excluding the removed Vanilla_UBE_Race_Compat.esp: the
                 # tool no longer generates it, but a LEFTOVER copy from a
                 # pre-2026-07-03 run may still sit in the output mod, and it must
@@ -3880,11 +3898,7 @@ def _cmd_auto(args):
                 _widx_excl = {"vanilla_ube_race_compat.esp",
                               "ube_modbody_coverage.esp",
                               "ube_modnonbody_coverage.esp"}
-                for _n in ordered_names:
-                    _nl = _n.lower()
-                    if _nl.startswith(_stem) and _nl.endswith(".esp"):
-                        _widx_excl.add(_nl)
-                _widx_excl.add(merged_name.lower())
+                _widx_excl |= _combined_output_names(merged_name, ordered_names)
                 shared_winner_index = ube_patcher.build_armo_winner_index(
                     ordered_paths, exclude_names=_widx_excl)
                 print(f"\n#132 winner index: {len(shared_winner_index)} "
@@ -3962,12 +3976,18 @@ def _cmd_auto(args):
                 _md = _discover_master_data_dirs(sources[0])
                 print(f"\n--- mod non-body UBE coverage -> {mnb_esp.name} "
                       "(+ SkyPatcher INI) ---")
+                # Exclude our OWN outputs from the winner scan: this coverage
+                # ESP, a leftover Vanilla_UBE_Race_Compat.esp, and the merged
+                # Combined + every ESL-split piece (by real --merged-name).
+                # Otherwise the pass reads the Combined's own overrides as
+                # load-order winners and mis-covers. #fsp-dedup
+                _mnb_excl = {mnb_esp.name.lower(),
+                             "vanilla_ube_race_compat.esp"}
+                _mnb_excl |= _combined_output_names(merged_name, _ordered)
                 mnb = ube_patcher.generate_modded_nonbody_ube_coverage_patch(
                     mnb_esp, _ordered,
                     exclude_armo_abs=_fsp_linked_abs,
-                    exclude_names={mnb_esp.name.lower(),
-                                   "cbbe_to_ube_combined.esp",
-                                   "vanilla_ube_race_compat.esp"},
+                    exclude_names=_mnb_excl,
                     master_data_dirs=_md)
                 ini_lines = mnb.get("ini_lines") or []
                 if ini_lines:
@@ -4045,11 +4065,7 @@ def _cmd_auto(args):
                     # overrides, so the exclusion stays byte-identical to today.
                     _cov_excl |= {"ube_modnonbody_coverage.esp",
                                   "vanilla_ube_race_compat.esp"}
-                    _merged_stem = Path(merged_name).stem.lower()
-                    for _op in _ordered:
-                        _opn = Path(_op).name.lower()
-                        if _opn.startswith(_merged_stem) and _opn.endswith(".esp"):
-                            _cov_excl.add(_opn)
+                    _cov_excl |= _combined_output_names(merged_name, _ordered)
                 mbd = ube_patcher.generate_modded_body_ube_coverage_patch(
                     mbd_esp, _ordered, converted_rel_paths=_conv_rel,
                     exclude_armo_abs=_fsp_linked_abs,
