@@ -365,6 +365,8 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
                 q.put(f"\n[mod scan failed: {e}]\n")
             root.after(0, lambda: _populate_mods(items))
 
+        threading.Thread(target=work, daemon=True).start()
+
     # ---- overlay-mod checklist helpers (mirror the armor ones above) ----
     def _ov_update_title():
         if state["running"]:
@@ -436,8 +438,6 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
                 items = []
                 q.put(f"\n[overlay mod scan failed: {e}]\n")
             root.after(0, lambda: _ov_populate(items))
-
-        threading.Thread(target=work, daemon=True).start()
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -627,11 +627,20 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
                           insertbackground=p["logfg"])
         except Exception:
             pass
+        # Prune canvases from closed dialogs so the list can't grow unbounded
+        # across repeated dialog opens (each open appends one); recolor the live
+        # ones. winfo_exists() is False for a destroyed widget.
+        _live = []
         for c in state.get("_canvases", []):
             try:
+                if not c.winfo_exists():
+                    continue
                 c.configure(bg=p["bg"])
+                _live.append(c)
             except Exception:
                 pass
+        if "_canvases" in state:
+            state["_canvases"][:] = _live
 
     def _apply_setting_values(vals):
         # Push a dict of values into the live settings vars (their write-traces
@@ -1374,6 +1383,8 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
         cancel_btn.configure(state="disabled")
 
     def _diag_done(zpath, err):
+        if not root.winfo_exists():
+            return   # app quit while the daemon export thread was still running
         if err:
             status.set("Diagnostics export failed — see log.")
             _append(f"\n[diagnostics export failed: {err}]\n")
@@ -1818,6 +1829,8 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
             pass
 
     def _finish(rc):
+        if not root.winfo_exists():
+            return   # app quit while the worker was still live; nothing to update
         state["running"] = False
         state["result"] = rc
         prog.stop()
@@ -1862,6 +1875,8 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
                    + (f" — {eta}" if eta else ""))
 
     def _poll():
+        if not root.winfo_exists():
+            return   # stop rescheduling once the window is gone
         try:
             while True:
                 item = q.get_nowait()

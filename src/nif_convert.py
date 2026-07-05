@@ -4796,14 +4796,24 @@ def _strip_jiggle_weights_map(weights_map, src_bones=None, force=False):
     if not affected:
         return {b: p for b, p in weights_map.items() if b not in jset}
     PELVIS = "NPC Pelvis [Pelv]"
+    # Same no-STB spike guard as _strip_genital_weights_map: only fall a
+    # jiggle-ONLY vert back to Pelvis when the shape ALREADY carries Pelvis
+    # (else _install_skin's add_bone gives Pelvis no skin-to-bone xform and the
+    # vert skins to the origin -> floor spike). With no Pelvis, leave the vert
+    # zero-weight for _fill_zero_weight_verts to reassign to a valid-STB bone.
+    has_pelvis = PELVIS in weights_map
     norm: "dict" = {}
     for v in affected:
         rest = other.get(v) or {}
         s = sum(rest.values())
-        norm[v] = ({b: w / s for b, w in rest.items()} if s > 1e-6
-                   else {PELVIS: 1.0})
+        if s > 1e-6:
+            norm[v] = {b: w / s for b, w in rest.items()}
+        elif has_pelvis:
+            norm[v] = {PELVIS: 1.0}
+        else:
+            norm[v] = {}
     out: "dict" = {}
-    for bn in (set(weights_map) - jset) | {PELVIS}:
+    for bn in (set(weights_map) - jset) | ({PELVIS} if has_pelvis else set()):
         pairs = [(int(i), float(w)) for i, w in weights_map.get(bn, [])
                  if int(i) not in affected]
         for v in affected:
@@ -9647,9 +9657,19 @@ def _reauthor_nif_fresh(dst_path: Path, override_verts_by_name=None,
             NiStringExtraData.New(
                 new, name="HDT Skinned Mesh Physics Object",
                 string_value=hdt_str, parent=new.rootNode)
-        new.save()
-        import os as _os
-        _os.replace(str(tmp_path), str(dst_path))
+        # Route through the shared atomic saver (temp-in-same-dir + os.replace +
+        # lock-aware OutputLockedError + temp cleanup on failure) instead of a
+        # hand-rolled save()+os.replace, so this writer matches every other
+        # game-loaded NIF save. atomic_nif_save repoints new.filepath at its own
+        # temp, so the .nif.reauth temp initialized above is unused here.
+        from .atomic_io import atomic_nif_save
+        atomic_nif_save(new, dst_path)
+        try:
+            import os as _os
+            if tmp_path.is_file():
+                _os.remove(str(tmp_path))
+        except OSError:
+            pass
         return True
     except Exception:
         try:
