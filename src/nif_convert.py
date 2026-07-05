@@ -5257,11 +5257,13 @@ def _conform_fitted_to_body(dst_path, biped_slots: int = 0) -> int:
     # implodes / sinks). Read the collider set straight from the already-open nf so
     # there is NO second disk parse per armor. #smp-collider-graft
     collider_names = _hdt_collider_shape_names(dst_path, nif=nf)
+    softbody_names = _hdt_softbody_shape_names(dst_path, nif=nf)
     total = 0
     dirty = False
     for s in nf.shapes:
         nm = (s.name or "").lower()
-        if s.name in collider_names or any(k in nm for k in _CONFORM_SKIP_NAMES):
+        if (s.name in collider_names or s.name in softbody_names
+                or any(k in nm for k in _CONFORM_SKIP_NAMES)):
             continue
         bw = s.bone_weights or {}
         # (a) CHEAP pre-gate: real soft-body jiggle weight -> deform-with-body
@@ -5657,6 +5659,7 @@ def _match_rigid_leg_bend_to_body(dst_path, biped_slots: int = 0) -> int:
         return 0  # effect-shader/glow NIF: a reload+re-save corrupts its controller -> CTD.
                   # Leave it exactly as the main conversion wrote it (see _nif_has_fx_shape).
     collider_names = _hdt_collider_shape_names(dst_path, nif=nf)
+    softbody_names = _hdt_softbody_shape_names(dst_path, nif=nf)
     # Bones grafted onto the plate + the EXISTING bone each re-anchors to: leg detail bones
     # anchor to Thigh/Calf; the butt-jiggle bones to the Pelvis; the breast bones to Spine2.
     # graft_anchor also drives the fold-back of any bone we can't safely anchor.
@@ -5676,7 +5679,8 @@ def _match_rigid_leg_bend_to_body(dst_path, biped_slots: int = 0) -> int:
     dirty = False
     for s in nf.shapes:
         nm = (s.name or "").lower()
-        if s.name in collider_names or any(k in nm for k in _CONFORM_SKIP_NAMES):
+        if (s.name in collider_names or s.name in softbody_names
+                or any(k in nm for k in _CONFORM_SKIP_NAMES)):
             continue
         if _shape_has_effect_shader(s) or _is_fx_overlay_name(s.name):
             continue  # glow/decal overlay -- grafting+re-saving corrupts its effect-shader
@@ -5891,11 +5895,13 @@ def _transfer_body_jiggle_to_fitted(dst_path, biped_slots: int = 0) -> int:
         return 0  # effect-shader/glow NIF: a reload+re-save corrupts its controller -> CTD.
                   # Leave it exactly as the main conversion wrote it (see _nif_has_fx_shape).
     collider_names = _hdt_collider_shape_names(dst_path, nif=nf)
+    softbody_names = _hdt_softbody_shape_names(dst_path, nif=nf)
     total = 0
     dirty = False
     for s in nf.shapes:
         nm = (s.name or "").lower()
-        if s.name in collider_names or any(k in nm for k in _CONFORM_SKIP_NAMES):
+        if (s.name in collider_names or s.name in softbody_names
+                or any(k in nm for k in _CONFORM_SKIP_NAMES)):
             continue
         if _shape_has_effect_shader(s) or _is_fx_overlay_name(s.name):
             continue  # glow/decal overlay -- never graft jiggle onto an effect-shader shape
@@ -9709,17 +9715,18 @@ def _reauthor_nif_fresh(dst_path: Path, override_verts_by_name=None,
         return False
 
 
-def _hdt_softbody_shape_names(src_nif_path: Path) -> set:
+def _hdt_softbody_shape_names(src_nif_path: Path, nif=None) -> set:
     """Shape names the armor's HDT-SMP XML drives as PER-VERTEX soft-bodies
     (free-swinging cloth, e.g. a hand-authored UBE armor's `soft-body cloth shape`). These must KEEP
-    their authored skin weighting: the converter's body-fit reskin would
-    re-weight every vert firmly to body bones, over-constraining the
-    soft-body so it can no longer swing/jiggle. Resolves the source XML via
-    the NIF's own extra-data first, then keyword match. Empty set on any
-    failure (reskin proceeds as normal)."""
+    their authored skin weighting: the converter's body-fit reskin (AND the
+    post-pass jiggle/chest/butt grafts) would add body jiggle bones the XML has
+    no weight-threshold anchor for, so those verts become un-anchored free cloth
+    in the sim and DRIFT away from the actor. Resolves the source XML via the
+    NIF's own extra-data first, then keyword match. Empty set on any failure
+    (reskin proceeds as normal). `nif` reuses an already-loaded NifFile."""
     if CHAIN_TO_SOFTBODY:
         return set()  # soft-body mode: nothing is preserved; reskin all cloth
-    txt = _read_source_hdt_xml_text(src_nif_path)
+    txt = _read_source_hdt_xml_text(src_nif_path, nif=nif)
     if not txt:
         return set()
     return set(re.findall(r'<per-vertex-shape\s+name="([^"]+)"', txt))
