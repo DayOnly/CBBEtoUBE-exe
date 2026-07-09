@@ -819,6 +819,10 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
         except Exception:
             pass
         _apply_theme(m)
+        try:
+            _paint_swatch()          # keep the preview chip in sync with the theme
+        except Exception:
+            pass
 
     def _register_scroll_canvas(cv):
         """Track a scroll canvas for theme recolours AND paint it with the
@@ -849,6 +853,24 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
                             state="readonly",
                             values=("Standard", "Light", "Dark"))
     theme_cb.pack(side="right", padx=(4, 0))
+    # Live theme swatch: a small two-tone chip (bg + accent) that PREVIEWS the active
+    # theme and repaints on switch. Font-independent "this control sets the appearance"
+    # indicator, sitting between the "Theme:" label and the value. Clicking it opens the
+    # dropdown so the whole cluster reads as one theme control.
+    theme_swatch = tk.Canvas(bar, width=24, height=14, bd=0, highlightthickness=1,
+                             takefocus=0, cursor="hand2")
+
+    def _paint_swatch(*_a):
+        p = _THEMES.get(theme_var.get().strip().lower(), _THEMES["standard"])
+        theme_swatch.configure(bg=p["bg"], highlightbackground=p["border"])
+        theme_swatch.delete("all")
+        theme_swatch.create_rectangle(0, 0, 12, 14, fill=p["bg"], outline="")
+        theme_swatch.create_rectangle(12, 0, 24, 14, fill=p["accent"], outline="")
+
+    theme_swatch.bind("<Button-1>", lambda e: (theme_cb.focus_set(),
+                                               theme_cb.event_generate("<Down>")))
+    theme_swatch.pack(side="right", padx=(6, 2))
+    _paint_swatch()
     ttk.Label(bar, text="Theme:").pack(side="right", padx=(8, 4))
     theme_var.trace_add("write", _on_theme)
     # After a pick, drop focus + clear the text selection so it doesn't stay
