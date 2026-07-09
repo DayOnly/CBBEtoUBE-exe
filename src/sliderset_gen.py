@@ -116,8 +116,14 @@ _ATTACHMENT_KEYWORDS = (
 # armor. Escape hatch: CBBE2UBE_NO_PROTRUSION_FOLLOW=1.
 _PROTRUSION_FOLLOW = os.environ.get(
     "CBBE2UBE_NO_PROTRUSION_FOLLOW", "").strip().lower() not in ("1", "true", "yes")
-# K body self-neighbors define the dilation reach (~5u on the UBE body at K=160).
-_PF_REACH_K = int(os.environ.get("CBBE2UBE_PROTRUSION_FOLLOW_K", "160"))
+# K body self-neighbors define the dilation reach (~3.3u at K=160, ~5u at K=400).
+# 400 lets a plate covering the UPPER cup (nearest body vert on the low-morph
+# upper chest, ~4-5u from the apex) reach the breast peak and ride out with it;
+# measured to lift the upper-cup follow 0.49->0.85 while the sternum (0.24->0.41)
+# and neck (0.00) stay controlled -- the outward-normal projection keeps the lift
+# on breast-facing surface, so more reach doesn't balloon flat/between-breast
+# areas. Tunable down if a specific armor over-fills cleavage.
+_PF_REACH_K = int(os.environ.get("CBBE2UBE_PROTRUSION_FOLLOW_K", "400"))
 # Only verts standing off at least this far are lifted (hugging cloth already
 # tracks well via pointwise IDW and must stay untouched).
 _PF_STANDOFF_MIN = float(os.environ.get("CBBE2UBE_PROTRUSION_FOLLOW_MIN", "1.5"))
