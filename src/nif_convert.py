@@ -12022,11 +12022,11 @@ def convert_nif_phase2(
                     body_verts_arr = np.asarray(
                         ube_basereshape.verts, dtype=np.float64)
                     # Outward normals for protrusion-follow (regional morph
-                    # tracking). Aligned to body_verts_arr (same BaseShape).
-                    _p2_body_normals = (
-                        np.asarray(ube_basereshape.normals, dtype=np.float64)
-                        if getattr(ube_basereshape, "normals", None) is not None
-                        else None)
+                    # tracking). Aligned to body_verts_arr (same BaseShape). Use
+                    # the robust helper (recomputes from tris if the injected
+                    # body ships zero/absent normals, same as phase-1) so the
+                    # follow field doesn't silently no-op on a degenerate body.
+                    _p2_body_normals = _body_normals_or_compute(ube_basereshape)
                     armor_shape_verts: dict[str, np.ndarray] = {}
                     body_in_dst: set[str] = set()
                     # Per-vert extremity fractions; see phase-1 #147 note.
