@@ -20,6 +20,33 @@ output, for converter diagnosis + fixes. Started 2026-07-07 (post unified-covera
 
 ## Open
 
+### 0. Breast-covering STANDOFF plates under-follow the breast slider (ROOT CAUSE, measured 2026-07-09)
+Two user reports — Falmer Slayer chestplate "clipping all around the breasts" and
+Steel Plate cuirass "clips at the under breasts" — are ONE root cause, measured across
+both armors. **Body pokes through the plate at the breasts when the breast slider is up.**
+
+**Mechanism (measured, not guessed).** The per-armor BODYTRI (`generate_armor_tri`)
+propagates each body slider delta to armor verts by nearest-body-vertex IDW. The breast
+is a PROTRUDING VOLUME that inflates; a plate covering the surrounding chest sits at
+standoff (2-4u) and its own nearest body vert is on the low-morph upper chest, so
+pointwise transfer leaves it ~static while the apex balloons out through it.
+- Perfect inverse correlation standoff→follow (Steel Plate Cuirass2, BreastsBigger, body=0.94):
+  `SteelArmor.015_2` standoff 4.4u→0.61 · `Collar` 3.5u→0.49 · `Cuirass` 2.2u→0.63 ·
+  `SteelArmor.012` 3.2u→**0.08**.  Fur (soft, hugs body, ~0 standoff)→1.02 (tracks fine).
+- Nearest-vertex delta for the .012 plate verts (z≈106) = **0.02**, but the apex peak
+  within 5u = 0.58, within 8u = 1.29. The signal is REGIONAL, not local.
+- **Simple fixes disproven by measurement:** nearest-bias / K1-lift did nothing
+  (11%→12%) because the nearest body vert itself under-morphs. No nearest-vertex scheme
+  (the converter's whole TRI approach) can capture a non-local volume inflation.
+- Physics RULED OUT (SMP-off "changed nothing"). Belly/butt follow fine (broad, local).
+**Fix candidates (need a reconvert to validate):** (A) regional protrusion-clearance in
+the morph — plate verts covering the breast get an outward delta from the regional breast
+expansion (visibly "follows"; but rigid steel ballooning looks wrong + higher risk); (B)
+damp the HIDDEN covered-body breast morph under a rigid non-following plate so the breast
+is CONTAINED by the plate instead of poking through (physically correct for rigid steel —
+a breastplate holds the breast in; lower risk; user still sees full slider on exposed
+skin + soft armor). Leaning B for rigid plates. See memory `project_breast_standoff_morph_follow`.
+
 ### 1. Noble Dark Leather  — reported 2026-07-07
 Female, viewed from behind (Whiterun). Outfit = leather cuirass + metal shoulder
 pauldrons + quilted/metal hip skirt-belt + thigh guards + greaves.

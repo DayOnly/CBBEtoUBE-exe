@@ -2973,6 +2973,7 @@ def convert_nif(
                             include_body_shapes=body_in_dst,
                             carrier_shape_name=carrier_name_for_tri,
                             armor_vert_extremity_fractions=armor_vert_ef,
+                            body_normals=_body_normals,
                         )
                         atomic_tri_save(tri, auto_tri_dst_phase1)
             except Exception as _e_tri:
@@ -12020,6 +12021,12 @@ def convert_nif_phase2(
                 if ube_basereshape is not None:
                     body_verts_arr = np.asarray(
                         ube_basereshape.verts, dtype=np.float64)
+                    # Outward normals for protrusion-follow (regional morph
+                    # tracking). Aligned to body_verts_arr (same BaseShape).
+                    _p2_body_normals = (
+                        np.asarray(ube_basereshape.normals, dtype=np.float64)
+                        if getattr(ube_basereshape, "normals", None) is not None
+                        else None)
                     armor_shape_verts: dict[str, np.ndarray] = {}
                     body_in_dst: set[str] = set()
                     # Per-vert extremity fractions; see phase-1 #147 note.
@@ -12049,6 +12056,7 @@ def convert_nif_phase2(
                         include_body_shapes=body_in_dst,
                         carrier_shape_name=p2_carrier_name,
                         armor_vert_extremity_fractions=armor_vert_ef,
+                        body_normals=_p2_body_normals,
                     )
                     atomic_tri_save(tri, auto_tri_dst)
         except Exception as e:
