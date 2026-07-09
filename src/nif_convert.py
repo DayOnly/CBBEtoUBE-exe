@@ -2356,6 +2356,9 @@ def convert_nif(
             # over-jiggles them and destabilises the cloth they collide against
             # (see _hdt_collider_shape_names).
             hdt_collider_names = _hdt_collider_shape_names(src_path)
+            # Multi-layer cloth (Cuirass_A/_B/_C) keeps source skin -- every graft pass
+            # skips it or it CTDs on equip (see _layered_cloth_shape_names).
+            layered_cloth_names = _layered_cloth_shape_names(src_nif_for_fit.shapes)
             for s in src_nif_for_fit.shapes:
                 if _should_drop_shape(s.name):
                     continue  # vestigial mashup leftover (e.g. MaleUnderwearBody)
@@ -2558,6 +2561,7 @@ def convert_nif(
                         and s.name not in hdt_collider_names
                         and not _shape_has_fine_animation_bones(s)
                         and not _shape_is_head_dominant(s)
+                        and s.name not in layered_cloth_names
                         and not _shape_has_hdt_smp_rigging(s, _body_bone_set)):
                     try:
                         verts_for_reskin = (snapped if snapped is not None
@@ -5318,11 +5322,13 @@ def _conform_fitted_to_body(dst_path, biped_slots: int = 0) -> int:
     # there is NO second disk parse per armor. #smp-collider-graft
     collider_names = _hdt_collider_shape_names(dst_path, nif=nf)
     softbody_names = _hdt_softbody_shape_names(dst_path, nif=nf)
+    layered_cloth_names = _layered_cloth_shape_names(nf.shapes)  # keep source skin
     total = 0
     dirty = False
     for s in nf.shapes:
         nm = (s.name or "").lower()
         if (s.name in collider_names or s.name in softbody_names
+                or s.name in layered_cloth_names
                 or any(k in nm for k in _CONFORM_SKIP_NAMES)):
             continue
         bw = s.bone_weights or {}
@@ -5725,6 +5731,7 @@ def _match_rigid_leg_bend_to_body(dst_path, biped_slots: int = 0) -> int:
                   # Leave it exactly as the main conversion wrote it (see _nif_has_fx_shape).
     collider_names = _hdt_collider_shape_names(dst_path, nif=nf)
     softbody_names = _hdt_softbody_shape_names(dst_path, nif=nf)
+    layered_cloth_names = _layered_cloth_shape_names(nf.shapes)  # keep source skin
     # Bones grafted onto the plate + the EXISTING bone each re-anchors to: leg detail bones
     # anchor to Thigh/Calf; the butt-jiggle bones to the Pelvis; the breast bones to Spine2.
     # graft_anchor also drives the fold-back of any bone we can't safely anchor.
@@ -5745,6 +5752,7 @@ def _match_rigid_leg_bend_to_body(dst_path, biped_slots: int = 0) -> int:
     for s in nf.shapes:
         nm = (s.name or "").lower()
         if (s.name in collider_names or s.name in softbody_names
+                or s.name in layered_cloth_names
                 or any(k in nm for k in _CONFORM_SKIP_NAMES)):
             continue
         if _shape_has_effect_shader(s) or _is_fx_overlay_name(s.name):
@@ -5979,11 +5987,13 @@ def _transfer_body_jiggle_to_fitted(dst_path, biped_slots: int = 0) -> int:
                   # Leave it exactly as the main conversion wrote it (see _nif_has_fx_shape).
     collider_names = _hdt_collider_shape_names(dst_path, nif=nf)
     softbody_names = _hdt_softbody_shape_names(dst_path, nif=nf)
+    layered_cloth_names = _layered_cloth_shape_names(nf.shapes)  # keep source skin
     total = 0
     dirty = False
     for s in nf.shapes:
         nm = (s.name or "").lower()
         if (s.name in collider_names or s.name in softbody_names
+                or s.name in layered_cloth_names
                 or any(k in nm for k in _CONFORM_SKIP_NAMES)):
             continue
         if _shape_has_effect_shader(s) or _is_fx_overlay_name(s.name):
@@ -8381,6 +8391,40 @@ def _shape_has_hdt_smp_rigging(src_shape, body_bone_names: set[str]) -> bool:
         return False
     unknown = armor_bones - body_bone_names
     return len(unknown) / len(armor_bones) > HDT_BONE_THRESHOLD
+
+
+# Multi-layer cloth cuirasses (Cuirass_A/_B/_C, Robe_01/_02) are authored bone-driven
+# cloth that a RUNTIME config often drives with HDT-SMP (not the NIF, so
+# _shape_has_hdt_smp_rigging can't see it -- they're weighted to body bones, not custom
+# chain bones, so the garment-chain check misses them too). Every body-follow pass (the
+# M6 reskin AND the conform/jiggle passes) grafts the body's HDT-SMP JIGGLE bones
+# (Breast/Butt/Belly) onto them; the runtime then drives that cloth by those SMP bones
+# and the engine CTDs on equip (New Leather "Cuirass_A/B", crash 2026-07-09). So KEEP
+# their SOURCE skin -- skip EVERY graft pass for them (pynifly can't cleanly remove a
+# bone after the fact, so prevention is the only reliable path). Detect structurally:
+# 2+ sibling shapes sharing a base stem + a short layer suffix. Off with
+# CBBE2UBE_NO_LAYERED_CLOTH_SKIN. #layered-cloth-skin
+_LAYERED_CLOTH_SKIN = (
+    os.environ.get("CBBE2UBE_NO_LAYERED_CLOTH_SKIN", "").strip().lower()
+    not in ("1", "true", "yes", "on"))
+_LAYER_SUFFIX_RE = re.compile(r"^(.*?)[_ ]([A-Za-z]|\d{1,2})$")
+
+
+def _layered_cloth_shape_names(shapes) -> "set[str]":
+    """Names of shapes in a MULTI-LAYER cloth group: 2+ shapes whose names share a base
+    stem and differ only by a short layer suffix (Cuirass_A/_B/_C, Robe_01/_02). Such
+    authored cloth keeps its SOURCE skin -- every body-follow graft pass skips it, so the
+    body's HDT-SMP jiggle bones aren't grafted on and the shape doesn't CTD on equip.
+    #layered-cloth-skin"""
+    if not _LAYERED_CLOTH_SKIN:
+        return set()
+    groups: "dict[str, list[str]]" = {}
+    for s in shapes:
+        nm = getattr(s, "name", "") or ""
+        m = _LAYER_SUFFIX_RE.match(nm)
+        if m:
+            groups.setdefault(m.group(1).lower(), []).append(nm)
+    return {n for members in groups.values() if len(members) >= 2 for n in members}
 
 
 def detect_zfight_pairs(
@@ -11176,6 +11220,9 @@ def convert_nif_phase2(
     # graft over-jiggles them and destabilises the cloth (see
     # _hdt_collider_shape_names).
     hdt_collider_names = _hdt_collider_shape_names(src_path)
+    # Multi-layer cloth (Cuirass_A/_B/_C) keeps source skin -- every graft pass skips it
+    # or it CTDs on equip (see _layered_cloth_shape_names).
+    layered_cloth_names = _layered_cloth_shape_names(src_nif.shapes)
 
     # LAYERED_ANTIPOKE pre-pass: rank this NIF's body-layer shapes innermost-
     # first (median distance to the body -- relative order is what matters, so
@@ -11527,6 +11574,7 @@ def convert_nif_phase2(
                 and s.name not in RESKIN_SKIP_NAMES
                 and s.name not in hdt_softbody_names
                 and s.name not in hdt_collider_names
+                and s.name not in layered_cloth_names
                 and not _shape_has_fine_animation_bones(s)
                 and not _shape_is_head_dominant(s)
                 and (_MORPHTRI_SCALE or not _is_morph_tri)):
