@@ -311,20 +311,24 @@ def test_merge_downgrades_to_full_esp_on_esl_overflow(tmp_path):
     from src.esp import ESP, TES4Header, Group, Record, encode_subrecord, \
         encode_zstring
 
-    def make_arma(own_fid: int) -> Record:
+    def make_arma(own_fid: int, tag: str) -> Record:
+        # DISTINCT mesh per ARMA (unique `tag`) so the merge record-dedup
+        # (MERGE_DEDUP_ARMAS) does NOT collapse them -- this test exercises the
+        # ESL-overflow downgrade, which needs 4 genuinely different ARMAs.
         payload = (
-            encode_subrecord(b"EDID", encode_zstring(f"ARMA_{own_fid:X}_UBE"))
+            encode_subrecord(b"EDID", encode_zstring(f"ARMA_{tag}_UBE"))
             + encode_subrecord(b"BOD2", struct.pack("<II", 0x4, 4))
             + encode_subrecord(b"RNAM", struct.pack("<I", 0x02005734))
-            + encode_subrecord(b"MOD3", encode_zstring("!UBE/Armor/test.nif"))
+            + encode_subrecord(b"MOD3", encode_zstring(f"!UBE/Armor/test_{tag}.nif"))
         )
         return Record(sig=b"ARMA", flags=0, formid=own_fid, timestamp_vc=0,
                       version_unk=0x002C, payload=payload)
 
-    def make_patch(path: Path, locals_: list[int]) -> Path:
+    def make_patch(path: Path, locals_: list[int], tags: list[str]) -> Path:
         masters = ["Skyrim.esm", "UBE_AllRace.esp"]
         own_byte = len(masters)
-        armas = [make_arma((own_byte << 24) | lo) for lo in locals_]
+        armas = [make_arma((own_byte << 24) | lo, t)
+                 for lo, t in zip(locals_, tags)]
         esp_obj = ESP(
             header=TES4Header(masters=masters, num_records=0,
                               next_object_id=max(locals_) + 1, version=1.7),
@@ -334,8 +338,8 @@ def test_merge_downgrades_to_full_esp_on_esl_overflow(tmp_path):
         return path
 
     tmp_path.mkdir(parents=True, exist_ok=True)
-    p1 = make_patch(tmp_path / "ov_a.esp", [0x800, 0x801])
-    p2 = make_patch(tmp_path / "ov_b.esp", [0x800, 0x801])
+    p1 = make_patch(tmp_path / "ov_a.esp", [0x800, 0x801], ["a0", "a1"])
+    p2 = make_patch(tmp_path / "ov_b.esp", [0x800, 0x801], ["b0", "b1"])
     out = tmp_path / "ov_merged.esp"
 
     # Force the cap below the 4 total new ARMAs so we exercise the downgrade.

@@ -28,14 +28,17 @@ and a vampire armor mod UBE conversions:
       * All other subrecords (OBND, BOD2, DNAM, textures, etc.) copied verbatim
 
   For each ARMO whose Armatures list references a source ARMA:
-    - Create an override in the patch
-    - Append the corresponding new ARMA's FormID to the Armatures list
+    - Record a SkyPatcher `armorAddonsToAdd` link (ARMO -> new UBE ARMA) in the
+      `.skypatcher.json` sidecar. NO ESP ARMO override is emitted -- SkyPatcher
+      is the sole delivery path (the legacy ARMO-override machinery was removed).
 
-Output masters: Skyrim.esm, [Dawnguard.esm if needed], UBE_AllRace.esp,
-                <source mod>.esp
+Output masters: all vanilla DLC ESMs (Skyrim/Update/Dawnguard/HearthFires/
+                Dragonborn) unconditionally, then the source mod's own masters,
+                UBE_AllRace.esp, and <source mod>.esp.
 """
 from __future__ import annotations
 
+import os
 import struct
 from pathlib import Path
 from typing import Iterable
@@ -390,9 +393,20 @@ def reconcile_alt_texture_indices_all(primary_esp_path, meshes_root) -> int:
 # render reads in-game as "the armor doesn't fit the body / doesn't conform".
 
 def _arma_dedup_identity(arma_payload: bytes):
-    """(rnam, mod2_lower, mod3_lower, subrecord_count) for an ARMA payload --
-    the render identity (race + meshes) plus a completeness tiebreak."""
-    rnam = mod2 = mod3 = None
+    """(rnam, mod2, mod3, mod4, mod5, slot_data, alttex, subrecord_count) for an
+    ARMA payload -- the FULL render identity (race + every gendered 3rd/1st-person
+    mesh + the biped-slot template + embedded alt-texture sets) plus a
+    completeness tiebreak.
+
+    Slot flags MUST be part of the key: two ARMAs that share meshes + race but
+    cover DIFFERENT biped slots (e.g. one also claims the Amulet slot, or differs
+    in ActsLike44) are NOT duplicates -- collapsing them drops real slot coverage
+    and breaks the piece on equip. Likewise the 1st-person meshes (MOD4/MOD5) and
+    the embedded alt-texture sets (MO2S/... -- colour variants) distinguish
+    otherwise-identical addons. The group key is [:7]; [7] is the completeness
+    tiebreak."""
+    rnam = mod2 = mod3 = mod4 = mod5 = slot_data = None
+    alttex: "dict[bytes, bytes]" = {}
     n = 0
     for sig, d in esp.iter_subrecords(arma_payload):
         n += 1
@@ -402,14 +416,60 @@ def _arma_dedup_identity(arma_payload: bytes):
             mod2 = d.rstrip(b"\x00").lower()
         elif sig == b"MOD3":
             mod3 = d.rstrip(b"\x00").lower()
-    return (rnam, mod2, mod3, n)
+        elif sig == b"MOD4":
+            mod4 = d.rstrip(b"\x00").lower()
+        elif sig == b"MOD5":
+            mod5 = d.rstrip(b"\x00").lower()
+        elif sig in (b"BOD2", b"BODT"):
+            slot_data = d               # full biped-slot + flags template bytes
+        elif sig in (b"MO2S", b"MO3S", b"MO4S", b"MO5S"):
+            alttex[sig] = d             # embedded alt-texture set -> colour variant
+    return (rnam, mod2, mod3, mod4, mod5, slot_data,
+            tuple(sorted(alttex.items())), n)
+
+
+# Merge-time RECORD dedup: the patcher mints one UBE ARMA per SOURCE armature
+# record, so many source armors that resolve to the SAME UBE mesh + slots + races
+# produce byte-identical minted ARMAs (differing only in EDID) -- e.g. one UBE
+# `DragonboneArmorF` mesh ended up with 8 ARMA records. At merge time we collapse
+# each set of identical minted ARMAs to ONE record and repoint every source
+# reference (incl. the SkyPatcher INI) at the keeper. Keyed on the FULL remapped
+# payload (minus EDID) + record flags, so ARMAs differing in ANY rendered field
+# (slots, meshes, alt-textures) are NEVER merged. Within one ESL piece only --
+# split pieces don't master each other, so they can't share a record.
+# Default ON; CBBE2UBE_NO_MERGE_DEDUP=1 disables.
+MERGE_DEDUP_ARMAS = (
+    os.environ.get("CBBE2UBE_NO_MERGE_DEDUP", "").strip().lower()
+    not in ("1", "true", "yes", "on"))
+
+
+# Subrecords that do NOT affect how the addon RENDERS, so they're excluded from
+# the merge record-dedup key: the editor id, and the CK-generated model
+# texture-HASH blocks (MODT-equivalents) for each of the 4 gendered models. Two
+# minted ARMAs with the same meshes/alt-textures/slots/races that differ only in
+# EDID or a texture hash are the same addon. The alt-texture SETS (MO2S/MO3S/
+# MO4S/MO5S) are KEPT -- those genuinely change the look.
+_ARMA_DEDUP_SKIP_SIGS = frozenset((b"EDID", b"MO2T", b"MO3T", b"MO4T", b"MO5T"))
+
+
+def _arma_merge_dedup_key(payload: bytes) -> bytes:
+    """The ARMA payload reduced to its render-identity bytes (EDID + model
+    texture-hash blocks stripped) -- the merge record-dedup key. See
+    MERGE_DEDUP_ARMAS and _ARMA_DEDUP_SKIP_SIGS."""
+    out = b""
+    for sig, d in esp.iter_subrecords(payload):
+        if sig in _ARMA_DEDUP_SKIP_SIGS:
+            continue
+        out += esp.encode_subrecord(sig, d)
+    return out
 
 
 def dedup_armo_armature_refs(esp_path) -> int:
     """In each ARMO, drop redundant armature refs that point at THIS patch's OWN
-    ARMAs sharing the same (RNAM, MOD2, MOD3) -- keeping the most complete one
-    (most subrecords). Vanilla/master armatures are never touched. Returns the
-    number of refs removed. Run AFTER the merge. See the block comment above."""
+    ARMAs sharing the same render identity (race + all gendered meshes + biped
+    slot flags; see _arma_dedup_identity) -- keeping the most complete one (most
+    subrecords). Vanilla/master armatures are never touched. Returns the number of
+    refs removed. Run AFTER the merge. See the block comment above."""
     e = esp.ESP.load(esp_path)
     own_byte = len(e.header.masters)
     own_arma_identity: "dict[int, tuple]" = {}
@@ -436,7 +496,7 @@ def dedup_armo_armature_refs(esp_path) -> int:
                 ident = own_arma_identity.get(fid)
                 if ident is None:
                     continue                 # vanilla/master ARMA -> leave alone
-                by_key.setdefault(ident[:3], []).append((fid, ident[3]))
+                by_key.setdefault(ident[:7], []).append((fid, ident[7]))
             keeper_for: "dict[tuple, int]" = {}
             for key, members in by_key.items():
                 if len(members) < 2:
@@ -454,8 +514,8 @@ def dedup_armo_armature_refs(esp_path) -> int:
                 if sig == b"MODL" and len(d) == 4:
                     fid = struct.unpack("<I", d)[0]
                     ident = own_arma_identity.get(fid)
-                    if ident is not None and ident[:3] in keeper_for:
-                        key = ident[:3]
+                    if ident is not None and ident[:7] in keeper_for:
+                        key = ident[:7]
                         if fid == keeper_for[key] and key not in emitted:
                             emitted.add(key)
                         else:
@@ -766,6 +826,26 @@ def _arma_texture_master_names(payload: bytes, src_masters: list[str],
             _remap_alt_texture_payload(data, _add)      # harvest nested TXSTs
         elif sig in _ARMA_SKIN_TXST_SIGS and len(data) == 4:
             _add(struct.unpack("<I", data)[0])
+    return names
+
+
+def _arma_race_master_names(payload: bytes, src_masters: list[str],
+                            src_filename: str) -> "list[str]":
+    """Master NAMEs referenced by an ARMA's RNAM (primary race) + MODL (additional
+    races), in the source ESP's master space (own-records resolve to src_filename).
+    Unified hands/feet coverage declares these so a source-primary armature's
+    preserved vanilla/custom races resolve in the coverage ESP's master space
+    instead of dangling. #unified-coverage"""
+    names: list[str] = []
+    seen: set[str] = set()
+    for sig, data in esp.iter_subrecords(payload):
+        if sig in (b"RNAM", ARMA_ADDITIONAL_RACE_SIG) and len(data) == 4:
+            fid = struct.unpack("<I", data)[0]
+            top = (fid >> 24) & 0xFF
+            nm = src_masters[top] if top < len(src_masters) else src_filename
+            if nm.lower() not in seen:
+                seen.add(nm.lower())
+                names.append(nm)
     return names
 
 
@@ -1230,7 +1310,17 @@ def _discover_ube_races(data_dirs: list[Path]) -> list[tuple[str, int, str]]:
                             None)
             if race_grp is None:
                 continue
+            own_byte = len(plugin_esp.header.masters)
             for rec in race_grp.records:
+                # Skip OVERRIDE records (FormID originated by a MASTER, not this
+                # plugin). Attributing the ref to THIS plugin yields a DANGLING
+                # race ref -- the "FExxxxxx <Could not be resolved>" bug -- because
+                # the race is originated elsewhere; and it DUPLICATES the
+                # originating plugin's race, which for a UBE_AllRace override is
+                # already covered by UBE_RACE_FIDS_24. Only ORIGINATED races (own
+                # top byte) are genuinely-new races worth adding.
+                if ((rec.formid >> 24) & 0xFF) != own_byte:
+                    continue
                 edid = None
                 for sig, sd in esp.iter_subrecords(rec.payload):
                     if sig == b"EDID":
@@ -1329,6 +1419,51 @@ def restore_female_models(patches_dir: "str | Path",
             "patches_changed": patches_changed}
 
 
+def coverage_arma_race_targeting(
+        slot_bits: int, src_rnam: "int | None", src_additional: "list[int]", *,
+        remap_src_fid, src_to_patch_byte: "dict[int, int]",
+        ube_primary: int, ube_additional: "list[int]",
+        ) -> "tuple[int, list[int]]":
+    """Pick (primary RNAM, additional-race list) for a minted coverage ARMA.
+
+    Shared by the per-source patch and the winner-scan coverage passes so both
+    build hand/foot armatures identically. All returned FormIDs are in the
+    caller's patch master space.
+
+    BODY (slot 32) armatures target UBE actors via the UBE body race, so the 16
+    UBE races alone suffice -> UBE-primary. HANDS (33) / FEET (37) are different:
+    a UBE actor's hand/foot slot resolves to a VANILLA race (the documented
+    nude-hands fallback routing), so an ARMA listing ONLY UBE races never matches
+    -> the gauntlet/boot is invisible and hides the real hands. For those we KEEP
+    the source primary race and PRESERVE the source's vanilla playable-race list
+    (remapped into patch space) then ADD the UBE races on top -- the ~16-UBE +
+    ~vanilla list a correct coverage armature carries. Dropping the vanilla races
+    was the modded-gauntlet-invisible bug. A source race whose master the patch
+    does not hold is skipped (can't emit a valid ref) rather than corrupting;
+    if the primary itself can't be remapped it falls back to UBE-primary.
+
+    `remap_src_fid` translates a source-master-space FormID into patch space;
+    `src_to_patch_byte` maps source master bytes that ARE patch masters.
+    """
+    if not (slot_bits & _BIPED_SLOT_HANDS_FEET_BITS):
+        return ube_primary, ube_additional
+    prim = remap_src_fid(src_rnam) or ube_primary   # remap fail -> fall back
+    addl: "list[int]" = []
+    seen: "set[int]" = set()
+    for _f in src_additional:
+        if ((_f >> 24) & 0xFF) not in src_to_patch_byte:
+            continue  # source master not mastered by patch -> skip
+        _r = remap_src_fid(_f)
+        if _r and _r not in seen:
+            seen.add(_r)
+            addl.append(_r)
+    for _u in ube_additional:
+        if _u not in seen:
+            seen.add(_u)
+            addl.append(_u)
+    return prim, (addl or list(ube_additional))
+
+
 def generate_ube_patch(
     source_esp_path: str | Path,
     output_esp_path: str | Path,
@@ -1349,8 +1484,8 @@ def generate_ube_patch(
     BODY coverage: loose-mesh replacers (HDT-SMP Vanilla) ship vanilla armor
     meshes with no ESP records, so the source-ARMA scan finds nothing. For
     each master body ARMA whose female mesh (MOD3) is in this set, we mint a
-    UBE ARMA (MOD3 -> !UBE, UBE races) and let the master-ARMO override loop
-    append it — making those vanilla body armors visible + fitted on UBE
+    UBE ARMA (MOD3 -> !UBE, UBE races) and record a SkyPatcher link for it
+    — making those vanilla body armors visible + fitted on UBE
     races. General: matched purely by mesh path, no per-armor logic."""
     source_esp_path = Path(source_esp_path)
     output_esp_path = Path(output_esp_path)
@@ -1446,9 +1581,19 @@ def generate_ube_patch(
     # the MODL block; mirror that exactly (full 16-race list, primary first).
     ube_additional = [ube_top | low for low in UBE_RACE_FIDS_24]
     # Add discovered extra UBE races; remap their FormIDs to patch space.
+    # GUARD (robustness): drop only EXACT-duplicate race FormIDs. The override
+    # skip in _discover_ube_races already prevents the dangling-ref / duplicate
+    # class, so this is belt-and-suspenders. We deliberately do NOT drop by low id
+    # alone: a genuinely-ORIGINATED custom race whose low id happens to collide
+    # with a UBE_AllRace value is a DIFFERENT race and must be kept, or that race
+    # renders no UBE armor.
+    _seen_race_fids = set(ube_additional)
     for plugin_name, fid, _edid in extra_ube_races:
-        plugin_top = make_master_byte(patch_masters, plugin_name) << 24
-        ube_additional.append(plugin_top | (fid & 0xFFFFFF))
+        ref = (make_master_byte(patch_masters, plugin_name) << 24) | (fid & 0xFFFFFF)
+        if ref in _seen_race_fids:
+            continue
+        _seen_race_fids.add(ref)
+        ube_additional.append(ref)
 
     src_arma_group = src.group(b"ARMA")
     src_armo_group = src.group(b"ARMO")
@@ -1582,45 +1727,14 @@ def generate_ube_patch(
 
         new_edid = (edid + "_UBE") if edid else f"UBE_NewARMA_{next_obj_id:X}"
 
-        # Rebuild ARMA payload with UBE race targeting + path prefix.
-        # HANDS (33) / FEET (37): keep the SOURCE primary race (vanilla
-        # DefaultRace) instead of UBE_Breton — the engine matches the hand/foot
-        # SKIN by primary race only, so a UBE-primary gauntlet/boot is invisible
-        # on non-Breton UBE actors (and hides the real hands). Remap the source
-        # RNAM into the patch master space; the UBE races still go on as
-        # additionals. Body keeps the UBE primary. See _BIPED_SLOT_HANDS_FEET_BITS.
-        # Additional-race list. Body (slot 32) matches UBE actors via the UBE
-        # body race, so the UBE races alone suffice. HANDS (33) / FEET (37) are
-        # different: a UBE actor's hand/foot slot resolves to a VANILLA race
-        # (the documented nude-hands fallback routing), so an ARMA that lists
-        # ONLY UBE races never matches -> the gauntlet/boot is invisible (and
-        # hides the real hands). The source ARMA already carries the full
-        # vanilla playable-race list (that's how it renders on vanilla races);
-        # we must PRESERVE those (remapped into patch master space) and ADD the
-        # UBE races on top -- exactly the 16-UBE + ~23-vanilla list a correct
-        # coverage armature carries. Dropping them was the
-        # modded-gauntlet-invisible bug. Skyrim.esm races remap cleanly
-        # (Skyrim is always a patch master); races whose master isn't a patch
-        # master are skipped (can't emit a valid ref) rather than corrupting.
-        if slot_bits & _BIPED_SLOT_HANDS_FEET_BITS:
-            _prim = _remap_src_fid_to_patch(src_rnam)
-            if not _prim:
-                _prim = ube_primary  # remap failed -> fall back (no worse)
-            _addl: list[int] = []
-            _seen: set[int] = set()
-            for _f in src_additional:
-                if ((_f >> 24) & 0xFF) not in src_to_patch_byte:
-                    continue  # source master not mastered by patch -> skip
-                _r = _remap_src_fid_to_patch(_f)
-                if _r and _r not in _seen:
-                    _seen.add(_r); _addl.append(_r)
-            for _u in ube_additional:
-                if _u not in _seen:
-                    _seen.add(_u); _addl.append(_u)
-            _additional_for_arma = _addl or list(ube_additional)
-        else:
-            _prim = ube_primary
-            _additional_for_arma = ube_additional
+        # Rebuild ARMA payload with UBE race targeting + path prefix. Body keeps
+        # UBE-primary; hands/feet keep source-primary + preserved vanilla races +
+        # UBE races (see coverage_arma_race_targeting for the full rationale).
+        _prim, _additional_for_arma = coverage_arma_race_targeting(
+            slot_bits, src_rnam, src_additional,
+            remap_src_fid=_remap_src_fid_to_patch,
+            src_to_patch_byte=src_to_patch_byte,
+            ube_primary=ube_primary, ube_additional=ube_additional)
         # PURE gauntlet (slot 33, not 32): ESP-only fallback keeps the ORIGINAL
         # hand mesh (callable returning False prevents the !UBE redirect; None
         # would FORCE it). Now GATED by GAUNTLET_ESP_ONLY — default OFF, because
@@ -1900,8 +2014,8 @@ def generate_ube_patch(
 
         # Mesh-path-driven vanilla body coverage: loose-mesh replacers ship
         # vanilla body meshes with no ESP records. If we converted the mesh
-        # to !UBE, mint a UBE ARMA and register it so the master-ARMO override
-        # loop appends it. Matched purely by mesh path; no per-armor logic.
+        # to !UBE, mint a UBE ARMA and record a SkyPatcher armorAddonsToAdd
+        # link for it. Matched purely by mesh path; no per-armor logic.
         if body_mesh_rel_paths:
             m_arma_grp = next(
                 (g for g in master_esp.groups if g.label == b"ARMA"), None)
@@ -3214,6 +3328,8 @@ def generate_modded_nonbody_ube_coverage_patch(
     exclude_names: "set[str] | None" = None,
     exclude_armo_abs: "set[tuple[str, int]] | None" = None,
     master_data_dirs: "list[Path] | None" = None,
+    cover_all: bool = False,
+    emit_sidecar: bool = False,
     author: str = "cbbe-to-ube modded non-body UBE coverage",
     description: str = "UBE race coverage for mod-defined non-body armor",
 ) -> dict:
@@ -3221,7 +3337,13 @@ def generate_modded_nonbody_ube_coverage_patch(
     WINNING armatures (from ANY plugin) lack it. For each such ARMO, mint a
     UBE-primary ARMA per missing DefaultRace armature (same mesh) and override
     the ARMO to add it. ARMOs/ARMAs are read as load-order winners (last wins).
-    `ordered_plugin_paths` must be in load order. Returns a stats dict."""
+    `ordered_plugin_paths` must be in load order.
+
+    cover_all=True (unified-coverage / primary role) covers NON-PLAYABLE non-body
+    items too, mirroring the body pass's cover_all: NPC-only helmets/jewelry on a
+    UBE-race NPC go invisible without it. The armature-level DefaultRace filter
+    (below) is still the beast-race guard, so this stays crash-safe. Default False
+    keeps today's playable-only fallback behavior. Returns a stats dict."""
     out_path = Path(output_esp_path)
     exclude = {n.lower() for n in (exclude_names or set())}
     DEFAULT_RACE = ("skyrim.esm", _DEFAULT_RACE_LOW24)
@@ -3274,7 +3396,10 @@ def generate_modded_nonbody_ube_coverage_patch(
         # hands mints (invisible gauntlets). #fsp-dedup
         if exclude_armo_abs and armo_abs in exclude_armo_abs:
             continue
-        if aflags & ARMO_NONPLAYABLE_FLAG:
+        # cover_all (unified/primary) also covers non-playable NPC gear -- it can
+        # sit on a UBE-race NPC and would otherwise be invisible. The armature
+        # DefaultRace filter below is still the beast guard, so this is crash-safe.
+        if (aflags & ARMO_NONPLAYABLE_FLAG) and not cover_all:
             continue
         if slots & _DEFORMING_SLOTS_MASK:
             continue
@@ -3314,6 +3439,7 @@ def generate_modded_nonbody_ube_coverage_patch(
              b"MO2T", b"MO3T", b"MO4T", b"MO5T",
              b"NAM0", b"NAM1", b"NAM2", b"NAM3"}
     new_arma_records: list[esp.Record] = []
+    _mint_rec: dict = {}   # arma_abs -> minted Record (for post-prune sidecar fids)
     next_id = ESL_OWN_FORMID_MIN
     mint_name = out_path.with_suffix(".esp").name
     for arma_abs in mint_set:
@@ -3331,10 +3457,12 @@ def generate_modded_nonbody_ube_coverage_patch(
         next_id += 1
         new_edid = "UBE_MNB_{:X}".format(arma_abs[1])
         minted_payload = replace_arma_edid(minted_payload, new_edid[:90])
-        new_arma_records.append(esp.Record(
+        _rec = esp.Record(
             sig=b"ARMA", flags=0, formid=new_fid, timestamp_vc=0,
-            version_unk=0x002C, payload=minted_payload))
+            version_unk=0x002C, payload=minted_payload)
+        new_arma_records.append(_rec)
         mint_set[arma_abs] = new_fid
+        _mint_rec[arma_abs] = _rec
 
     as_esl = len(new_arma_records) <= ESL_MAX_OWN_RECORDS
     tes4_flags = TES4_FLAG_ESL if as_esl else 0
@@ -3348,6 +3476,27 @@ def generate_modded_nonbody_ube_coverage_patch(
     prune_unused_masters(out_esp)
     out_esp.save(out_path)
     warnings = validate_patch(out_path, master_data_dirs=master_data_dirs)
+
+    # ---- SkyPatcher-links sidecar (Step 3b: fold into Combined via the merge) ----
+    # Same schema the per-source pass writes; the merge remaps minted fids + dedups
+    # (armo, src-armature). fids are POST-prune (rec.formid mutated in place).
+    if emit_sidecar:
+        import json as _json
+        _doc = []
+        for armo_abs, defining_plugin, to_mint in targets:
+            _adds = [{"fid": _mint_rec[_a].formid, "src": [_a[0], _a[1]]}
+                     for _a in to_mint if _a in _mint_rec]
+            if _adds:
+                _doc.append({"armo": [defining_plugin, armo_abs[1]],
+                             "adds": _adds})
+        _sc = Path(str(out_path) + ".skypatcher.json")
+        try:
+            if _doc:
+                _sc.write_text(_json.dumps(_doc, indent=1), encoding="utf-8")
+            elif _sc.is_file():
+                _sc.unlink()
+        except OSError:
+            pass
 
     # ---- Pass 4: SkyPatcher INI (add minted ARMA to each target ARMO) ----
     ini_lines = [
@@ -3387,7 +3536,9 @@ def generate_modded_body_ube_coverage_patch(
     exclude_armo_abs: "set[tuple[str, int]] | None" = None,
     master_data_dirs: "list[Path] | None" = None,
     cover_all: bool = False,
+    cover_hands_feet: bool = False,
     preserve_textures: bool = False,
+    emit_sidecar: bool = False,
     author: str = "cbbe-to-ube modded body UBE coverage",
     description: str = "UBE race coverage for mod-defined body armor variants",
 ) -> dict:
@@ -3421,6 +3572,12 @@ def generate_modded_body_ube_coverage_patch(
         return [d.rstrip(b"\x00").decode("utf-8", "ignore")
                 for sig, d in esp.iter_subrecords(payload)
                 if sig in (b"MOD2", b"MOD3", b"MOD4", b"MOD5")]
+
+    def _arma_bod2_slots(payload: bytes) -> int:
+        for sig, d in esp.iter_subrecords(payload):
+            if sig in (b"BOD2", b"BODT") and len(d) >= 4:
+                return struct.unpack_from("<I", d, 0)[0]
+        return 0
 
     # ---- Pass 1: load-order winners for ARMA + ARMO (last wins) ----
     arma_win: dict = {}
@@ -3473,19 +3630,31 @@ def generate_modded_body_ube_coverage_patch(
         # they stay on the source-primary ESP-override path.
         _is_body = bool(slots & _BIPED_SLOT_BODY_BIT)
         _cover_body = cover_all and _is_body
-        if (aflags & ARMO_NONPLAYABLE_FLAG) and not _cover_body:
+        # Unified mode (cover_hands_feet) makes the winner-scan the PRIMARY path
+        # for PURE hands/feet (33/37) too: cover them here -- non-playable NPC gear
+        # included -- and mint them SOURCE-primary below (preserved vanilla races +
+        # UBE) so a UBE actor's vanilla-resolving hand/foot slot still matches. This
+        # is safe ONLY because the per-source builder stops covering hands/feet when
+        # this is on (else the double armature = the invisible-gauntlet bug).
+        _cover_hf = (cover_hands_feet
+                     and bool(slots & _BIPED_SLOT_HANDS_FEET_BITS)
+                     and not _is_body)
+        if (aflags & ARMO_NONPLAYABLE_FLAG) and not (_cover_body or _cover_hf):
             continue
         if not (slots & _DEFORMING_SLOTS_MASK):
             continue                       # only body/hands/feet here (the inverse of non-body)
-        # Full-SkyPatcher PRIMARY role (cover_all) covers TORSO body (slot 32)
-        # ONLY -- the per-source builder suppresses just those. Pure hands/feet
-        # (33/37) stay on the source-primary ESP-override path, so covering them
-        # here would double them up with a UBE-primary armature (the nude-hands
-        # invisibility bug). The fallback role (cover_all=False) still covers the
-        # full deforming mask for items the ESP-override missed.
-        if cover_all and not _is_body:
+        # cover_all covers TORSO body (slot 32); cover_hands_feet adds pure
+        # hands/feet (33/37). Without either, a non-body-non-HF deforming item is
+        # skipped in cover_all (it's the per-source builder's job / fallback role).
+        if cover_all and not _is_body and not _cover_hf:
             continue
-        if rnam != DEFAULT_RACE:
+        # Fallback role filters on the ARMO's own RNAM. cover_all (unified/primary)
+        # does NOT -- ARMO RNAM is frequently a quirky authoring choice (a non-
+        # default race on human gear), exactly as the non-body pass documents. The
+        # real beast guard is the armature-level DefaultRace filter in to_mint
+        # below, so dropping the ARMO-RNAM skip here stays crash-safe while
+        # recovering human armor the per-source path covered. #unified-coverage
+        if rnam != DEFAULT_RACE and not cover_all:
             continue                       # beast/custom race -> never UBE-extend
         if not arms:
             continue
@@ -3495,10 +3664,16 @@ def generate_modded_body_ube_coverage_patch(
             continue
         if any(v[4] for _x, v in winning) and not _cover_body:
             continue                       # already has a UBE armature (vanilla ARMO path)
-        # mint only DefaultRace armatures whose mesh we actually converted
+        # mint DefaultRace armatures: BODY needs a converted mesh (an unconverted
+        # CBBE body on UBE clips); pure hands/feet (unified) are covered whether or
+        # not converted -- they keep the original mesh where unconverted, exactly
+        # like the per-source path, so a modded gauntlet is never left invisible.
         to_mint = [x for x, v in winning
                    if v[3] == DEFAULT_RACE
-                   and any(_conv_exists(mp) for mp in _arma_models(v[0]))]
+                   and (any(_conv_exists(mp) for mp in _arma_models(v[0]))
+                        or (_cover_hf
+                            and bool(_arma_bod2_slots(v[0])
+                                     & _BIPED_SLOT_HANDS_FEET_BITS)))]
         if not to_mint:
             continue
         targets.append((armo_abs, plugin_case.get(armo_abs[0], armo_abs[0]),
@@ -3521,6 +3696,19 @@ def generate_modded_body_ube_coverage_patch(
             for nm in _arma_texture_master_names(_pl, _m2, _n2):
                 if len(patch_masters) < _MASTER_CAP:
                     _add_master_if_missing(patch_masters, nm)
+    if cover_hands_feet:
+        # A source-primary hands/feet armature preserves its vanilla/custom race
+        # list, so declare those race masters here or the refs dangle. Skyrim (the
+        # common DefaultRace + vanilla playable list) is already a master; custom
+        # races (a few content mods) get unioned, capped like textures -- a race
+        # past the cap is simply skipped by src_to_patch_byte below (no dangle).
+        for arma_abs in mint_set:
+            _pl, _m2, _n2, _rn, _u = arma_win[arma_abs]
+            if not (_arma_bod2_slots(_pl) & _BIPED_SLOT_HANDS_FEET_BITS):
+                continue
+            for nm in _arma_race_master_names(_pl, _m2, _n2):
+                if len(patch_masters) < _MASTER_CAP:
+                    _add_master_if_missing(patch_masters, nm)
     pidx = {m.lower(): i for i, m in enumerate(patch_masters)}
     own_byte = len(patch_masters)
     ube_byte = pidx[ube_allrace_filename.lower()]
@@ -3535,12 +3723,55 @@ def generate_modded_body_ube_coverage_patch(
                   b"NAM0", b"NAM1", b"NAM2", b"NAM3"}
     STRIP_MIN = {b"SNDD", b"ONAM"}
     new_arma_records: list = []
+    _mint_rec: dict = {}   # arma_abs -> minted Record (for post-prune sidecar fids)
     next_id = ESL_OWN_FORMID_MIN
     mint_name = out_path.with_suffix(".esp").name
     preserved_count = 0
     preserve_fallbacks: list = []
     for arma_abs in mint_set:
         payload, m2, n2, _rn, _u = arma_win[arma_abs]
+        # Race targeting: BODY armatures -> UBE-primary + UBE-only (unchanged).
+        # Unified pure-hands/feet armatures -> SOURCE-primary + preserved vanilla
+        # races + UBE, via the shared helper, so a UBE actor's vanilla-resolving
+        # hand/foot slot still matches (else invisible gauntlet). Same decision the
+        # per-source path makes; the helper is golden-locked to it.
+        _prim, _addl = ube_primary_patch, ube_races_patch
+        if cover_hands_feet and (_arma_bod2_slots(payload)
+                                 & _BIPED_SLOT_HANDS_FEET_BITS):
+            _src_rnam = None
+            _src_addl: "list[int]" = []
+            for _s, _d in esp.iter_subrecords(payload):
+                # RNAM: >= 4 to match _summarize_arma (which gates to_mint); an
+                # armature admitted there must parse its primary here too, else it
+                # falls back to UBE-primary (invisible gauntlet on non-Breton UBE).
+                if _s == b"RNAM" and len(_d) >= 4:
+                    _src_rnam = struct.unpack_from("<I", _d, 0)[0]
+                elif _s == ARMA_ADDITIONAL_RACE_SIG and len(_d) == 4:
+                    _src_addl.append(struct.unpack("<I", _d)[0])
+            # A malformed hands/feet armature with NO primary race -> keep the safe
+            # UBE default rather than crash the whole body-coverage pass on None.
+            if _src_rnam is not None:
+                _s2p: "dict[int, int]" = {}
+                for _i, _mm in enumerate(m2):
+                    _j = pidx.get(_mm.lower())
+                    if _j is not None:
+                        _s2p[_i] = _j
+                _jown = pidx.get(n2.lower())
+                if _jown is not None:
+                    _s2p[len(m2)] = _jown
+
+                def _remap_race(fid: int, _map=_s2p) -> int:
+                    # Mirror per-source _remap_src_fid_to_patch: patch-space fid if
+                    # the master is held, else the fid unchanged (never raises).
+                    top = (fid >> 24) & 0xFF
+                    if top in _map:
+                        return (_map[top] << 24) | (fid & 0xFFFFFF)
+                    return fid
+
+                _prim, _addl = coverage_arma_race_targeting(
+                    _arma_bod2_slots(payload), _src_rnam, _src_addl,
+                    remap_src_fid=_remap_race, src_to_patch_byte=_s2p,
+                    ube_primary=ube_primary_patch, ube_additional=ube_races_patch)
         minted_payload = None
         if preserve_textures:
             def _remap(fid: int, _sm=m2, _sn=n2) -> int:
@@ -3552,8 +3783,8 @@ def generate_modded_body_ube_coverage_patch(
                 kept = _remap_arma_skin_txsts(kept, _remap)   # NAM0-3 -> patch space
                 minted_payload = rebuild_arma_payload(
                     kept,
-                    new_primary_rnam=ube_primary_patch,
-                    new_additional_race_fids=ube_races_patch,
+                    new_primary_rnam=_prim,
+                    new_additional_race_fids=_addl,
                     alt_texture_fid_remap=_remap,             # MO?S -> patch space
                     converted_nif_exists=_conv_exists,
                 )
@@ -3567,18 +3798,20 @@ def generate_modded_body_ube_coverage_patch(
                 for s, d in esp.iter_subrecords(payload) if s not in STRIP_FULL)
             minted_payload = rebuild_arma_payload(
                 stripped,
-                new_primary_rnam=ube_primary_patch,
-                new_additional_race_fids=ube_races_patch,
+                new_primary_rnam=_prim,
+                new_additional_race_fids=_addl,
                 converted_nif_exists=_conv_exists,   # redirect model -> !UBE\ where converted
             )
         new_fid = (own_byte << 24) | next_id
         next_id += 1
         new_edid = "UBE_MBD_{:X}".format(arma_abs[1])
         minted_payload = replace_arma_edid(minted_payload, new_edid[:90])
-        new_arma_records.append(esp.Record(
+        _rec = esp.Record(
             sig=b"ARMA", flags=0, formid=new_fid, timestamp_vc=0,
-            version_unk=0x002C, payload=minted_payload))
+            version_unk=0x002C, payload=minted_payload)
+        new_arma_records.append(_rec)
         mint_set[arma_abs] = new_fid
+        _mint_rec[arma_abs] = _rec
 
     as_esl = len(new_arma_records) <= ESL_MAX_OWN_RECORDS
     tes4_flags = TES4_FLAG_ESL if as_esl else 0
@@ -3590,13 +3823,36 @@ def generate_modded_body_ube_coverage_patch(
     if new_arma_records:
         out_esp.groups.append(esp.Group(label=b"ARMA", records=new_arma_records))
     prune_unused_masters(out_esp)
-    # preserve_textures unions source masters of varying tiers; tier-sort so a
-    # master-tier plugin never trails a regular ESP (both passes remap nested
-    # MO?S + NAM refs, so this is ref-safe).
-    if preserve_textures:
+    # preserve_textures / cover_hands_feet union source masters of varying tiers;
+    # tier-sort so a master-tier plugin never trails a regular ESP (all refs --
+    # nested MO?S/NAM textures and hands/feet race refs -- are remapped, ref-safe).
+    if preserve_textures or cover_hands_feet:
         resort_masters(out_esp, master_data_dirs=master_data_dirs)
     out_esp.save(out_path)
     warnings = validate_patch(out_path, master_data_dirs=master_data_dirs)
+
+    # ---- SkyPatcher-links sidecar (Step 3b: fold into Combined via the merge) ----
+    # Same schema the per-source pass writes; the merge remaps minted fids to final
+    # Combined space + dedups (armo, src-armature) so this folds in with no double-
+    # cover. fids are POST-prune/resort (rec.formid mutated in place) to match the
+    # merge's merged_rec_by_key. Written only when the pass feeds the merge.
+    if emit_sidecar:
+        import json as _json
+        _doc = []
+        for armo_abs, defining_plugin, to_mint in targets:
+            _adds = [{"fid": _mint_rec[_a].formid, "src": [_a[0], _a[1]]}
+                     for _a in to_mint if _a in _mint_rec]
+            if _adds:
+                _doc.append({"armo": [defining_plugin, armo_abs[1]],
+                             "adds": _adds})
+        _sc = Path(str(out_path) + ".skypatcher.json")
+        try:
+            if _doc:
+                _sc.write_text(_json.dumps(_doc, indent=1), encoding="utf-8")
+            elif _sc.is_file():
+                _sc.unlink()
+        except OSError:
+            pass
 
     # ---- Pass 4: SkyPatcher INI (add minted ARMA to each target ARMO) ----
     ini_lines = [
@@ -3771,8 +4027,12 @@ def merge_patches(
 
     # ----- Step 4: build new records with FormIDs + payload remapped -----
     own_arma_count = 0
+    # (record flags, remapped-payload-minus-EDID) -> (keeper_fid, keeper_record)
+    _arma_dedup_pool: "dict[tuple, tuple]" = {}
+    dedup_collapsed = 0
     for patch_path, pe in patches:
         byte_remap = patch_master_remap[patch_path]
+        patch_own_byte = len(pe.header.masters)
 
         for grp in pe.groups:
             if grp.label != b"ARMA":
@@ -3780,15 +4040,31 @@ def merge_patches(
             for rec in grp.records:
                 old_top = (rec.formid >> 24) & 0xFF
 
+                new_payload = _rewrite_payload_for_merge(
+                    rec.payload, patch_path, byte_remap, formid_remap)
+
+                # RECORD DEDUP: an OWN minted ARMA whose merged payload is byte-
+                # identical (ignoring EDID) to one already emitted is the SAME
+                # render -> reuse that keeper record. Repoint this source's FormID
+                # and merged-record mapping at the keeper (so the ARMO refs AND the
+                # SkyPatcher INI, which both read merged_rec_by_key, land on it).
+                is_own_new = (old_top == patch_own_byte)
+                dk = None
+                if is_own_new and MERGE_DEDUP_ARMAS:
+                    dk = (rec.flags, _arma_merge_dedup_key(new_payload))
+                    keeper = _arma_dedup_pool.get(dk)
+                    if keeper is not None:
+                        formid_remap[(patch_path, rec.formid)] = keeper[0]
+                        merged_rec_by_key[(patch_path, rec.formid)] = keeper[1]
+                        dedup_collapsed += 1
+                        continue
+
                 # Compute new FormID for this record
                 if (patch_path, rec.formid) in formid_remap:
                     new_fid = formid_remap[(patch_path, rec.formid)]
                 else:
                     new_top = byte_remap.get(old_top, old_top)
                     new_fid = (new_top << 24) | (rec.formid & 0xFFFFFF)
-
-                new_payload = _rewrite_payload_for_merge(
-                    rec.payload, patch_path, byte_remap, formid_remap)
 
                 new_rec = esp.Record(
                     sig=grp.label,
@@ -3804,11 +4080,31 @@ def merge_patches(
                 new_arma_records.append(new_rec)
                 if ((new_fid >> 24) & 0xFF) == own_byte_merged:
                     own_arma_count += 1
+                    if dk is not None:
+                        _arma_dedup_pool[dk] = (new_fid, new_rec)
+
+    # ----- Step 4.5: ESL dense re-pack (post-dedup) -----
+    # Own FormIDs were allocated PRE-dedup in Step 3 (dense 0x800..), so record
+    # dedup punches gaps and `as_esl` was decided on the pre-dedup total. A single
+    # patch that mints MORE than the ESL cap but dedups BELOW it (heavy cross-
+    # source overlap under unified coverage) is then wrongly downgraded to a full
+    # ESP AND its own-FormID max can sit past 0xFFF. Re-pack the EMITTED own ARMAs
+    # densely from ESL_OWN_FORMID_MIN and re-decide ESL on the EMITTED count, so
+    # such a piece is ESL-clean (max == 0x800 + count - 1 <= 0xFFF). Own ARMAs are
+    # referenced only by the SkyPatcher INI (via merged_rec_by_key -> Record.formid,
+    # read below), so an in-place renumber is complete and needs no ref rewrite.
+    if esl_flag and not as_esl and own_arma_count <= ESL_MAX_OWN_RECORDS:
+        _next = ESL_OWN_FORMID_MIN
+        for _rec in new_arma_records:
+            if ((_rec.formid >> 24) & 0xFF) == own_byte_merged:
+                _rec.formid = (own_byte_merged << 24) | _next
+                _next += 1
+        next_own_id = _next
+        as_esl = True
 
     # ----- Step 5: emit merged ESP -----
-    # TES4 flags. `as_esl` was decided up-front from the total new-ARMA count
-    # (own_arma_count here == total_new_arma); honour that decision so the flag
-    # matches the FormID range we actually allocated into.
+    # TES4 flags. `as_esl` reflects the EMITTED own-ARMA count after any post-dedup
+    # re-pack above, so the flag matches the FormID range we actually wrote.
     tes4_flags = 0
     if as_esl:
         tes4_flags |= TES4_FLAG_ESL
@@ -3879,11 +4175,14 @@ def merge_patches(
         "merged_patch_count": len(patches),
         "total_arma_records": len(new_arma_records),
         "own_arma_records": own_arma_count,
+        "dedup_collapsed_armas": dedup_collapsed,
         "total_armo_records": 0,       # SkyPatcher-only: never any ARMO records
         "esl_flagged": bool(tes4_flags & TES4_FLAG_ESL),
         "esl_slots_used": own_arma_count,
         "esl_slots_max": ESL_MAX_OWN_RECORDS,
-        "downgraded_to_full_esp": bool(esl_flag and not fits_esl),
+        # Reflect the FINAL flag (after the Step 4.5 post-dedup re-pack), not the
+        # pre-dedup `fits_esl` -- a piece re-packed back to ESL is NOT downgraded.
+        "downgraded_to_full_esp": bool(esl_flag and not as_esl),
     }
 
 
