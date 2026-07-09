@@ -85,10 +85,32 @@ class Nif:
     _backing: object | None = None  # underlying pynifly NifFile
 
 
+def open_nif_retry(path_str: str, attempts: int = 5, base_delay: float = 0.08):
+    """Open a pynifly NifFile, retrying TRANSIENT failures with backoff.
+
+    Under many parallel workers, opening a large source NIF can transiently fail
+    (Windows file-share / handle contention, an AV scan holding the file) even
+    though the file is a perfectly valid NIF -- observed as "Could not open ...
+    as nif" on 3-4MB meshes at 23 workers, on files that open fine in isolation.
+    Dropping the mesh on the first blip is wrong; retry a few times, then re-raise
+    the last error so a GENUINELY bad file still fails loudly. Backoff: 0.08, 0.16,
+    0.32, 0.64s (total ~1.2s worst case)."""
+    import time
+    last: "Exception | None" = None
+    for i in range(max(1, attempts)):
+        try:
+            return pynifly.NifFile(filepath=path_str)  # type: ignore[attr-defined]
+        except Exception as e:  # noqa: BLE001 - transient IO; retried below
+            last = e
+            if i < attempts - 1:
+                time.sleep(base_delay * (2 ** i))
+    raise last  # type: ignore[misc]
+
+
 def load_nif(path: str | os.PathLike) -> Nif:
     _require_pynifly()
     path = Path(path)
-    nf = pynifly.NifFile(filepath=str(path))  # type: ignore[attr-defined]
+    nf = open_nif_retry(str(path))
     shapes: list[Shape] = []
     for raw in nf.shapes:
         verts = np.asarray(raw.verts, dtype=np.float32)

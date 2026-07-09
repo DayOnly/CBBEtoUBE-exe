@@ -33,6 +33,26 @@ def _touch(p: Path):
     p.write_bytes(b"")
 
 
+# A full-height body vert cloud (>= the 500-vert / 60u-z-range bespoke-body floor)
+# and a tiny exposed-skin slice (below it), for the body-provenance check.
+_FULL_BODY_VERTS = [(0.0, 0.0, float(i) * 0.15) for i in range(700)]   # z 0..~105
+_SKIN_SLICE_VERTS = [(0.0, 0.0, float(i) * 0.1) for i in range(46)]    # 46 verts, z ~4.5
+
+
+class _FakeShape:
+    """Minimal stand-in for a pynifly shape: a name, a diffuse texture path, and
+    verts -- all that build_mesh_index's body-provenance check reads."""
+    def __init__(self, name, diffuse="", verts=None):
+        self.name = name
+        self.textures = {"Diffuse": diffuse} if diffuse else {}
+        self.verts = verts if verts is not None else []
+
+
+class _FakeNif:
+    def __init__(self, shapes):
+        self.shapes = shapes
+
+
 def test_build_mesh_index_priority_winner(tmp_path):
     mods = tmp_path / "mods"
     # Same path provided by two mods; the higher-priority (listed first) wins.
@@ -82,6 +102,140 @@ def test_build_mesh_index_skip_mods_case_insensitive(tmp_path):
         mods, ["CBBEtoUBE Auto", "Real"], target_keys={"armor/x_1.nif"},
         skip_mods={"cbbetoube auto"})  # lowercased, as _find_armor_mod_dirs sends
     assert idx["armor/x_1.nif"].parents[2].name == "Real"
+
+
+def test_build_mesh_index_deprioritizes_bodyslide_output_source(tmp_path):
+    """A 3BA/HIMBO BodySlide OUTPUT must NOT win the armour SOURCE over the base
+    mod, even at higher MO2 priority. It's the mesh morphed to the wrong body
+    PRESET; feeding it into a UBE conversion bakes that body's shape in and
+    squashes the cloth layers together -> clipping (the 2026-07-08 New Leather
+    Armor bug: 26 armours sourced from 'Bodyslide Output - 3BA'). Tier order:
+    (0) base/replacers, (1) UBE outputs, (2) other-body outputs. A BodySlide
+    output still wins a mesh nothing else provides (no invisibility regression).
+    #bodyslide-source"""
+    mods = tmp_path / "mods"
+    a = "armor/foo"
+    # bar: base + both outputs; the 3BA output is HIGHEST priority but must lose.
+    _touch(mods / "Authoria - Bodyslide Output - 3BA" / "meshes" / a / "bar_1.nif")
+    _touch(mods / "Authoria - Bodyslide Output - UBE" / "meshes" / a / "bar_1.nif")
+    _touch(mods / "New Leather Armor" / "meshes" / a / "bar_1.nif")
+    # ube: no base; the UBE output must beat the other-body 3BA output.
+    _touch(mods / "Authoria - Bodyslide Output - 3BA" / "meshes" / a / "ube_1.nif")
+    _touch(mods / "Authoria - Bodyslide Output - UBE" / "meshes" / a / "ube_1.nif")
+    # only: ONLY the 3BA output provides it — must still resolve (fills the gap).
+    _touch(mods / "Authoria - Bodyslide Output - 3BA" / "meshes" / a / "only_1.nif")
+    enabled = ["Authoria - Bodyslide Output - 3BA",   # highest MO2 priority
+               "Authoria - Bodyslide Output - UBE",
+               "New Leather Armor"]                    # lowest
+    idx = discovery.build_mesh_index(mods, enabled, target_keys={
+        "armor/foo/bar_1.nif", "armor/foo/ube_1.nif", "armor/foo/only_1.nif"})
+    assert idx["armor/foo/bar_1.nif"].parents[3].name == "New Leather Armor", \
+        "base mod must win the source over ANY BodySlide output"
+    assert idx["armor/foo/ube_1.nif"].parents[3].name \
+        == "Authoria - Bodyslide Output - UBE", \
+        "UBE output must beat an other-body (3BA) output when there's no base"
+    assert idx["armor/foo/only_1.nif"].parents[3].name \
+        == "Authoria - Bodyslide Output - 3BA", \
+        "a BodySlide-output-only mesh must still resolve (no invisibility regression)"
+
+
+def test_build_mesh_index_prefers_canonical_body_within_tier(tmp_path, monkeypatch):
+    """Within a tier, a source bundling the canonical 3BA body must beat one
+    bundling a BESPOKE body (e.g. an HDT-SMP "vanilla armours" mod ships its own
+    slim/large physics body), even at higher MO2 priority. The armour is authored
+    flush on whatever body it bundles; a mismatched bundled body leaves soft-body
+    cloth standing off the UBE target (the 2026-07-09 Fur Cuirass bug: HDT-SMP body
+    bust +9.88u -> +1.77u gap; the 3BA-body source +5.70u ~= UBE +5.74u -> ~flush).
+    #body-match-source"""
+    mods = tmp_path / "mods"
+    a = "armor/bandit"
+    # Both tier 0 (neither name has 'bodyslide output'). HDT-SMP is HIGHEST priority.
+    _touch(mods / "HDT SMP Vanilla Armors" / "meshes" / a / "body1f_1.nif")
+    _touch(mods / "CBBE 3BA Vanilla Outfits" / "meshes" / a / "body1f_1.nif")
+
+    def _fake_open(path_str, *a, **k):
+        # HDT-SMP source bundles a bespoke full-body 'BanditBody1'; 3BA source has '3BA'.
+        if "HDT SMP" in str(path_str):
+            return _FakeNif([_FakeShape("BanditBody1", "textures/actors/femalebody_1.dds",
+                                        _FULL_BODY_VERTS),
+                             _FakeShape("Top", "textures/armor/fur.dds")])
+        return _FakeNif([_FakeShape("BaseArmor", "textures/armor/fur.dds"),
+                         _FakeShape("3BA", "textures/actors/femalebody_1.dds", _FULL_BODY_VERTS)])
+
+    monkeypatch.setattr(discovery.nif_io, "open_nif_retry", _fake_open)
+
+    enabled = ["HDT SMP Vanilla Armors",     # highest MO2 priority, BESPOKE body
+               "CBBE 3BA Vanilla Outfits"]    # lower priority, CANONICAL 3BA body
+    idx = discovery.build_mesh_index(
+        mods, enabled, target_keys={"armor/bandit/body1f_1.nif"})
+    assert idx["armor/bandit/body1f_1.nif"].parents[3].name == "CBBE 3BA Vanilla Outfits", \
+        "canonical-3BA-body source must win the source over a bespoke-body source in-tier"
+
+    # Opt-out: CBBE2UBE_NO_BODYMATCH_SELECT=1 restores pure MO2 priority.
+    monkeypatch.setenv("CBBE2UBE_NO_BODYMATCH_SELECT", "1")
+    idx2 = discovery.build_mesh_index(
+        mods, enabled, target_keys={"armor/bandit/body1f_1.nif"})
+    assert idx2["armor/bandit/body1f_1.nif"].parents[3].name == "HDT SMP Vanilla Armors", \
+        "opt-out must fall back to pure MO2 priority"
+
+
+def test_build_mesh_index_bodymatch_leaves_no_body_physics_source(tmp_path, monkeypatch):
+    """The swap must fire ONLY on a BESPOKE-BODY incumbent. A physics source that
+    bundles NO body (e.g. an HDT-SMP robe: cloth + collision, no body-skin shape) is
+    NOT the bundled-body-mismatch bug -> it must KEEP winning so its SMP physics
+    survives, even though a canonical-body source also provides the mesh. Guards the
+    2026-07-09 over-swap that would have dropped SMP physics from mage robes.
+    #body-match-source"""
+    mods = tmp_path / "mods"
+    a = "clothes/archmage"
+    _touch(mods / "HDT-SMP College Mage Robes" / "meshes" / a / "archmagerobesf_1.nif")
+    _touch(mods / "CBBE 3BA Vanilla Outfits" / "meshes" / a / "archmagerobesf_1.nif")
+
+    def _fake_open(path_str, *a, **k):
+        # The HDT-SMP robe bundles NO body: robe cloth + collision + a tiny exposed-
+        # skin SLICE ('robes_skin', body-tex'd but only 46 verts) that must NOT be
+        # mistaken for a bundled body.
+        if "HDT-SMP" in str(path_str):
+            return _FakeNif([_FakeShape("robes", "textures/clothes/archmage.dds"),
+                             _FakeShape("robes_skin", "textures/actors/femalebody_1.dds",
+                                        _SKIN_SLICE_VERTS),
+                             _FakeShape("col", "")])
+        return _FakeNif([_FakeShape("BaseArmor", "textures/clothes/archmage.dds"),
+                         _FakeShape("3BA", "textures/actors/femalebody_1.dds", _FULL_BODY_VERTS)])
+
+    monkeypatch.setattr(discovery.nif_io, "open_nif_retry", _fake_open)
+    enabled = ["HDT-SMP College Mage Robes", "CBBE 3BA Vanilla Outfits"]
+    idx = discovery.build_mesh_index(
+        mods, enabled, target_keys={"clothes/archmage/archmagerobesf_1.nif"})
+    assert idx["clothes/archmage/archmagerobesf_1.nif"].parents[3].name \
+        == "HDT-SMP College Mage Robes", \
+        "a no-body physics source must keep winning (SMP physics preserved)"
+
+
+def test_build_mesh_index_bodymatch_does_not_override_tier(tmp_path, monkeypatch):
+    """The body-match preference acts WITHIN a tier only -- it must not promote a
+    canonical-body BodySlide OUTPUT (tier 2) over a bespoke-body base mod (tier 0).
+    Guards the New-Leather tier fix from the body-match rule. #body-match-source"""
+    mods = tmp_path / "mods"
+    a = "armor/foo"
+    _touch(mods / "Authoria - Bodyslide Output - 3BA" / "meshes" / a / "bar_1.nif")
+    _touch(mods / "Base Armor Mod" / "meshes" / a / "bar_1.nif")
+
+    def _fake_open(path_str, *a, **k):
+        # The tier-2 output bundles a canonical 3BA body; the tier-0 base bundles a
+        # bespoke body -> without the tier guard the body-match rule would wrongly
+        # promote the output. The tier must still win.
+        if "Bodyslide Output" in str(path_str):
+            return _FakeNif([_FakeShape("3BA", "textures/actors/femalebody_1.dds",
+                                        _FULL_BODY_VERTS)])
+        return _FakeNif([_FakeShape("SomeBody", "textures/actors/femalebody_1.dds",
+                                    _FULL_BODY_VERTS)])
+
+    monkeypatch.setattr(discovery.nif_io, "open_nif_retry", _fake_open)
+    enabled = ["Authoria - Bodyslide Output - 3BA", "Base Armor Mod"]
+    idx = discovery.build_mesh_index(mods, enabled, target_keys={"armor/foo/bar_1.nif"})
+    assert idx["armor/foo/bar_1.nif"].parents[3].name == "Base Armor Mod", \
+        "tier must dominate: a canonical-body tier-2 output must NOT beat a tier-0 base"
 
 
 def test_resolve_prefers_vfs_when_local_missing(tmp_path):

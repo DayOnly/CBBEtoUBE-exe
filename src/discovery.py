@@ -44,6 +44,28 @@ log = logging.getLogger("discovery")
 # "is this NIF CBBE 3BA armor with an inline body?"
 CBBE_3BA_VERT_COUNT = 18436
 
+# Shape names that identify a source bundling the canonical CBBE/3BA body (any
+# vert count -- a merged BodySlide project keeps the '3BA' body shape). Used by
+# build_mesh_index's within-tier body-match preference. #body-match-source
+_CANONICAL_BODY_SHAPE_NAMES = frozenset({"3BA"})
+# Diffuse-texture markers that identify a nude body-skin shape (mirrors
+# nif_convert._BODY_SKIN_TEXTURE_MARKERS). A shape carrying one of these IS a body,
+# even at low poly -- so a bespoke body (an HDT-SMP mod's own physics body) is
+# distinguishable from cloth. A source with NO body-skin shape (e.g. a physics robe
+# that bundles no body) is NOT a bespoke-body source and is left alone.
+_BODY_SKIN_TEXTURE_MARKERS = (
+    "femalebody", "malebody", "bodyfemale", "bodymale", "femaleskin",
+)
+# A bespoke BODY is a real, sizable body-skin shape. These floors separate it from an
+# exposed-skin SLICE (baked hands/neck skin on a robe -- body-tex'd but tiny, e.g.
+# 46 verts / z-range 5) that must NOT count as a bundled body. The vert floor alone
+# rejects slices; the z floor keeps it a body (a full HDT physics body is 1397v /
+# z103; a partial-torso underwear body 562v / z38 still counts and still mismatches
+# the target's bust).
+_BESPOKE_BODY_MIN_VERTS = 500
+_BESPOKE_BODY_MIN_Z_RANGE = 35.0
+_SENTINEL = object()
+
 
 @dataclass
 class WinningNif:
@@ -167,10 +189,90 @@ def build_mesh_index(
     """
     skip = {m.lower() for m in skip_mods}  # case-insensitive: mod folder names
     index: dict[str, Path] = {}            # and skip entries can differ in case
+    win_tier: dict[str, int] = {}          # rel -> tier of the current winner
     remaining = set(target_keys) if target_keys is not None else None
-    for mod_name in enabled_mods:
-        if remaining is not None and not remaining:
-            break  # every referenced mesh found; lower-priority mods can't win
+    # DEPRIORITIZE BodySlide-output mods as the armour SOURCE. A BodySlide output
+    # is the mesh morphed to a specific BODY PRESET; using a 3BA/HIMBO output as
+    # the source for a UBE conversion bakes the wrong body's shape into the result
+    # (layers squashed together -> clipping). The base mod (what BodySlide BUILDS
+    # from) is the clean source. So resolve in 3 tiers, preserving MO2 priority
+    # within each: (0) non-output mods, (1) UBE outputs, (2) other-body outputs.
+    # A BodySlide output still wins for a mesh NOTHING else provides (no regression
+    # for armour whose mesh only ships as a built output). #bodyslide-source
+    def _tier(name: str) -> int:
+        nl = name.lower()
+        if "bodyslide output" not in nl:
+            return 0
+        return 1 if "ube" in nl else 2
+    # WITHIN a tier, prefer a provider that bundles the CANONICAL CBBE/3BA body over
+    # one bundling a bespoke body (e.g. an HDT-SMP "vanilla armours" mod ships its own
+    # slim/large physics body). The armour is authored FLUSH on whatever body it
+    # bundles; if that body's proportions differ from the UBE target the piece is left
+    # standing off (soft-body cloth is kept at its source position -> a visible gap at
+    # the bust). A canonical-3BA source matches the pipeline's assumptions and the UBE
+    # target, so it converts flush. Measured: HDT-SMP "Fur Cuirass" body bust +9.88u ->
+    # +1.77u standoff; the 3BA-body source (+5.70u ~= UBE +5.74u) -> ~flush.
+    # Off with CBBE2UBE_NO_BODYMATCH_SELECT=1. #body-match-source
+    import os as _os
+    _bodymatch = (_os.environ.get("CBBE2UBE_NO_BODYMATCH_SELECT", "").strip().lower()
+                  not in ("1", "true", "yes", "on"))
+    _prov_cache: dict[Path, "tuple[bool, bool] | None"] = {}
+
+    def _body_provenance(path: Path) -> "tuple[bool, bool] | None":
+        """(has_canonical_body, has_bespoke_body) for a source NIF, or None on open
+        failure. canonical = a '3BA'-named body shape. bespoke = a body-skin-textured
+        shape that is NOT canonical (an HDT-SMP mod's own physics body, a slim/large
+        preset body). A source with neither (e.g. a physics robe that bundles no body)
+        is left untouched by the swap rule."""
+        cached = _prov_cache.get(path, _SENTINEL)
+        if cached is not _SENTINEL:
+            return cached
+        result: "tuple[bool, bool] | None"
+        try:
+            nf = nif_io.open_nif_retry(str(path))
+            has_canon = has_bespoke = False
+            for s in nf.shapes:
+                nm = s.name or ""
+                if nm in _CANONICAL_BODY_SHAPE_NAMES:
+                    has_canon = True
+                    continue
+                try:
+                    tex = dict(getattr(s, "textures", {}) or {})
+                except Exception:
+                    tex = {}
+                diff = (tex.get("Diffuse") or tex.get("0")
+                        or next((v for v in tex.values() if v), "")).lower()
+                if not any(m in diff for m in _BODY_SKIN_TEXTURE_MARKERS):
+                    continue
+                # Body-skin diffuse -> could be a bespoke body OR just an exposed-skin
+                # slice. Require full-body geometry so a robe's baked hand/neck skin
+                # isn't mistaken for a bundled body (which would wrongly drop the
+                # source's SMP physics).
+                try:
+                    vs = s.verts
+                    if len(vs) < _BESPOKE_BODY_MIN_VERTS:
+                        continue
+                    zs = [float(v[2]) for v in vs]
+                    if (max(zs) - min(zs)) >= _BESPOKE_BODY_MIN_Z_RANGE:
+                        has_bespoke = True
+                except Exception:
+                    pass
+            result = (has_canon, has_bespoke)
+        except Exception:
+            result = None
+        _prov_cache[path] = result
+        return result
+
+    found_max_tier = -1
+    ordered_mods = sorted(enabled_mods, key=_tier)  # stable: keeps priority in-tier
+    for mod_name in ordered_mods:
+        mtier = _tier(mod_name)
+        # Early-stop only once every referenced mesh is found AND no still-unwalked
+        # mod could out-rank a current winner. With body-match on, a later SAME-tier
+        # mod can still replace a winner, so we must finish every tier <= the deepest
+        # tier any winner came from before stopping.
+        if remaining is not None and not remaining and mtier > found_max_tier:
+            break
         if mod_name.lower() in skip:
             continue
         meshes_dir = mods_root / mod_name / "meshes"
@@ -189,6 +291,21 @@ def build_mesh_index(
                 continue
             if rel not in index:           # first (highest priority) wins
                 index[rel] = nif
+                win_tier[rel] = mtier
+                if mtier > found_max_tier:
+                    found_max_tier = mtier
                 if remaining is not None:
                     remaining.discard(rel)
+            elif _bodymatch and win_tier.get(rel) == mtier:
+                # Same tier. Swap ONLY when the incumbent bundles a BESPOKE (mismatched-
+                # preset) body but the challenger bundles the CANONICAL 3BA body: the
+                # challenger converts flush where the incumbent's body mismatch leaves
+                # the piece standing off. A source that bundles NO body (e.g. a physics
+                # robe) is NOT overridden -> its SMP physics is preserved.
+                inc = _body_provenance(index[rel])
+                chal = _body_provenance(nif)
+                if (inc is not None and chal is not None
+                        and inc == (False, True)     # incumbent: bespoke body, no canonical
+                        and chal[0]):                # challenger: has canonical body
+                    index[rel] = nif       # tier unchanged; priority already lost, body wins
     return index
