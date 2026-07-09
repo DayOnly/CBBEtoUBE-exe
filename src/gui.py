@@ -473,6 +473,10 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
     except Exception:
         pass  # a header hiccup must never block the converter window
 
+    # ---- theme control row: top-right, directly under the Ko-fi link ----
+    _theme_row = ttk.Frame(root)
+    _theme_row.pack(side="top", fill="x", padx=8, pady=(2, 0))
+
     # ---- notebook (tabs) + persistent bottom strip ----
     nb = ttk.Notebook(root)
     nb.pack(side="top", fill="both", expand=True, padx=8, pady=(8, 0))
@@ -849,7 +853,7 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
         except Exception:
             pass
 
-    theme_cb = ttk.Combobox(bar, textvariable=theme_var, width=9,
+    theme_cb = ttk.Combobox(_theme_row, textvariable=theme_var, width=9,
                             state="readonly",
                             values=("Standard", "Light", "Dark"))
     theme_cb.pack(side="right", padx=(4, 0))
@@ -857,8 +861,8 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
     # theme and repaints on switch. Font-independent "this control sets the appearance"
     # indicator, sitting between the "Theme:" label and the value. Clicking it opens the
     # dropdown so the whole cluster reads as one theme control.
-    theme_swatch = tk.Canvas(bar, width=24, height=14, bd=0, highlightthickness=1,
-                             takefocus=0, cursor="hand2")
+    theme_swatch = tk.Canvas(_theme_row, width=24, height=14, bd=0,
+                             highlightthickness=1, takefocus=0, cursor="hand2")
 
     def _paint_swatch(*_a):
         p = _THEMES.get(theme_var.get().strip().lower(), _THEMES["standard"])
@@ -871,7 +875,7 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
                                                theme_cb.event_generate("<Down>")))
     theme_swatch.pack(side="right", padx=(6, 2))
     _paint_swatch()
-    ttk.Label(bar, text="Theme:").pack(side="right", padx=(8, 4))
+    ttk.Label(_theme_row, text="Theme").pack(side="right", padx=(8, 4))
     theme_var.trace_add("write", _on_theme)
     # After a pick, drop focus + clear the text selection so it doesn't stay
     # highlighted.
