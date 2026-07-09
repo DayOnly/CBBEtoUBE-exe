@@ -35,6 +35,53 @@ sections below cover each.
 
 ---
 
+## Source selection (which mesh feeds the conversion)
+
+Before any fitting, `discovery.build_mesh_index` decides WHICH mod provides each
+armour mesh, resolving through the full MO2 VFS. The provider matters as much as the
+fit: an armour is authored FLUSH on whatever body it was built against, and the
+converter conforms it onto the UBE body -- so if the chosen source was built on a body
+whose proportions differ from UBE, the piece is born gapping or clipping before a
+single pass runs. Two rules encode this:
+
+1. **Tier: deprioritise BodySlide OUTPUTS** (`#bodyslide-source`). A 3BA/HIMBO/NSFW
+   BodySlide output is the mesh morphed to a specific PRESET; feeding it into a UBE
+   conversion bakes the wrong body's shape in (squashed layers -> clipping; the New
+   Leather Armor bug). 3 tiers, MO2 priority within each: (0) base/replacers, (1) UBE
+   outputs, (2) other-body outputs. A BodySlide output still wins a mesh nothing else
+   provides.
+
+2. **Within a tier: prefer the CANONICAL-body source over a BESPOKE-body source**
+   (`#body-match-source`). Some mods (an HDT-SMP "vanilla armours" pack, a retexture)
+   bundle their OWN body -- often a slim/large preset that is NOT the canonical 3BA
+   body. A soft-body band authored flush on a +9.88u big-bust bundled body is kept at
+   its source position (the converter does not warp physics cloth) and stands off the
+   +5.74u UBE bust -> the Fur Cuirass +1.77u breast gap. So when a same-tier challenger
+   bundles the canonical `3BA` body and the incumbent bundles ONLY a bespoke body, the
+   challenger wins -- it converts flush. `_body_provenance(path)` returns
+   `(has_canonical, has_bespoke)`:
+   - **canonical** = a shape named `3BA`.
+   - **bespoke** = a body-skin-textured shape (diffuse matches `femalebody`/`malebody`/
+     …) that is NOT canonical AND is a real body: `>= 500` verts and `>= 35u` z-range.
+     The size floor is essential -- it rejects an exposed-skin SLICE (baked hand/neck
+     skin on a robe, body-tex'd but ~46 verts / z-range 5) which must NOT count as a
+     bundled body.
+   The swap fires ONLY when `incumbent == (canonical=False, bespoke=True)` and the
+   challenger has a canonical body. Three guards fall out of that:
+   - a source that bundles NO body (a physics robe: cloth + collision, no body-skin
+     shape) is `(False, False)` -> never swapped, so its SMP physics is preserved;
+   - the incumbent already having a canonical body is `(True, …)` -> never swapped, so
+     MO2 priority decides among body-standard sources;
+   - the rule is WITHIN-tier only, so it can never promote a tier-2 output over a
+     tier-0 base (the New-Leather tier fix stands).
+   Open failure -> `None` -> treated as unknown, never a swap basis. Opt out with
+   `CBBE2UBE_NO_BODYMATCH_SELECT=1`. Measured pack impact: 42/2165 meshes re-source;
+   the Fur Cuirass band standoff drops +1.77u -> +0.59u. The tier-2 3BA-OUTPUT source
+   has both physics AND a matching body but promoting it would need overriding the tier
+   system -> deferred.
+
+---
+
 ## Fitting: warp + re-skin
 
 **Why.** BodySlide bakes armor to a specific body at slider-zero. On the bigger

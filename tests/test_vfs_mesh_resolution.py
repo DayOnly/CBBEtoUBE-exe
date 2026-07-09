@@ -238,6 +238,70 @@ def test_build_mesh_index_bodymatch_does_not_override_tier(tmp_path, monkeypatch
         "tier must dominate: a canonical-body tier-2 output must NOT beat a tier-0 base"
 
 
+def test_build_mesh_index_bodymatch_no_swap_without_canonical_challenger(tmp_path, monkeypatch):
+    """A bespoke-body incumbent stays put unless a SAME-TIER challenger bundles the
+    CANONICAL body. If the only other provider also lacks a canonical body, MO2
+    priority stands -- the rule never swaps to a merely-different bespoke source.
+    #body-match-source"""
+    mods = tmp_path / "mods"
+    a = "armor/bandit"
+    _touch(mods / "HDT SMP Vanilla Armors" / "meshes" / a / "body1f_1.nif")
+    _touch(mods / "Some Other Physics Mod" / "meshes" / a / "body1f_1.nif")
+
+    def _fake_open(path_str, *a, **k):
+        # Neither source bundles a canonical '3BA' body -> no swap basis.
+        return _FakeNif([_FakeShape("SomeBody", "textures/actors/femalebody_1.dds",
+                                    _FULL_BODY_VERTS)])
+
+    monkeypatch.setattr(discovery.nif_io, "open_nif_retry", _fake_open)
+    enabled = ["HDT SMP Vanilla Armors", "Some Other Physics Mod"]
+    idx = discovery.build_mesh_index(mods, enabled, target_keys={"armor/bandit/body1f_1.nif"})
+    assert idx["armor/bandit/body1f_1.nif"].parents[3].name == "HDT SMP Vanilla Armors", \
+        "no canonical challenger -> MO2 priority must stand (no swap)"
+
+
+def test_build_mesh_index_bodymatch_no_swap_on_open_failure(tmp_path, monkeypatch):
+    """If a candidate NIF can't be opened (corrupt / locked), the body-provenance
+    check returns None and the rule must NOT swap on that basis -- the incumbent
+    (MO2 priority winner) is kept. Guards against a bad challenger hijacking a mesh.
+    #body-match-source"""
+    mods = tmp_path / "mods"
+    a = "armor/bandit"
+    _touch(mods / "HDT SMP Vanilla Armors" / "meshes" / a / "body1f_1.nif")
+    _touch(mods / "CBBE 3BA Vanilla Outfits" / "meshes" / a / "body1f_1.nif")
+
+    def _fake_open(path_str, *a, **k):
+        raise RuntimeError("Could not open as nif")   # every open fails
+
+    monkeypatch.setattr(discovery.nif_io, "open_nif_retry", _fake_open)
+    enabled = ["HDT SMP Vanilla Armors", "CBBE 3BA Vanilla Outfits"]
+    idx = discovery.build_mesh_index(mods, enabled, target_keys={"armor/bandit/body1f_1.nif"})
+    assert idx["armor/bandit/body1f_1.nif"].parents[3].name == "HDT SMP Vanilla Armors", \
+        "open failure -> provenance unknown -> keep the priority winner (no swap)"
+
+
+def test_build_mesh_index_bodymatch_keeps_priority_among_canonical(tmp_path, monkeypatch):
+    """When the incumbent ALREADY bundles a canonical body, a lower-priority
+    canonical challenger must NOT displace it -- MO2 priority decides among equally
+    body-standard sources (the swap only rescues a bespoke-body incumbent).
+    #body-match-source"""
+    mods = tmp_path / "mods"
+    a = "armor/iron"
+    _touch(mods / "High Prio 3BA" / "meshes" / a / "cuirass_1.nif")
+    _touch(mods / "Low Prio 3BA" / "meshes" / a / "cuirass_1.nif")
+
+    def _fake_open(path_str, *a, **k):
+        # Both bundle a canonical 3BA body.
+        return _FakeNif([_FakeShape("BaseArmor", "textures/armor/iron.dds"),
+                         _FakeShape("3BA", "textures/actors/femalebody_1.dds", _FULL_BODY_VERTS)])
+
+    monkeypatch.setattr(discovery.nif_io, "open_nif_retry", _fake_open)
+    enabled = ["High Prio 3BA", "Low Prio 3BA"]
+    idx = discovery.build_mesh_index(mods, enabled, target_keys={"armor/iron/cuirass_1.nif"})
+    assert idx["armor/iron/cuirass_1.nif"].parents[3].name == "High Prio 3BA", \
+        "among canonical-body sources, MO2 priority must win (no needless swap)"
+
+
 def test_resolve_prefers_vfs_when_local_missing(tmp_path):
     """The female mesh isn't in the source mod's folder, but the VFS index has
     it (BodySlide output). It must be resolved + converted, not missed."""

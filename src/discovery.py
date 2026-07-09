@@ -14,7 +14,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-"""Find refit candidates by walking an MO2 mod tree.
+r"""Find refit candidates by walking an MO2 mod tree.
 
 Mode of operation:
 
