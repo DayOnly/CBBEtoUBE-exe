@@ -47,9 +47,12 @@ def _load_render(path: Path):
     return out
 
 
-def _breast_standoff(shapes):
-    """covered-mean gap between the UBE BaseShape breast band and the nearest armor
-    vertex (along the body normal). None if the mesh isn't a body-swap torso piece."""
+def _fit_metrics(shapes):
+    """(breast_standoff, worst_torso_penetration) for a body-swap torso piece, or
+    None if it isn't one. standoff = covered-mean gap at the breast band (armor sitting
+    OFF the body -- the over-inflation the fix targets). penetration = deepest armor
+    vertex INSIDE the body over the torso (armor cutting IN -- the opposite failure).
+    Both are what a good fit minimises."""
     if "BaseShape" not in shapes or shapes["BaseShape"][1] is None:
         return None
     bv, bn = shapes["BaseShape"]
@@ -59,19 +62,29 @@ def _breast_standoff(shapes):
     if not arm:
         return None
     av = np.vstack(arm)
-    t = cKDTree(av)
+    at = cKDTree(av)
     reg = np.where((bv[:, 2] >= 100) & (bv[:, 2] <= 108)
                    & (np.abs(bv[:, 0]) < 12) & (bv[:, 1] > 0))[0]
     if len(reg) < 15:
         return None
     gaps = []
     for i in reg:
-        d, j = t.query(bv[i])
+        d, j = at.query(bv[i])
         if d < 6.0:
             gaps.append(float((av[j] - bv[i]) @ bn[i]))
     if len(gaps) < 10:
         return None
-    return float(np.mean(gaps))
+    # penetration: armor torso verts sitting inside the body (signed dist < 0)
+    bt = cKDTree(bv)
+    tm = (av[:, 2] >= 70) & (av[:, 2] <= 115)
+    worst_pen = 0.0
+    if tm.any():
+        d, j = bt.query(av[tm])
+        sd = ((av[tm] - bv[j]) * bn[j]).sum(1)
+        near = sd[d < 8.0]
+        if near.size:
+            worst_pen = float(min(0.0, near.min()))
+    return float(np.mean(gaps)), worst_pen
 
 
 def main():
@@ -102,20 +115,27 @@ def main():
         if not outp.is_file():
             continue
         try:
-            g = _breast_standoff(_load_render(outp))
+            m = _fit_metrics(_load_render(outp))
         except Exception:
-            g = None
-        if g is not None:
-            rows.append((g, rel))
+            m = None
+        if m is not None:
+            rows.append((m[0], m[1], rel))
     rows.sort(reverse=True)
-    print(f"{'standoff':>8}  armor  (covered-mean breast gap, u)")
-    for g, rel in rows:
-        flag = "  <-- STILL HIGH" if g > 1.5 else ""
-        print(f"{g:8.2f}  {rel}{flag}")
-    hi = [r for g, r in rows if g > 1.5]
-    print(f"\n{len(rows)} torso pieces measured; {len(hi)} still > 1.5u "
-          f"(pre-fix Fur Cuirass was +2.12u). High ones may be a different source "
-          f"or a non-bust issue -- worth a closer look.")
+    print(f"{'standoff':>8} {'pen':>6}  armor")
+    for g, pen, rel in rows:
+        flags = []
+        if g > 1.5:
+            flags.append("gap")
+        if pen < -1.0:
+            flags.append("cut-in")
+        tag = ("  <-- " + ",".join(flags)) if flags else ""
+        print(f"{g:8.2f} {pen:6.2f}  {rel}{tag}")
+    hi_gap = [r for g, p, r in rows if g > 1.5]
+    hi_pen = [r for g, p, r in rows if p < -1.0]
+    print(f"\n{len(rows)} torso pieces measured. standoff = breast gap "
+          f"(pre-fix Fur Cuirass +2.12u); pen = deepest armor-into-body over the torso.")
+    print(f"{len(hi_gap)} still gap > 1.5u, {len(hi_pen)} cut in > 1.0u. Clean pieces "
+          f"sit near the body without cutting -- flagged ones want a closer look.")
     return 0
 
 
