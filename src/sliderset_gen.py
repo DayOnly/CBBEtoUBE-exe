@@ -33,6 +33,8 @@ application, so users only need to ship the TRI + ESP patch rather than
 """
 from __future__ import annotations
 
+import os
+
 import numpy as np
 from scipy.spatial import cKDTree
 
@@ -90,6 +92,99 @@ _ATTACHMENT_KEYWORDS = (
 )
 
 
+# ---- Protrusion-follow (regional outward morph tracking) --------------
+# A breast (or butt) is a PROTRUDING VOLUME. When it inflates under a slider,
+# armor covering the surrounding surface at a stand-off (a metal cuirass floats
+# 2-4u off the chest) does NOT follow, because the plate's own nearest body
+# vertex sits on the low-morph surface beside the protrusion while the apex a
+# few units inside balloons out THROUGH the plate. Pointwise nearest-vertex IDW
+# (the loop below) can't capture this because it's non-local: the plate must
+# track the peak outward expansion of the region it COVERS, not just its nearest
+# point. Measured signature: follow drops linearly with stand-off (a plate 4u
+# off follows a breast slider at ~0.1-0.6x of the body while a hugging fur
+# tracks ~1.0x); the body then pokes through at the breasts on any large preset.
+#
+# Fix: for each armor vert that stands off the body, top up its outward (body-
+# normal) displacement so it reaches the regional peak expansion within ~its
+# stand-off radius -- i.e. the plate rides out over the inflating protrusion,
+# preserving clearance. It ONLY adds outward push (never reduces, never moves
+# tangentially), is bounded by the regional peak (no spikes), and self-nullifies
+# for hugging cloth (stand-off below the gate) and for flat regions / back
+# plates with no nearby protrusion. The regional field is a morphological
+# dilation of the body's outward-expansion field; it depends only on the body +
+# slider (not the armor) so it is computed ONCE per run and cached across every
+# armor. Escape hatch: CBBE2UBE_NO_PROTRUSION_FOLLOW=1.
+_PROTRUSION_FOLLOW = os.environ.get(
+    "CBBE2UBE_NO_PROTRUSION_FOLLOW", "").strip().lower() not in ("1", "true", "yes")
+# K body self-neighbors define the dilation reach (~5u on the UBE body at K=160).
+_PF_REACH_K = int(os.environ.get("CBBE2UBE_PROTRUSION_FOLLOW_K", "160"))
+# Only verts standing off at least this far are lifted (hugging cloth already
+# tracks well via pointwise IDW and must stay untouched).
+_PF_STANDOFF_MIN = float(os.environ.get("CBBE2UBE_PROTRUSION_FOLLOW_MIN", "1.5"))
+# A slider whose peak outward body expansion is below this never needs a follow
+# field (flat / inward-only sliders can't poke out through armor).
+_PF_MIN_EXPANSION = 0.10
+
+# Cross-armor caches (a run reuses one UBE body + OSD for every armor).
+_PF_SELF_CACHE: "dict[tuple, np.ndarray]" = {}    # body sig -> (N, K) self-neighbors
+_PF_FIELD_CACHE: "dict[tuple, dict]" = {}         # (body,osd,prefix) sig -> {slider: field}
+
+
+def _pf_sig(arr: np.ndarray) -> tuple:
+    """Cheap, stable content signature for a body vert/normal array (used as a
+    cache key so we don't rely on id(), which can be recycled)."""
+    a = np.asarray(arr)
+    flat = a.ravel()
+    step = max(1, flat.size // 64)
+    return (a.shape, float(flat[::step].sum()), float(flat[-1]) if flat.size else 0.0)
+
+
+def _pf_self_neighbors(body_verts: np.ndarray, tree: cKDTree) -> np.ndarray:
+    key = (_pf_sig(body_verts), _PF_REACH_K)
+    cached = _PF_SELF_CACHE.get(key)
+    if cached is None:
+        k = min(_PF_REACH_K, len(body_verts))
+        _, cached = tree.query(body_verts, k=k)
+        if cached.ndim == 1:
+            cached = cached[:, None]
+        _PF_SELF_CACHE[key] = cached
+    return cached
+
+
+def _pf_follow_fields(body_verts, body_normals, body_osd, prefix, tree):
+    """{slider_name -> (N,) regional peak outward expansion} for the UBE body,
+    cached across armors. None when disabled or normals unavailable."""
+    if not _PROTRUSION_FOLLOW or body_normals is None:
+        return None
+    bn = np.asarray(body_normals, dtype=np.float64)
+    if bn.shape != np.asarray(body_verts).shape:
+        return None
+    key = (_pf_sig(body_verts), _pf_sig(bn), id(body_osd), prefix, _PF_REACH_K)
+    cached = _PF_FIELD_CACHE.get(key)
+    if cached is not None:
+        return cached
+    body_n = len(body_verts)
+    bself = _pf_self_neighbors(body_verts, tree)
+    buf = np.zeros((body_n, 3), dtype=np.float64)
+    fields: "dict[str, np.ndarray]" = {}
+    for m in body_osd.morphs:
+        if not m.offsets:
+            continue
+        slider = m.name[len(prefix):] if m.name.startswith(prefix) else m.name
+        off = np.asarray(m.offsets, dtype=np.float64)
+        idx = off[:, 0].astype(np.int64)
+        ok = (idx >= 0) & (idx < body_n)
+        buf.fill(0.0)
+        buf[idx[ok]] = off[ok, 1:4]
+        # Outward (body-normal) component of the slider's displacement, >= 0.
+        e = np.clip(np.einsum("ij,ij->i", buf, bn), 0.0, None)
+        if float(e.max()) <= _PF_MIN_EXPANSION:
+            continue
+        fields[slider] = e[bself].max(axis=1).astype(np.float64)
+    _PF_FIELD_CACHE[key] = fields
+    return fields
+
+
 def generate_armor_tri(
     armor_shapes: dict[str, np.ndarray],
     body_verts: np.ndarray,
@@ -101,6 +196,7 @@ def generate_armor_tri(
     carrier_shape_name: str | None = None,
     extra_body_osds: "dict[str, OsdFile] | None" = None,
     armor_vert_extremity_fractions: "dict[str, np.ndarray] | None" = None,
+    body_normals: "np.ndarray | None" = None,
 ) -> TriFile:  # noqa: docstring continues below
     """Build a BODYTRI for the armor by propagating UBE body slider deltas.
 
@@ -182,6 +278,22 @@ def generate_armor_tri(
         name: [] for name in armor_shapes
     }
 
+    # Regional outward-expansion field per slider (protrusion-follow). Computed
+    # once per run and cached across armors; None when disabled / no normals.
+    follow_fields = _pf_follow_fields(
+        body_verts_arr, body_normals, body_osd, prefix, tree)
+    # Per-shape outward normal at each armor vert's nearest body vert (reused
+    # across morphs). Only built when the follow fields are active.
+    shape_follow: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+    if follow_fields:
+        body_normals_arr = np.asarray(body_normals, dtype=np.float64)
+        for armor_shape_name, (neighbors, dists, nearest_dist) in shape_knn.items():
+            n0 = neighbors[:, 0]
+            shape_follow[armor_shape_name] = (
+                body_normals_arr[n0],                       # outward normal
+                (nearest_dist >= _PF_STANDOFF_MIN),         # stand-off gate
+            )
+
     for body_m in body_osd.morphs:
         if not body_m.offsets:
             continue
@@ -205,6 +317,20 @@ def generate_armor_tri(
             w = 1.0 / (np.power(dists, p[:, None]) + 1e-9)
             w /= w.sum(axis=1, keepdims=True)
             propagated = (morph_delta_buf[neighbors] * w[..., None]).sum(axis=1)
+            # Protrusion-follow: for stand-off verts over an inflating region,
+            # top up the OUTWARD (body-normal) displacement to the regional peak
+            # so a plate rides out over the protrusion instead of the body
+            # poking through it. Add-only, bounded by the region, self-nullifying
+            # for hugging cloth / flat areas. See _pf_follow_fields.
+            if follow_fields is not None:
+                field = follow_fields.get(slider_name)
+                if field is not None:
+                    n_out, gate = shape_follow[armor_shape_name]
+                    e_reg = field[neighbors[:, 0]]
+                    e_now = np.clip(
+                        np.einsum("ij,ij->i", propagated, n_out), 0.0, None)
+                    add = np.clip(e_reg - e_now, 0.0, None) * gate
+                    propagated = propagated + add[:, None] * n_out
             # Extremity dampening: scale propagated deltas by (1 - extremity_fraction)
             # so sleeve/calf verts get full body-morph response while
             # finger/toe verts stay near-zero (matching the separate nude Hands/Feet
