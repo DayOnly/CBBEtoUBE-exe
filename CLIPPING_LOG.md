@@ -407,3 +407,22 @@ thickness-gated so it does NOT false-flag thick plate (a plate stands off but is
 
 ## Fixed
 _(none yet)_
+
+### C2. Equip CTD -- HDT-SMP jiggle bones grafted onto multi-layer cloth (FIXED 2026-07-09)
+- Crash: `crash-2026-07-09-09-58-57.log`. `EXCEPTION_ACCESS_VIOLATION` in
+  `hdtsmp64.dll MainHooks::Update` on equip, faulting on `Cuirass_A`/`Cuirass_B` of the
+  New Leather / Noble Dark Leather cuirass (`narmor/leathersuitn/dcuirass`).
+- Root cause: the body-follow graft passes (M6 reskin + `_conform_fitted_to_body` +
+  `_match_rigid_leg_bend_to_body` + `_transfer_body_jiggle_to_fitted`) graft the body's
+  HDT-SMP JIGGLE bones (Breast01/02/03, Butt, Belly) onto bone-driven multi-layer cloth
+  cuirass shapes. A runtime SMP config drives that cloth by those body bones -> FSMP
+  OOB-crash. Not detected as SMP (no NIF marker; weighted to body bones, not custom
+  chains) so the softbody/collider/garment-chain skips all missed it. NOT the body-match
+  fix (New Leather sources from base, unchanged; mesh byte-identical to the `.looksgood`).
+- Fix: `_layered_cloth_shape_names` (2+ sibling shapes sharing a base stem + short layer
+  suffix, e.g. Cuirass_A/_B/_C) -> EVERY graft pass skips them, keeping SOURCE skin.
+  Prevention at every site (pynifly can't cleanly remove a bone after; a single post-strip
+  gets undone by later passes). Verified dcuirass+d1st Cuirass_A/B/C -> 0 grafted SMP.
+  Pack blast radius: 14 meshes (New Leather + accessories/dresses). Escape hatch
+  CBBE2UBE_NO_LAYERED_CLOTH_SKIN=1. Suite 628. Exe rebuilt + deployed (hash-verified).
+- Status: **FIXED IN CODE + deployed. Pending in-game equip test (reconvert first).**
