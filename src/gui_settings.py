@@ -205,11 +205,9 @@ SETTINGS: "tuple[Setting, ...]" = (
     #      window renders a dedicated control for it) --------------------------
     Setting("theme", "Window theme", "Appearance", "Appearance",
             kind="str", default="standard", env=None,
-            tooltip="Window colour palette. Standard (dark + gold) is the "
-                    "default; Light, Parchment and Whispa are light palettes; "
-                    "Nordic, Ebony, Copper, Verdant, Ember and Dark are dark "
-                    "palettes; Contrast maximises legibility. Picked from the "
-                    "Theme control at the top right."),
+            tooltip="Window colour palette: Standard (dark + gold), Light, "
+                    "Dark, or Whispa (silver + purple). Picked from the Theme "
+                    "control at the top right."),
 )
 
 
