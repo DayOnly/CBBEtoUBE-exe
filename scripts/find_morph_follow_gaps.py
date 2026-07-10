@@ -23,12 +23,13 @@ sys.path.insert(0, str(_REPO))
 sys.path.insert(0, str(_REPO / ".pynifly"))
 from pyn import pynifly                        # noqa: E402
 from src import paths                          # noqa: E402
+from src.body_zones import BREAST_Z, BELLY_Z, BUTT_Z   # noqa: E402
 
 OUT_MOD = os.environ.get("CBBE2UBE_OUT_MOD", "CBBEtoUBE Auto")
 # morph zone: (z-lo, z-hi, front/back sign for the body normal, jiggle-bone keyword)
-ZONES = [("breast", 100, 108, +1, "breast"),
-         ("belly", 88, 100, +1, "belly"),
-         ("butt", 66, 82, -1, "butt")]
+ZONES = [("breast", BREAST_Z[0], BREAST_Z[1], +1, "breast"),
+         ("belly", BELLY_Z[0], BELLY_Z[1], +1, "belly"),
+         ("butt", BUTT_Z[0], BUTT_Z[1], -1, "butt")]
 
 
 def _load(path):
