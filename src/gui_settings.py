@@ -206,8 +206,8 @@ SETTINGS: "tuple[Setting, ...]" = (
     Setting("theme", "Window theme", "Appearance", "Appearance",
             kind="str", default="standard", env=None,
             tooltip="Window colour palette: Standard (dark + gold), Light, "
-                    "Dark, or Whispa (silver + purple). Picked from the Theme "
-                    "control at the top right."),
+                    "Dark, Whispa (silver + purple), or Jbish (black + rose). "
+                    "Picked from the Theme control at the top right."),
 )
 
 
