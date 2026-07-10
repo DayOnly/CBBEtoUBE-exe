@@ -272,7 +272,20 @@ def _cached_ube_body_verts(path: Path):
 ADAPTIVE_CLEARANCE_ENABLED = True
 ADAPTIVE_CLEARANCE_BASE = 0.25       # minimum clearance in static zones
 ADAPTIVE_CLEARANCE_MORPH_FACTOR = 0.20  # clearance added per unit of outward body morph
-ADAPTIVE_CLEARANCE_MORPH_MAX = 0.8   # clearance cap for high-morph zones
+# Cap for the high-morph ramp. Was 0.8, which sat BELOW the fixed bust target it
+# replaced (ANTIPOKE_BUST_CLEAR = 1.0), so the breast ended up with less clearance
+# than before adaptive clearance existed. Measured per-zone on the UBE body (outward
+# morph amplitude -> fraction of verts the cap clipped):
+#     breast  amp 3.48 mean / 5.34 max -> ramp wants 0.95-1.32u -> 72% clipped
+#     belly   amp 3.35 mean            -> ramp wants 0.92u      -> 50% clipped
+#     sternum amp 1.66 mean            ->                          20% clipped
+#     butt / back / thigh  amp <= 0.85 ->                           0% clipped
+# So the cap only ever binds on the three zones the ramp exists to serve, and
+# raising it cannot loosen the back, butt or thighs. 1.1 lets the ramp clear the
+# 1.0 bust floor without letting the belly's outlier verts (amp up to 8.7) run to
+# ~2u. Tune with CBBE2UBE_CLEARANCE_MORPH_MAX (no rebuild needed for a reconvert).
+ADAPTIVE_CLEARANCE_MORPH_MAX = float(
+    os.environ.get("CBBE2UBE_CLEARANCE_MORPH_MAX", "1.1"))
 
 # Extra anti-poke clearance scaled by local jiggle-bone weight, for SMP bounce that
 # swings past the static envelope. Experimental, default off;
@@ -1485,6 +1498,31 @@ def clear_armor_outside_body(
         amp_worst = np.max(amp_k, axis=1)
         req = np.clip(adaptive_base + adaptive_factor * amp_worst,
                       adaptive_base, adaptive_cap)
+        # BUST FLOOR. The adaptive ramp REPLACED the bust ramp below, and its cap
+        # sat under the bust target -- so switching adaptive clearance on gave the
+        # breast LESS room than the fixed path it replaced, on the one zone that
+        # morphs most. Measured on the UBE body: breast morph amplitude is 3.48
+        # mean / 5.34 max, so the ramp wants 0.95-1.32u, but adaptive_cap=0.8
+        # clipped 72% of breast verts -- landing at 0.73u mean where the legacy
+        # bust target was 1.0u. Body then sits proud of the cuirass at the breast,
+        # at rest and in motion. Apply the bust ramp as a FLOOR, exactly the way
+        # rear_standoff does below (np.maximum, never stacks) so adaptive can add
+        # room but can never take the bust below what the fixed path guaranteed.
+        if body_nipple is not None and len(body_nipple) == len(bv):
+            z = bv[nearest][:, 2]
+            nipw = np.asarray(body_nipple, dtype=np.float64)[nearest]
+            # Gate on NIPPLE WEIGHT, not just the z-band. `bust_z` is a height
+            # range with no front/back test, so a vert on the BACK at chest height
+            # is "in bust" too -- flooring it at flat_clear would re-impose a fixed
+            # standoff on the static zones adaptive clearance exists to keep tight
+            # (measured: it pushed a fur cuirass's back from 0.74u to 1.02u).
+            # Nipple weight is non-zero only on the bust itself, so it confines the
+            # floor to the geometry that actually needs it.
+            in_bust = ((z >= bust_z[0]) & (z <= bust_z[1])
+                       & (nipw > 0.0) & (nrm[:, 1] > 0.0))
+            bust_req = np.clip(flat_clear + nipw * nipple_gain,
+                               flat_clear, bust_clear)
+            req = np.where(in_bust, np.maximum(req, bust_req), req)
     else:
         req = np.full(len(v), float(flat_clear))
         if body_nipple is not None and len(body_nipple) == len(bv):
