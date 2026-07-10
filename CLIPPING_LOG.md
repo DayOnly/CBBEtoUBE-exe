@@ -20,6 +20,21 @@ output, for converter diagnosis + fixes. Started 2026-07-07 (post unified-covera
 
 ## Open
 
+### 0c. POST-RECONVERT VERIFICATION 2026-07-10 (offline; user in-game still pending)
+`scripts/verify_motion_match.py` over 1223 meshes:
+- **Ratio 1.00** on all three problem armors, every driving slider: Noble Dark Leather
+  `Cuirass_A/B`; Steel Plate `Cuirass` (was 0.85), `SteelArmor.012` (was 1.48), `Collar`;
+  Falmer `chestplate`/`gorget`.
+- **Rigid-prop shear: 0 hits.** The artifact predicted from ratio-1.0 (a scabbard straddling
+  the hugging + drape zones bending) did NOT materialise.
+- **43 shapes carry no TriShape at all** -- `ColLegs`, `HDTSkirt`, `ColBelt`, `Dress1`,
+  `VirtualBody`, `Proxy`, `Stabilizer`: collision proxies + HDT softbody, excluded by design.
+  These show as "ratio 0.00" in a naive scan; that is NO morph, not a wrong morph.
+- **Only 3 genuinely off-ratio shapes**, all marginal drape cloth at the `_MATCH_NEAR` seam:
+  `CloakF` 1.11, two `Skirt` 0.90. Cosmetically negligible.
+Also confirmed: Noble Dark Leather has NO auto SMP xml and 0 jiggle bones on the cloth
+(crash + balloon fixes held through the reconvert).
+
 ### 0b. RESOLVED 2026-07-10 -- the rule is "armor moves as the body it covers" (ratio 1.0)
 Entry 0 below diagnosed the symptom correctly but the FIX was wrong twice. Final rule:
 an armor vert copies the delta of the body vertex it COVERS, so clearance is preserved
