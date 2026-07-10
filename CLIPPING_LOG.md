@@ -20,6 +20,41 @@ output, for converter diagnosis + fixes. Started 2026-07-07 (post unified-covera
 
 ## Open
 
+### 0d. "Armor too small for the breast" -- the adaptive clearance cap sat BELOW the bust target
+Reported in-game after 0b/0c landed: the cuirass reads too small at the breast, at rest AND
+in motion. "Both states" is the tell -- a defect present at rest that merely persists through
+motion is STATIC CLEARANCE, not a dynamic conform or morph-tracking problem.
+
+**PINNED: WHERE THE BREAST ACTUALLY IS.** z **90-102**, apex ~95-96 (UBE body, feet z~11).
+NOT z 99-112 -- that is the UPPER CHEST. Every "breast" number in entries 0/0b/0c above was
+measured on the upper chest by mistake, which is exactly why they all looked clean. Verified
+two independent ways: the body's front-most vertex is at z=95, and the strongest verts of
+`BreastsBigger`/`BreastsTBD` are at z=96. `ANTIPOKE_BUST_CLEAR`'s own `bust_z=(84,100)` was
+right all along. Measure the breast at z90-102 or the defect is invisible.
+
+**Root cause.** `clear_armor_outside_body` has two paths. The legacy one gives the bust zone
+a ramp up to `ANTIPOKE_BUST_CLEAR = 1.0`. The newer adaptive one REPLACES it with
+`clip(base + factor*amp, base, ADAPTIVE_CLEARANCE_MORPH_MAX)` -- and the cap was **0.8**,
+*below* the 1.0 bust target. So the pass that was meant to REFINE bust clearance silently
+gave the breast LESS room than the fixed code it superseded. The ramp wanted 0.95 mean /
+1.32 peak there and was clipped 72% of the time.
+
+**Measured before the fix** (steel cuirass, TRUE breast band, signed clearance along the body
+normal): rest mean +0.66u, **min -1.49u, 8% of breast verts already poking AT REST**; with a
+slider applied, 13% poking, deepest -1.98u. Disproven en route: it is not nearest-vertex
+quantisation (a full surface-barycentric transfer moved the worst vert only -0.44u -> -0.31u
+and changed the poke count 19 -> 19), and the injected `BaseShape` is byte-identical to the
+user's built body, so the armor IS fitted to the body being worn.
+
+**Fix (#bust-clearance-floor).** Floor the bust zone by the legacy ramp using the same
+`np.maximum` pattern `rear_standoff` already used ("a FLOOR on req, never stacks"), and lift
+`ADAPTIVE_CLEARANCE_MORPH_MAX` clear of the bust target. Gated on the body's nipple weight,
+which is measured nonzero ONLY at z90-102, 100% front-facing, and **exactly 0 on the back**
+-- so rear/side clearance cannot move. Env dial `CBBE2UBE_CLEARANCE_MORPH_MAX` (no rebuild).
+Check with `scripts/verify_bust_clearance.py`: breast should show no poking verts, and rear
+mean clearance must stay tight (a jump there means the nipple gate leaked and every armor
+went baggy at the back).
+
 ### 0c. POST-RECONVERT VERIFICATION 2026-07-10 (offline; user in-game still pending)
 `scripts/verify_motion_match.py` over 1223 meshes:
 - **Ratio 1.00** on all three problem armors, every driving slider: Noble Dark Leather
