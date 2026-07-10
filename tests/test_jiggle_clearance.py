@@ -14,10 +14,21 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-"""Jiggle-overshoot clearance (CBBE2UBE_JIGGLE_CLEARANCE, default OFF): the final
-anti-poke adds bounded extra clearance where the body's softbody (breast/butt/
-belly) jiggle weight is high, and adds exactly 0 where it's 0 -- so bouncing
-softbody can't punch through rigid cloth while tight fit is kept elsewhere."""
+"""Jiggle-overshoot clearance (DEFAULT ON since 2026-07-10): the final anti-poke adds
+bounded extra clearance where the body's softbody (breast/butt/belly) jiggle weight is
+high, and adds exactly 0 where it's 0 -- so bouncing softbody can't punch through rigid
+cloth while tight fit is kept elsewhere.
+
+Every other clearance term measures the body at REST. HDT-SMP throws the breast outward
+past that surface, and a rigid cuirass has no idea it's coming: an armor with +1.18u
+resting clearance and ratio-1.0 morph tracking still showed skin in-game. This term is
+the only one that reasons about the body's MOVING envelope.
+
+It was opt-in and simply never switched on -- and the env var could not have reached the
+converter anyway, since MO2 does not inherit them (the same reason UNIFIED_COVERAGE had to
+become a sentinel file). Measured on the UBE body: breast +0.14u mean / +0.28u at the
+nipple, belly +0.02u, butt +0.01u, back exactly 0.000u. Disable with
+CBBE2UBE_NO_JIGGLE_CLEARANCE=1; retune with CBBE2UBE_JIGGLE_CLEARANCE_GAIN / _MAX."""
 import sys
 from pathlib import Path
 
@@ -104,3 +115,37 @@ def test_body_jiggle_weight_map():
     # a body with no jiggle bones -> None (pass no-ops)
     assert _body_jiggle_weight(_FakeShape(2, {"NPC Spine": [(0, 1.0)]})) is None
     print("  test_body_jiggle_weight_map OK")
+
+
+def test_enabled_by_default():
+    """It shipped opt-in and was never switched on, so the armor was only ever cleared
+    against the body's resting shape. An env var would not have reached the converter."""
+    import src.nif_convert as nc
+    assert nc.JIGGLE_CLEARANCE_ENABLED is True
+
+
+def test_disable_switch_exists(monkeypatch):
+    import importlib
+    import src.nif_convert as nc
+    monkeypatch.setenv("CBBE2UBE_NO_JIGGLE_CLEARANCE", "1")
+    importlib.reload(nc)
+    assert nc.JIGGLE_CLEARANCE_ENABLED is False
+    monkeypatch.delenv("CBBE2UBE_NO_JIGGLE_CLEARANCE")
+    importlib.reload(nc)
+    assert nc.JIGGLE_CLEARANCE_ENABLED is True
+
+
+def test_gain_and_cap_retune_without_a_rebuild(monkeypatch):
+    """A bouncier SMP setup needs a bigger term. Retuning must cost a reconvert, not a
+    rebuild -- the clearance is baked into the mesh at convert time."""
+    import importlib
+    import src.nif_convert as nc
+    monkeypatch.setenv("CBBE2UBE_JIGGLE_CLEARANCE_GAIN", "1.4")
+    monkeypatch.setenv("CBBE2UBE_JIGGLE_CLEARANCE_MAX", "1.2")
+    importlib.reload(nc)
+    assert abs(nc.JIGGLE_CLEARANCE_GAIN - 1.4) < 1e-9
+    assert abs(nc.JIGGLE_CLEARANCE_MAX - 1.2) < 1e-9
+    monkeypatch.delenv("CBBE2UBE_JIGGLE_CLEARANCE_GAIN")
+    monkeypatch.delenv("CBBE2UBE_JIGGLE_CLEARANCE_MAX")
+    importlib.reload(nc)
+    assert abs(nc.JIGGLE_CLEARANCE_GAIN - 0.5) < 1e-9
