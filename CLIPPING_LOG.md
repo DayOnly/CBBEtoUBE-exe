@@ -20,6 +20,35 @@ output, for converter diagnosis + fixes. Started 2026-07-07 (post unified-covera
 
 ## Open
 
+### 0b. RESOLVED 2026-07-10 -- the rule is "armor moves as the body it covers" (ratio 1.0)
+Entry 0 below diagnosed the symptom correctly but the FIX was wrong twice. Final rule:
+an armor vert copies the delta of the body vertex it COVERS, so clearance is preserved
+-- the body then can't poke through and the armor can't balloon past it. Measured, both
+failure modes in-game on one steel cuirass + one leather cuirass:
+- plain IDW (old): dilutes a fitted cuirass to **0.59-0.81x** -> body bursts through.
+- regional-peak "protrusion-follow" (my first fix): overshoots to **2.0-2.2x** -> armor balloons.
+- nearest-copy (ratio **1.00**): correct. Subsumes the stand-off plate case -- preserving
+  clearance means nothing can poke through, so no regional peak is needed.
+Drape cloth far off the body keeps the smoothed IDW average (a skirt must not snap to
+whichever leg vert is nearest): weight eases 1.0 -> 0.0 between `_MATCH_NEAR` (4u) and
+`_MATCH_FAR` (10u). `_motion_match_weight` in `src/sliderset_gen.py`.
+
+**Second defect, same symptom.** After the above, the steel cuirass STILL poked. The
+**overlay-band morph-sync** was overwriting the breast plates' exact tracking with their
+under-layer's deltas. The tell: `Collar` (5589 verts, too LARGE to be classed a "band")
+held 1.00 while every band candidate was rewritten -- `Cuirass` 0.85, `SteelArmor.012`
+1.48. That pass only existed because bare IDW diluted each shape by its OWN stand-off, so
+band and layer moved differently and the band re-sank; motion-match makes every hugging
+shape 1.0, so hugging band + hugging layer are ALREADY lockstep. Gated the sync to bands
+genuinely lifted off the body.
+
+**Traps recorded:** (1) the sliders that inflate the chest are mostly NOT breast-named --
+`Donaught` 2.65, `TBD 2.0` 2.38, `Amazon` 1.79, `Peachy`, `Juicy_body`, `SternumDepth`.
+Never filter morphs by name. (2) A ratio computed against a near-zero denominator is
+meaningless -- `SteelArmor.012` "2.37x" was 0.16u vs 0.07u. Check ABSOLUTE motion too.
+Check with `scripts/verify_motion_match.py`. WATCH: rigid props (scabbard/sword) that
+straddle the hugging + drape zones can now SHEAR (near verts move fully, far verts don't).
+
 ### 0. Breast-covering STANDOFF plates under-follow the breast slider (ROOT CAUSE, measured 2026-07-09)
 Two user reports — Falmer Slayer chestplate "clipping all around the breasts" and
 Steel Plate cuirass "clips at the under breasts" — are ONE root cause, measured across
