@@ -287,6 +287,17 @@ def generate_armor_tri(
     # sitting clearly outside another cloth shape, replace its per-slider deltas
     # with the under-layer's nearest-vertex deltas. Fully gated: if the band
     # can't be classified it no-ops and the base lift still stands.
+    #
+    # NOT for body-hugging bands. This pass exists because the bare IDW diluted
+    # each shape by its OWN stand-off, so a band and its layer moved by different
+    # amounts and the band re-sank. Body-motion match removes that cause: every
+    # hugging shape now copies the body exactly (ratio 1.0), so a hugging band and
+    # its hugging layer already move in lockstep. Re-syncing them here instead
+    # OVERWRITES the exact match with the under-layer's delta sampled at a
+    # different body location -- measured on a steel cuirass: the breast plates
+    # (small enough to look like bands) dropped to 0.85x while the one shape too
+    # large to qualify held 1.00x, and the body poked through the breasts. Only
+    # bands genuinely lifted off the body (beyond the pure-copy zone) still need it.
     try:
         from scipy.spatial import cKDTree as _cKDTree
         _OM_SIZE_FRAC, _OM_R, _OM_MIN, _OM_THRESH, _OM_SYNC_R = 0.40, 3.0, 30, 0.20, 5.0
@@ -297,6 +308,8 @@ def generate_armor_tri(
             if _maxv <= 0 or len(av) >= _OM_SIZE_FRAC * _maxv or A not in shape_knn:
                 continue   # large body-conforming piece -> keep own morph
             a_nd = shape_knn[A][2]   # A's per-vert clearance to the body
+            if _BODY_MOTION_MATCH and float(np.median(a_nd)) <= _MATCH_NEAR:
+                continue   # hugging band already tracks the body exactly
             under_v, under_tag = [], []
             for B in _names:
                 if B == A or B not in shape_knn:
