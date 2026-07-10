@@ -162,6 +162,116 @@ def _kill_proc_tree(proc) -> None:
         pass
 
 
+# ---------------------------------------------------------------------------
+# Colour palettes. Module level (not nested in launch_gui) so tests can import
+# and check them without a display. Adding a palette here is the ONLY edit
+# needed -- the picker derives its list from this dict.
+#
+# Every palette carries the same key set (see THEME_KEYS) and must stay legible:
+# tests/test_gui_themes.py enforces WCAG contrast on the pairs that render text
+# (fg/bg, logfg/logbg, onaccent/accent) plus weaker bars for the secondary ones.
+#
+# `onaccent` is the text drawn ON the accent (button labels). A DARK theme wants
+# a bright accent, so `onaccent` goes near-black; a LIGHT theme wants a deeper
+# accent with white on it. No single blue satisfies both -- the old shared
+# #3b7dd8 gave white only 4.11 contrast, under the 4.5 AA bar.
+THEME_KEYS = frozenset((
+    "bg", "fg", "field", "hover", "border", "disabled", "hint", "tab",
+    "accent", "accenthi", "onaccent", "logbg", "logfg", "labelfg", "tabselfg",
+))
+
+_THEMES = {
+    "standard": {   # dark + gold (default)
+        "bg": "#262421", "fg": "#e8e2d4", "field": "#34312b",
+        "hover": "#403c33", "border": "#5c5445", "disabled": "#888274",
+        "hint": "#b6a98c", "tab": "#302d27", "accent": "#c9a24b",
+        "accenthi": "#e0b95e", "onaccent": "#241f16", "logbg": "#201e1a",
+        "logfg": "#ddd3bf", "labelfg": "#d9b968", "tabselfg": "#e0b95e",
+    },
+    "light": {
+        "bg": "#f4f4f3", "fg": "#1b1b1a", "field": "#ffffff",
+        "hover": "#e7e7e6", "border": "#c9c9c7", "disabled": "#a6a6a3",
+        "hint": "#6b6b6b", "tab": "#e4e4e2", "accent": "#2f6fc9",
+        "accenthi": "#3f7fd8", "onaccent": "#ffffff", "logbg": "#ffffff",
+        "logfg": "#1b1b1a", "labelfg": "#1b1b1a", "tabselfg": "#1b1b1a",
+    },
+    "dark": {
+        "bg": "#2b2b2b", "fg": "#e8e8e8", "field": "#3c3f41",
+        "hover": "#45494c", "border": "#565656", "disabled": "#7a7a7a",
+        "hint": "#a0a0a0", "tab": "#333638", "accent": "#5591e6",
+        "accenthi": "#7cb4f0", "onaccent": "#0d1420", "logbg": "#1e1e1e",
+        "logfg": "#dcdcdc", "labelfg": "#e8e8e8", "tabselfg": "#e8e8e8",
+    },
+    "nordic": {     # cold slate + ice blue
+        "bg": "#1f2429", "fg": "#e2e8ec", "field": "#2b3238",
+        "hover": "#39424a", "border": "#4a555e", "disabled": "#79858d",
+        "hint": "#9fb0bb", "tab": "#252c32", "accent": "#5fa8d3",
+        "accenthi": "#7cc0e6", "onaccent": "#0d1418", "logbg": "#171c20",
+        "logfg": "#d3dde3", "labelfg": "#8fc5e3", "tabselfg": "#7cc0e6",
+    },
+    "ebony": {      # near-black + violet
+        "bg": "#1c1a20", "fg": "#e6e2ec", "field": "#2a2731",
+        "hover": "#38343f", "border": "#4d4757", "disabled": "#7d7688",
+        "hint": "#a99fb8", "tab": "#221f27", "accent": "#9b7fd4",
+        "accenthi": "#b299e4", "onaccent": "#141118", "logbg": "#161419",
+        "logfg": "#d8d3e0", "labelfg": "#b299e4", "tabselfg": "#b299e4",
+    },
+    "copper": {     # warm brown + copper
+        "bg": "#241f1a", "fg": "#ece2d6", "field": "#332c24",
+        "hover": "#41382d", "border": "#5b4d3d", "disabled": "#8a7d6d",
+        "hint": "#bca88d", "tab": "#2a2420", "accent": "#c07a4a",
+        "accenthi": "#d99461", "onaccent": "#1a120c", "logbg": "#1e1a16",
+        "logfg": "#ded3c3", "labelfg": "#d99461", "tabselfg": "#d99461",
+    },
+    "verdant": {    # deep green + sage
+        "bg": "#1e241f", "fg": "#e0e9e0", "field": "#2a322b",
+        "hover": "#374037", "border": "#4a574b", "disabled": "#7a877b",
+        "hint": "#a3b6a5", "tab": "#232a24", "accent": "#7fb069",
+        "accenthi": "#98c682", "onaccent": "#0f150f", "logbg": "#171d18",
+        "logfg": "#d2ddd3", "labelfg": "#98c682", "tabselfg": "#98c682",
+    },
+    "ember": {      # charcoal + warm ember
+        "bg": "#221e1e", "fg": "#ece0dc", "field": "#312a29",
+        "hover": "#3f3634", "border": "#584b48", "disabled": "#877874",
+        "hint": "#bfa79f", "tab": "#282221", "accent": "#d2694b",
+        "accenthi": "#e68462", "onaccent": "#180f0c", "logbg": "#1c1817",
+        "logfg": "#ded0cb", "labelfg": "#e68462", "tabselfg": "#e68462",
+    },
+    "parchment": {  # warm light + sepia
+        "bg": "#f2ece0", "fg": "#2b2418", "field": "#fdfaf2",
+        "hover": "#e6dece", "border": "#c8bda4", "disabled": "#a49a86",
+        "hint": "#6e6553", "tab": "#e5ddcc", "accent": "#8a6d3b",
+        "accenthi": "#a3854f", "onaccent": "#ffffff", "logbg": "#fdfaf2",
+        "logfg": "#2b2418", "labelfg": "#5f4a24", "tabselfg": "#2b2418",
+    },
+    "whispa": {     # silver ground + purple accent
+        # A MID-TONE ground: plenty of headroom above it for dark text, very little
+        # below. `hint` has to sink to #5c5c5d to clear 3.0:1 and `disabled` lands at
+        # 2.20:1 -- legible, but there is no room left for a third muted tier. Lift
+        # `bg` toward #d4d4d4 if another muted level is ever wanted. The accent does
+        # real work here (legend, selected tab, log highlight), not just the button.
+        "bg": "#c0c0c0", "fg": "#141416", "field": "#d7d7d7",
+        "hover": "#b1b1b1", "border": "#888888", "disabled": "#7f7f7f",
+        "hint": "#5c5c5d", "tab": "#b6b6b6", "accent": "#800080",
+        "accenthi": "#a900a9", "onaccent": "#ffffff", "logbg": "#d7d7d7",
+        "logfg": "#141416", "labelfg": "#800080", "tabselfg": "#800080",
+    },
+    "contrast": {   # maximum-legibility / accessibility
+        "bg": "#000000", "fg": "#ffffff", "field": "#000000",
+        "hover": "#1a1a1a", "border": "#ffffff", "disabled": "#8c8c8c",
+        "hint": "#d0d0d0", "tab": "#000000", "accent": "#ffd400",
+        "accenthi": "#ffe45c", "onaccent": "#000000", "logbg": "#000000",
+        "logfg": "#ffffff", "labelfg": "#ffd400", "tabselfg": "#ffd400",
+    },
+}
+
+# Display order + labels for the picker, derived so a new palette above needs no
+# second edit here (the old hard-coded ("Standard","Light","Dark") tuple silently
+# hid any theme you forgot to add to it).
+THEME_NAMES = tuple(_THEMES)
+THEME_LABELS = tuple(n.capitalize() for n in THEME_NAMES)
+
+
 def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
     # auto_close_ms: test hook -- window auto-destroys after that many ms.
     # _smoke_settings: test hook -- open the settings dialog once, so a smoke
@@ -551,30 +661,6 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
 
     _SEMI = ("Segoe UI Semibold", 10)
 
-    _THEMES = {
-        "light": {
-            "bg": "#f4f4f3", "fg": "#1b1b1a", "field": "#ffffff",
-            "hover": "#e7e7e6", "border": "#c9c9c7", "disabled": "#a6a6a3",
-            "hint": "#6b6b6b", "tab": "#e4e4e2", "accent": "#3b7dd8",
-            "accenthi": "#5591e6", "onaccent": "#ffffff", "logbg": "#ffffff",
-            "logfg": "#1b1b1a", "labelfg": "#1b1b1a", "tabselfg": "#1b1b1a",
-        },
-        "dark": {
-            "bg": "#2b2b2b", "fg": "#e8e8e8", "field": "#3c3f41",
-            "hover": "#45494c", "border": "#565656", "disabled": "#7a7a7a",
-            "hint": "#a0a0a0", "tab": "#333638", "accent": "#3b7dd8",
-            "accenthi": "#5591e6", "onaccent": "#ffffff", "logbg": "#1e1e1e",
-            "logfg": "#dcdcdc", "labelfg": "#e8e8e8", "tabselfg": "#e8e8e8",
-        },
-        "standard": {   # dark + gold (default)
-            "bg": "#262421", "fg": "#e8e2d4", "field": "#34312b",
-            "hover": "#403c33", "border": "#5c5445", "disabled": "#888274",
-            "hint": "#b6a98c", "tab": "#302d27", "accent": "#c9a24b",
-            "accenthi": "#e0b95e", "onaccent": "#241f16", "logbg": "#201e1a",
-            "logfg": "#ddd3bf", "labelfg": "#d9b968", "tabselfg": "#e0b95e",
-        },
-    }
-
     def _apply_theme(mode):
         """Recolor the whole window for one of the themes in _THEMES. Uses the
         clam theme (the only built-in ttk theme that honours custom colours) plus
@@ -853,9 +939,8 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
         except Exception:
             pass
 
-    theme_cb = ttk.Combobox(_theme_row, textvariable=theme_var, width=9,
-                            state="readonly",
-                            values=("Standard", "Light", "Dark"))
+    theme_cb = ttk.Combobox(_theme_row, textvariable=theme_var, width=11,
+                            state="readonly", values=THEME_LABELS)
     theme_cb.pack(side="right", padx=(4, 0))
     # Live theme swatch: a small two-tone chip (bg + accent) that PREVIEWS the active
     # theme and repaints on switch. Font-independent "this control sets the appearance"
