@@ -216,6 +216,19 @@ _THEMES = {
         "accenthi": "#a900a9", "onaccent": "#e8e8e8", "logbg": "#c9c9c9",
         "logfg": "#141416", "labelfg": "#800080", "tabselfg": "#800080",
     },
+    "jbish": {      # black ground + dusty rose accent
+        # On a PURE BLACK ground everything can only go lighter, so the structural
+        # tones are set by hand rather than derived: `border` is lifted to #3d3d3d
+        # (below that an edge simply doesn't read against black) and `logbg` to
+        # #0a0a0a so the log reads as a pane instead of dissolving into the window.
+        # The button label is near-BLACK, not white: white on this rose is only
+        # 2.70:1, near-black is 7.20:1.
+        "bg": "#000000", "fg": "#ffffff", "field": "#141414",
+        "hover": "#1f1f1f", "border": "#3d3d3d", "disabled": "#616161",
+        "hint": "#949494", "tab": "#0b0b0b", "accent": "#cd8d8d",
+        "accenthi": "#ddb0b0", "onaccent": "#0d0d10", "logbg": "#0a0a0a",
+        "logfg": "#ffffff", "labelfg": "#cd8d8d", "tabselfg": "#cd8d8d",
+    },
 }
 
 # Display order + labels for the picker, derived so a new palette above needs no
