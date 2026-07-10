@@ -8448,6 +8448,42 @@ _LAYERED_CLOTH_SKIN = (
 _LAYER_SUFFIX_RE = re.compile(r"^(.*?)[_ ]([A-Za-z]|\d{1,2})$")
 
 
+def _is_first_person_mesh(dst_path, nif) -> bool:
+    """A FIRST-PERSON mesh: the player's viewmodel, never simulated cloth.
+
+    Auto-generating an HDT-SMP config for one is worse than useless. FSMP merges every
+    `<per-vertex-shape name="...">` into the ACTOR's physics system by SHAPE NAME, and a
+    first-person NIF carries the SAME shape names as its third-person twin (New Leather's
+    `1st.nif` and `dcuirass.nif` both hold `Cuirass_A/_B/_C`). So the first-person XML
+    ends up driving the third-person shapes, as skin-stripped cloth with nothing to
+    constrain it -> FSMP's soft body diverges and its collision SIMD reads out of bounds
+    -> access violation on equip (crash 2026-07-09). Deleting exactly those two XMLs is
+    what fixed it in-game; the third-person NIF never emitted one (its body collider +
+    absent chain already trip `_is_unconstrained_collision_pair`).
+
+    Detection is name AND structure, because neither alone is safe:
+      * name only -- `1stexplorersgarb_f` is an ITEM called "First Explorer's Garb",
+        a third-person body armor that would silently lose its physics.
+      * structure only -- a cloak, boots and gloves also carry no injected `BaseShape`,
+        and they DO want physics.
+    A genuine first-person mesh is the viewmodel: it never has a body injected into it.
+    """
+    try:
+        stem = Path(dst_path).stem.lower()
+    except Exception:
+        return False
+    for suf in ("_0", "_1"):
+        if stem.endswith(suf):
+            stem = stem[:-len(suf)]
+            break
+    if "1st" not in stem and "firstperson" not in stem:
+        return False
+    try:
+        return not any(s.name in UBE_BODY_INJECT_NAMES for s in nif.shapes)
+    except Exception:
+        return False
+
+
 def _layered_cloth_shape_names(shapes) -> "set[str]":
     """Names of shapes in a MULTI-LAYER cloth group: 2+ shapes whose names share a base
     stem and differ only by a short layer suffix (Cuirass_A/_B/_C, Robe_01/_02). Such
@@ -9495,6 +9531,12 @@ def _generate_hdt_xml_for_dst(dst_path: "Path") -> "str | None":
     except Exception:
         return None
 
+    # First-person viewmodels never simulate cloth, and their per-vertex shapes collide
+    # BY NAME with the third-person ones in the actor's merged SMP system. See
+    # _is_first_person_mesh -- this is the New Leather equip crash. Bail before the stale
+    # cleanup below so a previously-generated first-person XML is still removed.
+    _first_person = _is_first_person_mesh(dst_path, nf)
+
     # Clear a STALE auto-generated XML from a PRIOR run before deciding whether
     # to (re)generate. Reconverts write into the same output dir, so a leftover
     # `<stem>.xml` we generated last time survives even when this run decides the
@@ -9516,6 +9558,9 @@ def _generate_hdt_xml_for_dst(dst_path: "Path") -> "str | None":
                 _stale_xml.unlink()
     except Exception:
         pass
+
+    if _first_person:
+        return None
 
     # Reuse the BODYTRI carrier picker as the "cloth shape" classifier:
     # every textured, non-placeholder, non-rigid-prop shape qualifies.
@@ -9543,9 +9588,6 @@ def _generate_hdt_xml_for_dst(dst_path: "Path") -> "str | None":
     # none, so its XML still shipped and FSMP applied those per-vertex shapes by
     # NAME into the actor's merged SMP system, reaching the third-person shapes.
     # Skin-strip and physics must go together: keep layered cloth kinematic.
-    _layered = _layered_cloth_shape_names(nf.shapes)
-    if _layered:
-        carriers = [s for s in carriers if s.name not in _layered]
     if not carriers:
         return None
 
