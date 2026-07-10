@@ -287,15 +287,32 @@ ADAPTIVE_CLEARANCE_MORPH_FACTOR = 0.20  # clearance added per unit of outward bo
 ADAPTIVE_CLEARANCE_MORPH_MAX = float(
     os.environ.get("CBBE2UBE_CLEARANCE_MORPH_MAX", "1.1"))
 
-# Extra anti-poke clearance scaled by local jiggle-bone weight, for SMP bounce that
-# swings past the static envelope. Experimental, default off;
-# CBBE2UBE_JIGGLE_CLEARANCE=1 on.  [DESIGN: Clearance & anti-poke]
+# Extra anti-poke clearance scaled by local jiggle-bone weight, for the SMP bounce that
+# swings the body PAST its static envelope. Every other clearance term reasons about the
+# body at REST; a rigid cuirass has no idea the breast is about to be thrown outward by
+# physics. That leaves a rest-clean armor showing skin in-game -- clearance +1.18u, morph
+# tracking at ratio 1.0, and the breast still pokes because it doesn't stay where it was
+# measured.
+#
+# DEFAULT ON since 2026-07-10. It was opt-in and simply never switched on, and an env var
+# would not have reached the converter anyway: MO2 doesn't inherit them (the same reason
+# UNIFIED_COVERAGE had to become a sentinel file). Measured blast radius on the UBE body --
+# the term is `gain * jiggle_weight`, and jiggle weight is ~0 outside the jiggle zones, so
+# tight fits stay tight:
+#     breast  jiggle 0.28 mean / 0.56 max -> adds +0.14u mean, +0.28u at the nipple
+#     belly   0.03 mean                   -> adds +0.02u
+#     butt    0.02 mean                   -> adds +0.01u
+#     back    0.00 max                    -> adds  0.000u  (exactly zero, not rounded)
+# Disable with CBBE2UBE_NO_JIGGLE_CLEARANCE=1. Raise GAIN if a bouncier SMP setup still
+# shows skin at the nipple.  [DESIGN: Clearance & anti-poke]
 JIGGLE_CLEARANCE_ENABLED = (
-    os.environ.get("CBBE2UBE_JIGGLE_CLEARANCE", "").strip().lower()
-    in ("1", "true", "yes", "on")
+    os.environ.get("CBBE2UBE_NO_JIGGLE_CLEARANCE", "").strip().lower()
+    not in ("1", "true", "yes", "on")
 )
-JIGGLE_CLEARANCE_GAIN = 0.5   # extra clearance (units) at full jiggle weight
-JIGGLE_CLEARANCE_MAX = 0.5    # hard cap on the jiggle term
+JIGGLE_CLEARANCE_GAIN = float(
+    os.environ.get("CBBE2UBE_JIGGLE_CLEARANCE_GAIN", "0.5"))   # units at full jiggle weight
+JIGGLE_CLEARANCE_MAX = float(
+    os.environ.get("CBBE2UBE_JIGGLE_CLEARANCE_MAX", "0.5"))    # hard cap on the jiggle term
 
 # Flat clearance floor on rear-facing verts at butt/upper-thigh height, so leg armor
 # isn't punched through when the thigh swings back mid-stride. Raises below-floor
