@@ -2973,7 +2973,6 @@ def convert_nif(
                             include_body_shapes=body_in_dst,
                             carrier_shape_name=carrier_name_for_tri,
                             armor_vert_extremity_fractions=armor_vert_ef,
-                            body_normals=_body_normals,
                         )
                         atomic_tri_save(tri, auto_tri_dst_phase1)
             except Exception as _e_tri:
@@ -9494,6 +9493,21 @@ def _generate_hdt_xml_for_dst(dst_path: "Path") -> "str | None":
     # stripped physics from ~335 legitimate hanging-cloth armours. Reverted; the
     # rigid-torso-vs-skirt split can't be done by a single weight fraction. See
     # [[project_softbody_rigid_gate]]. The helper is kept for future use.
+
+    # Multi-layer cloth is deliberately kept on its SOURCE skin by every graft
+    # pass (#layered-cloth-skin), so it carries NO body jiggle bones. Simulating
+    # it as per-vertex SMP cloth therefore leaves it unconstrained: FSMP's soft
+    # body diverges and its collision SIMD reads out of bounds -> access violation
+    # while updating the shape (New Leather Cuirass_A/_B, crash 2026-07-09;
+    # disabling the generated XML stopped the crash, confirmed in-game). This is
+    # the same failure `_is_unconstrained_collision_pair` guards, but that gate
+    # only fires when the NIF has a body collider -- the FIRST-PERSON NIF has
+    # none, so its XML still shipped and FSMP applied those per-vertex shapes by
+    # NAME into the actor's merged SMP system, reaching the third-person shapes.
+    # Skin-strip and physics must go together: keep layered cloth kinematic.
+    _layered = _layered_cloth_shape_names(nf.shapes)
+    if _layered:
+        carriers = [s for s in carriers if s.name not in _layered]
     if not carriers:
         return None
 
@@ -12021,12 +12035,6 @@ def convert_nif_phase2(
                 if ube_basereshape is not None:
                     body_verts_arr = np.asarray(
                         ube_basereshape.verts, dtype=np.float64)
-                    # Outward normals for protrusion-follow (regional morph
-                    # tracking). Aligned to body_verts_arr (same BaseShape). Use
-                    # the robust helper (recomputes from tris if the injected
-                    # body ships zero/absent normals, same as phase-1) so the
-                    # follow field doesn't silently no-op on a degenerate body.
-                    _p2_body_normals = _body_normals_or_compute(ube_basereshape)
                     armor_shape_verts: dict[str, np.ndarray] = {}
                     body_in_dst: set[str] = set()
                     # Per-vert extremity fractions; see phase-1 #147 note.
@@ -12056,7 +12064,6 @@ def convert_nif_phase2(
                         include_body_shapes=body_in_dst,
                         carrier_shape_name=p2_carrier_name,
                         armor_vert_extremity_fractions=armor_vert_ef,
-                        body_normals=_p2_body_normals,
                     )
                     atomic_tri_save(tri, auto_tri_dst)
         except Exception as e:
