@@ -24,6 +24,7 @@ sys.path.insert(0, str(_REPO))
 sys.path.insert(0, str(_REPO / ".pynifly"))
 from pyn import pynifly                        # noqa: E402
 from src import paths                          # noqa: E402
+from src.body_zones import BREAST_Z               # noqa: E402
 
 OUT_MOD = os.environ.get("CBBE2UBE_OUT_MOD", "CBBEtoUBE Auto")
 GAP_MIN = float(os.environ.get("CBBE2UBE_OVERINFLATE_GAP", "1.2"))
@@ -51,7 +52,7 @@ def _measure(path):
         return None
     av = np.vstack(arm)
     t = cKDTree(av)
-    reg = np.where((bv[:, 2] >= 100) & (bv[:, 2] <= 108)
+    reg = np.where((bv[:, 2] >= BREAST_Z[0]) & (bv[:, 2] < BREAST_Z[1])
                    & (np.abs(bv[:, 0]) < 12) & (bv[:, 1] > 0))[0]
     gaps, shells = [], []
     for i in reg:
