@@ -25,7 +25,6 @@ footwear, drop the far-thigh scale bones from the graft while KEEPING RearCalf
 the real boot, it frees top-4-per-vert budget so RearCalf reaches MORE verts.
 """
 import numpy as np
-import pytest
 
 from src import nif_convert as nc
 

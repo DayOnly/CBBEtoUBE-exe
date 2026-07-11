@@ -25,7 +25,6 @@ TINY master list (mint ESP masters = vanilla + UBE_AllRace, never the mod).
 import struct
 from pathlib import Path
 
-from src import esp
 from src.esp import ESP, TES4Header, Group, Record, encode_subrecord, \
     encode_zstring, iter_subrecords
 from src import ube_patcher

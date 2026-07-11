@@ -274,9 +274,9 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  CBBE: {cbbe_p}")
             print(f"  UBE:  {ube_p}")
             if not cbbe_p.exists():
-                print(f"  CBBE MISSING"); continue
+                print("  CBBE MISSING"); continue
             if not ube_p.exists():
-                print(f"  UBE  MISSING"); continue
+                print("  UBE  MISSING"); continue
             cn = nif_io.load_nif(cbbe_p); cb = max(cn.shapes, key=lambda s: len(s.verts))
             un = nif_io.load_nif(ube_p);  ub = max(un.shapes, key=lambda s: len(s.verts))
             cv = np.asarray(cb.verts, dtype=np.float64)

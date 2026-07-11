@@ -221,7 +221,6 @@ if __name__ == "__main__":
         diagnose(a[0], a[1] if len(a) > 1 else None); sys.exit()
     D = r"D:/Modlists/ARR/mods/CBBEtoUBE Auto/meshes/!UBE/narmor/leathersuitn"
     base = load(D + "/dcuirass_1.nif.looksgood")
-    import os
     T = os.environ["TEMP"]
     cases = [("looksgood(GOOD)", D + "/dcuirass_1.nif.looksgood"),
              ("ithigh2(calf wrinkle)", T + "/ithigh2/dcuirass_1.nif"),

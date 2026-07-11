@@ -67,7 +67,7 @@ def per_shape_verts(nif) -> dict[str, np.ndarray]:
 
 def main() -> None:
     if not CBBE_SRC.is_file() or not UBE_TARGET.is_file():
-        print(f"SKIP — missing belt samples"); return
+        print("SKIP — missing belt samples"); return
 
     OUT_COPY.parent.mkdir(parents=True, exist_ok=True)
 

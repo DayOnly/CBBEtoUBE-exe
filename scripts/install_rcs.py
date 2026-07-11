@@ -139,7 +139,7 @@ for i, l in enumerate(out):
 
 for nm in new_mods:
     out.insert(insert_at, nm)
-print(f'[modlist] added at top:')
+print('[modlist] added at top:')
 for nm in new_mods:
     print(f'  {nm}')
 

@@ -329,7 +329,6 @@ def main():
                 if sd["class"] == "cloth":
                     cloth_in_tri_by_src[family] += 1
                 max_mag = sd.get("max_mag", 0.0)
-                p99_mag = sd.get("p99_mag", 0.0)
                 if max_mag > EXTREME_DELTA_U:
                     extreme_delta.append((rel, sd["name"], max_mag))
                 if (sd.get("morphs_with_offsets", 0) > 0
@@ -380,7 +379,7 @@ def main():
             load_errors, lambda x: f"{x[0]}  ({x[1]})")
 
     print()
-    print(f"=== CLOTH-SHAPE TRI COVERAGE BY FAMILY ===")
+    print("=== CLOTH-SHAPE TRI COVERAGE BY FAMILY ===")
     fams = sorted(set(cloth_in_tri_by_src) | set(cloth_missing_by_src))
     for f in fams[:30]:
         ok = cloth_in_tri_by_src.get(f, 0)

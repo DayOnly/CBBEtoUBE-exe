@@ -17,7 +17,6 @@
 """atomic_io: every emitted plugin/mesh must be written atomically so a crash,
 killed process, full disk, or locked destination can never leave a truncated
 file the game would load and CTD on."""
-import os
 from pathlib import Path
 
 import pytest

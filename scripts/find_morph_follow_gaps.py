@@ -115,10 +115,10 @@ def main():
     print(f"{'cover%':>6} {'follow':>6}  zone    armor")
     for _, cov, follow, zone, rel in hits[:60]:
         print(f"{cov*100:6.0f} {follow:6.2f}  {zone:6s}  {rel}")
-    print(f"\ncover% = body morph-zone covered by armor; follow = scale-bone weight on that "
-          f"cover (<0.15 = won't move with the morph -> body pokes through when morphed). "
-          f"NOTE: multi-layer cloth kept on source skin (layered-cloth CTD fix) shows low "
-          f"follow BY DESIGN -- that's the crash-vs-follow trade-off, not a new bug.")
+    print("\ncover% = body morph-zone covered by armor; follow = scale-bone weight on that "
+          "cover (<0.15 = won't move with the morph -> body pokes through when morphed). "
+          "NOTE: multi-layer cloth kept on source skin (layered-cloth CTD fix) shows low "
+          "follow BY DESIGN -- that's the crash-vs-follow trade-off, not a new bug.")
     return 0
 
 
