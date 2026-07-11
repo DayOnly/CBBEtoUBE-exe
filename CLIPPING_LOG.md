@@ -20,6 +20,31 @@ output, for converter diagnosis + fixes. Started 2026-07-07 (post unified-covera
 
 ## Open
 
+### Falmer Slayer Bodysuit -- body pokes through the REAR (butt/rear-thigh) -- REAL, diagnosed 2026-07-10
+The actual reported defect (the bare-breast thing below is by design). Standing still, large
+preset: red body skin shows through the tan skintight suit at the legs/abdomen, worst at the
+REAR. Measured (SURFACE metric, confirmed NOT a nearest-vertex artifact -- vertex and surface
+agree):
+    abdomen     9% of covered body verts outside the suit, worst -0.82u
+    front thigh 7%,  -0.56u
+    rear thigh  28%, -1.63u   <-- bad
+    hip/butt    28%, -1.81u   <-- bad
+Front is minor; the REAR is the failure. The suit IS conformed (moved 0.63u from its 3BA
+source) and its deepest butt point clears the body, so it is under-covering the rounded
+butt/rear-thigh SLOPES, not grossly undersized.
+**ROOT CAUSE:** the suit is HDT-SMP rigged (`_shape_has_hdt_smp_rigging -> True`), and the
+anti-poke clearance pass (`clear_armor_outside_body`) DELIBERATELY SKIPS SMP-rigged shapes --
+gate at ~nif_convert.py:11582 `... and not _shape_has_hdt_smp_rigging(...)`. The skip is
+intentional (pushing an SMP cloth's verts disturbs its physics rest shape), so the conform
+runs but the outward clearance guarantee never does. This is the known cloth-to-body declip
+tension ([[project_cloth_to_body_declip_research]]), not an oversight.
+**FIX PATH (not yet built -- physics risk, needs in-game validation):** allow a LIMITED,
+outward-only anti-poke on SMP suits -- only where the body actually pokes (rear), small
+max_push, front-and-rounded-slope only -- gated behind a default-OFF flag so it doesn't
+change every SMP cloth in the pack at once. Alt: improve conform coverage for SMP. Either
+needs a reconvert + in-game check that the suit's physics still behaves.
+STATIC (standing still) so it's clearance/coverage, not a jiggle-only fault. Screenshot on file.
+
 ### Falmer Slayer Bodysuit -- breasts exposed above it (reported 2026-07-10) -- BY DESIGN, NOT A DEFECT
 Whiterun, standing still, large preset. The suit covers legs + abdomen; the breasts are bare.
 USER CONFIRMED (twice) the bodysuit is NOT meant to cover the breasts -- it is a strapless /
