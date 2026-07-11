@@ -99,8 +99,13 @@ Persists via _reauthor_nif_fresh (Path() -- it silently no-ops on a str!). Env: 
 _ITERS(16), _FUR_GATE(300), _ZLO/_ZHI(88/116). Tests: tests/test_selfint_repair.py (5); suite 712.
 E2E validated on real NIFs: farmclothes 26->20, SaltLemon Corset_main 2597->573; body clearance
 NEVER worsened (unchanged or improved); fur untouched (0 moved). Reduction is a MITIGATION (20-80%),
-not full elimination. PENDING: exe rebuild+redeploy, reconvert, in-game visual check (does it read as
-fixed + no new artifacts). See [[project_bodymatch_source_selection]],
+not full elimination. VERIFIED IN OUTPUT post-reconvert 2026-07-11 (exe 52c71c5 deployed): farmclothes
+26->20, nwitch NWTop 4197->1404, SaltLemon Corset_main 2597->573 / BeltsV 307->59, fur 58604->58604
+(gate held). NOTE: the run's postflight "weight-partner parity: 21 shapes _0 vs _1 scale-bone
+divergence" warning is PRE-EXISTING, NOT this pass -- proved a pure _reauthor_nif_fresh round-trip
+preserves bone sets exactly, so re-authoring _0 doesn't change the _0<->_1 relationship. PENDING: only
+the in-game visual check (does it read as fixed + no new shading/pinch artifacts on moved verts).
+See [[project_bodymatch_source_selection]],
 [[project_3ba_source_selection_bug]] (source-selection history), [[project_ruby_flower_converter_fixes]]
 (multi-layer LIFT).
 
