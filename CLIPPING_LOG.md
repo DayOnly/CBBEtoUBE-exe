@@ -20,6 +20,22 @@ output, for converter diagnosis + fixes. Started 2026-07-07 (post unified-covera
 
 ## Open
 
+### Falmer Slayer Bodysuit -- breasts burst out, "major clipping all around" (reported 2026-07-10, clean reconvert)
+Whiterun, standing still. The suit covers the legs and abdomen but the BREASTS burst out
+through the top -- bare body skin fully exposed above the suit's chest, on a large preset.
+User confirms the suit is meant to cover the chest ("it covers the legs and abdomen" = it's
+NOT a strapless/underbust piece; the chest coverage is failing, not absent by design).
+This is a MODULAR Falmer Slayer set (Bodysuit / Chestplate / Fur / Panty / Thigh / ...);
+`FalmerSlayerBodysuit` is the base layer here, worn without the chestplate.
+NOT yet triaged this session. Prior Falmer work (memory `project_breast_standoff_morph_follow`
+early entries, since corrected) mis-measured the breast band and looked at the Chestplate;
+this is the Bodysuit and needs a fresh look at z90-102. Candidate mechanisms to rule out in
+order: (1) does the converted `bodysuit` shape even have verts over z90-102 front, or did the
+source stop at the underbust; (2) if it covers, is it under-following the breast slider
+(ratio << 1 -> body pokes out) or under-cleared (sits inside then physics throws it out);
+(3) HDT-SMP on the suit. Standing-still exposure => STATIC (coverage or clearance), not a
+dynamic/jiggle-only fault. Screenshot on file.
+
 ### 0d. "Armor too small for the breast" -- the adaptive clearance cap sat BELOW the bust target
 Reported in-game after 0b/0c landed: the cuirass reads too small at the breast, at rest AND
 in motion. "Both states" is the tell -- a defect present at rest that merely persists through
