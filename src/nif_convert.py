@@ -910,7 +910,7 @@ def _cached_cbbe_to_ube_delta(
     if cached is not None:
         return cached
     try:
-        pyn = _pynifly()
+        _pynifly()   # ensure pyn is importable for the nif_io calls below
         cbbe_nif = nif_io.open_nif_retry(str(cbbe_path))  # transient-IO resilient
         ube_nif = nif_io.open_nif_retry(str(ube_path))
         # Pick the 3BA shape — that's the standard 18k topology we want.
@@ -11598,7 +11598,7 @@ def convert_nif_phase2(
                         len(body_verts_for_p2))
                 except Exception:
                     _antipoke_amp = None
-                # Jiggle-overshoot headroom (default OFF): only rigid/fitted
+                # Jiggle-overshoot headroom (default ON): only rigid/fitted
                 # cloth reaches this pass (softbody/HDT shapes are skipped
                 # above), which is exactly what a bouncing body punches through.
                 _antipoke_jig = None

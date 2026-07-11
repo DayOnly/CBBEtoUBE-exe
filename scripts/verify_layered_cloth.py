@@ -84,7 +84,6 @@ def main():
             g = [b for b in out_b - src_b if any(t in b.lower() for t in _JIGGLE)]
             if g:
                 grafted[nm] = len(g)
-        tag = "  <-- STILL GRAFTED" if grafted else "ok"
         if grafted:
             bad.append(rel)
         print(f"  {'FAIL' if grafted else 'ok  '}  {rel}"

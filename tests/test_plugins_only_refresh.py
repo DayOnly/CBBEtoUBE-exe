@@ -25,7 +25,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from src import auto_convert as ac
-from src import esp
 from src.esp import ESP, TES4Header, Group, Record, encode_subrecord, \
     encode_zstring
 from src import ube_patcher as up

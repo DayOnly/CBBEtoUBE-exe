@@ -865,7 +865,7 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
 
     # theme selector (right-aligned)
     theme_var = tk.StringVar(
-        value=str(state["settings"].get("theme", "light")).capitalize())
+        value=str(state["settings"].get("theme", "standard")).capitalize())
 
     def _on_theme(*_a):
         m = theme_var.get().strip().lower()
@@ -2007,7 +2007,7 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
         _kill_proc_tree(state.get("proc"))
         root.destroy()
 
-    _apply_theme(state["settings"].get("theme", "light"))  # after all widgets exist
+    _apply_theme(state["settings"].get("theme", "standard"))  # after all widgets exist
     _sync_run()  # initial checklist visibility + Convert-button gating
     _run_preflight(_pf_auto)  # background setup check on launch
     root.protocol("WM_DELETE_WINDOW", _on_close)

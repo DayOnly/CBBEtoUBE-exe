@@ -530,7 +530,7 @@ class AutoConvertResult:
             f"CBBE-to-UBE auto-conversion report (v{_app_version})",
             f"source : {self.source_dir}",
             f"output : {self.output_dir}",
-            f"",
+            "",
             f"ESP ({len(self.source_esps)} patched)",
         ]
         esps_to_report = (
@@ -2600,7 +2600,7 @@ def _cmd_convert(args):
 
     if args.render_previews:
         from . import preview
-        print(f"\n--- rendering morph previews ---")
+        print("\n--- rendering morph previews ---")
         try:
             preview_results = preview.render_all_previews(output)
         except Exception as e:
@@ -2641,7 +2641,7 @@ def _cmd_convert(args):
         print(f"\n=== {overall_failures} failure(s), "
               f"{overall_warnings} warning(s) ===")
     else:
-        print(f"\n=== all clear ===")
+        print("\n=== all clear ===")
 
     # Written every run (empty on a clean one) -- the GUI's end-of-run popup
     # reads it; an empty list means "nothing failed", never "no data".
@@ -4313,9 +4313,9 @@ def _cmd_validate(args):
     if check_nifs and meshes_root:
         print(f"  meshes/ root: {meshes_root}")
     elif check_nifs:
-        print(f"  NIF check: SKIPPED (no meshes/ folder found)")
+        print("  NIF check: SKIPPED (no meshes/ folder found)")
     else:
-        print(f"  NIF check: DISABLED via --no-nifs")
+        print("  NIF check: DISABLED via --no-nifs")
 
     total_warnings = 0
     failing = 0
@@ -4330,7 +4330,7 @@ def _cmd_validate(args):
                 print(f"     {w}")
         else:
             print(f"  [OK] {esp_path.name}")
-    print(f"\n=== validation summary ===")
+    print("\n=== validation summary ===")
     print(f"  ESPs checked     : {len(esps)}")
     print(f"  ESPs with issues : {failing}")
     print(f"  total warnings   : {total_warnings}")

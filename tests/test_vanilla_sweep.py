@@ -27,10 +27,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from src import esp
 from src.esp import ESP, TES4Header, Group, Record, encode_subrecord, \
     encode_zstring
-from src import ube_patcher as up
 from src.auto_convert import (_vanilla_sweep_esps, _player_armor_mesh_bases,
                               _BsaMeshIndex, auto_convert_mod,
                               _preflight_vanilla_sweep)

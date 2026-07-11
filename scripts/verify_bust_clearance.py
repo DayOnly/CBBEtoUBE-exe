@@ -151,6 +151,9 @@ def _measure(path):
                 dd = ((q - p) ** 2).sum()
                 if dd < best:
                     best, bq = dd, q
+            if bq is None:      # all nearest verts were orphans (no incident triangle)
+                keep[i] = False
+                continue
             signed[i] = (bq - p) @ N[i]
         sg = signed[keep]
         if len(sg) < 30:

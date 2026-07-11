@@ -51,7 +51,6 @@ RIGID = sg._ATTACHMENT_KEYWORDS
 
 
 def _body():
-    ref = _REPO  # placeholder to keep flake quiet
     from src.nif_convert import _find_user_preset_body
     p = _find_user_preset_body("_1")
     if p is None:
