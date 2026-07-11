@@ -34,11 +34,18 @@ Given a Mod Organizer 2 setup, the full pipeline (`auto`):
    merge outgrows the 2048-record ESL cap it **splits** into numbered pieces
    (`CBBE_to_UBE_Combined.esp`, `CBBE_to_UBE_Combined2.esp`, ...) — enable
    **all** of them.
-5. Adds **vanilla race coverage** and mints **`UBE_ModNonBody_Coverage.esp`** +
-   **`UBE_ModBody_Coverage.esp`** (with active SkyPatcher INIs) so armatures
-   defined by other mods — overhaul-rearmatured helmets, circlets, jewelry,
-   and mod-defined body variants — still render on UBE races. **Both ESPs must
-   be enabled in MO2**, or the covered items are invisible on UBE actors.
+5. Adds **race coverage** so armatures defined by other mods —
+   overhaul-rearmatured helmets, circlets, jewelry, and mod-defined body
+   variants — still render on UBE races. Two modes:
+   - **Default — separate coverage ESPs.** Mints
+     **`UBE_ModNonBody_Coverage.esp`** + **`UBE_ModBody_Coverage.esp`** (each
+     with an active SkyPatcher INI). **Both must be enabled in MO2**, or the
+     covered items are invisible on UBE actors.
+   - **Unified coverage (opt-in).** With `CBBE2UBE_UNIFIED_COVERAGE=1`, or a
+     `UNIFIED_COVERAGE` sentinel file next to the exe, the coverage passes are
+     folded **into the Combined plugin family** instead — no standalone
+     `UBE_Mod*_Coverage.esp` are produced, so there is nothing extra to enable
+     beyond the Combined piece(s). Leaner load order; set it once and reconvert.
 6. **(Opt-in) RaceMenu overlay transfer.** Rebakes CBBE/3BA **body, hands, and
    feet** overlays (tattoos / body paints) into UBE's UV layout — UBE re-UVs the
    body, so CBBE-authored overlays otherwise land in the wrong place. The
@@ -55,7 +62,8 @@ Given a Mod Organizer 2 setup, the full pipeline (`auto`):
      Feet-only overlays already convert at their own path and are left untouched.
 
 The result is a self-contained output mod (default name: `CBBEtoUBE Auto`) you
-enable at the end of your load order, plus the two coverage ESPs above.
+enable at the end of your load order, plus the coverage plugin(s) from step 5 —
+the two coverage ESPs by default, or nothing extra under unified coverage.
 
 ## How the refit works
 
@@ -87,6 +95,14 @@ skinned shapes is baked into the verts):
 - **Anti-poke / adaptive clearance** — body verts that poke through armor are
   cleared along the body normal; the clearance floor is *morph-aware* (tight
   in static zones, real clearance only where breast/butt/belly sliders move).
+- **Body-motion match** — where armor hugs the body, each armor vertex copies
+  the morph/pose delta of the body surface it covers (follow ratio ~1.0), so its
+  clearance is preserved as sliders and physics move the body: the armor can
+  neither be left behind (body pokes through) nor overshoot (armor balloons).
+  Blends from exact-copy at the hugging surface to smoothed drape farther out.
+- **Jiggle clearance** — clears armor against the body's *moving* envelope, not
+  just its rest pose, so soft-body jiggle can't push skin through at the peak of
+  motion. On by default; `CBBE2UBE_NO_JIGGLE_CLEARANCE=1` disables it.
 - **Source-standoff conform** — a piece that hugged the 3BA body is reeled
   back to hug UBE instead of floating at the over-projected distance;
   pull-in only, with a bust-band exception so the nipple can't poke through.
