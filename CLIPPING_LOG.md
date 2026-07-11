@@ -38,11 +38,24 @@ gate at ~nif_convert.py:11582 `... and not _shape_has_hdt_smp_rigging(...)`. The
 intentional (pushing an SMP cloth's verts disturbs its physics rest shape), so the conform
 runs but the outward clearance guarantee never does. This is the known cloth-to-body declip
 tension ([[project_cloth_to_body_declip_research]]), not an oversight.
-**FIX PATH (not yet built -- physics risk, needs in-game validation):** allow a LIMITED,
-outward-only anti-poke on SMP suits -- only where the body actually pokes (rear), small
-max_push, front-and-rounded-slope only -- gated behind a default-OFF flag so it doesn't
-change every SMP cloth in the pack at once. Alt: improve conform coverage for SMP. Either
-needs a reconvert + in-game check that the suit's physics still behaves.
+**OPTION 2 (outward anti-poke on SMP suits) -- BUILT, MEASURED, DISPROVEN, REVERTED.**
+Ran `clear_armor_outside_body` on the suit offline (max_push 0.6-2.0, with/without smoothing,
+no jiggle term). It FIXED the flat regions -- abdomen 14%->0%, back 2%->0% -- but made the
+CONVEX butt/rear-thigh WORSE at every setting: butt 28%->29%, worst surface poke -1.81u->
+-2.20u. Pushing a skintight suit's verts OUTWARD on a convex protrusion spreads them apart
+and opens NEW gaps faster than it fills the dips -- the identical non-local failure the breast
+had (a rounded volume can't be covered by per-vertex outward pushes). Confirmed with the
+SURFACE metric, not just vertices. So clearance is a dead end for the butt; reverted, not shipped.
+**ALSO RULED OUT (#1 test):** not a wrong-body/undersize conform bug -- the suit's deepest butt
+point is -13.1 vs UBE body -12.4 and 3BA -11.7, so it sticks out PAST both bodies at the apex;
+the conform targeted UBE correctly. The 28% is LUMPY local coverage (clearance ranges +0.7 to
+-1.8u across the butt), i.e. an uneven conform result, not a size error.
+**REMAINING (unbuilt):** (3) inject a body COLLIDER so RUNTIME physics pushes the whole cloth
+surface out uniformly -- the only approach that handles a convex region correctly (no vert
+spreading), but UBE has no body collider = heavy, crash-prone ([[project_breast_collider_injection]]).
+(4) the outfit is MODULAR -- worn with the Fur/Panty pieces the rear is covered; the bare
+bodysuit alone is the only case that shows it. (5) improve the CONFORM smoothness at the butt
+(fix the lumpiness at the source) -- unscoped.
 STATIC (standing still) so it's clearance/coverage, not a jiggle-only fault. Screenshot on file.
 
 ### Falmer Slayer Bodysuit -- breasts exposed above it (reported 2026-07-10) -- BY DESIGN, NOT A DEFECT
