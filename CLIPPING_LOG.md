@@ -20,21 +20,15 @@ output, for converter diagnosis + fixes. Started 2026-07-07 (post unified-covera
 
 ## Open
 
-### Falmer Slayer Bodysuit -- breasts burst out, "major clipping all around" (reported 2026-07-10, clean reconvert)
-Whiterun, standing still. The suit covers the legs and abdomen but the BREASTS burst out
-through the top -- bare body skin fully exposed above the suit's chest, on a large preset.
-User confirms the suit is meant to cover the chest ("it covers the legs and abdomen" = it's
-NOT a strapless/underbust piece; the chest coverage is failing, not absent by design).
-This is a MODULAR Falmer Slayer set (Bodysuit / Chestplate / Fur / Panty / Thigh / ...);
-`FalmerSlayerBodysuit` is the base layer here, worn without the chestplate.
-NOT yet triaged this session. Prior Falmer work (memory `project_breast_standoff_morph_follow`
-early entries, since corrected) mis-measured the breast band and looked at the Chestplate;
-this is the Bodysuit and needs a fresh look at z90-102. Candidate mechanisms to rule out in
-order: (1) does the converted `bodysuit` shape even have verts over z90-102 front, or did the
-source stop at the underbust; (2) if it covers, is it under-following the breast slider
-(ratio << 1 -> body pokes out) or under-cleared (sits inside then physics throws it out);
-(3) HDT-SMP on the suit. Standing-still exposure => STATIC (coverage or clearance), not a
-dynamic/jiggle-only fault. Screenshot on file.
+### Falmer Slayer Bodysuit -- breasts exposed above it (reported 2026-07-10) -- BY DESIGN, NOT A DEFECT
+Whiterun, standing still, large preset. The suit covers legs + abdomen; the breasts are bare.
+USER CONFIRMED (twice) the bodysuit is NOT meant to cover the breasts -- it is a strapless /
+underbust piece, and bare breast skin above it is CORRECT. This matches the earlier finding
+that the source `FalmerSlayerBodysuit` mesh stops around the underbust (no chest geometry).
+So there is nothing for the converter to fix on this piece: it converts the geometry it is
+given, and that geometry does not include the chest. The breast coverage in that outfit
+comes from a SEPARATE piece (the Falmer Slayer Chestplate). NON-ISSUE -- do not chase it.
+(Recorded only so it is not re-reported as a bug.)
 
 ### 0d. "Armor too small for the breast" -- the adaptive clearance cap sat BELOW the bust target
 Reported in-game after 0b/0c landed: the cuirass reads too small at the breast, at rest AND
