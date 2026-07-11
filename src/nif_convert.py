@@ -3077,6 +3077,12 @@ def convert_nif(
             _match_rigid_leg_bend_to_body(dst_path, biped_slots)
         except Exception:
             pass
+        # Un-cross warp-introduced torso layer self-intersections (blouse-through-
+        # corset). Gated by the source self-int baseline (fur/strands untouched).
+        try:
+            _repair_self_intersections(dst_path, src_path, biped_slots)
+        except Exception:
+            pass
 
         # Verbatim-copied NIFs carry raw block structure the renderer can reject.
         # Re-author for a clean pynifly structure identical to body shapes.
@@ -5455,6 +5461,256 @@ def _conform_fitted_to_body(dst_path, biped_slots: int = 0) -> int:
         _hide_virtual_body(nf)
         try:
             atomic_nif_save(nf, dst_path)
+        except Exception:
+            return 0
+    return total
+
+
+# ---- Warp-introduced torso self-intersection repair -----------------------
+#
+# The per-vert body-delta warp moves an inner cloth surface (blouse, hugging the
+# body) outward MORE than the outer surface (corset) it sits under -- the inner
+# tracks the bustier UBE more -- so the two layers CROSS and the inner pokes
+# through the outer. The inter-shape layer passes (_separate_chest_layered_cloth_depth)
+# only separate DISTINCT shapes; a merged single-shape outfit (or a self-crossing
+# corset shape) has no partner to rank against, so nothing catches it.
+#
+# On-disk POST-pass (runs after conform/leg-bend, alongside _conform_fitted_to_body):
+# detect self-intersecting triangle pairs in the torso band, push the inner triangle
+# IN (toward the body) and the outer OUT, clamp so no moved vert sinks below the body
+# standoff, iterate until the count reaches the SOURCE baseline. The source baseline
+# is the gate that leaves BY-DESIGN self-intersecting geometry (fur, layered strands)
+# alone: fur self-intersects in the source too, so its target is already met and the
+# pass does nothing; real cloth is clean in the source (target ~0) so it is repaired.
+# Physics-chain verts (SMP softbody) never move -- only the static torso layers do.
+# Measured offline: farmclothes02 26->10, nwitch NWTop 4197->1148, SaltLemon
+# Corset_main 2569->675; body clearance held, fur untouched. Opt out with
+# CBBE2UBE_NO_SELFINT_REPAIR=1; band + gate tunable via CBBE2UBE_SELFINT_*.
+SELFINT_REPAIR = os.environ.get(
+    "CBBE2UBE_NO_SELFINT_REPAIR", "").strip().lower() not in ("1", "true", "yes")
+_SELFINT_ZLO = float(os.environ.get("CBBE2UBE_SELFINT_ZLO", "88"))
+_SELFINT_ZHI = float(os.environ.get("CBBE2UBE_SELFINT_ZHI", "116"))
+# Source self-intersection >= this = by-design (fur/strands) -> leave the shape alone.
+_SELFINT_FUR_GATE = int(os.environ.get("CBBE2UBE_SELFINT_FUR_GATE", "300"))
+_SELFINT_MIN = 5           # skip shapes with fewer than this many output crossings
+_SELFINT_ITERS = int(os.environ.get("CBBE2UBE_SELFINT_ITERS", "16"))
+_SELFINT_STEP = 0.20
+_SELFINT_STANDOFF = 0.3    # keep every moved vert this far above the body
+
+_BODY_SELFINT_CACHE: dict = {}
+
+
+def _body_selfint_ref(weight: str):
+    """(body_verts, body_normals, kdtree) for the UBE body at `weight`, or None if
+    unavailable or the body's global-to-skin isn't identity (a raw-space compare would
+    then be wrong -- skip rather than mis-measure). Cached."""
+    if weight in _BODY_SELFINT_CACHE:
+        return _BODY_SELFINT_CACHE[weight]
+    out = None
+    try:
+        from scipy.spatial import cKDTree
+        p = _find_ube_femalebody(weight) or _find_ube_femalebody("_1")
+        if p is not None and Path(p).is_file():
+            pyn = _pynifly()
+            nf = pyn.NifFile(filepath=str(p))
+            body = max(nf.shapes, key=lambda s: len(s.verts))
+            g2s = _shape_global_to_skin(body)
+            if g2s is None or _g2s_is_identity(g2s):
+                V = np.asarray(body.verts, np.float64)
+                N = _body_normals_or_compute(body)
+                if N is not None:
+                    out = (V, np.asarray(N, np.float64), cKDTree(V))
+    except Exception:
+        out = None
+    _BODY_SELFINT_CACHE[weight] = out
+    return out
+
+
+def _self_intersecting_pairs(v, tris, zlo=None, zhi=None, k=10):
+    """Indices (into `tris`) of self-intersecting triangle PAIRS within the [zlo,zhi]
+    z-band, excluding topological (shared-vertex) neighbours. k-NN prefiltered,
+    vectorized strict-interior segment/triangle test (Ericson/Moller-Trumbore)."""
+    from scipy.spatial import cKDTree
+    zlo = _SELFINT_ZLO if zlo is None else zlo
+    zhi = _SELFINT_ZHI if zhi is None else zhi
+    cen = v[tris].mean(1)
+    band = np.where((cen[:, 2] >= zlo) & (cen[:, 2] <= zhi))[0]
+    if len(band) < 20:
+        return np.zeros((0, 2), int)
+    bc = cen[band]
+    _, nn = cKDTree(bc).query(bc, k=min(k, len(band)))
+    I = np.repeat(np.arange(len(band)), nn.shape[1])
+    J = nn.ravel()
+    m = I < J
+    I, J = I[m], J[m]
+    A = tris[band[I]]
+    B = tris[band[J]]
+    keep = ~((A[:, :, None] == B[:, None, :]).any(2).any(1))
+    I, J = I[keep], J[keep]
+    if len(I) == 0:
+        return np.zeros((0, 2), int)
+
+    def _seg_tri(P, Q, TA, TB, TC):
+        D = Q - P
+        e1 = TB - TA
+        e2 = TC - TA
+        h = np.cross(D, e2)
+        det = np.einsum('ij,ij->i', e1, h)
+        ok = np.abs(det) > 1e-12
+        f = np.where(ok, 1.0 / np.where(ok, det, 1.0), 0.0)
+        s = P - TA
+        u = f * np.einsum('ij,ij->i', s, h)
+        q = np.cross(s, e1)
+        vv = f * np.einsum('ij,ij->i', D, q)
+        t = f * np.einsum('ij,ij->i', e2, q)
+        return (ok & (u >= -1e-6) & (u <= 1 + 1e-6) & (vv >= -1e-6)
+                & (u + vv <= 1 + 1e-6) & (t > 1e-4) & (t < 1 - 1e-4))
+
+    a = v[tris[band[I]]]
+    b = v[tris[band[J]]]
+    hit = np.zeros(len(I), bool)
+    for e0, e1 in ((0, 1), (1, 2), (2, 0)):
+        hit |= _seg_tri(a[:, e0], a[:, e1], b[:, 0], b[:, 1], b[:, 2])
+        hit |= _seg_tri(b[:, e0], b[:, e1], a[:, 0], a[:, 1], a[:, 2])
+    return np.stack([band[I[hit]], band[J[hit]]], 1)
+
+
+def _relax_shape_self_intersection(V, tris, chain_vert, Vb, Nb, tree, target):
+    """Separate self-intersecting torso triangles: inner tri pushed IN (toward the
+    body), outer OUT (gentler), clamped so no moved vert sits below _SELFINT_STANDOFF
+    above the body. `chain_vert` (bool per vert) marks SMP physics-chain verts that
+    must NOT move. Returns (new_verts, moved_vert_count). Deterministic."""
+    v = V.copy()
+    moved_any = np.zeros(len(v), bool)
+    for _ in range(_SELFINT_ITERS):
+        cr = _self_intersecting_pairs(v, tris)
+        if len(cr) <= target:
+            break
+        _, vbi = tree.query(v)                 # nearest body vert per garment vert
+        cen = v[tris].mean(1)
+        bd, _ = tree.query(cen)                # tri-centroid distance to body
+        move = np.zeros_like(v)
+        cnt = np.zeros(len(v))
+        for i, j in cr:
+            inner, outer = (i, j) if bd[i] <= bd[j] else (j, i)
+            for vi in tris[inner]:
+                if not chain_vert[vi]:
+                    move[vi] -= Nb[vbi[vi]] * _SELFINT_STEP
+                    cnt[vi] += 1
+            for vo in tris[outer]:
+                if not chain_vert[vo]:
+                    move[vo] += Nb[vbi[vo]] * _SELFINT_STEP * 0.6
+                    cnt[vo] += 1
+        m = cnt > 0
+        if not m.any():
+            break
+        v[m] = v[m] + move[m] / cnt[m, None]
+        moved_any |= m
+        # body-safety clamp: a moved vert must never end up below the standoff
+        _, vbi2 = tree.query(v)
+        signed = np.einsum('ij,ij->i', v - Vb[vbi2], Nb[vbi2])
+        under = (signed < _SELFINT_STANDOFF) & moved_any
+        if under.any():
+            v[under] = Vb[vbi2][under] + Nb[vbi2][under] * _SELFINT_STANDOFF
+    return v, int(moved_any.sum())
+
+
+def _repair_self_intersections(dst_path, src_path, biped_slots: int = 0) -> int:
+    """On-disk pass: un-cross warp-introduced torso layer self-intersections. Returns
+    verts moved (0 = nothing touched). Gated by the SOURCE self-intersection baseline
+    so by-design fur/strand geometry is left alone. See SELFINT_REPAIR."""
+    if not SELFINT_REPAIR:
+        return 0
+    if biped_slots & (BIPED_SLOT33_BIT | BIPED_SLOT37_BIT):
+        return 0  # hands/feet -- not the layered-torso class
+    weight = "_0" if str(dst_path).lower().endswith("_0.nif") else "_1"
+    try:
+        pyn = _pynifly()
+        nf = pyn.NifFile(filepath=str(dst_path))
+    except Exception:
+        return 0
+    if _nif_has_fx_shape(nf):
+        return 0  # glow/effect NIF: a reload+re-author corrupts its controller -> CTD
+    # Body reference for the inner/outer test + the standoff clamp: prefer the NIF's
+    # OWN injected BaseShape -- it is the actual body the garment covers, so clamping
+    # against it can't leave a vert below the visible body (the reference body differs
+    # slightly and let inner verts sink ~0.1-0.5u past the real surface). Fall back to
+    # the reference UBE body for plain-armor NIFs that carry no BaseShape.
+    from scipy.spatial import cKDTree
+    body = None
+    _base = next((s for s in nf.shapes if s.name == "BaseShape"), None)
+    if _base is not None:
+        _g2sb = _shape_global_to_skin(_base)
+        if _g2sb is None or _g2s_is_identity(_g2sb):
+            _Vb = np.asarray(_base.verts, np.float64)
+            _Nb = _body_normals_or_compute(_base)
+            if _Nb is not None:
+                body = (_Vb, np.asarray(_Nb, np.float64), cKDTree(_Vb))
+    if body is None:
+        body = _body_selfint_ref(weight)
+    if body is None:
+        return 0
+    Vb, Nb, tree = body
+    collider_names = _hdt_collider_shape_names(dst_path, nif=nf)
+    src_shapes: dict = {}
+    try:
+        snf = pyn.NifFile(filepath=str(src_path))
+        for s in snf.shapes:
+            src_shapes[s.name] = (np.asarray(s.verts, np.float64),
+                                  np.asarray(s.tris, np.int64))
+    except Exception:
+        src_shapes = {}
+    overrides: dict = {}
+    total = 0
+    for s in nf.shapes:
+        nm = s.name or ""
+        if (nm in ("BaseShape", "VirtualBody", "VirtualGround")
+                or nm in collider_names or nm.lower().startswith("col")):
+            continue
+        g2s = _shape_global_to_skin(s)
+        if not (g2s is None or _g2s_is_identity(g2s)):
+            continue  # non-identity scale/translation -> raw-space compare wrong; skip
+        try:
+            V = np.asarray(s.verts, np.float64)
+            T = np.asarray(s.tris, np.int64)
+        except Exception:
+            continue
+        if len(V) < 30 or int(((V[:, 2] >= _SELFINT_ZLO)
+                               & (V[:, 2] <= _SELFINT_ZHI)).sum()) < 30:
+            continue
+        out_cr = len(_self_intersecting_pairs(V, T))
+        if out_cr < _SELFINT_MIN:
+            continue
+        # SOURCE baseline (same topology): fur self-intersects here too -> high
+        # target -> the shape is left untouched. Real cloth is clean -> target ~0.
+        S = 0
+        src = src_shapes.get(nm)
+        if src is not None and len(src[0]) == len(V) and len(src[1]) == len(T):
+            S = len(_self_intersecting_pairs(src[0], src[1]))
+        if S >= _SELFINT_FUR_GATE:
+            continue
+        target = max(S, 3)
+        if out_cr <= target:
+            continue
+        # SMP physics-chain verts must not move (they drive the softbody rest pose)
+        chain_vert = np.zeros(len(V), bool)
+        for b, pairs in (s.bone_weights or {}).items():
+            if not _is_skeleton_bone(b):
+                for vi, w in pairs:
+                    iv = int(vi)
+                    if 0 <= iv < len(V) and float(w) > 0.1:
+                        chain_vert[iv] = True
+        Vr, moved = _relax_shape_self_intersection(V, T, chain_vert, Vb, Nb, tree, target)
+        if moved:
+            overrides[nm] = Vr
+            total += moved
+    if overrides:
+        try:
+            # _reauthor_nif_fresh re-authors via _copy_shape (recomputes normals for
+            # the overridden verts) -- the same commit path the seam-weld pass uses.
+            # Path() defensively: _reauthor uses Path methods (.with_suffix/.name) and
+            # silently returns False on a str, which would drop the repair.
+            _reauthor_nif_fresh(Path(dst_path), override_verts_by_name=overrides)
         except Exception:
             return 0
     return total
@@ -12226,6 +12482,12 @@ def convert_nif_phase2(
     # plate's Thigh:Calf split to the body so it bends with the knee (Orcish #knee).
     try:
         _match_rigid_leg_bend_to_body(dst_path, biped_slots)
+    except Exception:
+        pass
+    # Un-cross warp-introduced torso layer self-intersections (blouse-through-
+    # corset). Gated by the source self-int baseline (fur/strands untouched).
+    try:
+        _repair_self_intersections(dst_path, src_path, biped_slots)
     except Exception:
         pass
 

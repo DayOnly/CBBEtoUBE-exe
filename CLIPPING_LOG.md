@@ -20,6 +20,90 @@ output, for converter diagnosis + fixes. Started 2026-07-07 (post unified-covera
 
 ## Open
 
+### Common-clothes replacer ("Clothes" item) -- layer clip at rest + legs punch through the skirt when MOVING -- 2026-07-11
+In-game on a common-clothes replacer (puffy blouse + brocade bodice + long skirt) equipped
+as the vanilla "Clothes" item. TWO distinct issues:
+  1. STATIC -- the layered top clips: blouse / bodice / skirt intersect at the waist/seam
+     even standing still. Multi-layer order domain.
+  2. DYNAMIC (the important one) -- the LEGS pass through the skirt when walking/running.
+Triage per this log: #1 = STATIC layer-order, #2 = DYNAMIC cloth-vs-leg collision.
+**CONFIRMED item:** `ClothesFarmClothes02` (Skyrim.esm `000209A6`), mesh
+`clothes/farmclothes02/f/dress_1.nif`. Shape `Farm02FBodyLarge` (2507 verts, z 10-113 ->
+full skirt to floor), weighted to leg bones (Thigh/Calf/Butt), HDT-SMP (40-bone chain).
+**CORRECTION to an earlier wrong note in this entry:** the UBE body is NOT missing a collider.
+The converter's `hdt_xml_gen.py` DOES emit a `per-triangle-shape` on `BaseShape` (`tag=body`)
+that the skirt's `per-vertex-shape` collides with, it lists the leg skeleton bones, and legs
+already get a 2.0 `margin-multiplier`. So the leg collision EXISTS and still tunnels.
+**Real open questions (all runtime-FSMP, not measurable offline):**
+  - Body-collider leg bones use `weight-threshold = 1.0` (`classify_bone_threshold`: skeleton +
+    3BA scale bones = 1.0). On a 3BA thigh whose weight is SPLIT with FrontThigh/RearThigh
+    scale bones, a 1.0 threshold may leave the thigh under-bound in the collider (holes where
+    the leg swings). BUT 1.0 also matches hand-authored convention, so this is a HYPOTHESIS,
+    not a proven bug -- must be tested in-game (lower leg threshold to ~0.3-0.5 and observe).
+  - Margin/prenetration may be too tight for a fast leg swing vs a long loose skirt (classic
+    FSMP tunneling regime) -- levers: raise leg margin-multiplier >2.0, raise prenetration.
+This is the known cloth-to-body declip ceiling ([[project_cloth_collision_ube]],
+[[project_cloth_to_body_declip_research]] "at/beyond offline art"). Any fix is a
+tweak-equip-observe loop; offline metrics can't validate SMP collision.
+**EXPERIMENT RUN 2026-07-11 (in-game, both directions):** hand-edited this dress.xml and
+tested 3 collision-margin/threshold settings with a clean save->menu->load reload each:
+  - baseline (leg margin-mult 2.0, skirt margin 0.1): leg tunnels WHEN MOVING.
+  - aggressive (mult 4.0, skirt margin 0.3, leg threshold 0.4): skirt EJECTED to one side,
+    whole leg bare even near-standstill. WORSE.
+  - gentle (mult 2.75, skirt margin 0.15, thresholds 1.0): leg still pokes through. No better.
+CONCLUSION: no usable window -- too little collision under-catches the swinging leg, too much
+ejects the drape. Confirms the FSMP ceiling for a FLOOR-LENGTH SMP skirt over swinging legs.
+Auto-generated collision XML tuning CANNOT fix this class; it needs per-garment physics-artist
+work (chain stiffness, panel weighting, hand-placed capsule colliders) beyond auto-generation.
+dress.xml reverted to baseline; converter UNCHANGED (the lever doesn't help).
+**Status: WON'T-FIX (FSMP ceiling), confirmed in-game 2026-07-11.** Not a converter bug.
+
+#### STATIC layer-clip (same outfit) -- DIAGNOSED as a REAL converter defect (warp self-intersection) 2026-07-11
+Measured (tri-tri self-intersection, torso band z95-113, k-NN prefiltered, strict-interior seg-tri):
+  - source Farm02FBodyLarge on 3BA (Authoria Vanilla Bodyslides AND Redone-Prebuilt): **0** self-intersections
+  - OUTPUT Farm02FBodyLarge on UBE: **26** self-intersections
+So the UBE WARP INTRODUCED all 26 (source is clean). Localized: z 99-102, 20 of 26 on the FRONT --
+the corset neckline over the blouse chest. Mechanism: this dress's VFS winner ships the whole
+outfit as ONE merged shape (Farm02FBodyLarge); the source's LAYERED variant (Authoria Bodyslide
+Output - 3BA: 9 shapes Sleeves/Shirt/Corset/Waist/SkirtL/Panties) is a LOWER MO2-priority copy, so
+neither the game nor the converter uses it. On a single merged shape the inner (blouse) surface sits
+just behind the outer (corset); the per-vertex warp to the BUSTIER UBE moves the inner surface (closer
+to the body -> tracks the bust more) outward PAST the outer -> self-intersection. The converter's
+layer-separation passes (`_separate_chest_layered_cloth_depth`, `_rank_body_layers`) are INTER-shape
+(separate shape-A from shape-B) so they can't touch a single merged shape -- no machinery covers
+intra-shape self-intersection.
+**Status: OPEN, real+fixable converter defect (NOT the FSMP ceiling).** Fix options (all non-trivial,
+need reconvert + in-game): (A) intra-shape self-intersection repair / warp-coherence pass (couple
+radially-stacked verts to one warp delta so a stack keeps its gap); (B) prefer the LAYERED source when
+one exists so the existing inter-shape layer pass applies (big source-selection policy change, blast
+radius). PREVALENCE (measured 2026-07-11): a RAW output self-intersection scan (484/601 torso garments
+"affected") is CONTAMINATED -- fur/strand geometry self-intersects BY DESIGN (top offenders
+140k/130k pairs on DD-FVO-FUR / FalmerSlayerFur, physically impossible for a clip). The valid
+signal is SOURCE->OUTPUT DELTA (fur cancels: self-intersects in both). Cloth sample source-delta:
+~7 of 11 resolvable-source cloth garments have a CLEAR warp-introduced clip (source near-clean,
+warp adds hundreds-thousands): SaltLemon Rogue Stalker 9->2729, nwitch dress 4->2716,
+silverleather 2447->4735, TwilightPrincess 864->2719, Magecore 745->2117, Ruby flower 1231->2221,
+farmclothes02 0->20 (MILDEST). The rest were mostly by-design overlap (Ysmir 13385->13469 +84).
+=> SYSTEMIC across cloth torsos, severity varies widely; farmclothes02 is a mild example.
+FIX A PROTOTYPE (2026-07-11, offline, /tmp/proto_relax.py): post-warp self-intersection relaxation
+on the WARPED output verts -- detect crossing tri pairs, push inner tri IN (toward body) + outer
+tri OUT (gentler 0.6x), clamp every vert >= min_standoff above the UBE body, iterate. Results:
+farmclothes 26->15, nwitch NWTop 4197->1539, SaltLemon Corset_main 2569->675 (40-80% cut), body
+clearance held 0.30u everywhere (0 verts sank in), mean vert move tiny (only crossing verts move).
+De-risked, then SHIPPED IN CODE 2026-07-11 (branch testing, uncommitted at write time):
+`_repair_self_intersections` in nif_convert.py -- on-disk post-pass wired after conform in BOTH
+convert paths (copy ~3083 + rebuild ~12472). Gates: skip colliders + fx/glow NIFs + hands/feet
+slots + non-identity g2s; SOURCE self-int baseline (>=300 = fur -> skip); per-vert SMP physics-chain
+skip. Clamps against the NIF's OWN injected BaseShape (not the ref body -- that let verts sink ~0.2u).
+Persists via _reauthor_nif_fresh (Path() -- it silently no-ops on a str!). Env: CBBE2UBE_NO_SELFINT_REPAIR,
+_ITERS(16), _FUR_GATE(300), _ZLO/_ZHI(88/116). Tests: tests/test_selfint_repair.py (5); suite 712.
+E2E validated on real NIFs: farmclothes 26->20, SaltLemon Corset_main 2597->573; body clearance
+NEVER worsened (unchanged or improved); fur untouched (0 moved). Reduction is a MITIGATION (20-80%),
+not full elimination. PENDING: exe rebuild+redeploy, reconvert, in-game visual check (does it read as
+fixed + no new artifacts). See [[project_bodymatch_source_selection]],
+[[project_3ba_source_selection_bug]] (source-selection history), [[project_ruby_flower_converter_fixes]]
+(multi-layer LIFT).
+
 ### Falmer Slayer Bodysuit -- body pokes through the REAR (butt/rear-thigh) -- REAL, diagnosed 2026-07-10
 The actual reported defect (the bare-breast thing below is by design). Standing still, large
 preset: red body skin shows through the tan skintight suit at the legs/abdomen, worst at the
