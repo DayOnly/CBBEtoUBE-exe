@@ -1,0 +1,17 @@
+# Keep line endings EXACTLY as committed. The repo is intentionally mixed (some CRLF,
+# most LF) with core.autocrlf=false; `-text` tells git never to convert or renormalize,
+# so no file changes now and future tooling can't silently flip CRLF<->LF and bury the
+# real diff. (If a tool does flip a file, git will show it as a genuine byte change you
+# can catch, instead of auto-hiding it.)
+* -text
+
+# Tracked binaries: also never diff as text.
+*.exe  binary
+*.dll  binary
+*.pyd  binary
+*.zip  binary
+*.nif  binary
+*.tri  binary
+*.osd  binary
+*.dds  binary
+*.bsa  binary
