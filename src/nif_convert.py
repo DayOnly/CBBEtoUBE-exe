@@ -833,9 +833,8 @@ def _install_skin(new_shape, dst_nif, src_shape, bone_names, xforms_map,
         pass
     # Fix scale-bone STB space mismatch: bake g2s^-1 into scale-bone STBs.
     # (Runs on the pre-strip weights_map, as before -- it only mutates xforms_map.)
-    g2s_aligned = False
     if bake_T is None and src_shape.has_global_to_skin:
-        xforms_map, g2s_aligned = _align_scale_bone_stbs_to_verts(
+        xforms_map, _ = _align_scale_bone_stbs_to_verts(
             xforms_map, src_shape.global_to_skin, use_verts, weights_map)
     # Strip genital + jiggle weights, then fill zero-weight verts, ALL before add_bone
     # so we only add bones that still carry weight -- a zero-weight add_bone'd bone

@@ -51,18 +51,6 @@ from .tri import TriFile, TriShape, TriMorph
 # hand-authored TRIs are ~10MB; without filtering we'd produce 50MB+.
 DEFAULT_TRI_MIN_DELTA = 0.005
 
-# Threshold (in units, per-vertex max delta magnitude over the body)
-# above which a morph is treated as a "global body reshape" rather
-# than a local feature slider. For these big morphs we drop K from 4
-# to 1 in propagation so the armor vert tracks the body vert it sits
-# on closest to (no K=4 IDW averaging dampening). Without this, big
-# preset-style sliders like Amazon / Peachy under-track the body and
-# the body grows past the armor, collapsing the visual fit.
-#
-# 2.0 is empirically tuned from UBE's OSD: most local sliders top out
-# around 1.0-1.5 units; preset-style sliders are 2-7 units.
-HIGH_MAGNITUDE_K1_THRESHOLD = 2.0
-
 # Substrings (lowercased) marking a shape as a rigid prop / metal piece
 # that doesn't need body-morph tracking. These are sorted to the TAIL of
 # the TRI as a soft authoring convention (cloth before rigid). After
@@ -473,3 +461,4 @@ def generate_armor_tri(
     # written from `len(self.shapes)` by TriFile.save() regardless.
     from .tri import TRI_VERSION
     return TriFile(version=TRI_VERSION, shapes=tri_shapes)
+

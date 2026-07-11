@@ -104,7 +104,7 @@ class BSAArchive:
         if magic != b"BSA\x00":
             raise ValueError(f"{self.path.name}: not a BSA (magic {magic!r})")
         (version, folder_rec_off, archive_flags, folder_count, file_count,
-         total_folder_name_len, total_file_name_len, file_flags) = struct.unpack_from(
+         _total_folder_name_len, total_file_name_len, _file_flags) = struct.unpack_from(
             "<8I", d, 4)
         self.version = version
         self.archive_flags = archive_flags

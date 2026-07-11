@@ -103,37 +103,6 @@ def _eta_step(eta: dict, done: int, total: int, now: float,
     return _fmt_eta(rate * remaining)
 
 
-class _QueueWriter:
-    """Write-through stream: enqueues every chunk for the UI log AND forwards to
-    the original stream so the console / log-file tee keeps working. Unknown
-    attribute access (isatty, fileno, encoding, ...) delegates to the wrapped
-    stream so callers can't tell the difference."""
-
-    def __init__(self, q: "queue.Queue", orig):
-        self._q = q
-        self._orig = orig
-
-    def write(self, s):
-        if s:
-            self._q.put(s)
-        try:
-            if self._orig is not None:
-                self._orig.write(s)
-        except Exception:
-            pass
-        return len(s) if s else 0
-
-    def flush(self):
-        try:
-            if self._orig is not None:
-                self._orig.flush()
-        except Exception:
-            pass
-
-    def __getattr__(self, name):
-        return getattr(self._orig, name)
-
-
 def _kill_proc_tree(proc) -> None:
     """Terminate the conversion subprocess AND its ProcessPoolExecutor worker
     descendants. On Windows proc.terminate() kills only the DIRECT child, so the
@@ -2021,3 +1990,4 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
         root.after(int(auto_close_ms), root.destroy)  # smoke-test self-close
     root.mainloop()
     return int(state.get("result") or 0)
+

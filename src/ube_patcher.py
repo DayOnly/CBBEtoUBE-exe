@@ -1127,47 +1127,6 @@ def clear_slot33_from_bod2_payload(payload: bytes) -> tuple[bytes, bool]:
     return out, changed
 
 
-def add_arma_to_armo_payload(source_payload: bytes, new_arma_fid: int) -> bytes:
-    """Insert `new_arma_fid` into an ARMO's Armatures list (MODL entries).
-
-    Inserts immediately after the last existing MODL, before DATA.
-    Skyrim's ARMO parser stops reading armatures at DATA — any MODL after
-    DATA is silently ignored, making the new UBE ARMA invisible to the engine.
-    Falls back to splice-before-DATA or append if no MODL/DATA exists.
-    """
-    pieces = list(esp.iter_subrecords(source_payload))
-    last_modl_index = -1
-    for i, (sig, _data) in enumerate(pieces):
-        if sig == ARMO_ARMATURE_SIG:
-            last_modl_index = i
-
-    if last_modl_index >= 0:
-        out = b""
-        for i, (sig, data) in enumerate(pieces):
-            out += esp.encode_subrecord(sig, data)
-            if i == last_modl_index:
-                out += esp.encode_subrecord(
-                    ARMO_ARMATURE_SIG, struct.pack("<I", new_arma_fid)
-                )
-        return out
-
-    # No existing MODL — splice before DATA.
-    out = b""
-    inserted = False
-    for sig, data in pieces:
-        if sig == b"DATA" and not inserted:
-            out += esp.encode_subrecord(
-                ARMO_ARMATURE_SIG, struct.pack("<I", new_arma_fid)
-            )
-            inserted = True
-        out += esp.encode_subrecord(sig, data)
-    if not inserted:
-        out += esp.encode_subrecord(
-            ARMO_ARMATURE_SIG, struct.pack("<I", new_arma_fid)
-        )
-    return out
-
-
 # ----- top-level generator ------------------------------------------------
 
 def _scan_master_armos_referencing(
@@ -3019,122 +2978,6 @@ _STRIP_VANILLA_BODY_ARMA = {
     b"MO2T", b"MO3T", b"MO4T", b"MO5T",
     b"SNDD",
 }
-_STRIP_LOCALIZED_ARMO = {b"FULL", b"DESC", b"ITXT", b"NNAM", b"RDMP"}
-
-
-def _build_armo_body_override(
-    m_armo: "esp.Record", master_patch_byte: int,
-    master_to_new_arma: "dict[int, int]", master_name: str,
-    string_resolver, remap_fid=None,
-) -> "esp.Record | None":
-    """Build an ARMO override appending our minted UBE body ARMAs to a master
-    ARMO's armature list. Mirrors generate_ube_patch's proven master-ARMO
-    builder exactly: armature MODLs stay grouped BEFORE DATA (Skyrim stops
-    reading armatures at DATA), localized FULL/DESC are stripped (a synthetic
-    FULL is re-injected after EDID so the item shows in inventory), and all
-    FormIDs are remapped to patch space. Returns None if this ARMO references
-    none of our minted ARMAs. `master_patch_byte` is already << 24.
-
-    `remap_fid` (optional) maps any FormID in the source ARMO to patch space, or
-    None if its master is absent from the patch. When supplied, FormID-bearing
-    subrecords (TNAM/EITM/ETYP/KWDA/...) are remapped rather than copied verbatim
-    with the master's original byte (which would name the WRONG plugin in patch
-    space -> dangling FormID -> possible load CTD); unmappable refs are dropped."""
-    new_armas: "list[int]" = []
-    for sig, data in esp.iter_subrecords(m_armo.payload):
-        if sig == ARMO_ARMATURE_SIG and len(data) == 4:
-            ref = struct.unpack("<I", data)[0]
-            if ref in master_to_new_arma:
-                new_armas.append(master_to_new_arma[ref])
-    if not new_armas:
-        return None
-
-    src_edid = None
-    full_sid = None
-    for sig, data in esp.iter_subrecords(m_armo.payload):
-        if sig == b"EDID":
-            src_edid = data.rstrip(b"\x00").decode("utf-8", "ignore")
-        elif sig == b"FULL" and len(data) == 4:
-            full_sid = struct.unpack("<I", data)[0]
-    real_full = None
-    if string_resolver is not None and full_sid:
-        try:
-            real_full = string_resolver.resolve(master_name, full_sid)
-        except Exception:
-            real_full = None
-    synth_full = real_full or (
-        synthesize_name_from_edid(src_edid) if src_edid else None)
-
-    pieces = list(esp.iter_subrecords(m_armo.payload))
-    last_modl = -1
-    for i, (sig, _d) in enumerate(pieces):
-        if sig == ARMO_ARMATURE_SIG and len(_d) == 4:
-            last_modl = i
-    out = b""
-    full_done = False
-
-    def _arma_ref(ref: int) -> int:
-        # Existing armature ref -> patch space. Prefer the full master-byte remap
-        # (correct for a ref into a TRANSITIVE master); fall back to the single-
-        # byte rebase when no remap is supplied / the byte is unmappable.
-        if remap_fid is not None:
-            m = remap_fid(ref)
-            if m is not None:
-                return m
-        return master_patch_byte | (ref & 0xFFFFFF)
-
-    for i, (sig, data) in enumerate(pieces):
-        if sig == ARMO_ARMATURE_SIG and len(data) == 4:
-            ref = struct.unpack("<I", data)[0]
-            out += esp.encode_subrecord(sig, struct.pack("<I", _arma_ref(ref)))
-        elif sig in _STRIP_LOCALIZED_ARMO:
-            pass  # LSTRING refs we can't resolve in a non-localized patch
-        elif (remap_fid is not None
-              and sig in FORMID_SINGLE_SUBRECORD_SIGS and len(data) == 4):
-            # FormID-bearing subrecord (TNAM/EITM/ETYP/YNAM/ZNAM/BIDS/BAMT):
-            # remap its master byte to patch space. An unmappable ref (transitive
-            # master absent from the patch) is DROPPED -- a dangling TNAM/EITM can
-            # CTD at load, and the old verbatim copy kept the WRONG master byte.
-            _m = remap_fid(struct.unpack("<I", data)[0])
-            if _m is not None:
-                out += esp.encode_subrecord(sig, struct.pack("<I", _m))
-        elif (remap_fid is not None
-              and sig in FORMID_ARRAY_SUBRECORD_SIGS and len(data) % 4 == 0):
-            # KWDA: keep the mappable keywords, drop the unmappable ones.
-            _mapped = [remap_fid(struct.unpack_from("<I", data, j)[0])
-                       for j in range(0, len(data), 4)]
-            _kept = b"".join(struct.pack("<I", v) for v in _mapped if v is not None)
-            if _kept:
-                out += esp.encode_subrecord(sig, _kept)
-        else:
-            out += esp.encode_subrecord(sig, data)
-        if sig == b"EDID" and not full_done and synth_full is not None:
-            out += esp.encode_subrecord(b"FULL", esp.encode_zstring(synth_full))
-            full_done = True
-        if i == last_modl:
-            for nf in new_armas:
-                out += esp.encode_subrecord(
-                    ARMO_ARMATURE_SIG, struct.pack("<I", nf))
-    if last_modl < 0:
-        # No existing armatures: splice ours just before DATA (canonical).
-        rebuilt = b""
-        ins = False
-        for sig, data in esp.iter_subrecords(out):
-            if sig == b"DATA" and not ins:
-                for nf in new_armas:
-                    rebuilt += esp.encode_subrecord(
-                        ARMO_ARMATURE_SIG, struct.pack("<I", nf))
-                ins = True
-            rebuilt += esp.encode_subrecord(sig, data)
-        if not ins:
-            for nf in new_armas:
-                rebuilt += esp.encode_subrecord(
-                    ARMO_ARMATURE_SIG, struct.pack("<I", nf))
-        out = rebuilt
-
-    new_armo_fid = master_patch_byte | (m_armo.formid & 0xFFFFFF)
-    return esp.Record(sig=b"ARMO", flags=0, formid=new_armo_fid,
-                      timestamp_vc=0, version_unk=0x002C, payload=out)
 
 
 _UBE_SKIN_TEMPLATE_EDIDS = {"Torso": "00UBE_NakedTorso",
@@ -3144,13 +2987,6 @@ _UBE_SKINNAKED_EDID = "00UBE_SkinNaked"
 # FormID-bearing subrecords are remapped via the canonical module sets
 # (FORMID_SINGLE_SUBRECORD_SIGS + FORMID_ARRAY_SUBRECORD_SIGS) so the fold
 # stays in sync with the master-prune pass's notion of what is a FormID.
-
-
-def _edid_of_rec(rec) -> str:
-    for sig, d in esp.iter_subrecords(rec.payload):
-        if sig == b"EDID":
-            return d.rstrip(b"\x00").decode("ascii", "replace")
-    return ""
 
 
 def _read_tes4_flags(esp_path: Path) -> "int | None":
@@ -3388,7 +3224,7 @@ def generate_modded_nonbody_ube_coverage_patch(
     ARMO_NONPLAYABLE_FLAG = 0x00000004
     targets = []   # (armo_abs, defining_plugin_case, [arma_abs to mint])
     mint_set: dict = {}  # arma_abs -> placeholder (filled with minted fid later)
-    for armo_abs, (apayload, am, an, arms, rnam, slots, edid, aflags) in armo_win.items():
+    for armo_abs, (apayload, am, _an, arms, rnam, slots, edid, aflags) in armo_win.items():
         # FULL SKYPATCHER: skip ARMOs the Combined INI already links --
         # armature lists in ESPs no longer reflect runtime coverage, so
         # without this the fallback re-covers everything -> DOUBLE
@@ -3613,7 +3449,7 @@ def generate_modded_body_ube_coverage_patch(
     ARMO_NONPLAYABLE_FLAG = 0x00000004
     targets = []          # (armo_abs, defining_plugin_case, [arma_abs to mint])
     mint_set: dict = {}
-    for armo_abs, (apayload, am, an, arms, rnam, slots, edid, aflags) in armo_win.items():
+    for armo_abs, (apayload, am, _an, arms, rnam, slots, edid, aflags) in armo_win.items():
         # FULL SKYPATCHER: skip ARMOs the Combined INI already links --
         # armature lists in ESPs no longer reflect runtime coverage, so
         # without this the fallback re-covers everything -> DOUBLE
@@ -4404,5 +4240,6 @@ def _rewrite_payload_for_merge(
         else:
             out += esp.encode_subrecord(sig, data)
     return out
+
 
 
