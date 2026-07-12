@@ -1,7 +1,7 @@
 """Unit tests for the warp-introduced torso self-intersection repair
 (nif_convert._self_intersecting_pairs / _relax_shape_self_intersection).
 
-The full on-disk pass (_repair_self_intersections) needs a live UBE body ref +
+The full pass (folded into _conform_fitted_to_body via _selfint_overrides) needs a live UBE body ref +
 NIFs, so it's exercised in-game / by the offline sample script; here we lock down
 the pure geometry core: the detector finds real crossings (not topological
 neighbours), and the relaxation reduces them while never pushing a vert below the

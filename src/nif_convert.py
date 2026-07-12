@@ -3068,19 +3068,13 @@ def convert_nif(
         # Fitted-cloth body conform (gated; skin-tight garments only). Runs after
         # finalize so it sees final skinning; reauthor/harden below preserve it.
         try:
-            _conform_fitted_to_body(dst_path, biped_slots)
+            _conform_fitted_to_body(dst_path, src_path, biped_slots)
         except Exception:
             pass
         # Knee-bend conform for RIGID leg plate (the conform above skips it): match
         # the plate's Thigh:Calf split to the body so it bends with the knee.
         try:
             _match_rigid_leg_bend_to_body(dst_path, biped_slots)
-        except Exception:
-            pass
-        # Un-cross warp-introduced torso layer self-intersections (blouse-through-
-        # corset). Gated by the source self-int baseline (fur/strands untouched).
-        try:
-            _repair_self_intersections(dst_path, src_path, biped_slots)
         except Exception:
             pass
 
@@ -5352,20 +5346,20 @@ def _conform_blend_vert(dv: dict, bd: dict, blend: float, delta: float):
     return {b: w / ss for b, w in new.items() if w / ss > 1e-4}
 
 
-def _conform_fitted_to_body(dst_path, biped_slots: int = 0) -> int:
-    """Conform skin-tight GARMENT shapes to the UBE body's per-vert skinning so
-    the body doesn't clip through where a limb swings. On-disk post-pass; returns
-    the number of verts conformed (0 = nothing touched). See CONFORM_FITTED_CLOTH
-    for the detection gates -- rigid plate armor is excluded and stays rigid."""
-    if not CONFORM_FITTED_CLOTH:
+def _conform_fitted_to_body(dst_path, src_path=None, biped_slots: int = 0) -> int:
+    """Fitted-cloth FINALIZE pass -- ONE load + one save for BOTH the weight-conform
+    (skin-tight garments hug the UBE body's per-vert skinning) AND the self-intersection
+    repair (un-cross warp-introduced torso layer clips). Both move the SAME shapes, so
+    they share the loaded NIF and commit together: the relaxed verts + the conform
+    weight edits go out in one _reauthor_nif_fresh (no second load / re-author). Each
+    sub-pass keeps its own gate -- CONFORM_FITTED_CLOTH and SELFINT_REPAIR. Returns the
+    verts conformed (weight side)."""
+    hands_feet = bool(biped_slots & (BIPED_SLOT33_BIT | BIPED_SLOT37_BIT))
+    do_conform = CONFORM_FITTED_CLOTH and not hands_feet
+    do_selfint = SELFINT_REPAIR and not hands_feet and src_path is not None
+    if not do_conform and not do_selfint:
         return 0
-    if biped_slots & (BIPED_SLOT33_BIT | BIPED_SLOT37_BIT):
-        return 0  # hands/feet -- not the clip class, and risky to soften
     weight = "_0" if str(dst_path).lower().endswith("_0.nif") else "_1"
-    ref = _body_conform_ref(weight)
-    if ref is None:
-        return 0
-    _Vb, body_w, _body_bones, tree = ref  # chain test uses _is_skeleton_bone now
     try:
         pyn = _pynifly()
         nf = pyn.NifFile(filepath=str(dst_path))
@@ -5374,6 +5368,41 @@ def _conform_fitted_to_body(dst_path, biped_slots: int = 0) -> int:
     if _nif_has_fx_shape(nf):
         return 0  # effect-shader/glow NIF: a reload+re-save corrupts its controller -> CTD.
                   # Leave it exactly as the main conversion wrote it (see _nif_has_fx_shape).
+    total = 0
+    dirty = False
+    if do_conform:
+        dirty, total = _conform_weights_core(nf, dst_path, weight)
+    overrides = _selfint_overrides(nf, dst_path, src_path) if do_selfint else {}
+    if overrides:
+        # ONE re-author commits the relaxed verts AND (from the in-memory nf) the
+        # conform weight edits, recomputing normals for the moved verts. Re-assert the
+        # VirtualBody Hidden bit first so a re-save can't surface the blue body double.
+        _hide_virtual_body(nf)
+        try:
+            _reauthor_nif_fresh(Path(dst_path), override_verts_by_name=overrides, nif=nf)
+        except Exception:
+            if dirty:
+                try:
+                    atomic_nif_save(nf, dst_path)
+                except Exception:
+                    pass
+    elif dirty:
+        _hide_virtual_body(nf)
+        try:
+            atomic_nif_save(nf, dst_path)
+        except Exception:
+            return 0
+    return total
+
+
+def _conform_weights_core(nf, dst_path, weight) -> "tuple[bool, int]":
+    """The fitted-cloth weight-conform loop on an already-loaded nf. Returns
+    (dirty, verts_conformed). See CONFORM_FITTED_CLOTH for the detection gates --
+    rigid plate armor is excluded and stays rigid."""
+    ref = _body_conform_ref(weight)
+    if ref is None:
+        return False, 0
+    _Vb, body_w, _body_bones, tree = ref  # chain test uses _is_skeleton_bone now
     # Precise SMP-collider exclusion. The _CONFORM_SKIP_NAMES substring gate below
     # only catches name-tagged colliders ("...Col..."); re-weighting an UNTAGGED
     # per-triangle collider would re-introduce the exact over-graft the reskin pass
@@ -5455,15 +5484,7 @@ def _conform_fitted_to_body(dst_path, biped_slots: int = 0) -> int:
                 # full rebuild from the complete per-vert map -> removals applied
                 s.setShapeWeights(bn, [(i, vw[i][bn]) for i in range(n)
                                        if bn in vw[i] and vw[i][bn] > 1e-4])
-    if dirty:
-        # A re-save must never silently un-hide an SMP collision proxy (the "blue
-        # body double"); re-assert the VirtualBody Hidden bit, as _reauthor does.
-        _hide_virtual_body(nf)
-        try:
-            atomic_nif_save(nf, dst_path)
-        except Exception:
-            return 0
-    return total
+    return dirty, total
 
 
 # ---- Warp-introduced torso self-intersection repair -----------------------
@@ -5615,28 +5636,19 @@ def _relax_shape_self_intersection(V, tris, chain_vert, Vb, Nb, tree, target):
     return v, int(moved_any.sum())
 
 
-def _repair_self_intersections(dst_path, src_path, biped_slots: int = 0) -> int:
-    """On-disk pass: un-cross warp-introduced torso layer self-intersections. Returns
-    verts moved (0 = nothing touched). Gated by the SOURCE self-intersection baseline
-    so by-design fur/strand geometry is left alone. See SELFINT_REPAIR."""
+def _selfint_overrides(nf, dst_path, src_path) -> dict:
+    """Compute {shape_name -> relaxed verts} that un-cross warp-introduced torso layer
+    self-intersections, on an ALREADY-LOADED nf. No I/O except reading the SOURCE nif
+    for the baseline gate. Returns {} if nothing to do; the caller persists in ONE
+    _reauthor_nif_fresh (which recomputes normals). Gated by the SOURCE self-int
+    baseline so by-design fur/strand geometry is left alone. See SELFINT_REPAIR."""
     if not SELFINT_REPAIR:
-        return 0
-    if biped_slots & (BIPED_SLOT33_BIT | BIPED_SLOT37_BIT):
-        return 0  # hands/feet -- not the layered-torso class
-    weight = "_0" if str(dst_path).lower().endswith("_0.nif") else "_1"
-    try:
-        pyn = _pynifly()
-        nf = pyn.NifFile(filepath=str(dst_path))
-    except Exception:
-        return 0
-    if _nif_has_fx_shape(nf):
-        return 0  # glow/effect NIF: a reload+re-author corrupts its controller -> CTD
-    # Body reference for the inner/outer test + the standoff clamp: prefer the NIF's
-    # OWN injected BaseShape -- it is the actual body the garment covers, so clamping
-    # against it can't leave a vert below the visible body (the reference body differs
-    # slightly and let inner verts sink ~0.1-0.5u past the real surface). Fall back to
-    # the reference UBE body for plain-armor NIFs that carry no BaseShape.
+        return {}
     from scipy.spatial import cKDTree
+    # Body reference for the inner/outer test + the standoff clamp: prefer the NIF's
+    # OWN injected BaseShape -- the actual body the garment covers, so clamping against
+    # it can't leave a vert below the visible body. Fall back to the reference UBE body
+    # for plain-armor NIFs that carry no BaseShape.
     body = None
     _base = next((s for s in nf.shapes if s.name == "BaseShape"), None)
     if _base is not None:
@@ -5647,21 +5659,21 @@ def _repair_self_intersections(dst_path, src_path, biped_slots: int = 0) -> int:
             if _Nb is not None:
                 body = (_Vb, np.asarray(_Nb, np.float64), cKDTree(_Vb))
     if body is None:
+        weight = "_0" if str(dst_path).lower().endswith("_0.nif") else "_1"
         body = _body_selfint_ref(weight)
     if body is None:
-        return 0
+        return {}
     Vb, Nb, tree = body
     collider_names = _hdt_collider_shape_names(dst_path, nif=nf)
     src_shapes: dict = {}
     try:
-        snf = pyn.NifFile(filepath=str(src_path))
+        snf = _pynifly().NifFile(filepath=str(src_path))
         for s in snf.shapes:
             src_shapes[s.name] = (np.asarray(s.verts, np.float64),
                                   np.asarray(s.tris, np.int64))
     except Exception:
         src_shapes = {}
     overrides: dict = {}
-    total = 0
     for s in nf.shapes:
         nm = s.name or ""
         if (nm in ("BaseShape", "VirtualBody", "VirtualGround")
@@ -5703,17 +5715,7 @@ def _repair_self_intersections(dst_path, src_path, biped_slots: int = 0) -> int:
         Vr, moved = _relax_shape_self_intersection(V, T, chain_vert, Vb, Nb, tree, target)
         if moved:
             overrides[nm] = Vr
-            total += moved
-    if overrides:
-        try:
-            # _reauthor_nif_fresh re-authors via _copy_shape (recomputes normals for
-            # the overridden verts) -- the same commit path the seam-weld pass uses.
-            # Path() defensively: _reauthor uses Path methods (.with_suffix/.name) and
-            # silently returns False on a str, which would drop the repair.
-            _reauthor_nif_fresh(Path(dst_path), override_verts_by_name=overrides)
-        except Exception:
-            return 0
-    return total
+    return overrides
 
 
 def _body_leg_detail_ref(weight: str):
@@ -10544,7 +10546,7 @@ def _finalize_hdt_physics(dst_path: Path, src_nif_path: Path) -> bool:
 
 
 def _reauthor_nif_fresh(dst_path: Path, override_verts_by_name=None,
-                        exclude_shapes=None) -> bool:
+                        exclude_shapes=None, nif=None) -> bool:
     """Re-author a NIF from scratch into a fresh NifFile — copy every shape
     via _copy_shape (clean pynifly authoring) instead of leaving the
     source-derived bytes produced by the verbatim `shutil.copy2` path.
@@ -10568,7 +10570,10 @@ def _reauthor_nif_fresh(dst_path: Path, override_verts_by_name=None,
     """
     try:
         pyn = _pynifly()
-        old = pyn.NifFile(filepath=str(dst_path))
+        # Re-author from an already-open NIF when the caller passes one (the fitted
+        # finalize pass hands over its loaded nf, weight edits included, so verts +
+        # weights commit in ONE re-author instead of a second load).
+        old = nif if nif is not None else pyn.NifFile(filepath=str(dst_path))
         shapes = list(old.shapes)
         if not shapes:
             return False
@@ -12473,21 +12478,15 @@ def convert_nif_phase2(
         _transfer_body_jiggle_to_fitted(dst_path, biped_slots)
     except Exception:
         pass
-    # Fitted-cloth body conform (gated; skin-tight garments only).
+    # Fitted-cloth FINALIZE: weight-conform + self-int repair share one load/save.
     try:
-        _conform_fitted_to_body(dst_path, biped_slots)
+        _conform_fitted_to_body(dst_path, src_path, biped_slots)
     except Exception:
         pass
     # Knee-bend conform for RIGID leg plate (the conform above skips it): match the
     # plate's Thigh:Calf split to the body so it bends with the knee (Orcish #knee).
     try:
         _match_rigid_leg_bend_to_body(dst_path, biped_slots)
-    except Exception:
-        pass
-    # Un-cross warp-introduced torso layer self-intersections (blouse-through-
-    # corset). Gated by the source self-int baseline (fur/strands untouched).
-    try:
-        _repair_self_intersections(dst_path, src_path, biped_slots)
     except Exception:
         pass
 
