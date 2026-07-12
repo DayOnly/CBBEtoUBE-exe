@@ -2179,6 +2179,10 @@ def generate_ube_patch(
 _POSTFLIGHT_CTD_PREFIXES = (
     "master-ordering", "esl-overflow", "formid-out-of-range",
     "formid-zero", "modt-malformed",
+    # Not a crash, but build-failing: an ARMA linked to a source mesh while its
+    # converted !UBE mesh exists = broken/invisible armor at scale (the 204-armor
+    # coverage-routing regression). Fail the build so it never ships silently.
+    "unconverted-mesh-linked",
 )
 # NOTE: "unmappable-master-ref" is deliberately NOT here (soft, not CTD). It flags
 # master-LIST incompleteness (a master X in the list whose own master Y isn't),
@@ -2243,6 +2247,9 @@ def validate_patch(esp_path: str | Path,
       "formid-zero"            Record has FormID 0x00000000 (player-reserved).
       "formid-out-of-range"    FormID references master index past the list end.
       "missing-nif"            ARMA MOD3/MOD5 path not found on disk.
+      "unconverted-mesh-linked" ARMA MOD3/MOD5 points to a SOURCE mesh while a
+                               converted !UBE mesh exists for it -> wears the
+                               un-converted mesh (invisible/distorted, no morphs).
       "armo-missing-full"      ARMO has no FULL; inventory UI silently hides it.
       "unmappable-master-ref"  Override record references a transitive master
                                not in this patch's master list; FormID misroutes.
@@ -2428,6 +2435,8 @@ def validate_patch(esp_path: str | Path,
         if arma_grp is not None:
             missing = 0
             missing_examples: list[str] = []
+            unconv = 0
+            unconv_examples: list[str] = []
             for r in arma_grp.records:
                 for sig, sd in esp.iter_subrecords(r.payload):
                     if sig not in (b"MOD3", b"MOD5"):
@@ -2435,10 +2444,19 @@ def validate_patch(esp_path: str | Path,
                     path = sd.rstrip(b"\x00").decode("latin1", errors="ignore")
                     if not path:
                         continue
-                    # Only check paths the converter actually owns. Anything
-                    # without the !UBE\ prefix is a vanilla/source path the
-                    # engine resolves from masters' BSAs; not our concern.
+                    # Anything without the !UBE\ prefix is a source path. Most are
+                    # vanilla/accessory meshes the engine resolves from masters'
+                    # BSAs -- fine. BUT if a converted !UBE\ mesh EXISTS for this
+                    # exact path, the ARMA was never redirected -> the armour wears
+                    # the UN-converted source mesh on the UBE body (invisible /
+                    # distorted / no morphs). That is the coverage-routing bug that
+                    # once shipped 204 broken armors silently. #unconverted-mesh-linked
                     if not path.lower().startswith("!ube\\"):
+                        if (meshes_root / "!UBE" / path.replace("\\", "/")).is_file():
+                            unconv += 1
+                            if len(unconv_examples) < 5:
+                                unconv_examples.append(
+                                    f"{sig.decode()}={path} (ARMA {r.formid:08X})")
                         continue
                     disk = meshes_root / path.replace("\\", "/")
                     if not disk.is_file():
@@ -2452,6 +2470,13 @@ def validate_patch(esp_path: str | Path,
                     f"missing-nif: {missing} ARMA model path(s) point to "
                     f"!UBE\\ NIF(s) not present under {meshes_root}. "
                     f"Armor will render empty. Examples: {missing_examples}"
+                )
+            if unconv:
+                warnings.append(
+                    f"unconverted-mesh-linked: {unconv} ARMA model path(s) point to a "
+                    f"SOURCE mesh while a converted !UBE\\ mesh EXISTS for it -- the "
+                    f"armour wears the un-converted source on the UBE body (invisible / "
+                    f"distorted / no morphs). Examples: {unconv_examples}"
                 )
 
     # Unmappable transitive-master check: verify every master used by override
@@ -3160,6 +3185,7 @@ def generate_modded_nonbody_ube_coverage_patch(
     output_esp_path: "str | Path",
     ordered_plugin_paths: "list[Path]",
     *,
+    converted_rel_paths: "set[str] | None" = None,
     ube_allrace_filename: str = "UBE_AllRace.esp",
     exclude_names: "set[str] | None" = None,
     exclude_armo_abs: "set[tuple[str, int]] | None" = None,
@@ -3274,6 +3300,20 @@ def generate_modded_nonbody_ube_coverage_patch(
     STRIP = {b"SNDD", b"ONAM", b"MO2S", b"MO3S", b"MO4S", b"MO5S",
              b"MO2T", b"MO3T", b"MO4T", b"MO5T",
              b"NAM0", b"NAM1", b"NAM2", b"NAM3"}
+    # A "non-body" item whose OWN mesh WAS converted (e.g. a skin-tight cloth
+    # piece that covers a non-body slot but still got a UBE mesh) must point at
+    # the converted `!UBE\` mesh, NOT the source one. A blanket keep-source
+    # (`lambda: False`) left every such piece wearing the un-converted source
+    # mesh on the UBE body -> distorted/invisible in-game. Genuine non-body items
+    # (helmets/jewelry) aren't in converted_rel_paths, so they still keep source.
+    # #mnb-converted-redirect
+    crp = converted_rel_paths or set()
+
+    def _conv_exists(model_path: str) -> bool:
+        if not model_path:
+            return False
+        return model_path.replace("\\", "/").lstrip("/").lower() in crp
+
     new_arma_records: list[esp.Record] = []
     _mint_rec: dict = {}   # arma_abs -> minted Record (for post-prune sidecar fids)
     next_id = ESL_OWN_FORMID_MIN
@@ -3287,7 +3327,7 @@ def generate_modded_nonbody_ube_coverage_patch(
             stripped,
             new_primary_rnam=ube_primary_patch,
             new_additional_race_fids=ube_races_patch,
-            converted_nif_exists=lambda p: False,  # non-body: keep mesh path
+            converted_nif_exists=_conv_exists,  # redirect to !UBE\ where converted
         )
         new_fid = (own_byte << 24) | next_id
         next_id += 1
