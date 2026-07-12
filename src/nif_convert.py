@@ -5378,14 +5378,21 @@ def _conform_fitted_to_body(dst_path, src_path=None, biped_slots: int = 0) -> in
         # conform weight edits, recomputing normals for the moved verts. Re-assert the
         # VirtualBody Hidden bit first so a re-save can't surface the blue body double.
         _hide_virtual_body(nf)
+        ok = False
         try:
-            _reauthor_nif_fresh(Path(dst_path), override_verts_by_name=overrides, nif=nf)
+            ok = _reauthor_nif_fresh(Path(dst_path),
+                                     override_verts_by_name=overrides, nif=nf)
         except Exception:
-            if dirty:
-                try:
-                    atomic_nif_save(nf, dst_path)
-                except Exception:
-                    pass
+            ok = False
+        # _reauthor RETURNS False on its real failure modes (dropped shape / write
+        # error) rather than raising, so branch on the result: if the re-author didn't
+        # commit, at least save the conform weight edits (the native buffer already
+        # holds them) so they aren't lost along with the self-int verts.
+        if not ok and dirty:
+            try:
+                atomic_nif_save(nf, dst_path)
+            except Exception:
+                pass
     elif dirty:
         _hide_virtual_body(nf)
         try:
@@ -5484,6 +5491,12 @@ def _conform_weights_core(nf, dst_path, weight) -> "tuple[bool, int]":
                 # full rebuild from the complete per-vert map -> removals applied
                 s.setShapeWeights(bn, [(i, vw[i][bn]) for i in range(n)
                                        if bn in vw[i] and vw[i][bn] > 1e-4])
+            # setShapeWeights writes the NATIVE skin buffer but leaves pynifly's
+            # cached `bone_weights` (_weights) stale. The fold re-authors from THIS
+            # in-memory nf, and _copy_shape reads bone_weights -- so without this it
+            # would copy the PRE-conform weights and silently drop the conform.
+            # Invalidate so the re-author re-reads the native buffer we just wrote.
+            s._weights = None
     return dirty, total
 
 
@@ -5513,6 +5526,11 @@ _SELFINT_ZLO = float(os.environ.get("CBBE2UBE_SELFINT_ZLO", "88"))
 _SELFINT_ZHI = float(os.environ.get("CBBE2UBE_SELFINT_ZHI", "116"))
 # Source self-intersection >= this = by-design (fur/strands) -> leave the shape alone.
 _SELFINT_FUR_GATE = int(os.environ.get("CBBE2UBE_SELFINT_FUR_GATE", "300"))
+# Absolute safety net: a real warp clip is tens-to-hundreds of crossings (worst cloth
+# seen ~4200); thousands means by-design self-intersecting geometry (fur/strands).
+# Skip WITHOUT the source-baseline check -- that gate fails OPEN on a topology/name
+# mismatch (would then repair fur), and the source scan is costly on 50k-tri fur.
+_SELFINT_MAX_CROSSINGS = int(os.environ.get("CBBE2UBE_SELFINT_MAX", "10000"))
 _SELFINT_MIN = 5           # skip shapes with fewer than this many output crossings
 # Hard safety cap. Iterate to CONVERGENCE (crossings <= source baseline), not to a
 # fixed count -- the old 16-cap plateaued far above what the same algorithm reaches
@@ -5717,8 +5735,8 @@ def _selfint_overrides(nf, dst_path, src_path) -> dict:
                                & (V[:, 2] <= _SELFINT_ZHI)).sum()) < 30:
             continue
         out_cr = len(_self_intersecting_pairs(V, T))
-        if out_cr < _SELFINT_MIN:
-            continue
+        if out_cr < _SELFINT_MIN or out_cr >= _SELFINT_MAX_CROSSINGS:
+            continue  # too few to matter, or by-design fur/strands (see the constant)
         # SOURCE baseline (same topology): fur self-intersects here too -> high
         # target -> the shape is left untouched. Real cloth is clean -> target ~0.
         S = 0
