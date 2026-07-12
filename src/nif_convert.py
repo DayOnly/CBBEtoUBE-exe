@@ -1607,13 +1607,58 @@ def clear_armor_outside_body(
 # soft-body / physics shapes because moving every vert disturbs the sim; this pass
 # is band-limited to the breast + butt so only the poke-through zone is nudged (the
 # sim rest shape is otherwise untouched). Body-PRESERVING (never moves the body),
-# push-out only. Confirmed in-game (Ancient Falmer cuirass breast). Default ON;
+# push-out only. Confirmed in-game (a fur-collared cuirass breast). Default ON;
 # CBBE2UBE_NO_SOFTCLOTH_INFLATE=1 disables.
 INFLATE_SOFTCLOTH = (
     os.environ.get("CBBE2UBE_NO_SOFTCLOTH_INFLATE", "").strip().lower()
     not in ("1", "true", "yes", "on"))
 _SOFTCLOTH_BUST_CLEAR = float(os.environ.get("CBBE2UBE_SOFTCLOTH_BUST_CLEAR", "1.8"))
 _SOFTCLOTH_BUTT_CLEAR = float(os.environ.get("CBBE2UBE_SOFTCLOTH_BUTT_CLEAR", "1.5"))
+# Minimum fraction of BREAST-BAND vertex weight that must be carried by CHAIN
+# (non-body) bones for the bust to count as physics-driven. Below this the bust is
+# rigid/body-skinned -> use the normal anti-poke (clearance cap) not the softcloth
+# inflation. See _shape_bust_is_softbody_driven / #softcloth-bust-driven-gate.
+_SOFTCLOTH_BUST_CHAIN_MIN = float(
+    os.environ.get("CBBE2UBE_SOFTCLOTH_BUST_CHAIN_MIN", "0.20"))
+
+
+def _shape_bust_is_softbody_driven(shape, body_bone_names, softbody_names,
+                                   threshold: float = _SOFTCLOTH_BUST_CHAIN_MIN) -> bool:
+    """True when the shape's BREAST band is genuinely physics-driven, so the
+    anti-poke (which moves poking verts) would disturb its sim and the softcloth
+    breast-inflation must handle clearance instead.
+
+    A per-vertex soft-body qualifies outright (the whole shape is simulated).
+    Otherwise measure the fraction of breast-band vertex weight carried by CHAIN
+    (non-body) bones: an HDT-rigged robe whose chains drive only the SKIRT has a
+    RIGID, body-skinned bust (fraction ~0) and must go through the normal
+    anti-poke -- routing it to the softcloth inflation BALLOONS the rigid bust
+    (a chain-rigged robe whose chains drive only the skirt: 60% chain bones
+    overall but bust chain-fraction ~0.01, inflated +3.2u). Replaces the old
+    whole-shape `_shape_has_hdt_smp_rigging` test for the softcloth-vs-antipoke
+    split. #softcloth-bust-driven-gate"""
+    try:
+        if shape.name in softbody_names:
+            return True
+        v = np.asarray(shape.verts, np.float64)
+        bust = np.where((v[:, 2] > 92) & (v[:, 2] < 100) & (v[:, 1] > 4)
+                        & (np.abs(v[:, 0]) < 13))[0]
+        if len(bust) < 8:
+            # No meaningful bust to judge (e.g. a skirt) -> don't strip softcloth;
+            # it only touches bust+butt bands and there's no bust here to balloon.
+            return True
+        bset = set(int(i) for i in bust.tolist())
+        wtot = wchain = 0.0
+        for b, pairs in (shape.bone_weights or {}).items():
+            isc = b not in body_bone_names
+            for vi, ww in pairs:
+                if int(vi) in bset:
+                    wtot += float(ww)
+                    if isc:
+                        wchain += float(ww)
+        return wtot > 0.0 and (wchain / wtot) >= threshold
+    except Exception:
+        return False
 
 
 def _inflate_cloth_over_bust_butt(
@@ -2763,8 +2808,8 @@ def convert_nif(
                 except Exception:
                     pass  # best-effort; failure leaves overlays as-is
 
-            # PELVIS RE-ANCHOR (copy/fit path): a NIF-root-hung skirt (Anequina)
-            # takes this path, not phase-2, so recreate its custom bone chains up
+            # PELVIS RE-ANCHOR (copy/fit path): a NIF-root-hung skirt (a custom-race
+            # armor) takes this path, not phase-2, so recreate its custom bone chains up
             # front -- lifting the root-parented garment bones onto Pelvis -- so the
             # shape copy's add_bone reuses those re-anchored nodes. Gated on the
             # pattern actually being present, so all other armors are byte-unchanged.
@@ -2845,7 +2890,7 @@ def convert_nif(
             # NIF has no cloth carriers. Slot-49 cloth gets a cloth-only XML that
             # collides with the actor body's "body" tag at runtime.
             if hdt_xml is None:
-                hdt_xml = _generate_hdt_xml_for_dst(dst_path)
+                hdt_xml = _generate_hdt_xml_for_dst(dst_path, only_loose=True)
 
         # Figure out armor-specific TRI path (same logic as phase 2).
         armor_relpath = None
@@ -5093,7 +5138,7 @@ _BUTT_PELVIS = "NPC Pelvis [Pelv]"                                  # the jiggle
 _BUTT_JIGGLE_STRENGTH = float(os.environ.get("CBBE2UBE_BUTT_JIGGLE_STRENGTH", "1.0"))  # full match -> tracks body
 _BUTT_JIGGLE_CAP = float(os.environ.get("CBBE2UBE_BUTT_JIGGLE_CAP", "0.15"))  # max grafted jiggle/bone (subtle)
 # The Thigh<->Pelvis REBALANCE half of the butt match is DEFAULT-ON: it is the ORIGINAL,
-# proven behavior (the user-approved "looks good" New Leather Armor was made with it). A
+# proven behavior (the user-approved "looks good" leather cuirass was made with it). A
 # 2026-07-08 attempt to blame it for a "coverage regression" and default it off was a
 # MISDIAGNOSIS -- the real regression was elsewhere (see [[project_newleather_working_recipe]]).
 # Opt out only if a specific armor needs it: CBBE2UBE_BUTT_REBALANCE=0.
@@ -5517,8 +5562,8 @@ def _conform_weights_core(nf, dst_path, weight) -> "tuple[bool, int]":
 # alone: fur self-intersects in the source too, so its target is already met and the
 # pass does nothing; real cloth is clean in the source (target ~0) so it is repaired.
 # Physics-chain verts (SMP softbody) never move -- only the static torso layers do.
-# Measured offline: farmclothes02 26->10, nwitch NWTop 4197->1148, SaltLemon
-# Corset_main 2569->675; body clearance held, fur untouched. Opt out with
+# Measured offline: a layered dress 26->10, a corset top 4197->1148, a corset
+# 2569->675; body clearance held, fur untouched. Opt out with
 # CBBE2UBE_NO_SELFINT_REPAIR=1; band + gate tunable via CBBE2UBE_SELFINT_*.
 SELFINT_REPAIR = os.environ.get(
     "CBBE2UBE_NO_SELFINT_REPAIR", "").strip().lower() not in ("1", "true", "yes")
@@ -5534,7 +5579,7 @@ _SELFINT_MAX_CROSSINGS = int(os.environ.get("CBBE2UBE_SELFINT_MAX", "10000"))
 _SELFINT_MIN = 5           # skip shapes with fewer than this many output crossings
 # Hard safety cap. Iterate to CONVERGENCE (crossings <= source baseline), not to a
 # fixed count -- the old 16-cap plateaued far above what the same algorithm reaches
-# given more rounds (farmclothes 26->20 at 16 iters, 26->3 run to convergence). The
+# given more rounds (a layered dress 26->20 at 16 iters, 26->3 run to convergence). The
 # stall early-out below usually stops well before this cap.
 _SELFINT_ITERS = int(os.environ.get("CBBE2UBE_SELFINT_ITERS", "45"))
 _SELFINT_STEP = 0.20
@@ -6534,7 +6579,7 @@ NESTED_CHAIN_ANCHORS = (
 # never on the body). Re-parent that root node onto NPC Pelvis while PRESERVING its
 # global position: each descendant chain bone's global transform + skin-to-bone
 # (STB) is therefore unchanged (skin byte-identical), but the chain now follows the
-# pelvis like a correctly-rigged skirt. Confirmed in-game (Anequina wolf-armor
+# pelvis like a correctly-rigged skirt. Confirmed in-game (a custom-race wolf-armor
 # skirt). Default ON; CBBE2UBE_NO_PELVIS_REANCHOR=1 disables.
 PELVIS_REANCHOR_CHAINS = (
     os.environ.get("CBBE2UBE_NO_PELVIS_REANCHOR", "").strip().lower()
@@ -8755,7 +8800,7 @@ def _shape_has_hdt_smp_rigging(src_shape, body_bone_names: set[str]) -> bool:
 # chain bones, so the garment-chain check misses them too). Every body-follow pass (the
 # M6 reskin AND the conform/jiggle passes) grafts the body's HDT-SMP JIGGLE bones
 # (Breast/Butt/Belly) onto them; the runtime then drives that cloth by those SMP bones
-# and the engine CTDs on equip (New Leather "Cuirass_A/B", crash 2026-07-09). So KEEP
+# and the engine CTDs on equip (a layered-cloth cuirass, crash 2026-07-09). So KEEP
 # their SOURCE skin -- skip EVERY graft pass for them (pynifly can't cleanly remove a
 # bone after the fact, so prevention is the only reliable path). Detect structurally:
 # 2+ sibling shapes sharing a base stem + a short layer suffix. Off with
@@ -8771,7 +8816,7 @@ def _is_first_person_mesh(dst_path, nif) -> bool:
 
     Auto-generating an HDT-SMP config for one is worse than useless. FSMP merges every
     `<per-vertex-shape name="...">` into the ACTOR's physics system by SHAPE NAME, and a
-    first-person NIF carries the SAME shape names as its third-person twin (New Leather's
+    first-person NIF carries the SAME shape names as its third-person twin (a layered-cloth mod's
     `1st.nif` and `dcuirass.nif` both hold `Cuirass_A/_B/_C`). So the first-person XML
     ends up driving the third-person shapes, as skin-stripped cloth with nothing to
     constrain it -> FSMP's soft body diverges and its collision SIMD reads out of bounds
@@ -9432,9 +9477,10 @@ def _copy_shape(src_shape, dst_nif, parent=None, override_verts=None,
                 # Transplant the glow's animation controller chain (if any) so it keeps
                 # MOVING (e.g. texture scroll). Built BEFORE the shader so it can reference
                 # it at creation (those block buffers can't be modified afterward). Returns
-                # the new controller id, or NODEID_NONE for a static glow. Static by default:
-                # the controller chain doesn't survive the HDT inject's reload -> CTD.
-                # CBBE2UBE_GLOW_ANIM=1 restores animation.  [DESIGN: Effect-shader glow overlays]
+                # the new controller id, or NODEID_NONE for a static glow. ANIMATED by
+                # default (the reload-CTD that once forced static was traced to thigh
+                # SCALE bones on the glow skin, not the controller, and fixed);
+                # CBBE2UBE_NO_GLOW_ANIM=1 forces a static glow.  [DESIGN: Effect-shader glow overlays]
                 try:
                     if _EFFECT_GLOW_ANIM:
                         eff_buf.controllerID = _transplant_effect_controller(
@@ -9547,13 +9593,16 @@ def _copy_shape(src_shape, dst_nif, parent=None, override_verts=None,
 
     # Alpha: set has_alpha_property=True first (creates dst NiAlphaProperty),
     # then copy flags/threshold. Don't memcpy the whole buf (contains source
-    # block IDs). skip_alpha=True is for cloth shapes where NioOverride gates
-    # morph application on absence of NiAlphaProperty.
+    # block IDs). skip_alpha=True copies the shape WITHOUT recreating its
+    # NiAlphaProperty -- an alpha-free copy for callers that need one. (An
+    # earlier note claimed NioOverride gates BodyMorph on the ABSENCE of an alpha
+    # property; that was disproven in-game -- alpha-bearing shapes morph fine --
+    # so this is NOT a morph fix.)
     # Fault-isolate the alpha-property READ: on a source with a broken alpha
     # block reference, pynifly's has_alpha_property getter itself raises
     # ("getNiAlphaProperty called on invalid node"), and an unguarded read here
     # failed the whole _copy_shape -> shape DROPPED -> invisible piece in-game
-    # (Steelheart gauntlets class). Copy WITHOUT alpha instead: visible geometry
+    # (a broken-alpha gauntlet class). Copy WITHOUT alpha instead: visible geometry
     # beats a lost alpha flag on a mesh whose alpha ref was broken anyway.
     try:
         _src_has_alpha = bool(src_shape.has_alpha_property)
@@ -9797,7 +9846,78 @@ def _is_unconstrained_collision_pair(
     return body_collision_shape_name is not None and not chains
 
 
-def _generate_hdt_xml_for_dst(dst_path: "Path") -> "str | None":
+# --- Tight-vs-loose gate for GENERATED soft-body physics -----------------
+# When the source armor had NO authored HDT-SMP XML, the converter generates a
+# per-vertex soft-body for every cloth carrier so hanging cloth (skirts, capes,
+# tabards) drapes + collides. But a SKIN-TIGHT garment (leggings/pantyhose)
+# doesn't need a sim -- and worse, an FSMP per-vertex soft-body OVERWRITES the
+# shape's verts every frame from its own rest state, which CLOBBERS RaceMenu
+# BodyMorph: the tight cloth stops following the body sliders entirely. So a
+# body-conforming carrier must stay skinned+morphable, NOT become soft-body.
+# Calibrated on real output: a pantyhose reads max-standoff 3.7u / 100% within
+# 4u; every loose skirt/cape has verts hanging 8-23u out. #tight-softbody-gate
+_TIGHT_SOFTBODY_GATE = (
+    os.environ.get("CBBE2UBE_NO_TIGHT_SOFTBODY_GATE", "").strip().lower()
+    not in ("1", "true", "yes", "on")
+)
+_SOFTBODY_CONFORM_STANDOFF = float(
+    os.environ.get("CBBE2UBE_SOFTBODY_CONFORM_STANDOFF", "4.0"))
+_SOFTBODY_CONFORM_FRAC = float(
+    os.environ.get("CBBE2UBE_SOFTBODY_CONFORM_FRAC", "0.95"))
+_SOFTBODY_CONFORM_P95_CAP = float(
+    os.environ.get("CBBE2UBE_SOFTBODY_CONFORM_P95CAP", "5.0"))
+
+_ube_conform_tree_cache: dict = {}
+
+
+def _ube_conform_body_tree(weight_suffix: str):
+    """Cached (verts, cKDTree) of the UBE reference female body for the given
+    weight -- the morph target the converted cloth is warped into. Used to
+    measure how tightly a cloth carrier hugs the body. None if unavailable."""
+    key = weight_suffix if weight_suffix in ("_0", "_1") else "_1"
+    if key in _ube_conform_tree_cache:
+        return _ube_conform_tree_cache[key]
+    val = None
+    try:
+        from scipy.spatial import cKDTree
+        bp = _find_ube_femalebody(key)
+        if bp is not None:
+            nf = _pynifly().NifFile(filepath=str(bp))
+            b = next((x for x in nf.shapes if x.name == "BaseShape"), None) \
+                or (nf.shapes[0] if nf.shapes else None)
+            if b is not None:
+                bv = np.asarray(b.verts, np.float64)
+                val = (bv, cKDTree(bv))
+    except Exception:
+        val = None
+    _ube_conform_tree_cache[key] = val
+    return val
+
+
+def _carrier_is_body_conforming(shape, weight_suffix: str) -> bool:
+    """True if this cloth carrier hugs the body so tightly that a GENERATED
+    per-vertex soft-body would clobber its BodyMorph (skin-tight leggings /
+    pantyhose) -- such a shape must stay skinned+morphable. False for loose
+    hanging cloth (skirts/capes/tabards) that legitimately needs the sim.
+    #tight-softbody-gate. Fails OPEN (False = keep soft-body) on any error or
+    missing body ref, so a measurement gap never strips physics."""
+    try:
+        bt = _ube_conform_body_tree(weight_suffix)
+        if bt is None:
+            return False
+        _, tree = bt
+        v = np.asarray(shape.verts, np.float64)
+        if len(v) < 30:
+            return False
+        d, _ = tree.query(v)
+        frac = float((d < _SOFTBODY_CONFORM_STANDOFF).mean())
+        p95 = float(np.percentile(d, 95))
+        return frac >= _SOFTBODY_CONFORM_FRAC and p95 <= _SOFTBODY_CONFORM_P95_CAP
+    except Exception:
+        return False
+
+
+def _generate_hdt_xml_for_dst(dst_path: "Path", only_loose: bool = False) -> "str | None":
     """Generate a fresh HDT-SMP cloth-collision XML for the destination
     NIF, write it alongside the NIF, and return the Skyrim-relative
     path string (suitable for the `HDT Skinned Mesh Physics Object`
@@ -9851,7 +9971,7 @@ def _generate_hdt_xml_for_dst(dst_path: "Path") -> "str | None":
 
     # First-person viewmodels never simulate cloth, and their per-vertex shapes collide
     # BY NAME with the third-person ones in the actor's merged SMP system. See
-    # _is_first_person_mesh -- this is the New Leather equip crash. Bail before the stale
+    # _is_first_person_mesh -- this is the layered-cloth equip crash. Bail before the stale
     # cleanup below so a previously-generated first-person XML is still removed.
     _first_person = _is_first_person_mesh(dst_path, nf)
 
@@ -9899,13 +10019,38 @@ def _generate_hdt_xml_for_dst(dst_path: "Path") -> "str | None":
     # pass (#layered-cloth-skin), so it carries NO body jiggle bones. Simulating
     # it as per-vertex SMP cloth therefore leaves it unconstrained: FSMP's soft
     # body diverges and its collision SIMD reads out of bounds -> access violation
-    # while updating the shape (New Leather Cuirass_A/_B, crash 2026-07-09;
+    # while updating the shape (a layered-cloth cuirass, crash 2026-07-09;
     # disabling the generated XML stopped the crash, confirmed in-game). This is
     # the same failure `_is_unconstrained_collision_pair` guards, but that gate
     # only fires when the NIF has a body collider -- the FIRST-PERSON NIF has
     # none, so its XML still shipped and FSMP applied those per-vertex shapes by
     # NAME into the actor's merged SMP system, reaching the third-person shapes.
     # Skin-strip and physics must go together: keep layered cloth kinematic.
+
+    # #tight-softbody-gate: on the GENERATE-when-source-had-no-physics path,
+    # drop carriers that hug the body tightly. A generated per-vertex soft-body
+    # would overwrite their verts every frame and kill BodyMorph (skin-tight
+    # leggings/pantyhose stop following body sliders). They stay skinned +
+    # morphable instead. Loose hanging cloth is untouched. Never applied when
+    # regenerating a replacement for an armor that HAD authored physics.
+    if only_loose and _TIGHT_SOFTBODY_GATE and carriers:
+        _suf = "_1"
+        for _s in ("_0", "_1"):
+            if dst_path.stem.endswith(_s):
+                _suf = _s
+                break
+        _kept, _dropped = [], []
+        for c in carriers:
+            (_dropped if _carrier_is_body_conforming(c, _suf) else _kept).append(c.name)
+        if _dropped:
+            carriers = [c for c in carriers if c.name in _kept]
+            try:
+                print(f"  tight-softbody gate: {', '.join(_dropped)} kept "
+                      f"skinned+morphable (body-conforming; no generated soft-body)",
+                      file=sys.stderr)
+            except Exception:
+                pass
+
     if not carriers:
         return None
 
@@ -10223,7 +10368,7 @@ def _ensure_cloth_body_collider(xml_path: Path, nif) -> bool:
     risk.
 
     DEFAULT OFF (opt-in `CBBE2UBE_BODY_COLLIDER=1`): in-game this DESTABILISED the
-    sim -- the Ancient Falmer body (head/chest/butt) collapsed to the floor. A
+    sim -- a custom-race body (head/chest/butt) collapsed to the floor. A
     full-body per-triangle collider paired with cloth that is ALSO skinned +
     weight-pinned to that same body diverges in FSMP. A chest-only KINEMATIC
     sub-mesh collider is the next approach; until proven in-game this stays off.
@@ -10590,7 +10735,7 @@ def _finalize_hdt_physics(dst_path: Path, src_nif_path: Path) -> bool:
 
 
 def _reauthor_nif_fresh(dst_path: Path, override_verts_by_name=None,
-                        exclude_shapes=None, nif=None) -> bool:
+                        exclude_shapes=None, nif=None, strip_hdt=False) -> bool:
     """Re-author a NIF from scratch into a fresh NifFile — copy every shape
     via _copy_shape (clean pynifly authoring) instead of leaving the
     source-derived bytes produced by the verbatim `shutil.copy2` path.
@@ -10682,7 +10827,7 @@ def _reauthor_nif_fresh(dst_path: Path, override_verts_by_name=None,
             if tgt is not None:
                 NiStringExtraData.New(
                     new, name="BODYTRI", string_value=bodytri_str, parent=tgt)
-        if hdt_str:
+        if hdt_str and not strip_hdt:
             NiStringExtraData.New(
                 new, name="HDT Skinned Mesh Physics Object",
                 string_value=hdt_str, parent=new.rootNode)
@@ -11883,6 +12028,13 @@ def convert_nif_phase2(
         # FINAL anti-poke: push body-slot armor clear of the injected body.
         # Runs LAST in body space so nothing undoes it; skips soft-body cloth
         # and HDT-SMP physics shapes (moving verts would disturb the sim).
+        # _bust_driven (bust genuinely physics-driven) gates ONLY the softcloth
+        # elif below -- a rigid-bust HDT-rigged robe stays out of BOTH passes and
+        # keeps its warp position instead of being ballooned. #softcloth-bust-driven-gate
+        _bust_driven = _shape_bust_is_softbody_driven(
+            s, set(ube_base_for_pass1.bone_names or [])
+            if ube_base_for_pass1 is not None else set(),
+            hdt_softbody_names)
         if (body_verts_for_p2 is not None and body_norms_for_p2 is not None
                 and (biped_slots & (BIPED_SLOT32_BIT | BIPED_SLOT49_BIT))
                 and s.name not in RESKIN_SKIP_NAMES
@@ -11945,6 +12097,7 @@ def convert_nif_phase2(
                 and (biped_slots & (BIPED_SLOT32_BIT | BIPED_SLOT49_BIT))
                 and s.name not in RESKIN_SKIP_NAMES
                 and s.name not in hdt_collider_names
+                and _bust_driven
                 and (s.name in hdt_softbody_names
                      or _shape_has_hdt_smp_rigging(
                          s, set(ube_base_for_pass1.bone_names or [])
@@ -11952,6 +12105,8 @@ def convert_nif_phase2(
             # Soft-body / HDT-rigged cloth is skipped by the anti-poke above (moving
             # every vert disturbs the sim). The larger UBE breast/butt still punches
             # through it, so nudge ONLY those bands outward to cover, body-preserving.
+            # Gated on _bust_driven: a RIGID bust (chains drive only the skirt) skips
+            # this -> stays at warp position, not ballooned. #softcloth-bust-driven-gate
             try:
                 base_v = (np.asarray(override, dtype=np.float64)
                           if override is not None else _sv_body)
@@ -12480,7 +12635,7 @@ def convert_nif_phase2(
     # if it found one but failed to attach it, fall through and regen.
     if not hdt_injected:
         try:
-            generated_xml_path = _generate_hdt_xml_for_dst(dst_path)
+            generated_xml_path = _generate_hdt_xml_for_dst(dst_path, only_loose=True)
             if generated_xml_path:
                 # Re-open the NIF, add the extra-data, save again.
                 pyn = _pynifly()

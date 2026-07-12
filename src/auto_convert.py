@@ -1950,16 +1950,19 @@ def _emit_unified_coverage_patches(output, patches_dir, master_data_dirs,
         excl |= _combined_output_names(merged_name, ordered)
         print("\n--- unified coverage: winner-scan patches -> merge "
               "(folding into Combined) ---")
+        # Converted-mesh set FIRST: both coverage passes need it so a piece whose
+        # OWN mesh was converted points at the !UBE\ mesh, not source. #mnb-converted-redirect
+        ube_root = Path(output) / "meshes" / "!UBE"
+        conv_rel = {n.relative_to(ube_root).as_posix().lower()
+                    for n in ube_root.rglob("*.nif")} if ube_root.is_dir() else set()
         nb_out = patches_dir / "UBE_ModNonBody_Coverage UBE patch.esp"
         nb = ube_patcher.generate_modded_nonbody_ube_coverage_patch(
-            nb_out, ordered, exclude_armo_abs=None, exclude_names=excl,
+            nb_out, ordered, converted_rel_paths=conv_rel,
+            exclude_armo_abs=None, exclude_names=excl,
             master_data_dirs=master_data_dirs, cover_all=True, emit_sidecar=True)
         total_targets += int(nb.get("armo_targets") or 0)
         print(f"  non-body: minted {nb.get('minted_armas')} | "
               f"targets {nb.get('armo_targets')}")
-        ube_root = Path(output) / "meshes" / "!UBE"
-        conv_rel = {n.relative_to(ube_root).as_posix().lower()
-                    for n in ube_root.rglob("*.nif")} if ube_root.is_dir() else set()
         if conv_rel:
             bd_out = patches_dir / "UBE_ModBody_Coverage UBE patch.esp"
             bd = ube_patcher.generate_modded_body_ube_coverage_patch(
@@ -4030,6 +4033,14 @@ def _cmd_auto(args):
             if _ordered:
                 mnb_esp = output / "UBE_ModNonBody_Coverage.esp"
                 _md = _discover_master_data_dirs(sources[0])
+                # Converted-mesh set so a non-body item whose own mesh WAS
+                # converted redirects to !UBE\ instead of source. #mnb-converted-redirect
+                _mnb_ube_root = output / "meshes" / "!UBE"
+                _mnb_conv_rel = set()
+                if _mnb_ube_root.is_dir():
+                    for _nif in _mnb_ube_root.rglob("*.nif"):
+                        _mnb_conv_rel.add(
+                            _nif.relative_to(_mnb_ube_root).as_posix().lower())
                 print(f"\n--- mod non-body UBE coverage -> {mnb_esp.name} "
                       "(+ SkyPatcher INI) ---")
                 # Exclude our OWN outputs from the winner scan: this coverage
@@ -4042,6 +4053,7 @@ def _cmd_auto(args):
                 _mnb_excl |= _combined_output_names(merged_name, _ordered)
                 mnb = ube_patcher.generate_modded_nonbody_ube_coverage_patch(
                     mnb_esp, _ordered,
+                    converted_rel_paths=_mnb_conv_rel,
                     exclude_armo_abs=_fsp_linked_abs,
                     exclude_names=_mnb_excl,
                     master_data_dirs=_md,

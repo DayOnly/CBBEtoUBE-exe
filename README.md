@@ -33,7 +33,11 @@ Given a Mod Organizer 2 setup, the full pipeline (`auto`):
    one **ESL-flagged combined plugin** with a correct master order. If the
    merge outgrows the 2048-record ESL cap it **splits** into numbered pieces
    (`CBBE_to_UBE_Combined.esp`, `CBBE_to_UBE_Combined2.esp`, ...) — enable
-   **all** of them.
+   **all** of them. The plugin only *holds* the minted UBE armatures; an
+   **active SkyPatcher INI** (shipped in `SKSE/Plugins/SkyPatcher/armor/`)
+   attaches each one to its armor at runtime. The converter uses **no ESP
+   overrides**, so **SkyPatcher (SKSE) is required** — without it converted
+   armor is invisible.
 5. Adds **race coverage** so armatures defined by other mods —
    overhaul-rearmatured helmets, circlets, jewelry, and mod-defined body
    variants — still render on UBE races. Two modes:
@@ -137,6 +141,12 @@ skinned shapes is baked into the verts):
   can never re-weight a collision proxy (which would re-graft the over-jiggle the
   reskin pass avoids). Disable with `CBBE2UBE_NO_CONFORM=1`; tune the gates via
   `CBBE2UBE_CONFORM_*`.
+- **Soft-cloth bust/butt inflation** — the anti-poke can't move sim-driven verts
+  (it would disturb the physics), so for cloth whose bust/butt is genuinely
+  physics-driven the breast/butt bands are nudged outward instead, so the larger
+  UBE body can't punch through the sim. A *rigid* bust (an HDT-rigged robe whose
+  chains drive only the skirt) is excluded so it isn't ballooned. Disable with
+  `CBBE2UBE_NO_SOFTCLOTH_INFLATE=1`.
 - **Z-fight split, degenerate-triangle repair, normal recompute** — final
   cleanup so moved verts don't shimmer, pinch flat, or shade wrong.
 - **Physics & morphs carried through** — HDT-SMP chains are blended back
@@ -275,9 +285,20 @@ cbbe-to-ube/
 
 ## Dependencies
 
+**To run the converter (dev machine):**
+
 - Python 3.10+
 - `numpy`, `scipy` (pip — see `requirements.txt`)
 - `pynifly` + `NiflyDLL.dll` (vendored in `.pynifly/`; not on PyPI)
+
+**In-game (the converted output requires these on the target modlist):**
+
+- **SkyPatcher** (SKSE plugin) — the converter attaches every armature via a
+  SkyPatcher INI, not ESP overrides, so converted armor is invisible without it.
+- **UBE** and its **`UBE_AllRace.esp`** — the target body/race the minted
+  armatures point at.
+- **RaceMenu** — drives the BODYTRI body-morph data the converter regenerates
+  (and the optional overlay transfer).
 
 ## Building the exe
 
