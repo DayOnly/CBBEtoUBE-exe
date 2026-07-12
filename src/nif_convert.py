@@ -5514,9 +5514,14 @@ _SELFINT_ZHI = float(os.environ.get("CBBE2UBE_SELFINT_ZHI", "116"))
 # Source self-intersection >= this = by-design (fur/strands) -> leave the shape alone.
 _SELFINT_FUR_GATE = int(os.environ.get("CBBE2UBE_SELFINT_FUR_GATE", "300"))
 _SELFINT_MIN = 5           # skip shapes with fewer than this many output crossings
-_SELFINT_ITERS = int(os.environ.get("CBBE2UBE_SELFINT_ITERS", "16"))
+# Hard safety cap. Iterate to CONVERGENCE (crossings <= source baseline), not to a
+# fixed count -- the old 16-cap plateaued far above what the same algorithm reaches
+# given more rounds (farmclothes 26->20 at 16 iters, 26->3 run to convergence). The
+# stall early-out below usually stops well before this cap.
+_SELFINT_ITERS = int(os.environ.get("CBBE2UBE_SELFINT_ITERS", "45"))
 _SELFINT_STEP = 0.20
 _SELFINT_STANDOFF = 0.3    # keep every moved vert this far above the body
+_SELFINT_STALL_ROUNDS = 4    # rounds with no NEW best crossing count -> stop (dense mesh floor)
 
 _BODY_SELFINT_CACHE: dict = {}
 
@@ -5603,9 +5608,30 @@ def _relax_shape_self_intersection(V, tris, chain_vert, Vb, Nb, tree, target):
     must NOT move. Returns (new_verts, moved_vert_count). Deterministic."""
     v = V.copy()
     moved_any = np.zeros(len(v), bool)
+    # Track the BEST (lowest) crossing count seen and return that state -- the
+    # relaxation can briefly bump a round UP before resolving it, so returning the
+    # final state (or bailing on a single up-round) leaves reduction on the table.
+    best_v = v.copy()
+    best_moved = moved_any.copy()
+    initial_c = best_c = len(_self_intersecting_pairs(v, tris))
+    no_improve = 0
     for _ in range(_SELFINT_ITERS):
         cr = _self_intersecting_pairs(v, tris)
-        if len(cr) <= target:
+        c = len(cr)
+        if c < best_c:
+            best_c, best_v, best_moved = c, v.copy(), moved_any.copy()
+            no_improve = 0
+        elif best_c < initial_c:
+            # Only count a stall once we've made real progress. The relaxation can
+            # RISE for several rounds before it comes down (an initial hump), and
+            # cutting off during that leaves all the reduction on the table.
+            no_improve += 1
+        if best_c <= target:
+            break
+        # EARLY-OUT: a dense torso mesh hits a floor the push-relaxation can't clear
+        # (deeply interlocked crossings). Stop after a few no-new-best rounds so we
+        # don't grind at the floor; mild meshes keep finding new bests to ~target.
+        if no_improve >= _SELFINT_STALL_ROUNDS:
             break
         _, vbi = tree.query(v)                 # nearest body vert per garment vert
         cen = v[tris].mean(1)
@@ -5633,7 +5659,7 @@ def _relax_shape_self_intersection(V, tris, chain_vert, Vb, Nb, tree, target):
         under = (signed < _SELFINT_STANDOFF) & moved_any
         if under.any():
             v[under] = Vb[vbi2][under] + Nb[vbi2][under] * _SELFINT_STANDOFF
-    return v, int(moved_any.sum())
+    return best_v, int(best_moved.sum())
 
 
 def _selfint_overrides(nf, dst_path, src_path) -> dict:
