@@ -33,6 +33,8 @@ application, so users only need to ship the TRI + ESP patch rather than
 """
 from __future__ import annotations
 
+import os
+
 import numpy as np
 from scipy.spatial import cKDTree
 
@@ -48,18 +50,6 @@ from .tri import TriFile, TriShape, TriMorph
 # propagated deltas. Dropping them keeps the TRI compact — typical
 # hand-authored TRIs are ~10MB; without filtering we'd produce 50MB+.
 DEFAULT_TRI_MIN_DELTA = 0.005
-
-# Threshold (in units, per-vertex max delta magnitude over the body)
-# above which a morph is treated as a "global body reshape" rather
-# than a local feature slider. For these big morphs we drop K from 4
-# to 1 in propagation so the armor vert tracks the body vert it sits
-# on closest to (no K=4 IDW averaging dampening). Without this, big
-# preset-style sliders like Amazon / Peachy under-track the body and
-# the body grows past the armor, collapsing the visual fit.
-#
-# 2.0 is empirically tuned from UBE's OSD: most local sliders top out
-# around 1.0-1.5 units; preset-style sliders are 2-7 units.
-HIGH_MAGNITUDE_K1_THRESHOLD = 2.0
 
 # Substrings (lowercased) marking a shape as a rigid prop / metal piece
 # that doesn't need body-morph tracking. These are sorted to the TAIL of
@@ -88,6 +78,40 @@ _ATTACHMENT_KEYWORDS = (
     "pouch", "satchel",
     "amulet", "ring", "necklace", "circlet", "crown", "earring", "gem",
 )
+
+
+# ---- Body-motion match (armor tracks the body surface it covers) ------
+# An armor vert must move exactly as the BODY SURFACE IT COVERS moves, so its
+# clearance to the body is preserved under every slider. Then the body can never
+# poke through, and the armor never balloons past it.
+#
+# The IDW loop below smooths each armor vert's delta over its K nearest body
+# verts. For a vert standing off the body the exponent eases to 1 (wide flat
+# average), which DILUTES the motion: measured 0.59-0.81x of the body on a fitted
+# leather cuirass -- the body then bursts through it on a large preset. An earlier
+# attempt topped verts up to the REGIONAL PEAK expansion instead; that overshot to
+# 2.0-2.2x and ballooned the same cuirass. Both were measured in-game.
+#
+# The correct target is ratio 1.0: copy the body's delta at the vertex the armor
+# covers (its nearest body vert). Wide averaging is still wanted for DRAPE cloth
+# hanging far off the body (a skirt would otherwise snap rigidly to whichever leg
+# vert is nearest), so blend: pure nearest-copy while the armor hugs the body
+# (<= _MATCH_NEAR), easing to the smoothed IDW average out at drape distance
+# (>= _MATCH_FAR). The blend weight depends only on stand-off, not the slider, so
+# it is computed once per shape. Escape hatch: CBBE2UBE_NO_BODY_MOTION_MATCH=1.
+_BODY_MOTION_MATCH = os.environ.get(
+    "CBBE2UBE_NO_BODY_MOTION_MATCH", "").strip().lower() not in ("1", "true", "yes")
+# Stand-off (units) at/below which the armor copies its covered body vert exactly.
+_MATCH_NEAR = float(os.environ.get("CBBE2UBE_MATCH_NEAR", "4.0"))
+# Stand-off at/above which we fall back to the smoothed IDW average (drape cloth).
+_MATCH_FAR = float(os.environ.get("CBBE2UBE_MATCH_FAR", "10.0"))
+
+
+def _motion_match_weight(nearest_dist: np.ndarray) -> np.ndarray:
+    """Per-vert weight on the nearest-body-vert delta: 1 when hugging (copy the
+    body exactly, ratio 1.0), easing to 0 at drape distance (keep IDW smoothing)."""
+    span = max(_MATCH_FAR - _MATCH_NEAR, 1e-6)
+    return np.clip((_MATCH_FAR - np.asarray(nearest_dist)) / span, 0.0, 1.0)
 
 
 def generate_armor_tri(
@@ -182,6 +206,15 @@ def generate_armor_tri(
         name: [] for name in armor_shapes
     }
 
+    # Body-motion match: per-shape weight on the nearest-body-vert delta, so a
+    # hugging armor vert copies the body surface it covers (ratio 1.0, clearance
+    # preserved) while drape cloth keeps the smoothed IDW average. Depends only
+    # on stand-off, not the slider -- computed once per shape, reused per morph.
+    shape_match: dict[str, np.ndarray] = {}
+    if _BODY_MOTION_MATCH:
+        for armor_shape_name, (neighbors, dists, nearest_dist) in shape_knn.items():
+            shape_match[armor_shape_name] = _motion_match_weight(nearest_dist)[:, None]
+
     for body_m in body_osd.morphs:
         if not body_m.offsets:
             continue
@@ -205,6 +238,16 @@ def generate_armor_tri(
             w = 1.0 / (np.power(dists, p[:, None]) + 1e-9)
             w /= w.sum(axis=1, keepdims=True)
             propagated = (morph_delta_buf[neighbors] * w[..., None]).sum(axis=1)
+            # Body-motion match: blend toward the delta of the body vertex this
+            # armor vert COVERS, so hugging armor moves exactly as that surface
+            # does (clearance preserved -> the body can't poke through, and the
+            # armor can't balloon past it). The IDW average alone dilutes to
+            # 0.59-0.81x on a fitted cuirass. Drape cloth (far stand-off) keeps
+            # the smoothed average. See _motion_match_weight.
+            match_w = shape_match.get(armor_shape_name)
+            if match_w is not None:
+                nearest_delta = morph_delta_buf[neighbors[:, 0]]
+                propagated = match_w * nearest_delta + (1.0 - match_w) * propagated
             # Extremity dampening: scale propagated deltas by (1 - extremity_fraction)
             # so sleeve/calf verts get full body-morph response while
             # finger/toe verts stay near-zero (matching the separate nude Hands/Feet
@@ -232,6 +275,17 @@ def generate_armor_tri(
     # sitting clearly outside another cloth shape, replace its per-slider deltas
     # with the under-layer's nearest-vertex deltas. Fully gated: if the band
     # can't be classified it no-ops and the base lift still stands.
+    #
+    # NOT for body-hugging bands. This pass exists because the bare IDW diluted
+    # each shape by its OWN stand-off, so a band and its layer moved by different
+    # amounts and the band re-sank. Body-motion match removes that cause: every
+    # hugging shape now copies the body exactly (ratio 1.0), so a hugging band and
+    # its hugging layer already move in lockstep. Re-syncing them here instead
+    # OVERWRITES the exact match with the under-layer's delta sampled at a
+    # different body location -- measured on a steel cuirass: the breast plates
+    # (small enough to look like bands) dropped to 0.85x while the one shape too
+    # large to qualify held 1.00x, and the body poked through the breasts. Only
+    # bands genuinely lifted off the body (beyond the pure-copy zone) still need it.
     try:
         from scipy.spatial import cKDTree as _cKDTree
         _OM_SIZE_FRAC, _OM_R, _OM_MIN, _OM_THRESH, _OM_SYNC_R = 0.40, 3.0, 30, 0.20, 5.0
@@ -242,6 +296,8 @@ def generate_armor_tri(
             if _maxv <= 0 or len(av) >= _OM_SIZE_FRAC * _maxv or A not in shape_knn:
                 continue   # large body-conforming piece -> keep own morph
             a_nd = shape_knn[A][2]   # A's per-vert clearance to the body
+            if _BODY_MOTION_MATCH and float(np.median(a_nd)) <= _MATCH_NEAR:
+                continue   # hugging band already tracks the body exactly
             under_v, under_tag = [], []
             for B in _names:
                 if B == A or B not in shape_knn:
@@ -367,11 +423,18 @@ def generate_armor_tri(
                 slider_name = body_m.name
             if not body_m.offsets:
                 continue
-            body_morphs.append(TriMorph(
-                name=slider_name,
-                offsets=[(idx, dx, dy, dz)
-                         for idx, dx, dy, dz in body_m.offsets],
-            ))
+            # Bounds-filter verbatim OSD indices to the target vert count, like
+            # the K-NN path (`valid = idxs < body_n`). body_verts shares the
+            # injected BaseShape's topology, so an OSD index >= body_n is a stale
+            # OSD/mesh mismatch that would write an out-of-range vertex into the
+            # TRI -> NioOverride reads past the buffer at runtime (CTD / silent
+            # bad morph). Drop the OOB entries. #osd-bounds
+            filtered = [(idx, dx, dy, dz)
+                        for idx, dx, dy, dz in body_m.offsets
+                        if 0 <= idx < body_n]
+            if not filtered:
+                continue
+            body_morphs.append(TriMorph(name=slider_name, offsets=filtered))
         if body_morphs:
             if "BaseShape" in body_shape_set:
                 tri_shapes.insert(0, TriShape(
@@ -385,6 +448,11 @@ def generate_armor_tri(
                     and shape_name not in body_shape_set):
                 continue  # no matching shape in the dst NIF
             extra_prefix = shape_name  # OSD morphs prefix == shape name
+            # Bound OSD indices to the injected shape's vert count when we have it
+            # (the dst Hands/Feet shape is in armor_shapes); else fall back to the
+            # uint16 ceiling TriFile.save enforces. #osd-bounds
+            _cap = (len(armor_shapes[shape_name])
+                    if shape_name in armor_shapes else None)
             extra_morphs: list[TriMorph] = []
             for m in extra_osd.morphs:
                 if not m.offsets:
@@ -392,11 +460,13 @@ def generate_armor_tri(
                 slider_name = (m.name[len(extra_prefix):]
                                if m.name.startswith(extra_prefix)
                                else m.name)
+                filtered = [(idx, dx, dy, dz)
+                            for idx, dx, dy, dz in m.offsets
+                            if idx >= 0 and (_cap is None or idx < _cap)]
+                if not filtered:
+                    continue
                 extra_morphs.append(TriMorph(
-                    name=slider_name,
-                    offsets=[(idx, dx, dy, dz)
-                             for idx, dx, dy, dz in m.offsets],
-                ))
+                    name=slider_name, offsets=filtered))
             if extra_morphs:
                 tri_shapes.append(TriShape(
                     name=shape_name, morphs=extra_morphs))
@@ -405,3 +475,4 @@ def generate_armor_tri(
     # written from `len(self.shapes)` by TriFile.save() regardless.
     from .tri import TRI_VERSION
     return TriFile(version=TRI_VERSION, shapes=tri_shapes)
+

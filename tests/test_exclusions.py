@@ -59,7 +59,7 @@ def test_set_excluded_preserves_existing_meta(tmp_path):
 
 def test_scan_names_ube_token_boundaries():
     names = ["UBE 2.0 U. 0.7", "ube_body", "MyUBEArmor", "Cube Armor",
-             "Tube Top", "Nord Steelheart", "UBEArmor Pack", "someUBE"]
+             "Tube Top", "Nord Plate", "UBEArmor Pack", "someUBE"]
     props = {p["name"] for p in ex.scan_names(names)}
     # matches: a standalone `ube` token (digits ok), or ube at a non-letter edge
     assert "UBE 2.0 U. 0.7" in props
@@ -71,7 +71,7 @@ def test_scan_names_ube_token_boundaries():
     assert "MyUBEArmor" not in props
     assert "Cube Armor" not in props
     assert "Tube Top" not in props
-    assert "Nord Steelheart" not in props
+    assert "Nord Plate" not in props
     assert "someUBE" not in props
 
 
@@ -79,3 +79,34 @@ def test_scan_names_skips_existing():
     props = ex.scan_names(["ube_body", "OtherUBE thing"],
                           existing=["ube_body"])
     assert all(p["name"] != "ube_body" for p in props)
+
+
+def test_config_path_uses_state_dir(tmp_path, monkeypatch):
+    """The exclusions file lives under the stable state dir, not next to the exe --
+    so a redeploy can't wipe it. #state-dir"""
+    monkeypatch.delenv("CBBE2UBE_EXCLUSIONS", raising=False)
+    monkeypatch.setenv("CBBE2UBE_STATE_DIR", str(tmp_path / "state"))
+    assert ex.config_path() == tmp_path / "state" / "CBBEtoUBE_exclusions.json"
+
+
+def test_config_path_migrates_legacy(tmp_path, monkeypatch):
+    """An existing file in the OLD next-to-exe location is MOVED to the new state
+    dir on first use (not left behind, not duplicated). #state-dir"""
+    old_dir = tmp_path / "old"
+    old_dir.mkdir()
+    legacy = old_dir / "CBBEtoUBE_exclusions.json"
+    legacy.write_text('{"armor": {}}', encoding="utf-8")
+    monkeypatch.delenv("CBBE2UBE_EXCLUSIONS", raising=False)
+    monkeypatch.setenv("CBBE2UBE_STATE_DIR", str(tmp_path / "new"))
+    monkeypatch.setattr(ex, "_legacy_state_dir", lambda: old_dir)
+    p = ex.config_path()
+    assert p == tmp_path / "new" / "CBBEtoUBE_exclusions.json"
+    assert p.exists() and not legacy.exists()          # moved, not copied
+    assert p.read_text(encoding="utf-8") == '{"armor": {}}'
+
+
+def test_config_path_override_beats_state_dir(tmp_path, monkeypatch):
+    """CBBE2UBE_EXCLUSIONS stays the highest-precedence override. #state-dir"""
+    monkeypatch.setenv("CBBE2UBE_EXCLUSIONS", str(tmp_path / "x.json"))
+    monkeypatch.setenv("CBBE2UBE_STATE_DIR", str(tmp_path / "state"))
+    assert ex.config_path() == tmp_path / "x.json"

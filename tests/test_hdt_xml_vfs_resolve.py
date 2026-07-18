@@ -16,27 +16,27 @@
 
 """Guard for the authored-HDT-XML VFS resolution (#177): the source armor NIF's
 physics-XML reference must resolve even when the authored XML ships in a
-DIFFERENT mod than the (BodySlide-output) NIF. This is the Magecore "pulls to
-origin" root cause -- the converter couldn't find MCDressA.xml (it lives in the
-MAGECORE mod, the NIF lives in the Bodyslide-output mod) so it overwrote the
+DIFFERENT mod than the (BodySlide-output) NIF. This is the authored-physics
+"pulls to origin" root cause -- the converter couldn't find MDDressA.xml (it
+lives in the PHYSICS mod, the NIF lives in the Bodyslide-output mod) so it overwrote the
 custom chain physics with a generic XML that doesn't drive the chain."""
 from pathlib import Path
 from src import nif_convert
 
 
-REL = "Meshes\\Caenarvon\\Magecore\\XML\\MCDressA.xml"
+REL = "Meshes\\ModAuthor\\MageDress\\XML\\MDDressA.xml"
 
 
 def _make_layout(tmp: Path):
     """mods/ with a Bodyslide-output mod (ships the NIF) and a separate armor
-    mod (ships the authored XML) -- the real Magecore split."""
+    mod (ships the authored XML) -- the real physics-mod / BodySlide split."""
     mods = tmp / "mods"
-    nif = (mods / "Authoria - Bodyslide Output - 3BA" / "meshes"
-           / "Caenarvon" / "Magecore" / "Magecore_DressA_1.nif")
+    nif = (mods / "ExampleMod - Bodyslide Output - 3BA" / "meshes"
+           / "ModAuthor" / "MageDress" / "MageDress_DressA_1.nif")
     nif.parent.mkdir(parents=True, exist_ok=True)
     nif.write_bytes(b"\x00")
-    xml = (mods / "MAGECORE - hdt SMP (CBBE 3BA)" / "Meshes"
-           / "Caenarvon" / "Magecore" / "XML" / "MCDressA.xml")
+    xml = (mods / "MAGEDRESS - hdt SMP (CBBE 3BA)" / "Meshes"
+           / "ModAuthor" / "MageDress" / "XML" / "MDDressA.xml")
     xml.parent.mkdir(parents=True, exist_ok=True)
     xml.write_text("<system/>")
     return mods, nif, xml
@@ -53,8 +53,8 @@ def test_xml_in_other_mod_resolved_via_vfs(tmp_path, monkeypatch):
 def test_local_xml_preferred_over_vfs(tmp_path, monkeypatch):
     # If the XML sits next to the NIF's own mod root, that copy wins (no VFS).
     mods, nif, xml = _make_layout(tmp_path)
-    local = (nif.parents[3] / "Meshes" / "Caenarvon" / "Magecore"
-             / "XML" / "MCDressA.xml")
+    local = (nif.parents[3] / "Meshes" / "ModAuthor" / "MageDress"
+             / "XML" / "MDDressA.xml")
     local.parent.mkdir(parents=True, exist_ok=True)
     local.write_text("<system/>")
     monkeypatch.setattr(nif_convert._paths, "mods_root", lambda: mods)

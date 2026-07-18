@@ -21,7 +21,7 @@ map only has the `_1` key. Without folding, the `_0` weight file converts with
 biped_slots=0 -> every slot-gated path (torso_parity, slot-aware inflation /
 reskin band / scale reach, the calf/foot-boot far-thigh exclusion) misfires on
 `_0` while `_1` is correct, so the two weights convert DIFFERENTLY (observed:
-GTO boots_0 kept the fade-inducing far-thigh scale bones, boots_1 did not).
+a real boots_0 kept the fade-inducing far-thigh scale bones, boots_1 did not).
 """
 import sys
 from pathlib import Path
@@ -97,7 +97,7 @@ def _pairs(n):
 
 
 def test_parity_flags_missing_scale_bone_on_one_weight():
-    # The exact GTO boots_0/_1 shape: _0 kept the far-thigh scale bones, _1 didn't.
+    # The exact real-world boots_0/_1 shape: _0 kept the far-thigh scale bones, _1 didn't.
     s0 = _FakeShape("Plane Boots", {
         "NPC L Calf [LClf]": _pairs(600),
         "NPC L RearThigh": _pairs(175),      # present on _0

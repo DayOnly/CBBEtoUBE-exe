@@ -17,8 +17,8 @@
 """Non-identity shape-transform scale bake (#scalebake).
 
 Some source meshes carry a SCALE (and/or rotation) on the geometry's NiAVObject
-transform instead of the verts (e.g. Vigilant Shaokhan @ 0.0729, Pelinal arms @
-6.86). The engine ignores that transform for SKINNED meshes, so the converted
+transform instead of the verts (e.g. a bespoke boss armour @ 0.0729, a bespoke
+arm piece @ 6.86). The engine ignores that transform for SKINNED meshes, so the converted
 shape renders at the wrong scale (flung off-body = invisible/static, or
 collapsed). `_copy_shape` now bakes the transform into the verts and adjusts the
 skin-to-bone by its inverse (bind-preserving), emitting an identity transform.

@@ -47,17 +47,50 @@ UBE_NATIVE_REASON = ("Already rigged for UBE (or another advanced body) -- "
 _UBE_TOKEN = re.compile(r"(?<![a-z])ube(?![a-z])", re.IGNORECASE)
 
 
+def _state_dir() -> Path:
+    """Stable per-user directory for converter runtime state -- OUTSIDE the deploy
+    folder, so an exe redeploy (even a mirror copy) never touches it. Order:
+    CBBE2UBE_STATE_DIR override -> %LOCALAPPDATA%\\CBBEtoUBE (or %APPDATA%) ->
+    next-to-exe / repo root fallback (the legacy location)."""
+    ov = os.environ.get("CBBE2UBE_STATE_DIR", "").strip()
+    if ov:
+        return Path(ov)
+    base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")
+    if base:
+        d = Path(base) / "CBBEtoUBE"
+        try:
+            d.mkdir(parents=True, exist_ok=True)
+            return d
+        except OSError:
+            pass
+    return _legacy_state_dir()
+
+
+def _legacy_state_dir() -> Path:
+    """The OLD location: next to the exe (frozen) or the repo root (source)."""
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent.parent
+
+
 def config_path() -> Path:
-    """Where the exclusions JSON lives. CBBE2UBE_EXCLUSIONS overrides; else next
-    to the exe (frozen) or the repo root (source). Survives an exe redeploy."""
+    """Where the exclusions JSON lives. CBBE2UBE_EXCLUSIONS overrides; else a stable
+    per-user state dir that SURVIVES an exe redeploy (a mirror copy once wiped the
+    file from the old next-to-exe location). Migrates an existing legacy file to the
+    new home on first use."""
     override = os.environ.get("CBBE2UBE_EXCLUSIONS", "").strip()
     if override:
         return Path(override)
-    if getattr(sys, "frozen", False):
-        base = Path(sys.executable).resolve().parent
-    else:
-        base = Path(__file__).resolve().parent.parent
-    return base / "CBBEtoUBE_exclusions.json"
+    new = _state_dir() / "CBBEtoUBE_exclusions.json"
+    if not new.exists():
+        legacy = _legacy_state_dir() / "CBBEtoUBE_exclusions.json"
+        if legacy.exists() and legacy.resolve() != new.resolve():
+            try:                       # one-time migration: move old -> new
+                new.parent.mkdir(parents=True, exist_ok=True)
+                legacy.replace(new)
+            except OSError:
+                return legacy           # migration failed -> keep reading the old file
+    return new
 
 
 def empty() -> dict:

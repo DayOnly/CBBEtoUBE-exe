@@ -22,16 +22,16 @@ the collapsed layers.
 
 v4 (2026-06-11) — PER-REGION SOURCE ORDER-FIELD RESTORATION. v3 gave each
 shape PAIR one global consistency-gated edge, but real garments stack
-REGION-dependently (the Ruby Top's fabric is under the chest plate over most
+REGION-dependently (a layered top's fabric is under the chest plate over most
 of the torso yet tucked OVER it at the neckline; v3's single edge flipped the
 minority region — 72-98% of locally-reversed locations shipped inverted). v4
 applies v3's sign-consistency idea at NEIGHBOURHOOD scale: per-vert source
 gaps to each other shape, smoothed over the shape's own nearby verts, gate
 per-vert ORDER constraints (lift-only, vs the under-layer's current verts):
-  * a CONSISTENT region (coat>undershirt everywhere; the Ruby neckline tuck)
+  * a CONSISTENT region (coat>undershirt everywhere; the neckline tuck)
     -> constraints survive smoothing -> restored,
   * an INTERLEAVED weave (belt alternating over/under a coat) -> smooths to
-    ~0 -> NO constraint -> co-planar (= source), the bard fix preserved.
+    ~0 -> NO constraint -> co-planar (= source), the layered-coat fix preserved.
 v4 keeps v3's phase-1 fallback (output-frame ordering off the fit body) and
 its NO-body-floor rule (a blanket floor flung offset-transform armor)."""
 import numpy as np
@@ -102,7 +102,7 @@ def test_sunk_overlay_band_lifted_above_under_layer():
 
 
 def test_interleaved_belt_lands_coplanar_via_inner():
-    """THE bard-coat fix. undershirt (inner) < coat, and < belt, but belt~coat
+    """THE layered-coat fix. undershirt (inner) < coat, and < belt, but belt~coat
     INTERLEAVE (no edge). v2 force-ranked belt under the coat (buried); v3 leaves
     belt/coat unordered and lifts BOTH vs the undershirt -> belt lands co-planar
     with the coat (visible), never buried beneath it."""
@@ -156,7 +156,7 @@ def test_interleaved_pair_no_force_stacking():
     synthetic's edge stripes (`_patch_alt` makes full-width rows, and the
     boundary row is coherently under B across the whole patch in the source)
     legitimately read as locally-ordered, so sub-GAP rim adjustments are
-    allowed. The protective property (the bard/elven regressions) is that no
+    allowed. The protective property (the layered-coat/elven regressions) is that no
     vert moves by anything close to a visible burial — a force-stack moves
     the whole shape by >= LAYER_STACK_GAP, so assert max displacement stays
     under it and the shapes stay co-planar in the median."""
@@ -193,7 +193,7 @@ def test_disjoint_layers_no_floor():
 
 
 def test_regional_reversal_restored():
-    """THE Ruby Top fix (v4). The plate sits OUTSIDE the top over most of the
+    """THE multi-layer top fix (v4). The plate sits OUTSIDE the top over most of the
     torso, but at the NECKLINE a coherent region of the top is tucked OVER the
     plate in the source. The warp collapsed both to one depth. v3's single
     global edge (plate outside top, frac ~0.9) lifted the plate everywhere,
@@ -234,7 +234,7 @@ def test_regional_reversal_restored():
 def test_chest_pass_source_order_gate():
     """The cleavage depth-separation pass picks the LARGEST chest shape as
     authority and pushes co-planar receivers 0.4u behind it — source-blind,
-    it shoved the Ruby corset rim and belts behind the chest plate (they sit
+    it shoved a corset rim and belts behind the chest plate (they sit
     OVER the plate in the source), creating inversions the abdomen restore
     then had to fight. With source body info the pass must SKIP receiver
     verts whose source order says they're outside the authority, and still

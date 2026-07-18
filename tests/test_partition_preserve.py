@@ -14,15 +14,14 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-"""Regression guard for the Traveling Mage equip CTD (2026-05-31).
+"""Regression guard for a mage-robe equip CTD (2026-05-31).
 
 `_normalize_partitions` collapses a multi-partition cloth shape into a single
 SBP_32_BODY partition to unblock NioOverride morph routing. But collapsing a
 LIMB partition (forearms=34) that a body-spanning shape legitimately owns
 corrupts the skin partition's bone palette -> the renderer overruns its
-bone-matrix buffer -> hard CTD on equip (proven on Traveling Mage's
-`_Fuse00_TMage_Body`: source had SBP_34_FOREARMS + SBP_32_BODY, our output had
-merged them into one).
+bone-matrix buffer -> hard CTD on equip (proven on a mage-robe body shape:
+source had SBP_34_FOREARMS + SBP_32_BODY, our output had merged them into one).
 
 The fix: forearms (34) and the other standard limb/accessory dismember slots
 are in PRESERVE_DISMEMBER_SLOTS, so a shape owning one is left untouched. Only

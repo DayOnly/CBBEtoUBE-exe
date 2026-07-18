@@ -59,7 +59,7 @@ def test_robe_grazing_foot_not_fine_anim():
     # 200 verts on a skirt chain; 5 hem verts graze NPC L Foot at 2% weight ->
     # 0 foot-dominant verts -> NOT a hand/foot shape.
     bw = {
-        "TMage_Skirt_L1 01": [(i, 1.0) for i in range(200)],
+        "Robe_Skirt_L1 01": [(i, 1.0) for i in range(200)],
         "NPC L Foot [Lft ]": [(i, 0.02) for i in range(5)],
     }
     assert _shape_has_fine_animation_bones(
@@ -84,7 +84,7 @@ def test_named_gauntlet_is_fine_anim_without_hand_bones():
 
 
 def test_pure_cloth_not_fine_anim():
-    bw = {"TMage_Skirt_Back 01": [(i, 1.0) for i in range(60)]}
+    bw = {"Robe_Skirt_Back 01": [(i, 1.0) for i in range(60)]}
     assert _shape_has_fine_animation_bones(
         FakeShape("Skirt", [(0, 0, 0)] * 60, bw)) is False
 
@@ -95,7 +95,7 @@ def test_chain_cloth_held_at_source():
     src = np.array([[0, 0, 0], [1, 0, 0], [2, 0, 0], [3, 0, 0]], float)
     warped = src + 5.0                       # everything moved +5 by the warp
     bw = {
-        "TMage_Skirt_L1 01": [(0, 1.0), (1, 1.0)],   # self-simulated chain
+        "Robe_Skirt_L1 01": [(0, 1.0), (1, 1.0)],   # self-simulated chain
         "NPC L Breast": [(2, 1.0)],                  # soft-body (actor-driven)
         "NPC Spine2 [Spn2]": [(3, 1.0)],             # skeleton (actor-driven)
     }
@@ -112,7 +112,7 @@ def test_partial_chain_weight_blends_proportionally():
     warped = src + 10.0
     # 50% chain / 50% skeleton -> vert ends halfway back toward source.
     bw = {
-        "TMage_Skirt_L1 01": [(0, 0.5)],
+        "Robe_Skirt_L1 01": [(0, 0.5)],
         "NPC Spine2 [Spn2]": [(0, 0.5)],
     }
     out = _physics_chain_nowarp_blend(

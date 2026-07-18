@@ -261,7 +261,9 @@ def test_combined_output_names_accepts_paths():
 def test_graft_post_passes_skip_hdt_softbody():
     import inspect
     import src.nif_convert as nc
-    for fn in (nc._conform_fitted_to_body, nc._match_rigid_leg_bend_to_body,
+    # _conform_fitted_to_body's weight loop (with the softbody skip) lives in the
+    # extracted _conform_weights_core after the fit-finalize fold.
+    for fn in (nc._conform_weights_core, nc._match_rigid_leg_bend_to_body,
                nc._transfer_body_jiggle_to_fitted):
         src = inspect.getsource(fn)
         assert "softbody_names" in src and "_hdt_softbody_shape_names" in src, (

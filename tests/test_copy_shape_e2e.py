@@ -19,7 +19,7 @@
 The engine IGNORES a skinned shape's NiAVObject transform, so the converter must
 BAKE any non-identity scale/translation into the verts and ship an identity
 transform -- otherwise the shape renders at the wrong size / flung off-body /
-collapsed (the project_scale_bake_vigilant 'flung-off / breast-to-floor' class).
+collapsed (the scale-bake 'flung-off / breast-to-floor' class).
 The pure-logic tests (test_scale_bake) only exercise the matrix helpers on mocks;
 these build a REAL NIF, run the REAL `_copy_shape`, reload, and assert the bake
 actually landed in the on-disk verts. Skips cleanly if pynifly isn't available.

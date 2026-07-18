@@ -146,6 +146,14 @@ def is_high_velocity_bone(bone_name: str) -> bool:
 # Naming patterns: "Skirt 1_00", "SkirtF 1_00", "SkirtB 2_03", "Hair 1_00", etc.
 
 CHAIN_BONE_PATTERN = re.compile(r"^(.+?)_(\d{1,3})$")
+# Some rigs number their chain bones with NO underscore, e.g. "SkirtBBone01",
+# "SkirtFBone02", "CapeBone01". Match those too, but ONLY when the token right
+# before the digits is a cloth-chain word -- so we never mistake a skeleton bone
+# with a trailing digit ("NPC Spine2", "L ForearmTwist1") for a chain. Requires
+# 2-3 trailing digits (skeleton bones use single digits). #chain-nounderscore
+CHAIN_BONE_PATTERN_NOUS = re.compile(
+    r"^(.+?(?:Bone|Skirt|Cape|Tassel|Flap|Cloth|Sash|Rope|Belt|Tail|Chain))"
+    r"(\d{2,3})$", re.IGNORECASE)
 MIN_CHAIN_LENGTH = 2  # need at least anchor + 1 dynamic to be a chain
 
 
@@ -171,7 +179,7 @@ def detect_physics_chains(bone_names: Iterable[str]) -> "list[PhysicsChain]":
     """
     grouped: dict[str, list[tuple[int, str]]] = {}
     for name in bone_names:
-        m = CHAIN_BONE_PATTERN.match(name)
+        m = CHAIN_BONE_PATTERN.match(name) or CHAIN_BONE_PATTERN_NOUS.match(name)
         if not m:
             continue
         prefix = m.group(1)
