@@ -1,21 +1,38 @@
+# CBBEtoUBE - CBBE/3BA to UBE armor converter
+# Copyright (C) 2026 DayOnly
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
 """Convert ONE armor's mesh pair (interpreted path) for fast diagnose/fix/verify
 loops on a single piece -- without a full-pack reconvert. Resolves biped slots
 from the mod's ESP (ARMA whose MOD3 references the stem, non-male) and the UBE
 body ref automatically. Recipe flags come from the environment, so wrap the call:
 
   CBBE2UBE_THIGH_STANDOFF=1.0 python scripts/convert_one_armor.py \
-      "D:/Modlists/ARR/mods/<Mod>" narmor/leathersuitn dcuirass  C:/tmp/out
+      "D:/path/to/MO2/mods/<Mod>" armor/examplesuit cuirass  C:/tmp/out
 
-Args: <mod_dir> <mesh_subdir-under-meshes> <stem> [out_dir]
+Args: [--mo2-ini <ModOrganizer.ini>] <mod_dir> <mesh_subdir-under-meshes> <stem> [out_dir]
+The MO2 instance must be named either with `--mo2-ini` or via CBBE2UBE_MO2_INI.
 Then: python scripts/armor_clip_diag.py <out_dir>/<stem>_1.nif <mod>/.../<stem>_1.nif
 """
 import os, sys, struct
 from pathlib import Path
 
-REPO = r"C:\Users\Sam\Downloads\cbbe-to-ube"
-sys.path.insert(0, str(Path(REPO, ".pynifly").resolve()))
-sys.path.insert(0, REPO)
-os.environ.setdefault("CBBE2UBE_MO2_INI", r"D:\Modlists\ARR\ModOrganizer.ini")
+# This script lives in <repo>/scripts/, so the repo root is its parent's parent.
+REPO = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO / ".pynifly"))
+sys.path.insert(0, str(REPO))
 
 from src import paths, esp as E, auto_convert as ac   # noqa: E402
 import src.nif_convert as nc                            # noqa: E402
@@ -45,11 +62,23 @@ def biped_slots_for(mod_dir, stem):
 
 
 def main():
-    if len(sys.argv) < 4:
+    argv = sys.argv[1:]
+    if argv and argv[0] == "--mo2-ini":
+        if len(argv) < 2:
+            print("ERROR: --mo2-ini needs the path to a ModOrganizer.ini")
+            sys.exit(2)
+        os.environ["CBBE2UBE_MO2_INI"] = argv[1]
+        argv = argv[2:]
+    if len(argv) < 3:
         print(__doc__)
         sys.exit(1)
-    mod_dir, subdir, stem = sys.argv[1:4]
-    out = Path(sys.argv[4]) if len(sys.argv) > 4 else Path(os.environ["TEMP"], "one_armor")
+    if not os.environ.get("CBBE2UBE_MO2_INI"):
+        print(__doc__)
+        print("ERROR: no MO2 instance configured. Pass `--mo2-ini <ModOrganizer.ini>`\n"
+              "       or set the CBBE2UBE_MO2_INI environment variable.")
+        sys.exit(2)
+    mod_dir, subdir, stem = argv[:3]
+    out = Path(argv[3]) if len(argv) > 3 else Path(os.environ["TEMP"], "one_armor")
     out.mkdir(parents=True, exist_ok=True)
     paths.export_to_env(paths.discover_layout())
     slots = biped_slots_for(mod_dir, stem)

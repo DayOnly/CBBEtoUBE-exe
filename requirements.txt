@@ -1,2 +1,6 @@
 numpy>=1.24
 scipy>=1.10
+# BSA mesh extraction: Skyrim SE archives are LZ4-FRAME compressed. Without
+# this, BSA reads silently return None and vanilla-armor conversion produces
+# nothing -- so it is a hard runtime dependency, not an optional extra.
+lz4>=4.0

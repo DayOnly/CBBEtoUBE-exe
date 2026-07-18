@@ -73,7 +73,7 @@ single pass runs. Two rules encode this:
    - the incumbent already having a canonical body is `(True, …)` -> never swapped, so
      MO2 priority decides among body-standard sources;
    - the rule is WITHIN-tier only, so it can never promote a tier-2 output over a
-     tier-0 base (the New-Leather tier fix stands).
+     tier-0 base (the earlier source-tier fix stands).
    Open failure -> `None` -> treated as unknown, never a swap basis. Opt out with
    `CBBE2UBE_NO_BODYMATCH_SELECT=1`. Measured pack impact: 42/2165 meshes re-source;
    the Fur Cuirass band standoff drops +1.77u -> +0.59u. The tier-2 3BA-OUTPUT source
@@ -134,8 +134,7 @@ dropped them. It was wrong — the leg-conform already provides them — and gra
 second time onto a shape driven by its own body-slider TRI over-responded and caused
 a coverage regression (body poked through the thigh). It is now **opt-in, default
 OFF**; the default is the clean exemption (untouched source skin). See
-`[DESIGN: Leg-plate bend / butt-jiggle conform]` and the `newleather-working-recipe`
-memory.
+`[DESIGN: Leg-plate bend / butt-jiggle conform]`.
 
 Note this hinges on which source copy wins the VFS: a base mod may ship no TRI
 while a BodySlide-output override at the same path ships one. The exe resolves to
@@ -179,12 +178,14 @@ raises verts already below the floor, so well-fit armor is untouched, and it's
 push-out only. The rear term gates on rear-facing normals; the calf term is
 all-round (the calf bulges at the back and the shin extends at the front).
 
-### Jiggle clearance (experimental, default off)
+### Jiggle clearance (default ON)
 
 **Why.** HDT-SMP softbody swings breast/butt/belly *past* the rest surface at
 runtime, so cloth cleared only for the static envelope still gets hit mid-bounce.
-**How.** Adds clearance scaled by local jiggle-bone weight, capped small. Off by
-default because it loosens fit in the exact zones people most want tight.
+**How.** Adds clearance scaled by local jiggle-bone weight, capped small. It
+loosens fit slightly in the exact zones people most want tight, which is why it
+was originally opt-in; it has been ON by default since 2026-07-10. Turn it off
+with `CBBE2UBE_NO_JIGGLE_CLEARANCE=1`.
 
 ### Push-field smoothing (default off)
 
@@ -324,7 +325,7 @@ the authority's *jiggle* weights only — the receiver keeps its own base (thigh
 skin, rescaled to conserve mass, so leg deformation is untouched (a full-weight
 replace, tried first, moved the inner-thigh skin and clipped). Sibling of the chest
 `_sync_chest_layered_cloth_weights`. Default off pending cross-armor validation; on
-New Leather Armor it was correct but unneeded once the inner-thigh clip proved to be a
+a layered leather cuirass it was correct but unneeded once the inner-thigh clip proved to be a
 pre-existing pose limit. No `add_bone` beyond copying the authority's already-valid
 bones+xforms, so the STB footgun does not apply.
 
@@ -434,8 +435,9 @@ load-order and value/weight conflicts. **How.** SkyPatcher `armorAddonsToAdd`
 INI links are the sole delivery path: for each ARMO that references a converted
 armature, a link (ARMO → minted UBE ARMA) is recorded in a `.skypatcher.json`
 sidecar; no ESP ARMO override is emitted. The legacy ARMO-override machinery has
-been removed. (The two fallback coverage ESPs are a separate, opt-in path and do
-still emit ARMO overrides.)
+been removed. (The two fallback coverage ESPs are a separate path that does still
+emit ARMO overrides. They run by DEFAULT — `--no-modded-nonbody` disables both —
+unless unified coverage is enabled, which folds them into the Combined instead.)
 
 ---
 
