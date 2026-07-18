@@ -18,7 +18,7 @@
 
 FSMP merges every `<per-vertex-shape name="...">` into the ACTOR's physics system by
 SHAPE NAME, and a first-person NIF carries the same shape names as its third-person twin
-(one armour's `1st.nif` and `dcuirass.nif` both hold `Cuirass_A/_B/_C`). So the
+(one armour's `1st.nif` and `cuirass.nif` both hold `Cuirass_A/_B/_C`). So the
 first-person XML drives the THIRD-person shapes as skin-stripped cloth with nothing
 constraining it -- FSMP's soft body diverges, its collision SIMD reads out of bounds, and
 the game dies on equip. Deleting exactly those two XMLs is what fixed it in-game.
@@ -48,14 +48,14 @@ _BODY = sorted(UBE_BODY_INJECT_NAMES)[0]      # e.g. "BaseShape"
 
 def test_first_person_mesh_is_gated():
     """The literal crash source: 1st.nif carrying the third-person shape names."""
-    assert _is_first_person_mesh("narmor/leathersuitn/1st_1.nif",
+    assert _is_first_person_mesh("armor/examplesuit/1st_1.nif",
                                  _Nif("Cuirass_A", "Cuirass_B", "Cuirass_C"))
 
 
 def test_prefixed_first_person_variant_is_gated():
-    """`d1st` (the dark variant) has no word boundary before '1st' -- a regex keyed on
-    one would miss it, and it was the second crashing file."""
-    assert _is_first_person_mesh("narmor/leathersuitn/d1st_0.nif",
+    """`alt1st` (a letter-prefixed variant stem) has no word boundary before '1st' -- a
+    regex keyed on one would miss it, and it was the second crashing file."""
+    assert _is_first_person_mesh("armor/examplesuit/alt1st_0.nif",
                                  _Nif("Cuirass_A", "Cuirass_B"))
 
 
@@ -76,11 +76,11 @@ def test_bodyless_third_person_pieces_keep_physics():
     is what saves it. This is the regression the previous gate caused."""
     assert not _is_first_person_mesh("stormbear/stormbearcloakf_1.nif",
                                      _Nif("Cloak 1", "Cloak 2"))
-    assert not _is_first_person_mesh("narmor/leathersuitn/dboots_1.nif", _Nif("Boots"))
+    assert not _is_first_person_mesh("armor/examplesuit/boots_1.nif", _Nif("Boots"))
 
 
 def test_third_person_body_armor_is_not_gated():
-    assert not _is_first_person_mesh("narmor/leathersuitn/dcuirass_1.nif",
+    assert not _is_first_person_mesh("armor/examplesuit/cuirass_1.nif",
                                      _Nif(_BODY, "Cuirass_A", "Cuirass_B"))
 
 

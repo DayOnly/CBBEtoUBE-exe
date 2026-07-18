@@ -8996,7 +8996,7 @@ def _is_first_person_mesh(dst_path, nif) -> bool:
     Auto-generating an HDT-SMP config for one is worse than useless. FSMP merges every
     `<per-vertex-shape name="...">` into the ACTOR's physics system by SHAPE NAME, and a
     first-person NIF carries the SAME shape names as its third-person twin (a layered-cloth mod's
-    `1st.nif` and `dcuirass.nif` both hold `Cuirass_A/_B/_C`). So the first-person XML
+    `1st.nif` and `cuirass.nif` both hold `Cuirass_A/_B/_C`). So the first-person XML
     ends up driving the third-person shapes, as skin-stripped cloth with nothing to
     constrain it -> FSMP's soft body diverges and its collision SIMD reads out of bounds
     -> access violation on equip (crash 2026-07-09). Deleting exactly those two XMLs is
