@@ -1,13 +1,40 @@
+# CBBEtoUBE - CBBE/3BA to UBE armor converter
+# Copyright (C) 2026 DayOnly
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
 """Armor clip/crinkle/gap diagnostic — catches the classes my per-vert-delta and
 body-poke checks MISSED this session (crinkle = local push-field unevenness at a
 boundary; gap = skin visible between two shapes both outside the body; off-target
 = a change bleeding into a region it should have left alone).
 
-Usage: python armor_clip_diag.py <candidate.nif> [baseline.nif]
+Usage:
+  python armor_clip_diag.py <candidate.nif> [source.nif]    # single-armor scan
+  python armor_clip_diag.py --verify <candidate.nif> <baseline.nif>
+  python armor_clip_diag.py --cases <dir> [stem]            # sweep the experiment set
+
+For --cases, <dir> is the folder holding the converted `<stem>_1.nif` experiments
+and the `<stem>_1.nif.looksgood` baseline. It may also be supplied as
+CBBE2UBE_DIAG_DIR, with the mesh stem as CBBE2UBE_DIAG_STEM (default "cuirass").
 Calibrated 2026-07-08 against the day's known-good (.looksgood) + known-bad experiments.
 """
 import sys, numpy as np
-sys.path.insert(0, r"C:\Users\Sam\Downloads\cbbe-to-ube\.pynifly")
+from pathlib import Path
+
+# This script lives in <repo>/scripts/, so the repo root is its parent's parent.
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(_REPO_ROOT / ".pynifly"))
 from pyn import pynifly
 from scipy.spatial import cKDTree
 
@@ -217,19 +244,27 @@ if __name__ == "__main__":
               f"  -> {kind}")
         print(f"new-clips={layer_penetration(cand, base)}")
         sys.exit()
-    if a:                                          # diagnose <armor.nif> [source.nif]
+    if a and a[0] != "--cases":                    # diagnose <armor.nif> [source.nif]
         diagnose(a[0], a[1] if len(a) > 1 else None); sys.exit()
-    D = r"D:/Modlists/ARR/mods/CBBEtoUBE Auto/meshes/!UBE/narmor/leathersuitn"
-    base = load(D + "/dcuirass_1.nif.looksgood")
+    # --cases <dir> [stem], or CBBE2UBE_DIAG_DIR / CBBE2UBE_DIAG_STEM. No default:
+    # the experiment set lives wherever the caller converted it to.
+    D = (a[1] if len(a) > 1 else "") or os.environ.get("CBBE2UBE_DIAG_DIR", "")
+    S = (a[2] if len(a) > 2 else "") or os.environ.get("CBBE2UBE_DIAG_STEM", "cuirass")
+    if not D:
+        print(__doc__)
+        print("ERROR: no experiment directory given. Pass `--cases <dir> [stem]` or set\n"
+              "       CBBE2UBE_DIAG_DIR to the folder holding the converted meshes.")
+        sys.exit(2)
+    base = load(f"{D}/{S}_1.nif.looksgood")
     T = os.environ["TEMP"]
-    cases = [("looksgood(GOOD)", D + "/dcuirass_1.nif.looksgood"),
-             ("ithigh2(calf wrinkle)", T + "/ithigh2/dcuirass_1.nif"),
-             ("ithigh3(calf broken)", T + "/ithigh3/dcuirass_1.nif"),
-             ("gap35(thigh gaps)", T + "/gap35/dcuirass_1.nif"),
-             ("cinf(pants moved)", T + "/cinf/dcuirass_1.nif"),
-             ("cinf2(per-vtx inflate)", T + "/cinf2/dcuirass_1.nif"),
-             ("jsync_test(full replace)", T + "/jsync_test/dcuirass_1.nif"),
-             ("jsync2(jiggle-only)", T + "/jsync2/dcuirass_1.nif")]
+    cases = [("looksgood(GOOD)", f"{D}/{S}_1.nif.looksgood"),
+             ("ithigh2(calf wrinkle)", f"{T}/ithigh2/{S}_1.nif"),
+             ("ithigh3(calf broken)", f"{T}/ithigh3/{S}_1.nif"),
+             ("gap35(thigh gaps)", f"{T}/gap35/{S}_1.nif"),
+             ("cinf(pants moved)", f"{T}/cinf/{S}_1.nif"),
+             ("cinf2(per-vtx inflate)", f"{T}/cinf2/{S}_1.nif"),
+             ("jsync_test(full replace)", f"{T}/jsync_test/{S}_1.nif"),
+             ("jsync2(jiggle-only)", f"{T}/jsync2/{S}_1.nif")]
     # crinkle is checked on EVERY reskinned cloth shape, not just Greaves
     def worst_crinkle(c):
         best = (0.0, "", -1)

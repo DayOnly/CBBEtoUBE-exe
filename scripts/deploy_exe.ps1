@@ -22,7 +22,7 @@
 # user's exclusions; this script exists so that cannot happen again.
 #
 # Usage:
-#   .\scripts\deploy_exe.ps1 -Dest "D:\Modlists\ARR\tools\CBBEtoUBE"
+#   .\scripts\deploy_exe.ps1 -Dest "D:\path\to\MO2\tools\CBBEtoUBE"
 #   .\scripts\deploy_exe.ps1 -Dest <path> -WhatIf     # preview only
 
 [CmdletBinding()]
