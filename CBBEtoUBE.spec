@@ -63,7 +63,10 @@ a = Analysis(
     ["cbbe_to_ube_main.py"],
     pathex=[".", ".pynifly"],
     binaries=[(".pynifly/NiflyDLL.dll", ".")],
-    datas=[],
+    # The exe is what end users actually receive, so the GPL requires the
+    # licence travel WITH it (GPLv3 §4/§5) -- shipping it only in the repo is
+    # not enough. Third-party notices ride along for the same reason.
+    datas=[("LICENSE", "."), ("THIRD-PARTY-NOTICES.md", ".")],
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
@@ -72,6 +75,21 @@ a = Analysis(
         "bpy", "bpy_extras", "bmesh", "mathutils",  # Blender — never needed
         # tkinter is NOW bundled (the `gui` subcommand needs it).
         "matplotlib", "PIL", "pytest", "IPython", "pandas",
+        # libssl/libcrypto are OpenSSL 1.1.1n, whose licence carries an
+        # advertising clause the FSF considers INCOMPATIBLE with the GPL. They
+        # are pulled in ONLY by the `_ssl` and `_hashlib` C extensions, and
+        # nothing here does networking or cryptographic hashing, so excluding
+        # those two drops both DLLs and removes the conflict outright rather
+        # than needing a licence exception.
+        # DO NOT add "hashlib" here: it is a pure-Python module that parts of
+        # the stdlib import unconditionally. It only *tries* `_hashlib` and
+        # falls back to the built-in `_sha256`/`_md5`/`_blake2` extensions, so
+        # dropping the C extension alone is safe -- excluding `hashlib` itself
+        # makes the exe die at startup with ModuleNotFoundError (verified).
+        "ssl", "_ssl", "_hashlib",
+        # psutil is not imported anywhere and is not a declared dependency; it
+        # leaked in from the build environment.
+        "psutil",
     ],
     noarchive=False,
 )
