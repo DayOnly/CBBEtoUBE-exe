@@ -22,7 +22,7 @@ breaking the SMP chain -> the garment free-falls to the ground.
 
 `_precreate_custom_bone_chains` must ALSO seed its bone set from the physics
 XML's `<bone>` list so the zero-weight constraint bones get recreated at source
-bind. #smp-constraint-bones (Travelling Merchant skirt, 1.0 play-test)
+bind. #smp-constraint-bones (a merchant-outfit skirt, 1.0 play-test)
 """
 import pytest
 

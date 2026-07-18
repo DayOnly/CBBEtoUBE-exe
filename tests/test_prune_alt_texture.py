@@ -17,7 +17,7 @@
 """Regression: master-byte remap (prune / ESL-split / fold) must also remap the
 TXST FormIDs embedded in alt-texture (MO?S) subrecords.
 
-The Ballad-of-Bards / DDV-Ruby bug: `_iter_formids_in_payload` +
+The colour-variant alt-texture bug: `_iter_formids_in_payload` +
 `_rewrite_formids_in_payload` only walked the standard single/array FormID
 subrecords, so when `prune_unused_masters` dropped a master and renumbered the
 rest, the record header + normal refs shifted but the MO?S color-TXST FormID
@@ -31,7 +31,7 @@ from src import esp, ube_patcher as up
 
 
 def test_reconcile_runs_on_all_esl_split_pieces(tmp_path, monkeypatch):
-    # The bard color-variant bug: reconcile_alt_texture_indices ran ONLY on the
+    # The color-variant bug: reconcile_alt_texture_indices ran ONLY on the
     # primary Combined.esp, but merge_patches_split overflows records (incl. their
     # alt-texture sets) into Combined2.esp/Combined3.esp -- so 174 overflow ARMAs
     # kept stale 3D indices. The _all wrapper must visit EVERY split piece.
@@ -64,14 +64,14 @@ def _txst_of(payload: bytes) -> int:
 
 def test_prune_remaps_mo2s_txst_in_lockstep_with_header():
     # 8 masters; index 5 (UnusedMod) is referenced by nothing -> pruned. The
-    # color TXST + the record both live in TheBard.esp at index 7.
+    # color TXST + the record both live in ColorVariants.esp at index 7.
     masters = ["Skyrim.esm", "Update.esm", "Dawnguard.esm", "HearthFires.esm",
-               "Dragonborn.esm", "UnusedMod.esp", "UBE_AllRace.esp", "TheBard.esp"]
+               "Dragonborn.esm", "UnusedMod.esp", "UBE_AllRace.esp", "ColorVariants.esp"]
     payload = (esp.encode_subrecord(b"EDID", b"variant\x00")
                + esp.encode_subrecord(b"MO2S", _mo2s(b"coat", 0x07000825)))
     rec = esp.Record(sig=b"ARMO", flags=0, formid=0x07000812,
                      timestamp_vc=0, version_unk=0x002C, payload=payload)
-    # reference TheBard via a normal FormID too so it isn't itself pruned
+    # reference ColorVariants via a normal FormID too so it isn't itself pruned
     e = esp.ESP(
         header=esp.TES4Header(masters=masters, author="t", description="t",
                               flags=0, version=1.7, num_records=0,
@@ -81,12 +81,12 @@ def test_prune_remaps_mo2s_txst_in_lockstep_with_header():
     dropped = up.prune_unused_masters(e)
     assert "UnusedMod.esp" in dropped
 
-    new_idx = e.header.masters.index("TheBard.esp")
+    new_idx = e.header.masters.index("ColorVariants.esp")
     hdr_top = (rec.formid >> 24) & 0xFF
     txst_top = (_txst_of(rec.payload) >> 24) & 0xFF
-    assert hdr_top == new_idx, f"header top {hdr_top:#x} != TheBard {new_idx:#x}"
+    assert hdr_top == new_idx, f"header top {hdr_top:#x} != ColorVariants {new_idx:#x}"
     assert txst_top == new_idx, (
-        f"MO2S TXST top {txst_top:#x} != TheBard {new_idx:#x} "
+        f"MO2S TXST top {txst_top:#x} != ColorVariants {new_idx:#x} "
         f"-- alt-texture FormID not remapped with the master shift")
     # the low 24 bits (the TXST's local id) must be untouched
     assert _txst_of(rec.payload) & 0xFFFFFF == 0x825

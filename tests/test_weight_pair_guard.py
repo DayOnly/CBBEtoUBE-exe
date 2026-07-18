@@ -26,8 +26,8 @@ from src.auto_convert import _weight_base_key, _BODY_SLOT_BITS
 
 def test_weight_variants_share_base_key():
     # _0 and _1 of the same piece MUST normalize to the same key
-    assert (_weight_base_key("1FlutedArmor/GauntletsF_0.nif")
-            == _weight_base_key("1FlutedArmor/GauntletsF_1.nif"))
+    assert (_weight_base_key("ModArmor/GauntletsF_0.nif")
+            == _weight_base_key("ModArmor/GauntletsF_1.nif"))
     # case / meshes-prefix / backslashes don't matter
     assert (_weight_base_key("meshes\\Armor\\X_0.nif")
             == _weight_base_key("armor/x_1.NIF"))

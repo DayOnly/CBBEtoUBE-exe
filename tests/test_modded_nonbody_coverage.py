@@ -151,7 +151,7 @@ def test_modded_nonbody_skips_already_covered_and_deforming(tmp_path):
 
 def test_modded_nonbody_redirects_converted_mesh_to_ube(tmp_path):
     """A non-body item whose OWN mesh WAS converted must point at the !UBE\\ mesh,
-    NOT source (the FVO-pants class: minted through the non-body pass but its mesh
+    NOT source (the converted-pants class: minted through the non-body pass but its mesh
     was actually converted). A genuine non-body item (helmet, not in
     converted_rel_paths) still keeps its source mesh. #mnb-converted-redirect"""
     tmp_path.mkdir(parents=True, exist_ok=True)
@@ -165,7 +165,7 @@ def test_modded_nonbody_redirects_converted_mesh_to_ube(tmp_path):
     mod = _save(
         tmp_path / "Mod.esp", ["Skyrim.esm"],
         [Group(label=b"ARMA", records=[
-            _arma(conv_arma, "ConvAA", DEFAULT, "armor/fvo/pants_1.nif", HEAD,
+            _arma(conv_arma, "ConvAA", DEFAULT, "armor/modarmor/pants_1.nif", HEAD,
                   extra_races=(DEFAULT,)),
             _arma(src_arma, "SrcAA", DEFAULT, "armor/guard/helmet_1.nif", HEAD,
                   extra_races=(DEFAULT,))]),
@@ -175,7 +175,7 @@ def test_modded_nonbody_redirects_converted_mesh_to_ube(tmp_path):
     out = tmp_path / "UBE_ModNonBody_Coverage.esp"
     stats = ube_patcher.generate_modded_nonbody_ube_coverage_patch(
         out, [Path(sky), Path(ube), Path(mod)],
-        converted_rel_paths={"armor/fvo/pants_1.nif"},
+        converted_rel_paths={"armor/modarmor/pants_1.nif"},
         exclude_names={out.name.lower()}, master_data_dirs=[tmp_path])
     assert stats["minted_armas"] == 2, stats
     merged = ESP.load(out)

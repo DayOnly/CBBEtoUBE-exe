@@ -16,7 +16,7 @@
 
 """`_find_hdt_xml_for_armor` fallback (used when a source NIF carries no physics
 extra-data). The tiny keyword map (boob/breast/tasset/skirt/tail) misses most
-authored config names (Dress, Choker, ThorHair, ...). An XML whose stem EXACTLY
+authored config names (Dress, Choker, LongHair, ...). An XML whose stem EXACTLY
 matches the NIF stem is the armour's own config regardless of keyword, so it must
 win -- else the piece falls back to a GENERATED XML. But a stem MISMATCH must NOT
 be grabbed just for sharing a folder. #xml-stem-match
@@ -37,9 +37,9 @@ def _mk(root, rel_nif, xmls):
 
 
 def test_exact_stem_match_wins_over_missing_keyword(tmp_path):
-    nif = _mk(tmp_path, "armor/thor/ThorHair_1.nif", ["armor/thor/ThorHair.xml"])
+    nif = _mk(tmp_path, "armor/hair/LongHair_1.nif", ["armor/hair/LongHair.xml"])
     res = nc._find_hdt_xml_for_armor(nif)
-    assert res is not None and res.lower().endswith("thorhair.xml")
+    assert res is not None and res.lower().endswith("longhair.xml")
 
 
 def test_stem_mismatch_in_same_folder_not_grabbed(tmp_path):

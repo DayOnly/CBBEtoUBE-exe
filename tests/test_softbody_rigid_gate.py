@@ -17,8 +17,8 @@
 """Regression: the GENERATED per-vertex soft-body (the fallback physics for
 armors with no hand-authored XML) must only fire on free HANGING cloth, never on
 a rigid TORSO cuirass. A cuirass turned into cloth1 has no authored chain, so
-the whole armour flops / disjoints from the body (the Anequina Armor case: a
-single WolfArmor shape carrying both the plate torso and a skirt was wrongly
+the whole armour flops / disjoints from the body (a disjointed-skirt case: a
+single shape carrying both the plate torso and a skirt was wrongly
 soft-bodied -> disjointed skirt).
 
 `_shape_is_rigid_torso_armor` splits them by upper-torso rigid-bone weight

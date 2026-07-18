@@ -59,7 +59,7 @@ def test_set_excluded_preserves_existing_meta(tmp_path):
 
 def test_scan_names_ube_token_boundaries():
     names = ["UBE 2.0 U. 0.7", "ube_body", "MyUBEArmor", "Cube Armor",
-             "Tube Top", "Nord Steelheart", "UBEArmor Pack", "someUBE"]
+             "Tube Top", "Nord Plate", "UBEArmor Pack", "someUBE"]
     props = {p["name"] for p in ex.scan_names(names)}
     # matches: a standalone `ube` token (digits ok), or ube at a non-letter edge
     assert "UBE 2.0 U. 0.7" in props
@@ -71,7 +71,7 @@ def test_scan_names_ube_token_boundaries():
     assert "MyUBEArmor" not in props
     assert "Cube Armor" not in props
     assert "Tube Top" not in props
-    assert "Nord Steelheart" not in props
+    assert "Nord Plate" not in props
     assert "someUBE" not in props
 
 

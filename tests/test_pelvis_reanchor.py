@@ -18,7 +18,7 @@
 node ("BodyM_1.nif") instead of a skeleton bone tracks the actor ROOT (feet) at
 runtime, so the waist garment disconnects. `_reanchor_nif_root_chains` re-parents
 that root onto NPC Pelvis while PRESERVING its global position (descendant bind +
-STB unchanged). Confirmed in-game (Anequina wolf-armor skirt). #pelvis-reanchor
+STB unchanged). Confirmed in-game (a bone-driven fur-skirt armour). #pelvis-reanchor
 """
 import numpy as np
 import pytest

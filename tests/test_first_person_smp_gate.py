@@ -18,7 +18,7 @@
 
 FSMP merges every `<per-vertex-shape name="...">` into the ACTOR's physics system by
 SHAPE NAME, and a first-person NIF carries the same shape names as its third-person twin
-(New Leather's `1st.nif` and `dcuirass.nif` both hold `Cuirass_A/_B/_C`). So the
+(one armour's `1st.nif` and `dcuirass.nif` both hold `Cuirass_A/_B/_C`). So the
 first-person XML drives the THIRD-person shapes as skin-stripped cloth with nothing
 constraining it -- FSMP's soft body diverges, its collision SIMD reads out of bounds, and
 the game dies on equip. Deleting exactly those two XMLs is what fixed it in-game.
@@ -61,14 +61,14 @@ def test_prefixed_first_person_variant_is_gated():
 
 def test_spelled_out_first_person_is_gated():
     assert _is_first_person_mesh("armor/x/0cce_dress1_firstperson_1.nif", _Nif("Dress"))
-    assert _is_first_person_mesh("1FlutedArmor/1stpersoncuirassF_1.nif", _Nif("Cuirass"))
+    assert _is_first_person_mesh("ModArmor/1stpersoncuirassF_1.nif", _Nif("Cuirass"))
 
 
 def test_item_named_first_is_not_gated():
-    """`1stexplorersgarb_f` is "First Explorer's Garb" -- a THIRD-person body armor. It
+    """`1strangerscoat_f` is "First Ranger's Coat" -- a THIRD-person body armor. It
     carries an injected body, which a viewmodel never does. Name alone would strip it."""
     nif = _Nif(_BODY, "Shirt", "Pants")
-    assert not _is_first_person_mesh("museumarmor/female/1stexplorersgarb_f_1.nif", nif)
+    assert not _is_first_person_mesh("modarmor/female/1strangerscoat_f_1.nif", nif)
 
 
 def test_bodyless_third_person_pieces_keep_physics():

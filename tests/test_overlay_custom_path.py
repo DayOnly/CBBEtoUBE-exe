@@ -8,7 +8,7 @@
 
 """Overlay packs that (A) register via lowercase AddBodypaint( calls and/or
 (B) ship textures OUTSIDE the standard overlay roots must still be discovered
-and transferred. Regression for the Bitchcraft-tattoo case."""
+and transferred. Regression for a custom-path tattoo-pack case."""
 import src.overlay_slots as osl
 import src.overlay_transfer as ot
 import src.paths as P
@@ -25,8 +25,8 @@ def test_script_pre_filter_is_case_insensitive():
 
 def test_parser_yields_from_lowercase_call():
     calls = list(osl.iter_paint_calls(
-        r'AddBodypaint("BCT - X", "Actors\\Cridow Bitchcraft\\x.dds")'))
-    assert calls == [("body", "textures/actors/cridow bitchcraft/x.dds")]
+        r'AddBodypaint("CTP - X", "Actors\\ModAuthor Tattoos\\x.dds")'))
+    assert calls == [("body", "textures/actors/modauthor tattoos/x.dds")]
 
 
 # --- Bug A+B together: discover a custom-path, lowercase-registered overlay -

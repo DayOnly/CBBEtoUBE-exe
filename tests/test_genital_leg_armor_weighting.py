@@ -321,7 +321,7 @@ def test_conform_skip_names_misses_untagged_colliders():
     # gate: real output colliders ('Proxy','Greaves','3BCA_Breast',...) carry none
     # of the _CONFORM_SKIP_NAMES tokens, so the substring alone would let the
     # conform re-weight them (re-grafting the over-jiggle the reskin avoids).
-    for nm in ("Proxy", "Greaves", "3BCA_Breast", "FVOSkirt1", "TopProxy"):
+    for nm in ("Proxy", "Greaves", "3BCA_Breast", "ModSkirt1", "TopProxy"):
         assert not any(k in nm.lower() for k in nc._CONFORM_SKIP_NAMES), nm
     # the legacy-tagged ones the substring DID catch still match (belt + suspenders)
     assert any(k in "widu_colbodyskirt" for k in nc._CONFORM_SKIP_NAMES)

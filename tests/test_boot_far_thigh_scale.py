@@ -19,7 +19,7 @@
 A tall boot whose shaft rides the NPC Thigh rigid bone had the body's FAR THIGH
 scale bones (FrontThigh/RearThigh) grafted onto the shaft by the fine-animation
 reskin; on a UBE actor that makes the whole boot FADE OUT at camera distance
-(verified on GTO boots 2026-07-01). Fix: for foot-slot (37) calf/foot-dominant
+(verified on real tall boots 2026-07-01). Fix: for foot-slot (37) calf/foot-dominant
 footwear, drop the far-thigh scale bones from the graft while KEEPING RearCalf
 (the calf size morph). Dropping the thighs must NOT drop RearCalf -- measured on
 the real boot, it frees top-4-per-vert budget so RearCalf reaches MORE verts.

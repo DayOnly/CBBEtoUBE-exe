@@ -17,7 +17,7 @@
 """`_layered_cloth_shape_names` detects MULTI-LAYER cloth cuirass shapes (2+ sibling
 shapes sharing a base stem + a short layer suffix, e.g. Cuirass_A/_B/_C). Every
 body-follow graft pass skips them so the body's HDT-SMP jiggle bones aren't grafted
-onto bone-driven cloth -> no equip CTD (New Leather crash 2026-07-09). This guards
+onto bone-driven cloth -> no equip CTD (a layered-cuirass crash 2026-07-09). This guards
 the DETECTION: it must catch real layer groups but NOT single shapes, the body, or
 unrelated names (a false positive keeps a shape on source skin = loses morph-follow).
 #layered-cloth-skin"""
@@ -34,7 +34,7 @@ def _names(*names):
 
 
 def test_catches_letter_layer_group():
-    """Cuirass_A/_B/_C -> all three (the New Leather cuirass pattern)."""
+    """Cuirass_A/_B/_C -> all three (the real layered-cuirass pattern)."""
     out = _names("Cuirass_A", "Cuirass_B", "Cuirass_C", "Greaves", "BaseShape")
     assert out == {"Cuirass_A", "Cuirass_B", "Cuirass_C"}
 

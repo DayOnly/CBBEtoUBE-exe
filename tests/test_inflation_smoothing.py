@@ -14,7 +14,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-"""Guard for the body-normal inflation fix (Ruby gold-corset crushed-foil bug).
+"""Guard for the body-normal inflation fix (a gold-corset crushed-foil bug).
 
 `inflate_armor_outward` used to derive its push direction from
 (armor_vert - nearest_body_vert) normalized. For armor that HUGS the body

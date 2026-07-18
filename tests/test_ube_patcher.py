@@ -291,7 +291,7 @@ def test_validate_patch_catches_modl_after_data(tmp_path):
 # ---------------------------------------------------------------------------
 # Cross-patch ARMO merge: when two patches override the same Skyrim.esm
 # ARMO, the merger must combine their armatures lists. Reproduces the
-# diagnostic we ran by hand on the user's HDT-SMP + Remodeled overlap.
+# diagnostic we ran by hand on the user's HDT-SMP + armour-replacer overlap.
 # ---------------------------------------------------------------------------
 
 
@@ -301,7 +301,7 @@ def test_validate_patch_catches_modl_after_data(tmp_path):
 # ---------------------------------------------------------------------------
 # ESL-overflow downgrade: when the union of new ARMAs exceeds the ESL cap,
 # merge_patches must NOT raise (the old behaviour aborted the merge and left a
-# STALE Combined.esp on disk — the real "Vigilant armor invisible" bug). It
+# STALE Combined.esp on disk — the real "bespoke-master armor invisible" bug). It
 # must instead ship a regular non-ESL ESP and keep every record.
 # ---------------------------------------------------------------------------
 
@@ -571,7 +571,7 @@ def test_is_esm_tier_master_detects_esl_flagged_esp(tmp_path):
     """Regression: an ESL-flagged .esp (TES4 flag 0x200, WITHOUT the ESM bit
     0x1 — i.e. an ESPFE, the modern compact-plugin standard) must classify as
     MASTER-TIER so the merge sorts it before regular .esps. The old code checked
-    only 0x1, so 84 ESPFE armor masters (3BBB, Magecore, Velothi, ...) sorted
+    only 0x1, so 84 ESPFE armor masters in the modlist sorted
     AFTER UBE_AllRace.esp and corrupted the Combined's master order, misrouting
     their overrides (invisible/static armor on UBE)."""
     import struct

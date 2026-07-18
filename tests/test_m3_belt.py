@@ -14,7 +14,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-"""M3 phase 1: convert Kozakowy Belt_1 (no inline body) CBBE -> UBE and
+"""M3 phase 1: convert a sample Belt_1 (no inline body) CBBE -> UBE and
 compare to the hand-built UBE Belt_1.
 
 Empirical finding (see docs/M3_findings.md when written): for armor pieces
@@ -48,14 +48,14 @@ CBBE_REF = Path(os.environ.get("CBBE2UBE_CBBE_REF", ""))
 UBE_REF  = Path(os.environ.get("CBBE2UBE_UBE_REF", ""))
 
 CBBE_SRC = (
-    PROJ / "samples" / "m1" / "kozakowy_vampire" / "cbbe"
-    / "[TOTOxKozakowy] Kozakowy's Vampire Armor 3BA"
-    / "meshes" / "clothes" / "Kozakowy" / "VampireArmor" / "Belt_1.nif"
+    PROJ / "samples" / "m1" / "sample_armor" / "cbbe"
+    / "Sample Armor 3BA"
+    / "meshes" / "clothes" / "ModAuthor" / "SampleArmor" / "Belt_1.nif"
 )
 UBE_TARGET = (
-    PROJ / "samples" / "m1" / "kozakowy_vampire" / "ube"
-    / "[TOTOxKozakowy] Kozakowy's Vampire Armor UBE v1.0"
-    / "meshes" / "!UBE" / "clothes" / "Kozakowy" / "VampireArmor" / "Belt_1.nif"
+    PROJ / "samples" / "m1" / "sample_armor" / "ube"
+    / "Sample Armor UBE v1.0"
+    / "meshes" / "!UBE" / "clothes" / "ModAuthor" / "SampleArmor" / "Belt_1.nif"
 )
 OUT_COPY = PROJ / "output" / "m3" / "Belt_1.copy.nif"
 OUT_WARP = PROJ / "output" / "m3" / "Belt_1.warp.nif"

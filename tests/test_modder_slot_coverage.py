@@ -16,7 +16,7 @@
 
 """Coverage + crash-guard for lower-body cloth on ambiguous modder slots (#165).
 
-DDV Ruby Flower binds its pants to biped slot 44 and its skirt to slot 47 —
+A multi-layer armour set binds its pants to biped slot 44 and its skirt to 47 —
 free modder slots that the strict `_BODY_SLOT_BITS` allowlist excludes (44 is
 beard/mouth, 47 is backpack in vanilla). So those lower-body pieces were never
 converted and the game kept loading the CBBE-shaped originals under the UBE
@@ -33,8 +33,8 @@ def _bit(slot):
 
 
 def test_candidate_slots_cover_pants44_skirt47():
-    assert auto_convert._BODY_CANDIDATE_SLOT_BITS & _bit(44)  # Ruby pants
-    assert auto_convert._BODY_CANDIDATE_SLOT_BITS & _bit(47)  # Ruby skirt
+    assert auto_convert._BODY_CANDIDATE_SLOT_BITS & _bit(44)  # modder-slot pants
+    assert auto_convert._BODY_CANDIDATE_SLOT_BITS & _bit(47)  # modder-slot skirt
 
 
 def test_candidate_slots_are_NOT_in_strict_allowlist():

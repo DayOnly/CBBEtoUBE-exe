@@ -22,13 +22,13 @@ ON the body surface, so `compute_body_blend_skinning` already gives it the
 body's graduated weights and it co-moves with the body. The extra
 `add_scale_bone_weights` pass would then MAX-propagate redundant breast/butt
 weight onto it, so it over-inflates vs the real body under a slider and pokes
-through the corset (measured on Eli's Dark-Triss corset: breast-bone fraction
+through the corset (measured on a bespoke open corset: breast-bone fraction
 0.12 -> 0.19). `_is_exposed_body_skin_shape` detects such a shape purely by
 geometry (verts coincide with the CBBE body) so the caller can skip the pass.
 
 The detector must FIRE on a shape whose verts lie on the body and NOT fire on
 draped cloth (which always carries >=~1u of standoff). Measured real-world
-separation on the Triss corset: the exposed skin sits 100% within 0.5u of the
+separation on that corset: the exposed skin sits 100% within 0.5u of the
 body; every cloth shape <=8% within 0.5u.
 """
 import numpy as np
@@ -123,7 +123,7 @@ def test_exposed_skin_slice_flagged_for_injection():
     body = _body()
     band = body[(body[:, 2] >= 90) & (body[:, 2] <= 110)]   # breast-band slice
     skin = _Shape("CBBE", band[:400] + 0.1, _BODY_DIFF)     # on-body skin slice
-    corset = _Shape("triss", band[:400] + 1.5, _CLOTH_DIFF)  # off-body cloth
+    corset = _Shape("corset", band[:400] + 1.5, _CLOTH_DIFF)  # off-body cloth
     decal = _Shape("decal", band[:50] + 0.1, _BODY_DIFF)     # too few verts
     names = nc._exposed_body_skin_shape_names(_Nif([skin, corset, decal]), body)
     assert names == ["CBBE"]

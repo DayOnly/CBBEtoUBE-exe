@@ -109,7 +109,7 @@ def test_arm_dominated_vert_gets_no_torso_scale():
 
 
 def test_133_arm_vert_never_gets_torso_scale_on_cloth_path():
-    # #133 Valenwood bracer: a forearm-dominated bracer vert within reach of a
+    # #133 slot-34 bracer: a forearm-dominated bracer vert within reach of a
     # butt-weighted body vert must get ZERO butt scale weight -- even on the
     # cloth path (torso_parity=False), which is how a slot-34 bracer routes.
     body = _FakeBody([[0, 0, 75]], ["NPC L Butt"], {"NPC L Butt": [(0, BODY_W)]})

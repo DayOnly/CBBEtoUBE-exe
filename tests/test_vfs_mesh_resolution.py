@@ -108,34 +108,34 @@ def test_build_mesh_index_deprioritizes_bodyslide_output_source(tmp_path):
     """A 3BA/HIMBO BodySlide OUTPUT must NOT win the armour SOURCE over the base
     mod, even at higher MO2 priority. It's the mesh morphed to the wrong body
     PRESET; feeding it into a UBE conversion bakes that body's shape in and
-    squashes the cloth layers together -> clipping (the 2026-07-08 New Leather
-    Armor bug: 26 armours sourced from 'Bodyslide Output - 3BA'). Tier order:
+    squashes the cloth layers together -> clipping (the 2026-07-08 BodySlide-
+    source bug: 26 armours sourced from 'Bodyslide Output - 3BA'). Tier order:
     (0) base/replacers, (1) UBE outputs, (2) other-body outputs. A BodySlide
     output still wins a mesh nothing else provides (no invisibility regression).
     #bodyslide-source"""
     mods = tmp_path / "mods"
     a = "armor/foo"
     # bar: base + both outputs; the 3BA output is HIGHEST priority but must lose.
-    _touch(mods / "Authoria - Bodyslide Output - 3BA" / "meshes" / a / "bar_1.nif")
-    _touch(mods / "Authoria - Bodyslide Output - UBE" / "meshes" / a / "bar_1.nif")
-    _touch(mods / "New Leather Armor" / "meshes" / a / "bar_1.nif")
+    _touch(mods / "ExampleMod - Bodyslide Output - 3BA" / "meshes" / a / "bar_1.nif")
+    _touch(mods / "ExampleMod - Bodyslide Output - UBE" / "meshes" / a / "bar_1.nif")
+    _touch(mods / "Base Leather Armor" / "meshes" / a / "bar_1.nif")
     # ube: no base; the UBE output must beat the other-body 3BA output.
-    _touch(mods / "Authoria - Bodyslide Output - 3BA" / "meshes" / a / "ube_1.nif")
-    _touch(mods / "Authoria - Bodyslide Output - UBE" / "meshes" / a / "ube_1.nif")
+    _touch(mods / "ExampleMod - Bodyslide Output - 3BA" / "meshes" / a / "ube_1.nif")
+    _touch(mods / "ExampleMod - Bodyslide Output - UBE" / "meshes" / a / "ube_1.nif")
     # only: ONLY the 3BA output provides it — must still resolve (fills the gap).
-    _touch(mods / "Authoria - Bodyslide Output - 3BA" / "meshes" / a / "only_1.nif")
-    enabled = ["Authoria - Bodyslide Output - 3BA",   # highest MO2 priority
-               "Authoria - Bodyslide Output - UBE",
-               "New Leather Armor"]                    # lowest
+    _touch(mods / "ExampleMod - Bodyslide Output - 3BA" / "meshes" / a / "only_1.nif")
+    enabled = ["ExampleMod - Bodyslide Output - 3BA",   # highest MO2 priority
+               "ExampleMod - Bodyslide Output - UBE",
+               "Base Leather Armor"]                    # lowest
     idx = discovery.build_mesh_index(mods, enabled, target_keys={
         "armor/foo/bar_1.nif", "armor/foo/ube_1.nif", "armor/foo/only_1.nif"})
-    assert idx["armor/foo/bar_1.nif"].parents[3].name == "New Leather Armor", \
+    assert idx["armor/foo/bar_1.nif"].parents[3].name == "Base Leather Armor", \
         "base mod must win the source over ANY BodySlide output"
     assert idx["armor/foo/ube_1.nif"].parents[3].name \
-        == "Authoria - Bodyslide Output - UBE", \
+        == "ExampleMod - Bodyslide Output - UBE", \
         "UBE output must beat an other-body (3BA) output when there's no base"
     assert idx["armor/foo/only_1.nif"].parents[3].name \
-        == "Authoria - Bodyslide Output - 3BA", \
+        == "ExampleMod - Bodyslide Output - 3BA", \
         "a BodySlide-output-only mesh must still resolve (no invisibility regression)"
 
 
@@ -188,7 +188,7 @@ def test_build_mesh_index_bodymatch_leaves_no_body_physics_source(tmp_path, monk
     #body-match-source"""
     mods = tmp_path / "mods"
     a = "clothes/archmage"
-    _touch(mods / "HDT-SMP College Mage Robes" / "meshes" / a / "archmagerobesf_1.nif")
+    _touch(mods / "HDT-SMP Mage Robes" / "meshes" / a / "archmagerobesf_1.nif")
     _touch(mods / "CBBE 3BA Vanilla Outfits" / "meshes" / a / "archmagerobesf_1.nif")
 
     def _fake_open(path_str, *a, **k):
@@ -204,21 +204,21 @@ def test_build_mesh_index_bodymatch_leaves_no_body_physics_source(tmp_path, monk
                          _FakeShape("3BA", "textures/actors/femalebody_1.dds", _FULL_BODY_VERTS)])
 
     monkeypatch.setattr(discovery.nif_io, "open_nif_retry", _fake_open)
-    enabled = ["HDT-SMP College Mage Robes", "CBBE 3BA Vanilla Outfits"]
+    enabled = ["HDT-SMP Mage Robes", "CBBE 3BA Vanilla Outfits"]
     idx = discovery.build_mesh_index(
         mods, enabled, target_keys={"clothes/archmage/archmagerobesf_1.nif"})
     assert idx["clothes/archmage/archmagerobesf_1.nif"].parents[3].name \
-        == "HDT-SMP College Mage Robes", \
+        == "HDT-SMP Mage Robes", \
         "a no-body physics source must keep winning (SMP physics preserved)"
 
 
 def test_build_mesh_index_bodymatch_does_not_override_tier(tmp_path, monkeypatch):
     """The body-match preference acts WITHIN a tier only -- it must not promote a
     canonical-body BodySlide OUTPUT (tier 2) over a bespoke-body base mod (tier 0).
-    Guards the New-Leather tier fix from the body-match rule. #body-match-source"""
+    Guards the BodySlide-source tier fix from the body-match rule. #body-match-source"""
     mods = tmp_path / "mods"
     a = "armor/foo"
-    _touch(mods / "Authoria - Bodyslide Output - 3BA" / "meshes" / a / "bar_1.nif")
+    _touch(mods / "ExampleMod - Bodyslide Output - 3BA" / "meshes" / a / "bar_1.nif")
     _touch(mods / "Base Armor Mod" / "meshes" / a / "bar_1.nif")
 
     def _fake_open(path_str, *a, **k):
@@ -232,7 +232,7 @@ def test_build_mesh_index_bodymatch_does_not_override_tier(tmp_path, monkeypatch
                                     _FULL_BODY_VERTS)])
 
     monkeypatch.setattr(discovery.nif_io, "open_nif_retry", _fake_open)
-    enabled = ["Authoria - Bodyslide Output - 3BA", "Base Armor Mod"]
+    enabled = ["ExampleMod - Bodyslide Output - 3BA", "Base Armor Mod"]
     idx = discovery.build_mesh_index(mods, enabled, target_keys={"armor/foo/bar_1.nif"})
     assert idx["armor/foo/bar_1.nif"].parents[3].name == "Base Armor Mod", \
         "tier must dominate: a canonical-body tier-2 output must NOT beat a tier-0 base"
@@ -338,29 +338,29 @@ def test_find_armor_mod_dirs_selects_bodyslide_only_mod(tmp_path, monkeypatch):
     """SOURCE-SELECTION coverage: a mod whose ESP equips armour meshes that
     live ONLY in another mod (BodySlide output) — zero in its own folder — must
     still be selected as a source. This is the gate that previously dropped
-    DDV Ruby Flower before conversion could even run."""
+    a multi-layer armour set before conversion could even run."""
     mods = tmp_path / "mods"
     # armour mod: has an ESP, but ships NO armour meshes in its own folder
-    armor_mod = mods / "DDV Ruby"
+    armor_mod = mods / "Layered Armor"
     (armor_mod / "meshes").mkdir(parents=True)
-    (armor_mod / "ruby.esp").write_bytes(b"TES4")  # presence only (gate is stubbed)
+    (armor_mod / "layered.esp").write_bytes(b"TES4")  # presence only (gate is stubbed)
     # the BodySlide-output mod is where the built armour mesh actually lives
-    built = mods / "Bodyslide Output" / "meshes" / "armory" / "ruby" / "top_1.nif"
+    built = mods / "Bodyslide Output" / "meshes" / "armory" / "layered" / "top_1.nif"
     _touch(built)
     # stub the ESP gate so we don't need a hand-built ARMA record
     monkeypatch.setattr(
         auto_convert, "_player_armor_mesh_bases",
-        lambda d, **kw: {"armory/ruby/top"} if d.name == "DDV Ruby" else set())
+        lambda d, **kw: {"armory/layered/top"} if d.name == "Layered Armor" else set())
 
     # WITHOUT a VFS list -> dropped (legacy: 0 own-folder meshes)
     legacy = auto_convert._find_armor_mod_dirs(mods, require_arma=True)
-    assert "DDV Ruby" not in {c["name"] for c in legacy}
+    assert "Layered Armor" not in {c["name"] for c in legacy}
 
     # WITH the enabled-mods list -> resolved via VFS, selected
     sel = auto_convert._find_armor_mod_dirs(
         mods, require_arma=True,
-        enabled_ordered=["DDV Ruby", "Bodyslide Output"])
-    assert "DDV Ruby" in {c["name"] for c in sel}
+        enabled_ordered=["Layered Armor", "Bodyslide Output"])
+    assert "Layered Armor" in {c["name"] for c in sel}
 
 
 def test_bodyslide_output_excluded_as_source_still_resolves_meshes(tmp_path, monkeypatch):
@@ -369,36 +369,36 @@ def test_bodyslide_output_excluded_as_source_still_resolves_meshes(tmp_path, mon
     is ALSO where most armours' built female meshes live, so the mesh-resolution
     index must STILL see it. The VFS-index-share perf change wrongly fed the
     source-exclude set as the index skip set, so every armour with BodySlide-
-    built meshes resolved to nothing (DDV Ruby produced 4 NIFs instead of 14).
+    built meshes resolved to nothing (one armour set produced 4 NIFs instead of 14).
     The index must skip ONLY the output mod (`index_skip_mods`), never the
     body/BodySlide mods."""
     mods = tmp_path / "mods"
-    armor_mod = mods / "DDV Ruby"
+    armor_mod = mods / "Layered Armor"
     (armor_mod / "meshes").mkdir(parents=True)
-    (armor_mod / "ruby.esp").write_bytes(b"TES4")
-    built = mods / "Bodyslide Output" / "meshes" / "armory" / "ruby" / "top_1.nif"
+    (armor_mod / "layered.esp").write_bytes(b"TES4")
+    built = mods / "Bodyslide Output" / "meshes" / "armory" / "layered" / "top_1.nif"
     _touch(built)
     monkeypatch.setattr(
         auto_convert, "_player_armor_mesh_bases",
-        lambda d, **kw: {"armory/ruby/top"} if d.name == "DDV Ruby" else set())
+        lambda d, **kw: {"armory/layered/top"} if d.name == "Layered Armor" else set())
 
     # "Bodyslide Output" is excluded AS A SOURCE (extra_exclude_names) — exactly
-    # what _cmd_auto does for body mods — yet DDV Ruby must STILL be selected,
+    # what _cmd_auto does for body mods — yet Layered Armor must STILL be selected,
     # because its mesh resolves FROM that excluded mod.
     sel = auto_convert._find_armor_mod_dirs(
         mods, require_arma=True,
         extra_exclude_names={"Bodyslide Output"},
-        enabled_ordered=["DDV Ruby", "Bodyslide Output"])
-    assert "DDV Ruby" in {c["name"] for c in sel}, \
+        enabled_ordered=["Layered Armor", "Bodyslide Output"])
+    assert "Layered Armor" in {c["name"] for c in sel}, \
         "body-mod source-exclude must not remove it as a mesh provider"
 
     # Negative: if the index DID skip Bodyslide Output (the bug), the mesh can't
-    # resolve and DDV Ruby is dropped.
+    # resolve and Layered Armor is dropped.
     sel_bug = auto_convert._find_armor_mod_dirs(
         mods, require_arma=True,
-        enabled_ordered=["DDV Ruby", "Bodyslide Output"],
+        enabled_ordered=["Layered Armor", "Bodyslide Output"],
         index_skip_mods={"Bodyslide Output"})
-    assert "DDV Ruby" not in {c["name"] for c in sel_bug}
+    assert "Layered Armor" not in {c["name"] for c in sel_bug}
 
 
 def test_find_armor_mod_dirs_dedups_duplicate_plugin_by_load_order(tmp_path, monkeypatch):
@@ -406,35 +406,35 @@ def test_find_armor_mod_dirs_dedups_duplicate_plugin_by_load_order(tmp_path, mon
     LOAD-ORDER-WINNING copy (first in enabled_ordered) is selected as a source.
     Patching a lower-priority copy mis-targets the loaded ESP's FormID/record set
     -> records unique to the winning copy get no UBE armature -> INVISIBLE armor
-    (the Helga 'Unarmored Pants' bug: the Pants ARMOs live only in the winning
-    'My fixes' copy). #168"""
+    (an 'Unarmored Pants' bug seen in the wild: the Pants ARMOs live only in the
+    winning 'My fixes' copy). #168"""
     mods = tmp_path / "mods"
-    for name in ("Helga HiPrio", "Helga LoPrio"):
+    for name in ("Outfit HiPrio", "Outfit LoPrio"):
         d = mods / name
-        (d / "meshes" / "armor" / "helga").mkdir(parents=True)
-        (d / "_Fuse00_ArmorHelga.esp").write_bytes(b"TES4")
-        _touch(d / "meshes" / "armor" / "helga" / "body_1.nif")
+        (d / "meshes" / "armor" / "outfit").mkdir(parents=True)
+        (d / "_ModAuthor_ArmorOutfit.esp").write_bytes(b"TES4")
+        _touch(d / "meshes" / "armor" / "outfit" / "body_1.nif")
     # a DIFFERENT mod with a UNIQUE plugin must NOT be dropped
-    other = mods / "Ruby"
-    (other / "meshes" / "armory" / "ruby").mkdir(parents=True)
-    (other / "ruby.esp").write_bytes(b"TES4")
-    _touch(other / "meshes" / "armory" / "ruby" / "top_1.nif")
+    other = mods / "Layered"
+    (other / "meshes" / "armory" / "layered").mkdir(parents=True)
+    (other / "layered.esp").write_bytes(b"TES4")
+    _touch(other / "meshes" / "armory" / "layered" / "top_1.nif")
 
     def _bases(d, **kw):
-        if d.name.startswith("Helga"):
-            return {"armor/helga/body"}
-        if d.name == "Ruby":
-            return {"armory/ruby/top"}
+        if d.name.startswith("Outfit"):
+            return {"armor/outfit/body"}
+        if d.name == "Layered":
+            return {"armory/layered/top"}
         return set()
     monkeypatch.setattr(auto_convert, "_player_armor_mesh_bases", _bases)
 
     sel = auto_convert._find_armor_mod_dirs(
         mods, require_arma=True,
-        enabled_ordered=["Helga HiPrio", "Ruby", "Helga LoPrio"])
+        enabled_ordered=["Outfit HiPrio", "Layered", "Outfit LoPrio"])
     names = {c["name"] for c in sel}
-    assert "Helga HiPrio" in names, "load-order winner must be kept"
-    assert "Helga LoPrio" not in names, "lower-priority duplicate plugin must be dropped"
-    assert "Ruby" in names, "a mod with a unique plugin must never be dropped"
+    assert "Outfit HiPrio" in names, "load-order winner must be kept"
+    assert "Outfit LoPrio" not in names, "lower-priority duplicate plugin must be dropped"
+    assert "Layered" in names, "a mod with a unique plugin must never be dropped"
 
 
 def test_write_conversion_summary(tmp_path):

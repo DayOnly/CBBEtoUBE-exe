@@ -51,7 +51,7 @@ Usage:
   python scripts/fit_audit.py
   python scripts/fit_audit.py --output 'D:\\path\\to\\mod'
   # source-compare mode (catches dropped / truncated shapes):
-  python scripts/fit_audit.py --source "D:\\mods\\Templar" "D:\\mods\\Valenwood..."
+  python scripts/fit_audit.py --source "D:\\mods\\ModA" "D:\\mods\\ModB" ...
 """
 from __future__ import annotations
 import os
