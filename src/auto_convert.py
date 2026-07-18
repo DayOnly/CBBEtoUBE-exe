@@ -1573,12 +1573,11 @@ def _build_parser():
     convert.add_argument("--merged-name", default="CBBE_to_UBE_Combined.esp",
                          help="Filename for the auto-merged Combined ESP at "
                               "the mod root (default: CBBE_to_UBE_Combined.esp).")
-    convert.add_argument("--no-winner-rebase", action="store_true",
-                         help="Disable the #132 load-order winner rebase. By "
-                              "default each merged ARMO adopts the load-order "
-                              "WINNER's balance (armor rating / keywords / "
-                              "name) instead of the bare master's; stats-only, "
-                              "adds no masters.")
+    # --no-winner-rebase was REMOVED. The winner rebase only ever adjusted ARMO
+    # OVERRIDES; under SkyPatcher-only delivery the Combined emits no ARMO
+    # records at all, so there is nothing to rebase. The flag had decayed into a
+    # no-op that was never read, while still advertising behaviour the tool no
+    # longer has.
     convert.add_argument("--plugins-only", action="store_true",
                          dest="plugins_only",
                          help="ESP-only refresh: regenerate patch ESPs + merge "
@@ -1692,11 +1691,7 @@ def _build_parser():
                         help="Do NOT merge the per-source UBE patch ESPs into "
                              "one Combined ESP; leave them in _unmerged_patches/ "
                              "for you to merge/load yourself.")
-    auto_p.add_argument("--no-winner-rebase", action="store_true",
-                        help="Disable the #132 load-order winner rebase "
-                             "(default ON: merged ARMOs adopt the winner's "
-                             "overhaul balance; stats-only, no masters "
-                             "added).")
+    # --no-winner-rebase removed here too; see the note on the convert parser.
     auto_p.add_argument("--plugins-only", action="store_true",
                         dest="plugins_only",
                         help="ESP-only refresh from the last full run's espgen "

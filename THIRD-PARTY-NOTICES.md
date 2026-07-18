@@ -29,6 +29,22 @@ runtime and the following libraries, each under its own permissive license:
 - **SciPy** — BSD-3-Clause
 - **OpenBLAS** (bundled with NumPy/SciPy) — BSD-3-Clause
 - **Tcl/Tk** (for the GUI) — Tcl/Tk License (BSD-style)
+- **python-lz4** — BSD-2-Clause, Copyright (c) 2012-2013, Steeve Morin.
+  Required for reading Skyrim SE BSA archives, which are LZ4-frame compressed.
+- **libffi** — MIT
+- **Microsoft Visual C++ runtime** — redistributable under the Microsoft
+  Software License Terms accompanying the compiler
 
 Full license texts for these are distributed with each library; the project's
-own license is GPL-3.0 (see [LICENSE](LICENSE)).
+own license is GPL-3.0-or-later (see [LICENSE](LICENSE)), a copy of which is
+shipped inside the executable's folder alongside this file.
+
+### Deliberately NOT bundled
+
+OpenSSL is excluded from the frozen build. The 1.1.x series that the CPython
+build links carries an advertising clause the FSF considers incompatible with
+the GPL, and nothing in this project performs networking or hashing — so
+`ssl`/`hashlib` (and with them `libssl`/`libcrypto`) are excluded in
+`CBBEtoUBE.spec` rather than relying on a license exception. If future code
+needs either module, that exclusion has to be revisited together with this
+notice.
