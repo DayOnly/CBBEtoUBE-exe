@@ -368,6 +368,24 @@ ANTIPOKE_SMOOTH_ENABLED = (
 )
 ANTIPOKE_SMOOTH_ITERS = 2
 
+# Warp Pass-2 min-standoff SMOOTHING (default ON). Pass 2 pushes every vert whose
+# signed distance falls below `min_standoff` up to exactly the floor, on a HARD
+# threshold: a vert at floor-0.001 gets ~0 push and its neighbour at floor+0.001
+# gets none, so the boundary of the pushed region is a cliff. Measured: this makes
+# 94% of a cord shape's sharp edges (n_sharp 1583 -> 99 with min_standoff=0),
+# making it the largest single spike source left in the chain. Feather the push
+# scalar over mesh adjacency, FLOORED at the original requirement so no vert ever
+# ends up below the standoff (the clearance guarantee is preserved exactly).
+# Needs `tris`; call sites that pass none silently keep the old hard behaviour.
+# Lower collapse risk than ANTIPOKE_SMOOTH: this push is bounded by the 0.15u
+# buffer, not by a full clearance ramp. Kill with CBBE2UBE_NO_WARP_SMOOTH=1.
+WARP_STANDOFF_SMOOTH_ENABLED = (
+    os.environ.get("CBBE2UBE_NO_WARP_SMOOTH", "").strip().lower()
+    not in ("1", "true", "yes", "on")
+)
+WARP_STANDOFF_SMOOTH_ITERS = int(
+    os.environ.get("CBBE2UBE_WARP_SMOOTH_ITERS", "2") or 2)
+
 # Extra per-layer anti-poke floor so stacked garments don't converge to the same
 # standoff and z-fight. Default off (same finding as smoothing);
 # CBBE2UBE_LAYERED_ANTIPOKE=1 on.  [DESIGN: Layered anti-poke floors]
@@ -1004,6 +1022,7 @@ def warp_armor_by_body_delta(
     upper_damp_z: "tuple[float, float]" = (95.0, 105.0),
     upper_damp_standoff: "tuple[float, float]" = (2.0, 5.0),
     upper_damp_max: float = 0.6,
+    tris: "np.ndarray | None" = None,
 ) -> np.ndarray:
     """Warp armor verts to follow the body's CBBE -> UBE deformation,
     then enforce a minimum standoff above the UBE body surface.
@@ -1054,6 +1073,11 @@ def warp_armor_by_body_delta(
         Optional — pass None to disable the buffer pass entirely.
       ube_body_normals: (U, 3) outward unit normals matched 1:1 with
         `ube_body_verts`. Required when `ube_body_verts` is given.
+      tris: (T, 3) armor triangle indices. Optional; when given (and
+        WARP_STANDOFF_SMOOTH_ENABLED) the Pass-2 standoff push is feathered
+        over mesh adjacency instead of applied on a hard threshold, which is
+        what turns the push boundary from a cliff into a gradient. Omitting
+        it preserves the original unsmoothed behaviour exactly.
       max_distance: if set, linearly falls off the body-delta warp and
         the standoff push to zero at this nearest-body distance.
         Verts <= 0u from body get full delta; verts at max_distance
@@ -1140,11 +1164,43 @@ def warp_armor_by_body_delta(
             )
             need_push = need_push & (push_falloff > 0)
         if need_push.any():
-            deficit = (min_standoff - signed[need_push])[:, None]
-            push_vecs = near_n[need_push] * deficit
+            # Build the push as a full-length SCALAR magnitude along near_n so it
+            # can be feathered; the vector form can't be smoothed without blending
+            # opposing normals in concave regions (see the k=1 note above).
+            push_mag = np.zeros(len(warped), dtype=np.float64)
+            push_mag[need_push] = min_standoff - signed[need_push]
             if max_distance is not None and max_distance > 0:
-                push_vecs = push_vecs * push_falloff[need_push][:, None]
-            warped[need_push] += push_vecs
+                push_mag[need_push] *= push_falloff[need_push]
+            raw_mag = push_mag.copy()
+            if WARP_STANDOFF_SMOOTH_ENABLED and tris is not None:
+                # Floored at the raw requirement: smoothing may only ADD push to
+                # under-pushed neighbours, never reduce a vert below its standoff.
+                push_mag = _smooth_push_field(
+                    push_mag, raw_mag, tris,
+                    iters=WARP_STANDOFF_SMOOTH_ITERS)
+            unsmoothed = warped.copy()
+            unsmoothed[raw_mag > 0] += (
+                near_n[raw_mag > 0] * raw_mag[raw_mag > 0][:, None])
+            moved = push_mag > 0
+            if moved.any():
+                warped[moved] += near_n[moved] * push_mag[moved][:, None]
+            if WARP_STANDOFF_SMOOTH_ENABLED and tris is not None and moved.any():
+                # SAFETY CLAMP. Re-flooring the MAGNITUDE is not enough: spreading
+                # push onto a neighbour that needed none moves it along ITS OWN
+                # near_n, and where the surface is thin or concave (a belt strap,
+                # between the legs) that direction can drive the vert INTO another
+                # part of the body -- measured on a thin belt strap, min standoff
+                # 0.0206 -> -0.0092 (outside -> inside). So verify against the
+                # real geometry and revert any vert whose clearance got worse
+                # than it would have been unsmoothed. Smoothing is then a strict
+                # improvement or a no-op, never a new poke.
+                sm_d, sm_i = ube_tree.query(warped, k=1)
+                un_d, un_i = ube_tree.query(unsmoothed, k=1)
+                sm_signed = ((warped - ube_v[sm_i]) * ube_n[sm_i]).sum(axis=1)
+                un_signed = ((unsmoothed - ube_v[un_i]) * ube_n[un_i]).sum(axis=1)
+                worse = moved & (sm_signed < un_signed - 1e-9)
+                if worse.any():
+                    warped[worse] = unsmoothed[worse]
 
     return warped.astype(np.float32)
 
@@ -1860,6 +1916,27 @@ def _is_inline_body_name(name: "str | None") -> bool:
     return name in BODY_SHAPE_NAMES or nl.startswith(BODY_SHAPE_NAME_PREFIXES)
 
 
+# A "3BA"-family shape name (the CBBE 3BA body / its parts). Mod authors leave a
+# BodySlide REFERENCE body -- the full CBBE body, named "3BA Ref"/"3BA Reference"
+# -- inside skimpy armor NIFs, with a rendering shader but the ARMOR's diffuse
+# texture. The texture-gated body heuristic misses it (diffuse isn't a body skin)
+# so a whole CBBE body renders on the UBE actor (boots/panties/corset: the
+# in-game "explosion" that survived every mesh check). We swap it to the UBE body
+# by matching the name here -- but ONLY together with a FULL-BODY geometry gate
+# (see _looks_like_inline_body), so the SMALLER lower-body "3BA Ref" COLLISION
+# PROXIES that skirt HDT-SMP XMLs legitimately reference (~13k verts, z-range
+# ~78, listed as a per-vertex-shape) are left untouched. #3ba-ref-body
+def _is_3ba_body_family_name(name: "str | None") -> bool:
+    return (name or "").lower().startswith("3ba")
+
+
+# Full-body gates for the 3BA-ref-body swap: the full CBBE body is ~31.9k verts
+# spanning the whole character (~132u); a skirt collision proxy is ~13.4k verts
+# spanning only the lower body (~78u). Thresholds sit between the two.
+_INLINE_BODY_3BA_REF_MIN_VERTS = 20000
+_INLINE_BODY_3BA_REF_MIN_Z_RANGE = 100.0
+
+
 def validate_dst_nif(dst_path: "Path",
                      tri_path: "Path | None" = None,
                      src_path: "Path | None" = None) -> list[str]:
@@ -2152,6 +2229,16 @@ def _looks_like_inline_body(shape: "nif_io.Shape") -> bool:
         return True
     if shape.name == "VirtualBody" and len(shape.verts) >= _UBE_VIRTUALBODY_MIN_VERTS:
         return True
+    # A "3BA Ref"-style reference body (full CBBE body left in skimpy armor,
+    # rendering with the ARMOR diffuse so the texture gate below misses it).
+    # Catch it by the "3BA" name PLUS a full-body geometry gate, which excludes
+    # the smaller lower-body "3BA Ref" collision proxies skirts reference. #3ba-ref-body
+    if _is_3ba_body_family_name(shape.name) and len(shape.verts) >= _INLINE_BODY_3BA_REF_MIN_VERTS:
+        import numpy as _np
+        _z = _np.asarray(shape.verts, dtype=_np.float64)[:, 2]
+        if (float(_z.max() - _z.min()) >= _INLINE_BODY_3BA_REF_MIN_Z_RANGE
+                and len(shape.bone_names) >= _BODY_SKIN_MIN_BONES):
+            return True
     # General heuristic — needs ALL of: a nude-body-skin diffuse texture,
     # full character height span, many distinct skeleton bones, and enough
     # geometry to be a body. The TEXTURE gate goes first: it's what keeps a
@@ -2350,6 +2437,18 @@ def convert_nif(
                 ube_body_ref_path=matched_ref,
                 cbbe_body_ref_path=cbbe_ref_path,
                 biped_slots=biped_slots,
+                # Inject the UBE BaseShape only when this armor HIDES/PROVIDES the
+                # body the viewer sees: a slot-32 body piece (or a slotless one),
+                # OR a FIRST-PERSON body viewmodel (the 1st-person view renders
+                # ONLY 1st-person meshes -- dropping its body = invisible arms).
+                # A plain non-body slot (boots 37, panties/underwear, a cloak, a
+                # waist) does NOT hide slot 32, so the actor's own nude UBE body
+                # already renders; injecting a second body there just z-fights.
+                # For those we DROP the inline CBBE body (it's in body_names) and
+                # inject nothing. Matches the exposed-skin gate above. #3ba-ref-body
+                inject_baseshape=((not biped_slots)
+                                  or bool(biped_slots & _BODY_SLOT_BIT)
+                                  or _is_first_person_mesh(src_path, nif)),
                 alt_texture_shape_names=alt_texture_shape_names,
                 extra_body_drop_names=tuple(exposed_skin_names),
             )
@@ -2504,6 +2603,7 @@ def convert_nif(
                                 ube_body_verts=body_verts_for_fit,
                                 ube_body_normals=body_normals_for_fit,
                                 min_standoff=ARMOR_TO_SKIN_BUFFER,
+                                tris=np.asarray(s.tris, dtype=np.int64),
                             ).astype(np.float64)
                             if hf_ef is not None:
                                 wf = (1.0 - hf_ef)[:, None]
@@ -2605,6 +2705,7 @@ def convert_nif(
                             ube_body_verts=body_verts_for_fit,
                             ube_body_normals=body_normals_for_fit,
                             min_standoff=ARMOR_TO_SKIN_BUFFER,
+                            tris=np.asarray(s.tris, dtype=np.int64),
                         )
                         # Post-warp inflation: adds standoff so body morphs don't
                         # grow past the author's CBBE drape and poke through cloth.
@@ -3950,7 +4051,7 @@ def _normalize_partitions_on_disk(dst_path: Path,
     try:
         pyn = _pynifly()
         nf = pyn.NifFile(filepath=str(dst_path))
-        # HDT-SMP per-triangle COLLISION shapes (the authored furexarot/skirt
+        # HDT-SMP per-triangle COLLISION shapes (the authored cloth/skirt
         # colliders) must KEEP their authored skin partitions: collapsing or
         # re-slotting them desyncs FSMP's collision build from the XML -> an
         # out-of-bounds read in Main::Update on equip (CTD -- the elven cuirass
@@ -5140,7 +5241,7 @@ _BUTT_JIGGLE_CAP = float(os.environ.get("CBBE2UBE_BUTT_JIGGLE_CAP", "0.15"))  # 
 # The Thigh<->Pelvis REBALANCE half of the butt match is DEFAULT-ON: it is the ORIGINAL,
 # proven behavior (the user-approved "looks good" leather cuirass was made with it). A
 # 2026-07-08 attempt to blame it for a "coverage regression" and default it off was a
-# MISDIAGNOSIS -- the real regression was elsewhere (see [[project_newleather_working_recipe]]).
+# MISDIAGNOSIS -- the real regression was in a different pass entirely.
 # Opt out only if a specific armor needs it: CBBE2UBE_BUTT_REBALANCE=0.
 _BUTT_REBALANCE = (os.environ.get("CBBE2UBE_BUTT_REBALANCE", "1").strip().lower()
                    in ("1", "true", "yes", "on"))
@@ -5416,7 +5517,22 @@ def _conform_fitted_to_body(dst_path, src_path=None, biped_slots: int = 0) -> in
     total = 0
     dirty = False
     if do_conform:
-        dirty, total = _conform_weights_core(nf, dst_path, weight)
+        # Shapes driven by a source BodySlide morph TRI keep their source skin
+        # (see _conform_weights_core docstring + the reskin's morph-TRI gate).
+        morph_tri_names = (_source_morph_tri_shape_names(Path(src_path))
+                           if (src_path and RESKIN_PREFER_SOURCE_WHEN_MORPH_TRI)
+                           else frozenset())
+        # BUT only for a SINGLE-armor-layer piece (a lone bra, where the conform's
+        # body-blend can misfire onto Spine2 and make it rigid). A MULTI-LAYER
+        # stack (corset + blouse + belts...) NEEDS the conform: it makes every
+        # layer deform WITH the body so they stay separated under idle -- keeping
+        # their independent source skins makes the layers drift and CLIP into each
+        # other (measured regression on a layered top). #morphtri-conform-multilayer
+        n_armor = sum(1 for s in nf.shapes
+                      if s.name not in UBE_BODY_INJECT_NAMES)
+        if n_armor > 1:
+            morph_tri_names = frozenset()
+        dirty, total = _conform_weights_core(nf, dst_path, weight, morph_tri_names)
     overrides = _selfint_overrides(nf, dst_path, src_path) if do_selfint else {}
     if overrides:
         # ONE re-author commits the relaxed verts AND (from the in-memory nf) the
@@ -5447,10 +5563,19 @@ def _conform_fitted_to_body(dst_path, src_path=None, biped_slots: int = 0) -> in
     return total
 
 
-def _conform_weights_core(nf, dst_path, weight) -> "tuple[bool, int]":
+def _conform_weights_core(nf, dst_path, weight,
+                          morph_tri_names: "frozenset[str] | set[str]" = frozenset()
+                          ) -> "tuple[bool, int]":
     """The fitted-cloth weight-conform loop on an already-loaded nf. Returns
     (dirty, verts_conformed). See CONFORM_FITTED_CLOTH for the detection gates --
-    rigid plate armor is excluded and stays rigid."""
+    rigid plate armor is excluded and stays rigid.
+
+    `morph_tri_names`: shapes driven by a SOURCE BodySlide morph TRI keep their
+    STABLE source skin (same reason the M6 reskin excludes them, ~12257):
+    rebuilding the skin desyncs that TRI so the shape stops inflating to match a
+    morphed body AND, for a breast-jiggle bra, the body-weight blend pulls weight
+    off the Breast bones onto Spine2 -> the bra goes rigid and no longer follows
+    the breasts under physics (distorted/spiky). Skip them here too. #morphtri-conform"""
     ref = _body_conform_ref(weight)
     if ref is None:
         return False, 0
@@ -5470,6 +5595,7 @@ def _conform_weights_core(nf, dst_path, weight) -> "tuple[bool, int]":
         nm = (s.name or "").lower()
         if (s.name in collider_names or s.name in softbody_names
                 or s.name in layered_cloth_names
+                or s.name in morph_tri_names
                 or any(k in nm for k in _CONFORM_SKIP_NAMES)):
             continue
         bw = s.bone_weights or {}
@@ -5567,6 +5693,13 @@ def _conform_weights_core(nf, dst_path, weight) -> "tuple[bool, int]":
 # CBBE2UBE_NO_SELFINT_REPAIR=1; band + gate tunable via CBBE2UBE_SELFINT_*.
 SELFINT_REPAIR = os.environ.get(
     "CBBE2UBE_NO_SELFINT_REPAIR", "").strip().lower() not in ("1", "true", "yes")
+# Feathering rounds for the self-int separation step. Keeps the push continuous so
+# separating layers doesn't spike the mesh. 4 by SWEEP (0/1/2/4) on a bust top + a
+# cuirass cord shape: the cord's max edge jump falls 2.19 -> 1.09 (-50%) AND the
+# crossings it resolves IMPROVE (368 -> 248 remaining) -- a coherent push separates
+# better than a jittery one, so there's no trade here. 1 is a no-op (the neighbour
+# blend needs >=2 rounds to propagate). 0 restores the old raw behaviour.
+_SELFINT_SMOOTH = int(os.environ.get("CBBE2UBE_SELFINT_SMOOTH", "4") or "4")
 _SELFINT_ZLO = float(os.environ.get("CBBE2UBE_SELFINT_ZLO", "88"))
 _SELFINT_ZHI = float(os.environ.get("CBBE2UBE_SELFINT_ZHI", "116"))
 # Source self-intersection >= this = by-design (fur/strands) -> leave the shape alone.
@@ -5714,7 +5847,22 @@ def _relax_shape_self_intersection(V, tris, chain_vert, Vb, Nb, tree, target):
         m = cnt > 0
         if not m.any():
             break
-        v[m] = v[m] + move[m] / cnt[m, None]
+        step = np.zeros_like(v)
+        step[m] = move[m] / cnt[m, None]
+        # FEATHER the separation step over the mesh. Pushing only the verts of a
+        # crossing triangle, and leaving their untouched neighbours behind, IS a
+        # crinkle -- this pass moves thousands of verts (measured: 5879 on one
+        # cuirass cord shape) and roughly DOUBLES the displacement's max edge jump
+        # (0.59 -> 1.21 on a bust top) purely from that discontinuity. The spiky-vert
+        # artifact is the pipeline ACCUMULATING these unsmoothed per-vert pushes, so
+        # each one must move its neighbourhood with it. Chain verts stay pinned: they
+        # are zeroed after smoothing so a physics rest pose is never disturbed.
+        try:
+            step = _smooth_vertex_field(step, tris, iters=_SELFINT_SMOOTH)
+            step[chain_vert] = 0.0
+        except Exception:
+            pass
+        v = v + step
         moved_any |= m
         # body-safety clamp: a moved vert must never end up below the standoff
         _, vbi2 = tree.query(v)
@@ -5803,6 +5951,22 @@ def _selfint_overrides(nf, dst_path, src_path) -> dict:
                         chain_vert[iv] = True
         Vr, moved = _relax_shape_self_intersection(V, T, chain_vert, Vb, Nb, tree, target)
         if moved:
+            # The push-relaxation moves verts along the body normal with no
+            # degenerate-tri guard, so a thin fabric fold (front + back sheet ~one
+            # step apart) can be pinched flat -- two verts snapped coincident, a
+            # zero-area sliver that renders as a black "malformed underside". This
+            # post-save pass runs AFTER the pre-save degenerate-tri repair, so
+            # nothing else catches it. Un-pinch any op-collapsed tri back to its
+            # source-relative shape at the relaxed position (same repair; small
+            # moves that restore thickness without re-crossing). Source-degenerate
+            # folds are left alone by the repair's own source-area gate.
+            # #selfint-collapse-guard
+            if src is not None and len(src[0]) == len(Vr) and len(src[1]) == len(T):
+                try:
+                    Vr, _nfix = repair_collapsed_tris(
+                        np.asarray(Vr, np.float64), src[0], T)
+                except Exception:
+                    pass  # best-effort; leave relaxed verts as-is on failure
             overrides[nm] = Vr
     return overrides
 
@@ -6594,7 +6758,7 @@ def _reanchor_nif_root_chains(chain, anchors, src_nodes) -> int:
     """Re-parent garment-chain bones that hang off a NIF-ROOT node onto NPC Pelvis.
 
     `chain` maps bone -> (transform, parent_name) as gathered by
-    _precreate_custom_bone_chains. The failure case (Anequina): the top skirt bones
+    _precreate_custom_bone_chains. The failure case (a disjointed skirt): the top skirt bones
     are parented directly to the source scene root (e.g. "BodyM_1.nif"), which the
     engine tracks as the actor ROOT (feet), so the skirt disconnects. The root node
     itself is Pelvis's OWN ancestor (the whole skeleton hangs under it) and so can't
@@ -8408,11 +8572,26 @@ SKIN_PARTITION_BONE_CAP = 78
 
 # A single skin partition with a very high VERTEX count is not safe for the
 # runtime body-morph rebuild (NioOverride/RaceMenu): measured equip CTD when a
-# ~31.8k-vert torso shape sat in ONE partition (the morph walk read past the
-# vertex buffer at vertex 32768). The injected UBE body itself ships MULTIPLE
-# partitions; we mirror that by splitting any over-cap shape into vertex-balanced
-# partitions (CTD-safe, drops no bone/vert). Distinct from the BONE-count cap.
-SKIN_PARTITION_VERT_CAP = 16000
+# shape sat in ONE partition and the morph walk read past the vertex buffer at
+# vertex 32768 -- i.e. the 16-bit vertex-INDEX limit (32767). We split any shape
+# that would exceed that limit in a single partition (CTD-safe, drops no
+# bone/vert). Distinct from the BONE-count cap.
+#
+# 2026-07-13: the cap was 16000 -- HALF the real 16-bit limit -- so it split
+# body-sized morphable armor shapes that were nowhere near the overflow
+# (a large arm shape 29012v, a shoe 24088v). That UNNECESSARY 2-way split corrupts the
+# skin partition for HDT-SMP's per-frame actor re-skin: FSMP's Update moves the
+# skeleton, the game re-skins the split shape, and the read runs off the end ->
+# EXCEPTION_ACCESS_VIOLATION in hdtsmp64.dll (and the same bad skin data renders
+# as an exploded/garbage mass BEFORE the crash). Confirmed in-game: merging the
+# two partitions back to one on the deployed NIFs fixed BOTH the crash and the
+# explosion. The injected UBE body (29298v) already ships a SINGLE partition and
+# has always worked, which is the proof that ~29-32k in one partition is safe.
+# Raised to 31000 -- below the ONE measured ~31.8k CTD, above every body-sized
+# armor shape -- so nothing splits unless it genuinely approaches the 16-bit
+# index limit. Shapes still over 31000 (rare: 50k+ fur/book meshes) must split
+# regardless (they overflow the index) and are unaffected. #partition-split-smp
+SKIN_PARTITION_VERT_CAP = 31000
 
 
 def _cap_skin_bone_count(bone_names, xforms_map, weights_map,
@@ -8825,8 +9004,9 @@ def _is_first_person_mesh(dst_path, nif) -> bool:
     absent chain already trip `_is_unconstrained_collision_pair`).
 
     Detection is name AND structure, because neither alone is safe:
-      * name only -- `1stexplorersgarb_f` is an ITEM called "First Explorer's Garb",
-        a third-person body armor that would silently lose its physics.
+      * name only -- a `1st...`-prefixed stem can belong to an ITEM whose NAME simply
+        starts with "First" (e.g. a "First ... Garb" outfit), a third-person body
+        armor that would silently lose its physics.
       * structure only -- a cloak, boots and gloves also carry no injected `BaseShape`,
         and they DO want physics.
     A genuine first-person mesh is the viewmodel: it never has a body injected into it.
@@ -9408,7 +9588,7 @@ def _copy_shape(src_shape, dst_nif, parent=None, override_verts=None,
     # g2s. Zeroing the transform (even on the fit path, where the fit verts are
     # lowered BACK to skin space) leaves g2s offset + transform identity -> the cull
     # bound lands ~g2s-offset below the geometry -> frustum-culled / invisible at
-    # angles (the furexarot SMP elven cuirass). The engine IGNORES a skinned shape's
+    # angles (measured on an HDT-SMP elven cuirass). The engine IGNORES a skinned shape's
     # transform for RENDER, so keeping it can't fling the mesh -- it only restores the
     # matched pair the cull bound needs. So skip the reset for an offset-g2s skinned
     # shape; a SCALE/ROTATION bake (_bake_T) still wins (those must land in verts).
@@ -9420,8 +9600,8 @@ def _copy_shape(src_shape, dst_nif, parent=None, override_verts=None,
         # The source props carried a (possibly non-identity) NiAVObject transform.
         # Force identity ONLY when the verts are already in final space WITHOUT it:
         # baked above, OR body-positioned via override_verts (the fit path) -- else a
-        # leftover scale/translation flings the mesh off-body (project_scale_bake_
-        # vigilant). GATED on src_shape.bone_names: a NON-skinned transform IS
+        # leftover scale/translation flings the mesh off-body (the scale-bake
+        # case). GATED on src_shape.bone_names: a NON-skinned transform IS
         # engine-honored, so it must NOT be zeroed on the override path. GATED on
         # not _g2s_offset: an offset-g2s shape's transform is the cull-bound match
         # (above) -- keep it.
@@ -9767,6 +9947,15 @@ def _find_hdt_xml_for_armor(armor_nif_path: Path,
     return None
 
 
+# If the source HDT-SMP XML drives at least this many bones the converted
+# skeleton LACKS, the piece's physics rig is substantially gone -> regenerate a
+# stable soft-body XML instead of keeping a source XML that points FSMP at
+# non-existent bones (unconstrained -> divergence -> exploded spiky mass). A
+# cleanly-converted piece loses ~0 bones, so a large count is unambiguous.
+_HDT_REGEN_MISSING_BONES = int(
+    os.environ.get("CBBE2UBE_HDT_REGEN_MISSING_BONES", "8"))
+
+
 def _source_hdt_needs_missing_chain_bones(src_path, dst_bone_names) -> bool:
     """True if the source armor's HDT-SMP XML drives physics-CHAIN bones
     (physics-chain bones (prefix_NN), Skirt N_NN, etc.) that are NOT present in the
@@ -9814,12 +10003,26 @@ def _source_hdt_needs_missing_chain_bones(src_path, dst_bone_names) -> bool:
         xml_bones = set(re.findall(r'<bone\s+name="([^"]+)"', txt))
         if not xml_bones:
             return False
+        dst = set(dst_bone_names or ())
+        # Tolerate the "[Xxx]" node-id suffix on either side when matching.
+        def _norm(x):
+            return x.split('[', 1)[0].strip()
+        dst_norm = {_norm(b) for b in dst}
         from .hdt_xml_gen import detect_physics_chains
         chain_bones = {b for ch in detect_physics_chains(xml_bones)
                        for b in ch.bones}
-        if not chain_bones:
-            return False  # XML uses only standard bones we already have
-        return bool(chain_bones - set(dst_bone_names or ()))
+        # (1) A RECOGNIZED physics chain the converted skeleton lacks -> regen.
+        if any(_norm(b) not in dst_norm and b not in dst for b in chain_bones):
+            return True
+        # (2) The XML drives MANY missing bones even when their naming isn't a
+        # recognized chain pattern (space-separated custom rigs like "CustomChain 1",
+        # "HDT_BSN 1" that detect_physics_chains can't parse). Leaving the source
+        # XML points FSMP at bones that don't exist -> unconstrained soft body ->
+        # divergence -> exploded spiky mass. Regenerate a stable soft-body instead.
+        # #hdt-many-missing-regen
+        missing = sum(1 for b in xml_bones
+                      if _norm(b) not in dst_norm and b not in dst)
+        return missing >= _HDT_REGEN_MISSING_BONES
     except Exception:
         return False
 
@@ -10079,6 +10282,38 @@ def _generate_hdt_xml_for_dst(dst_path: "Path", only_loose: bool = False) -> "st
     # need to add new bones — they're already in the source mod's
     # skeleton, just unused without this XML.
     chains = hdt_xml_gen.detect_physics_chains(all_bones_seen)
+
+    # #chainless-softbody-gate: on the GENERATE-fresh path (only_loose -- the
+    # source shipped NO authored physics XML), a carrier set with NO detectable
+    # physics-chain bones can only yield constraint-less per-vertex soft-bodies
+    # (write_armor_hdt_xml with chains=[] emits per-vertex-shapes and ZERO
+    # constraints). FSMP then simulates those verts as unconstrained mass points
+    # with no stiffness -> they diverge into a spiky "exploded" mass. That is
+    # exactly what happens to a body-conforming fur/drape that was RIGID in the
+    # source (skinned to standard skeleton + breast/butt bones, never authored
+    # for simulation): the converter must NOT invent physics for it. Emit
+    # nothing -> the piece stays kinematic (skinned), matching the source.
+    #
+    # Fires on TWO cases (both = a chainless per-vertex soft-body that FSMP would
+    # diverge on):
+    #   (a) only_loose (generate-fresh, source had no physics) + no chains.
+    #   (b) ANY path with NO body collider + no chains -- including the missing-
+    #       chain REGEN path (only_loose=False). detect_physics_chains can't see
+    #       space-separated custom chains (e.g. "CustomChain 1"), so a cloth-only skirt
+    #       whose authored chains are space-separated regen's to chains=[]; with a
+    #       collider `_is_unconstrained_collision_pair` below catches it, but a
+    #       cloth-only NIF (collider is None) previously slipped BOTH guards and
+    #       shipped an exploding soft-body. A chainless soft-body with no collider
+    #       has nothing to stabilise it, so emit nothing (static) either way.
+    # #fur-auto-smp #chainless-cloth-only
+    if not chains and (only_loose or body_shape_name is None):
+        try:
+            print(f"  chainless-softbody gate: {dst_path.name} kept rigid "
+                  f"(no source physics + no chain bones -> no generated "
+                  f"soft-body)", file=sys.stderr)
+        except Exception:
+            pass
+        return None
 
     # Don't emit the FSMP equip-CTD pattern: an unconstrained collision
     # pair (cloth + per-triangle body collider, no simulated chain). The
@@ -10735,7 +10970,7 @@ def _finalize_hdt_physics(dst_path: Path, src_nif_path: Path) -> bool:
 
 
 def _reauthor_nif_fresh(dst_path: Path, override_verts_by_name=None,
-                        exclude_shapes=None, nif=None, strip_hdt=False) -> bool:
+                        exclude_shapes=None, nif=None) -> bool:
     """Re-author a NIF from scratch into a fresh NifFile — copy every shape
     via _copy_shape (clean pynifly authoring) instead of leaving the
     source-derived bytes produced by the verbatim `shutil.copy2` path.
@@ -10827,7 +11062,7 @@ def _reauthor_nif_fresh(dst_path: Path, override_verts_by_name=None,
             if tgt is not None:
                 NiStringExtraData.New(
                     new, name="BODYTRI", string_value=bodytri_str, parent=tgt)
-        if hdt_str and not strip_hdt:
+        if hdt_str:
             NiStringExtraData.New(
                 new, name="HDT Skinned Mesh Physics Object",
                 string_value=hdt_str, parent=new.rootNode)
@@ -11409,6 +11644,484 @@ def _match_seam_skinning(plates, seam_clusters):
     return n_matched
 
 
+# Multi-layer garment stacks (chest_plate / corset / top / belts / belts_metal) each get
+# displaced by the fit passes according to their OWN distance to the body, so a layer 1u
+# off the skin and one 2u off move by DIFFERENT amounts -> their spacing drifts -> they
+# cross = visible layer clipping at standstill. MEASURED: a 5-layer stack gained 5 NEW
+# cross-shape penetrations (~1.2u) vs its source, and a per-pass bisect (conform/self-int/
+# softcloth/motion-match/jiggle, and the opt-in ANTIPOKE_SMOOTH + LAYERED_ANTIPOKE floors)
+# moved WHICH pairs crossed but never the count -- it isn't one pass, it's the per-layer
+# independence itself.
+#
+# Fix: ride the stack COHERENTLY. Rank the layers innermost-first, then walk outward: each
+# layer re-derives its verts from the FINAL position of the nearest SOURCE-paired vert of
+# the geometry ALREADY placed beneath it, preserving that vert's SOURCE offset. The
+# innermost layer keeps its own body fit, and every layer above rides it, so relative
+# spacing is preserved BY CONSTRUCTION and layers can't cross. Same trick as the glow ride
+# below, cascaded over the layer stack instead of one plate. Per-vert gated on ride_max so
+# a layer with nothing beneath it locally (a waist belt over a chest-only reference) keeps
+# its own warp. CBBE2UBE_NO_LAYER_RIDE=1 disables. #layer-ride
+# Cord/trim shapes (decorative laces, cords, piping) are NOT a layer with a
+# consistent side -- they thread half-in / half-out of their host surface by design
+# (MEASURED: a 'Jacket Cords' trim shape vs its 'Jacket' host -- source signed offset median -0.01u,
+# range -0.71..+0.68, 4160/12100 verts already "inside" the host). So the layer-ride /
+# order-repair (which assume a definite side) can't help them and my order metric even
+# over-counts their natural weave. They sink in-game for a DIFFERENT reason: the host
+# surface warps ~0.9u CBBE->UBE while the cord, sitting ~0.04u ON that surface, doesn't
+# follow that exact motion -> it ends up buried.
+#
+# Fix: GLUE the cord to the host surface. For each cord vert take its foot-point on the
+# nearest host triangle + its signed HEIGHT along the host normal IN THE SOURCE, then
+# place the cord vert at host_FINAL_footpoint + source_height * host_FINAL_normal, with
+# the resulting displacement FEATHERED over the cord mesh so the strand moves coherently
+# (the cord's real defect is CRINKLE -- adjacent verts flung apart, measured max edge
+# jump 4.80u at the shoulder -- not sinking).
+#
+# DEFAULT OFF (opt in with CBBE2UBE_CORD_CONFORM=1). MEASURED on a cuirass whose cords
+# lace its jacket: the target cord's max edge jump improves 4.42 -> 3.38 (-23%), but it
+# is only a PARTIAL fix and it perturbs neighbouring pieces through pass interactions --
+# a shoulder pauldron's jump rose 1.33 -> 1.84 (~half of that via the cross-shape seam
+# weld coupling a moved cord vert to the pauldron; disabling the weld only halves it and
+# costs cord quality). Net-positive but NOT clean, so it stays opt-in rather than
+# trading one visible piece for another. The durable fix is to protect cord/trim shapes
+# DURING the warp (as the hand/foot extremity masking does) instead of repairing them
+# afterwards. #cord-conform
+CORD_CONFORM_ENABLED = (
+    os.environ.get("CBBE2UBE_CORD_CONFORM", "").strip().lower()
+    in ("1", "true", "yes", "on"))
+_CORD_MAX_HOST_DIST = float(os.environ.get("CBBE2UBE_CORD_MAX_DIST", "1.5") or "1.5")
+# Feathering rounds for the cord conform displacement. The cord's real defect is
+# neighbouring verts flung apart (crinkle); smoothing the conform makes the strand
+# move coherently. 3 (a cord is a thin strand -> a couple more rounds than a sheet).
+_CORD_SMOOTH = int(os.environ.get("CBBE2UBE_CORD_SMOOTH", "3") or "3")
+
+
+_CORD_NAME_HINTS = ("cord", "lace", "string", "trim", "strap", "rope", "chain",
+                    "stitch", "piping")
+
+
+def _cord_and_host_shapes(shape_jobs, softbody_names=frozenset(),
+                          collider_names=frozenset()):
+    """Split eligible garment jobs into (cords, hosts). A CORD is decorative trim that
+    THREADS through/around a host surface -- classified by NAME, not size (a dense
+    'Jacket Cords' mesh can have MORE verts than the jacket it laces, so a size gate
+    mis-files it as a host). Any shape whose name hints trim is a cord; everything else
+    is a candidate host. Whether a given cord actually hugs a given host is decided
+    geometrically at conform time (source foot-point within max_dist).
+    Returns (cord_jobs, host_jobs). Empty on any doubt."""
+    elig = [j for j in shape_jobs
+            if _layer_order_eligible(j, softbody_names, collider_names)]
+    if len(elig) < 2:
+        return [], []
+    cords, hosts = [], []
+    for j in elig:
+        nm = (j["src"].name or "").lower()
+        (cords if any(k in nm for k in _CORD_NAME_HINTS) else hosts).append(j)
+    # A cord needs a DIFFERENT shape to host it; if everything is trim (or nothing is),
+    # there's no host relationship to conform to.
+    if not cords or not hosts:
+        return [], []
+    return cords, hosts
+
+
+def _conform_cords_to_host(shape_jobs, softbody_names=frozenset(),
+                           collider_names=frozenset(),
+                           max_dist: float = _CORD_MAX_HOST_DIST):
+    """Glue cord/trim shapes to the FINAL surface of their host. See #cord-conform.
+
+    Returns the count of re-placed cord verts. Best-effort; a caller wraps it.
+    """
+    if not CORD_CONFORM_ENABLED:
+        return 0
+    try:
+        from .correspondence import MeshIndex, project_to_mesh
+    except Exception:
+        return 0
+    cords, hosts = _cord_and_host_shapes(shape_jobs, softbody_names, collider_names)
+    if not cords or not hosts:
+        return 0
+
+    # Build source + final MeshIndex for each host once.
+    host_idx = []
+    for h in hosts:
+        try:
+            hsv = np.asarray(h["src"].verts, dtype=np.float64)
+            htr = np.asarray(h["src"].tris, dtype=np.int64)
+            hfv = np.asarray(h["verts"], dtype=np.float64)
+            if hsv.ndim != 2 or hsv.shape != hfv.shape or htr.size == 0:
+                continue
+            host_idx.append((MeshIndex.build(hsv, htr), MeshIndex.build(hfv, htr)))
+        except Exception:
+            continue
+    if not host_idx:
+        return 0
+
+    n_fixed = 0
+    for c in cords:
+        try:
+            csv = np.asarray(c["src"].verts, dtype=np.float64)
+            cfv = np.asarray(c["verts"], dtype=np.float64).copy()
+        except Exception:
+            continue
+        if csv.ndim != 2 or csv.shape != cfv.shape or len(csv) == 0:
+            continue
+        # Choose, per host, the verts this cord actually hugs (source foot-point
+        # within max_dist); place them on that host's FINAL surface at their source
+        # height. If several hosts claim a vert, the nearest source foot-point wins.
+        best_d = np.full(len(csv), np.inf)
+        new_pos = cfv.copy()
+        touched = np.zeros(len(csv), bool)
+        for src_mi, fin_mi in host_idx:
+            proj_s, _tri_s, nrm_s = project_to_mesh(csv, src_mi)
+            d = np.linalg.norm(csv - proj_s, axis=1)
+            height = np.einsum('ij,ij->i', csv - proj_s, nrm_s)   # signed source height
+            take = (d < max_dist) & (d < best_d)
+            if not np.any(take):
+                continue
+            proj_f, _tri_f, nrm_f = project_to_mesh(csv[take], fin_mi)
+            new_pos[take] = proj_f + nrm_f * height[take][:, None]
+            best_d[take] = d[take]
+            touched[take] = True
+        if np.any(touched):
+            # The visible cord defect is CRINKLE, not sink: the fit passes fling
+            # adjacent cord verts apart (measured: a 'Jacket Cords' trim shape, max edge
+            # displacement-jump 4.80u -- the cord mesh shredding at the shoulder).
+            # Conforming each vert to its own foot-point independently would keep
+            # that tearing, so FEATHER the conform DISPLACEMENT over the cord mesh:
+            # the cord moves as a coherent strand instead of per-vert. Same lesson
+            # as the ride (k=1 snap) and the order-repair (per-vert shove). #cord-conform
+            corr = np.zeros_like(cfv)
+            corr[touched] = new_pos[touched] - cfv[touched]
+            try:
+                ctris = np.asarray(c["src"].tris, dtype=np.int64)
+                corr = _smooth_vertex_field(corr, ctris, iters=_CORD_SMOOTH)
+            except Exception:
+                pass
+            cfv = cfv + corr
+            c["verts"] = cfv
+            c["verts_modified"] = True
+            n_fixed += int(touched.sum())
+    return n_fixed
+
+
+LAYER_RIDE_ENABLED = (
+    os.environ.get("CBBE2UBE_NO_LAYER_RIDE", "").strip().lower()
+    not in ("1", "true", "yes", "on"))
+# 2.0 chosen by SWEEP (1.0/1.5/2.0/3.0) against layer_penetration + crinkle on a
+# 5-layer stack AND an angled-pauldron cuirass: 2.0 gave the best overall -- stack
+# chest_plate spikiness 5.38->0.99 and penetration 1.22->0.68u, while a shoulder
+# pauldron IMPROVED 2.92->2.23 (3.0 rides too far and drags it to 3.43). See #layer-ride.
+_LAYER_RIDE_MAX = float(os.environ.get("CBBE2UBE_LAYER_RIDE_MAX", "2.0") or "2.0")
+# k-nearest reference verts blended per rider vert. >1 is REQUIRED: a k=1 (snap to
+# nearest) ride inherits a discontinuous displacement and ADDS spikes. See #layer-ride.
+_LAYER_RIDE_K = int(os.environ.get("CBBE2UBE_LAYER_RIDE_K", "8") or "8")
+
+
+# Layer-ORDER repair. The visible "layers clipping into each other" artifact is NOT
+# "one layer is inside another" -- layered armor AUTHORS that (a source `top` sits 1.32u
+# inside its `chest_plate` across 6221 verts, hidden by design). The artifact is an ORDER
+# INVERSION: a vert that was on one side of another shape in the SOURCE ends up on the
+# OTHER side after the fit passes, so a piece that should sit on top gets swallowed (the
+# outermost metal band sinking 0.60u into the chest plate it should lie on; a cuirass's
+# cords sinking into the jacket across 40% of their verts).
+#
+# Fix: pair each vert to its nearest neighbour on every nearby shape IN SOURCE SPACE, take
+# the signed distance along that shape's normal in BOTH spaces, and where the SIGN FLIPPED
+# (was outside/on, now inside) push the vert back out along the destination normal until it
+# regains its SOURCE signed offset. Order + authored spacing restored; verts that never
+# flipped are untouched, so a correct fit is never disturbed. #layer-order
+LAYER_ORDER_REPAIR_ENABLED = (
+    os.environ.get("CBBE2UBE_NO_LAYER_ORDER", "").strip().lower()
+    not in ("1", "true", "yes", "on"))
+_LAYER_ORDER_NEAR = float(os.environ.get("CBBE2UBE_LAYER_ORDER_NEAR", "2.0") or "2.0")
+_LAYER_ORDER_EPS = 0.05     # sign-noise band
+_LAYER_ORDER_ITERS = int(os.environ.get("CBBE2UBE_LAYER_ORDER_ITERS", "2") or "2")
+# Feathering rounds for the correction field. MUST be > 0: a raw per-vert shove IS a
+# crinkle (measured 5.38 -> 6.09 spikiness unsmoothed). See #layer-order.
+_LAYER_ORDER_SMOOTH = int(os.environ.get("CBBE2UBE_LAYER_ORDER_SMOOTH", "2") or "2")
+
+
+def _smooth_vertex_field(vec: np.ndarray, tris, iters: int = 2,
+                         blend: float = 0.5) -> np.ndarray:
+    """Feather a per-vert VECTOR field over the mesh adjacency.
+
+    Vector sibling of _smooth_push_field (which handles a scalar push). Each round
+    blends every vert's vector toward its edge-neighbour average, so a correction
+    applied to one vert drags its neighbourhood along instead of leaving a step.
+    Verts whose neighbourhood has no correction stay ~0. Returns `vec` unchanged on
+    any failure (never worse than not smoothing).
+    """
+    try:
+        t = np.asarray(tris, dtype=np.int64)
+        v = np.asarray(vec, dtype=np.float64)
+        n = len(v)
+        if t.size == 0 or n < 3 or not np.any(np.abs(v) > 0):
+            return vec
+        from scipy import sparse
+        e = np.concatenate([t[:, [0, 1]], t[:, [1, 2]], t[:, [2, 0]]])
+        e = np.concatenate([e, e[:, ::-1]])
+        e = e[(e[:, 0] < n) & (e[:, 1] < n) & (e[:, 0] >= 0) & (e[:, 1] >= 0)]
+        if len(e) == 0:
+            return vec
+        A = sparse.coo_matrix(
+            (np.ones(len(e)), (e[:, 0], e[:, 1])), shape=(n, n)).tocsr()
+        deg = np.asarray(A.sum(axis=1)).ravel()
+        deg[deg == 0] = 1.0
+        out = v.copy()
+        for _ in range(max(1, int(iters))):
+            avg = np.vstack([np.asarray(A @ out[:, c]).ravel() / deg
+                             for c in range(out.shape[1])]).T
+            out = (1.0 - blend) * out + blend * avg
+        return out
+    except Exception:
+        return vec
+
+
+def _layer_order_eligible(j, softbody_names=frozenset(), collider_names=frozenset()):
+    """Garment shapes whose cross-layer order we may correct: textured, non-effect,
+    non-collider/softbody (those keep their authored rest pose), identity-g2s (source
+    and final verts must share a frame for a signed offset to mean anything)."""
+    s = j["src"]
+    nm = s.name or ""
+    if nm in UBE_BODY_INJECT_NAMES or _is_inline_body_name(nm):
+        return False
+    if nm in softbody_names or nm in collider_names or nm.lower().startswith("col"):
+        return False
+    if _shape_has_effect_shader(s):
+        return False
+    if not (s.textures or {}):
+        return False
+    try:
+        if s.has_global_to_skin:
+            g = _shape_global_to_skin(s)
+            if not (g is None or _g2s_is_identity(g)):
+                return False
+    except Exception:
+        return False
+    return True
+
+
+def _repair_layer_order(shape_jobs, softbody_names=frozenset(),
+                        collider_names=frozenset(),
+                        near: float = _LAYER_ORDER_NEAR,
+                        iters: int = _LAYER_ORDER_ITERS):
+    """Restore each vert to the SOURCE side of every nearby layer. See #layer-order.
+
+    Returns the count of corrected verts. Best-effort; a caller wraps it.
+    """
+    if not LAYER_ORDER_REPAIR_ENABLED:
+        return 0
+    try:
+        from scipy.spatial import cKDTree
+    except Exception:
+        return 0
+
+    layers = [j for j in shape_jobs
+              if _layer_order_eligible(j, softbody_names, collider_names)]
+    if len(layers) < 2:
+        return 0
+
+    # (src verts, src normals, tris, dst verts) per layer, kept in lockstep.
+    L = []
+    for j in layers:
+        try:
+            sv = np.asarray(j["src"].verts, dtype=np.float64)
+            sn = j["src"].normals
+            tris = np.asarray(j["src"].tris, dtype=np.int64)
+            dv = np.asarray(j["verts"], dtype=np.float64)
+        except Exception:
+            continue
+        if sn is None or sv.ndim != 2 or sv.shape != dv.shape or len(sv) == 0:
+            continue
+        sn = np.asarray(sn, dtype=np.float64)
+        if sn.shape != sv.shape or tris.size == 0:
+            continue
+        L.append({"j": j, "sv": sv, "sn": sn, "tris": tris, "dv": dv})
+    if len(L) < 2:
+        return 0
+
+    # SOURCE pairing is fixed (computed once): the authored relationship is the truth.
+    trees = [cKDTree(x["sv"]) for x in L]
+    pairing = {}
+    for ia, A in enumerate(L):
+        for ib, B in enumerate(L):
+            if ia == ib:
+                continue
+            d, idx = trees[ib].query(A["sv"])
+            m = d < near
+            if m.sum() < 3:
+                continue
+            ai = np.where(m)[0]
+            bj = idx[ai]
+            s_src = np.einsum('ij,ij->i', A["sv"][ai] - B["sv"][bj], B["sn"][bj])
+            pairing[(ia, ib)] = (ai, bj, s_src)
+    if not pairing:
+        return 0
+
+    corrected = set()
+    for _ in range(max(1, iters)):
+        # Destination normals must be recomputed each round -- the verts moved.
+        dn = [_recompute_vertex_normals(x["dv"], x["tris"], source_normals=x["sn"])
+              for x in L]
+        moves = [np.zeros_like(x["dv"]) for x in L]
+        mag = [np.zeros(len(x["dv"])) for x in L]
+        any_fix = False
+        for (ia, ib), (ai, bj, s_src) in pairing.items():
+            A, B = L[ia], L[ib]
+            nb = dn[ib][bj]
+            s_dst = np.einsum('ij,ij->i', A["dv"][ai] - B["dv"][bj], nb)
+            # Was on/outside B in the source, is INSIDE B now -> swallowed.
+            flip = (s_src >= -_LAYER_ORDER_EPS) & (s_dst < -_LAYER_ORDER_EPS)
+            if not np.any(flip):
+                continue
+            any_fix = True
+            need = (s_src - s_dst)[flip]          # push back out to the authored offset
+            vec = nb[flip] * need[:, None]
+            vi = ai[flip]
+            # Keep the LARGEST demanded push per vert (satisfies the worst constraint;
+            # summing several would overshoot and bulge the shape).
+            better = np.abs(need) > mag[ia][vi]
+            if np.any(better):
+                sel = vi[better]
+                moves[ia][sel] = vec[better]
+                mag[ia][sel] = np.abs(need)[better]
+                corrected.update((ia, int(v)) for v in sel)
+        if not any_fix:
+            break
+        for i, x in enumerate(L):
+            nz = mag[i] > 0
+            if not np.any(nz):
+                continue
+            # FEATHER the correction over the mesh before applying it. A raw per-vert
+            # shove fixes the violating vert but leaves its untouched neighbours behind,
+            # which IS a crinkle -- measured: the unsmoothed repair cut inverted verts
+            # 3555->1828 but drove worst depth 2.28->3.04u and spikiness 5.38->6.09.
+            # Averaging each vert's correction with its edge neighbours (the moved verts
+            # pull their neighbourhood along) keeps the push field continuous, so the
+            # layer comes back to the right side WITHOUT growing a spike. Same lesson as
+            # the k=1 ride. #layer-order
+            mv = moves[i]
+            try:
+                mv = _smooth_vertex_field(mv, x["tris"], iters=_LAYER_ORDER_SMOOTH)
+            except Exception:
+                pass
+            x["dv"] = x["dv"] + mv
+
+    if not corrected:
+        return 0
+    for x in L:
+        x["j"]["verts"] = x["dv"]
+        x["j"]["verts_modified"] = True
+    return len(corrected)
+
+
+def _ride_layers_on_reference(shape_jobs, body_verts=None,
+                              ride_max: float = _LAYER_RIDE_MAX,
+                              softbody_names=frozenset(),
+                              collider_names=frozenset()):
+    """Ride a multi-layer garment stack coherently so its layers can't cross.
+
+    Operates on pass-1 `shape_jobs`. Ranks the eligible layers innermost-first by
+    median distance to `body_verts`, then walks outward: layer i re-derives each
+    vert from the FINAL position of the nearest SOURCE-paired vert among all layers
+    already placed beneath it, keeping that vert's SOURCE offset. Returns the count
+    of re-bound verts. Best-effort; a caller wraps it. See #layer-ride.
+
+    Skips HDT soft-body / collider shapes (they keep their authored rest pose -- a
+    ride would fight the sim) and non-identity-g2s shapes (source + final verts must
+    share a frame for the offset to mean anything).
+    """
+    if not LAYER_RIDE_ENABLED or body_verts is None:
+        return 0
+    try:
+        from scipy.spatial import cKDTree
+    except Exception:
+        return 0
+
+    def _eligible(j):
+        s = j["src"]
+        nm = s.name or ""
+        if nm in UBE_BODY_INJECT_NAMES or _is_inline_body_name(nm):
+            return False
+        if nm in softbody_names or nm in collider_names:
+            return False
+        if _shape_has_effect_shader(s):
+            return False          # glow decals ride their plate separately
+        if not (s.textures or {}):
+            return False          # collision proxy
+        try:
+            if s.has_global_to_skin:
+                g = _shape_global_to_skin(s)
+                if not (g is None or _g2s_is_identity(g)):
+                    return False
+        except Exception:
+            return False
+        return True
+
+    layers = [j for j in shape_jobs if _eligible(j)]
+    if len(layers) < 2:
+        return 0                  # nothing stacked -> nothing to ride
+
+    btree = cKDTree(np.asarray(body_verts, dtype=np.float64))
+
+    # Rank innermost-first by MEDIAN distance to the body (relative order is what
+    # matters; median is robust to a few far verts on a trailing belt/strap).
+    ranked = []
+    for j in layers:
+        try:
+            sv = np.asarray(j["src"].verts, dtype=np.float64)
+            fv = np.asarray(j["verts"], dtype=np.float64)
+        except Exception:
+            continue
+        if sv.ndim != 2 or sv.shape != fv.shape or len(sv) == 0:
+            continue
+        d, _ = btree.query(sv)
+        ranked.append((float(np.median(d)), j, sv, fv))
+    if len(ranked) < 2:
+        return 0
+    ranked.sort(key=lambda t: t[0])
+
+    n_rebound = 0
+    # Accumulated geometry already placed (innermost outward), in lockstep.
+    ref_src = [ranked[0][2]]
+    ref_fin = [ranked[0][3]]
+    for _d, j, sv, fv in ranked[1:]:
+        base_src = np.concatenate(ref_src)
+        base_fin = np.concatenate(ref_fin)
+        base_disp = base_fin - base_src          # the reference DISPLACEMENT field
+        tree = cKDTree(base_src)
+        # SMOOTH the ride: take the k-nearest reference verts and inverse-distance
+        # blend their DISPLACEMENT, rather than snapping to the single nearest.
+        # A k=1 ride re-introduces the very artifact it's meant to remove --
+        # adjacent rider verts can pair to DIFFERENT reference verts whose
+        # displacements differ, so the rider inherits a discontinuity and spikes
+        # (MEASURED: k=1 raised a shoulder pauldron's spikiness 2.92 -> 3.85 and a
+        # cord's 4.78 -> 5.35 even while it fixed the stack's coherence). Blending
+        # gives a continuous field, so the layer moves WITH what's beneath it
+        # smoothly. #layer-ride
+        k = int(min(_LAYER_RIDE_K, len(base_src)))
+        d, idx = tree.query(sv, k=k)
+        if k == 1:
+            d = d[:, None]
+            idx = idx[:, None]
+        mask = d[:, 0] <= ride_max
+        if np.any(mask):
+            w = 1.0 / (d + 1e-6)
+            w /= w.sum(axis=1, keepdims=True)
+            disp = (base_disp[idx] * w[:, :, None]).sum(axis=1)
+            cur = fv.copy()
+            # Move the rider by the (smoothly interpolated) displacement of the
+            # geometry beneath it -> its SOURCE offset to that geometry is preserved.
+            cur[mask] = sv[mask] + disp[mask]
+            j["verts"] = cur
+            j["verts_modified"] = True
+            n_rebound += int(mask.sum())
+            fv = cur
+        ref_src.append(sv)
+        ref_fin.append(fv)
+    return n_rebound
+
+
 # Effect-shader decal overlays sit ~0.03u off their solid plate as a thin additive shell.
 # They're not body-hugging, so the per-vertex fit passes displace them and their plate by
 # slightly different amounts, amplifying that tiny offset into a visible gap (the glow
@@ -11648,7 +12361,14 @@ def convert_nif_phase2(
     # hand-authored UBE NIFs where NioOverride morphs all TRI shapes via
     # an armor-shape carrier. Added after armor shapes are copied below.
 
-    if not injected:
+    if not injected and inject_baseshape:
+        # Only a FAILURE when we actually wanted to inject the UBE body (slot-32
+        # body armor). For a non-body slot (inject_baseshape=False -- boots/
+        # panties/underwear whose inline CBBE body we DROP, letting the actor's
+        # own nude UBE body show), an empty `injected` is EXPECTED: we're not
+        # replacing the body, just removing the stray one and copying the armor.
+        # Without this gate, routing a "3BA Ref"-body piece here (see
+        # #3ba-ref-body) skips the whole conversion -> the CBBE body survives.
         return ConvertResult(
             src_path=src_path, dst_path=None,
             status="skipped",
@@ -11840,6 +12560,7 @@ def convert_nif_phase2(
                         ube_body_verts=body_verts_for_p2,
                         ube_body_normals=body_norms_for_p2,
                         min_standoff=ARMOR_TO_SKIN_BUFFER,
+                        tris=np.asarray(s.tris, dtype=np.int64),
                     ).astype(np.float64)
                     if hf_ef is not None:
                         wf = (1.0 - hf_ef)[:, None]
@@ -11972,6 +12693,7 @@ def convert_nif_phase2(
                     ube_body_verts=body_verts_for_p2,
                     ube_body_normals=body_norms_for_p2,
                     min_standoff=ARMOR_TO_SKIN_BUFFER,
+                    tris=np.asarray(s.tris, dtype=np.int64),
                 )
                 # Slot-aware inflation to maintain standoff under body morphs.
                 _infl_mag_p2 = _slot_aware_inflation_magnitude(
@@ -12370,12 +13092,68 @@ def convert_nif_phase2(
         except Exception:
             pass  # best-effort; failure leaves shapes as-is
 
-    # Degenerate-triangle repair (LAST vertex op): prior passes can pinch thin
-    # tris flat -> black slivers. Restore collapsed tris to source-relative shape.
-    # Source-degenerate folds are left alone.
+    # Layer ride: the per-shape fit passes above displaced each layer by its OWN
+    # distance to the body, so a stacked garment's layers drift apart/through each
+    # other. Re-place them coherently (innermost keeps its fit; each layer above
+    # rides what's beneath it, preserving source offsets). See _ride_layers_on_reference.
     if shape_jobs:
-        _n_demangle = 0
-        _n_shapes_demangle = 0
+        try:
+            n_ride_l = _ride_layers_on_reference(
+                shape_jobs, body_verts=body_verts_for_p2,
+                softbody_names=hdt_softbody_names,
+                collider_names=hdt_collider_names)
+            if n_ride_l:
+                import sys as _sys
+                print(f"  layer ride: re-placed {n_ride_l} vert(s) on the layer "
+                      f"beneath them (coherent stack)", file=_sys.stderr)
+        except Exception:
+            pass  # best-effort; failure leaves each layer independently warped
+
+    # Layer-ORDER repair: runs AFTER the ride (and every other vertex pass) so it
+    # corrects whatever any of them got wrong -- a vert that ended up on the wrong
+    # side of a neighbouring layer is pushed back to its authored side. This is the
+    # pass that targets the VISIBLE "layers clipping into each other" artifact.
+    # See _repair_layer_order / #layer-order.
+    if shape_jobs:
+        try:
+            n_ord = _repair_layer_order(
+                shape_jobs, softbody_names=hdt_softbody_names,
+                collider_names=hdt_collider_names)
+            if n_ord:
+                import sys as _sys
+                print(f"  layer order: restored {n_ord} vert(s) to their source "
+                      f"side of a neighbouring layer", file=_sys.stderr)
+        except Exception:
+            pass  # best-effort; failure leaves the layer order as the passes left it
+
+    # Cord/trim conform: laces/cords/piping thread half-in/half-out of their host by
+    # design, so the layer passes above can't place them. Glue them to the host's FINAL
+    # surface at their authored height. Runs AFTER the order repair so the host is
+    # already correctly placed. See _conform_cords_to_host / #cord-conform.
+    if shape_jobs:
+        try:
+            n_cord = _conform_cords_to_host(
+                shape_jobs, softbody_names=hdt_softbody_names,
+                collider_names=hdt_collider_names)
+            if n_cord:
+                import sys as _sys
+                print(f"  cord conform: glued {n_cord} cord/trim vert(s) to their "
+                      f"host surface", file=_sys.stderr)
+        except Exception:
+            pass  # best-effort; failure leaves cords independently warped
+
+    # Degenerate-triangle repair: prior passes can pinch thin tris flat -> black
+    # slivers. Restore collapsed tris to source-relative shape; source-degenerate
+    # folds are left alone. Run TWICE: once after the warp/inflate/conform passes,
+    # and again after the seam-weld/glow-ride below -- the seam-weld SNAPS verts
+    # (welding a detail shape's own verts to one centroid collapses its tris, e.g.
+    # a cuirass 'Top Stiches' band) AFTER this first pass, so a single early repair
+    # misses those. #post-weld-degenerate-repair
+    def _degenerate_repair_pass(_tag: str) -> None:
+        if not shape_jobs:
+            return
+        _nfix_tot = 0
+        _nshapes = 0
         for j in shape_jobs:
             try:
                 _src_shape = j["src"]
@@ -12388,14 +13166,16 @@ def convert_nif_phase2(
                 if _nfix:
                     j["verts"] = _fixed
                     j["verts_modified"] = True
-                    _n_demangle += _nfix
-                    _n_shapes_demangle += 1
+                    _nfix_tot += _nfix
+                    _nshapes += 1
             except Exception:
                 pass  # best-effort; a failed repair leaves the shape as-is
-        if _n_demangle:
+        if _nfix_tot:
             import sys as _sys
-            print(f"  degenerate-tri repair: un-pinched {_n_demangle} collapsed "
-                  f"tri(s) across {_n_shapes_demangle} shape(s)", file=_sys.stderr)
+            print(f"  degenerate-tri repair ({_tag}): un-pinched {_nfix_tot} "
+                  f"collapsed tri(s) across {_nshapes} shape(s)", file=_sys.stderr)
+
+    _degenerate_repair_pass("warp")
 
     # Cross-plate seam weld: close gaps where adjacent solid plates that share
     # a seam drifted apart under independent warp. Runs BEFORE the glow ride so
@@ -12424,6 +13204,11 @@ def convert_nif_phase2(
                       f"vert(s) to their plate", file=_sys.stderr)
         except Exception:
             pass  # best-effort; failure leaves overlays as-is
+
+    # Genuine LAST vertex op: catch tris the seam-weld/glow-ride snaps collapsed
+    # after the first repair (e.g. a detail band welded to a shared centroid).
+    # #post-weld-degenerate-repair
+    _degenerate_repair_pass("post-weld")
 
     # Pass 2: copy shapes. Alpha preserved — bit-19 (set by _reset_morph_flags)
     # enables NioOverride morphs on alpha cloth without stripping transparency.
@@ -12588,6 +13373,19 @@ def convert_nif_phase2(
                     (x for x in dst_check.shapes if x.name == "BaseShape"),
                     None,
                 )
+                if ube_basereshape is None:
+                    # Non-body-slot piece (inject_baseshape=False -> we DROPPED the
+                    # inline body and injected nothing, e.g. boots/panties whose
+                    # "3BA Ref" body we removed): there's no BaseShape in the dst,
+                    # but the armor shapes STILL need their per-armor BODYTRI so
+                    # they follow body sliders. Propagate from the UBE body REF's
+                    # BaseShape (same body space, just not embedded here). Without
+                    # this the TRI-gen was skipped entirely -> a STALE TRI survived
+                    # and the piece stopped morphing. #3ba-ref-body
+                    ube_basereshape = next(
+                        (x for x in ube_nif.shapes if x.name == "BaseShape"),
+                        None,
+                    )
                 if ube_basereshape is not None:
                     body_verts_arr = np.asarray(
                         ube_basereshape.verts, dtype=np.float64)

@@ -766,6 +766,53 @@ def _write_failures_file() -> None:
         pass
 
 
+def _warn_if_skypatcher_missing() -> bool:
+    """Warn UP FRONT when SkyPatcher can't deliver the armor we're about to build.
+
+    SkyPatcher is a HARD dependency with no ESP fallback (`ube_patcher.
+    _full_skypatcher_enabled` is unconditionally True): if the DLL is absent, or
+    iEnableArmorPatching=0, then EVERY converted piece is invisible in-game and
+    the only symptom is "the converter did nothing". The GUI surfaces this via
+    preflight on launch, but the CLI/one-click paths never ran any check, so a
+    headless run could spend an hour producing output that cannot load.
+
+    Warn rather than abort: the meshes and plugins we emit are still correct, and
+    the user can install SkyPatcher afterwards without reconverting. Returns True
+    when delivery looks viable. Never raises -- a probe failure must not take
+    down a conversion.
+    """
+    try:
+        from . import preflight as _pf
+        lay = paths.discover_layout()
+        mr = getattr(lay, "mods_root", None)
+        dd = getattr(lay, "game_data_dirs", []) or []
+        enabled = paths.enabled_mods(lay)
+        rel_dll, rel_ini = "SKSE/Plugins/SkyPatcher.dll", "SKSE/Plugins/SkyPatcher.ini"
+        found = bool(_pf._locate_in_mods_or_data(mr, enabled, dd, rel_dll))
+        armor_on = _pf._skypatcher_armor_patching(
+            _pf._locate_in_mods_or_data(mr, enabled, dd, rel_ini))
+        if found and armor_on is not False:
+            return True
+        why = ("SkyPatcher.dll not found in any enabled mod or the game Data"
+               if not found else
+               "SkyPatcher found but iEnableArmorPatching=0 in SkyPatcher.ini")
+        fix = ("Install SkyPatcher and enable it."
+               if not found else
+               "Set iEnableArmorPatching=1 in SKSE/Plugins/SkyPatcher.ini.")
+        print("  " + "!" * 70)
+        print(f"  WARNING: {why}.")
+        print("  SkyPatcher delivers ALL converted armor -- there is no ESP")
+        print("  fallback. Without it every converted piece is INVISIBLE in-game.")
+        print(f"  FIX: {fix}")
+        print("  (Converting anyway: the output stays valid, no reconvert needed")
+        print("   once SkyPatcher is in place.)")
+        print("  " + "!" * 70)
+        return False
+    except Exception as e:
+        print(f"  (SkyPatcher preflight skipped: {e!r})")
+        return True
+
+
 def _preflight_vanilla_sweep(data_dir: Path) -> "tuple[bool, str]":
     """Cheap viability check for the vanilla sweep, run BEFORE the batch.
 
@@ -1959,7 +2006,8 @@ def _emit_unified_coverage_patches(output, patches_dir, master_data_dirs,
         nb = ube_patcher.generate_modded_nonbody_ube_coverage_patch(
             nb_out, ordered, converted_rel_paths=conv_rel,
             exclude_armo_abs=None, exclude_names=excl,
-            master_data_dirs=master_data_dirs, cover_all=True, emit_sidecar=True)
+            master_data_dirs=master_data_dirs, cover_all=True,
+            preserve_textures=True, emit_sidecar=True)
         total_targets += int(nb.get("armo_targets") or 0)
         print(f"  non-body: minted {nb.get('minted_armas')} | "
               f"targets {nb.get('armo_targets')}")
@@ -1996,6 +2044,8 @@ def _cmd_convert(args):
             print(f"  game Data: {_layout.game_data_dirs[0]}")
     except Exception as _e:
         print(f"  (path auto-discovery note: {_e!r})")
+
+    _warn_if_skypatcher_missing()
 
     sources = list(args.sources)
     output = args.output
@@ -2675,6 +2725,46 @@ def _is_child_content_mod(name: str) -> bool:
                          for c in name.lower()).split())
     return bool(tokens & _CHILD_NAME_WORDS)
 
+
+# Child content reached by ASSET name rather than mod name. _is_child_content_mod
+# only gates whole MOD FOLDERS, so it does nothing for the vanilla sweep (whose
+# "mod" is the game Data dir) -- and vanilla ships child clothing bound to
+# DefaultRace: ChildrenTorsoV01AA and ChildrenShoesAA both have RNAM 0x00000019
+# and point at Clothes\ChildrenClothes\F\*. They therefore pass the DefaultRace
+# gate legitimately and got converted. (ChildTorso01/02/03AA bind the child race
+# 0x00013740 and were always correctly excluded -- only the DefaultRace-bound
+# ones leak.) So gate on the ASSET too.
+#
+# Asset names are camelCase, so tokens must split on case boundaries as well as
+# separators to see "ChildrenClothes" -> {children, clothes}. That splitting is
+# deliberately NOT applied to mod folder names (which are space-separated and
+# already work), and "kid" is deliberately NOT matched here: in a mesh path it is
+# far more likely to be "kidskin" (a leather) or "kidney" than a child, and a
+# camel split of "KidSkin" would false-positive. "child"/"children"/"kids" carry
+# the signal with no such ambiguity.
+_CHILD_ASSET_WORDS = frozenset({"child", "children", "kids"})
+
+
+def _camel_tokens(text: str) -> "set[str]":
+    """Lowercased tokens of `text`, split on BOTH non-alphanumerics and
+    lowercase->uppercase boundaries, so 'Clothes\\ChildrenClothes\\F' yields
+    {clothes, childrenclothes, children, f}."""
+    out: "set[str]" = set()
+    for word in "".join(c if c.isalnum() else " " for c in text).split():
+        out.add(word.lower())
+        start = 0
+        for i in range(1, len(word) + 1):
+            if i == len(word) or (word[i].isupper() and not word[i - 1].isupper()):
+                if i > start:
+                    out.add(word[start:i].lower())
+                start = i
+    return out
+
+
+def _is_child_content_asset(*texts: "str | None") -> bool:
+    """True if any of `texts` (an ARMA EDID, a model path) names child content."""
+    return any(t and (_camel_tokens(t) & _CHILD_ASSET_WORDS) for t in texts)
+
 # DefaultRace [RACE:00000019] in Skyrim.esm — the canonical humanoid race all
 # player-equippable armor binds to. Creature/beast/custom races bind elsewhere.
 _DEFAULT_RACE_LOW24 = 0x000019
@@ -3197,10 +3287,13 @@ def _player_armor_mesh_bases(mod_dir: Path,
                     continue
                 rnam = None
                 slot = 0
+                edid = ""
                 female_models: "list[str]" = []   # MOD3 (world) + MOD5 (1st-person)
                 male_models: "list[str]" = []      # MOD2 (world) + MOD4 (1st-person)
                 for sig, sd in _esp.iter_subrecords(rec.payload):
-                    if sig == b"RNAM" and len(sd) == 4:
+                    if sig == b"EDID":
+                        edid = sd.rstrip(b"\x00").decode("utf-8", errors="ignore")
+                    elif sig == b"RNAM" and len(sd) == 4:
                         rnam = _struct.unpack("<I", sd)[0]
                     elif sig in (b"BOD2", b"BODT") and len(sd) >= 4:
                         slot = _struct.unpack_from("<I", sd, 0)[0]
@@ -3249,12 +3342,16 @@ def _player_armor_mesh_bases(mod_dir: Path,
                                for m in models for _kw in _CLOAK_MESH_KEYWORDS):
                         continue  # no body-fitted slot (shield/helmet/hood/hair/
                                   # circlet/amulet/ring/ears) — don't convert
+                if _is_child_content_asset(edid):
+                    continue  # child clothing — not armour "for the player"
                 for m in models:
                     if not m:
                         continue
                     base = _weight_base_key(m)
                     if base.rsplit("/", 1)[-1] in _BODY_SKIN_BASENAMES:
                         continue  # nude body skin — not an armour piece
+                    if _is_child_content_asset(m):
+                        continue  # child clothing reached via an adult-named ARMA
                     bases.add(base)
     bases.discard("")
     return bases
@@ -4057,7 +4154,8 @@ def _cmd_auto(args):
                     exclude_armo_abs=_fsp_linked_abs,
                     exclude_names=_mnb_excl,
                     master_data_dirs=_md,
-                    cover_all=_unified_cov)
+                    cover_all=_unified_cov,
+                    preserve_textures=True)
                 ini_lines = mnb.get("ini_lines") or []
                 if ini_lines:
                     ini_path = (output / "SKSE" / "Plugins" / "SkyPatcher"
