@@ -18,7 +18,8 @@
 NO underscore (e.g. `SkirtBBone01`) as well as the `Skirt 1_00` underscore form.
 A rig that names its skirt bones `SkirtF/B/L/RBone01-03` was getting NO chain
 constraints -> the skirt simulated as unconstrained free cloth and flapped wild
-("disjointed skirt", the Anequina Armor case). The no-underscore match is gated
+("disjointed skirt", a real bone-driven skirt case). The no-underscore match is
+gated
 on a cloth-chain keyword + 2-3 digits so skeleton bones (`NPC Spine2`,
 `ForearmTwist1`) are never mistaken for chains. #chain-nounderscore
 """

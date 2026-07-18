@@ -20,7 +20,7 @@ A garment caught by the size gate but only PARTLY overlapping an under-layer
 (a shirt whose sleeves sit over undersleeves but whose chest has no cloth
 under-layer) must keep its own chest/breast morphs. The old code replaced the
 shape's ENTIRE morph set with the (arm-only) under-layer sync, silently dropping
-the chest conform -> "armor doesn't conform" in-game (LotD Museum shirt: 125
+the chest conform -> "armor doesn't conform" in-game (a layered shirt: 125
 source morphs collapsed to 19 arm-only)."""
 import numpy as np
 

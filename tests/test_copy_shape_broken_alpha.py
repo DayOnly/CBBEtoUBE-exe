@@ -17,7 +17,7 @@
 """A source shape whose NiAlphaProperty reference is BROKEN (pynifly's
 has_alpha_property getter raises "getNiAlphaProperty called on invalid node")
 must still copy -- WITHOUT the alpha property -- instead of failing _copy_shape
-and dropping the shape (invisible piece in-game; the Steelheart-gauntlets
+and dropping the shape (invisible piece in-game; a modded-gauntlets
 class)."""
 import sys
 from pathlib import Path

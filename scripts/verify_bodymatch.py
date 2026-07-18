@@ -138,7 +138,7 @@ def main():
     hi_gap = [r for g, p, n, r in rows if g > 1.5]
     hi_pen = [r for g, p, n, r in rows if n >= 8]
     print(f"\n{len(rows)} torso pieces measured. standoff = breast gap "
-          f"(pre-fix Fur Cuirass +2.12u); worst/ncut = deepest vert / how many verts cut "
+          f"(pre-fix worst case +2.12u); worst/ncut = deepest vert / how many verts cut "
           f"in > 0.5u (the AREA -- a lone deep vert isn't a visible clip).")
     print(f"{len(hi_gap)} still gap > 1.5u, {len(hi_pen)} cut in over an area (>=8 verts). "
           f"Flagged ones want a closer look; the rest sit clean.")

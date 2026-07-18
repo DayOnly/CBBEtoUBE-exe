@@ -20,12 +20,12 @@ without a display."""
 from src.gui import mod_name_matches as M
 
 MODS = [
-    "DDV - Ruby Flower Armor",
-    "DDV - Ruby Flower Belts",
-    "Ballad Of The Bards Vol.1 Main File",
-    "kco_brd Bard Coats",
-    "Eli Dark Triss",
-    "Wine Duchess",
+    "EXM - Rose Petal Armor",
+    "EXM - Rose Petal Belts",
+    "Songs Of The Minstrels Vol.1 Main File",
+    "abc_mst Minstrel Coats",
+    "Sample Dark Outfit",
+    "Velvet Countess",
 ]
 
 
@@ -41,27 +41,27 @@ def test_empty_query_matches_all():
 
 
 def test_case_insensitive_substring():
-    assert M("DDV - Ruby Flower Armor", "ruby")
-    assert M("DDV - Ruby Flower Armor", "RUBY")
-    assert not M("Wine Duchess", "ruby")
+    assert M("EXM - Rose Petal Armor", "rose")
+    assert M("EXM - Rose Petal Armor", "ROSE")
+    assert not M("Velvet Countess", "rose")
 
 
 def test_multi_token_and_order_independent():
     # every token must be present, in any order
-    assert M("DDV - Ruby Flower Armor", "ruby fl")
-    assert M("DDV - Ruby Flower Armor", "flower ruby")
-    assert M("DDV - Ruby Flower Armor", "ddv armor")
-    assert not M("DDV - Ruby Flower Armor", "ruby cape")   # 'cape' absent
+    assert M("EXM - Rose Petal Armor", "rose pe")
+    assert M("EXM - Rose Petal Armor", "petal rose")
+    assert M("EXM - Rose Petal Armor", "exm armor")
+    assert not M("EXM - Rose Petal Armor", "rose cape")   # 'cape' absent
 
 
 def test_filter_narrows_and_preserves_master_order():
-    v = _visible("ruby")
-    assert v == ["DDV - Ruby Flower Armor", "DDV - Ruby Flower Belts"]
+    v = _visible("rose")
+    assert v == ["EXM - Rose Petal Armor", "EXM - Rose Petal Belts"]
     # narrower token set drops the belts
-    assert _visible("ruby armor") == ["DDV - Ruby Flower Armor"]
-    # a family filter ("bard") spans differently-named mods
-    assert _visible("bard") == ["Ballad Of The Bards Vol.1 Main File",
-                                 "kco_brd Bard Coats"]
+    assert _visible("rose armor") == ["EXM - Rose Petal Armor"]
+    # a family filter ("minstrel") spans differently-named mods
+    assert _visible("minstrel") == ["Songs Of The Minstrels Vol.1 Main File",
+                                    "abc_mst Minstrel Coats"]
 
 
 def test_no_match_is_empty():

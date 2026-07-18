@@ -16,8 +16,8 @@
 
 """fix_spurious_hand_slot: clear biped slot 33 (Hands) from a forearm/wrist
 bracer that claims it but ships no hand geometry (-> it would hide the nude
-hands and draw nothing = invisible hands on UBE actors; the Sand Snake
-vambraces). Must NOT touch a real glove/gauntlet (mesh has hand geometry) nor a
+hands and draw nothing = invisible hands on UBE actors; the classic
+forearm-vambrace case). Must NOT touch a real glove/gauntlet (mesh has hand geometry) nor a
 full-body suit/skin (claims slot 32 Body; its hands come from the suit)."""
 import struct
 
@@ -153,7 +153,7 @@ def test_fix_spurious_hand_slot(tmp_path, monkeypatch):
 def test_fix_spurious_hand_slot_arma_level_vambrace(tmp_path, monkeypatch):
     # The ARMO is correctly a forearm piece (slot 34, NOT slot 33), but one of
     # its armatures carries a stray [33,34] over a handless mesh (the converted
-    # Sand Snake vambrace). Pass 1 (ARMO-gated) can't see it; the ARMA-level
+    # vambrace). Pass 1 (ARMO-gated) can't see it; the ARMA-level
     # pass must strip slot 33 from the armature so the nude hands render.
     meshes = tmp_path / "meshes"
     fracs = {}

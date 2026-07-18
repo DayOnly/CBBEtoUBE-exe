@@ -15,7 +15,7 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 """`open_nif_retry` must SURVIVE a transient open failure (Windows file-share /
-handle contention under many parallel workers made valid 3-4MB Sigrin meshes
+handle contention under many parallel workers made valid 3-4MB meshes
 report "Could not open ... as nif" at 23 workers) and still RE-RAISE for a
 genuinely unreadable file. Regression guard: too many workers must not silently
 drop a valid mesh. #transient-open-retry"""

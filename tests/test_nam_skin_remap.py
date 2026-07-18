@@ -18,9 +18,9 @@
 NAM2 male-1st / NAM3 female-1st) are TXST FormIDs and MUST be master-byte
 remapped by the merge / ESL-split / prune, exactly like RNAM/SNDD.
 
-The bard MO?S bug's sibling (MEASURED 2026-06-10 on the real Combined): NAM0-3
+The alt-texture MO?S bug's sibling (MEASURED 2026-06-10 on the real Combined): NAM0-3
 were NOT in FORMID_SINGLE_SUBRECORD_SIGS, so the remap skipped them. A NAM ref
-to a non-index-0 master broke (Kaidan kaiPrisonRags NAM0 UBE_AllRace.esp:000004
+to a non-index-0 master broke (a follower mod's prison-rags NAM0 UBE_AllRace.esp:000004
 -> wrong DAc0da.esm:000004) -> the armor's exposed skin used the wrong
 TextureSet. Refs to Skyrim.esm survived ONLY because it is always master
 index 0 (top byte 0x00 is right without remapping), which is what masked the

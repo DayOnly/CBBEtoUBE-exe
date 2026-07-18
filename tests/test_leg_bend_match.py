@@ -189,7 +189,7 @@ def test_effect_shader_detect_handles_missing_shader():
 
 
 def test_fx_overlay_name_catches_glow_shapes_not_legit():
-    # the real glow/FX shape names from the Daedric + Vigilant-ember crashes must match
+    # the real glow/FX shape names from the daedric-glow + ember-FX crashes must match
     for nm in ("MaleTorsoGlow", "DSkirt Glow", "TorsoF:FX", "TorsoMFX",
                "MiscMFx", "ArmMFx", "MiscF:Fx", "ArmF:FX"):
         assert nc._is_fx_overlay_name(nm) is True, nm

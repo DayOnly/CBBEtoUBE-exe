@@ -210,7 +210,7 @@ def build_mesh_index(
     # bundles; if that body's proportions differ from the UBE target the piece is left
     # standing off (soft-body cloth is kept at its source position -> a visible gap at
     # the bust). A canonical-3BA source matches the pipeline's assumptions and the UBE
-    # target, so it converts flush. Measured: HDT-SMP "Fur Cuirass" body bust +9.88u ->
+    # target, so it converts flush. Measured: an HDT-SMP fur cuirass's bundled body bust +9.88u ->
     # +1.77u standoff; the 3BA-body source (+5.70u ~= UBE +5.74u) -> ~flush.
     # Off with CBBE2UBE_NO_BODYMATCH_SELECT=1. #body-match-source
     import os as _os

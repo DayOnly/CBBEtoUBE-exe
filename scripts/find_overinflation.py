@@ -1,5 +1,5 @@
 """Triage tool: find converted armors whose bust band stands OFF the body -- the
-over-inflation / bundled-body-mismatch class (the Fur Cuirass symptom). Source-free
+over-inflation / bundled-body-mismatch class (a band floating off the bust). Source-free
 and thickness-gated so it targets TIGHT bands/bras that should hug, without false-
 flagging voluminous plate (a plate stands off but isn't a thin shell).
 

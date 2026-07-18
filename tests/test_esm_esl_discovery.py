@@ -18,15 +18,15 @@
 incremental filter.
 
 #179: `_find_source_esps` used to glob `*.esp` ONLY, so bespoke-armour content
-mods shipped as a master (Vigilant.esm, Legacy of the Dragonborn.esm,
-Unslaad.esm, Glenmoril.esm) were never discovered -> never converted -> invisible
+mods shipped as a master (BespokeArmor.esm, QuestMod.esm) were never
+discovered -> never converted -> invisible
 on UBE actors. The fix globs .esp + .esm + .esl while excluding only the
 vanilla/DLC master ESMs (their armor is covered by runtime race dispatch) +
 _ResourcePack and our own outputs.
 
 NOTE (a0c8bcd): Creation Club cc*.esl/.esm are NO LONGER name-skipped here — the
 cc "Alternative Armors" series ships 3BA builds the vanilla path doesn't cover
-(Requiem's Orcish Light Cuirass reuses the cc OrcishScaled armature), so dropping
+(an overhaul mod's Orcish Light Cuirass reuses the cc OrcishScaled armature), so dropping
 them left ~123 CC pieces invisible. `_find_source_esps` returns ALL cc*; the
 downstream armor-mod filter discards non-armor CC.
 """
@@ -48,8 +48,8 @@ def _touch(p: Path, data=b"TES4"):
 
 
 def test_finds_esm_esl_and_excludes_masters(tmp_path):
-    mod = tmp_path / "VigilantMod"
-    _touch(mod / "Vigilant.esm")              # bespoke-armour .esm -> FOUND (#179)
+    mod = tmp_path / "BespokeArmorMod"
+    _touch(mod / "BespokeArmor.esm")              # bespoke-armour .esm -> FOUND (#179)
     _touch(mod / "MyArmor.esp")               # normal .esp        -> FOUND
     _touch(mod / "Cool.esl")                  # .esl               -> FOUND
     _touch(mod / "ccBGSSSE055-ba.esl")        # CC armor (a0c8bcd) -> FOUND
@@ -60,7 +60,7 @@ def test_finds_esm_esl_and_excludes_masters(tmp_path):
     found = {p.name for p in _find_source_esps(mod)}
     # CC armor is a valid source now (a0c8bcd); only vanilla/DLC masters +
     # _ResourcePack are name-skipped.
-    assert {"Vigilant.esm", "MyArmor.esp", "Cool.esl", "ccBGSSSE055-ba.esl"} <= found
+    assert {"BespokeArmor.esm", "MyArmor.esp", "Cool.esl", "ccBGSSSE055-ba.esl"} <= found
     assert "Skyrim.esm" not in found
     assert "Dawnguard.esm" not in found
     assert "_ResourcePack.esl" not in found
@@ -216,10 +216,10 @@ class _FakeBSA:
 def test_bsa_mesh_index_extract(monkeypatch, tmp_path):
     import src.bsa_strings as bs
     monkeypatch.setattr(bs, "BSAArchive", _FakeBSA)
-    mod = tmp_path / "VigilantSE"
+    mod = tmp_path / "BespokeArmorSE"
     mod.mkdir()
-    (mod / "Vigilant.bsa").write_bytes(b"BSA")          # mesh BSA -> scanned
-    (mod / "Vigilant - Textures.bsa").write_bytes(b"BSA")  # texture BSA -> SKIPPED
+    (mod / "BespokeArmor.bsa").write_bytes(b"BSA")          # mesh BSA -> scanned
+    (mod / "BespokeArmor - Textures.bsa").write_bytes(b"BSA")  # texture BSA -> SKIPPED
     idx = ac._BsaMeshIndex([mod], tmp_path / "_stg")
     res = idx.extract("armor/v/robe_1.nif")             # strip meshes/ + lower
     assert res is not None
