@@ -22,3 +22,6 @@ tests/_tmp_*/
 # reconvert scratch output (never committed)
 _tmp_regen/
 _tmp_regen*/
+
+# Per-run failure record (written every run next to the run log)
+CBBEtoUBE_last_failures.json
