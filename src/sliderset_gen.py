@@ -423,11 +423,18 @@ def generate_armor_tri(
                 slider_name = body_m.name
             if not body_m.offsets:
                 continue
-            body_morphs.append(TriMorph(
-                name=slider_name,
-                offsets=[(idx, dx, dy, dz)
-                         for idx, dx, dy, dz in body_m.offsets],
-            ))
+            # Bounds-filter verbatim OSD indices to the target vert count, like
+            # the K-NN path (`valid = idxs < body_n`). body_verts shares the
+            # injected BaseShape's topology, so an OSD index >= body_n is a stale
+            # OSD/mesh mismatch that would write an out-of-range vertex into the
+            # TRI -> NioOverride reads past the buffer at runtime (CTD / silent
+            # bad morph). Drop the OOB entries. #osd-bounds
+            filtered = [(idx, dx, dy, dz)
+                        for idx, dx, dy, dz in body_m.offsets
+                        if 0 <= idx < body_n]
+            if not filtered:
+                continue
+            body_morphs.append(TriMorph(name=slider_name, offsets=filtered))
         if body_morphs:
             if "BaseShape" in body_shape_set:
                 tri_shapes.insert(0, TriShape(
@@ -441,6 +448,11 @@ def generate_armor_tri(
                     and shape_name not in body_shape_set):
                 continue  # no matching shape in the dst NIF
             extra_prefix = shape_name  # OSD morphs prefix == shape name
+            # Bound OSD indices to the injected shape's vert count when we have it
+            # (the dst Hands/Feet shape is in armor_shapes); else fall back to the
+            # uint16 ceiling TriFile.save enforces. #osd-bounds
+            _cap = (len(armor_shapes[shape_name])
+                    if shape_name in armor_shapes else None)
             extra_morphs: list[TriMorph] = []
             for m in extra_osd.morphs:
                 if not m.offsets:
@@ -448,11 +460,13 @@ def generate_armor_tri(
                 slider_name = (m.name[len(extra_prefix):]
                                if m.name.startswith(extra_prefix)
                                else m.name)
+                filtered = [(idx, dx, dy, dz)
+                            for idx, dx, dy, dz in m.offsets
+                            if idx >= 0 and (_cap is None or idx < _cap)]
+                if not filtered:
+                    continue
                 extra_morphs.append(TriMorph(
-                    name=slider_name,
-                    offsets=[(idx, dx, dy, dz)
-                             for idx, dx, dy, dz in m.offsets],
-                ))
+                    name=slider_name, offsets=filtered))
             if extra_morphs:
                 tri_shapes.append(TriShape(
                     name=shape_name, morphs=extra_morphs))

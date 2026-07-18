@@ -338,6 +338,16 @@ def transfer_overlay(src_rgba: np.ndarray,
     T = src_rgba.shape[0]
     m = _uv_map_for_size(corr, T)
     ys, xs, fy, fx, cov = m["ys"], m["xs"], m["fy"], m["fx"], m["cov"]
+    if len(ys) == 0:
+        # The UBE-UV rasterization covered NO texels -- a degenerate
+        # correspondence (e.g. a skin NIF whose body shape wasn't found or had
+        # placeholder/zeroed UVs). The result would be a FULLY TRANSPARENT image;
+        # writing it over `out_root/rel` (the original overlay path, highest
+        # priority) would ERASE the good CBBE overlay and the tattoo vanishes.
+        # Raise so every call site (all wrapped in try/except) skips the write and
+        # leaves the original in place, instead of silently blanking it.
+        # #overlay-fail-open
+        raise ValueError("overlay correspondence covers no UBE-UV texels")
     out = np.zeros((T, T, 4), np.uint8)
     if len(ys):
         if src_rgba.shape[1] != T:
@@ -1299,6 +1309,12 @@ def build_multislot_feet_overlays(layout, out_root, texconv, *, skip_mods=(),
                     src_dds = twork / "s.dds"
                     src_dds.write_bytes(srcrec[1].read_file(srcrec[2]))
                 outp = Path(out_root) / newrel.replace("/", "\\")
+                # `newrel` derives from a mod-supplied RaceMenu .psc AddFeetPaint
+                # path (not `..`-stripped) -> a crafted script could escape
+                # out_root and clobber an arbitrary .dds. Guard like the sibling
+                # sinks at ~875 / ~1467. #overlay-traversal
+                if not _paths.is_within_dir(Path(out_root), outp):
+                    continue
                 try:
                     rgba = dds_to_rgba(src_dds, texconv, twork)
                     rgba_to_dds(transfer_overlay(rgba, feet_corr), outp,

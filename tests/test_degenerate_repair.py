@@ -58,6 +58,21 @@ def test_healthy_tri_untouched():
     assert np.allclose(out, cur)
 
 
+def test_two_coincident_one_distinct_is_restored():
+    # The self-int relaxation snaps two verts of a thin fabric fold together
+    # (front + back sheet), leaving a tri with a COINCIDENT vertex pair (zero
+    # area) -- the layered-top 'malformed underside' sliver. #selfint-collapse-guard
+    src = np.array([[0.0, 0.0, 95.0], [0.08, 0.0, 95.0], [0.0, 0.0, 95.5]])
+    tris = np.array([[0, 1, 2]])
+    cur = src.copy()
+    cur[1] = cur[0]                                   # verts 0,1 snapped coincident
+    assert _area(cur, tris)[0] < 1e-6                 # collapsed to a sliver
+    out, n = repair_collapsed_tris(cur, src, tris)
+    assert n == 1
+    assert _area(out, tris)[0] > 1e-3                 # thickness restored
+    assert np.linalg.norm(out[0] - out[1]) > 1e-3     # pair no longer coincident
+
+
 def test_huge_collapse_capped():
     # a vert whose restore would jump it across the mesh (> max_fix) is skipped
     src = np.array([[0.0, 0.0, 0.0], [50.0, 0.0, 0.0], [0.0, 50.0, 0.0]])
