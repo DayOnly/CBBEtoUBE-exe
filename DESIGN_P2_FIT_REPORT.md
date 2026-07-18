@@ -50,7 +50,7 @@ shapes. Per armor emit:
 Numbers are calibrated: Fur Cuirass `breast_gap` 2.12 (bad) → 1.16 (fixed); a −1.6u
 greaves poke was the worst `cut_in` seen; crinkle spikiness ~3.7 benign vs ~20 real.
 `crinkle` is the noisiest — emit it but mark advisory (offline crinkle has both missed and
-false-flagged before; see the museum bust-pass revert).
+false-flagged before; see the coarse-mesh cuirass bust-pass revert).
 
 Reuse the math already written and calibrated in `scripts/armor_clip_diag.py`
 (`crinkle`, `off_target`, `thin_clearance`) — refactor its core measures into a small

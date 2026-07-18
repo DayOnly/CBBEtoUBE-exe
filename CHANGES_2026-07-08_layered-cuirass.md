@@ -1,13 +1,15 @@
-# Session changes 2026-07-08 — 3BA-source fix + New Leather Armor recipe + diagnostics (build22, UNCOMMITTED)
+# Session changes 2026-07-08 — 3BA-source fix + layered-cuirass recipe + diagnostics (build22, UNCOMMITTED)
 
-Context: a long New Leather Armor (dark, `dcuirass`/leathersuitn) clipping session.
-Most of it was misdiagnosis + guess-and-check; the durable wins are the SOURCE-SELECTION
-fix (below — the actual root cause), the butt-rebalance default flip, and the diagnostic
-scripts. See memory `project_3ba_source_selection_bug`, `project_newleather_working_recipe`,
+Context: a long clipping session on the layered dark-leather cuirass (4 cloth layers,
+shapes Cuirass_A/B/C + Greaves). Most of it was misdiagnosis + guess-and-check; the
+durable wins are the SOURCE-SELECTION fix (below — the actual root cause), the
+butt-rebalance default flip, and the diagnostic scripts. See memory
+`project_3ba_source_selection_bug`, the layered-cuirass working-recipe note,
 `feedback_armor_clip_diagnostic`.
 
 ## ROBUSTNESS — transient source-open retry (`nif_io.open_nif_retry`, build23)
-At 23 workers, eight valid 3-4MB Sigrin meshes reported "Could not open ... as nif"
+At 23 workers, eight valid 3-4MB meshes from one high-poly outfit mod reported
+"Could not open ... as nif"
 (Windows file-share / handle contention or AV scan on a file that opens fine in
 isolation) — the converter dropped them on the first blip. New `open_nif_retry`
 retries with backoff (0.08→0.64s, 5 attempts) then re-raises so a GENUINELY bad
@@ -18,18 +20,18 @@ mode. 3 tests (`test_nif_io_retry.py`). Suite 619.
 
 ## THE HEADLINE FIX — armor source selection (`discovery.build_mesh_index`)
 **Root cause of the clipping.** `build_mesh_index` resolved each armour mesh to the
-highest-MO2-priority provider (first-writer-wins). "Authoria - Bodyslide Output - 3BA"
-outranks the base mods, so ~26 armours were converted from a **3BA-body-preset-morphed**
+highest-MO2-priority provider (first-writer-wins). A `<mod> - Bodyslide Output - 3BA`
+folder outranks the base mods, so ~26 armours were converted from a **3BA-body-preset-morphed**
 source into a UBE target — the 3BA morph squashes the stacked cloth layers together ->
 clipping (belt-into-pants, robe-into-pants). The user-approved `.looksgood` only looked
 right because it was made from the **raw base** mesh (2.61u different from the 3BA source).
 **Fix:** 3-tier stable sort deprioritizes BodySlide-output mods — (0) base/replacers,
 (1) UBE outputs, (2) other-body outputs (3BA/HIMBO/NSFW). Base wins; an output still fills
-a mesh nothing else provides. Verified: dcuirass resolves to `New Leather Armor` (base),
+a mesh nothing else provides. Verified: the cuirass resolves to its own base mod,
 build22 exe convert == `.looksgood` to 0.008u. Regression test added
 (`test_build_mesh_index_deprioritizes_bodyslide_output_source`, 3 cases). Suite 616.
 HEURISTIC CAVEAT: keys on the substring `"bodyslide output"` (space) in the mod folder
-name — matches the user's Authoria naming; a differently-named output mod would slip through.
+name — matches the user's output-mod naming; a differently-named output mod would slip through.
 **Needs a full reconvert to apply pack-wide.**
 
 ## ALWAYS-ON changes (affect every reconvert — reviewed, safe)
