@@ -23,7 +23,7 @@ the max per mesh:
 
     score(c) =  w_body  * -|bundled_bust(c) - UBE_bust|     # measured, render-space; 0 if no bundled body
               + w_phys  *  has_physics(c)                    # SMP/HDT rigging present
-              + w_tier  * -bodyslide_output_penalty(c)       # keep the New-Leather demotion, but as a weight
+              + w_tier  * -bodyslide_output_penalty(c)       # keep the layered-cuirass demotion, but as a weight
               + w_prio  * -mo2_priority_index(c)             # final tiebreak
 
 Weights ordered so a real body mismatch (> ~1.5u) dominates everything (a gappy source
@@ -33,8 +33,9 @@ collision/proxy shapes or HDT-SMP bone chains. A source with no bundled body sco
 neutral on `body`, so physics robes are never penalised there.
 
 **What it fixes.** Fur Cuirass → the 3BA-output (matching body + physics) → flush AND
-jiggle. New Leather → base still wins (the 3BA-output's body is a *mismatched* preset →
-loses `body`). Generalises New-Leather + Fur-Cuirass + physics-preservation into one rule.
+jiggle. The layered dark-leather cuirass → base still wins (the 3BA-output's body is a
+*mismatched* preset → loses `body`). Generalises the layered-cuirass + Fur-Cuirass +
+physics-preservation into one rule.
 
 **Risk.** Pack-wide re-selection; must measure bundled-body bust for many candidates
 (bounded to contested meshes, cached — same cost profile as today's `_body_provenance`);
@@ -56,7 +57,7 @@ most of these itself.
 `armor_clip_diag` metrics: breast/butt covered-standoff, torso penetration, edge crinkle,
 inter-layer clip). Accumulate per-armor scores; at run end emit a ranked `FIT_REPORT.md`
 next to the output, worst-first, with the failing axis per armor. It's ADVISORY (offline
-metrics have missed in-game issues before — see the museum bust-pass revert), never a
+metrics have missed in-game issues before — see the coarse-mesh cuirass bust-pass revert), never a
 gate. Extends the existing `[clip-risk]` telemetry from one line to an aggregated report.
 
 **What it fixes.** Turns "go through armors in-game finding problems" into a ranked list

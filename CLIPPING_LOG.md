@@ -60,12 +60,12 @@ dress.xml reverted to baseline; converter UNCHANGED (the lever doesn't help).
 
 #### STATIC layer-clip (same outfit) -- DIAGNOSED as a REAL converter defect (warp self-intersection) 2026-07-11
 Measured (tri-tri self-intersection, torso band z95-113, k-NN prefiltered, strict-interior seg-tri):
-  - source Farm02FBodyLarge on 3BA (Authoria Vanilla Bodyslides AND Redone-Prebuilt): **0** self-intersections
+  - source Farm02FBodyLarge on 3BA (two independent 3BA bodyslide-output copies): **0** self-intersections
   - OUTPUT Farm02FBodyLarge on UBE: **26** self-intersections
 So the UBE WARP INTRODUCED all 26 (source is clean). Localized: z 99-102, 20 of 26 on the FRONT --
 the corset neckline over the blouse chest. Mechanism: this dress's VFS winner ships the whole
-outfit as ONE merged shape (Farm02FBodyLarge); the source's LAYERED variant (Authoria Bodyslide
-Output - 3BA: 9 shapes Sleeves/Shirt/Corset/Waist/SkirtL/Panties) is a LOWER MO2-priority copy, so
+outfit as ONE merged shape (Farm02FBodyLarge); the source's LAYERED variant (the 3BA Bodyslide
+Output copy: 9 shapes Sleeves/Shirt/Corset/Waist/SkirtL/Panties) is a LOWER MO2-priority copy, so
 neither the game nor the converter uses it. On a single merged shape the inner (blouse) surface sits
 just behind the outer (corset); the per-vertex warp to the BUSTIER UBE moves the inner surface (closer
 to the body -> tracks the bust more) outward PAST the outer -> self-intersection. The converter's
@@ -78,18 +78,21 @@ radially-stacked verts to one warp delta so a stack keeps its gap); (B) prefer t
 one exists so the existing inter-shape layer pass applies (big source-selection policy change, blast
 radius). PREVALENCE (measured 2026-07-11): a RAW output self-intersection scan (484/601 torso garments
 "affected") is CONTAMINATED -- fur/strand geometry self-intersects BY DESIGN (top offenders
-140k/130k pairs on DD-FVO-FUR / FalmerSlayerFur, physically impossible for a clip). The valid
+140k/130k pairs on two fur-strand garments, physically impossible for a clip). The valid
 signal is SOURCE->OUTPUT DELTA (fur cancels: self-intersects in both). Cloth sample source-delta:
 ~7 of 11 resolvable-source cloth garments have a CLEAR warp-introduced clip (source near-clean,
-warp adds hundreds-thousands): SaltLemon Rogue Stalker 9->2729, nwitch dress 4->2716,
-silverleather 2447->4735, TwilightPrincess 864->2719, Magecore 745->2117, Ruby flower 1231->2221,
-farmclothes02 0->20 (MILDEST). The rest were mostly by-design overlap (Ysmir 13385->13469 +84).
+warp adds hundreds-thousands): the corset-and-belts outfit 9->2729, the witch dress 4->2716,
+the already-dirty leather garment 2447->4735, another custom cloth torso 864->2719,
+a custom mage outfit 745->2117, the multi-layer dress 1231->2221,
+farmclothes02 0->20 (MILDEST). The rest were mostly by-design overlap (a heavily-overlapping
+layered piece 13385->13469 +84).
 => SYSTEMIC across cloth torsos, severity varies widely; farmclothes02 is a mild example.
 FIX A PROTOTYPE (2026-07-11, offline, /tmp/proto_relax.py): post-warp self-intersection relaxation
 on the WARPED output verts -- detect crossing tri pairs, push inner tri IN (toward body) + outer
 tri OUT (gentler 0.6x), clamp every vert >= min_standoff above the UBE body, iterate. Results:
-farmclothes 26->15, nwitch NWTop 4197->1539, SaltLemon Corset_main 2569->675 (40-80% cut), body
-clearance held 0.30u everywhere (0 verts sank in), mean vert move tiny (only crossing verts move).
+farmclothes 26->15, the witch dress's NWTop 4197->1539, the corset-and-belts outfit's
+Corset_main 2569->675 (40-80% cut), body clearance held 0.30u everywhere (0 verts sank in),
+mean vert move tiny (only crossing verts move).
 De-risked, then SHIPPED IN CODE 2026-07-11 (branch testing, uncommitted at write time):
 `_repair_self_intersections` in nif_convert.py -- on-disk post-pass wired after conform in BOTH
 convert paths (copy ~3083 + rebuild ~12472). Gates: skip colliders + fx/glow NIFs + hands/feet
@@ -97,19 +100,21 @@ slots + non-identity g2s; SOURCE self-int baseline (>=300 = fur -> skip); per-ve
 skip. Clamps against the NIF's OWN injected BaseShape (not the ref body -- that let verts sink ~0.2u).
 Persists via _reauthor_nif_fresh (Path() -- it silently no-ops on a str!). Env: CBBE2UBE_NO_SELFINT_REPAIR,
 _ITERS(16), _FUR_GATE(300), _ZLO/_ZHI(88/116). Tests: tests/test_selfint_repair.py (5); suite 712.
-E2E validated on real NIFs: farmclothes 26->20, SaltLemon Corset_main 2597->573; body clearance
-NEVER worsened (unchanged or improved); fur untouched (0 moved). Reduction is a MITIGATION (20-80%),
+E2E validated on real NIFs: farmclothes 26->20, the corset-and-belts outfit's Corset_main
+2597->573; body clearance NEVER worsened (unchanged or improved); fur untouched (0 moved).
+Reduction is a MITIGATION (20-80%),
 not full elimination. VERIFIED IN OUTPUT post-reconvert 2026-07-11 (exe 52c71c5 deployed): farmclothes
-26->20, nwitch NWTop 4197->1404, SaltLemon Corset_main 2597->573 / BeltsV 307->59, fur 58604->58604
-(gate held). NOTE: the run's postflight "weight-partner parity: 21 shapes _0 vs _1 scale-bone
+26->20, the witch dress's NWTop 4197->1404, the corset-and-belts outfit's Corset_main
+2597->573 / BeltsV 307->59, fur 58604->58604 (gate held).
+NOTE: the run's postflight "weight-partner parity: 21 shapes _0 vs _1 scale-bone
 divergence" warning is PRE-EXISTING, NOT this pass -- proved a pure _reauthor_nif_fresh round-trip
 preserves bone sets exactly, so re-authoring _0 doesn't change the _0<->_1 relationship. PENDING: only
 the in-game visual check (does it read as fixed + no new shading/pinch artifacts on moved verts).
 See [[project_bodymatch_source_selection]],
-[[project_3ba_source_selection_bug]] (source-selection history), [[project_ruby_flower_converter_fixes]]
-(multi-layer LIFT).
+[[project_3ba_source_selection_bug]] (source-selection history), and the multi-layer-dress
+memory note (multi-layer LIFT).
 
-### Falmer Slayer Bodysuit -- body pokes through the REAR (butt/rear-thigh) -- REAL, diagnosed 2026-07-10
+### Skintight bodysuit (custom outfit) -- body pokes through the REAR (butt/rear-thigh) -- REAL, diagnosed 2026-07-10
 The actual reported defect (the bare-breast thing below is by design). Standing still, large
 preset: red body skin shows through the tan skintight suit at the legs/abdomen, worst at the
 REAR. Measured (SURFACE metric, confirmed NOT a nearest-vertex artifact -- vertex and surface
@@ -147,14 +152,14 @@ bodysuit alone is the only case that shows it. (5) improve the CONFORM smoothnes
 (fix the lumpiness at the source) -- unscoped.
 STATIC (standing still) so it's clearance/coverage, not a jiggle-only fault. Screenshot on file.
 
-### Falmer Slayer Bodysuit -- breasts exposed above it (reported 2026-07-10) -- BY DESIGN, NOT A DEFECT
+### Skintight bodysuit -- breasts exposed above it (reported 2026-07-10) -- BY DESIGN, NOT A DEFECT
 Whiterun, standing still, large preset. The suit covers legs + abdomen; the breasts are bare.
 USER CONFIRMED (twice) the bodysuit is NOT meant to cover the breasts -- it is a strapless /
 underbust piece, and bare breast skin above it is CORRECT. This matches the earlier finding
-that the source `FalmerSlayerBodysuit` mesh stops around the underbust (no chest geometry).
+that the source bodysuit mesh stops around the underbust (no chest geometry).
 So there is nothing for the converter to fix on this piece: it converts the geometry it is
 given, and that geometry does not include the chest. The breast coverage in that outfit
-comes from a SEPARATE piece (the Falmer Slayer Chestplate). NON-ISSUE -- do not chase it.
+comes from a SEPARATE piece (the outfit's chestplate). NON-ISSUE -- do not chase it.
 (Recorded only so it is not re-reported as a bug.)
 
 ### 0d. "Armor too small for the breast" -- the adaptive clearance cap sat BELOW the bust target
@@ -194,9 +199,9 @@ went baggy at the back).
 
 ### 0c. POST-RECONVERT VERIFICATION 2026-07-10 (offline; user in-game still pending)
 `scripts/verify_motion_match.py` over 1223 meshes:
-- **Ratio 1.00** on all three problem armors, every driving slider: Noble Dark Leather
-  `Cuirass_A/B`; Steel Plate `Cuirass` (was 0.85), `SteelArmor.012` (was 1.48), `Collar`;
-  Falmer `chestplate`/`gorget`.
+- **Ratio 1.00** on all three problem armors, every driving slider: the layered dark-leather
+  cuirass `Cuirass_A/B`; Steel Plate `Cuirass` (was 0.85), `SteelArmor.012` (was 1.48), `Collar`;
+  the bodysuit outfit's `chestplate`/`gorget`.
 - **Rigid-prop shear: 0 hits.** The artifact predicted from ratio-1.0 (a scabbard straddling
   the hugging + drape zones bending) did NOT materialise.
 - **43 shapes carry no TriShape at all** -- `ColLegs`, `HDTSkirt`, `ColBelt`, `Dress1`,
@@ -204,7 +209,7 @@ went baggy at the back).
   These show as "ratio 0.00" in a naive scan; that is NO morph, not a wrong morph.
 - **Only 3 genuinely off-ratio shapes**, all marginal drape cloth at the `_MATCH_NEAR` seam:
   `CloakF` 1.11, two `Skirt` 0.90. Cosmetically negligible.
-Also confirmed: Noble Dark Leather has NO auto SMP xml and 0 jiggle bones on the cloth
+Also confirmed: the layered dark-leather cuirass has NO auto SMP xml and 0 jiggle bones on the cloth
 (crash + balloon fixes held through the reconvert).
 
 ### 0b. RESOLVED 2026-07-10 -- the rule is "armor moves as the body it covers" (ratio 1.0)
@@ -237,7 +242,7 @@ Check with `scripts/verify_motion_match.py`. WATCH: rigid props (scabbard/sword)
 straddle the hugging + drape zones can now SHEAR (near verts move fully, far verts don't).
 
 ### 0. Breast-covering STANDOFF plates under-follow the breast slider (ROOT CAUSE, measured 2026-07-09)
-Two user reports — Falmer Slayer chestplate "clipping all around the breasts" and
+Two user reports — the bodysuit outfit's chestplate "clipping all around the breasts" and
 Steel Plate cuirass "clips at the under breasts" — are ONE root cause, measured across
 both armors. **Body pokes through the plate at the breasts when the breast slider is up.**
 
@@ -263,7 +268,7 @@ is CONTAINED by the plate instead of poking through (physically correct for rigi
 a breastplate holds the breast in; lower risk; user still sees full slider on exposed
 skin + soft armor). Leaning B for rigid plates. See memory `project_breast_standoff_morph_follow`.
 
-### 1. Noble Dark Leather  — reported 2026-07-07
+### 1. Layered dark-leather cuirass  — reported 2026-07-07
 Female, viewed from behind (Whiterun). Outfit = leather cuirass + metal shoulder
 pauldrons + quilted/metal hip skirt-belt + thigh guards + greaves.
 - **Rear thighs — clip DURING MOVEMENT (dynamic).** The thigh/leg armor doesn't
@@ -276,8 +281,8 @@ pauldrons + quilted/metal hip skirt-belt + thigh guards + greaves.
   band sits inside the UBE butt/hip at rest → body pokes through the back of the belt.
   - Likely class: missing outward clearance over the UBE butt at the bind pose.
     Related prior work: `project_adaptive_armor_clearance`, `project_antipoke_refinements`.
-- Mod: "New Leather Armor" by furexarot (Nexus 132069, CBBE 3BA/HIMBO). Mesh =
-  `!UBE\narmor\leathersuitn\dcuirass_1.nif` (d = dark variant).
+- Source: a custom CBBE 3BA/HIMBO leather-armor mod; mesh = the DARK cuirass variant,
+  `_1` weight (shapes Cuirass_A/B/C + Greaves).
 - DIAGNOSED (shape inspect): thigh armor = shape `Greaves` (z25-79). The leg-bend
   conform (_match_rigid_leg_bend_to_body) DID run on it (has FrontThigh/RearThigh/
   RearCalf grafts) -- NOT a skip bug. Rear-thigh clip during movement = the conform's
@@ -319,7 +324,7 @@ pauldrons + quilted/metal hip skirt-belt + thigh guards + greaves.
 - Status: SHELVED (known-hard drape-projection). Belt-back STATIC clip: not separately
   pursued (the "belt" IS this same under-butt flap).
 
-### 2. New Leather Armor "pants" (Greaves) — reported 2026-07-07
+### 2. Layered dark-leather cuirass "pants" (Greaves) — reported 2026-07-07
 CORRECTION to entry 1: the movement clip is the PANTS (shape `Greaves`, the full-leg
 piece z25-79, 55% leg-bone weight), NOT the loincloth flap (entry 1 chased the wrong
 shape). Diagnosis (measured): the pants already TRACK the body's bones almost exactly
@@ -397,7 +402,7 @@ jiggle bone. Deployed live + exe rebuild. Detail below (superseded 3b-original).
 ### 3b-original (SUPERSEDED — kept for the wrong-turn record)
 After the pair-union fix stopped the explosion, the re-converted armor's PANTS collapsed
 at runtime (pull-to-plane) + legs showed bare (red skin viz). Could NOT reproduce or
-explain offline. The re-converted `_0`/`_1` NIFs + generated `dcuirass.tri` measure
+explain offline. The re-converted `_0`/`_1` NIFs + the generated cuirass `.tri` measure
 byte-correct + topology-consistent vs the working `.bak` in EVERY checked property:
 geometry (no exploded verts), skin bind transforms (valid), <=4 bones/vert, weight sums
 1.0, 0 unweighted verts, identity node transforms, identical skin partitions, identical
@@ -405,7 +410,7 @@ block types (no physics/SMP extradata), matching shape sets, tri morph indices a
 in-bounds (max = vertcount-1/shape). WRONG TURN: my first "cause" was BODYTRI=
 `femalebody_tangent.tri` -- a TEST-HARNESS ARTIFACT of converting to a TEMP dst with no
 `meshes` segment (BODYTRI relpath is derived by finding `meshes` in the DST, nif_convert
-:10950); a real `meshes` dst correctly emits `dcuirass.tri`. So the collapse is a RUNTIME
+:10950); a real `meshes` dst correctly emits the cuirass's own `.tri`. So the collapse is a RUNTIME
 factor invisible to static analysis (candidate: `_0`/`_1` vertex-ORDER divergence sharing
 one tri -- NOT verified). CAUTION: the OLD exe that built the working pack was OVERWRITTEN
 by the 10:15 rebuild -- working output for THIS armor exists ONLY as the `.bak` NIFs; the
@@ -424,8 +429,8 @@ source" float non-determinism (exe grafted FrontThigh ~3x weaker: 0.70% vs sourc
 - ROOT CAUSE: the reskin gate skips a shape whose SOURCE ships its own BodySlide
   morph TRI (`s.name in src_morph_shapes`, via `_source_morph_tri_shape_names`,
   which checks for `<stem>.tri` next to the source nif). The exe resolves
-  `dcuirass_1.nif` through the MO2 VFS to the **BodySlide-output override** (
-  `Authoria - Bodyslide Output - 3BA`), which HAS `dcuirass.tri` beside it → Greaves
+  the cuirass `_1.nif` through the MO2 VFS to the **BodySlide-output override** (a
+  `<mod> - Bodyslide Output - 3BA` folder), which HAS a matching `.tri` beside it → Greaves
   classified as morph-TRI → the WHOLE reskin block skipped → **no FrontThigh/RearThigh/
   RearCalf/Butt scale bones** → rear-thigh clip during movement. The earlier "source"
   run pointed at the base mod (no `.tri`) → reskin ran → scale bones present. Same
@@ -438,7 +443,7 @@ source" float non-determinism (exe grafted FrontThigh ~3x weaker: 0.70% vs sourc
   weights`) runs on that source skin. The graft only overrides the skin if it actually
   added a scale bone; else the true source skin flows through unchanged. Non-morph-TRI
   shapes unchanged (full reskin, as before). See `[DESIGN: Morph-TRI reskin]`.
-- VERIFIED: clean deployed exe on New Leather Armor → Greaves FrontThigh 0.70%→**1.60%**,
+- VERIFIED: clean deployed exe on the layered dark-leather cuirass → Greaves FrontThigh 0.70%→**1.60%**,
   RearThigh 0.65%, RearCalf 0.11%, Butt 1.17% (was ftBASE=0 / all scale bones absent);
   full-reskin branch (base mod) still 2.08%; suite 615; golden A/B held; exe byte-verified.
 - Status: **FIXED + DEPLOYED**, pending in-game confirm after reconvert. General class:
@@ -469,35 +474,35 @@ rest (chest mostly fine). Hide (entry 5) is the archetype. Ranked worst-first:
 | butt% | chest% | armor | note |
 |------:|-------:|-------|------|
 | 100 | 100 | armor/falmer/falmerarmorf | falmer (skimpy-ish, verify) |
-| 100 | 85 | clothes/volsCloaks/hoodedF | cloak (open front?) |
-| 86 | 0 | falmerslayer/FalmerSlayerChestplate | chestplate, no rear plate |
+| 100 | 85 | custom hooded cloak | cloak (open front?) |
+| 86 | 0 | the bodysuit outfit's chestplate | chestplate, no rear plate |
 | 77 | 3 | creationclub asvsse001 extravagantrobe01b | robe SHOULD cover — real |
 | 73 | 18 | dlc01 falmerheavy cuirass | full cuirass — real |
-| 72 | 18 | armor/aom/lamae/lamaedress | dress — real |
+| 72 | 18 | custom dress A | dress — real |
 | 70 | 5 | armor/hide/f/cuirasslight | **entry 5 archetype** |
 | 69 | 8 | armor/imperial/f/cuirassmedium | full cuirass — real |
 | 69 | 22 | armor/studded/male/body | full cuirass — real |
-| 69 | 22 | armor/crbex/yor/yordress | dress — real |
+| 69 | 22 | custom dress B | dress — real |
 | 68 | 25 | armor/imperial/f/cuirassheavy | full cuirass — real |
 | 68 | 4 | armor/hide/f/cuirassheavy(chieftain) | full cuirass — real |
 | 68 | 11 | armor/imperial/f/cuirasslight | full cuirass — real |
-| 68 | 5 | armor/witchhunt/witch/ashwitchdress | dress — real |
-| 66 | 12 | armor/revenant/queen/queendress | dress — real |
-| 66 | 0 | dbm museumarmor 1stexplorersgarb_f | explorer garb — real |
+| 68 | 5 | custom ash-witch dress | dress — real |
+| 66 | 12 | custom queen dress | dress — real |
+| 66 | 0 | custom explorer garb | explorer garb — real |
 
-- **By-design skimpy** (butt uncovered on purpose — NOT converter bugs): AsurasBra,
-  Cimmerian Top, Sigrin onlyTop, Traveler's Romper Bra, FVO Top, Zamorian Thief Top,
-  AuriLL Top, Ruby flower Top. Skip unless user reports one specifically.
-- **False positives** (1st-person/actor bodies — no worn butt geometry): falmer/aom
-  actor bodies, all the `*1st*`/`*fp*`/`*1person*` meshes. Ignore.
+- **By-design skimpy** (butt uncovered on purpose — NOT converter bugs): eight custom
+  bra / crop-top pieces (2 bras + 6 tops), one of them the multi-layer dress's top.
+  Skip unless user reports one specifically.
+- **False positives** (1st-person/actor bodies — no worn butt geometry): falmer +
+  custom-outfit actor bodies, all the `*1st*`/`*fp*`/`*1person*` meshes. Ignore.
 - **Read:** these are almost all vanilla/DLC/CC full cuirasses+dresses — a STATIC rear
   coverage class, one fix (stronger softcloth-butt inflation / rear anti-poke reach on
   full-torso armor) would address most of them at once. NOT yet A/B'd vs pre-reconvert;
   Hide is unchanged this session so this is a pre-existing limit, not a new regression.
 
 ### 6. Fur Cuirass (bandit fur band/bra) — OVER-inflation, breast gaps — reported 2026-07-08
-Female (Whiterun). Item "Fur Cuirass" = `REQ_Light_Fur_Body_Kilt` (Requiem for the
-Indifferent) → vanilla ARMA `BanditCuirass1AA` → mesh **`armor\bandit\body1f_1.nif`**.
+Female (Whiterun). Item "Fur Cuirass" = an overhaul's fur-body-kilt ARMO record →
+vanilla ARMA `BanditCuirass1AA` → mesh **`armor\bandit\body1f_1.nif`**.
 A skimpy strapless fur band (bra) + fur kilt. User: "overinflates all around and creates
 gaps especially at the breasts."
 - **Zone + condition:** breast band, at rest → armor stands OFF the body (hollow gap).
@@ -511,12 +516,12 @@ gaps especially at the breasts."
   5.70u ≈ UBE's 5.74u, and the band was flush — the source is a GOOD source here. The
   gap is purely the converter's **outward inflation** lifting a tight conformed bra off
   the body. (Aside: build22's source deprioritization keys on the substring "bodyslide
-  output"; this modlist also has output mods named "Authoria - Vanilla Bodyslides" and
-  "CBBE 3BA Vanilla Outfits Redone - Prebuilt" that the heuristic does NOT catch — but
+  output"; this modlist also has output mods whose folders instead read "... Vanilla
+  Bodyslides" or end in "- Prebuilt", which the heuristic does NOT catch — but
   those weren't used here and wouldn't have helped, since the 3BA source is fine.)
 - **ROOT CAUSE (confirmed by bisection 2026-07-09) — NOT softcloth, NOT anti-poke.**
   Both were toggled off with ZERO change (`scratchpad\ab_fur.py`). The chain:
-  1. The winning source is **HDT SMP Vanilla Armors** (build22 tier-0; the 3BA output is
+  1. The winning source is **an SMP-physics vanilla-armor replacer** (build22 tier-0; the 3BA output is
      tier-2). It bundles its OWN body `BanditBody1` whose bust reaches **+9.88u** — a
      big-bust preset (the 3BA/vanilla-bodyslide sources bundle a normal +5.70u body).
   2. The fur band `Top` is authored FLUSH on that +9.88 body.
@@ -527,7 +532,7 @@ gaps especially at the breasts."
      off. The softcloth pass only pushes cloth OUT where the body POKES; nothing pulls a
      too-loose band IN → the +1.77u gap.
   So: **a source that bundles a big-bust preset body + softbody cloth kept at source
-  position + no pull-in-when-loose = the gap.** Same FAMILY as the New-Leather 3BA-source
+  position + no pull-in-when-loose = the gap.** Same FAMILY as the layered-cuirass 3BA-source
   bug (source built to a mismatched preset), surfacing on softbody cloth.
 - **Two disproven fixes (do not retry):** (a) softcloth clearance tuning — softcloth
   isn't even acting here. (b) lowering `_BODY_HEURISTIC_MIN_VERTS`/`_MIN_BONES` so
@@ -551,13 +556,13 @@ gaps especially at the breasts."
   incumbent bundles a BESPOKE body (a body-skin-textured, full-body-sized shape that is
   NOT the canonical '3BA') while a same-tier challenger bundles the canonical '3BA' body,
   the challenger wins — it converts flush where the bespoke-body source stands off. Gated
-  so it does NOT fire on: a different tier (tier still dominates -> New-Leather safe), a
+  so it does NOT fire on: a different tier (tier still dominates -> layered-cuirass case safe), a
   source bundling NO body (physics robes keep winning -> SMP preserved), or an exposed-
   skin SLICE (baked hand/neck skin; rejected by a 500-vert / z-range-35 floor). Opt out
   `CBBE2UBE_NO_BODYMATCH_SELECT=1`. Measured end-to-end: fur band standoff **+1.77 ->
   +0.59u mean** (covered +2.12 -> +1.16), now matching the pipeline's normal fit. Pack
-  blast radius: **42 of 2165 meshes** re-source (36 fur-class from HDT SMP Vanilla Armors,
-  6 from a retexture bundling a full body); College Mage Robes / Miraak / Steel retexture
+  blast radius: **42 of 2165 meshes** re-source (36 fur-class from the SMP-physics
+  vanilla-armor replacer, 6 from a retexture bundling a full body); mage robes / Miraak / steel retexture
   correctly NOT swapped (skin-slices only). Suite 622 (+3 tests). **Trade-off:** the
   canonical source is a merged, non-physics mesh -> affected fur-class bands lose HDT-SMP
   jiggle (fit fixed, no jiggle -- acceptable for a fur band; the user chose fit).
@@ -582,20 +587,20 @@ thickness-gated so it does NOT false-flag thick plate (a plate stands off but is
 | 1.80 | 1.22 | armor/bandit/body3f | **Fur Cuirass sibling** |
 | 1.76 | 0.81 | armor/bandit/body2f | **Fur Cuirass sibling** |
 | 1.76 | 1.12 | creationclub asvsse001 commonrobe02 | |
-| 1.69 | 1.08 | son6of6tredis Argonian fem/Pants | full-body suit |
+| 1.69 | 1.08 | custom argonian suit, shape `Pants` | full-body suit |
 | 1.64 | 0.95 | **armor/bandit/body1f** | **Fur Cuirass (entry 6)** |
-| 1.64 | 1.00 | armor/revenant/queen/queendress | also 5t |
+| 1.64 | 1.00 | custom queen dress | also 5t |
 | 1.63 | 0.87 | armor/imperial/f/cuirasslight | also 5t |
-| 1.51 | 0.95 | witch/shamanrobe, aom/hag/hagrobe(v1) | |
+| 1.51 | 0.95 | custom shaman robe, custom hag robe (v1) | |
 | 1.49 | 1.37 | armor/studded/female/body | also 5t |
-| 1.46 | 1.10 | pulcharmsolis/redoran watchman/armorf | |
+| 1.46 | 1.10 | custom redoran watchman armor | |
 | 1.38 | 1.51 | dlc01 falmerheavy cuirass | also 5t |
 | 1.35 | 1.22 | clothes/forswornarmor/forswornarmorf | |
-| 1.2–1.33 | ~1.3 | NordWar SonsOfSkyrim guard armors (Solitude/Whiterun/Falkreath), fineclothes01, psiijicrobes, hide cuirassmedium, Kad_KhajiitMonk RobesF | borderline — verify by eye |
+| 1.2–1.33 | ~1.3 | custom hold-guard armor replacer (Solitude/Whiterun/Falkreath), fineclothes01, psiijicrobes, hide cuirassmedium, custom khajiit monk robes | borderline — verify by eye |
 
-- **One false positive:** `qwib/Traveler/Upgraded/Female/FP` (gap 1.71) — `FP` = 1st-person,
+- **One false positive:** a custom traveler outfit's `Female/FP` mesh (gap 1.71) — `FP` = 1st-person,
   slipped the name filter. Ignore.
-- **Cross-class overlap:** imperial (all 3), studded, queendress, falmerheavy, hide
+- **Cross-class overlap:** imperial (all 3), studded, the custom queen dress, falmerheavy, hide
   cuirassmedium appear in BOTH 5t (butt under-coverage) and 6t (breast over-inflation) —
   those full cuirasses have a two-sided fit error: the softcloth inflation over-lifts the
   chest while the rear still under-covers. A single inflation-tuning fix (don't inflate
@@ -613,7 +618,7 @@ thickness-gated so it does NOT false-flag thick plate (a plate stands off but is
   (`movups xmm0,[rax+r10]`) in `hdtsmp64.dll` MainHooks::Update, reading skin
   partition data of `BSTriShape "robes"` (BODYTRI, under "HDT Skinned Mesh Physics
   Object" node). Crashed on equipping a converted cuirass.
-- Armor: `!UBE\MrTT\Gift\Armor\cuirassmediumfi_1.nif` (source BSA-packed).
+- Armor: a BSA-packed custom cuirass, `!UBE\...\cuirassmediumfi_1.nif`.
 - ROOT CAUSE: the converter grafted **8 UBE scale/jiggle bones** (L/R FrontThigh,
   RearThigh, RearCalf, Butt) onto the AUTHORED SMP cloth shapes: `robes` 11->19
   bones, `robes001` 7->14 bones. These shapes are HDT-SMP-driven; adding skeleton
@@ -654,18 +659,19 @@ _(none yet)_
 ### C2. Equip CTD -- HDT-SMP jiggle bones grafted onto multi-layer cloth (FIXED 2026-07-09)
 - Crash: `crash-2026-07-09-09-58-57.log`. `EXCEPTION_ACCESS_VIOLATION` in
   `hdtsmp64.dll MainHooks::Update` on equip, faulting on `Cuirass_A`/`Cuirass_B` of the
-  New Leather / Noble Dark Leather cuirass (`narmor/leathersuitn/dcuirass`).
+  layered dark-leather cuirass.
 - Root cause: the body-follow graft passes (M6 reskin + `_conform_fitted_to_body` +
   `_match_rigid_leg_bend_to_body` + `_transfer_body_jiggle_to_fitted`) graft the body's
   HDT-SMP JIGGLE bones (Breast01/02/03, Butt, Belly) onto bone-driven multi-layer cloth
   cuirass shapes. A runtime SMP config drives that cloth by those body bones -> FSMP
   OOB-crash. Not detected as SMP (no NIF marker; weighted to body bones, not custom
   chains) so the softbody/collider/garment-chain skips all missed it. NOT the body-match
-  fix (New Leather sources from base, unchanged; mesh byte-identical to the `.looksgood`).
+  fix (the layered cuirass sources from base, unchanged; mesh byte-identical to the `.looksgood`).
 - Fix: `_layered_cloth_shape_names` (2+ sibling shapes sharing a base stem + short layer
   suffix, e.g. Cuirass_A/_B/_C) -> EVERY graft pass skips them, keeping SOURCE skin.
   Prevention at every site (pynifly can't cleanly remove a bone after; a single post-strip
-  gets undone by later passes). Verified dcuirass+d1st Cuirass_A/B/C -> 0 grafted SMP.
-  Pack blast radius: 14 meshes (New Leather + accessories/dresses). Escape hatch
+  gets undone by later passes). Verified on the cuirass + its 1st-person mesh,
+  Cuirass_A/B/C -> 0 grafted SMP.
+  Pack blast radius: 14 meshes (the layered cuirass + accessories/dresses). Escape hatch
   CBBE2UBE_NO_LAYERED_CLOTH_SKIN=1. Suite 628. Exe rebuilt + deployed (hash-verified).
 - Status: **FIXED IN CODE + deployed. Pending in-game equip test (reconvert first).**

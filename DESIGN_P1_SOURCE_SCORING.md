@@ -3,17 +3,17 @@
 Replace the two stacked source heuristics (tier deprioritisation + within-tier
 body-match) with ONE measured score per candidate, so the converter picks the source
 that both fits UBE AND keeps intended features (physics). Grounded in the 2026-07-09
-Fur Cuirass + the 2026-07-08 New Leather cases.
+Fur Cuirass + the 2026-07-08 layered-cuirass cases.
 
 Status: DESIGN ONLY. Higher risk than P2 (pack-wide re-selection). Implement + calibrate
-after the reconvert, behind a flag, with New-Leather + Fur-Cuirass as golden cases.
+after the reconvert, behind a flag, with the layered cuirass + Fur Cuirass as golden cases.
 
 ---
 
 ## 1. Why the current two heuristics aren't enough
 
 `build_mesh_index` today does: (a) tier-sort — BodySlide outputs lose to base
-(`#bodyslide-source`, fixed New Leather); (b) within-tier — a canonical-`3BA`-body source
+(`#bodyslide-source`, fixed the layered cuirass); (b) within-tier — a canonical-`3BA`-body source
 beats a bespoke-body source (`#body-match-source`, fixed Fur Cuirass). Both are PROXIES
 and they can't express the pack's actual best option:
 
@@ -49,7 +49,7 @@ For each mesh, gather ALL enabled providers (not first-wins), score each, pick t
 
 The tier penalty is really "a BodySlide output may bake a body that MISMATCHES the target."
 `body_term` should MEASURE exactly that — and it must capture more than bust, or it will
-REGRESS New Leather. New Leather's clipping was layers SQUASHED by a preset body; if that
+REGRESS the layered cuirass. Its clipping was layers SQUASHED by a preset body; if that
 preset happened to share UBE's bust, a bust-only `body_term` would score it fine and let
 the bad output win again. So:
 
@@ -57,8 +57,8 @@ the bad output win again. So:
                    thighs z45-66, bust z100-110) of nearest-vertex distance between the
                    candidate's bundled body and the UBE reference body, both render-space.
 
-A preset that squashes/inflates the body deviates across regions → penalised (New Leather
-output loses to base). A preset that matches UBE (Fur Cuirass 3BA-output) → ~0 deviation →
+A preset that squashes/inflates the body deviates across regions → penalised (the layered
+cuirass's output loses to base). A preset that matches UBE (Fur Cuirass 3BA-output) → ~0 deviation →
 not penalised, and its physics wins it. This makes `body_term` SUBSUME the tier intent;
 `out_term` drops to a small residual. The UBE reference is the same body ref the convert
 uses (`_find_ube_body_ref` / `_cached_ube_body_verts`), so "matches the target" is literal.
@@ -67,11 +67,11 @@ uses (`_find_ube_body_ref` / `_cached_ube_body_verts`), so "matches the target" 
 
 Tune `W_*` on real data so BOTH hold simultaneously:
 
-1. **New Leather** (`narmor/leathersuitn/dcuirass`) → **base** ("New Leather Armor").
+1. **The layered dark-leather cuirass** → **base** (the armor mod's own mesh).
    The `Bodyslide Output - 3BA` bakes a mismatched preset → high `body_term` penalty →
    base wins even though the output may have physics. Guards the 2026-07-08 fix.
 2. **Fur Cuirass** (`armor/bandit/body1f`) → **`Bodyslide Output - 3BA`** (matching body
-   +5.70u ≈ UBE + physics), NOT the merged non-physics Redone source. Recovers jiggle.
+   +5.70u ≈ UBE + physics), NOT the merged non-physics prebuilt source. Recovers jiggle.
 
 Plus: the whole 42-mesh body-match set (must not regress into gaps), physics robes (no
 body → keep their SMP source), and a full-pack A/B (scoring on vs current) reviewed for
@@ -105,7 +105,7 @@ machinery).
 - Unit (synthetic candidates, monkeypatched open): matching-body+physics beats
   mismatched-body; no-body physics source kept over a canonical source; a mismatched-body
   output loses to a matched-body base; priority breaks exact ties.
-- Golden calibration tests: New Leather → base, Fur → 3BA-output, on synthetic mimics with
+- Golden calibration tests: layered cuirass → base, Fur → 3BA-output, on synthetic mimics with
   the measured deviations baked in, so the WEIGHTS are regression-locked.
 - Backward-compat: `target_body_ref=None` reproduces today's selection byte-for-byte
   (reuse the existing tier + body-match tests unchanged).
@@ -114,7 +114,7 @@ machinery).
 
 ## 7. Risks
 
-- **New-Leather regression** if `body_term` under-measures the squash — mitigated by the
+- **Layered-cuirass regression** if `body_term` under-measures the squash — mitigated by the
   full-body (multi-region) deviation and the golden calibration test. HIGHEST risk.
 - **Perf**: deviation needs the candidate body + a KD-tree vs the UBE ref per contested
   source. Bounded to contests, cached; acceptable (same profile as today's provenance
@@ -124,14 +124,14 @@ machinery).
   proven, then ON.
 - **Pack-wide churn**: a full reconvert re-sources more than 42 meshes. Stage it: flag off
   → prove goldens identical → flag on in a branch → A/B review → in-game spot-check the
-  Fur Cuirass (jiggle back?) + New Leather (still clean?) before making it default.
+  Fur Cuirass (jiggle back?) + the layered cuirass (still clean?) before making it default.
 
 ## 8. Staged implementation (post-reconvert)
 
 1. `_score_candidate` + region-deviation helper + physics detection wiring. Unit tests.
 2. `build_mesh_index` candidate-collection + scoring path behind `target_body_ref`/flag;
    fallback unchanged. Backward-compat + golden-identical proven.
-3. Calibrate weights against New Leather + Fur goldens; lock with regression tests.
+3. Calibrate weights against the layered-cuirass + Fur goldens; lock with regression tests.
 4. Full-pack A/B review; in-game spot-check; flip default; later retire P0/tier heuristics.
 
 Effort: medium-high. The measurement pieces exist; the new work is the region-deviation
