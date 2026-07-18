@@ -1602,8 +1602,8 @@ def generate_ube_patch(
         """DefaultRace (Skyrim.esm 0x19) resolved THROUGH the given plugin's
         master table, EXACTLY like _record_abs_fid. Two traps a raw
         `(rnam >> 24) == 0` misses, both causing DOUBLE coverage vs the coverage
-        side: (1) Skyrim.esm is not always master index 0 (Requiem patch ESPs list
-        it later); (2) an own-record ref (top byte == len(masters)) -- notably
+        side: (1) Skyrim.esm is not always master index 0 (some third-party patch
+        ESPs list it later); (2) an own-record ref (top byte == len(masters)) -- notably
         Skyrim.esm's OWN DefaultRace, since Skyrim.esm has an EMPTY master list so
         its DefaultRace is top byte 0 == own. `masters`+`own_name` MUST belong to
         the plugin the RNAM lives in (source for same-plugin records, the owning
@@ -2191,7 +2191,7 @@ _POSTFLIGHT_CTD_PREFIXES = (
 # doesn't master Y it CANNOT encode a ref to Y (no top byte), so there's no
 # misroute. The only real misroute mode -- an out-of-range top byte -- is caught
 # by "formid-out-of-range" (which IS CTD above). Empirically confirmed: on the
-# real modlist this fired on Requiem/Legacy/Asuras with 0/98,972 refs out of range
+# real modlist this fired on several large third-party plugins with 0/98,972 refs out of range
 # and the game loaded fine. Kept as a soft warning so genuine oddities still show.
 
 
@@ -3192,6 +3192,7 @@ def generate_modded_nonbody_ube_coverage_patch(
     master_data_dirs: "list[Path] | None" = None,
     cover_all: bool = False,
     emit_sidecar: bool = False,
+    preserve_textures: bool = False,
     author: str = "cbbe-to-ube modded non-body UBE coverage",
     description: str = "UBE race coverage for mod-defined non-body armor",
 ) -> dict:
@@ -3288,6 +3289,21 @@ def generate_modded_nonbody_ube_coverage_patch(
     # ---- Pass 3: mint ESP (UBE-primary ARMAs only; masters = vanilla + UBE) ----
     patch_masters = list(VANILLA_DLC_MASTERS)
     _add_master_if_missing(patch_masters, ube_allrace_filename)
+    # preserve_textures: declare the masters each minted armature's alt-textures
+    # (MO?S) reference, so their FormIDs can be remapped into THIS ESP's master
+    # space instead of stripped. Without this, two ARMOs that share a mesh but
+    # differ ONLY in an alt-texture set (a colour/texture variant -- e.g. a plain
+    # vs a patterned stocking) both mint to a bare-mesh ARMA, become byte-identical,
+    # and the merge dedups them to ONE -> the variant loses its distinct look.
+    # Capped below the 255 top-byte limit; a ref past the cap falls back to strip.
+    # #nonbody-preserve-alttex
+    _MASTER_CAP = 250
+    if preserve_textures:
+        for arma_abs in mint_set:
+            _pl, _m2, _n2, _rn, _u = arma_win[arma_abs]
+            for nm in _arma_texture_master_names(_pl, _m2, _n2):
+                if len(patch_masters) < _MASTER_CAP:
+                    _add_master_if_missing(patch_masters, nm)
     pidx = {m.lower(): i for i, m in enumerate(patch_masters)}
     own_byte = len(patch_masters)
     ube_byte = pidx[ube_allrace_filename.lower()]
@@ -3297,9 +3313,12 @@ def generate_modded_nonbody_ube_coverage_patch(
     # Drop source-master FormID refs + texture data so the minted ARMA references
     # only UBE_AllRace (races) + mesh paths; keeps the ESP master list minimal.
     # NAM0-3 = skin-TXST / texture-swap FormIDs; strip for same reason as MO?S.
+    # preserve_textures keeps the alt-texture refs instead (remapped), stripping
+    # only the two non-texture FormID refs (footstep sound / art object).
     STRIP = {b"SNDD", b"ONAM", b"MO2S", b"MO3S", b"MO4S", b"MO5S",
              b"MO2T", b"MO3T", b"MO4T", b"MO5T",
              b"NAM0", b"NAM1", b"NAM2", b"NAM3"}
+    STRIP_MIN = {b"SNDD", b"ONAM"}
     # A "non-body" item whose OWN mesh WAS converted (e.g. a skin-tight cloth
     # piece that covers a non-body slot but still got a UBE mesh) must point at
     # the converted `!UBE\` mesh, NOT the source one. A blanket keep-source
@@ -3318,17 +3337,43 @@ def generate_modded_nonbody_ube_coverage_patch(
     _mint_rec: dict = {}   # arma_abs -> minted Record (for post-prune sidecar fids)
     next_id = ESL_OWN_FORMID_MIN
     mint_name = out_path.with_suffix(".esp").name
+    preserved_count = 0
+    preserve_fallbacks: list = []
     for arma_abs in mint_set:
         payload, m2, n2, _rn, _u = arma_win[arma_abs]
-        stripped = b"".join(
-            esp.encode_subrecord(s, d)
-            for s, d in esp.iter_subrecords(payload) if s not in STRIP)
-        minted_payload = rebuild_arma_payload(
-            stripped,
-            new_primary_rnam=ube_primary_patch,
-            new_additional_race_fids=ube_races_patch,
-            converted_nif_exists=_conv_exists,  # redirect to !UBE\ where converted
-        )
+        minted_payload = None
+        if preserve_textures:
+            # Keep the alt-texture set (MO?S) + skin swaps (NAM0-3), remapping their
+            # TXST FormIDs into this ESP's master space so a texture variant renders
+            # distinctly (and doesn't dedup-collapse into its sibling). #nonbody-preserve-alttex
+            def _remap(fid: int, _sm=m2, _sn=n2) -> int:
+                return remap_fid(fid, _sm, _sn, patch_masters)
+            try:
+                kept = b"".join(
+                    esp.encode_subrecord(s, d)
+                    for s, d in esp.iter_subrecords(payload) if s not in STRIP_MIN)
+                kept = _remap_arma_skin_txsts(kept, _remap)      # NAM0-3 -> patch space
+                minted_payload = rebuild_arma_payload(
+                    kept,
+                    new_primary_rnam=ube_primary_patch,
+                    new_additional_race_fids=ube_races_patch,
+                    alt_texture_fid_remap=_remap,                # MO?S -> patch space
+                    converted_nif_exists=_conv_exists,
+                )
+                preserved_count += 1
+            except Exception as _e:      # unresolvable master -> strip fallback
+                minted_payload = None
+                preserve_fallbacks.append((arma_abs[0], arma_abs[1], repr(_e)))
+        if minted_payload is None:
+            stripped = b"".join(
+                esp.encode_subrecord(s, d)
+                for s, d in esp.iter_subrecords(payload) if s not in STRIP)
+            minted_payload = rebuild_arma_payload(
+                stripped,
+                new_primary_rnam=ube_primary_patch,
+                new_additional_race_fids=ube_races_patch,
+                converted_nif_exists=_conv_exists,  # redirect to !UBE\ where converted
+            )
         new_fid = (own_byte << 24) | next_id
         next_id += 1
         new_edid = "UBE_MNB_{:X}".format(arma_abs[1])
@@ -3350,6 +3395,11 @@ def generate_modded_nonbody_ube_coverage_patch(
     if new_arma_records:
         out_esp.groups.append(esp.Group(label=b"ARMA", records=new_arma_records))
     prune_unused_masters(out_esp)
+    # preserve_textures unions source masters of varying tiers; tier-sort so a
+    # master-tier plugin never trails a regular ESP (all refs are remapped, so
+    # this is ref-safe). Mirrors the body coverage pass.
+    if preserve_textures:
+        resort_masters(out_esp, master_data_dirs=master_data_dirs)
     out_esp.save(out_path)
     warnings = validate_patch(out_path, master_data_dirs=master_data_dirs)
 
@@ -3399,6 +3449,8 @@ def generate_modded_nonbody_ube_coverage_patch(
         "esl_flagged": bool(tes4_flags & TES4_FLAG_ESL),
         "candidates_scanned": len(armo_win),
         "validation_warnings": warnings,
+        "textures_preserved": preserved_count,
+        "texture_fallbacks": len(preserve_fallbacks),
     }
 
 
