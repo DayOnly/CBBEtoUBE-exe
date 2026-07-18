@@ -154,6 +154,63 @@ def _plugin_in_mods(mr, enabled, name) -> bool:
     return False
 
 
+def _locate_in_mods_or_data(mr, enabled, dirs, name) -> "Path | None":
+    """Path to `name` (a Data-relative path) in an enabled mod or the game Data,
+    or None. Same search order as _plugin_in_mods/_plugin_in_data, but returns
+    the file so callers can READ it."""
+    if mr is not None:
+        mrp = Path(mr)
+        try:
+            folders = (enabled if enabled is not None
+                       else [d.name for d in mrp.iterdir() if d.is_dir()])
+        except OSError:
+            folders = []
+        for n in folders:
+            try:
+                p = mrp / n / name
+                if p.is_file():
+                    return p
+            except OSError:
+                continue
+    for d in dirs or []:
+        try:
+            p = Path(d) / name
+            if p.is_file():
+                return p
+        except OSError:
+            pass
+    return None
+
+
+def _skypatcher_armor_patching(ini_path) -> "bool | None":
+    """Read iEnableArmorPatching out of SkyPatcher.ini.
+
+    True/False when the key is present and parseable; **None when unknown**
+    (no INI, unreadable, or key absent). Unknown is deliberately NOT treated as
+    disabled -- a missing key is not evidence of a broken setup, and a check
+    that false-fails a healthy modlist is worse than no check (ROBUSTNESS_AUDIT
+    L3). Only an explicit 0 is a failure."""
+    if ini_path is None:
+        return None
+    try:
+        raw = Path(ini_path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line or line[0] in ";#":
+            continue
+        key, _, val = line.partition("=")
+        if key.strip().lower() != "ienablearmorpatching":
+            continue
+        val = val.split(";", 1)[0].strip()
+        try:
+            return int(val) != 0
+        except ValueError:
+            return None
+    return None
+
+
 def _enabled_has(enabled, *subs) -> bool:
     if not enabled:
         return False
@@ -282,15 +339,30 @@ def run_checks(layout=None, *, want_overlays=False, want_overlay_copy=False,
     except Exception:
         _fsp_on = True
     if _fsp_on:
-        skyp = (_plugin_in_mods(mr, enabled, "SKSE/Plugins/SkyPatcher.dll")
-                or _plugin_in_data(dd, "SKSE/Plugins/SkyPatcher.dll")
-                or _enabled_has(enabled, "skypatcher"))
-        checks.append(_c("skypatcher", "SkyPatcher (armor delivery)",
-                         OK if skyp else WARN,
-                         "found" if skyp else "SkyPatcher not detected.",
-                         "" if skyp else "Install SkyPatcher and set "
-                         "iEnableArmorPatching=1 — it delivers ALL converted armor "
-                         "now; without it converted armor is invisible."))
+        dll = _locate_in_mods_or_data(mr, enabled, dd, "SKSE/Plugins/SkyPatcher.dll")
+        skyp = bool(dll) or _enabled_has(enabled, "skypatcher")
+        # Presence of the DLL is not enough: iEnableArmorPatching=0 delivers
+        # exactly the same symptom (every converted piece invisible) with no
+        # other diagnostic, so verify the INI too.
+        armor_on = _skypatcher_armor_patching(
+            _locate_in_mods_or_data(mr, enabled, dd, "SKSE/Plugins/SkyPatcher.ini"))
+        if not skyp:
+            checks.append(_c("skypatcher", "SkyPatcher (armor delivery)", FAIL,
+                             "SkyPatcher not detected.",
+                             "Install SkyPatcher and set iEnableArmorPatching=1. "
+                             "It is a HARD dependency: it delivers ALL converted "
+                             "armor, there is no ESP fallback, so without it every "
+                             "converted piece is invisible in-game."))
+        elif armor_on is False:
+            checks.append(_c("skypatcher", "SkyPatcher (armor delivery)", FAIL,
+                             "SkyPatcher found but iEnableArmorPatching=0.",
+                             "Set iEnableArmorPatching=1 in SKSE/Plugins/"
+                             "SkyPatcher.ini. Armor patching is switched OFF, so "
+                             "every converted piece is invisible in-game."))
+        else:
+            checks.append(_c("skypatcher", "SkyPatcher (armor delivery)", OK,
+                             "found, armor patching enabled" if armor_on
+                             else "found"))
 
     out_dir = Path(mr) / output_name
     if out_dir.is_dir():

@@ -28,7 +28,6 @@ armour.
 The body-skin DIFFUSE texture gate is what keeps SMP skirts / robes (cloth
 diffuse) out, so the vert/bone floors can be relaxed once it passes.
 """
-import numpy as np
 
 from src import nif_convert
 

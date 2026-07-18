@@ -57,7 +57,6 @@ def arma_info(rec):
     slots: set[int] = set()
     meshes: list[str] = []
     addl_races: list[int] = []
-    seen_first_modl = False
     for sig, d in esp.iter_subrecords(rec.payload):
         if sig == b"EDID":
             edid = d.rstrip(b"\x00").decode("ascii", "replace")

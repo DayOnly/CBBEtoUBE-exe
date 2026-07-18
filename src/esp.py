@@ -316,8 +316,19 @@ class ESP:
         header = TES4Header.parse_from_record(tes4_rec)
         groups: list[Group] = []
         while offset < len(data):
+            prev = offset
             grp, offset = Group.parse(data, offset)
             groups.append(grp)
+            # A malformed top-level GRUP whose declared size is < the 24-byte
+            # header (e.g. a zeroed/truncated size field) makes Group.parse
+            # return the SAME offset -> this loop would spin forever, hanging the
+            # whole batch with no error. The nested-GRUP walk already guards this
+            # (Group.parse line ~211); enforce progress here too. Fail loud
+            # instead of hanging so a corrupt plugin surfaces cleanly.
+            if offset <= prev:
+                raise ValueError(
+                    f"non-advancing top-level GRUP at offset {prev} in "
+                    f"{path.name} (declared size < header; plugin is corrupt)")
         return cls(header=header, groups=groups)
 
     @classmethod

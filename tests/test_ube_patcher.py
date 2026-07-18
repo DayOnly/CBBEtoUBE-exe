@@ -291,7 +291,7 @@ def test_validate_patch_catches_modl_after_data(tmp_path):
 # ---------------------------------------------------------------------------
 # Cross-patch ARMO merge: when two patches override the same Skyrim.esm
 # ARMO, the merger must combine their armatures lists. Reproduces the
-# diagnostic we ran by hand on the user's HDT-SMP + Remodeled overlap.
+# diagnostic we ran by hand on the user's HDT-SMP + armour-replacer overlap.
 # ---------------------------------------------------------------------------
 
 
@@ -301,7 +301,7 @@ def test_validate_patch_catches_modl_after_data(tmp_path):
 # ---------------------------------------------------------------------------
 # ESL-overflow downgrade: when the union of new ARMAs exceeds the ESL cap,
 # merge_patches must NOT raise (the old behaviour aborted the merge and left a
-# STALE Combined.esp on disk — the real "Vigilant armor invisible" bug). It
+# STALE Combined.esp on disk — the real "bespoke-master armor invisible" bug). It
 # must instead ship a regular non-ESL ESP and keep every record.
 # ---------------------------------------------------------------------------
 
@@ -311,20 +311,24 @@ def test_merge_downgrades_to_full_esp_on_esl_overflow(tmp_path):
     from src.esp import ESP, TES4Header, Group, Record, encode_subrecord, \
         encode_zstring
 
-    def make_arma(own_fid: int) -> Record:
+    def make_arma(own_fid: int, tag: str) -> Record:
+        # DISTINCT mesh per ARMA (unique `tag`) so the merge record-dedup
+        # (MERGE_DEDUP_ARMAS) does NOT collapse them -- this test exercises the
+        # ESL-overflow downgrade, which needs 4 genuinely different ARMAs.
         payload = (
-            encode_subrecord(b"EDID", encode_zstring(f"ARMA_{own_fid:X}_UBE"))
+            encode_subrecord(b"EDID", encode_zstring(f"ARMA_{tag}_UBE"))
             + encode_subrecord(b"BOD2", struct.pack("<II", 0x4, 4))
             + encode_subrecord(b"RNAM", struct.pack("<I", 0x02005734))
-            + encode_subrecord(b"MOD3", encode_zstring("!UBE/Armor/test.nif"))
+            + encode_subrecord(b"MOD3", encode_zstring(f"!UBE/Armor/test_{tag}.nif"))
         )
         return Record(sig=b"ARMA", flags=0, formid=own_fid, timestamp_vc=0,
                       version_unk=0x002C, payload=payload)
 
-    def make_patch(path: Path, locals_: list[int]) -> Path:
+    def make_patch(path: Path, locals_: list[int], tags: list[str]) -> Path:
         masters = ["Skyrim.esm", "UBE_AllRace.esp"]
         own_byte = len(masters)
-        armas = [make_arma((own_byte << 24) | lo) for lo in locals_]
+        armas = [make_arma((own_byte << 24) | lo, t)
+                 for lo, t in zip(locals_, tags)]
         esp_obj = ESP(
             header=TES4Header(masters=masters, num_records=0,
                               next_object_id=max(locals_) + 1, version=1.7),
@@ -334,8 +338,8 @@ def test_merge_downgrades_to_full_esp_on_esl_overflow(tmp_path):
         return path
 
     tmp_path.mkdir(parents=True, exist_ok=True)
-    p1 = make_patch(tmp_path / "ov_a.esp", [0x800, 0x801])
-    p2 = make_patch(tmp_path / "ov_b.esp", [0x800, 0x801])
+    p1 = make_patch(tmp_path / "ov_a.esp", [0x800, 0x801], ["a0", "a1"])
+    p2 = make_patch(tmp_path / "ov_b.esp", [0x800, 0x801], ["b0", "b1"])
     out = tmp_path / "ov_merged.esp"
 
     # Force the cap below the 4 total new ARMAs so we exercise the downgrade.
@@ -567,7 +571,7 @@ def test_is_esm_tier_master_detects_esl_flagged_esp(tmp_path):
     """Regression: an ESL-flagged .esp (TES4 flag 0x200, WITHOUT the ESM bit
     0x1 — i.e. an ESPFE, the modern compact-plugin standard) must classify as
     MASTER-TIER so the merge sorts it before regular .esps. The old code checked
-    only 0x1, so 84 ESPFE armor masters (3BBB, Magecore, Velothi, ...) sorted
+    only 0x1, so 84 ESPFE armor masters in the modlist sorted
     AFTER UBE_AllRace.esp and corrupted the Combined's master order, misrouting
     their overrides (invisible/static armor on UBE)."""
     import struct

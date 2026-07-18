@@ -104,7 +104,7 @@ class BSAArchive:
         if magic != b"BSA\x00":
             raise ValueError(f"{self.path.name}: not a BSA (magic {magic!r})")
         (version, folder_rec_off, archive_flags, folder_count, file_count,
-         total_folder_name_len, total_file_name_len, file_flags) = struct.unpack_from(
+         _total_folder_name_len, total_file_name_len, _file_flags) = struct.unpack_from(
             "<8I", d, 4)
         self.version = version
         self.archive_flags = archive_flags
@@ -228,6 +228,15 @@ class BSAArchive:
             orig_size = struct.unpack_from("<I", d, p)[0]
             p += 4
             comp = d[p:off + size]
+            # Decompression-bomb guard: `orig_size` is attacker-controlled (read
+            # straight from an untrusted downloaded BSA), and zlib/lz4.frame expand
+            # without a ceiling. A crafted tiny-but-highly-compressible entry (or a
+            # huge declared orig_size) would otherwise force a multi-GB allocation
+            # -> memory exhaustion. Cap the decompressed size; a real Meshes/Textures
+            # entry is far below 512 MB. #bsa-decompress-cap
+            _MAX = 512 * 1024 * 1024
+            if orig_size > _MAX:
+                return None
             # Compression algorithm by BSA version: Oldrim (v104) = zlib;
             # Skyrim SE (v105) = LZ4 frame (magic 0x184D2204). Vanilla SSE
             # Meshes/Textures BSAs use LZ4 frame; lz4.block is a fallback for
@@ -235,11 +244,16 @@ class BSAArchive:
             if comp[:4] == b"\x04\x22\x4d\x18":
                 try:
                     import lz4.frame  # type: ignore
-                    return lz4.frame.decompress(comp)
+                    out = lz4.frame.decompress(comp)
+                    return out if len(out) <= _MAX else None
                 except Exception:
                     return None
             try:
-                return zlib.decompress(comp)
+                dobj = zlib.decompressobj()
+                out = dobj.decompress(comp, _MAX)
+                if dobj.unconsumed_tail:      # would exceed the cap -> reject
+                    return None
+                return out
             except zlib.error:
                 try:
                     import lz4.block  # type: ignore

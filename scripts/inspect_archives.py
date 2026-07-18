@@ -27,12 +27,14 @@ from pathlib import Path
 DL = Path(os.path.expanduser("~") + r'\Downloads')
 WINRAR_RAR = r'C:\Program Files\WinRAR\Rar.exe'
 
+# Archives to inspect, as filenames under DL. Fill in the ones you want to
+# compare -- typically the same outfit's base / 3BA / UBE downloads side by
+# side, to see which halves (plugin, built meshes, sliderset source data) each
+# one actually ships.
 ARCHIVES = [
-    'Eve\'s Sunfire Armor Main File-140366-1-0-1738428193.zip',
-    'Eve\'s Sunfire Armor UBE Bodyslide Files-140366-1-1-1738770593.rar',
-    'Kozakowy Female Vampire Armor Replacer - ESL-95284-1-0-beta-1688777576.zip',
-    'Female Vampire Armor Replacer 3BA-143980-1-3-1779068914.7z',
-    'Female Vampire Armor Replacer UBE-143980-1-0opt-1779069100.7z',
+    # 'SomeOutfit Main File.zip',
+    # 'SomeOutfit 3BA BodySlide Files.7z',
+    # 'SomeOutfit UBE BodySlide Files.rar',
 ]
 
 

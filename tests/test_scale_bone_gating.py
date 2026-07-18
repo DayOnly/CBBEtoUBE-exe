@@ -15,7 +15,7 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 """Guards for the scale-bone tracking layer + the GPU bone-cap that together
-fix the Traveling Mage equip CTD and the Forsworn cloth "far from body" (#166,
+fix a mage-robe equip CTD and the Forsworn cloth "far from body" (#166,
 reverted/superseded by the #167 regression fix).
 
 - Cloth carries NO per-shape BODYTRI (single carrier is the body shape, #114),
@@ -25,7 +25,7 @@ reverted/superseded by the #167 regression fix).
   overruns the bone-matrix palette at draw -> BSBatchRenderer access violation.
 - The cap must rank by LOCAL dominance (max per-vert weight) so a concentrated
   physics/skirt bone (e.g. a robe skirt chain) survives while a thinly-spread
-  scale tail is dropped. Total-weight ranking evicted the TMage skirt physics
+  scale tail is dropped. Total-weight ranking evicted a robe's skirt physics
   bones -> no sway + hem distortion.
 """
 from src import nif_convert as nc

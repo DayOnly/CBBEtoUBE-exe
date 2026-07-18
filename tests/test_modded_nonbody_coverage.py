@@ -25,7 +25,6 @@ TINY master list (mint ESP masters = vanilla + UBE_AllRace, never the mod).
 import struct
 from pathlib import Path
 
-from src import esp
 from src.esp import ESP, TES4Header, Group, Record, encode_subrecord, \
     encode_zstring, iter_subrecords
 from src import ube_patcher
@@ -150,7 +149,53 @@ def test_modded_nonbody_skips_already_covered_and_deforming(tmp_path):
     print("  test_modded_nonbody_skips_already_covered_and_deforming OK")
 
 
+def test_modded_nonbody_redirects_converted_mesh_to_ube(tmp_path):
+    """A non-body item whose OWN mesh WAS converted must point at the !UBE\\ mesh,
+    NOT source (the converted-pants class: minted through the non-body pass but its mesh
+    was actually converted). A genuine non-body item (helmet, not in
+    converted_rel_paths) still keeps its source mesh. #mnb-converted-redirect"""
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    sky = _save(tmp_path / "Skyrim.esm", [], [], flags=0x1)
+    ube = _save(tmp_path / "UBE_AllRace.esp", ["Skyrim.esm"], [], flags=0)
+    own = 1 << 24
+    DEFAULT = 0x00000019
+    HEAD = 1 << 0
+    conv_arma, conv_armo = own | 0x800, own | 0x801
+    src_arma, src_armo = own | 0x802, own | 0x803
+    mod = _save(
+        tmp_path / "Mod.esp", ["Skyrim.esm"],
+        [Group(label=b"ARMA", records=[
+            _arma(conv_arma, "ConvAA", DEFAULT, "armor/modarmor/pants_1.nif", HEAD,
+                  extra_races=(DEFAULT,)),
+            _arma(src_arma, "SrcAA", DEFAULT, "armor/guard/helmet_1.nif", HEAD,
+                  extra_races=(DEFAULT,))]),
+         Group(label=b"ARMO", records=[
+            _armo(conv_armo, "ConvItem", conv_arma, DEFAULT, HEAD),
+            _armo(src_armo, "SrcItem", src_arma, DEFAULT, HEAD)])])
+    out = tmp_path / "UBE_ModNonBody_Coverage.esp"
+    stats = ube_patcher.generate_modded_nonbody_ube_coverage_patch(
+        out, [Path(sky), Path(ube), Path(mod)],
+        converted_rel_paths={"armor/modarmor/pants_1.nif"},
+        exclude_names={out.name.lower()}, master_data_dirs=[tmp_path])
+    assert stats["minted_armas"] == 2, stats
+    merged = ESP.load(out)
+    meshes = []
+    for arma in next(g for g in merged.groups if g.label == b"ARMA").records:
+        for s, d in iter_subrecords(arma.payload):
+            if s == b"MOD3":
+                meshes.append(d.split(b"\x00")[0].decode("latin1"))
+    conv_mesh = next(m for m in meshes if "pants_1" in m)
+    src_mesh = next(m for m in meshes if "helmet_1" in m)
+    assert conv_mesh.lower().startswith("!ube"), \
+        f"converted non-body mesh must redirect to !UBE, got {conv_mesh!r}"
+    assert not src_mesh.lower().startswith("!ube"), \
+        f"non-converted mesh must keep source, got {src_mesh!r}"
+    print("  test_modded_nonbody_redirects_converted_mesh_to_ube OK")
+
+
 test_modded_nonbody_mints_ube_primary_and_skypatcher_line(
     Path(__file__).resolve().parent / "_tmp_modnonbody")
 test_modded_nonbody_skips_already_covered_and_deforming(
     Path(__file__).resolve().parent / "_tmp_modnonbody2")
+test_modded_nonbody_redirects_converted_mesh_to_ube(
+    Path(__file__).resolve().parent / "_tmp_modnonbody3")

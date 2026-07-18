@@ -20,7 +20,6 @@ Each test locks in an escalation/surfacing decision that the audit found missing
 so a future change can't silently revert it back to a swallowed failure / exit-0
 broken build. See ROBUSTNESS_AUDIT_2026-06-22.md for the findings these cover."""
 from argparse import Namespace
-from pathlib import Path
 
 
 # --- M2: unmappable-master-ref is SOFT, not CTD (revised 2026-07-04) ---------
@@ -30,8 +29,9 @@ from pathlib import Path
 # resolvable, and Skyrim loads transitive masters via each master's own list. If
 # the patch doesn't master Y it CANNOT encode a ref to Y (no top byte), so no
 # misroute. The real load-break -- an out-of-range top byte -- is "formid-out-of-
-# range" (still CTD). Empirical: on the real modlist this fired on Requiem/Legacy/
-# Asuras with 0/98,972 refs out of range and the game loaded. So: soft, not CTD.
+# range" (still CTD). Empirical: on the real modlist this fired on several large
+# third-party plugins with 0/98,972 refs out of range and the game loaded. So:
+# soft, not CTD.
 
 def test_unmappable_master_ref_is_soft_not_ctd():
     from src.ube_patcher import _POSTFLIGHT_CTD_PREFIXES

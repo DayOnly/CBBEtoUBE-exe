@@ -111,13 +111,27 @@ SETTINGS: "tuple[Setting, ...]" = (
             tooltip="Give stacked garments (shirt under vest) separated "
                     "clearance floors so layers don't converge and z-fight "
                     "where the body grows."),
-    Setting("jiggle_clearance", "Jiggle-overshoot clearance (experimental)",
-            "Armor", "Jiggle and physics transfer", default=False,
-            env="CBBE2UBE_JIGGLE_CLEARANCE", invert=False,
-            tooltip="Add extra anti-poke clearance where the body jiggles "
-                    "(breast/butt/belly) so bouncing softbody doesn't punch "
-                    "through rigid cloth mid-motion. Tight fit is kept in "
-                    "non-jiggle zones. Needs a reconvert to apply."),
+    Setting("jiggle_clearance", "Jiggle-overshoot clearance",
+            "Armor", "Jiggle and physics transfer", default=True,
+            env="CBBE2UBE_NO_JIGGLE_CLEARANCE", invert=True,
+            tooltip="Clear armor against the body's MOVING envelope, not just its "
+                    "resting one. HDT-SMP throws the breast outward past the surface "
+                    "the other clearance passes measure, so a rigid cuirass with ample "
+                    "resting clearance can still show skin. Adds room only where the "
+                    "body jiggles: breast +0.14u, belly +0.02u, butt +0.01u, back 0.000u."),
+    Setting("jiggle_clearance_gain", "Jiggle clearance gain (u)",
+            "Armor", "Jiggle and physics transfer", kind="float", default=0.5,
+            env="CBBE2UBE_JIGGLE_CLEARANCE_GAIN", advanced=True,
+            min=0.0, max=2.0, step=0.1,
+            tooltip="Extra clearance in units at full jiggle weight (peak ~0.56 at the "
+                    "nipple, so 0.5 adds ~0.28u there). Raise if a bouncier SMP setup "
+                    "still shows skin at the breast. Takes effect on a reconvert."),
+    Setting("jiggle_clearance_max", "Jiggle clearance cap (u)",
+            "Armor", "Jiggle and physics transfer", kind="float", default=0.5,
+            env="CBBE2UBE_JIGGLE_CLEARANCE_MAX", advanced=True,
+            min=0.0, max=2.0, step=0.1,
+            tooltip="Hard ceiling on the jiggle clearance term, so a runaway weight "
+                    "can't push armor arbitrarily far off the body."),
     # ---- Armor: glow and effect-shader --------------------------------
     Setting("glow_source_skin", "Keep source skin on glows",
             "Armor", "Glow and effect-shader", default=True,
@@ -205,7 +219,9 @@ SETTINGS: "tuple[Setting, ...]" = (
     #      window renders a dedicated control for it) --------------------------
     Setting("theme", "Window theme", "Appearance", "Appearance",
             kind="str", default="standard", env=None,
-            tooltip="Window theme: Standard (dark + gold), Light, or Dark."),
+            tooltip="Window colour palette: Standard (dark + gold), Light, "
+                    "Dark, Whispa (silver + purple), or Jbish (black + rose). "
+                    "Picked from the Theme control at the top right."),
 )
 
 

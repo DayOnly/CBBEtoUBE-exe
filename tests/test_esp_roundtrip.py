@@ -37,11 +37,11 @@ from src import esp
 
 
 SAMPLES = [
-    PROJ / "samples" / "m1" / "kozakowy_vampire" / "ube"
-         / "[TOTOxKozakowy] Kozakowy's Vampire Armor UBE v1.0"
-         / "KozakowyVampireArmor UBE patch.esp",
-    PROJ / "samples" / "m1" / "eve_sunfire" / "ube"
-         / "Obi - Eve's Sunfire Armor UBE patch.esp",
+    PROJ / "samples" / "m1" / "sample_armor" / "ube"
+         / "Sample Armor UBE v1.0"
+         / "SampleArmor UBE patch.esp",
+    PROJ / "samples" / "m1" / "sample_armor2" / "ube"
+         / "Sample Armor 2 UBE patch.esp",
 ]
 # Optional extra patch ESP to round-trip: set CBBE2UBE_TEST_ESP to any UBE
 # patch ESP path. Skipped (is_file guard below) when unset.
