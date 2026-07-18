@@ -197,11 +197,14 @@ repo root (already vendored here), or on `sys.path`.
 |---|---|
 | *(none)* / `gui` | Tkinter front-end — the default when run with no arguments |
 | `auto` | Full headless pipeline: convert all candidate mods, merge, add coverage |
-| `convert` | Convert one or more specific source mod folders |
-| `scan` | Pre-flight: list candidate CBBE armor mods without converting |
-| `merge` | Re-merge the per-mod patch ESPs into the combined plugin |
-| `validate` | Re-load and sanity-check converted output |
+| `convert -o OUT SRC …` | Convert one or more specific source mod folders |
+| `scan MODS_ROOT` | Pre-flight: list candidate CBBE armor mods without converting |
+| `merge -o OUT PATCH PATCH …` | Re-merge the per-mod patch ESPs into the combined plugin (needs 2+ patches) |
+| `validate MOD_DIR` | Re-load and sanity-check converted output |
 | `discover-body-ref` | Locate a usable UBE body reference NIF |
+
+Arguments shown in caps are required — `auto` is the only subcommand that
+takes none.
 
 Useful `auto` flags:
 
@@ -217,16 +220,29 @@ Useful `auto` flags:
   change forces a full reconvert automatically)
 - `--list-only` — dry run: list the mods that *would* convert, then stop
 - `--merged-name NAME` — filename of the merged Combined ESP
-- `--no-winner-rebase` — don't rebase merged ARMO stats onto the load-order
-  winner (default on: converted armor keeps the overhaul's balance)
+- `--exclude-mods NAME …` — never convert the named mod folders. Use this for
+  armor **already built for UBE**: converting it again would double-convert and
+  break it.
+- `--plugins-only` — rebuild only the plugins (ESP + SkyPatcher INI) from the
+  last run's snapshots, skipping all mesh work. Minutes instead of hours when
+  only the plugin side changed.
+- `--no-auto-merge` — convert without rebuilding the Combined ESP
+- `--no-textures` — skip the texture copy
 - `--convert-overlays` — also rebake CBBE/3BA RaceMenu **body/hands/feet
   overlays** (tattoos, body paints) into UBE UV space (loose DDS in the output
-  mod; RaceMenu loads them by load order, no ESP)
+  mod; RaceMenu loads them by load order, no ESP). **Needs `texconv`** — see
+  Requirements.
 - `--overlays-only` — run **only** the overlay rebake, skipping the armor
   convert/merge entirely (implies `--convert-overlays`) — the fast refresh once
   armor is already converted
-- `--no-modded-nonbody` — skip the mod-defined non-body UBE coverage pass
-  (overhaul-rearmatured helmets/circlets/jewelry)
+- `--overlay-copy` — non-destructive overlay mode that keeps the originals
+  working on non-UBE races (needs the Papyrus compiler)
+- `--overlay-skip-male`, `--overlay-mods NAME …`, `--overlay-exclude-mods NAME …`
+  — limit which overlay packs get processed
+- `--no-modded-nonbody` — skip the mod-defined UBE coverage passes. Note this
+  disables **both** `UBE_ModNonBody_Coverage.esp` (helmets/circlets/jewelry)
+  **and** `UBE_ModBody_Coverage.esp` (mod-defined body variants), so items in
+  either category go invisible on UBE actors.
 
 ### Discovery overrides
 
@@ -288,17 +304,35 @@ cbbe-to-ube/
 **To run the converter (dev machine):**
 
 - Python 3.10+
-- `numpy`, `scipy` (pip — see `requirements.txt`)
+- `numpy`, `scipy`, `lz4` (pip — see `requirements.txt`). `lz4` is **not
+  optional**: Skyrim SE BSA archives are LZ4-frame compressed, and without it
+  BSA mesh reads silently return nothing, so vanilla-armor conversion produces
+  no output.
 - `pynifly` + `NiflyDLL.dll` (vendored in `.pynifly/`; not on PyPI)
+- **`texconv`** — only for the overlay features (`--convert-overlays` /
+  `--overlays-only`). Put it in the MO2 `tools/` folder or beside the exe, or
+  point `CBBE2UBE_TEXCONV` at it. Without it the overlay pass is skipped.
+- **Papyrus compiler** — only for `--overlay-copy` and the multi-slot feet
+  overlay path. Auto-located via the registry / MO2 gamePath; override with
+  `CBBE2UBE_PAPYRUS_COMPILER`.
 
 **In-game (the converted output requires these on the target modlist):**
 
 - **SkyPatcher** (SKSE plugin) — the converter attaches every armature via a
   SkyPatcher INI, not ESP overrides, so converted armor is invisible without it.
+  This is a hard dependency with no fallback. It also needs
+  **`iEnableArmorPatching=1`** in `SKSE/Plugins/SkyPatcher.ini` — with it set to
+  `0` you get exactly the same symptom as not having SkyPatcher at all (every
+  converted piece invisible, no other diagnostic). The converter's setup check
+  fails on both cases.
+- **RaceCompatibility** — a UBE prerequisite; the Light build carries the
+  RaceDispatcher that puts converted armatures on the UBE races at runtime.
 - **UBE** and its **`UBE_AllRace.esp`** — the target body/race the minted
   armatures point at.
 - **RaceMenu** — drives the BODYTRI body-morph data the converter regenerates
   (and the optional overlay transfer).
+
+Run **Check setup** in the GUI to verify all of the above before converting.
 
 ## Building the exe
 
@@ -310,6 +344,14 @@ pyinstaller CBBEtoUBE.spec
 (or `scripts\build_exe.ps1`, which installs PyInstaller if missing and takes
 `-Clean`). Produces a self-contained onedir build at `dist/CBBEtoUBE/`
 (`CBBEtoUBE.exe` + `_internal/`).
+
+`LICENSE` and `THIRD-PARTY-NOTICES.md` are bundled into the build so the binary
+is distributed with its licence; PyInstaller places them in
+`dist/CBBEtoUBE/_internal/`. The build also deliberately **excludes** the `_ssl`
+and `_hashlib` extensions — they are the only things that pull in OpenSSL, whose
+1.1.x licence is GPL-incompatible, and nothing here needs them. Note the
+exclusion targets those C extensions, **not** the pure-Python `hashlib` module,
+which the stdlib imports unconditionally.
 
 ## License
 
