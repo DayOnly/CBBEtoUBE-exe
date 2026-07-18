@@ -461,7 +461,12 @@ converter treats them like normal cloth:
 
 ## Where the hard-won detail lives
 
-Running logs that complement this doc:
+Running logs that complement this doc. These are working notes rather than
+product documentation, so they live on the `testing` branch only — `main`
+carries the tool itself. Code comments citing them by shorthand (e.g.
+"CLIPPING_LOG C1", "ROBUSTNESS_AUDIT L3") point at these:
 
 - `CLIPPING_LOG.md` — in-game clipping/crash finds and their diagnoses.
 - `ROBUSTNESS_AUDIT_*.md`, `CONVERTER_AUDIT_*.md` — point-in-time audits.
+- `DESIGN_P*.md`, `DESIGN_PROPOSALS.md` — design-only proposals, not built.
+- `CHANGES_*.md` — per-investigation change notes.
