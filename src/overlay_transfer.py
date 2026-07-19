@@ -1242,7 +1242,13 @@ def _iter_feetpaint_scripts(layout, skip_mods=()):
             for n in names:
                 if not n.lower().endswith(".psc"):
                     continue
-                base = n.rsplit("/", 1)[-1]
+                # Path(n).name, NOT rsplit("/") -- BSA entry basenames are
+                # untrusted and keep their BACKSLASHES (only folder names are
+                # normalised at parse time), so a "..\..\Windows\Temp\x.psc"
+                # entry survives a "/" split intact and escapes the staging dir
+                # when joined below -- an arbitrary file write with
+                # attacker-chosen content. Path().name handles both separators.
+                base = Path(n).name
                 if base.lower() in seen:
                     continue
                 try:
@@ -1400,7 +1406,13 @@ def _iter_paint_scripts(layout, skip_mods=(), only_mods=None):
             for n in names:
                 if not n.lower().endswith(".psc"):
                     continue
-                base = n.rsplit("/", 1)[-1]
+                # Path(n).name, NOT rsplit("/") -- BSA entry basenames are
+                # untrusted and keep their BACKSLASHES (only folder names are
+                # normalised at parse time), so a "..\..\Windows\Temp\x.psc"
+                # entry survives a "/" split intact and escapes the staging dir
+                # when joined below -- an arbitrary file write with
+                # attacker-chosen content. Path().name handles both separators.
+                base = Path(n).name
                 if base.lower() in seen:
                     continue
                 try:

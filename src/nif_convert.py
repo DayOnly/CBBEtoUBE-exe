@@ -386,6 +386,33 @@ WARP_STANDOFF_SMOOTH_ENABLED = (
 WARP_STANDOFF_SMOOTH_ITERS = int(
     os.environ.get("CBBE2UBE_WARP_SMOOTH_ITERS", "2") or 2)
 
+# Source-body normals for the phase-2 conform pass. DEFAULT OFF -- opt in with
+# CBBE2UBE_SRC_NORMAL_FIX=1.
+#
+# The DEFECT is real and confirmed: the producer gated source normals on LENGTH
+# only, so an all-zero normal array (BodySlide output ships them routinely --
+# measured 18 of 21 sampled inline bodies) reached conform_to_source_standoff.
+# Zeroed normals make every source standoff read 0, which tells that pass the
+# cloth was skin-tight everywhere, so it reels LOOSE drape inward instead of
+# leaving it alone -- the opposite of its contract.
+#
+# It is OFF anyway because fixing it is NOT MEASURABLY BETTER. Full A/B on a real
+# multi-layer mod whose body does have zeroed normals: 19.6% of verts move, mean
+# 0.024u, max 3.01u -- but mean |standoff error vs the source drape| went 4.211u
+# -> 4.225u (+0.3%), with 15 shapes closer to source and 23 worse. The later
+# passes (inflate, anti-poke, layer ride) largely overwrite what conform did, so
+# correcting its input mostly reshuffles rather than improves.
+#
+# Every fit constant in this pipeline was tuned over dozens of in-game cycles
+# WITH the zeroed normals in play, so switching this on shifts ~20% of verts
+# modlist-wide on an unvalidated hunch. Enable it only alongside an in-game
+# round; if it proves out, retune the conform constants with it on and flip the
+# default here.
+_SRC_NORMAL_FIX = (
+    os.environ.get("CBBE2UBE_SRC_NORMAL_FIX", "").strip().lower()
+    in ("1", "true", "yes", "on")
+)
+
 # Extra per-layer anti-poke floor so stacked garments don't converge to the same
 # standoff and z-fight. Default off (same finding as smoothing);
 # CBBE2UBE_LAYERED_ANTIPOKE=1 on.  [DESIGN: Layered anti-poke floors]
@@ -12406,7 +12433,19 @@ def convert_nif_phase2(
         cbbe_ref = nif_io.open_nif_retry(str(Path(cbbe_body_ref_path)))  # transient-IO resilient
         cbbe_body_shape = max(cbbe_ref.shapes, key=lambda s: len(s.verts)) if cbbe_ref.shapes else None
     if cbbe_body_shape is not None:
-        _sbn = getattr(cbbe_body_shape, "normals", None)
+        # Use the HARDENED normal fetch, not a raw length check. BodySlide output
+        # routinely ships a body whose normals are all ZERO (see the same note at
+        # the `_body_normals_or_compute` call further down), and a length-only
+        # gate lets that straight through. Zeroed normals make every signed
+        # standoff `s_src` come out 0, which tells conform_to_source_standoff the
+        # source cloth was skin-tight everywhere -- so it reels LOOSE drape
+        # (skirts, robes, tabards) inward instead of leaving it alone, the exact
+        # opposite of that pass's stated contract. Measured on a real modlist:
+        # 18 of 21 sampled inline bodies had zeroed normals.
+        # `_body_normals_or_compute` verifies the normals are populated, unit-
+        # normalises them, and falls back to computing them from the triangles.
+        _sbn = (_body_normals_or_compute(cbbe_body_shape)
+                if _SRC_NORMAL_FIX else getattr(cbbe_body_shape, "normals", None))
         if _sbn is not None and len(_sbn) == len(cbbe_body_shape.verts):
             src_body_v_p2 = np.asarray(cbbe_body_shape.verts, dtype=np.float64)
             src_body_n_p2 = np.asarray(_sbn, dtype=np.float64)
