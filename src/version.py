@@ -20,4 +20,4 @@ Shown in the GUI title bar and stamped into the conversion report so any bug
 report is traceable to the exact build. Bump this on every release and tag the
 matching `vX.Y` on GitHub."""
 
-__version__ = "1.0"
+__version__ = "1.1"
