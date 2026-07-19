@@ -244,8 +244,27 @@ class BSAArchive:
             if comp[:4] == b"\x04\x22\x4d\x18":
                 try:
                     import lz4.frame  # type: ignore
-                    out = lz4.frame.decompress(comp)
-                    return out if len(out) <= _MAX else None
+                    # Decompress INCREMENTALLY and abort at the cap. A one-shot
+                    # `decompress(comp)` followed by a `len(out) <= _MAX` check is
+                    # NOT a limit: the full expansion is materialised before the
+                    # check ever runs, so a crafted frame allocates unbounded
+                    # memory first (measured: 276KB -> 64MB). The `orig_size`
+                    # pre-check upstream does not help -- that is the BSA record's
+                    # DECLARED size, which an attacker sets independently of what
+                    # the frame really expands to. This is the LIVE path for
+                    # Skyrim SE (v105) archives, i.e. the common case.
+                    ctx = lz4.frame.create_decompression_context()
+                    chunks, total = [], 0
+                    for i in range(0, len(comp), 1 << 20):
+                        res = lz4.frame.decompress_chunk(ctx, comp[i:i + (1 << 20)])
+                        buf = res[0] if isinstance(res, tuple) else res
+                        if not buf:
+                            continue
+                        total += len(buf)
+                        if total > _MAX:
+                            return None              # bomb -> reject
+                        chunks.append(buf)
+                    return b"".join(chunks)
                 except Exception:
                     return None
             try:
