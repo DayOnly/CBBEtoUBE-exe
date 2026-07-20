@@ -265,7 +265,7 @@ def test_ancestor_named_backup_or_ube_does_not_hide_every_plugin(tmp_path):
     ancestor. Testing those for "ube"/"backup" meant a modlist living under any
     such folder returned ZERO source plugins for EVERY mod -- no patches, no
     coverage, and nothing in the log to say why."""
-    for ancestor in ("ARR Backup", "UBE", "!ube", "my backups"):
+    for ancestor in ("Modlist Backup", "UBE", "!ube", "my backups"):
         root = tmp_path / ancestor / "mods"
         _mk(root, "Some Armor Mod/SomeArmor.esp")
         found = _find_source_esps(root)

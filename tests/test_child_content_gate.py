@@ -91,8 +91,8 @@ def test_mod_name_gate_unchanged():
 
 def test_already_ube_model_detects_the_convention():
     f = auto_convert._is_already_ube_model
-    assert f(r"!UBE\Obicnii\Outfit\Top_1.nif")
-    assert f("!ube/obicnii/outfit/top_1.nif")        # case-insensitive
+    assert f(r"!UBE\SomeAuthor\Outfit\Top_1.nif")
+    assert f("!ube/someauthor/outfit/top_1.nif")     # case-insensitive
     assert f(r"/!UBE\a\b.nif")                       # leading separator
     assert f("!UBE/Body/femalebody_tangent_1.nif")
 
