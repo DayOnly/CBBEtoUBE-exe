@@ -165,6 +165,12 @@ FORMID_SINGLE_SUBRECORD_SIGS = {
     b"RNAM",   # primary race
     b"MODL",   # additional race (in ARMA) / armature ref (in ARMO)
     b"SNDD",   # footstep sound set
+    b"ONAM",   # art object. MUST be classified: the coverage passes already
+               # treat ONAM as a FormID ref that "would dangle" and strip it, but
+               # while it was missing here _iter_formids_in_payload never yielded
+               # it -- so prune_unused_masters could DROP a master referenced only
+               # by ONAM and renumber the others around it, leaving the ONAM ref
+               # pointing at whatever now occupies that index.
     # ARMA skin-texture TXST refs (male/female 3rd/1st-person).
     b"NAM0", b"NAM1", b"NAM2", b"NAM3",
     # ARMO
@@ -4088,10 +4094,55 @@ def merge_patches(
                 if pair in seen_pairs:
                     continue          # same armature already added elsewhere
                 seen_pairs.add(pair)
-                sp_by_armo.setdefault((str(d), l), []).append(rec.formid)
-    for (d, l), fids in sorted(sp_by_armo.items()):
-        adds = ",".join("{}|{:06X}".format(out_path.name, f & 0xFFFFFF)
-                        for f in fids)
+                sp_by_armo.setdefault((str(d), l), []).append(rec)
+    # Drop links that would add RENDER-IDENTICAL armatures to the same ARMO.
+    #
+    # This is what `dedup_armo_armature_refs` used to do by walking ARMO records.
+    # Under SkyPatcher-only delivery the Combined contains no ARMO group at all,
+    # so that pass walks nothing and returns 0 on every run -- it has been a
+    # silent no-op since the pivot, which is how a handful of double-render
+    # cases got through. The equivalent surface now is the INI: two links on one
+    # armor pointing at armatures with the same render identity make the engine
+    # render the same mesh twice (z-fighting / doubled cloth). The merge's own
+    # dedup only collapses BYTE-identical payloads, which is strictly narrower
+    # than `_arma_dedup_identity` (race + gendered meshes + slot flags), so it
+    # does not cover this. Measured on a real modlist before this fix: 3 of 9379
+    # INI lines added render-identical armatures.
+    # Group on ident[:7] and keep the MOST COMPLETE member (highest ident[7]),
+    # per _arma_dedup_identity's documented contract: "The group key is [:7];
+    # [7] is the completeness tiebreak." Using the full 8-tuple as the key
+    # instead would treat two armatures that differ ONLY in subrecord count as
+    # distinct -- under-deduping exactly the near-identical pairs this exists to
+    # collapse -- and would keep whichever was seen first rather than the one
+    # carrying the most data.
+    sp_dropped = 0
+    for key, recs in sp_by_armo.items():
+        if len(recs) < 2:
+            continue
+        groups: dict = {}
+        unreadable = []
+        for rec in recs:
+            try:
+                ident = _arma_dedup_identity(rec.payload)
+            except Exception:
+                unreadable.append(rec)   # never drop blind
+                continue
+            if ident is None:
+                unreadable.append(rec)   # vanilla/master ARMA -> leave alone
+                continue
+            groups.setdefault(ident[:7], []).append((rec, ident[7]))
+        kept = list(unreadable)
+        for _k, members in groups.items():
+            if len(members) > 1:
+                sp_dropped += len(members) - 1
+            best = max(members, key=lambda m: m[1])[0]
+            kept.append(best)
+        # preserve the original link order (stable output/INI diffs)
+        order = {id(r): i for i, r in enumerate(recs)}
+        sp_by_armo[key] = sorted(kept, key=lambda r: order.get(id(r), 0))
+    for (d, l), recs in sorted(sp_by_armo.items()):
+        adds = ",".join("{}|{:06X}".format(out_path.name, r.formid & 0xFFFFFF)
+                        for r in recs)
         sp_ini.append("filterByArmors={}|{:06X}:armorAddonsToAdd={}".format(
             d, l, adds))
 
@@ -4180,6 +4231,7 @@ def merge_patches_split(
     author: str = "cbbe-to-ube merger",
     description: str = "Merged UBE compatibility patches",
     master_data_dirs=None,
+    owns_output_dir: bool = False,
 ) -> dict:
     """Merge UBE patch ESPs while keeping the result ESL-flagged.
 
@@ -4210,6 +4262,35 @@ def merge_patches_split(
 
     _sp_seen: set = set()   # cross-piece (armo, src-armature) dedup for links
 
+    def _drop_stale_pieces(keep: "set[str]") -> None:
+        """Delete numbered split pieces this run did NOT write.
+
+        MUST run on the single-piece paths too, not just the split branch. When a
+        run drops back under the ESL cap (N pieces -> 1) the old `...2.esp` /
+        `...3.esp` otherwise survive holding the PREVIOUS run's records. The user
+        was told to enable every piece, so they stay enabled; the new SkyPatcher
+        INI targets only the merged stem, so the orphan contributes unreferenced
+        duplicates. Worse, every post-merge pass globs the whole piece family, so
+        `resort_masters_all` rewrites the orphan and `postflight_validate_combined`
+        then reports it "validated clean" -- the stale-Combined guard certifying a
+        stale file.
+
+        Matched narrowly on `<stem><digits><suffix>` rather than `<stem>*<suffix>`:
+        this deletes files in the user's output directory, and the broad glob
+        would also swallow e.g. `<stem>_backup.esp`.
+        """
+        stem, suffix = out_path.stem, (out_path.suffix or ".esp")
+        for f in out_path.parent.glob(f"{stem}*{suffix}"):
+            if f.name in keep:
+                continue
+            tail = f.name[len(stem):len(f.name) - len(suffix)]
+            if not tail.isdigit():
+                continue          # not one of our numbered pieces -- leave it
+            try:
+                f.unlink()
+            except OSError:
+                pass
+
     def _single(esl):
         s = merge_patches(
             plist, out_path, esl_flag=esl, author=author,
@@ -4218,6 +4299,15 @@ def merge_patches_split(
         s["pieces"] = [out_path.name]
         s["split_pieces"] = 1
         s["piece_stats"] = [s]
+        # Only when the caller OWNS the output directory. merge_patches_split is
+        # also the standalone `merge` subcommand's entry point, where -o is an
+        # arbitrary user path -- and this unlinks `<stem><digits><suffix>`
+        # siblings. Cleaning up there would delete a user's own
+        # `MyPatch2.esp`/`MyPatch3.esp` that this tool never wrote. The SPLIT
+        # branch below still cleans unconditionally, matching pre-existing
+        # behaviour: it genuinely wrote those numbered pieces this run.
+        if owns_output_dir:
+            _drop_stale_pieces({out_path.name})
         return s
 
     if not esl_flag:
@@ -4262,13 +4352,7 @@ def merge_patches_split(
         piece_names.append(piece_path.name)
 
     # Remove stale pieces left by a prior, larger split (e.g. 3 -> 2 pieces).
-    keep = set(piece_names)
-    for f in parent_dir.glob(f"{stem}*{suffix}"):
-        if f.name not in keep:
-            try:
-                f.unlink()
-            except OSError:
-                pass
+    _drop_stale_pieces(set(piece_names))
 
     return {
         "output": str(out_path),

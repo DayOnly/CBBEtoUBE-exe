@@ -31,6 +31,7 @@ on the live modlist:
      live modlist: large quest-expansion mods whose FOLDER NAME carries no child
      token at all, so only the asset name can catch them).
 """
+from src import auto_convert
 from src.auto_convert import (_camel_tokens, _is_child_content_asset,
                               _is_child_content_mod)
 
@@ -81,3 +82,39 @@ def test_mod_name_gate_unchanged():
     # an adult-named quest mod: no child token in the folder name -> not gated
     for n in ("Ebony Armor", "The Ashen Vale - Quest Expansion"):
         assert not _is_child_content_mod(n), n
+
+
+# ---- already-UBE meshes must never be re-converted ------------------------
+# Converted output and UBE-native mods both live under `meshes\!UBE\`. Refitting
+# such a mesh onto the UBE body a second time double-converts it and writes to
+# `!UBE\!UBE\...`, which was found in real output on a live modlist.
+
+def test_already_ube_model_detects_the_convention():
+    f = auto_convert._is_already_ube_model
+    assert f(r"!UBE\SomeAuthor\Outfit\Top_1.nif")
+    assert f("!ube/someauthor/outfit/top_1.nif")     # case-insensitive
+    assert f(r"/!UBE\a\b.nif")                       # leading separator
+    assert f("!UBE/Body/femalebody_tangent_1.nif")
+
+
+def test_already_ube_model_does_not_over_match():
+    """Only the FIRST path segment counts. A mod folder or file that merely
+    contains the letters is not already-UBE -- the retired name hint made
+    exactly this mistake, excluding a 'Custom Cubemaps' mod."""
+    f = auto_convert._is_already_ube_model
+    assert not f(r"armor\cubemaps\x_1.nif")
+    assert not f(r"armor\ube-style\x_1.nif")         # substring, not the segment
+    assert not f(r"armor\studded\cuirassf_1.nif")
+    # a leading "meshes\" IS tolerated: ARMA paths are meshes-relative,
+    # but real mods ship the redundant prefix, so it must still be caught
+    assert f(r"meshes\!UBE\x.nif")
+    assert not f("") and not f(None)
+
+
+def test_ube_is_matched_as_a_whole_path_part_in_esp_discovery():
+    """_find_source_esps skips plugins in a UBE subfolder. Matching 'ube' as a
+    SUBSTRING there also swallowed the containing mod folder, which silently
+    made every '... - UBE' mod unreachable and duplicated the retired name
+    hint. Whole-part matching keeps the intent without the collateral."""
+    assert "ube" not in auto_convert._NONSOURCE_NAME_HINTS, (
+        "the 'ube' name hint is retired; _is_already_ube_model replaces it")
