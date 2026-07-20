@@ -1722,6 +1722,13 @@ def _build_parser():
     # --no-modded-nonbody REMOVED with the standalone coverage plugins: it
     # gated the legacy ModBody/ModNonBody emission, which no longer exists.
     # Coverage is now always folded into the Combined family.
+    auto_p.add_argument("--no-ube-native-scan", action="store_true",
+                        dest="no_ube_native_scan",
+                        help="Skip the geometry check that drops mods whose "
+                             "armor already fits the UBE body. That check "
+                             "prevents double-converting UBE-native armor "
+                             "that does not use the !UBE\ path convention; "
+                             "use this if it ever misjudges a CBBE mod.")
     auto_p.add_argument("--convert-overlays", action="store_true",
                         help="OPT-IN: rebake CBBE/3BA body overlays (RaceMenu "
                              "tattoos / body paints) into UBE UV space so they "
@@ -3932,6 +3939,44 @@ def _mesh_body_fit(nif_path, ube_tree, cbbe_tree):
     return (best[0], best[1]) if best is not None else None
 
 
+def _ube_native_verdict(mod_dir, ube_tree, cbbe_tree, sample_per_mod=6):
+    """Is this mod's armor shaped for UBE (already converted) or for CBBE?
+
+    Returns (verdict, confidence, signals) with verdict in ube/cbbe/unknown.
+    Compares the mod's most body-hugging sampled mesh against the UBE and CBBE
+    reference bodies.
+
+    DELIBERATELY CONSERVATIVE: a verdict is only issued when some shape sits
+    right ON one body (nearest distance under the hug threshold) AND that body
+    is clearly the closer of the two. Bulky or off-body meshes drift toward the
+    larger UBE body, so an inconclusive fit stays 'unknown' -- a CBBE mod must
+    never be mislabelled 'ube', because acting on that skips converting real
+    armor and leaves it unfitted in game.
+
+    Shared by the GUI advisory scan and the conversion pipeline's backstop so
+    the two can never disagree."""
+    best = None
+    if mod_dir is not None and mod_dir.is_dir():
+        for nif in _mod_armor_nifs(mod_dir, sample_per_mod):
+            fit = _mesh_body_fit(nif, ube_tree, cbbe_tree)
+            if fit is None:
+                continue
+            du, dc = fit
+            w = min(du, dc)
+            if best is None or w < best[0]:
+                best = (w, du, dc)
+            if w < _UBE_HUG_DIST:
+                break       # decisive body hug -> stop early
+    if best is None:
+        return "unknown", "low", ["no readable body mesh"]
+    w, du, dc = best
+    lo, hi = min(du, dc), max(du, dc)
+    if lo < _UBE_HUG_DIST and hi >= lo * _FIT_RATIO:
+        return ("ube" if du < dc else "cbbe"), "high", [
+            f"shape fit: dUBE={du:.2f}, dCBBE={dc:.2f}"]
+    return "unknown", "low", [f"shape fit: dUBE={du:.2f}, dCBBE={dc:.2f}"]
+
+
 def scan_ube_native(domain: str = "armor", sample_per_mod: int = 6,
                     progress=None) -> list:
     """Flag convertible ARMOR mods whose meshes are shaped for UBE (or another
@@ -3961,33 +4006,9 @@ def scan_ube_native(domain: str = "armor", sample_per_mod: int = 6,
                 progress(i + 1, total, name)
             except Exception:
                 pass
-        best = None            # (winner_dist, verdict, dUBE, dCBBE)
-        mod_dir = (mr / name) if mr is not None else None
-        if mod_dir is not None and mod_dir.is_dir():
-            for nif in _mod_armor_nifs(mod_dir, sample_per_mod):
-                fit = _mesh_body_fit(nif, ube_tree, cbbe_tree)
-                if fit is None:
-                    continue
-                du, dc = fit
-                w = min(du, dc)
-                if best is None or w < best[0]:
-                    best = (w, du, dc)
-                if w < _UBE_HUG_DIST:
-                    break       # decisive body hug -> stop early
-        if best is None:
-            verdict, conf, signals = "unknown", "low", ["no readable body mesh"]
-        else:
-            w, du, dc = best
-            # A verdict requires a DECISIVE hug: some shape sits right on one body
-            # (near dist < the hug threshold) AND that body is clearly the closer
-            # one. Bulky/off-body meshes drift toward the larger UBE body, so an
-            # inconclusive fit stays "unknown" -> a CBBE mod is never mislabelled.
-            lo, hi = min(du, dc), max(du, dc)
-            if lo < _UBE_HUG_DIST and hi >= lo * _FIT_RATIO:
-                verdict, conf = ("ube" if du < dc else "cbbe"), "high"
-            else:
-                verdict, conf = "unknown", "low"
-            signals = [f"shape fit: dUBE={du:.2f}, dCBBE={dc:.2f}"]
+        verdict, conf, signals = _ube_native_verdict(
+            (mr / name) if mr is not None else None,
+            ube_tree, cbbe_tree, sample_per_mod)
         out.append({"name": name, "verdict": verdict,
                     "confidence": conf, "signals": signals})
     return out
@@ -4074,6 +4095,47 @@ def _cmd_auto(args):
     if not candidates:
         print("error: found no equippable armor mods to convert.")
         return 2
+
+    # BACKSTOP: drop mods whose armor is ALREADY shaped for UBE.
+    #
+    # The `!UBE\` path gate catches converted output and UBE-native mods that
+    # follow the convention, but a UBE-native mod shipping at NORMAL paths
+    # (meshesrmor\...) looks exactly like a CBBE source. Converting it refits
+    # an already-UBE mesh onto the UBE body a second time and breaks it. This
+    # used to be caught only by the mod NAME containing "ube" -- a heuristic
+    # that both missed renamed mods and over-matched innocent ones.
+    #
+    # Geometry decides instead: compare the most body-hugging sampled mesh
+    # against the UBE and CBBE reference bodies. Only a HIGH-confidence "ube"
+    # verdict skips a mod -- an inconclusive fit stays "unknown" and converts
+    # as normal, because wrongly skipping a real CBBE mod leaves its armor
+    # unfitted in game. Needs both reference bodies; without them the scan
+    # returns nothing and the pipeline is unchanged.
+    if not getattr(args, "no_ube_native_scan", False):
+        try:
+            _ube_tree, _cbbe_tree = _body_trees()
+        except Exception:
+            _ube_tree = _cbbe_tree = None
+        if _ube_tree is not None and _cbbe_tree is not None:
+            _native = []
+            for _c in list(candidates):
+                try:
+                    _v, _cf, _sig = _ube_native_verdict(
+                        Path(_c), _ube_tree, _cbbe_tree)
+                except Exception:
+                    continue        # unreadable -> convert as normal
+                if _v == "ube" and _cf == "high":
+                    _native.append((Path(_c).name, _sig[0] if _sig else ""))
+            if _native:
+                _skip = {n for n, _s in _native}
+                candidates = [c for c in candidates
+                              if Path(c).name not in _skip]
+                print(f"  UBE-native scan: skipping {len(_native)} mod(s) whose "
+                      "armor already fits the UBE body (converting them would "
+                      "double-convert):")
+                for _n, _s in sorted(_native):
+                    print(f"    - {_n}  [{_s}]")
+                print("    (override with --no-ube-native-scan)")
 
     # --only-mods: reconvert a subset. The merge still re-globs ALL patches in
     # _unmerged_patches/ so unselected mods keep their existing patch + meshes.
