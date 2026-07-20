@@ -45,7 +45,17 @@ Given a Mod Organizer 2 setup, the full pipeline (`auto`):
    nothing extra to enable beyond the Combined piece(s). The winner scan is
    also the sole generator for the merge, which roughly halves the ARMA count
    and so needs fewer ESL pieces.
-6. **(Opt-in) RaceMenu overlay transfer.** Rebakes CBBE/3BA **body, hands, and
+6. **Coexists with armors that already have a UBE patch.** If another mod
+   already gives an armor a UBE armature — a hand-made UBE patch, or another
+   converter's output — that armor is left **entirely alone**. Adding a second
+   armature would make the actor render two bodies for the slot (z-fighting /
+   doubled cloth), and a hand-made patch is usually a better fit than an
+   automatic conversion anyway. Both delivery styles are detected: plugins that
+   define a UBE armature and reference it, and other mods' SkyPatcher
+   `armorAddonsToAdd` INIs. The run prints how many armors were skipped this
+   way. Output from **this tool** (any version, under any folder name) is never
+   mistaken for a third-party patch.
+7. **(Opt-in) RaceMenu overlay transfer.** Rebakes CBBE/3BA **body, hands, and
    feet** overlays (tattoos / body paints) into UBE's UV layout — UBE re-UVs the
    body, so CBBE-authored overlays otherwise land in the wrong place. The
    converted DDS are written **loose at their original texture paths** in the
@@ -218,6 +228,13 @@ Useful `auto` flags:
 - `--exclude-mods NAME …` — never convert the named mod folders. Use this for
   armor **already built for UBE**: converting it again would double-convert and
   break it.
+- `--no-ube-native-scan` — turn off the geometry check that skips mods whose
+  armor **already fits the UBE body**. Meshes under `meshes/!UBE/` are skipped
+  by path regardless; this check is the backstop for UBE-native armor shipped
+  at ordinary paths, where nothing in the name or path gives it away. It is
+  deliberately conservative — only a decisive fit against the UBE body skips a
+  mod, an ambiguous one converts as normal — because wrongly skipping a real
+  CBBE mod leaves its armor unfitted in game. Use this if it ever misjudges.
 - `--plugins-only` — rebuild only the plugins (ESP + SkyPatcher INI) from the
   last run's snapshots, skipping all mesh work. Minutes instead of hours when
   only the plugin side changed.
