@@ -10017,7 +10017,9 @@ def _source_hdt_needs_missing_chain_bones(src_path, dst_bone_names) -> bool:
         if xml_disk is None:
             rel = _find_hdt_xml_for_armor(src_path)
             if rel:
-                norm = rel.replace("\\", "/").lstrip("/")
+                norm = _safe_data_rel(rel)
+                if norm is None:
+                    return False
                 for parent in [src_path, *src_path.parents]:
                     if parent.name.lower() == "meshes":
                         cand = parent.parent / norm
@@ -10379,6 +10381,36 @@ def _generate_hdt_xml_for_dst(dst_path: "Path", only_loose: bool = False) -> "st
     return None
 
 
+def _safe_data_rel(rel: str) -> "str | None":
+    """Normalise a Data-relative path that came from UNTRUSTED file content, or
+    return None if it tries to escape.
+
+    The physics-XML path is read out of a third-party NIF's
+    `HDT Skinned Mesh Physics Object` string extra-data, so a hostile or merely
+    broken mesh controls it. `rel.replace("\\\\", "/").lstrip("/")` alone is NOT
+    enough: it strips leading slashes but keeps `..` segments, and pathlib
+    DISCARDS the left operand entirely when the right side is drive-absolute --
+    so `C:\\Users\\...\\id_rsa` resolves to exactly that, and `..\\..\\secret`
+    walks out of the mods tree. The file is then copied into the converted
+    output mod, which users routinely re-upload, making this a disclosure route
+    rather than just a bad read.
+
+    Rejects: drive letters, UNC roots, and any `..` component. Returns a clean
+    forward-slash relative path otherwise."""
+    if not rel:
+        return None
+    norm = str(rel).replace("\\", "/")
+    if ":" in norm.split("/", 1)[0]:          # C:, \\?\C:, etc.
+        return None
+    if norm.startswith("//"):                 # UNC \\server\share
+        return None
+    norm = norm.lstrip("/")
+    parts = [p for p in norm.split("/") if p not in ("", ".")]
+    if any(p == ".." for p in parts):
+        return None
+    return "/".join(parts) or None
+
+
 def _resolve_data_rel_in_vfs(rel: str, src_nif_path: Path) -> "Path | None":
     """Resolve a Data-relative path string (e.g. an armor NIF's authored
     "Meshes\\...\\Foo.xml" physics-XML reference) to a real file on disk.
@@ -10395,7 +10427,9 @@ def _resolve_data_rel_in_vfs(rel: str, src_nif_path: Path) -> "Path | None":
     """
     if not rel:
         return None
-    norm = rel.replace("\\", "/").lstrip("/")
+    norm = _safe_data_rel(rel)
+    if norm is None:
+        return None          # untrusted path tried to escape the mods tree
     # 1) Local: the source NIF's own mod root (dir that contains 'meshes').
     for parent in [src_nif_path, *src_nif_path.parents]:
         if parent.name.lower() == "meshes":
@@ -11144,7 +11178,9 @@ def _read_source_hdt_xml_text(src_nif_path: Path, nif=None) -> "str | None":
         if xml_disk is None:
             rel = _find_hdt_xml_for_armor(src_nif_path)
             if rel:
-                norm = rel.replace("\\", "/").lstrip("/")
+                norm = _safe_data_rel(rel)
+                if norm is None:
+                    return None          # this function returns str | None
                 for parent in [src_nif_path, *src_nif_path.parents]:
                     if parent.name.lower() == "meshes":
                         cand = parent.parent / norm
