@@ -28,3 +28,7 @@ CBBEtoUBE_last_failures.json
 
 # Packaged release archives
 CBBEtoUBE-*.zip
+
+# Per-armor worklist: names specific mods/armors, so it must never be published
+# (the repo is public and tracked content is kept mod-agnostic). Local only.
+ARMOR_WORKLIST.md
