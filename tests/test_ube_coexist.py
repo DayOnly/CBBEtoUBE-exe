@@ -70,16 +70,88 @@ def test_ignores_a_ube_arma_no_armo_points_at(tmp_path):
     assert auto_convert._third_party_ube_covered_armos(tmp_path) == set()
 
 
+def _ube_provider(tmp_path, mod="Other UBE", plugin="Other.esp"):
+    """A mod that both DEFINES a UBE armature and delivers it via SkyPatcher --
+    `_plugin` mints the ARMA at 0x01000800 with a single master, so its
+    absolute identity is (plugin, 0x000800)."""
+    md = tmp_path / mod
+    ini = md / "SKSE/Plugins/SkyPatcher/armor"
+    ini.mkdir(parents=True)
+    _plugin(md / plugin, r"!UBE\armor\x_1.nif", armo_refs_arma=False)
+    return ini
+
+
 def test_detects_skypatcher_delivery_too(tmp_path):
     """Another converter covers via armorAddonsToAdd, not ARMO records."""
-    ini = tmp_path / "Other UBE" / "SKSE/Plugins/SkyPatcher/armor"
-    ini.mkdir(parents=True)
+    ini = _ube_provider(tmp_path)
     (ini / "x.ini").write_text(
         "filterByArmors=Skyrim.esm|0209A6,Other.esp|000001:"
         "armorAddonsToAdd=Other.esp|000800\n", encoding="utf-8")
     got = auto_convert._third_party_ube_covered_armos(tmp_path)
     assert ("skyrim.esm", 0x0209A6) in got
     assert ("other.esp", 0x000001) in got
+
+
+def test_skypatcher_line_adding_a_NON_ube_addon_excludes_nothing(tmp_path):
+    """The armature being ADDED must itself be UBE. Otherwise ANY
+    armorAddonsToAdd line in the modlist -- a cape addon, a heels addon,
+    another body's compat patch -- permanently removes its targets from the
+    only delivery path there is, and the console still prints a reassuring
+    'N armors already have a UBE patch'."""
+    md = tmp_path / "Cape Addon"
+    ini = md / "SKSE/Plugins/SkyPatcher/armor"
+    ini.mkdir(parents=True)
+    _plugin(md / "Capes.esp", r"armor\capes\cape_1.nif")   # NOT under !UBE
+    (ini / "c.ini").write_text(
+        "filterByArmors=Skyrim.esm|00013920:armorAddonsToAdd=Capes.esp|000800\n",
+        encoding="utf-8")
+    assert ("skyrim.esm", 0x013920) not in \
+        auto_convert._third_party_ube_covered_armos(tmp_path)
+
+
+def test_commented_out_and_inverted_filters_are_not_live_exclusions(tmp_path):
+    """`;` starts a comment, and `filterByArmorsExcluded` means the OPPOSITE of
+    `filterByArmors` while having it as a prefix. Reading either as a live
+    exclusion suppresses armors nobody actually patched."""
+    ini = _ube_provider(tmp_path)
+    (ini / "x.ini").write_text(
+        "; filterByArmors=Skyrim.esm|00012E49:armorAddonsToAdd=Other.esp|000800\n"
+        "filterByArmorsExcluded=Skyrim.esm|00013100:"
+        "armorAddonsToAdd=Other.esp|000800\n",
+        encoding="utf-8")
+    got = auto_convert._third_party_ube_covered_armos(tmp_path)
+    assert ("skyrim.esm", 0x012E49) not in got, "a commented-out rule was read as live"
+    assert ("skyrim.esm", 0x013100) not in got, "an EXCLUDED filter was read as a target"
+
+
+def test_trailing_comment_does_not_corrupt_the_target(tmp_path):
+    """This is the case that actually depends on stripping `;`. A LEADING
+    comment is already rejected by the exact-key match (the key parses as
+    '; filterByArmors'), so it does not exercise the strip at all. A TRAILING
+    comment stays glued to the last segment's VALUE, and the real target is
+    then parsed as part of a garbage form and lost."""
+    ini = _ube_provider(tmp_path)
+    (ini / "x.ini").write_text(
+        "armorAddonsToAdd=Other.esp|000800:filterByArmors=Skyrim.esm|00013921"
+        " ; filterByArmors=Skyrim.esm|00099999\n",
+        encoding="utf-8")
+    got = auto_convert._third_party_ube_covered_armos(tmp_path)
+    assert ("skyrim.esm", 0x013921) in got, (
+        "real target lost -- the trailing comment was parsed as part of it")
+    assert ("skyrim.esm", 0x099999) not in got, "commented target was honoured"
+
+
+def test_operation_may_precede_the_filter(tmp_path):
+    """Segments are order-free in the grammar, so the targets are not always in
+    the first one. Taking `split('=',1)[1].split(':',1)[0]` recorded the ARMA
+    FormID as if it were the armor, and missed the real target entirely."""
+    ini = _ube_provider(tmp_path)
+    (ini / "x.ini").write_text(
+        "armorAddonsToAdd=Other.esp|000800:filterByArmors=Skyrim.esm|00013921\n",
+        encoding="utf-8")
+    got = auto_convert._third_party_ube_covered_armos(tmp_path)
+    assert ("skyrim.esm", 0x013921) in got, "real target missed when it came second"
+    assert ("other.esp", 0x000800) not in got, "the ARMA was recorded as an armor"
 
 
 def test_skip_mods_is_honoured(tmp_path):
@@ -117,14 +189,12 @@ def test_our_own_output_is_never_third_party(tmp_path):
 def test_a_real_third_party_ini_without_our_marker_still_counts(tmp_path):
     """The self-check must key on OUR marker only -- not on 'has a SkyPatcher
     INI', which every other patcher mod also has."""
-    other = tmp_path / "Another Patcher"
-    ini = other / "SKSE/Plugins/SkyPatcher/armor"
-    ini.mkdir(parents=True)
+    ini = _ube_provider(tmp_path, mod="Another Patcher", plugin="Other.esp")
     (ini / "z.ini").write_text(
         "; some other tool\n"
-        "filterByArmors=Skyrim.esm|0209A6:armorAddonsToAdd=X.esp|000DEA\n",
+        "filterByArmors=Skyrim.esm|0209A6:armorAddonsToAdd=Other.esp|000800\n",
         encoding="utf-8")
-    assert not auto_convert._is_our_own_output(other)
+    assert not auto_convert._is_our_own_output(tmp_path / "Another Patcher")
     assert ("skyrim.esm", 0x0209A6) in \
         auto_convert._third_party_ube_covered_armos(tmp_path)
 
