@@ -1700,10 +1700,9 @@ def _build_parser():
                         help="Reuse up-to-date converted NIFs (skip the refit) "
                              "for a fast re-run; a code or body change forces a "
                              "full re-convert automatically.")
-    auto_p.add_argument("--no-modded-nonbody", action="store_true",
-                        help="Skip the mod-defined non-body UBE coverage pass "
-                             "(mint ESP + SkyPatcher INI for overhaul-"
-                             "rearmatured helmets/circlets/jewelry).")
+    # --no-modded-nonbody REMOVED with the standalone coverage plugins: it
+    # gated the legacy ModBody/ModNonBody emission, which no longer exists.
+    # Coverage is now always folded into the Combined family.
     auto_p.add_argument("--convert-overlays", action="store_true",
                         help="OPT-IN: rebake CBBE/3BA body overlays (RaceMenu "
                              "tattoos / body paints) into UBE UV space so they "
@@ -1915,30 +1914,12 @@ def verify_output(output_dir) -> dict:
     return res
 
 
-def _unified_coverage_on(output) -> str:
-    """UNIFIED COVERAGE opt-in: env var CBBE2UBE_UNIFIED_COVERAGE, OR a sentinel
-    file `UNIFIED_COVERAGE` (also .txt / unified_coverage.flag) next to the exe or
-    in the output mod folder -- robust for MO2-launched runs where env vars often
-    don't inherit. Returns the source string ("env" / "file:PATH") or "" if off."""
-    v = os.environ.get("CBBE2UBE_UNIFIED_COVERAGE", "").strip().lower()
-    if v not in ("", "0", "false", "no"):
-        return "env"
-    bases = []
-    exe = getattr(sys, "executable", "") or ""
-    if exe:
-        bases.append(Path(exe).parent)
-    if output:
-        bases.append(Path(output))
-    for b in bases:
-        for fn in ("UNIFIED_COVERAGE", "UNIFIED_COVERAGE.txt",
-                   "unified_coverage.flag"):
-            try:
-                if (b / fn).exists():
-                    return f"file:{b / fn}"
-            except Exception:
-                pass
-    return ""
-
+# NOTE: _unified_coverage_on() was REMOVED. Unified coverage used to be
+# opt-in via an env var or a `UNIFIED_COVERAGE` sentinel file next to the
+# exe -- and because it defaulted OFF and failed SILENTLY to the legacy
+# model, losing that file (a /MIR deploy, a modlist update) silently
+# reverted the whole coverage model with no error. It is now the only
+# model, so there is nothing to toggle and nothing to lose.
 
 def _emit_unified_coverage_patches(output, patches_dir, master_data_dirs,
                                    merged_name) -> "tuple[bool, int]":
@@ -2461,25 +2442,26 @@ def _cmd_convert(args):
                 # patches stay in _unmerged_patches (unmerged / not loaded).
                 # SAFETY: if the emit produced no coverage patches (failure),
                 # fall back to merging everything so the Combined is never empty.
-                if _unified_coverage_on(output):
-                    _cov_ok, _cov_targets = _emit_unified_coverage_patches(
-                        output, patches_dir, batch_master_data_dirs,
-                        args.merged_name)
-                    _cov_only = sorted(
-                        patches_dir.glob("UBE_Mod*Coverage UBE patch.esp"))
-                    # Use coverage as the SOLE generator ONLY when it fully ran and
-                    # actually covered something; otherwise merge the per-source
-                    # patches so a failed/empty winner scan can't drop all coverage.
-                    if _cov_ok and _cov_targets > 0 and _cov_only:
-                        print(f"  [unified/3c] merging {len(_cov_only)} winner-scan "
-                              f"coverage patch(es) ({_cov_targets} armors) as the "
-                              "SOLE generator (per-source patches left unmerged)")
-                        patch_paths = _cov_only
-                    else:
-                        print(f"  !! [unified] coverage empty/incomplete "
-                              f"(ok={_cov_ok}, targets={_cov_targets}) -- merging "
-                              "per-source patches instead")
-                        patch_paths = sorted(patches_dir.glob("*UBE patch.esp"))
+                # Unified coverage is the ONLY coverage model. The old
+                # standalone ModBody/ModNonBody plugins are gone.
+                _cov_ok, _cov_targets = _emit_unified_coverage_patches(
+                    output, patches_dir, batch_master_data_dirs,
+                    args.merged_name)
+                _cov_only = sorted(
+                    patches_dir.glob("UBE_Mod*Coverage UBE patch.esp"))
+                # Use coverage as the SOLE generator ONLY when it fully ran and
+                # actually covered something; otherwise merge the per-source
+                # patches so a failed/empty winner scan can't drop all coverage.
+                if _cov_ok and _cov_targets > 0 and _cov_only:
+                    print(f"  [unified/3c] merging {len(_cov_only)} winner-scan "
+                          f"coverage patch(es) ({_cov_targets} armors) as the "
+                          "SOLE generator (per-source patches left unmerged)")
+                    patch_paths = _cov_only
+                else:
+                    print(f"  !! [unified] coverage empty/incomplete "
+                          f"(ok={_cov_ok}, targets={_cov_targets}) -- merging "
+                          "per-source patches instead")
+                    patch_paths = sorted(patches_dir.glob("*UBE patch.esp"))
                 merged_out = output / args.merged_name
                 print(f"\n--- auto-merging {len(patch_paths)} patch(es) "
                       f"into {merged_out.name} ---")
@@ -4103,153 +4085,6 @@ def _cmd_auto(args):
     except Exception:
         _fsp_linked_abs = set()
 
-    # UNIFIED COVERAGE (opt-in, Step 3b): when ON, _cmd_convert already ran the
-    # winner-scan coverage passes and folded them INTO the Combined family (via
-    # the merge), so the standalone ModBody/ModNonBody fallback below is skipped
-    # entirely -- no separate coverage plugins. Default OFF -> the per-source
-    # Combined + these two fallback coverage ESPs, byte-identical to today.
-    _unified_src = _unified_coverage_on(output)
-    _unified_cov = bool(_unified_src)
-    if _unified_cov:
-        print(f"  [unified coverage] ON ({_unified_src}) -- winner-scan folded "
-              "into Combined by _cmd_convert; skipping standalone "
-              "ModBody/ModNonBody coverage")
-
-    mnb_esp_generated = False
-    if not _unified_cov and not getattr(args, "no_modded_nonbody", False):
-        try:
-            _names = paths.active_plugins_ordered(lay)
-            _fidx = paths.plugin_file_index(lay)
-            _ordered = [Path(_fidx[n.lower()]) for n in (_names or [])
-                        if n.lower() in _fidx]
-            if _ordered:
-                mnb_esp = output / "UBE_ModNonBody_Coverage.esp"
-                _md = _discover_master_data_dirs(sources[0])
-                # Converted-mesh set so a non-body item whose own mesh WAS
-                # converted redirects to !UBE\ instead of source. #mnb-converted-redirect
-                _mnb_ube_root = output / "meshes" / "!UBE"
-                _mnb_conv_rel = set()
-                if _mnb_ube_root.is_dir():
-                    for _nif in _mnb_ube_root.rglob("*.nif"):
-                        _mnb_conv_rel.add(
-                            _nif.relative_to(_mnb_ube_root).as_posix().lower())
-                print(f"\n--- mod non-body UBE coverage -> {mnb_esp.name} "
-                      "(+ SkyPatcher INI) ---")
-                # Exclude our OWN outputs from the winner scan: this coverage
-                # ESP, a leftover Vanilla_UBE_Race_Compat.esp, and the merged
-                # Combined + every ESL-split piece (by real --merged-name).
-                # Otherwise the pass reads the Combined's own overrides as
-                # load-order winners and mis-covers. #fsp-dedup
-                _mnb_excl = {mnb_esp.name.lower(),
-                             "vanilla_ube_race_compat.esp"}
-                _mnb_excl |= _combined_output_names(merged_name, _ordered)
-                mnb = ube_patcher.generate_modded_nonbody_ube_coverage_patch(
-                    mnb_esp, _ordered,
-                    converted_rel_paths=_mnb_conv_rel,
-                    exclude_armo_abs=_fsp_linked_abs,
-                    exclude_names=_mnb_excl,
-                    master_data_dirs=_md,
-                    cover_all=_unified_cov,
-                    preserve_textures=True)
-                ini_lines = mnb.get("ini_lines") or []
-                if ini_lines:
-                    ini_path = (output / "SKSE" / "Plugins" / "SkyPatcher"
-                                / "armor" / "UBE_ModNonBody_Coverage.ini")
-                    # Atomic: a partially-written SkyPatcher INI silently applies
-                    # only the surviving lines (some covered items stay invisible).
-                    from .atomic_io import atomic_write_bytes
-                    atomic_write_bytes(
-                        ini_path, ("\n".join(ini_lines) + "\n").encode("utf-8"))
-                print(f"  minted UBE ARMAs: {mnb.get('minted_armas')} "
-                      f"| items covered: {mnb.get('armo_targets')} "
-                      f"| masters: {mnb.get('masters')} "
-                      f"| ESL: {mnb.get('esl_flagged')}")
-                if mnb_esp.exists() and mnb.get('armo_targets'):
-                    mnb_esp_generated = True
-                    print("  *** IMPORTANT: ENABLE "
-                          "'UBE_ModNonBody_Coverage.esp' IN MO2. ***")
-                    print("      Its SkyPatcher INI ships ACTIVE in this mod "
-                          "and attaches armatures FROM that ESP at runtime. If "
-                          "the ESP is left DISABLED, covered non-body armor "
-                          "(helmets / circlets / jewelry) is invisible or "
-                          "equippable-in-multiples on UBE actors.")
-                _vw = [w for w in mnb.get('validation_warnings', [])
-                       if 'missing-nif' not in w]
-                if _vw:
-                    print(f"  !! validator: {_vw[:5]}")
-        except Exception as e:
-            print(f"  !! mod non-body coverage skipped: {e!r}")
-            _record_failure("coverage pass failed", "UBE_ModNonBody_Coverage",
-                            "helmets / jewelry coverage", repr(e))
-            post_merge_failures += 1
-
-    # Mod-defined body coverage: overhaul ARMOs that reuse a vanilla armature
-    # whose mesh was converted, but the variant ARMO was never overridden ->
-    # no UBE armature -> invisible. Mints a UBE-primary ARMA + SkyPatcher INI.
-    mbd_esp_generated = False
-    if not _unified_cov and not getattr(args, "no_modded_nonbody", False):
-        try:
-            _names = paths.active_plugins_ordered(lay)
-            _fidx = paths.plugin_file_index(lay)
-            _ordered = [Path(_fidx[n.lower()]) for n in (_names or [])
-                        if n.lower() in _fidx]
-            _ube_root = output / "meshes" / "!UBE"
-            _conv_rel = set()
-            if _ube_root.is_dir():
-                for _nif in _ube_root.rglob("*.nif"):
-                    _conv_rel.add(_nif.relative_to(_ube_root).as_posix().lower())
-            if _ordered and _conv_rel:
-                mbd_esp = output / "UBE_ModBody_Coverage.esp"
-                _md = _discover_master_data_dirs(sources[0])
-                print(f"\n--- mod BODY UBE coverage -> {mbd_esp.name} "
-                      "(+ SkyPatcher INI) ---")
-                # Body coverage is the gap-filling FALLBACK: the Combined links
-                # body ARMOs per-source (exclude_armo_abs=_fsp_linked_abs dedups
-                # those), so this covers only body armor the Combined didn't.
-                # Exclude our OWN outputs from the winner scan too -- the SAME set
-                # the non-body pass uses -- so a stale Vanilla_UBE_Race_Compat /
-                # coverage / Combined-family ESP can't be read as a body-ARMO
-                # load-order winner and mis-attribute coverage. #fsp-dedup
-                _cov_excl = {mbd_esp.name.lower(),
-                             "vanilla_ube_race_compat.esp"}
-                _cov_excl |= _combined_output_names(merged_name, _ordered)
-                mbd = ube_patcher.generate_modded_body_ube_coverage_patch(
-                    mbd_esp, _ordered, converted_rel_paths=_conv_rel,
-                    exclude_armo_abs=_fsp_linked_abs,
-                    exclude_names=_cov_excl,
-                    master_data_dirs=_md,
-                    cover_all=_unified_cov,
-                    cover_hands_feet=_unified_cov,
-                    preserve_textures=_unified_cov)
-                ini_lines = mbd.get("ini_lines") or []
-                if ini_lines and mbd.get('armo_targets'):
-                    ini_path = (output / "SKSE" / "Plugins" / "SkyPatcher"
-                                / "armor" / "UBE_ModBody_Coverage.ini")
-                    # Atomic: a partially-written SkyPatcher INI silently applies
-                    # only the surviving lines (some covered items stay invisible).
-                    from .atomic_io import atomic_write_bytes
-                    atomic_write_bytes(
-                        ini_path, ("\n".join(ini_lines) + "\n").encode("utf-8"))
-                print(f"  minted UBE ARMAs: {mbd.get('minted_armas')} "
-                      f"| body items covered: {mbd.get('armo_targets')} "
-                      f"| masters: {mbd.get('masters')} "
-                      f"| ESL: {mbd.get('esl_flagged')}")
-                if mbd_esp.exists() and mbd.get('armo_targets'):
-                    mbd_esp_generated = True
-                    print("  *** IMPORTANT: ENABLE 'UBE_ModBody_Coverage.esp' "
-                          "IN MO2 -- mod-defined body-armor variants are "
-                          "INVISIBLE on UBE without it. Its SkyPatcher INI "
-                          "ships active in this mod. ***")
-                _vw = [w for w in mbd.get('validation_warnings', [])
-                       if 'missing-nif' not in w]
-                if _vw:
-                    print(f"  !! validator: {_vw[:5]}")
-        except Exception as e:
-            print(f"  !! mod body coverage skipped: {e!r}")
-            _record_failure("coverage pass failed", "UBE_ModBody_Coverage",
-                            "body-variant coverage", repr(e))
-            post_merge_failures += 1
-
     # OPT-IN: remap CBBE/3BA body overlays to UBE UV. Writes loose DDS at the
     # original texture paths so RaceMenu loads them via load order. Needs texconv.
     if getattr(args, "convert_overlays", False):
@@ -4283,12 +4118,6 @@ def _cmd_auto(args):
         pass
 
     _enable = f"'{output.name}' + its Combined ESP(s)"
-    if mnb_esp_generated:
-        _enable += (" + 'UBE_ModNonBody_Coverage.esp' "
-                    "(REQUIRED for helmets/non-body — see warning above)")
-    if mbd_esp_generated:
-        _enable += (" + 'UBE_ModBody_Coverage.esp' "
-                    "(REQUIRED for mod-defined body variants — see warning above)")
     if post_merge_failures:
         print(f"\n  !! {post_merge_failures} post-merge coverage phase(s) FAILED "
               "-- some armor may be invisible on UBE races (see errors above).")
