@@ -386,6 +386,33 @@ WARP_STANDOFF_SMOOTH_ENABLED = (
 WARP_STANDOFF_SMOOTH_ITERS = int(
     os.environ.get("CBBE2UBE_WARP_SMOOTH_ITERS", "2") or 2)
 
+# Source-body normals for the phase-2 conform pass. DEFAULT OFF -- opt in with
+# CBBE2UBE_SRC_NORMAL_FIX=1.
+#
+# The DEFECT is real and confirmed: the producer gated source normals on LENGTH
+# only, so an all-zero normal array (BodySlide output ships them routinely --
+# measured 18 of 21 sampled inline bodies) reached conform_to_source_standoff.
+# Zeroed normals make every source standoff read 0, which tells that pass the
+# cloth was skin-tight everywhere, so it reels LOOSE drape inward instead of
+# leaving it alone -- the opposite of its contract.
+#
+# It is OFF anyway because fixing it is NOT MEASURABLY BETTER. Full A/B on a real
+# multi-layer mod whose body does have zeroed normals: 19.6% of verts move, mean
+# 0.024u, max 3.01u -- but mean |standoff error vs the source drape| went 4.211u
+# -> 4.225u (+0.3%), with 15 shapes closer to source and 23 worse. The later
+# passes (inflate, anti-poke, layer ride) largely overwrite what conform did, so
+# correcting its input mostly reshuffles rather than improves.
+#
+# Every fit constant in this pipeline was tuned over dozens of in-game cycles
+# WITH the zeroed normals in play, so switching this on shifts ~20% of verts
+# modlist-wide on an unvalidated hunch. Enable it only alongside an in-game
+# round; if it proves out, retune the conform constants with it on and flip the
+# default here.
+_SRC_NORMAL_FIX = (
+    os.environ.get("CBBE2UBE_SRC_NORMAL_FIX", "").strip().lower()
+    in ("1", "true", "yes", "on")
+)
+
 # Extra per-layer anti-poke floor so stacked garments don't converge to the same
 # standoff and z-fight. Default off (same finding as smoothing);
 # CBBE2UBE_LAYERED_ANTIPOKE=1 on.  [DESIGN: Layered anti-poke floors]
@@ -8619,7 +8646,64 @@ def _cap_skin_bone_count(bone_names, xforms_map, weights_map,
         mx = max((float(w) for _, w in prs), default=0.0)
         tot = sum(float(w) for _, w in prs)
         return (mx, tot)
-    keep = set(sorted(names, key=_importance, reverse=True)[:limit])
+    # Keep MIRRORED PAIRS together. Ranking bones individually lets the cutoff
+    # fall between `NPC L FrontThigh` and `NPC R FrontThigh`, keeping one and
+    # dropping the other -- so one thigh follows the body's morph/flex and the
+    # other stays rigid, a visible asymmetric deformation. Measured on a real
+    # pack: 24 of 224 shapes carrying leg detail bones had exactly this, because
+    # thinly-propagated scale bones sit near the cutoff and their L/R importance
+    # differs by a hair. Rank each pair by its BEST member and admit both or
+    # neither; a pair that would straddle the limit is dropped whole, so the
+    # result can be 1 under `limit` -- deliberately, since staying under the GPU
+    # bone cap is the point and a lone half-pair is worse than one fewer bone.
+    def _mirror(b: str) -> str:
+        if b.startswith("NPC L "):
+            m = "NPC R " + b[6:]
+        elif b.startswith("NPC R "):
+            m = "NPC L " + b[6:]
+        else:
+            return ""
+        # bracketed side tag too: "[LThg]" <-> "[RThg]", "[LrClf]" <-> "[RrClf]"
+        i = m.rfind("[")
+        if i != -1 and i + 1 < len(m):
+            c = m[i + 1]
+            if c in "LR":
+                m = m[:i + 1] + ("R" if c == "L" else "L") + m[i + 2:]
+        return m
+
+    # Pair only when BOTH members matter comparably. A group is ranked by its
+    # best member, so an unconditional pair lets a near-zero partner ride in on
+    # its partner's rank and displace a higher-ranked singleton -- measured, an
+    # adversarial one-sided drape (dominant 0.90 / partner 0.01) displaced 2
+    # mid-ranked chain bones that individual ranking kept. Dropping a 0.01
+    # partner costs nothing visible; dropping a 0.75 skirt chain bone kills the
+    # sway. The asymmetry this pairing exists to prevent comes from bones whose
+    # L/R importance "differs by a hair", so requiring the weaker member to be
+    # within PAIR_MIN_RATIO of the stronger keeps the fix and drops the misfire.
+    PAIR_MIN_RATIO = 0.5
+
+    def _pairable(a: str, b: str) -> bool:
+        ia, ib = _importance(a)[0], _importance(b)[0]
+        hi = max(ia, ib)
+        return hi <= 0.0 or min(ia, ib) >= PAIR_MIN_RATIO * hi
+
+    nameset = set(names)
+    groups, seen = [], set()
+    for b in names:
+        if b in seen:
+            continue
+        mate = _mirror(b)
+        grp = ([b, mate] if mate and mate in nameset and mate != b
+               and _pairable(b, mate) else [b])
+        seen.update(grp)
+        groups.append(grp)
+    groups.sort(key=lambda g: max(_importance(x) for x in g), reverse=True)
+    keep, used = set(), 0
+    for g in groups:
+        if used + len(g) > limit:
+            continue          # would straddle the cap -> drop the whole pair
+        keep.update(g)
+        used += len(g)
     new_names = [b for b in names if b in keep]
     new_x = {b: v for b, v in (xforms_map or {}).items() if b in keep}
     new_w = {b: list(v) for b, v in (weights_map or {}).items() if b in keep}
@@ -9990,7 +10074,9 @@ def _source_hdt_needs_missing_chain_bones(src_path, dst_bone_names) -> bool:
         if xml_disk is None:
             rel = _find_hdt_xml_for_armor(src_path)
             if rel:
-                norm = rel.replace("\\", "/").lstrip("/")
+                norm = _safe_data_rel(rel)
+                if norm is None:
+                    return False
                 for parent in [src_path, *src_path.parents]:
                     if parent.name.lower() == "meshes":
                         cand = parent.parent / norm
@@ -10352,6 +10438,42 @@ def _generate_hdt_xml_for_dst(dst_path: "Path", only_loose: bool = False) -> "st
     return None
 
 
+def _safe_data_rel(rel: str) -> "str | None":
+    """Normalise a Data-relative path that came from UNTRUSTED file content, or
+    return None if it tries to escape.
+
+    The physics-XML path is read out of a third-party NIF's
+    `HDT Skinned Mesh Physics Object` string extra-data, so a hostile or merely
+    broken mesh controls it. `rel.replace("\\\\", "/").lstrip("/")` alone is NOT
+    enough: it strips leading slashes but keeps `..` segments, and pathlib
+    DISCARDS the left operand entirely when the right side is drive-absolute --
+    so `C:\\Users\\...\\id_rsa` resolves to exactly that, and `..\\..\\secret`
+    walks out of the mods tree. The file is then copied into the converted
+    output mod, which users routinely re-upload, making this a disclosure route
+    rather than just a bad read.
+
+    Rejects: drive letters, UNC roots, and any `..` component. Returns a clean
+    forward-slash relative path otherwise."""
+    if not rel:
+        return None
+    norm = str(rel).replace("\\", "/")
+    # ORDER MATTERS. The UNC test must run BEFORE stripping (stripping destroys
+    # the "//" that identifies it), and the drive test must run AFTER (a single
+    # leading separator makes the pre-strip first segment empty, so a drive test
+    # placed first sees "" and waves `/C:/Users/...` straight through -- then the
+    # strip re-exposes the drive letter. That bypass was live and is exactly the
+    # attack this function exists to stop).
+    if norm.startswith("//"):                 # UNC \\server\share, \\?\C:\...
+        return None
+    norm = norm.lstrip("/")
+    if ":" in norm.split("/", 1)[0]:          # C:, after any leading separators
+        return None
+    parts = [p for p in norm.split("/") if p not in ("", ".")]
+    if any(p == ".." for p in parts):
+        return None
+    return "/".join(parts) or None
+
+
 def _resolve_data_rel_in_vfs(rel: str, src_nif_path: Path) -> "Path | None":
     """Resolve a Data-relative path string (e.g. an armor NIF's authored
     "Meshes\\...\\Foo.xml" physics-XML reference) to a real file on disk.
@@ -10368,7 +10490,17 @@ def _resolve_data_rel_in_vfs(rel: str, src_nif_path: Path) -> "Path | None":
     """
     if not rel:
         return None
-    norm = rel.replace("\\", "/").lstrip("/")
+    norm = _safe_data_rel(rel)
+    if norm is None:
+        # Say so. A rejection here is not inert: the caller falls back, and if
+        # that also misses, `_hdt_collider_shape_names` and
+        # `_hdt_softbody_shape_names` both return EMPTY -- which every skin
+        # pass reads as "this armor has no colliders and no soft-bodies" and
+        # then reskins them, the documented equip-CTD and softbody-drift.
+        # Silent was the wrong default for a safety invariant failing open.
+        print(f"  !! physics XML path rejected (escapes the mods tree): {rel!r}"
+              " -- collider/soft-body detection may fail open for this armor")
+        return None
     # 1) Local: the source NIF's own mod root (dir that contains 'meshes').
     for parent in [src_nif_path, *src_nif_path.parents]:
         if parent.name.lower() == "meshes":
@@ -11117,7 +11249,9 @@ def _read_source_hdt_xml_text(src_nif_path: Path, nif=None) -> "str | None":
         if xml_disk is None:
             rel = _find_hdt_xml_for_armor(src_nif_path)
             if rel:
-                norm = rel.replace("\\", "/").lstrip("/")
+                norm = _safe_data_rel(rel)
+                if norm is None:
+                    return None          # this function returns str | None
                 for parent in [src_nif_path, *src_nif_path.parents]:
                     if parent.name.lower() == "meshes":
                         cand = parent.parent / norm
@@ -12406,7 +12540,24 @@ def convert_nif_phase2(
         cbbe_ref = nif_io.open_nif_retry(str(Path(cbbe_body_ref_path)))  # transient-IO resilient
         cbbe_body_shape = max(cbbe_ref.shapes, key=lambda s: len(s.verts)) if cbbe_ref.shapes else None
     if cbbe_body_shape is not None:
-        _sbn = getattr(cbbe_body_shape, "normals", None)
+        # NOTE: this branch is OFF BY DEFAULT (see _SRC_NORMAL_FIX -- opt in with
+        # CBBE2UBE_SRC_NORMAL_FIX=1). The defect below is real and confirmed, but
+        # correcting it measured no better overall, so it does not ship enabled.
+        # Read the rest of this comment as the RATIONALE for the opt-in, not as a
+        # description of current behaviour.
+        # Use the HARDENED normal fetch, not a raw length check. BodySlide output
+        # routinely ships a body whose normals are all ZERO (see the same note at
+        # the `_body_normals_or_compute` call further down), and a length-only
+        # gate lets that straight through. Zeroed normals make every signed
+        # standoff `s_src` come out 0, which tells conform_to_source_standoff the
+        # source cloth was skin-tight everywhere -- so it reels LOOSE drape
+        # (skirts, robes, tabards) inward instead of leaving it alone, the exact
+        # opposite of that pass's stated contract. Measured on a real modlist:
+        # 18 of 21 sampled inline bodies had zeroed normals.
+        # `_body_normals_or_compute` verifies the normals are populated, unit-
+        # normalises them, and falls back to computing them from the triangles.
+        _sbn = (_body_normals_or_compute(cbbe_body_shape)
+                if _SRC_NORMAL_FIX else getattr(cbbe_body_shape, "normals", None))
         if _sbn is not None and len(_sbn) == len(cbbe_body_shape.verts):
             src_body_v_p2 = np.asarray(cbbe_body_shape.verts, dtype=np.float64)
             src_body_n_p2 = np.asarray(_sbn, dtype=np.float64)
