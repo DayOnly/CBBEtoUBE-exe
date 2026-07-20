@@ -8646,7 +8646,47 @@ def _cap_skin_bone_count(bone_names, xforms_map, weights_map,
         mx = max((float(w) for _, w in prs), default=0.0)
         tot = sum(float(w) for _, w in prs)
         return (mx, tot)
-    keep = set(sorted(names, key=_importance, reverse=True)[:limit])
+    # Keep MIRRORED PAIRS together. Ranking bones individually lets the cutoff
+    # fall between `NPC L FrontThigh` and `NPC R FrontThigh`, keeping one and
+    # dropping the other -- so one thigh follows the body's morph/flex and the
+    # other stays rigid, a visible asymmetric deformation. Measured on a real
+    # pack: 24 of 224 shapes carrying leg detail bones had exactly this, because
+    # thinly-propagated scale bones sit near the cutoff and their L/R importance
+    # differs by a hair. Rank each pair by its BEST member and admit both or
+    # neither; a pair that would straddle the limit is dropped whole, so the
+    # result can be 1 under `limit` -- deliberately, since staying under the GPU
+    # bone cap is the point and a lone half-pair is worse than one fewer bone.
+    def _mirror(b: str) -> str:
+        if b.startswith("NPC L "):
+            m = "NPC R " + b[6:]
+        elif b.startswith("NPC R "):
+            m = "NPC L " + b[6:]
+        else:
+            return ""
+        # bracketed side tag too: "[LThg]" <-> "[RThg]", "[LrClf]" <-> "[RrClf]"
+        i = m.rfind("[")
+        if i != -1 and i + 1 < len(m):
+            c = m[i + 1]
+            if c in "LR":
+                m = m[:i + 1] + ("R" if c == "L" else "L") + m[i + 2:]
+        return m
+
+    nameset = set(names)
+    groups, seen = [], set()
+    for b in names:
+        if b in seen:
+            continue
+        mate = _mirror(b)
+        grp = [b, mate] if mate and mate in nameset and mate != b else [b]
+        seen.update(grp)
+        groups.append(grp)
+    groups.sort(key=lambda g: max(_importance(x) for x in g), reverse=True)
+    keep, used = set(), 0
+    for g in groups:
+        if used + len(g) > limit:
+            continue          # would straddle the cap -> drop the whole pair
+        keep.update(g)
+        used += len(g)
     new_names = [b for b in names if b in keep]
     new_x = {b: v for b, v in (xforms_map or {}).items() if b in keep}
     new_w = {b: list(v) for b, v in (weights_map or {}).items() if b in keep}
@@ -10400,11 +10440,17 @@ def _safe_data_rel(rel: str) -> "str | None":
     if not rel:
         return None
     norm = str(rel).replace("\\", "/")
-    if ":" in norm.split("/", 1)[0]:          # C:, \\?\C:, etc.
-        return None
-    if norm.startswith("//"):                 # UNC \\server\share
+    # ORDER MATTERS. The UNC test must run BEFORE stripping (stripping destroys
+    # the "//" that identifies it), and the drive test must run AFTER (a single
+    # leading separator makes the pre-strip first segment empty, so a drive test
+    # placed first sees "" and waves `/C:/Users/...` straight through -- then the
+    # strip re-exposes the drive letter. That bypass was live and is exactly the
+    # attack this function exists to stop).
+    if norm.startswith("//"):                 # UNC \\server\share, \\?\C:\...
         return None
     norm = norm.lstrip("/")
+    if ":" in norm.split("/", 1)[0]:          # C:, after any leading separators
+        return None
     parts = [p for p in norm.split("/") if p not in ("", ".")]
     if any(p == ".." for p in parts):
         return None

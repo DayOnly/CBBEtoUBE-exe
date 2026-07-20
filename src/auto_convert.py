@@ -2425,6 +2425,11 @@ def _cmd_convert(args):
         except Exception as e:
             print(f"!! vertex-color sanitize failed: {e!r}")
 
+    # Did unified coverage actually run? It now lives INSIDE the merge, so
+    # every path that skips the merge also skips coverage -- and coverage
+    # silently not happening is invisible until armor turns up missing
+    # in game. Tracked so the tail can say so out loud.
+    _coverage_ran = False
     # --- Auto-merge into Combined ESP ---
     # Merge all per-source UBE patch ESPs into one ESL-flagged ESP at the mod root.
     # Only the merged ESP should be visible to MO2's scanner; per-source patches in
@@ -2466,6 +2471,16 @@ def _cmd_convert(args):
                 _cov_ok, _cov_targets = _emit_unified_coverage_patches(
                     output, patches_dir, batch_master_data_dirs,
                     args.merged_name)
+                _coverage_ran = True
+                if not _cov_ok:
+                    # Record it. Coverage failing silently is the worst outcome
+                    # here: mod-defined helmets/circlets/jewelry and body
+                    # variants go INVISIBLE on UBE actors, and without this the
+                    # run exits 0 with nothing in the failures file to explain
+                    # it. (The old standalone passes recorded a failure; when
+                    # coverage moved inside the merge that accounting was lost.)
+                    _record_failure("coverage", output, "unified coverage",
+                                    f"winner-scan incomplete (targets={_cov_targets})")
                 _cov_only = sorted(
                     patches_dir.glob("UBE_Mod*Coverage UBE patch.esp"))
                 # Use coverage as the SOLE generator ONLY when it fully ran and
@@ -2646,6 +2661,20 @@ def _cmd_convert(args):
               "would otherwise be built from incomplete patches.")
         _record_failure("merge skipped", "Combined ESP", args.merged_name,
                         f"{merge_blockers} source(s) failed ESP generation")
+
+    if not _coverage_ran:
+        # Unified coverage is the ONLY coverage model and it is emitted as part
+        # of the merge -- so no merge means NO race coverage for mod-defined
+        # helmets/circlets/jewelry or body variants. They go INVISIBLE on UBE
+        # actors. Say so loudly; never let this run look clean.
+        print("")
+        print("  !! NO RACE COVERAGE GENERATED -- coverage is emitted as part of")
+        print("     the merge, and the merge did not run (--no-auto-merge, a")
+        print("     failed source, or no patches found). Mod-defined helmets,")
+        print("     circlets, jewelry and body variants will be INVISIBLE on UBE")
+        print("     actors until a run completes the merge.")
+        _record_failure("coverage", output, "unified coverage",
+                        "merge did not run, so no coverage was generated")
 
     if args.render_previews:
         from . import preview
