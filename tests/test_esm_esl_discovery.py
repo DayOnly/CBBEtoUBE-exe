@@ -249,3 +249,33 @@ def test_resolve_armor_meshes_bsa_fallback(monkeypatch, tmp_path):
     pairs2 = ac._resolve_armor_meshes(
         {"armor/v/robe"}, None, tmp_path / "meshes", [loose])
     assert pairs2[0][0].read_bytes() == b"LOOSE"        # loose beats BSA
+
+
+# ---- ancestor directories must not be mistaken for mod content -------------
+
+def _mk(root, rel):
+    p = root / rel
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_bytes(b"")
+    return p
+
+
+def test_ancestor_named_backup_or_ube_does_not_hide_every_plugin(tmp_path):
+    """`p` comes from an ABSOLUTE rglob, so p.parts carries the drive and every
+    ancestor. Testing those for "ube"/"backup" meant a modlist living under any
+    such folder returned ZERO source plugins for EVERY mod -- no patches, no
+    coverage, and nothing in the log to say why."""
+    for ancestor in ("ARR Backup", "UBE", "!ube", "my backups"):
+        root = tmp_path / ancestor / "mods"
+        _mk(root, "Some Armor Mod/SomeArmor.esp")
+        found = _find_source_esps(root)
+        assert len(found) == 1, (
+            f"an ancestor named {ancestor!r} hid the mod's plugin: {found}")
+
+
+def test_ube_and_backup_SUBfolders_inside_a_mod_are_still_skipped(tmp_path):
+    """Scoping to the mod-relative path must not lose the real intent."""
+    _mk(tmp_path, "Some Mod/ube/Inner.esp")
+    _mk(tmp_path, "Some Mod/backup/Old.esp")
+    _mk(tmp_path, "Some Mod/Good.esp")
+    assert sorted(p.name for p in _find_source_esps(tmp_path)) == ["Good.esp"]

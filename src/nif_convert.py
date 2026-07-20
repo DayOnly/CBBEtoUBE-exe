@@ -10492,7 +10492,15 @@ def _resolve_data_rel_in_vfs(rel: str, src_nif_path: Path) -> "Path | None":
         return None
     norm = _safe_data_rel(rel)
     if norm is None:
-        return None          # untrusted path tried to escape the mods tree
+        # Say so. A rejection here is not inert: the caller falls back, and if
+        # that also misses, `_hdt_collider_shape_names` and
+        # `_hdt_softbody_shape_names` both return EMPTY -- which every skin
+        # pass reads as "this armor has no colliders and no soft-bodies" and
+        # then reskins them, the documented equip-CTD and softbody-drift.
+        # Silent was the wrong default for a safety invariant failing open.
+        print(f"  !! physics XML path rejected (escapes the mods tree): {rel!r}"
+              " -- collider/soft-body detection may fail open for this armor")
+        return None
     # 1) Local: the source NIF's own mod root (dir that contains 'meshes').
     for parent in [src_nif_path, *src_nif_path.parents]:
         if parent.name.lower() == "meshes":
