@@ -104,3 +104,78 @@ def test_opt_out_flag_exists():
     ns = p.parse_args(["auto", "--no-ube-native-scan"])
     assert ns.no_ube_native_scan is True
     assert p.parse_args(["auto"]).no_ube_native_scan is False
+
+
+# ---- the WIRING, and the mixed-mod hazard ---------------------------------
+# Every test above calls _ube_native_verdict directly. None of them could
+# notice that the pipeline never CALLED it: the inline version did
+# `Path(candidate_dict)`, which raised TypeError into its own bare `except`,
+# so the gate never fired once and --no-ube-native-scan toggled nothing. It
+# failed OPEN, so nothing broke visibly -- it just silently did nothing.
+
+def _cand(tmp_path, name):
+    d = tmp_path / name
+    d.mkdir(parents=True, exist_ok=True)
+    return {"name": name, "path": d, "armor_nifs": 1, "esps": 1}
+
+
+def test_backstop_actually_drops_a_ube_native_candidate(tmp_path, monkeypatch):
+    monkeypatch.setattr(auto_convert, "_body_trees", lambda: ("u", "c"))
+    monkeypatch.setattr(
+        auto_convert, "_ube_native_verdict",
+        lambda p, u, c: (("ube", "high", ["fit"]) if p.name == "Already UBE"
+                         else ("cbbe", "high", ["fit"])))
+    cands = [_cand(tmp_path, "Already UBE"), _cand(tmp_path, "Normal CBBE Mod")]
+
+    kept = auto_convert._drop_ube_native_candidates(cands)
+
+    assert [c["name"] for c in kept] == ["Normal CBBE Mod"], (
+        "the UBE-native gate did not drop the candidate it judged 'ube'")
+
+
+def test_backstop_keeps_everything_when_verdicts_are_not_decisive(tmp_path,
+                                                                  monkeypatch):
+    """Only a HIGH-confidence 'ube' may skip. Wrongly skipping a CBBE mod
+    leaves its armor unfitted in game -- worse than double-converting."""
+    monkeypatch.setattr(auto_convert, "_body_trees", lambda: ("u", "c"))
+    monkeypatch.setattr(auto_convert, "_ube_native_verdict",
+                        lambda p, u, c: ("ube", "low", ["fit"]))
+    cands = [_cand(tmp_path, "A"), _cand(tmp_path, "B")]
+    assert len(auto_convert._drop_ube_native_candidates(cands)) == 2
+
+
+def test_backstop_fails_open_when_a_mod_raises(tmp_path, monkeypatch):
+    def _boom(p, u, c):
+        raise RuntimeError("unreadable")
+    monkeypatch.setattr(auto_convert, "_body_trees", lambda: ("u", "c"))
+    monkeypatch.setattr(auto_convert, "_ube_native_verdict", _boom)
+    cands = [_cand(tmp_path, "A")]
+    assert len(auto_convert._drop_ube_native_candidates(cands)) == 1
+
+
+def test_backstop_fails_open_without_reference_bodies(tmp_path, monkeypatch):
+    monkeypatch.setattr(auto_convert, "_body_trees", lambda: (None, None))
+    cands = [_cand(tmp_path, "A")]
+    assert len(auto_convert._drop_ube_native_candidates(cands)) == 1
+
+
+def test_already_ube_meshes_are_not_sampled_as_evidence(tmp_path):
+    r"""THE MIXED-MOD HAZARD. A mod shipping BOTH a hand-made `!UBE` variant
+    and its CBBE meshes must be judged on the CBBE ones. The `!UBE` mesh hugs
+    the UBE body exactly, `_tier` ranks a body mesh first, and `!` sorts ahead
+    of letters -- so without this exclusion it dominates the sample, the mod is
+    judged 'ube', and the whole mod is skipped, silently taking the CBBE meshes
+    that DID need converting with it."""
+    mod = tmp_path / "Mixed Mod"
+    ube = mod / "meshes" / "!UBE" / "armor" / "x"
+    cbbe = mod / "meshes" / "armor" / "x"
+    ube.mkdir(parents=True)
+    cbbe.mkdir(parents=True)
+    (ube / "femalebody_1.nif").write_bytes(b"")
+    (cbbe / "cuirassf_1.nif").write_bytes(b"")
+
+    picked = [p.name for p in auto_convert._mod_armor_nifs(mod, 6)]
+
+    assert "femalebody_1.nif" not in picked, (
+        "an already-!UBE mesh was sampled -- it would decide the whole mod")
+    assert "cuirassf_1.nif" in picked, "the convertible CBBE mesh was not sampled"
