@@ -435,9 +435,9 @@ load-order and value/weight conflicts. **How.** SkyPatcher `armorAddonsToAdd`
 INI links are the sole delivery path: for each ARMO that references a converted
 armature, a link (ARMO → minted UBE ARMA) is recorded in a `.skypatcher.json`
 sidecar; no ESP ARMO override is emitted. The legacy ARMO-override machinery has
-been removed. (The two fallback coverage ESPs are a separate path that does still
-emit ARMO overrides. They run by DEFAULT — `--no-modded-nonbody` disables both —
-unless unified coverage is enabled, which folds them into the Combined instead.)
+been removed. (The winner-scan coverage passes still emit ARMO overrides, but
+their output is folded into the Combined family rather than shipped as separate
+plugins — see "Unified coverage" below.)
 
 ---
 

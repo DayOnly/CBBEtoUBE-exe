@@ -40,16 +40,11 @@ Given a Mod Organizer 2 setup, the full pipeline (`auto`):
    armor is invisible.
 5. Adds **race coverage** so armatures defined by other mods —
    overhaul-rearmatured helmets, circlets, jewelry, and mod-defined body
-   variants — still render on UBE races. Two modes:
-   - **Default — separate coverage ESPs.** Mints
-     **`UBE_ModNonBody_Coverage.esp`** + **`UBE_ModBody_Coverage.esp`** (each
-     with an active SkyPatcher INI). **Both must be enabled in MO2**, or the
-     covered items are invisible on UBE actors.
-   - **Unified coverage (opt-in).** With `CBBE2UBE_UNIFIED_COVERAGE=1`, or a
-     `UNIFIED_COVERAGE` sentinel file next to the exe, the coverage passes are
-     folded **into the Combined plugin family** instead — no standalone
-     `UBE_Mod*_Coverage.esp` are produced, so there is nothing extra to enable
-     beyond the Combined piece(s). Leaner load order; set it once and reconvert.
+   variants — still render on UBE races. That coverage is folded **into the
+   Combined plugin family**, so there are no standalone coverage plugins and
+   nothing extra to enable beyond the Combined piece(s). The winner scan is
+   also the sole generator for the merge, which roughly halves the ARMA count
+   and so needs fewer ESL pieces.
 6. **(Opt-in) RaceMenu overlay transfer.** Rebakes CBBE/3BA **body, hands, and
    feet** overlays (tattoos / body paints) into UBE's UV layout — UBE re-UVs the
    body, so CBBE-authored overlays otherwise land in the wrong place. The
@@ -66,8 +61,8 @@ Given a Mod Organizer 2 setup, the full pipeline (`auto`):
      Feet-only overlays already convert at their own path and are left untouched.
 
 The result is a self-contained output mod (default name: `CBBEtoUBE Auto`) you
-enable at the end of your load order, plus the coverage plugin(s) from step 5 —
-the two coverage ESPs by default, or nothing extra under unified coverage.
+enable at the end of your load order. Coverage is inside the Combined plugin
+family, so the Combined piece(s) are the only plugins to enable.
 
 ## How the refit works
 
@@ -239,10 +234,6 @@ Useful `auto` flags:
   working on non-UBE races (needs the Papyrus compiler)
 - `--overlay-skip-male`, `--overlay-mods NAME …`, `--overlay-exclude-mods NAME …`
   — limit which overlay packs get processed
-- `--no-modded-nonbody` — skip the mod-defined UBE coverage passes. Note this
-  disables **both** `UBE_ModNonBody_Coverage.esp` (helmets/circlets/jewelry)
-  **and** `UBE_ModBody_Coverage.esp` (mod-defined body variants), so items in
-  either category go invisible on UBE actors.
 
 ### Discovery overrides
 
