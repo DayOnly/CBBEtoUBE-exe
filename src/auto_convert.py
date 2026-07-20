@@ -1992,6 +1992,50 @@ def _is_our_own_output(mod_dir) -> bool:
     return False
 
 
+def _skypatcher_fields(line: str) -> dict:
+    r"""Parse one SkyPatcher INI line into {key: value}.
+
+    The grammar is `key=value:key=value:...` with `;` starting a comment. Three
+    things make naive parsing wrong, and all three were reproduced against real
+    syntax:
+      * a fully commented-out line still contains `filterByArmors=`, so without
+        stripping comments a disabled rule is read as live;
+      * `filterByArmorsExcluded` is a real filter meaning the OPPOSITE, and it
+        has `filterByArmors` as a prefix -- so keys must match exactly;
+      * operations may legally precede filters, so the targets are not always
+        in the first segment.
+    """
+    line = line.split(";", 1)[0].strip()
+    if not line:
+        return {}
+    out: dict = {}
+    for seg in line.split(":"):
+        if "=" not in seg:
+            continue
+        k, v = seg.split("=", 1)
+        k = k.strip()
+        if k:
+            out[k] = v.strip()
+    return out
+
+
+def _skypatcher_forms(value: str):
+    """Yield (plugin lowercase, formid low24) for a comma-separated form list.
+
+    A full load-indexed ESL form (`FE012800`) masks to a different low24 than
+    the record's own index, so it simply will not match -- under-detecting,
+    never falsely excluding. EditorID-form targets are skipped likewise."""
+    for t in (value or "").split(","):
+        t = t.strip()
+        if "|" not in t:
+            continue
+        pl, fid = t.rsplit("|", 1)
+        try:
+            yield (pl.strip().lower(), int(fid, 16) & 0xFFFFFF)
+        except ValueError:
+            continue
+
+
 def _third_party_ube_covered_armos(mods_root, enabled_names=None,
                                    skip_mods=()) -> set:
     r"""ARMOs that ANOTHER mod already gives a UBE armature.
@@ -2021,6 +2065,15 @@ def _third_party_ube_covered_armos(mods_root, enabled_names=None,
     if key in _UBE_COVERED_CACHE:
         return _UBE_COVERED_CACHE[key]
     covered: set = set()
+    ube_armas: set = set()      # abs identity of every UBE armature found
+    pending_ini: list = []      # (mod name, ini text) judged in a 2nd pass
+    by_mod: dict = {}           # who supplied each exclusion (magnitude guard)
+
+    def _add(ident, mod_name):
+        if ident not in covered:
+            covered.add(ident)
+            by_mod[mod_name] = by_mod.get(mod_name, 0) + 1
+
     root = Path(mods_root)
     skip = {s.lower() for s in skip_mods}
     try:
@@ -2035,29 +2088,16 @@ def _third_party_ube_covered_armos(mods_root, enabled_names=None,
             continue
         if _is_our_own_output(md):
             continue        # our own output, under whatever folder name
-        # (a) SkyPatcher INIs from another UBE provider
+        # (a) SkyPatcher INIs -- DEFERRED. A line's targets only count if the
+        # armature it adds is itself UBE, and that armature can live in any
+        # mod, so the INIs cannot be judged until every plugin has been read.
         for ini in md.glob("SKSE/Plugins/SkyPatcher/armor/*.ini"):
             try:
-                txt = ini.read_text(encoding="utf-8", errors="replace")
+                pending_ini.append((md.name,
+                                    ini.read_text(encoding="utf-8",
+                                                  errors="replace")))
             except OSError:
                 continue
-            for line in txt.splitlines():
-                if "armorAddonsToAdd=" not in line:
-                    continue
-                try:
-                    tgts = line.split("=", 1)[1].split(":", 1)[0]
-                except Exception:
-                    continue
-                for t in tgts.split(","):
-                    t = t.strip()
-                    if "|" not in t:
-                        continue
-                    try:
-                        pl, fid = t.rsplit("|", 1)
-                        covered.add((pl.strip().lower(),
-                                     int(fid, 16) & 0xFFFFFF))
-                    except Exception:
-                        continue
         # (b) plugins that define a UBE ARMA and an ARMO pointing at it
         for pl in list(md.glob("*.esp")) + list(md.glob("*.esm")) + list(md.glob("*.esl")):
             try:
@@ -2066,6 +2106,12 @@ def _third_party_ube_covered_armos(mods_root, enabled_names=None,
                 continue
             masters = [m.lower() for m in e.header.masters]
             own = pl.name.lower()
+
+            def _abs(formid):
+                mi = formid >> 24
+                return ((masters[mi] if mi < len(masters) else own),
+                        formid & 0xFFFFFF)
+
             ube_fids = set()
             for g in e.groups:
                 if g.label != b"ARMA":
@@ -2076,6 +2122,7 @@ def _third_party_ube_covered_armos(mods_root, enabled_names=None,
                             s = dd.rstrip(bytes(1)).decode("cp1252", "replace")
                             if _is_already_ube_model(s):
                                 ube_fids.add(r.formid)
+                                ube_armas.add(_abs(r.formid))
                                 break
             if not ube_fids:
                 continue
@@ -2091,9 +2138,37 @@ def _third_party_ube_covered_armos(mods_root, enabled_names=None,
                                 break
                     if not hit:
                         continue
-                    mi = r.formid >> 24
-                    defp = masters[mi] if mi < len(masters) else own
-                    covered.add((defp, r.formid & 0xFFFFFF))
+                    _add(_abs(r.formid), md.name)
+
+    # (a, second pass) Now that every UBE armature is known, judge the INIs.
+    for mod_name, txt in pending_ini:
+        for line in txt.splitlines():
+            fields = _skypatcher_fields(line)
+            if not fields:
+                continue
+            addons = fields.get("armorAddonsToAdd")
+            targets = fields.get("filterByArmors")
+            if not addons or not targets:
+                continue
+            # The armature being ADDED must itself be UBE. Without this any
+            # armorAddonsToAdd line in the modlist -- a cape addon, a heels
+            # addon, another body's compat patch -- would permanently remove
+            # its targets from the only delivery path there is.
+            if not any(a in ube_armas for a in _skypatcher_forms(addons)):
+                continue
+            for t in _skypatcher_forms(targets):
+                _add(t, mod_name)
+
+    if by_mod:
+        top, n = max(by_mod.items(), key=lambda kv: kv[1])
+        # A single mod supplying most of a large exclusion set is the shape of
+        # the self-detection failure this guards: output from an older build
+        # read as a third-party provider suppressed 8318 of 10056 links.
+        if len(covered) >= 2000 and n >= 0.4 * len(covered):
+            print(f"  [unified] WARNING: {n} of {len(covered)} 'already UBE' "
+                  f"armors come from a single mod ({top}). If that is converter "
+                  "output rather than a hand-made patch, coverage is being "
+                  "suppressed wrongly -- check it before trusting this run.")
     _UBE_COVERED_CACHE[key] = covered
     return covered
 
