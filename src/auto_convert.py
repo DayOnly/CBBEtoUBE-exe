@@ -699,7 +699,15 @@ def _find_source_esps(source_dir: Path) -> list[Path]:
             name_lower = p.name.lower()
             if name_lower in _MASTER_SKIP:
                 continue  # vanilla/DLC master -> handled by the vanilla path
-            parts_lower = [s.lower() for s in p.parts]
+            # Test the MOD-RELATIVE path only. `p` comes from an absolute
+            # rglob, so p.parts carries the drive and every ancestor -- a
+            # modlist living under any folder named e.g. "backup" or "UBE"
+            # matched on the ancestor and returned ZERO source plugins for
+            # EVERY mod, which is total silent loss: no patches, no coverage.
+            try:
+                parts_lower = [s.lower() for s in p.relative_to(source_dir).parts]
+            except ValueError:
+                parts_lower = [s.lower() for s in p.parts]
             # Skip OUR OWN generated patch ESPs by their actual naming
             # convention ("<source> UBE patch.esp"), and plugins sitting in a
             # UBE subfolder. Both were previously caught by testing every path
@@ -2061,7 +2069,10 @@ def _third_party_ube_covered_armos(mods_root, enabled_names=None,
     crash here would cost the whole run."""
     import struct as _struct
     from . import esp as _esp   # module scope has no esp import
-    key = (str(mods_root), tuple(sorted(skip_mods)))
+    # enabled_names belongs in the key: it changes the result, and in the
+    # long-lived GUI process the modlist can change between two scans.
+    key = (str(mods_root), tuple(sorted(skip_mods)),
+           None if enabled_names is None else tuple(sorted(enabled_names)))
     if key in _UBE_COVERED_CACHE:
         return _UBE_COVERED_CACHE[key]
     covered: set = set()
@@ -2196,20 +2207,25 @@ def _print_coverage_warnings(label: str, stats: dict) -> None:
 
 
 def _emit_unified_coverage_patches(output, patches_dir, master_data_dirs,
-                                   merged_name) -> "tuple[bool, int]":
-    """Step 3b: run the winner-scan coverage passes as the PRIMARY generator and
+                                   merged_name) -> "tuple[bool, int, bool]":
+    r"""Step 3b: run the winner-scan coverage passes as the PRIMARY generator and
     drop their patch ESPs + `.skypatcher.json` sidecars into the patches dir, so
     the auto-merge folds them straight into the Combined family (the merge dedups
     links by (armo, src) and collapses byte-identical ARMAs). This makes the
     separate ModBody/ModNonBody plugins unnecessary.
 
-    Returns (ok, total_armo_targets). ok is True ONLY if BOTH coverage passes ran
-    to completion (the body pass may be legitimately skipped when there are no
-    converted !UBE meshes yet). The caller must use the coverage-only merge ONLY
+    Returns (ok, total_armo_targets, body_ran). ok is True if the passes that ran
+    completed without error. The caller must use the coverage-only merge ONLY
     when ok AND total_targets > 0 -- otherwise fall back to merging the per-source
     patches, so a failed/empty winner scan can never yield an empty or partial
     Combined with the per-source coverage silently dropped. Best-effort: any
-    failure is logged and reported via ok=False."""
+    failure is logged and reported via ok=False.
+
+    body_ran is False when the body/hands-feet pass was SKIPPED for want of
+    converted `!UBE\` meshes. That is legitimate on a fresh output, but it makes
+    the coverage PARTIAL -- it carries no body links at all -- so the caller must
+    not then treat it as the sole generator and discard the per-source patches,
+    which in that state are the only thing carrying body coverage."""
     total_targets = 0
     try:
         # Leave armors alone that ANOTHER mod already patched for UBE --
@@ -2293,11 +2309,14 @@ def _emit_unified_coverage_patches(output, patches_dir, master_data_dirs,
                   f"targets {bd.get('armo_targets')} | "
                   f"src-primary HF via preserved-race mint")
             _print_coverage_warnings("body", bd)
-        return (True, total_targets)
+        else:
+            print("  body+hands/feet: SKIPPED -- no converted !UBE meshes "
+                  "found, so this coverage carries NO body links")
+        return (True, total_targets, bool(conv_rel))
     except Exception as e:
         print(f"  !! unified coverage emission failed (continuing with "
               f"per-source coverage): {e!r}")
-        return (False, total_targets)
+        return (False, total_targets, False)
 
 
 def _cmd_convert(args):
@@ -2743,9 +2762,10 @@ def _cmd_convert(args):
                 # fall back to merging everything so the Combined is never empty.
                 # Unified coverage is the ONLY coverage model. The old
                 # standalone ModBody/ModNonBody plugins are gone.
-                _cov_ok, _cov_targets = _emit_unified_coverage_patches(
-                    output, patches_dir, batch_master_data_dirs,
-                    args.merged_name)
+                _cov_ok, _cov_targets, _cov_body = \
+                    _emit_unified_coverage_patches(
+                        output, patches_dir, batch_master_data_dirs,
+                        args.merged_name)
                 _coverage_ran = True
                 if not _cov_ok:
                     # Record it. Coverage failing silently is the worst outcome
@@ -2761,15 +2781,20 @@ def _cmd_convert(args):
                 # Use coverage as the SOLE generator ONLY when it fully ran and
                 # actually covered something; otherwise merge the per-source
                 # patches so a failed/empty winner scan can't drop all coverage.
-                if _cov_ok and _cov_targets > 0 and _cov_only:
+                # ...and only when it carries BODY links. With no converted
+                # !UBE meshes the body pass is skipped, and taking the sole
+                # branch there would discard the per-source patches that are
+                # the only remaining source of body coverage.
+                if _cov_ok and _cov_targets > 0 and _cov_only and _cov_body:
                     print(f"  [unified/3c] merging {len(_cov_only)} winner-scan "
                           f"coverage patch(es) ({_cov_targets} armors) as the "
                           "SOLE generator (per-source patches left unmerged)")
                     patch_paths = _cov_only
                 else:
                     print(f"  !! [unified] coverage empty/incomplete "
-                          f"(ok={_cov_ok}, targets={_cov_targets}) -- merging "
-                          "per-source patches instead")
+                          f"(ok={_cov_ok}, targets={_cov_targets}, "
+                          f"body={_cov_body}) -- merging per-source patches "
+                          "instead")
                     # EXCLUDE any coverage patch still on disk. The glob
                     # "*UBE patch.esp" also matches
                     # "UBE_Mod*Coverage UBE patch.esp", so a partial run --
@@ -2815,10 +2840,23 @@ def _cmd_convert(args):
                     # Combined FormIDs -- write the runtime INI. The Combined
                     # then carries NO third-party overrides.
                     _sp_lines = stats.get("skypatcher_ini_lines") or []
+                    _sp_ini_path = (output / "SKSE" / "Plugins"
+                                    / "SkyPatcher" / "armor"
+                                    / (merged_out.stem + ".ini"))
+                    if not _sp_lines and _sp_ini_path.is_file():
+                        # SkyPatcher applies EVERY INI in this folder. A run
+                        # that merged fine but produced no links would leave
+                        # the PREVIOUS run's INI in place, pointing at FormIDs
+                        # the rewritten Combined has since reassigned -- so
+                        # armatures attach to whatever now holds those IDs.
+                        try:
+                            _sp_ini_path.unlink()
+                            print("  FULL SKYPATCHER: no links this run -- "
+                                  f"removed stale {_sp_ini_path.name}")
+                        except OSError as _e:
+                            print(f"  !! could not remove stale "
+                                  f"{_sp_ini_path.name}: {_e}")
                     if _sp_lines:
-                        _sp_ini_path = (output / "SKSE" / "Plugins"
-                                        / "SkyPatcher" / "armor"
-                                        / (merged_out.stem + ".ini"))
                         from .atomic_io import atomic_write_bytes
                         _sp_hdr = [
                             f"; {SKYPATCHER_INI_MARKER} FULL SKYPATCHER: adds each converted",

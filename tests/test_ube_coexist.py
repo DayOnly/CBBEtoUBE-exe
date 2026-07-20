@@ -291,3 +291,45 @@ def test_detected_exclusions_reach_both_coverage_generators(tmp_path,
         "non-body coverage did not receive the already-UBE exclusions")
     assert seen.get("body") == sentinel, (
         "body coverage did not receive the already-UBE exclusions")
+
+
+def test_coverage_reports_body_skipped_when_no_converted_meshes(tmp_path,
+                                                                monkeypatch):
+    r"""With no converted `!UBE\` meshes the body/hands-feet pass is skipped, so
+    the coverage carries NO body links. Reporting that as a complete run let the
+    caller treat it as the SOLE generator and discard the per-source patches --
+    which in that state are the only thing carrying body coverage. Reachable on
+    a plugins-only run against a fresh or cleared output."""
+    calls = []
+
+    monkeypatch.setattr(auto_convert, "_third_party_ube_covered_armos",
+                        lambda *a, **k: set())
+    monkeypatch.setattr(
+        auto_convert.ube_patcher, "generate_modded_nonbody_ube_coverage_patch",
+        lambda *a, **k: (calls.append("nonbody"), {"armo_targets": 7})[1])
+    monkeypatch.setattr(
+        auto_convert.ube_patcher, "generate_modded_body_ube_coverage_patch",
+        lambda *a, **k: (calls.append("body"), {"armo_targets": 9})[1])
+    monkeypatch.setattr(auto_convert.paths, "discover_layout", lambda: None)
+    monkeypatch.setattr(auto_convert.paths, "enabled_mods", lambda lay: None)
+    monkeypatch.setattr(auto_convert.paths, "mods_root", lambda: str(tmp_path))
+    monkeypatch.setattr(auto_convert.paths, "active_plugins_ordered",
+                        lambda lay: ["Skyrim.esm"])
+    plug = tmp_path / "Skyrim.esm"
+    plug.write_bytes(b"")
+    monkeypatch.setattr(auto_convert.paths, "plugin_file_index",
+                        lambda lay: {"skyrim.esm": str(plug)})
+
+    out = tmp_path / "out"
+    patches = tmp_path / "patches"
+    (out / "meshes" / "!UBE").mkdir(parents=True)   # present but EMPTY
+    patches.mkdir()
+
+    ok, targets, body_ran = auto_convert._emit_unified_coverage_patches(
+        out, patches, None, "CBBE_to_UBE_Combined.esp")
+
+    assert "body" not in calls, "body pass ran without any converted meshes"
+    assert targets > 0, "fixture should still produce non-body targets"
+    assert body_ran is False, (
+        "coverage reported body links it does not have -- the caller would "
+        "drop the per-source patches that carry them")
