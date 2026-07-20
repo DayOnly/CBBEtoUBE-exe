@@ -8671,13 +8671,30 @@ def _cap_skin_bone_count(bone_names, xforms_map, weights_map,
                 m = m[:i + 1] + ("R" if c == "L" else "L") + m[i + 2:]
         return m
 
+    # Pair only when BOTH members matter comparably. A group is ranked by its
+    # best member, so an unconditional pair lets a near-zero partner ride in on
+    # its partner's rank and displace a higher-ranked singleton -- measured, an
+    # adversarial one-sided drape (dominant 0.90 / partner 0.01) displaced 2
+    # mid-ranked chain bones that individual ranking kept. Dropping a 0.01
+    # partner costs nothing visible; dropping a 0.75 skirt chain bone kills the
+    # sway. The asymmetry this pairing exists to prevent comes from bones whose
+    # L/R importance "differs by a hair", so requiring the weaker member to be
+    # within PAIR_MIN_RATIO of the stronger keeps the fix and drops the misfire.
+    PAIR_MIN_RATIO = 0.5
+
+    def _pairable(a: str, b: str) -> bool:
+        ia, ib = _importance(a)[0], _importance(b)[0]
+        hi = max(ia, ib)
+        return hi <= 0.0 or min(ia, ib) >= PAIR_MIN_RATIO * hi
+
     nameset = set(names)
     groups, seen = [], set()
     for b in names:
         if b in seen:
             continue
         mate = _mirror(b)
-        grp = [b, mate] if mate and mate in nameset and mate != b else [b]
+        grp = ([b, mate] if mate and mate in nameset and mate != b
+               and _pairable(b, mate) else [b])
         seen.update(grp)
         groups.append(grp)
     groups.sort(key=lambda g: max(_importance(x) for x in g), reverse=True)
