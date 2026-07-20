@@ -1727,7 +1727,7 @@ def _build_parser():
                         help="Skip the geometry check that drops mods whose "
                              "armor already fits the UBE body. That check "
                              "prevents double-converting UBE-native armor "
-                             "that does not use the !UBE\ path convention; "
+                             r"that does not use the !UBE\ path convention; "
                              "use this if it ever misjudges a CBBE mod.")
     auto_p.add_argument("--convert-overlays", action="store_true",
                         help="OPT-IN: rebake CBBE/3BA body overlays (RaceMenu "
@@ -1947,6 +1947,157 @@ def verify_output(output_dir) -> dict:
 # reverted the whole coverage model with no error. It is now the only
 # model, so there is nothing to toggle and nothing to lose.
 
+_UBE_COVERED_CACHE: dict = {}
+
+# Written as a comment into every SkyPatcher INI we emit, and read back by
+# `_is_our_own_output`.
+SKYPATCHER_INI_MARKER = "cbbe-to-ube"
+
+# Header markers this tool has written across its versions. Recognising OUR
+# OWN output cannot depend on the current marker alone: a modlist can hold
+# output from an OLDER build, and that build stamped a different header.
+_OUR_INI_MARKERS = (SKYPATCHER_INI_MARKER, "ube converter")
+
+
+def _is_our_own_output(mod_dir) -> bool:
+    """True if this mod folder is output from THIS tool -- ANY version, ANY
+    folder name.
+
+    Without this, a leftover output mod from an earlier run reads as a
+    third-party UBE provider covering thousands of armors, and we suppress our
+    own coverage wholesale -- converting everything and delivering none of it.
+    Measured on a real modlist: one stale output mod alone pushed the exclusion
+    set from 336 to 8873 and would have suppressed 8318 of 10056 links.
+
+    The primary test is STRUCTURAL -- a conversion report at the mod root is a
+    file only this tool writes, and it has been written under every version, so
+    it identifies old output that predates any header marker. The INI-header
+    check is the fallback for output whose report was deleted."""
+    md = Path(mod_dir)
+    try:
+        if (md / "conversion_report.json").is_file():
+            return True
+        if next(md.glob("conversion_report_*.txt"), None) is not None:
+            return True
+        for ini in md.glob("SKSE/Plugins/SkyPatcher/armor/*.ini"):
+            try:
+                head = ini.read_text(encoding="utf-8", errors="replace")[:400]
+            except OSError:
+                continue
+            low = head.lower()
+            if any(m in low for m in _OUR_INI_MARKERS):
+                return True
+    except OSError:
+        pass
+    return False
+
+
+def _third_party_ube_covered_armos(mods_root, enabled_names=None,
+                                   skip_mods=()) -> set:
+    r"""ARMOs that ANOTHER mod already gives a UBE armature.
+
+    Returned as {(defining plugin lowercase, formid low24)} -- the same
+    identity `exclude_armo_abs` takes in both coverage generators.
+
+    WHY: adding our armature to an armor that is ALREADY covered for UBE means
+    the actor renders TWO bodies for that slot (z-fighting / doubled cloth).
+    A hand-made UBE patch is also almost always a better fit than an automatic
+    conversion, so the right behaviour is to leave that armor entirely alone and
+    coexist rather than compete. Measured on a real modlist: 347 ARMOs already
+    carried a third-party UBE armature and we were double-covering 143 of them.
+
+    Two delivery mechanisms are detected, because UBE patches use both:
+      * ESP/ESL: an ARMA whose model path is under `!UBE\`, and any ARMO that
+        references it (the armor's own record, or an override of a master's).
+      * SkyPatcher: another mod's `armorAddonsToAdd` INI lines, which name their
+        targets directly -- the same mechanism this tool uses.
+
+    Best-effort and CACHED per (root, skip) -- an unreadable plugin is skipped,
+    never fatal: failing to detect coverage costs a double-render, while a
+    crash here would cost the whole run."""
+    import struct as _struct
+    from . import esp as _esp   # module scope has no esp import
+    key = (str(mods_root), tuple(sorted(skip_mods)))
+    if key in _UBE_COVERED_CACHE:
+        return _UBE_COVERED_CACHE[key]
+    covered: set = set()
+    root = Path(mods_root)
+    skip = {s.lower() for s in skip_mods}
+    try:
+        mod_dirs = [d for d in root.iterdir() if d.is_dir()]
+    except OSError:
+        _UBE_COVERED_CACHE[key] = covered
+        return covered
+    for md in mod_dirs:
+        if md.name.lower() in skip:
+            continue
+        if enabled_names is not None and md.name not in enabled_names:
+            continue
+        if _is_our_own_output(md):
+            continue        # our own output, under whatever folder name
+        # (a) SkyPatcher INIs from another UBE provider
+        for ini in md.glob("SKSE/Plugins/SkyPatcher/armor/*.ini"):
+            try:
+                txt = ini.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            for line in txt.splitlines():
+                if "armorAddonsToAdd=" not in line:
+                    continue
+                try:
+                    tgts = line.split("=", 1)[1].split(":", 1)[0]
+                except Exception:
+                    continue
+                for t in tgts.split(","):
+                    t = t.strip()
+                    if "|" not in t:
+                        continue
+                    try:
+                        pl, fid = t.rsplit("|", 1)
+                        covered.add((pl.strip().lower(),
+                                     int(fid, 16) & 0xFFFFFF))
+                    except Exception:
+                        continue
+        # (b) plugins that define a UBE ARMA and an ARMO pointing at it
+        for pl in list(md.glob("*.esp")) + list(md.glob("*.esm")) + list(md.glob("*.esl")):
+            try:
+                e = _esp.ESP.load(pl)
+            except Exception:
+                continue
+            masters = [m.lower() for m in e.header.masters]
+            own = pl.name.lower()
+            ube_fids = set()
+            for g in e.groups:
+                if g.label != b"ARMA":
+                    continue
+                for r in g.records:
+                    for sig, dd in _esp.iter_subrecords(r.payload):
+                        if sig in (b"MOD2", b"MOD3", b"MOD4", b"MOD5"):
+                            s = dd.rstrip(bytes(1)).decode("cp1252", "replace")
+                            if _is_already_ube_model(s):
+                                ube_fids.add(r.formid)
+                                break
+            if not ube_fids:
+                continue
+            for g in e.groups:
+                if g.label != b"ARMO":
+                    continue
+                for r in g.records:
+                    hit = False
+                    for sig, dd in _esp.iter_subrecords(r.payload):
+                        if sig == b"MODL" and len(dd) == 4:
+                            if _struct.unpack("<I", dd)[0] in ube_fids:
+                                hit = True
+                                break
+                    if not hit:
+                        continue
+                    mi = r.formid >> 24
+                    defp = masters[mi] if mi < len(masters) else own
+                    covered.add((defp, r.formid & 0xFFFFFF))
+    _UBE_COVERED_CACHE[key] = covered
+    return covered
+
+
 def _print_coverage_warnings(label: str, stats: dict) -> None:
     """Surface a coverage pass's validator warnings.
 
@@ -1986,6 +2137,24 @@ def _emit_unified_coverage_patches(output, patches_dir, master_data_dirs,
     failure is logged and reported via ok=False."""
     total_targets = 0
     try:
+        # Leave armors alone that ANOTHER mod already patched for UBE --
+        # adding a second armature renders two bodies, and a hand-made UBE
+        # patch beats an automatic conversion anyway. Coexist, do not compete.
+        try:
+            _uba_lay = paths.discover_layout()
+            _ube_excl = _third_party_ube_covered_armos(
+                paths.mods_root(),
+                enabled_names=paths.enabled_mods(_uba_lay),
+                skip_mods={Path(output).name})
+        except Exception as _e:
+            # Detection failure must never stop coverage -- but say so, or a
+            # silently-empty exclusion set looks exactly like "nothing to skip".
+            _ube_excl = set()
+            print(f"  [unified] WARNING: could not scan for existing UBE "
+                  f"patches ({type(_e).__name__}: {_e}); not excluding any")
+        if _ube_excl:
+            print(f"  [unified] {len(_ube_excl)} armor(s) already have a UBE "
+                  "patch from another mod -- leaving those alone")
         # Remove any STALE coverage from a prior run BEFORE regenerating: the
         # standalone ESP+INI (SkyPatcher applies every INI in the folder even if
         # the ESP is disabled -> double-cover) AND the prior coverage PATCHES in
@@ -2029,7 +2198,7 @@ def _emit_unified_coverage_patches(output, patches_dir, master_data_dirs,
         nb_out = patches_dir / "UBE_ModNonBody_Coverage UBE patch.esp"
         nb = ube_patcher.generate_modded_nonbody_ube_coverage_patch(
             nb_out, ordered, converted_rel_paths=conv_rel,
-            exclude_armo_abs=None, exclude_names=excl,
+            exclude_armo_abs=_ube_excl, exclude_names=excl,
             master_data_dirs=master_data_dirs, cover_all=True,
             preserve_textures=True, emit_sidecar=True)
         total_targets += int(nb.get("armo_targets") or 0)
@@ -2040,7 +2209,7 @@ def _emit_unified_coverage_patches(output, patches_dir, master_data_dirs,
             bd_out = patches_dir / "UBE_ModBody_Coverage UBE patch.esp"
             bd = ube_patcher.generate_modded_body_ube_coverage_patch(
                 bd_out, ordered, converted_rel_paths=conv_rel,
-                exclude_armo_abs=None, exclude_names=excl,
+                exclude_armo_abs=_ube_excl, exclude_names=excl,
                 master_data_dirs=master_data_dirs,
                 cover_all=True, cover_hands_feet=True, preserve_textures=True,
                 emit_sidecar=True)
@@ -2577,7 +2746,7 @@ def _cmd_convert(args):
                                         / (merged_out.stem + ".ini"))
                         from .atomic_io import atomic_write_bytes
                         _sp_hdr = [
-                            "; cbbe-to-ube FULL SKYPATCHER: adds each converted",
+                            f"; {SKYPATCHER_INI_MARKER} FULL SKYPATCHER: adds each converted",
                             "; armor's minted UBE armature(s) at runtime to the",
                             "; LOAD-ORDER-WINNING record -- no ESP overrides.",
                         ]
