@@ -43,11 +43,12 @@ def _minimal_patch(path, master="Skyrim.esm"):
     return path
 
 
-def _run_merge(tmp_path, out_name="Combined.esp"):
+def _run_merge(tmp_path, out_name="Combined.esp", owns=True):
     src = _minimal_patch(tmp_path / "a UBE patch.esp")
     return ube_patcher.merge_patches_split(
         [src], tmp_path / out_name, esl_flag=True,
-        author="t", description="t", master_data_dirs=None)
+        author="t", description="t", master_data_dirs=None,
+        owns_output_dir=owns)
 
 
 def test_orphaned_pieces_removed_when_run_drops_to_one_piece(tmp_path):
@@ -94,3 +95,14 @@ def test_onam_is_classified_as_a_formid_subrecord():
     payload = b"ONAM" + struct.pack("<H", 4) + struct.pack("<I", 0x01000ABC)
     found = list(ube_patcher._iter_formids_in_payload(payload))
     assert found, "ONAM FormID not yielded by _iter_formids_in_payload"
+
+
+def test_cleanup_is_skipped_when_the_caller_does_not_own_the_directory(tmp_path):
+    """merge_patches_split is also the standalone `merge` subcommand's entry
+    point, where -o is an arbitrary user path. Deleting `<stem><digits>.esp`
+    siblings there would destroy files this tool never wrote."""
+    mine = tmp_path / "Combined2.esp"
+    mine.write_bytes(b"user file, not ours")
+    _run_merge(tmp_path, owns=False)
+    assert mine.is_file(), "deleted a numbered sibling in a user-chosen dir"
+    assert mine.read_bytes() == b"user file, not ours"

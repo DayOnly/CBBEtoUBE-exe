@@ -12515,6 +12515,11 @@ def convert_nif_phase2(
         cbbe_ref = nif_io.open_nif_retry(str(Path(cbbe_body_ref_path)))  # transient-IO resilient
         cbbe_body_shape = max(cbbe_ref.shapes, key=lambda s: len(s.verts)) if cbbe_ref.shapes else None
     if cbbe_body_shape is not None:
+        # NOTE: this branch is OFF BY DEFAULT (see _SRC_NORMAL_FIX -- opt in with
+        # CBBE2UBE_SRC_NORMAL_FIX=1). The defect below is real and confirmed, but
+        # correcting it measured no better overall, so it does not ship enabled.
+        # Read the rest of this comment as the RATIONALE for the opt-in, not as a
+        # description of current behaviour.
         # Use the HARDENED normal fetch, not a raw length check. BodySlide output
         # routinely ships a body whose normals are all ZERO (see the same note at
         # the `_body_normals_or_compute` call further down), and a length-only

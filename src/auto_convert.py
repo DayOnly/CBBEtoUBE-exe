@@ -1940,6 +1940,28 @@ def verify_output(output_dir) -> dict:
 # reverted the whole coverage model with no error. It is now the only
 # model, so there is nothing to toggle and nothing to lose.
 
+def _print_coverage_warnings(label: str, stats: dict) -> None:
+    """Surface a coverage pass's validator warnings.
+
+    The standalone coverage blocks printed these; when coverage moved inside
+    the merge the key was simply ignored, silently losing the diagnostics for
+    the ONLY coverage model. `missing-nif` is filtered out because it fires in
+    bulk on retexture mods that ship no meshes of their own -- noise that would
+    bury the real entries."""
+    try:
+        ws = [w for w in (stats.get("validation_warnings") or [])
+              if "missing-nif" not in str(w)]
+    except Exception:
+        return
+    if not ws:
+        return
+    print(f"  !! {label} coverage validator: {len(ws)} warning(s)")
+    for w in ws[:5]:
+        print(f"       {w}")
+    if len(ws) > 5:
+        print(f"       ... and {len(ws) - 5} more")
+
+
 def _emit_unified_coverage_patches(output, patches_dir, master_data_dirs,
                                    merged_name) -> "tuple[bool, int]":
     """Step 3b: run the winner-scan coverage passes as the PRIMARY generator and
@@ -2006,6 +2028,7 @@ def _emit_unified_coverage_patches(output, patches_dir, master_data_dirs,
         total_targets += int(nb.get("armo_targets") or 0)
         print(f"  non-body: minted {nb.get('minted_armas')} | "
               f"targets {nb.get('armo_targets')}")
+        _print_coverage_warnings("non-body", nb)
         if conv_rel:
             bd_out = patches_dir / "UBE_ModBody_Coverage UBE patch.esp"
             bd = ube_patcher.generate_modded_body_ube_coverage_patch(
@@ -2018,6 +2041,7 @@ def _emit_unified_coverage_patches(output, patches_dir, master_data_dirs,
             print(f"  body+hands/feet: minted {bd.get('minted_armas')} | "
                   f"targets {bd.get('armo_targets')} | "
                   f"src-primary HF via preserved-race mint")
+            _print_coverage_warnings("body", bd)
         return (True, total_targets)
     except Exception as e:
         print(f"  !! unified coverage emission failed (continuing with "
@@ -2495,7 +2519,16 @@ def _cmd_convert(args):
                     print(f"  !! [unified] coverage empty/incomplete "
                           f"(ok={_cov_ok}, targets={_cov_targets}) -- merging "
                           "per-source patches instead")
-                    patch_paths = sorted(patches_dir.glob("*UBE patch.esp"))
+                    # EXCLUDE any coverage patch still on disk. The glob
+                    # "*UBE patch.esp" also matches
+                    # "UBE_Mod*Coverage UBE patch.esp", so a partial run --
+                    # non-body pass wrote its patch, body pass threw -- would
+                    # merge per-source AND coverage links for the same armors,
+                    # doubling the armature (body renders twice). The unified
+                    # path is all-or-nothing; the fallback is per-source ONLY.
+                    patch_paths = [q for q in
+                                   sorted(patches_dir.glob("*UBE patch.esp"))
+                                   if not q.name.startswith("UBE_Mod")]
                 merged_out = output / args.merged_name
                 print(f"\n--- auto-merging {len(patch_paths)} patch(es) "
                       f"into {merged_out.name} ---")
@@ -2503,6 +2536,10 @@ def _cmd_convert(args):
                     stats = ube_patcher.merge_patches_split(
                         patch_paths, merged_out, esl_flag=True,
                         master_data_dirs=batch_master_data_dirs,
+                        # the pipeline owns this output mod, so stale
+                        # numbered pieces from a previous run are ours
+                        # to remove
+                        owns_output_dir=True,
                     )
                     print(f"  merged ESP: {merged_out}")
                     print(f"  ESL flag  : {stats.get('esl_flagged')}")
@@ -2765,8 +2802,13 @@ def _is_already_ube_model(model_path: str) -> bool:
     and the geometry-based `scan_ube_native` (GUI-advisory only)."""
     if not model_path:
         return False
-    first = str(model_path).replace("\\", "/").lstrip("/").split("/", 1)[0]
-    return first.strip().lower() == "!ube"
+    parts = [s for s in str(model_path).replace("\\", "/").split("/") if s]
+    # Tolerate an authored leading "meshes\\" -- ARMA model paths are
+    # meshes-relative, but real mods do ship the redundant prefix, and
+    # nif_convert strips it elsewhere for exactly that reason.
+    if parts and parts[0].strip().lower() == "meshes":
+        parts = parts[1:]
+    return bool(parts) and parts[0].strip().lower() == "!ube"
 
 # Child-content mods: child-sized clothing for child NPCs. Matched as whole
 # words so "kidskin" (a leather type) is never caught.
@@ -4134,34 +4176,11 @@ def _cmd_auto(args):
 
     # Mod-defined non-body coverage: overhauls re-armature vanilla helmets/jewelry
     # with their own ARMAs listing only vanilla races -> invisible on UBE actors.
-    # Runtime race dispatch only covers vanilla ARMAs, not these mod-defined ones.
-    # Mints a UBE-primary ARMA per item + a SkyPatcher INI that adds it at runtime.
-    # FULL SKYPATCHER: ARMOs the Combined INI already links must be EXCLUDED
-    # from both coverage passes (ESP armature lists no longer reflect runtime
-    # coverage; re-covering doubles the armature -> body renders twice /
-    # UBE-primary hands mints -> invisible gauntlets). #fsp-dedup
-    _fsp_linked_abs: "set[tuple[str, int]]" = set()
-    try:
-        _mstem = Path(getattr(args, "merged_name",
-                              "CBBE_to_UBE_Combined.esp")).stem
-        _comb_ini = (output / "SKSE" / "Plugins" / "SkyPatcher" / "armor"
-                     / (_mstem + ".ini"))
-        if _comb_ini.is_file():
-            for _l in _comb_ini.read_text(encoding="utf-8").splitlines():
-                if not _l.startswith("filterByArmors="):
-                    continue
-                # Parse each line in ISOLATION: one malformed line must not wipe
-                # the whole exclude set. An empty set re-enables double-coverage
-                # mod-wide (double body render / UBE-primary hands -> invisible
-                # gauntlets), so a single bad line is skipped, not fatal. #fsp-dedup
-                try:
-                    _t = _l.split("=", 1)[1].split(":", 1)[0]
-                    _pl, _lo = _t.rsplit("|", 1)
-                    _fsp_linked_abs.add((_pl.lower(), int(_lo, 16)))
-                except Exception:
-                    continue
-    except Exception:
-        _fsp_linked_abs = set()
+    # NOTE: the #fsp-dedup exclude-set block that stood here is GONE with the
+    # standalone coverage passes. It parsed the Combined INI to stop those
+    # passes re-covering an already-linked ARMO. Unified coverage is now the
+    # SOLE generator, so there is no second pass to exclude anything from,
+    # and the set it built had no remaining reader.
 
     # OPT-IN: remap CBBE/3BA body overlays to UBE UV. Writes loose DDS at the
     # original texture paths so RaceMenu loads them via load order. Needs texconv.
