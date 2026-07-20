@@ -105,7 +105,9 @@ def test_already_ube_model_does_not_over_match():
     assert not f(r"armor\cubemaps\x_1.nif")
     assert not f(r"armor\ube-style\x_1.nif")         # substring, not the segment
     assert not f(r"armor\studded\cuirassf_1.nif")
-    assert not f(r"meshes\!UBE\x.nif")               # !UBE not first -> not ours
+    # a leading "meshes\" IS tolerated: ARMA paths are meshes-relative,
+    # but real mods ship the redundant prefix, so it must still be caught
+    assert f(r"meshes\!UBE\x.nif")
     assert not f("") and not f(None)
 
 

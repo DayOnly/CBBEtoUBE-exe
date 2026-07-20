@@ -4108,23 +4108,38 @@ def merge_patches(
     # than `_arma_dedup_identity` (race + gendered meshes + slot flags), so it
     # does not cover this. Measured on a real modlist before this fix: 3 of 9379
     # INI lines added render-identical armatures.
+    # Group on ident[:7] and keep the MOST COMPLETE member (highest ident[7]),
+    # per _arma_dedup_identity's documented contract: "The group key is [:7];
+    # [7] is the completeness tiebreak." Using the full 8-tuple as the key
+    # instead would treat two armatures that differ ONLY in subrecord count as
+    # distinct -- under-deduping exactly the near-identical pairs this exists to
+    # collapse -- and would keep whichever was seen first rather than the one
+    # carrying the most data.
     sp_dropped = 0
     for key, recs in sp_by_armo.items():
         if len(recs) < 2:
             continue
-        seen_ident, kept = set(), []
+        groups: dict = {}
+        unreadable = []
         for rec in recs:
             try:
                 ident = _arma_dedup_identity(rec.payload)
             except Exception:
-                kept.append(rec)      # unreadable -> keep, never drop blind
+                unreadable.append(rec)   # never drop blind
                 continue
-            if ident in seen_ident:
-                sp_dropped += 1
+            if ident is None:
+                unreadable.append(rec)   # vanilla/master ARMA -> leave alone
                 continue
-            seen_ident.add(ident)
-            kept.append(rec)
-        sp_by_armo[key] = kept
+            groups.setdefault(ident[:7], []).append((rec, ident[7]))
+        kept = list(unreadable)
+        for _k, members in groups.items():
+            if len(members) > 1:
+                sp_dropped += len(members) - 1
+            best = max(members, key=lambda m: m[1])[0]
+            kept.append(best)
+        # preserve the original link order (stable output/INI diffs)
+        order = {id(r): i for i, r in enumerate(recs)}
+        sp_by_armo[key] = sorted(kept, key=lambda r: order.get(id(r), 0))
     for (d, l), recs in sorted(sp_by_armo.items()):
         adds = ",".join("{}|{:06X}".format(out_path.name, r.formid & 0xFFFFFF)
                         for r in recs)
@@ -4216,6 +4231,7 @@ def merge_patches_split(
     author: str = "cbbe-to-ube merger",
     description: str = "Merged UBE compatibility patches",
     master_data_dirs=None,
+    owns_output_dir: bool = False,
 ) -> dict:
     """Merge UBE patch ESPs while keeping the result ESL-flagged.
 
@@ -4283,7 +4299,15 @@ def merge_patches_split(
         s["pieces"] = [out_path.name]
         s["split_pieces"] = 1
         s["piece_stats"] = [s]
-        _drop_stale_pieces({out_path.name})
+        # Only when the caller OWNS the output directory. merge_patches_split is
+        # also the standalone `merge` subcommand's entry point, where -o is an
+        # arbitrary user path -- and this unlinks `<stem><digits><suffix>`
+        # siblings. Cleaning up there would delete a user's own
+        # `MyPatch2.esp`/`MyPatch3.esp` that this tool never wrote. The SPLIT
+        # branch below still cleans unconditionally, matching pre-existing
+        # behaviour: it genuinely wrote those numbered pieces this run.
+        if owns_output_dir:
+            _drop_stale_pieces({out_path.name})
         return s
 
     if not esl_flag:
