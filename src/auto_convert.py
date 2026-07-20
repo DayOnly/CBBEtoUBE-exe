@@ -4579,11 +4579,29 @@ def _cmd_validate(args):
     else:
         print("  NIF check: DISABLED via --no-nifs")
 
+    # Master-tier classification needs to OPEN each master to read its TES4
+    # flags, because an ESL-flagged .esp (ESPFE) is master-tier while looking
+    # like a regular .esp. Without the search dirs `_is_esm_tier_master` cannot
+    # open them and falls back to "regular", so every ESPFE master is
+    # misclassified and any .esm/.esl later in the list trips a bogus
+    # "master-ordering ... crash" -- on output whose order is actually correct.
+    _mdd = None
+    try:
+        _vlay = paths.discover_layout()
+        _vidx = paths.plugin_file_index(_vlay)
+        _mdd = sorted({Path(p).parent for p in _vidx.values()}) or None
+    except Exception as _e:
+        print(f"  note: no plugin index ({type(_e).__name__}); ESL-flagged .esp "
+              "masters may be misreported as ordering errors")
+    if _mdd:
+        print(f"  master lookup: {len(_mdd)} dir(s)")
+
     total_warnings = 0
     failing = 0
     for esp_path in esps:
         warnings = ube_patcher.validate_patch(
-            esp_path, meshes_root=meshes_root, check_nifs=check_nifs)
+            esp_path, meshes_root=meshes_root, check_nifs=check_nifs,
+            master_data_dirs=_mdd)
         if warnings:
             failing += 1
             total_warnings += len(warnings)
