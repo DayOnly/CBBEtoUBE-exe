@@ -4124,14 +4124,26 @@ _NONBODY_MESH_HINTS = ("head", "face", "hair", "brow", "eye", "scalp", "mouth",
 
 
 def _mod_armor_nifs(mod_dir, limit: int):
-    """Up to `limit` of a mod's own body/armor NIFs, the body mesh first (it hugs
-    the reference body most tightly). Head/face/1st-person meshes are dropped."""
+    r"""Up to `limit` of a mod's own body/armor NIFs, the body mesh first (it
+    hugs the reference body most tightly). Head/face/1st-person meshes are
+    dropped.
+
+    Meshes already under `!UBE\` are dropped too, and that exclusion is what
+    makes a whole-mod verdict safe. Such a mesh is UBE-shaped by definition and
+    is never converted (`_is_already_ube_model` skips it), so sampling one
+    answers the wrong question -- and it would dominate the answer: it hugs the
+    UBE body exactly, `_tier` ranks a body mesh first, and `!` sorts ahead of
+    letters, so a mod shipping BOTH a hand-made `!UBE` variant and its CBBE
+    meshes would be judged entirely on the variant and skipped whole, taking
+    the CBBE meshes that did need converting with it."""
     picks: list = []
     try:
         for nif in mod_dir.rglob("*.nif"):
             rel = str(nif.relative_to(mod_dir)).lower().replace("/", "\\")
             if "meshes\\" not in rel:
                 continue
+            if _is_already_ube_model(rel.split("meshes\\", 1)[1]):
+                continue        # already UBE -> never converted, so not evidence
             if any(seg in rel for seg in _ENV_PATH_HINTS):
                 continue
             low = nif.name.lower()
@@ -4219,6 +4231,44 @@ def _ube_native_verdict(mod_dir, ube_tree, cbbe_tree, sample_per_mod=6):
         return ("ube" if du < dc else "cbbe"), "high", [
             f"shape fit: dUBE={du:.2f}, dCBBE={dc:.2f}"]
     return "unknown", "low", [f"shape fit: dUBE={du:.2f}, dCBBE={dc:.2f}"]
+
+
+def _drop_ube_native_candidates(candidates: list) -> list:
+    """Drop candidates whose armor is ALREADY shaped for UBE.
+
+    Takes and returns the pipeline's candidate dicts ({"name", "path", ...}).
+    Extracted from `_cmd_auto` so the WIRING can be tested: the previous inline
+    version called `Path(candidate_dict)`, which raised TypeError into its own
+    bare `except` and meant the gate never ran once. Every existing test called
+    `_ube_native_verdict` directly, so none of them noticed.
+
+    Fails OPEN at every step -- no reference bodies, an unreadable mod, or any
+    other error converts as normal. Wrongly skipping a real CBBE mod leaves its
+    armor unfitted in game, which is far worse than double-converting one."""
+    try:
+        ube_tree, cbbe_tree = _body_trees()
+    except Exception:
+        return candidates
+    if ube_tree is None or cbbe_tree is None:
+        return candidates
+    native = []
+    for c in candidates:
+        try:
+            verdict, conf, signals = _ube_native_verdict(
+                c["path"], ube_tree, cbbe_tree)
+        except Exception:
+            continue            # unreadable -> convert as normal
+        if verdict == "ube" and conf == "high":
+            native.append((c["name"], signals[0] if signals else ""))
+    if not native:
+        return candidates
+    skip = {n for n, _s in native}
+    print(f"  UBE-native scan: skipping {len(native)} mod(s) whose armor "
+          "already fits the UBE body (converting them would double-convert):")
+    for n, s in sorted(native):
+        print(f"    - {n}  [{s}]")
+    print("    (override with --no-ube-native-scan)")
+    return [c for c in candidates if c["name"] not in skip]
 
 
 def scan_ube_native(domain: str = "armor", sample_per_mod: int = 6,
@@ -4356,30 +4406,7 @@ def _cmd_auto(args):
     # unfitted in game. Needs both reference bodies; without them the scan
     # returns nothing and the pipeline is unchanged.
     if not getattr(args, "no_ube_native_scan", False):
-        try:
-            _ube_tree, _cbbe_tree = _body_trees()
-        except Exception:
-            _ube_tree = _cbbe_tree = None
-        if _ube_tree is not None and _cbbe_tree is not None:
-            _native = []
-            for _c in list(candidates):
-                try:
-                    _v, _cf, _sig = _ube_native_verdict(
-                        Path(_c), _ube_tree, _cbbe_tree)
-                except Exception:
-                    continue        # unreadable -> convert as normal
-                if _v == "ube" and _cf == "high":
-                    _native.append((Path(_c).name, _sig[0] if _sig else ""))
-            if _native:
-                _skip = {n for n, _s in _native}
-                candidates = [c for c in candidates
-                              if Path(c).name not in _skip]
-                print(f"  UBE-native scan: skipping {len(_native)} mod(s) whose "
-                      "armor already fits the UBE body (converting them would "
-                      "double-convert):")
-                for _n, _s in sorted(_native):
-                    print(f"    - {_n}  [{_s}]")
-                print("    (override with --no-ube-native-scan)")
+        candidates = _drop_ube_native_candidates(candidates)
 
     # --only-mods: reconvert a subset. The merge still re-globs ALL patches in
     # _unmerged_patches/ so unselected mods keep their existing patch + meshes.
