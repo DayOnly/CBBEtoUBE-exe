@@ -700,7 +700,18 @@ def _find_source_esps(source_dir: Path) -> list[Path]:
             if name_lower in _MASTER_SKIP:
                 continue  # vanilla/DLC master -> handled by the vanilla path
             parts_lower = [s.lower() for s in p.parts]
-            if any("backup" in s or "ube" in s for s in parts_lower):
+            # Skip OUR OWN generated patch ESPs by their actual naming
+            # convention ("<source> UBE patch.esp"), and plugins sitting in a
+            # UBE subfolder. Both were previously caught by testing every path
+            # part for the SUBSTRING "ube", which was far too broad: it also
+            # swallowed the containing MOD FOLDER, silently making every
+            # "... - UBE" mod unreachable (duplicating the now-retired name
+            # hint) and skipping unrelated mods whose name merely contains the
+            # letters, e.g. a "Custom Cubemaps" folder. Already-UBE MESHES are
+            # gated precisely by _is_already_ube_model on the model path instead.
+            if name_lower.endswith("ube patch.esp"):
+                continue
+            if any(s in ("ube", "!ube") or "backup" in s for s in parts_lower):
                 continue
             if any(s in _NON_PLUGIN_PARTS for s in parts_lower):
                 continue  # a plugin buried under meshes\/textures\ isn't a plugin
@@ -1307,6 +1318,14 @@ def auto_convert_mod(
         skipped_incremental = 0
         for src, rel in resolved_pairs:
             slot_bits = slot_bits_for(rel)
+            # Last line of defence against double-conversion. The real gate is in
+            # _player_armor_mesh_bases, but a mesh can reach here by other routes
+            # (BSA fallback, the convert-everything path when a mod exposes no
+            # armour bases), and the failure is silent: converting an already-UBE
+            # mesh writes it to `!UBE\!UBE\...` and refits a UBE mesh onto the UBE
+            # body a second time. Cheap to assert, so assert it.
+            if _is_already_ube_model(rel):
+                continue
             dst = nif_dst_root / Path(rel)
             # SECURITY: `rel` can derive from a mod-controlled ARMA model path /
             # BSA name; refuse `..`/absolute traversal outside the output meshes.
@@ -2689,8 +2708,36 @@ _ENV_PATH_HINTS = ("landscape", "architecture", "caves", "cave", "interiors",
 # Mod-name substrings that mark a mod as NOT a conversion source. Lowercased.
 # Excludes already-UBE content, body/BodySlide mods, our own output, and
 # khajiit/beast-race body/fur-overlay mods (target is human female UBE body).
-_NONSOURCE_NAME_HINTS = ("ube", "bodyslide output", "cbbetoube",
+_NONSOURCE_NAME_HINTS = ("bodyslide output", "cbbetoube",
                          "khajiit", "ohmes", "fur morph", "fur_morph")
+# "ube" was RETIRED from this list. It guarded against converting already-UBE
+# armor, but it did so by matching the MOD NAME, which is neither necessary nor
+# sufficient: mods shipping !UBE meshes under a name with no "ube" in it slipped
+# straight through (measured: two on a real modlist), while an unrelated mod
+# called "Custom Cubemaps" was excluded because "C-ube-maps" contains the
+# substring. `_is_already_ube_model` replaces it with the exact signal -- the
+# `!UBE\` path prefix that IS the UBE convention. Verified on a real pack before
+# removing: every UBE armor mod keeps 100% of its meshes under !UBE, so the path
+# gate covers everything the name hint did. The mods with meshes elsewhere are
+# eyebrows, RaceMenu presets and NPC facegen, which the DefaultRace and
+# body-slot gates already reject.
+
+
+def _is_already_ube_model(model_path: str) -> bool:
+    """True if an ARMA model path is ALREADY a converted/native UBE mesh.
+
+    Converted output lives under `meshes\\!UBE\\...`, and UBE-native mods use the
+    same convention, so a model whose first path segment is `!UBE` is UBE-shaped
+    already. Refitting it onto the UBE body a second time double-converts it --
+    and writes to `!UBE\\!UBE\\...`, which was found in real output.
+
+    Path-based on purpose: an exact, deterministic signal needing no reference
+    body and yielding no confidence level, unlike the name heuristic it replaces
+    and the geometry-based `scan_ube_native` (GUI-advisory only)."""
+    if not model_path:
+        return False
+    first = str(model_path).replace("\\", "/").lstrip("/").split("/", 1)[0]
+    return first.strip().lower() == "!ube"
 
 # Child-content mods: child-sized clothing for child NPCs. Matched as whole
 # words so "kidskin" (a leather type) is never caught.
@@ -3329,6 +3376,8 @@ def _player_armor_mesh_bases(mod_dir: Path,
                         continue  # nude body skin — not an armour piece
                     if _is_child_content_asset(m):
                         continue  # child clothing reached via an adult-named ARMA
+                    if _is_already_ube_model(m):
+                        continue  # already UBE-shaped — refitting would break it
                     bases.add(base)
     bases.discard("")
     return bases
