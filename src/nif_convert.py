@@ -3250,6 +3250,12 @@ def convert_nif(
             _match_rigid_leg_bend_to_body(dst_path, biped_slots)
         except Exception:
             pass
+        # Leg-MOTION match: the pass above only reaches reskin-eligible shapes, so a
+        # source-skin garment still under-travels the leg under hip flexion (#leg-motion-match).
+        try:
+            _match_leg_motion_to_body(dst_path, biped_slots)
+        except Exception:
+            pass
 
         # Verbatim-copied NIFs carry raw block structure the renderer can reject.
         # Re-author for a clean pynifly structure identical to body shapes.
@@ -4499,6 +4505,36 @@ def _shape_is_rigid_torso_armor(shape, threshold: float = 0.35) -> bool:
     return total > 0.0 and (upper / total) >= threshold
 
 
+def _cloth_candidate_shapes(nif) -> "list[object]":
+    """EVERY cloth-eligible shape in the NIF (not just the single BODYTRI carrier).
+
+    Mirrors the candidate filter inside `_pick_bodytri_carriers` -- textured,
+    not a known non-carrier, not a rigid-prop name, not extremity-dominant --
+    but returns them ALL. `_pick_bodytri_carriers` deliberately narrows to one
+    shape because BODYTRI wants a single morph carrier; the HDT-XML generator
+    needs the full set, because any of them may carry a physics chain that must
+    be simulated (#shadowed-chain-skirt).
+    """
+    out: list = []
+    for s in getattr(nif, "shapes", []) or []:
+        if s.name in ("BaseShape", "3BA", "VirtualBody"):
+            continue
+        if not (s.textures or {}):
+            continue
+        if s.name in BODYTRI_CARRIER_EXCLUDE:
+            continue
+        nlow = s.name.lower()
+        if any(kw in nlow for kw in NON_CLOTH_SHAPE_KEYWORDS):
+            continue
+        try:
+            if _shape_is_extremity_dominant(s):
+                continue
+        except Exception:
+            pass
+        out.append(s)
+    return out
+
+
 def _pick_bodytri_carriers(nif, *, exclude_body: bool = False) -> "list[object]":
     """Pick exactly ONE shape per NIF to receive a BODYTRI extra-data
     block, matching the hand-authored BodySlide UBE convention.
@@ -5198,6 +5234,62 @@ _JIGGLE_TRANSFER_FACTOR = float(
 MATCH_RIGID_LEG_BEND = (
     os.environ.get("CBBE2UBE_NO_LEG_BEND_MATCH", "").strip().lower()
     not in ("1", "true", "yes", "on"))
+
+# LEG-MOTION MATCH (#leg-motion-match). Complements MATCH_RIGID_LEG_BEND, which only
+# runs on shapes eligible for a full reskin. A garment that KEEPS ITS SOURCE SKIN --
+# every BodySlide-built piece shipping its own morph TRI, via the `_keep_src_skin`
+# branch -- carries CBBE-fitted leg weights over a UBE body, so its leg-bone share is
+# LOWER than the body's underneath it. Measured on a common-clothes dress (clipping
+# log F1): garment L-Thigh 0.592 vs body 0.763, lower on 80% of the failing verts.
+# Under hip flexion the body travels further than the cloth and emerges through it --
+# invisible at bind pose, which is why every bind-pose metric called that mesh clean.
+#
+# This raises the garment's leg share toward the body's, redistributing ONLY among
+# bones the shape ALREADY HAS (no add_bone -> none of the add_bone STB-reset footguns).
+# Push-up only (never lowers a leg share), never moves a vert, gated to verts that HUG
+# the body so a free-hanging hem is not pulled onto the leg bones.
+#
+# Validated with scripts/posed_clip_test.py --regression (covered-at-bind -> exposed-
+# under-stride); bind-pose metrics CANNOT see this defect and must not be used to judge
+# it. Dress 113 -> 21 newly-exposed verts (-81%); four heavy-armor variants 65/41/17/4
+# -> 0; nine other garments unchanged; bind-pose exposure identical on every mesh
+# tested (no static regression); free-hem stride motion +0.03u.
+# Default ON; CBBE2UBE_NO_LEG_MOTION_MATCH=1 off.
+MATCH_LEG_MOTION = (
+    os.environ.get("CBBE2UBE_NO_LEG_MOTION_MATCH", "").strip().lower()
+    not in ("1", "true", "yes", "on"))
+# Fraction of the body-vs-garment leg-share gap to close (1.0 = full match).
+_LEG_MOTION_STRENGTH = float(os.environ.get("CBBE2UBE_LEG_MOTION_STRENGTH", "1.0"))
+# Only match verts within this distance of the body: beyond it the cloth is drape, not
+# a fitted layer, and matching it would make a skirt cling to the legs.
+_LEG_MOTION_MAX_DIST = float(os.environ.get("CBBE2UBE_LEG_MOTION_MAX_DIST", "9.0"))
+# World-Z band: lower bound keeps the free hem out, upper bound stops at the waist.
+_LEG_MOTION_Z_LO = float(os.environ.get("CBBE2UBE_LEG_MOTION_Z_LO", "30.0"))
+_LEG_MOTION_Z_HI = float(os.environ.get("CBBE2UBE_LEG_MOTION_Z_HI", "80.0"))
+# Bones whose share is rebalanced. Only these are managed; every other bone on the
+# shape keeps its relative proportion and is rescaled to fill the remainder.
+_LEG_MOTION_BONES = ("NPC L Thigh [LThg]", "NPC R Thigh [RThg]",
+                     "NPC L Calf [LClf]", "NPC R Calf [RClf]",
+                     "NPC Pelvis [Pelv]")
+
+# #chain-skirt-physics. Generating soft-body physics for a shadowed chain-driven
+# skirt (see #shadowed-chain-skirt) is OFF by default: shipped ON once and a
+# common-clothes dress's skirt COLLAPSED in game. Everything structural checked out
+# (all 12 chain bones present as nodes, all referenced by the XML, parenting identical
+# to sibling dresses that emit fine), so the generated collision-only XML is simply not
+# reliable on an arbitrary chain and we cannot predict which. A collapse is worse than
+# the clipping it fixes. Kinematic + the leg-motion match covers the same ground safely.
+CHAIN_SKIRT_PHYSICS = (
+    os.environ.get("CBBE2UBE_CHAIN_SKIRT_PHYSICS", "").strip().lower()
+    in ("1", "true", "yes", "on"))
+# Skyrim's skin partition holds at most 4 bone influences per vertex. Exceed it and
+# the SAVE silently drops one of its own choosing, scrambling a computed split, so
+# the pass prunes to the 4 largest itself. #leg-motion-match
+_SKIN_MAX_INFLUENCES = 4
+# setShapeWeights ignores pairs at or below this, so anything we intend to KEEP
+# must be written above it (see #legmotion-normalise).
+_WRITE_MIN = 1e-4
+
 # Per leg: the prime bend bones (thigh/calf, already on the armor) and the skeleton
 # DETAIL bones (front/rear thigh, rear calf) -- each paired with the existing leg bone
 # its grafted STB is ANCHORED to (front/rear thigh -> thigh; rear calf -> calf).
@@ -6531,6 +6623,275 @@ def _match_rigid_leg_bend_to_body(dst_path, biped_slots: int = 0) -> int:
                 s.set_skin_to_bone_xform(b, graft_stb[b])
             except Exception:
                 pass
+    if dirty:
+        # A re-save must never silently un-hide an SMP collision proxy.
+        _hide_virtual_body(nf)
+        try:
+            atomic_nif_save(nf, dst_path)
+        except Exception:
+            return 0
+    return total
+
+
+def _match_leg_motion_to_body(dst_path, biped_slots: int = 0) -> int:
+    """Raise a garment's LEG-BONE share toward the body's so it travels WITH the leg
+    under hip flexion instead of being left behind (see MATCH_LEG_MOTION). Returns the
+    number of verts matched.
+
+    Fills the gap left by _match_rigid_leg_bend_to_body: that pass only reaches shapes
+    eligible for a reskin, so every BodySlide-built garment that keeps its SOURCE skin
+    (the `_keep_src_skin` morph-TRI branch) still wears CBBE-fitted leg weights over a
+    UBE body. Its leg share is then lower than the body's underneath it, the body
+    out-travels the cloth as the hip swings, and skin emerges -- a defect that is
+    completely invisible at bind pose.
+
+    Deliberately conservative:
+      * redistributes ONLY among bones the shape ALREADY HAS. No add_bone, so the
+        add_bone-resets-every-STB footgun cannot apply. (setShapeWeights can still
+        reset STBs, so they are saved and restored regardless.)
+      * PUSH-UP ONLY -- never lowers a leg share, so a garment already tracking the
+        body is left alone.
+      * NEVER moves a vert: rest pose stays byte-identical, which is what keeps the
+        bind-pose clearance work from earlier passes intact.
+      * only verts HUGGING the body (<= _LEG_MOTION_MAX_DIST) inside the leg Z band,
+        so a free-hanging hem is never pulled onto the leg bones and made to cling.
+      * skips colliders / soft-body / HDT-SMP-rigged shapes, per the standing rule
+        that every skin pass leaves authored physics geometry alone.
+    """
+    if not MATCH_LEG_MOTION:
+        return 0
+    if biped_slots & (BIPED_SLOT33_BIT | BIPED_SLOT37_BIT):
+        return 0  # hands/feet -- not the leg-motion class
+    try:
+        pyn = _pynifly()
+        nf = pyn.NifFile(filepath=str(dst_path))
+    except Exception:
+        return 0
+    if _nif_has_fx_shape(nf):
+        return 0  # effect-shader NIF: a reload+re-save corrupts its controller -> CTD
+    collider_names = _hdt_collider_shape_names(dst_path, nif=nf)
+    softbody_names = _hdt_softbody_shape_names(dst_path, nif=nf)
+    # Does a physics XML exist for this piece at all? Drives the inert-chain
+    # allowance below. Stem is per-armor (weight suffix stripped), matching where
+    # both the generator and the source-XML copy write.
+    # NOTE: callers pass dst_path as EITHER str or Path (the sibling passes all
+    # str()-coerce for the same reason), so normalise before using Path members --
+    # a bare `.stem` raised AttributeError on every str caller and, because the
+    # per-shape body swallows exceptions, silently did nothing.
+    _dst_p = Path(dst_path)
+    _xml_stem = _dst_p.stem
+    for _suf in ("_0", "_1"):
+        if _xml_stem.endswith(_suf):
+            _xml_stem = _xml_stem[:-len(_suf)]
+            break
+    try:
+        _piece_has_physics_xml = (_dst_p.parent / f"{_xml_stem}.xml").is_file()
+    except Exception:
+        _piece_has_physics_xml = True      # unknown -> behave conservatively
+    ube_bones: set = set()
+    base_shape = None
+    for s in nf.shapes:
+        if s.name == "BaseShape":
+            base_shape = s
+            ube_bones = set(s.bone_names or [])
+            break
+    # Body reference: PREFER the injected BaseShape in THIS nif. It is the body the
+    # game actually skins beside these shapes and shares their space exactly. The
+    # external reference body is a different mesh with its own vertex order and
+    # global-to-skin, and matching against it mapped garment verts to the wrong body
+    # verts -- total leg share came out right but the L/R-thigh SPLIT was wrong by up
+    # to 0.87, so the match landed on the wrong bones and fixed nothing (measured:
+    # 65 -> 65 newly-exposed, where the same maths against BaseShape gave 65 -> 0).
+    tree = None
+    body_pv = None
+    if base_shape is not None:
+        try:
+            from scipy.spatial import cKDTree as _KD
+            bsv = np.asarray(base_shape.verts, dtype=np.float64)
+            Vb = _verts_skin_to_world(bsv, _shape_global_to_skin(base_shape))
+            nb = len(Vb)
+            body_pv = [dict() for _ in range(nb)]
+            for b, pairs in (base_shape.bone_weights or {}).items():
+                for vi, w in pairs:
+                    iv = int(vi)
+                    if 0 <= iv < nb:
+                        body_pv[iv][b] = body_pv[iv].get(b, 0.0) + float(w)
+            tree = _KD(Vb)
+        except Exception:
+            tree = None
+            body_pv = None
+    if tree is None or body_pv is None:
+        weight = "_0" if str(dst_path).lower().endswith("_0.nif") else "_1"
+        ref = _body_conform_ref(weight)
+        if ref is None:
+            return 0
+        Vb, body_pv, _body_bones, tree = ref
+
+    total = 0
+    dirty = False
+    for s in nf.shapes:
+        if s.name == "BaseShape" or s.name in RESKIN_SKIP_NAMES:
+            continue
+        if s.name in collider_names or s.name in softbody_names:
+            continue
+        # INERT-CHAIN ALLOWANCE (#inert-chain-leg-motion). `_shape_has_hdt_smp_rigging`
+        # is a NIF-bone heuristic: >40% bones unknown to the body = "physics-rigged",
+        # meant to stop a reskin from replacing chain bones that a runtime SMP config
+        # drives. But a chain only matters if something DRIVES it, and that means an
+        # XML. With no physics XML for this piece the chain bones are INERT -- the
+        # garment is plain skinning that happens to carry unused bones, and refusing to
+        # match it just leaves the leg walking through a skirt that never moves.
+        # (The collider/softbody sets above are derived FROM the XML, so they already
+        # self-disable when there is none -- this is the only gate that did not.)
+        # Measured on a common-clothes dress left kinematic: 113 -> 37 newly-exposed
+        # verts, bind-pose exposure unchanged, free-hem drape motion identical.
+        if _piece_has_physics_xml:
+            try:
+                if _shape_has_hdt_smp_rigging(s, ube_bones):
+                    continue
+            except Exception:
+                pass
+        try:
+            bw = s.bone_weights or {}
+            shape_bones = list(bw.keys())
+            managed = [b for b in _LEG_MOTION_BONES if b in bw]
+            if not managed or len(shape_bones) < 2:
+                continue
+            sv = np.asarray(s.verts, dtype=np.float64)
+            n = len(sv)
+            if n == 0:
+                continue
+            wv = _verts_skin_to_world(sv, _shape_global_to_skin(s))
+            dist, near = tree.query(wv, k=1)
+            band = ((wv[:, 2] >= _LEG_MOTION_Z_LO) & (wv[:, 2] <= _LEG_MOTION_Z_HI)
+                    & (dist <= _LEG_MOTION_MAX_DIST))
+            if not band.any():
+                continue
+
+            G = np.zeros((n, len(shape_bones)), dtype=np.float64)
+            for j, b in enumerate(shape_bones):
+                for vi, w in bw[b]:
+                    iv = int(vi)
+                    if 0 <= iv < n:
+                        G[iv, j] += float(w)
+            tot = G.sum(axis=1)
+            live = tot > 1e-6
+            G[live] /= tot[live, None]
+
+            midx = [shape_bones.index(b) for b in managed]
+            B = np.zeros((n, len(managed)), dtype=np.float64)
+            for k, b in enumerate(managed):
+                B[:, k] = [body_pv[int(i)].get(b, 0.0) for i in near]
+
+            g_mass = G[:, midx].sum(axis=1)
+            b_mass = np.clip(B.sum(axis=1), 0.0, 1.0)
+            # push-up only: np.maximum, never lowers a share that already tracks
+            target = np.maximum(
+                np.clip(g_mass + _LEG_MOTION_STRENGTH * (b_mass - g_mass), 0.0, 1.0),
+                g_mass)
+            bsum = B.sum(axis=1)
+            has_b = bsum > 1e-6
+            shape_of = np.zeros_like(B)
+            shape_of[has_b] = B[has_b] / bsum[has_b, None]
+            # body vert carries no managed weight -> keep the garment's own split
+            keep = ~has_b & (g_mass > 1e-6)
+            if keep.any():
+                shape_of[keep] = (G[np.ix_(np.where(keep)[0], midx)]
+                                  / g_mass[keep, None])
+
+            # NOTE: do NOT filter to rows where the leg share actually RISES. Most of
+            # the benefit comes from RE-SPLITTING the leg mass a vert already has
+            # across thigh/calf/pelvis to match the body's split -- a vert whose total
+            # is already correct can still be following the wrong leg bone. Filtering
+            # on `target > g_mass` skipped exactly those verts and the fix did nothing
+            # (measured: 65 -> 65, versus 65 -> 18 once they were included).
+            rows = np.where(band & live & (g_mass > 1e-6))[0]
+            if len(rows) == 0:
+                continue
+            NEW = G.copy()
+            NEW[np.ix_(rows, midx)] = shape_of[rows] * target[rows, None]
+            other = [i for i in range(len(shape_bones)) if i not in midx]
+            if other:
+                o_old = G[np.ix_(rows, other)].sum(axis=1)
+                o_new = 1.0 - target[rows]
+                sc = np.zeros(len(rows))
+                nzo = o_old > 1e-6
+                sc[nzo] = o_new[nzo] / o_old[nzo]
+                NEW[np.ix_(rows, other)] = G[np.ix_(rows, other)] * sc[:, None]
+
+            # 4-INFLUENCE CAP, APPLIED HERE ON PURPOSE. Matching to the body's split
+            # can give a vert a 5th influence, and Skyrim's skin partition only holds
+            # 4 -- the save then drops one of its own choosing and renormalises, which
+            # scrambles the split we just computed (measured: 65 -> 18 newly-exposed
+            # written, where the same weights in memory gave 65 -> 0). Prune the
+            # SMALLEST ourselves and renormalise, so what lands is deterministic and
+            # the mass we intended stays on the bones we intended.
+            if NEW.shape[1] > _SKIN_MAX_INFLUENCES and len(rows):
+                sub = NEW[rows]
+                cut = np.argsort(sub, axis=1)[:, :-_SKIN_MAX_INFLUENCES]
+                np.put_along_axis(sub, cut, 0.0, axis=1)
+                ssum = sub.sum(axis=1)
+                good = ssum > 1e-6
+                sub[good] /= ssum[good, None]
+                NEW[rows] = sub
+
+            # #legmotion-normalise -- TWO invariants, both learned the hard way.
+            #
+            # (1) NEVER DROP AN EXISTING (bone, vert) WEIGHT TO ZERO.
+            # `setShapeWeights` MERGES: it only updates the pairs you pass, so a
+            # vertex you OMIT keeps its previous value. Zeroing a weight by leaving
+            # it out therefore does not remove it -- the stale value survives the
+            # save and the vertex ends up OVER-weighted (measured on this pass:
+            # weight sums up to 1.67). A vertex whose bone weights do not sum to 1
+            # is transformed by a partial/inflated sum of its bone matrices, so it
+            # drifts off, dragging long near-degenerate triangles that flicker with
+            # VIEW ANGLE -- in game, "part of the armour is invisible head-on but
+            # fine from the side". So any bone the vert ALREADY had is floored just
+            # above the write threshold and always written back.
+            #
+            # (2) Then renormalise every touched row, unconditionally -- no branch
+            # above may skip it.
+            if len(rows):
+                _sub = NEW[rows]
+                _had = G[rows] > 1e-4
+                _sub = np.where(_had & (_sub <= _WRITE_MIN), _WRITE_MIN * 2.0, _sub)
+                _ss = _sub.sum(axis=1)
+                _ok = _ss > 1e-6
+                _sub[_ok] /= _ss[_ok, None]
+                # a row that lost ALL weight would skin to the origin -- restore it
+                # rather than ship a spike.
+                if (~_ok).any():
+                    _sub[~_ok] = G[rows][~_ok]
+                NEW[rows] = _sub
+
+            # STBs: setShapeWeights can reset them, so save every bone we write and
+            # restore afterwards. If any can't be read, skip this shape rather than
+            # ship an identity-reset bone (an identity STB = origin spike = explosion).
+            saved_stb = {}
+            ok = True
+            for b in shape_bones:
+                try:
+                    st = s.get_shape_skin_to_bone(b)
+                except Exception:
+                    st = None
+                if st is None:
+                    ok = False
+                    break
+                saved_stb[b] = st
+            if not ok:
+                continue
+            for j, b in enumerate(shape_bones):
+                s.setShapeWeights(b, [(i, NEW[i, j]) for i in range(n)
+                                      if NEW[i, j] > _WRITE_MIN])
+            for b, st in saved_stb.items():
+                try:
+                    s.set_skin_to_bone_xform(b, st)
+                except Exception:
+                    pass
+            total += len(rows)
+            dirty = True
+        except Exception:
+            continue
     if dirty:
         # A re-save must never silently un-hide an SMP collision proxy.
         _hide_virtual_body(nf)
@@ -10296,6 +10657,45 @@ def _generate_hdt_xml_for_dst(dst_path: "Path", only_loose: bool = False) -> "st
     # a body-swap NIF picked its injected BaseShape as the cloth carrier, so
     # the body flopped as soft-body while the real cape got no physics at all.
     carriers = _pick_bodytri_carriers(nf, exclude_body=True)
+    # #shadowed-chain-skirt: _pick_bodytri_carriers returns exactly ONE shape --
+    # correct for BODYTRI (one morph carrier per NIF), WRONG as this generator's
+    # cloth classifier. A NIF with several cloth shapes gets only the top-ranked
+    # one, so a chain-driven skirt is silently shadowed by a higher-ranked
+    # sibling and its chain bones never reach detect_physics_chains -> chains=[]
+    # -> the chainless gate returns None -> the skirt ships with NO physics and
+    # the leg walks straight through it.
+    # Measured: a common-clothes dress with shapes {Corset, Dress} -- "corset"
+    # outranks "dress" in CLOTH_KEYWORDS, so the 12-bone (SkirtF/B/L/R Bone01-03)
+    # skirt was dropped and the tight-softbody gate then dropped the Corset too,
+    # leaving no XML at all. Its structurally identical siblings, whose shapes are
+    # {Top, Skirt}, ranked "skirt" first and emitted physics normally.
+    # Narrow fix on purpose: add back ONLY cloth shapes that actually carry
+    # detected physics chains. Those are authored to simulate, so this cannot
+    # invent soft-body for a rigid piece (the #fur-auto-smp / #chainless-cloth-only
+    # explosion class) -- chainless shapes are still excluded.
+    #
+    # DEFAULT OFF since 2026-07-21. Shipping this ON gave a common-clothes dress
+    # physics it had never had, and IN-GAME THE SKIRT COLLAPSED / fell away from the
+    # actor. The chain bones were all present as nodes, all referenced by the XML,
+    # parented exactly like the sibling dresses that emit fine -- so the generated
+    # collision-only XML simply is not stable driving THIS chain, and we cannot tell
+    # in advance which chains it will be stable on. A collapse is far worse than the
+    # clipping it was meant to fix, and the safe alternative covers the same ground:
+    # leaving the piece KINEMATIC lets `_match_leg_motion_to_body` treat the inert
+    # chain as ordinary skinning and track the leg (measured on that dress:
+    # 113 -> 37 newly-exposed verts, no static change, drape untouched).
+    # Turn on with CBBE2UBE_CHAIN_SKIRT_PHYSICS=1 to revisit per-garment.
+    if CHAIN_SKIRT_PHYSICS:
+        try:
+            _have = {c.name for c in carriers}
+            for _s in _cloth_candidate_shapes(nf):
+                if _s.name in _have:
+                    continue
+                if hdt_xml_gen.detect_physics_chains(set(_s.bone_names or [])):
+                    carriers.append(_s)
+                    _have.add(_s.name)
+        except Exception:
+            pass
     # NOTE: an earlier revision dropped carriers flagged `_shape_is_rigid_torso_
     # armor` here to stop a rigid cuirass flopping as generated cloth. That gate
     # was TOO BROAD -- it keys on upper-torso rigid-bone weight, which a cloak /
@@ -13635,6 +14035,12 @@ def convert_nif_phase2(
     # plate's Thigh:Calf split to the body so it bends with the knee (Orcish #knee).
     try:
         _match_rigid_leg_bend_to_body(dst_path, biped_slots)
+    except Exception:
+        pass
+    # Leg-MOTION match: the pass above only reaches reskin-eligible shapes, so a
+    # source-skin garment still under-travels the leg under hip flexion (#leg-motion-match).
+    try:
+        _match_leg_motion_to_body(dst_path, biped_slots)
     except Exception:
         pass
 
