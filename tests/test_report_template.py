@@ -107,9 +107,42 @@ class TestContent:
         text = rt.build_report("1.1.1", diagnostics_zip="d.zip")
         assert "before posting it publicly" in text
 
+    def test_offers_both_routes_not_just_one(self):
+        """A reporter who can't find the right channel just gives up."""
+        text = rt.build_report("1.1.1")
+        assert rt.DISCUSSIONS_URL in text
+        assert "/issues/new" in text
+
+    def test_tells_chat_users_to_use_a_code_fence(self):
+        """Without the fence Discord eats the indentation and the checkboxes."""
+        assert "code fence" in rt.build_report("1.1.1")
+
     def test_prereq_checklist_present_for_problems_not_features(self):
         assert "SkyPatcher installed" in rt.build_report("1.1.1", kind="conversion")
         assert "SkyPatcher installed" not in rt.build_report("1.1.1", kind="feature")
+
+
+class TestDocsMatchReality:
+    """REPORTING.md shows a sample of the report, and users trust it.
+
+    A sample that drifts from what the button actually produces is worse than
+    no sample: it teaches a format nobody is asked for.
+    """
+
+    def test_every_section_heading_in_the_doc_sample_is_real(self):
+        doc = (REPO_ROOT / "REPORTING.md").read_text(encoding="utf-8")
+        rendered = rt.build_report("1.1.1", kind="conversion")
+        headings = [ln for ln in rendered.splitlines()
+                    if ln and ln == ln.upper() and not ln.startswith(" ")
+                    and ln[0].isalpha()]
+        assert headings, "no section headings found - did the format change?"
+        for h in headings:
+            assert h in doc, f"REPORTING.md sample is missing section: {h}"
+
+    def test_doc_documents_the_prereq_checklist_verbatim(self):
+        doc = (REPO_ROOT / "REPORTING.md").read_text(encoding="utf-8")
+        for p in rt._PREREQS:
+            assert p in doc, f"REPORTING.md missing prerequisite line: {p}"
 
 
 class TestIssueUrls:

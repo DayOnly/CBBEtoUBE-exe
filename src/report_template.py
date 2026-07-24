@@ -39,6 +39,7 @@ from __future__ import annotations
 
 REPO_URL = "https://github.com/DayOnly/CBBEtoUBE-exe"
 ISSUES_URL = f"{REPO_URL}/issues"
+DISCUSSIONS_URL = f"{REPO_URL}/discussions"
 
 # Issue-form template filenames, keyed by the report kind used across the GUI.
 _TEMPLATES = {
@@ -179,6 +180,12 @@ def build_report(version: str,
     add("      look it over before posting it publicly.")
     add("")
 
-    add(f"File directly: {issue_url(kind, version)}")
+    # Both routes, every time. A reporter who picks the wrong one costs a
+    # round trip; a reporter who cannot find either just gives up.
+    add("WHERE TO SEND THIS")
+    add("  want it fixed  -> " + issue_url(kind, version))
+    add("  want an answer -> " + DISCUSSIONS_URL)
+    add("  pasting into chat or a discussion? wrap this in a ``` code fence,")
+    add("  or the indentation and checkboxes collapse.")
 
     return "\n".join(out)

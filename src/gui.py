@@ -1470,10 +1470,10 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
         _append(f"\n[diagnostics written: {zpath}]\n")
         # The zip is useless if nobody knows where to send it, and this message
         # is the only thing a user sees after the export.
-        _append(f"  attach it to an issue at {ISSUES_URL}\n"
-                "  or upload it to the chat channel with the report from\n"
-                "  the 'Copy report' button -- REPORT.txt inside the zip is\n"
-                "  the same text.\n"
+        _append(f"  want it fixed?  attach it to an issue at {ISSUES_URL}\n"
+                f"  want an answer? {_rt.DISCUSSIONS_URL}\n"
+                "  either way, send the report from the 'Copy report' button\n"
+                "  with it -- REPORT.txt inside the zip is the same text.\n"
                 "  it holds your MO2 paths, profile name, and load-order mod\n"
                 "  names -- look it over before posting it publicly.\n")
         try:

@@ -1,16 +1,20 @@
 # Reporting a problem
 
-Two ways to send a report. **Both use the same format** — pick whichever is
-easier for you, and don't send both.
+Three places to send a report. **All three use the same format** — pick one,
+and don't post the same thing in two of them.
 
-| | Best for |
+| Where | Best for |
 | --- | --- |
-| **[File a GitHub issue](#option-1--github-fastest-to-act-on)** | Anything that needs tracking or a fix |
-| **[Paste into chat](#option-2--paste-into-chat)** | Quick questions, "is this normal?", screenshots |
+| **[Issue](#option-1--file-an-issue)** | Something is broken and needs fixing or tracking |
+| **[Discussion](#option-2--start-a-discussion)** | "Is this normal?", setup help, questions, showing results |
+| **[Chat](#option-3--paste-into-chat)** | Quick back-and-forth, screenshots |
 
-Either way, start in the GUI: click **Copy report**. It fills in your version
-and the last run's numbers and puts the whole thing on your clipboard. Then
-fill in the two `<...>` lines and the `[ ]` checkboxes.
+Not sure? **If you want it fixed, open an issue. If you want an answer, start a
+discussion.** Posting a question as an issue is not a problem — it gets moved.
+
+Whichever you pick, start in the GUI: click **Copy report**. It fills in your
+version and the last run's numbers and puts the whole thing on your clipboard.
+Then fill in the two `<...>` lines and the `[ ]` checkboxes.
 
 ---
 
@@ -33,9 +37,10 @@ Running **Check setup** in the GUI verifies all of this for you.
 
 ---
 
-## Option 1 — GitHub (fastest to act on)
+## Option 1 — File an issue
 
-These links open the right form with your version already filled in:
+For something that is actually broken. These links open the right form with your
+version already filled in:
 
 - **[The converter errored or crashed](https://github.com/DayOnly/CBBEtoUBE-exe/issues/new?template=bug_report.yml)**
 - **[Armor looks wrong in game](https://github.com/DayOnly/CBBEtoUBE-exe/issues/new?template=conversion_problem.yml)**
@@ -44,7 +49,24 @@ These links open the right form with your version already filled in:
 The form asks for everything below, so you can fill it in directly instead of
 pasting. Drag your diagnostics zip into the issue to attach it.
 
-## Option 2 — Paste into chat
+## Option 2 — Start a discussion
+
+**<https://github.com/DayOnly/CBBEtoUBE-exe/discussions>**
+
+For anything that isn't a confirmed bug: setup trouble, "is this supposed to
+happen?", asking whether a modlist is supported, or showing off a conversion
+that came out well.
+
+Paste the **Copy report** output into a discussion the same way you would into
+chat — wrap it in a triple-backtick code fence. Discussions render Markdown, so
+the fence keeps the indentation and checkboxes intact, and you can drag the
+diagnostics zip straight in.
+
+This is the better home for a report that starts as a question. Discussions
+stay searchable, so the next person hitting the same thing finds your answer —
+which a chat message scrolling out of history does not.
+
+## Option 3 — Paste into chat
 
 Click **Copy report** in the GUI and paste. It looks like this:
 
@@ -82,6 +104,12 @@ LAST RUN
 
 DIAGNOSTICS
   [ ] CBBEtoUBE_diagnostics_<timestamp>.zip  (GUI -> Export diagnostics)
+      it holds your MO2 paths, profile name, and load-order mod names -
+      look it over before posting it publicly.
+
+WHERE TO SEND THIS
+  want it fixed  -> .../issues/new?template=conversion_problem.yml&version=1.1.1
+  want an answer -> https://github.com/DayOnly/CBBEtoUBE-exe/discussions
 ```
 
 **Wrap it in a code fence when you paste it into Discord** — put a line with
