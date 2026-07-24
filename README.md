@@ -342,6 +342,47 @@ cbbe-to-ube/
 
 Run **Check setup** in the GUI to verify all of the above before converting.
 
+## Reporting problems
+
+**Full instructions: [REPORTING.md](REPORTING.md).** The short version:
+
+1. In the GUI, click **Copy report** — it fills in your version and the last
+   run's numbers and puts the whole report on your clipboard.
+2. Fill in the two `<...>` lines and tick the checkboxes.
+3. Send it **either** way, not both — [file an issue](https://github.com/DayOnly/CBBEtoUBE-exe/issues/new/choose),
+   or paste it into chat (wrap it in a triple-backtick code fence for Discord,
+   or the indentation collapses).
+4. Attach the zip from **Export diagnostics**.
+
+Direct links, with your version pre-filled:
+[converter errored](https://github.com/DayOnly/CBBEtoUBE-exe/issues/new?template=bug_report.yml)
+· [armor looks wrong in game](https://github.com/DayOnly/CBBEtoUBE-exe/issues/new?template=conversion_problem.yml)
+· [feature request](https://github.com/DayOnly/CBBEtoUBE-exe/issues/new?template=feature_request.yml)
+
+Before filing an *invisible armor* report, rule out the two causes that account
+for nearly all of them: **SkyPatcher must be installed**, and
+**`iEnableArmorPatching=1`** must be set in `SKSE/Plugins/SkyPatcher.ini` — with
+it at `0` you get exactly the same symptom as no SkyPatcher at all. Then confirm
+**every** `CBBE_to_UBE_Combined*.esp` is enabled; the merge splits into numbered
+pieces past the ESL cap, and a disabled piece means missing armor.
+
+**Export diagnostics** writes `CBBEtoUBE_diagnostics_<timestamp>.zip` — the
+filled-in report as `REPORT.txt`, plus the run log, settings, exclusions, the
+discovered MO2 layout, and a fresh setup check — which answers most of the first
+round of questions on its own. **Glance at it before attaching**: it contains
+your MO2 paths, profile name, and the mods in your load order.
+
+A normal run also leaves `CBBEtoUBE_last_run.log` and
+`CBBEtoUBE_last_failures.json` beside the exe, and `conversion_report.json` /
+`conversion_summary.txt` / `conversion_report_<mod>.txt` at the output mod root
+(the GUI's **Report** button reads the first as a health scoreboard).
+
+There is no automatic crash upload, by design — the exe excludes the `ssl`
+extension for license reasons (see [Building the exe](#building-the-exe)) and so
+cannot make a network request at all. Reporting is manual and file-based.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the dev setup and pull-request notes.
+
 ## Building the exe
 
 ```
