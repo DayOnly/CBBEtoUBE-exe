@@ -23,10 +23,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # README claims 3.10+, but scipy/numpy wheels are what actually bound the
-        # floor in practice. Testing the two versions the exe is realistically
-        # built and run on; widen this if the 3.10 claim needs to be enforced.
-        python-version: ["3.11", "3.12"]
+        # 3.10 leads because it is the PRODUCTION runtime, not a legacy floor:
+        # the shipped exe is frozen from a 3.10 interpreter
+        # (dist/CBBEtoUBE/_internal/python310.dll). Note pip resolves older
+        # numpy/scipy on 3.10 (numpy 2.3+ and scipy 1.16+ dropped it) -- that is
+        # a feature here, since it is closer to what the frozen build bundles
+        # than the newest wheels are. Drop 3.10 only when the exe build moves.
+        python-version: ["3.10", "3.11", "3.12"]
 
     steps:
       - uses: actions/checkout@v5
