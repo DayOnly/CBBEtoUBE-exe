@@ -1,0 +1,81 @@
+name: Bug report — the converter errored or crashed
+description: The tool itself failed. It stopped with a traceback, hung, or produced no output mod at all.
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For armor that converted but looks *wrong in game* (invisible, clipping,
+        no physics), use **Conversion problem** instead — it asks for different
+        information.
+
+        **Please attach a diagnostics zip.** In the GUI, click **Export
+        diagnostics**. It writes `CBBEtoUBE_diagnostics_<timestamp>.zip`
+        containing the run log, your settings, the discovered MO2 layout, and a
+        fresh setup check. Drag the zip into this issue.
+
+        It is collected from your machine, so glance at it first — the layout
+        snapshot contains your MO2 paths and profile name.
+
+  - type: input
+    id: version
+    attributes:
+      label: CBBEtoUBE version
+      description: The GUI title bar shows it, and it is stamped into the conversion report.
+      placeholder: "1.1.1"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: how_run
+    attributes:
+      label: How were you running it?
+      options:
+        - Standalone exe — GUI
+        - Standalone exe — command line
+        - From source (Python)
+    validations:
+      required: true
+
+  - type: textarea
+    id: what_happened
+    attributes:
+      label: What happened
+      description: What you did, and where it stopped. Include the subcommand if you ran it headless.
+      placeholder: |
+        Clicked Convert with defaults. It ran through discovery, then stopped
+        partway through refitting with a traceback.
+    validations:
+      required: true
+
+  - type: textarea
+    id: error
+    attributes:
+      label: Error output
+      description: >-
+        Paste the traceback or the last ~30 lines of output. `CBBEtoUBE_last_run.log`
+        sits next to the exe and holds the full run; `CBBEtoUBE_last_failures.json`
+        records per-armor failures. This is rendered as code — no backticks needed.
+      render: text
+    validations:
+      required: false
+
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics zip
+      description: Drag `CBBEtoUBE_diagnostics_<timestamp>.zip` into this box to attach it.
+      placeholder: Attach the zip here.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: setup
+    attributes:
+      label: Setup check
+      options:
+        - label: I ran **Check setup** in the GUI and it passed (or I have said below which checks failed).
+          required: false
+        - label: I searched existing issues and did not find this one.
+          required: false

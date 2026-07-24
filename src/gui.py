@@ -56,6 +56,11 @@ from pathlib import Path
 
 _DONE = object()  # sentinel; the worker pushes (_DONE, exit_code) when finished
 
+# Where a diagnostics zip is meant to go. The exe is built without `ssl`, so it
+# can't submit anything itself -- the intake is a human pasting into an issue,
+# which only works if the address is in front of them at export time.
+ISSUES_URL = "https://github.com/DayOnly/CBBEtoUBE-exe/issues"
+
 
 def mod_name_matches(name: str, query: str) -> bool:
     """Case-insensitive, multi-token AND match for the checklist Filter box:
@@ -1459,6 +1464,11 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
             return
         status.set(f"Diagnostics written: {zpath.name}")
         _append(f"\n[diagnostics written: {zpath}]\n")
+        # The zip is useless if nobody knows where to send it, and this message
+        # is the only thing a user sees after the export.
+        _append(f"  attach it to an issue at {ISSUES_URL}\n"
+                "  it holds your MO2 paths, profile name, and load-order mod\n"
+                "  names -- look it over before posting it publicly.\n")
         try:
             _open_path(zpath.parent)
         except Exception:
