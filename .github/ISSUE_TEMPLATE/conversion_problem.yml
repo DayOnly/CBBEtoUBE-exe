@@ -1,0 +1,94 @@
+name: Conversion problem — converted armor looks wrong in game
+description: The run finished, but a piece is invisible, clips, has no physics, or the overlay landed wrong.
+title: "[conversion] "
+labels: ["conversion"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Before filing an invisibility report**, check the two causes that
+        account for nearly all of them:
+
+        1. **SkyPatcher is installed.** The converter attaches every armature
+           through a SkyPatcher INI, never an ESP override. Without SkyPatcher,
+           every converted piece is invisible.
+        2. **`iEnableArmorPatching=1`** in `SKSE/Plugins/SkyPatcher.ini`. Set to
+           `0` it produces the *exact same symptom* as SkyPatcher being absent.
+
+        Also confirm **every** `CBBE_to_UBE_Combined*.esp` is enabled — the merge
+        splits into numbered pieces when it outgrows the ESL cap, and a disabled
+        piece means missing armor.
+
+        **Please attach a diagnostics zip** (GUI → **Export diagnostics**) and,
+        if you can, `conversion_report.json` from the output mod root. Glance at
+        the zip first — it contains your MO2 paths and profile name.
+
+  - type: input
+    id: version
+    attributes:
+      label: CBBEtoUBE version
+      placeholder: "1.1.1"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: symptom
+    attributes:
+      label: Symptom
+      options:
+        - Armor is invisible / does not render
+        - Clipping or poke-through (body pushes through the armor)
+        - Gaps, seams, or a neck/wrist/ankle mismatch
+        - Physics wrong — no jiggle, or cloth behaves badly
+        - Body morphs (RaceMenu sliders) do not follow the armor
+        - High heels — character floats or sinks
+        - RaceMenu overlay (tattoo / body paint) is misaligned
+        - Armor was skipped and never converted
+        - Something else
+    validations:
+      required: true
+
+  - type: textarea
+    id: describe
+    attributes:
+      label: What you see
+      description: Which piece, on which body part, and under what conditions. Screenshots help a lot for anything visual — drag them in.
+    validations:
+      required: true
+
+  - type: textarea
+    id: report_entry
+    attributes:
+      label: What the conversion report says about this piece
+      description: >-
+        The output mod root has `conversion_summary.txt` and
+        `conversion_report_<mod>.txt` listing what was copied, skipped, and why.
+        Paste the lines for the affected armor.
+      render: text
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: prereqs
+    attributes:
+      label: In-game prerequisites
+      description: The converted output depends on all of these.
+      options:
+        - label: SkyPatcher (SKSE) is installed and `iEnableArmorPatching=1`
+          required: false
+        - label: Every `CBBE_to_UBE_Combined*.esp` is enabled
+          required: false
+        - label: RaceCompatibility, UBE + `UBE_AllRace.esp`, and RaceMenu are installed
+          required: false
+        - label: The output mod is at the **end** of the load order and wins its file conflicts
+          required: false
+        - label: I checked whether another mod already ships a UBE patch for this armor (those are skipped on purpose)
+          required: false
+
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics zip
+      description: Drag `CBBEtoUBE_diagnostics_<timestamp>.zip` into this box.
+    validations:
+      required: false

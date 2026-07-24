@@ -1,0 +1,14 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Setup and dependency questions
+    url: https://github.com/DayOnly/CBBEtoUBE-exe#dependencies
+    about: >-
+      Converted armor invisible? Overlay pass skipped? The Dependencies section
+      lists every in-game prerequisite (SkyPatcher, RaceCompatibility, UBE,
+      RaceMenu) and every optional tool (texconv, Papyrus compiler). Run "Check
+      setup" in the GUI first — it verifies all of them.
+  - name: How the refit works
+    url: https://github.com/DayOnly/CBBEtoUBE-exe/blob/main/DESIGN.md
+    about: >-
+      Why a piece was fitted, skipped, or body-swapped the way it was. DESIGN.md
+      documents the clearance passes, physics preservation, and delivery model.

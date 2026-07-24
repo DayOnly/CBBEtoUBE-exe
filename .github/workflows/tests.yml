@@ -1,0 +1,48 @@
+name: tests
+
+on:
+  push:
+    branches: [main, testing]
+  pull_request:
+  workflow_dispatch:
+
+# A second push to the same branch cancels the first — no point paying for a run
+# whose result is already stale.
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pytest:
+    # Windows only, and not for portability's sake: `.pynifly/NiflyDLL.dll` is a
+    # compiled Windows DLL, so the NIF layer cannot load anywhere else.
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # README claims 3.10+, but scipy/numpy wheels are what actually bound the
+        # floor in practice. Testing the two versions the exe is realistically
+        # built and run on; widen this if the 3.10 claim needs to be enforced.
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pytest
+
+      - name: Verify pynifly loads
+        # The vendored DLL is the one dependency pip cannot supply. If it fails
+        # to load, most of the suite fails in a confusing way — surface it here.
+        run: python -c "import sys; sys.path.insert(0, '.pynifly'); from pyn import pynifly; print('pynifly OK')"
+
+      - name: Run tests
+        run: python -m pytest -q
