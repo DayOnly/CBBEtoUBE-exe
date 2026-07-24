@@ -1,5 +1,12 @@
 blank_issues_enabled: true
 contact_links:
+  - name: Question, or not sure it's a bug? Start a discussion
+    url: https://github.com/DayOnly/CBBEtoUBE-exe/discussions
+    about: >-
+      Setup trouble, "is this supposed to happen?", whether a modlist is
+      supported, or showing off a conversion. Same report format as an issue --
+      paste it in a code fence. Filing it here as an issue is fine too; it gets
+      moved.
   - name: How to write a report we can act on
     url: https://github.com/DayOnly/CBBEtoUBE-exe/blob/main/REPORTING.md
     about: >-
