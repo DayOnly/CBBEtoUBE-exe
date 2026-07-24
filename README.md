@@ -349,9 +349,11 @@ Run **Check setup** in the GUI to verify all of the above before converting.
 1. In the GUI, click **Copy report** — it fills in your version and the last
    run's numbers and puts the whole report on your clipboard.
 2. Fill in the two `<...>` lines and tick the checkboxes.
-3. Send it **either** way, not both — [file an issue](https://github.com/DayOnly/CBBEtoUBE-exe/issues/new/choose),
-   or paste it into chat (wrap it in a triple-backtick code fence for Discord,
-   or the indentation collapses).
+3. Send it to **one** place, not several. If you want it fixed,
+   [file an issue](https://github.com/DayOnly/CBBEtoUBE-exe/issues/new/choose).
+   If you want an answer, [start a discussion](https://github.com/DayOnly/CBBEtoUBE-exe/discussions).
+   Chat works too — wrap it in a triple-backtick code fence for Discord, or the
+   indentation collapses.
 4. Attach the zip from **Export diagnostics**.
 
 Direct links, with your version pre-filled:

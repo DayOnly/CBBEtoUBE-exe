@@ -2,7 +2,10 @@ name: tests
 
 on:
   push:
-    branches: [main, testing]
+    # Contributor lanes included: work happens on a lane for days before it
+    # becomes a PR, and without this the first CI signal arrives at review time
+    # -- which is the most expensive moment to learn something is broken.
+    branches: [main, testing, 'mari/**']
   pull_request:
   workflow_dispatch:
 
