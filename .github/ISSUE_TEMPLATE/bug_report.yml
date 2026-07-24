@@ -18,6 +18,10 @@ body:
         It is collected from your machine, so glance at it first — the layout
         snapshot contains your MO2 paths and profile name.
 
+        The GUI's **Copy report** button fills in your version and the last run's
+        numbers if you would rather paste than type. Full guide:
+        [REPORTING.md](https://github.com/DayOnly/CBBEtoUBE-exe/blob/main/REPORTING.md).
+
   - type: input
     id: version
     attributes:

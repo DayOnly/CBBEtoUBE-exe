@@ -1,5 +1,10 @@
 blank_issues_enabled: true
 contact_links:
+  - name: How to write a report we can act on
+    url: https://github.com/DayOnly/CBBEtoUBE-exe/blob/main/REPORTING.md
+    about: >-
+      The report format, what to attach, and how to paste it into chat instead
+      of filing here. The GUI's "Copy report" button fills in most of it for you.
   - name: Setup and dependency questions
     url: https://github.com/DayOnly/CBBEtoUBE-exe#dependencies
     about: >-

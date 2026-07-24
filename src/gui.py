@@ -224,6 +224,7 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
     from . import exclusions as excl
     from . import preflight as pf
     from . import paths as _paths
+    from . import report_template as _rt
 
     from .version import __version__ as _app_version
 
@@ -836,6 +837,9 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
     diag_btn = ttk.Button(bar, text="Export diagnostics",
                           command=lambda: _export_diagnostics())
     diag_btn.pack(side="left", padx=(12, 0))
+    copy_rep_btn = ttk.Button(bar, text="Copy report",
+                              command=lambda: _copy_report())
+    copy_rep_btn.pack(side="left", padx=4)
 
     # theme selector (right-aligned)
     theme_var = tk.StringVar(
@@ -1467,12 +1471,51 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
         # The zip is useless if nobody knows where to send it, and this message
         # is the only thing a user sees after the export.
         _append(f"  attach it to an issue at {ISSUES_URL}\n"
+                "  or upload it to the chat channel with the report from\n"
+                "  the 'Copy report' button -- REPORT.txt inside the zip is\n"
+                "  the same text.\n"
                 "  it holds your MO2 paths, profile name, and load-order mod\n"
                 "  names -- look it over before posting it publicly.\n")
         try:
             _open_path(zpath.parent)
         except Exception:
             pass
+
+    def _read_conversion_report():
+        """conversion_report.json for the current output mod, or None.
+
+        Best-effort by design: a report is worth sending even when no run has
+        happened yet, so a missing file must not block the paste.
+        """
+        import json as _j
+        od = (state.get("output_dir") or out_var.get().strip() or default_out)
+        try:
+            p = Path(od) / "conversion_report.json"
+            if p.is_file():
+                return _j.loads(p.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+        return None
+
+    def _copy_report():
+        """Put a filled-in problem report on the clipboard.
+
+        The chat-paste half of the intake. Everything the tool already knows is
+        filled in, so what is left is only what the user alone can answer.
+        """
+        text = _rt.build_report(_app_version, kind="conversion",
+                                report=_read_conversion_report())
+        try:
+            root.clipboard_clear()
+            root.clipboard_append(text)
+            root.update_idletasks()   # flush the write before we report success
+        except Exception as e:
+            status.set("Could not reach the clipboard — see log.")
+            _append(f"\n[clipboard failed: {e}]\n")
+            _append(text + "\n")      # still give them something to select
+            return
+        status.set("Report copied — paste it into the chat or an issue.")
+        _append("\n[report template copied to clipboard]\n" + text + "\n")
 
     def _export_diagnostics():
         """Zip the run log + settings + exclusions + a layout snapshot + a fresh
@@ -1488,11 +1531,21 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
             gui_log = log.get("1.0", "end")
         except Exception:
             gui_log = ""
+        # Built on the main thread: it reads Tk vars. The zip carries its own
+        # cover sheet so a bare "here's my zip" hand-off still says what broke.
+        try:
+            cover = _rt.build_report(_app_version, kind="conversion",
+                                     report=_read_conversion_report(),
+                                     diagnostics_zip=zpath.name)
+        except Exception:
+            cover = ""
 
         def work():
             err = None
             try:
                 with zipfile.ZipFile(zpath, "w", zipfile.ZIP_DEFLATED) as z:
+                    if cover:
+                        z.writestr("REPORT.txt", cover)
                     z.writestr("gui_log.txt", gui_log)
                     for label, p in (("settings.json", gui_settings.config_path()),
                                      ("exclusions.json", excl.config_path())):

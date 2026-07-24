@@ -19,6 +19,10 @@ body:
         splits into numbered pieces when it outgrows the ESL cap, and a disabled
         piece means missing armor.
 
+        **Shortcut:** the GUI's **Copy report** button fills in your version and
+        the last run's numbers, so you can paste most of this form rather than
+        type it. Full guide: [REPORTING.md](https://github.com/DayOnly/CBBEtoUBE-exe/blob/main/REPORTING.md).
+
         **Please attach a diagnostics zip** (GUI → **Export diagnostics**) and,
         if you can, `conversion_report.json` from the output mod root. Glance at
         the zip first — it contains your MO2 paths and profile name.
