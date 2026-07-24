@@ -2,9 +2,12 @@
 
 ## Reporting a problem
 
-Open an issue: <https://github.com/DayOnly/CBBEtoUBE-exe/issues>. There are two
-templates, and picking the right one matters because they ask for different
-evidence:
+See **[REPORTING.md](REPORTING.md)** for the full guide. In short: if you want
+it fixed, [open an issue](https://github.com/DayOnly/CBBEtoUBE-exe/issues); if
+you want an answer, [start a discussion](https://github.com/DayOnly/CBBEtoUBE-exe/discussions).
+
+There are two issue templates, and picking the right one matters because they
+ask for different evidence:
 
 - **Bug report** — the converter itself errored, hung, or produced nothing.
 - **Conversion problem** — the run finished, but a piece is invisible, clips,
