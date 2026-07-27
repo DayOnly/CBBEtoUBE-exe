@@ -28,6 +28,7 @@ an ARMO's whole add-set stays in one piece and yields exactly ONE `filterByArmor
 line. The shipped INI has 9,913 lines for 9,913 distinct armors; splitting an ARMO
 would emit two lines for it, and whether SkyPatcher accumulates or last-wins is
 unverified. Not a risk worth taking on the only armour-delivery path."""
+import json
 import sys
 
 import pytest
@@ -123,6 +124,72 @@ def test_targets_whose_armatures_were_not_minted_cost_nothing():
     t, m = _mk(10)
     ghost = [(("p.esp", 1), "p.esp", [("src.esp", 77777)])]      # not in mint_rec
     assert len(_chunk_targets_for_esl(t + ghost, m, cap=2048)) == 1
+
+
+# --- the sidecar must agree with the SAVED piece ------------------------------
+
+def test_sidecar_fids_match_the_saved_records(tmp_path):
+    """REGRESSION, caught in-game not in CI. `_emit_coverage_pieces` used to snapshot
+    each minted FormID as an int BEFORE `prune_unused_masters` ran. Prune drops
+    unreferenced masters and remaps every record's master byte IN PLACE, so the
+    sidecar shipped `0x36000800` while the saved record was `0x34000800`.
+
+    The INI survived (it masks to 24 bits) but the MERGE keys on the full FormID, so
+    `merged_rec_by_key` missed every entry, the Combined got ZERO SkyPatcher links,
+    and the run deleted the previous INI as stale. Under SkyPatcher-only delivery
+    that is every converted armor invisible -- with a clean-looking log.
+
+    Measured on the real output before the fix: 0 of 2048 sidecar fids matched.
+
+    The earlier tests could not catch this: they build patches whose masters are all
+    referenced, so prune is a no-op and the stale int happens to be right."""
+    from src import esp
+    # TWO masters, but only the SECOND is referenced -> prune drops the first and
+    # every own FormID's master byte shifts 2 -> 1. That shift is the whole bug.
+    masters = ["Unreferenced.esm", "Real.esm"]
+    src_rec = esp.Record(sig=b"ARMA", flags=0, formid=0x01000800, timestamp_vc=0,
+                         version_unk=0x002C, payload=b"\x00" * 8)
+    key = ("Real.esm", 0x000800)
+    targets = [(("Real.esm", 0x001234), "Real.esm", [key])]
+
+    out = tmp_path / "UBE_ModBody_Coverage UBE patch.esp"
+    res = up._emit_coverage_pieces(
+        out, targets, {key: src_rec}, masters, own_byte=len(masters),
+        author="t", description="t", ini_header=[], emit_sidecar=True)
+
+    saved = esp.ESP.load(tmp_path / res["pieces"][0])
+    real = {r.formid for g in saved.groups if g.label == b"ARMA" for r in g.records}
+    doc = json.loads((tmp_path / (res["pieces"][0] + ".skypatcher.json"))
+                     .read_text(encoding="utf-8"))
+    side = {int(a["fid"]) for ent in doc for a in ent["adds"]}
+
+    assert len(saved.header.masters) < len(masters), (
+        "this test is only meaningful if prune actually removed a master")
+    assert side == real, (
+        f"sidecar fids {sorted(side)} != saved record fids {sorted(real)} -- "
+        "the merge resolves links by exact FormID, so any drift means ZERO links")
+
+
+def test_ini_and_sidecar_agree_on_the_low_24_bits(tmp_path):
+    """They are written from one source now; assert it, because the INI masks and the
+    sidecar does not, which is exactly how they drifted apart unnoticed."""
+    from src import esp
+    masters = ["Unreferenced.esm", "Real.esm"]
+    key = ("Real.esm", 0x000800)
+    rec = esp.Record(sig=b"ARMA", flags=0, formid=0x01000800, timestamp_vc=0,
+                     version_unk=0x002C, payload=b"\x00" * 8)
+    out = tmp_path / "UBE_ModBody_Coverage UBE patch.esp"
+    res = up._emit_coverage_pieces(
+        out, [(("Real.esm", 0x001234), "Real.esm", [key])], {key: rec}, masters,
+        own_byte=len(masters), author="t", description="t", ini_header=[],
+        emit_sidecar=True)
+
+    ini = [l for l in res["ini_lines"] if l.startswith("filterByArmors=")]
+    ini_low = {int(p.split("|")[1], 16)
+               for l in ini for p in l.split("armorAddonsToAdd=")[1].split(",")}
+    doc = json.loads((tmp_path / (res["pieces"][0] + ".skypatcher.json"))
+                     .read_text(encoding="utf-8"))
+    assert ini_low == {int(a["fid"]) & 0xFFFFFF for ent in doc for a in ent["adds"]}
 
 
 # --- wiring ------------------------------------------------------------------

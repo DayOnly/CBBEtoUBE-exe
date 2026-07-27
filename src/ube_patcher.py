@@ -3302,20 +3302,27 @@ def _emit_coverage_pieces(
     for idx, chunk in enumerate(chunks):
         piece_path = _piece_path(idx)
         piece_name = piece_path.with_suffix(".esp").name
-        local_fid: dict = {}
+        # Hold the Record OBJECTS, not their FormIDs. `prune_unused_masters`
+        # below drops unreferenced masters and remaps every record's master
+        # byte IN PLACE, so an int captured here goes stale -- the same trap
+        # the single-piece generator and the male-fallback sidecar document.
+        # Reading `rec.formid` after the save is the only correct source, and
+        # it feeds BOTH the INI and the sidecar so they cannot disagree.
+        local_rec: dict = {}
         recs: list = []
         nid = ESL_OWN_FORMID_MIN
         for _armo, _plugin, to_mint in chunk:
             for a in to_mint:
-                if a in local_fid or a not in mint_rec:
+                if a in local_rec or a not in mint_rec:
                     continue
                 fid = (own_byte << 24) | nid
                 nid += 1
                 src = mint_rec[a]
-                recs.append(esp.Record(
+                rec = esp.Record(
                     sig=b"ARMA", flags=0, formid=fid, timestamp_vc=0,
-                    version_unk=0x002C, payload=src.payload))
-                local_fid[a] = fid
+                    version_unk=0x002C, payload=src.payload)
+                recs.append(rec)
+                local_rec[a] = rec
         as_esl = len(recs) <= cap
         all_esl = all_esl and as_esl
         total_minted += len(recs)
@@ -3336,10 +3343,10 @@ def _emit_coverage_pieces(
         pieces.append(piece_name)
         masters_count = max(masters_count, len(piece.header.masters))
 
-        # INI: mask to 24 bits so the line stays correct after prune remapped the
-        # master byte (the same trick the single-piece version relied on).
+        # INI: post-prune fid, masked to 24 bits (SkyPatcher names the plugin
+        # separately, so the master byte is not part of the line).
         for armo_abs, defining_plugin, to_mint in chunk:
-            addons = [local_fid[a] for a in to_mint if a in local_fid]
+            addons = [local_rec[a].formid for a in to_mint if a in local_rec]
             if not addons:
                 continue
             adds = ",".join("{}|{:06X}".format(piece_name, (f & 0xFFFFFF))
@@ -3348,11 +3355,14 @@ def _emit_coverage_pieces(
                 defining_plugin, armo_abs[1], adds))
 
         if emit_sidecar:
+            # FULL fid here, NOT masked: the merge keys on the record's real
+            # FormID in this piece, so a stale master byte silently resolves to
+            # nothing and the run emits ZERO links.
             import json as _json
             doc = []
             for armo_abs, defining_plugin, to_mint in chunk:
-                adds = [{"fid": local_fid[a], "src": [a[0], a[1]]}
-                        for a in to_mint if a in local_fid]
+                adds = [{"fid": local_rec[a].formid, "src": [a[0], a[1]]}
+                        for a in to_mint if a in local_rec]
                 if adds:
                     doc.append({"armo": [defining_plugin, armo_abs[1]],
                                 "adds": adds})
