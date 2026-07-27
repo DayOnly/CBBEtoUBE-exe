@@ -60,6 +60,11 @@ NEVER_TRACKED = (
     # Golden baseline AND its piece inventory: the manifest records which MOD each
     # source mesh came from, and golden/pieces.json is that list by definition.
     "golden/",
+    # Measurement censuses. Every row is keyed by an armor's mesh path, so these
+    # name mods by construction -- there is no mod-agnostic version of them.
+    "fit_dataset*.jsonl",
+    "fit_census*.jsonl",
+    "penetration_census*.jsonl",
 )
 
 # The .gitignore lines that protect the set above. If one disappears, the

@@ -55,6 +55,9 @@ DESIGN_P6_*.md
 # Generated artefacts, sometimes large; regenerate rather than commit.
 fit_dataset*.jsonl
 fit_census*.jsonl
+# scripts/collect_penetration_census.py -- one row per ARMOR, keyed by its mesh path,
+# so it names mods by construction.
+penetration_census*.jsonl
 *.census.jsonl
 
 # Golden-output regression baseline (scripts/golden_output.py). Generated data, and
