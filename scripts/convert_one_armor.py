@@ -22,7 +22,12 @@ body ref automatically. Recipe flags come from the environment, so wrap the call
   CBBE2UBE_THIGH_STANDOFF=1.0 python scripts/convert_one_armor.py \
       "D:/path/to/MO2/mods/<Mod>" armor/examplesuit cuirass  C:/tmp/out
 
-Args: [--mo2-ini <ModOrganizer.ini>] <mod_dir> <mesh_subdir-under-meshes> <stem> [out_dir]
+Args: [--mo2-ini <ModOrganizer.ini>] [--slots 0xNNN] <mod_dir> <mesh_subdir> <stem> [out_dir]
+
+PASS --slots WHENEVER THE SOURCE MOD HAS NO ESP (a BodySlide-output mod). Slots are
+resolved from the mod's own ESP; with none they come out 0, and every slot-gated pass
+silently does not run -- which has produced two false findings already. Read the real
+mask off the armor's ARMA (BOD2) in the patch ESP, e.g. 0x134.
 Output lands in <out_dir>/meshes/<mesh_subdir>/ -- the `meshes` ancestor is REQUIRED
 for physics-XML (collider/soft-body) resolution to work; see the note in main().
 The MO2 instance must be named either with `--mo2-ini` or via CBBE2UBE_MO2_INI.
@@ -71,6 +76,13 @@ def main():
             sys.exit(2)
         os.environ["CBBE2UBE_MO2_INI"] = argv[1]
         argv = argv[2:]
+    override_slots = None
+    if argv and argv[0] == "--slots":
+        if len(argv) < 2:
+            print("ERROR: --slots needs a biped mask, e.g. --slots 0x134")
+            sys.exit(2)
+        override_slots = int(argv[1], 0)          # accepts 0x134 or 308
+        argv = argv[2:]
     if len(argv) < 3:
         print(__doc__)
         sys.exit(1)
@@ -97,7 +109,19 @@ def main():
     out = out / "meshes" / subdir.replace("/", os.sep)
     out.mkdir(parents=True, exist_ok=True)
     paths.export_to_env(paths.discover_layout())
-    slots = biped_slots_for(mod_dir, stem)
+    slots = override_slots if override_slots is not None else biped_slots_for(mod_dir, stem)
+    # LOUD, because slots=0 silently disables the slot-gated passes and makes this
+    # harness disagree with the pipeline. A BodySlide-output mod ships NO ESP, so
+    # `biped_slots_for` finds nothing and returns 0 -- and then `clear_armor_outside_body`
+    # (gated on slot 32/49) never runs. That has produced TWO false findings: a
+    # phantom "the final anti-poke never runs", and a bust-clearance A/B that showed no
+    # response because the pass under test was not reached. Pass --slots with the real
+    # ARMA's BOD2 mask (read it off the patch ESP) whenever the source mod has no ESP.
+    if not slots:
+        print(f"  !! biped slots resolved to 0 for '{stem}' -- no ESP in this mod?\n"
+              f"     Slot-gated passes (e.g. clear_armor_outside_body, slot 32/49) will\n"
+              f"     NOT run, so results may not match a real conversion.\n"
+              f"     Re-run with --slots 0x134 (or the mask from the armor's ARMA).")
     ref = str(ac._find_ube_body_ref())
     srcd = Path(mod_dir, "meshes", subdir)
     for w in ("_0", "_1"):
