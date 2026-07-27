@@ -52,10 +52,12 @@ def _slot_for(slot_map, agnostic, rel):
 
 def test_zero_partner_recovers_slot_from_one():
     # The ARMA-derived map only has the _1 mesh.
-    slot_map = {"meshes/girl's travel outfit/boots_1.nif": SLOT37}
+    # Apostrophe + spaces + mixed case are deliberate: that combination is what
+    # exercises the case-insensitive normalisation, not the name itself.
+    slot_map = {"meshes/some author's outfit/boots_1.nif": SLOT37}
     agnostic = _weight_agnostic_slot_map(slot_map)
-    one = _slot_for(slot_map, agnostic, "meshes/Girl's Travel Outfit/boots_1.nif")
-    zero = _slot_for(slot_map, agnostic, "meshes/Girl's Travel Outfit/boots_0.nif")
+    one = _slot_for(slot_map, agnostic, "meshes/Some Author's Outfit/boots_1.nif")
+    zero = _slot_for(slot_map, agnostic, "meshes/Some Author's Outfit/boots_0.nif")
     assert one & SLOT37
     assert zero & SLOT37, "boots_0 must inherit the foot slot from its _1 partner"
     assert zero == one, "both weights must convert with identical slot bits"

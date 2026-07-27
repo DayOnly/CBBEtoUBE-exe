@@ -49,6 +49,9 @@ NEVER_TRACKED = (
     # the audit/design notes quote measurements BY armour name, which is exactly
     # what makes them useful locally and unpublishable.
     "CLIPPING_LOG.md",
+    # The map from the synthetic names in tracked fixtures back to the REAL
+    # assets. Publishing it would undo every substitution it records.
+    "LOCAL_ASSET_SAMPLES.md",
     "AUDIT_REDUNDANCY_*.md",
     "CONVERTER_AUDIT_*.md",
     "DESIGN_JIGGLE_PLAN.md",

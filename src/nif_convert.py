@@ -11182,7 +11182,7 @@ def _find_hdt_xml_for_armor(armor_nif_path: Path,
     best_xml = None
 
     # HIGHEST confidence: an XML whose stem EXACTLY matches the NIF stem is the
-    # armour's own config (e.g. `ThorHair_1.nif` <-> `ThorHair.xml`), no matter
+    # armour's own config (e.g. `LongHair_1.nif` <-> `LongHair.xml`), no matter
     # whether the name contains a region keyword. Prefer one in the SAME folder;
     # else a UNIQUE same-stem match anywhere in the mod. Catches authored configs
     # the small keyword map misses -- without it they fall back to a GENERATED

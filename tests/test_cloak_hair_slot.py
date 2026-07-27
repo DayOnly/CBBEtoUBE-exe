@@ -84,7 +84,7 @@ def test_stormcloak_folder_not_a_false_positive(tmp_path):
     # admitted as a cloak (matching basename, not full path).
     _write(tmp_path, [
         _arma(0x801, "GuardsHelmet", _bits(31, 42),
-              "OpenFaceHelmets\\Stormcloaks\\Helmet_1.nif"),
+              "HelmetPack\\Stormcloaks\\Helmet_1.nif"),
     ])
     bases = _player_armor_mesh_bases(tmp_path, include_candidate_slots=True)
     assert not any("helmet" in b for b in bases), bases

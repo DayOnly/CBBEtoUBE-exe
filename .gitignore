@@ -42,6 +42,9 @@ CBBEtoUBE-*.zip
 # Adding a new working note that names a mod? List it here in the same commit.
 ARMOR_WORKLIST.md
 CLIPPING_LOG.md
+# The map from published synthetic names back to the REAL assets they stand in for.
+# Local by definition: naming them is exactly what it is for.
+LOCAL_ASSET_SAMPLES.md
 AUDIT_REDUNDANCY_*.md
 CONVERTER_AUDIT_*.md
 DESIGN_JIGGLE_PLAN.md

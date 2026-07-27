@@ -33,29 +33,29 @@ def test_ube_variant_rel():
 
 
 def test_ube_variant_scriptpath_double_backslash():
-    sp = "Actors\\\\Character\\\\Overlays\\\\Set\\\\tribal.dds"
+    sp = "Actors\\\\Character\\\\Overlays\\\\Set\\\\paint.dds"
     assert (ot._ube_variant_scriptpath(sp)
-            == "Actors\\\\Character\\\\Overlays\\\\Set\\\\UBE\\\\tribal.dds")
+            == "Actors\\\\Character\\\\Overlays\\\\Set\\\\UBE\\\\paint.dds")
 
 
 def test_add_ube_paint_lines_only_baked_and_preserves_original():
     text = (
         "Function OnInit()\n"
-        '    AddBodyPaint("Tribal", "Actors\\\\Character\\\\Overlays'
-        '\\\\Set\\\\tribal.dds")\n'
+        '    AddBodyPaint("Paint", "Actors\\\\Character\\\\Overlays'
+        '\\\\Set\\\\paint.dds")\n'
         '    AddBodyPaint("Other", "Actors\\\\Character\\\\Overlays'
         '\\\\Set\\\\other.dds")\n'
         "EndFunction\n"
     )
-    baked = {"textures/actors/character/overlays/set/tribal.dds"}
+    baked = {"textures/actors/character/overlays/set/paint.dds"}
     new, n = ot.add_ube_paint_lines(text, baked)
     assert n == 1
     # original untouched
-    assert ('    AddBodyPaint("Tribal", "Actors\\\\Character\\\\Overlays'
-            '\\\\Set\\\\tribal.dds")') in new
+    assert ('    AddBodyPaint("Paint", "Actors\\\\Character\\\\Overlays'
+            '\\\\Set\\\\paint.dds")') in new
     # UBE copy inserted, indentation kept, points at the ube/ variant
-    assert ('    AddBodyPaint("UBE Tribal", "Actors\\\\Character\\\\Overlays'
-            '\\\\Set\\\\UBE\\\\tribal.dds")') in new
+    assert ('    AddBodyPaint("UBE Paint", "Actors\\\\Character\\\\Overlays'
+            '\\\\Set\\\\UBE\\\\paint.dds")') in new
     # the un-baked overlay gets NO copy
     assert '"UBE Other"' not in new
 
@@ -76,13 +76,13 @@ def test_is_male_overlay():
     assert ot._is_male_overlay(
         "textures/actors/character/overlays/set/malebody.dds") is True
     assert ot._is_male_overlay(
-        "Actors\\Character\\Overlays\\Male\\tribal.dds") is True
+        "Actors\\Character\\Overlays\\Male\\paint.dds") is True
     # 'female' must NOT be read as 'male'
     assert ot._is_male_overlay(
         "textures/actors/character/overlays/set/femalebody.dds") is False
     # neutral overlay -> not male
     assert ot._is_male_overlay(
-        "textures/actors/character/overlays/set/tribal.dds") is False
+        "textures/actors/character/overlays/set/paint.dds") is False
 
 
 def test_list_overlay_mods_orders_by_discovery_and_dedupes(monkeypatch):

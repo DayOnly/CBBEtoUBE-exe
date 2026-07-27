@@ -70,7 +70,7 @@ def test_already_ube_patched_armor_is_not_converted(tmp_path):
     # itself -- identity ("coveredmod.esp", low24).
     mod = _write_mod(
         tmp_path, "CoveredMod",
-        armas=[_arma(0x01000800, "BodysuitAA", "falmerslayer/bodysuit_1.nif")],
+        armas=[_arma(0x01000800, "BodysuitAA", "armorpack/bodysuit_1.nif")],
         armos=[_armo(0x01000900, "Bodysuit", 0x01000800)])
     covered = {("coveredmod.esp", 0x000900)}
     assert _player_armor_mesh_bases(mod, ube_covered_armos=covered) == set()
@@ -79,7 +79,7 @@ def test_already_ube_patched_armor_is_not_converted(tmp_path):
 def test_uncovered_armor_in_the_same_mod_still_converts(tmp_path):
     mod = _write_mod(
         tmp_path, "MixedMod",
-        armas=[_arma(0x01000800, "BeltAA", "fs/belt_1.nif"),
+        armas=[_arma(0x01000800, "BeltAA", "armorpack/belt_1.nif"),
                _arma(0x01000801, "GlovesAA", "fs/gloves_1.nif")],
         armos=[_armo(0x01000900, "Belt", 0x01000800),
                _armo(0x01000901, "Gloves", 0x01000801)])

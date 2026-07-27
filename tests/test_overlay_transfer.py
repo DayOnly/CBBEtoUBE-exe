@@ -25,34 +25,35 @@ from src import overlay_transfer as ot
 def test_classify_overlay_path_aware():
     O = "textures/actors/character/overlays/"
     # slot in the FILENAME (slot-in-filename pack convention)
-    assert ot.classify_overlay(O + "ovp/00 body.dds") == "body"
-    assert ot.classify_overlay(O + "ovp/01 hands.dds") == "hands"
-    assert ot.classify_overlay(O + "ovp/02 feet.dds") == "feet"
-    assert ot.classify_overlay(O + "ovp/02 head m.dds") == "head"
-    assert ot.classify_overlay(O + "ovp/warpaint_face.dds") == "head"
+    assert ot.classify_overlay(O + "seta/00 body.dds") == "body"
+    assert ot.classify_overlay(O + "seta/01 hands.dds") == "hands"
+    assert ot.classify_overlay(O + "seta/02 feet.dds") == "feet"
+    assert ot.classify_overlay(O + "seta/02 head m.dds") == "head"
+    assert ot.classify_overlay(O + "seta/warpaint_face.dds") == "head"
     # makeup keywords anywhere in the path -> head (never remapped)
-    assert ot.classify_overlay(O + "mkp/blush/blush_01.dds") == "head"
-    assert ot.classify_overlay(O + "mkp/eyeliner/liner.dds") == "head"
+    assert ot.classify_overlay(O + "setm/blush/blush_01.dds") == "head"
+    assert ot.classify_overlay(O + "setm/eyeliner/liner.dds") == "head"
     # slot in a FOLDER, not the filename (slot-in-folder pack convention)
-    assert ot.classify_overlay(O + "bpk/hand/01.dds") == "hands"
-    assert ot.classify_overlay(O + "bpk/face/01.dds") == "head"
+    assert ot.classify_overlay(O + "setb/hand/01.dds") == "hands"
+    assert ot.classify_overlay(O + "setb/face/01.dds") == "head"
     # unlabeled body paint -> 'ambiguous' (resolved at the set level by discover)
-    assert ot.classify_overlay(O + "bpk/floral/floral 1.dds") == "ambiguous"
-    assert ot.classify_overlay(O + "mkp/extra/extra 1.dds") == "ambiguous"
-    assert ot._overlay_set(O + "bpk/floral/floral 1.dds") == "bpk"
-    # body-part NAMES (whole word) -> body (the 'tat' set: tat abs/butt/chest)
-    assert ot.classify_overlay(O + "tat/tat butt cat.dds") == "body"
-    assert ot.classify_overlay(O + "tat/tat abs butterfly.dds") == "body"
-    assert ot.classify_overlay(O + "tat/tat chest dragon.dds") == "body"
-    # whole-word matching must NOT false-match (butterfly!=butt, armor!=arm)
+    assert ot.classify_overlay(O + "setb/paint/paint 1.dds") == "ambiguous"
+    assert ot.classify_overlay(O + "setm/extra/extra 1.dds") == "ambiguous"
+    assert ot._overlay_set(O + "setb/paint/paint 1.dds") == "setb"
+    # body-part NAMES (whole word) -> body (a set labelled only by body part)
+    assert ot.classify_overlay(O + "setc/setc butt motif.dds") == "body"
+    assert ot.classify_overlay(O + "setc/setc abs motif.dds") == "body"
+    assert ot.classify_overlay(O + "setc/setc chest motif.dds") == "body"
+    # whole-word matching must NOT false-match (butterfly!=butt, armor!=arm).
+    # These three filenames are LOAD-BEARING -- do not "genericise" them away.
     assert ot.classify_overlay(O + "x/butterfly.dds") == "ambiguous"
-    assert ot.classify_overlay(O + "x/armor study.dds") == "ambiguous"
+    assert ot.classify_overlay(O + "x/armor motif.dds") == "ambiguous"
     assert ot.classify_overlay(O + "x/background.dds") == "ambiguous"
     # gender prefix fused onto a body part ("malechest") still resolves to body
-    assert ot.classify_overlay(O + "pkg/pkg_malechest_art.dds") == "body"
-    assert ot.classify_overlay(O + "x/femalethigh art.dds") == "body"
+    assert ot.classify_overlay(O + "setd/setd_malechest_motif.dds") == "body"
+    assert ot.classify_overlay(O + "x/femalethigh motif.dds") == "body"
     # ...but a fused face part is still face (head keyword wins first)
-    assert ot.classify_overlay(O + "x/femalehead freckles.dds") == "head"
+    assert ot.classify_overlay(O + "x/femalehead motif.dds") == "head"
 
 
 def test_set_override_file(tmp_path, monkeypatch):
@@ -69,7 +70,7 @@ def test_set_override_file(tmp_path, monkeypatch):
         (d / Path(sub).name).write_bytes(b"\x00")
 
     mk("PKA", "packa/packa_male_01.dds")        # all-unlabeled -> normally skipped
-    mk("PKB", "packb/age spots 01.dds")         # all-unlabeled -> normally skipped
+    mk("PKB", "packb/unlabeled 01.dds")         # all-unlabeled -> normally skipped
     (tmp_path / "overlay_slots.txt").write_text(
         "# user overrides\npacka = body\npackb = skip\n", encoding="utf-8")
     monkeypatch.setattr(ot._paths, "mods_root", lambda: mr)
@@ -86,37 +87,37 @@ def test_set_override_file(tmp_path, monkeypatch):
 def test_discover_resolves_ambiguous_by_set(tmp_path, monkeypatch):
     """A body-paint set (one that also has body/hand/feet slots) -> its unmarked
     files become body; an all-makeup set -> its unmarked files stay face/skipped.
-    This is what makes folder-organized paints (BPK/Floral) transfer while
-    makeup sets (MKP/Extra) are left alone."""
+    This is what makes folder-organized paints (setb/Paint) transfer while
+    makeup sets (setm/Extra) are left alone."""
     from pathlib import Path
     mr = tmp_path / "mods"
 
-    def mk(mod, sub):                       # sub e.g. "BPK/Hand/h.dds"
+    def mk(mod, sub):                       # sub e.g. "SETB/Hand/h.dds"
         d = (mr / mod / "textures" / "actors" / "character" / "overlays"
              / Path(sub).parent)
         d.mkdir(parents=True, exist_ok=True)
         (d / Path(sub).name).write_bytes(b"\x00")
 
-    mk("BPK", "BPK/Hand/h.dds")             # body-paint set: has a hand slot
-    mk("BPK", "BPK/Floral/floral 1.dds")    # -> this ambiguous file becomes body
-    mk("BPK", "BPK/Face/f.dds")             # face -> skipped
-    mk("MKP", "MKP/Blush/b.dds")            # all-makeup set
-    mk("MKP", "MKP/Extra/e.dds")            # -> this ambiguous file stays face
-    # TAT: body-paint set recognized via body-part NAMES (no "body" keyword)
-    mk("TAT", "TAT/tat butt cat.dds")       # body-part word -> body
-    mk("TAT", "TAT/tat chestl birds.dds")   # concatenated 'chestl' -> ambiguous
+    mk("SETB", "SETB/Hand/h.dds")           # body-paint set: has a hand slot
+    mk("SETB", "SETB/Paint/paint 1.dds")    # -> this ambiguous file becomes body
+    mk("SETB", "SETB/Face/f.dds")           # face -> skipped
+    mk("SETM", "SETM/Blush/b.dds")          # all-makeup set
+    mk("SETM", "SETM/Extra/e.dds")          # -> this ambiguous file stays face
+    # setc: body-paint set recognized via body-part NAMES (no "body" keyword)
+    mk("SETC", "SETC/setc butt motif.dds")   # body-part word -> body
+    mk("SETC", "SETC/setc chestl motif.dds")  # concatenated 'chestl' -> ambiguous
     monkeypatch.setattr(ot._paths, "mods_root", lambda: mr)
     monkeypatch.setattr(ot._paths, "enabled_mods_ordered",
-                        lambda lay: ["BPK", "MKP", "TAT"])
+                        lambda lay: ["SETB", "SETM", "SETC"])
 
     by = ot.discover_overlays(None, ("body", "hands", "feet"))
     body = {k.split("/overlays/")[1] for k in by["body"]}
     hands = {k.split("/overlays/")[1] for k in by["hands"]}
-    assert "bpk/floral/floral 1.dds" in body     # body-paint set ambiguous -> body
-    assert "bpk/hand/h.dds" in hands
-    assert "mkp/extra/e.dds" not in body           # makeup set ambiguous stays face
-    assert "tat/tat butt cat.dds" in body            # body-part name -> body
-    assert "tat/tat chestl birds.dds" in body      # ambiguous, but tat is a body set
+    assert "setb/paint/paint 1.dds" in body      # body-paint set ambiguous -> body
+    assert "setb/hand/h.dds" in hands
+    assert "setm/extra/e.dds" not in body          # makeup set ambiguous stays face
+    assert "setc/setc butt motif.dds" in body        # body-part name -> body
+    assert "setc/setc chestl motif.dds" in body    # ambiguous, but setc is a body set
     assert not any(("face" in k or "blush" in k) for k in by["body"])
 
 
@@ -134,13 +135,13 @@ def test_discover_scans_character_assets_overlays_root(tmp_path, monkeypatch):
         (mr / mod / Path(rel)).write_bytes(b"\x00")
 
     mk("Wounds", "textures/actors/character/character assets/overlays/wounds_arm_right.dds")
-    mk("BPK", "textures/actors/character/overlays/bpk/01 body.dds")
+    mk("SETB", "textures/actors/character/overlays/setb/01 body.dds")
     monkeypatch.setattr(ot._paths, "mods_root", lambda: mr)
-    monkeypatch.setattr(ot._paths, "enabled_mods_ordered", lambda lay: ["Wounds", "BPK"])
+    monkeypatch.setattr(ot._paths, "enabled_mods_ordered", lambda lay: ["Wounds", "SETB"])
 
     body = {k.split("/overlays/")[1] for k in ot.discover_overlays(None, ("body",))["body"]}
     assert "wounds_arm_right.dds" in body        # alternate root scanned + body ("arm")
-    assert "bpk/01 body.dds" in body             # standard root still works
+    assert "setb/01 body.dds" in body            # standard root still works
 
 
 def test_tga_roundtrip(tmp_path):
