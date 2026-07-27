@@ -135,10 +135,24 @@ Two findings in this document were nearly reported wrong:
 2. **"Inflate is undone by conform, delete it."** cos −0.949 makes that look obvious.
    Forcing the magnitude to zero and diffing the final meshes disproved it.
 
-Both were caught by testing the claim rather than the correlation. The pattern is
-consistent enough to state plainly: **a measurement that suggests deleting something
-should be followed by actually deleting it in a scratch run and measuring the
-difference.**
+3. **"Eleven tests pass, the feature works."** They did pass, and the feature was
+   broken in a way that made every converted armor undeliverable. The tests built
+   patches whose masters were all referenced, so `prune_unused_masters` — the step
+   whose renumbering was the actual bug — was a **no-op** in every one of them. The
+   stale value they asserted on happened to be correct. Found in the user's real
+   output, not in CI.
+
+Both of the first two were caught by testing the claim rather than the correlation.
+The pattern is consistent enough to state plainly: **a measurement that suggests
+deleting something should be followed by actually deleting it in a scratch run and
+measuring the difference.**
+
+The third generalises it to tests: **assert the precondition your test depends on.**
+If a test exists to cover behaviour downstream of some transformation, it must prove
+that transformation actually did something (`assert len(after) < len(before)`), or it
+is testing the trivial path and reporting confidence it has not earned. And a
+regression test written after a fix should be **run against the unfixed code** — the
+two added here were, and they fail as intended.
 
 ---
 

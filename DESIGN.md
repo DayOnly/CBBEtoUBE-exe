@@ -439,6 +439,39 @@ been removed. (The winner-scan coverage passes still emit ARMO overrides, but
 their output is folded into the Combined family rather than shipped as separate
 plugins — see "Unified coverage" below.)
 
+### The sidecar FormID invariant
+
+**A sidecar records the FULL, POST-PRUNE FormID of each minted armature.** The merge
+resolves every link by exact FormID (`merged_rec_by_key[(patch, fid)]`), so a sidecar
+holding anything else resolves to nothing.
+
+The trap is that `prune_unused_masters` drops unreferenced masters and remaps every
+record's **master byte in place**, so a FormID captured as an `int` before it goes
+stale. Hold the **Record object** and read `rec.formid` after the save. Emit the INI
+from that same object — the INI masks to 24 bits (SkyPatcher names the plugin
+separately), so it stays correct across the remap and therefore **cannot detect the
+drift**. One source, or they diverge silently.
+
+The failure mode is total and quiet: zero links, the merge deletes the previous INI as
+stale (correctly — it points at reassigned FormIDs), and nothing is delivered, while
+the ESL flag, split, master count and ARMA total all report normally. Any test covering
+code downstream of prune must assert a master was **actually dropped**
+(`len(saved.header.masters) < len(masters)`), or prune is a no-op and a stale int
+passes by accident.
+
+### Coverage patches size themselves to the ESL cap
+
+`_partition_patches_for_esl` bin-packs whole patches and cannot split one, so a single
+coverage patch minting more than 2048 own records used to force its merged piece down
+to a full ESP. The coverage generators therefore emit **numbered pieces of their own**
+(`_emit_coverage_pieces`), each within the cap.
+
+Chunking is **by target (ARMO), never by armature**, so an ARMO's whole add-set stays
+in one piece and yields exactly **one** `filterByArmors` line. Whether SkyPatcher
+accumulates duplicate lines for one armor or takes the last is unverified, and this is
+the only delivery path. The cost is that an armature shared across a chunk boundary is
+minted twice — measured at ~2%.
+
 ---
 
 ## Effect-shader glow overlays
@@ -472,3 +505,11 @@ carries the tool itself. Code comments citing them by shorthand (e.g.
 - `ROBUSTNESS_AUDIT_*.md`, `CONVERTER_AUDIT_*.md` — point-in-time audits.
 - `DESIGN_P*.md`, `DESIGN_PROPOSALS.md` — design-only proposals, not built.
 - `CHANGES_*.md` — per-investigation change notes.
+- `LOCAL_ASSET_SAMPLES.md` — maps the synthetic mod/asset names used in tracked
+  comments and test fixtures back to the real assets they stand in for. Tracked
+  content is kept mod-agnostic; this preserves the provenance of a measurement or
+  a regression case without publishing it. **Add a row in the same change as any
+  new substitution.**
+
+These are gitignored, and `tests/test_public_repo_hygiene.py` asserts they stay
+untracked — the repo is public and every one of them names specific mods.

@@ -38,7 +38,10 @@ Given a Mod Organizer 2 setup, the full pipeline (`auto`):
    one **ESL-flagged combined plugin** with a correct master order. If the
    merge outgrows the 2048-record ESL cap it **splits** into numbered pieces
    (`CBBE_to_UBE_Combined.esp`, `CBBE_to_UBE_Combined2.esp`, ...) — enable
-   **all** of them. The plugin only *holds* the minted UBE armatures; an
+   **all** of them. Every generator emits within the cap, so a piece is
+   normally still ESL-flagged and costs a light slot rather than a load-order
+   slot; a full-ESP downgrade is a last resort. The plugin only *holds* the
+   minted UBE armatures; an
    **active SkyPatcher INI** (shipped in `SKSE/Plugins/SkyPatcher/armor/`)
    attaches each one to its armor at runtime. The converter uses **no ESP
    overrides**, so **SkyPatcher (SKSE) is required** — without it converted

@@ -89,11 +89,16 @@ The conversion producing files is not the same as the game using them.
 1. **Refresh MO2** (F5). A brand-new output folder appears as a new mod.
 2. **Enable the output mod**, and give it priority over the source armor mods so
    its meshes win.
-3. **Enable EVERY Combined ESP.** This is the step people miss. If the patch
-   exceeds the ESL record cap it is shipped as a full ESP **split into numbered
-   pieces** — `CBBE_to_UBE_Combined.esp`, `CBBE_to_UBE_Combined2.esp`, and so on.
-   The log says so explicitly (`SPLIT: ... (enable ALL of them)`). Enabling only
-   the first leaves part of your armor unpatched and invisible.
+3. **Enable EVERY Combined ESP.** This is the step people miss. Past the 2048-record
+   ESL cap the patch is **split into numbered pieces** — `CBBE_to_UBE_Combined.esp`,
+   `CBBE_to_UBE_Combined2.esp`, and so on. The log says so explicitly
+   (`SPLIT: ... (enable ALL of them)`). Enabling only the first leaves part of your
+   armor unpatched and invisible.
+
+   The pieces are normally **ESL-flagged**, so they cost light slots rather than
+   load-order slots — a large list producing three or four of them is expected and
+   costs you nothing. A full-ESP downgrade is now a last resort and says so loudly
+   in the log; if you see one, the count of pieces is not the problem.
 4. **Position the plugin(s) to win** over the mods they patch.
 
 Then load a save and check a converted piece. Nothing about steps 1-4 is
@@ -105,6 +110,16 @@ automatic.
 
 - **Log**: `=== N failure(s), M warning(s) ===` — investigate any failures.
 - **`conversion_summary.txt`**: how many armors were covered.
+- **The link count.** The merge summary ends with
+  `FULL SKYPATCHER: N armor record(s) -> ...CBBE_to_UBE_Combined.ini`. **N should be
+  in the thousands and roughly match the armors you converted.** If it instead says
+  `no links this run`, delivery is dead for every armor — nothing is applied — and
+  the merge will have deleted the INI (correctly: a stale INI points at FormIDs the
+  rebuilt plugin has reassigned).
+
+  This line is worth reading every run, because everything around it still looks
+  healthy when it fails — ESL flag, split, master count and ARMA total are all
+  reported normally, and the failure is one line in a log thousands long.
 - **In game**: equip a converted piece. If it renders, delivery works end to end.
 
 **Force a mesh reload before judging anything.** Skyrim caches a worn armor's
@@ -121,6 +136,7 @@ Work down this table — the first two questions eliminate most cases.
 | Symptom | Most likely cause | What to do |
 |---|---|---|
 | **Everything** converted is invisible | SkyPatcher missing, or `iEnableArmorPatching=0` | Check that first, always. It is the single delivery path. |
+| **Everything** invisible **and SkyPatcher is fine** | The run produced no links, so there is no INI to apply | Check `SKSE/Plugins/SkyPatcher/armor/CBBE_to_UBE_Combined.ini` **exists** and search the log for `FULL SKYPATCHER: no links this run`. See §5 — the rest of the merge summary looks healthy when this happens. |
 | **Some** armors invisible | Combined ESP pieces not all enabled; output mod not winning; or that armor was skipped | Check step 4; then search the SkyPatcher INI for the armor's plugin name. |
 | One armor invisible, others fine | Its meshes may come from another mod that needs building in BodySlide | Check whether the source ships built meshes or only BodySlide shape data. |
 | Clipping **while standing still** | Static fit/clearance | Note the armor and the body region. |
