@@ -60,7 +60,7 @@ def test_prefixed_first_person_variant_is_gated():
 
 
 def test_spelled_out_first_person_is_gated():
-    assert _is_first_person_mesh("armor/x/0cce_dress1_firstperson_1.nif", _Nif("Dress"))
+    assert _is_first_person_mesh("armor/x/pack_dress1_firstperson_1.nif", _Nif("Dress"))
     assert _is_first_person_mesh("ModArmor/1stpersoncuirassF_1.nif", _Nif("Cuirass"))
 
 
