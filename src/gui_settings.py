@@ -92,6 +92,14 @@ SETTINGS: "tuple[Setting, ...]" = (
             "Armor", "Jiggle and physics transfer", default=True,
             env="CBBE2UBE_NO_JIGGLE_TRANSFER", invert=True,
             tooltip="Graft the body's butt/belly jiggle onto rigid pants so the butt doesn't poke through."),
+    Setting("torso_jiggle", "Chest/butt jiggle on fitted torso armor",
+            "Armor", "Jiggle and physics transfer", default=False,
+            env="CBBE2UBE_TORSO_JIGGLE", invert=False,
+            tooltip="Extend the graft above to a fitted corset/bra/cuirass, so it "
+                    "follows the body's breast and butt instead of staying rigid "
+                    "while the body moves under it (the 'clips only when moving' "
+                    "case). EXPERIMENTAL: jiggle on a rigid leather or plate cup "
+                    "can read as rubbery -- judge it in game."),
     Setting("butt_jiggle", "Butt jiggle graft",
             "Armor", "Jiggle and physics transfer", default=True,
             env="CBBE2UBE_NO_BUTT_JIGGLE", invert=True,
@@ -111,6 +119,89 @@ SETTINGS: "tuple[Setting, ...]" = (
             tooltip="Give stacked garments (shirt under vest) separated "
                     "clearance floors so layers don't converge and z-fight "
                     "where the body grows."),
+    Setting("chest_follow", "Chest follow ratio (experimental)",
+            "Armor", "Jiggle and physics transfer", default=False,
+            env="CBBE2UBE_CHEST_FOLLOW", invert=False,
+            tooltip="Let a fitted soft-material top track the body's breast motion "
+                    "by the amount its own clearance actually requires, instead of "
+                    "an absolute weight cap that leaves it following about a third "
+                    "of the body. Targets 'chest clips only when moving'. Metal "
+                    "armour keeps the old conservative cap. Experimental: too much "
+                    "tracking makes stiff armour look rubbery."),
+    Setting("drape_xml_gate", "Fit robes/dresses that declare their own physics",
+            "Armor", "Jiggle and physics transfer", default=False,
+            env="CBBE2UBE_DRAPE_XML_GATE", invert=False,
+            tooltip="Robes, dresses, cloaks and capes are skipped by every fitting "
+                    "pass, because some of them are cloth driven by a game-wide "
+                    "physics config that cannot be detected from the mesh -- and "
+                    "adjusting those has crashed on equip. This narrows the skip to "
+                    "pieces that do NOT ship their own physics file, so a robe whose "
+                    "physics IS declared can be fitted like any other garment. "
+                    "RISK: the failure mode is a crash when equipping a robe, so "
+                    "test robes specifically after turning this on."),
+    Setting("source_follow", "...judge by the outfit's own weighting, not its name",
+            "Armor", "Jiggle and physics transfer", default=False,
+            env="CBBE2UBE_SOURCE_FOLLOW", invert=False,
+            tooltip="Decide how much a top may move by looking at whether the "
+                    "outfit's author weighted its chest at all, instead of "
+                    "guessing the material from its name and textures. Outfits "
+                    "the author weighted already move correctly and are left "
+                    "alone; the ones they left rigid are the ones that clip, and "
+                    "this lets them move as much as their own fit requires. Only "
+                    "ever adds movement to pieces nothing was helping."),
+    Setting("chest_follow_unknown", "...its ceiling for unrecognised materials",
+            "Armor", "Jiggle and physics transfer", kind="float", default=0.35,
+            env="CBBE2UBE_CHEST_FOLLOW_UNKNOWN", min=0.0, max=1.0, step=0.05,
+            tooltip="How much body motion a top may follow when its material "
+                    "cannot be identified from its name or texture. 0.35 (the "
+                    "default) treats it like metal; 1.0 treats it like cloth. "
+                    "Most armour in a large pack is unidentifiable, and this is "
+                    "what limits it -- raise it if chests still clip when moving, "
+                    "lower it if stiff armour starts looking rubbery."),
+    Setting("chain_torso", "Chest follow on skirt-welded cuirasses (experimental)",
+            "Armor", "Jiggle and physics transfer", default=False,
+            env="CBBE2UBE_CHAIN_TORSO", invert=False,
+            tooltip="Some cuirasses are modelled as ONE piece together with their "
+                    "own physics skirt. The skirt hangs away from the body, which "
+                    "drags the whole piece below the 'hugs the body' test, so "
+                    "nothing ever adjusts the chest -- even though the chest itself "
+                    "is skin-tight. This judges such a piece on its non-skirt part. "
+                    "Needs 'Chest follow ratio' on as well. The skirt is never "
+                    "touched: physics drives it. UNPROVEN -- on every armour tested "
+                    "so far it changed nothing; the setting above it is what "
+                    "actually moves these pieces."),
+    Setting("leg_chain_guard", "Never re-weight physics-driven cloth",
+            "Armor", "Jiggle and physics transfer", default=True,
+            env="CBBE2UBE_NO_LEG_CHAIN_GUARD", invert=True,
+            tooltip="Keep the leg/chest conform away from vertices that HDT-SMP "
+                    "simulates. Writing those is pointless (physics wins at "
+                    "runtime) and has crashed on equip before. Leave this on "
+                    "unless you are bisecting a problem."),
+    Setting("smp_antipoke", "Bust clearance on SMP collider armor (experimental)",
+            "Armor", "Fit and conform", default=False,
+            env="CBBE2UBE_SMP_ANTIPOKE", invert=False,
+            tooltip="An armor whose physics config names it only as a COLLIDER "
+                    "currently gets no bust clearance at all, so the body pushes "
+                    "straight through it -- the 'chest clips when moving' case on "
+                    "cuirasses with their own physics. Measured 6.3% -> 3.3% "
+                    "exposed on one such cuirass. Experimental: pushing verts out "
+                    "on a convex region has spread them before."),
+    Setting("smp_antipoke_push", "...its push budget (units)",
+            "Armor", "Fit and conform", kind="float", default=1.0,
+            env="CBBE2UBE_SMP_ANTIPOKE_PUSH", min=0.0, max=6.0, step=0.1,
+            tooltip="How far that pass may push a vert outward. Default 1.0 was "
+                    "tuned at rest; the body's breast physics is allowed several "
+                    "times that much travel, so raising it is the next lever if "
+                    "clearance helps but falls short. Raise one step at a time -- "
+                    "too large spreads verts on rounded areas.",
+            advanced=True),
+    Setting("skin_influence_cap", "Cap skin influences on the main skin install",
+            "Armor", "Fit and conform", default=False,
+            env="CBBE2UBE_SKIN_INFLUENCE_CAP", invert=False,
+            tooltip="Trim every vertex to the 4 influences the format allows and "
+                    "renormalise, instead of letting the save silently drop the "
+                    "smallest and leave the weights light. Experimental: touches "
+                    "the skinning of every converted mesh."),
     Setting("jiggle_clearance", "Jiggle-overshoot clearance",
             "Armor", "Jiggle and physics transfer", default=True,
             env="CBBE2UBE_NO_JIGGLE_CLEARANCE", invert=True,
@@ -336,13 +427,50 @@ def load_values(path=None) -> "dict[str, object]":
     return vals
 
 
+KNOWN_KEYS_FIELD = "_known_settings"
+
+
+def unseen_settings(path=None) -> "tuple[bool, list]":
+    """`(baseline_known, settings this build has that the saved file never saw)`.
+
+    `save_values` stores ONLY non-default values, so an absent key means "at its
+    default" -- which is indistinguishable from "added to the tool AFTER you last
+    saved". That ambiguity cost a full reconvert on 2026-07-27: two options built
+    that day defaulted OFF, the run looked completely normal for an hour, and the
+    work simply did not happen. The only visible evidence was the ABSENCE of a
+    setting's name in the flag echo, which reads exactly like a deliberate choice.
+
+    So the file also records `_known_settings` -- every key the build knew at save
+    time -- letting a genuinely NEW option be NAMED instead of inferred.
+
+    `baseline_known=False` means the saved file predates this tracking, so nothing
+    can be diffed yet; it becomes accurate after the next save. A file that does not
+    exist is not a warning: nothing was ever chosen, so nothing is new relative to a
+    choice."""
+    p = Path(path) if path is not None else config_path()
+    try:
+        raw = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return True, []
+    if not isinstance(raw, dict):
+        return True, []
+    known = raw.get(KNOWN_KEYS_FIELD)
+    if not isinstance(known, list):
+        return False, []            # saved before tracking existed
+    seen = {k for k in known if isinstance(k, str)}
+    return True, [s for s in SETTINGS if s.key not in seen]
+
+
 def save_values(values: "dict[str, object]", path=None) -> bool:
     """Persist only the settings that DIFFER from their default (keeps the file
-    small and forward-compatible -- new settings just use their new default).
+    small and forward-compatible -- new settings just use their new default), plus
+    `_known_settings`: every key THIS BUILD offers, so a later build can tell a
+    newly-added option from one deliberately left at its default (`unseen_settings`).
     Returns True on success."""
     reg = by_key()
     out = {k: values[k] for k in values
            if k in reg and values[k] != reg[k].default}
+    out[KNOWN_KEYS_FIELD] = sorted(reg)   # ignored on load: not a registered key
     p = Path(path) if path is not None else config_path()
     try:
         p.parent.mkdir(parents=True, exist_ok=True)

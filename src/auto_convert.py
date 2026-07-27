@@ -639,6 +639,71 @@ def _find_textures_root(source_dir: Path) -> Path | None:
     return candidates[0] if candidates else None
 
 
+def _echo_active_experiment_flags() -> None:
+    """Print every `CBBE2UBE_*` that is actually set for THIS run, at the top.
+
+    #settings-did-not-apply. The GUI reads `CBBEtoUBE_settings.json` at STARTUP and
+    hands the variables to the run, so a settings file edited while the GUI is
+    already open has NO effect -- that run silently uses the old in-memory state.
+    A full ~1h reconvert was once spent testing a flag that never got set, and there
+    was no way to tell from the log afterwards: the only evidence was the ABSENCE of
+    a pass's own message, which is indistinguishable from the pass having nothing to
+    do. Echoing what is actually in the environment turns "did my setting apply?"
+    into a fact you can read at the top of the log instead of an inference.
+
+    Deliberately prints the raw environment rather than the settings file: the
+    environment is what the conversion actually reads, and the whole failure mode was
+    the two disagreeing."""
+    try:
+        skip = ("MO2_INI", "MODS_ROOT", "GAME_DATA", "CONFIG", "OUT_MOD", "NO_PAUSE")
+        act = {k: v for k, v in os.environ.items()
+               if k.startswith("CBBE2UBE_") and str(v).strip()
+               and not any(s in k for s in skip)}
+        if act:
+            print(f"\n  active flags ({len(act)}): "
+                  + ", ".join(f"{k[9:]}={v}" for k, v in sorted(act.items())))
+        else:
+            print("\n  active flags: none (all defaults)")
+    except Exception:
+        pass          # never let a diagnostic line break a run
+    _warn_unseen_settings()
+
+
+def _warn_unseen_settings() -> None:
+    """Name any option this build added that the saved settings have never seen.
+
+    The flag echo above reports what the run HAS. It cannot report what the run is
+    MISSING, because an option absent from `CBBEtoUBE_settings.json` means "at its
+    default" -- which in the log is identical to one deliberately switched off.
+
+    That gap cost a full reconvert on 2026-07-27: two options built that day shipped
+    default-OFF, the settings file predated them, the echo listed only the older
+    flags, and an hour of conversion produced none of the intended work. Nothing in
+    the output was wrong -- it simply was not the run that was asked for. Printed
+    beside the echo so both halves of "what am I actually running" appear together,
+    at the top, before any work starts."""
+    try:
+        from . import gui_settings as gs
+        baseline, new = gs.unseen_settings()
+        if new:
+            print(f"\n  NOTE: {len(new)} option(s) were added to this build since "
+                  "your settings were last saved.")
+            print("        They run at their DEFAULT, which is not the same as you "
+                  "having chosen it:")
+            for s in new[:8]:
+                print(f"          - {s.label}  (default: {s.default})")
+            if len(new) > 8:
+                print(f"          ... and {len(new) - 8} more")
+            print("        Open the GUI's Settings tab and save once to record them.")
+        elif not baseline:
+            print("\n  NOTE: your saved settings predate new-option tracking, so an "
+                  "option added later")
+            print("        cannot be told apart from one you left off. Save settings "
+                  "once to record a baseline.")
+    except Exception:
+        pass          # never let a diagnostic line break a run
+
+
 def _discover_master_data_dirs(source_dir: Path) -> list[Path]:
     """Auto-discover directories that may contain master ESMs and UBE race plugins.
 
@@ -992,6 +1057,13 @@ def auto_convert_mod(
     # body-ref mtime) so any code or body change invalidates every cached
     # output. None => always convert (default, safest). Opt-in via --incremental.
     incremental_floor: "float | None" = None,
+    # Armors a THIRD-PARTY mod has already UBE-patched, as
+    # {(defining plugin lowercase, formid low24)} from
+    # `_third_party_ube_covered_armos`. Built ONCE by the caller (the scan is
+    # cached but reads every enabled plugin). Pieces owned entirely by such an
+    # armor are skipped before conversion instead of being converted and then
+    # suppressed at the coverage stage. None => convert everything. #skip-already-ube
+    ube_covered_armos: "set[tuple[str, int]] | None" = None,
 ) -> AutoConvertResult:
     """Run the full M2 + M3 phase 1 pipeline on a single CBBE armor mod.
 
@@ -1098,16 +1170,34 @@ def auto_convert_mod(
     # mesh exists; keep male for male-only or dead-female-path pieces).
     armor_bases = _player_armor_mesh_bases(
         source_dir, include_candidate_slots=True,
-        mesh_resolves=_female_mesh_resolves)
+        mesh_resolves=_female_mesh_resolves,
+        ube_covered_armos=ube_covered_armos)
     # Resolve through the full MO2 VFS so meshes in BodySlide-output / replacer /
     # patch mods are found. Falls back to source-local when no VFS index is given.
-    # Sweep: NEVER fall into the ESP-less "convert every NIF the folder ships"
-    # path — under the game Data dir that would convert every loose vanilla
-    # mesh (skeletons, clutter, creatures).
-    if _sweep_esps and not armor_bases:
+    #
+    # THE FALLBACK IS FOR PLUGIN-LESS MODS ONLY. `_resolve_armor_meshes` treats an
+    # empty `armor_bases` as "this source has no ESP to classify by -> convert every
+    # NIF it ships". That is right for a loose-mesh replacer, and WRONG for any mod
+    # whose plugin we could read, because empty then means "the ESP was read and
+    # selected nothing" -- and everything `_player_armor_mesh_bases` filters out
+    # lives in that difference: the DefaultRace/RNAM gate, the body-slot allowlist,
+    # the nude-body-skin and child-content filters, the female-only policy, and
+    # (since #skip-already-ube) armors another mod has already UBE-patched.
+    #
+    # Keying the guard on "no armour bases" alone therefore inverted the coexistence
+    # gate: a mod whose armors were ALL third-party-covered came back with an empty
+    # set and converted its ENTIRE meshes tree instead of nothing -- more orphan
+    # output than before the gate existed, with the female-only policy bypassed.
+    # So gate on whether a plugin was actually READ. #esp-less-fallback-only
+    _src_esps = _sweep_esps or _find_source_esps(source_dir)
+    if _skip_esp_less_fallback(armor_bases, _src_esps):
         resolved_pairs = []
         result.notes.append(
-            "vanilla sweep: no DefaultRace armour ARMAs resolved — nothing planned")
+            "vanilla sweep: no DefaultRace armour ARMAs resolved — nothing planned"
+            if _sweep_esps else
+            "plugin read but no convertible armour selected — nothing planned "
+            "(already-UBE-patched, non-playable, not DefaultRace, wrong slot, "
+            "child/body-skin, or already UBE-shaped)")
     else:
         resolved_pairs = _resolve_armor_meshes(
             armor_bases, mesh_vfs_index, meshes_root, all_nif_paths)
@@ -1115,8 +1205,7 @@ def auto_convert_mod(
     # the work-item builder later. Built once from the source ESPs; a `_0` file
     # the ARMA never named inherits its `_1` partner's slots. #slot0-weight-partner
     try:
-        _raw_slot_map = ube_patcher.build_nif_slot_map(
-            _sweep_esps or _find_source_esps(source_dir))
+        _raw_slot_map = ube_patcher.build_nif_slot_map(_src_esps)
     except Exception:
         _raw_slot_map = {}
     slot_bits_for = _make_slot_resolver(_raw_slot_map)
@@ -1385,7 +1474,7 @@ def auto_convert_mod(
         planned_output_nifs = {it[1] for it in work_items}
 
         if nif_workers is None:
-            nif_workers = max(1, (os.cpu_count() or 4) - 1)
+            nif_workers = default_worker_count()
         nif_workers = max(1, min(nif_workers, len(work_items)))
 
         t_start = time.perf_counter()
@@ -1795,6 +1884,31 @@ def _build_parser():
     return p
 
 
+def _is_duplicate_source(r) -> bool:
+    """A mod that produced no mesh because an EARLIER source already converted the
+    same paths -- the armour exists, so this is not a miss and must never be reported
+    as one."""
+    return any("collision" in n.lower() for n in (r.notes or []))
+
+
+def _split_zero_mesh_mods(ok: list) -> "tuple[list, list]":
+    """Mods that produced NO converted mesh, split by WHY: `(duplicates, misses)`.
+
+    This lived in THREE places: the text summary and the JSON report each built the
+    split with their own copy of the predicate (`_collision_skipped` / `_collision`),
+    and the per-mod detail loop called a third. Identical today, but a fix to one
+    would silently miss the others and the two reports would then disagree about how
+    many mods failed -- the kind of divergence nobody notices until the numbers get
+    quoted at each other.
+
+    Consolidating this actually surfaced that third caller: removing one copy left it
+    dangling, and `write_conversion_summary`'s blanket `except Exception: return None`
+    swallowed the NameError into a silently missing report file. A test caught it."""
+    zero_all = [(s, r) for s, r in ok if len(r.nif_results) == 0]
+    return ([(s, r) for s, r in zero_all if _is_duplicate_source(r)],
+            [(s, r) for s, r in zero_all if not _is_duplicate_source(r)])
+
+
 def write_conversion_summary(output_dir: Path, results: list) -> Path | None:
     """Write a batch coverage report (`conversion_summary.txt`) at the output root.
 
@@ -1813,13 +1927,7 @@ def write_conversion_summary(output_dir: Path, results: list) -> Path | None:
         tot_loadfail = sum(len(r.nif_load_failures) for _, r in ok)
         tot_vfs_other = sum(r.vfs_other_mod_count for _, r in ok)
         tot_patches = sum(len(r.output_esps) for _, r in ok)
-        # Split zero-mesh mods: collision-skipped = duplicate source (armor IS
-        # converted under another mod); zero-resolved = likely still missing.
-        def _collision_skipped(r):
-            return any("collision" in n.lower() for n in (r.notes or []))
-        zero_all = [(s, r) for s, r in ok if len(r.nif_results) == 0]
-        zero_dup = [(s, r) for s, r in zero_all if _collision_skipped(r)]
-        zero = [(s, r) for s, r in zero_all if not _collision_skipped(r)]
+        zero_dup, zero = _split_zero_mesh_mods(ok)
 
         L: list[str] = []
         L.append("CBBE -> UBE batch conversion summary")
@@ -1863,7 +1971,7 @@ def write_conversion_summary(output_dir: Path, results: list) -> Path | None:
         for s, r in ok:
             if len(r.nif_results) == 0:
                 flag = ("  (0 NIFs - all collision-skipped; converted under "
-                        "another source)" if _collision_skipped(r)
+                        "another source)" if _is_duplicate_source(r)
                         else "  ** 0 meshes (nothing resolved)")
             else:
                 flag = ""
@@ -1900,11 +2008,9 @@ def write_conversion_report_json(output_dir, results,
         ok = [(s, r) for s, r, e in results if r is not None and e is None]
         failed = [(s, e) for s, r, e in results if e is not None]
 
-        def _collision(r):
-            return any("collision" in n.lower() for n in (r.notes or []))
-        zero_all = [(s, r) for s, r in ok if len(r.nif_results) == 0]
-        zero_dup = [s.name for s, r in zero_all if _collision(r)]
-        zero = [s.name for s, r in zero_all if not _collision(r)]
+        _dup, _miss = _split_zero_mesh_mods(ok)
+        zero_dup = [s.name for s, _r in _dup]
+        zero = [s.name for s, _r in _miss]
         rep = {
             "output_mod": str(output_dir),
             "source_mods": len(results),
@@ -2263,7 +2369,11 @@ def _emit_unified_coverage_patches(output, patches_dir, master_data_dirs,
                         print(f"  [unified] removed stale {_p.name}")
                 except OSError:
                     pass
-        for _cp in patches_dir.glob("UBE_Mod*Coverage UBE patch.esp*"):
+        # `*` after Coverage catches the numbered ESL pieces the coverage generators
+        # now emit ("...Coverage2 UBE patch.esp"). Without it a stale piece from a
+        # LARGER previous run survives and keeps delivering its old links, because
+        # SkyPatcher applies every INI in the folder. #coverage-esl-chunks
+        for _cp in patches_dir.glob("UBE_Mod*Coverage* UBE patch.esp*"):
             try:
                 _cp.unlink()
             except OSError:
@@ -2367,11 +2477,21 @@ def _cmd_convert(args):
         shared_pool = None  # serial path; auto_convert_mod handles it
     else:
         pool_workers = args.workers
-        if pool_workers is None:
-            pool_workers = max(1, (os.cpu_count() or 4) - 1)
+        _auto_workers = pool_workers is None
+        if _auto_workers:
+            pool_workers = default_worker_count()
         shared_pool = _NifPool(pool_workers, args.ube_body_ref)
+        _why = ""
+        if _auto_workers:
+            _gb = _total_physical_gb()
+            _cpu = max(1, (os.cpu_count() or 4) - 1)
+            if _gb and pool_workers < _cpu:
+                _why = (f"; capped by RAM ({_gb:.0f} GB / "
+                        f"{WORKER_MEM_BUDGET_GB:g} GB per worker, "
+                        f"cpu allows {_cpu})")
         print(f"  batch worker pool: {pool_workers} workers "
-              f"(shared across all sources, self-healing on worker crash)")
+              f"(shared across all sources, self-healing on worker crash)"
+              f"{_why}")
         try:
             shared_pool.prewarm()
         except Exception as e:
@@ -2465,6 +2585,25 @@ def _cmd_convert(args):
             print(f"  !! incremental floor calc failed (full convert): {e!r}")
             incremental_floor = None
 
+    # #skip-already-ube: armors ANOTHER mod has already UBE-patched are skipped
+    # BEFORE conversion, not converted-then-suppressed at the coverage stage.
+    # Computed once here (the scan is cached, so the coverage stage's later call
+    # is free) because it reads every enabled plugin. Never fatal: on failure we
+    # convert everything, which is the old behaviour.
+    try:
+        _skip_ube_lay = paths.discover_layout()
+        batch_ube_covered = _third_party_ube_covered_armos(
+            paths.mods_root(),
+            enabled_names=paths.enabled_mods(_skip_ube_lay),
+            skip_mods={Path(output).name})
+        if batch_ube_covered:
+            print(f"  {len(batch_ube_covered)} armor(s) already UBE-patched by "
+                  "another mod -- those pieces will NOT be converted")
+    except Exception as _e:
+        batch_ube_covered = None
+        print(f"  !! could not scan for existing UBE patches "
+              f"({type(_e).__name__}: {_e}); converting everything")
+
     results = []
     try:
         for i, src in enumerate(sources, 1):
@@ -2502,6 +2641,7 @@ def _cmd_convert(args):
                     master_data_dirs=batch_master_data_dirs,
                     mesh_vfs_index=mesh_vfs_index,
                     incremental_floor=incremental_floor,
+                    ube_covered_armos=batch_ube_covered,
                 )
 
             try:
@@ -2777,7 +2917,7 @@ def _cmd_convert(args):
                     _record_failure("coverage", output, "unified coverage",
                                     f"winner-scan incomplete (targets={_cov_targets})")
                 _cov_only = sorted(
-                    patches_dir.glob("UBE_Mod*Coverage UBE patch.esp"))
+                    patches_dir.glob("UBE_Mod*Coverage* UBE patch.esp"))
                 # Use coverage as the SOLE generator ONLY when it fully ran and
                 # actually covered something; otherwise merge the per-source
                 # patches so a failed/empty winner scan can't drop all coverage.
@@ -3357,9 +3497,33 @@ def _scale_bone_vert_counts(shape, eps: float = 1e-4) -> "dict[str, int]":
     return out
 
 
+def _scale_bone_peak_weights(shape, eps: float = 1e-4) -> "dict[str, float]":
+    """Per-scale-bone HEAVIEST weight on a shape -- how much the bone actually
+    moves the mesh, as opposed to how many verts it touches at all.
+
+    The vert count alone cannot tell a real divergence from a rounding artefact.
+    Measured on a full conversion: all 17 flagged divergences carried a peak weight
+    of 0.114 or less (median 0.025) -- e.g. a collar shape 20 units above the bust
+    picking up 22 verts of `L Breast01` at 2%, which moves nothing a player can see,
+    yet scored identically to a bone at 90%.  #slot0-weight-partner"""
+    from .nif_convert import _is_scale_bone
+    bw = getattr(shape, "bone_weights", None) or {}
+    out: "dict[str, float]" = {}
+    for bn in getattr(shape, "bone_names", None) or []:
+        if not _is_scale_bone(bn):
+            continue
+        pairs = bw.get(bn) or []
+        pl = pairs.tolist() if hasattr(pairs, "tolist") else pairs
+        peak = max((float(w) for _, w in pl if w > eps), default=0.0)
+        if peak > 0.0:
+            out[bn] = peak
+    return out
+
+
 def _weight_partner_scale_divergence(
         shapes0, shapes1, base_label: str,
-        present_min: int = 8, absent_max: int = 1) -> "list[str]":
+        present_min: int = 8, absent_max: int = 1,
+        weight_min: float = 0.10) -> "list[str]":
     """Compare the scale-bone weighting of SAME-NAMED shapes across a `_0`/`_1`
     pair and report only a true PRESENCE/ABSENCE leak: a bone substantially
     present (>= `present_min` verts) in one weight and effectively ABSENT
@@ -3369,6 +3533,11 @@ def _weight_partner_scale_divergence(
     smooth slim-vs-curvy gradient (e.g. 7 vs 50 verts): the graft reaches
     slightly different vert counts at each body weight, which is expected, not a
     bug. Pure + duck-typed so it's unit-testable without a real NIF.
+
+    `weight_min` additionally requires the bone to MOVE the mesh on the side it is
+    present. Vert count alone proved to be pure noise: on a full conversion all 17
+    divergences peaked at <= 0.114 (median 0.025) -- inert bones a graft brushed at
+    2%, not metadata leaks -- so 19 warnings fired and not one was actionable.
     #slot0-weight-partner"""
     by0 = {getattr(s, "name", None): s for s in shapes0}
     issues: "list[str]" = []
@@ -3379,12 +3548,18 @@ def _weight_partner_scale_divergence(
             continue
         c0 = _scale_bone_vert_counts(s0)
         c1 = _scale_bone_vert_counts(s1)
+        p0 = _scale_bone_peak_weights(s0)
+        p1 = _scale_bone_peak_weights(s1)
         only0, only1 = [], []
         for bn in set(c0) | set(c1):
             n0, n1 = c0.get(bn, 0), c1.get(bn, 0)
-            if n0 >= present_min and n1 <= absent_max:
+            # ...and the bone must actually MOVE the mesh on the side it is present.
+            # Without this the check fires on bones that are present-but-inert: every
+            # divergence on a real conversion (17/17) peaked at <= 0.114, median
+            # 0.025, so the warning was 100% noise and trained the reader to skip it.
+            if n0 >= present_min and n1 <= absent_max and p0.get(bn, 0.0) >= weight_min:
                 only0.append(bn)
-            elif n1 >= present_min and n0 <= absent_max:
+            elif n1 >= present_min and n0 <= absent_max and p1.get(bn, 0.0) >= weight_min:
                 only1.append(bn)
         if only0 or only1:
             det = []
@@ -3606,9 +3781,118 @@ def _resolve_armor_meshes(
     return pairs
 
 
+# #worker-mem-budget -- steady-state private footprint of ONE conversion worker.
+# Measured on a real 3800-mod pack mid-run: 25 worker processes held 58.9 GB of
+# private bytes (~2.4 GB each). 2.0 is deliberately a little under the measured
+# figure: workers do not all peak together, and the cap is a floor on headroom,
+# not an allocation.
+WORKER_MEM_BUDGET_GB = 2.0
+
+
+def _total_physical_gb() -> "float | None":
+    """Total physical RAM in GB, or None if it can't be determined.
+
+    Stdlib only, ON PURPOSE: `psutil` is EXCLUDED from the frozen build
+    (CBBEtoUBE.spec), so importing it here would work in a source run and blow up
+    in the exe every user actually runs."""
+    try:
+        if sys.platform == "win32":
+            import ctypes
+
+            class _MS(ctypes.Structure):
+                _fields_ = [("dwLength", ctypes.c_ulong),
+                            ("dwMemoryLoad", ctypes.c_ulong),
+                            ("ullTotalPhys", ctypes.c_ulonglong),
+                            ("ullAvailPhys", ctypes.c_ulonglong),
+                            ("ullTotalPageFile", ctypes.c_ulonglong),
+                            ("ullAvailPageFile", ctypes.c_ulonglong),
+                            ("ullTotalVirtual", ctypes.c_ulonglong),
+                            ("ullAvailVirtual", ctypes.c_ulonglong),
+                            ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+            st = _MS()
+            st.dwLength = ctypes.sizeof(_MS)
+            if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(st)):
+                return None
+            return st.ullTotalPhys / (1024 ** 3)
+        return (os.sysconf("SC_PHYS_PAGES")
+                * os.sysconf("SC_PAGE_SIZE")) / (1024 ** 3)
+    except Exception:
+        return None
+
+
+def default_worker_count() -> int:
+    """Worker processes to run by default: bounded by CPUs AND by RAM.
+
+    RATIONALE = avoid oversubscribing memory. `cpu_count() - 1` alone assumes
+    RAM is free. It is not: MEASURED 2026-07-25 mid-reconvert on a 24-thread /
+    32 GB box, the old default's 23 workers held 58.9 GB of private bytes
+    against 31.8 GB physical, leaving 0.6 GB free while the OS paged ~36 GB out
+    and faulted it back at 200-744 pages/sec. This cap keeps the pool inside
+    real memory instead. #worker-mem-budget
+
+    THROUGHPUT EFFECT IS UNPROVEN -- do not claim this is faster. A 20-mod /
+    775-NIF A/B (23 vs 16, alternating, warm-up discarded, 2026-07-25) came back
+    a TIE: 418.6s vs 428.2s median conversion, a 2.3% edge to 23 that is inside
+    the noise band, and the wall-clock medians favoured the other arm. That test
+    peaked at ~24 GB with ~8 GB free, i.e. it never reproduced the pressure --
+    the footprint only builds to exhaustion over a full ~3800-mod run. So the
+    paging is real and the slowdown is plausible but unmeasured; settling it
+    needs two FULL runs. Treat this as insurance (and a genuine help on low-RAM
+    machines), not a speed-up.
+
+    Lands somewhere sensible on hybrid CPUs as a side effect: 32 GB yields 16,
+    which on a 12th-gen i9 is exactly the P-core thread count -- workers past
+    that run on the much slower E-cores.
+
+    `--workers` (CLI) and the GUI spinbox still override this outright; the
+    budget itself can be retuned with CBBE2UBE_WORKER_MEM_GB for A/B testing."""
+    cpu = max(1, (os.cpu_count() or 4) - 1)
+    try:
+        budget = float(os.environ.get("CBBE2UBE_WORKER_MEM_GB", "").strip()
+                       or WORKER_MEM_BUDGET_GB)
+    except ValueError:
+        budget = WORKER_MEM_BUDGET_GB
+    if budget <= 0:
+        return cpu
+    gb = _total_physical_gb()
+    if not gb:
+        return cpu                      # unknown RAM -> old behaviour
+    # Round to NEAREST, not down: a "32 GB" machine reports ~31.8 GB (firmware
+    # reserve), and flooring would drop a worker over 0.2 GB of accounting.
+    return max(1, min(cpu, int(gb / budget + 0.5)))
+
+
+def _skip_esp_less_fallback(armor_bases, src_esps) -> bool:
+    """True when an empty `armor_bases` means "the plugin was read and selected
+    nothing" rather than "there is no plugin" -- in which case the ESP-less
+    "convert every NIF the folder ships" fallback must NOT fire.
+    #esp-less-fallback-only
+
+    Keyed on a plugin actually PARSING, not merely existing. `_find_source_esps`
+    is a bare glob, while `_player_armor_mesh_bases` swallows a parse failure and
+    returns an empty set -- so a truncated or unsupported plugin looks exactly
+    like "selected nothing". Gating on file presence alone would convert ZERO
+    meshes for such a mod, where it previously converted every NIF it ships:
+    silent total loss, under a note claiming the plugin was read.
+
+    Parses are cached (`ESP.load_cached`), and the caller has already parsed
+    these same files via `_player_armor_mesh_bases`, so this costs a dict hit."""
+    if armor_bases or not src_esps:
+        return False
+    from . import esp as _esp
+    for _p in src_esps:
+        try:
+            _esp.ESP.load_cached(_p)
+            return True                 # a plugin genuinely parsed -> trust it
+        except Exception:
+            continue
+    return False                        # nothing parsed -> treat as plugin-less
+
+
 def _player_armor_mesh_bases(mod_dir: Path,
                              include_candidate_slots: bool = False,
-                             mesh_resolves=None) -> "set[str]":
+                             mesh_resolves=None,
+                             ube_covered_armos=None) -> "set[str]":
     """Weight-agnostic rel-path keys of every mesh a DefaultRace ARMA in this mod
     points at as an armor piece (biped slot is not hair-only).
 
@@ -3618,6 +3902,15 @@ def _player_armor_mesh_bases(mod_dir: Path,
     actor never renders the male mesh). The male model is kept only for a male-only
     piece, or when the female model is a dead path (so the female ARMA can redirect to
     the converted male). ``None`` keeps the legacy "convert every slot".
+
+    `ube_covered_armos`: optional ``{(defining plugin lowercase, formid low24)}``
+    of armors a THIRD-PARTY mod has already UBE-patched (from
+    `_third_party_ube_covered_armos`). An ARMA whose every referencing ARMO IN
+    THIS PLUGIN is in that set is skipped, so the piece is never converted at
+    all. Without this the coexistence check only ran at the coverage/link stage:
+    the meshes were converted and shipped, then suppressed -- burning conversion
+    time and leaving orphan meshes in the output with no SkyPatcher link.
+    #skip-already-ube
 
     `include_candidate_slots`: also admit ambiguous modder slots (44/45/47/48/59/61)
     used for body cloth. The crash guard in auto_convert_mod drops any non-body-skinned
@@ -3650,17 +3943,35 @@ def _player_armor_mesh_bases(mod_dir: Path,
         _ARMO_NONPLAYABLE = 0x00000004
         playable_ref: "set[int]" = set()
         any_ref: "set[int]" = set()
+        # #skip-already-ube: same shape as the playable/non-playable split above,
+        # for armors a third-party mod has ALREADY UBE-patched. An ARMA is only
+        # skipped when EVERY referencing ARMO in this plugin is covered -- a mesh
+        # shared with an uncovered armor must still convert.
+        _lc_masters = [m.lower() for m in masters]
+        covered_ref: "set[int]" = set()
+        uncovered_ref: "set[int]" = set()
         for g in e.groups:
             if g.label != b"ARMO":
                 continue
             for arec in g.records:
                 _play = not (arec.flags & _ARMO_NONPLAYABLE)
+                if ube_covered_armos:
+                    # Identity as `_third_party_ube_covered_armos` returns it: the
+                    # DEFINING plugin (a master when this record is an override,
+                    # else this plugin) + the low-24 formid.
+                    _mi = arec.formid >> 24
+                    _def = (_lc_masters[_mi] if _mi < len(_lc_masters)
+                            else ep.name.lower())
+                    _is_cov = (_def, arec.formid & 0xFFFFFF) in ube_covered_armos
+                else:
+                    _is_cov = False
                 for s, d in _esp.iter_subrecords(arec.payload):
                     if s == b"MODL" and len(d) == 4:
                         rf = _struct.unpack("<I", d)[0]
                         any_ref.add(rf)
                         if _play:
                             playable_ref.add(rf)
+                        (covered_ref if _is_cov else uncovered_ref).add(rf)
         for g in e.groups:
             if g.label != b"ARMA":
                 continue
@@ -3668,6 +3979,11 @@ def _player_armor_mesh_bases(mod_dir: Path,
                 # Gore/effect: this ARMA is referenced ONLY by non-playable
                 # ARMO(s) in this plugin -> not player-equippable -> don't convert.
                 if rec.formid in any_ref and rec.formid not in playable_ref:
+                    continue
+                # #skip-already-ube: referenced ONLY by armors another mod has
+                # already UBE-patched -> that mod owns this piece; converting it
+                # would ship a mesh we then suppress at the coverage stage.
+                if rec.formid in covered_ref and rec.formid not in uncovered_ref:
                     continue
                 rnam = None
                 slot = 0
@@ -4361,6 +4677,9 @@ def _cmd_auto(args):
     the Combined ESP, and emit vanilla race coverage. This is what the MO2
     executable button runs."""
     import argparse as _ap
+    # FIRST thing in the log, before discovery and before anything can abort: a run
+    # that dies early still has to say what flags it was carrying. #settings-did-not-apply
+    _echo_active_experiment_flags()
     lay = paths.discover_layout()
     paths.export_to_env(lay)
     mr = paths.mods_root()

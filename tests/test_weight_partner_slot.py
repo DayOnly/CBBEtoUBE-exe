@@ -91,9 +91,14 @@ def test_resolver_matches_manual_lookup():
 
 # ---- weight-partner parity guardrail (#slot0-weight-partner) ----
 
-def _pairs(n):
-    # n weighted verts on a bone -> [(i, 0.1), ...]
-    return [(i, 0.1) for i in range(n)]
+def _pairs(n, w=0.5):
+    """n weighted verts on a bone. `w` defaults to a MATERIAL weight.
+
+    It used to be 0.1 -- exactly the `weight_min` gate added later, so every parity
+    test sat right on the boundary and would have flipped on any nudge to the
+    threshold. A bone has to clearly move the mesh for these tests to mean what
+    they say."""
+    return [(i, w) for i in range(n)]
 
 
 def test_parity_flags_missing_scale_bone_on_one_weight():
@@ -151,3 +156,52 @@ def test_scale_bone_vert_counts_ignores_rigid():
     })
     assert _scale_bone_vert_counts(s) == {"NPC L RearCalf [LrClf]": 50,
                                           "NPC L RearThigh": 2}
+
+
+# ---- the divergence must also MOVE the mesh (#slot0-weight-partner) ----
+
+def test_parity_ignores_a_present_but_INERT_bone():
+    """Vert count alone is not evidence of a defect.
+
+    Measured on a full conversion: all 17 flagged divergences peaked at <= 0.114
+    (median 0.025). The worst offender was a collar shape sitting 20 units ABOVE
+    the bust that had picked up 22 verts of `L Breast01` at 2% weight -- inert, but
+    scored identically to a bone at 90%. Nineteen warnings fired and not one was
+    actionable, which is how a check teaches its reader to ignore it."""
+    s1 = _FakeShape("Collar", {"NPC L Breast01": _pairs(22, w=0.02)})
+    s0 = _FakeShape("Collar", {})
+    assert _weight_partner_scale_divergence([s0], [s1], "collar_1.nif") == []
+
+
+def test_parity_still_flags_a_materially_weighted_divergence():
+    """The gate must not silence the case the check exists for -- the real boots
+    pair, where the far-thigh bones genuinely drove the mesh on one weight only."""
+    s0 = _FakeShape("Boots", {"NPC L RearThigh": _pairs(175, w=0.45)})
+    s1 = _FakeShape("Boots", {})
+    out = _weight_partner_scale_divergence([s0], [s1], "boots_1.nif")
+    assert len(out) == 1 and "RearThigh" in out[0]
+
+
+def test_parity_weight_gate_is_tunable_and_defaults_conservatively():
+    """0.10 sits above the entire measured noise band (max 0.114 was the single
+    outlier) without silencing anything that actually deforms."""
+    import inspect
+    sig = inspect.signature(_weight_partner_scale_divergence)
+    assert sig.parameters["weight_min"].default == 0.10
+    s1 = _FakeShape("X", {"NPC L Breast01": _pairs(30, w=0.06)})
+    s0 = _FakeShape("X", {})
+    assert _weight_partner_scale_divergence([s0], [s1], "x.nif") == []
+    assert len(_weight_partner_scale_divergence(
+        [s0], [s1], "x.nif", weight_min=0.05)) == 1
+
+
+def test_peak_weight_helper_reports_the_heaviest_not_the_count():
+    from src.auto_convert import _scale_bone_peak_weights
+    s = _FakeShape("S", {"NPC L Breast01": [(0, 0.02), (1, 0.31), (2, 0.05)]})
+    assert abs(_scale_bone_peak_weights(s)["NPC L Breast01"] - 0.31) < 1e-9
+
+
+def test_peak_weight_helper_ignores_rigid_bones():
+    from src.auto_convert import _scale_bone_peak_weights
+    s = _FakeShape("S", {"NPC L Calf [LClf]": [(0, 0.9)]})
+    assert "NPC L Calf [LClf]" not in _scale_bone_peak_weights(s)

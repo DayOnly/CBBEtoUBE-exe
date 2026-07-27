@@ -23,6 +23,8 @@ body ref automatically. Recipe flags come from the environment, so wrap the call
       "D:/path/to/MO2/mods/<Mod>" armor/examplesuit cuirass  C:/tmp/out
 
 Args: [--mo2-ini <ModOrganizer.ini>] <mod_dir> <mesh_subdir-under-meshes> <stem> [out_dir]
+Output lands in <out_dir>/meshes/<mesh_subdir>/ -- the `meshes` ancestor is REQUIRED
+for physics-XML (collider/soft-body) resolution to work; see the note in main().
 The MO2 instance must be named either with `--mo2-ini` or via CBBE2UBE_MO2_INI.
 Then: python scripts/armor_clip_diag.py <out_dir>/<stem>_1.nif <mod>/.../<stem>_1.nif
 """
@@ -79,6 +81,20 @@ def main():
         sys.exit(2)
     mod_dir, subdir, stem = argv[:3]
     out = Path(argv[3]) if len(argv) > 3 else Path(os.environ["TEMP"], "one_armor")
+    # MIRROR THE REAL LAYOUT: <out>/meshes/<subdir>/. Writing to a FLAT directory
+    # silently mis-models every armour that carries a physics XML.
+    # `_read_source_hdt_xml_text` resolves the XML by walking up to a directory
+    # literally named `meshes` and re-rooting the NIF's data-relative path there; with
+    # no such ancestor it returns None, `_hdt_collider_shape_names` returns an EMPTY
+    # SET, and every collider/soft-body protection quietly no-ops.
+    #
+    # Measured on the hide cuirass (2026-07-27): flat output reports NO colliders and
+    # the chest pass grafts its bust to 0.770; the identical mesh under a `meshes/`
+    # ancestor reports {CuirassLight, HideCollision} and is correctly left at 0.000.
+    # A harness that disagrees with the pipeline about which shapes are colliders is
+    # worse than no harness -- it validates the one rule that is in-game-proven
+    # (#smp-collider-graft) in the direction of breaking it.
+    out = out / "meshes" / subdir.replace("/", os.sep)
     out.mkdir(parents=True, exist_ok=True)
     paths.export_to_env(paths.discover_layout())
     slots = biped_slots_for(mod_dir, stem)

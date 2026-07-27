@@ -158,6 +158,20 @@ always specificity:
 - **Screenshots for anything visual.** For clipping, gaps, or seams, one
   screenshot beats a paragraph. Say which body slider and weight if it only
   happens at particular settings.
+- **For clipping, say whether you were STANDING STILL or MOVING.** This one word
+  changes the diagnosis more than anything else in the report, because the two are
+  different faults with different fixes:
+
+  | | what it means |
+  |---|---|
+  | clips while **standing still** | the armor is fitted too close to the body |
+  | clips **only in motion** | the fit is fine, but the body *travels* further than the armor was given room for |
+  | body shows **only when zoomed out** | not clipping at all — distance z-fighting, cosmetic |
+
+  A piece can measure perfectly clear at rest and still be passed straight through
+  once breast or butt physics starts moving, so "it clips" without this detail can
+  send the fix in entirely the wrong direction. If you can, say which motion does
+  it — running, jumping, combat, or turning.
 - **One report per problem.** Two unrelated bugs in one thread means one of
   them gets forgotten.
 

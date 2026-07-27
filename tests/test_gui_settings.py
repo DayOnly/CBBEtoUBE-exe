@@ -117,6 +117,12 @@ def test_persistence_round_trip_only_non_default(tmp_path):
     assert gs.save_values(vals, path=p)
     import json
     on_disk = json.loads(p.read_text(encoding="utf-8"))
+    # VALUES are still only the non-defaults -- that contract is unchanged. The one
+    # extra entry is `_known_settings`: the record of which options THIS build
+    # offered, which is what lets a later build NAME a newly-added option instead of
+    # mistaking it for one deliberately left off (see test_unseen_settings.py).
+    baseline = on_disk.pop(gs.KNOWN_KEYS_FIELD)
+    assert set(baseline) == {s.key for s in gs.SETTINGS}
     assert on_disk == {"conform_to_body": False, "seam_weld_tol": 0.12}
     loaded = gs.load_values(path=p)
     assert loaded["conform_to_body"] is False

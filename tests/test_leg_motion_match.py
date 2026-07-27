@@ -30,6 +30,24 @@ import os
 import numpy as np
 
 import src.nif_convert as nc
+from src.weights import plan_weight_writes
+
+_TEST_BONES = ["A", "B", "C", "D", "E"]
+
+
+def _plan(weights, had=None, rows=None):
+    """Run the pass's write planner over one or more rows of intended weights."""
+    W = np.asarray(weights, dtype=np.float64)
+    if had is None:
+        had = W > 0
+    if rows is None:
+        rows = np.arange(W.shape[0])
+    return plan_weight_writes(W, rows, _TEST_BONES, np.asarray(had, dtype=bool))
+
+
+def _written(plan, vert):
+    """{bone: weight} actually written for `vert`, including 0.0 removals."""
+    return {b: w for b, pairs in plan.items() for v, w in pairs if v == vert}
 
 
 def test_flag_default_on_and_kill_switch(monkeypatch):
@@ -82,15 +100,116 @@ def test_push_up_only():
     assert "np.maximum(" in src
 
 
+def _shipped_cap_then_floor(new_row, g_row=None):
+    """Replicate the pass's own cap+floor arithmetic (nif_convert, the
+    `_SKIN_MAX_INFLUENCES` prune followed by `#legmotion-normalise`) so the tests
+    below assert what SHIPS rather than what a helper would do.
+
+    Hand-copied from `_match_leg_motion_to_body`; if that block changes, this must
+    change with it (the source assertions in these tests are the tripwire).
+
+    TWO ARGUMENTS ON PURPOSE. In the pass, `G` is the PRE-match weight matrix and
+    `NEW` is the POST-match one, so `_had = G[rows] > 1e-4` means "a bone the
+    vertex carried BEFORE the match". Passing one row for both (the default)
+    models a vert whose weights were only re-split, and the floor then restores a
+    capped bone -> 5 influences ship. Passing them separately models the case the
+    pass exists for -- a GRAFT, where `NEW` carries a bone `G` never had -- and
+    there the graft is the smallest, the cap drops it, and `_had` does NOT bring
+    it back: 4 influences ship and the graft is LOST. Aliasing the two hides that
+    entirely."""
+    NEW = np.array([new_row], dtype=np.float64)
+    G = np.array([new_row if g_row is None else g_row], dtype=np.float64)
+    rows = np.array([0])
+    cap = nc._SKIN_MAX_INFLUENCES
+    if NEW.shape[1] > cap:
+        sub = NEW[rows]
+        cut = np.argsort(sub, axis=1)[:, :-cap]
+        np.put_along_axis(sub, cut, 0.0, axis=1)
+        ss = sub.sum(axis=1)
+        good = ss > 1e-6
+        sub[good] /= ss[good, None]
+        NEW[rows] = sub
+    _sub = NEW[rows]
+    _had = G[rows] > 1e-4
+    _sub = np.where(_had & (_sub <= nc._WRITE_MIN), nc._WRITE_MIN * 2.0, _sub)
+    _ss = _sub.sum(axis=1)
+    _ok = _ss > 1e-6
+    _sub[_ok] /= _ss[_ok, None]
+    if (~_ok).any():
+        _sub[~_ok] = G[rows][~_ok]
+    NEW[rows] = _sub
+    return NEW[0], G[0]
+
+
 def test_prunes_to_the_skin_partition_influence_cap():
-    """Skyrim holds 4 influences per vertex. Exceed it and the SAVE drops one of
-    its own choosing and renormalises, scrambling the computed split (measured:
+    """Skyrim holds 4 influences per vertex. Exceed it and the SAVE keeps the
+    LARGEST 4 and does NOT renormalise (measured 2026-07-25: a row given two extra
+    bones came back summing 1.160), scrambling the computed split (measured:
     65 -> 18 newly-exposed written vs 65 -> 0 for the same weights in memory).
-    The pass must prune the smallest itself so the result is deterministic."""
+    The pass prunes the smallest itself so the result is deterministic.
+
+    KNOWN, DELIBERATE CONTRADICTION -- pinned here so nobody "fixes" it blind:
+    the `#legmotion-normalise` floor below restores every bone the vertex ALREADY
+    had, including one the cap just dropped, so a capped row ships with FIVE
+    influences and the save resolves it after all. The floor exists because
+    `setShapeWeights` merges (an omitted weight keeps its stale value), and the
+    two requirements genuinely conflict. See DESIGN_P6: the resolution is an
+    explicit 0.0 write, attempted and reverted because it measured neutral."""
     assert nc._SKIN_MAX_INFLUENCES == 4
     src = inspect.getsource(nc._match_leg_motion_to_body)
     assert "_SKIN_MAX_INFLUENCES" in src
     assert "put_along_axis" in src
+    out, _ = _shipped_cap_then_floor([0.50, 0.20, 0.15, 0.10, 0.05])
+    written = int((out > nc._WRITE_MIN).sum())
+    assert written == 5, (
+        "the cap-then-floor pair writes 5, not 4 -- if this becomes 4 the floor "
+        "was removed, and stale merged weights will over-weight the vertex")
+    assert abs(out.sum() - 1.0) < 1e-9, "the row must still sum to 1"
+
+
+def test_floor_sits_above_the_write_threshold():
+    """RESTORED COVERAGE. The floor must land STRICTLY above `_WRITE_MIN`, or the
+    floored value is itself dropped by the write filter and the stale weight
+    survives anyway -- defeating the whole point of flooring."""
+    src = inspect.getsource(nc._match_leg_motion_to_body)
+    assert "_WRITE_MIN * 2.0" in src
+    assert "> _WRITE_MIN" in src, "the write must use the same named threshold"
+    out, _ = _shipped_cap_then_floor([0.50, 0.20, 0.15, 0.10, 0.05])
+    floored = out[out < 0.01]
+    assert floored.size and (floored > nc._WRITE_MIN).all(), (
+        "a floored bone must survive the write filter")
+
+
+def test_floor_detects_bones_the_vertex_already_had():
+    """RESTORED COVERAGE. The floor is gated on `_had` -- only bones the vertex
+    ALREADY carried are restored. A bone it never had must stay at zero, or the
+    pass invents an influence."""
+    assert "_had = G[rows] > 1e-4" in inspect.getsource(
+        nc._match_leg_motion_to_body)
+    # 5th column was never present -> must not be floored into existence.
+    out, _ = _shipped_cap_then_floor([0.50, 0.30, 0.15, 0.05, 0.0])
+    assert out[4] == 0.0
+
+
+def test_renormalise_comes_after_the_floor():
+    """RESTORED COVERAGE. Ordering matters: flooring after the renormalise would
+    push the row back off 1.0."""
+    src = inspect.getsource(nc._match_leg_motion_to_body)
+    i_floor = src.index("_had & (_sub <= _WRITE_MIN)")
+    i_norm = src.index("_sub[_ok] /= _ss[_ok, None]", i_floor)
+    assert i_norm > i_floor
+    out, _ = _shipped_cap_then_floor([0.50, 0.20, 0.15, 0.10, 0.05])
+    assert abs(out.sum() - 1.0) < 1e-9
+
+
+def test_row_that_loses_all_weight_is_restored_not_zeroed():
+    """RESTORED COVERAGE. A row normalised from a zero sum would skin to the
+    origin -- a visible vertex spike. It must be restored to its original
+    weighting instead."""
+    assert "_sub[~_ok] = G[rows][~_ok]" in inspect.getsource(
+        nc._match_leg_motion_to_body)
+    out, G = _shipped_cap_then_floor([0.0, 0.0, 0.0, 0.0, 0.0])
+    assert np.allclose(out, G), "a zero row must come back as its original G"
 
 
 def test_does_not_filter_rows_to_leg_share_increases():
@@ -114,30 +233,34 @@ def test_never_drops_an_existing_weight_and_always_renormalises():
     drifts and drags near-degenerate triangles that flicker with VIEW ANGLE -- in
     game, "invisible head-on, fine from the side".
 
-    So: any bone the vert already had must be floored above the write threshold and
-    written back, and every touched row must be renormalised unconditionally."""
-    src = inspect.getsource(nc._match_leg_motion_to_body)
-    assert "_WRITE_MIN" in src, "the write threshold must be a named constant"
-    assert "_had = G[rows] > 1e-4" in src, (
-        "must detect bones the vertex ALREADY had, so none is silently dropped")
-    # the floor and the renormalise must both be present, renormalise last
-    i_floor = src.index("_had & (_sub <= _WRITE_MIN)")
-    i_norm = src.index("_sub[_ok] /= _ss[_ok, None]", i_floor)
-    assert i_norm > i_floor, "renormalise must come after the floor"
+    The ORIGINAL fix floored every bone the vert already had and wrote it back. That
+    defeated the 4-influence cap (a capped row got its dropped bones restored, so it
+    shipped with 5-6 anyway and the SAVE chose the survivors). #weight-write-invariant
+    keeps the guarantee and drops the contradiction: a dropped influence is cleared by
+    writing an explicit 0.0 -- which genuinely removes it -- so nothing stale survives
+    AND the cap holds."""
+    # A bone the vertex HAD, now pruned, must be written as 0.0 -- never omitted.
+    plan = _plan([[0.50, 0.20, 0.15, 0.10, 0.05]])
+    row = _written(plan, 0)
+    dropped = [b for b, w in row.items() if w == 0.0]
+    assert dropped, "a pruned influence the vert had must be explicitly zeroed"
+    # Every written row sums to exactly 1.
+    assert abs(sum(w for w in row.values() if w > 0) - 1.0) < 1e-9
 
 
-def test_write_threshold_matches_the_floor():
-    """The floor must sit ABOVE the write threshold, or the floored value is itself
-    dropped on write and the stale weight survives anyway."""
-    src = inspect.getsource(nc._match_leg_motion_to_body)
-    assert "_WRITE_MIN * 2.0" in src
-    assert "> _WRITE_MIN])" in src, "the write must use the same named threshold"
+def test_a_bone_the_vertex_never_had_is_not_written():
+    """The zero-write exists only to clear a STALE value. A bone the vertex never
+    carried has nothing to clear, so writing it would be pure noise."""
+    had = [[True, True, True, True, False]]
+    plan = _plan([[0.50, 0.20, 0.15, 0.10, 0.05]], had=had)
+    assert "E" not in plan
 
 
-def test_row_that_loses_all_weight_is_restored():
-    """A row normalised from a zero sum would skin to the origin -- a vertex spike."""
-    src = inspect.getsource(nc._match_leg_motion_to_body)
-    assert "_sub[~_ok] = G[rows][~_ok]" in src
+def test_row_that_loses_all_weight_is_left_untouched():
+    """A row normalised from a zero sum would skin to the origin -- a vertex spike.
+    It must be skipped entirely, so merge semantics keep its original weighting."""
+    plan = _plan([[0.0, 0.0, 0.0, 0.0, 0.0]], had=[[True] * 5])
+    assert plan == {}, "a zero row must not be written at all"
 
 
 def test_influence_pruning_keeps_the_largest_and_renormalises():
@@ -165,3 +288,29 @@ def test_body_reference_prefers_the_injected_baseshape():
 def test_hands_and_feet_slots_are_skipped():
     src = inspect.getsource(nc._match_leg_motion_to_body)
     assert "BIPED_SLOT33_BIT" in src and "BIPED_SLOT37_BIT" in src
+
+
+def test_a_grafted_bone_is_dropped_by_the_cap_and_NOT_restored():
+    """THE CASE THE PASS EXISTS FOR, and the one an aliased G/NEW fixture hides.
+
+    When the match grafts a bone the vertex never carried, that graft is typically
+    the smallest influence, so the cap drops it -- and `_had` (built from the
+    PRE-match weights) does not bring it back, because the vertex never had it.
+    The graft is silently lost on that vertex.
+
+    This is not a bug in the floor; it is the cap and the floor doing exactly what
+    each was written to do, on a vertex that cannot satisfy both. It is pinned here
+    so the trade-off is visible rather than surprising -- and so a future change
+    that claims to "fix the cap" has to state what it does to this case."""
+    g = [0.40, 0.20, 0.15, 0.25, 0.00]      # E never carried
+    new = [0.36, 0.18, 0.14, 0.22, 0.10]    # E grafted by the match
+    out, _ = _shipped_cap_then_floor(new, g)
+    written = int((out > nc._WRITE_MIN).sum())
+    assert written == 4, "cap holds when the dropped bone was never carried"
+    assert out[4] == 0.0, "the GRAFT is what the cap dropped"
+    assert abs(out.sum() - 1.0) < 1e-9
+
+    # Contrast: same row, but the vertex already carried E -> the floor restores
+    # it and 5 influences ship. Same code, opposite outcome.
+    out2, _ = _shipped_cap_then_floor(new)
+    assert int((out2 > nc._WRITE_MIN).sum()) == 5

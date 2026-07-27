@@ -29,6 +29,32 @@ CBBEtoUBE_last_failures.json
 # Packaged release archives
 CBBEtoUBE-*.zip
 
-# Per-armor worklist: names specific mods/armors, so it must never be published
-# (the repo is public and tracked content is kept mod-agnostic). Local only.
+# LOCAL WORKING NOTES THAT NAME SPECIFIC MODS/ARMORS.
+#
+# The repo is public and tracked content is kept mod-agnostic. These files exist to
+# record in-game findings, which is only useful if they say WHICH armour -- so they
+# are local-only by design, not by accident.
+#
+# ARMOR_WORKLIST.md was already listed. The rest were merely UNTRACKED, which is not
+# the same protection: `git add .` would have published them. CLIPPING_LOG.md alone
+# carries 17 mod-naming lines. Found by the 2026-07-27 redundancy audit.
+#
+# Adding a new working note that names a mod? List it here in the same commit.
 ARMOR_WORKLIST.md
+CLIPPING_LOG.md
+AUDIT_REDUNDANCY_*.md
+CONVERTER_AUDIT_*.md
+DESIGN_JIGGLE_PLAN.md
+DESIGN_P5_*.md
+DESIGN_P6_*.md
+
+# Development measurement data (scripts/collect_fit_dataset.py).
+# Generated artefacts, sometimes large; regenerate rather than commit.
+fit_dataset*.jsonl
+fit_census*.jsonl
+*.census.jsonl
+
+# Golden-output regression baseline (scripts/golden_output.py). Generated data, and
+# its manifest records which MOD each source mesh came from -- so it falls under the
+# same mod-agnostic rule as the working notes above. Re-capture rather than commit.
+golden/

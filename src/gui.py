@@ -256,7 +256,15 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
 
     # ---- tk vars ----
     out_var = tk.StringVar(value=default_out)
-    workers_var = tk.IntVar(value=max(1, (os.cpu_count() or 2) - 1))
+    # RAM-aware default: `cpu_count()-1` alone oversubscribes memory (measured:
+    # 23 workers wanted 58.9 GB on a 32 GB box). Not a proven speed-up -- see
+    # auto_convert.default_worker_count. #worker-mem-budget
+    try:
+        from . import auto_convert as _ac_w
+        _worker_default = _ac_w.default_worker_count()
+    except Exception:
+        _worker_default = max(1, (os.cpu_count() or 2) - 1)
+    workers_var = tk.IntVar(value=_worker_default)
     copy_tex = tk.BooleanVar(value=False)  # default: resolve textures via VFS
     dry = tk.BooleanVar(value=False)
     convert_armor = tk.BooleanVar(value=True)   # master toggle: convert armor mods

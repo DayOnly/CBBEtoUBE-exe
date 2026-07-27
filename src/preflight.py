@@ -157,7 +157,13 @@ def _plugin_in_mods(mr, enabled, name) -> bool:
 def _locate_in_mods_or_data(mr, enabled, dirs, name) -> "Path | None":
     """Path to `name` (a Data-relative path) in an enabled mod or the game Data,
     or None. Same search order as _plugin_in_mods/_plugin_in_data, but returns
-    the file so callers can READ it."""
+    the file so callers can READ it.
+
+    PASS `enabled` IN MO2 PRIORITY ORDER (`enabled_mods_ordered`) whenever the
+    CONTENT matters. `enabled_mods` returns a SET, and set iteration order is
+    arbitrary, so with several mods providing the same path this would return a
+    losing copy -- fine for "does it exist", wrong for "what does it say".
+    #winner-order"""
     if mr is not None:
         mrp = Path(mr)
         try:
@@ -344,8 +350,22 @@ def run_checks(layout=None, *, want_overlays=False, want_overlay_copy=False,
         # Presence of the DLL is not enough: iEnableArmorPatching=0 delivers
         # exactly the same symptom (every converted piece invisible) with no
         # other diagnostic, so verify the INI too.
+        # Read the INI the GAME loads: `ordered` is MO2 priority order (winner
+        # first), `enabled` is an unordered set. With more than one mod shipping
+        # SkyPatcher.ini, the set could hand back a LOSING copy -- and reading
+        # `iEnableArmorPatching=1` from a copy the game overrides would PASS a
+        # setup whose live value is 0, i.e. every converted piece invisible with
+        # a green preflight. Fall back to the set only when no order is known.
+        # #winner-order
+        # Winner-first, then any other enabled mod: ordering must never LOSE a
+        # detection, only prefer the right copy when several exist.
+        _sp_search = list(ordered) if ordered else []
+        if enabled:
+            _seen = set(_sp_search)
+            _sp_search += [n for n in sorted(enabled) if n not in _seen]
         armor_on = _skypatcher_armor_patching(
-            _locate_in_mods_or_data(mr, enabled, dd, "SKSE/Plugins/SkyPatcher.ini"))
+            _locate_in_mods_or_data(mr, _sp_search or enabled, dd,
+                                    "SKSE/Plugins/SkyPatcher.ini"))
         if not skyp:
             checks.append(_c("skypatcher", "SkyPatcher (armor delivery)", FAIL,
                              "SkyPatcher not detected.",
@@ -373,6 +393,33 @@ def run_checks(layout=None, *, want_overlays=False, want_overlay_copy=False,
                          + (" and is enabled" if en else " but is DISABLED"),
                          "" if en else f"Enable '{output_name}' in MO2 and let it "
                          "WIN over the source mods, or its output won't load."))
+
+    # Options this build added that the saved settings have never seen. Absent from
+    # the file == "at its default", which reads identically to "you chose off" -- the
+    # ambiguity that silently cost a full reconvert on 2026-07-27.
+    try:
+        from . import gui_settings as _gs
+        _baseline, _new = _gs.unseen_settings()
+        if _new:
+            _names = ", ".join(f'"{s.label}"' for s in _new[:5])
+            _more = f" (+{len(_new) - 5} more)" if len(_new) > 5 else ""
+            checks.append(_c(
+                "newsettings", "New options in this build", WARN,
+                f"{len(_new)} option(s) were added since you last saved settings "
+                f"and are running at their default: {_names}{_more}",
+                "Open Settings, choose them (or accept the defaults) and save once "
+                "- that records them and clears this."))
+        elif not _baseline:
+            checks.append(_c(
+                "newsettings", "New options in this build", WARN,
+                "Your saved settings predate new-option tracking, so an option added "
+                "later cannot be told apart from one you deliberately left off.",
+                "Save your settings once to record a baseline."))
+        else:
+            checks.append(_c("newsettings", "New options in this build", OK,
+                             "Nothing added since your last save."))
+    except Exception:
+        pass
 
     try:
         free_gb = shutil.disk_usage(str(mr)).free / (1024 ** 3)

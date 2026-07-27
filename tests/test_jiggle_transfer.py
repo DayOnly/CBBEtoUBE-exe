@@ -73,3 +73,39 @@ def test_existing_jiggle_bone_is_noop():
 def test_negligible_weight_is_noop():
     # a near-zero body jiggle weight produces no meaningful graft
     assert nc._jiggle_transfer_vert({THIGH: 1.0}, {BUTT: 1e-5}, 1.0, 0.7) == (None, set())
+
+
+def test_added_bone_must_emit_a_weight_above_the_write_threshold():
+    """#zeroweight-bone-desync. `new_bones` only means "the graft gave this bone
+    weight somewhere". The write filters on `> 1e-4`, so a bone whose every
+    grafted weight lands under that would be add_bone'd and then written an EMPTY
+    weight list -- a bone present in the shape but absent from the regenerated
+    skin-partition palette, so a per-vertex index runs past the palette and the
+    piece CTDs on equip.
+
+    `_match_rigid_leg_bend_to_body` has carried this `any(... > 1e-4 ...)` test on
+    its own `to_add` from the start; this pass was missing it (found by review
+    2026-07-26, after measuring 3 pre-existing zero-weight bones in real output).
+    Dropping such a bone is safe -- its sub-threshold weight was never going to be
+    written."""
+    import inspect
+    import src.nif_convert as nc
+    src = inspect.getsource(nc._transfer_body_jiggle_to_fitted)
+    i = src.index("addable = [")
+    guard = src[i:i + 260]
+    assert "stb is not None" in guard, "STB validity gate must remain"
+    assert "> 1e-4" in guard, (
+        "an added bone must also EMIT a weight above the write threshold, or it "
+        "ships as a zero-weight bone (equip CTD)")
+
+
+def test_both_add_bone_passes_use_the_same_emit_gate():
+    """The two passes that add_bone must agree: a bone is only worth adding if it
+    will emit a written weight. Divergence here is what left the gap."""
+    import inspect
+    import src.nif_convert as nc
+    for fn in (nc._transfer_body_jiggle_to_fitted,
+               nc._match_rigid_leg_bend_to_body):
+        src = inspect.getsource(fn)
+        assert "add_bone" in src
+        assert "> 1e-4" in src, f"{fn.__name__} lost its emit gate"

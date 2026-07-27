@@ -81,6 +81,32 @@ If your change alters how armor is fitted, say in the PR **what you verified in
 game** — which armor, on which body. Structural tests catch structural problems;
 they do not catch a mesh that is technically valid and visibly wrong.
 
+## Development measurement tools
+
+Not part of the shipped converter. `scripts/` is not bundled by PyInstaller and
+none of these have a GUI setting or CLI surface in the exe — they exist to measure
+and verify the converter while working on it.
+
+| script | what it answers |
+|---|---|
+| `verify_skin_exposure.py` | Is a patch of body skin actually visible through the armour? Ray-based, validated with positive/negative controls. |
+| `survey_motion_clipping.py` | Which shapes let skin show once the body MOVES, pack-wide. |
+| `collect_fit_dataset.py` | Full-pack census: one JSONL row per shape, ~53 fields (fit, clearance, follow ratio, required follow, exposure curves for chest AND butt, shader numerics, mesh density, weight health). |
+| `verify_zero_weight_bones.py` | Bones left in a shape with no weight — the `#zeroweight-bone-desync` equip-CTD class. |
+| `verify_weight_invariant.py` | Rows that do not sum to 1.0. |
+
+**Measure before concluding.** `METRICS.md` records which measurement methods proved
+sound and which gave wrong answers, with the controls used to tell them apart. Read it
+before trusting a number from any of the above — two metrics in it looked fine and were
+not, and each produced a wrong conclusion that shipped into the notes before it was
+caught.
+
+Dataset output (`fit_dataset*.jsonl`, `fit_census*.jsonl`) is gitignored: it is a
+generated artefact, sometimes large, and should be regenerated rather than committed.
+Each dataset's first line is a header record holding the converter version, timestamp,
+active flags and the constants in force — two datasets are only comparable if you know
+what produced them.
+
 ## License
 
 CBBEtoUBE is GPL-3.0 (see [LICENSE](LICENSE)) — it vendors GPL-3.0 PyNifly, so

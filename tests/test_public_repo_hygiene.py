@@ -29,6 +29,7 @@ and that the ignore entries protecting them stay present. It cannot enforce
 of mod names would itself be tracked content naming mods. That last line stays
 a review judgement; these tests fence everything mechanical around it.
 """
+import fnmatch
 import subprocess
 from pathlib import Path
 
@@ -44,18 +45,24 @@ NEVER_TRACKED = (
     "CBBEtoUBE_last_failures.json",
     "output/",
     "samples/",
+    # In-game working notes. CLIPPING_LOG.md alone carries 17 mod-naming lines;
+    # the audit/design notes quote measurements BY armour name, which is exactly
+    # what makes them useful locally and unpublishable.
+    "CLIPPING_LOG.md",
+    "AUDIT_REDUNDANCY_*.md",
+    "CONVERTER_AUDIT_*.md",
+    "DESIGN_JIGGLE_PLAN.md",
+    "DESIGN_P5_*.md",
+    "DESIGN_P6_*.md",
+    # Golden baseline AND its piece inventory: the manifest records which MOD each
+    # source mesh came from, and golden/pieces.json is that list by definition.
+    "golden/",
 )
 
 # The .gitignore lines that protect the set above. If one disappears, the
 # protection is gone even though nothing is tracked *yet* -- catch it then,
 # not at the first accidental `git add .`.
-REQUIRED_IGNORE_ENTRIES = (
-    "ARMOR_WORKLIST.md",
-    "CBBEtoUBE_last_failures.json",
-    "output/",
-    "samples/",
-    "*.log",
-)
+REQUIRED_IGNORE_ENTRIES = NEVER_TRACKED + ("*.log",)
 
 
 def _tracked_files():
@@ -80,6 +87,9 @@ needs_git = pytest.mark.skipif(
 def test_local_only_file_is_not_tracked(banned):
     if banned.endswith("/"):
         hits = [f for f in tracked if f.startswith(banned)]
+    elif "*" in banned:
+        hits = [f for f in tracked
+                if fnmatch.fnmatch(f, banned) or fnmatch.fnmatch(f, "*/" + banned)]
     else:
         hits = [f for f in tracked if f == banned or f.endswith("/" + banned)]
     assert not hits, (

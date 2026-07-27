@@ -11,6 +11,11 @@ not a plugin-record problem, so the tool rewrites NIF vertices and bone weights
 directly, then generates the minimal ESP records that point the armor at the new
 meshes.
 
+> **New here? Start with [USING.md](USING.md)** — a start-to-finish walkthrough:
+> what to check before converting, how to run it, **how to wire the output into
+> MO2** (the step that most often goes wrong), and how to read a problem when one
+> shows up. This README is the reference for commands, flags and internals.
+
 ## What it does
 
 Given a Mod Organizer 2 setup, the full pipeline (`auto`):
@@ -112,6 +117,12 @@ skinned shapes is baked into the verts):
 - **Jiggle clearance** — clears armor against the body's *moving* envelope, not
   just its rest pose, so soft-body jiggle can't push skin through at the peak of
   motion. On by default; `CBBE2UBE_NO_JIGGLE_CLEARANCE=1` disables it.
+
+  > Three separate passes graft jiggle weight, each scaled differently, and their
+  > sliders do **not** state the ratio they deliver — the same nominal `1.0` yields
+  > 0.35 on the chest and 1.00 on the butt. **[DESIGN_JIGGLE.md](DESIGN_JIGGLE.md)**
+  > documents all of it with measured numbers, and proposes a single "follow ratio"
+  > so a slider means what it says.
 - **Source-standoff conform** — a piece that hugged the 3BA body is reeled
   back to hug UBE instead of floating at the over-projected distance;
   pull-in only, with a bust-band exception so the nipple can't poke through.
@@ -261,6 +272,19 @@ When running it from outside the instance, point it explicitly:
 - `CBBE2UBE_MODS_ROOT` — the `mods/` folder directly (skips INI parsing)
 - `CBBE2UBE_GAME_DATA` — game `Data` folder(s), `;`-separated
 - `CBBE2UBE_LAYER_DEBUG=1` — per-round stats from the layer-order pass
+
+> **Environment variables do not reach an MO2 launch.** MO2 does not pass your
+> environment to the program it starts, so `CBBE2UBE_*` set in a shell (or in your
+> user environment) has **no effect** on a run launched from MO2 — it applies only
+> when you invoke the converter directly from that shell. Every behaviour toggle
+> therefore also has a **GUI checkbox** (Armor / Overlays / Paths tabs), which is
+> the supported way to change one; the GUI writes the variable into the run itself.
+> Settings persist to `CBBEtoUBE_settings.json` beside the exe.
+>
+> This is not a hypothetical: a measured fit improvement sat unused for weeks
+> because it was reachable only by environment variable, and so could never be
+> switched on by a normal launch. If you add a flag meant to be play-tested, give it
+> a row in `src/gui_settings.py`.
 
 ## Reference bodies
 

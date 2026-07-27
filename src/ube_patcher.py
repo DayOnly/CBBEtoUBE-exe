@@ -3011,10 +3011,11 @@ _STRIP_VANILLA_BODY_ARMA = {
 }
 
 
-_UBE_SKIN_TEMPLATE_EDIDS = {"Torso": "00UBE_NakedTorso",
-                            "Hands": "00UBE_NakedHands",
-                            "Feet": "00UBE_NakedFeet"}
-_UBE_SKINNAKED_EDID = "00UBE_SkinNaked"
+# The UBE race-skin EditorIDs are `00UBE_SkinNaked` (the ARMO) and its three ARMA
+# templates `00UBE_NakedTorso` / `00UBE_NakedHands` / `00UBE_NakedFeet`. Recorded here
+# as reference only: lookup tables for them existed but nothing read them (removed
+# 2026-07-27). Skin routing goes through RNAM/race matching, not EditorID strings --
+# see the nude hands/feet wrist-desync work for why matching on names was abandoned.
 # FormID-bearing subrecords are remapped via the canonical module sets
 # (FORMID_SINGLE_SUBRECORD_SIGS + FORMID_ARRAY_SUBRECORD_SIGS) so the fold
 # stays in sync with the master-prune pass's notion of what is a FormID.
@@ -3130,7 +3131,6 @@ def _record_abs_fid(formid: int, plugin_masters: list[str],
 # the winning ARMO to include it.
 
 _HAIR_ONLY_SLOTS = 0x802          # biped slots 31 (Hair) | 41 (LongHair)
-_BODY_SLOT_BIT_32 = 1 << 2        # biped slot 32 (Body)
 _ARMORHELMET_KW_LOW24 = 0x06BBD9  # Skyrim.esm ArmorHelmet keyword
 
 
@@ -3185,6 +3185,189 @@ def _summarize_armo(payload, masters, own_name):
         elif s == b"EDID":
             edid = d.split(b"\x00")[0].decode("latin1", "ignore")
     return arms, rnam, slots, edid
+
+
+def _converted_model_exists(model_path: str, crp: "set[str]") -> bool:
+    """Does a CONVERTED `!UBE\\` mesh exist for this model path?
+
+    Decides whether a coverage ARMA points at the converted mesh or keeps the source
+    one. Getting it wrong is not cosmetic: a blanket keep-source once left every such
+    piece wearing the un-converted mesh on the UBE body, i.e. distorted or invisible
+    in game (`#mnb-converted-redirect`).
+
+    Was defined identically inside both `generate_modded_nonbody_ube_coverage_patch`
+    and `generate_modded_body_ube_coverage_patch`, each closing over its own `crp`.
+    The two coverage generators must normalise a path the same way or they disagree
+    about which pieces got converted -- so the normalisation lives in one place."""
+    if not model_path:
+        return False
+    return model_path.replace("\\", "/").lstrip("/").lower() in crp
+
+
+def _chunk_targets_for_esl(targets, mint_rec, cap: int) -> "list[list]":
+    """Group coverage targets into chunks, each minting <= `cap` DISTINCT armatures.
+
+    Chunked by TARGET (ARMO), never by armature, so an ARMO's whole add-set stays in
+    one piece and therefore yields ONE `filterByArmors` line. Splitting an ARMO across
+    pieces would emit two lines for it, and whether SkyPatcher accumulates or the last
+    wins is unverified -- the shipped INI currently has exactly one line per armor
+    (9,913 lines / 9,913 distinct armors) and that invariant is worth keeping.
+
+    Cost of that choice: an armature shared by ARMOs in different chunks is minted
+    once per chunk. Measured on the live pack this is a handful of records, far
+    cheaper than risking the delivery path.
+
+    A single target needing more than `cap` armatures becomes its own over-cap chunk
+    -- it cannot be split without breaking the invariant above, and the caller
+    downgrades just that piece."""
+    chunks: list = []
+    cur: list = []
+    cur_keys: set = set()
+    for tgt in targets:
+        _armo, _plugin, to_mint = tgt
+        fresh = {a for a in to_mint if a in mint_rec} - cur_keys
+        if cur and len(cur_keys) + len(fresh) > cap:
+            chunks.append(cur)
+            cur, cur_keys = [], set()
+            fresh = {a for a in to_mint if a in mint_rec}
+        cur.append(tgt)
+        cur_keys |= fresh
+    if cur:
+        chunks.append(cur)
+    return chunks
+
+
+def _emit_coverage_pieces(
+    out_path: Path,
+    targets,
+    mint_rec: dict,
+    patch_masters,
+    *,
+    own_byte: int,
+    author: str,
+    description: str,
+    ini_header: "list[str]",
+    preserve_textures: bool = False,
+    master_data_dirs=None,
+    emit_sidecar: bool = False,
+    cap: int = ESL_MAX_OWN_RECORDS,
+) -> dict:
+    """Write a coverage patch as ONE OR MORE ESL-sized pieces.
+
+    Both coverage generators used to emit a single monolithic ESP. On a large pack
+    each minted well over the 2048 own-record ESL limit (measured 2,116 and 2,104),
+    and `_partition_patches_for_esl` bin-packs whole PATCHES -- it cannot split one.
+    So every merged piece containing a coverage patch was forced to a full ESP, and
+    the only reason one stayed light was that dedup happened to land it 4 records
+    under the line. Emitting ESL-sized pieces here is what the splitting was for.
+
+    Each piece restarts its own-FormID space at `ESL_OWN_FORMID_MIN`, carries its own
+    pruned master list, and gets its own INI lines and sidecar, so it is independently
+    ESL-clean and valid standalone.
+
+    Piece names keep the `... UBE patch.esp` suffix (`<stem>2 UBE patch.esp`) because
+    the merge collects patches with `*UBE patch.esp`; a name that breaks that glob is
+    silently dropped from the Combined, which is invisible until armour goes missing
+    in game."""
+    stem, suffix = out_path.stem, (out_path.suffix or ".esp")
+    parent = out_path.parent
+    # `<stem>` here is e.g. "UBE_ModBody_Coverage UBE patch"; the index goes before
+    # " UBE patch" so the suffix survives.
+    base = stem.rpartition(" UBE patch")[0] or stem
+
+    def _piece_path(i: int) -> Path:
+        return out_path if i == 0 else parent / f"{base}{i + 1} UBE patch{suffix}"
+
+    chunks = _chunk_targets_for_esl(targets, mint_rec, cap)
+    # Drop pieces a previous, larger run left behind (N pieces -> fewer). Same hazard
+    # `merge_patches_split._drop_stale_pieces` documents: an orphan keeps delivering
+    # the PREVIOUS run's links because SkyPatcher applies every INI in the folder.
+    keep = {_piece_path(i).name for i in range(len(chunks))}
+    for f in parent.glob(f"{base}* UBE patch{suffix}"):
+        if f.name in keep:
+            continue
+        mid = f.name[len(base):len(f.name) - len(f" UBE patch{suffix}")]
+        if not mid.isdigit():
+            continue                  # not one of our numbered pieces
+        for victim in (f, Path(str(f) + ".skypatcher.json")):
+            try:
+                if victim.is_file():
+                    victim.unlink()
+            except OSError:
+                pass
+
+    ini_lines = list(ini_header)
+    pieces, warnings, total_minted, all_esl = [], [], 0, True
+    masters_count = 0
+    for idx, chunk in enumerate(chunks):
+        piece_path = _piece_path(idx)
+        piece_name = piece_path.with_suffix(".esp").name
+        local_fid: dict = {}
+        recs: list = []
+        nid = ESL_OWN_FORMID_MIN
+        for _armo, _plugin, to_mint in chunk:
+            for a in to_mint:
+                if a in local_fid or a not in mint_rec:
+                    continue
+                fid = (own_byte << 24) | nid
+                nid += 1
+                src = mint_rec[a]
+                recs.append(esp.Record(
+                    sig=b"ARMA", flags=0, formid=fid, timestamp_vc=0,
+                    version_unk=0x002C, payload=src.payload))
+                local_fid[a] = fid
+        as_esl = len(recs) <= cap
+        all_esl = all_esl and as_esl
+        total_minted += len(recs)
+        flags = TES4_FLAG_ESL if as_esl else 0
+        piece = esp.ESP(header=esp.TES4Header(
+            masters=list(patch_masters), author=author,
+            description=(description if len(chunks) == 1 else
+                         f"{description} (part {idx + 1}/{len(chunks)})"),
+            flags=flags, version=1.7, num_records=0,
+            next_object_id=max(ESL_OWN_FORMID_MIN, nid)), groups=[])
+        if recs:
+            piece.groups.append(esp.Group(label=b"ARMA", records=recs))
+        prune_unused_masters(piece)
+        if preserve_textures:
+            resort_masters(piece, master_data_dirs=master_data_dirs)
+        piece.save(piece_path)
+        warnings.extend(validate_patch(piece_path, master_data_dirs=master_data_dirs))
+        pieces.append(piece_name)
+        masters_count = max(masters_count, len(piece.header.masters))
+
+        # INI: mask to 24 bits so the line stays correct after prune remapped the
+        # master byte (the same trick the single-piece version relied on).
+        for armo_abs, defining_plugin, to_mint in chunk:
+            addons = [local_fid[a] for a in to_mint if a in local_fid]
+            if not addons:
+                continue
+            adds = ",".join("{}|{:06X}".format(piece_name, (f & 0xFFFFFF))
+                            for f in addons)
+            ini_lines.append("filterByArmors={}|{:06X}:armorAddonsToAdd={}".format(
+                defining_plugin, armo_abs[1], adds))
+
+        if emit_sidecar:
+            import json as _json
+            doc = []
+            for armo_abs, defining_plugin, to_mint in chunk:
+                adds = [{"fid": local_fid[a], "src": [a[0], a[1]]}
+                        for a in to_mint if a in local_fid]
+                if adds:
+                    doc.append({"armo": [defining_plugin, armo_abs[1]],
+                                "adds": adds})
+            sc = Path(str(piece_path) + ".skypatcher.json")
+            try:
+                if doc:
+                    sc.write_text(_json.dumps(doc, indent=1), encoding="utf-8")
+                elif sc.is_file():
+                    sc.unlink()
+            except OSError:
+                pass
+
+    return {"pieces": pieces, "ini_lines": ini_lines, "minted_armas": total_minted,
+            "esl_flagged": all_esl, "masters": masters_count,
+            "validation_warnings": warnings, "split_pieces": len(chunks)}
 
 
 def generate_modded_nonbody_ube_coverage_patch(
@@ -3335,9 +3518,7 @@ def generate_modded_nonbody_ube_coverage_patch(
     crp = converted_rel_paths or set()
 
     def _conv_exists(model_path: str) -> bool:
-        if not model_path:
-            return False
-        return model_path.replace("\\", "/").lstrip("/").lower() in crp
+        return _converted_model_exists(model_path, crp)
 
     new_arma_records: list[esp.Record] = []
     _mint_rec: dict = {}   # arma_abs -> minted Record (for post-prune sidecar fids)
@@ -3391,68 +3572,29 @@ def generate_modded_nonbody_ube_coverage_patch(
         mint_set[arma_abs] = new_fid
         _mint_rec[arma_abs] = _rec
 
-    as_esl = len(new_arma_records) <= ESL_MAX_OWN_RECORDS
-    tes4_flags = TES4_FLAG_ESL if as_esl else 0
-    out_header = esp.TES4Header(
-        masters=patch_masters, author=author, description=description,
-        flags=tes4_flags, version=1.7, num_records=0,
-        next_object_id=max(0x800, next_id))
-    out_esp = esp.ESP(header=out_header, groups=[])
-    if new_arma_records:
-        out_esp.groups.append(esp.Group(label=b"ARMA", records=new_arma_records))
-    prune_unused_masters(out_esp)
-    # preserve_textures unions source masters of varying tiers; tier-sort so a
-    # master-tier plugin never trails a regular ESP (all refs are remapped, so
-    # this is ref-safe). Mirrors the body coverage pass.
-    if preserve_textures:
-        resort_masters(out_esp, master_data_dirs=master_data_dirs)
-    out_esp.save(out_path)
-    warnings = validate_patch(out_path, master_data_dirs=master_data_dirs)
-
-    # ---- SkyPatcher-links sidecar (Step 3b: fold into Combined via the merge) ----
-    # Same schema the per-source pass writes; the merge remaps minted fids + dedups
-    # (armo, src-armature). fids are POST-prune (rec.formid mutated in place).
-    if emit_sidecar:
-        import json as _json
-        _doc = []
-        for armo_abs, defining_plugin, to_mint in targets:
-            _adds = [{"fid": _mint_rec[_a].formid, "src": [_a[0], _a[1]]}
-                     for _a in to_mint if _a in _mint_rec]
-            if _adds:
-                _doc.append({"armo": [defining_plugin, armo_abs[1]],
-                             "adds": _adds})
-        _sc = Path(str(out_path) + ".skypatcher.json")
-        try:
-            if _doc:
-                _sc.write_text(_json.dumps(_doc, indent=1), encoding="utf-8")
-            elif _sc.is_file():
-                _sc.unlink()
-        except OSError:
-            pass
-
-    # ---- Pass 4: SkyPatcher INI (add minted ARMA to each target ARMO) ----
-    ini_lines = [
+    # #coverage-esl-chunks -- emit ESL-sized pieces instead of one monolithic ESP.
+    _res = _emit_coverage_pieces(
+        out_path, targets, _mint_rec, patch_masters, own_byte=own_byte,
+        author=author, description=description,
+        ini_header=[
         "; cbbe-to-ube: UBE race coverage for mod-defined non-body armor.",
         "; Adds a minted UBE-primary ArmorAddon to each item whose winning",
         "; armature lacked UBE races (overhauls re-armature vanilla gear).",
-    ]
-    for armo_abs, defining_plugin, to_mint in targets:
-        addons = [mint_set[x] for x in to_mint if mint_set.get(x) is not None]
-        if not addons:
-            continue
-        adds = ",".join("{}|{:06X}".format(mint_name, (fid & 0xFFFFFF))
-                        for fid in addons)
-        ini_lines.append(
-            "filterByArmors={}|{:06X}:armorAddonsToAdd={}".format(
-                defining_plugin, armo_abs[1], adds))
+        ],
+        preserve_textures=preserve_textures, master_data_dirs=master_data_dirs,
+        emit_sidecar=emit_sidecar)
+    ini_lines = _res["ini_lines"]
+    warnings = _res["validation_warnings"]
 
     return {
         "output": str(out_path),
+        "pieces": _res["pieces"],
+        "split_pieces": _res["split_pieces"],
         "ini_lines": ini_lines,
-        "masters": len(out_esp.header.masters),
-        "minted_armas": len(new_arma_records),
+        "masters": _res["masters"],
+        "minted_armas": _res["minted_armas"],
         "armo_targets": len(targets),
-        "esl_flagged": bool(tes4_flags & TES4_FLAG_ESL),
+        "esl_flagged": _res["esl_flagged"],
         "candidates_scanned": len(armo_win),
         "validation_warnings": warnings,
         "textures_preserved": preserved_count,
@@ -3498,9 +3640,7 @@ def generate_modded_body_ube_coverage_patch(
     crp = converted_rel_paths or set()
 
     def _conv_exists(model_path: str) -> bool:
-        if not model_path:
-            return False
-        return model_path.replace("\\", "/").lstrip("/").lower() in crp
+        return _converted_model_exists(model_path, crp)
 
     def _arma_models(payload: bytes) -> "list[str]":
         return [d.rstrip(b"\x00").decode("utf-8", "ignore")
@@ -3747,71 +3887,30 @@ def generate_modded_body_ube_coverage_patch(
         mint_set[arma_abs] = new_fid
         _mint_rec[arma_abs] = _rec
 
-    as_esl = len(new_arma_records) <= ESL_MAX_OWN_RECORDS
-    tes4_flags = TES4_FLAG_ESL if as_esl else 0
-    out_header = esp.TES4Header(
-        masters=patch_masters, author=author, description=description,
-        flags=tes4_flags, version=1.7, num_records=0,
-        next_object_id=max(0x800, next_id))
-    out_esp = esp.ESP(header=out_header, groups=[])
-    if new_arma_records:
-        out_esp.groups.append(esp.Group(label=b"ARMA", records=new_arma_records))
-    prune_unused_masters(out_esp)
-    # preserve_textures / cover_hands_feet union source masters of varying tiers;
-    # tier-sort so a master-tier plugin never trails a regular ESP (all refs --
-    # nested MO?S/NAM textures and hands/feet race refs -- are remapped, ref-safe).
-    if preserve_textures or cover_hands_feet:
-        resort_masters(out_esp, master_data_dirs=master_data_dirs)
-    out_esp.save(out_path)
-    warnings = validate_patch(out_path, master_data_dirs=master_data_dirs)
-
-    # ---- SkyPatcher-links sidecar (Step 3b: fold into Combined via the merge) ----
-    # Same schema the per-source pass writes; the merge remaps minted fids to final
-    # Combined space + dedups (armo, src-armature) so this folds in with no double-
-    # cover. fids are POST-prune/resort (rec.formid mutated in place) to match the
-    # merge's merged_rec_by_key. Written only when the pass feeds the merge.
-    if emit_sidecar:
-        import json as _json
-        _doc = []
-        for armo_abs, defining_plugin, to_mint in targets:
-            _adds = [{"fid": _mint_rec[_a].formid, "src": [_a[0], _a[1]]}
-                     for _a in to_mint if _a in _mint_rec]
-            if _adds:
-                _doc.append({"armo": [defining_plugin, armo_abs[1]],
-                             "adds": _adds})
-        _sc = Path(str(out_path) + ".skypatcher.json")
-        try:
-            if _doc:
-                _sc.write_text(_json.dumps(_doc, indent=1), encoding="utf-8")
-            elif _sc.is_file():
-                _sc.unlink()
-        except OSError:
-            pass
-
-    # ---- Pass 4: SkyPatcher INI (add minted ARMA to each target ARMO) ----
-    ini_lines = [
+    # #coverage-esl-chunks -- emit ESL-sized pieces instead of one monolithic ESP.
+    _res = _emit_coverage_pieces(
+        out_path, targets, _mint_rec, patch_masters, own_byte=own_byte,
+        author=author, description=description,
+        ini_header=[
         "; cbbe-to-ube: UBE race coverage for mod-defined BODY armor variants.",
         "; Adds a minted UBE-primary ArmorAddon (redirected to the converted",
         "; !UBE mesh) to each body item whose winning armature lacked UBE races",
         "; (e.g. an overhaul's mod-defined armor variant reusing a vanilla armature).",
-    ]
-    for armo_abs, defining_plugin, to_mint in targets:
-        addons = [mint_set[x] for x in to_mint if mint_set.get(x) is not None]
-        if not addons:
-            continue
-        adds = ",".join("{}|{:06X}".format(mint_name, (fid & 0xFFFFFF))
-                        for fid in addons)
-        ini_lines.append(
-            "filterByArmors={}|{:06X}:armorAddonsToAdd={}".format(
-                defining_plugin, armo_abs[1], adds))
+        ],
+        preserve_textures=preserve_textures, master_data_dirs=master_data_dirs,
+        emit_sidecar=emit_sidecar)
+    ini_lines = _res["ini_lines"]
+    warnings = _res["validation_warnings"]
 
     return {
         "output": str(out_path),
+        "pieces": _res["pieces"],
+        "split_pieces": _res["split_pieces"],
         "ini_lines": ini_lines,
-        "masters": len(out_esp.header.masters),
-        "minted_armas": len(new_arma_records),
+        "masters": _res["masters"],
+        "minted_armas": _res["minted_armas"],
         "armo_targets": len(targets),
-        "esl_flagged": bool(tes4_flags & TES4_FLAG_ESL),
+        "esl_flagged": _res["esl_flagged"],
         "candidates_scanned": len(armo_win),
         "validation_warnings": warnings,
         "textures_preserved": preserved_count,
