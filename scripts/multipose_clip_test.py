@@ -269,3 +269,85 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+def analyse_with_body(garment_path, garment_names, body_path, body_shape,
+                      skeleton=None, sample=400, seed=12345, only_region=None):
+    """Same measurement, but the BODY comes from a canonical reference NIF.
+
+    Pairing a garment with whatever body its own file bundles is biased -- sources
+    bundle different bodies, or none. Taking the body from a fixed reference makes
+    the source and converted sides differ only in what the converter changed.
+    `garment_names` is supplied by the caller (matched by name across the two sides),
+    so no "which shape is the body" heuristic is involved on either side.
+    """
+    skel = skeleton or DEFAULT_SKELETON
+    if not skel or not Path(skel).is_file():
+        try:
+            from scripts.pose_engine import load_skeleton
+            skel = load_skeleton()[2]
+        except Exception:
+            skel = None
+    if not skel or not Path(skel).is_file():
+        raise SystemExit("no skeleton NIF found")
+
+    gnif = pynifly.NifFile(str(garment_path))
+    have = {s.name: s for s in gnif.shapes}
+    missing = [n for n in garment_names if n not in have]
+    if missing:
+        raise SystemExit(f"garment shapes absent from {Path(garment_path).name}: {missing}")
+    bnif = pynifly.NifFile(str(body_path))
+    bsh = next((s for s in bnif.shapes if s.name == body_shape), None)
+    if bsh is None:
+        raise SystemExit(f"body shape {body_shape!r} not in {Path(body_path).name}")
+
+    BODY = "__body__"
+    data = {BODY: read_skin(bsh)}
+    for n in garment_names:
+        data[n] = read_skin(have[n])
+    par = bone_parents(pynifly.NifFile(skel))
+    body_v, _bt, body_w = data[BODY]
+    origins = {b: o for b, (w, o) in body_w.items()}
+
+    ident = float(np.abs(apply_pose(body_v, body_w, {}) - body_v).max())
+    regions = [(n, s) for n, s in REGIONS if not only_region or n == only_region]
+    pb0, pbn0, GV0, GT0 = _posed(data, list(garment_names), {}, BODY)
+    rng = np.random.default_rng(seed)
+    picks, base = {}, {}
+    for name, sel in regions:
+        z, ny = pb0[:, 2], pbn0[:, 1]
+        m = (sel(z, ny) & (np.abs(pb0[:, 0]) < ARM_X) & (np.abs(pb0[:, 0]) > MID_X))
+        idx = np.flatnonzero(m)
+        if len(idx) > sample:
+            idx = np.sort(rng.choice(idx, size=sample, replace=False))
+        picks[name] = idx
+        base[name] = (~rays_hit(pb0[idx], pbn0[idx], GV0, GT0)
+                      if len(idx) else np.zeros(0, dtype=bool))
+
+    needed = {p for n, _s in regions for p in REGION_POSES.get(n, []) if POSE_SET.get(p)}
+    scores = {n: [] for n, _s in regions}
+    for pose in sorted(needed):
+        acc = build_pose(par, origins, POSE_SET[pose])
+        pb, pbn, GV, GT = _posed(data, list(garment_names), acc, BODY)
+        for name, _sel in regions:
+            if pose not in REGION_POSES.get(name, []):
+                continue
+            idx = picks[name]
+            if not len(idx):
+                continue
+            exp = ~rays_hit(pb[idx], pbn[idx], GV, GT)
+            covered = ~base[name]
+            newly = covered & exp
+            scores[name].append((pose, int(newly.sum()),
+                                 100.0 * newly.sum() / max(int(covered.sum()), 1)))
+    out = {}
+    for name, _sel in regions:
+        rows = sorted(scores[name], key=lambda r: -r[2])
+        out[name] = {"sampled": int(len(picks[name])),
+                     "covered_at_bind": int((~base[name]).sum()),
+                     "worst_pose": rows[0][0] if rows else None,
+                     "worst_pct": round(rows[0][2], 3) if rows else 0.0,
+                     "worst_verts": rows[0][1] if rows else 0,
+                     "per_pose": [{"pose": p, "verts": v, "pct": round(q, 3)}
+                                  for p, v, q in rows]}
+    return out, ident

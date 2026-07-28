@@ -52,39 +52,9 @@ sys.path.insert(0, str(_REPO / ".pynifly"))
 
 from pyn import pynifly                                          # noqa: E402
 from src import paths                                            # noqa: E402
-from scripts.multipose_clip_test import analyse                  # noqa: E402
-
-SKIP_SRC = ("CBBEtoUBE",)          # never compare our own output against itself
-_NAME_CACHE: dict = {}
-
-
-def shape_names(p):
-    key = str(p)
-    if key not in _NAME_CACHE:
-        try:
-            _NAME_CACHE[key] = {s.name for s in pynifly.NifFile(str(p)).shapes}
-        except Exception:
-            _NAME_CACHE[key] = set()
-    return _NAME_CACHE[key]
-
-
-def find_source(rel, conv_path, mods_root):
-    """The source whose GARMENT SHAPES match the output's -- see the module note."""
-    want = shape_names(conv_path) - {"BaseShape", "VirtualBody"}
-    if not want:
-        return None
-    best, best_score = None, 0
-    for d in sorted(mods_root.iterdir()):
-        if not d.is_dir() or any(k in d.name for k in SKIP_SRC):
-            continue
-        p = d / "meshes" / rel
-        if not p.is_file():
-            continue
-        score = len(want & shape_names(p))
-        if score > best_score:
-            best, best_score = p, score
-    return best if best_score else None
-
+from scripts.multipose_clip_test import analyse_with_body        # noqa: E402
+from scripts.canonical_body import (canonical_cbbe, canonical_ube,  # noqa: E402
+                                    converted_garment_names, find_source)
 
 def main():
     argv = sys.argv[1:]
@@ -122,14 +92,22 @@ def main():
         files.append(p)
     if limit:
         files = files[:limit]
+    cbbe_path, cbbe_shape = canonical_cbbe(str(mods_root))
+    ube_path, ube_shape = canonical_ube()
     print(f"{len(files)} armors, sample={sample}, gate={gate}%")
+    print(f"  source body : {cbbe_shape}  {Path(cbbe_path).parent.parent.parent.parent.name}")
+    print(f"  target body : {ube_shape}  {Path(ube_path).name}")
 
     t0, n, reg, gated, nosrc = time.time(), 0, 0, 0, 0
     with out.open("w", encoding="utf-8") as fh:
         for i, p in enumerate(files, 1):
             rel = str(p.relative_to(root)).replace("\\", "/")
             try:
-                conv, ic = analyse(p, sample=sample)
+                gnames = converted_garment_names(p)
+                if not gnames:
+                    continue
+                conv, ic = analyse_with_body(p, gnames, ube_path, ube_shape,
+                                             sample=sample)
             except (Exception, SystemExit):
                 continue
             if ic > 1e-4:
@@ -140,13 +118,14 @@ def main():
                 row["gated"] = True
                 gated += 1
             else:
-                src = find_source(rel, p, mods_root)
+                src = find_source(rel, gnames, mods_root)
                 if src is None:
                     row["source"] = None
                     nosrc += 1
                 else:
                     try:
-                        s, isrc = analyse(src, sample=sample)
+                        s, isrc = analyse_with_body(src, gnames, cbbe_path,
+                                                    cbbe_shape, sample=sample)
                     except (Exception, SystemExit):
                         s, isrc = None, 1.0
                     if s is None or isrc > 1e-4:
