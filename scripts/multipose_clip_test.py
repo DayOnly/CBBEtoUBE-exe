@@ -109,48 +109,67 @@ def region_visible(body, bn, GV, GT, sel):
     return idx, ~rays_hit(body[idx], bn[idx], GV, GT)
 
 
-def analyse(nif_path, skeleton=None, only_region=None):
+def analyse(nif_path, skeleton=None, only_region=None, sample=400, seed=12345):
+    """Per region: the worst pose and how much bind-coverage it loses.
+
+    TWO THINGS MAKE THIS AFFORDABLE, and without them a population sweep is 31 hours:
+      * pose ONCE, score every region from it. The obvious loop -- for each region,
+        for each of its poses -- recomputes all six regions per pose and throws five
+        away (42 posings instead of 13).
+      * SAMPLE the region's verts. These are proportions over thousands of vertices;
+        ray casting is the whole cost. Fixed seed, and the SAME vertex indices are
+        used at bind and posed, so the regression is a paired comparison.
+    """
     data, garments, par, origins = load(nif_path, skeleton)
-    body_v = data['BaseShape'][0]
-    body_w = data['BaseShape'][2]
+    body_v, _body_t, body_w = data['BaseShape']
 
-    def state(acc):
-        pb, pbn, GV, GT = _posed(data, garments, acc)
-        out = {}
-        for name, sel in REGIONS:
-            if only_region and name != only_region:
-                continue
-            idx, exp = region_visible(pb, pbn, GV, GT, sel)
-            e = np.zeros(len(body_v), dtype=bool)
-            s = np.zeros(len(body_v), dtype=bool)
-            if len(idx):
-                s[idx] = True
-                e[idx[exp]] = True
-            out[name] = (e, s)
-        return out, pb
-
-    base, _bind_pb = state({})
-    # SELF-TEST: identity must reproduce the bind mesh exactly. If it does not, the
-    # skinning is wrong and every number below it is meaningless.
+    # SELF-TEST first: identity must reproduce the bind mesh exactly, or the skinning
+    # is wrong and every number below is meaningless.
     ident = float(np.abs(apply_pose(body_v, body_w, {}) - body_v).max())
 
-    results = {}
-    for name, (e0, s0) in base.items():
-        covered = s0 & ~e0
-        rows = []
-        for pose in REGION_POSES.get(name, list(POSE_SET)):
-            specs = POSE_SET.get(pose)
-            if not specs:
+    regions = [(n, s) for n, s in REGIONS if not only_region or n == only_region]
+    # Fix each region's sampled vertex set ONCE, from the bind mesh, so bind and
+    # posed states are compared over identical vertices.
+    pb0, pbn0, GV0, GT0 = _posed(data, garments, {})
+    rng = np.random.default_rng(seed)
+    picks, base = {}, {}
+    for name, sel in regions:
+        z, ny = pb0[:, 2], pbn0[:, 1]
+        m = (sel(z, ny) & (np.abs(pb0[:, 0]) < ARM_X)
+             & (np.abs(pb0[:, 0]) > MID_X))
+        idx = np.flatnonzero(m)
+        if len(idx) > sample:
+            idx = np.sort(rng.choice(idx, size=sample, replace=False))
+        picks[name] = idx
+        base[name] = (~rays_hit(pb0[idx], pbn0[idx], GV0, GT0)
+                      if len(idx) else np.zeros(0, dtype=bool))
+
+    # Which poses does anyone actually need?
+    needed = {p for n, _s in regions for p in REGION_POSES.get(n, [])
+              if POSE_SET.get(p)}
+    scores = {n: [] for n, _s in regions}
+    for pose in sorted(needed):
+        acc = build_pose(par, origins, POSE_SET[pose])
+        pb, pbn, GV, GT = _posed(data, garments, acc)
+        for name, _sel in regions:
+            if pose not in REGION_POSES.get(name, []):
                 continue
-            acc = build_pose(par, origins, specs)
-            st, _pb = state(acc)
-            e1, s1 = st[name]
-            newly = covered & s1 & e1
-            rows.append((pose, int(newly.sum()),
-                         100.0 * newly.sum() / max(covered.sum(), 1)))
-        rows.sort(key=lambda r: -r[2])
+            idx = picks[name]
+            if not len(idx):
+                continue
+            exp = ~rays_hit(pb[idx], pbn[idx], GV, GT)
+            covered = ~base[name]                    # covered at bind
+            newly = covered & exp
+            scores[name].append(
+                (pose, int(newly.sum()),
+                 100.0 * newly.sum() / max(int(covered.sum()), 1)))
+
+    results = {}
+    for name, _sel in regions:
+        rows = sorted(scores[name], key=lambda r: -r[2])
         results[name] = {
-            "covered_at_bind": int(covered.sum()),
+            "sampled": int(len(picks[name])),
+            "covered_at_bind": int((~base[name]).sum()),
             "worst_pose": rows[0][0] if rows else None,
             "worst_pct": round(rows[0][2], 3) if rows else 0.0,
             "worst_verts": rows[0][1] if rows else 0,

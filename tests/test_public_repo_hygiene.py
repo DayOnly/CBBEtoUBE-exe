@@ -65,6 +65,7 @@ NEVER_TRACKED = (
     "fit_dataset*.jsonl",
     "fit_census*.jsonl",
     "penetration_census*.jsonl",
+    "multipose_census*.jsonl",
 )
 
 # The .gitignore lines that protect the set above. If one disappears, the
