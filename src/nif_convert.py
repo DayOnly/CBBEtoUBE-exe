@@ -4743,6 +4743,43 @@ def _source_morph_tri_shape_names(src_path: "Path") -> "set[str]":
 RESKIN_NEAR_DIST_BODYFIT = 1.2
 RESKIN_FAR_DIST_BODYFIT = 3.5
 
+# #reskin-wide -- a WIDER conformance band for body-fitted slots.
+#
+# DEFORMATION MATCHING BEATS CLEARANCE, measured. Replacing a garment's weights with
+# the body's outright (an upper bound, not shippable) takes pose-induced exposure from
+# 83.7% -> 5.4% at the thigh, 11.0% -> 0.1% at the breast, 14.7% -> 2.8% at the butt.
+# The best a clearance push managed on the same cases was 3.5% / 8.0%. And it costs NO
+# volume: the bind shape is untouched, only how the garment MOVES, so it cannot
+# produce the baggy look a uniform push is rejected for.
+#
+# The band decides how much of that the converter captures, and today's is too tight.
+# Swept on real armour (pose-induced exposure, worst pose per region):
+#
+#   band        thigh   butt   breast
+#   0.5/2.0     83.7%  14.1%    3.2%    <- non-body-fitted default
+#   1.2/3.5      ~     ~14%     ~3%     <- current body-fitted
+#   2.0/6.0     66.2%   7.5%    0.1%
+#   4.0/10.0    17.0%   4.6%    0.1%
+#   full         5.4%   2.8%    0.1%
+#
+# SAFE ONLY BECAUSE THE RESKIN IS ALREADY GATED: both call sites run only when
+# `not _shape_has_hdt_smp_rigging(...)`, so chain-driven cloth never reaches it.
+# That gate is load-bearing here -- widening the band on a skirt would replace its
+# `Skirt N_NN` weights with body weights and the skirt would stop swinging. The armour
+# needing the WIDEST band (hanging skirts, thigh coverage) is exactly the chain-driven
+# kind this must not touch, so the win is the rigid part of the pack: 204 of 314
+# armours measured fully rigid.
+#
+# Default OFF. A wider band makes a RIGID plate deform further with the body, so a
+# metal cuirass could start bending like skin -- check the golden set for SHAPE change,
+# not just clip counts, before enabling.  CBBE2UBE_RESKIN_WIDE=1
+RESKIN_WIDE_BAND = os.environ.get(
+    "CBBE2UBE_RESKIN_WIDE", "").strip().lower() in ("1", "true", "yes", "on")
+RESKIN_NEAR_DIST_WIDE = float(
+    os.environ.get("CBBE2UBE_RESKIN_WIDE_NEAR", "").strip() or "2.0")
+RESKIN_FAR_DIST_WIDE = float(
+    os.environ.get("CBBE2UBE_RESKIN_WIDE_FAR", "").strip() or "6.0")
+
 # Body-fitted biped slots: body(32), forearms(34), calves(38), legs(53-58).
 # Hands/feet/gauntlets/boots take _shape_has_fine_animation_bones path instead.
 _RESKIN_BODY_FITTED_BITS = (
@@ -4758,6 +4795,11 @@ def _slot_aware_reskin_band(biped_slots: int) -> "tuple[float, float]":
     animation (kills body-poke-through-during-movement). Slot-49-only flowing
     cloth and slot-less armor keep the narrow default so they still drape."""
     if biped_slots & _RESKIN_BODY_FITTED_BITS:
+        # #reskin-wide: only the BODY-FITTED branch widens. Slot-49 flowing cloth
+        # keeps the narrow band deliberately -- over-conforming a skirt makes it
+        # cling instead of drape, which is a different defect, not a fix.
+        if RESKIN_WIDE_BAND:
+            return (RESKIN_NEAR_DIST_WIDE, RESKIN_FAR_DIST_WIDE)
         return (RESKIN_NEAR_DIST_BODYFIT, RESKIN_FAR_DIST_BODYFIT)
     return (RESKIN_NEAR_DIST, RESKIN_FAR_DIST)
 
