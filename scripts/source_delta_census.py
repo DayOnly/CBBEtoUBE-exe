@@ -51,10 +51,14 @@ sys.path.insert(0, str(_REPO))
 sys.path.insert(0, str(_REPO / ".pynifly"))
 
 from pyn import pynifly                                          # noqa: E402
+from src.nif_convert import UBE_BODY_INJECT_NAMES                # noqa: E402
 from src import paths                                            # noqa: E402
 from scripts.multipose_clip_test import analyse_with_body        # noqa: E402
 from scripts.canonical_body import (canonical_cbbe, canonical_ube,  # noqa: E402
                                     converted_garment_names, find_source)
+
+MIN_COV = 30
+
 
 def main():
     argv = sys.argv[1:]
@@ -71,6 +75,8 @@ def main():
     # finding regressions; it does deliberately NOT measure improvements below the
     # gate, which is stated in the row as gated=true rather than left to be guessed.
     gate = float(opt("--gate", "3.0"))
+    global MIN_COV
+    MIN_COV = int(opt("--min-cov", "30"))
 
     lay = paths.discover_layout()
     mods_root = lay.mods_root
@@ -88,6 +94,19 @@ def main():
                 break
         if ("1st" in stem or "firstperson" in stem or stem.endswith("fp")
                 or "_fp_" in stem or "1person" in stem):
+            continue
+        # BODY-COVERING PIECES ONLY. Without this the sweep is 1290 meshes -- boots,
+        # gauntlets, pauldrons, scarves, pouches -- none of which meaningfully cover a
+        # torso or leg region. Worse than slow: an accessory GRAZES a region on the
+        # larger UBE body and misses it entirely on CBBE, so it scores a huge false
+        # delta off a source coverage of ZERO (a boot read +6.8 at the thigh with
+        # coverage 207/0; a pouch read +100 off a single vertex). The converter marks
+        # body-covering pieces by injecting a body into them, so that is the filter.
+        try:
+            if not any(s.name in UBE_BODY_INJECT_NAMES
+                       for s in pynifly.NifFile(str(p)).shapes):
+                continue
+        except Exception:
             continue
         files.append(p)
     if limit:
@@ -139,6 +158,12 @@ def main():
                             sp = next((x["pct"] for x in s[rg]["per_pose"]
                                        if x["pose"] == pose), None)
                             if sp is None:
+                                continue
+                            # BOTH sides need a real denominator. A delta between
+                            # 207 covered verts and 0 is not a regression, it is two
+                            # different questions; and "100% of 1 vertex" is noise.
+                            if (cv["covered_at_bind"] < MIN_COV
+                                    or s[rg]["covered_at_bind"] < MIN_COV):
                                 continue
                             d[rg] = {"pose": pose, "conv": cv["worst_pct"],
                                      "src": sp, "delta": round(cv["worst_pct"] - sp, 3),
