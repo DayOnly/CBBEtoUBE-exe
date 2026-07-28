@@ -188,6 +188,16 @@ Ignore those rows or widen the filter before quoting a worst-offender list.
 
 ## Exposure is COVERAGE, not a defect — the poke/neckline/uncovered split
 
+> **CORRECTED 2026-07-28 — the rim-distance form below is UNSOUND on boundary-heavy
+> garments.** It decides poke-vs-neckline by distance to the garment's open boundary.
+> On a cuirass where 61% of verts lie on a boundary, every exposed vert is inside the
+> rim threshold and the rule CANNOT return "poke" — it reported 0.0% poke on armour the
+> user could see the body coming through. Use a CONTAINMENT test instead: cast a cone
+> of rays (10 dirs, 50°) round the exposed vert's outward normal and count how many are
+> blocked by garment; surrounded = poke. On the same mesh that read 0.0%, containment
+> found 49% of exposed verts with garment around them. Before trusting any classifier,
+> check what fraction of the input already satisfies its threshold.
+
 The upper chest looked like the worst region in the census above (62% of armors over
 5% "exposed and garment within 2u"). Almost all of it is **garment design**.
 
