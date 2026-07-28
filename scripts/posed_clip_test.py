@@ -209,24 +209,66 @@ def vert_normals(v, t):
 
 
 def rays_hit(P, N, V, T, tmax=40.0, eps=1e-3, chunk=2000):
-    """Moller-Trumbore, all rays vs all triangles, chunked over rays."""
+    """Moller-Trumbore, all rays vs all triangles, chunked over rays.
+
+    EXACT range cull first. The rays of one call are a body REGION -- a tight
+    cluster -- while T is the whole garment, so on a full-length dress most
+    triangles cannot be reached by any ray in the batch. Dropping them is a pure
+    speedup, NOT an approximation:
+
+        c = centre of the ray origins,  r = max |origin - c|
+        a hit point p lies within tmax of its origin, so
+            |p - c| <= |p - o| + |o - c| <= tmax + r
+        for any point p of a triangle and any vertex v of it,
+            |p - c| >= |v - c| - |p - v| >= min_v|v - c| - L
+        where L is the triangle's longest edge (= its diameter, so |p - v| <= L).
+        Hence min_v|v - c| > r + tmax + L  =>  no point of the triangle is in range.
+
+    Using the PER-TRIANGLE L rather than a global maximum keeps the bound tight
+    while staying conservative. Verified to reproduce the un-culled result exactly.
+    """
+    T = np.asarray(T, dtype=np.int64).reshape(-1, 3)
+    if len(P) and len(T):
+        c = (P.min(axis=0) + P.max(axis=0)) * 0.5
+        r = float(np.linalg.norm(P - c, axis=1).max())
+        tv3 = V[T]                                             # (nT, 3, 3)
+        dmin = np.linalg.norm(tv3 - c, axis=2).min(axis=1)      # nearest vertex
+        L = np.linalg.norm(tv3 - tv3[:, [1, 2, 0], :], axis=2).max(axis=1)
+        T = T[dmin <= r + tmax + L]
+        if not len(T):
+            return np.zeros(len(P), dtype=bool)
     A = V[T[:, 0]]; B = V[T[:, 1]]; C = V[T[:, 2]]
     e1 = B - A; e2 = C - A
     hit = np.zeros(len(P), dtype=bool)
+    # Block over TRIANGLES as well as rays, and drop rays that have already hit.
+    # Most body verts under a garment ARE blocked, so the active set collapses
+    # after the first block or two and the remaining blocks cost almost nothing.
+    # Without this, a 90k-triangle garment builds (rays x 90000 x 3) temporaries
+    # for every ray including the ones already resolved -- hundreds of MB of
+    # memory traffic to re-answer a question already answered.
+    tblock = 8192
     for i in range(0, len(P), chunk):
         o = P[i:i + chunk]; dv = N[i:i + chunk]
-        pv = np.cross(dv[:, None, :], e2[None, :, :])
-        det = np.einsum('tk,rtk->rt', e1, pv)
-        ok = np.abs(det) > 1e-9
-        inv = np.where(ok, 1.0 / np.where(ok, det, 1.0), 0.0)
-        tv = o[:, None, :] - A[None, :, :]
-        u = np.einsum('rtk,rtk->rt', tv, pv) * inv
-        qv = np.cross(tv, e1[None, :, :])
-        vv = np.einsum('rk,rtk->rt', dv, qv) * inv
-        t = np.einsum('tk,rtk->rt', e2, qv) * inv
-        good = (ok & (u >= 0) & (u <= 1) & (vv >= 0) & (u + vv <= 1)
-                & (t > eps) & (t < tmax))
-        hit[i:i + chunk] = good.any(axis=1)
+        live = np.arange(len(o))
+        for j in range(0, len(T), tblock):
+            if not len(live):
+                break
+            ol, dl = o[live], dv[live]
+            A2, e1b, e2b = A[j:j + tblock], e1[j:j + tblock], e2[j:j + tblock]
+            pv = np.cross(dl[:, None, :], e2b[None, :, :])
+            det = np.einsum('tk,rtk->rt', e1b, pv)
+            ok = np.abs(det) > 1e-9
+            inv = np.where(ok, 1.0 / np.where(ok, det, 1.0), 0.0)
+            tv = ol[:, None, :] - A2[None, :, :]
+            u = np.einsum('rtk,rtk->rt', tv, pv) * inv
+            qv = np.cross(tv, e1b[None, :, :])
+            vv = np.einsum('rk,rtk->rt', dl, qv) * inv
+            t = np.einsum('tk,rtk->rt', e2b, qv) * inv
+            good = (ok & (u >= 0) & (u <= 1) & (vv >= 0) & (u + vv <= 1)
+                    & (t > eps) & (t < tmax)).any(axis=1)
+            if good.any():
+                hit[i + live[good]] = True
+                live = live[~good]
     return hit
 
 
