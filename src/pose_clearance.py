@@ -38,24 +38,28 @@ armour's belly WORSE, 3.5% -> 3.9%).
 THE LEVER IS SOUND, only the targeting was wrong. A uniform push cut breast exposure
 11.0% -> 2.5% and butt 14.7% -> 6.9% under pose; this aims the same push.
 
-STATUS 2026-07-28: NOT READY, and the reason is recorded here rather than rediscovered.
-The demand it computes is far too BROAD -- it moves 35-74% of a garment's vertices by
-a mean of 0.35-1.36u, with the cap saturated. That is the bagginess this term exists to
-avoid, and a uniform push is rejected outright for exactly that look.
+TWO DEMAND SIGNALS LIVE HERE, and only ONE is usable.
 
-The cause is the demand SIGNAL, not the plumbing. "Clearance along the body normal
-fell" fires wherever the two surfaces slide TANGENTIALLY across each other, which a
-sprint or a crouch does over most of the torso, while real poke-through is only 3-15%
-of a region's covered vertices. Fixing the correspondence (measure against the SAME
-body vertex at bind and at pose, rather than a fresh nearest-neighbour lookup that
-swaps reference points under rotation) was necessary and is kept -- but it did not
-narrow the demand, which is what ruled the signal out rather than the plumbing.
+`pose_clearance_demand` (clearance deficit) is SUPERSEDED. It moved 35-74% of a
+garment's vertices by a mean of 0.35-1.36u with the cap saturated -- the bagginess a
+uniform push is rejected for. The fault was the signal, not the plumbing: "clearance
+along the body normal fell" fires wherever two surfaces slide TANGENTIALLY, which a
+sprint or crouch does across most of the torso, while real poke-through is 3-15% of a
+region. Fixing its correspondence (compare the SAME body vertex at bind and at pose,
+not a fresh nearest-neighbour lookup that swaps reference points under rotation) was a
+real correctness fix and is kept, but it did NOT narrow the demand -- which is what
+ruled out the signal. Retained for its posing primitives and as the record of why.
 
-NEXT: derive the demand from EXPOSURE, not clearance. Take the body vertices that are
-covered at bind and exposed under a pose -- the harness's own measure, sparse by
-construction -- and ask how far the nearby garment must move to re-cover them. That
-optimises the quantity actually cared about instead of a proxy that is loose in
-exactly the poses of interest.
+`exposure_demand` is the one to use. Only body vertices COVERED at bind and EXPOSED
+under a pose ask for anything, so it is sparse by construction. Measured on real
+armour: breast exposure under a spine twist 11.0% -> 3.9% while moving 0.9% of the
+garment by a mean of 0.26u -- versus a uniform push reaching 4.8% by moving all of it.
+Belly 4.8% -> 3.5% (8.9% moved). Runtime ~3-5s per armour.
+
+STILL OPEN: the butt case does not respond (14.7% -> 14.7%) even though 4.1% of the
+garment is moved by a mean 1.51u, while a UNIFORM push did help it (14.7% -> 10.2%).
+So the demand is landing in the wrong place there. That is the next thing to chase,
+and it is why this ships default OFF.
 """
 from __future__ import annotations
 
@@ -233,3 +237,137 @@ def pose_clearance_demand(armor_verts, armor_weights, body_verts, body_weights,
         cur = np.einsum("ij,ij->i", pav - pbv[corr], pbn[corr])
         np.maximum(worst, base - cur, out=worst)
     return np.clip(worst * gain, 0.0, cap)
+
+
+def rays_escape(origins, dirs, verts, tris, tmax=25.0, chunk=512, tblock=8192):
+    """True where the ray from origins[i] along dirs[i] hits NO triangle.
+
+    The sound exposure test: a body vertex whose outward normal escapes the garment
+    is visible. Unambiguous by construction -- no sign to guess and no dependence on
+    which face of a shell happens to be nearest, which is what makes signed-distance
+    tests unreliable on a two-faced garment.
+
+    Blocks over triangles and drops rays that already hit: most body verts under a
+    garment ARE blocked, so the active set collapses after a block or two.
+    """
+    V = np.asarray(verts, dtype=np.float64)
+    T = np.asarray(tris, dtype=np.int64).reshape(-1, 3)
+    O = np.asarray(origins, dtype=np.float64)
+    D = np.asarray(dirs, dtype=np.float64)
+    if not len(T) or not len(O):
+        return np.ones(len(O), dtype=bool)
+    n = np.linalg.norm(D, axis=1, keepdims=True)
+    D = D / np.where(n > 1e-12, n, 1.0)
+    A = V[T[:, 0]]
+    e1 = V[T[:, 1]] - A
+    e2 = V[T[:, 2]] - A
+    hit = np.zeros(len(O), dtype=bool)
+    for i in range(0, len(O), chunk):
+        o, dv = O[i:i + chunk], D[i:i + chunk]
+        live = np.arange(len(o))
+        for j in range(0, len(T), tblock):
+            if not len(live):
+                break
+            ol, dl = o[live], dv[live]
+            A2, e1b, e2b = A[j:j + tblock], e1[j:j + tblock], e2[j:j + tblock]
+            pv = np.cross(dl[:, None, :], e2b[None, :, :])
+            det = np.einsum('tk,rtk->rt', e1b, pv)
+            ok = np.abs(det) > 1e-9
+            inv = np.where(ok, 1.0 / np.where(ok, det, 1.0), 0.0)
+            tv = ol[:, None, :] - A2[None, :, :]
+            u = np.einsum('rtk,rtk->rt', tv, pv) * inv
+            qv = np.cross(tv, e1b[None, :, :])
+            vv = np.einsum('rk,rtk->rt', dl, qv) * inv
+            t = np.einsum('tk,rtk->rt', e2b, qv) * inv
+            good = (ok & (u >= 0) & (u <= 1) & (vv >= 0) & (u + vv <= 1)
+                    & (t > 1e-3) & (t < tmax)).any(axis=1)
+            if good.any():
+                hit[i + live[good]] = True
+                live = live[~good]
+    return ~hit
+
+
+def exposure_demand(armor_verts, armor_weights, armor_tris,
+                    body_verts, body_weights, body_normals,
+                    parents, origins, poses=None, sample=1200, near=6.0,
+                    spread=3.0, margin=0.1, gain=None, cap=None, body_key=None):
+    """Per armour vertex: how far it must move OUT so the body stops showing in pose.
+
+    Demand is derived from EXPOSURE, not from a clearance proxy. Only body vertices
+    that are COVERED at bind and EXPOSED under some pose generate any demand, and
+    those are 3-15% of a region -- against 35-74% of the garment moved by the
+    clearance-deficit signal this replaces, which is the bagginess a uniform push is
+    rejected for. Everything else asks for exactly nothing.
+
+    For each such vertex the shortfall is how far it protrudes past the garment at
+    that pose; it is applied to garment vertices within `spread`, taking the max, so
+    a poking vertex lifts its own neighbourhood and nothing else.
+    """
+    from scipy.spatial import cKDTree
+
+    av = np.asarray(armor_verts, dtype=np.float64)
+    at = np.asarray(armor_tris, dtype=np.int64).reshape(-1, 3)
+    bv = np.asarray(body_verts, dtype=np.float64)
+    bn = np.asarray(body_normals, dtype=np.float64)
+    gain = POSE_CLEARANCE_GAIN if gain is None else float(gain)
+    cap = POSE_CLEARANCE_MAX if cap is None else float(cap)
+    out = np.zeros(len(av), dtype=np.float64)
+    if not len(av) or not len(bv) or not len(at):
+        return out
+
+    # Only body verts NEAR the garment can be covered by it; the rest are bare by
+    # design and would just cost ray casts.
+    atree = cKDTree(av)
+    d0, _ = atree.query(bv, k=1)
+    cand = np.flatnonzero(d0 < near)
+    if not len(cand):
+        return out
+    if len(cand) > sample:
+        cand = np.sort(np.random.default_rng(12345).choice(cand, sample, replace=False))
+
+    covered = ~rays_escape(bv[cand], bn[cand], av, at)
+    if not covered.any():
+        return out
+    cov_idx = cand[covered]
+
+    for name, specs in (poses or POSE_SET_CLEARANCE).items():
+        acc = build_pose(parents, origins, specs)
+        if not acc:
+            continue
+        ck = (body_key, name, "exp")
+        if body_key is not None and ck in _POSED_BODY_CACHE:
+            pbv, pbn = _POSED_BODY_CACHE[ck]
+        else:
+            pbv = apply_pose(bv, body_weights, acc)
+            pbn = bn.copy()
+            for bone, (w, _o) in body_weights.items():
+                M = acc.get(bone)
+                if M is None:
+                    continue
+                m = w > 0.5
+                if m.any():
+                    pbn[m] = bn[m] @ M[:3, :3].T
+            nl = np.linalg.norm(pbn, axis=1)
+            pbn = pbn / np.where(nl > 1e-9, nl, 1.0)[:, None]
+            if body_key is not None:
+                _POSED_BODY_CACHE[ck] = (pbv, pbn)
+        pav = apply_pose(av, armor_weights, acc)
+        esc = rays_escape(pbv[cov_idx], pbn[cov_idx], pav, at)
+        if not esc.any():
+            continue
+        bad = cov_idx[esc]
+        # Shortfall: how far the body vert sits beyond the garment at this pose,
+        # measured against the nearest garment vertex along the body's own normal.
+        ptree = cKDTree(pav)
+        _dd, jj = ptree.query(pbv[bad], k=1)
+        short = np.einsum("ij,ij->i", pbv[bad] - pav[jj], pbn[bad]) + margin
+        short = np.clip(short, 0.0, cap)
+        # Lift the neighbourhood of each offender, at BIND indices.
+        for grp, s in zip(atree.query_ball_point(bv[bad], spread), short):
+            if grp and s > 0:
+                gi = np.asarray(grp, dtype=np.int64)
+                # `out[gi] = np.maximum(...)`, NOT `np.maximum(..., out=out[gi])`:
+                # fancy indexing yields a COPY, so an out= write lands in a temporary
+                # and is silently discarded -- which read as "the term does nothing".
+                out[gi] = np.maximum(out[gi], s)
+    return np.clip(out * gain, 0.0, cap)
