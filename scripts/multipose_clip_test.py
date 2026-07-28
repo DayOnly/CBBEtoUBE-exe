@@ -271,6 +271,17 @@ if __name__ == "__main__":
     main()
 
 
+_BODY_SKIN_CACHE: dict = {}
+_PAR_CACHE: dict = {}
+
+
+def _parents(skel):
+    """Skeleton hierarchy, cached: it is one 649-node NIF re-parsed per call."""
+    if skel not in _PAR_CACHE:
+        _PAR_CACHE[skel] = bone_parents(pynifly.NifFile(skel))
+    return _PAR_CACHE[skel]
+
+
 def analyse_with_body(garment_path, garment_names, body_path, body_shape,
                       skeleton=None, sample=400, seed=12345, only_region=None):
     """Same measurement, but the BODY comes from a canonical reference NIF.
@@ -291,21 +302,30 @@ def analyse_with_body(garment_path, garment_names, body_path, body_shape,
     if not skel or not Path(skel).is_file():
         raise SystemExit("no skeleton NIF found")
 
+    # The canonical body is the SAME mesh for every armour in a sweep, but reading
+    # and skinning it costs more than the whole comparison: 29k verts (UBE) and 18k
+    # (CBBE), re-read twice per armour. Caching it took a pack sweep from 133s/armour
+    # to a fraction of that. Keyed on (path, shape) so a different reference is a
+    # different entry, never a stale hit.
+    global _BODY_SKIN_CACHE
     gnif = pynifly.NifFile(str(garment_path))
     have = {s.name: s for s in gnif.shapes}
     missing = [n for n in garment_names if n not in have]
     if missing:
         raise SystemExit(f"garment shapes absent from {Path(garment_path).name}: {missing}")
-    bnif = pynifly.NifFile(str(body_path))
-    bsh = next((s for s in bnif.shapes if s.name == body_shape), None)
-    if bsh is None:
-        raise SystemExit(f"body shape {body_shape!r} not in {Path(body_path).name}")
+    ckey = (str(body_path), body_shape)
+    if ckey not in _BODY_SKIN_CACHE:
+        bnif = pynifly.NifFile(str(body_path))
+        bsh = next((s for s in bnif.shapes if s.name == body_shape), None)
+        if bsh is None:
+            raise SystemExit(f"body shape {body_shape!r} not in {Path(body_path).name}")
+        _BODY_SKIN_CACHE[ckey] = read_skin(bsh)
 
     BODY = "__body__"
-    data = {BODY: read_skin(bsh)}
+    data = {BODY: _BODY_SKIN_CACHE[ckey]}
     for n in garment_names:
         data[n] = read_skin(have[n])
-    par = bone_parents(pynifly.NifFile(skel))
+    par = _parents(skel)
     body_v, _bt, body_w = data[BODY]
     origins = {b: o for b, (w, o) in body_w.items()}
 
