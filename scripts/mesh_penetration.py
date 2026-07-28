@@ -271,3 +271,39 @@ def surface_penetration(body_verts, garment_verts, garment_tris,
             best_signed[better] = np.sign(s[better]) * d[better]
         _ = rows
     return best_signed, best, best <= float(contact), agree
+
+
+def cone_dirs(normals, half_deg=50.0, k=10):
+    """k directions spread on a cone of `half_deg` about each normal."""
+    n = np.asarray(normals, dtype=np.float64)
+    n = n / np.linalg.norm(n, axis=1, keepdims=True)
+    a = np.array([0.0, 0.0, 1.0])
+    t = np.where((np.abs(n @ a) > 0.9)[:, None], np.array([1.0, 0.0, 0.0]), a)
+    u = np.cross(n, t)
+    u /= np.linalg.norm(u, axis=1, keepdims=True)
+    v = np.cross(n, u)
+    th = np.deg2rad(half_deg)
+    return [n * np.cos(th) + (u * np.cos(ph) + v * np.sin(ph)) * np.sin(th)
+            for ph in (2 * np.pi * i / k for i in range(k))]
+
+
+def containment(exposed_pts, exposed_normals, verts, tris, half_deg=50.0, k=10):
+    """How much garment surrounds each exposed body vertex, as blocked/k.
+
+    THE SOUND POKE TEST, and it replaces the rim-distance rule in
+    `classify_exposure`, which is UNSOUND on boundary-heavy garments: that rule calls
+    a vertex "neckline" when it is within a few units of the garment's open boundary,
+    but a cuirass can have 61% of its vertices ON a boundary, so the rule can never
+    return "poke" and reported 0.0% on armour the body was visibly coming through.
+
+    This asks the actual question -- is there garment AROUND this skin -- by casting a
+    cone of rays about the outward normal. Surrounded means the skin is inside the
+    garment's coverage and is poking through it; nothing blocked means it is genuinely
+    outside coverage (bare by design).
+    """
+    if not len(exposed_pts):
+        return np.zeros(0, dtype=np.int64)
+    blocked = np.zeros(len(exposed_pts), dtype=np.int64)
+    for d in cone_dirs(exposed_normals, half_deg, k):
+        blocked += (~ray_exposure(exposed_pts, d, verts, tris)).astype(np.int64)
+    return blocked
