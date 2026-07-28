@@ -56,10 +56,25 @@ armour: breast exposure under a spine twist 11.0% -> 3.9% while moving 0.9% of t
 garment by a mean of 0.26u -- versus a uniform push reaching 4.8% by moving all of it.
 Belly 4.8% -> 3.5% (8.9% moved). Runtime ~3-5s per armour.
 
-STILL OPEN: the butt case does not respond (14.7% -> 14.7%) even though 4.1% of the
-garment is moved by a mean 1.51u, while a UNIFORM push did help it (14.7% -> 10.2%).
-So the demand is landing in the wrong place there. That is the next thing to chase,
-and it is why this ships default OFF.
+BUTT CASE RESOLVED (was: no response at all). Two sizing faults, not a wrong idea:
+a fixed 3.0u radius when the median body-to-garment distance on the failing region
+was 3.04u, so most offenders found nothing to lift; and sampling 1200 of 23870
+candidate body verts, which is fine for a census PROPORTION but skipped ~95% of the
+offenders when generating a per-vertex correction. k-nearest neighbours plus a larger
+sample fixed both.
+
+CURRENT NUMBERS (worst pose per region, cap 2.0):
+  butt   / sprint       14.7% -> 8.0%   17.5% of the garment moved, mean 1.70u
+  breast / spine twist  11.0% -> 3.5%    2.3% moved, mean 0.53u
+  belly  / sprint        4.8% -> 2.7%   22.0% moved, mean 1.15u
+The butt now beats the uniform push (8.0% vs 10.2%) instead of doing nothing.
+
+WHAT STILL NEEDS TUNING, and why this is still default OFF: breadth and cost both
+rose with the fix. The butt and belly move 17-22% of the garment at a mean over 1u,
+which is heading back toward the look a uniform push is rejected for, and runtime went
+from 3-5s to 9-22s per armour (~1.5h over a full pack). `cap`, `gain`, `knn` and
+`sample` are the levers; the pose census gives the distribution to set them against.
+Belly is the least valuable target of the three and the most expensive in breadth.
 """
 from __future__ import annotations
 
@@ -289,8 +304,8 @@ def rays_escape(origins, dirs, verts, tris, tmax=25.0, chunk=512, tblock=8192):
 
 def exposure_demand(armor_verts, armor_weights, armor_tris,
                     body_verts, body_weights, body_normals,
-                    parents, origins, poses=None, sample=1200, near=6.0,
-                    spread=3.0, margin=0.1, gain=None, cap=None, body_key=None):
+                    parents, origins, poses=None, sample=6000, near=6.0,
+                    knn=8, margin=0.1, gain=None, cap=None, body_key=None):
     """Per armour vertex: how far it must move OUT so the body stops showing in pose.
 
     Demand is derived from EXPOSURE, not from a clearance proxy. Only body vertices
@@ -300,8 +315,18 @@ def exposure_demand(armor_verts, armor_weights, armor_tris,
     rejected for. Everything else asks for exactly nothing.
 
     For each such vertex the shortfall is how far it protrudes past the garment at
-    that pose; it is applied to garment vertices within `spread`, taking the max, so
-    a poking vertex lifts its own neighbourhood and nothing else.
+    that pose, applied to its `knn` NEAREST garment vertices, taking the max -- a
+    poking vertex lifts its own neighbourhood and nothing else.
+
+    TWO SIZING MISTAKES THAT MADE THIS A NO-OP ON ONE ARMOUR, both worth keeping in
+    mind if it is retuned:
+      * a fixed RADIUS instead of k-nearest. The radius was 3.0u while the median
+        body-to-garment distance on the failing region was 3.04u, so most offenders
+        found nothing to lift and contributed zero. k-nearest always lifts something.
+      * SAMPLING the candidate body verts. 1200 of 23870 is fine for a census
+        PROPORTION but not for generating a per-vertex correction: ~95% of the
+        failing verts were never examined, and the demand that did land sat a median
+        13.4u away from the ones that mattered.
     """
     from scipy.spatial import cKDTree
 
@@ -362,12 +387,16 @@ def exposure_demand(armor_verts, armor_weights, armor_tris,
         _dd, jj = ptree.query(pbv[bad], k=1)
         short = np.einsum("ij,ij->i", pbv[bad] - pav[jj], pbn[bad]) + margin
         short = np.clip(short, 0.0, cap)
-        # Lift the neighbourhood of each offender, at BIND indices.
-        for grp, s in zip(atree.query_ball_point(bv[bad], spread), short):
-            if grp and s > 0:
-                gi = np.asarray(grp, dtype=np.int64)
-                # `out[gi] = np.maximum(...)`, NOT `np.maximum(..., out=out[gi])`:
-                # fancy indexing yields a COPY, so an out= write lands in a temporary
-                # and is silently discarded -- which read as "the term does nothing".
-                out[gi] = np.maximum(out[gi], s)
+        # Lift each offender's k NEAREST garment verts, at BIND indices.
+        k = int(min(knn, len(av)))
+        _dk, nk = atree.query(bv[bad], k=k)
+        nk = np.atleast_2d(nk.T).T if k > 1 else nk.reshape(-1, 1)
+        for row, s in zip(nk, short):
+            if s <= 0:
+                continue
+            gi = np.asarray(row, dtype=np.int64).ravel()
+            # `out[gi] = np.maximum(...)`, NOT `np.maximum(..., out=out[gi])`:
+            # fancy indexing yields a COPY, so an out= write lands in a temporary
+            # and is silently discarded -- which read as "the term does nothing".
+            out[gi] = np.maximum(out[gi], s)
     return np.clip(out * gain, 0.0, cap)
