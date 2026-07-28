@@ -54,14 +54,64 @@ sys.path.insert(0, str(_REPO / ".pynifly"))
 import numpy as np                                              # noqa: E402
 
 from pyn import pynifly                                         # noqa: E402
+from src.nif_convert import UBE_BODY_INJECT_NAMES               # noqa: E402
 from scripts.posed_clip_test import (                           # noqa: E402
-    build_pose, read_skin, bone_parents, apply_pose, rays_hit, _posed,
+    build_pose, read_skin, bone_parents, apply_pose, rays_hit, vert_normals,
     DEFAULT_SKELETON)
+
+
+def _posed(data, garments, acc, body_name):
+    """Pose the body and every garment with the SAME bone deltas.
+
+    `posed_clip_test._posed` hardcodes `BaseShape`; this takes the body's name so the
+    same code can pose a SOURCE nif, whose author named it `body` / `CBBE` / whatever.
+    """
+    body_v, body_t, body_w = data[body_name]
+    pb = apply_pose(body_v, body_w, acc)
+    GV, GT, off = [], [], 0
+    for g in garments:
+        gv, gt, gw = data[g]
+        GV.append(apply_pose(gv, gw, acc))
+        GT.append(gt + off)
+        off += len(gv)
+    return pb, vert_normals(pb, body_t), np.vstack(GV), np.vstack(GT)
 from scripts.pose_set import (                                  # noqa: E402
     POSE_SET, REGION_POSES, REGIONS, ARM_X, MID_X)
 
 
-def load(nif_path, skeleton=None):
+def pick_body_shape(nif):
+    """Which shape is the BODY -- works on a SOURCE nif as well as our output.
+
+    Our output names it `BaseShape`; a source names it whatever the author chose
+    (`body`, `CBBE`, `CBBE Body`, ...), so a name list would need extending forever
+    and would silently pick nothing when it missed. Detect it structurally instead:
+    the body is the shape with the most vertices that also reaches the FLOOR (it has
+    legs). Collision/proxy hulls also reach the floor but carry two orders of
+    magnitude fewer verts, so max-verts breaks the tie.
+    """
+    best, best_n = None, -1
+    zfloor = None
+    for s in nif.shapes:
+        try:
+            v = np.asarray(s.verts, dtype=np.float64)
+        except Exception:
+            continue
+        if not len(v):
+            continue
+        zfloor = v[:, 2].min() if zfloor is None else min(zfloor, v[:, 2].min())
+    for s in nif.shapes:
+        if s.name in UBE_BODY_INJECT_NAMES:
+            return s.name
+        try:
+            v = np.asarray(s.verts, dtype=np.float64)
+        except Exception:
+            continue
+        if len(v) > best_n and zfloor is not None and v[:, 2].min() <= zfloor + 3.0:
+            best, best_n = s.name, len(v)
+    return best
+
+
+def load(nif_path, skeleton=None, body_name=None):
     """Mirror `posed_clip_test.main`'s loading exactly.
 
     Two things that are easy to get wrong and silently produce a no-op pose:
@@ -86,13 +136,20 @@ def load(nif_path, skeleton=None):
             "CBBE2UBE_GAME_DATA / CBBE2UBE_MODS_ROOT), or pass --skeleton.")
     nif = pynifly.NifFile(str(nif_path))
     data = {s.name: read_skin(s) for s in nif.shapes}
-    if 'BaseShape' not in data:
-        raise SystemExit("no injected BaseShape in this nif -- nothing to measure")
+    bn = body_name or pick_body_shape(nif)
+    if bn not in data:
+        raise SystemExit(f"no body shape found in {Path(nif_path).name}")
+    # Physics helpers are not the visible garment; counting them as coverage makes
+    # the body read as protected where nothing renders.
+    garments = [n for n in data if n != bn
+                and n.strip().lower() not in ("collision", "hidecollision", "proxy",
+                                              "proxy2", "proxy3", "stabilizer")]
+    if not garments:
+        raise SystemExit(f"no garment shapes in {Path(nif_path).name}")
     par = bone_parents(pynifly.NifFile(skel))
-    garments = [n for n in data if n != 'BaseShape']
-    _bv, _bt, body_w = data['BaseShape']
+    _bv, _bt, body_w = data[bn]
     origins = {b: o for b, (w, o) in body_w.items()}
-    return data, garments, par, origins
+    return data, garments, par, origins, bn
 
 
 def region_visible(body, bn, GV, GT, sel):
@@ -109,7 +166,8 @@ def region_visible(body, bn, GV, GT, sel):
     return idx, ~rays_hit(body[idx], bn[idx], GV, GT)
 
 
-def analyse(nif_path, skeleton=None, only_region=None, sample=400, seed=12345):
+def analyse(nif_path, skeleton=None, only_region=None, sample=400, seed=12345,
+            body_name=None):
     """Per region: the worst pose and how much bind-coverage it loses.
 
     TWO THINGS MAKE THIS AFFORDABLE, and without them a population sweep is 31 hours:
@@ -120,8 +178,8 @@ def analyse(nif_path, skeleton=None, only_region=None, sample=400, seed=12345):
         ray casting is the whole cost. Fixed seed, and the SAME vertex indices are
         used at bind and posed, so the regression is a paired comparison.
     """
-    data, garments, par, origins = load(nif_path, skeleton)
-    body_v, _body_t, body_w = data['BaseShape']
+    data, garments, par, origins, bname = load(nif_path, skeleton, body_name)
+    body_v, _body_t, body_w = data[bname]
 
     # SELF-TEST first: identity must reproduce the bind mesh exactly, or the skinning
     # is wrong and every number below is meaningless.
@@ -130,7 +188,7 @@ def analyse(nif_path, skeleton=None, only_region=None, sample=400, seed=12345):
     regions = [(n, s) for n, s in REGIONS if not only_region or n == only_region]
     # Fix each region's sampled vertex set ONCE, from the bind mesh, so bind and
     # posed states are compared over identical vertices.
-    pb0, pbn0, GV0, GT0 = _posed(data, garments, {})
+    pb0, pbn0, GV0, GT0 = _posed(data, garments, {}, bname)
     rng = np.random.default_rng(seed)
     picks, base = {}, {}
     for name, sel in regions:
@@ -150,7 +208,7 @@ def analyse(nif_path, skeleton=None, only_region=None, sample=400, seed=12345):
     scores = {n: [] for n, _s in regions}
     for pose in sorted(needed):
         acc = build_pose(par, origins, POSE_SET[pose])
-        pb, pbn, GV, GT = _posed(data, garments, acc)
+        pb, pbn, GV, GT = _posed(data, garments, acc, bname)
         for name, _sel in regions:
             if pose not in REGION_POSES.get(name, []):
                 continue

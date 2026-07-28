@@ -59,6 +59,7 @@ fit_census*.jsonl
 # so it names mods by construction.
 penetration_census*.jsonl
 multipose_census*.jsonl
+source_delta_census*.jsonl
 *.census.jsonl
 
 # Golden-output regression baseline (scripts/golden_output.py). Generated data, and
