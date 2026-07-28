@@ -66,7 +66,47 @@ from __future__ import annotations
 import numpy as np
 from scipy.spatial import cKDTree
 
-__all__ = ["closest_point_on_triangles", "surface_penetration", "ray_exposure"]
+__all__ = ["closest_point_on_triangles", "surface_penetration", "ray_exposure",
+           "boundary_points", "classify_exposure"]
+
+
+def boundary_points(verts, tris):
+    """Vertices on an OPEN boundary -- endpoints of edges used by exactly one triangle.
+
+    A garment is an open shell; its rim is the neckline, hem, armhole. Distance to
+    that rim is what separates "skin shows because the garment ENDS here" from "skin
+    shows through the middle of the garment".
+    """
+    from collections import defaultdict
+    T = np.asarray(tris, dtype=np.int64).reshape(-1, 3)
+    cnt = defaultdict(int)
+    for tri in T:
+        for a, b in ((tri[0], tri[1]), (tri[1], tri[2]), (tri[2], tri[0])):
+            cnt[(a, b) if a < b else (b, a)] += 1
+    idx = sorted({v for (a, b), c in cnt.items() if c == 1 for v in (a, b)})
+    return np.asarray(verts, dtype=np.float64)[idx] if idx else np.zeros((0, 3))
+
+
+def classify_exposure(exposed, surf_dist, rim_dist, near=2.0, rim=4.0):
+    """Split exposed body vertices into POKE / NECKLINE / UNCOVERED.
+
+    Exposure alone is a COVERAGE measure, not a defect measure -- a bikini is exposed
+    by design. Even "exposed AND garment nearby" is not enough: at a neckline the
+    garment IS nearby, just below the rim. Both conditions are required:
+
+      poke      exposed, garment surface within `near`, AND more than `rim` from any
+                open boundary -- garment all around it and the body coming through.
+      neckline  exposed, garment nearby, but close to the rim -- the garment ends here.
+      uncovered exposed with no garment nearby at all -- bare by design.
+
+    Measured on 187 flagged armors: poke 0.4% mean, neckline 13.6%, uncovered 30.0%.
+    Using rim distance ALONE scores a towel and a bra at 100% poke, because that
+    distance is large both deep inside coverage and completely outside the garment.
+    """
+    near_m = np.asarray(surf_dist) < near
+    far_rim = np.asarray(rim_dist) > rim
+    e = np.asarray(exposed, dtype=bool)
+    return (e & near_m & far_rim), (e & near_m & ~far_rim), (e & ~near_m)
 
 
 def ray_exposure(origins, dirs, verts, tris, tmax=25.0, chunk=2048):

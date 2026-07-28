@@ -188,3 +188,55 @@ def test_ray_exposure_handles_empty_geometry():
     import numpy as _np
     body, _bt, bn = _sphere(9.0)
     assert ray_exposure(body, bn, _np.zeros((0, 3)), _np.zeros((0, 3))).all()
+
+
+# --- exposure is COVERAGE, not a defect ---------------------------------------
+#
+# 187 armors flagged >5% "exposed and garment within 2u" at the upper chest, and only
+# SIX had a real poke-through. At a neckline the garment IS within 2u -- just below
+# the rim. Without this split, a population signal is mostly garment design.
+
+def _octahedron():
+    """A genuinely CLOSED mesh. `_sphere` above leaves its UV seam unstitched, so it
+    is open and cannot serve as the closed control -- which is what these two tests
+    caught the first time they ran."""
+    v = np.array([[1.0, 0, 0], [-1, 0, 0], [0, 1, 0],
+                  [0, -1, 0], [0, 0, 1], [0, 0, -1]])
+    t = np.array([[0, 2, 4], [2, 1, 4], [1, 3, 4], [3, 0, 4],
+                  [2, 0, 5], [1, 2, 5], [3, 1, 5], [0, 3, 5]])
+    return v, t
+
+
+def test_boundary_points_finds_an_open_rim():
+    from scripts.mesh_penetration import boundary_points
+    v, t = _octahedron()
+    rim = boundary_points(v, t[:-1])                # drop one face -> a 3-edge hole
+    assert len(rim) == 3, f"one missing face leaves a triangular rim, got {len(rim)}"
+
+
+def test_closed_mesh_has_no_boundary():
+    from scripts.mesh_penetration import boundary_points
+    v, t = _octahedron()
+    assert len(boundary_points(v, t)) == 0, "a closed shell has no open rim"
+
+
+def test_classify_splits_poke_from_neckline_and_bare_skin():
+    from scripts.mesh_penetration import classify_exposure
+    exposed = np.array([True, True, True, False])
+    surf = np.array([0.5, 0.5, 9.0, 0.5])           # near, near, far, near
+    rim = np.array([9.0, 1.0, 9.0, 9.0])            # deep, at-rim, deep, deep
+    poke, neck, uncov = classify_exposure(exposed, surf, rim)
+    assert poke.tolist() == [True, False, False, False], "garment around it = defect"
+    assert neck.tolist() == [False, True, False, False], "at the rim = neckline"
+    assert uncov.tolist() == [False, False, True, False], "no garment = bare by design"
+
+
+def test_rim_distance_alone_would_misclassify_a_bare_body():
+    """THE bug this split fixes. Rim distance is large BOTH deep inside coverage and
+    completely outside the garment, so on its own it scored a towel at 100% poke."""
+    from scripts.mesh_penetration import classify_exposure
+    exposed = np.array([True] * 3)
+    far_from_rim = np.array([50.0] * 3)             # identical on the naive test
+    surf = np.array([0.4, 20.0, 30.0])              # only the first is covered
+    poke, _neck, uncov = classify_exposure(exposed, surf, far_from_rim)
+    assert poke.sum() == 1 and uncov.sum() == 2

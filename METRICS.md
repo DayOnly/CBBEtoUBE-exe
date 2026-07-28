@@ -185,3 +185,31 @@ spot is the **upper chest / neckline**.
 **Known limitation:** the viewmodel exclusion matches `1st` / `firstperson`, so stems
 using `_fp_`, `FP` or `1person` still slip through and rank high by construction.
 Ignore those rows or widen the filter before quoting a worst-offender list.
+
+## Exposure is COVERAGE, not a defect — the poke/neckline/uncovered split
+
+The upper chest looked like the worst region in the census above (62% of armors over
+5% "exposed and garment within 2u"). Almost all of it is **garment design**.
+
+`pct_exposed_near` is not sufficient on its own: at a NECKLINE the garment IS within
+2u — just below the rim. Splitting on distance to the garment's open boundary
+(`boundary_points`, edges used by exactly one triangle) separates the cases:
+
+| class | test | meaning |
+|---|---|---|
+| **poke** | exposed, garment within 2u, **>4u from any rim** | garment all around it, body coming through — the defect |
+| neckline | exposed, garment within 2u, near the rim | the garment ends here — design |
+| uncovered | exposed, no garment within 2u | bare skin by design |
+
+Over the 187 flagged armors: **poke 0.4% mean, neckline 13.6%, uncovered 30.0%.
+Only 6 of 187 exceed 5% poke; 1 exceeds 15%.**
+
+**Rim distance ALONE does not work** and was tried first: it is large both deep inside
+coverage AND completely outside the garment, so it scored a towel and a bra at 100%
+poke. Both conditions are required. `classify_exposure` enforces that, and
+`test_rim_distance_alone_would_misclassify_a_bare_body` pins it.
+
+**Conclusion for the upper chest: there is no systemic defect to fix.** The population
+signal was coverage. Six armors have a genuine poke-through and are individually
+actionable; a pass aimed at the region as a whole would be tuning against garment
+design — the same mistake as the reverted rear-clearance feature, one level subtler.

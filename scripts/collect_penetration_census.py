@@ -52,7 +52,8 @@ from pyn import pynifly                                          # noqa: E402
 from src import nif_convert as nc, paths                         # noqa: E402
 from src.nif_convert import UBE_BODY_INJECT_NAMES                # noqa: E402
 from src.nif_convert import _body_normals_or_compute             # noqa: E402
-from scripts.mesh_penetration import surface_penetration, ray_exposure  # noqa: E402
+from scripts.mesh_penetration import (surface_penetration, ray_exposure,  # noqa: E402
+                                      boundary_points, classify_exposure)
 
 # Physics helper shapes are not the visible garment. Counting them as coverage makes
 # the body read as protected where nothing renders.
@@ -150,6 +151,7 @@ def row_for(path: Path, root: Path, contact: float = 5.0,
     od, oi = cKDTree(gv).query(bv, k=1)
     old_signed = np.einsum("ij,ij->i", gv[oi] - bv, bn)
 
+    rim = boundary_points(gv, gt)      # garment rim: neckline/hem/armhole
     z, ny = bv[:, 2], bn[:, 1]
     rigged = [bool(nc._shape_has_hdt_smp_rigging(s, bbones)) for s in garments]
     row = {
@@ -176,9 +178,18 @@ def row_for(path: Path, root: Path, contact: float = 5.0,
             if len(idx) > sample:
                 idx = rng.choice(idx, size=sample, replace=False)
             exp = ray_exposure(bv[idx], bn[idx], gv, gt)
+            # Split exposure into DEFECT vs DESIGN. `pct_exposed_near` alone is not
+            # enough: at a neckline the garment IS within 2u, just below the rim, so
+            # 187 armors flagged on it and only 6 had a real poke-through.
+            rd = (cKDTree(rim).query(bv[idx], k=1)[0] if len(rim)
+                  else np.full(len(idx), np.inf))
+            poke, neck, uncov = classify_exposure(exp, dist[idx], rd)
             r.update(
                 sampled=int(len(idx)),
                 pct_exposed=round(float(100.0 * exp.mean()), 3),
+                pct_poke=round(float(100.0 * poke.mean()), 3),
+                pct_neckline=round(float(100.0 * neck.mean()), 3),
+                pct_uncovered=round(float(100.0 * uncov.mean()), 3),
                 # How far the garment sits from the skin, over the SAME verts.
                 # Unsigned, so sound. Large + exposed = uncovered by design (a
                 # bikini); small + exposed = the garment is there and the body is
