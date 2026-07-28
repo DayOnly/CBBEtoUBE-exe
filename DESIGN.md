@@ -359,6 +359,49 @@ bones (STB footgun applies).
 
 ---
 
+## Bust collider split
+
+**Why.** Some authors reuse the bust garment itself as the piece's per-triangle
+SMP collider (their skirt/tassel chains rest on it). A shape that IS its own
+collider can never carry jiggle: grafting breast motion onto it closes a
+feedback loop — cloth moves collider, collider pushes cloth — and in game the
+breasts tore off the body (the revert that kept the torso graft off for a
+release). The well-behaved siblings in the same source family solve this by
+hand: a SEPARATE hidden collider shape carries the support role, leaving the
+bust garment free to follow the breast. Diffing a working sibling against the
+failing piece is what found this, after three theory-driven fixes failed.
+
+**How.** Two order-critical passes at both pipeline sites. Pass 1, before
+`_finalize_hdt_physics`: clone the garment IN PLACE as `<name>Col` — hidden
+(flags 15), textureless, keeping the garment's CURRENT rigid weights so the
+resting chains see identical support. In place matters: rebuilding a NIF from
+its shapes drops ALL extra data (BODYTRI + the physics link; in game "ignores
+morphs, body reverts to its _0 shape"). The pass snapshots root- AND
+shape-level extra data (BODYTRI lives on its carrier shape) and byte-restores
+the file if anything is lost. Pass 2, after the finalize (which overwrites the
+on-disk XML with the authored copy — an earlier rewrite is silently undone)
+and before the jiggle graft (which reads that XML): repoint each
+`per-triangle-shape` decl at the clone, gating the split/morph/physics
+invariants together. The stock torso graft then reaches the garment with no
+bypass, because it is no longer a collider.
+
+**Detection is measured, never named.** A candidate is a RENDERED per-triangle
+collider (textured, not Hidden) covering the bust band whose breast FOLLOW
+RATIO against the body underneath is below 0.5 — weight, not bone presence: a
+garment can carry all six breast bones at 0.15 of the body's drive and still
+fail in game. Names with XML roles beyond the per-triangle decl (constraints,
+pairs) are skipped as unvalidated structure. Bodies, hidden helpers and
+already-split pieces are excluded by construction.
+
+**Status.** In-game validated on the motivating vanilla cuirass (production
+output reproduces the hand-built artifact: follow 0.660 vs anchor 0.643, same
+per-bone distribution as the body). Census over the shipped pack: 33 pieces in
+the split class. `CBBE2UBE_NO_BUST_COLLIDER_SPLIT=1` disables the split;
+`CBBE2UBE_TORSO_JIGGLE=0` disables the whole fix (split included — a split
+with no graft is inert output churn).
+
+---
+
 ## HDT-SMP physics-cloth preservation
 
 **Why.** Authored SMP cloth (per-vertex softbody) and SMP colliders (per-triangle)

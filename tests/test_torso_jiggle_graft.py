@@ -68,20 +68,23 @@ def _clean_module():
 
 # --- the flag itself ---------------------------------------------------------
 
-def test_torso_jiggle_defaults_off(monkeypatch):
-    """Breast jiggle on a RIGID CUP can read as rubbery leather -- a judgement only
-    in-game can make. The pass's own deferral note says so. Ships opt-in."""
-    assert _reload(monkeypatch, None).TORSO_JIGGLE_TRANSFER is False
+def test_torso_jiggle_defaults_on(monkeypatch):
+    """DEFAULT ON since 1.2. The original deferral (rubbery-cup aesthetics, judge
+    in game) was answered in game: the motivating cuirass with the full graft via
+    the bust collider split was confirmed GOOD. The 7c tear-off is structurally
+    prevented (colliders are never grafted; the split provides a non-collider
+    target). An env-gated default-OFF fix is a fix that never ships."""
+    assert _reload(monkeypatch, None).TORSO_JIGGLE_TRANSFER is True
 
 
-def test_torso_jiggle_opt_in(monkeypatch):
-    assert _reload(monkeypatch, "1").TORSO_JIGGLE_TRANSFER is True
+def test_torso_jiggle_opt_out(monkeypatch):
+    assert _reload(monkeypatch, "0").TORSO_JIGGLE_TRANSFER is False
 
 
-def test_flag_accepts_the_usual_truthy_spellings(monkeypatch):
-    for v in ("1", "true", "YES", "on"):
+def test_flag_accepts_the_usual_spellings(monkeypatch):
+    for v in ("1", "true", "YES", "on", ""):
         assert _reload(monkeypatch, v).TORSO_JIGGLE_TRANSFER is True, v
-    for v in ("0", "", "no", "off"):
+    for v in ("0", "false", "no", "OFF"):
         assert _reload(monkeypatch, v).TORSO_JIGGLE_TRANSFER is False, v
 
 

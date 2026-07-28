@@ -5396,15 +5396,23 @@ _JIGGLE_TRANSFER_FACTOR = float(
 
 # #torso-jiggle-graft -- extend the jiggle graft to fitted TORSO garments (corsets,
 # bras, cuirasses), which the leg-only gating in _transfer_body_jiggle_to_fitted
-# excludes. Motivated in-game: a hide cuirass sits over a body carrying NINE jiggle
+# excludes. Motivated in-game: a cuirass sits over a body carrying NINE jiggle
 # bones and carries NONE of its own, so breast/butt travel and the leather does not
 # -- "clips especially under movement". Static clearance cannot reach that; the
-# garment has no way to follow the body at all. OPT-IN: the deferral note on that
-# function warns jiggle on a RIGID CUP can read as rubbery leather, and that
-# judgement is in-game, not measurable here.
+# garment has no way to follow the body at all.
+#
+# DEFAULT ON since 1.2. The original deferral ("jiggle on a rigid cup can read as
+# rubbery, judge in game") was answered in game: the motivating cuirass with the
+# full graft (via the bust collider split) was confirmed GOOD, first success after
+# three reverted attempts. The tear-off failure mode that forced the 7c revert is
+# structurally prevented -- a collider is never grafted, and the split hands the
+# graft a non-collider target instead of relaxing that rule. The graft copies the
+# BODY's own per-bone breast mix under each vert (a hand-tuned single-bone
+# weighting with a HIGHER total follow read worse in game than the graft's matched
+# distribution). CBBE2UBE_TORSO_JIGGLE=0 restores the old rigid behaviour.
 TORSO_JIGGLE_TRANSFER = (
     os.environ.get("CBBE2UBE_TORSO_JIGGLE", "").strip().lower()
-    in ("1", "true", "yes", "on"))
+    not in ("0", "false", "no", "off"))
 # Fraction of a torso shape's NON-CHAIN verts that must sit within _CONFORM_FIT_PROX
 # of the body. The whole-shape 0.90 gate cannot serve: a cuirass welded to its own
 # simulated skirt scores 0.43 over all verts (the skirt hangs away) and 0.67 over the
@@ -7755,9 +7763,9 @@ def _transfer_body_jiggle_to_fitted(dst_path, biped_slots: int = 0) -> int:
     alone. Armor-only -- the body is never modified. Spike-proof: the grafted bone
     gets the body's own skin-to-bone transform, valid because both carry an
     identity global-to-skin (the graft is skipped otherwise, see _body_jiggle_ref).
-    Leg-dominant garments by default; fitted TORSO garments (corset / bra / cuirass)
-    are opt-in behind CBBE2UBE_TORSO_JIGGLE, since breast jiggle on a rigid cup is
-    visually riskier and only in-game can judge it.  #torso-jiggle-graft"""
+    Leg-dominant garments plus fitted TORSO garments (corset / bra / cuirass);
+    the torso path (default ON since 1.2, in-game validated via the bust collider
+    split) is opt-out behind CBBE2UBE_TORSO_JIGGLE=0.  #torso-jiggle-graft"""
     if not TRANSFER_BODY_JIGGLE:
         return 0
     if biped_slots & (BIPED_SLOT33_BIT | BIPED_SLOT37_BIT):

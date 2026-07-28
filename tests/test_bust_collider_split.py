@@ -66,18 +66,20 @@ def _reload(monkeypatch, **env):
 
 # --- flags -------------------------------------------------------------------
 
-def test_split_is_on_by_default_but_inert_without_the_torso_graft(monkeypatch):
+def test_split_and_graft_ship_on_together_and_die_together(monkeypatch):
     """The split's only purpose is to let the torso graft reach the garment; on
-    its own it is output churn. One flag (TORSO_JIGGLE) decides the whole fix;
-    the split's own switch exists only for bisection."""
+    its own it is output churn. One flag (TORSO_JIGGLE, default ON since 1.2)
+    decides the whole fix; the split's own switch exists only for bisection."""
     m = _reload(monkeypatch, CBBE2UBE_TORSO_JIGGLE=None)
     assert m.BUST_COLLIDER_SPLIT is True
-    assert m.TORSO_JIGGLE_TRANSFER is False
-    assert m._bust_split_candidates("x_1.nif", None) == []
+    assert m.TORSO_JIGGLE_TRANSFER is True
+    m2 = _reload(monkeypatch, CBBE2UBE_TORSO_JIGGLE="0")
+    assert m2.TORSO_JIGGLE_TRANSFER is False
+    assert m2._bust_split_candidates("x_1.nif", None) == []
 
 
 def test_kill_switch(monkeypatch):
-    m = _reload(monkeypatch, CBBE2UBE_TORSO_JIGGLE="1",
+    m = _reload(monkeypatch, CBBE2UBE_TORSO_JIGGLE=None,
                 CBBE2UBE_NO_BUST_COLLIDER_SPLIT="1")
     assert m.BUST_COLLIDER_SPLIT is False
     assert m._bust_split_candidates("x_1.nif", None) == []
