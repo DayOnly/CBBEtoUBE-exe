@@ -336,3 +336,50 @@ surrounded**. So the percentages above are **floors, not magnitudes** — only t
 RANKING is usable. Do not quote "0.7% of breast verts poke" as a health figure.
 
 All bind pose, so all of it is a best case; see the pose-regression section above.
+
+## Sound: narrow-band pass over the breast UNDER-CURVE
+
+`scripts/underbust_census.py`. The region census ranks but cannot size, because the
+under-curve is only **484 of 3674** verts the `breast` selector accepts — 13.2%, a
+**~7.6× dilution**. That predicts the observed gap on the piece confirmed by eye:
+region level scored `exposed=40 poke=2`, the band scores `exposed=80 surrounded=13`.
+
+**Band located by measurement, not assumption.** Sweeping 2u z-slabs on the canonical
+UBE body for where the surface turns from facing forward to facing down puts the
+under-curve at **z 90–94** (mean nz −0.41/−0.39, down-and-forward 38.6%/41.1%), with
+the apex at z 94–96 (max y 8.16) — agreeing with the independently pinned "apex ~95".
+
+**A thing that looked like a second cause and is not:** the `breast` selector's
+`ny > 0.3` keeps **78.8%** of the under-curve. The band's mean `ny` of +0.18 is over
+the whole z-slab, not over the under-curve subset. Dilution is the whole story.
+
+199 rigid armors, bind pose, 612-vert band:
+
+| | verts | of exposed |
+|---|---|---|
+| band | 121,788 | |
+| exposed | 7,705 (6.3% of band) | |
+| **surrounded** | **491** | **6.4%** |
+| partial | 1,439 | 18.7% |
+| bare | 5,775 | 75.0% |
+
+**Split closed vs open garments, or the number means nothing.** A low-cut top exposing
+the under-curve is design; a closed one doing it is the defect. Splitting at 15% band
+exposure: closed garments run **9.5%** surrounded-of-exposed against open ones at
+**5.0%** — the defect concentrates where a garment claims to cover, which is the right
+sign and is the reason the confirmed piece ranks 5th and 8th here while ranking only
+12th and 15th on raw band percentage.
+
+**Actionable population: 16 of 199 (8%)** — closed garments with ≥5 surrounded verts.
+Seven show the purest signature, every exposed under-curve vert surrounded (28/28,
+14/14, 12/12, 8/8, 3/3, 1/1, 1/1): a fully-closed garment with the body coming through.
+
+**This is NARROWER than the region census, not wider — the expectation going in was
+wrong.** Region-level `upper_chest` flagged 55/199; the band flags 16. Both are real
+and they are different defects: the region test counts poke anywhere in z 99–112,
+including necklines, straps and collars, while the band isolates the under-curve
+specifically. Do not treat the 55 as a superset of the 16.
+
+Negative control is enforced in-script and aborts the run: a garment entirely below
+z 80 scored at the under-curve must read 100% bare (two picked from the population by
+geometry, both PASS at 612/612). Bind pose only, so still a best case.

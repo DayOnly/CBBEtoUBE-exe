@@ -60,6 +60,8 @@ fit_census*.jsonl
 penetration_census*.jsonl
 multipose_census*.jsonl
 source_delta_census*.jsonl
+# scripts/underbust_census.py writes beside itself; same rule -- keyed by mesh path.
+scripts/underbust_census*.json
 *.census.jsonl
 
 # Golden-output regression baseline (scripts/golden_output.py). Generated data, and
