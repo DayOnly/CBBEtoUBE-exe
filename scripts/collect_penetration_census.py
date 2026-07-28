@@ -52,7 +52,7 @@ from pyn import pynifly                                          # noqa: E402
 from src import nif_convert as nc, paths                         # noqa: E402
 from src.nif_convert import UBE_BODY_INJECT_NAMES                # noqa: E402
 from src.nif_convert import _body_normals_or_compute             # noqa: E402
-from scripts.mesh_penetration import surface_penetration         # noqa: E402
+from scripts.mesh_penetration import surface_penetration, ray_exposure  # noqa: E402
 
 # Physics helper shapes are not the visible garment. Counting them as coverage makes
 # the body read as protected where nothing renders.
@@ -110,10 +110,29 @@ def _combined(garments):
     return np.vstack(vs), np.vstack(ts), np.vstack(ns)
 
 
-def row_for(path: Path, root: Path, contact: float = 5.0) -> "dict | None":
+def row_for(path: Path, root: Path, contact: float = 5.0,
+            sample: int = 400) -> "dict | None":
     nif = pynifly.NifFile(str(path))
     body, garments = _shapes(nif)
     if body is None or not garments:
+        return None
+    # FIRST-PERSON VIEWMODELS ARE NOT MEASURABLE HERE and must not be counted. They
+    # are arms-only, so "is the body poking through the garment" has no meaning: every
+    # one read ~100% poking at the depth ceiling and they took the entire top of the
+    # worst-offender list on the first run.
+    #
+    # The converter's `_is_first_person_mesh` CANNOT be reused on output. Its structural
+    # half is "a viewmodel never carries an injected BaseShape" -- true of the SOURCE,
+    # but the converter injects one during the body-swap, so post-conversion it returns
+    # False for every viewmodel (verified). Name matching alone is what is left, and it
+    # is sound HERE in a way it is not in the pipeline: a false positive costs one row
+    # of a census, not an armour's physics. Same keywords the converter uses.
+    _stem = path.stem.lower()
+    for _suf in ("_0", "_1"):
+        if _stem.endswith(_suf):
+            _stem = _stem[:-len(_suf)]
+            break
+    if "1st" in _stem or "firstperson" in _stem:
         return None
     gv, gt, gn = _combined(garments)
     if gv is None or not len(gt):
@@ -122,10 +141,12 @@ def row_for(path: Path, root: Path, contact: float = 5.0) -> "dict | None":
     bn = np.asarray(_body_normals_or_compute(body), dtype=np.float64)
     bbones = set(body.bone_names or [])
 
-    signed, dist, covered, agree = surface_penetration(
+    # DISTANCE only. `surface_penetration`'s SIGN is known-bad (METRICS.md: a garment
+    # is a shell with two faces; a vertex inside the cup is near both, so the nearest
+    # one decides the sign arbitrarily). The unsigned distance it returns IS sound.
+    _signed, dist, _cov, agree = surface_penetration(
         bv, gv, gt, gn if gn.any() else None, contact=contact)
-    # The OLD metric, kept alongside so the disagreement is queryable, never to be
-    # used on its own for a rear number.
+    # The nearest-VERTEX metric, kept only so the disagreement stays queryable.
     od, oi = cKDTree(gv).query(bv, k=1)
     old_signed = np.einsum("ij,ij->i", gv[oi] - bv, bn)
 
@@ -142,33 +163,32 @@ def row_for(path: Path, root: Path, contact: float = 5.0) -> "dict | None":
         "contact_gate": contact,
         "regions": {},
     }
+    rng = np.random.default_rng(12345)          # fixed: a census must be re-runnable
     for name, sel in REGIONS:
         m = sel(z, ny)
-        cov = m & covered
-        r = {"verts": int(m.sum()), "covered": int(cov.sum())}
-        if cov.sum():
-            s = signed[cov]
-            pk = s > 0
+        idx = np.flatnonzero(m)
+        r = {"verts": int(len(idx))}
+        if len(idx):
+            # EXPOSURE is the sound test: march the vertex's own outward normal and
+            # see whether any garment triangle blocks it. Subsampled -- this is a
+            # proportion over thousands of verts, and the ray test is the expensive
+            # part of the census.
+            if len(idx) > sample:
+                idx = rng.choice(idx, size=sample, replace=False)
+            exp = ray_exposure(bv[idx], bn[idx], gv, gt)
             r.update(
-                pct_poking=round(float(100.0 * pk.mean()), 3),
-                max_depth=round(float(s.max()), 4),
-                mean_gap=round(float(-s.mean()), 4),          # +ve = body inside
-                # the OLD metric on the SAME verts, for the disagreement column
-                old_pct_poking=round(float(100.0 * (old_signed[cov] < 0).mean()), 3),
+                sampled=int(len(idx)),
+                pct_exposed=round(float(100.0 * exp.mean()), 3),
+                # How far the garment sits from the skin, over the SAME verts.
+                # Unsigned, so sound. Large + exposed = uncovered by design (a
+                # bikini); small + exposed = the garment is there and the body is
+                # coming through it, which is the defect.
+                dist_p50=round(float(np.percentile(dist[idx], 50)), 4),
+                dist_p10=round(float(np.percentile(dist[idx], 10)), 4),
+                pct_exposed_near=round(float(100.0 * (exp & (dist[idx] < 2.0)).mean()), 3),
+                # the discredited nearest-VERTEX number on the same verts
+                old_pct_poking=round(float(100.0 * (old_signed[idx] < 0).mean()), 3),
             )
-            # Depth distribution, so a truncated measurement is visible instead of
-            # looking like a real ceiling: max_depth == contact_gate means the gate
-            # clipped it, not the mesh.
-            if pk.any():
-                d_pk = s[pk]
-                r.update(
-                    depth_p50=round(float(np.percentile(d_pk, 50)), 4),
-                    depth_p99=round(float(np.percentile(d_pk, 99)), 4),
-                    depth_truncated=bool(float(s.max()) >= contact - 1e-6),
-                )
-            r["old_pct_poking_ungated"] = round(
-                float(100.0 * (old_signed[m & (od < 6.0)] < 0).mean()), 3
-            ) if (m & (od < 6.0)).any() else None
         row["regions"][name] = r
     return row
 
@@ -182,6 +202,7 @@ def main():
     out = Path(opt("--out", "penetration_census.jsonl"))
     limit = int(opt("--limit", "0") or 0)
     contact = float(opt("--contact", "5.0"))
+    sample = int(opt("--sample", "400"))
     lay = paths.discover_layout()
     root = (lay.mods_root / opt("--out-mod", os.environ.get("CBBE2UBE_OUT_MOD",
                                                             "CBBEtoUBE Auto"))
@@ -199,7 +220,7 @@ def main():
     with out.open("w", encoding="utf-8") as fh:
         for i, p in enumerate(files, 1):
             try:
-                row = row_for(p, root, contact)
+                row = row_for(p, root, contact, sample)
             except Exception as exc:
                 skipped += 1
                 # Loud, not silent: a swallowed measurement error is indistinguishable

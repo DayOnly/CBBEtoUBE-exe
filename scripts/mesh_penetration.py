@@ -14,7 +14,28 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-"""Body-through-garment penetration measured against the garment SURFACE.
+"""Body-through-garment penetration.
+
+READ THIS BEFORE USING `surface_penetration`. Deciding inside/outside from the NEAREST
+TRIANGLE'S NORMAL IS A KNOWN-BAD METRIC in this project and its numbers are void --
+`METRICS.md`, "Signed distance via the nearest triangle's normal - REPLACED". A garment
+is a SHELL with an outer and an inner face; a body vertex sitting safely inside the cup
+is near BOTH, so whichever face happens to be nearest decides the sign and the sign is
+essentially arbitrary there. It once reported 135/1110 nipple verts outside a cuirass
+whose surface was 2.4u in FRONT of them; the truth was 0.
+
+Rebuilding it (2026-07-27) reproduced the same failure from the other direction: a
+~20-30% "poking" floor in EVERY body region pack-wide, which is the coin-flip, not
+geometry. Winding was clean (agreement 0.99) -- orientation was never the problem. The
+shell is.
+
+**Use `ray_exposure`.** March each body vertex along its own outward normal; if no
+garment triangle blocks it, that vertex is visible from outside -- which is both
+unambiguous by construction and the thing a player actually sees. That is the metric
+`METRICS.md` lists as sound, with positive controls.
+
+`surface_penetration` is kept ONLY for the unsigned DISTANCE it returns (how far the
+garment surface is), which is sound. Do not use its sign.
 
 WHY THIS EXISTS. The obvious metric -- take each body vertex's NEAREST GARMENT VERTEX
 and project the offset onto the body normal, negative = "poking" -- is invalid wherever
@@ -45,7 +66,49 @@ from __future__ import annotations
 import numpy as np
 from scipy.spatial import cKDTree
 
-__all__ = ["closest_point_on_triangles", "surface_penetration"]
+__all__ = ["closest_point_on_triangles", "surface_penetration", "ray_exposure"]
+
+
+def ray_exposure(origins, dirs, verts, tris, tmax=25.0, chunk=2048):
+    """True where the ray from origins[i] along dirs[i] hits NO triangle.
+
+    The sound penetration test: a body vertex whose outward normal escapes without
+    crossing the garment is visible from outside. Unambiguous by construction -- there
+    is no sign to guess and no dependence on which face of a shell is nearest.
+
+    Möller-Trumbore, batched over rays so a whole region is one set of array ops
+    rather than a Python loop per vertex.
+    """
+    V = np.asarray(verts, dtype=np.float64)
+    T = np.asarray(tris, dtype=np.int64).reshape(-1, 3)
+    O = np.asarray(origins, dtype=np.float64)
+    D = np.asarray(dirs, dtype=np.float64)
+    n = np.linalg.norm(D, axis=1, keepdims=True)
+    D = np.divide(D, np.where(n > 1e-12, n, 1.0))
+    if not len(T) or not len(O):
+        return np.ones(len(O), dtype=bool)
+
+    a = V[T[:, 0]]
+    e1 = V[T[:, 1]] - a
+    e2 = V[T[:, 2]] - a
+    out = np.zeros(len(O), dtype=bool)
+    for s in range(0, len(O), chunk):
+        o = O[s:s + chunk]
+        d = D[s:s + chunk]
+        p = np.cross(d[:, None, :], e2[None, :, :])            # (R,T,3)
+        det = np.einsum("rtj,tj->rt", p, e1)
+        ok = np.abs(det) > 1e-9
+        inv = np.zeros_like(det)
+        np.divide(1.0, det, out=inv, where=ok)
+        t0 = o[:, None, :] - a[None, :, :]
+        u = np.einsum("rtj,rtj->rt", t0, p) * inv
+        q = np.cross(t0, e1[None, :, :])
+        v = np.einsum("rtj,rj->rt", q, d) * inv
+        t = np.einsum("rtj,tj->rt", q, e2) * inv
+        hit = (ok & (u >= -1e-6) & (v >= -1e-6) & (u + v <= 1 + 1e-6)
+               & (t > 1e-4) & (t < tmax))
+        out[s:s + chunk] = hit.any(axis=1)
+    return ~out                                                # True = EXPOSED
 
 
 def closest_point_on_triangles(pts, a, b, c):

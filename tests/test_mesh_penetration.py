@@ -136,3 +136,55 @@ def test_no_usable_triangles_returns_nothing_covered():
     _s, dist, covered, _a = surface_penetration(
         np.array([[0.0, 5.0, 0.0]]), gv, gt, None)
     assert not covered.any() and np.isinf(dist).all()
+
+
+# --- the SOUND metric: ray exposure -------------------------------------------
+#
+# `surface_penetration`'s SIGN is known-bad (METRICS.md: shell has two faces, the
+# nearest one decides the sign, so it is arbitrary inside a cup). These cover the
+# replacement, with positive controls -- a metric that reports "no problem" is
+# indistinguishable from one that cannot see the problem.
+
+def test_ray_exposure_fully_enclosed_body_is_not_exposed():
+    """POSITIVE CONTROL, the direction that matters: a body entirely inside a closed
+    shell must read 0% exposed. This is the case the signed-normal metric got wrong."""
+    from scripts.mesh_penetration import ray_exposure
+    body, _bt, bn = _sphere(9.0)
+    gv, gt, _gn = _sphere(10.0)
+    exposed = ray_exposure(body, bn, gv, gt)
+    assert exposed.mean() == 0.0, "an enclosed body cannot be exposed"
+
+
+def test_ray_exposure_uncovered_body_is_fully_exposed():
+    """The other control: no garment in the way -> 100% exposed."""
+    from scripts.mesh_penetration import ray_exposure
+    body, _bt, bn = _sphere(9.0)
+    gv, gt, _gn = _sphere(2.0)                  # tiny shell deep inside, blocks nothing
+    assert ray_exposure(body, bn, gv, gt).mean() == 1.0
+
+
+def test_ray_exposure_localises_a_hole():
+    """A garment with one side removed: exposure must be confined to that side."""
+    from scripts.mesh_penetration import ray_exposure
+    body, _bt, bn = _sphere(9.0)
+    gv, gt, _gn = _sphere(10.0)
+    keep = ~((gv[gt].mean(axis=1))[:, 0] > 4.0)      # delete the +x cap
+    exposed = ray_exposure(body, bn, gv, gt[keep])
+    assert 0.05 < exposed.mean() < 0.5, f"partial hole, got {exposed.mean():.2f}"
+    assert body[exposed][:, 0].min() > 0, "exposure must be on the removed side only"
+
+
+def test_ray_exposure_ignores_a_garment_that_hangs_away_but_still_covers():
+    """Loose drape still BLOCKS the ray, so it is covered -- the distinction the
+    nearest-vertex metric could not make. A 4u gap is not exposure."""
+    from scripts.mesh_penetration import ray_exposure
+    body, _bt, bn = _sphere(6.0)
+    gv, gt, _gn = _sphere(10.0)
+    assert ray_exposure(body, bn, gv, gt).mean() == 0.0
+
+
+def test_ray_exposure_handles_empty_geometry():
+    from scripts.mesh_penetration import ray_exposure
+    import numpy as _np
+    body, _bt, bn = _sphere(9.0)
+    assert ray_exposure(body, bn, _np.zeros((0, 3)), _np.zeros((0, 3))).all()

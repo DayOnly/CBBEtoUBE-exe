@@ -118,3 +118,70 @@ motion defect. See `project_antipoke_vertex_blind`.
    one is wrong; agreement is the only real evidence.
 4. **Synthetic tests** with analytically known answers.
 5. **State what the metric cannot see**, next to the number it reports.
+
+---
+
+# 2026-07-27 — rear/penetration metric rebuilt, and a repeat offence
+
+## The same wrong metric got rebuilt from scratch
+
+`scripts/mesh_penetration.surface_penetration` decides inside/outside from the nearest
+TRIANGLE's normal — which is the metric already recorded above as **REPLACED**. It was
+re-derived from first principles, given eight passing unit tests on synthetic spheres,
+and run over the whole pack before anyone re-read this file.
+
+It failed exactly as documented: a garment is a shell with an outer and an inner face,
+a body vertex inside the cup is near BOTH, and the nearer face decides the sign
+arbitrarily. Symptom this time was a **~20–30% "poking" floor in EVERY body region**,
+which no one sees in game. Winding was clean (agreement 0.992, min 0.941 over 314
+armors), so orientation was never the issue — the shell is.
+
+**Synthetic tests did not catch it.** A closed sphere has no second face near the
+sample point, so every unit test passed. The failure needs a real shell to appear.
+That is the lesson worth keeping: *a positive control has to include the geometry the
+metric will actually meet.*
+
+`surface_penetration` is kept for its UNSIGNED DISTANCE, which is sound. Its sign must
+not be used.
+
+## Sound: ray exposure, and a census built on it
+
+`scripts/mesh_penetration.ray_exposure` — march each body vertex along its own outward
+normal; if no garment triangle blocks it, that vertex is visible from outside.
+Unambiguous by construction, and it is what a player sees. Positive controls in
+`tests/test_mesh_penetration.py`: enclosed body **0.0%** exposed, uncovered body
+**100%**, a garment hanging 4u away still reads 0% (it blocks the ray), and a one-sided
+hole localises to that side.
+
+Sanity check on real geometry, the check that settles it: a full-length robe reads
+**0.0% exposed in every region**. The nearest-vertex metric claimed 29.5% butt
+poke-through on that same mesh.
+
+`scripts/collect_penetration_census.py` — full census, one row per armor, six regions,
+400-vertex sample per region, fixed seed. Records `pct_exposed`, `pct_exposed_near`
+(exposed AND garment within 2u — the defect signature, as opposed to skin bare by
+design), unsigned distance percentiles, SMP-rigged flags, and the discredited
+nearest-vertex number so the disagreement stays queryable.
+
+### Result over 314 armors (first-person viewmodels excluded)
+
+| region | exposed mean | median | exposed&near mean | median | old metric |
+|---|---|---|---|---|---|
+| breast | 11.6% | 4.0% | 6.8% | 2.8% | 5.5% |
+| **upper chest** | 27.8% | 14.2% | **20.4%** | **12.8%** | 8.3% |
+| belly | 23.7% | 18.5% | 9.0% | 5.8% | 8.4% |
+| **butt** | 12.8% | **0.0%** | **4.6%** | **0.0%** | 22.4% |
+| lower back | 25.6% | 17.4% | 9.2% | 5.5% | 12.1% |
+| thigh | 21.6% | 0.0% | 5.4% | 0.0% | 14.4% |
+
+Armors with >5% exposed-and-near: upper chest **187/303 (62%)**, belly 164 (52%),
+lower back 160 (51%), breast 120 (40%), thigh 61 (20%), **butt 50/313 (16%)**.
+
+**This reverses the earlier finding.** The butt is the LEAST affected region by the
+sound metric — median exactly 0.0% — where the discredited one ranked it worst at
+22.4% and justified a rear-clearance feature that was built and reverted. The real hot
+spot is the **upper chest / neckline**.
+
+**Known limitation:** the viewmodel exclusion matches `1st` / `firstperson`, so stems
+using `_fp_`, `FP` or `1person` still slip through and rank high by construction.
+Ignore those rows or widen the filter before quoting a worst-offender list.
