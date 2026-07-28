@@ -513,3 +513,71 @@ carries the tool itself. Code comments citing them by shorthand (e.g.
 
 These are gitignored, and `tests/test_public_repo_hygiene.py` asserts they stay
 untracked — the repo is public and every one of them names specific mods.
+
+---
+
+## Pose-driven clipping: what moves, what fixes it, and what does not
+
+Everything the converter did about clipping was solved at BIND pose — an A-pose nobody
+stands in. Measuring under a pose set (`scripts/multipose_clip_test.py`) showed a class
+of failure no bind-pose metric can see: armour that is clean at rest loses coverage the
+moment the actor moves. On a rigid cuirass, 11.0% of covered breast is exposed by a
+spine twist; on a skirted piece, 14.7% of covered butt by a sprint; on a vanilla
+cuirass, 83.7% of covered thigh by a crouch.
+
+### The measure is a REGRESSION, not an exposure level
+
+Body verts COVERED at bind and EXPOSED under a pose, as a fraction of the covered set.
+Raw exposure cannot be compared across garments — a bikini is 90% exposed by design and
+a robe 0%, neither of which is a defect. Each garment is its own baseline. The same
+principle separates a defect from a neckline: exposure is only a defect when the
+garment is right there (within ~2u) AND well inside its own boundary, which is why
+`classify_exposure` splits poke / neckline / uncovered.
+
+### Two levers, and they are not equal
+
+**Clearance** (push the garment out) works but pays in volume. A uniform push took
+breast exposure 11.0% -> 2.5% — while moving every vertex, which reads as baggy. A
+targeted, exposure-driven demand (`src/pose_clearance.py`) reaches 3.5% while moving
+0.9-2.3% of the garment, and is default OFF pending calibration.
+
+**Deformation matching** (give the garment the body's weights so the two deform
+together) is strictly better and costs NOTHING in volume — the bind shape is
+byte-identical, only the motion changes:
+
+| region / pose | authored | clearance, best | deformation matching |
+|---|---|---|---|
+| thigh / crouch | 83.7% | (cannot reach it) | **5.4%** |
+| breast / spine twist | 11.0% | 3.5% | **0.1%** |
+| butt / sprint | 14.7% | 8.0% | **2.8%** |
+
+The converter already has this as the M6 body-blend reskin. It is bounded two ways:
+transferring weights onto authored physics cloth replaces its chain weights and the
+skirt stops swinging, and the reskin's K-NN blend has a history of equip fly/spike
+instability. Both call sites are therefore gated on `not _shape_has_hdt_smp_rigging`.
+
+### Why the reskin does not run on most armour
+
+Two gates, in sequence. A source that bundles an inline body routes to phase 2, so
+phase 1's reskin is never reached. Phase 2's gate then ends in `not _is_morph_tri` —
+excluding any shape carrying a source BodySlide morph TRI, which in a BodySlide-built
+pack is nearly everything. `CBBE2UBE_RESKIN_KEEP=1` overrides it.
+
+The stated reasons are a morph desync (the TRI is keyed to the source skin) and the
+equip-fly instability. On the piece measured, the desync half is NOT reproduced: the
+output TRI is regenerated post-reskin (it differs between reskin off and on), and
+morph-follow under a full breast slider is identical either way (4.5% -> 12.1% in both).
+The instability half can only be settled in game.
+
+### A caveat about the numbers above
+
+They come from `scripts/convert_one_armor.py`, which does not reproduce the auto
+pipeline exactly — see METRICS.md. The divergence is small (mean 0.006u) and the
+effects here are large, but a single-piece measurement is not a pack guarantee.
+
+### What no offline metric here can see
+
+Runtime physics (SMP cloth goes where the simulation puts it), BodyMorph/OBody
+inflation beyond the fitted body, and equip-time instability. A full breast slider
+takes exposure 4.5% -> 12.1% on a piece whose pose behaviour is clean — the morph path
+is a separate, unexamined class, and on that piece it is the larger one.

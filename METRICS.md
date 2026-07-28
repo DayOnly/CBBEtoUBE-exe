@@ -213,3 +213,63 @@ poke. Both conditions are required. `classify_exposure` enforces that, and
 signal was coverage. Six armors have a genuine poke-through and are individually
 actionable; a pass aimed at the region as a whole would be tuning against garment
 design — the same mistake as the reverted rear-clearance feature, one level subtler.
+
+---
+
+# 2026-07-28 — pose metrics, and a limit on the single-piece harness
+
+## Sound: pose-induced coverage regression
+
+`scripts/multipose_clip_test.py` over `scripts/pose_set.py`. Body verts COVERED at bind
+and EXPOSED under a pose, as a fraction of the covered set — self-baselining, so a
+bikini and a robe are comparable. Exposure itself is the ray test already listed as
+sound; the addition is that the body MOVES.
+
+Controls: identity pose reproduces the bind mesh to 0.000000u and is asserted on every
+run; every region must be driven by poses that can actually move it (a test pins that
+the chest is driven by torso/arm bones, not legs — the blind spot that made a previous
+harness report the chest as clean).
+
+Positive control on the metric's own claim: a full-length robe reads 0.0% exposed in
+every region, where the discredited nearest-vertex metric claimed 29.5%.
+
+## Sound: source-vs-converted delta
+
+`scripts/source_delta_census.py`. Level metrics cannot separate "the converter broke
+it" from "the author made it that way" — a confound that produced four withdrawn
+conclusions in one day, including a 30-armour worst-offender list that was mostly
+armour already behaving that way (top thigh failures: converted 83.3%, SOURCE 82.6%).
+
+Two requirements, both learned by getting them wrong first:
+* **Canonical bodies on both sides.** Pairing each garment with whatever body its own
+  NIF bundles is biased three ways — sources bundle DIFFERENT bodies, some bundle none,
+  and every "pick the body" heuristic tried picked the wrong shape (a full-length robe
+  out-spans a real body; a `Stabilizer` at z −47.5 redefines the floor; the UBE body has
+  head bones but no foot/hand bones while a robe has both).
+* **Source chosen by garment SHAPE-NAME overlap**, not "the last mod providing this
+  path". Two mods can ship one path with different geometry; picking the wrong one
+  inverted a measured delta from +0.7 to +83.3 — from "authored" to "our fault".
+
+## LIMIT: `convert_one_armor.py` does not exactly reproduce the auto pipeline
+
+The single-piece harness is the basis of most measurements here, and memory described
+it as faithful. Measured on one cuirass: **750 of 4833 garment verts differ from the
+pack's own output, up to 0.4195u (mean 0.0057u)**.
+
+Ruled out, each by producing byte-identical output: the GUI settings the CLI does not
+read (4 flags are ON in the live settings file), the source mod (only one ships that
+mesh), and the biped slot mask (`0x4` vs the real `0x114`). Another piece DID reproduce
+exactly, so it is piece-dependent — more likely a specific pass than a global ordering
+effect.
+
+**Consequence:** treat single-piece numbers as indicative, not as pack truth. Effects
+of a few tenths of a percent are inside this noise; the large ones measured here
+(11.0% → 0.2%) are not. Diffing the `convert_nif` call arguments between the two paths
+is the obvious next step.
+
+## Reminder: the pose harness poses but does NOT morph
+
+Stated in its own docstring and worth repeating because it bounds every number above.
+On a piece whose pose behaviour is clean, a full breast slider takes exposure
+4.5% → 12.1%. The morph path is a separate class, unexamined, and on that piece the
+larger one.
