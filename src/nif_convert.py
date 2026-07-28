@@ -3274,11 +3274,29 @@ def convert_nif(
         # Multi-partition collapse — see _normalize_partitions_on_disk.
         _normalize_partitions_on_disk(dst_path, src_path)
 
+        # Bust collider split, pass 1 (shape): BEFORE the physics finalize so the
+        # hidden clone exists when the XML is validated/hardened against the NIF.
+        # [DESIGN: bust collider split]
+        if not (biped_slots & (BIPED_SLOT33_BIT | BIPED_SLOT37_BIT)):
+            try:
+                _split_bust_collider_shape(dst_path, src_path)
+            except Exception:
+                pass
+
         # FINAL HDT-SMP physics pass — must run LAST so extra-data survives
         # earlier round-trips. Skip hand/foot: cloth physics collapses them.
         if not (biped_slots & (BIPED_SLOT33_BIT | BIPED_SLOT37_BIT)):
             try:
                 _finalize_hdt_physics(dst_path, src_path)
+            except Exception:
+                pass
+
+        # Bust collider split, pass 2 (XML): AFTER the finalize (which overwrites
+        # the XML with the authored copy) and BEFORE the jiggle graft (which reads
+        # it to decide what is a collider). [DESIGN: bust collider split]
+        if not (biped_slots & (BIPED_SLOT33_BIT | BIPED_SLOT37_BIT)):
+            try:
+                _split_bust_collider_xml(dst_path)
             except Exception:
                 pass
 
@@ -5394,6 +5412,28 @@ TORSO_JIGGLE_TRANSFER = (
 # scarves, pauldrons and scabbards land at 0.00-0.03, corsets/bras/chest plates at
 # 1.00 -- so any floor in 0.4-0.7 separates them; 0.5 takes the middle with margin.
 _TORSO_JIGGLE_FIT_FRAC = float(os.environ.get("CBBE2UBE_TORSO_JIGGLE_FIT", "0.5"))
+
+# #bust-collider-split -- a bust garment that is ITS OWN per-triangle collider can
+# never carry jiggle: grafting onto it closes a feedback loop (cloth moves collider,
+# collider pushes cloth) that tore the breasts off in game and forced a revert. The
+# in-game-validated fix mirrors the arrangement the well-behaved vanilla siblings
+# author by hand: a SEPARATE hidden collider clone carries the garment's current
+# rigid weights (the resting chain sees identical support), the physics XML is
+# repointed at the clone, and the garment -- no longer a collider -- becomes
+# reachable by the stock torso jiggle graft. Detection is by MEASURED WEIGHT, never
+# bone presence: a rendered per-triangle collider covering the bust band whose
+# breast follow ratio against the body underneath is below the floor. Split and
+# graft are one fix, so the split keys off the torso-graft gate; the kill switch
+# only exists for bisection.  [DESIGN: bust collider split]
+BUST_COLLIDER_SPLIT = (
+    os.environ.get("CBBE2UBE_NO_BUST_COLLIDER_SPLIT", "").strip().lower()
+    not in ("1", "true", "yes", "on"))
+_BUST_SPLIT_MIN_VERTS = 50       # bust-band verts before "covers the bust"
+_BUST_SPLIT_FOLLOW_FLOOR = float(
+    os.environ.get("CBBE2UBE_BUST_SPLIT_FOLLOW_FLOOR", "0.5"))
+_BUST_SPLIT_PROX = 4.0           # garment vert counts only when this close to body
+_BUST_SPLIT_COL_SUFFIX = "Col"
+_BUST_SPLIT_HIDDEN_FLAGS = 15    # matches the hand-authored hidden colliders
 
 # Make a rigid leg plate track the body's leg bend: match each leg vert's Thigh/Calf
 # split to its nearest body vert and graft the body's detail bones (Front/Rear thigh,
@@ -7987,6 +8027,276 @@ def _transfer_body_jiggle_to_fitted(dst_path, biped_slots: int = 0) -> int:
         except Exception:
             return 0
     return total
+
+
+def _bust_split_candidates(dst_path, nf, src_path=None) -> list:
+    """Garment shapes in `nf` that are their own per-triangle collider AND
+    measurably fail to follow the bust -- the split class. Reads the XML the
+    physics finalize WILL install (the authored source copy, unless soft-body
+    mode keeps the generated one), because that is the view the jiggle graft
+    later sees.  [DESIGN: bust collider split]
+
+    Class property, all measured, no name lists:
+      * declared as a per-triangle collider by the piece's physics XML,
+      * a RENDERED garment (textured, not Hidden) -- collider-only helper
+        shapes are excluded by construction,
+      * covers the bust band with >= _BUST_SPLIT_MIN_VERTS verts,
+      * bust FOLLOW RATIO (breast weight vs the body underneath, verts within
+        _BUST_SPLIT_PROX) below _BUST_SPLIT_FOLLOW_FLOOR -- weight, never bone
+        presence: a garment with authored bust follow is left alone,
+      * its name appears in the XML ONLY as the per-triangle decl -- a name
+        also referenced elsewhere (constraints, collision pairs) is a
+        structure this fix has not been validated on, so it is skipped.
+    """
+    if not (BUST_COLLIDER_SPLIT and TORSO_JIGGLE_TRANSFER
+            and TRANSFER_BODY_JIGGLE):
+        return []
+    txt = None
+    if src_path is not None and not CHAIN_TO_SOFTBODY:
+        try:
+            authored = _read_source_hdt_xml_disk(Path(src_path))
+            if authored is not None:
+                txt = Path(authored).read_text(errors="ignore")
+        except Exception:
+            txt = None
+    if txt is None:
+        txt = _read_source_hdt_xml_text(Path(dst_path), nif=nf)
+    if not txt:
+        return []
+    colliders = set(re.findall(r'<per-triangle-shape\s+name="([^"]+)"', txt))
+    if not colliders:
+        return []
+    weight = "_0" if str(dst_path).lower().endswith("_0.nif") else "_1"
+    ref = _body_conform_ref(weight)
+    if ref is None:
+        return []           # no body to measure follow against -> no split
+    _Vb, body_w, _bb, tree = ref
+    names = {s.name for s in nf.shapes}
+    out = []
+    for s in nf.shapes:
+        name = s.name or ""
+        if name not in colliders:
+            continue
+        if (name.endswith(_BUST_SPLIT_COL_SUFFIX)
+                or (name + _BUST_SPLIT_COL_SUFFIX) in names):
+            continue        # already split (or is itself a clone)
+        if _is_inline_body_name(name) or name == "BaseShape":
+            continue        # never the body
+        if int(getattr(s, "flags", 0) or 0) & 0x1:
+            continue        # Hidden -> a collider helper, not a garment
+        if not any(v for v in (s.textures or {}).values()):
+            continue        # textureless -> not a rendered garment
+        # the name must have no XML role beyond the per-triangle decl(s)
+        decl_uses = len(re.findall(
+            r'<per-triangle-shape\s+name="' + re.escape(name) + r'"', txt))
+        if txt.count(f'"{name}"') != decl_uses:
+            continue
+        try:
+            g2s = _shape_global_to_skin(s)
+            V = _verts_skin_to_world(np.asarray(s.verts, np.float64), g2s)
+        except Exception:
+            continue
+        z = V[:, 2]
+        band = np.flatnonzero((z >= _CHEST_Z_LO) & (z <= _CHEST_Z_HI))
+        if len(band) < _BUST_SPLIT_MIN_VERTS:
+            continue
+        d, idx = tree.query(V[band])
+        keep = d < _BUST_SPLIT_PROX
+        if int(keep.sum()) < _BUST_SPLIT_MIN_VERTS:
+            continue
+        bw = s.bone_weights or {}
+        per_vert = np.zeros(len(V), np.float64)
+        for b, pairs in bw.items():
+            if _BREAST_BONE_RE.search(b):
+                for vi, w in pairs:
+                    iv = int(vi)
+                    if 0 <= iv < len(V):
+                        per_vert[iv] += float(w)
+        under = float(np.mean([
+            sum(w for b, w in body_w[int(j)].items()
+                if _BREAST_BONE_RE.search(b))
+            for j in idx[keep]]))
+        if under <= 1e-6:
+            continue        # body's bust is not here -> nothing to follow
+        follow = float(per_vert[band][keep].mean()) / under
+        if follow < _BUST_SPLIT_FOLLOW_FLOOR:
+            out.append(name)
+    return out
+
+
+def _split_bust_collider_shape(dst_path, src_path=None) -> int:
+    """PASS 1 of the bust collider split: add the hidden collider clone.
+
+    ORDER-CRITICAL: runs BEFORE _finalize_hdt_physics, so the clone exists when
+    that pass validates/hardens the XML against the NIF -- and the clone is
+    added IN PLACE on the loaded NifFile (the same mechanism the finalize uses
+    for re-imported proxies). Rebuilding a NIF from its shapes drops ALL extra
+    data (BODYTRI + the physics link -- in game: "ignores morphs, body reverts
+    to its _0 version"), which is why this is not a rebuild.
+
+    All-or-nothing with a byte-restore: after the save the file is reloaded
+    and every pre-existing shape and extra-data name must survive alongside
+    the clone(s); on any loss the original bytes are written back. Returns
+    clones added (0 = untouched or restored)."""
+    try:
+        pyn = _pynifly()
+        nf = pyn.NifFile(filepath=str(dst_path))
+    except Exception:
+        return 0
+    cands = _bust_split_candidates(dst_path, nf, src_path=src_path)
+    if not cands:
+        return 0
+    try:
+        backup = Path(dst_path).read_bytes()
+    except Exception:
+        return 0
+
+    def _all_extra(nf_):
+        # BODYTRI lives on its CARRIER SHAPE, not the root -- snapshot both, or
+        # the morph invariant is checked against the wrong place.
+        out = {(None, getattr(ed, "name", None))
+               for ed in nf_.rootNode.extra_data()}
+        for s_ in nf_.shapes:
+            try:
+                out |= {(s_.name, getattr(ed, "name", None))
+                        for ed in s_.extra_data()}
+            except Exception:
+                pass
+        return out
+
+    pre_extra = _all_extra(nf)
+    pre_shapes = {s.name for s in nf.shapes}
+    # Second instance of the same file as the copy SOURCE: _copy_shape reads
+    # from one NifFile and authors into another; self-copy within one handle
+    # is not a validated path.
+    try:
+        nf_src = pyn.NifFile(filepath=str(dst_path))
+        src_by = {s.name: s for s in nf_src.shapes}
+    except Exception:
+        return 0
+    added = []
+    for name in cands:
+        gsh = src_by.get(name)
+        if gsh is None:
+            continue
+        clone = _copy_shape(gsh, nf, preserve_authored_skin=True)
+        if clone is None:
+            return 0        # nothing saved yet -> file untouched
+        try:
+            clone.name = name + _BUST_SPLIT_COL_SUFFIX
+        except Exception:
+            return 0        # cannot rename -> abort before any save
+        # Hide it and strip textures. Without this the "collider" ships as a
+        # VISIBLE duplicate z-fighting the garment. flags=15 matches the
+        # hand-authored hidden colliders (HDT reads geometry; render skips).
+        try:
+            pr = getattr(clone, "properties", None)
+            if pr is not None and hasattr(pr, "flags"):
+                pr.flags = _BUST_SPLIT_HIDDEN_FLAGS
+            if hasattr(clone, "flags"):
+                clone.flags = _BUST_SPLIT_HIDDEN_FLAGS
+        except Exception:
+            return 0        # a visible duplicate must never ship
+        for slot in list((clone.textures or {}).keys()):
+            try:
+                clone.set_texture(slot, "")
+            except Exception:
+                pass
+        added.append(name)
+    if not added:
+        return 0
+    _hide_virtual_body(nf)
+    try:
+        atomic_nif_save(nf, dst_path)
+    except Exception:
+        return 0
+    ok = False
+    try:
+        nf2 = pyn.NifFile(filepath=str(dst_path))
+        post_extra = _all_extra(nf2)
+        post_shapes = {s.name for s in nf2.shapes}
+        ok = (pre_extra <= post_extra and pre_shapes <= post_shapes
+              and all((n + _BUST_SPLIT_COL_SUFFIX) in post_shapes
+                      for n in added))
+    except Exception:
+        ok = False
+    if not ok:
+        try:
+            atomic_write_bytes(dst_path, backup)
+        except Exception:
+            pass
+        print(f"  WARN: bust-collider split on {Path(dst_path).name} lost "
+              f"shapes/extra-data -- RESTORED original, split skipped",
+              file=sys.stderr)
+        return 0
+    for n in added:
+        print(f"    [bust-split] {Path(dst_path).name}: {n} -> "
+              f"{n}{_BUST_SPLIT_COL_SUFFIX} (hidden collider clone)")
+    return len(added)
+
+
+def _split_bust_collider_xml(dst_path) -> int:
+    """PASS 2 of the bust collider split: repoint the physics XML at the clone.
+
+    ORDER-CRITICAL: runs AFTER _finalize_hdt_physics -- which OVERWRITES the
+    on-disk XML with the authored source copy, silently undoing any earlier
+    rewrite (that trap restored the exact configuration that tore breasts off)
+    -- and BEFORE _transfer_body_jiggle_to_fitted, which reads this XML to
+    decide what is a collider. The split / morph / physics invariants are
+    gated TOGETHER: the decl is rewritten only when the garment AND its clone
+    are both in the NIF (clones only survive pass 1's restore-on-loss check)
+    and the NIF still carries its physics extra-data. Returns decls rewritten.
+    """
+    if not (BUST_COLLIDER_SPLIT and TORSO_JIGGLE_TRANSFER
+            and TRANSFER_BODY_JIGGLE):
+        return 0
+    p = Path(dst_path)
+    stem = p.stem
+    for suf in ("_0", "_1"):
+        if stem.endswith(suf):
+            stem = stem[:-len(suf)]
+            break
+    xml = p.parent / f"{stem}.xml"
+    if not xml.is_file():
+        return 0
+    try:
+        pyn = _pynifly()
+        nf = pyn.NifFile(filepath=str(p))
+        shapes = {s.name for s in nf.shapes}
+        extra = {getattr(ed, "name", None) for ed in nf.rootNode.extra_data()}
+    except Exception:
+        return 0
+    if "HDT Skinned Mesh Physics Object" not in extra:
+        return 0            # physics invariant: no link, nothing to repoint
+    # Byte-preserving text handling: utf-8 strict first, latin-1 fallback
+    # (latin-1 round-trips every byte; the names touched are ASCII). Never a
+    # replacing decode -- that manufactures U+FFFD mojibake on re-encode.
+    raw = xml.read_bytes()
+    codec = "utf-8"
+    try:
+        txt = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        codec = "latin-1"
+        txt = raw.decode("latin-1")
+    n_rw = 0
+    for name in set(re.findall(r'<per-triangle-shape\s+name="([^"]+)"', txt)):
+        if name.endswith(_BUST_SPLIT_COL_SUFFIX):
+            continue
+        col = name + _BUST_SPLIT_COL_SUFFIX
+        if col not in shapes or name not in shapes:
+            continue        # split invariant: garment AND clone both present
+        txt, n = re.subn(
+            r'(<per-triangle-shape\s+name=")' + re.escape(name) + r'(")',
+            r'\g<1>' + col.replace("\\", "\\\\") + r'\g<2>', txt)
+        n_rw += n
+    if n_rw:
+        try:
+            atomic_write_bytes(xml, txt.encode(codec))
+        except Exception:
+            return 0
+        print(f"    [bust-split] {xml.name}: {n_rw} per-triangle decl(s) "
+              f"repointed at the hidden clone")
+    return n_rw
 
 
 # Chain-anchor strategy: physics-chain hard-skeleton anchors (Pelvis/Spine/...)
@@ -15084,6 +15394,15 @@ def convert_nif_phase2(
     # Multi-partition collapse (post all re-saves so extra-data isn't clobbered).
     _normalize_partitions_on_disk(dst_path, src_path)
 
+    # Bust collider split, pass 1 (shape): BEFORE the physics finalize so the
+    # hidden clone exists when the XML is validated/hardened against the NIF.
+    # [DESIGN: bust collider split]
+    if not (biped_slots & (BIPED_SLOT33_BIT | BIPED_SLOT37_BIT)):
+        try:
+            _split_bust_collider_shape(dst_path, src_path)
+        except Exception:
+            pass
+
     # FINAL HDT-SMP physics pass — runs LAST so the extra-data survives
     # (earlier round-trips dropped it). Prefers the source armor's
     # authored XML. See _finalize_hdt_physics.
@@ -15091,6 +15410,15 @@ def convert_nif_phase2(
         _finalize_hdt_physics(dst_path, src_path)
     except Exception:
         pass
+
+    # Bust collider split, pass 2 (XML): AFTER the finalize (which overwrites the
+    # XML with the authored copy) and BEFORE the jiggle graft (which reads it to
+    # decide what is a collider). [DESIGN: bust collider split]
+    if not (biped_slots & (BIPED_SLOT33_BIT | BIPED_SLOT37_BIT)):
+        try:
+            _split_bust_collider_xml(dst_path)
+        except Exception:
+            pass
 
     # Graft body jiggle onto fitted leg cloth that lacks its own, THEN conform --
     # the graft lets the jiggle-gated conform ALSO weight-match these pants to the
