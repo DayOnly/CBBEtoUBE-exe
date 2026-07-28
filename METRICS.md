@@ -195,8 +195,13 @@ Ignore those rows or widen the filter before quoting a worst-offender list.
 > user could see the body coming through. Use a CONTAINMENT test instead: cast a cone
 > of rays (10 dirs, 50°) round the exposed vert's outward normal and count how many are
 > blocked by garment; surrounded = poke. On the same mesh that read 0.0%, containment
-> found 49% of exposed verts with garment around them. Before trusting any classifier,
-> check what fraction of the input already satisfies its threshold.
+> found **9.0% of exposed verts strictly surrounded and a further 31% partial**. Before
+> trusting any classifier, check what fraction of the input already satisfies its
+> threshold.
+>
+> (An earlier draft of this note said "49%". That was strictly-surrounded and partial
+> added together and quoted as one number; the strict figure is 9.0%. Keep the two
+> separate — partial means *some* garment nearby, not body-through-armour.)
 
 The upper chest looked like the worst region in the census above (62% of armors over
 5% "exposed and garment within 2u"). Almost all of it is **garment design**.
@@ -223,6 +228,11 @@ poke. Both conditions are required. `classify_exposure` enforces that, and
 signal was coverage. Six armors have a genuine poke-through and are individually
 actionable; a pass aimed at the region as a whole would be tuning against garment
 design — the same mistake as the reverted rear-clearance feature, one level subtler.
+
+> **OVERTURNED 2026-07-28 by the containment census — see below.** That conclusion
+> rested on the rim-distance classifier corrected above, which structurally could not
+> return "poke" here. Re-measured with containment, the upper chest is the **worst**
+> region in the pack, not a clean one.
 
 ---
 
@@ -283,3 +293,46 @@ Stated in its own docstring and worth repeating because it bounds every number a
 On a piece whose pose behaviour is clean, a full breast slider takes exposure
 4.5% → 12.1%. The morph path is a separate class, unexamined, and on that piece the
 larger one.
+
+---
+
+## Sound: containment census over the rigid population
+
+`containment()` in `scripts/mesh_penetration.py`, 199 fully-rigid armors, bind pose,
+10 rays at 50° half-angle, tmax 6u. Of **exposed** body verts, the fraction with
+garment around them:
+
+| region | strictly surrounded | + partial | armors >2% of region verts |
+|---|---|---|---|
+| **breast** | **7.5%** | 29.3% | 21 / 199 |
+| **upper_chest** | **7.1%** | 34.4% | **55 / 199** |
+| belly | 3.3% | 16.1% | 12 / 199 |
+| lower_back | 2.1% | 12.1% | 9 / 199 |
+| butt | 1.3% | 6.3% | 6 / 199 |
+| thigh | 1.0% | 6.9% | 6 / 199 |
+
+**The chest is 5–7× worse than any other region** and 8 of the 10 worst individual
+scores are `upper_chest`. This reproduces the in-game report (chest underside clipping
+in most poses including idle; butt and thighs fine) from an independent measurement.
+
+`tmax` is **not** a sensitive knob: the confirmed piece reads 9.0% strictly surrounded
+at both 6.0 and 40.0. It only shuffles partial↔bare.
+
+### Two footguns, both of which produced wrong numbers before this run
+
+**Ray sense.** `ray_exposure` returns True = ESCAPED; `rays_hit` returns True = **HIT**.
+`containment()` uses the former, so its `~` is correct — copying that line into a script
+built on `rays_hit` inverts the metric. Symptom: 99.6–100% "surrounded" and 0.0% bare
+everywhere, including a pants mesh scoring 100% breast poke. **Positive controls cannot
+catch this.** Every run must carry a NEGATIVE control: a garment that physically cannot
+cover a region must read 100% bare. Two are pinned (pants and underwear scored at the
+breast) and both read 0.0% surrounded / 100% bare.
+
+**Sampling dilution — the subtler one, and it limits the table above.** The census
+samples 400 verts per region, which averages a narrow-band defect into nothing. The
+piece confirmed by eye scores `breast exposed=40 poke=2` at region level, while a
+targeted under-bust analysis of the SAME mesh finds **155 exposed / 14 strictly
+surrounded**. So the percentages above are **floors, not magnitudes** — only the
+RANKING is usable. Do not quote "0.7% of breast verts poke" as a health figure.
+
+All bind pose, so all of it is a best case; see the pose-regression section above.
