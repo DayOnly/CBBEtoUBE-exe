@@ -123,4 +123,70 @@ def find_source(rel, garment_names, mods_root):
             best, best_score = p, score
     # Require EVERY garment to be present: a partial match means the two sides are
     # not the same outfit, and a delta over different geometry is meaningless.
-    return best if best_score == len(want) else None
+    if best_score == len(want):
+        return best
+    return _find_source_in_bsa(rel, want)
+
+
+_BSA_INDEX = ["unset"]          # list-as-cell so a failed build is cached too
+
+
+def _bsa_index():
+    """The pipeline's own BSA resolver, built exactly as auto_convert builds it.
+
+    A loose-file scan misses every BSA-packed source, and those are not a fringe case:
+    the three LARGEST real pose defects in the pack all reported "no source" purely
+    because their meshes live in archives. A harness that cannot see what the converter
+    reads silently drops the worst cases and reports the pack as cleaner than it is.
+    """
+    if _BSA_INDEX[0] != "unset":
+        return _BSA_INDEX[0]
+    _BSA_INDEX[0] = None
+    try:
+        import tempfile
+        from src import paths as _p
+        from src.auto_convert import _BsaMeshIndex
+        lay = _p.discover_layout()
+        order = _p.enabled_mods_ordered(lay)
+        root = _p.mods_root()
+        if root is None or not order:
+            return None
+        # Mod BSAs first in MO2 priority, game Data dirs LAST -- the same precedence
+        # the converter uses, so the harness resolves to the file the pipeline read.
+        dirs = [Path(root) / n for n in order]
+        dirs += [Path(d) for d in (lay.game_data_dirs or []) if Path(d) not in dirs]
+        staging = Path(tempfile.gettempdir()) / "cbbe2ube_harness_bsa"
+        staging.mkdir(parents=True, exist_ok=True)
+        _BSA_INDEX[0] = _BsaMeshIndex(dirs, staging)
+    except Exception:
+        _BSA_INDEX[0] = None
+    return _BSA_INDEX[0]
+
+
+def _find_source_in_bsa(rel, want):
+    """Resolve `rel` out of the BSAs, keeping the same all-shapes-present rule."""
+    idx = _bsa_index()
+    if idx is None:
+        return None
+    # Index keys are relative to meshes/ ("armor/aom/hag/hagrobe_1.nif"), NOT prefixed
+    # with it. Prefixing silently misses every archive entry while the index still
+    # reports tens of thousands of paths -- a lookup that looks healthy and finds nothing.
+    key = str(rel).replace("\\", "/").lower().lstrip("/")
+    if key.startswith("meshes/"):
+        key = key[len("meshes/"):]
+    try:
+        if not idx.contains(key):
+            return None
+        got = idx.extract(key)
+    except Exception:
+        return None
+    if not got:
+        return None
+    p = Path(got[0] if isinstance(got, (tuple, list)) else got)
+    if not p.is_file():
+        return None
+    try:
+        have = {s.name for s in pynifly.NifFile(str(p)).shapes}
+    except Exception:
+        return None
+    return p if want <= have else None
