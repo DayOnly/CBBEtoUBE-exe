@@ -58,7 +58,8 @@ sys.path.insert(0, str(_REPO / ".pynifly"))
 
 from scripts.multipose_clip_test import load, _posed              # noqa: E402
 from scripts.posed_clip_test import rays_hit                      # noqa: E402
-from scripts.mesh_penetration import cone_dirs                    # noqa: E402
+from scripts.mesh_penetration import (cone_dirs,                  # noqa: E402
+                                      exposure_with_margin, noise_floor)
 
 OUT = Path(r"<MODLIST_ROOT>/mods/CBBEtoUBE Auto/meshes/!UBE")
 
@@ -71,6 +72,13 @@ ARM_X, MID_X = 20.0, 2.5
 K, HALF_DEG, TMAX = 10, 50.0, 6.0
 SURROUNDED = 5          # >=5 of 10 cone rays blocked
 
+# A plain exposure count is a HARD ray-hit boolean, so a vert on the coverage boundary
+# flips on hundredths of a unit. Measured here: jittering the garment 0.02u flips ~13
+# band verts. A bare delta of +/-3 is therefore not a result -- and one was nearly
+# acted on as a defect. `MARGIN` splits off those boundary verts as AMBIGUOUS so the
+# reported count does not churn; the run also prints its own resolution.
+MARGIN = 0.02
+
 
 def under_bust(v, n):
     """Boolean mask for the breast under-curve on a posed body."""
@@ -79,16 +87,24 @@ def under_bust(v, n):
             & (np.abs(v[:, 0]) < ARM_X) & (np.abs(v[:, 0]) > MID_X))
 
 
-def score(body, normals, gv, gt):
-    """(n_band, n_exposed, surrounded, partial, bare) over the under-curve."""
+def score(body, normals, gv, gt, margin=MARGIN):
+    """Under-curve exposure + containment, with the boundary band split off.
+
+    `exposed` stays the raw hard-threshold count so old rows remain comparable.
+    `exposed_firm` / `ambiguous` are the stable pair: a delta in `exposed_firm`
+    means something, a delta smaller than `ambiguous` does not.
+    """
     m = under_bust(body, normals)
     idx = np.flatnonzero(m)
     if len(idx) < 20:
         return None
     exposed = ~rays_hit(body[idx], normals[idx], gv, gt)
     e = idx[exposed]
+    firm, _cov, amb = exposure_with_margin(body[idx], normals[idx], gv, gt,
+                                           margin=margin)
     d = {"n": int(len(idx)), "exposed": int(exposed.sum()),
-         "surrounded": 0, "partial": 0, "bare": 0}
+         "exposed_firm": int(firm.sum()), "ambiguous": int(amb.sum()),
+         "margin": margin, "surrounded": 0, "partial": 0, "bare": 0}
     if len(e):
         # rays_hit returns True = HIT, and blocked IS the hit. Do NOT invert:
         # `~rays_hit` counts rays that ESCAPED and reads as "everything is
@@ -140,6 +156,26 @@ def main():
               f"exposed={d['exposed']:<5} bare={pct:.1f}%", flush=True)
     if not ok:
         raise SystemExit("negative control FAILED -- metric is inverted, stop.")
+
+    # State the resolution BEFORE any result, so no delta gets read as a finding
+    # without the number it has to beat sitting next to it.
+    for r in rigid:
+        try:
+            data, gar, par, orig, bn = load(OUT / r["armor"])
+            pb, pbn, gv, gt = _posed(data, gar, {}, bn)
+        except Exception:
+            continue
+        i = np.flatnonzero(under_bust(pb, pbn))
+        if len(i) < 20:
+            continue
+        nf = noise_floor(pb[i], pbn[i], gv, gt, amps=(0.01, MARGIN))
+        print("\nRESOLUTION (garment jitter -> band verts that flip):", flush=True)
+        for amp, v in nf.items():
+            print(f"  {amp:>5}u  flipped {v['flipped']:5.1f}  net {v['net']:+5.1f}",
+                  flush=True)
+        print(f"  -> a reported delta below ~{nf[MARGIN]['flipped']:.0f} verts is NOT "
+              f"a result; use exposed_firm.", flush=True)
+        break
 
     out = []
     dest = Path(__file__).with_name("underbust_census.json")

@@ -307,3 +307,75 @@ def containment(exposed_pts, exposed_normals, verts, tris, half_deg=50.0, k=10):
     for d in cone_dirs(exposed_normals, half_deg, k):
         blocked += (~ray_exposure(exposed_pts, d, verts, tris)).astype(np.int64)
     return blocked
+
+
+# --- Resolution: what a delta has to beat to mean anything --------------------
+#
+# `ray_exposure` is a HARD boolean -- the ray hits a triangle or it does not. A body
+# vert sitting on the coverage boundary therefore flips on hundredths of a unit, and a
+# whole-census delta can be pure churn. Measured on one piece: jittering the garment by
+# 0.010u flips ~11 verts (net +4.8) and by 0.020u flips ~12 (net +2.4) -- while a real
+# code change under evaluation flipped 13 for a net of +3. That "regression" was
+# indistinguishable from noise, and was nearly acted on as if it were a defect.
+#
+# So: never report a bare exposure delta. Use `exposure_with_margin` for a count that
+# does not churn, and `noise_floor` to state the resolution alongside the number.
+
+# Deterministic offsets, so a re-run reproduces exactly (a random jitter here would
+# reintroduce the very instability this is meant to remove).
+_MARGIN_OFFSETS = np.array([
+    [0.0, 0.0, 0.0],
+    [1.0, 0.0, 0.0], [-1.0, 0.0, 0.0],
+    [0.0, 1.0, 0.0], [0.0, -1.0, 0.0],
+    [0.0, 0.0, 1.0], [0.0, 0.0, -1.0],
+], dtype=np.float64)
+
+
+def exposure_with_margin(origins, normals, verts, tris, *, margin=0.02, tmax=25.0):
+    """Three-way exposure that survives a `margin`-sized perturbation.
+
+    Returns (exposed, covered, ambiguous) boolean arrays. A vert is only called
+    exposed or covered if the answer holds with the ray origin displaced by
+    `margin` along each of six axes -- equivalent to perturbing the garment, since
+    only relative motion matters. Verts whose answer flips are AMBIGUOUS and belong
+    in neither count.
+
+    Report `exposed` for a stable trend and `ambiguous` as the width of the band the
+    trend is measured through. margin=0 reproduces plain `ray_exposure` exactly.
+    """
+    O = np.asarray(origins, dtype=np.float64)
+    N = np.asarray(normals, dtype=np.float64)
+    if margin <= 0.0:
+        e = ray_exposure(O, N, verts, tris, tmax=tmax)
+        return e, ~e, np.zeros(len(O), dtype=bool)
+    hits = np.zeros(len(O), dtype=np.int64)
+    for off in _MARGIN_OFFSETS:
+        esc = ray_exposure(O + off * margin, N, verts, tris, tmax=tmax)
+        hits += (~esc).astype(np.int64)
+    n = len(_MARGIN_OFFSETS)
+    covered = hits == n
+    exposed = hits == 0
+    return exposed, covered, ~(covered | exposed)
+
+
+def noise_floor(origins, normals, verts, tris, *, amps=(0.005, 0.01, 0.02),
+                trials=5, seed=0, tmax=25.0):
+    """Resolution of a plain exposure count, by jittering the GARMENT.
+
+    Returns {amp: {"flipped": mean, "net": mean}}. A reported delta smaller than the
+    flip count at the amplitude of the change under test is not a result. Cheap
+    enough to print next to every census number, which is the point.
+    """
+    rng = np.random.default_rng(seed)
+    V = np.asarray(verts, dtype=np.float64)
+    base = ray_exposure(origins, normals, V, tris, tmax=tmax)
+    out = {}
+    for amp in amps:
+        fl, net = [], []
+        for _ in range(trials):
+            e = ray_exposure(origins, normals,
+                             V + rng.normal(scale=amp, size=V.shape), tris, tmax=tmax)
+            fl.append(int((e ^ base).sum()))
+            net.append(int(e.sum()) - int(base.sum()))
+        out[amp] = {"flipped": float(np.mean(fl)), "net": float(np.mean(net))}
+    return out
