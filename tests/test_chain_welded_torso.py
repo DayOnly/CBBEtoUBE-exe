@@ -256,10 +256,11 @@ def test_the_match_loop_applies_the_guard():
 
 def test_the_follow_requirement_ignores_chain_verts():
     """A vert the graft will refuse must not size the graft either. Including them
-    would derive the shape's follow ratio from cloth the pass never touches."""
+    would derive the shape's follow ratio from cloth the pass never touches.
+    Now lives in the shared `_chest_band`, so the requirement, the source-follow
+    measurement and the achieved-follow check all inherit it."""
     import inspect
-    src = inspect.getsource(nc._match_rigid_leg_bend_to_body)
-    assert "LEG_CHAIN_GUARD and is_chain[_i]" in src
+    assert "LEG_CHAIN_GUARD and is_chain[i]" in inspect.getsource(nc._chest_band)
 
 
 def test_every_jiggle_pass_agrees_on_what_cloth_is():

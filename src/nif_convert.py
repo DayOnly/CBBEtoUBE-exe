@@ -3383,7 +3383,8 @@ def convert_nif(
         # Knee-bend conform for RIGID leg plate (the conform above skips it): match
         # the plate's Thigh:Calf split to the body so it bends with the knee.
         try:
-            _match_rigid_leg_bend_to_body(dst_path, biped_slots)
+            _match_rigid_leg_bend_to_body(dst_path, biped_slots,
+                                          src_nif_path=src_path)
         except Exception:
             pass
         # Leg-MOTION match: the pass above only reaches reskin-eligible shapes, so a
@@ -7056,6 +7057,19 @@ def _chest_match_vert(dv: dict, bd: dict, strength: float = 1.0,
         # jiggles at that spot. The absolute cap below cannot do that -- 0.15 is a
         # third of the body's motion at the bust and all of it at the butt.
         want = min(bsum * max(0.0, follow), mass) if bsum > 0.0 else 0.0
+        # THE CEILING CAPS THIS PASS'S GRAFT, NEVER THE PASS-THROUGH.
+        # `target` below SETS each breast bone rather than raising it, so without
+        # this a ceiling under the vert's existing follow drags it DOWN. That is
+        # not hypothetical: since the torso jiggle graft went default-ON it runs
+        # FIRST and leaves real bust weight here, and this pass then overwrote it
+        # with the material ceiling -- measured on a metal cuirass as 0.66 follow
+        # (torso graft alone) -> 0.325 (both passes), i.e. the two features
+        # together were WORSE than either alone, and worse than the 0.805 the
+        # chest pass reached before the torso graft existed. The rigid ceiling
+        # exists so THIS pass does not make metal look rubbery; it was never a
+        # licence to strip follow another pass established.
+        # #chest-follow-passthrough
+        want = max(want, sum(dv.get(b, 0.0) for b in present))
     else:
         want = min(bsum * min(1.0, strength), cap, mass) if bsum > 0.0 else 0.0
     target = {b: want * body[b] / bsum for b in body} if bsum > 0.0 else {}
@@ -7142,7 +7156,103 @@ def _shape_has_effect_shader(shape) -> bool:
         return False
 
 
-def _match_rigid_leg_bend_to_body(dst_path, biped_slots: int = 0) -> int:
+# How far under its requirement a shape must sit before this pass refuses to
+# hand it to the conform pass. A margin, not zero: the requirement carries its
+# own safety factor and the follow measurement has vert-level noise, so a shape
+# a hair short is not worth re-claiming. #chest-follow-passthrough
+_CHEST_FOLLOW_SHORTFALL = float(
+    os.environ.get("CBBE2UBE_CHEST_FOLLOW_SHORTFALL", "0.05"))
+
+
+def _chest_band(n, d, idx_k, body_w, is_chain) -> list:
+    """Vert indices this pass judges the bust on: close to the body, not
+    simulated cloth, and over body that actually jiggles. Shared by the
+    requirement, the source-follow measurement and the achieved-follow check so
+    all three describe the SAME surface."""
+    out = []
+    for i in range(n):
+        if d[i] > _CHEST_PROX:
+            continue
+        if LEG_CHAIN_GUARD and is_chain[i]:
+            continue        # a vert the graft will refuse must not set its size
+        bj = sum(w for b, w in body_w[idx_k[i][0]].items()
+                 if b in _CHEST_JIGGLE_BONE_SET)
+        if bj > 0.05:
+            out.append(i)
+    return out
+
+
+def _chest_follow_target(shape, n, d, idx_k, vw, body_w, is_chain,
+                         src_vw=None) -> "float | None":
+    """The follow ratio this shape's chest graft aims for, or None outside ratio
+    mode. Geometry sets the amount, the material only caps it.
+
+    ONE ratio for the whole shape, deliberately: applying the per-vert
+    requirement directly was MEASURED WORSE than doing nothing (leather cuirass
+    4.0% -> 9.5% skin visible at 5u), because neighbouring verts then move by
+    different amounts and the surface tears open between them. The requirement
+    varies smoothly but the garment deforms as one piece, so the shape takes the
+    p90 of what its covered bust verts need.
+
+    `src_vw` (#source-follow) is the AUTHOR's weighting, read from the source
+    mesh. It must not be the converted state: our own torso graft runs first and
+    would otherwise read as authorship. None falls through to the material
+    ceiling, the conservative direction."""
+    if not CHEST_FOLLOW_RATIO:
+        return None
+    band = _chest_band(n, d, idx_k, body_w, is_chain)
+    if not band:
+        return 0.0
+    reqs = [_chest_follow_required(d[i],
+                                   sum(w for b, w in body_w[idx_k[i][0]].items()
+                                       if b in _CHEST_JIGGLE_BONE_SET))
+            for i in band]
+    weighted = None
+    if SOURCE_FOLLOW_CEILING:
+        sf = _shape_bust_follow(src_vw if src_vw is not None else vw,
+                                body_w, idx_k, band)
+        weighted = None if sf is None else bool(sf >= _SOURCE_WEIGHTED_MIN)
+    ceiling = _chest_follow_for_shape(shape, source_weighted=weighted)
+    return min(ceiling, float(np.percentile(reqs, 90)))
+
+
+def _source_bust_weight_map(src_nif_path, shape_name, n_verts):
+    """Per-vert weight dicts for `shape_name` AS THE AUTHOR SHIPPED IT, or None.
+
+    #source-follow asks "did the outfit author weight this garment's bust" --
+    a question about the SOURCE. Measuring it on the converted shape used to be
+    equivalent, and stopped being so when the torso jiggle graft went default-ON
+    and started running BEFORE this pass: the graft's own weight then read as
+    authorship, flipping the shape from "unweighted" (ceiling lifted to the full
+    geometric requirement) to "weighted" (capped at the material ceiling), and
+    the measured result was a metal cuirass held at 0.616 where the chest pass
+    alone reached 0.792. Reading the source restores the question's meaning.
+
+    Vert indices are preserved through conversion (the passes move positions and
+    reweight; they do not renumber), so a source shape with the SAME vert count
+    maps 1:1. Any mismatch returns None -> the caller falls through to today's
+    material ceiling, which is the conservative direction. #chest-follow-passthrough"""
+    if src_nif_path is None:
+        return None
+    try:
+        pyn = _pynifly()
+        snf = pyn.NifFile(filepath=str(src_nif_path))
+        ss = next((x for x in snf.shapes if x.name == shape_name), None)
+        if ss is None or len(ss.verts) != n_verts:
+            return None
+        out = [dict() for _ in range(n_verts)]
+        for b, pairs in (ss.bone_weights or {}).items():
+            for vi, w in pairs:
+                iv = int(vi)
+                if 0 <= iv < n_verts:
+                    out[iv][b] = out[iv].get(b, 0.0) + float(w)
+        return out
+    except Exception:
+        return None
+
+
+def _match_rigid_leg_bend_to_body(dst_path, biped_slots: int = 0,
+                                  src_nif_path=None) -> int:
     """Conform a RIGID plate's deformation to the UBE body so it deforms/bounces WITH the
     body instead of staying stiff while the body pokes through. Complements
     _conform_fitted_to_body (jiggle-gated, SKIPS rigid plate); runs ONLY on the rigid plate
@@ -7312,6 +7422,15 @@ def _match_rigid_leg_bend_to_body(dst_path, biped_slots: int = 0) -> int:
             d_k = d_k[:, None]
             idx_k = idx_k[:, None]
         d = d_k[:, 0]                # nearest distance still gates the passes
+        # #chest-follow-ratio target, computed HERE (it used to sit below the
+        # deferral) because the deferral decision needs it: "does this shape
+        # already follow well enough" is a question about FOLLOW, and answering
+        # it with a vert count is what let the torso graft disqualify shapes
+        # from this pass. See the block below for the derivation.
+        _chest_follow = _chest_follow_target(
+            s, n, d, idx_k, vw, body_w, is_chain,
+            src_vw=(_source_bust_weight_map(src_nif_path, s.name, n)
+                    if (CHEST_FOLLOW_RATIO and SOURCE_FOLLOW_CEILING) else None))
         if _defer_to_conform:
             # #conform-coverage-hole. Hand over ONLY if the conform pass will really
             # take the shape; otherwise keep it and graft it here, because the
@@ -7320,11 +7439,27 @@ def _match_rigid_leg_bend_to_body(dst_path, biped_slots: int = 0) -> int:
             # and a whole-shape fit of 0.501 against the conform's 0.90 meant the
             # conform declined -- follow left at 0.34 against a 0.81 requirement,
             # which the census puts in the 92%-clip band.
-            if not _conform_orphans_shape(s, vw, n, d, collider_names,
-                                          softbody_names, layered_cloth_names,
-                                          is_chain=is_chain,
-                                          piece_has_hdt_xml=_has_xml):
-                continue
+            #
+            # #chest-follow-passthrough: in ratio mode, do NOT hand over a shape
+            # that is still SHORT of its requirement. `_defer_to_conform` is
+            # decided by a jiggle-VERT COUNT, and since the torso graft went
+            # default-ON that count is tripped by our own earlier pass -- so a
+            # garment the torso graft lifted partway was declared "already
+            # jiggling" and handed off, ending BELOW what either pass reached
+            # alone (measured: 0.650 both vs 0.784 chest-only). Achieved follow
+            # against the requirement is the honest test; the count never was.
+            _achieved = None
+            if CHEST_FOLLOW_RATIO and _chest_follow is not None:
+                _achieved = _shape_bust_follow(vw, body_w, idx_k, _chest_band(
+                    n, d, idx_k, body_w, is_chain))
+            if not (CHEST_FOLLOW_RATIO and _chest_follow is not None
+                    and _achieved is not None
+                    and _achieved < _chest_follow - _CHEST_FOLLOW_SHORTFALL):
+                if not _conform_orphans_shape(s, vw, n, d, collider_names,
+                                              softbody_names, layered_cloth_names,
+                                              is_chain=is_chain,
+                                              piece_has_hdt_xml=_has_xml):
+                    continue
 
         def _match_body_w(i):
             # Average the k-nearest body verts' weight dicts -> a match target a sub-unit
@@ -7346,30 +7481,7 @@ def _match_rigid_leg_bend_to_body(dst_path, biped_slots: int = 0) -> int:
         # different amounts and the surface tears open between them. The requirement
         # varies smoothly but the garment has to deform as one piece, so the shape
         # takes the p90 of what its covered bust verts need.
-        _chest_follow = None
-        if CHEST_FOLLOW_RATIO:
-            _reqs = []
-            _band: list = []
-            for _i in range(n):
-                if d[_i] > _CHEST_PROX:
-                    continue
-                if LEG_CHAIN_GUARD and is_chain[_i]:
-                    continue  # a vert the graft will refuse must not set its size
-                _bj = sum(w for b, w in body_w[idx_k[_i][0]].items()
-                          if b in _CHEST_JIGGLE_BONE_SET)
-                if _bj > 0.05:
-                    _reqs.append(_chest_follow_required(d[_i], _bj))
-                    _band.append(_i)
-            # #source-follow: measured BEFORE the graft, over the same bust verts the
-            # requirement is derived from, so the two answer the same question about
-            # the same surface.
-            _weighted = None
-            if SOURCE_FOLLOW_CEILING:
-                _sf = _shape_bust_follow(vw, body_w, idx_k, _band)
-                _weighted = None if _sf is None else bool(_sf >= _SOURCE_WEIGHTED_MIN)
-            _ceiling = _chest_follow_for_shape(s, source_weighted=_weighted)
-            _chest_follow = (min(_ceiling, float(np.percentile(_reqs, 90)))
-                             if _reqs else 0.0)
+        # (computed above, before the deferral decision, which needs it)
         _max_prox = max(_LEG_BEND_PROX, _BUTT_PROX, _CHEST_PROX)
         for i in range(n):
             di = d[i]
@@ -15721,7 +15833,8 @@ def convert_nif_phase2(
     # Knee-bend conform for RIGID leg plate (the conform above skips it): match the
     # plate's Thigh:Calf split to the body so it bends with the knee (Orcish #knee).
     try:
-        _match_rigid_leg_bend_to_body(dst_path, biped_slots)
+        _match_rigid_leg_bend_to_body(dst_path, biped_slots,
+                                      src_nif_path=src_path)
     except Exception:
         pass
     # Leg-MOTION match: the pass above only reaches reskin-eligible shapes, so a

@@ -178,20 +178,40 @@ def test_it_can_only_ever_RAISE_a_ceiling(monkeypatch):
 
 # --- wired in -------------------------------------------------------------------
 
-def test_the_pass_measures_before_it_grafts():
-    """The measurement has to read the AUTHORED weighting, so it must happen before
-    this pass writes any of its own. Reading it afterwards would see the graft and
-    call every shape weighted."""
+def test_the_measurement_reads_the_SOURCE_not_the_converted_state():
+    """The measurement asks what the AUTHOR weighted, so it must not read weight
+    OUR OWN passes wrote.
+
+    Reading the converted shape was equivalent until the torso jiggle graft went
+    default-ON and started running BEFORE this pass: its weight then read as
+    authorship, flipping a shape from 'unweighted' (ceiling lifted to the full
+    geometric requirement) to 'weighted' (capped at the material ceiling).
+    MEASURED on a metal cuirass: 0.616 with both features vs 0.792 from the
+    chest pass alone. #chest-follow-passthrough"""
     import inspect
-    src = inspect.getsource(nc._match_rigid_leg_bend_to_body)
-    assert "_shape_bust_follow(vw, body_w, idx_k, _band)" in src
-    assert src.index("_shape_bust_follow") < src.index("_chest_match_vert(vw[i]")
+    tgt = inspect.getsource(nc._chest_follow_target)
+    assert "src_vw if src_vw is not None else vw" in tgt, (
+        "the source weighting must be preferred over the converted state")
+    # and the source map must come from the SOURCE nif, by name + vert count
+    smap = inspect.getsource(nc._source_bust_weight_map)
+    assert "NifFile(filepath=str(src_nif_path))" in smap
+    assert "len(ss.verts) != n_verts" in smap, (
+        "a topology mismatch must fall back, not mis-map weights")
+    # wired from both pipeline sites
+    whole = inspect.getsource(nc)
+    assert whole.count("src_nif_path=src_path") == 2, (
+        "both conversion paths must pass the source through")
 
 
 def test_the_measurement_uses_the_same_verts_as_the_requirement():
     """Both answer a question about the same surface. Deriving the requirement from
     one set of bust verts and the authored weighting from another would let a shape
-    be judged unweighted on verts the graft never sizes."""
+    be judged unweighted on verts the graft never sizes. Now structural: one
+    `_chest_band` feeds the requirement, the source measurement AND the
+    achieved-follow check."""
     import inspect
-    src = inspect.getsource(nc._match_rigid_leg_bend_to_body)
-    assert "_band.append(_i)" in src
+    tgt = inspect.getsource(nc._chest_follow_target)
+    assert "band = _chest_band(" in tgt
+    assert tgt.count("band") >= 3
+    assert "_chest_band(" in inspect.getsource(nc._match_rigid_leg_bend_to_body), (
+        "the deferral's achieved-follow check must judge the same verts")

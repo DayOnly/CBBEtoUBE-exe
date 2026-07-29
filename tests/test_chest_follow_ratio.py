@@ -265,8 +265,8 @@ def test_material_ratio_is_only_a_CEILING_on_the_requirement():
     were wrong ("metal hugs tighter", then "named cases prove a difference"); this one
     claims no measurement it does not have."""
     import inspect
-    src = inspect.getsource(nc._match_rigid_leg_bend_to_body)
-    assert "min(_ceiling, float(np.percentile(_reqs, 90)))" in src
+    src = inspect.getsource(nc._chest_follow_target)
+    assert "min(ceiling, float(np.percentile(reqs, 90)))" in src
 
 
 def test_one_ratio_per_shape_not_per_vertex():
@@ -275,9 +275,10 @@ def test_one_ratio_per_shape_not_per_vertex():
     verts then move by different amounts and the surface tears between them. The
     garment deforms as one piece, so the ratio is resolved once per shape."""
     import inspect
+    # resolved ONCE per shape, in the helper...
+    assert "np.percentile(reqs, 90)" in inspect.getsource(nc._chest_follow_target)
+    # ...and the per-vert call site passes that shape-level value through.
     src = inspect.getsource(nc._match_rigid_leg_bend_to_body)
-    i = src.index("_chest_follow = (min(_ceiling")
-    # the call site must pass the shape-level value, not recompute per vert
     call = src[src.index("_chest_match_vert(vw[i]"):]
     assert "follow=_chest_follow" in call[:160]
     assert "_chest_follow_required(di" not in src, (
