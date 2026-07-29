@@ -84,6 +84,22 @@ sys.path.insert(0, str(REPO))
 from src import paths, auto_convert as ac, ube_patcher   # noqa: E402
 
 
+def _say(msg: str) -> None:
+    """print() that cannot kill the run on a console codec.
+
+    The converter's own result reasons contain non-cp1252 characters (e.g. the
+    U+2194 in an HDT bone warning). In the real pipeline those reach a UTF-8
+    log; on a Windows cp1252 console `print` raises UnicodeEncodeError -- which
+    aborted this script AFTER converting `_0` and BEFORE `_1`, silently
+    producing a half-converted pair. A diagnostic line must never be able to
+    do that."""
+    try:
+        print(msg)
+    except UnicodeEncodeError:
+        enc = getattr(sys.stdout, "encoding", None) or "ascii"
+        print(msg.encode(enc, "replace").decode(enc, "replace"))
+
+
 def _candidate_esps(mod_dir: Path, extra: "list[Path]") -> "list[Path]":
     """Plugins to resolve slots from, in the batch's own order of authority.
 
@@ -220,8 +236,8 @@ def main():
         # is exactly one conversion path. #single-vs-batch-parity
         item = (src, dst_dir / f"{stem}{w}.nif", ref, int(slots), alt_tex)
         r = ac._nif_convert_worker(item)
-        print(f"  {stem}{w}: {getattr(r, 'status', r)}"
-              + (f"  -- {r.reason}" if getattr(r, "reason", "") else ""))
+        _say(f"  {stem}{w}: {getattr(r, 'status', r)}"
+             + (f"  -- {r.reason}" if getattr(r, "reason", "") else ""))
 
 
 if __name__ == "__main__":
