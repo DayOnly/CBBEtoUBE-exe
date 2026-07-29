@@ -96,8 +96,10 @@ def check_one(rel_and_root):
     rel, root = rel_and_root
     p = Path(root) / rel
     rec = {"rel": rel, "zero_weight": [], "clones": [], "xml_repointed": None,
-           "follow": {}, "bodytri": None, "hdt": None, "err": None}
+           "follow": {}, "bodytri": None, "hdt": None, "err": None,
+           "mtime": 0.0}
     try:
+        rec["mtime"] = p.stat().st_mtime
         pyn = _nc._pynifly()
         nf = pyn.NifFile(filepath=str(p))
         names = {s.name for s in nf.shapes}
@@ -186,6 +188,9 @@ def main():
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--workers", type=int, default=8)
     ap.add_argument("--baseline", default="", help="pre-reconvert census jsonl")
+    ap.add_argument("--stale-hours", type=float, default=6.0,
+                    help="a piece older than this behind the newest output is "
+                         "reported STALE (left over from an earlier run)")
     args = ap.parse_args()
 
     os.chdir(_REPO)
@@ -201,13 +206,25 @@ def main():
     rels = [str(p.relative_to(root)) for p in root.rglob("*_1.nif")
             if not excl.search(str(p))]
     rels.sort()
-    if args.limit:
-        rels = rels[:args.limit]
+    # Sanity-check the DISCOVERED population, before --limit: limiting is a
+    # debugging aid and must not trip the "wrong root" guard.
     print(f"population: {len(rels)} pieces under {root}")
     if len(rels) < 100:
         print("ABORT: population implausibly small -- wrong root, or the "
               "reconvert did not finish", file=sys.stderr)
         sys.exit(3)
+    if args.limit:
+        # The control pieces are FORCED into every sample. Without this a
+        # limited run reports "control missing" and certifies nothing -- a
+        # sample that cannot validate itself is the check-measures-nothing
+        # failure in a new costume.
+        ctrl = [r for r in rels
+                if r.replace(os.sep, "/").lower().endswith(
+                    (CTRL_SPLIT_SUBSTR, CTRL_NOSPLIT_SUBSTR))]
+        rels = ctrl + [r for r in rels[:args.limit] if r not in ctrl]
+        print(f"  --limit {args.limit}: SAMPLING {len(rels)} of them "
+              f"({len(ctrl)} control piece(s) force-included); class counts "
+              f"below are NOT pack-wide totals")
 
     jobs = [(r, str(root)) for r in rels]
     recs = []
@@ -232,8 +249,31 @@ def main():
     follows = sorted((v, r["rel"], n) for r in recs
                      for n, v in r["follow"].items())
 
+    # ---- FRESHNESS: the output mod is overwritten PER MOD, so a mod that
+    # errored (or was skipped) leaves its PREVIOUS-run file in place. Measuring
+    # those as if they were this run's output is the "clean result that
+    # measured nothing" failure with extra steps -- a stale piece cannot have
+    # the new passes in it. Report them, and refuse to certify if a CONTROL is
+    # stale. ----
+    newest = max((r["mtime"] for r in recs if r["mtime"]), default=0.0)
+    cutoff = newest - args.stale_hours * 3600.0
+    stale = [r for r in recs if r["mtime"] and r["mtime"] < cutoff]
+    fresh = [r for r in recs if r not in stale]
+
     # ---- CONTROLS (abort on failure) ----
     fails = []
+    if stale:
+        import datetime as _dt
+        newest_s = _dt.datetime.fromtimestamp(newest).strftime("%Y-%m-%d %H:%M")
+        print(f"\n!! STALE: {len(stale)} of {len(recs)} piece(s) predate the "
+              f"newest output ({newest_s}) by more than {args.stale_hours}h "
+              f"-- they are LEFTOVERS from an earlier run, not this one's "
+              f"output. Every figure below covers all {len(recs)}; the "
+              f"{len(fresh)} fresh ones are what this run actually produced.")
+        for r in stale[:8]:
+            print(f"     stale: {r['rel']}")
+        if len(stale) > 8:
+            print(f"     ... and {len(stale) - 8} more")
 
     def _find(sub):
         s = sub.replace("/", os.sep).lower()
@@ -243,6 +283,10 @@ def main():
     c_nosplit = _find(CTRL_NOSPLIT_SUBSTR)
     if c_split is None:
         fails.append(f"CONTROL missing from output: {CTRL_SPLIT_SUBSTR}")
+    elif c_split in stale:
+        fails.append(f"CONTROL {CTRL_SPLIT_SUBSTR} is STALE (left over from an "
+                     f"earlier run) -- this run did not produce it, so nothing "
+                     f"here certifies the release")
     elif not c_split["clones"]:
         fails.append(f"CONTROL {CTRL_SPLIT_SUBSTR}: in-game-confirmed split "
                      f"class did NOT split -- the fix did not run")
