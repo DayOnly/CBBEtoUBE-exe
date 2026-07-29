@@ -226,8 +226,17 @@ def analyse(path, garment_name=None, label="", cap=900, resolution=True):
         fails.append("NEGATIVE control has no data (no calf-band verts)")
 
     # --- CONTROL: normal orientation ---
+    # NOTE the `else`. Without it an empty bust band skipped this control
+    # silently, `100*exp/max(1,0)` printed 0.0%, and verdict() fell through to
+    # "MOTION (by elimination)" -- the one verdict that says stop measuring and
+    # go in-game -- on a piece where NOTHING was measured. A control that can
+    # be skipped is not a control.
     n_s, e_s, _ = _expose(bV, bN, bust, bV, bT)
-    if n_s:
+    if not n_s:
+        fails.append("ORIENTATION control has NO DATA: zero bust-band verts "
+                     "on the body (wrong body, wrong band, or a morphed "
+                     "mesh) -- nothing below was measured")
+    else:
         print(f"    [control] body vs ITSELF: exposed {100.0*e_s/n_s:.1f}% "
               f"(expect high -- outward rays escape; concavities self-hit)")
         if e_s / n_s < CTRL_SELF_EXPOSED_MIN:

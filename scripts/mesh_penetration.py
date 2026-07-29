@@ -379,3 +379,139 @@ def noise_floor(origins, normals, verts, tris, *, amps=(0.005, 0.01, 0.02),
             net.append(int(e.sum()) - int(base.sum()))
         out[amp] = {"flipped": float(np.mean(fl)), "net": float(np.mean(net))}
     return out
+
+
+# --- The refined statistic -----------------------------------------------------
+#
+# `surface_penetration` answers "is this body vert outside THIS garment surface".
+# Four things stand between that and an accurate figure for "how much skin is
+# coming through the armour", each of which changed a conclusion in practice:
+#
+# 1. ONE SHAPE IS NOT THE GARMENT. 49% of converted pieces render more than one
+#    garment shape (Top+Skirt, Corset+dress, ...). Scoring a single shape counts
+#    skin covered by its SIBLING as exposed. The union is the garment.
+# 2. VERTS ARE NOT AREA. Body vertex density is not uniform, so a vert count
+#    over-weights dense regions. The eye sees AREA; weight each vert by its
+#    one-ring share.
+# 3. A HARD SIGN TEST IS NOISE-DOMINATED. `signed > 0` counts +0.001u the same
+#    as +1.5u, and a vert on the surface flips on rounding. Report a depth
+#    distribution and a count above a depth that means something.
+# 4. THE CONTACT GATE IS A CLIFF. A vert at 2.01u is unjudged, at 1.99u judged.
+#    Report the figure at several gates so a number that only exists at one
+#    gate is visible as such.
+def poke_report(body_verts, body_tris, garments, *, contacts=(1.5, 2.0, 3.0),
+                depth_min=0.05, mask=None):
+    """Area-weighted skin-through-armour statistic against the WHOLE garment.
+
+    `garments`: list of (verts, tris, normals|None) -- every VISIBLE garment
+    shape of the piece. A body vert inside ANY of them is covered.
+    `mask`: optional bool array selecting the body verts to report on.
+    Returns {contact: {...}} plus 'area_total'.
+    """
+    bV = np.asarray(body_verts, dtype=np.float64)
+    bT = np.asarray(body_tris, dtype=np.int64).reshape(-1, 3)
+    sel = np.ones(len(bV), bool) if mask is None else np.asarray(mask, bool)
+
+    # per-vert area = a third of each incident triangle (one-ring share)
+    a = bV[bT[:, 0]]
+    tri_area = 0.5 * np.linalg.norm(
+        np.cross(bV[bT[:, 1]] - a, bV[bT[:, 2]] - a), axis=1)
+    vert_area = np.zeros(len(bV))
+    for k in range(3):
+        np.add.at(vert_area, bT[:, k], tri_area / 3.0)
+
+    # nearest surface across ALL garment shapes; inside any -> covered
+    best_d = np.full(len(bV), np.inf)
+    best_s = np.full(len(bV), np.inf)
+    inside_any = np.zeros(len(bV), bool)
+    for gv, gt, gn in garments:
+        s, d, _cov, agree = surface_penetration(
+            bV, gv, gt, garment_normals=gn, contact=float(max(contacts)))
+        if agree is not None and agree < 0.7:
+            continue            # orientation ambiguous -> its sign is unusable
+        closer = d < best_d
+        best_d = np.where(closer, d, best_d)
+        best_s = np.where(closer, s, best_s)
+        inside_any |= (s < 0) & (d <= float(max(contacts)))
+
+    out = {"area_total": float(vert_area[sel].sum())}
+    for c in contacts:
+        judged = sel & (best_d <= c)
+        poking = judged & (best_s > 0) & ~inside_any
+        deep = poking & (best_s > depth_min)
+        ja = vert_area[judged].sum()
+        out[c] = {
+            "judged_verts": int(judged.sum()),
+            "judged_area": float(ja),
+            "poke_area_pct": float(100.0 * vert_area[poking].sum() / ja) if ja else None,
+            "poke_vert_pct": float(100.0 * poking.sum() / max(1, judged.sum())),
+            "deep_area_pct": float(100.0 * vert_area[deep].sum() / ja) if ja else None,
+            "depth_p50": float(np.percentile(best_s[poking], 50)) if poking.any() else 0.0,
+            "depth_p90": float(np.percentile(best_s[poking], 90)) if poking.any() else 0.0,
+            "depth_max": float(best_s[poking].max()) if poking.any() else 0.0,
+        }
+    return out
+
+
+# --- THE validated clipping test ----------------------------------------------
+#
+# Calibrated against user-supplied in-game ground truth on 2026-07-29: reads
+# 0.0% on the armour the user reports CLEAN (hide CuirassLight) and 8.9% on the
+# one they report CLIPPING (hide CuirassMedium). Any change to this function
+# must preserve that separation or it is wrong.
+#
+# It replaces signed-distance (`surface_penetration`) and the ray cone
+# (`containment`) for health questions. Both of those scored the CLEAN armour
+# WORSE than the clipping one at every depth threshold, because neither can
+# separate "skin is outside the garment SURFACE" from "skin is outside the
+# garment's COVERAGE" -- so a small revealing garment scores terribly by
+# design and the figure is dominated by rim geometry. They are ANTI-correlated
+# with ground truth; no threshold rescues them.
+#
+# The question this asks instead is the one that defines clipping: IS THE
+# GARMENT BEHIND THE SKIN? If a ray along the body's outward normal escapes but
+# the ray along the INWARD normal hits garment, then the garment lies between
+# the skin and the body interior -- the skin has come through it. Skin merely
+# beside an open edge escapes in both directions and is simply uncovered.
+def clipping_report(body_verts, body_tris, body_normals, garments, *,
+                    tmax=5.0, mask=None):
+    """Area-weighted covered / CLIPPING / uncovered for one armour.
+
+    `garments`: list of (verts, tris) for every VISIBLE garment shape -- the
+    union is the garment. `mask`: optional bool array of body verts to score.
+    Percentages are of the masked skin AREA (vertex density is not uniform, so
+    a vert count over-weights dense regions).
+    """
+    bV = np.asarray(body_verts, dtype=np.float64)
+    bT = np.asarray(body_tris, dtype=np.int64).reshape(-1, 3)
+    n = np.asarray(body_normals, dtype=np.float64)
+    n = n / np.clip(np.linalg.norm(n, axis=1, keepdims=True), 1e-9, None)
+    idx = (np.flatnonzero(mask) if mask is not None
+           else np.arange(len(bV), dtype=np.int64))
+
+    a = bV[bT[:, 0]]
+    tri_area = 0.5 * np.linalg.norm(
+        np.cross(bV[bT[:, 1]] - a, bV[bT[:, 2]] - a), axis=1)
+    va = np.zeros(len(bV))
+    for k in range(3):
+        np.add.at(va, bT[:, k], tri_area / 3.0)
+
+    out_hit = np.zeros(len(idx), bool)
+    in_hit = np.zeros(len(idx), bool)
+    for gv, gt in garments:
+        out_hit |= ~ray_exposure(bV[idx], n[idx], gv, gt, tmax=tmax)
+        in_hit |= ~ray_exposure(bV[idx], -n[idx], gv, gt, tmax=tmax)
+    clip = in_hit & ~out_hit
+    unc = ~in_hit & ~out_hit
+    A = va[idx].sum()
+    if A <= 0:
+        return {"area": 0.0, "covered_pct": None, "clipping_pct": None,
+                "uncovered_pct": None, "n_verts": len(idx)}
+    return {
+        "area": float(A),
+        "covered_pct": float(100.0 * va[idx][out_hit].sum() / A),
+        "clipping_pct": float(100.0 * va[idx][clip].sum() / A),
+        "uncovered_pct": float(100.0 * va[idx][unc].sum() / A),
+        "clip_verts": int(clip.sum()),
+        "n_verts": len(idx),
+    }
