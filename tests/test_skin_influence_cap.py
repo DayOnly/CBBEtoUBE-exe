@@ -46,27 +46,30 @@ import src.nif_convert as nc
 def _clean_module():
     yield
     import os
-    os.environ.pop("CBBE2UBE_SKIN_INFLUENCE_CAP", None)
+    os.environ.pop("CBBE2UBE_NO_SKIN_INFLUENCE_CAP", None)
     importlib.reload(nc)
 
 
 def _reload(monkeypatch, value):
     if value is None:
-        monkeypatch.delenv("CBBE2UBE_SKIN_INFLUENCE_CAP", raising=False)
+        monkeypatch.delenv("CBBE2UBE_NO_SKIN_INFLUENCE_CAP", raising=False)
     else:
-        monkeypatch.setenv("CBBE2UBE_SKIN_INFLUENCE_CAP", value)
+        monkeypatch.setenv("CBBE2UBE_NO_SKIN_INFLUENCE_CAP", value)
     return importlib.reload(nc)
 
 
 # --- the flag ---------------------------------------------------------------
 
-def test_defaults_off(monkeypatch):
-    """Main conversion path for every mesh. Not enabled on offline numbers."""
-    assert _reload(monkeypatch, None).SKIN_INFLUENCE_CAP_ENABLED is False
+def test_defaults_on(monkeypatch):
+    """Main conversion path for every mesh -- which is exactly why the fix must
+    SHIP: 59 zero-weight bones across 42 shapes (equip-CTD class) went out in
+    every default conversion while this sat opt-in (audit 2026-07-28). First
+    full-pack playtest is the 1.2 reconvert, same as WEIGHT_INVARIANT."""
+    assert _reload(monkeypatch, None).SKIN_INFLUENCE_CAP_ENABLED is True
 
 
-def test_opt_in(monkeypatch):
-    assert _reload(monkeypatch, "1").SKIN_INFLUENCE_CAP_ENABLED is True
+def test_opt_out(monkeypatch):
+    assert _reload(monkeypatch, "1").SKIN_INFLUENCE_CAP_ENABLED is False
 
 
 # --- what the cap does ------------------------------------------------------

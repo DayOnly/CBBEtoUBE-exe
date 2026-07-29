@@ -50,7 +50,8 @@ import src.nif_convert as nc
 @pytest.fixture(autouse=True)
 def _clean_module():
     yield
-    for v in ("CBBE2UBE_TORSO_JIGGLE", "CBBE2UBE_NO_BUST_COLLIDER_SPLIT"):
+    for v in ("CBBE2UBE_TORSO_JIGGLE", "CBBE2UBE_NO_TORSO_JIGGLE",
+              "CBBE2UBE_NO_BUST_COLLIDER_SPLIT"):
         os.environ.pop(v, None)
     importlib.reload(nc)
 

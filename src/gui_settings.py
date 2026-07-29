@@ -93,13 +93,14 @@ SETTINGS: "tuple[Setting, ...]" = (
             env="CBBE2UBE_NO_JIGGLE_TRANSFER", invert=True,
             tooltip="Graft the body's butt/belly jiggle onto rigid pants so the butt doesn't poke through."),
     Setting("torso_jiggle", "Chest/butt jiggle on fitted torso armor",
-            "Armor", "Jiggle and physics transfer", default=False,
-            env="CBBE2UBE_TORSO_JIGGLE", invert=False,
+            "Armor", "Jiggle and physics transfer", default=True,
+            env="CBBE2UBE_NO_TORSO_JIGGLE", invert=True,
             tooltip="Extend the graft above to a fitted corset/bra/cuirass, so it "
                     "follows the body's breast and butt instead of staying rigid "
                     "while the body moves under it (the 'clips only when moving' "
-                    "case). EXPERIMENTAL: jiggle on a rigid leather or plate cup "
-                    "can read as rubbery -- judge it in game."),
+                    "case). Default ON since 1.2, validated in game via the bust "
+                    "collider split; unchecking also disables that split (the two "
+                    "ship as one fix)."),
     Setting("butt_jiggle", "Butt jiggle graft",
             "Armor", "Jiggle and physics transfer", default=True,
             env="CBBE2UBE_NO_BUTT_JIGGLE", invert=True,
@@ -196,12 +197,14 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "too large spreads verts on rounded areas.",
             advanced=True),
     Setting("skin_influence_cap", "Cap skin influences on the main skin install",
-            "Armor", "Fit and conform", default=False,
-            env="CBBE2UBE_SKIN_INFLUENCE_CAP", invert=False,
+            "Armor", "Fit and conform", default=True,
+            env="CBBE2UBE_NO_SKIN_INFLUENCE_CAP", invert=True,
             tooltip="Trim every vertex to the 4 influences the format allows and "
                     "renormalise, instead of letting the save silently drop the "
-                    "smallest and leave the weights light. Experimental: touches "
-                    "the skinning of every converted mesh."),
+                    "smallest and leave the weights light. Default ON since 1.2: "
+                    "the unmetered drop shipped zero-weight bones (an equip-CTD "
+                    "hazard) on 42 shapes pack-wide. Uncheck to restore the old "
+                    "write exactly."),
     Setting("jiggle_clearance", "Jiggle-overshoot clearance",
             "Armor", "Jiggle and physics transfer", default=True,
             env="CBBE2UBE_NO_JIGGLE_CLEARANCE", invert=True,

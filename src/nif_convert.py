@@ -657,8 +657,15 @@ def _g2s_is_identity(g2s, eps=1e-4) -> bool:
                 if abs(R[i][j] - (1.0 if i == j else 0.0)) > eps:
                     return False
         return True
-    except Exception:
-        return True  # unknown -> treat as identity (keep current behavior)
+    except Exception as _ge:
+        # Unknown -> treat as identity (keeps current behavior), but SAY SO:
+        # this predicate gates every skin-to-world lift, and a pynifly API
+        # drift here silently reads every offset shape as identity -- the
+        # warp-against-air / invisible-armor class (audit 2026-07-28). "No
+        # effect" and "never measured" must not print the same nothing.
+        print(f"  WARN: _g2s_is_identity could not read the transform "
+              f"({_ge!r}) -- ASSUMING identity", file=sys.stderr)
+        return True
 
 
 def _shape_global_to_skin(shape):
@@ -2050,6 +2057,14 @@ def validate_dst_nif(dst_path: "Path",
             continue
         bw = s.bone_weights or {}
         if not bw:
+            # A shape WITH a bone list but NO weights at all is total skin
+            # loss, and the old `continue` here made the spike check below
+            # vacuously unable to fire in the worst case it exists for
+            # (audit 2026-07-28: could-not-measure read as measured-fine).
+            warnings.append(
+                f"{name} :: {s.name}: has {len(bones)} bones but ZERO "
+                f"weights -- skin lost entirely (renders at bone origin)"
+            )
             continue
         n_verts = len(s.verts)
         per_vert_sum = np.zeros(n_verts, dtype=np.float64)
@@ -2179,11 +2194,37 @@ def validate_dst_nif(dst_path: "Path",
                     f"{name} :: BODYTRI lists {len(tri_only)} shape(s) "
                     f"not in NIF: {sorted(tri_only)[:5]}"
                 )
+            # LINK absence (audit 2026-07-28): a TRI on disk with no BODYTRI
+            # extra-data record in the NIF is the "ignores morphs, body
+            # reverts to its _0 shape" class -- and the old check was
+            # presence-conditional, so the lost-link case validated clean.
+            # BODYTRI lives on its carrier SHAPE, not the root.
+            _has_bodytri = False
+            for s in nf.shapes:
+                try:
+                    if any(getattr(ed, "name", None) == "BODYTRI"
+                           for ed in s.extra_data()):
+                        _has_bodytri = True
+                        break
+                except Exception:
+                    pass
+            if not _has_bodytri:
+                warnings.append(
+                    f"{name} :: TRI written but NO shape carries a BODYTRI "
+                    f"extra-data record (morphs will not apply -- body "
+                    f"reverts to _0 shape when equipped)")
         except Exception as e:
             warnings.append(f"{name} :: TRI validation failed: {e!r}")
 
     # HDT-SMP XML cross-check: verify the referenced XML exists, parses,
     # and only references bones in the NIF skeleton.
+    #
+    # ABSENCE check first (audit 2026-07-28): the block below only ran when
+    # the link SURVIVED -- but the documented failure mode is a rebuild
+    # DROPPING extra data, exactly when hdt_xml_rel is None and the validator
+    # used to report clean. If the SOURCE carried a physics link and the dst
+    # does not, that is the dead-SMP class, not a clean file. Same for a
+    # source-side BODYTRI extra-data record lost from the dst.
     try:
         hdt_xml_rel: str | None = None
         for ed in nf.rootNode.extra_data():
@@ -2191,6 +2232,19 @@ def validate_dst_nif(dst_path: "Path",
                     and ed.name == "HDT Skinned Mesh Physics Object"):
                 hdt_xml_rel = ed.string_data
                 break
+        if hdt_xml_rel is None and src_path is not None:
+            try:
+                snf = pyn.NifFile(filepath=str(src_path))
+                for ed in snf.rootNode.extra_data():
+                    if (hasattr(ed, "string_data")
+                            and ed.name == "HDT Skinned Mesh Physics Object"):
+                        warnings.append(
+                            f"{name} :: source declares an HDT physics link "
+                            f"but the converted NIF has NONE (SMP dead -- "
+                            f"extra-data dropped by a rebuild?)")
+                        break
+            except Exception:
+                pass
         if hdt_xml_rel:
             # Resolve relative to the NIF's `meshes/` ancestor.
             xml_disk: "Path | None" = None
@@ -2961,9 +3015,18 @@ def convert_nif(
             # Cross-plate seam weld: close gaps where adjacent solid plates
             # that share a seam drifted apart under independent warp. Runs
             # BEFORE the glow ride so the glow rides the welded plate.
+            # Physics shapes are excluded (small inner try: a scoping error
+            # only empties the exclusion, it must never kill the weld).
             if shape_jobs_p1:
                 try:
-                    n_weld = _weld_cross_shape_seams(shape_jobs_p1)
+                    try:
+                        _weld_excl = (set(hdt_collider_names)
+                                      | set(hdt_softbody_names)
+                                      | set(layered_cloth_names))
+                    except Exception:
+                        _weld_excl = set()
+                    n_weld = _weld_cross_shape_seams(shape_jobs_p1,
+                                                     exclude_names=_weld_excl)
                     if n_weld:
                         import sys as _sys
                         print(f"  seam weld: closed {n_weld} cross-plate seam "
@@ -3283,8 +3346,11 @@ def convert_nif(
             except Exception:
                 pass
 
-        # FINAL HDT-SMP physics pass — must run LAST so extra-data survives
-        # earlier round-trips. Skip hand/foot: cloth physics collapses them.
+        # FINAL HDT-SMP physics pass — after every earlier round-trip so
+        # extra-data survives them. NOT literally last: the passes below use
+        # the in-place load+save pattern and preserve it — any NEW pass added
+        # after this point must do the same (a rebuild drops it). Skip
+        # hand/foot: cloth physics collapses them.
         if not (biped_slots & (BIPED_SLOT33_BIT | BIPED_SLOT37_BIT)):
             try:
                 _finalize_hdt_physics(dst_path, src_path)
@@ -4228,7 +4294,14 @@ def _normalize_partitions_on_disk(dst_path: Path,
             _hide_virtual_body(nf)
             atomic_nif_save(nf, dst_path)
         return changed
-    except Exception:
+    except Exception as _pe:
+        # 0 is also the legit "nothing needed collapsing" answer, and the loud
+        # over-cap WARNINGs above live INSIDE this try -- an early failure
+        # skips them too, so an over-cap shape would ship silently (equip-CTD
+        # class; audit 2026-07-28). Say the pass died.
+        print(f"  WARN: partition normalize FAILED on {Path(dst_path).name}: "
+              f"{_pe!r} -- partitions left as-is, over-cap checks NOT run",
+              file=sys.stderr)
         return 0
 
 
@@ -4559,7 +4632,14 @@ def _shape_is_rigid_torso_armor(shape, threshold: float = 0.35) -> bool:
     threshold cleanly splits them. #softbody-rigid-gate"""
     try:
         wpb = shape.bone_weights
-    except Exception:
+    except Exception as _re:
+        # False here routes the shape toward GENERATED soft-body -- the branch
+        # this gate exists to prevent ("the whole armour flops / disjoints").
+        # An accessor drift (the get_weights-vs-bone_weights incident class)
+        # must not take that branch silently (audit 2026-07-28).
+        print(f"  WARN: rigid-torso gate could not read weights on "
+              f"{getattr(shape, 'name', '?')!r} ({_re!r}) -- treating as "
+              f"NOT rigid torso", file=sys.stderr)
         return False
     if not wpb:
         return False
@@ -5410,8 +5490,14 @@ _JIGGLE_TRANSFER_FACTOR = float(
 # BODY's own per-bone breast mix under each vert (a hand-tuned single-bone
 # weighting with a HIGHER total follow read worse in game than the graft's matched
 # distribution). CBBE2UBE_TORSO_JIGGLE=0 restores the old rigid behaviour.
+# House convention for default-ON features is a NO_* opt-out (the GUI registry
+# can only emit "1"-or-unset, so a positive-name flag with a "0" opt-out made
+# the checkbox a no-op in BOTH directions -- audit 2026-07-28). The legacy
+# CBBE2UBE_TORSO_JIGGLE=0 spelling published with 1.2 stays honored.
 TORSO_JIGGLE_TRANSFER = (
-    os.environ.get("CBBE2UBE_TORSO_JIGGLE", "").strip().lower()
+    os.environ.get("CBBE2UBE_NO_TORSO_JIGGLE", "").strip().lower()
+    not in ("1", "true", "yes", "on")
+    and os.environ.get("CBBE2UBE_TORSO_JIGGLE", "").strip().lower()
     not in ("0", "false", "no", "off"))
 # Fraction of a torso shape's NON-CHAIN verts that must sit within _CONFORM_FIT_PROX
 # of the body. The whole-shape 0.90 gate cannot serve: a cuirass welded to its own
@@ -5555,10 +5641,16 @@ WEIGHT_INVARIANT_ENABLED = os.environ.get(
 # shape 29% of verts sit saturated at 4 influences with 0 at 5 (the save capping) and
 # 7 light-sum verts (the same cap firing without renormalising).
 #
-# DEFAULT OFF. This is the main conversion path for every mesh, and the in-game
-# consequence of re-balancing skin weights pack-wide has not been play-tested.
+# DEFAULT ON since 1.2 (was opt-in via CBBE2UBE_SKIN_INFLUENCE_CAP, which -- per
+# the audit -- meant 59 equip-CTD-class zero-weight bones shipped in every
+# default conversion while the fix sat behind a flag nobody sets). The same
+# family's leg-pass fix (WEIGHT_INVARIANT) went default-ON 2026-07-26; both get
+# their first full-pack playtest in the 1.2 reconvert, and both share the
+# bisection story: CBBE2UBE_NO_SKIN_INFLUENCE_CAP=1 restores the previous
+# main-path write exactly.
 SKIN_INFLUENCE_CAP_ENABLED = os.environ.get(
-    "CBBE2UBE_SKIN_INFLUENCE_CAP", "").strip().lower() in ("1", "true", "yes", "on")
+    "CBBE2UBE_NO_SKIN_INFLUENCE_CAP", "").strip().lower() not in (
+        "1", "true", "yes", "on")
 
 
 def _cap_weights_map(weights_map, n_verts: int):
@@ -6138,8 +6230,18 @@ def _body_conform_ref(weight: str):
                     if 0 <= iv < n:
                         pv[iv][b] = pv[iv].get(b, 0.0) + float(w)
             out = (V, pv, set(body.bone_names), cKDTree(V))
-    except Exception:
+    except Exception as _be:
         out = None
+        print(f"  WARN: body-conform reference failed to load ({_be!r})",
+              file=sys.stderr)
+    if out is None:
+        # Cached None = conform, bust-split and jiggle transfer are ALL
+        # silently disabled for every piece at this weight for the rest of
+        # the run, while each conversion still reports success (audit
+        # 2026-07-28, fail-dangerous class). One loud line per weight.
+        print(f"  WARN: no UBE body reference for weight {weight!r} -- the "
+              f"body-follow repair layer (conform / bust split / jiggle "
+              f"transfer) is OFF for this run", file=sys.stderr)
     _BODY_CONFORM_CACHE[weight] = out
     return out
 
@@ -6193,28 +6295,43 @@ def _jiggle_transfer_vert(dv: dict, bd_jig: dict, closeness: float,
     to fill the remainder so the weights still sum to 1. The grafted jiggle is thus
     a REAL share of the vert's skinning -- it follows the body's jiggle at a
     comparable amplitude -- not a token amount renormalization would shrink away.
-    Returns (new_weights, set_of_newly_added_bones), or (None, set()) when nothing
-    new is grafted (no body jiggle here, far vert, or all targets negligible)."""
+
+    REINFORCES as well as grafts (#jiggle-reinforce): the final weight on each
+    target bone is max(existing, target) -- raise, never lower. The old refusal
+    here ("only reinforces existing jiggle -> leave it") was the presence-is-not-
+    follow fallacy in miniature: a vert carrying an authored TOKEN weight (a
+    name-copy at 1-5% of the body's drive) on every target bone was refused, and
+    the (0, 0.1] band was claimed by NEITHER this pass NOR the jiggle-gated
+    conform -- the measured 0.154-follow garment class. Idempotent: a vert
+    already at/above target on every bone returns None, so re-runs no-op.
+
+    Returns (new_weights, added) where `added` is the set of target bones the
+    vert did NOT previously carry -- EMPTY for a pure reinforcement -- or
+    (None, set()) when nothing changes (no body jiggle here, far vert, all
+    targets negligible, or already at target)."""
     if not bd_jig or closeness <= 0.0:
         return None, set()
     targets = {jb: wb * factor * closeness for jb, wb in bd_jig.items()}
     targets = {jb: t for jb, t in targets.items() if t > 1e-3}
+    if not targets:
+        return None, set()
+    if all(float(dv.get(jb, 0.0)) >= t - 1e-3 for jb, t in targets.items()):
+        return None, set()       # already follows at target -> idempotent no-op
+    final = {jb: max(float(dv.get(jb, 0.0)), t) for jb, t in targets.items()}
     added = {jb for jb in targets if jb not in dv}
-    if not added:
-        return None, set()       # only reinforces existing jiggle -> leave it
-    tot = sum(targets.values())
+    tot = sum(final.values())
     if tot >= 0.95:              # never let the graft dominate the vert
         sc = 0.95 / tot
-        targets = {jb: t * sc for jb, t in targets.items()}
-        tot = sum(targets.values())
+        final = {jb: t * sc for jb, t in final.items()}
+        tot = sum(final.values())
     remain = max(0.0, 1.0 - tot)
-    base_sum = sum(w for b, w in dv.items() if b not in targets)
+    base_sum = sum(w for b, w in dv.items() if b not in final)
     new: dict = {}
     if base_sum > 0:
         for b, w in dv.items():
-            if b not in targets:
+            if b not in final:
                 new[b] = w / base_sum * remain
-    for jb, t in targets.items():
+    for jb, t in final.items():
         new[jb] = new.get(jb, 0.0) + t
     new = {b: w for b, w in new.items() if w > 1e-4}
     if not new:
@@ -6391,6 +6508,7 @@ def _conform_weights_core(nf, dst_path, weight,
         if float((d < _CONFORM_FIT_PROX).mean()) < _CONFORM_FIT_FRAC:
             continue
         touched: "set" = set()
+        removed: dict = {}   # bone -> vert indices that LOST it in the blend
         conf = 0
         for i in range(n):
             if d[i] > _CONFORM_VERT_PROX:
@@ -6405,6 +6523,9 @@ def _conform_weights_core(nf, dst_path, weight,
             if new is None:
                 continue
             touched |= set(dv)        # bones the vert had (may now lose this vert)
+            for b in dv:
+                if b not in new:
+                    removed.setdefault(b, set()).add(i)
             vw[i] = new
             touched |= set(vw[i])     # bones it kept after the blend
             conf += 1
@@ -6412,9 +6533,23 @@ def _conform_weights_core(nf, dst_path, weight,
             dirty = True
             total += conf
             for bn in touched:
-                # full rebuild from the complete per-vert map -> removals applied
-                s.setShapeWeights(bn, [(i, vw[i][bn]) for i in range(n)
-                                       if bn in vw[i] and vw[i][bn] > 1e-4])
+                # setShapeWeights MERGES per vert (omitted verts KEEP their old
+                # value; explicit 0.0 removes) -- the old comment here claimed a
+                # full rebuild applied removals, which is false under merge
+                # semantics: a bone the blend dropped from a vert survived on
+                # disk and the row summed >1 (the view-angle-flicker class the
+                # leg pass bisected). Emit explicit 0.0 for every vert that
+                # lost the bone. #weight-write-invariant
+                pairs = [(i, vw[i][bn]) for i in range(n)
+                         if bn in vw[i] and vw[i][bn] > 1e-4]
+                pairs += [(i, 0.0) for i in removed.get(bn, ())]
+                if not any(w > 0.0 for _i, w in pairs):
+                    # NEVER EMPTY A BONE: writing pure removals would leave the
+                    # bone in the list but out of the regenerated partition
+                    # palette (equip CTD). Stale sums on a few rows are the
+                    # cheaper failure. #zeroweight-bone-desync
+                    continue
+                s.setShapeWeights(bn, pairs)
             # setShapeWeights writes the NATIVE skin buffer but leaves pynifly's
             # cached `bone_weights` (_weights) stale. The fold re-authors from THIS
             # in-memory nf, and _copy_shape reads bone_weights -- so without this it
@@ -7559,10 +7694,17 @@ def _match_leg_motion_to_body(dst_path, biped_slots: int = 0) -> int:
 
     total = 0
     dirty = False
+    _lm_layered = _layered_cloth_shape_names(nf.shapes)
     for s in nf.shapes:
         if s.name == "BaseShape" or s.name in RESKIN_SKIP_NAMES:
             continue
         if s.name in collider_names or s.name in softbody_names:
+            continue
+        if s.name in _lm_layered:
+            # Layered cloth keeps its SOURCE skin; this was the only one of the
+            # four sibling post-passes without the skip (audit 2026-07-28) --
+            # rewriting a layer stack's leg split per-layer independently
+            # reopens inter-layer clipping under hip flexion.
             continue
         # INERT-CHAIN ALLOWANCE (#inert-chain-leg-motion). `_shape_has_hdt_smp_rigging`
         # is a NIF-bone heuristic: >40% bones unknown to the body = "physics-rigged",
@@ -7728,9 +7870,26 @@ def _match_leg_motion_to_body(dst_path, biped_slots: int = 0) -> int:
             # Writes EVERY live vert, not just `rows`: `G` is normalised, so this
             # incidentally repairs verts whose source weights never summed to 1.
             # Measured load-bearing -- narrowing it regressed the invariant.
-            for j, b in enumerate(shape_bones):
-                s.setShapeWeights(b, [(i, NEW[i, j]) for i in range(n)
-                                      if NEW[i, j] > _WRITE_MIN])
+            #
+            # The write loop gets its OWN except with an STB restore: the outer
+            # per-shape catch below would swallow a mid-loop failure with the
+            # STBs still reset, and the half-written shape SHIPS if any other
+            # shape marks the NIF dirty (audit 2026-07-28 -- the add_bone-STB
+            # equip-explosion class via the exception path).
+            try:
+                for j, b in enumerate(shape_bones):
+                    s.setShapeWeights(b, [(i, NEW[i, j]) for i in range(n)
+                                          if NEW[i, j] > _WRITE_MIN])
+            except Exception as _we:
+                for b, st in saved_stb.items():
+                    try:
+                        s.set_skin_to_bone_xform(b, st)
+                    except Exception:
+                        pass
+                print(f"  WARN: leg-motion weight write failed mid-shape on "
+                      f"{s.name!r} ({_we!r}) -- STBs restored, shape left "
+                      f"partially matched", file=sys.stderr)
+                continue
             for b, st in saved_stb.items():
                 try:
                     s.set_skin_to_bone_xform(b, st)
@@ -7918,7 +8077,12 @@ def _transfer_body_jiggle_to_fitted(dst_path, biped_slots: int = 0) -> int:
             vw[i] = new
             grafted_rows.append(i)
             graft += 1
-        if not graft or not new_bones:
+        # `new_bones` empty does NOT mean nothing happened: a pure REINFORCEMENT
+        # (every raised bone already in the shape's list) updates rows without
+        # needing any add_bone. The old `or not new_bones` clause here threw
+        # away every such row -- the shape-level half of the presence-is-not-
+        # follow trap (#jiggle-reinforce).
+        if not graft:
             continue
         # Graft each new jiggle bone with the body's bind transform. CRITICAL:
         # add ALL bones FIRST, THEN set the STBs -- a later add_bone RESETS the
@@ -7994,10 +8158,14 @@ def _transfer_body_jiggle_to_fitted(dst_path, biped_slots: int = 0) -> int:
                     ss = sum(vw[i].values())
                     if ss > 0:
                         vw[i] = {b: w / ss for b, w in vw[i].items()}
-        if not safe:
-            # add_bone above already reset the existing STBs -> restore before bailing.
+        if addable and not safe:
+            # We TRIED to add bones and none took an STB -> nothing safely
+            # grafted; add_bone above already reset the existing STBs, restore
+            # before bailing. (`addable` empty is the pure-reinforcement case:
+            # no add_bone ran, rows only touch existing bones -> proceed to
+            # write. #jiggle-reinforce)
             _restore_existing_stbs()
-            continue   # nothing safely grafted -> leave this shape untouched
+            continue   # leave this shape untouched
         touched: set = set()
         for i in range(n):
             touched |= set(vw[i])
@@ -8151,6 +8319,10 @@ def _split_bust_collider_shape(dst_path, src_path=None) -> int:
         nf = pyn.NifFile(filepath=str(dst_path))
     except Exception:
         return 0
+    if _nif_has_fx_shape(nf):
+        return 0  # effect-shader/glow NIF: a reload+re-save corrupts its
+                  # controller -> CTD. Every sibling in-place pass carries this
+                  # bail; the audit found this one missing it.
     cands = _bust_split_candidates(dst_path, nf, src_path=src_path)
     if not cands:
         return 0
@@ -9378,7 +9550,13 @@ def _separate_chest_layered_cloth_depth(
             total_pushed += int(push_mask.sum())
 
         return total_pushed
-    except Exception:
+    except Exception as _le:
+        # A refactor bug here kills this inter-layer pass for EVERY
+        # conversion forever, and 'crashed on line 1' prints exactly what
+        # 'no layers in this NIF' prints (audit 2026-07-28, the dead-
+        # backstop class). One line, always.
+        print(f"  WARN: _separate_chest_layered_cloth_depth died: {_le!r} -- "
+              f"layer pass skipped for this piece", file=sys.stderr)
         return 0
 
 
@@ -9783,7 +9961,13 @@ def _separate_abdomen_layered_cloth_depth(
             for k in ("_wv", "_ov", "_oc"):
                 j.pop(k, None)
         return total
-    except Exception:
+    except Exception as _le:
+        # A refactor bug here kills this inter-layer pass for EVERY
+        # conversion forever, and 'crashed on line 1' prints exactly what
+        # 'no layers in this NIF' prints (audit 2026-07-28, the dead-
+        # backstop class). One line, always.
+        print(f"  WARN: _separate_abdomen_layered_cloth_depth died: {_le!r} -- "
+              f"layer pass skipped for this piece", file=sys.stderr)
         return 0
 
 
@@ -9933,7 +10117,13 @@ def _sync_chest_layered_cloth_weights(shape_jobs: list) -> int:
             total_synced += len(replace_map)
 
         return total_synced
-    except Exception:
+    except Exception as _le:
+        # A refactor bug here kills this inter-layer pass for EVERY
+        # conversion forever, and 'crashed on line 1' prints exactly what
+        # 'no layers in this NIF' prints (audit 2026-07-28, the dead-
+        # backstop class). One line, always.
+        print(f"  WARN: _sync_chest_layered_cloth_weights died: {_le!r} -- "
+              f"layer pass skipped for this piece", file=sys.stderr)
         return 0
 
 
@@ -10085,7 +10275,13 @@ def _sync_abdomen_layered_cloth_weights(shape_jobs: list) -> int:
                         recv_weights.setdefault(b, []).append((vi, float(w)))
             total_synced += len(new_per_vert)
         return total_synced
-    except Exception:
+    except Exception as _le:
+        # A refactor bug here kills this inter-layer pass for EVERY
+        # conversion forever, and 'crashed on line 1' prints exactly what
+        # 'no layers in this NIF' prints (audit 2026-07-28, the dead-
+        # backstop class). One line, always.
+        print(f"  WARN: _sync_abdomen_layered_cloth_weights died: {_le!r} -- "
+              f"layer pass skipped for this piece", file=sys.stderr)
         return 0
 
 
@@ -12591,6 +12787,22 @@ def _finalize_hdt_physics(dst_path: Path, src_nif_path: Path) -> bool:
         # only XML instead (the authored chain XML is what collapses on UBE).
         src_xml = None if CHAIN_TO_SOFTBODY else _read_source_hdt_xml_disk(src_nif_path)
         if src_xml is not None:
+            # KNOWN ISSUE (audit 2026-07-28, left OPEN by design): for the
+            # narrow class where the phases regenerated the XML because the
+            # authored one drives BodySlide-BUILD-injected chain bones, this
+            # copy REVERSES that decision. A re-check of
+            # _source_hdt_needs_missing_chain_bones here was tried and
+            # REVERTED the same day: the helper cannot distinguish truly
+            # missing bones from runtime-resolvable ones (a runtime-physics
+            # mod's authored XML legitimately drives skeleton bones no mesh
+            # NIF carries -- the common case, in-game-proven across four
+            # reconverts), so the gate over-fired, declined the authored XML
+            # pack-wide, and the harness negative controls caught grafts dead
+            # and physics shapes lost. Any future fix must classify the XML's
+            # bones against what actually resolves AT RUNTIME, not against
+            # the NIF/source bone sets available here.
+            pass
+        if src_xml is not None:
             # #authored-xml-bone-remap (OPT-IN, default OFF -- see
             # XML_BONE_REMAP_ENABLED for why the original justification was
             # disproven). Retarget the source's breast-chain bone names onto the
@@ -12789,7 +13001,15 @@ def _finalize_hdt_physics(dst_path: Path, src_nif_path: Path) -> bool:
         except Exception:
             pass
         return True
-    except Exception:
+    except Exception as _fe:
+        # One line, always: a silent failure here drops the authored-XML
+        # attach, the collider re-import AND the FSMP hardening in one go
+        # (dead skirts / skirt collapse / equip-CTD gate skipped), and the
+        # caller swallows the return -- "no physics needed" and "physics
+        # finalize crashed" printed the same nothing (audit 2026-07-28).
+        print(f"  WARN: physics finalize FAILED on {Path(dst_path).name}: "
+              f"{_fe!r} -- SMP/XML state for this piece is whatever the "
+              f"earlier phases left", file=sys.stderr)
         if os.environ.get("CBBE2UBE_DEBUG_FINALIZE"):
             import traceback as _tb
             _tb.print_exc()
@@ -12855,6 +13075,21 @@ def _reauthor_nif_fresh(dst_path: Path, override_verts_by_name=None,
             if int(getattr(s, "flags", 0) or 0) & 0x1
         }
 
+        # Authored-skin set: SMP colliders, per-vertex soft-bodies and layered
+        # cloth must keep their skin VERBATIM through a rebuild. _copy_shape's
+        # default path runs _install_skin's genital/jiggle strips + influence
+        # processing on them -- the #smp-collider-skin-preserve equip-CTD class
+        # -- and this rebuild runs AFTER _finalize_hdt_physics deliberately
+        # re-imported those shapes with preserve_authored_skin=True (it also
+        # re-processed the bust-split collider clone). Audit 2026-07-28.
+        _preserve = set()
+        try:
+            _preserve |= _hdt_collider_shape_names(dst_path, nif=old)
+            _preserve |= _hdt_softbody_shape_names(dst_path, nif=old)
+            _preserve |= _layered_cloth_shape_names(shapes)
+        except Exception:
+            pass
+
         tmp_path = dst_path.with_suffix(".nif.reauth")
         new = pyn.NifFile()
         new.initialize("SKYRIMSE", str(tmp_path))
@@ -12865,7 +13100,8 @@ def _reauthor_nif_fresh(dst_path: Path, override_verts_by_name=None,
             if s.name in _excl:
                 continue                 # drop this shape from the re-author
             try:
-                _copy_shape(s, new, override_verts=_ov.get(s.name))
+                _copy_shape(s, new, override_verts=_ov.get(s.name),
+                            preserve_authored_skin=(s.name in _preserve))
             except Exception as _ce:
                 copy_failed.append((s.name, repr(_ce)))
         if copy_failed:
@@ -12993,6 +13229,24 @@ def _read_source_hdt_xml_text_uncached(src_nif_path: Path, nif=None) -> "str | N
                             xml_disk = cand
                         break
         if xml_disk is None or not xml_disk.is_file():
+            # If the NIF itself DECLARES a physics link, "no XML text" is a
+            # RESOLUTION FAILURE, not "this piece has no physics" -- and every
+            # collider/softbody skip downstream silently disengages on the
+            # empty set (audit 2026-07-28: grafting onto colliders is the
+            # in-game-proven tear-off class). Distinguish the two loudly.
+            try:
+                _nfq = nif if nif is not None else \
+                    _pynifly().NifFile(filepath=str(src_nif_path))
+                for _ed in _nfq.rootNode.extra_data():
+                    if (getattr(_ed, "name", None)
+                            == "HDT Skinned Mesh Physics Object"):
+                        print(f"  WARN: {Path(src_nif_path).name} declares an "
+                              f"HDT physics XML but it did not resolve -- "
+                              f"collider/softbody protections will treat this "
+                              f"piece as physics-free", file=sys.stderr)
+                        break
+            except Exception:
+                pass
             return None
         return xml_disk.read_text(errors="ignore")
     except Exception:
@@ -13318,12 +13572,21 @@ def _shape_has_identity_g2s(s) -> bool:
         return False
 
 
-def _weld_cross_shape_seams(shape_jobs, tol: float = _SEAM_WELD_TOL):
+def _weld_cross_shape_seams(shape_jobs, tol: float = _SEAM_WELD_TOL,
+                            exclude_names=None):
     """Weld source-coincident cross-plate seam verts to their centroid.
 
     Operates on the pass-1 `shape_jobs` (each {"src", "verts",
     "verts_modified", ...}). Returns the count of welded verts. Best-effort.
-    """
+
+    `exclude_names`: SMP colliders / per-vertex soft-bodies / layered cloth.
+    The weld moves REST verts and the skin-match below synthesizes an
+    override_skin and edits seam weights -- both forbidden on authored physics
+    geometry (sim rest-pose desync / the drift-and-CTD class; every other
+    skin pass carries these skips, this one did not -- audit 2026-07-28).
+    A physics shape sharing a source-coincident seam with a rigid plate keeps
+    its authored rest + skin; the rigid side still welds toward the centroid
+    of its own members."""
     if os.environ.get("CBBE2UBE_NO_SEAM_WELD", "").strip().lower() in (
             "1", "true", "yes", "on"):
         return 0
@@ -13332,10 +13595,12 @@ def _weld_cross_shape_seams(shape_jobs, tol: float = _SEAM_WELD_TOL):
     except Exception:
         return 0
 
-
-    # Candidate plates: textured, non-effect, identity-g2s (frame match).
+    _excl = exclude_names or set()
+    # Candidate plates: textured, non-effect, identity-g2s (frame match),
+    # and never authored-physics geometry.
     plates = [j for j in shape_jobs
               if (j["src"].textures or {})
+              and (j["src"].name or "") not in _excl
               and not _shape_has_effect_shader(j["src"])
               and _shape_has_identity_g2s(j["src"])]
     if len(plates) < 2:
@@ -15121,10 +15386,18 @@ def convert_nif_phase2(
 
     # Cross-plate seam weld: close gaps where adjacent solid plates that share
     # a seam drifted apart under independent warp. Runs BEFORE the glow ride so
-    # the glow rides the welded plate. See _weld_cross_shape_seams.
+    # the glow rides the welded plate. Physics shapes excluded (see phase 1 --
+    # the small inner try keeps a scoping error from killing the weld).
     if shape_jobs:
         try:
-            n_weld = _weld_cross_shape_seams(shape_jobs)
+            try:
+                _weld_excl = (set(hdt_collider_names)
+                              | set(hdt_softbody_names)
+                              | set(layered_cloth_names))
+            except Exception:
+                _weld_excl = set()
+            n_weld = _weld_cross_shape_seams(shape_jobs,
+                                             exclude_names=_weld_excl)
             if n_weld:
                 import sys as _sys
                 print(f"  seam weld: closed {n_weld} cross-plate seam vert(s)",
@@ -15411,13 +15684,18 @@ def convert_nif_phase2(
         except Exception:
             pass
 
-    # FINAL HDT-SMP physics pass — runs LAST so the extra-data survives
-    # (earlier round-trips dropped it). Prefers the source armor's
-    # authored XML. See _finalize_hdt_physics.
-    try:
-        _finalize_hdt_physics(dst_path, src_path)
-    except Exception:
-        pass
+    # FINAL HDT-SMP physics pass — after every earlier round-trip so the
+    # extra-data survives them (passes AFTER it use the in-place pattern and
+    # preserve it). Prefers the source armor's authored XML. Skip hand/foot:
+    # cloth physics collapses them — this gate existed only on the phase-1
+    # site while the two bust passes flanking THIS one carried it (parity
+    # audit 2026-07-28); a gauntlet with an authored HDT XML got cloth
+    # physics attached here. See _finalize_hdt_physics.
+    if not (biped_slots & (BIPED_SLOT33_BIT | BIPED_SLOT37_BIT)):
+        try:
+            _finalize_hdt_physics(dst_path, src_path)
+        except Exception:
+            pass
 
     # Bust collider split, pass 2 (XML): AFTER the finalize (which overwrites the
     # XML with the authored copy) and BEFORE the jiggle graft (which reads it to

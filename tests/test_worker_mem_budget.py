@@ -132,7 +132,7 @@ def test_every_playtestable_toggle_is_reachable_from_the_gui():
     from src import gui_settings as gs
     rows = {s.env for s in gs.SETTINGS if s.env}
     for env in ("CBBE2UBE_SMP_ANTIPOKE", "CBBE2UBE_SMP_ANTIPOKE_PUSH",
-                "CBBE2UBE_SKIN_INFLUENCE_CAP"):
+                "CBBE2UBE_NO_SKIN_INFLUENCE_CAP"):
         assert env in rows, f"{env} is unreachable from an MO2 launch"
 
 

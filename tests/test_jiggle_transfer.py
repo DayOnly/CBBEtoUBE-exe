@@ -63,11 +63,49 @@ def test_closeness_scales_graft_amount():
     assert near[BUTT] > far[BUTT]                   # closer to the body -> more jiggle
 
 
-def test_existing_jiggle_bone_is_noop():
-    # the graft only ADDS missing jiggle (reinforcing an existing bone is the
-    # conform pass's job) -> a vert that already has the bone is left untouched.
+def test_at_target_vert_is_idempotent_noop():
+    # A vert already carrying >= the target on every jiggle bone is left
+    # untouched -- re-running the pass on grafted output must be a no-op.
+    # (target here = 0.5 * 0.7 = 0.35, existing 0.4 >= it)
     assert nc._jiggle_transfer_vert(
         {THIGH: 0.6, BUTT: 0.4}, {BUTT: 0.5}, 1.0, 0.7) == (None, set())
+
+
+def test_token_weight_is_reinforced_not_refused():
+    """#jiggle-reinforce -- the presence-is-not-follow lesson in miniature.
+    The old code refused any vert whose target bones were all already present
+    ('only reinforces existing jiggle -> leave it'), so an authored name-copy
+    at 1-5% of the body's drive was unfixable by every pass: this one refused
+    it, and the conform gate requires >=8 verts ABOVE 0.1 -- the (0, 0.1]
+    band was claimed by neither. That is the measured 0.154-follow garment."""
+    new, added = nc._jiggle_transfer_vert(
+        {THIGH: 0.98, BUTT: 0.02}, {BUTT: 0.5}, 1.0, 0.7)
+    assert new is not None, "token-weight vert must be reinforced"
+    assert added == set(), "no NEW bone -- pure reinforcement"
+    assert abs(new[BUTT] - 0.35) < 1e-6      # raised TO target
+    assert abs(sum(new.values()) - 1.0) < 1e-6
+
+
+def test_reinforcement_never_lowers_an_authored_weight():
+    # One bone above target, one token bone below: the above-target bone
+    # keeps its authored weight; only the token one is raised.
+    new, added = nc._jiggle_transfer_vert(
+        {THIGH: 0.55, BUTT: 0.40, "NPC Belly": 0.05},
+        {BUTT: 0.5, "NPC Belly": 0.5}, 1.0, 0.7)
+    assert new is not None
+    assert added == set()
+    assert new[BUTT] >= 0.40 - 1e-6          # never lowered
+    assert abs(new["NPC Belly"] - 0.35) < 1e-6
+    assert abs(sum(new.values()) - 1.0) < 1e-6
+
+
+def test_mixed_add_and_reinforce_reports_only_new_bones_as_added():
+    new, added = nc._jiggle_transfer_vert(
+        {THIGH: 0.95, BUTT: 0.05}, {BUTT: 0.5, "NPC Belly": 0.5}, 1.0, 0.7)
+    assert new is not None
+    assert added == {"NPC Belly"}            # BUTT was present -> not "added"
+    assert abs(new[BUTT] - 0.35) < 1e-6
+    assert abs(new["NPC Belly"] - 0.35) < 1e-6
 
 
 def test_negligible_weight_is_noop():

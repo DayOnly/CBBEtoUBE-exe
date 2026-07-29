@@ -49,11 +49,15 @@ import pytest
 import src.nif_convert as nc
 
 
-def _reload(monkeypatch, value):
+def _reload(monkeypatch, value, legacy=None):
     if value is None:
+        monkeypatch.delenv("CBBE2UBE_NO_TORSO_JIGGLE", raising=False)
+    else:
+        monkeypatch.setenv("CBBE2UBE_NO_TORSO_JIGGLE", value)
+    if legacy is None:
         monkeypatch.delenv("CBBE2UBE_TORSO_JIGGLE", raising=False)
     else:
-        monkeypatch.setenv("CBBE2UBE_TORSO_JIGGLE", value)
+        monkeypatch.setenv("CBBE2UBE_TORSO_JIGGLE", legacy)
     return importlib.reload(nc)
 
 
@@ -63,6 +67,7 @@ def _clean_module():
     yield
     import os
     os.environ.pop("CBBE2UBE_TORSO_JIGGLE", None)
+    os.environ.pop("CBBE2UBE_NO_TORSO_JIGGLE", None)
     importlib.reload(nc)
 
 
@@ -77,15 +82,38 @@ def test_torso_jiggle_defaults_on(monkeypatch):
     assert _reload(monkeypatch, None).TORSO_JIGGLE_TRANSFER is True
 
 
-def test_torso_jiggle_opt_out(monkeypatch):
-    assert _reload(monkeypatch, "0").TORSO_JIGGLE_TRANSFER is False
+def test_torso_jiggle_opt_out_is_the_house_no_flag(monkeypatch):
+    """NO_* opt-out, matching every other default-ON feature: the GUI registry
+    can only emit '1'-or-unset, so a positive-name flag with a '0' opt-out made
+    the checkbox a no-op in both directions (audit 2026-07-28)."""
+    assert _reload(monkeypatch, "1").TORSO_JIGGLE_TRANSFER is False
+
+
+def test_legacy_zero_spelling_still_honored(monkeypatch):
+    """CBBE2UBE_TORSO_JIGGLE=0 was published with 1.2 -- it must keep working."""
+    assert _reload(monkeypatch, None, legacy="0").TORSO_JIGGLE_TRANSFER is False
+    assert _reload(monkeypatch, None, legacy="1").TORSO_JIGGLE_TRANSFER is True
 
 
 def test_flag_accepts_the_usual_spellings(monkeypatch):
-    for v in ("1", "true", "YES", "on", ""):
+    for v in ("0", "false", "no", "OFF", ""):
         assert _reload(monkeypatch, v).TORSO_JIGGLE_TRANSFER is True, v
-    for v in ("0", "false", "no", "OFF"):
+    for v in ("1", "true", "YES", "on"):
         assert _reload(monkeypatch, v).TORSO_JIGGLE_TRANSFER is False, v
+
+
+def test_gui_registry_polarity_matches_the_flag():
+    """The audit found the registry stale after the default flip: default=False,
+    invert=False on a flag whose code default is ON -- so the checkbox could
+    never turn the feature off, and apply_env's authoritative pop STRIPPED a
+    user's system-level opt-out. Pin the corrected mapping end to end."""
+    from src import gui_settings as gs
+    s = next(x for x in gs.SETTINGS if x.key == "torso_jiggle")
+    assert s.default is True
+    assert s.invert is True
+    assert s.env == "CBBE2UBE_NO_TORSO_JIGGLE"
+    assert gs.env_string_for(s, True) is None    # checked -> unset -> feature ON
+    assert gs.env_string_for(s, False) == "1"    # unchecked -> NO_=1 -> feature OFF
 
 
 # --- the collider rule -------------------------------------------------------
