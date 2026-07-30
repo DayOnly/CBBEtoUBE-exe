@@ -75,6 +75,52 @@ def mod_name_matches(name: str, query: str) -> bool:
     return all(tok in low for tok in q.split())
 
 
+def repack_filtered(items, checkbuttons, query, canvas=None) -> list:
+    """Show only the checkbuttons whose mod matches `query`, in MASTER order.
+
+    Shared by the "mods to reconvert" and "overlay mods" checklists, which had
+    near-identical copies (0.992 similar). Module-level and widget-agnostic so
+    the contract is unit-testable without a display -- the closures it replaced
+    could only be exercised by running the GUI, which is why the filter
+    behaviour was previously tested by a re-implementation in the test file.
+
+    Deliberately does NOT touch the tick variables: hiding a mod must not
+    untick it, or a filter would silently drop mods from the run. Returns the
+    visible names so a caller can assert on them.
+    """
+    for cb in checkbuttons.values():
+        cb.pack_forget()
+    shown = []
+    for it in items:
+        name = it["name"]
+        if mod_name_matches(name, query) and name in checkbuttons:
+            checkbuttons[name].pack(anchor="w")
+            shown.append(name)
+    if canvas is not None:
+        try:
+            canvas.configure(scrollregion=canvas.bbox("all"))
+            canvas.yview_moveto(0.0)
+        except Exception:
+            pass          # a scroll region is cosmetic; never fail the filter
+    return shown
+
+
+def set_ticks_for_visible(items, tick_vars, query, value) -> int:
+    """All/None act on the VISIBLE (filtered) set only.
+
+    So a filter plus All ticks just that family; with an empty filter it is
+    every mod, as before. Shared by both checklists (0.986 similar). Returns
+    how many were set, so a caller can tell "ticked nothing" from "ticked all".
+    """
+    n = 0
+    for it in items:
+        name = it["name"]
+        if mod_name_matches(name, query) and name in tick_vars:
+            tick_vars[name].set(value)
+            n += 1
+    return n
+
+
 def _fmt_eta(seconds: float) -> str:
     """Human 'time left' string from a seconds estimate."""
     s = int(max(0, round(seconds)))
@@ -365,29 +411,11 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
         _refresh_run_button()   # ticking a mod in Select mode gates Convert
 
     def _apply_filter():
-        # Show/hide checkbuttons to match the filter WITHOUT touching mod_vars,
-        # so ticks survive filtering. Re-pack matches in master order.
-        q = search_var.get()
-        for cb in mod_cbs.values():
-            cb.pack_forget()
-        for it in mod_items_all:
-            if _matches(it["name"], q):
-                mod_cbs[it["name"]].pack(anchor="w")
-        try:
-            _canvas.configure(scrollregion=_canvas.bbox("all"))
-            _canvas.yview_moveto(0.0)
-        except Exception:
-            pass
+        repack_filtered(mod_items_all, mod_cbs, search_var.get(), _canvas)
         _update_title()
 
     def _set_all(val):
-        # All/None act on the VISIBLE (filtered) set only -- so "kco" + All ticks
-        # just that family. With an empty filter this is every mod, as before.
-        q = search_var.get()
-        for it in mod_items_all:
-            name = it["name"]
-            if _matches(name, q) and name in mod_vars:
-                mod_vars[name].set(val)
+        set_ticks_for_visible(mod_items_all, mod_vars, search_var.get(), val)
         _update_title()
 
     def _populate_mods(items):
@@ -447,25 +475,12 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
         _refresh_run_button()   # ticking an overlay mod gates Convert
 
     def _ov_apply_filter():
-        qf = ov_search_var.get()
-        for cb in ov_cbs.values():
-            cb.pack_forget()
-        for it in ov_items_all:
-            if _matches(it["name"], qf):
-                ov_cbs[it["name"]].pack(anchor="w")
-        try:
-            ov_canvas.configure(scrollregion=ov_canvas.bbox("all"))
-            ov_canvas.yview_moveto(0.0)
-        except Exception:
-            pass
+        repack_filtered(ov_items_all, ov_cbs, ov_search_var.get(), ov_canvas)
         _ov_update_title()
 
     def _ov_set_all(val):
-        qf = ov_search_var.get()
-        for it in ov_items_all:
-            name = it["name"]
-            if _matches(name, qf) and name in overlay_mod_vars:
-                overlay_mod_vars[name].set(val)
+        set_ticks_for_visible(ov_items_all, overlay_mod_vars,
+                              ov_search_var.get(), val)
         _ov_update_title()
 
     def _ov_populate(items):

@@ -13514,43 +13514,44 @@ def _glob_first_in_mods(pattern: str,
     return None
 
 
-def _find_ube_template_body() -> Path | None:
-    """Find a UBE Release Body template NIF (BodySlide ShapeData, slider-
-    zero). Scanned from any mod's CalienteTools/BodySlide/ShapeData by
-    content/name hint — no fixed mod name. Env override: CBBE2UBE_UBE_TEMPLATE."""
-    ck = "ube_template"
-    if ck in _BODY_DISCOVERY_CACHE:
-        return _BODY_DISCOVERY_CACHE[ck]
-    env = os.environ.get("CBBE2UBE_UBE_TEMPLATE")
+def _find_ube_shapedata(cache_key: str, env_var: str,
+                        ext: str) -> Path | None:
+    """A UBE body asset from any mod's BodySlide ShapeData, by name hint.
+
+    Shared by the template NIF and the slider-delta OSD, which differed only in
+    cache key, env override and file extension (0.92 similar). No fixed mod
+    name is ever used — the scan is by content/name hint across all mods.
+
+    The TWO-TIER hint is load-bearing, not belt-and-braces: prefer the canonical
+    "...Release Body" over outfit-specific UBE body variants that also contain
+    "ube"+"body". Falling straight through to the loose hint would pick whichever
+    outfit's body happened to be found first.
+
+    CACHED per process (the caller runs per-NIF and this scans every mod).
+    """
+    if cache_key in _BODY_DISCOVERY_CACHE:
+        return _BODY_DISCOVERY_CACHE[cache_key]
+    env = os.environ.get(env_var)
     if env and Path(env).is_file():
-        _BODY_DISCOVERY_CACHE[ck] = Path(env)
-        return _BODY_DISCOVERY_CACHE[ck]
-    pat = "CalienteTools/BodySlide/ShapeData/*/*.nif"
-    # Prefer the canonical "...Release Body" over outfit-specific UBE body
-    # variants (BDOR_Hair, etc.) that also contain "ube"+"body".
-    # CACHED (per-NIF caller, scans all mods).
+        _BODY_DISCOVERY_CACHE[cache_key] = Path(env)
+        return _BODY_DISCOVERY_CACHE[cache_key]
+    pat = f"CalienteTools/BodySlide/ShapeData/*/*.{ext}"
     res = (_glob_first_in_mods(pat, name_substrs=("ube", "release", "body"))
            or _glob_first_in_mods(pat, name_substrs=("ube", "body")))
-    _BODY_DISCOVERY_CACHE[ck] = res
+    _BODY_DISCOVERY_CACHE[cache_key] = res
     return res
+
+
+def _find_ube_template_body() -> Path | None:
+    """The UBE Release Body template NIF (BodySlide ShapeData, slider-zero).
+    Env override: CBBE2UBE_UBE_TEMPLATE."""
+    return _find_ube_shapedata("ube_template", "CBBE2UBE_UBE_TEMPLATE", "nif")
 
 
 def _find_ube_body_osd() -> Path | None:
-    """Find a UBE body OSD (slider-deltas catalog) for M8 auto-TRI. Scanned
-    from any mod's BodySlide ShapeData by name hint. Env override:
-    CBBE2UBE_UBE_OSD. Result is cached (stable for the process lifetime)."""
-    ck = "ube_osd"
-    if ck in _BODY_DISCOVERY_CACHE:
-        return _BODY_DISCOVERY_CACHE[ck]
-    env = os.environ.get("CBBE2UBE_UBE_OSD")
-    if env and Path(env).is_file():
-        _BODY_DISCOVERY_CACHE[ck] = Path(env)
-        return _BODY_DISCOVERY_CACHE[ck]
-    pat = "CalienteTools/BodySlide/ShapeData/*/*.osd"
-    res = (_glob_first_in_mods(pat, name_substrs=("ube", "release", "body"))
-           or _glob_first_in_mods(pat, name_substrs=("ube", "body")))
-    _BODY_DISCOVERY_CACHE[ck] = res
-    return res
+    """The UBE body OSD (slider-deltas catalog) for M8 auto-TRI.
+    Env override: CBBE2UBE_UBE_OSD."""
+    return _find_ube_shapedata("ube_osd", "CBBE2UBE_UBE_OSD", "osd")
 
 
 def _find_user_preset_body(weight_suffix: str = "_1") -> Path | None:
