@@ -741,6 +741,41 @@ TRACE_TMAX = 14.0      # a gap is measured in units the bust ceiling never sees
 TRACE_MIN_HITS = 8
 
 
+def garment_reaches(garment_verts, body_verts, idx, margin: float = TMAX):
+    """Could this garment possibly be hit by rays from `idx`? Bounding box only.
+
+    THE HOT-PATH GATE. Arming previously tested only the BODY region size, which
+    is a constant -- the UBE bust band is 5249 verts against a floor of 50 -- so
+    EVERY phase-2 shape armed and paid the full measurement cost: two chain
+    measurements, a standoff record and up to four band records. A belt, a bag,
+    a boot and a skirt each paid seven ray casts to discover they are nowhere
+    near the bust.
+
+    A ray from a band vert travels at most `margin`, so anything that can be hit
+    lies within `margin` of the band. Comparing BOUNDING BOXES is conservative
+    by construction -- a garment's box contains all of its triangles, so a box
+    that does not overlap cannot contain a triangle that does. It can only ever
+    admit work, never skip a real hit. O(n) over verts, no triangle touched.
+
+    The margin is the full ray reach rather than something tuned: pushes are
+    capped in the low single digits of units, so 12u leaves ample slack for a
+    pass moving a garment INTO the band after this is evaluated.
+    """
+    try:
+        g = np.asarray(garment_verts, np.float64)
+        if g.ndim != 2 or not len(g):
+            return False
+        b = np.asarray(body_verts, np.float64)
+        if idx is None or not len(idx):
+            return False
+        band = b[idx]
+        lo = band.min(axis=0) - margin
+        hi = band.max(axis=0) + margin
+        return bool(np.all(g.max(axis=0) >= lo) and np.all(g.min(axis=0) <= hi))
+    except Exception:
+        return True      # never let the gate itself drop a measurement
+
+
 def front_slab(body_verts, body_normals, z_lo, z_hi,
                ny_min: float = TRACE_NY_MIN, x_max: float = TRACE_X_MAX):
     """Front-facing torso skin in a z slab."""
@@ -848,6 +883,13 @@ class ChainGuard:
         """Entry diagnosis. `known` reuses a count already measured this shape
         rather than paying for it twice."""
         if not self.armed:
+            return -1
+        if verts is not None and not garment_reaches(verts, self.bV, self.idx):
+            # Nowhere near the measured band: the criterion would read
+            # 0->0 and the two measurements would buy nothing. Disarming
+            # here is what stops a belt paying a torso shape's bill.
+            self.armed = False
+            self.outcome = "out of band"
             return -1
         self.entry = int(known) if known is not None else self.exposed(verts)
         if self.entry >= 0:
@@ -1017,12 +1059,14 @@ def record_torso_bands(dst_path, shape_name, garment_verts, garment_tris,
             return []
         bV = np.asarray(body_verts, np.float64)
         bN = np.asarray(body_normals, np.float64)
-        tester = _ClipTester(np.asarray(garment_verts, np.float64),
-                             garment_tris, tmax=TMAX)
+        gv = np.asarray(garment_verts, np.float64)
+        tester = _ClipTester(gv, garment_tris, tmax=TMAX)
         for name, lo, hi in TORSO_BANDS:
             idx = front_slab(bV, bN, lo, hi)
             if len(idx) < TRACE_MIN_HITS:
                 continue
+            if not garment_reaches(gv, bV, idx):
+                continue          # cannot be hit; do not cast
             med, hits = slab_standoff(tester, bV, bN, idx)
             if not np.isfinite(med):
                 continue
@@ -1065,8 +1109,20 @@ def record_standoff(dst_path, shape_name, garment_verts, garment_tris,
         idx = band_index(body_verts)
         if len(idx) < MIN_HITS:
             return None
-        s = standoff(body_verts, body_normals, garment_verts, garment_tris,
-                     idx)
+        # Cheap gate BEFORE any ray work. This ran the full measurement and
+        # then threw it away for every shape that does not cover the bust.
+        if not garment_reaches(garment_verts, body_verts, idx):
+            return None
+        # SPARSE path. This used the dense `standoff()` -- the formulation that
+        # reached 15 GB measuring several bands on one cuirass -- on every
+        # armed shape. `tests/test_torso_bands.py` asserts the two agree to
+        # 1e-6 on the same index, so the anchor is unmoved.
+        _t = _ClipTester(np.asarray(garment_verts, np.float64),
+                         garment_tris, tmax=TMAX)
+        _O = np.asarray(body_verts, np.float64)[idx]
+        _N = np.asarray(body_normals, np.float64)[idx]
+        _d = _t._cast(_O, _N, *_t._pairs(_O), len(_O))
+        s = _d[np.isfinite(_d)]
         if len(s) < MIN_HITS:
             return None                      # does not cover the bust
         rec = {
