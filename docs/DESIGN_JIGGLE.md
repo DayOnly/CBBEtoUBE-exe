@@ -1,6 +1,9 @@
 # Jiggle: what we know, and why the sliders lie
 
-> The work plan built on these measurements is **[DESIGN_JIGGLE_PLAN.md](DESIGN_JIGGLE_PLAN.md)**.
+> The work plan built on these measurements is `DESIGN_JIGGLE_PLAN.md`, a
+> **local working note that is not in this repository** — gitignored, like
+> `CLIPPING_LOG.md`. It was written here as a link, which resolved only on the
+> author's machine and was dead in every clone; recorded as plain text now.
 
 How armor comes to follow the body's breast/butt/belly physics, what each knob
 actually does, and a proposal to make the numbers mean what they say.

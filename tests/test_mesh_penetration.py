@@ -140,7 +140,7 @@ def test_no_usable_triangles_returns_nothing_covered():
 
 # --- the SOUND metric: ray exposure -------------------------------------------
 #
-# `surface_penetration`'s SIGN is known-bad (METRICS.md: shell has two faces, the
+# `surface_penetration`'s SIGN is known-bad (docs/METRICS.md: shell has two faces, the
 # nearest one decides the sign, so it is arbitrary inside a cup). These cover the
 # replacement, with positive controls -- a metric that reports "no problem" is
 # indistinguishable from one that cannot see the problem.

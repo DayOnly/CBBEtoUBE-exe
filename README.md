@@ -15,6 +15,11 @@ meshes.
 > what to check before converting, how to run it, **how to wire the output into
 > MO2** (the step that most often goes wrong), and how to read a problem when one
 > shows up. This README is the reference for commands, flags and internals.
+>
+> **Working on the converter?** [docs/](docs/README.md) holds the design and
+> measurement references — [DESIGN.md](docs/DESIGN.md) for why each pass exists,
+> [METRICS.md](docs/METRICS.md) for which measurements can be trusted and which
+> were wrong.
 
 ## What it does
 
@@ -123,7 +128,7 @@ skinned shapes is baked into the verts):
 
   > Three separate passes graft jiggle weight, each scaled differently, and their
   > sliders do **not** state the ratio they deliver — the same nominal `1.0` yields
-  > 0.35 on the chest and 1.00 on the butt. **[DESIGN_JIGGLE.md](DESIGN_JIGGLE.md)**
+  > 0.35 on the chest and 1.00 on the butt. **[docs/DESIGN_JIGGLE.md](docs/DESIGN_JIGGLE.md)**
   > documents all of it with measured numbers, and proposes a single "follow ratio"
   > so a slider means what it says.
 - **Source-standoff conform** — a piece that hugged the 3BA body is reeled

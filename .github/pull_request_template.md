@@ -17,7 +17,7 @@
 
 - [ ] `src/version.py` bumped
 - [ ] `dist/CBBEtoUBE/` rebuilt (`pyinstaller CBBEtoUBE.spec` or `scripts\build_exe.ps1`)
-- [ ] README / DESIGN.md updated if behaviour or dependencies changed
+- [ ] README / docs/DESIGN.md updated if behaviour or dependencies changed
 
 ## Notes for review
 

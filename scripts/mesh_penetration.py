@@ -18,7 +18,7 @@
 
 READ THIS BEFORE USING `surface_penetration`. Deciding inside/outside from the NEAREST
 TRIANGLE'S NORMAL IS A KNOWN-BAD METRIC in this project and its numbers are void --
-`METRICS.md`, "Signed distance via the nearest triangle's normal - REPLACED". A garment
+`docs/METRICS.md`, "Signed distance via the nearest triangle's normal - REPLACED". A garment
 is a SHELL with an outer and an inner face; a body vertex sitting safely inside the cup
 is near BOTH, so whichever face happens to be nearest decides the sign and the sign is
 essentially arbitrary there. It once reported 135/1110 nipple verts outside a cuirass
@@ -32,7 +32,7 @@ shell is.
 **Use `ray_exposure`.** March each body vertex along its own outward normal; if no
 garment triangle blocks it, that vertex is visible from outside -- which is both
 unambiguous by construction and the thing a player actually sees. That is the metric
-`METRICS.md` lists as sound, with positive controls.
+`docs/METRICS.md` lists as sound, with positive controls.
 
 `surface_penetration` is kept ONLY for the unsigned DISTANCE it returns (how far the
 garment surface is), which is sound. Do not use its sign.
@@ -371,7 +371,7 @@ def noise_floor(origins, normals, verts, tris, *, amps=(0.005, 0.01, 0.02),
 # It replaced signed-distance (`surface_penetration`, still here because its
 # DISTANCE is sound and the census uses it -- only its SIGN was bad) and the ray
 # cone (`containment`, DELETED 2026-07-29 along with `poke_report`; see
-# METRICS.md for the census that discredited it). Both scored the CLEAN armour
+# docs/METRICS.md for the census that discredited it). Both scored the CLEAN armour
 # WORSE than the clipping one at every depth threshold, because neither can
 # separate "skin is outside the garment SURFACE" from "skin is outside the
 # garment's COVERAGE" -- so a small revealing garment scores terribly by

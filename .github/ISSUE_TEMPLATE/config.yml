@@ -22,5 +22,5 @@ contact_links:
   - name: How the refit works
     url: https://github.com/DayOnly/CBBEtoUBE-exe/blob/main/DESIGN.md
     about: >-
-      Why a piece was fitted, skipped, or body-swapped the way it was. DESIGN.md
+      Why a piece was fitted, skipped, or body-swapped the way it was. docs/DESIGN.md
       documents the clearance passes, physics preservation, and delivery model.

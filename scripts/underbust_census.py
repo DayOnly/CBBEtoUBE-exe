@@ -59,7 +59,7 @@ over the under-curve subset. Dilution is the whole story.
 
 CONTROLS RUN EVERY TIME, and the negative one is not optional -- the ray-sense
 inversion that produced "99.6% surrounded everywhere" is invisible to a positive
-control. See METRICS.md.
+control. See docs/METRICS.md.
 """
 from __future__ import annotations
 

@@ -229,7 +229,7 @@ anti-correlated with the game. Consolidating passes against a broken criterion w
 have produced confident, wrong results. What changed here:
 
 **Step 1 (golden harness) — built, and now joined by a runtime check.** The chain
-contract (`DESIGN.md`) measures every armed shape before and after the pass chain and
+contract (`../DESIGN.md`) measures every armed shape before and after the pass chain and
 rolls back a net regression. It is NOT a substitute for the golden set: it sees only
 bust-region clipping, it cannot see a 0.2u shape change that does not expose skin, and
 it runs on the pack rather than on a fixed comparable set. Both are wanted.
@@ -260,6 +260,6 @@ originally written here.
 
 **Step 2 (swallowed exceptions) got worse too:** 187 `except Exception: pass` sites in
 `src/`, 119 of them in `nif_convert.py`. 1.2 added one of the bad kind — the
-`ChainGuard` call site — recorded as a known gap in `DESIGN.md`.
+`ChainGuard` call site — recorded as a known gap in `../DESIGN.md`.
 
 **Step 3 and Step 6 are untouched.**

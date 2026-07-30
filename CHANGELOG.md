@@ -75,7 +75,7 @@ job. `CBBE2UBE_GROOVE_ONESIDED=0` restores the old behaviour for comparison.
   Both were anti-correlated with in-game ground truth and had zero callers and
   zero tests. `surface_penetration` stays: only its *sign* was bad, and the
   census uses its distance. The reasoning that discredited them is preserved in
-  `METRICS.md`, and the four metric requirements written for `poke_report`
+  `docs/METRICS.md`, and the four metric requirements written for `poke_report`
   moved onto `clipping_report`, which actually satisfies them.
 - **Added** an orientation gate that removes a false positive under morph
   (an inward ray striking the far side of the garment past a cut rim) without

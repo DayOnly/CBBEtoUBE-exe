@@ -142,7 +142,7 @@ def row_for(path: Path, root: Path, contact: float = 5.0,
     bn = np.asarray(_body_normals_or_compute(body), dtype=np.float64)
     bbones = set(body.bone_names or [])
 
-    # DISTANCE only. `surface_penetration`'s SIGN is known-bad (METRICS.md: a garment
+    # DISTANCE only. `surface_penetration`'s SIGN is known-bad (docs/METRICS.md: a garment
     # is a shell with two faces; a vertex inside the cup is near both, so the nearest
     # one decides the sign arbitrarily). The unsigned distance it returns IS sound.
     _signed, dist, _cov, agree = surface_penetration(

@@ -74,7 +74,7 @@ Two things that are easy to get wrong here:
   clone (`git config core.autocrlf false`) so a tool cannot silently renormalize
   a file and bury the real diff.
 - **Behaviour changes need a test.** Almost every fit-correction pass in
-  `DESIGN.md` exists because of a specific in-game failure, and the test suite is
+  `docs/DESIGN.md` exists because of a specific in-game failure, and the test suite is
   what stops the next change from reintroducing it.
 
 If your change alters how armor is fitted, say in the PR **what you verified in
@@ -95,7 +95,7 @@ and verify the converter while working on it.
 | `verify_zero_weight_bones.py` | Bones left in a shape with no weight — the `#zeroweight-bone-desync` equip-CTD class. |
 | `verify_weight_invariant.py` | Rows that do not sum to 1.0. |
 
-**Measure before concluding.** `METRICS.md` records which measurement methods proved
+**Measure before concluding.** `docs/METRICS.md` records which measurement methods proved
 sound and which gave wrong answers, with the controls used to tell them apart. Read it
 before trusting a number from any of the above — two metrics in it looked fine and were
 not, and each produced a wrong conclusion that shipped into the notes before it was

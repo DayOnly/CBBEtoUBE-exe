@@ -5533,7 +5533,7 @@ _CONFORM_SKIP_NAMES = _CONFORM_SKIP_STRUCTURAL + _CONFORM_SKIP_DRAPING
 # The reasoning the flag rests on: a piece that ships an XML has its physics AUTHORED
 # and declared, and the existing structural gates read that same file. A shape absent
 # from it is not simulated, so the name adds nothing there. The name is only the sole
-# guard for the pieces with no XML at all -- which is exactly the class DESIGN.md
+# guard for the pieces with no XML at all -- which is exactly the class docs/DESIGN.md
 # describes and C1 crashed on.
 #
 # Measured over 400 name-excluded shapes: 239 are already caught by a structural gate
