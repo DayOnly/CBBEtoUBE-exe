@@ -44,11 +44,17 @@ remainder of the ~2 hours and have not been measured yet.
 
 ## Ruled out
 
-### Telemetry is not the cause — but it was measured late
-The fit measurements (chain contract, standoff, torso bands) were the first
-suspect, having been added the same day. A chain measurement is ~120 ms and the
-gate below removes most of them, but against a **21.7 s** mean per file the
-whole measurement stack cannot be the two-hour problem.
+### ~~Telemetry is not the cause~~ — WRONG, overturned by the first profile
+The fit measurements were the first suspect, and this section originally
+dismissed them: a chain measurement is ~120 ms against a 21.7 s mean per file,
+so "the whole measurement stack cannot be the two-hour problem".
+
+**That reasoning was wrong.** Measurement cost scales with mesh size, and the
+mean hides the files that matter. Profiling one expensive conversion (70k verts,
+11 shapes, 176.3 s) put **fit_metrics at roughly half the wall clock**:
+`_rim_distance` 25%, `_cast` 13%, `_pairs` 8.5%, plus the `norm`/`cross`/`reduce`
+they call. Reasoning from an average about a distribution with a 15x tail is
+the same mistake as judging the torso by the bust band.
 
 Still worth having fixed, and both shipped in 1.2.2b:
 - 63% of armed shapes were measuring nothing at all — arming tested the *body*
@@ -114,4 +120,17 @@ has not been profiled.
 
 | date | change | before | after | measured how |
 |---|---|---|---|---|
-| — | *(baseline above)* | — | 103.8 min | run log timing notes |
+| — | *(baseline)* | — | 103.8 min pack | run log timing notes |
+| 07-30 | restrict `_rim_distance` + reach KD query to the push region | **176.3 s** | **108.8 s** | cProfile, same file, same settings |
+
+**One file, −38%.** `minimum_push` computed rim distance and nearest-garment
+reach for **every** body vert (~29k), then masked the result down to the push
+region (~5k) — so ~82% of that work was discarded. Both are now computed on the
+region's verts only. `_rim_distance` fell 44.01 s → 6.08 s (25% → 5.6% of wall).
+
+Exactness was established *before* timing: 6 randomised trials assert the
+restricted computation selects an identical vert set. A speedup that changes the
+selection would be a behaviour change wearing a performance costume.
+
+Remaining on that file: `_cast` 17.8%, `_pairs` 11.8%, `generate_armor_tri`
+8.0%. The ray-cast pair still dominates and is the next target.

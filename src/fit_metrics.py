@@ -562,9 +562,16 @@ def minimum_push(garment_verts, garment_tris, garment_normals,
     if int(region.sum()) < PUSH_MIN_REGION:
         stats["skipped"] = "region too small"
         return gV, stats
-    rim_d = _rim_distance(bV, gV, _rim_edges(gT))
-    reach, _nn = cKDTree(gV).query(bV, k=1)
-    region &= (rim_d > PUSH_RIM_MARGIN) & (reach <= PUSH_MAX_REACH)
+    # Rim distance and reach are only ever read through `region`, so compute
+    # them for the region's verts instead of the whole body. Identical
+    # arithmetic on ~5.6x fewer points: `_rim_distance` is O(verts x rim edges)
+    # and was the single most expensive function in a profiled conversion --
+    # 44.0s of a 176.3s file, 25% of the whole thing -- almost all of it spent
+    # on body verts that the z-band had already excluded.
+    _r = np.flatnonzero(region)
+    rim_d = _rim_distance(bV[_r], gV, _rim_edges(gT))
+    reach, _nn = cKDTree(gV).query(bV[_r], k=1)
+    region[_r] &= (rim_d > PUSH_RIM_MARGIN) & (reach <= PUSH_MAX_REACH)
     idx = np.flatnonzero(region)
     if len(idx) < PUSH_MIN_REGION:
         stats["skipped"] = "no judgeable skin after rim/reach gating"
