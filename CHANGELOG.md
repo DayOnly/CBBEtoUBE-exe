@@ -288,3 +288,61 @@ anchor depends on its exact definition. The bands use the sparse `_ClipTester`
 path rather than `standoff()`, whose dense formulation reached 15 GB measuring
 several bands on one cuirass; a test asserts the two agree to 1e-6 on the same
 index, so the mixed implementation is verified rather than assumed.
+
+## 1.2.2b — unreleased
+
+Follow-up to 1.2.2, driven by defects the 1.2.2 run itself surfaced.
+
+### Fixed — a dense garment raised MemoryError mid-run
+
+```
+MemoryError: Unable to allocate 825 MiB for shape (36,061,621, 3)
+```
+
+`_pairs` emits one row per (ray, triangle) candidate, so cost scales with
+rays × candidates. The sparse formulation is far cheaper than the dense one it
+replaced — which is why it was introduced — but it was never *bounded*, and it
+was described as "memory-safe" anyway.
+
+It failed **twice, and only once visibly**: `record_torso_bands` recorded a
+`standoff_band_error` because it is built to record its own failures, while
+`ChainGuard.exposed()` swallowed the identical error into a `-1` that surfaced
+as the single word `unmeasurable`. Same armour, same cause.
+
+Fixed once in the shared cast (`cast_chunked`, chunked `clipping()`), used by
+the standoff record, the torso bands, the pass trace and the chain guard. Rays
+are independent, so a chunk boundary cannot change a result — asserted across
+chunk sizes that do not divide the ray count evenly, and against the dense
+reference so the calibrated anchor cannot drift. `CBBE2UBE_RAY_CHUNK` tunes it.
+
+### Performance — stop measuring garments that cannot be hit
+
+`ChainGuard` armed on the **body** region size, which is a constant (the UBE
+band is 5249 verts against a floor of 50), so *every* phase-2 shape armed. Of
+4382 armed shapes in the previous run, only 1605 covered the bust band —
+**2777 (63%) measured and found nothing**, and `record_standoff` ran the full
+measurement before discarding it, on the dense path.
+
+`garment_reaches()` gates all three call sites on bounding-box overlap, which is
+conservative by construction: a garment's box contains all its triangles, so a
+box that does not overlap cannot hold one that does. It can only admit work,
+never skip a real hit, and it fails **open**. The risk is one-sided, so the test
+asserts directly that whenever the gate says skip, the ray cast finds zero hits.
+
+`record_standoff` also moved off the dense `standoff()` onto the sparse path,
+with a test pinning that the recorded median still matches the dense result on
+the calibrated mask.
+
+> **Not yet measured end-to-end.** These remove work; what fraction of
+> conversion time that is has not been profiled. No speedup is claimed.
+
+### Added — `scripts/audit_sink.py`
+
+One reader for `standoff_audit.jsonl`. Nothing in the repo read the frame, chain
+or band records, so every analysis was hand-written — more than fifty times in a
+day, each re-deciding which field to trust. It refuses to repeat four specific
+mistakes: it reads `shipped` and never `final`; it reports measurement
+**failures first** rather than burying them under clean averages; it excludes
+first-person viewmodels from standoff *and states how many*; and it prints
+percentiles rather than inventing ceilings for bands that have no calibrated
+anchor.
