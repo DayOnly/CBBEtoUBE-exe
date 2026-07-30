@@ -72,6 +72,13 @@ BAND_Y_MIN = 2.0
 TMAX = 12.0            # deliberately past the clip test's 5u: a ballooned
                        # garment sits further out than that, and truncating
                        # there would hide exactly what this is for
+# Ray-cast tuning. All three are EXACT optimisations -- they change how fast a
+# measurement runs, never its verdict -- so they are env-toggleable only so a
+# suspected regression can be bisected against the slow path.
+TIER_PCTS = (50.0, 90.0, 99.0)   # triangle-radius buckets for the ball query
+CAST_CULL = os.environ.get("CBBE2UBE_NO_CAST_CULL") != "1"
+CAST_CULL_MIN = 4096   # below this the cull costs more than the test it saves
+
 MIN_HITS = 40          # below this the garment does not cover the bust and
                        # the distribution is a handful of stray rays
 CEIL_MEDIAN = float(os.environ.get("CBBE2UBE_STANDOFF_CEIL_MEDIAN", "1.60"))
@@ -159,6 +166,32 @@ class _ClipTester:
         self.ctree = cKDTree(self.cent)
         self.reach = float(self.tmax + self.trad.max())
         self._fn = None
+        self._tiers = None
+
+    def tiers(self):
+        """Triangles bucketed by radius, each with its own search ball.
+
+        A single large triangle sets `reach` for the WHOLE mesh (6.2u of radius
+        on top of a 5u ray here, so every ray searched 11.2u to find candidates
+        that are then thrown away). Bucketing by radius lets the small
+        triangles -- the overwhelming majority -- be queried at a much tighter
+        radius. Exact: the union of the buckets is every triangle, and each is
+        still filtered by its own radius afterwards.
+        """
+        if self._tiers is None:
+            tiers = []
+            if len(self.trad):
+                edges = np.unique(np.concatenate(
+                    ([0.0], np.percentile(self.trad, TIER_PCTS), [np.inf])))
+                lo = -np.inf
+                for hi in edges[1:]:
+                    sel = np.flatnonzero((self.trad > lo) & (self.trad <= hi))
+                    lo = hi
+                    if len(sel):
+                        tiers.append((sel, cKDTree(self.cent[sel]),
+                                      float(self.tmax + self.trad[sel].max())))
+            self._tiers = tiers
+        return self._tiers
 
     def face_normals(self):
         if self._fn is None:
@@ -169,16 +202,34 @@ class _ClipTester:
         return self._fn
 
     def _pairs(self, O):
-        balls = self.ctree.query_ball_point(O, self.reach)
-        cnt = np.fromiter((len(b) for b in balls), np.int64, len(balls))
-        if not cnt.sum():
+        """Candidate (ray, triangle) pairs. Was 61% of a measurement.
+
+        `query_ball_point` hands back a list of Python lists; turning 5249 of
+        them into index arrays cost more than the ray casting itself.
+        `sparse_distance_matrix(output_type='ndarray')` does the same search
+        entirely in C and returns the centre distance we were recomputing with
+        a separate norm over 676k pairs. Measured 4.0x, and combined with the
+        radius tiers 7.0x, with a bit-identical pair set both times.
+        """
+        O = np.asarray(O, np.float64)
+        if not len(O) or not len(self.gT):
             return np.empty(0, np.int64), np.empty(0, np.int64)
-        ray_i = np.repeat(np.arange(len(O), dtype=np.int64), cnt)
-        tri_i = np.concatenate([np.asarray(b, np.int64)
-                                for b in balls if len(b)])
-        d = np.linalg.norm(self.cent[tri_i] - O[ray_i], axis=1)
-        keep = d <= self.tmax + self.trad[tri_i]
-        return ray_i[keep], tri_i[keep]
+        otree = cKDTree(O)
+        ri, ti = [], []
+        for sel, ktree, reach in self.tiers():
+            m = otree.sparse_distance_matrix(ktree, reach,
+                                             output_type="ndarray")
+            if not len(m):
+                continue
+            a = m["i"].astype(np.int64)
+            b = sel[m["j"].astype(np.int64)]
+            keep = m["v"] <= self.tmax + self.trad[b]
+            if keep.any():
+                ri.append(a[keep])
+                ti.append(b[keep])
+        if not ri:
+            return np.empty(0, np.int64), np.empty(0, np.int64)
+        return np.concatenate(ri), np.concatenate(ti)
 
     def _cast(self, O, D, ray_i, tri_i, n_rays, want_tri=False):
         out = np.full(n_rays, np.inf)
@@ -186,6 +237,29 @@ class _ClipTester:
         if not len(ray_i):
             return (out, who) if want_tri else out
         V, T = self.gV, self.gT
+        # RAY-LINE CULL. A ray along unit D can only hit a triangle whose
+        # centroid lies within that triangle's own radius of the ray LINE, so
+        # one cross product rejects what the full intersection test would spend
+        # far more to reject. The ball query is centred on the ray ORIGIN and so
+        # keeps everything in a sphere; most of that sphere is nowhere near the
+        # ray. Measured: 4.0% of pairs survive, and _cast runs 2.0x faster with
+        # bit-identical hits. Conservative -- it can only drop pairs that could
+        # not have intersected.
+        if CAST_CULL and len(ray_i) > CAST_CULL_MIN:
+            d_r = D[ray_i]
+            w = self.cent[tri_i] - O[ray_i]
+            # |w x d| / |d| is the distance to the ray line. Dividing rather
+            # than assuming |d| == 1 on purpose: every caller today passes unit
+            # normals, but an unnormalised direction would silently shrink the
+            # cull radius and drop real hits -- and a MISSED hit reads as "no
+            # clipping", which no downstream number could distinguish from a
+            # garment that genuinely does not clip.
+            nd = np.linalg.norm(d_r, axis=1)
+            perp = np.linalg.norm(np.cross(w, d_r), axis=1)
+            k = perp <= self.trad[tri_i] * np.where(nd > 1e-12, nd, 1.0) + 1e-9
+            ray_i, tri_i = ray_i[k], tri_i[k]
+            if not len(ray_i):
+                return (out, who) if want_tri else out
         a = V[T[tri_i, 0]]
         e1 = V[T[tri_i, 1]] - a
         e2 = V[T[tri_i, 2]] - a
@@ -563,23 +637,23 @@ class PassTracer:
     """MEASURE every pass, REVERT nothing. Default OFF.
 
     Separates measurement from enforcement, deliberately. Guarding all twelve
-    corrective passes is not affordable -- measured, not guessed: one region
-    measurement is 1.004s (5249 body verts x 3480 tris), so before+after on
-    twelve passes is 24s per shape, ~96s for a four-shape piece, and 102 hours
-    over 3800 output NIFs. Sharing measurements (pass N's "after" IS pass N+1's
-    "before") brings it to 13 per shape, still ~55 hours pack-wide.
+    corrective passes is not affordable -- measured, not guessed. Even after
+    the ray-cast work took a region measurement from 1.004s to ~0.12s, guarding
+    every pass is 11 measurements per shape against the chain contract's 2.
 
-    Reverting broadly is also WRONG, not merely slow. The criterion here is
-    bust-region clipping, and several passes optimise for things it cannot see
-    (groove smoothing fixes crinkles, seam welding fixes gaps, inflation fixes
-    z-fighting). Worse, `conform_to_source_standoff` pulls IN by design, which
-    can raise clipping until the anti-poke pushes back out -- reverting it would
-    systematically bias every garment looser, which is the over-inflation the
-    user reported twice.
+    Reverting broadly is also WRONG, not merely slow, and the data from this
+    tracer is what established that. The criterion is bust-region clipping, and
+    several passes optimise for things it cannot see (groove smoothing fixes
+    crinkles, seam welding fixes gaps, inflation fixes z-fighting). Worse,
+    `conform_to_source_standoff` pulls IN by design: over 48 traced shapes it
+    was the ONLY pass that ever regressed fit, all 5 of its regressions were
+    recovered downstream, and 0 of 48 shapes ended worse than they started.
+    Reverting it would have blocked a correct pass and biased every garment
+    looser -- the over-inflation the user reported twice.
 
-    So: enforce only on terminal passes (see FitGuard), and use this to LEARN,
-    on a bounded sample, which passes ever regress fit and by how much. Nothing
-    is reverted here, so there is no correctness risk in running it.
+    So: enforce at the CHAIN level (see ChainGuard), and use this to LEARN, on a
+    bounded sample, which passes ever regress fit and by how much. Nothing is
+    reverted here, so there is no correctness risk in running it.
 
     Each `mark()` measures once and reports the delta against the previous mark
     -- that is the shared-measurement scheme, so N passes cost N+1 measurements.
@@ -634,37 +708,61 @@ class PassTracer:
                                "shape": str(shape_name), **r})
 
 
-class FitGuard:
-    """DIAGNOSE -> TREAT -> VERIFY for a single shape: reject any pass whose
-    output measures worse than its input.
+CHAIN_GUARD = os.environ.get("CBBE2UBE_NO_CHAIN_GUARD") != "1"
+CHAIN_TOL = int(os.environ.get("CBBE2UBE_CHAIN_TOL", "0"))
 
-    WHY. The chain is speculative. Twelve passes key off proximity-to-body
-    against a constant, so they move leather whether or not skin is exposed, and
-    nothing between them measures the result -- a pass that makes fit WORSE is
-    invisible unless it happens to run last. That is how an over-inflated mesh
-    reached the user twice, and how a 40u frame error corrupted twelve passes in
-    silence.
 
-    Each guarded pass now states its own outcome: kept, or reverted because it
-    regressed. The count of clipping verts is the criterion (the validated test,
-    orientation-gated), not a proxy.
+class ChainGuard:
+    """DIAGNOSE -> TREAT -> VERIFY at the level where the criterion is valid.
 
-    COST CONTROL, deliberately conservative: the guard builds its region ONCE
-    per shape and refuses to arm at all unless the shape covers enough of the
-    measured band to judge. On a piece the metric cannot see, guarding would
-    spend ray casts to learn nothing -- exactly the "measured nothing" failure
-    in a new costume. `armed` says whether it is doing anything.
+    The obvious contract -- reject any pass that measures worse than its input
+    -- is WRONG here, and the trace says so rather than a hunch. Over 48 shapes
+    exactly one pass ever regressed bust fit (`conform`, 5 times), every one of
+    those 5 was fully recovered later in the chain, and 0 of 48 shapes ended
+    worse than they started. `conform_to_source_standoff` pulls IN by design and
+    the passes after it push back out; reverting it would have blocked a
+    correct pass five times and biased every garment looser -- which is the
+    over-inflation that reached the user twice. Intermediate regressions are
+    part of how the chain works.
+
+    So the contract is applied to the CHAIN, not to each pass:
+
+      begin(v)        one measurement; what was wrong before anything ran
+      checkpoint(l,v) a snapshot -- an array copy, NO measurement, ~free
+      finish(v)       one measurement; if the chain as a whole made this shape
+                      worse, walk the snapshots back and ship the best one
+
+    Two measurements per armed shape in the normal case, against eleven for
+    per-pass guarding. Snapshots only cost measurements when the verify FAILS,
+    which on the traced sample was never -- the price is paid on the shapes
+    that are actually broken.
+
+    What this deliberately does NOT do is skip passes because the entry
+    measurement looks clean. Bind-pose clipping is blind to animation: "at rest"
+    in game is an animated pose, and the anti-poke exists for morphs and motion
+    this metric cannot see. Gating passes on a bind-pose number would trade a
+    measurable defect for an unmeasurable one.
     """
 
-    def __init__(self, body_verts, body_normals, garment_tris,
-                 min_region: int = PUSH_MIN_REGION):
+    def __init__(self, body_verts, body_normals, garment_tris, *,
+                 enabled=None, min_region: int = PUSH_MIN_REGION,
+                 max_checkpoints: int = 16):
+        self.enabled = CHAIN_GUARD if enabled is None else bool(enabled)
         self.armed = False
-        self.log = []
+        self.entry = -1
+        self.final = -1
+        self.outcome = "unarmed"
+        self.rolled_back_to = None
+        self.extra_measurements = 0
+        self._snaps = []
+        self._max = int(max_checkpoints)
+        if not self.enabled:
+            return
         try:
             self.bV = np.asarray(body_verts, np.float64)
-            self.bN = np.asarray(body_normals, np.float64)
-            self.bN = self.bN / np.clip(
-                np.linalg.norm(self.bN, axis=1, keepdims=True), 1e-9, None)
+            bn = np.asarray(body_normals, np.float64)
+            self.bN = bn / np.clip(np.linalg.norm(bn, axis=1, keepdims=True),
+                                   1e-9, None)
             self.gT = np.asarray(garment_tris, np.int64).reshape(-1, 3)
             if len(self.gT) == 0 or len(self.bV) < 3:
                 return
@@ -676,8 +774,7 @@ class FitGuard:
             self.armed = False
 
     def exposed(self, verts) -> int:
-        """Clipping vert count for `verts`. -1 when it cannot be measured."""
-        if not self.armed:
+        if not self.armed or verts is None:
             return -1
         try:
             clip, _ = _ClipTester(np.asarray(verts, np.float64),
@@ -686,33 +783,77 @@ class FitGuard:
         except Exception:
             return -1
 
-    def guard(self, label, before, after, tol: int = 0):
-        """Return (verts, outcome). Reverts to `before` if `after` is worse.
+    def begin(self, verts, known: "int | None" = None) -> int:
+        """Entry diagnosis. `known` reuses a count already measured this shape
+        rather than paying for it twice."""
+        if not self.armed:
+            return -1
+        self.entry = int(known) if known is not None else self.exposed(verts)
+        if self.entry >= 0:
+            self.checkpoint("entry", verts, count=self.entry)
+        return self.entry
 
-        `tol` allows a pass a small budget when it trades measured fit for
-        something this metric cannot see (a seam weld, a z-fight separation).
-        Default 0: no pass gets to make fit worse silently.
-        """
-        if not self.armed or after is None:
-            return after, "unguarded"
-        b = self.exposed(before)
-        a = self.exposed(after)
-        if b < 0 or a < 0:
-            return after, "unmeasurable"
-        if a > b + tol:
-            self.log.append((label, b, a, "REVERTED"))
-            return before, f"reverted ({b}->{a})"
-        self.log.append((label, b, a, "kept"))
-        return after, f"kept ({b}->{a})"
+    def checkpoint(self, label, verts, count: "int | None" = None) -> None:
+        """Remember the geometry after `label`. No measurement -- an array copy
+        is ~microseconds against ~120ms for a measurement, so the chain can
+        afford to remember every pass and measure only if it has to."""
+        if not self.armed or verts is None:
+            return
+        try:
+            v = np.array(verts, dtype=np.float64, copy=True)
+        except Exception:
+            return
+        self._snaps.append((str(label), v, count))
+        if len(self._snaps) > self._max:
+            # keep entry, drop the oldest middle: the useful fallbacks are the
+            # start and the recent ones
+            del self._snaps[1]
+
+    def finish(self, verts):
+        """Verify the finished shape. Returns (verts, outcome)."""
+        if not self.armed or verts is None:
+            self.outcome = "unarmed"
+            return verts, self.outcome
+        self.final = self.exposed(verts)
+        if self.entry < 0 or self.final < 0:
+            self.outcome = "unmeasurable"
+            return verts, self.outcome
+        if self.final <= self.entry + CHAIN_TOL:
+            self.outcome = f"ok ({self.entry}->{self.final})"
+            return verts, self.outcome
+        # The chain made this shape worse. Find the best snapshot we have.
+        best_v, best_n, best_l = verts, self.final, "final"
+        for label, v, count in reversed(self._snaps):
+            if count is None:
+                count = self.exposed(v)
+                self.extra_measurements += 1
+            if count < 0:
+                continue
+            if count < best_n:
+                best_v, best_n, best_l = v, count, label
+            if best_n <= self.entry:
+                break            # good enough: no worse than we started
+        if best_l == "final":
+            self.outcome = f"REGRESSED unrecoverable ({self.entry}->{self.final})"
+            return verts, self.outcome
+        self.rolled_back_to = best_l
+        self.outcome = (f"ROLLED BACK to {best_l} "
+                        f"({self.entry}->{self.final}, kept {best_n})")
+        return best_v, self.outcome
+
+    def release(self) -> None:
+        """Drop snapshots. A torso can be tens of thousands of verts and the
+        converter holds several shapes at once."""
+        self._snaps = []
 
     def record(self, dst_path, shape_name) -> None:
-        if not self.log or not _enabled():
+        if not self.armed or not _enabled():
             return
-        for label, b, a, verdict in self.log:
-            _append(dst_path, {"kind": "pass", "nif": str(Path(dst_path).name),
-                               "shape": str(shape_name), "pass": label,
-                               "exposed_before": b, "exposed_after": a,
-                               "verdict": verdict})
+        _append(dst_path, {"kind": "chain", "nif": str(Path(dst_path).name),
+                           "shape": str(shape_name), "entry": self.entry,
+                           "final": self.final, "outcome": self.outcome,
+                           "rolled_back_to": self.rolled_back_to,
+                           "extra_measurements": self.extra_measurements})
 
 
 def record_standoff(dst_path, shape_name, garment_verts, garment_tris,

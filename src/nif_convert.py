@@ -15061,28 +15061,57 @@ def convert_nif_phase2(
         # can actually see the shape (enough covered skin in the measured band);
         # on a piece it cannot see, guarding would burn ray casts to learn
         # nothing, which is the "measured nothing" failure wearing a new hat.
-        _fit_guard = None
+        #
+        # CHAIN contract: diagnose here, verify at the end, roll back to the
+        # best checkpoint if the chain AS A WHOLE regressed. Two measurements
+        # per armed shape against eleven for guarding every pass -- and more
+        # correct, because intermediate regressions are legitimate. This
+        # replaced per-pass guards on the anti-poke and the soft-cloth inflate:
+        # over 48 traced shapes neither ever regressed, `conform` was the only
+        # pass that did, all 5 of its regressions were recovered downstream,
+        # and 0 of 48 shapes ended worse than they started. Per-pass reverting
+        # would therefore have blocked a correct pass and biased every garment
+        # looser -- the over-inflation reported twice from the game.
         _tracer = None
+        _chain = None
         if body_verts_for_p2 is not None and body_norms_for_p2 is not None:
             try:
                 _gtris = np.asarray(s.tris, dtype=np.int64).reshape(-1, 3)
-                _g = fit_metrics.FitGuard(
+                _c = fit_metrics.ChainGuard(
                     body_verts_for_p2, body_norms_for_p2, _gtris)
-                _fit_guard = _g if _g.armed else None
-                # Diagnostic, default OFF (CBBE2UBE_PASS_TRACE=1). Measures after
-                # EVERY pass and reverts NOTHING: guarding all twelve is
-                # unaffordable (measured 1.004s per region measurement -> ~55h
-                # pack-wide even with shared measurements) and reverting broadly
-                # is wrong, because this metric cannot see z-fighting, crinkles
-                # or seams and `conform_to_source_standoff` pulls IN by design.
+                _chain = _c if _c.armed else None
+                # Diagnostic, default OFF (CBBE2UBE_PASS_TRACE=1). Measures
+                # after EVERY pass and reverts NOTHING -- this is how a pass
+                # earns a guard, rather than being guarded on suspicion. It is
+                # what identified `groove_smooth` regressing 13 of 42 shapes,
+                # and what showed that reverting per pass was the wrong
+                # contract.
                 _t = fit_metrics.PassTracer(
                     body_verts_for_p2, body_norms_for_p2, _gtris)
                 _tracer = _t if _t.armed else None
                 if _tracer is not None:
                     _tracer.mark("entry", _sv_body)
+                if _chain is not None:
+                    # Share the tracer's entry measurement when it already ran,
+                    # so turning the trace on does not double the cost.
+                    _chain.begin(_sv_body, known=(
+                        _tracer._prev_count if _tracer is not None else None))
             except Exception:
-                _fit_guard = None
                 _tracer = None
+                _chain = None
+
+        def _stage(label, v):
+            """A pass boundary: trace it (opt-in) and snapshot it (always).
+
+            The snapshot is an array copy -- microseconds against ~120ms for a
+            measurement -- so the chain can afford to remember every pass and
+            pay for measurements only if the final verify fails.
+            """
+            if _tracer is not None:
+                _tracer.mark(label, v)
+            if _chain is not None:
+                _chain.checkpoint(label, v)
+
         if preset_template_verts is not None and preset_user_verts is not None:
             try:
                 override = bake_preset_into_armor(
@@ -15090,8 +15119,7 @@ def convert_nif_phase2(
                     preset_template_verts, preset_user_verts,
                     k=4, close_threshold=5.0,
                 )
-                if _tracer is not None:
-                    _tracer.mark('bake_preset', override)
+                _stage('bake_preset', override)
             except Exception as e:
                 failed.append((f"{s.name}:bake", repr(e)))
                 override = None
@@ -15119,8 +15147,7 @@ def convert_nif_phase2(
                     min_standoff=ARMOR_TO_SKIN_BUFFER,
                     tris=np.asarray(s.tris, dtype=np.int64),
                 )
-                if _tracer is not None:
-                    _tracer.mark('warp', override)
+                _stage('warp', override)
                 # Slot-aware inflation to maintain standoff under body morphs.
                 _infl_mag_p2 = _slot_aware_inflation_magnitude(
                     biped_slots, shape=s)
@@ -15137,8 +15164,7 @@ def convert_nif_phase2(
                             morph_amplitude=_morph_amp_p2,
                             morph_max=ADAPTIVE_CLEARANCE_MORPH_MAX,
                         )
-                        if _tracer is not None:
-                            _tracer.mark('inflate', override)
+                        _stage('inflate', override)
                     except Exception:
                         pass
                 # Standoff-preserving conform: reel over-projected verts back to
@@ -15152,8 +15178,7 @@ def convert_nif_phase2(
                             override, body_verts_for_p2, body_norms_for_p2,
                             ube_body_nipple=body_nipple_for_p2,
                         )
-                        if _tracer is not None:
-                            _tracer.mark('conform', override)
+                        _stage('conform', override)
                     except Exception:
                         pass
                 # Groove-smooth: flatten warp-induced indent grooves on tight
@@ -15164,8 +15189,7 @@ def convert_nif_phase2(
                             _sv_body, np.asarray(override, dtype=np.float64),
                             body_verts_for_p2,
                             ube_body_normals=body_norms_for_p2)
-                        if _tracer is not None:
-                            _tracer.mark('groove_smooth', override)
+                        _stage('groove_smooth', override)
                     except Exception:
                         pass
             except Exception as e:
@@ -15178,8 +15202,7 @@ def convert_nif_phase2(
                 override = snap_armor_outside_body(
                     base_verts, body_verts_for_p2, body_norms_for_p2,
                 )
-                if _tracer is not None:
-                    _tracer.mark('snap_legacy', override)
+                _stage('snap_legacy', override)
             except Exception as e:
                 failed.append((f"{s.name}:snap", repr(e)))
         # FINAL anti-poke: push body-slot armor clear of the injected body.
@@ -15276,7 +15299,6 @@ def convert_nif_phase2(
                     _ap_kw["max_push"] = SMP_ANTIPOKE_MAX_PUSH
                     print(f"    [smp-antipoke] {s.name}: clearance pass enabled "
                           f"(collision-only SMP, max_push={SMP_ANTIPOKE_MAX_PUSH})")
-                _ap_before = base_v
                 override = clear_armor_outside_body(
                     base_v, body_verts_for_p2, body_norms_for_p2,
                     body_nipple=body_nipple_for_p2,
@@ -15286,16 +15308,7 @@ def convert_nif_phase2(
                     tris=(np.asarray(s.tris, dtype=np.int64)
                           if ANTIPOKE_SMOOTH_ENABLED else None),
                     **_ap_kw)
-                if _tracer is not None:
-                    _tracer.mark('antipoke', override)
-                # VERIFY: this is the FINAL anti-poke, so if it leaves the shape
-                # measurably worse than it found it, nothing downstream will
-                # catch that. Reverts on regression rather than shipping it.
-                if _fit_guard is not None:
-                    override, _v = _fit_guard.guard(
-                        "clear_armor_outside_body", _ap_before, override)
-                    if _v.startswith("reverted"):
-                        print(f"    [verify] {s.name}: anti-poke {_v}")
+                _stage('antipoke', override)
                 # Clip-risk telemetry: verts still INSIDE the body after the
                 # final pass (deep verts past max_push, or capped regions) are
                 # the residual in-game clip risk. Greppable in the run log.
@@ -15338,13 +15351,7 @@ def convert_nif_phase2(
                 override = _inflate_cloth_over_bust_butt(
                     base_v, body_verts_for_p2, body_norms_for_p2,
                     tris=np.asarray(s.tris, dtype=np.int64))
-                if _tracer is not None:
-                    _tracer.mark('softcloth', override)
-                if _fit_guard is not None:
-                    override, _v = _fit_guard.guard(
-                        "_inflate_cloth_over_bust_butt", base_v, override)
-                    if _v.startswith("reverted"):
-                        print(f"    [verify] {s.name}: softcloth {_v}")
+                _stage('softcloth', override)
             except Exception as e:
                 failed.append((f"{s.name}:softcloth", repr(e)))
         # Chain-bone cloth stays at SOURCE position so it aligns with its chain
@@ -15352,8 +15359,7 @@ def convert_nif_phase2(
         # hybrid shapes (skirt+chest) keep the chest warped.
         if override is not None:
             override = _physics_chain_nowarp_blend(s, _sv_body, override)
-            if _tracer is not None:
-                _tracer.mark('chain_blend', override)
+            _stage('chain_blend', override)
         # MINIMUM PUSH -- the only pass here driven by MEASURED skin-through-
         # armour rather than by proximity to the body. Every push pass above
         # keys off "how close is this vert to the body" against a constant, so
@@ -15449,8 +15455,7 @@ def convert_nif_phase2(
                     # `_off_p2` and the later `override - _off_p2` would shift the
                     # shape by the offset a second time.
                     override = _mp_v + (_mp_out - _mp_base)
-                    if _tracer is not None:
-                        _tracer.mark("min_push", override)
+                    _stage("min_push", override)
                     print(f"    [min-push] {s.name}: {_mp_st['moved']} vert(s), "
                           f"exposed {_mp_st['exposed_before']} -> "
                           f"{_mp_st['exposed_after']}, max "
@@ -15475,11 +15480,20 @@ def convert_nif_phase2(
         # It early-outs on hit count rather than reporting a wrong number, but
         # the honest fix is to assert where the garment is final. KNOWN GAP:
         # shapes untouched by phase-2 passes produce no record.
-        if _fit_guard is not None:
+        # CHAIN VERIFY. Must run BEFORE the standoff record below, so that
+        # telemetry describes the geometry actually shipped, and before the
+        # offset is subtracted back off, because the snapshots are all in the
+        # same world space the passes worked in.
+        if _chain is not None:
             try:
-                _fit_guard.record(dst_path, s.name)
+                override, _cv = _chain.finish(override)
+                if _chain.rolled_back_to is not None:
+                    print(f"    [chain] {s.name}: {_cv}")
+                _chain.record(dst_path, s.name)
             except Exception:
                 pass
+            finally:
+                _chain.release()      # snapshots of a torso are not small
         if _tracer is not None:
             try:
                 _tracer.flush(dst_path, s.name)
