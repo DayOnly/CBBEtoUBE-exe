@@ -152,7 +152,39 @@ margin; the `MemoryError` (36 M pairs) cannot recur at any of these sizes. No
 change made — the default was already right, and now that is known rather than
 assumed.
 
-### What is left, and why it needs a different kind of fix
+| 07-30 | one shared cast for the standoff record + all four torso bands | 94.4 s | **70.2 s** | cProfile, same file |
+
+**Cumulative on that file: 176.3 s → 70.2 s (−60%).**
+
+`record_standoff` and the four bands run on the same geometry, at the same
+moment, with the same `tmax`, over ray sets that overlap heavily — the
+calibrated bust mask and the `bust` slab cover largely the same skin. That was
+five casts of one garment. `_TorsoCast` casts the union once and slices per
+consumer; rays are independent, so this is arithmetically identical.
+
+Deliberately NOT shared with the chain contract or `minimum_push`: those cast at
+different points in the pass chain, so the geometry genuinely differs and
+reusing a result would be wrong rather than merely stale.
+
+The equivalence tests compare **record-for-record** against the per-consumer
+path, not "looks right". The calibrated bust record carries the 1.15u / 1.52u
+anchor every over-inflation verdict is measured against; a shift there would
+silently break every historical comparison.
+
+### What is left
+
+| | share of a 70.2 s conversion |
+|---|---|
+| `_cast` | 16.3% |
+| `generate_armor_tri` (BODYTRI morphs) | **11.7%** |
+| `_pairs` | 9.8% |
+| `_rim_distance` | 8.1% |
+
+Measurement is now ~34% of the file, down from ~50%. **`generate_armor_tri` has
+risen to second place** — morph generation, a different subsystem, untouched by
+any of this and never profiled.
+
+### Why the remaining cast cost is structural
 
 `_cast` 22.1% and `_pairs` 14.4% still lead, and one full-band cast on that
 garment is **~11 s**: 5,249 rays × 98k triangles → 92 M candidate pairs before

@@ -15546,16 +15546,23 @@ def convert_nif_phase2(
             try:
                 _ov = np.asarray(override, dtype=np.float64)
                 _tr = np.asarray(s.tris, dtype=np.int64).reshape(-1, 3)
+                # ONE cast for both records below. They run on the same
+                # geometry at the same moment with the same tmax, over ray sets
+                # that overlap heavily -- five casts of the same garment where
+                # one will do. Rays are independent, so slicing the union is
+                # arithmetically identical.
+                _cast = fit_metrics._TorsoCast(
+                    _ov, _tr, body_verts_for_p2, body_norms_for_p2)
                 fit_metrics.record_standoff(
                     dst_path, s.name, _ov, _tr,
-                    body_verts_for_p2, body_norms_for_p2)
+                    body_verts_for_p2, body_norms_for_p2, cast=_cast)
                 # Additive: the calibrated bust record above is unchanged. This
                 # covers the REST of the torso -- under-bust through strap line
                 # -- which no pack-wide record has ever measured, and which is
                 # where a gap reported in game turned out to live.
                 fit_metrics.record_torso_bands(
                     dst_path, s.name, _ov, _tr,
-                    body_verts_for_p2, body_norms_for_p2)
+                    body_verts_for_p2, body_norms_for_p2, cast=_cast)
             except Exception:
                 # telemetry must never fail a conversion; the module records
                 # its own exceptions to the sink, so a broken measurement is

@@ -834,7 +834,59 @@ def front_slab(body_verts, body_normals, z_lo, z_hi,
                           & (v[:, 2] >= z_lo) & (v[:, 2] < z_hi))
 
 
-def cast_chunked(tester, O, N, chunk: int = 0):
+class _TorsoCast:
+    """ONE cast over the union of every torso ray set, sliced per consumer.
+
+    `record_standoff` and the four `record_torso_bands` slabs run on the SAME
+    geometry, at the same moment, with the same `tmax`, over ray sets that
+    overlap heavily -- the calibrated bust mask and the `bust` slab cover
+    largely the same skin. That was five separate casts of the same garment.
+
+    Rays are independent, so casting the union once and slicing per consumer is
+    arithmetically identical; `tests/test_torso_dedupe.py` asserts that against
+    the per-consumer path rather than assuming it.
+
+    Not shared with the chain contract or `minimum_push`: those cast at
+    DIFFERENT points in the pass chain, so the geometry genuinely differs and
+    reusing a result would be wrong, not merely stale.
+    """
+
+    __slots__ = ("all", "ok", "t")
+
+    def __init__(self, gV, gT, bV, bN):
+        self.ok = False
+        self.all = np.empty(0, np.int64)
+        self.t = None
+        try:
+            sets = [band_index(bV)]
+            for _n, lo, hi in TORSO_BANDS:
+                sets.append(front_slab(bV, bN, lo, hi))
+            sets = [s for s in sets if len(s)]
+            if not sets:
+                return
+            self.all = np.unique(np.concatenate(sets))
+            if not garment_reaches(gV, bV, self.all):
+                return
+            tester = _ClipTester(np.asarray(gV, np.float64), gT, tmax=TMAX)
+            self.t = cast_chunked(tester, bV[self.all], bN[self.all],
+                                  finite_only=False)
+            self.ok = True
+        except Exception:
+            self.ok = False
+
+    def hits(self, idx):
+        """Finite outward distances for the given BODY-vert indices."""
+        if not self.ok or idx is None or not len(idx):
+            return np.empty(0)
+        loc = np.searchsorted(self.all, np.asarray(idx))
+        loc = loc[(loc >= 0) & (loc < len(self.all))]
+        if not len(loc):
+            return np.empty(0)
+        v = self.t[loc]
+        return v[np.isfinite(v)]
+
+
+def cast_chunked(tester, O, N, chunk: int = 0, finite_only: bool = True):
     """Outward distances for rays `O` along `N`, in bounded-memory chunks.
 
     Returns only the FINITE hits, like `standoff()`. Rays are independent, so
@@ -852,7 +904,7 @@ def cast_chunked(tester, O, N, chunk: int = 0):
     for i in range(0, len(O), n):
         o, d = O[i:i + n], N[i:i + n]
         t = tester._cast(o, d, *tester._pairs(o), len(o))
-        out.append(t[np.isfinite(t)])
+        out.append(t[np.isfinite(t)] if finite_only else t)
     return np.concatenate(out) if out else np.empty(0)
 
 
@@ -1109,7 +1161,7 @@ TORSO_BANDS = (("underbust", 78.0, 90.0), ("bust", 90.0, 102.0),
 
 
 def record_torso_bands(dst_path, shape_name, garment_verts, garment_tris,
-                       body_verts, body_normals) -> list:
+                       body_verts, body_normals, cast=None) -> list:
     """Standoff per torso band. Additive: the calibrated bust record is
     unchanged and still written by `record_standoff`.
 
@@ -1128,19 +1180,19 @@ def record_torso_bands(dst_path, shape_name, garment_verts, garment_tris,
         bV = np.asarray(body_verts, np.float64)
         bN = np.asarray(body_normals, np.float64)
         gv = np.asarray(garment_verts, np.float64)
-        tester = _ClipTester(gv, garment_tris, tmax=TMAX)
+        tester = None if cast is not None else _ClipTester(
+            gv, garment_tris, tmax=TMAX)
         for name, lo, hi in TORSO_BANDS:
             idx = front_slab(bV, bN, lo, hi)
             if len(idx) < TRACE_MIN_HITS:
                 continue
             if not garment_reaches(gv, bV, idx):
                 continue          # cannot be hit; do not cast
-            med, hits = slab_standoff(tester, bV, bN, idx)
-            if not np.isfinite(med):
+            f = (cast.hits(idx) if cast is not None
+                 else cast_chunked(tester, bV[idx], bN[idx]))
+            if len(f) < TRACE_MIN_HITS:
                 continue
-            O, N = bV[idx], bN[idx]
-            t = tester._cast(O, N, *tester._pairs(O), len(O))
-            f = t[np.isfinite(t)]
+            med, hits = float(np.median(f)), int(len(f))
             rec = {"kind": "standoff_band",
                    "nif": str(Path(dst_path).name),
                    "shape": str(shape_name), "band": name,
@@ -1162,7 +1214,8 @@ def record_torso_bands(dst_path, shape_name, garment_verts, garment_tris,
 
 
 def record_standoff(dst_path, shape_name, garment_verts, garment_tris,
-                    body_verts, body_normals) -> "dict | None":
+                    body_verts, body_normals,
+                    cast=None) -> "dict | None":
     """Measure the finished shape and record it. Never raises, never edits.
 
     Returns the record, or None when there was nothing to measure. A failure
@@ -1185,10 +1238,12 @@ def record_standoff(dst_path, shape_name, garment_verts, garment_tris,
         # reached 15 GB measuring several bands on one cuirass -- on every
         # armed shape. `tests/test_torso_bands.py` asserts the two agree to
         # 1e-6 on the same index, so the anchor is unmoved.
-        _t = _ClipTester(np.asarray(garment_verts, np.float64),
-                         garment_tris, tmax=TMAX)
-        s = cast_chunked(_t, np.asarray(body_verts, np.float64)[idx],
-                         np.asarray(body_normals, np.float64)[idx])
+        _t = None if cast is not None else _ClipTester(
+            np.asarray(garment_verts, np.float64), garment_tris,
+            tmax=TMAX)
+        s = (cast.hits(idx) if cast is not None else
+             cast_chunked(_t, np.asarray(body_verts, np.float64)[idx],
+                          np.asarray(body_normals, np.float64)[idx]))
         if len(s) < MIN_HITS:
             return None                      # does not cover the bust
         rec = {
