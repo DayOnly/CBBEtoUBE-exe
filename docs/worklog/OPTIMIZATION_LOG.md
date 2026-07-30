@@ -214,6 +214,39 @@ a real dense armour. **`0fa473d7…925f` on both sides, 1,669,330 offsets.**
 > 5.4% of the profile. **The end-to-end figure needs re-measuring on a quiet
 > machine before any cumulative claim is made.**
 
+| 07-30 | index seam weights instead of rescanning them (COPY path) | **160.1 s** | **8.78 s** | back-to-back A/B, real armour, digest-verified |
+
+## The copy path was never profiled, and it was the worst offender
+
+**78% of the pack (2,858 of 3,653 files) takes the copy path**, and every
+optimisation before this one lives in `convert_nif_phase2` — i.e. they could not
+touch it. The first copy-path file profiled took **186.9 s**, *longer than the
+phase-2 file*, and the shape of it was completely different:
+
+```
+178.7 s  95.6%  _weld_cross_shape_seams
+178.4 s         _match_seam_skinning
+107.2 s         _set_override_vert_weights   39,024 calls
+ 98.8 s         <listcomp> line 13921        78,048 calls
+```
+
+`_set_override_vert_weights` rebuilt **every bone's entire weight list** to
+remove one vertex, and the matching read scanned every `(vert, weight)` pair to
+find one vertex. Unifying N seam verts was O(N × total pairs) — quadratic.
+Indexing the weights to `{bone: {vert: weight}}` for the duration of the pass
+makes both O(1). **160.1 s → 8.78 s, 18×**, with a bit-identical skin-weight
+digest (`50612ccb…a060`, 55,902 pairs, same 39,024 seam verts closed).
+
+This is the largest win of the session by a wide margin, and it is on the path
+that carries 78% of the files.
+
+### A latent bug the tests found
+
+`_osk_from_source` did not guard `src_shape is None`. In production that
+`AttributeError` propagates to `_weld_cross_shape_seams`'s catch-all, so **one
+plate without a source shape silently costs the entire NIF its seam welding**.
+Found by a test written for the index change, not by the profiler.
+
 ### Why the remaining cast cost is structural
 
 `_cast` 22.1% and `_pairs` 14.4% still lead, and one full-band cast on that

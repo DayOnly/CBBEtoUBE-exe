@@ -13908,21 +13908,57 @@ def _weld_cross_shape_seams(shape_jobs, tol: float = _SEAM_WELD_TOL,
     return n_weld
 
 
+def _weights_to_index(osk):
+    """`{bone: [(vi, w), ...]}` -> `{bone: {vi: w}}`, in place, once per shape.
+
+    The list form makes "set the weights of ONE vertex" cost a full rebuild of
+    every bone's list, so unifying N seam verts was O(N x total weight pairs).
+    Profiled on a copy-path armour: `_set_override_vert_weights` ran 39,024
+    times and its list rebuild alone was 98.8s of a 186.9s conversion.
+    """
+    w = osk.get("weights")
+    if not isinstance(w, dict):
+        return
+    for bn, pairs in list(w.items()):
+        if isinstance(pairs, dict):
+            continue
+        d = {}
+        for v, ww in (pairs.tolist() if hasattr(pairs, "tolist") else pairs):
+            d[int(v)] = float(ww)
+        w[bn] = d
+
+
+def _weights_from_index(osk):
+    """`{bone: {vi: w}}` -> `{bone: [(vi, w), ...]}`. Restores the shape every
+    downstream consumer expects; a dict leaking out would be a silent format
+    change. Sorted so output is deterministic across runs."""
+    w = osk.get("weights")
+    if not isinstance(w, dict):
+        return
+    for bn, d in list(w.items()):
+        if isinstance(d, dict):
+            w[bn] = [(int(v), float(x)) for v, x in sorted(d.items())]
+
+
 def _set_override_vert_weights(osk, vi, tgt, bone_xform):
     """Set vert `vi`'s skin weights in an override_skin dict to exactly `tgt`
     ({bone: weight}). Removes `vi` from every existing bone entry, then adds it
     to each target bone, creating the bone in the bones list / xforms map as
     needed (xform pulled from `bone_xform`, the cluster-wide skeleton-global
-    skin-to-bone map)."""
+    skin-to-bone map).
+
+    Expects `weights` in INDEX form (see `_weights_to_index`), so removing a
+    vertex is a dict delete rather than rebuilding every bone's list.
+    """
     weights = osk["weights"]
     bones = osk.setdefault("bones", list(weights.keys()))
     xforms = osk.setdefault("xforms", {})
-    for bn in list(weights.keys()):
-        weights[bn] = [(v, w) for (v, w) in weights[bn] if int(v) != vi]
+    for bn in weights:
+        weights[bn].pop(vi, None)
     for bn, w in tgt.items():
         if w <= 0:
             continue
-        weights.setdefault(bn, []).append((vi, float(w)))
+        weights.setdefault(bn, {})[vi] = float(w)
         if bn not in bones:
             bones.append(bn)
         if bn not in xforms and bn in bone_xform:
@@ -13944,6 +13980,12 @@ def _match_seam_skinning(plates, seam_clusters):
         # seam verts edited. Guard on bone count: the override path caps bones
         # (a no-op under the GPU limit) where the source path would split, so
         # only build when capping can't drop a bone (dense shapes -> skip).
+        # A plate can legitimately carry no source shape. Without this guard the
+        # AttributeError propagates up to `_weld_cross_shape_seams`, whose
+        # catch-all then abandons seam welding for the ENTIRE nif -- one
+        # unusable member silently costing every other cluster its weld.
+        if src_shape is None:
+            return None
         bones = list(src_shape.bone_names or [])
         if not bones or len(bones) > 40:
             return None
@@ -13962,6 +14004,7 @@ def _match_seam_skinning(plates, seam_clusters):
         return {"bones": bones, "xforms": xforms, "weights": weights}
 
     n_matched = 0
+    touched = set()
     for cluster in seam_clusters:
         oss = []
         ok = True
@@ -13979,14 +14022,18 @@ def _match_seam_skinning(plates, seam_clusters):
             oss.append(osk)
         if not ok:
             continue
+        for _osk in oss:
+            _weights_to_index(_osk)      # O(1) per-vert edits below
+        touched.update(id(o) for o in oss)
         member_w = []
         bone_xform = {}  # cluster-wide bone -> skin-to-bone (skeleton-global)
         for (pi, li), osk in zip(cluster, oss):
-            wd = {}
-            for bn, pairs in osk["weights"].items():
-                for vi, w in pairs:
-                    if int(vi) == li:
-                        wd[bn] = wd.get(bn, 0.0) + float(w)
+            # Indexed lookup. This scanned EVERY (vert, weight) pair of
+            # every bone to read ONE vertex -- the second half of the
+            # same quadratic.
+            _li = int(li)
+            wd = {bn: d[_li] for bn, d in osk["weights"].items()
+                  if _li in d}
             member_w.append(wd)
             for bn, xf in (osk.get("xforms") or {}).items():
                 bone_xform.setdefault(bn, xf)
@@ -14006,6 +14053,11 @@ def _match_seam_skinning(plates, seam_clusters):
         for (pi, li), osk in zip(cluster, oss):
             _set_override_vert_weights(osk, int(li), tgt, bone_xform)
             n_matched += 1
+    # Back to the list form every downstream consumer expects.
+    for _p in plates:
+        _o = _p.get("override_skin")
+        if _o and id(_o) in touched:
+            _weights_from_index(_o)
     return n_matched
 
 
