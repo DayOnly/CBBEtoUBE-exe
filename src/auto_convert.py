@@ -323,6 +323,98 @@ def _incremental_code_mtime() -> float:
                default=0.0)
 
 
+# Args that can change the BYTES of a converted NIF. Deliberately a small,
+# justified allow-list rather than "every arg": over-inclusion is safe for
+# correctness but makes incremental reuse useless as a DEFAULT (every
+# `--only-mods X` iteration would invalidate the whole cache), and a useless
+# default is one users turn off.
+#
+# NOT included, and why: `workers`/`incremental`/`list_only`/`plugins_only`/
+# `render_previews` never touch mesh maths; `merged_name`/`esp_name`/
+# `no_auto_merge`/`unmerged_patch_subdir` are ESP-only (verified: nif_convert
+# imports neither ube_patcher nor esp/gui code).
+#
+# Mod-SELECTION flags (`only_mods`, `exclude_mods`, `overlay_mods`,
+# `overlay_exclude_mods`) are also excluded: they change WHICH NIFs get
+# produced, not what any single NIF's bytes are, so an already-converted
+# up-to-date NIF stays valid regardless. CAVEAT, stated rather than hidden:
+# output paths are first-writer-wins across source mods
+# (`claimed_dst_paths`), so a different selection could in principle hand a
+# contested path to a different source mod. That is a PRE-EXISTING property of
+# incremental reuse, not something this fingerprint introduces, and folding
+# selection in would cost the default its usefulness. A full (non-incremental)
+# run remains the answer when source-mod priority changes.
+_NIF_RELEVANT_ARGS = (
+    "ube_body_ref",        # the fit target itself
+    "convert_overlays",    # changes the converted mesh set + overlay handling
+    "overlay_copy",
+    "overlay_skip_male",
+    "overlays_only",
+    "no_textures",         # texture handling can reach paths baked into a NIF
+    "copy_textures",
+    "no_ube_native_scan",  # changes which meshes are treated as already-UBE
+)
+
+
+def _nif_config_fingerprint(args) -> str:
+    """Stable hash of every setting that can change a converted NIF's bytes.
+
+    WHY THIS EXISTS. The `--incremental` floor only ever compared mtimes:
+    source NIF, converter code, body ref. But `nif_convert.py` reads **135
+    distinct `CBBE2UBE_*` environment variables** (counted, not estimated) --
+    clearance margins, follow ratios, jiggle strengths, pass on/off switches --
+    and NONE of them were in the floor. Flip one, re-run incrementally, and the
+    converter reports "reusing N up-to-date NIFs" while the setting you changed
+    never reached a single mesh. That is this project's documented dominant
+    failure mode (a check that comes back clean because it measured nothing)
+    wearing a new hat, and it is the thing that blocked making reuse a default.
+
+    Env vars are collected BY PREFIX, never from a hand-maintained list. A
+    literal list of 135 names would drift the first time someone adds a flag --
+    exactly the staleness that made the four-module whitelist in the project
+    notes wrong (it predated `nif_convert` importing `fit_metrics`). A prefix
+    scan cannot go stale.
+    """
+    import hashlib
+
+    parts = []
+    for k in sorted(os.environ):
+        if k.startswith("CBBE2UBE_"):
+            parts.append(f"env:{k}={os.environ[k]}")
+    for name in _NIF_RELEVANT_ARGS:
+        if hasattr(args, name):
+            parts.append(f"arg:{name}={getattr(args, name)!r}")
+    blob = "\n".join(parts)
+    return hashlib.sha256(blob.encode("utf-8", "replace")).hexdigest()
+
+
+def _config_stamp_mtime(output_root, fingerprint: str) -> float:
+    """Fold the config fingerprint into the mtime-based floor.
+
+    Rather than bolt a second comparison onto the reuse check, this reuses the
+    machinery that already works: a stamp file whose mtime moves ONLY when the
+    fingerprint changes. A changed setting therefore makes the floor newer than
+    every cached NIF and invalidates all of them, through exactly the same
+    `dst.mtime > floor` test as a code edit.
+
+    Written only when the content differs -- rewriting an identical stamp would
+    bump its mtime every run and defeat reuse entirely (the failure mode where
+    the optimisation silently never applies).
+    """
+    stamp = Path(output_root) / "_incremental_config.sha256"
+    try:
+        if stamp.is_file() and stamp.read_text(encoding="utf-8").strip() == fingerprint:
+            return stamp.stat().st_mtime
+        stamp.parent.mkdir(parents=True, exist_ok=True)
+        stamp.write_text(fingerprint + "\n", encoding="utf-8")
+        return stamp.stat().st_mtime
+    except OSError:
+        # Unreadable/unwritable stamp must FAIL SAFE: return "now" so the floor
+        # invalidates everything and the run converts fully, never silently
+        # reuses against an unknown config.
+        return time.time()
+
+
 def _combined_output_names(merged_name: str, plugin_names_or_paths) -> "set[str]":
     """Lower-cased names of ALL our merged-Combined outputs to exclude from a
     load-order winner scan: the base `--merged-name` plus every ESL-split piece
@@ -2568,8 +2660,11 @@ def _cmd_convert(args):
     except Exception:
         _BATCH_BSA_INDEX = None
 
-    # Incremental floor = newest of (converter source code, UBE body ref).
-    # Any code or body change invalidates every cached output. Opt-in.
+    # Incremental floor = newest of (converter source code, UBE body ref,
+    # CONFIG FINGERPRINT). The fingerprint closes the gap that kept this
+    # opt-in: 135 CBBE2UBE_* env vars and the NIF-relevant args were invisible
+    # to a pure-mtime floor, so changing one and re-running incrementally
+    # reported "reusing N NIFs" while the change reached nothing.
     incremental_floor = None
     if getattr(args, "incremental", False):
         try:
@@ -2578,9 +2673,14 @@ def _cmd_convert(args):
             _ref = args.ube_body_ref or _find_ube_body_ref()
             if _ref and Path(_ref).is_file():
                 ref_mtime = Path(_ref).stat().st_mtime
-            incremental_floor = max(code_mtime, ref_mtime)
+            _fp = _nif_config_fingerprint(args)
+            cfg_mtime = _config_stamp_mtime(output, _fp)
+            incremental_floor = max(code_mtime, ref_mtime, cfg_mtime)
+            _why = "code" if code_mtime >= max(ref_mtime, cfg_mtime) else (
+                "body ref" if ref_mtime >= cfg_mtime else "config")
             print(f"  incremental mode ON (reuse outputs newer than "
-                  f"source + {time.strftime('%Y-%m-%d %H:%M', time.localtime(incremental_floor))})")
+                  f"source + {time.strftime('%Y-%m-%d %H:%M', time.localtime(incremental_floor))}"
+                  f"; floor set by {_why}, config {_fp[:12]})")
         except Exception as e:
             print(f"  !! incremental floor calc failed (full convert): {e!r}")
             incremental_floor = None
