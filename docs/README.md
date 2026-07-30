@@ -22,6 +22,7 @@ re-derived — but they are **snapshots, not current state**. Where a worklog an
 | [worklog/PLAN_PASS_CONSOLIDATION.md](worklog/PLAN_PASS_CONSOLIDATION.md) | Measured pass-interaction study and a six-step plan. Step 1 done, step 3 partly; carries a status note on what drifted. |
 | [worklog/LESSONS_2026_07_27.md](worklog/LESSONS_2026_07_27.md) | What the July clipping work taught, mostly about measurement discipline. |
 | [worklog/HIDE_ARMOR_ZERO_CLIP.md](worklog/HIDE_ARMOR_ZERO_CLIP.md) | Working document for one armour that resisted diagnosis for three months. |
+| [worklog/OPTIMIZATION_LOG.md](worklog/OPTIMIZATION_LOG.md) | Conversion speed: baseline measurements, the ceiling on each idea, and the hypotheses that turned out wrong. **Open.** |
 
 ## Not in the repository
 
