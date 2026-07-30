@@ -14,14 +14,31 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-"""Narrow-band containment census over the BREAST UNDER-CURVE.
+"""Narrow-band CLIPPING census over the BREAST UNDER-CURVE.
 
-WHY A NARROW BAND. The region-level containment census dilutes this defect into
-nothing. The under-curve is 484 of the 3674 verts the `breast` region selector
-accepts -- 13.2%, a ~7.6x dilution -- so a defect confined to it reads as ~1-2% at
-region level. On the one piece confirmed by eye in game, the region census scored
-`exposed=40 poke=2` while a targeted under-curve pass on the SAME mesh found
-155 exposed / 14 strictly surrounded. Region percentages rank; they do not size.
+METRIC RETIRED 2026-07-29. This used to classify each exposed vert with a cone
+of rays -- `surrounded` (>=5 of 10 blocked) / `partial` / `bare` -- the same
+statistic `mesh_penetration.containment` implemented. That statistic is
+ANTI-CORRELATED with in-game ground truth: it scored the armour the user
+confirmed CLEAN *worse* than the one that visibly clips, because a ray cone
+cannot separate "skin is outside the garment SURFACE" from "skin is outside the
+garment's COVERAGE", so a small or open garment scores terribly by design. No
+threshold rescues it; `containment` was deleted rather than re-tuned.
+
+It now uses the validated test (`clipping_report`): a body vert is CLIPPING when
+the outward ray escapes but the INWARD ray hits garment -- the garment is behind
+the skin. Skin merely beside an open edge escapes both ways and is UNCOVERED,
+which is a cut, not a defect. Calibrated 0.0% on the clean armour, 8.9% on the
+clipping one.
+
+The `surrounded` / `partial` / `bare` columns are gone. Rows written before this
+date carry them and are NOT comparable to rows written after -- the old columns
+answered a different, discredited question.
+
+WHY A NARROW BAND. The region-level census dilutes this defect into nothing. The
+under-curve is 484 of the 3674 verts the `breast` region selector accepts --
+13.2%, a ~7.6x dilution -- so a defect confined to it reads as ~1-2% at region
+level. Region percentages rank; they do not size.
 
 WHERE THE BAND IS -- measured on the canonical UBE body, not assumed. Sweeping
 2u z-slabs and asking where the surface turns from facing forward to facing DOWN:
@@ -51,6 +68,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+from scipy.spatial import cKDTree
 
 _REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_REPO))
@@ -58,7 +76,7 @@ sys.path.insert(0, str(_REPO / ".pynifly"))
 
 from scripts.multipose_clip_test import load, _posed              # noqa: E402
 from scripts.posed_clip_test import rays_hit                      # noqa: E402
-from scripts.mesh_penetration import (cone_dirs,                  # noqa: E402
+from scripts.mesh_penetration import (clipping_report,            # noqa: E402
                                       exposure_with_margin, noise_floor)
 
 OUT = Path(r"<MODLIST_ROOT>/mods/CBBEtoUBE Auto/meshes/!UBE")
@@ -69,8 +87,7 @@ Z_LO, Z_HI = 90.0, 94.0
 NZ_MAX = -0.30          # surface faces DOWN
 NY_MIN = 0.10           # ...and still somewhat forward: the under-curve, not the back
 ARM_X, MID_X = 20.0, 2.5
-K, HALF_DEG, TMAX = 10, 50.0, 6.0
-SURROUNDED = 5          # >=5 of 10 cone rays blocked
+TMAX = 6.0              # ray reach for the clipping test
 
 # A plain exposure count is a HARD ray-hit boolean, so a vert on the coverage boundary
 # flips on hundredths of a unit. Measured here: jittering the garment 0.02u flips ~13
@@ -87,57 +104,84 @@ def under_bust(v, n):
             & (np.abs(v[:, 0]) < ARM_X) & (np.abs(v[:, 0]) > MID_X))
 
 
-def score(body, normals, gv, gt, margin=MARGIN):
-    """Under-curve exposure + containment, with the boundary band split off.
+def score(body, body_tris, normals, gv, gt, margin=MARGIN):
+    """Under-curve exposure + CLIPPING, with the boundary band split off.
 
-    `exposed` stays the raw hard-threshold count so old rows remain comparable.
-    `exposed_firm` / `ambiguous` are the stable pair: a delta in `exposed_firm`
-    means something, a delta smaller than `ambiguous` does not.
+    `exposed` stays the raw hard-threshold count so old rows remain comparable
+    on that column. `exposed_firm` / `ambiguous` are the stable pair: a delta in
+    `exposed_firm` means something, a delta smaller than `ambiguous` does not.
+
+    `clipping` is the validated test and is the column to judge on. Note it is
+    NOT a subset of `exposed` by construction -- exposure asks "did the outward
+    ray escape", clipping additionally asks "does the garment lie behind the
+    skin". A garment can leave skin exposed without any of it clipping (an open
+    neckline), which is exactly the distinction the retired cone metric could
+    not make.
     """
-    m = under_bust(body, normals)
-    idx = np.flatnonzero(m)
+    idx = np.flatnonzero(under_bust(body, normals))
     if len(idx) < 20:
         return None
+    mask = np.zeros(len(body), bool)
+    mask[idx] = True
     exposed = ~rays_hit(body[idx], normals[idx], gv, gt)
-    e = idx[exposed]
     firm, _cov, amb = exposure_with_margin(body[idx], normals[idx], gv, gt,
                                            margin=margin)
-    d = {"n": int(len(idx)), "exposed": int(exposed.sum()),
-         "exposed_firm": int(firm.sum()), "ambiguous": int(amb.sum()),
-         "margin": margin, "surrounded": 0, "partial": 0, "bare": 0}
-    if len(e):
-        # rays_hit returns True = HIT, and blocked IS the hit. Do NOT invert:
-        # `~rays_hit` counts rays that ESCAPED and reads as "everything is
-        # surrounded" -- the exact bug that voided the first census.
-        blocked = np.zeros(len(e), dtype=np.int64)
-        for dirv in cone_dirs(normals[e], HALF_DEG, K):
-            blocked += rays_hit(body[e], dirv, gv, gt, tmax=TMAX).astype(np.int64)
-        d["surrounded"] = int((blocked >= SURROUNDED).sum())
-        d["partial"] = int(((blocked >= 1) & (blocked < SURROUNDED)).sum())
-        d["bare"] = int((blocked == 0).sum())
-    return d
+    rep = clipping_report(body, body_tris, normals, [(gv, gt)],
+                          tmax=TMAX, mask=mask)
+    return {"n": int(len(idx)), "exposed": int(exposed.sum()),
+            "exposed_firm": int(firm.sum()), "ambiguous": int(amb.sum()),
+            "margin": margin,
+            "clipping": int(rep.get("clip_verts") or 0),
+            "clipping_pct": rep.get("clipping_pct"),
+            "covered_pct": rep.get("covered_pct"),
+            "uncovered_pct": rep.get("uncovered_pct")}
 
 
-def _controls(rigid):
-    """A garment that cannot reach the chest MUST read 100% bare here.
+def _controls(rigid, scan=40):
+    """Both controls, chosen from the population by GEOMETRY, not hardcoded.
 
-    Chosen from the population by geometry (no garment vert above z 80) rather than
-    hardcoded, so the control survives a repack.
+    NEGATIVE -- a garment entirely below z 80 must read 0 clipping and ~100%
+    uncovered. Catches "everything reads covered/clipping".
+
+    POSITIVE -- a garment that densely covers the band must read mostly COVERED.
+    This is the one that catches a transposed ray sense, and the negative
+    control provably cannot: a garment nowhere near the band produces no ray
+    hits in EITHER direction, so swapping the two directions leaves 0 clipping
+    and 100% uncovered untouched. Verified by running the census with the
+    normals negated -- the negative control passed regardless; only the
+    positive one collapsed. A control that cannot fail is not a control, and
+    the ray-sense inversion that produced "99.6% surrounded everywhere" is
+    exactly the bug this pair exists to catch.
+
+    `scan` bounds the search: posing every armor to pick a control would cost
+    more than the census.
     """
-    picked = []
-    for r in rigid:
+    neg, pos, best = [], None, -1.0
+    for r in rigid[:scan]:
         try:
             data, gar, par, orig, bn = load(OUT / r["armor"])
             pb, pbn, gv, gt = _posed(data, gar, {}, bn)
         except Exception:
             continue
-        if len(gv) and gv[:, 2].max() < 80.0:
-            d = score(pb, pbn, gv, gt)
-            if d and d["exposed"]:
-                picked.append((r["armor"], d))
-        if len(picked) == 2:
-            break
-    return picked
+        if not len(gv):
+            continue
+        if gv[:, 2].max() < 80.0:
+            if len(neg) < 2:
+                d = score(pb, data[bn][1], pbn, gv, gt)
+                if d:
+                    neg.append((r["armor"], d))
+            continue
+        # coverage by geometry alone: how much of the band has garment close by
+        idx = np.flatnonzero(under_bust(pb, pbn))
+        if len(idx) < 20:
+            continue
+        near = cKDTree(gv).query(pb[idx], k=1)[0]
+        frac = float((near < 2.0).mean())
+        if frac > best:
+            d = score(pb, data[bn][1], pbn, gv, gt)
+            if d and d["covered_pct"] is not None:
+                best, pos = frac, (r["armor"], d, frac)
+    return neg, pos
 
 
 def main():
@@ -146,16 +190,31 @@ def main():
     rigid = [r for r in rows if not r["smp_rigged_any"]]
     print(f"{len(rigid)} fully-rigid armors of {len(rows)}", flush=True)
 
-    print("\nNEGATIVE CONTROLS (garment entirely below z 80 -> must be 100% bare):",
-          flush=True)
+    neg, pos = _controls(rigid)
+    if not neg or pos is None:
+        raise SystemExit(
+            "controls could not be built -- the census would run with NOTHING "
+            "checking the metric's sense. Stop.")
     ok = True
-    for name, d in _controls(rigid):
-        pct = 100 * d["bare"] / d["exposed"]
-        ok &= d["surrounded"] == 0
-        print(f"  {'PASS' if d['surrounded'] == 0 else 'FAIL'}  {name[:44]:<46}"
-              f"exposed={d['exposed']:<5} bare={pct:.1f}%", flush=True)
+    print("\nNEGATIVE CONTROLS (garment below z 80 -> 0 clipping, ~100% "
+          "uncovered):", flush=True)
+    for name, d in neg:
+        unc = d["uncovered_pct"]
+        good = d["clipping"] == 0 and unc is not None and unc > 99.0
+        ok &= good
+        print(f"  {'PASS' if good else 'FAIL'}  {name[:44]:<46}"
+              f"clipping={d['clipping']:<5} uncovered="
+              f"{'n/a' if unc is None else f'{unc:.1f}%'}", flush=True)
+    print("POSITIVE CONTROL (densest band coverage -> mostly COVERED). This is "
+          "the one that catches a transposed ray sense:", flush=True)
+    name, d, frac = pos
+    good = d["covered_pct"] is not None and d["covered_pct"] > 50.0
+    ok &= good
+    print(f"  {'PASS' if good else 'FAIL'}  {name[:44]:<46}"
+          f"covered={d['covered_pct']:.1f}%  (garment within 2u of "
+          f"{100*frac:.0f}% of the band)", flush=True)
     if not ok:
-        raise SystemExit("negative control FAILED -- metric is inverted, stop.")
+        raise SystemExit("control FAILED -- metric is inverted, stop.")
 
     # State the resolution BEFORE any result, so no delta gets read as a finding
     # without the number it has to beat sitting next to it.
@@ -183,7 +242,7 @@ def main():
         try:
             data, gar, par, orig, bn = load(OUT / r["armor"])
             pb, pbn, gv, gt = _posed(data, gar, {}, bn)
-            d = score(pb, pbn, gv, gt)
+            d = score(pb, data[bn][1], pbn, gv, gt)
         except Exception:
             continue
         if d:

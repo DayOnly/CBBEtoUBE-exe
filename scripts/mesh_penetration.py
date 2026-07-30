@@ -273,64 +273,6 @@ def surface_penetration(body_verts, garment_verts, garment_tris,
     return best_signed, best, best <= float(contact), agree
 
 
-def cone_dirs(normals, half_deg=50.0, k=10):
-    """k directions spread on a cone of `half_deg` about each normal."""
-    n = np.asarray(normals, dtype=np.float64)
-    n = n / np.linalg.norm(n, axis=1, keepdims=True)
-    a = np.array([0.0, 0.0, 1.0])
-    t = np.where((np.abs(n @ a) > 0.9)[:, None], np.array([1.0, 0.0, 0.0]), a)
-    u = np.cross(n, t)
-    u /= np.linalg.norm(u, axis=1, keepdims=True)
-    v = np.cross(n, u)
-    th = np.deg2rad(half_deg)
-    return [n * np.cos(th) + (u * np.cos(ph) + v * np.sin(ph)) * np.sin(th)
-            for ph in (2 * np.pi * i / k for i in range(k))]
-
-
-def containment(exposed_pts, exposed_normals, verts, tris, half_deg=50.0, k=10):
-    """DISCREDITED AND ORPHANED (2026-07-29). Do not use for fit work.
-
-    Measured against user-supplied in-game ground truth, this scored the
-    CONFIRMED-CLEAN armour WORSE than the one the user can see clipping
-    (32.4% vs 23.9%), at every depth threshold -- ANTI-CORRELATED. It cannot
-    separate "skin is outside the garment SURFACE" from "skin is outside the
-    garment's COVERAGE", so a small revealing garment scores terribly by
-    design and the number is dominated by rim geometry. An entire evening of
-    parameter sweeps tuned against it was tuning noise.
-
-    Superseded by `clipping_report` in this module (0.00% on that clean
-    armour, 8.87% on the clipping one), and by `scripts/standoff_audit.py`
-    which pairs it with the STANDOFF counter-metric -- necessary because
-    clipping has no upper bound and cannot see an over-inflated garment.
-
-    Call sites: NONE as of 2026-07-29 (`bust_verdict.py` was migrated off it).
-    Kept, not deleted, only because this repo has a documented history of
-    dead-code false positives -- verify before removing. If you are reaching
-    for this, you almost certainly want `standoff_audit.clip_stats`.
-
-    Original docstring follows.
-
-    How much garment surrounds each exposed body vertex, as blocked/k.
-
-    THE SOUND POKE TEST, and it replaces the rim-distance rule in
-    `classify_exposure`, which is UNSOUND on boundary-heavy garments: that rule calls
-    a vertex "neckline" when it is within a few units of the garment's open boundary,
-    but a cuirass can have 61% of its vertices ON a boundary, so the rule can never
-    return "poke" and reported 0.0% on armour the body was visibly coming through.
-
-    This asks the actual question -- is there garment AROUND this skin -- by casting a
-    cone of rays about the outward normal. Surrounded means the skin is inside the
-    garment's coverage and is poking through it; nothing blocked means it is genuinely
-    outside coverage (bare by design).
-    """
-    if not len(exposed_pts):
-        return np.zeros(0, dtype=np.int64)
-    blocked = np.zeros(len(exposed_pts), dtype=np.int64)
-    for d in cone_dirs(exposed_normals, half_deg, k):
-        blocked += (~ray_exposure(exposed_pts, d, verts, tris)).astype(np.int64)
-    return blocked
-
-
 # --- Resolution: what a delta has to beat to mean anything --------------------
 #
 # `ray_exposure` is a HARD boolean -- the ray hits a triangle or it does not. A body
@@ -403,11 +345,11 @@ def noise_floor(origins, normals, verts, tris, *, amps=(0.005, 0.01, 0.02),
     return out
 
 
-# --- The refined statistic -----------------------------------------------------
+# --- THE validated clipping test ----------------------------------------------
 #
-# `surface_penetration` answers "is this body vert outside THIS garment surface".
-# Four things stand between that and an accurate figure for "how much skin is
-# coming through the armour", each of which changed a conclusion in practice:
+# FOUR REQUIREMENTS this test satisfies, each of which changed a conclusion in
+# practice when an earlier metric ignored it (they outlived `poke_report`, the
+# superseded statistic they were first written for):
 #
 # 1. ONE SHAPE IS NOT THE GARMENT. 49% of converted pieces render more than one
 #    garment shape (Top+Skirt, Corset+dress, ...). Scoring a single shape counts
@@ -416,93 +358,20 @@ def noise_floor(origins, normals, verts, tris, *, amps=(0.005, 0.01, 0.02),
 #    over-weights dense regions. The eye sees AREA; weight each vert by its
 #    one-ring share.
 # 3. A HARD SIGN TEST IS NOISE-DOMINATED. `signed > 0` counts +0.001u the same
-#    as +1.5u, and a vert on the surface flips on rounding. Report a depth
-#    distribution and a count above a depth that means something.
-# 4. THE CONTACT GATE IS A CLIFF. A vert at 2.01u is unjudged, at 1.99u judged.
-#    Report the figure at several gates so a number that only exists at one
-#    gate is visible as such.
-def poke_report(body_verts, body_tris, garments, *, contacts=(1.5, 2.0, 3.0),
-                depth_min=0.05, mask=None):
-    """SUPERSEDED AND ORPHANED (2026-07-29). Prefer `clipping_report`.
-
-    Built on `surface_penetration`'s signed distance, which shares
-    `containment`'s defect: it cannot tell "skin outside the garment SURFACE"
-    from "skin outside the garment's COVERAGE". The 2026-07-29 bust probe was
-    solved against this family of requirement and produced a mesh the user
-    reported OVERINFLATED in game (standoff 2.88u where their clean armour
-    sits at 1.15u) -- the metric's noise baked into geometry.
-
-    Use `clipping_report` (validated 0.00% clean / 8.87% clipping on the
-    user's own ground-truth pair) and pair it with the standoff check in
-    `scripts/standoff_audit.py`, because clipping alone has NO UPPER BOUND and
-    scores a garment three units too large as perfect.
-
-    Call sites: NONE as of 2026-07-29. Kept rather than deleted per this
-    repo's dead-code false-positive history -- verify before removing.
-
-    Original docstring follows.
-
-    Area-weighted skin-through-armour statistic against the WHOLE garment.
-
-    `garments`: list of (verts, tris, normals|None) -- every VISIBLE garment
-    shape of the piece. A body vert inside ANY of them is covered.
-    `mask`: optional bool array selecting the body verts to report on.
-    Returns {contact: {...}} plus 'area_total'.
-    """
-    bV = np.asarray(body_verts, dtype=np.float64)
-    bT = np.asarray(body_tris, dtype=np.int64).reshape(-1, 3)
-    sel = np.ones(len(bV), bool) if mask is None else np.asarray(mask, bool)
-
-    # per-vert area = a third of each incident triangle (one-ring share)
-    a = bV[bT[:, 0]]
-    tri_area = 0.5 * np.linalg.norm(
-        np.cross(bV[bT[:, 1]] - a, bV[bT[:, 2]] - a), axis=1)
-    vert_area = np.zeros(len(bV))
-    for k in range(3):
-        np.add.at(vert_area, bT[:, k], tri_area / 3.0)
-
-    # nearest surface across ALL garment shapes; inside any -> covered
-    best_d = np.full(len(bV), np.inf)
-    best_s = np.full(len(bV), np.inf)
-    inside_any = np.zeros(len(bV), bool)
-    for gv, gt, gn in garments:
-        s, d, _cov, agree = surface_penetration(
-            bV, gv, gt, garment_normals=gn, contact=float(max(contacts)))
-        if agree is not None and agree < 0.7:
-            continue            # orientation ambiguous -> its sign is unusable
-        closer = d < best_d
-        best_d = np.where(closer, d, best_d)
-        best_s = np.where(closer, s, best_s)
-        inside_any |= (s < 0) & (d <= float(max(contacts)))
-
-    out = {"area_total": float(vert_area[sel].sum())}
-    for c in contacts:
-        judged = sel & (best_d <= c)
-        poking = judged & (best_s > 0) & ~inside_any
-        deep = poking & (best_s > depth_min)
-        ja = vert_area[judged].sum()
-        out[c] = {
-            "judged_verts": int(judged.sum()),
-            "judged_area": float(ja),
-            "poke_area_pct": float(100.0 * vert_area[poking].sum() / ja) if ja else None,
-            "poke_vert_pct": float(100.0 * poking.sum() / max(1, judged.sum())),
-            "deep_area_pct": float(100.0 * vert_area[deep].sum() / ja) if ja else None,
-            "depth_p50": float(np.percentile(best_s[poking], 50)) if poking.any() else 0.0,
-            "depth_p90": float(np.percentile(best_s[poking], 90)) if poking.any() else 0.0,
-            "depth_max": float(best_s[poking].max()) if poking.any() else 0.0,
-        }
-    return out
-
-
-# --- THE validated clipping test ----------------------------------------------
+#    as +1.5u, and a vert on the surface flips on rounding. This test is not a
+#    sign test at all, which is why it does not churn.
+# 4. A CONTACT GATE IS A CLIFF. A vert at 2.01u unjudged and at 1.99u judged
+#    makes a figure that only exists at one gate look like a finding.
 #
 # Calibrated against user-supplied in-game ground truth on 2026-07-29: reads
 # 0.0% on the armour the user reports CLEAN (hide CuirassLight) and 8.9% on the
 # one they report CLIPPING (hide CuirassMedium). Any change to this function
 # must preserve that separation or it is wrong.
 #
-# It replaces signed-distance (`surface_penetration`) and the ray cone
-# (`containment`) for health questions. Both of those scored the CLEAN armour
+# It replaced signed-distance (`surface_penetration`, still here because its
+# DISTANCE is sound and the census uses it -- only its SIGN was bad) and the ray
+# cone (`containment`, DELETED 2026-07-29 along with `poke_report`; see
+# METRICS.md for the census that discredited it). Both scored the CLEAN armour
 # WORSE than the clipping one at every depth threshold, because neither can
 # separate "skin is outside the garment SURFACE" from "skin is outside the
 # garment's COVERAGE" -- so a small revealing garment scores terribly by
