@@ -88,6 +88,35 @@ def test_rolls_back_a_chain_that_ends_worse():
     assert "ROLLED BACK" in outcome
 
 
+def test_shipped_reports_what_was_actually_kept():
+    """`final` is the REJECTED measurement when a rollback fires.
+
+    Reading `final` on the first pack-wide run made 20 rolled-back shapes look
+    like they shipped 174 exposed verts when they actually shipped 101, and
+    made a run with zero regressions read as "20 shapes ended worse". Anything
+    judging output quality must read `shipped`.
+    """
+    bV, bN, gT, good, bad = _scene()
+    g = fm.ChainGuard(bV, bN, gT)
+    g.begin(good)
+    g.checkpoint("warp", good)
+    g.finish(bad)
+    assert g.rolled_back_to is not None
+    assert g.final > g.entry, "the rejected measurement should be the worse one"
+    assert g.shipped <= g.entry, (
+        f"shipped={g.shipped} must be the KEPT count, not the rejected "
+        f"{g.final}")
+
+
+def test_shipped_equals_final_when_nothing_rolled_back():
+    bV, bN, gT, good, bad = _scene()
+    g = fm.ChainGuard(bV, bN, gT)
+    g.begin(bad)
+    g.checkpoint("warp", bad)
+    g.finish(good)
+    assert g.rolled_back_to is None and g.shipped == g.final
+
+
 def test_keeps_a_chain_that_improves():
     bV, bN, gT, good, bad = _scene()
     g = fm.ChainGuard(bV, bN, gT)

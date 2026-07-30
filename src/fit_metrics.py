@@ -614,6 +614,13 @@ def _append(dst_path, rec: dict) -> None:
     # pipe-buffer size are atomic enough for pool workers, and a torn line
     # costs one record rather than the file.
     try:
+        # `nif` is a BARE FILENAME, and filenames repeat across mods -- three
+        # different mods in one modlist ship a `cuirassmedium_1.nif`. A record
+        # naming only the basename cannot be traced back to the piece it
+        # describes, which cost real time when a frame correction had to be
+        # matched to one of three candidates. Carry enough of the tail to
+        # disambiguate without recording an absolute path.
+        rec.setdefault("path", "/".join(Path(dst_path).parts[-4:]))
         with open(sink_path(dst_path), "a", encoding="utf-8") as f:
             f.write(json.dumps(rec) + "\n")
     except Exception:
@@ -711,6 +718,58 @@ class PassTracer:
 CHAIN_GUARD = os.environ.get("CBBE2UBE_NO_CHAIN_GUARD") != "1"
 CHAIN_TOL = int(os.environ.get("CBBE2UBE_CHAIN_TOL", "0"))
 
+# ---------------------------------------------------- STANDOFF TRACE (opt-in)
+# Which pass pushed the garment OFF the body, and where up the torso.
+#
+# The pass trace answers "which pass left skin exposed"; it is blind to the
+# opposite defect. A gap reported in game at the strap line was invisible to
+# every number this module produced: the ceiling guards z 90-102 only, and a
+# nine-arm kill-switch bisect moved it by 0.02u, so no toggleable pass owns it.
+# Measuring STANDOFF at the checkpoints the chain already keeps names the
+# responsible pass directly, without new conversions or guesswork.
+#
+# SLABS, not one window. A single median over z 105-114 read identically for all
+# nine bisect arms because hit density varies ~10x across it and the dense lower
+# slabs pin the median. Same failure as judging the whole torso by the bust
+# band. Slabs are narrow enough that the number describes one place.
+STANDOFF_TRACE = os.environ.get("CBBE2UBE_STANDOFF_TRACE") == "1"
+TRACE_SLABS = ((90.0, 102.0), (102.0, 105.0), (105.0, 108.0),
+               (108.0, 111.0), (111.0, 114.0))
+TRACE_NY_MIN = 0.25    # front-facing skin; normal-based so it generalises up
+TRACE_X_MAX = 18.0     # torso front, clear of the arms
+TRACE_TMAX = 14.0      # a gap is measured in units the bust ceiling never sees
+TRACE_MIN_HITS = 8
+
+
+def front_slab(body_verts, body_normals, z_lo, z_hi,
+               ny_min: float = TRACE_NY_MIN, x_max: float = TRACE_X_MAX):
+    """Front-facing torso skin in a z slab."""
+    v = np.asarray(body_verts, np.float64)
+    n = np.asarray(body_normals, np.float64)
+    return np.flatnonzero((n[:, 1] > ny_min) & (np.abs(v[:, 0]) < x_max)
+                          & (v[:, 2] >= z_lo) & (v[:, 2] < z_hi))
+
+
+def slab_standoff(tester, body_verts, body_normals, idx,
+                  min_hits: int = TRACE_MIN_HITS):
+    """(median outward distance, hit count) over `idx`. NaN when too few hits.
+
+    Goes through `_ClipTester`, whose tiered ball query and ray-line cull keep
+    only candidate pairs. The dense (rays x ALL triangles x 3) formulation used
+    by `standoff()` reached 15 GB on a five-shape cuirass and had to be killed
+    mid-run, so anything that measures per pass has to take the sparse path.
+    """
+    O = np.asarray(body_verts, np.float64)[idx]
+    N = np.asarray(body_normals, np.float64)[idx]
+    if not len(O):
+        return float("nan"), 0
+    ray_i, tri_i = tester._pairs(O)
+    t = tester._cast(O, N, ray_i, tri_i, len(O))
+    f = t[np.isfinite(t)]
+    if len(f) < min_hits:
+        return float("nan"), int(len(f))
+    return float(np.median(f)), int(len(f))
+
 
 class ChainGuard:
     """DIAGNOSE -> TREAT -> VERIFY at the level where the criterion is valid.
@@ -751,6 +810,8 @@ class ChainGuard:
         self.armed = False
         self.entry = -1
         self.final = -1
+        self.shipped = -1     # what was SHIPPED; differs from
+                              # `final` whenever a rollback fired
         self.outcome = "unarmed"
         self.rolled_back_to = None
         self.extra_measurements = 0
@@ -809,6 +870,60 @@ class ChainGuard:
             # start and the recent ones
             del self._snaps[1]
 
+    def trace_standoff(self, dst_path, shape_name, final_verts=None) -> list:
+        """Per-pass standoff up the torso. Default OFF, measure-only.
+
+        Costs one measurement per slab per checkpoint, so it is a diagnostic to
+        aim at a piece, never something a pack run turns on. It reads the
+        snapshots the chain already keeps, so it needs no re-conversion and adds
+        nothing to the hot path when disabled.
+
+        MUST run before `release()`. Returns the rows it recorded so a caller
+        can assert it measured something -- an empty list means the shape was
+        unarmed or every slab fell below the hit floor, which must not be
+        mistaken for "no pass moved anything".
+        """
+        if not (STANDOFF_TRACE and self.armed):
+            return []
+        snaps = list(self._snaps)
+        if final_verts is not None:
+            snaps.append(("final", np.asarray(final_verts, np.float64), None))
+        rows = []
+        try:
+            idx = [(lo, hi, front_slab(self.bV, self.bN, lo, hi))
+                   for lo, hi in TRACE_SLABS]
+            prev = {}
+            for label, v, _c in snaps:
+                tester = _ClipTester(v, self.gT, tmax=TRACE_TMAX)
+                for lo, hi, ii in idx:
+                    med, hits = slab_standoff(tester, self.bV, self.bN, ii)
+                    key = (lo, hi)
+                    d = (med - prev[key]) if (key in prev
+                                              and np.isfinite(med)
+                                              and np.isfinite(prev[key])) \
+                        else float("nan")
+                    rows.append({"kind": "standoff_trace",
+                                 "nif": str(Path(dst_path).name),
+                                 "shape": str(shape_name), "pass": label,
+                                 "z_lo": lo, "z_hi": hi,
+                                 "median": None if not np.isfinite(med)
+                                 else round(med, 3),
+                                 "delta": None if not np.isfinite(d)
+                                 else round(d, 3),
+                                 "hits": hits})
+                    if np.isfinite(med):
+                        prev[key] = med
+        except Exception as e:
+            _append(dst_path, {"kind": "standoff_trace_error",
+                               "nif": str(Path(dst_path).name),
+                               "shape": str(shape_name),
+                               "error": f"{type(e).__name__}: {e}"})
+            return rows
+        if _enabled():
+            for r in rows:
+                _append(dst_path, r)
+        return rows
+
     def finish(self, verts):
         """Verify the finished shape. Returns (verts, outcome)."""
         if not self.armed or verts is None:
@@ -819,6 +934,7 @@ class ChainGuard:
             self.outcome = "unmeasurable"
             return verts, self.outcome
         if self.final <= self.entry + CHAIN_TOL:
+            self.shipped = self.final
             self.outcome = f"ok ({self.entry}->{self.final})"
             return verts, self.outcome
         # The chain made this shape worse. Find the best snapshot we have.
@@ -834,9 +950,11 @@ class ChainGuard:
             if best_n <= self.entry:
                 break            # good enough: no worse than we started
         if best_l == "final":
+            self.shipped = self.final
             self.outcome = f"REGRESSED unrecoverable ({self.entry}->{self.final})"
             return verts, self.outcome
         self.rolled_back_to = best_l
+        self.shipped = best_n
         self.outcome = (f"ROLLED BACK to {best_l} "
                         f"({self.entry}->{self.final}, kept {best_n})")
         return best_v, self.outcome
@@ -851,7 +969,7 @@ class ChainGuard:
             return
         _append(dst_path, {"kind": "chain", "nif": str(Path(dst_path).name),
                            "shape": str(shape_name), "entry": self.entry,
-                           "final": self.final, "outcome": self.outcome,
+                           "final": self.final, "shipped": self.shipped, "outcome": self.outcome,
                            "rolled_back_to": self.rolled_back_to,
                            "extra_measurements": self.extra_measurements})
 

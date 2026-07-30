@@ -14754,6 +14754,32 @@ def convert_nif_phase2(
         return _shape_diffuse_is_body_skin(s)
 
     cbbe_body_shape = next((s for s in src_nif.shapes if _is_body_pynifly_shape(s)), None)
+    if cbbe_body_shape is None and body_names:
+        # TWO BODY DETECTORS DISAGREED, and the stricter one silently cost the
+        # conform its reference. `classify_shapes` -> `_looks_like_inline_body`
+        # already identified these shapes as the body and DROPPED them for the
+        # swap; `_is_body_pynifly_shape` then refused the same shape because its
+        # heuristic wants >= 40 bones. A BodySlide-output inline body carries
+        # only the bones its surviving verts touch -- the two hide cuirasses ship
+        # one at 26 bones -- so it fails on bone count before the texture gate is
+        # even reached.
+        #
+        # Consequence: `src_body_v_p2` stayed None, so
+        # `conform_to_source_standoff` -- the ONLY pass that reels an
+        # over-projected garment back onto the body -- never ran, and nothing
+        # anywhere recorded that. Measured: the affected piece sits 2.40u off the
+        # body at the strap line, past the MAXIMUM (1.79u) of 42 shapes where the
+        # pass did run.
+        #
+        # Deliberately a FALLBACK, not a replacement: on the 42 shapes where the
+        # first detector already answers, this cannot change which shape is
+        # picked, so it cannot move geometry that is currently correct. Largest
+        # wins because `body_names` can also carry exposed-skin slices, and the
+        # body proper is the biggest of them.
+        _bn = set(body_names)
+        _named_body = [s for s in src_nif.shapes if s.name in _bn]
+        if _named_body:
+            cbbe_body_shape = max(_named_body, key=lambda s: len(s.verts))
     if cbbe_body_shape is None and cbbe_body_ref_path is not None:
         cbbe_ref = nif_io.open_nif_retry(str(Path(cbbe_body_ref_path)))  # transient-IO resilient
         cbbe_body_shape = max(cbbe_ref.shapes, key=lambda s: len(s.verts)) if cbbe_ref.shapes else None
@@ -15180,8 +15206,15 @@ def convert_nif_phase2(
                             ube_body_nipple=body_nipple_for_p2,
                         )
                         _stage('conform', override)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        # RECORDED, not swallowed. This pass is the only one
+                        # that reels an over-projected garment back onto the
+                        # body, so when it dies the garment simply stays out
+                        # there -- and a bare `pass` made that indistinguishable
+                        # from "nothing to conform". Traced from a strap-line
+                        # gap reported in game: the pass was absent from the
+                        # per-pass trace entirely and nothing anywhere said so.
+                        failed.append((f"{s.name}:conform", repr(e)))
                 # Groove-smooth: flatten warp-induced indent grooves on tight
                 # bust cloth. Mirrors phase-1 call; near-body verts only.
                 if override is not None and body_verts_for_p2 is not None:
@@ -15491,8 +15524,16 @@ def convert_nif_phase2(
                 if _chain.rolled_back_to is not None:
                     print(f"    [chain] {s.name}: {_cv}")
                 _chain.record(dst_path, s.name)
-            except Exception:
-                pass
+                # Per-pass STANDOFF, default OFF (CBBE2UBE_STANDOFF_TRACE=1).
+                # Reads the snapshots the chain already holds, so it must run
+                # before release() drops them.
+                _chain.trace_standoff(dst_path, s.name, override)
+            except Exception as e:
+                # RECORDED. A bare `pass` here meant a shape whose verification
+                # FAILED looked exactly like one that verified clean -- the only
+                # tell was a missing chain record, which nothing checks. Same
+                # class of blindness that hid the conform skip for a full day.
+                failed.append((f"{s.name}:chain-verify", repr(e)))
             finally:
                 _chain.release()      # snapshots of a torso are not small
         if _tracer is not None:

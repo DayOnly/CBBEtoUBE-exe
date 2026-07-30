@@ -102,9 +102,33 @@ Frame corrections, chain verdicts and standoff distributions append to
 `standoff_audit.jsonl` at the output mod root. Failed measurements are recorded
 too: one that errored must not look like one that found nothing.
 
-> **Known gap.** The `ChainGuard` call site swallows exceptions, so a shape whose
-> verification *failed* currently looks like one that verified clean. The tell is
-> an armed shape with no `chain` record in the sink.
+Records carry `entry`, `final` and **`shipped`**. Read `shipped`, not `final`:
+when a rollback fires, `final` is the measurement that was *rejected*. On the
+first pack-wide run that distinction was 174 exposed verts versus 101 actually
+shipped, and made a run with **zero** regressions read as "20 shapes ended worse".
+
+### The pass that ran on nothing
+
+`conform_to_source_standoff` is the only pass that reels an over-projected
+garment back onto the body; everything else nudges outward. It was silently
+skipped on some pieces because **two body detectors disagreed**:
+`classify_shapes` → `_looks_like_inline_body` identified a shape as the body and
+dropped it for the swap, while `_is_body_pynifly_shape` refused the same shape
+for having fewer than 40 bones — a BodySlide-output inline body only carries the
+bones its surviving verts touch, and the hide cuirasses ship one with 26. So
+`src_body_v_p2` stayed `None` and the gate never opened.
+
+Nothing recorded it: no exception, no warning, the pass simply absent from the
+trace. It surfaced only because the per-pass **standoff** trace was added to
+chase a gap reported in game. Cost on the affected piece: 2.40u of standoff at
+the strap line, against a 1.79u maximum across 42 shapes where the pass ran;
+with the fallback it lands at 1.72u with clipping unchanged at 0.00%.
+
+The fix is a fallback to the shapes `classify_shapes` already named, reached
+only when the strict detector returns nothing — so it cannot change which shape
+is picked where that detector already answers (verified byte-identical on a
+piece that previously worked). It was rare: 42 of 42 armed shapes in a 9-mod
+census ran the pass.
 
 ---
 

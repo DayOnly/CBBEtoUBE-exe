@@ -190,3 +190,50 @@ helped. That is how one frame error corrupted all twelve in silence.
 - Loose robe chests can still bake in roughly +3u of over-inflation from the
   static warp/clearance path.
 - The chain-gate on finalize remains reverted.
+
+## 1.2.1 — unreleased
+
+Follow-up to a gap reported in game on a shipped 1.2 mesh. Everything here came
+from the pack-wide telemetry 1.2 added.
+
+### Fixed — the only pull-in pass was silently skipped
+
+`conform_to_source_standoff` reels an over-projected garment back onto the body;
+every other pass nudges outward. On some pieces it never ran, because **two body
+detectors disagreed**. `classify_shapes` identified a shape as the body and
+dropped it for the swap; `_is_body_pynifly_shape` then refused the same shape for
+carrying fewer than 40 bones — a BodySlide-output inline body only carries the
+bones its surviving verts touch, and the affected pieces ship one with 26. The
+source-body reference stayed `None` and the gate never opened.
+
+No exception, no warning — the pass was simply absent. It was found only because
+the per-pass standoff trace below was built to chase the report.
+
+Measured on the affected piece: strap-line standoff **2.40u → 1.72u**, against a
+**1.79u maximum** across 42 shapes where the pass did run. Clipping unchanged at
+0.00%, so the gap closed without trading it for skin poking through.
+
+Rare, not systemic: 42 of 42 armed shapes in a 9-mod census already ran the pass.
+The fix is a fallback reached only when the strict detector finds nothing, so it
+cannot alter pieces that already work — verified byte-identical on one.
+
+### Added — per-pass STANDOFF trace (`CBBE2UBE_STANDOFF_TRACE=1`, default off)
+
+The existing trace measures clipping and is blind to the opposite defect. This
+reports standoff per pass in 3u slabs up the torso, reading the snapshots the
+chain already keeps, so it needs no re-conversion. Slabs rather than one window:
+a single median over z105–114 read identically for all nine arms of a bisect
+because hit density varies ~10× across it.
+
+### Fixed — telemetry that misreported itself
+
+- **`shipped`** added to chain records. `final` is the *rejected* measurement
+  when a rollback fires; on the first pack-wide run that read as 174 exposed
+  verts against 101 actually shipped, and made a run with zero regressions look
+  like 20 shapes ended worse.
+- **`path`** added to every record. `nif` is a bare filename and filenames repeat
+  across mods — three ship a `cuirassmedium_1.nif` — so a record could not be
+  traced to the piece it described.
+- The `conform` and chain-verify call sites now **record** their exceptions
+  instead of `except Exception: pass`. Both made a failure indistinguishable from
+  "nothing to do".
