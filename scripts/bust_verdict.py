@@ -21,28 +21,56 @@ Follow is not health. A piece measured at 0.78 follow with a body-matched
 per-bone distribution was still reported "breasts fully outside" -- so once
 follow is good, three candidates remain, and they need different fixes:
 
-  CUT      the body comes through the garment AT REST -> static containment
-           is bad at bind. Offline-fixable (clearance / containment).
-  MORPH    contained at rest, but the body inflates past the garment under
-           its own breast morph, because the garment's TRI does not carry the
-           matching inflation. Offline-fixable (TRI / morph-follow).
-  MOTION   contained at rest AND under morph -> what remains is SMP travel,
-           which NOTHING here can measure (the pose harness poses a skeleton,
-           it does not simulate). In-game A/B only.
+  CUT          skin comes through the garment AT REST. Offline-fixable
+               (minimum push / re-cut).
+  OVERINFLATED the garment covers, but stands further off the body than a
+               correctly-fitted armour does. NOT visible to a clipping test at
+               all -- see below.
+  MORPH        clean at rest, but the body inflates past the garment under its
+               own breast morph because the garment's TRI does not carry the
+               matching inflation. Offline-fixable (TRI / morph-follow).
+  MOTION       clean at rest AND under morph -> what remains is SMP travel,
+               which NOTHING here can measure (the pose harness poses a
+               skeleton, it does not simulate). In-game A/B only.
 
     python scripts/bust_verdict.py <piece_1.nif> [<garment>] [--anchor <good_1.nif>]
+
+RETIRED 2026-07-29: `mp.containment`. This script used to call a body vert
+"surrounded" when >=5 of 10 cone rays were blocked. That metric, and signed
+distance with it, scored the user's CONFIRMED-CLEAN armour WORSE than the one
+they can see clipping (32.4% vs 23.9%) -- anti-correlated with ground truth at
+every threshold, because neither separates "skin outside the garment SURFACE"
+from "skin outside the garment's COVERAGE". Everything ever tuned against them
+was tuning noise. It now uses the validated clip test from `standoff_audit`,
+which reads 0.00% on that clean armour and 8.87% on the clipping one.
+
+Two consequences worth knowing:
+  * the old "NO VERDICT without --anchor" is gone. It existed because
+    containment read ~7.6% on a piece confirmed GOOD, so no absolute threshold
+    could work. The clip test reads 0.0% there, so CUT is now decidable on its
+    own. --anchor is now REQUIRED only for the OVERINFLATED verdict, because
+    standoff is a distribution over whichever skin the mask selects and a
+    figure from a different mask is not comparable (a front-only 1.15u judged
+    against a whole-band subject labels the CLEAN armour overinflated).
+  * OVERINFLATED is a new verdict this script could not previously reach.
+    Clipping has NO UPPER BOUND -- leather three units too far off the body
+    scores perfectly -- and a probe tuned against clipping alone was reported
+    in game as overinflated twice before anything measured it. STANDOFF is
+    that measurement.
 
 CONTROLS (every run, all ABORT -- "no problem" and "cannot see the problem"
 must not print the same thing):
   * POLARITY/NEGATIVE  the body's CALF band scored against a BUST garment must
-    read almost fully EXPOSED and almost nothing surrounded. A bust garment
-    cannot contain a calf; if this reads "covered", the exposure test is
-    inverted. This control exists because that inversion has happened twice in
-    this repo -- once in a census, and once in the first draft of THIS script
-    (`ray_exposure` returns True = ESCAPED/EXPOSED, not True = HIT).
+    read essentially zero COVERED. A bust garment cannot cover a calf; if this
+    reads covered, the test is inverted. This control exists because that
+    inversion has happened twice in this repo -- once in a census, and once in
+    the first draft of THIS script (`ray_exposure` returns True = ESCAPED, not
+    True = HIT).
   * ORIENTATION  the body's own band cast against the BODY ITSELF must read
     mostly exposed: rays leave along outward normals and escape. A low number
     means the normals point inward and every coverage figure is meaningless.
+  * EQUALITY  the fast tester is checked against `mp.clipping_report` on the
+    subject's own band before any number is reported.
   * RESOLUTION  the jitter noise floor prints BEFORE any verdict, and a delta
     under it is reported as NOT A RESULT.
 """
@@ -59,6 +87,7 @@ sys.path.insert(0, str(_REPO))
 sys.path.insert(0, str(_REPO / ".pynifly"))
 
 from scripts import mesh_penetration as mp          # noqa: E402
+from scripts import standoff_audit as sa            # noqa: E402
 from src.body_zones import BREAST_Z                 # noqa: E402
 import src.nif_convert as nc                        # noqa: E402
 
@@ -66,10 +95,17 @@ import src.nif_convert as nc                        # noqa: E402
 # drifted off the anatomy before (upper chest z102-112 is NOT the breast).
 BUST = BREAST_Z              # (90.0, 102.0), apex ~95.5
 CALF = (10.0, 30.0)          # negative-control band a bust garment cannot cover
-SURROUND_MIN = 5             # >=5/10 cone rays blocked = poke-through
-CTRL_CALF_EXPOSED_MIN = 0.90
-CTRL_CALF_SURROUND_MAX = 0.05
+CTRL_CALF_COVERED_MAX = 5.0      # % area; a bust garment cannot cover a calf
 CTRL_SELF_EXPOSED_MIN = 0.80
+# A clean armour reads 0.0% clipping, so this is a real threshold rather than a
+# tuned one; the margin is for mesh-resolution noise only.
+CLIP_BAD = 1.0               # % area of the bust band clipping = CUT
+# There is NO hardcoded standoff anchor, deliberately. Standoff is a
+# distribution over whichever skin the mask selects, and a number measured on a
+# different mask is not comparable: judging a whole-bust-band subject against a
+# front-only figure (1.15u) labelled the user's CONFIRMED-CLEAN armour
+# OVERINFLATED on its own geometry. The anchor must be measured in the same run
+# over the same band, so OVERINFLATED requires --anchor.
 
 
 def _shape(nf, name=None, exclude=()):
@@ -112,8 +148,8 @@ def _band(V, lo, hi):
 
 def _sample(idx, cap):
     """Deterministic stride subsample. Ray casting is O(rays x triangles) and
-    the full bust band against a cuirass is ~19 full casts once containment
-    and the noise floor are included -- minutes per piece. A strided sample
+    the full bust band against a cuirass is several full casts once the
+    noise floor is included -- minutes per piece. A strided sample
     is unbiased for a FRACTION (which is what every threshold here uses) and
     the sampled size is always printed: report the population the metric
     actually saw, never the one it was pointed at."""
@@ -123,21 +159,32 @@ def _sample(idx, cap):
     return idx[::step]
 
 
-def _expose(bV, bN, idx, gV, gT):
-    """(n_checked, n_exposed, n_surrounded) for body verts `idx` vs a garment.
+def _clip(bV, bT, bN, idx, gV, gT, va):
+    """Covered / CLIPPING / uncovered for body verts `idx`, area-weighted.
 
-    `mp.ray_exposure` returns True = EXPOSED (the ray escaped without crossing
-    the garment). Do NOT invert it -- that is the documented metric-inversion
-    bug, and it bit this script's first draft."""
+    Replaces the `mp.containment` cone count this script used to call
+    "surrounded". That reading was anti-correlated with ground truth: it scored
+    the user's confirmed-CLEAN armour worse than the one they can see clipping.
+    This is the test calibrated to 0.00% / 8.87% on that pair."""
     if not len(idx):
-        return 0, 0, 0
-    exposed_mask = mp.ray_exposure(bV[idx], bN[idx], gV, gT)
-    exposed = np.flatnonzero(exposed_mask)
-    if not len(exposed):
-        return len(idx), 0, 0
-    pts, nrm = bV[idx][exposed], bN[idx][exposed]
-    blocked = mp.containment(pts, nrm, gV, gT)
-    return len(idx), int(len(exposed)), int((blocked >= SURROUND_MIN).sum())
+        return {"n": 0, "clipping_pct": None, "covered_pct": None,
+                "uncovered_pct": None}
+    return sa.ClipTester(gV, gT).report(bV, bT, bN, idx, va, oriented=True)
+
+
+def _standoff(bV, bN, idx, gV, gT):
+    """How far off the body the garment sits, over covered skin only.
+
+    The counter-metric. Clipping has no upper bound, so a garment that has been
+    inflated until nothing pokes scores perfectly on it -- which is exactly the
+    defect that reached the user twice before anything measured it."""
+    if not len(idx):
+        return {"n": 0, "median": None, "p90": None, "max": None}
+    s = sa.ClipTester(gV, gT).standoff(bV, bN, idx, tmax=12.0)
+    if not len(s):
+        return {"n": 0, "median": None, "p90": None, "max": None}
+    return {"n": int(len(s)), "median": float(np.median(s)),
+            "p90": float(np.percentile(s, 90)), "max": float(s.max())}
 
 
 def _dense_morph(morph, n_verts):
@@ -210,18 +257,25 @@ def analyse(path, garment_name=None, label="", cap=900, resolution=True):
     print(f"    bust band: {len(bust_all)} verts, measuring {len(bust)} "
           f"(stride sample; all figures below are over THAT sample)")
     fails = []
+    va = sa.vert_areas(bV, bT)
+
+    # --- CONTROL: the fast tester must equal the reference ---
+    m_bust = np.zeros(len(bV), bool)
+    m_bust[bust] = True
+    if not sa.selftest(bV, bT, bN, gV, gT, m_bust, "subject bust band"):
+        fails.append("EQUALITY control: the fast clip test disagrees with "
+                     "mp.clipping_report -- it is a different metric")
 
     # --- CONTROL: polarity / negative ---
-    n_c, e_c, s_c = _expose(bV, bN, calf, gV, gT)
-    if n_c:
-        f_exp, f_sur = e_c / n_c, s_c / n_c
-        print(f"    [control] calf band vs bust garment: exposed "
-              f"{f_exp*100:.1f}% surrounded {f_sur*100:.1f}% "
-              f"(expect ~100% / ~0%)")
-        if f_exp < CTRL_CALF_EXPOSED_MIN or f_sur > CTRL_CALF_SURROUND_MAX:
+    c_c = _clip(bV, bT, bN, calf, gV, gT, va)
+    if c_c["n"] and c_c["covered_pct"] is not None:
+        print(f"    [control] calf band vs bust garment: covered "
+              f"{c_c['covered_pct']:.1f}% clipping {c_c['clipping_pct']:.1f}% "
+              f"(expect ~0% / ~0%)")
+        if c_c["covered_pct"] > CTRL_CALF_COVERED_MAX:
             fails.append("POLARITY/NEGATIVE control: a bust garment appears to "
-                         "cover the calf -- the exposure test is inverted or "
-                         "the garment is not what it claims to be")
+                         "cover the calf -- the test is inverted or the "
+                         "garment is not what it claims to be")
     else:
         fails.append("NEGATIVE control has no data (no calf-band verts)")
 
@@ -231,7 +285,9 @@ def analyse(path, garment_name=None, label="", cap=900, resolution=True):
     # "MOTION (by elimination)" -- the one verdict that says stop measuring and
     # go in-game -- on a piece where NOTHING was measured. A control that can
     # be skipped is not a control.
-    n_s, e_s, _ = _expose(bV, bN, bust, bV, bT)
+    n_s = len(bust)
+    e_s = (int(mp.ray_exposure(bV[bust], bN[bust], bV, bT).sum())
+           if n_s else 0)
     if not n_s:
         fails.append("ORIENTATION control has NO DATA: zero bust-band verts "
                      "on the body (wrong body, wrong band, or a morphed "
@@ -260,10 +316,17 @@ def analyse(path, garment_name=None, label="", cap=900, resolution=True):
         print(f"    [resolution] SKIPPED (--no-resolution); assuming a "
               f"{noise:.0f}-vert floor")
 
-    n_b, exp, sur = _expose(bV, bN, bust, gV, gT)
-    print(f"    AT REST   bust verts {n_b}: exposed {exp} "
-          f"({100.0*exp/max(1,n_b):.1f}%), of those SURROUNDED "
-          f"(body coming THROUGH the garment) {sur}")
+    rest = _clip(bV, bT, bN, bust, gV, gT, va)
+    so = _standoff(bV, bN, bust, gV, gT)
+    n_b = rest["n"]
+    print(f"    AT REST   bust verts {n_b}: CLIPPING "
+          f"{rest['clipping_pct']:.2f}% of area  (covered "
+          f"{rest['covered_pct']:.1f}%, uncovered {rest['uncovered_pct']:.1f}%)")
+    if so["n"]:
+        print(f"    STANDOFF  over covered skin: median {so['median']:.2f}u  "
+              f"p90 {so['p90']:.2f}u  max {so['max']:.2f}u  ({so['n']} verts)")
+    else:
+        print("    STANDOFF  no covered skin -- nothing to measure")
 
     # --- MORPH: inflate body AND garment by their own TRI morphs ---
     stem = Path(path).stem
@@ -282,10 +345,14 @@ def analyse(path, garment_name=None, label="", cap=900, resolution=True):
             bV2 = bV + bd
             gV2 = gV + gd if gd is not None else gV
             bN2 = _normals(body, bV2)
-            _, m_exp, m_sur = _expose(bV2, bN2, bust, gV2, gT)
+            # area weights on the MORPHED body: weighting a morphed state by
+            # bind areas is a real error and it read 6.82% where the reference
+            # read 7.33% on the same configuration
+            m = _clip(bV2, bT, bN2, bust, gV2, gT, sa.vert_areas(bV2, bT))
+            m_sur = m["clipping_pct"]
+            m_exp = m["uncovered_pct"]
             print(f"    UNDER MORPH (body={bname!r}, garment={gname!r}): "
-                  f"exposed {m_exp} ({100.0*m_exp/max(1,n_b):.1f}%), "
-                  f"surrounded {m_sur}")
+                  f"CLIPPING {m_sur:.2f}% (uncovered {m_exp:.1f}%)")
             if gd is None:
                 print("      NOTE: the garment carries NO in-band morph -- it "
                       "cannot inflate with the body at all")
@@ -299,65 +366,78 @@ def analyse(path, garment_name=None, label="", cap=900, resolution=True):
         for f in fails:
             print("   " + f)
         sys.exit(3)
-    return {"bust": n_b, "exp": exp, "sur": sur,
-            "m_exp": m_exp, "m_sur": m_sur, "noise": noise}
-
-
-def _frac(r, key):
-    return r[key] / max(1, r["bust"]) if r.get(key) is not None else None
+    return {"bust": n_b, "clip": rest["clipping_pct"],
+            "covered": rest["covered_pct"], "uncovered": rest["uncovered_pct"],
+            "standoff": so, "m_clip": m_sur, "m_unc": m_exp, "noise": noise}
 
 
 def verdict(r, anchor=None):
-    """Classify the subject -- ANCHOR-RELATIVE, never on an absolute count.
+    """Classify the subject on the validated clip test AND standoff.
 
-    Calibration that forced this: the hide cuirass CONFIRMED GOOD in game
-    measures 7.6% of its bust verts 'surrounded' (body inside the garment's
-    coverage cone). An absolute threshold therefore calls a healthy piece
-    CUT, and would have sent the next session into clearance work -- the
-    exact move that produced three reverts. Chest containment reads high
-    everywhere (it is 5-7x any other region even on clean armour), so the
-    only thing the number can support is a COMPARISON against a piece whose
-    in-game verdict is known."""
+    Both are needed and neither is sufficient. Clipping alone cannot see an
+    overinflated garment -- it has no upper bound, so leather three units too
+    far off the body scores 0.0%, and a probe tuned against it alone reached
+    the user as 'overinflated' twice. Standoff alone cannot see a piece that is
+    tight and pierced. Judged in that order: pierced is worse than baggy.
+
+    The old anchor requirement is gone. It existed because `mp.containment`
+    read ~7.6% on a piece confirmed GOOD in game, so no absolute threshold
+    could work. The clip test reads 0.0% there, so CUT is decidable alone. An
+    anchor measured in the same run is still preferred for standoff, because a
+    hardcoded number cannot know the body it is being compared on.
+    """
     print("\n--- verdict ---")
-    sub_rest = _frac(r, "sur")
-    sub_morph = _frac(r, "m_sur")
-    print(f"  subject at rest: {r['sur']}/{r['bust']} surrounded "
-          f"({sub_rest*100:.1f}%)"
-          + (f", under morph {r['m_sur']}/{r['bust']} ({sub_morph*100:.1f}%)"
-             if sub_morph is not None else ""))
+    rest, morph = r["clip"], r["m_clip"]
+    print(f"  at rest: CLIPPING {rest:.2f}% of bust area"
+          + (f", under morph {morph:.2f}%" if morph is not None else ""))
+    so = r.get("standoff") or {}
+    anc_so = (anchor or {}).get("standoff") or {}
+    if so.get("n"):
+        print(f"  standoff median {so['median']:.2f}u p90 {so['p90']:.2f}u"
+              + (f" vs anchor {anc_so['median']:.2f}u / {anc_so['p90']:.2f}u"
+                 if anc_so.get("n") else "  (no anchor: fit not judged)"))
 
-    # MORPH is judged WITHIN the subject (rest vs morphed), so it needs no
-    # anchor -- a garment that contains the bust at rest and not under the
-    # body's own slider has a morph-follow defect regardless of calibration.
-    noise_frac = r["noise"] / max(1, r["bust"])
-    if sub_morph is not None and sub_morph > sub_rest + max(2 * noise_frac, 0.03):
-        print(f"  MORPH: contained at rest but not under the body's own breast "
-              f"morph (+{100*(sub_morph-sub_rest):.1f} pts, noise "
-              f"+/-{100*noise_frac:.1f}). The garment does not inflate with "
-              f"the body -- TRI / morph-follow, offline-fixable.")
+    # CUT first: a garment that is pierced at rest is broken regardless of fit.
+    # `noise` is a flipped-VERT count and clipping is an AREA percentage, so
+    # this floor is an order-of-magnitude guard, not a conversion. It only
+    # ever raises the threshold, never lowers it.
+    noise_pts = 100.0 * r["noise"] / max(1, r["bust"])
+    if rest is not None and rest > max(CLIP_BAD, noise_pts):
+        print(f"  CUT: skin comes through AT REST ({rest:.2f}% > "
+              f"{max(CLIP_BAD, noise_pts):.2f}% threshold). A clean armour "
+              f"reads 0.0% here. Offline-fixable -- MINIMUM push to clear it, "
+              f"then re-check standoff; pushing until nothing clips is what "
+              f"produced the overinflated probe.")
         return
 
-    if anchor is None:
-        print("  NO VERDICT: an absolute containment count cannot separate CUT "
-              "from MOTION -- the in-game-GOOD reference piece reads ~7-8% "
-              "surrounded at the bust too. Re-run with --anchor <a piece you "
-              "have confirmed GOOD in game> to calibrate.")
+    bad = (sa.check(so, anc_so, keys=("median", "p90"))
+           if so.get("n") and anc_so.get("n") else [])
+    if bad:
+        print(f"  OVERINFLATED: it covers, but it stands off further than a "
+              f"correctly-fitted armour:")
+        for b in bad:
+            print(f"    {b}")
+        print("  Not visible to a clipping test at any threshold. Re-solve "
+              "for the minimum push that holds coverage.")
         return
 
-    anc_rest = _frac(anchor, "sur")
-    print(f"  anchor (in-game GOOD): {anchor['sur']}/{anchor['bust']} "
-          f"({anc_rest*100:.1f}%)")
-    margin = max(2 * noise_frac, 0.03)
-    if sub_rest > anc_rest + margin:
-        print(f"  CUT: the subject is materially worse AT REST than a piece "
-              f"confirmed good in game (+{100*(sub_rest-anc_rest):.1f} pts > "
-              f"{100*margin:.1f} margin). Offline-fixable -- clearance / "
-              f"containment, NOT more weight.")
+    if morph is not None and morph > max(CLIP_BAD, noise_pts):
+        print(f"  MORPH: clean at rest ({rest:.2f}%) but pierced under the "
+              f"body's own breast morph ({morph:.2f}%). The garment does not "
+              f"inflate with the body -- TRI / morph-follow, offline-fixable.")
         return
-    print(f"  MOTION (by elimination): at rest the subject is not measurably "
-          f"worse than the in-game-GOOD anchor, and it does not degrade under "
-          f"morph. What remains is SMP travel, which nothing in this repo can "
-          f"measure -- the harness poses a skeleton, it does not simulate.")
+
+    for m in (sa.margins(so, anc_so, keys=("median", "p90"))
+              if so.get("n") and anc_so.get("n") else []):
+        print(f"  MARGINAL fit: {m}")
+    if not anc_so.get("n"):
+        print("  NOTE: no --anchor, so OVERINFLATED could not be tested. A "
+              "garment inflated until nothing pokes reads 0.0% clipping, so "
+              "'clean at rest' alone does not mean well fitted.")
+    print(f"  MOTION (by elimination): clean at rest, fit within the reference, "
+          f"and no degradation under morph. What remains is SMP travel, which "
+          f"nothing in this repo can measure -- the harness poses a skeleton, "
+          f"it does not simulate.")
     print("  Do NOT chase this with more weight or clearance on the strength "
           "of an offline number: that is what produced three reverts. Next "
           "step is an in-game A/B of ONE lever.")

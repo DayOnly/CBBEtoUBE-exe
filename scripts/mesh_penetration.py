@@ -288,7 +288,29 @@ def cone_dirs(normals, half_deg=50.0, k=10):
 
 
 def containment(exposed_pts, exposed_normals, verts, tris, half_deg=50.0, k=10):
-    """How much garment surrounds each exposed body vertex, as blocked/k.
+    """DISCREDITED AND ORPHANED (2026-07-29). Do not use for fit work.
+
+    Measured against user-supplied in-game ground truth, this scored the
+    CONFIRMED-CLEAN armour WORSE than the one the user can see clipping
+    (32.4% vs 23.9%), at every depth threshold -- ANTI-CORRELATED. It cannot
+    separate "skin is outside the garment SURFACE" from "skin is outside the
+    garment's COVERAGE", so a small revealing garment scores terribly by
+    design and the number is dominated by rim geometry. An entire evening of
+    parameter sweeps tuned against it was tuning noise.
+
+    Superseded by `clipping_report` in this module (0.00% on that clean
+    armour, 8.87% on the clipping one), and by `scripts/standoff_audit.py`
+    which pairs it with the STANDOFF counter-metric -- necessary because
+    clipping has no upper bound and cannot see an over-inflated garment.
+
+    Call sites: NONE as of 2026-07-29 (`bust_verdict.py` was migrated off it).
+    Kept, not deleted, only because this repo has a documented history of
+    dead-code false positives -- verify before removing. If you are reaching
+    for this, you almost certainly want `standoff_audit.clip_stats`.
+
+    Original docstring follows.
+
+    How much garment surrounds each exposed body vertex, as blocked/k.
 
     THE SOUND POKE TEST, and it replaces the rim-distance rule in
     `classify_exposure`, which is UNSOUND on boundary-heavy garments: that rule calls
@@ -401,7 +423,26 @@ def noise_floor(origins, normals, verts, tris, *, amps=(0.005, 0.01, 0.02),
 #    gate is visible as such.
 def poke_report(body_verts, body_tris, garments, *, contacts=(1.5, 2.0, 3.0),
                 depth_min=0.05, mask=None):
-    """Area-weighted skin-through-armour statistic against the WHOLE garment.
+    """SUPERSEDED AND ORPHANED (2026-07-29). Prefer `clipping_report`.
+
+    Built on `surface_penetration`'s signed distance, which shares
+    `containment`'s defect: it cannot tell "skin outside the garment SURFACE"
+    from "skin outside the garment's COVERAGE". The 2026-07-29 bust probe was
+    solved against this family of requirement and produced a mesh the user
+    reported OVERINFLATED in game (standoff 2.88u where their clean armour
+    sits at 1.15u) -- the metric's noise baked into geometry.
+
+    Use `clipping_report` (validated 0.00% clean / 8.87% clipping on the
+    user's own ground-truth pair) and pair it with the standoff check in
+    `scripts/standoff_audit.py`, because clipping alone has NO UPPER BOUND and
+    scores a garment three units too large as perfect.
+
+    Call sites: NONE as of 2026-07-29. Kept rather than deleted per this
+    repo's dead-code false-positive history -- verify before removing.
+
+    Original docstring follows.
+
+    Area-weighted skin-through-armour statistic against the WHOLE garment.
 
     `garments`: list of (verts, tris, normals|None) -- every VISIBLE garment
     shape of the piece. A body vert inside ANY of them is covered.

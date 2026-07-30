@@ -24,6 +24,22 @@ landed pack-wide -- and that nothing regressed:
   C  bust follow ratio          (torso garments; vs the pre-reconvert census)
   D  morph/physics invariants   (BODYTRI record present when a TRI exists;
                                  HDT link present when the piece has an XML)
+  E  FIT: clipping AND standoff (bust front, union of visible garment)
+
+WHY E EXISTS. A/B/C/D can all pass on a garment that stands three units off the
+body. Clipping has no upper bound, so a piece inflated until nothing pokes
+scores perfectly on every geometric check this script had -- and that is not
+hypothetical: a bust probe tuned against clipping alone was reported IN GAME as
+overinflated, twice, while nothing here could see it. STANDOFF is the
+counter-metric, and E is the pack-wide gate that would have caught it.
+
+E needs an ANCHOR, and it must be measured in the SAME RUN over the SAME MASK:
+standoff is a distribution over whichever skin the mask selects, and comparing
+against a figure taken on a different mask labels a correctly-fitted armour
+overinflated (measured). `CTRL_SPLIT_SUBSTR` -- the piece the user confirmed
+CLEAN and correctly fitted in game -- is that anchor, and it is already forced
+into every sample. If it is absent, stale, or does not read ~0% clipping, E
+certifies nothing and says so rather than passing.
 
 WHY MESH-BASED, NOT LOG-BASED. The converter fans NIF work across a process
 pool, and in the frozen WINDOWED exe a worker's `sys.stdout`/`sys.stderr` can
@@ -61,6 +77,24 @@ WRITE_MIN = 1e-4
 CTRL_SPLIT_SUBSTR = "armor/hide/f/cuirasslight_1.nif"     # MUST be split
 CTRL_NOSPLIT_SUBSTR = "armor/bandit/body1f_1.nif"          # author already split
 
+# --- E (fit) ---
+# Front-only, and the breast band proper rather than the wider BAND above: a
+# mask that includes skin facing away from the garment makes standoff
+# meaningless (one ray reaches a distant panel -- the clean armour reads max
+# 10.21u over the full bust band and 2.01u over the front).
+FIT_BAND = (90.0, 102.0)
+FIT_MIN_VERTS = 50          # below this the piece does not cover the bust
+# Fit is only defined where the garment actually covers the bust. A piece that
+# covers a sliver has a standoff distribution built from a handful of stray
+# hits, and classifying it is the "metric reports a number it cannot support"
+# failure: the first run of E flagged a FIRST-PERSON mesh at 8.47u standoff,
+# which is not an overinflated cuirass, it is arms. Judge only what is covered;
+# report the rest as unjudged rather than dropping them silently.
+FIT_MIN_COVERED = 25.0      # % of the bust-front area the garment must cover
+FIT_CLIP_BAD = 1.0          # % of bust-front AREA clipping; a clean piece is 0.0
+CTRL_ANCHOR_CLIP_MAX = 0.5  # the anchor is user-confirmed CLEAN; if the metric
+                            # disagrees, the metric is wrong for this run
+
 _nc = None
 _np = None
 
@@ -97,7 +131,7 @@ def check_one(rel_and_root):
     p = Path(root) / rel
     rec = {"rel": rel, "zero_weight": [], "clones": [], "xml_repointed": None,
            "follow": {}, "bodytri": None, "hdt": None, "err": None,
-           "mtime": 0.0}
+           "mtime": 0.0, "fit": None}
     try:
         rec["mtime"] = p.stat().st_mtime
         pyn = _nc._pynifly()
@@ -178,6 +212,54 @@ def check_one(rel_and_root):
                 bm = float(_np.mean([_breast(bW[int(j)]) for j in idx[keep]]))
                 if bm > 1e-6:
                     rec["follow"][nm] = round(gm / bm, 4)
+
+            # --- E: FIT -- clipping AND standoff over the bust front ---
+            # The UNION of visible garment shapes, not one at a time: scoring a
+            # shape alone counts skin covered by a SIBLING as exposed, and half
+            # of converted output has more than one visible shape.
+            from scripts import standoff_audit as _sa
+            parts = []
+            for s in nf.shapes:
+                nm = s.name or ""
+                if (nm == "BaseShape" or nm in colliders
+                        or _nc._is_inline_body_name(nm)):
+                    continue
+                if int(getattr(s, "flags", 0) or 0) & 0x1:
+                    continue                       # hidden (collider clone)
+                if not any(v for v in (s.textures or {}).values()):
+                    continue                       # not rendered
+                try:
+                    parts.append((_wv(s)[0],
+                                  _np.asarray(s.tris, _np.int64).reshape(-1, 3)))
+                except Exception:
+                    continue
+            bT = _np.asarray(body.tris, _np.int64).reshape(-1, 3)
+            bN = _np.asarray(body.normals, _np.float64)
+            bN = bN / _np.clip(_np.linalg.norm(bN, axis=1, keepdims=True),
+                               1e-9, None)
+            zz = bV[:, 2]
+            fmask = ((zz >= FIT_BAND[0]) & (zz <= FIT_BAND[1])
+                     & (bV[:, 1] > 2.0))
+            if parts and int(fmask.sum()) >= FIT_MIN_VERTS:
+                gV_u = _np.concatenate([v for v, _t in parts])
+                off, tl = 0, []
+                for v, t in parts:
+                    tl.append(t + off)
+                    off += len(v)
+                gT_u = _np.concatenate(tl)
+                idxf = _np.flatnonzero(fmask)
+                ct = _sa.ClipTester(gV_u, gT_u)
+                rp = ct.report(bV, bT, bN, idxf, _sa.vert_areas(bV, bT),
+                               oriented=True)
+                so = ct.standoff(bV, bN, idxf, tmax=12.0)
+                if rp["covered_pct"] is not None and len(so):
+                    rec["fit"] = {
+                        "clip": round(float(rp["clipping_pct"]), 3),
+                        "covered": round(float(rp["covered_pct"]), 2),
+                        "median": round(float(_np.median(so)), 3),
+                        "p90": round(float(_np.percentile(so, 90)), 3),
+                        "n": int(len(so)),
+                    }
     except Exception as e:
         rec["err"] = f"{type(e).__name__}: {e}"
     return rec
@@ -186,6 +268,13 @@ def check_one(rel_and_root):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--limit", type=int, default=0)
+    ap.add_argument("--weights", choices=("both", "1", "0"), default="both",
+                    help="which weight files to read. BOTH by default: the "
+                         "checks used to glob *_1.nif only, and _0 is not a "
+                         "scaled copy of _1 -- one cuirass measures 4.52%% "
+                         "bust-front clipping at weight 1 and 9.48%% at "
+                         "weight 0, so half the shipped output was invisible "
+                         "to every check here.")
     ap.add_argument("--workers", type=int, default=8)
     ap.add_argument("--baseline", default="", help="pre-reconvert census jsonl")
     ap.add_argument("--stale-hours", type=float, default=6.0,
@@ -202,13 +291,18 @@ def main():
         print(f"ABORT: output not found at {root}", file=sys.stderr)
         sys.exit(3)
 
-    excl = re.compile(r"1stperson", re.I)
-    rels = [str(p.relative_to(root)) for p in root.rglob("*_1.nif")
-            if not excl.search(str(p))]
-    rels.sort()
+    # "1stp" as well as "1stperson": the Ysmir set uses the short prefix and a
+    # first-person mesh slipped into E's population on the first run.
+    excl = re.compile(r"1stperson|1stp", re.I)
+    pats = {"both": ("*_1.nif", "*_0.nif"), "1": ("*_1.nif",),
+            "0": ("*_0.nif",)}[args.weights]
+    rels = sorted({str(p.relative_to(root)) for pat in pats
+                   for p in root.rglob(pat) if not excl.search(str(p))})
     # Sanity-check the DISCOVERED population, before --limit: limiting is a
     # debugging aid and must not trip the "wrong root" guard.
-    print(f"population: {len(rels)} pieces under {root}")
+    n1 = len([r for r in rels if r.lower().endswith("_1.nif")])
+    print(f"population: {len(rels)} piece(s) under {root} "
+          f"({n1} at weight 1, {len(rels) - n1} at weight 0)")
     if len(rels) < 100:
         print("ABORT: population implausibly small -- wrong root, or the "
               "reconvert did not finish", file=sys.stderr)
@@ -301,6 +395,28 @@ def main():
         fails.append("CONTROL: zero follow measurements -- the metric saw "
                      "nothing (band/body resolution broken?)")
 
+    # ---- E CONTROLS: the fit anchor must exist, be fresh, and be CLEAN ----
+    # Without a same-run anchor E cannot judge fit at all, and must say so
+    # rather than pass: a garment inflated until nothing pokes reads 0.0%
+    # clipping, so "no clipping anywhere" is not evidence of good fit.
+    fit_recs = [r for r in recs if r.get("fit")]
+    anchor_fit = (c_split or {}).get("fit")
+    fit_judged = True
+    if anchor_fit is None:
+        fit_judged = False
+        fails.append(f"CONTROL: no FIT anchor -- {CTRL_SPLIT_SUBSTR} produced "
+                     f"no standoff measurement, so E judged nothing")
+    elif c_split in stale:
+        fit_judged = False
+        fails.append("CONTROL: the FIT anchor is STALE -- E cannot certify fit")
+    elif anchor_fit["clip"] > CTRL_ANCHOR_CLIP_MAX:
+        fit_judged = False
+        fails.append(f"CONTROL: the FIT anchor (user-confirmed CLEAN in game) "
+                     f"reads {anchor_fit['clip']:.2f}% clipping -- the metric "
+                     f"disagrees with ground truth, so nothing E says counts")
+    if not fit_recs:
+        fails.append("CONTROL: zero FIT measurements -- E saw nothing")
+
     print(f"\nwrote {out}")
     print(f"errors reading: {len(errs)}")
     for e in errs[:5]:
@@ -357,15 +473,86 @@ def main():
     for r in no_hdt[:5]:
         print(f"     no HDT link: {r['rel']}")
 
+    print(f"\nE  fit (bust front, union of visible garment): "
+          f"{len(fit_recs)} piece(s) measured")
+    inflated, clipping = [], []
+    if fit_recs and anchor_fit:
+        print(f"     anchor {CTRL_SPLIT_SUBSTR}: clip {anchor_fit['clip']:.2f}% "
+              f"standoff median {anchor_fit['median']:.2f}u "
+              f"p90 {anchor_fit['p90']:.2f}u  ({anchor_fit['n']} verts)")
+    thin = [r for r in fit_recs if r["fit"]["covered"] < FIT_MIN_COVERED]
+    judged = [r for r in fit_recs if r["fit"]["covered"] >= FIT_MIN_COVERED]
+    if thin:
+        print(f"     not judged (covers under {FIT_MIN_COVERED:.0f}% of the "
+              f"bust front, so fit is undefined): {len(thin)}")
+        for r in thin[:5]:
+            print(f"       covered {r['fit']['covered']:5.1f}%  {r['rel']}")
+    if judged and fit_judged:
+        from scripts import standoff_audit as sa
+        for r in judged:
+            f_ = r["fit"]
+            if sa.check(f_, anchor_fit, keys=("median", "p90")):
+                inflated.append(r)
+            if f_["clip"] > FIT_CLIP_BAD:
+                clipping.append(r)
+        med = sorted(r["fit"]["median"] for r in judged)[len(judged) // 2]
+        print(f"     standoff median across the {len(judged)} judged "
+              f"piece(s): {med:.2f}u")
+        print(f"     OVERINFLATED (standoff past the clean anchor): "
+              f"{len(inflated)}")
+        for r in sorted(inflated,
+                        key=lambda x: -x["fit"]["median"])[:10]:
+            f_ = r["fit"]
+            print(f"       median {f_['median']:5.2f}u p90 {f_['p90']:5.2f}u "
+                  f"clip {f_['clip']:5.2f}%  {r['rel']}")
+        print(f"     CLIPPING over {FIT_CLIP_BAD}%: {len(clipping)}")
+        for r in sorted(clipping, key=lambda x: -x["fit"]["clip"])[:10]:
+            f_ = r["fit"]
+            print(f"       clip {f_['clip']:5.2f}% (standoff "
+                  f"{f_['median']:.2f}u)  {r['rel']}")
+    elif fit_recs:
+        print("     NOT JUDGED -- the anchor control failed; the numbers are "
+              "in the jsonl but no piece was classified")
+    # A LOOSE GARMENT IS NOT AN INFLATED ONE. The anchor is a fitted leather
+    # cuirass, so a robe or a dress that is meant to hang will exceed it and be
+    # flagged -- the absolute list above cannot tell "designed loose" from
+    # "inflated by a pass". The BASELINE comparison can: it asks whether THIS
+    # piece got looser than it used to be, which is the question a postflight
+    # is actually for. Prefer this list over the absolute one when a baseline
+    # exists.
+    if args.baseline and Path(args.baseline).is_file() and judged:
+        bfit = {}
+        for line in Path(args.baseline).read_text(encoding="utf-8").splitlines():
+            try:
+                b = json.loads(line)
+            except Exception:
+                continue
+            if b.get("fit"):
+                bfit[b["rel"].lower()] = b["fit"]
+        common = [r for r in judged if r["rel"].lower() in bfit]
+        if common:
+            looser = [(r["fit"]["median"] - bfit[r["rel"].lower()]["median"], r)
+                      for r in common]
+            looser = [x for x in looser if x[0] > 0.15]
+            print(f"     vs baseline ({len(common)} matched): {len(looser)} "
+                  f"piece(s) got LOOSER by more than 0.15u")
+            for d, r in sorted(looser, key=lambda x: -x[0])[:10]:
+                print(f"       +{d:.2f}u -> {r['fit']['median']:.2f}u  "
+                      f"{r['rel']}")
+        else:
+            print("     vs baseline: no matched pieces carry fit data "
+                  "(baseline predates check E)")
+
     if fails:
         print("\n!! CONTROL FAILURES -- results NOT trustworthy:")
         for f in fails:
             print("   " + f)
         sys.exit(3)
-    print("\ncontrols passed "
-          "(split control split + repointed, no double-split, metric has data)")
+    print("\ncontrols passed (split control split + repointed, no "
+          "double-split, follow has data, fit anchor present/fresh/clean)")
 
-    bad = bool(zw or bad_xml or no_bodytri or no_hdt or errs)
+    bad = bool(zw or bad_xml or no_bodytri or no_hdt or errs
+               or inflated or clipping)
     print("RESULT:", "PROBLEMS FOUND (see above)" if bad else "CLEAN")
     sys.exit(1 if bad else 0)
 
