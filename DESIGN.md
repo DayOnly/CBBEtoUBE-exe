@@ -127,8 +127,22 @@ with the fallback it lands at 1.72u with clipping unchanged at 0.00%.
 The fix is a fallback to the shapes `classify_shapes` already named, reached
 only when the strict detector returns nothing — so it cannot change which shape
 is picked where that detector already answers (verified byte-identical on a
-piece that previously worked). It was rare: 42 of 42 armed shapes in a 9-mod
-census ran the pass.
+piece that previously worked).
+
+**Scope: 103 of 482 phase-2 source pieces (21.4%) match the predicate**, of which
+**22 reach the converted output**; the remaining 81 are overwhelmingly HIMBO/male
+bodies that the female-only policy never converts. It concentrates in the
+vanilla-lineage armours — hide, imperial, stormcloak, draugr, Ysgramor — whose
+BodySlide output emits an inline body carrying only the bones its surviving verts
+touch.
+
+> **A sampling lesson, not a footnote.** This was first reported as "rare — 42 of
+> 42 armed shapes in a 9-mod census ran the pass". The census drew nine pieces
+> that all happened to have a detectable body. A sample landing entirely in one
+> state establishes no rate at all, and it was read as if it established a low
+> one. The real figure is 21.4%, found by sweeping every phase-2 piece. When the
+> question is "how often", sample only if the sample can observe both outcomes —
+> otherwise sweep.
 
 ---
 

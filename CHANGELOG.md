@@ -213,7 +213,21 @@ Measured on the affected piece: strap-line standoff **2.40u → 1.72u**, against
 **1.79u maximum** across 42 shapes where the pass did run. Clipping unchanged at
 0.00%, so the gap closed without trading it for skin poking through.
 
-Rare, not systemic: 42 of 42 armed shapes in a 9-mod census already ran the pass.
+**Scope, measured by a full sweep rather than a sample:** the predicate matches
+**103 of 482** phase-2 source pieces (21.4%). Of those, **22 are actually in the
+converted output** — the other 81 are overwhelmingly HIMBO/male bodies (77),
+which match the predicate but are never converted under the female-only policy.
+So 22 pieces across 5 mods need reconverting, dominated by the vanilla-lineage
+armours (hide, imperial, stormcloak, draugr, Ysgramor) whose BodySlide output
+emits a low-bone inline body.
+
+> An earlier draft of this entry said "rare, not systemic: 42 of 42 armed shapes
+> in a 9-mod census already ran the pass". **That was wrong.** The census drew
+> nine pieces that all happened to have detectable bodies; a sample that lands
+> entirely in one state cannot establish a rate, and it was read as if it had.
+> The full sweep replaced it. The 1.2.1 commit message still carries the wrong
+> figure and is left alone rather than rewriting pushed history.
+
 The fix is a fallback reached only when the strict detector finds nothing, so it
 cannot alter pieces that already work — verified byte-identical on one.
 

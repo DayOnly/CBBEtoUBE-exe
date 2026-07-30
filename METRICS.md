@@ -128,6 +128,18 @@ motion defect. See `project_antipoke_vertex_blind`.
 7. **Ship a counter-metric when the metric is one-sided.** Clipping has no upper
    bound, so "0.0%" is also what a balloon reads. Anything with a floor but no
    ceiling needs a paired measurement or it will be optimised off a cliff.
+8. **A sample that lands entirely in one state establishes no rate.** When the
+   question is "how often does X happen", the sample must be able to observe
+   both outcomes — otherwise sweep the population. Added 2026-07-30: a 9-mod
+   census reported "42 of 42 shapes ran the pass", which was read as "the bug is
+   rare". A full sweep of all 482 phase-2 pieces put it at **21.4%**. The census
+   was not wrong about its 42 shapes; it was never capable of answering the
+   question asked of it.
+9. **Say which population, and prove the filter.** Of those 103 matches only 22
+   reach the output — the rest are HIMBO/male bodies the female-only policy
+   never converts. Quoting either number without the filter misleads, in
+   opposite directions. See also the repeated failure of censuses that counted
+   never-converted clutter as results.
 
 ---
 
