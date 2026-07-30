@@ -48,7 +48,7 @@ from pathlib import Path
 
 import numpy as np
 
-from . import nif_io, nif_patch
+from . import fit_metrics, nif_io, nif_patch
 from .atomic_io import (
     atomic_nif_save, atomic_copy, atomic_write_bytes, atomic_tri_save)
 from .correspondence import MeshIndex, compute_deformation
@@ -1053,7 +1053,11 @@ GROOVE_SMOOTH_ITERS = 8
 GROOVE_SMOOTH_ROUGH = 0.25  # displacement-deviation (u) above which a vert is "grooved"
 
 
-def _smooth_warp_grooves(src_world, warped, ube_body_verts):
+GROOVE_ONESIDED = os.environ.get("CBBE2UBE_GROOVE_ONESIDED", "1") != "0"
+
+
+def _smooth_warp_grooves(src_world, warped, ube_body_verts,
+                         ube_body_normals=None):
     """Flatten warp-induced displacement grooves on body-conforming armor.
 
     The per-vert body-delta warp can introduce localized roughness in the
@@ -1062,7 +1066,31 @@ def _smooth_warp_grooves(src_world, warped, ube_body_verts):
     roughness-weighted Laplacian smooth of the DISPLACEMENT (warped - source),
     gated to verts close to the body, so genuine drape on loose/decorative
     geometry (far from the body) and already-smooth regions are left alone.
-    Returns the (possibly) smoothed warped verts."""
+    Returns the (possibly) smoothed warped verts.
+
+    ONE-SIDED SINCE 2026-07-29: a vert may be smoothed along the surface or
+    AWAY from the body, never TOWARD it. Measured cause, not a precaution.
+
+    A per-pass trace over 9 phase-2 pieces (292 measurements) found this pass
+    regressed bust fit on 13 of 42 shapes -- net +1052 exposed verts, worst
+    +394 -- and improved fit ZERO times. Reproduced in isolation on a
+    farm-clothes torso: 31 -> 161 exposed (+130).
+
+    Why: it smooths the DISPLACEMENT field, and over a convex feature that field
+    PEAKS at the apex (UBE's bust is larger than CBBE's, so the apex travels
+    furthest). Laplacian smoothing flattens a peak, pulling the garment back
+    onto the skin. The weighting made it worse -- `rough` is largest exactly at
+    the apex, so `wt` saturates there and the pass smoothed HARDEST where
+    flattening does the most damage. On the newly-exposed verts: displacement
+    reduced by a mean 0.191u, pre-smooth roughness a median 0.254u against
+    0.140u elsewhere (1.8x, at the full-weight cap). Nothing downstream restored
+    it: the pass knew only "is this vert near the body", never "did I just move
+    it toward the body".
+
+    Removing ONLY the inward component keeps the tangential and outward motion,
+    which is what actually flattens a groove. Set CBBE2UBE_GROOVE_ONESIDED=0 to
+    restore the old behaviour for comparison.
+    """
     try:
         from scipy.spatial import cKDTree
         src = np.asarray(src_world, dtype=np.float64)
@@ -1070,11 +1098,14 @@ def _smooth_warp_grooves(src_world, warped, ube_body_verts):
         if len(src) != len(w) or len(src) < 12:
             return warped
         disp = w - src
-        if ube_body_verts is not None and len(ube_body_verts):
-            d2b, _ = cKDTree(
-                np.asarray(ube_body_verts, dtype=np.float64)).query(w, k=1)
+        body = (np.asarray(ube_body_verts, dtype=np.float64)
+                if ube_body_verts is not None and len(ube_body_verts) else None)
+        if body is not None:
+            btree = cKDTree(body)
+            d2b, nn0 = btree.query(w, k=1)
             active = (d2b < GROOVE_SMOOTH_CLOSE).astype(np.float64)[:, None]
         else:
+            nn0 = None
             active = np.ones((len(src), 1), dtype=np.float64)
         if not active.any():
             return warped
@@ -1085,7 +1116,30 @@ def _smooth_warp_grooves(src_world, warped, ube_body_verts):
             rough = np.linalg.norm(disp - nm, axis=1)
             wt = np.clip(rough / GROOVE_SMOOTH_ROUGH, 0.15, 1.0)[:, None]
             disp = disp + active * (0.6 * wt) * (nm - disp)
-        return src + disp
+        out = src + disp
+        if GROOVE_ONESIDED and body is not None:
+            # Outward direction at each vert. Prefer the body's own normals: for
+            # tight armour `vert - nearest_body_vert` is near zero and
+            # normalising it amplifies float noise into a random direction (the
+            # documented failure that made inflate_armor_outward crumple a
+            # corset). Fall back to the position difference only when no normals
+            # were supplied.
+            nrm = None
+            if ube_body_normals is not None:
+                bn = np.asarray(ube_body_normals, dtype=np.float64)
+                if bn.shape == body.shape:
+                    nrm = bn[nn0]
+            if nrm is None:
+                d = out - body[nn0]
+                ln = np.linalg.norm(d, axis=1, keepdims=True)
+                nrm = np.divide(d, np.where(ln > 1e-6, ln, 1.0))
+            ln = np.linalg.norm(nrm, axis=1, keepdims=True)
+            nrm = np.divide(nrm, np.where(ln > 1e-9, ln, 1.0))
+            move = out - w                       # what smoothing did, total
+            along = np.einsum("ij,ij->i", move, nrm)
+            inward = np.minimum(along, 0.0)[:, None]
+            out = out - inward * nrm             # cancel only the inward part
+        return out
     except Exception:
         return warped
 
@@ -1848,8 +1902,37 @@ def _inflate_cloth_over_bust_butt(
     return (v + bn[ib] * push[:, None]).astype(np.float32)
 
 
-def shape_body_offset(shape) -> np.ndarray:
+def shape_body_offset(shape, body_verts=None) -> np.ndarray:
     """Translation that maps a shape's STORED (local) verts into body space.
+
+    PASS `body_verts` TO GET THE OFFSET CHECKED (2026-07-29). Without it the
+    behaviour is exactly as before, so untouched callers are unaffected.
+
+    WHY THE CHECK EXISTS, measured not reasoned. This adds a shape's
+    `NiAVObject.transform.translation` to its verts. That is right for a shape
+    authored in a shifted space and repositioned by that transform at render.
+    It is WRONG for a SKINNED shape already in body space, because a skinned
+    shape renders through its skin data and the NiAVObject transform is inert --
+    adding it displaces the shape bodily. A real cuirass carries translation
+    [-40, 0, 0] with an IDENTITY global_to_skin and verts already correctly
+    placed; the offset moved it 40u sideways, and the median distance from bust
+    skin to that garment went 2.11u -> 21.09u. Every phase-2 fit pass (warp,
+    conform, inflate, anti-poke) was therefore matching a garment that was not
+    where the body is, which is a strong candidate for why that piece resisted
+    fixing and shipped at 8.87% bust clipping.
+
+    A census over 765 source NIFs across 194 mods: 351 shapes carry a non-zero
+    offset, and of those, restricted to shapes genuinely fitted to a body
+    (median nearest-vert reach < 5u), the ones the offset DISPLACES were 4/4
+    skinned-with-identity-g2s. The offset is genuinely REQUIRED for others --
+    one stabiliser shape measures 40.26u raw and 5.48u with the offset -- so it
+    cannot simply be removed.
+
+    The check is therefore GEOMETRIC rather than a rule about NIF semantics: if
+    adding the offset moves the shape FURTHER from the body, it is not a
+    body-space correction and is discarded. That cannot mis-handle a shape which
+    needs the offset (for those, the offset moves it closer and is kept), and it
+    degrades gracefully on cases nobody has looked at yet.
 
     Some armor shapes are authored in a shifted coordinate space and repositioned
     by their NiAVObject `transform` at render time (e.g. a vanilla elven cuirass
@@ -1866,17 +1949,39 @@ def shape_body_offset(shape) -> np.ndarray:
     before writing -- the stored verts + unchanged transform are identical except
     for the (now correctly-computed) warp.
     """
+    zero = np.zeros(3, dtype=np.float64)
     tr = getattr(shape, "transform", None)
     t = getattr(tr, "translation", None) if tr is not None else None
     if t is None:
-        return np.zeros(3, dtype=np.float64)
+        return zero
     try:
-        return np.array([float(t.x), float(t.y), float(t.z)], dtype=np.float64)
+        off = np.array([float(t.x), float(t.y), float(t.z)], dtype=np.float64)
     except Exception:
         try:
-            return np.array([float(t[0]), float(t[1]), float(t[2])], dtype=np.float64)
+            off = np.array([float(t[0]), float(t[1]), float(t[2])],
+                           dtype=np.float64)
         except Exception:
-            return np.zeros(3, dtype=np.float64)
+            return zero
+    if body_verts is None or not np.any(np.abs(off) > 1e-6):
+        return off
+    # GEOMETRIC CHECK. Median nearest-vert distance to the body, with and
+    # without the offset; keep the offset only if it moves the shape CLOSER.
+    # Median (not mean) so a handful of far verts on a long shape cannot decide
+    # it. The 0.5u slack means a wash leaves existing behaviour alone.
+    try:
+        bv = np.asarray(body_verts, dtype=np.float64)
+        v = np.asarray(shape.verts, dtype=np.float64)
+        if bv.ndim != 2 or len(bv) < 3 or v.ndim != 2 or len(v) < 3:
+            return off
+        from scipy.spatial import cKDTree as _KD
+        tree = _KD(bv)
+        d_raw = float(np.median(tree.query(v, k=1)[0]))
+        d_off = float(np.median(tree.query(v + off, k=1)[0]))
+        if d_off > d_raw + 0.5:
+            return zero          # the offset is not a body-space correction
+        return off
+    except Exception:
+        return off               # never fail a conversion over a sanity check
 
 
 def repair_collapsed_tris(cur_verts: np.ndarray, src_verts: np.ndarray,
@@ -2863,7 +2968,8 @@ def convert_nif(
                         # Groove-smooth: flatten warp-induced indent grooves on
                         # tight bust cloth. Near-body verts only; decorative shapes unaffected.
                         snapped = _smooth_warp_grooves(
-                            sv_world, snapped, body_verts_for_fit)
+                            sv_world, snapped, body_verts_for_fit,
+                            ube_body_normals=body_normals_for_fit)
                     else:
                         # Legacy fallback: no CBBE base body; push inside-body verts
                         # outward along UBE normals.
@@ -14921,8 +15027,62 @@ def convert_nif_phase2(
         # warp/inflate/conform computed in body space or they match the wrong
         # body region. Applied before math, removed before storage. Zero for
         # identity-transform shapes (no effect).
-        _off_p2 = shape_body_offset(s)
+        # Checked against the body: a transform translation that moves this
+        # shape AWAY from the body is not a body-space correction and is
+        # discarded. Every fit pass below consumes `_off_p2`, so the check
+        # belongs here rather than in each of them.
+        _off_p2 = shape_body_offset(s, body_verts=body_verts_for_p2)
         _sv_body = np.asarray(s.verts, dtype=np.float64) + _off_p2
+        # PRECONDITION, reported before any pass runs. Every pass below computes
+        # against the body and assumes this shape is in body space; nothing used
+        # to assert it, and when the assumption broke all twelve computed against
+        # a garment 40u out of place and the piece shipped clipping. Recording it
+        # here is what makes that class of error greppable instead of a hunt.
+        if body_verts_for_p2 is not None:
+            try:
+                # The RAW (unchecked) offset, deliberately: `_off_p2` has already
+                # had a bad offset discarded, so reporting on it could never
+                # observe that a correction happened -- the report would be
+                # structurally incapable of firing, which is how a check ends up
+                # measuring nothing. Give it the raw value and let it judge.
+                _fr = fit_metrics.frame_report(
+                    np.asarray(s.verts, dtype=np.float64),
+                    shape_body_offset(s), body_verts_for_p2)
+                if _fr.get("corrected") or _fr.get("suspect"):
+                    fit_metrics.record_frame(dst_path, s.name, _fr)
+                    if _fr.get("corrected"):
+                        print(f"    [frame] {s.name}: transform offset "
+                              f"{_fr['offset']} DISCARDED -- it moved the shape "
+                              f"off the body ({_fr['raw_reach']}u -> "
+                              f"{_fr['offset_reach']}u)")
+            except Exception:
+                pass          # a precondition report must never fail a convert
+        # VERIFY harness for this shape. Arms only where the validated metric
+        # can actually see the shape (enough covered skin in the measured band);
+        # on a piece it cannot see, guarding would burn ray casts to learn
+        # nothing, which is the "measured nothing" failure wearing a new hat.
+        _fit_guard = None
+        _tracer = None
+        if body_verts_for_p2 is not None and body_norms_for_p2 is not None:
+            try:
+                _gtris = np.asarray(s.tris, dtype=np.int64).reshape(-1, 3)
+                _g = fit_metrics.FitGuard(
+                    body_verts_for_p2, body_norms_for_p2, _gtris)
+                _fit_guard = _g if _g.armed else None
+                # Diagnostic, default OFF (CBBE2UBE_PASS_TRACE=1). Measures after
+                # EVERY pass and reverts NOTHING: guarding all twelve is
+                # unaffordable (measured 1.004s per region measurement -> ~55h
+                # pack-wide even with shared measurements) and reverting broadly
+                # is wrong, because this metric cannot see z-fighting, crinkles
+                # or seams and `conform_to_source_standoff` pulls IN by design.
+                _t = fit_metrics.PassTracer(
+                    body_verts_for_p2, body_norms_for_p2, _gtris)
+                _tracer = _t if _t.armed else None
+                if _tracer is not None:
+                    _tracer.mark("entry", _sv_body)
+            except Exception:
+                _fit_guard = None
+                _tracer = None
         if preset_template_verts is not None and preset_user_verts is not None:
             try:
                 override = bake_preset_into_armor(
@@ -14930,6 +15090,8 @@ def convert_nif_phase2(
                     preset_template_verts, preset_user_verts,
                     k=4, close_threshold=5.0,
                 )
+                if _tracer is not None:
+                    _tracer.mark('bake_preset', override)
             except Exception as e:
                 failed.append((f"{s.name}:bake", repr(e)))
                 override = None
@@ -14957,6 +15119,8 @@ def convert_nif_phase2(
                     min_standoff=ARMOR_TO_SKIN_BUFFER,
                     tris=np.asarray(s.tris, dtype=np.int64),
                 )
+                if _tracer is not None:
+                    _tracer.mark('warp', override)
                 # Slot-aware inflation to maintain standoff under body morphs.
                 _infl_mag_p2 = _slot_aware_inflation_magnitude(
                     biped_slots, shape=s)
@@ -14973,6 +15137,8 @@ def convert_nif_phase2(
                             morph_amplitude=_morph_amp_p2,
                             morph_max=ADAPTIVE_CLEARANCE_MORPH_MAX,
                         )
+                        if _tracer is not None:
+                            _tracer.mark('inflate', override)
                     except Exception:
                         pass
                 # Standoff-preserving conform: reel over-projected verts back to
@@ -14986,6 +15152,8 @@ def convert_nif_phase2(
                             override, body_verts_for_p2, body_norms_for_p2,
                             ube_body_nipple=body_nipple_for_p2,
                         )
+                        if _tracer is not None:
+                            _tracer.mark('conform', override)
                     except Exception:
                         pass
                 # Groove-smooth: flatten warp-induced indent grooves on tight
@@ -14994,7 +15162,10 @@ def convert_nif_phase2(
                     try:
                         override = _smooth_warp_grooves(
                             _sv_body, np.asarray(override, dtype=np.float64),
-                            body_verts_for_p2)
+                            body_verts_for_p2,
+                            ube_body_normals=body_norms_for_p2)
+                        if _tracer is not None:
+                            _tracer.mark('groove_smooth', override)
                     except Exception:
                         pass
             except Exception as e:
@@ -15007,6 +15178,8 @@ def convert_nif_phase2(
                 override = snap_armor_outside_body(
                     base_verts, body_verts_for_p2, body_norms_for_p2,
                 )
+                if _tracer is not None:
+                    _tracer.mark('snap_legacy', override)
             except Exception as e:
                 failed.append((f"{s.name}:snap", repr(e)))
         # FINAL anti-poke: push body-slot armor clear of the injected body.
@@ -15103,6 +15276,7 @@ def convert_nif_phase2(
                     _ap_kw["max_push"] = SMP_ANTIPOKE_MAX_PUSH
                     print(f"    [smp-antipoke] {s.name}: clearance pass enabled "
                           f"(collision-only SMP, max_push={SMP_ANTIPOKE_MAX_PUSH})")
+                _ap_before = base_v
                 override = clear_armor_outside_body(
                     base_v, body_verts_for_p2, body_norms_for_p2,
                     body_nipple=body_nipple_for_p2,
@@ -15112,6 +15286,16 @@ def convert_nif_phase2(
                     tris=(np.asarray(s.tris, dtype=np.int64)
                           if ANTIPOKE_SMOOTH_ENABLED else None),
                     **_ap_kw)
+                if _tracer is not None:
+                    _tracer.mark('antipoke', override)
+                # VERIFY: this is the FINAL anti-poke, so if it leaves the shape
+                # measurably worse than it found it, nothing downstream will
+                # catch that. Reverts on regression rather than shipping it.
+                if _fit_guard is not None:
+                    override, _v = _fit_guard.guard(
+                        "clear_armor_outside_body", _ap_before, override)
+                    if _v.startswith("reverted"):
+                        print(f"    [verify] {s.name}: anti-poke {_v}")
                 # Clip-risk telemetry: verts still INSIDE the body after the
                 # final pass (deep verts past max_push, or capped regions) are
                 # the residual in-game clip risk. Greppable in the run log.
@@ -15154,6 +15338,13 @@ def convert_nif_phase2(
                 override = _inflate_cloth_over_bust_butt(
                     base_v, body_verts_for_p2, body_norms_for_p2,
                     tris=np.asarray(s.tris, dtype=np.int64))
+                if _tracer is not None:
+                    _tracer.mark('softcloth', override)
+                if _fit_guard is not None:
+                    override, _v = _fit_guard.guard(
+                        "_inflate_cloth_over_bust_butt", base_v, override)
+                    if _v.startswith("reverted"):
+                        print(f"    [verify] {s.name}: softcloth {_v}")
             except Exception as e:
                 failed.append((f"{s.name}:softcloth", repr(e)))
         # Chain-bone cloth stays at SOURCE position so it aligns with its chain
@@ -15161,6 +15352,152 @@ def convert_nif_phase2(
         # hybrid shapes (skirt+chest) keep the chest warped.
         if override is not None:
             override = _physics_chain_nowarp_blend(s, _sv_body, override)
+            if _tracer is not None:
+                _tracer.mark('chain_blend', override)
+        # MINIMUM PUSH -- the only pass here driven by MEASURED skin-through-
+        # armour rather than by proximity to the body. Every push pass above
+        # keys off "how close is this vert to the body" against a constant, so
+        # it moves leather whether or not anything is actually exposed, and
+        # cannot move leather that IS exposed but sits further out. This one
+        # measures with the validated clip test (calibrated 0.00% on an armour
+        # the user confirmed clean in game, 8.87% on one they can see clipping)
+        # and moves the smallest amount that clears what it found.
+        #
+        # CONDITIONAL: a pack census found only 4 of 72 judged pieces (6%)
+        # clipping above 1% at the bust, so this exits having moved ZERO verts
+        # on the other 94% -- which is both the safety property and what keeps
+        # the cost off pieces that do not need it. The clean-armour negative
+        # control is asserted in tests/test_minimum_push.py and re-verified on
+        # the real meshes (cuirasslight: 0 verts moved, both weights).
+        # Off with CBBE2UBE_NO_MIN_PUSH=1.
+        # FRAME GUARD: `override is not None` is the only condition under which
+        # this shape is known to be in the UBE body's frame. TRACED, not
+        # assumed: falling back to `_sv_body` when override is None measures
+        # PRE-WARP source geometry, and CBBE's cup is far smaller than UBE's
+        # bust, so UBE bust skin sits outside the unwarped garment entirely. On
+        # a real piece that reads 8.87% clipping in its FINISHED form, the
+        # in-converter attempt reported "no judgeable skin after rim/reach
+        # gating" and moved nothing -- the reach gate caught the bad frame and
+        # failed safe rather than pushing against a misaligned body.
+        #
+        # CONSEQUENCE, and it is a real limitation of this integration point:
+        # shapes that no earlier phase-2 pass modified are NOT reached here, and
+        # that includes pieces in the very class this fix targets. Fixing those
+        # requires running the solve where the garment is FINAL (a post-write
+        # pass over the output NIF, which is what the validated scratch harness
+        # does), not mid-stack. Left in place because it is correct and safe for
+        # the shapes it does reach; not yet sufficient on its own.
+        if (override is not None
+                and body_verts_for_p2 is not None
+                and body_norms_for_p2 is not None
+                and ube_base_for_pass1 is not None):
+            try:
+                _mp_v = np.asarray(override, dtype=np.float64)
+                # FRAME SELECTION. `_off_p2` (shape_body_offset) is added by
+                # every phase-2 pass so its maths runs in body space. That is
+                # correct for a shape authored in a shifted space, and WRONG for
+                # a skinned shape already in body space whose NiAVObject
+                # transform is inert at render. Measured on a real cuirass:
+                # translation [-40,0,0] with IDENTITY global_to_skin and verts
+                # already placed, so the offset shoves it 40u off the body
+                # (bust-skin reach median 29.6u, vs 1.6u for a sibling with zero
+                # offset). Ask the geometry which frame is on the body instead of
+                # trusting the offset; a shape that genuinely needs the offset
+                # still wins, because for it the offset candidate is the closer
+                # one. Only a DISPLACEMENT computed in the chosen frame is used,
+                # so the offset bookkeeping downstream stays intact.
+                _mp_region = fit_metrics.push_region_mask(body_verts_for_p2)
+                _mp_cands = [("body-space", _mp_v)]
+                if np.any(np.abs(_off_p2) > 1e-6):
+                    _mp_cands.append(("no-offset", _mp_v - _off_p2))
+                _mp_lbl, _mp_base, _mp_med = fit_metrics.choose_aligned(
+                    _mp_cands, body_verts_for_p2, _mp_region)
+                _mp_n = len(_mp_v)
+                _mp_bw = s.bone_weights or {}
+                _mp_vw = [dict() for _ in range(_mp_n)]
+                for _b, _pairs in _mp_bw.items():
+                    for _vi, _w in _pairs:
+                        _iv = int(_vi)
+                        if 0 <= _iv < _mp_n:
+                            _mp_vw[_iv][_b] = _mp_vw[_iv].get(_b, 0.0) + float(_w)
+                _mp_chain = np.asarray(_chain_vert_mask(_mp_vw, _mp_n), bool)
+                # Normals must match the CURRENT (post-push-stack) positions,
+                # not the source-file ones -- the stored normals belong to the
+                # geometry as authored, and this shape has already been warped
+                # and inflated by the passes above.
+                _mp_tris = np.asarray(s.tris, dtype=np.int64).reshape(-1, 3)
+                _mp_gn = np.asarray(
+                    _recompute_vertex_normals(
+                        _mp_base, _mp_tris,
+                        source_normals=(np.asarray(s.normals, dtype=np.float64)
+                                        if getattr(s, "normals", None) is not None
+                                        else None)),
+                    dtype=np.float64)
+                _mp_out, _mp_st = fit_metrics.minimum_push(
+                    _mp_base,
+                    _mp_tris,
+                    _mp_gn,
+                    body_verts_for_p2,
+                    np.asarray(ube_base_for_pass1.tris,
+                               dtype=np.int64).reshape(-1, 3),
+                    body_norms_for_p2,
+                    is_chain=_mp_chain)
+                if _mp_st.get("moved"):
+                    # Apply only the DISPLACEMENT, added back onto the array the
+                    # rest of phase 2 owns. Never assign the aligned-frame verts
+                    # directly: if the no-offset frame won, doing so would drop
+                    # `_off_p2` and the later `override - _off_p2` would shift the
+                    # shape by the offset a second time.
+                    override = _mp_v + (_mp_out - _mp_base)
+                    if _tracer is not None:
+                        _tracer.mark("min_push", override)
+                    print(f"    [min-push] {s.name}: {_mp_st['moved']} vert(s), "
+                          f"exposed {_mp_st['exposed_before']} -> "
+                          f"{_mp_st['exposed_after']}, max "
+                          f"{_mp_st['max_push']:.2f}u, frame={_mp_lbl} "
+                          f"(reach {_mp_med:.2f}u)")
+            except Exception as e:
+                failed.append((f"{s.name}:min-push", repr(e)))
+        # STANDOFF ASSERTION -- the last point where this shape's FINISHED
+        # geometry and the body are both in world space. Every push pass above
+        # is bounded by its own max_push, which bounds what THAT pass adds, not
+        # where the vertex ends up; several run in sequence over the same verts,
+        # so the stack is jointly unbounded and nothing measured the result.
+        # Clipping cannot see it -- a garment three units too far off the body
+        # scores 0.0% -- and an overinflated mesh reached the user twice.
+        # MEASURE ONLY: records to a JSONL beside the output, because a worker's
+        # print can be discarded outright in the frozen windowed exe. Never
+        # edits geometry.
+        #
+        # Same FRAME GUARD as the push above, for the same traced reason: with
+        # override None the shape is still pre-warp, so a standoff number there
+        # would be measured against a body the garment has not been fitted to.
+        # It early-outs on hit count rather than reporting a wrong number, but
+        # the honest fix is to assert where the garment is final. KNOWN GAP:
+        # shapes untouched by phase-2 passes produce no record.
+        if _fit_guard is not None:
+            try:
+                _fit_guard.record(dst_path, s.name)
+            except Exception:
+                pass
+        if _tracer is not None:
+            try:
+                _tracer.flush(dst_path, s.name)
+            except Exception:
+                pass
+        if (override is not None and body_verts_for_p2 is not None
+                and body_norms_for_p2 is not None):
+            try:
+                fit_metrics.record_standoff(
+                    dst_path, s.name,
+                    np.asarray(override, dtype=np.float64),
+                    np.asarray(s.tris, dtype=np.int64).reshape(-1, 3),
+                    body_verts_for_p2, body_norms_for_p2)
+            except Exception:
+                # telemetry must never fail a conversion; the module records
+                # its own exceptions to the sink, so a broken measurement is
+                # visible there rather than silently absent
+                pass
         # Back to local space; transform is unchanged, render identical.
         # No-op when _off_p2 is zero.
         if override is not None and _off_p2.any():
