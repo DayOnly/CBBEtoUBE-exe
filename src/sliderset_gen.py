@@ -215,6 +215,23 @@ def generate_armor_tri(
         for armor_shape_name, (neighbors, dists, nearest_dist) in shape_knn.items():
             shape_match[armor_shape_name] = _motion_match_weight(nearest_dist)[:, None]
 
+    # The IDW weights are per-SHAPE too, for the same reason: `p` and `w` depend
+    # only on the K-NN distances, which do not change when the slider changes.
+    # They were being rebuilt INSIDE the morph loop -- a `np.power` with a
+    # per-row exponent plus a normalisation over every armour vert, recomputed
+    # once per slider (~40x on a real body OSD) to produce identical numbers
+    # every time.
+    shape_w: dict[str, np.ndarray] = {}
+    for armor_shape_name, (neighbors, dists, nearest_dist) in shape_knn.items():
+        # Continuous adaptive IDW: exponent p eases from 2 (body-hugging,
+        # nearest dominates) to 1 (stand-off/drape, wide average). This avoids
+        # the crease artifacts that discrete threshold zones produced at their
+        # boundaries. p = clip(2 - nearest_dist, 1, 2).
+        _p = np.clip(2.0 - nearest_dist, 1.0, 2.0)
+        _w = 1.0 / (np.power(dists, _p[:, None]) + 1e-9)
+        _w /= _w.sum(axis=1, keepdims=True)
+        shape_w[armor_shape_name] = _w
+
     for body_m in body_osd.morphs:
         if not body_m.offsets:
             continue
@@ -230,14 +247,11 @@ def generate_armor_tri(
         morph_delta_buf[idxs[valid]] = deltas[valid]
 
         for armor_shape_name, (neighbors, dists, nearest_dist) in shape_knn.items():
-            # Continuous adaptive IDW: exponent p eases from 2 (body-hugging,
-            # nearest dominates) to 1 (stand-off/drape, wide average). This avoids
-            # the crease artifacts that discrete threshold zones produced at their
-            # boundaries. p = clip(2 - nearest_dist, 1, 2).
-            p = np.clip(2.0 - nearest_dist, 1.0, 2.0)
-            w = 1.0 / (np.power(dists, p[:, None]) + 1e-9)
-            w /= w.sum(axis=1, keepdims=True)
-            propagated = (morph_delta_buf[neighbors] * w[..., None]).sum(axis=1)
+            w = shape_w[armor_shape_name]          # hoisted: see above
+            # einsum fuses the weight-multiply and the sum. The previous form
+            # built an (n, K, 3) temporary for the product and then reduced it,
+            # so it allocated the gathered array twice over.
+            propagated = np.einsum("nkj,nk->nj", morph_delta_buf[neighbors], w)
             # Body-motion match: blend toward the delta of the body vertex this
             # armor vert COVERS, so hugging armor moves exactly as that surface
             # does (clearance preserved -> the body can't poke through, and the
@@ -263,10 +277,13 @@ def generate_armor_tri(
             if len(keep) == 0:
                 continue
             kept_d = propagated[keep]
+            # `.tolist()` converts to Python ints/floats in C. The previous form
+            # called int()/float() four times per kept vertex from the
+            # interpreter, on every morph of every shape.
             shape_morphs[armor_shape_name].append(TriMorph(
                 name=slider_name,
-                offsets=[(int(i), float(d0), float(d1), float(d2))
-                         for i, (d0, d1, d2) in zip(keep, kept_d)],
+                offsets=[(i, d[0], d[1], d[2])
+                         for i, d in zip(keep.tolist(), kept_d.tolist())],
             ))
 
     # ---- Overlay-band morph-sync ----

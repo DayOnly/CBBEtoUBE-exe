@@ -184,6 +184,36 @@ Measurement is now ~34% of the file, down from ~50%. **`generate_armor_tri` has
 risen to second place** — morph generation, a different subsystem, untouched by
 any of this and never profiled.
 
+| 07-30 | `generate_armor_tri`: hoist per-shape IDW weights out of the morph loop; einsum; `tolist()` | **11.80 s** | **5.02 s** | back-to-back A/B, same process, identical inputs |
+
+**2.4× on morph generation, with bit-identical output.** Three things, all in
+one function:
+
+- **`p` and `w` were rebuilt inside the morph loop.** They depend only on the
+  K-NN distances, which do not change when the slider changes — so a `np.power`
+  with a per-row exponent plus a normalisation over every armour vert ran once
+  per slider (791 morphs here) to produce the same numbers every time. The
+  motion-match weight two blocks above was already hoisted for exactly this
+  reason; the IDW weights had been missed.
+- **`(gathered * w[..., None]).sum(axis=1)` → `np.einsum("nkj,nk->nj", ...)`.**
+  The old form allocated the `(n, K, 3)` array twice — once for the gather, once
+  for the product — then reduced it.
+- **`int()`/`float()` per element → `.tolist()`.** Four interpreter-level
+  conversions per kept vertex, on every morph of every shape, became one C-level
+  conversion.
+
+Equivalence was checked the only way that counts for a shipped morph: a SHA-256
+over every morph offset, old implementation versus new, on the real body OSD and
+a real dense armour. **`0fa473d7…925f` on both sides, 1,669,330 offsets.**
+
+> **Measurement caveat.** The end-to-end file profile read 70.2 s before this
+> change and 76.5 s after, which is *contention noise* — the machine was running
+> the game during the second reading. The trustworthy number is the back-to-back
+> function-level A/B above (11.80 → 5.02 s in one process, same inputs). The
+> per-function share is also consistent: `generate_armor_tri` fell from 11.7% to
+> 5.4% of the profile. **The end-to-end figure needs re-measuring on a quiet
+> machine before any cumulative claim is made.**
+
 ### Why the remaining cast cost is structural
 
 `_cast` 22.1% and `_pairs` 14.4% still lead, and one full-band cast on that
