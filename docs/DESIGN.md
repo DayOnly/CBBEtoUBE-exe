@@ -129,12 +129,18 @@ only when the strict detector returns nothing — so it cannot change which shap
 is picked where that detector already answers (verified byte-identical on a
 piece that previously worked).
 
-**Scope: 103 of 482 phase-2 source pieces (21.4%) match the predicate**, of which
-**22 reach the converted output**; the remaining 81 are overwhelmingly HIMBO/male
-bodies that the female-only policy never converts. It concentrates in the
-vanilla-lineage armours — hide, imperial, stormcloak, draugr, Ysgramor — whose
-BodySlide output emits an inline body carrying only the bones its surviving verts
-touch.
+**Scope: 14 pieces.** 103 of 482 source pieces match the predicate; 22 of those
+reach the converted output (the rest are HIMBO/male bodies the female-only
+policy never converts); and converting all 22 showed **8 route to phase 1**, the
+copy path, which never reaches `conform` at all — the scan tested for a body
+`classify_shapes` could name, but phase-2 routing has further conditions, so it
+over-matched. It concentrates in the vanilla-lineage armours — hide, imperial,
+stormcloak, draugr, Ysgramor — whose BodySlide output emits an inline body
+carrying only the bones its surviving verts touch.
+
+Each narrowing came from measuring rather than reasoning, and each was smaller
+than the last: **103 → 22 → 14**. Verified on the final set: **48 of 48 armed
+shapes run `conform`**, with a control that already ran it still doing so.
 
 > **A sampling lesson, not a footnote.** This was first reported as "rare — 42 of
 > 42 armed shapes in a 9-mod census ran the pass". The census drew nine pieces

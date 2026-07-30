@@ -15544,10 +15544,17 @@ def convert_nif_phase2(
         if (override is not None and body_verts_for_p2 is not None
                 and body_norms_for_p2 is not None):
             try:
+                _ov = np.asarray(override, dtype=np.float64)
+                _tr = np.asarray(s.tris, dtype=np.int64).reshape(-1, 3)
                 fit_metrics.record_standoff(
-                    dst_path, s.name,
-                    np.asarray(override, dtype=np.float64),
-                    np.asarray(s.tris, dtype=np.int64).reshape(-1, 3),
+                    dst_path, s.name, _ov, _tr,
+                    body_verts_for_p2, body_norms_for_p2)
+                # Additive: the calibrated bust record above is unchanged. This
+                # covers the REST of the torso -- under-bust through strap line
+                # -- which no pack-wide record has ever measured, and which is
+                # where a gap reported in game turned out to live.
+                fit_metrics.record_torso_bands(
+                    dst_path, s.name, _ov, _tr,
                     body_verts_for_p2, body_norms_for_p2)
             except Exception:
                 # telemetry must never fail a conversion; the module records

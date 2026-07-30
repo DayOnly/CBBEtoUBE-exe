@@ -214,12 +214,18 @@ Measured on the affected piece: strap-line standoff **2.40u → 1.72u**, against
 0.00%, so the gap closed without trading it for skin poking through.
 
 **Scope, measured by a full sweep rather than a sample:** the predicate matches
-**103 of 482** phase-2 source pieces (21.4%). Of those, **22 are actually in the
-converted output** — the other 81 are overwhelmingly HIMBO/male bodies (77),
-which match the predicate but are never converted under the female-only policy.
-So 22 pieces across 5 mods need reconverting, dominated by the vanilla-lineage
+103 of 482 source pieces. Of those, 22 reach the converted output — the other 81
+are overwhelmingly HIMBO/male bodies (77), which the female-only policy never
+converts. Converting all 22 then showed **8 of them route to phase 1**, the copy
+path, which never reaches `conform` at all: the scan tested for a body
+`classify_shapes` could name, but phase-2 routing has further conditions, so it
+over-matched. **The real list is 14 pieces**, dominated by the vanilla-lineage
 armours (hide, imperial, stormcloak, draugr, Ysgramor) whose BodySlide output
-emits a low-bone inline body.
+emits a low-bone inline body. The ones that dropped off are cloaks, boots,
+panties and a corset — consistent with them not being body-swap pieces.
+
+Verified across that set rather than sampled: **48 of 48 armed shapes now run
+`conform`**, with a control piece that already ran it still doing so.
 
 > An earlier draft of this entry said "rare, not systemic: 42 of 42 armed shapes
 > in a 9-mod census already ran the pass". **That was wrong.** The census drew
@@ -251,3 +257,34 @@ because hit density varies ~10× across it.
 - The `conform` and chain-verify call sites now **record** their exceptions
   instead of `except Exception: pass`. Both made a failure indistinguishable from
   "nothing to do".
+
+## 1.2.2 — unreleased
+
+Telemetry only. No geometry changes: output from 1.2.1 and 1.2.2 is identical.
+
+### Added — standoff recorded up the whole torso, not just the bust front
+
+The ceiling guards `z 90–102`, and that was the only region any pack-wide record
+had ever covered. A gap reported in game sat at **z 108–114**, so "1.31u median,
+within ceiling" was an accurate statement about a region the user was not
+looking at. The under-bust had been an open lead for weeks with no numbers
+behind it at all.
+
+Four bands are now recorded per shape — `underbust` (z 78–90), `bust` (90–102),
+`upperchest` (102–108), `strap` (108–114) — **separately, never merged**. Hit
+density varies ~10× up the torso, so a single median over the whole range is
+pinned by whichever slab has the most covered skin; a nine-arm bisect that
+aggregated `z 105–114` read identically for every arm for exactly that reason.
+
+**No verdict on the new bands.** `over` stays on the bust record alone, because
+it is the only band with an anchor confirmed correct in game. Standoff rises
+monotonically up the torso — measured 1.17u at the bust to 1.94u at the strap
+line — so applying the bust ceiling higher up would manufacture failures on
+nearly every garment. These ship as data; the next full run is what produces
+enough of them to calibrate against.
+
+The calibrated bust record is untouched, mask and all, since the 1.15u/1.52u
+anchor depends on its exact definition. The bands use the sparse `_ClipTester`
+path rather than `standoff()`, whose dense formulation reached 15 GB measuring
+several bands on one cuirass; a test asserts the two agree to 1e-6 on the same
+index, so the mixed implementation is verified rather than assumed.

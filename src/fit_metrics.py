@@ -974,6 +974,81 @@ class ChainGuard:
                            "extra_measurements": self.extra_measurements})
 
 
+# ------------------------------------------------- TORSO BANDS (measure-only)
+# The ceiling above guards z 90-102 -- the bust FRONT -- and nothing else has
+# ever been recorded pack-wide. A gap reported in game sat at z 108-114, which
+# no record could see: "1.31u median, within ceiling" was an accurate statement
+# about a region the user was not looking at. The under-bust (z 78-90) has been
+# an open lead for just as long with no numbers behind it.
+#
+# SEPARATE BANDS, NOT ONE WIDER ONE. Merging them would hide exactly what this
+# is for: hit density varies ~10x up the torso, so a single median is pinned by
+# whichever slab has the most covered skin. A bisect that aggregated z 105-114
+# read IDENTICALLY for all nine of its arms for precisely that reason.
+#
+# NO VERDICT on the new bands. `over` stays on the bust record alone, because
+# that is the only band with a calibrated anchor (a piece confirmed correct in
+# game). A garment legitimately stands further off at the strap line than at the
+# apex, so reusing the bust ceiling there would manufacture failures. These
+# bands ship as DATA; a ceiling can be calibrated once there are numbers to
+# calibrate it against, which is what this run produces.
+#
+# Measure-only, like everything else here: it records, it never moves a vertex.
+TORSO_BANDS = (("underbust", 78.0, 90.0), ("bust", 90.0, 102.0),
+               ("upperchest", 102.0, 108.0), ("strap", 108.0, 114.0))
+
+
+def record_torso_bands(dst_path, shape_name, garment_verts, garment_tris,
+                       body_verts, body_normals) -> list:
+    """Standoff per torso band. Additive: the calibrated bust record is
+    unchanged and still written by `record_standoff`.
+
+    Uses the sparse `_ClipTester` path rather than `standoff()`, which builds a
+    dense (rays x ALL triangles) array -- that reached 15 GB on a five-shape
+    cuirass when measuring several bands. `tests/test_torso_bands.py` asserts
+    the two agree on the same index, so the mixed implementation is justified
+    rather than assumed.
+    """
+    if not _enabled():
+        return []
+    out = []
+    try:
+        if body_verts is None or body_normals is None:
+            return []
+        bV = np.asarray(body_verts, np.float64)
+        bN = np.asarray(body_normals, np.float64)
+        tester = _ClipTester(np.asarray(garment_verts, np.float64),
+                             garment_tris, tmax=TMAX)
+        for name, lo, hi in TORSO_BANDS:
+            idx = front_slab(bV, bN, lo, hi)
+            if len(idx) < TRACE_MIN_HITS:
+                continue
+            med, hits = slab_standoff(tester, bV, bN, idx)
+            if not np.isfinite(med):
+                continue
+            O, N = bV[idx], bN[idx]
+            t = tester._cast(O, N, *tester._pairs(O), len(O))
+            f = t[np.isfinite(t)]
+            rec = {"kind": "standoff_band",
+                   "nif": str(Path(dst_path).name),
+                   "shape": str(shape_name), "band": name,
+                   "z_lo": lo, "z_hi": hi,
+                   "n": int(hits), "skin": int(len(idx)),
+                   "covered_pct": round(100.0 * hits / len(idx), 1),
+                   "median": round(float(med), 3),
+                   "p90": round(float(np.percentile(f, 90)), 3),
+                   "max": round(float(f.max()), 3)}
+            _append(dst_path, rec)
+            out.append(rec)
+        return out
+    except Exception as e:
+        _append(dst_path, {"kind": "standoff_band_error",
+                           "nif": str(Path(dst_path).name),
+                           "shape": str(shape_name),
+                           "error": f"{type(e).__name__}: {e}"})
+        return out
+
+
 def record_standoff(dst_path, shape_name, garment_verts, garment_tris,
                     body_verts, body_normals) -> "dict | None":
     """Measure the finished shape and record it. Never raises, never edits.
