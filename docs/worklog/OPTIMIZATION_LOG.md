@@ -132,5 +132,39 @@ Exactness was established *before* timing: 6 randomised trials assert the
 restricted computation selects an identical vert set. A speedup that changes the
 selection would be a behaviour change wearing a performance costume.
 
-Remaining on that file: `_cast` 17.8%, `_pairs` 11.8%, `generate_armor_tri`
-8.0%. The ray-cast pair still dominates and is the next target.
+| 07-30 | ray-line cull via the Lagrange identity (no cross, no sqrt) | 108.8 s | **94.4 s** | cProfile, same file |
+
+**Cumulative on that file: 176.3 s → 94.4 s (−46%).**
+
+The cull tested `|w x d| / |d| <= trad`, computing a cross product and two norms
+over EVERY candidate pair before rejecting 96% of them. `|w x d|^2 ==
+|w|^2|d|^2 - (w.d)^2` gives the identical test from three dot products over
+`(n,)` arrays — no `(n,3)` temporaries, no sqrt. `cross` (8.9 s) and most of
+`norm` (5.8 s) left the profile entirely. Verified hit-for-hit against the
+unculled reference across **9,042,432 candidate pairs**.
+
+### Chunk size: a measured non-result worth keeping
+
+`RAY_CHUNK` was picked at 512 without measuring. Timing 256 → unchunked on a
+98k-triangle garment: **~2% spread in speed**, but peak candidate pairs swing
+**2.8 M → 92 M**. Chunking is therefore essentially free and buys a 33× memory
+margin; the `MemoryError` (36 M pairs) cannot recur at any of these sizes. No
+change made — the default was already right, and now that is known rather than
+assumed.
+
+### What is left, and why it needs a different kind of fix
+
+`_cast` 22.1% and `_pairs` 14.4% still lead, and one full-band cast on that
+garment is **~11 s**: 5,249 rays × 98k triangles → 92 M candidate pairs before
+the cull. That is inherent to a ball query of radius `tmax` around every ray
+origin, so further micro-optimisation has little left to give.
+
+The remaining win is **not doing the work twice**. Per shape the same garment is
+cast against overlapping ray sets by `record_standoff` (band mask, tmax 12), the
+`bust` torso band (front-slab mask, tmax 12 — largely the same skin), the chain
+contract (tmax 5, twice) and `minimum_push` (tmax 5). Deduplicating the
+overlapping measurements, and sharing one tester per shape, is worth more than
+anything left inside the cast. Not attempted yet.
+
+Also now visible: `generate_armor_tri` at 9.5% — BODYTRI morph generation, a
+different subsystem, untouched by any of this.

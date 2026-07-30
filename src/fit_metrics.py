@@ -229,8 +229,11 @@ class _ClipTester:
                                              output_type="ndarray")
             if not len(m):
                 continue
-            a = m["i"].astype(np.int64)
-            b = sel[m["j"].astype(np.int64)]
+            # copy=False: the sparse-matrix indices already come back as a
+            # platform int, so this is a no-op on Windows rather than a full
+            # copy of every candidate pair.
+            a = m["i"].astype(np.int64, copy=False)
+            b = sel[m["j"].astype(np.int64, copy=False)]
             keep = m["v"] <= self.tmax + self.trad[b]
             if keep.any():
                 ri.append(a[keep])
@@ -256,15 +259,29 @@ class _ClipTester:
         if CAST_CULL and len(ray_i) > CAST_CULL_MIN:
             d_r = D[ray_i]
             w = self.cent[tri_i] - O[ray_i]
-            # |w x d| / |d| is the distance to the ray line. Dividing rather
-            # than assuming |d| == 1 on purpose: every caller today passes unit
-            # normals, but an unnormalised direction would silently shrink the
-            # cull radius and drop real hits -- and a MISSED hit reads as "no
-            # clipping", which no downstream number could distinguish from a
-            # garment that genuinely does not clip.
-            nd = np.linalg.norm(d_r, axis=1)
-            perp = np.linalg.norm(np.cross(w, d_r), axis=1)
-            k = perp <= self.trad[tri_i] * np.where(nd > 1e-12, nd, 1.0) + 1e-9
+            # SQUARED form, via the Lagrange identity:
+            #     |w x d|^2 == |w|^2 |d|^2 - (w.d)^2
+            # The test is |w x d| / |d| <= trad, and both sides are
+            # non-negative, so squaring preserves it exactly. This replaces a
+            # cross product and two norms -- each allocating an (n,3) temporary
+            # and a sqrt over EVERY candidate pair, before 96% of them are
+            # rejected -- with three dot products over (n,) arrays.
+            #
+            # Still divides by |d| rather than assuming 1: every caller today
+            # passes unit normals, but an unnormalised direction would shrink
+            # the cull radius and drop real hits, and a MISSED hit reads as "no
+            # clipping", which no downstream number could tell from a garment
+            # that genuinely does not clip.
+            #
+            # Cancellation in `ww*dd - wd*wd` is harmless HERE: it only bites
+            # when w is nearly parallel to d, which is the small-perp case that
+            # is kept anyway. Erring small can only admit a pair, never drop one.
+            ww = np.einsum("ij,ij->i", w, w)
+            dd = np.einsum("ij,ij->i", d_r, d_r)
+            wd = np.einsum("ij,ij->i", w, d_r)
+            perp2 = ww * dd - wd * wd
+            lim = self.trad[tri_i] * np.sqrt(np.where(dd > 1e-24, dd, 1.0)) + 1e-9
+            k = perp2 <= lim * lim
             ray_i, tri_i = ray_i[k], tri_i[k]
             if not len(ray_i):
                 return (out, who) if want_tri else out
