@@ -134,13 +134,14 @@ helped. That is how one frame error corrupted all twelve in silence.
 - `src/fit_metrics.py` — the canonical in-converter metrics module.
 - **Frame precondition**: every phase-2 shape's frame choice is checked and
   recorded when suspect.
-- **`FitGuard`** — diagnose/treat/verify around the two passes with a history of
-  over-inflating; reverts a pass that leaves more skin exposed than it found.
-  Deliberately narrow: a measurement costs ~1.0s, so guarding everything would
-  cost 55–102h pack-wide.
+- **`ChainGuard`** — the contract described above. An earlier `FitGuard` guarded
+  two individual passes and was removed within this same release once the trace
+  showed neither ever regressed; the chain verify covers the outcome for a
+  quarter of the measurements.
 - **`PassTracer`** (`CBBE2UBE_PASS_TRACE=1`) — before/after at every pass
   boundary with shared measurements, so N passes cost N+1 measurements. This is
-  what found the groove-smoothing regression.
+  what found the groove-smoothing regression, and what showed that guarding each
+  pass was the wrong contract.
 - **`minimum_push`** — conditional, one-sided targeted push for residual
   exposure. Exits having moved nothing on ~94% of shapes, never moves
   chain-driven (SMP) verts, and reverts on regression.

@@ -114,10 +114,20 @@ motion defect. See `project_antipoke_vertex_blind`.
 1. **Positive control** — a case that MUST report a problem. Without it, "0%" is
    unfalsifiable.
 2. **Negative control** — a case that must report nothing.
-3. **A second, independent method** on the same input. Disagreement means at least
+3. **Break the metric and confirm the controls scream.** A control that cannot
+   fail is not a control. Negate the normals, invert the sign, disable the pass —
+   whatever the failure mode is — and check that a control actually goes red.
+   Added 2026-07-29 after a negative control that had guarded a census for a week
+   turned out to pass just as happily with the ray sense transposed: the garment
+   it used produced no hits in EITHER direction, so there was nothing for the
+   inversion to change. Third occurrence of a passing control measuring nothing.
+4. **A second, independent method** on the same input. Disagreement means at least
    one is wrong; agreement is the only real evidence.
-4. **Synthetic tests** with analytically known answers.
-5. **State what the metric cannot see**, next to the number it reports.
+5. **Synthetic tests** with analytically known answers.
+6. **State what the metric cannot see**, next to the number it reports.
+7. **Ship a counter-metric when the metric is one-sided.** Clipping has no upper
+   bound, so "0.0%" is also what a balloon reads. Anything with a floor but no
+   ceiling needs a paired measurement or it will be optimised off a cliff.
 
 ---
 
@@ -296,7 +306,13 @@ larger one.
 
 ---
 
-## Sound: containment census over the rigid population
+## ~~Sound~~: containment census over the rigid population
+
+> **OVERTURNED AND DELETED 2026-07-29 — see "the ray cone was never sound" below.**
+> `containment()` no longer exists. It is anti-correlated with in-game ground
+> truth: it scores the armour the user confirms CLEAN *worse* than the one that
+> visibly clips. The RANKING below is therefore not usable either — the caveat
+> in this section was too weak, not too strong. Kept for the record chain.
 
 `containment()` in `scripts/mesh_penetration.py`, 199 fully-rigid armors, bind pose,
 10 rays at 50° half-angle, tmax 6u. Of **exposed** body verts, the fraction with
@@ -337,7 +353,14 @@ RANKING is usable. Do not quote "0.7% of breast verts poke" as a health figure.
 
 All bind pose, so all of it is a best case; see the pose-regression section above.
 
-## Sound: narrow-band pass over the breast UNDER-CURVE
+## ~~Sound~~: narrow-band pass over the breast UNDER-CURVE
+
+> **METRIC REPLACED 2026-07-29.** The band location, the dilution arithmetic and
+> the closed-vs-open split below all still hold — they are geometry, not metric.
+> The `surrounded` / `partial` / `bare` COLUMNS do not: they were the same ray
+> cone, and it is discredited. `underbust_census.py` now reports `clipping` from
+> the validated test, so rows written before 2026-07-29 are not comparable on
+> those columns. Its negative control was also blind; see below.
 
 `scripts/underbust_census.py`. The region census ranks but cannot size, because the
 under-curve is only **484 of 3674** verts the `breast` selector accepts — 13.2%, a
@@ -383,3 +406,84 @@ specifically. Do not treat the 55 as a superset of the 16.
 Negative control is enforced in-script and aborts the run: a garment entirely below
 z 80 scored at the under-curve must read 100% bare (two picked from the population by
 geometry, both PASS at 612/612). Bind pose only, so still a best case.
+
+---
+
+# 2026-07-29 — the ray cone was never sound, and what replaced it
+
+## Discredited and DELETED: signed distance and the ray cone
+
+Calibrated against user-supplied in-game ground truth on a pair the user judged by
+eye: `CuirassLight` **CLEAN**, `CuirassMedium` **CLIPS**.
+
+| metric | clean armour | clipping armour | verdict |
+|---|---|---|---|
+| signed distance (`surface_penetration` sign) | 32.4% | 23.9% | **inverted** |
+| ray cone (`containment`) | 7.6% | lower | **inverted** |
+| **clipping test** (`clipping_report`) | **0.00%** | **8.87%** | separates |
+
+Both old metrics score the CLEAN armour **worse** than the clipping one, at every
+depth threshold. The cause is structural, not a tuning problem: neither can separate
+*"skin is outside the garment SURFACE"* from *"skin is outside the garment's
+COVERAGE"*, so a small or open garment scores terribly by design and the figure is
+dominated by rim geometry. No threshold rescues that.
+
+`containment()`, `poke_report()` and `cone_dirs()` were **deleted** rather than
+re-tuned (-155 lines). `surface_penetration` stays: only its *sign* was bad, its
+distance is sound and the census uses it.
+
+**Every conclusion on this page that rests on the cone is void**, including the
+"upper chest is the worst region" reversal recorded on 2026-07-28. The 2026-07-27
+`ray_exposure` work is unaffected — that measures coverage, and coverage is what it
+was read as.
+
+## The question the validated test asks instead
+
+**Is the garment BEHIND the skin?** If a ray along the body's outward normal escapes
+but the ray along the INWARD normal hits garment, the garment lies between the skin
+and the body interior — the skin has come through it. Skin merely beside an open
+edge escapes in both directions and is simply UNCOVERED, which is a cut, not a
+defect. That distinction is exactly the one the cone could not make.
+
+Area-weighted over the union of visible garment shapes, orientation-gated (the hit
+triangle must face the same way as the skin, which removes a false positive under
+large morphs where sagging skin passes the cut rim of a cup).
+
+## STANDOFF — the counter-metric that was missing entirely
+
+Clipping has **no upper bound**. An over-inflated garment scores a perfect 0.0%
+because nothing pokes through a balloon — which is how over-inflation reached the
+user twice with no number complaining. Standoff measures how far off the body the
+finished garment actually sits, anchored on the confirmed-clean armour: median
+**1.15u**, p90 **1.52u**. The over-inflated probe read median **2.88u** at 0.21%
+clipping. **Never report clipping without standoff beside it.**
+
+## A negative control that could not fail
+
+`underbust_census.py` asserted that a garment entirely below z 80 reads 0 clipping
+and ~100% uncovered, and claimed this pinned the ray sense. **It does not.** Such a
+garment produces no ray hits in EITHER direction, so transposing the two directions
+leaves both numbers untouched. Verified by re-running the census with the normals
+negated: the negative control passed regardless.
+
+A POSITIVE control now carries that job — the garment with the densest band coverage,
+picked by geometry rather than by the metric (picking it by the metric would be
+circular), must read mostly COVERED. Under the same inversion it collapses
+**100.0% → 0.0%** and fails. The run aborts if either control cannot be built.
+
+**Generalised:** a control that cannot fail is not a control. Before trusting one,
+break the thing it guards and confirm it screams. This is the third time on this
+project that a passing control was measuring nothing.
+
+## Cost, since it decides what is affordable
+
+A region measurement was 1.004s and is now ~120ms, from three exact optimisations,
+each verified against brute-force Möller-Trumbore rather than against a previous
+run's numbers: a C-level sparse distance matrix instead of lists of Python lists
+(4.0×), radius-tiered ball queries so one large triangle stops setting the search
+radius for the whole mesh (1.6×), and a ray-line cull before the intersection test
+that 4% of pairs survive (2.0× on the cast).
+
+That is what makes an in-converter fit contract affordable at all — but the contract
+still measures twice per shape, not once per pass, and for a reason that is about
+correctness rather than cost: see `DESIGN.md`.

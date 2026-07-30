@@ -218,3 +218,48 @@ notes. The harness deletes its scratch conversions — keeping them cost 105 MB 
 the baseline itself is 3.7 MB.
 
 **Step 5 (the standoff merge) is now unblocked.**
+
+---
+
+# Status against this plan after 1.2 (2026-07-29)
+
+**Steps 2–6 are NOT done.** 1.2 went at the measurement problem instead, because the
+metric the whole plan would have been validated against turned out to be
+anti-correlated with the game. Consolidating passes against a broken criterion would
+have produced confident, wrong results. What changed here:
+
+**Step 1 (golden harness) — built, and now joined by a runtime check.** The chain
+contract (`DESIGN.md`) measures every armed shape before and after the pass chain and
+rolls back a net regression. It is NOT a substitute for the golden set: it sees only
+bust-region clipping, it cannot see a 0.2u shape change that does not expose skin, and
+it runs on the pack rather than on a fixed comparable set. Both are wanted.
+
+**Step 5 (the inflate/conform merge) now has the per-pass data it needed.**
+`CBBE2UBE_PASS_TRACE=1` records before/after at every pass boundary. Over 48 shapes:
+
+| pass | improved | no-op | regressed | net verts |
+|---|---|---|---|---|
+| warp | 27 | 21 | 0 | −6641 |
+| inflate | 10 | 38 | 0 | −1142 |
+| **conform** | 0 | 43 | **5** | **+51** |
+| groove_smooth | 5 | 43 | 0 | −73 |
+| antipoke | 2 | 40 | 0 | −14 |
+
+This sharpens the merge target: `inflate` never regresses and `conform` is the only
+pass that does — but all 5 of its regressions are recovered downstream, so it is
+working as designed and must not simply be deleted. The churn figure that motivated
+Step 5 (2.27×) is still unaddressed.
+
+**Step 4 (env-only flags) got WORSE, not better.** 190 `CBBE2UBE_*` flags in `src/`
+now, of which **137 are never referenced by any test**. 18 are default-OFF feature
+gates. Separately: the four features enabled in the maintainer's live
+`settings.json` (`chest_follow`, `source_follow`, `smp_antipoke`, `drape_xml_gate`)
+are all default-OFF in code, so **the shipped default configuration is not the one
+being validated in game**. That is a stronger reason to act on Step 4 than the one
+originally written here.
+
+**Step 2 (swallowed exceptions) got worse too:** 187 `except Exception: pass` sites in
+`src/`, 119 of them in `nif_convert.py`. 1.2 added one of the bad kind — the
+`ChainGuard` call site — recorded as a known gap in `DESIGN.md`.
+
+**Step 3 and Step 6 are untouched.**

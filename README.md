@@ -131,7 +131,12 @@ skinned shapes is baked into the verts):
   pull-in only, with a bust-band exception so the nipple can't poke through.
 - **Warp groove smoothing** — roughness-weighted smoothing of the warp
   *displacement* removes localized warp noise (breast "indent lines") without
-  flattening real detail.
+  flattening real detail. **One-sided since 1.2**: a vert may be smoothed along
+  the surface or *away* from the body, never toward it. Smoothing a displacement
+  field flattens whatever it peaks over, and over a convex feature it peaks at
+  the bust apex — so the pass used to pull the garment back onto the skin
+  exactly where that does most harm. `CBBE2UBE_GROOVE_ONESIDED=0` restores the
+  old behaviour.
 - **Multi-layer order restoration** — the warp's min-standoff clamp collapses
   a layered outfit's radial stacking (belts sink into corsets, trim sinks
   under breastplates). The pass re-imposes the **source** layer order
@@ -168,10 +173,54 @@ skinned shapes is baked into the verts):
   `CBBE2UBE_NO_SOFTCLOTH_INFLATE=1`.
 - **Z-fight split, degenerate-triangle repair, normal recompute** — final
   cleanup so moved verts don't shimmer, pinch flat, or shade wrong.
+- **Minimum push** — the only corrective pass driven by *measured* skin-through-
+  armor rather than by proximity to the body. Every pass above keys off "how
+  close is this vert" against a constant, so it fires whether or not anything is
+  actually exposed. This one measures first, moves only what the measurement
+  calls for, never touches physics-chain verts, and reverts itself on
+  regression. On most shapes it correctly does nothing.
 - **Physics & morphs carried through** — HDT-SMP chains are blended back
   un-warped (no collapsed skirts), BODYTRI morph data is regenerated to match
   the new geometry, and hem verts grazing foot bones are kept off the
   hand/foot misclassification path.
+
+### How the refit checks itself
+
+Added in 1.2. Before this, twelve passes computed against the body, every one
+assumed the garment shared its coordinate frame, none asserted it, and nothing
+between them measured whether a pass helped — so a single bad transform could
+corrupt all twelve in silence, and an over-inflated mesh could ship because each
+pass capped only its own contribution.
+
+- **Frame precondition** — a shape's transform translation is only a
+  body-space correction if applying it moves the shape *closer* to the body.
+  If it moves it further away it is discarded and reported. This is the
+  cheapest check in the chain.
+- **Diagnose → treat → verify, per shape** — one measurement before the chain,
+  one after. If the chain *as a whole* left more skin exposed than it found, the
+  best intermediate state is shipped instead. Checkpoints between passes are
+  array copies, not measurements, so the whole contract costs two measurements
+  rather than one per pass.
+
+  It is applied to the chain rather than to each pass deliberately. Intermediate
+  regressions are legitimate: the source-standoff conform pulls *in* by design
+  and later passes push back out, so reverting per pass would block a correct
+  pass and bias every garment looser.
+
+  It also does **not** skip passes when the entry measurement looks clean.
+  Bind-pose clipping is blind to animation — "at rest" in game is an animated
+  pose — so gating passes on it would trade a measurable defect for an
+  unmeasurable one.
+- **Two metrics, not one** — clipping (skin behind the garment) has no upper
+  bound, so an over-inflated garment scores a perfect 0.0%. **Standoff** is the
+  counter-metric: how far off the body the finished garment actually sits,
+  against a ceiling calibrated on a piece confirmed correct in game.
+- **Telemetry is a file, not a print** — conversion fans out across a process
+  pool, and in the frozen windowed exe a worker's `print()` can be discarded
+  outright. Frame corrections, chain verdicts and standoff distributions are
+  appended to `standoff_audit.jsonl` at the output mod root. Failed measurements
+  are recorded too: a measurement that *errored* must not look like one that
+  found nothing.
 
 ## Quick start (standalone exe)
 

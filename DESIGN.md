@@ -35,6 +35,79 @@ sections below cover each.
 
 ---
 
+## The fit contract (1.2)
+
+Until 1.2 the chain was **speculative**. Twelve phase-2 passes compute against
+the body; every one assumed the garment shared its coordinate frame, none
+asserted it; and nothing between them measured whether a pass had helped. Two
+failures follow directly from that shape, and both happened:
+
+- a single bad transform displaced one shape by 40 units, and all twelve passes
+  computed against a garment that was not where they thought it was — for three
+  months, with every pass still reporting success;
+- each pass caps only its OWN contribution, so the push stack is individually
+  bounded and jointly unbounded. Over-inflated meshes shipped twice.
+
+Per shape, the chain now states:
+
+| step | cost | what it does |
+|---|---|---|
+| frame precondition | ~free | discard a transform offset that moves the shape AWAY from the body |
+| diagnose | 1 measurement | exposed skin before anything runs |
+| *(each pass)* | array copy | checkpoint — **no** measurement |
+| verify | 1 measurement | if the chain as a whole regressed, ship the best checkpoint |
+
+**Two measurements per armed shape, not one per pass.** Checkpoints are copies
+(microseconds against ~120ms), so the chain can afford to remember every pass and
+pay to inspect them only when the verify fails.
+
+### Why the contract is on the CHAIN, not each pass
+
+"Reject any pass that measures worse than its input" was the obvious design and
+the pass trace (`CBBE2UBE_PASS_TRACE=1`) refutes it. Over 48 traced shapes:
+
+- exactly **one** pass ever regressed bust fit — `conform`, 5 times;
+- **all 5** were recovered downstream;
+- **0 of 48** shapes ended worse than they started (total exposure 8138 → 245).
+
+`conform_to_source_standoff` pulls IN by design and later passes push back out.
+Reverting it per-pass would have blocked a correct pass five times and biased
+every garment looser — which is precisely the over-inflation reported from the
+game. **Intermediate regressions are how the chain works.** This is also why the
+per-pass guards on the anti-poke and the soft-cloth inflate were removed in 1.2:
+neither ever regressed, and the chain verify covers the outcome for a quarter of
+the measurements.
+
+### What it deliberately does NOT do
+
+It does not skip passes when the entry diagnosis looks clean. Bind-pose clipping
+is blind to animation — "at rest" in game is an animated pose, and the anti-poke
+exists for morphs and motion this metric cannot see. Gating passes on a
+bind-pose number trades a measurable defect for an unmeasurable one. The chain
+measures whether the passes *collectively* helped; it does not decide which ones
+to run.
+
+### Two metrics, because clipping has no upper bound
+
+An over-inflated garment scores a perfect 0.0% clipping — nothing pokes through a
+balloon. **Standoff** is the counter-metric, anchored on a piece confirmed correct
+in game (median 1.15u, p90 1.52u). Never read one without the other. See
+`METRICS.md` for the calibration and for the metrics this replaced.
+
+### Telemetry is a file
+
+Conversion fans across a process pool, and in the frozen windowed exe a worker's
+`print()` can be discarded outright — a clean log is not evidence of a clean run.
+Frame corrections, chain verdicts and standoff distributions append to
+`standoff_audit.jsonl` at the output mod root. Failed measurements are recorded
+too: one that errored must not look like one that found nothing.
+
+> **Known gap.** The `ChainGuard` call site swallows exceptions, so a shape whose
+> verification *failed* currently looks like one that verified clean. The tell is
+> an armed shape with no `chain` record in the sink.
+
+---
+
 ## Source selection (which mesh feeds the conversion)
 
 Before any fitting, `discovery.build_mesh_index` decides WHICH mod provides each
