@@ -78,6 +78,14 @@ TMAX = 12.0            # deliberately past the clip test's 5u: a ballooned
 TIER_PCTS = (50.0, 90.0, 99.0)   # triangle-radius buckets for the ball query
 CAST_CULL = os.environ.get("CBBE2UBE_NO_CAST_CULL") != "1"
 CAST_CULL_MIN = 4096   # below this the cull costs more than the test it saves
+# Rays are cast in CHUNKS. `_pairs` emits one row per (ray, triangle) candidate,
+# so cost scales with rays x candidates -- on a dense garment that reached
+# 36,061,621 pairs and a MemoryError trying to allocate 825 MiB for one array.
+# The sparse formulation is far cheaper than the dense one it replaced, but it
+# was never BOUNDED, which is what calling it "memory-safe" wrongly implied.
+# Chunking cannot change a verdict: every ray is independent, so a chunk
+# boundary is invisible to the result.
+RAY_CHUNK = int(os.environ.get("CBBE2UBE_RAY_CHUNK", "512"))
 
 MIN_HITS = 40          # below this the garment does not cover the bust and
                        # the distribution is a handful of stray rays
@@ -283,8 +291,25 @@ class _ClipTester:
             return out, who
         return out
 
-    def clipping(self, bV, bN, idx, oriented: bool = True):
-        """(clip_mask, in_t) over `idx`. clip = out escapes AND in hits."""
+    def clipping(self, bV, bN, idx, oriented: bool = True, chunk: int = 0):
+        """(clip_mask, in_t) over `idx`. clip = out escapes AND in hits.
+
+        CHUNKED. Rays are independent, so splitting them is identical to casting
+        all at once while bounding peak memory. Unchunked, a dense garment
+        raised MemoryError in here and `exposed()` swallowed it into a -1, which
+        the chain contract reported as "unmeasurable" -- the only trace that a
+        shape had lost its diagnosis entirely. Pass chunk<0 to force one batch.
+        """
+        idx = np.asarray(idx)
+        _n = chunk if chunk else RAY_CHUNK
+        if _n > 0 and len(idx) > _n:
+            masks, ts = [], []
+            for _i in range(0, len(idx), _n):
+                _m, _t = self.clipping(bV, bN, idx[_i:_i + _n], oriented,
+                                       chunk=-1)
+                masks.append(_m)
+                ts.append(_t)
+            return np.concatenate(masks), np.concatenate(ts)
         O, N = np.asarray(bV)[idx], np.asarray(bN)[idx]
         ray_i, tri_i = self._pairs(O)
         o = self._cast(O, N, ray_i, tri_i, len(O))
@@ -785,22 +810,41 @@ def front_slab(body_verts, body_normals, z_lo, z_hi,
                           & (v[:, 2] >= z_lo) & (v[:, 2] < z_hi))
 
 
+def cast_chunked(tester, O, N, chunk: int = 0):
+    """Outward distances for rays `O` along `N`, in bounded-memory chunks.
+
+    Returns only the FINITE hits, like `standoff()`. Rays are independent, so
+    chunking caps how many (ray, triangle) pairs exist at once and changes
+    nothing else. Unchunked, a dense garment produced 36,061,621 pairs and a
+    MemoryError; the sparse path is far cheaper than the dense one it replaced,
+    but it was never bounded.
+    """
+    O = np.asarray(O, np.float64)
+    N = np.asarray(N, np.float64)
+    if not len(O):
+        return np.empty(0)
+    n = max(chunk if chunk > 0 else RAY_CHUNK, 1)
+    out = []
+    for i in range(0, len(O), n):
+        o, d = O[i:i + n], N[i:i + n]
+        t = tester._cast(o, d, *tester._pairs(o), len(o))
+        out.append(t[np.isfinite(t)])
+    return np.concatenate(out) if out else np.empty(0)
+
+
 def slab_standoff(tester, body_verts, body_normals, idx,
                   min_hits: int = TRACE_MIN_HITS):
     """(median outward distance, hit count) over `idx`. NaN when too few hits.
 
     Goes through `_ClipTester`, whose tiered ball query and ray-line cull keep
-    only candidate pairs. The dense (rays x ALL triangles x 3) formulation used
-    by `standoff()` reached 15 GB on a five-shape cuirass and had to be killed
-    mid-run, so anything that measures per pass has to take the sparse path.
+    only candidate pairs, and casts them in bounded chunks -- the sparse path is
+    cheap but not bounded, and a dense garment hit MemoryError without this.
     """
     O = np.asarray(body_verts, np.float64)[idx]
     N = np.asarray(body_normals, np.float64)[idx]
     if not len(O):
         return float("nan"), 0
-    ray_i, tri_i = tester._pairs(O)
-    t = tester._cast(O, N, ray_i, tri_i, len(O))
-    f = t[np.isfinite(t)]
+    f = cast_chunked(tester, O, N)
     if len(f) < min_hits:
         return float("nan"), int(len(f))
     return float(np.median(f)), int(len(f))
@@ -1119,10 +1163,8 @@ def record_standoff(dst_path, shape_name, garment_verts, garment_tris,
         # 1e-6 on the same index, so the anchor is unmoved.
         _t = _ClipTester(np.asarray(garment_verts, np.float64),
                          garment_tris, tmax=TMAX)
-        _O = np.asarray(body_verts, np.float64)[idx]
-        _N = np.asarray(body_normals, np.float64)[idx]
-        _d = _t._cast(_O, _N, *_t._pairs(_O), len(_O))
-        s = _d[np.isfinite(_d)]
+        s = cast_chunked(_t, np.asarray(body_verts, np.float64)[idx],
+                         np.asarray(body_normals, np.float64)[idx])
         if len(s) < MIN_HITS:
             return None                      # does not cover the bust
         rec = {
