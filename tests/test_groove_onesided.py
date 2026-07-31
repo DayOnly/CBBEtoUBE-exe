@@ -151,3 +151,213 @@ def test_no_body_is_still_handled(monkeypatch):
     out = nc._smooth_warp_grooves(src, warped, None)
     assert np.asarray(out).shape == warped.shape
     assert np.isfinite(np.asarray(out)).all()
+
+
+# --- #groove-authored-cap -------------------------------------------------
+# This pass runs AFTER conform_to_source_standoff and, being outward-only, the
+# only thing it could do to a vert the conform had just reeled in was hand the
+# clearance back (traced: chest 0.235 -> 0.322u, a bigger term than the
+# conform's floor and blend caps combined). The cap bounds its OUTWARD motion at
+# s_out <= max(s_in, s_authored): a vert already looser than the authored fit
+# cannot be pushed out at all, a vert TIGHTER than it is a real groove and may
+# still be lifted. It only ever restricts motion, so the one-sided guarantee
+# above still holds.
+
+
+def _standoff(v):
+    """Body is the y=0 plane with +y normals, so clearance IS the y coord."""
+    return np.asarray(v)[:, 1]
+
+
+def _outward(out, warped):
+    dy = (np.asarray(out) - np.asarray(warped))[:, 1]
+    return float(dy[dy > 0.0].sum())
+
+
+def _dent_scene(n=16, span=8.0, amp=1.0):
+    """Same scene but the garment is DENTED toward the body at the centre --
+    i.e. a genuine groove, sitting TIGHTER than the author's fit."""
+    body, normals, src, _ = _scene(n, span, amp)
+    x, z = body[:, 0], body[:, 2]
+    dent = amp * np.exp(-(x ** 2 + z ** 2) / 8.0)
+    warped = src - np.stack([np.zeros_like(x), dent, np.zeros_like(x)], 1)
+    return body, normals, src, warped
+
+
+def _above_cap(out, warped):
+    """How much clearance is handed back above max(s_in, authored). The source
+    body is the same plane in these scenes, so authored clearance is 1.0."""
+    cap = np.maximum(_standoff(warped), np.full(len(np.asarray(out)), 1.0))
+    return float(np.maximum(_standoff(out) - cap, 0.0).sum())
+
+
+def test_authored_cap_kills_the_giveback(monkeypatch):
+    """A vert already at or beyond the authored standoff must not be pushed
+    further out. The bound is AGGREGATE, not per-vert: the subtraction is
+    feathered over the mesh and backed off where the body normals are
+    incoherent, because a raw per-vert shove is itself a crinkle. So the
+    contract is "the giveback is substantially removed", and the assertion is
+    written to that -- a per-vert clamp here would be asserting a guarantee the
+    pass deliberately does not make."""
+    body, nrm, src, warped = _scene()
+    kw = dict(ube_body_normals=nrm, src_body_verts=body, src_body_normals=nrm)
+    monkeypatch.setattr(nc, "GROOVE_AUTHORED_CAP", False)
+    loose = _above_cap(nc._smooth_warp_grooves(src, warped, body, **kw), warped)
+    monkeypatch.setattr(nc, "GROOVE_AUTHORED_CAP", True)
+    capped = _above_cap(nc._smooth_warp_grooves(src, warped, body, **kw), warped)
+    assert loose > 0.05, f"scene hands nothing back ({loose}); test vacuous"
+    assert capped < 0.2 * loose, (
+        f"cap removed only {100.0 * (1 - capped / loose):.0f}% of the giveback")
+
+
+def test_authored_cap_actually_removes_outward_motion(monkeypatch):
+    """NEGATIVE CONTROL for the test above: without the cap this scene really
+    does push verts outward, so the clamp is not being tested vacuously."""
+    body, nrm, src, warped = _scene()
+    monkeypatch.setattr(nc, "GROOVE_AUTHORED_CAP", False)
+    loose = _outward(nc._smooth_warp_grooves(
+        src, warped, body, ube_body_normals=nrm,
+        src_body_verts=body, src_body_normals=nrm), warped)
+    monkeypatch.setattr(nc, "GROOVE_AUTHORED_CAP", True)
+    capped = _outward(nc._smooth_warp_grooves(
+        src, warped, body, ube_body_normals=nrm,
+        src_body_verts=body, src_body_normals=nrm), warped)
+    assert loose > 0.05, f"scene pushes nothing outward ({loose}); test vacuous"
+    assert capped < loose, (loose, capped)
+
+
+def test_authored_cap_still_lifts_a_real_groove(monkeypatch):
+    """The cap must not turn the pass off. A vert sitting TIGHTER than the
+    authored fit is a genuine groove; it may still be raised, up to -- and not
+    past -- the authored standoff."""
+    monkeypatch.setattr(nc, "GROOVE_AUTHORED_CAP", True)
+    body, nrm, src, warped = _dent_scene()
+    centre = int(np.argmin(np.linalg.norm(body[:, [0, 2]], axis=1)))
+    out = nc._smooth_warp_grooves(src, warped, body, ube_body_normals=nrm,
+                                  src_body_verts=body, src_body_normals=nrm)
+    lift = _standoff(out)[centre] - _standoff(warped)[centre]
+    assert lift > 0.05, f"groove not lifted ({lift}); the cap disabled the pass"
+    assert _standoff(out)[centre] <= 1.0 + 1e-9      # not past the authored fit
+
+
+def test_authored_cap_never_moves_a_vert_toward_the_body(monkeypatch):
+    """The cap only ever subtracts outward motion, so GROOVE_ONESIDED's
+    guarantee -- the thing that stopped the bust apex being flattened onto the
+    skin on 13 of 42 shapes -- must survive it untouched."""
+    monkeypatch.setattr(nc, "GROOVE_ONESIDED", True)
+    monkeypatch.setattr(nc, "GROOVE_AUTHORED_CAP", True)
+    for scene in (_scene(), _dent_scene()):
+        body, nrm, src, warped = scene
+        out = nc._smooth_warp_grooves(src, warped, body, ube_body_normals=nrm,
+                                      src_body_verts=body, src_body_normals=nrm)
+        assert _inward(out, warped) == pytest.approx(0.0, abs=1e-9)
+
+
+def test_no_source_body_leaves_the_pass_exactly_as_it_was(monkeypatch):
+    """Callers that pass no source body (and every test above) must be
+    bit-for-bit unchanged -- the cap is opt-in on knowing the authored fit."""
+    monkeypatch.setattr(nc, "GROOVE_AUTHORED_CAP", True)
+    body, nrm, src, warped = _scene()
+    a = nc._smooth_warp_grooves(src, warped, body, ube_body_normals=nrm)
+    monkeypatch.setattr(nc, "GROOVE_AUTHORED_CAP", False)
+    b = nc._smooth_warp_grooves(src, warped, body, ube_body_normals=nrm)
+    assert np.array_equal(a, b)
+
+
+def test_authored_cap_survives_junk_source_body(monkeypatch):
+    """Mismatched / empty source-body arrays must fall back to the uncapped
+    result, not raise -- phase 2 wraps this call in a bare except."""
+    monkeypatch.setattr(nc, "GROOVE_AUTHORED_CAP", True)
+    body, nrm, src, warped = _scene()
+    base = nc._smooth_warp_grooves(src, warped, body, ube_body_normals=nrm)
+    for bv, bn in ((body, None), (body, nrm[:3]), (np.zeros((0, 3)), np.zeros((0, 3)))):
+        out = nc._smooth_warp_grooves(src, warped, body, ube_body_normals=nrm,
+                                      src_body_verts=bv, src_body_normals=bn)
+        assert np.asarray(out).shape == np.asarray(base).shape
+        assert np.all(np.isfinite(np.asarray(out)))
+
+
+
+# --- #groove-nipple-hold --------------------------------------------------
+# This pass is one-sided per VERTEX, but its TANGENTIAL motion reshapes the
+# triangles, so the interpolated SURFACE over a tip that sits BETWEEN verts
+# drops even though no vert moved inward. Traced on a studded cuirass: the
+# conform delivered 0.284u of nipple clearance and this pass took it to 0.161u.
+# Holding the smoothing back over the protrusion leaves those verts where the
+# conform put them. It only ever REMOVES motion, so it cannot loosen the
+# garment -- every alternative tried pushed the tip out and inflated the torso
+# with it (clipping log F-S1).
+
+def _nip_scene(n=16, span=8.0, amp=1.0, w=0.6):
+    """`_scene` plus a nipple weight map peaked at the centre of the body."""
+    body, nrm, src, warped = _scene(n, span, amp)
+    r = np.linalg.norm(body[:, [0, 2]], axis=1)
+    return body, nrm, src, warped, w * np.exp(-(r ** 2) / 8.0)
+
+
+def _moved_in(out, warped, sel):
+    d = np.linalg.norm(np.asarray(out)[sel] - np.asarray(warped)[sel], axis=1)
+    return float(d.sum())
+
+
+def test_hold_stops_the_smoothing_over_a_protrusion(monkeypatch):
+    """Scored on TOTAL smoothing motion, not on the apex vert.
+
+    The apex itself is already pinned by GROOVE_ONESIDED -- its smoothing is
+    purely inward and gets cancelled -- so it moves zero either way and would
+    assert nothing. What this pass actually does to a protrusion is move the
+    verts AROUND it tangentially, which reshapes the triangles and drops the
+    interpolated surface over the tip. So the hold shows up as less motion
+    overall, which is what is checked here. The end-to-end effect is measured on
+    a real mesh instead: nipple clearance 0.161 -> 0.284u with every fit band
+    and the crinkle-vs-source unchanged (clipping log F-S1)."""
+    body, nrm, src, warped, nip = _nip_scene()
+    monkeypatch.setattr(nc, "GROOVE_NIPPLE_HOLD", False)
+    loose = nc._smooth_warp_grooves(src, warped, body, ube_body_normals=nrm,
+                                    ube_body_nipple=nip)
+    monkeypatch.setattr(nc, "GROOVE_NIPPLE_HOLD", True)
+    held = nc._smooth_warp_grooves(src, warped, body, ube_body_normals=nrm,
+                                   ube_body_nipple=nip)
+    _nl, tl = _moved(loose, warped)
+    _nh, th = _moved(held, warped)
+    # NEGATIVE CONTROL: the unheld pass really does move this scene.
+    assert tl > 0.05, f"nothing to hold back ({tl}); test would be vacuous"
+    assert th < tl - 1e-6, (tl, th)          # the hold removes motion
+    assert th > 0.5 * tl, (tl, th)           # ...only near the tip, not globally
+
+
+def test_hold_leaves_fabric_away_from_the_nipple_alone(monkeypatch):
+    """An exemption, not a bypass: with the weight map zero the pass is
+    bit-for-bit what it was."""
+    body, nrm, src, warped, _nip = _nip_scene()
+    monkeypatch.setattr(nc, "GROOVE_NIPPLE_HOLD", True)
+    a = nc._smooth_warp_grooves(src, warped, body, ube_body_normals=nrm,
+                                ube_body_nipple=np.zeros(len(body)))
+    b = nc._smooth_warp_grooves(src, warped, body, ube_body_normals=nrm)
+    assert np.array_equal(a, b)
+
+
+def test_hold_never_loosens_the_garment(monkeypatch):
+    """It only removes smoothing motion, so no vert may end further from the
+    body than it would unheld -- this is what every earlier attempt failed."""
+    body, nrm, src, warped, nip = _nip_scene()
+    monkeypatch.setattr(nc, "GROOVE_NIPPLE_HOLD", False)
+    loose = nc._smooth_warp_grooves(src, warped, body, ube_body_normals=nrm,
+                                    ube_body_nipple=nip)
+    monkeypatch.setattr(nc, "GROOVE_NIPPLE_HOLD", True)
+    held = nc._smooth_warp_grooves(src, warped, body, ube_body_normals=nrm,
+                                   ube_body_nipple=nip)
+    # Held motion is a subset of unheld motion, so in aggregate it can only be
+    # smaller -- per-vert it need not be, because Laplacian smoothing couples
+    # neighbours and a held vert changes what its neighbours average to.
+    assert _outward(held, warped) < _outward(loose, warped) + 1e-9
+    assert _inward(held, warped) == pytest.approx(0.0, abs=1e-9)
+
+
+def test_hold_ignores_a_mismatched_weight_map(monkeypatch):
+    monkeypatch.setattr(nc, "GROOVE_NIPPLE_HOLD", True)
+    body, nrm, src, warped, _nip = _nip_scene()
+    a = nc._smooth_warp_grooves(src, warped, body, ube_body_normals=nrm)
+    b = nc._smooth_warp_grooves(src, warped, body, ube_body_normals=nrm,
+                                ube_body_nipple=np.zeros(len(body) + 5))
+    assert np.array_equal(a, b)

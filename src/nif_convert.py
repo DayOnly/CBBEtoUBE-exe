@@ -133,6 +133,70 @@ BUST_FLAT_CLEARANCE = 0.3
 BUST_NIPPLE_GAIN = 1.0
 BUST_NEIGHBORHOOD_K = 6
 BUST_NEIGHBORHOOD_RADIUS = 4.0
+# #bust-neighbourhood-spacing.
+# MEASURED: `BUST_NEIGHBORHOOD_RADIUS` above is very nearly INERT. The UBE body's
+# local vertex spacing is 0.359u, so k=6 reaches a median of only 0.673u -- the
+# 4.0u filter almost never removes a neighbour, and the effective neighbourhood
+# is set by k, not by the radius the constant advertises.
+# That matters because the push-out is applied PER GARMENT VERTEX while garment
+# spacing is 0.71-1.21u on the pieces measured: the body tip that pokes BETWEEN
+# two garment verts sits up to ~0.6u from either, i.e. right at or outside the
+# 0.673u the pass actually looks at. Result on a 3339-vert cuirass: 0.125u of
+# nipple clearance delivered against a 0.55u requirement, with nothing in the
+# pass aware it had missed.
+# Fix: size the neighbourhood by the patch a vertex is responsible for -- its own
+# local spacing -- and raise k enough to actually REACH that far. The floor
+# preserves today's effective 0.67u reach, so a garment finer than the body is
+# unchanged. The cap stays well under the advertised 4.0u deliberately: at 4u the
+# "worst body point" on a breast can be a far-away protrusion, which would
+# balloon the garment rather than clear a tip.
+BUST_SPACING_AWARE = os.environ.get("CBBE2UBE_NO_BUST_SPACING") != "1"
+# SATURATED at 1.5 by measurement: 1.5 / 2.0 / 3.0 all give the same clearance
+# on the failing piece, so the radius stops being the limiter here. Not a knob.
+BUST_SPACING_MULT = 1.5
+BUST_NEIGHBORHOOD_RADIUS_MAX = 2.0     # ~ what K_MAX reaches on this body
+BUST_NEIGHBORHOOD_K_MAX = 64
+# #bust-surface-req. `worst` (above) is the clearance of a garment VERTEX over
+# the body. The defect is the clearance of the garment SURFACE. Measured on a
+# studded cuirass: 50 of the 50 tightest nipple spots sit in a triangle INTERIOR
+# a median 1.607u from any vertex, the vertices stand 1.45u clear, and the
+# surface spanning them sags to 0.338u -- the vertex measure OVERSTATES by
+# 0.855u. `req - worst` is then negative at every nipple vert (mean -0.921), so
+# the push never fires and `req` is never read: raising it by 3.5u moved
+# delivered clearance by 0.04u. Six earlier attempts were all compensating for
+# that, and each ballooned the torso because it pushed on some other quantity.
+# So evaluate the requirement where the defect is -- against the SURFACE, with
+# the same closest-point-on-triangle test the validated poke metric uses -- and
+# push the offending triangle's own vertices. Needs `tris`; without them the
+# pass behaves exactly as before.
+BUST_SURFACE_REQ = os.environ.get("CBBE2UBE_NO_BUST_SURFACE_REQ") != "1"
+BUST_SURFACE_K = 24            # body points tested per garment triangle
+# Ceiling on what the surface test may demand. NOT a knob: 1.5 / 2.5 / 3.5 all
+# give the same result across 112 installed presets (1 still poking, the same
+# outlier) and the same fit, so the cap is not the limiter -- it is a safety rail.
+BUST_SURFACE_MAX_PUSH = 1.5
+# #bust-morph-residual. The bust requirement is met against the BIND body, but
+# the character in game is MORPHED, and a nipple can travel 5.35u outward at
+# runtime. The armour follows -- `generate_armor_tri` gives a hugging vert the
+# delta of its NEAREST body vert (match_w -> 1) -- so what survives is not the
+# travel but the RESIDUAL: the poking body point and the garment vert covering
+# it are different body verts, and under a slider that reshapes rather than
+# merely inflates, their deltas differ in DIRECTION.
+# Measured on a studded cuirass: 1 of 23 bust sliders (Big_SaggyBreasts) turned
+# +0.284u of clearance into -0.165u while following at ratio 1.00 by magnitude.
+# That is exactly why a poke is PRESET-DEPENDENT, and why every bind-pose metric
+# read it as clean.
+# So: add the residual to the required clearance. Requiring the full 5u travel
+# would balloon every garment; the residual is small and affordable.
+BUST_MORPH_RESIDUAL = os.environ.get("CBBE2UBE_NO_BUST_MORPH_RESIDUAL") != "1"
+BUST_MORPH_RESIDUAL_MAX = 1.5   # u -- ceiling on what the residual may demand
+# Nipple weight at which the residual is charged IN FULL. Not a taste knob:
+# 0.25 (the tip only) leaves the piece poking at -0.141u, 0.10 closes it at
+# +0.035u, and 0.05 is IDENTICAL to 0.10 -- saturated, so there is nothing below
+# it to win. The ring around the tip has to be charged too, because the body
+# point that pokes is not the one carrying the peak weight.
+BUST_MORPH_RESIDUAL_NIPW = 0.10
+_MORPH_STACK_MIN = 0.5          # peak delta below this cannot drive a bust poke
 # Breast03 = nipple apex; Breast02 partial contributor. Matched without spaces.
 NIPPLE_TIP_BONE_WEIGHTS = {"breast03": 1.0, "nipple": 1.0, "breast02": 0.4}
 
@@ -595,6 +659,50 @@ def _cached_body_morph_amplitude(osd_path: Path,
                 amp[idx] = outward
     _BODY_MORPH_AMP_CACHE[p] = amp
     return amp
+
+
+_BODY_MORPH_STACK_CACHE: "dict[Path, np.ndarray | None]" = {}
+
+
+def _cached_body_morph_stack(osd_path: Path, n_verts: int) -> "np.ndarray | None":
+    """(M, n_verts, 3) float32 stack of the body's SHAPE-DRIVING slider deltas.
+
+    `_cached_body_morph_amplitude` collapses the sliders to a per-vert MAXIMUM,
+    which is enough to know "this vert can grow", but not to compare two body
+    verts under the SAME slider -- and that comparison is the whole of
+    #bust-morph-residual. Kept as float32 and filtered to sliders that actually
+    move something (peak delta >= _MORPH_STACK_MIN), so the real OSD's 202
+    morphs reduce to the few dozen that can drive a bust poke.
+    Cached per OSD path; returns None if no OSD.
+    """
+    if osd_path is None:
+        return None
+    p = Path(osd_path)
+    if p in _BODY_MORPH_STACK_CACHE:
+        return _BODY_MORPH_STACK_CACHE[p]
+    try:
+        osd = _cached_osd_load(p)
+    except Exception:
+        _BODY_MORPH_STACK_CACHE[p] = None
+        return None
+    keep: "list[np.ndarray]" = []
+    for m in osd.morphs:
+        if not m.offsets:
+            continue
+        arr = np.asarray(m.offsets, dtype=np.float64)
+        idx = arr[:, 0].astype(np.int64)
+        d = arr[:, 1:4]
+        ok = (idx >= 0) & (idx < n_verts)
+        if not ok.any():
+            continue
+        if np.linalg.norm(d[ok], axis=1).max() < _MORPH_STACK_MIN:
+            continue
+        buf = np.zeros((n_verts, 3), dtype=np.float32)
+        buf[idx[ok]] = d[ok]
+        keep.append(buf)
+    out = np.stack(keep) if keep else None
+    _BODY_MORPH_STACK_CACHE[p] = out
+    return out
 
 
 # --- Portable body discovery (no hardcoded modpack paths) -------------
@@ -1148,10 +1256,43 @@ GROOVE_SMOOTH_ROUGH = 0.25  # displacement-deviation (u) above which a vert is "
 
 
 GROOVE_ONESIDED = os.environ.get("CBBE2UBE_GROOVE_ONESIDED", "1") != "0"
+# #groove-nipple-hold: hold this smoothing back over a body protrusion. The pass
+# is one-sided per VERTEX, but its TANGENTIAL motion reshapes the triangles and
+# the interpolated SURFACE over a tip between verts drops with them. Full hold at
+# this nipple weight, fading in below it.
+GROOVE_NIPPLE_HOLD = os.environ.get("CBBE2UBE_NO_GROOVE_HOLD") != "1"
+GROOVE_NIPPLE_HOLD_W = 0.25
+
+
+# --- Authored-standoff cap on the groove smooth (#groove-authored-cap) ----
+# GROOVE_ONESIDED made this pass outward-only, and it runs AFTER
+# `conform_to_source_standoff`, so the only thing it could do to a vert the
+# conform had just reeled in was hand the clearance back: traced on a mail
+# layer, the conform reached 0.235u on the chest and this pass pushed it back to
+# 0.322u. Measured against the other two limiters on the same piece, that
+# giveback (+0.085u) is LARGER than the conform's min-clearance floor (0.024u)
+# and blend fraction (0.033u) combined, so it is the biggest single term left.
+#
+# Reordering was tried and rejected (see IN_GAME_BUGS 4c/4d): output smoothness
+# comes from this pass smoothing the CUMULATIVE field last, so nothing may be
+# moved after it. The cap keeps it last and bounds only its OUTWARD motion:
+#     s_out <= max(s_in, s_authored)
+# A vert already looser than the author's fit gets cap = where it already is, so
+# it cannot be pushed out at all -- the giveback dies. A vert TIGHTER than the
+# author's fit is a genuine groove and may still be raised, up to the authored
+# standoff. Inward motion is still cancelled by GROOVE_ONESIDED, so the
+# regression that flag exists to stop (flattening the bust apex onto the skin,
+# 13 of 42 shapes) is untouched: this only ever restricts, never adds, motion.
+# Needs the SOURCE body to know the authored standoff; without it the pass
+# behaves exactly as before. Set CBBE2UBE_NO_GROOVE_CAP=1 to disable.
+GROOVE_AUTHORED_CAP = os.environ.get("CBBE2UBE_NO_GROOVE_CAP") != "1"
+GROOVE_CAP_FEATHER = 2      # rounds of feathering on the cap's subtraction
 
 
 def _smooth_warp_grooves(src_world, warped, ube_body_verts,
-                         ube_body_normals=None):
+                         ube_body_normals=None,
+                         src_body_verts=None, src_body_normals=None,
+                         ube_body_nipple=None):
     """Flatten warp-induced displacement grooves on body-conforming armor.
 
     The per-vert body-delta warp can introduce localized roughness in the
@@ -1198,6 +1339,21 @@ def _smooth_warp_grooves(src_world, warped, ube_body_verts,
             btree = cKDTree(body)
             d2b, nn0 = btree.query(w, k=1)
             active = (d2b < GROOVE_SMOOTH_CLOSE).astype(np.float64)[:, None]
+            # #groove-nipple-hold: fade the smoothing out over a protrusion.
+            # This pass is one-sided per VERTEX, but its TANGENTIAL motion
+            # reshapes the triangles, and the interpolated SURFACE over a tip
+            # sitting between verts drops with them -- traced on a studded
+            # cuirass, the conform delivered 0.284u of nipple clearance and this
+            # pass took it to 0.161u without moving a single vert inward.
+            # Holding the smoothing back over the tip leaves those verts exactly
+            # where the conform put them. It only ever REMOVES motion, so it can
+            # never loosen the garment: the alternative fixes all pushed the tip
+            # out and ballooned the torso with it (see the clipping log, F-S1).
+            if (GROOVE_NIPPLE_HOLD and ube_body_nipple is not None
+                    and len(ube_body_nipple) == len(body)):
+                nipw = np.asarray(ube_body_nipple, dtype=np.float64)[nn0]
+                hold = np.clip(nipw / max(GROOVE_NIPPLE_HOLD_W, 1e-6), 0.0, 1.0)
+                active = active * (1.0 - hold)[:, None]
         else:
             nn0 = None
             active = np.ones((len(src), 1), dtype=np.float64)
@@ -1211,7 +1367,7 @@ def _smooth_warp_grooves(src_world, warped, ube_body_verts,
             wt = np.clip(rough / GROOVE_SMOOTH_ROUGH, 0.15, 1.0)[:, None]
             disp = disp + active * (0.6 * wt) * (nm - disp)
         out = src + disp
-        if GROOVE_ONESIDED and body is not None:
+        if (GROOVE_ONESIDED or GROOVE_AUTHORED_CAP) and body is not None:
             # Outward direction at each vert. Prefer the body's own normals: for
             # tight armour `vert - nearest_body_vert` is near zero and
             # normalising it amplifies float noise into a random direction (the
@@ -1229,10 +1385,56 @@ def _smooth_warp_grooves(src_world, warped, ube_body_verts,
                 nrm = np.divide(d, np.where(ln > 1e-6, ln, 1.0))
             ln = np.linalg.norm(nrm, axis=1, keepdims=True)
             nrm = np.divide(nrm, np.where(ln > 1e-9, ln, 1.0))
-            move = out - w                       # what smoothing did, total
-            along = np.einsum("ij,ij->i", move, nrm)
-            inward = np.minimum(along, 0.0)[:, None]
-            out = out - inward * nrm             # cancel only the inward part
+            if GROOVE_ONESIDED:
+                move = out - w                   # what smoothing did, total
+                along = np.einsum("ij,ij->i", move, nrm)
+                inward = np.minimum(along, 0.0)[:, None]
+                out = out - inward * nrm         # cancel only the inward part
+            # #groove-authored-cap: bound the OUTWARD motion at the authored
+            # standoff so this pass can no longer hand back the clearance the
+            # conform just removed. Restricts only; never adds motion, so the
+            # GROOVE_ONESIDED guarantee above is unaffected.
+            if GROOVE_AUTHORED_CAP and src_body_verts is not None:
+                sbv = np.asarray(src_body_verts, dtype=np.float64)
+                sbn = (np.asarray(src_body_normals, dtype=np.float64)
+                       if src_body_normals is not None else None)
+                if (sbn is not None and sbn.shape == sbv.shape and len(sbv)
+                        and len(sbv[0]) == 3):
+                    _, si = cKDTree(sbv).query(src, k=1)
+                    # authored clearance, measured the same way the conform
+                    # measures it (signed, along the SOURCE body's normal)
+                    s_auth = ((src - sbv[si]) * sbn[si]).sum(axis=1)
+                    s_in = ((w - body[nn0]) * nrm).sum(axis=1)
+                    s_out = ((out - body[nn0]) * nrm).sum(axis=1)
+                    cap = np.maximum(s_in, s_auth)
+                    excess = np.maximum(s_out - cap, 0.0)
+                    # Feather the subtraction over the SAME neighbourhood the
+                    # smoothing above used. A raw per-vert shove is itself a
+                    # crinkle (the lesson `_LAYER_ORDER_SMOOTH` records), and
+                    # nothing runs after this pass to clean one up.
+                    for _ in range(GROOVE_CAP_FEATHER):
+                        excess = 0.5 * (excess + excess[nbr].mean(axis=1))
+                    # Back off where the normal field itself is incoherent. The
+                    # cap subtracts ALONG `nrm` (the nearest body vert's
+                    # normal), and in a body fold -- armpit, inner thigh,
+                    # cleavage -- adjacent verts snap to opposite walls, so that
+                    # direction flips between neighbours (measured: 100-179deg
+                    # between adjacent moves on a sleeve). Subtracting along a
+                    # direction that flips IS a crease, and no amount of
+                    # feathering the scalar fixes a discontinuous direction.
+                    # `coh` is the length of the averaged neighbour normals: ~1
+                    # on smooth surface, -> 0 where they oppose. Scaling by it
+                    # only ever REDUCES the correction, so the fold keeps
+                    # today's behaviour instead of gaining a new crease.
+                    coh = np.linalg.norm(nrm[nbr].mean(axis=1), axis=1)
+                    excess = excess * np.clip(coh, 0.0, 1.0)
+                    # Feathering must not push a vert PAST where it arrived:
+                    # clamped to the outward motion the smoothing actually made,
+                    # so the vert lands in [s_in, s_out] and GROOVE_ONESIDED's
+                    # "never toward the body" guarantee is preserved exactly.
+                    excess = np.clip(excess, 0.0,
+                                     np.maximum(s_out - s_in, 0.0))
+                    out = out - excess[:, None] * nrm
         return out
     except Exception:
         return warped
@@ -1547,6 +1749,7 @@ def conform_to_source_standoff(
     morph_amplitude: "np.ndarray | None" = None,
     static_amp: float = STATIC_AUTHORED_AMP,
     static_min_clearance: float = STATIC_AUTHORED_MIN_CLEARANCE,
+    tris: "np.ndarray | None" = None,
 ) -> np.ndarray:
     """Restore each cloth vert's ORIGINAL clearance from the body after the
     CBBE->UBE warp+inflate, so a piece that HUGGED the source body still hugs the
@@ -1639,14 +1842,36 @@ def conform_to_source_standoff(
     body_z = ube_body_verts[ui][:, 2]
     in_bust = (body_z >= bust_z[0]) & (body_z <= bust_z[1])
     if np.any(in_bust):
-        kk = min(BUST_NEIGHBORHOOD_K, len(ube_body_verts))
+        # #bust-neighbourhood-spacing (see the constants for the measurement):
+        # each garment vertex must clear the body under the patch its surface
+        # spans, and that patch is its own local vertex spacing -- not a
+        # constant, and not the ~0.67u that k=6 happens to reach.
+        _spacing_aware = BUST_SPACING_AWARE and len(cur_cloth) > 4
+        kk = min(BUST_NEIGHBORHOOD_K_MAX if _spacing_aware
+                 else BUST_NEIGHBORHOOD_K, len(ube_body_verts))
         dd, jj = ube_tree.query(cur_cloth, k=kk)
         if kk == 1:
             dd = dd[:, None]; jj = jj[:, None]
+        if _spacing_aware:
+            gk = min(5, len(cur_cloth))
+            gd, _ = cKDTree(cur_cloth).query(cur_cloth, k=gk)
+            spacing = gd[:, 1:].mean(axis=1)          # local vertex spacing
+            radius_v = np.minimum(spacing * BUST_SPACING_MULT,
+                                  BUST_NEIGHBORHOOD_RADIUS_MAX)[:, None]
+            # Today's sample is kept as an exact SUBSET -- the first
+            # BUST_NEIGHBORHOOD_K neighbours are always included, whatever the
+            # radius works out to -- and the spacing-driven radius only ever
+            # ADDS to it. So a garment finer than the body is sampled bit for
+            # bit as before, and the required push can only ever grow, never
+            # shrink. (A plain radius floor is not equivalent: on tied
+            # distances it admits neighbours that k truncated arbitrarily.)
+            keep = (np.arange(kk)[None, :] < BUST_NEIGHBORHOOD_K) | (dd <= radius_v)
+        else:
+            keep = dd <= BUST_NEIGHBORHOOD_RADIUS
         nrm0 = ube_body_normals[ui]                   # nearest-vert outward normal
         diff = cur_cloth[:, None, :] - ube_body_verts[jj]          # (n, kk, 3)
         s_k = (diff * nrm0[:, None, :]).sum(axis=2)                # clearance over each neighbour along nrm0
-        s_k = np.where(dd <= BUST_NEIGHBORHOOD_RADIUS, s_k, np.inf)
+        s_k = np.where(keep, s_k, np.inf)
         worst = np.min(s_k, axis=1)                                # closest nearby body point
         worst = np.where(np.isfinite(worst), worst, s_cur)         # fallback: no neighbour in radius
         # required clearance: small everywhere, ramping up only at the nipple
@@ -1657,12 +1882,139 @@ def conform_to_source_standoff(
             nipw = np.zeros(len(ui))
         req = np.clip(BUST_FLAT_CLEARANCE + nipw * BUST_NIPPLE_GAIN,
                       BUST_FLAT_CLEARANCE, bust_clearance)
+        # #bust-morph-residual (see the constants): `req` above is a BIND-pose
+        # requirement, and the character in game is morphed. `generate_armor_tri`
+        # hands a hugging garment vert the delta of ITS OWN nearest body vert,
+        # so under slider m the clearance over neighbour b changes by
+        #     (delta_m[b] - delta_m[ui]) . nrm0
+        # -- zero when the slider merely inflates (both move alike), POSITIVE
+        # when it reshapes and carries b outward relative to the vert covering
+        # it. Take the worst such residual over every slider and demand it on
+        # top of `req`, so the fit that is tight at bind stays covered morphed.
+        if BUST_MORPH_RESIDUAL:
+            _stack = _cached_body_morph_stack(_find_ube_body_osd(),
+                                              len(ube_body_verts))
+            if _stack is not None and len(_stack):
+                bi = np.where(in_bust)[0]           # bust verts only: this is
+                if len(bi):                          # per-slider work, keep it small
+                    resid = np.zeros(len(bi))
+                    jb, kb, nb = jj[bi], keep[bi], nrm0[bi]
+                    ub = ui[bi]
+                    for dm in _stack:
+                        du = (dm[ub].astype(np.float64) * nb).sum(axis=1)
+                        dj = np.einsum("nkj,nj->nk",
+                                       dm[jb].astype(np.float64), nb)
+                        r = np.where(kb, dj - du[:, None], -np.inf).max(axis=1)
+                        np.maximum(resid, r, out=resid)
+                    # Charge the residual only where a poke can actually
+                    # happen -- weighted by the SAME nipple map `req` ramps on.
+                    # Applied flat across the bust band it costs the whole torso
+                    # (measured: fit 0.496 -> 0.751u) to protect a tip that is a
+                    # fraction of it, which is the overinflation this project
+                    # keeps re-learning.
+                    req = req.copy()
+                    w_nip = np.clip(nipw[bi] / max(BUST_MORPH_RESIDUAL_NIPW,
+                                                   1e-6), 0.0, 1.0)
+                    req[bi] += w_nip * np.clip(resid, 0.0,
+                                               BUST_MORPH_RESIDUAL_MAX)
         # pull IN only as far as the general conform wanted AND no closer than
         # `req` over the worst neighbour; push OUT if the nipple would poke.
         move = np.where(in_bust, np.maximum(move, req - worst), move)
+        # #bust-surface-req (see the constants): the same requirement, evaluated
+        # against the garment SURFACE instead of its vertices. Per triangle, over
+        # the body points that project INSIDE it, so a point off to the side --
+        # which the surface does not cover -- cannot demand a push.
+        if BUST_SURFACE_REQ and tris is not None:
+            need = _bust_surface_deficit(
+                cur_cloth, tris, ube_body_verts, ube_body_normals,
+                in_bust, req, ube_tree, bust_z)
+            if need is not None:
+                move = np.where(need > 0.0, np.maximum(move, need), move)
     near = (sd < max_body_dist) & (ud < max_body_dist)
     move = np.where(near, np.clip(move, -max_pull, max_push_out), 0.0)
     return (cur_cloth + ube_body_normals[ui] * move[:, None]).astype(np.float32)
+
+
+def _bust_surface_deficit(cur_cloth, tris, ube_body_verts, ube_body_normals,
+                          in_bust, req, ube_tree, bust_z):
+    """Per-vertex push needed so the garment SURFACE meets `req` over the body.
+
+    The bust rule elsewhere asks whether each garment VERTEX stands `req` clear.
+    That is not the defect: the tightest point sits in a triangle interior, and a
+    surface can sag 0.855u below vertices that all pass. This asks the question
+    the defect is in -- for every garment triangle in the bust band, how far the
+    body points that project INSIDE it rise above the surface -- and returns the
+    outward push each vertex needs to fix its worst triangle.
+
+    Inside-ness matters: a body point beside the triangle is not covered BY that
+    triangle, and letting it demand a push is how an earlier attempt inflated the
+    whole chest (0.434 -> 2.297u). Returns None when there is nothing to do.
+    """
+    try:
+        t = np.asarray(tris, dtype=np.int64)
+        if t.ndim != 2 or t.shape[1] != 3 or not len(t):
+            return None
+        n = len(cur_cloth)
+        t = t[(t >= 0).all(axis=1) & (t < n).all(axis=1)]
+        if not len(t):
+            return None
+        sel = np.where(in_bust[t].any(axis=1))[0]
+        if not len(sel):
+            return None
+        t = t[sel]
+        A, B, C = cur_cloth[t[:, 0]], cur_cloth[t[:, 1]], cur_cloth[t[:, 2]]
+        fn = np.cross(B - A, C - A)
+        fl = np.linalg.norm(fn, axis=1, keepdims=True)
+        ok = fl[:, 0] > 1e-12
+        if not ok.any():
+            return None
+        fn = np.divide(fn, np.where(fl > 1e-12, fl, 1.0))
+        kb = int(min(BUST_SURFACE_K, len(ube_body_verts)))
+        _d, bidx = ube_tree.query((A + B + C) / 3.0, k=kb)
+        if kb == 1:
+            bidx = bidx[:, None]
+        P = ube_body_verts[bidx]                       # (T, kb, 3)
+        bn = ube_body_normals[bidx]
+        # Orient each triangle normal OUTWARD using the body's own normal, so a
+        # winding-flipped triangle cannot invert the sign of the whole test.
+        sgn = np.sign(np.einsum("tj,tkj->tk", fn, bn))
+        sgn = np.where(sgn == 0.0, 1.0, sgn)
+        nrm = fn[:, None, :] * sgn[:, :, None]         # (T, kb, 3)
+        # clearance of the surface plane over each body point
+        clear = -np.einsum("tkj,tkj->tk", P - A[:, None, :], nrm)
+        # barycentric inside test, in the triangle's own plane
+        v0 = (B - A)[:, None, :]
+        v1 = (C - A)[:, None, :]
+        v2 = P - A[:, None, :]
+        d00 = np.einsum("tkj,tkj->tk", v0, v0)
+        d01 = np.einsum("tkj,tkj->tk", v0, v1)
+        d11 = np.einsum("tkj,tkj->tk", v1, v1)
+        d20 = np.einsum("tkj,tkj->tk", v2, v0)
+        d21 = np.einsum("tkj,tkj->tk", v2, v1)
+        den = d00 * d11 - d01 * d01
+        den = np.where(np.abs(den) < 1e-12, 1e-12, den)
+        v = (d11 * d20 - d01 * d21) / den
+        w = (d00 * d21 - d01 * d20) / den
+        inside = (v >= -1e-6) & (w >= -1e-6) & (v + w <= 1.0 + 1e-6)
+        bz = ube_body_verts[bidx][:, :, 2]
+        inband = (bz >= bust_z[0]) & (bz <= bust_z[1])
+        reqb = req[t[:, 0]][:, None]                   # the triangle's own need
+        deficit = np.where(inside & inband, reqb - clear, -np.inf).max(axis=1)
+        deficit = np.where(np.isfinite(deficit), deficit, 0.0)
+        deficit = np.clip(deficit, 0.0, BUST_SURFACE_MAX_PUSH)
+        if not (deficit > 0).any():
+            return None
+        need = np.zeros(n, dtype=np.float64)
+        for col in range(3):
+            np.maximum.at(need, t[:, col], deficit)
+        # NOT feathered. `_smooth_push_field` was tried here on the theory that
+        # a raw per-vert scatter creases (the `_LAYER_ORDER_SMOOTH` lesson): it
+        # moved a light cuirass's max edge-jump 0.269 -> 0.264u, i.e. nothing,
+        # while costing another 0.033u of fit on the piece this exists to fix.
+        # The scatter is not what roughens this pass; do not re-add it.
+        return need
+    except Exception:
+        return None
 
 
 def _rank_body_layers(shapes, body_verts, *, body_names, reskin_skip,
@@ -3103,6 +3455,8 @@ def convert_nif(
                                         body_verts_for_fit,
                                         body_normals_for_fit,
                                         morph_amplitude=_amp1,
+                                        tris=np.asarray(s.tris,
+                                                        dtype=np.int64),
                                     )
                             except Exception as e:
                                 # RECORDED, not swallowed -- the phase-2 sibling
@@ -3112,9 +3466,28 @@ def convert_nif(
                                                repr(e)))
                         # Groove-smooth: flatten warp-induced indent grooves on
                         # tight bust cloth. Near-body verts only; decorative shapes unaffected.
+                        # Source body passed for #groove-authored-cap -- same
+                        # pairing the conform uses, so both measure the authored
+                        # standoff against the same reference.
+                        try:
+                            _gc_bn = _cached_cbbe_body_normals(cbbe_body_path_p1)
+                        except Exception:
+                            _gc_bn = None
+                        # Guarded like _gc_bn: this call sits inside the big try
+                        # that wraps the whole phase-1 fit, so an exception here
+                        # would discard the warp, inflate AND conform for this
+                        # shape -- which reads in the output as the conform
+                        # having been switched off (torso 0.496 -> 1.830u).
+                        try:
+                            _gc_nip = _body_nipple_weight(ube_base_for_reskin)
+                        except Exception:
+                            _gc_nip = None
                         snapped = _smooth_warp_grooves(
                             sv_world, snapped, body_verts_for_fit,
-                            ube_body_normals=body_normals_for_fit)
+                            ube_body_normals=body_normals_for_fit,
+                            src_body_verts=cbbe_verts_for_warp,
+                            src_body_normals=_gc_bn,
+                            ube_body_nipple=_gc_nip)
                     else:
                         # Legacy fallback: no CBBE base body; push inside-body verts
                         # outward along UBE normals.
@@ -15545,6 +15918,7 @@ def convert_nif_phase2(
                             override, body_verts_for_p2, body_norms_for_p2,
                             ube_body_nipple=body_nipple_for_p2,
                             morph_amplitude=_amp_conf,
+                            tris=np.asarray(s.tris, dtype=np.int64),
                         )
                         _stage('conform', override)
                     except Exception as e:
@@ -15558,12 +15932,18 @@ def convert_nif_phase2(
                         failed.append((f"{s.name}:conform", repr(e)))
                 # Groove-smooth: flatten warp-induced indent grooves on tight
                 # bust cloth. Mirrors phase-1 call; near-body verts only.
+                # Source body passed for #groove-authored-cap -- the SAME arrays
+                # the conform above was given, so the authored standoff the cap
+                # bounds against is the one the conform aimed at.
                 if override is not None and body_verts_for_p2 is not None:
                     try:
                         override = _smooth_warp_grooves(
                             _sv_body, np.asarray(override, dtype=np.float64),
                             body_verts_for_p2,
-                            ube_body_normals=body_norms_for_p2)
+                            ube_body_normals=body_norms_for_p2,
+                            src_body_verts=src_body_v_p2,
+                            src_body_normals=src_body_n_p2,
+                            ube_body_nipple=body_nipple_for_p2)
                         _stage('groove_smooth', override)
                     except Exception:
                         pass

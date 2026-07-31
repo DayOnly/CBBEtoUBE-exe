@@ -18,7 +18,10 @@
 chest too far out" by reeling each cloth vert back to its ORIGINAL clearance from
 the body. Must be safe-by-construction: pull-IN only (never push out), clamp to a
 min clearance, no-op for already-tight / far-from-body cloth."""
+from pathlib import Path
+
 import numpy as np
+import src.nif_convert as nc_mod
 from src.nif_convert import conform_to_source_standoff
 
 
@@ -191,3 +194,283 @@ def test_body_nipple_weight_from_breast03():
     # a body with NO breast bones -> None (bust pass falls back to flat clearance)
     assert _body_nipple_weight(
         _FakeShape(np.zeros((2, 3)), bone_weights={"NPC Spine2": [(0, 1.0)]})) is None
+
+
+# --- #bust-neighbourhood-spacing ------------------------------------------
+# The bust push-out is applied PER GARMENT VERTEX, so each vertex must clear
+# every body point the surface around it spans -- a span set by the garment's
+# own vertex spacing, not by a constant. A fixed 6-neighbour / 4.0u sample
+# misses a tip that pokes between two vertices of a coarse garment (measured:
+# 0.125u of nipple clearance delivered against a 0.55u requirement).
+
+def _nipple_body(n=61, span=6.0, z=92.0, tip=0.8, bump=1.2):
+    """Chest plane in the bust band with a protruding tip, at the REAL body's
+    vertex density (0.2u here vs the UBE body's 0.359u) so the sampling geometry
+    this fix is about is reproduced rather than idealised."""
+    xs = np.linspace(-span, span, n)
+    gx, gy = np.meshgrid(xs, xs)
+    v = np.stack([gx.ravel(), gy.ravel(), np.full(gx.size, z)], axis=1)
+    # Deterministic jitter so no two body verts are EXACTLY equidistant from a
+    # garment vert. A perfect grid is pathological here: tied distances let a
+    # k=64 query return a different "nearest 6" than a k=6 query, which is a
+    # property of the fixture, not of the pass. Real body meshes are irregular.
+    v[:, 0] += 0.03 * np.sin(7.0 * v[:, 1] + 1.3)
+    v[:, 1] += 0.03 * np.sin(5.0 * v[:, 0] + 0.7)
+    r = np.linalg.norm(v[:, :2], axis=1)
+    v[:, 2] += tip * np.exp(-(r ** 2) / (2 * (bump / 2.5) ** 2))    # sharp tip
+    nrm = np.tile(np.array([0.0, 0.0, 1.0]), (len(v), 1))
+    nip = 0.6 * np.exp(-(r ** 2) / (2 * bump ** 2))
+    return v.astype(float), nrm.astype(float), nip, int(np.argmin(r))
+
+
+def _coarse_garment(spacing=1.2, z=92.35, half=3):
+    """A garment at realistic coarse spacing, offset so NO vertex sits over the
+    tip -- the poke is on the surface between them."""
+    o = np.arange(-half, half + 1) * spacing + spacing / 2.0
+    gx, gy = np.meshgrid(o, o)
+    return np.stack([gx.ravel(), gy.ravel(), np.full(gx.size, z)], axis=1)
+
+
+def test_coarse_garment_still_clears_a_tip_between_its_verts(monkeypatch):
+    """The tip sits between garment verts, inside the patch a vertex spans
+    (spacing 1.2u) but outside the ~0.67u that k=6 actually reaches."""
+    bv, bn, nip, c = _nipple_body()
+    cur = _coarse_garment()
+    src = cur.copy()
+    tip_z = bv[c, 2]
+    monkeypatch.setattr(nc_mod, "BUST_SPACING_AWARE", False)
+    tight = conform_to_source_standoff(src, bv, bn, cur, bv, bn,
+                                       ube_body_nipple=nip)
+    monkeypatch.setattr(nc_mod, "BUST_SPACING_AWARE", True)
+    aware = conform_to_source_standoff(src, bv, bn, cur, bv, bn,
+                                       ube_body_nipple=nip)
+    inner = np.linalg.norm(cur[:, :2], axis=1) < 1.5
+    # NEGATIVE CONTROL: today's sampling really does under-clear this tip.
+    assert tight[inner, 2].min() - tip_z < 0.5, (
+        "the fixed sample already clears the tip; this test would be vacuous")
+    assert aware[inner, 2].min() > tight[inner, 2].min() + 1e-3, (
+        tight[inner, 2].min(), aware[inner, 2].min())
+    # PUSH-OUT ONLY: never tighter than the fixed version, anywhere.
+    assert np.all(aware[:, 2] >= tight[:, 2] - 1e-6)
+
+
+def test_spacing_aware_leaves_a_fine_garment_alone(monkeypatch):
+    """Today's k nearest are always kept and the spacing radius only ADDS to
+    them, so once the garment is fine enough that its radius falls inside what
+    k already reaches, sampling is bit for bit unchanged and dense pieces cannot
+    drift. Threshold measured on this fixture: the body's smallest k=6 reach is
+    0.271u, so a 0.15u garment (radius 0.225u) is provably inside it."""
+    bv, bn, nip, _c = _nipple_body()
+    cur = _coarse_garment(spacing=0.15, half=20)
+    src = cur.copy()
+    monkeypatch.setattr(nc_mod, "BUST_SPACING_AWARE", False)
+    a = conform_to_source_standoff(src, bv, bn, cur, bv, bn, ube_body_nipple=nip)
+    monkeypatch.setattr(nc_mod, "BUST_SPACING_AWARE", True)
+    b = conform_to_source_standoff(src, bv, bn, cur, bv, bn, ube_body_nipple=nip)
+    assert np.allclose(a, b, atol=1e-6), np.abs(a - b).max()
+
+
+
+# --- #bust-morph-residual -------------------------------------------------
+# `req` is a BIND-pose requirement but the character in game is MORPHED, and a
+# nipple travels up to 5.35u at runtime. The armour follows (generate_armor_tri
+# gives a hugging vert the delta of its NEAREST body vert), so what survives is
+# the RESIDUAL: the poking body point and the vert covering it are different
+# body verts, and a slider that RESHAPES moves them differently. Measured: 1 of
+# 23 bust sliders turned +0.284u of clearance into -0.165u while following at
+# ratio 1.00 by magnitude -- which is why the poke was PRESET-DEPENDENT and why
+# every bind-pose metric called the piece clean.
+
+class _FakeOsdMorph:
+    def __init__(self, name, offsets):
+        self.name = name
+        self.offsets = offsets
+
+
+class _FakeOsd:
+    def __init__(self, morphs):
+        self.morphs = morphs
+
+
+def _reshaping_osd(bv, c, nrm):
+    """One slider that moves the TIP outward and its neighbours not at all --
+    a reshape, not an inflate. An inflate moves both alike and must cost
+    nothing; this is the case the residual exists for."""
+    offs = []
+    for i in range(len(bv)):
+        if i == c:
+            d = nrm[i] * 1.2
+            offs.append((i, float(d[0]), float(d[1]), float(d[2])))
+    return _FakeOsd([_FakeOsdMorph("BaseShapeReshape", offs)])
+
+
+def test_morph_residual_demands_more_over_a_reshaping_slider(monkeypatch):
+    bv, bn, nip, c = _nipple_body(n=34)
+    cur = _coarse_garment(spacing=1.2, half=3)
+    src = cur.copy()
+    monkeypatch.setattr(nc_mod, "_find_ube_body_osd", lambda: Path("fake.osd"))
+    monkeypatch.setattr(nc_mod, "_cached_osd_load",
+                        lambda _p: _reshaping_osd(bv, c, bn))
+    nc_mod._BODY_MORPH_STACK_CACHE.clear()
+    monkeypatch.setattr(nc_mod, "BUST_MORPH_RESIDUAL", False)
+    plain = conform_to_source_standoff(src, bv, bn, cur, bv, bn,
+                                       ube_body_nipple=nip)
+    nc_mod._BODY_MORPH_STACK_CACHE.clear()
+    monkeypatch.setattr(nc_mod, "BUST_MORPH_RESIDUAL", True)
+    resid = conform_to_source_standoff(src, bv, bn, cur, bv, bn,
+                                       ube_body_nipple=nip)
+    near = np.linalg.norm(cur[:, :2] - bv[c, :2], axis=1) < 2.0
+    assert near.any()
+    # NEGATIVE CONTROL: without it the pass really does stop short here.
+    assert resid[near, 2].max() > plain[near, 2].max() + 1e-4, (
+        plain[near, 2].max(), resid[near, 2].max())
+    # PUSH-OUT ONLY: it may never end up tighter anywhere.
+    assert np.all(resid[:, 2] >= plain[:, 2] - 1e-6)
+
+
+def test_morph_residual_costs_nothing_for_a_pure_inflate(monkeypatch):
+    """A slider that moves the tip and its surroundings ALIKE has zero residual
+    -- the garment follows it exactly -- so it must not buy any clearance. This
+    is what keeps the requirement from inflating every garment by the full 5u
+    of runtime travel."""
+    bv, bn, nip, _c = _nipple_body(n=34)
+    cur = _coarse_garment(spacing=1.2, half=3)
+    src = cur.copy()
+    offs = [(i, float(bn[i, 0]), float(bn[i, 1]), float(bn[i, 2]))
+            for i in range(len(bv))]                    # uniform outward = inflate
+    monkeypatch.setattr(nc_mod, "_find_ube_body_osd", lambda: Path("fake.osd"))
+    monkeypatch.setattr(nc_mod, "_cached_osd_load",
+                        lambda _p: _FakeOsd([_FakeOsdMorph("BaseShapeInflate", offs)]))
+    nc_mod._BODY_MORPH_STACK_CACHE.clear()
+    monkeypatch.setattr(nc_mod, "BUST_MORPH_RESIDUAL", False)
+    a = conform_to_source_standoff(src, bv, bn, cur, bv, bn, ube_body_nipple=nip)
+    nc_mod._BODY_MORPH_STACK_CACHE.clear()
+    monkeypatch.setattr(nc_mod, "BUST_MORPH_RESIDUAL", True)
+    b = conform_to_source_standoff(src, bv, bn, cur, bv, bn, ube_body_nipple=nip)
+    assert np.allclose(a, b, atol=1e-6), np.abs(a - b).max()
+
+
+def test_morph_residual_is_a_no_op_without_an_osd(monkeypatch):
+    bv, bn, nip, _c = _nipple_body(n=34)
+    cur = _coarse_garment(spacing=1.2, half=3)
+    src = cur.copy()
+    monkeypatch.setattr(nc_mod, "_find_ube_body_osd", lambda: None)
+    nc_mod._BODY_MORPH_STACK_CACHE.clear()
+    monkeypatch.setattr(nc_mod, "BUST_MORPH_RESIDUAL", True)
+    a = conform_to_source_standoff(src, bv, bn, cur, bv, bn, ube_body_nipple=nip)
+    monkeypatch.setattr(nc_mod, "BUST_MORPH_RESIDUAL", False)
+    b = conform_to_source_standoff(src, bv, bn, cur, bv, bn, ube_body_nipple=nip)
+    assert np.array_equal(a, b)
+
+
+def _surface_gap_at_tip(cur, out, bv, c, tris):
+    """Clearance of the garment SURFACE directly over the tip (barycentric
+    point-in-triangle on xy), which a per-vertex assertion cannot see."""
+    tip = bv[c]
+    best = None
+    for t in tris:
+        a, b, cc = out[t[0]], out[t[1]], out[t[2]]
+        d = ((b[1]-cc[1])*(a[0]-cc[0]) + (cc[0]-b[0])*(a[1]-cc[1]))
+        if abs(d) < 1e-12:
+            continue
+        u = ((b[1]-cc[1])*(tip[0]-cc[0]) + (cc[0]-b[0])*(tip[1]-cc[1])) / d
+        v = ((cc[1]-a[1])*(tip[0]-cc[0]) + (a[0]-cc[0])*(tip[1]-cc[1])) / d
+        w = 1.0 - u - v
+        if u < -1e-9 or v < -1e-9 or w < -1e-9:
+            continue
+        z = u*a[2] + v*b[2] + w*cc[2]
+        if best is None or z < best:
+            best = z
+    return None if best is None else best - tip[2]
+
+
+def _patch(spacing=2.0, z=92.35, half=3):
+    """Coarse garment patch with tris, offset so no vertex sits over the tip."""
+    o = np.arange(-half, half + 1) * spacing + spacing / 2.0
+    gx, gy = np.meshgrid(o, o)
+    v = np.stack([gx.ravel(), gy.ravel(), np.full(gx.size, z)], axis=1)
+    n = len(o)
+    tris = []
+    for i in range(n - 1):
+        for j in range(n - 1):
+            a = i * n + j
+            tris.append([a, a + 1, a + n]); tris.append([a + 1, a + n + 1, a + n])
+    return v, np.asarray(tris, dtype=np.int64)
+
+
+# --- #bust-surface-req ----------------------------------------------------
+# `worst` asks whether each garment VERTEX stands `req` clear. The defect is the
+# SURFACE: the tightest point sits in a triangle interior, and a surface can sag
+# 0.855u below vertices that all pass. That is why `req - worst` was negative at
+# every nipple vert (mean -0.921) and raising `req` by 3.5u moved delivered
+# clearance by 0.04u -- the push was never firing. These guard the surface test.
+
+def test_surface_req_pushes_where_the_vertices_pass_but_the_surface_sags(monkeypatch):
+    """The tip pokes BETWEEN the verts: every vertex is clear, the surface is
+    not. The vertex rule alone cannot see this -- that is the whole point."""
+    # spacing 3.0 reproduces the real geometry: the tightest surface point sits
+    # far enough from any vertex that the vertex rule passes while the surface
+    # pokes (-0.003u). At 2.0 the vertex rule already clears it and the negative
+    # control below correctly calls the test vacuous.
+    bv, bn, nip, c = _nipple_body(n=34, tip=1.1)
+    cur, tris = _patch(spacing=3.0)
+    src = cur.copy()
+    monkeypatch.setattr(nc_mod, "BUST_SURFACE_REQ", False)
+    vert_only = conform_to_source_standoff(src, bv, bn, cur, bv, bn,
+                                           ube_body_nipple=nip, tris=tris)
+    monkeypatch.setattr(nc_mod, "BUST_SURFACE_REQ", True)
+    surf = conform_to_source_standoff(src, bv, bn, cur, bv, bn,
+                                      ube_body_nipple=nip, tris=tris)
+    g0 = _surface_gap_at_tip(cur, vert_only, bv, c, tris)
+    g1 = _surface_gap_at_tip(cur, surf, bv, c, tris)
+    assert g0 is not None and g1 is not None
+    # NEGATIVE CONTROL: the vertex rule really does leave the surface short here.
+    assert g0 < 0.5, f"vertex rule already clears the surface ({g0:.3f}); vacuous"
+    assert g1 > g0 + 1e-3, (g0, g1)
+    # PUSH-OUT ONLY: never tighter than the vertex rule, anywhere.
+    assert np.all(surf[:, 2] >= vert_only[:, 2] - 1e-6)
+
+
+def test_surface_req_ignores_body_points_beside_the_triangle(monkeypatch):
+    """Only points that project INSIDE a triangle are covered by it. Letting a
+    point beside it demand a push is how an earlier attempt inflated the whole
+    chest 0.434 -> 2.297u, so a tip well outside the patch must cost nothing."""
+    bv, bn, nip, _c = _nipple_body(n=34, tip=1.1)
+    # patch offset far to one side: the tip at the origin is not under it
+    cur, tris = _patch(spacing=1.0, half=2)
+    cur = cur + np.array([6.0, 6.0, 0.0])
+    src = cur.copy()
+    monkeypatch.setattr(nc_mod, "BUST_SURFACE_REQ", False)
+    a = conform_to_source_standoff(src, bv, bn, cur, bv, bn,
+                                   ube_body_nipple=nip, tris=tris)
+    monkeypatch.setattr(nc_mod, "BUST_SURFACE_REQ", True)
+    b = conform_to_source_standoff(src, bv, bn, cur, bv, bn,
+                                   ube_body_nipple=nip, tris=tris)
+    assert np.allclose(a, b, atol=1e-6), np.abs(a - b).max()
+
+
+def test_surface_req_is_a_no_op_without_tris(monkeypatch):
+    monkeypatch.setattr(nc_mod, "BUST_SURFACE_REQ", True)
+    bv, bn, nip, _c = _nipple_body(n=34, tip=1.1)
+    cur, _tris = _patch(spacing=3.0)
+    src = cur.copy()
+    a = conform_to_source_standoff(src, bv, bn, cur, bv, bn, ube_body_nipple=nip)
+    monkeypatch.setattr(nc_mod, "BUST_SURFACE_REQ", False)
+    b = conform_to_source_standoff(src, bv, bn, cur, bv, bn, ube_body_nipple=nip)
+    assert np.array_equal(a, b)
+
+
+def test_surface_req_survives_junk_tris(monkeypatch):
+    """Degenerate adjacency must fall back, not raise: this call sits inside the
+    try that records `errors during shape copy`, and a raise there silently
+    removes the whole conform (it has happened twice)."""
+    monkeypatch.setattr(nc_mod, "BUST_SURFACE_REQ", True)
+    bv, bn, nip, _c = _nipple_body(n=34, tip=1.1)
+    cur, _t = _patch(spacing=3.0)
+    src = cur.copy()
+    base = conform_to_source_standoff(src, bv, bn, cur, bv, bn, ube_body_nipple=nip)
+    for junk in (np.zeros((0, 3), np.int64), np.array([[0, 1, 999999]], np.int64),
+                 np.array([1, 2, 3], np.int64)):
+        out = conform_to_source_standoff(src, bv, bn, cur, bv, bn,
+                                         ube_body_nipple=nip, tris=junk)
+        assert out.shape == base.shape and np.all(np.isfinite(out))

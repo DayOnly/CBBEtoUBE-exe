@@ -421,3 +421,61 @@ mistakes: it reads `shipped` and never `final`; it reports measurement
 first-person viewmodels from standoff *and states how many*; and it prints
 percentiles rather than inventing ceilings for bands that have no calibrated
 anchor.
+
+## 1.2.3 — unreleased
+
+Bust anti-poke. Reported in game as a nipple poking through a fitted cuirass on
+*one* BodySlide preset and not others; every offline metric read the piece as
+clean. Four measurement corrections and one real bug behind that.
+
+### Fixed — the bust requirement was measured on the wrong thing (#bust-surface-req)
+
+`conform_to_source_standoff` asked whether each garment **vertex** stood `req`
+clear of the body. The defect is the **surface**: the tightest point sits in a
+triangle interior — on the failing piece, 50 of the 50 tightest spots, a median
+1.607u from any vertex — so a surface can sag 0.855u below vertices that all
+pass. `req - worst` was therefore negative at every nipple vert (mean -0.921),
+the push-out never fired, and `req` was never read at all: raising it by 3.5u
+moved delivered clearance by 0.04u.
+
+The requirement is now evaluated per garment triangle over the body points that
+project **inside** it. The inside test is load-bearing — a point beside a
+triangle is not covered by it, and charging it inflated the whole chest
+(0.434 -> 2.297u) when tried. `CBBE2UBE_NO_BUST_SURFACE_REQ=1` disables.
+
+Measured across **112 installed BodySlide presets**, poking presets **19 -> 1**
+(the survivor is one named "Too Big"). On the reported piece and preset:
+-0.082u with 65 poking verts -> +0.220u with none, for +0.024u of torso fit and
++0.000 crinkle.
+
+### Fixed — the bust neighbourhood never reached past its own vertices (#bust-neighbourhood-spacing)
+
+`BUST_NEIGHBORHOOD_RADIUS = 4.0` was effectively dead: with `k=6` and a 0.359u
+body the sample only ever reached 0.673u, so the 4.0u filter never removed
+anything and the real neighbourhood was set by `k`. Garment spacing is
+0.71-1.21u, so a tip poking between two garment verts was never sampled. The
+sample is now sized by each vertex's own local spacing, with `k` raised enough
+to reach it and today's `k` nearest retained as an exact subset (so a garment
+finer than the body is unchanged). `CBBE2UBE_NO_BUST_SPACING=1` disables.
+
+### Fixed — the requirement ignored body morphs (#bust-morph-residual)
+
+`req` was a bind-pose number while the character in game is morphed, and a UBE
+nipple travels up to 5.35u at runtime. The armour follows via its own BODYTRI,
+so what survives is the *residual* between the body point that pokes and the
+garment vert covering it — zero for a slider that merely inflates, positive for
+one that reshapes. That residual is added to `req`, weighted by nipple weight so
+it costs the torso nothing. `CBBE2UBE_NO_BUST_MORPH_RESIDUAL=1` disables.
+
+### Fixed — groove smoothing gave back the clearance the conform had won
+
+Two independent defects in `_smooth_warp_grooves`, which runs after the conform:
+
+- It is outward-only, so on a vert the conform had just reeled in it could only
+  hand clearance back (traced: chest 0.235 -> 0.322u). Its outward motion is now
+  bounded at the authored standoff. `CBBE2UBE_NO_GROOVE_CAP=1` disables.
+- Its *tangential* motion reshapes triangles, dropping the interpolated surface
+  over a tip between verts even though no vert moves inward (0.284 -> 0.161u).
+  The smoothing is now held back over a protrusion.
+  `CBBE2UBE_NO_GROOVE_HOLD=1` disables.
+

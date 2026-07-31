@@ -134,6 +134,32 @@ skinned shapes is baked into the verts):
 - **Source-standoff conform** — a piece that hugged the 3BA body is reeled
   back to hug UBE instead of floating at the over-projected distance;
   pull-in only, with a bust-band exception so the nipple can't poke through.
+  The bust exception is a **morph** requirement, not a bind-pose one: a nipple
+  travels up to 5.35u at runtime, the armour follows it via its own BODYTRI, and
+  what survives is the *residual* between the body point that pokes and the
+  garment vert covering it — zero for a slider that merely inflates, positive
+  for one that reshapes. That residual is added to the required clearance,
+  weighted by nipple weight so it costs the torso nothing. Without it a poke is
+  **preset-dependent** and invisible to every bind-pose metric. The requirement is
+  also evaluated against the garment **surface**, not its vertices: the tightest
+  point sits in a triangle interior, so a surface can sag 0.855u below vertices
+  that all pass, and the vertex form of the test never fired at all. Measured
+  across 112 installed BodySlide presets, poking presets went 19 -> 1.
+  `CBBE2UBE_NO_BUST_MORPH_RESIDUAL=1` disables it;
+  **[DESIGN_P5_CLEARANCE_PRESERVING_CONFORM.md](DESIGN_P5_CLEARANCE_PRESERVING_CONFORM.md) §8**
+  has the measurements and the dead ends.
+- **Bust neighbourhood sizing** — the anti-poke samples the body over the patch
+  each garment vertex actually spans (its own local vertex spacing), not a fixed
+  count. `BUST_NEIGHBORHOOD_RADIUS` was previously inert: with `k=6` and a
+  0.359u body the sample only ever reached 0.673u, so a tip poking *between*
+  coarse garment verts was never seen. `CBBE2UBE_NO_BUST_SPACING=1` disables.
+- **Groove-smooth nipple hold** — the groove smoothing is one-sided per vertex,
+  but its *tangential* motion reshapes triangles and drops the interpolated
+  surface over a tip between verts. It is held back over a protrusion, leaving
+  those verts where the conform put them. `CBBE2UBE_NO_GROOVE_HOLD=1` disables.
+- **Groove-smooth authored cap** — the smoothing runs last, so being outward-only
+  it could only hand back clearance the conform had just removed. Its outward
+  motion is bounded at the authored standoff. `CBBE2UBE_NO_GROOVE_CAP=1` disables.
 - **Warp groove smoothing** — roughness-weighted smoothing of the warp
   *displacement* removes localized warp noise (breast "indent lines") without
   flattening real detail. **One-sided since 1.2**: a vert may be smoothed along
