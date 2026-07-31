@@ -151,3 +151,25 @@ def test_postflight_stays_quiet_about_bones_the_actor_supplies(
     assert not [x for x in w if "NPC L Clavicle" in x], (
         "warned about a bone the actor resolves")
     assert not [x for x in w if "LArmA 01" in x]
+
+
+# --- anchor-mode selection ---------------------------------------------
+
+def test_arm_anchor_matches_the_limb_bone_not_the_chain_bone():
+    """The chain bone `LArmA 01` must NOT read as an arm ANCHOR -- only the
+    actual limb bone does. Getting this backwards is how the anchor set filled
+    with chain bones instead of `NPC L Forearm`."""
+    assert nc._is_arm_anchor("NPC L Forearm [LLar]") is True
+    assert nc._is_arm_anchor("NPC R UpperArm [RUar]") is True
+    assert nc._is_arm_anchor("LArmA 01") is False
+    assert nc._is_arm_anchor("NPC Pelvis [Pelv]") is False
+    assert nc._is_arm_anchor("") is False
+
+
+def test_arm_keywords_are_not_in_the_upper_body_list():
+    """They are deliberately separate: the upper-body list flips the WHOLE file
+    to nested, and 3 measured rigs mix a pelvis-anchored skirt with an
+    arm-anchored sleeve. Nesting those pelvis chains is the June skirt-sag
+    regression."""
+    for kw in nc._ARM_ANCHOR_KEYWORDS:
+        assert kw not in nc._UPPER_BODY_ANCHOR_KEYWORDS

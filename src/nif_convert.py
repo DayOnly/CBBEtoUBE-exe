@@ -5063,6 +5063,37 @@ def _is_leg_rigid_bone(bone_name: str) -> bool:
 _UPPER_BODY_ANCHOR_KEYWORDS = ("spine", "neck", "head", "clavicle", "shoulder")
 
 
+# Arm anchors are handled SEPARATELY from the list above, on purpose.
+#
+# Flat mode re-parents an anchor to Scene Root at its source GLOBAL position.
+# That is fine for a skirt, whose anchor sits near the actor root and barely
+# moves relative to it, but an arm swings far from the root -- so a flat-anchored
+# sleeve holds a fixed pose in actor space instead of following the arm.
+# Observed in game as sleeves "disconnected from the body, bound in a pose".
+# The source rig parents its sleeve chains to `NPC L/R Forearm`.
+#
+# Kept out of _UPPER_BODY_ANCHOR_KEYWORDS because nesting is decided per FILE.
+# Measured over the pack, 5 rigs carry an arm anchor and 3 of them are MIXED --
+# a skirt on `NPC Pelvis` plus a sleeve on `NPC L UpperArm` in one NIF. Putting
+# the arm keywords in the list above would flip those files whole, dragging
+# their pelvis-anchored chains into nested mode, which is precisely what made
+# working skirts sag in June. The gate below therefore requires EVERY anchor in
+# the file to be an arm. The 3 mixed rigs keep flat behaviour unchanged; their
+# sleeves stay as they are today, which is pre-existing rather than a new
+# regression, and is the safer half of a trade we cannot settle without an
+# in-game report.
+#
+# Per-ANCHOR nesting was tried first and does not work: the chain bones are
+# parented during skin install, before the anchor-creation loop runs, so
+# switching mode there left `LArmA 01` on Scene Root anyway. Verified.
+_ARM_ANCHOR_KEYWORDS = ("upperarm", "forearm")
+
+
+def _is_arm_anchor(bone_name: str) -> bool:
+    low = (bone_name or "").lower()
+    return any(k in low for k in _ARM_ANCHOR_KEYWORDS)
+
+
 def _is_upper_body_anchor(bone_name: str) -> bool:
     low = (bone_name or "").lower()
     return any(k in low for k in _UPPER_BODY_ANCHOR_KEYWORDS)
@@ -8977,13 +9008,25 @@ def _precreate_custom_bone_chains(dst_nif, src_nif, bone_names) -> int:
             if _n0 is None:
                 break
             _pn0 = _n0.parent.name if _n0.parent is not None else None
-            if _pn0 is None or _is_skeleton_bone(_pn0):
+            # Stop at a bone the ACTOR supplies, not at one whose NAME merely
+            # looks skeletal. With `_is_skeleton_bone` here the walk up from
+            # `LArmA 02` stopped at `LArmA 01` -- a custom chain bone matching
+            # the "arm" substring -- and recorded IT as the anchor, so the
+            # anchor set filled with chain bones and the real anchor
+            # (`NPC L Forearm`) never appeared. Verified by instrumenting a
+            # real conversion.
+            if _pn0 is None or _actor_can_resolve_bone(_pn0):
                 if _pn0:
                     _heur_anchors.add(_pn0)
                 break
             _cur = _pn0
-    use_nested = NESTED_CHAIN_ANCHORS or any(
-        _is_upper_body_anchor(a) for a in _heur_anchors)
+    # `all` for the arm case, not `any` -- see _ARM_ANCHOR_KEYWORDS. A file whose
+    # chains ALL hang off an arm has no pelvis-anchored chain to put at risk.
+    use_nested = (
+        NESTED_CHAIN_ANCHORS
+        or any(_is_upper_body_anchor(a) for a in _heur_anchors)
+        or (bool(_heur_anchors)
+            and all(_is_arm_anchor(a) for a in _heur_anchors)))
     walk_bones = list(custom)
     if custom and use_nested:
         # Nested mode: restore all skeleton bones so the bone tree matches the
@@ -9025,7 +9068,10 @@ def _precreate_custom_bone_chains(dst_nif, src_nif, bone_names) -> int:
     # kinematic chain; a flat anchor breaks that even if every bone has the
     # correct global position.
     for a in anchors:
-        if not use_nested:
+        # Per-anchor, not per-file: an arm-anchored chain must keep its parent
+        # link so it follows the limb, while a pelvis-anchored chain in the SAME
+        # nif keeps flat behaviour unchanged. See _ARM_ANCHOR_KEYWORDS.
+        if not (use_nested or _is_arm_anchor(a)):
             # Flat mode: recreate full ancestor chain each at its SOURCE GLOBAL
             # transform but flat-parented (parent=Scene Root). Walking the whole
             # ancestor chain (not just the immediate anchor) ensures deep skeleton
