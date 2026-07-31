@@ -351,10 +351,18 @@ STATIC_AUTHORED_FIT = (
 )
 # Outward morph amplitude (units) at/above which a vert counts as a MORPH zone
 # and keeps today's behaviour. Measured per-zone amplitudes: breast 3.48 mean,
-# belly 3.35, sternum 1.66, butt/back/thigh <= 0.85. 1.0 puts back/butt/thigh
-# on the static side and keeps breast/belly/sternum on the morph side.
+# belly 3.35, sternum 1.66, butt/back/thigh <= 0.85.
+#
+# 2.0, not 1.0. At 1.0 the STERNUM (1.66) landed on the morph side and kept the
+# loose treatment, which left the upper chest the worst remaining band on a
+# reported armour -- authored 0.197u, shipped 0.561u, still 0.353u with the
+# conform on. The sternum is not a jiggle zone: it is the flat plate between the
+# breasts, and the breast's own travel is served by the bust band's push-out,
+# which is applied afterwards and is untouched by this. 2.0 sits in the wide gap
+# between sternum (1.66) and belly (3.35), so breast and belly keep every unit
+# of room they have today and only the sternum changes sides.
 STATIC_AUTHORED_AMP = float(
-    os.environ.get("CBBE2UBE_STATIC_AUTHORED_AMP", "1.0"))
+    os.environ.get("CBBE2UBE_STATIC_AUTHORED_AMP", "2.0"))
 # Floor the authored fit may reach in a fully static zone. Not 0: coincident
 # surfaces z-fight, and the warp's own error is not zero either.
 STATIC_AUTHORED_MIN_CLEARANCE = float(

@@ -125,8 +125,13 @@ def test_loose_drape_is_unaffected_by_the_static_ramp():
 def test_amplitude_ramp_is_monotonic_and_continuous():
     """No cliff between static and morph zones -- a discontinuity would show as
     a visible seam across the shoulder/bust boundary."""
+    # Sample points derived from the threshold, not hardcoded: pinning literals
+    # here made this test fail the moment STATIC_AUTHORED_AMP moved 1.0 -> 2.0,
+    # reporting a "discontinuity" that was only the samples no longer reaching
+    # past the boundary.
+    t = nc.STATIC_AUTHORED_AMP
     vals = [_run(0.15, 0.90, amp=a)
-            for a in (0.0, 0.25, 0.5, 0.75, 1.0, 2.0)]
+            for a in (0.0, 0.25 * t, 0.5 * t, 0.75 * t, t, 2.0 * t)]
     assert all(b >= a - 1e-9 for a, b in zip(vals, vals[1:])), vals
     assert abs(vals[-1] - vals[-2]) < 1e-6, "not flat past the threshold"
 
