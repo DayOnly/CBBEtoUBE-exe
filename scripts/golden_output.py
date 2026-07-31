@@ -160,19 +160,66 @@ def _flags() -> dict:
             and not any(s in k for s in skip)}
 
 
+def _alt_texture_names(mod: Path) -> set:
+    """Alt-texture protected shapes, collected as the batch collects them."""
+    from src import ube_patcher
+    return ube_patcher.collect_alt_texture_shape_names(
+        ac._find_source_esps(mod)) or set()
+
+
+def _git_head() -> str:
+    """HEAD sha (+dirty), so a baseline cannot be silently compared across a
+    different tree.
+
+    The baseline on disk went stale exactly this way: it predated a session of
+    fit work, and `check` cheerfully reported 13 pieces "regressed" -- moved
+    verts and added scale bones that were simply newer code. The FLAG set was
+    already guarded; the code those flags drive was not.
+    """
+    import subprocess
+    try:
+        r = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=_REPO,
+                           capture_output=True, text=True, timeout=15)
+        if r.returncode != 0:
+            return "?"
+        head = r.stdout.strip()
+        st = subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=no",
+             "--", "src", "scripts"],
+            cwd=_REPO, capture_output=True, text=True, timeout=15)
+        return head + ("+dirty" if st.returncode == 0 and st.stdout.strip()
+                       else "")
+    except Exception:
+        return "?"
+
+
 def _convert(sub: str, stem: str, slots: int, out_root: Path):
+    """Convert one piece through the SAME worker the batch uses.
+
+    #single-vs-batch-parity. This used to call `nc.convert_nif` directly, which
+    is NOT the shipping path: the batch (and convert_one_armor.py) build a work
+    tuple and hand it to `ac._nif_convert_worker`. The two genuinely disagreed
+    -- on a multi-shape mashup the batch path showed ZERO change from a pass
+    while this path showed it firing on three shapes -- so a golden verdict
+    could be about code that never reaches a user.
+    """
     mod = _resolve_source(sub, stem)
     if mod is None:
         return None, None
     src = mod / "meshes" / sub.replace("/", os.sep) / f"{stem}_1.nif"
     dst_dir = out_root / "meshes" / sub.replace("/", os.sep)   # the meshes/ ancestor
     dst_dir.mkdir(parents=True, exist_ok=True)
-    ref = str(ac._find_ube_body_ref())
+    ref = ac._find_ube_body_ref()
+    ref = str(ref) if ref else None
+    try:
+        alt_tex = _alt_texture_names(mod)
+    except Exception:
+        alt_tex = set()
     import contextlib, io
+    dst = dst_dir / f"{stem}_1.nif"
     with contextlib.redirect_stdout(io.StringIO()):
-        nc.convert_nif(str(src), str(dst_dir / f"{stem}_1.nif"),
-                       ube_body_ref_path=ref, biped_slots=slots)
-    return src, dst_dir / f"{stem}_1.nif"
+        ac._nif_convert_worker((src, dst, ref, int(slots), alt_tex))
+    return src, dst
 
 
 def _fingerprint(nif_path: Path) -> dict:
@@ -198,7 +245,7 @@ def _fingerprint(nif_path: Path) -> dict:
 
 def capture() -> int:
     GOLDEN.mkdir(exist_ok=True)
-    man = {"flags": _flags(), "pieces": {}}
+    man = {"flags": _flags(), "git_head": _git_head(), "pieces": {}}
     try:
         man["converter_version"] = (
             (_REPO / "src" / "version.py").read_text(encoding="utf-8")
@@ -249,6 +296,25 @@ def check(tol: float) -> int:
         print(f"  baseline: {man['flags']}")
         print(f"  now     : {now}")
         return 2
+    # STALENESS. A baseline captured on different code is not a baseline, it is
+    # a diff against history -- and it reads as "your change broke N pieces".
+    # Not fatal (comparing across an intended change is the whole point), so
+    # this NAMES what is being compared instead of silently implying HEAD.
+    base_head = man.get("git_head")
+    head_now = _git_head()
+    if base_head is None:
+        print("NOTE: baseline predates git-head tracking -- it may have been "
+              "captured on different code. Re-capture to make `check` "
+              "attributable.")
+    elif base_head != head_now:
+        print(f"BASELINE IS FROM DIFFERENT CODE: captured at {base_head}, "
+              f"now {head_now}.")
+        print("  Differences below include every change between those trees, "
+              "not just yours.")
+        print("  Re-capture first if you wanted to isolate the working diff.")
+    if "+dirty" in (head_now or ""):
+        print("NOTE: src/ or scripts/ has uncommitted changes -- `check` is "
+              "measuring the working tree, not a commit.")
     work = GOLDEN / "_check"
     bad = src_changed = 0
     for label, sub, stem, slots, _why in PIECES:
