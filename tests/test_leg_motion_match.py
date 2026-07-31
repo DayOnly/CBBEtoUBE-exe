@@ -68,6 +68,38 @@ def test_pass_is_wired_into_both_convert_paths():
     assert src.count("_match_leg_motion_to_body(dst_path") >= 2
 
 
+def test_leg_pass_uses_the_per_row_smp_fallback():
+    """#smp-row-gate. The shape-level SMP heuristic fires on the main garment of
+    pieces that carry a generated physics XML, and this pass then did nothing at
+    all on them -- measured over 400 converted pieces, 39 leg-bearing shapes were
+    gated out entirely, and every one had rows that survive the per-row test.
+
+    Measured effect (hip band, follow ratio, verts below 0.5):
+        dragonbone cuirass  0.882 -> 1.119   21.8% -> 12.0%
+        draugr chain        1.006 -> 1.092    9.6% ->  3.4%
+    Weights only: zero vertex movement on either weight of all three probes.
+    """
+    src = inspect.getsource(nc._match_leg_motion_to_body)
+    assert "smp_row_gate=True" in src
+
+
+def test_row_fallback_never_relaxes_the_collider_or_softbody_skip():
+    """THE CONTROL on the row gate. It relaxes ONLY the bone-count heuristic.
+
+    The collider/soft-body skips are a standing rule and are what makes the
+    documented Markarth/Morthal behaviour correct (those shapes are declared as
+    per-vertex soft bodies, so declining to rewrite them is right, not a miss).
+    If the row gate ever moved above them, this pass would start rewriting
+    simulated cloth and that resolution would silently become wrong.
+    """
+    src = inspect.getsource(nc._match_limb_motion_to_body)
+    skip = src.index("in collider_names or")
+    gate = src.index("_row_gate = False")
+    assert skip < gate, (
+        "the collider/softbody skip must stay ABOVE the row-gate fallback")
+    assert "if not smp_row_gate:" in src
+
+
 def test_skips_colliders_and_softbody():
     """Standing rule: every skin pass leaves authored physics geometry alone --
     a skin pass touching an SMP collider CTDs, and touching softbody drifts."""

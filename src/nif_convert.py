@@ -8476,7 +8476,12 @@ def _match_leg_motion_to_body(dst_path, biped_slots: int = 0) -> int:
     return _match_limb_motion_to_body(
         dst_path, biped_slots, family="leg", bones=_LEG_MOTION_BONES,
         z_lo=_LEG_MOTION_Z_LO, z_hi=_LEG_MOTION_Z_HI,
-        max_dist=_LEG_MOTION_MAX_DIST, strength=_LEG_MOTION_STRENGTH)
+        max_dist=_LEG_MOTION_MAX_DIST, strength=_LEG_MOTION_STRENGTH,
+        # Same fallback the arm pass uses (#smp-row-gate). Measured over 400
+        # converted pieces: 39 leg-bearing shapes are gated out of this pass
+        # entirely, and every one of them has rows that survive the per-row test,
+        # so the shape gate was costing real work rather than protecting a chain.
+        smp_row_gate=True)
 
 
 def _match_arm_motion_to_body(dst_path, biped_slots: int = 0) -> int:

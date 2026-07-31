@@ -31,6 +31,36 @@ Weights only: no vertex moves on any shape, so bind-pose fit is untouched.
 
 `CBBE2UBE_NO_ARM_MOTION_MATCH=1` disables it.
 
+### Fixed — the leg-motion match was silently doing nothing on part of the pack
+
+The same over-broad gate. `_shape_has_hdt_smp_rigging` flags a shape when 40%+ of
+its bones are unknown to the body — but the injected body declares 36 bones and a
+garment routinely carries 50–70, including plain skeleton bones like
+`UpperarmTwist2`. On any piece that also has a physics XML, the leg-motion match
+therefore returned without touching anything.
+
+Measured over 400 converted pieces: the gate fires on the main garment of 141
+(36%); 35 (9.0%) also have a physics XML. Of the leg-bearing shapes in that state,
+39 were gated out of the pass entirely and every one had rows that survive a
+per-row test. So the shape gate was costing real work rather than protecting a
+physics chain.
+
+The leg pass now uses the same per-row fallback the arm pass does: where the
+shape-level heuristic fires, rewrite only verts whose entire weight sits on bones
+the body also has. Such a row provably carries no authored chain bone. The
+collider and soft-body skips are untouched and still unconditional, which is what
+keeps the documented Markarth/Morthal behaviour correct — those shapes are
+declared per-vertex soft bodies and declining to rewrite them is right.
+
+    hip band, follow ratio      median          verts below 0.5
+    dragonbone cuirass          0.882 -> 1.119   21.8% -> 12.0%
+    draugr chain                1.006 -> 1.092    9.6% ->  3.4%
+    hide cuirass (light)        0.000 -> 0.157   90.2% -> 82.2%
+
+No band on any probe got worse. Weights only: zero vertex movement on both weights
+of all three probes and across all 15 golden pieces, and the weight-sum invariant
+is unchanged.
+
 ### Fixed — fitted pieces shipped standing off the body
 
 Phase 1 carried TWO `inflate_armor_outward` call sites and NO conform; phase 2
