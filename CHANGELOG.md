@@ -2,96 +2,6 @@
 
 ## 1.2 — unreleased
 
-### Fixed — the torso under-followed every spine bend (under-bust clipping)
-
-The third instance of the same body-rig mismatch, and the cause of the under-bust
-clipping that only appeared in motion. The garment parks its spine mass on the
-wrong vertebra — measured in the under-bust band of a vanilla cuirass, normalised:
-
-    garment   Spine 0.121   Spine1 0.727   Spine2 0.151
-    body      Spine 0.098   Spine1 0.492   Spine2 0.410
-
-`Spine2` sits furthest up the chain and so accumulates the most rotation. Carrying
-0.151 of it against the body's 0.410 makes the garment under-travel every spine
-bend by ~20%, and the skin slides out from under the bust. Like the other two, it
-is invisible at bind pose. All three spine bones are managed together because the
-defect is the split between them, not missing mass.
-
-    under-bust band       follow median      verts below 0.7
-    spine forward lean    0.814 -> 1.099      24.3% -> 0%
-    spine twist           0.793 -> 1.162      24.3% -> 0%
-    spine side bend       0.840 -> 1.016      24.3% -> 0%
-    sprint                0.832 -> 1.091      24.3% -> 0%
-    bust, bow draw (p10)  0.720 -> 1.048
-
-**Pass ordering is now load-bearing.** Every family-scoped match rescales the bones
-it does not manage, so the spine and arm passes contend for rows where their bands
-overlap and whichever runs last wins. Spine runs first: measured, spine-last costs
-the armhole 1.106 → 1.076, while arm-last costs the under-bust nothing, because
-under-bust rows carry no arm-family weight and are skipped anyway. A test asserts
-the ordering per convert path.
-
-`CBBE2UBE_NO_SPINE_MOTION_MATCH=1` disables it.
-
-### Fixed — the shoulder walked out through the armhole in motion
-
-CBBE and UBE rig the shoulder differently: CBBE's `UpperArm` weight stops at
-z 99.7 and the shoulder above it is Clavicle-only, while UBE carries `UpperArm`
-up to z 110.1. A CBBE-authored garment bakes in the CBBE convention, so on a UBE
-body it arrives with ZERO `UpperArm` weight across the armhole over skin that has
-0.179 there. The shoulder then moves and the garment does not — follow p10 was
-literally 0.000, meaning those verts did not move at all — and the body emerged
-under the arm and down the side during animation. Bind-pose clearance cannot see
-any of this, which is why it survived every clearance pass.
-
-Not a converter leak: the source garment and the source body both measure 0.000
-there. It is a body-rig mismatch, so it applied to every CBBE-sourced piece
-covering the shoulder.
-
-Built as the ARM instance of the existing leg-motion match — the same defect at
-the hip — by parameterising that pass by bone family and Z band rather than
-copying it, so the 4-influence cap and the weight-write invariants cannot drift
-apart between limbs. `Clavicle` is rebalanced alongside `UpperArm`, because the
-defect is mass sitting on the wrong bone of the pair, not just missing mass.
-Weights only: no vertex moves on any shape, so bind-pose fit is untouched.
-
-    armhole, arms forward   follow 0.642 -> 1.106,  38.4% -> 0.8% of verts under 0.5
-    armhole, arms crossed          0.684 -> 1.127,  35.0% -> 0.8%
-    side, arms crossed             1.016 -> 1.015,   9.6% -> 3.2%
-    under-bust / bust              unchanged (specificity control)
-
-`CBBE2UBE_NO_ARM_MOTION_MATCH=1` disables it.
-
-### Fixed — the leg-motion match was silently doing nothing on part of the pack
-
-The same over-broad gate. `_shape_has_hdt_smp_rigging` flags a shape when 40%+ of
-its bones are unknown to the body — but the injected body declares 36 bones and a
-garment routinely carries 50–70, including plain skeleton bones like
-`UpperarmTwist2`. On any piece that also has a physics XML, the leg-motion match
-therefore returned without touching anything.
-
-Measured over 400 converted pieces: the gate fires on the main garment of 141
-(36%); 35 (9.0%) also have a physics XML. Of the leg-bearing shapes in that state,
-39 were gated out of the pass entirely and every one had rows that survive a
-per-row test. So the shape gate was costing real work rather than protecting a
-physics chain.
-
-The leg pass now uses the same per-row fallback the arm pass does: where the
-shape-level heuristic fires, rewrite only verts whose entire weight sits on bones
-the body also has. Such a row provably carries no authored chain bone. The
-collider and soft-body skips are untouched and still unconditional, which is what
-keeps the documented Markarth/Morthal behaviour correct — those shapes are
-declared per-vertex soft bodies and declining to rewrite them is right.
-
-    hip band, follow ratio      median          verts below 0.5
-    dragonbone cuirass          0.882 -> 1.119   21.8% -> 12.0%
-    draugr chain                1.006 -> 1.092    9.6% ->  3.4%
-    hide cuirass (light)        0.000 -> 0.157   90.2% -> 82.2%
-
-No band on any probe got worse. Weights only: zero vertex movement on both weights
-of all three probes and across all 15 golden pieces, and the weight-sum invariant
-is unchanged.
-
 ### Fixed — fitted pieces shipped standing off the body
 
 Phase 1 carried TWO `inflate_armor_outward` call sites and NO conform; phase 2
@@ -123,6 +33,13 @@ authored fit; groove-smoothing then runs and pushes it back out. That pass is
 ONE-SIDED by design (`GROOVE_ONESIDED`, it can never pull toward the body), so
 it will always partially undo an inward conform placed before it. The fix is
 ORDERING — conform after groove-smooth — and applies to BOTH phases. Not done.
+
+**CORRECTION (2026-07-31): that reorder was built, measured, and REVERTED.** It
+does tighten the chest band (0.322 → 0.283) but costs +2.267u of arm crinkle,
+because the output's smoothness comes from groove-smooth smoothing the
+*cumulative* field last. Do not re-attempt it — the fit problem it describes was
+addressed instead by bounding groove-smooth's outward motion at the authored
+standoff (`#groove-authored-cap`).
 
 ### Fixed — physics chains whose anchor node was dropped (pull-to-origin)
 
@@ -580,3 +497,95 @@ actively harmful. Ablated across all 112 installed BodySlide presets:
 
 with identical torso fit and identical crinkle on every shape. Deleting it
 cleared the last holdout.
+
+## 1.2.4 — unreleased
+
+### Fixed — the torso under-followed every spine bend (under-bust clipping)
+
+The third instance of the same body-rig mismatch, and the cause of the under-bust
+clipping that only appeared in motion. The garment parks its spine mass on the
+wrong vertebra — measured in the under-bust band of a vanilla cuirass, normalised:
+
+    garment   Spine 0.121   Spine1 0.727   Spine2 0.151
+    body      Spine 0.098   Spine1 0.492   Spine2 0.410
+
+`Spine2` sits furthest up the chain and so accumulates the most rotation. Carrying
+0.151 of it against the body's 0.410 makes the garment under-travel every spine
+bend by ~20%, and the skin slides out from under the bust. Like the other two, it
+is invisible at bind pose. All three spine bones are managed together because the
+defect is the split between them, not missing mass.
+
+    under-bust band       follow median      verts below 0.7
+    spine forward lean    0.814 -> 1.099      24.3% -> 0%
+    spine twist           0.793 -> 1.162      24.3% -> 0%
+    spine side bend       0.840 -> 1.016      24.3% -> 0%
+    sprint                0.832 -> 1.091      24.3% -> 0%
+    bust, bow draw (p10)  0.720 -> 1.048
+
+**Pass ordering is now load-bearing.** Every family-scoped match rescales the bones
+it does not manage, so the spine and arm passes contend for rows where their bands
+overlap and whichever runs last wins. Spine runs first: measured, spine-last costs
+the armhole 1.106 → 1.076, while arm-last costs the under-bust nothing, because
+under-bust rows carry no arm-family weight and are skipped anyway. A test asserts
+the ordering per convert path.
+
+`CBBE2UBE_NO_SPINE_MOTION_MATCH=1` disables it.
+
+### Fixed — the shoulder walked out through the armhole in motion
+
+CBBE and UBE rig the shoulder differently: CBBE's `UpperArm` weight stops at
+z 99.7 and the shoulder above it is Clavicle-only, while UBE carries `UpperArm`
+up to z 110.1. A CBBE-authored garment bakes in the CBBE convention, so on a UBE
+body it arrives with ZERO `UpperArm` weight across the armhole over skin that has
+0.179 there. The shoulder then moves and the garment does not — follow p10 was
+literally 0.000, meaning those verts did not move at all — and the body emerged
+under the arm and down the side during animation. Bind-pose clearance cannot see
+any of this, which is why it survived every clearance pass.
+
+Not a converter leak: the source garment and the source body both measure 0.000
+there. It is a body-rig mismatch, so it applied to every CBBE-sourced piece
+covering the shoulder.
+
+Built as the ARM instance of the existing leg-motion match — the same defect at
+the hip — by parameterising that pass by bone family and Z band rather than
+copying it, so the 4-influence cap and the weight-write invariants cannot drift
+apart between limbs. `Clavicle` is rebalanced alongside `UpperArm`, because the
+defect is mass sitting on the wrong bone of the pair, not just missing mass.
+Weights only: no vertex moves on any shape, so bind-pose fit is untouched.
+
+    armhole, arms forward   follow 0.642 -> 1.106,  38.4% -> 0.8% of verts under 0.5
+    armhole, arms crossed          0.684 -> 1.127,  35.0% -> 0.8%
+    side, arms crossed             1.016 -> 1.015,   9.6% -> 3.2%
+    under-bust / bust              unchanged (specificity control)
+
+`CBBE2UBE_NO_ARM_MOTION_MATCH=1` disables it.
+
+### Fixed — the leg-motion match was silently doing nothing on part of the pack
+
+The same over-broad gate. `_shape_has_hdt_smp_rigging` flags a shape when 40%+ of
+its bones are unknown to the body — but the injected body declares 36 bones and a
+garment routinely carries 50–70, including plain skeleton bones like
+`UpperarmTwist2`. On any piece that also has a physics XML, the leg-motion match
+therefore returned without touching anything.
+
+Measured over 400 converted pieces: the gate fires on the main garment of 141
+(36%); 35 (9.0%) also have a physics XML. Of the leg-bearing shapes in that state,
+39 were gated out of the pass entirely and every one had rows that survive a
+per-row test. So the shape gate was costing real work rather than protecting a
+physics chain.
+
+The leg pass now uses the same per-row fallback the arm pass does: where the
+shape-level heuristic fires, rewrite only verts whose entire weight sits on bones
+the body also has. Such a row provably carries no authored chain bone. The
+collider and soft-body skips are untouched and still unconditional, which is what
+keeps the documented Markarth/Morthal behaviour correct — those shapes are
+declared per-vertex soft bodies and declining to rewrite them is right.
+
+    hip band, follow ratio      median          verts below 0.5
+    dragonbone cuirass          0.882 -> 1.119   21.8% -> 12.0%
+    draugr chain                1.006 -> 1.092    9.6% ->  3.4%
+    hide cuirass (light)        0.000 -> 0.157   90.2% -> 82.2%
+
+No band on any probe got worse. Weights only: zero vertex movement on both weights
+of all three probes and across all 15 golden pieces, and the weight-sum invariant
+is unchanged.
