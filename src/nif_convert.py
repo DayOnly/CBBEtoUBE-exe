@@ -325,6 +325,41 @@ ADAPTIVE_CLEARANCE_MORPH_FACTOR = 0.20  # clearance added per unit of outward bo
 ADAPTIVE_CLEARANCE_MORPH_MAX = float(
     os.environ.get("CBBE2UBE_CLEARANCE_MORPH_MAX", "1.1"))
 
+# --- Authored fit in STATIC zones (#static-authored-fit) -----------------
+# `conform_to_source_standoff` deliberately leaves tight cloth looser than the
+# author had it: it floors the target at `min_clearance` (0.25) and only reels a
+# skin-hugging vert `blend_tight` (0.3) of the way back. Its stated reason is
+# that the source was fitted to the SMALLER 3BA body, so a tight piece needs
+# extra room on the bigger UBE one.
+#
+# That reasoning holds where the UBE body is bigger and MOVES -- bust, butt,
+# belly. It does not hold at a shoulder, a back or an upper chest, and those are
+# exactly where it showed: measured per-vertex across 8.1M verts of the shipped
+# pack (loose + BSA sources), verts the author placed at 0.10-0.25u ship
+# +0.346u further out (p90 +1.00u), the largest push of any band, landing them
+# at or above the 0.25 floor. Loose verts (>1u) move +0.034u. So the tighter the
+# author fitted it, the more we inflate it -- backwards. One reported armour
+# fits its mail layer at 0.055u on the shoulder and ships it at 0.472u.
+#
+# So both limiters ramp OFF as the body's outward morph amplitude falls: full
+# authored fit in static zones, current behaviour untouched where the body
+# actually grows. Still pull-IN only, and the bust band's push-out is applied
+# after this and is unchanged -- this cannot create nipple poke-through.
+STATIC_AUTHORED_FIT = (
+    os.environ.get("CBBE2UBE_NO_STATIC_AUTHORED_FIT", "").strip().lower()
+    not in ("1", "true", "yes", "on")
+)
+# Outward morph amplitude (units) at/above which a vert counts as a MORPH zone
+# and keeps today's behaviour. Measured per-zone amplitudes: breast 3.48 mean,
+# belly 3.35, sternum 1.66, butt/back/thigh <= 0.85. 1.0 puts back/butt/thigh
+# on the static side and keeps breast/belly/sternum on the morph side.
+STATIC_AUTHORED_AMP = float(
+    os.environ.get("CBBE2UBE_STATIC_AUTHORED_AMP", "1.0"))
+# Floor the authored fit may reach in a fully static zone. Not 0: coincident
+# surfaces z-fight, and the warp's own error is not zero either.
+STATIC_AUTHORED_MIN_CLEARANCE = float(
+    os.environ.get("CBBE2UBE_STATIC_AUTHORED_MIN", "0.06"))
+
 # Extra anti-poke clearance scaled by local jiggle-bone weight, for the SMP bounce that
 # swings the body PAST its static envelope. Every other clearance term reasons about the
 # body at REST; a rigid cuirass has no idea the breast is about to be thrown outward by
@@ -1450,6 +1485,9 @@ def conform_to_source_standoff(
     bust_z: "tuple[float, float]" = (84.0, 100.0),
     max_push_out: float = 2.5,
     ube_body_nipple: "np.ndarray | None" = None,
+    morph_amplitude: "np.ndarray | None" = None,
+    static_amp: float = STATIC_AUTHORED_AMP,
+    static_min_clearance: float = STATIC_AUTHORED_MIN_CLEARANCE,
 ) -> np.ndarray:
     """Restore each cloth vert's ORIGINAL clearance from the body after the
     CBBE->UBE warp+inflate, so a piece that HUGGED the source body still hugs the
@@ -1505,7 +1543,21 @@ def conform_to_source_standoff(
     ube_tree = cKDTree(ube_body_verts)
     ud, ui = ube_tree.query(cur_cloth, k=1)
     s_cur = ((cur_cloth - ube_body_verts[ui]) * ube_body_normals[ui]).sum(1)
-    tight = np.clip(np.minimum(s_src, s_cur), min_clearance, None)
+    # #static-authored-fit: relax BOTH limiters where the body doesn't morph.
+    # `static_w` is 1 in a fully static zone and 0 once the outward morph
+    # amplitude reaches `static_amp`, so morph zones keep today's numbers
+    # exactly and there is no discontinuity between the two.
+    min_clear_v = min_clearance
+    blend_tight_v = blend_tight
+    if (STATIC_AUTHORED_FIT and morph_amplitude is not None
+            and len(morph_amplitude) == len(ube_body_verts)):
+        amp_at = np.asarray(morph_amplitude, dtype=np.float64)[ui]
+        static_w = np.clip((static_amp - amp_at) / max(static_amp, 1e-6),
+                           0.0, 1.0)
+        min_clear_v = (min_clearance
+                       + static_w * (static_min_clearance - min_clearance))
+        blend_tight_v = blend_tight + static_w * (1.0 - blend_tight)
+    tight = np.maximum(np.minimum(s_src, s_cur), min_clear_v)
     if blend is None:
         # ADAPTIVE per-vert blend keyed on the source clearance:
         #  - tight verts (skin-hugging, small s_src) keep ROOM (low blend) so they
@@ -1515,7 +1567,7 @@ def conform_to_source_standoff(
         #    don't FLOAT off the body (the forsworn gap). One knob, both symptoms.
         _b = np.clip((s_src - tight_standoff)
                      / max(loose_standoff - tight_standoff, 1e-6), 0.0, 1.0)
-        blend_v = blend_tight + _b * (1.0 - blend_tight)
+        blend_v = blend_tight_v + _b * (1.0 - blend_tight_v)
     else:
         blend_v = float(blend)
     target = s_cur + (tight - s_cur) * blend_v
@@ -15385,11 +15437,21 @@ def convert_nif_phase2(
                 if (src_body_v_p2 is not None and body_verts_for_p2 is not None
                         and body_norms_for_p2 is not None):
                     try:
+                        # Morph map lets the conform restore the AUTHORED fit in
+                        # static zones while leaving morph zones alone.
+                        # #static-authored-fit
+                        try:
+                            _amp_conf = _cached_body_morph_amplitude(
+                                _find_ube_body_osd(), body_norms_for_p2,
+                                len(body_verts_for_p2))
+                        except Exception:
+                            _amp_conf = None
                         override = conform_to_source_standoff(
                             _sv_body,
                             src_body_v_p2, src_body_n_p2,
                             override, body_verts_for_p2, body_norms_for_p2,
                             ube_body_nipple=body_nipple_for_p2,
+                            morph_amplitude=_amp_conf,
                         )
                         _stage('conform', override)
                     except Exception as e:
