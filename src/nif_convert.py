@@ -1121,8 +1121,8 @@ def _install_skin(new_shape, dst_nif, src_shape, bone_names, xforms_map,
     # Preserve physics-bone chains BEFORE add_bone (source transforms+parents).
     try:
         _precreate_custom_bone_chains(dst_nif, src_shape.file, bone_names)
-    except Exception:
-        pass
+    except Exception as _pe:
+        _note_pass_failure("_precreate_custom_bone_chains", _pe)
     # Fix scale-bone STB space mismatch: bake g2s^-1 into scale-bone STBs.
     # (Runs on the pre-strip weights_map, as before -- it only mutates xforms_map.)
     if bake_T is None and src_shape.has_global_to_skin:
@@ -2346,8 +2346,8 @@ def _inflate_cloth_over_bust_butt(
             push = np.clip(
                 _smooth_push_field(push, push, np.asarray(tris, np.int64),
                                    smooth_iters), 0.0, max_push)
-        except Exception:
-            pass
+        except Exception as _pe:
+            _note_pass_failure("_smooth_push_field", _pe)
     _, ib = cKDTree(bv).query(v)                 # push each vert along its body normal
     return (v + bn[ib] * push[:, None]).astype(np.float32)
 
@@ -2505,6 +2505,38 @@ def _weight_matched_ube_ref(src_path: Path, ube_body_ref_path: Path) -> Path:
                     return candidate
             break
     return ref
+
+
+# --- broken pass vs failed design -------------------------------------------
+# Every fit pass is called inside `try: ... except Exception: pass`, so a pass
+# that RAISES is indistinguishable from a pass that ran and did nothing. That
+# has cost three wrong verdicts: a stale keyword argument raised TypeError on
+# every build, the pass never ran, and the measurements read as "the design does
+# not work". The catch itself is right -- one bad piece must not abort a
+# 4000-piece batch -- but SILENCE is not.
+#
+# `_note_pass_failure` records the failure and prints it once per (pass, piece).
+# Grep the build log for `PASS FAILED` before believing any measurement.
+_PASS_FAILURES: "dict[str, int]" = {}
+
+
+def _note_pass_failure(label: str, exc: BaseException, dst=None) -> None:
+    """Record a swallowed fit-pass exception. NEVER raises: the caller is an
+    except-handler, and a recorder that can throw would turn a survivable pass
+    failure into a lost piece."""
+    try:
+        key = f"{label}: {type(exc).__name__}"
+        _PASS_FAILURES[key] = _PASS_FAILURES.get(key, 0) + 1
+        if _PASS_FAILURES[key] <= 3:      # once per kind, not per piece
+            where = f" on {Path(dst).name}" if dst else ""
+            print(f"  PASS FAILED: {label}{where} -- {exc!r}", file=sys.stderr)
+    except Exception:
+        pass
+
+
+def pass_failure_summary() -> "dict[str, int]":
+    """{`pass: ExcType` -> count} for the conversion report."""
+    return dict(_PASS_FAILURES)
 
 
 # Lazy pynifly import — used by phase 2. Phase 1 doesn't need it.
@@ -3949,8 +3981,8 @@ def convert_nif(
         if not (biped_slots & (BIPED_SLOT33_BIT | BIPED_SLOT37_BIT)):
             try:
                 _split_bust_collider_shape(dst_path, src_path)
-            except Exception:
-                pass
+            except Exception as _pe:
+                _note_pass_failure("_split_bust_collider_shape", _pe)
 
         # FINAL HDT-SMP physics pass — after every earlier round-trip so
         # extra-data survives them. NOT literally last: the passes below use
@@ -3969,8 +4001,8 @@ def convert_nif(
         if not (biped_slots & (BIPED_SLOT33_BIT | BIPED_SLOT37_BIT)):
             try:
                 _split_bust_collider_xml(dst_path)
-            except Exception:
-                pass
+            except Exception as _pe:
+                _note_pass_failure("_split_bust_collider_xml", _pe)
 
         # Graft body jiggle onto fitted leg cloth that lacks its own, THEN conform.
         # ORDER MATTERS: the graft gives a no-jiggle pant the body's butt/belly
@@ -3978,27 +4010,27 @@ def convert_nif(
         # to the body -- fixing the knee-BEND clip, not just butt-jiggle follow.
         try:
             _transfer_body_jiggle_to_fitted(dst_path, biped_slots)
-        except Exception:
-            pass
+        except Exception as _pe:
+            _note_pass_failure("_transfer_body_jiggle_to_fitted", _pe)
         # Fitted-cloth body conform (gated; skin-tight garments only). Runs after
         # finalize so it sees final skinning; reauthor/harden below preserve it.
         try:
             _conform_fitted_to_body(dst_path, src_path, biped_slots)
-        except Exception:
-            pass
+        except Exception as _pe:
+            _note_pass_failure("_conform_fitted_to_body", _pe)
         # Knee-bend conform for RIGID leg plate (the conform above skips it): match
         # the plate's Thigh:Calf split to the body so it bends with the knee.
         try:
             _match_rigid_leg_bend_to_body(dst_path, biped_slots,
                                           src_nif_path=src_path)
-        except Exception:
-            pass
+        except Exception as _pe:
+            _note_pass_failure("_match_rigid_leg_bend_to_body", _pe)
         # Leg-MOTION match: the pass above only reaches reskin-eligible shapes, so a
         # source-skin garment still under-travels the leg under hip flexion (#leg-motion-match).
         try:
             _match_leg_motion_to_body(dst_path, biped_slots)
-        except Exception:
-            pass
+        except Exception as _pe:
+            _note_pass_failure("_match_leg_motion_to_body", _pe)
         # Spine-MOTION match: the TORSO instance -- the garment carries its spine
         # mass on Spine1 where the body uses Spine2, so it under-travels every
         # spine rotation (#spine-follow). MUST run BEFORE the arm pass: the two
@@ -4008,15 +4040,15 @@ def convert_nif(
         # because under-bust rows carry no arm weight and are skipped anyway.
         try:
             _match_spine_motion_to_body(dst_path, biped_slots)
-        except Exception:
-            pass
+        except Exception as _pe:
+            _note_pass_failure("_match_spine_motion_to_body", _pe)
         # Arm-MOTION match: the same gap at the SHOULDER. CBBE ends UpperArm weight
         # at the armhole and UBE does not, so the shoulder walks out through a
         # source-skin garment that never got the bone (#armhole-arm-follow).
         try:
             _match_arm_motion_to_body(dst_path, biped_slots)
-        except Exception:
-            pass
+        except Exception as _pe:
+            _note_pass_failure("_match_arm_motion_to_body", _pe)
 
         # Verbatim-copied NIFs carry raw block structure the renderer can reject.
         # Re-author for a clean pynifly structure identical to body shapes.
@@ -5153,8 +5185,8 @@ def _sanitize_one_nif_worker(path_str: str) -> int:
         pass
     try:
         n += _repair_effect_shader_shape_controllers(nif._backing)
-    except Exception:
-        pass
+    except Exception as _pe:
+        _note_pass_failure("_repair_effect_shader_shape_controllers", _pe)
     if n:
         try:
             atomic_nif_save(nif._backing, path_str)
@@ -5205,8 +5237,8 @@ def sanitize_output_vertex_color_flags(meshes_root, workers: "int | None" = None
                 pass
             try:
                 n += _repair_effect_shader_shape_controllers(nif._backing)
-            except Exception:
-                pass
+            except Exception as _pe:
+                _note_pass_failure("_repair_effect_shader_shape_controllers", _pe)
             if n:
                 try:
                     atomic_nif_save(nif._backing, ps)
@@ -7564,8 +7596,8 @@ def _relax_shape_self_intersection(V, tris, chain_vert, Vb, Nb, tree, target):
         try:
             step = _smooth_vertex_field(step, tris, iters=_SELFINT_SMOOTH)
             step[chain_vert] = 0.0
-        except Exception:
-            pass
+        except Exception as _pe:
+            _note_pass_failure("_smooth_vertex_field", _pe)
         v = v + step
         moved_any |= m
         # body-safety clamp: a moved vert must never end up below the standoff
@@ -15069,8 +15101,8 @@ def _conform_cords_to_host(shape_jobs, softbody_names=frozenset(),
             try:
                 ctris = np.asarray(c["src"].tris, dtype=np.int64)
                 corr = _smooth_vertex_field(corr, ctris, iters=_CORD_SMOOTH)
-            except Exception:
-                pass
+            except Exception as _pe:
+                _note_pass_failure("_smooth_vertex_field", _pe)
             cfv = cfv + corr
             c["verts"] = cfv
             c["verts_modified"] = True
@@ -15277,8 +15309,8 @@ def _repair_layer_order(shape_jobs, softbody_names=frozenset(),
             mv = moves[i]
             try:
                 mv = _smooth_vertex_field(mv, x["tris"], iters=_LAYER_ORDER_SMOOTH)
-            except Exception:
-                pass
+            except Exception as _pe:
+                _note_pass_failure("_smooth_vertex_field", _pe)
             x["dv"] = x["dv"] + mv
 
     if not corrected:
@@ -16149,8 +16181,8 @@ def convert_nif_phase2(
                             src_body_verts=src_body_v_p2,
                             src_body_normals=src_body_n_p2)
                         _stage('groove_smooth', override)
-                    except Exception:
-                        pass
+                    except Exception as _pe:
+                        _note_pass_failure("_smooth_warp_grooves", _pe)
             except Exception as e:
                 failed.append((f"{s.name}:warp", repr(e)))
         elif body_verts_for_p2 is not None:
@@ -17125,8 +17157,8 @@ def convert_nif_phase2(
     if not (biped_slots & (BIPED_SLOT33_BIT | BIPED_SLOT37_BIT)):
         try:
             _split_bust_collider_shape(dst_path, src_path)
-        except Exception:
-            pass
+        except Exception as _pe:
+            _note_pass_failure("_split_bust_collider_shape", _pe)
 
     # FINAL HDT-SMP physics pass — after every earlier round-trip so the
     # extra-data survives them (passes AFTER it use the in-place pattern and
@@ -17147,34 +17179,34 @@ def convert_nif_phase2(
     if not (biped_slots & (BIPED_SLOT33_BIT | BIPED_SLOT37_BIT)):
         try:
             _split_bust_collider_xml(dst_path)
-        except Exception:
-            pass
+        except Exception as _pe:
+            _note_pass_failure("_split_bust_collider_xml", _pe)
 
     # Graft body jiggle onto fitted leg cloth that lacks its own, THEN conform --
     # the graft lets the jiggle-gated conform ALSO weight-match these pants to the
     # body, fixing the knee-BEND clip (not just butt-jiggle follow). Order matters.
     try:
         _transfer_body_jiggle_to_fitted(dst_path, biped_slots)
-    except Exception:
-        pass
+    except Exception as _pe:
+        _note_pass_failure("_transfer_body_jiggle_to_fitted", _pe)
     # Fitted-cloth FINALIZE: weight-conform + self-int repair share one load/save.
     try:
         _conform_fitted_to_body(dst_path, src_path, biped_slots)
-    except Exception:
-        pass
+    except Exception as _pe:
+        _note_pass_failure("_conform_fitted_to_body", _pe)
     # Knee-bend conform for RIGID leg plate (the conform above skips it): match the
     # plate's Thigh:Calf split to the body so it bends with the knee (Orcish #knee).
     try:
         _match_rigid_leg_bend_to_body(dst_path, biped_slots,
                                       src_nif_path=src_path)
-    except Exception:
-        pass
+    except Exception as _pe:
+        _note_pass_failure("_match_rigid_leg_bend_to_body", _pe)
     # Leg-MOTION match: the pass above only reaches reskin-eligible shapes, so a
     # source-skin garment still under-travels the leg under hip flexion (#leg-motion-match).
     try:
         _match_leg_motion_to_body(dst_path, biped_slots)
-    except Exception:
-        pass
+    except Exception as _pe:
+        _note_pass_failure("_match_leg_motion_to_body", _pe)
     # Spine-MOTION match: the TORSO instance -- the garment carries its spine mass
     # on Spine1 where the body uses Spine2, so it under-travels every spine
     # rotation (#spine-follow). MUST run BEFORE the arm pass -- see the note at
@@ -17182,15 +17214,15 @@ def convert_nif_phase2(
     # the two bands overlap.
     try:
         _match_spine_motion_to_body(dst_path, biped_slots)
-    except Exception:
-        pass
+    except Exception as _pe:
+        _note_pass_failure("_match_spine_motion_to_body", _pe)
     # Arm-MOTION match: the same gap at the SHOULDER. CBBE ends UpperArm weight
     # at the armhole and UBE does not, so the shoulder walks out through a
     # source-skin garment that never got the bone (#armhole-arm-follow).
     try:
         _match_arm_motion_to_body(dst_path, biped_slots)
-    except Exception:
-        pass
+    except Exception as _pe:
+        _note_pass_failure("_match_arm_motion_to_body", _pe)
 
     # Validation pass — catches subtle skinning / TRI mismatches.
     val_warnings = validate_dst_nif(

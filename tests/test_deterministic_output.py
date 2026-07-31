@@ -141,3 +141,31 @@ def test_generated_tri_morph_order_is_deterministic():
                                                     errors="ignore")
     assert "for sl in sorted(all_sliders):" in gen
     assert "for sl in all_sliders:" not in gen
+
+
+def test_fit_passes_record_failures_instead_of_swallowing_them():
+    """A pass that RAISES must not be indistinguishable from one that ran and
+    did nothing.
+
+    Every fit pass is called inside `try: ... except Exception: pass`. The catch
+    is right -- one bad piece must not abort a 4000-piece batch -- but the
+    silence is not: a stale keyword argument once raised TypeError on every
+    build, the pass never ran, and the measurements read as "the design does not
+    work". Three wrong verdicts before anyone thought to grep the log.
+    """
+    src = inspect.getsource(nc)
+    for pass_name in ("_match_arm_motion_to_body", "_match_spine_motion_to_body",
+                      "_match_leg_motion_to_body", "_transfer_body_jiggle_to_fitted",
+                      "_conform_fitted_to_body", "_match_rigid_leg_bend_to_body"):
+        assert f'_note_pass_failure("{pass_name}"' in src, (
+            f"{pass_name} failures are still swallowed silently")
+
+
+def test_pass_failure_recorder_never_raises():
+    """It runs INSIDE an except-handler. A recorder that can throw turns a
+    survivable pass failure into a lost piece."""
+    body = inspect.getsource(nc._note_pass_failure)
+    assert "except Exception:" in body and body.rstrip().endswith("pass")
+    nc._note_pass_failure("probe", ValueError("x"), dst=None)
+    nc._note_pass_failure("probe", ValueError("x"), dst=object())   # bad dst
+    assert any(k.startswith("probe") for k in nc.pass_failure_summary())
