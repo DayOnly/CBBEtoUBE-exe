@@ -392,5 +392,43 @@ def main() -> int:
     return 2
 
 
+def _pin_hash_seed() -> None:
+    """Re-exec with a fixed PYTHONHASHSEED so a verdict is reproducible.
+
+    THE CONVERTER IS HASH-SEED DEPENDENT -- pre-existing, and NOT introduced by
+    any follow pass (it reproduces with all three disabled). Measured on a
+    vanilla light cuirass: the chain bone `HideSkirt 5_01` totals 17.430756 at
+    seeds 0 and 1, and 17.468628 at seed 2 -- a 0.038 swing, ~0.2%. Somewhere a
+    set/dict iteration order reaches a weight value.
+
+    That made `check` flag one piece on roughly half of runs, which is worse
+    than a plain failure: a gate that cries wolf gets ignored, and a real
+    regression on that piece would have been dismissed as "the flaky one".
+
+    Pinning does NOT fix the converter -- it makes THIS TOOL's answer stable.
+    The underlying nondeterminism is a separate open item, and the message
+    below exists so pinning never gets mistaken for a fix.
+    """
+    if os.environ.get("PYTHONHASHSEED") is not None:
+        return
+    if os.environ.get("CBBE2UBE_GOLDEN_NO_PIN"):
+        print("NOTE: PYTHONHASHSEED unset and pinning disabled -- one known "
+              "piece varies between runs, so a lone REGRESSION may be noise.")
+        return
+    print("re-running with PYTHONHASHSEED=0 (the converter is hash-seed "
+          "dependent; see _pin_hash_seed). CBBE2UBE_GOLDEN_NO_PIN=1 to skip.",
+          flush=True)
+    # subprocess, NOT os.execve: exec'ing the interpreter SEGFAULTED here
+    # (exit 139) and produced an EMPTY run that looks exactly like a clean one.
+    # A relaunch that can silently destroy the output is worse than the flake
+    # it was added to remove.
+    import subprocess
+    env = dict(os.environ, PYTHONHASHSEED="0")
+    r = subprocess.run([sys.executable, str(Path(__file__).resolve()),
+                        *sys.argv[1:]], env=env)
+    raise SystemExit(r.returncode)
+
+
 if __name__ == "__main__":
+    _pin_hash_seed()
     raise SystemExit(main())
