@@ -2,6 +2,35 @@
 
 ## 1.2 — unreleased
 
+### Fixed — the shoulder walked out through the armhole in motion
+
+CBBE and UBE rig the shoulder differently: CBBE's `UpperArm` weight stops at
+z 99.7 and the shoulder above it is Clavicle-only, while UBE carries `UpperArm`
+up to z 110.1. A CBBE-authored garment bakes in the CBBE convention, so on a UBE
+body it arrives with ZERO `UpperArm` weight across the armhole over skin that has
+0.179 there. The shoulder then moves and the garment does not — follow p10 was
+literally 0.000, meaning those verts did not move at all — and the body emerged
+under the arm and down the side during animation. Bind-pose clearance cannot see
+any of this, which is why it survived every clearance pass.
+
+Not a converter leak: the source garment and the source body both measure 0.000
+there. It is a body-rig mismatch, so it applied to every CBBE-sourced piece
+covering the shoulder.
+
+Built as the ARM instance of the existing leg-motion match — the same defect at
+the hip — by parameterising that pass by bone family and Z band rather than
+copying it, so the 4-influence cap and the weight-write invariants cannot drift
+apart between limbs. `Clavicle` is rebalanced alongside `UpperArm`, because the
+defect is mass sitting on the wrong bone of the pair, not just missing mass.
+Weights only: no vertex moves on any shape, so bind-pose fit is untouched.
+
+    armhole, arms forward   follow 0.642 -> 1.106,  38.4% -> 0.8% of verts under 0.5
+    armhole, arms crossed          0.684 -> 1.127,  35.0% -> 0.8%
+    side, arms crossed             1.016 -> 1.015,   9.6% -> 3.2%
+    under-bust / bust              unchanged (specificity control)
+
+`CBBE2UBE_NO_ARM_MOTION_MATCH=1` disables it.
+
 ### Fixed — fitted pieces shipped standing off the body
 
 Phase 1 carried TWO `inflate_armor_outward` call sites and NO conform; phase 2

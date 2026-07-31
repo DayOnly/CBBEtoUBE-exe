@@ -112,7 +112,7 @@ def test_inert_chain_allows_leg_motion_match():
     plain skinning, so the leg-motion match must be allowed to track the leg --
     otherwise the leg walks through a skirt that never moves. Measured on the
     kinematic dress: 113 -> 37 newly-exposed verts."""
-    src = inspect.getsource(nc._match_leg_motion_to_body)
+    src = inspect.getsource(nc._match_limb_motion_to_body)
     assert "_piece_has_physics_xml" in src
     # Target the CALL, not the mention in the explanatory comment above it.
     i = src.index("if _shape_has_hdt_smp_rigging(")

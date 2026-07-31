@@ -71,7 +71,7 @@ def test_pass_is_wired_into_both_convert_paths():
 def test_skips_colliders_and_softbody():
     """Standing rule: every skin pass leaves authored physics geometry alone --
     a skin pass touching an SMP collider CTDs, and touching softbody drifts."""
-    src = inspect.getsource(nc._match_leg_motion_to_body)
+    src = inspect.getsource(nc._match_limb_motion_to_body)
     assert "_hdt_collider_shape_names" in src
     assert "_hdt_softbody_shape_names" in src
     assert "_shape_has_hdt_smp_rigging" in src
@@ -80,7 +80,7 @@ def test_skips_colliders_and_softbody():
 def test_never_moves_a_vertex():
     """The pass must only touch WEIGHTS. Moving verts would undo the bind-pose
     clearance the earlier passes established."""
-    src = inspect.getsource(nc._match_leg_motion_to_body)
+    src = inspect.getsource(nc._match_limb_motion_to_body)
     assert ".verts =" not in src
     assert "set_shape_verts" not in src
     assert "setShapeWeights" in src
@@ -89,14 +89,14 @@ def test_never_moves_a_vertex():
 def test_saves_and_restores_skin_to_bone():
     """setShapeWeights can reset a shape's skin-to-bone transforms; an STB left at
     identity skins the shape to the origin and the armor explodes in game."""
-    src = inspect.getsource(nc._match_leg_motion_to_body)
+    src = inspect.getsource(nc._match_limb_motion_to_body)
     assert "get_shape_skin_to_bone" in src
     assert "set_skin_to_bone_xform" in src
 
 
 def test_push_up_only():
     """Never LOWER a leg share -- a garment already tracking the body is left be."""
-    src = inspect.getsource(nc._match_leg_motion_to_body)
+    src = inspect.getsource(nc._match_limb_motion_to_body)
     assert "np.maximum(" in src
 
 
@@ -156,7 +156,7 @@ def test_prunes_to_the_skin_partition_influence_cap():
     two requirements genuinely conflict. See DESIGN_P6: the resolution is an
     explicit 0.0 write, attempted and reverted because it measured neutral."""
     assert nc._SKIN_MAX_INFLUENCES == 4
-    src = inspect.getsource(nc._match_leg_motion_to_body)
+    src = inspect.getsource(nc._match_limb_motion_to_body)
     assert "_SKIN_MAX_INFLUENCES" in src
     assert "put_along_axis" in src
     out, _ = _shipped_cap_then_floor([0.50, 0.20, 0.15, 0.10, 0.05])
@@ -171,7 +171,7 @@ def test_floor_sits_above_the_write_threshold():
     """RESTORED COVERAGE. The floor must land STRICTLY above `_WRITE_MIN`, or the
     floored value is itself dropped by the write filter and the stale weight
     survives anyway -- defeating the whole point of flooring."""
-    src = inspect.getsource(nc._match_leg_motion_to_body)
+    src = inspect.getsource(nc._match_limb_motion_to_body)
     assert "_WRITE_MIN * 2.0" in src
     assert "> _WRITE_MIN" in src, "the write must use the same named threshold"
     out, _ = _shipped_cap_then_floor([0.50, 0.20, 0.15, 0.10, 0.05])
@@ -185,7 +185,7 @@ def test_floor_detects_bones_the_vertex_already_had():
     ALREADY carried are restored. A bone it never had must stay at zero, or the
     pass invents an influence."""
     assert "_had = G[rows] > 1e-4" in inspect.getsource(
-        nc._match_leg_motion_to_body)
+        nc._match_limb_motion_to_body)
     # 5th column was never present -> must not be floored into existence.
     out, _ = _shipped_cap_then_floor([0.50, 0.30, 0.15, 0.05, 0.0])
     assert out[4] == 0.0
@@ -194,7 +194,7 @@ def test_floor_detects_bones_the_vertex_already_had():
 def test_renormalise_comes_after_the_floor():
     """RESTORED COVERAGE. Ordering matters: flooring after the renormalise would
     push the row back off 1.0."""
-    src = inspect.getsource(nc._match_leg_motion_to_body)
+    src = inspect.getsource(nc._match_limb_motion_to_body)
     i_floor = src.index("_had & (_sub <= _WRITE_MIN)")
     i_norm = src.index("_sub[_ok] /= _ss[_ok, None]", i_floor)
     assert i_norm > i_floor
@@ -207,7 +207,7 @@ def test_row_that_loses_all_weight_is_restored_not_zeroed():
     origin -- a visible vertex spike. It must be restored to its original
     weighting instead."""
     assert "_sub[~_ok] = G[rows][~_ok]" in inspect.getsource(
-        nc._match_leg_motion_to_body)
+        nc._match_limb_motion_to_body)
     out, G = _shipped_cap_then_floor([0.0, 0.0, 0.0, 0.0, 0.0])
     assert np.allclose(out, G), "a zero row must come back as its original G"
 
@@ -218,7 +218,7 @@ def test_does_not_filter_rows_to_leg_share_increases():
     TOTAL is already right can still follow the wrong bone. An earlier version
     filtered rows to `target > g_mass` and the fix measured 65 -> 65 (i.e. did
     nothing); including those verts gives 65 -> 18."""
-    src = inspect.getsource(nc._match_leg_motion_to_body)
+    src = inspect.getsource(nc._match_limb_motion_to_body)
     rows_line = [ln for ln in src.splitlines() if "rows = np.where(" in ln]
     assert rows_line, "row selection not found"
     assert "target > g_mass" not in "".join(rows_line)
@@ -280,13 +280,13 @@ def test_body_reference_prefers_the_injected_baseshape():
     """The injected BaseShape is the body the game skins beside these shapes and
     shares their space exactly; matching against a differently-ordered external
     body mapped verts to the wrong side."""
-    src = inspect.getsource(nc._match_leg_motion_to_body)
+    src = inspect.getsource(nc._match_limb_motion_to_body)
     assert "BaseShape" in src
     assert "_body_conform_ref" in src           # fallback retained
 
 
 def test_hands_and_feet_slots_are_skipped():
-    src = inspect.getsource(nc._match_leg_motion_to_body)
+    src = inspect.getsource(nc._match_limb_motion_to_body)
     assert "BIPED_SLOT33_BIT" in src and "BIPED_SLOT37_BIT" in src
 
 

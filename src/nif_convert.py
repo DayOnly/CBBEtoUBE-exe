@@ -3999,6 +3999,13 @@ def convert_nif(
             _match_leg_motion_to_body(dst_path, biped_slots)
         except Exception:
             pass
+        # Arm-MOTION match: the same gap at the SHOULDER. CBBE ends UpperArm weight
+        # at the armhole and UBE does not, so the shoulder walks out through a
+        # source-skin garment that never got the bone (#armhole-arm-follow).
+        try:
+            _match_arm_motion_to_body(dst_path, biped_slots)
+        except Exception:
+            pass
 
         # Verbatim-copied NIFs carry raw block structure the renderer can reject.
         # Re-author for a clean pynifly structure identical to body shapes.
@@ -6288,6 +6295,42 @@ _LEG_MOTION_BONES = ("NPC L Thigh [LThg]", "NPC R Thigh [RThg]",
                      "NPC L Calf [LClf]", "NPC R Calf [RClf]",
                      "NPC Pelvis [Pelv]")
 
+# #armhole-arm-follow -- the SHOULDER instance of the same defect the leg pass fixes.
+# CBBE/3BA and UBE rig the shoulder DIFFERENTLY: measured on the reference bodies,
+# CBBE's UpperArm weight STOPS at z 99.7 and the shoulder above it is Clavicle-only,
+# while UBE carries UpperArm up to z 110.1 (mean 0.239 at z 100-105, 0.194 at 105-110).
+# A CBBE-authored garment therefore arrives with the CBBE convention baked in: measured
+# on a vanilla cuirass, ZERO UpperArm weight across the whole 439-vert armhole band
+# against a body carrying mean 0.179 there. An UpperArm rotation then moves the body and
+# not the garment (follow p10 = 0.000 -- those verts do not move AT ALL) and the shoulder
+# emerges through the armhole in motion. Invisible at bind pose, which is why clearance
+# work never touched it.
+#
+# This is NOT a converter leak: the source garment and the source body BOTH measure 0.000
+# there, so nothing is being dropped -- it is a body-rig mismatch, and it applies to every
+# CBBE-sourced piece covering the shoulder, not to one armor.
+#
+# Band from measurement, not guesswork: the deficit spans z 87.7-113.9 (p5 91.5, p95
+# 108.9) with a garment-to-body hug of median 0.52 / p90 1.45. The Z bounds are only a
+# safety rail -- the real selector is the BODY's own arm weight, since push-up-only
+# leaves any vert whose body point carries no arm mass exactly as authored.
+# Default ON; CBBE2UBE_NO_ARM_MOTION_MATCH=1 off.
+MATCH_ARM_MOTION = (
+    os.environ.get("CBBE2UBE_NO_ARM_MOTION_MATCH", "").strip().lower()
+    not in ("1", "true", "yes", "on"))
+_ARM_MOTION_STRENGTH = float(os.environ.get("CBBE2UBE_ARM_MOTION_STRENGTH", "1.0"))
+# Tighter than the leg's 9.0: a shoulder sits close, and the gap to keep clear of is a
+# free-hanging pauldron/cape, which must not be pulled onto the arm and made to swing.
+_ARM_MOTION_MAX_DIST = float(os.environ.get("CBBE2UBE_ARM_MOTION_MAX_DIST", "5.0"))
+_ARM_MOTION_Z_LO = float(os.environ.get("CBBE2UBE_ARM_MOTION_Z_LO", "84.0"))
+_ARM_MOTION_Z_HI = float(os.environ.get("CBBE2UBE_ARM_MOTION_Z_HI", "125.0"))
+# Clavicle is managed ALONGSIDE UpperArm on purpose. The defect is not just missing
+# UpperArm mass, it is mass sitting on the WRONG bone of the pair: the garment carries
+# Clavicle 0.429 where the body carries Clavicle 0.377 + UpperArm 0.179. Managing only
+# UpperArm would add mass without correcting the split.
+_ARM_MOTION_BONES = ("NPC L Clavicle [LClv]", "NPC R Clavicle [RClv]",
+                     "NPC L UpperArm [LUar]", "NPC R UpperArm [RUar]")
+
 # #chain-skirt-physics. Generating soft-body physics for a shadowed chain-driven
 # skirt (see #shadowed-chain-skirt) is OFF by default: shipped ON once and a
 # common-clothes dress's skirt COLLAPSED in game. Everything structural checked out
@@ -8423,34 +8466,78 @@ def _match_rigid_leg_bend_to_body(dst_path, biped_slots: int = 0,
 
 
 def _match_leg_motion_to_body(dst_path, biped_slots: int = 0) -> int:
-    """Raise a garment's LEG-BONE share toward the body's so it travels WITH the leg
-    under hip flexion instead of being left behind (see MATCH_LEG_MOTION). Returns the
-    number of verts matched.
+    """LEG instance of the limb-motion match -- see _match_limb_motion_to_body.
+
+    The flag is read HERE, at call time, not captured into the arguments, so a
+    test that monkeypatches the module global still disables the pass.
+    """
+    if not MATCH_LEG_MOTION:
+        return 0
+    return _match_limb_motion_to_body(
+        dst_path, biped_slots, family="leg", bones=_LEG_MOTION_BONES,
+        z_lo=_LEG_MOTION_Z_LO, z_hi=_LEG_MOTION_Z_HI,
+        max_dist=_LEG_MOTION_MAX_DIST, strength=_LEG_MOTION_STRENGTH)
+
+
+def _match_arm_motion_to_body(dst_path, biped_slots: int = 0) -> int:
+    """ARM instance of the limb-motion match  (#armhole-arm-follow).
+
+    Same defect as the leg case, at the shoulder: CBBE ends UpperArm weight at
+    z 99.7 and UBE carries it to z 110.1, so a CBBE-authored garment arrives with
+    ZERO UpperArm weight across the armhole over a body that has 0.179 there, and
+    the shoulder walks out through it. See _ARM_MOTION_BONES for the measurements.
+    """
+    if not MATCH_ARM_MOTION:
+        return 0
+    return _match_limb_motion_to_body(
+        dst_path, biped_slots, family="arm", bones=_ARM_MOTION_BONES,
+        z_lo=_ARM_MOTION_Z_LO, z_hi=_ARM_MOTION_Z_HI,
+        max_dist=_ARM_MOTION_MAX_DIST, strength=_ARM_MOTION_STRENGTH,
+        # The shape gate fires on the main garment of any piece with generated
+        # physics, which is most of them -- without the per-row fallback this
+        # pass is a no-op on exactly the armors that show the defect.
+        smp_row_gate=True)
+
+
+def _match_limb_motion_to_body(dst_path, biped_slots: int = 0, *,
+                               family: str = "leg", bones=(),
+                               z_lo: float = 0.0, z_hi: float = 0.0,
+                               max_dist: float = 0.0,
+                               strength: float = 1.0,
+                               smp_row_gate: bool = False) -> int:
+    """Raise a garment's LIMB-BONE share toward the body's so it travels WITH the
+    limb instead of being left behind. Returns the number of verts matched.
+
+    Parameterised by bone family + Z band so the LEG (hip flexion) and ARM
+    (shoulder rotation) instances are the same code: they are the same defect
+    twice, and the maths -- match the managed family's mass AND its split to the
+    covered body's -- is identical. Only the family, band and hug distance differ.
 
     Fills the gap left by _match_rigid_leg_bend_to_body: that pass only reaches shapes
     eligible for a reskin, so every BodySlide-built garment that keeps its SOURCE skin
-    (the `_keep_src_skin` morph-TRI branch) still wears CBBE-fitted leg weights over a
-    UBE body. Its leg share is then lower than the body's underneath it, the body
-    out-travels the cloth as the hip swings, and skin emerges -- a defect that is
+    (the `_keep_src_skin` morph-TRI branch) still wears CBBE-fitted weights over a
+    UBE body. Its limb share is then lower than the body's underneath it, the body
+    out-travels the cloth as the joint swings, and skin emerges -- a defect that is
     completely invisible at bind pose.
 
     Deliberately conservative:
       * redistributes ONLY among bones the shape ALREADY HAS. No add_bone, so the
         add_bone-resets-every-STB footgun cannot apply. (setShapeWeights can still
         reset STBs, so they are saved and restored regardless.)
-      * PUSH-UP ONLY -- never lowers a leg share, so a garment already tracking the
-        body is left alone.
+      * PUSH-UP ONLY -- never lowers a limb share, so a garment already tracking the
+        body is left alone. This is also what makes the Z band a mere safety rail:
+        where the covered body carries no weight on the family, the target collapses
+        to the garment's own share and the vert is written back unchanged.
       * NEVER moves a vert: rest pose stays byte-identical, which is what keeps the
         bind-pose clearance work from earlier passes intact.
-      * only verts HUGGING the body (<= _LEG_MOTION_MAX_DIST) inside the leg Z band,
-        so a free-hanging hem is never pulled onto the leg bones and made to cling.
+      * only verts HUGGING the body (<= max_dist) inside the Z band, so a free-hanging
+        hem -- or a free-hanging pauldron -- is never pulled onto the limb bones and
+        made to cling or swing.
       * skips colliders / soft-body / HDT-SMP-rigged shapes, per the standing rule
         that every skin pass leaves authored physics geometry alone.
     """
-    if not MATCH_LEG_MOTION:
-        return 0
     if biped_slots & (BIPED_SLOT33_BIT | BIPED_SLOT37_BIT):
-        return 0  # hands/feet -- not the leg-motion class
+        return 0  # hands/feet -- not the limb-motion class
     try:
         pyn = _pynifly()
         nf = pyn.NifFile(filepath=str(dst_path))
@@ -8515,6 +8602,10 @@ def _match_leg_motion_to_body(dst_path, biped_slots: int = 0) -> int:
         if ref is None:
             return 0
         Vb, body_pv, _body_bones, tree = ref
+        if not ube_bones:
+            # The row gate below needs a body-bone set. Without one every bone
+            # reads as foreign and the gate would silently reject every row.
+            ube_bones = set(_body_bones or ())
 
     total = 0
     dirty = False
@@ -8541,16 +8632,42 @@ def _match_leg_motion_to_body(dst_path, biped_slots: int = 0) -> int:
         # self-disable when there is none -- this is the only gate that did not.)
         # Measured on a common-clothes dress left kinematic: 113 -> 37 newly-exposed
         # verts, bind-pose exposure unchanged, free-hem drape motion identical.
+        # #smp-row-gate. When the shape-level heuristic fires, a family-scoped pass
+        # does not have to give up on the whole shape: it can fall back to the SAME
+        # test applied PER ROW -- rewrite only verts whose entire weight sits on
+        # bones the BODY also has. Such a row provably carries no authored chain
+        # bone, so the rescale cannot weaken a chain, whatever the shape-level
+        # heuristic concluded about the shape as a whole.
+        #
+        # This is not hypothetical tidiness. On a vanilla cuirass the shape gate
+        # fired on the MAIN GARMENT and cost the arm fix everything, and what it
+        # was "protecting" on those rows was NPC L/R UpperarmTwist2 -- skeleton arm
+        # bones, counted foreign only because the injected BaseShape declares 36
+        # bones and the garment carries 59. The piece's XML drives Proxy/Collision
+        # and nothing else; the garment shape is plain skinned geometry.
+        #
+        # Gating on "referenced by the physics XML" instead was MEASURED AND
+        # REJECTED: `_xml_referenced_bone_names` harvests by any route including
+        # constraint bodies, so a generated XML names 126 bones -- Clavicle, Calf,
+        # Forearm included -- and the gate excluded 1601 of 1601 rows. A silent
+        # no-op, not a safer gate. Do not re-attempt it.
+        #
+        # OPT-IN per family: the arm pass uses it, the leg pass keeps the plain
+        # shape-wide skip it shipped and was validated with. Widening the leg
+        # pass's reach is a separate change that needs its own measurement.
+        _row_gate = False
         if _piece_has_physics_xml:
             try:
                 if _shape_has_hdt_smp_rigging(s, ube_bones):
-                    continue
+                    if not smp_row_gate:
+                        continue
+                    _row_gate = True
             except Exception:
                 pass
         try:
             bw = s.bone_weights or {}
             shape_bones = list(bw.keys())
-            managed = [b for b in _LEG_MOTION_BONES if b in bw]
+            managed = [b for b in bones if b in bw]
             if not managed or len(shape_bones) < 2:
                 continue
             sv = np.asarray(s.verts, dtype=np.float64)
@@ -8559,8 +8676,8 @@ def _match_leg_motion_to_body(dst_path, biped_slots: int = 0) -> int:
                 continue
             wv = _verts_skin_to_world(sv, _shape_global_to_skin(s))
             dist, near = tree.query(wv, k=1)
-            band = ((wv[:, 2] >= _LEG_MOTION_Z_LO) & (wv[:, 2] <= _LEG_MOTION_Z_HI)
-                    & (dist <= _LEG_MOTION_MAX_DIST))
+            band = ((wv[:, 2] >= z_lo) & (wv[:, 2] <= z_hi)
+                    & (dist <= max_dist))
             if not band.any():
                 continue
 
@@ -8583,7 +8700,7 @@ def _match_leg_motion_to_body(dst_path, biped_slots: int = 0) -> int:
             b_mass = np.clip(B.sum(axis=1), 0.0, 1.0)
             # push-up only: np.maximum, never lowers a share that already tracks
             target = np.maximum(
-                np.clip(g_mass + _LEG_MOTION_STRENGTH * (b_mass - g_mass), 0.0, 1.0),
+                np.clip(g_mass + strength * (b_mass - g_mass), 0.0, 1.0),
                 g_mass)
             bsum = B.sum(axis=1)
             has_b = bsum > 1e-6
@@ -8595,13 +8712,26 @@ def _match_leg_motion_to_body(dst_path, biped_slots: int = 0) -> int:
                 shape_of[keep] = (G[np.ix_(np.where(keep)[0], midx)]
                                   / g_mass[keep, None])
 
-            # NOTE: do NOT filter to rows where the leg share actually RISES. Most of
-            # the benefit comes from RE-SPLITTING the leg mass a vert already has
-            # across thigh/calf/pelvis to match the body's split -- a vert whose total
-            # is already correct can still be following the wrong leg bone. Filtering
+            # NOTE: do NOT filter to rows where the limb share actually RISES. Most of
+            # the benefit comes from RE-SPLITTING the limb mass a vert already has
+            # across the family to match the body's split -- a vert whose total is
+            # already correct can still be following the wrong bone of the family.
+            # (Leg: thigh/calf/pelvis. Arm: the Clavicle-vs-UpperArm split, which is
+            # the whole defect in the armhole.) Filtering
             # on `target > g_mass` skipped exactly those verts and the fix did nothing
             # (measured: 65 -> 65, versus 65 -> 18 once they were included).
-            rows = np.where(band & live & (g_mass > 1e-6))[0]
+            _sel = band & live & (g_mass > 1e-6)
+            if _row_gate:
+                # See #smp-row-gate above. `foreign` is weight on any bone the
+                # body does not have -- an authored chain bone, or a skeleton bone
+                # the injected body simply does not declare. Either way we decline
+                # to touch the row rather than guess which it is.
+                foreign = np.zeros(n, dtype=np.float64)
+                for _j, _b in enumerate(shape_bones):
+                    if _b not in ube_bones:
+                        foreign += G[:, _j]
+                _sel &= foreign <= 1e-4
+            rows = np.where(_sel)[0]
             if len(rows) == 0:
                 continue
             NEW = G.copy()
@@ -8710,7 +8840,7 @@ def _match_leg_motion_to_body(dst_path, biped_slots: int = 0) -> int:
                         s.set_skin_to_bone_xform(b, st)
                     except Exception:
                         pass
-                print(f"  WARN: leg-motion weight write failed mid-shape on "
+                print(f"  WARN: {family}-motion weight write failed mid-shape on "
                       f"{s.name!r} ({_we!r}) -- STBs restored, shape left "
                       f"partially matched", file=sys.stderr)
                 continue
@@ -16950,6 +17080,13 @@ def convert_nif_phase2(
     # source-skin garment still under-travels the leg under hip flexion (#leg-motion-match).
     try:
         _match_leg_motion_to_body(dst_path, biped_slots)
+    except Exception:
+        pass
+    # Arm-MOTION match: the same gap at the SHOULDER. CBBE ends UpperArm weight
+    # at the armhole and UBE does not, so the shoulder walks out through a
+    # source-skin garment that never got the bone (#armhole-arm-follow).
+    try:
+        _match_arm_motion_to_body(dst_path, biped_slots)
     except Exception:
         pass
 
