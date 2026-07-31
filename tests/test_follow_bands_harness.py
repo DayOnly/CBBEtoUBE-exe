@@ -143,14 +143,28 @@ def test_stationary_verts_are_gated_out(fb):
     assert "MIN_BODY_MOVE" in inspect.getsource(fb.main)
 
 
-def test_only_the_known_band_pair_overlaps(fb):
-    """The bands are anatomical, NOT a partition -- pinned so nobody treats two
-    rows as independent evidence about disjoint verts.
+def test_band_overlap_set_is_pinned(fb):
+    """The bands are anatomical, NOT a partition. Pinned so nobody treats two
+    rows as independent evidence about disjoint verts, and so a band edit that
+    creates a NEW overlap has to be a deliberate decision.
 
-    `side` (z 92-103, |x|>=8) and `bust` (z 90-102, y>0) genuinely share the
-    front-lateral chest: measured on a synthetic body-sized cloud, 553 verts,
-    46% of `side` and 61% of `bust`. That is the ONLY overlapping pair, and
-    this test fails if a band edit creates another one.
+    Known and accepted:
+      side x bust        the front-lateral chest, genuinely shared
+      *   x forearm      the forearm hangs beside the torso with arms down, so
+                         it shares z with the chest bands and the hip
+    Measured on REAL meshes (not this synthetic cloud): 4.9-5.9% of banded
+    verts on a cuirass fall in two bands, 11.7% on a gauntlet -- mostly
+    under-bust x forearm, which is the gauntlet lying against the hip.
+
+    The torso bands deliberately carry NO lateral cap even though
+    `body_zones.breast_mask` does. Adding one is more correct anatomically but
+    drops 1.4-18.1% of the verts the S2/S3 results were measured on, and
+    re-cutting a band after the fact breaks the chain of evidence for a shipped
+    fix. Left as-is on purpose; this docstring is the record of that choice.
+
+    NOTE the uniform cloud below OVERSTATES overlap versus a real body -- it
+    places verts at |x|=25 with |y|=10 at chest height, where no body surface
+    is. It is a change-detector, not an anatomy measurement.
     """
     rng = np.random.default_rng(0)
     n = 20000
@@ -164,5 +178,10 @@ def test_only_the_known_band_pair_overlaps(fb):
             a, b = names[i], names[j]
             if (masks[a] & masks[b]).any():
                 overlapping.add(frozenset((a, b)))
-    assert overlapping == {frozenset(("side", "bust"))}, (
-        f"band overlap changed: {[tuple(sorted(p)) for p in overlapping]}")
+    expected = {frozenset(p) for p in (
+        ("side", "bust"), ("side", "forearm"), ("under-bust", "forearm"),
+        ("bust", "forearm"), ("forearm", "hip"))}
+    assert overlapping == expected, (
+        f"band overlap changed: "
+        f"added {[tuple(sorted(p)) for p in overlapping - expected]}, "
+        f"removed {[tuple(sorted(p)) for p in expected - overlapping]}")

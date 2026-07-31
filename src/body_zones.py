@@ -65,6 +65,10 @@ REAR_Y = -2.0
 UNDER_BUST_Z = (84.0, 90.0)      # front-facing, just below BREAST_Z
 SIDE_Z = (92.0, 103.0)           # flank: lateral gate, not a front gate
 ARMHOLE_Z = (103.0, 118.0)       # shoulder/armhole, ABOVE the breast (cf UPPER_CHEST_Z)
+# Forearm, arms-down: the rig sweep puts the CBBE-vs-UBE Forearm disagreement at
+# z 76.1-92.3. Needs the LATERAL gate or it swallows the under-bust/belly front.
+FOREARM_Z = (76.0, 93.0)
+FOREARM_HALF_X = 16.0            # = TORSO_HALF_X: beyond the torso is the arm
 HIP_Z = (62.0, 80.0)             # same span as BUTT_Z but NOT rear-gated
 THIGH_Z = (45.0, 62.0)
 KNEE_Z = (36.0, 45.0)

@@ -69,6 +69,7 @@ from pyn import pynifly                                                  # noqa:
 # and a test refuses any script that hardcodes its own.
 from src.body_zones import (ARMHOLE_Z, ARMHOLE_HALF_X, SIDE_Z,           # noqa: E402
                             SIDE_HALF_X, UNDER_BUST_Z, BREAST_Z, FRONT_Y,
+                            FOREARM_Z, FOREARM_HALF_X,
                             HIP_Z, THIGH_Z, KNEE_Z, CALF_Z)
 
 MIN_BODY_MOVE = 0.25        # u -- below this the covered body point barely moves
@@ -95,6 +96,8 @@ BANDS = {
                     "sprint"]),
     "bust":       (lambda v: _z(v, BREAST_Z) & (v[:, 1] > 0.0),
                    ["spine fwd lean", "spine twist", "bow draw", "sprint"]),
+    "forearm":    (lambda v: _z(v, FOREARM_Z) & _lateral(v, FOREARM_HALF_X),
+                   ["arms crossed", "bow draw", "arms down", "sprint"]),
     "hip":        (lambda v: _z(v, HIP_Z),
                    ["stride", "deep stride", "crouch", "walk + lean", "sprint"]),
     "thigh":      (lambda v: _z(v, THIGH_Z),
