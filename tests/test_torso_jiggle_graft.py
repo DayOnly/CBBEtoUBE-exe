@@ -241,13 +241,34 @@ def test_write_never_empties_an_existing_bone():
     the same guard the leg pass carries."""
     import inspect
     src = inspect.getsource(nc._transfer_body_jiggle_to_fitted)
-    i = src.index("for bn in touched:")
+    i = src.index("for bn in sorted(touched):")
     body = src[i:src.index("s.setShapeWeights(bn, pairs)", i)]
     assert "if not pairs and bn in existing:" in body
     assert "continue" in body, (
         "the guard must SKIP the write, leaving the bone as it was -- not write "
         "an empty weight list")
     assert "#zeroweight-bone-desync" in body
+
+
+def test_weight_write_order_is_deterministic():
+    """#deterministic-weight-write. `touched` is a SET of bone names, so
+    iterating it directly made the WRITE ORDER depend on PYTHONHASHSEED -- and
+    write order decides which influence survives when a row still overflows the
+    4-slot limit at save time.
+
+    Measured before the fix on a vanilla light cuirass: ONE vertex kept
+    `HideSkirt 6_01` at seed 0 and `HideSkirt 5_01` at seed 2 (near-tied at
+    0.037872 / 0.038025), moving that bone's weight total by 0.038. That made
+    the golden harness flag the piece on roughly half of all runs, and a gate
+    that cries wolf gets ignored -- so a 0.2% wobble cost far more than its
+    size. Bisected to this pass with CBBE2UBE_NO_JIGGLE_TRANSFER.
+    """
+    import inspect
+    src = inspect.getsource(nc._transfer_body_jiggle_to_fitted)
+    assert "for bn in sorted(touched):" in src
+    assert "for bn in touched:" not in src, (
+        "iterating the bone-name set directly reintroduces hash-seed-dependent "
+        "write order")
 
 
 def test_new_bone_emit_gate_still_present():

@@ -7340,7 +7340,7 @@ def _conform_weights_core(nf, dst_path, weight,
         if conf:
             dirty = True
             total += conf
-            for bn in touched:
+            for bn in sorted(touched):     # sorted: see #deterministic-weight-write
                 # setShapeWeights MERGES per vert (omitted verts KEEP their old
                 # value; explicit 0.0 removes) -- the old comment here claimed a
                 # full rebuild applied removals, which is false under merge
@@ -8434,7 +8434,7 @@ def _match_rigid_leg_bend_to_body(dst_path, biped_slots: int = 0,
         # reported as "the fix is written but not enabled" -- wrong both times. A
         # comment that disagrees with its own flag is worse than no comment.
         if not WEIGHT_INVARIANT_ENABLED:
-            for bn in touched:
+            for bn in sorted(touched):     # sorted: see #deterministic-weight-write
                 s.setShapeWeights(bn, [(i, vw[i][bn]) for i in range(n)
                                        if bn in vw[i] and vw[i][bn] > 1e-4])
             for eb, st in saved_stb.items():
@@ -9199,7 +9199,16 @@ def _transfer_body_jiggle_to_fitted(dst_path, biped_slots: int = 0) -> int:
         touched: set = set()
         for i in range(n):
             touched |= set(vw[i])
-        for bn in touched:
+        # SORTED, and it is not cosmetic. Iterating the set directly made the
+        # WRITE ORDER depend on PYTHONHASHSEED, and write order decides which
+        # influence survives when a row still overflows the 4-slot limit at save
+        # time. Measured on a vanilla light cuirass: ONE vertex (694) kept
+        # `HideSkirt 6_01` at seed 0 and `HideSkirt 5_01` at seed 2 -- the two
+        # are near-tied at 0.037872 / 0.038025 -- which moved that bone's weight
+        # total by 0.038 and made the golden harness flag the piece on roughly
+        # half of all runs. A gate that cries wolf gets ignored, so this was
+        # costing more than the 0.2% it moved.  #deterministic-weight-write
+        for bn in sorted(touched):
             pairs = [(i, vw[i][bn]) for i in range(n)
                      if bn in vw[i] and vw[i][bn] > 1e-4]
             if not pairs and bn in existing:
