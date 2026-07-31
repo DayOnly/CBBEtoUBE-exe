@@ -68,6 +68,43 @@ def test_pass_is_wired_into_both_convert_paths():
     assert src.count("_match_leg_motion_to_body(dst_path") >= 2
 
 
+def test_row_gate_has_a_body_bone_fallback_when_no_BaseShape_is_injected():
+    """Without this, the row gate rejects EVERY row on 26 of 150 sampled
+    pieces and both the arm and spine passes silently do nothing there.
+
+    `ube_bones` is read off the injected BaseShape. 110 of 150 converted
+    outputs have none -- every boot and gauntlet among them -- and 26 of those
+    also carry a physics XML, which is the combination that makes the gate
+    fire at all. With an empty body-bone set EVERY bone reads foreign, so
+    `foreign <= 1e-4` is false for every vert and nothing is written. A
+    silent no-op, indistinguishable in the logs from a clean run.
+    """
+    src = inspect.getsource(nc._match_limb_motion_to_body)
+    assert "if not ube_bones:" in src
+    assert "_body_bones" in src
+    # and it must be populated BEFORE the per-shape loop consults it
+    fallback = src.index("if not ube_bones:")
+    gate = src.index("_row_gate = False")
+    assert fallback < gate, (
+        "the body-bone fallback must run before the row gate reads it")
+
+
+def test_empty_body_bone_set_would_reject_every_row():
+    """The arithmetic behind the test above, so the reason survives a refactor.
+
+    Any bone not in the body set counts as foreign; with no body set, foreign
+    weight equals the vert's whole (normalised) weight, which is 1.0 -- never
+    <= 1e-4. This is why the fallback is load-bearing and not defensive."""
+    shape_bones = ["NPC Spine2 [Spn2]", "NPC L Clavicle [LClv]"]
+    G = np.array([[0.6, 0.4], [0.5, 0.5]])
+    for body_bones, expect_any in ((set(), False), (set(shape_bones), True)):
+        foreign = np.zeros(len(G))
+        for j, b in enumerate(shape_bones):
+            if b not in body_bones:
+                foreign += G[:, j]
+        assert bool((foreign <= 1e-4).any()) is expect_any
+
+
 def test_leg_pass_uses_the_per_row_smp_fallback():
     """#smp-row-gate. The shape-level SMP heuristic fires on the main garment of
     pieces that carry a generated physics XML, and this pass then did nothing at

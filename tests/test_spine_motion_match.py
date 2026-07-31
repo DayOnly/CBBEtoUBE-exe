@@ -101,6 +101,35 @@ def test_uses_the_per_row_smp_fallback():
     assert "smp_row_gate=True" in src
 
 
+def test_full_pass_order_is_leg_then_spine_then_arm():
+    """All THREE, not just the pair that was measured.
+
+    The bands overlap pairwise -- leg x spine at z 72-80, spine x arm at
+    z 84-120 -- and every family match rescales the bones it does not manage,
+    so the later pass wins the shared rows. Only spine-vs-arm was measured
+    (spine last costs the armhole 1.106 -> 1.076); leg-vs-spine was measured
+    NEUTRAL on the probe piece but is unguarded, and "neutral on one piece" is
+    not "safe by construction". Pinning the whole order means a reordering has
+    to be a deliberate, measured decision rather than an accident of where
+    someone pasted a call.
+    """
+    src = inspect.getsource(nc)
+    calls = {
+        "leg": "_match_leg_motion_to_body(dst_path, biped_slots)",
+        "spine": "_match_spine_motion_to_body(dst_path, biped_slots)",
+        "arm": "_match_arm_motion_to_body(dst_path, biped_slots)",
+    }
+    at = {k: [i for i in range(len(src)) if src.startswith(v, i)]
+          for k, v in calls.items()}
+    for k, v in at.items():
+        assert len(v) >= 2, f"{k} is not wired into both convert paths"
+    # one (leg, spine, arm) triple per convert path, in that order
+    for leg, spine, arm in zip(at["leg"], at["spine"], at["arm"]):
+        assert leg < spine < arm, (
+            "pass order must be leg -> spine -> arm in every convert path; "
+            "the last pass to run wins the rows where two bands overlap")
+
+
 def _push_up_target(g_mass, b_mass, strength=1.0):
     return np.maximum(
         np.clip(g_mass + strength * (b_mass - g_mass), 0.0, 1.0), g_mass)
