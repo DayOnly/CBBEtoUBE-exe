@@ -2,6 +2,37 @@
 
 ## 1.2 — unreleased
 
+### Fixed — the torso under-followed every spine bend (under-bust clipping)
+
+The third instance of the same body-rig mismatch, and the cause of the under-bust
+clipping that only appeared in motion. The garment parks its spine mass on the
+wrong vertebra — measured in the under-bust band of a vanilla cuirass, normalised:
+
+    garment   Spine 0.121   Spine1 0.727   Spine2 0.151
+    body      Spine 0.098   Spine1 0.492   Spine2 0.410
+
+`Spine2` sits furthest up the chain and so accumulates the most rotation. Carrying
+0.151 of it against the body's 0.410 makes the garment under-travel every spine
+bend by ~20%, and the skin slides out from under the bust. Like the other two, it
+is invisible at bind pose. All three spine bones are managed together because the
+defect is the split between them, not missing mass.
+
+    under-bust band       follow median      verts below 0.7
+    spine forward lean    0.814 -> 1.099      24.3% -> 0%
+    spine twist           0.793 -> 1.162      24.3% -> 0%
+    spine side bend       0.840 -> 1.016      24.3% -> 0%
+    sprint                0.832 -> 1.091      24.3% -> 0%
+    bust, bow draw (p10)  0.720 -> 1.048
+
+**Pass ordering is now load-bearing.** Every family-scoped match rescales the bones
+it does not manage, so the spine and arm passes contend for rows where their bands
+overlap and whichever runs last wins. Spine runs first: measured, spine-last costs
+the armhole 1.106 → 1.076, while arm-last costs the under-bust nothing, because
+under-bust rows carry no arm-family weight and are skipped anyway. A test asserts
+the ordering per convert path.
+
+`CBBE2UBE_NO_SPINE_MOTION_MATCH=1` disables it.
+
 ### Fixed — the shoulder walked out through the armhole in motion
 
 CBBE and UBE rig the shoulder differently: CBBE's `UpperArm` weight stops at

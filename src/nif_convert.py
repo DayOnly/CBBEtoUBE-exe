@@ -3999,6 +3999,17 @@ def convert_nif(
             _match_leg_motion_to_body(dst_path, biped_slots)
         except Exception:
             pass
+        # Spine-MOTION match: the TORSO instance -- the garment carries its spine
+        # mass on Spine1 where the body uses Spine2, so it under-travels every
+        # spine rotation (#spine-follow). MUST run BEFORE the arm pass: the two
+        # bands overlap, every family match rescales the bones it does not manage,
+        # and whichever runs LAST wins those rows. Measured: spine last costs the
+        # armhole 1.106 -> 1.076, while arm last costs the under-bust nothing,
+        # because under-bust rows carry no arm weight and are skipped anyway.
+        try:
+            _match_spine_motion_to_body(dst_path, biped_slots)
+        except Exception:
+            pass
         # Arm-MOTION match: the same gap at the SHOULDER. CBBE ends UpperArm weight
         # at the armhole and UBE does not, so the shoulder walks out through a
         # source-skin garment that never got the bone (#armhole-arm-follow).
@@ -6331,6 +6342,47 @@ _ARM_MOTION_Z_HI = float(os.environ.get("CBBE2UBE_ARM_MOTION_Z_HI", "125.0"))
 _ARM_MOTION_BONES = ("NPC L Clavicle [LClv]", "NPC R Clavicle [RClv]",
                      "NPC L UpperArm [LUar]", "NPC R UpperArm [RUar]")
 
+# #spine-follow -- the TORSO instance, and the cause of the under-bust follow deficit
+# logged as S3. The rig sweep (CBBE reference body vs UBE body, matched by nearest
+# surface) makes Spine2 the LARGEST disagreement between the two bodies: 6564 verts,
+# mean 0.227, z 80.9-110.7. The reverse direction shows CBBE loading `Spine1` where
+# UBE does not, so this is a SPLIT problem across the three spine bones, not missing
+# mass -- exactly the shape of the Clavicle-vs-UpperArm defect.
+#
+# Measured in the under-bust band (z 84-90, front) of a vanilla cuirass, normalised
+# spine split:
+#     garment   Spine 0.121   Spine1 0.727   Spine2 0.151
+#     body      Spine 0.098   Spine1 0.492   Spine2 0.410
+# Spine2 is furthest up the chain so it accumulates the most rotation; the garment
+# parks its mass on Spine1 and carries 0.151 of the motion-heaviest bone against the
+# body's 0.410. That is the ~20% under-follow, and it is invisible at bind pose.
+#
+# ORDER IS LOAD-BEARING: this pass runs BEFORE the arm pass. Every family-scoped
+# match rescales the bones it does not manage, so two passes over overlapping bands
+# fight, and whichever runs LAST wins. Measured on the same piece: spine running
+# last drags the armhole from 1.106 back to 1.076. The arm pass cannot do the
+# reverse harm, because under-bust rows carry no arm-family weight at all and are
+# skipped by the `g_mass > 1e-6` test. So spine first, arm second.
+# Holding the already-matched families at their absolute weights instead was
+# MEASURED AND REJECTED -- it reached only 437 of 1177 rows, left the under-bust at
+# 0.948 instead of 1.099, and pushed the armhole into over-follow (median 1.34,
+# verts below 0.5 up from 3.8% to 5.1%). Do not re-attempt it.
+# Default ON; CBBE2UBE_NO_SPINE_MOTION_MATCH=1 off.
+MATCH_SPINE_MOTION = (
+    os.environ.get("CBBE2UBE_NO_SPINE_MOTION_MATCH", "").strip().lower()
+    not in ("1", "true", "yes", "on"))
+_SPINE_MOTION_STRENGTH = float(
+    os.environ.get("CBBE2UBE_SPINE_MOTION_STRENGTH", "1.0"))
+_SPINE_MOTION_MAX_DIST = float(
+    os.environ.get("CBBE2UBE_SPINE_MOTION_MAX_DIST", "5.0"))
+# Covers the measured mismatch (z 80.9-110.7) with margin at the waist end, where
+# the garment over-weights Spine1 against the body's Spine/Spine2.
+_SPINE_MOTION_Z_LO = float(os.environ.get("CBBE2UBE_SPINE_MOTION_Z_LO", "72.0"))
+_SPINE_MOTION_Z_HI = float(os.environ.get("CBBE2UBE_SPINE_MOTION_Z_HI", "120.0"))
+# All three managed together: the defect is the SPLIT between them.
+_SPINE_MOTION_BONES = ("NPC Spine [Spn0]", "NPC Spine1 [Spn1]",
+                       "NPC Spine2 [Spn2]")
+
 # #chain-skirt-physics. Generating soft-body physics for a shadowed chain-driven
 # skirt (see #shadowed-chain-skirt) is OFF by default: shipped ON once and a
 # common-clothes dress's skirt COLLAPSED in game. Everything structural checked out
@@ -8503,6 +8555,23 @@ def _match_arm_motion_to_body(dst_path, biped_slots: int = 0) -> int:
         # combination that makes every gated pass a silent no-op, including the
         # LEG pass. Not "most pieces", but 9% of the pack getting nothing from a
         # pass that is supposed to be default-ON is worth the row-level fallback.
+        smp_row_gate=True)
+
+
+def _match_spine_motion_to_body(dst_path, biped_slots: int = 0) -> int:
+    """SPINE instance of the limb-motion match  (#spine-follow).
+
+    The torso case, and the cause of the under-bust follow deficit (S3): the
+    garment carries its spine mass on Spine1 where the body uses Spine2, so it
+    under-travels every spine rotation by ~20%. See _SPINE_MOTION_BONES for the
+    measurements and for why this runs BEFORE the arm pass.
+    """
+    if not MATCH_SPINE_MOTION:
+        return 0
+    return _match_limb_motion_to_body(
+        dst_path, biped_slots, family="spine", bones=_SPINE_MOTION_BONES,
+        z_lo=_SPINE_MOTION_Z_LO, z_hi=_SPINE_MOTION_Z_HI,
+        max_dist=_SPINE_MOTION_MAX_DIST, strength=_SPINE_MOTION_STRENGTH,
         smp_row_gate=True)
 
 
@@ -17087,6 +17156,15 @@ def convert_nif_phase2(
     # source-skin garment still under-travels the leg under hip flexion (#leg-motion-match).
     try:
         _match_leg_motion_to_body(dst_path, biped_slots)
+    except Exception:
+        pass
+    # Spine-MOTION match: the TORSO instance -- the garment carries its spine mass
+    # on Spine1 where the body uses Spine2, so it under-travels every spine
+    # rotation (#spine-follow). MUST run BEFORE the arm pass -- see the note at
+    # _SPINE_MOTION_BONES; whichever family match runs last wins the rows where
+    # the two bands overlap.
+    try:
+        _match_spine_motion_to_body(dst_path, biped_slots)
     except Exception:
         pass
     # Arm-MOTION match: the same gap at the SHOULDER. CBBE ends UpperArm weight
