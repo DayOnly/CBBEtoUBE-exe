@@ -1675,7 +1675,7 @@ def auto_convert_mod(
             from pyn import pynifly  # type: ignore
             from . import nif_convert as _nc  # for _hide_virtual_body
 
-            for dst in planned_output_nifs:
+            for dst in sorted(planned_output_nifs):  # sorted: #deterministic-set-iteration
                 if not dst.is_file():
                     # Conversion produced nothing (already recorded); not a load failure.
                     continue

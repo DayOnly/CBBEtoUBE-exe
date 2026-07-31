@@ -1971,7 +1971,7 @@ def generate_ube_patch(
         # to source space (to look up our new ARMA FormID).
         lookup_in_master_space = set()
         master_to_src_fid: dict[int, int] = {}
-        for src_fid in converted_arma_src_fids:
+        for src_fid in sorted(converted_arma_src_fids):  # sorted: #deterministic-set-iteration
             if ((src_fid >> 24) & 0xFF) == master_byte_in_src:
                 master_space_fid = (master_own_byte << 24) | (src_fid & 0xFFFFFF)
                 lookup_in_master_space.add(master_space_fid)

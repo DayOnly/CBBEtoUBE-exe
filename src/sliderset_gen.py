@@ -364,7 +364,7 @@ def generate_armor_tri(
             for Bn in dense:
                 all_sliders |= set(dense[Bn])
             new_morphs = []
-            for sl in all_sliders:
+            for sl in sorted(all_sliders):  # sorted: #deterministic-set-iteration
                 base_arr = own_dense.get(sl)
                 arr = (base_arr.copy() if base_arr is not None
                        else np.zeros((len(av), 3), dtype=np.float64))

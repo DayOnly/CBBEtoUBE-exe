@@ -5946,7 +5946,7 @@ def _strip_genital_weights_map(weights_map):
     # gives it its nearest weighted vert's bones -- which DO have valid STBs.
     has_pelvis = PELVIS in weights_map
     norm: "dict" = {}         # affected vert -> {bone: renormalized w}
-    for v in affected:
+    for v in sorted(affected):  # sorted: #deterministic-set-iteration
         rest = other.get(v) or {}
         s = sum(rest.values())
         if s > 1e-6:
@@ -5957,10 +5957,10 @@ def _strip_genital_weights_map(weights_map):
             norm[v] = {}      # left for _fill_zero_weight_verts (no-STB spike guard)
     out: "dict" = {}
     _bones_iter = (set(weights_map) - gset) | ({PELVIS} if has_pelvis else set())
-    for bn in _bones_iter:
+    for bn in sorted(_bones_iter):  # sorted: #deterministic-set-iteration
         pairs = [(int(i), float(w)) for i, w in weights_map.get(bn, [])
                  if int(i) not in affected]
-        for v in affected:
+        for v in sorted(affected):  # sorted: #deterministic-set-iteration
             nw = norm[v].get(bn)
             if nw and nw > 0.0:
                 pairs.append((v, nw))
@@ -6085,7 +6085,7 @@ def _strip_jiggle_weights_map(weights_map, src_bones=None, force=False):
     # zero-weight for _fill_zero_weight_verts to reassign to a valid-STB bone.
     has_pelvis = PELVIS in weights_map
     norm: "dict" = {}
-    for v in affected:
+    for v in sorted(affected):  # sorted: #deterministic-set-iteration
         rest = other.get(v) or {}
         s = sum(rest.values())
         if s > 1e-6:
@@ -6098,7 +6098,7 @@ def _strip_jiggle_weights_map(weights_map, src_bones=None, force=False):
     for bn in (set(weights_map) - jset) | ({PELVIS} if has_pelvis else set()):
         pairs = [(int(i), float(w)) for i, w in weights_map.get(bn, [])
                  if int(i) not in affected]
-        for v in affected:
+        for v in sorted(affected):  # sorted: #deterministic-set-iteration
             nw = norm[v].get(bn)
             if nw and nw > 0.0:
                 pairs.append((v, nw))
@@ -6506,8 +6506,16 @@ def _cap_and_renormalise_rows(vw, n, writable, rows=None) -> None:
         live = {b: w for b, w in vw[i].items()
                 if b in writable and w > _WRITE_MIN}
         if len(live) > _SKIN_MAX_INFLUENCES:
-            keep = set(sorted(live, key=live.get,
-                              reverse=True)[:_SKIN_MAX_INFLUENCES])
+            # TOTAL ORDER, not weight alone. `sorted` is stable, so EQUAL weights
+            # fell back to `live`'s insertion order -- which traces back through
+            # `vw` to sets iterated upstream, making the survivor depend on
+            # PYTHONHASHSEED. Symmetric bones tie EXACTLY: measured on a fitted
+            # dress, `L Breast02` and `R Breast02` both 0.003428 on vertex 6816,
+            # and which survived flipped between seeds. Breaking the tie on the
+            # bone NAME settles the whole class here instead of chasing every
+            # producer that feeds `vw`.  #deterministic-set-iteration
+            keep = set(sorted(live, key=lambda b: (-live[b], b))
+                       [:_SKIN_MAX_INFLUENCES])
             for b in list(vw[i]):
                 if b in writable and b not in keep:
                     vw[i][b] = 0.0
@@ -9782,7 +9790,7 @@ def _precreate_custom_bone_chains(dst_nif, src_nif, bone_names) -> int:
     # transforms + parent links. HDT-SMP walks the NIF hierarchy to build its
     # kinematic chain; a flat anchor breaks that even if every bone has the
     # correct global position.
-    for a in anchors:
+    for a in sorted(anchors):  # sorted: #deterministic-set-iteration
         # Per-anchor, not per-file: an arm-anchored chain must keep its parent
         # link so it follows the limb, while a pelvis-anchored chain in the SAME
         # nif keeps flat behaviour unchanged. See _ARM_ANCHOR_KEYWORDS.
@@ -12156,7 +12164,7 @@ def _close_pubic_holes(
 
     # Build boundary-vert adjacency.
     adj: "dict[int, set[int]]" = defaultdict(set)
-    for a, b in boundary_edges:
+    for a, b in sorted(boundary_edges):  # sorted: #deterministic-set-iteration
         adj[a].add(b)
         adj[b].add(a)
 
