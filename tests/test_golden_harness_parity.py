@@ -94,6 +94,23 @@ def test_flag_guard_still_present():
     assert "FLAG SET DIFFERS" in src
 
 
+def test_harness_controls_are_not_recorded_as_converter_flags():
+    """A control that cannot be exercised is not a control.
+
+    `_flags` records every CBBE2UBE_* var and `check` refuses across a
+    different set. CBBE2UBE_GOLDEN_NO_PIN is a knob for THIS SCRIPT, not for
+    converter behaviour, so leaving it in meant using the escape hatch made
+    `check` refuse with FLAG SET DIFFERS -- and three refusals in a row read
+    exactly like three identical clean runs. That false result was very
+    nearly reported as proof the converter was deterministic.
+    """
+    src = _text()
+    i = src.index("def _flags(")
+    body = src[i:src.index("\ndef ", i + 10)]
+    assert '"GOLDEN_"' in body or "'GOLDEN_'" in body, (
+        "harness-only controls must be excluded from the recorded flag set")
+
+
 def test_git_head_never_raises():
     """A dev tool must not die because git is missing or the repo is a tarball;
     it degrades to '?' and the check still runs."""

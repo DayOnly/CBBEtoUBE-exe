@@ -154,7 +154,13 @@ def _file_sig(p: Path) -> str:
 
 
 def _flags() -> dict:
-    skip = ("MO2_INI", "MODS_ROOT", "GAME_DATA", "CONFIG", "OUT_MOD", "NO_PAUSE")
+    # GOLDEN_* are controls for THIS HARNESS, not converter behaviour. Leaving
+    # them in made the escape hatch unusable: setting CBBE2UBE_GOLDEN_NO_PIN=1
+    # changed the recorded flag set, so `check` refused with "FLAG SET DIFFERS"
+    # -- and three such refusals in a row look exactly like three identical
+    # clean runs. A control that cannot be exercised is not a control.
+    skip = ("MO2_INI", "MODS_ROOT", "GAME_DATA", "CONFIG", "OUT_MOD",
+            "NO_PAUSE", "GOLDEN_")
     return {k: v for k, v in sorted(os.environ.items())
             if k.startswith("CBBE2UBE_") and str(v).strip()
             and not any(s in k for s in skip)}
