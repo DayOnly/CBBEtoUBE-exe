@@ -169,3 +169,29 @@ def test_pass_failure_recorder_never_raises():
     nc._note_pass_failure("probe", ValueError("x"), dst=None)
     nc._note_pass_failure("probe", ValueError("x"), dst=object())   # bad dst
     assert any(k.startswith("probe") for k in nc.pass_failure_summary())
+
+
+def test_pass_failures_travel_home_in_ConvertResult_reason():
+    """The batch runs on ProcessPoolExecutor, so a worker's module state and its
+    stderr NEVER reach the parent -- the frozen exe discards pool-worker output
+    outright. `reason` is the only channel that survives the boundary, and
+    auto_convert already writes it into the report and the failures file.
+
+    Verified end-to-end by breaking a pass inside a real worker process: the
+    parent's pass_failure_summary() came back EMPTY (as it must) while
+    ConvertResult.reason carried `PASS FAILED _match_arm_motion_to_body`.
+    """
+    src = inspect.getsource(nc)
+    assert "_begin_piece_pass_log()" in src
+    assert "_piece_pass_failures()" in src
+    # both result assemblies -- the copy path and the body-swap path
+    assert src.count("_piece_pass_failures()") >= 3, (
+        "every ConvertResult path must carry pass failures home")
+
+
+def test_piece_log_is_reset_at_the_single_entry_point_only():
+    """phase 2 is reached THROUGH convert_nif, so resetting in both would throw
+    away everything phase 1 recorded."""
+    src = inspect.getsource(nc)
+    assert src.count("_begin_piece_pass_log()") == 2, (
+        "expected exactly one definition and one call site")

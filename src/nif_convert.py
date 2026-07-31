@@ -2518,6 +2518,15 @@ def _weight_matched_ube_ref(src_path: Path, ube_body_ref_path: Path) -> Path:
 # `_note_pass_failure` records the failure and prints it once per (pass, piece).
 # Grep the build log for `PASS FAILED` before believing any measurement.
 _PASS_FAILURES: "dict[str, int]" = {}
+# Per-conversion, because the process-wide dict above CANNOT reach the caller:
+# the batch runs on ProcessPoolExecutor, so every worker has its OWN module
+# instance and the parent's copy stays empty no matter how many passes failed.
+# stderr is no better -- the frozen exe discards pool-worker output, a
+# documented trap here ("clean log =/= clean run"). The only channel that
+# survives the worker boundary is the returned ConvertResult, so failures ride
+# home in `reason`, which auto_convert already writes into the report and the
+# failures file.
+_PASS_FAILURES_THIS_PIECE: "list[str]" = []
 
 
 def _note_pass_failure(label: str, exc: BaseException, dst=None) -> None:
@@ -2527,6 +2536,9 @@ def _note_pass_failure(label: str, exc: BaseException, dst=None) -> None:
     try:
         key = f"{label}: {type(exc).__name__}"
         _PASS_FAILURES[key] = _PASS_FAILURES.get(key, 0) + 1
+        entry = f"PASS FAILED {label} ({type(exc).__name__}: {exc})"
+        if entry not in _PASS_FAILURES_THIS_PIECE:
+            _PASS_FAILURES_THIS_PIECE.append(entry)
         if _PASS_FAILURES[key] <= 3:      # once per kind, not per piece
             where = f" on {Path(dst).name}" if dst else ""
             print(f"  PASS FAILED: {label}{where} -- {exc!r}", file=sys.stderr)
@@ -2534,8 +2546,21 @@ def _note_pass_failure(label: str, exc: BaseException, dst=None) -> None:
         pass
 
 
+def _begin_piece_pass_log() -> None:
+    """Reset the per-conversion list. Called at the ONE entry point
+    (`convert_nif`) -- phase 2 is reached THROUGH it, so resetting there as well
+    would discard everything phase 1 recorded."""
+    del _PASS_FAILURES_THIS_PIECE[:]
+
+
+def _piece_pass_failures() -> "list[str]":
+    return list(_PASS_FAILURES_THIS_PIECE)
+
+
 def pass_failure_summary() -> "dict[str, int]":
-    """{`pass: ExcType` -> count} for the conversion report."""
+    """{`pass: ExcType` -> count} for THIS PROCESS. Meaningful for an in-process
+    convert; for the BATCH read ConvertResult.reason instead -- a worker's copy
+    of this dict never reaches the parent."""
     return dict(_PASS_FAILURES)
 
 
@@ -3062,6 +3087,9 @@ def convert_nif(
     """
     src_path = Path(src_path)
     dst_path = Path(dst_path)
+    # Per-piece pass-failure log. THE one entry point, so phase 2 (reached
+    # through this function) accumulates into the same list.
+    _begin_piece_pass_log()
     # Bound the HDT-XML memo to ONE armor. Its entries are also mtime-keyed, but a
     # per-armor clear means a stale collider set can never survive into a different
     # piece even if both bounds were somehow wrong at once. See
@@ -4106,6 +4134,11 @@ def convert_nif(
                     reason_parts.append("heel transplant unsafe — used original mesh")
                 except OSError:
                     pass
+
+        # A pass that RAISED must reach the caller. The parent process cannot
+        # see this worker's module state or its stderr, so `reason` is the only
+        # channel -- see _PASS_FAILURES_THIS_PIECE.
+        reason_parts.extend(_piece_pass_failures())
 
         return ConvertResult(
             src_path=src_path,
@@ -5244,8 +5277,8 @@ def sanitize_output_vertex_color_flags(meshes_root, workers: "int | None" = None
                     atomic_nif_save(nif._backing, ps)
                     fc += 1
                     sf += n
-                except Exception:
-                    pass
+                except Exception as _pe:
+                    _note_pass_failure("atomic_nif_save", _pe)
         return fc, sf
 
     # Serial for small batches / single worker — pool spawn (esp. frozen-exe
@@ -7267,8 +7300,8 @@ def _conform_fitted_to_body(dst_path, src_path=None, biped_slots: int = 0) -> in
         if not ok and dirty:
             try:
                 atomic_nif_save(nf, dst_path)
-            except Exception:
-                pass
+            except Exception as _pe:
+                _note_pass_failure("atomic_nif_save", _pe)
     elif dirty:
         _hide_virtual_body(nf)
         try:
@@ -8421,8 +8454,8 @@ def _match_rigid_leg_bend_to_body(dst_path, biped_slots: int = 0,
                 for b in to_add:
                     try:
                         s.add_bone(b)
-                    except Exception:
-                        pass
+                    except Exception as _pe:
+                        _note_pass_failure("add_bone", _pe)
         unsafe = need - set(existing) - set(to_add)
         if unsafe:
             # Detail bone we couldn't anchor: fold its weight back into the anchor the
@@ -8480,13 +8513,13 @@ def _match_rigid_leg_bend_to_body(dst_path, biped_slots: int = 0,
             for eb, st in saved_stb.items():
                 try:
                     s.set_skin_to_bone_xform(eb, st)
-                except Exception:
-                    pass
+                except Exception as _pe:
+                    _note_pass_failure("set_skin_to_bone_xform", _pe)
             for b in to_add:
                 try:
                     s.set_skin_to_bone_xform(b, graft_stb[b])
-                except Exception:
-                    pass
+                except Exception as _pe:
+                    _note_pass_failure("set_skin_to_bone_xform", _pe)
             continue
         _writable = set(existing) | set(to_add)
         # RE-CAP over the FINAL palette. The pre-`to_add` pass above already capped
@@ -8540,13 +8573,13 @@ def _match_rigid_leg_bend_to_body(dst_path, biped_slots: int = 0,
         for eb, st in saved_stb.items():
             try:
                 s.set_skin_to_bone_xform(eb, st)
-            except Exception:
-                pass
+            except Exception as _pe:
+                _note_pass_failure("set_skin_to_bone_xform", _pe)
         for b in to_add:
             try:
                 s.set_skin_to_bone_xform(b, graft_stb[b])
-            except Exception:
-                pass
+            except Exception as _pe:
+                _note_pass_failure("set_skin_to_bone_xform", _pe)
     if dirty:
         # A re-save must never silently un-hide an SMP collision proxy.
         _hide_virtual_body(nf)
@@ -8954,8 +8987,8 @@ def _match_limb_motion_to_body(dst_path, biped_slots: int = 0, *,
                 for b, st in saved_stb.items():
                     try:
                         s.set_skin_to_bone_xform(b, st)
-                    except Exception:
-                        pass
+                    except Exception as _pe:
+                        _note_pass_failure("set_skin_to_bone_xform", _pe)
                 print(f"  WARN: {family}-motion weight write failed mid-shape on "
                       f"{s.name!r} ({_we!r}) -- STBs restored, shape left "
                       f"partially matched", file=sys.stderr)
@@ -8963,8 +8996,8 @@ def _match_limb_motion_to_body(dst_path, biped_slots: int = 0, *,
             for b, st in saved_stb.items():
                 try:
                     s.set_skin_to_bone_xform(b, st)
-                except Exception:
-                    pass
+                except Exception as _pe:
+                    _note_pass_failure("set_skin_to_bone_xform", _pe)
             total += len(rows)
             dirty = True
         except Exception:
@@ -9204,21 +9237,21 @@ def _transfer_body_jiggle_to_fitted(dst_path, biped_slots: int = 0) -> int:
             for eb, st in saved_stb.items():
                 try:
                     s.set_skin_to_bone_xform(eb, st)
-                except Exception:
-                    pass
+                except Exception as _pe:
+                    _note_pass_failure("set_skin_to_bone_xform", _pe)
 
         for jb, _stb in addable:
             try:
                 s.add_bone(jb)
-            except Exception:
-                pass
+            except Exception as _pe:
+                _note_pass_failure("add_bone", _pe)
         safe: set = set()
         for jb, stb in addable:
             try:
                 s.set_skin_to_bone_xform(jb, stb)
                 safe.add(jb)
-            except Exception:
-                pass
+            except Exception as _pe:
+                _note_pass_failure("set_skin_to_bone_xform", _pe)
         unsafe = set(new_bones) - safe
         if unsafe:
             for i in range(n):
@@ -9269,8 +9302,8 @@ def _transfer_body_jiggle_to_fitted(dst_path, biped_slots: int = 0) -> int:
             if jb in safe:
                 try:
                     s.set_skin_to_bone_xform(jb, stb)
-                except Exception:
-                    pass
+                except Exception as _pe:
+                    _note_pass_failure("set_skin_to_bone_xform", _pe)
         dirty = True
         total += graft
     if dirty:
@@ -17232,6 +17265,13 @@ def convert_nif_phase2(
     if val_warnings:
         joined = "; ".join(val_warnings)
         result_reason = (result_reason + "; " if result_reason else "") + joined
+    # A pass that RAISED must reach the caller. The parent process cannot see
+    # this worker's module state or its stderr, so `reason` is the only channel
+    # -- see _PASS_FAILURES_THIS_PIECE.
+    _pf = _piece_pass_failures()
+    if _pf:
+        result_reason = ((result_reason + "; " if result_reason else "")
+                         + "; ".join(_pf))
 
     return ConvertResult(
         src_path=src_path, dst_path=dst_path,

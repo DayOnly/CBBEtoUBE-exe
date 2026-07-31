@@ -228,6 +228,37 @@ def _convert(sub: str, stem: str, slots: int, out_root: Path):
     return src, dst
 
 
+def _sidecar_digests(nif_path: Path) -> dict:
+    """{filename -> sha256} for the non-NIF artifacts a conversion emits.
+
+    Golden compared NIF geometry and weights ONLY, so a defect living in the
+    generated .tri or .xml was invisible to it BY CONSTRUCTION -- and one was:
+    a set-iteration leak reordered the morphs inside a .tri, same morph set,
+    different order. Harmless in game (the engine matches by name) and
+    therefore permanent, because nothing would ever flag it.
+
+    Byte digests are right here: unlike vertices there is no float wobble to
+    tolerate, and ORDER is exactly what needs pinning.
+    """
+    import hashlib
+    out = {}
+    stem = nif_path.stem
+    for suf in ("_0", "_1"):
+        if stem.endswith(suf):
+            stem = stem[: -len(suf)]
+            break
+    for f in sorted(nif_path.parent.iterdir()):
+        if not f.is_file() or f.suffix.lower() == ".nif":
+            continue
+        if not f.name.lower().startswith(stem.lower()):
+            continue
+        try:
+            out[f.name] = hashlib.sha256(f.read_bytes()).hexdigest()[:32]
+        except OSError:
+            out[f.name] = "?"
+    return out
+
+
 def _fingerprint(nif_path: Path) -> dict:
     """Per-shape verts + a weight fingerprint, in a form that supports MAGNITUDE diffs."""
     nf = pynifly.NifFile(filepath=str(nif_path))
@@ -278,6 +309,7 @@ def capture() -> int:
             if "mods" in src.parts else "?",
             "source_sig": _file_sig(src),
             "shapes": {n: int(len(d["verts"])) for n, d in fp.items()},
+            "sidecars": _sidecar_digests(dst),
         }
         ok += 1
         print(f"  captured {label:<20} {len(fp)} shape(s), "
@@ -342,6 +374,22 @@ def check(tol: float) -> int:
         cur = _fingerprint(dst)
         names = sorted({k.split("::")[0] for k in g.files})
         worst = []
+        # SIDECARS (.tri, .xml) -- byte-compared. Golden used to look at NIF
+        # geometry and weights only, so a defect living in a generated .tri was
+        # invisible to it BY CONSTRUCTION, and one was: a set-iteration leak
+        # reordered the morphs. A baseline captured before this records nothing,
+        # so treat a missing key as "not covered yet" rather than a regression.
+        _base_side = rec.get("sidecars")
+        if _base_side is not None:
+            _now_side = _sidecar_digests(dst)
+            for fn in sorted(set(_base_side) | set(_now_side)):
+                was, now = _base_side.get(fn), _now_side.get(fn)
+                if was is None:
+                    worst.append(f"sidecar ADDED: {fn}")
+                elif now is None:
+                    worst.append(f"sidecar MISSING: {fn}")
+                elif was != now:
+                    worst.append(f"sidecar CHANGED: {fn}")
         for n in names:
             if n not in cur:
                 worst.append(f"shape MISSING: {n}")
