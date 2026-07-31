@@ -1,5 +1,29 @@
 # Changelog
 
+## 1.2.5 - unreleased
+
+### Fixed - the converter was not deterministic across processes
+
+Iterating a set of strings orders by hash, which varies per process, and that
+order reached the output three ways: the order `setShapeWeights` was called
+(deciding which influence survived an overflowing row), the morph order inside
+a generated .tri, and the 4-influence cap's tie-break on exactly-equal weights
+(symmetric bones tie). Same input now produces the same bytes: verified across
+PYTHONHASHSEED 0, 2, 5 and 7 over all 46 emitted artifacts.
+
+### Fixed - a fit pass that raised was indistinguishable from one that did nothing
+
+Every fit pass runs inside a catch so one bad piece cannot abort a 4000-piece
+batch. The catch was silent, so a pass that threw simply vanished -- which had
+already cost three wrong verdicts. Failures are now recorded and travel back to
+the caller in the conversion report; grep it for PASS FAILED. Swallowed mesh
+SAVES report the same way.
+
+### Faster - skeleton bone resolution
+
+The normalised skeleton bone set was rebuilt on every membership test
+(1.9M redundant calls over five pieces). Cached; about 5-6%, output identical.
+
 ## 1.2 — unreleased
 
 ### Fixed — fitted pieces shipped standing off the body
