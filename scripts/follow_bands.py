@@ -64,32 +64,44 @@ from posed_clip_test import (build_pose, read_skin, bone_parents,        # noqa:
                              apply_pose, DEFAULT_SKELETON)
 from pose_set import POSE_SET as POSES                                   # noqa: E402
 from pyn import pynifly                                                  # noqa: E402
+# Anatomy comes from ONE place. Four diagnostic scripts once each re-derived a
+# "breast band" by eye and four were wrong, so the bands live in src.body_zones
+# and a test refuses any script that hardcodes its own.
+from src.body_zones import (ARMHOLE_Z, ARMHOLE_HALF_X, SIDE_Z,           # noqa: E402
+                            SIDE_HALF_X, UNDER_BUST_Z, BREAST_Z, FRONT_Y,
+                            HIP_Z, THIGH_Z, KNEE_Z, CALF_Z)
 
 MIN_BODY_MOVE = 0.25        # u -- below this the covered body point barely moves
 MIN_BAND_VERTS = 20         # fewer than this and the band says nothing
 MIN_BODY_VERTS = 5000       # a real body reference; a garment is far smaller
 
+def _z(v, span):
+    return (v[:, 2] >= span[0]) & (v[:, 2] < span[1])
+
+
+def _lateral(v, half_x):
+    return np.abs(v[:, 0]) >= half_x
+
+
 BANDS = {
-    "armhole":    (lambda v: (v[:, 2] >= 103) & (v[:, 2] <= 118)
-                   & (np.abs(v[:, 0]) >= 7.0),
+    "armhole":    (lambda v: _z(v, ARMHOLE_Z) & _lateral(v, ARMHOLE_HALF_X),
                    ["arms down", "arms forward", "arms crossed", "bow draw",
                     "sprint"]),
-    "side":       (lambda v: (v[:, 2] >= 92) & (v[:, 2] < 103)
-                   & (np.abs(v[:, 0]) >= 8.0),
+    "side":       (lambda v: _z(v, SIDE_Z) & _lateral(v, SIDE_HALF_X),
                    ["arms down", "arms crossed", "spine side bend",
                     "spine twist", "sprint"]),
-    "under-bust": (lambda v: (v[:, 2] >= 84) & (v[:, 2] < 90) & (v[:, 1] > 0.0),
+    "under-bust": (lambda v: _z(v, UNDER_BUST_Z) & (v[:, 1] > 0.0),
                    ["spine fwd lean", "spine side bend", "spine twist",
                     "sprint"]),
-    "bust":       (lambda v: (v[:, 2] >= 90) & (v[:, 2] <= 102) & (v[:, 1] > 0.0),
+    "bust":       (lambda v: _z(v, BREAST_Z) & (v[:, 1] > 0.0),
                    ["spine fwd lean", "spine twist", "bow draw", "sprint"]),
-    "hip":        (lambda v: (v[:, 2] >= 62) & (v[:, 2] <= 80),
+    "hip":        (lambda v: _z(v, HIP_Z),
                    ["stride", "deep stride", "crouch", "walk + lean", "sprint"]),
-    "thigh":      (lambda v: (v[:, 2] >= 45) & (v[:, 2] < 62),
+    "thigh":      (lambda v: _z(v, THIGH_Z),
                    ["stride", "deep stride", "knee bend", "crouch", "sprint"]),
-    "knee":       (lambda v: (v[:, 2] >= 36) & (v[:, 2] < 45),
+    "knee":       (lambda v: _z(v, KNEE_Z),
                    ["stride", "knee bend", "crouch", "sprint"]),
-    "calf":       (lambda v: (v[:, 2] >= 18) & (v[:, 2] < 36),
+    "calf":       (lambda v: _z(v, CALF_Z),
                    ["stride", "knee bend", "crouch", "sprint"]),
 }
 
