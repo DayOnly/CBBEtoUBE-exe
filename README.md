@@ -153,10 +153,6 @@ skinned shapes is baked into the verts):
   count. `BUST_NEIGHBORHOOD_RADIUS` was previously inert: with `k=6` and a
   0.359u body the sample only ever reached 0.673u, so a tip poking *between*
   coarse garment verts was never seen. `CBBE2UBE_NO_BUST_SPACING=1` disables.
-- **Groove-smooth nipple hold** — the groove smoothing is one-sided per vertex,
-  but its *tangential* motion reshapes triangles and drops the interpolated
-  surface over a tip between verts. It is held back over a protrusion, leaving
-  those verts where the conform put them. `CBBE2UBE_NO_GROOVE_HOLD=1` disables.
 - **Groove-smooth authored cap** — the smoothing runs last, so being outward-only
   it could only hand back clearance the conform had just removed. Its outward
   motion is bounded at the authored standoff. `CBBE2UBE_NO_GROOVE_CAP=1` disables.

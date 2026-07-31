@@ -1256,12 +1256,15 @@ GROOVE_SMOOTH_ROUGH = 0.25  # displacement-deviation (u) above which a vert is "
 
 
 GROOVE_ONESIDED = os.environ.get("CBBE2UBE_GROOVE_ONESIDED", "1") != "0"
-# #groove-nipple-hold: hold this smoothing back over a body protrusion. The pass
-# is one-sided per VERTEX, but its TANGENTIAL motion reshapes the triangles and
-# the interpolated SURFACE over a tip between verts drops with them. Full hold at
-# this nipple weight, fading in below it.
-GROOVE_NIPPLE_HOLD = os.environ.get("CBBE2UBE_NO_GROOVE_HOLD") != "1"
-GROOVE_NIPPLE_HOLD_W = 0.25
+# REMOVED 2026-07-31: #groove-nipple-hold held this smoothing back over a body
+# protrusion, and it earned that while it was the only thing protecting the tip.
+# Once #bust-surface-req landed it became actively harmful. Ablation on the piece
+# it was written for, across all 112 installed BodySlide presets:
+#     hold ON    1 preset still poking, nipple clearance +0.220u
+#     hold OFF   0 presets poking,      nipple clearance +0.528u
+# with identical torso fit (0.520u) and IDENTICAL crinkle on every shape.
+# Deleting it cleared the last holdout. Do not re-add without redoing that
+# ablation -- a pass that was load-bearing can stop being so.
 
 
 # --- Authored-standoff cap on the groove smooth (#groove-authored-cap) ----
@@ -1291,8 +1294,7 @@ GROOVE_CAP_FEATHER = 2      # rounds of feathering on the cap's subtraction
 
 def _smooth_warp_grooves(src_world, warped, ube_body_verts,
                          ube_body_normals=None,
-                         src_body_verts=None, src_body_normals=None,
-                         ube_body_nipple=None):
+                         src_body_verts=None, src_body_normals=None):
     """Flatten warp-induced displacement grooves on body-conforming armor.
 
     The per-vert body-delta warp can introduce localized roughness in the
@@ -1339,21 +1341,6 @@ def _smooth_warp_grooves(src_world, warped, ube_body_verts,
             btree = cKDTree(body)
             d2b, nn0 = btree.query(w, k=1)
             active = (d2b < GROOVE_SMOOTH_CLOSE).astype(np.float64)[:, None]
-            # #groove-nipple-hold: fade the smoothing out over a protrusion.
-            # This pass is one-sided per VERTEX, but its TANGENTIAL motion
-            # reshapes the triangles, and the interpolated SURFACE over a tip
-            # sitting between verts drops with them -- traced on a studded
-            # cuirass, the conform delivered 0.284u of nipple clearance and this
-            # pass took it to 0.161u without moving a single vert inward.
-            # Holding the smoothing back over the tip leaves those verts exactly
-            # where the conform put them. It only ever REMOVES motion, so it can
-            # never loosen the garment: the alternative fixes all pushed the tip
-            # out and ballooned the torso with it (see the clipping log, F-S1).
-            if (GROOVE_NIPPLE_HOLD and ube_body_nipple is not None
-                    and len(ube_body_nipple) == len(body)):
-                nipw = np.asarray(ube_body_nipple, dtype=np.float64)[nn0]
-                hold = np.clip(nipw / max(GROOVE_NIPPLE_HOLD_W, 1e-6), 0.0, 1.0)
-                active = active * (1.0 - hold)[:, None]
         else:
             nn0 = None
             active = np.ones((len(src), 1), dtype=np.float64)
@@ -3478,16 +3465,11 @@ def convert_nif(
                         # would discard the warp, inflate AND conform for this
                         # shape -- which reads in the output as the conform
                         # having been switched off (torso 0.496 -> 1.830u).
-                        try:
-                            _gc_nip = _body_nipple_weight(ube_base_for_reskin)
-                        except Exception:
-                            _gc_nip = None
                         snapped = _smooth_warp_grooves(
                             sv_world, snapped, body_verts_for_fit,
                             ube_body_normals=body_normals_for_fit,
                             src_body_verts=cbbe_verts_for_warp,
-                            src_body_normals=_gc_bn,
-                            ube_body_nipple=_gc_nip)
+                            src_body_normals=_gc_bn)
                     else:
                         # Legacy fallback: no CBBE base body; push inside-body verts
                         # outward along UBE normals.
@@ -15942,8 +15924,7 @@ def convert_nif_phase2(
                             body_verts_for_p2,
                             ube_body_normals=body_norms_for_p2,
                             src_body_verts=src_body_v_p2,
-                            src_body_normals=src_body_n_p2,
-                            ube_body_nipple=body_nipple_for_p2)
+                            src_body_normals=src_body_n_p2)
                         _stage('groove_smooth', override)
                     except Exception:
                         pass

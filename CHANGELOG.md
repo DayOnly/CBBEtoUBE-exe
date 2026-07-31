@@ -479,3 +479,14 @@ Two independent defects in `_smooth_warp_grooves`, which runs after the conform:
   The smoothing is now held back over a protrusion.
   `CBBE2UBE_NO_GROOVE_HOLD=1` disables.
 
+### Removed — #groove-nipple-hold
+
+It held the groove smoothing back over a protrusion, and earned that while it was
+the only thing protecting the tip. Once the surface requirement landed it became
+actively harmful. Ablated across all 112 installed BodySlide presets:
+
+    hold ON    1 preset still poking, nipple clearance +0.220u
+    hold OFF   0 presets poking,      nipple clearance +0.528u
+
+with identical torso fit and identical crinkle on every shape. Deleting it
+cleared the last holdout.
