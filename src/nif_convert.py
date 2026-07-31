@@ -5913,7 +5913,21 @@ def _actor_can_resolve_bone(name: str) -> bool:
         skel = set()
     if not skel:
         return _is_skeleton_bone(name)
-    return _norm_bone(name) in {_norm_bone(b) for b in skel}
+    # The NORMALISED set is cached, not just the raw one. This line used to read
+    # `{_norm_bone(b) for b in skel}`, rebuilding the whole normalised skeleton
+    # on EVERY membership test -- profiled at 1,937,715 `_norm_bone` calls over
+    # five pieces, ~8.8% of wall clock in `re.sub` alone. Identical comparison
+    # and identical result; only the rebuild is gone.
+    global _SKELETON_BONES_NORM_CACHE
+    if (_SKELETON_BONES_NORM_CACHE is None
+            or _SKELETON_BONES_NORM_CACHE[0] is not skel):
+        # Keyed on the IDENTITY of the cached set, so an upstream invalidation
+        # (which replaces the object) invalidates this too. A stale skeleton
+        # here would silently prune resolvable bones -- the exact class that
+        # regressed working cuirasses in June.
+        _SKELETON_BONES_NORM_CACHE = (
+            skel, frozenset(_norm_bone(b) for b in skel))
+    return _norm_bone(name) in _SKELETON_BONES_NORM_CACHE[1]
 
 
 _XML_BONE_DECL_RE = re.compile(r'<bone\s+name="([^"]+)"')
@@ -13499,6 +13513,10 @@ def _read_source_hdt_xml_disk(src_nif_path: Path, nif=None) -> "Path | None":
 
 
 _SKELETON_BONES_CACHE: "set[str] | None" = None
+# (raw set, normalised frozenset) -- see _actor_can_resolve_bone. Held as a PAIR
+# so the raw set's identity is the cache key: replacing _SKELETON_BONES_CACHE
+# invalidates this automatically rather than leaving a stale skeleton behind.
+_SKELETON_BONES_NORM_CACHE: "tuple | None" = None
 
 
 def _actor_skeleton_bone_names() -> "set[str]":
