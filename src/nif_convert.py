@@ -360,6 +360,57 @@ STATIC_AUTHORED_AMP = float(
 STATIC_AUTHORED_MIN_CLEARANCE = float(
     os.environ.get("CBBE2UBE_STATIC_AUTHORED_MIN", "0.06"))
 
+# --- Phase-1 source-standoff conform (#phase1-conform) -------------------
+# Phase 1 carries TWO `inflate_armor_outward` call sites and NO conform, while
+# phase 2 has both. So a phase-1 piece gets clearance ADDED with nothing to reel
+# it back to the author's fit -- it inflates and never returns. Phase 1 is the
+# large majority of files, so this asymmetry, not any per-armour quirk, is why a
+# tightly-fitted piece ships standing off the body.
+#
+# The conform needs a SOURCE body to measure the authored standoff against.
+# Phase-1 pieces frequently ship no inline body -- part of why they are phase 1 --
+# so the CBBE base body already loaded for the warp (`cbbe_body_path_p1`) is used
+# as the reference. That is the body the source was fitted to, and it is the same
+# geometry the warp itself is keyed on, so the two passes agree by construction.
+#
+# DEFAULT OFF until the census + clipping A/B justify it. Clearance exists to
+# stop poke-through; the clip metric has no upper bound while overinflation is
+# invisible to it, so flipping this on unmeasured trades a visible defect for an
+# invisible one. Enable with CBBE2UBE_PHASE1_CONFORM=1.
+PHASE1_CONFORM = (
+    os.environ.get("CBBE2UBE_PHASE1_CONFORM", "").strip().lower()
+    in ("1", "true", "yes", "on")
+)
+
+_CBBE_BODY_NORMALS_CACHE: dict = {}
+
+
+def _cached_cbbe_body_normals(path) -> "np.ndarray | None":
+    """Outward vertex normals of the CBBE base body, cached by path.
+
+    `conform_to_source_standoff` measures the authored standoff along the SOURCE
+    body's normal, so the sign is meaningless without them. Uses the same
+    normals-or-recompute helper as the UBE side, because BodySlide output
+    frequently ships zero/absent normals and a silent zero vector would make
+    every authored standoff read 0 -- which would look like "the author fitted
+    everything coincident" and pull the whole garment onto the skin.
+    """
+    key = str(path)
+    if key in _CBBE_BODY_NORMALS_CACHE:
+        return _CBBE_BODY_NORMALS_CACHE[key]
+    out = None
+    try:
+        nf = _pynifly().NifFile(filepath=str(path))
+        sh = next((s for s in nf.shapes if _looks_like_inline_body(s)), None)
+        if sh is None and nf.shapes:
+            sh = max(nf.shapes, key=lambda s: len(s.verts))
+        if sh is not None:
+            out = _body_normals_or_compute(sh)
+    except Exception:
+        out = None
+    _CBBE_BODY_NORMALS_CACHE[key] = out
+    return out
+
 # Extra anti-poke clearance scaled by local jiggle-bone weight, for the SMP bounce that
 # swings the body PAST its static envelope. Every other clearance term reasons about the
 # body at REST; a rigid cuirass has no idea the breast is about to be thrown outward by
@@ -3017,6 +3068,40 @@ def convert_nif(
                                 )
                             except Exception:
                                 pass
+                        # Reel the inflation back to the AUTHORED standoff. Phase 2
+                        # has always done this; phase 1 inflated with no counter-
+                        # pass, so a tightly-fitted piece just stood off the body.
+                        # Source body = the CBBE base the warp is already keyed on.
+                        # #phase1-conform
+                        if (PHASE1_CONFORM and cbbe_verts_for_warp is not None
+                                and body_verts_for_fit is not None
+                                and body_normals_for_fit is not None):
+                            try:
+                                _src_bn = _cached_cbbe_body_normals(
+                                    cbbe_body_path_p1)
+                                if _src_bn is not None:
+                                    _amp1 = None
+                                    try:
+                                        _amp1 = _cached_body_morph_amplitude(
+                                            _find_ube_body_osd(),
+                                            body_normals_for_fit,
+                                            len(body_verts_for_fit))
+                                    except Exception:
+                                        _amp1 = None
+                                    snapped = conform_to_source_standoff(
+                                        sv_world,
+                                        cbbe_verts_for_warp, _src_bn,
+                                        snapped,
+                                        body_verts_for_fit,
+                                        body_normals_for_fit,
+                                        morph_amplitude=_amp1,
+                                    )
+                            except Exception as e:
+                                # RECORDED, not swallowed -- the phase-2 sibling
+                                # was silently absent for months and looked
+                                # identical to "nothing to conform".
+                                failed.append((f"{s.name}:phase1-conform",
+                                               repr(e)))
                         # Groove-smooth: flatten warp-induced indent grooves on
                         # tight bust cloth. Near-body verts only; decorative shapes unaffected.
                         snapped = _smooth_warp_grooves(
