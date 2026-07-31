@@ -8493,9 +8493,11 @@ def _match_arm_motion_to_body(dst_path, biped_slots: int = 0) -> int:
         dst_path, biped_slots, family="arm", bones=_ARM_MOTION_BONES,
         z_lo=_ARM_MOTION_Z_LO, z_hi=_ARM_MOTION_Z_HI,
         max_dist=_ARM_MOTION_MAX_DIST, strength=_ARM_MOTION_STRENGTH,
-        # The shape gate fires on the main garment of any piece with generated
-        # physics, which is most of them -- without the per-row fallback this
-        # pass is a no-op on exactly the armors that show the defect.
+        # MEASURED over 391 converted pieces: the shape gate fires on the main
+        # garment of 141 (36%), and 35 (9.0%) also carry a physics XML -- the
+        # combination that makes every gated pass a silent no-op, including the
+        # LEG pass. Not "most pieces", but 9% of the pack getting nothing from a
+        # pass that is supposed to be default-ON is worth the row-level fallback.
         smp_row_gate=True)
 
 
