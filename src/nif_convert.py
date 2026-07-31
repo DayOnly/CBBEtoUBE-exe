@@ -5252,6 +5252,81 @@ def _is_skeleton_bone(name: str) -> bool:
     return any(kw in low for kw in _SKELETON_BONE_KEYWORDS)
 
 
+def _norm_bone(name: str) -> str:
+    """Bone names compare case- AND whitespace-insensitively.
+
+    Both matter in real data: XPMSSE writes `NPC L Foot [Lft ]` with a trailing
+    space INSIDE the brackets where physics XMLs write `[Lft]`, and `[PElv]` vs
+    `[Pelv]` differ only in case. An exact-match comparison reports real,
+    resolvable skeleton bones as missing -- which is how the first measurement
+    of this defect produced a 1260-name result that was mostly casing noise.
+
+    Drops whitespace entirely rather than collapsing runs, because the observed
+    difference is interior (`[Lft ]`) and a collapse leaves it. Two genuinely
+    different bones differing ONLY in whitespace would collide, which is not a
+    naming pattern that occurs; and the consequence of a collision is merely
+    treating the bone as actor-resolvable, i.e. the long-standing behaviour.
+    """
+    return re.sub(r"\s+", "", name).casefold()
+
+
+def _actor_can_resolve_bone(name: str) -> bool:
+    """True if the ACTOR's skeleton supplies this bone, so the armour NIF does
+    not need to carry a node for it.
+
+    This is the question the node-preservation sites actually ask, and it is
+    answerable by measurement -- the bone is either in the skeleton or it is
+    not. `_is_skeleton_bone` answers a DIFFERENT question by name heuristic,
+    matching `_SKELETON_BONE_KEYWORDS` as unanchored substrings, so a custom
+    physics-chain bone called `LArmA 01` matches "arm" and is treated as an
+    actor bone. Nothing then carries its node (chain anchors are zero-weight,
+    so no shape's skin references them either), FSMP cannot resolve it, and the
+    chain hanging off it is placed at the origin -- the sleeves-pull-to-origin
+    defect. The `startswith("_")` escape hatch in `_is_skeleton_bone` was an
+    earlier partial patch for this same class, covering only mods that prefix
+    chain bones with an underscore.
+
+    Deliberately NOT a fix to `_is_skeleton_bone` itself: that predicate also
+    drives weighting, leg-rigid detection and the jiggle strip, and a blanket
+    change to it is exactly what regressed working cuirasses on 2026-06-05.
+
+    Falls back to the name heuristic when no skeleton can be loaded, so a
+    missing skeleton keeps the old behaviour instead of preserving every bone.
+    """
+    try:
+        skel = _actor_skeleton_bone_names()
+    except Exception:
+        skel = set()
+    if not skel:
+        return _is_skeleton_bone(name)
+    return _norm_bone(name) in {_norm_bone(b) for b in skel}
+
+
+_XML_BONE_DECL_RE = re.compile(r'<bone\s+name="([^"]+)"')
+_XML_BONE_TEXT_RE = re.compile(r"<bone>([^<]+)</bone>")
+_XML_CONSTRAINT_BODY_RE = re.compile(r'body[AB]="([^"]+)"')
+
+
+def _xml_referenced_bone_names(xml_text: str) -> "set[str]":
+    """Every bone name a physics XML refers to, by ANY route.
+
+    Harvesting only `<bone name=...>` misses CONSTRAINT-ONLY bones -- names that
+    appear solely as `bodyA`/`bodyB` of a `<generic-constraint>` and are never
+    declared. Those are real to FSMP, which resolves constraint bodies against
+    the NIF hierarchy rather than the XML's own `<bone>` list (established
+    2026-06-05, when pruning constraints by the declared-bone set regressed
+    working cuirasses). Drop such a node and its constraint points at a phantom
+    body, which drags the chain to the origin.
+
+    Measured on one shipped skirt XML: 124 declared bones, 81 constraint bodies,
+    18 of which are never declared -- including the whole `FVOc` chain that went
+    missing from the output.
+    """
+    return (set(_XML_BONE_DECL_RE.findall(xml_text))
+            | {m.strip() for m in _XML_BONE_TEXT_RE.findall(xml_text)}
+            | set(_XML_CONSTRAINT_BODY_RE.findall(xml_text)))
+
+
 _SOFT_BODY_PHYSICS_BONE_KEYWORDS = (
     "breast", "butt", "belly", "genital", "vagina", "anus", "clit", "labia",
 )
@@ -8844,27 +8919,39 @@ def _precreate_custom_bone_chains(dst_nif, src_nif, bone_names) -> int:
     # Operate on ALL source shapes' bones (union). An anchor added flat by an
     # earlier shape's add_bone can't be overwritten by a later _precreate call;
     # pre-creating all chains upfront ensures correct bind placement.
+    # XML-referenced bones the ACTOR cannot supply. Tracked separately because
+    # the `custom` filter below would otherwise discard them again on the same
+    # name heuristic that lost them in the first place.
+    _xml_must_keep: "set[str]" = set()
     try:
         _allb = set(bone_names)
         for _sh in src_nif.shapes:
             _allb |= set(_sh.bone_names)
-        # Seed from the physics XML's <bone> list too. Pure CONSTRAINT bones --
-        # the skirt/flap chains a bone-driven SMP garment hangs from (SkirtFBone,
-        # HDT_FS, ...) -- carry ZERO skin weight, so they appear in NO shape's
-        # bone list and the shape-driven copy never recreates their NODES. But
-        # HDT-SMP walks the NIF hierarchy to build its kinematic chain; with the
-        # chain's parent nodes gone it has nothing to hang from and the garment
-        # free-falls to the ground. Add the XML's own custom bones that exist in
-        # the source rig so the chain (below) recreates them at source bind.
+        # Seed from the physics XML too. Pure CONSTRAINT bones -- the skirt/flap
+        # chains a bone-driven SMP garment hangs from (SkirtFBone, HDT_FS, the
+        # `_01` anchor of an arm chain, ...) -- carry ZERO skin weight, so they
+        # appear in NO shape's bone list and the shape-driven copy never
+        # recreates their NODES. But HDT-SMP walks the NIF hierarchy to build its
+        # kinematic chain; with the chain's parent nodes gone it has nothing to
+        # hang from and the garment free-falls or stretches to the origin.
         # #smp-constraint-bones
+        #
+        # Two ways this set was previously computed too NARROW, each losing a
+        # different armour (both measured, see _xml_referenced_bone_names and
+        # _actor_can_resolve_bone):
+        #   * only `<bone name=>` was harvested, so constraint-only bodies were
+        #     never seen at all;
+        #   * `_is_skeleton_bone` cleared custom bones whose names happen to
+        #     contain a body-part substring ("LArmA 01" contains "arm").
         try:
             _sp = getattr(src_nif, "filepath", None)
             if _sp:
                 _xt = _read_source_hdt_xml_text(Path(_sp), nif=src_nif)
                 if _xt:
-                    for _xb in re.findall(r'<bone\s+name="([^"]+)"', _xt):
-                        if _xb in src_nodes and not _is_skeleton_bone(_xb):
+                    for _xb in _xml_referenced_bone_names(_xt):
+                        if _xb in src_nodes and not _actor_can_resolve_bone(_xb):
                             _allb.add(_xb)
+                            _xml_must_keep.add(_xb)
         except Exception:
             pass
         bone_names = list(_allb)
@@ -8874,7 +8961,8 @@ def _precreate_custom_bone_chains(dst_nif, src_nif, bone_names) -> int:
     # also restore soft-body jiggle bones (breast/butt/belly): their HDT physics
     # is seeded from the NIF bind; a flat/missing parent collapses chest cloth.
     # Gated on a custom chain existing; plain body armour is untouched.
-    custom = [b for b in bone_names if not _is_skeleton_bone(b)]
+    custom = [b for b in bone_names
+              if not _is_skeleton_bone(b) or b in _xml_must_keep]
     # Auto-select flat vs nested: upper-body chain anchor -> NESTED; lower-body-
     # only (pelvis/thigh) -> FLAT. CBBE2UBE_NESTED_CHAIN_ANCHORS=1 forces nested.
     # Jiggle bones excluded from the anchor scan (body bones, not garment chains).

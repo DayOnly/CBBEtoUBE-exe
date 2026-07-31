@@ -2,6 +2,47 @@
 
 ## 1.2 — unreleased
 
+### Fixed — physics chains whose anchor node was dropped (pull-to-origin)
+
+An HDT-SMP chain hangs off a kinematic anchor bone. Those anchors carry ZERO
+skin weight, so no shape's bone list mentions them and the rebuild — which
+carries the bones the skin references — has no reason to keep them. A separate
+pass exists to preserve them from the physics XML. It was computing the
+preservation set two ways too narrowly, and each way lost a different armour:
+
+* it harvested only `<bone name=...>` declarations, so a chain whose anchor
+  appears ONLY as a `<generic-constraint>` `bodyA`/`bodyB` was never seen. One
+  shipped skirt XML declares 124 bones and names 81 constraint bodies, 18 of
+  them never declared.
+* it cleared candidates with `_is_skeleton_bone`, which matches its body-part
+  keyword list as UNANCHORED SUBSTRINGS. The custom chain bone `LArmA 01`
+  contains "arm", so it was treated as a bone the actor supplies. No skeleton
+  has it.
+
+Either way FSMP cannot resolve the anchor, places it at the origin, and the
+chain hanging off it is dragged there — sleeves stretching from the shoulder to
+the ground, skirts collapsing.
+
+The preservation set is now built from every bone the XML references by any
+route, minus the ones the ACTOR'S skeleton actually supplies — a lookup against
+the real skeleton rather than a guess from the name. `_is_skeleton_bone` is
+deliberately left alone: it also drives weighting, leg-rigid detection and the
+jiggle strip, and a blanket change to it is what regressed working cuirasses in
+June.
+
+Measured over the shipped pack as a source→output differential: of 548 output
+NIFs carrying a physics XML, 239 dropped at least one XML-referenced node, but
+75 of the 87 dropped names are real actor bones where dropping is correct. **12
+names were unresolvable, across 18 NIFs in 3 armour sets** — all three now keep
+their anchors, recreated at the exact source bind (delta 0.0). An unaffected
+piece is unchanged: identical shapes, vertices, weights and node transforms.
+
+The postflight check that was supposed to catch this had both blind spots too:
+it read only declarations, and it warned about every declared bone missing from
+the NIF including the resolvable ones — ~45 lines per file, which is how the six
+that mattered stayed invisible. It now reports only genuinely unresolvable
+bones, and counts constraint bodies as references.
+
 The theme of this release is **measuring fit correctly, then fixing what the
 measurement exposed.** Most of 1.1.x's fit work was steered by two metrics that
 turned out to be anti-correlated with what the game actually shows, so a run
