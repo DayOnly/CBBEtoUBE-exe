@@ -422,7 +422,7 @@ first-person viewmodels from standoff *and states how many*; and it prints
 percentiles rather than inventing ceilings for bands that have no calibrated
 anchor.
 
-## 1.2.3 — unreleased
+## 1.2.3b — unreleased
 
 Bust anti-poke. Reported in game as a nipple poking through a fitted cuirass on
 *one* BodySlide preset and not others; every offline metric read the piece as
