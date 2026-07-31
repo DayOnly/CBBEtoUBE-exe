@@ -2,6 +2,40 @@
 
 ## 1.2 — unreleased
 
+### Fixed — fitted pieces shipped standing off the body
+
+Phase 1 carried TWO `inflate_armor_outward` call sites and NO conform; phase 2
+had both. A phase-1 piece — the large majority of files — got clearance added
+with nothing to reel it back to the author's fit. `conform_to_source_standoff`
+now runs in phase 1 too, using the CBBE base body the warp is already keyed on
+as the source reference (phase-1 pieces frequently ship no inline body, which is
+part of why they are phase 1).
+
+`conform_to_source_standoff` also deliberately left tight cloth looser than
+authored — flooring at `min_clearance` and reeling a skin-hugging vert only
+`blend_tight` of the way back — because the source was fitted to the smaller
+3BA body. True at bust/belly/butt, false at a shoulder or sternum. Both limiters
+now ramp off with the body's outward morph amplitude.
+
+Measured per-vertex over 8.1M verts of the shipped pack (loose AND BSA sources):
+verts the author placed at 0.10-0.25u shipped +0.346u further out (p90 +1.00u),
+the largest push of any band; loose verts (>1u) moved +0.034u. The tighter the
+author fitted it, the more it was inflated.
+
+Env: `CBBE2UBE_PHASE1_CONFORM=1` (DEFAULT OFF pending the clipping A/B),
+`CBBE2UBE_NO_STATIC_AUTHORED_FIT=1`, `CBBE2UBE_STATIC_AUTHORED_AMP` (2.0),
+`CBBE2UBE_STATIC_AUTHORED_MIN` (0.06).
+
+**KNOWN INCOMPLETE — a pass ordering bug, traced not guessed.** Per-pass trace of
+one armour's chest band: authored 0.197 -> warp 0.265 -> inflate 0.490 ->
+**conform 0.235** -> `_smooth_warp_grooves` **0.322**. The conform reaches the
+authored fit; groove-smoothing then runs and pushes it back out. That pass is
+ONE-SIDED by design (`GROOVE_ONESIDED`, it can never pull toward the body), so
+it will always partially undo an inward conform placed before it. The fix is
+ORDERING — conform after groove-smooth — and applies to BOTH phases. Not done.
+
+### Fixed — physics chains whose anchor node was dropped (pull-to-origin)
+
 ### Fixed — physics chains whose anchor node was dropped (pull-to-origin)
 
 An HDT-SMP chain hangs off a kinematic anchor bone. Those anchors carry ZERO
