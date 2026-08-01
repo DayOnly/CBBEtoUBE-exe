@@ -1796,6 +1796,7 @@ def conform_to_source_standoff(
     static_amp: float = STATIC_AUTHORED_AMP,
     static_min_clearance: float = STATIC_AUTHORED_MIN_CLEARANCE,
     tris: "np.ndarray | None" = None,
+    conform_margin: float = 0.0,
 ) -> np.ndarray:
     """Restore each cloth vert's ORIGINAL clearance from the body after the
     CBBE->UBE warp+inflate, so a piece that HUGGED the source body still hugs the
@@ -1866,6 +1867,17 @@ def conform_to_source_standoff(
                        + static_w * (static_min_clearance - min_clearance))
         blend_tight_v = blend_tight + static_w * (1.0 - blend_tight)
     tight = np.maximum(np.minimum(s_src, s_cur), min_clear_v)
+    # #unified-offset candidate (c): fold inflate's additive margin into THIS
+    # target instead of running it as a separate pass. `inflate` adds headroom
+    # to the authored drape; conform aims AT the authored drape; so the two
+    # composed are just "authored drape PLUS headroom".
+    #
+    # Raising `tight` reduces how far a vert is pulled in, i.e. leaves it
+    # `margin` further out -- for the verts conform actually touches. It cannot
+    # PUSH a vert out, because `move` below is clamped to <= 0. Whether that
+    # reach is enough is the empirical question; see AUDIT A16.
+    if float(conform_margin) > 0.0:
+        tight = tight + float(conform_margin)
     if blend is None:
         # ADAPTIVE per-vert blend keyed on the source clearance:
         #  - tight verts (skin-hugging, small s_src) keep ROOM (low blend) so they
@@ -4429,6 +4441,14 @@ def snap_armor_outside_body(
 #     banner of consolidation and the A/B could not attribute the result.
 UNIFIED_OFFSET = os.environ.get(
     "CBBE2UBE_UNIFIED_OFFSET", "").strip().lower() in ("1", "true", "yes", "on")
+# The FLOOR form, kept only so its negative result stays reproducible. A/B'd on
+# the four pieces with real bust-clipping headroom and measured ~50% WORSE
+# (4.728% -> 7.079%), because a floor lifts 5.6% of verts where the additive
+# push it replaced reaches 75% -- a difference in REACH that no floor value
+# closes. Do not enable expecting an improvement; enable to re-derive A14/A15.
+UNIFIED_OFFSET_FLOOR = os.environ.get(
+    "CBBE2UBE_UNIFIED_OFFSET_FLOOR", "").strip().lower() in (
+        "1", "true", "yes", "on")
 
 
 def _unified_clearance_floor(
@@ -16715,6 +16735,11 @@ def convert_nif_phase2(
                             ube_body_nipple=body_nipple_for_p2,
                             morph_amplitude=_amp_conf,
                             tris=np.asarray(s.tris, dtype=np.int64),
+                            # candidate (c): inflate's headroom folded into the
+                            # authored-drape target rather than run as its own
+                            # additive pass. Zero unless UNIFIED_OFFSET.
+                            conform_margin=(float(_infl_gate_p2)
+                                            if UNIFIED_OFFSET else 0.0),
                         )
                         _stage('conform', override)
                     except Exception as e:
@@ -16750,7 +16775,13 @@ def convert_nif_phase2(
                 # gating inflate off left exactly those shapes with LESS
                 # clearance than before. After groove_smooth so smoothing cannot
                 # push a vert back under the floor.
-                if (UNIFIED_OFFSET and override is not None
+                # DISABLED: the floor form was A/B'd and measured ~50% WORSE
+                # (AUDIT A14/A15) -- a floor reaches 5.6% of verts where the
+                # additive push reaches 75%, and no floor VALUE closes that.
+                # Kept behind a second flag so the measurement is reproducible
+                # rather than deleted and re-derived. Candidate (c), the margin
+                # folded into conform's target, is what UNIFIED_OFFSET now runs.
+                if (UNIFIED_OFFSET_FLOOR and override is not None
                         and _infl_gate_p2 > 0
                         and body_verts_for_p2 is not None
                         and body_norms_for_p2 is not None):
