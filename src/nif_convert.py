@@ -8687,10 +8687,17 @@ def _match_limb_motion_to_body(dst_path, biped_slots: int = 0, *,
       * redistributes ONLY among bones the shape ALREADY HAS. No add_bone, so the
         add_bone-resets-every-STB footgun cannot apply. (setShapeWeights can still
         reset STBs, so they are saved and restored regardless.)
-      * PUSH-UP ONLY -- never lowers a limb share, so a garment already tracking the
-        body is left alone. This is also what makes the Z band a mere safety rail:
-        where the covered body carries no weight on the family, the target collapses
-        to the garment's own share and the vert is written back unchanged.
+      * PUSH-UP ONLY -- the TARGET is never below the garment's existing share, so
+        a garment already tracking the body is left alone. This is also what makes
+        the Z band a mere safety rail: where the covered body carries no weight on
+        the family, the target collapses to the garment's own share and the vert is
+        written back unchanged.
+        NOT an end-to-end guarantee, and this said "never lowers" until it was
+        measured. The 4-INFLUENCE CAP runs after the target and can still drop a
+        family bone off an overflowing row, so the WRITTEN share occasionally
+        falls: measured on a multi-shape mashup, 118 of 3254 changed verts lost
+        family mass, worst 0.0303, mean 0.0012. Small and cap-induced, not a
+        systematic lowering -- but "never" was wrong.
       * NEVER moves a vert: rest pose stays byte-identical, which is what keeps the
         bind-pose clearance work from earlier passes intact.
       * only verts HUGGING the body (<= max_dist) inside the Z band, so a free-hanging

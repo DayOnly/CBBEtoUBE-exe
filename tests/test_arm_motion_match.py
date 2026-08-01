@@ -118,9 +118,16 @@ def _push_up_target(g_mass, b_mass, strength=1.0):
         np.clip(g_mass + strength * (b_mass - g_mass), 0.0, 1.0), g_mass)
 
 
-def test_push_up_only_never_lowers_a_share():
+def test_push_up_only_never_lowers_the_TARGET():
     """A garment already tracking the arm better than the body must be left
-    alone -- lowering it would introduce the very defect we are fixing."""
+    alone -- lowering it would introduce the very defect we are fixing.
+
+    SCOPE: this exercises the target rule in isolation, NOT the written weight.
+    Measured on the shipped pass, the 4-influence cap can still reduce a family
+    bone on an overflowing row (118 of 3254 changed verts, worst 0.0303), so
+    "never lowers" holds for the target and not end-to-end. Named for what it
+    actually checks.
+    """
     g = np.array([0.90, 0.43, 0.00])
     b = np.array([0.55, 0.56, 0.20])
     t = _push_up_target(g, b)

@@ -164,7 +164,15 @@ def test_skips_colliders_and_softbody():
 
 def test_never_moves_a_vertex():
     """The pass must only touch WEIGHTS. Moving verts would undo the bind-pose
-    clearance the earlier passes established."""
+    clearance the earlier passes established.
+
+    This is a SOURCE proxy -- it proves the pass never assigns verts, not that
+    the output is unmoved. The empirical half is real and was measured: max
+    vertex delta 0.00e+00 across all 15 golden pieces and every hand probe
+    (studded, orcish, three leg pieces), for all three limb families. The
+    standing gate is `golden_output.py check`, which compares vertex positions
+    and fails on any movement.
+    """
     src = inspect.getsource(nc._match_limb_motion_to_body)
     assert ".verts =" not in src
     assert "set_shape_verts" not in src
@@ -179,10 +187,25 @@ def test_saves_and_restores_skin_to_bone():
     assert "set_skin_to_bone_xform" in src
 
 
-def test_push_up_only():
-    """Never LOWER a leg share -- a garment already tracking the body is left be."""
+def test_push_up_only_applies_to_the_TARGET_not_the_written_weight():
+    """`np.maximum` floors the TARGET at the garment's existing share, so a
+    garment already tracking the body is left alone.
+
+    This test used to say "Never LOWER a leg share", full stop. MEASURED on the
+    shipped pass over a multi-shape mashup, that is false end-to-end: the
+    4-influence cap runs AFTER the target and can drop a family bone off an
+    overflowing row, so 118 of 3254 changed verts lost family mass (worst
+    0.0303, mean 0.0012). Cap-induced and small, not a systematic lowering --
+    but a test asserting an absolute the code does not honour is how a real
+    report gets waved off as impossible.
+
+    So: pin the target rule, and pin that the cap is the thing that can undo it.
+    """
     src = inspect.getsource(nc._match_limb_motion_to_body)
     assert "np.maximum(" in src
+    assert "_SKIN_MAX_INFLUENCES" in src, (
+        "the cap must stay visible in this function -- it is the reason the "
+        "written share is not a hard floor")
 
 
 def _shipped_cap_then_floor(new_row, g_row=None):

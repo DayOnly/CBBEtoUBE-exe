@@ -145,7 +145,10 @@ def test_negative_control_no_body_spine_weight_is_a_no_op():
     assert np.allclose(t, g)
 
 
-def test_push_up_only_never_lowers_the_spine_share():
+def test_push_up_only_never_lowers_the_spine_TARGET():
+    """SCOPE: the target rule in isolation, not the written weight -- the
+    4-influence cap can still reduce a family bone on an overflowing row
+    (measured 118 of 3254 changed verts, worst 0.0303)."""
     g = np.array([0.95, 0.62, 0.10])
     b = np.array([0.60, 0.97, 0.44])
     t = _push_up_target(g, b)
