@@ -247,6 +247,65 @@ SMP_COLLISION_ONLY_ANTIPOKE = os.environ.get(
 SMP_ANTIPOKE_MAX_PUSH = float(
     os.environ.get("CBBE2UBE_SMP_ANTIPOKE_PUSH", "").strip() or ANTIPOKE_BUST_CLEAR)
 
+# #smp-chain-antipoke (default OFF, opt-in). A SEPARATE flag from
+# SMP_COLLISION_ONLY_ANTIPOKE on purpose: that one is scoped to shapes the XML
+# declares as COLLIDERS, its comment says so, and widening it in place would make
+# its name a lie -- which its own history warns about.
+#
+# This one admits the case that flag cannot reach: a BONE-DRIVEN SMP CHAIN
+# garment. Traced on a vanilla cuirass whose single shape is a rigid torso welded
+# to an authored skirt (40 `Skirt N_NN` chain bones). Every fit pass skips it, so
+# it keeps CBBE dimensions over a UBE body and the wider UBE hip comes through.
+# Measured with the validated clipping metric, source vs converted:
+#
+#     band                 SOURCE   OURS     with the pass restored
+#     hip/low-back 60-80     0.60%   8.13%   1.08%
+#     upper-back  95-110     1.49%   5.31%   0.70%
+#     REAR upper chest         --   11.64%   0.00%
+#
+# so the defect is ours, not inherited, and the pass closes most of it.
+#
+# OFF BY DEFAULT, AND EXPECT IT TO STAY OFF UNTIL SOMEONE LOOKS IN GAME. This is
+# the same bet that has now failed twice on CONVEX regions: once historically (a
+# suit's butt 28% -> 29%, worst poke -1.81 -> -2.20u) and once here, where the
+# structurally identical `#smp-structural-relax` change was measured on pauldrons
+# and put MORE verts inside the body (5 -> 9, 7 -> 10). The bands above are rear
+# and flat, which is exactly where anti-poke is known to work -- that is a reason
+# to test it, not a reason to trust it. A bind-pose win on flat bands has no
+# bearing on what the convex parts of the same garment do.
+#
+# Requires the NIF to contain no per-vertex soft-body cloth at all, mirroring the
+# collision-only flag: moving a shape that simulated cloth rests against changes
+# that cloth's authored rest state. Pushes at SMP_ANTIPOKE_MAX_PUSH, not the 3.0
+# default, for the vert-spreading reason recorded above.
+SMP_CHAIN_ANTIPOKE = os.environ.get(
+    "CBBE2UBE_SMP_CHAIN_ANTIPOKE", "").strip().lower() in (
+        "1", "true", "yes", "on")
+
+# Its OWN push budget, NOT SMP_ANTIPOKE_MAX_PUSH. That constant carries a sharp
+# optimum measured on the collision-only path (6.9->2.4 at 1.0, WORSE at 0.6,
+# only 5.7 at 3.0) and raising it would move that path off its own measurement.
+# Two paths, two budgets.
+#
+# 2.0 measured on the traced cuirass, real conversions, everything else equal:
+#
+#     budget   rear-upper-back buried verts   worst poke   bust FRONT (convex)
+#     off                    6                  -2.92u          1.71%
+#     1.0                    7                  -1.96u          1.34%
+#     2.0                    5                  -1.00u          1.16%
+#
+# Strictly better on the back, and the CONVEX columns improve rather than
+# degrade, which is the failure mode this family keeps hitting. The band
+# clipping % is unchanged at 1.04% either way -- it is dominated by verts sitting
+# within 0.2u of the skin, which is coincident-surface z-fighting that no budget
+# can fix. Depth is what moves; the percentage is not the metric to tune on.
+#
+# Does NOT help the hip: 1.0 and 2.0 give an identical 7.30% there, because that
+# band is chain cloth pinned to source by _physics_chain_nowarp_blend and no
+# clearance budget survives it.
+SMP_CHAIN_ANTIPOKE_PUSH = float(
+    os.environ.get("CBBE2UBE_SMP_CHAIN_PUSH", "").strip() or 2.0)
+
 
 def _is_belt_overlay(shape) -> bool:
     """True if the shape is a decorative waist belt/sash that rides ON TOP of
@@ -5630,6 +5689,21 @@ def _is_physics_jiggle_scale_bone(bone_name: str) -> bool:
     return any(kw in low for kw in PHYSICS_JIGGLE_SCALE_KEYWORDS)
 
 
+def _jiggle_region_of(bone_name: str) -> "str | None":
+    """Which jiggle REGION a bone belongs to, or None if it is not a jiggle bone.
+
+    The boolean above answers "does this shape jiggle at all", which is the wrong
+    question wherever the regions are independent: a garment can carry breast
+    weight and no butt weight, and pooling them let the second hide behind the
+    first for the entire life of the project. #region-jiggle-gate
+    """
+    low = bone_name.lower()
+    for kw in PHYSICS_JIGGLE_SCALE_KEYWORDS:
+        if kw in low:
+            return kw
+    return None
+
+
 # Rigid LEG skeleton bones (the actual animation bones, NOT the frontthigh/
 # rearthigh/rearcalf SCALE bones, which also contain "thigh"/"calf"). A shape
 # whose verts are MAJORITY-dominated by these is leg-encasing armor.
@@ -9118,16 +9192,38 @@ def _transfer_body_jiggle_to_fitted(dst_path, biped_slots: int = 0) -> int:
         if len(existing) + len(jstbs) > SKIN_PARTITION_BONE_CAP:
             continue
         bw = s.bone_weights or {}
-        # Only shapes that LACK jiggle (inverse of the conform gate -- a shape that
-        # already jiggles is handled by _conform_fitted_to_body).
-        jig = 0
+        # Only regions that LACK jiggle. PER REGION, not pooled. #region-jiggle-gate
+        #
+        # This counter used to pool breast+butt+belly into one number and skip the
+        # whole shape at 8, on the reasoning that a shape which already jiggles is
+        # handled by `_conform_fitted_to_body`. BOTH HALVES WERE WRONG:
+        #
+        #  * the chest-follow pass grafts breast weight EARLIER, so 295 breast verts
+        #    tripped the counter on the first bone and the shape was dropped with
+        #    its butt weight still at zero -- a whole-shape gate deciding a
+        #    per-region question;
+        #  * and the pass it defers to cannot finish. `_conform_blend_vert` keeps
+        #    the vert's bone set and it "can only SHRINK (no body-only bone is
+        #    added)" -- it rebalances bones the shape HAS, so a shape with no
+        #    `NPC L/R Butt` never gets one from there. Butt weight stayed at
+        #    exactly 0.0000 permanently.
+        #
+        # Measured over the shipped pack: 184 pieces show a butt-follow gap, 105 of
+        # them in exactly this state. In game the body pushed straight through the
+        # armour under morph, on the vanilla leather cuirass among others.
+        #
+        # `already` is then used to filter the per-vert graft below, so a region the
+        # shape ALREADY carries is left untouched -- this must not re-graft over
+        # chest-follow's measured ratio.
+        have = {kw: 0 for kw in PHYSICS_JIGGLE_SCALE_KEYWORDS}
         for b, pairs in bw.items():
-            if _is_physics_jiggle_scale_bone(b):
-                jig += sum(1 for _vi, w in pairs if float(w) > 0.1)
-                if jig >= _CONFORM_MIN_JIGGLE_VERTS:
-                    break
-        if jig >= _CONFORM_MIN_JIGGLE_VERTS:
-            continue
+            kw = _jiggle_region_of(b)
+            if kw is not None:
+                have[kw] += sum(1 for _vi, w in pairs if float(w) > 0.1)
+        already = {kw for kw, c in have.items()
+                   if c >= _CONFORM_MIN_JIGGLE_VERTS}
+        if len(already) >= len(PHYSICS_JIGGLE_SCALE_KEYWORDS):
+            continue        # every region present -> genuinely the conform's job
         try:
             V = np.asarray(s.verts, np.float64)
         except Exception:
@@ -9190,7 +9286,13 @@ def _transfer_body_jiggle_to_fitted(dst_path, biped_slots: int = 0) -> int:
             bd = body_w[idx[i]]
             bd_jig = {b: w for b, w in bd.items()
                       if _is_physics_jiggle_scale_bone(b) and w > 1e-3
-                      and b in jstbs}
+                      and b in jstbs
+                      # #region-jiggle-gate: graft ONLY the regions this shape is
+                      # missing. A region it already carries was weighted by the
+                      # source or by chest-follow, whose ratio is separately
+                      # measured -- re-grafting over it would silently retune a
+                      # constant somebody validated in game.
+                      and _jiggle_region_of(b) not in already}
             if not bd_jig:
                 continue  # body doesn't jiggle under this vert -> nothing to follow
             closeness = max(0.0, 1.0 - d[i] / _CONFORM_VERT_PROX)
@@ -9712,6 +9814,153 @@ def _reanchor_nif_root_chains(chain, anchors, src_nodes) -> int:
     return done
 
 
+# ------------------------------------------------- #chain-body-shift (opt-in)
+# Move a physics chain to where the UBE body actually is.
+#
+# THE DEFECT. `_physics_chain_nowarp_blend` pins chain verts to their SOURCE
+# position so they stay aligned with chain bones recreated at SOURCE bind.
+# Measured on a vanilla cuirass: all 63 chain bones sit at EXACTLY 0.0000u from
+# source while other bones moved up to 109.78u. So the skirt keeps a CBBE-sized
+# rest pose while the body grows to UBE proportions, and the bigger butt ends up
+# INSIDE it. Chain-driven skirt triangles over the butt band:
+#
+#     SOURCE (CBBE)   covers  0.00%   clipping 0.00%
+#     OUTPUT (UBE)    covers 63.81%   clipping 7.46%
+#
+# On CBBE the skirt does not reach the butt at all; on UBE it is buried in it.
+# Every other lever is inert here BY CONSTRUCTION -- clearance cannot move a
+# pinned vert, and the jiggle graft correctly refuses sim-driven verts -- so this
+# is the only axis left.
+#
+# WHY THIS IS SAFE, and why it shifts ROOTS ONLY. Chain bone transforms are
+# PARENT-LOCAL, so displacing a chain's root translates the entire chain
+# RIGIDLY: every inter-bone distance changes by exactly 0.0000u. The authored
+# constraints are self-closing (`bodyA`/`bodyB` only) with no explicit
+# `frameInA`, so FSMP derives each rest frame from the bones at load -- nothing
+# hard-codes CBBE coordinates -- and the skirt groups' +/-1u linear limits are
+# RELATIVE, so a rigid translation cannot violate them. Warping bones
+# INDIVIDUALLY would change rest lengths and is exactly how a chain explodes;
+# this deliberately does not do that.
+#
+# The pin itself is left alone. It protects an ALIGNMENT (verts must match the
+# bones the sim drives), not a POSITION, and the alignment survives because the
+# verts ride the bones: rendered position is BoneGlobal . STB . v, so moving the
+# node moves the cloth. Nothing recomputes the STB -- doing so would re-derive
+# the bind from the new node and cancel the shift to zero.
+CHAIN_BODY_SHIFT = os.environ.get(
+    "CBBE2UBE_CHAIN_BODY_SHIFT", "").strip().lower() in ("1", "true", "yes", "on")
+# Cap. The measured requirement is the body delta itself (butt band: mean 0.506u,
+# p90 0.940u, max 1.467u), so 2.0u is headroom, not a target.
+CHAIN_BODY_SHIFT_MAX = float(
+    os.environ.get("CBBE2UBE_CHAIN_BODY_SHIFT_MAX", "2.0"))
+CHAIN_BODY_SHIFT_MIN_VERTS = 8
+# Only verts genuinely NEAR the body inform the shift. A floor-length hem hangs
+# metres away where the delta field is meaningless; averaging it in would drag
+# every chain toward zero and make the pass look inert.
+CHAIN_BODY_SHIFT_NEAR = 8.0
+
+
+def _chain_root_subtrees(chain: dict) -> dict:
+    """{root: every bone in its subtree}. A root is a chain bone whose parent is
+    NOT itself a chain bone -- i.e. it hangs off the skeleton."""
+    kids: dict = {}
+    for b, (_xf, par) in chain.items():
+        kids.setdefault(par, []).append(b)
+    out: dict = {}
+    for r in [b for b, (_xf, par) in chain.items() if par not in chain]:
+        sub, stack = set(), [r]
+        while stack:
+            cur = stack.pop()
+            if cur in sub:
+                continue
+            sub.add(cur)
+            stack.extend(kids.get(cur, ()))
+        out[r] = sub
+    return out
+
+
+def _shift_chain_roots_by_body_delta(chain: dict, src_nif) -> int:
+    """Translate each physics chain by the CBBE->UBE body delta where it sits.
+
+    Mutates `chain` in place (root entries only) and returns the number of
+    chains moved. Default OFF -- see CHAIN_BODY_SHIFT.
+    """
+    if not CHAIN_BODY_SHIFT or not chain:
+        return 0
+    # NOT wrapped in a bare `except: return 0`. The first version was, and it
+    # swallowed a NameError (`cKDTree` is imported per-function in this module,
+    # never at module level) as "nothing to move" -- a broken pass reading
+    # exactly like a clean one. Genuine absences return 0 explicitly below;
+    # anything else propagates to the caller, which reports it.
+    from scipy.spatial import cKDTree
+    cbbe = _find_cbbe_base_body()
+    ube = _find_user_preset_body()
+    if not cbbe or not ube:
+        return 0
+    cV, delta = _cached_cbbe_to_ube_delta(cbbe, ube)
+    cV = np.asarray(cV, np.float64)
+    delta = np.asarray(delta, np.float64)
+    if len(cV) < 3 or len(cV) != len(delta):
+        return 0
+    tree = cKDTree(cV)
+
+    # Where each chain bone's cloth actually sits. Taken from the SKINNED VERTS,
+    # not from the node transforms: skeleton bones are (0,0,0) placeholders in an
+    # armour NIF, so `global_transform` on a chain returns PELVIS-RELATIVE
+    # coordinates (measured z -26..28 against a butt band at z 62..80). Sampling
+    # the delta field there queries empty space -- the nearest body vert averaged
+    # 12.66u away, which is the tell. The verts are already in the frame the
+    # delta field is defined in.
+    per_bone: dict = {}
+    shapes = list(src_nif.shapes)
+    for sh in shapes:
+        try:
+            V = _verts_skin_to_world(np.asarray(sh.verts, np.float64),
+                                     _shape_global_to_skin(sh))
+        except Exception:
+            continue
+        for b, pairs in (sh.bone_weights or {}).items():
+            if b not in chain:
+                continue
+            idx = [int(v) for v, w in pairs
+                   if float(w) > 0.2 and 0 <= int(v) < len(V)]
+            if idx:
+                per_bone.setdefault(b, []).append(V[idx])
+
+    moved = 0
+    for root, sub in _chain_root_subtrees(chain).items():
+        chunks = [a for b in sub for a in per_bone.get(b, ())]
+        if not chunks:
+            continue
+        P = np.concatenate(chunks)
+        d, j = tree.query(P, k=min(4, len(cV)))
+        if d.ndim == 1:                       # k==1 on a tiny reference body
+            d, j = d[:, None], j[:, None]
+        near = d[:, 0] < CHAIN_BODY_SHIFT_NEAR
+        if int(near.sum()) < CHAIN_BODY_SHIFT_MIN_VERTS:
+            continue
+        w = 1.0 / np.clip(d[near], 1e-6, None)
+        w /= w.sum(axis=1, keepdims=True)
+        shift = (delta[j[near]] * w[..., None]).sum(axis=1).mean(axis=0)
+        mag = float(np.linalg.norm(shift))
+        if not np.isfinite(mag) or mag < 1e-3:
+            continue
+        if mag > CHAIN_BODY_SHIFT_MAX:
+            shift = shift * (CHAIN_BODY_SHIFT_MAX / mag)
+        # COPY, never mutate. `node.transform` is a VIEW onto the source node --
+        # verified: writing through it changes what the source node reports, so
+        # the second weight file converted from the same load would inherit the
+        # shift a second time.
+        xf, par = chain[root]
+        nxf = xf.copy()
+        t = nxf.translation
+        nxf.translation = (float(t[0] + shift[0]), float(t[1] + shift[1]),
+                           float(t[2] + shift[2]))
+        chain[root] = (nxf, par)
+        moved += 1
+    return moved
+
+
 def _has_nif_root_garment_chain(src_nif) -> bool:
     """True if the NIF has a non-skeleton (garment) bone parented directly to a
     NIF-root node at waist/hip height -- the pattern _reanchor_nif_root_chains
@@ -9872,6 +10121,17 @@ def _precreate_custom_bone_chains(dst_nif, src_nif, bone_names) -> int:
             _reanchor_nif_root_chains(chain, anchors, src_nodes)
         except Exception:
             pass
+    # AFTER the re-anchor, so it adds to whatever local transform that left --
+    # the two compose, and running first would have the re-anchor overwrite it.
+    if CHAIN_BODY_SHIFT:
+        try:
+            _n = _shift_chain_roots_by_body_delta(chain, src_nif)
+            if _n:
+                print(f"    [chain-shift] moved {_n} chain(s) onto the UBE body")
+        except Exception as _e:
+            # RECORDED, not swallowed: a silent failure here is indistinguishable
+            # from "the pass ran and found nothing to move".
+            print(f"    [chain-shift] FAILED: {type(_e).__name__}: {_e}")
     pyn = _pynifly()
     existing = set(dst_nif.nodes.keys())
     added = 0
@@ -11929,6 +12189,98 @@ def add_scale_bone_weights(
 
 HDT_BONE_THRESHOLD = 0.4  # fraction of armor bones unknown to the body
                           # required to classify a shape as HDT-SMP rigged.
+
+# A bone the ACTOR SKELETON supplies, carrying no physics role, is NOT evidence
+# of author physics rigging -- it is a gap in the reference BODY.
+# `_shape_has_hdt_smp_rigging` counts every bone the injected BaseShape lacks,
+# and the BaseShape is a body: no hand, finger, pauldron or twist bones. So a
+# 2-bone pauldron clears the 0.4 ratio by missing both, and loses the clearance
+# pass. Measured over a converted modlist, 26 of 236 gated shapes are this
+# misclassification (MiraakPauldrons 2/2, Claws 32/38 hand+finger).
+#
+# DELIBERATELY NOT APPLIED INSIDE `_shape_has_hdt_smp_rigging`. That was built
+# and measured first, and the predicate gates EIGHT call sites -- so relaxing it
+# there also switched on the M6 reskin and the conform/graft passes for these
+# shapes. Measured on a vanilla robe: the pauldrons moved 435/474 verts and
+# their clearance went DOWN ~0.07u, a direction the clearance pass cannot even
+# produce, because the movement was coming from the other passes. One predicate
+# feeding eight decisions is exactly why this is scoped to the ONE call site
+# that asks the question this answers.
+#
+# Jiggle and cloth-named bones stay evidence EVEN WHEN THE SKELETON HAS THEM:
+# XPMSE ships `SkirtFBone01`, and treating skeleton membership alone as
+# "structural" reclassified 26 genuine chain shapes -- the skirt-collapse family.
+#
+# The floor of 3 is measured, not chosen: at 3 the collateral is 0/194 real chain
+# shapes with 22/26 misclassifications recovered; at 4 it is 6/194. The two
+# populations touch at exactly 3, so 4 of the 26 stay conservatively excluded.
+#
+# DEFAULT OFF -- the detection is right and the CONSEQUENCE was measured HARMFUL.
+# Identifying these shapes as structural is correct; letting the clearance pass
+# run on them is not. A/B on a vanilla robe, both weights, everything else
+# identical (the only shape that changes is MiraakPauldrons, 435/474 verts):
+#
+#     weight   verts INSIDE body   worst poke        mean clearance
+#     _0        5 ->  9            -1.335 -> -1.026u  +1.086 -> +1.002u
+#     _1        7 -> 10            -0.968 -> -1.972u  +1.087 -> +1.001u
+#
+# Worse on every measure, consistently, including the count under the 0.8u
+# target (250->282, 254->276). This is the failure the gate comment in
+# convert_nif_phase2 already records -- anti-poke fixes FLAT regions and spreads
+# verts on CONVEX ones (a suit's butt 28%->29%, worst poke -1.81->-2.20u).
+# Pauldrons sit on convex shoulders and reproduce it almost exactly.
+#
+# Kept, not deleted: the classification is sound and reusable, and the next
+# person to notice these shapes get no clearance deserves the measurement rather
+# than a second run at the same wall. CBBE2UBE_SMP_STRUCTURAL_RELAX=1 to enable.
+# #smp-structural-relax
+_SMP_STRUCTURAL_RELAX = (
+    os.environ.get("CBBE2UBE_SMP_STRUCTURAL_RELAX", "").strip().lower()
+    in ("1", "true", "yes", "on"))
+_SMP_CHAIN_EVIDENCE_MIN = 3
+_CLOTH_BONE_RE = re.compile(
+    r"skirt|cloth|cape|coat|robe|dress|tail|hair|belt|sash", re.I)
+
+
+def _is_physics_evidence_bone(name: str) -> bool:
+    """True if this bone indicates PHYSICS rigging rather than a plain
+    structural bone the reference body happens not to carry.
+
+    Soft-body jiggle bones and cloth-named bones count even when the actor
+    skeleton resolves them, because standard-but-simulated is still simulated.
+    Everything else counts only when the skeleton CANNOT supply it.
+    """
+    if _is_soft_body_physics_bone(name) or _CLOTH_BONE_RE.search(name or ""):
+        return True
+    return not _actor_can_resolve_bone(name)
+
+
+def _smp_rigging_is_structural_only(src_shape, body_bone_names: set) -> bool:
+    """True when a shape classified as SMP-rigged has NO physics evidence.
+
+    i.e. `_shape_has_hdt_smp_rigging` said yes, but only because the reference
+    BODY lacks ordinary skeleton bones the garment is weighted to. Such a shape
+    has no simulation to disturb, so the ANTI-POKE may safely run on it.
+
+    Answers a narrower question than the predicate it refines, and is used at
+    exactly one call site. Returns False when no skeleton can be loaded --
+    without one there is nothing to tell structural from authored, and keeping
+    the conservative answer beats guessing.
+    """
+    if not _SMP_STRUCTURAL_RELAX:
+        return False
+    armor_bones = set(getattr(src_shape, "bone_names", None) or [])
+    if not armor_bones:
+        return False
+    try:
+        if not _actor_skeleton_bone_names():
+            return False
+    except Exception:
+        return False
+    evidence = {b for b in armor_bones - set(body_bone_names)
+                if _is_physics_evidence_bone(b)}
+    return (len(evidence) < _SMP_CHAIN_EVIDENCE_MIN
+            and len(evidence) / len(armor_bones) <= HDT_BONE_THRESHOLD)
 
 
 # --- Chain-cloth -> soft-body conversion (gated option) --------------------
@@ -16103,6 +16455,16 @@ def convert_nif_phase2(
         # looser -- the over-inflation reported twice from the game.
         _tracer = None
         _chain = None
+        # Deliberately OUTSIDE the body-geometry guard below and armed with no
+        # region at all: this one compares a pass against its own displacement
+        # field, so it needs neither. Gating it the way the two metric-based
+        # harnesses are gated would blind it on every shape the bust band cannot
+        # see -- which includes the hip, the band it exists to explain.
+        _surv = fit_metrics.DisplacementSurvival()
+        if not _surv.armed:
+            _surv = None
+        else:
+            _surv.checkpoint("entry", _sv_body)
         if body_verts_for_p2 is not None and body_norms_for_p2 is not None:
             try:
                 _gtris = np.asarray(s.tris, dtype=np.int64).reshape(-1, 3)
@@ -16140,6 +16502,8 @@ def convert_nif_phase2(
                 _tracer.mark(label, v)
             if _chain is not None:
                 _chain.checkpoint(label, v)
+            if _surv is not None:
+                _surv.checkpoint(label, v)
 
         if preset_template_verts is not None and preset_user_verts is not None:
             try:
@@ -16310,11 +16674,39 @@ def convert_nif_phase2(
         _smp_relax = (SMP_COLLISION_ONLY_ANTIPOKE
                       and s.name in hdt_collider_names
                       and not hdt_softbody_names)
+        # #smp-structural-relax -- a SECOND, independent reason the SMP term may
+        # be withdrawn here, and the only site that gets it. The shape was
+        # classified as rigged purely because the reference BODY lacks ordinary
+        # skeleton bones it is weighted to (hands, fingers, pauldrons, twist):
+        # there is no simulation to disturb, so the clearance pass is safe.
+        # DEFAULT OFF like the flag above, and for the same reason: the
+        # classification is right but ACTING on it measured worse (pauldrons
+        # went from 5 to 9 verts inside the body -- see the constant's comment).
+        # Deliberately NOT folded into `_shape_has_hdt_smp_rigging`, whose eight
+        # call sites would then also enable the reskin and conform passes.
+        _structural_relax = (
+            s.name not in hdt_collider_names
+            and s.name not in hdt_softbody_names
+            and _smp_rigging_is_structural_only(
+                s, set(ube_base_for_pass1.bone_names or [])
+                if ube_base_for_pass1 is not None else set()))
+        # #smp-chain-antipoke -- the bone-driven CHAIN garment case, which the
+        # collision-only flag deliberately cannot reach (the shape is not a
+        # declared collider). Its own opt-in, default OFF; see SMP_CHAIN_ANTIPOKE
+        # for the measurements and for why a rear-band win does not license it.
+        _chain_relax = (SMP_CHAIN_ANTIPOKE
+                        and not hdt_softbody_names
+                        and s.name not in hdt_collider_names
+                        and _shape_has_hdt_smp_rigging(
+                            s, set(ube_base_for_pass1.bone_names or [])
+                            if ube_base_for_pass1 is not None else set()))
         if (body_verts_for_p2 is not None and body_norms_for_p2 is not None
                 and (biped_slots & (BIPED_SLOT32_BIT | BIPED_SLOT49_BIT))
                 and s.name not in RESKIN_SKIP_NAMES
                 and s.name not in hdt_softbody_names
                 and (_smp_relax
+                     or _structural_relax
+                     or _chain_relax
                      or (s.name not in hdt_collider_names
                          and not _shape_has_hdt_smp_rigging(
                              s, set(ube_base_for_pass1.bone_names or [])
@@ -16343,7 +16735,16 @@ def convert_nif_phase2(
                 # the clearance target, not the 3.0 default -- overshoot spreads
                 # verts on the convex bust and opens new gaps. #smp-collision-only-antipoke
                 _ap_kw = {}
-                if _smp_relax and (
+                if _chain_relax:
+                    # Chain garments reach this pass ONLY via the opt-in, and
+                    # the capped budget is not optional for them: the 3.0
+                    # default is what spreads verts on convex regions. Uses the
+                    # CHAIN budget, measured on this path -- see the constant.
+                    _ap_kw["max_push"] = SMP_CHAIN_ANTIPOKE_PUSH
+                    print(f"    [smp-antipoke] {s.name}: clearance pass enabled "
+                          f"(bone-driven SMP chain, "
+                          f"max_push={SMP_CHAIN_ANTIPOKE_PUSH})")
+                elif _smp_relax and (
                         s.name in hdt_collider_names
                         or _shape_has_hdt_smp_rigging(
                             s, set(ube_base_for_pass1.bone_names or [])
@@ -16554,6 +16955,20 @@ def convert_nif_phase2(
                 failed.append((f"{s.name}:chain-verify", repr(e)))
             finally:
                 _chain.release()      # snapshots of a torso are not small
+        # DISPLACEMENT SURVIVAL, default OFF (CBBE2UBE_SURVIVAL_TRACE=1). Must
+        # run AFTER the chain verify: a pass whose work a rollback discarded has
+        # not survived either, and `override` only names the SHIPPED geometry
+        # once finish() has had its say. Same world space as the snapshots, and
+        # before the offset is subtracted back off, for the same reason.
+        if _surv is not None:
+            try:
+                _surv.flush(dst_path, s.name, override)
+            except Exception as e:
+                # RECORDED, never swallowed. A silent failure here reads as
+                # "no pass was cancelled", which is the exact wrong conclusion.
+                failed.append((f"{s.name}:survival", repr(e)))
+            finally:
+                _surv.release()
         if _tracer is not None:
             try:
                 _tracer.flush(dst_path, s.name)
