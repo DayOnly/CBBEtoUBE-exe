@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.2.6 - unreleased
+
+### Changed - a failed pass or a failed write now reaches the report
+
+Every fit pass and every mesh/sidecar write ran inside a silent catch, so a
+pass that RAISED was indistinguishable from one that ran and did nothing.
+30 such handlers for passes and 19 for writes are now 0: failures are recorded
+and travel back in the conversion report. Grep it for PASS FAILED.
+
 ## 1.2.5 - unreleased
 
 ### Fixed - the converter was not deterministic across processes
