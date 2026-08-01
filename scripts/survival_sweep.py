@@ -89,10 +89,16 @@ def _run_one(piece, out_root, env, sink):
     # of its output path, so records stay attributable without a file per piece.
     e["CBBE2UBE_STANDOFF_LOG"] = str(sink)
     t0 = time.time()
-    p = subprocess.run(
-        [sys.executable, str(REPO / "scripts" / "convert_one_armor.py"),
-         str(src), sub, stem, str(out), "--slots", hex(slots)],
-        capture_output=True, text=True, cwd=str(REPO), env=e)
+    # slots=0 means "let convert_one_armor resolve them from the plugins", which
+    # is what the batch does. PASSING --slots 0x0 would be actively wrong: a
+    # slots=0 run silently disables every slot-gated pass (anti-poke, slot-aware
+    # inflation, reskin band) and has produced two false findings already.
+    cmd = [sys.executable, str(REPO / "scripts" / "convert_one_armor.py"),
+           str(src), sub, stem, str(out)]
+    if slots:
+        cmd += ["--slots", hex(slots)]
+    p = subprocess.run(cmd, capture_output=True, text=True,
+                       cwd=str(REPO), env=e)
     dt = time.time() - t0
     if p.returncode != 0:
         return {"piece": label, "status": "FAILED", "secs": round(dt, 1),
