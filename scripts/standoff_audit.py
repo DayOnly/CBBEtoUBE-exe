@@ -156,7 +156,8 @@ class ClipTester:
                 i_t[esc] = res
         return (o, i_t, who) if want_tri else (o, i_t)
 
-    def report(self, bV, bT, bN, idx, vert_area, oriented: bool = False):
+    def report(self, bV, bT, bN, idx, vert_area, oriented: bool = False,
+               body_occlusion: bool = True):
         if oriented:
             o, i_t, who = self.classify(bV, bN, idx, want_tri=True)
             fn = self.face_normals()
@@ -168,18 +169,36 @@ class ClipTester:
             o, i_t = self.classify(bV, bN, idx)
             same = np.ones(len(idx), bool)
         out_hit, in_hit = np.isfinite(o), np.isfinite(i_t)
+        if body_occlusion:
+            # `mp.clipping_report` gained this gate on 2026-08-01; this tester
+            # did NOT, so the two silently disagreed wherever it fires --
+            # measured 100.0% here against 0.0% there on a garment past the far
+            # wall. `selftest` missed it because it is called on the BUST band,
+            # where the body is thick and the gate rejects nothing, while the
+            # regions it exists for are the thin ones (hip, inner thigh,
+            # armpit). Two predicates for one concept drift apart, so this one
+            # DELEGATES the body cast rather than reimplementing it.
+            i_t = i_t.copy()
+            far = mp.ray_first_hit(
+                np.asarray(bV)[idx], -np.asarray(bN)[idx],
+                bV, np.asarray(bT, np.int64).reshape(-1, 3),
+                tmax=mp.BODY_TMAX, tmin=mp.BODY_EPS)
+            i_t[in_hit & ~(i_t < far)] = np.inf
+            in_hit = np.isfinite(i_t)
         clip = in_hit & ~out_hit & same
         A = vert_area[idx].sum()
         if A <= 0:
             return {"n": len(idx), "clipping_pct": None, "covered_pct": None,
                     "uncovered_pct": None, "clip_idx": idx[:0],
-                    "out_t": o, "in_t": i_t}
+                    "out_t": o, "in_t": i_t,
+                    **mp.depth_bands(np.empty(0), np.empty(0), 0.0)}
         return {"n": len(idx),
                 "clipping_pct": float(100.0 * vert_area[idx][clip].sum() / A),
                 "covered_pct": float(100.0 * vert_area[idx][out_hit].sum() / A),
                 "uncovered_pct": float(
                     100.0 * vert_area[idx][~in_hit & ~out_hit].sum() / A),
-                "clip_idx": idx[clip], "out_t": o, "in_t": i_t}
+                "clip_idx": idx[clip], "out_t": o, "in_t": i_t,
+                **mp.depth_bands(i_t[clip], vert_area[idx][clip], A)}
 
     def standoff(self, bV, bN, idx, tmax: float = 12.0):
         """Distance to the garment along +normal, covered skin only.
@@ -332,11 +351,22 @@ def margins(stats: dict, anchor: dict, *, slack: float = 0.15,
 
 
 def selftest(bV, bT, bN, gV, gT, mask, label: str = "") -> bool:
-    """This tester must EQUAL `mp.clipping_report`, not merely track it."""
+    """This tester must EQUAL `mp.clipping_report`, not merely track it.
+
+    Compares the DEPTH BANDS as well as the total. Checking only the total let
+    the body-occlusion gate live in one implementation for a whole release: the
+    percentages happened to agree on the band this is called with, and nothing
+    looked at the split that would have shown the two answering differently.
+    """
     got = ClipTester(gV, gT).report(bV, bT, bN, np.flatnonzero(mask),
-                                    vert_areas(bV, bT))["clipping_pct"]
-    ref = mp.clipping_report(bV, bT, bN, [(gV, gT)], mask=mask)["clipping_pct"]
-    ok = abs(ref - got) < 1e-6
-    print(f"  standoff_audit selftest {label}: reference {ref:.4f}% vs "
-          f"{got:.4f}% -> {'MATCH' if ok else 'MISMATCH'}")
-    return ok
+                                    vert_areas(bV, bT))
+    ref = mp.clipping_report(bV, bT, bN, [(gV, gT)], mask=mask)
+    keys = ("clipping_pct", "clip_coincident_pct", "clip_shallow_pct",
+            "clip_buried_pct")
+    bad = [k for k in keys
+           if (ref[k] is None) != (got[k] is None)
+           or (ref[k] is not None and abs(ref[k] - got[k]) >= 1e-6)]
+    print(f"  standoff_audit selftest {label}: reference "
+          f"{ref['clipping_pct']:.4f}% vs {got['clipping_pct']:.4f}% -> "
+          f"{'MATCH' if not bad else 'MISMATCH on ' + ', '.join(bad)}")
+    return not bad

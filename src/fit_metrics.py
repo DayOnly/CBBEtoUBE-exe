@@ -764,6 +764,190 @@ class PassTracer:
                                "shape": str(shape_name), **r})
 
 
+# ------------------------------------------ DISPLACEMENT SURVIVAL (opt-in)
+# Did a pass's work reach the shipped verts, or did a later pass undo it?
+#
+# Every other diagnostic in this file measures the SHAPE after a pass. None of
+# them can tell "this pass did nothing" from "this pass did the right thing and
+# a later pass put it back", because both read as an unchanged final number.
+# That distinction cost a session. The chain anti-poke moved the hip band
+# exactly as intended and `_physics_chain_nowarp_blend`, four passes later and
+# BY DESIGN, pins every chain vert back to its source position -- so raising the
+# push budget from 1.0 to 2.0 produced an identical 7.30%. Probing that pass
+# offline, where nothing runs after it, claimed a fix seven times larger than
+# the pipeline delivered.
+#
+# The question is geometric and needs NO body, NO rays and NO region: it asks
+# what is left of the pass's own displacement field at the end. So unlike
+# ChainGuard and PassTracer this arms on EVERY shape rather than only the ones
+# the bust metric can see -- the pass it was written to catch acts on the HIP,
+# a band those two never arm for, which is precisely how it stayed hidden.
+SURVIVAL_TRACE = os.environ.get("CBBE2UBE_SURVIVAL_TRACE") == "1"
+SURVIVAL_EPS = 1e-4        # below this a vert was not moved by the pass
+SURVIVAL_CANCELLED = 0.10  # <10% of the motion left = cancelled downstream
+SURVIVAL_KEPT = 0.90       # >90% left = the pass owns this vert's position
+# A RATIO NEEDS A DENOMINATOR WORTH DIVIDING BY. The first real run produced
+# `bake_preset survival 46.9` off 8 verts moved a mean of 0.014u -- arithmetically
+# correct and completely meaningless, because later passes moved those verts
+# units in the same direction and the ratio just measures them. Read as a finding
+# it says a pass was amplified 47x. The floor sits well under the smallest push
+# any pass applies (~0.15u) and far above vertex quantisation, so it excludes
+# only motion too small for the question to mean anything.
+SURVIVAL_MIN_MOTION = 0.05
+
+
+class DisplacementSurvival:
+    """Per pass: how much of what it moved is still in the final verts.
+
+    For pass k with snapshots S(k-1) -> S(k), its displacement is D = S(k)-S(k-1)
+    and what is LEFT of it at the end is R = F - S(k-1), F being the shipped
+    geometry. Survival is the least-squares scale of D that R contains::
+
+        survival = sum(R.D) / sum(D.D)
+
+    1.0 = the pass's motion is intact, 0.0 = something put those verts exactly
+    back, negative = a later pass overshot past the starting point, >1 = a later
+    pass pushed further the same way. It is |D|**2-weighted by construction, so
+    the verts a pass actually moved dominate and the untouched majority cannot
+    dilute the number -- an unweighted mean over a mostly-zero field is noise.
+
+    Motion PERPENDICULAR to D neither adds nor subtracts here. That is the
+    intended reading: the question is whether this pass's contribution is still
+    present, not whether the vertex is still where this pass left it.
+
+    A single aggregate hides a fully-pinned SUBPOPULATION -- a pass that moves
+    500 chain verts and 500 free ones, with only the chain half restored, reads
+    a healthy 0.5. So `frac_cancelled` reports the share of moved verts whose
+    OWN survival is under the threshold, and that is the number that would have
+    named the hip band immediately.
+
+    Attribution comes out of the same snapshots for free: the contribution of a
+    later pass m is sum(D(m).D(k)) / sum(D(k).D(k)) over the verts k moved, and
+    those contributions sum with 1.0 to exactly the survival above (the
+    displacements telescope). The most negative one names the canceller.
+    """
+
+    def __init__(self, *, enabled=None, max_passes: int = 64):
+        self.enabled = SURVIVAL_TRACE if enabled is None else bool(enabled)
+        self.armed = bool(self.enabled)
+        self._snaps = []
+        self._max = int(max_passes)
+        self.dropped = 0
+
+    def checkpoint(self, label, verts) -> None:
+        """Remember the geometry after `label`. An array copy, no measurement."""
+        if not self.armed or verts is None:
+            return
+        try:
+            v = np.array(verts, dtype=np.float64, copy=True)
+        except Exception:
+            return
+        if v.ndim != 2 or v.shape[1] != 3:
+            return
+        if len(self._snaps) >= self._max:
+            # Keep the PREFIX contiguous rather than dropping a middle snapshot
+            # the way ChainGuard does. Merging two passes under one label would
+            # make the record attribute motion to the wrong pass, and a
+            # diagnostic that lies about which pass moved something is worse
+            # than one that admits it stopped early.
+            self.dropped += 1
+            return
+        self._snaps.append((str(label), v))
+
+    def analyse(self, final_verts) -> list:
+        """One row per pass. An EMPTY list means nothing was measured, which
+        must never be read as 'nothing was cancelled' -- callers that care
+        should assert on it."""
+        if not self.armed or final_verts is None or len(self._snaps) < 2:
+            return []
+        try:
+            F = np.asarray(final_verts, dtype=np.float64)
+        except Exception:
+            return []
+        snaps = list(self._snaps)
+        # The SHIPPED geometry is the authority, not the last checkpoint: a
+        # chain rollback and any edit after the final stage both land here, and
+        # a pass whose work is discarded by a rollback has not survived either.
+        if (F.shape == snaps[-1][1].shape
+                and not np.array_equal(F, snaps[-1][1])):
+            snaps.append(("(after last pass)", F))
+        n = len(snaps)
+        rows = []
+        for k in range(1, n):
+            label, S1 = snaps[k]
+            S0 = snaps[k - 1][1]
+            if S0.shape != S1.shape:
+                rows.append({"pass": label,
+                             "skipped": f"verts {len(S0)} -> {len(S1)}"})
+                continue
+            if F.shape != S0.shape:
+                rows.append({"pass": label,
+                             "skipped": f"final verts {len(F)} != {len(S0)}"})
+                continue
+            D = S1 - S0
+            mag2 = np.einsum("ij,ij->i", D, D)
+            moved = mag2 > (SURVIVAL_EPS * SURVIVAL_EPS)
+            if not moved.any():
+                rows.append({"pass": label, "moved_verts": 0,
+                             "note": "pass moved nothing"})
+                continue
+            Dm = D[moved]
+            m2 = mag2[moved]
+            denom = float(m2.sum())
+            proj = np.einsum("ij,ij->i", F[moved] - S0[moved], Dm)
+            per = proj / m2
+            surv = float(proj.sum() / denom)
+            worst_lbl, worst_val = None, 0.0
+            for m in range(k + 1, n):
+                Sm, Sp = snaps[m][1], snaps[m - 1][1]
+                if Sm.shape != S1.shape or Sp.shape != S1.shape:
+                    continue
+                c = float(np.einsum("ij,ij->i",
+                                    (Sm - Sp)[moved], Dm).sum() / denom)
+                if c < worst_val:
+                    worst_lbl, worst_val = snaps[m][0], c
+            mean_mag = float(np.sqrt(m2).mean())
+            low = mean_mag < SURVIVAL_MIN_MOTION
+            row = {"pass": label,
+                   "moved_verts": int(moved.sum()),
+                   "moved_mean": round(mean_mag, 4),
+                   "moved_max": round(float(np.sqrt(m2.max())), 4),
+                   "survival": round(surv, 4),
+                   "frac_cancelled": round(
+                       float((per < SURVIVAL_CANCELLED).mean()), 4),
+                   "frac_kept": round(float((per > SURVIVAL_KEPT).mean()), 4),
+                   # Survival above is exact regardless; only the ATTRIBUTION
+                   # needs every later pass, so say when the tail is missing.
+                   "attrib_complete": self.dropped == 0}
+            if low:
+                row["low_signal"] = True
+            if worst_lbl is not None:
+                row["cancelled_by"] = worst_lbl
+                row["cancelled_frac"] = round(worst_val, 4)
+            # No verdict on a pass that barely moved: "cancelled" on 0.014u of
+            # motion is an alarm about nothing, and alarms about nothing are
+            # how a real one gets ignored.
+            if surv < SURVIVAL_CANCELLED and not low:
+                row["verdict"] = "CANCELLED"
+            rows.append(row)
+        return rows
+
+    def flush(self, dst_path, shape_name, final_verts) -> list:
+        """Analyse and record. Returns the rows so a caller can assert it
+        measured something."""
+        rows = self.analyse(final_verts)
+        if rows and _enabled():
+            for r in rows:
+                _append(dst_path, {"kind": "survival",
+                                   "nif": str(Path(dst_path).name),
+                                   "shape": str(shape_name), **r})
+        return rows
+
+    def release(self) -> None:
+        """Drop snapshots -- a torso holds several passes' worth of verts."""
+        self._snaps = []
+
+
 CHAIN_GUARD = os.environ.get("CBBE2UBE_NO_CHAIN_GUARD") != "1"
 CHAIN_TOL = int(os.environ.get("CBBE2UBE_CHAIN_TOL", "0"))
 

@@ -151,6 +151,67 @@ def ray_exposure(origins, dirs, verts, tris, tmax=25.0, chunk=2048):
     return ~out                                                # True = EXPOSED
 
 
+def _auto_chunk(n_tris, budget_bytes=2.5e8):
+    """Rays per batch that keep the (R,T,3) temporaries inside a memory budget.
+
+    The inner arrays are R*T*3 float64 = R*T*24 bytes. A fixed chunk is fine for
+    a 2k-triangle garment and allocates GIGABYTES against a 58k-triangle body,
+    which is what the body-occlusion test below casts at. Scales the batch
+    instead of the budget.
+    """
+    n_tris = max(1, int(n_tris))
+    return int(np.clip(budget_bytes / (n_tris * 24.0), 16, 2048))
+
+
+def ray_first_hit(origins, dirs, verts, tris, tmax=25.0, chunk=None, tmin=1e-4):
+    """Distance to the NEAREST triangle hit along each ray; inf where none.
+
+    `ray_exposure` answers "is there any hit", which cannot distinguish a garment
+    sitting just under the skin from one hit on the FAR SIDE of the body after
+    the ray has crossed the whole torso. Ordering the hits is what separates
+    them, so this returns t rather than a bool.
+
+    `tmin` ignores hits nearer than that. Needed when casting a body ray from a
+    body vertex: the triangles sharing that vertex sit at t ~ 0 and would read as
+    the far wall, rejecting everything. Raising the ORIGIN instead would silently
+    drop genuine poke-throughs shallower than the offset, so the cut is made on
+    the hit distance rather than on the origin.
+    """
+    V = np.asarray(verts, dtype=np.float64)
+    T = np.asarray(tris, dtype=np.int64).reshape(-1, 3)
+    O = np.asarray(origins, dtype=np.float64)
+    D = np.asarray(dirs, dtype=np.float64)
+    nrm = np.linalg.norm(D, axis=1, keepdims=True)
+    D = np.divide(D, np.where(nrm > 1e-12, nrm, 1.0))
+    best = np.full(len(O), np.inf)
+    if not len(T) or not len(O):
+        return best
+    if chunk is None:
+        chunk = _auto_chunk(len(T))
+
+    a = V[T[:, 0]]
+    e1 = V[T[:, 1]] - a
+    e2 = V[T[:, 2]] - a
+    for s in range(0, len(O), chunk):
+        o = O[s:s + chunk]
+        d = D[s:s + chunk]
+        p = np.cross(d[:, None, :], e2[None, :, :])
+        det = np.einsum("rtj,tj->rt", p, e1)
+        ok = np.abs(det) > 1e-9
+        inv = np.zeros_like(det)
+        np.divide(1.0, det, out=inv, where=ok)
+        t0 = o[:, None, :] - a[None, :, :]
+        u = np.einsum("rtj,rtj->rt", t0, p) * inv
+        q = np.cross(t0, e1[None, :, :])
+        v = np.einsum("rtj,rj->rt", q, d) * inv
+        t = np.einsum("rtj,tj->rt", q, e2) * inv
+        hit = (ok & (u >= -1e-6) & (v >= -1e-6) & (u + v <= 1 + 1e-6)
+               & (t > tmin) & (t < tmax))
+        tt = np.where(hit, t, np.inf)
+        best[s:s + chunk] = tt.min(axis=1)
+    return best
+
+
 def closest_point_on_triangles(pts, a, b, c):
     """Closest point on each triangle (a,b,c) to each point. Vectorised, exact.
 
@@ -383,14 +444,75 @@ def noise_floor(origins, normals, verts, tris, *, amps=(0.005, 0.01, 0.02),
 # the ray along the INWARD normal hits garment, then the garment lies between
 # the skin and the body interior -- the skin has come through it. Skin merely
 # beside an open edge escapes in both directions and is simply uncovered.
+# DEPTH BANDS. One clipping percentage conflates defects that need different
+# fixes -- separating them by hand changed the conclusion every time it was
+# done, and on one shipped cuirass it immediately split four "3-9% bust
+# clipping" pieces into two that are 90% shallow poke-through and one that is
+# 100% sub-0.2u.
+#
+# WHAT THE SHALLOW BAND IS NOT: z-fighting. That was the working theory when
+# these bands were introduced (2026-08-01) and the ZOOM TEST FALSIFIED IT the
+# same day -- the user reports the sub-0.2u hip clipping is equally visible with
+# the camera right up against it, and z-fighting by definition is not. In
+# hindsight the theory never held numerically either: 0.2u is ~3mm of real
+# separation, orders of magnitude above depth-buffer precision at close range.
+# So a vert at 0.06u is the body genuinely coming through the garment by a
+# small amount, it is VISIBLE, and a clearance pass CAN act on it -- do not
+# dismiss this band as cosmetic. See docs and CLIPPING_LOG entry R7.
+#
+# What the bands are for is the SIZE of the correction, which differs by more
+# than an order of magnitude across them: the same hip band is 67% of verts
+# under 0.2u (median 0.123u) and 18% over 1u (up to 4.02u). A single push
+# budget cannot be right for both, and an average over them is right for
+# neither.
+#
+# The edges are not tuned to make a result: 0.2u is comfortably above the
+# ray-cast noise floor (0.005-0.02u jitter, see `noise_floor`) and comfortably
+# below the smallest push any pass applies, and 1.0u is the standoff the
+# clean-armour anchor sits at (median 1.15u on CuirassLight).
+CLIP_COINCIDENT = 0.2
+CLIP_BURIED = 1.0
+
+# Body-occlusion cast parameters, MODULE-level because a second implementation
+# of this gate exists (`standoff_audit.ClipTester.report`) and the two must not
+# be able to pick different numbers. See that method for what happened when the
+# gate lived in only one of them.
+BODY_TMAX = 200.0
+BODY_EPS = 0.05
+
+
 def clipping_report(body_verts, body_tris, body_normals, garments, *,
-                    tmax=5.0, mask=None):
+                    tmax=5.0, mask=None, body_occlusion=True, eps=BODY_EPS,
+                    body_tmax=BODY_TMAX):
     """Area-weighted covered / CLIPPING / uncovered for one armour.
 
     `garments`: list of (verts, tris) for every VISIBLE garment shape -- the
     union is the garment. `mask`: optional bool array of body verts to score.
     Percentages are of the masked skin AREA (vertex density is not uniform, so
     a vert count over-weights dense regions).
+
+    `body_occlusion` (default ON) rejects an inward hit that lies BEYOND the
+    body's own far wall. Without it the inward ray keeps going after leaving the
+    body and reports whatever it meets on the other side as clipping -- measured
+    on a shipped cuirass, 162 of 257 flagged hip verts (63%) were the skirt seen
+    across the gap between the legs, at a median 3.22u through the body interior.
+    A genuine poke-through is a fraction of a unit and is hit BEFORE any body
+    wall. The same test on the upper back, where the body is thick, rejected
+    NOTHING (0 of 38), which is what makes this a targeted fix and not a general
+    suppression: it only fires where a ray can actually escape.
+
+    Turn it off to reproduce pre-fix numbers. Anything recorded before
+    2026-08-01 was measured without it and reads HIGH in thin-geometry regions
+    (hip, inner thigh, armpit, between the breasts).
+
+    `eps`: minimum hit distance for the BODY cast, so the origin's own triangles
+    are not counted as the far wall.
+
+    `body_tmax` is deliberately far larger than `tmax`. The garment is looked for
+    within a few units; the far wall of a torso is a MEDIAN 12.8u away, so a body
+    cast sharing tmax=5 found no wall for 2409 of 3602 hip verts and the gate sat
+    inert on two thirds of the band. The two casts answer different questions and
+    need different ranges.
     """
     bV = np.asarray(body_verts, dtype=np.float64)
     bT = np.asarray(body_tris, dtype=np.int64).reshape(-1, 3)
@@ -408,15 +530,43 @@ def clipping_report(body_verts, body_tris, body_normals, garments, *,
 
     out_hit = np.zeros(len(idx), bool)
     in_hit = np.zeros(len(idx), bool)
-    for gv, gt in garments:
-        out_hit |= ~ray_exposure(bV[idx], n[idx], gv, gt, tmax=tmax)
-        in_hit |= ~ray_exposure(bV[idx], -n[idx], gv, gt, tmax=tmax)
+    # Depth of the inward garment hit, kept in BOTH branches so the bands do not
+    # exist only on the default path. `~ray_exposure` and `isfinite(first_hit)`
+    # test the identical predicate over the identical bounds (t > 1e-4, t < tmax)
+    # -- swapping one for the other returns the same `in_hit` and additionally
+    # yields the distance, which the bool form throws away.
+    t_gar = np.full(len(idx), np.inf)
+    if not body_occlusion:
+        for gv, gt in garments:
+            out_hit |= ~ray_exposure(bV[idx], n[idx], gv, gt, tmax=tmax)
+            t_gar = np.minimum(
+                t_gar, ray_first_hit(bV[idx], -n[idx], gv, gt, tmax=tmax))
+        in_hit = np.isfinite(t_gar)
+    else:
+        # Both casts share the TRUE origin so the distances are directly
+        # comparable. Only the BODY cast skips the first `eps`, to step over the
+        # origin's own triangles; the garment cast keeps full range so a shallow
+        # poke-through is still seen.
+        o_in = bV[idx]
+        d_in = -n[idx]
+        # Honoured as given, NOT clamped up to `tmax`: a silent override would
+        # hide exactly the inert-gate failure this parameter exists to prevent.
+        # Setting it below `tmax` disables the gate wherever the wall is further
+        # than that, which is the caller's choice to make explicitly.
+        t_body = ray_first_hit(o_in, d_in, bV, bT, tmax=body_tmax, tmin=eps)
+        for gv, gt in garments:
+            out_hit |= ~ray_exposure(bV[idx], n[idx], gv, gt, tmax=tmax)
+            t_gar = np.minimum(
+                t_gar, ray_first_hit(o_in, d_in, gv, gt, tmax=tmax))
+        # Behind the SKIN, not behind the whole BODY.
+        in_hit = np.isfinite(t_gar) & (t_gar < t_body)
     clip = in_hit & ~out_hit
     unc = ~in_hit & ~out_hit
     A = va[idx].sum()
     if A <= 0:
         return {"area": 0.0, "covered_pct": None, "clipping_pct": None,
-                "uncovered_pct": None, "n_verts": len(idx)}
+                "uncovered_pct": None, "n_verts": len(idx),
+                **depth_bands(np.empty(0), np.empty(0), 0.0)}
     return {
         "area": float(A),
         "covered_pct": float(100.0 * va[idx][out_hit].sum() / A),
@@ -424,4 +574,36 @@ def clipping_report(body_verts, body_tris, body_normals, garments, *,
         "uncovered_pct": float(100.0 * va[idx][unc].sum() / A),
         "clip_verts": int(clip.sum()),
         "n_verts": len(idx),
+        # Every clipping vert has a FINITE depth by construction -- `in_hit` is
+        # exactly `isfinite(t_gar)` on both branches -- so the three bands
+        # partition the clip set and their percentages sum to `clipping_pct`.
+        **depth_bands(t_gar[clip], va[idx][clip], A),
+    }
+
+
+def depth_bands(depths, areas, total_area) -> dict:
+    """Split a clipping set by how far behind the skin the garment sits.
+
+    Separate because the empty case has to produce the SAME keys as the full
+    one. A report that omits a key when a band is empty forces every consumer
+    to guess whether a missing band means zero or means "this build predates
+    the split", and one of those is a silent wrong answer.
+    """
+    d = np.asarray(depths, dtype=np.float64)
+    a = np.asarray(areas, dtype=np.float64)
+    coin = d < CLIP_COINCIDENT
+    bur = d >= CLIP_BURIED
+    sha = ~coin & ~bur
+    pct = (lambda m: float(100.0 * a[m].sum() / total_area)
+           if total_area > 0 else 0.0)
+    return {
+        "clip_coincident_pct": pct(coin),
+        "clip_shallow_pct": pct(sha),
+        "clip_buried_pct": pct(bur),
+        "clip_coincident_verts": int(coin.sum()),
+        "clip_shallow_verts": int(sha.sum()),
+        "clip_buried_verts": int(bur.sum()),
+        "clip_depth_median": float(np.median(d)) if len(d) else None,
+        "clip_depth_p90": float(np.percentile(d, 90)) if len(d) else None,
+        "clip_depth_max": float(d.max()) if len(d) else None,
     }

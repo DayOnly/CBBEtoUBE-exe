@@ -255,6 +255,18 @@ def check_one(rel_and_root):
                 if rp["covered_pct"] is not None and len(so):
                     rec["fit"] = {
                         "clip": round(float(rp["clipping_pct"]), 3),
+                        # Split by DEPTH. One percentage conflates 0.06u of
+                        # penetration with a 2u gap; both are visible in game
+                        # (the zoom test settled that the shallow band is NOT
+                        # cosmetic) but they need corrections an order of
+                        # magnitude apart, so one push budget cannot serve both.
+                        "clip_coincident": round(
+                            float(rp["clip_coincident_pct"]), 3),
+                        "clip_shallow": round(float(rp["clip_shallow_pct"]), 3),
+                        "clip_buried": round(float(rp["clip_buried_pct"]), 3),
+                        "clip_depth_p90": (
+                            None if rp["clip_depth_p90"] is None
+                            else round(float(rp["clip_depth_p90"]), 3)),
                         "covered": round(float(rp["covered_pct"]), 2),
                         "median": round(float(_np.median(so)), 3),
                         "p90": round(float(_np.percentile(so, 90)), 3),
