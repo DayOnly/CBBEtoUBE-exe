@@ -2154,6 +2154,9 @@ def verify_output(output_dir) -> dict:
 # model, so there is nothing to toggle and nothing to lose.
 
 _UBE_COVERED_CACHE: dict = {}
+# {same cache key -> {mod name: how many ARMOs it already covers for UBE}}.
+# Diagnostics only -- nothing in the convert path reads it.
+_UBE_COVERED_BY_MOD: dict = {}
 
 # Written as a comment into every SkyPatcher INI we emit, and read back by
 # `_is_our_own_output`.
@@ -2368,6 +2371,12 @@ def _third_party_ube_covered_armos(mods_root, enabled_names=None,
             for t in _skypatcher_forms(targets):
                 _add(t, mod_name)
 
+    # Per-mod attribution, kept for diagnostics. The exclusion set alone answers
+    # "how many armors are already UBE-covered" but not "BY WHAT" -- and that is
+    # the question to answer before deciding whether a provider is a hand-made
+    # patch worth keeping or a replacer to disable. Recorded from the SAME scan,
+    # so it can never disagree with the set it explains.
+    _UBE_COVERED_BY_MOD[key] = dict(by_mod)
     if by_mod:
         top, n = max(by_mod.items(), key=lambda kv: kv[1])
         # A single mod supplying most of a large exclusion set is the shape of
