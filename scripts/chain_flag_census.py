@@ -47,10 +47,13 @@ sys.path.insert(0, str(_REPO / ".pynifly"))
 
 import numpy as np                                        # noqa: E402
 from scripts import standoff_audit as sa                  # noqa: E402
+# The bust band and its vert floor are IMPORTED, not restated. Two definitions of
+# one concept drift -- `clipping_report` and `ClipTester` disagreed for a whole
+# release that way -- and a census measuring a different band from the postflight
+# it is compared against answers a different question.
+from scripts.postflight_1_2 import FIT_BAND, FIT_MIN_VERTS  # noqa: E402
 import src.nif_convert as nc                              # noqa: E402
 
-FIT_BAND = (90.0, 102.0)     # breast z, apex ~95 (pinned)
-FIT_MIN_VERTS = 50
 COVERED_MIN = 25.0           # % of bust-front area the garment must cover
 
 
