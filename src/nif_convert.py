@@ -4398,6 +4398,131 @@ def snap_armor_outside_body(
     return armor_verts.astype(np.float32)
 
 
+# ------------------------------------------------- #unified-offset (opt-in)
+# ONE clearance floor, solved once, applied once -- replacing the three passes
+# that are all really asserting the same thing.
+#
+# `inflate_armor_outward` computes its per-vert magnitude as
+#     clip(ADAPTIVE_CLEARANCE_BASE + MORPH_FACTOR*amp, BASE, MORPH_MAX)
+# and `clear_armor_outside_body` computes its adaptive clearance the SAME way.
+# They are the same number, computed twice, applied on opposite sides of
+# `conform_to_source_standoff` -- and because inflate is ADDITIVE while conform
+# is ABSOLUTE, conform simply overwrites it. Measured over 38 shapes: inflate
+# CANCELLED by conform on 12 of 32 instances, every cancellation naming conform.
+#
+# Stated as a FLOOR applied AFTER the target, the same intent cannot be
+# overwritten:  offset_final = max(conform's target, clearance floor).
+#
+# SCOPE OF THIS WIRING -- deliberately narrow, so the A/B can attribute what it
+# measures:
+#   * REPLACES `inflate_armor_outward` + `clear_armor_outside_body`. Those two
+#     are the pair that fight through `conform`, and their adaptive term is
+#     literally the same formula computed twice.
+#   * `conform_to_source_standoff` KEEPS setting the target and still runs
+#     first; the floor is applied after it and so cannot be overwritten.
+#   * `_inflate_cloth_over_bust_butt` is LEFT ALONE. It serves shapes the
+#     anti-poke skips (soft-body / HDT-rigged), a disjoint population, so there
+#     is no conflict there to resolve and folding it in would widen the change
+#     for no measurable gain.
+#   * NO CEILING is introduced. `max_push_out`/`max_pull` are MOVE caps, not
+#     offset ceilings; adding one would smuggle a new constraint in under the
+#     banner of consolidation and the A/B could not attribute the result.
+UNIFIED_OFFSET = os.environ.get(
+    "CBBE2UBE_UNIFIED_OFFSET", "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _unified_clearance_floor(
+    verts, body_verts, body_normals, *,
+    body_nipple=None, morph_amplitude=None, tris=None, chain_mask=None,
+    flat_clear=ANTIPOKE_FLAT_CLEAR, bust_clear=ANTIPOKE_BUST_CLEAR,
+    nipple_gain=ANTIPOKE_NIPPLE_GAIN, bust_z=(84.0, 100.0),
+    max_push=3.0, max_body_dist=10.0, feather_iters=2,
+    region_standoffs=True, uniform_clear=0.0,
+):
+    """Per-vert clearance FLOOR, solved and applied once. Returns new verts.
+
+    The floor at a vert is the MAX of every clearance any pass would have
+    asserted there -- adaptive morph clearance, the flat/bust anti-poke clears,
+    and the rear/calf/thigh standoffs -- because they are all lower bounds on
+    the same quantity and the strictest one is the one that matters.
+
+    Verts further than `max_body_dist` from the body are untouched: a loose robe
+    has no clearance requirement, and pushing it is the over-inflation that
+    reached the user twice.
+
+    `chain_mask` is the PIN, as a weight rather than a restore: a simulated vert
+    is never moved, so nothing is done and then discarded.
+    """
+    from . import offset_field as _of
+    V = np.asarray(verts, np.float64)
+    B = np.asarray(body_verts, np.float64)
+    if len(V) == 0 or len(B) == 0:
+        return V
+    N = np.asarray(body_normals, np.float64)
+    off, j, dist = _of.current_offset(V, B, N)
+
+    bz = B[j][:, 2]
+    # `uniform_clear` is the inflate-replacement term: one clearance everywhere
+    # the pass reaches, which is what inflate asserted. The named region clears
+    # below belong to the anti-poke and are switched OFF when this stands in for
+    # inflate alone -- widening the anti-poke's regions to the shapes inflate
+    # covers would be a different change wearing this one's name.
+    floor = np.full(len(V), max(float(flat_clear), float(uniform_clear)))
+    # bust band, with the nipple gain where the body says there is one
+    in_bust = (bz >= bust_z[0]) & (bz <= bust_z[1])
+    bust_val = np.full(len(V), float(bust_clear))
+    if body_nipple is not None:
+        try:
+            nip = np.asarray(body_nipple, np.float64)
+            if len(nip) == len(B):
+                bust_val = bust_val * (1.0 + (float(nipple_gain) - 1.0)
+                                       * np.clip(nip[j], 0.0, 1.0))
+        except Exception:
+            pass
+    if float(bust_clear) > 0.0:
+        floor = np.where(in_bust, np.maximum(floor, bust_val), floor)
+    # region standoffs -- same bands and values the anti-poke already uses
+    ny = N[j][:, 1] if N.ndim == 2 and N.shape[1] == 3 else np.zeros(len(V))
+    for lo, hi, val, rear in (() if not region_standoffs else (
+            (REAR_STANDOFF_Z_LO, REAR_STANDOFF_Z_HI, REAR_STANDOFF, True),
+            (CALF_STANDOFF_Z_LO, CALF_STANDOFF_Z_HI, CALF_STANDOFF, False),
+            (THIGH_STANDOFF_Z_LO, THIGH_STANDOFF_Z_HI, THIGH_STANDOFF, False))):
+        if float(val) <= 0.0:
+            continue
+        m = (bz >= lo) & (bz <= hi)
+        if rear:
+            m = m & (ny < -abs(REAR_STANDOFF_NY))
+        floor = np.where(m, np.maximum(floor, float(val)), floor)
+    # adaptive morph clearance -- the term inflate and the anti-poke BOTH
+    # compute, here once
+    if (ADAPTIVE_CLEARANCE_ENABLED and morph_amplitude is not None):
+        try:
+            amp = np.asarray(morph_amplitude, np.float64)
+            if len(amp) == len(B):
+                floor = np.maximum(floor, np.clip(
+                    ADAPTIVE_CLEARANCE_BASE
+                    + ADAPTIVE_CLEARANCE_MORPH_FACTOR * amp[j],
+                    ADAPTIVE_CLEARANCE_BASE, ADAPTIVE_CLEARANCE_MORPH_MAX))
+        except Exception:
+            pass
+
+    weight = np.ones(len(V))
+    weight[dist > float(max_body_dist)] = 0.0     # nothing to clear out here
+    if chain_mask is not None:
+        try:
+            cm = np.asarray(chain_mask, bool)
+            if len(cm) == len(V):
+                weight[cm] = 0.0
+        except Exception:
+            pass
+    target = _of.solve(off, floor=floor)
+    # OUTWARD ONLY. A floor may raise a vert off the body; it must never pull
+    # one in -- that is the target pass's job and this must not fight it.
+    target = np.maximum(target, off)
+    return _of.apply(V, N, j, off, target, max_move=max_push,
+                     weight=weight, tris=tris, feather_iters=feather_iters)
+
+
 def inflate_armor_outward(
     armor_verts: np.ndarray,
     body_verts: np.ndarray,
@@ -16544,6 +16669,15 @@ def convert_nif_phase2(
                 # Slot-aware inflation to maintain standoff under body morphs.
                 _infl_mag_p2 = _slot_aware_inflation_magnitude(
                     biped_slots, shape=s)
+                # #unified-offset: inflate is ADDITIVE and conform, which runs
+                # next, is ABSOLUTE -- so conform overwrites it (measured
+                # cancelled on 12 of 32 shapes). With the unified pass on, the
+                # same magnitude is asserted as a FLOOR after conform instead;
+                # `_infl_gate_p2` carries it there so the replacement fires on
+                # exactly the shapes inflate fired on.
+                _infl_gate_p2 = _infl_mag_p2
+                if UNIFIED_OFFSET:
+                    _infl_mag_p2 = 0.0
                 if _infl_mag_p2 > 0 and body_verts_for_p2 is not None:
                     try:
                         _morph_amp_p2 = _cached_body_morph_amplitude(
@@ -16608,6 +16742,50 @@ def convert_nif_phase2(
                         _stage('groove_smooth', override)
                     except Exception as _pe:
                         _note_pass_failure("_smooth_warp_grooves", _pe)
+                # #unified-offset: inflate's clearance, restated as a FLOOR and
+                # moved to AFTER the absolute target that used to overwrite it.
+                # Runs wherever inflate ran (same gate, same magnitude) -- NOT
+                # in the anti-poke's branch, which is narrower: an SMP-rigged
+                # shape never enters it, so putting the replacement there while
+                # gating inflate off left exactly those shapes with LESS
+                # clearance than before. After groove_smooth so smoothing cannot
+                # push a vert back under the floor.
+                if (UNIFIED_OFFSET and override is not None
+                        and _infl_gate_p2 > 0
+                        and body_verts_for_p2 is not None
+                        and body_norms_for_p2 is not None):
+                    try:
+                        _uf_v = np.asarray(override, dtype=np.float64)
+                        _uf_n = len(_uf_v)
+                        _uf_vw = [dict() for _ in range(_uf_n)]
+                        for _b, _prs in (s.bone_weights or {}).items():
+                            for _vi, _w in _prs:
+                                _iv = int(_vi)
+                                if 0 <= _iv < _uf_n:
+                                    _uf_vw[_iv][_b] = _uf_vw[_iv].get(
+                                        _b, 0.0) + float(_w)
+                        try:
+                            _uf_amp = _cached_body_morph_amplitude(
+                                _find_ube_body_osd(), body_norms_for_p2,
+                                len(body_verts_for_p2))
+                        except Exception:
+                            _uf_amp = None
+                        override = _unified_clearance_floor(
+                            _uf_v, body_verts_for_p2, body_norms_for_p2,
+                            morph_amplitude=_uf_amp,
+                            tris=np.asarray(s.tris, dtype=np.int64),
+                            chain_mask=np.asarray(
+                                _chain_vert_mask(_uf_vw, _uf_n), bool),
+                            # inflate's own reach and budget, not the
+                            # anti-poke's -- this replaces inflate ONLY.
+                            flat_clear=0.0, bust_clear=0.0,
+                            region_standoffs=False,
+                            uniform_clear=float(_infl_gate_p2),
+                            max_push=float(_infl_gate_p2),
+                            max_body_dist=ARMOR_INFLATION_FALLOFF_DISTANCE)
+                        _stage('unified_floor', override)
+                    except Exception as _pe:
+                        _note_pass_failure("_unified_clearance_floor", _pe)
             except Exception as e:
                 failed.append((f"{s.name}:warp", repr(e)))
         elif body_verts_for_p2 is not None:

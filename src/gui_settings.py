@@ -120,6 +120,18 @@ SETTINGS: "tuple[Setting, ...]" = (
             tooltip="Give stacked garments (shirt under vest) separated "
                     "clearance floors so layers don't converge and z-fight "
                     "where the body grows."),
+    Setting("unified_offset", "Unified clearance floor (experimental)",
+            "Armor", "Fit and conform", default=False,
+            env="CBBE2UBE_UNIFIED_OFFSET", invert=False,
+            tooltip="Solve one clearance floor per vertex and apply it once, "
+                    "instead of inflating before the standoff conform and "
+                    "pushing again after it. The inflate is additive and the "
+                    "conform is absolute, so today the conform overwrites the "
+                    "inflate on about a third of shapes; stated as a floor "
+                    "AFTER the conform the same clearance survives. Feathers "
+                    "once rather than twice, and spends one budget per vertex "
+                    "instead of several. Experimental: changes the fit of "
+                    "body-slot armour, so test it before a full reconvert."),
     Setting("chest_follow", "Chest follow ratio (experimental)",
             "Armor", "Jiggle and physics transfer", default=False,
             env="CBBE2UBE_CHEST_FOLLOW", invert=False,
