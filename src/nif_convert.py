@@ -7117,6 +7117,30 @@ CHAIN_TORSO_CLAIM = (
     in ("1", "true", "yes", "on"))
 
 
+def _carrier_chain_fraction(shape) -> float:
+    """Fraction of a shape's verts driven by a CUSTOM (non-skeleton) bone.
+
+    The same 0.1 threshold and the same skeleton test every other pass uses, so
+    "is this vert cloth" means one thing across the converter. Returns 0.0 on any
+    error -- a shape we cannot read is treated as fully rigid, which for
+    #rigid-majority-softbody-gate means "do not invent physics for it", the safe
+    direction (the source shipped none).
+    """
+    try:
+        n = len(shape.verts)
+        if not n:
+            return 0.0
+        vw = [dict() for _ in range(n)]
+        for b, pairs in (shape.bone_weights or {}).items():
+            for vi, w in pairs:
+                iv = int(vi)
+                if 0 <= iv < n:
+                    vw[iv][b] = vw[iv].get(b, 0.0) + float(w)
+        return sum(_chain_vert_mask(vw, n)) / float(n)
+    except Exception:
+        return 0.0
+
+
 def _chain_vert_mask(vw, n) -> "list":
     """Per-vert: is this vertex driven by a CUSTOM (non-skeleton) bone, i.e. is it
     SIMULATED cloth rather than skinned armour? Same 0.1 threshold every other pass
@@ -13569,6 +13593,21 @@ def _is_unconstrained_collision_pair(
 # body-conforming carrier must stay skinned+morphable, NOT become soft-body.
 # Calibrated on real output: a pantyhose reads max-standoff 3.7u / 100% within
 # 4u; every loose skirt/cape has verts hanging 8-23u out. #tight-softbody-gate
+# #rigid-majority-softbody-gate -- OPT-IN, default OFF. Changes physics for a
+# whole class (55% of generated soft-bodies at threshold 0.5, ~37% at 0.15), so
+# it needs equip-CTD and cloth-collapse checks in game, not just a clip number.
+# GUI entry `rigid_majority_softbody` exists so it can actually be tested: an
+# env-only behaviour toggle is unreachable under MO2 and can never be validated.
+RIGID_MAJORITY_SOFTBODY_GATE = os.environ.get(
+    "CBBE2UBE_RIGID_MAJORITY_SOFTBODY", "").strip().lower() in (
+        "1", "true", "yes", "on")
+# Chain fraction below which a shape is "not a cloth garment". Census of 216
+# generated soft-bodies: p25 0.030, p50 0.355, p75 0.788 -- continuous, no
+# natural gap. 0.15 clears the measured 0.0535 failure and stays well under the
+# median. TUNE THIS AGAINST THE CENSUS, not against one piece.
+RIGID_MAJORITY_CHAIN_MIN = float(
+    os.environ.get("CBBE2UBE_RIGID_MAJORITY_CHAIN_MIN", "0.15"))
+
 _TIGHT_SOFTBODY_GATE = (
     os.environ.get("CBBE2UBE_NO_TIGHT_SOFTBODY_GATE", "").strip().lower()
     not in ("1", "true", "yes", "on")
@@ -13800,6 +13839,49 @@ def _generate_hdt_xml_for_dst(dst_path: "Path", only_loose: bool = False) -> "st
                 print(f"  tight-softbody gate: {', '.join(_dropped)} kept "
                       f"skinned+morphable (body-conforming; no generated soft-body)",
                       file=sys.stderr)
+            except Exception:
+                pass
+
+    # #rigid-majority-softbody-gate: a shape that is mostly RIGID must not be
+    # declared simulated cloth just because a small flap on it is chain-driven.
+    #
+    # The soft-body decision is per SHAPE; chain drive is per VERTEX. Measured
+    # cause of 7.5-8.1% bust clipping on a vanilla-style cuirass: 5511 verts, 27
+    # bones, THREE custom skirt-flap bones driving 295 verts (5.4%). The source
+    # shipped NO physics at all; we invented a per-vertex soft-body over the
+    # whole shape, so the 94.6% of rigid cuirass covering the bust became
+    # simulated cloth -- and simulated cloth does not follow BodyMorph. Breast
+    # follow measured 0.0000, the UBE breast punched straight through, and no
+    # clearance pass could reach it (three were tried and all failed).
+    #
+    # THRESHOLD, and it is a judgement call, so here is the census it rests on.
+    # Over the 216 GENERATED soft-body shapes in a shipped pack the chain
+    # fraction is continuous with no natural gap -- p25 0.030, p50 0.355,
+    # p75 0.788 -- and 27% sit under 0.05, i.e. declared cloth while essentially
+    # nothing on them is chain-driven. 0.15 sits clear of the measured 0.0535
+    # failure and well below the median, so it reads as "under 15% chain-driven
+    # is not a cloth garment" rather than as a fit to one piece.
+    #
+    # THE TRADE, stated: the flap loses its swing (the whole shape stays
+    # kinematic) and the panel keeps its morph-follow. Splitting the shape would
+    # give both and is the better long-term answer; this is the cheap half.
+    # Mirrors #tight-softbody-gate, which already keeps body-conforming garments
+    # skinned+morphable for the same underlying reason.
+    if only_loose and RIGID_MAJORITY_SOFTBODY_GATE and carriers:
+        _kept, _dropped = [], []
+        for c in carriers:
+            fr = _carrier_chain_fraction(c)
+            (_dropped if fr < RIGID_MAJORITY_CHAIN_MIN
+             else _kept).append((c.name, fr))
+        if _dropped:
+            _keep_names = {n for n, _f in _kept}
+            carriers = [c for c in carriers if c.name in _keep_names]
+            try:
+                print("  rigid-majority gate: "
+                      + ", ".join(f"{n} ({100 * f:.1f}% chain)"
+                                  for n, f in _dropped)
+                      + " kept skinned+morphable (mostly rigid; no generated "
+                        "soft-body)", file=sys.stderr)
             except Exception:
                 pass
 

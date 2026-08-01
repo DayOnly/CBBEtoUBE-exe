@@ -120,6 +120,20 @@ SETTINGS: "tuple[Setting, ...]" = (
             tooltip="Give stacked garments (shirt under vest) separated "
                     "clearance floors so layers don't converge and z-fight "
                     "where the body grows."),
+    Setting("rigid_majority_softbody", "Keep mostly-rigid armour skinned "
+            "(experimental)",
+            "Armor", "Jiggle and physics transfer", default=False,
+            env="CBBE2UBE_RIGID_MAJORITY_SOFTBODY", invert=False,
+            tooltip="When a small chain-driven flap shares one shape with a "
+                    "large rigid panel, the converter currently gives the WHOLE "
+                    "shape simulated cloth physics -- and simulated cloth does "
+                    "not follow body sliders, so the body pushes through the "
+                    "rigid part. Measured on a cuirass whose 5%%-of-verts skirt "
+                    "flap made all of it simulated: breast follow 0.00 and "
+                    "7.5%% bust clipping. This keeps such shapes skinned and "
+                    "morphable. Trade-off: the flap stops swinging. "
+                    "Experimental -- changes physics, so check for equip "
+                    "crashes and collapsing cloth, not just clipping."),
     Setting("unified_offset", "Unified clearance floor (experimental)",
             "Armor", "Fit and conform", default=False,
             env="CBBE2UBE_UNIFIED_OFFSET", invert=False,
