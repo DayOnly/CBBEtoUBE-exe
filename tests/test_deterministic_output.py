@@ -195,3 +195,65 @@ def test_piece_log_is_reset_at_the_single_entry_point_only():
     src = inspect.getsource(nc)
     assert src.count("_begin_piece_pass_log()") == 2, (
         "expected exactly one definition and one call site")
+
+
+def _silent_handlers_wrapping(names, path):
+    """(line, func) for `except: pass` whose try body calls one of `names`."""
+    tree = ast.parse(Path(path).read_text(encoding="utf-8", errors="ignore"))
+    parents = {c: p for p in ast.walk(tree) for c in ast.iter_child_nodes(p)}
+    out = []
+    for n in ast.walk(tree):
+        if not isinstance(n, ast.Try):
+            continue
+        if not any(len(h.body) == 1 and isinstance(h.body[0], ast.Pass)
+                   for h in n.handlers):
+            continue
+        called = set()
+        for c in ast.walk(ast.Module(body=n.body, type_ignores=[])):
+            if isinstance(c, ast.Call):
+                f = c.func
+                called.add(f.id if isinstance(f, ast.Name) else
+                           (f.attr if isinstance(f, ast.Attribute) else ""))
+        hit = called & set(names)
+        if hit:
+            fn = "?"
+            cur = n
+            while cur in parents:
+                cur = parents[cur]
+                if isinstance(cur, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    fn = cur.name
+                    break
+            out.append((n.lineno, fn, sorted(hit)))
+    return out
+
+
+def test_no_fit_pass_failure_is_swallowed_silently():
+    """A pass that RAISES must never be indistinguishable from one that ran and
+    did nothing -- the shape of the failure that cost three wrong verdicts.
+
+    Swept the whole module: 30 such handlers existed, all now record. This
+    fails if a new one appears.
+    """
+    PASSES = ("_match_limb_motion_to_body", "_match_leg_motion_to_body",
+              "_match_arm_motion_to_body", "_match_spine_motion_to_body",
+              "_transfer_body_jiggle_to_fitted", "_conform_fitted_to_body",
+              "_match_rigid_leg_bend_to_body", "_weld_cross_shape_seams",
+              "_repair_layer_order", "_conform_cords_to_host",
+              "_sync_abdomen_layered_cloth_weights",
+              "_sync_chest_layered_cloth_weights",
+              "_split_bust_collider_shape", "_split_bust_collider_xml",
+              "_smooth_warp_grooves", "_precreate_custom_bone_chains")
+    bad = _silent_handlers_wrapping(PASSES, nc.__file__)
+    assert not bad, (
+        "fit-pass failure swallowed silently at " +
+        "; ".join(f"{f}():{ln} ({','.join(h)})" for ln, f, h in bad))
+
+
+def test_no_mesh_write_is_swallowed_silently():
+    """A swallowed SAVE is worse than a swallowed pass: the piece ships
+    unconverted or half-written while reporting success."""
+    WRITES = ("atomic_nif_save", "setShapeWeights", "add_bone")
+    bad = _silent_handlers_wrapping(WRITES, nc.__file__)
+    assert not bad, (
+        "mesh write swallowed silently at " +
+        "; ".join(f"{f}():{ln} ({','.join(h)})" for ln, f, h in bad))

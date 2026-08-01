@@ -2131,8 +2131,11 @@ def generate_ube_patch(
                                    encoding="utf-8")
         elif _sp_sidecar.is_file():
             _sp_sidecar.unlink()   # stale sidecar from an older run
-    except OSError:
-        pass
+    except OSError as _e:
+        # NOT silent: the merge reads it to emit armorAddonsToAdd lines.
+        import sys as _sys
+        print(f"  WARN: skypatcher-links sidecar not written ({_e}) -- the merge reads it to emit armorAddonsToAdd lines",
+              file=_sys.stderr)
 
     # Sidecar for the female-model re-check: ARMAs whose female model was
     # redirected to the male mesh at patch time (female NIF not yet converted).
@@ -2148,8 +2151,11 @@ def generate_ube_patch(
                                encoding="utf-8")
         elif sidecar.is_file():
             sidecar.unlink()  # stale sidecar from an older run of this patch
-    except OSError:
-        pass  # sidecar is an optimization; the patch itself is complete
+    except OSError as _e:
+        # NOT silent: restore_female_models cannot re-point female models.
+        import sys as _sys
+        print(f"  WARN: male-fallback sidecar not written ({_e}) -- restore_female_models cannot re-point female models",
+              file=_sys.stderr)
 
     # Post-save structural sanity check. Catches subrecord-ordering bugs
     # (like MODL-after-DATA), broken master ordering, FormID drift, and
@@ -3372,8 +3378,11 @@ def _emit_coverage_pieces(
                     sc.write_text(_json.dumps(doc, indent=1), encoding="utf-8")
                 elif sc.is_file():
                     sc.unlink()
-            except OSError:
-                pass
+            except OSError as _e:
+                # NOT silent: that piece's armature links are lost at merge.
+                import sys as _sys
+                print(f"  WARN: coverage-piece skypatcher sidecar not written ({_e}) -- that piece's armature links are lost at merge",
+                      file=_sys.stderr)
 
     return {"pieces": pieces, "ini_lines": ini_lines, "minted_armas": total_minted,
             "esl_flagged": all_esl, "masters": masters_count,

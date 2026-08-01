@@ -3675,8 +3675,8 @@ def convert_nif(
                         import sys as _sys
                         print(f"  waist jiggle sync: matched {n_async} inner-layer "
                               f"vert(s) to the outer layer", file=_sys.stderr)
-                except Exception:
-                    pass  # best-effort; failure leaves shapes as-is
+                except Exception as _pe:
+                    _note_pass_failure("_sync_layered_cloth_weights", _pe)
 
             # Cross-plate seam weld: close gaps where adjacent solid plates
             # that share a seam drifted apart under independent warp. Runs
@@ -3697,8 +3697,8 @@ def convert_nif(
                         import sys as _sys
                         print(f"  seam weld: closed {n_weld} cross-plate seam "
                               f"vert(s)", file=_sys.stderr)
-                except Exception:
-                    pass  # best-effort; failure leaves seams as-is
+                except Exception as _pe:
+                    _note_pass_failure("_weld_cross_shape_seams", _pe)
 
             # Effect-shader decal overlays (Daedric red glow etc.) must RIDE
             # their underlying plate, not be warped independently -- else the
@@ -3997,8 +3997,11 @@ def convert_nif(
             nf_for_vb = pyn_for_vb.NifFile(filepath=str(dst_path))
             if _hide_virtual_body(nf_for_vb):
                 atomic_nif_save(nf_for_vb, dst_path)
-        except Exception:
-            pass  # best-effort; doesn't break the conversion
+        except Exception as _pe:
+            # It does not break the conversion, but an unhidden VirtualBody
+            # renders as a SECOND body in game -- a visible defect, not a
+            # nothing. Runs in a worker, so it must ride home in `reason`.
+            _note_pass_failure("virtualbody-hide", _pe)
 
         # Multi-partition collapse — see _normalize_partitions_on_disk.
         _normalize_partitions_on_disk(dst_path, src_path)
@@ -16830,8 +16833,9 @@ def convert_nif_phase2(
                 import sys as _sys
                 print(f"  waist jiggle sync: matched {n_async} inner-layer "
                       f"vert(s) to the outer layer", file=_sys.stderr)
-        except Exception:
-            pass  # best-effort; failure leaves shapes as-is
+        except Exception as _pe:
+            # wraps BOTH the chest and abdomen sync -- either can raise
+            _note_pass_failure("_sync_layered_cloth_weights", _pe)
 
     # Layer ride: the per-shape fit passes above displaced each layer by its OWN
     # distance to the body, so a stacked garment's layers drift apart/through each
@@ -16864,8 +16868,8 @@ def convert_nif_phase2(
                 import sys as _sys
                 print(f"  layer order: restored {n_ord} vert(s) to their source "
                       f"side of a neighbouring layer", file=_sys.stderr)
-        except Exception:
-            pass  # best-effort; failure leaves the layer order as the passes left it
+        except Exception as _pe:
+            _note_pass_failure("_repair_layer_order", _pe)
 
     # Cord/trim conform: laces/cords/piping thread half-in/half-out of their host by
     # design, so the layer passes above can't place them. Glue them to the host's FINAL
@@ -16880,8 +16884,8 @@ def convert_nif_phase2(
                 import sys as _sys
                 print(f"  cord conform: glued {n_cord} cord/trim vert(s) to their "
                       f"host surface", file=_sys.stderr)
-        except Exception:
-            pass  # best-effort; failure leaves cords independently warped
+        except Exception as _pe:
+            _note_pass_failure("_conform_cords_to_host", _pe)
 
     # Degenerate-triangle repair: prior passes can pinch thin tris flat -> black
     # slivers. Restore collapsed tris to source-relative shape; source-degenerate
@@ -16936,8 +16940,8 @@ def convert_nif_phase2(
                 import sys as _sys
                 print(f"  seam weld: closed {n_weld} cross-plate seam vert(s)",
                       file=_sys.stderr)
-        except Exception:
-            pass  # best-effort; failure leaves seams as-is
+        except Exception as _pe:
+            _note_pass_failure("_weld_cross_shape_seams", _pe)
 
     # Effect-shader decal overlays (Daedric red glow etc.) must RIDE their
     # underlying plate, not be warped independently -- else the thin source

@@ -938,8 +938,14 @@ def _write_failures_file() -> None:
         _failures_file_path().write_text(
             _json.dumps({"failures": _RUN_FAILURES}, indent=1),
             encoding="utf-8")
-    except OSError:
-        pass
+    except OSError as _e:
+        # THE FAILURE REPORT ITSELF. Swallowing this means a run with failures
+        # looks exactly like a clean one to anything reading the file -- the
+        # worst place in the pipeline to be quiet.
+        import sys as _sys
+        print(f"  WARN: could not write the failures file ({_e}) -- "
+              f"{len(_RUN_FAILURES)} recorded failure(s) will not appear there",
+              file=_sys.stderr)
 
 
 def _warn_if_skypatcher_missing() -> bool:
@@ -1699,10 +1705,22 @@ def auto_convert_mod(
                         _nif_invariant_issues(
                             dst.name, nf_check.shapes,
                             _nc.SKIN_PARTITION_BONE_CAP))
-                except Exception:
-                    pass
-        except ImportError:
-            pass
+                except Exception as _ive:
+                    # A postflight check that RAISES reports no warnings, which
+                    # reads identically to a NIF that passed. Record the failure
+                    # in the same list the warnings go to, so the report cannot
+                    # imply this file was checked when it was not.
+                    result.nif_invariant_warnings.append(
+                        f"{dst.name}: postflight invariant check FAILED to run "
+                        f"({_ive!r}) -- this file is UNCHECKED, not clean")
+        except ImportError as _ie:
+            # Without pynifly the ENTIRE post-conversion load check is skipped:
+            # no load-rejection detection, no VirtualBody re-hide, no postflight.
+            # Silence here makes an unverified run look like a verified one.
+            import sys as _sys
+            print(f"  WARN: post-conversion load check skipped -- pynifly "
+                  f"unavailable ({_ie}). Output was NOT re-loaded or verified.",
+                  file=_sys.stderr)
 
     # --- report ---
     report_name = f"conversion_report_{source_dir.name}.txt"
