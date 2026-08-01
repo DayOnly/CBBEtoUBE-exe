@@ -4449,6 +4449,14 @@ UNIFIED_OFFSET = os.environ.get(
 UNIFIED_OFFSET_FLOOR = os.environ.get(
     "CBBE2UBE_UNIFIED_OFFSET_FLOOR", "").strip().lower() in (
         "1", "true", "yes", "on")
+# A TUNING KNOB (numeric, so env-only is fine per the flag rule): how much
+# headroom `conform` leaves above the authored drape when it reels a garment in.
+#
+# Both attempts to REPLACE inflate failed on REACH -- a floor touches 5.6% of
+# verts and a conform margin ~16%, against inflate's 75%. This is the composition
+# instead of the replacement: inflate keeps its reach AND conform stops reeling
+# the result quite so tight. 0.0 is exactly today's behaviour.
+CONFORM_MARGIN = float(os.environ.get("CBBE2UBE_CONFORM_MARGIN", "0.0"))
 
 
 def _unified_clearance_floor(
@@ -16735,11 +16743,13 @@ def convert_nif_phase2(
                             ube_body_nipple=body_nipple_for_p2,
                             morph_amplitude=_amp_conf,
                             tris=np.asarray(s.tris, dtype=np.int64),
-                            # candidate (c): inflate's headroom folded into the
-                            # authored-drape target rather than run as its own
-                            # additive pass. Zero unless UNIFIED_OFFSET.
+                            # UNIFIED_OFFSET = candidate (c), inflate REPLACED by
+                            # this margin (measured worse -- A16). Otherwise the
+                            # standalone knob, which COMPOSES with inflate
+                            # instead of replacing it.
                             conform_margin=(float(_infl_gate_p2)
-                                            if UNIFIED_OFFSET else 0.0),
+                                            if UNIFIED_OFFSET
+                                            else CONFORM_MARGIN),
                         )
                         _stage('conform', override)
                     except Exception as e:
