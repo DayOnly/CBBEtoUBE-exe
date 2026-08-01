@@ -139,10 +139,26 @@ def test_row_fallback_never_relaxes_the_collider_or_softbody_skip():
 
 def test_skips_colliders_and_softbody():
     """Standing rule: every skin pass leaves authored physics geometry alone --
-    a skin pass touching an SMP collider CTDs, and touching softbody drifts."""
+    a skin pass touching an SMP collider CTDs, and touching softbody drifts.
+
+    The three checks are NOT equivalent any more, and lumping them together is
+    how this test went stale. Collider and soft-body membership come FROM the
+    physics XML and are absolute. `_shape_has_hdt_smp_rigging` is a NAME-COUNT
+    heuristic (>40% of a shape's bones unknown to the body) and since
+    #smp-row-gate it no longer skips the whole shape for an opted-in family --
+    it falls back to the same test applied per ROW. Asserting all three
+    identically implied a guarantee the middle one no longer gives.
+    """
     src = inspect.getsource(nc._match_limb_motion_to_body)
+    # ABSOLUTE -- these must keep short-circuiting the whole shape
     assert "_hdt_collider_shape_names" in src
     assert "_hdt_softbody_shape_names" in src
+    assert "in collider_names or" in src, (
+        "collider/softbody membership must still skip the shape outright")
+    # CONDITIONAL by design -- the heuristic, not the XML
+    assert "if not smp_row_gate:" in src, (
+        "the SMP-rigging heuristic must be the conditional one: a family that "
+        "opts in falls back to the per-row test instead of skipping the shape")
     assert "_shape_has_hdt_smp_rigging" in src
 
 

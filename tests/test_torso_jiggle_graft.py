@@ -167,10 +167,30 @@ def test_simulated_cloth_is_never_grafted_regardless_of_mode():
 def test_chain_verts_are_skipped_per_vertex():
     """A vert a custom bone drives is simulated: it has no rest position to follow
     the body from, and rewriting it is a partition hazard. True in BOTH modes."""
+    import ast
     import inspect
+    import textwrap
     src = inspect.getsource(nc._transfer_body_jiggle_to_fitted)
     assert "if is_chain[i]:" in src
-    assert "continue  # custom-chain vert" in src
+
+    # The guard's BODY must be a bare `continue`, checked on the parse tree
+    # rather than by matching the source line.
+    #
+    # This used to read `assert "continue  # custom-chain vert" in src`, which
+    # pinned the COMMENT's exact wording: rewording it broke the test while the
+    # behaviour was untouched, and it added nothing the `if is_chain[i]:` line
+    # above does not already cover. A test coupled to comment text trains people
+    # to edit tests to match comments.
+    tree = ast.parse(textwrap.dedent(src))
+    guards = [n for n in ast.walk(tree)
+              if isinstance(n, ast.If)
+              and isinstance(n.test, ast.Subscript)
+              and getattr(n.test.value, "id", None) == "is_chain"]
+    assert guards, "no `if is_chain[i]:` guard found in the parse tree"
+    assert any(len(g.body) == 1 and isinstance(g.body[0], ast.Continue)
+               for g in guards), (
+        "the chain-vert guard must SKIP the vertex (bare `continue`) -- a vert "
+        "a custom bone drives has no rest position to follow the body from")
 
 
 # --- the torso acceptance gate ----------------------------------------------
