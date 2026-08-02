@@ -58,7 +58,7 @@ history. A directory layout, not a credential.
 
 ## 3. Eleven commit messages contain the deploy path — LOW
 
-`<MODLIST_ROOT>\tools\CBBEtoUBE` appears in 11 commit messages, all of the
+The developer's absolute deploy path appears in 11 commit messages, all of the
 "rebuild and deploy" kind. Three further matches are test-fixture placeholders
 (`C:/Users/v/.ssh/id_rsa`, `C:\Users\...\id_rsa`) and are not real paths.
 
@@ -69,8 +69,8 @@ destination generically in future deploy commits.
 ## 4. Two personal email addresses are in the commit metadata — MEDIUM (privacy)
 
     417 commits   DayOnly <DayOnly@users.noreply.github.com>
-     11 commits   REDACTED@example.invalid        (as "Mari Dunham" and "Whisper")
-      2 commits   REDACTED@example.invalid       (as "DayOnly")
+     11 commits   a personal gmail address    (under two different display names)
+      2 commits   a personal icloud address
 
 Author email is public on every commit of a public repo and is exposed through
 the API, so those two addresses are harvestable. 97% of commits already use the
@@ -131,3 +131,22 @@ The hygiene test guards the tip. Nothing guards a *new* commit that adds a
 policy file — it would be caught only on the next run, after the commit exists.
 A `pre-commit` hook running the hygiene test would move the guard one step
 earlier, to before the object is written. Cheap, and it makes §1 unrepeatable.
+
+---
+
+## Postscript: this document was itself a leak
+
+The first revision of this file quoted both personal email addresses, one real
+display name, and the absolute deploy path — as *findings*, in plain text, on a
+public branch. A rewrite that strips those from commit metadata while the audit
+describing them republishes them as file content achieves nothing.
+
+Caught by re-running the content scan against the REWRITTEN history rather than
+trusting that the rewrite had done its job: the scan reported `personal email:
+1 path` and named this file.
+
+**An audit that quotes the identifier it is reporting becomes a copy of the
+leak.** Report the shape and the count; never the value. The same rule already
+applies to mod names elsewhere in this repo — it applies to addresses and paths
+too, and the strings are now scrubbed from history by `--replace-text` rather
+than only from the tip.
