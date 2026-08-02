@@ -59,8 +59,8 @@ history. A directory layout, not a credential.
 ## 3. Eleven commit messages contain the deploy path — LOW
 
 The developer's absolute deploy path appears in 11 commit messages, all of the
-"rebuild and deploy" kind. Three further matches are test-fixture placeholders
-(`C:/Users/v/.ssh/id_rsa`, `C:\Users\...\id_rsa`) and are not real paths.
+"rebuild and deploy" kind. Three further matches are test-fixture SSH-key
+placeholders quoted in commit messages, not real paths.
 
 Commit messages cannot be edited without rewriting history, and unlike file
 content they are not covered by any test. Worth a habit change: name the
