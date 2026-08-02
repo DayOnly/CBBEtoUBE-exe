@@ -126,6 +126,108 @@ def _match(slider, keys):
     return None
 
 
+def _garment_parts(nf, p, hits_provider):
+    """[(shape, bind verts, tris, per-slider morph table)] for rendered shapes."""
+    out = []
+    for s in nf.shapes:
+        nm = s.name or ""
+        if nm == "BaseShape" or nc._is_inline_body_name(nm):
+            continue
+        if int(getattr(s, "flags", 0) or 0) & 0x1:
+            continue
+        if not any(v for v in (s.textures or {}).values()):
+            continue
+        gV = _world(s)
+        gT = np.asarray(s.tris, np.int64).reshape(-1, 3)
+        gm, _tn = garment_morphs(p, nm, len(gV))
+        out.append((nm, gV, gT, gm))
+    return out
+
+
+def _union(parts):
+    V = np.concatenate([v for v, _t in parts])
+    off, tl = 0, []
+    for v, t in parts:
+        tl.append(t + off)
+        off += len(v)
+    return V, np.concatenate(tl)
+
+
+def _sweep(a, nf, bV, bT, bN, bm, p) -> int:
+    """Score every slider that actually moves the band.
+
+    Sliders are ranked by the clipping they COST, so the output is a list of
+    suspects ordered by how much they matter -- not 202 numbers to read.
+    `--min-body-move` drops sliders that barely touch the band: they cannot be
+    responsible, and including them would bury the real ones in noise.
+    """
+    (zlo, zhi), front = BANDS[a.band]
+    mask = ((bV[:, 2] >= zlo) & (bV[:, 2] <= zhi)
+            & (np.abs(bV[:, 0]) < TORSO_HALF_X)
+            & ((bV[:, 1] > 2) if front else (bV[:, 1] < REAR_Y)))
+    idx = np.flatnonzero(mask)
+    if len(idx) < 20:
+        print(f"ABORT: {a.band} band has {len(idx)} verts", file=sys.stderr)
+        return 3
+    parts = _garment_parts(nf, p, None)
+    if not parts:
+        print("ABORT: no rendered garment shape", file=sys.stderr)
+        return 3
+    va = sa.vert_areas(bV, bT)
+    gV0, gT0 = _union([(v, t) for _n, v, t, _m in parts])
+    base = sa.ClipTester(gV0, gT0).report(bV, bT, bN, idx, va,
+                                          oriented=True)["clipping_pct"]
+    print(f"{a.band.upper()} band {len(idx)} verts   BIND clipping "
+          f"{base:.3f}%   strength {a.strength}")
+    print(f"scoring sliders that move the band by >= {a.min_body_move}u ...",
+          flush=True)
+
+    rows, skipped = [], 0
+    for name, dB in bm.items():
+        move = np.linalg.norm(dB[idx], axis=1)
+        if move.max() < a.min_body_move:
+            skipped += 1
+            continue
+        dBs = dB * float(a.strength)
+        moved_parts, gmove = [], 0.0
+        for _nm, gV, gT, gm in parts:
+            mk = _match(name, gm.keys())
+            dG = (gm[mk] * float(a.strength) if mk is not None
+                  else np.zeros_like(gV))
+            gmove = max(gmove, float(np.linalg.norm(dG, axis=1).max()))
+            moved_parts.append((gV + dG, gT))
+        gVm, gTm = _union(moved_parts)
+        r = sa.ClipTester(gVm, gTm).report(bV + dBs, bT, bN, idx,
+                                           sa.vert_areas(bV + dBs, bT),
+                                           oriented=True)
+        rows.append({"slider": name, "clip": r["clipping_pct"],
+                     "d": r["clipping_pct"] - base,
+                     "buried": r["clip_buried_pct"],
+                     "bmove": float(np.median(move)), "gmove": gmove})
+    if not rows:
+        print("ABORT: no slider moved the band -- nothing was measured",
+              file=sys.stderr)
+        return 3
+    rows.sort(key=lambda r: -r["d"])
+    print(f"{len(rows)} sliders scored ({skipped} skipped as too small)\n")
+    print(f"{'slider':<42}{'clip%':>8}{'delta':>8}{'buried':>8}"
+          f"{'body':>7}{'garment':>8}{'follow':>8}")
+    print("-" * 89)
+    for r in rows[:20]:
+        fol = (r["gmove"] / r["bmove"]) if r["bmove"] > 1e-6 else float("nan")
+        print(f"{r['slider'][:41]:<42}{r['clip']:>8.3f}{r['d']:>+8.3f}"
+              f"{r['buried']:>8.3f}{r['bmove']:>7.3f}{r['gmove']:>8.3f}"
+              f"{fol:>8.2f}")
+    worst = rows[0]
+    nofollow = [r for r in rows if r["gmove"] < 1e-4]
+    print(f"\nworst: {worst['slider']}  {worst['d']:+.3f} points")
+    print(f"sliders the garment does NOT follow at all (0.000u): "
+          f"{len(nofollow)} of {len(rows)}")
+    for r in nofollow[:8]:
+        print(f"   {r['d']:+7.3f}  {r['slider']}")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("nif")
@@ -135,6 +237,13 @@ def main() -> int:
     ap.add_argument("--band", default="bust", choices=sorted(BANDS))
     ap.add_argument("--list", action="store_true",
                     help="list the body sliders that match and exit")
+    ap.add_argument("--sweep", action="store_true",
+                    help="score EVERY slider that moves the band, ranked by the "
+                         "clipping it costs")
+    ap.add_argument("--min-body-move", type=float, default=0.15,
+                    help="sweep only sliders that move the band at least this "
+                         "much (default 0.15u) -- a slider that barely moves "
+                         "the band cannot be responsible for a clip")
     a = ap.parse_args()
 
     p = Path(a.nif)
@@ -154,6 +263,8 @@ def main() -> int:
         print("ABORT: no body OSD resolved -- cannot morph the body",
               file=sys.stderr)
         return 3
+    if a.sweep:
+        return _sweep(a, nf, bV, bT, bN, bm, p)
     hits = [k for k in bm if a.slider.lower() in k.lower()]
     if a.list or not hits:
         print(f"body slider source: {osd_name}   {len(bm)} sliders")
