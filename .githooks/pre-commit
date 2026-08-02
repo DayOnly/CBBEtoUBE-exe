@@ -1,0 +1,14 @@
+#!/bin/sh
+# Public-repo guard, run BEFORE the commit object exists.
+#
+# The test suite checks the same rules, but only after a commit is made -- and
+# for this class of mistake that is too late: undoing a working-note file that
+# reached a public branch took a full history rewrite, a force-push to the
+# default branch, and a support ticket for the objects GitHub still serves by
+# SHA afterwards. Here it costs one blocked commit.
+#
+# Rules live in scripts/repo_hygiene.py, shared with tests/, so the hook and the
+# test cannot drift apart.
+#
+# Bypass with `git commit --no-verify` when you genuinely mean to.
+exec python "$(git rev-parse --show-toplevel)/scripts/hook_precommit.py"

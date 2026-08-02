@@ -1,0 +1,4 @@
+#!/bin/sh
+# Commit messages cannot be edited later without rewriting history, and no test
+# covers them -- 11 carried an absolute deploy path before the 2026-08-02 audit.
+exec python "$(git rev-parse --show-toplevel)/scripts/hook_commitmsg.py" "$1"
