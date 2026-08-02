@@ -154,6 +154,75 @@ def _eta_step(eta: dict, done: int, total: int, now: float,
     return _fmt_eta(rate * remaining)
 
 
+class _Tooltip:
+    """Hover balloon carrying a setting's FULL explanation.
+
+    Exists so the long text can leave the page while staying reachable: the
+    tooltips record measured numbers and in-game caveats that are written down
+    nowhere else, so shortening them to save space would cost more than the
+    clutter did. Inline shows one line (`gui_settings.hint_for`); this shows the
+    rest on hover.
+
+    Deliberately plain: an override-redirect Toplevel, no theming hooks, torn
+    down on leave. It must never be able to break the window it annotates, so
+    every step is guarded -- a tooltip that raises is strictly worse than no
+    tooltip.
+    """
+
+    DELAY_MS = 450
+    WRAP_PX = 460
+
+    def __init__(self, widget, text: str):
+        self.widget = widget
+        self.text = text
+        self.tip = None
+        self._after = None
+        widget.bind("<Enter>", self._schedule, add="+")
+        widget.bind("<Leave>", self._hide, add="+")
+        widget.bind("<ButtonPress>", self._hide, add="+")
+
+    def _schedule(self, _e=None):
+        self._cancel()
+        try:
+            self._after = self.widget.after(self.DELAY_MS, self._show)
+        except Exception:
+            self._after = None
+
+    def _cancel(self):
+        if self._after is not None:
+            try:
+                self.widget.after_cancel(self._after)
+            except Exception:
+                pass
+            self._after = None
+
+    def _show(self):
+        self._after = None
+        if self.tip is not None or not self.text:
+            return
+        try:
+            x = self.widget.winfo_rootx() + 18
+            y = self.widget.winfo_rooty() + self.widget.winfo_height() + 6
+            self.tip = tk.Toplevel(self.widget)
+            self.tip.wm_overrideredirect(True)
+            self.tip.wm_geometry(f"+{x}+{y}")
+            tk.Label(self.tip, text=self.text, justify="left",
+                     wraplength=self.WRAP_PX, relief="solid", borderwidth=1,
+                     background="#ffffe0", foreground="#000000",
+                     padx=6, pady=4).pack()
+        except Exception:
+            self.tip = None
+
+    def _hide(self, _e=None):
+        self._cancel()
+        if self.tip is not None:
+            try:
+                self.tip.destroy()
+            except Exception:
+                pass
+            self.tip = None
+
+
 def _kill_proc_tree(proc) -> None:
     """Terminate the conversion subprocess AND its ProcessPoolExecutor worker
     descendants. On Windows proc.terminate() kills only the DIRECT child, so the
@@ -276,7 +345,18 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
 
     root = tk.Tk()
     root.title(f"CBBE/3BA to UBE Converter  v{_app_version}")
-    root.geometry("860x680")
+    # Restore the last window SIZE. Size only, never position: a saved position
+    # from a monitor that is no longer attached opens the window off-screen with
+    # no way to drag it back, and the size is what actually matters here (the
+    # settings tab is several screens tall).
+    _saved_geom = str(gui_settings.load_values().get("window_geometry", "") or "")
+    if re.fullmatch(r"\d+x\d+", _saved_geom):
+        try:
+            root.geometry(_saved_geom)
+        except Exception:
+            root.geometry("860x680")
+    else:
+        root.geometry("860x680")
     root.minsize(680, 520)
 
     q: "queue.Queue" = queue.Queue()
@@ -815,25 +895,87 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
                        command=_import_settings).pack(side="left")
         if prefix is not None:
             prefix(body)
+
+        # ---- filter bar: search + "show advanced" ----
+        # 37 settings on one tab; the armour checklist already proved a live
+        # filter here. `advanced` hides the numeric tuning knobs, which is what
+        # the field was added for -- it had never been wired to anything.
+        fbar = ttk.Frame(body)
+        fbar.pack(fill="x", padx=10, pady=(8, 0))
+        ttk.Label(fbar, text="Find:").pack(side="left")
+        q_var = tk.StringVar()
+        q_entry = ttk.Entry(fbar, textvariable=q_var, width=22)
+        q_entry.pack(side="left", padx=(4, 10))
+        q_entry.bind("<Escape>", lambda e: q_var.set(""))
+        adv_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(fbar, text="Show advanced", variable=adv_var).pack(side="left")
+        found_lbl = ttk.Label(fbar, text="", style="Hint.TLabel")
+        found_lbl.pack(side="left", padx=(10, 0))
+        state["_setting_vars"].extend([q_var, adv_var])
+
+        groups_area = ttk.Frame(body)
+        groups_area.pack(fill="x")
+
+        def _matches(s, q):
+            if not q:
+                return True
+            q = q.lower()
+            return (q in s.label.lower() or q in s.key.lower()
+                    or q in (s.tooltip or "").lower())
+
+        def _render():
+            for w in groups_area.winfo_children():
+                w.destroy()
+            q = q_var.get().strip()
+            shown = hidden_adv = 0
+            for group in gui_settings.groups_in_tab(tab):
+                items = [s for s in gui_settings.settings_in(tab, group)
+                         if _matches(s, q)]
+                vis = [s for s in items if adv_var.get() or not s.advanced]
+                hidden_adv += len(items) - len(vis)
+                if not vis:
+                    continue          # empty group disappears while filtering
+                shown += len(vis)
+                _render_group(groups_area, group, vis)
+            if q:
+                found_lbl.configure(text=f"{shown} match(es)")
+            elif hidden_adv:
+                found_lbl.configure(text=f"{hidden_adv} advanced hidden")
+            else:
+                found_lbl.configure(text="")
+            try:
+                cv.configure(scrollregion=cv.bbox("all"))
+            except Exception:
+                pass
+
+        q_var.trace_add("write", lambda *a: _render())
+        adv_var.trace_add("write", lambda *a: _render())
+        _render()
+
+    def _render_group(parent, group, items):
+        """One LabelFrame of controls. Split out of `_build_settings_tab` so the
+        group area can be rebuilt when the search text or "show advanced"
+        changes."""
         av = state["_setting_vars"]        # keep tk vars alive for the window
-        for group in gui_settings.groups_in_tab(tab):
-            gf = ttk.LabelFrame(body, text=group)
+        for group in [group]:
+            gf = ttk.LabelFrame(parent, text=group)
             gf.pack(fill="x", padx=10, pady=6)
-            for s in gui_settings.settings_in(tab, group):
+            for s in items:
                 cur = state["settings"].get(s.key, s.default)
+                ctl = None
                 if s.kind == "bool":
                     var = tk.BooleanVar(value=bool(cur))
                     av.append(var)
                     state["_setting_var_by_key"][s.key] = var
-                    ttk.Checkbutton(gf, text=s.label, variable=var).pack(
-                        anchor="w", padx=8, pady=(4, 0))
+                    ctl = ttk.Checkbutton(gf, text=s.label, variable=var)
+                    ctl.pack(anchor="w", padx=8, pady=(4, 0))
                     var.trace_add("write", lambda *a, k=s.key, v=var:
                                   _settings_set(k, bool(v.get())))
                 elif s.kind in ("float", "int"):
                     row = ttk.Frame(gf)
                     row.pack(fill="x", padx=8, pady=(4, 0))
-                    ttk.Label(row, text=s.label, width=28,
-                              anchor="w").pack(side="left")
+                    ctl = ttk.Label(row, text=s.label, width=28, anchor="w")
+                    ctl.pack(side="left")
                     var = tk.DoubleVar(value=float(cur))
                     av.append(var)
                     state["_setting_var_by_key"][s.key] = var
@@ -847,8 +989,8 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
                 else:
                     row = ttk.Frame(gf)
                     row.pack(fill="x", padx=8, pady=(4, 0))
-                    ttk.Label(row, text=s.label, width=28,
-                              anchor="w").pack(side="left")
+                    ctl = ttk.Label(row, text=s.label, width=28, anchor="w")
+                    ctl.pack(side="left")
                     var = tk.StringVar(value=str(cur))
                     av.append(var)
                     state["_setting_var_by_key"][s.key] = var
@@ -860,10 +1002,20 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
                         ttk.Button(row, text="Browse", width=8,
                                    command=lambda v=var: _pick_path(v)).pack(
                                        side="left")
-                if s.tooltip:
-                    ttk.Label(gf, text=s.tooltip, style="Hint.TLabel",
-                              wraplength=580, justify="left").pack(
-                                  anchor="w", padx=26, pady=(0, 2))
+                # ONE LINE inline; the full text on hover. Rendering every
+                # tooltip inline made this tab 86% prose and ~3.7 screens tall.
+                # Nothing is lost -- the tooltips carry measured numbers and
+                # in-game caveats recorded nowhere else, so they move, they do
+                # not get trimmed.
+                hint = gui_settings.hint_for(s)
+                if hint:
+                    hl = ttk.Label(gf, text=hint, style="Hint.TLabel",
+                                   wraplength=580, justify="left")
+                    hl.pack(anchor="w", padx=26, pady=(0, 2))
+                    if s.tooltip and s.tooltip != hint:
+                        _Tooltip(hl, s.tooltip)
+                if s.tooltip and ctl is not None:
+                    _Tooltip(ctl, s.tooltip)
 
     # ---- action bar (persistent, below the tabs) ----
     bar = ttk.Frame(bottom)
@@ -2087,6 +2239,11 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
                 "Quit", "A conversion is still running. Quit anyway?\n"
                 "(The conversion will be stopped.)"):
             return
+        try:                       # remember the size for next launch
+            _settings_set("window_geometry",
+                          f"{root.winfo_width()}x{root.winfo_height()}")
+        except Exception:
+            pass                   # never block a quit on a cosmetic preference
         # Child-process launch means we can actually stop the run on quit
         # (the old in-process thread couldn't be killed cleanly). Tree-kill so
         # the ProcessPoolExecutor workers don't orphan and lock the exe.

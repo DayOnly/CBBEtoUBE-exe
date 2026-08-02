@@ -102,7 +102,7 @@ def test_tab_and_group_structure():
     assert "Armor" in gs.tabs_present()
     assert "Tuning" not in gs.tabs_present()   # folded into Armor
     groups = gs.groups_in_tab("Armor")
-    assert "Fit and conform" in groups and "Glow and effect-shader" in groups
+    assert "Fit and clearance" in groups and "Glow and effect shaders" in groups
     assert all(s.tab == "Armor" for s in gs.settings_in("Armor", "Seams"))
     # a numeric "tuning" knob now nests under its feature's Armor group
     seam_keys = [s.key for s in gs.settings_in("Armor", "Seams")]
@@ -191,3 +191,61 @@ def test_vanilla_sweep_lives_on_the_run_tab():
     # and it must be off the Armor tab, taking the one-item group with it
     assert "Coverage" not in gs.groups_in_tab("Armor")
     assert all(s.key != "vanilla_sweep" for s in gs.settings_in("Armor", "Coverage"))
+
+
+def test_every_setting_is_in_exactly_one_layout_group():
+    """LAYOUT drives display order. A key it omits still renders (at the end of
+    its group), but a key in the WRONG group would render twice or not at all.
+    """
+    for tab, groups in gs.LAYOUT.items():
+        listed = [k for _g, keys in groups for k in keys]
+        assert len(listed) == len(set(listed)), "a key is listed twice in LAYOUT"
+        by_group = {g: set(keys) for g, keys in groups}
+        for s in gs.SETTINGS:
+            if s.tab != tab:
+                continue
+            for g, keys in by_group.items():
+                if s.key in keys:
+                    assert s.group == g, (
+                        f"{s.key} is in LAYOUT group {g!r} but Setting.group "
+                        f"says {s.group!r}")
+        # every LAYOUT key must be a real setting on that tab
+        real = {s.key for s in gs.SETTINGS if s.tab == tab}
+        assert not (set(listed) - real), f"LAYOUT names non-existent: {set(listed) - real}"
+
+
+def test_layout_nests_each_knob_under_the_toggle_it_tunes():
+    """The bug this fixes: chest_follow_unknown rendered four rows from
+    chest_follow, so it read as an independent option."""
+    keys = [s.key for s in gs.settings_in("Armor", "Body follow and morphs")]
+    assert keys.index("chest_follow_unknown") == keys.index("chest_follow") + 1
+    keys = [s.key for s in gs.settings_in("Armor", "Seams")]
+    assert keys.index("seam_weld_tol") == keys.index("seam_weld") + 1
+
+
+def test_every_numeric_knob_is_advanced():
+    """`advanced` hides tuning knobs. One knob left un-marked would be the lone
+    spinbox still shown, which reads as a deliberate promotion."""
+    for s in gs.SETTINGS:
+        if s.kind in ("float", "int"):
+            assert s.advanced, f"{s.key} is a numeric knob but not advanced"
+
+
+def test_hint_is_one_short_line_and_never_replaces_the_tooltip():
+    for s in gs.SETTINGS:
+        h = gs.hint_for(s)
+        assert len(h) <= gs.HINT_MAX + 1, f"{s.key} hint too long: {len(h)}"
+        assert "\n" not in h, f"{s.key} hint is multi-line"
+        if s.tooltip:
+            assert h, f"{s.key} has a tooltip but no hint"
+    # the full text must still be there -- the point is to MOVE it, not trim it
+    assert len(gs.by_key()["rigid_majority_softbody"].tooltip) > 300
+
+
+def test_hint_falls_back_to_first_sentence():
+    s = gs.Setting("x", "X", "Armor", "G", tooltip="First one. Second one here.")
+    assert gs.hint_for(s) == "First one."
+    s2 = gs.Setting("y", "Y", "Armor", "G", hint="explicit", tooltip="Long. More.")
+    assert gs.hint_for(s2) == "explicit"
+    long = "w" * (gs.HINT_MAX + 40) + ". tail."
+    assert gs.hint_for(gs.Setting("z", "Z", "Armor", "G", tooltip=long)).endswith("…")

@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -50,9 +51,9 @@ class Setting:
     default: object = False
     env: "str | None" = None       # CBBE2UBE_* var, or None for CLI/informational
     invert: bool = False           # env "1" DISABLES the feature (NO_* style)
-    cli: "str | None" = None       # CLI flag instead of/alongside env
-    tooltip: str = ""
-    advanced: bool = False
+    tooltip: str = ""              # the FULL explanation; shown on hover/expand
+    hint: str = ""                 # one line shown inline; see `hint_for`
+    advanced: bool = False         # hidden unless "Show advanced" is ticked
     min: "float | None" = None
     max: "float | None" = None
     step: "float | None" = None
@@ -67,15 +68,15 @@ TABS = ("Run", "Armor", "Overlays", "Paths", "Diagnostics")
 SETTINGS: "tuple[Setting, ...]" = (
     # ---- Armor: fit and conform --------------------------------------
     Setting("conform_to_body", "Conform fitted cloth to body",
-            "Armor", "Fit and conform", default=True,
+            "Armor", "Fit and clearance", default=True,
             env="CBBE2UBE_NO_CONFORM", invert=True,
             tooltip="Snap body-hugging cloth onto the UBE body so it stops clipping."),
     Setting("leg_bend_match", "Rigid leg-plate knee conform",
-            "Armor", "Fit and conform", default=True,
+            "Armor", "Limbs and extremities", default=True,
             env="CBBE2UBE_NO_LEG_BEND_MATCH", invert=True,
             tooltip="Make rigid greaves follow the knee/thigh so plates don't split when posed."),
     Setting("disable_softbody_scales", "Disable soft-body scale bones",
-            "Armor", "Fit and conform", default=False,
+            "Armor", "Jiggle transfer", default=False,
             env="CBBE2UBE_NO_SOFTBODY_SCALES", invert=False,
             tooltip="Drop breast/butt/belly jiggle transfer (troubleshooting jiggle-drag)."),
     # ---- Armor: seams -------------------------------------------------
@@ -89,12 +90,13 @@ SETTINGS: "tuple[Setting, ...]" = (
             tooltip="Give welded seam verts identical weights so they don't reopen when posed."),
     # ---- Armor: jiggle and physics transfer ---------------------------
     Setting("jiggle_transfer", "Transfer body jiggle to cloth",
-            "Armor", "Jiggle and physics transfer", default=True,
+            "Armor", "Jiggle transfer", default=True,
             env="CBBE2UBE_NO_JIGGLE_TRANSFER", invert=True,
             tooltip="Graft the body's butt/belly jiggle onto rigid pants so the butt doesn't poke through."),
     Setting("torso_jiggle", "Chest/butt jiggle on fitted torso armor",
-            "Armor", "Jiggle and physics transfer", default=True,
+            "Armor", "Jiggle transfer", default=True,
             env="CBBE2UBE_NO_TORSO_JIGGLE", invert=True,
+            hint="Let chest/belly jiggle reach cloth that covers the torso.",
             tooltip="Extend the graft above to a fitted corset/bra/cuirass, so it "
                     "follows the body's breast and butt instead of staying rigid "
                     "while the body moves under it (the 'clips only when moving' "
@@ -102,28 +104,30 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "collider split; unchecking also disables that split (the two "
                     "ship as one fix)."),
     Setting("butt_jiggle", "Butt jiggle graft",
-            "Armor", "Jiggle and physics transfer", default=True,
+            "Armor", "Jiggle transfer", default=True,
             env="CBBE2UBE_NO_BUTT_JIGGLE", invert=True,
             tooltip="Add capped butt-jiggle weight to rigid leg plate."),
     Setting("chest_jiggle", "Chest jiggle graft",
-            "Armor", "Jiggle and physics transfer", default=True,
+            "Armor", "Jiggle transfer", default=True,
             env="CBBE2UBE_NO_CHEST_JIGGLE", invert=True,
             tooltip="Add capped breast-jiggle weight to rigid chest plate (front-gated)."),
     Setting("antipoke_smooth", "Smooth anti-poke pushes (experimental)",
-            "Armor", "Fit and conform", default=False,
+            "Armor", "Fit and clearance", default=False,
             env="CBBE2UBE_ANTIPOKE_SMOOTH", invert=False,
             tooltip="Feather the final anti-poke's per-vert pushes over the mesh "
                     "so cleared cloth doesn't crinkle. Never reopens a poke."),
     Setting("layered_antipoke", "Layer-aware anti-poke (experimental)",
-            "Armor", "Fit and conform", default=False,
+            "Armor", "Fit and clearance", default=False,
             env="CBBE2UBE_LAYERED_ANTIPOKE", invert=False,
+            hint="Give stacked garments separated clearance floors so layers don't converge.",
             tooltip="Give stacked garments (shirt under vest) separated "
                     "clearance floors so layers don't converge and z-fight "
                     "where the body grows."),
     Setting("rigid_majority_softbody", "Keep mostly-rigid armour skinned "
             "(experimental)",
-            "Armor", "Jiggle and physics transfer", default=False,
+            "Armor", "Body follow and morphs", default=False,
             env="CBBE2UBE_RIGID_MAJORITY_SOFTBODY", invert=False,
+            hint="Stop a small chain flap turning a whole rigid cuirass into simulated cloth.",
             tooltip="When a small chain-driven flap shares one shape with a "
                     "large rigid panel, the converter currently gives the WHOLE "
                     "shape simulated cloth physics -- and simulated cloth does "
@@ -136,8 +140,9 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "crashes and collapsing cloth, not just clipping."),
     Setting("chain_body_shift", "Shift physics chains onto the new body "
             "(experimental)",
-            "Armor", "Jiggle and physics transfer", default=False,
+            "Armor", "Physics chains (HDT-SMP)", default=False,
             env="CBBE2UBE_CHAIN_BODY_SHIFT", invert=False,
+            hint="Move a skirt's chain bones onto the new body instead of leaving them at source.",
             tooltip="Chain-driven cloth (skirts, drapes) is pinned to its "
                     "SOURCE rest position so it stays aligned with its bones, "
                     "which means no clearance pass can reach it -- a skirt "
@@ -150,8 +155,9 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "piece, but showed no visible in-game change, so it is "
                     "unproven where it counts. Experimental."),
     Setting("unified_offset", "Unified clearance floor (experimental)",
-            "Armor", "Fit and conform", default=False,
+            "Armor", "Fit and clearance", default=False,
             env="CBBE2UBE_UNIFIED_OFFSET", invert=False,
+            hint="Solve one clearance floor per vertex instead of inflating then conforming.",
             tooltip="Solve one clearance floor per vertex and apply it once, "
                     "instead of inflating before the standoff conform and "
                     "pushing again after it. The inflate is additive and the "
@@ -162,8 +168,9 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "instead of several. Experimental: changes the fit of "
                     "body-slot armour, so test it before a full reconvert."),
     Setting("chest_follow", "Chest follow ratio (experimental)",
-            "Armor", "Jiggle and physics transfer", default=False,
+            "Armor", "Body follow and morphs", default=False,
             env="CBBE2UBE_CHEST_FOLLOW", invert=False,
+            hint="Make chest cloth track the morphed bust instead of standing off it.",
             tooltip="Let a fitted soft-material top track the body's breast motion "
                     "by the amount its own clearance actually requires, instead of "
                     "an absolute weight cap that leaves it following about a third "
@@ -171,8 +178,9 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "armour keeps the old conservative cap. Experimental: too much "
                     "tracking makes stiff armour look rubbery."),
     Setting("drape_xml_gate", "Fit robes/dresses that declare their own physics",
-            "Armor", "Jiggle and physics transfer", default=False,
+            "Armor", "Fit and clearance", default=False,
             env="CBBE2UBE_DRAPE_XML_GATE", invert=False,
+            hint="Also fit robes and dresses that declare their own physics.",
             tooltip="Robes, dresses, cloaks and capes are skipped by every fitting "
                     "pass, because some of them are cloth driven by a game-wide "
                     "physics config that cannot be detected from the mesh -- and "
@@ -182,8 +190,9 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "RISK: the failure mode is a crash when equipping a robe, so "
                     "test robes specifically after turning this on."),
     Setting("source_follow", "...judge by the outfit's own weighting, not its name",
-            "Armor", "Jiggle and physics transfer", default=False,
+            "Armor", "Body follow and morphs", default=False,
             env="CBBE2UBE_SOURCE_FOLLOW", invert=False,
+            hint="Follow the bust only where the original author weighted it.",
             tooltip="Decide how much a top may move by looking at whether the "
                     "outfit's author weighted its chest at all, instead of "
                     "guessing the material from its name and textures. Outfits "
@@ -192,8 +201,10 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "this lets them move as much as their own fit requires. Only "
                     "ever adds movement to pieces nothing was helping."),
     Setting("chest_follow_unknown", "...its ceiling for unrecognised materials",
-            "Armor", "Jiggle and physics transfer", kind="float", default=0.35,
+            "Armor", "Body follow and morphs", kind="float", default=0.35,
             env="CBBE2UBE_CHEST_FOLLOW_UNKNOWN", min=0.0, max=1.0, step=0.05,
+            advanced=True,
+            hint="How far to trust chest follow when the source's intent is unclear (0-1).",
             tooltip="How much body motion a top may follow when its material "
                     "cannot be identified from its name or texture. 0.35 (the "
                     "default) treats it like metal; 1.0 treats it like cloth. "
@@ -201,7 +212,7 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "what limits it -- raise it if chests still clip when moving, "
                     "lower it if stiff armour starts looking rubbery."),
     Setting("chain_torso", "Chest follow on skirt-welded cuirasses (experimental)",
-            "Armor", "Jiggle and physics transfer", default=False,
+            "Armor", "Physics chains (HDT-SMP)", default=False,
             env="CBBE2UBE_CHAIN_TORSO", invert=False,
             tooltip="Some cuirasses are modelled as ONE piece together with their "
                     "own physics skirt. The skirt hangs away from the body, which "
@@ -213,15 +224,16 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "so far it changed nothing; the setting above it is what "
                     "actually moves these pieces."),
     Setting("leg_chain_guard", "Never re-weight physics-driven cloth",
-            "Armor", "Jiggle and physics transfer", default=True,
+            "Armor", "Physics chains (HDT-SMP)", default=True,
             env="CBBE2UBE_NO_LEG_CHAIN_GUARD", invert=True,
             tooltip="Keep the leg/chest conform away from vertices that HDT-SMP "
                     "simulates. Writing those is pointless (physics wins at "
                     "runtime) and has crashed on equip before. Leave this on "
                     "unless you are bisecting a problem."),
     Setting("smp_antipoke", "Bust clearance on SMP collider armor (experimental)",
-            "Armor", "Fit and conform", default=False,
+            "Armor", "Fit and clearance", default=False,
             env="CBBE2UBE_SMP_ANTIPOKE", invert=False,
+            hint="Push simulated cloth clear of the body so the bust stops poking through.",
             tooltip="An armor whose physics config names it only as a COLLIDER "
                     "currently gets no bust clearance at all, so the body pushes "
                     "straight through it -- the 'chest clips when moving' case on "
@@ -229,7 +241,7 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "exposed on one such cuirass. Experimental: pushing verts out "
                     "on a convex region has spread them before."),
     Setting("smp_antipoke_push", "...its push budget (units)",
-            "Armor", "Fit and conform", kind="float", default=1.0,
+            "Armor", "Fit and clearance", kind="float", default=1.0,
             env="CBBE2UBE_SMP_ANTIPOKE_PUSH", min=0.0, max=6.0, step=0.1,
             tooltip="How far that pass may push a vert outward. Default 1.0 was "
                     "tuned at rest; the body's breast physics is allowed several "
@@ -238,8 +250,9 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "too large spreads verts on rounded areas.",
             advanced=True),
     Setting("skin_influence_cap", "Cap skin influences on the main skin install",
-            "Armor", "Fit and conform", default=True,
+            "Armor", "Output checks", default=True,
             env="CBBE2UBE_NO_SKIN_INFLUENCE_CAP", invert=True,
+            hint="Trim each vertex to the 4 bone influences the format allows, and renormalise.",
             tooltip="Trim every vertex to the 4 influences the format allows and "
                     "renormalise, instead of letting the save silently drop the "
                     "smallest and leave the weights light. Default ON since 1.2: "
@@ -247,7 +260,7 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "hazard) on 42 shapes pack-wide. Uncheck to restore the old "
                     "write exactly."),
     Setting("jiggle_clearance", "Jiggle-overshoot clearance",
-            "Armor", "Jiggle and physics transfer", default=True,
+            "Armor", "Jiggle transfer", default=True,
             env="CBBE2UBE_NO_JIGGLE_CLEARANCE", invert=True,
             tooltip="Clear armor against the body's MOVING envelope, not just its "
                     "resting one. HDT-SMP throws the breast outward past the surface "
@@ -255,51 +268,52 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "resting clearance can still show skin. Adds room only where the "
                     "body jiggles: breast +0.14u, belly +0.02u, butt +0.01u, back 0.000u."),
     Setting("jiggle_clearance_gain", "Jiggle clearance gain (u)",
-            "Armor", "Jiggle and physics transfer", kind="float", default=0.5,
+            "Armor", "Jiggle transfer", kind="float", default=0.5,
             env="CBBE2UBE_JIGGLE_CLEARANCE_GAIN", advanced=True,
             min=0.0, max=2.0, step=0.1,
             tooltip="Extra clearance in units at full jiggle weight (peak ~0.56 at the "
                     "nipple, so 0.5 adds ~0.28u there). Raise if a bouncier SMP setup "
                     "still shows skin at the breast. Takes effect on a reconvert."),
     Setting("jiggle_clearance_max", "Jiggle clearance cap (u)",
-            "Armor", "Jiggle and physics transfer", kind="float", default=0.5,
+            "Armor", "Jiggle transfer", kind="float", default=0.5,
             env="CBBE2UBE_JIGGLE_CLEARANCE_MAX", advanced=True,
             min=0.0, max=2.0, step=0.1,
+            hint="Upper bound on the extra clearance jiggle transfer is allowed to add.",
             tooltip="Hard ceiling on the jiggle clearance term, so a runaway weight "
                     "can't push armor arbitrarily far off the body."),
     # ---- Armor: glow and effect-shader --------------------------------
     Setting("glow_source_skin", "Keep source skin on glows",
-            "Armor", "Glow and effect-shader", default=True,
+            "Armor", "Glow and effect shaders", default=True,
             env="CBBE2UBE_EFFECT_RESKIN", invert=True,
             tooltip="Effect-shader glows keep their vanilla skin instead of the body reskin."),
     Setting("glow_anim", "Glow animation (texture scroll)",
-            "Armor", "Glow and effect-shader", default=True,
+            "Armor", "Glow and effect shaders", default=True,
             env="CBBE2UBE_NO_GLOW_ANIM", invert=True,
             tooltip="Keep the glow's animated texture-scroll controller (e.g. the Daedric red glow)."),
     Setting("glow_ride", "Glow rides its plate",
-            "Armor", "Glow and effect-shader", default=True,
+            "Armor", "Glow and effect shaders", default=True,
             env="CBBE2UBE_NO_GLOW_RIDE", invert=True,
             tooltip="Bind the glow decal to its plate so it doesn't clip through when the body moves."),
     # ---- Armor: HDT-SMP chains ---------------------------------------
     Setting("chain_to_softbody", "Chain cloth to soft-body",
-            "Armor", "HDT-SMP chains", default=False,
+            "Armor", "Physics chains (HDT-SMP)", default=False,
             env="CBBE2UBE_CHAIN_TO_SOFTBODY", invert=False,
             tooltip="Convert authored physics-chain cloth to per-vertex soft-body (stable on UBE, no independent sway)."),
     Setting("static_chains", "Static chains",
-            "Armor", "HDT-SMP chains", default=False,
+            "Armor", "Physics chains (HDT-SMP)", default=False,
             env="CBBE2UBE_STATIC_CHAINS", invert=False,
             tooltip="Freeze physics chains (troubleshooting collapse-to-origin)."),
     Setting("nested_chain_anchors", "Nested chain anchors",
-            "Armor", "HDT-SMP chains", default=False,
+            "Armor", "Physics chains (HDT-SMP)", default=False,
             env="CBBE2UBE_NESTED_CHAIN_ANCHORS", invert=False,
             tooltip="Nest upper-body-anchored chains so FSMP tracks torso motion through them."),
     # ---- Armor: boots and parity -------------------------------------
     Setting("boot_far_thigh", "Exclude far-thigh scale on boots",
-            "Armor", "Boots and parity", default=True,
+            "Armor", "Limbs and extremities", default=True,
             env="CBBE2UBE_KEEP_BOOT_THIGH_SCALE", invert=True,
             tooltip="Drop far-thigh scale bones from calf/foot boots so they don't fade at camera distance."),
     Setting("weight_parity_check", "Weight-partner parity check",
-            "Armor", "Boots and parity", default=True,
+            "Armor", "Output checks", default=True,
             env="CBBE2UBE_NO_WEIGHT_PARITY_CHECK", invert=True,
             tooltip="Postflight warn when a _0/_1 weight pair converts differently."),
     # ---- Run: what the run covers --------------------------------------
@@ -322,7 +336,7 @@ SETTINGS: "tuple[Setting, ...]" = (
 
     # ---- Armor: advanced numeric knobs (nest under the feature they tune) ---
     Setting("jiggle_transfer_factor", "Jiggle transfer factor",
-            "Armor", "Jiggle and physics transfer", kind="float", default=0.85,
+            "Armor", "Jiggle transfer", kind="float", default=0.85,
             env="CBBE2UBE_JIGGLE_TRANSFER_FACTOR", advanced=True,
             min=0.0, max=1.0, step=0.05,
             tooltip="Fraction of the body's local jiggle weight grafted onto fitted cloth."),
@@ -332,7 +346,7 @@ SETTINGS: "tuple[Setting, ...]" = (
             min=0.0, max=0.5, step=0.01,
             tooltip="Max distance for two cross-plate verts to be treated as one seam."),
     Setting("glow_ride_max", "Glow ride max (u)",
-            "Armor", "Glow and effect-shader", kind="float", default=2.0,
+            "Armor", "Glow and effect shaders", kind="float", default=2.0,
             env="CBBE2UBE_GLOW_RIDE_MAX", advanced=True,
             min=0.0, max=10.0, step=0.5,
             tooltip="Max plate distance a glow vert will ride; farther verts keep their own warp."),
@@ -362,6 +376,12 @@ SETTINGS: "tuple[Setting, ...]" = (
             tooltip="Window colour palette: Standard (dark + gold), Light, "
                     "Dark, Whispa (silver + purple), or Jbish (black + rose). "
                     "Picked from the Theme control at the top right."),
+    Setting("window_geometry", "Remembered window size", "Appearance",
+            "Appearance", kind="str", default="", env=None,
+            tooltip="The main window's last size and position, saved on close "
+                    "and restored on open. Not shown as a control -- the "
+                    "window itself is the control. Clear it (or Reset to "
+                    "defaults) to go back to the built-in size."),
 )
 
 
@@ -374,15 +394,74 @@ def by_key() -> "dict[str, Setting]":
     return {s.key: s for s in SETTINGS}
 
 
+HINT_MAX = 110
+
+
+def hint_for(s: Setting) -> str:
+    """The ONE LINE shown inline under a control.
+
+    The full `tooltip` moves behind a hover/expand: 38 settings x a paragraph
+    each made the Armor tab 86% prose and ~3.7 screens tall. Nothing is deleted
+    -- every word stays reachable, and `docs/worklog/PLAN_GUI_ARMOR_TAB.md`
+    records why deleting it would be the wrong trade (the tooltips carry
+    measured numbers and in-game caveats that exist nowhere else).
+
+    Defaults to the tooltip's first sentence, which is already a summary for
+    most settings (median 79 chars). Set `hint=` explicitly where it is not.
+    """
+    if s.hint:
+        return s.hint
+    t = (s.tooltip or "").strip()
+    if not t:
+        return ""
+    first = re.split(r"(?<=[.!?])\s+", t)[0]
+    if len(first) <= HINT_MAX:
+        return first
+    cut = first[:HINT_MAX].rsplit(" ", 1)[0]
+    return cut + "…"
+
+
 def tabs_present() -> "list[str]":
     """Tabs that actually have settings, in canonical order."""
     have = {s.tab for s in SETTINGS}
     return [t for t in TABS if t in have]
 
 
+# Explicit display order. SETTINGS is grouped by CONCERN, but a tuple's order is
+# the order things were added over time, which is not a useful reading order --
+# it left numeric knobs several rows from the toggle they tune, so they read as
+# independent options. Declaring layout separately keeps "add a setting = one
+# line in SETTINGS" true; anything not named here still renders, at the end of
+# its group, so a new setting can never silently vanish.
+LAYOUT: "dict[str, tuple]" = {
+    "Armor": (
+        ("Fit and clearance", (
+            "drape_xml_gate", "conform_to_body", "smp_antipoke",
+            "smp_antipoke_push", "antipoke_smooth", "layered_antipoke",
+            "unified_offset")),
+        ("Body follow and morphs", (
+            "chest_follow", "chest_follow_unknown", "source_follow",
+            "rigid_majority_softbody")),
+        ("Jiggle transfer", (
+            "jiggle_transfer", "jiggle_transfer_factor", "torso_jiggle",
+            "butt_jiggle", "chest_jiggle", "jiggle_clearance",
+            "jiggle_clearance_gain", "jiggle_clearance_max",
+            "disable_softbody_scales")),
+        ("Physics chains (HDT-SMP)", (
+            "leg_chain_guard", "chain_to_softbody", "static_chains",
+            "nested_chain_anchors", "chain_torso", "chain_body_shift")),
+        ("Limbs and extremities", ("leg_bend_match", "boot_far_thigh")),
+        ("Seams", ("seam_weld", "seam_weld_tol", "seam_skin_match")),
+        ("Glow and effect shaders", (
+            "glow_source_skin", "glow_anim", "glow_ride", "glow_ride_max")),
+        ("Output checks", ("skin_influence_cap", "weight_parity_check")),
+    ),
+}
+
+
 def groups_in_tab(tab: str) -> "list[str]":
-    """Group names in a tab, in first-seen order."""
-    out: "list[str]" = []
+    """Group names in a tab: LAYOUT order first, then any group it omits."""
+    out = [g for g, _keys in LAYOUT.get(tab, ())]
     for s in SETTINGS:
         if s.tab == tab and s.group not in out:
             out.append(s.group)
@@ -390,7 +469,13 @@ def groups_in_tab(tab: str) -> "list[str]":
 
 
 def settings_in(tab: str, group: str) -> "list[Setting]":
-    return [s for s in SETTINGS if s.tab == tab and s.group == group]
+    """Settings in one group: LAYOUT order first, then any key it omits."""
+    have = [s for s in SETTINGS if s.tab == tab and s.group == group]
+    order = dict(LAYOUT.get(tab, ())).get(group)
+    if not order:
+        return have
+    rank = {k: i for i, k in enumerate(order)}
+    return sorted(have, key=lambda s: rank.get(s.key, len(rank)))
 
 
 def env_string_for(s: Setting, value) -> "str | None":
