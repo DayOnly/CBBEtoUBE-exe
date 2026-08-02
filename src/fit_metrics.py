@@ -898,12 +898,21 @@ class DisplacementSurvival:
             per = proj / m2
             surv = float(proj.sum() / denom)
             worst_lbl, worst_val = None, 0.0
+            # EVERY later pass's contribution, not just the worst. "Who else
+            # touched this pass's work" is a different question from "who undid
+            # the most of it", and the second cannot answer the first: a
+            # consolidation is justified by two passes FIGHTING, so it needs the
+            # pairwise number, and reading the worst-canceller column instead
+            # would credit a fight to whichever pass happened to win.
+            contrib = {}
             for m in range(k + 1, n):
                 Sm, Sp = snaps[m][1], snaps[m - 1][1]
                 if Sm.shape != S1.shape or Sp.shape != S1.shape:
                     continue
                 c = float(np.einsum("ij,ij->i",
                                     (Sm - Sp)[moved], Dm).sum() / denom)
+                if abs(c) >= 0.01:
+                    contrib[snaps[m][0]] = round(c, 4)
                 if c < worst_val:
                     worst_lbl, worst_val = snaps[m][0], c
             mean_mag = float(np.sqrt(m2).mean())
@@ -921,6 +930,8 @@ class DisplacementSurvival:
                    "attrib_complete": self.dropped == 0}
             if low:
                 row["low_signal"] = True
+            if contrib:
+                row["contrib"] = contrib
             if worst_lbl is not None:
                 row["cancelled_by"] = worst_lbl
                 row["cancelled_frac"] = round(worst_val, 4)

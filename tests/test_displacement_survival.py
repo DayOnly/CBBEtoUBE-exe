@@ -287,3 +287,37 @@ def test_default_is_off():
     d.checkpoint("entry", _grid())
     d.checkpoint("p", _grid() + 1.0)
     assert d.analyse(_grid()) == []
+
+
+def test_every_later_pass_is_attributed_not_just_the_worst():
+    """A consolidation is justified by two passes FIGHTING, so the pairwise
+    number is what decides it. The worst-canceller column cannot answer that --
+    it credits the fight to whichever pass happened to win."""
+    v0 = _grid()
+    v1 = v0.copy()
+    v1[:, 1] += 2.0                  # pass under test
+    v2 = v1.copy()
+    v2[:, 1] -= 0.5                  # takes back a quarter
+    v3 = v2.copy()
+    v3[:, 1] -= 1.0                  # takes back a half -- the worst
+    rows = _run([("entry", v0), ("conform", v1),
+                 ("antipoke", v2), ("chain_blend", v3)])
+    r = _row(rows, "conform")
+    assert r["cancelled_by"] == "chain_blend"
+    assert set(r["contrib"]) == {"antipoke", "chain_blend"}
+    assert np.isclose(r["contrib"]["antipoke"], -0.25)
+    assert np.isclose(r["contrib"]["chain_blend"], -0.50)
+    # and the parts still reconstruct the whole
+    assert np.isclose(1.0 + sum(r["contrib"].values()), r["survival"])
+
+
+def test_a_negligible_contribution_is_not_recorded():
+    """Otherwise every row carries a dozen 0.001 entries and the real
+    interaction is buried."""
+    v0 = _grid()
+    v1 = v0.copy()
+    v1[:, 1] += 2.0
+    v2 = v1.copy()
+    v2[:, 1] -= 0.001
+    r = _row(_run([("entry", v0), ("p", v1), ("q", v2)]), "p")
+    assert "contrib" not in r or "q" not in r.get("contrib", {})
