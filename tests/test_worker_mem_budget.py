@@ -91,7 +91,7 @@ def test_smp_antipoke_flag_defaults_off(monkeypatch):
     cuirass improves 6.3% -> 3.3% exposed with it on, but that is a partial win
     with a sharp optimum, so it ships off until confirmed in-game."""
     import importlib
-    monkeypatch.delenv("CBBE2UBE_SMP_ANTIPOKE", raising=False)
+    monkeypatch.setenv("CBBE2UBE_NO_SMP_ANTIPOKE", "1")
     nc = importlib.reload(importlib.import_module("src.nif_convert"))
     assert nc.SMP_COLLISION_ONLY_ANTIPOKE is False
     # Push budget is the clearance target, NOT the 3.0 default: measured 6.9% ->
@@ -131,17 +131,17 @@ def test_every_playtestable_toggle_is_reachable_from_the_gui():
     not: without a row, the intent is not real."""
     from src import gui_settings as gs
     rows = {s.env for s in gs.SETTINGS if s.env}
-    for env in ("CBBE2UBE_SMP_ANTIPOKE", "CBBE2UBE_SMP_ANTIPOKE_PUSH",
+    for env in ("CBBE2UBE_NO_SMP_ANTIPOKE", "CBBE2UBE_SMP_ANTIPOKE_PUSH",
                 "CBBE2UBE_NO_SKIN_INFLUENCE_CAP"):
         assert env in rows, f"{env} is unreachable from an MO2 launch"
 
 
 def test_smp_antipoke_flag_opt_in(monkeypatch):
     import importlib
-    monkeypatch.setenv("CBBE2UBE_SMP_ANTIPOKE", "1")
+    monkeypatch.delenv("CBBE2UBE_NO_SMP_ANTIPOKE", raising=False)
     nc = importlib.reload(importlib.import_module("src.nif_convert"))
     assert nc.SMP_COLLISION_ONLY_ANTIPOKE is True
-    monkeypatch.delenv("CBBE2UBE_SMP_ANTIPOKE", raising=False)
+    monkeypatch.setenv("CBBE2UBE_NO_SMP_ANTIPOKE", "1")
     importlib.reload(nc)          # leave the module clean for other tests
 
 

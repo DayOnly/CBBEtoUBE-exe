@@ -270,3 +270,52 @@ def test_unseen_settings_ignores_cosmetic_options(tmp_path):
     keys = {s.key for s in new}
     assert behavioural[0] in keys, "a real option must still be named"
     assert cosmetic[0] not in keys, "a cosmetic option must not raise the alarm"
+
+
+# Flags promoted to DEFAULT ON in 1.2, after a full-pack conversion and in-game
+# use. Each needs BOTH halves flipped: the registry default AND the source
+# constant's polarity. Flipping only the registry would show ON in the GUI while
+# the converter still ran with the feature off -- the exact silent mismatch this
+# module's docstring warns about.
+PROMOTED_IN_1_2 = {
+    "chest_follow":   "CBBE2UBE_NO_CHEST_FOLLOW",
+    "drape_xml_gate": "CBBE2UBE_NO_DRAPE_XML_GATE",
+    "smp_antipoke":   "CBBE2UBE_NO_SMP_ANTIPOKE",
+    "source_follow":  "CBBE2UBE_NO_SOURCE_FOLLOW",
+}
+
+
+def test_promoted_flags_are_default_on_with_a_no_kill_switch():
+    reg = gs.by_key()
+    for key, env in PROMOTED_IN_1_2.items():
+        s = reg[key]
+        assert s.default is True, f"{key} should ship ON"
+        assert s.env == env, f"{key} must use the NO_ form, got {s.env}"
+        assert s.invert is True, f"{key} env must DISABLE, not enable"
+
+
+def test_promoted_flags_emit_nothing_at_default_and_a_kill_var_when_off():
+    d = gs.defaults()
+    env_on = gs.apply_env(d, {})
+    for key, var in PROMOTED_IN_1_2.items():
+        assert var not in env_on, f"{var} leaked while {key} is at its default"
+        off = gs.apply_env({**d, key: False}, {})
+        assert off[var] == "1", f"unticking {key} must set {var}=1"
+
+
+def test_the_source_constants_actually_default_on():
+    """The half a registry-only edit would miss. Reads the real module."""
+    import importlib
+    import src.nif_convert as nc
+    importlib.reload(nc)
+    for name in ("CHEST_FOLLOW_RATIO", "DRAPE_SKIP_XML_GATED",
+                 "SOURCE_FOLLOW_CEILING", "SMP_COLLISION_ONLY_ANTIPOKE"):
+        assert getattr(nc, name) is True, f"{name} is not ON by default"
+
+
+def test_rigid_majority_softbody_still_ships_off():
+    """It changes physics and has no in-game verdict. PIPELINE.md rule 8: ship a
+    flag off and get a verdict before defaulting it on."""
+    s = gs.by_key()["rigid_majority_softbody"]
+    assert s.default is False
+    assert s.invert is False and s.env == "CBBE2UBE_RIGID_MAJORITY_SOFTBODY"

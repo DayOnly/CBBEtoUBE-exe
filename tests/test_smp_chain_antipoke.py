@@ -39,8 +39,10 @@ def test_chain_optin_defaults_off():
     assert nc.SMP_CHAIN_ANTIPOKE is False
 
 
-def test_collision_only_flag_still_defaults_off():
-    assert nc.SMP_COLLISION_ONLY_ANTIPOKE is False
+def test_collision_only_flag_now_defaults_on():
+    """Promoted in 1.2 after a full-pack run and in-game use. The CHAIN flag
+    beside it is a different, still-opt-in thing (see below)."""
+    assert nc.SMP_COLLISION_ONLY_ANTIPOKE is True
 
 
 def test_the_two_flags_are_independent():
@@ -49,13 +51,16 @@ def test_the_two_flags_are_independent():
     They admit different shapes for different reasons: one a declared collider
     with no per-vertex sim, the other a bone-driven chain garment. Collapsing
     them would silently widen the collider flag past its documented scope.
+
+    Since 1.2 the collider flag defaults ON, so independence is shown the other
+    way round: disabling it must NOT disable the chain flag.
     """
     import importlib
     import os
     prev = dict(os.environ)
     try:
         os.environ["CBBE2UBE_SMP_CHAIN_ANTIPOKE"] = "1"
-        os.environ.pop("CBBE2UBE_SMP_ANTIPOKE", None)
+        os.environ["CBBE2UBE_NO_SMP_ANTIPOKE"] = "1"
         m = importlib.reload(nc)
         assert m.SMP_CHAIN_ANTIPOKE is True
         assert m.SMP_COLLISION_ONLY_ANTIPOKE is False

@@ -53,21 +53,23 @@ import src.nif_convert as nc
 @pytest.fixture(autouse=True)
 def _clean():
     yield
-    os.environ.pop("CBBE2UBE_DRAPE_XML_GATE", None)
+    os.environ.pop("CBBE2UBE_NO_DRAPE_XML_GATE", None)
     importlib.reload(nc)
 
 
 # --- the flag ------------------------------------------------------------------
 
-def test_defaults_off(monkeypatch):
-    """The failure mode is a crash on equip. Off unless asked for."""
-    monkeypatch.delenv("CBBE2UBE_DRAPE_XML_GATE", raising=False)
-    assert importlib.reload(nc).DRAPE_SKIP_XML_GATED is False
-
-
-def test_opt_in(monkeypatch):
-    monkeypatch.setenv("CBBE2UBE_DRAPE_XML_GATE", "1")
+def test_defaults_on(monkeypatch):
+    """Promoted to default ON in 1.2 after a full-pack run and in-game use.
+    The failure mode is a crash on equipping a robe, so the kill switch below
+    is the first thing to reach for if one appears."""
+    monkeypatch.delenv("CBBE2UBE_NO_DRAPE_XML_GATE", raising=False)
     assert importlib.reload(nc).DRAPE_SKIP_XML_GATED is True
+
+
+def test_kill_switch(monkeypatch):
+    monkeypatch.setenv("CBBE2UBE_NO_DRAPE_XML_GATE", "1")
+    assert importlib.reload(nc).DRAPE_SKIP_XML_GATED is False
 
 
 # --- the two groups -------------------------------------------------------------
@@ -91,7 +93,7 @@ def test_structural_group_keeps_col(monkeypatch):
     physics comes from a GLOBAL config, so freeing them walks straight into C1. It
     stays STRUCTURAL, where the XML gate never relaxes it."""
     assert "col" in nc._CONFORM_SKIP_STRUCTURAL
-    monkeypatch.setenv("CBBE2UBE_DRAPE_XML_GATE", "1")
+    monkeypatch.delenv("CBBE2UBE_NO_DRAPE_XML_GATE", raising=False)
     m = importlib.reload(nc)
     assert "col" in m._conform_skip_keys(piece_has_hdt_xml=True)
 
@@ -101,14 +103,14 @@ def test_structural_group_keeps_col(monkeypatch):
 def test_flag_off_always_uses_the_full_list(monkeypatch):
     """REGRESSION. With the flag off the shipped behaviour is unchanged for every
     piece, whether or not it declares an XML."""
-    monkeypatch.delenv("CBBE2UBE_DRAPE_XML_GATE", raising=False)
+    monkeypatch.setenv("CBBE2UBE_NO_DRAPE_XML_GATE", "1")
     m = importlib.reload(nc)
     for has in (True, False, None):
         assert set(m._conform_skip_keys(has)) == set(m._CONFORM_SKIP_NAMES)
 
 
 def test_piece_with_an_xml_drops_the_draping_names(monkeypatch):
-    monkeypatch.setenv("CBBE2UBE_DRAPE_XML_GATE", "1")
+    monkeypatch.delenv("CBBE2UBE_NO_DRAPE_XML_GATE", raising=False)
     m = importlib.reload(nc)
     keys = m._conform_skip_keys(piece_has_hdt_xml=True)
     assert set(keys) == set(m._CONFORM_SKIP_STRUCTURAL)
@@ -117,7 +119,7 @@ def test_piece_with_an_xml_drops_the_draping_names(monkeypatch):
 
 def test_piece_without_an_xml_KEEPS_them(monkeypatch):
     """The C1 class. This is the whole point of the gate."""
-    monkeypatch.setenv("CBBE2UBE_DRAPE_XML_GATE", "1")
+    monkeypatch.delenv("CBBE2UBE_NO_DRAPE_XML_GATE", raising=False)
     m = importlib.reload(nc)
     assert set(m._conform_skip_keys(piece_has_hdt_xml=False)) == set(m._CONFORM_SKIP_NAMES)
 
@@ -125,7 +127,7 @@ def test_piece_without_an_xml_KEEPS_them(monkeypatch):
 def test_UNKNOWN_is_treated_as_no_xml(monkeypatch):
     """An unanswered question must not relax a CTD guard. `None` reaches the predicate
     whenever a caller could not determine the piece's physics."""
-    monkeypatch.setenv("CBBE2UBE_DRAPE_XML_GATE", "1")
+    monkeypatch.delenv("CBBE2UBE_NO_DRAPE_XML_GATE", raising=False)
     m = importlib.reload(nc)
     assert set(m._conform_skip_keys(piece_has_hdt_xml=None)) == set(m._CONFORM_SKIP_NAMES)
 
@@ -133,7 +135,7 @@ def test_UNKNOWN_is_treated_as_no_xml(monkeypatch):
 def test_unreadable_piece_reports_no_xml(tmp_path, monkeypatch):
     """`_piece_has_hdt_xml` must fail CLOSED: an unreadable or absent NIF answers
     False, which keeps the full list."""
-    monkeypatch.setenv("CBBE2UBE_DRAPE_XML_GATE", "1")
+    monkeypatch.delenv("CBBE2UBE_NO_DRAPE_XML_GATE", raising=False)
     m = importlib.reload(nc)
     assert m._piece_has_hdt_xml(tmp_path / "does_not_exist.nif") is False
     bad = tmp_path / "junk.nif"
