@@ -134,6 +134,21 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "morphable. Trade-off: the flap stops swinging. "
                     "Experimental -- changes physics, so check for equip "
                     "crashes and collapsing cloth, not just clipping."),
+    Setting("chain_body_shift", "Shift physics chains onto the new body "
+            "(experimental)",
+            "Armor", "Jiggle and physics transfer", default=False,
+            env="CBBE2UBE_CHAIN_BODY_SHIFT", invert=False,
+            tooltip="Chain-driven cloth (skirts, drapes) is pinned to its "
+                    "SOURCE rest position so it stays aligned with its bones, "
+                    "which means no clearance pass can reach it -- a skirt "
+                    "keeps a source-shaped rest pose over a differently-shaped "
+                    "body. This moves each chain's ROOT bone by the local body "
+                    "delta instead, so the whole chain translates rigidly "
+                    "(measured worst inter-bone change 0.000000u -- warping "
+                    "chain bones individually is what makes a chain explode). "
+                    "Took bind-pose skirt clipping 7.5%% to 1.1%% on the test "
+                    "piece, but showed no visible in-game change, so it is "
+                    "unproven where it counts. Experimental."),
     Setting("unified_offset", "Unified clearance floor (experimental)",
             "Armor", "Fit and conform", default=False,
             env="CBBE2UBE_UNIFIED_OFFSET", invert=False,
