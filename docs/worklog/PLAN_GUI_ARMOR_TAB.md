@@ -149,10 +149,21 @@ Nine groups of 2–6 visible rows each, no group over 6, no junk drawer, chains
 unified, the three misfilings corrected. 31 bools + 7 knobs = 38, all accounted
 for.
 
-One open question: **`vanilla_sweep` probably does not belong on the Armor tab at
-all.** It selects which *sources* get converted, which is a Run-tab concern. It
-is parked in "What gets fitted" above so nothing is lost, but moving it to Run is
-the better call if the Run tab has room.
+~~One open question: **`vanilla_sweep` probably does not belong on the Armor tab
+at all.**~~ **DONE (`e9a763e`)** — moved to the Run tab, into the "Convert armor"
+section beside the mod selection it extends, taking the one-item "Coverage" group
+off Armor with it. The Run tab is hand-built rather than generated, so this added
+`gui.py::_registry_check` — a registry-backed checkbox rendered outside the
+generated tabs, same binding and persistence, registry still the single source of
+label/tooltip/default/env. It joins `sel_widgets` and locks during a run, because
+settings are read once at child launch.
+
+That leaves **8 groups and 37 settings** on Armor for stage 3.
+
+It also added `test_no_orphaned_settings`, which is worth keeping independent of
+this plan: a setting on a tab nobody builds renders nowhere, so it can never be
+enabled, validated, or finished. Verified against a planted orphan and against
+the realistic slip (moving a setting to Run without hand-rendering it).
 
 ### Stage 4 — signal stability consistently
 
