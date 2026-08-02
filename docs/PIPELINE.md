@@ -120,8 +120,14 @@ separate/sync → `_weld_cross_shape_seams` → `_ride_effect_overlays_on_plate`
 motion-match on-disk group.
 
 **Phase 1 has NO anti-poke** (`clear_armor_outside_body` is never called) and no
-`bake_preset_into_armor`. It DOES conform — earlier notes claiming otherwise are
-wrong; verified in source 2026-08-01.
+`bake_preset_into_armor`.
+
+**It also does NOT conform by default.** A `conform_to_source_standoff` call site
+exists in the phase-1 path, but it is gated on `PHASE1_CONFORM`, which is default
+OFF — so a stock phase-1 piece inflates with nothing to reel it back to the
+author's fit. (An earlier revision of this file claimed phase 1 conforms. That
+was derived by listing call sites without evaluating their gates — the presence
+of a call is not evidence that it runs. Corrected 2026-08-01.)
 
 ---
 
