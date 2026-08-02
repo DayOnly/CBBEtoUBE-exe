@@ -4,7 +4,18 @@ The Armor tab holds 38 of the tool's 43 settings and has stopped being
 scannable. This is the plan to fix it, in dependency order, with the
 measurements that justify each step.
 
-Status: PLANNED, nothing implemented.
+Status: **stages 1–3 SHIPPED** (`882d28b`, `b8310c8`), plus findings 3–7 in §6.
+**2616px → 1494px, 3.7 → 2.1 screens** with advanced hidden. Still open: §6.1
+(the run log overwriting its own flag echo) and §6.2 (no run history).
+
+Verified on the way: no tooltip text was lost — diffing every tooltip against
+HEAD shows **zero changed, none removed**; the tab was smoke-built via
+`launch_gui` (rc=0), and a planted renderer fault was confirmed to make that
+same smoke run raise, so rc=0 means something.
+
+Missed the ≤1200px target from §6 by 294px. The remainder is 30 control rows and
+8 group frames — near the floor without collapsible groups, which is the next
+lever if it still feels tall.
 
 ---
 
