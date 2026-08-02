@@ -167,19 +167,20 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "once rather than twice, and spends one budget per vertex "
                     "instead of several. Experimental: changes the fit of "
                     "body-slot armour, so test it before a full reconvert."),
-    Setting("chest_follow", "Chest follow ratio (experimental)",
-            "Armor", "Body follow and morphs", default=False,
-            env="CBBE2UBE_CHEST_FOLLOW", invert=False,
+    Setting("chest_follow", "Chest follow ratio",
+            "Armor", "Body follow and morphs", default=True,
+            env="CBBE2UBE_NO_CHEST_FOLLOW", invert=True,
             hint="Make chest cloth track the morphed bust instead of standing off it.",
             tooltip="Let a fitted soft-material top track the body's breast motion "
                     "by the amount its own clearance actually requires, instead of "
                     "an absolute weight cap that leaves it following about a third "
                     "of the body. Targets 'chest clips only when moving'. Metal "
-                    "armour keeps the old conservative cap. Experimental: too much "
-                    "tracking makes stiff armour look rubbery."),
+                    "armour keeps the old conservative cap. DEFAULT ON since 1.2, "
+                    "after a full-pack conversion and in-game use. Untick it if "
+                    "stiff armour starts reading as rubbery."),
     Setting("drape_xml_gate", "Fit robes/dresses that declare their own physics",
-            "Armor", "Fit and clearance", default=False,
-            env="CBBE2UBE_DRAPE_XML_GATE", invert=False,
+            "Armor", "Fit and clearance", default=True,
+            env="CBBE2UBE_NO_DRAPE_XML_GATE", invert=True,
             hint="Also fit robes and dresses that declare their own physics.",
             tooltip="Robes, dresses, cloaks and capes are skipped by every fitting "
                     "pass, because some of them are cloth driven by a game-wide "
@@ -187,11 +188,12 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "adjusting those has crashed on equip. This narrows the skip to "
                     "pieces that do NOT ship their own physics file, so a robe whose "
                     "physics IS declared can be fitted like any other garment. "
-                    "RISK: the failure mode is a crash when equipping a robe, so "
-                    "test robes specifically after turning this on."),
+                    "DEFAULT ON since 1.2, after a full-pack conversion and "
+                    "in-game use. The failure mode is a crash when equipping a "
+                    "robe, so if that happens, untick this first."),
     Setting("source_follow", "...judge by the outfit's own weighting, not its name",
-            "Armor", "Body follow and morphs", default=False,
-            env="CBBE2UBE_SOURCE_FOLLOW", invert=False,
+            "Armor", "Body follow and morphs", default=True,
+            env="CBBE2UBE_NO_SOURCE_FOLLOW", invert=True,
             hint="Follow the bust only where the original author weighted it.",
             tooltip="Decide how much a top may move by looking at whether the "
                     "outfit's author weighted its chest at all, instead of "
@@ -230,16 +232,18 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "simulates. Writing those is pointless (physics wins at "
                     "runtime) and has crashed on equip before. Leave this on "
                     "unless you are bisecting a problem."),
-    Setting("smp_antipoke", "Bust clearance on SMP collider armor (experimental)",
-            "Armor", "Fit and clearance", default=False,
-            env="CBBE2UBE_SMP_ANTIPOKE", invert=False,
+    Setting("smp_antipoke", "Bust clearance on SMP collider armor",
+            "Armor", "Fit and clearance", default=True,
+            env="CBBE2UBE_NO_SMP_ANTIPOKE", invert=True,
             hint="Push simulated cloth clear of the body so the bust stops poking through.",
             tooltip="An armor whose physics config names it only as a COLLIDER "
                     "currently gets no bust clearance at all, so the body pushes "
                     "straight through it -- the 'chest clips when moving' case on "
                     "cuirasses with their own physics. Measured 6.3% -> 3.3% "
-                    "exposed on one such cuirass. Experimental: pushing verts out "
-                    "on a convex region has spread them before."),
+                    "exposed on one such cuirass. DEFAULT ON since 1.2, after a "
+                    "full-pack conversion and in-game use. Untick it if a bust "
+                    "looks spread or faceted -- pushing verts out on a convex "
+                    "region has done that before."),
     Setting("smp_antipoke_push", "...its push budget (units)",
             "Armor", "Fit and clearance", kind="float", default=1.0,
             env="CBBE2UBE_SMP_ANTIPOKE_PUSH", min=0.0, max=6.0, step=0.1,

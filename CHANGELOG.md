@@ -7,10 +7,44 @@ builds that were never published, folded into one release rather than
 presented as eight pending versions.
 
 The theme is **measuring fit correctly, then fixing what the measurement
-exposed**: several long-standing fit defects turned out to be metrics that did
-not measure what their name claimed.
+exposed**. Most of 1.1.x's fit work was steered by two metrics that turned out
+to be anti-correlated with what the game actually shows, so a run could score
+better and look worse. Replacing them uncovered a frame bug that had been
+corrupting the entire phase-2 pass chain, and several long-standing fit defects
+turned out to be metrics that did not measure what their name claimed.
 
-### Fixed - the converter was not deterministic across processes
+### Changed — four fit options are now ON by default
+
+These shipped as opt-in switches nobody was turning on, so the out-of-the-box
+conversion was missing fixes that had already been proven. All four have since
+run over a full pack and been used in game, so they are the defaults now:
+
+* **Judge chest movement by the outfit's own weighting, not its name.** Decides
+  how much a top may move by whether its author weighted the chest at all,
+  instead of guessing the material from the file name and textures. It only ever
+  adds movement to pieces nothing was helping.
+* **Chest follow ratio.** A fitted soft top now tracks the body's breast motion
+  by the amount its own clearance requires, rather than a flat cap that left it
+  following about a third of the body. Metal keeps the conservative cap.
+* **Bust clearance on collider-only SMP armour.** Armour whose physics config
+  names it only as a collider was getting no bust clearance at all, so the body
+  pushed straight through it. Measured 6.3% → 3.3% exposed on one such cuirass.
+* **Fit robes and dresses that declare their own physics.** Draping pieces were
+  skipped wholesale; the skip now applies only to those that ship no physics
+  file of their own.
+
+Each keeps an escape hatch, and the Armor tab is the place to use it:
+`CBBE2UBE_NO_SOURCE_FOLLOW`, `CBBE2UBE_NO_CHEST_FOLLOW`,
+`CBBE2UBE_NO_SMP_ANTIPOKE`, `CBBE2UBE_NO_DRAPE_XML_GATE`.
+
+If a robe crashes on equip, untick "Fit robes/dresses that declare their own
+physics" first — that is its known failure mode. If stiff armour starts looking
+rubbery, untick the chest follow ratio.
+
+**Not** promoted: keeping mostly-rigid armour skinned. It changes physics and
+has no in-game verdict yet, so it stays opt-in on the Armor tab.
+
+### Fixed — the converter was not deterministic across processes
 
 Iterating a set of strings orders by hash, which varies per process, and that
 order reached the output three ways: the order `setShapeWeights` was called
@@ -19,7 +53,7 @@ a generated .tri, and the 4-influence cap's tie-break on exactly-equal weights
 (symmetric bones tie). Same input now produces the same bytes: verified across
 PYTHONHASHSEED 0, 2, 5 and 7 over all 46 emitted artifacts.
 
-### Fixed - a fit pass that raised was indistinguishable from one that did nothing
+### Fixed — a fit pass that raised was indistinguishable from one that did nothing
 
 Every fit pass runs inside a catch so one bad piece cannot abort a 4000-piece
 batch. The catch was silent, so a pass that threw simply vanished -- which had
@@ -51,20 +85,18 @@ Env: `CBBE2UBE_PHASE1_CONFORM=1` (DEFAULT OFF pending the clipping A/B),
 `CBBE2UBE_NO_STATIC_AUTHORED_FIT=1`, `CBBE2UBE_STATIC_AUTHORED_AMP` (2.0),
 `CBBE2UBE_STATIC_AUTHORED_MIN` (0.06).
 
-**KNOWN INCOMPLETE — a pass ordering bug, traced not guessed.** Per-pass trace of
-one armour's chest band: authored 0.197 -> warp 0.265 -> inflate 0.490 ->
-**conform 0.235** -> `_smooth_warp_grooves` **0.322**. The conform reaches the
-authored fit; groove-smoothing then runs and pushes it back out. That pass is
-ONE-SIDED by design (`GROOVE_ONESIDED`, it can never pull toward the body), so
-it will always partially undo an inward conform placed before it. The fix is
-ORDERING — conform after groove-smooth — and applies to BOTH phases. Not done.
+A related ordering effect, traced rather than guessed. Per-pass trace of one
+armour's chest band: authored 0.197 → warp 0.265 → inflate 0.490 → **conform
+0.235** → `_smooth_warp_grooves` **0.322**. The conform reaches the authored
+fit; groove-smoothing then runs and pushes part of it back out, because that
+pass is one-sided by design and can never pull toward the body.
 
-**CORRECTION (2026-07-31): that reorder was built, measured, and REVERTED.** It
-does tighten the chest band (0.322 → 0.283) but costs +2.267u of arm crinkle,
-because the output's smoothness comes from groove-smooth smoothing the
-*cumulative* field last. Do not re-attempt it — the fit problem it describes was
-addressed instead by bounding groove-smooth's outward motion at the authored
-standoff (`#groove-authored-cap`).
+Reordering conform after groove-smooth was the obvious fix, and it was built and
+measured: it does tighten the chest band (0.322 → 0.283) but costs +2.267u of
+arm crinkle, because the output's smoothness comes from groove-smooth smoothing
+the *cumulative* field last. So it was reverted, and the fit problem was solved
+instead by bounding groove-smooth's outward motion at the authored standoff.
+Recorded here so the reorder is not attempted again.
 
 ### Fixed — physics chains whose anchor node was dropped (pull-to-origin)
 
@@ -106,12 +138,6 @@ it read only declarations, and it warned about every declared bone missing from
 the NIF including the resolvable ones — ~45 lines per file, which is how the six
 that mattered stayed invisible. It now reports only genuinely unresolvable
 bones, and counts constraint bodies as references.
-
-The theme of this release is **measuring fit correctly, then fixing what the
-measurement exposed.** Most of 1.1.x's fit work was steered by two metrics that
-turned out to be anti-correlated with what the game actually shows, so a run
-could get "better" numbers and worse armour. Replacing them uncovered a frame
-bug that had been corrupting the entire phase-2 pass chain.
 
 ### Fixed — the pass chain was computing against a misplaced garment
 
@@ -376,7 +402,7 @@ No band on any probe got worse. Weights only: zero vertex movement on both weigh
 of all three probes and across all 15 golden pieces, and the weight-sum invariant
 is unchanged.
 
-### Changed - the Armor settings tab is readable again
+### Changed — the Armor settings tab is readable again
 
 It had grown to 38 of the tool's 43 settings and rendered about 3.7 screens
 tall, but the bulk of that was not controls: 86% of the text on the tab was
@@ -400,7 +426,7 @@ fitted.
 
 Net effect: 3.7 screens to 2.1, with every word still reachable.
 
-### Changed - a failed pass or a failed write now reaches the report
+### Changed — a failed pass or a failed write now reaches the report
 
 Every fit pass and every mesh/sidecar write ran inside a silent catch, so a
 pass that RAISED was indistinguishable from one that ran and did nothing.
@@ -540,7 +566,7 @@ first-person viewmodels from standoff *and states how many*; and it prints
 percentiles rather than inventing ceilings for bands that have no calibrated
 anchor.
 
-### Faster - skeleton bone resolution
+### Performance — skeleton bone resolution
 
 The normalised skeleton bone set was rebuilt on every membership test
 (1.9M redundant calls over five pieces). Cached; about 5-6%, output identical.

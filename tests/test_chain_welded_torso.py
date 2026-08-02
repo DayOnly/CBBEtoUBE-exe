@@ -67,7 +67,7 @@ import pytest
 import src.nif_convert as nc
 
 _ENV = ("CBBE2UBE_CHAIN_TORSO", "CBBE2UBE_NO_LEG_CHAIN_GUARD",
-        "CBBE2UBE_CHEST_FOLLOW", "CBBE2UBE_CHEST_FOLLOW_UNKNOWN")
+        "CBBE2UBE_NO_CHEST_FOLLOW", "CBBE2UBE_CHEST_FOLLOW_UNKNOWN")
 
 
 @pytest.fixture(autouse=True)

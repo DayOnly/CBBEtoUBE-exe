@@ -222,14 +222,17 @@ ANTIPOKE_BUST_CLEAR = float(
     os.environ.get("CBBE2UBE_BUST_CLEAR", "").strip() or "1.0")
 ANTIPOKE_NIPPLE_GAIN = 1.5
 
-# #smp-collision-only-antipoke -- OPT-IN. Let the anti-poke pass reach a shape
-# that carries SMP rigging but is NOT itself simulated per-vertex (its XML only
-# names it as a collider). Such a shape currently gets no bust clearance at all,
-# so the body pushes through it; but pushing verts outward on a CONVEX region has
-# backfired before (see the gate comment in convert_nif_phase2), so this stays off
-# until confirmed in-game. CBBE2UBE_SMP_ANTIPOKE=1 to enable.
+# #smp-collision-only-antipoke -- DEFAULT ON since 1.2. Let the anti-poke pass
+# reach a shape that carries SMP rigging but is NOT itself simulated per-vertex
+# (its XML only names it as a collider). Such a shape otherwise gets no bust
+# clearance at all, so the body pushes straight through it. Measured 6.3% -> 3.3%
+# exposed on a collider-only cuirass, then run over a full pack and used in game.
+# Pushing verts outward on a CONVEX region has backfired before (see the gate
+# comment in convert_nif_phase2), so the escape hatch stays:
+# CBBE2UBE_NO_SMP_ANTIPOKE=1 disables it.
 SMP_COLLISION_ONLY_ANTIPOKE = os.environ.get(
-    "CBBE2UBE_SMP_ANTIPOKE", "").strip().lower() in ("1", "true", "yes", "on")
+    "CBBE2UBE_NO_SMP_ANTIPOKE", "").strip().lower() not in (
+        "1", "true", "yes", "on")
 # Push budget for that path. NOT the 3.0 default: measured offline on the traced
 # hide cuirass, exposure went 6.9% -> 2.4% at 1.0 but only 5.7% at 3.0 and WORSE
 # (8.1%) at 0.6. The optimum sits exactly at ANTIPOKE_BUST_CLEAR -- i.e. push far
@@ -6479,9 +6482,11 @@ _CONFORM_SKIP_NAMES = _CONFORM_SKIP_STRUCTURAL + _CONFORM_SKIP_DRAPING
 # being named. `LEG_CHAIN_GUARD` does NOT close that hole -- it skips verts driven by
 # CUSTOM bones, while C1's robe was driven by SKELETON bones. Default OFF; judge it by
 # equipping robes, not by reading a metric.
+# DEFAULT ON since 1.2. The failure mode is a crash when equipping a robe, so
+# CBBE2UBE_NO_DRAPE_XML_GATE=1 restores the blanket skip if one appears.
 DRAPE_SKIP_XML_GATED = (
-    os.environ.get("CBBE2UBE_DRAPE_XML_GATE", "").strip().lower()
-    in ("1", "true", "yes", "on"))
+    os.environ.get("CBBE2UBE_NO_DRAPE_XML_GATE", "").strip().lower()
+    not in ("1", "true", "yes", "on"))
 
 
 def _conform_skip_keys(piece_has_hdt_xml=None) -> tuple:
@@ -6948,9 +6953,11 @@ _CHEST_PROX = float(os.environ.get("CBBE2UBE_CHEST_PROX", "5.0"))
 # Material matters because the cap has a real job on plate -- jiggle on a steel cuirass
 # reads as rubber. Soft leather/cloth has no such excuse and is where the clipping is.
 # Unknown material stays RIGID: the conservative direction is today's behaviour.
+# DEFAULT ON since 1.2, after a full-pack conversion and in-game use. Disable
+# with CBBE2UBE_NO_CHEST_FOLLOW=1 if stiff armour starts reading as rubbery.
 CHEST_FOLLOW_RATIO = (
-    os.environ.get("CBBE2UBE_CHEST_FOLLOW", "").strip().lower()
-    in ("1", "true", "yes", "on"))
+    os.environ.get("CBBE2UBE_NO_CHEST_FOLLOW", "").strip().lower()
+    not in ("1", "true", "yes", "on"))
 _CHEST_FOLLOW_SOFT = float(os.environ.get("CBBE2UBE_CHEST_FOLLOW_SOFT", "1.0"))
 _CHEST_FOLLOW_RIGID = float(os.environ.get("CBBE2UBE_CHEST_FOLLOW_RIGID", "0.35"))
 # Material the keyword lists do NOT recognise. Its own knob rather than sharing the
@@ -6996,9 +7003,11 @@ _CHEST_FOLLOW_UNKNOWN = float(
 # authored weighting as the reskin passed it through -- the very quantity the table
 # above measures -- and it makes the pass idempotent: once grafted, the shape reads
 # as weighted and is left alone.
+# DEFAULT ON since 1.2. It only ever ADDS movement to pieces nothing was
+# helping. Disable with CBBE2UBE_NO_SOURCE_FOLLOW=1.
 SOURCE_FOLLOW_CEILING = (
-    os.environ.get("CBBE2UBE_SOURCE_FOLLOW", "").strip().lower()
-    in ("1", "true", "yes", "on"))
+    os.environ.get("CBBE2UBE_NO_SOURCE_FOLLOW", "").strip().lower()
+    not in ("1", "true", "yes", "on"))
 # Split point. The distribution is strongly BIMODAL -- an author either copies the
 # body's bust weights (landing near 1.0) or leaves the bust at 0 -- so any threshold
 # in the middle separates the same populations. 0.5 takes the midpoint; it is not

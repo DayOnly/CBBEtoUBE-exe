@@ -52,7 +52,7 @@ import src.nif_convert as nc
 def _clean():
     yield
     import os
-    for k in ("CBBE2UBE_CHEST_FOLLOW", "CBBE2UBE_CHEST_FOLLOW_SOFT",
+    for k in ("CBBE2UBE_NO_CHEST_FOLLOW", "CBBE2UBE_CHEST_FOLLOW_SOFT",
               "CBBE2UBE_CHEST_FOLLOW_RIGID", "CBBE2UBE_CHEST_RIGID_JIGGLE_FRAC"):
         os.environ.pop(k, None)
     importlib.reload(nc)
@@ -66,14 +66,16 @@ class _Shape:
 
 # --- the flag ---------------------------------------------------------------
 
-def test_defaults_off(monkeypatch):
-    monkeypatch.delenv("CBBE2UBE_CHEST_FOLLOW", raising=False)
-    assert importlib.reload(nc).CHEST_FOLLOW_RATIO is False
-
-
-def test_opt_in(monkeypatch):
-    monkeypatch.setenv("CBBE2UBE_CHEST_FOLLOW", "1")
+def test_defaults_on(monkeypatch):
+    """Promoted to default ON in 1.2 after a full-pack run and in-game use."""
+    monkeypatch.delenv("CBBE2UBE_NO_CHEST_FOLLOW", raising=False)
     assert importlib.reload(nc).CHEST_FOLLOW_RATIO is True
+
+
+def test_kill_switch(monkeypatch):
+    """The escape hatch, if stiff armour starts reading as rubbery."""
+    monkeypatch.setenv("CBBE2UBE_NO_CHEST_FOLLOW", "1")
+    assert importlib.reload(nc).CHEST_FOLLOW_RATIO is False
 
 
 # --- legacy path must be untouched ------------------------------------------
@@ -139,7 +141,7 @@ def test_ratio_mode_skips_the_per_bone_clamp():
 # --- material classification -------------------------------------------------
 
 def test_soft_material_from_the_diffuse_path(monkeypatch):
-    monkeypatch.setenv("CBBE2UBE_CHEST_FOLLOW", "1")
+    monkeypatch.delenv("CBBE2UBE_NO_CHEST_FOLLOW", raising=False)
     m = importlib.reload(nc)
     s = _Shape("Armor002", {"Diffuse": r"textures\armorpack\heavy\impleather.dds"})
     assert m._chest_follow_for_shape(s) == m._CHEST_FOLLOW_SOFT
@@ -147,7 +149,7 @@ def test_soft_material_from_the_diffuse_path(monkeypatch):
 
 def test_rigid_material_wins_over_soft(monkeypatch):
     """'steel-studded leather' should stay stiff."""
-    monkeypatch.setenv("CBBE2UBE_CHEST_FOLLOW", "1")
+    monkeypatch.delenv("CBBE2UBE_NO_CHEST_FOLLOW", raising=False)
     m = importlib.reload(nc)
     s = _Shape("SteelLeatherCuirass", {"Diffuse": "textures/armor/steelleather.dds"})
     assert m._chest_follow_for_shape(s) == m._CHEST_FOLLOW_RIGID
@@ -159,7 +161,7 @@ def test_unknown_material_stays_rigid(monkeypatch):
     Unknown now has its OWN ceiling (`_CHEST_FOLLOW_UNKNOWN`), defaulting to the rigid
     value so this stays true -- see #chain-welded-torso for why it was split out: 129
     of the 182 shapes the ceiling actually blocks are unlabelled, not metal."""
-    monkeypatch.setenv("CBBE2UBE_CHEST_FOLLOW", "1")
+    monkeypatch.delenv("CBBE2UBE_NO_CHEST_FOLLOW", raising=False)
     m = importlib.reload(nc)
     s = _Shape("Armor_001_1", {"Diffuse": "textures/armorpack/piece_001.dds"})
     assert m._chest_follow_for_shape(s) == m._CHEST_FOLLOW_UNKNOWN
@@ -171,7 +173,7 @@ def test_only_the_diffuse_slot_is_read(monkeypatch):
     leather cuirass matched 'steel' from its ENVIRONMENT map (cubemaps/steel_e.dds)
     and a dress matched 'metal' from its PBR map (`*_metallic.dds`). Neither describes
     the garment."""
-    monkeypatch.setenv("CBBE2UBE_CHEST_FOLLOW", "1")
+    monkeypatch.delenv("CBBE2UBE_NO_CHEST_FOLLOW", raising=False)
     m = importlib.reload(nc)
     leather = _Shape("Armor002", {
         "Diffuse": r"textures\armorpack\impleather.dds",
@@ -185,7 +187,7 @@ def test_only_the_diffuse_slot_is_read(monkeypatch):
 
 
 def test_missing_textures_do_not_raise(monkeypatch):
-    monkeypatch.setenv("CBBE2UBE_CHEST_FOLLOW", "1")
+    monkeypatch.delenv("CBBE2UBE_NO_CHEST_FOLLOW", raising=False)
     m = importlib.reload(nc)
     assert m._chest_follow_for_shape(_Shape("Thing")) == m._CHEST_FOLLOW_RIGID
     assert m._chest_follow_for_shape(_Shape("Thing", None)) == m._CHEST_FOLLOW_RIGID

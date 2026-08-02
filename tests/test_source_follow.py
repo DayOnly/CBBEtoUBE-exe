@@ -48,7 +48,7 @@ import pytest
 
 import src.nif_convert as nc
 
-_ENV = ("CBBE2UBE_SOURCE_FOLLOW", "CBBE2UBE_SOURCE_WEIGHTED_MIN",
+_ENV = ("CBBE2UBE_NO_SOURCE_FOLLOW", "CBBE2UBE_SOURCE_WEIGHTED_MIN",
         "CBBE2UBE_CHEST_FOLLOW_UNWEIGHTED", "CBBE2UBE_CHEST_FOLLOW_UNKNOWN")
 
 
@@ -78,14 +78,16 @@ def _ctx(armor_breast, body_breast, count):
 
 # --- the flag ----------------------------------------------------------------
 
-def test_defaults_off(monkeypatch):
-    monkeypatch.delenv("CBBE2UBE_SOURCE_FOLLOW", raising=False)
-    assert importlib.reload(nc).SOURCE_FOLLOW_CEILING is False
-
-
-def test_opt_in(monkeypatch):
-    monkeypatch.setenv("CBBE2UBE_SOURCE_FOLLOW", "1")
+def test_defaults_on(monkeypatch):
+    """Promoted to default ON in 1.2. It only ever ADDS movement to pieces
+    nothing was helping, which is why it went first."""
+    monkeypatch.delenv("CBBE2UBE_NO_SOURCE_FOLLOW", raising=False)
     assert importlib.reload(nc).SOURCE_FOLLOW_CEILING is True
+
+
+def test_kill_switch(monkeypatch):
+    monkeypatch.setenv("CBBE2UBE_NO_SOURCE_FOLLOW", "1")
+    assert importlib.reload(nc).SOURCE_FOLLOW_CEILING is False
 
 
 # --- measuring the authored weighting ------------------------------------------
@@ -131,7 +133,7 @@ def test_matches_breast_bones_by_NAME_not_by_our_own_bone_list():
 def test_unweighted_source_lifts_the_ceiling(monkeypatch):
     """THE point. A shape whose author left the bust unweighted gets its geometric
     requirement allowed through instead of a ceiling picked from its file name."""
-    monkeypatch.setenv("CBBE2UBE_SOURCE_FOLLOW", "1")
+    monkeypatch.delenv("CBBE2UBE_NO_SOURCE_FOLLOW", raising=False)
     m = importlib.reload(nc)
     s = _Shape("Cuirass", textures={"Diffuse": "textures/armor/steelplate.dds"})
     assert m._chest_follow_for_shape(s, source_weighted=False) == m._CHEST_FOLLOW_UNWEIGHTED
@@ -141,7 +143,7 @@ def test_unweighted_source_lifts_the_ceiling(monkeypatch):
 def test_weighted_source_falls_through_to_the_material_path(monkeypatch):
     """Already tracks the body (measured 1.454, 0.7% short). Nothing to do, and the
     flag must not change it."""
-    monkeypatch.setenv("CBBE2UBE_SOURCE_FOLLOW", "1")
+    monkeypatch.delenv("CBBE2UBE_NO_SOURCE_FOLLOW", raising=False)
     m = importlib.reload(nc)
     s = _Shape("Cuirass", textures={"Diffuse": "textures/armor/steelplate.dds"})
     assert m._chest_follow_for_shape(s, source_weighted=True) == m._CHEST_FOLLOW_RIGID
@@ -149,7 +151,7 @@ def test_weighted_source_falls_through_to_the_material_path(monkeypatch):
 
 def test_unknown_source_falls_through_to_the_material_path(monkeypatch):
     """Too few bust verts to judge -> today's behaviour, not a guess."""
-    monkeypatch.setenv("CBBE2UBE_SOURCE_FOLLOW", "1")
+    monkeypatch.delenv("CBBE2UBE_NO_SOURCE_FOLLOW", raising=False)
     m = importlib.reload(nc)
     s = _Shape("Cuirass", textures={"Diffuse": "textures/armor/steelplate.dds"})
     assert m._chest_follow_for_shape(s, source_weighted=None) == m._CHEST_FOLLOW_RIGID
@@ -158,7 +160,7 @@ def test_unknown_source_falls_through_to_the_material_path(monkeypatch):
 def test_flag_off_ignores_the_measurement_entirely(monkeypatch):
     """REGRESSION -- with the flag off the shipped path must be bit-for-bit unchanged
     no matter what the measurement said."""
-    monkeypatch.delenv("CBBE2UBE_SOURCE_FOLLOW", raising=False)
+    monkeypatch.setenv("CBBE2UBE_NO_SOURCE_FOLLOW", "1")
     m = importlib.reload(nc)
     s = _Shape("Cuirass", textures={"Diffuse": "textures/armor/steelplate.dds"})
     for sw in (True, False, None):
@@ -168,7 +170,7 @@ def test_flag_off_ignores_the_measurement_entirely(monkeypatch):
 def test_it_can_only_ever_RAISE_a_ceiling(monkeypatch):
     """Safety property: for every material the lifted ceiling is >= the material one,
     so enabling the flag cannot make a garment follow the body LESS than it does now."""
-    monkeypatch.setenv("CBBE2UBE_SOURCE_FOLLOW", "1")
+    monkeypatch.delenv("CBBE2UBE_NO_SOURCE_FOLLOW", raising=False)
     m = importlib.reload(nc)
     for dif in ("steelplate.dds", "impleather.dds", "piece_001.dds"):   # rigid/soft/unknown
         s = _Shape("Cuirass", textures={"Diffuse": f"textures/armor/{dif}"})
