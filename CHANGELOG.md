@@ -475,7 +475,7 @@ the calibrated mask.
 > **Not yet measured end-to-end.** These remove work; what fraction of
 > conversion time that is has not been profiled. No speedup is claimed.
 
-### Added — `scripts/audit_sink.py`
+### Added — `scripts/analysis/audit_sink.py`
 
 One reader for `standoff_audit.jsonl`. Nothing in the repo read the frame, chain
 or band records, so every analysis was hand-written — more than fifty times in a

@@ -36,7 +36,7 @@ from pathlib import Path
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts" / "analysis"))
 from mesh_penetration import (clipping_report, ray_exposure,     # noqa: E402
                               ray_first_hit, CLIP_COINCIDENT, CLIP_BURIED)
 
@@ -151,7 +151,7 @@ def test_the_fast_tester_agrees_with_the_reference_where_the_gate_FIRES():
     """
     import numpy as np
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-    from scripts import standoff_audit as sa
+    from scripts.analysis import standoff_audit as sa
 
     bv, bt, bn, mask = _body_slab()
     for label, g in (("beyond the far wall", _panel(-6.0)),   # gate fires

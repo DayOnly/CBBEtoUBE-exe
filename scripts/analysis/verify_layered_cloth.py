@@ -22,7 +22,7 @@ carry NO body HDT-SMP jiggle bones that weren't in their SOURCE -- i.e. the graf
 CTDs FSMP on equip is gone. Any mesh that still shows grafted SMP bones means the fix
 did NOT land for it (stale exe / incremental skip) -- fix that before testing in-game.
 
-    python scripts/verify_layered_cloth.py
+    python scripts/analysis/verify_layered_cloth.py
 
 Read-only; resolves sources via the live MO2 instance (CBBE2UBE_MO2_INI).
 """

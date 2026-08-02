@@ -16,7 +16,7 @@
 
 """Morph the BODY and the GARMENT together, then measure the clip.
 
-    python scripts/morph_clip_test.py <converted.nif> [--strength 1.0]
+    python scripts/analysis/morph_clip_test.py <converted.nif> [--strength 1.0]
         [--slider Breast] [--band bust|butt] [--list]
 
 WHY THIS EXISTS. Every clip number in this project is taken at BIND POSE, and
@@ -60,7 +60,7 @@ sys.path.insert(0, str(_REPO))
 sys.path.insert(0, str(_REPO / ".pynifly"))
 
 import numpy as np                                    # noqa: E402
-from scripts import standoff_audit as sa              # noqa: E402
+from scripts.analysis import standoff_audit as sa              # noqa: E402
 import src.nif_convert as nc                          # noqa: E402
 from src.body_zones import BREAST_Z, BUTT_Z, TORSO_HALF_X, REAR_Y  # noqa: E402
 

@@ -69,7 +69,7 @@ when launching (they cannot be applied afterwards):
 
   CBBE2UBE_THIGH_STANDOFF=1.0 python scripts/convert_one_armor.py ...
 
-Then: python scripts/armor_clip_diag.py <out>/<stem>_1.nif <mod>/.../<stem>_1.nif
+Then: python scripts/analysis/armor_clip_diag.py <out>/<stem>_1.nif <mod>/.../<stem>_1.nif
 """
 import argparse
 import os

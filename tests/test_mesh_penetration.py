@@ -25,7 +25,7 @@ predecessor. That is the `test_loose_drape_is_not_penetration` case below."""
 import numpy as np
 import pytest
 
-from scripts.mesh_penetration import closest_point_on_triangles, surface_penetration
+from scripts.analysis.mesh_penetration import closest_point_on_triangles, surface_penetration
 
 
 def _sphere(r, n=16, centre=(0.0, 0.0, 0.0)):
@@ -148,7 +148,7 @@ def test_no_usable_triangles_returns_nothing_covered():
 def test_ray_exposure_fully_enclosed_body_is_not_exposed():
     """POSITIVE CONTROL, the direction that matters: a body entirely inside a closed
     shell must read 0% exposed. This is the case the signed-normal metric got wrong."""
-    from scripts.mesh_penetration import ray_exposure
+    from scripts.analysis.mesh_penetration import ray_exposure
     body, _bt, bn = _sphere(9.0)
     gv, gt, _gn = _sphere(10.0)
     exposed = ray_exposure(body, bn, gv, gt)
@@ -157,7 +157,7 @@ def test_ray_exposure_fully_enclosed_body_is_not_exposed():
 
 def test_ray_exposure_uncovered_body_is_fully_exposed():
     """The other control: no garment in the way -> 100% exposed."""
-    from scripts.mesh_penetration import ray_exposure
+    from scripts.analysis.mesh_penetration import ray_exposure
     body, _bt, bn = _sphere(9.0)
     gv, gt, _gn = _sphere(2.0)                  # tiny shell deep inside, blocks nothing
     assert ray_exposure(body, bn, gv, gt).mean() == 1.0
@@ -165,7 +165,7 @@ def test_ray_exposure_uncovered_body_is_fully_exposed():
 
 def test_ray_exposure_localises_a_hole():
     """A garment with one side removed: exposure must be confined to that side."""
-    from scripts.mesh_penetration import ray_exposure
+    from scripts.analysis.mesh_penetration import ray_exposure
     body, _bt, bn = _sphere(9.0)
     gv, gt, _gn = _sphere(10.0)
     keep = ~((gv[gt].mean(axis=1))[:, 0] > 4.0)      # delete the +x cap
@@ -177,14 +177,14 @@ def test_ray_exposure_localises_a_hole():
 def test_ray_exposure_ignores_a_garment_that_hangs_away_but_still_covers():
     """Loose drape still BLOCKS the ray, so it is covered -- the distinction the
     nearest-vertex metric could not make. A 4u gap is not exposure."""
-    from scripts.mesh_penetration import ray_exposure
+    from scripts.analysis.mesh_penetration import ray_exposure
     body, _bt, bn = _sphere(6.0)
     gv, gt, _gn = _sphere(10.0)
     assert ray_exposure(body, bn, gv, gt).mean() == 0.0
 
 
 def test_ray_exposure_handles_empty_geometry():
-    from scripts.mesh_penetration import ray_exposure
+    from scripts.analysis.mesh_penetration import ray_exposure
     import numpy as _np
     body, _bt, bn = _sphere(9.0)
     assert ray_exposure(body, bn, _np.zeros((0, 3)), _np.zeros((0, 3))).all()
@@ -208,20 +208,20 @@ def _octahedron():
 
 
 def test_boundary_points_finds_an_open_rim():
-    from scripts.mesh_penetration import boundary_points
+    from scripts.analysis.mesh_penetration import boundary_points
     v, t = _octahedron()
     rim = boundary_points(v, t[:-1])                # drop one face -> a 3-edge hole
     assert len(rim) == 3, f"one missing face leaves a triangular rim, got {len(rim)}"
 
 
 def test_closed_mesh_has_no_boundary():
-    from scripts.mesh_penetration import boundary_points
+    from scripts.analysis.mesh_penetration import boundary_points
     v, t = _octahedron()
     assert len(boundary_points(v, t)) == 0, "a closed shell has no open rim"
 
 
 def test_classify_splits_poke_from_neckline_and_bare_skin():
-    from scripts.mesh_penetration import classify_exposure
+    from scripts.analysis.mesh_penetration import classify_exposure
     exposed = np.array([True, True, True, False])
     surf = np.array([0.5, 0.5, 9.0, 0.5])           # near, near, far, near
     rim = np.array([9.0, 1.0, 9.0, 9.0])            # deep, at-rim, deep, deep
@@ -234,7 +234,7 @@ def test_classify_splits_poke_from_neckline_and_bare_skin():
 def test_rim_distance_alone_would_misclassify_a_bare_body():
     """THE bug this split fixes. Rim distance is large BOTH deep inside coverage and
     completely outside the garment, so on its own it scored a towel at 100% poke."""
-    from scripts.mesh_penetration import classify_exposure
+    from scripts.analysis.mesh_penetration import classify_exposure
     exposed = np.array([True] * 3)
     far_from_rim = np.array([50.0] * 3)             # identical on the naive test
     surf = np.array([0.4, 20.0, 30.0])              # only the first is covered

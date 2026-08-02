@@ -68,6 +68,15 @@ NEVER_TRACKED = (
     "penetration_census*.jsonl",
     "multipose_census*.jsonl",
     "source_delta_census*.jsonl",
+    # Coverage-scan reports a run drops in the REPO ROOT. Both name the mods
+    # root and list mod names; neither was ignored, so `git add .` would have
+    # staged them (2026-08-02 audit of main).
+    "ube_providers.txt",
+    "ube_replacers_to_disable.txt",
+    # Per-user GUI state. Tracking it means a source run dirties the tree and a
+    # clone carries someone else's chosen flags. Absent == all defaults, so
+    # there is nothing to ship.
+    "CBBEtoUBE_settings.json",
 )
 
 # The .gitignore lines that protect the set above. If one disappears, the

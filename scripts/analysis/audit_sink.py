@@ -16,7 +16,7 @@
 
 """Read `standoff_audit.jsonl` and say what the run actually did.
 
-    python scripts/audit_sink.py <output-mod-root-or-jsonl> [--all-runs]
+    python scripts/analysis/audit_sink.py <output-mod-root-or-jsonl> [--all-runs]
 
 WHY THIS EXISTS. The converter writes frame corrections, chain verdicts,
 standoff and per-band telemetry to a JSONL, and until now nothing in the repo

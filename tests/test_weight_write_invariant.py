@@ -26,7 +26,7 @@ TWO SUBJECTS, and only one of them ships:
   `_match_rigid_leg_bend_to_body` -- the pass the checkpoint trace found
   introduces ALL the on-disk drift -- and is DEFAULT ON since 2026-07-26.
 
-The invariant on real output is checked by `scripts/verify_weight_invariant.py`
+The invariant on real output is checked by `scripts/analysis/verify_weight_invariant.py`
 against saved NIFs, which is the only place it can honestly be measured.
 
 Save semantics, measured 2026-07-25 on a real shape (see DESIGN_P6):

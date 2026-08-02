@@ -17,8 +17,8 @@
 """Read the `survival` records out of a run's audit sink and table them.
 
     CBBE2UBE_SURVIVAL_TRACE=1 python scripts/convert_one_armor.py ... <out>
-    python scripts/survival_report.py <out>/standoff_audit.jsonl [--nif body_1]
-    python scripts/survival_report.py A.jsonl B.jsonl        # A/B two runs
+    python scripts/analysis/survival_report.py <out>/standoff_audit.jsonl [--nif body_1]
+    python scripts/analysis/survival_report.py A.jsonl B.jsonl        # A/B two runs
 
 `survival` is the least-squares scale of a pass's own displacement still present
 in the shipped verts: 1.0 intact, 0.0 put back exactly, negative overshot past

@@ -12,7 +12,7 @@ in one day.
 
 ## Sound
 
-### Ray-based skin exposure — `scripts/verify_skin_exposure.py`
+### Ray-based skin exposure — `scripts/analysis/verify_skin_exposure.py`
 March from each body vertex along its own outward normal; if no armour triangle
 blocks it, that skin is visible. Unambiguous by construction — no sign to guess.
 
@@ -43,7 +43,7 @@ Two independent methods agreeing on the ordering is the reason to trust either.
 Restrict to armour verts within ~4u of the body; beyond that the nearest body vert
 is not what drives the armour vert and the ratio is meaningless.
 
-### Zero-weight bone detection — `scripts/verify_zero_weight_bones.py`
+### Zero-weight bone detection — `scripts/analysis/verify_zero_weight_bones.py`
 A bone in a shape's list carrying no weight above the write threshold. Directly
 observable, no inference. Measured 59 across 42 shapes.
 
@@ -179,7 +179,7 @@ Sanity check on real geometry, the check that settles it: a full-length robe rea
 **0.0% exposed in every region**. The nearest-vertex metric claimed 29.5% butt
 poke-through on that same mesh.
 
-`scripts/collect_penetration_census.py` — full census, one row per armor, six regions,
+`scripts/analysis/collect_penetration_census.py` — full census, one row per armor, six regions,
 400-vertex sample per region, fixed seed. Records `pct_exposed`, `pct_exposed_near`
 (exposed AND garment within 2u — the defect signature, as opposed to skin bare by
 design), unsigned distance percentiles, SMP-rigged flags, and the discredited
@@ -262,7 +262,7 @@ design — the same mistake as the reverted rear-clearance feature, one level su
 
 ## Sound: pose-induced coverage regression
 
-`scripts/multipose_clip_test.py` over `scripts/pose_set.py`. Body verts COVERED at bind
+`scripts/analysis/multipose_clip_test.py` over `scripts/analysis/pose_set.py`. Body verts COVERED at bind
 and EXPOSED under a pose, as a fraction of the covered set — self-baselining, so a
 bikini and a robe are comparable. Exposure itself is the ray test already listed as
 sound; the addition is that the body MOVES.
@@ -277,7 +277,7 @@ every region, where the discredited nearest-vertex metric claimed 29.5%.
 
 ## Sound: source-vs-converted delta
 
-`scripts/source_delta_census.py`. Level metrics cannot separate "the converter broke
+`scripts/analysis/source_delta_census.py`. Level metrics cannot separate "the converter broke
 it" from "the author made it that way" — a confound that produced four withdrawn
 conclusions in one day, including a 30-armour worst-offender list that was mostly
 armour already behaving that way (top thigh failures: converted 83.3%, SOURCE 82.6%).
@@ -326,7 +326,7 @@ larger one.
 > visibly clips. The RANKING below is therefore not usable either — the caveat
 > in this section was too weak, not too strong. Kept for the record chain.
 
-`containment()` in `scripts/mesh_penetration.py`, 199 fully-rigid armors, bind pose,
+`containment()` in `scripts/analysis/mesh_penetration.py`, 199 fully-rigid armors, bind pose,
 10 rays at 50° half-angle, tmax 6u. Of **exposed** body verts, the fraction with
 garment around them:
 
@@ -374,7 +374,7 @@ All bind pose, so all of it is a best case; see the pose-regression section abov
 > the validated test, so rows written before 2026-07-29 are not comparable on
 > those columns. Its negative control was also blind; see below.
 
-`scripts/underbust_census.py`. The region census ranks but cannot size, because the
+`scripts/analysis/underbust_census.py`. The region census ranks but cannot size, because the
 under-curve is only **484 of 3674** verts the `breast` selector accepts — 13.2%, a
 **~7.6× dilution**. That predicts the observed gap on the piece confirmed by eye:
 region level scored `exposed=40 poke=2`, the band scores `exposed=80 surrounded=13`.

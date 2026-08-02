@@ -91,7 +91,13 @@ def test_belly_and_butt_masks_pick_their_own_sides():
     assert not butt_mask(_verts(70.0, +6.0))[0]     # butt is rear-facing
 
 
-@pytest.mark.parametrize("script", sorted(p.name for p in _SCRIPTS.glob("*.py")))
+# rglob, NOT glob: a non-recursive glob silently stopped covering 35 scripts the
+# moment they moved into scripts/analysis/, and the suite stayed GREEN while
+# checking less. Parametrised on the path relative to scripts/ so the test id
+# names the subfolder and a future move is visible in the diff.
+@pytest.mark.parametrize("script", sorted(
+    str(p.relative_to(_SCRIPTS)).replace("\\", "/")
+    for p in _SCRIPTS.rglob("*.py")))
 def test_no_script_redefines_a_breast_band(script):
     """Guard the guard: a script that hardcodes its own z-band can silently drift off
     the anatomy again. If a script needs the breast, it imports it."""

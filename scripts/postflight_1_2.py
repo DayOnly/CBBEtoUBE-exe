@@ -217,7 +217,7 @@ def check_one(rel_and_root):
             # The UNION of visible garment shapes, not one at a time: scoring a
             # shape alone counts skin covered by a SIBLING as exposed, and half
             # of converted output has more than one visible shape.
-            from scripts import standoff_audit as _sa
+            from scripts.analysis import standoff_audit as _sa
             parts = []
             for s in nf.shapes:
                 nm = s.name or ""
@@ -500,7 +500,7 @@ def main():
         for r in thin[:5]:
             print(f"       covered {r['fit']['covered']:5.1f}%  {r['rel']}")
     if judged and fit_judged:
-        from scripts import standoff_audit as sa
+        from scripts.analysis import standoff_audit as sa
         for r in judged:
             f_ = r["fit"]
             if sa.check(f_, anchor_fit, keys=("median", "p90")):
