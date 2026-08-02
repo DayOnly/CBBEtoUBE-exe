@@ -2,6 +2,30 @@
 
 ## 1.2.6 - unreleased
 
+### Changed - the Armor settings tab is readable again
+
+It had grown to 38 of the tool's 43 settings and rendered about 3.7 screens
+tall, but the bulk of that was not controls: 86% of the text on the tab was
+always-visible explanation, one paragraph per setting.
+
+Each setting now shows a single line, with the full text on hover. Nothing was
+shortened or deleted -- those explanations carry measured numbers and in-game
+caveats recorded nowhere else, so they moved rather than shrank.
+
+The seven numeric tuning knobs now hide behind "Show advanced", which is what
+the underlying field was always for; it had never been connected to anything.
+There is also a live search over the settings, and the window remembers its
+size between launches.
+
+Groups were re-cut from six to eight by what a setting actually acts on: the
+physics-chain options had been split across two groups, one group had grown to
+16 unrelated settings, and three settings sat under the wrong heading.
+"Convert vanilla armor" moved to the Run tab, beside the mod selection it
+extends -- it adds a source to the run rather than changing how a garment is
+fitted.
+
+Net effect: 3.7 screens to 2.1, with every word still reachable.
+
 ### Changed - a failed pass or a failed write now reaches the report
 
 Every fit pass and every mesh/sidecar write ran inside a silent catch, so a
