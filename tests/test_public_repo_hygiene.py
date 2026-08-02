@@ -149,8 +149,8 @@ def test_the_local_path_rule_actually_catches_one():
     """Control. A content rule that matches nothing reads as compliance, and
     this one shipped matching almost nothing on its first draft."""
     # the real leaks this was written for -- all four were Modlists paths
-    assert _LOCAL_PATH_RE.search(r'root = r"<MODLIST_ROOT>\mods"')
-    assert _LOCAL_PATH_RE.search(r"OUT = Path('<MODLIST_ROOT>/mods/x')")
+    assert _LOCAL_PATH_RE.search(r'root = r"D:\Modlists\Somelist\mods"')
+    assert _LOCAL_PATH_RE.search(r"OUT = Path('D:/Modlists/Somelist/mods/x')")
     assert _LOCAL_PATH_RE.search(r"C:\Users\realname\Downloads\thing")
 
     # and it must NOT fire on things that identify nobody
