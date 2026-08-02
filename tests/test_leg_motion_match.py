@@ -124,7 +124,7 @@ def test_row_fallback_never_relaxes_the_collider_or_softbody_skip():
     """THE CONTROL on the row gate. It relaxes ONLY the bone-count heuristic.
 
     The collider/soft-body skips are a standing rule and are what makes the
-    documented Markarth/Morthal behaviour correct (those shapes are declared as
+    documented soft-body cases correct (those shapes are declared as
     per-vertex soft bodies, so declining to rewrite them is right, not a miss).
     If the row gate ever moved above them, this pass would start rewriting
     simulated cloth and that resolution would silently become wrong.

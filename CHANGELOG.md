@@ -635,8 +635,8 @@ The leg pass now uses the same per-row fallback the arm pass does: where the
 shape-level heuristic fires, rewrite only verts whose entire weight sits on bones
 the body also has. Such a row provably carries no authored chain bone. The
 collider and soft-body skips are untouched and still unconditional, which is what
-keeps the documented Markarth/Morthal behaviour correct — those shapes are
-declared per-vertex soft bodies and declining to rewrite them is right.
+keeps the documented soft-body cases correct — those shapes are declared
+per-vertex soft bodies and declining to rewrite them is right.
 
     hip band, follow ratio      median          verts below 0.5
     dragonbone cuirass          0.882 -> 1.119   21.8% -> 12.0%
