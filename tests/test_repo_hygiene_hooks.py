@@ -61,8 +61,12 @@ def test_never_track_rule_catches_the_files_that_actually_leaked():
         assert H.path_is_never_tracked(ok) is None, f"false positive on {ok}"
 
 
+# The sample modlist is deliberately NOT the real one. These controls must hold
+# a path the rule MATCHES, so a history scrub targeting the real name would
+# rewrite them and silently turn the control into an assertion about a
+# placeholder -- which is exactly what happened on the first scrub attempt.
 def test_content_rule_catches_a_machine_path_but_not_a_generic_one():
-    assert H.scan_text("scripts/x.py", r'root = r"<MODLIST_ROOT>\mods"')
+    assert H.scan_text("scripts/x.py", r'root = r"D:\Modlists\Somelist\mods"')
     assert H.scan_text("scripts/x.py", r'p = "C:/Users/realname/Downloads/a"')
     assert not H.scan_text("docs/a.md", r"set it to C:\Games\Skyrim\Data")
     assert not H.scan_text("docs/a.md", r"e.g. <MO2Root>\mods")
@@ -77,7 +81,7 @@ def test_content_rule_catches_a_personal_email():
 
 
 def test_message_rule_catches_a_deploy_path():
-    assert H.scan_message(r"dist: deploy to <MODLIST_ROOT>\tools\CBBEtoUBE")
+    assert H.scan_message(r"dist: deploy to D:\Modlists\Somelist\tools\CBBEtoUBE")
     assert H.scan_message("ping person@gmail.com about it")
     assert not H.scan_message("dist: rebuild and deploy to the tools folder")
     # a Co-Authored-By trailer is a service address, not a person -- the first
@@ -85,7 +89,7 @@ def test_message_rule_catches_a_deploy_path():
     assert not H.scan_message(
         "feat: x\n\nCo-Authored-By: A B <noreply@anthropic.com>")
     # git's own comment lines are not the author's message
-    assert not H.scan_message("# On branch main\n" + r"# path: <MODLIST_ROOT>\x")
+    assert not H.scan_message("# On branch main\n" + r"# path: D:\Modlists\Somelist\x")
 
 
 def test_identity_rule_rejects_a_personal_address():
