@@ -61,8 +61,31 @@ PHYSICS_NAMES = {"collision", "hidecollision", "proxy", "proxy2", "proxy3",
 _CACHE: dict = {}
 
 
-def canonical_cbbe(mods_root=r"<MODLIST_ROOT>\mods"):
-    """(path, shape_name) of the CBBE/3BA reference body -- the SOURCE-side body."""
+def _resolve_mods_root():
+    """The mods root, resolved the way the converter itself resolves it.
+
+    Never hardcode a developer's own modlist path here: it makes the harness
+    silently useless on every other machine, and it publishes a local directory
+    layout to a public repository.
+    """
+    from src import paths as _p
+    root = _p.mods_root()
+    if root is None:
+        raise FileNotFoundError(
+            "could not locate a mods root -- set CBBE2UBE_MODS_ROOT, or "
+            "CBBE2UBE_MO2_INI to point at a ModOrganizer.ini")
+    return root
+
+
+def canonical_cbbe(mods_root=None):
+    """(path, shape_name) of the CBBE/3BA reference body -- the SOURCE-side body.
+
+    `mods_root` defaults to the SAME discovery the converter uses
+    (`paths.mods_root()`: the CBBE2UBE_MODS_ROOT env var, else a fresh MO2
+    layout discovery), so this works on any machine.
+    """
+    if mods_root is None:
+        mods_root = _resolve_mods_root()
     if "cbbe" not in _CACHE:
         cands = [c for c in glob.glob(
             str(Path(mods_root) / "**" / "character assets" / "femalebody_1.nif"),

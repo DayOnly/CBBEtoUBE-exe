@@ -218,7 +218,7 @@ set, and there was no way to tell from the log afterwards."* In a real
 multi-worker run that line does not survive. Read from a live log:
 
     offset 4:  active flags (7): CHEST_FOLLOW=1, DRAPE_XML_GATE=1,
-               GLOW_LOG=<MODLIST_ROOT>\  duplicate-plugin dedup: dropped 39 …
+               GLOW_LOG=<path cut mid-va  duplicate-plugin dedup: dropped 39 …
 
 The line is spliced mid-value — `GLOW_LOG`'s path is cut after 24 characters and
 other output continues **on the same line with no newline between them**. No NUL

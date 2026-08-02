@@ -46,11 +46,26 @@ from src import nif_convert as nc                           # noqa: E402
 _SKEL_CACHE: dict = {}
 
 
-def load_skeleton(mods_root=r"<MODLIST_ROOT>\mods"):
-    """Parent map + world pivot for every skeleton node. Prefers XPMSSE."""
+def load_skeleton(mods_root=None):
+    """Parent map + world pivot for every skeleton node. Prefers XPMSSE.
+
+    `mods_root` defaults to the SAME discovery the converter uses
+    (CBBE2UBE_MODS_ROOT, else MO2 layout discovery). Never hardcode a
+    developer's own modlist path: it makes the harness silently useless on
+    every other machine, and publishes a local directory layout.
+    """
     if "skel" in _SKEL_CACHE:
         return _SKEL_CACHE["skel"]
-    cands = glob.glob(mods_root + r"\**\skeleton_female.nif", recursive=True)
+    if mods_root is None:
+        from src import paths as _p
+        root = _p.mods_root()
+        if root is None:
+            raise FileNotFoundError(
+                "could not locate a mods root -- set CBBE2UBE_MODS_ROOT, or "
+                "CBBE2UBE_MO2_INI to point at a ModOrganizer.ini")
+        mods_root = str(root)
+    cands = glob.glob(str(Path(mods_root) / "**" / "skeleton_female.nif"),
+                      recursive=True)
     cands.sort(key=lambda p: (0 if "XPMSSE" in p or "XP32" in p else 1, len(p)))
     if not cands:
         raise FileNotFoundError("no skeleton_female.nif found")

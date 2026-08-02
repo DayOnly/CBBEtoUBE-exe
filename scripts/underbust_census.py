@@ -64,6 +64,7 @@ control. See docs/METRICS.md.
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -79,7 +80,27 @@ from scripts.posed_clip_test import rays_hit                      # noqa: E402
 from scripts.mesh_penetration import (clipping_report,            # noqa: E402
                                       exposure_with_margin, noise_floor)
 
-OUT = Path(r"<MODLIST_ROOT>/mods/CBBEtoUBE Auto/meshes/!UBE")
+def _out_root() -> Path:
+    """The converted-output meshes root, resolved rather than hardcoded.
+
+    CBBE2UBE_OUT_ROOT overrides; otherwise it is the converter's own output mod
+    under the discovered mods root. Never hardcode a developer's own modlist
+    path: it makes the harness silently useless on every other machine, and it
+    publishes a local directory layout to a public repository.
+    """
+    env = os.environ.get("CBBE2UBE_OUT_ROOT", "").strip()
+    if env:
+        return Path(env)
+    from src import paths as _p
+    root = _p.mods_root()
+    if root is None:
+        raise FileNotFoundError(
+            "could not locate a mods root -- set CBBE2UBE_OUT_ROOT, or "
+            "CBBE2UBE_MODS_ROOT / CBBE2UBE_MO2_INI")
+    return Path(root) / "CBBEtoUBE Auto" / "meshes" / "!UBE"
+
+
+OUT = _out_root()
 
 # Empirically located above. Kept as module constants so a caller can widen the
 # band and see the number move, rather than editing a lambda buried in a loop.
