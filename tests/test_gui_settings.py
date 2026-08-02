@@ -150,3 +150,44 @@ def test_saved_config_applies_through_env(tmp_path):
     gs.save_values({**gs.defaults(), "glow_source_skin": False}, path=p)
     env = gs.apply_env(gs.load_values(path=p), base_env={})
     assert env["CBBE2UBE_EFFECT_RESKIN"] == "1"
+
+
+# Tabs whose contents gui.py GENERATES from the registry (_build_settings_tab).
+# A setting on any other tab must be rendered by hand, or it is invisible.
+_GENERATED_TABS = {"Armor", "Paths", "Diagnostics"}
+
+
+def _gui_source() -> str:
+    from pathlib import Path
+    return (Path(__file__).resolve().parent.parent
+            / "src" / "gui.py").read_text(encoding="utf-8", errors="replace")
+
+
+def test_no_orphaned_settings():
+    """Every setting must be reachable in the UI.
+
+    A setting on a tab nobody builds renders nowhere, so it can never be
+    switched on, never validated in game, and never finished -- the deadlock
+    docs/PIPELINE.md rule 1 exists to prevent. Settings outside the generated
+    tabs (vanilla_sweep on Run, theme on Appearance) are hand-rendered, so
+    require the key to appear in gui.py.
+    """
+    src = _gui_source()
+    orphans = [s.key for s in gs.SETTINGS
+               if s.tab not in _GENERATED_TABS and f'"{s.key}"' not in src]
+    assert not orphans, f"settings rendered by nothing: {orphans}"
+
+
+def test_vanilla_sweep_lives_on_the_run_tab():
+    """It adds a SOURCE to the run rather than changing how a garment is
+    fitted, so it belongs beside the mod selection it extends."""
+    s = gs.by_key()["vanilla_sweep"]
+    assert (s.tab, s.group) == ("Run", "Convert armor")
+    assert s.default is True
+    # moving it must not change what the converter sees
+    assert "CBBE2UBE_NO_VANILLA_SWEEP" not in gs.apply_env(gs.defaults(), {})
+    off = gs.apply_env({**gs.defaults(), "vanilla_sweep": False}, {})
+    assert off["CBBE2UBE_NO_VANILLA_SWEEP"] == "1"
+    # and it must be off the Armor tab, taking the one-item group with it
+    assert "Coverage" not in gs.groups_in_tab("Armor")
+    assert all(s.key != "vanilla_sweep" for s in gs.settings_in("Armor", "Coverage"))

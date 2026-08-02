@@ -302,9 +302,14 @@ SETTINGS: "tuple[Setting, ...]" = (
             "Armor", "Boots and parity", default=True,
             env="CBBE2UBE_NO_WEIGHT_PARITY_CHECK", invert=True,
             tooltip="Postflight warn when a _0/_1 weight pair converts differently."),
-    # ---- Armor: coverage ----------------------------------------------
+    # ---- Run: what the run covers --------------------------------------
+    # Lives on the RUN tab, not Armor: it adds a SOURCE to the run (the game Data
+    # dir) rather than changing how a garment is fitted, so it belongs beside the
+    # mod selection it extends. The Run tab is hand-built, so gui.py renders this
+    # one via `_registry_check` -- same binding, same persistence, and the
+    # registry stays the single source of label/tooltip/default/env.
     Setting("vanilla_sweep", "Convert vanilla armor (base game + DLC)",
-            "Armor", "Coverage", default=True,
+            "Run", "Convert armor", default=True,
             env="CBBE2UBE_NO_VANILLA_SWEEP", invert=True,
             tooltip="Run the game Data dir as the last (lowest-priority) "
                     "source so every vanilla/DLC armor mesh converts. Without "

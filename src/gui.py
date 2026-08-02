@@ -604,6 +604,30 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
             return                      # mid-typing / invalid -> ignore
         _settings_set(key, int(round(val)) if kind == "int" else float(val))
 
+    def _registry_check(parent, key, **pack):
+        """A registry-backed bool checkbox rendered OUTSIDE the generated
+        settings tabs -- for a setting that belongs next to the run controls it
+        scopes rather than on a settings page. Same binding and persistence as
+        `_build_settings_tab`, so the two stay interchangeable; the registry
+        remains the single source of label, tooltip and default.
+
+        Returns the widget so the caller can add it to `sel_widgets` (settings
+        are read once when the child launches, so a control that keeps taking
+        clicks mid-run would imply an effect it cannot have)."""
+        s = gui_settings.by_key()[key]
+        var = tk.BooleanVar(value=bool(state["settings"].get(key, s.default)))
+        state["_setting_vars"].append(var)      # keep the tk var alive
+        state["_setting_var_by_key"][key] = var
+        cb = ttk.Checkbutton(parent, text=s.label, variable=var)
+        cb.pack(**pack)
+        var.trace_add("write",
+                      lambda *a, k=key, v=var: _settings_set(k, bool(v.get())))
+        if s.tooltip:
+            ttk.Label(parent, text=s.tooltip, style="Hint.TLabel",
+                      wraplength=560, justify="left").pack(
+                          anchor="w", padx=(pack.get("padx", 6) + 20), pady=(0, 2))
+        return cb
+
     def _pick_path(var):
         d = filedialog.askopenfilename(initialdir=".")
         if d:
@@ -954,6 +978,12 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
                                  variable=mode, command=_sync_run)
     arm_sel_rb.pack(side="left", padx=8)
 
+    # Vanilla/DLC is an extra SOURCE for the run, not an armour-fitting option,
+    # so it belongs beside the mod selection it extends rather than three tabs
+    # away under conversion settings.
+    vanilla_cb = _registry_check(armor_sec, "vanilla_sweep",
+                                 anchor="w", padx=24, pady=(2, 0))
+
     # Exclusions strip (shown in All mode; gates the run until reviewed).
     armor_excl = ttk.Frame(armor_sec)
     armor_excl_btn = ttk.Button(armor_excl, text="Exclusions…", width=13,
@@ -978,7 +1008,8 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
     # Live filter as the user types. All/None then act on the visible subset.
     search_var.trace_add("write", lambda *a: _apply_filter())
     sel_widgets = [refresh_btn, all_btn, none_btn, search_entry,
-                   arm_all_rb, arm_sel_rb, armor_excl_btn]   # locked during a run
+                   arm_all_rb, arm_sel_rb, armor_excl_btn,
+                   vanilla_cb]                               # locked during a run
     _cwrap = ttk.Frame(mods_box)
     _cwrap.pack(fill="both", expand=True)
     _canvas = tk.Canvas(_cwrap, height=140, highlightthickness=0)
