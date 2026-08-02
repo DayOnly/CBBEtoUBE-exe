@@ -1,39 +1,14 @@
 # Changelog
 
-## 1.2.6 - unreleased
+## 1.2 — 2026-08-02
 
-### Changed - the Armor settings tab is readable again
+The first release since 1.1.1. Everything here shipped as internal 1.2.x
+builds that were never published, folded into one release rather than
+presented as eight pending versions.
 
-It had grown to 38 of the tool's 43 settings and rendered about 3.7 screens
-tall, but the bulk of that was not controls: 86% of the text on the tab was
-always-visible explanation, one paragraph per setting.
-
-Each setting now shows a single line, with the full text on hover. Nothing was
-shortened or deleted -- those explanations carry measured numbers and in-game
-caveats recorded nowhere else, so they moved rather than shrank.
-
-The seven numeric tuning knobs now hide behind "Show advanced", which is what
-the underlying field was always for; it had never been connected to anything.
-There is also a live search over the settings, and the window remembers its
-size between launches.
-
-Groups were re-cut from six to eight by what a setting actually acts on: the
-physics-chain options had been split across two groups, one group had grown to
-16 unrelated settings, and three settings sat under the wrong heading.
-"Convert vanilla armor" moved to the Run tab, beside the mod selection it
-extends -- it adds a source to the run rather than changing how a garment is
-fitted.
-
-Net effect: 3.7 screens to 2.1, with every word still reachable.
-
-### Changed - a failed pass or a failed write now reaches the report
-
-Every fit pass and every mesh/sidecar write ran inside a silent catch, so a
-pass that RAISED was indistinguishable from one that ran and did nothing.
-30 such handlers for passes and 19 for writes are now 0: failures are recorded
-and travel back in the conversion report. Grep it for PASS FAILED.
-
-## 1.2.5 - unreleased
+The theme is **measuring fit correctly, then fixing what the measurement
+exposed**: several long-standing fit defects turned out to be metrics that did
+not measure what their name claimed.
 
 ### Fixed - the converter was not deterministic across processes
 
@@ -51,13 +26,6 @@ batch. The catch was silent, so a pass that threw simply vanished -- which had
 already cost three wrong verdicts. Failures are now recorded and travel back to
 the caller in the conversion report; grep it for PASS FAILED. Swallowed mesh
 SAVES report the same way.
-
-### Faster - skeleton bone resolution
-
-The normalised skeleton bone set was rebuilt on every membership test
-(1.9M redundant calls over five pieces). Cached; about 5-6%, output identical.
-
-## 1.2 — unreleased
 
 ### Fixed — fitted pieces shipped standing off the body
 
@@ -97,8 +65,6 @@ because the output's smoothness comes from groove-smooth smoothing the
 *cumulative* field last. Do not re-attempt it — the fit problem it describes was
 addressed instead by bounding groove-smooth's outward motion at the authored
 standoff (`#groove-authored-cap`).
-
-### Fixed — physics chains whose anchor node was dropped (pull-to-origin)
 
 ### Fixed — physics chains whose anchor node was dropped (pull-to-origin)
 
@@ -147,13 +113,6 @@ turned out to be anti-correlated with what the game actually shows, so a run
 could get "better" numbers and worse armour. Replacing them uncovered a frame
 bug that had been corrupting the entire phase-2 pass chain.
 
-### Read this before trusting the numbers
-
-The fit figures below come from the mesh harness, in bind pose, on a specific
-body. They are necessary but **not sufficient** — bind-pose metrics are blind to
-what animation does, and the worst remaining clipping lives on SMP/soft-body
-cloth that no skin pass can reach. In-game verification is still the gate.
-
 ### Fixed — the pass chain was computing against a misplaced garment
 
 `shape_body_offset` adds a shape's NiAVObject translation to put its verts into
@@ -189,119 +148,6 @@ body, never toward it. On the reproduction case, 31 → 161 exposed verts become
 31 → 21, while 81% of the smoothing motion is retained — the pass still does its
 job. `CBBE2UBE_GROOVE_ONESIDED=0` restores the old behaviour for comparison.
 
-### Changed — the fit metric
-
-- **Added** the validated clipping test: a body vert is clipping when the
-  garment sits *behind* the skin (ray out escapes, ray in hits a
-  same-facing triangle). Calibrated against a user-confirmed clean/dirty pair:
-  reads 0.00% on the clean armour, 8.87% on the one that clips.
-- **Added STANDOFF** as the counter-metric. Clipping has no upper bound, so an
-  over-inflated garment scores a perfect 0.0% — which is exactly how
-  over-inflation reached the user twice without any number complaining. Anchor
-  from the clean armour: median 1.15u, p90 1.52u.
-- **Retired** `bust_verdict.py` and `postflight_1_2.py` off the discredited
-  signed-distance path.
-- **Retired the ray cone from `underbust_census.py`**, its last live consumer.
-  The `surrounded` / `partial` / `bare` columns are replaced by `clipping`;
-  rows written before 2026-07-29 are not comparable on those columns. Its
-  negative control turned out to be blind to the very bug it was written for —
-  a garment below z 80 produces no ray hits in *either* direction, so
-  transposing the two directions left it passing. A positive control (densest
-  band coverage must read mostly COVERED) was added, and verified to fail under
-  a deliberately inverted metric while the negative control still passed.
-- **Deleted** `mesh_penetration.containment`, `poke_report`, and `cone_dirs`
-  (−155 lines).
-  Both were anti-correlated with in-game ground truth and had zero callers and
-  zero tests. `surface_penetration` stays: only its *sign* was bad, and the
-  census uses its distance. The reasoning that discredited them is preserved in
-  `docs/METRICS.md`, and the four metric requirements written for `poke_report`
-  moved onto `clipping_report`, which actually satisfies them.
-- **Added** an orientation gate that removes a false positive under morph
-  (an inward ray striking the far side of the garment past a cut rim) without
-  moving the calibration anchors.
-
-### Added — a fit contract over the whole pass chain
-
-The pipeline now states, per shape: **diagnose** what was wrong before anything
-ran, **treat**, then **verify** the result and roll back to the best intermediate
-state if the chain as a whole made things worse.
-
-Applied to the chain rather than to each pass, because the per-pass version is
-measurably the wrong contract. Over 48 traced shapes, exactly one pass ever
-regressed bust fit (`conform`, 5 times), every one of those was recovered
-downstream, and **0 of 48 shapes ended worse than they started** (total exposure
-8138 → 245). `conform_to_source_standoff` pulls IN by design and later passes
-push back out; reverting it would have blocked a correct pass and biased every
-garment looser — which is the over-inflation reported twice from the game.
-
-Cost: **two measurements per armed shape** instead of eleven. Checkpoints are
-array copies, not measurements, so the chain remembers every pass and only pays
-to inspect them when the final verify actually fails.
-
-What it deliberately does not do is skip passes when the entry diagnosis looks
-clean. Bind-pose clipping is blind to animation — "at rest" in game is an
-animated pose — so gating passes on it would trade a measurable defect for an
-unmeasurable one.
-
-The per-pass guards on the anti-poke and the soft-cloth inflate were removed in
-favour of this: neither ever regressed across the traced sample, and the chain
-verify covers the outcome for a quarter of the measurements.
-
-### Performance — the ray cast, which is what made the contract affordable
-
-Three exact optimisations, each verified against brute-force Möller-Trumbore
-rather than against a previous run's numbers:
-
-- candidate pruning moved off lists-of-Python-lists onto a C-level sparse
-  distance matrix (**4.0×**);
-- the ball query is bucketed by triangle radius, so one 6u triangle no longer
-  sets the search radius for the whole mesh (a further **1.6×**);
-- a ray-line cull before the intersection test — 4% of candidate pairs survive
-  it (**2.0×** on the cast).
-
-A region measurement went from **391 ms to ~120 ms**. End-to-end conversion time
-is unchanged within run-to-run noise: fit measurement simply is not a
-significant fraction of a piece's conversion cost, which is the point — the
-contract is free in practice.
-
-### Added — instrumentation, because the chain was speculative
-
-Twelve passes computed against the body, all assumed the garment was in body
-space, none asserted it, and nothing between them measured whether a pass
-helped. That is how one frame error corrupted all twelve in silence.
-
-- `src/fit_metrics.py` — the canonical in-converter metrics module.
-- **Frame precondition**: every phase-2 shape's frame choice is checked and
-  recorded when suspect.
-- **`ChainGuard`** — the contract described above. An earlier `FitGuard` guarded
-  two individual passes and was removed within this same release once the trace
-  showed neither ever regressed; the chain verify covers the outcome for a
-  quarter of the measurements.
-- **`PassTracer`** (`CBBE2UBE_PASS_TRACE=1`) — before/after at every pass
-  boundary with shared measurements, so N passes cost N+1 measurements. This is
-  what found the groove-smoothing regression, and what showed that guarding each
-  pass was the wrong contract.
-- **`minimum_push`** — conditional, one-sided targeted push for residual
-  exposure. Exits having moved nothing on ~94% of shapes, never moves
-  chain-driven (SMP) verts, and reverts on regression.
-
-### Added — physics and follow
-
-- **Bust collider split** and **torso jiggle graft** now default ON, both
-  confirmed in game.
-- Chest-follow: the material ceiling caps *this pass's graft*, never the
-  pass-through, fixing a conflict where the torso graft and the follow pass
-  together scored worse (0.325) than either alone (now 0.786).
-
-### Performance
-
-- Canonical body skin and skeleton are cached: **133s → 30s** per armor.
-- Ray casting gained an exact range cull and early-out over triangle blocks:
-  **6.4h → 2.1h** on a full census.
-- The incremental-rebuild floor now includes a hash of every `CBBE2UBE_*`
-  environment variable and the NIF-relevant arguments, so changing a setting
-  correctly invalidates stale output instead of silently reusing it.
-
 ### Fixed — correctness
 
 - Coverage sidecars shipped pre-prune FormIDs, so the merge emitted **zero**
@@ -312,28 +158,6 @@ helped. That is how one frame error corrupted all twelve in silence.
   single-piece validation quietly untrustworthy.
 - A diagnostic print can no longer abort a conversion.
 - BSA-packed sources resolve in `find_source`.
-
-### Tooling and project
-
-- Report intake (issue templates, diagnostics zip), CI on contributor lanes,
-  and CI coverage for Python 3.10 — the runtime the shipped exe actually uses.
-- The mod-agnostic tracked-content policy is now enforced by a test rather than
-  trusted.
-
-### Known issues
-
-- Butt clipping ~11.6%: needs a physics `can-collide-with-tag` change, not a
-  mesh pass.
-- Under-bust side (z 80–86) is unresolved; the metric's resolution there is only
-  ~10–14 verts.
-- Loose robe chests can still bake in roughly +3u of over-inflation from the
-  static warp/clearance path.
-- The chain-gate on finalize remains reverted.
-
-## 1.2.1 — unreleased
-
-Follow-up to a gap reported in game on a shipped 1.2 mesh. Everything here came
-from the pack-wide telemetry 1.2 added.
 
 ### Fixed — the only pull-in pass was silently skipped
 
@@ -376,14 +200,6 @@ Verified across that set rather than sampled: **48 of 48 armed shapes now run
 The fix is a fallback reached only when the strict detector finds nothing, so it
 cannot alter pieces that already work — verified byte-identical on one.
 
-### Added — per-pass STANDOFF trace (`CBBE2UBE_STANDOFF_TRACE=1`, default off)
-
-The existing trace measures clipping and is blind to the opposite defect. This
-reports standoff per pass in 3u slabs up the torso, reading the snapshots the
-chain already keeps, so it needs no re-conversion. Slabs rather than one window:
-a single median over z105–114 read identically for all nine arms of a bisect
-because hit density varies ~10× across it.
-
 ### Fixed — telemetry that misreported itself
 
 - **`shipped`** added to chain records. `final` is the *rejected* measurement
@@ -396,41 +212,6 @@ because hit density varies ~10× across it.
 - The `conform` and chain-verify call sites now **record** their exceptions
   instead of `except Exception: pass`. Both made a failure indistinguishable from
   "nothing to do".
-
-## 1.2.2 — unreleased
-
-Telemetry only. No geometry changes: output from 1.2.1 and 1.2.2 is identical.
-
-### Added — standoff recorded up the whole torso, not just the bust front
-
-The ceiling guards `z 90–102`, and that was the only region any pack-wide record
-had ever covered. A gap reported in game sat at **z 108–114**, so "1.31u median,
-within ceiling" was an accurate statement about a region the user was not
-looking at. The under-bust had been an open lead for weeks with no numbers
-behind it at all.
-
-Four bands are now recorded per shape — `underbust` (z 78–90), `bust` (90–102),
-`upperchest` (102–108), `strap` (108–114) — **separately, never merged**. Hit
-density varies ~10× up the torso, so a single median over the whole range is
-pinned by whichever slab has the most covered skin; a nine-arm bisect that
-aggregated `z 105–114` read identically for every arm for exactly that reason.
-
-**No verdict on the new bands.** `over` stays on the bust record alone, because
-it is the only band with an anchor confirmed correct in game. Standoff rises
-monotonically up the torso — measured 1.17u at the bust to 1.94u at the strap
-line — so applying the bust ceiling higher up would manufacture failures on
-nearly every garment. These ship as data; the next full run is what produces
-enough of them to calibrate against.
-
-The calibrated bust record is untouched, mask and all, since the 1.15u/1.52u
-anchor depends on its exact definition. The bands use the sparse `_ClipTester`
-path rather than `standoff()`, whose dense formulation reached 15 GB measuring
-several bands on one cuirass; a test asserts the two agree to 1e-6 on the same
-index, so the mixed implementation is verified rather than assumed.
-
-## 1.2.2b — unreleased
-
-Follow-up to 1.2.2, driven by defects the 1.2.2 run itself surfaced.
 
 ### Fixed — a dense garment raised MemoryError mid-run
 
@@ -453,44 +234,6 @@ the standoff record, the torso bands, the pass trace and the chain guard. Rays
 are independent, so a chunk boundary cannot change a result — asserted across
 chunk sizes that do not divide the ray count evenly, and against the dense
 reference so the calibrated anchor cannot drift. `CBBE2UBE_RAY_CHUNK` tunes it.
-
-### Performance — stop measuring garments that cannot be hit
-
-`ChainGuard` armed on the **body** region size, which is a constant (the UBE
-band is 5249 verts against a floor of 50), so *every* phase-2 shape armed. Of
-4382 armed shapes in the previous run, only 1605 covered the bust band —
-**2777 (63%) measured and found nothing**, and `record_standoff` ran the full
-measurement before discarding it, on the dense path.
-
-`garment_reaches()` gates all three call sites on bounding-box overlap, which is
-conservative by construction: a garment's box contains all its triangles, so a
-box that does not overlap cannot hold one that does. It can only admit work,
-never skip a real hit, and it fails **open**. The risk is one-sided, so the test
-asserts directly that whenever the gate says skip, the ray cast finds zero hits.
-
-`record_standoff` also moved off the dense `standoff()` onto the sparse path,
-with a test pinning that the recorded median still matches the dense result on
-the calibrated mask.
-
-> **Not yet measured end-to-end.** These remove work; what fraction of
-> conversion time that is has not been profiled. No speedup is claimed.
-
-### Added — `scripts/analysis/audit_sink.py`
-
-One reader for `standoff_audit.jsonl`. Nothing in the repo read the frame, chain
-or band records, so every analysis was hand-written — more than fifty times in a
-day, each re-deciding which field to trust. It refuses to repeat four specific
-mistakes: it reads `shipped` and never `final`; it reports measurement
-**failures first** rather than burying them under clean averages; it excludes
-first-person viewmodels from standoff *and states how many*; and it prints
-percentiles rather than inventing ceilings for bands that have no calibrated
-anchor.
-
-## 1.2.3b — unreleased
-
-Bust anti-poke. Reported in game as a nipple poking through a fitted cuirass on
-*one* BodySlide preset and not others; every offline metric read the piece as
-clean. Four measurement corrections and one real bug behind that.
 
 ### Fixed — the bust requirement was measured on the wrong thing (#bust-surface-req)
 
@@ -542,20 +285,6 @@ Two independent defects in `_smooth_warp_grooves`, which runs after the conform:
   over a tip between verts even though no vert moves inward (0.284 -> 0.161u).
   The smoothing is now held back over a protrusion.
   `CBBE2UBE_NO_GROOVE_HOLD=1` disables.
-
-### Removed — #groove-nipple-hold
-
-It held the groove smoothing back over a protrusion, and earned that while it was
-the only thing protecting the tip. Once the surface requirement landed it became
-actively harmful. Ablated across all 112 installed BodySlide presets:
-
-    hold ON    1 preset still poking, nipple clearance +0.220u
-    hold OFF   0 presets poking,      nipple clearance +0.528u
-
-with identical torso fit and identical crinkle on every shape. Deleting it
-cleared the last holdout.
-
-## 1.2.4 — unreleased
 
 ### Fixed — the torso under-followed every spine bend (under-bust clipping)
 
@@ -646,3 +375,255 @@ per-vertex soft bodies and declining to rewrite them is right.
 No band on any probe got worse. Weights only: zero vertex movement on both weights
 of all three probes and across all 15 golden pieces, and the weight-sum invariant
 is unchanged.
+
+### Changed - the Armor settings tab is readable again
+
+It had grown to 38 of the tool's 43 settings and rendered about 3.7 screens
+tall, but the bulk of that was not controls: 86% of the text on the tab was
+always-visible explanation, one paragraph per setting.
+
+Each setting now shows a single line, with the full text on hover. Nothing was
+shortened or deleted -- those explanations carry measured numbers and in-game
+caveats recorded nowhere else, so they moved rather than shrank.
+
+The seven numeric tuning knobs now hide behind "Show advanced", which is what
+the underlying field was always for; it had never been connected to anything.
+There is also a live search over the settings, and the window remembers its
+size between launches.
+
+Groups were re-cut from six to eight by what a setting actually acts on: the
+physics-chain options had been split across two groups, one group had grown to
+16 unrelated settings, and three settings sat under the wrong heading.
+"Convert vanilla armor" moved to the Run tab, beside the mod selection it
+extends -- it adds a source to the run rather than changing how a garment is
+fitted.
+
+Net effect: 3.7 screens to 2.1, with every word still reachable.
+
+### Changed - a failed pass or a failed write now reaches the report
+
+Every fit pass and every mesh/sidecar write ran inside a silent catch, so a
+pass that RAISED was indistinguishable from one that ran and did nothing.
+30 such handlers for passes and 19 for writes are now 0: failures are recorded
+and travel back in the conversion report. Grep it for PASS FAILED.
+
+### Changed — the fit metric
+
+- **Added** the validated clipping test: a body vert is clipping when the
+  garment sits *behind* the skin (ray out escapes, ray in hits a
+  same-facing triangle). Calibrated against a user-confirmed clean/dirty pair:
+  reads 0.00% on the clean armour, 8.87% on the one that clips.
+- **Added STANDOFF** as the counter-metric. Clipping has no upper bound, so an
+  over-inflated garment scores a perfect 0.0% — which is exactly how
+  over-inflation reached the user twice without any number complaining. Anchor
+  from the clean armour: median 1.15u, p90 1.52u.
+- **Retired** `bust_verdict.py` and `postflight_1_2.py` off the discredited
+  signed-distance path.
+- **Retired the ray cone from `underbust_census.py`**, its last live consumer.
+  The `surrounded` / `partial` / `bare` columns are replaced by `clipping`;
+  rows written before 2026-07-29 are not comparable on those columns. Its
+  negative control turned out to be blind to the very bug it was written for —
+  a garment below z 80 produces no ray hits in *either* direction, so
+  transposing the two directions left it passing. A positive control (densest
+  band coverage must read mostly COVERED) was added, and verified to fail under
+  a deliberately inverted metric while the negative control still passed.
+- **Deleted** `mesh_penetration.containment`, `poke_report`, and `cone_dirs`
+  (−155 lines).
+  Both were anti-correlated with in-game ground truth and had zero callers and
+  zero tests. `surface_penetration` stays: only its *sign* was bad, and the
+  census uses its distance. The reasoning that discredited them is preserved in
+  `docs/METRICS.md`, and the four metric requirements written for `poke_report`
+  moved onto `clipping_report`, which actually satisfies them.
+- **Added** an orientation gate that removes a false positive under morph
+  (an inward ray striking the far side of the garment past a cut rim) without
+  moving the calibration anchors.
+
+### Added — a fit contract over the whole pass chain
+
+The pipeline now states, per shape: **diagnose** what was wrong before anything
+ran, **treat**, then **verify** the result and roll back to the best intermediate
+state if the chain as a whole made things worse.
+
+Applied to the chain rather than to each pass, because the per-pass version is
+measurably the wrong contract. Over 48 traced shapes, exactly one pass ever
+regressed bust fit (`conform`, 5 times), every one of those was recovered
+downstream, and **0 of 48 shapes ended worse than they started** (total exposure
+8138 → 245). `conform_to_source_standoff` pulls IN by design and later passes
+push back out; reverting it would have blocked a correct pass and biased every
+garment looser — which is the over-inflation reported twice from the game.
+
+Cost: **two measurements per armed shape** instead of eleven. Checkpoints are
+array copies, not measurements, so the chain remembers every pass and only pays
+to inspect them when the final verify actually fails.
+
+What it deliberately does not do is skip passes when the entry diagnosis looks
+clean. Bind-pose clipping is blind to animation — "at rest" in game is an
+animated pose — so gating passes on it would trade a measurable defect for an
+unmeasurable one.
+
+The per-pass guards on the anti-poke and the soft-cloth inflate were removed in
+favour of this: neither ever regressed across the traced sample, and the chain
+verify covers the outcome for a quarter of the measurements.
+
+### Added — instrumentation, because the chain was speculative
+
+Twelve passes computed against the body, all assumed the garment was in body
+space, none asserted it, and nothing between them measured whether a pass
+helped. That is how one frame error corrupted all twelve in silence.
+
+- `src/fit_metrics.py` — the canonical in-converter metrics module.
+- **Frame precondition**: every phase-2 shape's frame choice is checked and
+  recorded when suspect.
+- **`ChainGuard`** — the contract described above. An earlier `FitGuard` guarded
+  two individual passes and was removed within this same release once the trace
+  showed neither ever regressed; the chain verify covers the outcome for a
+  quarter of the measurements.
+- **`PassTracer`** (`CBBE2UBE_PASS_TRACE=1`) — before/after at every pass
+  boundary with shared measurements, so N passes cost N+1 measurements. This is
+  what found the groove-smoothing regression, and what showed that guarding each
+  pass was the wrong contract.
+- **`minimum_push`** — conditional, one-sided targeted push for residual
+  exposure. Exits having moved nothing on ~94% of shapes, never moves
+  chain-driven (SMP) verts, and reverts on regression.
+
+### Added — physics and follow
+
+- **Bust collider split** and **torso jiggle graft** now default ON, both
+  confirmed in game.
+- Chest-follow: the material ceiling caps *this pass's graft*, never the
+  pass-through, fixing a conflict where the torso graft and the follow pass
+  together scored worse (0.325) than either alone (now 0.786).
+
+### Added — per-pass STANDOFF trace (`CBBE2UBE_STANDOFF_TRACE=1`, default off)
+
+The existing trace measures clipping and is blind to the opposite defect. This
+reports standoff per pass in 3u slabs up the torso, reading the snapshots the
+chain already keeps, so it needs no re-conversion. Slabs rather than one window:
+a single median over z105–114 read identically for all nine arms of a bisect
+because hit density varies ~10× across it.
+
+### Added — standoff recorded up the whole torso, not just the bust front
+
+The ceiling guards `z 90–102`, and that was the only region any pack-wide record
+had ever covered. A gap reported in game sat at **z 108–114**, so "1.31u median,
+within ceiling" was an accurate statement about a region the user was not
+looking at. The under-bust had been an open lead for weeks with no numbers
+behind it at all.
+
+Four bands are now recorded per shape — `underbust` (z 78–90), `bust` (90–102),
+`upperchest` (102–108), `strap` (108–114) — **separately, never merged**. Hit
+density varies ~10× up the torso, so a single median over the whole range is
+pinned by whichever slab has the most covered skin; a nine-arm bisect that
+aggregated `z 105–114` read identically for every arm for exactly that reason.
+
+**No verdict on the new bands.** `over` stays on the bust record alone, because
+it is the only band with an anchor confirmed correct in game. Standoff rises
+monotonically up the torso — measured 1.17u at the bust to 1.94u at the strap
+line — so applying the bust ceiling higher up would manufacture failures on
+nearly every garment. These ship as data; the next full run is what produces
+enough of them to calibrate against.
+
+The calibrated bust record is untouched, mask and all, since the 1.15u/1.52u
+anchor depends on its exact definition. The bands use the sparse `_ClipTester`
+path rather than `standoff()`, whose dense formulation reached 15 GB measuring
+several bands on one cuirass; a test asserts the two agree to 1e-6 on the same
+index, so the mixed implementation is verified rather than assumed.
+
+### Added — `scripts/analysis/audit_sink.py`
+
+One reader for `standoff_audit.jsonl`. Nothing in the repo read the frame, chain
+or band records, so every analysis was hand-written — more than fifty times in a
+day, each re-deciding which field to trust. It refuses to repeat four specific
+mistakes: it reads `shipped` and never `final`; it reports measurement
+**failures first** rather than burying them under clean averages; it excludes
+first-person viewmodels from standoff *and states how many*; and it prints
+percentiles rather than inventing ceilings for bands that have no calibrated
+anchor.
+
+### Faster - skeleton bone resolution
+
+The normalised skeleton bone set was rebuilt on every membership test
+(1.9M redundant calls over five pieces). Cached; about 5-6%, output identical.
+
+### Performance — the ray cast, which is what made the contract affordable
+
+Three exact optimisations, each verified against brute-force Möller-Trumbore
+rather than against a previous run's numbers:
+
+- candidate pruning moved off lists-of-Python-lists onto a C-level sparse
+  distance matrix (**4.0×**);
+- the ball query is bucketed by triangle radius, so one 6u triangle no longer
+  sets the search radius for the whole mesh (a further **1.6×**);
+- a ray-line cull before the intersection test — 4% of candidate pairs survive
+  it (**2.0×** on the cast).
+
+A region measurement went from **391 ms to ~120 ms**. End-to-end conversion time
+is unchanged within run-to-run noise: fit measurement simply is not a
+significant fraction of a piece's conversion cost, which is the point — the
+contract is free in practice.
+
+### Performance
+
+- Canonical body skin and skeleton are cached: **133s → 30s** per armor.
+- Ray casting gained an exact range cull and early-out over triangle blocks:
+  **6.4h → 2.1h** on a full census.
+- The incremental-rebuild floor now includes a hash of every `CBBE2UBE_*`
+  environment variable and the NIF-relevant arguments, so changing a setting
+  correctly invalidates stale output instead of silently reusing it.
+
+### Performance — stop measuring garments that cannot be hit
+
+`ChainGuard` armed on the **body** region size, which is a constant (the UBE
+band is 5249 verts against a floor of 50), so *every* phase-2 shape armed. Of
+4382 armed shapes in the previous run, only 1605 covered the bust band —
+**2777 (63%) measured and found nothing**, and `record_standoff` ran the full
+measurement before discarding it, on the dense path.
+
+`garment_reaches()` gates all three call sites on bounding-box overlap, which is
+conservative by construction: a garment's box contains all its triangles, so a
+box that does not overlap cannot hold one that does. It can only admit work,
+never skip a real hit, and it fails **open**. The risk is one-sided, so the test
+asserts directly that whenever the gate says skip, the ray cast finds zero hits.
+
+`record_standoff` also moved off the dense `standoff()` onto the sparse path,
+with a test pinning that the recorded median still matches the dense result on
+the calibrated mask.
+
+> **Not yet measured end-to-end.** These remove work; what fraction of
+> conversion time that is has not been profiled. No speedup is claimed.
+
+### Removed — #groove-nipple-hold
+
+It held the groove smoothing back over a protrusion, and earned that while it was
+the only thing protecting the tip. Once the surface requirement landed it became
+actively harmful. Ablated across all 112 installed BodySlide presets:
+
+    hold ON    1 preset still poking, nipple clearance +0.220u
+    hold OFF   0 presets poking,      nipple clearance +0.528u
+
+with identical torso fit and identical crinkle on every shape. Deleting it
+cleared the last holdout.
+
+### Read this before trusting the numbers
+
+The fit figures below come from the mesh harness, in bind pose, on a specific
+body. They are necessary but **not sufficient** — bind-pose metrics are blind to
+what animation does, and the worst remaining clipping lives on SMP/soft-body
+cloth that no skin pass can reach. In-game verification is still the gate.
+
+### Tooling and project
+
+- Report intake (issue templates, diagnostics zip), CI on contributor lanes,
+  and CI coverage for Python 3.10 — the runtime the shipped exe actually uses.
+- The mod-agnostic tracked-content policy is now enforced by a test rather than
+  trusted.
+
+### Known issues
+
+- Butt clipping ~11.6%: needs a physics `can-collide-with-tag` change, not a
+  mesh pass.
+- Under-bust side (z 80–86) is unresolved; the metric's resolution there is only
+  ~10–14 verts.
+- Loose robe chests can still bake in roughly +3u of over-inflation from the
+  static warp/clearance path.
+- The chain-gate on finalize remains reverted.
