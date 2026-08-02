@@ -102,7 +102,7 @@ def test_tab_and_group_structure():
     assert "Armor" in gs.tabs_present()
     assert "Tuning" not in gs.tabs_present()   # folded into Armor
     groups = gs.groups_in_tab("Armor")
-    assert "Fit and conform" in groups and "Glow and effect-shader" in groups
+    assert "Fit and clearance" in groups and "Glow and effect shaders" in groups
     assert all(s.tab == "Armor" for s in gs.settings_in("Armor", "Seams"))
     # a numeric "tuning" knob now nests under its feature's Armor group
     seam_keys = [s.key for s in gs.settings_in("Armor", "Seams")]
@@ -117,6 +117,12 @@ def test_persistence_round_trip_only_non_default(tmp_path):
     assert gs.save_values(vals, path=p)
     import json
     on_disk = json.loads(p.read_text(encoding="utf-8"))
+    # VALUES are still only the non-defaults -- that contract is unchanged. The one
+    # extra entry is `_known_settings`: the record of which options THIS build
+    # offered, which is what lets a later build NAME a newly-added option instead of
+    # mistaking it for one deliberately left off (see test_unseen_settings.py).
+    baseline = on_disk.pop(gs.KNOWN_KEYS_FIELD)
+    assert set(baseline) == {s.key for s in gs.SETTINGS}
     assert on_disk == {"conform_to_body": False, "seam_weld_tol": 0.12}
     loaded = gs.load_values(path=p)
     assert loaded["conform_to_body"] is False
@@ -144,3 +150,123 @@ def test_saved_config_applies_through_env(tmp_path):
     gs.save_values({**gs.defaults(), "glow_source_skin": False}, path=p)
     env = gs.apply_env(gs.load_values(path=p), base_env={})
     assert env["CBBE2UBE_EFFECT_RESKIN"] == "1"
+
+
+# Tabs whose contents gui.py GENERATES from the registry (_build_settings_tab).
+# A setting on any other tab must be rendered by hand, or it is invisible.
+_GENERATED_TABS = {"Armor", "Paths", "Diagnostics"}
+
+
+def _gui_source() -> str:
+    from pathlib import Path
+    return (Path(__file__).resolve().parent.parent
+            / "src" / "gui.py").read_text(encoding="utf-8", errors="replace")
+
+
+def test_no_orphaned_settings():
+    """Every setting must be reachable in the UI.
+
+    A setting on a tab nobody builds renders nowhere, so it can never be
+    switched on, never validated in game, and never finished -- the deadlock
+    docs/PIPELINE.md rule 1 exists to prevent. Settings outside the generated
+    tabs (vanilla_sweep on Run, theme on Appearance) are hand-rendered, so
+    require the key to appear in gui.py.
+    """
+    src = _gui_source()
+    orphans = [s.key for s in gs.SETTINGS
+               if s.tab not in _GENERATED_TABS and f'"{s.key}"' not in src]
+    assert not orphans, f"settings rendered by nothing: {orphans}"
+
+
+def test_vanilla_sweep_lives_on_the_run_tab():
+    """It adds a SOURCE to the run rather than changing how a garment is
+    fitted, so it belongs beside the mod selection it extends."""
+    s = gs.by_key()["vanilla_sweep"]
+    assert (s.tab, s.group) == ("Run", "Convert armor")
+    assert s.default is True
+    # moving it must not change what the converter sees
+    assert "CBBE2UBE_NO_VANILLA_SWEEP" not in gs.apply_env(gs.defaults(), {})
+    off = gs.apply_env({**gs.defaults(), "vanilla_sweep": False}, {})
+    assert off["CBBE2UBE_NO_VANILLA_SWEEP"] == "1"
+    # and it must be off the Armor tab, taking the one-item group with it
+    assert "Coverage" not in gs.groups_in_tab("Armor")
+    assert all(s.key != "vanilla_sweep" for s in gs.settings_in("Armor", "Coverage"))
+
+
+def test_every_setting_is_in_exactly_one_layout_group():
+    """LAYOUT drives display order. A key it omits still renders (at the end of
+    its group), but a key in the WRONG group would render twice or not at all.
+    """
+    for tab, groups in gs.LAYOUT.items():
+        listed = [k for _g, keys in groups for k in keys]
+        assert len(listed) == len(set(listed)), "a key is listed twice in LAYOUT"
+        by_group = {g: set(keys) for g, keys in groups}
+        for s in gs.SETTINGS:
+            if s.tab != tab:
+                continue
+            for g, keys in by_group.items():
+                if s.key in keys:
+                    assert s.group == g, (
+                        f"{s.key} is in LAYOUT group {g!r} but Setting.group "
+                        f"says {s.group!r}")
+        # every LAYOUT key must be a real setting on that tab
+        real = {s.key for s in gs.SETTINGS if s.tab == tab}
+        assert not (set(listed) - real), f"LAYOUT names non-existent: {set(listed) - real}"
+
+
+def test_layout_nests_each_knob_under_the_toggle_it_tunes():
+    """The bug this fixes: chest_follow_unknown rendered four rows from
+    chest_follow, so it read as an independent option."""
+    keys = [s.key for s in gs.settings_in("Armor", "Body follow and morphs")]
+    assert keys.index("chest_follow_unknown") == keys.index("chest_follow") + 1
+    keys = [s.key for s in gs.settings_in("Armor", "Seams")]
+    assert keys.index("seam_weld_tol") == keys.index("seam_weld") + 1
+
+
+def test_every_numeric_knob_is_advanced():
+    """`advanced` hides tuning knobs. One knob left un-marked would be the lone
+    spinbox still shown, which reads as a deliberate promotion."""
+    for s in gs.SETTINGS:
+        if s.kind in ("float", "int"):
+            assert s.advanced, f"{s.key} is a numeric knob but not advanced"
+
+
+def test_hint_is_one_short_line_and_never_replaces_the_tooltip():
+    for s in gs.SETTINGS:
+        h = gs.hint_for(s)
+        assert len(h) <= gs.HINT_MAX + 1, f"{s.key} hint too long: {len(h)}"
+        assert "\n" not in h, f"{s.key} hint is multi-line"
+        if s.tooltip:
+            assert h, f"{s.key} has a tooltip but no hint"
+    # the full text must still be there -- the point is to MOVE it, not trim it
+    assert len(gs.by_key()["rigid_majority_softbody"].tooltip) > 300
+
+
+def test_hint_falls_back_to_first_sentence():
+    s = gs.Setting("x", "X", "Armor", "G", tooltip="First one. Second one here.")
+    assert gs.hint_for(s) == "First one."
+    s2 = gs.Setting("y", "Y", "Armor", "G", hint="explicit", tooltip="Long. More.")
+    assert gs.hint_for(s2) == "explicit"
+    long = "w" * (gs.HINT_MAX + 40) + ". tail."
+    assert gs.hint_for(gs.Setting("z", "Z", "Armor", "G", tooltip=long)).endswith("…")
+
+
+def test_unseen_settings_ignores_cosmetic_options(tmp_path):
+    """The warning exists for options that change a CONVERSION. A setting with
+    no env var cannot, so flagging it would be a false alarm -- and a warning
+    that cries wolf about window size is how a real one gets skimmed past."""
+    p = tmp_path / "s.json"
+    gs.save_values(gs.defaults(), path=p)
+    import json
+    raw = json.loads(p.read_text(encoding="utf-8"))
+    cosmetic = [s.key for s in gs.SETTINGS if not s.env]
+    behavioural = [s.key for s in gs.SETTINGS if s.env]
+    assert cosmetic and behavioural, "need both kinds for this test to mean anything"
+    # forget one of each
+    raw[gs.KNOWN_KEYS_FIELD] = [k for k in raw[gs.KNOWN_KEYS_FIELD]
+                                if k not in (cosmetic[0], behavioural[0])]
+    p.write_text(json.dumps(raw), encoding="utf-8")
+    _baseline, new = gs.unseen_settings(path=p)
+    keys = {s.key for s in new}
+    assert behavioural[0] in keys, "a real option must still be named"
+    assert cosmetic[0] not in keys, "a cosmetic option must not raise the alarm"

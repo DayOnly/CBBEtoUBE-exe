@@ -56,7 +56,6 @@ _OVERLAY_ROOTS = (
     "textures/actors/character/overlays",
     "textures/actors/character/character assets/overlays",
 )
-_OVERLAY_ROOT = _OVERLAY_ROOTS[0]      # back-compat (diag scripts, default path)
 
 
 # ---------- texconv locator -------------------------------------------------

@@ -1,0 +1,27 @@
+name: Feature request
+description: Suggest a capability, a new option, or a change to how the pipeline behaves.
+title: "[feature] "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: Describe the situation you hit, not just the feature. The concrete case is usually what shapes the design.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like it to do
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you tried instead
+      description: Existing flags, GUI settings, exclusions, or manual steps you used as a workaround.
+    validations:
+      required: false

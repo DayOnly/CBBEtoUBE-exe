@@ -661,12 +661,40 @@ def validate_armor_hdt_xml(xml_path: "Path",
         return warnings
 
     xml_bones = {b.get("name") for b in root.findall("bone") if b.get("name")}
-    nif_bone_set = set(nif_bone_names)
-    for xml_bone in xml_bones:
-        if xml_bone not in nif_bone_set:
+
+    # A bone is only a problem when NOTHING can resolve it: not the NIF, and not
+    # the ACTOR's skeleton. Physics XMLs legitimately name skeleton bones the
+    # armour isn't skinned to (NPC Head, NPC L Hand, breast bones) and FSMP
+    # resolves those at runtime. Warning on those too made this check emit ~45
+    # lines per file, which is how the SIX that actually mattered stayed
+    # invisible -- a check that cries wolf every time reads as background noise.
+    #
+    # Constraint bodies count as references. `bodyA`/`bodyB` of a
+    # <generic-constraint> need not be declared as <bone>, and a chain whose
+    # anchor appears ONLY there is exactly the case this check used to miss:
+    # it warned about the declared siblings and never about the anchor whose
+    # absence dragged the chain to the origin.
+    from . import nif_convert as _nc  # local: nif_convert imports this module
+
+    norm = _nc._norm_bone
+    nif_bone_set = {norm(b) for b in nif_bone_names}
+    try:
+        actor = {norm(b) for b in _nc._actor_skeleton_bone_names()}
+    except Exception:
+        actor = set()
+    referenced = set(xml_bones)
+    for c in root.iter("generic-constraint"):
+        for attr in ("bodyA", "bodyB"):
+            v = c.get(attr)
+            if v:
+                referenced.add(v)
+    for xml_bone in sorted(referenced):
+        n = norm(xml_bone)
+        if n not in nif_bone_set and n not in actor:
             warnings.append(
-                f"HDT XML declares bone {xml_bone!r} that the NIF skeleton "
-                f"doesn't have — HDT-SMP will silently skip this bone")
+                f"HDT XML references bone {xml_bone!r} that is in NEITHER the "
+                f"NIF nor the actor skeleton — HDT-SMP cannot resolve it and "
+                f"will place it at the ORIGIN, dragging its chain there")
 
     # Per-vertex-shape weight thresholds must reference declared bones
     for sh in root.findall("per-vertex-shape"):

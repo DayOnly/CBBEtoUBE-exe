@@ -52,6 +52,32 @@ TORSO_HALF_X = 16.0
 FRONT_Y = 2.0
 REAR_Y = -2.0
 
+# ---- FOLLOW-measurement bands ------------------------------------------------
+# Where the motion-follow harness scores. Kept here for exactly the reason the
+# zones above are: a band re-derived by eye inside a script gives a CLEAN answer
+# to the WRONG question, and that is far harder to catch than a wrong one.
+# These are MOTION bands, not clearance zones, so they are named separately even
+# where the numbers coincide with a zone above.
+#
+# NOT A PARTITION. `SIDE_Z` and `BREAST_Z` genuinely share the front-lateral
+# chest -- measured on a body-sized cloud, 46% of side and 61% of bust. Never
+# treat two band results as independent evidence about disjoint vertices.
+UNDER_BUST_Z = (84.0, 90.0)      # front-facing, just below BREAST_Z
+SIDE_Z = (92.0, 103.0)           # flank: lateral gate, not a front gate
+ARMHOLE_Z = (103.0, 118.0)       # shoulder/armhole, ABOVE the breast (cf UPPER_CHEST_Z)
+# Forearm, arms-down: the rig sweep puts the CBBE-vs-UBE Forearm disagreement at
+# z 76.1-92.3. Needs the LATERAL gate or it swallows the under-bust/belly front.
+FOREARM_Z = (76.0, 93.0)
+FOREARM_HALF_X = 16.0            # = TORSO_HALF_X: beyond the torso is the arm
+HIP_Z = (62.0, 80.0)             # same span as BUTT_Z but NOT rear-gated
+THIGH_Z = (45.0, 62.0)
+KNEE_Z = (36.0, 45.0)
+CALF_Z = (18.0, 36.0)
+
+# Lateral gates for the bands defined by sitting OFF the midline.
+ARMHOLE_HALF_X = 7.0
+SIDE_HALF_X = 8.0
+
 
 def _band(verts, zlo, zhi):
     import numpy as np

@@ -194,3 +194,51 @@ def test_skypatcher_ini_parsing():
     assert pf._skypatcher_armor_patching(f("iEnableArmorPatching=yes")) is None
     assert pf._skypatcher_armor_patching(None) is None
     assert pf._skypatcher_armor_patching(Path("no-such-dir/nope.ini")) is None
+
+
+def test_skypatcher_ini_read_from_the_winning_mod(tmp_path, monkeypatch):
+    """#winner-order -- with two mods shipping SkyPatcher.ini, preflight must read
+    the copy MO2 gives the game (highest priority), not an arbitrary one.
+
+    `enabled_mods` returns a SET, so iterating it picks a copy at random. Reading
+    `iEnableArmorPatching=1` off a LOSING copy while the winner says 0 would pass a
+    setup in which every converted piece is invisible -- the exact failure this
+    check exists to catch."""
+    mods = tmp_path / "mods"
+    (mods / "CBBEtoUBE Auto").mkdir(parents=True)
+    data = tmp_path / "Data"
+    data.mkdir()
+    # Loser: patching ON. Winner (higher MO2 priority): patching OFF.
+    _install_skypatcher(mods, ini="[Patcher]\niEnableArmorPatching=1\n")
+    win = mods / "AAA_SkyPatcher_Override" / "SKSE" / "Plugins"
+    win.mkdir(parents=True)
+    (win / "SkyPatcher.ini").write_text("[Patcher]\niEnableArmorPatching=0\n")
+    lay = _Lay(mods, game_data_dirs=[data], selected_profile="Main")
+    monkeypatch.setattr(pf, "_probe_ube_body", lambda: tmp_path / "ube_1.nif")
+    monkeypatch.setattr(pf, "_probe_cbbe_body", lambda: tmp_path / "cbbe_1.nif")
+    names = {"CBBEtoUBE Auto", "SkyPatcher", "AAA_SkyPatcher_Override"}
+    monkeypatch.setattr(pf._paths, "enabled_mods", lambda l: names)
+    monkeypatch.setattr(pf._paths, "enabled_mods_ordered",
+                        lambda l: ["AAA_SkyPatcher_Override", "SkyPatcher",
+                                   "CBBEtoUBE Auto"])
+    b = _by_id(pf.run_checks(lay))
+    assert b["skypatcher"].status == pf.FAIL, b["skypatcher"].detail
+    assert "iEnableArmorPatching=0" in b["skypatcher"].detail
+
+
+def test_skypatcher_ini_still_found_without_priority_info(tmp_path, monkeypatch):
+    """No modlist.txt -> no order. Detection must still work (fall back to the
+    enabled set) rather than silently stop reading the INI."""
+    mods = tmp_path / "mods"
+    (mods / "CBBEtoUBE Auto").mkdir(parents=True)
+    data = tmp_path / "Data"
+    data.mkdir()
+    _install_skypatcher(mods, ini="[Patcher]\niEnableArmorPatching=0\n")
+    lay = _Lay(mods, game_data_dirs=[data], selected_profile="Main")
+    monkeypatch.setattr(pf, "_probe_ube_body", lambda: tmp_path / "ube_1.nif")
+    monkeypatch.setattr(pf, "_probe_cbbe_body", lambda: tmp_path / "cbbe_1.nif")
+    monkeypatch.setattr(pf._paths, "enabled_mods",
+                        lambda l: {"CBBEtoUBE Auto", "SkyPatcher"})
+    monkeypatch.setattr(pf._paths, "enabled_mods_ordered", lambda l: None)
+    b = _by_id(pf.run_checks(lay))
+    assert b["skypatcher"].status == pf.FAIL

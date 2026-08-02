@@ -294,12 +294,11 @@ class TES4Header:
 # Read-only parse cache, keyed by (path, mtime, size). Each source ESP is
 # parsed once per run. The cached object is shared — callers that mutate or
 # emit output must use plain `ESP.load`, never `load_cached`.
+#
+# The key includes mtime+size, so a rewritten ESP invalidates itself and the cache
+# never needs manual clearing. A `clear_load_cache()` helper existed for that and was
+# never called by anything; removed 2026-07-27.
 _LOAD_CACHE: "dict[tuple, ESP]" = {}
-
-
-def clear_load_cache() -> None:
-    """Drop the read-only ESP parse cache (call at the start of a batch)."""
-    _LOAD_CACHE.clear()
 
 
 @dataclass

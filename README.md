@@ -11,6 +11,16 @@ not a plugin-record problem, so the tool rewrites NIF vertices and bone weights
 directly, then generates the minimal ESP records that point the armor at the new
 meshes.
 
+> **New here? Start with [USING.md](USING.md)** — a start-to-finish walkthrough:
+> what to check before converting, how to run it, **how to wire the output into
+> MO2** (the step that most often goes wrong), and how to read a problem when one
+> shows up. This README is the reference for commands, flags and internals.
+>
+> **Working on the converter?** [docs/](docs/README.md) holds the design and
+> measurement references — [DESIGN.md](docs/DESIGN.md) for why each pass exists,
+> [METRICS.md](docs/METRICS.md) for which measurements can be trusted and which
+> were wrong.
+
 ## What it does
 
 Given a Mod Organizer 2 setup, the full pipeline (`auto`):
@@ -33,7 +43,10 @@ Given a Mod Organizer 2 setup, the full pipeline (`auto`):
    one **ESL-flagged combined plugin** with a correct master order. If the
    merge outgrows the 2048-record ESL cap it **splits** into numbered pieces
    (`CBBE_to_UBE_Combined.esp`, `CBBE_to_UBE_Combined2.esp`, ...) — enable
-   **all** of them. The plugin only *holds* the minted UBE armatures; an
+   **all** of them. Every generator emits within the cap, so a piece is
+   normally still ESL-flagged and costs a light slot rather than a load-order
+   slot; a full-ESP downgrade is a last resort. The plugin only *holds* the
+   minted UBE armatures; an
    **active SkyPatcher INI** (shipped in `SKSE/Plugins/SkyPatcher/armor/`)
    attaches each one to its armor at runtime. The converter uses **no ESP
    overrides**, so **SkyPatcher (SKSE) is required** — without it converted
@@ -112,12 +125,45 @@ skinned shapes is baked into the verts):
 - **Jiggle clearance** — clears armor against the body's *moving* envelope, not
   just its rest pose, so soft-body jiggle can't push skin through at the peak of
   motion. On by default; `CBBE2UBE_NO_JIGGLE_CLEARANCE=1` disables it.
+
+  > Three separate passes graft jiggle weight, each scaled differently, and their
+  > sliders do **not** state the ratio they deliver — the same nominal `1.0` yields
+  > 0.35 on the chest and 1.00 on the butt. **[docs/DESIGN_JIGGLE.md](docs/DESIGN_JIGGLE.md)**
+  > documents all of it with measured numbers, and proposes a single "follow ratio"
+  > so a slider means what it says.
 - **Source-standoff conform** — a piece that hugged the 3BA body is reeled
   back to hug UBE instead of floating at the over-projected distance;
   pull-in only, with a bust-band exception so the nipple can't poke through.
+  The bust exception is a **morph** requirement, not a bind-pose one: a nipple
+  travels up to 5.35u at runtime, the armour follows it via its own BODYTRI, and
+  what survives is the *residual* between the body point that pokes and the
+  garment vert covering it — zero for a slider that merely inflates, positive
+  for one that reshapes. That residual is added to the required clearance,
+  weighted by nipple weight so it costs the torso nothing. Without it a poke is
+  **preset-dependent** and invisible to every bind-pose metric. The requirement is
+  also evaluated against the garment **surface**, not its vertices: the tightest
+  point sits in a triangle interior, so a surface can sag 0.855u below vertices
+  that all pass, and the vertex form of the test never fired at all. Measured
+  across 112 installed BodySlide presets, poking presets went 19 -> 1.
+  `CBBE2UBE_NO_BUST_MORPH_RESIDUAL=1` disables it;
+  **[DESIGN_P5_CLEARANCE_PRESERVING_CONFORM.md](DESIGN_P5_CLEARANCE_PRESERVING_CONFORM.md) §8**
+  has the measurements and the dead ends.
+- **Bust neighbourhood sizing** — the anti-poke samples the body over the patch
+  each garment vertex actually spans (its own local vertex spacing), not a fixed
+  count. `BUST_NEIGHBORHOOD_RADIUS` was previously inert: with `k=6` and a
+  0.359u body the sample only ever reached 0.673u, so a tip poking *between*
+  coarse garment verts was never seen. `CBBE2UBE_NO_BUST_SPACING=1` disables.
+- **Groove-smooth authored cap** — the smoothing runs last, so being outward-only
+  it could only hand back clearance the conform had just removed. Its outward
+  motion is bounded at the authored standoff. `CBBE2UBE_NO_GROOVE_CAP=1` disables.
 - **Warp groove smoothing** — roughness-weighted smoothing of the warp
   *displacement* removes localized warp noise (breast "indent lines") without
-  flattening real detail.
+  flattening real detail. **One-sided since 1.2**: a vert may be smoothed along
+  the surface or *away* from the body, never toward it. Smoothing a displacement
+  field flattens whatever it peaks over, and over a convex feature it peaks at
+  the bust apex — so the pass used to pull the garment back onto the skin
+  exactly where that does most harm. `CBBE2UBE_GROOVE_ONESIDED=0` restores the
+  old behaviour.
 - **Multi-layer order restoration** — the warp's min-standoff clamp collapses
   a layered outfit's radial stacking (belts sink into corsets, trim sinks
   under breastplates). The pass re-imposes the **source** layer order
@@ -154,10 +200,54 @@ skinned shapes is baked into the verts):
   `CBBE2UBE_NO_SOFTCLOTH_INFLATE=1`.
 - **Z-fight split, degenerate-triangle repair, normal recompute** — final
   cleanup so moved verts don't shimmer, pinch flat, or shade wrong.
+- **Minimum push** — the only corrective pass driven by *measured* skin-through-
+  armor rather than by proximity to the body. Every pass above keys off "how
+  close is this vert" against a constant, so it fires whether or not anything is
+  actually exposed. This one measures first, moves only what the measurement
+  calls for, never touches physics-chain verts, and reverts itself on
+  regression. On most shapes it correctly does nothing.
 - **Physics & morphs carried through** — HDT-SMP chains are blended back
   un-warped (no collapsed skirts), BODYTRI morph data is regenerated to match
   the new geometry, and hem verts grazing foot bones are kept off the
   hand/foot misclassification path.
+
+### How the refit checks itself
+
+Added in 1.2. Before this, twelve passes computed against the body, every one
+assumed the garment shared its coordinate frame, none asserted it, and nothing
+between them measured whether a pass helped — so a single bad transform could
+corrupt all twelve in silence, and an over-inflated mesh could ship because each
+pass capped only its own contribution.
+
+- **Frame precondition** — a shape's transform translation is only a
+  body-space correction if applying it moves the shape *closer* to the body.
+  If it moves it further away it is discarded and reported. This is the
+  cheapest check in the chain.
+- **Diagnose → treat → verify, per shape** — one measurement before the chain,
+  one after. If the chain *as a whole* left more skin exposed than it found, the
+  best intermediate state is shipped instead. Checkpoints between passes are
+  array copies, not measurements, so the whole contract costs two measurements
+  rather than one per pass.
+
+  It is applied to the chain rather than to each pass deliberately. Intermediate
+  regressions are legitimate: the source-standoff conform pulls *in* by design
+  and later passes push back out, so reverting per pass would block a correct
+  pass and bias every garment looser.
+
+  It also does **not** skip passes when the entry measurement looks clean.
+  Bind-pose clipping is blind to animation — "at rest" in game is an animated
+  pose — so gating passes on it would trade a measurable defect for an
+  unmeasurable one.
+- **Two metrics, not one** — clipping (skin behind the garment) has no upper
+  bound, so an over-inflated garment scores a perfect 0.0%. **Standoff** is the
+  counter-metric: how far off the body the finished garment actually sits,
+  against a ceiling calibrated on a piece confirmed correct in game.
+- **Telemetry is a file, not a print** — conversion fans out across a process
+  pool, and in the frozen windowed exe a worker's `print()` can be discarded
+  outright. Frame corrections, chain verdicts and standoff distributions are
+  appended to `standoff_audit.jsonl` at the output mod root. Failed measurements
+  are recorded too: a measurement that *errored* must not look like one that
+  found nothing.
 
 ## Quick start (standalone exe)
 
@@ -262,6 +352,19 @@ When running it from outside the instance, point it explicitly:
 - `CBBE2UBE_GAME_DATA` — game `Data` folder(s), `;`-separated
 - `CBBE2UBE_LAYER_DEBUG=1` — per-round stats from the layer-order pass
 
+> **Environment variables do not reach an MO2 launch.** MO2 does not pass your
+> environment to the program it starts, so `CBBE2UBE_*` set in a shell (or in your
+> user environment) has **no effect** on a run launched from MO2 — it applies only
+> when you invoke the converter directly from that shell. Every behaviour toggle
+> therefore also has a **GUI checkbox** (Armor / Overlays / Paths tabs), which is
+> the supported way to change one; the GUI writes the variable into the run itself.
+> Settings persist to `CBBEtoUBE_settings.json` beside the exe.
+>
+> This is not a hypothetical: a measured fit improvement sat unused for weeks
+> because it was reachable only by environment variable, and so could never be
+> switched on by a normal launch. If you add a flag meant to be play-tested, give it
+> a row in `src/gui_settings.py`.
+
 ## Reference bodies
 
 The converter needs the source (CBBE) and target (UBE) base body meshes — the
@@ -341,6 +444,49 @@ cbbe-to-ube/
   (and the optional overlay transfer).
 
 Run **Check setup** in the GUI to verify all of the above before converting.
+
+## Reporting problems
+
+**Full instructions: [REPORTING.md](REPORTING.md).** The short version:
+
+1. In the GUI, click **Copy report** — it fills in your version and the last
+   run's numbers and puts the whole report on your clipboard.
+2. Fill in the two `<...>` lines and tick the checkboxes.
+3. Send it to **one** place, not several. If you want it fixed,
+   [file an issue](https://github.com/DayOnly/CBBEtoUBE-exe/issues/new/choose).
+   If you want an answer, [start a discussion](https://github.com/DayOnly/CBBEtoUBE-exe/discussions).
+   Chat works too — wrap it in a triple-backtick code fence for Discord, or the
+   indentation collapses.
+4. Attach the zip from **Export diagnostics**.
+
+Direct links, with your version pre-filled:
+[converter errored](https://github.com/DayOnly/CBBEtoUBE-exe/issues/new?template=bug_report.yml)
+· [armor looks wrong in game](https://github.com/DayOnly/CBBEtoUBE-exe/issues/new?template=conversion_problem.yml)
+· [feature request](https://github.com/DayOnly/CBBEtoUBE-exe/issues/new?template=feature_request.yml)
+
+Before filing an *invisible armor* report, rule out the two causes that account
+for nearly all of them: **SkyPatcher must be installed**, and
+**`iEnableArmorPatching=1`** must be set in `SKSE/Plugins/SkyPatcher.ini` — with
+it at `0` you get exactly the same symptom as no SkyPatcher at all. Then confirm
+**every** `CBBE_to_UBE_Combined*.esp` is enabled; the merge splits into numbered
+pieces past the ESL cap, and a disabled piece means missing armor.
+
+**Export diagnostics** writes `CBBEtoUBE_diagnostics_<timestamp>.zip` — the
+filled-in report as `REPORT.txt`, plus the run log, settings, exclusions, the
+discovered MO2 layout, and a fresh setup check — which answers most of the first
+round of questions on its own. **Glance at it before attaching**: it contains
+your MO2 paths, profile name, and the mods in your load order.
+
+A normal run also leaves `CBBEtoUBE_last_run.log` and
+`CBBEtoUBE_last_failures.json` beside the exe, and `conversion_report.json` /
+`conversion_summary.txt` / `conversion_report_<mod>.txt` at the output mod root
+(the GUI's **Report** button reads the first as a health scoreboard).
+
+There is no automatic crash upload, by design — the exe excludes the `ssl`
+extension for license reasons (see [Building the exe](#building-the-exe)) and so
+cannot make a network request at all. Reporting is manual and file-based.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the dev setup and pull-request notes.
 
 ## Building the exe
 

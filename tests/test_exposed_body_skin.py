@@ -26,6 +26,19 @@ through the corset (measured on a bespoke open corset: breast-bone fraction
 0.12 -> 0.19). `_is_exposed_body_skin_shape` detects such a shape purely by
 geometry (verts coincide with the CBBE body) so the caller can skip the pass.
 
+SCOPE -- checked against the shipped call site, because the paragraph above
+reads as though the reskin always runs, and it does not. The reskin, this
+detector and `add_scale_bone_weights` all sit inside ONE gate:
+
+    if (... and (_MORPHTRI_SCALE or not _is_morph_tri)):
+
+`_MORPHTRI_SCALE` is DEFAULT OFF, so a shape whose SOURCE ships a BodySlide .tri
+carrying its morphs -- nearly every converted piece -- keeps its own skin and
+none of the three run. That does not weaken the detector: the over-inflation it
+guards against comes FROM `add_scale_bone_weights`, which the same gate skips.
+The detector matters for shapes that do reach the reskin -- those without source
+morphs, or with CBBE2UBE_MORPHTRI_SCALE=1.
+
 The detector must FIRE on a shape whose verts lie on the body and NOT fire on
 draped cloth (which always carries >=~1u of standoff). Measured real-world
 separation on that corset: the exposed skin sits 100% within 0.5u of the

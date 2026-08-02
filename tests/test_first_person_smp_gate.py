@@ -24,8 +24,9 @@ constraining it -- FSMP's soft body diverges, its collision SIMD reads out of bo
 the game dies on equip. Deleting exactly those two XMLs is what fixed it in-game.
 
 Detection needs name AND structure. Neither alone is safe, and this is the whole test:
-  * name only  -> `1stexplorersgarb_f` is an ITEM named "First Explorer's Garb", a
-    third-person body armor that would silently lose its physics.
+  * name only  -> a real body armor can begin with the letters `1st` by accident (an
+    item whose name starts with an ordinal, e.g. `1stripedcoat_f`); it is third-person
+    and would silently lose its physics.
   * structure only -> cloaks, boots and gloves also carry no injected BaseShape, and
     they DO want physics. An earlier gate keyed on "is this layered cloth" instead and
     stripped physics from a cloak, a book and two armors to fix one first-person mesh.
@@ -60,21 +61,23 @@ def test_prefixed_first_person_variant_is_gated():
 
 
 def test_spelled_out_first_person_is_gated():
-    assert _is_first_person_mesh("armor/x/0cce_dress1_firstperson_1.nif", _Nif("Dress"))
+    assert _is_first_person_mesh("armor/x/pack_dress1_firstperson_1.nif", _Nif("Dress"))
     assert _is_first_person_mesh("ModArmor/1stpersoncuirassF_1.nif", _Nif("Cuirass"))
 
 
 def test_item_named_first_is_not_gated():
-    """`1strangerscoat_f` is "First Ranger's Coat" -- a THIRD-person body armor. It
+    """A stem beginning `1st` by ACCIDENT -- an ordinal starting the item's name, with
+    `1st` running straight into the next word so there is no boundary to key on. This
+    is a real class, not a hypothetical: it is a THIRD-person body armor, and it
     carries an injected body, which a viewmodel never does. Name alone would strip it."""
     nif = _Nif(_BODY, "Shirt", "Pants")
-    assert not _is_first_person_mesh("modarmor/female/1strangerscoat_f_1.nif", nif)
+    assert not _is_first_person_mesh("modarmor/female/1stripedcoat_f_1.nif", nif)
 
 
 def test_bodyless_third_person_pieces_keep_physics():
     """A cloak has no injected body either -- structure alone would gate it. Its NAME
     is what saves it. This is the regression the previous gate caused."""
-    assert not _is_first_person_mesh("stormbear/stormbearcloakf_1.nif",
+    assert not _is_first_person_mesh("examplecloak/longcloakf_1.nif",
                                      _Nif("Cloak 1", "Cloak 2"))
     assert not _is_first_person_mesh("armor/examplesuit/boots_1.nif", _Nif("Boots"))
 

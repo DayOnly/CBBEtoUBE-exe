@@ -56,6 +56,11 @@ from pathlib import Path
 
 _DONE = object()  # sentinel; the worker pushes (_DONE, exit_code) when finished
 
+# Where a diagnostics zip is meant to go. The exe is built without `ssl`, so it
+# can't submit anything itself -- the intake is a human pasting into an issue,
+# which only works if the address is in front of them at export time.
+ISSUES_URL = "https://github.com/DayOnly/CBBEtoUBE-exe/issues"
+
 
 def mod_name_matches(name: str, query: str) -> bool:
     """Case-insensitive, multi-token AND match for the checklist Filter box:
@@ -68,6 +73,52 @@ def mod_name_matches(name: str, query: str) -> bool:
         return True
     low = name.lower()
     return all(tok in low for tok in q.split())
+
+
+def repack_filtered(items, checkbuttons, query, canvas=None) -> list:
+    """Show only the checkbuttons whose mod matches `query`, in MASTER order.
+
+    Shared by the "mods to reconvert" and "overlay mods" checklists, which had
+    near-identical copies (0.992 similar). Module-level and widget-agnostic so
+    the contract is unit-testable without a display -- the closures it replaced
+    could only be exercised by running the GUI, which is why the filter
+    behaviour was previously tested by a re-implementation in the test file.
+
+    Deliberately does NOT touch the tick variables: hiding a mod must not
+    untick it, or a filter would silently drop mods from the run. Returns the
+    visible names so a caller can assert on them.
+    """
+    for cb in checkbuttons.values():
+        cb.pack_forget()
+    shown = []
+    for it in items:
+        name = it["name"]
+        if mod_name_matches(name, query) and name in checkbuttons:
+            checkbuttons[name].pack(anchor="w")
+            shown.append(name)
+    if canvas is not None:
+        try:
+            canvas.configure(scrollregion=canvas.bbox("all"))
+            canvas.yview_moveto(0.0)
+        except Exception:
+            pass          # a scroll region is cosmetic; never fail the filter
+    return shown
+
+
+def set_ticks_for_visible(items, tick_vars, query, value) -> int:
+    """All/None act on the VISIBLE (filtered) set only.
+
+    So a filter plus All ticks just that family; with an empty filter it is
+    every mod, as before. Shared by both checklists (0.986 similar). Returns
+    how many were set, so a caller can tell "ticked nothing" from "ticked all".
+    """
+    n = 0
+    for it in items:
+        name = it["name"]
+        if mod_name_matches(name, query) and name in tick_vars:
+            tick_vars[name].set(value)
+            n += 1
+    return n
 
 
 def _fmt_eta(seconds: float) -> str:
@@ -101,6 +152,75 @@ def _eta_step(eta: dict, done: int, total: int, now: float,
     if rate is None or remaining <= 0:
         return "estimating…"
     return _fmt_eta(rate * remaining)
+
+
+class _Tooltip:
+    """Hover balloon carrying a setting's FULL explanation.
+
+    Exists so the long text can leave the page while staying reachable: the
+    tooltips record measured numbers and in-game caveats that are written down
+    nowhere else, so shortening them to save space would cost more than the
+    clutter did. Inline shows one line (`gui_settings.hint_for`); this shows the
+    rest on hover.
+
+    Deliberately plain: an override-redirect Toplevel, no theming hooks, torn
+    down on leave. It must never be able to break the window it annotates, so
+    every step is guarded -- a tooltip that raises is strictly worse than no
+    tooltip.
+    """
+
+    DELAY_MS = 450
+    WRAP_PX = 460
+
+    def __init__(self, widget, text: str):
+        self.widget = widget
+        self.text = text
+        self.tip = None
+        self._after = None
+        widget.bind("<Enter>", self._schedule, add="+")
+        widget.bind("<Leave>", self._hide, add="+")
+        widget.bind("<ButtonPress>", self._hide, add="+")
+
+    def _schedule(self, _e=None):
+        self._cancel()
+        try:
+            self._after = self.widget.after(self.DELAY_MS, self._show)
+        except Exception:
+            self._after = None
+
+    def _cancel(self):
+        if self._after is not None:
+            try:
+                self.widget.after_cancel(self._after)
+            except Exception:
+                pass
+            self._after = None
+
+    def _show(self):
+        self._after = None
+        if self.tip is not None or not self.text:
+            return
+        try:
+            x = self.widget.winfo_rootx() + 18
+            y = self.widget.winfo_rooty() + self.widget.winfo_height() + 6
+            self.tip = tk.Toplevel(self.widget)
+            self.tip.wm_overrideredirect(True)
+            self.tip.wm_geometry(f"+{x}+{y}")
+            tk.Label(self.tip, text=self.text, justify="left",
+                     wraplength=self.WRAP_PX, relief="solid", borderwidth=1,
+                     background="#ffffe0", foreground="#000000",
+                     padx=6, pady=4).pack()
+        except Exception:
+            self.tip = None
+
+    def _hide(self, _e=None):
+        self._cancel()
+        if self.tip is not None:
+            try:
+                self.tip.destroy()
+            except Exception:
+                pass
+            self.tip = None
 
 
 def _kill_proc_tree(proc) -> None:
@@ -219,12 +339,24 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
     from . import exclusions as excl
     from . import preflight as pf
     from . import paths as _paths
+    from . import report_template as _rt
 
     from .version import __version__ as _app_version
 
     root = tk.Tk()
     root.title(f"CBBE/3BA to UBE Converter  v{_app_version}")
-    root.geometry("860x680")
+    # Restore the last window SIZE. Size only, never position: a saved position
+    # from a monitor that is no longer attached opens the window off-screen with
+    # no way to drag it back, and the size is what actually matters here (the
+    # settings tab is several screens tall).
+    _saved_geom = str(gui_settings.load_values().get("window_geometry", "") or "")
+    if re.fullmatch(r"\d+x\d+", _saved_geom):
+        try:
+            root.geometry(_saved_geom)
+        except Exception:
+            root.geometry("860x680")
+    else:
+        root.geometry("860x680")
     root.minsize(680, 520)
 
     q: "queue.Queue" = queue.Queue()
@@ -250,7 +382,15 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
 
     # ---- tk vars ----
     out_var = tk.StringVar(value=default_out)
-    workers_var = tk.IntVar(value=max(1, (os.cpu_count() or 2) - 1))
+    # RAM-aware default: `cpu_count()-1` alone oversubscribes memory (measured:
+    # 23 workers wanted 58.9 GB on a 32 GB box). Not a proven speed-up -- see
+    # auto_convert.default_worker_count. #worker-mem-budget
+    try:
+        from . import auto_convert as _ac_w
+        _worker_default = _ac_w.default_worker_count()
+    except Exception:
+        _worker_default = max(1, (os.cpu_count() or 2) - 1)
+    workers_var = tk.IntVar(value=_worker_default)
     copy_tex = tk.BooleanVar(value=False)  # default: resolve textures via VFS
     dry = tk.BooleanVar(value=False)
     convert_armor = tk.BooleanVar(value=True)   # master toggle: convert armor mods
@@ -351,29 +491,11 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
         _refresh_run_button()   # ticking a mod in Select mode gates Convert
 
     def _apply_filter():
-        # Show/hide checkbuttons to match the filter WITHOUT touching mod_vars,
-        # so ticks survive filtering. Re-pack matches in master order.
-        q = search_var.get()
-        for cb in mod_cbs.values():
-            cb.pack_forget()
-        for it in mod_items_all:
-            if _matches(it["name"], q):
-                mod_cbs[it["name"]].pack(anchor="w")
-        try:
-            _canvas.configure(scrollregion=_canvas.bbox("all"))
-            _canvas.yview_moveto(0.0)
-        except Exception:
-            pass
+        repack_filtered(mod_items_all, mod_cbs, search_var.get(), _canvas)
         _update_title()
 
     def _set_all(val):
-        # All/None act on the VISIBLE (filtered) set only -- so "kco" + All ticks
-        # just that family. With an empty filter this is every mod, as before.
-        q = search_var.get()
-        for it in mod_items_all:
-            name = it["name"]
-            if _matches(name, q) and name in mod_vars:
-                mod_vars[name].set(val)
+        set_ticks_for_visible(mod_items_all, mod_vars, search_var.get(), val)
         _update_title()
 
     def _populate_mods(items):
@@ -433,25 +555,12 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
         _refresh_run_button()   # ticking an overlay mod gates Convert
 
     def _ov_apply_filter():
-        qf = ov_search_var.get()
-        for cb in ov_cbs.values():
-            cb.pack_forget()
-        for it in ov_items_all:
-            if _matches(it["name"], qf):
-                ov_cbs[it["name"]].pack(anchor="w")
-        try:
-            ov_canvas.configure(scrollregion=ov_canvas.bbox("all"))
-            ov_canvas.yview_moveto(0.0)
-        except Exception:
-            pass
+        repack_filtered(ov_items_all, ov_cbs, ov_search_var.get(), ov_canvas)
         _ov_update_title()
 
     def _ov_set_all(val):
-        qf = ov_search_var.get()
-        for it in ov_items_all:
-            name = it["name"]
-            if _matches(name, qf) and name in overlay_mod_vars:
-                overlay_mod_vars[name].set(val)
+        set_ticks_for_visible(ov_items_all, overlay_mod_vars,
+                              ov_search_var.get(), val)
         _ov_update_title()
 
     def _ov_populate(items):
@@ -574,6 +683,30 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
         except Exception:
             return                      # mid-typing / invalid -> ignore
         _settings_set(key, int(round(val)) if kind == "int" else float(val))
+
+    def _registry_check(parent, key, **pack):
+        """A registry-backed bool checkbox rendered OUTSIDE the generated
+        settings tabs -- for a setting that belongs next to the run controls it
+        scopes rather than on a settings page. Same binding and persistence as
+        `_build_settings_tab`, so the two stay interchangeable; the registry
+        remains the single source of label, tooltip and default.
+
+        Returns the widget so the caller can add it to `sel_widgets` (settings
+        are read once when the child launches, so a control that keeps taking
+        clicks mid-run would imply an effect it cannot have)."""
+        s = gui_settings.by_key()[key]
+        var = tk.BooleanVar(value=bool(state["settings"].get(key, s.default)))
+        state["_setting_vars"].append(var)      # keep the tk var alive
+        state["_setting_var_by_key"][key] = var
+        cb = ttk.Checkbutton(parent, text=s.label, variable=var)
+        cb.pack(**pack)
+        var.trace_add("write",
+                      lambda *a, k=key, v=var: _settings_set(k, bool(v.get())))
+        if s.tooltip:
+            ttk.Label(parent, text=s.tooltip, style="Hint.TLabel",
+                      wraplength=560, justify="left").pack(
+                          anchor="w", padx=(pack.get("padx", 6) + 20), pady=(0, 2))
+        return cb
 
     def _pick_path(var):
         d = filedialog.askopenfilename(initialdir=".")
@@ -762,25 +895,87 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
                        command=_import_settings).pack(side="left")
         if prefix is not None:
             prefix(body)
+
+        # ---- filter bar: search + "show advanced" ----
+        # 37 settings on one tab; the armour checklist already proved a live
+        # filter here. `advanced` hides the numeric tuning knobs, which is what
+        # the field was added for -- it had never been wired to anything.
+        fbar = ttk.Frame(body)
+        fbar.pack(fill="x", padx=10, pady=(8, 0))
+        ttk.Label(fbar, text="Find:").pack(side="left")
+        q_var = tk.StringVar()
+        q_entry = ttk.Entry(fbar, textvariable=q_var, width=22)
+        q_entry.pack(side="left", padx=(4, 10))
+        q_entry.bind("<Escape>", lambda e: q_var.set(""))
+        adv_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(fbar, text="Show advanced", variable=adv_var).pack(side="left")
+        found_lbl = ttk.Label(fbar, text="", style="Hint.TLabel")
+        found_lbl.pack(side="left", padx=(10, 0))
+        state["_setting_vars"].extend([q_var, adv_var])
+
+        groups_area = ttk.Frame(body)
+        groups_area.pack(fill="x")
+
+        def _matches(s, q):
+            if not q:
+                return True
+            q = q.lower()
+            return (q in s.label.lower() or q in s.key.lower()
+                    or q in (s.tooltip or "").lower())
+
+        def _render():
+            for w in groups_area.winfo_children():
+                w.destroy()
+            q = q_var.get().strip()
+            shown = hidden_adv = 0
+            for group in gui_settings.groups_in_tab(tab):
+                items = [s for s in gui_settings.settings_in(tab, group)
+                         if _matches(s, q)]
+                vis = [s for s in items if adv_var.get() or not s.advanced]
+                hidden_adv += len(items) - len(vis)
+                if not vis:
+                    continue          # empty group disappears while filtering
+                shown += len(vis)
+                _render_group(groups_area, group, vis)
+            if q:
+                found_lbl.configure(text=f"{shown} match(es)")
+            elif hidden_adv:
+                found_lbl.configure(text=f"{hidden_adv} advanced hidden")
+            else:
+                found_lbl.configure(text="")
+            try:
+                cv.configure(scrollregion=cv.bbox("all"))
+            except Exception:
+                pass
+
+        q_var.trace_add("write", lambda *a: _render())
+        adv_var.trace_add("write", lambda *a: _render())
+        _render()
+
+    def _render_group(parent, group, items):
+        """One LabelFrame of controls. Split out of `_build_settings_tab` so the
+        group area can be rebuilt when the search text or "show advanced"
+        changes."""
         av = state["_setting_vars"]        # keep tk vars alive for the window
-        for group in gui_settings.groups_in_tab(tab):
-            gf = ttk.LabelFrame(body, text=group)
+        for group in [group]:
+            gf = ttk.LabelFrame(parent, text=group)
             gf.pack(fill="x", padx=10, pady=6)
-            for s in gui_settings.settings_in(tab, group):
+            for s in items:
                 cur = state["settings"].get(s.key, s.default)
+                ctl = None
                 if s.kind == "bool":
                     var = tk.BooleanVar(value=bool(cur))
                     av.append(var)
                     state["_setting_var_by_key"][s.key] = var
-                    ttk.Checkbutton(gf, text=s.label, variable=var).pack(
-                        anchor="w", padx=8, pady=(4, 0))
+                    ctl = ttk.Checkbutton(gf, text=s.label, variable=var)
+                    ctl.pack(anchor="w", padx=8, pady=(4, 0))
                     var.trace_add("write", lambda *a, k=s.key, v=var:
                                   _settings_set(k, bool(v.get())))
                 elif s.kind in ("float", "int"):
                     row = ttk.Frame(gf)
                     row.pack(fill="x", padx=8, pady=(4, 0))
-                    ttk.Label(row, text=s.label, width=28,
-                              anchor="w").pack(side="left")
+                    ctl = ttk.Label(row, text=s.label, width=28, anchor="w")
+                    ctl.pack(side="left")
                     var = tk.DoubleVar(value=float(cur))
                     av.append(var)
                     state["_setting_var_by_key"][s.key] = var
@@ -794,8 +989,8 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
                 else:
                     row = ttk.Frame(gf)
                     row.pack(fill="x", padx=8, pady=(4, 0))
-                    ttk.Label(row, text=s.label, width=28,
-                              anchor="w").pack(side="left")
+                    ctl = ttk.Label(row, text=s.label, width=28, anchor="w")
+                    ctl.pack(side="left")
                     var = tk.StringVar(value=str(cur))
                     av.append(var)
                     state["_setting_var_by_key"][s.key] = var
@@ -807,10 +1002,20 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
                         ttk.Button(row, text="Browse", width=8,
                                    command=lambda v=var: _pick_path(v)).pack(
                                        side="left")
-                if s.tooltip:
-                    ttk.Label(gf, text=s.tooltip, style="Hint.TLabel",
-                              wraplength=580, justify="left").pack(
-                                  anchor="w", padx=26, pady=(0, 2))
+                # ONE LINE inline; the full text on hover. Rendering every
+                # tooltip inline made this tab 86% prose and ~3.7 screens tall.
+                # Nothing is lost -- the tooltips carry measured numbers and
+                # in-game caveats recorded nowhere else, so they move, they do
+                # not get trimmed.
+                hint = gui_settings.hint_for(s)
+                if hint:
+                    hl = ttk.Label(gf, text=hint, style="Hint.TLabel",
+                                   wraplength=580, justify="left")
+                    hl.pack(anchor="w", padx=26, pady=(0, 2))
+                    if s.tooltip and s.tooltip != hint:
+                        _Tooltip(hl, s.tooltip)
+                if s.tooltip and ctl is not None:
+                    _Tooltip(ctl, s.tooltip)
 
     # ---- action bar (persistent, below the tabs) ----
     bar = ttk.Frame(bottom)
@@ -831,6 +1036,9 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
     diag_btn = ttk.Button(bar, text="Export diagnostics",
                           command=lambda: _export_diagnostics())
     diag_btn.pack(side="left", padx=(12, 0))
+    copy_rep_btn = ttk.Button(bar, text="Copy report",
+                              command=lambda: _copy_report())
+    copy_rep_btn.pack(side="left", padx=4)
 
     # theme selector (right-aligned)
     theme_var = tk.StringVar(
@@ -922,6 +1130,12 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
                                  variable=mode, command=_sync_run)
     arm_sel_rb.pack(side="left", padx=8)
 
+    # Vanilla/DLC is an extra SOURCE for the run, not an armour-fitting option,
+    # so it belongs beside the mod selection it extends rather than three tabs
+    # away under conversion settings.
+    vanilla_cb = _registry_check(armor_sec, "vanilla_sweep",
+                                 anchor="w", padx=24, pady=(2, 0))
+
     # Exclusions strip (shown in All mode; gates the run until reviewed).
     armor_excl = ttk.Frame(armor_sec)
     armor_excl_btn = ttk.Button(armor_excl, text="Exclusions…", width=13,
@@ -946,7 +1160,8 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
     # Live filter as the user types. All/None then act on the visible subset.
     search_var.trace_add("write", lambda *a: _apply_filter())
     sel_widgets = [refresh_btn, all_btn, none_btn, search_entry,
-                   arm_all_rb, arm_sel_rb, armor_excl_btn]   # locked during a run
+                   arm_all_rb, arm_sel_rb, armor_excl_btn,
+                   vanilla_cb]                               # locked during a run
     _cwrap = ttk.Frame(mods_box)
     _cwrap.pack(fill="both", expand=True)
     _canvas = tk.Canvas(_cwrap, height=140, highlightthickness=0)
@@ -1459,10 +1674,54 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
             return
         status.set(f"Diagnostics written: {zpath.name}")
         _append(f"\n[diagnostics written: {zpath}]\n")
+        # The zip is useless if nobody knows where to send it, and this message
+        # is the only thing a user sees after the export.
+        _append(f"  want it fixed?  attach it to an issue at {ISSUES_URL}\n"
+                f"  want an answer? {_rt.DISCUSSIONS_URL}\n"
+                "  either way, send the report from the 'Copy report' button\n"
+                "  with it -- REPORT.txt inside the zip is the same text.\n"
+                "  it holds your MO2 paths, profile name, and load-order mod\n"
+                "  names -- look it over before posting it publicly.\n")
         try:
             _open_path(zpath.parent)
         except Exception:
             pass
+
+    def _read_conversion_report():
+        """conversion_report.json for the current output mod, or None.
+
+        Best-effort by design: a report is worth sending even when no run has
+        happened yet, so a missing file must not block the paste.
+        """
+        import json as _j
+        od = (state.get("output_dir") or out_var.get().strip() or default_out)
+        try:
+            p = Path(od) / "conversion_report.json"
+            if p.is_file():
+                return _j.loads(p.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+        return None
+
+    def _copy_report():
+        """Put a filled-in problem report on the clipboard.
+
+        The chat-paste half of the intake. Everything the tool already knows is
+        filled in, so what is left is only what the user alone can answer.
+        """
+        text = _rt.build_report(_app_version, kind="conversion",
+                                report=_read_conversion_report())
+        try:
+            root.clipboard_clear()
+            root.clipboard_append(text)
+            root.update_idletasks()   # flush the write before we report success
+        except Exception as e:
+            status.set("Could not reach the clipboard — see log.")
+            _append(f"\n[clipboard failed: {e}]\n")
+            _append(text + "\n")      # still give them something to select
+            return
+        status.set("Report copied — paste it into the chat or an issue.")
+        _append("\n[report template copied to clipboard]\n" + text + "\n")
 
     def _export_diagnostics():
         """Zip the run log + settings + exclusions + a layout snapshot + a fresh
@@ -1478,11 +1737,21 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
             gui_log = log.get("1.0", "end")
         except Exception:
             gui_log = ""
+        # Built on the main thread: it reads Tk vars. The zip carries its own
+        # cover sheet so a bare "here's my zip" hand-off still says what broke.
+        try:
+            cover = _rt.build_report(_app_version, kind="conversion",
+                                     report=_read_conversion_report(),
+                                     diagnostics_zip=zpath.name)
+        except Exception:
+            cover = ""
 
         def work():
             err = None
             try:
                 with zipfile.ZipFile(zpath, "w", zipfile.ZIP_DEFLATED) as z:
+                    if cover:
+                        z.writestr("REPORT.txt", cover)
                     z.writestr("gui_log.txt", gui_log)
                     for label, p in (("settings.json", gui_settings.config_path()),
                                      ("exclusions.json", excl.config_path())):
@@ -1970,6 +2239,11 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
                 "Quit", "A conversion is still running. Quit anyway?\n"
                 "(The conversion will be stopped.)"):
             return
+        try:                       # remember the size for next launch
+            _settings_set("window_geometry",
+                          f"{root.winfo_width()}x{root.winfo_height()}")
+        except Exception:
+            pass                   # never block a quit on a cosmetic preference
         # Child-process launch means we can actually stop the run on quit
         # (the old in-process thread couldn't be killed cleanly). Tree-kill so
         # the ProcessPoolExecutor workers don't orphan and lock the exe.

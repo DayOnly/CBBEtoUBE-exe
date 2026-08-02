@@ -104,3 +104,64 @@ def test_no_script_redefines_a_breast_band(script):
     assert not offenders, (
         f"{script} starts a z-band in the upper chest ({offenders}); the breast is "
         f"z{BREAST_Z[0]:.0f}-{BREAST_Z[1]:.0f} -- import it from src.body_zones")
+
+
+# --- the same guard, extended to src/ -----------------------------------------
+#
+# The scripts/ guard above exists because four diagnostic scripts each re-derived
+# a "breast band" by eye and all four landed on the upper chest. src/ was never
+# covered, and it has the same failure: a band NAMED for the breast whose bounds
+# are not the breast gives a CLEAN answer to the WRONG question.
+#
+# This checks the bounds rather than the lower edge alone, because the real
+# offender found in src/ starts at a plausible z 93 and runs to z 118 -- past the
+# upper chest (102-112) and into the neck.
+_SRC = Path(__file__).resolve().parent.parent / "src"
+
+# KNOWN, DELIBERATELY NOT SILENT. `_inflate_cloth_over_bust_butt` builds
+#     breast = (y > 1.0) & (z > 93.0) & (z < 118.0) & (ny > 0.2)
+# which is 16 units taller than BREAST_Z. It is gated on a front-facing normal,
+# so it is not simply wrong -- but it is not the breast either, and narrowing it
+# CHANGES the softcloth inflation area, i.e. fit. Listed here so it is visible
+# and so any NEW wide band fails instead of joining it quietly. Removing the
+# entry requires measuring the fit change, not just editing the number.
+_KNOWN_WIDE_BREAST_BANDS = {"nif_convert.py": 1}
+
+
+def _breastish_band_upper_bounds(text):
+    """Upper z bound of every band assigned to a breast/bust-named variable."""
+    out = []
+    for m in re.finditer(
+            r"\b(breast|bust)\w*\s*=\s*\(?[^\n]*?2\]\s*<=?\s*([0-9]+(?:\.[0-9]+)?)",
+            text, re.I):
+        out.append(float(m.group(2)))
+    return out
+
+
+@pytest.mark.parametrize("mod", sorted(p.name for p in _SRC.glob("*.py")))
+def test_src_breast_bands_do_not_reach_past_the_upper_chest(mod):
+    """A band called `breast` must not extend into the upper chest / neck.
+
+    BREAST_Z tops out at 102 and UPPER_CHEST_Z (102-112) is named precisely so
+    nobody reaches for it. A band ending above 112 is neither.
+    """
+    if mod == "body_zones.py":
+        return
+    text = (_SRC / mod).read_text(encoding="utf-8", errors="ignore")
+    wide = [b for b in _breastish_band_upper_bounds(text) if b > UPPER_CHEST_Z[1]]
+    allowed = _KNOWN_WIDE_BREAST_BANDS.get(mod, 0)
+    assert len(wide) <= allowed, (
+        f"{mod}: {len(wide)} breast-named band(s) end above z{UPPER_CHEST_Z[1]:.0f} "
+        f"({wide}); the breast is z{BREAST_Z[0]:.0f}-{BREAST_Z[1]:.0f}. Import the "
+        f"zone from src.body_zones, or add a measured justification to "
+        f"_KNOWN_WIDE_BREAST_BANDS.")
+
+
+def test_the_known_wide_band_still_exists():
+    """The allowlist must not outlive what it excuses -- a stale entry silently
+    weakens the guard for whatever replaces it."""
+    text = (_SRC / "nif_convert.py").read_text(encoding="utf-8", errors="ignore")
+    wide = [b for b in _breastish_band_upper_bounds(text) if b > UPPER_CHEST_Z[1]]
+    assert len(wide) == _KNOWN_WIDE_BREAST_BANDS["nif_convert.py"], (
+        "the known wide breast band changed; if it was narrowed (good), drop the "
+        "_KNOWN_WIDE_BREAST_BANDS entry and record the measured fit change")

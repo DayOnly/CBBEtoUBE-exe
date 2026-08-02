@@ -22,8 +22,8 @@ from src import overlay_slots as osl
 def test_normalize_script_texpath():
     # .psc string literals DOUBLE their backslashes -> must collapse to one slash
     assert osl.normalize_script_texpath(
-        "Actors\\\\Character\\\\Overlays\\\\OVP\\\\00 Body.dds"
-    ) == "textures/actors/character/overlays/ovp/00 body.dds"
+        "Actors\\\\Character\\\\Overlays\\\\SETA\\\\00 Body.dds"
+    ) == "textures/actors/character/overlays/seta/00 body.dds"
     # single backslash form + leading slash
     assert osl.normalize_script_texpath(
         "\\Actors\\Character\\Overlays\\x.dds"
@@ -36,23 +36,23 @@ def test_normalize_script_texpath():
 
 def test_iter_paint_calls_slots():
     src = '''Event OnWarpaintRequest()
-    AddWarPaint("OVP 01 Face Mystic", "Actors\\\\Character\\\\Overlays\\\\OVP\\\\01 Head M.dds")
+    AddWarPaint("SETA 01 Face Mystic", "Actors\\\\Character\\\\Overlays\\\\SETA\\\\01 Head M.dds")
 EndEvent
 Event OnBodyPaintRequest()
-    AddBodyPaint("OVP 00 Body Pattern", "Actors\\\\Character\\\\Overlays\\\\OVP\\\\00 Body.dds")
+    AddBodyPaint("SETA 00 Body Pattern", "Actors\\\\Character\\\\Overlays\\\\SETA\\\\00 Body.dds")
 EndEvent
 Event OnHandPaintRequest()
-    AddHandPaint("OVP 00 Hands Pattern", "Actors\\\\Character\\\\Overlays\\\\OVP\\\\00 Hands.dds")
+    AddHandPaint("SETA 00 Hands Pattern", "Actors\\\\Character\\\\Overlays\\\\SETA\\\\00 Hands.dds")
 EndEvent
 Event OnFeetPaintRequest()
-    AddFeetPaint("OVP 00 Feet Pattern", "Actors\\\\Character\\\\Overlays\\\\OVP\\\\00 Body.dds")
+    AddFeetPaint("SETA 00 Feet Pattern", "Actors\\\\Character\\\\Overlays\\\\SETA\\\\00 Body.dds")
 EndEvent'''
     got = dict()
     for slot, rel in osl.iter_paint_calls(src):
         got.setdefault(rel, set()).add(slot)
-    body = "textures/actors/character/overlays/ovp/00 body.dds"
-    head = "textures/actors/character/overlays/ovp/01 head m.dds"
-    hands = "textures/actors/character/overlays/ovp/00 hands.dds"
+    body = "textures/actors/character/overlays/seta/00 body.dds"
+    head = "textures/actors/character/overlays/seta/01 head m.dds"
+    hands = "textures/actors/character/overlays/seta/00 hands.dds"
     assert got[head] == {"head"}
     assert got[hands] == {"hands"}
     # the SAME body texture is registered as body AND feet -> multi-slot

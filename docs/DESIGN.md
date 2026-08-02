@@ -35,6 +35,123 @@ sections below cover each.
 
 ---
 
+## The fit contract (1.2)
+
+Until 1.2 the chain was **speculative**. Twelve phase-2 passes compute against
+the body; every one assumed the garment shared its coordinate frame, none
+asserted it; and nothing between them measured whether a pass had helped. Two
+failures follow directly from that shape, and both happened:
+
+- a single bad transform displaced one shape by 40 units, and all twelve passes
+  computed against a garment that was not where they thought it was — for three
+  months, with every pass still reporting success;
+- each pass caps only its OWN contribution, so the push stack is individually
+  bounded and jointly unbounded. Over-inflated meshes shipped twice.
+
+Per shape, the chain now states:
+
+| step | cost | what it does |
+|---|---|---|
+| frame precondition | ~free | discard a transform offset that moves the shape AWAY from the body |
+| diagnose | 1 measurement | exposed skin before anything runs |
+| *(each pass)* | array copy | checkpoint — **no** measurement |
+| verify | 1 measurement | if the chain as a whole regressed, ship the best checkpoint |
+
+**Two measurements per armed shape, not one per pass.** Checkpoints are copies
+(microseconds against ~120ms), so the chain can afford to remember every pass and
+pay to inspect them only when the verify fails.
+
+### Why the contract is on the CHAIN, not each pass
+
+"Reject any pass that measures worse than its input" was the obvious design and
+the pass trace (`CBBE2UBE_PASS_TRACE=1`) refutes it. Over 48 traced shapes:
+
+- exactly **one** pass ever regressed bust fit — `conform`, 5 times;
+- **all 5** were recovered downstream;
+- **0 of 48** shapes ended worse than they started (total exposure 8138 → 245).
+
+`conform_to_source_standoff` pulls IN by design and later passes push back out.
+Reverting it per-pass would have blocked a correct pass five times and biased
+every garment looser — which is precisely the over-inflation reported from the
+game. **Intermediate regressions are how the chain works.** This is also why the
+per-pass guards on the anti-poke and the soft-cloth inflate were removed in 1.2:
+neither ever regressed, and the chain verify covers the outcome for a quarter of
+the measurements.
+
+### What it deliberately does NOT do
+
+It does not skip passes when the entry diagnosis looks clean. Bind-pose clipping
+is blind to animation — "at rest" in game is an animated pose, and the anti-poke
+exists for morphs and motion this metric cannot see. Gating passes on a
+bind-pose number trades a measurable defect for an unmeasurable one. The chain
+measures whether the passes *collectively* helped; it does not decide which ones
+to run.
+
+### Two metrics, because clipping has no upper bound
+
+An over-inflated garment scores a perfect 0.0% clipping — nothing pokes through a
+balloon. **Standoff** is the counter-metric, anchored on a piece confirmed correct
+in game (median 1.15u, p90 1.52u). Never read one without the other. See
+`METRICS.md` for the calibration and for the metrics this replaced.
+
+### Telemetry is a file
+
+Conversion fans across a process pool, and in the frozen windowed exe a worker's
+`print()` can be discarded outright — a clean log is not evidence of a clean run.
+Frame corrections, chain verdicts and standoff distributions append to
+`standoff_audit.jsonl` at the output mod root. Failed measurements are recorded
+too: one that errored must not look like one that found nothing.
+
+Records carry `entry`, `final` and **`shipped`**. Read `shipped`, not `final`:
+when a rollback fires, `final` is the measurement that was *rejected*. On the
+first pack-wide run that distinction was 174 exposed verts versus 101 actually
+shipped, and made a run with **zero** regressions read as "20 shapes ended worse".
+
+### The pass that ran on nothing
+
+`conform_to_source_standoff` is the only pass that reels an over-projected
+garment back onto the body; everything else nudges outward. It was silently
+skipped on some pieces because **two body detectors disagreed**:
+`classify_shapes` → `_looks_like_inline_body` identified a shape as the body and
+dropped it for the swap, while `_is_body_pynifly_shape` refused the same shape
+for having fewer than 40 bones — a BodySlide-output inline body only carries the
+bones its surviving verts touch, and the hide cuirasses ship one with 26. So
+`src_body_v_p2` stayed `None` and the gate never opened.
+
+Nothing recorded it: no exception, no warning, the pass simply absent from the
+trace. It surfaced only because the per-pass **standoff** trace was added to
+chase a gap reported in game. Cost on the affected piece: 2.40u of standoff at
+the strap line, against a 1.79u maximum across 42 shapes where the pass ran;
+with the fallback it lands at 1.72u with clipping unchanged at 0.00%.
+
+The fix is a fallback to the shapes `classify_shapes` already named, reached
+only when the strict detector returns nothing — so it cannot change which shape
+is picked where that detector already answers (verified byte-identical on a
+piece that previously worked).
+
+**Scope: 14 pieces.** 103 of 482 source pieces match the predicate; 22 of those
+reach the converted output (the rest are HIMBO/male bodies the female-only
+policy never converts); and converting all 22 showed **8 route to phase 1**, the
+copy path, which never reaches `conform` at all — the scan tested for a body
+`classify_shapes` could name, but phase-2 routing has further conditions, so it
+over-matched. It concentrates in the vanilla-lineage armours — hide, imperial,
+stormcloak, draugr, Ysgramor — whose BodySlide output emits an inline body
+carrying only the bones its surviving verts touch.
+
+Each narrowing came from measuring rather than reasoning, and each was smaller
+than the last: **103 → 22 → 14**. Verified on the final set: **48 of 48 armed
+shapes run `conform`**, with a control that already ran it still doing so.
+
+> **A sampling lesson, not a footnote.** This was first reported as "rare — 42 of
+> 42 armed shapes in a 9-mod census ran the pass". The census drew nine pieces
+> that all happened to have a detectable body. A sample landing entirely in one
+> state establishes no rate at all, and it was read as if it established a low
+> one. The real figure is 21.4%, found by sweeping every phase-2 piece. When the
+> question is "how often", sample only if the sample can observe both outcomes —
+> otherwise sweep.
+
+---
+
 ## Source selection (which mesh feeds the conversion)
 
 Before any fitting, `discovery.build_mesh_index` decides WHICH mod provides each
@@ -359,6 +476,49 @@ bones (STB footgun applies).
 
 ---
 
+## Bust collider split
+
+**Why.** Some authors reuse the bust garment itself as the piece's per-triangle
+SMP collider (their skirt/tassel chains rest on it). A shape that IS its own
+collider can never carry jiggle: grafting breast motion onto it closes a
+feedback loop — cloth moves collider, collider pushes cloth — and in game the
+breasts tore off the body (the revert that kept the torso graft off for a
+release). The well-behaved siblings in the same source family solve this by
+hand: a SEPARATE hidden collider shape carries the support role, leaving the
+bust garment free to follow the breast. Diffing a working sibling against the
+failing piece is what found this, after three theory-driven fixes failed.
+
+**How.** Two order-critical passes at both pipeline sites. Pass 1, before
+`_finalize_hdt_physics`: clone the garment IN PLACE as `<name>Col` — hidden
+(flags 15), textureless, keeping the garment's CURRENT rigid weights so the
+resting chains see identical support. In place matters: rebuilding a NIF from
+its shapes drops ALL extra data (BODYTRI + the physics link; in game "ignores
+morphs, body reverts to its _0 shape"). The pass snapshots root- AND
+shape-level extra data (BODYTRI lives on its carrier shape) and byte-restores
+the file if anything is lost. Pass 2, after the finalize (which overwrites the
+on-disk XML with the authored copy — an earlier rewrite is silently undone)
+and before the jiggle graft (which reads that XML): repoint each
+`per-triangle-shape` decl at the clone, gating the split/morph/physics
+invariants together. The stock torso graft then reaches the garment with no
+bypass, because it is no longer a collider.
+
+**Detection is measured, never named.** A candidate is a RENDERED per-triangle
+collider (textured, not Hidden) covering the bust band whose breast FOLLOW
+RATIO against the body underneath is below 0.5 — weight, not bone presence: a
+garment can carry all six breast bones at 0.15 of the body's drive and still
+fail in game. Names with XML roles beyond the per-triangle decl (constraints,
+pairs) are skipped as unvalidated structure. Bodies, hidden helpers and
+already-split pieces are excluded by construction.
+
+**Status.** In-game validated on the motivating vanilla cuirass (production
+output reproduces the hand-built artifact: follow 0.660 vs anchor 0.643, same
+per-bone distribution as the body). Census over the shipped pack: 33 pieces in
+the split class. `CBBE2UBE_NO_BUST_COLLIDER_SPLIT=1` disables the split;
+`CBBE2UBE_TORSO_JIGGLE=0` disables the whole fix (split included — a split
+with no graft is inert output churn).
+
+---
+
 ## HDT-SMP physics-cloth preservation
 
 **Why.** Authored SMP cloth (per-vertex softbody) and SMP colliders (per-triangle)
@@ -439,6 +599,39 @@ been removed. (The winner-scan coverage passes still emit ARMO overrides, but
 their output is folded into the Combined family rather than shipped as separate
 plugins — see "Unified coverage" below.)
 
+### The sidecar FormID invariant
+
+**A sidecar records the FULL, POST-PRUNE FormID of each minted armature.** The merge
+resolves every link by exact FormID (`merged_rec_by_key[(patch, fid)]`), so a sidecar
+holding anything else resolves to nothing.
+
+The trap is that `prune_unused_masters` drops unreferenced masters and remaps every
+record's **master byte in place**, so a FormID captured as an `int` before it goes
+stale. Hold the **Record object** and read `rec.formid` after the save. Emit the INI
+from that same object — the INI masks to 24 bits (SkyPatcher names the plugin
+separately), so it stays correct across the remap and therefore **cannot detect the
+drift**. One source, or they diverge silently.
+
+The failure mode is total and quiet: zero links, the merge deletes the previous INI as
+stale (correctly — it points at reassigned FormIDs), and nothing is delivered, while
+the ESL flag, split, master count and ARMA total all report normally. Any test covering
+code downstream of prune must assert a master was **actually dropped**
+(`len(saved.header.masters) < len(masters)`), or prune is a no-op and a stale int
+passes by accident.
+
+### Coverage patches size themselves to the ESL cap
+
+`_partition_patches_for_esl` bin-packs whole patches and cannot split one, so a single
+coverage patch minting more than 2048 own records used to force its merged piece down
+to a full ESP. The coverage generators therefore emit **numbered pieces of their own**
+(`_emit_coverage_pieces`), each within the cap.
+
+Chunking is **by target (ARMO), never by armature**, so an ARMO's whole add-set stays
+in one piece and yields exactly **one** `filterByArmors` line. Whether SkyPatcher
+accumulates duplicate lines for one armor or takes the last is unverified, and this is
+the only delivery path. The cost is that an armature shared across a chunk boundary is
+minted twice — measured at ~2%.
+
 ---
 
 ## Effect-shader glow overlays
@@ -472,3 +665,79 @@ carries the tool itself. Code comments citing them by shorthand (e.g.
 - `ROBUSTNESS_AUDIT_*.md`, `CONVERTER_AUDIT_*.md` — point-in-time audits.
 - `DESIGN_P*.md`, `DESIGN_PROPOSALS.md` — design-only proposals, not built.
 - `CHANGES_*.md` — per-investigation change notes.
+- `LOCAL_ASSET_SAMPLES.md` — maps the synthetic mod/asset names used in tracked
+  comments and test fixtures back to the real assets they stand in for. Tracked
+  content is kept mod-agnostic; this preserves the provenance of a measurement or
+  a regression case without publishing it. **Add a row in the same change as any
+  new substitution.**
+
+These are gitignored, and `tests/test_public_repo_hygiene.py` asserts they stay
+untracked — the repo is public and every one of them names specific mods.
+
+---
+
+## Pose-driven clipping: what moves, what fixes it, and what does not
+
+Everything the converter did about clipping was solved at BIND pose — an A-pose nobody
+stands in. Measuring under a pose set (`scripts/multipose_clip_test.py`) showed a class
+of failure no bind-pose metric can see: armour that is clean at rest loses coverage the
+moment the actor moves. On a rigid cuirass, 11.0% of covered breast is exposed by a
+spine twist; on a skirted piece, 14.7% of covered butt by a sprint; on a vanilla
+cuirass, 83.7% of covered thigh by a crouch.
+
+### The measure is a REGRESSION, not an exposure level
+
+Body verts COVERED at bind and EXPOSED under a pose, as a fraction of the covered set.
+Raw exposure cannot be compared across garments — a bikini is 90% exposed by design and
+a robe 0%, neither of which is a defect. Each garment is its own baseline. The same
+principle separates a defect from a neckline: exposure is only a defect when the
+garment is right there (within ~2u) AND well inside its own boundary, which is why
+`classify_exposure` splits poke / neckline / uncovered.
+
+### Two levers, and they are not equal
+
+**Clearance** (push the garment out) works but pays in volume. A uniform push took
+breast exposure 11.0% -> 2.5% — while moving every vertex, which reads as baggy. A
+targeted, exposure-driven demand (`src/pose_clearance.py`) reaches 3.5% while moving
+0.9-2.3% of the garment, and is default OFF pending calibration.
+
+**Deformation matching** (give the garment the body's weights so the two deform
+together) is strictly better and costs NOTHING in volume — the bind shape is
+byte-identical, only the motion changes:
+
+| region / pose | authored | clearance, best | deformation matching |
+|---|---|---|---|
+| thigh / crouch | 83.7% | (cannot reach it) | **5.4%** |
+| breast / spine twist | 11.0% | 3.5% | **0.1%** |
+| butt / sprint | 14.7% | 8.0% | **2.8%** |
+
+The converter already has this as the M6 body-blend reskin. It is bounded two ways:
+transferring weights onto authored physics cloth replaces its chain weights and the
+skirt stops swinging, and the reskin's K-NN blend has a history of equip fly/spike
+instability. Both call sites are therefore gated on `not _shape_has_hdt_smp_rigging`.
+
+### Why the reskin does not run on most armour
+
+Two gates, in sequence. A source that bundles an inline body routes to phase 2, so
+phase 1's reskin is never reached. Phase 2's gate then ends in `not _is_morph_tri` —
+excluding any shape carrying a source BodySlide morph TRI, which in a BodySlide-built
+pack is nearly everything. `CBBE2UBE_RESKIN_KEEP=1` overrides it.
+
+The stated reasons are a morph desync (the TRI is keyed to the source skin) and the
+equip-fly instability. On the piece measured, the desync half is NOT reproduced: the
+output TRI is regenerated post-reskin (it differs between reskin off and on), and
+morph-follow under a full breast slider is identical either way (4.5% -> 12.1% in both).
+The instability half can only be settled in game.
+
+### A caveat about the numbers above
+
+They come from `scripts/convert_one_armor.py`, which does not reproduce the auto
+pipeline exactly — see METRICS.md. The divergence is small (mean 0.006u) and the
+effects here are large, but a single-piece measurement is not a pack guarantee.
+
+### What no offline metric here can see
+
+Runtime physics (SMP cloth goes where the simulation puts it), BodyMorph/OBody
+inflation beyond the fitted body, and equip-time instability. A full breast slider
+takes exposure 4.5% -> 12.1% on a piece whose pose behaviour is clean — the morph path
+is a separate, unexamined class, and on that piece it is the larger one.
