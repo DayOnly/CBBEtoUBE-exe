@@ -96,9 +96,19 @@ def test_identity_rule_rejects_a_personal_address():
     assert H.check_identity("noreply@anthropic.com") is None
 
 
-def test_this_repo_currently_satisfies_the_identity_rule():
+def test_a_configured_identity_is_not_a_personal_address():
+    """If this checkout CAN commit, its identity must not be personal.
+
+    Skips when no identity is set: that is a CI runner, which never commits, and
+    the first version of this test failed all three matrix jobs by asserting a
+    developer-machine property in an environment that has none. The hook still
+    rejects an unset identity at commit time, where it actually matters.
+    """
     email = subprocess.run(["git", "-C", str(PROJ), "config", "user.email"],
                            capture_output=True, text=True).stdout.strip()
+    if not email:
+        import pytest
+        pytest.skip("no commit identity configured (CI runner)")
     assert H.check_identity(email) is None, (
         f"this checkout would publish {email!r} on every commit")
 
