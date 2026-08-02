@@ -71,3 +71,16 @@ scripts/underbust_census*.json
 # its manifest records which MOD each source mesh came from -- so it falls under the
 # same mod-agnostic rule as the working notes above. Re-capture rather than commit.
 golden/
+
+# Coverage-scan reports written into the repo root by a run. Both name the
+# mods root AND list mod names, so they fall under the same mod-agnostic rule
+# as the working notes above -- and nothing else stopped `git add .` staging
+# them (found by the 2026-08-02 main audit).
+ube_providers.txt
+ube_replacers_to_disable.txt
+
+# Per-user GUI state, written by the app beside the exe (frozen) or here
+# (source). Tracking it means a source run dirties the working tree, and a
+# clone would carry someone else's chosen flags. The app treats an absent
+# file as "all defaults", so there is nothing to ship.
+CBBEtoUBE_settings.json

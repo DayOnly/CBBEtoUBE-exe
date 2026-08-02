@@ -34,7 +34,7 @@ success, which is why the positive control matters.
 """
 import numpy as np
 
-from scripts.verify_skin_exposure import ray_blocked
+from scripts.analysis.verify_skin_exposure import ray_blocked
 
 
 def _quad(cx, cy, cz, size=10.0, axis="z"):

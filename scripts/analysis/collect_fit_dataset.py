@@ -28,7 +28,7 @@ no sampling variance, and dumping it to JSONL means later questions are queries
 instead of rescans -- so an answer can be re-checked without trusting a remembered
 number.
 
-    python scripts/collect_fit_dataset.py [--out FILE] [--limit N] [--no-rays]
+    python scripts/analysis/collect_fit_dataset.py [--out FILE] [--limit N] [--no-rays]
 
 One JSON object per line. Read-only; safe to run while a conversion is in progress.
 """
@@ -51,7 +51,7 @@ from scipy.spatial import cKDTree                            # noqa: E402
 
 from pyn import pynifly                                      # noqa: E402
 from src import nif_convert as nc, paths                     # noqa: E402
-from scripts.verify_skin_exposure import ray_blocked         # noqa: E402
+from scripts.analysis.verify_skin_exposure import ray_blocked         # noqa: E402
 
 BREAST = re.compile(r'breast', re.I)
 BUTT = re.compile(r'butt', re.I)

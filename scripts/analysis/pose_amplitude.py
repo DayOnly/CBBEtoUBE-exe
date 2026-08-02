@@ -49,9 +49,9 @@ sys.path.insert(0, str(_REPO / ".pynifly"))
 import numpy as np                                              # noqa: E402
 
 from pyn import pynifly                                          # noqa: E402
-from scripts.posed_clip_test import (                            # noqa: E402
+from scripts.analysis.posed_clip_test import (                            # noqa: E402
     read_skin, bone_parents, build_pose, apply_pose, DEFAULT_SKELETON)
-from scripts.pose_set import POSE_SET                            # noqa: E402
+from scripts.analysis.pose_set import POSE_SET                            # noqa: E402
 
 _CACHE: dict = {}
 
@@ -60,7 +60,7 @@ def _skeleton_path(skeleton=None):
     skel = skeleton or DEFAULT_SKELETON
     if not skel or not Path(skel).is_file():
         try:
-            from scripts.pose_engine import load_skeleton
+            from scripts.analysis.pose_engine import load_skeleton
             skel = load_skeleton()[2]
         except Exception:
             skel = None
@@ -143,7 +143,7 @@ def pose_amplitude(body_path, body_shape=None, skeleton=None, poses=None,
 
 
 def _main():
-    from scripts.canonical_body import canonical_ube
+    from scripts.analysis.canonical_body import canonical_ube
     argv = sys.argv[1:]
     if argv:
         body, shape = argv[0], (argv[1] if len(argv) > 1 else None)

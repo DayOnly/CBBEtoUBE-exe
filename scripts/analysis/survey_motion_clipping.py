@@ -10,7 +10,7 @@ Uses the validated ray metric (`verify_skin_exposure`), not a distance. For each
 armour shape it poses body and armour by their own jiggle weights and reports the
 fraction of chest / butt skin that becomes visible.
 
-    python scripts/survey_motion_clipping.py [--limit N] [--bounce 4.0]
+    python scripts/analysis/survey_motion_clipping.py [--limit N] [--bounce 4.0]
 
 Read-only.
 """
@@ -24,7 +24,7 @@ sys.path.insert(0, str(_REPO)); sys.path.insert(0, str(_REPO / ".pynifly"))
 import numpy as np
 from pyn import pynifly                                     # noqa: E402
 from src import nif_convert as nc, paths                    # noqa: E402
-from scripts.verify_skin_exposure import ray_blocked        # noqa: E402
+from scripts.analysis.verify_skin_exposure import ray_blocked        # noqa: E402
 
 JIG = re.compile(r'^[LR] Breast0[123]$|breast|butt', re.I)
 # Non-rendered helpers only. Deliberately NOT _CONFORM_SKIP_NAMES, which also lists

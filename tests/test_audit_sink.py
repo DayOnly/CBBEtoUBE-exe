@@ -37,7 +37,7 @@ from pathlib import Path
 _REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_REPO))
 
-from scripts import audit_sink as A  # noqa: E402
+from scripts.analysis import audit_sink as A  # noqa: E402
 
 
 def _cap():

@@ -160,7 +160,7 @@ Most "this pass doesn't work" reports are really "this pass never ran".
 | ... fast, in-pipeline | `standoff_audit.ClipTester` | must stay equal to the above; `selftest` compares totals AND depth bands |
 | ... inside the converter | `fit_metrics._ClipTester` | **no occlusion gate** — safe only while the push region stays on thick front torso |
 | is it too far OFF the body? | standoff median/p90 | clipping has no upper bound; over-inflation scores 0.0% |
-| will the body punch through under morph? | follow ratio | `scripts/find_morph_follow_gaps.py` |
+| will the body punch through under morph? | follow ratio | `scripts/analysis/find_morph_follow_gaps.py` |
 | did a pass survive to the shipped verts? | `CBBE2UBE_SURVIVAL_TRACE=1` | names the canceller |
 
 **Split any clipping number by depth before concluding.** Sub-0.2u and >1u need

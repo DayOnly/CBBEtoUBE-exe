@@ -75,9 +75,9 @@ _REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_REPO))
 sys.path.insert(0, str(_REPO / ".pynifly"))
 
-from scripts.multipose_clip_test import load, _posed              # noqa: E402
-from scripts.posed_clip_test import rays_hit                      # noqa: E402
-from scripts.mesh_penetration import (clipping_report,            # noqa: E402
+from scripts.analysis.multipose_clip_test import load, _posed              # noqa: E402
+from scripts.analysis.posed_clip_test import rays_hit                      # noqa: E402
+from scripts.analysis.mesh_penetration import (clipping_report,            # noqa: E402
                                       exposure_with_margin, noise_floor)
 
 def _out_root() -> Path:

@@ -17,7 +17,7 @@
 """Which SHIPPED pieces could `CBBE2UBE_SMP_CHAIN_ANTIPOKE` reach, and which of
 those cover the CONVEX BUST -- the population for its A/B.
 
-    python scripts/chain_flag_census.py <output mod root> [-o pieces.json]
+    python scripts/analysis/chain_flag_census.py <output mod root> [-o pieces.json]
 
 WHY THE BUST SPECIFICALLY. Two changes in this family have now been measured on
 convex regions and both made them WORSE (`#smp-structural-relax` put pauldrons
@@ -33,7 +33,7 @@ on, deliberately: a candidate that turns out to be unreachable costs one
 conversion, whereas a piece missing from the population is a hole in the gate
 and invisible in the result.
 
-Emits `pieces.json` in the shape `scripts/survival_sweep.py` consumes, so the
+Emits `pieces.json` in the shape `scripts/analysis/survival_sweep.py` consumes, so the
 A/B runs over exactly the set this measured.
 """
 import argparse
@@ -46,7 +46,7 @@ sys.path.insert(0, str(_REPO))
 sys.path.insert(0, str(_REPO / ".pynifly"))
 
 import numpy as np                                        # noqa: E402
-from scripts import standoff_audit as sa                  # noqa: E402
+from scripts.analysis import standoff_audit as sa                  # noqa: E402
 # The bust band and its vert floor are IMPORTED, not restated. Two definitions of
 # one concept drift -- `clipping_report` and `ClipTester` disagreed for a whole
 # release that way -- and a census measuring a different band from the postflight

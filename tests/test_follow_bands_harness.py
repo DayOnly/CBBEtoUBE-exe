@@ -35,7 +35,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-_SRC = Path(__file__).resolve().parent.parent / "scripts" / "follow_bands.py"
+_SRC = Path(__file__).resolve().parent.parent / "scripts" / "analysis" / "follow_bands.py"
 
 
 def _load():

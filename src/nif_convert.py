@@ -6592,7 +6592,7 @@ MATCH_RIGID_LEG_BEND = (
 # Push-up only (never lowers a leg share), never moves a vert, gated to verts that HUG
 # the body so a free-hanging hem is not pulled onto the leg bones.
 #
-# Validated with scripts/posed_clip_test.py --regression (covered-at-bind -> exposed-
+# Validated with scripts/analysis/posed_clip_test.py --regression (covered-at-bind -> exposed-
 # under-stride); bind-pose metrics CANNOT see this defect and must not be used to judge
 # it. Dress 113 -> 21 newly-exposed verts (-81%); four heavy-armor variants 65/41/17/4
 # -> 0; nine other garments unchanged; bind-pose exposure identical on every mesh

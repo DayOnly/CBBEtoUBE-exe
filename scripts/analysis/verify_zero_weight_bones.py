@@ -26,7 +26,7 @@ pattern points at the pass responsible: jiggle bones implicate the jiggle graft,
 leg-deform bones the rigid-leg conform, chain bones (`... 1_00`) the physics
 framework re-import.
 
-    python scripts/verify_zero_weight_bones.py [--limit N] [--all]
+    python scripts/analysis/verify_zero_weight_bones.py [--limit N] [--all]
 
 Read-only. Resolves the output via the live MO2 instance (CBBE2UBE_MO2_INI).
 Exit 1 if any are found, so it can gate a run.

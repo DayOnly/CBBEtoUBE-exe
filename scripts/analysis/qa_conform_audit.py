@@ -34,7 +34,7 @@ Anomalies it flags:
     in-game -> good spot-check candidates.
 
 Usage:
-  python scripts/qa_conform_audit.py <armor_dir> [--body <femalebody_1.nif>]
+  python scripts/analysis/qa_conform_audit.py <armor_dir> [--body <femalebody_1.nif>]
                                       [--limit N]
   (set CBBE2UBE_MO2_INI or CBBE2UBE_UBE_BODY_1 so the body can be found if
    --body is omitted)

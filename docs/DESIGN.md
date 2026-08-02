@@ -679,7 +679,7 @@ untracked — the repo is public and every one of them names specific mods.
 ## Pose-driven clipping: what moves, what fixes it, and what does not
 
 Everything the converter did about clipping was solved at BIND pose — an A-pose nobody
-stands in. Measuring under a pose set (`scripts/multipose_clip_test.py`) showed a class
+stands in. Measuring under a pose set (`scripts/analysis/multipose_clip_test.py`) showed a class
 of failure no bind-pose metric can see: armour that is clean at rest loses coverage the
 moment the actor moves. On a rigid cuirass, 11.0% of covered breast is exposed by a
 spine twist; on a skirted piece, 14.7% of covered butt by a sprint; on a vanilla

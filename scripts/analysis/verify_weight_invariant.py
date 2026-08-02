@@ -31,7 +31,7 @@ triangles that flicker with view angle.
 Run this on the OUTPUT (post-save), never on in-memory shapes: the truncation
 happens during the write, which is exactly what an in-memory check cannot see.
 
-    python scripts/verify_weight_invariant.py [--limit N] [--all]
+    python scripts/analysis/verify_weight_invariant.py [--limit N] [--all]
 
 Read-only. Resolves the output via the live MO2 instance (CBBE2UBE_MO2_INI).
 """

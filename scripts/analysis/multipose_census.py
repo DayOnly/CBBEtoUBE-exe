@@ -16,7 +16,7 @@
 
 """POSE-AWARE census: run the pose set over every converted armor.
 
-    python scripts/multipose_census.py [--out FILE] [--limit N] [--sample N]
+    python scripts/analysis/multipose_census.py [--out FILE] [--limit N] [--sample N]
 
 One JSON row per armor: per region, the worst pose and the fraction of bind-covered
 verts it exposes, plus the properties a CLASS might be keyed on (garment shape count,
@@ -45,7 +45,7 @@ sys.path.insert(0, str(_REPO / ".pynifly"))
 from pyn import pynifly                                          # noqa: E402
 from src import nif_convert as nc, paths                         # noqa: E402
 from src.nif_convert import UBE_BODY_INJECT_NAMES                # noqa: E402
-from scripts.multipose_clip_test import analyse, load            # noqa: E402
+from scripts.analysis.multipose_clip_test import analyse, load            # noqa: E402
 
 PHYSICS_ONLY = {"collision", "proxy", "stabilizer"}
 

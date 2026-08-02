@@ -39,7 +39,7 @@ Two checks:
     gradient was gentler. Flags props whose per-vertex delta spread is large relative
     to their size. A hit here is cosmetic (a bending sword), not a crash.
 
-    python scripts/verify_motion_match.py
+    python scripts/analysis/verify_motion_match.py
 
 Read-only. Resolves the body via the live MO2 instance (CBBE2UBE_MO2_INI).
 """

@@ -22,7 +22,7 @@ blind spot the set exists to close. These pin the wiring, not the physics."""
 import numpy as np
 import pytest
 
-from scripts import pose_set as ps
+from scripts.analysis import pose_set as ps
 
 
 def test_every_region_has_poses_that_can_move_it():

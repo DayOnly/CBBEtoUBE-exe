@@ -51,7 +51,7 @@ from scipy.spatial import cKDTree
 try:                                    # importable as `standoff_audit` or
     import mesh_penetration as mp       # as `scripts.standoff_audit`
 except ImportError:                     # pragma: no cover
-    from scripts import mesh_penetration as mp
+    from scripts.analysis import mesh_penetration as mp
 
 
 class ClipTester:

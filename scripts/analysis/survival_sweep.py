@@ -16,7 +16,7 @@
 
 """Run the displacement-survival trace over MANY pieces, one arm of an A/B.
 
-    python scripts/survival_sweep.py <out_dir> [--pieces golden|<json>]
+    python scripts/analysis/survival_sweep.py <out_dir> [--pieces golden|<json>]
         [--env K=V]... [--limit N] [--jobs N]
 
 One piece measured is an anecdote. A pass that looks cancelled on a chain-welded
