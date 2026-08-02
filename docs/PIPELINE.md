@@ -73,7 +73,8 @@ CANCELLED by `conform` on 12 of 32 instances, every cancellation naming conform,
 with `conform` moving the same verts 1–5x further the other way. `conform`'s own
 median survival is 0.507 and it never exceeds 0.847 on any shape. Order decides
 the winner. This is the strongest argument for consolidating 4/5/8/8b into one
-target-offset field — see `worklog/PLAN_PASS_CONSOLIDATION.md`.
+target-offset field — the measured pass-interaction study behind that argument
+is kept with the development working notes.
 
 **Pass 9 makes 4/5/8 inert on chain verts.** It pins them to source position so
 they stay aligned with chain bones recreated at source bind. Full-chain verts

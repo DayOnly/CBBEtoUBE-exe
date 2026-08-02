@@ -402,9 +402,9 @@ def hint_for(s: Setting) -> str:
 
     The full `tooltip` moves behind a hover/expand: 38 settings x a paragraph
     each made the Armor tab 86% prose and ~3.7 screens tall. Nothing is deleted
-    -- every word stays reachable, and `docs/worklog/PLAN_GUI_ARMOR_TAB.md`
-    records why deleting it would be the wrong trade (the tooltips carry
-    measured numbers and in-game caveats that exist nowhere else).
+    -- every word stays reachable. Deleting it would be the wrong trade: the
+    tooltips carry measured numbers and in-game caveats that exist nowhere
+    else, so they MOVE rather than shrink.
 
     Defaults to the tooltip's first sentence, which is already a summary for
     most settings (median 79 chars). Set `hint=` explicitly where it is not.
