@@ -193,7 +193,99 @@ moving a setting between tabs never disturbs a saved value.
 
 ---
 
-## 6. Acceptance
+## 6. Further findings (2026-08-01, surveying the rest of the GUI)
+
+Ordered by value, not by effort. (1) is a live bug and is not really a GUI
+problem at all — it was found by trying to use the GUI's own log to answer a
+question, which is the best evidence that it matters.
+
+### 1. The run log's flag echo is being OVERWRITTEN mid-line — HIGH
+
+`auto_convert._echo_active_flags` exists for one reason, stated in its own
+docstring: *"a full ~1h reconvert was once spent testing a flag that never got
+set, and there was no way to tell from the log afterwards."* In a real
+multi-worker run that line does not survive. Read from a live log:
+
+    offset 4:  active flags (7): CHEST_FOLLOW=1, DRAPE_XML_GATE=1,
+               GLOW_LOG=<MODLIST_ROOT>\  duplicate-plugin dedup: dropped 39 …
+
+The line is spliced mid-value — `GLOW_LOG`'s path is cut after 24 characters and
+other output continues **on the same line with no newline between them**. No NUL
+bytes, so this is not preallocation; it is a second writer with an independent
+file position. Corroborating: `duplicate-plugin dedup:` appears **twice** in the
+log while `active flags` appears once.
+
+**The casualty is exactly the payload.** Flags are printed alphabetically, so
+everything after `GLOW_LOG` is lost — in this run that is four names including
+the one flag actually under test. Only the `(7)` count survived, and that count
+was the sole reason the run could be verified at all.
+
+`cbbe_to_ube_main._install_log_tee` intends to prevent this — it installs the
+tee in the main process only, and comments that `freeze_support()` diverts pool
+workers so "workers never reach here to clobber the log". Something still does.
+Root-causing it was deliberately deferred: a conversion was running and this
+needs multiprocessing work, not a quick patch.
+
+Cheap mitigations, independent of root cause:
+* write the flag echo to its own file (`CBBEtoUBE_last_run.flags.txt`) as well —
+  one small write, no interleaving window, and it becomes diffable (see 2);
+* print the echo again at the END of the run, where there is no start-up burst;
+* one flag per line instead of one long joined line, so a splice costs one name
+  rather than the whole tail.
+
+### 2. No run history, so "what changed since the run I tested?" is unanswerable
+
+`gui.py` deletes `CBBEtoUBE_last_run.log` at the start of every run, and nothing
+else records what a run used. The project's entire loop is *change one flag →
+reconvert → judge in game → verdict*, and the tool cannot say what is different
+between the build in the game and the one before it.
+
+Proposal: append one line per run to `CBBEtoUBE_runs.jsonl` (timestamp, exit
+code, resolved non-default settings, counts) and show a **settings diff versus
+the previous run** in the GUI before the Convert button is pressed:
+
+    since your last run:  rigid_majority_softbody  OFF -> ON
+
+This completes the pair the existing diagnostics start: the flag echo says what
+the run HAS, `unseen_settings` says what the build ADDED, and neither says what
+**you** changed.
+
+### 3. `Setting.cli` is vestigial; `Setting.advanced` is dead
+
+`cli` is documented in the dataclass, set on **0** settings, and read **0**
+times — delete it. `advanced` is set on 6 and read 0 times (§1b). Both are the
+same class as the two dead-code finds already in the audit; a sweep for
+registry fields nothing consumes is worth doing once.
+
+### 4. `chest_follow_unknown` is the odd one out
+
+It is the only one of the 7 numeric knobs not marked `advanced`, so once
+`advanced` is wired it would be the lone knob still shown — and it is currently
+rendered four rows from the toggle it tunes, reading as an independent option.
+Mark it `advanced` and nest it under `chest_follow`.
+
+### 5. No hover-tooltip infrastructure exists
+
+There is no tooltip widget anywhere in `gui.py`; the inline hint label is the
+only mechanism, which is *why* the tab is 86% prose. Stage 1 cannot start until
+one is written. Small, self-contained, and the prerequisite for the biggest win.
+
+### 6. Settings have no search, though the pattern is already in the codebase
+
+37 settings and no filter. The armour checklist already has a live one
+(`search_var` + `repack_filtered` + Esc-to-clear); reusing it over setting
+labels and tooltips would make "where is the bust follow option" a two-second
+question. Worth doing *instead of* the tab split in §5 if it lands first.
+
+### 7. Window geometry is hardcoded and not persisted
+
+`root.geometry("860x680")` every launch. With a settings tab several screens
+tall, a user who resizes has to redo it each time. The settings file already
+exists to store it.
+
+---
+
+## 7. Acceptance
 
 1. Rendered-height estimate re-run after each stage; stage 1+2 target ≤1200px.
 2. No tooltip text deleted — diff the registry's total tooltip characters before
