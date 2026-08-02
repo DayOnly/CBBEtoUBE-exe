@@ -592,7 +592,12 @@ def unseen_settings(path=None) -> "tuple[bool, list]":
     if not isinstance(known, list):
         return False, []            # saved before tracking existed
     seen = {k for k in known if isinstance(k, str)}
-    return True, [s for s in SETTINGS if s.key not in seen]
+    # Only options that can CHANGE A CONVERSION are worth warning about. A
+    # setting with no env var (theme, window size) cannot affect a run, so
+    # naming it as "running at its default, which is not the same as you having
+    # chosen it" would be false -- and a warning that cries wolf about cosmetics
+    # is how a real one gets skimmed past.
+    return True, [s for s in SETTINGS if s.key not in seen and s.env]
 
 
 def save_values(values: "dict[str, object]", path=None) -> bool:

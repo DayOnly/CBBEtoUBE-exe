@@ -249,3 +249,24 @@ def test_hint_falls_back_to_first_sentence():
     assert gs.hint_for(s2) == "explicit"
     long = "w" * (gs.HINT_MAX + 40) + ". tail."
     assert gs.hint_for(gs.Setting("z", "Z", "Armor", "G", tooltip=long)).endswith("…")
+
+
+def test_unseen_settings_ignores_cosmetic_options(tmp_path):
+    """The warning exists for options that change a CONVERSION. A setting with
+    no env var cannot, so flagging it would be a false alarm -- and a warning
+    that cries wolf about window size is how a real one gets skimmed past."""
+    p = tmp_path / "s.json"
+    gs.save_values(gs.defaults(), path=p)
+    import json
+    raw = json.loads(p.read_text(encoding="utf-8"))
+    cosmetic = [s.key for s in gs.SETTINGS if not s.env]
+    behavioural = [s.key for s in gs.SETTINGS if s.env]
+    assert cosmetic and behavioural, "need both kinds for this test to mean anything"
+    # forget one of each
+    raw[gs.KNOWN_KEYS_FIELD] = [k for k in raw[gs.KNOWN_KEYS_FIELD]
+                                if k not in (cosmetic[0], behavioural[0])]
+    p.write_text(json.dumps(raw), encoding="utf-8")
+    _baseline, new = gs.unseen_settings(path=p)
+    keys = {s.key for s in new}
+    assert behavioural[0] in keys, "a real option must still be named"
+    assert cosmetic[0] not in keys, "a cosmetic option must not raise the alarm"
