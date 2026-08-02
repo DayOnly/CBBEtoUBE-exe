@@ -38,51 +38,16 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-# Files/dirs that are LOCAL ONLY by policy, not merely by convenience.
-# ARMOR_WORKLIST.md names specific mods and modlists; the rest are per-machine
-# run products whose paths and mod names would leak a user's setup.
-NEVER_TRACKED = (
-    "ARMOR_WORKLIST.md",
-    "CBBEtoUBE_last_failures.json",
-    "output/",
-    "samples/",
-    # In-game working notes. CLIPPING_LOG.md alone carries 17 mod-naming lines;
-    # the audit/design notes quote measurements BY armour name, which is exactly
-    # what makes them useful locally and unpublishable.
-    "CLIPPING_LOG.md",
-    # The map from the synthetic names in tracked fixtures back to the REAL
-    # assets. Publishing it would undo every substitution it records.
-    "LOCAL_ASSET_SAMPLES.md",
-    "AUDIT_REDUNDANCY_*.md",
-    "CONVERTER_AUDIT_*.md",
-    "DESIGN_JIGGLE_PLAN.md",
-    "DESIGN_P5_*.md",
-    "DESIGN_P6_*.md",
-    # Golden baseline AND its piece inventory: the manifest records which MOD each
-    # source mesh came from, and golden/pieces.json is that list by definition.
-    "golden/",
-    # Measurement censuses. Every row is keyed by an armor's mesh path, so these
-    # name mods by construction -- there is no mod-agnostic version of them.
-    "fit_dataset*.jsonl",
-    "fit_census*.jsonl",
-    "penetration_census*.jsonl",
-    "multipose_census*.jsonl",
-    "source_delta_census*.jsonl",
-    # Coverage-scan reports a run drops in the REPO ROOT. Both name the mods
-    # root and list mod names; neither was ignored, so `git add .` would have
-    # staged them (2026-08-02 audit of main).
-    "ube_providers.txt",
-    "ube_replacers_to_disable.txt",
-    # Per-user GUI state. Tracking it means a source run dirties the tree and a
-    # clone carries someone else's chosen flags. Absent == all defaults, so
-    # there is nothing to ship.
-    "CBBEtoUBE_settings.json",
-)
+# The rules now live in scripts/repo_hygiene.py so the git HOOKS enforce the
+# exact same set before a commit object exists. Two copies of one rule drift --
+# that is a documented failure in this project already. Imported, not restated.
+from scripts import repo_hygiene as H  # noqa: E402
 
-# The .gitignore lines that protect the set above. If one disappears, the
-# protection is gone even though nothing is tracked *yet* -- catch it then,
-# not at the first accidental `git add .`.
-REQUIRED_IGNORE_ENTRIES = NEVER_TRACKED + ("*.log",)
+NEVER_TRACKED = H.NEVER_TRACKED
+REQUIRED_IGNORE_ENTRIES = H.REQUIRED_IGNORE_ENTRIES
+_LOCAL_PATH_RE = H.LOCAL_PATH_RE
+_PLACEHOLDER = H.PLACEHOLDER
+_TEXT_SUFFIXES = H.TEXT_SUFFIXES
 
 
 def _tracked_files():
@@ -138,9 +103,6 @@ def test_gitignore_still_protects_the_local_only_set(entry):
 # for it does not itself have to name anything. Naming mods stays a review
 # judgement, as the module docstring says.
 
-_TEXT_SUFFIXES = {".py", ".md", ".ps1", ".yml", ".yaml", ".json", ".txt",
-                  ".spec", ".cfg", ".toml", ".ini"}
-
 # Fires only on a path that identifies a PERSON or a NAMED modlist -- those are
 # what leak. A generic drive path (C:\Games\..., C:\mods\...) identifies nobody
 # and appears legitimately in setup docs and test fixtures, so it is not matched.
@@ -148,20 +110,8 @@ _TEXT_SUFFIXES = {".py", ".md", ".ps1", ".yml", ".yaml", ".json", ".txt",
 # Written WITHOUT re.VERBOSE on purpose: a trailing backslash in a verbose-mode
 # comment escapes the newline and swallows the next alternative, which is how
 # the first draft of this compiled to nonsense and matched almost nothing.
-_LOCAL_PATH_RE = re.compile(
-    r"[A-Za-z]:[\\/]"
-    r"(?:Users[\\/][A-Za-z0-9._-]+[\\/]"
-    r"|Modlists[\\/])",
-    re.IGNORECASE)
-
 # Stand-in names that are synthetic BY CONSTRUCTION -- a fixture or a doc
 # example, not a real machine.
-_PLACEHOLDER = re.compile(
-    r"<[^>]+>"
-    r"|Users[\\/](?:someone|username|user|you|yourname|test|example)[\\/]"
-    r"|path[\\/]to|your[\\/-]|example|MO2Root",
-    re.IGNORECASE)
-
 
 @needs_git
 def test_no_absolute_local_paths_in_tracked_text():
@@ -174,27 +124,22 @@ def test_no_absolute_local_paths_in_tracked_text():
 
     Resolve through `src.paths` (CBBE2UBE_MODS_ROOT, else MO2 discovery)
     instead.
+
+    Scans via `repo_hygiene.scan_text` -- the same call the pre-commit hook
+    makes -- so a file the hook would refuse cannot pass here, and vice versa.
+    The skip and exemption lists live there too: keeping a second copy here is
+    exactly how this test silently stopped covering a newly added file.
     """
     offenders = []
     for rel in tracked:
         p = REPO_ROOT / rel
-        if p.suffix.lower() not in _TEXT_SUFFIXES or not p.is_file():
-            continue
-        if rel.startswith("dist/") or rel.startswith(".pynifly/"):
-            continue                      # vendored/built, not authored here
-        if rel.endswith("test_public_repo_hygiene.py"):
-            # This file DEFINES the rule, so it necessarily contains examples of
-            # what the rule catches. Its own control test is what proves the
-            # pattern still fires; scanning it here would only ever report them.
+        if not p.is_file():
             continue
         try:
             text = p.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        for n, line in enumerate(text.splitlines(), 1):
-            m = _LOCAL_PATH_RE.search(line)
-            if m and not _PLACEHOLDER.search(line):
-                offenders.append(f"{rel}:{n}: {line.strip()[:90]}")
+        offenders.extend(H.scan_text(rel, text))
     assert not offenders, (
         "tracked files hardcode an absolute local path (public repo + breaks "
         "on other machines):\n  " + "\n  ".join(offenders[:10]))

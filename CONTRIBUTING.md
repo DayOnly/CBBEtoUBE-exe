@@ -50,7 +50,32 @@ cd CBBEtoUBE-exe
 python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt pytest
+git config core.hooksPath .githooks
 python -m pytest -q
+```
+
+**That `core.hooksPath` line is not optional housekeeping.** This repository is
+public, and three kinds of thing must never reach a commit: a file that is
+local-only by policy (they name specific mods), an absolute path identifying
+your machine or modlist, and a personal email address. The hooks in
+`.githooks/` refuse a commit that carries any of them.
+
+The suite checks the same rules — but only *after* a commit exists, and by then
+it is too late: a file removed from the tip is still fetched by every clone and
+still served by SHA. Removing three such files took a full history rewrite, a
+force-push to the default branch, and a support ticket for the objects GitHub
+kept serving afterwards. The hook turns that into one blocked commit.
+
+Hook config is per-clone and git cannot enable it for you, which is why it is a
+setup step rather than something the repo does silently. The rules themselves
+live in `scripts/repo_hygiene.py`, imported by both the hooks and the tests so
+the two cannot drift.
+
+Also set your commit identity to your GitHub noreply address — author email is
+public on every commit and the hook will refuse a personal one:
+
+```bash
+git config user.email YOUR_USERNAME@users.noreply.github.com
 ```
 
 `pynifly` is **not on PyPI** — it is vendored in `.pynifly/` (the `pyn` package
