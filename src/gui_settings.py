@@ -159,6 +159,43 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "vertex still travels the full local body delta, it just "
                     "stops shearing away from its neighbours -- so it cannot "
                     "leave armour CBBE-shaped."),
+    Setting("warp_delta_outlier", "Stop the warp flinging a lone vertex",
+            "Armor", "Fit and clearance", default=False,
+            env="CBBE2UBE_WARP_DELTA_OUTLIER", invert=False,
+            hint="Fixes small pure-black spots, usually a mirrored pair, that survive other fixes.",
+            tooltip="A single vertex can be driven several units away from its "
+                    "own neighbours -- mostly by the clearance push, which "
+                    "shoves a deep interior vertex out to the floor while the "
+                    "vertices around it stay put. The triangles bridging that "
+                    "vertex to the rest of the garment then stretch and rotate "
+                    "until they face INTO the body, so they draw with no light "
+                    "at all: small PURE BLACK patches, normally a left/right "
+                    "pair. They are not inverted -- winding and normals agree "
+                    "-- so no other check finds them. This caps how far one "
+                    "vertex may travel relative to its neighbours. Confirmed "
+                    "in game: the patches stopped being visible."),
+    Setting("warp_delta_outlier_max", "  ...allowed deviation (units)",
+            "Armor", "Fit and clearance", kind="float", default=0.5,
+            env="CBBE2UBE_WARP_DELTA_OUTLIER_MAX", advanced=True,
+            min=0.1, max=3.0, step=0.05,
+            tooltip="Lower clamps harder. Swept on one piece by worst "
+                    "black-triangle area: 1.0 -> 27.7, 0.5 -> 24.2, "
+                    "0.25 -> 19.6, at about 0.004u of median standoff "
+                    "throughout. Below ~0.25 the worst case keeps shrinking "
+                    "but the COUNT of inward-facing triangles starts rising."),
+    Setting("warp_push_shell_cap", "Never push a vertex through its own armour",
+            "Armor", "Fit and clearance", default=False,
+            env="CBBE2UBE_WARP_PUSH_SHELL_CAP", invert=False,
+            hint="Stops the clearance push driving hidden lining out through the outer shell.",
+            tooltip="The clearance push fires on any vertex too close to the "
+                    "body, including ones the author deliberately buried -- a "
+                    "lining, the hidden edge of a flap. Those cannot be where "
+                    "skin shows through, because there is more armour in front "
+                    "of them, so pushing them buys nothing and can drive them "
+                    "out through the outer shell as a spike. This caps the "
+                    "push at the garment's own surface. It only ever binds "
+                    "where armour is already in front of the vertex, so it "
+                    "cannot reopen clipping."),
     Setting("rigid_majority_softbody", "Keep mostly-rigid armour skinned "
             "(experimental)",
             "Armor", "Body follow and morphs", default=False,
@@ -477,7 +514,9 @@ LAYOUT: "dict[str, tuple]" = {
     "Armor": (
         ("Fit and clearance", (
             "drape_xml_gate", "conform_to_body", "conform_fold_guard",
-            "warp_shear_limit", "smp_antipoke", "smp_antipoke_push",
+            "warp_shear_limit", "warp_delta_outlier",
+            "warp_delta_outlier_max", "warp_push_shell_cap",
+            "smp_antipoke", "smp_antipoke_push",
             "antipoke_smooth", "layered_antipoke", "unified_offset")),
         ("Body follow and morphs", (
             "chest_follow", "chest_follow_unknown", "source_follow",
