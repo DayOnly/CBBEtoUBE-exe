@@ -301,6 +301,37 @@ WARP_DELTA_OUTLIER = os.environ.get(
 WARP_DELTA_OUTLIER_MAX = float(
     os.environ.get("CBBE2UBE_WARP_DELTA_OUTLIER_MAX", "") or 1.0)
 
+# #warp-push-shell-cap -- OPT-IN. Never push a vertex out THROUGH its own
+# garment.
+#
+# The standoff push exists for exactly one reason: stop body skin showing
+# through the garment. It fires on any vertex whose clearance is below the
+# floor, including vertices the author deliberately BURIED -- a lining, the
+# hidden edge of a flap. Those cannot be where skin shows through, because
+# there is more garment in front of them, so pushing them buys nothing; and
+# when the push is large it drives them out THROUGH the outer shell, where they
+# become a visible spike.
+#
+# Measured on one converted cuirass, the three worst fliers (a mirrored pair at
+# the waist plus one more) sat 2.0-2.5u INSIDE the body in the author's own
+# mesh with 10-15 garment triangles outward of them, and the push moved them to
+# +1.3u -- straight through the shell. Their own normals were near
+# PERPENDICULAR to the body normal they were pushed along (-0.03, -0.10), i.e.
+# the correspondence driving the push did not describe them at all.
+#
+# WHY IT CANNOT REOPEN CLIPPING: the cap binds ONLY where the ray from the
+# vertex along its push direction HITS this garment's own surface. Where that
+# ray escapes -- the only case in which skin can actually be seen -- nothing
+# changes. That is a strictly stronger safety argument than the existing
+# smooth-then-revert, which trades a clip for a spike and keeps the spike.
+WARP_PUSH_SHELL_CAP = os.environ.get(
+    "CBBE2UBE_WARP_PUSH_SHELL_CAP", "").strip().lower() in (
+        "1", "true", "yes", "on")
+# Stop just SHORT of the occluder, so a capped vertex rests inside its own
+# shell instead of landing exactly on it and z-fighting.
+WARP_PUSH_SHELL_GAP = float(
+    os.environ.get("CBBE2UBE_WARP_PUSH_SHELL_GAP", "") or 0.1)
+
 # #winding-consistency -- DEFAULT ON. Every written shape leaves with its
 # triangle winding agreeing with its own vertex normals.
 #
@@ -1667,6 +1698,59 @@ def _ring_average(values, tris, n):
     return out
 
 
+def _cap_push_at_own_shell(verts, tris, dirs, push,
+                          gap=WARP_PUSH_SHELL_GAP, tmax=8.0):
+    """Cap each standoff push so a vertex never emerges through its own garment.
+
+    For every vertex with a pending push, cast a ray from it along the push
+    direction against THIS garment's triangles. A finite hit means there is
+    more garment in front of the vertex: it is not a place skin can show, so
+    the push is capped at (hit distance - `gap`). No hit means the vertex is
+    genuinely exposed and the push is left exactly as it was -- which is what
+    makes this unable to reopen clipping.
+
+    The ray origin is nudged `gap` along the direction so the vertex's OWN
+    incident triangles, which it lies on, are behind the origin and cannot
+    register as an occluder at t~0.
+
+    Returns (push, n_capped).
+    """
+    from src import fit_metrics as _fm
+    p = np.array(push, dtype=np.float64, copy=True)
+    t = np.asarray(tris, dtype=np.int64)
+    if t.ndim != 2 or t.shape[1] != 3 or len(t) == 0:
+        return p, 0
+    idx = np.flatnonzero(p > 1e-6)
+    if not len(idx):
+        return p, 0
+    V = np.asarray(verts, dtype=np.float64)
+    D = np.asarray(dirs, dtype=np.float64)[idx]
+    dl = np.linalg.norm(D, axis=1)
+    ok = dl > 1e-9
+    if not ok.any():
+        return p, 0
+    idx, D, dl = idx[ok], D[ok], dl[ok]
+    D = D / dl[:, None]
+    O = V[idx] + D * float(gap)
+
+    tester = _fm._ClipTester(V, t, tmax=float(tmax))
+    hit = _fm.cast_chunked(tester, O, D, finite_only=False)
+    hit = np.asarray(hit, dtype=np.float64)
+    if len(hit) != len(idx):
+        return p, 0                      # alignment lost -> change nothing
+    finite = np.isfinite(hit)
+    if not finite.any():
+        return p, 0
+    # `hit` is measured from the NUDGED origin, so the vertex-to-occluder
+    # distance is (gap + hit). Stopping `gap` short of the occluder therefore
+    # allows exactly (gap + hit) - gap == hit.
+    allowed = np.maximum(hit[finite], 0.0)
+    target = np.minimum(p[idx[finite]], allowed)
+    capped = int((target < p[idx[finite]] - 1e-9).sum())
+    p[idx[finite]] = target
+    return p, capped
+
+
 def _clamp_delta_outliers(delta, tris, n, max_dev=WARP_DELTA_OUTLIER_MAX):
     """Pull each vertex's warp delta back toward its 1-ring mean.
 
@@ -1872,14 +1956,6 @@ def warp_armor_by_body_delta(
                 * _ss(sd0, upper_damp_standoff[0], upper_damp_standoff[1]))
         interp_delta = interp_delta * (1.0 - gate * upper_damp_max)[:, None]
 
-    # #warp-delta-outlier: on the INTERPOLATED delta, before it is applied and
-    # before the standoff pass, because this is a defect in the interpolation
-    # itself -- a vertex handed a delta sampled from the wrong anatomy. Clamping
-    # it later would be fighting the result instead of the cause.
-    if WARP_DELTA_OUTLIER and tris is not None:
-        interp_delta, _n_out = _clamp_delta_outliers(
-            interp_delta, tris, len(armor_verts))
-
     warped = armor_verts + interp_delta
 
     # ----- Pass 2: minimum standoff buffer -----
@@ -1918,6 +1994,16 @@ def warp_armor_by_body_delta(
             push_mag[need_push] = min_standoff - signed[need_push]
             if max_distance is not None and max_distance > 0:
                 push_mag[need_push] *= push_falloff[need_push]
+            # #warp-push-shell-cap, BEFORE `raw_mag` is snapshotted. The
+            # safety clamp below can revert a vertex to the UNSMOOTHED result,
+            # so capping only the smoothed field would let the very spike this
+            # is removing come straight back through that path.
+            if WARP_PUSH_SHELL_CAP and tris is not None:
+                try:
+                    push_mag, _n_cap = _cap_push_at_own_shell(
+                        warped, tris, near_n, push_mag)
+                except Exception:
+                    pass                 # measurement failure must not move geometry
             raw_mag = push_mag.copy()
             if WARP_STANDOFF_SMOOTH_ENABLED and tris is not None:
                 # Floored at the raw requirement: smoothing may only ADD push to
@@ -1948,6 +2034,19 @@ def warp_armor_by_body_delta(
                 worse = moved & (sm_signed < un_signed - 1e-9)
                 if worse.any():
                     warped[worse] = unsmoothed[worse]
+
+    # #warp-delta-outlier: against the TOTAL displacement, NOT the interpolated
+    # delta. Traced on the vertex that motivated it: its delta deviates from its
+    # ring by 0.372u (mesh max 1.070u) and is entirely unremarkable, yet the
+    # vertex ends up 5.07u from source -- the other ~4.6u is PASS 2 shoving a
+    # deep interior vertex out to the clearance floor while its ring stays put.
+    # Clamping the delta therefore measured as a perfect no-op. The roughness a
+    # viewer sees is a property of the finished geometry, so it has to be capped
+    # on the finished geometry.
+    if WARP_DELTA_OUTLIER and tris is not None:
+        _tot, _n_out = _clamp_delta_outliers(
+            warped.astype(np.float64) - armor_verts, tris, len(armor_verts))
+        warped = armor_verts + _tot
 
     # #warp-shear-limit: applied HERE, against the pass's TOTAL displacement,
     # not against `interp_delta` before the standoff pass. Clamping the delta
