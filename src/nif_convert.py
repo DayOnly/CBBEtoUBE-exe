@@ -175,6 +175,167 @@ BUST_SURFACE_K = 24            # body points tested per garment triangle
 # give the same result across 112 installed presets (1 still poking, the same
 # outlier) and the same fit, so the cap is not the limiter -- it is a safety rail.
 BUST_SURFACE_MAX_PUSH = 1.5
+# #conform-fold-guard -- OPT-IN. Stop `conform` turning the garment surface
+# inside-out.
+#
+# The pass moves every vertex along ITS OWN nearest-body-vertex normal by ITS
+# OWN scalar, and nothing couples neighbours. Across a body crease -- spine
+# groove, underbust, waist -- two adjacent cloth verts snap to body verts whose
+# normals diverge sharply and whose pulls differ by up to `max_pull`, so they
+# travel through each other and the triangle between them inverts. It then
+# renders backface-culled and lit the wrong way: a flat dark patch, in mirrored
+# pairs because the body's creases are symmetric. Reported in game on a
+# cuirass as "two black squares", traced to this pass by per-pass fold count
+# (0 at entry, +121 here, of which `groove_smooth` happens to undo 52).
+#
+# The guard is a CLAMP, never a push: a vertex may end up moved LESS than the
+# unguarded pass wanted, never further and never in a new direction. So it
+# cannot create clipping. What it CAN do is leave a garment standing off
+# slightly further out, which is the overinflation axis this project keeps
+# paying for -- hence opt-in and a standoff measurement, not just a fold count.
+CONFORM_FOLD_GUARD = os.environ.get(
+    "CBBE2UBE_CONFORM_FOLD_GUARD", "").strip().lower() in (
+        "1", "true", "yes", "on")
+# Damping steps. Each halves the remaining motion on the offending triangles'
+# vertices, so 8 steps reach 1/256 of the requested pull -- effectively zero for
+# a vertex that simply cannot move without folding, while a vertex that only
+# slightly overshot recovers most of its motion in the first step or two.
+CONFORM_FOLD_GUARD_STEPS = int(
+    os.environ.get("CBBE2UBE_CONFORM_FOLD_GUARD_STEPS", "") or 8)
+# Fraction of its ENTRY signed area a triangle must keep. A plain sign test is
+# not enough and the difference is not academic: stopping the moment the
+# orientation is barely positive leaves the triangle pinched almost flat, and
+# the float32 cast on the way out of the pass then rounds a good share of them
+# straight back over the edge -- measured as the guard converging in 8 steps
+# yet the shipped mesh still gaining 29 folds.
+#
+# Swept on the traced cuirass by the pass's OWN added folds, which is the only
+# part this knob controls: 0.10 -> +17, 0.25 -> +9, 0.40 -> +3, 0.60 -> +3. It
+# is a knee, not an optimum -- past 0.40 the count stops improving and the only
+# thing still growing is how much authored pull-in gets thrown away.
+CONFORM_FOLD_GUARD_MARGIN = float(
+    os.environ.get("CBBE2UBE_CONFORM_FOLD_GUARD_MARGIN", "") or 0.40)
+# Feather rounds over the damping field. Damping only the offending vertices
+# leaves their neighbours at full motion, so the displacement field gains a
+# cliff exactly where the guard acted -- which is a CRINKLE, the defect this
+# project has already paid for twice (see the anti-poke push-field smoothing).
+# First measurement of the unfeathered guard: armor_clip_diag reported
+# max_jump 2.29u against moved_mean 0.12u, spikiness 13.4 -- its own threshold
+# for "real crease, not a broad morph". Feathering spreads each vertex's damping
+# into its ring, and because it only ever LOWERS a scale it cannot undo the
+# guard or reintroduce a fold.
+#
+# ONE round. This is a standing project rule, settled by earlier testing and not
+# to be re-derived per pass: extra rounds keep spreading the damping into
+# geometry that was never at fault, and the measurement here agrees -- 2, 3 and
+# 5 rounds all land on the same fold count as 1, while each one throws away more
+# authored pull-in.
+CONFORM_FOLD_GUARD_FEATHER = int(
+    os.environ.get("CBBE2UBE_CONFORM_FOLD_GUARD_FEATHER", "") or 1)
+
+# #warp-shear-limit -- OPT-IN. Stop the body-delta warp shearing a large triangle
+# until it faces INTO the body.
+#
+# Reported in game as "two black squares at the back waist" on a converted cuirass,
+# and NOT the same defect as #conform-fold-guard. Triangles 4877/4878 there are
+# the two biggest in the mesh; the warp grew them 2.6x and rotated them past the
+# body surface:
+#
+#     stage    area          stored.outward
+#     source   27.5 / 29.5   +0.678 / +0.852   (facing out)
+#     output   73.7 / 79.8   -0.288 / -0.572   (facing into the body)
+#
+# `stored.winding` stays +0.99 the whole way, i.e. winding and normals remain
+# CONSISTENT -- so the fold metric, and the conform guard built on it, are both
+# structurally blind to this. The triangle is not inverted, it is turned over.
+#
+# Cause is the same shape as the conform fold: `interp_delta` is per-vertex, IDW
+# from each vert's own nearest body verts, with nothing coupling neighbours. A
+# big triangle's three corners sample very different deltas at the waist, where
+# CBBE and UBE diverge most, and the triangle shears.
+#
+# THE FIX MUST NOT BE "warp less". Damping the warp is exactly what once left
+# every armour CBBE-shaped -- the warp is the only pass that reshapes a rigid
+# cuirass to UBE proportions, so a blunt clamp here is far worse than the defect.
+# Instead this limits ONLY THE DIFFERENTIAL: a vertex is blended toward the
+# ring-average of its neighbours' deltas, never toward zero. At full strength the
+# vertex still moves by the local average delta, so the garment still reaches UBE
+# size and position; what it loses is the shear between neighbours. Whole-mesh
+# area grows 1.8% under the warp against 160% for these two triangles, so a cap
+# near 2x is an outlier clamp that touches almost nothing else.
+WARP_SHEAR_LIMIT = os.environ.get(
+    "CBBE2UBE_WARP_SHEAR_LIMIT", "").strip().lower() in (
+        "1", "true", "yes", "on")
+# Largest area growth a single triangle may take from the warp.
+WARP_SHEAR_MAX_GROWTH = float(
+    os.environ.get("CBBE2UBE_WARP_SHEAR_MAX_GROWTH", "") or 2.0)
+WARP_SHEAR_STEPS = int(os.environ.get("CBBE2UBE_WARP_SHEAR_STEPS", "") or 8)
+
+# #warp-delta-outlier -- OPT-IN. Stop the warp flinging a LONE vertex.
+#
+# Distinct from #warp-shear-limit, which bounds how much a TRIANGLE stretches.
+# This bounds how far one VERTEX may move relative to its own neighbours, and
+# they catch different defects: a vertex can be dragged 4u past its ring while
+# every triangle it belongs to stays within an area cap, because the triangles
+# simply follow it.
+#
+# Cause: the delta is IDW-interpolated from each vertex's 4 nearest CBBE BODY
+# vertices, independently. A vertex sitting in a crevice -- a boundary corner at
+# the waist, ring of 3 -- can have its nearest body vertices land on different
+# anatomy from its neighbours', so it receives a completely different delta.
+# Measured on one converted cuirass, a MIRRORED PAIR at the waist (two verts,
+# x=-8.54/+8.91, z~71) each moved ~3.9u with a roughness of ~4.4u against a mesh
+# p50 of 0.16u and p99 of 1.77u. Reported in game as "one broken vert on each
+# side". `groove_smooth` shaves a little off and nothing else touches them.
+#
+# The cap is on the DEVIATION from the ring mean, not on the motion: a vertex
+# may travel as far as the warp wants provided its neighbourhood travels with
+# it, so broad reshaping is untouched and only the isolated flier is reined in.
+WARP_DELTA_OUTLIER = os.environ.get(
+    "CBBE2UBE_WARP_DELTA_OUTLIER", "").strip().lower() in (
+        "1", "true", "yes", "on")
+# 1.0u sits between the mesh's p99 (1.77u on the traced piece -- note that is
+# TOTAL displacement roughness, so the delta-field tail is smaller) and the 4-6u
+# fliers. Not tuned: it is an outlier fence, and the numbers either side of it
+# differ by a factor of four.
+WARP_DELTA_OUTLIER_MAX = float(
+    os.environ.get("CBBE2UBE_WARP_DELTA_OUTLIER_MAX", "") or 1.0)
+
+# #winding-consistency -- DEFAULT ON. Every written shape leaves with its
+# triangle winding agreeing with its own vertex normals.
+#
+# Culling reads the winding, lighting reads the normals, and until now nothing
+# checked they agree. Where they disagree the triangle is culled from the side
+# it is lit for: a flat dark shape. Measured across the shipped pack (7703 shape
+# pairs, 2832 NIFs): sources carry 52683 such triangles, our output 404106.
+#
+# Default ON because this is not a fit choice -- it changes no vertex, no
+# normal, no weight and no UV, only the order of three indices, and it is a
+# provable no-op on any mesh whose winding is already correct. The escape hatch
+# exists for one scenario: a mesh that deliberately ships inside-out geometry
+# and relies on it. CBBE2UBE_NO_WINDING_REPAIR=1 disables it.
+WINDING_CONSISTENCY_REPAIR = os.environ.get(
+    "CBBE2UBE_NO_WINDING_REPAIR", "").strip().lower() not in (
+        "1", "true", "yes", "on")
+
+# #seam-weld-self -- DEFAULT ON. Vertices coincident in the SOURCE must still be
+# coincident in the output.
+#
+# A UV/normal seam is several vertices at one position; they exist because their
+# NORMALS differ, and nearly every pass here pushes a vertex along its own
+# normal. So the halves of a seam are pushed apart and it opens into a gap that
+# shows the unlit interior -- a black shape running along the seam line, which
+# is how the user described it. The existing seam machinery welds CROSS-SHAPE
+# seams only; a seam inside one shape was never handled.
+#
+# Default ON: coincidence is an authored invariant of a closed surface, so
+# restoring it can only close a hole that should not have opened. It does move
+# geometry, though (up to half the split), so the risk is a vertex that a
+# clearance pass had deliberately pushed out being averaged back in -- verify
+# clipping, not just the seam count. CBBE2UBE_NO_SEAM_WELD_SELF=1 disables.
+SEAM_WELD_SELF = os.environ.get(
+    "CBBE2UBE_NO_SEAM_WELD_SELF", "").strip().lower() not in (
+        "1", "true", "yes", "on")
 # #bust-morph-residual. The bust requirement is met against the BIND body, but
 # the character in game is MORPHED, and a nipple can travel 5.35u outward at
 # runtime. The armour follows -- `generate_armor_tri` gives a hugging vert the
@@ -1489,6 +1650,104 @@ def _smooth_warp_grooves(src_world, warped, ube_body_verts,
         return warped
 
 
+def _ring_average(values, tris, n):
+    """Mean of each vertex's 1-ring (neighbours + itself). Shared by the guards."""
+    from scipy import sparse
+    t = np.asarray(tris, dtype=np.int64)
+    e = np.vstack([t[:, [0, 1]], t[:, [1, 2]], t[:, [2, 0]]])
+    rows = np.concatenate([e[:, 0], e[:, 1]])
+    cols = np.concatenate([e[:, 1], e[:, 0]])
+    adj = sparse.coo_matrix((np.ones(len(rows)), (rows, cols)),
+                            shape=(n, n)).tocsr()
+    adj.data[:] = 1.0
+    deg = np.asarray(adj.sum(axis=1)).ravel()
+    out = np.array(values, dtype=np.float64, copy=True)
+    has = deg > 0
+    out[has] = ((adj @ values)[has] + values[has]) / (deg[has] + 1.0)[:, None]
+    return out
+
+
+def _clamp_delta_outliers(delta, tris, n, max_dev=WARP_DELTA_OUTLIER_MAX):
+    """Pull each vertex's warp delta back toward its 1-ring mean.
+
+    Only the DEVIATION is capped, so a vertex whose whole neighbourhood moves
+    together keeps every bit of that motion -- this cannot flatten the reshape,
+    only the lone flier. A vertex with no ring (isolated) is left alone: there
+    is nothing to compare it against, and inventing a reference would be worse
+    than the outlier.
+
+    Returns (delta, n_clamped).
+    """
+    from scipy import sparse
+    t = np.asarray(tris, dtype=np.int64)
+    d = np.array(delta, dtype=np.float64, copy=True)
+    if t.ndim != 2 or t.shape[1] != 3 or len(t) == 0 or max_dev <= 0:
+        return d, 0
+    e = np.vstack([t[:, [0, 1]], t[:, [1, 2]], t[:, [2, 0]]])
+    rows = np.concatenate([e[:, 0], e[:, 1]])
+    cols = np.concatenate([e[:, 1], e[:, 0]])
+    adj = sparse.coo_matrix((np.ones(len(rows)), (rows, cols)),
+                            shape=(n, n)).tocsr()
+    adj.data[:] = 1.0
+    deg = np.asarray(adj.sum(axis=1)).ravel()
+    has = deg > 0
+    ring = np.zeros_like(d)
+    ring[has] = (adj @ d)[has] / deg[has][:, None]
+    dev = d - ring
+    mag = np.linalg.norm(dev, axis=1)
+    over = has & (mag > max_dev)
+    if not over.any():
+        return d, 0
+    scale = np.ones(len(d))
+    scale[over] = max_dev / mag[over]
+    d = ring + dev * scale[:, None]
+    return d, int(over.sum())
+
+
+def _limit_triangle_shear(verts, delta, tris, max_growth=WARP_SHEAR_MAX_GROWTH,
+                          steps=WARP_SHEAR_STEPS):
+    """Cap how far the warp may STRETCH any one triangle, without warping less.
+
+    Each vertex's displacement is split into the ring-average of its neighbours'
+    displacements plus its own deviation from that average. Only the DEVIATION is
+    scaled back. The average is never touched, so a clamped vertex still travels
+    the full local CBBE->UBE delta -- this cannot leave a garment CBBE-shaped,
+    which is the failure mode that makes any edit to this pass dangerous.
+
+    Triangles that are degenerate before the warp are skipped: an area ratio
+    against ~0 is meaningless, not infinite.
+    """
+    v = np.asarray(verts, dtype=np.float64)
+    d = np.asarray(delta, dtype=np.float64)
+    t = np.asarray(tris, dtype=np.int64)
+    if t.ndim != 2 or t.shape[1] != 3 or len(t) == 0:
+        return d
+
+    def area(x):
+        p0, p1, p2 = x[t[:, 0]], x[t[:, 1]], x[t[:, 2]]
+        return 0.5 * np.linalg.norm(np.cross(p1 - p0, p2 - p0), axis=1)
+
+    a0 = area(v)
+    live = a0 > 1e-9
+    if not live.any():
+        return d
+
+    bar = _ring_average(d, t, len(v))
+    dev = d - bar
+    scale = np.ones(len(v), dtype=np.float64)
+    cap = float(max_growth)
+    for _ in range(int(steps)):
+        a1 = area(v + bar + dev * scale[:, None])
+        bad = live & (a1 > cap * a0)
+        if not bad.any():
+            break
+        scale[np.unique(t[bad])] *= 0.5
+    # Feather ONCE, min-only so it can only tighten (see feather rule).
+    ring = _ring_average(scale[:, None], t, len(v)).ravel()
+    scale = np.minimum(scale, ring)
+    return bar + dev * scale[:, None]
+
+
 def warp_armor_by_body_delta(
     armor_verts: np.ndarray,
     cbbe_body_verts: np.ndarray,
@@ -1613,6 +1872,14 @@ def warp_armor_by_body_delta(
                 * _ss(sd0, upper_damp_standoff[0], upper_damp_standoff[1]))
         interp_delta = interp_delta * (1.0 - gate * upper_damp_max)[:, None]
 
+    # #warp-delta-outlier: on the INTERPOLATED delta, before it is applied and
+    # before the standoff pass, because this is a defect in the interpolation
+    # itself -- a vertex handed a delta sampled from the wrong anatomy. Clamping
+    # it later would be fighting the result instead of the cause.
+    if WARP_DELTA_OUTLIER and tris is not None:
+        interp_delta, _n_out = _clamp_delta_outliers(
+            interp_delta, tris, len(armor_verts))
+
     warped = armor_verts + interp_delta
 
     # ----- Pass 2: minimum standoff buffer -----
@@ -1681,6 +1948,18 @@ def warp_armor_by_body_delta(
                 worse = moved & (sm_signed < un_signed - 1e-9)
                 if worse.any():
                     warped[worse] = unsmoothed[worse]
+
+    # #warp-shear-limit: applied HERE, against the pass's TOTAL displacement,
+    # not against `interp_delta` before the standoff pass. Clamping the delta
+    # first measured as a complete no-op on the traced cuirass -- the guard fired
+    # (4 triangles, 2.66x -> 1.73x) and the shipped mesh was byte-identical --
+    # because Pass 2 then repositions those same verts against the body surface
+    # and overwrites the correction. The offending corners are placed by the
+    # standoff push, not by the body delta, so the cap has to see the result.
+    if WARP_SHEAR_LIMIT and tris is not None:
+        total = _limit_triangle_shear(
+            armor_verts, warped.astype(np.float64) - armor_verts, tris)
+        warped = armor_verts + total
 
     return warped.astype(np.float32)
 
@@ -1774,6 +2053,91 @@ def _body_jiggle_weight(shape) -> "np.ndarray | None":
             if 0 <= i < n:
                 out[i] = max(out[i], float(w))
     return np.clip(out, 0.0, 1.0) if found else None
+
+
+def _damp_to_avoid_inversion(cur, disp, tris, steps=CONFORM_FOLD_GUARD_STEPS,
+                             margin=CONFORM_FOLD_GUARD_MARGIN,
+                             feather=CONFORM_FOLD_GUARD_FEATHER):
+    """Scale back per-vertex displacement until no triangle turns inside-out.
+
+    `cur` is the geometry ENTERING the pass and is the orientation reference, so
+    a triangle the author already shipped inverted stays exactly as inverted as
+    it arrived -- this guard forbids NEW flips, it does not repair old ones. A
+    triangle that is degenerate on entry has no reliable normal and is ignored
+    rather than guessed at.
+
+    A triangle must keep `margin` of its entry signed area, not merely stay on
+    the positive side of zero. Barely-positive is not a safe answer here: the
+    pass returns float32, and a triangle left pinched flat rounds back over the
+    boundary on the cast.
+
+    Returns the damped displacement. Every component is the requested
+    displacement times a per-vertex factor in [0, 1], so the result can only be
+    a SHORTER move in the SAME direction -- there is no configuration in which
+    this steers a vertex sideways or sends it further than asked.
+
+    Damping is re-evaluated over ALL triangles every step rather than only the
+    offending ones, because shrinking one vertex's motion reshapes every
+    triangle that vertex belongs to and can in principle disturb a neighbour
+    that was fine. The fixed point is scale = 0, which is the (valid) entry
+    geometry, so the loop cannot diverge; `steps` bounds the work, and the
+    result is safe at any step count because it is only ever less motion.
+    """
+    cur = np.asarray(cur, dtype=np.float64)
+    disp = np.asarray(disp, dtype=np.float64)
+    t = np.asarray(tris, dtype=np.int64)
+    if t.ndim != 2 or t.shape[1] != 3 or len(t) == 0:
+        return disp
+
+    def wind(v):
+        p0, p1, p2 = v[t[:, 0]], v[t[:, 1]], v[t[:, 2]]
+        return np.cross(p1 - p0, p2 - p0)
+
+    ref = wind(cur)
+    ref_len = np.linalg.norm(ref, axis=1)
+    live = ref_len > 1e-12                     # degenerate on entry -> ignore
+    if not live.any():
+        return disp
+
+    # Projecting the candidate cross product onto the ENTRY one measures signed
+    # area in the entry orientation, so the test is "kept this share of the area
+    # it had, facing the same way" -- one comparison for both flip and collapse.
+    floor = float(margin) * (ref_len * ref_len)
+
+    def settle(scale):
+        for _ in range(int(steps)):
+            cand = wind(cur + disp * scale[:, None])
+            bad = live & (np.einsum("ij,ij->i", ref, cand) < floor)
+            if not bad.any():
+                break
+            scale[np.unique(t[bad])] *= 0.5
+        return scale
+
+    scale = settle(np.ones(len(cur), dtype=np.float64))
+
+    if int(feather) > 0:
+        # Ring-average the damping field, then take the MIN against what the
+        # settle step decided. Min is what keeps this safe: feathering can only
+        # pull a scale DOWN, so it can neither undo the guard nor push a vertex
+        # past what conform asked for. Re-settle afterwards because a lowered
+        # scale is still a different geometry and deserves the same test.
+        from scipy import sparse
+        n = len(cur)
+        e = np.vstack([t[:, [0, 1]], t[:, [1, 2]], t[:, [2, 0]]])
+        rows = np.concatenate([e[:, 0], e[:, 1]])
+        cols = np.concatenate([e[:, 1], e[:, 0]])
+        adj = sparse.coo_matrix((np.ones(len(rows)), (rows, cols)),
+                                shape=(n, n)).tocsr()
+        adj.data[:] = 1.0
+        deg = np.asarray(adj.sum(axis=1)).ravel()
+        has = deg > 0
+        for _ in range(int(feather)):
+            ring = np.array(scale, copy=True)
+            ring[has] = ((adj @ scale)[has] + scale[has]) / (deg[has] + 1.0)
+            scale = np.minimum(scale, ring)
+        scale = settle(scale)
+
+    return disp * scale[:, None]
 
 
 def conform_to_source_standoff(
@@ -1993,7 +2357,14 @@ def conform_to_source_standoff(
                 move = np.where(need > 0.0, np.maximum(move, need), move)
     near = (sd < max_body_dist) & (ud < max_body_dist)
     move = np.where(near, np.clip(move, -max_pull, max_push_out), 0.0)
-    return (cur_cloth + ube_body_normals[ui] * move[:, None]).astype(np.float32)
+    disp = ube_body_normals[ui] * move[:, None]
+    # #conform-fold-guard: this pass is per-vertex by construction, so nothing
+    # above stops two neighbours crossing through each other. Clamp last, after
+    # every contribution (pull-in, bust push-out, surface deficit) is in `disp`,
+    # so the guard sees the motion that will actually be applied.
+    if CONFORM_FOLD_GUARD and tris is not None:
+        disp = _damp_to_avoid_inversion(cur_cloth, disp, tris)
+    return (cur_cloth + disp).astype(np.float32)
 
 
 def _bust_surface_deficit(cur_cloth, tris, ube_body_verts, ube_body_normals,
@@ -10040,20 +10411,49 @@ CHAIN_BODY_SHIFT = os.environ.get(
 CHAIN_BODY_SHIFT_MAX = float(
     os.environ.get("CBBE2UBE_CHAIN_BODY_SHIFT_MAX", "2.0"))
 CHAIN_BODY_SHIFT_MIN_VERTS = 8
+# Which of the chain's near verts set the shift. 0.0 = the plain mean over all
+# of them, which is the validated behaviour and stays the default.
+#
+# Why a knob at all: one rigid translation cannot satisfy a skirt that wraps the
+# hips, because the body did not grow evenly around it. In the butt band the
+# delta is mean 0.506u but p90 0.940u and max 1.467u -- so the mean is set
+# largely by the front and sides, and UNDER-serves the butt, which is the part
+# that actually clips. Raising this to e.g. 0.75 averages only the top quartile
+# by delta magnitude, biasing the shift toward wherever the body grew most.
+#
+# It trades one region for another and cannot be judged from a bind pose, so it
+# ships at the validated 0.0 until the recorded numbers say otherwise.
+CHAIN_BODY_SHIFT_BIAS = float(
+    os.environ.get("CBBE2UBE_CHAIN_BODY_SHIFT_BIAS", "") or 0.0)
 # Only verts genuinely NEAR the body inform the shift. A floor-length hem hangs
 # metres away where the delta field is meaningless; averaging it in would drag
 # every chain toward zero and make the pass look inert.
 CHAIN_BODY_SHIFT_NEAR = 8.0
 
 
-def _chain_root_subtrees(chain: dict) -> dict:
+def _chain_root_subtrees(chain: dict, custom_only: bool = False) -> dict:
     """{root: every bone in its subtree}. A root is a chain bone whose parent is
-    NOT itself a chain bone -- i.e. it hangs off the skeleton."""
+    NOT itself a chain bone -- i.e. it hangs off the skeleton.
+
+    `custom_only` restricts roots to GARMENT bones. `chain` carries the skeleton
+    ancestors a chain hangs off (Pelvis, Spine) so the hierarchy can be
+    recreated, and without this the plain rule elects those skeleton bones as
+    roots -- measured on a real cuirass, the roots came back as
+    `NPC Pelvis [Pelv]` and `NPC Spine [Spn0]`. Translating an actor's pelvis is
+    never what a caller wants; the topmost GARMENT bone is.
+    """
     kids: dict = {}
     for b, (_xf, par) in chain.items():
         kids.setdefault(par, []).append(b)
+
+    def _is_root(b, par):
+        if custom_only:
+            return (not _is_skeleton_bone(b)) and (
+                par not in chain or _is_skeleton_bone(par))
+        return par not in chain
+
     out: dict = {}
-    for r in [b for b, (_xf, par) in chain.items() if par not in chain]:
+    for r in [b for b, (_xf, par) in chain.items() if _is_root(b, par)]:
         sub, stack = set(), [r]
         while stack:
             cur = stack.pop()
@@ -10065,11 +10465,16 @@ def _chain_root_subtrees(chain: dict) -> dict:
     return out
 
 
-def _shift_chain_roots_by_body_delta(chain: dict, src_nif) -> int:
+def _shift_chain_roots_by_body_delta(chain: dict, src_nif, dst_path=None) -> int:
     """Translate each physics chain by the CBBE->UBE body delta where it sits.
 
     Mutates `chain` in place (root entries only) and returns the number of
     chains moved. Default OFF -- see CHAIN_BODY_SHIFT.
+
+    `dst_path` is telemetry only: every root's decision, INCLUDING the skips and
+    their reason, goes to the run's JSONL sink. Without it the pass is
+    unverifiable in bulk -- it moves bones rather than verts, so nothing
+    downstream can see whether it fired.
     """
     if not CHAIN_BODY_SHIFT or not chain:
         return 0
@@ -10113,10 +10518,23 @@ def _shift_chain_roots_by_body_delta(chain: dict, src_nif) -> int:
             if idx:
                 per_bone.setdefault(b, []).append(V[idx])
 
+    def _say(root, **kw):
+        if dst_path is None:
+            return
+        try:
+            fit_metrics.record_chain_shift(dst_path, dict(root=str(root), **kw))
+        except Exception:
+            pass
+
     moved = 0
-    for root, sub in _chain_root_subtrees(chain).items():
+    # GARMENT roots only. The skeleton anchors in `chain` are the actor's own
+    # bones; the armour NIF's copies are placeholders the actor skeleton
+    # overrides at runtime, so translating them is both wrong in intent and
+    # inert in effect.
+    for root, sub in _chain_root_subtrees(chain, custom_only=True).items():
         chunks = [a for b in sub for a in per_bone.get(b, ())]
         if not chunks:
+            _say(root, skipped="no skinned cloth on this chain")
             continue
         P = np.concatenate(chunks)
         d, j = tree.query(P, k=min(4, len(cV)))
@@ -10124,15 +10542,34 @@ def _shift_chain_roots_by_body_delta(chain: dict, src_nif) -> int:
             d, j = d[:, None], j[:, None]
         near = d[:, 0] < CHAIN_BODY_SHIFT_NEAR
         if int(near.sum()) < CHAIN_BODY_SHIFT_MIN_VERTS:
+            _say(root, skipped="too few verts near the body",
+                 near=int(near.sum()), verts=int(len(P)),
+                 nearest=float(d[:, 0].min()))
             continue
         w = 1.0 / np.clip(d[near], 1e-6, None)
         w /= w.sum(axis=1, keepdims=True)
-        shift = (delta[j[near]] * w[..., None]).sum(axis=1).mean(axis=0)
+        per_vert = (delta[j[near]] * w[..., None]).sum(axis=1)
+        # Which near verts get a vote. Default: all of them (the plain mean).
+        if CHAIN_BODY_SHIFT_BIAS > 0.0:
+            mags = np.linalg.norm(per_vert, axis=1)
+            cut = np.quantile(mags, min(max(CHAIN_BODY_SHIFT_BIAS, 0.0), 0.99))
+            sel = mags >= cut
+            if sel.sum() >= 1:
+                per_vert = per_vert[sel]
+        shift = per_vert.mean(axis=0)
         mag = float(np.linalg.norm(shift))
         if not np.isfinite(mag) or mag < 1e-3:
+            _say(root, skipped="delta is zero here", mag=mag,
+                 near=int(near.sum()))
             continue
-        if mag > CHAIN_BODY_SHIFT_MAX:
+        capped = mag > CHAIN_BODY_SHIFT_MAX
+        if capped:
             shift = shift * (CHAIN_BODY_SHIFT_MAX / mag)
+        _say(root, moved=True, mag=round(mag, 4),
+             applied=round(float(np.linalg.norm(shift)), 4),
+             capped=bool(capped), near=int(near.sum()), verts=int(len(P)),
+             bias=CHAIN_BODY_SHIFT_BIAS,
+             shift=[round(float(c), 4) for c in shift])
         # COPY, never mutate. `node.transform` is a VIEW onto the source node --
         # verified: writing through it changes what the source node reports, so
         # the second weight file converted from the same load would inherit the
@@ -10311,13 +10748,41 @@ def _precreate_custom_bone_chains(dst_nif, src_nif, bone_names) -> int:
     # the two compose, and running first would have the re-anchor overwrite it.
     if CHAIN_BODY_SHIFT:
         try:
-            _n = _shift_chain_roots_by_body_delta(chain, src_nif)
+            # dst path for telemetry only; absent -> the pass still runs, it
+            # just cannot record. Never let a missing path skip the shift.
+            _dp = getattr(dst_nif, "filepath", None) or getattr(
+                dst_nif, "filename", None)
+            _before = {b: tuple(float(c) for c in x.translation)
+                       for b, (x, _p) in chain.items()}
+            _n = _shift_chain_roots_by_body_delta(chain, src_nif, dst_path=_dp)
+            # Roots whose transform the shift actually changed. The node loop
+            # below only ADDS nodes that do not already exist, and a garment
+            # chain root is normally already present -- `_copy_shape` adds it as
+            # a skin bone before this runs. So without re-applying here the
+            # shift is computed, reported, and silently DISCARDED: measured on a
+            # real cuirass as "moved 10 chain(s)" with ZERO nodes differing in
+            # the written file.
+            _shifted = {b: chain[b][0] for b, t in _before.items()
+                        if tuple(float(c) for c in chain[b][0].translation) != t}
             if _n:
                 print(f"    [chain-shift] moved {_n} chain(s) onto the UBE body")
         except Exception as _e:
             # RECORDED, not swallowed: a silent failure here is indistinguishable
             # from "the pass ran and found nothing to move".
             print(f"    [chain-shift] FAILED: {type(_e).__name__}: {_e}")
+            _shifted = {}
+        # Re-apply onto nodes that already exist. Restricted to roots the shift
+        # itself moved, and those are garment bones by construction
+        # (custom_only), so this cannot touch a skeleton node.
+        for _b, _x in (_shifted or {}).items():
+            _nd = dst_nif.nodes.get(_b)
+            if _nd is None:
+                continue           # not yet created -> the add loop uses `chain`
+            try:
+                _nd.transform.translation = tuple(
+                    float(c) for c in _x.translation)
+            except Exception:
+                pass
     pyn = _pynifly()
     existing = set(dst_nif.nodes.keys())
     added = 0
@@ -12753,6 +13218,167 @@ PUBIC_HOLE_Z_MAX = 72.0
 PUBIC_HOLE_X_BOUND = 6.0
 
 
+def _geometry_repair_allowed(shape, skip_geometry_repair=False) -> bool:
+    """May the rendering repairs touch this shape?
+
+    NO for HDT-SMP COLLIDERS and collision proxies. Those are never rendered, so
+    a repair aimed at RENDERING gains nothing on them -- while FSMP reads their
+    triangle orientation and vertex positions for collision, and this project
+    has a long history of equip CTDs from exactly that kind of well-meant edit
+    (see #smp-collider-skin-preserve: 'self-contained and internally
+    consistent').
+
+    YES for soft-body and layered cloth. They are SIMULATED but they are also
+    DRAWN, so a split seam or an inverted triangle shows on them like anything
+    else.
+
+    This deliberately does NOT key off `preserve_authored_skin`. That flag means
+    "keep this shape's authored SKIN", and the re-author path sets it for
+    colliders, soft-body AND layered cloth alike -- three classes, only one of
+    which should be excluded here. Borrowing it blocked the repair on ordinary
+    rendered garments: measured on a two-shape cuirass where the re-author handed
+    ONE of the two shapes fresh unwelded verts with the repair disabled,
+    overwriting the welded geometry, while its sibling got no override and stayed
+    clean. Same NIF, opposite outcomes, from one overloaded flag.
+    """
+    if skip_geometry_repair:
+        return False
+    name = str(getattr(shape, "name", "") or "")
+    low = name.lower()
+    # "Virtual*" is the physics-helper naming convention -- VirtualBody (the
+    # HDT collision proxy) and VirtualGround (a simulation plane). Neither is
+    # rendered. VirtualGround came through a real conversion unmodified only
+    # because its winding happened to already agree; that is luck, not a rule.
+    if low.startswith("virtual"):
+        return False
+    # ENDSWITH, not `in`. The suffix is the two-letter "Col", and a substring
+    # test excludes any shape whose name merely contains it -- the pack has a
+    # rendered shape whose name merely ENDS in those letters (a collar, a
+    # protocol part), which would then silently lose the repair.
+    if low.endswith(_BUST_SPLIT_COL_SUFFIX.lower()):
+        return False
+    return True
+
+
+def _weld_source_coincident_verts(src_verts, out_verts, tol=1e-4):
+    """Re-close seams the per-vertex passes pulled apart.
+
+    A UV/normal seam is stored as SEVERAL vertices at one position with separate
+    indices -- they exist precisely because their normals differ. Every fit pass
+    here is per-vertex and most push along each vertex's OWN normal, so the two
+    halves of a seam are pushed apart and the seam opens into a gap. Through the
+    gap you see the unlit interior: a black shape running along the seam line.
+
+    Measured on one converted cuirass: of 739 source-coincident groups, 237 were
+    split in the shipped mesh, 157 by over 0.05u, the worst a MIRRORED PAIR of
+    3.3u gaps at (+/-10.8, -7.0, 75.7) -- the rear waist, exactly where the user
+    reported black squares along a seam.
+
+    Coincidence is an authored invariant, not an accident: the mesh is a closed
+    surface and those vertices are one point. Restoring it can only close a hole
+    that should never have opened. Each group is moved to its own centroid, so
+    the seam lands between where the passes put its halves rather than snapping
+    to either side.
+    """
+    sv = np.asarray(src_verts, dtype=np.float64)
+    ov = np.array(out_verts, dtype=np.float64, copy=True)
+    if sv.shape != ov.shape or len(sv) == 0:
+        return ov, 0
+    key = np.round(sv / float(tol)).astype(np.int64)
+    _, inv, counts = np.unique(key, axis=0, return_inverse=True,
+                               return_counts=True)
+    multi = counts > 1
+    if not multi.any():
+        return ov, 0
+    sums = np.zeros((len(counts), 3), dtype=np.float64)
+    np.add.at(sums, inv, ov)
+    means = sums / counts[:, None]
+    mask = multi[inv]
+    before = ov[mask]
+    target = means[inv][mask]
+    n_moved = int((np.linalg.norm(before - target, axis=1) > 1e-6).sum())
+    ov[mask] = target
+    return ov, n_moved
+
+
+def _repair_winding_consistency(verts, tris, normals):
+    """Flip any triangle whose winding disagrees with its own vertex normals.
+
+    The two are read by different parts of the GPU: backface culling uses the
+    WINDING, lighting uses the NORMALS. When they disagree the triangle is
+    discarded from the side it is lit for and drawn on the side it is not --
+    which is a flat dark shape. Nothing else in the pipeline checks the pair
+    agree, so authored errors and pipeline damage both survive to the shipped
+    mesh.
+
+    The normals are treated as the authority, deliberately. On a closed body or
+    garment they are smoothed across many triangles and are the more robust of
+    the two, whereas a winding is a single ordering that one bad operation
+    flips. Flipping only reorders indices: no vertex moves, no normal changes,
+    UVs and skin weights are addressed by vertex index and are untouched.
+
+    A no-op on a healthy mesh -- every triangle already agrees -- so this cannot
+    restyle correct geometry.
+
+    Returns (tris, n_flipped).
+    """
+    v = np.asarray(verts, dtype=np.float64)
+    t = np.asarray(tris, dtype=np.int64)
+    n = np.asarray(normals, dtype=np.float64)
+    if t.ndim != 2 or t.shape[1] != 3 or len(t) == 0 or len(n) != len(v):
+        return t, 0
+    p0, p1, p2 = v[t[:, 0]], v[t[:, 1]], v[t[:, 2]]
+    cr = np.cross(p1 - p0, p2 - p0)
+    ln = np.linalg.norm(cr, axis=1)
+    live = ln > 1e-12
+    avg = n[t].mean(1)
+    al = np.linalg.norm(avg, axis=1)
+    live &= al > 1e-9
+    if not live.any():
+        return t, 0
+    dot = np.einsum("ij,ij->i", cr[live], avg[live])
+    bad = np.zeros(len(t), dtype=bool)
+    bad[np.where(live)[0][dot < 0.0]] = True
+    if not bad.any():
+        return t, 0
+    out = t.copy()
+    out[bad] = out[bad][:, [0, 2, 1]]
+    return out, int(bad.sum())
+
+
+def _repair_degenerate_normals(verts, tris, normals, tol=0.5):
+    """Replace unusable vertex normals with geometry-derived ones.
+
+    A normal shorter than `tol` carries no direction -- it cannot shade a
+    surface and it cannot decide a winding. The UBE body ships six of them
+    (|n| = 0.0068) sitting exactly on the pubic hole boundary, so every job that
+    consumes normals in that region is working from a zero vector: measured on a
+    converted cuirass, five fill triangles averaged a normal length of 0.56 and
+    one had a winding-vs-normal dot of exactly 0.000 -- its orientation decided
+    by nothing.
+
+    Only the unusable entries are touched; every healthy authored normal is left
+    byte-identical, so this cannot restyle a mesh's shading.
+
+    Returns (normals, n_repaired).
+    """
+    n = np.array(normals, dtype=np.float64, copy=True)
+    ln = np.linalg.norm(n, axis=1)
+    bad = ln < float(tol)
+    if not bad.any():
+        return n, 0
+    geo = _vertex_normals_from_tris(verts, tris)
+    # Keep the authored sign where there is any signal at all to keep; with a
+    # length of 0.0068 there generally is not, and the geometric normal is the
+    # only defensible answer.
+    n[bad] = geo[bad]
+    ln2 = np.linalg.norm(n, axis=1)
+    still = ln2 < 1e-6
+    if still.any():                    # fully isolated verts: leave a unit up
+        n[still] = np.array([0.0, 0.0, 1.0])
+    return n, int(bad.sum())
+
+
 def _close_pubic_holes(
         verts: np.ndarray, tris: np.ndarray, normals: np.ndarray,
 ) -> "tuple[np.ndarray, int]":
@@ -12779,6 +13405,10 @@ def _close_pubic_holes(
 
     if normals is None or len(verts) == 0:
         return tris, 0
+    # Repair before ANY use: the per-triangle winding vote below reads these,
+    # and a zero-length normal makes that vote meaningless rather than merely
+    # inaccurate.
+    normals, _ = _repair_degenerate_normals(verts, tris, normals)
 
     # Build boundary-edge set.
     edge_count: Counter = Counter()
@@ -12864,8 +13494,18 @@ def _close_pubic_holes(
         face_n /= np.linalg.norm(face_n, axis=1, keepdims=True) + 1e-9
         src_n = (normals[fan[:, 0]] + normals[fan[:, 1]] + normals[fan[:, 2]]) / 3.0
         src_n /= np.linalg.norm(src_n, axis=1, keepdims=True) + 1e-9
-        if (face_n * src_n).sum(axis=1).mean() < 0:
-            fan = fan[:, [0, 2, 1]]
+        # PER TRIANGLE, not per fan. The mean dot over the whole fan is an
+        # all-or-nothing vote, and the pubic loop is curved enough that a fan
+        # from one apex spans both orientations -- so every triangle that
+        # disagreed with the average was left inverted, rendering flat black.
+        # Measured on one converted body: 366 fill triangles, 105 inverted,
+        # 28 of them outside the garment and therefore visible, at z 66-69 on the
+        # rear midline. Reported in game as black polygons at the waist seen from
+        # below. The per-triangle dot was already being computed here and then
+        # discarded by the .mean(); this just uses it.
+        flip = (face_n * src_n).sum(axis=1) < 0
+        if flip.any():
+            fan[flip] = fan[flip][:, [0, 2, 1]]
         new_tris_chunks.append(fan)
         n_closed += 1
 
@@ -13028,7 +13668,8 @@ def _transplant_effect_controller(src_shader, dst_nif, pyn):
 
 def _copy_shape(src_shape, dst_nif, parent=None, override_verts=None,
                 override_skin=None, skip_alpha=False, override_tris=None,
-                preserve_authored_skin=False):
+                preserve_authored_skin=False, override_normals=None,
+                skip_geometry_repair=False):
     """Deep-copy a single shape from src NIF to dst NIF via pynifly.
 
     Carries through: geometry (verts/tris/uvs/normals), shape properties
@@ -13054,6 +13695,21 @@ def _copy_shape(src_shape, dst_nif, parent=None, override_verts=None,
     # "expected c_float_Array_3 instance, got numpy.ndarray" error.
     if override_verts is not None:
         ov = np.asarray(override_verts)
+        # #seam-weld-self on EVERY path that moves verts, not just the phase-2
+        # chain. Wiring it only into the chain left the copy-path pieces torn --
+        # measured on one armour set: the cuirass 0 split seams (chain path) but
+        # its gauntlets 60, worst 2.95u, boots 18, first-person cuirass 70. Welding
+        # BEFORE the normal recompute below so the normals describe the welded
+        # surface rather than the torn one.
+        if SEAM_WELD_SELF and _geometry_repair_allowed(
+                src_shape, skip_geometry_repair):
+            try:
+                _sv = np.asarray(src_shape.verts, dtype=np.float64)
+                _wv, _nw = _weld_source_coincident_verts(_sv, ov)
+                if _nw:
+                    ov = _wv
+            except Exception:
+                pass
         use_verts = [tuple(float(c) for c in row) for row in ov]
         # Recompute normals: source normals are stale after warp/inflate.
         # Pass source normals as sign reference so boundary verts don't flip.
@@ -13068,6 +13724,16 @@ def _copy_shape(src_shape, dst_nif, parent=None, override_verts=None,
         use_verts = list(src_shape.verts)
         use_normals = (list(src_shape.normals)
                        if src_shape.normals is not None else None)
+
+    # `override_normals` wins over both branches above. Used by the pubic-hole
+    # fill, whose source normals are trusted verbatim (see below) and so must be
+    # repaired BEFORE they are trusted -- the UBE body ships a handful of
+    # zero-length normals right on the hole boundary, and a fill triangle built
+    # on them is shaded from a zero vector.
+    if override_normals is not None:
+        _on = np.asarray(override_normals, dtype=np.float64)
+        if len(_on) == len(use_verts):
+            use_normals = [tuple(float(c) for c in row) for row in _on]
 
     # With override_tris, keep source normals as-is: fill tris inherit existing
     # normals (outward-pointing, continuous shading). No recompute needed.
@@ -13101,6 +13767,32 @@ def _copy_shape(src_shape, dst_nif, parent=None, override_verts=None,
         # Lift verts by the engine-ignored translation. Normals unchanged.
         _tx, _ty, _tz = _bake_trans
         use_verts = [(v[0] + _tx, v[1] + _ty, v[2] + _tz) for v in use_verts]
+
+    _repair_ok = _geometry_repair_allowed(src_shape, skip_geometry_repair)
+
+    # Degenerate normals on EVERY written shape, not just the injected body.
+    # Wiring this only into the body path left the boots shipping a 0.0068-long
+    # normal -- they take the copy path, so the repair never saw them.
+    if (WINDING_CONSISTENCY_REPAIR and _repair_ok
+            and use_normals is not None and len(use_tris)):
+        _fn, _nrep = _repair_degenerate_normals(
+            np.asarray(use_verts, dtype=np.float64),
+            np.asarray(use_tris, dtype=np.int64),
+            np.asarray(use_normals, dtype=np.float64))
+        if _nrep:
+            use_normals = [tuple(float(c) for c in row) for row in _fn]
+
+    # #winding-consistency -- LAST, after the transform bake, because a bake
+    # matrix with negative determinant mirrors the geometry and flips winding
+    # by itself. Repairing before it would be repairing the wrong orientation.
+    if (WINDING_CONSISTENCY_REPAIR and _repair_ok
+            and use_normals is not None and len(use_tris)):
+        _ut, _nflip = _repair_winding_consistency(
+            np.asarray(use_verts, dtype=np.float64),
+            np.asarray(use_tris, dtype=np.int64),
+            np.asarray(use_normals, dtype=np.float64))
+        if _nflip:
+            use_tris = [tuple(int(c) for c in row) for row in _ut]
 
     new_shape = dst_nif.createShapeFromData(
         src_shape.name,
@@ -14716,7 +15408,8 @@ def _finalize_hdt_physics(dst_path: Path, src_nif_path: Path) -> bool:
                         # (override_verts) to the UBE body radius. #smp-collider-skin-preserve
                         new_col = _copy_shape(src_shape, nf,
                                               override_verts=_col_ov,
-                                              preserve_authored_skin=True)
+                                              preserve_authored_skin=True,
+                                              skip_geometry_repair=True)
                         # Hide (bit 0): HDT reads geometry; renderer skips Hidden.
                         tgt = new_col if new_col is not None else next(
                             (s for s in nf.shapes if s.name == cn), None)
@@ -14847,8 +15540,15 @@ def _reauthor_nif_fresh(dst_path: Path, override_verts_by_name=None,
         # re-imported those shapes with preserve_authored_skin=True (it also
         # re-processed the bust-split collider clone). Audit 2026-07-28.
         _preserve = set()
+        # Kept SEPARATE on purpose. `_preserve` answers "keep this shape's
+        # authored SKIN"; `_colliders` answers "may the RENDERING repairs run".
+        # Those are different questions, and conflating them silently disabled
+        # the seam weld on every soft-body and layered-cloth garment this path
+        # re-authors -- which is most of the seam splits left in the pack.
+        _colliders: set = set()
         try:
-            _preserve |= _hdt_collider_shape_names(dst_path, nif=old)
+            _colliders = set(_hdt_collider_shape_names(dst_path, nif=old))
+            _preserve |= _colliders
             _preserve |= _hdt_softbody_shape_names(dst_path, nif=old)
             _preserve |= _layered_cloth_shape_names(shapes)
         except Exception:
@@ -14865,7 +15565,8 @@ def _reauthor_nif_fresh(dst_path: Path, override_verts_by_name=None,
                 continue                 # drop this shape from the re-author
             try:
                 _copy_shape(s, new, override_verts=_ov.get(s.name),
-                            preserve_authored_skin=(s.name in _preserve))
+                            preserve_authored_skin=(s.name in _preserve),
+                            skip_geometry_repair=(s.name in _colliders))
             except Exception as _ce:
                 copy_failed.append((s.name, repr(_ce)))
         if copy_failed:
@@ -15283,23 +15984,34 @@ def _inject_ube_baseshape(
         # them with fan tris using only existing verts. See
         # `_close_pubic_holes` for details.
         override_tris = None
+        override_normals = None
         if s.name == "BaseShape":
             try:
                 src_verts = np.asarray(s.verts, dtype=np.float64)
                 src_normals = (np.asarray(s.normals, dtype=np.float64)
                                if s.normals is not None else None)
                 if src_normals is not None:
+                    src_tris = np.asarray(s.tris, dtype=np.int64)
+                    # Repair, and SHIP the repair. Fixing them only inside
+                    # _close_pubic_holes would sort the winding vote and leave
+                    # the fill triangles still shaded from a zero vector,
+                    # because _copy_shape trusts the source normals verbatim on
+                    # this path.
+                    fixed, n_fixed = _repair_degenerate_normals(
+                        src_verts, src_tris, src_normals)
+                    if n_fixed:
+                        override_normals = fixed
                     sealed_tris, n_loops = _close_pubic_holes(
-                        src_verts,
-                        np.asarray(s.tris, dtype=np.int64),
-                        src_normals,
+                        src_verts, src_tris, fixed,
                     )
                     if n_loops > 0:
                         override_tris = sealed_tris
             except Exception:
                 override_tris = None
+                override_normals = None
         try:
-            _copy_shape(s, dst_nif, override_tris=override_tris)
+            _copy_shape(s, dst_nif, override_tris=override_tris,
+                        override_normals=override_normals)
             injected.append(s.name)
         except Exception as e:
             return (s.name, repr(e))
@@ -17252,6 +17964,16 @@ def convert_nif_phase2(
                 override, _cv = _chain.finish(override)
                 if _chain.rolled_back_to is not None:
                     print(f"    [chain] {s.name}: {_cv}")
+                # #seam-weld-self: after the chain has settled, while the shape
+                # is still in the same world frame the passes worked in and
+                # before the offset is subtracted back off. `_sv_body` is this
+                # shape's SOURCE geometry in that frame, so coincidence in it is
+                # exactly coincidence in the authored mesh.
+                if SEAM_WELD_SELF and override is not None:
+                    override, _nw = _weld_source_coincident_verts(
+                        _sv_body, override)
+                    if _nw:
+                        _stage('seam_weld', override)
                 _chain.record(dst_path, s.name)
                 # Per-pass STANDOFF, default OFF (CBBE2UBE_STANDOFF_TRACE=1).
                 # Reads the snapshots the chain already holds, so it must run
