@@ -686,6 +686,24 @@ def record_frame(dst_path, shape_name, report: dict) -> None:
     _append(dst_path, rec)
 
 
+def record_chain_shift(dst_path, report: dict) -> None:
+    """Append one #chain-body-shift decision to the run's sink.
+
+    This pass is unusually easy to misjudge, in both directions. It moves BONES,
+    not vertices, so a clip test on `shape.verts` shows nothing and the pass
+    reads as inert whether or not it worked. A print is no substitute: a pool
+    worker's stdout can be discarded outright in the frozen exe, so a run can
+    look silent while every chain moved. Recording the decision -- including the
+    SKIPPED ones and why -- is what makes the pass verifiable over a pack
+    instead of one piece at a time.
+    """
+    if not _enabled():
+        return
+    rec = {"kind": "chain_shift", "nif": str(Path(dst_path).name)}
+    rec.update(report)
+    _append(dst_path, rec)
+
+
 PASS_TRACE = os.environ.get("CBBE2UBE_PASS_TRACE") == "1"
 
 
