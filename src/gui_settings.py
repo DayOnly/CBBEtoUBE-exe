@@ -123,6 +123,42 @@ SETTINGS: "tuple[Setting, ...]" = (
             tooltip="Give stacked garments (shirt under vest) separated "
                     "clearance floors so layers don't converge and z-fight "
                     "where the body grows."),
+    Setting("conform_fold_guard", "Stop the conform folding the surface "
+            "(experimental)",
+            "Armor", "Fit and clearance", default=False,
+            env="CBBE2UBE_CONFORM_FOLD_GUARD", invert=False,
+            hint="Fixes dark patches that show only from some angles, usually in mirrored pairs.",
+            tooltip="The conform pass pulls each vertex toward the body on its "
+                    "own, and nothing stops two neighbours crossing through "
+                    "each other. Where the body creases -- spine groove, "
+                    "underbust, waist -- the surface between them turns inside "
+                    "out and renders as a flat dark patch, normally in a "
+                    "left/right pair because the body's creases are "
+                    "symmetric. Reported in game as two black squares on an "
+                    "converted cuirass, and measured on 208 of 302 shapes in a "
+                    "200-mesh sample. This clamps the pull so no triangle can "
+                    "flip. It only ever moves a vertex LESS than before, so it "
+                    "cannot cause clipping -- but a garment can sit very "
+                    "slightly further off the body exactly where the fold "
+                    "used to be."),
+    Setting("warp_shear_limit", "Stop the warp shearing big triangles "
+            "(experimental)",
+            "Armor", "Fit and clearance", default=False,
+            env="CBBE2UBE_WARP_SHEAR_LIMIT", invert=False,
+            hint="Fixes flat black patches that appear in mirrored pairs, often at the waist.",
+            tooltip="The CBBE-to-UBE warp moves each vertex by the body "
+                    "deformation nearest to it. A LARGE triangle's corners sit "
+                    "far apart, so at the waist -- where the two bodies differ "
+                    "most -- they get pulled very different ways, and the "
+                    "triangle stretches and rotates until it faces INTO the "
+                    "body. It is then lit from behind and renders flat black, "
+                    "in a left/right pair. Measured on a converted cuirass: the "
+                    "two biggest triangles grew 2.6x and turned over, while "
+                    "the mesh as a whole grew only 1.8%%. This caps how far one "
+                    "triangle may stretch. It does NOT warp less -- a clamped "
+                    "vertex still travels the full local body delta, it just "
+                    "stops shearing away from its neighbours -- so it cannot "
+                    "leave armour CBBE-shaped."),
     Setting("rigid_majority_softbody", "Keep mostly-rigid armour skinned "
             "(experimental)",
             "Armor", "Body follow and morphs", default=False,
@@ -440,9 +476,9 @@ def tabs_present() -> "list[str]":
 LAYOUT: "dict[str, tuple]" = {
     "Armor": (
         ("Fit and clearance", (
-            "drape_xml_gate", "conform_to_body", "smp_antipoke",
-            "smp_antipoke_push", "antipoke_smooth", "layered_antipoke",
-            "unified_offset")),
+            "drape_xml_gate", "conform_to_body", "conform_fold_guard",
+            "warp_shear_limit", "smp_antipoke", "smp_antipoke_push",
+            "antipoke_smooth", "layered_antipoke", "unified_offset")),
         ("Body follow and morphs", (
             "chest_follow", "chest_follow_unknown", "source_follow",
             "rigid_majority_softbody")),
