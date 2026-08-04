@@ -716,4 +716,35 @@ def validate_armor_hdt_xml(xml_path: "Path",
             warnings.append("HDT XML body shape has no can-collide-with-tag "
                             "entries — no cloth↔body collision will fire")
 
+    # ...and the MIRROR of that check, which was missing. Collision is mutual:
+    # either side naming the other's tag is enough, so a cloth naming `body`
+    # collides even against a collider that names nothing. The check above only
+    # ever looked at the BODY side, so a cloth naming no body-ish tag -- which
+    # therefore cannot collide with the body whatever the collider says --
+    # passed silently. Measured over a converted pack: 28 of 231 cloth XMLs.
+    #
+    # REPORTED, never auto-fixed. Adding `body` to an UNCONSTRAINED cloth
+    # recreates the equip-CTD pattern (per-vertex + per-triangle + no
+    # generic-constraint = an unconstrained collision pair, which diverges and
+    # takes FSMP's collision SIMD out of bounds). The warning therefore states
+    # whether the piece is constrained, because that is what decides whether it
+    # is fixable at all.
+    body_tags = {"body", "body2", "colbody", "bodycol"}
+    constrained = root.find("generic-constraint") is not None
+    for sh in root.findall("per-vertex-shape"):
+        sh_name = sh.get("name") or "?"
+        can = {(t.text or "").strip().lower()
+               for t in sh.findall("can-collide-with-tag")}
+        if can & body_tags:
+            continue
+        why = ("the piece IS constrained, so body collision can be added safely"
+               if constrained else
+               "the piece has NO constraints, so adding one would recreate the "
+               "unconstrained-collision-pair equip CTD -- it needs a rigged "
+               "chain first")
+        warnings.append(
+            f"HDT XML cloth shape {sh_name!r} declares no body-ish "
+            f"can-collide-with-tag (has {sorted(can) or 'none'}) -- it cannot "
+            f"collide with the body; {why}")
+
     return warnings
