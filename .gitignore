@@ -84,3 +84,18 @@ ube_replacers_to_disable.txt
 # clone would carry someone else's chosen flags. The app treats an absent
 # file as "all defaults", so there is nothing to ship.
 CBBEtoUBE_settings.json
+
+# Outputs of the 2026-08-05 census scripts (scripts/analysis/). Same two rules
+# as everything above, and both bite here:
+#   * the JSON baselines are keyed by MESH PATH -- crumple_baseline.json alone
+#     lists 365 hit pieces and 2504 clean ones, so it names mods by
+#     construction;
+#   * the A/B harnesses write whole CONVERTED NIF TREES (hundreds of MB) into
+#     the repo root by default, and nothing else stopped `git add .` staging
+#     them -- the same hole the 2026-08-02 audit found for the coverage reports.
+# Override the scratch location with CBBE2UBE_AB_DIR if you want them elsewhere.
+_ab_morphtri/
+_ab_coherence/
+crumple_baseline.json
+morphtri_gated.json
+census3_ab.json
