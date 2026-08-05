@@ -14532,8 +14532,14 @@ def _copy_shape(src_shape, dst_nif, parent=None, override_verts=None,
                 _wv, _nw = _weld_source_coincident_verts(_sv, ov)
                 if _nw:
                     ov = _wv
-            except Exception:
-                pass
+            except Exception as _we:
+                # REPORTED, like its sibling below. A bare `pass` here is
+                # indistinguishable from "no seam needed welding", and the
+                # defect this pass exists for -- torn seams on the COPY path --
+                # is invisible on disk until someone looks at the mesh. The
+                # coherence repair immediately below already reports; this one
+                # was the last silent pass in the block.
+                _note_pass_failure("_weld_source_coincident_verts", _we)
         # Un-buckle thin features the fit crumpled. AFTER the weld (which can
         # itself move a rim vert) and BEFORE the normal recompute, so the
         # normals describe the repaired surface. #coherence-repair

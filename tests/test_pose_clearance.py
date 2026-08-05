@@ -29,7 +29,7 @@ pins the case it could not see."""
 import numpy as np
 import pytest
 
-from src import pose_clearance as pc
+from research import pose_clearance as pc
 
 
 def _grid(n=12, z0=0.0, z1=10.0, r=5.0, y=0.0):

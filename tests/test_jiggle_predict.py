@@ -18,7 +18,7 @@
 the worst-case kinematic model is provable by construction."""
 import numpy as np
 
-from src.jiggle_predict import (
+from research.jiggle_predict import (
     DEFAULT_EXCURSION,
     calibrate_excursion,
     excursion_for_bone,
