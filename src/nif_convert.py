@@ -11388,6 +11388,15 @@ LEG_GARMENT_NOT_EXTREMITY = (
     os.environ.get("CBBE2UBE_NO_LEG_GARMENT_GUARD", "").strip().lower()
     not in ("1", "true", "yes", "on"))
 
+# #boot-pelvis-only. Weigh the guard against PELVIS mass alone, not thigh+pelvis.
+# A tall boot IS a thigh garment (thigh/ext up to 6.79 on thigh-high socks), so
+# including thigh let a boot's own shaft read as a leg garment's hip anchor and
+# reclassified 58 real footwear shapes. See the full measurement and the dead
+# chain-bone variant at the guard itself. Set to 0 to restore thigh+pelvis.
+LEG_GARMENT_PELVIS_ONLY = (
+    os.environ.get("CBBE2UBE_LEG_GARMENT_PELVIS_ONLY", "").strip().lower()
+    not in ("0", "false", "no", "off"))
+
 
 def _shape_has_fine_animation_bones(src_shape) -> bool:
     """Detect shapes rigged for hand/foot/finger/toe articulation OR
@@ -11446,22 +11455,57 @@ def _shape_has_fine_animation_bones(src_shape) -> bool:
     # never gets collider handling, and it picks up a leg scale-bone graft from
     # the hands/feet call that the cloth path's collider guard never sees.
     #
-    # WEIGHT MASS separates them cleanly, with nothing to tune:
+    # WEIGHT MASS separates them, but ONLY THE PELVIS TERM. #boot-pelvis-only
     #     real boot   thigh  0.1%  pelvis  0.0%  foot 54.6%
     #     real glove  thigh  0.0%  pelvis  0.0%  hand 64.9%
     #     leg pants   thigh 35.1%  pelvis 12.7%  foot  6.7%
-    # An extremity piece rides its OWN extremity; it does not hang off the thigh
-    # and pelvis. Require extremity mass to exceed upper-leg mass -- a ~500x
-    # margin on real boots, so it cannot misfire on them.
-    up = 0.0
+    #
+    # THIS ORIGINALLY SUMMED THIGH + PELVIS, and the "~500x margin, cannot
+    # misfire on real boots" that justified it is true only of the single ankle
+    # boot it was tuned on. Measured over the whole converted pack, 58 real
+    # footwear shapes reclassified, spanning ratio 0.53-1.02 across a boundary
+    # at 1.00 while a heel survived at 1.02 -- the threshold ran straight
+    # through the middle of the class it was supposed to protect.
+    #
+    # THIGH IS THE TERM THAT BREAKS IT. A tall boot IS a thigh garment: measured
+    # thigh/ext reaches 6.79 on thigh-high socks, 2.77 on a knee boot, 1.31 on a
+    # tall armoured boot. Summing thigh in lets a boot's own shaft stand in for a
+    # leg garment's pelvis mass, and no threshold can then separate them.
+    #
+    # THE PELVIS TERM ALONE DOES SEPARATE. A boot is a TUBE AROUND THE LEG and
+    # never reaches the pelvis; pants HANG FROM it. Measured pelvis/ext over the
+    # pack: all 730 footwear shapes <= 0.189, while the leg garment this guard
+    # was built for sits at 1.901. Dropping thigh fixes all 58 and breaks none.
+    #
+    # MONOTONE BY CONSTRUCTION, which is the point: `ext > thigh + pelvis`
+    # implies `ext > pelvis` because thigh >= 0, so this rule can only ever
+    # WITHDRAW an extremity->cloth flip, never add one. "Newly broken" is 0 by
+    # proof rather than by measurement -- and a classifier change here is what
+    # regressed boots in June.
+    #
+    # COVERAGE COST, stated plainly: leg garments caught drops 42 -> 10. Every
+    # one dropped is rigid plate (greaves, metal leg shells) carrying no chain
+    # bones, so it is inert on either path -- rigid is rigid. The exception is
+    # one cloth `pants` shape at pelvis/ext 0.892 that now stays extremity; it
+    # has no chain bones either, so it cannot hit the physics-collapse class,
+    # but it does miss the cloth fit pass. Known and accepted.
+    #
+    # A CHAIN-BONE TERM WAS TRIED AND IS DEAD -- do not re-add it. Requiring "no
+    # custom chain bones" to be an extremity flips real GLOVES: chain PRESENCE
+    # catches 4 handwear shapes, and chain MASS does not separate them either
+    # (glove arms_mesh 0.09245 vs dress 0.09164 -- indistinguishable).
+    # CBBE2UBE_LEG_GARMENT_PELVIS_ONLY=0 restores the thigh+pelvis sum.
+    anchor = 0.0
     for bn, pairs in bw.items():
         low = bn.lower()
-        if not (("thigh" in low and "front" not in low and "rear" not in low)
-                or "pelvis" in low):
+        is_pelvis = "pelvis" in low
+        # frontthigh/rearthigh are SCALE bones, not the animation thigh
+        is_thigh = ("thigh" in low and "front" not in low and "rear" not in low)
+        if not (is_pelvis or (is_thigh and not LEG_GARMENT_PELVIS_ONLY)):
             continue
         pl = pairs.tolist() if hasattr(pairs, "tolist") else pairs
-        up += sum(float(w) for _i, w in pl)
-    return up <= float(ext.sum())
+        anchor += sum(float(w) for _i, w in pl)
+    return anchor <= float(ext.sum())
 
 
 # Fraction of a shape's total vertex weight on hand/finger/foot/toe bones that
