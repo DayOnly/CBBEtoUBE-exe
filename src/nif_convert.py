@@ -294,12 +294,22 @@ WARP_SHEAR_STEPS = int(os.environ.get("CBBE2UBE_WARP_SHEAR_STEPS", "") or 8)
 WARP_DELTA_OUTLIER = os.environ.get(
     "CBBE2UBE_WARP_DELTA_OUTLIER", "").strip().lower() in (
         "1", "true", "yes", "on")
-# 1.0u sits between the mesh's p99 (1.77u on the traced piece -- note that is
-# TOTAL displacement roughness, so the delta-field tail is smaller) and the 4-6u
-# fliers. Not tuned: it is an outlier fence, and the numbers either side of it
-# differ by a factor of four.
+# An outlier FENCE, not a tuned parameter: it sits between the mesh's own
+# roughness and the fliers, and the numbers either side differ by a factor of
+# four. 1.0u was the first choice, from the traced piece's p99 of 1.77u (that is
+# TOTAL displacement roughness, so the delta-field tail is smaller) against 4-6u
+# fliers.
+#
+# 0.5 IS THE DEFAULT because that is the value with evidence behind it. The GUI
+# has offered 0.5 since the setting was exposed while this constant still read
+# 1.0, so enabling the guard from the GUI and from the environment gave
+# DIFFERENT clamps -- a silent factor-of-two disagreement in which knob you
+# happened to use. The generalization test was run at 0.5 over 10 pieces the
+# guard had never seen: clipping -56 verts with 0 pieces worse, standoff
+# +0.0082u. Nothing was measured at 1.0, so 0.5 is the honest default and the
+# two surfaces now agree. #warp-outlier-default
 WARP_DELTA_OUTLIER_MAX = float(
-    os.environ.get("CBBE2UBE_WARP_DELTA_OUTLIER_MAX", "") or 1.0)
+    os.environ.get("CBBE2UBE_WARP_DELTA_OUTLIER_MAX", "") or 0.5)
 
 # #warp-push-shell-cap -- OPT-IN. Never push a vertex out THROUGH its own
 # garment.
