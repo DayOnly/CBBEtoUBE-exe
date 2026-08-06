@@ -172,12 +172,27 @@ def main() -> int:
     if probe_file:
         pf = Path(probe_file)
         assert pf.is_file(), f"CONTROL UNAVAILABLE: {pf} missing"
-        key = None
-        for k in index:
-            if Path(k).name == pf.name.split(".nif")[0] + ".nif":
-                key = k
+        # Resolve the source by the probe's FULL meshes-relative path, not its
+        # basename. Matching on basename alone picks the first `cuirassf_1.nif`
+        # in the index, which belongs to a DIFFERENT armour: the vert counts
+        # then disagree, every shape is skipped, and the control reports the
+        # detector as broken when the detector is fine. That false alarm cost a
+        # real investigation on 2026-08-05 -- dozens of pieces share a filename.
+        rel = pf.name
+        for suf in (".pre-coh-bak", ".pre-keepjig-bak"):
+            if rel.endswith(suf):
+                rel = rel[:-len(suf)]
                 break
-        assert key, f"CONTROL UNAVAILABLE: no source indexed for {pf.name}"
+        else:
+            rel = rel.split(".nif")[0] + ".nif"
+        try:
+            key = str(pf.parent.relative_to(ube) / rel).lower()
+        except ValueError:
+            key = rel.lower()
+        assert key in index, (
+            f"CONTROL UNAVAILABLE: no source indexed for {key!r}. The probe "
+            f"must sit under the output root so its meshes-relative path can "
+            f"be derived.")
         bsh, ssh = shapes_of(pf), shapes_of(index[key][0])
         n_pat = 0
         for n in bsh:
