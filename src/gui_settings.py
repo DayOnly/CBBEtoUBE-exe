@@ -88,33 +88,6 @@ SETTINGS: "tuple[Setting, ...]" = (
             "Armor", "Seams", default=True,
             env="CBBE2UBE_NO_SEAM_SKIN_MATCH", invert=True,
             tooltip="Give welded seam verts identical weights so they don't reopen when posed."),
-    Setting("arm_twist_pushdown", "Stop the upper back sliding out when the arms move",
-            "Armor", "Limbs and extremities", default=False,
-            env="CBBE2UBE_ARM_TWIST_PUSHDOWN", invert=False,
-            hint="For skin showing at the shoulder blades on larger body presets.",
-            tooltip="Some outfits carry more arm-twist weight across the upper "
-                    "back than the body underneath does, so swinging an arm "
-                    "drags the garment off the skin and the shoulder blades "
-                    "come through -- worse on a larger preset, because there "
-                    "is less clearance to lose. Measured on a fur cuirass: the "
-                    "garment moved 5.2x as far as the skin it covered under "
-                    "arms-forward, and 74 of 331 covered points went from "
-                    "covered to showing; with this on, 3. Spine motion is "
-                    "unchanged either way. It only ever REMOVES excess arm "
-                    "weight and never moves a vertex, so the fit you already "
-                    "have does not change. NOT yet confirmed in game, and it "
-                    "edits the skinning of outfits that ship their own morph "
-                    "data -- which is why it is off by default."),
-    Setting("arm_twist_strength", "  ...how much of the excess to remove",
-            "Armor", "Limbs and extremities", kind="float", default=0.85,
-            env="CBBE2UBE_ARM_TWIST_STRENGTH", advanced=True,
-            min=0.1, max=1.0, step=0.05,
-            tooltip="1.0 removes ALL of it, which overshoots: the garment then "
-                    "stops responding to the arm at all (measured follow 0.02 "
-                    "-- the same defect pointing the other way). It tracks the "
-                    "skin best between 0.75 and 0.85. Sweep, as follow / points "
-                    "newly showing: 0.35 -> 3.10/+65, 0.60 -> 1.91/+41, "
-                    "0.75 -> 1.27/+15, 0.85 -> 0.88/+3, 1.00 -> 0.02/-1."),
     # ---- Armor: jiggle and physics transfer ---------------------------
     Setting("jiggle_transfer", "Transfer body jiggle to cloth",
             "Armor", "Jiggle transfer", default=True,
