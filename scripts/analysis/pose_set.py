@@ -91,6 +91,10 @@ REGION_POSES = {
                     "crouch", "walk + lean", "sprint"],
     "butt":        ["stride", "deep stride", "crouch", "walk + lean", "sprint"],
     "lower_back":  ["spine fwd lean", "spine twist", "crouch", "sprint"],
+    # Same poses as upper_chest: the shoulder blades are driven by the clavicle,
+    # upper arm and Spine2, so an arm pose moves them and a leg pose does not.
+    "upper_back":  ["spine fwd lean", "spine twist", "spine side bend",
+                    "arms down", "arms forward", "arms crossed", "bow draw", "sprint"],
     "thigh":       ["stride", "deep stride", "knee bend", "legs together",
                     "crouch", "walk + lean", "sprint"],
 }
@@ -104,6 +108,14 @@ REGIONS = (
     ("belly",       lambda z, ny: (z >= 75) & (z < 90) & (ny > 0.3)),
     ("butt",        lambda z, ny: (z >= 55) & (z <= 75) & (ny < -0.3)),
     ("lower_back",  lambda z, ny: (z > 75) & (z <= 95) & (ny < -0.3)),
+    # THE SHOULDER BLADES, which nothing here could see: lower_back stops at z95 and
+    # upper_chest is z99-112 FRONT-facing, so the rear above z95 was judged in no
+    # region at all.
+    # It starts at 95, NOT at upper_chest's 99. Mirroring the front band exactly was
+    # the tidier story, but it left rear z95-99 in no region -- and an unjudged strip
+    # between two regions is exactly where a defect sits unseen. Contiguity with
+    # lower_back's ceiling beats symmetry with the front.
+    ("upper_back",  lambda z, ny: (z > 95) & (z <= 112) & (ny < -0.3)),
     ("thigh",       lambda z, ny: (z >= 35) & (z < 55)),
 )
 

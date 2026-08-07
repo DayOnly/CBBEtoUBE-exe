@@ -62,9 +62,17 @@ sys.path.insert(0, str(_REPO / ".pynifly"))
 import numpy as np                                    # noqa: E402
 from scripts.analysis import standoff_audit as sa              # noqa: E402
 import src.nif_convert as nc                          # noqa: E402
-from src.body_zones import BREAST_Z, BUTT_Z, TORSO_HALF_X, REAR_Y  # noqa: E402
+from src import body_zones as bz                      # noqa: E402
 
-BANDS = {"bust": (BREAST_Z, True), "butt": (BUTT_Z, False)}
+# A band IS the project's own zone predicate, not a second copy of one. What this
+# replaced was an inline (z-range, front-flag) re-derivation of breast_mask and
+# butt_mask -- identical today, and exactly the way two detectors for one concept
+# drift apart later. Calling the real predicate keeps there being only one.
+#
+# `back` is body_zones.back_mask: z 90..110, rear-facing. Its ceiling of 110 sits
+# BELOW the shoulder blades, so a back number here is a LOWER BOUND on the region
+# the defect was reported in -- do not read a clean back band as a clean upper back.
+BANDS = {"bust": bz.breast_mask, "butt": bz.butt_mask, "back": bz.back_mask}
 
 
 def _world(shape):
@@ -126,6 +134,68 @@ def _match(slider, keys):
     return None
 
 
+def _load_preset(path):
+    """{slider -> value} from a BodySlide SliderPresets XML or a RaceMenu .jslot.
+
+    A preset is the population that actually ships. Scoring sliders ONE AT A TIME
+    was the wrong population once already: a preset engages them together and the
+    residuals ADD, so the combination pokes where no single slider does.
+
+    BodySlide stores a percent on two weight sides; we take `big`, the weight-100
+    side, because that is the side a `_1` mesh is measured against. RaceMenu stores
+    a per-mod key list per morph, whose values SUM to the applied value.
+    """
+    p = Path(path)
+    if p.suffix.lower() == ".jslot":
+        import json
+        d = json.loads(p.read_text(encoding="utf-8-sig"))
+        out = {}
+        for e in d.get("bodyMorphs") or []:
+            nm = e.get("name")
+            if not nm:
+                continue
+            out[nm] = out.get(nm, 0.0) + sum(
+                float(k.get("value", 0.0)) for k in (e.get("keys") or []))
+        return out, "racemenu jslot"
+    import xml.etree.ElementTree as ET
+    out = {}
+    for pr in ET.parse(str(p)).getroot().iter("Preset"):
+        for s in pr.iter("SetSlider"):
+            if (s.get("size") or "").lower() != "big":
+                continue
+            nm = s.get("name")
+            if nm:
+                out[nm] = float(s.get("value", "0")) / 100.0
+    return out, "bodyslide xml (big/weight-100 side)"
+
+
+def _resolve_preset(pv, bm):
+    """{body OSD morph -> value}, plus what did NOT resolve.
+
+    EXACT match on the name with the shape prefix stripped, because the loose
+    suffix rule `_match` uses for a single slider is unsafe over a whole preset:
+    'Butt' would silently bind to 'BaseShapeBigButt'. Anything that needs the
+    loose rule is recorded as FUZZY and printed, never folded in quietly.
+    """
+    idx = {}
+    for k in bm:
+        n = k[len("BaseShape"):] if k.lower().startswith("baseshape") else k
+        idx.setdefault(n.lower(), k)
+    sel, missing, fuzzy = {}, [], []
+    for nm, v in pv.items():
+        if abs(v) < 1e-9:
+            continue
+        k = idx.get(nm.lower())
+        if k is None:
+            k = _match(nm, list(bm))
+            if k is None:
+                missing.append(nm)
+                continue
+            fuzzy.append((nm, k))
+        sel[k] = sel.get(k, 0.0) + v
+    return sel, missing, fuzzy
+
+
 def _garment_parts(nf, p, hits_provider):
     """[(shape, bind verts, tris, per-slider morph table)] for rendered shapes."""
     out = []
@@ -161,10 +231,7 @@ def _sweep(a, nf, bV, bT, bN, bm, p) -> int:
     `--min-body-move` drops sliders that barely touch the band: they cannot be
     responsible, and including them would bury the real ones in noise.
     """
-    (zlo, zhi), front = BANDS[a.band]
-    mask = ((bV[:, 2] >= zlo) & (bV[:, 2] <= zhi)
-            & (np.abs(bV[:, 0]) < TORSO_HALF_X)
-            & ((bV[:, 1] > 2) if front else (bV[:, 1] < REAR_Y)))
+    mask = BANDS[a.band](bV)
     idx = np.flatnonzero(mask)
     if len(idx) < 20:
         print(f"ABORT: {a.band} band has {len(idx)} verts", file=sys.stderr)
@@ -244,6 +311,11 @@ def main() -> int:
                     help="sweep only sliders that move the band at least this "
                          "much (default 0.15u) -- a slider that barely moves "
                          "the band cannot be responsible for a clip")
+    ap.add_argument("--preset",
+                    help="apply a whole preset at once (BodySlide SliderPresets "
+                         ".xml or RaceMenu .jslot) instead of one slider. This is "
+                         "the population that ships: residuals ADD across the "
+                         "sliders a preset engages together.")
     a = ap.parse_args()
 
     p = Path(a.nif)
@@ -265,17 +337,40 @@ def main() -> int:
         return 3
     if a.sweep:
         return _sweep(a, nf, bV, bT, bN, bm, p)
-    hits = [k for k in bm if a.slider.lower() in k.lower()]
-    if a.list or not hits:
-        print(f"body slider source: {osd_name}   {len(bm)} sliders")
-        for k in sorted(hits or bm)[:40]:
-            print(f"   {k}")
-        return 0 if a.list else 3
+    if a.preset:
+        pv, pkind = _load_preset(a.preset)
+        sel, missing, fuzzy = _resolve_preset(pv, bm)
+        engaged = sum(1 for v in pv.values() if abs(v) > 1e-9)
+        # COVERAGE, printed beside the verdict: a clean number from a preset that
+        # only resolved a handful of its sliders is vacuous.
+        print(f"preset       : {Path(a.preset).name}  [{pkind}]")
+        print(f"             : {len(pv)} sliders, {engaged} engaged, "
+              f"{len(sel)} resolved against the body OSD "
+              f"({100.0 * len(sel) / max(engaged, 1):.1f}% coverage), "
+              f"{len(missing)} unresolved, {len(fuzzy)} fuzzy")
+        if fuzzy:
+            for nm, k in fuzzy[:6]:
+                print(f"    FUZZY  {nm}  ->  {k}")
+        if missing:
+            print(f"    unresolved (first 8): {', '.join(sorted(missing)[:8])}")
+        if not sel:
+            print("ABORT: the preset resolved to NO body slider -- nothing "
+                  "would be measured", file=sys.stderr)
+            return 3
+        hits = sorted(sel)
+    else:
+        hits = [k for k in bm if a.slider.lower() in k.lower()]
+        if a.list or not hits:
+            print(f"body slider source: {osd_name}   {len(bm)} sliders")
+            for k in sorted(hits or bm)[:40]:
+                print(f"   {k}")
+            return 0 if a.list else 3
+        sel = {k: 1.0 for k in hits}
 
     # --- morph the body ---
     dB = np.zeros_like(bV)
     for k in hits:
-        dB += bm[k]
+        dB += bm[k] * sel[k]
     dB *= float(a.strength)
     moved_b = np.linalg.norm(dB, axis=1)
     if moved_b.max() < 1e-4:
@@ -301,7 +396,7 @@ def main() -> int:
         for k in hits:
             mk = _match(k, gm.keys())
             if mk is not None:
-                dG += gm[mk]
+                dG += gm[mk] * sel[k]
                 used.append(mk)
         dG *= float(a.strength)
         parts_bind.append((gV, gT))
@@ -329,16 +424,17 @@ def main() -> int:
             off += len(v)
         return V, np.concatenate(tl)
 
-    (zlo, zhi), front = BANDS[a.band]
-    mask = ((bV[:, 2] >= zlo) & (bV[:, 2] <= zhi)
-            & (np.abs(bV[:, 0]) < TORSO_HALF_X)
-            & ((bV[:, 1] > 2) if front else (bV[:, 1] < REAR_Y)))
+    mask = BANDS[a.band](bV)
     idx = np.flatnonzero(mask)
     if len(idx) < 20:
         print(f"ABORT: {a.band} band has {len(idx)} verts", file=sys.stderr)
         return 3
 
-    print(f"body sliders : {', '.join(hits)}  (strength {a.strength})")
+    if a.preset:
+        print(f"body sliders : {len(hits)} from the preset  "
+              f"(strength {a.strength})")
+    else:
+        print(f"body sliders : {', '.join(hits)}  (strength {a.strength})")
     print(f"body moves   : max {moved_b.max():.3f}u   "
           f"median-in-band {np.median(moved_b[idx]):.3f}u")
     print(f"{'garment shape':<24}{'verts':>7}{'tri':>16}{'morphs':>8}"

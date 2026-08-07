@@ -47,7 +47,11 @@ import json
 import sys
 from pathlib import Path
 
-_REPO = Path(__file__).resolve().parent.parent
+# parent x3: this file is scripts/analysis/, so the repo root (which owns `src/`
+# and `.pynifly/`) is three levels up. It read parent.parent -- i.e. `scripts/` --
+# which has neither, so the module only imported when the repo root happened to be
+# on sys.path already. Most of scripts/analysis/ still has the parent.parent form.
+_REPO = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(_REPO))
 sys.path.insert(0, str(_REPO / ".pynifly"))
 
@@ -55,9 +59,74 @@ import numpy as np                                              # noqa: E402
 
 from pyn import pynifly                                         # noqa: E402
 from src.nif_convert import UBE_BODY_INJECT_NAMES               # noqa: E402
+from src.tri import TriFile                                     # noqa: E402
 from scripts.analysis.posed_clip_test import (                           # noqa: E402
     build_pose, read_skin, bone_parents, apply_pose, rays_hit, vert_normals,
     DEFAULT_SKELETON)
+from scripts.analysis.morph_clip_test import _load_preset       # noqa: E402
+
+
+def _morph_key(name):
+    """Morph names lose the body-shape prefix: generate_armor_tri emits the bare
+    slider name for garment shapes but the body's own OSD names (`BaseShape<X>`)
+    verbatim for the embedded body shape. Compare on the bare name or the two
+    never match."""
+    low = name.lower()
+    return low[len("baseshape"):] if low.startswith("baseshape") else low
+
+
+def apply_preset(nif_path, data, preset, strength=1.0):
+    """Morph EVERY shape from the NIF's own sibling .tri, before any posing.
+
+    This is what skee does at runtime: one BODYTRI, applied by shape name, to the
+    injected body AND to each garment. Sourcing both sides from the artefact -- not
+    from the converter's OSD -- means the measurement sees exactly what shipped,
+    including any morph the generator dropped.
+
+    Deltas are added to `read_skin`'s verts, which are the raw shape verts: the same
+    space TRI offsets are authored in, so no transform belongs here.
+    """
+    stem = Path(nif_path).stem
+    for suf in ("_0", "_1"):
+        if stem.endswith(suf):
+            stem = stem[:-2]
+    tri_p = Path(nif_path).parent / f"{stem}.tri"
+    if not tri_p.is_file():
+        raise SystemExit(f"ABORT: no sibling .tri at {tri_p} -- nothing to morph")
+    tri_shapes = {s.name: s for s in TriFile.load(tri_p).shapes}
+    pv, kind = _load_preset(preset)
+    engaged = {}
+    for k, v in pv.items():
+        if abs(v) > 1e-9:
+            engaged[_morph_key(k)] = engaged.get(_morph_key(k), 0.0) + v
+    if not engaged:
+        raise SystemExit("ABORT: preset engages no slider")
+
+    rows = []
+    for name in list(data):
+        v, t, w = data[name]
+        sh = tri_shapes.get(name)
+        if sh is None:
+            rows.append((name, 0, 0, 0.0))
+            continue
+        idx = {_morph_key(m.name): m for m in sh.morphs}
+        d = np.zeros_like(v)
+        used = 0
+        for sl, val in engaged.items():
+            m = idx.get(sl)
+            if m is None:
+                continue
+            used += 1
+            off = np.asarray(m.offsets, dtype=np.float64)
+            if not len(off):
+                continue
+            vi = off[:, 0].astype(np.int64)
+            ok = (vi >= 0) & (vi < len(v))
+            np.add.at(d, vi[ok], off[ok, 1:4] * (val * float(strength)))
+        data[name] = (v + d, t, w)
+        rows.append((name, len(sh.morphs), used,
+                     float(np.linalg.norm(d, axis=1).max())))
+    return rows, kind, len(engaged), tri_p.name
 
 
 def _posed(data, garments, acc, body_name):
@@ -148,6 +217,8 @@ def load(nif_path, skeleton=None, body_name=None):
         raise SystemExit(f"no garment shapes in {Path(nif_path).name}")
     par = bone_parents(pynifly.NifFile(skel))
     _bv, _bt, body_w = data[bn]
+    # Bind origins, taken BEFORE/independently of the morph on purpose: BodyMorph
+    # moves vertices, never bones, so the pose pivots are unchanged by it.
     origins = {b: o for b, (w, o) in body_w.items()}
     return data, garments, par, origins, bn
 
@@ -167,7 +238,7 @@ def region_visible(body, bn, GV, GT, sel):
 
 
 def analyse(nif_path, skeleton=None, only_region=None, sample=400, seed=12345,
-            body_name=None):
+            body_name=None, preset=None, strength=1.0, out=None):
     """Per region: the worst pose and how much bind-coverage it loses.
 
     TWO THINGS MAKE THIS AFFORDABLE, and without them a population sweep is 31 hours:
@@ -179,6 +250,26 @@ def analyse(nif_path, skeleton=None, only_region=None, sample=400, seed=12345,
         used at bind and posed, so the regression is a paired comparison.
     """
     data, garments, par, origins, bname = load(nif_path, skeleton, body_name)
+
+    # MORPH BEFORE POSING, which is the order the engine uses: skee applies the
+    # BODYTRI deltas to the shape's vertices, and skinning then runs on the result.
+    # Done here rather than inside load() so load()'s 5-tuple API -- underbust_census
+    # unpacks it in three places -- is untouched. `origins` is already computed and
+    # is bind data, which BodyMorph does not move.
+    morph = None
+    if preset:
+        before = data[bname][0].copy()
+        rows, kind, n_engaged, tri_name = apply_preset(
+            nif_path, data, preset, strength)
+        moved = float(np.linalg.norm(data[bname][0] - before, axis=1).max())
+        if strength and moved < 1e-4:
+            raise SystemExit(
+                f"ABORT: the preset moves the body {moved:.6f}u -- a morph "
+                f"harness that morphs nothing would report a clean zero")
+        morph = {"rows": rows, "kind": kind, "engaged": n_engaged,
+                 "tri": tri_name, "body_moved": moved,
+                 "strength": float(strength)}
+
     body_v, _body_t, body_w = data[bname]
 
     # SELF-TEST first: identity must reproduce the bind mesh exactly, or the skinning
@@ -233,6 +324,9 @@ def analyse(nif_path, skeleton=None, only_region=None, sample=400, seed=12345,
             "worst_verts": rows[0][1] if rows else 0,
             "per_pose": [{"pose": p, "verts": v, "pct": round(q, 3)} for p, v, q in rows],
         }
+    # Side channel, not a third return value: multipose_census unpacks a 2-tuple.
+    if out is not None:
+        out["morph"] = morph
     return results, ident
 
 
@@ -246,21 +340,50 @@ def main():
         i = argv.index('--region')
         region = argv[i + 1]
         del argv[i:i + 2]
+    preset = None
+    if '--preset' in argv:
+        i = argv.index('--preset')
+        preset = argv[i + 1]
+        del argv[i:i + 2]
+    strength = 1.0
+    if '--preset-strength' in argv:
+        i = argv.index('--preset-strength')
+        strength = float(argv[i + 1])
+        del argv[i:i + 2]
     if not argv:
         print(__doc__)
         sys.exit(1)
 
-    res, ident = analyse(argv[0], only_region=region)
+    out = {}
+    res, ident = analyse(argv[0], only_region=region, preset=preset,
+                         strength=strength, out=out)
     if as_json:
         print(json.dumps({"armor": argv[0], "identity_check": ident,
+                          "morph": (out.get("morph") or {}).get("body_moved"),
                           "regions": res}, indent=1))
         return
     print(f"{Path(argv[0]).name}   identity check {ident:.6f}u "
           f"({'OK' if ident < 1e-4 else 'FAIL -- skinning is wrong, ignore all below'})")
-    print(f"\n{'region':<13}{'covered':>9}{'worst pose':>18}{'newly exposed':>15}{'%':>8}")
+    m = out.get("morph")
+    if m:
+        followed = [r for r in m["rows"] if r[2] > 0]
+        print(f"morph: {Path(preset).name} via {m['tri']}  strength "
+              f"{m['strength']:g}   {m['engaged']} engaged sliders, body moves "
+              f"{m['body_moved']:.3f}u")
+        print(f"       {len(followed)}/{len(m['rows'])} shapes carry any morph "
+              f"({100.0 * len(followed) / max(len(m['rows']), 1):.0f}% coverage)")
+        for nm, n_tri, used, mx in m["rows"]:
+            print(f"         {nm[:26]:<26}{n_tri:>5} in tri{used:>5} used"
+                  f"{mx:>9.3f}u max")
+    # `sampled` is printed next to `covered` on purpose: a percentage whose
+    # denominator is a handful of verts reads exactly like a real one otherwise.
+    print(f"\n{'region':<13}{'sampled':>9}{'covered':>9}{'worst pose':>18}"
+          f"{'newly exposed':>15}{'%':>8}")
     for name, r in res.items():
-        print(f"{name:<13}{r['covered_at_bind']:>9}{str(r['worst_pose']):>18}"
-              f"{r['worst_verts']:>15}{r['worst_pct']:>8.2f}")
+        thin = "  <- thin, treat as noise" if r["covered_at_bind"] < 25 else ""
+        print(f"{name:<13}{r['sampled']:>9}{r['covered_at_bind']:>9}"
+              f"{str(r['worst_pose']):>18}{r['worst_verts']:>15}"
+              f"{r['worst_pct']:>8.2f}{thin}")
     if region:
         print(f"\nall poses for {region}:")
         for p in res[region]["per_pose"]:

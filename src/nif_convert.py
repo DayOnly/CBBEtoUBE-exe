@@ -4670,6 +4670,14 @@ def convert_nif(
                                       src_nif_path=src_path)
         except Exception as _pe:
             _note_pass_failure("_match_arm_motion_to_body", _pe)
+        # Arm-TWIST push-down: the same family at the opposite sign, on the upper
+        # back. Default OFF (#arm-twist-pushdown). Runs after the two push-up
+        # passes so their measured results stand.
+        try:
+            _match_arm_twist_pushdown_to_body(dst_path, biped_slots,
+                                              src_nif_path=src_path)
+        except Exception as _pe:
+            _note_pass_failure("_match_arm_twist_pushdown_to_body", _pe)
 
         # Verbatim-copied NIFs carry raw block structure the renderer can reject.
         # Re-author for a clean pynifly structure identical to body shapes.
@@ -7289,6 +7297,64 @@ _ARM_MOTION_Z_HI = float(os.environ.get("CBBE2UBE_ARM_MOTION_Z_HI", "125.0"))
 _ARM_MOTION_BONES = ("NPC L Clavicle [LClv]", "NPC R Clavicle [RClv]",
                      "NPC L UpperArm [LUar]", "NPC R UpperArm [RUar]")
 
+# #arm-twist-pushdown -- the SAME defect at the OPPOSITE SIGN, on the UPPER BACK.
+# The armhole case is UNDER-follow: the garment lacks UpperArm mass the body has, so
+# the shoulder out-travels the cloth. On the upper back the fur cuirass measures the
+# reverse -- the garment carries `UpperarmTwist1/2` mass the body does NOT have there
+# (garment 0.077 vs body 0.009 over the 331 covered verts of the z95-112 rear band),
+# so an ARM rotation drags the GARMENT and leaves the skin behind. Measured with the
+# morph+pose harness: follow 5.18 under `arms forward`, 5.16 under `arms crossed`,
+# 74-77 of 331 covered verts going from clear to emerging, while every SPINE pose sits
+# at follow 0.98-1.00 with 0-2 emerging. Arm-driven, spine-clean -- which is the whole
+# signature, and the null control any fix has to preserve.
+#
+# WHY NO EXISTING PASS TOUCHES IT (same-build flag A/B, both changed 0 bones):
+#   1. the shape is TRI-owned, and the morph-TRI gate skips it before any maths;
+#   2. even ungated, PUSH-UP ONLY computes target = max(body, garment) and so cannot
+#      remove excess -- it is the wrong sign for this defect;
+#   3. `_ARM_MOTION_BONES` does not manage the twist bones at all.
+#
+# DEFAULT OFF. It is a fit change on TRI-owned shapes -- exactly the population the
+# morph-TRI gate protects because re-sharing limb mass there regressed in game once
+# ("a crease that raises when leaning forward"). This pass touches ONLY the twist
+# bones, only where the garment has MORE than the body, and never moves a vertex; the
+# freed mass goes to the bones the vert already carries (in practice Spine2). That is
+# a much narrower change than the one that regressed -- but narrower is not proven,
+# so it ships off until an in-game look says otherwise.
+# CBBE2UBE_ARM_TWIST_PUSHDOWN=1 on.
+MATCH_ARM_TWIST_PUSHDOWN = (
+    os.environ.get("CBBE2UBE_ARM_TWIST_PUSHDOWN", "").strip().lower()
+    in ("1", "true", "yes", "on"))
+# 0.85, NOT 1.0, and the difference is the whole calibration. At strength 1.0 the
+# target IS the body's own twist share, which is ~0 on these verts, so the garment's
+# twist collapses to the write floor and it stops responding to the arm AT ALL --
+# measured follow 0.02, i.e. the armhole defect in miniature pointing the other way.
+# Follow crosses the ideal 1.0 between 0.75 and 0.85. Sweep on the fur cuirass upper
+# back (follow / verts newly emerging, `arms forward`):
+#     OFF 4.72/+74   0.35 3.10/+65   0.60 1.91/+41
+#     0.75 1.27/+15  0.85 0.88/+3    1.00 0.02/-1
+# 1.00 wins on emergence alone; 0.85 is the value where the garment actually TRACKS
+# the skin, and it still takes emergence from +74 to +3. A first sweep at only
+# 0.35/0.60/1.00 made this look like a cliff -- it is smooth; sample the knee.
+_ARM_TWIST_STRENGTH = float(
+    os.environ.get("CBBE2UBE_ARM_TWIST_STRENGTH", "0.85"))
+# Same hug distance as the arm pass, and for the same reason: a free-hanging cape or
+# pauldron over the shoulder blades must not have its twist mass stripped.
+_ARM_TWIST_MAX_DIST = float(
+    os.environ.get("CBBE2UBE_ARM_TWIST_MAX_DIST", "5.0"))
+# The band is NOT a safety rail here (see push_down in _match_limb_motion_to_body):
+# with a push-down target, "body carries no family weight" means "remove it all", so
+# these bounds are what confine the pass to the region the defect was measured in.
+# They are the upper_back region of pose_set, which is contiguous with lower_back at
+# 95 and matches upper_chest's ceiling at 112.
+_ARM_TWIST_Z_LO = float(os.environ.get("CBBE2UBE_ARM_TWIST_Z_LO", "95.0"))
+_ARM_TWIST_Z_HI = float(os.environ.get("CBBE2UBE_ARM_TWIST_Z_HI", "112.0"))
+# Twist bones ONLY. UpperArm and Clavicle are deliberately NOT here: they are the
+# push-UP pass's family, and managing a bone in both directions in two passes is how
+# the spine-vs-arm ordering fight got started (see #armhole-arm-follow).
+_ARM_TWIST_BONES = ("NPC L UpperarmTwist1 [LUt1]", "NPC R UpperarmTwist1 [RUt1]",
+                    "NPC L UpperarmTwist2 [LUt2]", "NPC R UpperarmTwist2 [RUt2]")
+
 # #spine-follow -- the TORSO instance, and the cause of the under-bust follow deficit
 # logged as S3. The rig sweep (CBBE reference body vs UBE body, matched by nearest
 # surface) makes Spine2 the LARGEST disagreement between the two bodies: 6564 verts,
@@ -9627,12 +9693,43 @@ def _match_spine_motion_to_body(dst_path, biped_slots: int = 0, src_nif_path=Non
         smp_row_gate=True)
 
 
+def _match_arm_twist_pushdown_to_body(dst_path, biped_slots: int = 0,
+                                      src_nif_path=None) -> int:
+    """UPPER-BACK instance, and the first PUSH-DOWN one  (#arm-twist-pushdown).
+
+    The mirror of the armhole defect: there the garment lacks arm mass the body has
+    and gets left behind; here it carries `UpperarmTwist` mass the body does NOT have
+    on the upper back, so an arm swing drags the garment off the skin and the shoulder
+    blades come through. See _ARM_TWIST_BONES for the measurements, for the A/B showing
+    neither shipped pass can reach it, and for why this is default OFF.
+
+    Runs LAST of the three, after spine and arm. Those two only ever RAISE a share and
+    manage disjoint bones, so this cannot undo their work -- but ordering is
+    load-bearing in this family (see #armhole-arm-follow) and last is the position that
+    leaves their measured results intact.
+    """
+    if not MATCH_ARM_TWIST_PUSHDOWN:
+        return 0
+    return _match_limb_motion_to_body(
+        dst_path, biped_slots, src_nif_path=src_nif_path,
+        family="arm-twist", bones=_ARM_TWIST_BONES,
+        z_lo=_ARM_TWIST_Z_LO, z_hi=_ARM_TWIST_Z_HI,
+        max_dist=_ARM_TWIST_MAX_DIST, strength=_ARM_TWIST_STRENGTH,
+        smp_row_gate=True,
+        push_down=True,
+        # The defect population IS the TRI-owned shapes; gated, this pass is a
+        # measured no-op. This is the risk the default-OFF is carrying.
+        ignore_morph_tri=True)
+
+
 def _match_limb_motion_to_body(dst_path, biped_slots: int = 0, *,
                                family: str = "leg", bones=(),
                                z_lo: float = 0.0, z_hi: float = 0.0,
                                max_dist: float = 0.0,
                                strength: float = 1.0,
                                smp_row_gate: bool = False,
+                               push_down: bool = False,
+                               ignore_morph_tri: bool = False,
                                src_nif_path=None) -> int:
     """Raise a garment's LIMB-BONE share toward the body's so it travels WITH the
     limb instead of being left behind. Returns the number of verts matched.
@@ -9658,6 +9755,14 @@ def _match_limb_motion_to_body(dst_path, biped_slots: int = 0, *,
         the Z band a mere safety rail: where the covered body carries no weight on
         the family, the target collapses to the garment's own share and the vert is
         written back unchanged.
+        `push_down=True` MIRRORS this for the opposite-sign defect: the target is
+        never ABOVE the garment's share, so the pass can only REMOVE excess family
+        mass and can never do the push-up pass's job. The two are deliberately
+        disjoint -- a vert is either over- or under-weighted on the family, and
+        letting one instance do both would make an A/B uninterpretable. Note the
+        Z band stops being a mere safety rail here: where the body carries no
+        family weight the push-DOWN target is 0, so the band is what stops the
+        pass stripping family mass somewhere it was never measured.
         NOT an end-to-end guarantee, and this said "never lowers" until it was
         measured. The 4-INFLUENCE CAP runs after the target and can still drop a
         family bone off an overflowing row, so the WRITTEN share occasionally
@@ -9689,8 +9794,16 @@ def _match_limb_motion_to_body(dst_path, biped_slots: int = 0, *,
     # that "raises when leaning forward" -- spine rotation -- while the bind pose
     # measured clean. Measured on a heavy cuirass rear band: Spine1 4.86% -> 0.94%.
     # Same rule as the reskin and the graft gates. #morphtri-no-leg-graft
+    #
+    # `ignore_morph_tri` exists because this gate reaches 88.2% of the pack, so a
+    # family whose defect lives ON TRI-owned shapes is a guaranteed no-op without
+    # it -- measured: the arm AND spine instances each changed 0 bones on a fur
+    # cuirass upper back purely because the shape is TRI-owned. Opt-in per
+    # instance and NEVER on for the shipped push-up families, where this gate is
+    # protecting the real in-game regression described above.
     morph_tri_names = (_source_morph_tri_shape_names(Path(src_nif_path))
-                       if (src_nif_path and MORPHTRI_NO_LEG_GRAFT) else set())
+                       if (src_nif_path and MORPHTRI_NO_LEG_GRAFT
+                           and not ignore_morph_tri) else set())
     # Does a physics XML exist for this piece at all? Drives the inert-chain
     # allowance below. Stem is per-armor (weight suffix stripped), matching where
     # both the generator and the source-XML copy write.
@@ -9843,10 +9956,13 @@ def _match_limb_motion_to_body(dst_path, biped_slots: int = 0, *,
 
             g_mass = G[:, midx].sum(axis=1)
             b_mass = np.clip(B.sum(axis=1), 0.0, 1.0)
-            # push-up only: np.maximum, never lowers a share that already tracks
-            target = np.maximum(
-                np.clip(g_mass + strength * (b_mass - g_mass), 0.0, 1.0),
-                g_mass)
+            _toward = np.clip(g_mass + strength * (b_mass - g_mass), 0.0, 1.0)
+            # push-up only: np.maximum, never lowers a share that already tracks.
+            # push_down is the exact mirror -- np.minimum, never RAISES one. Each
+            # instance moves the share in one direction only, so an A/B on either
+            # measures that direction alone.
+            target = (np.minimum(_toward, g_mass) if push_down
+                      else np.maximum(_toward, g_mass))
             bsum = B.sum(axis=1)
             has_b = bsum > 1e-6
             shape_of = np.zeros_like(B)
@@ -19635,6 +19751,15 @@ def convert_nif_phase2(
                                   src_nif_path=src_path)
     except Exception as _pe:
         _note_pass_failure("_match_arm_motion_to_body", _pe)
+    # Arm-TWIST push-down: the same family at the opposite sign, on the upper back.
+    # Default OFF (#arm-twist-pushdown). Runs after the two push-up passes so their
+    # measured results stand. Wired at BOTH call sites -- a pass on only one path is
+    # the convert-path parity defect the parity test exists to catch.
+    try:
+        _match_arm_twist_pushdown_to_body(dst_path, biped_slots,
+                                          src_nif_path=src_path)
+    except Exception as _pe:
+        _note_pass_failure("_match_arm_twist_pushdown_to_body", _pe)
 
     # The TRI above was generated BEFORE _finalize_hdt_physics re-imported the
     # textureless collision / physics-framework proxies, so they shipped with no
