@@ -33,7 +33,7 @@ import sys, numpy as np
 from pathlib import Path
 
 # This script lives in <repo>/scripts/, so the repo root is its parent's parent.
-_REPO_ROOT = Path(__file__).resolve().parent.parent
+_REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(_REPO_ROOT / ".pynifly"))
 from pyn import pynifly
 from scipy.spatial import cKDTree
