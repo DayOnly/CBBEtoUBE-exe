@@ -111,6 +111,28 @@ SETTINGS: "tuple[Setting, ...]" = (
             "Armor", "Jiggle transfer", default=True,
             env="CBBE2UBE_NO_CHEST_JIGGLE", invert=True,
             tooltip="Add capped breast-jiggle weight to rigid chest plate (front-gated)."),
+    Setting("back_morph_residual",
+            "Keep the upper back covered when the body morphs",
+            "Armor", "Fit and clearance", default=True,
+            env="CBBE2UBE_NO_BACK_MORPH_RESIDUAL", invert=True,
+            hint="Fixes skin showing through armour across the shoulder blades "
+                 "on larger presets.",
+            tooltip="Every other clearance pass measures the un-morphed body, "
+                    "and the one that doesn't is aimed at the bust -- so the "
+                    "upper back was given no allowance for the body growing "
+                    "under it at runtime. Charges the back the same allowance "
+                    "the bust already gets."),
+    Setting("clearance_differential",
+            "Base clearance on reshaping, not just growth",
+            "Armor", "Fit and clearance", default=True,
+            env="CBBE2UBE_NO_CLEARANCE_DIFFERENTIAL", invert=True,
+            hint="Fixes skin showing through around the upper chest and back "
+                 "on larger presets.",
+            tooltip="Clearance used to scale with how far the body GROWS, but "
+                    "armour follows growth for free -- what pokes through is "
+                    "the body RESHAPING underneath it. Measures that instead. "
+                    "Only ever adds room, never takes it away, so a piece that "
+                    "fits today cannot get tighter."),
     Setting("antipoke_smooth", "Smooth anti-poke pushes (experimental)",
             "Armor", "Fit and clearance", default=False,
             env="CBBE2UBE_ANTIPOKE_SMOOTH", invert=False,

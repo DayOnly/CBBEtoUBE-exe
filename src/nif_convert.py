@@ -402,6 +402,196 @@ _MORPH_STACK_MIN = 0.5          # peak delta below this cannot drive a bust poke
 # Breast03 = nipple apex; Breast02 partial contributor. Matched without spaces.
 NIPPLE_TIP_BONE_WEIGHTS = {"breast03": 1.0, "nipple": 1.0, "breast02": 0.4}
 
+# ---- #back-morph-residual: the same charge, on the UPPER BACK -------------
+# The bust residual above is gated on NIPPLE WEIGHT, so the upper back -- which
+# has none -- is charged nothing and keeps a BIND-pose requirement only. Reported
+# in game as skin through the fur across the shoulder blades, and measured:
+#
+#   upper back (z95-112, rear), 1438 covered verts on a fur cuirass
+#     clearance it has          median 0.494u   p10 0.163u
+#     residual it needs         median 0.265u   p90 0.658u   max 1.893u
+#     verts SHORT of the need   396 / 1438  (27.5%)
+#     deficit to close          p90 0.279u      max 1.552u
+#
+# The envelope is the WORST over the 49 installed presets that actually drive the
+# UBE body -- NOT the sum-of-all-sliders supremum, which is 2-4x larger and is
+# recorded as measured-worse twice ("any preset" attempts, -0.279u / 138 poking).
+# 64 of 113 installed presets are CBBE/3BA and match almost no UBE slider; count
+# matched sliders, not presets, or the envelope silently reads 0.000.
+#
+# Note bust_z is height-only with no front/back test, so rear verts at z90-102
+# were already inside `in_bust` and got the flat floor; what they never got is a
+# MORPH allowance. Above z102 they got nothing at all.
+#
+# DEFAULT ON as of 2026-08-08, together with #clearance-differential. Measured
+# over the 6 golden pieces the charge reaches x 4 presets, gated metric, shared
+# OFF baseline, 96 piece/preset/region pairs:
+#
+#     arm     upper back  lower back  breast  uchest   worse  better  worst +
+#     BACK         -1513         -91      +2      -5      11      33       +8
+#     DIFF          -666        -106      -8    -164       5      41      +16
+#     BOTH         -1522        -105     -11    -168       5      49       +3
+#
+# The two are COMPLEMENTARY IN BOTH DIRECTIONS, which is why neither replaces the
+# other: this charge alone leaves the upper chest untouched, the differential
+# alone recovers it (-164) but regresses hide-collider's upper chest 0 -> 16 on
+# every preset, and enabling both removes that regression entirely. Together the
+# worst single regression across all 96 pairs is +3 verts.
+#
+# It was default OFF while unproven: a fit change on a band nothing had pushed
+# before, and the bust version needed a saturation study plus a triangle-interior
+# correction before it stopped overinflating.
+# NO_-style var to match its sibling BUST_MORPH_RESIDUAL and the GUI's convention
+# for a default-ON flag: CBBE2UBE_NO_BACK_MORPH_RESIDUAL=1 disables.
+BACK_MORPH_RESIDUAL = os.environ.get(
+    "CBBE2UBE_NO_BACK_MORPH_RESIDUAL", "").strip().lower() not in (
+        "1", "true", "yes", "on")
+# Ceiling well under the bust's 1.5: the measured deficit is p90 0.279u, so 0.5
+# covers the bulk while capping the 1.55u tail that would balloon the piece.
+BACK_MORPH_RESIDUAL_MAX = float(
+    os.environ.get("CBBE2UBE_BACK_MORPH_RESIDUAL_MAX", "0.5"))
+# The band, matching pose_set's upper_back so the harness and the pass agree.
+BACK_RESIDUAL_Z = (float(os.environ.get("CBBE2UBE_BACK_RESIDUAL_Z_LO", "95.0")),
+                   float(os.environ.get("CBBE2UBE_BACK_RESIDUAL_Z_HI", "112.0")))
+# Rear-facing only, by the body NORMAL rather than by y position: a height band
+# with no facing test is what made `bust_z` quietly include the back.
+BACK_RESIDUAL_NY = -0.3
+BACK_RESIDUAL_HALF_X = 20.0     # beyond this is the arm, bare by design
+# FEATHER THE BAND EDGE. A binary zone puts a displacement STEP across the
+# triangles that straddle its boundary, and conform's fold guard is the one step
+# in the pass that is not per-vertex -- it damps whole triangles, so a straddling
+# triangle applies a factor set by its in-band corner to its OUT-OF-BAND corners,
+# which then lose displacement they had with the charge off and settle closer to
+# the body. Measured, OFF vs ON, out-of-band displacement change:
+#     robes-thalmor      0.0000u before the guard -> 1.7191u after
+#     chainweld-studded  0.0000u before the guard -> 1.5093u after
+#     nameskip-dress     0.0000u before the guard -> 0.1498u after
+# Zero before, real after, on every piece: the guard is the transmitter and the
+# step is what it reacts to. That is also why bounding the edit made the front
+# WORSE (11 -> 18 regressions) -- a smaller step is still a step.
+# Same shape as #rear-standoff-feather: ramp INWARD from the edge, so the zone
+# interior is unchanged and the charge can only be REDUCED near the boundary.
+# FEATHER ONCE: this is the single feather for this field.  #back-residual-feather
+#
+# MEASURED WORSE, DEFAULT OFF. The transmission finding above is sound, but
+# removing the step is not the lever: the guard damps any triangle whose in-band
+# corner moves at all, so ramping the magnitude changes WHICH triangles trip it,
+# not WHETHER they do. Six golden pieces, four presets, gated metric:
+#     flat charge   back 71.1 -> 8.0    back-worse 0   front-worse 11   4.03u
+#     feathered     back 71.1 -> 10.8   back-worse 1   front-worse 12   4.03u
+# Peak travel identical, back degraded (softbody-dress 1.5 -> 13.5), front cost
+# unchanged. Kept behind the constant because the diagnosis is worth preserving:
+# set CBBE2UBE_BACK_RESIDUAL_FEATHER to a body-z width to opt back in.
+BACK_RESIDUAL_FEATHER = float(
+    os.environ.get("CBBE2UBE_BACK_RESIDUAL_FEATHER", "") or 0.0)      # body-z
+BACK_RESIDUAL_FEATHER_NY = float(
+    os.environ.get("CBBE2UBE_BACK_RESIDUAL_FEATHER_NY", "") or 0.2)   # normal-y
+BACK_RESIDUAL_FEATHER_X = float(
+    os.environ.get("CBBE2UBE_BACK_RESIDUAL_FEATHER_X", "") or 3.0)    # body-x
+# CAP THE MOVE, not just the requirement. `move = max(move, req - worst)` has no
+# lower bound on `worst`: where the body already intersects the garment at bind,
+# `worst` is deeply negative and the push runs away. Measured on the golden set:
+# 3.14u of travel against a 0.5u residual cap, which MANUFACTURED 16 upper-chest
+# clipping verts from zero on a piece whose back barely improved (38 -> 34.5).
+# The sibling pass guards the same failure with PUSH_REQ_CAP / PUSH_MAX_TOTAL.
+#
+# A deep bind intersection is another pass's business. This charge exists only to
+# buy a MORPH allowance, so it may never ask for more than the allowance it can
+# itself compute -- flat clearance plus the residual ceiling. Expressed from the
+# constants rather than as a literal so it stays coherent if either moves.
+BACK_MOVE_MAX = float(os.environ.get("CBBE2UBE_BACK_MOVE_MAX", "")
+                      or (BUST_FLAT_CLEARANCE + BACK_MORPH_RESIDUAL_MAX))
+# ...except it still did not, and the comment above was the giveaway. The charge
+# applies as `max(move, deficit)`, and `move` there is conform PULLING IN toward
+# the fit the source author gave the garment. Replacing a -7.64u pull-in with a
+# +0.3u push is a 7.94u edit while every capped number stays under 0.8u.
+# Instrumented over the golden pieces that fire:
+#     fitted-dress       1616 of 1621 edits cancel a pull-in, worst 2.76u
+#     chainweld-studded   515 of  515 edits cancel a pull-in, worst 7.64u
+#     robes-thalmor       168 of  168 edits cancel a pull-in, worst 5.11u
+# So the cap bounded a term that never binds, and BACK_MOVE_MAX was decorative.
+# With this ON the charge may raise a vert at most BACK_MOVE_MAX beyond wherever
+# conform put it, which is what the constant has always claimed to mean.
+BACK_BOUND_EDIT = os.environ.get(
+    "CBBE2UBE_BACK_BOUND_EDIT", "").strip().lower() in ("1", "true", "yes", "on")
+# CONDITIONAL BY CONSTRUCTION, like `minimum_push`. A piece with nothing to gain
+# must exit having moved ZERO verts -- that is what keeps the cost, and the risk,
+# off the majority. Measured: the charge fires on 6 of 13 golden pieces, and on
+# one of those (hide-collider) it bought 3.5 verts of back while disturbing the
+# front, which a floor would have declined outright.
+BACK_MIN_DEFICIT = float(os.environ.get("CBBE2UBE_BACK_MIN_DEFICIT", "0.05"))
+BACK_MIN_VERTS = int(os.environ.get("CBBE2UBE_BACK_MIN_VERTS", "24"))
+# SURFACE rule for the back: MEASURED WORSE THAN THE VERTEX RULE, default OFF.
+# The bust needs the surface test -- the tightest point sits in a triangle
+# interior and a vertex rule misses it, and its inside-ness gate is what stopped
+# an earlier attempt inflating the chest 0.434 -> 2.297u. The BACK fails the other
+# way round: its deficit is spread thinly over many verts, so the stricter rule
+# pushes too few of them. Body3F, 14 presets, gated metric:
+#     vertex rule      back 50.0 -> 8.9    front regressions 0   <- shipped
+#     surface, masked  back 50.0 -> 20.5   front regressions 1
+#     surface, raw     back 50.0 -> 17.5   front regressions 10, travel to 4.32u
+# The raw surface number needed a mask because `_surface_deficit` scatters `need`
+# to all three corners of any triangle with one masked vertex, and over the top of
+# the shoulder those wrap front-to-back. Masking fixed that (10 -> 0) and the rule
+# still lost. Kept behind the flag because the diagnosis is worth preserving.
+# CBBE2UBE_BACK_SURFACE_REQ=1 to opt in.
+BACK_SURFACE_REQ = os.environ.get(
+    "CBBE2UBE_BACK_SURFACE_REQ", "").strip().lower() in (
+        "1", "true", "yes", "on")
+# One line per piece that fires, so a run is auditable the way min-push is.
+BACK_RESIDUAL_VERBOSE = os.environ.get(
+    "CBBE2UBE_BACK_RESIDUAL_QUIET", "").strip().lower() not in (
+        "1", "true", "yes", "on")
+# Reports the EDIT the charge makes, not the charge itself. Diagnostic only.
+BACK_DEBUG = os.environ.get("CBBE2UBE_BACK_DEBUG", "").strip().lower() in (
+    "1", "true", "yes", "on")
+# Writes to a FILE, never stdout. `golden_output._convert` runs the worker under
+# `redirect_stdout(io.StringIO())`, so a diagnostic that prints is discarded by
+# the harness -- which reads as "the pass never fired" while it fires normally.
+BACK_DEBUG_LOG = os.environ.get("CBBE2UBE_BACK_DEBUG_LOG", "").strip()
+
+
+# Directory for the per-call conform displacement dump. Diagnostic only: names
+# the step that carries a back-band edit to an out-of-band vertex.
+BACK_DUMP_DISP = os.environ.get("CBBE2UBE_BACK_DUMP_DISP", "").strip()
+_BACK_DUMP_N = [0]
+
+
+def _dump_conform_disp(pre, post, in_back) -> None:
+    """One .npz per conform call, indexed by CALL ORDER.
+
+    Builds are deterministic (verified: same-flag repeat moves 0 verts on all six
+    golden pieces that fire), so call N in one arm is the same shape as call N in
+    another and the arms can be compared without a shape name -- which conform
+    never receives.
+    """
+    import numpy as _np
+    i = _BACK_DUMP_N[0]
+    _BACK_DUMP_N[0] = i + 1
+    try:
+        d = Path(BACK_DUMP_DISP)
+        d.mkdir(parents=True, exist_ok=True)
+        _np.savez_compressed(
+            d / f"{i:04d}.npz", pre=_np.asarray(pre, _np.float32),
+            post=_np.asarray(post, _np.float32),
+            in_back=(_np.zeros(len(pre), bool) if in_back is None
+                     else _np.asarray(in_back, bool)))
+    except OSError:
+        pass
+
+
+def _back_dbg(msg: str) -> None:
+    if not BACK_DEBUG:
+        return
+    if BACK_DEBUG_LOG:
+        try:
+            with open(BACK_DEBUG_LOG, "a", encoding="utf-8") as fh:
+                fh.write(msg + "\n")
+            return
+        except OSError:
+            pass
+    print(msg)
+
 # ---- Final anti-poke pass -----------------------------------------------
 # clear_armor_outside_body() runs last (after warp/inflate/conform) and pushes
 # armor clear of the injected UBE body. Flat panels use FLAT_CLEAR; the breast
@@ -896,6 +1086,107 @@ _MORPH_SIZE_KEYWORDS = (
     # "trochanter" = hip-bone slider. Both are genuine outward-volume zones.
     "glute", "trochanter",
 )
+
+
+# #clearance-differential: adaptive clearance allocates room by the WRONG
+# quantity, and the back is where that shows.
+#
+# `clear_armor_outside_body` ignores ANTIPOKE_FLAT_CLEAR whenever an amplitude map
+# exists and uses `BASE + FACTOR * amp`, where amp is a vertex's own outward
+# GROWTH. Clipping is not caused by growth. It is caused by the DIFFERENTIAL --
+# how much a neighbour outgrows the point covering it -- because a garment vert
+# carries the delta of the body point it hugs. Uniform inflation has large amp
+# and zero differential and a hugging garment follows it for free; a reshaping
+# slider has small amp and large differential, and that is what pokes.
+#
+# Measured on the UBE body (29298 verts), amp vs differential need:
+#     zone            amp p50   adaptive grants   differential asks (p90)
+#     back band          0.02             0.26u                    0.385u  SHORT
+#     rear 80-95         0.23             0.31u                    0.354u  SHORT
+#     breast             3.69             1.05u                    0.569u  covers
+#     belly              1.41             0.62u                    0.502u  covers
+# Pearson r between amp and need: +0.088 on the back, -0.413 on the breast. The
+# proxy is uncorrelated where it matters and NEGATIVELY correlated on the front;
+# the front is protected by accident, because amp happens to be enormous there.
+#
+# Applied as a MONOTONE FLOOR (np.maximum, never stacks, never lowers), so the
+# breast keeps the 1.05u the amp ramp already grants and only under-served zones
+# move. That also makes "newly starved" zero by construction, which is the shape
+# this project's measurement rules ask for.
+# DEFAULT ON as of 2026-08-08. Its largest effect is NOT the back: the upper
+# chest (z 99-112) sits above the amp-rich breast, so the amp ramp under-serves it
+# too, and the differential recovers 164 clipping verts there. Golden six x 4
+# presets, with #back-morph-residual also on: 96 pairs -> 5 worse, 49 better, 42
+# unchanged, worst single regression +3 verts, travel unchanged at 4.03u.
+# NO_-style var, matching the GUI's convention for a default-ON flag:
+# CBBE2UBE_NO_CLEARANCE_DIFFERENTIAL=1 disables.
+#
+# REACH: this rides `clear_armor_outside_body`, so it cannot touch a shape that
+# pass skips. Measured on the golden set it fires on 5 of 6 pieces --
+# chainweld-studded moved ZERO verts, because the anti-poke is skipped for
+# SMP/chain shapes. The conform-side back charge still reaches those.
+CLEARANCE_DIFFERENTIAL = os.environ.get(
+    "CBBE2UBE_NO_CLEARANCE_DIFFERENTIAL", "").strip().lower() not in (
+        "1", "true", "yes", "on")
+_BODY_MORPH_DIFF_CACHE: dict = {}
+
+
+def _cached_body_morph_differential(osd_path: Path,
+                                    body_verts: "np.ndarray",
+                                    body_normals: "np.ndarray",
+                                    ) -> "np.ndarray | None":
+    """Per-body-vert clearance the worst slider TAKES AWAY from a hugging garment.
+
+    For body vert i with outward normal n_i, over the k-neighbourhood the
+    clearance passes already use:
+
+        need[i] = max over sliders m, neighbours j of  (d_m[j] - d_m[i]) . n_i
+
+    Zero when a slider merely translates or inflates uniformly (the deltas
+    cancel), positive only where the body RESHAPES relative to the surface a
+    garment sits on. Same formula `conform_to_source_standoff` applies to the
+    bust and the back, evaluated on the body alone so every pass can share it.
+
+    Uses `_cached_body_morph_stack`, which selects sliders by MEASURED peak
+    delta. `_cached_body_morph_amplitude` selects by NAME
+    (_MORPH_SIZE_KEYWORDS): 105 of the OSD's 202 sliders against the stack's 145,
+    so the two morph-aware mechanisms have never read the same sliders.
+
+    Cached on (osd path, vert count). Note the sibling cache
+    `_BODY_MORPH_STACK_CACHE` keys on the path ALONE while its value depends on
+    `n_verts`, so a first call with a different count poisons every later one.
+    """
+    if osd_path is None or body_verts is None or body_normals is None:
+        return None
+    v = np.asarray(body_verts, dtype=np.float64)
+    n = np.asarray(body_normals, dtype=np.float64)
+    if v.shape != n.shape or len(v) == 0:
+        return None
+    key = (Path(osd_path), len(v))
+    hit = _BODY_MORPH_DIFF_CACHE.get(key)
+    if hit is not None:
+        return hit
+    stack = _cached_body_morph_stack(osd_path, len(v))
+    if stack is None or not len(stack):
+        _BODY_MORPH_DIFF_CACHE[key] = None
+        return None
+    from scipy.spatial import cKDTree       # imported per-function in this file
+    kk = min(BUST_NEIGHBORHOOD_K, len(v))
+    dd, jj = cKDTree(v).query(v, k=kk)
+    if kk == 1:
+        dd = dd[:, None]
+        jj = jj[:, None]
+    keep = dd <= BUST_NEIGHBORHOOD_RADIUS
+    out = np.zeros(len(v))
+    for dm in stack:
+        d = np.asarray(dm, dtype=np.float64)
+        du = np.einsum("ij,ij->i", d, n)
+        dj = np.einsum("nkj,nj->nk", d[jj], n)
+        np.maximum(out, np.where(keep, dj - du[:, None], -np.inf).max(axis=1),
+                   out=out)
+    np.clip(out, 0.0, None, out=out)
+    _BODY_MORPH_DIFF_CACHE[key] = out
+    return out
 
 
 def _cached_body_morph_amplitude(osd_path: Path,
@@ -2381,6 +2672,10 @@ def conform_to_source_standoff(
     # nearer. Push-out only where the body would poke.  [DESIGN: Clearance & anti-poke]
     body_z = ube_body_verts[ui][:, 2]
     in_bust = (body_z >= bust_z[0]) & (body_z <= bust_z[1])
+    if BACK_DEBUG and BACK_MORPH_RESIDUAL:
+        _back_dbg(f"  [back-debug] gate: in_bust {int(in_bust.sum())} vert(s)"
+                  f"{'' if np.any(in_bust) else '  -> BACK CHARGE UNREACHABLE'}")
+    in_back = None
     if np.any(in_bust):
         # #bust-neighbourhood-spacing (see the constants for the measurement):
         # each garment vertex must clear the body under the patch its surface
@@ -2457,15 +2752,169 @@ def conform_to_source_standoff(
                                                    1e-6), 0.0, 1.0)
                     req[bi] += w_nip * np.clip(resid, 0.0,
                                                BUST_MORPH_RESIDUAL_MAX)
+        # #back-morph-residual: the SAME charge on the upper back, which the
+        # nipple gate above charges nothing. Rear-facing by the body NORMAL, not
+        # by a height band alone -- that is the mistake `bust_z` still carries.
+        in_back = np.zeros(len(ui), dtype=bool)
+        req_back = None
+        w_back = None
+        if BACK_MORPH_RESIDUAL:
+            _bx = ube_body_verts[ui][:, 0]
+            in_back = ((body_z >= BACK_RESIDUAL_Z[0])
+                       & (body_z <= BACK_RESIDUAL_Z[1])
+                       & (nrm0[:, 1] < BACK_RESIDUAL_NY)
+                       & (np.abs(_bx) < BACK_RESIDUAL_HALF_X))
+            # #back-residual-feather: ramp the charge to zero at the zone edge so
+            # no triangle straddles a displacement step. Interior stays 1.0, so
+            # this can only REDUCE the charge, never extend it past `in_back`.
+            if BACK_RESIDUAL_FEATHER > 0.0:
+                _fz = max(BACK_RESIDUAL_FEATHER, 1e-6)
+                _wz = np.minimum(
+                    np.clip((body_z - BACK_RESIDUAL_Z[0]) / _fz, 0.0, 1.0),
+                    np.clip((BACK_RESIDUAL_Z[1] - body_z) / _fz, 0.0, 1.0))
+                _fn = max(BACK_RESIDUAL_FEATHER_NY, 1e-6)
+                _wn = np.clip((BACK_RESIDUAL_NY - nrm0[:, 1]) / _fn, 0.0, 1.0)
+                _fx = max(BACK_RESIDUAL_FEATHER_X, 1e-6)
+                _wx = np.clip(
+                    (BACK_RESIDUAL_HALF_X - np.abs(_bx)) / _fx, 0.0, 1.0)
+                w_back = _wz * _wn * _wx
+            if BACK_DEBUG:
+                _st = _cached_body_morph_stack(_find_ube_body_osd(),
+                                               len(ube_body_verts))
+                _back_dbg(f"  [back-debug] band: in_back {int(in_back.sum())} "
+                          f"vert(s), morph stack "
+                          f"{'None' if _st is None else len(_st)}")
+            if in_back.any():
+                _stack = _cached_body_morph_stack(_find_ube_body_osd(),
+                                                  len(ube_body_verts))
+                if _stack is not None and len(_stack):
+                    ki = np.where(in_back)[0]
+                    resid_b = np.zeros(len(ki))
+                    jb, kb, nb2 = jj[ki], keep[ki], nrm0[ki]
+                    ub2 = ui[ki]
+                    for dm in _stack:
+                        du = (dm[ub2].astype(np.float64) * nb2).sum(axis=1)
+                        dj = np.einsum("nkj,nj->nk",
+                                       dm[jb].astype(np.float64), nb2)
+                        r = np.where(kb, dj - du[:, None], -np.inf).max(axis=1)
+                        np.maximum(resid_b, r, out=resid_b)
+                    # SEPARATE ARRAY, NOT `req`. `req` is handed whole to
+                    # `_bust_surface_deficit` below, which evaluates per garment
+                    # TRIANGLE -- so a triangle in the bust band that happens to
+                    # own one back-band vertex would read that vertex's inflated
+                    # requirement and demand a push for it. That pass's own
+                    # docstring records where this leads: letting points that the
+                    # triangle does not cover demand a push "inflated the whole
+                    # chest (0.434 -> 2.297u)".
+                    # Measured with the shared array: `hide-collider` gained 15-17
+                    # upper-chest clipping verts FROM ZERO on every preset, at
+                    # 3.14u of travel that capping the back push did not budge --
+                    # because the push was never the back charge's, it was the
+                    # surface pass acting on a requirement the back charge wrote.
+                    req_back = req.copy()
+                    req_back[ki] += np.clip(resid_b, 0.0,
+                                            BACK_MORPH_RESIDUAL_MAX)
         # pull IN only as far as the general conform wanted AND no closer than
         # `req` over the worst neighbour; push OUT if the nipple would poke.
         move = np.where(in_bust, np.maximum(move, req - worst), move)
+        # The back charge is applied SEPARATELY and CAPPED, so bust behaviour is
+        # bit-for-bit what it was -- the bust line above is untouched, and a vert
+        # in both bands takes the larger of the two, with only the back half
+        # bounded. See BACK_MOVE_MAX for what the uncapped version did.
+        if req_back is not None and in_back.any():
+            _move_pre = move.copy()
+            # MEASURE FIRST, act only if there is enough to gain, and SAY what
+            # was done. `minimum_push` is conditional by construction because a
+            # census found only 6% of pieces need it; this charge fired on every
+            # in-band vert regardless, which is how it reached a piece whose back
+            # improved by 3.5 verts while disturbing its front (hide-collider).
+            _deficit = np.clip(req_back - worst, 0.0, BACK_MOVE_MAX)
+            _hit = int((_deficit > BACK_MIN_DEFICIT).sum())
+            if _hit < BACK_MIN_VERTS:
+                if BACK_RESIDUAL_VERBOSE:
+                    print(f"  [back-residual] {_hit} vert(s) over "
+                          f"{BACK_MIN_DEFICIT}u -- under the {BACK_MIN_VERTS}"
+                          f" floor, skipped")
+            else:
+                # SURFACE, not vertices. The vertex rule asks whether each vert
+                # stands clear; the defect sits in the triangle interior, where a
+                # surface can sag 0.855u below vertices that all pass. Same rule
+                # the bust uses, same inside-ness test -- a body point beside a
+                # triangle is not covered by it and may not demand a push.
+                _need = None
+                if BACK_SURFACE_REQ and tris is not None:
+                    _need = _surface_deficit(
+                        cur_cloth, tris, ube_body_verts, ube_body_normals,
+                        in_back, req_back, ube_tree, BACK_RESIDUAL_Z,
+                        max_push=BACK_MOVE_MAX)
+                if _need is not None:
+                    # MASK BACK TO THE BAND. `_surface_deficit` selects any
+                    # triangle with at least ONE masked vertex and scatters the
+                    # result to ALL THREE corners. Over the top of the shoulder
+                    # the garment wraps back-to-front, so a straddling triangle
+                    # pushed FRONT verts that were never in the back mask --
+                    # measured: upper chest worse on 10 of 14 presets and travel
+                    # up from 0.84u to 4.32u, neither of which the strictly
+                    # masked vertex rule could produce. A straddling triangle may
+                    # still RAISE the requirement; it may not MOVE a vert outside
+                    # the band. Masked here, at the back's call site only, so the
+                    # bust's use of the shared rule is unchanged.
+                    _need = np.where(in_back, _need, 0.0)
+                    move = np.where(_need > 0.0, np.maximum(move, _need), move)
+                    _applied = int((_need > 0.0).sum())
+                    _mx = float(_need.max())
+                else:
+                    _raised = np.maximum(move, _deficit)
+                    if BACK_BOUND_EDIT:
+                        _raised = np.minimum(_raised, move + BACK_MOVE_MAX)
+                    if w_back is not None:
+                        # FEATHER THE EDIT, not the requirement. Scaling
+                        # `_deficit` instead leaves `max(move, 0)` in force where
+                        # the weight is zero, so the charge still cancels
+                        # conform's pull-in at exactly the edge the feather
+                        # exists to leave alone: measured, feather 0 and feather
+                        # 1e-9 differed on 330 verts, which is the floor, not the
+                        # ramp. Blending the EDIT is continuous by construction
+                        # -- w=1 is the flat behaviour, w=0 is no change at all.
+                        # `np.where` on w==1 rather than blending everywhere:
+                        # `move + 1.0*(raised - move)` is ALGEBRAICALLY `raised`
+                        # but not bit-identical to it, and this chain amplifies
+                        # that. Measured, blending every vert at an effectively
+                        # zero-width ramp: 529 verts differed from the flat arm,
+                        # median 0.0010u but reaching 0.2546u once the layer and
+                        # anti-poke passes made discrete decisions on the
+                        # perturbed input. The zone interior must be untouched,
+                        # not merely equal.
+                        _raised = np.where(
+                            w_back >= 1.0, _raised,
+                            move + w_back * (_raised - move))
+                    move = np.where(in_back, _raised, move)
+                    _applied = int((_deficit > 0.0).sum())
+                    _mx = float(_deficit.max())
+                if BACK_RESIDUAL_VERBOSE:
+                    print(f"  [back-residual] {_applied} vert(s), deficit over "
+                          f"{_hit} in-band, max {_mx:.2f}u"
+                          f"{' (surface)' if _need is not None else ' (vertex)'}")
+                if BACK_DEBUG:
+                    # BACK_MOVE_MAX caps the CHARGE, not the EDIT. `np.maximum`
+                    # over a NEGATIVE move replaces conform's pull-in, so the
+                    # artefact can differ by |pull-in| + charge while every
+                    # number printed above stays under the cap. Report the edit.
+                    _chg = move - _move_pre
+                    _mv = _chg > 1e-9
+                    _cancel = _mv & (_move_pre < 0.0)
+                    _back_dbg(
+                        f"  [back-debug] edit max {float(_chg.max()):.2f}u "
+                        f"over {int(_mv.sum())} vert(s); {int(_cancel.sum())} "
+                        f"cancel a pull-in (worst pull "
+                        f"{float(-_move_pre[_cancel].min()) if _cancel.any() else 0.0:.2f}u); "
+                        f"out-of-band edits {int((_mv & ~in_back).sum())}")
         # #bust-surface-req (see the constants): the same requirement, evaluated
         # against the garment SURFACE instead of its vertices. Per triangle, over
         # the body points that project INSIDE it, so a point off to the side --
         # which the surface does not cover -- cannot demand a push.
         if BUST_SURFACE_REQ and tris is not None:
-            need = _bust_surface_deficit(
+            need = _surface_deficit(
                 cur_cloth, tris, ube_body_verts, ube_body_normals,
                 in_bust, req, ube_tree, bust_z)
             if need is not None:
@@ -2477,14 +2926,27 @@ def conform_to_source_standoff(
     # above stops two neighbours crossing through each other. Clamp last, after
     # every contribution (pull-in, bust push-out, surface deficit) is in `disp`,
     # so the guard sees the motion that will actually be applied.
+    _pre_guard = disp.copy() if BACK_DUMP_DISP else None
     if CONFORM_FOLD_GUARD and tris is not None:
         disp = _damp_to_avoid_inversion(cur_cloth, disp, tris)
+    if _pre_guard is not None:
+        # The guard is the only step here that is NOT per-vertex: it damps whole
+        # triangles, so a displacement change inside the back band can move a
+        # vertex that was never in the band. `move` shows 0 out-of-band edits,
+        # which is why the transmitter has to be looked for after it.
+        _dump_conform_disp(_pre_guard, disp, in_back)
     return (cur_cloth + disp).astype(np.float32)
 
 
-def _bust_surface_deficit(cur_cloth, tris, ube_body_verts, ube_body_normals,
-                          in_bust, req, ube_tree, bust_z):
+def _surface_deficit(cur_cloth, tris, ube_body_verts, ube_body_normals,
+                     in_bust, req, ube_tree, bust_z, max_push=None):
     """Per-vertex push needed so the garment SURFACE meets `req` over the body.
+
+    Region-agnostic despite the parameter names: `in_bust`/`bust_z` are simply
+    the mask and height band to evaluate, and the back charge passes its own.
+    Formerly `_bust_surface_deficit`; renamed when the second caller arrived,
+    because one surface rule with two call sites beats two implementations that
+    drift apart -- the failure mode this project keeps re-learning.
 
     The bust rule elsewhere asks whether each garment VERTEX stands `req` clear.
     That is not the defect: the tightest point sits in a triangle interior, and a
@@ -2548,7 +3010,9 @@ def _bust_surface_deficit(cur_cloth, tris, ube_body_verts, ube_body_normals,
         reqb = req[t[:, 0]][:, None]                   # the triangle's own need
         deficit = np.where(inside & inband, reqb - clear, -np.inf).max(axis=1)
         deficit = np.where(np.isfinite(deficit), deficit, 0.0)
-        deficit = np.clip(deficit, 0.0, BUST_SURFACE_MAX_PUSH)
+        deficit = np.clip(deficit, 0.0,
+                          BUST_SURFACE_MAX_PUSH if max_push is None
+                          else float(max_push))
         if not (deficit > 0).any():
             return None
         need = np.zeros(n, dtype=np.float64)
@@ -2653,6 +3117,7 @@ def clear_armor_outside_body(
     max_push: float = 3.0,
     max_body_dist: float = 10.0,
     morph_amplitude: "np.ndarray | None" = None,
+    morph_differential: "np.ndarray | None" = None,
     adaptive_base: float = ADAPTIVE_CLEARANCE_BASE,
     adaptive_factor: float = ADAPTIVE_CLEARANCE_MORPH_FACTOR,
     adaptive_cap: float = ADAPTIVE_CLEARANCE_MORPH_MAX,
@@ -2717,6 +3182,20 @@ def clear_armor_outside_body(
         amp_worst = np.max(amp_k, axis=1)
         req = np.clip(adaptive_base + adaptive_factor * amp_worst,
                       adaptive_base, adaptive_cap)
+        # #clearance-differential (see the constant): the amp ramp above pays for
+        # GROWTH; clipping is caused by the DIFFERENTIAL. Charge the clearance
+        # the worst slider actually takes away, as a MONOTONE FLOOR so no zone
+        # can lose room it has today.
+        #
+        # Indexed at `nearest`, NOT maxed over the neighbourhood again: the array
+        # is already `max over neighbours j of (d[j]-d[i]).n_i`, so a second
+        # neighbourhood max would dilate a value that has already been dilated.
+        # `amp` needs that max because it is a bare per-vert quantity; this does
+        # not.
+        if morph_differential is not None and len(morph_differential) == len(bv):
+            _diff = np.asarray(morph_differential, dtype=np.float64)[nearest]
+            req = np.maximum(req, np.minimum(adaptive_base + _diff,
+                                             adaptive_cap))
         # BUST FLOOR. The adaptive ramp REPLACED the bust ramp below, and its cap
         # sat under the bust target -- so switching adaptive clearance on gave the
         # breast LESS room than the fixed path it replaced, on the one zone that
@@ -18623,6 +19102,16 @@ def convert_nif_phase2(
                         len(body_verts_for_p2))
                 except Exception:
                     _antipoke_amp = None
+                # #clearance-differential: what the worst slider TAKES AWAY,
+                # rather than how far the body grows. Cached per (OSD, verts).
+                _antipoke_diff = None
+                if CLEARANCE_DIFFERENTIAL:
+                    try:
+                        _antipoke_diff = _cached_body_morph_differential(
+                            _find_ube_body_osd(), body_verts_for_p2,
+                            body_norms_for_p2)
+                    except Exception:
+                        _antipoke_diff = None
                 # Jiggle-overshoot headroom (default ON): only rigid/fitted
                 # cloth reaches this pass (softbody/HDT shapes are skipped
                 # above), which is exactly what a bouncing body punches through.
@@ -18657,6 +19146,7 @@ def convert_nif_phase2(
                     base_v, body_verts_for_p2, body_norms_for_p2,
                     body_nipple=body_nipple_for_p2,
                     morph_amplitude=_antipoke_amp,
+                    morph_differential=_antipoke_diff,
                     jiggle_amplitude=_antipoke_jig,
                     req_extra=_layer_extra.get(s.name, 0.0),
                     tris=(np.asarray(s.tris, dtype=np.int64)
