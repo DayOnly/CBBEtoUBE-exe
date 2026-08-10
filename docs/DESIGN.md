@@ -623,8 +623,9 @@ reason worth re-checking elsewhere — every cross-chain constraint uses
 every explicit-`frameInA` constraint is intra-chain and those change 0.000000u.
 Read the emitted XML for that pairing before assuming it.
 
-Full history, including the two candidate fixes the numbers killed first:
-`worklog/BUTT_CLIP_CHAIN_REST.md`.
+Full history, including the two candidate fixes the numbers killed first, is in
+`docs/worklog/BUTT_CLIP_CHAIN_REST.md` — a working note, so it lives on the
+`testing` branch only (see "Where the hard-won detail lives" below).
 
 ---
 

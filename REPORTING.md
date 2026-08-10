@@ -73,7 +73,7 @@ Click **Copy report** in the GUI and paste. It looks like this:
 ```
 CBBEtoUBE problem report
 ========================
-Version:  1.2
+Version:  1.3-alpha
 Type:     Conversion problem - output looks wrong in game
 Symptom:  Armor is invisible / does not render
 
@@ -108,7 +108,7 @@ DIAGNOSTICS
       look it over before posting it publicly.
 
 WHERE TO SEND THIS
-  want it fixed  -> .../issues/new?template=conversion_problem.yml&version=1.2
+  want it fixed  -> .../issues/new?template=conversion_problem.yml&version=1.3-alpha
   want an answer -> https://github.com/DayOnly/CBBEtoUBE-exe/discussions
 ```
 
