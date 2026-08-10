@@ -12544,6 +12544,359 @@ def _shift_chain_roots_by_body_delta(chain: dict, src_nif, dst_path=None) -> int
     return moved
 
 
+# -------------------------------------- #chain-rest-outside-body (opt-in)
+# Lift a physics chain whose REST POSE sits INSIDE the body it drapes over.
+#
+# THE DEFECT. Chain bone globals move 0.000000u through the conversion (measured
+# source vs output, all 63 bones on the test cuirass) while the body grows to UBE
+# proportions, so the rest pose the solver pulls toward ends up inside the
+# buttock. HDT-SMP resolves an equilibrium -- `generic-constraint` pulls each
+# bone back to its rest pose while collision pushes out -- so an inside rest pose
+# drags the cloth in every frame, identically at standstill and in motion. That
+# is the reported symptom, and it is why three collider passes each helped and
+# none could finish: they add push against a pull nothing addressed.
+#
+# THE SIZE OF IT, measured on the vanilla studded cuirass:
+#
+#     against the BUILT UBE body            2 of 63 bones inside, max 0.778u
+#     against that body under the user's    8 of 63 inside, mean 0.900u,
+#       RaceMenu preset (Punk UBE, w100)      max 2.000u
+#
+# Always the `_01` segment at the fullest part of the buttock; `_02.._04` hang
+# clear (+0.3 to +7.6u) and the front/stabilizer chains clear everywhere. An
+# earlier note put this at ~3.2u; that compared a bone's y against the body's
+# rearmost point ANYWHERE in the band rather than the surface at the bone's own
+# location. 2.0u is the honest figure.
+#
+# WHY THE MARGIN IS THE MORPH AMPLITUDE, not a fudge. The converter only ever
+# sees the BUILT body; the player's RaceMenu sliders grow it further at runtime,
+# and that is where 6 of the 8 penetrations come from. Rather than teach this
+# pass a preset it cannot know, it clears the body's OWN outward morph headroom
+# (`_cached_body_morph_amplitude` -- the same map adaptive clearance uses). Over
+# the at-risk bones on the test piece that map reads mean 1.009u against an
+# actual Punk UBE growth of mean 0.879u / max 1.615u, so it is a fair proxy.
+# Adaptive clearance takes only 20% of that amplitude for GARMENT verts because
+# those verts morph too; a chain bone has no morph channel at all, so it needs
+# the whole of it. Hence FACTOR 1.0 here against 0.20 there.
+#
+# REFUTED, with numbers, before this was written -- "restore the clearance the
+# author gave each bone against its OWN body", the bone-space analogue of
+# `conform_to_source_standoff`. It is the wrong criterion twice over: the
+# largest losses are on the FRONT skirt (2.96u) where nothing clips, and 10 of
+# 63 bones were ALREADY inside the source body, because an author routinely runs
+# a skirt's bones down the INSIDE of the cloth. The two bones that actually clip
+# do not appear in the top 16. Sampling the source body also needs care --
+# its 6463 normals are ALL ZERO, so a signed distance taken from stored normals
+# reads exactly +0.000 for every bone and looks like a clean measurement.
+#
+# ROOTS ONLY, never individual bones. Chain transforms are PARENT-LOCAL, so
+# displacing a root translates the whole chain RIGIDLY -- every inter-bone
+# distance changes by exactly 0.000000u. Warping bones individually changes rest
+# lengths and is how a chain explodes (`docs/PIPELINE.md` §7). THE COST of that
+# rigidity is that the free-hanging lower chain moves out too; it is recorded
+# per root as `flare` so the trade is visible, and capped by CHAIN_LIFT_MAX.
+CHAIN_REST_LIFT = os.environ.get(
+    "CBBE2UBE_CHAIN_REST_LIFT", "").strip().lower() in ("1", "true", "yes", "on")
+# Clearance a bone must end up with = BASE + FACTOR * (outward morph amplitude).
+CHAIN_LIFT_BASE = float(os.environ.get("CBBE2UBE_CHAIN_LIFT_BASE", "0.25"))
+CHAIN_LIFT_MORPH_FACTOR = float(
+    os.environ.get("CBBE2UBE_CHAIN_LIFT_MORPH", "1.0"))
+# Ceiling on that wanted clearance, and the pass's real engagement rule: a bone
+# further than this from the skin is not the defect, whatever the morph map says
+# about its neighbourhood. WITHOUT IT the pass recruited two FRONT skirt chains
+# sitting +3.63u clear of the belly, because belly amplitude runs to 8.7u there
+# and drove a wanted clearance of 6.79u -- a confident 2.0u push on cloth with
+# nothing wrong with it, which the `flare` counter-metric caught at +8.5u.
+# Adaptive clearance caps its own ramp for exactly this outlier
+# (ADAPTIVE_CLEARANCE_MORPH_MAX). 1.75 clears the measured requirement -- over
+# the at-risk bones of the test piece the wanted clearance peaks at 1.696u and
+# the actual preset growth at 1.615u -- while excluding the belly outliers.
+CHAIN_LIFT_WANT_MAX = float(
+    os.environ.get("CBBE2UBE_CHAIN_LIFT_WANT_MAX", "1.75"))
+# Cap. The measured requirement is 1.87u on the worst chain of the test piece,
+# so 2.0 is the ceiling that requirement fits under, not a target.
+CHAIN_LIFT_MAX = float(os.environ.get("CBBE2UBE_CHAIN_LIFT_MAX", "2.0"))
+# Below this a lift is noise against the thing it is trying to fix.
+CHAIN_LIFT_MIN = 0.05
+# Node-global vs skin-derived bind position must agree within this, or the
+# node tree is in a frame we cannot sample a body in. See _chain_frame_ok.
+CHAIN_LIFT_FRAME_TOL = 0.5
+
+
+# Keyed on the body path, and it holds the tree TOGETHER with the verts and
+# normals it was built from. `_ube_conform_body_tree` exists and is cached, but
+# it re-opens the body itself and returns no normals -- pairing its index space
+# with normals from `_cached_ube_body_verts` would silently mismatch if the two
+# ever resolved different files. One tuple, one source, no pairing to get wrong.
+_CHAIN_LIFT_BODY_CACHE: dict = {}
+
+
+def _xf_matrix(xf) -> "np.ndarray":
+    """TransformBuf -> 4x4. Rotation is row-major 3x3; scale is uniform."""
+    m = np.eye(4)
+    r = np.array([[float(c) for c in row] for row in xf.rotation], np.float64)
+    m[:3, :3] = r * float(getattr(xf, "scale", 1.0) or 1.0)
+    m[:3, 3] = [float(c) for c in xf.translation]
+    return m
+
+
+def _chain_rest_globals(chain: dict, src_nodes) -> dict:
+    """{bone -> (3,) world position} for every bone in `chain`.
+
+    Composed from the CHAIN's OWN local transforms rather than read off the
+    source node tree, so anything that already mutated `chain` -- the pelvis
+    re-anchor, `#chain-body-shift` -- is accounted for instead of silently
+    discarded. The walk roots at the first ancestor the chain does not own (a
+    real skeleton bone), whose SOURCE global supplies the frame.
+    """
+    memo: dict = {}
+
+    def _g(b, stack):
+        if b in memo:
+            return memo[b]
+        if b in stack:
+            return None                      # cyclic parent link -> give up
+        ent = chain.get(b)
+        if ent is None:                      # anchor: the frame comes from here
+            nd = src_nodes.get(b)
+            if nd is None:
+                return None
+            try:
+                M = _xf_matrix(nd.global_transform)
+            except Exception:
+                return None
+            memo[b] = M
+            return M
+        xf, par = ent
+        if not par:
+            P = np.eye(4)
+        else:
+            P = _g(par, stack | {b})
+            if P is None:
+                return None
+        M = P @ _xf_matrix(xf)
+        memo[b] = M
+        return M
+
+    out: dict = {}
+    for b in chain:
+        M = _g(b, frozenset())
+        if M is not None:
+            out[b] = M[:3, 3].copy()
+    return out
+
+
+def _chain_frame_ok(src_nif, gpos: dict) -> "tuple[bool, int, float]":
+    """Do the node-tree globals agree with the SKINNING? (ok, checked, worst).
+
+    Chain nodes are parent-local and an armour NIF's skeleton bones are often
+    (0,0,0) placeholders, in which case the composed global is PELVIS-RELATIVE
+    -- measured once as z -26..28 against a butt band at z 62..80. Sampling a
+    body surface with those coordinates compares two different frames and lifts
+    every chain by a confident, meaningless number.
+
+    A bone's bind world transform is independently recoverable from the skin,
+    which cannot be in the wrong frame: `inv(global_to_skin) . inv(skin_to_bone)`.
+    Where both exist they must agree. Bones with no skin weight at all (pure
+    constraint bones -- the `_00` anchors are exactly these) have no STB and are
+    not checkable; the frame is a property of the NODE TREE, so one agreeing
+    bone anywhere in the file vouches for it. `checked == 0` is NOT agreement
+    and the caller must treat it as a refusal.
+    """
+    worst = 0.0
+    checked = 0
+    for sh in src_nif.shapes:
+        try:
+            G_inv = np.linalg.inv(_xf_matrix(_shape_global_to_skin(sh)))
+        except Exception:
+            continue
+        for b in (sh.bone_names or []):
+            if b not in gpos:
+                continue
+            try:
+                stb = _xf_matrix(sh.get_shape_skin_to_bone(b))
+                skin_pos = (G_inv @ np.linalg.inv(stb))[:3, 3]
+            except Exception:
+                continue
+            checked += 1
+            worst = max(worst, float(np.linalg.norm(skin_pos - gpos[b])))
+    return (checked > 0 and worst <= CHAIN_LIFT_FRAME_TOL), checked, worst
+
+
+def _lift_chain_roots_off_body(chain: dict, src_nif, dst_path=None) -> int:
+    """Translate each physics chain until no bone of it rests inside the body.
+
+    Mutates `chain` in place (ROOT entries only) and returns the number of
+    chains lifted. Default OFF -- see CHAIN_REST_LIFT.
+
+    `dst_path` is telemetry only: every root's decision, INCLUDING the skips and
+    their reason, goes to the run's JSONL sink. Without it the pass is
+    unverifiable in bulk -- it moves bones rather than verts, so nothing
+    downstream can see whether it fired.
+    """
+    if not CHAIN_REST_LIFT or not chain:
+        return 0
+    # NOT wrapped in a bare `except: return 0`. Its sibling was, and it swallowed
+    # a NameError as "nothing to move" -- a broken pass reading exactly like a
+    # clean one. Genuine absences return 0 explicitly; anything else propagates
+    # to the caller, which reports it.
+    from scipy.spatial import cKDTree
+
+    def _say(root, **kw):
+        if dst_path is None:
+            return
+        try:
+            fit_metrics.record_chain_shift(
+                dst_path, dict(pass_="chain-rest-lift", root=str(root), **kw))
+        except Exception:
+            pass
+
+    body_p = _find_user_preset_body()
+    if not body_p:
+        _say("*", skipped="no UBE body to measure against")
+        return 0
+    # Cached as one tuple: this pass runs once per SHAPE COPY (8x over a weight
+    # pair on the test piece), and a 29k-vert tree per call is pure waste.
+    cached = _CHAIN_LIFT_BODY_CACHE.get(Path(body_p))
+    if cached is None:
+        _bnif, _V, _N = _cached_ube_body_verts(Path(body_p))
+        if _V is None or _N is None or len(_V) < 3:
+            _say("*", skipped="UBE body has no usable surface")
+            return 0
+        _V = np.asarray(_V, np.float64)
+        _N = np.asarray(_N, np.float64)
+        cached = (_V, _N,
+                  _cached_body_morph_amplitude(_find_ube_body_osd(), _N,
+                                               len(_V)),
+                  cKDTree(_V))
+        _CHAIN_LIFT_BODY_CACHE[Path(body_p)] = cached
+    # `amp` is how far each body vert can still grow OUTWARD at runtime. None
+    # (no OSD) is not fatal -- the margin falls back to the flat base.
+    V, N, amp, tree = cached
+    try:
+        src_nodes = src_nif.nodes
+    except Exception:
+        return 0
+
+    gpos = _chain_rest_globals(chain, src_nodes)
+    if not gpos:
+        _say("*", skipped="could not resolve chain bone globals")
+        return 0
+    ok, checked, worst = _chain_frame_ok(src_nif, gpos)
+    if not ok:
+        # Refusing is the whole point: an untrusted frame produces a confident
+        # wrong lift, which is worse than no lift at all.
+        _say("*", skipped="node-tree frame disagrees with the skinning",
+             checked=int(checked), worst=round(float(worst), 4),
+             tol=CHAIN_LIFT_FRAME_TOL)
+        return 0
+
+    # How far each body vert can still grow OUTWARD at runtime. None (no OSD) is
+    # not fatal -- it just means the margin falls back to the flat base.
+    amp = _cached_body_morph_amplitude(_find_ube_body_osd(), N, len(V))
+    tree = cKDTree(V)
+
+    # Which chain bones actually carry cloth. Same 0.2 threshold the sibling
+    # shift samples at, so "this chain drives cloth" means one thing here.
+    cloth_bones: "set[str]" = set()
+    for sh in src_nif.shapes:
+        for b, pairs in (sh.bone_weights or {}).items():
+            if b in chain and b not in cloth_bones and any(
+                    float(w) > 0.2 for _v, w in pairs):
+                cloth_bones.add(b)
+
+    moved = 0
+    # GARMENT roots only. The skeleton anchors in `chain` are the actor's own
+    # bones; the armour NIF's copies are placeholders the actor overrides at
+    # runtime, so translating them is both wrong in intent and inert in effect.
+    for root, sub in _chain_root_subtrees(chain, custom_only=True).items():
+        # A chain with no cloth on it has nothing to un-clip, and this is also
+        # the gate that keeps the pass off things that are not garment chains at
+        # all. `custom_only` only means "not a skeleton bone": on a real cuirass
+        # it elected `NPC` as a garment root. That subtree sat 12.28u clear so
+        # it skipped, but it skipped on the arithmetic, not on a rule, and a
+        # root that qualifies translates whatever hangs under it. Requiring
+        # skinned cloth is the same rule the sibling shift uses, and it excludes
+        # `NPC` for the right reason instead of by a name match -- `_is_nif_root`
+        # does NOT match it (measured: skeleton=False, nif_root=False).
+        if not (sub & cloth_bones):
+            _say(root, skipped="no skinned cloth on this chain",
+                 bones=len(sub))
+            continue
+        # SOFT-BODY jiggle bones (breast/butt/belly) cannot be ROOTS -- they are
+        # `_is_skeleton_bone`, so `custom_only` already dropped them, and adding
+        # a second predicate for that here is how two detectors for one concept
+        # drift apart. They CAN sit inside a garment chain's subtree though, and
+        # there they must not be candidates for the worst bone: they rest inside
+        # the body BY DESIGN, so one would peg the lift and push a garment out
+        # to clear the body's own physics rig.
+        bones = [b for b in sorted(sub) if b in gpos
+                 and not _is_soft_body_physics_bone(b)]
+        if not bones:
+            _say(root, skipped="no resolvable bone positions on this chain")
+            continue
+        P = np.array([gpos[b] for b in bones], np.float64)
+        _d, j = tree.query(P, k=1)
+        # Signed clearance along the body's own outward normal. Negative = the
+        # rest pose is behind the skin.
+        clear = np.einsum('ij,ij->i', P - V[j], N[j])
+        # A per-bone ARRAY even with no OSD, not a bare 0.0: as a scalar the
+        # morph term collapses `want` to a 0-d array and the `want[w]` below
+        # raises IndexError -- on the no-OSD path only, which is exactly the
+        # path least likely to be exercised while developing.
+        grow = (CHAIN_LIFT_MORPH_FACTOR * amp[j] if amp is not None
+                else np.zeros(len(bones), np.float64))
+        want = np.minimum(CHAIN_LIFT_BASE + grow, CHAIN_LIFT_WANT_MAX)
+        need = want - clear
+        w = int(np.argmax(need))
+        lift = float(need[w])
+        if lift < CHAIN_LIFT_MIN:
+            _say(root, skipped="every bone already clears the body",
+                 bones=len(bones), worst_bone=bones[w],
+                 clearance=round(float(clear[w]), 4),
+                 wanted=round(float(want[w]), 4),
+                 amp=round(float(amp[j[w]]) if amp is not None else 0.0, 4))
+            continue
+        n_hat = N[j[w]]
+        nl = float(np.linalg.norm(n_hat))
+        if not np.isfinite(nl) or nl < 1e-9:
+            _say(root, skipped="body normal is degenerate here",
+                 worst_bone=bones[w])
+            continue
+        n_hat = n_hat / nl
+        capped = lift > CHAIN_LIFT_MAX
+        if capped:
+            lift = CHAIN_LIFT_MAX
+        shift = n_hat * lift
+        # The counter-metric: a rigid lift also moves the part of the chain that
+        # was hanging free, and over-inflation scores 0.0% on a clip test, so it
+        # is invisible unless something states it (#standoff-counter-metric).
+        # Report the chain's PRE-LIFT median clearance and let `lift` be the
+        # cost. An earlier version reported median+lift as a single "flare" and
+        # that number was unreadable -- a chain hanging 8u off the body scored
+        # 10.25 after a 2.0u lift and looked like the pass had thrown it into
+        # orbit. How far the chain already hung is not this pass's doing.
+        _say(root, moved=True, lift=round(lift, 4), capped=bool(capped),
+             bones=len(bones), worst_bone=bones[w],
+             clearance=round(float(clear[w]), 4),
+             wanted=round(float(want[w]), 4),
+             amp=round(float(amp[j[w]]) if amp is not None else 0.0, 4),
+             inside=int((clear < 0).sum()),
+             p50_before=round(float(np.median(clear)), 4),
+             shift=[round(float(c), 4) for c in shift])
+        # COPY, never mutate. `node.transform` is a VIEW onto the source node --
+        # writing through it changes what the SOURCE reports, so the second
+        # weight file converted from the same load inherits the lift twice.
+        xf, par = chain[root]
+        nxf = xf.copy()
+        t = nxf.translation
+        nxf.translation = (float(t[0] + shift[0]), float(t[1] + shift[1]),
+                           float(t[2] + shift[2]))
+        chain[root] = (nxf, par)
+        moved += 1
+    return moved
+
+
 def _has_nif_root_garment_chain(src_nif) -> bool:
     """True if the NIF has a non-skeleton (garment) bone parented directly to a
     NIF-root node at waist/hip height -- the pattern _reanchor_nif_root_chains
@@ -12840,32 +13193,42 @@ def _precreate_custom_bone_chains(dst_nif, src_nif, bone_names) -> int:
             pass
     # AFTER the re-anchor, so it adds to whatever local transform that left --
     # the two compose, and running first would have the re-anchor overwrite it.
-    if CHAIN_BODY_SHIFT:
-        try:
-            # dst path for telemetry only; absent -> the pass still runs, it
-            # just cannot record. Never let a missing path skip the shift.
-            _dp = getattr(dst_nif, "filepath", None) or getattr(
-                dst_nif, "filename", None)
-            _before = {b: tuple(float(c) for c in x.translation)
-                       for b, (x, _p) in chain.items()}
-            _n = _shift_chain_roots_by_body_delta(chain, src_nif, dst_path=_dp)
-            # Roots whose transform the shift actually changed. The node loop
-            # below only ADDS nodes that do not already exist, and a garment
-            # chain root is normally already present -- `_copy_shape` adds it as
-            # a skin bone before this runs. So without re-applying here the
-            # shift is computed, reported, and silently DISCARDED: measured on a
-            # real cuirass as "moved 10 chain(s)" with ZERO nodes differing in
-            # the written file.
-            _shifted = {b: chain[b][0] for b, t in _before.items()
-                        if tuple(float(c) for c in chain[b][0].translation) != t}
-            if _n:
-                print(f"    [chain-shift] moved {_n} chain(s) onto the UBE body")
-        except Exception as _e:
-            # RECORDED, not swallowed: a silent failure here is indistinguishable
-            # from "the pass ran and found nothing to move".
-            print(f"    [chain-shift] FAILED: {type(_e).__name__}: {_e}")
-            _shifted = {}
-        # Re-apply onto nodes that already exist. Restricted to roots the shift
+    if CHAIN_BODY_SHIFT or CHAIN_REST_LIFT:
+        # dst path for telemetry only; absent -> the passes still run, they just
+        # cannot record. Never let a missing path skip a shift.
+        _dp = getattr(dst_nif, "filepath", None) or getattr(
+            dst_nif, "filename", None)
+        # ONE snapshot around BOTH passes. They mutate the same root entries and
+        # compose (rest-lift measures the positions the body-delta shift left),
+        # so the re-apply below must see their combined effect, not the last
+        # one's. Taken before either runs.
+        _before = {b: tuple(float(c) for c in x.translation)
+                   for b, (x, _p) in chain.items()}
+        for _label, _fn, _flag in (
+                ("chain-shift", _shift_chain_roots_by_body_delta,
+                 CHAIN_BODY_SHIFT),
+                ("chain-rest-lift", _lift_chain_roots_off_body,
+                 CHAIN_REST_LIFT)):
+            if not _flag:
+                continue
+            try:
+                _n = _fn(chain, src_nif, dst_path=_dp)
+                if _n:
+                    print(f"    [{_label}] moved {_n} chain(s) off the UBE body")
+            except Exception as _e:
+                # RECORDED, not swallowed: a silent failure here is
+                # indistinguishable from "the pass ran and found nothing to do".
+                print(f"    [{_label}] FAILED: {type(_e).__name__}: {_e}")
+                _note_pass_failure(_label, _e, _dp)
+        # Roots whose transform a pass actually changed. The node loop below only
+        # ADDS nodes that do not already exist, and a garment chain root is
+        # normally already present -- `_copy_shape` adds it as a skin bone before
+        # this runs. So without re-applying here the shift is computed, reported,
+        # and silently DISCARDED: measured on a real cuirass as "moved 10
+        # chain(s)" with ZERO nodes differing in the written file.
+        _shifted = {b: chain[b][0] for b, t in _before.items()
+                    if tuple(float(c) for c in chain[b][0].translation) != t}
+        # Re-apply onto nodes that already exist. Restricted to roots a pass
         # itself moved, and those are garment bones by construction
         # (custom_only), so this cannot touch a skeleton node.
         for _b, _x in (_shifted or {}).items():

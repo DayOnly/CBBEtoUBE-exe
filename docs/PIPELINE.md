@@ -83,8 +83,9 @@ chain-driven region cannot work, and has been tried.
 
 ### 2b. Skin and bone
 
-`_precreate_custom_bone_chains` (chain nodes; pelvis re-anchor and the optional
-`#chain-body-shift` fire inside it) → `add_scale_bone_weights` →
+`_precreate_custom_bone_chains` (chain nodes; the pelvis re-anchor and the two
+optional root moves — `#chain-body-shift` then `#chain-rest-outside-body` — fire
+inside it, in that order, and compose) → `add_scale_bone_weights` →
 `compute_body_blend_skinning` (the "M6 reskin") → `_slot_aware_*` band/reach →
 `_sync_chest_layered_cloth_weights` / `_sync_abdomen_...`.
 
@@ -216,6 +217,19 @@ in the same commit, or it does not get written.**
 * **Warping chain bones individually.** Changes inter-bone rest lengths and is
   how a chain explodes. Shift a chain's ROOT and it translates rigidly —
   measured worst inter-bone change 0.000000u.
+
+  **But "rigid" is only true WITHIN a chain, and the chains are not always
+  independent** (2026-08-11). On the studded cuirass 74 of 130
+  `generic-constraint`s are CROSS-CHAIN: the skirt is a hoop of ten panels
+  stitched to their neighbours at the `_01` and `_02` rings. Lifting six of
+  them by three different amounts changed 28 inter-panel rest distances by up
+  to 1.651u. That is safe **here**, and the reason is worth knowing before the
+  next such change: every cross-chain constraint uses `frameInLerp`, so FSMP
+  derives its rest frame from the bones AT LOAD and the ±1u linear limits are
+  measured from wherever the panels then sit; every constraint with an explicit
+  `frameInA` is INTRA-chain, and those rest lengths change 0.000000u. Check
+  that pairing in the emitted XML before shifting roots differentially — a
+  differential lift under explicit cross-chain frames would fight the solver.
 * **Grafting jiggle onto a collider.** See §4.
 * **MOVING a collider's existing verts to close a coverage gap** (2026-08-10,
   three ways, all measured). Nearest-point projection closed 0.12u of a 2.89u
@@ -232,6 +246,20 @@ in the same commit, or it does not get written.**
   inside the body — the solver pulls in every frame while collision pushes out.
   Adding push cannot win against the pull. See
   `#chain-rest-pose-inside-body` in the worklog before touching this again.
+  The answer to it is `#chain-rest-outside-body`, and the two things it had to
+  get right are recorded there: the margin must be the body's own outward MORPH
+  amplitude (the converter never sees the player's preset, and 6 of the 8
+  penetrations only exist under it), and that amplitude must be CAPPED — the
+  belly's runs to 8.7u and recruited two front chains measured +3.63u clear.
+* **Restoring a chain bone's AUTHORED clearance** (the bone-space analogue of
+  `conform_to_source_standoff`). Refuted before building, 2026-08-11: the
+  largest losses are on the FRONT skirt (2.96u) where nothing clips, and 10 of
+  63 bones were ALREADY inside the source body, because an author routinely runs
+  a skirt's bones down the INSIDE of its cloth. The two bones that actually clip
+  do not appear in the top 16 losses. Note also that the source's bundled body
+  ships **all 6463 normals zero**, so a signed distance taken from stored
+  normals reads exactly +0.000 for every bone and looks like a clean
+  measurement — derive normals from the triangles.
 
 ---
 

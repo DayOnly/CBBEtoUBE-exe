@@ -301,6 +301,28 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "Took bind-pose skirt clipping 7.5%% to 1.1%% on the test "
                     "piece, but showed no visible in-game change, so it is "
                     "unproven where it counts. Experimental."),
+    Setting("chain_rest_lift", "Lift physics chains out of the body "
+            "(experimental)",
+            "Armor", "Physics chains (HDT-SMP)", default=False,
+            env="CBBE2UBE_CHAIN_REST_LIFT", invert=False,
+            hint="Stop a skirt being pulled inside the hips it hangs over.",
+            tooltip="A skirt's chain bones keep their SOURCE rest position "
+                    "while the body grows to UBE proportions, so on a fuller "
+                    "body they end up sitting INSIDE it. The physics solver "
+                    "pulls the cloth back toward those bones every frame while "
+                    "collision pushes it out, so the skirt settles part-way "
+                    "inside -- the same at standstill and in motion, which is "
+                    "why extra collision never finished the job. This moves "
+                    "each affected chain's ROOT outward until no bone of it "
+                    "rests inside the body, including the room the body still "
+                    "has to grow under your RaceMenu sliders. The chain "
+                    "translates rigidly (measured worst inter-bone change "
+                    "0.000000u -- warping chain bones individually is what "
+                    "makes a chain explode). Trade-off: the free-hanging lower "
+                    "part of the skirt moves out by the same amount, so it can "
+                    "stand off further than the author intended. Experimental "
+                    "-- changes physics, so watch for ballooning, collapsing "
+                    "cloth and equip crashes, not just clipping."),
     Setting("unified_offset", "Unified clearance floor (experimental)",
             "Armor", "Fit and clearance", default=False,
             env="CBBE2UBE_UNIFIED_OFFSET", invert=False,
