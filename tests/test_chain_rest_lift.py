@@ -164,10 +164,24 @@ def _run(chain, fake, amp_value=0.5, osd=True):
 
 # ------------------------------------------------------------------ the gate
 
-def test_default_is_off():
-    ch = _chain()
-    assert nc.CHAIN_REST_LIFT is False
-    assert nc._lift_chain_roots_off_body(ch, _FakeNif(ch)) == 0
+def test_defaults_on_since_it_was_judged_in_motion():
+    """Held OFF for ballooning, collapse, pull-to-origin and a skirt standing
+    too far out -- all things that only look wrong IN MOTION. Judged there on
+    the piece the defect was reported against (2026-08-11): "perfect"."""
+    assert nc.CHAIN_REST_LIFT is True
+
+
+def test_opts_out(monkeypatch):
+    import importlib
+    monkeypatch.setenv("CBBE2UBE_NO_CHAIN_REST_LIFT", "1")
+    reloaded = importlib.reload(nc)
+    try:
+        assert reloaded.CHAIN_REST_LIFT is False
+        ch = _chain(a_root_y=-4.0, a_mid_y=+1.0)
+        assert reloaded._lift_chain_roots_off_body(ch, _FakeNif(ch)) == 0
+    finally:
+        monkeypatch.delenv("CBBE2UBE_NO_CHAIN_REST_LIFT", raising=False)
+        importlib.reload(nc)
 
 
 # ------------------------------------------------------- it lifts what it must

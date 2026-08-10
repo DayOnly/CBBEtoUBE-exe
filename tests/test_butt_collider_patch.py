@@ -38,20 +38,26 @@ import inspect
 import src.nif_convert as nc
 
 
-def test_flag_defaults_off():
-    """The riskiest change in the project: it adds a collision shape and an XML
-    collision declaration, which is the equip-CTD surface. It does not get a
-    default until it has been equip-tested in game."""
-    assert nc.BUTT_COLLIDER_PATCH is False
+def test_flag_defaults_on_since_the_equip_test_passed():
+    """It adds a collision shape and an XML collision declaration, which is the
+    equip-CTD surface, so it shipped OFF until equip-tested. It equipped clean
+    in game (2026-08-10) and the piece carrying it was judged good (08-11), so
+    it is ON.
+
+    The OFFSET default moved with it. 0.6 is the value that was deployed and
+    judged; leaving the knob at the original 0.2 while flipping the toggle would
+    default the pack to a recipe nobody has looked at."""
+    assert nc.BUTT_COLLIDER_PATCH is True
+    assert nc._BUTT_COL_OFFSET == 0.6
 
 
-def test_flag_opts_in(monkeypatch):
-    monkeypatch.setenv("CBBE2UBE_BUTT_COLLIDER_PATCH", "1")
+def test_flag_opts_out(monkeypatch):
+    monkeypatch.setenv("CBBE2UBE_NO_BUTT_COLLIDER_PATCH", "1")
     reloaded = importlib.reload(nc)
     try:
-        assert reloaded.BUTT_COLLIDER_PATCH is True
+        assert reloaded.BUTT_COLLIDER_PATCH is False
     finally:
-        monkeypatch.delenv("CBBE2UBE_BUTT_COLLIDER_PATCH", raising=False)
+        monkeypatch.delenv("CBBE2UBE_NO_BUTT_COLLIDER_PATCH", raising=False)
         importlib.reload(nc)
 
 
@@ -123,11 +129,13 @@ def test_decimation_keeps_ORIGINAL_verts():
 
 # --- #skirt-proxy-rebuild ----------------------------------------------------
 
-def test_skirt_proxy_flag_defaults_off():
-    """A rank above ButtCol in risk: ButtCol is KINEMATIC and cannot destabilise
-    the sim, while a cloth proxy is chain-driven and a bad one can balloon,
-    collapse, or pull to the origin."""
-    assert nc.SKIRT_PROXY_REBUILD is False
+def test_skirt_proxy_defaults_on_since_it_was_judged_in_motion():
+    """A rank above ButtCol in risk -- ButtCol is KINEMATIC and cannot
+    destabilise the sim, while a cloth proxy is chain-driven and a bad one can
+    balloon, collapse, or pull to the origin. All three of those look wrong IN
+    MOTION, which is the check it was held back for and the check it passed
+    (2026-08-11, user verdict on the piece carrying it)."""
+    assert nc.SKIRT_PROXY_REBUILD is True
 
 
 def test_skirt_proxy_wired_into_both_convert_paths():

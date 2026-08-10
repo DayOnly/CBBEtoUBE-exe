@@ -1,5 +1,39 @@
 # Changelog
 
+## Unreleased
+
+### Changed — four fit/physics options are now ON by default
+
+All four were built default-OFF pending an in-game verdict, and all four have
+now had one. **A reconvert is required for any of this to reach an existing
+pack** — nothing rewrites meshes that are already built.
+
+* **Match armour skinning to the body it covers.** A CBBE-authored garment
+  carries CBBE weighting on a UBE body, so the body slides out from under it as
+  you move. This copies the covered body's whole weight vector on the vertices
+  that hug it. Bust exposure in motion 50.9% → 3.1% on the test piece; it moves
+  no vertices, so resting fit is unchanged. Now at full strength (1.0), which
+  was held back only because a garment deforming exactly like skin could be
+  wrong for rigid plate — a glass cuirass at 1.0 has since been judged good in
+  game beside the leather.
+* **Lift physics chains out of the body.** The fix for the long-standing
+  buttock clip. A skirt's chain bones keep their source rest position while the
+  body grows, so on a fuller body they end up inside it and the solver pulls the
+  cloth in every frame while collision pushes out — which is why more collision
+  never finished the job. Each affected chain's root is moved out until no bone
+  of it rests inside the body. Trade-off: the free-hanging lower skirt moves out
+  by the same amount (0.5u on the test piece).
+* **Add the missing rear collision surface**, and **let the visible skirt
+  collide, not just its proxy.** These attack the same defect from the body and
+  cloth sides; both fire only on pieces measured to need them.
+
+Escape hatches, and the Armor tab is the place to use them:
+`CBBE2UBE_NO_FULL_WEIGHT_MATCH`, `CBBE2UBE_NO_CHAIN_REST_LIFT`,
+`CBBE2UBE_NO_BUTT_COLLIDER_PATCH`, `CBBE2UBE_NO_SKIRT_PROXY_REBUILD`.
+
+If a skirt now looks held too far off the hips, untick "Lift physics chains out
+of the body" first.
+
 ## 1.2 — 2026-08-02
 
 The first release since 1.1.1. Everything here shipped as internal 1.2.x

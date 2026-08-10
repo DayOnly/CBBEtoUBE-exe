@@ -7951,17 +7951,25 @@ _SPINE_TWIST_BONES = _SPINE_MOTION_BONES
 # the material ceiling is aesthetic, not geometric, and jiggling steel looks
 # wrong. That concern is unmeasured, so the default stays conservative.
 #
-# DEFAULT OFF -- CBBE2UBE_FULL_WEIGHT_MATCH=1. This is the closest thing in the
-# codebase to a reskin of a source-skinned garment, which is the thing the
-# morph-TRI gate exists to prevent, so it does not get a default until there is a
-# pack census and an in-game look. Note the gate's own in-game evidence was "a
-# crease that raises when leaning forward" and `spine fwd lean` here goes
-# 10.80 -> 0.25 -- suggestive, on a different piece, and NOT proof.
+# DEFAULT ON since 2026-08-11 (CBBE2UBE_NO_FULL_WEIGHT_MATCH=1 disables).
+#
+# It shipped OFF because this is the closest thing in the codebase to a reskin of
+# a source-skinned garment -- the thing the morph-TRI gate exists to prevent --
+# and because at strength 1.0 a garment deforms exactly like skin, which is right
+# for soft leather and was feared WRONG for rigid plate ("jiggling steel looks
+# wrong"). That was the one unmeasured objection and it is now answered: the
+# glass cuirass, rigid plate with 3.97% of its mass relocated, was judged in game
+# alongside the leather. USER: both "look perfect".
 MATCH_FULL_WEIGHTS = (
-    os.environ.get("CBBE2UBE_FULL_WEIGHT_MATCH", "").strip().lower()
-    in ("1", "true", "yes", "on"))
+    os.environ.get("CBBE2UBE_NO_FULL_WEIGHT_MATCH", "").strip().lower()
+    not in ("1", "true", "yes", "on"))
+# 1.0, not the 0.6 this shipped with: 1.0 is the strength that was BUILT and
+# judged on both pieces. Leaving the knob at 0.6 while flipping the toggle would
+# default the pack to a recipe nobody has looked at -- the exact "the shipped
+# default configuration is not the one being validated in game" trap the
+# 2026-07-27 audit recorded.
 _FULL_WEIGHT_STRENGTH = float(
-    os.environ.get("CBBE2UBE_FULL_WEIGHT_STRENGTH", "0.6"))
+    os.environ.get("CBBE2UBE_FULL_WEIGHT_STRENGTH", "1.0"))
 _FULL_WEIGHT_MAX_DIST = float(
     os.environ.get("CBBE2UBE_FULL_WEIGHT_MAX_DIST", "5.0"))
 # Above the shoulder the hug gate has to mean CONTACT, not proximity -- that is
@@ -11613,16 +11621,23 @@ def _conform_collider_to_body(dst_path) -> int:
 #   * all-or-nothing with a byte-restore, the same contract as the bust split;
 #   * it fires ONLY where the gap is measured, so a piece whose collider already
 #     covers the buttocks is untouched.
-# DEFAULT OFF -- CBBE2UBE_BUTT_COLLIDER_PATCH=1. Needs an EQUIP test in game;
-# a clearance number cannot clear this class.
+# DEFAULT ON since 2026-08-11 (CBBE2UBE_NO_BUTT_COLLIDER_PATCH=1 disables).
+# The equip test this needed is passed: the added collision shape and its XML
+# declaration equipped clean in game, and the piece carrying it was judged
+# "perfect" with the patch, the skirt proxy and the chain lift all present.
+# It stays narrow by measurement, not by the default -- the fire gate is >=150
+# butt verts with no collider within 3u, which is 1 of the 15 golden pieces.
 BUTT_COLLIDER_PATCH = (
-    os.environ.get("CBBE2UBE_BUTT_COLLIDER_PATCH", "").strip().lower()
-    in ("1", "true", "yes", "on"))
+    os.environ.get("CBBE2UBE_NO_BUTT_COLLIDER_PATCH", "").strip().lower()
+    not in ("1", "true", "yes", "on"))
 _BUTT_COL_NAME = "ButtCol"
 # FSMP cost scales with collider triangles; the body's raw butt is ~2.6k verts.
 _BUTT_COL_TARGET = int(os.environ.get("CBBE2UBE_BUTT_COLLIDER_TARGET", "400"))
-# Sit just proud of the skin so cloth rests ON the body, not inside it.
-_BUTT_COL_OFFSET = float(os.environ.get("CBBE2UBE_BUTT_COLLIDER_OFFSET", "0.2"))
+# Sit just proud of the skin so cloth rests ON the body, not inside it. 0.6, not
+# the 0.2 this shipped with: 0.6 is what round 2 deployed and what was judged.
+# See the strength note on MATCH_FULL_WEIGHTS -- flipping a toggle without the
+# value it was validated at ships an unjudged recipe.
+_BUTT_COL_OFFSET = float(os.environ.get("CBBE2UBE_BUTT_COLLIDER_OFFSET", "0.6"))
 # "Uncovered" = no existing collider vert within this. Also the fire gate.
 _BUTT_COL_GAP = float(os.environ.get("CBBE2UBE_BUTT_COLLIDER_GAP", "3.0"))
 _BUTT_COL_MIN_UNCOVERED = int(
@@ -11922,12 +11937,14 @@ def _add_butt_collider_patch(dst_path) -> int:
 #
 # RISK RANK: this is a step above ButtCol. ButtCol is KINEMATIC and cannot
 # destabilise the simulation; a cloth proxy is chain-driven and a bad one can
-# balloon, collapse, or pull to the origin. DEFAULT OFF --
-# CBBE2UBE_SKIRT_PROXY_REBUILD=1. Needs the equip test AND a look at the skirt in
-# motion, not just at rest.
+# balloon, collapse, or pull to the origin.
+# DEFAULT ON since 2026-08-11 (CBBE2UBE_NO_SKIRT_PROXY_REBUILD=1 disables). The
+# equip test AND the look at the skirt in motion are both done -- the piece
+# carrying it was judged "perfect", which is the only check that could clear a
+# chain-driven proxy.
 SKIRT_PROXY_REBUILD = (
-    os.environ.get("CBBE2UBE_SKIRT_PROXY_REBUILD", "").strip().lower()
-    in ("1", "true", "yes", "on"))
+    os.environ.get("CBBE2UBE_NO_SKIRT_PROXY_REBUILD", "").strip().lower()
+    not in ("1", "true", "yes", "on"))
 _SKIRT_PROXY_NAME = "SkirtCol"
 _SKIRT_PROXY_TARGET = int(
     os.environ.get("CBBE2UBE_SKIRT_PROXY_TARGET", "500"))
@@ -12595,8 +12612,20 @@ def _shift_chain_roots_by_body_delta(chain: dict, src_nif, dst_path=None) -> int
 # lengths and is how a chain explodes (`docs/PIPELINE.md` §7). THE COST of that
 # rigidity is that the free-hanging lower chain moves out too; it is recorded
 # per root as `flare` so the trade is visible, and capped by CHAIN_LIFT_MAX.
+# DEFAULT ON since 2026-08-11 (CBBE2UBE_NO_CHAIN_REST_LIFT=1 disables). Judged
+# in game on the piece the defect was reported against, in motion, with the two
+# collider passes present: USER "perfect". The risks this was held back for --
+# ballooning, collapse, pull-to-origin, a skirt standing too far off -- are the
+# ones that look wrong in motion, and none appeared.
+#
+# CAVEAT worth keeping in view: this fires on 6 of the 12 chain-bearing golden
+# pieces (34 chains), where the butt patch fires on 1 of 15. ONE piece carried
+# the verdict. Two pieces (`fitted-dress`, `hide-collider`) hit CHAIN_LIFT_MAX,
+# meaning the criterion wanted more than it is allowed -- those are the first
+# places to look if a skirt is reported standing off.
 CHAIN_REST_LIFT = os.environ.get(
-    "CBBE2UBE_CHAIN_REST_LIFT", "").strip().lower() in ("1", "true", "yes", "on")
+    "CBBE2UBE_NO_CHAIN_REST_LIFT", "").strip().lower() not in (
+        "1", "true", "yes", "on")
 # Clearance a bone must end up with = BASE + FACTOR * (outward morph amplitude).
 CHAIN_LIFT_BASE = float(os.environ.get("CBBE2UBE_CHAIN_LIFT_BASE", "0.25"))
 CHAIN_LIFT_MORPH_FACTOR = float(

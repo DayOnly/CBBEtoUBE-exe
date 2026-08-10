@@ -34,17 +34,19 @@ import numpy as np
 import src.nif_convert as nc
 
 
-def test_flag_defaults_off_and_opts_in(monkeypatch):
+def test_flag_defaults_on_and_opts_out(monkeypatch):
     """This is the closest thing here to a reskin of a source-skinned garment --
-    exactly what the morph-TRI gate exists to prevent. One piece, offline metric,
-    nothing in game: it does not get a default."""
-    assert nc.MATCH_FULL_WEIGHTS is False
-    monkeypatch.setenv("CBBE2UBE_FULL_WEIGHT_MATCH", "1")
+    exactly what the morph-TRI gate exists to prevent -- so it shipped OFF on one
+    piece and an offline metric. It has since been judged in game on BOTH
+    material classes it could plausibly break differently, soft leather and
+    rigid plate (2026-08-11), which is what earns the default."""
+    assert nc.MATCH_FULL_WEIGHTS is True
+    monkeypatch.setenv("CBBE2UBE_NO_FULL_WEIGHT_MATCH", "1")
     reloaded = importlib.reload(nc)
     try:
-        assert reloaded.MATCH_FULL_WEIGHTS is True
+        assert reloaded.MATCH_FULL_WEIGHTS is False
     finally:
-        monkeypatch.delenv("CBBE2UBE_FULL_WEIGHT_MATCH", raising=False)
+        monkeypatch.delenv("CBBE2UBE_NO_FULL_WEIGHT_MATCH", raising=False)
         importlib.reload(nc)
 
 
@@ -145,11 +147,16 @@ def test_shoulder_gate_only_ever_narrows_the_band():
     assert list(band) == [True, True, False, True]
 
 
-def test_default_strength_is_conservative_not_the_best_measured():
-    """1.0 measured better on the probe (breast 3.12 vs 22.86) but makes a
-    garment deform exactly like skin -- right for soft leather, wrong for a
-    rigid plate, and that concern is unmeasured."""
-    assert 0.0 < nc._FULL_WEIGHT_STRENGTH < 1.0
+def test_default_strength_is_the_one_that_was_judged_in_game():
+    """1.0 measured best on the probe (breast 3.12 vs 22.86). It was held at 0.6
+    because a garment deforming exactly like skin is right for soft leather and
+    was feared WRONG for rigid plate -- the one objection that was never
+    measured. It has now been looked at: a glass cuirass at 1.0, with 3.97% of
+    its mass relocated, was judged good in game beside the leather (2026-08-11).
+
+    Pinned because the default and the verdict must not drift apart: a strength
+    the user has not seen is not a validated default, in either direction."""
+    assert nc._FULL_WEIGHT_STRENGTH == 1.0
 
 
 def test_blend_is_a_convex_combination_of_two_normalised_rows():

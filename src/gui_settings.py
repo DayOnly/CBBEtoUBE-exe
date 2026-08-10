@@ -219,10 +219,10 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "where armour is already in front of the vertex, so it "
                     "cannot reopen clipping."),
     Setting("full_weight_match", "Match armour skinning to the body it covers",
-            "Armor", "Fit and clearance", default=False,
-            env="CBBE2UBE_FULL_WEIGHT_MATCH", invert=False,
-            hint="Stops armour sliding off the body in motion. Big win on the bust; "
-                 "one piece tested in game.",
+            "Armor", "Fit and clearance", default=True,
+            env="CBBE2UBE_NO_FULL_WEIGHT_MATCH", invert=True,
+            hint="Stops armour sliding off the body in motion. Confirmed on "
+                 "soft leather and rigid plate.",
             tooltip="A CBBE-authored garment carries CBBE weighting on a UBE "
                     "body, so it travels differently from the skin underneath "
                     "and the body slides out from under it while you move. The "
@@ -232,34 +232,37 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "that hug it, so nothing is left over to pay with. Measured "
                     "on a leather cuirass: bust exposure in motion 50.9% -> "
                     "3.1%, and no pose worse than before. Moves no vertices, so "
-                    "resting fit is untouched. Confirmed in game on that one "
-                    "piece; still default off pending a wider look."),
+                    "resting fit is untouched. Confirmed in game on a soft "
+                    "leather cuirass and on rigid glass plate."),
     Setting("full_weight_strength", "  ...how far to match (0-1)",
-            "Armor", "Fit and clearance", kind="float", default=0.6,
+            "Armor", "Fit and clearance", kind="float", default=1.0,
             env="CBBE2UBE_FULL_WEIGHT_STRENGTH", advanced=True,
             min=0.0, max=1.0, step=0.05,
-            hint="1.0 matched best in the test but makes rigid plate deform like skin.",
+            hint="1.0 matched best, and rigid plate at 1.0 was judged good in game.",
             tooltip="0 leaves the garment's own weighting, 1 adopts the body's "
                     "exactly. Higher tracks the body better in every pose "
-                    "measured; the reason the default is not 1.0 is that a "
-                    "garment which deforms exactly like skin is right for soft "
-                    "leather and wrong for a rigid plate, and that has not been "
-                    "measured."),
+                    "measured. It sat at 0.6 because a garment deforming exactly "
+                    "like skin is right for soft leather and was feared wrong "
+                    "for rigid plate; a glass cuirass at 1.0, with 3.97% of its "
+                    "mass relocated, was then judged good in game, so 1.0 is the "
+                    "default. Lower it if a specific plate piece looks rubbery."),
     Setting("butt_collider_patch", "Add the missing rear collision surface",
-            "Armor", "Physics chains (HDT-SMP)", default=False,
-            env="CBBE2UBE_BUTT_COLLIDER_PATCH", invert=False,
-            hint="For skirts that clip through the buttocks. Equip-tested, partial fix.",
+            "Armor", "Physics chains (HDT-SMP)", default=True,
+            env="CBBE2UBE_NO_BUTT_COLLIDER_PATCH", invert=True,
+            hint="For skirts that clip through the buttocks. Equip-tested and "
+                 "confirmed in game.",
             tooltip="Many CBBE-authored armours ship a collider that stops at "
                     "the smaller CBBE buttock, so on the larger UBE body a "
                     "simulated skirt has nothing to rest on and sinks into the "
                     "skin. This adds a hidden collision surface taken from the "
                     "body itself, and only on pieces measured to need it. It "
-                    "equipped cleanly in game and clearly improved the defect, "
-                    "but did not finish it -- see the worklog for why."),
+                    "equipped cleanly in game. On its own it improved the defect "
+                    "without finishing it -- what finishes it is lifting the "
+                    "chain out of the body, below."),
     Setting("skirt_proxy_rebuild", "Let the visible skirt collide, not just its proxy",
-            "Armor", "Physics chains (HDT-SMP)", default=False,
-            env="CBBE2UBE_SKIRT_PROXY_REBUILD", invert=False,
-            hint="Riskier: touches simulated cloth. Watch the skirt in motion.",
+            "Armor", "Physics chains (HDT-SMP)", default=True,
+            env="CBBE2UBE_NO_SKIRT_PROXY_REBUILD", invert=True,
+            hint="Touches simulated cloth. Confirmed in game, in motion.",
             tooltip="Some armours represent their cloth in the physics with a "
                     "very coarse stand-in that does not resemble the skirt you "
                     "actually see -- on the test piece it reached only 1/3 of "
@@ -267,9 +270,10 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "stand-in off the body correctly while the rendered skirt "
                     "goes through it. This adds a proxy built from the visible "
                     "cloth. It ADDS rather than replacing, so the authored "
-                    "physics is untouched. Higher risk than the collider patch: "
-                    "this is simulated geometry, so check the skirt in motion "
-                    "for ballooning or collapse, not just standing still."),
+                    "physics is untouched. Higher risk than the collider patch, "
+                    "because this is simulated geometry -- it was checked in "
+                    "motion for ballooning and collapse before being defaulted "
+                    "on. Untick it first if a skirt starts behaving oddly."),
     Setting("rigid_majority_softbody", "Keep mostly-rigid armour skinned "
             "(experimental)",
             "Armor", "Body follow and morphs", default=False,
@@ -301,11 +305,11 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "Took bind-pose skirt clipping 7.5%% to 1.1%% on the test "
                     "piece, but showed no visible in-game change, so it is "
                     "unproven where it counts. Experimental."),
-    Setting("chain_rest_lift", "Lift physics chains out of the body "
-            "(experimental)",
-            "Armor", "Physics chains (HDT-SMP)", default=False,
-            env="CBBE2UBE_CHAIN_REST_LIFT", invert=False,
-            hint="Stop a skirt being pulled inside the hips it hangs over.",
+    Setting("chain_rest_lift", "Lift physics chains out of the body",
+            "Armor", "Physics chains (HDT-SMP)", default=True,
+            env="CBBE2UBE_NO_CHAIN_REST_LIFT", invert=True,
+            hint="Stop a skirt being pulled inside the hips it hangs over. "
+                 "This is what fixes the long-standing buttock clip.",
             tooltip="A skirt's chain bones keep their SOURCE rest position "
                     "while the body grows to UBE proportions, so on a fuller "
                     "body they end up sitting INSIDE it. The physics solver "
@@ -319,10 +323,11 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "translates rigidly (measured worst inter-bone change "
                     "0.000000u -- warping chain bones individually is what "
                     "makes a chain explode). Trade-off: the free-hanging lower "
-                    "part of the skirt moves out by the same amount, so it can "
-                    "stand off further than the author intended. Experimental "
-                    "-- changes physics, so watch for ballooning, collapsing "
-                    "cloth and equip crashes, not just clipping."),
+                    "part of the skirt moves out by the same amount (0.5u on "
+                    "the test piece), so it can stand off further than the "
+                    "author intended. Confirmed in game, in motion. If a skirt "
+                    "looks like it is held too far off the hips, this is the "
+                    "one to untick."),
     Setting("unified_offset", "Unified clearance floor (experimental)",
             "Armor", "Fit and clearance", default=False,
             env="CBBE2UBE_UNIFIED_OFFSET", invert=False,

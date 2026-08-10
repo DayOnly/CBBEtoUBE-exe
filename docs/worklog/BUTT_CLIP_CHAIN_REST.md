@@ -55,9 +55,9 @@ Note for anyone re-measuring against a source body: this one ships **all 6463
 normals zero**, so a signed distance taken from stored normals reads exactly
 +0.000 for every bone and looks like a clean measurement. Derive from triangles.
 
-## What shipped — `#chain-rest-outside-body`, default OFF
+## What shipped — `#chain-rest-outside-body` (default OFF at first; ON since 08-11)
 
-`_lift_chain_roots_off_body`, `CBBE2UBE_CHAIN_REST_LIFT`, GUI-exposed. Lifts each
+`_lift_chain_roots_off_body`, `CBBE2UBE_NO_CHAIN_REST_LIFT`, GUI-exposed. Lifts each
 garment chain's ROOT along the body's outward normal until no bone of that chain
 rests inside the body. Criterion, margin and caps:
 
@@ -103,10 +103,27 @@ That is safe here, for a reason worth checking rather than assuming:
 A differential lift under explicit cross-chain frames would fight the solver.
 Read the emitted XML for that pairing before shifting roots differentially.
 
-## Status
+## Status — CONFIRMED IN GAME, and DEFAULT ON since 2026-08-11
 
-Not in-game verified. Bind-pose and morph-aware numbers have failed to predict
-the eye before on this defect, so treat the above as a strong signal on the right
-mechanism, not a fix. The in-game test has to look for **ballooning, collapse,
-pull-to-origin and the skirt standing off too far**, in motion — not only at the
-butt. A clearance number cannot clear that class.
+The user judged the piece the defect was reported against, in motion, with the
+lift, the butt patch and the skirt proxy all present: **"perfect"**. A glass
+cuirass carrying the full-vector match at strength 1.0 was judged in the same
+pass, which cleared the last unmeasured objection to that pass (rigid plate
+deforming like skin). All four are now default ON with `CBBE2UBE_NO_*` hatches.
+
+**The numeric defaults moved with the toggles** — `FULL_WEIGHT_STRENGTH` 0.6 →
+1.0 and `BUTT_COLLIDER_OFFSET` 0.2 → 0.6. Those are the values that were built
+and judged; flipping a toggle while leaving the knob at its old value would
+default the pack to a recipe nobody has looked at, which is the
+"shipped default is not the validated configuration" trap the 2026-07-27 audit
+recorded. Proved closed: a conversion with NO feature flags reproduces the
+deployed, judged build to **0.000000u** on every shape and node, with
+byte-identical XML and TRI.
+
+**A reconvert is required** for any of this to reach an existing pack.
+
+**The open risk is reach, not correctness.** The lift fires on 6 of the 12
+chain-bearing golden pieces (34 chains) where the butt patch fires on 1 of 15,
+and ONE piece carried the verdict. Two pieces (`fitted-dress`, `hide-collider`)
+hit `CHAIN_LIFT_MAX`, meaning the criterion wanted more than it is allowed —
+those are the first places to look if a skirt is reported standing off the hips.
