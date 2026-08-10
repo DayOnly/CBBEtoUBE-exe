@@ -218,6 +218,58 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "push at the garment's own surface. It only ever binds "
                     "where armour is already in front of the vertex, so it "
                     "cannot reopen clipping."),
+    Setting("full_weight_match", "Match armour skinning to the body it covers",
+            "Armor", "Fit and clearance", default=False,
+            env="CBBE2UBE_FULL_WEIGHT_MATCH", invert=False,
+            hint="Stops armour sliding off the body in motion. Big win on the bust; "
+                 "one piece tested in game.",
+            tooltip="A CBBE-authored garment carries CBBE weighting on a UBE "
+                    "body, so it travels differently from the skin underneath "
+                    "and the body slides out from under it while you move. The "
+                    "existing passes each fix ONE bone family and pay for it "
+                    "out of the others, which trades one pose for another. This "
+                    "copies the covered body's whole weight vector on vertices "
+                    "that hug it, so nothing is left over to pay with. Measured "
+                    "on a leather cuirass: bust exposure in motion 50.9% -> "
+                    "3.1%, and no pose worse than before. Moves no vertices, so "
+                    "resting fit is untouched. Confirmed in game on that one "
+                    "piece; still default off pending a wider look."),
+    Setting("full_weight_strength", "  ...how far to match (0-1)",
+            "Armor", "Fit and clearance", kind="float", default=0.6,
+            env="CBBE2UBE_FULL_WEIGHT_STRENGTH", advanced=True,
+            min=0.0, max=1.0, step=0.05,
+            hint="1.0 matched best in the test but makes rigid plate deform like skin.",
+            tooltip="0 leaves the garment's own weighting, 1 adopts the body's "
+                    "exactly. Higher tracks the body better in every pose "
+                    "measured; the reason the default is not 1.0 is that a "
+                    "garment which deforms exactly like skin is right for soft "
+                    "leather and wrong for a rigid plate, and that has not been "
+                    "measured."),
+    Setting("butt_collider_patch", "Add the missing rear collision surface",
+            "Armor", "Physics chains (HDT-SMP)", default=False,
+            env="CBBE2UBE_BUTT_COLLIDER_PATCH", invert=False,
+            hint="For skirts that clip through the buttocks. Equip-tested, partial fix.",
+            tooltip="Many CBBE-authored armours ship a collider that stops at "
+                    "the smaller CBBE buttock, so on the larger UBE body a "
+                    "simulated skirt has nothing to rest on and sinks into the "
+                    "skin. This adds a hidden collision surface taken from the "
+                    "body itself, and only on pieces measured to need it. It "
+                    "equipped cleanly in game and clearly improved the defect, "
+                    "but did not finish it -- see the worklog for why."),
+    Setting("skirt_proxy_rebuild", "Let the visible skirt collide, not just its proxy",
+            "Armor", "Physics chains (HDT-SMP)", default=False,
+            env="CBBE2UBE_SKIRT_PROXY_REBUILD", invert=False,
+            hint="Riskier: touches simulated cloth. Watch the skirt in motion.",
+            tooltip="Some armours represent their cloth in the physics with a "
+                    "very coarse stand-in that does not resemble the skirt you "
+                    "actually see -- on the test piece it reached only 1/3 of "
+                    "the way to the visible hem. The simulation then holds the "
+                    "stand-in off the body correctly while the rendered skirt "
+                    "goes through it. This adds a proxy built from the visible "
+                    "cloth. It ADDS rather than replacing, so the authored "
+                    "physics is untouched. Higher risk than the collider patch: "
+                    "this is simulated geometry, so check the skirt in motion "
+                    "for ballooning or collapse, not just standing still."),
     Setting("rigid_majority_softbody", "Keep mostly-rigid armour skinned "
             "(experimental)",
             "Armor", "Body follow and morphs", default=False,
@@ -538,6 +590,7 @@ LAYOUT: "dict[str, tuple]" = {
             "drape_xml_gate", "conform_to_body", "conform_fold_guard",
             "warp_shear_limit", "warp_delta_outlier",
             "warp_delta_outlier_max", "warp_push_shell_cap",
+            "full_weight_match", "full_weight_strength",
             "smp_antipoke", "smp_antipoke_push",
             "antipoke_smooth", "layered_antipoke", "unified_offset")),
         ("Body follow and morphs", (
@@ -549,6 +602,7 @@ LAYOUT: "dict[str, tuple]" = {
             "jiggle_clearance_gain", "jiggle_clearance_max",
             "disable_softbody_scales")),
         ("Physics chains (HDT-SMP)", (
+            "butt_collider_patch", "skirt_proxy_rebuild",
             "leg_chain_guard", "chain_to_softbody", "static_chains",
             "nested_chain_anchors", "chain_torso", "chain_body_shift")),
         ("Limbs and extremities", ("leg_bend_match", "boot_far_thigh")),

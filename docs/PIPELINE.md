@@ -102,12 +102,26 @@ Conflating them is the `_shape_has_hdt_smp_rigging` bug that cost a session.
 
 `_normalize_partitions_on_disk` → `_split_bust_collider_shape` →
 **`_finalize_hdt_physics`** → `_split_bust_collider_xml` →
-`_transfer_body_jiggle_to_fitted` → `_conform_fitted_to_body` →
-`_match_rigid_leg_bend_to_body` → `_match_leg_motion_to_body` →
-`_match_spine_motion_to_body` → `_match_arm_motion_to_body` → `validate_dst_nif`.
+`_conform_collider_to_body` → `_add_butt_collider_patch` →
+`_add_skirt_collider_proxy` → `_transfer_body_jiggle_to_fitted` →
+`_conform_fitted_to_body` → `_match_rigid_leg_bend_to_body` →
+`_match_leg_motion_to_body` → `_match_spine_motion_to_body` →
+`_match_arm_motion_to_body` → `_match_spine_twist_to_body` →
+`_match_full_weights_to_body` → `validate_dst_nif`.
 
 `_finalize_hdt_physics` must stay before the graft (which reads the XML to decide
 what is a collider) and last among the extra-data writers.
+
+The three collider passes (all default OFF, added 2026-08-10) sit straight after
+`_split_bust_collider_xml` for the same reason it does: `_finalize_hdt_physics`
+overwrites the XML with the authored copy AND re-imports the collider shapes, so
+anything earlier is discarded. The butt patch and the skirt proxy APPEND to the
+XML that finalize wrote.
+
+**Family-match order is load-bearing** — each rescales the bones it does not
+manage, so the last to run wins the overlapping rows: leg → spine → arm →
+spine-twist → full-vector. The full-vector match manages EVERY shared bone, so
+nothing may run after it. A test pins the whole order.
 
 ---
 
@@ -203,6 +217,21 @@ in the same commit, or it does not get written.**
   how a chain explodes. Shift a chain's ROOT and it translates rigidly —
   measured worst inter-bone change 0.000000u.
 * **Grafting jiggle onto a collider.** See §4.
+* **MOVING a collider's existing verts to close a coverage gap** (2026-08-10,
+  three ways, all measured). Nearest-point projection closed 0.12u of a 2.89u
+  gap; standoff enforcement closed nothing (the collider was already OUTSIDE the
+  body, just outside a different part of it); radial shrink-wrap
+  (`_conform_collider_to_body`, kept default OFF) moved 50 verts, every one of
+  them on the LEGS, and not one rear vert moved rearward. **A collider that lacks
+  geometry in a region cannot be made to cover it by moving what it has** — that
+  one carried only 10 rear verts in the whole band z62-72 and none at the apex.
+  Add geometry (`_add_butt_collider_patch`) or do nothing.
+* **Fixing chain-driven cloth from the BODY side alone.** Also 2026-08-10. With
+  collider coverage measured complete (0.0% uncovered z44-80) and the standoff
+  morph-tracked, the cloth still clipped, because the chain bones' REST POSE sits
+  inside the body — the solver pulls in every frame while collision pushes out.
+  Adding push cannot win against the pull. See
+  `#chain-rest-pose-inside-body` in the worklog before touching this again.
 
 ---
 
