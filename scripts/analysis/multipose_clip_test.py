@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import json
 import sys
+import zlib
 from pathlib import Path
 
 # parent x3: this file is scripts/analysis/, so the repo root (which owns `src/`
@@ -145,7 +146,53 @@ def _posed(data, garments, acc, body_name):
         off += len(gv)
     return pb, vert_normals(pb, body_t), np.vstack(GV), np.vstack(GT)
 from scripts.analysis.pose_set import (                                  # noqa: E402
-    POSE_SET, REGION_POSES, REGIONS, ARM_X, MID_X)
+    POSE_SET, REGION_POSES, REGIONS, ARM_X, MID_X,
+    ARM_BONE_KEYS, ARM_WEIGHT_MAX, WEIGHT_ARM_EXCLUDED)
+
+
+def region_rng(seed, name):
+    """A sample draw that depends on the REGION, not on which regions ran.
+
+    A single `default_rng(seed)` advanced across the region loop, so restricting a
+    run with `--region` changed the draw for that region: the same file measured
+    `breast_side` at 9.07% alone and 12.63% in a full-table run. Two numbers for
+    one mesh, and the difference reads exactly like a real regression -- it nearly
+    got attributed to a 0.047u geometry difference between the single-piece
+    harness and the pack. Deriving the seed from the region name makes
+    `--region X` reproduce the full run's X exactly.
+
+    crc32, not hash(): `hash()` is salted per process, so it would be stable
+    within a run and different tomorrow.
+    """
+    return np.random.default_rng([seed, zlib.crc32(name.encode("utf-8"))])
+
+
+def arm_weight(body_w, n_verts):
+    """Per-body-vert weight on the arm chain, for the LATERAL arm exclusion.
+
+    `ARM_X` cannot do this job at breast height -- the bind-pose upper arm sits at
+    |x| 12-20, INSIDE the cut, carrying arm weight 1.000, while the flank at |x|
+    8-12 carries 0.220. See pose_set.ARM_BONE_KEYS for the measurement.
+    """
+    w = np.zeros(n_verts)
+    for b, (bw, _o) in body_w.items():
+        if any(k in b for k in ARM_BONE_KEYS):
+            w += np.asarray(bw, dtype=np.float64)
+    return w
+
+
+def region_mask(name, sel, verts, normals, arm_w):
+    """Body verts a region judges, with the arm exclusion that region calls for.
+
+    Front/rear regions keep the |x| < ARM_X cut EXACTLY as before, so every number
+    ever recorded against them stays comparable. Lateral regions use skin weight,
+    because for them the arm is not off to one side -- it is the thing in the way.
+    """
+    m = sel(verts[:, 2], normals[:, 1], normals[:, 0])
+    m &= np.abs(verts[:, 0]) > MID_X
+    if name in WEIGHT_ARM_EXCLUDED:
+        return m & (arm_w <= ARM_WEIGHT_MAX)
+    return m & (np.abs(verts[:, 0]) < ARM_X)
 
 
 def pick_body_shape(nif):
@@ -223,18 +270,11 @@ def load(nif_path, skeleton=None, body_name=None):
     return data, garments, par, origins, bn
 
 
-def region_visible(body, bn, GV, GT, sel):
-    """Body verts in `sel` whose outward ray escapes the garment.
-
-    The arm and midline exclusions are not optional -- without them the midline
-    crevice reads exposed in EVERY pose including bind and buries the signal.
-    """
-    z, ny = body[:, 2], bn[:, 1]
-    m = sel(z, ny) & (np.abs(body[:, 0]) < ARM_X) & (np.abs(body[:, 0]) > MID_X)
-    idx = np.flatnonzero(m)
-    if not len(idx):
-        return idx, np.zeros(0, dtype=bool)
-    return idx, ~rays_hit(body[idx], bn[idx], GV, GT)
+# `region_visible` lived here and built the region mask a SECOND time, inline. It
+# had no callers, and once lateral regions arrived it would have disagreed with
+# `region_mask` -- applying the |x| arm cut to a region that needs the weight one.
+# Two predicates for one concept is how the conform-skip detectors drifted apart;
+# deleted rather than left to rot into a wrong answer.
 
 
 def analyse(nif_path, skeleton=None, only_region=None, sample=400, seed=12345,
@@ -280,15 +320,14 @@ def analyse(nif_path, skeleton=None, only_region=None, sample=400, seed=12345,
     # Fix each region's sampled vertex set ONCE, from the bind mesh, so bind and
     # posed states are compared over identical vertices.
     pb0, pbn0, GV0, GT0 = _posed(data, garments, {}, bname)
-    rng = np.random.default_rng(seed)
+    armw = arm_weight(body_w, len(pb0))
     picks, base = {}, {}
     for name, sel in regions:
-        z, ny = pb0[:, 2], pbn0[:, 1]
-        m = (sel(z, ny) & (np.abs(pb0[:, 0]) < ARM_X)
-             & (np.abs(pb0[:, 0]) > MID_X))
+        m = region_mask(name, sel, pb0, pbn0, armw)
         idx = np.flatnonzero(m)
         if len(idx) > sample:
-            idx = np.sort(rng.choice(idx, size=sample, replace=False))
+            idx = np.sort(region_rng(seed, name).choice(
+                idx, size=sample, replace=False))
         picks[name] = idx
         base[name] = (~rays_hit(pb0[idx], pbn0[idx], GV0, GT0)
                       if len(idx) else np.zeros(0, dtype=bool))
@@ -455,14 +494,14 @@ def analyse_with_body(garment_path, garment_names, body_path, body_shape,
     ident = float(np.abs(apply_pose(body_v, body_w, {}) - body_v).max())
     regions = [(n, s) for n, s in REGIONS if not only_region or n == only_region]
     pb0, pbn0, GV0, GT0 = _posed(data, list(garment_names), {}, BODY)
-    rng = np.random.default_rng(seed)
+    armw = arm_weight(body_w, len(pb0))
     picks, base = {}, {}
     for name, sel in regions:
-        z, ny = pb0[:, 2], pbn0[:, 1]
-        m = (sel(z, ny) & (np.abs(pb0[:, 0]) < ARM_X) & (np.abs(pb0[:, 0]) > MID_X))
+        m = region_mask(name, sel, pb0, pbn0, armw)
         idx = np.flatnonzero(m)
         if len(idx) > sample:
-            idx = np.sort(rng.choice(idx, size=sample, replace=False))
+            idx = np.sort(region_rng(seed, name).choice(
+                idx, size=sample, replace=False))
         picks[name] = idx
         base[name] = (~rays_hit(pb0[idx], pbn0[idx], GV0, GT0)
                       if len(idx) else np.zeros(0, dtype=bool))

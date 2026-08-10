@@ -99,3 +99,7 @@ _ab_coherence/
 crumple_baseline.json
 morphtri_gated.json
 census3_ab.json
+
+# Golden capture sets from a same-build A/B (golden_off/, golden_on/, ...).
+# Same generated data as golden/, just kept side by side for a comparison.
+golden_*/
