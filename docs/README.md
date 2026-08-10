@@ -13,6 +13,14 @@ people *using* it stays at the repo root: `README.md`, `USING.md`,
 
 ## worklog/
 
+<!-- MERGE NOTE -- DO NOT CARRY THIS SECTION TO `main`.
+     `main` deliberately ships WITHOUT docs/worklog/ (see the merge commit
+     "Merge testing into main (1.2.6), without the development worklog"), and
+     carries its own "## Working notes" section here instead, which points at
+     this branch in prose and links nothing. Taking the table below onto main
+     would publish one broken link per row. Keep main's version of THIS section
+     when merging; everything else in this file merges normally. -->
+
 Dated investigation records. They are kept because the *reasoning* is worth more
 than the conclusion — several of them exist to stop a wrong idea being
 re-derived — but they are **snapshots, not current state**. Where a worklog and

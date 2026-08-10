@@ -772,7 +772,8 @@ garment is right there (within ~2u) AND well inside its own boundary, which is w
 
 **Clearance** (push the garment out) works but pays in volume. A uniform push took
 breast exposure 11.0% -> 2.5% — while moving every vertex, which reads as baggy. A
-targeted, exposure-driven demand (`src/pose_clearance.py`) reaches 3.5% while moving
+targeted, exposure-driven demand (`research/pose_clearance.py` — moved out of
+`src/` because it does not ship) reaches 3.5% while moving
 0.9-2.3% of the garment, and is default OFF pending calibration.
 
 **Deformation matching** (give the garment the body's weights so the two deform

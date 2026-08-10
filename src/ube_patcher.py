@@ -3737,9 +3737,31 @@ def generate_modded_body_ube_coverage_patch(
         if not (slots & _DEFORMING_SLOTS_MASK):
             continue                       # only body/hands/feet here (the inverse of non-body)
         # cover_all covers TORSO body (slot 32); cover_hands_feet adds pure
-        # hands/feet (33/37). Without either, a non-body-non-HF deforming item is
-        # skipped in cover_all (it's the per-source builder's job / fallback role).
-        if cover_all and not _is_body and not _cover_hf:
+        # hands/feet (33/37). Without either, a non-body-non-HF deforming item was
+        # skipped in cover_all -- "it's the per-source builder's job / fallback
+        # role".
+        #
+        # THAT ASSUMPTION DIED WITH UNIFIED COVERAGE (#slot34-coverage-hole, fixed
+        # 2026-08-11). In unified mode the winner scan is the SOLE generator and
+        # the per-source patches are LEFT UNMERGED, so there is no fallback: a
+        # deforming item that is neither body nor hands/feet was covered by
+        # NOBODY. `_DEFORMING_SLOTS_MASK` is slots 32/33/34/37/38, so the hole was
+        # exactly **slot 34 (forearms) and slot 38 (calves)** -- the non-body pass
+        # rejects them for HAVING a deforming slot, this pass rejected them for
+        # not being body or hands/feet.
+        #
+        # Measured on a real pack: ALL 51 slot-34-only and ALL 7 slot-38-only
+        # ARMOs had no armature link, so every one was equippable and INVISIBLE on
+        # a UBE race. Reported as "crimson dark arms are equipable but invisible".
+        #
+        # Admitting them needs no new guard: `to_mint` below already requires a
+        # DefaultRace armature AND a converted !UBE mesh, which is what keeps a
+        # non-body mesh from being handed UBE body races (the documented
+        # actor-setup ACCESS_VIOLATION). Checked against the worst case in the
+        # pack -- a modder's tower SHIELD parked on slot 38 -- and it fails both:
+        # its armature is on a custom giant race and its mesh was never converted.
+        _unified = bool(cover_hands_feet)   # winner scan is the sole generator
+        if cover_all and not _is_body and not _cover_hf and not _unified:
             continue
         # Fallback role filters on the ARMO's own RNAM. cover_all (unified/primary)
         # does NOT -- ARMO RNAM is frequently a quirky authoring choice (a non-
