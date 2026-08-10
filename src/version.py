@@ -18,6 +18,10 @@
 
 Shown in the GUI title bar and stamped into the conversion report so any bug
 report is traceable to the exact build. Bump this on every release and tag the
-matching `vX.Y` on GitHub."""
+matching `vX.Y` on GitHub.
 
-__version__ = "1.2"
+Treated as an OPAQUE string everywhere it is read (the GUI title, the report
+stamp, `scripts/golden_output.py` and the fit-dataset header all take it
+verbatim), so a pre-release suffix is safe and does not need a parser."""
+
+__version__ = "1.3-alpha"

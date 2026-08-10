@@ -123,6 +123,17 @@ def test_no_script_redefines_a_breast_band(script):
 # offender found in src/ starts at a plausible z 93 and runs to z 118 -- past the
 # upper chest (102-112) and into the neck.
 _SRC = Path(__file__).resolve().parent.parent / "src"
+# `research/` is scanned too. Three modules moved out of src/ on 2026-08-05 and
+# this guard, being parameterised over src/*.py, quietly lost three cases -- a
+# guard that shrinks whenever someone relocates a file is a guard you cannot
+# trust. They still reason about body bands, so they still get checked.
+_RESEARCH = Path(__file__).resolve().parent.parent / "research"
+
+
+def _scanned_modules():
+    out = [("src", p.name) for p in _SRC.glob("*.py")]
+    out += [("research", p.name) for p in _RESEARCH.glob("*.py")]
+    return sorted(out)
 
 # KNOWN, DELIBERATELY NOT SILENT. `_inflate_cloth_over_bust_butt` builds
 #     breast = (y > 1.0) & (z > 93.0) & (z < 118.0) & (ny > 0.2)
@@ -144,8 +155,8 @@ def _breastish_band_upper_bounds(text):
     return out
 
 
-@pytest.mark.parametrize("mod", sorted(p.name for p in _SRC.glob("*.py")))
-def test_src_breast_bands_do_not_reach_past_the_upper_chest(mod):
+@pytest.mark.parametrize("pkg,mod", _scanned_modules())
+def test_src_breast_bands_do_not_reach_past_the_upper_chest(pkg, mod):
     """A band called `breast` must not extend into the upper chest / neck.
 
     BREAST_Z tops out at 102 and UPPER_CHEST_Z (102-112) is named precisely so
@@ -153,7 +164,8 @@ def test_src_breast_bands_do_not_reach_past_the_upper_chest(mod):
     """
     if mod == "body_zones.py":
         return
-    text = (_SRC / mod).read_text(encoding="utf-8", errors="ignore")
+    root = _SRC if pkg == "src" else _RESEARCH
+    text = (root / mod).read_text(encoding="utf-8", errors="ignore")
     wide = [b for b in _breastish_band_upper_bounds(text) if b > UPPER_CHEST_Z[1]]
     allowed = _KNOWN_WIDE_BREAST_BANDS.get(mod, 0)
     assert len(wide) <= allowed, (

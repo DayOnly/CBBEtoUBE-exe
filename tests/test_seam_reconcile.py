@@ -17,7 +17,7 @@
 """Cross-shape seam reconciliation math. Pure arrays, no pynifly."""
 import numpy as np
 
-from src.seam_reconcile import reconcile_seam_groups
+from research.seam_reconcile import reconcile_seam_groups
 
 
 def _body_line():

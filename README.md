@@ -129,8 +129,10 @@ skinned shapes is baked into the verts):
   > Three separate passes graft jiggle weight, each scaled differently, and their
   > sliders do **not** state the ratio they deliver — the same nominal `1.0` yields
   > 0.35 on the chest and 1.00 on the butt. **[docs/DESIGN_JIGGLE.md](docs/DESIGN_JIGGLE.md)**
-  > documents all of it with measured numbers, and proposes a single "follow ratio"
-  > so a slider means what it says.
+  > documents all of it with measured numbers, and proposed a single "follow ratio"
+  > so a slider means what it says. The **chest** third of that shipped (the
+  > follow-ratio pass, on by default); the butt and the transfer pass still run
+  > on the old absolute caps.
 - **Source-standoff conform** — a piece that hugged the 3BA body is reeled
   back to hug UBE instead of floating at the over-projected distance;
   pull-in only, with a bust-band exception so the nipple can't poke through.
@@ -145,9 +147,9 @@ skinned shapes is baked into the verts):
   point sits in a triangle interior, so a surface can sag 0.855u below vertices
   that all pass, and the vertex form of the test never fired at all. Measured
   across 112 installed BodySlide presets, poking presets went 19 -> 1.
-  `CBBE2UBE_NO_BUST_MORPH_RESIDUAL=1` disables it;
-  **[DESIGN_P5_CLEARANCE_PRESERVING_CONFORM.md](DESIGN_P5_CLEARANCE_PRESERVING_CONFORM.md) §8**
-  has the measurements and the dead ends.
+  `CBBE2UBE_NO_BUST_MORPH_RESIDUAL=1` disables it. (The measurements and the dead
+  ends live in a working note that is local-only by policy — it names specific
+  mods — so this list is the published record.)
 - **Bust neighbourhood sizing** — the anti-poke samples the body over the patch
   each garment vertex actually spans (its own local vertex spacing), not a fixed
   count. `BUST_NEIGHBORHOOD_RADIUS` was previously inert: with `k=6` and a
@@ -198,6 +200,35 @@ skinned shapes is baked into the verts):
   UBE body can't punch through the sim. A *rigid* bust (an HDT-rigged robe whose
   chains drive only the skirt) is excluded so it isn't ballooned. Disable with
   `CBBE2UBE_NO_SOFTCLOTH_INFLATE=1`.
+- **Full-vector weight match** — the strongest form of the body-motion match
+  above, and its successor. The per-family matches each fix one bone family and
+  rescale the rest, so every one trades a pose for another pose; this copies the
+  covered body's **whole** weight vector on hugging rows, leaving nothing to pay
+  with. Measured on a leather cuirass: bust exposure under a swing 12.8% → 3.5%
+  and under a sprint 50.9% → 3.1%, with **zero** vertex movement — the bind mesh
+  is byte-identical, only the motion changes. Above the shoulder the hug test is
+  CONTACT rather than proximity, because at proximity it gave a standing
+  decorative plate arm weight it never had and the plate visibly moved wrong.
+  Confirmed in game on soft leather and on rigid glass plate.
+  `CBBE2UBE_NO_FULL_WEIGHT_MATCH=1` disables it.
+- **Chain rest-pose lift** — the fix for a skirt clipping the buttocks. A
+  physics chain's bones keep their **source** rest position while the body grows
+  to UBE, so on a fuller body they end up *inside* it; the solver then pulls the
+  cloth toward them every frame while collision pushes out, and it settles
+  part-way inside — identically at rest and in motion, which is why more
+  collision never finished it. Each affected chain's **root** is translated
+  outward until no bone of it rests inside the body, including the room the body
+  still has to grow under RaceMenu sliders. Roots only: displacing a root moves
+  the chain rigidly (measured worst inter-bone change 0.000000u), while warping
+  bones individually changes rest lengths and is how a chain explodes. Costs
+  0.5u of extra standoff on the free-hanging part of the chain.
+  `CBBE2UBE_NO_CHAIN_REST_LIFT=1` disables it.
+- **Rear collision surface + visible-skirt proxy** — the body-side half of the
+  same defect. Many CBBE-authored armours ship a collider that stops at the
+  smaller CBBE buttock, and represent their cloth in the physics with a coarse
+  stand-in that does not reach the skirt you actually see. Both are rebuilt from
+  the real geometry, and only on pieces measured to need it.
+  `CBBE2UBE_NO_BUTT_COLLIDER_PATCH=1` / `CBBE2UBE_NO_SKIRT_PROXY_REBUILD=1`.
 - **Z-fight split, degenerate-triangle repair, normal recompute** — final
   cleanup so moved verts don't shimmer, pinch flat, or shade wrong.
 - **Minimum push** — the only corrective pass driven by *measured* skin-through-

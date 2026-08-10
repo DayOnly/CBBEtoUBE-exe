@@ -142,6 +142,23 @@ Result: three knobs (`chest follow`, `butt follow`, `transfer follow`), each mea
 the same thing, each stating what it delivers. Defaults chosen to reproduce today's
 output exactly, so adopting the model changes nothing until a slider is moved.
 
+### Status: the CHEST third of this shipped; the other two did not
+
+Checked 2026-08-11 against the code, because a proposal that half-shipped reads
+as untouched and gets re-proposed.
+
+| proposal | status |
+|---|---|
+| 1. caps as ratios | **shipped for the chest only** — `#chest-follow-ratio`, `CHEST_FOLLOW_RATIO` default ON, with `_CHEST_FOLLOW_SOFT` 1.0 / `_CHEST_FOLLOW_RIGID` 0.35 / `_CHEST_FOLLOW_UNKNOWN` 0.35 and a GUI row. The **butt** still runs on the absolute `_BUTT_JIGGLE_CAP`, so the chest/butt asymmetry in §1 is still there — now on two different models rather than one. |
+| 2. closeness out of the transfer ratio | **not done.** `jiggle_transfer_factor` is still 0.85 and still an upper bound rather than an achieved ratio. |
+| 3. retire `strength` | **not done.** `_CHEST_JIGGLE_STRENGTH` still exists, still 1.0, still never binds. |
+
+Separately, the strongest lever here is no longer any of these: the
+**full-vector weight match** (default ON, `docs/DESIGN.md`) copies the covered
+body's whole weight row rather than grafting a scaled fraction of one family, so
+on the shapes it reaches the ratio question does not arise. It is still a skin
+pass and still cannot touch simulated cloth.
+
 ## 5. Open questions
 
 - ~~**Is 1.0 the right target?**~~ **ANSWERED by the census.** Not a fixed number at

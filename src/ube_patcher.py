@@ -3737,9 +3737,31 @@ def generate_modded_body_ube_coverage_patch(
         if not (slots & _DEFORMING_SLOTS_MASK):
             continue                       # only body/hands/feet here (the inverse of non-body)
         # cover_all covers TORSO body (slot 32); cover_hands_feet adds pure
-        # hands/feet (33/37). Without either, a non-body-non-HF deforming item is
-        # skipped in cover_all (it's the per-source builder's job / fallback role).
-        if cover_all and not _is_body and not _cover_hf:
+        # hands/feet (33/37). Without either, a non-body-non-HF deforming item was
+        # skipped in cover_all -- "it's the per-source builder's job / fallback
+        # role".
+        #
+        # THAT ASSUMPTION DIED WITH UNIFIED COVERAGE (#slot34-coverage-hole, fixed
+        # 2026-08-11). In unified mode the winner scan is the SOLE generator and
+        # the per-source patches are LEFT UNMERGED, so there is no fallback: a
+        # deforming item that is neither body nor hands/feet was covered by
+        # NOBODY. `_DEFORMING_SLOTS_MASK` is slots 32/33/34/37/38, so the hole was
+        # exactly **slot 34 (forearms) and slot 38 (calves)** -- the non-body pass
+        # rejects them for HAVING a deforming slot, this pass rejected them for
+        # not being body or hands/feet.
+        #
+        # Measured on a real pack: ALL 51 slot-34-only and ALL 7 slot-38-only
+        # ARMOs had no armature link, so every one was equippable and INVISIBLE on
+        # a UBE race. Reported as "crimson dark arms are equipable but invisible".
+        #
+        # Admitting them needs no new guard: `to_mint` below already requires a
+        # DefaultRace armature AND a converted !UBE mesh, which is what keeps a
+        # non-body mesh from being handed UBE body races (the documented
+        # actor-setup ACCESS_VIOLATION). Checked against the worst case in the
+        # pack -- a modder's tower SHIELD parked on slot 38 -- and it fails both:
+        # its armature is on a custom giant race and its mesh was never converted.
+        _unified = bool(cover_hands_feet)   # winner scan is the sole generator
+        if cover_all and not _is_body and not _cover_hf and not _unified:
             continue
         # Fallback role filters on the ARMO's own RNAM. cover_all (unified/primary)
         # does NOT -- ARMO RNAM is frequently a quirky authoring choice (a non-
@@ -4190,13 +4212,25 @@ def merge_patches(
     sp_by_armo: "dict[tuple[str, int], list[int]]" = {}
     seen_pairs = _sp_seen_pairs if _sp_seen_pairs is not None else set()
     import json as _json
+    # Every sidecar link either becomes an INI line or is COUNTED as dropped,
+    # by reason. An armature link that vanishes here is an invisible armour
+    # piece in game, and until 2026-08-11 all three drop paths below were bare
+    # `continue`s: a shipped pack was found with 0 of one mod's 114 sidecar
+    # links emitted and nothing anywhere saying so. The run reconciled 21,004
+    # sidecar entries to 10,297 INI lines and reported neither number.
+    sp_seen_links = 0
+    sp_drop_norec = 0
+    sp_drop_dup = 0
+    sp_bad_sidecar: "list[str]" = []
     for patch_path, _pe in patches:
         sc = Path(str(patch_path) + ".skypatcher.json")
         if not sc.is_file():
-            continue
+            continue          # patch legitimately produced no links
         try:
             doc = _json.loads(sc.read_text(encoding="utf-8"))
-        except Exception:
+        except Exception as _sce:
+            # NOT silent: this discards every link the patch recorded.
+            sp_bad_sidecar.append(f"{sc.name}: {type(_sce).__name__}")
             continue
         for ent in doc:
             try:
@@ -4204,12 +4238,19 @@ def merge_patches(
             except Exception:
                 continue
             for a in ent.get("adds", []):
+                sp_seen_links += 1
                 rec = merged_rec_by_key.get((patch_path, int(a.get("fid", -1))))
                 if rec is None:
+                    # PATHOLOGICAL, unlike the other two drops: the patch minted
+                    # this ARMA and recorded the link, but the merged output has
+                    # no record for it. The armour it belongs to gets no UBE
+                    # armature at all -> equippable and invisible.
+                    sp_drop_norec += 1
                     continue
                 src = a.get("src") or ["", -1]
                 pair = ((str(d), l), (str(src[0]), int(src[1])))
                 if pair in seen_pairs:
+                    sp_drop_dup += 1   # legitimate: first-writer-wins
                     continue          # same armature already added elsewhere
                 seen_pairs.add(pair)
                 sp_by_armo.setdefault((str(d), l), []).append(rec)
@@ -4269,6 +4310,14 @@ def merge_patches(
         "masters": out_esp.header.masters,
         "skypatcher_ini_lines": sp_ini,
         "skypatcher_targets": len(sp_by_armo),
+        # Link reconciliation. `seen` must equal emitted + the three drop
+        # reasons; a mismatch means a fourth path is losing links silently.
+        "sp_links_seen": sp_seen_links,
+        "sp_links_emitted": sum(len(v) for v in sp_by_armo.values()),
+        "sp_dropped_no_record": sp_drop_norec,
+        "sp_dropped_duplicate_pair": sp_drop_dup,
+        "sp_dropped_render_identical": sp_dropped,
+        "sp_unreadable_sidecars": sp_bad_sidecar,
         "merged_patch_count": len(patches),
         "total_arma_records": len(new_arma_records),
         "own_arma_records": own_arma_count,
@@ -4339,6 +4388,49 @@ def _partition_patches_for_esl(pinfo, cap):
         if not placed:
             pieces.append([list(gpaths), gnew])
     return [p[0] for p in pieces]
+
+
+def report_link_reconciliation(stats: dict) -> "list[str]":
+    """Lines accounting for every SkyPatcher armature link the merge consumed.
+
+    A link that disappears between a patch's sidecar and the INI is an armour
+    piece with no UBE armature -- equippable and INVISIBLE in game, on a UBE
+    race. That is a silent failure by nature: the mesh converts, the report says
+    "converted", and nothing else ever mentions the piece again. It shipped
+    exactly once (2026-08-11: one mod's 114 sidecar links all absent from the
+    INI, found only because a user reported one invisible piece), and the run
+    that did it printed no number that could have caught it.
+
+    `no_record` is the pathological one and is reported as `!!`: the patch
+    minted the ARMA and recorded the link, but no merged record answers to it.
+    The other two drops are by design -- `duplicate_pair` is first-writer-wins
+    across patches, `render_identical` stops one armour rendering the same mesh
+    twice -- so they are reported as plain counts, not warnings.
+    """
+    seen = int(stats.get("sp_links_seen", 0) or 0)
+    if not seen:
+        return []
+    emitted = int(stats.get("sp_links_emitted", 0) or 0)
+    norec = int(stats.get("sp_dropped_no_record", 0) or 0)
+    dup = int(stats.get("sp_dropped_duplicate_pair", 0) or 0)
+    ident = int(stats.get("sp_dropped_render_identical", 0) or 0)
+    bad = list(stats.get("sp_unreadable_sidecars") or [])
+    out = [f"  armature links: {seen} recorded -> {emitted} emitted "
+           f"({dup} duplicate, {ident} render-identical, {norec} unresolved)"]
+    if norec:
+        out.append(f"  !! {norec} armature link(s) had NO merged record -- "
+                   f"those armor pieces get no UBE armature and will be "
+                   f"INVISIBLE on a UBE race")
+    for b in bad:
+        out.append(f"  !! unreadable link sidecar {b} -- every link that patch "
+                   f"recorded is lost")
+    # The identity that makes the count trustworthy: if these do not agree, a
+    # path is losing links that none of the three reasons above describes.
+    if emitted + dup + ident + norec != seen:
+        out.append(f"  !! link accounting does not balance "
+                   f"({emitted}+{dup}+{ident}+{norec} != {seen}) -- a drop "
+                   f"path is unaccounted for")
+    return out
 
 
 def merge_patches_split(
@@ -4489,6 +4581,17 @@ def merge_patches_split(
                                  for l in s.get("skypatcher_ini_lines", [])],
         "skypatcher_targets": sum(s.get("skypatcher_targets", 0)
                                   for s in piece_stats),
+        "sp_links_seen": sum(s.get("sp_links_seen", 0) for s in piece_stats),
+        "sp_links_emitted": sum(s.get("sp_links_emitted", 0)
+                                for s in piece_stats),
+        "sp_dropped_no_record": sum(s.get("sp_dropped_no_record", 0)
+                                    for s in piece_stats),
+        "sp_dropped_duplicate_pair": sum(s.get("sp_dropped_duplicate_pair", 0)
+                                         for s in piece_stats),
+        "sp_dropped_render_identical": sum(
+            s.get("sp_dropped_render_identical", 0) for s in piece_stats),
+        "sp_unreadable_sidecars": [x for s in piece_stats
+                                   for x in s.get("sp_unreadable_sidecars", [])],
         "piece_stats": piece_stats,
     }
 

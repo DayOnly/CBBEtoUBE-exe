@@ -295,6 +295,35 @@ raises verts already below the floor, so well-fit armor is untouched, and it's
 push-out only. The rear term gates on rear-facing normals; the calf term is
 all-round (the calf bulges at the back and the shin extends at the front).
 
+### thin-rim crumple (default ON)
+
+**Why.** A THIN feature — a hem rim, a seam ridge — buckles when neighbouring
+verts take *different* displacements, even sub-unit ones that every
+absolute-magnitude guard in the pipeline passes. Measured: **0.41u of
+differential wrecks a 2.2u rim**, while the same displacement across a panel is
+invisible. The defect is the vert-to-vert *differential*, not the warp, which is
+why no clearance or push cap ever caught it.
+
+**The metric is COHERENCE COLLAPSE, not rotation or area.** Per-triangle angle
+between source and output face normal; cluster the turned triangles into
+connected patches; a patch is BROKEN when its area-weighted `|mean normal|`
+falls from `>= COHERENCE_SRC_MIN` to `<= COHERENCE_OUT_MAX`. A legitimate refit
+turns every normal in a patch *together* and keeps `|mean|` long — only a crumple
+scatters them. Judging by **rotation** alone flags 53% of the pack; judging by
+per-triangle **area** misses the defect entirely, because it is many small
+triangles summing to one visible patch.
+
+**The repair.** Smooth the DISPLACEMENT FIELD (`out - src`) across the patch with
+its boundary held fixed, then re-apply. The patch's mean displacement is
+preserved, so the garment stays exactly where the fit put it and
+clearance/standoff are unchanged — only the differential that buckles a thin
+feature is removed. A strip thinner than `COHERENCE_THIN` is moved **rigidly**
+rather than smoothed, and gates on how far coherence *fell* rather than its
+absolute value, because a rim that reorients coherently is still a defect.
+
+`CBBE2UBE_NO_COHERENCE_REPAIR=1` is the hatch; the gates are the
+`CBBE2UBE_COHERENCE_*` knobs.
+
 ### Jiggle clearance (default ON)
 
 **Why.** HDT-SMP softbody swings breast/butt/belly *past* the rest surface at
@@ -552,6 +581,51 @@ links, anchored to the standard bone they hang off. `_is_skeleton_bone` tells th
 apart by prefix/keyword — a leading `_` marks an armor-specific chain even when the
 name contains a body-part keyword.
 
+### Chain rest-pose lift (default ON)
+
+**Why.** Recreating a chain at its *source* bind is right for the rig and wrong
+for the body: the bones keep CBBE-era positions while the body grows to UBE, so
+on a fuller body a skirt's chain bones end up **inside** it. HDT-SMP resolves an
+equilibrium — `generic-constraint` pulls each bone back toward its rest pose
+while collision pushes out — so an inside rest pose drags the cloth in every
+frame and it settles part-way inside. It looks identical standing still and
+moving, which is why it read as neither a follow problem nor a clearance one,
+and why three collider passes each helped and none finished: they add push
+against a pull nothing addressed.
+
+Measured on the test cuirass: 2 of 63 chain bones inside the **built** body, and
+8 of 63 inside it under the player's RaceMenu preset, mean 0.900u / max 2.000u.
+
+**How.** Translate each affected chain's **ROOT** outward along the body normal
+until no bone of that chain rests inside. Roots only — displacing a root moves
+the chain rigidly (worst inter-bone change 0.000000u), while warping bones
+individually changes rest lengths and is how a chain explodes.
+
+**The margin is the body's own outward morph amplitude**, capped. The converter
+never sees the player's preset, and 6 of the 8 penetrations exist only under it,
+so the pass clears the room the body still has to grow. Adaptive clearance takes
+20% of that amplitude for garment verts because those verts morph too; a chain
+bone has no morph channel, so it takes all of it. The cap is the real engagement
+rule: uncapped, the belly's amplitude (to 8.7u) recruited FRONT chains measured
++3.63u clear of the skin.
+
+**Cost.** The lift is rigid, so the free-hanging lower chain moves out too —
+0.5u on the test piece. That is the counter-metric to watch, and the reason this
+is the first toggle to untick if a skirt looks held off the hips.
+
+**A caveat before shifting roots differentially.** "A root shift is rigid" holds
+*within* a chain. It does not follow that chains are independent: on the test
+piece 74 of 130 `generic-constraint`s are cross-chain, stitching ten skirt
+panels into a hoop, and lifting six of them by three different amounts changed
+28 inter-panel rest distances by up to 1.651u. That is safe **there** for a
+reason worth re-checking elsewhere — every cross-chain constraint uses
+`frameInLerp`, so FSMP derives its rest frame from the bones at load, while
+every explicit-`frameInA` constraint is intra-chain and those change 0.000000u.
+Read the emitted XML for that pairing before assuming it.
+
+Full history, including the two candidate fixes the numbers killed first:
+`worklog/BUTT_CLIP_CHAIN_REST.md`.
+
 ---
 
 ## BODYTRI / body-morph generation
@@ -698,7 +772,8 @@ garment is right there (within ~2u) AND well inside its own boundary, which is w
 
 **Clearance** (push the garment out) works but pays in volume. A uniform push took
 breast exposure 11.0% -> 2.5% — while moving every vertex, which reads as baggy. A
-targeted, exposure-driven demand (`src/pose_clearance.py`) reaches 3.5% while moving
+targeted, exposure-driven demand (`research/pose_clearance.py` — moved out of
+`src/` because it does not ship) reaches 3.5% while moving
 0.9-2.3% of the garment, and is default OFF pending calibration.
 
 **Deformation matching** (give the garment the body's weights so the two deform
@@ -715,6 +790,17 @@ The converter already has this as the M6 body-blend reskin. It is bounded two wa
 transferring weights onto authored physics cloth replaces its chain weights and the
 skirt stops swinging, and the reskin's K-NN blend has a history of equip fly/spike
 instability. Both call sites are therefore gated on `not _shape_has_hdt_smp_rigging`.
+
+**Superseded in practice by the full-vector weight match (default ON).** The
+per-family motion matches that followed this section each manage one bone family
+and rescale the rest, so each buys a pose by selling another. The full-vector
+match copies the covered body's whole weight row on hugging verts, so there is
+nothing left to pay with: breast_side under a swing 12.81% → 3.52% and front
+bust under a sprint 50.91% → 3.12%, with belly/butt/thigh unchanged and **zero**
+vertex movement. Because it manages every shared bone, nothing may run after it —
+a test pins the family-match order (leg → spine → arm → spine-twist →
+full-vector). It is still a *skin* pass, so it inherits every exclusion above and
+cannot reach simulated cloth; the chain rest-pose lift is what reaches that.
 
 ### Why the reskin does not run on most armour
 

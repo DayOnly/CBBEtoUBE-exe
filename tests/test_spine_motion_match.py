@@ -48,7 +48,7 @@ def test_pass_is_wired_into_both_convert_paths():
     src = inspect.getsource(nc)
     # Count CALL sites only -- the `def` line also contains the name, and taking
     # the raw count once hid that only one of the two convert paths was wired.
-    calls = src.count("_match_spine_motion_to_body(dst_path, biped_slots)")
+    calls = src.count("_match_spine_motion_to_body(dst_path, biped_slots,")
     assert calls >= 2, f"only {calls} call site(s)"
 
 
@@ -85,8 +85,8 @@ def test_spine_runs_before_arm_in_both_convert_paths():
     # Match the CALL form exactly. A prefix match on the bare name also hits the
     # `def` lines, whose relative order is meaningless -- that false positive is
     # what this assertion first tripped on.
-    s_call = "_match_spine_motion_to_body(dst_path, biped_slots)"
-    a_call = "_match_arm_motion_to_body(dst_path, biped_slots)"
+    s_call = "_match_spine_motion_to_body(dst_path, biped_slots,"
+    a_call = "_match_arm_motion_to_body(dst_path, biped_slots,"
     spine = [i for i in range(len(src)) if src.startswith(s_call, i)]
     arm = [i for i in range(len(src)) if src.startswith(a_call, i)]
     assert len(spine) >= 2 and len(arm) >= 2
@@ -115,9 +115,9 @@ def test_full_pass_order_is_leg_then_spine_then_arm():
     """
     src = inspect.getsource(nc)
     calls = {
-        "leg": "_match_leg_motion_to_body(dst_path, biped_slots)",
-        "spine": "_match_spine_motion_to_body(dst_path, biped_slots)",
-        "arm": "_match_arm_motion_to_body(dst_path, biped_slots)",
+        "leg": "_match_leg_motion_to_body(dst_path, biped_slots,",
+        "spine": "_match_spine_motion_to_body(dst_path, biped_slots,",
+        "arm": "_match_arm_motion_to_body(dst_path, biped_slots,",
     }
     at = {k: [i for i in range(len(src)) if src.startswith(v, i)]
           for k, v in calls.items()}

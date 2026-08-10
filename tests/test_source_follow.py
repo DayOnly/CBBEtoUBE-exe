@@ -199,9 +199,17 @@ def test_the_measurement_reads_the_SOURCE_not_the_converted_state():
     assert "NifFile(filepath=str(src_nif_path))" in smap
     assert "len(ss.verts) != n_verts" in smap, (
         "a topology mismatch must fall back, not mis-map weights")
-    # wired from both pipeline sites
+    # Wired from both pipeline sites. Checked against THIS pass's own call sites,
+    # not a module-wide count of the kwarg: other passes legitimately take the
+    # same source argument (the morph-TRI graft gates do), and the bare count
+    # failed on an unrelated, correct addition. #morphtri-no-leg-graft
+    import re as _re
     whole = inspect.getsource(nc)
-    assert whole.count("src_nif_path=src_path") == 2, (
+    calls = [c for c in _re.findall(
+        r"_match_rigid_leg_bend_to_body\((?:[^()]|\([^()]*\))*\)", whole)
+        if "biped_slots: int" not in c]          # drop the def line
+    assert len(calls) == 2, f"expected 2 call sites, found {len(calls)}"
+    assert all("src_nif_path=src_path" in c for c in calls), (
         "both conversion paths must pass the source through")
 
 

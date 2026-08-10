@@ -83,8 +83,9 @@ chain-driven region cannot work, and has been tried.
 
 ### 2b. Skin and bone
 
-`_precreate_custom_bone_chains` (chain nodes; pelvis re-anchor and the optional
-`#chain-body-shift` fire inside it) → `add_scale_bone_weights` →
+`_precreate_custom_bone_chains` (chain nodes; the pelvis re-anchor and the two
+optional root moves — `#chain-body-shift` then `#chain-rest-outside-body` — fire
+inside it, in that order, and compose) → `add_scale_bone_weights` →
 `compute_body_blend_skinning` (the "M6 reskin") → `_slot_aware_*` band/reach →
 `_sync_chest_layered_cloth_weights` / `_sync_abdomen_...`.
 
@@ -102,12 +103,32 @@ Conflating them is the `_shape_has_hdt_smp_rigging` bug that cost a session.
 
 `_normalize_partitions_on_disk` → `_split_bust_collider_shape` →
 **`_finalize_hdt_physics`** → `_split_bust_collider_xml` →
-`_transfer_body_jiggle_to_fitted` → `_conform_fitted_to_body` →
-`_match_rigid_leg_bend_to_body` → `_match_leg_motion_to_body` →
-`_match_spine_motion_to_body` → `_match_arm_motion_to_body` → `validate_dst_nif`.
+`_conform_collider_to_body` → `_add_butt_collider_patch` →
+`_add_skirt_collider_proxy` → `_transfer_body_jiggle_to_fitted` →
+`_conform_fitted_to_body` → `_match_rigid_leg_bend_to_body` →
+`_match_leg_motion_to_body` → `_match_spine_motion_to_body` →
+`_match_arm_motion_to_body` → `_match_spine_twist_to_body` →
+`_match_full_weights_to_body` → `validate_dst_nif`.
 
 `_finalize_hdt_physics` must stay before the graft (which reads the XML to decide
 what is a collider) and last among the extra-data writers.
+
+The three collider passes (added 2026-08-10) sit straight after
+`_split_bust_collider_xml` for the same reason it does: `_finalize_hdt_physics`
+overwrites the XML with the authored copy AND re-imports the collider shapes, so
+anything earlier is discarded. The butt patch and the skirt proxy APPEND to the
+XML that finalize wrote.
+
+Defaults as of 2026-08-11: `_add_butt_collider_patch` and
+`_add_skirt_collider_proxy` are **ON** (equip-tested, then judged in game on the
+piece the defect was reported against); `_conform_collider_to_body`
+(`#collider-shrinkwrap`) stays **OFF** — it is kept only because the leg
+expansion it performs is real, and it is not a butt fix (see §7).
+
+**Family-match order is load-bearing** — each rescales the bones it does not
+manage, so the last to run wins the overlapping rows: leg → spine → arm →
+spine-twist → full-vector. The full-vector match manages EVERY shared bone, so
+nothing may run after it. A test pins the whole order.
 
 ---
 
@@ -175,12 +196,27 @@ whose garment sits beside it, and anything that only pokes through under morph.
 
 ## 6. The flag surface
 
-215 `CBBE2UBE_*` names; 39 GUI-exposed; 77 boolean toggles of which 48 are
-env-only. 28 of those are `NO_*` kill-switches (fine — bisect tools) and 3 are
-diagnostics (fine). The remaining **17 are opt-in features nobody can enable**.
+Counted 2026-08-11 over flags the code actually **reads** (`os.environ.get`), not
+every name a comment mentions — the earlier figures here (215 / 39 / 28 / 17)
+were a looser count and are superseded:
 
-Several document themselves as "default OFF until proven in game" while being
-impossible to turn on in game. That is a deadlock, not caution.
+| | |
+|---|---|
+| `CBBE2UBE_*` flags read by `src/` | 286 |
+| GUI-exposed | 54 |
+| env-only | 232 — of which 34 `NO_*` kill-switches and 13 diagnostics |
+| boolean OPT-INS (default OFF, enable something) | 34 |
+| ...of those, **unreachable from the GUI** | **20** |
+
+Every GUI setting's env var IS read by `src/` — no dead rows. The unreachable 20
+are the number that matters: several document themselves as "default OFF until
+proven in game" while being impossible to turn on in game. That is a deadlock,
+not caution.
+
+Re-count rather than trusting these figures — they drift with every commit, and a
+stale count here survived several audits. The method: collect
+`os.environ.get("CBBE2UBE_…")` across `src/*.py`, and subtract
+`{s.env for s in gui_settings.SETTINGS if s.env}` for the env-only set.
 
 **Rule: an opt-in intended to ship gets a `src/gui_settings.py::SETTINGS` entry
 in the same commit, or it does not get written.**
@@ -202,7 +238,49 @@ in the same commit, or it does not get written.**
 * **Warping chain bones individually.** Changes inter-bone rest lengths and is
   how a chain explodes. Shift a chain's ROOT and it translates rigidly —
   measured worst inter-bone change 0.000000u.
+
+  **But "rigid" is only true WITHIN a chain, and the chains are not always
+  independent** (2026-08-11). On the studded cuirass 74 of 130
+  `generic-constraint`s are CROSS-CHAIN: the skirt is a hoop of ten panels
+  stitched to their neighbours at the `_01` and `_02` rings. Lifting six of
+  them by three different amounts changed 28 inter-panel rest distances by up
+  to 1.651u. That is safe **here**, and the reason is worth knowing before the
+  next such change: every cross-chain constraint uses `frameInLerp`, so FSMP
+  derives its rest frame from the bones AT LOAD and the ±1u linear limits are
+  measured from wherever the panels then sit; every constraint with an explicit
+  `frameInA` is INTRA-chain, and those rest lengths change 0.000000u. Check
+  that pairing in the emitted XML before shifting roots differentially — a
+  differential lift under explicit cross-chain frames would fight the solver.
 * **Grafting jiggle onto a collider.** See §4.
+* **MOVING a collider's existing verts to close a coverage gap** (2026-08-10,
+  three ways, all measured). Nearest-point projection closed 0.12u of a 2.89u
+  gap; standoff enforcement closed nothing (the collider was already OUTSIDE the
+  body, just outside a different part of it); radial shrink-wrap
+  (`_conform_collider_to_body`, kept default OFF) moved 50 verts, every one of
+  them on the LEGS, and not one rear vert moved rearward. **A collider that lacks
+  geometry in a region cannot be made to cover it by moving what it has** — that
+  one carried only 10 rear verts in the whole band z62-72 and none at the apex.
+  Add geometry (`_add_butt_collider_patch`) or do nothing.
+* **Fixing chain-driven cloth from the BODY side alone.** Also 2026-08-10. With
+  collider coverage measured complete (0.0% uncovered z44-80) and the standoff
+  morph-tracked, the cloth still clipped, because the chain bones' REST POSE sits
+  inside the body — the solver pulls in every frame while collision pushes out.
+  Adding push cannot win against the pull. See
+  `#chain-rest-pose-inside-body` in the worklog before touching this again.
+  The answer to it is `#chain-rest-outside-body`, and the two things it had to
+  get right are recorded there: the margin must be the body's own outward MORPH
+  amplitude (the converter never sees the player's preset, and 6 of the 8
+  penetrations only exist under it), and that amplitude must be CAPPED — the
+  belly's runs to 8.7u and recruited two front chains measured +3.63u clear.
+* **Restoring a chain bone's AUTHORED clearance** (the bone-space analogue of
+  `conform_to_source_standoff`). Refuted before building, 2026-08-11: the
+  largest losses are on the FRONT skirt (2.96u) where nothing clips, and 10 of
+  63 bones were ALREADY inside the source body, because an author routinely runs
+  a skirt's bones down the INSIDE of its cloth. The two bones that actually clip
+  do not appear in the top 16 losses. Note also that the source's bundled body
+  ships **all 6463 normals zero**, so a signed distance taken from stored
+  normals reads exactly +0.000 for every bone and looks like a clean
+  measurement — derive normals from the triangles.
 
 ---
 

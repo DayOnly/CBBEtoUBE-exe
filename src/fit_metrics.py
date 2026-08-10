@@ -395,9 +395,17 @@ def band_index(body_verts) -> np.ndarray:
 #   * back is excluded on purpose: it was never a reported defect and the
 #     original gap probe measured it trading +2 points on the back for -13 on
 #     the front.
-PUSH_Z_LO = BAND_Z[0] - 4.0
-PUSH_Z_HI = BAND_Z[1]
-PUSH_Y_MIN = -2.0
+# The three gates are env-overridable so the front/back trade recorded above can
+# be RE-MEASURED without editing source. Defaults are unchanged, so the shipped
+# region is exactly what it was: front + side + underside of the bust, z 86-102.
+# The "back excluded" decision rests on two premises and one has since expired --
+# it IS now a reported defect (upper back, z 95-112, where half the covered skin
+# measured under 0.5u of clearance). The other premise, that including the back
+# cost the FRONT 13 points to gain 2 on the back, is still live and is why any
+# re-measurement must treat the FRONT as a hard counter-metric.
+PUSH_Z_LO = float(os.environ.get("CBBE2UBE_PUSH_Z_LO", "") or BAND_Z[0] - 4.0)
+PUSH_Z_HI = float(os.environ.get("CBBE2UBE_PUSH_Z_HI", "") or BAND_Z[1])
+PUSH_Y_MIN = float(os.environ.get("CBBE2UBE_PUSH_Y_MIN", "") or -2.0)
 # Skin within this of the garment's own cut edge is EXCLUDED. On the
 # user-confirmed CLEAN armour, 35 of 35 flagged underside verts sat within
 # 1.33u of a hem (median 0.76u) -- hem-adjacency noise, not a defect, and
@@ -682,6 +690,24 @@ def record_frame(dst_path, shape_name, report: dict) -> None:
         return
     rec = {"kind": "frame", "nif": str(Path(dst_path).name),
            "shape": str(shape_name)}
+    rec.update(report)
+    _append(dst_path, rec)
+
+
+def record_chain_shift(dst_path, report: dict) -> None:
+    """Append one #chain-body-shift decision to the run's sink.
+
+    This pass is unusually easy to misjudge, in both directions. It moves BONES,
+    not vertices, so a clip test on `shape.verts` shows nothing and the pass
+    reads as inert whether or not it worked. A print is no substitute: a pool
+    worker's stdout can be discarded outright in the frozen exe, so a run can
+    look silent while every chain moved. Recording the decision -- including the
+    SKIPPED ones and why -- is what makes the pass verifiable over a pack
+    instead of one piece at a time.
+    """
+    if not _enabled():
+        return
+    rec = {"kind": "chain_shift", "nif": str(Path(dst_path).name)}
     rec.update(report)
     _append(dst_path, rec)
 

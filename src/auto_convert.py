@@ -3135,6 +3135,8 @@ def _cmd_convert(args):
                         print(f"  FULL SKYPATCHER: {stats.get('skypatcher_targets')} "
                               f"armor record(s) covered via "
                               f"{_sp_ini_path.name} (no ESP overrides)")
+                        for _rl in ube_patcher.report_link_reconciliation(stats):
+                            print(_rl)
                         # Vanilla-coverage assertion: crashes are caught by
                         # the sweep pass's own isolation, but a SILENT hole
                         # (sweep ran, linked nothing) would only show up as
@@ -5105,6 +5107,8 @@ def _cmd_merge(args):
                            ("\n".join(_sp_lines) + "\n").encode("utf-8"))
         print(f"  FULL SKYPATCHER: {stats.get('skypatcher_targets')} armor "
               f"record(s) -> {_sp_ini_path}")
+        for _rl in ube_patcher.report_link_reconciliation(stats):
+            print(_rl)
     # Self-heal a stale/mis-sorted master list before validating (no-op if clean).
     try:
         _nrs = ube_patcher.resort_masters_all(

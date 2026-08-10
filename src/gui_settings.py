@@ -111,6 +111,28 @@ SETTINGS: "tuple[Setting, ...]" = (
             "Armor", "Jiggle transfer", default=True,
             env="CBBE2UBE_NO_CHEST_JIGGLE", invert=True,
             tooltip="Add capped breast-jiggle weight to rigid chest plate (front-gated)."),
+    Setting("back_morph_residual",
+            "Keep the upper back covered when the body morphs",
+            "Armor", "Fit and clearance", default=True,
+            env="CBBE2UBE_NO_BACK_MORPH_RESIDUAL", invert=True,
+            hint="Fixes skin showing through armour across the shoulder blades "
+                 "on larger presets.",
+            tooltip="Every other clearance pass measures the un-morphed body, "
+                    "and the one that doesn't is aimed at the bust -- so the "
+                    "upper back was given no allowance for the body growing "
+                    "under it at runtime. Charges the back the same allowance "
+                    "the bust already gets."),
+    Setting("clearance_differential",
+            "Base clearance on reshaping, not just growth",
+            "Armor", "Fit and clearance", default=True,
+            env="CBBE2UBE_NO_CLEARANCE_DIFFERENTIAL", invert=True,
+            hint="Fixes skin showing through around the upper chest and back "
+                 "on larger presets.",
+            tooltip="Clearance used to scale with how far the body GROWS, but "
+                    "armour follows growth for free -- what pokes through is "
+                    "the body RESHAPING underneath it. Measures that instead. "
+                    "Only ever adds room, never takes it away, so a piece that "
+                    "fits today cannot get tighter."),
     Setting("antipoke_smooth", "Smooth anti-poke pushes (experimental)",
             "Armor", "Fit and clearance", default=False,
             env="CBBE2UBE_ANTIPOKE_SMOOTH", invert=False,
@@ -123,6 +145,135 @@ SETTINGS: "tuple[Setting, ...]" = (
             tooltip="Give stacked garments (shirt under vest) separated "
                     "clearance floors so layers don't converge and z-fight "
                     "where the body grows."),
+    Setting("conform_fold_guard", "Stop the conform folding the surface "
+            "(experimental)",
+            "Armor", "Fit and clearance", default=False,
+            env="CBBE2UBE_CONFORM_FOLD_GUARD", invert=False,
+            hint="Fixes dark patches that show only from some angles, usually in mirrored pairs.",
+            tooltip="The conform pass pulls each vertex toward the body on its "
+                    "own, and nothing stops two neighbours crossing through "
+                    "each other. Where the body creases -- spine groove, "
+                    "underbust, waist -- the surface between them turns inside "
+                    "out and renders as a flat dark patch, normally in a "
+                    "left/right pair because the body's creases are "
+                    "symmetric. Reported in game as two black squares on an "
+                    "converted cuirass, and measured on 208 of 302 shapes in a "
+                    "200-mesh sample. This clamps the pull so no triangle can "
+                    "flip. It only ever moves a vertex LESS than before, so it "
+                    "cannot cause clipping -- but a garment can sit very "
+                    "slightly further off the body exactly where the fold "
+                    "used to be."),
+    Setting("warp_shear_limit", "Stop the warp shearing big triangles "
+            "(experimental)",
+            "Armor", "Fit and clearance", default=False,
+            env="CBBE2UBE_WARP_SHEAR_LIMIT", invert=False,
+            hint="Fixes flat black patches that appear in mirrored pairs, often at the waist.",
+            tooltip="The CBBE-to-UBE warp moves each vertex by the body "
+                    "deformation nearest to it. A LARGE triangle's corners sit "
+                    "far apart, so at the waist -- where the two bodies differ "
+                    "most -- they get pulled very different ways, and the "
+                    "triangle stretches and rotates until it faces INTO the "
+                    "body. It is then lit from behind and renders flat black, "
+                    "in a left/right pair. Measured on a converted cuirass: the "
+                    "two biggest triangles grew 2.6x and turned over, while "
+                    "the mesh as a whole grew only 1.8%%. This caps how far one "
+                    "triangle may stretch. It does NOT warp less -- a clamped "
+                    "vertex still travels the full local body delta, it just "
+                    "stops shearing away from its neighbours -- so it cannot "
+                    "leave armour CBBE-shaped."),
+    Setting("warp_delta_outlier", "Stop the warp flinging a lone vertex",
+            "Armor", "Fit and clearance", default=False,
+            env="CBBE2UBE_WARP_DELTA_OUTLIER", invert=False,
+            hint="Fixes small pure-black spots, usually a mirrored pair, that survive other fixes.",
+            tooltip="A single vertex can be driven several units away from its "
+                    "own neighbours -- mostly by the clearance push, which "
+                    "shoves a deep interior vertex out to the floor while the "
+                    "vertices around it stay put. The triangles bridging that "
+                    "vertex to the rest of the garment then stretch and rotate "
+                    "until they face INTO the body, so they draw with no light "
+                    "at all: small PURE BLACK patches, normally a left/right "
+                    "pair. They are not inverted -- winding and normals agree "
+                    "-- so no other check finds them. This caps how far one "
+                    "vertex may travel relative to its neighbours. Confirmed "
+                    "in game: the patches stopped being visible."),
+    Setting("warp_delta_outlier_max", "  ...allowed deviation (units)",
+            "Armor", "Fit and clearance", kind="float", default=0.5,
+            env="CBBE2UBE_WARP_DELTA_OUTLIER_MAX", advanced=True,
+            min=0.1, max=3.0, step=0.05,
+            tooltip="Lower clamps harder. Swept on one piece by worst "
+                    "black-triangle area: 1.0 -> 27.7, 0.5 -> 24.2, "
+                    "0.25 -> 19.6, at about 0.004u of median standoff "
+                    "throughout. Below ~0.25 the worst case keeps shrinking "
+                    "but the COUNT of inward-facing triangles starts rising."),
+    Setting("warp_push_shell_cap", "Never push a vertex through its own armour",
+            "Armor", "Fit and clearance", default=False,
+            env="CBBE2UBE_WARP_PUSH_SHELL_CAP", invert=False,
+            hint="Stops the clearance push driving hidden lining out through the outer shell.",
+            tooltip="The clearance push fires on any vertex too close to the "
+                    "body, including ones the author deliberately buried -- a "
+                    "lining, the hidden edge of a flap. Those cannot be where "
+                    "skin shows through, because there is more armour in front "
+                    "of them, so pushing them buys nothing and can drive them "
+                    "out through the outer shell as a spike. This caps the "
+                    "push at the garment's own surface. It only ever binds "
+                    "where armour is already in front of the vertex, so it "
+                    "cannot reopen clipping."),
+    Setting("full_weight_match", "Match armour skinning to the body it covers",
+            "Armor", "Fit and clearance", default=True,
+            env="CBBE2UBE_NO_FULL_WEIGHT_MATCH", invert=True,
+            hint="Stops armour sliding off the body in motion. Confirmed on "
+                 "soft leather and rigid plate.",
+            tooltip="A CBBE-authored garment carries CBBE weighting on a UBE "
+                    "body, so it travels differently from the skin underneath "
+                    "and the body slides out from under it while you move. The "
+                    "existing passes each fix ONE bone family and pay for it "
+                    "out of the others, which trades one pose for another. This "
+                    "copies the covered body's whole weight vector on vertices "
+                    "that hug it, so nothing is left over to pay with. Measured "
+                    "on a leather cuirass: bust exposure in motion 50.9% -> "
+                    "3.1%, and no pose worse than before. Moves no vertices, so "
+                    "resting fit is untouched. Confirmed in game on a soft "
+                    "leather cuirass and on rigid glass plate."),
+    Setting("full_weight_strength", "  ...how far to match (0-1)",
+            "Armor", "Fit and clearance", kind="float", default=1.0,
+            env="CBBE2UBE_FULL_WEIGHT_STRENGTH", advanced=True,
+            min=0.0, max=1.0, step=0.05,
+            hint="1.0 matched best, and rigid plate at 1.0 was judged good in game.",
+            tooltip="0 leaves the garment's own weighting, 1 adopts the body's "
+                    "exactly. Higher tracks the body better in every pose "
+                    "measured. It sat at 0.6 because a garment deforming exactly "
+                    "like skin is right for soft leather and was feared wrong "
+                    "for rigid plate; a glass cuirass at 1.0, with 3.97% of its "
+                    "mass relocated, was then judged good in game, so 1.0 is the "
+                    "default. Lower it if a specific plate piece looks rubbery."),
+    Setting("butt_collider_patch", "Add the missing rear collision surface",
+            "Armor", "Physics chains (HDT-SMP)", default=True,
+            env="CBBE2UBE_NO_BUTT_COLLIDER_PATCH", invert=True,
+            hint="For skirts that clip through the buttocks. Equip-tested and "
+                 "confirmed in game.",
+            tooltip="Many CBBE-authored armours ship a collider that stops at "
+                    "the smaller CBBE buttock, so on the larger UBE body a "
+                    "simulated skirt has nothing to rest on and sinks into the "
+                    "skin. This adds a hidden collision surface taken from the "
+                    "body itself, and only on pieces measured to need it. It "
+                    "equipped cleanly in game. On its own it improved the defect "
+                    "without finishing it -- what finishes it is lifting the "
+                    "chain out of the body, below."),
+    Setting("skirt_proxy_rebuild", "Let the visible skirt collide, not just its proxy",
+            "Armor", "Physics chains (HDT-SMP)", default=True,
+            env="CBBE2UBE_NO_SKIRT_PROXY_REBUILD", invert=True,
+            hint="Touches simulated cloth. Confirmed in game, in motion.",
+            tooltip="Some armours represent their cloth in the physics with a "
+                    "very coarse stand-in that does not resemble the skirt you "
+                    "actually see -- on the test piece it reached only 1/3 of "
+                    "the way to the visible hem. The simulation then holds the "
+                    "stand-in off the body correctly while the rendered skirt "
+                    "goes through it. This adds a proxy built from the visible "
+                    "cloth. It ADDS rather than replacing, so the authored "
+                    "physics is untouched. Higher risk than the collider patch, "
+                    "because this is simulated geometry -- it was checked in "
+                    "motion for ballooning and collapse before being defaulted "
+                    "on. Untick it first if a skirt starts behaving oddly."),
     Setting("rigid_majority_softbody", "Keep mostly-rigid armour skinned "
             "(experimental)",
             "Armor", "Body follow and morphs", default=False,
@@ -154,6 +305,29 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "Took bind-pose skirt clipping 7.5%% to 1.1%% on the test "
                     "piece, but showed no visible in-game change, so it is "
                     "unproven where it counts. Experimental."),
+    Setting("chain_rest_lift", "Lift physics chains out of the body",
+            "Armor", "Physics chains (HDT-SMP)", default=True,
+            env="CBBE2UBE_NO_CHAIN_REST_LIFT", invert=True,
+            hint="Stop a skirt being pulled inside the hips it hangs over. "
+                 "This is what fixes the long-standing buttock clip.",
+            tooltip="A skirt's chain bones keep their SOURCE rest position "
+                    "while the body grows to UBE proportions, so on a fuller "
+                    "body they end up sitting INSIDE it. The physics solver "
+                    "pulls the cloth back toward those bones every frame while "
+                    "collision pushes it out, so the skirt settles part-way "
+                    "inside -- the same at standstill and in motion, which is "
+                    "why extra collision never finished the job. This moves "
+                    "each affected chain's ROOT outward until no bone of it "
+                    "rests inside the body, including the room the body still "
+                    "has to grow under your RaceMenu sliders. The chain "
+                    "translates rigidly (measured worst inter-bone change "
+                    "0.000000u -- warping chain bones individually is what "
+                    "makes a chain explode). Trade-off: the free-hanging lower "
+                    "part of the skirt moves out by the same amount (0.5u on "
+                    "the test piece), so it can stand off further than the "
+                    "author intended. Confirmed in game, in motion. If a skirt "
+                    "looks like it is held too far off the hips, this is the "
+                    "one to untick."),
     Setting("unified_offset", "Unified clearance floor (experimental)",
             "Armor", "Fit and clearance", default=False,
             env="CBBE2UBE_UNIFIED_OFFSET", invert=False,
@@ -440,9 +614,12 @@ def tabs_present() -> "list[str]":
 LAYOUT: "dict[str, tuple]" = {
     "Armor": (
         ("Fit and clearance", (
-            "drape_xml_gate", "conform_to_body", "smp_antipoke",
-            "smp_antipoke_push", "antipoke_smooth", "layered_antipoke",
-            "unified_offset")),
+            "drape_xml_gate", "conform_to_body", "conform_fold_guard",
+            "warp_shear_limit", "warp_delta_outlier",
+            "warp_delta_outlier_max", "warp_push_shell_cap",
+            "full_weight_match", "full_weight_strength",
+            "smp_antipoke", "smp_antipoke_push",
+            "antipoke_smooth", "layered_antipoke", "unified_offset")),
         ("Body follow and morphs", (
             "chest_follow", "chest_follow_unknown", "source_follow",
             "rigid_majority_softbody")),
@@ -452,6 +629,7 @@ LAYOUT: "dict[str, tuple]" = {
             "jiggle_clearance_gain", "jiggle_clearance_max",
             "disable_softbody_scales")),
         ("Physics chains (HDT-SMP)", (
+            "butt_collider_patch", "skirt_proxy_rebuild",
             "leg_chain_guard", "chain_to_softbody", "static_chains",
             "nested_chain_anchors", "chain_torso", "chain_body_shift")),
         ("Limbs and extremities", ("leg_bend_match", "boot_far_thigh")),

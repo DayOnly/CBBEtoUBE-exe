@@ -1,5 +1,123 @@
 # Changelog
 
+## 1.3-alpha — 2026-08-10
+
+**Pre-release.** Everything below is built and tested, and the headline fits are
+confirmed in game, but this build has not had a full play-through. Treat it as a
+testing build: keep your previous output mod so you can roll back.
+
+**A reconvert is required** for any of this to reach an existing pack — nothing
+rewrites meshes that are already built.
+
+### Fixed — forearm and calf armour was invisible on UBE
+
+A piece whose ONLY biped slot is 34 (forearms) or 38 (calves) got no UBE
+armature from anywhere, so it equipped and rendered nothing. Two winner-scan
+passes divide coverage by slot: the non-body pass skips anything with a
+deforming slot, and the body pass handled only torso plus pure hands/feet,
+leaving the rest to the per-source builder. Unified coverage then made the
+winner scan the sole generator and stopped merging the per-source patches — so
+the fallback that arrangement depended on no longer ran, and forearms and calves
+fell between the two.
+
+Measured on a real pack: **all 51 slot-34-only and all 7 slot-38-only armours**
+had no link. Reported as "the arms are equippable but invisible".
+
+Admitting them needed no new safety gate — minting already requires a
+DefaultRace armature and a converted mesh, which is what keeps a non-body mesh
+from being handed UBE body races. Checked against the worst case in the pack, a
+modder's tower shield parked on the calves slot: still correctly excluded.
+
+### Changed — four fit/physics options are now ON by default
+
+All four were built default-OFF pending an in-game verdict, and all four have
+now had one. **A reconvert is required for any of this to reach an existing
+pack** — nothing rewrites meshes that are already built.
+
+* **Match armour skinning to the body it covers.** A CBBE-authored garment
+  carries CBBE weighting on a UBE body, so the body slides out from under it as
+  you move. This copies the covered body's whole weight vector on the vertices
+  that hug it. Bust exposure in motion 50.9% → 3.1% on the test piece; it moves
+  no vertices, so resting fit is unchanged. Now at full strength (1.0), which
+  was held back only because a garment deforming exactly like skin could be
+  wrong for rigid plate — a glass cuirass at 1.0 has since been judged good in
+  game beside the leather.
+* **Lift physics chains out of the body.** The fix for the long-standing
+  buttock clip. A skirt's chain bones keep their source rest position while the
+  body grows, so on a fuller body they end up inside it and the solver pulls the
+  cloth in every frame while collision pushes out — which is why more collision
+  never finished the job. Each affected chain's root is moved out until no bone
+  of it rests inside the body. Trade-off: the free-hanging lower skirt moves out
+  by the same amount (0.5u on the test piece).
+* **Add the missing rear collision surface**, and **let the visible skirt
+  collide, not just its proxy.** These attack the same defect from the body and
+  cloth sides; both fire only on pieces measured to need them.
+
+Escape hatches, and the Armor tab is the place to use them:
+`CBBE2UBE_NO_FULL_WEIGHT_MATCH`, `CBBE2UBE_NO_CHAIN_REST_LIFT`,
+`CBBE2UBE_NO_BUTT_COLLIDER_PATCH`, `CBBE2UBE_NO_SKIRT_PROXY_REBUILD`.
+
+If a skirt now looks held too far off the hips, untick "Lift physics chains out
+of the body" first.
+
+### Fixed — an armature link can no longer go missing in silence
+
+Every converted armour records a link that attaches its UBE armature to the
+armour itself. If that link is lost between the per-mod patch and the SkyPatcher
+INI, the piece is **equippable and invisible** — and nothing said so: the mesh
+converts, the report says "converted", the plugin carries the armature, and no
+other output mentions the piece again. A pack shipped with one mod's 114 links
+absent, found only when a user reported a single invisible arm piece.
+
+The merge now accounts for every link and prints the result:
+
+```
+armature links: N recorded -> M emitted (x duplicate, y render-identical, z unresolved)
+```
+
+`duplicate` (the same armature claimed by several mods, added once) and
+`render-identical` (two identical armatures on one armour would render the mesh
+twice) are by design. **`unresolved` should be zero**; anything else prints a
+warning naming the consequence. An unreadable link sidecar is named rather than
+swallowed, and the four numbers must sum to the recorded total, so a future drop
+path cannot hide behind the accounting meant to catch it.
+
+### Added — other new options in this build
+
+Not covered above, and previously absent from this changelog entirely:
+
+* **Keep the upper back covered when the body morphs** (`back_morph_residual`,
+  **on**) and **base clearance on reshaping, not just growth**
+  (`clearance_differential`, **on**). Both are measurement-driven fit
+  corrections. **Neither has an in-game verdict recorded yet** — they are on
+  because the offline numbers support them, and this is a pre-release partly so
+  that gets tested. `CBBE2UBE_NO_BACK_MORPH_RESIDUAL=1` /
+  `CBBE2UBE_NO_CLEARANCE_DIFFERENTIAL=1` turn them off.
+* **Four warp guards, all default OFF**: stop the warp flinging a lone vertex
+  (`warp_delta_outlier`), never push a vertex through its own armour
+  (`warp_push_shell_cap`), stop the warp shearing big triangles
+  (`warp_shear_limit`), and stop the conform folding the surface
+  (`conform_fold_guard`).
+
+  > **Worth knowing before you convert.** Every conversion verified in game so
+  > far — including the ones behind the fit claims above — ran with
+  > `warp_delta_outlier` and `warp_push_shell_cap` **ON**, because they are
+  > ticked in the maintainer's settings. They ship **off**, so an out-of-the-box
+  > run is not the configuration that was tested. Ticking both on the Armor tab
+  > reproduces the validated build. Making them the default is deliberately
+  > deferred to the 1.3 release rather than decided in a pre-release.
+
+### Known issues
+
+* **The fur-set gloves and a few NPC-skin pieces still get no armature.** 30
+  slot-34 pieces in one fur mod, plus draugr-beard and Creation Club items, are
+  unlinked for a *different* reason than the forearm fix above and are not
+  addressed here.
+* **A skirt may now sit further off the hips.** The chain rest-pose lift moves
+  the free-hanging part of a chain out by the same amount as the part it
+  rescues (0.5u on the test piece). If a skirt looks held away from the body,
+  untick "Lift physics chains out of the body" and reconvert that mod.
+
 ## 1.2 — 2026-08-02
 
 The first release since 1.1.1. Everything here shipped as internal 1.2.x

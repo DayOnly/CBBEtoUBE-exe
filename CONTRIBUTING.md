@@ -82,7 +82,7 @@ git config user.email YOUR_USERNAME@users.noreply.github.com
 plus `NiflyDLL.dll`) and added to `sys.path` at import time. `NiflyDLL.dll` is a
 Windows binary, so the suite is Windows-only.
 
-The suite is ~820 tests and runs in about 15 seconds. Run it before you push;
+The suite is ~1860 tests and runs in about 35 seconds. Run it before you push;
 CI runs the same command on `windows-latest`.
 
 ### Pull requests
