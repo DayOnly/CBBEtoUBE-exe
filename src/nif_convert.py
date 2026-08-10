@@ -1010,13 +1010,19 @@ THIGH_STANDOFF_MEDIAL = (os.environ.get("CBBE2UBE_THIGH_STANDOFF_MEDIAL", "").st
 # "greave" OR leg-bone-dominated) is skipped. Value in units. CBBE2UBE_CUIRASS_INFLATE.
 CUIRASS_INFLATE = float(os.environ.get("CBBE2UBE_CUIRASS_INFLATE", "0.0"))
 
-# Anti-poke push-field SMOOTHING (default ON): the final anti-poke pushes each
+# Anti-poke push-field SMOOTHING (default OFF): the final anti-poke pushes each
 # vert independently along its nearest body normal, so adjacent verts get
 # different magnitudes -> faceted/crinkled cloth exactly where clearance was
 # applied. Feather the push scalar over the armor mesh adjacency instead. The
 # smoothed field is FLOORED at the original per-vert requirement, so smoothing
-# Feather the anti-poke push over the mesh so adjacent verts don't crinkle. Default
-# off (it can collapse a multi-layer gap); CBBE2UBE_ANTIPOKE_SMOOTH=1 on.
+# can never re-open a poke it was called to close.
+#
+# OFF because in game it raised the inner layer of a multi-layer garment toward
+# an unpushed outer one and collapsed the gap between them; re-enable once the
+# smoothing is gap-aware. `CBBE2UBE_ANTIPOKE_SMOOTH=1` turns it on.
+#
+# (This block previously opened "default ON" and closed "Default off" in two
+# spliced halves, the first cut off mid-sentence. The code has always been OFF.)
 # [DESIGN: Push-field smoothing]
 ANTIPOKE_SMOOTH_ENABLED = (
     os.environ.get("CBBE2UBE_ANTIPOKE_SMOOTH", "").strip().lower()

@@ -20,10 +20,15 @@ re-derived — but they are **snapshots, not current state**. Where a worklog an
 
 | file | what it is |
 |---|---|
+| [worklog/BUTT_CLIP_CHAIN_REST.md](worklog/BUTT_CLIP_CHAIN_REST.md) | Why a skirt clipped the buttocks for months, the two fixes the numbers killed first, and the cross-chain constraint caveat on shifting chain roots. |
 | [worklog/PLAN_PASS_CONSOLIDATION.md](worklog/PLAN_PASS_CONSOLIDATION.md) | Measured pass-interaction study and a six-step plan. Step 1 done, step 3 partly; carries a status note on what drifted. |
-| [worklog/LESSONS_2026_07_27.md](worklog/LESSONS_2026_07_27.md) | What the July clipping work taught, mostly about measurement discipline. |
+| [worklog/LESSONS_2026_07_27.md](worklog/LESSONS_2026_07_27.md) | What the July clipping work taught, mostly about measurement discipline. Its §4 ("skin passes cannot reach the worst clipping") was true of skin passes and is no longer the whole picture — the chain rest-pose lift reaches part of that population. |
 | [worklog/HIDE_ARMOR_ZERO_CLIP.md](worklog/HIDE_ARMOR_ZERO_CLIP.md) | Working document for one armour that resisted diagnosis for three months. |
 | [worklog/OPTIMIZATION_LOG.md](worklog/OPTIMIZATION_LOG.md) | Conversion speed: baseline measurements, the ceiling on each idea, and the hypotheses that turned out wrong. **Open.** |
+| [worklog/PLAN_GUI_ARMOR_TAB.md](worklog/PLAN_GUI_ARMOR_TAB.md) | Plan for the GUI Armor tab — which toggles a user can actually reach, and why that matters. |
+| [worklog/AUDIT_MAIN_HISTORY.md](worklog/AUDIT_MAIN_HISTORY.md) | Audit of what `main`'s history carries, and the history-rewrite that removed local-only files. |
+| [worklog/AUDIT_MAIN_LAYOUT.md](worklog/AUDIT_MAIN_LAYOUT.md) | Audit of the repository layout on `main`. |
+| [worklog/AUDIT_GH_TESTING.md](worklog/AUDIT_GH_TESTING.md) | Audit of the GitHub-side testing setup (CI, templates). |
 
 ## Not in the repository
 

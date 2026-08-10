@@ -113,11 +113,17 @@ Conflating them is the `_shape_has_hdt_smp_rigging` bug that cost a session.
 `_finalize_hdt_physics` must stay before the graft (which reads the XML to decide
 what is a collider) and last among the extra-data writers.
 
-The three collider passes (all default OFF, added 2026-08-10) sit straight after
+The three collider passes (added 2026-08-10) sit straight after
 `_split_bust_collider_xml` for the same reason it does: `_finalize_hdt_physics`
 overwrites the XML with the authored copy AND re-imports the collider shapes, so
 anything earlier is discarded. The butt patch and the skirt proxy APPEND to the
 XML that finalize wrote.
+
+Defaults as of 2026-08-11: `_add_butt_collider_patch` and
+`_add_skirt_collider_proxy` are **ON** (equip-tested, then judged in game on the
+piece the defect was reported against); `_conform_collider_to_body`
+(`#collider-shrinkwrap`) stays **OFF** — it is kept only because the leg
+expansion it performs is real, and it is not a butt fix (see §7).
 
 **Family-match order is load-bearing** — each rescales the bones it does not
 manage, so the last to run wins the overlapping rows: leg → spine → arm →
@@ -190,12 +196,27 @@ whose garment sits beside it, and anything that only pokes through under morph.
 
 ## 6. The flag surface
 
-215 `CBBE2UBE_*` names; 39 GUI-exposed; 77 boolean toggles of which 48 are
-env-only. 28 of those are `NO_*` kill-switches (fine — bisect tools) and 3 are
-diagnostics (fine). The remaining **17 are opt-in features nobody can enable**.
+Counted 2026-08-11 over flags the code actually **reads** (`os.environ.get`), not
+every name a comment mentions — the earlier figures here (215 / 39 / 28 / 17)
+were a looser count and are superseded:
 
-Several document themselves as "default OFF until proven in game" while being
-impossible to turn on in game. That is a deadlock, not caution.
+| | |
+|---|---|
+| `CBBE2UBE_*` flags read by `src/` | 286 |
+| GUI-exposed | 54 |
+| env-only | 232 — of which 34 `NO_*` kill-switches and 13 diagnostics |
+| boolean OPT-INS (default OFF, enable something) | 34 |
+| ...of those, **unreachable from the GUI** | **20** |
+
+Every GUI setting's env var IS read by `src/` — no dead rows. The unreachable 20
+are the number that matters: several document themselves as "default OFF until
+proven in game" while being impossible to turn on in game. That is a deadlock,
+not caution.
+
+Re-count rather than trusting these figures — they drift with every commit, and a
+stale count here survived several audits. The method: collect
+`os.environ.get("CBBE2UBE_…")` across `src/*.py`, and subtract
+`{s.env for s in gui_settings.SETTINGS if s.env}` for the env-only set.
 
 **Rule: an opt-in intended to ship gets a `src/gui_settings.py::SETTINGS` entry
 in the same commit, or it does not get written.**

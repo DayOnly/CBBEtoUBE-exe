@@ -34,6 +34,32 @@ Escape hatches, and the Armor tab is the place to use them:
 If a skirt now looks held too far off the hips, untick "Lift physics chains out
 of the body" first.
 
+### Fixed — an armature link can no longer go missing in silence
+
+Every converted armour records a link that attaches its UBE armature to the
+armour itself. If that link is lost between the per-mod patch and the SkyPatcher
+INI, the piece is **equippable and invisible** — and nothing said so: the mesh
+converts, the report says "converted", the plugin carries the armature, and no
+other output mentions the piece again. A pack shipped with one mod's 114 links
+absent, found only when a user reported a single invisible arm piece.
+
+The merge now accounts for every link and prints the result:
+
+```
+armature links: N recorded -> M emitted (x duplicate, y render-identical, z unresolved)
+```
+
+`duplicate` (the same armature claimed by several mods, added once) and
+`render-identical` (two identical armatures on one armour would render the mesh
+twice) are by design. **`unresolved` should be zero**; anything else prints a
+warning naming the consequence. An unreadable link sidecar is named rather than
+swallowed, and the four numbers must sum to the recorded total, so a future drop
+path cannot hide behind the accounting meant to catch it.
+
+The same investigation found that armour whose **only** biped slot is 34
+(forearms) fell between the per-mod patch and the non-body coverage pass, which
+skips deforming slots by design. Reconverting picks those up.
+
 ## 1.2 — 2026-08-02
 
 The first release since 1.1.1. Everything here shipped as internal 1.2.x

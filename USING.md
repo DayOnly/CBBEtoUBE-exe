@@ -120,6 +120,20 @@ automatic.
   This line is worth reading every run, because everything around it still looks
   healthy when it fails — ESL flag, split, master count and ARMA total are all
   reported normally, and the failure is one line in a log thousands long.
+- **The armature-link reconciliation**, printed straight after it:
+
+  ```
+  armature links: N recorded -> M emitted (x duplicate, y render-identical, z unresolved)
+  ```
+
+  Each converted armour records a link that attaches its UBE armature to the
+  armour. `duplicate` and `render-identical` are by design — the same armature
+  claimed by several mods is added once, and two identical armatures on one
+  armour would render the mesh twice. **`unresolved` should be 0**, and anything
+  else prints a `!!` line saying so: those armours got no armature and will be
+  equippable but *invisible*. This exists because a pack shipped with one mod's
+  114 links silently missing, which surfaced only when a user reported a single
+  invisible piece.
 - **In game**: equip a converted piece. If it renders, delivery works end to end.
 
 **Force a mesh reload before judging anything.** Skyrim caches a worn armor's
@@ -140,7 +154,9 @@ Work down this table — the first two questions eliminate most cases.
 | **Some** armors invisible | Combined ESP pieces not all enabled; output mod not winning; or that armor was skipped | Check step 4; then search the SkyPatcher INI for the armor's plugin name. |
 | One armor invisible, others fine | Its meshes may come from another mod that needs building in BodySlide | Check whether the source ships built meshes or only BodySlide shape data. |
 | Clipping **while standing still** | Static fit/clearance | Note the armor and the body region. |
-| Clipping **only while moving** | The armor has no clearance for how far the body *travels* — it was fitted against a body standing still | A different fix class from static clipping. See §7: try **Bust clearance on SMP collider armor** first, then its push budget. Note which motion triggers it. |
+| Clipping **only while moving** | The armour does not *follow* the body — it was fitted against a body standing still | A different fix class from static clipping. The passes that address it are on by default now (§7), so this is a report, not a setting to flip: note which motion triggers it and which body region. |
+| The **butt** pokes through a skirted cuirass | The skirt's physics chain rests inside the fuller UBE body, so the simulation pulls the cloth inward | Fixed by **Lift physics chains out of the body** (§7), on by default. If you still see it, say whether it happens standing still, moving, or both. |
+| A skirt now sits **too far off** the hips | The same chain lift moves the free-hanging part out by the same amount | Untick **Lift physics chains out of the body** (§7) and reconvert that mod; report the piece. |
 | Body shows **only when zoomed out** | Distance z-fighting, not clipping | Do the zoom test first; it is cosmetic and not worth chasing as a clip. |
 | Crash **on equipping** a piece | Physics/skinning defect | Note the exact armor and keep the crash log — this is high priority. |
 
@@ -163,26 +179,44 @@ Settings persist to `CBBEtoUBE_settings.json` next to the exe (only your
 overrides are stored, so defaults keep tracking the build), and it survives a
 redeploy.
 
-Several settings are worth calling out, because they ship **off** and they target the
-hardest symptom to fix — chest or butt clipping that only shows up **in motion**.
+Several settings are worth calling out, because they target the hardest symptom
+to fix — chest or butt clipping that only shows up **in motion**. Most of them
+are **on by default** now; the column says so per row, because which ones ship on
+has changed twice and turning on something already on wastes a run.
 
-| Setting (Armor tab) | What it does |
-|---|---|
-| **Bust clearance on SMP collider armor** | An armour whose physics config names it only as a *collider* currently gets no bust clearance at all, so the body pushes straight through it. This gives it clearance. Try this **first** for a cuirass that clips at the chest while moving. Measured 6.3% → 3.3% exposed on one such cuirass. |
-| **...its push budget (units)** | How far that pass may move a vertex outward. The default `1.0` was tuned against a body standing still, while the body's breast physics is allowed several times that much travel — so if clearance helps but falls short, raise this a step at a time. Too large spreads vertices on rounded areas. |
-| **Chest/butt jiggle on fitted torso armor** | Makes a fitted corset or bra *follow* the body's breast and butt instead of staying rigid. **It deliberately skips any armour that is also a physics collider** — grafting body motion onto a collider the body collides against causes a runaway feedback loop, so that case is permanently excluded. It therefore does nothing for a cuirass with its own physics; those want the clearance setting above. |
-| **Chest follow ratio** | Lets a fitted top track the body's breast motion by the amount its own clearance actually needs, instead of a fixed cap that leaves it following about a third of the body. This is the switch the two below hang off — neither does anything without it. |
-| **...its ceiling for unrecognised materials** | How much motion a top may follow when its material can't be identified from its name or texture. `0.35` (default) treats it like metal; `1.0` treats it like cloth. **In a large pack most armour is unidentifiable, and this is what limits it** — of the pieces whose clearance says they need to follow more than they're allowed to, roughly 70% are unlabelled rather than actually metal. Raise it if chests still clip in motion; lower it if stiff armour starts looking rubbery. |
-| **Chest follow on skirt-welded cuirasses** | Some cuirasses are one piece with their own physics skirt, which drags the whole piece below the "hugs the body" test. This judges such a piece on its non-skirt part. **Unproven: on every armour tested it changed nothing** — the ceiling setting above it is what actually moves these pieces. Left in as an off-by-default experiment. |
+| Setting (Armor tab) | Default | What it does |
+|---|---|---|
+| **Bust clearance on SMP collider armor** | **on** (since 1.2) | An armour whose physics config names it only as a *collider* would otherwise get no bust clearance at all, so the body pushes straight through it. Measured 6.3% → 3.3% exposed on one such cuirass. Untick it if a collider-only cuirass looks too loose at the chest. |
+| **...its push budget (units)** | `1.0` | How far that pass may move a vertex outward. Tuned against a body standing still, while the body's breast physics is allowed several times that much travel — so if clearance helps but falls short, raise this a step at a time. Too large spreads vertices on rounded areas. |
+| **Chest/butt jiggle on fitted torso armor** | **on** | Makes a fitted corset or bra *follow* the body's breast and butt instead of staying rigid. **It deliberately skips any armour that is also a physics collider** — grafting body motion onto a collider the body collides against causes a runaway feedback loop, so that case is permanently excluded. It therefore does nothing for a cuirass with its own physics; those want the clearance setting above. |
+| **Chest follow ratio** | **on** (since 1.2) | Lets a fitted top track the body's breast motion by the amount its own clearance actually needs, instead of a fixed cap that leaves it following about a third of the body. The ceiling below hangs off this one. |
+| **...its ceiling for unrecognised materials** | `0.35` | How much motion a top may follow when its material can't be identified from its name or texture. `0.35` treats it like metal; `1.0` treats it like cloth. **In a large pack most armour is unidentifiable, and this is what limits it** — of the pieces whose clearance says they need to follow more than they're allowed to, roughly 70% are unlabelled rather than actually metal. Raise it if chests still clip in motion; lower it if stiff armour starts looking rubbery. |
+| **Match armour skinning to the body it covers** | **on** (new) | The strongest of these. Instead of fixing one bone family and rescaling the rest, it copies the covered body's *whole* weight vector wherever the garment hugs it, so nothing is left over to pay with. Measured on a leather cuirass: bust exposure in motion 50.9% → 3.1%, and it moves no vertices, so resting fit is untouched. Confirmed in game on soft leather and on rigid glass plate. |
+| **Lift physics chains out of the body** | **on** (new) | **This is the buttock fix** — see below. |
+| **Chest follow on skirt-welded cuirasses** | off | Some cuirasses are one piece with their own physics skirt, which drags the whole piece below the "hugs the body" test. This judges such a piece on its non-skirt part. **Unproven: on every armour tested it changed nothing** — the ceiling setting above it is what actually moves these pieces. Left in as an off-by-default experiment. |
 
 The measured win on a skirt-welded cuirass came from the **ceiling** setting alone:
 bare skin visible under motion went from **71% to 9%**.
 
-**What the skirt-welded setting will *not* fix: the butt.** On a cuirass like that,
-the part covering the butt *is* the simulated skirt. Nothing this converter writes
-into the mesh moves it — the skirt's position at runtime comes from the physics
-engine, not from the weights. If such a piece pokes at the butt, that is a physics
-problem and the settings on this page cannot reach it.
+### The butt on a skirted cuirass
+
+This used to be listed here as unfixable, on the reasoning that the part covering
+the butt *is* the simulated skirt, so nothing written into the mesh can move it.
+The first half is true and the conclusion was wrong.
+
+A skirt's chain bones keep their **source** rest position while the body grows to
+UBE proportions, so on a fuller body those bones end up *inside* it. The physics
+solver pulls the cloth back toward them every frame while collision pushes it
+out, and it settles part-way inside — the same standing still as moving, which is
+why adding more collision never finished the job and why the symptom looked like
+it had no lever at all. Moving each affected chain's **root** back outside the
+body does reach it, and that is what **Lift physics chains out of the body** does.
+Confirmed in game.
+
+Trade-off worth knowing: the chain moves rigidly, so the free-hanging lower skirt
+moves out by the same amount (0.5u on the test piece). **If a skirt now looks
+held too far off the hips, that is the setting to untick** — it is the only one
+here that can cause that.
 
 **Why "in motion" is its own category.** Armour is fitted against a body that is
 standing still, but the body you actually see is animated and physics-driven. A

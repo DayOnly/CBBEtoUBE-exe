@@ -85,6 +85,21 @@ per-triangle array; raised immediately rather than returning a wrong answer. Now
 `'ij,ij->i'`. Recorded because a crash is the good failure mode — the metrics above
 failed silently, which is far worse.
 
+### Signed distance taken from a mesh's STORED normals — **FOOTGUN, 2026-08-11**
+A source mod's bundled body shipped **all 6463 vertex normals as zero**. Every
+signed distance computed as `(p - v) · n` against it therefore returned exactly
+`+0.000` — for every point, in every band — and read as a clean, precise
+measurement rather than as no measurement at all. It survived a whole round of
+analysis and produced a confident wrong conclusion ("the author placed these
+bones exactly on the surface") before the constant-zero pattern gave it away.
+
+**Rule: derive normals from the triangles, or assert `|n| ≈ 1` before using
+them.** The converter already knows this on the write side —
+`_body_normals_or_compute` exists precisely because "BodySlide body outputs
+frequently ship ZERO/absent vertex normals" — so the analysis side has no excuse.
+A result that is *exactly* zero to full precision across a whole population is
+almost never a measurement; check the operand before believing it.
+
 ---
 
 ## Sound, but over-interpreted
