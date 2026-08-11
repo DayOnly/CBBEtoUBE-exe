@@ -21342,8 +21342,18 @@ def convert_nif_phase2(
                 _tracer.flush(dst_path, s.name)
             except Exception:
                 pass
+        # THE AUDIT'S OFF-SWITCH HAS TO REACH THE EXPENSIVE PART.
+        # `record_standoff` and `record_torso_bands` both check the audit flag
+        # and return immediately -- but the cast that FEEDS them was built
+        # first and unconditionally, so `CBBE2UBE_NO_STANDOFF_AUDIT=1` skipped
+        # only the cheap half and bought nothing. Profiled on a five-layer
+        # piece: `_TorsoCast.__init__` is 43.7s of a 179.7s conversion -- 24%
+        # of the run and 61% of ALL its ray casting -- spent purely on
+        # telemetry the flag claimed to have disabled. Gate it where the cost
+        # is, not only where the write is.
         if (override is not None and body_verts_for_p2 is not None
-                and body_norms_for_p2 is not None):
+                and body_norms_for_p2 is not None
+                and fit_metrics._enabled()):
             try:
                 _ov = np.asarray(override, dtype=np.float64)
                 _tr = np.asarray(s.tris, dtype=np.int64).reshape(-1, 3)
