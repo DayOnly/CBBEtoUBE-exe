@@ -62,11 +62,17 @@ class _FakeShape:
 @pytest.fixture(autouse=True)
 def _world_space(monkeypatch):
     """Give each fake shape its own global-to-skin, so the world-space
-    assertions below are actually exercising a transform."""
+    assertions below are actually exercising a transform.
+
+    Also forces the guard ON. The pass now ships OFF (it was destructive in
+    game -- see test_guard_defaults_OFF_and_why), but these tests exercise the
+    MACHINERY, which must stay correct for any successor design. Without this
+    they would all pass vacuously on an empty group list."""
     monkeypatch.setattr(nc, "_shape_global_to_skin", lambda s: s)
     monkeypatch.setattr(
         nc, "_verts_skin_to_world",
         lambda sv, xf: np.asarray(sv, dtype=np.float64) + xf.shift)
+    monkeypatch.setattr(nc, "_FULL_WEIGHT_LAYER_GUARD", True)
 
 
 def _grid(z, n=8, step=1.0, x0=0.0):
@@ -75,11 +81,35 @@ def _grid(z, n=8, step=1.0, x0=0.0):
 
 # --------------------------------------------------------------- the thresholds
 
-def test_guard_defaults_on_and_opts_out(monkeypatch):
-    """It restores 1.2 behaviour on a reported regression, so it ships ON. The
-    escape hatch has to genuinely restore the old path or a bisect against it
-    proves nothing."""
-    assert nc._FULL_WEIGHT_LAYER_GUARD is True
+def test_guard_defaults_OFF_and_why():
+    """SHIPPED ON, JUDGED IN GAME, AND TURNED OFF THE SAME DAY.
+
+    Reported: "clips at the belts and the breasts", "the back hard regressed at
+    poses", "the sleeves being bound". Measured on that piece, 1.2 -> pass ON:
+
+        top          ARM 3840.6 -> 2928.3   BREAST  708.1 ->  118.9
+        chest_plate  ARM   73.0 ->    0.3   BREAST 1208.3 ->  155.2
+
+    with the lost mass landing on SPINE/CLAVICLE. Same build with it OFF keeps
+    them (ARM 3741.2 / 81.4, BREAST 990.8 / 1008.9).
+
+    The design is wrong, not mistuned: routing every stacked layer through the
+    INNERMOST member's anchor makes a sleeve -- grouped with the chest plate
+    because they overlap -- resolve its body row through a TORSO point.
+
+    Asserted on the SOURCE, not the module attribute, because the autouse
+    fixture forces the flag on for the machinery tests below.
+    """
+    src = inspect.getsource(nc)
+    i = src.index("_FULL_WEIGHT_LAYER_GUARD = (")
+    decl = src[i:i + 240]
+    assert '"CBBE2UBE_FULL_WEIGHT_LAYER_GUARD"' in decl, (
+        "the flag must be an opt-IN (bare name), not a NO_* kill-switch")
+    assert "not in (" not in decl, (
+        "`not in` would make this default ON again -- it was destructive in game")
+
+
+def test_thresholds_are_sane():
     assert nc._LAYER_STACK_RADIUS > 0.0
     assert 0.0 < nc._LAYER_STACK_COVER <= 1.0
 

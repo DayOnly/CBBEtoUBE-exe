@@ -15845,9 +15845,39 @@ _LAYER_SUFFIX_RE = re.compile(r"^(.*?)[_ ]([A-Za-z]|\d{1,2})$")
 # follow the body as far as its least-capable member: two layers 2u apart that
 # follow different bones interpenetrate, so the intersection is not a
 # concession, it is the physical constraint.
+# DEFAULT OFF SINCE 2026-08-11 — REPORTED IN GAME, AND THE NUMBERS AGREE.
+#
+# Shipped ON, reconverted, and judged in game the same day: "clips at the belts
+# and the breasts", "the back hard regressed at poses", "the sleeves being
+# bound". Measured on that piece, 1.2 -> this pass ON:
+#
+#   top          ARM 3840.6 -> 2928.3   BREAST 708.1 ->  118.9
+#   chest_plate  ARM   73.0 ->    0.3   BREAST 1208.3 -> 155.2
+#
+# and the lost mass landed on SPINE/CLAVICLE (+1190 and +1126). Bound sleeves,
+# a bust that no longer follows, and a back that tracks the torso rigidly are
+# exactly what those three numbers predict. Same build with this OFF keeps them
+# (ARM 3741.2 / 81.4, BREAST 990.8 / 1008.9), which is what makes this the
+# cause rather than a correlate.
+#
+# WHY THE DESIGN IS WRONG, not just mistuned. Routing every stacked layer
+# through the INNERMOST member's anchor means a sleeve -- grouped with the
+# chest plate because they overlap -- resolves its body row through a TORSO
+# point instead of an arm one. Sharing an anchor is only sound where the layers
+# genuinely cover the same anatomy, and "stacked within 2u" does not establish
+# that.
+#
+# THE WARNING WAS THERE AND I TALKED PAST IT: the same A/B showed `top`'s own
+# body gap rising 0.082 -> 0.159 and I recorded it as "by design". A layer that
+# fits the body WORSE is the defect, not the design.
+#
+# #layer-follow-divergence (the reported layer-into-layer clipping) is therefore
+# STILL OPEN. Any successor must make stacked layers agree WITHOUT overriding
+# where each one legitimately anchors, and must be judged on arm/bust follow --
+# not on divergence alone, which this scored well on while destroying the pass.
 _FULL_WEIGHT_LAYER_GUARD = (
-    os.environ.get("CBBE2UBE_NO_FULL_WEIGHT_LAYER_GUARD", "").strip().lower()
-    not in ("1", "true", "yes", "on"))
+    os.environ.get("CBBE2UBE_FULL_WEIGHT_LAYER_GUARD", "").strip().lower()
+    in ("1", "true", "yes", "on"))
 # COVERAGE, not contact. A trim strip or a buckle touches a cuirass along its
 # border and is not a layer; a layer shadows a large share of its neighbour.
 _LAYER_STACK_RADIUS = float(
