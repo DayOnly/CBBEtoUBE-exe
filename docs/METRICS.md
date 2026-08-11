@@ -100,6 +100,53 @@ frequently ship ZERO/absent vertex normals" — so the analysis side has no excu
 A result that is *exactly* zero to full precision across a whole population is
 almost never a measurement; check the operand before believing it.
 
+### A census over an EMPTY population — **FOOTGUN, 2026-08-11**
+A verification conversion aborted (the single-piece script *requires* `--esp` or
+`--slots` and errors rather than guessing). It left no output. The census then
+walked that empty directory and printed `0 broken / 0 bones / 0 verts` — which
+is character-for-character what a successful fix looks like. It was one step
+from being reported as "the fix generalises".
+
+**Rule: a scan must refuse an empty population, not score it.** Any harness that
+reports a rate must print its denominator and abort when it is zero. Same family
+as the shrinking-denominator rule below: 0/0 is not a pass.
+
+### Diffing against a STALE artifact — **FOOTGUN, 2026-08-11**
+Two censuses and a "the skirt has no physics XML" finding were all produced
+against an output mod that had not been rebuilt in three weeks. The live output
+is a **different mod directory**; the stale one still existed, still parsed, and
+still answered every question plausibly.
+
+**Rule: establish which artifact is live before measuring it** — newest mtime
+across candidates, or the path the tool is actually configured to write. A mod
+folder full of valid NIFs is not evidence that they are *this build's* NIFs.
+
+---
+
+## Sound
+
+### Inter-layer follow divergence — `layerfollow.py` (2026-08-11)
+For each vertex of layer A, the nearest vertex of layer B; if within 2.0u they
+are STACKED, and the metric is the mean L1 distance between their weight rows in
+a common bone basis. 0 = the two points deform identically; 2 = completely
+different bones. This is what catches "layers clipping into other layers", which
+**no position metric can see** — the stored vertices are correct and the layers
+separate only once animated.
+
+Its counter-metric is mandatory and lives beside it: total breast/butt/belly
+weight per shape, plus the mean row distance to the body underneath. A change
+can drive divergence to zero by making every layer follow nothing, and one did.
+
+### Weighted chain bones flat at the origin — `chaincensus.py` (2026-08-11)
+A bone some shape is WEIGHTED to, that the actor cannot resolve, whose node is
+parented to `Scene Root` at identity. Broken by definition: a real chain bone
+has a position on the body, and at the origin it drags its verts to the
+character's feet. Self-contained — needs no source mapping, so it is independent
+of which mod a piece came from.
+
+Controlled both ways before it was trusted: **0 broken** on a known-good 1.2
+build of a piece, **23 bones / 22,306 verts** on the known-broken build.
+
 ---
 
 ## Sound, but over-interpreted

@@ -92,6 +92,24 @@ inside it, in that order, and compose) → `add_scale_bone_weights` →
 **Weight passes and position passes are different domains. Do not merge them.**
 Conflating them is the `_shape_has_hdt_smp_rigging` bug that cost a session.
 
+**WHOEVER CREATES A NODE FIRST WINS, and the chain writer needs its PARENT.**
+Two coupled facts, each of which has cost a shipped defect:
+
+* pynifly exposes no node-transform setter that survives a save, so a node
+  created flat at identity by `add_bone` during skin install can never be moved
+  afterwards. `_seed_flat_chain_anchors` exists to win that race and runs into
+  the still-empty NIF (`#anchor-global-fix`).
+* the chain writer at the end of `_precreate_custom_bone_chains` attaches a bone
+  only once its PARENT is in `existing`, and gives up when a round adds nothing.
+  So deleting the flat branch's anchor creation did not cost one bone — it cost
+  every chain hanging off that anchor, and shipped as skirts stretched from the
+  hip to the origin (`#chain-anchor-recreate`: 44 pieces, 167,920 verts).
+
+Generalises past chains: **before deleting a node-creating call, ask what LATER
+code assumes that node exists.** The deletion behind this was right about the
+case it described (an anchor that already exists, whose global is genuinely
+unrecoverable) and silent about the case it also removed (one that does not).
+
 ### 2c. Cross-shape
 
 `_separate_chest_layered_cloth_depth` → `_separate_abdomen_...` →
@@ -282,6 +300,20 @@ in the same commit, or it does not get written.**
   normals reads exactly +0.000 for every bone and looks like a clean
   measurement — derive normals from the triangles.
 
+* **Forcing a stacked layer group onto a SHARED BONE BASIS** so its members
+  deform identically (`CBBE2UBE_LAYER_STACK_SHARED_BASIS`, built and left OFF,
+  2026-08-11). It WINS on the target metric — inter-layer weight-row divergence
+  on all five pairs of a test cuirass fell to ≤0.032, below their 1.2 values,
+  beating the shipped fix. It also guts the pass: breast/butt/belly follow
+  1208 → 155 on the main layer (−87%) and body-follow 7x worse than EITHER
+  baseline. Structural, not a threshold — the layers form one connected group,
+  so the shared set collapses to what an 8-bone accessory and a 9-bone plate
+  have in common, and every layer renormalises onto that stub. The shipped fix
+  shares the ANCHOR instead and leaves each shape its own basis.
+  **The general lesson: this one scored better on the metric it was built for
+  and was still wrong. A fit change needs a counter-metric aimed at what it
+  could plausibly destroy, not just the number it targets.**
+
 ---
 
 ## 8. Checklist for changing a pass
@@ -295,7 +327,15 @@ in the same commit, or it does not get written.**
    Separate "has the symptom" from "has this cause" before quoting a class size.
 6. Handle failure the way the siblings do — `_note_pass_failure`, not a bare
    `except: pass`. A pass that dies silently reads exactly like a pass with
-   nothing to do.
+   nothing to do. **This includes the FINAL SAVE**: `return 0` is already the
+   pass's word for "nothing qualified", so a swallowed `atomic_nif_save` makes
+   a lost write indistinguishable from a clean no-op. Seven passes shipped that
+   way until the 2026-08-11 audit; `tests/test_no_silent_save.py` is a ratchet
+   that keeps the save surface honest, and it is negative-controlled (silence a
+   handler and it names the function and line).
+   Use `_note_pass_failure`, not `print`: a pool worker's stdout can be
+   discarded by the frozen exe, while the recorder also reaches the per-piece
+   report.
 7. `scripts/golden_output.py check` — an unintended diff is a regression; an
    intended one must be explainable shape by shape.
 8. Ship it off by default and get an in-game verdict before defaulting it on.

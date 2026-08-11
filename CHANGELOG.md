@@ -79,6 +79,37 @@ makes body-follow 7x worse than either baseline.
 
 **A reconvert is required** for this to reach an existing pack.
 
+### Changed — a fit pass can no longer fail without saying so
+
+Most fit passes end by returning the number of vertices they changed, where 0
+means "nothing qualified". Seven of them wrapped their final save in a handler
+that swallowed the error and returned 0 anyway — so a **lost write looked
+exactly like a clean no-op**: the pass reported success, the run report showed
+nothing unusual, and the piece shipped unmodified.
+
+That is not a hypothetical failure mode. Two defects reached players through it:
+a pairing step that raised on every call while producing a byte-identical mesh,
+and the chain bug fixed above.
+
+Those seven now report through the run's normal failure channel, so a failed
+save appears as a `PASS FAILED` line instead of silence. Two further handlers
+the audit flagged were left alone — they already report by another route.
+
+Nothing about the output changes: these paths only execute when a save has
+already failed.
+
+### Changed — faster: the morph-TRI lookup is no longer repeated
+
+Seven passes ask whether a shape is covered by the source mod's own morph TRI,
+and each question re-read and re-parsed the whole file. Profiled on a five-layer
+outfit: twelve reads costing 14.0s, now 0.95s.
+
+Honest about the scale of this: the saving inside that lookup is measured and
+solid, but a single before/after run showed only a ~1% change in total
+conversion time, with unrelated work drifting by more than that between the two
+runs. Treat it as one repeated cost removed, not a promise of a faster
+reconvert. Output verified unchanged.
+
 ## 1.3-alpha — 2026-08-10
 
 **Pre-release.** Everything below is built and tested, and the headline fits are
