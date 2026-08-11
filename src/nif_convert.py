@@ -10563,11 +10563,17 @@ def _match_limb_motion_to_body(dst_path, biped_slots: int = 0, *,
     _stack_plan: dict = {}
     if full_vector and _FULL_WEIGHT_LAYER_GUARD:
         try:
-            _sg = _stacked_layer_groups(
-                nf.shapes,
-                exclude=(set(collider_names) | set(softbody_names)
-                         | set(UBE_BODY_INJECT_NAMES) | set(_lm_layered)
-                         | set(morph_tri_names)))
+            _excl = (set(collider_names) | set(softbody_names)
+                     | set(UBE_BODY_INJECT_NAMES) | set(_lm_layered)
+                     | set(morph_tri_names))
+            # #layer-group-canonical. Decide WHICH shapes stack once, on the
+            # `_1` source, so `_0` and `_1` cannot disagree -- 51 of 812 stacked
+            # pieces did. Fall back to the file in hand when there is no usable
+            # source, rather than grouping nothing.
+            _names = _canonical_stack_name_groups(src_nif_path, _excl)
+            _sg = (_dst_groups_for_names(nf.shapes, _names, _excl)
+                   if _names is not None
+                   else _stacked_layer_groups(nf.shapes, exclude=_excl))
             if _sg:
                 _stack_plan = _stacked_layer_plan(_sg, tree, ube_bones)
         except Exception as _e:
@@ -15989,6 +15995,93 @@ def _stacked_layer_groups(shapes, *, radius: float = 0.0, cover: float = 0.0,
     for i in range(n):
         buckets.setdefault(_find(i), []).append(items[i])
     return [g for g in buckets.values() if len(g) >= 2]
+
+
+# #layer-group-canonical. WHICH shapes form a stack is a property of the
+# GARMENT; WHERE their shared anchor sits is a property of the BODY WEIGHT.
+# Deciding both from the file in hand made the first half weight-dependent:
+# `_0` and `_1` are the same garment on different bodies, so a coverage fraction
+# sitting near the threshold flips between them.
+#
+# MEASURED over the reconverted pack: of 812 pieces that form a stack, **51
+# (6.3%) grouped DIFFERENTLY at `_0` than at `_1`** -- e.g. one guard cuirass
+# partitioned (0,1,2)+(3,4,5) at `_1` and (0,1,3,4,5) at `_0`. Since the engine
+# MORPHS BETWEEN the two meshes, skinning them on different groupings is exactly
+# the per-weight leak the postflight parity check exists to catch.
+#
+# So the grouping is decided ONCE, on the `_1` source, and both weights reuse
+# it. Source-side is also the more defensible frame: whether two layers are
+# stacked is authored, not a consequence of which body they were fitted to.
+# The ANCHOR is still resolved per weight from the shapes in hand, because that
+# one genuinely differs.
+#
+# Memoised on (path, mtime, size) -- the pass runs five instances per weight and
+# would otherwise re-read the source NIF ten times per piece.
+_STACK_NAME_GROUP_CACHE: "dict[tuple, list]" = {}
+
+
+def _canonical_stack_name_groups(src_nif_path, exclude) -> "list | None":
+    """Stacked-shape groups as NAME SETS, decided on the `_1` source weight.
+
+    Returns None when there is no usable source, so the caller falls back to
+    deciding from the file in hand rather than silently grouping nothing.
+    """
+    if not src_nif_path:
+        return None
+    try:
+        p = Path(src_nif_path)
+        stem = p.stem
+        for suf in ("_0", "_1"):
+            if stem.endswith(suf):
+                stem = stem[:-len(suf)]
+                break
+        cand = p.parent / (stem + "_1" + p.suffix)
+        if not cand.is_file():
+            cand = p                      # unweighted piece: it IS canonical
+        if not cand.is_file():
+            return None
+        st = cand.stat()
+        key = (str(cand).lower(), st.st_mtime_ns, st.st_size, tuple(sorted(exclude)))
+        hit = _STACK_NAME_GROUP_CACHE.get(key)
+        if hit is not None:
+            return [set(g) for g in hit]
+        snif = _pynifly().NifFile(filepath=str(cand))
+        groups = _stacked_layer_groups(snif.shapes, exclude=exclude)
+        names = [{m[0] for m in g} for g in groups]
+        _STACK_NAME_GROUP_CACHE[key] = [set(g) for g in names]
+        return names
+    except Exception as _e:
+        _note_pass_failure("_canonical_stack_name_groups", _e)
+        return None
+
+
+def _dst_groups_for_names(shapes, name_groups, exclude) -> "list[list]":
+    """Rebuild the canonical groups against the shapes IN HAND.
+
+    Names come from the canonical weight; the world verts must come from this
+    file, because the anchor is measured against this body. A name the source
+    grouped but this file lacks is simply dropped -- a group that ends up with
+    fewer than two members here is not a stack here.
+    """
+    by_name = {}
+    for s in shapes:
+        nm = getattr(s, "name", "") or ""
+        if not nm or nm in exclude or nm in RESKIN_SKIP_NAMES:
+            continue
+        try:
+            sv = np.asarray(s.verts, dtype=np.float64)
+            if len(sv) == 0:
+                continue
+            by_name[nm] = (nm, _verts_skin_to_world(
+                sv, _shape_global_to_skin(s)), s)
+        except Exception as _e:
+            _note_pass_failure("_dst_groups_for_names/verts", _e)
+    out = []
+    for g in name_groups:
+        members = [by_name[n] for n in sorted(g) if n in by_name]
+        if len(members) >= 2:
+            out.append(members)
+    return out
 
 
 def _stacked_layer_plan(groups, tree, ube_bones) -> dict:
