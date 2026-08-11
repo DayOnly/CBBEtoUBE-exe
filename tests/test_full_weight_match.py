@@ -81,7 +81,11 @@ def test_the_clean_row_gate_is_UNCONDITIONAL_here():
     """
     src = inspect.getsource(nc._match_limb_motion_to_body)
     i = src.index("if full_vector:")
-    j = src.index("else:", i)
+    # Slice on the FAMILY path's own first statement, not on the next `else:`.
+    # The `else:` form broke the moment the full-vector branch grew an inner
+    # if/else: the slice stopped early and this failed on a guard that was
+    # still present, which reads as "the invariant is gone" when it is not.
+    j = src.index("midx = [shape_bones.index(b)", i)
     branch = src[i:j]
     assert "foreign <= 1e-4" in branch, (
         "the full-vector branch must refuse rows carrying chain/foreign weight")

@@ -7983,6 +7983,25 @@ _FULL_WEIGHT_MAX_DIST = float(
 # (ARMHOLE_Z[0]); 0 disables and restores one gate everywhere.
 _FULL_WEIGHT_SHOULDER_DIST = float(
     os.environ.get("CBBE2UBE_FULL_WEIGHT_SHOULDER_DIST", "2.0"))
+# #full-weight-limb-boundary. A garment vert may adopt an ARM-DOMINATED body
+# weight vector only if it is ITSELF arm geometry. Above this share the matched
+# body vertex is judged to be on the arm rather than the torso.
+#
+# REPORTED IN GAME (Ruby Flower): "stretched parts that link to the arms when
+# they shouldn't". The nearest body vertex is not always the covered one, and in
+# the A-pose the upper arm hangs right beside the chest -- so for chest-plate
+# geometry near the armpit, KD-nearest lands ON THE ARM and the full-vector copy
+# takes the arm's whole weight row with it. Measured on that cuirass: 396 units
+# of arm weight moved onto `chest_plate`, concentrated at |x| 8-12 and z 90-100
+# (the front of the chest at bust height, where the arms are at |x| > 16), with
+# the worst verts reaching 0.98 -- chest plate almost fully following the arm.
+#
+# The z>=103 shoulder gate above cannot see this: it is a band, and this is a
+# whole band lower. The property that separates them is not height but WHICH
+# LIMB the matched body point belongs to, which is why this gate is expressed
+# that way and generalises to any limb the same accident could reach.
+_FULL_WEIGHT_LIMB_MAX = float(
+    os.environ.get("CBBE2UBE_FULL_WEIGHT_LIMB_MAX", "0.5"))
 
 # #chain-skirt-physics. Generating soft-body physics for a shadowed chain-driven
 # skirt (see #shadowed-chain-skirt) is OFF by default: shipped ON once and a
@@ -10671,7 +10690,28 @@ def _match_limb_motion_to_body(dst_path, biped_slots: int = 0, *,
                 for _j, _b in enumerate(shape_bones):
                     if _b not in ube_bones:
                         foreign += G[:, _j]
-                _sel = band & live & _okb & (foreign <= 1e-4)
+                # LIMB-BOUNDARY GATE (#full-weight-limb-boundary). Refuse a match
+                # whose body vertex is ARM-dominated unless the garment vert is
+                # arm geometry too. KD-nearest crosses the armpit: in the A-pose
+                # the upper arm hangs beside the chest, so chest-plate verts get
+                # paired to the ARM and this copy would hand them the arm's whole
+                # row -- measured up to 0.98 arm weight on plate at bust height.
+                # Clavicle is deliberately NOT arm here (`_is_arm_hand_bone`): a
+                # chest plate legitimately follows the clavicle.
+                # No `else:` branch on purpose -- default-then-narrow. The
+                # sibling invariant test slices this branch at the first `else:`
+                # after `if full_vector:`, so an inner one silently truncated
+                # what it was checking and it failed on a guard that was still
+                # there. (That test now slices on a stable marker too.)
+                _limb_ok = np.ones(n, dtype=bool)
+                _arm_cols = [_j for _j, _b in enumerate(shape_bones)
+                             if _is_arm_hand_bone(_b)]
+                if _arm_cols and _FULL_WEIGHT_LIMB_MAX > 0.0:
+                    _body_arm = BF[:, _arm_cols].sum(axis=1)
+                    _garm_arm = G[:, _arm_cols].sum(axis=1)
+                    _limb_ok = ((_body_arm <= _FULL_WEIGHT_LIMB_MAX)
+                                | (_garm_arm > _FULL_WEIGHT_LIMB_MAX))
+                _sel = band & live & _okb & (foreign <= 1e-4) & _limb_ok
                 rows = np.where(_sel)[0]
                 if len(rows) == 0:
                     continue
