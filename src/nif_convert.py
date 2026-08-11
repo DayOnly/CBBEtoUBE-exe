@@ -6484,7 +6484,10 @@ def _sanitize_one_nif_worker(path_str: str) -> int:
         try:
             atomic_nif_save(nif._backing, path_str)
             return n
-        except Exception:
+        except Exception as _se:
+            # `return 0` is this worker's word for "nothing needed sanitising",
+            # so a swallowed save reports a clean piece that was never written.
+            _note_pass_failure("_sanitize_one_nif_worker/save", _se, path_str)
             return 0
     return 0
 
@@ -6764,12 +6767,31 @@ _MORPHTRI_SCALE = (
 )
 
 
+# #morphtri-name-cache. The morph-TRI gate is consulted by SEVEN passes, and
+# each consultation re-parsed the whole source TRI. Profiled on a five-layer
+# piece: 12 calls, 13.98s of a 181.8s conversion, cut to 0.95s (-93%).
+#
+# Keyed by path AND mtime+size, not path alone: the converter WRITES TRIs (the
+# re-import refresh re-emits one mid-run), and a path-only cache would serve a
+# stale shape list to a later pass. Per-process by construction, which is what
+# the worker pool needs -- there is no shared state to invalidate.
+#
+# END-TO-END SPEEDUP IS NOT ESTABLISHED. The function-level saving is measured
+# and isolated; total wall time moved only +1.2% on a single before/after pair,
+# and an unrelated function (`_cast`) moved 8s in that same pair -- a TRI cache
+# cannot slow ray casting, so the pair carries too much noise to support a
+# wall-clock claim. Output is byte-identical (verts 0.000000).
+_MORPH_TRI_NAME_CACHE: "dict[tuple, set]" = {}
+
+
 def _source_morph_tri_shape_names(src_path: "Path") -> "set[str]":
     """Shape names covered by the SOURCE mod's own BodySlide morph TRI (it sits
     next to the source NIF as `<armor-stem>.tri`). These shapes are morphed by
     that TRI at runtime, so they don't need the M6 reskin's scale-bone morph and
     are better served by their stable source skin. Empty set if the source ships
-    no such TRI (-> keep the reskin). Best-effort; never raises."""
+    no such TRI (-> keep the reskin). Best-effort; never raises.
+
+    Memoised -- see _MORPH_TRI_NAME_CACHE for the measurement."""
     try:
         stem = src_path.stem
         for suf in ("_0", "_1"):
@@ -6779,8 +6801,20 @@ def _source_morph_tri_shape_names(src_path: "Path") -> "set[str]":
         tri = src_path.parent / (stem + ".tri")
         if not tri.is_file():
             return set()
+        try:
+            _st = tri.stat()
+            _key = (str(tri).lower(), _st.st_mtime_ns, _st.st_size)
+        except Exception:
+            _key = None            # cannot key it safely -> parse, don't cache
+        if _key is not None:
+            _hit = _MORPH_TRI_NAME_CACHE.get(_key)
+            if _hit is not None:
+                return set(_hit)   # copy: callers treat the result as theirs
         from .tri import TriFile
-        return {sh.name for sh in TriFile.load(tri).shapes}
+        names = {sh.name for sh in TriFile.load(tri).shapes}
+        if _key is not None:
+            _MORPH_TRI_NAME_CACHE[_key] = set(names)
+        return names
     except Exception:
         return set()
 
@@ -8897,7 +8931,10 @@ def _conform_fitted_to_body(dst_path, src_path=None, biped_slots: int = 0) -> in
         _hide_virtual_body(nf)
         try:
             atomic_nif_save(nf, dst_path)
-        except Exception:
+        except Exception as _se:
+            # See _match_rigid_leg_bend_to_body: `return 0` already means "no
+            # rows matched", so a swallowed save reads as a clean no-op.
+            _note_pass_failure("_conform_fitted_to_body/save", _se, dst_path)
             return 0
     return total
 
@@ -10242,7 +10279,12 @@ def _match_rigid_leg_bend_to_body(dst_path, biped_slots: int = 0,
         _hide_virtual_body(nf)
         try:
             atomic_nif_save(nf, dst_path)
-        except Exception:
+        except Exception as _se:
+            # A LOST SAVE IS NOT "NOTHING QUALIFIED". `return 0` is this pass's
+            # own word for "no rows matched", so swallowing here makes a failed
+            # write indistinguishable from a clean no-op -- the exact shape of
+            # the two defects that shipped unnoticed. Report, then return.
+            _note_pass_failure("_match_rigid_leg_bend_to_body/save", _se, dst_path)
             return 0
     return total
 
@@ -10988,7 +11030,10 @@ def _match_limb_motion_to_body(dst_path, biped_slots: int = 0, *,
         _hide_virtual_body(nf)
         try:
             atomic_nif_save(nf, dst_path)
-        except Exception:
+        except Exception as _se:
+            # See _match_rigid_leg_bend_to_body: `return 0` already means "no
+            # rows matched", so a swallowed save reads as a clean no-op.
+            _note_pass_failure("_match_limb_motion_to_body/save", _se, dst_path)
             return 0
     return total
 
@@ -11338,7 +11383,10 @@ def _transfer_body_jiggle_to_fitted(dst_path, biped_slots: int = 0,
         _hide_virtual_body(nf)
         try:
             atomic_nif_save(nf, dst_path)
-        except Exception:
+        except Exception as _se:
+            # See _match_rigid_leg_bend_to_body: `return 0` already means "no
+            # rows matched", so a swallowed save reads as a clean no-op.
+            _note_pass_failure("_transfer_body_jiggle_to_fitted/save", _se, dst_path)
             return 0
     return total
 
@@ -11526,7 +11574,10 @@ def _split_bust_collider_shape(dst_path, src_path=None) -> int:
     _hide_virtual_body(nf)
     try:
         atomic_nif_save(nf, dst_path)
-    except Exception:
+    except Exception as _se:
+        # See _match_rigid_leg_bend_to_body: `return 0` already means "nothing
+        # qualified", so a swallowed save reads as a clean no-op.
+        _note_pass_failure("_split_bust_collider_shape/save", _se, dst_path)
         return 0
     ok = False
     try:
@@ -18852,7 +18903,12 @@ def _reauthor_nif_fresh(dst_path: Path, override_verts_by_name=None,
         except OSError:
             pass
         return True
-    except Exception:
+    except Exception as _se:
+        # A failed re-author returns False and the caller falls back, so the
+        # piece survives -- but the REASON was lost, and this rebuild is what
+        # drops unweighted chain nodes (#chain-anchor-recreate). A silent
+        # failure here is a whole rig quietly not rebuilt.
+        _note_pass_failure("_reauthor_nif_fresh", _se, dst_path)
         try:
             import os as _os
             tp = dst_path.with_suffix(".nif.reauth")
