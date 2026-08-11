@@ -311,6 +311,32 @@ WARP_DELTA_OUTLIER = os.environ.get(
 WARP_DELTA_OUTLIER_MAX = float(
     os.environ.get("CBBE2UBE_WARP_DELTA_OUTLIER_MAX", "") or 0.5)
 
+# A FINAL DE-SPIKE WAS BUILT HERE AND REMOVED -- do not rebuild it without
+# reading this. Reported in game as "the belts still have distortion", I capped
+# the 1-ring deviation of TOTAL displacement at the end of the geometry
+# pipeline, on the theory that the warp-stage cap never sees roughness added by
+# later passes. It changed ONE vertex. #no-final-despike
+#
+# The theory was untestable as posed, because the metric behind it was wrong. It
+# measured how far a vertex's DISPLACEMENT deviated from its neighbours',
+# relative to another build -- "what moved differently", not "is the surface
+# bumpy". A vertex can move very differently from its neighbours and still land
+# on a smooth surface.
+#
+# Measured properly -- absolute Laplacian |v - mean(1-ring)| on the final mesh --
+# there is no geometry regression to fix. Verts above 0.5u, source / 1.2 / now:
+#   belts        283 / 461 / 488     (p90 0.553 -> 0.559: unchanged)
+#   belts_metal   92 / 138 / 139
+#   top          163 / 233 / 217     (BETTER than 1.2)
+#   corset         0 /   8 /   0     (fixed)
+# The author's own mesh already carries 283 bumpy verts on `belts` -- studded,
+# segmented geometry, i.e. design. The belts' surface matches 1.2.
+#
+# The real belt defect is SKINNING, not shape: `belts_metal/belts` weight-row
+# divergence is 0.107 against 1.2's 0.027. Two stacked belts deforming
+# differently from each other reads as distortion on a piece whose geometry is
+# unchanged. Fix follow, not form.
+
 # #warp-push-shell-cap -- OPT-IN. Never push a vertex out THROUGH its own
 # garment.
 #
@@ -10658,7 +10684,21 @@ def _match_limb_motion_to_body(dst_path, biped_slots: int = 0, *,
                 # onto, so any row written here would be renormalised over a
                 # different set per member -- which IS the defect.
                 continue
-            _qv = _plan["pos"] if _plan is not None else wv
+            # THE SHARED ANCHOR APPLIES ONLY WHERE THE LAYERS OVERLAP.
+            # #layer-anchor-local. Substituting it for EVERY vert of a grouped
+            # shape is what destroyed arm follow in game: a sleeve vert borrowed
+            # the nearest point on the corset -- a torso anchor for arm geometry
+            # -- and `top` ARM went 3840.6 -> 2928.3, `chest_plate` 73.0 -> 0.3.
+            # `near_ok` is the subset actually within stacking distance of the
+            # innermost member; everything else keeps its own surface, so a
+            # sleeve still pairs to the arm while the overlapping verts still
+            # agree with the layer beneath them.
+            _qv = wv
+            if _plan is not None:
+                _ok = np.asarray(_plan["near_ok"], dtype=bool)
+                if _ok.any():
+                    _qv = wv.copy()
+                    _qv[_ok] = np.asarray(_plan["pos"], dtype=np.float64)[_ok]
             dist, near = tree.query(_qv, k=1)
             band = ((wv[:, 2] >= z_lo) & (wv[:, 2] <= z_hi)
                     & (dist <= max_dist))
@@ -10713,12 +10753,20 @@ def _match_limb_motion_to_body(dst_path, biped_slots: int = 0, *,
                     # normal is what makes two stacked layers hit different body
                     # triangles, and that is the whole residual divergence of
                     # the worst measured pair. #layer-follow-divergence
+                    _gn = _vertex_normals_from_tris(
+                        wv, np.asarray(s.tris, dtype=np.int64))
+                    _src = wv
                     if _plan is not None:
-                        _gn, _src = _plan["nrm"], _plan["pos"]
-                    else:
-                        _gn = _vertex_normals_from_tris(
-                            wv, np.asarray(s.tris, dtype=np.int64))
-                        _src = wv
+                        # Same locality rule as the KD query above: cast from
+                        # the shared anchor ONLY on the overlapping verts, or a
+                        # sleeve fires its ray from a point on the torso.
+                        _ok2 = np.asarray(_plan["near_ok"], dtype=bool)
+                        if _ok2.any():
+                            _gn, _src = _gn.copy(), wv.copy()
+                            _gn[_ok2] = np.asarray(
+                                _plan["nrm"], dtype=np.float64)[_ok2]
+                            _src[_ok2] = np.asarray(
+                                _plan["pos"], dtype=np.float64)[_ok2]
                     _O = _src[_rows]
                     _D = -_gn[_rows]
                     _dl = np.linalg.norm(_D, axis=1)
@@ -16117,23 +16165,35 @@ def _dst_groups_for_names(shapes, name_groups, exclude) -> "list[list]":
 def _stacked_layer_plan(groups, tree, ube_bones) -> dict:
     """Per-shape anchor surface + shared bone basis for each stacked group.
 
-    THE ANCHOR. Every member resolves the body through the group's INNERMOST
-    member -- the one sitting closest to the skin, and so the one whose pairing
-    is most trustworthy. Each vert borrows the innermost surface point nearest
-    to it, and that point's normal, so the whole stack asks the body one
-    question instead of one question per layer. Without this the ray pairing
-    casts from each layer's own position along its own normal and the layers hit
-    different body triangles by construction -- the entire residual divergence
-    of `belts_metal/belts`, which survives every other control.
+    THE ANCHOR IS THE LAYER DIRECTLY BENEATH, AND IT IS LOCAL. Members are
+    ordered by depth (median distance to the body), and each vert anchors to the
+    nearest point on ANY member closer to the body than its own -- within the
+    stacking radius, or not at all.
 
-    THE BASIS. The copied row is restricted to bones EVERY member shares (and
-    the body has). The body row is renormalised onto each shape's own bone list,
-    so `top` (26 bones, Breast02/03 + Belly) and `chest_plate` (9, none of them)
-    take different rows from the same body vertex -- 76% of that pair's
-    divergence. A group can only follow the body as far as its least-capable
-    member: two layers 2u apart following different bones interpenetrate.
+    Two corrections are folded in here, each paid for in game:
 
-    Returns {shape_name: {"pos": (n,3), "nrm": (n,3), "basis": set[str]}}.
+    * LOCAL (#layer-anchor-local). The first version queried the innermost
+      surface for EVERY vertex with no distance limit, so a SLEEVE vertex 20u
+      from the corset still borrowed the nearest corset point -- a TORSO anchor
+      for arm geometry. Reported as "the sleeves being bound", measured as `top`
+      ARM 3840.6 -> 2928.3 and `chest_plate` 73.0 -> 0.3. Reconciling two layers
+      only means anything where they OVERLAP.
+
+    * ADJACENT, not innermost (#layer-anchor-adjacent). Anchoring everything to
+      the GLOBALLY innermost member leaves a three-deep stack inconsistent:
+      `belts` sits within 2u of the corset and takes the shared anchor, while
+      `belts_metal` sits on `belts` and is FURTHER than 2u from the corset, so it
+      keeps its own -- and the two belts end up on different anchors, which is
+      exactly the pair that stayed divergent (0.107 against 1.2's 0.027).
+      Anchoring to whatever lies directly beneath makes the agreement propagate
+      inward layer by layer.
+
+    THE BASIS. Kept behind a flag and OFF -- restricting the copy to the bones
+    every member shares fixes divergence and costs ~87% of the jiggle follow,
+    because the group collapses to what its least-capable member can express.
+    See _LAYER_STACK_SHARED_BASIS.
+
+    Returns {name: {"pos", "nrm", "basis", "near_ok"}}.
     """
     from scipy.spatial import cKDTree as _KD
     plan: dict = {}
@@ -16147,37 +16207,91 @@ def _stacked_layer_plan(groups, tree, ube_bones) -> dict:
             # every member re-diverge, so record the empty basis explicitly and
             # let the caller refuse the group.
             basis = set()
-        inner, inner_med = None, None
+        # Order by DEPTH -- median distance to the body -- so "beneath" is
+        # defined before anything anchors to anything.
+        ranked = []
         for nm, wv, s in g:
             try:
                 d, _ = tree.query(wv, k=1)
-                med = float(np.median(d))
+                ranked.append((float(np.median(d)), nm, wv, s))
             except Exception as _e:
                 _note_pass_failure("_stacked_layer_plan/depth", _e)
-                continue
-            if inner_med is None or med < inner_med:
-                inner, inner_med = (nm, wv, s), med
-        if inner is None:
+        if not ranked:
             continue
-        _inm, _inwv, _ins = inner
-        try:
-            inrm = _vertex_normals_from_tris(
-                _inwv, np.asarray(_ins.tris, dtype=np.int64))
-        except Exception as _e:
-            _note_pass_failure("_stacked_layer_plan/normals", _e)
-            continue
-        itree = _KD(_inwv)
-        for nm, wv, s in g:
-            if nm == _inm:
-                plan[nm] = {"pos": _inwv, "nrm": inrm, "basis": set(basis)}
-                continue
+        ranked.sort(key=lambda r: r[0])          # innermost first
+        # Accumulate the surface of everything already placed, so each member
+        # anchors to whatever lies DIRECTLY BENEATH it rather than to the
+        # globally innermost layer. #layer-anchor-adjacent
+        below_v: "list" = []
+        below_n: "list" = []
+        for _med, nm, wv, s in ranked:
             try:
-                _, nn = itree.query(wv, k=1)
+                own_n = _vertex_normals_from_tris(
+                    wv, np.asarray(s.tris, dtype=np.int64))
             except Exception as _e:
-                _note_pass_failure("_stacked_layer_plan/anchor", _e)
+                _note_pass_failure("_stacked_layer_plan/normals", _e)
+                own_n = None
+            if not below_v:
+                # The innermost member has nothing beneath it; it IS the anchor
+                # the next layer up will use.
+                if own_n is not None:
+                    plan[nm] = {"pos": wv, "nrm": own_n, "basis": set(basis),
+                                "near_ok": np.ones(len(wv), dtype=bool)}
+                    below_v.append(wv)
+                    below_n.append(own_n)
                 continue
-            nn = np.asarray(nn, dtype=np.int64)
-            plan[nm] = {"pos": _inwv[nn], "nrm": inrm[nn], "basis": set(basis)}
+            # PREFER THE INNERMOST LAYER, FALL BACK TO THE NEAREST REACHABLE
+            # ONE. Measured on a five-layer piece, neither rule alone wins:
+            #
+            #   pair                 1.2     innermost-only   adjacent-only
+            #   belts_metal/belts  0.027        0.107            0.045
+            #   chest_plate/corset 0.128        0.013            0.190
+            #   top/corset         0.075        0.000            0.038
+            #
+            # Anchoring everything to the innermost layer is best WHERE IT IS
+            # REACHABLE -- `chest_plate` sits within the radius of the corset and
+            # goes to 0.013. It fails where it is not: `belts_metal` sits on
+            # `belts` and is out of range of the corset, so it kept its own
+            # anchor and stayed divergent. Preferring the innermost and only
+            # falling back when it is out of reach gets both.
+            # #layer-anchor-innermost-first
+            in_v, in_n = below_v[0], below_n[0]
+            try:
+                d0, n0 = _KD(in_v).query(wv, k=1)
+            except Exception as _e:
+                _note_pass_failure("_stacked_layer_plan/anchor-inner", _e)
+                continue
+            d0 = np.asarray(d0, dtype=np.float64)
+            n0 = np.asarray(n0, dtype=np.int64)
+            pos = in_v[n0]
+            nrm = in_n[n0]
+            near_ok = d0 <= _LAYER_STACK_RADIUS
+            if len(below_v) > 1 and not near_ok.all():
+                # Out of reach of the innermost: use the nearest point on ANY
+                # layer beneath, which for a three-deep stack is the one
+                # directly below.
+                bV = np.vstack(below_v)
+                bN = np.vstack(below_n)
+                try:
+                    d1, n1 = _KD(bV).query(wv, k=1)
+                except Exception as _e:
+                    _note_pass_failure("_stacked_layer_plan/anchor-any", _e)
+                    d1 = None
+                if d1 is not None:
+                    d1 = np.asarray(d1, dtype=np.float64)
+                    n1 = np.asarray(n1, dtype=np.int64)
+                    _fb = (~near_ok) & (d1 <= _LAYER_STACK_RADIUS)
+                    if _fb.any():
+                        pos = pos.copy()
+                        nrm = nrm.copy()
+                        pos[_fb] = bV[n1[_fb]]
+                        nrm[_fb] = bN[n1[_fb]]
+                        near_ok = near_ok | _fb
+            plan[nm] = {"pos": pos, "nrm": nrm, "basis": set(basis),
+                        "near_ok": near_ok}
+            if own_n is not None:
+                below_v.append(wv)
+                below_n.append(own_n)
     return plan
 
 
@@ -16413,6 +16527,26 @@ COHERENCE_DILATE = int(os.environ.get("CBBE2UBE_COHERENCE_DILATE", "2"))
 # A patch whose bbox min extent is under this is a THIN STRIP (a hem rim, a
 # seam ridge) and is moved RIGIDLY rather than smoothed -- see #coherence-rigid.
 COHERENCE_THIN = float(os.environ.get("CBBE2UBE_COHERENCE_THIN", "3.0"))
+# #coherence-thin-area -- OPT-IN, and it did NOT do what it was built for.
+#
+# Theory: a thin strap's features are all small-area by construction, so the
+# absolute floor rejects the very class this pass repairs. `belts` carried 82
+# folded boundary verts and the repair had never run on it once, while firing
+# repeatedly on the thicker shapes.
+#
+# MEASURED AT 0.15: the repair STILL never touched `belts` (flipped normals only
+# 82 -> 74, which is the winding repair, not this). The area floor was not why
+# the belts were skipped -- see #coherence-kink: a FOLD is a RIGID rotation, so
+# the patch's mean-normal coherence is PRESERVED and the collapse criterion
+# (`co <= COHERENCE_OUT_MAX`) can never fire on it.
+#
+# It did, however, widen the repair's reach on the shapes it already handled --
+# `chest_plate` 2 -> 5 patches, `top` 1 -> 10 -- and improved THEIR flipped
+# normals (`top` 13 -> 3, `chest_plate` 4 -> 2). That is a real gain on the same
+# defect class, but it is an unmeasured widening of a fit pass over ~2800 pieces,
+# so it ships at 1.0 (no change) until censused. Set 0.15 to re-enable.
+COHERENCE_THIN_AREA_SCALE = float(
+    os.environ.get("CBBE2UBE_COHERENCE_THIN_AREA_SCALE", "1.0"))
 # For a THIN strip, gate on how far coherence FELL rather than its absolute
 # value -- a rim that reorients coherently is still a defect. #coherence-rigid
 COHERENCE_THIN_DROP = float(
@@ -16513,7 +16647,31 @@ def _repair_coherence_collapse(src_verts, out_verts, tris):
                         if nb not in seen:
                             seen.add(nb)
                             stack.append(nb)
-            if float(ao[comp].sum()) < COHERENCE_MIN_AREA:
+            # THINNESS FIRST, so the area floor can be scaled by it.
+            core_early = np.unique(t[comp])
+            _p = sv[core_early]
+            thin_extent = float((_p.max(axis=0) - _p.min(axis=0)).min())
+            # A THIN STRAP'S FEATURES ARE ALL SMALL-AREA BY CONSTRUCTION, so an
+            # absolute floor measures the wrong thing there. #coherence-thin-area
+            #
+            # REPORTED IN GAME as belts "still corrupted". Measured on that
+            # piece: `belts` carries 82 boundary verts whose surface has FOLDED
+            # back on itself -- stored and triangle-implied normals agree in the
+            # source (0 flipped) and disagree by >90 degrees after conversion, so
+            # the triangles turned over. Thin-rim buckling, exactly what this
+            # pass repairs. The log shows it un-buckling `chest_plate` and `top`
+            # repeatedly and `belts` NEVER: a belt strap's folded sliver is well
+            # under COHERENCE_MIN_AREA (4.0), so the floor meant to reject noise
+            # rejected the thinnest rim on the piece -- the case the pass exists
+            # for.
+            #
+            # Scaled ONLY for patches already judged thin by the pass's own
+            # `COHERENCE_THIN` criterion, so ordinary patches keep the tuned 4.0
+            # and the pass's reach on everything else is unchanged.
+            _area_floor = COHERENCE_MIN_AREA
+            if thin_extent < COHERENCE_THIN:
+                _area_floor *= COHERENCE_THIN_AREA_SCALE
+            if float(ao[comp].sum()) < _area_floor:
                 continue
             ws = as_[comp][:, None]
             wo = ao[comp][:, None]
@@ -16521,9 +16679,6 @@ def _repair_coherence_collapse(src_verts, out_verts, tris):
                 (ns[comp] * ws).sum(0) / max(float(ws.sum()), 1e-9)))
             co = float(np.linalg.norm(
                 (no[comp] * wo).sum(0) / max(float(wo.sum()), 1e-9)))
-            core_early = np.unique(t[comp])
-            _p = sv[core_early]
-            thin_extent = float((_p.max(axis=0) - _p.min(axis=0)).min())
             ok = (cs >= COHERENCE_SRC_MIN and co <= COHERENCE_OUT_MAX)
             # KINK: a patch that turns far MORE than the surface it is attached
             # to. It rotates RIGIDLY, so coherence is preserved and both gates

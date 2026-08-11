@@ -286,10 +286,35 @@ def test_the_plan_is_built_and_USED_by_the_pass():
     assert "_stacked_layer_groups(" in src, "the plan is never built"
     assert "_stacked_layer_plan(" in src
     assert "_stack_plan.get(s.name)" in src, "the plan is never consulted"
-    assert "_qv = _plan[\"pos\"]" in src, "the shared anchor is not used"
-    assert "_gn, _src = _plan[\"nrm\"], _plan[\"pos\"]" in src, \
-        "the ray still casts from each layer's own surface"
-    assert "if _b in _fv_basis:" in src, "the shared basis is not applied"
+    assert "_plan[\"near_ok\"]" in src, "the shared anchor is not used"
+    assert "if _b in _fv_basis:" in src, "the copy basis is not applied"
+
+
+def test_the_shared_anchor_is_applied_ONLY_WHERE_LAYERS_OVERLAP():
+    """THE REGRESSION THIS COST US, PINNED (#layer-anchor-local).
+
+    The first version substituted the shared anchor for EVERY vertex of a
+    grouped shape. `itree.query(wv, k=1)` has no distance limit, so a SLEEVE
+    vertex 20u from the corset still borrowed the nearest corset point -- a
+    TORSO anchor for arm geometry. Reported in game as "the sleeves being
+    bound", and measured: `top` ARM 3840.6 -> 2928.3, `chest_plate` 73.0 -> 0.3,
+    with the mass landing on spine/clavicle.
+
+    Reconciling two layers only means anything where they OVERLAP. So the
+    substitution must be MASKED by `near_ok`, never wholesale -- both for the
+    KD query and for the ray origin/normal, or the sleeve fires its ray from a
+    point on the torso.
+    """
+    src = inspect.getsource(nc._match_limb_motion_to_body)
+    # masked, not wholesale
+    assert "_qv[_ok] = " in src, (
+        "the anchor must be written only into the overlapping verts")
+    assert "_src[_ok2] = " in src and "_gn[_ok2] = " in src, (
+        "the ray origin AND normal must be masked the same way")
+    # and the plan must actually carry the mask
+    plan = inspect.getsource(nc._stacked_layer_plan)
+    assert "near_ok" in plan and "_LAYER_STACK_RADIUS" in plan, (
+        "the plan must bound the anchor by the stacking radius")
 
 
 def test_the_guard_is_scoped_to_the_FULL_VECTOR_instance():
