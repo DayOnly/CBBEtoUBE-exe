@@ -13088,6 +13088,21 @@ ANCHOR_GLOBAL_FIX = (
     os.environ.get("CBBE2UBE_NO_ANCHOR_GLOBAL_FIX", "").strip().lower()
     not in ("1", "true", "yes", "on"))
 
+# #chain-anchor-recreate. Recreate a MISSING flat anchor node, so the chain that
+# hangs off it can be attached at all -- see `_precreate_custom_bone_chains`'
+# flat branch for the measurement. Default ON: it only ever creates a node that
+# is ABSENT, so it is a no-op wherever the anchor already survived.
+#
+# IT HAS ITS OWN HATCH ON PURPOSE. The regression this repairs shipped with no
+# flag of its own, so bisecting it cost a full rebuild per hypothesis, and two
+# plausible suspects (`CBBE2UBE_NO_ANCHOR_GLOBAL_FIX`,
+# `CBBE2UBE_NO_LEG_GARMENT_GUARD`) each read as "not it" only because neither
+# could switch the real cause off. A behaviour with no off-switch cannot be
+# A/B'd. CBBE2UBE_NO_CHAIN_ANCHOR_RECREATE=1 disables.
+CHAIN_ANCHOR_RECREATE = (
+    os.environ.get("CBBE2UBE_NO_CHAIN_ANCHOR_RECREATE", "").strip().lower()
+    not in ("1", "true", "yes", "on"))
+
 
 def _seed_flat_chain_anchors(dst_nif, src_nif) -> int:
     """Pre-create physics-chain ANCHOR bones (and their source ancestors) at their
@@ -13429,8 +13444,37 @@ def _precreate_custom_bone_chains(dst_nif, src_nif, bone_names) -> int:
                 # transform, assuming a parent at pelvis/COM height) lands ~69u
                 # low. Correcting it HERE does not survive: a later rebuild
                 # re-emits the nodes and discards it -- measured, the same trap
-                # the CHAIN_BODY_SHIFT block above documents. The repair is
-                # `_seed_flat_chain_anchors`, which runs FIRST into the empty NIF. #anchor-global-fix
+                # the CHAIN_BODY_SHIFT block above documents. The repair for THAT
+                # is `_seed_flat_chain_anchors`, which runs FIRST into the empty
+                # NIF. #anchor-global-fix
+                #
+                # BUT WHEN IT DOES NOT EXIST IT MUST STILL BE CREATED HERE.
+                # #chain-anchor-recreate -- REPORTED IN GAME as "skirts appear
+                # stretched". Deleting this add along with the already-exists case
+                # broke the chain writer at the bottom of this function, which can
+                # only attach a bone once its PARENT is in `existing`: with the
+                # anchor absent the very first chain bone never qualifies, the
+                # loop makes no progress and gives up, and `add_bone` then creates
+                # every weighted chain bone flat at IDENTITY under the root.
+                #
+                # Measured on a chain-driven skirt, v1.2 -> 1.3-alpha:
+                #   RFSd 1  z 79.80 -> 11.57
+                #   RFSd 2  z 84.01 ->  0.00   (parent became `Scene Root`)
+                #   RFSd 3  z 85.75 ->  0.00
+                # 7,379 of 9,290 verts hang off those bones, so the skirt
+                # stretched from the hip to the origin between the feet. Censused
+                # over the live pack: 44 of 446 chain-carrying pieces, 594 bones,
+                # 167,920 verts -- skirts, vests, robes, belts, a Skaal torso.
+                #
+                # This is a no-op wherever the anchor already survived, which is
+                # why it cannot reintroduce the #anchor-global-fix trap above.
+                if CHAIN_ANCHOR_RECREATE and cur not in existing:
+                    try:
+                        dst_nif.add_node(cur, xf, parent=None)
+                        existing.add(cur)
+                        added += 1
+                    except Exception:
+                        pass
                 p = src_c.parent
                 cur = p.name if p is not None else None
             continue

@@ -2,6 +2,46 @@
 
 ## Unreleased
 
+### Fixed — chain-driven skirts (and vests, robes, belts) stretched to the floor
+
+Reported after 1.3-alpha as skirts looking "stretched". The physics chain a
+garment hangs from was being written **detached and at the character's origin**,
+so every vertex weighted to it was dragged down between the feet.
+
+Measured on a chain-driven skirt, 1.2 → 1.3-alpha → fixed:
+
+| chain bone | 1.2 | 1.3-alpha | fixed |
+|---|---|---|---|
+| root | z 79.80 | z 11.57 | z 80.48 |
+| next | z 84.01 | z **0.00** | z 84.69 |
+| next | z 85.75 | z **0.00** | z 86.44 |
+
+7,379 of that shape's 9,290 vertices hang off those bones.
+
+The cause was a deleted line. `_precreate_custom_bone_chains` used to recreate a
+chain's anchor when it was missing; that was removed along with a genuinely
+unfixable case (an anchor that already exists cannot be corrected in place).
+But the chain writer can only attach a bone once its **parent** exists — so with
+the anchor gone the first bone never qualifies, the loop gives up, and the skin
+installer then creates every chain bone flat at the origin. One missing anchor
+costs the entire chain, not one bone.
+
+Censused over a real 1,886-piece output: **44 of 446 chain-carrying pieces, 594
+bones, 167,920 vertices** — skirts, two vests, a Skaal torso, Creation Club
+robes, belts and accessories.
+
+The repair only ever creates an anchor that is **absent**, so it is a no-op
+wherever the chain already survived: an unaffected cuirass reconverts with
+0.000000 vertex movement, 0.0% of weight mass moved and no bone changes. Nothing
+about geometry or skinning changes on the repaired pieces either — the fix
+touches only the bone hierarchy.
+
+Escape hatch `CBBE2UBE_NO_CHAIN_ANCHOR_RECREATE`. The regression it repairs
+shipped with no flag of its own, which made it far more expensive to find; this
+one is switchable so it can be A/B'd.
+
+**A reconvert is required** for this to reach an existing pack.
+
 ### Fixed — layers of a multi-layer garment clipped through each other
 
 Reported after 1.3-alpha on a cuirass built from five stacked pieces: the layers
