@@ -98,12 +98,22 @@ def test_it_never_adds_a_bone():
     is mean 0.0006, p90 0.0000, no row above 0.10."""
     src = inspect.getsource(nc._match_limb_motion_to_body)
     i = src.index("if full_vector:")
-    j = src.index("else:", i)
+    # Slice on the FAMILY path's own first statement. `src.index("else:", i)`
+    # looked stable and was not: the branch carries a comment containing the
+    # literal `else:` (the one explaining why there is no else branch), so the
+    # slice stopped inside the prose and the assertions below silently checked
+    # only the first third of the branch.
+    j = src.index("midx = [shape_bones.index(b)", i)
     branch = src[i:j]
     # `add_bone(` -- the CALL. A bare "add_bone" also matches the comment that
     # documents the invariant, which made this assertion fail on its own prose.
     assert "add_bone(" not in branch
-    assert "if _b in ube_bones:" in branch, (
+    # `_fv_basis`, not `ube_bones`, since #layer-follow-divergence: outside a
+    # stacked group it IS `ube_bones`, inside one it is the bones every member
+    # of the group shares, so it can only ever NARROW. The subset relation is
+    # asserted against the real builder in test_layer_follow_divergence.py --
+    # here we only pin that the write stays gated on it.
+    assert "if _b in _fv_basis:" in branch, (
         "only bones the BODY also has may receive weight")
     # The write is indexed by `shape_bones`, i.e. bones the shape ALREADY has --
     # that is what makes "never adds a bone" true by construction, not by policy.

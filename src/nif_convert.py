@@ -7987,8 +7987,8 @@ _FULL_WEIGHT_SHOULDER_DIST = float(
 # weight vector only if it is ITSELF arm geometry. Above this share the matched
 # body vertex is judged to be on the arm rather than the torso.
 #
-# REPORTED IN GAME (Ruby Flower): "stretched parts that link to the arms when
-# they shouldn't". The nearest body vertex is not always the covered one, and in
+# REPORTED IN GAME on a multi-layer cuirass: "stretched parts that link to the
+# arms when they shouldn't". The nearest body vertex is not the covered one, and in
 # the A-pose the upper arm hangs right beside the chest -- so for chest-plate
 # geometry near the armpit, KD-nearest lands ON THE ARM and the full-vector copy
 # takes the arm's whole weight row with it. Measured on that cuirass: 396 units
@@ -8002,6 +8002,14 @@ _FULL_WEIGHT_SHOULDER_DIST = float(
 # that way and generalises to any limb the same accident could reach.
 _FULL_WEIGHT_LIMB_MAX = float(
     os.environ.get("CBBE2UBE_FULL_WEIGHT_LIMB_MAX", "0.5"))
+# The copy renormalises whatever share of the body's row its basis captured up
+# to 1.0, so a basis that captures little turns a partial sample into a
+# confident wrong answer. Require it to explain at least half the body's motion
+# at that vertex; below the floor the vert keeps its authored row. 0 restores
+# the old effectively-absent gate. See #layer-follow-divergence, which narrows
+# the basis to a stacked group's shared bones and so makes this reachable.
+_FULL_WEIGHT_BASIS_MIN = float(
+    os.environ.get("CBBE2UBE_FULL_WEIGHT_BASIS_MIN", "0.5"))
 
 # #chain-skirt-physics. Generating soft-body physics for a shadowed chain-driven
 # skirt (see #shadowed-chain-skirt) is OFF by default: shipped ON once and a
@@ -10500,6 +10508,31 @@ def _match_limb_motion_to_body(dst_path, biped_slots: int = 0, *,
     dirty = False
     _ray_paired = 0          # rows re-paired by ray; 0 with pair_by_ray on is a BUG
     _lm_layered = _layered_cloth_shape_names(nf.shapes)
+    # #layer-follow-divergence. Stacked layers have to resolve the body TOGETHER
+    # or they stop deforming together. See _stacked_layer_groups for why the
+    # name-based set above cannot see a semantically-named stack, and why simply
+    # skipping such shapes was censused (66.6% of the pack) and rejected.
+    #
+    # Scoped to the full-vector instance on purpose: the four family passes
+    # rescale ONE bone family and leave the rest of the row proportional, so
+    # they decohere a stack far less, and each was validated in game as it
+    # stands. Widening this to them is a separate change needing its own
+    # measurement.
+    _stack_plan: dict = {}
+    if full_vector and _FULL_WEIGHT_LAYER_GUARD:
+        try:
+            _sg = _stacked_layer_groups(
+                nf.shapes,
+                exclude=(set(collider_names) | set(softbody_names)
+                         | set(UBE_BODY_INJECT_NAMES) | set(_lm_layered)
+                         | set(morph_tri_names)))
+            if _sg:
+                _stack_plan = _stacked_layer_plan(_sg, tree, ube_bones)
+        except Exception as _e:
+            # Never silent: a swallowed failure here is indistinguishable from
+            # "no stack qualified", which is exactly how this pass's ray pairing
+            # once became a no-op that read like a clean result.
+            _note_pass_failure("_match_limb_motion_to_body/stack-plan", _e)
     for s in nf.shapes:
         if s.name == "BaseShape" or s.name in RESKIN_SKIP_NAMES:
             continue
@@ -10568,9 +10601,25 @@ def _match_limb_motion_to_body(dst_path, biped_slots: int = 0, *,
             if n == 0:
                 continue
             wv = _verts_skin_to_world(sv, _shape_global_to_skin(s))
-            dist, near = tree.query(wv, k=1)
+            # #layer-follow-divergence -- resolve the body through the stacked
+            # group's shared anchor rather than this shape's own surface.
+            _plan = _stack_plan.get(s.name)
+            if (_plan is not None and _LAYER_STACK_SHARED_BASIS
+                    and not _plan["basis"]):
+                # Shared-basis mode only: the group shares no body bone to copy
+                # onto, so any row written here would be renormalised over a
+                # different set per member -- which IS the defect.
+                continue
+            _qv = _plan["pos"] if _plan is not None else wv
+            dist, near = tree.query(_qv, k=1)
             band = ((wv[:, 2] >= z_lo) & (wv[:, 2] <= z_hi)
                     & (dist <= max_dist))
+            if _plan is not None:
+                # Conservative on BOTH distances. The shared anchor can hug the
+                # body while THIS layer hangs well off it, and a free-hanging
+                # outer layer must not be dragged onto the body's motion just
+                # because the layer underneath it is in contact.
+                band &= np.asarray(tree.query(wv, k=1)[0]) <= max_dist
             if lateral_half_x > 0.0:
                 band &= np.abs(wv[:, 0]) >= lateral_half_x
             # ABOVE THE SHOULDER, "near the body" IS NOT "touching it".
@@ -10611,9 +10660,18 @@ def _match_limb_motion_to_body(dst_path, biped_slots: int = 0, *,
             if pair_by_ray and body_tris is not None and len(body_tris):
                 try:
                     _rows = np.flatnonzero(band)
-                    _gn = _vertex_normals_from_tris(
-                        wv, np.asarray(s.tris, dtype=np.int64))
-                    _O = wv[_rows]
+                    # Cast from the stacked group's shared anchor when there is
+                    # one. Casting from each layer's own position along its own
+                    # normal is what makes two stacked layers hit different body
+                    # triangles, and that is the whole residual divergence of
+                    # the worst measured pair. #layer-follow-divergence
+                    if _plan is not None:
+                        _gn, _src = _plan["nrm"], _plan["pos"]
+                    else:
+                        _gn = _vertex_normals_from_tris(
+                            wv, np.asarray(s.tris, dtype=np.int64))
+                        _src = wv
+                    _O = _src[_rows]
                     _D = -_gn[_rows]
                     _dl = np.linalg.norm(_D, axis=1)
                     _ok = _dl > 1e-9
@@ -10679,12 +10737,31 @@ def _match_limb_motion_to_body(dst_path, biped_slots: int = 0, *,
                 # for the family path: blending toward a body that has no chain
                 # bone would drain an authored chain to zero. A row carrying any
                 # weight on a bone the body lacks is left alone.
+                # THE COPY BASIS (#layer-follow-divergence). Every bone the body
+                # has, unless the opt-in shared-basis mode narrows it to what a
+                # stacked group has in common -- see _LAYER_STACK_SHARED_BASIS
+                # for the counter-metric that keeps that OFF.
+                _fv_basis = (_plan["basis"]
+                             if (_plan is not None and _LAYER_STACK_SHARED_BASIS)
+                             else ube_bones)
                 BF = np.zeros((n, len(shape_bones)), dtype=np.float64)
                 for _j, _b in enumerate(shape_bones):
-                    if _b in ube_bones:
+                    if _b in _fv_basis:
                         BF[:, _j] = [body_pv[int(i)].get(_b, 0.0) for i in near]
+                # THE BASIS MUST EXPLAIN THE BODY, NOT JUST BE NON-EMPTY.
+                # `_bs` is the share of the body's row that the basis captures
+                # (a body row sums to 1), and the line below rescales whatever
+                # it captured up to 1. At 1e-6 that is a licence to take 10% of
+                # a vert's motion and present it as all of it: on a shoulder
+                # vert whose body row is mostly Clavicle/UpperArm, a basis of
+                # spine bones alone would write FULL spine weight there.
+                # Harmless while the basis was every body bone -- the pass
+                # measured the shortfall at mean 0.0006 -- but #layer-follow-
+                # divergence narrows the basis to what a stacked group shares,
+                # so the weak gate became reachable. Below the floor the vert
+                # keeps its authored row, which is the conservative answer.
                 _bs = BF.sum(axis=1)
-                _okb = _bs > 1e-6
+                _okb = _bs > max(_FULL_WEIGHT_BASIS_MIN, 1e-6)
                 BF[_okb] /= _bs[_okb, None]
                 foreign = np.zeros(n, dtype=np.float64)
                 for _j, _b in enumerate(shape_bones):
@@ -15613,6 +15690,92 @@ _LAYERED_CLOTH_SKIN = (
     not in ("1", "true", "yes", "on"))
 _LAYER_SUFFIX_RE = re.compile(r"^(.*?)[_ ]([A-Za-z]|\d{1,2})$")
 
+# #layer-follow-divergence. A GEOMETRIC companion to the name-based detector
+# above, for ONE consumer: the full-vector weight match.
+#
+# REPORTED IN GAME after 1.3-alpha: "layers clipping into other layers (not the
+# body)". The full-vector match copies the covered body's whole weight row into
+# each shape INDEPENDENTLY, and two stacked layers do not get the same answer.
+# Measured on that piece as mean weight-row divergence between stacked vertex
+# pairs -- 1.2 -> now: chest_plate/top 0.190 -> 0.309, belts/corset 0.026 ->
+# 0.071, belts_metal/belts 0.027 -> 0.204. Turning the pass off restores EVERY
+# pair to its 1.2 value, which is what makes this the cause and not a
+# correlate.
+#
+# TWO mechanisms, one root, and neither is fixed by sharing a single body
+# lookup between the shapes:
+#   * BASIS. The body row is projected onto each shape's OWN bone list and
+#     renormalised, so `top` (26 bones, including Breast02/03 and Belly) and
+#     `chest_plate` (9, none of those) get different rows from the SAME body
+#     vertex. Renormalising both onto their shared bones collapses that pair
+#     0.288 -> 0.062, so basis is ~76% of it.
+#   * RAY PAIRING. `pair_by_ray` casts from each vert along its OWN normal, so
+#     stacked layers hit different body triangles by construction. That is the
+#     whole of `belts_metal/belts`, which survives every other control: both
+#     rows rewritten, same KD body vertex, shared basis, still 0.190 -> 0.191.
+#
+# Ruled out by measurement, so do not re-attempt them: PARTIAL APPLICATION
+# (18,254 of 18,389 stacked pairs have BOTH members rewritten, and the
+# rewrote-only-one class diverges LESS, 0.185 vs 0.310), and pairing alone
+# (same-KD-vertex pairs diverge as much as different-vertex ones).
+#
+# The name-based detector cannot see this piece: its layers are `chest_plate`,
+# `top`, `belts`, `corset`, `belts_metal` -- named semantically, sharing no
+# stem -- so the guard written for exactly this defect returned an empty set.
+# Same failure as #conform-skip-two-detectors: one concept, and a predicate
+# that had drifted away from it.
+#
+# SKIPPING STACKED SHAPES WAS MEASURED AND REJECTED. Extending the existing
+# keep-source-skin guard geometrically is the obvious fix and it is far too
+# blunt: censused over the converted pack (977 NIFs / 2,802 garment shapes),
+# a 2.0u/30% stacking rule covers 66.6% of shapes and 2.0u/50% still covers
+# 55.9%. That would switch the pass off for two thirds of the pack, including
+# the single-layer cuirasses whose in-game verdict is what earned it its
+# default. So the pass stays ON and is made COHERENT instead.
+#
+# Nor is this folded into `_layered_cloth_shape_names`: that set feeds seven
+# sites including `_preserve` (keep authored skin), and widening it there
+# would change source-skin decisions across the whole pack.
+#
+# WHAT THE FIX DOES. For each stacked group, the members resolve the body
+# through ONE shared anchor -- the innermost member's surface point and normal,
+# so the group gets one pairing instead of one per shape -- and the copied row
+# is restricted to the bones every member of the group shares. A group can only
+# follow the body as far as its least-capable member: two layers 2u apart that
+# follow different bones interpenetrate, so the intersection is not a
+# concession, it is the physical constraint.
+_FULL_WEIGHT_LAYER_GUARD = (
+    os.environ.get("CBBE2UBE_NO_FULL_WEIGHT_LAYER_GUARD", "").strip().lower()
+    not in ("1", "true", "yes", "on"))
+# COVERAGE, not contact. A trim strip or a buckle touches a cuirass along its
+# border and is not a layer; a layer shadows a large share of its neighbour.
+_LAYER_STACK_RADIUS = float(
+    os.environ.get("CBBE2UBE_LAYER_STACK_RADIUS", "2.0"))
+_LAYER_STACK_COVER = float(
+    os.environ.get("CBBE2UBE_LAYER_STACK_COVER", "0.30"))
+# THE SHARED BASIS IS OFF, AND THE COUNTER-METRIC IS WHY.
+#
+# Restricting a stacked group's copy to the bones every member shares does fix
+# the divergence -- on the reported piece it took all five pairs to <=0.032,
+# below their 1.2 values. It also wrecks the two things the pass exists for.
+# Same build, same piece, 1.2 -> 1.3-alpha -> shared basis:
+#
+#   chest_plate  jiggle mass 1208 -> 958 -> 155   body gap 0.253 -> 0.298 -> 0.617
+#   top          jiggle mass  710 -> 993 ->  76   body gap 0.082 -> 0.082 -> 0.571
+#   corset       jiggle mass  6.7 -> 6.6 ->  0.9  body gap 0.010 -> 0.015 -> 0.431
+#
+# ~87% of the breast/butt/belly follow destroyed and body-follow 7x worse than
+# EITHER baseline. The cause is structural, not a threshold: the five layers
+# form one connected group, so the shared set collapses to what an 8-bone
+# accessory and a 9-bone plate have in common and every layer renormalises onto
+# that stub. Kept behind a flag because it is the only construction that makes
+# stacked layers deform identically, and a future design may want it for a
+# group whose members already agree on bones -- but it must never default ON
+# without a counter-metric beside it.
+_LAYER_STACK_SHARED_BASIS = (
+    os.environ.get("CBBE2UBE_LAYER_STACK_SHARED_BASIS", "").strip().lower()
+    in ("1", "true", "yes", "on"))
+
 
 def _is_first_person_mesh(dst_path, nif) -> bool:
     """A FIRST-PERSON mesh: the player's viewmodel, never simulated cloth.
@@ -15666,6 +15829,138 @@ def _layered_cloth_shape_names(shapes) -> "set[str]":
         if m:
             groups.setdefault(m.group(1).lower(), []).append(nm)
     return {n for members in groups.values() if len(members) >= 2 for n in members}
+
+
+def _stacked_layer_groups(shapes, *, radius: float = 0.0, cover: float = 0.0,
+                          exclude: "set[str] | None" = None) -> "list[list]":
+    """Connected groups of shapes that STACK on one another (#layer-follow-divergence).
+
+    Stacked means COVERAGE, not contact: at least `cover` of the SMALLER shape's
+    verts have a partner in the other within `radius`. A buckle or a trim strip
+    touches a cuirass along its border and is not a layer; a layer shadows a
+    large share of its neighbour. Censused over the pack, contact alone would
+    have swept in two thirds of all shapes.
+
+    Compared in WORLD space. Shapes in one NIF can carry different
+    global-to-skin transforms, so comparing raw `verts` would pair shapes that
+    are nowhere near each other -- and, worse, silently miss ones that are.
+
+    `exclude` keeps non-garment shapes out of a group entirely. Without it the
+    census grouped a shoe with the FEET and a cuirass with its own `ColBody`
+    collider: neither is a cloth layer, and dragging one into a group would
+    constrain the garment's bone basis to a body part's.
+
+    Returns a list of groups, each a list of (name, world_verts, shape).
+    """
+    rad = _LAYER_STACK_RADIUS if radius <= 0.0 else radius
+    cov = _LAYER_STACK_COVER if cover <= 0.0 else cover
+    if not _FULL_WEIGHT_LAYER_GUARD or rad <= 0.0 or cov <= 0.0:
+        return []
+    skip = set(exclude or ())
+    items = []
+    for s in shapes:
+        nm = getattr(s, "name", "") or ""
+        if not nm or nm in skip or nm in RESKIN_SKIP_NAMES:
+            continue
+        try:
+            sv = np.asarray(s.verts, dtype=np.float64)
+            if len(sv) == 0:
+                continue
+            items.append((nm, _verts_skin_to_world(sv, _shape_global_to_skin(s)), s))
+        except Exception as _e:
+            _note_pass_failure("_stacked_layer_groups/verts", _e)
+    if len(items) < 2:
+        return []
+    from scipy.spatial import cKDTree as _KD
+    trees = [_KD(v) for _, v, _ in items]
+    n = len(items)
+    parent = list(range(n))
+
+    def _find(a):
+        while parent[a] != a:
+            parent[a] = parent[parent[a]]
+            a = parent[a]
+        return a
+
+    for i in range(n):
+        for j in range(i + 1, n):
+            a, b = (i, j) if len(items[i][1]) <= len(items[j][1]) else (j, i)
+            d, _ = trees[b].query(items[a][1], k=1)
+            if float((np.asarray(d) <= rad).mean()) >= cov:
+                ra, rb = _find(i), _find(j)
+                if ra != rb:
+                    parent[ra] = rb
+    buckets: "dict[int, list]" = {}
+    for i in range(n):
+        buckets.setdefault(_find(i), []).append(items[i])
+    return [g for g in buckets.values() if len(g) >= 2]
+
+
+def _stacked_layer_plan(groups, tree, ube_bones) -> dict:
+    """Per-shape anchor surface + shared bone basis for each stacked group.
+
+    THE ANCHOR. Every member resolves the body through the group's INNERMOST
+    member -- the one sitting closest to the skin, and so the one whose pairing
+    is most trustworthy. Each vert borrows the innermost surface point nearest
+    to it, and that point's normal, so the whole stack asks the body one
+    question instead of one question per layer. Without this the ray pairing
+    casts from each layer's own position along its own normal and the layers hit
+    different body triangles by construction -- the entire residual divergence
+    of `belts_metal/belts`, which survives every other control.
+
+    THE BASIS. The copied row is restricted to bones EVERY member shares (and
+    the body has). The body row is renormalised onto each shape's own bone list,
+    so `top` (26 bones, Breast02/03 + Belly) and `chest_plate` (9, none of them)
+    take different rows from the same body vertex -- 76% of that pair's
+    divergence. A group can only follow the body as far as its least-capable
+    member: two layers 2u apart following different bones interpenetrate.
+
+    Returns {shape_name: {"pos": (n,3), "nrm": (n,3), "basis": set[str]}}.
+    """
+    from scipy.spatial import cKDTree as _KD
+    plan: dict = {}
+    for g in groups:
+        basis = None
+        for nm, _wv, s in g:
+            own = {b for b in (getattr(s, "bone_names", None) or ()) if b in ube_bones}
+            basis = own if basis is None else (basis & own)
+        if not basis:
+            # Nothing shared to copy onto. Leaving the group unplanned would let
+            # every member re-diverge, so record the empty basis explicitly and
+            # let the caller refuse the group.
+            basis = set()
+        inner, inner_med = None, None
+        for nm, wv, s in g:
+            try:
+                d, _ = tree.query(wv, k=1)
+                med = float(np.median(d))
+            except Exception as _e:
+                _note_pass_failure("_stacked_layer_plan/depth", _e)
+                continue
+            if inner_med is None or med < inner_med:
+                inner, inner_med = (nm, wv, s), med
+        if inner is None:
+            continue
+        _inm, _inwv, _ins = inner
+        try:
+            inrm = _vertex_normals_from_tris(
+                _inwv, np.asarray(_ins.tris, dtype=np.int64))
+        except Exception as _e:
+            _note_pass_failure("_stacked_layer_plan/normals", _e)
+            continue
+        itree = _KD(_inwv)
+        for nm, wv, s in g:
+            if nm == _inm:
+                plan[nm] = {"pos": _inwv, "nrm": inrm, "basis": set(basis)}
+                continue
+            try:
+                _, nn = itree.query(wv, k=1)
+            except Exception as _e:
+                _note_pass_failure("_stacked_layer_plan/anchor", _e)
+                continue
+            nn = np.asarray(nn, dtype=np.int64)
+            plan[nm] = {"pos": _inwv[nn], "nrm": inrm[nn], "basis": set(basis)}
+    return plan
 
 
 def detect_zfight_pairs(

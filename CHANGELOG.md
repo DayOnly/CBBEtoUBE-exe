@@ -1,5 +1,44 @@
 # Changelog
 
+## Unreleased
+
+### Fixed — layers of a multi-layer garment clipped through each other
+
+Reported after 1.3-alpha on a cuirass built from five stacked pieces: the layers
+began passing through one another (not through the body).
+
+`Match armour skinning to the body it covers` copies the covered body's whole
+weight row into each shape **independently**, and two layers stacked 1-2u apart
+did not get the same answer — so they stopped deforming together. Measured as
+the mean weight-row difference between stacked vertex pairs, 1.2 → 1.3-alpha:
+0.190 → 0.309 on the two main layers, and 0.027 → 0.204 on the worst pair.
+Switching the pass off restored every pair to its 1.2 value, which is what
+identified it rather than merely implicating it.
+
+The mechanism is that the pass casts a ray from each vertex along **its own**
+normal, so stacked layers land on different body triangles by construction. Each
+stacked group now resolves the body through one shared anchor — the innermost
+layer's surface — so the whole stack asks the body a single question. All five
+pairs now sit **at or below their 1.2 values** (0.024 / 0.138 / 0.074 / 0.029 /
+0.029), while breast/butt/belly follow is preserved (1208 → 1231 on the main
+layer, against 958 in 1.3-alpha).
+
+Groups are detected by **coverage**, not contact: a layer shadows a large share
+of its neighbour, while a buckle or a trim strip only touches one along its
+border. Colliders, soft-body shapes and injected body parts are kept out of a
+group entirely.
+
+Single-layer pieces are untouched — the leather cuirass whose fit was confirmed
+in game reconverts byte-identical, 0.000 vertex movement and 0.0% of weight mass
+moved.
+
+Escape hatch `CBBE2UBE_NO_FULL_WEIGHT_LAYER_GUARD`. The stricter variant that
+also forces a stacked group onto a shared bone basis is **off by default**: it
+drives the divergence lower still, but destroys ~87% of the jiggle follow and
+makes body-follow 7x worse than either baseline.
+
+**A reconvert is required** for this to reach an existing pack.
+
 ## 1.3-alpha — 2026-08-10
 
 **Pre-release.** Everything below is built and tested, and the headline fits are
