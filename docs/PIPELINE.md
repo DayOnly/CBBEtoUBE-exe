@@ -220,16 +220,24 @@ were a looser count and are superseded:
 
 | | |
 |---|---|
-| `CBBE2UBE_*` flags read by `src/` | 286 |
-| GUI-exposed | 54 |
-| env-only | 232 — of which 34 `NO_*` kill-switches and 13 diagnostics |
-| boolean OPT-INS (default OFF, enable something) | 34 |
-| ...of those, **unreachable from the GUI** | **20** |
+| | 2026-08-11 | 2026-08-12 |
+|---|---|---|
+| `CBBE2UBE_*` flags read by `src/` | 286 | **313** |
+| GUI-exposed | 54 | **59** |
+| env-only | 232 (34 `NO_*`, 13 diagnostic) | **254** (37 `NO_*`, 15 diagnostic) |
 
-Every GUI setting's env var IS read by `src/` — no dead rows. The unreachable 20
-are the number that matters: several document themselves as "default OFF until
-proven in game" while being impossible to turn on in game. That is a deadlock,
-not caution.
+**THE "no dead rows" CLAIM WAS FALSE, and stating it is what hid the defect.**
+Re-counting on 2026-08-12 found `warp_delta_outlier` writing
+`CBBE2UBE_WARP_DELTA_OUTLIER`, which nothing in `src/` reads: the flag is
+`CBBE2UBE_NO_WARP_DELTA_OUTLIER` and its default went ON when the feature was
+defaulted on, without the GUI row being updated. The checkbox was therefore
+inert in BOTH directions and showed a default-ON feature as off. Fixed, and
+`tests/test_gui_settings.py::test_every_gui_env_is_read_by_src` now ratchets
+it — a hand-verified promise in a doc is exactly what failed here.
+
+The env-only opt-ins remain the number that matters: several document
+themselves as "default OFF until proven in game" while being impossible to turn
+on in game. That is a deadlock, not caution.
 
 Re-count rather than trusting these figures — they drift with every commit, and a
 stale count here survived several audits. The method: collect

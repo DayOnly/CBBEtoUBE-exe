@@ -319,3 +319,35 @@ def test_rigid_majority_softbody_still_ships_off():
     s = gs.by_key()["rigid_majority_softbody"]
     assert s.default is False
     assert s.invert is False and s.env == "CBBE2UBE_RIGID_MAJORITY_SOFTBODY"
+
+
+def test_every_gui_env_is_read_by_src():
+    """A GUI row whose env var nothing reads is a toggle that does nothing.
+
+    `warp_delta_outlier` shipped that way: the row wrote
+    CBBE2UBE_WARP_DELTA_OUTLIER while the code read
+    CBBE2UBE_NO_WARP_DELTA_OUTLIER, so the checkbox was inert in BOTH
+    directions and displayed a default-ON feature as off. The registry's own
+    docstring promises this mapping is verified against the source; this is
+    that verification, as a ratchet rather than a promise.
+    """
+    import re
+    from pathlib import Path
+    src = Path(__file__).resolve().parent.parent / "src"
+    read = set()
+    for f in src.glob("*.py"):
+        read |= set(re.findall(
+            r'os\.environ\.get\(\s*["\'](CBBE2UBE_[A-Z0-9_]+)["\']',
+            f.read_text(encoding="utf-8", errors="replace")))
+    exposed = {s.env for s in gs.SETTINGS if s.env}
+    dead = sorted(e for e in exposed if e not in read)
+    assert not dead, f"GUI rows whose env nothing in src/ reads: {dead}"
+
+# A "NO_* env <=> invert=True" ratchet was written here and REMOVED the same
+# day: it fails on three rows that are all correct, because this registry
+# expresses a negation three different ways -- a NO_ var
+# (`CBBE2UBE_NO_SOFTBODY_SCALES`), a KEEP_ var
+# (`CBBE2UBE_KEEP_BOOT_THIGH_SCALE`), and a negatively-phrased LABEL ("Disable
+# soft-body scale bones", whose feature really is the disabling). A test that
+# fails on correct design only teaches people to suppress it. The property
+# worth ratcheting is the one above: an env var nothing reads is always a bug.

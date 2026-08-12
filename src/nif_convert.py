@@ -954,6 +954,67 @@ ADAPTIVE_CLEARANCE_MORPH_FACTOR = 0.20  # clearance added per unit of outward bo
 ADAPTIVE_CLEARANCE_MORPH_MAX = float(
     os.environ.get("CBBE2UBE_CLEARANCE_MORPH_MAX", "1.1"))
 
+# --- Authored-aware outward push (#authored-inflate) ----------------------
+# `inflate_armor_outward` is ADDITIVE: it adds its per-vert magnitude to
+# whatever standoff a vertex already has, and it has never known where the
+# AUTHOR put that vertex. So it pushes a garment that is already sitting at the
+# author's spacing further out anyway.
+#
+# The pack census (160/160 mods, 13,889 shape-pairs, 32.1M verts) measured both
+# halves of that. Deleting the pass is NOT the answer -- clearance got worse on
+# 4.1x as many shapes as it helped, so it stays. But on the 6738 shapes it
+# actually moves, removing it moved 67.5% of them CLOSER to the author's fit.
+# That over-push is the cost being paid, and it is what this addresses.
+#
+# Stated as a FLOOR instead of an addition:
+#
+#     floor    = max(authored standoff, buffer + min(morph amplitude, cap))
+#     ceiling  = what the additive pass would have produced (UNCHANGED)
+#     required = min(ceiling, max(current, floor))
+#     push     = max(0, required - current)
+#
+# MONOTONE BY CONSTRUCTION: `required <= ceiling`, so this can only ever push a
+# vertex LESS than today, never more. Over-inflation therefore cannot get worse,
+# and the entire risk surface is "did the floor come out too low somewhere",
+# which the clearance counters in the census measure directly.
+#
+# Why it is not the `#unified-offset` floor that measured 50% worse: that one
+# used inflate's own magnitude as the floor value, which is inert (it lifted
+# 5.6% of verts against inflate's 75% reach) -- AND it was computed when
+# `conform`'s authored standoff read identically ZERO, so "authored" carried no
+# information at all. Both halves of that are different here.
+AUTHORED_INFLATE = os.environ.get("CBBE2UBE_AUTHORED_INFLATE") == "1"
+# How much of the body's local outward morph the floor must cover. The margin
+# has to be the body's OWN morph amplitude -- the converter never sees the
+# player's preset -- and it has to be CAPPED, because the belly's runs to 8.7u
+# and a floor that tracked it would fling loose drape outward. Same lesson as
+# `#chain-rest-outside-body`.
+AUTHORED_INFLATE_AMP_CAP = float(
+    os.environ.get("CBBE2UBE_AUTHORED_INFLATE_AMP_CAP", "1.5"))
+
+# The source body is the SAME array for every shape in a NIF, and the CBBE base
+# is the same for the whole run, so building its KD-tree per shape is pure
+# waste. Measured: the tree is 1.2ms over an 8k inline body and 4.0ms over the
+# 18,436-vert CBBE base, against ~5ms for the query that actually needs doing.
+# Keyed on id(), which is only safe while something holds the array alive --
+# so the entry KEEPS THE ARRAY, and identity is re-verified on hit. Without
+# that, a freed array's id can be reused and the cache would hand back a tree
+# built over different geometry.
+_AUTHORED_SRC_TREE: "dict[int, tuple]" = {}
+
+
+def _authored_src_tree(sb):
+    key = id(sb)
+    hit = _AUTHORED_SRC_TREE.get(key)
+    if hit is not None and hit[0] is sb:
+        return hit[1]
+    from scipy.spatial import cKDTree
+    tree = cKDTree(sb)
+    if len(_AUTHORED_SRC_TREE) > 8:      # a run needs 1-2; never let it grow
+        _AUTHORED_SRC_TREE.clear()
+    _AUTHORED_SRC_TREE[key] = (sb, tree)
+    return tree
+
 # --- Authored fit in STATIC zones (#static-authored-fit) -----------------
 # `conform_to_source_standoff` deliberately leaves tight cloth looser than the
 # author had it: it floors the target at `min_clearance` (0.25) and only reels a
@@ -1169,18 +1230,36 @@ WARP_STANDOFF_SMOOTH_ITERS = int(
 # cloth was skin-tight everywhere, so it reels LOOSE drape inward instead of
 # leaving it alone -- the opposite of its contract.
 #
-# It is OFF anyway because fixing it is NOT MEASURABLY BETTER. Full A/B on a real
-# multi-layer mod whose body does have zeroed normals: 19.6% of verts move, mean
-# 0.024u, max 3.01u -- but mean |standoff error vs the source drape| went 4.211u
-# -> 4.225u (+0.3%), with 15 shapes closer to source and 23 worse. The later
-# passes (inflate, anti-poke, layer ride) largely overwrite what conform did, so
-# correcting its input mostly reshuffles rather than improves.
+# It was long marked "OFF anyway because fixing it is NOT MEASURABLY BETTER",
+# on this A/B: 19.6% of verts move, mean 0.024u, max 3.01u, and mean |standoff
+# error vs the source drape| 4.211u -> 4.225u (+0.3%), 15 shapes closer and 23
+# worse -- with the reason given as "the later passes largely overwrite what
+# conform did, so correcting its input mostly reshuffles rather than improves".
 #
-# Every fit constant in this pipeline was tuned over dozens of in-game cycles
-# WITH the zeroed normals in play, so switching this on shifts ~20% of verts
-# modlist-wide on an unvalidated hunch. Enable it only alongside an in-game
-# round; if it proves out, retune the conform constants with it on and flip the
-# default here.
+# THAT CONCLUSION DID NOT SURVIVE RE-MEASUREMENT (2026-08-12). Two things were
+# wrong with it, and both are worth keeping because they are easy to repeat:
+#
+#   * The metric was a MEAN over |standoff error|, which on a garment is
+#     dominated by the verts furthest from the body -- exactly the ones conform
+#     is gated away from. Per-pass, area-weighted, it is not close: across the
+#     conform boundary the authored-offset error goes 0.227 -> 0.319 (WORSE)
+#     with the normals zeroed and 0.227 -> 0.200 (BETTER) with them fixed on
+#     one shape, 0.666 -> 0.817 vs 0.666 -> 0.552 on another. Same pass, same
+#     piece, opposite verdicts.
+#   * "The later passes overwrite it anyway" is an argument for fixing the
+#     CHAIN, not for leaving the target broken. Shipped numbers on the reported
+#     piece with it on: layers on the wrong side 1074 -> 706, rough edges
+#     4205 -> 3910, dihedral mean 10.56 -> 10.33, edge deviation 0.0814 ->
+#     0.0810.
+#
+# It also explains `#unified-offset`: that solver was asked for
+# clip(target, floor, ceiling) with target identically ZERO.
+#
+# STILL DEFAULT OFF, but now for a different and smaller reason: every fit
+# constant here was tuned over dozens of in-game cycles WITH the zeroed normals
+# in play, so it shifts ~20% of verts modlist-wide. It is deployed for an
+# in-game verdict; when that lands, retune the conform constants with it on and
+# flip the default.
 _SRC_NORMAL_FIX = (
     os.environ.get("CBBE2UBE_SRC_NORMAL_FIX", "").strip().lower()
     in ("1", "true", "yes", "on")
@@ -5042,6 +5121,21 @@ def convert_nif(
                                 _morph_amp = _cached_body_morph_amplitude(
                                     _find_ube_body_osd(), body_normals_for_fit,
                                     len(body_verts_for_fit))
+                                # #authored-inflate on the phase-1 chain too.
+                                # Phase 1 has no INLINE body by definition, but
+                                # it does have the body the garment was authored
+                                # against -- the CBBE base it warps from, the
+                                # same pair the phase-1 conform reads below.
+                                # Without this the floor would reach only
+                                # phase 2, i.e. 4400 of the census's 13,889
+                                # shape-pairs, and quietly leave the other
+                                # two thirds on the blind additive push.
+                                _a_bn = None
+                                try:
+                                    _a_bn = _cached_cbbe_body_normals(
+                                        cbbe_body_path_p1)
+                                except Exception:
+                                    _a_bn = None
                                 snapped = inflate_armor_outward(
                                     snapped, body_verts_for_fit,
                                     magnitude=_infl_mag,
@@ -5049,9 +5143,14 @@ def convert_nif(
                                     body_normals=body_normals_for_fit,
                                     morph_amplitude=_morph_amp,
                                     morph_max=ADAPTIVE_CLEARANCE_MORPH_MAX,
+                                    src_armor_verts=sv_world,
+                                    src_body_verts=cbbe_verts_for_warp,
+                                    src_body_normals=_a_bn,
                                 )
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                # RECORDED. The pack's main clearance provider;
+                                # a silent failure ships a garment with none.
+                                failed.append((f"{s.name}:inflate", repr(e)))
                         # Reel the inflation back to the AUTHORED standoff. Phase 2
                         # has always done this; phase 1 inflated with no counter-
                         # pass, so a tightly-fitted piece just stood off the body.
@@ -6000,6 +6099,17 @@ UNIFIED_OFFSET = os.environ.get(
 # (4.728% -> 7.079%), because a floor lifts 5.6% of verts where the additive
 # push it replaced reaches 75% -- a difference in REACH that no floor value
 # closes. Do not enable expecting an improvement; enable to re-derive A14/A15.
+#
+# READ THAT VERDICT WITH ITS PRECONDITION (added 2026-08-12). It was measured
+# while `conform_to_source_standoff` was reading an authored standoff of
+# IDENTICALLY ZERO on every vertex -- BodySlide ships inline body normals all
+# zero and `_SRC_NORMAL_FIX` was off -- so `clip(target, floor, ceiling)` was
+# being solved with no target at all. "A floor cannot match the additive push's
+# reach" may still be true, but it was established against a degenerate target
+# and has not been re-tested since the target became real.
+# `#authored-inflate` is the re-test, and it is NOT this: it keeps the additive
+# result as a CEILING and only ever reduces a push, so it cannot lose reach the
+# way this form did.
 UNIFIED_OFFSET_FLOOR = os.environ.get(
     "CBBE2UBE_UNIFIED_OFFSET_FLOOR", "").strip().lower() in (
         "1", "true", "yes", "on")
@@ -6116,6 +6226,9 @@ def inflate_armor_outward(
     base_magnitude: float = ADAPTIVE_CLEARANCE_BASE,
     morph_factor: float = ADAPTIVE_CLEARANCE_MORPH_FACTOR,
     morph_max: float = ADAPTIVE_CLEARANCE_MORPH_MAX,
+    src_armor_verts: "np.ndarray | None" = None,
+    src_body_verts: "np.ndarray | None" = None,
+    src_body_normals: "np.ndarray | None" = None,
 ) -> np.ndarray:
     """Push body-hugging armor verts outward to avoid z-fighting with a
     morphed body.
@@ -6191,7 +6304,51 @@ def inflate_armor_outward(
 
     # Linear falloff: full magnitude at body, zero at close_threshold
     falloff = np.clip((close_threshold - dists) / close_threshold, 0.0, 1.0)
-    push = directions_unit * (per_vert_mag * falloff)[:, None]
+    push_len = per_vert_mag * falloff
+
+    # #authored-inflate. Re-state the push as a FLOOR the vertex must reach
+    # rather than an amount to add, so a garment already sitting at the author's
+    # spacing stops being shoved further out. See the constant for the census
+    # that motivates it and for why this is not the rejected `#unified-offset`
+    # floor. Needs the author's own mesh AND their body; without either it
+    # cannot know the authored standoff, so it leaves the additive behaviour
+    # exactly as it was rather than guessing a floor.
+    if (AUTHORED_INFLATE and body_normals is not None
+            and src_armor_verts is not None and src_body_verts is not None
+            and src_body_normals is not None):
+        try:
+            sa = np.asarray(src_armor_verts, dtype=np.float64)
+            sb = np.asarray(src_body_verts, dtype=np.float64)
+            sn = np.asarray(src_body_normals, dtype=np.float64)
+            if sa.shape == armor_verts.shape and sb.shape == sn.shape and len(sb):
+                bn_at = np.asarray(body_normals, dtype=np.float64)[idxs]
+                # Where the vertex sits NOW, signed along the body's normal.
+                s_cur = np.einsum('ij,ij->i', armor_verts - body_verts[idxs],
+                                  bn_at)
+                # Where the AUTHOR put it, on THEIR body. Negative means they
+                # tucked it under the surface; a floor must not honour that, so
+                # it is clamped at zero.
+                _, si = _authored_src_tree(sb).query(sa, k=1, workers=-1)
+                authored = np.maximum(
+                    np.einsum('ij,ij->i', sa - sb[si], sn[si]), 0.0)
+                amp_room = np.zeros(len(armor_verts))
+                if (ADAPTIVE_CLEARANCE_ENABLED and morph_amplitude is not None
+                        and len(morph_amplitude) > idxs.max()):
+                    amp_room = np.minimum(
+                        np.asarray(morph_amplitude, dtype=np.float64)[idxs],
+                        AUTHORED_INFLATE_AMP_CAP)
+                floor = np.maximum(authored, ARMOR_TO_SKIN_BUFFER + amp_room)
+                # The additive result is the CEILING: this may reduce a push,
+                # never raise one, so over-inflation cannot get worse.
+                required = np.minimum(s_cur + push_len,
+                                      np.maximum(s_cur, floor))
+                push_len = np.maximum(required - s_cur, 0.0)
+        except Exception as e:
+            # A silently-failed floor is indistinguishable from "the floor was
+            # already satisfied", and would ship as a quiet loss of clearance.
+            _note_pass_failure("inflate/authored-floor", e)
+
+    push = directions_unit * push_len[:, None]
 
     return (armor_verts + push).astype(np.float32)
 
@@ -11483,14 +11640,24 @@ def _match_limb_motion_to_body(dst_path, biped_slots: int = 0, *,
             # DESIGN_P6_WEIGHT_WRITE_INVARIANT.md. Replacing the cap+floor pair below
             # with `weights.plan_weight_writes` (prune to 4, renormalise, clear the
             # dropped influences with an explicit 0.0) is theoretically cleaner and
-            # its unit tests pass, but on REAL meshes it made the on-disk invariant
-            # WORSE, not better: traced heavy cuirass bad-sum 1650 -> 1966, worst
-            # deviation +0.074 -> +0.130 (deterministic across runs; the pass does
-            # fire, 1776 verts). Restoring the original full-breadth write recovered
-            # the light body mesh exactly (181 -> 181) but not this one, so something
-            # downstream of this pass is re-introducing the drift and the cap/floor
-            # pair is not the whole story. Do not re-attempt without first finding
-            # which later pass rewrites these rows.
+            # its unit tests pass, but on REAL meshes it appeared to make the
+            # on-disk invariant WORSE, not better: traced heavy cuirass bad-sum
+            # 1650 -> 1966, worst deviation +0.074 -> +0.130 (the pass does fire,
+            # 1776 verts).
+            #
+            # TREAT THAT 1650 -> 1966 AS VOID. Those are the two numbers the
+            # project later identified as a BATCH-produced output compared
+            # against a SINGLE-MESH conversion -- mismatched arms, so the
+            # "regression" was a harness artifact and not a result. The advice
+            # attached to it ("do not re-attempt without first finding which
+            # later pass rewrites these rows") is still GOOD advice, and it was
+            # followed: a per-pass trace on 2026-08-12 showed the drift is
+            # introduced HERE, that `_match_full_weights_to_body` is the last
+            # weight pass, and that nothing downstream repairs it. The fix that
+            # came out of it is `#family-weight-invariant` below -- which is
+            # deliberately NOT this prune-and-clear design, because the real
+            # mechanism turned out to be different again (a bone the VERTEX has
+            # no room for, not a row over the cap).
             if NEW.shape[1] > _SKIN_MAX_INFLUENCES and len(rows):
                 sub = NEW[rows]
                 cut = np.argsort(sub, axis=1)[:, :-_SKIN_MAX_INFLUENCES]
@@ -21913,10 +22080,21 @@ def convert_nif_phase2(
                             body_normals=body_norms_for_p2,
                             morph_amplitude=_morph_amp_p2,
                             morph_max=ADAPTIVE_CLEARANCE_MORPH_MAX,
+                            # #authored-inflate: the author's own mesh and body,
+                            # so the push can be a floor rather than a blind
+                            # addition. Same pair `conform` reads just below --
+                            # and the same caveat applies, that the stored
+                            # source-body normals are routinely all zero, so
+                            # this is only informative with _SRC_NORMAL_FIX on.
+                            src_armor_verts=_sv_body,
+                            src_body_verts=src_body_v_p2,
+                            src_body_normals=src_body_n_p2,
                         )
                         _stage('inflate', override)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        # RECORDED. This pass is the pack's main clearance
+                        # provider; a silent failure ships a garment with none.
+                        failed.append((f"{s.name}:inflate", repr(e)))
                 # Standoff-preserving conform: reel over-projected verts back to
                 # their source clearance (pull-in only, >= min clearance).
                 if (src_body_v_p2 is not None and body_verts_for_p2 is not None

@@ -181,9 +181,16 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "vertex still travels the full local body delta, it just "
                     "stops shearing away from its neighbours -- so it cannot "
                     "leave armour CBBE-shaped."),
+    # POLARITY CORRECTED 2026-08-12. This row wrote CBBE2UBE_WARP_DELTA_OUTLIER,
+    # which `src/` does not read: the flag is `CBBE2UBE_NO_WARP_DELTA_OUTLIER`
+    # and its default went ON when the feature was defaulted on. So the row was
+    # dead in BOTH directions -- ticking it did nothing, unticking it did
+    # nothing, and the GUI showed a default-ON feature as off. Found by counting
+    # GUI envs against the ones `src/` actually reads; `test_every_gui_env_is_
+    # read_by_src` now keeps it honest.
     Setting("warp_delta_outlier", "Stop the warp flinging a lone vertex",
-            "Armor", "Fit and clearance", default=False,
-            env="CBBE2UBE_WARP_DELTA_OUTLIER", invert=False,
+            "Armor", "Fit and clearance", default=True,
+            env="CBBE2UBE_NO_WARP_DELTA_OUTLIER", invert=True,
             hint="Fixes small pure-black spots, usually a mirrored pair, that survive other fixes.",
             tooltip="A single vertex can be driven several units away from its "
                     "own neighbours -- mostly by the clearance push, which "
@@ -218,6 +225,32 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "push at the garment's own surface. It only ever binds "
                     "where armour is already in front of the vertex, so it "
                     "cannot reopen clipping."),
+    Setting("authored_inflate", "Only add clearance where it is missing",
+            "Armor", "Fit and clearance", default=False,
+            env="CBBE2UBE_AUTHORED_INFLATE", invert=False,
+            hint="Stops armour being pushed off the body where the author "
+                 "already left room. Needs the setting above.",
+            tooltip="To keep skin from showing through when body sliders grow "
+                    "the body, the converter pushes armour outward. It does "
+                    "that blindly -- it adds the same clearance whether or not "
+                    "the garment already had plenty. Measured across the whole "
+                    "load order (13,889 shapes): on the shapes it moves, that "
+                    "push takes two thirds of them FURTHER from the shape "
+                    "their author built. This asks instead how much room each "
+                    "spot actually needs -- the author's own spacing, or "
+                    "enough for the body to grow there, whichever is larger -- "
+                    "and tops up only what is short. It can never push a "
+                    "vertex further than before, so armour cannot end up "
+                    "floating more than it does today."),
+    Setting("authored_inflate_amp_cap",
+            "  ...room reserved for body growth (units)",
+            "Armor", "Fit and clearance", kind="float", default=1.5,
+            env="CBBE2UBE_AUTHORED_INFLATE_AMP_CAP", advanced=True,
+            min=0.0, max=4.0, step=0.1,
+            tooltip="Upper limit on how much room the setting above reserves "
+                    "for the body growing at runtime. Uncapped it would track "
+                    "the belly, which can grow 8.7 units, and push loose "
+                    "clothing away from the body."),
     Setting("src_normal_fix", "Read the author's real fit, not a flat one",
             "Armor", "Fit and clearance", default=False,
             env="CBBE2UBE_SRC_NORMAL_FIX", invert=False,
@@ -684,7 +717,8 @@ LAYOUT: "dict[str, tuple]" = {
             "drape_xml_gate", "conform_to_body", "conform_fold_guard",
             "warp_shear_limit", "warp_delta_outlier",
             "warp_delta_outlier_max", "warp_push_shell_cap",
-            "surface_warp_field", "src_normal_fix", "layer_order_last",
+            "surface_warp_field", "src_normal_fix", "authored_inflate",
+            "authored_inflate_amp_cap", "layer_order_last",
             "family_weight_invariant",
             "full_weight_match", "full_weight_strength",
             "smp_antipoke", "smp_antipoke_push",
