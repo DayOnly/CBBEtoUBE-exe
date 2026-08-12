@@ -75,6 +75,13 @@ BODY_NAMES = {"baseshape", "3ba", "cbbe", "femalebody", "body", "ubebody"}
 # Inherits the caller's MO2 layout (CBBE2UBE_MO2_INI / CBBE2UBE_MODS_ROOT) --
 # no path is baked in, so this runs against any instance.
 BASE_ENV = {
+    # Telemetry OFF. Applied to BOTH arms, so it cannot bias the comparison,
+    # and VERIFIED not to change geometry: same flags twice moved 0 verts
+    # (max 0.000000u), and audit-off vs audit-on also moved 0 verts over 56
+    # shapes. The NIF hashes DO differ either way -- the writer is
+    # nondeterministic in non-geometry bytes -- so this had to be checked on
+    # vertex data with a same-flags control, not on file hashes.
+    "CBBE2UBE_NO_STANDOFF_AUDIT": "1",
     "CBBE2UBE_STRAP_SCALE_UNIFORM": "1",
     "CBBE2UBE_SHORT_EDGE_CAP": "1",
     "CBBE2UBE_LAYER_RIDE_BARY": "1",
@@ -170,6 +177,24 @@ def source_index():
     return _SRCIDX["m"]
 
 
+def cbbe_reference():
+    """The CBBE base body -- the body a garment was authored against when its
+    own NIF carries no inline body (every phase-1 piece). Without it the
+    AUTHORED OFFSET, which is the whole point of `#authored-inflate`, could only
+    be computed for phase 2."""
+    if "c" not in _REF:
+        from src import nif_convert as nc, paths
+        lay = paths.discover_layout()
+        paths.export_to_env(lay)
+        p = nc._find_cbbe_base_body("_1")
+        if p is None:
+            raise RuntimeError("no CBBE base body found")
+        m = _load(p)
+        k = max(m, key=lambda k: len(m[k][0]))
+        _REF["c"] = m[k]
+    return _REF["c"]
+
+
 def ube_reference():
     """The UBE body the converter itself fits to.
 
@@ -218,6 +243,20 @@ def score_nif(out_path, src_path):
             src = _load(src_path)
         except Exception:
             src = {}
+    # The body the AUTHOR fitted to: their own inline body when the source NIF
+    # ships one, else the CBBE base. Needed for the authored-offset error --
+    # the metric `#authored-inflate` actually targets. Edge deviation cannot
+    # see it: a uniform outward offset barely changes any edge RATIO, so a
+    # census without this reads a real change as "no fidelity effect".
+    sbody = None
+    if src:
+        k = next((k for k in src if k.lower() in BODY_NAMES), None)
+        try:
+            sv_, st_ = src[k] if k else cbbe_reference()
+            sbody = (sv_, _vnorm(sv_, st_), cKDTree(sv_))
+        except Exception:
+            sbody = None
+
     rows = []
     for name, (v, t) in out.items():
         if name.lower() in BODY_NAMES or len(v) < 12 or not len(t):
@@ -236,16 +275,24 @@ def score_nif(out_path, src_path):
         sv = src.get(name, (None,))[0]
         if sv is not None and sv.shape == v.shape:
             row["edge_dev"] = _edge_dev(sv, v, t)
+            if sbody is not None:
+                bv2, bn2, tr2 = sbody
+                _, j = tr2.query(sv, workers=-1)
+                authored = np.einsum('ij,ij->i', sv - bv2[j], bn2[j])
+                row["auth_err"] = float(np.median(np.abs(s - authored)))
         rows.append(row)
     if not rows:
         return None, "no garment shapes"
     return rows, None
 
 
-def convert(mod_dir, out_dir, magnitude, workers):
+def convert(mod_dir, out_dir, arm_env, workers):
+    """`arm_env` is the ONLY difference between the arms. Everything else comes
+    from BASE_ENV, so the census cannot accidentally measure two changes at
+    once."""
     env = dict(os.environ)
     env.update(BASE_ENV)
-    env["CBBE2UBE_INFLATION_MAGNITUDE"] = str(magnitude)
+    env.update(arm_env)
     cmd = [sys.executable, "-m", "src.auto_convert", "convert", str(mod_dir),
            "-o", str(out_dir), "--no-textures", "--no-auto-merge",
            "--workers", str(workers)]
@@ -260,6 +307,24 @@ def main() -> int:
     def opt(f, d=None):
         return argv[argv.index(f) + 1] if f in argv else d
 
+    def arm(flag, default):
+        """--arm-on / --arm-off as comma-separated KEY=VALUE."""
+        raw = opt(flag)
+        if not raw:
+            return dict(default)
+        out = {}
+        for part in raw.split(","):
+            k, _, v = part.partition("=")
+            out[k.strip()] = v.strip()
+        return out
+
+    arm_on = arm("--arm-on", {"CBBE2UBE_INFLATION_MAGNITUDE": "0.7"})
+    arm_off = arm("--arm-off", {"CBBE2UBE_INFLATION_MAGNITUDE": "0"})
+    print(f"ARM 'on' : {arm_on}")
+    print(f"ARM 'off': {arm_off}")
+    if arm_on == arm_off:
+        print("the two arms are identical; nothing would be measured")
+        return 2
     pop = json.loads(Path(opt("--population")).read_text())
     out_json = Path(opt("--out", "inflate_census.json"))
     limit = int(opt("--limit", "0") or 0)
@@ -272,6 +337,29 @@ def main() -> int:
 
     results, excl = [], defaultdict(int)
     n_mods_ok = 0
+    # RESUME. A census over 160 mods takes hours; without this, stopping to
+    # change anything throws the finished work away, which is a strong
+    # incentive to leave it running badly. Mods already present in the output
+    # are skipped and their rows carried forward.
+    pop_total = len(pop)          # BEFORE resume filters it, or the report
+                                  # understates its own denominator
+    resume = opt("--resume")
+    if resume and Path(resume).is_file():
+        prev = json.loads(Path(resume).read_text())
+        results = prev.get("rows") or []
+        for k, v in (prev.get("exclusions") or {}).items():
+            excl[k] += v
+        seen = {r["mod"] for r in results}
+        n_mods_ok = len(seen)
+        before = len(pop)
+        pop = [m for m in pop if m["name"] not in seen]
+        print(f"RESUME: {len(results)} shape-pairs from {n_mods_ok} mods kept; "
+              f"{before - len(pop)} of {before} mods skipped, {len(pop)} to go")
+        if prev.get("arm_on") and prev.get("arm_on") != arm_on:
+            print(f"  REFUSING: the saved run used arms {prev.get('arm_on')} / "
+                  f"{prev.get('arm_off')}; resuming with different arms would "
+                  f"mix two experiments in one file.")
+            return 2
     for mi, m in enumerate(pop, 1):
         mod = Path(m["dir"])
         a, b = scratch / "on", scratch / "off"
@@ -279,8 +367,8 @@ def main() -> int:
             shutil.rmtree(d, ignore_errors=True)
         print(f"[{mi}/{len(pop)}] {m['name']}  ({m['nifs']} NIFs)", flush=True)
         try:
-            ra = convert(mod, a, 0.7, workers)
-            rb = convert(mod, b, 0.0, workers)
+            ra = convert(mod, a, arm_on, workers)
+            rb = convert(mod, b, arm_off, workers)
         except subprocess.TimeoutExpired:
             excl["mod: conversion timed out"] += m["nifs"]
             continue
@@ -326,11 +414,12 @@ def main() -> int:
         print(f"    scored {seen} shape-pairs   (running total "
               f"{len(results)})", flush=True)
         out_json.write_text(json.dumps(
-            {"mods_scored": n_mods_ok, "mods_total": len(pop),
+            {"mods_scored": n_mods_ok, "mods_total": pop_total,
+             "arm_on": arm_on, "arm_off": arm_off,
              "exclusions": dict(excl), "rows": results}, indent=1))
         for d in (a, b):
             shutil.rmtree(d, ignore_errors=True)
-    print(f"\nDONE. {n_mods_ok}/{len(pop)} mods, {len(results)} shape-pairs")
+    print(f"\nDONE. {n_mods_ok}/{pop_total} mods, {len(results)} shape-pairs")
     for k, v in sorted(excl.items(), key=lambda kv: -kv[1]):
         print(f"  EXCLUDED {v:6d}  {k}")
     return 0

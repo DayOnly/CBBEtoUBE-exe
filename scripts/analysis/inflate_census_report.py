@@ -64,6 +64,12 @@ def main() -> int:
     rows = data["rows"]
     print(f"POPULATION  {data['mods_scored']}/{data['mods_total']} mods scored, "
           f"{len(rows)} shape-pairs")
+    # Which change is being measured. The columns are named ON/OFF after the two
+    # arms, and reading them as "inflate on/off" when the arms are something
+    # else would invert every verdict below.
+    if data.get("arm_on") or data.get("arm_off"):
+        print(f"  ARM 'ON'  = {data.get('arm_on')}")
+        print(f"  ARM 'OFF' = {data.get('arm_off')}")
     ex = data.get("exclusions") or {}
     if ex:
         print("EXCLUSIONS (a shrinking denominator is not a clean result):")
@@ -104,8 +110,10 @@ def main() -> int:
             continue
         print(f"\n=== {name}   {len(sub)} shape-pairs "
               f"({sum(r['on']['verts'] for r in sub):,} verts)")
-        print("  TARGET -- what removing inflate is supposed to buy")
-        band("edge deviation (fidelity)", col(sub, "on", "edge_dev"),
+        print("  TARGET -- fidelity to the author")
+        band("authored-offset error", col(sub, "on", "auth_err"),
+             col(sub, "off", "auth_err"), higher_is_better=False, unit="u")
+        band("edge deviation (shape)", col(sub, "on", "edge_dev"),
              col(sub, "off", "edge_dev"), higher_is_better=False)
         band("dihedral (roughness)", col(sub, "on", "dihedral"),
              col(sub, "off", "dihedral"), higher_is_better=False)
