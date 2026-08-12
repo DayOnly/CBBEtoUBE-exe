@@ -89,7 +89,11 @@ ARMOR_TO_SKIN_BUFFER = 0.15
 # this pass adds a uniform outward inflation with linear falloff so armor
 # retains clearance when body morph sliders grow the mesh at runtime.
 # 0 = disable. Reconvert any affected mod after changing.
-ARMOR_INFLATION_MAGNITUDE = 0.7
+# Env override is for ABLATION: this pass is only justifiable while the passes
+# around it cannot deliver the authored standoff themselves, so "set it to 0 and
+# measure" has to be one command. Numeric knob, so env-only is allowed (§6).
+ARMOR_INFLATION_MAGNITUDE = float(
+    os.environ.get("CBBE2UBE_INFLATION_MAGNITUDE", "") or 0.7)
 ARMOR_INFLATION_FALLOFF_DISTANCE = 3.0
 
 # Slot-49 (skirts, loincloths, hip cloth) sit closer to skin than torso
@@ -2027,6 +2031,16 @@ def _cached_cbbe_to_ube_delta(
 
 GROOVE_SMOOTH_CLOSE = 6.0   # only smooth verts within this of the UBE body (tight armor)
 GROOVE_SMOOTH_ITERS = 8
+# Kill switch, for ABLATION. This pass is a CLEANUP: it exists because the warp
+# and the conform leave grooves. Measured on a five-layer top, area-weighted
+# mean dihedral across the conform boundary: 7.09 -> 13.52 with the conform
+# reading a ZEROED authored standoff, and 7.09 -> 11.50 once it reads the real
+# one. So how much cleanup is still needed is a function of how well the passes
+# upstream behave, and that has to be re-measurable in one command rather than
+# assumed from when it was written.
+GROOVE_SMOOTH_ENABLED = os.environ.get(
+    "CBBE2UBE_NO_GROOVE_SMOOTH", "").strip().lower() not in (
+        "1", "true", "yes", "on")
 GROOVE_SMOOTH_ROUGH = 0.25  # displacement-deviation (u) above which a vert is "grooved"
 
 
@@ -2103,6 +2117,8 @@ def _smooth_warp_grooves(src_world, warped, ube_body_verts,
     which is what actually flattens a groove. Set CBBE2UBE_GROOVE_ONESIDED=0 to
     restore the old behaviour for comparison.
     """
+    if not GROOVE_SMOOTH_ENABLED:
+        return warped
     try:
         from scipy.spatial import cKDTree
         src = np.asarray(src_world, dtype=np.float64)
@@ -20690,6 +20706,17 @@ LAYER_ORDER_REPAIR_ENABLED = (
     not in ("1", "true", "yes", "on"))
 _LAYER_ORDER_NEAR = float(os.environ.get("CBBE2UBE_LAYER_ORDER_NEAR", "2.0") or "2.0")
 _LAYER_ORDER_EPS = 0.05     # sign-noise band
+# #layer-order-joint -- satisfy ALL of a vert's layer constraints at once
+# instead of only its largest. See the push-selection block for the measurement.
+# Measured a near no-op on the piece it was written for (flips 1074 -> 1064), so
+# few verts are actually under two layers at once; kept OFF and kept only
+# because it costs nothing and the reasoning is sound where it does apply.
+LAYER_ORDER_JOINT = os.environ.get("CBBE2UBE_LAYER_ORDER_JOINT") == "1"
+
+# #layer-order-last -- let the cross-shape layer reconciliation be the last
+# thing that moves a vert on phase 2, instead of the per-shape geometry repairs
+# re-running at write time. See the `_copy_shape` call in `convert_nif_phase2`.
+LAYER_ORDER_LAST = os.environ.get("CBBE2UBE_LAYER_ORDER_LAST") == "1"
 _LAYER_ORDER_ITERS = int(os.environ.get("CBBE2UBE_LAYER_ORDER_ITERS", "2") or "2")
 # Feathering rounds for the correction field. MUST be > 0: a raw per-vert shove IS a
 # crinkle (measured 5.38 -> 6.09 spikiness unsmoothed). See #layer-order.
@@ -20841,14 +20868,41 @@ def _repair_layer_order(shape_jobs, softbody_names=frozenset(),
             need = (s_src - s_dst)[flip]          # push back out to the authored offset
             vec = nb[flip] * need[:, None]
             vi = ai[flip]
-            # Keep the LARGEST demanded push per vert (satisfies the worst constraint;
-            # summing several would overshoot and bulge the shape).
-            better = np.abs(need) > mag[ia][vi]
-            if np.any(better):
-                sel = vi[better]
-                moves[ia][sel] = vec[better]
-                mag[ia][sel] = np.abs(need)[better]
-                corrected.update((ia, int(v)) for v in sel)
+            if LAYER_ORDER_JOINT:
+                # #layer-order-joint. A vert buried under several layers gets
+                # SEVERAL constraints, and keeping only the largest DISCARDS the
+                # rest -- so it comes out from under one layer while staying
+                # inside the next, and the next round pushes it back. Measured,
+                # that oscillates rather than converges: raising the round count
+                # made things WORSE on the target AND on every counter-metric
+                # (flips 1074 -> 1239 -> 1210 at 2/4/8 rounds, neighbour-step
+                # p99 0.517 -> 0.589 -> 0.738). That is the signature of
+                # constraints fighting each other, not of too little work.
+                #
+                # Satisfy them TOGETHER, by projection: add only what each
+                # constraint still LACKS given what is already applied. This is
+                # not the naive sum the note below rightly warns against -- a
+                # constraint another push has already satisfied contributes
+                # nothing, so one violation can never be paid for twice.
+                cur = np.einsum('ij,ij->i', moves[ia][vi], nb[flip])
+                short = need - cur
+                add = short > 0
+                if np.any(add):
+                    # `vi` is unique within a pair, so this add is well defined.
+                    np.add.at(moves[ia], vi[add],
+                              nb[flip][add] * short[add, None])
+                    mag[ia][vi[add]] = np.maximum(mag[ia][vi[add]],
+                                                  np.abs(need)[add])
+                    corrected.update((ia, int(v)) for v in vi[add])
+            else:
+                # Keep the LARGEST demanded push per vert (satisfies the worst
+                # constraint; summing several would overshoot and bulge the shape).
+                better = np.abs(need) > mag[ia][vi]
+                if np.any(better):
+                    sel = vi[better]
+                    moves[ia][sel] = vec[better]
+                    mag[ia][sel] = np.abs(need)[better]
+                    corrected.update((ia, int(v)) for v in sel)
         if not any_fix:
             break
         for i, x in enumerate(L):
@@ -22823,6 +22877,58 @@ def convert_nif_phase2(
     # #post-weld-degenerate-repair
     _degenerate_repair_pass("post-weld")
 
+    # #layer-order-last. The three per-shape geometry repairs also run inside
+    # `_copy_shape`, i.e. at WRITE time, after everything here -- so on phase 2
+    # they run twice and the second run is the last thing to touch a vertex.
+    # It moves 74% of a belt's vertices by up to 0.600u, which is what undoes
+    # the cross-shape reconciliation: `_repair_layer_order` leaves 669
+    # wrong-side verts (103 for top-inside-belts) and 1068 (240) ship.
+    #
+    # But that second run is NOT redundant, which is the whole difficulty:
+    # simply suppressing it recovers the layer order (top-inside-belts
+    # 248 -> 168) and costs surface quality across the board (neighbour-step
+    # edges 4205 -> 4806, dihedral mean 10.56 -> 11.37, edge deviation
+    # 0.0814 -> 0.0868), because the ride and order passes CREATE crumple that
+    # it is there to repair.
+    #
+    # So do both, in the only order that can satisfy both: run the repairs
+    # HERE, on the post-cross-shape geometry, and then re-run the order repair
+    # so the relationship has the last word -- the same rule the groove smooth
+    # follows. `_copy_shape` is then told to skip them, so nothing moves a
+    # vertex after this.
+    if LAYER_ORDER_LAST and shape_jobs:
+        for j in shape_jobs:
+            try:
+                _s = j["src"]
+                if not _geometry_repair_allowed(_s):
+                    continue
+                _sv = np.asarray(_s.verts, dtype=np.float64)
+                _ov = np.asarray(j["verts"], dtype=np.float64)
+                if _ov.shape != _sv.shape:
+                    continue
+                for _fn in (_repair_coherence_collapse, _uniformise_local_scale,
+                            _cap_short_edge_stretch):
+                    _ov2, _n = _fn(_sv, _ov, _s.tris)
+                    if _n:
+                        _ov = _ov2
+                        j["verts"] = _ov
+                        j["verts_modified"] = True
+            except Exception as _pe:
+                # RECORDED: a silent failure here is indistinguishable from
+                # "nothing qualified", and it would ship the crumple the
+                # suppressed copy-time run used to catch.
+                _note_pass_failure("layer-order-last/geometry-repair", _pe)
+        try:
+            _n_ord2 = _repair_layer_order(
+                shape_jobs, softbody_names=set(hdt_softbody_names),
+                collider_names=set(hdt_collider_names))
+            if _n_ord2:
+                import sys as _sys
+                print(f"  layer order (final): restored {_n_ord2} vert(s) "
+                      f"after the geometry repairs", file=_sys.stderr)
+        except Exception as _pe:
+            _note_pass_failure("_repair_layer_order/final", _pe)
+
     # Pass 2: copy shapes. Alpha preserved — bit-19 (set by _reset_morph_flags)
     # enables NioOverride morphs on alpha cloth without stripping transparency.
     first_armor_shape = None
@@ -22835,6 +22941,25 @@ def convert_nif_phase2(
                 s, dst_nif,
                 override_verts=override_v,
                 override_skin=j["override_skin"],
+                # #layer-order-last. The three geometry repairs are wired at
+                # BOTH this site and inside `_copy_shape`, deliberately, so the
+                # phase-1 copy path gets them too. On a phase-2 piece that
+                # means they run TWICE on the same geometry -- and the second
+                # run happens at WRITE time, after the cross-shape chain, so it
+                # is the last thing to touch the verts. Traced execution order:
+                #     [coherence, strap-scale, short-edge] x5 shapes
+                #     _ride_layers_on_reference -> _repair_layer_order
+                #     _weld_cross_shape_seams
+                #     [coherence, strap-scale, short-edge] x5 shapes   <- again
+                # The second group moves 74% of the belt's vertices by up to
+                # 0.600u, which is what undoes the layer reconciliation:
+                # `_repair_layer_order` leaves 669 wrong-side verts (top-inside-
+                # belts 103) and 1068 (240) ship.
+                #
+                # A pass that RESTORES A RELATIONSHIP has to have the last word
+                # on position, for the same reason the groove smooth does. So
+                # skip the repairs here on phase 2, where they have already run.
+                skip_geometry_repair=LAYER_ORDER_LAST,
             )
             copied.append(s.name)
             if first_armor_shape is None:

@@ -218,6 +218,37 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "push at the garment's own surface. It only ever binds "
                     "where armour is already in front of the vertex, so it "
                     "cannot reopen clipping."),
+    Setting("src_normal_fix", "Read the author's real fit, not a flat one",
+            "Armor", "Fit and clearance", default=False,
+            env="CBBE2UBE_SRC_NORMAL_FIX", invert=False,
+            hint="Keeps a garment's spacing closer to how its author built it.",
+            tooltip="To keep the author's fit, the converter has to know how "
+                    "far each part of the garment stood off their body. It "
+                    "reads that using the body's surface directions -- and "
+                    "BodySlide routinely ships bodies with those left blank "
+                    "(measured: 18 of 21 sampled). Blank reads as ZERO, so the "
+                    "converter believes the garment was skin-tight everywhere "
+                    "and reels loose drape inward. With it on, the fit step "
+                    "moves the garment TOWARD the author's spacing instead of "
+                    "away from it, and the smoothing pass has far less to "
+                    "clean up. Measured on a five-layer top: layers on the "
+                    "wrong side of each other 1074 -> 706, roughness and "
+                    "distortion both down."),
+    Setting("layer_order_last", "Let the layer fix have the last word",
+            "Armor", "Fit and clearance", default=False,
+            env="CBBE2UBE_LAYER_ORDER_LAST", invert=False,
+            hint="For an under-layer poking through the layer above it.",
+            tooltip="Three small repairs -- un-buckling, evening out a "
+                    "stretched strap, and pulling back blown-up detail -- run "
+                    "again as the garment is written out, AFTER the step that "
+                    "puts the layers back in the author's order. On a belt "
+                    "they move three quarters of its vertices, which undoes "
+                    "that ordering. This runs those repairs first and the "
+                    "ordering last. Measured on the piece it was reported "
+                    "against: the under-layer poking through the belts went "
+                    "from 248 vertices to 80. It costs a little smoothness, "
+                    "because those repairs are also cleaning up after the "
+                    "layer steps themselves."),
     Setting("family_weight_invariant", "Fix stray broken vertices on layered "
                                        "garments",
             "Armor", "Fit and clearance", default=False,
@@ -653,7 +684,8 @@ LAYOUT: "dict[str, tuple]" = {
             "drape_xml_gate", "conform_to_body", "conform_fold_guard",
             "warp_shear_limit", "warp_delta_outlier",
             "warp_delta_outlier_max", "warp_push_shell_cap",
-            "surface_warp_field", "family_weight_invariant",
+            "surface_warp_field", "src_normal_fix", "layer_order_last",
+            "family_weight_invariant",
             "full_weight_match", "full_weight_strength",
             "smp_antipoke", "smp_antipoke_push",
             "antipoke_smooth", "layered_antipoke", "unified_offset")),
