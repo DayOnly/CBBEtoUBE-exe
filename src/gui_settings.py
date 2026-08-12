@@ -225,6 +225,45 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "push at the garment's own surface. It only ever binds "
                     "where armour is already in front of the vertex, so it "
                     "cannot reopen clipping."),
+    # These three shipped OPT-IN "until judged in game" and were then impossible
+    # to switch on in game -- the deadlock PIPELINE section 6 describes. They are
+    # deployed in a test mesh awaiting exactly that verdict, so they need to be
+    # reachable for anyone to give one.
+    Setting("strap_scale_uniform", "Un-crumple stretched straps",
+            "Armor", "Fit and clearance", default=False,
+            env="CBBE2UBE_STRAP_SCALE_UNIFORM", invert=False,
+            hint="For a belt or strap that came out rippled rather than bent.",
+            tooltip="Refitting a narrow strap onto a different body can leave "
+                    "its edges running anywhere from half to one and a half "
+                    "times the length the author gave them. That is not the "
+                    "strap bending, it is the strap crumpling. This gives each "
+                    "edge the length its own neighbourhood agrees on. Reaches "
+                    "about one shape in six across a load order, so it is worth "
+                    "a look on more than the piece it was written for."),
+    Setting("short_edge_cap", "Stop tiny detail being blown up",
+            "Armor", "Fit and clearance", default=False,
+            env="CBBE2UBE_SHORT_EDGE_CAP", invert=False,
+            hint="For small studs, buckles and trim that came out oversized.",
+            tooltip="The smallest details in a mesh -- the edges making up a "
+                    "stud or a line of stitching -- can be stretched many times "
+                    "their original size by the refit, because a tiny edge "
+                    "magnifies any error in where its two ends land. This pulls "
+                    "those back toward the size the author gave them, while "
+                    "leaving any edge that already agrees with its neighbours "
+                    "alone, so it stays a repair rather than a resurfacing."),
+    Setting("layer_ride_bary", "Ride layers on the surface, not on vertices",
+            "Armor", "Fit and clearance", default=False,
+            env="CBBE2UBE_LAYER_RIDE_BARY", invert=False,
+            hint="Slightly steadier placement for belts and trim sitting on "
+                 "another layer.",
+            tooltip="When a belt or a piece of trim sits on top of another "
+                    "layer, it is moved to follow whatever is underneath it. "
+                    "That following is worked out from the nearby POINTS of the "
+                    "layer below, which shift about slightly; this follows the "
+                    "actual spot on its SURFACE instead, which does not. "
+                    "Measured as a small reduction in stray spikes with no "
+                    "visible change otherwise, so treat it as a refinement "
+                    "rather than a fix for anything you can see."),
     Setting("authored_inflate", "Only add clearance where it is missing",
             "Armor", "Fit and clearance", default=False,
             env="CBBE2UBE_AUTHORED_INFLATE", invert=False,
@@ -717,7 +756,9 @@ LAYOUT: "dict[str, tuple]" = {
             "drape_xml_gate", "conform_to_body", "conform_fold_guard",
             "warp_shear_limit", "warp_delta_outlier",
             "warp_delta_outlier_max", "warp_push_shell_cap",
-            "surface_warp_field", "src_normal_fix", "authored_inflate",
+            "surface_warp_field", "src_normal_fix",
+            "strap_scale_uniform", "short_edge_cap", "layer_ride_bary",
+            "authored_inflate",
             "authored_inflate_amp_cap", "layer_order_last",
             "family_weight_invariant",
             "full_weight_match", "full_weight_strength",
