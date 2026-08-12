@@ -12818,19 +12818,42 @@ def _add_butt_collider_patch(dst_path) -> int:
         ns.skin()
         rep_pos = {int(o): i for i, o in enumerate(rep_old)}
         wrote = 0
+        # VALIDATE, THEN MUTATE (#identity-stb-collider). Read every bone's
+        # skin-to-bone transform BEFORE adding a single one, because once the
+        # shape has been touched the three ways this goes wrong are mutually
+        # exclusive:
+        #   * setting the transform inside a swallowing handler leaves a failed
+        #     read at IDENTITY -- and the next line weights vertices to it. An
+        #     identity STB skins those verts to the ORIGIN, the documented
+        #     explosion mode, on a COLLIDER the body's physics collides against.
+        #   * skipping the bone AFTER `add_bone` leaves it in the shape with an
+        #     empty weight list -- `#zeroweight-bone-desync`, an equip CTD.
+        #   * skipping it and writing the rest leaves those vertices
+        #     under-weighted, which displaces them (same defect as
+        #     `#family-weight-invariant`).
+        # So an unreadable transform aborts the whole patch: the handler below
+        # records it and returns BEFORE the save, leaving the NIF on disk
+        # untouched. A missing butt patch is a state this pack shipped in for
+        # its whole life; a collider anchored to the origin is not.
+        plan = []
         for bname, pairs in (base.bone_weights or {}).items():
             sub = [(rep_pos[int(vi)], float(w)) for vi, w in pairs
                    if int(vi) in rep_pos and float(w) > 1e-4]
             if not sub:
                 continue
+            try:
+                _stb = base.get_shape_skin_to_bone(bname)
+            except Exception as _be:
+                raise RuntimeError(
+                    f"skin-to-bone unreadable for {bname!r}: {_be!r}") from _be
+            if _stb is None:
+                raise RuntimeError(f"skin-to-bone missing for {bname!r}")
+            plan.append((bname, _stb, sub))
+        for bname, _stb, sub in plan:
             # NEW shape -> add_bone is safe here; the STB footgun is about adding
             # a bone to an ALREADY-skinned shape.
             ns.add_bone(bname)
-            try:
-                ns.set_skin_to_bone_xform(
-                    bname, base.get_shape_skin_to_bone(bname))
-            except Exception:
-                pass
+            ns.set_skin_to_bone_xform(bname, _stb)
             ns.setShapeWeights(bname, sub)
             wrote += len(sub)
         if not wrote:
@@ -13100,17 +13123,26 @@ def _add_skirt_collider_proxy(dst_path) -> int:
         ns.skin()
         rep_pos = {int(o): i for i, o in enumerate(rep_old)}
         wrote = 0
+        # VALIDATE, THEN MUTATE -- see `#identity-stb-collider` in
+        # `_add_butt_collider_patch` for the three failure modes this ordering
+        # is avoiding at once.
+        plan = []
         for bname, pairs in (src_sh.bone_weights or {}).items():
             s_pairs = [(rep_pos[int(vi)], float(w)) for vi, w in pairs
                        if int(vi) in rep_pos and float(w) > 1e-4]
             if not s_pairs:
                 continue
-            ns.add_bone(bname)
             try:
-                ns.set_skin_to_bone_xform(
-                    bname, src_sh.get_shape_skin_to_bone(bname))
-            except Exception:
-                pass
+                _stb = src_sh.get_shape_skin_to_bone(bname)
+            except Exception as _be:
+                raise RuntimeError(
+                    f"skin-to-bone unreadable for {bname!r}: {_be!r}") from _be
+            if _stb is None:
+                raise RuntimeError(f"skin-to-bone missing for {bname!r}")
+            plan.append((bname, _stb, s_pairs))
+        for bname, _stb, s_pairs in plan:
+            ns.add_bone(bname)
+            ns.set_skin_to_bone_xform(bname, _stb)
             ns.setShapeWeights(bname, s_pairs)
             wrote += len(s_pairs)
         if not wrote:
