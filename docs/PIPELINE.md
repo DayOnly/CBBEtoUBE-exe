@@ -117,6 +117,33 @@ unrecoverable) and silent about the case it also removed (one that does not).
 (off) → `repair_collapsed_tris` → `_weld_cross_shape_seams` →
 `_ride_effect_overlays_on_plate`.
 
+**THIS LIST IS NOT THE END OF THE VERTEX CHAIN, and reading it as if it were
+cost a full investigation** (2026-08-12). Three per-shape geometry repairs —
+`_repair_coherence_collapse`, `_uniformise_local_scale`,
+`_cap_short_edge_stretch` — are wired at TWO sites: once in the phase-2 shape
+loop, and again inside `_copy_shape`, which runs at WRITE time, after
+everything above. So on phase 2 they execute twice, and the second run is the
+last thing to touch a vertex. Traced order, from a real conversion:
+
+```
+[coherence, strap-scale, short-edge] x5 shapes     <- phase-2 loop
+_separate_chest_layered_cloth_depth
+_ride_layers_on_reference -> _repair_layer_order
+_weld_cross_shape_seams
+[coherence, strap-scale, short-edge] x5 shapes     <- _copy_shape, at write
+```
+
+They are not idempotent: on a belt the second run moves 74% of the vertices by
+up to 0.600u, which is why `_repair_layer_order` can leave 669 wrong-side verts
+and 1068 still ship. Anything here that RESTORES A RELATIONSHIP has to account
+for that — see `#layer-order-last`, and note that simply suppressing the second
+run measures WORSE, because the ride and order passes create the crumple it
+cleans up.
+
+**The general lesson: "the source order" is not the order of the calls you can
+find by grepping the pass names.** A pass invoked from the writer runs after
+every list like the one above.
+
 ### 2d. On-disk, post-save (each re-loads and re-saves the NIF)
 
 `_normalize_partitions_on_disk` → `_split_bust_collider_shape` →
