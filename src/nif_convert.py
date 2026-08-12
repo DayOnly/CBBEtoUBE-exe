@@ -5335,8 +5335,9 @@ def convert_nif(
                         import sys as _sys
                         print(f"  overlay-band lift: raised {n_abdo} band "
                               f"vert(s) back on top of their under-layer", file=_sys.stderr)
-                except Exception:
-                    pass  # best-effort
+                except Exception as _pe:
+                    _note_pass_failure(
+                        "_separate_abdomen_layered_cloth_depth/phase1", _pe)
 
             # Layered-cloth weight sync: gated by breast-weight fraction so
             # it only touches genuine bust layers (not decorative attachments).
@@ -5393,8 +5394,9 @@ def convert_nif(
                         print(f"  glow overlay ride: re-bound {n_ride} "
                               f"effect-overlay vert(s) to their plate",
                               file=_sys.stderr)
-                except Exception:
-                    pass  # best-effort; failure leaves overlays as-is
+                except Exception as _pe:
+                    _note_pass_failure(
+                        "_ride_effect_overlays_on_plate/phase1", _pe)
 
             # PELVIS RE-ANCHOR (copy/fit path): a NIF-root-hung skirt (a custom-race
             # armor) takes this path, not phase-2, so recreate its custom bone chains up
@@ -11111,9 +11113,20 @@ def _match_limb_motion_to_body(dst_path, biped_slots: int = 0, *,
     completely invisible at bind pose.
 
     Deliberately conservative:
-      * redistributes ONLY among bones the shape ALREADY HAS. No add_bone, so the
+      * redistributes ONLY among bones the SHAPE already has. No add_bone, so the
         add_bone-resets-every-STB footgun cannot apply. (setShapeWeights can still
         reset STBs, so they are saved and restored regardless.)
+
+        TRUE PER SHAPE, FALSE PER VERTEX, and the gap is where a real defect
+        lived (2026-08-12). A vertex holds at most four bones; this pass will
+        happily assign one of the shape's bones to a vertex that does not have
+        it and has no room for it. The write is bone-by-bone and merges, so that
+        assignment loses the four-way contest against the vertex's still-stale
+        old values and is dropped -- while the bones that DID land were scaled
+        as a share of a total that counted it, so the vertex ships light.
+        Traced on `top` v1561: a perfect row summing to 1.0000 hands 0.1400 to
+        `NPC R UpperArm`, which that vertex does not carry, and it ships at
+        0.8601. See `#family-weight-invariant` below for the fix.
       * PUSH-UP ONLY -- the TARGET is never below the garment's existing share, so
         a garment already tracking the body is left alone. This is also what makes
         the Z band a mere safety rail: where the covered body carries no weight on
@@ -22856,8 +22869,11 @@ def convert_nif_phase2(
                 import sys as _sys
                 print(f"  overlay-band lift: raised {n_abdo} band "
                       f"vert(s) above their under-layer", file=_sys.stderr)
-        except Exception:
-            pass  # best-effort
+        except Exception as _pe:
+            # RECORDED. This exact pass was once a SILENT NO-OP in phase 2 (the
+            # call site had stopped passing `cbbe_body_verts`) and it read as
+            # "no band qualified" for as long as it lasted.
+            _note_pass_failure("_separate_abdomen_layered_cloth_depth", _pe)
 
     # Cuirass inflate: push the torso/cuirass cloth out a hair from the body,
     # leaving LEG armor (greaves) untouched. Per-shape gate: skip anything named
@@ -22943,8 +22959,10 @@ def convert_nif_phase2(
                 import sys as _sys
                 print(f"  layer ride: re-placed {n_ride_l} vert(s) on the layer "
                       f"beneath them (coherent stack)", file=_sys.stderr)
-        except Exception:
-            pass  # best-effort; failure leaves each layer independently warped
+        except Exception as _pe:
+            # RECORDED: failure leaves each layer independently warped, which
+            # is indistinguishable on disk from a stack that needed no ride.
+            _note_pass_failure("_ride_layers_on_reference", _pe)
 
     # Layer-ORDER repair: runs AFTER the ride (and every other vertex pass) so it
     # corrects whatever any of them got wrong -- a vert that ended up on the wrong
@@ -23047,8 +23065,8 @@ def convert_nif_phase2(
                 import sys as _sys
                 print(f"  glow overlay ride: re-bound {n_ride} effect-overlay "
                       f"vert(s) to their plate", file=_sys.stderr)
-        except Exception:
-            pass  # best-effort; failure leaves overlays as-is
+        except Exception as _pe:
+            _note_pass_failure("_ride_effect_overlays_on_plate", _pe)
 
     # Genuine LAST vertex op: catch tris the seam-weld/glow-ride snaps collapsed
     # after the first repair (e.g. a detail band welded to a shared centroid).
