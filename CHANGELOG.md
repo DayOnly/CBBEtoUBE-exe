@@ -2,6 +2,100 @@
 
 ## Unreleased
 
+### Fixed — sub-millimetre detail on metal fittings was being blown up
+
+Reported on a belt's buckles. The fit stretched authored edges of 0.02–0.04u — a
+tight seam, the rim of a stud — to as much as **0.41u, an 18× blow-up**, which
+reads as a spike or a tear on a small plate. The seam weld misses these because it
+welds *coincident* verts, and 0.023u is far above its tolerance while still being
+detail that must move as one piece.
+
+Such an edge may now stretch only in proportion to the garment's own growth. The
+correction moves both ends toward each other by equal and opposite amounts, so
+every corrected edge keeps its midpoint and a fitting cannot be relocated — only
+un-stretched. Worst blow-up on the reported piece **+0.391u → +0.087u**, touching
+23 vertices of 2938 and nothing else on the garment.
+
+Found only after the edge-distortion metric was checked for contamination: 1% of
+that shape's edges were inflating its mean score by 75%. See `docs/METRICS.md`.
+
+Opt-in as `CBBE2UBE_SHORT_EDGE_CAP` pending a pack-wide verdict.
+
+### Changed — a layer can follow the surface point it rests on
+
+`Ride layers on reference` moved each layer by the inverse-distance blend of its 8
+nearest reference *vertices*, so a fitting followed its neighbourhood's average
+motion rather than the motion of the spot it actually sits on. Where the surface
+beneath moves unevenly, those differ, and the gap drifts.
+
+It can now use the barycentric correspondence instead — the exact surface point,
+taken from the author's geometry and replayed on the output. Unlike the k=1 ride
+this does not reintroduce spikes, because a point on a triangle moves continuously
+where a nearest-vertex snap jumps: spikiness **12.8 → 11.3**, and every fitting on
+the reported piece moved toward its authored depth (the top plate 0.170 → 0.139
+against an authored 0.132).
+
+Opt-in as `CBBE2UBE_LAYER_RIDE_BARY`. It does not hold the authored distance
+*exactly*, and `docs/PIPELINE.md` records why that is not reachable from here.
+
+### Fixed — belts and straps came through crumpled
+
+Reported in game as belts "visibly distorting". Edge length is what separates the
+two things that look similar: a belt wrapped round a wider body **bends**, and
+bending keeps every edge the length the author drew, while **stretching** does
+not. On the reported piece the strap's edges ran from **0.52× to 1.51×** the
+author's, a mean deviation of 0.219 against 0.060 for the chest plate on the same
+garment, with 78% of its edges off by more than 5%.
+
+The repair gives every edge the length its **neighbourhood agrees on**, so the
+garment's overall growth survives untouched — that strap's median edge is 1.025,
+and a belt on a wider waist genuinely should be slightly longer. Only the spread
+is removed: deviation 0.219 → 0.128, with arm and bust follow unchanged and the
+worst inter-shape clip down 65%.
+
+Three refusals keep it a repair rather than a resurfacing: a shape must be
+measurably crumpled to qualify (16.2% of shapes pack-wide), a shape whose median
+edge is more than 1.5× the author's is **mis-scaled rather than crumpled** and is
+left alone, and small fittings — studs, buckles, rivets — are excluded, because a
+cluster of separate objects has a scale that legitimately varies between them.
+
+Opt-in as `CBBE2UBE_STRAP_SCALE_UNIFORM` pending an in-game verdict.
+
+**Not a regression:** 1.2 measures 0.224 on the same strap. It has always looked
+like this.
+
+### Changed — the options you were actually being judged on are now the defaults
+
+Three fit options shipped **opt-in and off** while every in-game verdict on this
+project was given on a build that had them forced **on**. Production output was
+therefore not the output anyone had looked at: on one five-layer test piece the
+difference reached **1.38u**.
+
+Each was re-decided by measurement rather than by restoring the status quo, and
+they did not all come out the same way.
+
+**Reconcile stacked layers — now ON.** Verified in game before the default was
+set: back, sleeves and bust all confirmed good on the reported piece, with arm
+follow identical to this option off and bust follow better than off. Off-switch
+`CBBE2UBE_NO_FULL_WEIGHT_LAYER_GUARD`.
+
+**Cap isolated warp fliers — now ON.** Judged on a quantity it does not optimise:
+it caps a vertex's deviation from its neighbours, so it was scored on the
+**absolute** irregularity of the final surface, for the vertices it actually
+touched, against the author's own value for those vertices. It acts hardest
+exactly where the defect is worst — on a steel cuirass the skirt's worst spike
+fell from 10.34u to 6.44u, with four more shapes improved. Where it does not
+help it costs about 0.03u. A 3.9u spike is a visible broken vertex; 0.03u is not.
+Off-switch `CBBE2UBE_NO_WARP_DELTA_OUTLIER`.
+
+**Cap the warp push at the garment's own shell — stays OFF.** Measured the same
+way and it did not earn its cost: zero vertices touched on every shape of that
+cuirass carrying a large spike, marginal gains where it does fire, two shapes
+regressed — and it alone accounted for the 1.38u geometry change above. Still
+available as `CBBE2UBE_WARP_PUSH_SHELL_CAP`.
+
+**A reconvert is required** for any of this to reach an existing pack.
+
 ### Fixed — chain-driven skirts (and vests, robes, belts) stretched to the floor
 
 Reported after 1.3-alpha as skirts looking "stretched". The physics chain a
@@ -57,11 +151,25 @@ identified it rather than merely implicating it.
 
 The mechanism is that the pass casts a ray from each vertex along **its own**
 normal, so stacked layers land on different body triangles by construction. Each
-stacked group now resolves the body through one shared anchor — the innermost
-layer's surface — so the whole stack asks the body a single question. All five
-pairs now sit **at or below their 1.2 values** (0.024 / 0.138 / 0.074 / 0.029 /
-0.029), while breast/butt/belly follow is preserved (1208 → 1231 on the main
-layer, against 958 in 1.3-alpha).
+stacked group now resolves the body through one shared anchor, and it does so
+**only where the layers actually overlap**, through the innermost layer it can
+reach. Four of the five pairs sit at or below their 1.2 values (0.013 / 0.000 /
+0.000 / 0.035), with follow intact rather than merely claimed: on the reported
+piece arm follow on the outer layer is identical to this pass off (3741.2) and
+bust follow on the plate is better than off (1064.2 against 1008.9). The fifth
+pair is worse than 1.2 (0.259 against 0.190), and the reason is that the two
+layers end up on **different bust chains**: the outer layer keeps the author's
+two bones (L/R Breast01) while its neighbour receives the body's three-segment
+chain (Breast01/02/03). The author had every layer of that garment on the same
+two bones, so they moved together; on different chains they cannot. Sharing an
+anchor does not fix that, because it is the bone set and not the pairing.
+
+Both locality conditions were learned the hard way. A first version substituted
+the shared anchor for **every** vertex of a grouped shape, so a sleeve 20u from
+the chest plate borrowed a torso anchor; in game that read as bound sleeves, a
+bust that stopped following and a back that tracked the torso rigidly. It scored
+*better* on divergence while doing so, which is why every divergence figure here
+is quoted next to a follow figure.
 
 Groups are detected by **coverage**, not contact: a layer shadows a large share
 of its neighbour, while a buckle or a trim strip only touches one along its
@@ -72,10 +180,11 @@ Single-layer pieces are untouched — the leather cuirass whose fit was confirme
 in game reconverts byte-identical, 0.000 vertex movement and 0.0% of weight mass
 moved.
 
-Escape hatch `CBBE2UBE_NO_FULL_WEIGHT_LAYER_GUARD`. The stricter variant that
-also forces a stacked group onto a shared bone basis is **off by default**: it
-drives the divergence lower still, but destroys ~87% of the jiggle follow and
-makes body-follow 7x worse than either baseline.
+**On by default**, verified in game before that default was set. Escape hatch
+`CBBE2UBE_NO_FULL_WEIGHT_LAYER_GUARD`. The stricter variant that also forces a
+stacked group onto a shared bone basis is **off by default**: it drives the
+divergence lower still, but destroys ~87% of the jiggle follow and makes
+body-follow 7x worse than either baseline.
 
 **A reconvert is required** for this to reach an existing pack.
 

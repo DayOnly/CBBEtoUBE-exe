@@ -309,10 +309,112 @@ in the same commit, or it does not get written.**
   baseline. Structural, not a threshold — the layers form one connected group,
   so the shared set collapses to what an 8-bone accessory and a 9-bone plate
   have in common, and every layer renormalises onto that stub. The shipped fix
-  shares the ANCHOR instead and leaves each shape its own basis.
+  shares the ANCHOR instead — and only WHERE THE LAYERS OVERLAP — leaving each
+  shape its own basis. It is ON by default as of 2026-08-11, after an in-game
+  verification; the off-switch is `CBBE2UBE_NO_FULL_WEIGHT_LAYER_GUARD`.
   **The general lesson: this one scored better on the metric it was built for
   and was still wrong. A fit change needs a counter-metric aimed at what it
   could plausibly destroy, not just the number it targets.**
+
+* **WHY NO DISPLACEMENT-TRANSFER RIDE CAN HOLD THE AUTHORED DISTANCE** — the
+  finding that explains the whole family of failures below (`#layer-rotation`,
+  2026-08-11). Every layer pass in this converter preserves a rider's offset as a
+  **world-space vector**: rider = source position + the displacement of the
+  geometry beneath it. That keeps the DISTANCE only while the surface underneath
+  does not turn. Measured between the author's mesh and ours, the surface a rider
+  sits on rotates a **median 24.7 degrees** on a belt strap (p90 96.8) and 10-14
+  degrees on every other layer of the same garment. A preserved vector across 24.7
+  degrees retains cos(24.7) = **91%** of its perpendicular distance; at the p90 the
+  cosine is NEGATIVE and the authored offset points INTO the surface it was meant
+  to stand off from. **Precision of aim was never the limiting factor. The frame
+  is.** Any future attempt must preserve the offset's NORMAL COMPONENT in the
+  surface's own frame, not the offset vector.
+  **First attempt REVERTED** (`#layer-frame-transfer`): rebuilding each rider from
+  a per-triangle frame (tangent, bitangent, normal) made the gap WORSE on five of
+  six pairs (`chest_plate`/`corset` 8.1% → 4.0% preserved). Cause: the tangent was
+  `normalize(b - a)`, an ARBITRARY triangle edge, so adjacent triangles map the
+  tangential components through inconsistent frames. Only the normal component was
+  ever well defined. **The normal-only refinement was then built and ALSO
+  REVERTED** (`#layer-normal-standoff`): frame used for the normal component only,
+  tangential residual carried by displacement then flattened onto the new tangent
+  plane, normals interpolated from area-weighted VERTEX normals so the frame is
+  continuous. It delivers exactly what it promises — the pair the ride actually
+  manages went 82.8% -> **87.7%** of verts holding their authored gap, closures
+  15.5% -> 10.2% — and is still worse overall: **spikiness 11.3 -> 14.4** (worse
+  than the plain barycentric ride and than no ride change at all), max jump 1.94u
+  -> 2.93u, and fittings OVERSHOOT (a stud landed 0.329u below its strap against an
+  authored 0.085u).
+
+  **THE SAME ROTATION CUTS BOTH WAYS, and that is the lesson.** Holding the standoff
+  exactly means accepting whatever direction the new normal points; where the
+  surface rotated 97 degrees, preserving |offset| along it flings the rider
+  sideways. Vector transfer loses DISTANCE under rotation; normal transfer loses
+  POSITION. Neither is safe where the surface turns that far.
+
+  **Two things to attack instead, in order.** (1) A 97-degree p90 normal rotation on
+  a belt strap is itself suspicious — a strap should not turn that far between the
+  author's mesh and a refit, so the upstream fit is likely the real defect and all
+  of this is downstream symptom. (2) The ride is a SINGLE RANKED CHAIN, so a rider
+  only ever gets a correspondence to one surface; in a five-layer stack it cannot
+  hold every pairwise distance, and satisfying one pair measurably pulls against
+  another (`top`/`corset` 38.5% -> 32.0% while `chest_plate`/`top` improved).
+
+* **Restoring the AUTHORED DISTANCE between layers, not just the authored side**
+  (`#layer-gap-rejected`, built and REVERTED 2026-08-11 — three attempts).
+  `_repair_layer_order` fires only when a vert crosses to the wrong SIDE of a
+  neighbouring layer. **The diagnosis that motivated widening it is sound and
+  still stands:** with the source pairing held fixed (same triangle, same
+  barycentrics, re-evaluated in the output), the author's layer-to-layer gap
+  survives on as little as **12.3%** of a pair's verts, and **73.1%** have closed,
+  median −0.304u. Almost none of that is a sign flip, so almost none is repaired.
+  The pass's own correction is already right (`s_src - s_dst` restores the authored
+  offset); only its trigger is narrow.
+  **Every attempt to widen it made the piece visibly worse in game.** Attempt 1, a
+  hard tolerance: the gap metric improved on 3 of 6 pairs, but a vert losing 0.11u
+  got a full push while its neighbour losing 0.09u got none — 5216 edges on one
+  chest plate with a corrected vert on one side and an untouched one on the other.
+  Attempt 2 ramped the correction in over the tolerance; `top` got WORSE (3260 →
+  4196 step edges, worst step 0.825 → 1.334), which ruled out the tolerance as the
+  discontinuity. Attempt 3 found the real one — pairing is a hard spatial cut at
+  `near`, so a vert at 1.99u is correctable and one at 2.01u never is — and faded
+  the correction to zero at that radius. Also worse (5344 / 4196).
+  **Why it cannot be fixed by smoothing:** the correctable set is bounded by the
+  pairing radius no matter how the weight is shaped, so widening WHO fires makes
+  that boundary the dominant artifact. A real fix needs every vert to have a
+  defined relationship to its neighbour layer, not just those within 2u — i.e. a
+  different pairing, not a different weight.
+  **The lesson for the metric, too:** "how many verts now hold the authored gap"
+  cannot see that the TRANSITION between corrected and uncorrected verts is a
+  cliff. It scored attempt 1 a net win while the mesh faceted. Any pass that moves
+  a subset of a surface must be judged on the STEP BETWEEN NEIGHBOURS as well —
+  count edges whose ends were treated differently.
+
+* **Restoring a fitting's AUTHORED SHAPE — rigidifying studs, buckles and clasps**
+  (`#rigid-small-element-rejected`, built and DELETED 2026-08-11). A buckle is a
+  rigid object, so refitting each small welded component with a rigid transform
+  looked unarguable, and on its own metric it is perfect: the reported belt's
+  fittings go to an exact 1.000 isometry, 0.000 edge deviation.
+  **It was reported in game as "buckle sunk in the strap", and it was the cause.**
+  Same-code A/B, mean sink over every buckle vertex: **0.041 with the pass off,
+  0.069 with it on**, and the 1406 verts it refit went 0.110 → 0.226 while the
+  components it skipped did not move at all.
+  Four repairs were tried and all failed: anchoring the correction on the outer
+  extent (0.063), on the outward-facing verts (0.070), fitting a uniform scale so
+  the size is preserved (0.072), and letting the strap pass handle the fittings
+  instead (0.057, but their distortion rose 0.364 → 0.454).
+  **Why none of them can work:** the edges the fit stretched to 1.7× *are* the
+  distortion, and they are also what holds the fitting proud of the strap. The
+  strap conformed to the new body; a fitting pushed back toward its authored shape
+  no longer matches the strap's new curvature, whatever you do about its scale or
+  its placement. Seating it correctly needs the fitting judged AGAINST the strap —
+  cross-shape information a per-shape pass does not have.
+  The 0.000 isometry it produced is also **tautological**: a rigid refit optimises
+  exactly that number. Every independent measurement was flat (folded normals) or
+  worse (sink).
+  Kept from it: `_welded_components` and `_small_element_mask`, which
+  `_uniformise_local_scale` needs in order to leave fittings alone.
+  **STILL OPEN:** the fittings' own distortion, 0.364 mean edge deviation on the
+  reported piece — worse than the strap's 0.219 was — and unchanged since 1.2.
 
 ---
 

@@ -64,10 +64,11 @@ def _world_space(monkeypatch):
     """Give each fake shape its own global-to-skin, so the world-space
     assertions below are actually exercising a transform.
 
-    Also forces the guard ON. The pass now ships OFF (it was destructive in
-    game -- see test_guard_defaults_OFF_and_why), but these tests exercise the
-    MACHINERY, which must stay correct for any successor design. Without this
-    they would all pass vacuously on an empty group list."""
+    Also forces the guard ON explicitly rather than relying on its default --
+    which is currently ON, but has been flipped twice in one day (see
+    test_guard_defaults_ON_and_ONLY_WITH_THE_LOCALITY_FIX). Without this, a
+    future flip would make every test below pass vacuously on an empty group
+    list instead of failing."""
     monkeypatch.setattr(nc, "_shape_global_to_skin", lambda s: s)
     monkeypatch.setattr(
         nc, "_verts_skin_to_world",
@@ -81,21 +82,26 @@ def _grid(z, n=8, step=1.0, x0=0.0):
 
 # --------------------------------------------------------------- the thresholds
 
-def test_guard_defaults_OFF_and_why():
-    """SHIPPED ON, JUDGED IN GAME, AND TURNED OFF THE SAME DAY.
+def test_guard_defaults_ON_and_ONLY_WITH_THE_LOCALITY_FIX():
+    """ON, OFF, AND ON AGAIN THE SAME DAY -- so the default is pinned to its
+    PRECONDITION, not just to a value.
 
-    Reported: "clips at the belts and the breasts", "the back hard regressed at
-    poses", "the sleeves being bound". Measured on that piece, 1.2 -> pass ON:
+    It shipped ON in `2ed7eec` and was judged in game hours later: "clips at the
+    belts and the breasts", "the back hard regressed at poses", "the sleeves
+    being bound". Measured on that piece, 1.2 -> that version:
 
         top          ARM 3840.6 -> 2928.3   BREAST  708.1 ->  118.9
         chest_plate  ARM   73.0 ->    0.3   BREAST 1208.3 ->  155.2
 
-    with the lost mass landing on SPINE/CLAVICLE. Same build with it OFF keeps
-    them (ARM 3741.2 / 81.4, BREAST 990.8 / 1008.9).
+    The cause was WHOLESALE substitution: `itree.query(wv, k=1)` had no distance
+    limit, so a sleeve vertex 20u away borrowed the chest plate's TORSO anchor.
+    Fixed by masking the substitution with `near_ok`, then verified in game --
+    back, sleeves and bust good, `top` ARM 3741.2 (identical to OFF) and
+    `chest_plate` BREAST 1064.2 (better than OFF's 1008.9).
 
-    The design is wrong, not mistuned: routing every stacked layer through the
-    INNERMOST member's anchor makes a sleeve -- grouped with the chest plate
-    because they overlap -- resolve its body row through a TORSO point.
+    So this asserts BOTH: the default is ON, AND the locality mask is still
+    there. ON without it is the configuration that broke a play session, and a
+    test that pinned only the boolean would have allowed it back.
 
     Asserted on the SOURCE, not the module attribute, because the autouse
     fixture forces the flag on for the machinery tests below.
@@ -103,10 +109,13 @@ def test_guard_defaults_OFF_and_why():
     src = inspect.getsource(nc)
     i = src.index("_FULL_WEIGHT_LAYER_GUARD = (")
     decl = src[i:i + 240]
-    assert '"CBBE2UBE_FULL_WEIGHT_LAYER_GUARD"' in decl, (
-        "the flag must be an opt-IN (bare name), not a NO_* kill-switch")
-    assert "not in (" not in decl, (
-        "`not in` would make this default ON again -- it was destructive in game")
+    assert '"CBBE2UBE_NO_FULL_WEIGHT_LAYER_GUARD"' in decl, (
+        "a default-ON flag takes a NO_* kill-switch, matching the convention "
+        "CHAIN_ANCHOR_RECREATE already uses")
+    assert "not in (" in decl, "the default must be ON"
+    assert '_plan["near_ok"]' in src, (
+        "the default may only be ON while the shared anchor is applied LOCALLY; "
+        "wholesale substitution with this ON is what bound the sleeves")
 
 
 def test_thresholds_are_sane():

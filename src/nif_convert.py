@@ -291,8 +291,31 @@ WARP_SHEAR_STEPS = int(os.environ.get("CBBE2UBE_WARP_SHEAR_STEPS", "") or 8)
 # The cap is on the DEVIATION from the ring mean, not on the motion: a vertex
 # may travel as far as the warp wants provided its neighbourhood travels with
 # it, so broad reshaping is untouched and only the isolated flier is reined in.
+#
+# DEFAULT ON since 2026-08-11, MEASURED ON A QUANTITY IT DOES NOT OPTIMISE. This
+# caps deviation-from-ring-mean, so scoring it on deviation-from-ring-mean would
+# be circular. Judged instead on ABSOLUTE surface irregularity (|v - mean(1-ring)|
+# of the final surface) of the vertices it actually touched, against the AUTHOR'S
+# own value for those vertices -- and it acts hardest exactly where the defect is
+# worst. On a five-shape steel cuirass, worst-spike before -> after:
+#
+#   Skirt   10.335 -> 6.439     Seeves 5.603 -> 5.510    Pants 3.638 -> 3.420
+#   HeavyFur 4.034 -> 3.895     SteelArmor.012 3.830 -> 3.820
+#
+# The costs are real and an order of magnitude smaller: four shapes worse by
+# <=0.03, up to +0.545 on UNTOUCHED verts of one fur shape, and on a smooth piece
+# (Ruby flower top) the touched verts go 0.029 -> 0.076 against a source 0.015.
+# A 3.9u spike is a visible broken vertex; 0.05u is not. That asymmetry is the
+# whole argument -- not the count of shapes that moved either way.
+#
+# Its sibling `WARP_PUSH_SHELL_CAP` was measured the same way and STAYS OFF: it
+# touches ZERO verts on every shape of that cuirass carrying a large spike
+# (Skirt, Pants, Seeves, SteelArmor.012), wins only marginally where it does fire
+# (CuirassFur 5.498 -> 5.491), regresses Corset 5.916 -> 5.978 and HeavyFur 4.034
+# -> 4.127, and yet accounts for a 1.38u geometry change on its own. Cost without
+# a demonstrated benefit.
 WARP_DELTA_OUTLIER = os.environ.get(
-    "CBBE2UBE_WARP_DELTA_OUTLIER", "").strip().lower() in (
+    "CBBE2UBE_NO_WARP_DELTA_OUTLIER", "").strip().lower() not in (
         "1", "true", "yes", "on")
 # An outlier FENCE, not a tuned parameter: it sits between the mesh's own
 # roughness and the fliers, and the numbers either side differ by a factor of
@@ -310,6 +333,64 @@ WARP_DELTA_OUTLIER = os.environ.get(
 # two surfaces now agree. #warp-outlier-default
 WARP_DELTA_OUTLIER_MAX = float(
     os.environ.get("CBBE2UBE_WARP_DELTA_OUTLIER_MAX", "") or 0.5)
+
+# WHAT COUNTS AS A SMALL FITTING -- a stud, buckle, clasp or rivet, as opposed to
+# a strap or a panel. Used to keep `_uniformise_local_scale` off them; see
+# `_small_element_mask`. These two outlived the rigid-element pass that introduced
+# them (deleted 2026-08-11, see #rigid-small-element-rejected in PIPELINE.md).
+#
+# Diagonal: the reported belt's fittings are 2-5.5u, a strap on the SAME shape is
+# 14-21u and a corset 26.8u, so 6.0 separates them with room either side.
+SMALL_ELEMENT_MAX_DIAG = float(
+    os.environ.get("CBBE2UBE_SMALL_ELEMENT_MAX_DIAG", "6.0"))
+# Distance below which two vertices are the SAME point split for shading. Well
+# under any real gap between two objects; a missed weld only degrades to treating
+# one surface as several, which the size gate still bounds.
+SMALL_ELEMENT_WELD = float(
+    os.environ.get("CBBE2UBE_SMALL_ELEMENT_WELD", "0.001"))
+
+# #strap-scale-uniform -- see `_uniformise_local_scale`. A strap whose edges run
+# 0.52x to 1.51x the author's lengths is crumpled, not bent. OPT-IN until judged
+# in game.
+STRAP_SCALE_UNIFORM = (
+    os.environ.get("CBBE2UBE_STRAP_SCALE_UNIFORM", "").strip().lower()
+    in ("1", "true", "yes", "on"))
+# Shape-level gate: mean |edge ratio - 1|. The reported strap measures 0.219, the
+# chest plate on the SAME garment 0.060 and the outer layer 0.121, so 0.15 fires
+# on the crumpled one and leaves the merely-imperfect ones alone. Censused at
+# 16.2% of shapes pack-wide.
+STRAP_SCALE_MIN_DEV = float(
+    os.environ.get("CBBE2UBE_STRAP_SCALE_MIN_DEV", "0.15"))
+# Refuse a shape whose MEDIAN edge is this far from the author's. Past that it is
+# mis-scaled rather than crumpled, and uniformising it only makes it evenly wrong.
+# The reported strap's median is 1.025; the pack's extremes are 3.7x and 21.3x.
+STRAP_SCALE_MAX_GROWTH = float(
+    os.environ.get("CBBE2UBE_STRAP_SCALE_MAX_GROWTH", "1.5"))
+# Solver shape, deliberately NOT environment-tunable: these were swept once and
+# fixed, and every additional switch is one more thing that can ship set wrong
+# (see the flag-surface audit). SMOOTH is what separates "the garment grew"
+# (survives neighbour averaging) from "this edge is crumpled" (does not); TOL
+# leaves an edge alone once it agrees with its neighbourhood, so this stays a
+# repair rather than a resurfacing; ANCHOR pulls back toward the fit's own answer
+# so satisfying edge lengths cannot walk the shape off the body.
+# #short-edge-cap -- see `_cap_short_edge_stretch`. OPT-IN until judged in game.
+SHORT_EDGE_CAP = (
+    os.environ.get("CBBE2UBE_SHORT_EDGE_CAP", "").strip().lower()
+    in ("1", "true", "yes", "on"))
+# What counts as a SHORT authored edge. Sub-millimetre detail -- a tight seam, a
+# fold, the rim of a stud. On the reported buckle 28 of 2938 edges are below this
+# and the worst was stretched 18x; the leather beside it has 5 and none stretched.
+SHORT_EDGE_MAX = float(os.environ.get("CBBE2UBE_SHORT_EDGE_MAX", "0.05"))
+# How far past the garment's OWN growth such an edge may still stretch. 3x leaves
+# ordinary fit variation alone (the reported piece's long edges grow ~1.09) while
+# catching a blow-up: a 0.0229u edge is allowed ~0.075u, not 0.41u.
+SHORT_EDGE_SLACK = float(os.environ.get("CBBE2UBE_SHORT_EDGE_SLACK", "3.0"))
+SHORT_EDGE_ITERS = int(os.environ.get("CBBE2UBE_SHORT_EDGE_ITERS", "3"))
+
+STRAP_SCALE_SMOOTH = 8
+STRAP_SCALE_ITERS = 12
+STRAP_SCALE_TOL = 0.05
+STRAP_SCALE_ANCHOR = 0.05
 
 # A FINAL DE-SPIKE WAS BUILT HERE AND REMOVED -- do not rebuild it without
 # reading this. Reported in game as "the belts still have distortion", I capped
@@ -2088,6 +2169,291 @@ def _cap_push_at_own_shell(verts, tris, dirs, push,
     capped = int((target < p[idx[finite]] - 1e-9).sum())
     p[idx[finite]] = target
     return p, capped
+
+
+def _welded_components(sv, tris):
+    """Connected components of `tris`, with positionally coincident verts WELDED.
+
+    WHY WELD: a topological component is NOT an object. Authors split vertices at
+    hard edges for shading, so one continuous surface arrives as many topological
+    pieces whose verts are positionally coincident across the split. Censused on
+    the pack, a stocking reads as 865 components on 3459 verts and a mantle's body
+    mesh as 2000 on 8776 -- in both, 100% of those verts coincide with a vertex of
+    a DIFFERENT component and the median piece is 4 verts. A real fitting measures
+    nothing like that (a skull ornament on the same piece: 145 verts, 29% welded).
+
+    Single definition on purpose, so nothing that reasons about "a part" can drift
+    from anything else that does -- the duplicate-predicate failure this project
+    has already paid for (#conform-skip-two-detectors).
+
+    Returns (labels, n_components) or (None, 0) if it cannot be computed.
+    """
+    try:
+        from scipy import sparse
+        from scipy.sparse import csgraph
+        t = np.asarray(tris, dtype=np.int64)
+        n = len(sv)
+        e = np.vstack([t[:, [0, 1]], t[:, [1, 2]], t[:, [2, 0]]])
+        if SMALL_ELEMENT_WELD > 0.0:
+            try:
+                from scipy.spatial import cKDTree
+                _wp = cKDTree(sv).query_pairs(
+                    r=SMALL_ELEMENT_WELD, output_type="ndarray")
+                if len(_wp):
+                    e = np.vstack([e, np.asarray(_wp, dtype=np.int64)])
+            except Exception:
+                pass
+        g = sparse.coo_matrix(
+            (np.ones(len(e)), (e[:, 0], e[:, 1])), shape=(n, n))
+        ncomp, lab = csgraph.connected_components(g, directed=False)
+        return (lab, ncomp) if ncomp > 0 else (None, 0)
+    except Exception:
+        return None, 0
+
+
+def _small_element_mask(sv, tris):
+    """Verts belonging to a welded component small enough to be a FITTING.
+
+    Below this size a part is a stud, buckle, clasp or rivet; above it, a strap or
+    a panel. `_uniformise_local_scale` uses it to leave fittings alone: that pass
+    smooths a local scale field, and a cluster of separate small objects has a
+    scale that legitimately VARIES between them, so smoothing pushes each toward a
+    consensus belonging to its neighbours. Measured on the reported piece, letting
+    it reach them took a buckle's edge deviation from 0.364 to 0.454 and a chest
+    plate's from 0.060 to 0.090.
+    """
+    lab, ncomp = _welded_components(sv, tris)
+    if lab is None:
+        return None
+    mask = np.zeros(len(sv), dtype=bool)
+    for ci in range(ncomp):
+        idx = np.flatnonzero(lab == ci)
+        if len(idx) < 4:
+            continue
+        ext = sv[idx].max(axis=0) - sv[idx].min(axis=0)
+        if float(np.linalg.norm(ext)) <= SMALL_ELEMENT_MAX_DIAG:
+            mask[idx] = True
+    return mask
+
+
+def _cap_short_edge_stretch(src_verts, out_verts, tris):
+    """A pair of verts the author placed 0.02u apart may not end up 0.4u apart.
+    #short-edge-cap
+
+    REPORTED IN GAME, three times, on the metal fittings of a belt. Found only
+    after the edge-distortion metric was checked for contamination: 28 of the
+    buckle's 2938 edges are under 0.05u in the author's mesh, and the fit stretched
+    the worst of them 0.0229u -> 0.4138u, an 18x blow-up, all clustered at
+    z 86.1-87.3 -- the band reported. The leather beside it has nothing comparable
+    (5 short edges, worst +0.016u). A vertex dragged 0.39u from a neighbour it was
+    0.02u from is a spike or a tear in a small plate.
+
+    WHY THE SEAM WELD MISSES THEM. `_weld_source_coincident_verts` welds verts that
+    are COINCIDENT; 0.0229u is far above its tolerance while still being detail
+    that has to move as one piece.
+
+    WHY THIS CANNOT REPEAT THE FAILURES BEFORE IT. Two earlier attempts at these
+    same fittings were reverted for RELOCATING them -- restoring a fitting's
+    authored shape sank it into the strap, and every re-anchoring under-corrected.
+    This pass moves each pair's endpoints toward each other by EQUAL AND OPPOSITE
+    amounts, so every corrected edge keeps its midpoint exactly. It cannot move a
+    fitting, only un-stretch it. And it can only ever touch edges the author drew
+    shorter than 0.05u, which bounds the blast radius by construction.
+
+    The allowance scales with the garment's OWN growth, measured from the edges
+    long enough to measure it honestly, so a piece legitimately fitted to a larger
+    body keeps its detail proportionally. The cap is on the blow-up, not on the fit.
+
+    Returns (verts, n_moved). Best-effort; never raises.
+    """
+    if not SHORT_EDGE_CAP:
+        return out_verts, 0
+    try:
+        sv = np.asarray(src_verts, dtype=np.float64)
+        ov = np.asarray(out_verts, dtype=np.float64)
+        t = np.asarray(tris, dtype=np.int64)
+        if (sv.ndim != 2 or sv.shape != ov.shape or len(sv) < 4
+                or t.ndim != 2 or t.shape[1] != 3 or len(t) == 0):
+            return out_verts, 0
+        e = np.vstack([t[:, [0, 1]], t[:, [1, 2]], t[:, [2, 0]]])
+        e = np.unique(np.sort(e, axis=1), axis=0)
+        ls = np.linalg.norm(sv[e[:, 0]] - sv[e[:, 1]], axis=1)
+        lo0 = np.linalg.norm(ov[e[:, 0]] - ov[e[:, 1]], axis=1)
+        ok = ls > 1e-9
+        _long = ok & (ls >= SHORT_EDGE_MAX)
+        short = ok & (ls < SHORT_EDGE_MAX)
+        if not short.any() or not _long.any():
+            return out_verts, 0
+        # Deliberately NOT measured from the short edges this pass is judging.
+        grow = float(np.median(lo0[_long] / ls[_long]))
+        grow = min(max(grow, 1.0), 2.0)
+        es = e[short]
+        allowed = ls[short] * grow * SHORT_EDGE_SLACK
+        cur = ov.copy()
+        n = len(sv)
+        for _ in range(SHORT_EDGE_ITERS):
+            d = cur[es[:, 1]] - cur[es[:, 0]]
+            L = np.linalg.norm(d, axis=1)
+            bad = (L > allowed) & (L > 1e-12)
+            if not np.any(bad):
+                break
+            # Equal and opposite: the midpoint of every corrected edge is fixed.
+            half = (0.5 * (L[bad] - allowed[bad]) / L[bad])[:, None] * d[bad]
+            acc = np.zeros_like(cur)
+            cnt = np.zeros(n)
+            np.add.at(acc, es[bad, 0], half)
+            np.add.at(cnt, es[bad, 0], 1.0)
+            np.add.at(acc, es[bad, 1], -half)
+            np.add.at(cnt, es[bad, 1], 1.0)
+            mv = cnt > 0
+            cur[mv] += acc[mv] / cnt[mv, None]
+        moved = int((np.linalg.norm(cur - ov, axis=1) > 1e-6).sum())
+        return (cur, moved) if moved else (out_verts, 0)
+    except Exception as _ee:
+        _note_pass_failure("_cap_short_edge_stretch", _ee)
+        return out_verts, 0
+
+
+def _uniformise_local_scale(src_verts, out_verts, tris):
+    """Remove the VARIANCE in a shape's local scale, keeping its overall growth.
+    #strap-scale-uniform
+
+    REPORTED IN GAME, twice: "belts still have distortion", then "belts are still
+    visably distorting". This is the STRAP. The buckle on the same belt is a
+    separate defect and is still open -- see #rigid-small-element-rejected in
+    PIPELINE.md for why the obvious repair for it cannot work.
+
+    WHAT IT IS, measured. Edge length is the frame-free way to separate bending
+    from stretching: a belt wrapped round a wider waist bends, and bending keeps
+    every edge the length the author drew. On the reported piece the strap's edge
+    ratios run 0.517 to 1.514 -- edges HALVED next to edges stretched by half,
+    with a mean absolute deviation of 0.219 against 0.060 for the chest plate on
+    the same garment. 78% of its edges are outside 5%.
+
+    WHY NOT ISOMETRY. The strap's MEDIAN ratio is 1.025, and that is correct: a
+    belt fitted to a wider body should be slightly longer. Forcing edges back to
+    the author's lengths would fight the fit. The defect is the SPREAD, so the
+    repair is to give every edge the length its NEIGHBOURHOOD agrees on -- a
+    smoothed local scale field -- and relax to that. Uniform growth survives; the
+    crumple does not.
+
+    NOT A REGRESSION, and that is why it needs its own pass rather than a bisect:
+    1.2 measures 0.224 on the same strap against today's 0.219. It has always
+    looked like this.
+
+    Edge lengths only -- no rigid fit, no reference frame. That matters because
+    every per-vertex Kabsch test in this project degenerates on a 2u-wide strap,
+    where the 1-ring is nearly collinear and the fitted rotation is noise.
+
+    Gated on the shape's OWN distortion so it cannot resurface a garment that is
+    merely imperfect: at 0.15 the reported strap (0.219) qualifies and the chest
+    plate (0.060) and outer layer (0.121) do not.
+
+    Returns (verts, n_moved). Best-effort; never raises.
+    """
+    if not STRAP_SCALE_UNIFORM:
+        return out_verts, 0
+    try:
+        sv = np.asarray(src_verts, dtype=np.float64)
+        ov = np.asarray(out_verts, dtype=np.float64)
+        t = np.asarray(tris, dtype=np.int64)
+        if (sv.ndim != 2 or sv.shape != ov.shape or len(sv) < 16
+                or t.ndim != 2 or t.shape[1] != 3 or len(t) == 0):
+            return out_verts, 0
+        n = len(sv)
+        e = np.vstack([t[:, [0, 1]], t[:, [1, 2]], t[:, [2, 0]]])
+        e = np.unique(np.sort(e, axis=1), axis=0)
+        ls = np.linalg.norm(sv[e[:, 0]] - sv[e[:, 1]], axis=1)
+        ok = ls > 1e-6
+        e, ls = e[ok], ls[ok]
+        if len(e) == 0:
+            return out_verts, 0
+        # FREEZE the fittings -- but ONLY while the rigid pass is the one handling
+        # them. The two ran in series on the same verts and fought: this one went
+        # first and took `belts_metal` from an exact 1.000 isometry back to 0.009,
+        # because the rigid pass afterwards only re-refit what still met its gates.
+        #
+        # LETTING IT REACH THE FITTINGS WAS TRIED AND IS WORSE, so the freeze is
+        # unconditional. The buckle's own edge deviation is 0.364 and this pass is
+        # an algorithm for reducing exactly that, so reaching it looked obviously
+        # right -- measured, it took the buckle to 0.454 and a chest plate from
+        # 0.060 to 0.090. A cluster of separate small objects has a scale field
+        # that legitimately VARIES between them, and smoothing it pushes each one
+        # toward a consensus that belongs to its neighbours, not to it. This pass
+        # repairs a continuous surface; a fitting is not one.
+        _small = _small_element_mask(sv, t)
+        if _small is not None and _small.any():
+            _free = ~(_small[e[:, 0]] | _small[e[:, 1]])
+            e, ls = e[_free], ls[_free]
+            if len(e) == 0:
+                return out_verts, 0
+        else:
+            _small = np.zeros(n, dtype=bool)
+        lo = np.linalg.norm(ov[e[:, 0]] - ov[e[:, 1]], axis=1)
+        ratio = lo / ls
+        if float(np.abs(ratio - 1.0).mean()) < STRAP_SCALE_MIN_DEV:
+            return out_verts, 0        # this shape is not distorted enough
+        # MIS-SCALED IS NOT CRUMPLED. This pass makes the local scale UNIFORM, so
+        # on a shape whose median edge is 3x or 20x the author's it would produce
+        # an evenly ballooned shape rather than a repaired one -- tidier by this
+        # metric and no less broken. Censused, the pack's extremes are exactly
+        # that: a boot fitted from a MALE source measures 21.3 mean deviation and
+        # a skirt collider 3.7. Those need a different fix, not this one.
+        _med = float(np.median(ratio))
+        if not (1.0 / STRAP_SCALE_MAX_GROWTH) <= _med <= STRAP_SCALE_MAX_GROWTH:
+            return out_verts, 0
+        # Smooth local scale field: what each neighbourhood AGREES the scale is.
+        s = np.ones(n)
+        acc = np.zeros(n)
+        cnt = np.zeros(n)
+        for k in (0, 1):
+            np.add.at(acc, e[:, k], ratio)
+            np.add.at(cnt, e[:, k], 1.0)
+        m = cnt > 0
+        s[m] = acc[m] / cnt[m]
+        for _ in range(STRAP_SCALE_SMOOTH):
+            acc[:] = 0.0
+            cnt[:] = 0.0
+            np.add.at(acc, e[:, 0], s[e[:, 1]])
+            np.add.at(cnt, e[:, 0], 1.0)
+            np.add.at(acc, e[:, 1], s[e[:, 0]])
+            np.add.at(cnt, e[:, 1], 1.0)
+            m = cnt > 0
+            s[m] = acc[m] / cnt[m]
+        target = ls * 0.5 * (s[e[:, 0]] + s[e[:, 1]])
+        cur = ov.copy()
+        for _ in range(STRAP_SCALE_ITERS):
+            d = cur[e[:, 1]] - cur[e[:, 0]]
+            L = np.linalg.norm(d, axis=1)
+            live = (L > 1e-9) & (target > 1e-9)
+            act = live & (np.abs(L / np.where(live, target, 1.0) - 1.0)
+                          > STRAP_SCALE_TOL)
+            if not act.any():
+                break
+            corr = d[act] * (0.5 * (L[act] - target[act]) / L[act])[:, None]
+            acc2 = np.zeros_like(cur)
+            cnt2 = np.zeros(n)
+            np.add.at(acc2, e[act, 0], corr)
+            np.add.at(cnt2, e[act, 0], 1.0)
+            np.add.at(acc2, e[act, 1], -corr)
+            np.add.at(cnt2, e[act, 1], 1.0)
+            mv = (cnt2 > 0) & (~_small)
+            cur[mv] += acc2[mv] / cnt2[mv, None]
+            # Anchor only what moved: blending every vertex toward its original
+            # turns a repair into a shape-wide nudge and makes the moved count
+            # useless as a blast radius.
+            cur[mv] = ((1.0 - STRAP_SCALE_ANCHOR) * cur[mv]
+                       + STRAP_SCALE_ANCHOR * ov[mv])
+        moved = int((np.linalg.norm(cur - ov, axis=1) > 1e-4).sum())
+        return (cur, moved) if moved else (out_verts, 0)
+    except Exception as _se:
+        # REPORTED, never swallowed. Returning 0 quietly is indistinguishable from
+        # "no shape was distorted enough to qualify", which is this pass's normal
+        # and most common outcome -- so a broken pass would look exactly like a
+        # clean run. That is the failure this project fixed in seven other passes
+        # earlier the same day; do not reintroduce it here.
+        _note_pass_failure("_uniformise_local_scale", _se)
+        return out_verts, 0
 
 
 def _clamp_delta_outliers(delta, tris, n, max_dev=WARP_DELTA_OUTLIER_MAX):
@@ -15893,7 +16259,8 @@ _LAYER_SUFFIX_RE = re.compile(r"^(.*?)[_ ]([A-Za-z]|\d{1,2})$")
 # follow the body as far as its least-capable member: two layers 2u apart that
 # follow different bones interpenetrate, so the intersection is not a
 # concession, it is the physical constraint.
-# DEFAULT OFF SINCE 2026-08-11 — REPORTED IN GAME, AND THE NUMBERS AGREE.
+# IT WAS DEFAULTED OFF ON 2026-08-11 AND IS ON AGAIN THE SAME DAY. The history
+# stays because the successor must not repeat it.
 #
 # Shipped ON, reconverted, and judged in game the same day: "clips at the belts
 # and the breasts", "the back hard regressed at poses", "the sleeves being
@@ -15919,13 +16286,22 @@ _LAYER_SUFFIX_RE = re.compile(r"^(.*?)[_ ]([A-Za-z]|\d{1,2})$")
 # body gap rising 0.082 -> 0.159 and I recorded it as "by design". A layer that
 # fits the body WORSE is the defect, not the design.
 #
-# #layer-follow-divergence (the reported layer-into-layer clipping) is therefore
-# STILL OPEN. Any successor must make stacked layers agree WITHOUT overriding
-# where each one legitimately anchors, and must be judged on arm/bust follow --
-# not on divergence alone, which this scored well on while destroying the pass.
+# RESOLVED, AND VERIFIED IN GAME BEFORE THIS DEFAULT. The successor reconciles
+# layers only WHERE THEY OVERLAP (`near_ok`) and prefers the innermost REACHABLE
+# inner layer, so a sleeve grouped with a chest plate keeps an ARM anchor. Judged
+# in game on the reported piece: back, sleeves and bust all confirmed good, with
+# follow intact -- `top` ARM 3741.2 (identical to this OFF) and `chest_plate`
+# BREAST 1064.2 (BETTER than OFF's 1008.9) -- and four of five layer pairs at or
+# below their 1.2 divergence. Judged on BOTH numbers, because judging it on
+# divergence alone is precisely what shipped the broken version.
+#
+# DEFAULT ON since 2026-08-11, off-switch `CBBE2UBE_NO_FULL_WEIGHT_LAYER_GUARD`.
+# It was opt-in for exactly as long as it took to fix the anchor: an opt-in that
+# nothing sets is a fix that does not ship, which is the finding of the flag
+# surface audit (#audit-2026-08-01-flags), not a hypothetical.
 _FULL_WEIGHT_LAYER_GUARD = (
-    os.environ.get("CBBE2UBE_FULL_WEIGHT_LAYER_GUARD", "").strip().lower()
-    in ("1", "true", "yes", "on"))
+    os.environ.get("CBBE2UBE_NO_FULL_WEIGHT_LAYER_GUARD", "").strip().lower()
+    not in ("1", "true", "yes", "on"))
 # COVERAGE, not contact. A trim strip or a buckle touches a cuirass along its
 # border and is not a layer; a layer shadows a large share of its neighbour.
 _LAYER_STACK_RADIUS = float(
@@ -17260,6 +17636,22 @@ def _copy_shape(src_shape, dst_nif, parent=None, override_verts=None,
                     ov = _cv
                     print(f"    [coherence-repair] {src_shape.name}: "
                           f"un-buckled {_nc} patch(es)")
+                # A crumpled strap: give every edge the length its neighbourhood
+                # agrees on. Wired at BOTH sites -- doing only one left 5% of the
+                # pack torn when the seam weld was added that way.
+                # #strap-scale-uniform
+                _uv, _nsu = _uniformise_local_scale(_sv2, ov, src_shape.tris)
+                if _nsu:
+                    ov = _uv
+                    print(f"    [strap-scale] {src_shape.name}: "
+                          f"uniformised {_nsu} vert(s)")
+                # Sub-millimetre detail the fit blew up. Last, so nothing after it
+                # re-stretches what it just pulled back. #short-edge-cap
+                _ev, _nse = _cap_short_edge_stretch(_sv2, ov, src_shape.tris)
+                if _nse:
+                    ov = _ev
+                    print(f"    [short-edge] {src_shape.name}: "
+                          f"un-stretched {_nse} vert(s)")
             except Exception as _ce:
                 # REPORTED, never swallowed. A silent handler here is
                 # indistinguishable from "no patch qualified", and that is
@@ -20068,6 +20460,16 @@ _LAYER_RIDE_MAX = float(os.environ.get("CBBE2UBE_LAYER_RIDE_MAX", "2.0") or "2.0
 # k-nearest reference verts blended per rider vert. >1 is REQUIRED: a k=1 (snap to
 # nearest) ride inherits a discontinuous displacement and ADDS spikes. See #layer-ride.
 _LAYER_RIDE_K = int(os.environ.get("CBBE2UBE_LAYER_RIDE_K", "8") or "8")
+# Follow the SURFACE POINT a rider rests on instead of a blend of nearby reference
+# VERTICES. See `_ride_disp_barycentric`. Opt-in until judged in game.
+LAYER_RIDE_BARY = (
+    os.environ.get("CBBE2UBE_LAYER_RIDE_BARY", "").strip().lower()
+    in ("1", "true", "yes", "on"))
+# Reference triangles tested per rider vertex. The nearest CENTROID is not always
+# on the nearest triangle -- a long thin triangle's centroid sits far from its own
+# edge -- so several candidates are evaluated and the closest surface point wins.
+_LAYER_RIDE_BARY_CAND = int(
+    os.environ.get("CBBE2UBE_LAYER_RIDE_BARY_CAND", "6") or "6")
 
 
 # Layer-ORDER repair. The visible "layers clipping into each other" artifact is NOT
@@ -20224,6 +20626,14 @@ def _repair_layer_order(shape_jobs, softbody_names=frozenset(),
             nb = dn[ib][bj]
             s_dst = np.einsum('ij,ij->i', A["dv"][ai] - B["dv"][bj], nb)
             # Was on/outside B in the source, is INSIDE B now -> swallowed.
+            #
+            # ONLY the sign flip. Firing on a LOST GAP as well -- restoring the
+            # authored DISTANCE rather than only the authored SIDE -- was built and
+            # REVERTED; see #layer-gap-rejected in PIPELINE.md. The diagnosis behind
+            # it stands (the authored gap survives on as little as 12.3% of a pair's
+            # verts), but every version of the repair made the piece visibly worse,
+            # because this pass can only correct verts inside its pairing radius and
+            # cannot make that boundary invisible once most of them fire.
             flip = (s_src >= -_LAYER_ORDER_EPS) & (s_dst < -_LAYER_ORDER_EPS)
             if not np.any(flip):
                 continue
@@ -20266,6 +20676,104 @@ def _repair_layer_order(shape_jobs, softbody_names=frozenset(),
         x["j"]["verts"] = x["dv"]
         x["j"]["verts_modified"] = True
     return len(corrected)
+
+
+def _closest_point_on_tris(p, a, b, c):
+    """Closest point on each triangle (a,b,c) to each point p, plus barycentrics.
+
+    Vectorised over rows. Returns (q, v, w) with q = a + (b-a)v + (c-a)w, so the
+    same (triangle, v, w) can be re-evaluated on a DIFFERENT set of vertex
+    positions -- which is the whole point: it gives a correspondence that is fixed
+    by the source and can be replayed on the output.
+    """
+    ab, ac, ap = b - a, c - a, p - a
+    d1 = np.einsum('ij,ij->i', ab, ap)
+    d2 = np.einsum('ij,ij->i', ac, ap)
+    bp = p - b
+    d3 = np.einsum('ij,ij->i', ab, bp)
+    d4 = np.einsum('ij,ij->i', ac, bp)
+    cp = p - c
+    d5 = np.einsum('ij,ij->i', ab, cp)
+    d6 = np.einsum('ij,ij->i', ac, cp)
+    va = d3 * d6 - d5 * d4
+    vb = d5 * d2 - d1 * d6
+    vc = d1 * d4 - d3 * d2
+    den = va + vb + vc
+    den = np.where(np.abs(den) < 1e-20, 1e-20, den)
+    v = np.clip(vb / den, 0.0, 1.0)
+    w = np.clip(vc / den, 0.0, 1.0)
+    s = v + w
+    over = s > 1.0
+    sd = np.where(s == 0.0, 1.0, s)
+    v = np.where(over, v / sd, v)
+    w = np.where(over, w / sd, w)
+    return a + ab * v[:, None] + ac * w[:, None], v, w
+
+
+def _ride_disp_barycentric(sv, base_src, base_fin, base_tris, ride_max):
+    """Displacement of the exact SURFACE POINT each rider vertex rests on.
+    #layer-ride-barycentric
+
+    WHY, measured. The vertex-blend ride moves a rider by the inverse-distance
+    average of its 8 nearest reference VERTICES, so it follows the neighbourhood's
+    average motion rather than the motion of the spot it is actually sitting on.
+    Where the surface beneath moves unevenly -- which is exactly what the
+    scale-uniform repair does to a strap -- the average is not the contact point,
+    and the gap drifts. Reported in game three times as a buckle sinking into its
+    leather; measured, a plate went from 0.124u below the strap (better than the
+    author's 0.132u) to 0.171u once the strap moved under it.
+
+    WHY THIS IS NOT THE k=1 RIDE, which was measured to ADD spikes (a pauldron's
+    spikiness 2.92 -> 3.85). Snapping to the nearest VERTEX is discontinuous:
+    adjacent riders pair to different verts whose displacements differ, so the
+    rider inherits a jump. A barycentric point on a TRIANGLE is continuous -- slide
+    the rider along the surface and the correspondence slides with it, and the
+    displacement interpolated across a triangle is piecewise linear with no jump at
+    the seams. So this is precise AND smooth, which is the combination the k=8
+    blend was trading away.
+
+    Correspondence is taken in the SOURCE and replayed on the output, so it encodes
+    the authored contact and cannot be re-chosen by whatever the fit did.
+
+    Returns (disp, dist): the displacement to apply per rider vertex and its
+    distance to the reference surface in the source. Falls back to (None, None) if
+    it cannot be computed, so the caller can use the blend instead.
+    """
+    try:
+        from scipy.spatial import cKDTree
+        t = np.asarray(base_tris, dtype=np.int64)
+        if t.ndim != 2 or t.shape[1] != 3 or len(t) == 0:
+            return None, None
+        cen = base_src[t].mean(axis=1)
+        k = int(min(max(_LAYER_RIDE_BARY_CAND, 1), len(t)))
+        _d, cand = cKDTree(cen).query(sv, k=k)
+        if k == 1:
+            cand = cand[:, None]
+        best_d = np.full(len(sv), np.inf)
+        best_q = np.zeros_like(sv)
+        best_f = np.zeros_like(sv)
+        for ci in range(cand.shape[1]):
+            ti = t[cand[:, ci]]
+            a, b, c = base_src[ti[:, 0]], base_src[ti[:, 1]], base_src[ti[:, 2]]
+            q, v, w = _closest_point_on_tris(sv, a, b, c)
+            dist = np.linalg.norm(sv - q, axis=1)
+            better = dist < best_d
+            if not better.any():
+                continue
+            fa = base_fin[ti[:, 0]]
+            fb = base_fin[ti[:, 1]]
+            fc = base_fin[ti[:, 2]]
+            # Same triangle, same barycentrics, evaluated on the FINAL positions.
+            f = fa + (fb - fa) * v[:, None] + (fc - fa) * w[:, None]
+            best_d[better] = dist[better]
+            best_q[better] = q[better]
+            best_f[better] = f[better]
+        if not np.isfinite(best_d).any():
+            return None, None
+        return best_f - best_q, best_d
+    except Exception as _re:
+        _note_pass_failure("_ride_disp_barycentric", _re)
+        return None, None
 
 
 def _ride_layers_on_reference(shape_jobs, body_verts=None,
@@ -20338,10 +20846,21 @@ def _ride_layers_on_reference(shape_jobs, body_verts=None,
     # Accumulated geometry already placed (innermost outward), in lockstep.
     ref_src = [ranked[0][2]]
     ref_fin = [ranked[0][3]]
+    # ...and their TRIANGLES, re-indexed into the concatenated vertex array, so a
+    # rider can be paired to the reference SURFACE and not just to its verts.
+    ref_tris = []
+    try:
+        _t0 = np.asarray(ranked[0][1]["src"].tris, dtype=np.int64).reshape(-1, 3)
+        ref_tris.append(_t0)
+    except Exception:
+        ref_tris.append(np.zeros((0, 3), dtype=np.int64))
+    _voff = [len(ranked[0][2])]
     for _d, j, sv, fv in ranked[1:]:
         base_src = np.concatenate(ref_src)
         base_fin = np.concatenate(ref_fin)
         base_disp = base_fin - base_src          # the reference DISPLACEMENT field
+        base_tris = (np.concatenate(ref_tris) if any(len(x) for x in ref_tris)
+                     else np.zeros((0, 3), dtype=np.int64))
         tree = cKDTree(base_src)
         # SMOOTH the ride: take the k-nearest reference verts and inverse-distance
         # blend their DISPLACEMENT, rather than snapping to the single nearest.
@@ -20357,11 +20876,20 @@ def _ride_layers_on_reference(shape_jobs, body_verts=None,
         if k == 1:
             d = d[:, None]
             idx = idx[:, None]
-        mask = d[:, 0] <= ride_max
-        if np.any(mask):
+        disp = None
+        if LAYER_RIDE_BARY and len(base_tris):
+            # Follow the surface POINT, not a blend of nearby verts. Continuous,
+            # so it does not reintroduce the k=1 spikes. #layer-ride-barycentric
+            disp, bdist = _ride_disp_barycentric(
+                sv, base_src, base_fin, base_tris, ride_max)
+            if disp is not None:
+                mask = bdist <= ride_max
+        if disp is None:
             w = 1.0 / (d + 1e-6)
             w /= w.sum(axis=1, keepdims=True)
             disp = (base_disp[idx] * w[:, :, None]).sum(axis=1)
+            mask = d[:, 0] <= ride_max
+        if np.any(mask):
             cur = fv.copy()
             # Move the rider by the (smoothly interpolated) displacement of the
             # geometry beneath it -> its SOURCE offset to that geometry is preserved.
@@ -20372,6 +20900,12 @@ def _ride_layers_on_reference(shape_jobs, body_verts=None,
             fv = cur
         ref_src.append(sv)
         ref_fin.append(fv)
+        try:
+            _tj = np.asarray(j["src"].tris, dtype=np.int64).reshape(-1, 3)
+            ref_tris.append(_tj + int(np.sum(_voff)))
+        except Exception:
+            ref_tris.append(np.zeros((0, 3), dtype=np.int64))
+        _voff.append(len(sv))
     return n_rebound
 
 
@@ -21588,6 +22122,30 @@ def convert_nif_phase2(
                         _stage('coherence_repair', override)
                         print(f"    [coherence-repair] {s.name}: "
                               f"un-buckled {_nc} patch(es)")
+                # COLLIDER GUARD. The sibling site wraps its repairs in
+                # `_geometry_repair_allowed`; this one only checks `override is
+                # not None`, so a collision proxy reaches the repairs here. FSMP
+                # reads a collider's triangles and positions, and this project
+                # has a history of equip CTDs from well-meant edits to them.
+                # KNOWN GAP, pre-existing: `_repair_coherence_collapse` above is
+                # still unguarded here. Widening THAT changes collider geometry
+                # across the pack and needs its own census, so it is left alone
+                # rather than quietly altered under cover of this fix.
+                if override is not None and _geometry_repair_allowed(s):
+                    # #strap-scale-uniform
+                    override, _nsu = _uniformise_local_scale(
+                        _sv_body, override, s.tris)
+                    if _nsu:
+                        _stage('strap_scale', override)
+                        print(f"    [strap-scale] {s.name}: "
+                              f"uniformised {_nsu} vert(s)")
+                    # #short-edge-cap, last for the same reason as the other site.
+                    override, _nse = _cap_short_edge_stretch(
+                        _sv_body, override, s.tris)
+                    if _nse:
+                        _stage('short_edge', override)
+                        print(f"    [short-edge] {s.name}: "
+                              f"un-stretched {_nse} vert(s)")
                 _chain.record(dst_path, s.name)
                 # Per-pass STANDOFF, default OFF (CBBE2UBE_STANDOFF_TRACE=1).
                 # Reads the snapshots the chain already holds, so it must run

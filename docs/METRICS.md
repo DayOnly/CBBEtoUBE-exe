@@ -121,6 +121,57 @@ still answered every question plausibly.
 across candidates, or the path the tool is actually configured to write. A mod
 folder full of valid NIFs is not evidence that they are *this build's* NIFs.
 
+### "Flipped normals" counted a PASS FIRING, not a defect — **RETRACTED, 2026-08-11**
+`normcheck.py` reports a vertex as *flipped* when its stored normal disagrees with
+the one its triangles imply. That reads like a shading defect. It is not: the
+stored normal **is** the triangle-implied recompute, after
+`_recompute_vertex_normals` sign-aligns it to the source. So the count is exactly
+the number of vertices where that sign-alignment fired, and the source scores 0 by
+construction rather than by being clean.
+
+It was used all session as a quality number — "belts 332 → 84 → 50" — including as
+evidence for a change that was then partly justified by it. On the reported strap
+**all 84 were boundary verts**, which is the one case the sign-align exists to
+handle, so the "defect" may well have been the repair working.
+
+**Rule: before quoting a count as quality, ask what a passing score would require.**
+If the answer is "the pass never fired", it is an activity counter. Two independent
+detectors here disagreed 40× (2 vs 82) — that gap was the tell, and the cheaper
+detector was the honest one.
+
+### Surface roughness cannot see crumple on a TEXTURED shape — **INSUFFICIENT, 2026-08-11**
+Absolute Laplacian |v − mean(1-ring)| is a sound quantity (it caught the warp
+outlier defect). It is the wrong instrument for "is this strap crumpled", because
+the author's own strap is studded and textured: 451 of its 3234 verts already
+exceed the 0.5 threshold. Output 631 vs source 451 is a real difference, but the
+signal is buried in authored detail, and every parameter that removed it touched
+17–65% of the shape — a resurfacing, not a repair.
+
+**What worked instead: edge length.** A belt bends, and bending preserves every
+edge; stretching does not. Frame-free, no rigid fit, so — unlike every Kabsch-based
+test on this project — it does not degenerate on a 2u-wide strap where the 1-ring
+is nearly collinear. It separated the strap (mean |ratio−1| **0.219**, edges from
+0.517× to 1.514×) from the chest plate on the same garment (**0.060**), and read
+exactly **0.000** on a shape a rigid pass had just made isometric, which is the
+sanity check that the instrument works.
+
+**Rule: pick the metric that a correct-but-different shape scores well on.** A
+textured surface must be allowed to be bumpy; nothing is allowed to have its edges
+halved.
+
+**...but WEIGHT IT BY LENGTH — FOOTGUN, 2026-08-11.** The ratio divides by the
+authored length, so a 0.02u edge stretched to 0.06u scores 3.0. On the reported
+buckle **1% of edges (29 of 2938) inflated its mean deviation by 75%**: raw 0.364,
+short edges dropped 0.209, length-weighted **0.174**. Every belt number quoted
+during that session was the raw one, including a "the buckle is worse than the
+strap ever was" comparison that does not survive the correction.
+
+Not a general rule that short edges are noise: a chest plate on the same garment
+is 10.8% short edges and its raw and weighted values agree to 0.002. The
+contamination needs short edges AND large stretch together — which is itself a
+signal worth looking at, since those edges are real geometry being blown up.
+Report both; if they disagree, the raw one is wrong.
+
 ---
 
 ## Sound
