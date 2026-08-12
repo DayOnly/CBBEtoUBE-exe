@@ -985,6 +985,76 @@ class DisplacementSurvival:
         self._snaps = []
 
 
+# ------------------------------------------------- GEOMETRY DUMP (diagnostic)
+# Every pass boundary's verts to disk, so a geometric question can be BISECTED
+# over the chain from ONE conversion instead of N kill-switch runs.
+#
+# The siblings above each answer a fixed question (does it clip, did it survive,
+# how far off the body). A new question -- how far the SURFACE TURNED -- needed
+# neither a new guard nor nine more conversions; it needed the geometry the
+# chain already holds in memory, written out. Single-disable bisects also
+# MISATTRIBUTE where passes cancel each other, and passes 4 and 5 here are
+# documented as doing exactly that.
+#
+# Diagnostic, not telemetry: it writes megabytes per shape, so it is off unless
+# a directory is named, and it never runs in a batch.
+STAGE_DUMP_DIR = os.environ.get("CBBE2UBE_STAGE_DUMP")
+
+
+class GeometryDump:
+    """Pass-boundary geometry to `<dir>/<nif stem>__<shape>.npz`.
+
+    One file per shape holding EVERY stage (`s00_entry`, `s01_warp`, ...) plus
+    the triangles, because the consumer's questions are all per-shape and a
+    stage-major layout would force it to reopen every file per shape.
+    """
+
+    def __init__(self, *, dest=None):
+        self.dest = dest if dest is not None else STAGE_DUMP_DIR
+        self.armed = bool(self.dest)
+        self._snaps = []
+
+    def checkpoint(self, label, verts) -> None:
+        if not self.armed or verts is None:
+            return
+        try:
+            v = np.asarray(verts, dtype=np.float32)
+        except Exception:
+            return
+        if v.ndim != 2 or v.shape[1] != 3:
+            return
+        self._snaps.append((str(label), v.copy()))
+
+    def flush(self, dst_path, shape_name, tris, final_verts) -> int:
+        """Write the shape's stages. Returns the count so a caller can assert
+        it dumped something -- an empty dump must never read as 'no pass moved
+        anything'."""
+        if not self.armed or len(self._snaps) < 2:
+            return 0
+        snaps = list(self._snaps)
+        # The SHIPPED verts, for the same reason DisplacementSurvival appends
+        # them: anything after the last checkpoint still moved the mesh.
+        if final_verts is not None:
+            f = np.asarray(final_verts, dtype=np.float32)
+            if f.shape == snaps[-1][1].shape and not np.array_equal(
+                    f, snaps[-1][1]):
+                snaps.append(("final", f))
+        d = Path(self.dest)
+        d.mkdir(parents=True, exist_ok=True)
+        safe = "".join(c if (c.isalnum() or c in "-_. ") else "_"
+                       for c in str(shape_name))
+        payload = {f"s{i:02d}_{lbl}": v for i, (lbl, v) in enumerate(snaps)}
+        try:
+            payload["tris"] = np.asarray(tris, dtype=np.int32).reshape(-1, 3)
+        except Exception:
+            return 0
+        np.savez_compressed(d / f"{Path(dst_path).stem}__{safe}.npz", **payload)
+        return len(snaps)
+
+    def release(self) -> None:
+        self._snaps = []
+
+
 CHAIN_GUARD = os.environ.get("CBBE2UBE_NO_CHAIN_GUARD") != "1"
 CHAIN_TOL = int(os.environ.get("CBBE2UBE_CHAIN_TOL", "0"))
 

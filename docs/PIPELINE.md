@@ -359,6 +359,59 @@ in the same commit, or it does not get written.**
   hold every pairwise distance, and satisfying one pair measurably pulls against
   another (`top`/`corset` 38.5% -> 32.0% while `chest_plate`/`top` improved).
 
+  **(1) WAS INVESTIGATED AND THE ROTATION IS MOSTLY LEGITIMATE** (2026-08-12,
+  `scripts/analysis/normal_rotation.py`, bisected over the phase-2 chain from one
+  conversion via `CBBE2UBE_STAGE_DUMP`). Three corrections, in the order they
+  matter:
+
+  * **The 24.7 / 96.8 figures are estimator artifacts.** They are UNWEIGHTED
+    percentiles of VERTEX normals. A garment's triangle areas span four orders of
+    magnitude, so an unweighted percentile is a percentile over the smallest
+    slivers. AREA-WEIGHTED FACE normals on the same shipped belt read **p50 15.0,
+    p90 33.9**, with 12.3% of the strap's area past 30 degrees. The vertex
+    estimator is additionally inflated on this shape because `belts` is 1.10
+    tris/vert — mostly disconnected shells, not a surface.
+    The thin-rim cancellation this predicts is NOT the cause here and the control
+    says so: 99.0% of the strap's vertices have a coherent normal, and their p50
+    (22.7) matches the whole (22.8). It is the area weighting that moves the
+    number, not the rim.
+  * **The body's OWN surface turns 7.2 degrees** (area-weighted p50) in that band,
+    6.7 at the bust — measured by applying the converter's own CBBE->UBE delta to
+    the CBBE body. A garment is supposed to follow that. **So over half the belt's
+    shipped rotation is required, not a defect.**
+  * **No pass owns the rest.** Cumulative area-weighted p50 on `belts`: body floor
+    7.2 -> warp 10.0 -> inflate 12.4 -> conform 14.3 -> groove_smooth 13.6 ->
+    antipoke 14.2 -> shipped 15.0. Every push pass adds one to three degrees and
+    the smoothing gives one back. There is no upstream fit defect to remove; the
+    frame conclusion above stands, but the premise that a 97-degree turn proves a
+    broken fit does not.
+
+  **What the bisect DID find is at the bust, and it is `conform`.** On
+  `chest_plate` conform alone takes the area turning >30 degrees from 8.3% to
+  22.8% in one pass (step p90 49.4 degrees) — entirely in z90-105, 0.4% below
+  z90 — and on `top` from 7.4% to 21.8% at z95-100. `_smooth_warp_grooves` runs
+  next and recovers about a third of it, which is presumably why it was written.
+  conform treats a SUBSET (13552 of 18389 verts), and the boundary is a real
+  ridge: 1211 edges with one end treated and one not, median step 0.133u and up
+  to 1.352u, against 0.011u across edges whose ends were both treated.
+
+  **Also found, and separately actionable: the warp field is a STAIRCASE.**
+  `_cached_cbbe_to_ube_delta` snaps each CBBE vertex to the nearest UBE VERTEX,
+  which quantises a continuous deformation onto discrete targets. Field gradient
+  |d(a)-d(b)|/|a-b| over body edges: **p90 1.07, 11.5% of edges above 1.0**, worst
+  at hip/butt (16.8%) and bust (16.4%) — the two regions this project keeps
+  fighting. Both real bodies are smooth (mean dihedral 3.7 and 4.3 degrees); the
+  warped body reads **43.2**. Rebuilding the same field as the closest point on
+  the UBE SURFACE takes gradient p90 to 0.29 (0.21% of edges) and the warped
+  body's dihedral to 4.6, i.e. back to the source body's own smoothness.
+  **But measure the PASS, not the field** (§0 rule 5): run through
+  `warp_armor_by_body_delta`, the k=4 IDW blurs most of it away, and the garment
+  gains far less than the body-level numbers promise — `chest_plate` area p50
+  3.87 -> 1.93, `top` 6.98 -> 6.51, `belts_metal` 10.93 -> 10.08, and **`belts`
+  10.03 -> 10.03, no change at all**. Counter-metric clean (standoff p05/p50
+  unchanged, verts inside the body 0.06% -> 0.00%), verts move a median 0.07-0.16u.
+  Worth doing on its own merits; it is not a fix for the rotation.
+
 * **Restoring the AUTHORED DISTANCE between layers, not just the authored side**
   (`#layer-gap-rejected`, built and REVERTED 2026-08-11 — three attempts).
   `_repair_layer_order` fires only when a vert crosses to the wrong SIDE of a

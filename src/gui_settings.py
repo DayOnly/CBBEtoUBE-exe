@@ -218,6 +218,24 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "push at the garment's own surface. It only ever binds "
                     "where armour is already in front of the vertex, so it "
                     "cannot reopen clipping."),
+    Setting("surface_warp_field", "Smooth the shape the body is warped onto",
+            "Armor", "Fit and clearance", default=False,
+            env="CBBE2UBE_SURFACE_WARP_FIELD", invert=False,
+            hint="Removes a stair-step in the field every garment is refit "
+                 "through. Biggest at the bust and the hips.",
+            tooltip="The refit moves armour by the amount the BODY changes "
+                    "shape between CBBE and UBE. That amount is worked out by "
+                    "matching each point of one body to the nearest POINT of "
+                    "the other -- and points are discrete, so two neighbouring "
+                    "spots can be handed changes that do not match, leaving a "
+                    "stair-step. Measured: both bodies are smooth (about 4 "
+                    "degrees between neighbouring faces) while the shape they "
+                    "are warped onto reads 43. Matching to the nearest point "
+                    "on the SURFACE instead brings that back to 4.6. In "
+                    "practice the refit already averages over four "
+                    "neighbours, which hides most of it, so expect a small "
+                    "improvement on tight chest pieces and none on a belt. It "
+                    "does not change how far armour sits off the body."),
     Setting("full_weight_match", "Match armour skinning to the body it covers",
             "Armor", "Fit and clearance", default=True,
             env="CBBE2UBE_NO_FULL_WEIGHT_MATCH", invert=True,
@@ -617,6 +635,7 @@ LAYOUT: "dict[str, tuple]" = {
             "drape_xml_gate", "conform_to_body", "conform_fold_guard",
             "warp_shear_limit", "warp_delta_outlier",
             "warp_delta_outlier_max", "warp_push_shell_cap",
+            "surface_warp_field",
             "full_weight_match", "full_weight_strength",
             "smp_antipoke", "smp_antipoke_push",
             "antipoke_smooth", "layered_antipoke", "unified_offset")),

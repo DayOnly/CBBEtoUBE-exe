@@ -1860,6 +1860,94 @@ def _install_skin(new_shape, dst_nif, src_shape, bone_names, xforms_map,
         new_shape.set_partitions(src_shape.partitions, src_shape.partition_tris)
 
 
+# --- The warp field's SMOOTHNESS (#warp-field-staircase) ------------------
+# The CBBE->UBE field is built by snapping each CBBE vertex to the nearest UBE
+# VERTEX. That quantises a continuous deformation onto discrete targets, so two
+# adjacent CBBE verts can land on UBE verts that are not adjacent: a staircase,
+# not a deformation. Measured over body edges as |d(a)-d(b)| / |a-b|, which a
+# smooth field keeps well under 1:
+#
+#     nearest VERTEX     p50 0.48   p90 1.07   11.51% of edges over 1.0
+#     closest POINT      p50 0.07   p90 0.29    0.21%
+#
+# and the tell is that BOTH endpoint bodies are smooth (mean dihedral 3.7 and
+# 4.3 degrees) while `cbbe + delta` reads 43.2. Closest-point brings that to
+# 4.6 -- back to the source body's own smoothness. Worst regions are hip/butt
+# (16.8% of edges) and bust (16.4%), which is where this project's recurring
+# defects live.
+#
+# TEMPER THE EXPECTATION: the garment does not see the field per-vertex, it
+# samples it with a k=4 IDW, which blurs most of the staircase away. Measured
+# THROUGH the pass, area-weighted p50 rotation: chest_plate 3.87 -> 1.93, top
+# 6.98 -> 6.51, belts_metal 10.93 -> 10.08, and belts 10.03 -> 10.03 -- no
+# change at all on the shape the investigation started from. This is a
+# smoothness fix, NOT the fix for surface rotation; see docs/PIPELINE.md §7.
+# Counter-metric on the same run: standoff p05/p50 unchanged to three decimals,
+# verts inside the body 0.06% -> 0.00%, verts move a median 0.07-0.16u.
+SURFACE_WARP_FIELD = os.environ.get("CBBE2UBE_SURFACE_WARP_FIELD") == "1"
+SURFACE_FIELD_CANDIDATES = 24    # triangles tested per point
+
+
+def _closest_point_delta(points, tv, tt, *, fallback=None,
+                         k: int = SURFACE_FIELD_CANDIDATES):
+    """Vector from each point to the nearest point on the triangle mesh.
+
+    Candidates come from a KD-tree over triangle CENTROIDS, which is an
+    approximation: a long thin triangle can be near the point while its
+    centroid is not. So the nearest-VERTEX result is passed in as `fallback`
+    and taken wherever it is closer. That is not a safety net bolted on, it is
+    exact -- a vertex IS a point on the surface, so the elementwise minimum of
+    the two can only be closer to the true answer than either. It also makes
+    `k` a speed knob rather than a correctness one.
+    """
+    from scipy.spatial import cKDTree
+    pts = np.asarray(points, dtype=np.float64)
+    tv = np.asarray(tv, dtype=np.float64)
+    tt = np.asarray(tt, dtype=np.int64).reshape(-1, 3)
+    A0, B0, C0 = tv[tt[:, 0]], tv[tt[:, 1]], tv[tt[:, 2]]
+    k = int(min(max(k, 1), len(tt)))
+    _, cand = cKDTree((A0 + B0 + C0) / 3.0).query(pts, k=k, workers=-1)
+    cand = np.atleast_2d(cand.reshape(len(pts), -1))
+    best = np.full(len(pts), np.inf)
+    out = np.zeros_like(pts)
+    if fallback is not None:
+        out = np.asarray(fallback, dtype=np.float64).copy()
+        best = np.linalg.norm(out, axis=1)
+    for j in range(cand.shape[1]):
+        ti = cand[:, j]
+        A, ab, ac = A0[ti], B0[ti] - A0[ti], C0[ti] - A0[ti]
+        ap = pts - A
+        # Project onto the triangle's plane in barycentrics, then clamp into
+        # the triangle. The clamp alone is not the true closest point outside
+        # the face region, so every edge is tested below and the nearest wins;
+        # vertices need no separate case, being edge endpoints.
+        d00 = np.einsum('ij,ij->i', ab, ab)
+        d01 = np.einsum('ij,ij->i', ab, ac)
+        d11 = np.einsum('ij,ij->i', ac, ac)
+        den = np.maximum(d00 * d11 - d01 * d01, 1e-20)
+        u = np.clip((d11 * np.einsum('ij,ij->i', ab, ap)
+                     - d01 * np.einsum('ij,ij->i', ac, ap)) / den, 0.0, 1.0)
+        v = np.clip((d00 * np.einsum('ij,ij->i', ac, ap)
+                     - d01 * np.einsum('ij,ij->i', ab, ap)) / den, 0.0, 1.0)
+        s = np.maximum(u + v, 1.0)
+        p = A + (u / s)[:, None] * ab + (v / s)[:, None] * ac
+        dp = np.linalg.norm(pts - p, axis=1)
+        for P, Q in ((A0[ti], B0[ti]), (B0[ti], C0[ti]), (A0[ti], C0[ti])):
+            e = Q - P
+            t = np.clip(np.einsum('ij,ij->i', pts - P, e)
+                        / np.maximum(np.einsum('ij,ij->i', e, e), 1e-20),
+                        0.0, 1.0)
+            q = P + t[:, None] * e
+            dq = np.linalg.norm(pts - q, axis=1)
+            closer = dq < dp
+            p = np.where(closer[:, None], q, p)
+            dp = np.where(closer, dq, dp)
+        take = dp < best
+        best = np.where(take, dp, best)
+        out = np.where(take[:, None], p - pts, out)
+    return out
+
+
 def _cached_cbbe_to_ube_delta(
         cbbe_path: Path, ube_path: Path,
 ) -> "tuple[np.ndarray, np.ndarray] | tuple[None, None]":
@@ -1917,6 +2005,19 @@ def _cached_cbbe_to_ube_delta(
             from scipy.spatial import cKDTree
             _, nn = cKDTree(ube_v).query(cbbe_v, k=1)
             delta = ube_v[nn] - cbbe_v
+            if SURFACE_WARP_FIELD:
+                # #warp-field-staircase. See the constant for the measurement.
+                try:
+                    ube_t = np.asarray(ube_shape.tris,
+                                       dtype=np.int64).reshape(-1, 3)
+                    delta = _closest_point_delta(cbbe_v, ube_v, ube_t,
+                                                 fallback=delta)
+                except Exception as e:
+                    # A field this one silently failed to build is a field the
+                    # whole pack is warped by. Say so; keep the nearest-vertex
+                    # result, which is the shipped behaviour.
+                    print(f"  [warp-field] closest-point field failed, "
+                          f"keeping nearest-vertex: {e!r}")
         _CBBE_UBE_DELTA_CACHE[key] = (cbbe_v, delta)
         return cbbe_v, delta
     except Exception:
@@ -21547,6 +21648,16 @@ def convert_nif_phase2(
             _surv = None
         else:
             _surv.checkpoint("entry", _sv_body)
+        # Geometry dump, default OFF (CBBE2UBE_STAGE_DUMP=<dir>). The same
+        # snapshots written to disk, so an OFFLINE question can be bisected
+        # over the chain without adding a measurement in here for each one --
+        # and without N kill-switch conversions, which misattribute wherever
+        # two passes cancel each other.
+        _dump = fit_metrics.GeometryDump()
+        if not _dump.armed:
+            _dump = None
+        else:
+            _dump.checkpoint("entry", _sv_body)
         if body_verts_for_p2 is not None and body_norms_for_p2 is not None:
             try:
                 _gtris = np.asarray(s.tris, dtype=np.int64).reshape(-1, 3)
@@ -21586,6 +21697,8 @@ def convert_nif_phase2(
                 _chain.checkpoint(label, v)
             if _surv is not None:
                 _surv.checkpoint(label, v)
+            if _dump is not None:
+                _dump.checkpoint(label, v)
 
         if preset_template_verts is not None and preset_user_verts is not None:
             try:
@@ -22173,6 +22286,16 @@ def convert_nif_phase2(
                 failed.append((f"{s.name}:survival", repr(e)))
             finally:
                 _surv.release()
+        if _dump is not None:
+            try:
+                if not _dump.flush(dst_path, s.name, s.tris, override):
+                    # An EMPTY dump reads exactly like "no pass moved
+                    # anything". Say which it was.
+                    failed.append((f"{s.name}:stagedump", "wrote nothing"))
+            except Exception as e:
+                failed.append((f"{s.name}:stagedump", repr(e)))
+            finally:
+                _dump.release()
         if _tracer is not None:
             try:
                 _tracer.flush(dst_path, s.name)
