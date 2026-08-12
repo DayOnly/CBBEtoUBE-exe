@@ -243,6 +243,42 @@ in the same commit, or it does not get written.**
 
 ## 7. Dead ends — do not retry these
 
+* **DELETING `inflate_armor_outward`** (`#inflate-census`, 2026-08-12). Refuted
+  by a pack census — and it looked good on one piece first, which is the whole
+  reason the rule against single-piece fixes exists.
+  Population: **160/160 source mods, 13,889 shape-pairs, 32.1M verts**, both
+  arms produced by the real `convert` subcommand with identical flags, only
+  `CBBE2UBE_INFLATION_MAGNITUDE` differing. Exclusions, all counted: 2213
+  fidelity-only (source mesh unresolvable — clearance still measured), 89 shapes
+  whose vert count differs between arms, 84 NIFs with no garment shape.
+  Inflate fires on **48.5%** of shapes; the untouched half is reported
+  separately because it drags every median to +0.0000 and hides the effect.
+  On the **6738 shapes it actually moves**:
+
+  | | ON | OFF | |
+  |---|---|---|---|
+  | edge deviation (fidelity) | 0.0447 | **0.0417** | 67.5% of shapes improve |
+  | dihedral (roughness) | 15.69 | 15.92 | only 28.9% improve |
+  | standoff p10 | 0.6686 | **0.5477** | −0.125u, only 9.5% improve |
+  | verts inside the body | 0.833% | **0.939%** | |
+  | verts grazing (<0.1u) | 1.069% | **1.303%** | |
+  | shapes gaining inside-verts | — | **2300 vs 556 losing** | 4.1:1 |
+
+  Worst single regressions are real armour, not slivers: a VIGILANT robe torso
+  +454 verts newly inside the body, Dwarven armour +213/+211, several +200.
+  **Verdict: inflate STAYS.** The rule was fixed before the run — removal is
+  justified only if the clearance counters do not materially worsen — and they
+  do, on 4.1x as many shapes as they help.
+  **But the fidelity result is the finding worth keeping: inflate pushes 67.5%
+  of the shapes it touches AWAY from the author's fit.** That cost is real and
+  is now measured pack-wide. The answer is not deletion, it is making the
+  outward push AUTHORED-AWARE instead of a uniform 0.7u — which only became
+  possible once `conform`'s target stopped being identically zero (see the
+  `_SRC_NORMAL_FIX` entry). Re-test `#unified-offset` against a TRUE target
+  before trusting its "inflate cannot be unified" verdict, which was measured
+  with target ≡ 0.
+  Harness: `scripts/analysis/inflate_census.py` + `inflate_census_report.py`.
+
 * **Full body as an SMP collider.** `_ensure_cloth_body_collider` exists,
   default off. Tried in game: the sim destabilised and a body collapsed to the
   floor. A full-body collider paired with cloth also skinned to that body
