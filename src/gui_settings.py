@@ -218,6 +218,24 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "push at the garment's own surface. It only ever binds "
                     "where armour is already in front of the vertex, so it "
                     "cannot reopen clipping."),
+    Setting("family_weight_invariant", "Fix stray broken vertices on layered "
+                                       "garments",
+            "Armor", "Fit and clearance", default=False,
+            env="CBBE2UBE_FAMILY_WEIGHT_INVARIANT", invert=False,
+            hint="For single vertices dragged into a spike or a flickering "
+                 "sliver, usually on an under-layer.",
+            tooltip="A vertex is held by at most four bones, and the file "
+                    "format enforces that by keeping the four strongest and "
+                    "discarding the rest -- without redistributing what it "
+                    "discarded. A vertex that ends up holding five is then "
+                    "short of the full amount, so it is placed by a partial "
+                    "sum of its bones and drifts away from the surface, "
+                    "dragging a long thin triangle that flickers depending on "
+                    "the angle you view it from. Measured on a reported "
+                    "five-layer top: 288 such vertices on the under-layer, "
+                    "none in the author's own mesh. This shares the four "
+                    "strongest back out to the full amount. It changes only "
+                    "the amounts, never which bones hold a vertex."),
     Setting("surface_warp_field", "Smooth the shape the body is warped onto",
             "Armor", "Fit and clearance", default=False,
             env="CBBE2UBE_SURFACE_WARP_FIELD", invert=False,
@@ -635,7 +653,7 @@ LAYOUT: "dict[str, tuple]" = {
             "drape_xml_gate", "conform_to_body", "conform_fold_guard",
             "warp_shear_limit", "warp_delta_outlier",
             "warp_delta_outlier_max", "warp_push_shell_cap",
-            "surface_warp_field",
+            "surface_warp_field", "family_weight_invariant",
             "full_weight_match", "full_weight_strength",
             "smp_antipoke", "smp_antipoke_push",
             "antipoke_smooth", "layered_antipoke", "unified_offset")),

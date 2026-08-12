@@ -8591,6 +8591,21 @@ WEIGHT_INVARIANT_ENABLED = os.environ.get(
         "1", "true", "yes", "on")
 
 
+# #family-weight-invariant -- the SAME defect in the family-match write, which
+# the flag above does not reach. Separate flag because it is a separate pass
+# with a different safety story (it adds no bones, so it cannot strand one
+# unweighted) and because the fix above is already default ON and in-game
+# verified, while this one is not yet.
+#
+# Traced per pass over the reported piece, bad-sum verts added to `top`:
+#     _match_rigid_leg_bend_to_body   +76   worst 0.032
+#     _match_full_weights_to_body    +218   worst 0.140
+# and the author's own mesh has ZERO on every shape, so all of it is ours.
+# Nothing weight-related runs after the second, so nothing repairs it.
+FAMILY_WEIGHT_INVARIANT = os.environ.get(
+    "CBBE2UBE_FAMILY_WEIGHT_INVARIANT") == "1"
+
+
 # #skin-influence-cap -- apply the same 4-influence cap to the MAIN skin install.
 # `_install_skin` gates on "only add bones that still carry weight", but it measures
 # that BEFORE the save, and the save keeps only the 4 largest influences per vertex
@@ -11496,6 +11511,90 @@ def _match_limb_motion_to_body(dst_path, biped_slots: int = 0, *,
                 # rather than ship a spike.
                 if (~_ok).any():
                     _sub[~_ok] = G[rows][~_ok]
+                NEW[rows] = _sub
+
+            # #family-weight-invariant. BOTH blocks above only touch `rows`, but
+            # the write below writes EVERY vert -- so an UNTOUCHED row carrying
+            # more than four influences reaches the save uncapped, the save keeps
+            # its largest four and does not renormalise, and the vertex ships
+            # under-weighted. Traced on the reported piece: this pass alone adds
+            # 218 bad-sum verts to one shape, worst 0.140, and it is the LAST
+            # weight pass, so nothing downstream repairs them. In game that is a
+            # vertex transformed by a deflated sum of its bone matrices -- it
+            # drifts off and drags a spike, which is what "broken verts" is.
+            #
+            # Renormalise ONLY the four that will survive, and leave the rest of
+            # the row alone. That is what makes this safe where the sibling fix
+            # in `_match_rigid_leg_bend_to_body` needed a provisional palette:
+            # nothing is removed and no explicit 0.0 is written, so no bone can
+            # be left in the shape with an empty weight list
+            # (`#zeroweight-bone-desync`, an equip CTD). The surviving four only
+            # ever grow, so they are still the largest four and the save's choice
+            # is unchanged -- this alters the shipped WEIGHTS, never the shipped
+            # influence SET.
+            #
+            # Note the earlier `#legmotion-cap-then-floor` warning above, which
+            # says a cap here measured WORSE (1650 -> 1966) and not to retry
+            # without first finding which later pass rewrites these rows. Those
+            # are the two numbers the project later identified as a BATCH output
+            # compared against a SINGLE-MESH conversion -- a false regression from
+            # mismatched arms, not a real one. The precondition is met regardless:
+            # the per-pass trace that motivated this shows the drift is introduced
+            # HERE and that no weight pass runs after it.
+            if FAMILY_WEIGHT_INVARIANT and len(rows):
+                # #family-weight-invariant -- RENORMALISE OVER THE INFLUENCES
+                # THAT WILL ACTUALLY SURVIVE THE WRITE.
+                #
+                # A vertex holds at most four bones. The write below is
+                # bone-by-bone and `setShapeWeights` MERGES, so each write is
+                # arbitrated against a row that is still PART STALE -- a bone
+                # this pass wants to ADD arrives while the old, larger values
+                # of the bones it is meant to replace are still in place, loses
+                # the four-way contest immediately, and is gone before those
+                # get lowered. The row then ships missing exactly that weight,
+                # while the bones that did land were scaled as a share of a
+                # total that counted it.
+                #
+                # Traced on the reported piece, `top` vertex 1561: the pass
+                # computes a perfect row (sum 1.0000) that hands 0.1400 to
+                # `NPC R UpperArm`, a bone the vertex does not have; the vertex
+                # ships at 0.8601 with `R Breast01` sitting at the 0.0002 floor
+                # where the arm weight should be. 288 vertices on that shape,
+                # none in the author's own mesh. In game: a vertex placed by a
+                # deflated sum of its bones, dragging a spike.
+                #
+                # So do not hand weight to a bone that cannot take it. Keep the
+                # influences the vertex already HAS, spend any free slots on the
+                # strongest newcomers, and renormalise over that set. Nothing is
+                # removed and no explicit 0.0 is written, so no bone can be
+                # stranded with an empty weight list (`#zeroweight-bone-desync`,
+                # an equip CTD) -- the alternative fix, freeing slots by zeroing
+                # first, has to solve that and does not buy a better row.
+                #
+                # It is deliberately NOT "keep the four largest of NEW": that is
+                # the rule the save applies, and applying it here reproduces the
+                # bug, because the largest four can include a newcomer the
+                # vertex has no room for.
+                _sub = NEW[rows]
+                _have = G[rows] > _WRITE_MIN
+                _free = _SKIN_MAX_INFLUENCES - _have.sum(axis=1)
+                _newb = (~_have) & (_sub > _WRITE_MIN)
+                # rank newcomers by weight, strongest first
+                _ord = np.argsort(-np.where(_newb, _sub, -np.inf), axis=1)
+                _rank = np.empty_like(_ord)
+                np.put_along_axis(
+                    _rank, _ord,
+                    np.broadcast_to(np.arange(_sub.shape[1]), _sub.shape), 1)
+                _allow = _have | (_newb & (_rank < np.maximum(
+                    _free, 0)[:, None]))
+                _sub = np.where(_allow, _sub, 0.0)
+                _ss = _sub.sum(axis=1)
+                # A row left with nothing would skin to the origin: keep what
+                # the pass had rather than ship a spike.
+                _ok = _ss > 1e-6
+                _sub[_ok] /= _ss[_ok, None]
+                if (~_ok).any():
+                    _sub[~_ok] = NEW[rows][~_ok]
                 NEW[rows] = _sub
 
             # STBs: setShapeWeights can reset them, so save every bone we write and
