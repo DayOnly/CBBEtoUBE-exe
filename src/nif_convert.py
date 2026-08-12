@@ -15270,6 +15270,10 @@ def _separate_chest_layered_cloth_depth(
         # backstop class). One line, always.
         print(f"  WARN: _separate_chest_layered_cloth_depth died: {_le!r} -- "
               f"layer pass skipped for this piece", file=sys.stderr)
+        # ALSO to the recorder: a pool worker's stdout can be discarded by the
+        # frozen exe, and this print was the only trace that the layer order
+        # shipped unresolved. #worker-print-vanishes
+        _note_pass_failure("_separate_chest_layered_cloth_depth", _le)
         return 0
 
 
@@ -15681,6 +15685,7 @@ def _separate_abdomen_layered_cloth_depth(
         # backstop class). One line, always.
         print(f"  WARN: _separate_abdomen_layered_cloth_depth died: {_le!r} -- "
               f"layer pass skipped for this piece", file=sys.stderr)
+        _note_pass_failure("_separate_abdomen_layered_cloth_depth", _le)
         return 0
 
 
@@ -15837,6 +15842,7 @@ def _sync_chest_layered_cloth_weights(shape_jobs: list) -> int:
         # backstop class). One line, always.
         print(f"  WARN: _sync_chest_layered_cloth_weights died: {_le!r} -- "
               f"layer pass skipped for this piece", file=sys.stderr)
+        _note_pass_failure("_sync_chest_layered_cloth_weights", _le)
         return 0
 
 
@@ -15995,6 +16001,7 @@ def _sync_abdomen_layered_cloth_weights(shape_jobs: list) -> int:
         # backstop class). One line, always.
         print(f"  WARN: _sync_abdomen_layered_cloth_weights died: {_le!r} -- "
               f"layer pass skipped for this piece", file=sys.stderr)
+        _note_pass_failure("_sync_abdomen_layered_cloth_weights", _le)
         return 0
 
 
@@ -19802,6 +19809,11 @@ def _finalize_hdt_physics(dst_path: Path, src_nif_path: Path) -> bool:
                               f"re-import into {dst_path.name}: {_e!r} -- SMP "
                               f"shape DROPPED; reconvert this NIF",
                               file=_sys.stderr)
+                        # A dropped collision proxy breaks SMP at runtime, and
+                        # this print was its only trace. #worker-print-vanishes
+                        _note_pass_failure(
+                            f"_finalize_hdt_physics/collider:{cn}", _e,
+                            dst_path)
         except Exception:
             pass
 
@@ -19844,6 +19856,7 @@ def _finalize_hdt_physics(dst_path: Path, src_nif_path: Path) -> bool:
         print(f"  WARN: physics finalize FAILED on {Path(dst_path).name}: "
               f"{_fe!r} -- SMP/XML state for this piece is whatever the "
               f"earlier phases left", file=sys.stderr)
+        _note_pass_failure("_finalize_hdt_physics", _fe, dst_path)
         if os.environ.get("CBBE2UBE_DEBUG_FINALIZE"):
             import traceback as _tb
             _tb.print_exc()
