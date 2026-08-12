@@ -1873,7 +1873,9 @@ def _build_parser():
             "reserved for player); formid-out-of-range (FormID master byte "
             ">= master list length - guaranteed crash on equip); missing-nif "
             "(ARMA MOD3/MOD5 path points to a !UBE\\ NIF that isn't on disk "
-            "- armor renders empty); armo-missing-full (ARMO override has "
+            "- the engine reads a freed/garbage model path; this is "
+            "startup-CTD cause #1, not merely invisible armour); "
+            "armo-missing-full (ARMO override has "
             "no FULL subrecord - inventory UI silently hides the item)."
         ))
     val.add_argument("mod_dir", type=Path,
@@ -2414,12 +2416,19 @@ def _print_coverage_warnings(label: str, stats: dict) -> None:
 
     The standalone coverage blocks printed these; when coverage moved inside
     the merge the key was simply ignored, silently losing the diagnostics for
-    the ONLY coverage model. `missing-nif` is filtered out because it fires in
-    bulk on retexture mods that ship no meshes of their own -- noise that would
-    bury the real entries."""
+    the ONLY coverage model.
+
+    `missing-nif` USED TO BE FILTERED OUT HERE, on the reasoning that it "fires
+    in bulk on retexture mods that ship no meshes of their own". That rationale
+    describes SOURCE paths -- and the check no longer counts those: it skips
+    anything without the `!UBE` path prefix, so it now reports only paths
+    TOOL produced pointing at meshes THIS TOOL did not write. That is the
+    condition behind startup-CTD cause #1 (an ARMA aimed at an absent !UBE
+    hood -> EXCEPTION_ACCESS_VIOLATION when an actor wearing it loads), which
+    the project notes say never to dismiss. Measured on the live shipped
+    Combined ESPs: 0 occurrences, so it is not noisy today either. Printed."""
     try:
-        ws = [w for w in (stats.get("validation_warnings") or [])
-              if "missing-nif" not in str(w)]
+        ws = [w for w in (stats.get("validation_warnings") or [])]
     except Exception:
         return
     if not ws:

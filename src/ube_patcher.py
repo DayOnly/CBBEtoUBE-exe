@@ -2258,7 +2258,14 @@ def validate_patch(esp_path: str | Path,
       "esl-overflow"           ESL flag set but own record count > 2048.
       "formid-zero"            Record has FormID 0x00000000 (player-reserved).
       "formid-out-of-range"    FormID references master index past the list end.
-      "missing-nif"            ARMA MOD3/MOD5 path not found on disk.
+      "missing-nif"            An ARMA `!UBE\\` model path with no mesh on
+                               disk. STARTUP-CTD cause #1, not "invisible":
+                               the engine reads a freed/garbage string when an
+                               actor wearing it loads. Only `!UBE\\` paths are
+                               counted -- source paths resolve from masters'
+                               BSAs and belong to "unconverted-mesh-linked" --
+                               so every hit is a path this tool wrote aimed at
+                               a mesh this tool did not write.
       "unconverted-mesh-linked" ARMA MOD3/MOD5 points to a SOURCE mesh while a
                                converted !UBE mesh exists for it -> wears the
                                un-converted mesh (invisible/distorted, no morphs).
@@ -2481,7 +2488,11 @@ def validate_patch(esp_path: str | Path,
                 warnings.append(
                     f"missing-nif: {missing} ARMA model path(s) point to "
                     f"!UBE\\ NIF(s) not present under {meshes_root}. "
-                    f"Armor will render empty. Examples: {missing_examples}"
+                    f"The engine reads a freed/garbage model path when an "
+                    f"actor wearing one loads -- startup-CTD cause #1 "
+                    f"(EXCEPTION_ACCESS_VIOLATION), NOT merely empty armour. "
+                    f"Only paths THIS tool wrote are counted. "
+                    f"Examples: {missing_examples}"
                 )
             if unconv:
                 warnings.append(
