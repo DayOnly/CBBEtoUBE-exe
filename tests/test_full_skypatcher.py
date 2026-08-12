@@ -26,7 +26,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from src.esp import ESP, TES4Header, Group, Record, encode_subrecord, \
-    encode_zstring
+    encode_zstring, iter_subrecords
 from src import ube_patcher as up
 
 DEFAULT = 0x00000019
@@ -151,3 +151,68 @@ def test_coverage_excludes_ini_linked_armos(tmp_path):
     assert res2["armo_targets"] == res["armo_targets"] - 1, \
         (res["armo_targets"], res2["armo_targets"])
     print("  test_coverage_excludes_ini_linked_armos OK")
+
+
+# ---- startup-CTD cause #1: never mint a UBE ARMA for a mesh we did not
+# convert ------------------------------------------------------------------
+# The recorded crash: a hood ARMA whose model path was rewritten to `!UBE\`
+# for a mesh the converter never produced, then given the 16 UBE body races, so
+# it fired for actors that load it and the engine read a freed/garbage string
+# -> EXCEPTION_ACCESS_VIOLATION about two minutes into a game.
+#
+# The fix (project notes call it "THE REAL FIX", after an earlier partial one
+# was measured insufficient) is the guard in `generate_ube_patch`: skip the
+# armature entirely when NONE of its model paths are in `converted_rel_paths`.
+# It had no test, so nothing stopped it being refactored away.
+
+
+def _gen_partial(tmp, name, mesh_stem, converted):
+    """Same source as `_gen`, but only `converted` is declared converted."""
+    src = _mk_source(tmp, name, mesh_stem)
+    out = tmp / (name.replace(".esp", "") + " UBE patch.esp")
+    stats = up.generate_ube_patch(src, out, master_data_dirs=[tmp],
+                                  converted_rel_paths=converted)
+    return out, stats
+
+
+def test_no_ube_arma_is_minted_for_an_unconverted_mesh(tmp_path):
+    """The BODY mesh converts, the HELM mesh does not. The helm armature must
+    not appear -- minting it is the crash."""
+    _mk_env(tmp_path)
+    out, _ = _gen_partial(tmp_path, "ModP.esp", "p",
+                          {"armor/p/body_0.nif"})          # helm NOT converted
+    e = ESP.load(out)
+    grp = e.group(b"ARMA")
+    paths = []
+    for r in (grp.records if grp else []):
+        for sig, sd in iter_subrecords(r.payload):
+            if sig in (b"MOD3", b"MOD5"):
+                paths.append(sd.rstrip(bytes(1)).decode("latin1"))
+    # Assert the armature is ABSENT, not merely that its path lacks the !UBE
+    # prefix. Checked against the guard disabled (converted_rel_paths=None):
+    # the armature is minted AND does carry the !UBE prefix, so a prefix-only
+    # assertion would in fact have failed here too. Absence is still the right
+    # property, because it is the one that holds for BOTH halves of the fix --
+    # the project notes record that the path-prefix half "ALONE WAS
+    # INSUFFICIENT", since a real unconverted mesh keeps its original path,
+    # which does not exist either, while the armature still carries UBE races.
+    assert not any("helm_0.nif" in q for q in paths), (
+        f"minted an armature for a mesh that was never converted: {paths}")
+
+
+def test_control_the_same_armature_IS_minted_once_its_mesh_converts(tmp_path):
+    """NEGATIVE CONTROL. If the helm armature were absent for some unrelated
+    reason, the assertion above would pass while defending nothing."""
+    _mk_env(tmp_path)
+    out, _ = _gen_partial(tmp_path, "ModQ.esp", "q",
+                          {"armor/q/body_0.nif", "armor/q/helm_0.nif"})
+    e = ESP.load(out)
+    grp = e.group(b"ARMA")
+    paths = []
+    for r in (grp.records if grp else []):
+        for sig, sd in iter_subrecords(r.payload):
+            if sig in (b"MOD3", b"MOD5"):
+                paths.append(sd.rstrip(bytes(1)).decode("latin1"))
+    assert any("helm_0.nif" in q for q in paths), (
+        f"control failed: the helm armature is missing even when converted, "
+        f"so the test above proves nothing. paths={paths}")
