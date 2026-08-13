@@ -63,6 +63,19 @@ is a regression that every bind-pose number will call a win.
 POPULATION DISCIPLINE. Every exclusion is counted and printed. A shrinking
 denominator is not a clean result, and 0/0 is not a pass.
 
+NO RESOLUTION FLOOR IS REPORTED, AND ONE IS NEEDED BEFORE ANY VERDICT.
+This census prints medians of per-shape deltas without ever stating how large
+a delta has to be to mean anything. The pipeline is known to move hundreds of
+vertices by ~0.25u on an ALGEBRAIC NO-OP, so a small median difference between
+arms can be entirely float noise. `mesh_penetration.noise_floor` exists for
+exactly this and is used by `bust_verdict` and `underbust_census` -- not here,
+because these columns are edge/dihedral/standoff rather than ray exposure.
+
+The equivalent control for this harness is `morphtri_gate_ab`'s: convert the
+SAME arm twice and score it against itself. Whatever spread that produces is
+the floor, and any between-arm delta below it is not a result. Run it on a
+handful of mods before reading a verdict off this census.
+
 One mod is converted, scored and DELETED before the next, so disk stays bounded.
 Writes incremental JSON so a partial run is still reportable with its exact
 denominator.

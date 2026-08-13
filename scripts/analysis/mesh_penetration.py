@@ -295,6 +295,19 @@ def surface_penetration(body_verts, garment_verts, garment_tris,
     keep = ln > 1e-12                       # drop degenerate triangles
     a, b, c, fn, tris = a[keep], b[keep], c[keep], fn[keep] / ln[keep, None], tris[keep]
     if not len(a):
+        # EVERY triangle was degenerate, so nothing could be measured. The
+        # signed distance returned here is ZERO, and zero on a penetration
+        # metric reads as "flush against the body, no clipping" -- a caller
+        # that looks only at the depth cannot tell this from a clean garment.
+        # The distance channel is the tell: it comes back +inf, which no real
+        # surface produces. CHECK `dist` (or the None in slot 4) before
+        # trusting a zero depth out of this function.
+        #
+        # Left as zeros DELIBERATELY: this is the reference implementation
+        # that `tests/test_fit_metrics_matches_reference.py` pins
+        # `src/fit_metrics` against, so changing these return values would
+        # move the anchor rather than fix a defect. The honest fix belongs in
+        # the callers, which is why the tell is documented instead.
         z = np.zeros(len(bv))
         return z, np.full(len(bv), np.inf), np.zeros(len(bv), dtype=bool), None
 
