@@ -97,7 +97,11 @@ def _dihedral(v, t):
             e2t[(min(e), max(e))].append(ti)
     p = [q for q in e2t.values() if len(q) == 2]
     if not p:
-        return 0.0
+        # NOT 0.0. This is a ROUGHNESS score, so zero reads as "perfectly
+        # smooth" -- a shape with no manifold edge pairs would score better
+        # than any real surface and drag the column's median with it. NaN says
+        # "not measured" and is excluded from the aggregate below.
+        return float("nan")
     p = np.asarray(p)
     i, j = p[:, 0], p[:, 1]
     ang = np.degrees(np.arccos(np.clip(np.einsum('ij,ij->i', f[i], f[j]),
@@ -244,11 +248,15 @@ def main() -> int:
         d = per_pass.get(name)
         if not d:
             continue
-        f_ = float(np.median(d["fit"]))
-        r_ = float(np.median(d["rough"]))
-        s_ = float(np.median(d["stretch"]))
-        k_ = float(np.median(d["spike"]))
-        o_ = float(np.sum(d["fold"]))
+        # nanmedian throughout: a shape that could not be measured contributes
+        # NOTHING rather than a convenient zero. `unmeasured` is printed so a
+        # thin column is visible as a thin column.
+        f_ = float(np.nanmedian(d["fit"]))
+        r_ = float(np.nanmedian(d["rough"]))
+        s_ = float(np.nanmedian(d["stretch"]))
+        k_ = float(np.nanmedian(d["spike"]))
+        o_ = float(np.nansum(d["fold"]))
+        unmeasured = int(np.count_nonzero(~np.isfinite(d["rough"])))
         if o_ > 0:
             # A fold is the surface through itself. It outranks the fidelity
             # columns because a pass can read "buys fit" while folding the
@@ -262,6 +270,9 @@ def main() -> int:
             read = "inert here"
         else:
             read = ""
+        if unmeasured:
+            read = (read + f"  [{unmeasured}/{len(d['rough'])} shapes had no "
+                    f"measurable surface]").strip()
         print(f"  {name:22s} {len(d['fit']):4d} {f_:+8.4f} {r_:+8.3f} "
               f"{s_:+9.4f} {k_:+8.1f} {o_:+8.0f}   {read}")
     return 0

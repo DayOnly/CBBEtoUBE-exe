@@ -111,7 +111,11 @@ def dihedral(v, t):
             e2t[(min(e), max(e))].append(ti)
     p = np.asarray([q for q in e2t.values() if len(q) == 2])
     if not len(p):
-        return 0.0
+        # NOT 0.0. Zero on a ROUGHNESS score reads as "perfectly smooth", so a
+        # shape with no manifold edge pairs would out-score every real surface
+        # in the table. NaN prints as `nan` and cannot be misread as a good
+        # result.
+        return float("nan")
     i, j = p[:, 0], p[:, 1]
     ang = np.degrees(np.arccos(np.clip(np.einsum('ij,ij->i', fn[i], fn[j]),
                                        -1, 1)))
