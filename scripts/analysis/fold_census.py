@@ -130,17 +130,22 @@ def score(verts, tris, normals=None):
 
 
 def _shapes(path):
+    """Returns (shapes, unreadable). The count is NOT optional: a shape
+    dropped silently leaves the population smaller than it looks, and this
+    tool's whole claim is that its denominator is honest.
+    """
     nf = pynifly.NifFile(filepath=str(path))
     out = {}
+    unreadable = []
     for s in nf.shapes:
         try:
             out[s.name] = (np.asarray(s.verts, float),
                            np.asarray(s.tris).reshape(-1, 3),
                            np.asarray(s.normals, float)
                            if s.normals is not None else None)
-        except Exception:
-            continue
-    return out
+        except Exception as e:
+            unreadable.append((getattr(s, "name", "<unnamed>"), repr(e)))
+    return out, unreadable
 
 
 def main() -> int:
@@ -177,11 +182,14 @@ def main() -> int:
     worst = []
     for p in files:
         try:
-            shapes = _shapes(p)
+            shapes, unreadable = _shapes(p)
         except Exception as e:
             tot["pieces unreadable"] += 1
             print(f"  unreadable: {p.name}: {e!r}")
             continue
+        for nm, err in unreadable:
+            tot["shapes: unreadable (dropped from the denominator)"] += 1
+            print(f"  unreadable shape {p.name}::{nm}: {err}")
         tot["pieces"] += 1
         pf = pi = 0
         for name, (v, t, nr) in shapes.items():
@@ -199,7 +207,7 @@ def main() -> int:
                     tot["shapes: no author mesh to compare"] += 1
                     continue
                 try:
-                    a = _shapes(sp).get(name)
+                    a = _shapes(sp)[0].get(name)
                 except Exception:
                     a = None
                 if a is None or a[0].shape != v.shape:

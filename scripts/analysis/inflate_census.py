@@ -444,6 +444,30 @@ def main() -> int:
     print(f"\nDONE. {n_mods_ok}/{pop_total} mods, {len(results)} shape-pairs")
     for k, v in sorted(excl.items(), key=lambda kv: -kv[1]):
         print(f"  EXCLUDED {v:6d}  {k}")
+
+    # DID THE MANIPULATION TAKE EFFECT? The guard at the top only proves the
+    # two arm DICTS differ, which a misspelled flag name passes: both arms
+    # then run identical code, every pair matches, and the census reports "no
+    # difference" as though it were a finding. That false negative is
+    # indistinguishable from a real null result unless it is checked for --
+    # and it is the exact mistake that shipped a wrong single-piece build
+    # earlier in this project, caught only by a separate control.
+    if results:
+        same = sum(1 for r in results if r.get("on") == r.get("off"))
+        pct = 100.0 * same / len(results)
+        print(f"\nMANIPULATION CHECK: {same}/{len(results)} pairs identical "
+              f"({pct:.1f}%)")
+        if pct > 99.0:
+            print("  ABORT-LEVEL: the arms are effectively the same mesh. "
+                  "Either the flag is inert or it never reached the "
+                  "converter (misspelled name, read at import, wrong "
+                  "process). DO NOT read this as 'the flag makes no "
+                  "difference'.")
+            return 3
+        print("  the flag reaches the mesh, so a null result would be real")
+    else:
+        print("\nNOTHING WAS SCORED -- 0/0 is not a clean result")
+        return 3
     return 0
 
 
