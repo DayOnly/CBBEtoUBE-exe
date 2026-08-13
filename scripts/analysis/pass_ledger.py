@@ -112,10 +112,25 @@ def _edges(t):
 
 
 def _stretch(sv, v, e):
+    """99th-percentile edge ratio, LENGTH-WEIGHTED.
+
+    Weighted because an unweighted percentile counts a hair-thin edge and a
+    long structural one equally, and a garment's edge lengths span orders of
+    magnitude: 1% of short edges once inflated this score by 75%, describing
+    a distortion nobody could see. A long edge also smears far more texture
+    than a short one, so length is the right weight for the thing being
+    judged.
+    """
     ls = np.linalg.norm(sv[e[:, 0]] - sv[e[:, 1]], axis=1)
     lo = np.linalg.norm(v[e[:, 0]] - v[e[:, 1]], axis=1)
     m = ls > 1e-6
-    return float(np.percentile(lo[m] / ls[m], 99)) if m.any() else float("nan")
+    if not m.any():
+        return float("nan")
+    r, w = lo[m] / ls[m], ls[m]
+    order = np.argsort(r)
+    r, w = r[order], w[order]
+    cum = np.cumsum(w)
+    return float(r[np.searchsorted(cum, 0.99 * cum[-1])])
 
 
 def _spikes(v, e):

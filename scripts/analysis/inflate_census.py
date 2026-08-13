@@ -289,7 +289,15 @@ def score_nif(out_path, src_path):
 def convert(mod_dir, out_dir, arm_env, workers):
     """`arm_env` is the ONLY difference between the arms. Everything else comes
     from BASE_ENV, so the census cannot accidentally measure two changes at
-    once."""
+    once.
+
+    Returns (returncode, broken). A ZERO EXIT IS NOT SUCCESS: the converter
+    reports `errors during shape copy` for a shape it failed to build and
+    still exits 0, so that arm holds a broken mesh which scores like any
+    other. Reading a broken pass as a legitimate measurement has cost this
+    project three wrong verdicts. The output was already being captured here
+    and then thrown away, so the signal was present and unread.
+    """
     env = dict(os.environ)
     env.update(BASE_ENV)
     env.update(arm_env)
@@ -298,7 +306,13 @@ def convert(mod_dir, out_dir, arm_env, workers):
            "--workers", str(workers)]
     r = subprocess.run(cmd, cwd=str(_REPO), env=env,
                        capture_output=True, text=True, timeout=10800)
-    return r.returncode
+    blob = f"{r.stdout or ''}\n{r.stderr or ''}".lower()
+    broken = blob.count("errors during shape copy")
+    # A pool worker's prints can be discarded before reaching stdout, so a
+    # traceback that surfaces only on stderr has to count as well.
+    if "traceback (most recent call last)" in blob:
+        broken += 1
+    return r.returncode, broken
 
 
 def main() -> int:
@@ -367,13 +381,21 @@ def main() -> int:
             shutil.rmtree(d, ignore_errors=True)
         print(f"[{mi}/{len(pop)}] {m['name']}  ({m['nifs']} NIFs)", flush=True)
         try:
-            ra = convert(mod, a, arm_on, workers)
-            rb = convert(mod, b, arm_off, workers)
+            ra, bra = convert(mod, a, arm_on, workers)
+            rb, brb = convert(mod, b, arm_off, workers)
         except subprocess.TimeoutExpired:
             excl["mod: conversion timed out"] += m["nifs"]
             continue
         if ra != 0 or rb != 0:
             excl[f"mod: convert exited {ra}/{rb}"] += m["nifs"]
+            continue
+        if bra or brb:
+            # EXCLUDED, not scored. A shape the converter failed to build is
+            # not a measurement of the flag under test, and if one arm breaks
+            # more often than the other the bias runs in that arm's favour.
+            excl["mod: errors during shape copy (exit was still 0)"] += \
+                m["nifs"]
+            print(f"    EXCLUDED: shape-copy errors on/off = {bra}/{brb}")
             continue
         seen = 0
         for pa in sorted(a.rglob("*.nif")):
