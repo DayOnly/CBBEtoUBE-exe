@@ -14963,13 +14963,19 @@ CHEST_SYNC_MIN_BREAST_FRAC = 0.25
 # breast-family SHARE among the bones it ALREADY has, per vert, up to the
 # overlapping cloth's local fraction. No add_bone -> a physics/chain bone can
 # never be introduced onto the plate, so the equip-CTD guard is STRUCTURAL rather
-# than a name filter. DEFAULT ON (verified in game on the ruby flower Top -- "they
-# move together"); `=0` turns it off. NOT yet pack-censused, but the pass is
-# heavily gated (breast bones + >=0.5 mutual cleavage overlap + no add_bone + no
-# vertex moves) and a NON-qualifying piece is never re-saved (dirty stays False),
-# so default-on is byte-identical on every piece without a plate-over-cloth stack.
+# than a name filter.
+#
+# BACK TO DEFAULT OFF (`=1` opts in). It was flipped ON after the ruby flower
+# verdict and that was premature: the pack census then found it fires on 55 of
+# 1658 pieces, and the first one looked at IN GAME -- the vanilla necromancer
+# robes, a mesh shared by ~70 armor records -- SPLIT APART at the bust. Root
+# cause and the guard it produced are in BUST_PLATE_SYNC_MIN_COVER. With that
+# guard the robe is correctly left alone, but "the guard makes the piece we broke
+# a no-op" is not the same evidence as "the class is fixed", and only ONE piece
+# (the ruby flower) has ever been verified good in game. It stays opt-in until a
+# censused sample has been looked at.
 BUST_PLATE_SYNC = os.environ.get(
-    "CBBE2UBE_BUST_PLATE_SYNC", "1").strip().lower() in ("1", "true", "yes", "on")
+    "CBBE2UBE_BUST_PLATE_SYNC", "").strip().lower() in ("1", "true", "yes", "on")
 # Min mutual overlap (each layer's cleavage verts within CHEST_SYNC_DISTANCE of
 # the other's, BOTH ways, over the cleavage box) to treat two breast-boned shapes
 # as a genuine stacked bust. Ruby flower chest_plate<->top = 1.00/0.82; an
@@ -14996,6 +15002,17 @@ BUST_PLATE_SYNC_OVERLAP = float(
 # column; predicting the drop from it was wrong by 2x (19 vs the real 40).
 BUST_PLATE_SYNC_MIN_GAP = float(
     os.environ.get("CBBE2UBE_BUST_PLATE_SYNC_MIN_GAP", "") or 0.02)
+# Min fraction of a receiver's verts that WANT raising and CAN be raised, before
+# the piece is treated as safely fixable at all. A vertex carrying no breast bone
+# cannot be raised without add_bone (the structural CTD guard), so on a shape
+# whose breast bones cover only part of it the pass would raise one region and
+# leave the rest -- REPORTED IN GAME: a robe's `TopLeather` carries R-side breast
+# bones only, so its LEFT half went 0.000 -> 0.366 while the RIGHT half stayed at
+# 0.000 and the garment split apart at the bust. Below this fraction NOTHING is
+# written for the whole piece: a stack raised in part is not a partial fix, it is
+# a fresh divergence between the layers that moved and the ones that could not.
+BUST_PLATE_SYNC_MIN_COVER = float(
+    os.environ.get("CBBE2UBE_BUST_PLATE_SYNC_MIN_COVER", "") or 0.90)
 # The tighter JIGGLE BAND (front, z 88-104) that ranks authority. The full
 # cleavage box (z 85-115) reaches the rigid upper chest and can rank a plate's
 # breast fraction ABOVE the cloth's, inverting who should follow whom.
@@ -15939,8 +15956,21 @@ def _sync_bust_plate_follow_postwrite(dst_path) -> int:
             if (int(vi) in auth_rows and auth_rows[int(vi)][1] > 0) else 0.0
             for vi in auth_idx], dtype=np.float64)
 
-        total = 0
-        dirty = False
+        # --- PLAN EVERY RECEIVER FIRST, AND ONLY THEN WRITE ------------------
+        # ALL-OR-NOTHING PER PIECE. Raising SOME of a stack is not a partial fix,
+        # it is a NEW divergence: the layers left behind now disagree with the
+        # ones that moved, which is the very defect this pass exists to remove.
+        # And a shape this pass can only PARTIALLY reach tears in half -- it can
+        # raise a vertex's breast share only among bones that vertex ALREADY has
+        # (no add_bone, the CTD guard), so a vertex carrying no breast bone can
+        # never be raised. REPORTED IN GAME on a robe whose `TopLeather` carries
+        # R-side breast bones only: the pass raised its LEFT half 0.000 -> 0.366
+        # and left the RIGHT half at 0.000, and the garment split apart at the
+        # bust. The ruby flower hid this -- only 1.5% of its plate verts lack a
+        # breast bone, and they are scattered rather than a whole side.
+        # So: if any receiver cannot be brought along essentially in full, this
+        # piece is not safely fixable and NOTHING is written. #bust-plate-sync
+        plans = []
         for (s, box_v, box_idx, follow, rows) in group[1:]:
             if auth_follow - follow < BUST_PLATE_SYNC_MIN_GAP:
                 # Too close to be the plate-vs-cloth divergence this pass exists
@@ -15953,6 +15983,8 @@ def _sync_bust_plate_follow_postwrite(dst_path) -> int:
             # per-vert breast/non-breast rescale factors (push-up only)
             scale_br = {}
             scale_nb = {}
+            n_need = 0        # verts that WANT raising (the authority is higher)
+            n_blocked = 0     # ... of those, the ones with no breast bone to raise
             for li, (d, ai) in enumerate(zip(dists, nn)):
                 if not np.isfinite(d) or d > CHEST_SYNC_DISTANCE:
                     continue
@@ -15963,18 +15995,34 @@ def _sync_bust_plate_follow_postwrite(dst_path) -> int:
                 if r is None or r[1] <= 0:
                     continue
                 B, T = r[0], r[1]
-                if B <= 0.0:
-                    continue  # no breast bone here -> can't raise without add_bone
                 cur = B / T
                 tgt = float(auth_frac[ai])
                 if tgt <= cur + 1e-4:
                     continue  # already tracks the cloth here -> leave it
+                n_need += 1
+                if B <= 0.0:
+                    # No breast bone on this vertex: unreachable without add_bone.
+                    # COUNTED, not silently skipped -- the count is the coverage
+                    # test below, and skipping quietly is what tore the robe.
+                    n_blocked += 1
+                    continue
                 N = T - B
                 scale_br[ivi] = (tgt * T) / B
                 scale_nb[ivi] = ((1.0 - tgt) * T / N) if N > 1e-12 else 0.0
             if not scale_br:
                 continue
+            cover = (n_need - n_blocked) / float(max(n_need, 1))
+            if cover < BUST_PLATE_SYNC_MIN_COVER:
+                print(f"  bust-plate follow: {Path(dst_path).name} left alone -- "
+                      f"{s.name!r} is only {cover*100:.0f}% reachable "
+                      f"({n_blocked} of {n_need} verts carry no breast bone), and "
+                      f"a partly-raised layer splits apart", file=sys.stderr)
+                return 0
+            plans.append((s, scale_br, scale_nb))
 
+        total = 0
+        dirty = False
+        for (s, scale_br, scale_nb) in plans:
             bw = s.bone_weights or {}
             bone_list = list(s.bone_names or list(bw.keys()))
             # STBs: setShapeWeights can reset them, so save every bone and restore
