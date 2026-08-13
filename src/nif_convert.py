@@ -15776,7 +15776,7 @@ def _sync_chest_layered_cloth_weights(shape_jobs: list) -> int:
         return 0
 
 
-def _sync_bust_plate_follow_postwrite(dst_path, src_nif_path=None) -> int:
+def _sync_bust_plate_follow_postwrite(dst_path) -> int:
     """#bust-plate-sync. Raise a rigid bust PLATE's breast-family follow up to the
     jiggle CLOTH stacked beneath it, so the cloth stops swinging out through the
     plate under breast physics. Returns the number of receiver verts raised.
@@ -15814,11 +15814,37 @@ def _sync_bust_plate_follow_postwrite(dst_path, src_nif_path=None) -> int:
         return 0
     if _nif_has_fx_shape(nf):
         return 0  # effect-shader NIF: a reload+re-save corrupts its controller -> CTD
+    # FAIL CLOSED. These name the authored physics geometry this pass must not
+    # touch, so an empty set on failure is not a safe default -- it would silently
+    # drop the guard below and let a collider / soft-body shape be reweighted,
+    # the class this project has traced to equip CTDs and cloth collapse. A
+    # lookup that RAISED tells us nothing about the piece, so skip it entirely
+    # and RECORD why (a bare fallback made a protection-less run read as clean).
     try:
         collider_names = _hdt_collider_shape_names(dst_path, nif=nf)
         softbody_names = _hdt_softbody_shape_names(dst_path, nif=nf)
-    except Exception:
-        collider_names = softbody_names = set()
+    except Exception as _pe:
+        _note_pass_failure(
+            "_sync_bust_plate_follow_postwrite/physics-names", _pe, dst_path)
+        print(f"  WARN: bust-plate follow skipped on {Path(dst_path).name}: "
+              f"could not resolve the physics shape names ({_pe!r})",
+              file=sys.stderr)
+        return 0
+    # NO MORPH-TRI SKIP HERE, DELIBERATELY -- and this is a real divergence from
+    # every sibling weight pass, so it is argued rather than assumed. Those passes
+    # (`_match_limb_motion_to_body` and friends) skip a shape driven by its own
+    # source morph TRI because they RE-SHARE LIMB MASS: they move mass between
+    # arm/leg/spine families, which changes how the shape answers a joint
+    # ROTATION its TRI was authored against. MEASURED CONSEQUENCE OF ADOPTING IT
+    # HERE: on the piece this pass was built and in-game-verified for, ALL of
+    # `chest_plate`, `top`, `corset`, `belts` are morph-TRI driven, so the gate
+    # admits nothing and the plate stays at its unfixed 0.095 follow -- and the
+    # pack is ~88% morph-TRI gated (see the pre-reconvert censuses), so the skip
+    # does not make this pass safe, it deletes it. The in-game verdict on that
+    # fully morph-TRI piece was that plate and cloth now move together.
+    # KNOWN LIMIT: that verdict covers JIGGLE. Whether a rewritten plate answers
+    # BODY SLIDERS exactly as before is the untested axis -- a morph A/B, not a
+    # skip, is what would settle it. #bust-plate-sync
     try:
         from scipy.spatial import cKDTree
 
@@ -23524,7 +23550,7 @@ def convert_nif_phase2(
     # now settle -- and raises the plate's breast share to the cloth's. Default
     # OFF (CBBE2UBE_BUST_PLATE_SYNC); a no-op that never loads the NIF when off.
     try:
-        n_bps = _sync_bust_plate_follow_postwrite(dst_path, src_nif_path=src_path)
+        n_bps = _sync_bust_plate_follow_postwrite(dst_path)
         if n_bps:
             import sys as _sys
             print(f"  bust-plate follow: raised {n_bps} plate vert(s) to the "
