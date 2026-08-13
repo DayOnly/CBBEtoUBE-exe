@@ -984,6 +984,12 @@ ADAPTIVE_CLEARANCE_MORPH_MAX = float(
 # `conform`'s authored standoff read identically ZERO, so "authored" carried no
 # information at all. Both halves of that are different here.
 AUTHORED_INFLATE = os.environ.get("CBBE2UBE_AUTHORED_INFLATE") == "1"
+# The same floor for the ANTI-POKE (`clear_armor_outside_body`). Separate flag
+# because it is a separate pass with a different safety story: anti-poke is the
+# LAST line against skin through steel, so its floor must never drop below the
+# body-growth allowance, and it is judged on the morph counters rather than at
+# bind pose. See `#authored-antipoke` at the push site.
+AUTHORED_ANTIPOKE = os.environ.get("CBBE2UBE_AUTHORED_ANTIPOKE") == "1"
 # How much of the body's local outward morph the floor must cover. The margin
 # has to be the body's OWN morph amplitude -- the converter never sees the
 # player's preset -- and it has to be CAPPED, because the belly's runs to 8.7u
@@ -3733,6 +3739,9 @@ def clear_armor_outside_body(
     req_extra: float = 0.0,
     tris=None,
     smooth_iters: int = ANTIPOKE_SMOOTH_ITERS,
+    src_armor_verts: "np.ndarray | None" = None,
+    src_body_verts: "np.ndarray | None" = None,
+    src_body_normals: "np.ndarray | None" = None,
 ) -> np.ndarray:
     """Final anti-poke pass: push each armor vert out of the body so the
     actor's live morph can't punch through. Push-out only; never pulls cloth in.
@@ -3889,6 +3898,49 @@ def clear_armor_outside_body(
         # standoff so stacked garments don't converge to the same surface.
         # Added AFTER the morph/jiggle clips so the cap can't swallow it.
         req = req + float(req_extra)
+
+    # #authored-antipoke. Everything above builds the requirement from
+    # clearance rules alone -- it has never known where the AUTHOR put the
+    # vertex, so a garment already sitting at the author's spacing is pushed out
+    # to a flat floor anyway. The multi-piece pass ledger (18 shapes) makes that
+    # the worst entry in the chain: this is the ONLY pass that moves the mesh
+    # AWAY from the author's fit (+0.0537u median) and it is also the largest
+    # single roughness source in the chain (+2.00 dihedral, more than conform or
+    # inflate), adding ~3 spikes per shape for later passes to clean up.
+    #
+    # Same construction as `#authored-inflate`, monotone for the same reason:
+    # the requirement computed above is the CEILING, so this can only lower a
+    # requirement, never raise one. No vertex is pushed further than today, so
+    # over-inflation cannot worsen and the whole risk surface is "did the floor
+    # come out too low" -- which the census clearance counters measure directly.
+    #
+    # It relaxes only where BOTH hold: the author had this vertex tighter than
+    # the flat floor, AND the body does not grow much here. Where the body
+    # morphs outward -- the bust, belly and butt this pass exists for --
+    # `amp_room` holds the requirement up.
+    if (AUTHORED_ANTIPOKE and src_armor_verts is not None
+            and src_body_verts is not None and src_body_normals is not None):
+        try:
+            sa = np.asarray(src_armor_verts, dtype=np.float64)
+            sb = np.asarray(src_body_verts, dtype=np.float64)
+            sn = np.asarray(src_body_normals, dtype=np.float64)
+            if sa.shape == v.shape and sb.shape == sn.shape and len(sb):
+                _, si = _authored_src_tree(sb).query(sa, k=1, workers=-1)
+                authored = np.maximum(
+                    np.einsum('ij,ij->i', sa - sb[si], sn[si]), 0.0)
+                amp_room = np.zeros(len(v))
+                if morph_amplitude is not None and len(morph_amplitude):
+                    _amp = np.asarray(morph_amplitude, dtype=np.float64)
+                    if len(_amp) > int(nearest.max()):
+                        amp_room = np.minimum(_amp[nearest],
+                                              AUTHORED_INFLATE_AMP_CAP)
+                floor = np.maximum(authored, ARMOR_TO_SKIN_BUFFER + amp_room)
+                req = np.minimum(req, np.maximum(floor, worst))
+        except Exception as e:
+            # A silently-failed floor here reads as "the requirement was
+            # already satisfied" and would ship as a quiet loss of clearance.
+            _note_pass_failure("clear_armor_outside_body/authored-floor", e)
+
     push = np.clip(req - worst, 0.0, max_push)            # push OUT only
     if tris is not None and smooth_iters > 0:
         # Feather the push over the mesh so per-vert normal/magnitude jumps
@@ -22421,6 +22473,15 @@ def convert_nif_phase2(
                     req_extra=_layer_extra.get(s.name, 0.0),
                     tris=(np.asarray(s.tris, dtype=np.int64)
                           if ANTIPOKE_SMOOTH_ENABLED else None),
+                    # #authored-antipoke: the author's own mesh and body, so the
+                    # clearance requirement can be relaxed where they had the
+                    # vertex tighter AND the body does not grow there. Same pair
+                    # conform and inflate read; only informative with
+                    # _SRC_NORMAL_FIX on, since the stored source-body normals
+                    # are routinely all zero.
+                    src_armor_verts=_sv_body,
+                    src_body_verts=src_body_v_p2,
+                    src_body_normals=src_body_n_p2,
                     **_ap_kw)
                 _stage('antipoke', override)
                 # Clip-risk telemetry: verts still INSIDE the body after the

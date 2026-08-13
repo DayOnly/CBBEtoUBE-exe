@@ -264,6 +264,25 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "Measured as a small reduction in stray spikes with no "
                     "visible change otherwise, so treat it as a refinement "
                     "rather than a fix for anything you can see."),
+    Setting("authored_antipoke",
+            "Keep the author's tight fit where the body doesn't grow",
+            "Armor", "Fit and clearance", default=False,
+            env="CBBE2UBE_AUTHORED_ANTIPOKE", invert=False,
+            hint="Stops the last anti-clipping step loosening a deliberately "
+                 "tight garment. Needs the two settings above.",
+            tooltip="The final step against skin showing through pushes armour "
+                    "out to a set distance from the body. It does that even "
+                    "where the author deliberately fitted the garment tight "
+                    "and the body does not change shape -- so a corset that "
+                    "should hug ends up standing off it. Measured across a set "
+                    "of garments, this is the only step that moves armour "
+                    "AWAY from the shape its author built, and it is also the "
+                    "single biggest source of surface roughness. This lets it "
+                    "settle back toward the author's spacing, but ONLY where "
+                    "the body underneath does not grow; over the bust, belly "
+                    "and backside -- what the step exists for -- it keeps the "
+                    "full clearance. It can never push armour further out than "
+                    "it does today."),
     Setting("authored_inflate", "Only add clearance where it is missing",
             "Armor", "Fit and clearance", default=False,
             env="CBBE2UBE_AUTHORED_INFLATE", invert=False,
@@ -758,6 +777,7 @@ LAYOUT: "dict[str, tuple]" = {
             "warp_delta_outlier_max", "warp_push_shell_cap",
             "surface_warp_field", "src_normal_fix",
             "strap_scale_uniform", "short_edge_cap", "layer_ride_bary",
+            "authored_antipoke",
             "authored_inflate",
             "authored_inflate_amp_cap", "layer_order_last",
             "family_weight_invariant",
