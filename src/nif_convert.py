@@ -17662,6 +17662,26 @@ NORMAL_SIGN_GUARD_DETERMINED = os.environ.get(
 # normal is trusted over the source's sign.
 NORMAL_DETERMINED_FAN_MIN = 3
 NORMAL_DETERMINED_COHERENCE_MIN = 0.5
+# The determinacy gate handles the sign by FLIPPING the recompute toward the
+# source. That is wrong at a thin-strap RIM: the rim is a topology boundary where
+# the area-weighted recompute is meaningless (double-sided faces cancel to a
+# sideways normal), so flipping it just relocates garbage -- the white "shard"
+# class (measured on the ruby flower belt: 9 rim verts backwards vs their own
+# geometry, all on boundary edges, while the AUTHORED source normals there are
+# correct at 0.99). When on, this takes the AUTHORED source normal outright at
+# boundary verts and trusts the recompute in the interior -- fixing the rim
+# shards, preserving the pubic-loop case (also a boundary), and no longer
+# flipping a sharp manifold stud to a stale source. DEFAULT OFF pending in game.
+NORMAL_SIGN_GUARD_BOUNDARY = os.environ.get(
+    "CBBE2UBE_NORMAL_GUARD_BOUNDARY", "").strip().lower() in (
+        "1", "true", "yes", "on")
+# Part of the clearance-field pipeline. That build drops the layer-order repair,
+# so this sign-guard rim garbage is the last broad shading defect left; the
+# boundary-source form fixes it (measured: belt rim verts output-vs-author
+# 0.899 -> 1.000, misaligned 181 -> 0). Default it on wherever a clearance-field
+# solve is active. VERIFIED IN GAME. Force independently with the env flag.
+if CLEARANCE_FIELD_SOLVE or CLEARANCE_FIELD_INFLATE:
+    NORMAL_SIGN_GUARD_BOUNDARY = True
 
 
 def _recompute_vertex_normals(
@@ -17723,8 +17743,28 @@ def _recompute_vertex_normals(
             # recompute is undetermined -- see the block above the
             # function for why the blanket form was damage.
             dot = (out * src).sum(axis=1, keepdims=True)
-            flip_mask = dot < 0
-            if NORMAL_SIGN_GUARD_DETERMINED:
+            if NORMAL_SIGN_GUARD_BOUNDARY:
+                # At a topology BOUNDARY (an edge in exactly one triangle) the
+                # area-weighted recompute is unreliable: a double-sided thin
+                # strap's incident faces cancel to a sideways normal, and merely
+                # FLIPPING that garbage toward the source relocates it rather than
+                # fixing it (measured: 9 belt-rim verts backwards vs their own
+                # geometry, while the AUTHORED source normals there are correct at
+                # 0.99). So at a boundary vert take the authored source normal
+                # outright, and trust the recompute in the INTERIOR where it is
+                # reliable -- which also stops a sharp manifold STUD (low
+                # coherence, correct recompute) being flipped to a stale source,
+                # the backwards-normal "shard" class.
+                _ed = np.sort(np.concatenate(
+                    [tris[:, [0, 1]], tris[:, [1, 2]], tris[:, [0, 2]]]),
+                    axis=1)
+                _ue, _uc = np.unique(_ed, axis=0, return_counts=True)
+                _bnd = np.zeros(len(verts), bool)
+                _bnd[_ue[_uc == 1].ravel()] = True
+                _sl = np.linalg.norm(src, axis=1, keepdims=True)
+                _use = _bnd[:, None] & (_sl > 1e-6)
+                out = np.where(_use, src / np.maximum(_sl, 1e-9), out)
+            elif NORMAL_SIGN_GUARD_DETERMINED:
                 # coherence: do the incident faces point the same way?
                 # |sum(area * n)| / sum(area) -- 1.0 flat, 0.0 cancelling.
                 # Both terms carry the same 2x from the raw cross product,
@@ -17733,8 +17773,10 @@ def _recompute_vertex_normals(
                     area_sum, 1e-12)
                 determined = ((fan >= NORMAL_DETERMINED_FAN_MIN)
                               & (coh >= NORMAL_DETERMINED_COHERENCE_MIN))
-                flip_mask = flip_mask & ~determined[:, None]
-            out = np.where(flip_mask, -out, out)
+                flip_mask = (dot < 0) & ~determined[:, None]
+                out = np.where(flip_mask, -out, out)
+            else:
+                out = np.where(dot < 0, -out, out)
     return out
 
 
