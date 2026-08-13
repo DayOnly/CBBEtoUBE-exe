@@ -25,12 +25,31 @@ are asserted here, and each test carries a control that FAILS if the mechanism
 under test is not the one doing the work.
 """
 import numpy as np
+import pytest
 
+import src.nif_convert as nc
 from src.nif_convert import (
     NORMAL_DETERMINED_COHERENCE_MIN,
     NORMAL_DETERMINED_FAN_MIN,
     _recompute_vertex_normals,
 )
+
+
+@pytest.fixture(autouse=True)
+def _select_determinacy_branch():
+    """Every test below exercises the coherence/fan DETERMINACY sign-guard. A
+    clearance-field build -- now the default -- force-enables
+    NORMAL_SIGN_GUARD_BOUNDARY (see the `CLEARANCE_FIELD_* -> True` line by its
+    definition), and that branch SHADOWS the determinacy one. Select the
+    determinacy branch explicitly: it is the live fallback whenever clearance-field
+    is off, and it is what this module is about. The boundary guard -- the
+    production default -- has its own test at the end of the file."""
+    saved = nc.NORMAL_SIGN_GUARD_BOUNDARY
+    nc.NORMAL_SIGN_GUARD_BOUNDARY = False
+    try:
+        yield
+    finally:
+        nc.NORMAL_SIGN_GUARD_BOUNDARY = saved
 
 
 def _disc(n=8, r=1.0, z=0.0):
@@ -120,3 +139,29 @@ def test_cancelling_fan_is_treated_as_undetermined():
     assert guarded[0][2] < 0.0, (
         "a cancelling fan is undetermined -- the source sign must win even "
         "though the vertex has plenty of triangles")
+
+
+def test_boundary_guard_is_the_clearance_field_default(monkeypatch):
+    """The PRODUCTION default (clearance-field forces NORMAL_SIGN_GUARD_BOUNDARY
+    on): take the AUTHORED source normal at a topology BOUNDARY vertex, and TRUST
+    the recompute in the interior -- the f6f811f rim-shard fix. This is a
+    different mechanism from the determinacy gate above, so it defeats the autouse
+    fixture on purpose and gives the now-default branch its own coverage."""
+    monkeypatch.setattr(nc, "NORMAL_SIGN_GUARD_BOUNDARY", True)
+
+    # A single triangle: every vertex is a boundary (each edge in one triangle),
+    # so the authored source sign must win even though the recompute is clean.
+    verts = np.asarray([(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)], float)
+    tris = np.asarray([(0, 1, 2)], np.int64)
+    stale = np.tile(np.asarray([0.0, 0.0, -1.0]), (3, 1))
+    at_rim = _recompute_vertex_normals(verts, tris, source_normals=stale)
+    assert at_rim[0][2] < -0.9, "a boundary vert takes the authored source sign"
+
+    # An interior vertex with a full agreeing fan is INTERIOR (no boundary edge),
+    # so the recompute is trusted and is NOT flipped to the stale source -- the
+    # sharp-stud "shard" the boundary form was written to stop.
+    dv, dt = _disc()
+    interior = _recompute_vertex_normals(
+        dv, dt, source_normals=np.tile(np.asarray([0.0, 0.0, -1.0]), (len(dv), 1)))
+    assert interior[0][2] > 0.9, (
+        "an interior determined fan is trusted, not flipped to a stale source")
