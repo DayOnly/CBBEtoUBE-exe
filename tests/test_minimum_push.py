@@ -187,7 +187,14 @@ def test_rim_margin_and_reach_are_configurable_but_default_conservative():
 def test_reduces_exposure_when_there_is_real_clipping(gap):
     bV, bT, bN, gV, gT, gN = _body_and_garment(gap=gap)
     out, st = fm.minimum_push(gV, gT, gN, bV, bT, bN)
-    if st["exposed_before"] == 0:
-        pytest.skip("synthetic case produced no measurable exposure")
+    # ASSERT THE FIXTURE FIRED. This used to pytest.skip() when the synthetic
+    # case produced no exposure, so the test quietly stopped testing anything
+    # the moment the fixture -- or the detection it leans on -- stopped
+    # producing clipping, while the suite still reported green. Every gap here
+    # is NEGATIVE, i.e. the garment starts inside the body, so zero exposure
+    # is a broken fixture, not a condition to skip on.
+    assert st["exposed_before"] > 0, (
+        f"gap={gap} puts the garment inside the body, so there must be "
+        f"exposure to reduce; got {st}")
     assert st["exposed_after"] < st["exposed_before"], st
     assert st["moved"] > 0

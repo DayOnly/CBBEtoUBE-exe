@@ -27,13 +27,34 @@ against a single-mesh conversion has already produced one false regression here
 (1650 vs 1966 read as damage that did not exist).
 
 TARGET (what removing it should improve)
-    edge deviation vs the author, LENGTH-weighted   fidelity to the original
+    edge deviation vs the author, LENGTH-weighted   UNIFORMITY, not size
     dihedral, area-weighted                         roughness
+
+    READ `edge_dev` CORRECTLY. It is the length-weighted mean |ratio - MEDIAN
+    ratio|, so it scores how UNEVENLY the garment was stretched, not how far
+    it ended up from the author. A garment scaled uniformly by 1.5x scores
+    ZERO -- perfect on this column while being half again too big. It was
+    described here as "fidelity to the original", which it is not, and for a
+    census of INFLATE that gap matters: making things bigger is the pass's
+    job, so its most obvious failure mode is invisible in the target column
+    and only the standoff counters below can see it. Uneven stretch is what
+    smears a texture, so the metric is right for warp-field-style damage and
+    wrong for uniform growth.
 
 COUNTER (what it could destroy -- inflate exists for headroom, so these decide)
     standoff p10 / median                           how much room is left
     verts INSIDE the body                           bind clipping
     verts within 0.1u of the body                   about to clip under morph
+
+    ALL THREE COUNTERS ARE NEAREST-BODY-VERTEX measurements: the signed
+    distance from a garment vertex to the closest body VERTEX, along that
+    vertex's normal. That is the same staircase the warp field was moved off,
+    and it misreads across a concave crease or a coarsely tessellated region,
+    so these numbers are NOT sound as absolute clearances. They are used here
+    only in a PAIRED A/B where both arms are measured identically and the bias
+    cancels. Quoting one of them on its own -- "this garment has N verts
+    inside the body" -- is a claim this census cannot support; use the ray
+    cone in `mesh_penetration.py` for that.
 
 The counters are the point. A pass whose removal improves fidelity while
 quietly halving the clearance the garment needs when the body morphs at runtime
