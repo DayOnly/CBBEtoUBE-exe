@@ -3835,6 +3835,13 @@ PUSH_DIVERGENCE_ITERS = int(
 CLEARANCE_FIELD_SOLVE = os.environ.get(
     "CBBE2UBE_CLEARANCE_FIELD", "").strip().lower() in (
         "1", "true", "yes", "on")
+# The SAME solve on the earlier `inflate_armor_outward` pass -- the bigger fold
+# source (stage ledger on the ruby flower top: inflate creates +592 folds vs the
+# anti-poke's +360). Independent flag so inflate and anti-poke can be A/B'd
+# apart; both share LAMBDA / ITERS / DEBUG below. DEFAULT OFF.
+CLEARANCE_FIELD_INFLATE = os.environ.get(
+    "CBBE2UBE_CLEARANCE_FIELD_INFLATE", "").strip().lower() in (
+        "1", "true", "yes", "on")
 # Locality/mass term. 0.0 = pure harmonic (infinite reach); larger = shorter
 # reach, tighter hug. Numeric tuning knob, so env-only per the flag rule.
 CLEARANCE_FIELD_LAMBDA = float(
@@ -6753,6 +6760,27 @@ def inflate_armor_outward(
             # already satisfied", and would ship as a quiet loss of clearance.
             _note_pass_failure("inflate/authored-floor", e)
 
+    # #clearance-field: solve ONE minimum-stretch displacement that meets every
+    # vert's outward gain, instead of pushing each along its own (diverging) body
+    # normal. Same solve as the final anti-poke; `push_len` (already the authored
+    # -inflate-capped outward gain) is the constraint's lower bound. Own flag and
+    # early return so the OFF path below stays byte-identical. `cap` doubles as
+    # the "assert the pass fired" guard: nothing to inflate -> don't run.
+    if CLEARANCE_FIELD_INFLATE and tris is not None:
+        need = np.clip(push_len, 0.0, None)
+        cap = float(need.max()) if need.size else 0.0
+        if cap > 1e-9:
+            u, _cf = _solve_clearance_field(
+                armor_verts, directions_unit, need, tris, max_push=cap)
+            if _cf.get("ok"):
+                if CLEARANCE_FIELD_DEBUG:
+                    import sys as _sys
+                    _sys.stderr.write(
+                        "[clearance-field/inflate] need=%d moved=%d "
+                        "max_move=%.3f iters=%d converged=%s\n" % (
+                            _cf["n_need"], _cf["n_moved"], _cf["max_move"],
+                            _cf["iters"], _cf["converged"]))
+                return (armor_verts + u).astype(np.float32)
     push = directions_unit * push_len[:, None]
     # #push-divergence: make the field parallel, keeping every vertex's own
     # outward gain. Not a new pass -- the same displacement, applied better.
@@ -21375,6 +21403,17 @@ _LAYER_RIDE_BARY_CAND = int(
 LAYER_ORDER_REPAIR_ENABLED = (
     os.environ.get("CBBE2UBE_NO_LAYER_ORDER", "").strip().lower()
     not in ("1", "true", "yes", "on"))
+# The #clearance-field solve produces a SMOOTH, layer-consistent mesh. This repair
+# was built to clean up the SPIKY per-vertex push, and on the smooth solve output
+# it MISFIRES: it reads fine interface verts as violations and hard-yanks them,
+# buckling thin straps (ruby flower belt: folds ~55 with the repair, 24 without;
+# pack total 92->46, belt spikiness 19.4->4.1). So when a clearance-field solve is
+# active the repair is OFF by default. VERIFIED IN GAME -- the belt reads better
+# without it. Force it back on with CBBE2UBE_FORCE_LAYER_ORDER=1.
+if (CLEARANCE_FIELD_SOLVE or CLEARANCE_FIELD_INFLATE) and (
+        os.environ.get("CBBE2UBE_FORCE_LAYER_ORDER", "").strip().lower()
+        not in ("1", "true", "yes", "on")):
+    LAYER_ORDER_REPAIR_ENABLED = False
 _LAYER_ORDER_NEAR = float(os.environ.get("CBBE2UBE_LAYER_ORDER_NEAR", "2.0") or "2.0")
 _LAYER_ORDER_EPS = 0.05     # sign-noise band
 # #layer-order-joint -- satisfy ALL of a vert's layer constraints at once
