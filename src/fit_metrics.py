@@ -695,7 +695,7 @@ def record_frame(dst_path, shape_name, report: dict) -> None:
 
 
 def record_chain_shift(dst_path, report: dict) -> None:
-    """Append one #chain-body-shift decision to the run's sink.
+    """Append one chain root-shift decision to the run's sink.
 
     This pass is unusually easy to misjudge, in both directions. It moves BONES,
     not vertices, so a clip test on `shape.verts` shows nothing and the pass

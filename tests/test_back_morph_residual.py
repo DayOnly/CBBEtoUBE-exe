@@ -370,8 +370,6 @@ def test_defaults_are_the_measured_configuration():
     assert nc.BACK_RESIDUAL_FEATHER == 0.0
     # Bounding the edit: travel 4.03u -> 1.67u but front 11 -> 18 regressions.
     assert nc.BACK_BOUND_EDIT is False
-    # Surface rule: back 50.0 -> 20.5 where the vertex rule reached 8.9.
-    assert nc.BACK_SURFACE_REQ is False
     assert nc.BACK_MIN_VERTS == 24
     assert nc.BACK_MOVE_MAX == pytest.approx(
         nc.BUST_FLAT_CLEARANCE + nc.BACK_MORPH_RESIDUAL_MAX)

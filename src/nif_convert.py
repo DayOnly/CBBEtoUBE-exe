@@ -632,23 +632,6 @@ BACK_BOUND_EDIT = os.environ.get(
 # front, which a floor would have declined outright.
 BACK_MIN_DEFICIT = float(os.environ.get("CBBE2UBE_BACK_MIN_DEFICIT", "0.05"))
 BACK_MIN_VERTS = int(os.environ.get("CBBE2UBE_BACK_MIN_VERTS", "24"))
-# SURFACE rule for the back: MEASURED WORSE THAN THE VERTEX RULE, default OFF.
-# The bust needs the surface test -- the tightest point sits in a triangle
-# interior and a vertex rule misses it, and its inside-ness gate is what stopped
-# an earlier attempt inflating the chest 0.434 -> 2.297u. The BACK fails the other
-# way round: its deficit is spread thinly over many verts, so the stricter rule
-# pushes too few of them. Body3F, 14 presets, gated metric:
-#     vertex rule      back 50.0 -> 8.9    front regressions 0   <- shipped
-#     surface, masked  back 50.0 -> 20.5   front regressions 1
-#     surface, raw     back 50.0 -> 17.5   front regressions 10, travel to 4.32u
-# The raw surface number needed a mask because `_surface_deficit` scatters `need`
-# to all three corners of any triangle with one masked vertex, and over the top of
-# the shoulder those wrap front-to-back. Masking fixed that (10 -> 0) and the rule
-# still lost. Kept behind the flag because the diagnosis is worth preserving.
-# CBBE2UBE_BACK_SURFACE_REQ=1 to opt in.
-BACK_SURFACE_REQ = os.environ.get(
-    "CBBE2UBE_BACK_SURFACE_REQ", "").strip().lower() in (
-        "1", "true", "yes", "on")
 # One line per piece that fires, so a run is auditable the way min-push is.
 BACK_RESIDUAL_VERBOSE = os.environ.get(
     "CBBE2UBE_BACK_RESIDUAL_QUIET", "").strip().lower() not in (
@@ -752,65 +735,6 @@ SMP_COLLISION_ONLY_ANTIPOKE = os.environ.get(
 # verts on a convex region). Raise it deliberately, in game, one step at a time.
 SMP_ANTIPOKE_MAX_PUSH = float(
     os.environ.get("CBBE2UBE_SMP_ANTIPOKE_PUSH", "").strip() or ANTIPOKE_BUST_CLEAR)
-
-# #smp-chain-antipoke (default OFF, opt-in). A SEPARATE flag from
-# SMP_COLLISION_ONLY_ANTIPOKE on purpose: that one is scoped to shapes the XML
-# declares as COLLIDERS, its comment says so, and widening it in place would make
-# its name a lie -- which its own history warns about.
-#
-# This one admits the case that flag cannot reach: a BONE-DRIVEN SMP CHAIN
-# garment. Traced on a vanilla cuirass whose single shape is a rigid torso welded
-# to an authored skirt (40 `Skirt N_NN` chain bones). Every fit pass skips it, so
-# it keeps CBBE dimensions over a UBE body and the wider UBE hip comes through.
-# Measured with the validated clipping metric, source vs converted:
-#
-#     band                 SOURCE   OURS     with the pass restored
-#     hip/low-back 60-80     0.60%   8.13%   1.08%
-#     upper-back  95-110     1.49%   5.31%   0.70%
-#     REAR upper chest         --   11.64%   0.00%
-#
-# so the defect is ours, not inherited, and the pass closes most of it.
-#
-# OFF BY DEFAULT, AND EXPECT IT TO STAY OFF UNTIL SOMEONE LOOKS IN GAME. This is
-# the same bet that has now failed twice on CONVEX regions: once historically (a
-# suit's butt 28% -> 29%, worst poke -1.81 -> -2.20u) and once here, where the
-# structurally identical `#smp-structural-relax` change was measured on pauldrons
-# and put MORE verts inside the body (5 -> 9, 7 -> 10). The bands above are rear
-# and flat, which is exactly where anti-poke is known to work -- that is a reason
-# to test it, not a reason to trust it. A bind-pose win on flat bands has no
-# bearing on what the convex parts of the same garment do.
-#
-# Requires the NIF to contain no per-vertex soft-body cloth at all, mirroring the
-# collision-only flag: moving a shape that simulated cloth rests against changes
-# that cloth's authored rest state. Pushes at SMP_ANTIPOKE_MAX_PUSH, not the 3.0
-# default, for the vert-spreading reason recorded above.
-SMP_CHAIN_ANTIPOKE = os.environ.get(
-    "CBBE2UBE_SMP_CHAIN_ANTIPOKE", "").strip().lower() in (
-        "1", "true", "yes", "on")
-
-# Its OWN push budget, NOT SMP_ANTIPOKE_MAX_PUSH. That constant carries a sharp
-# optimum measured on the collision-only path (6.9->2.4 at 1.0, WORSE at 0.6,
-# only 5.7 at 3.0) and raising it would move that path off its own measurement.
-# Two paths, two budgets.
-#
-# 2.0 measured on the traced cuirass, real conversions, everything else equal:
-#
-#     budget   rear-upper-back buried verts   worst poke   bust FRONT (convex)
-#     off                    6                  -2.92u          1.71%
-#     1.0                    7                  -1.96u          1.34%
-#     2.0                    5                  -1.00u          1.16%
-#
-# Strictly better on the back, and the CONVEX columns improve rather than
-# degrade, which is the failure mode this family keeps hitting. The band
-# clipping % is unchanged at 1.04% either way -- it is dominated by verts sitting
-# within 0.2u of the skin, which is coincident-surface z-fighting that no budget
-# can fix. Depth is what moves; the percentage is not the metric to tune on.
-#
-# Does NOT help the hip: 1.0 and 2.0 give an identical 7.30% there, because that
-# band is chain cloth pinned to source by _physics_chain_nowarp_blend and no
-# clearance budget survives it.
-SMP_CHAIN_ANTIPOKE_PUSH = float(
-    os.environ.get("CBBE2UBE_SMP_CHAIN_PUSH", "").strip() or 2.0)
 
 
 def _is_belt_overlay(shape) -> bool:
@@ -2883,8 +2807,7 @@ def warp_armor_by_body_delta(
     # distortion on that piece, more than every other pass combined.
     #
     # REFUTED END TO END, 2026-08-13. Kept default-OFF and reachable so the
-    # negative stays reproducible, the same convention as #push-divergence-
-    # smooth and #unified-offset.
+    # negative stays reproducible.
     #
     # AT THIS STAGE it works, and dramatically: k=2/w=0.5 took belts_metal's
     # band stretch 0.137 -> 0.069 and its anisotropy 3.97 -> 1.89. It also ate
@@ -3512,65 +3435,37 @@ def conform_to_source_standoff(
                           f"{BACK_MIN_DEFICIT}u -- under the {BACK_MIN_VERTS}"
                           f" floor, skipped")
             else:
-                # SURFACE, not vertices. The vertex rule asks whether each vert
-                # stands clear; the defect sits in the triangle interior, where a
-                # surface can sag 0.855u below vertices that all pass. Same rule
-                # the bust uses, same inside-ness test -- a body point beside a
-                # triangle is not covered by it and may not demand a push.
-                _need = None
-                if BACK_SURFACE_REQ and tris is not None:
-                    _need = _surface_deficit(
-                        cur_cloth, tris, ube_body_verts, ube_body_normals,
-                        in_back, req_back, ube_tree, BACK_RESIDUAL_Z,
-                        max_push=BACK_MOVE_MAX)
-                if _need is not None:
-                    # MASK BACK TO THE BAND. `_surface_deficit` selects any
-                    # triangle with at least ONE masked vertex and scatters the
-                    # result to ALL THREE corners. Over the top of the shoulder
-                    # the garment wraps back-to-front, so a straddling triangle
-                    # pushed FRONT verts that were never in the back mask --
-                    # measured: upper chest worse on 10 of 14 presets and travel
-                    # up from 0.84u to 4.32u, neither of which the strictly
-                    # masked vertex rule could produce. A straddling triangle may
-                    # still RAISE the requirement; it may not MOVE a vert outside
-                    # the band. Masked here, at the back's call site only, so the
-                    # bust's use of the shared rule is unchanged.
-                    _need = np.where(in_back, _need, 0.0)
-                    move = np.where(_need > 0.0, np.maximum(move, _need), move)
-                    _applied = int((_need > 0.0).sum())
-                    _mx = float(_need.max())
-                else:
-                    _raised = np.maximum(move, _deficit)
-                    if BACK_BOUND_EDIT:
-                        _raised = np.minimum(_raised, move + BACK_MOVE_MAX)
-                    if w_back is not None:
-                        # FEATHER THE EDIT, not the requirement. Scaling
-                        # `_deficit` instead leaves `max(move, 0)` in force where
-                        # the weight is zero, so the charge still cancels
-                        # conform's pull-in at exactly the edge the feather
-                        # exists to leave alone: measured, feather 0 and feather
-                        # 1e-9 differed on 330 verts, which is the floor, not the
-                        # ramp. Blending the EDIT is continuous by construction
-                        # -- w=1 is the flat behaviour, w=0 is no change at all.
-                        # `np.where` on w==1 rather than blending everywhere:
-                        # `move + 1.0*(raised - move)` is ALGEBRAICALLY `raised`
-                        # but not bit-identical to it, and this chain amplifies
-                        # that. Measured, blending every vert at an effectively
-                        # zero-width ramp: 529 verts differed from the flat arm,
-                        # median 0.0010u but reaching 0.2546u once the layer and
-                        # anti-poke passes made discrete decisions on the
-                        # perturbed input. The zone interior must be untouched,
-                        # not merely equal.
-                        _raised = np.where(
-                            w_back >= 1.0, _raised,
-                            move + w_back * (_raised - move))
-                    move = np.where(in_back, _raised, move)
-                    _applied = int((_deficit > 0.0).sum())
-                    _mx = float(_deficit.max())
+                # (a SURFACE-deficit rule for the back -- measuring the deficit against the garment surface, not its vertices -- was measured worse than this vertex rule and removed; refuted, see git history.)
+                _raised = np.maximum(move, _deficit)
+                if BACK_BOUND_EDIT:
+                    _raised = np.minimum(_raised, move + BACK_MOVE_MAX)
+                if w_back is not None:
+                    # FEATHER THE EDIT, not the requirement. Scaling
+                    # `_deficit` instead leaves `max(move, 0)` in force where
+                    # the weight is zero, so the charge still cancels
+                    # conform's pull-in at exactly the edge the feather
+                    # exists to leave alone: measured, feather 0 and feather
+                    # 1e-9 differed on 330 verts, which is the floor, not the
+                    # ramp. Blending the EDIT is continuous by construction
+                    # -- w=1 is the flat behaviour, w=0 is no change at all.
+                    # `np.where` on w==1 rather than blending everywhere:
+                    # `move + 1.0*(raised - move)` is ALGEBRAICALLY `raised`
+                    # but not bit-identical to it, and this chain amplifies
+                    # that. Measured, blending every vert at an effectively
+                    # zero-width ramp: 529 verts differed from the flat arm,
+                    # median 0.0010u but reaching 0.2546u once the layer and
+                    # anti-poke passes made discrete decisions on the
+                    # perturbed input. The zone interior must be untouched,
+                    # not merely equal.
+                    _raised = np.where(
+                        w_back >= 1.0, _raised,
+                        move + w_back * (_raised - move))
+                move = np.where(in_back, _raised, move)
+                _applied = int((_deficit > 0.0).sum())
+                _mx = float(_deficit.max())
                 if BACK_RESIDUAL_VERBOSE:
                     print(f"  [back-residual] {_applied} vert(s), deficit over "
-                          f"{_hit} in-band, max {_mx:.2f}u"
-                          f"{' (surface)' if _need is not None else ' (vertex)'}")
+                          f"{_hit} in-band, max {_mx:.2f}u (vertex)")
                 if BACK_DEBUG:
                     # BACK_MOVE_MAX caps the CHARGE, not the EDIT. `np.maximum`
                     # over a NEGATIVE move replaces conform's pull-in, so the
@@ -3744,65 +3639,8 @@ def _rank_body_layers(shapes, body_verts, *, body_names, reskin_skip,
             for rk, (_m, nm) in enumerate(elig)}
 
 
-# #push-divergence -- the clearance pushes stretch the surface, and it is the
-# DIRECTION spread that does it, not the magnitude.
-#
-# Both `inflate_armor_outward` and `clear_armor_outside_body` move each vertex
-# along ITS OWN nearest body vertex's normal. Those normals fan apart wherever
-# the body creases -- the waist above all, which is where CBBE and UBE differ
-# most -- so two neighbouring vertices are pushed in different directions and
-# the triangle between them is pulled out of shape. Measured on the reported
-# piece by recovering each pass's push vector from consecutive stage snapshots
-# and splitting it per triangle into the part common to all three corners (a
-# rigid translation, harmless) and the part that differs:
-#
-#     corr(stretch, DIVERGENCE)   corr(stretch, MAGNITUDE)
-#     top      antipoke   +0.784            +0.461
-#     corset   antipoke   +0.712            +0.417
-#     belts    inflate    +0.596            +0.249
-#     corset   inflate    +0.574            +0.169
-#
-# and on the worst-stretched triangles the divergence runs 4-6x typical while
-# the push magnitude runs about 2x. So the surface is not being pushed too hard,
-# it is being pushed APART.
-#
-# This is also why `ANTIPOKE_SMOOTH` did not help and measured WORSE on the
-# reported patch (bad area 69.7 -> 91.9): it feathers the push SCALAR and leaves
-# every direction untouched, so it spreads a divergent field over more triangles
-# instead of making it parallel.
-#
-# Smoothing the push VECTOR looked like the fix: it is the component the
-# correlations above blame, and the outward part can be restored per vertex so
-# no clearance is traded away.
-#
-# IT MEASURED WORSE AND IS KEPT ONLY SO THE NEGATIVE STAYS REPRODUCIBLE.
-# On the reported patch (top+corset+belts at the waist, bad triangles / bad
-# area):
-#
-#     as shipped                        501 / 69.7
-#     + ANTIPOKE_SMOOTH (scalar)        613 / 91.9
-#     + this, the vector version        656 / 101.7
-#
-# WHY, and it is structural rather than a tuning failure: the clearance
-# guarantee is stated PER VERTEX ALONG ITS OWN NORMAL, and that normal field is
-# the divergent thing. So the restore step -- `v += nrm * shortfall`, which is
-# what keeps the pass honest -- adds displacement back along exactly the
-# directions the smoothing just removed. Every iteration parallelises and then
-# re-diverges, and the net is more total displacement and more stretch.
-#
-# The two cannot both hold: you cannot guarantee each vertex's own outward
-# clearance along a diverging normal field AND keep the field parallel. Any
-# future attempt has to change what is being GUARANTEED -- clearance against a
-# smoothed normal field, or a displacement solved for minimum stretch subject to
-# clearance -- not post-process the push. Smoothing the push is now refuted in
-# both of its available forms.
-PUSH_DIVERGENCE_SMOOTH = os.environ.get(
-    "CBBE2UBE_PUSH_DIVERGENCE_SMOOTH") == "1"
-PUSH_DIVERGENCE_ITERS = int(
-    os.environ.get("CBBE2UBE_PUSH_DIVERGENCE_ITERS", "") or 3)
-
 # #clearance-field. THE alternative the refuted push-divergence smoothing named
-# as the only way forward (see the block above): "a displacement solved for
+# as the only way forward: "a displacement solved for
 # minimum stretch subject to clearance -- not post-process the push."
 #
 # Every clearance pass today states its guarantee PER VERTEX ALONG ITS OWN
@@ -3821,7 +3659,7 @@ PUSH_DIVERGENCE_ITERS = int(
 # The floor is an INEQUALITY, not a target: a vertex may sit further out than
 # need_i when that costs less stretch, so over a concave crease the field lifts
 # off the valley and BRIDGES it instead of diving in along the fanning normals.
-# That is what `_parallelise_push` cannot do -- it re-projects every vertex back
+# That is what push-smoothing cannot do -- it re-projects every vertex back
 # ONTO need_i (an equality) as its terminal step, forbidding the lift-off -- and
 # what the scalar feather cannot do -- it never touches direction. Solved by
 # projected Jacobi to a fixed point (the constrained-QP optimum), which is a
@@ -3858,56 +3696,6 @@ CLEARANCE_FIELD_ITERS = int(
 CLEARANCE_FIELD_DEBUG = os.environ.get(
     "CBBE2UBE_CLEARANCE_FIELD_DEBUG", "").strip().lower() in (
         "1", "true", "yes", "on")
-
-
-def _parallelise_push(push_vec, normals, needed, tris,
-                      iters: int = None, blend: float = 0.5):
-    """Make a push field more PARALLEL without reducing what it clears.
-
-    `push_vec` is the per-vertex displacement a clearance pass is about to
-    apply, `normals` the outward direction each vertex was pushed along, and
-    `needed` the outward distance it was required to gain. Smoothing the vector
-    over mesh adjacency removes the sideways disagreement between neighbours;
-    the outward component is then floored back at `needed`, so the guarantee the
-    pass makes is untouched and only the stretch is given up.
-
-    Returns `push_vec` unchanged on any failure -- never worse than not doing it.
-    """
-    if iters is None:
-        iters = PUSH_DIVERGENCE_ITERS
-    try:
-        t = np.asarray(tris, dtype=np.int64).reshape(-1, 3)
-        v = np.asarray(push_vec, dtype=np.float64)
-        n = len(v)
-        if t.size == 0 or n < 3 or iters < 1 or not np.any(
-                np.linalg.norm(v, axis=1) > 1e-9):
-            return push_vec
-        e = np.concatenate([t[:, [0, 1]], t[:, [1, 2]], t[:, [2, 0]]])
-        e = np.concatenate([e, e[:, ::-1]])
-        e = e[(e[:, 0] < n) & (e[:, 1] < n) & (e[:, 0] >= 0) & (e[:, 1] >= 0)]
-        if not len(e):
-            return push_vec
-        nrm = np.asarray(normals, dtype=np.float64)
-        need = np.asarray(needed, dtype=np.float64)
-        cnt = np.bincount(e[:, 0], minlength=n).astype(np.float64)
-        live = cnt > 0
-        for _ in range(int(iters)):
-            acc = np.zeros_like(v)
-            for k in range(3):
-                np.add.at(acc[:, k], e[:, 0], v[e[:, 1], k])
-            avg = np.zeros_like(v)
-            avg[live] = acc[live] / cnt[live, None]
-            v = np.where(live[:, None], (1.0 - blend) * v + blend * avg, v)
-            # RESTORE THE CLEARANCE. Smoothing can only be allowed to take away
-            # sideways motion; whatever outward distance the pass demanded is
-            # put straight back, so this cannot reopen a poke-through.
-            along = np.einsum('ij,ij->i', v, nrm)
-            short = np.maximum(need - along, 0.0)
-            v = v + nrm * short[:, None]
-        return v
-    except Exception as _pe:
-        _note_pass_failure("_parallelise_push", _pe)
-        return push_vec
 
 
 def _smooth_push_field(push: np.ndarray, needed: np.ndarray, tris,
@@ -4305,12 +4093,6 @@ def clear_armor_outside_body(
                        0.0, max_push)
     push = np.where(dd[:, 0] < max_body_dist, push, 0.0)  # leave far drapes alone
     push_vec = nrm * push[:, None]
-    # #push-divergence: same displacement, applied so neighbours move together.
-    # Runs AFTER the scalar feather above, because that one shapes HOW MUCH and
-    # this one shapes WHICH WAY -- and it is the direction spread that stretches
-    # the surface (see `_parallelise_push`).
-    if PUSH_DIVERGENCE_SMOOTH and tris is not None:
-        push_vec = _parallelise_push(push_vec, nrm, push, tris)
     return (v + push_vec).astype(np.float32)
 
 
@@ -6481,56 +6263,6 @@ def snap_armor_outside_body(
     return armor_verts.astype(np.float32)
 
 
-# ------------------------------------------------- #unified-offset (opt-in)
-# ONE clearance floor, solved once, applied once -- replacing the three passes
-# that are all really asserting the same thing.
-#
-# `inflate_armor_outward` computes its per-vert magnitude as
-#     clip(ADAPTIVE_CLEARANCE_BASE + MORPH_FACTOR*amp, BASE, MORPH_MAX)
-# and `clear_armor_outside_body` computes its adaptive clearance the SAME way.
-# They are the same number, computed twice, applied on opposite sides of
-# `conform_to_source_standoff` -- and because inflate is ADDITIVE while conform
-# is ABSOLUTE, conform simply overwrites it. Measured over 38 shapes: inflate
-# CANCELLED by conform on 12 of 32 instances, every cancellation naming conform.
-#
-# Stated as a FLOOR applied AFTER the target, the same intent cannot be
-# overwritten:  offset_final = max(conform's target, clearance floor).
-#
-# SCOPE OF THIS WIRING -- deliberately narrow, so the A/B can attribute what it
-# measures:
-#   * REPLACES `inflate_armor_outward` + `clear_armor_outside_body`. Those two
-#     are the pair that fight through `conform`, and their adaptive term is
-#     literally the same formula computed twice.
-#   * `conform_to_source_standoff` KEEPS setting the target and still runs
-#     first; the floor is applied after it and so cannot be overwritten.
-#   * `_inflate_cloth_over_bust_butt` is LEFT ALONE. It serves shapes the
-#     anti-poke skips (soft-body / HDT-rigged), a disjoint population, so there
-#     is no conflict there to resolve and folding it in would widen the change
-#     for no measurable gain.
-#   * NO CEILING is introduced. `max_push_out`/`max_pull` are MOVE caps, not
-#     offset ceilings; adding one would smuggle a new constraint in under the
-#     banner of consolidation and the A/B could not attribute the result.
-UNIFIED_OFFSET = os.environ.get(
-    "CBBE2UBE_UNIFIED_OFFSET", "").strip().lower() in ("1", "true", "yes", "on")
-# The FLOOR form, kept only so its negative result stays reproducible. A/B'd on
-# the four pieces with real bust-clipping headroom and measured ~50% WORSE
-# (4.728% -> 7.079%), because a floor lifts 5.6% of verts where the additive
-# push it replaced reaches 75% -- a difference in REACH that no floor value
-# closes. Do not enable expecting an improvement; enable to re-derive A14/A15.
-#
-# READ THAT VERDICT WITH ITS PRECONDITION (added 2026-08-12). It was measured
-# while `conform_to_source_standoff` was reading an authored standoff of
-# IDENTICALLY ZERO on every vertex -- BodySlide ships inline body normals all
-# zero and `_SRC_NORMAL_FIX` was off -- so `clip(target, floor, ceiling)` was
-# being solved with no target at all. "A floor cannot match the additive push's
-# reach" may still be true, but it was established against a degenerate target
-# and has not been re-tested since the target became real.
-# `#authored-inflate` is the re-test, and it is NOT this: it keeps the additive
-# result as a CEILING and only ever reduces a push, so it cannot lose reach the
-# way this form did.
-UNIFIED_OFFSET_FLOOR = os.environ.get(
-    "CBBE2UBE_UNIFIED_OFFSET_FLOOR", "").strip().lower() in (
-        "1", "true", "yes", "on")
 # A TUNING KNOB (numeric, so env-only is fine per the flag rule): how much
 # headroom `conform` leaves above the authored drape when it reels a garment in.
 #
@@ -6539,98 +6271,6 @@ UNIFIED_OFFSET_FLOOR = os.environ.get(
 # instead of the replacement: inflate keeps its reach AND conform stops reeling
 # the result quite so tight. 0.0 is exactly today's behaviour.
 CONFORM_MARGIN = float(os.environ.get("CBBE2UBE_CONFORM_MARGIN", "0.0"))
-
-
-def _unified_clearance_floor(
-    verts, body_verts, body_normals, *,
-    body_nipple=None, morph_amplitude=None, tris=None, chain_mask=None,
-    flat_clear=ANTIPOKE_FLAT_CLEAR, bust_clear=ANTIPOKE_BUST_CLEAR,
-    nipple_gain=ANTIPOKE_NIPPLE_GAIN, bust_z=(84.0, 100.0),
-    max_push=3.0, max_body_dist=10.0, feather_iters=2,
-    region_standoffs=True, uniform_clear=0.0,
-):
-    """Per-vert clearance FLOOR, solved and applied once. Returns new verts.
-
-    The floor at a vert is the MAX of every clearance any pass would have
-    asserted there -- adaptive morph clearance, the flat/bust anti-poke clears,
-    and the rear/calf/thigh standoffs -- because they are all lower bounds on
-    the same quantity and the strictest one is the one that matters.
-
-    Verts further than `max_body_dist` from the body are untouched: a loose robe
-    has no clearance requirement, and pushing it is the over-inflation that
-    reached the user twice.
-
-    `chain_mask` is the PIN, as a weight rather than a restore: a simulated vert
-    is never moved, so nothing is done and then discarded.
-    """
-    from . import offset_field as _of
-    V = np.asarray(verts, np.float64)
-    B = np.asarray(body_verts, np.float64)
-    if len(V) == 0 or len(B) == 0:
-        return V
-    N = np.asarray(body_normals, np.float64)
-    off, j, dist = _of.current_offset(V, B, N)
-
-    bz = B[j][:, 2]
-    # `uniform_clear` is the inflate-replacement term: one clearance everywhere
-    # the pass reaches, which is what inflate asserted. The named region clears
-    # below belong to the anti-poke and are switched OFF when this stands in for
-    # inflate alone -- widening the anti-poke's regions to the shapes inflate
-    # covers would be a different change wearing this one's name.
-    floor = np.full(len(V), max(float(flat_clear), float(uniform_clear)))
-    # bust band, with the nipple gain where the body says there is one
-    in_bust = (bz >= bust_z[0]) & (bz <= bust_z[1])
-    bust_val = np.full(len(V), float(bust_clear))
-    if body_nipple is not None:
-        try:
-            nip = np.asarray(body_nipple, np.float64)
-            if len(nip) == len(B):
-                bust_val = bust_val * (1.0 + (float(nipple_gain) - 1.0)
-                                       * np.clip(nip[j], 0.0, 1.0))
-        except Exception:
-            pass
-    if float(bust_clear) > 0.0:
-        floor = np.where(in_bust, np.maximum(floor, bust_val), floor)
-    # region standoffs -- same bands and values the anti-poke already uses
-    ny = N[j][:, 1] if N.ndim == 2 and N.shape[1] == 3 else np.zeros(len(V))
-    for lo, hi, val, rear in (() if not region_standoffs else (
-            (REAR_STANDOFF_Z_LO, REAR_STANDOFF_Z_HI, REAR_STANDOFF, True),
-            (CALF_STANDOFF_Z_LO, CALF_STANDOFF_Z_HI, CALF_STANDOFF, False),
-            (THIGH_STANDOFF_Z_LO, THIGH_STANDOFF_Z_HI, THIGH_STANDOFF, False))):
-        if float(val) <= 0.0:
-            continue
-        m = (bz >= lo) & (bz <= hi)
-        if rear:
-            m = m & (ny < -abs(REAR_STANDOFF_NY))
-        floor = np.where(m, np.maximum(floor, float(val)), floor)
-    # adaptive morph clearance -- the term inflate and the anti-poke BOTH
-    # compute, here once
-    if (ADAPTIVE_CLEARANCE_ENABLED and morph_amplitude is not None):
-        try:
-            amp = np.asarray(morph_amplitude, np.float64)
-            if len(amp) == len(B):
-                floor = np.maximum(floor, np.clip(
-                    ADAPTIVE_CLEARANCE_BASE
-                    + ADAPTIVE_CLEARANCE_MORPH_FACTOR * amp[j],
-                    ADAPTIVE_CLEARANCE_BASE, ADAPTIVE_CLEARANCE_MORPH_MAX))
-        except Exception:
-            pass
-
-    weight = np.ones(len(V))
-    weight[dist > float(max_body_dist)] = 0.0     # nothing to clear out here
-    if chain_mask is not None:
-        try:
-            cm = np.asarray(chain_mask, bool)
-            if len(cm) == len(V):
-                weight[cm] = 0.0
-        except Exception:
-            pass
-    target = _of.solve(off, floor=floor)
-    # OUTWARD ONLY. A floor may raise a vert off the body; it must never pull
-    # one in -- that is the target pass's job and this must not fight it.
-    target = np.maximum(target, off)
-    return _of.apply(V, N, j, off, target, max_move=max_push,
-                     weight=weight, tris=tris, feather_iters=feather_iters)
 
 
 def inflate_armor_outward(
@@ -6789,10 +6429,6 @@ def inflate_armor_outward(
                             _cf["iters"], _cf["converged"]))
                 return (armor_verts + u).astype(np.float32)
     push = directions_unit * push_len[:, None]
-    # #push-divergence: make the field parallel, keeping every vertex's own
-    # outward gain. Not a new pass -- the same displacement, applied better.
-    if PUSH_DIVERGENCE_SMOOTH and tris is not None:
-        push = _parallelise_push(push, directions_unit, push_len, tris)
 
     return (armor_verts + push).astype(np.float32)
 
@@ -13812,66 +13448,6 @@ def _reanchor_nif_root_chains(chain, anchors, src_nodes) -> int:
     return done
 
 
-# ------------------------------------------------- #chain-body-shift (opt-in)
-# Move a physics chain to where the UBE body actually is.
-#
-# THE DEFECT. `_physics_chain_nowarp_blend` pins chain verts to their SOURCE
-# position so they stay aligned with chain bones recreated at SOURCE bind.
-# Measured on a vanilla cuirass: all 63 chain bones sit at EXACTLY 0.0000u from
-# source while other bones moved up to 109.78u. So the skirt keeps a CBBE-sized
-# rest pose while the body grows to UBE proportions, and the bigger butt ends up
-# INSIDE it. Chain-driven skirt triangles over the butt band:
-#
-#     SOURCE (CBBE)   covers  0.00%   clipping 0.00%
-#     OUTPUT (UBE)    covers 63.81%   clipping 7.46%
-#
-# On CBBE the skirt does not reach the butt at all; on UBE it is buried in it.
-# Every other lever is inert here BY CONSTRUCTION -- clearance cannot move a
-# pinned vert, and the jiggle graft correctly refuses sim-driven verts -- so this
-# is the only axis left.
-#
-# WHY THIS IS SAFE, and why it shifts ROOTS ONLY. Chain bone transforms are
-# PARENT-LOCAL, so displacing a chain's root translates the entire chain
-# RIGIDLY: every inter-bone distance changes by exactly 0.0000u. The authored
-# constraints are self-closing (`bodyA`/`bodyB` only) with no explicit
-# `frameInA`, so FSMP derives each rest frame from the bones at load -- nothing
-# hard-codes CBBE coordinates -- and the skirt groups' +/-1u linear limits are
-# RELATIVE, so a rigid translation cannot violate them. Warping bones
-# INDIVIDUALLY would change rest lengths and is exactly how a chain explodes;
-# this deliberately does not do that.
-#
-# The pin itself is left alone. It protects an ALIGNMENT (verts must match the
-# bones the sim drives), not a POSITION, and the alignment survives because the
-# verts ride the bones: rendered position is BoneGlobal . STB . v, so moving the
-# node moves the cloth. Nothing recomputes the STB -- doing so would re-derive
-# the bind from the new node and cancel the shift to zero.
-CHAIN_BODY_SHIFT = os.environ.get(
-    "CBBE2UBE_CHAIN_BODY_SHIFT", "").strip().lower() in ("1", "true", "yes", "on")
-# Cap. The measured requirement is the body delta itself (butt band: mean 0.506u,
-# p90 0.940u, max 1.467u), so 2.0u is headroom, not a target.
-CHAIN_BODY_SHIFT_MAX = float(
-    os.environ.get("CBBE2UBE_CHAIN_BODY_SHIFT_MAX", "2.0"))
-CHAIN_BODY_SHIFT_MIN_VERTS = 8
-# Which of the chain's near verts set the shift. 0.0 = the plain mean over all
-# of them, which is the validated behaviour and stays the default.
-#
-# Why a knob at all: one rigid translation cannot satisfy a skirt that wraps the
-# hips, because the body did not grow evenly around it. In the butt band the
-# delta is mean 0.506u but p90 0.940u and max 1.467u -- so the mean is set
-# largely by the front and sides, and UNDER-serves the butt, which is the part
-# that actually clips. Raising this to e.g. 0.75 averages only the top quartile
-# by delta magnitude, biasing the shift toward wherever the body grew most.
-#
-# It trades one region for another and cannot be judged from a bind pose, so it
-# ships at the validated 0.0 until the recorded numbers say otherwise.
-CHAIN_BODY_SHIFT_BIAS = float(
-    os.environ.get("CBBE2UBE_CHAIN_BODY_SHIFT_BIAS", "") or 0.0)
-# Only verts genuinely NEAR the body inform the shift. A floor-length hem hangs
-# metres away where the delta field is meaningless; averaging it in would drag
-# every chain toward zero and make the pass look inert.
-CHAIN_BODY_SHIFT_NEAR = 8.0
-
-
 def _chain_root_subtrees(chain: dict, custom_only: bool = False) -> dict:
     """{root: every bone in its subtree}. A root is a chain bone whose parent is
     NOT itself a chain bone -- i.e. it hangs off the skeleton.
@@ -13904,125 +13480,6 @@ def _chain_root_subtrees(chain: dict, custom_only: bool = False) -> dict:
             stack.extend(kids.get(cur, ()))
         out[r] = sub
     return out
-
-
-def _shift_chain_roots_by_body_delta(chain: dict, src_nif, dst_path=None) -> int:
-    """Translate each physics chain by the CBBE->UBE body delta where it sits.
-
-    Mutates `chain` in place (root entries only) and returns the number of
-    chains moved. Default OFF -- see CHAIN_BODY_SHIFT.
-
-    `dst_path` is telemetry only: every root's decision, INCLUDING the skips and
-    their reason, goes to the run's JSONL sink. Without it the pass is
-    unverifiable in bulk -- it moves bones rather than verts, so nothing
-    downstream can see whether it fired.
-    """
-    if not CHAIN_BODY_SHIFT or not chain:
-        return 0
-    # NOT wrapped in a bare `except: return 0`. The first version was, and it
-    # swallowed a NameError (`cKDTree` is imported per-function in this module,
-    # never at module level) as "nothing to move" -- a broken pass reading
-    # exactly like a clean one. Genuine absences return 0 explicitly below;
-    # anything else propagates to the caller, which reports it.
-    from scipy.spatial import cKDTree
-    cbbe = _find_cbbe_base_body()
-    ube = _find_user_preset_body()
-    if not cbbe or not ube:
-        return 0
-    cV, delta = _cached_cbbe_to_ube_delta(cbbe, ube)
-    cV = np.asarray(cV, np.float64)
-    delta = np.asarray(delta, np.float64)
-    if len(cV) < 3 or len(cV) != len(delta):
-        return 0
-    tree = cKDTree(cV)
-
-    # Where each chain bone's cloth actually sits. Taken from the SKINNED VERTS,
-    # not from the node transforms: skeleton bones are (0,0,0) placeholders in an
-    # armour NIF, so `global_transform` on a chain returns PELVIS-RELATIVE
-    # coordinates (measured z -26..28 against a butt band at z 62..80). Sampling
-    # the delta field there queries empty space -- the nearest body vert averaged
-    # 12.66u away, which is the tell. The verts are already in the frame the
-    # delta field is defined in.
-    per_bone: dict = {}
-    shapes = list(src_nif.shapes)
-    for sh in shapes:
-        try:
-            V = _verts_skin_to_world(np.asarray(sh.verts, np.float64),
-                                     _shape_global_to_skin(sh))
-        except Exception:
-            continue
-        for b, pairs in (sh.bone_weights or {}).items():
-            if b not in chain:
-                continue
-            idx = [int(v) for v, w in pairs
-                   if float(w) > 0.2 and 0 <= int(v) < len(V)]
-            if idx:
-                per_bone.setdefault(b, []).append(V[idx])
-
-    def _say(root, **kw):
-        if dst_path is None:
-            return
-        try:
-            fit_metrics.record_chain_shift(dst_path, dict(root=str(root), **kw))
-        except Exception:
-            pass
-
-    moved = 0
-    # GARMENT roots only. The skeleton anchors in `chain` are the actor's own
-    # bones; the armour NIF's copies are placeholders the actor skeleton
-    # overrides at runtime, so translating them is both wrong in intent and
-    # inert in effect.
-    for root, sub in _chain_root_subtrees(chain, custom_only=True).items():
-        chunks = [a for b in sub for a in per_bone.get(b, ())]
-        if not chunks:
-            _say(root, skipped="no skinned cloth on this chain")
-            continue
-        P = np.concatenate(chunks)
-        d, j = tree.query(P, k=min(4, len(cV)))
-        if d.ndim == 1:                       # k==1 on a tiny reference body
-            d, j = d[:, None], j[:, None]
-        near = d[:, 0] < CHAIN_BODY_SHIFT_NEAR
-        if int(near.sum()) < CHAIN_BODY_SHIFT_MIN_VERTS:
-            _say(root, skipped="too few verts near the body",
-                 near=int(near.sum()), verts=int(len(P)),
-                 nearest=float(d[:, 0].min()))
-            continue
-        w = 1.0 / np.clip(d[near], 1e-6, None)
-        w /= w.sum(axis=1, keepdims=True)
-        per_vert = (delta[j[near]] * w[..., None]).sum(axis=1)
-        # Which near verts get a vote. Default: all of them (the plain mean).
-        if CHAIN_BODY_SHIFT_BIAS > 0.0:
-            mags = np.linalg.norm(per_vert, axis=1)
-            cut = np.quantile(mags, min(max(CHAIN_BODY_SHIFT_BIAS, 0.0), 0.99))
-            sel = mags >= cut
-            if sel.sum() >= 1:
-                per_vert = per_vert[sel]
-        shift = per_vert.mean(axis=0)
-        mag = float(np.linalg.norm(shift))
-        if not np.isfinite(mag) or mag < 1e-3:
-            _say(root, skipped="delta is zero here", mag=mag,
-                 near=int(near.sum()))
-            continue
-        capped = mag > CHAIN_BODY_SHIFT_MAX
-        if capped:
-            shift = shift * (CHAIN_BODY_SHIFT_MAX / mag)
-        _say(root, moved=True, mag=round(mag, 4),
-             applied=round(float(np.linalg.norm(shift)), 4),
-             capped=bool(capped), near=int(near.sum()), verts=int(len(P)),
-             bias=CHAIN_BODY_SHIFT_BIAS,
-             shift=[round(float(c), 4) for c in shift])
-        # COPY, never mutate. `node.transform` is a VIEW onto the source node --
-        # verified: writing through it changes what the source node reports, so
-        # the second weight file converted from the same load would inherit the
-        # shift a second time.
-        xf, par = chain[root]
-        nxf = xf.copy()
-        t = nxf.translation
-        nxf.translation = (float(t[0] + shift[0]), float(t[1] + shift[1]),
-                           float(t[2] + shift[2]))
-        chain[root] = (nxf, par)
-        moved += 1
-    return moved
 
 
 # -------------------------------------- #chain-rest-outside-body (opt-in)
@@ -14138,7 +13595,7 @@ def _chain_rest_globals(chain: dict, src_nodes) -> dict:
 
     Composed from the CHAIN's OWN local transforms rather than read off the
     source node tree, so anything that already mutated `chain` -- the pelvis
-    re-anchor, `#chain-body-shift` -- is accounted for instead of silently
+    re-anchor, the chain-rest-lift -- is accounted for instead of silently
     discarded. The walk roots at the first ancestor the chain does not own (a
     real skeleton bone), whose SOURCE global supplies the frame.
     """
@@ -14701,22 +14158,21 @@ def _precreate_custom_bone_chains(dst_nif, src_nif, bone_names) -> int:
             pass
     # AFTER the re-anchor, so it adds to whatever local transform that left --
     # the two compose, and running first would have the re-anchor overwrite it.
-    if CHAIN_BODY_SHIFT or CHAIN_REST_LIFT:
-        # dst path for telemetry only; absent -> the passes still run, they just
+    if CHAIN_REST_LIFT:
+        # dst path for telemetry only; absent -> the pass still runs, it just
         # cannot record. Never let a missing path skip a shift.
         _dp = getattr(dst_nif, "filepath", None) or getattr(
             dst_nif, "filename", None)
-        # ONE snapshot around BOTH passes. They mutate the same root entries and
-        # compose (rest-lift measures the positions the body-delta shift left),
-        # so the re-apply below must see their combined effect, not the last
-        # one's. Taken before either runs.
+        # Snapshot the root translations before the pass runs. The node loop
+        # further down only ADDS nodes that don't already exist, and a garment
+        # chain root is normally already present, so a root the pass moves must
+        # have its new transform re-applied below or the shift is silently
+        # discarded.
         _before = {b: tuple(float(c) for c in x.translation)
                    for b, (x, _p) in chain.items()}
         for _label, _fn, _flag in (
-                ("chain-shift", _shift_chain_roots_by_body_delta,
-                 CHAIN_BODY_SHIFT),
                 ("chain-rest-lift", _lift_chain_roots_off_body,
-                 CHAIN_REST_LIFT)):
+                 CHAIN_REST_LIFT),):
             if not _flag:
                 continue
             try:
@@ -14784,10 +14240,11 @@ def _precreate_custom_bone_chains(dst_nif, src_nif, bone_names) -> int:
                 # chain bone parented onto it (which kept its source-LOCAL
                 # transform, assuming a parent at pelvis/COM height) lands ~69u
                 # low. Correcting it HERE does not survive: a later rebuild
-                # re-emits the nodes and discards it -- measured, the same trap
-                # the CHAIN_BODY_SHIFT block above documents. The repair for THAT
-                # is `_seed_flat_chain_anchors`, which runs FIRST into the empty
-                # NIF. #anchor-global-fix
+                # re-emits the nodes and discards it -- measured, the same
+                # discard trap the `_shifted` re-apply above guards against (and
+                # that the removed chain-body-shift pass hit; see git history).
+                # The repair for THAT is `_seed_flat_chain_anchors`, which runs
+                # FIRST into the empty NIF. #anchor-global-fix
                 #
                 # BUT WHEN IT DOES NOT EXIST IT MUST STILL BE CREATED HERE.
                 # #chain-anchor-recreate -- REPORTED IN GAME as "skirts appear
@@ -20254,120 +19711,6 @@ def _select_framework_bone_carriers(xml_bones, present_bones, source_shapes, *,
     return carriers
 
 
-# #authored-xml-bone-remap -- OPT-IN, DEFAULT OFF. An authored CBBE/3BA physics
-# XML names the breast chain `NPC L/R Breast` etc, while a UBE mesh is skinned to
-# `L Breast01/02/03`. On a real modlist 109 of 216 authored XMLs name the 3BA
-# chain (104x `NPC L/R Breast`, 94x `NPC L/R PreButt`, 53x `NPC L/R PreBreast`).
-# This retargets those names onto the chain the converted mesh carries.
-#
-# READ THIS BEFORE ENABLING -- THE ORIGINAL JUSTIFICATION WAS DISPROVEN.
-# It was first written on the premise that those names were DEAD, i.e. the
-# garment got no bust collision at all. That is wrong twice over:
-#   1. FSMP resolves an XML's bone names against the ACTOR SKELETON, not against
-#      the armour NIF (see `_actor_skeleton_bone_names`, `_harden_hdt_xml_for_fsmp`,
-#      `_select_framework_bone_carriers`), and XPMSSE's skeleton_female.nif DOES
-#      carry `NPC L Breast`, `NPC L PreBreast` and `NPC L PreButt` -- verified.
-#   2. The fallback premise "they exist but nothing drives them on a UBE body" is
-#      ALSO doubtful: the active body config (`CUSTOM CBBE SMP.xml`) drives BOTH
-#      naming schemes, so the original reference may have been moving correctly.
-# So this is a HYPOTHESIS (re-anchor the collider onto the chain the UBE body is
-# skinned to), not a fix. Shipped once ungated: no CTD across 109 XMLs and a full
-# play session, but it did NOT resolve the report that motivated it. It stays OFF
-# until an in-game A/B on an armour carrying BOTH a collider and simulated cloth
-# shows it holds the bust better with no new jitter. CBBE2UBE_XML_BONE_REMAP=1.
-XML_BONE_REMAP_ENABLED = os.environ.get(
-    "CBBE2UBE_XML_BONE_REMAP", "").strip().lower() in ("1", "true", "yes", "on")
-
-# Only entries with an unambiguous UBE counterpart are listed. `PreButt` is
-# deliberately ABSENT: UBE has no equivalent (only `NPC L/R Butt`, which authored
-# XMLs already name correctly), and inventing a target is worse than leaving the
-# reference as authored. The `PreBreast -> Breast00` pair is speculative -- no
-# observed UBE mesh carries `Breast00`, so the existence guard makes it inert
-# today; it is kept only for meshes that do.
-#
-# NOT INJECTIVE: several keys share a target (`NPC L Breast`, `Breast_L 01` and
-# `Breast_L01` all -> `L Breast01`). `_remap_authored_xml_bones` must therefore
-# refuse a second claimant per target, or an XML declaring two of them would emit
-# two `<bone name="L Breast01">` entries = two rigid bodies for one skeleton node.
-_UBE_XML_BONE_ALIASES = {
-    "NPC L Breast": "L Breast01",
-    "NPC R Breast": "R Breast01",
-    "NPC L Breast01": "L Breast02",
-    "NPC R Breast01": "R Breast02",
-    "NPC L Breast02": "L Breast03",
-    "NPC R Breast02": "R Breast03",
-    "NPC L PreBreast": "L Breast00",
-    "NPC R PreBreast": "R Breast00",
-    "Breast_L 01": "L Breast01", "Breast_L01": "L Breast01",
-    "Breast_R 01": "R Breast01", "Breast_R01": "R Breast01",
-    "Breast_L 02": "L Breast02", "Breast_L02": "L Breast02",
-    "Breast_R 02": "R Breast02", "Breast_R02": "R Breast02",
-}
-
-
-def _remap_authored_xml_bones(xml_text: str, mesh_bones) -> "tuple[str, dict]":
-    """Rewrite foreign (CBBE/3BA/BHUNP) bone names in an authored HDT-SMP XML to
-    the UBE names THIS mesh actually carries. Returns (text, {old: new}).
-
-    Three guards, each of which a naive find-replace gets wrong:
-
-      * SUBSTRING. "NPC L Breast" is a prefix of "NPC L Breast01", so a plain
-        replace turns the latter into "L Breast0101". Every match is therefore
-        anchored to the XML delimiters around the name (`name="..."` or
-        `<tag>...</tag>`), which a longer name can never satisfy at that offset.
-      * COLLISION. Some XMLs carry BOTH schemes (measured: 104 files name
-        `NPC L Breast` and 68 name `L Breast01`, over 135 files total, so they
-        overlap). Renaming into a name the XML already declares would duplicate
-        the bone, so those are skipped.
-      * REALITY. A rename is only made when the target bone EXISTS in this mesh
-        and the original does NOT. Renaming a bone that already resolves, or onto
-        one the mesh lacks, would break physics that currently work.
-
-    All renames are applied in a SINGLE pass so no rename can feed another."""
-    if not xml_text or not mesh_bones:
-        return xml_text, {}
-    have = {str(b).strip().lower() for b in mesh_bones}
-    present = set(re.findall(r'<bone[^>]*name="([^"]+)"', xml_text))
-    present |= set(m.strip() for m in re.findall(r'<bone>([^<]+)</bone>', xml_text))
-    plan: "dict[str, str]" = {}
-    for old, new in _UBE_XML_BONE_ALIASES.items():
-        if old not in present:
-            continue
-        if old.lower() in have:
-            continue                    # already resolves against this mesh
-        if new.lower() not in have:
-            continue                    # this mesh has no such bone
-        if new in present:
-            continue                    # would duplicate an existing declaration
-        if new in plan.values():
-            # NOT INJECTIVE: several aliases share a target. Without this, an XML
-            # declaring e.g. both `NPC L Breast` and `Breast_L01` would emit two
-            # `<bone name="L Breast01">` entries -- two rigid bodies for one
-            # skeleton node, the exact duplicate the guard above prevents for
-            # names already in the file. First claimant wins (dict order = the
-            # alias table's order, so the 3BA chain takes precedence).
-            continue
-        plan[old] = new
-    if not plan:
-        return xml_text, {}
-    # Single pass, longest source first: with delimiter anchoring the length
-    # ordering is belt-and-braces, but it keeps the behaviour obvious.
-    # `\s*` inside the delimiters: `present` is built with .strip(), so a padded
-    # `<bone>\n  NAME  \n</bone>` is DETECTED -- without matching the padding here
-    # the plan would be non-empty while the document went unchanged, and the
-    # caller would log a retarget it never made.
-    pattern = "|".join(re.escape(k) for k in
-                       sorted(plan, key=len, reverse=True))
-    rx = re.compile(r'(?<=[">])(\s*)(' + pattern + r')(\s*)(?=["<])')
-    new_text, n_subs = rx.subn(
-        lambda m: m.group(1) + plan[m.group(2)] + m.group(3), xml_text)
-    if not n_subs:
-        # Detected but not substitutable (e.g. a single-quoted attribute). Report
-        # nothing rather than a rename that did not happen.
-        return xml_text, {}
-    return new_text, plan
-
-
 def _finalize_hdt_physics(dst_path: Path, src_nif_path: Path) -> bool:
     """FINAL physics pass — runs AFTER every other NIF round-trip (merge,
     VirtualBody-hide, partition-normalize) so the HDT-SMP extra-data can't
@@ -20415,53 +19758,11 @@ def _finalize_hdt_physics(dst_path: Path, src_nif_path: Path) -> bool:
             # the NIF/source bone sets available here.
             pass
         if src_xml is not None:
-            # #authored-xml-bone-remap (OPT-IN, default OFF -- see
-            # XML_BONE_REMAP_ENABLED for why the original justification was
-            # disproven). Retarget the source's breast-chain bone names onto the
-            # chain THIS converted mesh carries. Any failure, or the flag being
-            # off, falls back to the verbatim copy -- the long-standing behaviour.
-            _remapped = False
-            if XML_BONE_REMAP_ENABLED:
-                try:
-                    _bones = set()
-                    _nfb = pyn.NifFile(filepath=str(dst_path))
-                    _bones |= set(_nfb.nodes.keys())
-                    for _s in _nfb.shapes:
-                        try:
-                            _bones |= set(_s.bone_names)
-                        except Exception:
-                            pass
-                    # Read BYTES and decode STRICTLY. `read_text(errors="replace")`
-                    # turned a Windows-1252 authored XML (an accented name in a
-                    # comment is common) into U+FFFD and then wrote it back out as
-                    # UTF-8 -- silent mojibake, and a lie if the file declares
-                    # `encoding="windows-1252"`. It also performs universal-newline
-                    # translation, republishing a CRLF file as LF. The copy path is
-                    # byte-exact, so the remap path must not quietly differ in ways
-                    # unrelated to the rename. A non-UTF-8 file now raises here and
-                    # falls through to that byte-exact copy.
-                    _txt = Path(src_xml).read_bytes().decode("utf-8")
-                    _new, _plan = _remap_authored_xml_bones(_txt, _bones)
-                    if _plan:
-                        atomic_write_bytes(dst_xml_disk, _new.encode("utf-8"))
-                        _remapped = True
-                except Exception:
-                    _remapped = False
-                # Log AFTER the write is committed: a print that raised used to
-                # land in the except above and send the already-remapped file
-                # back through the verbatim copy below, silently undoing it.
-                if _remapped:
-                    try:
-                        print(f"    [xml-bones] {dst_xml_disk.name}: retargeted "
-                              + ", ".join(f"{o!r}->{n!r}" for o, n in
-                                          sorted(_plan.items())))
-                    except Exception:
-                        pass
-            if not _remapped:
-                try:
-                    atomic_copy(str(src_xml), str(dst_xml_disk))
-                except Exception:
-                    pass
+            # (an authored-XML breast-chain bone remap was an unproven opt-in and was removed -- refuted; see git history. verbatim copy is the long-standing default.)
+            try:
+                atomic_copy(str(src_xml), str(dst_xml_disk))
+            except Exception:
+                pass
         if not dst_xml_disk.is_file():
             return False  # nothing to point at (no source + no generated)
 
@@ -21714,12 +21015,6 @@ if (CLEARANCE_FIELD_SOLVE or CLEARANCE_FIELD_INFLATE) and (
     LAYER_ORDER_REPAIR_ENABLED = False
 _LAYER_ORDER_NEAR = float(os.environ.get("CBBE2UBE_LAYER_ORDER_NEAR", "2.0") or "2.0")
 _LAYER_ORDER_EPS = 0.05     # sign-noise band
-# #layer-order-joint -- satisfy ALL of a vert's layer constraints at once
-# instead of only its largest. See the push-selection block for the measurement.
-# Measured a near no-op on the piece it was written for (flips 1074 -> 1064), so
-# few verts are actually under two layers at once; kept OFF and kept only
-# because it costs nothing and the reasoning is sound where it does apply.
-LAYER_ORDER_JOINT = os.environ.get("CBBE2UBE_LAYER_ORDER_JOINT") == "1"
 
 # #layer-order-last -- let the cross-shape layer reconciliation be the last
 # thing that moves a vert on phase 2, instead of the per-shape geometry repairs
@@ -21876,41 +21171,15 @@ def _repair_layer_order(shape_jobs, softbody_names=frozenset(),
             need = (s_src - s_dst)[flip]          # push back out to the authored offset
             vec = nb[flip] * need[:, None]
             vi = ai[flip]
-            if LAYER_ORDER_JOINT:
-                # #layer-order-joint. A vert buried under several layers gets
-                # SEVERAL constraints, and keeping only the largest DISCARDS the
-                # rest -- so it comes out from under one layer while staying
-                # inside the next, and the next round pushes it back. Measured,
-                # that oscillates rather than converges: raising the round count
-                # made things WORSE on the target AND on every counter-metric
-                # (flips 1074 -> 1239 -> 1210 at 2/4/8 rounds, neighbour-step
-                # p99 0.517 -> 0.589 -> 0.738). That is the signature of
-                # constraints fighting each other, not of too little work.
-                #
-                # Satisfy them TOGETHER, by projection: add only what each
-                # constraint still LACKS given what is already applied. This is
-                # not the naive sum the note below rightly warns against -- a
-                # constraint another push has already satisfied contributes
-                # nothing, so one violation can never be paid for twice.
-                cur = np.einsum('ij,ij->i', moves[ia][vi], nb[flip])
-                short = need - cur
-                add = short > 0
-                if np.any(add):
-                    # `vi` is unique within a pair, so this add is well defined.
-                    np.add.at(moves[ia], vi[add],
-                              nb[flip][add] * short[add, None])
-                    mag[ia][vi[add]] = np.maximum(mag[ia][vi[add]],
-                                                  np.abs(need)[add])
-                    corrected.update((ia, int(v)) for v in vi[add])
-            else:
-                # Keep the LARGEST demanded push per vert (satisfies the worst
-                # constraint; summing several would overshoot and bulge the shape).
-                better = np.abs(need) > mag[ia][vi]
-                if np.any(better):
-                    sel = vi[better]
-                    moves[ia][sel] = vec[better]
-                    mag[ia][sel] = np.abs(need)[better]
-                    corrected.update((ia, int(v)) for v in sel)
+            # (satisfying all of a vert's layer constraints jointly was measured to oscillate, not converge, and was removed -- refuted; see git history.)
+            # Keep the LARGEST demanded push per vert (satisfies the worst
+            # constraint; summing several would overshoot and bulge the shape).
+            better = np.abs(need) > mag[ia][vi]
+            if np.any(better):
+                sel = vi[better]
+                moves[ia][sel] = vec[better]
+                mag[ia][sel] = np.abs(need)[better]
+                corrected.update((ia, int(v)) for v in sel)
         if not any_fix:
             break
         for i, x in enumerate(L):
@@ -22900,15 +22169,6 @@ def convert_nif_phase2(
                 # Slot-aware inflation to maintain standoff under body morphs.
                 _infl_mag_p2 = _slot_aware_inflation_magnitude(
                     biped_slots, shape=s)
-                # #unified-offset: inflate is ADDITIVE and conform, which runs
-                # next, is ABSOLUTE -- so conform overwrites it (measured
-                # cancelled on 12 of 32 shapes). With the unified pass on, the
-                # same magnitude is asserted as a FLOOR after conform instead;
-                # `_infl_gate_p2` carries it there so the replacement fires on
-                # exactly the shapes inflate fired on.
-                _infl_gate_p2 = _infl_mag_p2
-                if UNIFIED_OFFSET:
-                    _infl_mag_p2 = 0.0
                 if _infl_mag_p2 > 0 and body_verts_for_p2 is not None:
                     try:
                         _morph_amp_p2 = _cached_body_morph_amplitude(
@@ -22958,13 +22218,7 @@ def convert_nif_phase2(
                             ube_body_nipple=body_nipple_for_p2,
                             morph_amplitude=_amp_conf,
                             tris=np.asarray(s.tris, dtype=np.int64),
-                            # UNIFIED_OFFSET = candidate (c), inflate REPLACED by
-                            # this margin (measured worse -- A16). Otherwise the
-                            # standalone knob, which COMPOSES with inflate
-                            # instead of replacing it.
-                            conform_margin=(float(_infl_gate_p2)
-                                            if UNIFIED_OFFSET
-                                            else CONFORM_MARGIN),
+                            conform_margin=CONFORM_MARGIN,
                         )
                         _stage('conform', override)
                     except Exception as e:
@@ -22992,56 +22246,6 @@ def convert_nif_phase2(
                         _stage('groove_smooth', override)
                     except Exception as _pe:
                         _note_pass_failure("_smooth_warp_grooves", _pe)
-                # #unified-offset: inflate's clearance, restated as a FLOOR and
-                # moved to AFTER the absolute target that used to overwrite it.
-                # Runs wherever inflate ran (same gate, same magnitude) -- NOT
-                # in the anti-poke's branch, which is narrower: an SMP-rigged
-                # shape never enters it, so putting the replacement there while
-                # gating inflate off left exactly those shapes with LESS
-                # clearance than before. After groove_smooth so smoothing cannot
-                # push a vert back under the floor.
-                # DISABLED: the floor form was A/B'd and measured ~50% WORSE
-                # (AUDIT A14/A15) -- a floor reaches 5.6% of verts where the
-                # additive push reaches 75%, and no floor VALUE closes that.
-                # Kept behind a second flag so the measurement is reproducible
-                # rather than deleted and re-derived. Candidate (c), the margin
-                # folded into conform's target, is what UNIFIED_OFFSET now runs.
-                if (UNIFIED_OFFSET_FLOOR and override is not None
-                        and _infl_gate_p2 > 0
-                        and body_verts_for_p2 is not None
-                        and body_norms_for_p2 is not None):
-                    try:
-                        _uf_v = np.asarray(override, dtype=np.float64)
-                        _uf_n = len(_uf_v)
-                        _uf_vw = [dict() for _ in range(_uf_n)]
-                        for _b, _prs in (s.bone_weights or {}).items():
-                            for _vi, _w in _prs:
-                                _iv = int(_vi)
-                                if 0 <= _iv < _uf_n:
-                                    _uf_vw[_iv][_b] = _uf_vw[_iv].get(
-                                        _b, 0.0) + float(_w)
-                        try:
-                            _uf_amp = _cached_body_morph_amplitude(
-                                _find_ube_body_osd(), body_norms_for_p2,
-                                len(body_verts_for_p2))
-                        except Exception:
-                            _uf_amp = None
-                        override = _unified_clearance_floor(
-                            _uf_v, body_verts_for_p2, body_norms_for_p2,
-                            morph_amplitude=_uf_amp,
-                            tris=np.asarray(s.tris, dtype=np.int64),
-                            chain_mask=np.asarray(
-                                _chain_vert_mask(_uf_vw, _uf_n), bool),
-                            # inflate's own reach and budget, not the
-                            # anti-poke's -- this replaces inflate ONLY.
-                            flat_clear=0.0, bust_clear=0.0,
-                            region_standoffs=False,
-                            uniform_clear=float(_infl_gate_p2),
-                            max_push=float(_infl_gate_p2),
-                            max_body_dist=ARMOR_INFLATION_FALLOFF_DISTANCE)
-                        _stage('unified_floor', override)
-                    except Exception as _pe:
-                        _note_pass_failure("_unified_clearance_floor", _pe)
             except Exception as e:
                 failed.append((f"{s.name}:warp", repr(e)))
         elif body_verts_for_p2 is not None:
@@ -23124,23 +22328,12 @@ def convert_nif_phase2(
             and _smp_rigging_is_structural_only(
                 s, set(ube_base_for_pass1.bone_names or [])
                 if ube_base_for_pass1 is not None else set()))
-        # #smp-chain-antipoke -- the bone-driven CHAIN garment case, which the
-        # collision-only flag deliberately cannot reach (the shape is not a
-        # declared collider). Its own opt-in, default OFF; see SMP_CHAIN_ANTIPOKE
-        # for the measurements and for why a rear-band win does not license it.
-        _chain_relax = (SMP_CHAIN_ANTIPOKE
-                        and not hdt_softbody_names
-                        and s.name not in hdt_collider_names
-                        and _shape_has_hdt_smp_rigging(
-                            s, set(ube_base_for_pass1.bone_names or [])
-                            if ube_base_for_pass1 is not None else set()))
         if (body_verts_for_p2 is not None and body_norms_for_p2 is not None
                 and (biped_slots & (BIPED_SLOT32_BIT | BIPED_SLOT49_BIT))
                 and s.name not in RESKIN_SKIP_NAMES
                 and s.name not in hdt_softbody_names
                 and (_smp_relax
                      or _structural_relax
-                     or _chain_relax
                      or (s.name not in hdt_collider_names
                          and not _shape_has_hdt_smp_rigging(
                              s, set(ube_base_for_pass1.bone_names or [])
@@ -23179,16 +22372,7 @@ def convert_nif_phase2(
                 # the clearance target, not the 3.0 default -- overshoot spreads
                 # verts on the convex bust and opens new gaps. #smp-collision-only-antipoke
                 _ap_kw = {}
-                if _chain_relax:
-                    # Chain garments reach this pass ONLY via the opt-in, and
-                    # the capped budget is not optional for them: the 3.0
-                    # default is what spreads verts on convex regions. Uses the
-                    # CHAIN budget, measured on this path -- see the constant.
-                    _ap_kw["max_push"] = SMP_CHAIN_ANTIPOKE_PUSH
-                    print(f"    [smp-antipoke] {s.name}: clearance pass enabled "
-                          f"(bone-driven SMP chain, "
-                          f"max_push={SMP_CHAIN_ANTIPOKE_PUSH})")
-                elif _smp_relax and (
+                if _smp_relax and (
                         s.name in hdt_collider_names
                         or _shape_has_hdt_smp_rigging(
                             s, set(ube_base_for_pass1.bone_names or [])

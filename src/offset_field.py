@@ -54,8 +54,8 @@ FOUR PROPERTIES THIS BUYS, each tied to a logged defect:
    layer-ride / spiky-vert class. Here the MOVE field is smoothed once, before
    anything is applied.
 3. ONE BUDGET PER VERT instead of ANTIPOKE_FLAT_CLEAR, ANTIPOKE_BUST_CLEAR,
-   SMP_ANTIPOKE_MAX_PUSH, SMP_CHAIN_ANTIPOKE_PUSH, the inflate magnitude, the
-   soft-cloth clears and the rear/calf/thigh standoffs -- each of which today
+   SMP_ANTIPOKE_MAX_PUSH, the inflate magnitude, the soft-cloth clears and the
+   rear/calf/thigh standoffs -- each of which today
    carries a separately measured optimum that is invisible to the others.
 4. PINNING IS A WEIGHT, not a restore. `_physics_chain_nowarp_blend` currently
    moves chain verts and then puts them back; here a pinned vert has weight 0
