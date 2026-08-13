@@ -314,6 +314,40 @@ in the same commit, or it does not get written.**
   with target ≡ 0.
   Harness: `scripts/analysis/inflate_census.py` + `inflate_census_report.py`.
 
+* **`#authored-inflate` -- the outward push as a FLOOR, not an addition**
+  (2026-08-12, built and censused, still opt-in). The census above says
+  `inflate_armor_outward` pushes 67.5% of the shapes it touches AWAY from the
+  author's fit while being load-bearing for clearance. This keeps the pass and
+  removes the over-push:
+
+      floor    = max(authored standoff, buffer + min(morph amplitude, 1.5u))
+      ceiling  = what the additive pass would have produced (UNCHANGED)
+      push     = max(0, min(ceiling, max(current, floor)) - current)
+
+  MONOTONE by construction -- it can only push a vertex LESS than today -- so
+  over-inflation cannot worsen and the whole risk surface is "is the floor ever
+  too low", which the clearance counters measure directly.
+  Census, 35/160 mods, 8379 shape-pairs, 4852 touched, 9.4M verts (stopped early;
+  flat across 807/3221/4822/4852-pair checkpoints):
+
+  | | additive | floor |
+  |---|---|---|
+  | authored-offset error | 0.2671 | **0.2132** (77.9% of shapes improve) |
+  | edge deviation | 0.0427 | **0.0422** |
+  | dihedral | 16.14 | 16.21 |
+  | standoff p10 | 0.7046 | 0.6399 |
+  | verts inside the body | 1.040% | 1.050% |
+  | shapes gaining inside-verts | — | **514 vs 369 losing (1.39:1)** |
+
+  Against DELETION's 4.1:1 and -0.125u, this is about a quarter of the clearance
+  cost for most of the fidelity gain. **Wire BOTH chains** -- phase 1 has no
+  inline body but does have the CBBE base it warps from, and phase 1 was 9489 of
+  13,889 pairs, so a phase-2-only version reaches a third of the pack.
+  **The census could not see it at first**: its fidelity metric was edge
+  deviation, and a uniform outward offset barely changes any edge RATIO. The
+  authored-offset error had to be added mid-run. A census whose target metric
+  cannot see the change is not a null result.
+
 * **Full body as an SMP collider.** `_ensure_cloth_body_collider` exists,
   default off. Tried in game: the sim destabilised and a body collapsed to the
   floor. A full-body collider paired with cloth also skinned to that body
