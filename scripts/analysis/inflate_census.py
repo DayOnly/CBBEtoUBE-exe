@@ -520,6 +520,29 @@ def main() -> int:
                           f"max {max(d):.5f}")
             print("  A REAL A/B DELTA MUST EXCEED THESE. Anything smaller is "
                   "this pipeline's float noise, not an effect.")
+            # SIZE-DEPENDENCE, so the control can be compared like-for-like
+            # against the A/B it is validating. standoff_p10 is a 10th
+            # percentile: on a 300-vertex strap it comes off ~30 samples,
+            # against a nearest-body-VERTEX reference that reassigns whenever
+            # a vertex moves. Small sample plus unstable reference is exactly
+            # where a spurious but CONSISTENT bias comes from, so a real A/B
+            # showing a size gradient means nothing until this control is
+            # checked for the same gradient.
+            print("\n  same-arm bias by shape size (expect ~50% everywhere; "
+                  "a gradient here means the METRIC, not the change):")
+            print(f"    {'size':12s} {'n':>6s} {'worse %':>8s} {'median d':>11s}")
+            for lo, hi, lbl in ((0, 500, "<500"), (500, 2000, "500-2k"),
+                                (2000, 8000, "2k-8k"), (8000, 10**9, "8k+")):
+                dd = [r["on"]["standoff_p10"] - r["off"]["standoff_p10"]
+                      for r in results
+                      if lo <= r["on"].get("verts", 0) < hi
+                      and isinstance(r["on"].get("standoff_p10"), (int, float))
+                      and isinstance(r["off"].get("standoff_p10"), (int, float))]
+                if len(dd) < 40:
+                    continue
+                dd = np.asarray(dd)
+                print(f"    {lbl:12s} {len(dd):6d} "
+                      f"{100 * np.mean(dd < 0):7.1f}% {np.median(dd):+11.5f}")
             return 0
         print(f"\nMANIPULATION CHECK: {same}/{len(results)} pairs identical "
               f"({pct:.1f}%)")
