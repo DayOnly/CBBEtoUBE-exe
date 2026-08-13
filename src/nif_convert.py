@@ -15497,6 +15497,33 @@ CHEST_SYNC_DISTANCE = 2.5
 # >=0.34; decorative attachments <=0.11. 0.25 sits in the gap.
 CHEST_SYNC_MIN_BREAST_FRAC = 0.25
 
+# --- #bust-plate-sync: a rigid bust PLATE follows the jiggle cloth beneath it ---
+# A rigid bust plate (a metal cuirass front) sits OVER breast cloth but follows
+# the breast far LESS (ruby flower chest_plate band-follow 0.095 vs the cloth
+# `top` 0.212), so under jiggle the cloth swings out THROUGH the stiffer plate --
+# a MOTION defect invisible at bind pose, so an in-game look is the only judge.
+# The fix (post-write, see _sync_bust_plate_follow_postwrite) raises the plate's
+# breast-family SHARE among the bones it ALREADY has, per vert, up to the
+# overlapping cloth's local fraction. No add_bone -> a physics/chain bone can
+# never be introduced onto the plate, so the equip-CTD guard is STRUCTURAL rather
+# than a name filter. DEFAULT OFF pending the in-game verdict.
+BUST_PLATE_SYNC = os.environ.get(
+    "CBBE2UBE_BUST_PLATE_SYNC", "").strip().lower() in ("1", "true", "yes", "on")
+# Min mutual overlap (each layer's cleavage verts within CHEST_SYNC_DISTANCE of
+# the other's, BOTH ways, over the cleavage box) to treat two breast-boned shapes
+# as a genuine stacked bust. Ruby flower chest_plate<->top = 1.00/0.82; an
+# ornament that merely grazes the chest overlaps one-way at most (corset/belts
+# 0.18-0.25), cleanly excluded. COVERAGE, not weight -- a real plate HAS breast
+# bones but low follow, so a weight gate would wrongly call it decorative.
+BUST_PLATE_SYNC_OVERLAP = float(
+    os.environ.get("CBBE2UBE_BUST_PLATE_SYNC_OVERLAP", "") or 0.5)
+# The tighter JIGGLE BAND (front, z 88-104) that ranks authority. The full
+# cleavage box (z 85-115) reaches the rigid upper chest and can rank a plate's
+# breast fraction ABOVE the cloth's, inverting who should follow whom.
+BUST_PLATE_BAND_Z_LO = 88.0
+BUST_PLATE_BAND_Z_HI = 104.0
+BUST_PLATE_BAND_Y_MIN = 2.0
+
 # --- ABDOMEN/BUTT layer jiggle sync (sibling of the chest sync above) ---
 # An inner cloth layer grafted MORE butt/belly jiggle than the outer layer over
 # it (jiggle is proximity-grafted, and the inner layer sits closer to the body)
@@ -16285,6 +16312,224 @@ def _sync_chest_layered_cloth_weights(shape_jobs: list) -> int:
         print(f"  WARN: _sync_chest_layered_cloth_weights died: {_le!r} -- "
               f"layer pass skipped for this piece", file=sys.stderr)
         _note_pass_failure("_sync_chest_layered_cloth_weights", _le)
+        return 0
+
+
+def _sync_bust_plate_follow_postwrite(dst_path, src_nif_path=None) -> int:
+    """#bust-plate-sync. Raise a rigid bust PLATE's breast-family follow up to the
+    jiggle CLOTH stacked beneath it, so the cloth stops swinging out through the
+    plate under breast physics. Returns the number of receiver verts raised.
+
+    POST-WRITE by necessity: the breast follow split is only final after the
+    family / full-vector weight matches have run on `dst_path`, and whichever pass
+    touches a bone LAST wins it. Reading the FINAL NIF here, the authority (the
+    highest band-follow layer) is the inner cloth and the receiver is the outer
+    plate -- exactly the order we want: pull the plate UP to the cloth's jiggle,
+    never the cloth down to the plate's stiffness. (A pre-write attempt on source
+    weights picked the authority backwards AND was overwritten downstream.)
+
+    Conservative, in the spirit of _match_limb_motion_to_body:
+      * PUSH-UP ONLY -- never lowers a layer's follow; a plate already tracking the
+        cloth is left alone.
+      * NO add_bone -- only rescales the breast-vs-non-breast SHARE among the bones
+        a vertex ALREADY carries. So it can never introduce a physics/chain/SMP
+        bone onto a rigid plate (the equip-CTD guard is structural, not a filter),
+        it never moves a vertex (bind pose byte-identical), and the relative
+        proportions WITHIN the non-breast bones are preserved, so body-follow is
+        only scaled, never re-based (the trap that gutted the shared-basis fix in
+        #layer-follow-divergence).
+      * admission by COVERAGE, not weight -- a genuine plate HAS breast bones but
+        low follow, so only a layer that MUTUALLY overlaps a higher-follow breast
+        layer is admitted; an ornament grazing the chest overlaps one-way at most.
+      * skips colliders / soft-body / fx shapes, per the standing rule that a skin
+        pass leaves authored physics geometry alone.
+    """
+    if not BUST_PLATE_SYNC:
+        return 0
+    try:
+        pyn = _pynifly()
+        nf = pyn.NifFile(filepath=str(dst_path))
+    except Exception:
+        return 0
+    if _nif_has_fx_shape(nf):
+        return 0  # effect-shader NIF: a reload+re-save corrupts its controller -> CTD
+    try:
+        collider_names = _hdt_collider_shape_names(dst_path, nif=nf)
+        softbody_names = _hdt_softbody_shape_names(dst_path, nif=nf)
+    except Exception:
+        collider_names = softbody_names = set()
+    try:
+        from scipy.spatial import cKDTree
+
+        # --- gather candidate bust layers: (shape, box_verts, box_idx,
+        #     band_follow, per-vert [breast_w, total_w] rows) ----------------
+        cand = []
+        for s in nf.shapes:
+            if s.name == "BaseShape" or s.name in RESKIN_SKIP_NAMES:
+                continue
+            if s.name in collider_names or s.name in softbody_names:
+                continue
+            bw = s.bone_weights or {}
+            if not any("breast" in b.lower() for b in bw):
+                continue
+            v = np.asarray(s.verts, dtype=np.float64)
+            if v.size == 0:
+                continue
+            box = ((v[:, 2] >= CHEST_SYNC_Z_MIN) & (v[:, 2] <= CHEST_SYNC_Z_MAX)
+                   & (np.abs(v[:, 0]) <= CHEST_SYNC_X_BOUND)
+                   & (v[:, 1] >= CHEST_SYNC_Y_MIN))
+            if int(box.sum()) < 5:
+                continue
+            box_idx = np.where(box)[0]
+            rows = {}  # vert idx -> [breast_w, total_w] over the cleavage box
+            box_set = set(int(i) for i in box_idx)
+            for b, prs in bw.items():
+                isbr = "breast" in b.lower()
+                for vi, w in prs:
+                    if w <= 0.0:
+                        continue
+                    ivi = int(vi)
+                    if ivi not in box_set:
+                        continue
+                    r = rows.get(ivi)
+                    if r is None:
+                        r = rows[ivi] = [0.0, 0.0]
+                    r[1] += w
+                    if isbr:
+                        r[0] += w
+            # band-follow (z 88-104, front) ranks authority
+            band = (box & (v[:, 2] >= BUST_PLATE_BAND_Z_LO)
+                    & (v[:, 2] <= BUST_PLATE_BAND_Z_HI)
+                    & (v[:, 1] > BUST_PLATE_BAND_Y_MIN))
+            band_bw = band_tw = 0.0
+            for ivi in (int(i) for i in np.where(band)[0]):
+                r = rows.get(ivi)
+                if r:
+                    band_tw += r[1]
+                    band_bw += r[0]
+            band_follow = (band_bw / band_tw) if band_tw > 0 else 0.0
+            cand.append((s, v[box_idx], box_idx, band_follow, rows))
+        if len(cand) < 2:
+            return 0
+
+        # --- admit a stacked group by MUTUAL overlap over the cleavage box ---
+        cand.sort(key=lambda c: -c[3])          # highest band follow = authority
+        auth = cand[0]
+        atree = cKDTree(auth[1])
+        group = [auth]
+        for c in cand[1:]:
+            d_ca, _ = atree.query(c[1])
+            d_ac, _ = cKDTree(c[1]).query(auth[1])
+            ov = min(float((d_ca < CHEST_SYNC_DISTANCE).mean()),
+                     float((d_ac < CHEST_SYNC_DISTANCE).mean()))
+            if ov >= BUST_PLATE_SYNC_OVERLAP:
+                group.append(c)
+        if len(group) < 2:
+            return 0
+
+        _as, _abv, auth_idx, auth_follow, auth_rows = group[0]
+        # authority's LOCAL breast fraction, 1:1 with its cleavage-box verts
+        auth_frac = np.array([
+            (auth_rows[int(vi)][0] / auth_rows[int(vi)][1])
+            if (int(vi) in auth_rows and auth_rows[int(vi)][1] > 0) else 0.0
+            for vi in auth_idx], dtype=np.float64)
+
+        total = 0
+        dirty = False
+        for (s, box_v, box_idx, follow, rows) in group[1:]:
+            if follow >= auth_follow:
+                continue  # not a receiver (authority is the max; guard anyway)
+            dists, nn = atree.query(box_v, k=1,
+                                    distance_upper_bound=CHEST_SYNC_DISTANCE)
+            # per-vert breast/non-breast rescale factors (push-up only)
+            scale_br = {}
+            scale_nb = {}
+            for li, (d, ai) in enumerate(zip(dists, nn)):
+                if not np.isfinite(d) or d > CHEST_SYNC_DISTANCE:
+                    continue
+                if ai < 0 or ai >= len(auth_frac):
+                    continue
+                ivi = int(box_idx[li])
+                r = rows.get(ivi)
+                if r is None or r[1] <= 0:
+                    continue
+                B, T = r[0], r[1]
+                if B <= 0.0:
+                    continue  # no breast bone here -> can't raise without add_bone
+                cur = B / T
+                tgt = float(auth_frac[ai])
+                if tgt <= cur + 1e-4:
+                    continue  # already tracks the cloth here -> leave it
+                N = T - B
+                scale_br[ivi] = (tgt * T) / B
+                scale_nb[ivi] = ((1.0 - tgt) * T / N) if N > 1e-12 else 0.0
+            if not scale_br:
+                continue
+
+            bw = s.bone_weights or {}
+            bone_list = list(s.bone_names or list(bw.keys()))
+            # STBs: setShapeWeights can reset them, so save every bone and restore
+            # afterwards. If any can't be read, skip -- an identity STB = spike.
+            saved_stb = {}
+            ok = True
+            for b in bone_list:
+                try:
+                    st = s.get_shape_skin_to_bone(b)
+                except Exception:
+                    st = None
+                if st is None:
+                    ok = False
+                    break
+                saved_stb[b] = st
+            if not ok:
+                continue
+            # Full per-bone rewrite: unchanged verts keep their weight, the raised
+            # verts get breast scaled up / non-breast scaled down. No add_bone.
+            try:
+                for b in bone_list:
+                    isbr = "breast" in b.lower()
+                    outp = []
+                    for vi, w in bw.get(b, []):
+                        ivi = int(vi)
+                        nw = float(w)
+                        if isbr and ivi in scale_br:
+                            nw = w * scale_br[ivi]
+                        elif (not isbr) and ivi in scale_nb:
+                            nw = w * scale_nb[ivi]
+                        if nw > _WRITE_MIN:
+                            outp.append((ivi, nw))
+                    if outp:
+                        s.setShapeWeights(b, outp)
+            except Exception as _we:
+                for b, st in saved_stb.items():
+                    try:
+                        s.set_skin_to_bone_xform(b, st)
+                    except Exception as _pe:
+                        _note_pass_failure("set_skin_to_bone_xform", _pe)
+                print(f"  WARN: bust-plate follow write failed mid-shape on "
+                      f"{s.name!r} ({_we!r}) -- STBs restored", file=sys.stderr)
+                continue
+            for b, st in saved_stb.items():
+                try:
+                    s.set_skin_to_bone_xform(b, st)
+                except Exception as _pe:
+                    _note_pass_failure("set_skin_to_bone_xform", _pe)
+            total += len(scale_br)
+            dirty = True
+
+        if dirty:
+            _hide_virtual_body(nf)
+            try:
+                atomic_nif_save(nf, dst_path)
+            except Exception as _se:
+                _note_pass_failure(
+                    "_sync_bust_plate_follow_postwrite/save", _se, dst_path)
+                return 0
+        return total
+    except Exception as _le:
+        print(f"  WARN: _sync_bust_plate_follow_postwrite died: {_le!r} -- "
+              f"bust-plate follow skipped for this piece", file=sys.stderr)
+        _note_pass_failure("_sync_bust_plate_follow_postwrite", _le)
         return 0
 
 
@@ -24085,6 +24330,19 @@ def convert_nif_phase2(
                                     src_nif_path=src_path)
     except Exception as _pe:
         _note_pass_failure("_match_full_weights_to_body", _pe)
+    # Bust-plate follow (#bust-plate-sync): a rigid bust plate under-follows the
+    # jiggle cloth beneath it, so the cloth swings out through it. Runs LAST of
+    # the weight passes -- ON the FINAL follow split, which the matches above only
+    # now settle -- and raises the plate's breast share to the cloth's. Default
+    # OFF (CBBE2UBE_BUST_PLATE_SYNC); a no-op that never loads the NIF when off.
+    try:
+        n_bps = _sync_bust_plate_follow_postwrite(dst_path, src_nif_path=src_path)
+        if n_bps:
+            import sys as _sys
+            print(f"  bust-plate follow: raised {n_bps} plate vert(s) to the "
+                  f"cloth's breast follow", file=_sys.stderr)
+    except Exception as _pe:
+        _note_pass_failure("_sync_bust_plate_follow_postwrite", _pe)
 
     # The TRI above was generated BEFORE _finalize_hdt_physics re-imported the
     # textureless collision / physics-framework proxies, so they shipped with no
