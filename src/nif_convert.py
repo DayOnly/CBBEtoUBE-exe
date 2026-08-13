@@ -14978,6 +14978,24 @@ BUST_PLATE_SYNC = os.environ.get(
 # bones but low follow, so a weight gate would wrongly call it decorative.
 BUST_PLATE_SYNC_OVERLAP = float(
     os.environ.get("CBBE2UBE_BUST_PLATE_SYNC_OVERLAP", "") or 0.5)
+# Min band-follow GAP (authority - receiver) before a layer is worth syncing.
+# Without it the pass rewrites thousands of weights to chase follow NOISE, which
+# can only cost an authored difference.
+#
+# PACK CENSUS, measured BOTH WAYS on 1658 converted `_1` NIFs (the shipped pass
+# applied to a copy of each, then diffed per (nif, shape) -- not inferred):
+#     threshold 0     106 synced shapes / 95 pieces
+#     threshold 0.02   66 synced shapes / 55 pieces   (40 dropped, 0 added)
+# The 40 it drops have a MEDIAN actual follow change of 0.0003 and a MAX of
+# 0.0416; NONE reaches 0.05, and only 4 reach 0.02. What survives keeps a median
+# change of 0.0154 and a max of 0.4879. So this removes near-no-ops and leaves
+# the real target class intact (ruby flower gap 0.117, the big movers 0.4-0.6).
+# NOTE the census's own printed "gap" column is an OVERESTIMATE -- it recovers
+# the authority as the highest-follow UNCHANGED shape, which picks a shape that
+# failed the overlap test when there is one. Trust this per-shape diff, not that
+# column; predicting the drop from it was wrong by 2x (19 vs the real 40).
+BUST_PLATE_SYNC_MIN_GAP = float(
+    os.environ.get("CBBE2UBE_BUST_PLATE_SYNC_MIN_GAP", "") or 0.02)
 # The tighter JIGGLE BAND (front, z 88-104) that ranks authority. The full
 # cleavage box (z 85-115) reaches the rigid upper chest and can rank a plate's
 # breast fraction ABOVE the cloth's, inverting who should follow whom.
@@ -15924,8 +15942,12 @@ def _sync_bust_plate_follow_postwrite(dst_path) -> int:
         total = 0
         dirty = False
         for (s, box_v, box_idx, follow, rows) in group[1:]:
-            if follow >= auth_follow:
-                continue  # not a receiver (authority is the max; guard anyway)
+            if auth_follow - follow < BUST_PLATE_SYNC_MIN_GAP:
+                # Too close to be the plate-vs-cloth divergence this pass exists
+                # for -- rewriting thousands of weights to chase follow noise
+                # only risks an authored difference. Also covers `follow >=
+                # auth_follow` (the authority is the max, but guard anyway).
+                continue
             dists, nn = atree.query(box_v, k=1,
                                     distance_upper_bound=CHEST_SYNC_DISTANCE)
             # per-vert breast/non-breast rescale factors (push-up only)
