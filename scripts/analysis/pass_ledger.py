@@ -29,10 +29,26 @@ For every pass boundary, per shape, this scores the geometry it produced:
     STRETCH   99th-percentile edge ratio vs the author -- the distortion that
               reads as "broken" on screen
     SPIKES    verts >1.0u from the mean of their edge neighbours
+    FOLDS     verts whose own incident faces disagree by >90deg -- the surface
+              passing through itself
 
 and reports, per pass, the MEDIAN change it makes to each. A pass whose FIT
 column is ~0 and whose ROUGH/STRETCH columns are positive is doing damage that
 something later has to undo -- which is the case worth acting on.
+
+FOLDS was added 2026-08-12 because none of the four columns above could see the
+defect the user was actually reporting. All of them score how far a vertex
+MOVED; a fold is about the surface's own consistency, so a mesh can be folded
+through itself while every fidelity number reads clean. It named the
+responsible passes on its first run -- `inflate` +296, `antipoke` +179, with
+`groove_smooth` -249 cleaning up after them. Gate and controls live in
+`scripts/analysis/fold_census.py`; this imports them rather than restating them,
+so the two tools cannot drift apart.
+
+CLOSE THE LEDGER ON THE WRITTEN NIF. `_copy_shape` re-runs three geometry
+repairs at WRITE time, after the last stage checkpoint, so a ledger built from
+stage dumps alone measures what each pass CREATES, not what survives: on one
+piece the stages ended at 221 folded verts where the shipped mesh has 92.
 
 Reads `CBBE2UBE_STAGE_DUMP` directories, so one conversion per piece produces
 the whole ledger and passes that cancel each other are attributed correctly.
@@ -52,6 +68,9 @@ sys.path.insert(0, str(_REPO / ".pynifly"))
 import numpy as np                                      # noqa: E402
 from scipy.spatial import cKDTree                       # noqa: E402
 from pyn import pynifly                                 # noqa: E402
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from fold_census import score as _fold_score            # noqa: E402
 
 BODY_NAMES = {"baseshape", "3ba", "cbbe", "femalebody", "body", "ubebody"}
 
@@ -189,16 +208,19 @@ def main() -> int:
             _, i = btree.query(v, workers=-1)
             fit = float(np.median(np.abs(
                 np.einsum('ij,ij->i', v - bv[i], bn[i]) - authored)))
-            cur = (fit, _dihedral(v, t), _stretch(sv, v, e), _spikes(v, e))
+            folded, _, _ = _fold_score(v, t)
+            cur = (fit, _dihedral(v, t), _stretch(sv, v, e), _spikes(v, e),
+                   int(folded.sum()))
             if prev is not None:
                 name = k[4:]
-                for idx, key in enumerate(("fit", "rough", "stretch", "spike")):
+                for idx, key in enumerate(("fit", "rough", "stretch", "spike",
+                                           "fold")):
                     per_pass[name][key].append(cur[idx] - prev[idx])
             prev = cur
 
     print(f"pass ledger over {shapes} shapes\n")
     print(f"  {'pass':22s} {'n':>4s} {'dFIT':>8s} {'dROUGH':>8s} "
-          f"{'dSTRETCH':>9s} {'dSPIKES':>8s}   reading")
+          f"{'dSTRETCH':>9s} {'dSPIKES':>8s} {'dFOLDS':>8s}   reading")
     order = ["bake_preset", "warp", "inflate", "conform", "groove_smooth",
              "unified_floor", "snap_legacy", "antipoke", "softcloth",
              "chain_blend", "min_push", "seam_weld", "coherence_repair",
@@ -211,7 +233,13 @@ def main() -> int:
         r_ = float(np.median(d["rough"]))
         s_ = float(np.median(d["stretch"]))
         k_ = float(np.median(d["spike"]))
-        if f_ < -0.002:
+        o_ = float(np.sum(d["fold"]))
+        if o_ > 0:
+            # A fold is the surface through itself. It outranks the fidelity
+            # columns because a pass can read "buys fit" while folding the
+            # mesh, which is exactly how this went unnoticed.
+            read = "FOLDS the surface"
+        elif f_ < -0.002:
             read = "buys fit"
         elif r_ > 0.05 or s_ > 0.01 or k_ > 0:
             read = "DAMAGE -- something later repairs this"
@@ -220,7 +248,7 @@ def main() -> int:
         else:
             read = ""
         print(f"  {name:22s} {len(d['fit']):4d} {f_:+8.4f} {r_:+8.3f} "
-              f"{s_:+9.4f} {k_:+8.1f}   {read}")
+              f"{s_:+9.4f} {k_:+8.1f} {o_:+8.0f}   {read}")
     return 0
 
 
