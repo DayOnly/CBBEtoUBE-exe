@@ -3668,6 +3668,114 @@ def _rank_body_layers(shapes, body_verts, *, body_names, reskin_skip,
             for rk, (_m, nm) in enumerate(elig)}
 
 
+# #push-divergence -- the clearance pushes stretch the surface, and it is the
+# DIRECTION spread that does it, not the magnitude.
+#
+# Both `inflate_armor_outward` and `clear_armor_outside_body` move each vertex
+# along ITS OWN nearest body vertex's normal. Those normals fan apart wherever
+# the body creases -- the waist above all, which is where CBBE and UBE differ
+# most -- so two neighbouring vertices are pushed in different directions and
+# the triangle between them is pulled out of shape. Measured on the reported
+# piece by recovering each pass's push vector from consecutive stage snapshots
+# and splitting it per triangle into the part common to all three corners (a
+# rigid translation, harmless) and the part that differs:
+#
+#     corr(stretch, DIVERGENCE)   corr(stretch, MAGNITUDE)
+#     top      antipoke   +0.784            +0.461
+#     corset   antipoke   +0.712            +0.417
+#     belts    inflate    +0.596            +0.249
+#     corset   inflate    +0.574            +0.169
+#
+# and on the worst-stretched triangles the divergence runs 4-6x typical while
+# the push magnitude runs about 2x. So the surface is not being pushed too hard,
+# it is being pushed APART.
+#
+# This is also why `ANTIPOKE_SMOOTH` did not help and measured WORSE on the
+# reported patch (bad area 69.7 -> 91.9): it feathers the push SCALAR and leaves
+# every direction untouched, so it spreads a divergent field over more triangles
+# instead of making it parallel.
+#
+# Smoothing the push VECTOR looked like the fix: it is the component the
+# correlations above blame, and the outward part can be restored per vertex so
+# no clearance is traded away.
+#
+# IT MEASURED WORSE AND IS KEPT ONLY SO THE NEGATIVE STAYS REPRODUCIBLE.
+# On the reported patch (top+corset+belts at the waist, bad triangles / bad
+# area):
+#
+#     as shipped                        501 / 69.7
+#     + ANTIPOKE_SMOOTH (scalar)        613 / 91.9
+#     + this, the vector version        656 / 101.7
+#
+# WHY, and it is structural rather than a tuning failure: the clearance
+# guarantee is stated PER VERTEX ALONG ITS OWN NORMAL, and that normal field is
+# the divergent thing. So the restore step -- `v += nrm * shortfall`, which is
+# what keeps the pass honest -- adds displacement back along exactly the
+# directions the smoothing just removed. Every iteration parallelises and then
+# re-diverges, and the net is more total displacement and more stretch.
+#
+# The two cannot both hold: you cannot guarantee each vertex's own outward
+# clearance along a diverging normal field AND keep the field parallel. Any
+# future attempt has to change what is being GUARANTEED -- clearance against a
+# smoothed normal field, or a displacement solved for minimum stretch subject to
+# clearance -- not post-process the push. Smoothing the push is now refuted in
+# both of its available forms.
+PUSH_DIVERGENCE_SMOOTH = os.environ.get(
+    "CBBE2UBE_PUSH_DIVERGENCE_SMOOTH") == "1"
+PUSH_DIVERGENCE_ITERS = int(
+    os.environ.get("CBBE2UBE_PUSH_DIVERGENCE_ITERS", "") or 3)
+
+
+def _parallelise_push(push_vec, normals, needed, tris,
+                      iters: int = None, blend: float = 0.5):
+    """Make a push field more PARALLEL without reducing what it clears.
+
+    `push_vec` is the per-vertex displacement a clearance pass is about to
+    apply, `normals` the outward direction each vertex was pushed along, and
+    `needed` the outward distance it was required to gain. Smoothing the vector
+    over mesh adjacency removes the sideways disagreement between neighbours;
+    the outward component is then floored back at `needed`, so the guarantee the
+    pass makes is untouched and only the stretch is given up.
+
+    Returns `push_vec` unchanged on any failure -- never worse than not doing it.
+    """
+    if iters is None:
+        iters = PUSH_DIVERGENCE_ITERS
+    try:
+        t = np.asarray(tris, dtype=np.int64).reshape(-1, 3)
+        v = np.asarray(push_vec, dtype=np.float64)
+        n = len(v)
+        if t.size == 0 or n < 3 or iters < 1 or not np.any(
+                np.linalg.norm(v, axis=1) > 1e-9):
+            return push_vec
+        e = np.concatenate([t[:, [0, 1]], t[:, [1, 2]], t[:, [2, 0]]])
+        e = np.concatenate([e, e[:, ::-1]])
+        e = e[(e[:, 0] < n) & (e[:, 1] < n) & (e[:, 0] >= 0) & (e[:, 1] >= 0)]
+        if not len(e):
+            return push_vec
+        nrm = np.asarray(normals, dtype=np.float64)
+        need = np.asarray(needed, dtype=np.float64)
+        cnt = np.bincount(e[:, 0], minlength=n).astype(np.float64)
+        live = cnt > 0
+        for _ in range(int(iters)):
+            acc = np.zeros_like(v)
+            for k in range(3):
+                np.add.at(acc[:, k], e[:, 0], v[e[:, 1], k])
+            avg = np.zeros_like(v)
+            avg[live] = acc[live] / cnt[live, None]
+            v = np.where(live[:, None], (1.0 - blend) * v + blend * avg, v)
+            # RESTORE THE CLEARANCE. Smoothing can only be allowed to take away
+            # sideways motion; whatever outward distance the pass demanded is
+            # put straight back, so this cannot reopen a poke-through.
+            along = np.einsum('ij,ij->i', v, nrm)
+            short = np.maximum(need - along, 0.0)
+            v = v + nrm * short[:, None]
+        return v
+    except Exception as _pe:
+        _note_pass_failure("_parallelise_push", _pe)
+        return push_vec
+
+
 def _smooth_push_field(push: np.ndarray, needed: np.ndarray, tris,
                        iters: int = ANTIPOKE_SMOOTH_ITERS,
                        blend: float = 0.5) -> np.ndarray:
@@ -3948,7 +4056,14 @@ def clear_armor_outside_body(
         push = np.clip(_smooth_push_field(push, push, tris, smooth_iters),
                        0.0, max_push)
     push = np.where(dd[:, 0] < max_body_dist, push, 0.0)  # leave far drapes alone
-    return (v + nrm * push[:, None]).astype(np.float32)
+    push_vec = nrm * push[:, None]
+    # #push-divergence: same displacement, applied so neighbours move together.
+    # Runs AFTER the scalar feather above, because that one shapes HOW MUCH and
+    # this one shapes WHICH WAY -- and it is the direction spread that stretches
+    # the surface (see `_parallelise_push`).
+    if PUSH_DIVERGENCE_SMOOTH and tris is not None:
+        push_vec = _parallelise_push(push_vec, nrm, push, tris)
+    return (v + push_vec).astype(np.float32)
 
 
 # Push soft-body / HDT-rigged CLOTH outward over the breast & butt where the larger
@@ -5198,6 +5313,7 @@ def convert_nif(
                                     src_armor_verts=sv_world,
                                     src_body_verts=cbbe_verts_for_warp,
                                     src_body_normals=_a_bn,
+                                    tris=np.asarray(s.tris, dtype=np.int64),
                                 )
                             except Exception as e:
                                 # RECORDED. The pack's main clearance provider;
@@ -6283,6 +6399,7 @@ def inflate_armor_outward(
     src_armor_verts: "np.ndarray | None" = None,
     src_body_verts: "np.ndarray | None" = None,
     src_body_normals: "np.ndarray | None" = None,
+    tris: "np.ndarray | None" = None,
 ) -> np.ndarray:
     """Push body-hugging armor verts outward to avoid z-fighting with a
     morphed body.
@@ -6403,6 +6520,10 @@ def inflate_armor_outward(
             _note_pass_failure("inflate/authored-floor", e)
 
     push = directions_unit * push_len[:, None]
+    # #push-divergence: make the field parallel, keeping every vertex's own
+    # outward gain. Not a new pass -- the same displacement, applied better.
+    if PUSH_DIVERGENCE_SMOOTH and tris is not None:
+        push = _parallelise_push(push, directions_unit, push_len, tris)
 
     return (armor_verts + push).astype(np.float32)
 
@@ -22199,6 +22320,7 @@ def convert_nif_phase2(
                             src_armor_verts=_sv_body,
                             src_body_verts=src_body_v_p2,
                             src_body_normals=src_body_n_p2,
+                            tris=np.asarray(s.tris, dtype=np.int64),
                         )
                         _stage('inflate', override)
                     except Exception as e:
