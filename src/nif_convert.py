@@ -15506,9 +15506,13 @@ CHEST_SYNC_MIN_BREAST_FRAC = 0.25
 # breast-family SHARE among the bones it ALREADY has, per vert, up to the
 # overlapping cloth's local fraction. No add_bone -> a physics/chain bone can
 # never be introduced onto the plate, so the equip-CTD guard is STRUCTURAL rather
-# than a name filter. DEFAULT OFF pending the in-game verdict.
+# than a name filter. DEFAULT ON (verified in game on the ruby flower Top -- "they
+# move together"); `=0` turns it off. NOT yet pack-censused, but the pass is
+# heavily gated (breast bones + >=0.5 mutual cleavage overlap + no add_bone + no
+# vertex moves) and a NON-qualifying piece is never re-saved (dirty stays False),
+# so default-on is byte-identical on every piece without a plate-over-cloth stack.
 BUST_PLATE_SYNC = os.environ.get(
-    "CBBE2UBE_BUST_PLATE_SYNC", "").strip().lower() in ("1", "true", "yes", "on")
+    "CBBE2UBE_BUST_PLATE_SYNC", "1").strip().lower() in ("1", "true", "yes", "on")
 # Min mutual overlap (each layer's cleavage verts within CHEST_SYNC_DISTANCE of
 # the other's, BOTH ways, over the cleavage box) to treat two breast-boned shapes
 # as a genuine stacked bust. Ruby flower chest_plate<->top = 1.00/0.82; an
