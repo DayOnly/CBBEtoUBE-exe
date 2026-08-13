@@ -1226,6 +1226,19 @@ WARP_STANDOFF_SMOOTH_ENABLED = (
 WARP_STANDOFF_SMOOTH_ITERS = int(
     os.environ.get("CBBE2UBE_WARP_SMOOTH_ITERS", "2") or 2)
 
+# #warp-delta-smooth -- Laplacian passes over the BODY-DELTA field itself,
+# before it is applied. Distinct from the two smoothings above it: those act on
+# the standoff PUSH, this acts on the displacement the body asked for. Measured
+# on one garment, `warp` produces 72-87% of the waist distortion and its field
+# jumps 15-23% of an edge length between neighbours, which is the stretch.
+# DEFAULT 0 (off): it trades that distortion against the clearance this stage
+# hands downstream, and the net on the shipped mesh has to be measured end to
+# end before any default moves. See the block at the call site.
+WARP_DELTA_SMOOTH_ITERS = int(
+    os.environ.get("CBBE2UBE_WARP_DELTA_SMOOTH", "0") or 0)
+WARP_DELTA_SMOOTH_WEIGHT = float(
+    os.environ.get("CBBE2UBE_WARP_DELTA_SMOOTH_W", "0.5") or 0.5)
+
 # Source-body normals for the phase-2 conform pass. DEFAULT OFF -- opt in with
 # CBBE2UBE_SRC_NORMAL_FIX=1.
 #
@@ -2862,6 +2875,69 @@ def warp_armor_by_body_delta(
         gate = (_ss(az, upper_damp_z[0], upper_damp_z[1])
                 * _ss(sd0, upper_damp_standoff[0], upper_damp_standoff[1]))
         interp_delta = interp_delta * (1.0 - gate * upper_damp_max)[:, None]
+
+    # #warp-delta-smooth. The delta field is what the distortion IS: measured
+    # on one garment, the applied displacement jumps between adjacent vertices
+    # by 15-23% of the edge between them, and that number is the same as the
+    # edge stretch it produces. `warp` contributes 72-87% of the waist
+    # distortion on that piece, more than every other pass combined.
+    #
+    # REFUTED END TO END, 2026-08-13. Kept default-OFF and reachable so the
+    # negative stays reproducible, the same convention as #push-divergence-
+    # smooth and #unified-offset.
+    #
+    # AT THIS STAGE it works, and dramatically: k=2/w=0.5 took belts_metal's
+    # band stretch 0.137 -> 0.069 and its anisotropy 3.97 -> 1.89. It also ate
+    # the clearance handed downstream -- standoff p10 0.150 -> 0.094, and the
+    # shape went from ZERO verts inside the body to 12.
+    #
+    # ON THE SHIPPED MESH the gain is gone and the mesh is worse:
+    #
+    #     arm      belts stretch   belts aniso   FOLDED verts (all shapes)
+    #     k=0          0.141          2.46            92
+    #     k=2          0.139          2.54           102
+    #     k=10         0.128          2.59           123
+    #
+    # Five times the smoothing buys ~9% of stretch on ONE shape while folds
+    # rise 34% and anisotropy -- the quantity that actually smears a texture --
+    # gets worse.
+    #
+    # WHY, and it invalidates the reason this was tried. The argument for it
+    # was that #push-divergence-smooth failed because the clearance push
+    # GUARANTEES each vertex's standoff along its own normal, so its restore
+    # step re-added the divergence smoothing removed -- while the body-delta
+    # field carries no such guarantee and nothing would fight it back. The
+    # guarantee is simply enforced LATER. Hand inflate and anti-poke a smoother
+    # mesh with less clearance and they push harder, along the same diverging
+    # normal field, re-creating the distortion and adding folds. Same
+    # structure, one pass removed.
+    #
+    # THE METHODOLOGICAL LESSON, which outlives this flag: a stage ledger
+    # attributes but does NOT establish cause. `warp` measures as 72-87% of the
+    # waist distortion, yet halving what warp contributes did not halve the
+    # result, because the passes after it compensate toward their own targets.
+    # Read the fold ledger the same way -- `inflate` at +296 may likewise be
+    # compensating for what reaches it, not originating the damage.
+    if (WARP_DELTA_SMOOTH_ITERS > 0 and tris is not None
+            and len(interp_delta) > 3):
+        try:
+            _t = np.asarray(tris, dtype=np.int64).reshape(-1, 3)
+            _e = np.unique(np.sort(np.vstack(
+                [_t[:, [0, 1]], _t[:, [1, 2]], _t[:, [0, 2]]]), axis=1), axis=0)
+            _w = float(np.clip(WARP_DELTA_SMOOTH_WEIGHT, 0.0, 1.0))
+            for _ in range(int(WARP_DELTA_SMOOTH_ITERS)):
+                _acc = np.zeros_like(interp_delta)
+                _cnt = np.zeros(len(interp_delta))
+                for _a, _b in ((_e[:, 0], _e[:, 1]), (_e[:, 1], _e[:, 0])):
+                    np.add.at(_acc, _a, interp_delta[_b])
+                    np.add.at(_cnt, _a, 1.0)
+                _ok = _cnt > 0
+                _tgt = interp_delta.copy()
+                _tgt[_ok] = _acc[_ok] / _cnt[_ok, None]
+                interp_delta[_ok] = ((1.0 - _w) * interp_delta[_ok]
+                                     + _w * _tgt[_ok])
+        except Exception as _wse:
+            _note_pass_failure("warp_delta_smooth", _wse)
 
     warped = armor_verts + interp_delta
 
