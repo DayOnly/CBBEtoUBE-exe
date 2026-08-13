@@ -3801,6 +3801,50 @@ PUSH_DIVERGENCE_SMOOTH = os.environ.get(
 PUSH_DIVERGENCE_ITERS = int(
     os.environ.get("CBBE2UBE_PUSH_DIVERGENCE_ITERS", "") or 3)
 
+# #clearance-field. THE alternative the refuted push-divergence smoothing named
+# as the only way forward (see the block above): "a displacement solved for
+# minimum stretch subject to clearance -- not post-process the push."
+#
+# Every clearance pass today states its guarantee PER VERTEX ALONG ITS OWN
+# NORMAL: `u_i = n_i * max(req_i - offset_i, 0)`. That normal field fans at a
+# concave crease (the waist, under a belt), so neighbours are pushed in
+# different directions and the surface stretches or folds. Smoothing the push
+# (scalar OR vector) is refuted because the honest-keeping RE-PROJECTION re-adds
+# displacement along exactly the diverging normals it just removed.
+#
+# So do not push-then-repair. Solve ONE field u that meets every requirement
+# with the least stretch:
+#
+#     minimise  sum_edges ||u_i - u_j||^2  +  lambda * sum_i ||u_i||^2
+#     s.t.      n_i . u_i  >=  need_i        (clear the body, a LOWER BOUND)
+#
+# The floor is an INEQUALITY, not a target: a vertex may sit further out than
+# need_i when that costs less stretch, so over a concave crease the field lifts
+# off the valley and BRIDGES it instead of diving in along the fanning normals.
+# That is what `_parallelise_push` cannot do -- it re-projects every vertex back
+# ONTO need_i (an equality) as its terminal step, forbidding the lift-off -- and
+# what the scalar feather cannot do -- it never touches direction. Solved by
+# projected Jacobi to a fixed point (the constrained-QP optimum), which is a
+# strict stretch improvement over today's push because that push is itself a
+# feasible point of the same solve. `lambda` gives the reach a finite length so
+# a far drape is not dragged by the harmonic tail.
+#
+# DEFAULT OFF pending an in-game verdict. This is NOT the rejected
+# `#unified-offset`, which reformulated the operator ALGEBRA but still applied
+# its scalar result along each vertex's own diverging normal.
+CLEARANCE_FIELD_SOLVE = os.environ.get(
+    "CBBE2UBE_CLEARANCE_FIELD", "").strip().lower() in (
+        "1", "true", "yes", "on")
+# Locality/mass term. 0.0 = pure harmonic (infinite reach); larger = shorter
+# reach, tighter hug. Numeric tuning knob, so env-only per the flag rule.
+CLEARANCE_FIELD_LAMBDA = float(
+    os.environ.get("CBBE2UBE_CLEARANCE_FIELD_LAMBDA", "") or 0.5)
+CLEARANCE_FIELD_ITERS = int(
+    os.environ.get("CBBE2UBE_CLEARANCE_FIELD_ITERS", "") or 256)
+CLEARANCE_FIELD_DEBUG = os.environ.get(
+    "CBBE2UBE_CLEARANCE_FIELD_DEBUG", "").strip().lower() in (
+        "1", "true", "yes", "on")
+
 
 def _parallelise_push(push_vec, normals, needed, tris,
                       iters: int = None, blend: float = 0.5):
@@ -3884,6 +3928,98 @@ def _smooth_push_field(push: np.ndarray, needed: np.ndarray, tris,
         return p
     except Exception:
         return push
+
+
+def _solve_clearance_field(verts, normals, need, tris, *,
+                           max_push=3.0, lam=None, iters=None,
+                           tol=1e-4, weld_tol=1e-3):
+    """One minimum-stretch displacement that clears the body.  #clearance-field
+
+    Returns (u, stats): `u` is the per-vertex displacement (n, 3); `stats` lets
+    the caller ASSERT THE PASS FIRED (n_need / n_moved / max_move / iters /
+    converged). On ANY failure returns a zero field and stats['ok']=False, so a
+    solver error is a NO-OP the caller falls through -- never a silent loss of
+    clearance.
+
+    `need` is the outward gain each vertex must achieve ALONG its own body
+    normal -- exactly the capped `req - worst` the anti-poke already computed.
+    The constraint is one-sided: `n_i . u_i >= need_i`. Verts with need_i <= 0
+    are free; the `lam` mass term decays their motion to zero away from the
+    active set, so a far drape is not dragged out by the harmonic tail.
+
+    WELD (a component is not an object): coincident verts at a UV seam are
+    separate indices with identical position, and with no edge between them the
+    Laplacian never couples them, so the seam re-diverges. Group by position at
+    `weld_tol` and chain intra-group edges, so one SURFACE smooths as one.
+    """
+    lam = CLEARANCE_FIELD_LAMBDA if lam is None else float(lam)
+    iters = CLEARANCE_FIELD_ITERS if iters is None else int(iters)
+    V = np.asarray(verts, np.float64)
+    n = len(V)
+    stats = {"ok": False, "n_need": 0, "n_moved": 0,
+             "max_move": 0.0, "iters": 0, "converged": False}
+    try:
+        N = np.asarray(normals, np.float64)
+        s = np.clip(np.asarray(need, np.float64), 0.0, float(max_push))
+        stats["n_need"] = int((s > 1e-9).sum())
+        T = np.asarray(tris, np.int64).reshape(-1, 3)
+        if n < 3 or not len(T) or not np.any(s > 1e-9):
+            return np.zeros((n, 3)), stats
+        # Unit normals; a zero-length normal makes its own constraint inert
+        # rather than injecting a NaN direction.
+        Nl = np.linalg.norm(N, axis=1, keepdims=True)
+        Nu = N / np.where(Nl > 1e-9, Nl, 1.0)
+
+        # Adjacency = triangle edges + weld edges between coincident verts.
+        e = np.concatenate([T[:, [0, 1]], T[:, [1, 2]], T[:, [2, 0]]])
+        key = np.round(V / float(weld_tol)).astype(np.int64)
+        order = np.lexsort((key[:, 2], key[:, 1], key[:, 0]))
+        sk = key[order]
+        bnd = np.where(np.any(np.diff(sk, axis=0) != 0, axis=1))[0] + 1
+        starts = np.concatenate([[0], bnd, [n]])
+        weld = [np.column_stack([order[a:b - 1], order[a + 1:b]])
+                for a, b in zip(starts[:-1], starts[1:]) if b - a > 1]
+        if weld:
+            e = np.concatenate([e] + weld)
+        e = np.concatenate([e, e[:, ::-1]])
+        e = e[(e[:, 0] >= 0) & (e[:, 1] >= 0) & (e[:, 0] < n) & (e[:, 1] < n)]
+        if not len(e):
+            return np.zeros((n, 3)), stats
+        src, dst = e[:, 0], e[:, 1]
+        deg = np.bincount(src, minlength=n).astype(np.float64)
+        live = deg > 0
+        denom = deg + lam
+        denom[~live] = 1.0
+
+        # Projected Jacobi. Each step: relax toward the screened neighbour
+        # average (the gradient step of the stretch+mass energy), then project
+        # each vert onto its half-space `n_i . u_i >= s_i`. The projection only
+        # ever RAISES the along-normal component to the floor, never pins it, so
+        # a vert is free to sit above the floor -- the lift-off.
+        u = np.zeros((n, 3))
+        for it in range(int(iters)):
+            acc = np.zeros((n, 3))
+            for k in range(3):
+                np.add.at(acc[:, k], src, u[dst, k])
+            un = acc / denom[:, None]
+            un[~live] = 0.0
+            along = np.einsum('ij,ij->i', un, Nu)
+            short = np.clip(s - along, 0.0, None)
+            un = un + Nu * short[:, None]
+            step = float(np.linalg.norm(un - u, axis=1).max())
+            u = un
+            stats["iters"] = it + 1
+            if step < float(tol):
+                stats["converged"] = True
+                break
+        mv = np.linalg.norm(u, axis=1)
+        stats["n_moved"] = int((mv > 1e-6).sum())
+        stats["max_move"] = float(mv.max())
+        stats["ok"] = True
+        return u, stats
+    except Exception as _pe:
+        _note_pass_failure("_solve_clearance_field", _pe)
+        return np.zeros((n, 3)), stats
 
 
 def clear_armor_outside_body(
@@ -4126,9 +4262,31 @@ def clear_armor_outside_body(
             _note_pass_failure("clear_armor_outside_body/authored-floor", e)
 
     push = np.clip(req - worst, 0.0, max_push)            # push OUT only
-    if tris is not None and smooth_iters > 0:
+    # #clearance-field: solve ONE minimum-stretch displacement that meets every
+    # vertex's outward requirement, instead of pushing each vertex along its own
+    # (diverging) body normal and then feathering/re-projecting the damage. `push`
+    # is the per-vertex requirement -- the constraint's lower bound. This REPLACES
+    # both the scalar feather and the vector re-projection below (which only ever
+    # post-process the diverging push). Own `need` var so the OFF path is
+    # untouched and byte-identical. Falls through on solver failure.
+    if CLEARANCE_FIELD_SOLVE and tris is not None:
+        need = np.where(dd[:, 0] < max_body_dist, push, 0.0)  # far drapes free
+        u, _cf = _solve_clearance_field(v, nrm, need, tris, max_push=max_push)
+        if _cf.get("ok"):
+            if CLEARANCE_FIELD_DEBUG:
+                import sys as _sys
+                _sys.stderr.write(
+                    "[clearance-field] need=%d moved=%d max_move=%.3f iters=%d "
+                    "converged=%s\n" % (
+                        _cf["n_need"], _cf["n_moved"], _cf["max_move"],
+                        _cf["iters"], _cf["converged"]))
+            return (v + u).astype(np.float32)
+    if ANTIPOKE_SMOOTH_ENABLED and tris is not None and smooth_iters > 0:
         # Feather the push over the mesh so per-vert normal/magnitude jumps
         # don't crinkle the cloth; floored at the raw push (never reopens).
+        # Gated on its own flag: `tris` may now be present only for the
+        # #clearance-field solve above (which returns early on success), so this
+        # scalar feather must not switch itself on off the back of that.
         push = np.clip(_smooth_push_field(push, push, tris, smooth_iters),
                        0.0, max_push)
     push = np.where(dd[:, 0] < max_body_dist, push, 0.0)  # leave far drapes alone
@@ -22708,8 +22866,13 @@ def convert_nif_phase2(
                     morph_differential=_antipoke_diff,
                     jiggle_amplitude=_antipoke_jig,
                     req_extra=_layer_extra.get(s.name, 0.0),
+                    # Topology is needed by the scalar feather (ANTIPOKE_SMOOTH)
+                    # AND by the #clearance-field solve; pass it when EITHER is
+                    # on. With both off this stays None, so the OFF path is
+                    # unchanged.
                     tris=(np.asarray(s.tris, dtype=np.int64)
-                          if ANTIPOKE_SMOOTH_ENABLED else None),
+                          if (ANTIPOKE_SMOOTH_ENABLED or CLEARANCE_FIELD_SOLVE)
+                          else None),
                     # #authored-antipoke: the author's own mesh and body, so the
                     # clearance requirement can be relaxed where they had the
                     # vertex tighter AND the body does not grow there. Same pair
