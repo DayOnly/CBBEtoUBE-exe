@@ -3829,18 +3829,25 @@ PUSH_DIVERGENCE_ITERS = int(
 # feasible point of the same solve. `lambda` gives the reach a finite length so
 # a far drape is not dragged by the harmonic tail.
 #
-# DEFAULT OFF pending an in-game verdict. This is NOT the rejected
-# `#unified-offset`, which reformulated the operator ALGEBRA but still applied
-# its scalar result along each vertex's own diverging normal.
+# DEFAULT ON (2026-08-13). Pack-validated over 17 mods / 1226 shape-pairs: folds
+# -14.5%, verts inside body -6.4%, grazing -4.6%, roughness and stretch slightly
+# better, standoff +0.013u; the only apparent regressions (high-neck/collar
+# shapes) were a concave-neck proxy artifact that the ray-cone truth check
+# cleared (ON has FEWER real penetrations). Verified in-game on the ruby flower
+# (whole set). `CBBE2UBE_CLEARANCE_FIELD=0` turns it back off (the census OFF arm).
+# This is NOT the rejected `#unified-offset`, which reformulated the operator
+# ALGEBRA but still applied its scalar result along each vertex's own diverging
+# normal.
 CLEARANCE_FIELD_SOLVE = os.environ.get(
-    "CBBE2UBE_CLEARANCE_FIELD", "").strip().lower() in (
+    "CBBE2UBE_CLEARANCE_FIELD", "1").strip().lower() in (
         "1", "true", "yes", "on")
 # The SAME solve on the earlier `inflate_armor_outward` pass -- the bigger fold
 # source (stage ledger on the ruby flower top: inflate creates +592 folds vs the
 # anti-poke's +360). Independent flag so inflate and anti-poke can be A/B'd
-# apart; both share LAMBDA / ITERS / DEBUG below. DEFAULT OFF.
+# apart; both share LAMBDA / ITERS / DEBUG below. DEFAULT ON (see above);
+# `CBBE2UBE_CLEARANCE_FIELD_INFLATE=0` turns it off.
 CLEARANCE_FIELD_INFLATE = os.environ.get(
-    "CBBE2UBE_CLEARANCE_FIELD_INFLATE", "").strip().lower() in (
+    "CBBE2UBE_CLEARANCE_FIELD_INFLATE", "1").strip().lower() in (
         "1", "true", "yes", "on")
 # Locality/mass term. 0.0 = pure harmonic (infinite reach); larger = shorter
 # reach, tighter hug. Numeric tuning knob, so env-only per the flag rule.

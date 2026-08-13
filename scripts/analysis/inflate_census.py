@@ -102,6 +102,9 @@ import numpy as np                                      # noqa: E402
 from scipy.spatial import cKDTree                       # noqa: E402
 from pyn import pynifly                                 # noqa: E402
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from fold_census import score as _fold_score           # noqa: E402
+
 BODY_NAMES = {"baseshape", "3ba", "cbbe", "femalebody", "body", "ubebody"}
 
 # The flags the deployed build runs with. Both arms get these; only the
@@ -304,6 +307,10 @@ def score_nif(out_path, src_path):
             "inside": int((s < -0.05).sum()),
             "grazing": int((s < 0.10).sum()),
             "dihedral": _dihedral(v, t),
+            # #clearance-field target: folds need no normals (positions only), so
+            # they are scorable here. Its whole point is fewer folds, and the
+            # counters above cannot see them.
+            "folded": int(_fold_score(v, t)[0].sum()),
             "phase": phase,
         }
         sv = src.get(name, (None,))[0]
