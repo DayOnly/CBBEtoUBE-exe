@@ -368,10 +368,24 @@ def main() -> int:
 
     arm_on = arm("--arm-on", {"CBBE2UBE_INFLATION_MAGNITUDE": "0.7"})
     arm_off = arm("--arm-off", {"CBBE2UBE_INFLATION_MAGNITUDE": "0"})
+    # SAME-ARM CONTROL: run the identical env down both arms to measure this
+    # harness's own RESOLUTION. Whatever spread comes back is float noise --
+    # the pipeline moves hundreds of verts by ~0.25u on an algebraic no-op --
+    # and any real A/B delta smaller than it is not a result. Without this
+    # number the census's medians have no scale, which is why it is a mode
+    # here rather than a thing someone remembers to do.
+    same_arm = "--same-arm-control" in argv
+    if same_arm:
+        arm_off = dict(arm_on)
     print(f"ARM 'on' : {arm_on}")
     print(f"ARM 'off': {arm_off}")
-    if arm_on == arm_off:
-        print("the two arms are identical; nothing would be measured")
+    if same_arm:
+        print("SAME-ARM CONTROL: both arms identical ON PURPOSE. Every number "
+              "below is this harness's noise floor, NOT an effect.")
+    elif arm_on == arm_off:
+        print("the two arms are identical; nothing would be measured. If that "
+              "was deliberate, pass --same-arm-control so the output is "
+              "labelled as a noise floor instead of read as an effect.")
         return 2
     pop = json.loads(Path(opt("--population")).read_text())
     out_json = Path(opt("--out", "inflate_census.json"))
@@ -489,6 +503,24 @@ def main() -> int:
     if results:
         same = sum(1 for r in results if r.get("on") == r.get("off"))
         pct = 100.0 * same / len(results)
+        if same_arm:
+            # The control run: identical arms are the POINT, so the check
+            # inverts. What matters is the residue -- pairs that differ even
+            # though nothing was changed. That residue is the noise floor.
+            noisy = [r for r in results if r.get("on") != r.get("off")]
+            print(f"\nNOISE FLOOR: {len(noisy)}/{len(results)} pairs differ "
+                  f"with NOTHING changed ({100 - pct:.1f}%)")
+            for key in ("edge_dev", "dihedral", "standoff_p50"):
+                d = [abs(r["on"][key] - r["off"][key]) for r in noisy
+                     if isinstance(r["on"].get(key), (int, float))
+                     and isinstance(r["off"].get(key), (int, float))]
+                if d:
+                    print(f"  {key:14s} p50 {np.median(d):.5f}  "
+                          f"p95 {np.percentile(d, 95):.5f}  "
+                          f"max {max(d):.5f}")
+            print("  A REAL A/B DELTA MUST EXCEED THESE. Anything smaller is "
+                  "this pipeline's float noise, not an effect.")
+            return 0
         print(f"\nMANIPULATION CHECK: {same}/{len(results)} pairs identical "
               f"({pct:.1f}%)")
         if pct > 99.0:
