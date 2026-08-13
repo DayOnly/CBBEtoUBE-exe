@@ -17377,6 +17377,31 @@ def detect_zfight_pairs(
     return offsets_per_shape
 
 
+# The sign guard below rescues normals the recompute cannot determine. It used
+# to apply to EVERY vertex, on the docstring's assertion that it "only matters
+# at boundary verts where the recompute is fundamentally underdetermined" --
+# which nothing measured. It does not: on one garment it forced the source's
+# sign onto vertices with a full, agreeing triangle fan, storing normals that
+# point into the surface. Those shade as if lit from behind, and no positional
+# metric can see them -- three fixes aimed at stretch missed them entirely.
+#
+# Determinacy is the property that actually separates the two populations, and
+# it needs BOTH terms. Coherence alone scores a vertex belonging to ONE
+# triangle as perfectly coherent (nothing to disagree with), which is exactly
+# the isolated-tab case the guard exists for -- measuring its own blind spot.
+# The pubic-loop regression the guard was written for is fan-1 boundary verts,
+# so it stays guarded under `fan < 3`.
+#
+# CBBE2UBE_NO_NORMAL_DETERMINACY=1 restores the blanket flip.
+NORMAL_SIGN_GUARD_DETERMINED = os.environ.get(
+    "CBBE2UBE_NO_NORMAL_DETERMINACY", "").strip().lower() not in (
+        "1", "true", "yes", "on")
+# A vertex needs a real fan, and that fan has to agree, before its recomputed
+# normal is trusted over the source's sign.
+NORMAL_DETERMINED_FAN_MIN = 3
+NORMAL_DETERMINED_COHERENCE_MIN = 0.5
+
+
 def _recompute_vertex_normals(
         verts: np.ndarray, tris,
         source_normals: "np.ndarray | None" = None,
@@ -17417,8 +17442,13 @@ def _recompute_vertex_normals(
     # larger tris contribute more to their verts (area weighting),
     # which is the standard convention for smooth shading.
     vert_normals = np.zeros_like(verts)
+    face_area = np.linalg.norm(face_normals, axis=1)
+    fan = np.zeros(len(verts))
+    area_sum = np.zeros(len(verts))
     for i in range(3):
         np.add.at(vert_normals, tris[:, i], face_normals)
+        np.add.at(area_sum, tris[:, i], face_area)
+        np.add.at(fan, tris[:, i], 1)
     vn_len = np.linalg.norm(vert_normals, axis=1, keepdims=True)
     vn_len[vn_len < 1e-9] = 1.0
     out = vert_normals / vn_len
@@ -17427,12 +17457,21 @@ def _recompute_vertex_normals(
         src = np.asarray(source_normals, dtype=np.float64)
         if src.shape == out.shape:
             # Per-vert sign alignment: if recomputed disagrees with
-            # source by >90 degrees, flip it. Hits ~all interior verts
-            # as a no-op (recompute already agrees on a smooth mesh)
-            # and only matters at boundary verts where the recompute
-            # is fundamentally underdetermined.
+            # source by >90 degrees, flip it. Applied ONLY where the
+            # recompute is undetermined -- see the block above the
+            # function for why the blanket form was damage.
             dot = (out * src).sum(axis=1, keepdims=True)
             flip_mask = dot < 0
+            if NORMAL_SIGN_GUARD_DETERMINED:
+                # coherence: do the incident faces point the same way?
+                # |sum(area * n)| / sum(area) -- 1.0 flat, 0.0 cancelling.
+                # Both terms carry the same 2x from the raw cross product,
+                # so it cancels and no factor belongs here.
+                coh = np.linalg.norm(vert_normals, axis=1) / np.maximum(
+                    area_sum, 1e-12)
+                determined = ((fan >= NORMAL_DETERMINED_FAN_MIN)
+                              & (coh >= NORMAL_DETERMINED_COHERENCE_MIN))
+                flip_mask = flip_mask & ~determined[:, None]
             out = np.where(flip_mask, -out, out)
     return out
 

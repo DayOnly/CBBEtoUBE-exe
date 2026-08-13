@@ -140,9 +140,37 @@ for that — see `#layer-order-last`, and note that simply suppressing the secon
 run measures WORSE, because the ride and order passes create the crumple it
 cleans up.
 
+The stage dump is blind to all of it. `GeometryDump`'s last checkpoint sits
+inside the phase-2 loop, so a pass ledger built from it measures what each pass
+CREATES, not what survives: on one piece the dump ended at 221 folded vertices
+where the shipped NIF has 92, one shape going 70 → 4. Always close a stage
+ledger by scoring the WRITTEN NIF as its final row.
+
 **The general lesson: "the source order" is not the order of the calls you can
 find by grepping the pass names.** A pass invoked from the writer runs after
 every list like the one above.
+
+**Fold ledger, 2026-08-12** (folded verts = a vertex whose own incident faces
+disagree by >90°, i.e. the surface passing through itself; positions only, so
+it is computable at every stage boundary). One garment, 5 shapes, entry
+matching the author's own count exactly:
+
+| pass | net folds created |
+|---|---|
+| `inflate` | **+296** |
+| `antipoke` | **+179** |
+| `warp` | +61 |
+| `conform` | −6 (but +91 on one shape) |
+| `groove_smooth` | −249 |
+| `coherence_repair` | −59 |
+
+Damage-then-repair, and the two biggest creators are the outward-push passes.
+81–96% of newly folded verts are CONCAVE — pushing outward along converging
+normals makes neighbours cross. `push/R` (R = local concave curvature radius)
+separates folded from unfolded by 10–30× in median, but the continuous
+self-intersection threshold `push > R` catches only 10–29% of them, so a
+curvature cap at R is **refuted as a sufficient fix**. The discrete condition
+(push differential across an edge vs that edge's length) is the open lead.
 
 ### 2d. On-disk, post-save (each re-loads and re-saves the NIF)
 

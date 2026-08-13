@@ -212,6 +212,24 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "0.25 -> 19.6, at about 0.004u of median standoff "
                     "throughout. Below ~0.25 the worst case keeps shrinking "
                     "but the COUNT of inward-facing triangles starts rising."),
+    Setting("normal_determinacy", "Trust the mesh's own shading where it is clear",
+            "Armor", "Fit and clearance", default=True,
+            env="CBBE2UBE_NO_NORMAL_DETERMINACY", invert=True,
+            hint="Fixes dark shards that survive every geometry fix, because the geometry was never the problem.",
+            tooltip="After the fit moves vertices, their normals are "
+                    "recomputed from the new shape -- except that any normal "
+                    "disagreeing with the ORIGINAL by more than 90 degrees was "
+                    "flipped back, on the assumption this only ever happened "
+                    "where the recompute was ambiguous. It also happened at "
+                    "vertices with a full, agreeing set of triangles, storing "
+                    "a normal that points INTO the surface: those shade as if "
+                    "lit from behind, which reads as broken angular verts and "
+                    "is invisible to every position-based check. Measured on "
+                    "one garment against the author's own mesh, which had "
+                    "none. This limits the flip to vertices whose normal "
+                    "genuinely cannot be determined -- too few triangles, or "
+                    "triangles that cancel -- which is the case it was written "
+                    "for."),
     Setting("warp_push_shell_cap", "Never push a vertex through its own armour",
             "Armor", "Fit and clearance", default=False,
             env="CBBE2UBE_WARP_PUSH_SHELL_CAP", invert=False,
