@@ -14965,17 +14965,21 @@ CHEST_SYNC_MIN_BREAST_FRAC = 0.25
 # never be introduced onto the plate, so the equip-CTD guard is STRUCTURAL rather
 # than a name filter.
 #
-# BACK TO DEFAULT OFF (`=1` opts in). It was flipped ON after the ruby flower
-# verdict and that was premature: the pack census then found it fires on 55 of
-# 1658 pieces, and the first one looked at IN GAME -- the vanilla necromancer
-# robes, a mesh shared by ~70 armor records -- SPLIT APART at the bust. Root
-# cause and the guard it produced are in BUST_PLATE_SYNC_MIN_COVER. With that
-# guard the robe is correctly left alone, but "the guard makes the piece we broke
-# a no-op" is not the same evidence as "the class is fixed", and only ONE piece
-# (the ruby flower) has ever been verified good in game. It stays opt-in until a
-# censused sample has been looked at.
+# DEFAULT ON (`=0` turns it off). History worth keeping, because the default has
+# moved twice: flipped on after the ruby flower verdict, then OFF when the first
+# censused spot-check -- the vanilla necromancer robes -- SPLIT APART at the bust,
+# then back ON once BUST_PLATE_SYNC_MIN_COVER made that piece a no-op (the split
+# was a partly-reachable layer being raised in half; see that constant). Fires on
+# 21 of 1658 censused pieces, 0 new bones anywhere.
+# WHAT THIS PASS IS, HONESTLY: a DOWNSTREAM COMPENSATOR. The conversion does not
+# preserve the AUTHORED breast follow -- measured source vs converted, the ruby
+# flower's plate/cloth order INVERTS (0.181 > 0.135 becomes 0.095 < 0.212) and the
+# necromancer robe's layers are wiped outright (BodyStock 0.681 -> 0.000). This
+# pass copies follow from a surviving layer to paper over that, which is why it
+# cannot help a piece where the layers it would copy FROM were also wiped. The
+# real fix is upstream, in whatever pass is eating the authored weights.
 BUST_PLATE_SYNC = os.environ.get(
-    "CBBE2UBE_BUST_PLATE_SYNC", "").strip().lower() in ("1", "true", "yes", "on")
+    "CBBE2UBE_BUST_PLATE_SYNC", "1").strip().lower() in ("1", "true", "yes", "on")
 # Min mutual overlap (each layer's cleavage verts within CHEST_SYNC_DISTANCE of
 # the other's, BOTH ways, over the cleavage box) to treat two breast-boned shapes
 # as a genuine stacked bust. Ruby flower chest_plate<->top = 1.00/0.82; an
