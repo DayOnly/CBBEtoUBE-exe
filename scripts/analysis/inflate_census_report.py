@@ -43,16 +43,25 @@ def col(rows, side, key):
                      for r in rows], float)
 
 
-def band(label, on, off, higher_is_better, unit=""):
-    d = off - on
+def band(label, on, off, higher_is_better, unit="", cand="OFF"):
+    """`cand` names the arm being PROPOSED; every verdict word below is written
+    from its point of view, and the difference is candidate-minus-baseline.
+
+    This used to be hard-wired to OFF because the first question asked here was
+    "does REMOVING inflate pay", where OFF was the proposal. `inflate_census`
+    has since been generalised to arbitrary --arm-on/--arm-off, and for a
+    census whose candidate is the ON arm every line printed was inverted --
+    not merely mislabelled, since the sign of `d` decides the wording.
+    """
+    d = (off - on) if cand == "OFF" else (on - off)
     ok = ~np.isnan(d)
     if not ok.any():
         print(f"  {label:26s}  no data")
         return
     d = d[ok]
     better = (d > 0).mean() if higher_is_better else (d < 0).mean()
-    arrow = "OFF better" if (
-        (np.median(d) > 0) == higher_is_better) else "OFF WORSE"
+    arrow = f"{cand} better" if (
+        (np.median(d) > 0) == higher_is_better) else f"{cand} WORSE"
     print(f"  {label:26s} ON {np.nanmedian(on[ok]):8.4f}   "
           f"OFF {np.nanmedian(off[ok]):8.4f}   "
           f"delta p50 {np.median(d):+8.4f}{unit}   "
@@ -60,7 +69,15 @@ def band(label, on, off, higher_is_better, unit=""):
 
 
 def main() -> int:
-    data = json.loads(Path(sys.argv[1]).read_text())
+    argv = sys.argv[1:]
+    # WHICH ARM IS THE PROPOSAL. Defaults to OFF, which is what the original
+    # question ("does removing inflate pay?") meant, so existing invocations
+    # are unchanged. Pass `--candidate on` when the ON arm is the thing being
+    # argued for -- e.g. a census of a flag whose default is being turned ON.
+    cand = "ON" if "--candidate" in argv and \
+        argv[argv.index("--candidate") + 1].strip().lower() == "on" else "OFF"
+    base = "OFF" if cand == "ON" else "ON"
+    data = json.loads(Path(argv[0]).read_text())
     rows = data["rows"]
     print(f"POPULATION  {data['mods_scored']}/{data['mods_total']} mods scored, "
           f"{len(rows)} shape-pairs")
@@ -70,6 +87,8 @@ def main() -> int:
     if data.get("arm_on") or data.get("arm_off"):
         print(f"  ARM 'ON'  = {data.get('arm_on')}")
         print(f"  ARM 'OFF' = {data.get('arm_off')}")
+    print(f"  CANDIDATE = the {cand} arm (baseline: {base}). Every verdict "
+          f"below is written from the {cand} arm's point of view.")
     ex = data.get("exclusions") or {}
     if ex:
         print("EXCLUSIONS (a shrinking denominator is not a clean result):")
@@ -94,14 +113,14 @@ def main() -> int:
         return r["on"].get("inside") != r["off"].get("inside")
 
     n_touch = sum(1 for r in rows if touched(r))
-    print(f"\nINFLATE FIRED on {n_touch}/{len(rows)} shapes "
+    print(f"\nTHE CHANGE FIRED on {n_touch}/{len(rows)} shapes "
           f"({100 * n_touch / max(len(rows), 1):.1f}%) -- the rest are "
           f"identical in both arms and would dilute every median below.")
 
     for phase in (None, 2, 1, "touched"):
         if phase == "touched":
             sub = [r for r in rows if touched(r)]
-            name = "SHAPES INFLATE ACTUALLY MOVED"
+            name = "SHAPES THE CHANGE ACTUALLY MOVED"
         else:
             sub = rows if phase is None else [
                 r for r in rows if r["on"].get("phase") == phase]
@@ -112,16 +131,16 @@ def main() -> int:
               f"({sum(r['on']['verts'] for r in sub):,} verts)")
         print("  TARGET -- fidelity to the author")
         band("authored-offset error", col(sub, "on", "auth_err"),
-             col(sub, "off", "auth_err"), higher_is_better=False, unit="u")
+             col(sub, "off", "auth_err"), higher_is_better=False, unit="u", cand=cand)
         band("edge deviation (shape)", col(sub, "on", "edge_dev"),
-             col(sub, "off", "edge_dev"), higher_is_better=False)
+             col(sub, "off", "edge_dev"), higher_is_better=False, cand=cand)
         band("dihedral (roughness)", col(sub, "on", "dihedral"),
-             col(sub, "off", "dihedral"), higher_is_better=False)
-        print("  COUNTER -- clearance, which is what inflate exists for")
+             col(sub, "off", "dihedral"), higher_is_better=False, cand=cand)
+        print("  COUNTER -- clearance, which the fit passes exist to protect")
         band("standoff p10", col(sub, "on", "standoff_p10"),
-             col(sub, "off", "standoff_p10"), higher_is_better=True, unit="u")
+             col(sub, "off", "standoff_p10"), higher_is_better=True, unit="u", cand=cand)
         band("standoff p50", col(sub, "on", "standoff_p50"),
-             col(sub, "off", "standoff_p50"), higher_is_better=True, unit="u")
+             col(sub, "off", "standoff_p50"), higher_is_better=True, unit="u", cand=cand)
         ion, ioff = col(sub, "on", "inside"), col(sub, "off", "inside")
         gon, goff = col(sub, "on", "grazing"), col(sub, "off", "grazing")
         vt = col(sub, "on", "verts")
@@ -133,13 +152,23 @@ def main() -> int:
               f"OFF {int(np.nansum(goff)):8d}   "
               f"({100 * np.nansum(gon) / max(np.nansum(vt), 1):.3f}% -> "
               f"{100 * np.nansum(goff) / max(np.nansum(vt), 1):.3f}% of verts)")
-        worse = int((ioff > ion).sum())
+        # Direction follows the CANDIDATE: "gained" means the proposed arm has
+        # more verts inside the body than the baseline. Hard-wiring this to
+        # OFF made the column count the wrong shapes for any census whose
+        # candidate is the ON arm.
+        c_in, b_in = (ion, ioff) if cand == "ON" else (ioff, ion)
+        worse = int((c_in > b_in).sum())
         print(f"  {'shapes that gained INSIDE verts':26s} {worse} "
               f"({100 * worse / len(sub):.1f}%)   "
-              f"shapes that lost them: {int((ioff < ion).sum())}")
+              f"shapes that lost them: {int((c_in < b_in).sum())}")
 
     # The pieces that would regress worst, so the verdict is not a mean.
-    d = col(rows, "off", "inside") - col(rows, "on", "inside")
+    # Candidate-minus-baseline, so the list names the pieces the PROPOSAL
+    # makes worse. With this hard-wired to OFF, a census whose candidate is
+    # the ON arm listed exactly the pieces the proposal IMPROVED.
+    d = (col(rows, "on", "inside") - col(rows, "off", "inside")) \
+        if cand == "ON" else \
+        (col(rows, "off", "inside") - col(rows, "on", "inside"))
     order = np.argsort(-np.nan_to_num(d))[:12]
     print("\nWORST REGRESSIONS by verts newly inside the body")
     print(f"  {'delta':>7s}  {'shape':20s} {'mod / nif'}")
