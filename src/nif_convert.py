@@ -6860,6 +6860,43 @@ UBE_BODY_INJECT_NAMES = ("BaseShape", "VirtualBody")
 # [DESIGN: BODYTRI / body-morph generation]
 UBE_BODY_TRI_PATH = r"!UBE\Body\femalebody_tangent.tri"  # legacy fallback only
 
+# --- #tri-write-once ------------------------------------------------------
+# See the call site in `convert_nif_phase2` for the measurements. Short form:
+# both weight variants of an armour derive the SAME `.tri` path, so both write
+# it -- a race, and a nondeterministic result, on every pair in the pack.
+_TRI_WRITE_ONCE = os.environ.get(
+    "CBBE2UBE_TRI_BOTH_WEIGHTS", "").strip().lower() not in (
+        "1", "true", "yes", "on")
+
+
+def _tri_is_owning_variant(src_path) -> bool:
+    """Is this the weight variant that OWNS the shared `.tri`?
+
+    `_1` owns it, because the body the morph deltas are measured against is
+    itself the `_1` reference body -- so armour and body agree.
+
+    Decided from the SOURCE path, never the destination. The source pair is
+    complete on disk before conversion starts, whereas a destination sibling may
+    not be written yet and, in a worker pool, is being written by a DIFFERENT
+    PROCESS -- so any shared in-memory hint would not reach it. That is the same
+    cross-process assumption that made this a race in the first place.
+
+    A piece with no `_1` source partner owns its own TRI whatever its suffix.
+    Otherwise a `_0`-only armour would silently lose body morphs entirely, which
+    is worse than the race this prevents.
+    """
+    try:
+        p = Path(src_path)
+        stem = p.stem
+    except Exception:
+        return True                      # unparseable -> keep the old behaviour
+    if not stem.endswith("_0"):
+        return True                      # `_1`, or single-variant: it owns it
+    try:
+        return not p.with_name(stem[:-2] + "_1" + p.suffix).is_file()
+    except Exception:
+        return True                      # cannot tell -> generate rather than skip
+
 
 # Shapes that NEVER carry BODYTRI even if a keyword matches their
 # name. VirtualBody / VirtualGround / BaseShape are pynifly-injected
@@ -22147,6 +22184,27 @@ def convert_nif_phase2(
                 tri_stem = tri_stem[:-len(suf)]
                 break
         auto_tri_dst = dst_path.parent / (tri_stem + ".tri")
+        # #tri-write-once. The stem drops the weight suffix, so `x_0.nif` and
+        # `x_1.nif` derive the SAME `x.tri` -- BOTH variants generate it and both
+        # write it, on every armour pair in the pack. Two consequences, both
+        # measured on a 161-mod reconvert:
+        #
+        #   * A RACE. With a worker pool the two writers collide on the atomic
+        #     rename; 24 writes lost it, and 4 pieces shipped with a missing or
+        #     stale TRI (they then do not follow body sliders at all).
+        #   * NONDETERMINISM, which is the worse half and was invisible. The two
+        #     variants do NOT produce the same file -- on one boot, 17 of 24
+        #     morphs differ, worst 0.171u per vertex -- so which BODYTRI ships
+        #     has been decided by thread timing.
+        #
+        # Generate it ONCE, from the `_1` variant. `_1` because the body the
+        # deltas are computed against is itself the `_1` reference
+        # (`femalebody_tangent_1.nif`), so the armour and the body agree. A
+        # piece with no `_1` partner keeps generating from whatever it has, so
+        # single-variant armour is unaffected. Also halves TRI work pack-wide.
+        # `CBBE2UBE_TRI_BOTH_WEIGHTS=1` restores the old racing behaviour.
+        if _TRI_WRITE_ONCE and not _tri_is_owning_variant(src_path):
+            auto_tri_dst = None
         # Compute Skyrim-relative path from auto_tri_dst by finding
         # the "meshes" segment.
         dst_parts = auto_tri_dst.parts
