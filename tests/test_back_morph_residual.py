@@ -377,8 +377,16 @@ def test_defaults_are_the_measured_configuration():
     # Bounding the edit: travel 4.03u -> 1.67u but front 11 -> 18 regressions.
     assert nc.BACK_BOUND_EDIT is False
     assert nc.BACK_MIN_VERTS == 24
+    # The cap was measured at 0.8, and it must STAY 0.8. It used to be written
+    # as `BUST_FLAT_CLEARANCE + BACK_MORPH_RESIDUAL_MAX`, which quietly made a
+    # BACK number follow a BUST knob: retuning the bust floor to 0.12 for a
+    # chest defect dragged this to 0.62 with nothing re-measured, and then broke
+    # the overlap test outright when the bust ceiling went back to 0.9. The back
+    # now carries its own base, so this pins the measured value AND the fact
+    # that a bust retune can no longer reach it.
     assert nc.BACK_MOVE_MAX == pytest.approx(
-        nc.BUST_FLAT_CLEARANCE + nc.BACK_MORPH_RESIDUAL_MAX)
+        nc.BACK_MOVE_BASE_CLEARANCE + nc.BACK_MORPH_RESIDUAL_MAX)
+    assert nc.BACK_MOVE_MAX == pytest.approx(0.8)
 
 
 def test_diagnostics_are_off_by_default_and_do_not_print():

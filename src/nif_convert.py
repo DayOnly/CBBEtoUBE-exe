@@ -164,10 +164,30 @@ BELT_OVERLAY_KEYWORDS = (
 # pass's own target) is untouched, so the last line against skin-through-steel
 # is where it was. Restore the old fit with
 # `CBBE2UBE_BUST_FLAT_CLEAR=0.3 CBBE2UBE_CONFORM_BUST_CLEAR=0.9`.
+#
+# THE CEILING WENT BACK TO 0.9 (2026-08-13, same day it moved). Reported in
+# game on a leather cuirass: "leather armor once again has a nipple show". This
+# value is the ONLY thing standing between a breast tip and the garment over it
+# -- it is what the nipple ramp climbs to -- and 0.3 is not enough for it.
+#
+# NOTE THE COUPLING, because it is the whole difficulty here: the same ceiling
+# also decides how far a SKIN-TIGHT layer is held off the chest, since a
+# bodysuit's chest verts carry real nipple weight and so ride the same ramp.
+# Measured on a layered robe's bodysuit (author 0.121u):
+#     floor 0.12 / ceiling 0.3  -> median 0.561   nipple POKES
+#     floor 0.12 / ceiling 0.9  -> median 1.225   nipple safe
+# So this is not a knob with a right answer, it is a trade, and the tip wins:
+# a visible nipple through armour is a worse defect than a layer sitting proud.
+# Splitting them needs a narrower nipple region with a steeper ramp, so the tip
+# keeps its clearance without dragging the whole bust band out with it -- that
+# is a design change, not a retune, and it is unbuilt.
+#
+# NEITHER default was reachable from the GUI before 2026-08-13, and neither is
+# the same number as `ANTIPOKE_BUST_CLEAR`, which is a different pass.
 BUST_FLAT_CLEARANCE = float(
     os.environ.get("CBBE2UBE_BUST_FLAT_CLEAR", "") or 0.12)
 CONFORM_BUST_CLEARANCE = float(
-    os.environ.get("CBBE2UBE_CONFORM_BUST_CLEAR", "") or 0.3)
+    os.environ.get("CBBE2UBE_CONFORM_BUST_CLEAR", "") or 0.9)
 BUST_NIPPLE_GAIN = 1.0
 BUST_NEIGHBORHOOD_K = 6
 BUST_NEIGHBORHOOD_RADIUS = 4.0
@@ -645,17 +665,21 @@ BACK_RESIDUAL_FEATHER_X = float(
 # itself compute -- flat clearance plus the residual ceiling. Expressed from the
 # constants rather than as a literal so it stays coherent if either moves.
 #
-# THAT DERIVATION IS NOW A LIABILITY, and it moved this cap without anyone asking
-# (found in the 2026-08-13 comment audit, after the fact). `BUST_FLAT_CLEARANCE`
-# stopped being a general "flat clearance" and became a BUST-tuned number, so
-# taking it down 0.3 -> 0.12 for a chest defect silently took this BACK cap
-# 0.8 -> 0.62, a 22% reduction in a band whose own note records "4 fixes, 3
-# measured worse". Nothing here was re-measured at 0.62. Left as-is rather than
-# changed mid-reconvert; the fix is to give the back its OWN base pinned at the
-# 0.3 this was tuned against, so a bust knob cannot reach it again. Override
-# meanwhile with CBBE2UBE_BACK_MOVE_MAX=0.8.
+# THAT DERIVATION WAS A LIABILITY, and it moved this cap twice without anyone
+# asking. `BUST_FLAT_CLEARANCE` stopped being a general "flat clearance" and
+# became a BUST-tuned number, so taking it 0.3 -> 0.12 for a chest defect
+# silently took this BACK cap 0.8 -> 0.62 -- a 22% cut in a band whose own note
+# records "4 fixes, 3 measured worse", re-measured at the new value by nobody.
+# It then FAILED a test outright once the bust ceiling went back to 0.9: the
+# bust push reached 0.63 against a back cap of 0.62, and the overlap assertion
+# that guards `req_back = req.copy()` fired. A bust retune must not be able to
+# do that.
+#
+# So the back keeps its OWN base, pinned at the 0.3 this cap was tuned against.
+# Same arithmetic as before (0.3 + 0.5 = 0.8), now immune to the bust knobs.
+BACK_MOVE_BASE_CLEARANCE = 0.3
 BACK_MOVE_MAX = float(os.environ.get("CBBE2UBE_BACK_MOVE_MAX", "")
-                      or (BUST_FLAT_CLEARANCE + BACK_MORPH_RESIDUAL_MAX))
+                      or (BACK_MOVE_BASE_CLEARANCE + BACK_MORPH_RESIDUAL_MAX))
 # ...except it still did not, and the comment above was the giveaway. The charge
 # applies as `max(move, deficit)`, and `move` there is conform PULLING IN toward
 # the fit the source author gave the garment. Replacing a -7.64u pull-in with a
@@ -6080,6 +6104,17 @@ def convert_nif(
         # propagates UBE body OSD deltas via K-NN, writes the TRI at
         # auto_tri_dst_phase1. Skipped when a user-built BodySlide TRI
         # was found above (auto_tri_dst_phase1 is None in that case).
+        # #tri-write-once, PHASE 1 TOO. Gating only phase 2 fixed nothing for
+        # boots, gloves and other armour-only pieces -- they route through HERE,
+        # and they were most of what lost a TRI to the race. Caught by putting a
+        # boot pair through the DEPLOYED exe and finding it had shipped the `_0`
+        # TRI. Note this suppresses only the WRITE: `bodytri_path` above is still
+        # derived, so the `_0` mesh keeps pointing at the shared TRI. Dropping
+        # that reference would cost it body morphs outright -- worse than the
+        # race being fixed.
+        if (auto_tri_dst_phase1 is not None and _TRI_WRITE_ONCE
+                and not _tri_is_owning_variant(src_path)):
+            auto_tri_dst_phase1 = None
         if auto_tri_dst_phase1 is not None:
             try:
                 ube_osd_path = _find_ube_body_osd()
@@ -22177,6 +22212,9 @@ def convert_nif_phase2(
     # Always auto-generate the armor TRI from CBBE source + UBE body
     # OSD slider data (see module-level UBE_BODY_TRI_PATH note).
     auto_tri_dst: Path | None = None  # if set, write generated TRI here
+    # Set inside the branch below; initialised here because the generation gate
+    # far downstream reads it unconditionally.
+    _tri_write_this_variant = True
     if armor_relpath is not None and auto_gen_tri:
         tri_stem = dst_path.stem
         for suf in ("_0", "_1"):
@@ -22203,8 +22241,13 @@ def convert_nif_phase2(
         # piece with no `_1` partner keeps generating from whatever it has, so
         # single-variant armour is unaffected. Also halves TRI work pack-wide.
         # `CBBE2UBE_TRI_BOTH_WEIGHTS=1` restores the old racing behaviour.
-        if _TRI_WRITE_ONCE and not _tri_is_owning_variant(src_path):
-            auto_tri_dst = None
+        #
+        # Suppress only the WRITE, and only AFTER `body_tri_path` is derived
+        # below: the `_0` mesh must keep pointing at the shared TRI or it loses
+        # body morphs outright, which is worse than the race. (Nulling the path
+        # here instead would also have crashed on the very next line.)
+        _tri_write_this_variant = (
+            (not _TRI_WRITE_ONCE) or _tri_is_owning_variant(src_path))
         # Compute Skyrim-relative path from auto_tri_dst by finding
         # the "meshes" segment.
         dst_parts = auto_tri_dst.parts
@@ -23917,6 +23960,10 @@ def convert_nif_phase2(
     # via K-NN IDW. Only runs when no user-built BodySlide TRI was found.
     # Makes armors without a published UBE sliderset follow body morphs at
     # runtime without a manual BodySlide step.
+    # #tri-write-once: the `_0` variant of a pair does not write the shared TRI,
+    # but it HAS kept `body_tri_path` pointing at it (see the derivation above).
+    if not _tri_write_this_variant:
+        auto_tri_dst = None
     if auto_tri_dst is not None:
         try:
             ube_osd_path = _find_ube_body_osd()

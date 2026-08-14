@@ -270,7 +270,7 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "over the skin. NOT the same number as the anti-poke's own "
                     "bust target, which is untouched."),
     Setting("conform_bust_clear", "Bust clearance ceiling at the nipple",
-            "Armor", "Fit and clearance", kind="float", default=0.3,
+            "Armor", "Fit and clearance", kind="float", default=0.9,
             env="CBBE2UBE_CONFORM_BUST_CLEAR", min=0.0, max=2.0, step=0.05,
             advanced=True,
             hint="The most the floor above may ramp to at the nipple.",
