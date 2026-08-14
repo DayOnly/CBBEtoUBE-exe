@@ -3070,6 +3070,38 @@ def _body_nipple_weight(shape) -> "np.ndarray | None":
     return out if found else None
 
 
+def _body_breast_motion_weight(shape) -> "np.ndarray | None":
+    """Per-vertex share of the body driven by ANY breast bone -- the map of
+    where the bust actually TRAVELS under physics.
+
+    Deliberately not `_body_nipple_weight`, which is Breast03/02 only and by its
+    own docstring reads ~0 on "the sternum, SIDES and upper chest". The side of
+    the breast is exactly where a re-hugged garment gets punched through when
+    the bust swings (reported in game, walking, 2026-08-13), so a tip-weighted
+    map cannot protect it. Sums every breast bone instead: Breast01 carries the
+    root/flank travel that 02 and 03 do not.
+
+    Returns a (V,) array clipped to [0,1], or None if the body has no breast
+    bones at all (a static body has nothing to swing, so the caller no-ops).
+    """
+    try:
+        n = len(shape.verts)
+    except Exception:
+        return None
+    bw = getattr(shape, "bone_weights", None) or {}
+    out = np.zeros(n, dtype=np.float64)
+    found = False
+    for bn, pairs in bw.items():
+        if "breast" not in (bn or "").lower() or pairs is None:
+            continue
+        found = True
+        pl = pairs.tolist() if hasattr(pairs, "tolist") else pairs
+        for i, w in pl:
+            if 0 <= i < n:
+                out[i] += float(w)
+    return np.clip(out, 0.0, 1.0) if found else None
+
+
 def _body_jiggle_weight(shape) -> "np.ndarray | None":
     """Per-vertex jiggle weight from the body's softbody bones (breast/butt/
     belly, PHYSICS_JIGGLE_SCALE_KEYWORDS): max weight over those bones, ~[0,1].
@@ -3177,6 +3209,157 @@ def _damp_to_avoid_inversion(cur, disp, tris, steps=CONFORM_FOLD_GUARD_STEPS,
         scale = settle(scale)
 
     return disp * scale[:, None]
+
+
+# --- #rebury-authored: a vert the AUTHOR hid INSIDE the body stays inside ---
+# Authors routinely sink whole REGIONS of a garment below the skin -- the part of
+# a leather top that runs under the bust, the back of a bodystock, the buried
+# half of a thong -- because geometry under the skin cannot z-fight and costs
+# nothing to draw. Every clearance pass in this file enforces a POSITIVE floor
+# (`min_clearance` 0.25, `ARMOR_TO_SKIN_BUFFER` 0.15, the anti-poke targets), and
+# `#authored-inflate` clamps the authored standoff at zero on purpose --
+# "Negative means they tucked it under the surface; a floor must not honour
+# that". So every one of those verts is dragged out into view.
+#
+# MEASURED on the vanilla necromancer robes (`body_bury_census.py`):
+#
+#   shape         author-buried   still buried   SURFACED   median depth
+#   TopLeather             227             0     227 (100%)      0.313u
+#   Thong                 2588            38    2550  (99%)      0.323u
+#   Feathers               172            96      76  (44%)      0.196u
+#   whole piece           3066           133    2933  (96%)
+#
+# 96% of the author's hidden geometry is pushed into view. On the chest that is
+# 227 verts of DARK LEATHER lying just outside the skin across the bust -- the
+# user's report is "the skin goes extremely dark below the neck ... that is the
+# mesh that should most likely be inside the body", with a screenshot.
+#
+# This is the user's own criterion ("inside on CBBE should be inside on UBE")
+# applied to the pair every other pass ignores: garment vs THE BODY. It is also
+# why the standoff work could not fix it -- pulling a layer from 0.79u to 0.56u
+# still leaves it OUTSIDE, and outside by any amount renders.
+#
+# SAFE BY CONSTRUCTION: it only ever moves a vert the author had inside the body,
+# only ever INWARD, and never deeper than the author put it. A vert that ends up
+# inside the skin is invisible, so this cannot create a visible artifact of its
+# own; the risk it does carry is stretching the triangles that bridge a buried
+# vert and an exposed neighbour, which is why the move field is feathered and
+# capped. DEFAULT OFF pending the in-game verdict.
+REBURY_AUTHORED = os.environ.get(
+    "CBBE2UBE_REBURY_AUTHORED", "").strip().lower() in ("1", "true", "yes", "on")
+REBURY_MAX_MOVE = float(os.environ.get("CBBE2UBE_REBURY_MAX_MOVE", "") or 1.5)
+# INSIDE is not the only hidden state, and on the reported piece it is not even
+# the relevant one. MEASURED on that BodyStock -- a bodysuit -- against the CBBE
+# body it was authored on: min +0.001, p25 +0.089, median +0.129, and ZERO of
+# its 4309 verts negative. It is never inside; it is FLUSH, hugging the skin
+# within a tenth of a unit, which is why it reads as the body's own surface in
+# the source. Ship the same verts at 0.56-0.79u and they become a separate dark
+# shell standing off the skin -- the reported "the skin goes extremely dark
+# below the neck". So the rule has to be "as close as the author had it" for
+# every vert the author kept AT the surface, of which "inside" is one case.
+#
+# The threshold is the project's own armor-to-skin buffer: at or below it, a
+# vert was never meant to read as its own surface. Above it the author is
+# genuinely standing the garment off, and that vert keeps its morph clearance --
+# which is what stops this from becoming "throw away all headroom everywhere".
+# Set to 0.0 for exactly "inside on CBBE stays inside on UBE" and nothing more.
+REBURY_FLUSH_MAX = float(
+    os.environ.get("CBBE2UBE_REBURY_FLUSH_MAX", "") or ARMOR_TO_SKIN_BUFFER)
+REBURY_EPS = 0.02          # sign-noise band on the authored clearance
+# Breast-bone share at which the restore is fully suppressed. Below it the
+# restore ramps linearly, so there is no step at the edge of the bust for the
+# feathering to turn into a crease. 0.35 rather than 1.0 because the SIDE of the
+# breast -- where it punched through -- carries a partial share, not a full one;
+# a threshold near 1.0 would protect only the apex and leave the flank exposed,
+# which is the same mistake `_body_nipple_weight` makes.
+REBURY_MOTION_FULL = float(
+    os.environ.get("CBBE2UBE_REBURY_MOTION_FULL", "") or 0.35)
+
+
+def rebury_authored_verts(
+    src_cloth, src_body_verts, src_body_normals,
+    cur_cloth, ube_body_verts, ube_body_normals,
+    tris=None, max_move: float = REBURY_MAX_MOVE,
+    body_motion_weight=None,
+):
+    """Put back inside the UBE body every vert the author had inside theirs.
+
+    `body_motion_weight`: per-BODY-vertex share driven by breast bones
+    (`_body_breast_motion_weight`). Where the body TRAVELS, the standoff is not
+    slack to be reclaimed -- it is the room the bust swings through, and taking
+    it back punches the breast out through the side of the garment on the first
+    step (reported in game). The restore is scaled by (1 - w) so the static
+    torso is re-hugged fully and the moving bust keeps its clearance. Passing
+    None restores everywhere, which is the behaviour that produced that report.
+
+    Returns (verts, n_moved). No-op (input returned) on any mismatch, so a
+    caller can wire it unconditionally. See #rebury-authored above.
+    """
+    from scipy.spatial import cKDTree
+    cur = np.asarray(cur_cloth, dtype=np.float64)
+    sa = np.asarray(src_cloth, dtype=np.float64)
+    if sa.shape != cur.shape or len(cur) == 0:
+        return cur_cloth, 0
+    sb = np.asarray(src_body_verts, dtype=np.float64)
+    sn = np.asarray(src_body_normals, dtype=np.float64)
+    ub = np.asarray(ube_body_verts, dtype=np.float64)
+    un = np.asarray(ube_body_normals, dtype=np.float64)
+    if sb.shape != sn.shape or ub.shape != un.shape or not len(sb) or not len(ub):
+        return cur_cloth, 0
+    if not np.any(sn):
+        # All-zero source normals are the #conform-target-was-zero trap: every
+        # authored clearance would read 0.000 and NOTHING would look buried.
+        return cur_cloth, 0
+
+    _, si = _authored_src_tree(sb).query(sa, k=1, workers=-1)
+    authored = np.einsum('ij,ij->i', sa - sb[si], sn[si])
+    # HIDDEN = inside the author's body, or flush against it (see the constant).
+    buried = authored <= REBURY_FLUSH_MAX
+    if not np.any(buried):
+        return cur_cloth, 0
+
+    # Same body array for every shape in the NIF, so share the tree rather than
+    # paying ~4ms per shape to rebuild it over 29k verts (17 shapes x 1658
+    # pieces is not a rounding error). Cache is id-keyed and re-verifies
+    # identity, and it KEEPS the array alive -- see `_authored_src_tree`.
+    utree = _authored_src_tree(ub)
+    _, ui = utree.query(cur, k=1, workers=-1)
+    nrm = un[ui]
+    curc = np.einsum('ij,ij->i', cur - ub[ui], nrm)
+
+    # Only verts the author buried, and only where we have them further out
+    # than the author did. Target is the AUTHORED clearance -- not "just under
+    # the skin", so a vert buried 0.6u deep goes back to 0.6u deep and the
+    # surface it belongs to keeps its shape.
+    move = np.zeros(len(cur))
+    act = buried & (curc > authored)
+    move[act] = np.clip(authored[act] - curc[act], -abs(max_move), 0.0)
+    # MOTION GATE: give back none of the standoff where the body swings.
+    if body_motion_weight is not None:
+        w = np.asarray(body_motion_weight, dtype=np.float64)
+        if len(w) == len(ub):
+            keep = np.clip(w[ui] / max(REBURY_MOTION_FULL, 1e-6), 0.0, 1.0)
+            move *= (1.0 - keep)
+    if not np.any(move < -1e-6):
+        return cur_cloth, 0
+
+    vec = nrm * move[:, None]
+    if tris is not None:
+        try:
+            vec = _smooth_vertex_field(vec, tris, iters=2)
+        except Exception as _pe:
+            _note_pass_failure("rebury/smooth", _pe)
+    out = cur + vec
+    # Re-clamp AFTER feathering: smoothing hands part of the move to neighbours
+    # that were never buried, and no vert may end up deeper than the author put
+    # it (that is what would tear the seam between buried and exposed regions).
+    _, ui2 = utree.query(out, k=1, workers=-1)
+    newc = np.einsum('ij,ij->i', out - ub[ui2], un[ui2])
+    over = newc < np.minimum(authored, curc) - 1e-6
+    if np.any(over):
+        fix = (np.minimum(authored, curc) - newc)[over]
+        out[over] += un[ui2][over] * fix[:, None]
+    return out.astype(np.float32), int((move < -1e-6).sum())
 
 
 def conform_to_source_standoff(
@@ -22093,6 +22276,7 @@ def convert_nif_phase2(
     ube_base_for_pass1 = next(
         (x for x in ube_nif.shapes if x.name == "BaseShape"), None)
     body_nipple_for_p2 = None
+    _rebury_motion_w = None
     if ube_base_for_pass1 is not None:
         body_verts_for_p2 = np.asarray(
             ube_base_for_pass1.verts, dtype=np.float64)
@@ -22102,6 +22286,11 @@ def convert_nif_phase2(
         # the bust pass its Breast03 nipple localization.
         body_norms_for_p2 = _body_normals_or_compute(ube_base_for_pass1)
         body_nipple_for_p2 = _body_nipple_weight(ube_base_for_pass1)
+        # ALL breast bones, not the tip: #rebury-authored must not reclaim the
+        # standoff the bust SWINGS through, and the flank is where it punched
+        # out. See _body_breast_motion_weight for why the nipple map is wrong here.
+        if REBURY_AUTHORED:
+            _rebury_motion_w = _body_breast_motion_weight(ube_base_for_pass1)
     else:
         body_verts_for_p2 = None
         body_norms_for_p2 = None
@@ -22715,6 +22904,31 @@ def convert_nif_phase2(
                 _stage('softcloth', override)
             except Exception as e:
                 failed.append((f"{s.name}:softcloth", repr(e)))
+        # #rebury-authored. Put back inside the body every vert the author had
+        # inside theirs. Runs AFTER inflate/conform/anti-poke on purpose: those
+        # all enforce a positive clearance floor, so anywhere earlier they would
+        # simply drag the vert back out (the same cancellation the stage dump
+        # caught between inflate and conform). Physics cloth and colliders are
+        # excluded -- their rest pose is owned by the sim.
+        if (REBURY_AUTHORED and override is not None
+                and src_body_v_p2 is not None and src_body_n_p2 is not None
+                and body_verts_for_p2 is not None
+                and body_norms_for_p2 is not None
+                and s.name not in hdt_collider_names
+                and s.name not in hdt_softbody_names):
+            try:
+                override, _n_reb = rebury_authored_verts(
+                    _sv_body, src_body_v_p2, src_body_n_p2,
+                    override, body_verts_for_p2, body_norms_for_p2,
+                    tris=np.asarray(s.tris, dtype=np.int64),
+                    body_motion_weight=_rebury_motion_w)
+                if _n_reb:
+                    _stage('rebury', override)
+            except Exception as e:
+                # RECORDED: a silent failure here reads exactly like "this shape
+                # had nothing buried", which is what 96% surfaced looked like for
+                # as long as nobody measured it.
+                _note_pass_failure(f"{s.name}:rebury-authored", e)
         # Chain-bone cloth stays at SOURCE position so it aligns with its chain
         # bones (recreated at source bind). Per-vertex by chain-weight fraction;
         # hybrid shapes (skirt+chest) keep the chest warped.
