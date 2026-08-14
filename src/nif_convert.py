@@ -133,7 +133,27 @@ BELT_OVERLAY_KEYWORDS = (
 # bust_clearance by Breast03 nipple weight (checked over the worst nearby body vert,
 # so a peeking tip is caught). Lower BUST_FLAT_CLEARANCE for a tighter chest; raise
 # the gain if a nipple still pokes.  [DESIGN: Clearance & anti-poke]
-BUST_FLAT_CLEARANCE = 0.3
+#
+# THIS IS THE PAIR THAT ACTUALLY BINDS THE CHEST STANDOFF, and `CBBE2UBE_BUST_CLEAR`
+# DOES NOT REACH IT -- that env feeds `ANTIPOKE_BUST_CLEAR`, a different number in a
+# different pass. Two predicates for one concept, and they drifted (the same class as
+# the clip-metric divergence). Traced with CBBE2UBE_STAGE_DUMP on a skin-tight
+# BodyStock the author holds 0.121u off the skin and we shipped at 0.791u:
+#
+#     magnitude 0.7        magnitude 0.2
+#     s03_inflate  +0.637   s03_inflate  +0.278
+#     s04_conform  -0.029   s04_conform  +0.323   <- puts back what inflate gave up
+#
+# Both land at ~0.78, because THIS floor is what the conform enforces in the bust
+# band. That is why lowering the inflate magnitude, ANTIPOKE_FLAT_CLEAR and
+# CBBE2UBE_BUST_CLEAR all measured inert on it. Env-tunable now, DEFAULTS
+# UNCHANGED, so the chest can be A/B'd in game without a rebuild:
+#     CBBE2UBE_BUST_FLAT_CLEAR=<units>   the floor everywhere in the band
+#     CBBE2UBE_CONFORM_BUST_CLEAR=<units>  the ceiling the nipple ramp climbs to
+BUST_FLAT_CLEARANCE = float(
+    os.environ.get("CBBE2UBE_BUST_FLAT_CLEAR", "") or 0.3)
+CONFORM_BUST_CLEARANCE = float(
+    os.environ.get("CBBE2UBE_CONFORM_BUST_CLEAR", "") or 0.9)
 BUST_NIPPLE_GAIN = 1.0
 BUST_NEIGHBORHOOD_K = 6
 BUST_NEIGHBORHOOD_RADIUS = 4.0
@@ -3174,7 +3194,7 @@ def conform_to_source_standoff(
     loose_standoff: float = 4.0,
     max_pull: float = 4.0,
     max_body_dist: float = 12.0,
-    bust_clearance: float = 0.9,
+    bust_clearance: float = CONFORM_BUST_CLEARANCE,
     bust_z: "tuple[float, float]" = (84.0, 100.0),
     max_push_out: float = 2.5,
     ube_body_nipple: "np.ndarray | None" = None,
