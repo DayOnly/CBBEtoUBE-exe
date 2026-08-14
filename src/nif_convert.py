@@ -8749,6 +8749,81 @@ _SPINE_TWIST_BONES = _SPINE_MOTION_BONES
 MATCH_FULL_WEIGHTS = (
     os.environ.get("CBBE2UBE_NO_FULL_WEIGHT_MATCH", "").strip().lower()
     not in ("1", "true", "yes", "on"))
+
+# --- #breast-follow-keep: push-up only on the BREAST family ------------------
+# Both body-match passes blend a garment's weights TOWARD the body's. That is
+# right for LIMBS -- the garment has to travel with the joint or the body
+# out-swings it and skin emerges -- and wrong for the BUST, where the author
+# deliberately gives an inner layer MORE breast follow than the body so it hugs.
+# The UBE BaseShape's own band follow is 0.330, so every layer converges on
+# 0.330 from wherever the author put it. BISECTED on the vanilla necromancer
+# robes (`scratchpad .../follow_ledger.py`, band z88-104):
+#
+#   shape        CBBE source   first write   shipped
+#   BodyStock        0.681        0.680        0.355   <- _conform_fitted_to_body
+#   TopLeather       0.465        0.469        0.214   <- and _match_full_weights
+#   Cloth            0.463          .          0.070
+#
+# THE PRE-WRITE PIPELINE IS INNOCENT: the first write still carries the author's
+# values. Two post-write passes take them.
+#
+# WHY IT IS THE VISIBLE DEFECT. Shipped, BodyStock (0.355) follows the breast
+# slightly MORE than the body under it (0.330) while the TopLeather over it
+# follows at 0.214 -- so under breast motion the inner layer travels outward and
+# the outer one lags, and the bodystock swings out THROUGH the leather. The
+# author's ordering is the opposite: every layer follows LESS than the body
+# (0.681, 0.465 vs the body's 1.0), inner-most most. No bind-pose metric can see
+# this -- measured on the same piece, only 37 of 1982 body-stock verts covered by
+# the leather in the source are uncovered in ours (1.9%), i.e. the REST POSE
+# stack is very nearly right. #clearance-is-the-wrong-axis, again.
+#
+# `_match_limb_motion_to_body` already states this rule for its own managed
+# family ("PUSH-UP ONLY -- the TARGET is never below the garment's existing
+# share"). The full-vector instance manages EVERY shared bone and never applied
+# it; the conform blend never had it. This applies it to breast in both.
+# DEFAULT OFF pending an in-game verdict on motion, which is the only place the
+# difference shows.
+BREAST_FOLLOW_KEEP = os.environ.get(
+    "CBBE2UBE_BREAST_FOLLOW_KEEP", "").strip().lower() in (
+        "1", "true", "yes", "on")
+
+
+def _is_breast_bone(name: str) -> bool:
+    return "breast" in (name or "").lower()
+
+
+def _keep_breast_share(before: "dict", after: "dict") -> "dict":
+    """Push-up only on breast: never return a row with LESS breast share than it
+    came in with. The shortfall is funded proportionally from the non-breast
+    bones, so the row still sums to what `after` summed to.
+
+    Never introduces a bone the vert did not already have -- the restored breast
+    entries are taken from `before`, and `after` is always a subset of it, so the
+    result stays inside the vert's original (<= 4) influence set and the
+    partition palette stays valid. #breast-follow-keep
+    """
+    if not after or not before:
+        return after
+    sb = sum(before.values())
+    sa = sum(after.values())
+    if sb <= 0 or sa <= 0:
+        return after
+    want = sum(w for b, w in before.items() if _is_breast_bone(b)) / sb
+    have = sum(w for b, w in after.items() if _is_breast_bone(b)) / sa
+    if want <= 0 or have >= want - 1e-6:
+        return after                     # no breast, or already tracking
+    other = sum(w for b, w in after.items() if not _is_breast_bone(b))
+    if other <= 0:
+        return after                     # all-breast row: nothing to fund from
+    f_other = ((1.0 - want) * sa) / other
+    out = {b: w * f_other for b, w in after.items() if not _is_breast_bone(b)}
+    br_before = {b: w for b, w in before.items() if _is_breast_bone(b) and w > 0}
+    tb = sum(br_before.values())
+    for b, w in br_before.items():
+        out[b] = (w / tb) * want * sa
+    return out
+
+
 # 1.0, not the 0.6 this shipped with: 1.0 is the strength that was BUILT and
 # judged on both pieces. Leaving the knob at 0.6 while flipping the toggle would
 # default the pack to a recipe nobody has looked at -- the exact "the shipped
@@ -9623,7 +9698,12 @@ def _conform_blend_vert(dv: dict, bd: dict, blend: float, delta: float):
     ss = sum(new.values())
     if ss <= 0:
         return None
-    return {b: w / ss for b, w in new.items() if w / ss > 1e-4}
+    out = {b: w / ss for b, w in new.items() if w / ss > 1e-4}
+    if BREAST_FOLLOW_KEEP:
+        # CULPRIT 1 of the authored-breast-follow loss: this blend drags an
+        # inner layer's breast share down to the BODY's. #breast-follow-keep
+        out = _keep_breast_share(dv, out)
+    return out
 
 
 def _conform_fitted_to_body(dst_path, src_path=None, biped_slots: int = 0) -> int:
@@ -11636,6 +11716,39 @@ def _match_limb_motion_to_body(dst_path, biped_slots: int = 0, *,
                     continue
                 NEW = G.copy()
                 NEW[rows] = (1.0 - strength) * G[rows] + strength * BF[rows]
+                if BREAST_FOLLOW_KEEP:
+                    # CULPRIT 2 of the authored-breast-follow loss. The family
+                    # path below is push-up only by construction (np.maximum);
+                    # this branch manages EVERY shared bone and so happily
+                    # LOWERS breast to the body's share. Restore the authored
+                    # breast mass and fund it from the non-breast bones, which
+                    # keeps each row summing to 1. #breast-follow-keep
+                    _bcol = np.array([_j for _j, _b in enumerate(shape_bones)
+                                      if _is_breast_bone(_b)], dtype=int)
+                    if len(_bcol):
+                        _ocol = np.array([_j for _j in range(len(shape_bones))
+                                          if _j not in set(_bcol.tolist())],
+                                         dtype=int)
+                        _g_br = G[rows][:, _bcol].sum(axis=1)
+                        _n_br = NEW[rows][:, _bcol].sum(axis=1)
+                        _short = _n_br < _g_br - 1e-6
+                        if np.any(_short) and len(_ocol):
+                            _r = rows[_short]
+                            _want = _g_br[_short]
+                            _cur = _n_br[_short]
+                            _oth = NEW[_r][:, _ocol].sum(axis=1)
+                            # breast: rescale to the authored mass, or fall back
+                            # to the garment's OWN distribution where the blend
+                            # zeroed the family outright.
+                            _blk = NEW[np.ix_(_r, _bcol)]
+                            _safe = _cur > 1e-9
+                            _blk[_safe] *= (_want[_safe] / _cur[_safe])[:, None]
+                            _blk[~_safe] = G[np.ix_(_r[~_safe], _bcol)]
+                            NEW[np.ix_(_r, _bcol)] = _blk
+                            _fo = np.divide(1.0 - _want, _oth,
+                                            out=np.ones_like(_oth),
+                                            where=_oth > 1e-9)
+                            NEW[np.ix_(_r, _ocol)] *= _fo[:, None]
             else:
                 midx = [shape_bones.index(b) for b in managed]
                 B = np.zeros((n, len(managed)), dtype=np.float64)
@@ -21191,6 +21304,24 @@ def _repair_layer_order(shape_jobs, softbody_names=frozenset(),
                         near: float = _LAYER_ORDER_NEAR,
                         iters: int = _LAYER_ORDER_ITERS):
     """Restore each vert to the SOURCE side of every nearby layer. See #layer-order.
+
+    ONE DIRECTION ONLY, and now deliberately so. The test below fires on
+    SWALLOWED verts (outside a neighbour in the source, INSIDE it now) and
+    structurally cannot see the mirror -- an inner layer that has SURFACED
+    through the garment over it, which is what "the bodystock is visible through
+    the leather" looks like as geometry.
+
+    THE MIRROR WAS BUILT AND REVERTED (#containment-restore, 2026-08-13). With
+    the source pairing, a body-clearance clamp and a source-order inward budget
+    all in place it cut the vertex-proxy flip count 812 -> 515 on the vanilla
+    necromancer robes -- and made the VALIDATED ray-occlusion score WORSE: verts
+    the source covers and we expose went 1323 -> 1389 (1373 with the budget).
+    It converts one order violation into the other, because a stack this tight
+    has nowhere to put the vert: without the budget it created 201 newly
+    swallowed verts, and with it the flips came straight back. Do not rebuild it
+    against a vertex-order metric -- that family is measured ANTI-CORRELATED
+    with what the user sees (project_clipping_metric_validated). The scratchpad
+    `cover_census.py` scores the relation that matters.
 
     Returns the count of corrected verts. Best-effort; a caller wraps it.
     """
