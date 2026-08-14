@@ -691,7 +691,21 @@ def _back_dbg(msg: str) -> None:
 # armor clear of the injected UBE body. Flat panels use FLAT_CLEAR; the breast
 # front ramps up to BUST_CLEAR by nipple weight. Raise FLAT_CLEAR if the body
 # still pokes on large presets, lower it for a tighter fit.
-ANTIPOKE_FLAT_CLEAR = 0.8
+#
+# ENV-TUNABLE, DEFAULT UNCHANGED (`CBBE2UBE_FLAT_CLEAR=<units>`). Lowering the
+# DEFAULT would tighten every garment for every NPC preset and trade back the
+# poke headroom this floor exists to buy, so it stays where it was tuned.
+#
+# BE WARNED THAT THIS KNOB IS INERT ON THE CASE THAT MOTIVATED IT. It was
+# exposed while chasing a skin-tight BodyStock that the author holds 0.121u off
+# the skin and we ship at 0.791u; 0.791 is so close to this 0.8 that the
+# constant looked like the obvious culprit. MEASURED: 0.8 -> 0.25 changed that
+# standoff by NOTHING. `clear_armor_outside_body` ignores this value whenever an
+# amplitude map exists (see #clearance-differential below), and the stage dump
+# puts the whole +0.637u on `inflate`, with anti-poke at -0.001. So this reaches
+# only the no-amplitude-map path, and a chest standoff is not it.
+ANTIPOKE_FLAT_CLEAR = float(
+    os.environ.get("CBBE2UBE_FLAT_CLEAR", "") or 0.8)
 # The BUST clearance TARGET, and the real lever on bust poke-through -- measured,
 # not assumed. The clearance pass pushes a vert "far enough to reach the target and
 # no further", so raising the push BUDGET alone changes nothing: on the traced
