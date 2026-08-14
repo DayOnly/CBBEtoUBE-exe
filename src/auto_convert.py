@@ -602,6 +602,25 @@ class AutoConvertResult:
     def nif_error_results(self) -> "list[nif_convert.ConvertResult]":
         return [r for r in self.nif_results if r.status == "error"]
 
+    # A piece that fails to write its BODYTRI still CONVERTS -- the mesh is
+    # fine, it just has no body morphs, so it stops following the player's
+    # sliders. That is a visible defect in game, and it was invisible in every
+    # counter here: a 161-mod run reported "0 hard failures / 0 nif errors"
+    # while 4 pieces had silently lost their TRI to a locked-rename race. The
+    # detail sat in a per-mod .txt reason that nobody reads. Count it.
+    _MORPH_LOSS_MARKERS = ("auto-TRI", "body-morph unavailable",
+                           "BODYTRI injection failed")
+
+    @property
+    def nif_morph_loss_results(self) -> "list[nif_convert.ConvertResult]":
+        """Converted NIFs that came out WITHOUT working body morphs."""
+        return [r for r in self.nif_results
+                if any(m in (r.reason or "") for m in self._MORPH_LOSS_MARKERS)]
+
+    @property
+    def nif_morph_losses(self) -> int:
+        return len(self.nif_morph_loss_results)
+
     @property
     def nif_partial(self) -> int:
         """NIFs that converted but dropped >=1 shape (invisible piece in-game)."""
@@ -650,6 +669,12 @@ class AutoConvertResult:
                          f"(conversion raised an exception)")
             for r in self.nif_error_results:
                 lines.append(f"      {r.src_path.name}: {r.reason}")
+        if self.nif_morph_losses:
+            lines.append(f"  ! NO BODY MORPH : {self.nif_morph_losses} "
+                         f"(converted, but the .tri was not written -- these "
+                         f"will NOT follow body sliders in game)")
+            for r in self.nif_morph_loss_results:
+                lines.append(f"      {r.src_path.name}")
         if self.nif_load_failures:
             lines.append(f"  ! load failures : {len(self.nif_load_failures)} "
                          f"(re-load the output via pynifly failed)")
@@ -2131,6 +2156,12 @@ def write_conversion_report_json(output_dir, results,
             "armor_nifs": sum(len(r.nif_results) for _, r in ok),
             "esp_patches": sum(len(r.output_esps) for _, r in ok),
             "nif_errors": sum(r.nif_errors for _, r in ok),
+            # Converted but WITHOUT body morphs -- not an "error", and so absent
+            # from every counter above until 4 pieces shipped that way unseen.
+            "nif_morph_losses": sum(r.nif_morph_losses for _, r in ok),
+            "nif_morph_loss_pieces": sorted(
+                str(n.src_path.name)
+                for _, r in ok for n in r.nif_morph_loss_results)[:50],
             "load_failures": sum(len(r.nif_load_failures) for _, r in ok),
             "vfs_resolved": sum(r.vfs_other_mod_count for _, r in ok),
             "zero_mesh_mods": zero,
