@@ -6907,8 +6907,20 @@ _TRI_WRITE_ONCE = os.environ.get(
 def _tri_is_owning_variant(src_path) -> bool:
     """Is this the weight variant that OWNS the shared `.tri`?
 
-    `_1` owns it, because the body the morph deltas are measured against is
-    itself the `_1` reference body -- so armour and body agree.
+    **`_0` owns it.** That is measured, not reasoned. This first shipped picking
+    `_1`, on the argument that the body the deltas are measured against is the
+    `_1` reference -- and it put a nipple through a leather cuirass in game
+    within hours. The armour that HAD been working carried a `_0`-derived TRI,
+    and the two are not close on a bust piece: on that cuirass's chest shape 92
+    of 155 morphs differ, worst `Juicy_breasts` at 2.16u, `BreastsTBD` 1.96u.
+    Matching the working file against both candidates settled it -- `_0`-derived
+    mean |delta| 0.00002u, `_1`-derived 0.00157u with a 2.16u worst.
+
+    Why it matters so much more here than on the boots this was first checked on
+    (0.17u worst): `_0` and `_1` differ most exactly where a bust piece has its
+    geometry, so deltas computed from them diverge most there too. The game
+    applies ONE tri across the whole weight range, so this choice is a real fit
+    decision at the chest, not bookkeeping.
 
     Decided from the SOURCE path, never the destination. The source pair is
     complete on disk before conversion starts, whereas a destination sibling may
@@ -6916,19 +6928,18 @@ def _tri_is_owning_variant(src_path) -> bool:
     PROCESS -- so any shared in-memory hint would not reach it. That is the same
     cross-process assumption that made this a race in the first place.
 
-    A piece with no `_1` source partner owns its own TRI whatever its suffix.
-    Otherwise a `_0`-only armour would silently lose body morphs entirely, which
-    is worse than the race this prevents.
+    A piece with no `_0` source partner owns its own TRI whatever its suffix,
+    so a `_1`-only armour never silently loses body morphs.
     """
     try:
         p = Path(src_path)
         stem = p.stem
     except Exception:
-        return True                      # unparseable -> keep the old behaviour
-    if not stem.endswith("_0"):
-        return True                      # `_1`, or single-variant: it owns it
+        return True                      # unparseable -> generate, never skip
+    if not stem.endswith("_1"):
+        return True                      # `_0`, or single-variant: it owns it
     try:
-        return not p.with_name(stem[:-2] + "_1" + p.suffix).is_file()
+        return not p.with_name(stem[:-2] + "_0" + p.suffix).is_file()
     except Exception:
         return True                      # cannot tell -> generate rather than skip
 
