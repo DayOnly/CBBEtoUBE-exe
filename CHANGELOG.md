@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+### Fixed — bust layers no longer swing through each other, and a sheer layer sits on the skin again
+
+Two defects on the chest, both reported in game, both now default behaviour.
+
+**The layers moved independently.** A garment's weights are matched to the body's
+so it travels with it — right for arms and legs, wrong for the bust, where an
+author deliberately gives an inner layer *more* breast follow than the body so it
+hugs. Every layer was converging on the body's own share instead, so an inner
+layer out-travelled the one over it and swung out through it whenever the breasts
+moved. Measured on one robe: the author's 0.681 / 0.465 / 0.463 shipped as
+0.355 / 0.229 / 0.083. The first write is innocent — two *post-write* weight
+passes took them. Those passes now refuse to lower a row's breast share, which is
+the rule one of them already stated for its own bone family. Restores
+0.676 / 0.519 / 0.481 and **moves no vertex at all**, so every bind-pose fit
+stays exactly as it was. Verified in game under motion, the only place it shows.
+
+**A skin-tight layer stood off the body.** A sheer, alpha-blended bodysuit its
+author holds a median 0.121u off the skin was shipping at 0.79u — far enough that
+it reads as a dark shell over the chest instead of a tint on it. The chest
+conform carries its own clearance pair, separate from the anti-poke target
+everyone reaches for and unreachable from it, and that pair is what pins the
+layer there; lowered from 0.3/0.9 to 0.12/0.3. The measured per-slider morph
+charge and the anti-poke's own bust target are unchanged, so the headroom that
+protects against poke-through is still there.
+
+Both were gated per region against the previously shipped mesh across seven
+pieces, counting garment vertices driven *inside* the body. No region worse on
+any piece; most better — one robe's shoulder 96 → 48, its arms 60 → 44, its bust
+11 → 2. All three settings are on the Armor tab and can be turned back off.
+
 ### Fixed — sub-millimetre detail on metal fittings was being blown up
 
 Reported on a belt's buckles. The fit stretched authored edges of 0.02–0.04u — a

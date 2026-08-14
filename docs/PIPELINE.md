@@ -265,6 +265,26 @@ settles that.
 **`uncovered` is not "bare by design".** Both rays escaping also catches a vert
 whose garment sits beside it, and anything that only pokes through under morph.
 
+**Before deploying, diff against the LAST APPROVED MESH — not the author — and
+do it PER REGION.** Both halves cost a user evaluation on 2026-08-13. A
+whole-piece ours-vs-author report read *"26.3% ours vs the author's 72.3%"* —
+comfortably better — for a build that was driving **5399 verts into that piece's
+shoulder** and had visibly destroyed it. Ours-vs-author cannot see a regression,
+because an author legitimately buries geometry and a large number there looks
+normal; and one number per piece averages a destroyed shoulder into a fine bust
+(the same dilution `containment` already documents). Scratchpad
+`regression_check.py` counts garment verts driven *inside* the body per region
+and exits non-zero on any region that worsens — verify it fires on a known-bad
+build before trusting a clean result from it.
+
+**A pass measuring "inert" usually means a LATER pass undid it.** Four separate
+knobs read as no-ops on one chest standoff — `ANTIPOKE_FLAT_CLEAR` 0.8→0.25 (no
+change), `INFLATION_MAGNITUDE` 0.7→0.2 (−0.024), `AUTHORED_INFLATE` (no change),
+`CBBE2UBE_BUST_CLEAR` (no change) — before `CBBE2UBE_STAGE_DUMP` showed
+`inflate` giving +0.637 and `conform` handing back +0.323 the moment inflate was
+lowered. Both arms land at ~0.78 because the conform's floor is what binds. Dump
+the stages before concluding a knob does nothing.
+
 ---
 
 ## 6. The flag surface
@@ -275,11 +295,14 @@ were a looser count and are superseded:
 
 | | |
 |---|---|
-| | 2026-08-11 | 2026-08-12 |
-|---|---|---|
-| `CBBE2UBE_*` flags read by `src/` | 286 | **313** |
-| GUI-exposed | 54 | **59** |
-| env-only | 232 (34 `NO_*`, 13 diagnostic) | **254** (37 `NO_*`, 15 diagnostic) |
+| | 2026-08-11 | 2026-08-12 | 2026-08-13 |
+|---|---|---|---|
+| `CBBE2UBE_*` flags read by `src/` | 286 | 313 | **326** |
+| GUI-exposed | 54 | 59 | **66** |
+| env-only | 232 (34 `NO_*`, 13 diagnostic) | 254 (37 `NO_*`, 15 diagnostic) | **260** |
+
+Re-counted 2026-08-13; **0 GUI rows with no reader**. Reproduce with the
+`os.environ.get` / `env="…"` scan — do not hand-count.
 
 **THE "no dead rows" CLAIM WAS FALSE, and stating it is what hid the defect.**
 Re-counting on 2026-08-12 found `warp_delta_outlier` writing
@@ -305,6 +328,48 @@ in the same commit, or it does not get written.**
 ---
 
 ## 7. Dead ends — do not retry these
+
+* **SCORING LAYER ORDER ON VERTEX PAIRS** (2026-08-13). Binding each vert to its
+  3D-nearest partner and comparing signed offsets is the same family as
+  `surface_penetration` and the ray-cone `containment`, both already measured
+  *anti-correlated* with the user's verdict. The tell: on one robe it claims the
+  **author** ships 24.5% (clearance basis) / 53.6% (normal basis) of an inner
+  layer outside the layer over it. A vert's nearest partner vertex is routinely
+  on a rim, a fold, or the far side of the covering shape. Use a ray — scratchpad
+  `cover_census.py` puts the same pair at 1.9%.
+
+* **RESTORING LAYER ORDER BY THE MIRROR SIGN FLIP** (`#containment-restore`,
+  2026-08-13). `_repair_layer_order` repairs only a *swallowed* vert (outside a
+  neighbour in the source, inside it now). The mirror — an inner layer that has
+  *surfaced* — was built with everything it needed: source-fixed pairing, a
+  body-clearance clamp, a source-order inward budget, feathering, coverage
+  accounting. It cut the vertex-proxy flip count 812 → 515 and made the
+  **validated ray score worse**, 1323 → 1389 lost-coverage verts (1373 with the
+  budget). It converts one order violation into the other, because a stack this
+  tight has nowhere to put the vert.
+
+* **WAKING THE INTER-LAYER DEPTH PASSES ON PHASE-2 PIECES** (2026-08-13). All
+  three — `_separate_chest_layered_cloth_depth`,
+  `_separate_abdomen_layered_cloth_depth`, `_sync_chest_layered_cloth_weights` —
+  gate on `shape_job["override_skin"]`, which phase 2 leaves None for every shape
+  that keeps its authored skin. Probed on one robe: **17 of 17 jobs, all three
+  returned 0**. The dead gate is real; opening it is not the win. Measured with
+  the gate lent open and no converter edits (scratchpad `reach_probe.py`): the
+  abdomen LIFT-v4 pass moved 9355 verts and made flips **worse** (1865 → 2126),
+  its neighbourhood gate cancelling on exactly the authored weave; the cleavage
+  depth pass moved 336 verts for a flip delta of **exactly zero**.
+
+* **RECLAIMING THE STANDOFF OF VERTS THE AUTHOR KEPT AT THE SKIN**
+  (`#rebury-authored`, 2026-08-13, shipped default OFF). Sound premise — 96% of
+  one robe's author-buried verts are pushed into view — and it does restore the
+  standoff (a bodysuit 0.554 → 0.214 against the author's 0.129). It also
+  **destroyed the ruby flower top's shoulders and arms in game**. Bisected: every
+  other change in the recipe left 0 verts inside the body there; rebury put 3132
+  in the shoulder and 525 in the arms. The bug is its post-feather clamp — those
+  arm verts have an authored clearance of **+10.777u**, so they were never
+  eligible (gate is ≤ 0.15); feathering dragged them in and the clamp failed to
+  hold them, leaving 521 of 525 deeper than the author. It also lacks the
+  eligibility gate `_layer_order_eligible` applies for this exact class.
 
 * **DELETING `inflate_armor_outward`** (`#inflate-census`, 2026-08-12). Refuted
   by a pack census — and it looked good on one piece first, which is the whole
