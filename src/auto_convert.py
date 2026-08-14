@@ -3370,10 +3370,30 @@ _ENV_PATH_HINTS = ("landscape", "architecture", "caves", "cave", "interiors",
                    "dungeons", "actors\\character\\character assets",
                    "static", "props", "creatures", "monsters", "vfx")
 # Mod-name substrings that mark a mod as NOT a conversion source. Lowercased.
-# Excludes already-UBE content, body/BodySlide mods, our own output, and
-# khajiit/beast-race body/fur-overlay mods (target is human female UBE body).
-_NONSOURCE_NAME_HINTS = ("bodyslide output", "cbbetoube",
-                         "khajiit", "ohmes", "fur morph", "fur_morph")
+#
+# HARD: never a source whatever they contain -- our own output and the
+# BodySlide output the VFS resolves THROUGH. Converting either is a feedback
+# loop, and no evidence inside them can change that.
+_NONSOURCE_NAME_HINTS_HARD = ("bodyslide output", "cbbetoube",
+                              "fur morph", "fur_morph")
+# BEAST-RACE: body / fur-overlay / race mods, excluded because the target is the
+# human female UBE body. Applied ONLY where there is no positive ARMA evidence,
+# because these words also appear in the names of ordinary ARMOUR mods.
+#
+# "khajiit" silently dropped every khajiit ARMOUR mod in a 161-mod run, and the
+# user reported it as "all khajiiti armor is invisible" -- an armour whose mesh
+# was never converted, wearing an armature minted anyway. MEASURED over the live
+# modlist: 35 enabled mods match one of these hints, and 33 of them have ZERO
+# player-armour ARMA bases, so `require_arma` drops them WITHOUT any help from
+# the name. The hint was therefore redundant for every mod it was written for
+# and wrong for the two it was not.
+#
+# Same lesson as the retired "ube" hint below: a name is neither necessary nor
+# sufficient. Evidence decides; the name only breaks ties where there is none.
+_NONSOURCE_NAME_HINTS_BEAST = ("khajiit", "ohmes")
+# Preserved as the union for the `scan` preview, which has no ESP parse and so
+# has no evidence to weigh -- and for anything still importing this name.
+_NONSOURCE_NAME_HINTS = _NONSOURCE_NAME_HINTS_HARD + _NONSOURCE_NAME_HINTS_BEAST
 # "ube" was RETIRED from this list. It guarded against converting already-UBE
 # armor, but it did so by matching the MOD NAME, which is neither necessary nor
 # sufficient: mods shipping !UBE meshes under a name with no "ube" in it slipped
@@ -4358,7 +4378,14 @@ def _find_armor_mod_dirs_uncached(mods_root: Path,
             return False
         if enabled_names is not None and mod_dir.name not in enabled_names:
             return False  # disabled in the active MO2 profile
-        if any(h in nl for h in _NONSOURCE_NAME_HINTS):
+        # The beast-race hints are a TIE-BREAKER, not a veto: under
+        # `require_arma` the ARMA test is the evidence and it decides, so a
+        # khajiit ARMOUR mod is admitted while a khajiit body/fur/race mod still
+        # yields no armour base and is dropped below. The `scan` preview has no
+        # ESP parse, hence no evidence, so there the name is all we have.
+        _hints = (_NONSOURCE_NAME_HINTS_HARD if require_arma
+                  else _NONSOURCE_NAME_HINTS)
+        if any(h in nl for h in _hints):
             return False
         if _is_child_content_mod(mod_dir.name):
             return False  # child clothing — not armour "for the player"
