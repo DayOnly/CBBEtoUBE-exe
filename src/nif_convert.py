@@ -644,6 +644,16 @@ BACK_RESIDUAL_FEATHER_X = float(
 # buy a MORPH allowance, so it may never ask for more than the allowance it can
 # itself compute -- flat clearance plus the residual ceiling. Expressed from the
 # constants rather than as a literal so it stays coherent if either moves.
+#
+# THAT DERIVATION IS NOW A LIABILITY, and it moved this cap without anyone asking
+# (found in the 2026-08-13 comment audit, after the fact). `BUST_FLAT_CLEARANCE`
+# stopped being a general "flat clearance" and became a BUST-tuned number, so
+# taking it down 0.3 -> 0.12 for a chest defect silently took this BACK cap
+# 0.8 -> 0.62, a 22% reduction in a band whose own note records "4 fixes, 3
+# measured worse". Nothing here was re-measured at 0.62. Left as-is rather than
+# changed mid-reconvert; the fix is to give the back its OWN base pinned at the
+# 0.3 this was tuned against, so a bust knob cannot reach it again. Override
+# meanwhile with CBBE2UBE_BACK_MOVE_MAX=0.8.
 BACK_MOVE_MAX = float(os.environ.get("CBBE2UBE_BACK_MOVE_MAX", "")
                       or (BUST_FLAT_CLEARANCE + BACK_MORPH_RESIDUAL_MAX))
 # ...except it still did not, and the comment above was the giveaway. The charge
@@ -927,6 +937,18 @@ ADAPTIVE_CLEARANCE_MORPH_MAX = float(
     os.environ.get("CBBE2UBE_CLEARANCE_MORPH_MAX", "1.1"))
 
 # --- Authored-aware outward push (#authored-inflate) ----------------------
+#
+# WARNING, MEASURED 2026-08-13: THIS FLAG CANNOT FIRE AT THE SHIPPING DEFAULTS.
+# The floor below is implemented in the ADDITIVE path, and `#clearance-field`
+# replaced that path with a solve -- `CLEARANCE_FIELD_INFLATE`, DEFAULT ON since
+# the fold-class fix -- which returns before the floor is consulted. Traced on a
+# skin-tight layer: `AUTHORED_INFLATE=1` alone changed its standoff by NOTHING
+# (0.791u either way), and only `AUTHORED_INFLATE=1 CLEARANCE_FIELD_INFLATE=0`
+# moved it (0.689u). So the census below is real but the feature is unreachable:
+# an opt-in that cannot fire is a fix that does not ship (#audit-2026-08-01-flags).
+# To make it count, carry the floor INTO `_solve_clearance_field`'s constraint
+# rather than applying it to `push_len` beforehand.
+#
 # `inflate_armor_outward` is ADDITIVE: it adds its per-vert magnitude to
 # whatever standoff a vertex already has, and it has never known where the
 # AUTHOR put that vertex. So it pushes a garment that is already sitting at the
@@ -3426,9 +3448,21 @@ def conform_to_source_standoff(
       target = current + (tight - current) * blend     # partway IN, never OUT
       move   = min(target - current, 0)                # PULL IN ONLY
     The ONE exception is the bust Z-band (`bust_z`), where over-tight cloth is
-    pushed OUT to >= `bust_clearance` so the body's nipple can't poke through it
-    (`bust_clearance` defaults above the measured UBE nipple protrusion). Cloth
-    already at/above bust_clearance there is untouched.
+    pushed OUT to >= `bust_clearance` so the body's nipple can't poke through it.
+    Cloth already at/above bust_clearance there is untouched.
+
+    That requirement is a MARGIN OVER THE WORST NEARBY BODY POINT, not a budget
+    sized to cover the nipple: `worst` below is the smallest clearance among the
+    vert's k nearest body points, so on the bust the nipple IS the point being
+    cleared and the garment is held `req` in front of it. This docstring used to
+    claim `bust_clearance` "defaults above the measured UBE nipple protrusion",
+    which was unbacked -- no figure was recorded and the phrase describes a
+    budget, not the margin the code applies. Measured on the UBE body when the
+    default moved (2026-08-13): a tip vert stands 0.057u (p90) above the surface
+    within 1u of it, while the same measure over a 2-4u neighbourhood reads
+    0.7-1.1u because it is dominated by the breast's own curvature rather than by
+    the nipple. So do not re-derive this constant from a protrusion number
+    without saying which scale it was taken at.
     => Loose-draping cloth (source standoff already large, e.g. a skirt/tabard) and
        cloth already tighter than its source: tight == current -> NO-OP.
        Only an over-projected fitted layer (current > source) gets reeled back (by
@@ -17831,7 +17865,17 @@ NORMAL_DETERMINED_COHERENCE_MIN = 0.5
 # correct at 0.99). When on, this takes the AUTHORED source normal outright at
 # boundary verts and trusts the recompute in the interior -- fixing the rim
 # shards, preserving the pubic-loop case (also a boundary), and no longer
-# flipping a sharp manifold stud to a stale source. DEFAULT OFF pending in game.
+# flipping a sharp manifold stud to a stale source.
+#
+# EFFECTIVELY DEFAULT **ON**, and VERIFIED IN GAME -- see the conditional right
+# below, which forces it wherever a clearance-field solve is active, and that
+# solve is itself default ON. The env read here is the bare default and is
+# shadowed; this line used to end "DEFAULT OFF pending in game", which was the
+# exact opposite of what ships and of what has been judged. Same shadowing shape
+# as `LAYER_ORDER_REPAIR_ENABLED`, which the clearance-field default silently
+# turned OFF and which cost a set of normal-determinacy tests. When reading any
+# flag in this file, check for a conditional reassignment before trusting the
+# comment on its declaration.
 NORMAL_SIGN_GUARD_BOUNDARY = os.environ.get(
     "CBBE2UBE_NORMAL_GUARD_BOUNDARY", "").strip().lower() in (
         "1", "true", "yes", "on")
