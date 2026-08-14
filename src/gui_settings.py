@@ -243,6 +243,40 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "push at the garment's own surface. It only ever binds "
                     "where armour is already in front of the vertex, so it "
                     "cannot reopen clipping."),
+    Setting("breast_follow_keep", "Keep the author's bust follow",
+            "Armor", "Fit and clearance", default=True,
+            env="CBBE2UBE_NO_BREAST_FOLLOW_KEEP", invert=True,
+            hint="Untick only if bust cloth over-follows the breast.",
+            tooltip="A garment's layers are matched to the body's skinning so "
+                    "they travel with it. That is right for arms and legs and "
+                    "wrong for the bust, where the author deliberately makes an "
+                    "inner layer follow the breast MORE than the body does so "
+                    "it hugs. Without this every layer converges on the body's "
+                    "own share, and an inner layer ends up out-travelling the "
+                    "one over it -- so the underlayer swings out through the "
+                    "outer one whenever the breasts move. Nothing moves at "
+                    "rest, so this cannot change the fit; it only changes what "
+                    "travels with what."),
+    Setting("bust_flat_clear", "Bust clearance floor",
+            "Armor", "Fit and clearance", kind="float", default=0.12,
+            env="CBBE2UBE_BUST_FLAT_CLEAR", min=0.0, max=1.5, step=0.01,
+            advanced=True,
+            hint="Raise toward 0.3 if a bust pokes through; lower to hug.",
+            tooltip="How far off the skin the chest conform holds a garment "
+                    "everywhere in the bust band, before the nipple ramp and "
+                    "the measured morph allowance are added on top. Was 0.3, "
+                    "which held a skin-tight bodysuit six times further from "
+                    "the body than its author did, so it read as a dark shell "
+                    "over the skin. NOT the same number as the anti-poke's own "
+                    "bust target, which is untouched."),
+    Setting("conform_bust_clear", "Bust clearance ceiling at the nipple",
+            "Armor", "Fit and clearance", kind="float", default=0.3,
+            env="CBBE2UBE_CONFORM_BUST_CLEAR", min=0.0, max=2.0, step=0.05,
+            advanced=True,
+            hint="The most the floor above may ramp to at the nipple.",
+            tooltip="The chest conform ramps its clearance toward this value as "
+                    "it approaches the nipple, so a tip cannot poke through a "
+                    "garment that is otherwise hugging. Was 0.9."),
     # These three shipped OPT-IN "until judged in game" and were then impossible
     # to switch on in game -- the deadlock PIPELINE section 6 describes. They are
     # deployed in a test mesh awaiting exactly that verdict, so they need to be

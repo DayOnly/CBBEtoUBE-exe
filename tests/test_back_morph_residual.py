@@ -303,7 +303,13 @@ def test_overlapping_bands_take_the_larger_charge_not_the_sum(monkeypatch):
     body = np.array([(x, BACK_Y, z) for x in xs for z in kz])
     bv = body.astype(np.float64)
     bnorm = np.tile([0.0, -1.0, 0.0], (len(bv), 1)).astype(np.float64)
-    cloth = (body + np.array([0.0, -0.3, 0.0])).astype(np.float32)
+    # Start the cloth WELL INSIDE the bust requirement so the bust charge has
+    # room to fire. Derived from the constant rather than hardcoded: this was a
+    # flat 0.3, comfortably under the old 0.9 ceiling, and when that ceiling
+    # moved to 0.3 the cloth started exactly AT the requirement -- the charge
+    # measured zero and the control below correctly aborted the test as vacuous.
+    cloth = (body + np.array([0.0, -0.3 * nc.CONFORM_BUST_CLEARANCE, 0.0])
+             ).astype(np.float32)
     mask = np.ones(len(cloth), bool)
     nip = np.ones(len(bv))                          # full bust requirement
     st = _stack_for(bv)

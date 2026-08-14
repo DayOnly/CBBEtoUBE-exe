@@ -150,10 +150,24 @@ BELT_OVERLAY_KEYWORDS = (
 # UNCHANGED, so the chest can be A/B'd in game without a rebuild:
 #     CBBE2UBE_BUST_FLAT_CLEAR=<units>   the floor everywhere in the band
 #     CBBE2UBE_CONFORM_BUST_CLEAR=<units>  the ceiling the nipple ramp climbs to
+#
+# DEFAULTS MOVED 2026-08-13, 0.3/0.9 -> 0.12/0.3. The old pair held a
+# SKIN-TIGHT layer 0.79u off the body when its author had it at 0.121u, which
+# ships as a sheer bodysuit standing proud of the skin and reading as a dark
+# region across the chest (reported in game with a screenshot). These values
+# were then gated per REGION against the previously-shipped mesh on 7 pieces:
+# no region worse, bust verts-inside-body DOWN on most (necromancer 11 -> 2,
+# ruby flower 206 -> 196, hide cuirasslight 5 -> 2).
+#
+# The morph charge is unaffected -- `req` still adds the measured per-slider
+# residual on top of this floor -- and `ANTIPOKE_BUST_CLEAR` (the anti-poke
+# pass's own target) is untouched, so the last line against skin-through-steel
+# is where it was. Restore the old fit with
+# `CBBE2UBE_BUST_FLAT_CLEAR=0.3 CBBE2UBE_CONFORM_BUST_CLEAR=0.9`.
 BUST_FLAT_CLEARANCE = float(
-    os.environ.get("CBBE2UBE_BUST_FLAT_CLEAR", "") or 0.3)
+    os.environ.get("CBBE2UBE_BUST_FLAT_CLEAR", "") or 0.12)
 CONFORM_BUST_CLEARANCE = float(
-    os.environ.get("CBBE2UBE_CONFORM_BUST_CLEAR", "") or 0.9)
+    os.environ.get("CBBE2UBE_CONFORM_BUST_CLEAR", "") or 0.3)
 BUST_NIPPLE_GAIN = 1.0
 BUST_NEIGHBORHOOD_K = 6
 BUST_NEIGHBORHOOD_RADIUS = 4.0
@@ -8998,10 +9012,13 @@ MATCH_FULL_WEIGHTS = (
 # family ("PUSH-UP ONLY -- the TARGET is never below the garment's existing
 # share"). The full-vector instance manages EVERY shared bone and never applied
 # it; the conform blend never had it. This applies it to breast in both.
-# DEFAULT OFF pending an in-game verdict on motion, which is the only place the
-# difference shows.
+# DEFAULT ON since 2026-08-13. VERIFIED IN GAME, under motion, which is the only
+# place the difference shows: "the bust layers track together yes". Then gated
+# per REGION against the previously-shipped mesh on 7 pieces (4 hide cuirasses,
+# a legion leather replacer, the ruby flower top, the necromancer robes) with no
+# region worse and most better. Off with CBBE2UBE_NO_BREAST_FOLLOW_KEEP=1.
 BREAST_FOLLOW_KEEP = os.environ.get(
-    "CBBE2UBE_BREAST_FOLLOW_KEEP", "").strip().lower() in (
+    "CBBE2UBE_NO_BREAST_FOLLOW_KEEP", "").strip().lower() not in (
         "1", "true", "yes", "on")
 
 
