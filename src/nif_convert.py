@@ -156,8 +156,8 @@ BELT_OVERLAY_KEYWORDS = (
 # ships as a sheer bodysuit standing proud of the skin and reading as a dark
 # region across the chest (reported in game with a screenshot). These values
 # were then gated per REGION against the previously-shipped mesh on 7 pieces:
-# no region worse, bust verts-inside-body DOWN on most (necromancer 11 -> 2,
-# ruby flower 206 -> 196, hide cuirasslight 5 -> 2).
+# no region worse, bust verts-inside-body DOWN on most (the layered robe 11 -> 2,
+# that plated top 206 -> 196, hide cuirasslight 5 -> 2).
 #
 # The morph charge is unaffected -- `req` still adds the measured per-slider
 # residual on top of this floor -- and `ANTIPOKE_BUST_CLEAR` (the anti-poke
@@ -342,7 +342,7 @@ WARP_SHEAR_STEPS = int(os.environ.get("CBBE2UBE_WARP_SHEAR_STEPS", "") or 8)
 #
 # The costs are real and an order of magnitude smaller: four shapes worse by
 # <=0.03, up to +0.545 on UNTOUCHED verts of one fur shape, and on a smooth piece
-# (Ruby flower top) the touched verts go 0.029 -> 0.076 against a source 0.015.
+# (a plated bust top) the touched verts go 0.029 -> 0.076 against a source 0.015.
 # A 3.9u spike is a visible broken vertex; 0.05u is not. That asymmetry is the
 # whole argument -- not the count of shapes that moved either way.
 #
@@ -3257,7 +3257,7 @@ def _damp_to_avoid_inversion(cur, disp, tris, steps=CONFORM_FOLD_GUARD_STEPS,
 # "Negative means they tucked it under the surface; a floor must not honour
 # that". So every one of those verts is dragged out into view.
 #
-# MEASURED on the vanilla necromancer robes (`body_bury_census.py`):
+# MEASURED on a layered robe (`body_bury_census.py`):
 #
 #   shape         author-buried   still buried   SURFACED   median depth
 #   TopLeather             227             0     227 (100%)      0.313u
@@ -3936,7 +3936,7 @@ def _rank_body_layers(shapes, body_verts, *, body_names, reskin_skip,
 # -14.5%, verts inside body -6.4%, grazing -4.6%, roughness and stretch slightly
 # better, standoff +0.013u; the only apparent regressions (high-neck/collar
 # shapes) were a concave-neck proxy artifact that the ray-cone truth check
-# cleared (ON has FEWER real penetrations). Verified in-game on the ruby flower
+# cleared (ON has FEWER real penetrations). Verified in-game on that plated top
 # (whole set). `CBBE2UBE_CLEARANCE_FIELD=0` turns it back off (the census OFF arm).
 # This is NOT the rejected `#unified-offset`, which reformulated the operator
 # ALGEBRA but still applied its scalar result along each vertex's own diverging
@@ -3945,7 +3945,7 @@ CLEARANCE_FIELD_SOLVE = os.environ.get(
     "CBBE2UBE_CLEARANCE_FIELD", "1").strip().lower() in (
         "1", "true", "yes", "on")
 # The SAME solve on the earlier `inflate_armor_outward` pass -- the bigger fold
-# source (stage ledger on the ruby flower top: inflate creates +592 folds vs the
+# source (stage ledger on a plated bust top: inflate creates +592 folds vs the
 # anti-poke's +360). Independent flag so inflate and anti-poke can be A/B'd
 # apart; both share LAMBDA / ITERS / DEBUG below. DEFAULT ON (see above);
 # `CBBE2UBE_CLEARANCE_FIELD_INFLATE=0` turns it off.
@@ -5050,7 +5050,7 @@ _BODY_SKIN_MIN_BONES = 15
 # floor-length robe / gown / dress (8000+ verts, many SMP bones,
 # full-height Z span) gets misclassified as an inline body and DROPPED,
 # leaving only the panty (real bug found on monkrobes / archmagerobes /
-# necromancerrobes etc. — the converted NIF had BaseShape + Panty only).
+# a layered robe etc. — the converted NIF had BaseShape + Panty only).
 _BODY_SKIN_TEXTURE_MARKERS = (
     "femalebody", "malebody", "bodyfemale", "bodymale", "femaleskin",
 )
@@ -9021,8 +9021,8 @@ MATCH_FULL_WEIGHTS = (
 # out-swings it and skin emerges -- and wrong for the BUST, where the author
 # deliberately gives an inner layer MORE breast follow than the body so it hugs.
 # The UBE BaseShape's own band follow is 0.330, so every layer converges on
-# 0.330 from wherever the author put it. BISECTED on the vanilla necromancer
-# robes (`scratchpad .../follow_ledger.py`, band z88-104):
+# 0.330 from wherever the author put it. BISECTED on a layered robe
+# (`scratchpad .../follow_ledger.py`, band z88-104):
 #
 #   shape        CBBE source   first write   shipped
 #   BodyStock        0.681        0.680        0.355   <- _conform_fitted_to_body
@@ -9049,7 +9049,7 @@ MATCH_FULL_WEIGHTS = (
 # DEFAULT ON since 2026-08-13. VERIFIED IN GAME, under motion, which is the only
 # place the difference shows: "the bust layers track together yes". Then gated
 # per REGION against the previously-shipped mesh on 7 pieces (4 hide cuirasses,
-# a legion leather replacer, the ruby flower top, the necromancer robes) with no
+# a light-armour replacer, a plated bust top, the layered robe) with no
 # region worse and most better. Off with CBBE2UBE_NO_BREAST_FOLLOW_KEEP=1.
 BREAST_FOLLOW_KEEP = os.environ.get(
     "CBBE2UBE_NO_BREAST_FOLLOW_KEEP", "").strip().lower() not in (
@@ -15337,7 +15337,7 @@ CHEST_SYNC_MIN_BREAST_FRAC = 0.25
 
 # --- #bust-plate-sync: a rigid bust PLATE follows the jiggle cloth beneath it ---
 # A rigid bust plate (a metal cuirass front) sits OVER breast cloth but follows
-# the breast far LESS (ruby flower chest_plate band-follow 0.095 vs the cloth
+# the breast far LESS (that plated top chest_plate band-follow 0.095 vs the cloth
 # `top` 0.212), so under jiggle the cloth swings out THROUGH the stiffer plate --
 # a MOTION defect invisible at bind pose, so an in-game look is the only judge.
 # The fix (post-write, see _sync_bust_plate_follow_postwrite) raises the plate's
@@ -15347,15 +15347,15 @@ CHEST_SYNC_MIN_BREAST_FRAC = 0.25
 # than a name filter.
 #
 # DEFAULT ON (`=0` turns it off). History worth keeping, because the default has
-# moved twice: flipped on after the ruby flower verdict, then OFF when the first
-# censused spot-check -- the vanilla necromancer robes -- SPLIT APART at the bust,
+# moved twice: flipped on after the plated top's verdict, then OFF when the first
+# censused spot-check -- a layered robe -- SPLIT APART at the bust,
 # then back ON once BUST_PLATE_SYNC_MIN_COVER made that piece a no-op (the split
 # was a partly-reachable layer being raised in half; see that constant). Fires on
 # 21 of 1658 censused pieces, 0 new bones anywhere.
 # WHAT THIS PASS IS, HONESTLY: a DOWNSTREAM COMPENSATOR. The conversion does not
 # preserve the AUTHORED breast follow -- measured source vs converted, the ruby
 # flower's plate/cloth order INVERTS (0.181 > 0.135 becomes 0.095 < 0.212) and the
-# necromancer robe's layers are wiped outright (BodyStock 0.681 -> 0.000). This
+# the layered robe's layers are wiped outright (BodyStock 0.681 -> 0.000). This
 # pass copies follow from a surviving layer to paper over that, which is why it
 # cannot help a piece where the layers it would copy FROM were also wiped. The
 # real fix is upstream, in whatever pass is eating the authored weights.
@@ -15363,7 +15363,7 @@ BUST_PLATE_SYNC = os.environ.get(
     "CBBE2UBE_BUST_PLATE_SYNC", "1").strip().lower() in ("1", "true", "yes", "on")
 # Min mutual overlap (each layer's cleavage verts within CHEST_SYNC_DISTANCE of
 # the other's, BOTH ways, over the cleavage box) to treat two breast-boned shapes
-# as a genuine stacked bust. Ruby flower chest_plate<->top = 1.00/0.82; an
+# as a genuine stacked bust. On that plated top, chest_plate<->top = 1.00/0.82; an
 # ornament that merely grazes the chest overlaps one-way at most (corset/belts
 # 0.18-0.25), cleanly excluded. COVERAGE, not weight -- a real plate HAS breast
 # bones but low follow, so a weight gate would wrongly call it decorative.
@@ -15380,7 +15380,7 @@ BUST_PLATE_SYNC_OVERLAP = float(
 # The 40 it drops have a MEDIAN actual follow change of 0.0003 and a MAX of
 # 0.0416; NONE reaches 0.05, and only 4 reach 0.02. What survives keeps a median
 # change of 0.0154 and a max of 0.4879. So this removes near-no-ops and leaves
-# the real target class intact (ruby flower gap 0.117, the big movers 0.4-0.6).
+# the real target class intact (that plated top gap 0.117, the big movers 0.4-0.6).
 # NOTE the census's own printed "gap" column is an OVERESTIMATE -- it recovers
 # the authority as the highest-follow UNCHANGED shape, which picks a shape that
 # failed the overlap test when there is one. Trust this per-shape diff, not that
@@ -16351,7 +16351,7 @@ def _sync_bust_plate_follow_postwrite(dst_path) -> int:
         # never be raised. REPORTED IN GAME on a robe whose `TopLeather` carries
         # R-side breast bones only: the pass raised its LEFT half 0.000 -> 0.366
         # and left the RIGHT half at 0.000, and the garment split apart at the
-        # bust. The ruby flower hid this -- only 1.5% of its plate verts lack a
+        # bust. That plated top hid this -- only 1.5% of its plate verts lack a
         # breast bone, and they are scattered rather than a whole side.
         # So: if any receiver cannot be brought along essentially in full, this
         # piece is not safely fixable and NOTHING is written. #bust-plate-sync
@@ -17860,7 +17860,7 @@ NORMAL_DETERMINED_COHERENCE_MIN = 0.5
 # source. That is wrong at a thin-strap RIM: the rim is a topology boundary where
 # the area-weighted recompute is meaningless (double-sided faces cancel to a
 # sideways normal), so flipping it just relocates garbage -- the white "shard"
-# class (measured on the ruby flower belt: 9 rim verts backwards vs their own
+# class (measured on a plated top's belt: 9 rim verts backwards vs their own
 # geometry, all on boundary edges, while the AUTHORED source normals there are
 # correct at 0.99). When on, this takes the AUTHORED source normal outright at
 # boundary verts and trusts the recompute in the interior -- fixing the rim
@@ -21496,7 +21496,7 @@ LAYER_ORDER_REPAIR_ENABLED = (
 # The #clearance-field solve produces a SMOOTH, layer-consistent mesh. This repair
 # was built to clean up the SPIKY per-vertex push, and on the smooth solve output
 # it MISFIRES: it reads fine interface verts as violations and hard-yanks them,
-# buckling thin straps (ruby flower belt: folds ~55 with the repair, 24 without;
+# buckling thin straps (a plated top's belt: folds ~55 with the repair, 24 without;
 # pack total 92->46, belt spikiness 19.4->4.1). So when a clearance-field solve is
 # active the repair is OFF by default. VERIFIED IN GAME -- the belt reads better
 # without it. Force it back on with CBBE2UBE_FORCE_LAYER_ORDER=1.
@@ -21592,7 +21592,7 @@ def _repair_layer_order(shape_jobs, softbody_names=frozenset(),
     THE MIRROR WAS BUILT AND REVERTED (#containment-restore, 2026-08-13). With
     the source pairing, a body-clearance clamp and a source-order inward budget
     all in place it cut the vertex-proxy flip count 812 -> 515 on the vanilla
-    necromancer robes -- and made the VALIDATED ray-occlusion score WORSE: verts
+    the layered robe -- and made the VALIDATED ray-occlusion score WORSE: verts
     the source covers and we expose went 1323 -> 1389 (1373 with the budget).
     It converts one order violation into the other, because a stack this tight
     has nowhere to put the vert: without the budget it created 201 newly

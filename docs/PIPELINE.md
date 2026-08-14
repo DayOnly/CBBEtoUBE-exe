@@ -297,12 +297,26 @@ were a looser count and are superseded:
 |---|---|
 | | 2026-08-11 | 2026-08-12 | 2026-08-13 |
 |---|---|---|---|
-| `CBBE2UBE_*` flags read by `src/` | 286 | 313 | **326** |
+| `CBBE2UBE_*` flags read by `src/` | 286 | 313 | **331** |
 | GUI-exposed | 54 | 59 | **66** |
-| env-only | 232 (34 `NO_*`, 13 diagnostic) | 254 (37 `NO_*`, 15 diagnostic) | **260** |
+| env-only | 232 (34 `NO_*`, 13 diagnostic) | 254 (37 `NO_*`, 15 diagnostic) | **265** (37 `NO_*`, 15 diagnostic) |
 
-Re-counted 2026-08-13; **0 GUI rows with no reader**. Reproduce with the
-`os.environ.get` / `env="…"` scan — do not hand-count.
+Re-counted 2026-08-13; **0 GUI rows with no reader**.
+
+**THE SCAN ITSELF UNDERCOUNTS, and the earlier figures in this table inherit
+it.** Matching `os.environ.get("CBBE2UBE_…")` on a literal misses every var read
+through a NAMED CONSTANT — `MO2_INI_ENV = "CBBE2UBE_MO2_INI"`, then
+`os.environ.get(MO2_INI_ENV)`. Four flags hide there
+(`CBBE2UBE_MO2_INI`, `_MODS_ROOT`, `_GAME_DATA`, `_OVERLAY_SLOTS`), and three of
+them are the user-facing path overrides README documents. Matching only `.get(`
+also misses `os.environ[...]`. Count BOTH forms and resolve constants:
+
+```python
+lit = re.findall(r'os\.environ(?:\.get\(|\[)\s*["\'](CBBE2UBE_[A-Z0-9_]+)', src)
+# then for os.environ.get(NAME), resolve NAME = "CBBE2UBE_…" and add it
+```
+
+Do not hand-count, and do not trust a literal-only scan to prove a flag is dead.
 
 **THE "no dead rows" CLAIM WAS FALSE, and stating it is what hid the defect.**
 Re-counting on 2026-08-12 found `warp_delta_outlier` writing
@@ -363,7 +377,7 @@ in the same commit, or it does not get written.**
   (`#rebury-authored`, 2026-08-13, shipped default OFF). Sound premise — 96% of
   one robe's author-buried verts are pushed into view — and it does restore the
   standoff (a bodysuit 0.554 → 0.214 against the author's 0.129). It also
-  **destroyed the ruby flower top's shoulders and arms in game**. Bisected: every
+  **destroyed a plated bust top's shoulders and arms in game**. Bisected: every
   other change in the recipe left 0 verts inside the body there; rebury put 3132
   in the shoulder and 525 in the arms. The bug is its post-feather clamp — those
   arm verts have an authored clearance of **+10.777u**, so they were never

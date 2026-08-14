@@ -8,6 +8,12 @@ trusting it. A metric that reports "no problem" is indistinguishable from a metr
 that cannot see the problem, and we shipped decisions on that ambiguity three times
 in one day.
 
+**Tool names below are not all in the repo.** Several metrics were first written
+as one-off session tools that were never tracked; the sections keep them because
+the *metric* is the durable part, but a bare name like `layerfollow.py` is not a
+file you can run. Anything under `scripts/analysis/` is real and tracked;
+anything else is marked at its section.
+
 ---
 
 ## Sound
@@ -122,7 +128,8 @@ across candidates, or the path the tool is actually configured to write. A mod
 folder full of valid NIFs is not evidence that they are *this build's* NIFs.
 
 ### "Flipped normals" counted a PASS FIRING, not a defect — **RETRACTED, 2026-08-11**
-`normcheck.py` reports a vertex as *flipped* when its stored normal disagrees with
+`normcheck.py` (never tracked; a session tool, and the finding below retracted it
+anyway) reports a vertex as *flipped* when its stored normal disagrees with
 the one its triangles imply. That reads like a shading defect. It is not: the
 stored normal **is** the triangle-implied recompute, after
 `_recompute_vertex_normals` sign-aligns it to the source. So the count is exactly
@@ -176,7 +183,10 @@ Report both; if they disagree, the raw one is wrong.
 
 ## Sound
 
-### Inter-layer follow divergence — `layerfollow.py` (2026-08-11)
+### Inter-layer follow divergence — `layerfollow.py` (2026-08-11) — **TOOL GONE, metric stands**
+> Never tracked; a session tool. Nothing in `scripts/analysis/` replaces it —
+> `follow_bands.py` measures garment-vs-BODY follow, not layer-vs-layer. Rebuild
+> from the definition below if the question comes back.
 For each vertex of layer A, the nearest vertex of layer B; if within 2.0u they
 are STACKED, and the metric is the mean L1 distance between their weight rows in
 a common bone basis. 0 = the two points deform identically; 2 = completely
@@ -188,7 +198,9 @@ Its counter-metric is mandatory and lives beside it: total breast/butt/belly
 weight per shape, plus the mean row distance to the body underneath. A change
 can drive divergence to zero by making every layer follow nothing, and one did.
 
-### Weighted chain bones flat at the origin — `chaincensus.py` (2026-08-11)
+### Weighted chain bones flat at the origin — `chaincensus.py` (2026-08-11) — **TOOL GONE, metric stands**
+> Never tracked. `scripts/analysis/chain_flag_census.py` is a different question
+> (which pieces a given chain flag can reach), not this one.
 A bone some shape is WEIGHTED to, that the actor cannot resolve, whose node is
 parented to `Scene Root` at identity. Broken by definition: a real chain bone
 has a position on the body, and at the origin it drags its verts to the
