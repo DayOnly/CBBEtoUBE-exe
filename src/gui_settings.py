@@ -269,6 +269,18 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "the body than its author did, so it read as a dark shell "
                     "over the skin. NOT the same number as the anti-poke's own "
                     "bust target, which is untouched."),
+    Setting("bust_clear", "Anti-poke bust target at the nipple",
+            "Armor", "Fit and clearance", kind="float", default=1.0,
+            env="CBBE2UBE_BUST_CLEAR", min=0.0, max=3.0, step=0.05,
+            advanced=True,
+            hint="How far the bust of a garment is held off the body.",
+            tooltip="The anti-poke pass holds a garment this far off the body "
+                    "at the nipple, ramping down to the flat-chest value away "
+                    "from it. It is a FLOOR, so a garment already sitting "
+                    "further out is left alone -- raising it only affects "
+                    "pieces that currently sit closer than the new value. NOT "
+                    "the same number as the conform ceiling below, which is a "
+                    "different pass. Was 1.0."),
     Setting("conform_bust_clear", "Bust clearance ceiling at the nipple",
             "Armor", "Fit and clearance", kind="float", default=0.9,
             env="CBBE2UBE_CONFORM_BUST_CLEAR", min=0.0, max=2.0, step=0.05,
@@ -499,6 +511,40 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "morphable. Trade-off: the flap stops swinging. "
                     "Experimental -- changes physics, so check for equip "
                     "crashes and collapsing cloth, not just clipping."),
+    Setting("per_anchor_seed", "Place each physics chain's anchor separately",
+            "Armor", "Physics chains (HDT-SMP)", default=False,
+            env="CBBE2UBE_PER_ANCHOR_SEED", invert=False,
+            hint="Fixes skirts hanging far below the body on outfits that mix "
+                 "a hip chain with a chest one.",
+            tooltip="Chain anchors are placed in one pass for the whole "
+                    "outfit, and that pass gives up entirely if ANY of the "
+                    "outfit's chains hangs from the upper body. On an outfit "
+                    "that mixes the two -- a skirt from the hips plus a small "
+                    "chest chain, which is common -- nothing is placed at all "
+                    "and every chain lands about 69 units low, at floor "
+                    "level. Measured on vanilla iron armour: 38 chain nodes, "
+                    "most of them below the ground. This places each anchor on "
+                    "its own merits, so the hip chains are positioned "
+                    "correctly whatever else the outfit carries."),
+    Setting("mixed_cloth_clearance",
+            "Give the fitted parts of physics outfits body clearance",
+            "Armor", "Fit and clearance", default=False,
+            env="CBBE2UBE_MIXED_CLOTH_CLEARANCE", invert=False,
+            hint="For a piece that is part simulated cloth, part fitted cloth: "
+                 "the fitted part gets no clearance.",
+            tooltip="Clearance is skipped for anything carrying physics "
+                    "rigging, because moving simulated cloth fights the "
+                    "simulation. But one piece often holds BOTH a simulated "
+                    "skirt and an ordinary fitted top, and the whole piece is "
+                    "skipped on account of the skirt -- so the top never "
+                    "receives a bust or body clearance target and the body can "
+                    "push through it. Measured across the pack: 392 of 482 "
+                    "skipped pieces are mixed this way, 57%% of their vertices "
+                    "carry no physics weight at all, and 198 pieces have chest "
+                    "cloth no clearance can currently reach. This clears only "
+                    "the vertices carrying no physics weight; every simulated "
+                    "vertex is put back exactly where the simulation expects "
+                    "it."),
     Setting("chain_rest_lift", "Lift physics chains out of the body",
             "Armor", "Physics chains (HDT-SMP)", default=True,
             env="CBBE2UBE_NO_CHAIN_REST_LIFT", invert=True,
