@@ -6,11 +6,19 @@ a rename race that cost 4 pieces their TRI, and -- worse because it was silent -
 a nondeterministic result, since the two variants do NOT produce the same file
 (17 of 24 morphs differed on one boot, worst 0.171u/vertex).
 
-The `_0` variant owns it. That is MEASURED: shipping `_1` put a nipple through a
-leather cuirass in game, and the armour that had been working carried a
-`_0`-derived TRI -- on that cuirass's chest shape 92 of 155 morphs differ,
-worst `Juicy_breasts` 2.16u. Matching the working file against both candidates:
-`_0`-derived mean |delta| 0.00002u, `_1`-derived 0.00157u / 2.16u worst.
+The `_0` variant owns it. The reason is DETERMINISM, not a fixed defect: pick
+either one, but pick the same one every run.
+
+It was briefly believed that shipping `_1` put a nipple through a leather
+cuirass in game. That is DISPROVEN (2026-08-14). The numbers behind it were
+scored against a backup captured AFTER the user reported the nipple -- broken
+vs broken. Re-scored against the true last-known-good build, the `_0`- and
+`_1`-derived TRIs are BOTH 3.2492u from it on the chest shape, and under the
+player's own preset both measure 0 of 1256 tip verts exposed. The variant
+choice does not move the poke. What survives is the rule below and this: never
+size a weight-variant decision on a piece with no bust (the original choice was
+validated on a BOOT pair, where the two differ by 0.17u and it reads as
+rounding).
 
 These pin the rule and, above all, the exception: a `_1` with no partner must
 still get a TRI, or single-variant armour silently loses body morphs -- a worse
@@ -26,7 +34,7 @@ def _mk(d, *names):
 
 
 def test_low_weight_variant_owns_the_tri(tmp_path):
-    """`_0`, measured against the armour that was working in game."""
+    """`_0` owns it -- one variant, chosen deterministically."""
     _mk(tmp_path, "boots_0.nif", "boots_1.nif")
     assert nc._tri_is_owning_variant(tmp_path / "boots_0.nif") is True
     assert nc._tri_is_owning_variant(tmp_path / "boots_1.nif") is False

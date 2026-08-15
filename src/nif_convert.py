@@ -291,6 +291,111 @@ CONFORM_FOLD_GUARD_MARGIN = float(
 CONFORM_FOLD_GUARD_FEATHER = int(
     os.environ.get("CBBE2UBE_CONFORM_FOLD_GUARD_FEATHER", "") or 1)
 
+# #conform-stretch-field -- OPT-IN. Couple neighbouring verts in the conform
+# DISPLACEMENT, instead of damping the ones that misbehave.
+#
+# Same defect as #conform-fold-guard, opposite instrument. Conform sends each
+# vert along `ube_body_normals[ui]`, the normal of its NEAREST BODY VERTEX. That
+# direction field belongs to the BODY, so it inherits the body's creases: at the
+# neck/clavicle the nearest-vertex assignment flips across the crease and two
+# adjacent garment verts are handed normals >90deg apart, then travel different
+# distances along them. Nothing in the pass couples them, so the edge between
+# them is free to grow without bound.
+#
+# MEASURED on a reported bodysuit, per-stage, against the author's own edge
+# lengths: entering conform the mesh is at 4.98x worst edge stretch; leaving it,
+# 63.1x, with 979 of the 1525 edges past 2x inside z 102-116 -- the neckline.
+# Folds over the same boundary: +1911.
+#
+# The fold guard addresses this by damping the offending verts toward NO motion.
+# It works on its own terms (-44% folds, 37.3x -> 11.6x) but conform's motion on
+# a fitted piece is mostly authored PULL-IN, so discarding it leaves the garment
+# floating: the same measurement put the suit 1.152u off the body against the
+# author's 0.604u, which is the overinflation this project keeps paying for
+# (see project_bodystock_standoff_defect). It also RAISES moderate stretch
+# (edges >2x: 1008 -> 1401), because holding one vert still while its ring
+# travels is itself a stretch.
+#
+# So: relax the displacement field over the garment's own welded adjacency
+# (`_welded_edges`, the same notion of "next to" the clearance field uses), then
+# put the along-normal component back inside the envelope the pass already
+# validated. The relaxation is an AVERAGING operator seeded at the requested
+# field, so no vertex can be handed a displacement outside the convex hull of
+# its neighbourhood -- it cannot invent a new extreme. What survives is the
+# TANGENTIAL part, a slide along the body surface, which is exactly the freedom
+# that relieves stretch and which the per-vertex formulation never had.
+#
+# MEASURED on that piece at the settings below, shipped mesh against the author:
+#
+#                        author   default    guard   stretch field
+#     conform's folds         --     +1911       --           +765
+#     worst edge stretch    1.00x    37.32x   11.59x         13.82x
+#     edges  >1.5x              0      2313     3033           1681
+#     edges  <0.5x              0       772      282            652
+#     collar plate folds        0        17        1              0
+#     collar plate buried    9.8%     19.3%    16.0%          12.9%
+#     bust plate buried      8.7%     18.1%    15.6%          12.7%
+#     STANDOFF              0.604     0.744    1.152          0.771
+#
+# The layering rows are why this is worth having: burial of both overlay plates
+# falls by more than half, BACK TOWARD the authored value -- the reported defect
+# -- and the standoff row says it cost 0.027u to get there.
+#
+# It does NOT rescue the base shape's own fold count on its own (1920 -> 1784).
+# `antipoke` immediately spends what conform stops taking (+546 -> +705), so the
+# shipped total barely moves. That is a measured result about a DIFFERENT pass,
+# not a shortfall in this one -- do not read the flat total as this failing.
+CONFORM_STRETCH_FIELD = os.environ.get(
+    "CBBE2UBE_CONFORM_STRETCH_FIELD", "").strip().lower() in (
+        "1", "true", "yes", "on")
+# Relaxation sweeps. Cheap (one sparse accumulate each), and far short of the
+# clearance field's 256 because this is a local repair rather than a global
+# solve -- the divergence is between immediate neighbours.
+CONFORM_STRETCH_ITERS = int(
+    os.environ.get("CBBE2UBE_CONFORM_STRETCH_ITERS", "") or 32)
+# Locality/mass term, as CLEARANCE_FIELD_LAMBDA: 0.0 = pure harmonic (infinite
+# reach), larger = shorter reach.
+#
+# SWEPT on the reported bodysuit by conform's OWN added folds, which is the only
+# thing this knob controls, with the standoff measured alongside because the
+# whole point of this pass over the fold guard is that it does NOT buy folds
+# with fit:
+#
+#     lam/iters      conform folds    shipped standoff (author 0.604)
+#     (guard off)          +1911            0.744
+#     2.0 / 12             +1048            0.749
+#     1.0 / 32              +876            0.757
+#     0.5 / 32              +765            0.771
+#
+# Lower keeps paying and the standoff barely notices -- 0.027u across the whole
+# sweep, against the fold guard's 0.408u. Held at the clearance field's own 0.5
+# rather than pushed lower: past here the reach starts to exceed the defect,
+# and an authored fit redistributed across a whole garment is the failure this
+# project has already paid for (#unified-offset).
+CONFORM_STRETCH_LAMBDA = float(
+    os.environ.get("CBBE2UBE_CONFORM_STRETCH_LAMBDA", "") or 0.5)
+# Ceiling on the NEW motion this can introduce -- the tangential slide, the one
+# component the original pass never authorised. The along-normal component is
+# clamped back to what conform asked for, so it needs no budget of its own; this
+# is the only way the field can move a vert somewhere conform did not choose,
+# and it is therefore the number to hold down and to measure.
+CONFORM_STRETCH_TANGENT_MAX = float(
+    os.environ.get("CBBE2UBE_CONFORM_STRETCH_TANGENT_MAX", "") or 0.5)
+# #conform-adaptive-reach. Scale the mass term with the SQUARE of the local edge
+# length, so the smoothing reaches the same distance in WORLD units everywhere
+# instead of the same number of graph steps. Aimed at the reported collar, which
+# is the finest geometry on its garment (median edge 0.385u against the torso's
+# 0.625u, 15.1% of its edges under 0.1u) and therefore gets the shortest
+# world-space reach from a single global lam. 0 disables and restores one lam.
+CONFORM_STRETCH_ADAPTIVE = os.environ.get(
+    "CBBE2UBE_CONFORM_STRETCH_ADAPTIVE", "1").strip().lower() not in (
+        "0", "false", "no", "off")
+# Bound on how far the per-vertex lam may stray from the global one, either way.
+# Unbounded, a single sliver triangle sets a lam that either freezes its region
+# or smooths it across the whole shape.
+CONFORM_STRETCH_REACH_MAX = float(
+    os.environ.get("CBBE2UBE_CONFORM_STRETCH_REACH_MAX", "") or 8.0)
+
 # #warp-shear-limit -- OPT-IN. Stop the body-delta warp shearing a large triangle
 # until it faces INTO the body.
 #
@@ -801,6 +906,38 @@ ANTIPOKE_NIPPLE_GAIN = 1.5
 SMP_COLLISION_ONLY_ANTIPOKE = os.environ.get(
     "CBBE2UBE_NO_SMP_ANTIPOKE", "").strip().lower() not in (
         "1", "true", "yes", "on")
+# #mixed-cloth-clearance -- OPT-IN, default OFF.
+#
+# The anti-poke/bust/nipple clearance pass is skipped PER SHAPE for anything
+# carrying SMP rigging. But a single shape routinely holds BOTH a simulated
+# skirt and ordinary skinned cloth, and the whole shape is excluded on account
+# of the simulated part. Measured on the leather cuirass: `bodyREVISE` is one
+# shape whose skirt is chain-driven (34% of verts) and whose CHEST carries
+# 0.0% chain weight over all 416 verts -- so no bust or nipple target can ever
+# land on it, and every clearance knob reads as INERT there. That is why
+# CONFORM_BUST_CLEAR and BUST_CLEAR both moved 0 verts on that piece, including
+# a 5.0 control that should have moved everything.
+#
+# CENSUS of the shipped pack (1658 pieces, 314 with physics):
+#     cloth shapes skipped by the clearance pass   482
+#       entirely chain-driven (skip is correct)     90
+#       MIXED, carry zero-chain verts too          392   (81%)
+#     verts inside skipped shapes            1,289,840
+#       of those with ZERO chain weight        730,992   (56.7%)
+#     pieces with excluded CHEST cloth             198
+#
+# So the pass runs, and then every SIMULATED vertex is restored to its
+# pre-pass position -- the sim's rest state is bit-identical, and only cloth
+# that carries no chain weight at all is allowed to move. DEFAULT OFF because
+# this touches clearance on 392 shapes and the last two defaults flipped on a
+# single piece's verdict both shipped bugs.
+MIXED_CLOTH_CLEARANCE = os.environ.get(
+    "CBBE2UBE_MIXED_CLOTH_CLEARANCE", "").strip().lower() in (
+        "1", "true", "yes", "on")
+# A vert is SIMULATED (and therefore untouchable) at or above this weight on any
+# bone the ACTOR skeleton cannot resolve, i.e. a custom physics-chain bone.
+MIXED_CLOTH_CHAIN_EPS = float(
+    os.environ.get("CBBE2UBE_MIXED_CLOTH_CHAIN_EPS", "") or 0.01)
 # Push budget for that path. NOT the 3.0 default: measured offline on the traced
 # hide cuirass, exposure went 6.9% -> 2.4% at 1.0 but only 5.7% at 3.0 and WORSE
 # (8.1%) at 0.6. The optimum sits exactly at ANTIPOKE_BUST_CLEAR -- i.e. push far
@@ -1077,6 +1214,27 @@ STATIC_AUTHORED_FIT = (
 # of room they have today and only the sternum changes sides.
 STATIC_AUTHORED_AMP = float(
     os.environ.get("CBBE2UBE_STATIC_AUTHORED_AMP", "2.0"))
+# How far a SKIN-HUGGING vert is reeled back toward the standoff the author gave
+# it. 0.3 means seven tenths of the authored fit is deliberately not restored.
+#
+# Env-exposed for ABLATION, on the same grounds as ARMOR_INFLATION_MAGNITUDE: it
+# is the single largest lever on "how close to the original is this", and the
+# measured seat error (mean |our standoff - the author's|, 0.66u on a reported
+# bodysuit) cannot be attributed without being able to move it in one command.
+# The pass ledger shows the clearance knobs are NOT that lever -- halving both
+# anti-poke clearances moved seat error 0.6627 -> 0.6561, and
+# INFLATION_MAGNITUDE 0.7 -> 0.35 is a bit-identical no-op because conform pulls
+# back whatever inflate pushes out.
+CONFORM_BLEND_TIGHT = float(
+    os.environ.get("CBBE2UBE_CONFORM_BLEND_TIGHT", "") or 0.3)
+# #derived-clearance -- OPT-IN. Aim conform at (authored standoff + the
+# clearance the worst slider takes away) per vertex, instead of keeping a fixed
+# fraction of the authored gap as an unmeasured margin. See the target
+# computation in `conform_to_source_standoff` for the measurement that motivates
+# it. DEFAULT OFF: it changes conform's target for every fitted piece.
+DERIVED_CLEARANCE_TARGET = os.environ.get(
+    "CBBE2UBE_DERIVED_CLEARANCE", "").strip().lower() in (
+        "1", "true", "yes", "on")
 # Floor the authored fit may reach in a fully static zone. Not 0: coincident
 # surfaces z-fight, and the warp's own error is not zero either.
 STATIC_AUTHORED_MIN_CLEARANCE = float(
@@ -3432,7 +3590,7 @@ def conform_to_source_standoff(
     *,
     min_clearance: float = 0.25,
     blend: "float | None" = None,
-    blend_tight: float = 0.3,
+    blend_tight: float = CONFORM_BLEND_TIGHT,
     tight_standoff: float = 1.0,
     loose_standoff: float = 4.0,
     max_pull: float = 4.0,
@@ -3442,6 +3600,7 @@ def conform_to_source_standoff(
     max_push_out: float = 2.5,
     ube_body_nipple: "np.ndarray | None" = None,
     morph_amplitude: "np.ndarray | None" = None,
+    morph_differential: "np.ndarray | None" = None,
     static_amp: float = STATIC_AUTHORED_AMP,
     static_min_clearance: float = STATIC_AUTHORED_MIN_CLEARANCE,
     tris: "np.ndarray | None" = None,
@@ -3528,6 +3687,49 @@ def conform_to_source_standoff(
                        + static_w * (static_min_clearance - min_clearance))
         blend_tight_v = blend_tight + static_w * (1.0 - blend_tight)
     tight = np.maximum(np.minimum(s_src, s_cur), min_clear_v)
+    # #derived-clearance -- OPT-IN. Aim at a target DERIVED per vertex instead of
+    # holding back a fixed fraction of the authored fit.
+    #
+    # `blend_tight` (0.3) exists because a piece fitted to the smaller 3BA body
+    # needs room on the bigger UBE one -- so it keeps seven tenths of the gap as
+    # an unmeasured safety margin, everywhere, whatever the garment. MEASURED on
+    # a reported bodysuit the author held at a uniform 0.24-0.34u:
+    #
+    #   region        authored   headroom   TARGET   shipped   excess
+    #   flank            0.288      0.004    0.292     0.816    +0.524
+    #   STOMACH          0.339      0.251    0.590     1.271    +0.681
+    #   BUTT             0.314      0.705    1.019     1.420    +0.401
+    #
+    # The right gap varies 3.5x across one garment -- 0.29u at a flank the body
+    # never moves, 1.02u at a butt that grows 0.7u -- so no constant can express
+    # it, and a GLOBAL tightening gets it backwards: pushing `blend_tight` to 1.0
+    # pulled the butt and lower back BELOW their target (-0.08, -0.30), exactly
+    # where the body needs the most room, while still leaving +0.33 at the flank
+    # where it needs none.
+    #
+    # So: target = the author's own standoff + the clearance the worst slider
+    # TAKES AWAY at that vertex. `morph_differential` is that second term,
+    # already computed by `_cached_body_morph_differential` for the anti-poke and
+    # evaluated over the whole slider envelope rather than one preset -- it is a
+    # DIFFERENTIAL, so a slider that merely translates or inflates uniformly
+    # contributes nothing (see #clearance-differential: paid for GROWTH, not
+    # RESHAPE).
+    #
+    # Still pull-IN only: `move` below is clamped <= 0 outside the bust band, so
+    # this can lower a target but can never push a vert outward.
+    if (DERIVED_CLEARANCE_TARGET and morph_differential is not None
+            and len(morph_differential) == len(ube_body_verts)):
+        _diff = np.clip(
+            np.asarray(morph_differential, dtype=np.float64)[ui], 0.0, None)
+        _derived = np.maximum(s_src + _diff, min_clear_v)
+        # Capped at the CURRENT standoff so this can only ever aim inward. The
+        # `move <= 0` clamp below enforces that too; stating it here keeps the
+        # target itself honest rather than relying on a later clip.
+        tight = np.minimum(_derived, np.maximum(s_cur, min_clear_v))
+        # The blend existed to hold back an unmeasured margin. The margin is now
+        # explicit in the target, so aim at it in full -- holding back on top
+        # would double-count the headroom.
+        blend = 1.0
     # #unified-offset candidate (c): fold inflate's additive margin into THIS
     # target instead of running it as a separate pass. `inflate` adds headroom
     # to the authored drape; conform aims AT the authored drape; so the two
@@ -3786,6 +3988,14 @@ def conform_to_source_standoff(
     # above stops two neighbours crossing through each other. Clamp last, after
     # every contribution (pull-in, bust push-out, surface deficit) is in `disp`,
     # so the guard sees the motion that will actually be applied.
+    # #conform-stretch-field: relax the field over the garment's own adjacency
+    # BEFORE the fold guard, so the guard judges the field that will actually be
+    # applied and still has the last word if both are on.
+    if CONFORM_STRETCH_FIELD and tris is not None:
+        disp = _relax_conform_field(
+            cur_cloth, disp, move, ube_body_normals[ui], tris,
+            body_tree=ube_tree, body_verts=ube_body_verts,
+            body_normals=ube_body_normals)
     _pre_guard = disp.copy() if BACK_DUMP_DISP else None
     if CONFORM_FOLD_GUARD and tris is not None:
         disp = _damp_to_avoid_inversion(cur_cloth, disp, tris)
@@ -4021,6 +4231,248 @@ def _smooth_push_field(push: np.ndarray, needed: np.ndarray, tris,
         return push
 
 
+def _relax_conform_field(cur, disp, move, normals, tris, *,
+                         body_tree=None, body_verts=None, body_normals=None,
+                         iters=None, lam=None, tangent_max=None,
+                         weld_tol=1e-3):
+    """Smooth conform's per-vertex displacement over the SURFACE, then put the
+    along-normal component back inside the envelope the pass validated.
+    #conform-stretch-field
+
+    Two clamps, and both are load-bearing:
+
+    ALONG-NORMAL is clipped into [min(move,0), max(move,0)] -- the interval
+    between zero and exactly what conform asked for, per vertex. So the relaxed
+    field can never pull a vert further IN than the pass's own `max_pull`/
+    `min_clearance` logic allowed (no new clipping), never push it further OUT
+    than `max_push_out` (no new inflation), and never reverse a vert's sign. The
+    envelope is inherited rather than restated, which is why this cannot drift
+    away from the safety reasoning above it.
+
+    TANGENTIAL is capped at `tangent_max` AND re-tested against the body. The
+    cap alone is not enough, and assuming it was cost a deploy: a slide is only
+    "along the surface" with respect to ONE vertex's body normal, so across a
+    curved region it cuts into the body. Measured on the slim (`_0`) variant of
+    the reported piece, where the shoulder is tighter than on `_1`: a 0.5u
+    budget drove **4643 of 19641 shoulder verts inside the body**, against 78
+    with this pass off, while `_1` improved in the same run. A one-weight check
+    would have shipped it.
+
+    So the slide is held to the clearance conform's OWN field would have
+    produced -- `body_tree`/`body_verts`/`body_normals` re-queried at the moved
+    position, tangential magnitude halved on any vertex that came out worse.
+    The floor is inherited rather than restated, exactly as the along-normal
+    envelope is. WITHOUT a body to test against, `tangent_max` is forced to
+    zero: the along-normal smoothing still works and the unverifiable part is
+    simply not taken.
+
+    MONOTONE ON ITS OWN OBJECTIVE, and that is not decoration. Relaxation helps
+    a solid garment and HURTS a thin one: measured over a five-piece population,
+    a hide cuirass went 89 folds -> 63 and 40 stretched edges -> 6, while the
+    same code on a robe's physics chain took a clean shape from 0 folds and 15
+    stretched edges to 38 and 627, worst edge 1.68x -> 6.77x. A chain is a few
+    verts wide, so its "neighbourhood average" is dominated by verts across the
+    strand rather than along it, and smoothing pulls it apart.
+
+    Gating that by shape name would be a per-piece rule and would still be wrong
+    on the next thin shape nobody named. Instead every iterate is SCORED on the
+    quantity this pass exists to protect -- squared deviation of each edge from
+    its length entering conform -- and the best-scoring one wins, with the
+    UNMODIFIED requested field as iterate zero. So the result is never worse
+    than doing nothing, on any shape, by construction rather than by gate.
+
+    Returns the original `disp` unchanged on any failure or degenerate input: a
+    smoothing repair must never be able to cost the pass its fit.
+    """
+    iters = CONFORM_STRETCH_ITERS if iters is None else int(iters)
+    lam = CONFORM_STRETCH_LAMBDA if lam is None else float(lam)
+    tmax = (CONFORM_STRETCH_TANGENT_MAX if tangent_max is None
+            else float(tangent_max))
+    try:
+        D = np.asarray(disp, np.float64)
+        n = len(D)
+        src, dst, deg, live = _welded_edges(cur, tris, weld_tol)
+        if src is None or n == 0:
+            return disp
+
+        Nu = np.asarray(normals, np.float64)
+        ln = np.linalg.norm(Nu, axis=1, keepdims=True)
+        Nu = Nu / np.where(ln > 1e-9, ln, 1.0)
+        m = np.asarray(move, np.float64)
+        lo, hi = np.minimum(m, 0.0), np.maximum(m, 0.0)
+
+        P = np.asarray(cur, np.float64)
+        l0 = np.linalg.norm(P[src] - P[dst], axis=1)
+        # #conform-relative-stretch. Work in RELATIVE stretch, not absolute.
+        #
+        # MEASURED on the reported piece's standing collar, the region the user
+        # points at: conform's displacement there is SMOOTH in absolute units --
+        # neighbour disagreement p50 0.067u, p90 0.164u, direction angle p50 4
+        # degrees, only 40 of 9851 edges pointing >90 degrees apart -- and
+        # catastrophic relative to edge length: p90 0.74, max 17.3.
+        #
+        # The collar is simply the finest geometry on the garment. Median edge
+        # 0.385u against the torso's 0.625u, and 15.1% of its edges are under
+        # 0.1u against the waist's 7.5%. A 0.164u disagreement is 2.6x stretch
+        # across a 0.1u edge and an invisible 26% across a 0.625u one. So the
+        # gold trim, the frame around a gem, embroidery -- every finely
+        # tessellated detail -- pays many times the relative price of the same
+        # absolute error, which is exactly what "the gold is massively
+        # distorted" looks like as geometry.
+        #
+        # Two consequences, both applied below: the cost is scored on
+        # (delta / original length), and the Laplacian weights are inverse
+        # length so a short edge holds its neighbours harder. Weights are
+        # renormalised to sum to the vertex's degree, so `lam` keeps exactly the
+        # meaning it had and only the RELATIVE pull among neighbours changes.
+        # #conform-adaptive-reach. `lam` is a MASS term: the screened
+        # Laplacian's decay length is roughly (edge length / sqrt(lam)), so ONE
+        # global lam gives a finely tessellated region a SHORTER world-space
+        # reach than a coarse one -- it is smoothed over fewer units of the
+        # body exactly where the body's own detail needs it smoothed over more.
+        # Scaling lam with the square of the local edge length equalises the
+        # world-space reach instead of the graph-step reach.
+        #
+        # Weld edges are ~0 long and are not geometry, so they are excluded
+        # from the local scale or every seam vertex would read as ultra-fine.
+        real = l0 > 1e-4
+        cnt = np.bincount(src[real], minlength=n).astype(np.float64)
+        tot = np.bincount(src[real], weights=l0[real], minlength=n)
+        has = cnt > 0
+        elen = np.where(has, tot / np.maximum(cnt, 1.0), 0.0)
+        med = float(np.median(elen[has])) if has.any() else 0.0
+        if CONFORM_STRETCH_ADAPTIVE and med > 1e-6:
+            ratio = np.where(has, elen / med, 1.0)
+            lam_v = np.clip(lam * ratio * ratio,
+                            lam / CONFORM_STRETCH_REACH_MAX,
+                            lam * CONFORM_STRETCH_REACH_MAX)
+        else:
+            lam_v = np.full(n, lam, dtype=np.float64)
+        denom = deg + lam_v
+        denom[~live] = 1.0
+
+        # A REWEIGHTING of the coupling by inverse length DOES NOT HELP -- that
+        # is a different idea and it was built, measured, and reverted the same
+        # day; see below. This one changes the REACH, not the weights.
+        #
+        # ...the reweighting attempt, recorded so it is not re-derived --
+        # reverted the same day. Scoring the cost as (delta / length) and making
+        # the Laplacian weights inverse-length gave, at that collar: conform's
+        # stretched-edge COUNT slightly better (>1.5x 537 -> 464, >2x 290 ->
+        # 253) and its WORST edge clearly worse (11.26x -> 14.08x), and by the
+        # end of the chain worse on everything (>1.5x 488 -> 558, >2x 275 ->
+        # 297, worst 11.32 -> 12.28). Holding short edges harder buys their
+        # neighbours' slack, and on a rim the neighbours are where it shows.
+        # The diagnosis stands and the lever is elsewhere; do not re-derive it.
+
+        # No body to test the slide against -> do not take the slide. The
+        # along-normal smoothing is unaffected and needs no such test.
+        can_test = (body_tree is not None and body_verts is not None
+                    and body_normals is not None)
+        if not can_test:
+            tmax = 0.0
+
+        def clearance(Q):
+            _, i = body_tree.query(Q, k=1)
+            return np.einsum('ij,ij->i', Q - body_verts[i], body_normals[i])
+
+        # The floor: whatever clearance conform's OWN field would have left.
+        ref_clear = clearance(P + D) if can_test else None
+
+        def clamp(u):
+            """Into the envelope conform validated: along-normal between zero
+            and exactly what it asked for, tangential on its own budget and
+            never at the cost of clearance conform would have kept."""
+            a = np.clip(np.einsum('ij,ij->i', u, Nu), lo, hi)
+            t = u - Nu * np.einsum('ij,ij->i', u, Nu)[:, None]
+            tl = np.linalg.norm(t, axis=1)
+            over = tl > max(tmax, 0.0)
+            if over.any():
+                t[over] *= (tmax / np.maximum(tl[over], 1e-12))[:, None]
+            if not can_test or tmax <= 0.0:
+                return Nu * a[:, None] + t
+            # Halve the slide wherever it costs clearance. Only ever LESS
+            # slide, so this cannot introduce motion of its own; the fixed
+            # point is a pure along-normal move, which is already validated.
+            base = Nu * a[:, None]
+            for _ in range(4):
+                bad = clearance(P + base + t) < ref_clear - 1e-9
+                if not bad.any():
+                    break
+                t[bad] *= 0.5
+            t[clearance(P + base + t) < ref_clear - 1e-9] = 0.0
+            return base + t
+
+        def cost(u):
+            """What this pass exists to protect: how far the applied field
+            drags each edge off the length it had entering conform."""
+            Q = P + u
+            d = np.linalg.norm(Q[src] - Q[dst], axis=1) - l0
+            return float(d @ d)
+
+        # Iterate zero is the UNMODIFIED request, so "no improvement found"
+        # returns exactly what conform asked for and this pass is a no-op.
+        best_u, best_c = D, cost(D)
+        # Screened Jacobi seeded at the requested field. Each sweep replaces a
+        # vertex by the (mass-screened) mean of its neighbours, so every
+        # iterate stays in the convex hull of the input -- no new extreme, and
+        # nothing to diverge.
+        u = D.copy()
+        for _ in range(int(iters)):
+            acc = np.zeros((n, 3))
+            for k in range(3):
+                np.add.at(acc[:, k], src, u[dst, k])
+            un = (acc + lam_v[:, None] * D) / denom[:, None]
+            un[~live] = D[~live]
+            u = un
+            cand = clamp(u)
+            c = cost(cand)
+            if c < best_c:
+                best_u, best_c = cand, c
+        return best_u
+    except Exception as _pe:
+        _note_pass_failure("_relax_conform_field", _pe)
+        return disp
+
+
+def _welded_edges(V, T, weld_tol=1e-3):
+    """Surface adjacency for a smoothing solve: triangle edges PLUS weld edges
+    between coincident vertices. Returns (src, dst, deg, live), or four Nones
+    when there is no usable adjacency.
+
+    The weld half is not optional (a component is not an object): coincident
+    verts at a UV seam are separate indices at identical positions, and with no
+    triangle edge between them a Laplacian never couples them -- so the seam
+    re-diverges under exactly the smoothing that was meant to close it. Group by
+    rounded position and chain each group, so one SURFACE relaxes as one.
+
+    Shared by `_solve_clearance_field` and `#conform-stretch-field`; both need
+    the identical notion of "next to", and two copies would drift.
+    """
+    V = np.asarray(V, np.float64)
+    T = np.asarray(T, np.int64).reshape(-1, 3)
+    n = len(V)
+    if n < 3 or not len(T):
+        return None, None, None, None
+    e = np.concatenate([T[:, [0, 1]], T[:, [1, 2]], T[:, [2, 0]]])
+    key = np.round(V / float(weld_tol)).astype(np.int64)
+    order = np.lexsort((key[:, 2], key[:, 1], key[:, 0]))
+    sk = key[order]
+    bnd = np.where(np.any(np.diff(sk, axis=0) != 0, axis=1))[0] + 1
+    starts = np.concatenate([[0], bnd, [n]])
+    weld = [np.column_stack([order[a:b - 1], order[a + 1:b]])
+            for a, b in zip(starts[:-1], starts[1:]) if b - a > 1]
+    if weld:
+        e = np.concatenate([e] + weld)
+    e = np.concatenate([e, e[:, ::-1]])
+    e = e[(e[:, 0] >= 0) & (e[:, 1] >= 0) & (e[:, 0] < n) & (e[:, 1] < n)]
+    if not len(e):
+        return None, None, None, None
+    src, dst = e[:, 0], e[:, 1]
+    deg = np.bincount(src, minlength=n).astype(np.float64)
+    return src, dst, deg, deg > 0
+
+
 def _solve_clearance_field(verts, normals, need, tris, *,
                            max_push=3.0, lam=None, iters=None,
                            tol=1e-4, weld_tol=1e-3):
@@ -4061,24 +4513,9 @@ def _solve_clearance_field(verts, normals, need, tris, *,
         Nl = np.linalg.norm(N, axis=1, keepdims=True)
         Nu = N / np.where(Nl > 1e-9, Nl, 1.0)
 
-        # Adjacency = triangle edges + weld edges between coincident verts.
-        e = np.concatenate([T[:, [0, 1]], T[:, [1, 2]], T[:, [2, 0]]])
-        key = np.round(V / float(weld_tol)).astype(np.int64)
-        order = np.lexsort((key[:, 2], key[:, 1], key[:, 0]))
-        sk = key[order]
-        bnd = np.where(np.any(np.diff(sk, axis=0) != 0, axis=1))[0] + 1
-        starts = np.concatenate([[0], bnd, [n]])
-        weld = [np.column_stack([order[a:b - 1], order[a + 1:b]])
-                for a, b in zip(starts[:-1], starts[1:]) if b - a > 1]
-        if weld:
-            e = np.concatenate([e] + weld)
-        e = np.concatenate([e, e[:, ::-1]])
-        e = e[(e[:, 0] >= 0) & (e[:, 1] >= 0) & (e[:, 0] < n) & (e[:, 1] < n)]
-        if not len(e):
+        src, dst, deg, live = _welded_edges(V, T, weld_tol)
+        if src is None:
             return np.zeros((n, 3)), stats
-        src, dst = e[:, 0], e[:, 1]
-        deg = np.bincount(src, minlength=n).astype(np.float64)
-        live = deg > 0
         denom = deg + lam
         denom[~live] = 1.0
 
@@ -13170,6 +13607,11 @@ _BUTT_COL_TARGET = int(os.environ.get("CBBE2UBE_BUTT_COLLIDER_TARGET", "400"))
 # See the strength note on MATCH_FULL_WEIGHTS -- flipping a toggle without the
 # value it was validated at ships an unjudged recipe.
 _BUTT_COL_OFFSET = float(os.environ.get("CBBE2UBE_BUTT_COLLIDER_OFFSET", "0.6"))
+# The cloned donor block's own <margin>. The derived standoff (#derived-butt-
+# standoff) sits this far UNDER the cloth's resting p10, because FSMP's margin
+# already inflates the collision surface by it -- landing the effective barrier
+# at the cloth rather than through it.
+_BUTT_COL_MARGIN = float(os.environ.get("CBBE2UBE_BUTT_COLLIDER_MARGIN", "0.1"))
 # "Uncovered" = no existing collider vert within this. Also the fire gate.
 _BUTT_COL_GAP = float(os.environ.get("CBBE2UBE_BUTT_COLLIDER_GAP", "3.0"))
 _BUTT_COL_MIN_UNCOVERED = int(
@@ -13327,7 +13769,57 @@ def _add_butt_collider_patch(dst_path) -> int:
         if not len(new_tris) or not len(reps):
             return 0
         rep_old = used[reps]                       # indices into the BODY
-        pv = bv[rep_old] + bn[rep_old] * float(_BUTT_COL_OFFSET)
+        # A COLLIDER IS A BACKSTOP, NOT A SHAPE-SETTER. #derived-butt-standoff
+        #
+        # A flat 0.6 sits ABOVE where close-fitting rear cloth actually rests, so
+        # it stops being a floor against penetration and starts dictating the
+        # silhouette -- the user's "the collider for leather armor is inflating
+        # the rear". Measured on the deployed pieces, rear-band signed standoff
+        # of the garment from the body:
+        #
+        #                        authored p10   converted p10   0.6 floor?
+        #     leather (hugs)        -1.29           +0.30        BITES
+        #     iron (flared skirt)  +12.80           +0.79        never touches
+        #
+        # The author's leather cloth ranged down to -1.29 -- it is SUPPOSED to
+        # tuck in. A uniform +0.60 forbids that everywhere on the rear and
+        # flattens the shape out.
+        #
+        # So derive the standoff from where this piece's own cloth rests, and
+        # sit just under it. CAPPED at the old constant so this can only ever
+        # REDUCE the offset (iron is unchanged, protecting the collapse fix that
+        # was just confirmed in game), and floored at 0 so the collider is never
+        # placed inside the skin, which is the clip it exists to stop.
+        _off = float(_BUTT_COL_OFFSET)
+        try:
+            _decl_col = set(re.findall(
+                r'<per-triangle-shape\s+name="([^"]+)"', txt))
+            _cloth = []
+            for _s in nf.shapes:
+                if _s.name in _decl_col or _s.name == base.name:
+                    continue
+                if not (_s.textures or {}):
+                    continue          # textureless == collider/proxy, not cloth
+                _cw = _verts_skin_to_world(
+                    np.asarray(_s.verts, np.float64), _shape_global_to_skin(_s))
+                _m = ((_cw[:, 2] >= BUTT_Z[0]) & (_cw[:, 2] <= BUTT_Z[1])
+                      & (_cw[:, 1] < -2.0))
+                if _m.sum():
+                    _d, _i = _KD(bv).query(_cw[_m])
+                    _cloth.append(np.einsum(
+                        'ij,ij->i', _cw[_m] - bv[_i], bn[_i]))
+            if _cloth:
+                _all = np.concatenate(_cloth)
+                if len(_all) >= 20:
+                    _p10 = float(np.percentile(_all, 10))
+                    _off = min(_off, max(0.0, _p10 - _BUTT_COL_MARGIN))
+        except Exception as _oe:
+            _note_pass_failure("_add_butt_collider_patch/standoff", _oe)
+            _off = float(_BUTT_COL_OFFSET)
+        if abs(_off - float(_BUTT_COL_OFFSET)) > 1e-6:
+            print(f"    [butt-col] {p.name}: standoff {_BUTT_COL_OFFSET} -> "
+                  f"{_off:.2f} (derived from this piece's own rear cloth)")
+        pv = bv[rep_old] + bn[rep_old] * _off
         # back to the body's STORED frame so the new shape shares its space
         pv_stored = _verts_world_to_skin(pv, _shape_global_to_skin(base))
         nverts = [tuple(float(c) for c in r) for r in pv_stored]
@@ -13377,12 +13869,58 @@ def _add_butt_collider_patch(dst_path) -> int:
         # records it and returns BEFORE the save, leaving the NIF on disk
         # untouched. A missing butt patch is a state this pack shipped in for
         # its whole life; a collider anchored to the origin is not.
-        plan = []
+        # ONLY BONES THE PIECE'S OWN PHYSICS XML DECLARES. #collider-declared-bones
+        #
+        # This collider is REGISTERED in the XML, and FSMP resolves a registered
+        # per-triangle shape's vertices through the bones of ITS OWN system. The
+        # body donates its full skinning, which includes the UBE body's JIGGLE
+        # bones (NPC L/R Butt, L/R Front/RearThigh) -- and iron's XML declares
+        # none of them, so 6 of ButtCol's 12 influences had no rigid body in the
+        # system it was registered into.
+        #
+        # THE INVARIANT IS THE AUTHOR'S, measured on iron: every authored
+        # collider is 100% XML-declared (Collision 5/5, Belt Col 3/3, Bag Col
+        # 4/4). ButtCol was 6/12. Bisected in game 2026-08-14: with the shape in
+        # the mesh but its <per-triangle-shape> block REMOVED from the XML the
+        # collapse STOPS, which puts the fault in the registration, not the
+        # geometry.
+        #
+        # So relabel WHICH bone holds the weight -- the same move as
+        # `#bust-plate-chain-transplant`. Walk the ACTOR skeleton to the nearest
+        # DECLARED ancestor (Butt -> Pelvis, Front/RearThigh -> Thigh) and
+        # ACCUMULATE onto it. At bind this is exactly position-preserving:
+        # every bone's STB is its own bind inverse, so the skinned point does
+        # not depend on which bone carries the weight -- verified 0.000u. No
+        # bone is ADDED (every target is already an influence), so the
+        # add_bone/STB reset above is not re-entered and the influence count per
+        # vertex never rises.
+        _declared_bones = set(re.findall(r'<bone\s+name="([^"]+)"', txt))
+        _avail = set((base.bone_weights or {}).keys())
+        _acc: "dict[str, dict[int, float]]" = {}
+        _redirects: "dict[str, str]" = {}
         for bname, pairs in (base.bone_weights or {}).items():
             sub = [(rep_pos[int(vi)], float(w)) for vi, w in pairs
                    if int(vi) in rep_pos and float(w) > 1e-4]
             if not sub:
                 continue
+            tgt = bname
+            if _declared_bones and bname not in _declared_bones:
+                tgt = _nearest_declared_ancestor(
+                    bname, _declared_bones, _avail)
+                if tgt is None:
+                    # No declared ancestor: shipping it would re-create the very
+                    # defect this guards. Decline the whole patch -- a missing
+                    # butt collider is a state the pack shipped in for its whole
+                    # life; a collider FSMP cannot resolve collapses the cloth.
+                    raise RuntimeError(
+                        f"no XML-declared ancestor for {bname!r} -- declining "
+                        f"rather than registering an unresolvable collider")
+                _redirects[bname] = tgt
+            d = _acc.setdefault(tgt, {})
+            for vi, w in sub:
+                d[vi] = d.get(vi, 0.0) + w      # ACCUMULATE, never overwrite
+        plan = []
+        for bname, vw in _acc.items():
             try:
                 _stb = base.get_shape_skin_to_bone(bname)
             except Exception as _be:
@@ -13390,12 +13928,39 @@ def _add_butt_collider_patch(dst_path) -> int:
                     f"skin-to-bone unreadable for {bname!r}: {_be!r}") from _be
             if _stb is None:
                 raise RuntimeError(f"skin-to-bone missing for {bname!r}")
-            plan.append((bname, _stb, sub))
-        for bname, _stb, sub in plan:
-            # NEW shape -> add_bone is safe here; the STB footgun is about adding
-            # a bone to an ALREADY-skinned shape.
+            plan.append((bname, _stb, sorted(vw.items())))
+        if _redirects:
+            print(f"    [butt-col] {p.name}: redirected {len(_redirects)} "
+                  f"XML-undeclared bone(s) onto declared parents: "
+                  f"{ {k: v for k, v in sorted(_redirects.items())} }")
+        # ADD EVERY BONE FIRST, THEN SET EVERY STB (`_install_skin`'s order).
+        # #identity-stb-collider. `add_bone` RESETS the skin-to-bone transforms
+        # of bones already on the shape, so the interleaved
+        # add/set/set-weights loop this used to be left ONLY THE LAST BONE with
+        # a valid STB and shipped every other one at IDENTITY -- measured on the
+        # deployed iron: 11 of ButtCol's 12 bones identity, the survivor being
+        # the last one added. An identity STB does NOT skin the vertex to the
+        # origin here (g2s still places it); it drops the bone's own bind
+        # inverse, so at runtime the collider is transformed by the raw actor
+        # bone globals and lands nowhere near the buttocks -- reconstructed
+        # against the actor skeleton, all 354 verts were >1u out, p50 52.8u,
+        # max 72.8u, while all three AUTHORED colliders reconstruct inside
+        # 0.02u. That is what made HDT-SMP cloth free-fall: the skirts are told
+        # to collide with a 561-triangle ColBody shape that is not where the
+        # body is, so the solver never settles. #butt-collider-patch was
+        # DEFAULT ON, so this shipped.
+        #
+        # The comment this replaced said "NEW shape -> add_bone is safe here;
+        # the STB footgun is about adding a bone to an ALREADY-skinned shape."
+        # That is wrong twice over: `ns.skin()` has already been called, and the
+        # reset applies to any bone previously added to THIS shape regardless of
+        # where the shape came from. `project_jiggle_transfer` recorded the same
+        # footgun in June and the fix it prescribes is exactly this ordering.
+        for bname, _stb, _sub in plan:
             ns.add_bone(bname)
+        for bname, _stb, _sub in plan:
             ns.set_skin_to_bone_xform(bname, _stb)
+        for bname, _stb, sub in plan:
             ns.setShapeWeights(bname, sub)
             wrote += len(sub)
         if not wrote:
@@ -13682,9 +14247,17 @@ def _add_skirt_collider_proxy(dst_path) -> int:
             if _stb is None:
                 raise RuntimeError(f"skin-to-bone missing for {bname!r}")
             plan.append((bname, _stb, s_pairs))
-        for bname, _stb, s_pairs in plan:
+        # Add-all-then-set-all, same as `_add_butt_collider_patch` and for the
+        # same measured reason (#identity-stb-collider): `add_bone` resets the
+        # STBs already on the shape, so interleaving ships every bone but the
+        # last at identity. Worse here than on ButtCol -- this proxy is
+        # CHAIN-DRIVEN, so a dropped bind inverse misplaces a shape the
+        # simulation itself moves.
+        for bname, _stb, _s_pairs in plan:
             ns.add_bone(bname)
+        for bname, _stb, _s_pairs in plan:
             ns.set_skin_to_bone_xform(bname, _stb)
+        for bname, _stb, s_pairs in plan:
             ns.setShapeWeights(bname, s_pairs)
             wrote += len(s_pairs)
         if not wrote:
@@ -14365,6 +14938,32 @@ CHAIN_ANCHOR_RECREATE = (
     os.environ.get("CBBE2UBE_NO_CHAIN_ANCHOR_RECREATE", "").strip().lower()
     not in ("1", "true", "yes", "on"))
 
+# #per-anchor-seed. `_seed_flat_chain_anchors` decides per FILE whether to seed,
+# and ONE upper-body anchor turns the whole thing off -- including the pelvis
+# every skirt actually hangs from. MEASURED on vanilla iron, which anchors BOTH
+# `NPC Pelvis` (the real skirt/belt/bag chains) and `NPC Spine2` (a `PBelt`
+# chain that carries ZERO skin weight and whose shape the mesh does not even
+# have -- it is there only because the physics XML is shared with the plate
+# variant). `any(_is_upper_body_anchor)` fires on that vestigial chain, nothing
+# is seeded, `NPC Pelvis` stays flat at IDENTITY, and every chain parented onto
+# it keeps a source-LOCAL transform that assumed a parent at hip height -- so
+# the whole rig lands 68.91u low, under the floor. REPORTED IN GAME as the legs
+# sinking away from the body and falling forever. All 8 iron files, both
+# weights, both variants, and identically in the shipped pack.
+#
+# The ARM branch of that same gate is already `all()` rather than `any()`,
+# precisely because mixed rigs exist (an `any()` there "would nest their pelvis
+# chains = the June sag"). This gives the upper-body branch the same treatment:
+# decide per ANCHOR, seed the pelvis, and leave the upper-body anchor to the
+# nested branch that builds real parent links for it.
+#
+# OPT-IN until censused. The blast radius is every NIF that mixes a pelvis chain
+# with ANY upper-body chain, which is unmeasured, and this area has regressed
+# TWICE (the June skirt sag; arm-anchor nesting).
+PER_ANCHOR_ANCHOR_SEED = os.environ.get(
+    "CBBE2UBE_PER_ANCHOR_SEED", "").strip().lower() in (
+        "1", "true", "yes", "on")
+
 
 def _seed_flat_chain_anchors(dst_nif, src_nif) -> int:
     """Pre-create physics-chain ANCHOR bones (and their source ancestors) at their
@@ -14443,14 +15042,25 @@ def _seed_flat_chain_anchors(dst_nif, src_nif) -> int:
         # them flat would be the June skirt-sag regression. Same gate as
         # `_precreate_custom_bone_chains`.
         if (NESTED_CHAIN_ANCHORS
-                or any(_is_upper_body_anchor(a) for a in anchors)
                 or all(_is_arm_anchor(a) for a in anchors)):
+            return 0
+        # #per-anchor-seed. Whole-file OFF switch on ANY upper-body anchor. One
+        # vestigial upper-body chain takes the pelvis down with it -- see the
+        # flag. Opt-in decides per ANCHOR in the loop below instead.
+        if (not PER_ANCHOR_ANCHOR_SEED
+                and any(_is_upper_body_anchor(a) for a in anchors)):
             return 0
 
         seeded = []
         existing = set(dst_nif.nodes.keys())
         for a in sorted(anchors):          # sorted: #deterministic-set-iteration
-            if _is_arm_anchor(a):
+            # Upper-body anchors are skipped HERE rather than aborting the whole
+            # file: flat-seeding one would freeze a sleeve/pauldron that has to
+            # swing with the limb, but that is a reason to leave THAT anchor to
+            # the nested branch, not to abandon the pelvis beside it. With
+            # PER_ANCHOR_ANCHOR_SEED off this is unreachable -- the early return
+            # above already took the file -- so the default path is unchanged.
+            if _is_arm_anchor(a) or _is_upper_body_anchor(a):
                 continue
             cur, seen2 = a, set()
             while cur and cur not in seen2:
@@ -15481,6 +16091,76 @@ BUST_PLATE_SYNC_MIN_GAP = float(
 # a fresh divergence between the layers that moved and the ones that could not.
 BUST_PLATE_SYNC_MIN_COVER = float(
     os.environ.get("CBBE2UBE_BUST_PLATE_SYNC_MIN_COVER", "") or 0.90)
+# #bust-plate-bone-shape -- ATTEMPTED AND REVERTED 2026-08-14. Recorded because
+# the defect is real and the next attempt should not start from scratch.
+#
+# THE DEFECT. This pass matches a plate's breast FRACTION to the cloth's, which
+# is the right SIZE and the wrong SHAPE when the plate has fewer breast bones.
+# MEASURED on the reported plated top: UBE drives the breast hardest at the TIP
+# (L Breast03 weight 351, centroid y 7.47) and least at the BASE (Breast01, 85,
+# y 5.64); the cloth `top` spans all three out to y 8.32 while `chest_plate`
+# carries Breast01 ALONE and took its entire raised follow -- 2381 units -- on
+# that one base bone. A joint chain compounds, so the plate tracks the
+# least-moving joint while the layer over it tracks the tip.
+#
+# WHY THE OBVIOUS FIX FAILED, in the order the walls were hit:
+#   1. `s.bone_names` is CACHED and does not refresh after `add_bone`, so a
+#      refreshed write list silently omits the new bones and they ship at ZERO
+#      weight. Extend the list you already hold; never re-read it.
+#   2. A vertex may carry only 4 influences (`MAX_BONES_PER_VERT`, already a
+#      local in two other functions here). These plate verts are ALREADY at 3-4
+#      with Spine1/Spine2/Clavicle/Breast01, so a three-bone breast chain does
+#      not fit, and the writer evicts the smallest WITHOUT redistributing --
+#      727 verts summing 0.956-1.063.
+#   3. Choosing the best 4 explicitly and renormalising DOES give clean sums,
+#      and then the chain bones lose the eviction to the spine weights: total
+#      breast follow fell 3690 -> 2277 with no Breast02/03 surviving at all.
+#      Correct weights, worse follow than doing nothing.
+#
+# So the budget, not the bone-add, is the binding constraint: the plate cannot
+# hold the chain without giving up spine weight, and whether that is safe is
+# unmeasured.
+#
+# THE WAY THROUGH (2026-08-14b): do not build a MIX -- TRANSPLANT. Rewrite WHICH
+# chain bone carries the breast weight the vertex already has, instead of
+# splitting that weight across three bones. One chain bone replaces another, so
+# the influence COUNT never rises: the 4-per-vertex budget is never contested,
+# nothing is evicted, and the per-vert weight sum is identical by construction --
+# which is walls 2 and 3 above, both gone. Wall 1 still applies and is handled
+# (extend the bone list you hold; never re-read `s.bone_names` after add_bone).
+#
+# MEASURED, region-matched per vertex on that plated top (nearest cloth vert
+# within CHEST_SYNC_DISTANCE, over the jiggle band, 10910 verts). NOTE the
+# whole-shape weight SUMS mislead here -- plate and cloth have different vertex
+# counts over different areas -- and the earlier "the cloth tracks the TIP" read
+# was one of those: the BODY is tip-heavy, the cloth over the plate is NOT.
+#     chain fraction   Breast01  Breast02  Breast03   effective lever
+#     chest_plate         1.000     0.000     0.000        0.000
+#     top (cloth)         0.393     0.519     0.088        0.601
+# The plate under-travels on 95% of matched verts. Residual lever error after a
+# transplant, against 0.601 for doing nothing:
+#     Breast01+02        mean 0.314  p90 0.417   47.8% closed   2 new bones
+#     Breast01+02+03     mean 0.261  p90 0.405   56.6% closed   4 new bones
+# p90 barely separates them; the full chain only wins in the tail. Depth 2 is the
+# default because the one wall this does NOT knock down is that a transplant
+# still needs `add_bone`, which trades #bust-plate-sync's STRUCTURAL "a chain
+# bone can never reach a rigid plate" guard for a judgement -- so the smaller
+# bone surface goes first.
+#
+# TRAP FOR THE NEXT ATTEMPT: `ctrl_parity.py` compares vertex POSITIONS, so it
+# reports "reproduces" for a pass that only writes WEIGHTS -- including one that
+# has died. Verify this pass on weights.
+#
+# OPT-IN. Off, this pass is byte-identical to the scale-only build.
+BUST_PLATE_CHAIN_TRANSPLANT = os.environ.get(
+    "CBBE2UBE_BUST_PLATE_CHAIN_TRANSPLANT", "").strip().lower() in (
+        "1", "true", "yes", "on")
+# Chain bones, base -> tip. The index in this tuple IS the chain depth.
+BUST_PLATE_CHAIN = ("Breast01", "Breast02", "Breast03")
+# How far up the chain a transplant may reach. 2 = Breast01/02 (default), 3 =
+# the full chain. Clamped to the tuple above.
+BUST_PLATE_CHAIN_DEPTH = max(1, min(len(BUST_PLATE_CHAIN), int(
+    os.environ.get("CBBE2UBE_BUST_PLATE_CHAIN_DEPTH", "") or 2)))
 # The tighter JIGGLE BAND (front, z 88-104) that ranks authority. The full
 # cleavage box (z 85-115) reaches the rigid upper chest and can rank a plate's
 # breast fraction ABOVE the cloth's, inverting who should follow whom.
@@ -15503,7 +16183,57 @@ _ABDO_JIGGLE_SYNC = (os.environ.get("CBBE2UBE_ABDO_JIGGLE_SYNC", "").strip().low
                      in ("1", "true", "yes", "on"))
 
 
-CHEST_DEPTH_SEPARATION = 0.4     # target clearance the inner bust layer is pushed to
+# Target clearance the inner bust layer is pushed to. Env-overridable so it can
+# be bisected: it was the only number in this chain that could not be, and the
+# pass moves thousands of verts INWARD, which is the shape of a burial.
+CHEST_DEPTH_SEPARATION = float(
+    os.environ.get("CBBE2UBE_CHEST_DEPTH_SEP", "") or 0.4)
+# #coincident-twin-not-a-layer -- DEFAULT ON, off with
+# CBBE2UBE_NO_TWIN_LAYER_GUARD=1. See the receiver loop below for the
+# measurement. Default ON rather than opt-in because the gate is extremely
+# narrow -- it fires only when a shape's chest verts sit within
+# TWIN_COINCIDENT_TOL of the authority's over TWIN_COINCIDENT_FRAC of them,
+# which no genuine second layer does -- and the behaviour it replaces is
+# destructive whenever it does fire.
+TWIN_LAYER_GUARD = os.environ.get(
+    "CBBE2UBE_NO_TWIN_LAYER_GUARD", "").strip().lower() not in (
+        "1", "true", "yes", "on")
+# Tight on purpose. A bra and an outer fabric sharing a depth are ~0.1-0.4u
+# apart, three orders of magnitude above this; a duplicate is bit-identical.
+TWIN_COINCIDENT_TOL = float(
+    os.environ.get("CBBE2UBE_TWIN_COINCIDENT_TOL", "") or 1e-3)
+TWIN_COINCIDENT_FRAC = float(
+    os.environ.get("CBBE2UBE_TWIN_COINCIDENT_FRAC", "") or 0.95)
+
+
+def _is_coincident_twin(auth_src, auth_mask, recv_src, recv_mask,
+                        auth_job, recv_job):
+    """Is `recv` the same surface as `auth`, authored twice?
+
+    Judged on the SOURCE geometry where available -- the author's own arrangement
+    is the truth, and by this point in the pipeline both copies have been through
+    the fit chain. Falls back to the current verts, which for a real twin are
+    still identical because both copies were given identical treatment.
+
+    Conservative on every failure: returns False, i.e. the pass behaves exactly
+    as it did before. A guard that wrongly fires would silently disable a
+    legitimate cleavage separation, so it must be the doubtful case that keeps
+    the old behaviour, not the confident one.
+    """
+    try:
+        a = auth_src if auth_src is not None else np.asarray(
+            auth_job["verts"], dtype=np.float64)
+        r = recv_src if recv_src is not None else np.asarray(
+            recv_job["verts"], dtype=np.float64)
+        ac, rc = a[auth_mask], r[recv_mask]
+        if len(ac) < 5 or len(rc) < 5:
+            return False
+        from scipy.spatial import cKDTree
+        d, _ = cKDTree(ac).query(rc, k=1)
+        return float((d <= TWIN_COINCIDENT_TOL).mean()) >= TWIN_COINCIDENT_FRAC
+    except Exception as _pe:
+        _note_pass_failure("_is_coincident_twin", _pe)
+        return False
 CHEST_DEPTH_FRONT_TOL = 0.2      # only push receiver verts within this distance in FRONT
                                   # of the authority. Verts clearly in front (ornaments,
                                   # straps, cloaks) are left alone so the pass doesn't sink
@@ -15624,7 +16354,29 @@ def _separate_chest_layered_cloth_depth(
                 src_gate_ready = True
 
         total_pushed = 0
+        auth_src_all = _shape_src(auth_job)
         for recv_job, recv_mask, _ in candidates[1:]:
+            # #coincident-twin-not-a-layer. A receiver that COINCIDES with the
+            # authority is the same surface authored twice -- two materials, or
+            # a two-pass shader -- not an inner layer at the same depth. This
+            # pass exists for a bra under fabric: different surfaces that happen
+            # to share a depth. A twin shares every VERTEX.
+            #
+            # Ungated, the size sort picks one twin arbitrarily and declares the
+            # other an inner layer, then pushes it CHEST_DEPTH_SEPARATION (0.4u)
+            # INTO the body; the cross-shape seam weld afterwards averages the
+            # two coincident copies, so BOTH ship buried and identical. Measured
+            # on the reported bodysuit's `Suit`/`Suit 2` pair: 7222 verts pushed
+            # inward, and the slim variant shipped 2296 shoulder verts inside
+            # the body against 39 with this pass neutralised.
+            #
+            # The SOURCE-ORDER GATE below cannot catch it: it only spares a vert
+            # the source puts OUTSIDE the authority, and a coincident vert is
+            # neither outside nor inside -- it sits exactly at 0.
+            if TWIN_LAYER_GUARD and _is_coincident_twin(
+                    auth_src_all, auth_mask, _shape_src(recv_job), recv_mask,
+                    auth_job, recv_job):
+                continue
             recv_v_full = np.asarray(recv_job["verts"], dtype=np.float64)
             recv_chest_idx_in_shape = np.where(recv_mask)[0]
             recv_chest = recv_v_full[recv_mask]
@@ -16279,6 +17031,69 @@ def _sync_chest_layered_cloth_weights(shape_jobs: list) -> int:
         return 0
 
 
+def _breast_chain_index(bone):
+    """-> (side, chain index) for a breast CHAIN bone, else None.
+
+    Deliberately narrower than the `"breast" in name` test the rest of this pass
+    uses: only the numbered chain may be transplanted onto, so any other
+    breast-named bone keeps the plain rescale and can never lose its weight to a
+    relabel it was not measured for.
+    """
+    lb = bone.lower()
+    side = "L" if lb.startswith("l ") else ("R" if lb.startswith("r ") else None)
+    if side is None:
+        return None
+    for i, c in enumerate(BUST_PLATE_CHAIN):
+        if c.lower() in lb:
+            return side, i
+    return None
+
+
+def _breast_chain_levers(nf):
+    """Per chain bone, how far along the chain it sits -- a travel proxy.
+
+    Motion under a joint chain COMPOUNDS, so a bone's distance from the chain
+    ROOT stands in for how far a vertex bound to it moves. Measured off the
+    BODY's own weighting (the authored chain) as a weight-averaged centroid in
+    +y, which is the axis the bust travels on.
+
+    Returns a per-chain-index list, or [] when the body or the chain is missing
+    -- the caller then skips the transplant rather than inventing a geometry.
+    """
+    body = next((s for s in nf.shapes if s.name == "BaseShape"), None)
+    if body is None:
+        return []
+    try:
+        bv = np.asarray(body.verts, dtype=np.float64)
+        bw = body.bone_weights or {}
+    except Exception:
+        return []
+    if bv.size == 0:
+        return []
+    cen = {}
+    for b, pairs in bw.items():
+        ci = _breast_chain_index(b)
+        if ci is None or not pairs:
+            continue
+        idx = np.array([int(v) for v, _w in pairs])
+        w = np.array([float(_w) for _v, _w in pairs], dtype=np.float64)
+        if w.sum() <= 0 or idx.size == 0 or int(idx.max()) >= len(bv):
+            continue
+        cen[b] = float(np.average(bv[idx, 1], weights=w))
+    out = []
+    for i in range(len(BUST_PLATE_CHAIN)):
+        vals = []
+        for side in ("L", "R"):
+            root = cen.get(f"{side} {BUST_PLATE_CHAIN[0]}")
+            y = cen.get(f"{side} {BUST_PLATE_CHAIN[i]}")
+            if root is not None and y is not None:
+                vals.append(y - root)
+        if not vals:
+            return []          # incomplete chain -> no transplant
+        out.append(float(np.mean(vals)))
+    return out
+
+
 def _sync_bust_plate_follow_postwrite(dst_path) -> int:
     """#bust-plate-sync. Raise a rigid bust PLATE's breast-family follow up to the
     jiggle CLOTH stacked beneath it, so the cloth stops swinging out through the
@@ -16295,13 +17110,18 @@ def _sync_bust_plate_follow_postwrite(dst_path) -> int:
     Conservative, in the spirit of _match_limb_motion_to_body:
       * PUSH-UP ONLY -- never lowers a layer's follow; a plate already tracking the
         cloth is left alone.
-      * NO add_bone -- only rescales the breast-vs-non-breast SHARE among the bones
-        a vertex ALREADY carries. So it can never introduce a physics/chain/SMP
-        bone onto a rigid plate (the equip-CTD guard is structural, not a filter),
-        it never moves a vertex (bind pose byte-identical), and the relative
-        proportions WITHIN the non-breast bones are preserved, so body-follow is
-        only scaled, never re-based (the trap that gutted the shared-basis fix in
-        #layer-follow-divergence).
+      * NO add_bone BY DEFAULT -- only rescales the breast-vs-non-breast SHARE
+        among the bones a vertex ALREADY carries. So it can never introduce a
+        physics/chain/SMP bone onto a rigid plate (the equip-CTD guard is
+        structural, not a filter), it never moves a vertex (bind pose
+        byte-identical), and the relative proportions WITHIN the non-breast bones
+        are preserved, so body-follow is only scaled, never re-based (the trap
+        that gutted the shared-basis fix in #layer-follow-divergence).
+        BUST_PLATE_CHAIN_TRANSPLANT (opt-in) is the one thing that relaxes this:
+        it gives the plate the chain bone whose TRAVEL matches the cloth, which
+        needs add_bone and so trades that structural guard for a judgement. It
+        still never raises a vertex's influence COUNT and never changes a
+        vertex's total weight -- it relabels which chain bone holds it.
       * admission by COVERAGE, not weight -- a genuine plate HAS breast bones but
         low follow, so only a layer that MUTUALLY overlaps a higher-follow breast
         layer is admitted; an ornament grazing the chest overlaps one-way at most.
@@ -16372,9 +17192,14 @@ def _sync_bust_plate_follow_postwrite(dst_path) -> int:
                 continue
             box_idx = np.where(box)[0]
             rows = {}  # vert idx -> [breast_w, total_w] over the cleavage box
+            # vert idx -> per-chain-bone weight, built ONLY for the transplant so
+            # the default path stays exactly as it shipped.
+            chain_rows = {} if BUST_PLATE_CHAIN_TRANSPLANT else None
             box_set = set(int(i) for i in box_idx)
             for b, prs in bw.items():
                 isbr = "breast" in b.lower()
+                ci = (_breast_chain_index(b)
+                      if BUST_PLATE_CHAIN_TRANSPLANT else None)
                 for vi, w in prs:
                     if w <= 0.0:
                         continue
@@ -16387,6 +17212,11 @@ def _sync_bust_plate_follow_postwrite(dst_path) -> int:
                     r[1] += w
                     if isbr:
                         r[0] += w
+                    if ci is not None:
+                        cr = chain_rows.get(ivi)
+                        if cr is None:
+                            cr = chain_rows[ivi] = [0.0] * len(BUST_PLATE_CHAIN)
+                        cr[ci[1]] += w
             # band-follow (z 88-104, front) ranks authority
             band = (box & (v[:, 2] >= BUST_PLATE_BAND_Z_LO)
                     & (v[:, 2] <= BUST_PLATE_BAND_Z_HI)
@@ -16398,7 +17228,7 @@ def _sync_bust_plate_follow_postwrite(dst_path) -> int:
                     band_tw += r[1]
                     band_bw += r[0]
             band_follow = (band_bw / band_tw) if band_tw > 0 else 0.0
-            cand.append((s, v[box_idx], box_idx, band_follow, rows))
+            cand.append((s, v[box_idx], box_idx, band_follow, rows, chain_rows))
         if len(cand) < 2:
             return 0
 
@@ -16417,12 +17247,32 @@ def _sync_bust_plate_follow_postwrite(dst_path) -> int:
         if len(group) < 2:
             return 0
 
-        _as, _abv, auth_idx, auth_follow, auth_rows = group[0]
+        _as, _abv, auth_idx, auth_follow, auth_rows, auth_chain = group[0]
         # authority's LOCAL breast fraction, 1:1 with its cleavage-box verts
         auth_frac = np.array([
             (auth_rows[int(vi)][0] / auth_rows[int(vi)][1])
             if (int(vi) in auth_rows and auth_rows[int(vi)][1] > 0) else 0.0
             for vi in auth_idx], dtype=np.float64)
+
+        # --- transplant geometry: the authority's effective LEVER per vert ----
+        # How far the cloth actually travels here, as the chain-weighted mean of
+        # the joint levers. This is what the plate's single chain bone is chosen
+        # to match. Empty levers (no body / broken chain) disable the transplant
+        # rather than guessing.
+        levers = (_breast_chain_levers(nf)
+                  if BUST_PLATE_CHAIN_TRANSPLANT else [])
+        allowed = list(range(min(BUST_PLATE_CHAIN_DEPTH, len(levers))))
+        auth_lever = None
+        if levers and allowed:
+            auth_lever = np.full(len(auth_idx), np.nan, dtype=np.float64)
+            lv = np.asarray(levers, dtype=np.float64)
+            for k, vi in enumerate(auth_idx):
+                cr = (auth_chain or {}).get(int(vi))
+                if not cr:
+                    continue
+                tot = float(sum(cr))
+                if tot > 0:
+                    auth_lever[k] = float(np.dot(np.asarray(cr) / tot, lv))
 
         # --- PLAN EVERY RECEIVER FIRST, AND ONLY THEN WRITE ------------------
         # ALL-OR-NOTHING PER PIECE. Raising SOME of a stack is not a partial fix,
@@ -16439,7 +17289,7 @@ def _sync_bust_plate_follow_postwrite(dst_path) -> int:
         # So: if any receiver cannot be brought along essentially in full, this
         # piece is not safely fixable and NOTHING is written. #bust-plate-sync
         plans = []
-        for (s, box_v, box_idx, follow, rows) in group[1:]:
+        for (s, box_v, box_idx, follow, rows, chain_rows) in group[1:]:
             if auth_follow - follow < BUST_PLATE_SYNC_MIN_GAP:
                 # Too close to be the plate-vs-cloth divergence this pass exists
                 # for -- rewriting thousands of weights to chase follow noise
@@ -16451,6 +17301,8 @@ def _sync_bust_plate_follow_postwrite(dst_path) -> int:
             # per-vert breast/non-breast rescale factors (push-up only)
             scale_br = {}
             scale_nb = {}
+            # vert idx -> chain index its breast weight should be carried on
+            chain_tgt = {}
             n_need = 0        # verts that WANT raising (the authority is higher)
             n_blocked = 0     # ... of those, the ones with no breast bone to raise
             for li, (d, ai) in enumerate(zip(dists, nn)):
@@ -16465,6 +17317,19 @@ def _sync_bust_plate_follow_postwrite(dst_path) -> int:
                 B, T = r[0], r[1]
                 cur = B / T
                 tgt = float(auth_frac[ai])
+                # CHAIN TARGET FIRST, and for EVERY vert carrying chain weight --
+                # including the ones the push-up leaves alone. The bone-shape
+                # defect does not depend on whether the FRACTION needs raising,
+                # and transplanting only the raised verts would leave a lever
+                # STEP through the middle of the plate: the same blocked-REGION
+                # shape that split a robe in game, arriving by a different route.
+                if auth_lever is not None and chain_rows is not None:
+                    cr = chain_rows.get(ivi)
+                    al = float(auth_lever[ai])
+                    if cr and sum(cr) > 0 and np.isfinite(al):
+                        best = min(allowed,
+                                   key=lambda ci: abs(levers[ci] - al))
+                        chain_tgt[ivi] = best
                 if tgt <= cur + 1e-4:
                     continue  # already tracks the cloth here -> leave it
                 n_need += 1
@@ -16477,7 +17342,7 @@ def _sync_bust_plate_follow_postwrite(dst_path) -> int:
                 N = T - B
                 scale_br[ivi] = (tgt * T) / B
                 scale_nb[ivi] = ((1.0 - tgt) * T / N) if N > 1e-12 else 0.0
-            if not scale_br:
+            if not scale_br and not chain_tgt:
                 continue
             cover = (n_need - n_blocked) / float(max(n_need, 1))
             if cover < BUST_PLATE_SYNC_MIN_COVER:
@@ -16486,13 +17351,41 @@ def _sync_bust_plate_follow_postwrite(dst_path) -> int:
                       f"({n_blocked} of {n_need} verts carry no breast bone), and "
                       f"a partly-raised layer splits apart", file=sys.stderr)
                 return 0
-            plans.append((s, scale_br, scale_nb))
+            plans.append((s, scale_br, scale_nb, chain_tgt))
 
         total = 0
         dirty = False
-        for (s, scale_br, scale_nb) in plans:
+        for (s, scale_br, scale_nb, chain_tgt) in plans:
             bw = s.bone_weights or {}
             bone_list = list(s.bone_names or list(bw.keys()))
+            # --- transplant: resolve the bones to add, and their STB donors ---
+            # A bone added without a correct skin-to-bone transform spikes the
+            # mesh, so a bone with NO donor in this NIF disables the transplant
+            # for the shape rather than being added blind.
+            want, donor_stb = [], {}
+            if chain_tgt:
+                want = sorted({f"{side} {BUST_PLATE_CHAIN[ci]}"
+                               for ci in set(chain_tgt.values())
+                               for side in ("L", "R")} - set(bone_list))
+                for bone in want:
+                    for other in nf.shapes:
+                        if other.name == s.name:
+                            continue
+                        if bone not in (other.bone_names or []):
+                            continue
+                        try:
+                            st = other.get_shape_skin_to_bone(bone)
+                        except Exception:
+                            st = None
+                        if st is not None:
+                            donor_stb[bone] = st
+                            break
+                missing = [b for b in want if b not in donor_stb]
+                if missing:
+                    print(f"  bust-plate transplant: {s.name!r} left on the "
+                          f"chain base -- no skin-to-bone donor in this NIF for "
+                          f"{missing}", file=sys.stderr)
+                    chain_tgt, want = {}, []
             # STBs: setShapeWeights can reset them, so save every bone and restore
             # afterwards. If any can't be read, skip -- an identity STB = spike.
             saved_stb = {}
@@ -16508,12 +17401,82 @@ def _sync_bust_plate_follow_postwrite(dst_path) -> int:
                 saved_stb[b] = st
             if not ok:
                 continue
+            if want:
+                # add_bone RESETS the shape's whole bone table, so per its own
+                # docstring: add EVERY bone first, then set EVERY transform, then
+                # weights. And `s.bone_names` is CACHED -- it will not show what
+                # was just added -- so EXTEND the list already held. Re-reading it
+                # here is exactly how these bones once shipped at zero weight.
+                try:
+                    for bone in want:
+                        s.add_bone(bone)
+                    for bone in want:
+                        s.set_skin_to_bone_xform(bone, donor_stb[bone])
+                    for b, st in saved_stb.items():
+                        s.set_skin_to_bone_xform(b, st)
+                except Exception as _ae:
+                    print(f"  WARN: bust-plate transplant could not add "
+                          f"{want} to {s.name!r} ({_ae!r}) -- scale only",
+                          file=sys.stderr)
+                    _note_pass_failure("bust-plate transplant/add_bone", _ae)
+                    chain_tgt = {}
+                else:
+                    saved_stb.update(donor_stb)
+                    bone_list = bone_list + want
+            # Per-vert breast total after the push-up, re-homed onto the chain
+            # bone whose travel matches the cloth. Side is PRESERVED (an L vert's
+            # weight stays on an L bone) and the per-vert total is untouched, so
+            # this relabels rather than redistributes: one chain bone replaces
+            # another, the influence count never rises, and nothing is evicted.
+            moved = {}          # bone -> {vert: weight}
+            for b in bone_list:
+                ci = _breast_chain_index(b) if chain_tgt else None
+                if ci is None:
+                    continue
+                for vi, w in bw.get(b, []):
+                    ivi = int(vi)
+                    if ivi not in chain_tgt or w <= 0.0:
+                        continue
+                    tb = f"{ci[0]} {BUST_PLATE_CHAIN[chain_tgt[ivi]]}"
+                    d = moved.setdefault(tb, {})
+                    d[ivi] = d.get(ivi, 0.0) + float(w) * scale_br.get(ivi, 1.0)
             # Full per-bone rewrite: unchanged verts keep their weight, the raised
-            # verts get breast scaled up / non-breast scaled down. No add_bone.
+            # verts get breast scaled up / non-breast scaled down.
             try:
                 for b in bone_list:
                     isbr = "breast" in b.lower()
+                    ci = _breast_chain_index(b) if chain_tgt else None
                     outp = []
+                    if ci is not None:
+                        # transplanted verts are re-emitted from `moved` (possibly
+                        # onto this same bone); everything else is untouched.
+                        prev = {int(vi): float(w) for vi, w in bw.get(b, [])}
+                        mine = moved.get(b, {})
+                        for ivi, w in prev.items():
+                            if ivi not in chain_tgt:
+                                if w > _WRITE_MIN:
+                                    outp.append((ivi, w))
+                            elif ivi not in mine:
+                                # This bone is GIVING THIS VERTEX UP, and that has
+                                # to be said out loud: setShapeWeights UPDATES the
+                                # pairs it is handed and leaves every other vertex
+                                # of that bone alone, so omitting one does NOT
+                                # remove it. Measured when this wrote the new bone
+                                # and merely skipped the old: the weight landed on
+                                # BOTH, 5355 verts gained an influence and sums
+                                # went 1.000 -> 1.300. Every other weight pass here
+                                # rewrites VALUES and never has to remove a vertex
+                                # from a bone, which is why nothing hit this first.
+                                outp.append((ivi, 0.0))
+                        for ivi, w in mine.items():
+                            if w > _WRITE_MIN:
+                                outp.append((ivi, w))
+                        outp.sort()
+                        # ALWAYS write, even empty: a chain bone that gave all its
+                        # verts away has to be zeroed, and skipping the call would
+                        # leave the old weight in place and DOUBLE the follow.
+                        s.setShapeWeights(b, outp)
+                        continue
                     for vi, w in bw.get(b, []):
                         ivi = int(vi)
                         nw = float(w)
@@ -16539,6 +17502,18 @@ def _sync_bust_plate_follow_postwrite(dst_path) -> int:
                     s.set_skin_to_bone_xform(b, st)
                 except Exception as _pe:
                     _note_pass_failure("set_skin_to_bone_xform", _pe)
+            if chain_tgt:
+                # Report the SPLIT, not just a count: "n verts transplanted" hides
+                # the case where every vert chose the base bone and the pass was
+                # a no-op wearing a success.
+                per = {}
+                for ci in chain_tgt.values():
+                    per[ci] = per.get(ci, 0) + 1
+                print(f"  bust-plate transplant: {s.name!r} "
+                      + ", ".join(f"{per.get(i,0)} -> {BUST_PLATE_CHAIN[i]}"
+                                  for i in sorted(per))
+                      + (f" (added {want})" if want else " (no new bones)"),
+                      file=sys.stderr)
             total += len(scale_br)
             dirty = True
 
@@ -20042,6 +21017,66 @@ def _actor_skeleton_bone_names() -> "set[str]":
     return names
 
 
+_SKELETON_PARENTS_CACHE: "dict[str, str] | None" = None
+
+
+def _actor_skeleton_bone_parents() -> "dict[str, str]":
+    """child -> parent over the ACTOR's skeleton, raw names.
+
+    The armour NIF's OWN node tree cannot answer this: the converter recreates
+    every skeleton bone FLAT at identity parented to Scene Root by design
+    (see `_seed_flat_chain_anchors`), so walking it yields `Scene Root` for
+    everything. Only the actor skeleton carries the real hierarchy --
+    `NPC L Butt -> ... -> NPC Pelvis [Pelv]`,
+    `NPC L FrontThigh -> ... -> NPC L Thigh [LThg]`. Empty dict if no skeleton
+    is found, and every caller must then decline rather than guess.
+    """
+    global _SKELETON_PARENTS_CACHE
+    if _SKELETON_PARENTS_CACHE is not None:
+        return _SKELETON_PARENTS_CACHE
+    out: "dict[str, str]" = {}
+    for pat in (
+        "meshes/actors/character/character assets female/skeleton_female.nif",
+        "meshes/actors/character/character assets/skeleton_female.nif",
+        "meshes/actors/character/character assets/skeleton.nif",
+    ):
+        try:
+            p = _glob_first_in_mods(pat)
+        except Exception:
+            p = None
+        if not p:
+            continue
+        try:
+            nf = _pynifly().NifFile(filepath=str(p))
+            for nm, nd in nf.nodes.items():
+                par = getattr(nd, "parent", None)
+                pnm = getattr(par, "name", None) if par is not None else None
+                if pnm and pnm != nm:
+                    out[nm] = pnm
+        except Exception:
+            continue
+        if out:
+            break
+    _SKELETON_PARENTS_CACHE = out
+    return out
+
+
+def _nearest_declared_ancestor(bone: str, declared: "set[str]",
+                               available: "set[str]") -> "str | None":
+    """Walk the ACTOR skeleton up from `bone` to the first ancestor that the
+    piece's own physics XML DECLARES and that we can actually weight to.
+    None when there is no such ancestor (caller must decline)."""
+    parents = _actor_skeleton_bone_parents()
+    seen: "set[str]" = set()
+    cur = parents.get(bone)
+    while cur and cur not in seen:
+        seen.add(cur)
+        if cur in declared and cur in available:
+            return cur
+        cur = parents.get(cur)
+    return None
+
+
 # REMOVED 2026-07-27: `HARDEN_AUTHORED_PHYSICS` / `_harden_physics_params`.
 #
 # It clamped chain-rig stability params (inertia floor 70, angular-damping floor 0.9,
@@ -21544,6 +22579,38 @@ LAYER_RIDE_ENABLED = (
 # 5-layer stack AND an angled-pauldron cuirass: 2.0 gave the best overall -- stack
 # chest_plate spikiness 5.38->0.99 and penetration 1.22->0.68u, while a shoulder
 # pauldron IMPROVED 2.92->2.23 (3.0 rides too far and drags it to 3.43). See #layer-ride.
+# #ride-as-inequality -- OPT-IN. Make the layer ride RESTORE the authored
+# separation where it has closed, instead of reassigning every rider vertex.
+#
+# The ride currently sets `rider = its source position + the reference's
+# displacement`, which buys layer coherence by discarding the rider's own fit.
+# See `_ride_gap_deficit` for the three measured consequences; the headline is
+# that it moves layers that were already correct -- worth +0.374u of the 1.114u
+# by which a reported bust plate came off the breast -- and multiplies any
+# upstream perturbation by about seven on the way through.
+RIDE_INEQUALITY = os.environ.get(
+    "CBBE2UBE_RIDE_INEQUALITY", "").strip().lower() in (
+        "1", "true", "yes", "on")
+# Ceiling on a single restore. The deficit is a measured quantity, but a bad
+# correspondence at a rim can make it large and nonsensical, and this pass must
+# not be able to fling a vert. Same role as `ride_max` bounding the pairing.
+_RIDE_GAP_MAX = float(os.environ.get("CBBE2UBE_RIDE_GAP_MAX", "") or 1.0)
+
+# #authored-ride-order -- OPT-IN. Rank the ride stack by the AUTHOR's own
+# pairwise layer relation instead of by median distance to the body.
+#
+# The median is one global scalar answering a question that is local: on the
+# reported bodysuit it made a 774-vert bust plate the REFERENCE and had the
+# 15250-vert full bodysuit ride it, because the plate sits slightly tighter
+# than the suit's median over its legs and arms (1.341u vs 1.407u). Since the
+# reference is the only layer that keeps its own fit, that decides whose fit
+# survives -- and it also amplifies: measured on the slim variant's shoulder,
+# a perturbation upstream of the ride grew from +618 verts-inside-body with the
+# ride disabled to +4533 with it on, a factor of seven.
+# See `_authored_layer_depth` for what replaces it.
+AUTHORED_RIDE_ORDER = os.environ.get(
+    "CBBE2UBE_AUTHORED_RIDE_ORDER", "").strip().lower() in (
+        "1", "true", "yes", "on")
 _LAYER_RIDE_MAX = float(os.environ.get("CBBE2UBE_LAYER_RIDE_MAX", "2.0") or "2.0")
 # k-nearest reference verts blended per rider vert. >1 is REQUIRED: a k=1 (snap to
 # nearest) ride inherits a discontinuous displacement and ADDS spikes. See #layer-ride.
@@ -21598,6 +22665,33 @@ _LAYER_ORDER_ITERS = int(os.environ.get("CBBE2UBE_LAYER_ORDER_ITERS", "2") or "2
 # Feathering rounds for the correction field. MUST be > 0: a raw per-vert shove IS a
 # crinkle (measured 5.38 -> 6.09 spikiness unsmoothed). See #layer-order.
 _LAYER_ORDER_SMOOTH = int(os.environ.get("CBBE2UBE_LAYER_ORDER_SMOOTH", "2") or "2")
+
+
+# #relative-displacement-cap -- BUILT, MEASURED, REVERTED 2026-08-15.
+#
+# `project_collar_fine_tessellation` named it as the untried, "possibly simpler"
+# lever: cap each vert's displacement at k x its own mean incident edge, feather
+# the pull-back, and run it BEFORE the final anti-poke so the anti-poke can push
+# anything back out of the body. The ordering worked -- body penetration stayed
+# 0 in every arm -- but the cap itself REPRODUCES the failure of the
+# reweighting that was reverted for the collar, by a different route:
+#
+#     arm        edge p99  edge max  >10% strain  spike p99  FOLDED  INVERTED
+#     baseline    1.3796     5.700      11974      0.3394      586       81
+#     cap 2.0     1.4060     8.610      11607      0.3426        -        -
+#     cap 1.5     1.4131     7.838      11429      0.3456        -        -
+#     cap 1.0     1.3944     5.680      10797      0.3425      655      106
+#
+# Same signature as the reverted reweighting: the strained-edge COUNT improves
+# slightly while the WORST edge, p99, spikiness and FOLDS all get worse --
+# pulling the offenders back buys their neighbours' slack, and on a rim the
+# neighbours are where it shows. It also did NOT reduce what it was built for:
+# strap verts buried in the pants 3130 -> 3098, worst depth -0.226 -> -0.248.
+#
+# TWO INDEPENDENT ROUTES NOW FAIL THE SAME WAY, so treat the whole "hold fine
+# verts back" family as dead. The remaining DISTINCT lever from that memory is
+# the smoothing REACH (`CONFORM_STRETCH_LAMBDA` scaling with local edge length),
+# which changes how far the correction spreads rather than how much of it lands.
 
 
 def _smooth_vertex_field(vec: np.ndarray, tris, iters: int = 2,
@@ -21899,6 +22993,158 @@ def _ride_disp_barycentric(sv, base_src, base_fin, base_tris, ride_max):
         return None, None
 
 
+def _ride_gap_deficit(sv, fv, base_src, base_fin, base_tris, idx, d,
+                      ride_max=None, max_gain=None):
+    """How far each rider vert must move OUT to get its authored separation
+    from the layer beneath back. Returns an (n,3) displacement, or None.
+    #ride-as-inequality
+
+    The ride's original contract is an ASSIGNMENT -- `rider = its source
+    position + the reference's displacement` -- which reaches layer coherence by
+    throwing the rider's own fit away. Three measured consequences:
+
+      * the rider inherits the reference's errors wholesale. A perturbation
+        upstream of the ride grew ~7x through it (a `_0` shoulder went from +618
+        verts-inside-body with the ride off to +4533 with it on).
+      * coincident duplicates are welded to each other exactly, so a two-material
+        surface can never differ from its twin even where it should.
+      * it MOVES A LAYER THAT WAS ALREADY RIGHT. The bust plate the author seated
+        into the breast (0.281u, 19.8% of verts inside the skin) ships at 1.395u;
+        turning the ride off alone recovers it to 1.021u, so the assignment owns
+        +0.374u of that lift on its own.
+
+    The relationship the ride exists to protect is a SEPARATION, and a separation
+    is an inequality: layers must not converge past what the author authored.
+    Where the gap is intact the rider keeps every bit of its own fit -- including
+    its tangential position, which the assignment also overwrote.
+
+    ONE-SIDED, deliberately. This only ever pushes a rider OUT along the
+    reference's outward normal, never pulls a drifted layer back in. The mirror
+    (dragging an over-separated layer inward) is the same move
+    `_repair_layer_order` documents as BUILT AND REVERTED under
+    #containment-restore: it converts one order violation into the other and
+    measured worse on the validated occlusion score. So it is not rebuilt here.
+    """
+    ride_max = _LAYER_RIDE_MAX if ride_max is None else float(ride_max)
+    max_gain = _RIDE_GAP_MAX if max_gain is None else float(max_gain)
+    try:
+        if not len(base_tris):
+            return None
+        n_src = _vertex_normals_from_tris(base_src, base_tris)
+        n_fin = _vertex_normals_from_tris(base_fin, base_tris)
+        w = 1.0 / (d + 1e-6)
+        w /= w.sum(axis=1, keepdims=True)
+
+        def blend(a):
+            return (a[idx] * w[:, :, None]).sum(axis=1)
+
+        p_src, p_fin = blend(base_src), blend(base_fin)
+        u_src, u_fin = blend(n_src), blend(n_fin)
+        for u in (u_src, u_fin):
+            ln = np.linalg.norm(u, axis=1, keepdims=True)
+            u /= np.where(ln > 1e-9, ln, 1.0)
+
+        # The authored separation, and the one we currently have.
+        gap_src = np.einsum('ij,ij->i', sv - p_src, u_src)
+        gap_fin = np.einsum('ij,ij->i', fv - p_fin, u_fin)
+        deficit = gap_src - gap_fin
+
+        near = d[:, 0] <= ride_max
+        gain = np.clip(deficit, 0.0, max_gain)      # one-sided: out only
+        gain = np.where(near, gain, 0.0)
+        return u_fin * gain[:, None]
+    except Exception as _pe:
+        _note_pass_failure("_ride_gap_deficit", _pe)
+        return None
+
+
+def _authored_layer_depth(entries, near=None, agree_min=0.70,
+                          coincident_eps=1e-3, min_overlap=3):
+    """Stack depth per layer, read off the AUTHOR's own geometry.
+    #authored-ride-order
+
+    Replaces ranking by median distance to the body, which is one global scalar
+    standing in for a question that is local and pairwise -- and which inverts
+    on a perfectly ordinary piece. MEASURED on the reported bodysuit:
+
+        Suit Plates       median 1.341u    774 verts  z[87.9, 94.9]  <- REFERENCE
+        Suit              median 1.407u  15250 verts  z[63.7,116.8]  rides it
+
+    A 774-vert bust plate covering seven units of height became the reference
+    and the whole bodysuit rode it, because the plate happens to sit slightly
+    tighter than the suit's median over its legs and arms. Everything above the
+    reference is re-derived as `source_position + reference_displacement`, so
+    that ranking decides whose fit survives.
+
+    THE RELATION, not a scalar: for each pair, pair verts in the SOURCE and take
+    the signed offset along the OTHER shape's SOURCE normals -- the same measure
+    `_repair_layer_order` already uses, so the two cannot drift.
+
+    BOTH DIRECTIONS, decided by COVERAGE. The evidence is asymmetric and taking
+    one direction gets it wrong: on that piece `Suit -> Clavices Plates` reads
+    "suit outside plate" at 66% agreement (1896 suit verts land near the little
+    plate, including collar-BACK geometry with no real counterpart), while
+    `Clavices Plates -> Suit` reads "plate outside suit" at 90%. The shape more
+    fully covered by the other is the subset, and the subset is the one whose
+    verts all have a genuine counterpart -- so it asks the meaningful question.
+
+    COINCIDENT DUPLICATES tie instead of stacking. A median offset of ~0 over a
+    full overlap is one surface authored twice (two materials), not a layer, and
+    forcing an order on it makes one copy ride the other for no reason.
+
+    Returns {index: depth}, depth 0 = innermost. Equal depth = same layer.
+    """
+    near = _LAYER_ORDER_NEAR if near is None else float(near)
+    n = len(entries)
+    depth = {i: 0 for i in range(n)}
+    try:
+        from scipy.spatial import cKDTree
+    except Exception:
+        return None
+    prep = []
+    for e in entries:
+        v = np.asarray(e["sv"], np.float64)
+        nr = e.get("sn")
+        nr = None if nr is None else np.asarray(nr, np.float64)
+        if nr is None or nr.shape != v.shape or not np.isfinite(nr).all() \
+                or float(np.linalg.norm(nr, axis=1).max(initial=0.0)) < 1e-9:
+            # Source normals ship all-zero often enough that trusting them
+            # silently is how a comparison ends up reading 0.000 everywhere.
+            nr = _vertex_normals_from_tris(v, e["tris"])
+        if nr is None:
+            return None
+        prep.append((v, nr, cKDTree(v)))
+
+    def probe(ia, ib):
+        va, _, _ = prep[ia]
+        vb, nb, tb = prep[ib]
+        d, idx = tb.query(va)
+        m = d < near
+        if int(m.sum()) < min_overlap:
+            return 0.0, None, None
+        ai = np.where(m)[0]
+        s = np.einsum('ij,ij->i', va[ai] - vb[idx[ai]], nb[idx[ai]])
+        return float(m.mean()), float(np.median(s)), float((s > 0).mean())
+
+    for ia in range(n):
+        for ib in range(ia + 1, n):
+            cA, mA, gA = probe(ia, ib)
+            cB, mB, gB = probe(ib, ia)
+            if mA is None and mB is None:
+                continue
+            if mA is not None and (mB is None or cA >= cB):
+                med, agr, outer, inner = mA, gA, ia, ib
+            else:
+                med, agr, outer, inner = mB, gB, ib, ia
+            if abs(med) < coincident_eps:
+                continue                       # one surface twice -> tie
+            if med > 0 and agr >= agree_min:
+                depth[outer] += 1
+            elif med < 0 and (1.0 - agr) >= agree_min:
+                depth[inner] += 1
+    return depth
+
+
 def _ride_layers_on_reference(shape_jobs, body_verts=None,
                               ride_max: float = _LAYER_RIDE_MAX,
                               softbody_names=frozenset(),
@@ -21965,6 +23211,32 @@ def _ride_layers_on_reference(shape_jobs, body_verts=None,
         return 0
     ranked.sort(key=lambda t: t[0])
 
+    # #authored-ride-order. Re-rank by the authored pairwise relation, keeping
+    # the median as the tiebreak WITHIN a depth so shapes the author left
+    # genuinely unordered (and coincident duplicates) keep a stable order.
+    # Falls through to the median ranking if the relation cannot be built --
+    # never silently, because a ride on the wrong reference is the defect this
+    # exists to stop.
+    if AUTHORED_RIDE_ORDER:
+        try:
+            entries = [{"sv": sv,
+                        "sn": (np.asarray(j["src"].normals, np.float64)
+                               if j["src"].normals is not None else None),
+                        "tris": np.asarray(j["src"].tris,
+                                           np.int64).reshape(-1, 3)}
+                       for _d, j, sv, fv in ranked]
+            depth = _authored_layer_depth(entries)
+            if depth is None:
+                _note_pass_failure(
+                    "_authored_layer_depth",
+                    RuntimeError("no relation built; kept median ranking"))
+            else:
+                order = sorted(range(len(ranked)),
+                               key=lambda i: (depth[i], ranked[i][0]))
+                ranked = [ranked[i] for i in order]
+        except Exception as _pe:
+            _note_pass_failure("_authored_layer_depth", _pe)
+
     n_rebound = 0
     # Accumulated geometry already placed (innermost outward), in lockstep.
     ref_src = [ranked[0][2]]
@@ -22012,7 +23284,20 @@ def _ride_layers_on_reference(shape_jobs, body_verts=None,
             w /= w.sum(axis=1, keepdims=True)
             disp = (base_disp[idx] * w[:, :, None]).sum(axis=1)
             mask = d[:, 0] <= ride_max
-        if np.any(mask):
+        if RIDE_INEQUALITY:
+            # #ride-as-inequality. Restore the authored SEPARATION where it has
+            # closed, instead of reassigning the rider's position outright.
+            gain = _ride_gap_deficit(sv, fv, base_src, base_fin, base_tris,
+                                     idx, d)
+            if gain is not None:
+                cur = fv + gain
+                moved = np.linalg.norm(gain, axis=1) > 1e-9
+                if np.any(moved):
+                    j["verts"] = cur
+                    j["verts_modified"] = True
+                    n_rebound += int(moved.sum())
+                    fv = cur
+        elif np.any(mask):
             cur = fv.copy()
             # Move the rider by the (smoothly interpolated) displacement of the
             # geometry beneath it -> its SOURCE offset to that geometry is preserved.
@@ -22838,12 +24123,26 @@ def convert_nif_phase2(
                                 len(body_verts_for_p2))
                         except Exception:
                             _amp_conf = None
+                        # #derived-clearance: the clearance each slider TAKES
+                        # AWAY, per body vert, over the whole slider envelope.
+                        # Already computed for the anti-poke; conform's target
+                        # never consumed it. None when unavailable, which leaves
+                        # the blend path exactly as it was.
+                        try:
+                            _diff_conf = _cached_body_morph_differential(
+                                _find_ube_body_osd(), body_verts_for_p2,
+                                body_norms_for_p2)
+                        except Exception as _de:
+                            _note_pass_failure(
+                                "_cached_body_morph_differential/conform", _de)
+                            _diff_conf = None
                         override = conform_to_source_standoff(
                             _sv_body,
                             src_body_v_p2, src_body_n_p2,
                             override, body_verts_for_p2, body_norms_for_p2,
                             ube_body_nipple=body_nipple_for_p2,
                             morph_amplitude=_amp_conf,
+                            morph_differential=_diff_conf,
                             tris=np.asarray(s.tris, dtype=np.int64),
                             conform_margin=CONFORM_MARGIN,
                         )
@@ -22955,12 +24254,37 @@ def convert_nif_phase2(
             and _smp_rigging_is_structural_only(
                 s, set(ube_base_for_pass1.bone_names or [])
                 if ube_base_for_pass1 is not None else set()))
+        # #mixed-cloth-clearance -- a THIRD relax, per VERTEX rather than per
+        # shape. Admit a rigged shape that also carries cloth with NO chain
+        # weight, and protect the simulated part by restoring it after the pass
+        # (see the restore below). `_mix_sim` is the untouchable set.
+        _mix_sim = None
+        _mixed_relax = False
+        if MIXED_CLOTH_CLEARANCE and s.name not in hdt_softbody_names:
+            try:
+                _cwv = np.zeros(len(s.verts), dtype=np.float64)
+                for _b, _pr in (s.bone_weights or {}).items():
+                    if _actor_can_resolve_bone(_b):
+                        continue          # ordinary skeleton bone, not simulated
+                    for _vi, _w in _pr:
+                        _vi = int(_vi)
+                        if _vi < len(_cwv):
+                            _cwv[_vi] = max(_cwv[_vi], float(_w))
+                _sim = _cwv > MIXED_CLOTH_CHAIN_EPS
+                # Only relevant when the shape is genuinely MIXED. A wholly
+                # chain-driven shape stays excluded exactly as before.
+                if _sim.any() and not _sim.all():
+                    _mix_sim = _sim
+                    _mixed_relax = True
+            except Exception:
+                _mix_sim, _mixed_relax = None, False
         if (body_verts_for_p2 is not None and body_norms_for_p2 is not None
                 and (biped_slots & (BIPED_SLOT32_BIT | BIPED_SLOT49_BIT))
                 and s.name not in RESKIN_SKIP_NAMES
                 and s.name not in hdt_softbody_names
                 and (_smp_relax
                      or _structural_relax
+                     or _mixed_relax
                      or (s.name not in hdt_collider_names
                          and not _shape_has_hdt_smp_rigging(
                              s, set(ube_base_for_pass1.bone_names or [])
@@ -23031,6 +24355,27 @@ def convert_nif_phase2(
                     src_body_verts=src_body_v_p2,
                     src_body_normals=src_body_n_p2,
                     **_ap_kw)
+                # #mixed-cloth-clearance: hand every SIMULATED vertex straight
+                # back. The sim's authored rest state must be bit-identical --
+                # a cloth vert moved here starts frame one interpenetrating and
+                # FSMP resolves it with an impulse, which is the skirt-collapse
+                # family. Only zero-chain-weight cloth keeps the pass's result.
+                if _mix_sim is not None and override is not None:
+                    try:
+                        _ov = np.asarray(override, dtype=np.float64)
+                        _bv0 = np.asarray(base_v, dtype=np.float64)
+                        if len(_ov) == len(_mix_sim) == len(_bv0):
+                            _moved = int((np.linalg.norm(
+                                _ov - _bv0, axis=1) > 1e-4).sum())
+                            _ov[_mix_sim] = _bv0[_mix_sim]
+                            override = _ov
+                            _kept = int((~_mix_sim).sum())
+                            print(f"    [mixed-cloth] {s.name}: clearance on "
+                                  f"{_kept} non-simulated vert(s), "
+                                  f"{int(_mix_sim.sum())} simulated vert(s) "
+                                  f"restored ({_moved} moved by the pass)")
+                    except Exception as _me:
+                        _note_pass_failure("mixed-cloth-restore", _me)
                 _stage('antipoke', override)
                 # Clip-risk telemetry: verts still INSIDE the body after the
                 # final pass (deep verts past max_push, or capped regions) are
@@ -24178,7 +25523,8 @@ def convert_nif_phase2(
     # jiggle cloth beneath it, so the cloth swings out through it. Runs LAST of
     # the weight passes -- ON the FINAL follow split, which the matches above only
     # now settle -- and raises the plate's breast share to the cloth's. Default
-    # OFF (CBBE2UBE_BUST_PLATE_SYNC); a no-op that never loads the NIF when off.
+    # ON (CBBE2UBE_BUST_PLATE_SYNC=0 turns it off); a no-op that never loads the
+    # NIF when off.
     try:
         n_bps = _sync_bust_plate_follow_postwrite(dst_path)
         if n_bps:
