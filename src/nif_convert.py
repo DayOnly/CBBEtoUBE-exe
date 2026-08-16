@@ -8588,6 +8588,44 @@ def _is_leg_rigid_bone(bone_name: str) -> bool:
 # Chains anchored on the lower body (pelvis/thigh) work FLAT (actor-driven).
 _UPPER_BODY_ANCHOR_KEYWORDS = ("spine", "neck", "head", "clavicle", "shoulder")
 
+# #seed-spine-anchors -- OPT-IN, `CBBE2UBE_SEED_SPINE_ANCHORS=1`.
+#
+# SPINE is the one keyword above the arm argument does not cover. That argument
+# is explicitly about distance from the actor root: "an arm swings far from the
+# root -- so a flat-anchored sleeve holds a fixed pose in actor space". A spine
+# bone sits ON the torso axis and moves with the root much as the PELVIS does,
+# and pelvis flat-seeding is CONFIRMED GOOD in game (`#per-anchor-seed`, the
+# iron collapse). Clavicle and shoulder DO ride the arm and stay excluded, as do
+# neck and head.
+#
+# The defect it addresses, measured on the shipped pack after the 2026-08-15
+# reconvert -- chains whose GLOBAL is >5u from source, by the anchor they hang
+# from:
+#
+#     NPC Spine2   196 chains across 13 pieces
+#     NPC Spine1   104 chains across  7 pieces
+#     NPC Pelvis    29 chains across  3 pieces   (a SEPARATE anomaly: these
+#                                                 should already be seeded)
+#     Scene Root     8 chains across  7 pieces   (not a real anchor)
+#
+# So spine alone is 300 chains across 20 of the 28 affected pieces. Reported in
+# game as a fur chest piece collapsing on the breast: its `FurL`/`FurR` chains
+# hang from `NPC Spine2` and land 89.78u low -- source z 101.67, shipped z 12.00
+# -- while every pelvis-anchored chain on the same mesh is correct to 0.9u.
+#
+# OPT-IN because spine seeding is UNTESTED in game. Pelvis seeding is proven
+# good and arm seeding is proven bad; spine sits between them and only an
+# in-game verdict can place it.
+SEED_SPINE_ANCHORS = os.environ.get(
+    "CBBE2UBE_SEED_SPINE_ANCHORS", "").strip().lower() in (
+        "1", "true", "yes", "on")
+
+
+def _is_spine_anchor(bone_name: str) -> bool:
+    """Torso-axis anchor: moves with the root like the pelvis, unlike an arm.
+    Deliberately NOT clavicle/shoulder -- those ride the arm."""
+    return "spine" in (bone_name or "").lower()
+
 
 # Arm anchors are handled SEPARATELY from the list above, on purpose.
 #
@@ -15047,7 +15085,14 @@ def _seed_flat_chain_anchors(dst_nif, src_nif) -> int:
         # #per-anchor-seed. Whole-file OFF switch on ANY upper-body anchor. One
         # vestigial upper-body chain takes the pelvis down with it -- see the
         # flag. Opt-in decides per ANCHOR in the loop below instead.
+        # #seed-spine-anchors also implies the per-anchor path when every
+        # upper-body anchor in the file is a SPINE -- otherwise this whole-file
+        # return takes the file before the loop can seed anything, and the flag
+        # would read as inert.
+        _ub = [a for a in anchors if _is_upper_body_anchor(a)]
+        _spine_only = bool(_ub) and all(_is_spine_anchor(a) for a in _ub)
         if (not PER_ANCHOR_ANCHOR_SEED
+                and not (SEED_SPINE_ANCHORS and _spine_only)
                 and any(_is_upper_body_anchor(a) for a in anchors)):
             return 0
 
@@ -15060,7 +15105,12 @@ def _seed_flat_chain_anchors(dst_nif, src_nif) -> int:
             # the nested branch, not to abandon the pelvis beside it. With
             # PER_ANCHOR_ANCHOR_SEED off this is unreachable -- the early return
             # above already took the file -- so the default path is unchanged.
-            if _is_arm_anchor(a) or _is_upper_body_anchor(a):
+            # #seed-spine-anchors: a SPINE anchor is torso-axis and behaves like
+            # the pelvis, so it may be seeded when the opt-in is on. Arm,
+            # clavicle, shoulder, neck and head stay excluded either way.
+            if _is_arm_anchor(a) or (
+                    _is_upper_body_anchor(a)
+                    and not (SEED_SPINE_ANCHORS and _is_spine_anchor(a))):
                 continue
             cur, seen2 = a, set()
             while cur and cur not in seen2:

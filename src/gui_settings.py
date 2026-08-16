@@ -545,6 +545,23 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "the vertices carrying no physics weight; every simulated "
                     "vertex is put back exactly where the simulation expects "
                     "it."),
+    Setting("seed_spine_anchors", "Place chains that hang from the spine",
+            "Armor", "Physics chains (HDT-SMP)", default=False,
+            env="CBBE2UBE_SEED_SPINE_ANCHORS", invert=False,
+            hint="For fur, capes and mantles that hang off the chest or back "
+                 "and collapse downward.",
+            tooltip="Chains hanging from a spine bone are left unplaced, on the "
+                    "grounds that anything on the upper body has to swing with "
+                    "it. That is true of a sleeve on an arm, which swings far "
+                    "from the body's centre; it is not true of the spine, which "
+                    "sits on the body's own axis and moves much as the hips do "
+                    "-- and placing hip chains is already known good. Left "
+                    "unplaced, such a chain starts at chest height and lands "
+                    "near the floor: measured on a fur cuirass, its two chest "
+                    "chains sit about 90 units low while every hip chain on the "
+                    "same piece is correct. Affects 20 pieces in the pack. "
+                    "Shoulder, collar, neck and arm chains are still left "
+                    "alone."),
     Setting("chain_rest_lift", "Lift physics chains out of the body",
             "Armor", "Physics chains (HDT-SMP)", default=True,
             env="CBBE2UBE_NO_CHAIN_REST_LIFT", invert=True,
