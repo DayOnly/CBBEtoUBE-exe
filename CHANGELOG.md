@@ -2,6 +2,67 @@
 
 ## Unreleased
 
+### Fixed — physics cloth no longer falls away from the body, and the collider that caused it is kept
+
+Reported in game as legs sinking away from the body and falling forever, on
+vanilla iron armour. The standing workaround was to switch the added buttock
+collider off, which also gave up the buttock clipping it exists to fix. Both are
+kept now.
+
+**The cause was the collider's bone list, not its shape.** The collider copies the
+body's skinning wholesale, and that drags in the body's jiggle bones. The piece's
+own physics file never declares those bones, so half the collider's influences had
+no counterpart in the system it was registered into. Every collider the *author*
+ships is weighted only to bones that file declares — that is the rule the
+generated one broke. It now hands each undeclared bone's weight to the nearest
+declared parent on the actual skeleton, which leaves the collider in exactly the
+same place (the geometry comes out identical to the vertex) while giving the
+simulation something it can resolve. It fires only where the rule is actually
+broken: the piece this work was originally judged on redirects nothing, because
+its file already declares those bones.
+
+Found by removing the collider's *declaration* while leaving the shape in the
+mesh. The cloth settled, which put the fault in the registration rather than the
+geometry — no amount of measuring the mesh would have shown that.
+
+**A second, separate defect: every generated collider shipped with broken binds.**
+Adding a bone to a shape silently resets the bind transforms already on it, so
+building them one at a time left only the last bone correct — **174 of 176 shipped
+colliders**, sitting a median 72 units from the body at runtime against 0.02u for
+the authored ones. Now built the way the rest of the converter does it. Real and
+worth fixing on its own, but it was *not* what made the cloth fall; both had to be
+fixed.
+
+**The collider also sat too far off the skin.** Its 0.6u standoff had been tuned
+by eye against a collider that was misplaced at runtime the whole time, so that
+tuning measured nothing. It is now taken from where each piece's own rear cloth
+actually rests, capped so it can only ever come down, and floored so it never sits
+inside the skin. On a close-fitting piece that reported an inflated rear it drops
+to 0; on a flared skirt it is unchanged.
+
+### Added — two settings that were previously impossible to switch on
+
+Both were finished, verified in game, and unreachable: the converter reads its
+settings file, and a setting with no entry there cannot be turned on however it is
+described elsewhere. A full reconvert would have quietly run without them.
+
+- **Place each physics chain's anchor separately.** Anchors are placed in one pass
+  for a whole outfit, and that pass gave up entirely if any one chain hung from the
+  upper body. An outfit mixing a hip chain with a small chest chain — common — got
+  nothing placed, and every chain landed about 69 units low, at floor level.
+  Measured on vanilla iron armour: 38 chain nodes, most below the ground.
+- **Give the fitted parts of physics outfits body clearance.** Clearance is skipped
+  for anything carrying physics rigging, because moving simulated cloth fights the
+  simulation — but one piece often holds both a simulated skirt and an ordinary
+  fitted top, and the whole piece was skipped on account of the skirt. Across the
+  pack, **392 of 482 skipped pieces are mixed like this, 57% of their vertices
+  carry no physics weight at all, and 198 pieces have chest cloth that no clearance
+  could reach.** Only vertices with no physics weight are moved; every simulated
+  vertex is put back exactly where the simulation expects it.
+
+The anti-poke bust target is adjustable now as well. Raising it loosens the bust
+on most pieces, so it is left at its existing value.
+
 ### Fixed — bust layers no longer swing through each other, and a sheer layer sits on the skin again
 
 Two defects on the chest, both reported in game, both now default behaviour.
