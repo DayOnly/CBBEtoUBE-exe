@@ -117,6 +117,15 @@ KNOWN_PHASE2_ONLY = {
     # behaviour change and needs its own A/B plus the clearance counter-metric,
     # not a quiet edit. See the 2026-08-05 path-parity review.
     "_inflate_cloth_over_bust_butt": "OPEN: per-shape, no documented reason",
+    # #panel-rigidity. Per-shape, so it COULD run on the copy path -- it is here
+    # only because it is OPT-IN (`CBBE2UBE_PANEL_RIGIDITY`, default 0) and has
+    # not had its first in-game verdict, and wiring an unjudged pass into both
+    # paths doubles the blast radius of a mistake. THIS ENTRY IS A DEBT, NOT A
+    # BLESSING: wire it into the copy path BEFORE the default is ever flipped,
+    # or the two paths will split the pack -- the defect this file exists to
+    # catch.
+    "_weld_components": "OPT-IN #panel-rigidity, unjudged; wire into the copy "
+                        "path before any default flip",
 }
 
 

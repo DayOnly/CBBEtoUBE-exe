@@ -545,6 +545,26 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "the vertices carrying no physics weight; every simulated "
                     "vertex is put back exactly where the simulation expects "
                     "it."),
+    Setting("authored_ride_order",
+            "Stack layers in the order the author built them",
+            "Armor", "Fit and clearance", default=True,
+            env="CBBE2UBE_NO_AUTHORED_RIDE_ORDER", invert=True,
+            hint="For multi-layer outfits: decides which layer the rest of the "
+                 "outfit is fitted around.",
+            tooltip="Layered outfits are placed one layer at a time, starting "
+                    "from whichever layer sits closest to the body -- and every "
+                    "layer above it is rebuilt from that one, so it is the only "
+                    "layer that keeps its own fit. 'Closest' is currently the "
+                    "average distance to the body, which a narrow strap wins "
+                    "over the garment it is worn on top of: on a reported top, "
+                    "the waist belts became the base of the outfit and the "
+                    "bodysuit underneath was rebuilt from them. Measured across "
+                    "167 shipped layered pieces, that average picks a layer the "
+                    "outfit is actually worn UNDER on 39%% of them. This reads "
+                    "the over/under relation off the author's own mesh instead, "
+                    "which on a reported top took clipping into the body from "
+                    "790 vertices to 1. Confirmed in game. Turn it off only if "
+                    "a layered outfit looks worse than it did before."),
     Setting("seed_spine_anchors", "Place chains that hang from the spine",
             "Armor", "Physics chains (HDT-SMP)", default=False,
             env="CBBE2UBE_SEED_SPINE_ANCHORS", invert=False,

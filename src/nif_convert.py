@@ -22629,25 +22629,9 @@ LAYER_RIDE_ENABLED = (
 # 5-layer stack AND an angled-pauldron cuirass: 2.0 gave the best overall -- stack
 # chest_plate spikiness 5.38->0.99 and penetration 1.22->0.68u, while a shoulder
 # pauldron IMPROVED 2.92->2.23 (3.0 rides too far and drags it to 3.43). See #layer-ride.
-# #ride-as-inequality -- OPT-IN. Make the layer ride RESTORE the authored
-# separation where it has closed, instead of reassigning every rider vertex.
-#
-# The ride currently sets `rider = its source position + the reference's
-# displacement`, which buys layer coherence by discarding the rider's own fit.
-# See `_ride_gap_deficit` for the three measured consequences; the headline is
-# that it moves layers that were already correct -- worth +0.374u of the 1.114u
-# by which a reported bust plate came off the breast -- and multiplies any
-# upstream perturbation by about seven on the way through.
-RIDE_INEQUALITY = os.environ.get(
-    "CBBE2UBE_RIDE_INEQUALITY", "").strip().lower() in (
-        "1", "true", "yes", "on")
-# Ceiling on a single restore. The deficit is a measured quantity, but a bad
-# correspondence at a rim can make it large and nonsensical, and this pass must
-# not be able to fling a vert. Same role as `ride_max` bounding the pairing.
-_RIDE_GAP_MAX = float(os.environ.get("CBBE2UBE_RIDE_GAP_MAX", "") or 1.0)
-
-# #authored-ride-order -- OPT-IN. Rank the ride stack by the AUTHOR's own
-# pairwise layer relation instead of by median distance to the body.
+# #authored-ride-order -- DEFAULT ON since 2026-08-16. Rank the ride stack by
+# the AUTHOR's own pairwise layer relation instead of by median distance to the
+# body. Kill with `CBBE2UBE_NO_AUTHORED_RIDE_ORDER=1`.
 #
 # The median is one global scalar answering a question that is local: on the
 # reported bodysuit it made a 774-vert bust plate the REFERENCE and had the
@@ -22657,9 +22641,25 @@ _RIDE_GAP_MAX = float(os.environ.get("CBBE2UBE_RIDE_GAP_MAX", "") or 1.0)
 # survives -- and it also amplifies: measured on the slim variant's shoulder,
 # a perturbation upstream of the ride grew from +618 verts-inside-body with the
 # ride disabled to +4533 with it on, a factor of seven.
-# See `_authored_layer_depth` for what replaces it.
+#
+# WHY IT EARNED THE DEFAULT. Census over 167 shipped multi-layer pieces / 1747
+# authored pairs: the median ranking makes an OUTER layer the reference on 65 of
+# them (38.9%) and contradicts 33.5% of the author's own verdicts; this reads
+# 3.8%, all of it on the 23 pieces whose relation genuinely CYCLES. On a
+# reported 5-layer top it had the waist BELTS as the base of the stack with the
+# bodysuit riding them, and correcting that took verts-inside-body from 790 to 1
+# (141 -> 0 at pure defaults, 783 -> 1 on the other weight) while moving the
+# belts/corset contact TOWARD the author. It is the root cause the layer-ride
+# clamp, the coupled clamp, the joint solve and the ride-as-inequality were all
+# fighting downstream -- see project_layer_ride_discards_fit.
+#
+# CONFIRMED IN GAME 2026-08-16 on two pieces, one of them the previously
+# approved control: "they both look much better."
+#
+# See `_authored_layer_depth` for the relation and `_stack_depth_from_relation`
+# for why the depth is a longest path and not a count.
 AUTHORED_RIDE_ORDER = os.environ.get(
-    "CBBE2UBE_AUTHORED_RIDE_ORDER", "").strip().lower() in (
+    "CBBE2UBE_NO_AUTHORED_RIDE_ORDER", "").strip().lower() not in (
         "1", "true", "yes", "on")
 _LAYER_RIDE_MAX = float(os.environ.get("CBBE2UBE_LAYER_RIDE_MAX", "2.0") or "2.0")
 # k-nearest reference verts blended per rider vert. >1 is REQUIRED: a k=1 (snap to
@@ -22742,6 +22742,263 @@ _LAYER_ORDER_SMOOTH = int(os.environ.get("CBBE2UBE_LAYER_ORDER_SMOOTH", "2") or 
 # verts back" family as dead. The remaining DISTINCT lever from that memory is
 # the smoothing REACH (`CONFORM_STRETCH_LAMBDA` scaling with local edge length),
 # which changes how far the correction spreads rather than how much of it lands.
+
+
+# #panel-rigidity -- OPT-IN, `CBBE2UBE_PANEL_RIGIDITY=<0..1>` (0/unset = off).
+#
+# Armour that reads as LAYERED PLATES is routinely one shape holding many rigid
+# panels. The fit chain moves vertices individually, so a plate that should
+# travel as a unit gets STRETCHED, and the crisp authored edge between two
+# panels warps. Reported in game on a khajiit cuirass: "supposed to have a line
+# indented on that part of the armor, but when there are breasts the indent
+# heavily distorts".
+#
+# Measured on that piece -- 4084 verts, 12 connected components after welding.
+# Per component, the best RIGID fit (rotation + translation, no scale) from
+# source to converted, and the residual it cannot explain:
+#
+#     panel      verts   z     rigid MOVE   DEFORM mean   p95
+#     bust        2062  96.7      0.674        0.740     1.453   <- the reported one
+#     lower        645  77.5      0.426        0.917     1.339
+#     10 plates  80-165 54-74   0.26-1.23    0.10-0.44  0.12-0.92
+#
+# The bust panel is DEFORMED MORE THAN IT IS MOVED. A plate that merely
+# travelled would read ~0.
+#
+# THE TRADE, stated because it is the whole risk: a plate moved rigidly cannot
+# follow a larger bust -- fully rigid trades a distorted indent for a clearance
+# defect. So this is PARTIAL: each panel keeps its own rigid motion and gives up
+# only `strength` of its deformation. It also runs BEFORE the final anti-poke, so
+# anything pulled back into the body is pushed clear again -- the same ordering
+# that held for the (reverted) displacement cap, where body penetration stayed 0
+# in every arm.
+#
+# SIMULATED cloth is excluded per VERTEX, not per shape: a component carrying any
+# chain weight is left alone entirely, because rigidifying cloth would fight the
+# solver (#mixed-cloth-clearance records the same distinction).
+PANEL_RIGIDITY = float(os.environ.get("CBBE2UBE_PANEL_RIGIDITY", "") or 0.0)
+# A component smaller than this is a stud or a buckle, not a panel; a rigid fit
+# over a handful of verts is noise.
+PANEL_RIGIDITY_MIN_VERTS = int(
+    os.environ.get("CBBE2UBE_PANEL_RIGIDITY_MIN_VERTS", "24") or "24")
+
+
+def _weld_components(verts, tris, tol: float = 1e-3):
+    """Connected components over WELDED topology. Welding first is required:
+    a seam splits one panel into many and a COMPONENT is not an OBJECT until
+    coincident verts are joined (#component-is-not-an-object). Returns a label
+    array, or None on failure."""
+    try:
+        from scipy.spatial import cKDTree as _KD
+        v = np.asarray(verts, dtype=np.float64)
+        t = np.asarray(tris, dtype=np.int64)
+        if len(v) < 3 or t.size == 0:
+            return None
+        parent = np.arange(len(v))
+
+        def find(x):
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]
+                x = parent[x]
+            return x
+
+        def union(x, y):
+            rx, ry = find(x), find(y)
+            if rx != ry:
+                parent[max(rx, ry)] = min(rx, ry)
+
+        for x, y in _KD(v).query_pairs(tol, output_type='ndarray'):
+            union(int(x), int(y))
+        for tri in t:
+            union(int(tri[0]), int(tri[1]))
+            union(int(tri[1]), int(tri[2]))
+        return np.array([find(i) for i in range(len(v))])
+    except Exception:
+        return None
+
+
+def _partial_rigid_panels(src_v, dst_v, tris, strength: float,
+                          skip_mask=None, min_verts: int = 24):
+    """Give each rigid PANEL back `strength` of its lost rigidity.
+
+    For every connected component: fit the best rigid transform source->current
+    (Procrustes, no scale) and move the panel a fraction of the way from its
+    deformed state toward that rigid result. `strength` 0 leaves the mesh alone,
+    1 makes each panel fully rigid.
+
+    `skip_mask` marks vertices that must not be touched (simulated cloth).
+    Returns (verts, panels_touched, worst_deform_before). Best-effort: returns
+    the input unchanged on any failure.
+    """
+    try:
+        s = np.asarray(src_v, dtype=np.float64)
+        d = np.asarray(dst_v, dtype=np.float64)
+        if strength <= 0 or s.shape != d.shape or len(s) < 3:
+            return dst_v, 0, 0.0
+        lab = _weld_components(s, tris)
+        if lab is None:
+            return dst_v, 0, 0.0
+        out = d.copy()
+        touched = 0
+        worst = 0.0
+        for u in np.unique(lab):
+            m = lab == u
+            if int(m.sum()) < max(12, int(min_verts)):
+                continue
+            # SIMULATED cloth is excluded per VERTEX, not per component. A
+            # cuirass panel routinely carries a small chain-driven flap -- on the
+            # reported piece, 125 of 4084 verts -- and skipping the whole
+            # component for it disqualified the 2062-vert bust panel that was
+            # the entire point. Fit the panel from its RIGID verts only, move
+            # only those, and leave every simulated vert exactly where the
+            # solver expects it (#mixed-cloth-clearance draws the same line).
+            free = m if skip_mask is None else (m & ~skip_mask)
+            if int(free.sum()) < max(12, int(min_verts)):
+                continue                       # mostly cloth -- not a plate
+            P, Q = s[free], d[free]
+            Pc = P - P.mean(0)
+            Qc = Q - Q.mean(0)
+            U, S, Vt = np.linalg.svd(Pc.T @ Qc)
+            det = np.sign(np.linalg.det(Vt.T @ U.T))
+            R = Vt.T @ np.diag([1.0, 1.0, det]) @ U.T
+            rigid = (R @ Pc.T).T + Q.mean(0)   # panel's own motion, shape kept
+            resid = np.linalg.norm(Q - rigid, axis=1)
+            worst = max(worst, float(resid.max()))
+            out[free] = Q + (rigid - Q) * float(strength)
+            touched += 1
+        return out, touched, worst
+    except Exception:
+        return dst_v, 0, 0.0
+
+
+# THREE TOGGLES DELETED HERE, 2026-08-16. DO NOT REBUILD THEM.
+#
+#   `#panel-rigid-push`      CBBE2UBE_PANEL_RIGID_PUSH
+#   `#panel-facet-rigidity`  CBBE2UBE_PANEL_FACET (+ _LO/_HI)
+#   `#panel-rigid-antipoke`  CBBE2UBE_PANEL_RIGID_ANTIPOKE (+ _PUSH_MAX)
+#
+# All three tried to keep a plate straight by redistributing displacement inside
+# `_rigidify_within_clearance`, and all three measured FLAT on the reported
+# cuirass -- front deform p95 0.804 / 0.807 / 0.807 against a live 0.805.
+#
+# THEY WERE NOT WRONG IDEAS; THEY WERE MEASURED AGAINST A LIE. This pass was
+# already writing a PERFECT rigid panel (stage deform 0.000) and
+# `_ride_layers_on_reference` was overwriting it afterwards with
+# `source + displacement_of_the_layer_beneath` -- see `#panel-rigid-ride` below
+# and project_layer_ride_discards_fit. Nothing tuned here could ever have shown
+# up in the file. The fix belongs at the ride, which is where it now lives.
+#
+# So: do not re-add a lever in this function to chase panel straightness without
+# first confirming the ride is not overwriting the verts in question. The
+# `[panel-ride]` log line reports exactly that per shape.
+#
+# (Historic note kept because it is still true of the pass that remains:
+# `_rigidify_within_clearance` resolves a clash by giving BACK deformation --
+# it reduces the panel's rigidity until nothing sinks into the body, so a flat
+# plate over a larger bust still ends up ROUNDED, just less so.)
+
+
+# SHAPE FACT WORTH KEEPING from the deleted facet work: the cuirass's largest
+# component is not a plate but a closed BAND -- x -11..+11, y -11.5..+9.6, 1054
+# verts at the FRONT and 772 at the BACK. That is why translating a panel clear
+# of the bust cannot work: it drives the back half into the spine. Any future
+# "just push it out" idea has to answer that first.
+
+# HOW THE RE-ROUNDING WAS FOUND, recorded because the same question will be
+# asked again about some other pass. A temporary "write every panel fully rigid,
+# no guard at all" switch separates two failures that look identical from
+# outside: the guard being the limiter (forcing it makes the panel straight) vs
+# something downstream re-deforming (forcing it changes nothing). Here the pass
+# wrote a PERFECT rigid panel and the NIF still shipped it rounded, which named
+# `#panel-rigid-ride` as the culprit in one run. Note it cannot be diagnosed by
+# re-running the pass on the output (project_chain_welded_torso) -- the stage
+# dump vs the WRITTEN NIF is the comparison that works.
+
+
+def _rigidify_within_clearance(src_v, cur_v, tris, body_v, body_n,
+                               strength: float, skip_mask=None,
+                               min_verts: int = 24):
+    """Rigidify each panel as far as it can go WITHOUT losing body clearance.
+
+    `_partial_rigid_panels` has to run before the anti-poke, so the anti-poke
+    then re-deforms every panel it pushes -- measured ceiling: even at full
+    strength the residual only falls to ~0.98u from 1.45u. This runs AFTER, and
+    recovers the rest where there is room for it.
+
+    The strength is solved PER PANEL, not per vertex: bisect the largest s in
+    [0, strength] whose result leaves no vertex deeper inside the body than the
+    anti-poke already left it. A per-VERTEX clamp would be a crinkle (the
+    `_LAYER_ORDER_SMOOTH` lesson); one scalar per panel moves the plate as a
+    unit, so the panel keeps its shape and no step is introduced.
+
+    Returns (verts, panels_touched, mean_strength_used).
+    """
+    try:
+        from scipy.spatial import cKDTree as _KD
+        s = np.asarray(src_v, dtype=np.float64)
+        d = np.asarray(cur_v, dtype=np.float64)
+        if strength <= 0 or s.shape != d.shape or len(s) < 3:
+            return cur_v, 0, 0.0
+        if body_v is None or body_n is None or not len(body_v):
+            return cur_v, 0, 0.0
+        lab = _weld_components(s, tris)
+        if lab is None:
+            return cur_v, 0, 0.0
+        tree = _KD(np.asarray(body_v, dtype=np.float64))
+        bv = np.asarray(body_v, dtype=np.float64)
+        bn = np.asarray(body_n, dtype=np.float64)
+
+        def clear_of(pts):
+            _, j = tree.query(pts)
+            return np.einsum('ij,ij->i', pts - bv[j], bn[j])
+
+        out = d.copy()
+        touched = 0
+        used = []
+        for u in np.unique(lab):
+            m = lab == u
+            if int(m.sum()) < max(12, int(min_verts)):
+                continue
+            free = m if skip_mask is None else (m & ~skip_mask)
+            if int(free.sum()) < max(12, int(min_verts)):
+                continue
+            P, Q = s[free], d[free]
+            Pc, Qc = P - P.mean(0), Q - Q.mean(0)
+            U, S, Vt = np.linalg.svd(Pc.T @ Qc)
+            det = np.sign(np.linalg.det(Vt.T @ U.T))
+            R = Vt.T @ np.diag([1.0, 1.0, det]) @ U.T
+            rigid = (R @ Pc.T).T + Q.mean(0)
+            # PER-VERTEX floor, not the panel's worst vertex. Guarding only the
+            # minimum let every OTHER vertex sink in: measured on the reported
+            # piece, verts inside the body went 55 -> 105 while the worst depth
+            # barely moved. The floor each vertex must still clear is its own
+            # current clearance, or 0 if the anti-poke already left it inside --
+            # so nothing NEWLY enters the body and nothing already in gets
+            # deeper.
+            floor = np.minimum(clear_of(Q), 0.0) - 1e-4
+
+            def feasible(sv):
+                return bool(np.all(clear_of(Q + (rigid - Q) * sv) >= floor))
+
+            lo, hi = 0.0, float(strength)
+            if feasible(hi):
+                best = hi                      # full strength costs nothing
+            else:
+                for _ in range(10):            # bisect the feasible strength
+                    mid = 0.5 * (lo + hi)
+                    if feasible(mid):
+                        lo = mid
+                    else:
+                        hi = mid
+                best = lo
+            if best <= 1e-3:
+                continue
+            out[free] = Q + (rigid - Q) * best
+            touched += 1
+            used.append(best)
+        return out, touched, (float(np.mean(used)) if used else 0.0)
+    except Exception:
+        return cur_v, 0, 0.0
 
 
 def _smooth_vertex_field(vec: np.ndarray, tris, iters: int = 2,
@@ -23043,71 +23300,6 @@ def _ride_disp_barycentric(sv, base_src, base_fin, base_tris, ride_max):
         return None, None
 
 
-def _ride_gap_deficit(sv, fv, base_src, base_fin, base_tris, idx, d,
-                      ride_max=None, max_gain=None):
-    """How far each rider vert must move OUT to get its authored separation
-    from the layer beneath back. Returns an (n,3) displacement, or None.
-    #ride-as-inequality
-
-    The ride's original contract is an ASSIGNMENT -- `rider = its source
-    position + the reference's displacement` -- which reaches layer coherence by
-    throwing the rider's own fit away. Three measured consequences:
-
-      * the rider inherits the reference's errors wholesale. A perturbation
-        upstream of the ride grew ~7x through it (a `_0` shoulder went from +618
-        verts-inside-body with the ride off to +4533 with it on).
-      * coincident duplicates are welded to each other exactly, so a two-material
-        surface can never differ from its twin even where it should.
-      * it MOVES A LAYER THAT WAS ALREADY RIGHT. The bust plate the author seated
-        into the breast (0.281u, 19.8% of verts inside the skin) ships at 1.395u;
-        turning the ride off alone recovers it to 1.021u, so the assignment owns
-        +0.374u of that lift on its own.
-
-    The relationship the ride exists to protect is a SEPARATION, and a separation
-    is an inequality: layers must not converge past what the author authored.
-    Where the gap is intact the rider keeps every bit of its own fit -- including
-    its tangential position, which the assignment also overwrote.
-
-    ONE-SIDED, deliberately. This only ever pushes a rider OUT along the
-    reference's outward normal, never pulls a drifted layer back in. The mirror
-    (dragging an over-separated layer inward) is the same move
-    `_repair_layer_order` documents as BUILT AND REVERTED under
-    #containment-restore: it converts one order violation into the other and
-    measured worse on the validated occlusion score. So it is not rebuilt here.
-    """
-    ride_max = _LAYER_RIDE_MAX if ride_max is None else float(ride_max)
-    max_gain = _RIDE_GAP_MAX if max_gain is None else float(max_gain)
-    try:
-        if not len(base_tris):
-            return None
-        n_src = _vertex_normals_from_tris(base_src, base_tris)
-        n_fin = _vertex_normals_from_tris(base_fin, base_tris)
-        w = 1.0 / (d + 1e-6)
-        w /= w.sum(axis=1, keepdims=True)
-
-        def blend(a):
-            return (a[idx] * w[:, :, None]).sum(axis=1)
-
-        p_src, p_fin = blend(base_src), blend(base_fin)
-        u_src, u_fin = blend(n_src), blend(n_fin)
-        for u in (u_src, u_fin):
-            ln = np.linalg.norm(u, axis=1, keepdims=True)
-            u /= np.where(ln > 1e-9, ln, 1.0)
-
-        # The authored separation, and the one we currently have.
-        gap_src = np.einsum('ij,ij->i', sv - p_src, u_src)
-        gap_fin = np.einsum('ij,ij->i', fv - p_fin, u_fin)
-        deficit = gap_src - gap_fin
-
-        near = d[:, 0] <= ride_max
-        gain = np.clip(deficit, 0.0, max_gain)      # one-sided: out only
-        gain = np.where(near, gain, 0.0)
-        return u_fin * gain[:, None]
-    except Exception as _pe:
-        _note_pass_failure("_ride_gap_deficit", _pe)
-        return None
-
-
 def _authored_layer_depth(entries, near=None, agree_min=0.70,
                           coincident_eps=1e-3, min_overlap=3):
     """Stack depth per layer, read off the AUTHOR's own geometry.
@@ -23142,11 +23334,14 @@ def _authored_layer_depth(entries, near=None, agree_min=0.70,
     full overlap is one surface authored twice (two materials), not a layer, and
     forcing an order on it makes one copy ride the other for no reason.
 
+    The pairwise verdicts are then ORDERED by `_stack_depth_from_relation`, not
+    counted -- see there for why counting contradicted an eighth of the verdicts
+    this function had itself produced.
+
     Returns {index: depth}, depth 0 = innermost. Equal depth = same layer.
     """
     near = _LAYER_ORDER_NEAR if near is None else float(near)
     n = len(entries)
-    depth = {i: 0 for i in range(n)}
     try:
         from scipy.spatial import cKDTree
     except Exception:
@@ -23176,29 +23371,680 @@ def _authored_layer_depth(entries, near=None, agree_min=0.70,
         s = np.einsum('ij,ij->i', va[ai] - vb[idx[ai]], nb[idx[ai]])
         return float(m.mean()), float(np.median(s)), float((s > 0).mean())
 
+    rel = {}
     for ia in range(n):
         for ib in range(ia + 1, n):
             cA, mA, gA = probe(ia, ib)
             cB, mB, gB = probe(ib, ia)
             if mA is None and mB is None:
                 continue
+            # `med` is a's offset measured along b's normals, so med > 0 reads
+            # "a sits on b". Keep a and b named for what they are -- calling
+            # them outer/inner before the verdict is decided is how the sign
+            # branches below get read backwards.
             if mA is not None and (mB is None or cA >= cB):
-                med, agr, outer, inner = mA, gA, ia, ib
+                med, agr, a, b = mA, gA, ia, ib
             else:
-                med, agr, outer, inner = mB, gB, ib, ia
+                med, agr, a, b = mB, gB, ib, ia
             if abs(med) < coincident_eps:
                 continue                       # one surface twice -> tie
             if med > 0 and agr >= agree_min:
-                depth[outer] += 1
+                rel[(a, b)] = abs(med)         # a sits ON b
             elif med < 0 and (1.0 - agr) >= agree_min:
-                depth[inner] += 1
+                rel[(b, a)] = abs(med)         # b sits ON a
+    return _stack_depth_from_relation(n, rel)
+
+
+def _stack_depth_from_relation(n, rel):
+    """Order the pairwise verdicts into a stack depth. #authored-ride-order
+
+    `rel` maps (outer, inner) -> the authored separation that decided the pair.
+
+    LONGEST PATH, not a count. The first version did `depth[outer] += 1` -- how
+    many layers each shape is outside of -- which is not an ordering of the
+    relation at all, and MEASURED it contradicted an eighth of the verdicts the
+    same function had just produced. Over 120 shipped multi-layer pieces
+    carrying 1246 decided pairs:
+
+        order                       pairs contradicted   pieces affected
+        live median distance          437  (35.1%)        86 / 120
+        depth as a COUNT              169  (13.6%)        51 / 120
+        depth as LONGEST PATH          50  ( 4.0%)        20 / 120
+
+    A count ties a shape that sits on five narrow trims with one that sits on a
+    single dress, and then ignores a direct verdict between those two. Longest
+    path cannot: a layer is placed strictly after everything it is authored to
+    sit on.
+
+    THE 4% RESIDUAL IS NOT SLACK -- it is exactly the 50 edges broken below, on
+    exactly the 20 pieces whose relation contains a CYCLE. A sash that crosses
+    over a coat at the front and tucks under it at the back genuinely has no
+    consistent stack order, and no linear ranking can satisfy every verdict on
+    such a piece. Where a cycle must be cut, cut it at the WEAKEST edge -- the
+    pair with the smallest authored separation, i.e. the verdict we have least
+    evidence for -- by adding edges strongest-first and dropping any that would
+    close a loop.
+    """
+    below = {i: [] for i in range(n)}          # below[x] = layers x sits on
+
+    def _reaches(a, b, seen):
+        if a == b:
+            return True
+        if a in seen:
+            return False
+        seen.add(a)
+        return any(_reaches(x, b, seen) for x in below[a])
+
+    for (outer, inner) in sorted(rel, key=lambda k: -rel[k]):
+        if _reaches(inner, outer, set()):
+            continue          # would close a cycle against stronger evidence
+        below[outer].append(inner)
+
+    depth = {}
+
+    def _depth(i):
+        if i in depth:
+            return depth[i]
+        depth[i] = 0          # re-entry guard; acyclic by construction above
+        v = 0
+        for j in below[i]:
+            v = max(v, _depth(j) + 1)
+        depth[i] = v
+        return v
+
+    for i in range(n):
+        _depth(i)
     return depth
+
+
+# #panel-rigid-ride -- OPT-IN, `CBBE2UBE_PANEL_RIGID_RIDE=1`.
+#
+# THIS IS WHERE THE PANEL WAS BEING RE-ROUNDED, and it explains why three
+# separate rigidity levers all measured flat at ~0.80u of front deformation
+# while the pass itself was doing exactly what it was told.
+#
+# MEASURED, forced-rigid diagnostic on the reported cuirass, front facet of the
+# 2062-vert bust panel:
+#
+#     stage s08_panel_rigidity_post      deform p95 0.000   (perfectly rigid)
+#     stage s10_final                    deform p95 0.000   (still rigid)
+#     WRITTEN NIF                        deform p95 0.560   <-- 3024 of 4084
+#                                        verts moved at write time, mean 0.43u
+#     WRITTEN NIF, CBBE2UBE_NO_LAYER_RIDE=1
+#                                        deform p95 0.000   strain >10% 0.0%
+#
+# The ride is not subtly degrading the panel; it is DISCARDING the fit outright
+# for every vert it touches -- `cur[mask] = sv[mask] + disp[mask]` sets the
+# rider from its SOURCE position plus the displacement of the layer beneath.
+# Nothing any earlier pass did to those verts survives.
+#
+# Which also hands us the fix for free. Since the ridden position is
+# `source + displacement`, making the displacement CONSTANT across a panel
+# yields the AUTHORED panel under a pure translation -- rigid by construction,
+# not by approximation, and "a straight piece instead of rounded" exactly as
+# asked. The layer still rides out coherently, which is what the ride is for;
+# it just rides as a plate instead of as 2062 independent points.
+#
+# NOT A LICENCE TO DISABLE THE RIDE. Turning it off scores well here and is
+# known to make roughness WORSE overall (project_layer_ride), so the panel-aware
+# form is the only acceptable version of this.
+#
+# WHOLE COMPONENTS ONLY. A component the ride covers only partly would get a
+# constant displacement on the covered verts and a smooth field on the rest,
+# putting a step INSIDE one connected surface. Between components a step is
+# invisible -- they share no vertex, and the boundary is the authored edge
+# between plates -- so the coverage gate is what keeps this from tearing.
+PANEL_RIGID_RIDE = os.environ.get(
+    "CBBE2UBE_PANEL_RIGID_RIDE", "").strip().lower() in (
+        "1", "true", "yes", "on")
+_PANEL_RIDE_COVERAGE = float(
+    os.environ.get("CBBE2UBE_PANEL_RIDE_COVERAGE", "") or 0.9)
+# WHERE in the panel's displacement spread to sit the plate, as a quantile along
+# the panel's own ride direction. 0.5 is the plain mean: the plate lands in the
+# middle of what its verts individually wanted, so the half that wanted to move
+# further out end up INSIDE the body -- measured 83 -> 149 verts inside on the
+# reported piece. Raising it slides the whole plate outward toward what its
+# most-displaced verts asked for, trading standoff for clearance. This is the
+# straight-plate trade made adjustable rather than assumed.
+_PANEL_RIDE_Q = float(os.environ.get("CBBE2UBE_PANEL_RIDE_Q", "") or 0.5)
+
+
+_PANEL_RIDE_PUSH_MAX = float(
+    os.environ.get("CBBE2UBE_PANEL_RIDE_PUSH_MAX", "") or 1.5)
+
+
+# How much a panel may be uniformly GROWN to clear the body, when translating it
+# cannot. 1.0 forbids it (translation only).
+#
+# 1.04 IS NOT AN ARBITRARY MIDPOINT. Measured on the reported cuirass, the LIVE
+# pipeline already grows that panel to scale 1.038 all by itself -- it just gets
+# there by stretching the plate unevenly instead of sizing it. So a 4% cap ships
+# the plate at the size it ships at today; what changes is that the growth is
+# uniform. The full sweep, front facet of the bust panel:
+#
+#   cap      scale   rigid p95   SIMILARITY p95   strain>10%   inside   worst
+#   live     1.038     0.805         0.443           9.3%        83     -0.78
+#   1.00     1.001     0.196         0.189           2.4%       149     -1.26
+#   1.02     1.020     0.338         0.150           2.4%       113     -1.08
+#   1.04     1.039     0.677         0.250           3.5%        89     -0.91
+#   1.08     1.077     1.334         0.587           5.8%        53     -0.55
+#
+# Read the SIMILARITY column for shape and `inside` for clipping; the rigid
+# column charges uniform growth as if it were distortion (see `sim_resid` in the
+# scratch metric). 1.04 is the only setting that improves shape (0.443 -> 0.250)
+# without giving up clearance against the build that ships today.
+#
+# Growing further is NOT monotone in shape: at 1.08 the enlarged panel starts
+# overlapping neighbouring layers and the layer-ORDER repair, which runs after
+# this, bends it back -- similarity 0.189 -> 0.587. That is why the cap exists
+# at all rather than "grow until clear".
+_PANEL_RIDE_SCALE_MAX = float(
+    os.environ.get("CBBE2UBE_PANEL_RIDE_SCALE_MAX", "") or 1.04)
+
+
+# Only verts actually NEAR another garment surface can be said to be inside it.
+# Beyond this a nearest-VERTEX normal is arbitrary -- a vert on the far side of
+# the torso resolves to some rim vertex whose normal points wherever the rim
+# faces. On an 18k-vert plate against a narrow belt strip that noise IS the
+# measurement: an ungated read showed a plate driving 1641 -> 3189 verts into
+# the belts, and gating showed the true figure was ZERO in every arm. It sent me
+# after the wrong pair. Not needed for the BODY, which is a closed surface that
+# encloses every garment vert, so its nearest-vertex normal is always meaningful.
+_LAYER_NEAR = 2.0
+
+
+def _penetration_delta(base_pts, cand_pts, kd, ov, on, near=None):
+    """(NET change in verts inside `ov`, how much deeper the worst got).
+
+    RELATIVE to what would otherwise ship, never absolute -- armour layers
+    overlap heavily by design, so an absolute penetration count says nothing
+    about whether a change is an improvement.
+
+    NET, and that is not a detail. Counting only verts that go clear -> inside,
+    without crediting the ones that go inside -> clear, is a one-sided metric
+    that reads any reshuffle as a regression. It rejected a panel whose layer
+    contacts all IMPROVED (into the pauldrons 446 -> 353, into the choker
+    574 -> 385, into the layer beneath 538 -> 529) because a minority of its
+    verts moved the other way. A pass that cannot see its own improvements will
+    decline every one of them.
+    """
+    db, jb = kd.query(base_pts)
+    cb = np.einsum('ij,ij->i', base_pts - ov[jb], on[jb])
+    dc, jc = kd.query(cand_pts)
+    cc = np.einsum('ij,ij->i', cand_pts - ov[jc], on[jc])
+    if near is not None:
+        cb = np.where(db < near, cb, 1.0)
+        cc = np.where(dc < near, cc, 1.0)
+    return (int(np.sum(cc < 0.0)) - int(np.sum(cb < 0.0)),
+            float(max(0.0, cb.min() - cc.min())))
+
+
+def _panel_fit_out_of_body(pts, c, kd, body_v, body_n):
+    """Get one rigid panel out of the body WITHOUT bending it.
+
+    Two shape-preserving moves, tried in that order:
+
+      1. TRANSLATE. Free -- the panel keeps its exact size and shape. Works for
+         an open plate, and only for an open plate.
+      2. GROW uniformly about the panel's own centroid. A closed BAND cannot be
+         translated clear at all: pushing the chest off the bust drives the back
+         half into the spine, so the search runs away and hits its cap. Measured
+         on the reported cuirass -- worst penetration -1.26u, translation
+         rejected, panel left inside. A uniform scale is still a similarity, so
+         the plate stays exactly as flat/straight as it was authored; it just
+         becomes the size that fits over a larger body, which is what an
+         armourer would actually do.
+
+    Returns the panel's final POSITIONS (translation alone is not enough to
+    express a scale), or None to leave the panel where it is.
+    """
+    try:
+        cur = np.asarray(c, dtype=np.float64).copy()
+
+        def clear_at(q):
+            _, jj = kd.query(q)
+            return np.einsum('ij,ij->i', q - body_v[jj], body_n[jj]), jj
+
+        q = pts + cur
+        clr, jj = clear_at(q)
+        if not np.any(clr < 0.0):
+            return None                       # already clear: touch nothing
+        # --- 1. translation --------------------------------------------------
+        total = 0.0
+        tq = q
+        for _ in range(6):
+            clr, jj = clear_at(tq)
+            bad = clr < 0.0
+            if not np.any(bad):
+                return tq
+            step = float(-clr[bad].min())
+            if step <= 1e-4:
+                return tq
+            nout = body_n[jj][bad].mean(0)
+            nn = float(np.linalg.norm(nout))
+            if nn <= 1e-6:
+                break
+            total += step
+            if total > _PANEL_RIDE_PUSH_MAX:
+                break                          # a band: translation runs away
+            tq = tq + (nout / nn) * step
+        # --- 2. uniform growth ------------------------------------------------
+        if _PANEL_RIDE_SCALE_MAX <= 1.0:
+            return None
+        ctr = q.mean(0)
+        rel = q - ctr
+
+        def grown(k):
+            return ctr + rel * k
+
+        hi = float(_PANEL_RIDE_SCALE_MAX)
+        clr_hi, _ = clear_at(grown(hi))
+        if np.any(clr_hi < 0.0):
+            # Even the largest permitted growth does not fully clear it. Take it
+            # anyway: growth is monotone in clearance, so this is strictly the
+            # best available, and a partly-fixed plate beats a bent one.
+            return grown(hi)
+        lo = 1.0
+        for _ in range(12):                    # smallest growth that clears
+            mid = 0.5 * (lo + hi)
+            c_mid, _ = clear_at(grown(mid))
+            if np.any(c_mid < 0.0):
+                lo = mid
+            else:
+                hi = mid
+        return grown(hi)
+    except Exception:
+        return None
+
+
+# ACCEPTANCE BUDGET. A rigidified panel may not make body clearance materially
+# worse than what would otherwise ship. Without this the pass freezes panels it
+# CANNOT fit clear -- `_panel_fit_out_of_body` returns best-effort growth even
+# when the growth fails, so a body-hugging inner layer gets frozen half inside
+# the body. Measured on a second piece: a 3353-vert corset went 469 -> 1534
+# verts inside, worst -0.37 -> -1.16u, while the outer plate on the same piece
+# improved. One number cannot tell those apart; a per-panel budget can.
+#
+# The two pieces measured separate by more than an order of magnitude, so these
+# are not knife-edge values -- newly-inside as a fraction of the panel:
+#     outer chest plate (WANT)   ~0.5%   deepened 0.13u
+#     inner corset      (REJECT) ~32%    deepened 0.79u
+# Calibrated on exactly two pieces, so widen only with a measurement.
+_PANEL_RIDE_MAX_NEW_INSIDE = float(
+    os.environ.get("CBBE2UBE_PANEL_RIDE_MAX_NEW_INSIDE", "") or 0.03)
+_PANEL_RIDE_MAX_DEEPEN = float(
+    os.environ.get("CBBE2UBE_PANEL_RIDE_MAX_DEEPEN", "") or 0.35)
+
+
+# #ride-body-clamp -- OPT-IN, `CBBE2UBE_RIDE_BODY_CLAMP=1`.
+#
+# THE RIDE PUTS GARMENTS INSIDE THE BODY, and on every piece measured it is the
+# dominant source of body clipping in the finished mesh:
+#
+#     piece              ride ON   ride OFF
+#     ruby   corset          469        0
+#     ruby   top             560        0
+#     khajiit cuirass          92        8
+#
+# 1029 of one piece's 1031 body-inside verts, and 84 of another's 92. The
+# authored corset is 100% clear of its source body (worst +0.16u) and ours ships
+# 469 verts inside.
+#
+# Cause is the ride's assignment itself: `cur = source + disp_of_layer_beneath`
+# discards the entire fit chain for every vert it touches -- the ANTI-POKE's
+# clearance work included -- and nothing downstream re-checks the body. It
+# concentrates at the WAIST because that is where the UBE body is widest
+# relative to the source (+0.23u at the waist, +1.64u at the low waist), so that
+# is where the discarded push mattered most.
+#
+# NOT FIXABLE BY DISABLING THE RIDE: off is on record as making surface
+# roughness worse, and it is what keeps layers from crossing. Instead clamp its
+# OUTPUT -- pull each vert back toward the position the fit chain gave it, by
+# the minimum needed to restore the clearance that position had.
+#
+# PUSH OUT ALONG THE BODY NORMAL -- do NOT blend back toward the fitted
+# position. That was the first form and it MEASURED WORSE: reverting a vert
+# toward where the fit chain had it undoes the ride's TANGENTIAL placement,
+# which is the layer coherence itself. Body-inside fell 1031 -> 17 while the
+# layers came apart -- corset into the fabric 18 -> 208, belts into the fabric
+# 46 -> 176, z-fight contacts up across the piece.
+#
+# Pushing along the body normal fixes the penetration and leaves the ride's
+# tangential placement untouched, so the stack stays coherent. It is the same
+# operation the anti-poke performs, run after the pass that was discarding it --
+# which is arguably where it always belonged.
+#
+# THE PUSH IS SMOOTHED, and that is not optional: a raw per-vertex push is a
+# crinkle (the `_LAYER_ORDER_SMOOTH` lesson). `_smooth_push_field` feathers it
+# over the mesh and re-floors at the per-vert requirement each iteration, so
+# smoothing can never reopen a poke.
+#
+# STILL OPT-IN, AND STILL UNDECIDED. `#authored-ride-order` removes most of this
+# defect on the piece it was tuned on (790 -> 1) but NOT across a 12-piece
+# layered sweep, where the two available metrics disagree in sign. So the clamp
+# is kept rather than retired with the joint solve and the inequality form.
+RIDE_BODY_CLAMP = os.environ.get(
+    "CBBE2UBE_RIDE_BODY_CLAMP", "").strip().lower() in ("1", "true", "yes", "on")
+_RIDE_CLAMP_MAX = float(os.environ.get("CBBE2UBE_RIDE_CLAMP_MAX", "") or 2.0)
+# How close an outer layer must be to the layer beneath to inherit its lift. A
+# pauldron floating well above a cuirass shares no surface with it and must not
+# be dragged along.
+_RIDE_CLAMP_COUPLE = float(
+    os.environ.get("CBBE2UBE_RIDE_CLAMP_COUPLE", "") or 3.0)
+
+
+# How far a lift propagates to the layers sitting on top of it. TIGHT on
+# purpose: an earlier attempt coupled layers at 3.0u and dragged half the piece.
+_RIDE_LIFT_PROP = float(
+    os.environ.get("CBBE2UBE_RIDE_LIFT_PROP", "") or 1.0)
+
+
+def _propagate_lift(ranked, lifts, stats=None):
+    """Carry each layer's body-lift up into the layers resting on it.
+
+    The ride only moves an outer layer where its own ride mask reaches, so a
+    layer lifted out of the body can rise straight into a neighbour that was
+    never told to follow. Measured on the reported piece: the corset lifted
+    0.398u while the belts over it moved 0.022u, and the corset came up through
+    them. User: "the belts now clip heavy into the corset."
+
+    Propagates the ACTUAL APPLIED LIFT, not a recomputed requirement, and only
+    to layers placed AFTER the lifted one, within `_RIDE_LIFT_PROP`. Both
+    differences matter: an earlier version recomputed a need and coupled at
+    3.0u, which dragged geometry that shared no surface at all.
+    """
+    from scipy.spatial import cKDTree as _KDp
+    for i in range(len(ranked)):
+        j = ranked[i][1]
+        try:
+            v = np.asarray(j["verts"], dtype=np.float64)
+            inherit = np.zeros_like(v)
+            mag = np.zeros(len(v))
+            for k in range(i):
+                rec = lifts.get(k)
+                if rec is None:
+                    continue
+                pre, lift = rec
+                d, jj = _KDp(pre).query(v)
+                lm = np.linalg.norm(lift[jj], axis=1)
+                take = (d < _RIDE_LIFT_PROP) & (lm > mag)
+                if np.any(take):
+                    inherit[take] = lift[jj][take]
+                    mag[take] = lm[take]
+            if not np.any(mag > 1e-4):
+                continue
+            t = np.asarray(j["src"].tris, dtype=np.int64).reshape(-1, 3)
+            try:
+                inherit = np.asarray(_smooth_vertex_field(inherit, t),
+                                     dtype=np.float64)
+            except Exception:
+                pass
+            j["verts"] = v + inherit
+            j["verts_modified"] = True
+            if stats is not None:
+                stats["propagated"] = stats.get("propagated", 0) + int(
+                    np.sum(mag > 1e-4))
+        except Exception as e:
+            if stats is not None:
+                stats.setdefault("errors", []).append(repr(e))
+
+
+def _ride_body_clamp_one(v, tris, kd, body_v, body_n, stats=None):
+    """Lift ONE layer out of the body along the body normal.
+
+    MUST BE CALLED INLINE, as each layer is placed -- not as a post-pass over
+    the finished stack. The ride derives every outer layer's displacement from
+    the geometry beneath it, so a layer lifted DURING the ride is a layer the
+    outer ones then ride on and follow. Lifting everything afterwards gives them
+    nothing to follow: measured on the same piece and the same lift, inline
+    scored `corset -> top` 77 and the post-pass form 241. Same arithmetic, and
+    a 3x difference purely from where it sits in the sequence.
+    """
+    try:
+        v = np.asarray(v, dtype=np.float64)
+        t = np.asarray(tris, dtype=np.int64).reshape(-1, 3)
+        if v.ndim != 2 or len(v) < 3 or not t.size:
+            return v
+        _, jb = kd.query(v)
+        need = np.clip(-np.einsum('ij,ij->i', v - body_v[jb], body_n[jb]),
+                       0.0, _RIDE_CLAMP_MAX)
+        if not np.any(need > 1e-4):
+            return v
+        push = np.asarray(_smooth_push_field(need, need, t), dtype=np.float64)
+        push = np.maximum(push, need)          # never reopen what it fixed
+        if stats is not None:
+            stats["clamped"] = stats.get("clamped", 0) + int(np.sum(need > 1e-4))
+            stats["clamp_max"] = max(stats.get("clamp_max", 0.0),
+                                     float(need.max()))
+        return v + body_n[jb] * push[:, None]
+    except Exception as e:
+        if stats is not None:
+            stats.setdefault("errors", []).append(repr(e))
+        return v
+
+
+
+
+def _stack_probe(shape_jobs, verts_by_name):
+    """(name, verts, normals, kdtree) for every garment shape in a placed stack.
+
+    Built ONCE from a baseline ride so a panel can be judged against the WHOLE
+    piece. The ride's own `base_fin` reference only ever holds the layers
+    BENEATH the current one -- the outer layers have not been placed yet -- so a
+    panel that punches UP into an outer layer is invisible to it. Measured: a
+    rigidified chest plate went 1641 -> 3188 verts inside the belts ABOVE it
+    while every beneath-test passed.
+    """
+    out = []
+    for j in shape_jobs:
+        try:
+            nm = j["src"].name
+            v = verts_by_name.get(nm)
+            if v is None or len(v) < 12:
+                continue
+            t = np.asarray(j["src"].tris, dtype=np.int64).reshape(-1, 3)
+            if not len(t):
+                continue
+            n = _vertex_normals_from_tris(np.asarray(v, dtype=np.float64), t)
+            from scipy.spatial import cKDTree as _KDs
+            out.append((nm, np.asarray(v, dtype=np.float64),
+                        np.asarray(n, dtype=np.float64),
+                        _KDs(np.asarray(v, dtype=np.float64))))
+        except Exception:
+            continue
+    return out
+
+
+def _panel_rigid_disp(src_v, tris, disp, mask, min_verts: int,
+                      body_v=None, body_n=None, stats=None, base_v=None,
+                      stack=None, self_name=None):
+    """Flatten the ride's displacement to one constant per rigid panel.
+
+    Returns a displacement field: unchanged everywhere except on welded
+    components that the ride covers (>= `_PANEL_RIDE_COVERAGE` of their verts),
+    which get their own mean. Returns `disp` untouched on any failure -- never
+    worse than not doing it.
+
+    CLEARANCE. The ride runs after the anti-poke and overwrites it, so a plate
+    made rigid here re-enters the body wherever the body is fuller than the
+    authored plate -- measured 83 -> 149 verts inside on the reported piece.
+    Given a body, the panel's constant is then pushed OUTWARD as a unit until
+    nothing is inside, which is the whole point of doing this rigidly: one
+    translation fixes the plate without bending it back into the shape the user
+    is complaining about. Bounded by `_PANEL_RIDE_PUSH_MAX` so a panel that
+    would need an absurd push stays put rather than flying off the body.
+    """
+    try:
+        s = np.asarray(src_v, dtype=np.float64)
+        d = np.asarray(disp, dtype=np.float64)
+        m = np.asarray(mask, dtype=bool)
+        if s.shape != d.shape or len(m) != len(s):
+            return disp, None
+        lab = _weld_components(s, np.asarray(tris, dtype=np.int64))
+        if lab is None:
+            return disp, None
+        _kd = None
+        if body_v is not None and body_n is not None:
+            try:
+                from scipy.spatial import cKDTree as _KDp
+                _kd = _KDp(np.asarray(body_v, dtype=np.float64))
+                body_v = np.asarray(body_v, dtype=np.float64)
+                body_n = np.asarray(body_n, dtype=np.float64)
+            except Exception:
+                _kd = None
+        # Everything else in the piece, at its baseline placement -- layers
+        # ABOVE this one included, which is the half the ride's own reference
+        # cannot supply.
+        others = [x for x in (stack or []) if x[0] != self_name]
+        # What would otherwise ship for these verts: the plain ride's result on
+        # the ridden ones, the fit chain's on the rest. This is the baseline the
+        # acceptance budget below judges each panel against.
+        base = None
+        if base_v is not None:
+            try:
+                base = np.asarray(base_v, dtype=np.float64).copy()
+                if base.shape == s.shape:
+                    base[m] = s[m] + d[m]
+                else:
+                    base = None
+            except Exception:
+                base = None
+        out = d.copy()
+        force = np.zeros(len(s), dtype=bool)
+        for u in np.unique(lab):
+            comp = lab == u
+            n = int(comp.sum())
+            if n < max(12, int(min_verts)):
+                continue
+            sel = comp & m
+            if stats is not None:
+                stats["seen"] = stats.get("seen", 0) + 1
+            if int(sel.sum()) < _PANEL_RIDE_COVERAGE * n:
+                if stats is not None:      # COUNT what is excluded, never 0/0
+                    stats["partial"] = stats.get("partial", 0) + 1
+                continue          # partly-ridden panel: a step would land INSIDE it
+            if stats is not None:
+                stats["flat"] = stats.get("flat", 0) + 1
+            # THE WHOLE COMPONENT MOVES, not just the ridden part of it.
+            #
+            # The coverage gate admits a panel at 90%, so up to a tenth of it can
+            # sit outside the ride mask -- and those verts would otherwise keep
+            # their per-VERTEX fit while the other nine tenths moved as a plate.
+            # That is a STEP along the boundary between them, and it lands on the
+            # parts furthest from the layer beneath: the waist and the UNDER-BUST.
+            # User, on the first build that shipped this: "the underside still
+            # looks a little off". Measured, front of the panel, similarity
+            # residual p95 -- under-bust 0.554 and waist 0.868 against 0.186 /
+            # 0.244 for the same build with no growth, because growth widens the
+            # very step it was creating. They belong to one physical plate; move
+            # them with it.
+            sel = comp
+            c = d[sel].mean(0)
+            if _PANEL_RIDE_Q != 0.5:
+                # Slide the plate along its OWN ride direction to the requested
+                # quantile of what its verts individually wanted. Only the
+                # component along that direction is re-picked; the tangential
+                # mean is kept, so the plate does not skew sideways.
+                nrm = float(np.linalg.norm(c))
+                if nrm > 1e-9:
+                    u_dir = c / nrm
+                    proj = d[sel] @ u_dir
+                    c = c + u_dir * float(
+                        np.quantile(proj, _PANEL_RIDE_Q) - proj.mean())
+            cand = s[sel] + c                      # flattened, before fitting
+            if _kd is not None:
+                if stats is not None:
+                    _, _j0 = _kd.query(cand)
+                    _c0 = np.einsum('ij,ij->i',
+                                    cand - body_v[_j0], body_n[_j0])
+                    stats["min_clear"] = min(stats.get("min_clear", 9e9),
+                                             float(_c0.min()))
+                _q = _panel_fit_out_of_body(s[sel], c, _kd, body_v, body_n)
+                if _q is not None:
+                    # A scale cannot be expressed as one constant, so the panel
+                    # gets a per-vertex displacement here. It is still a
+                    # SIMILARITY of the authored panel, not a per-vertex fit.
+                    cand = _q
+                    if stats is not None:
+                        stats["fitted"] = stats.get("fitted", 0) + 1
+                elif stats is not None:
+                    stats["no_push"] = stats.get("no_push", 0) + 1
+                # THE PASS MUST BE ABLE TO DECLINE. `_panel_fit_out_of_body`
+                # returns best-effort growth even when the growth does NOT
+                # clear, so without this a panel it cannot fix still gets
+                # frozen -- half inside the body, which is worse than leaving
+                # the per-vertex fit alone. Judge the candidate against what
+                # would otherwise ship, per panel, and back out if it loses.
+                if base is not None:
+                    new_in, deepen = _penetration_delta(
+                        base[sel], cand, _kd, body_v, body_n)
+                    # AND EVERY OTHER LAYER OF THE PIECE. The ride exists to
+                    # keep a stack coherent -- each layer holding its authored
+                    # offset to its neighbour at EVERY point. A constant per
+                    # panel holds only the AVERAGE offset, so where a
+                    # neighbouring layer bulges the plate stops following and
+                    # the two cross. Body clearance is blind to this: both
+                    # shapes can be perfectly outside the body and still pass
+                    # through each other. User: "it does help yes but the
+                    # problem is it creates issues with the layers of the
+                    # armor."
+                    #
+                    # AGAINST THE WHOLE STACK, not just the layers beneath. A
+                    # beneath-only test passed this plate while it drove 1641 ->
+                    # 3188 verts into the belts ABOVE it.
+                    #
+                    # RELATIVE, never absolute: these layers overlap heavily BY
+                    # DESIGN (the authored plate already sits 1743 verts inside
+                    # the belts), so the only meaningful question is whether WE
+                    # made it worse.
+                    layer_in, layer_worst = 0, 0.0
+                    _blame = None
+                    for _onm, _ov, _on, _okd in others:
+                        _di, _dw = _penetration_delta(
+                            base[sel], cand, _okd, _ov, _on,
+                            near=_LAYER_NEAR)
+                        if _di > 0 and (_blame is None or _di > _blame[1]):
+                            _blame = (_onm, _di)
+                        layer_in += max(0, _di)
+                        layer_worst = max(layer_worst, _dw)
+                    if stats is not None:
+                        stats["stack"] = len(others)
+                        if _blame is not None:
+                            stats["worst_pair"] = max(
+                                stats.get("worst_pair", ("", 0)), _blame,
+                                key=lambda x: x[1])
+                    budget = _PANEL_RIDE_MAX_NEW_INSIDE * n
+                    if (new_in > budget or layer_in > budget
+                            or deepen > _PANEL_RIDE_MAX_DEEPEN):
+                        if stats is not None:
+                            stats["declined"] = stats.get("declined", 0) + 1
+                            stats["declined_worst"] = max(
+                                stats.get("declined_worst", 0.0), deepen)
+                            if layer_in > budget:
+                                stats["declined_layer"] = stats.get(
+                                    "declined_layer", 0) + 1
+                        continue           # leave this panel entirely alone
+            elif stats is not None:
+                stats["no_body"] = stats.get("no_body", 0) + 1
+            out[sel] = cand - s[sel]
+            force |= comp
+        return out, force
+    except Exception as e:
+        # NEVER SILENT. `stats` is mutated as the loop runs, so a throw AFTER
+        # the counters were filled printed a healthy-looking "N ridden rigidly,
+        # 0 DECLINED" while the caller actually got the plain ride back. That
+        # cost a wrong diagnosis: the piece read as unchanged for no reason.
+        if stats is not None:
+            stats["error"] = repr(e)
+        return disp, None
 
 
 def _ride_layers_on_reference(shape_jobs, body_verts=None,
                               ride_max: float = _LAYER_RIDE_MAX,
                               softbody_names=frozenset(),
-                              collider_names=frozenset()):
+                              collider_names=frozenset(),
+                              body_norms=None, enable_panels=True,
+                              stack=None):
     """Ride a multi-layer garment stack coherently so its layers can't cross.
 
     Operates on pass-1 `shape_jobs`. Ranks the eligible layers innermost-first by
@@ -23288,6 +24134,19 @@ def _ride_layers_on_reference(shape_jobs, body_verts=None,
             _note_pass_failure("_authored_layer_depth", _pe)
 
     n_rebound = 0
+    # #ride-body-clamp: one body tree for every rider, built once.
+    _body_kd = None
+    _cst = {}
+    _lifts = {}      # ride-order index -> (pre-lift verts, lift vector)
+    if RIDE_BODY_CLAMP and body_verts is not None and body_norms is not None:
+        try:
+            from scipy.spatial import cKDTree as _KDb
+            body_verts = np.asarray(body_verts, dtype=np.float64)
+            body_norms = np.asarray(body_norms, dtype=np.float64)
+            if body_verts.shape == body_norms.shape and len(body_verts):
+                _body_kd = _KDb(body_verts)
+        except Exception:
+            _body_kd = None
     # Accumulated geometry already placed (innermost outward), in lockstep.
     ref_src = [ranked[0][2]]
     ref_fin = [ranked[0][3]]
@@ -23300,7 +24159,7 @@ def _ride_layers_on_reference(shape_jobs, body_verts=None,
     except Exception:
         ref_tris.append(np.zeros((0, 3), dtype=np.int64))
     _voff = [len(ranked[0][2])]
-    for _d, j, sv, fv in ranked[1:]:
+    for _ri, (_d, j, sv, fv) in enumerate(ranked[1:], start=1):
         base_src = np.concatenate(ref_src)
         base_fin = np.concatenate(ref_fin)
         base_disp = base_fin - base_src          # the reference DISPLACEMENT field
@@ -23334,27 +24193,56 @@ def _ride_layers_on_reference(shape_jobs, body_verts=None,
             w /= w.sum(axis=1, keepdims=True)
             disp = (base_disp[idx] * w[:, :, None]).sum(axis=1)
             mask = d[:, 0] <= ride_max
-        if RIDE_INEQUALITY:
-            # #ride-as-inequality. Restore the authored SEPARATION where it has
-            # closed, instead of reassigning the rider's position outright.
-            gain = _ride_gap_deficit(sv, fv, base_src, base_fin, base_tris,
-                                     idx, d)
-            if gain is not None:
-                cur = fv + gain
-                moved = np.linalg.norm(gain, axis=1) > 1e-9
-                if np.any(moved):
-                    j["verts"] = cur
-                    j["verts_modified"] = True
-                    n_rebound += int(moved.sum())
-                    fv = cur
-        elif np.any(mask):
+        if np.any(mask):
             cur = fv.copy()
             # Move the rider by the (smoothly interpolated) displacement of the
             # geometry beneath it -> its SOURCE offset to that geometry is preserved.
-            cur[mask] = sv[mask] + disp[mask]
+            _rd = disp
+            _apply = mask
+            if PANEL_RIGID_RIDE and enable_panels:
+                _st = {}
+                _rd, _force = _panel_rigid_disp(
+                    sv, j["src"].tris, disp, mask,
+                    PANEL_RIGIDITY_MIN_VERTS,
+                    body_v=body_verts, body_n=body_norms, stats=_st,
+                    base_v=fv, stack=stack, self_name=j["src"].name)
+                if _force is not None and np.any(_force):
+                    # A rigidified panel moves WHOLE. Assigning only `mask` here
+                    # would leave its un-ridden tenth behind at a per-vertex fit
+                    # and reintroduce the step this exists to remove.
+                    _apply = mask | _force
+                if _st.get("seen"):
+                    import sys as _sys
+                    print(f"    [panel-ride] {j['src'].name}: "
+                          f"{_st.get('flat', 0)} of {_st['seen']} panel(s) "
+                          f"ridden rigidly ({_st.get('partial', 0)} only "
+                          f"partly ridden), {_st.get('fitted', 0)} fitted "
+                          f"clear, {_st.get('no_push', 0)} already clear, "
+                          f"{_st.get('declined', 0)} DECLINED"
+                          + (f" ({_st.get('declined_layer', 0)} for crossing "
+                             f"another layer, worst deepen "
+                             f"{_st['declined_worst']:.2f}u)"
+                             if _st.get("declined") else "")
+                          + f", stack {_st.get('stack', 0)}"
+                          + (f", worst pair -> {_st['worst_pair'][0]} "
+                             f"+{_st['worst_pair'][1]}"
+                             if _st.get("worst_pair") else "")
+                          + (f"  ** DISCARDED: {_st['error']} **"
+                             if _st.get("error") else "")
+                          + (", NO BODY" if _st.get("no_body") else "")
+                          + (f", min clearance {_st['min_clear']:.2f}u"
+                             if "min_clear" in _st else ""),
+                          file=_sys.stderr)
+            cur[_apply] = sv[_apply] + _rd[_apply]
+            if RIDE_BODY_CLAMP and _body_kd is not None:
+                _pre = cur
+                cur = _ride_body_clamp_one(cur, j["src"].tris, _body_kd,
+                                           body_verts, body_norms, _cst)
+                if cur is not _pre:
+                    _lifts[_ri] = (_pre.copy(), cur - _pre)
             j["verts"] = cur
             j["verts_modified"] = True
-            n_rebound += int(mask.sum())
+            n_rebound += int(_apply.sum())
             fv = cur
         ref_src.append(sv)
         ref_fin.append(fv)
@@ -23364,6 +24252,33 @@ def _ride_layers_on_reference(shape_jobs, body_verts=None,
         except Exception:
             ref_tris.append(np.zeros((0, 3), dtype=np.int64))
         _voff.append(len(sv))
+    # #ride-body-clamp. The per-layer lift runs INLINE in the loop above -- see
+    # `_ride_body_clamp_one`, placement in the sequence is worth 3x on the layer
+    # metric. Two things remain once every layer is placed.
+    if RIDE_BODY_CLAMP and _body_kd is not None:
+        # 1. The innermost layer is never a rider, so the inline clamp never
+        #    reaches it. It has nothing above it to disturb.
+        try:
+            _j0 = ranked[0][1]
+            _pre0 = np.asarray(_j0["verts"], dtype=np.float64)
+            _new0 = _ride_body_clamp_one(
+                _pre0, _j0["src"].tris, _body_kd, body_verts,
+                body_norms, _cst)
+            if _new0 is not _pre0:
+                _lifts[0] = (_pre0.copy(), _new0 - _pre0)
+            _j0["verts"] = _new0
+            _j0["verts_modified"] = True
+        except Exception as _pe:
+            _cst.setdefault("errors", []).append(repr(_pe))
+        # 2. Carry every lift up into whatever rests on it.
+        _propagate_lift(ranked, _lifts, _cst)
+        if _cst.get("clamped"):
+            import sys as _sys
+            print(f"  [ride-clamp] lifted {_cst['clamped']} vert(s) out of the "
+                  f"body (deepest {_cst.get('clamp_max', 0.0):.2f}u)"
+                  + (f"  ** {len(_cst['errors'])} FAILED: "
+                     f"{_cst['errors'][0]} **" if _cst.get("errors") else ""),
+                  file=_sys.stderr)
     return n_rebound
 
 
@@ -24235,6 +25150,38 @@ def convert_nif_phase2(
                 _stage('snap_legacy', override)
             except Exception as e:
                 failed.append((f"{s.name}:snap", repr(e)))
+        # #panel-rigidity. Give layered PLATES back the rigidity the per-vertex
+        # fit took off them, before the anti-poke below can push anything clear
+        # again. See the constant for the measurements and the trade.
+        # bound here, not inside the branch: the post-anti-poke half reads it and
+        # a shape can reach one block without the other.
+        _skip = None
+        if PANEL_RIGIDITY > 0 and override is not None and _sv_body is not None:
+            try:
+                try:
+                    _cw = np.zeros(len(s.verts), dtype=np.float64)
+                    for _b, _pr in (s.bone_weights or {}).items():
+                        if _actor_can_resolve_bone(_b):
+                            continue
+                        for _vi, _w in _pr:
+                            _vi = int(_vi)
+                            if _vi < len(_cw):
+                                _cw[_vi] = max(_cw[_vi], float(_w))
+                    _skip = _cw > MIXED_CLOTH_CHAIN_EPS
+                except Exception:
+                    _skip = None
+                _pv, _np_, _wd = _partial_rigid_panels(
+                    _sv_body, override, np.asarray(s.tris, dtype=np.int64),
+                    PANEL_RIGIDITY, skip_mask=_skip,
+                    min_verts=PANEL_RIGIDITY_MIN_VERTS)
+                if _np_:
+                    override = _pv
+                    _stage('panel_rigidity', override)
+                    print(f"    [panel-rigidity] {s.name}: {_np_} panel(s) "
+                          f"re-rigidified at {PANEL_RIGIDITY:.2f} "
+                          f"(worst deformation was {_wd:.3f}u)")
+            except Exception as _pe:
+                _note_pass_failure("panel-rigidity", _pe)
         # FINAL anti-poke: push body-slot armor clear of the injected body.
         # Runs LAST in body space so nothing undoes it; skips soft-body cloth
         # and HDT-SMP physics shapes (moving verts would disturb the sim).
@@ -24427,6 +25374,28 @@ def convert_nif_phase2(
                     except Exception as _me:
                         _note_pass_failure("mixed-cloth-restore", _me)
                 _stage('antipoke', override)
+                # #panel-rigidity, second half. Anti-poke re-deforms every panel
+                # it pushes, which is what capped the pre-pass at ~0.98u of
+                # residual. Recover the rest where there is clearance for it --
+                # per PANEL, never per vertex, and never at the cost of a
+                # vertex the anti-poke just pushed clear.
+                if (PANEL_RIGIDITY > 0 and override is not None
+                        and _sv_body is not None):
+                    try:
+                        _rv, _rn, _rs = _rigidify_within_clearance(
+                            _sv_body, override,
+                            np.asarray(s.tris, dtype=np.int64),
+                            body_verts_for_p2, body_norms_for_p2,
+                            PANEL_RIGIDITY, skip_mask=_skip,
+                            min_verts=PANEL_RIGIDITY_MIN_VERTS)
+                        if _rn:
+                            override = _rv
+                            _stage('panel_rigidity_post', override)
+                            print(f"    [panel-rigidity] {s.name}: {_rn} panel(s) "
+                                  f"re-rigidified AFTER anti-poke, mean "
+                                  f"strength {_rs:.2f} of {PANEL_RIGIDITY:.2f}")
+                    except Exception as _pe2:
+                        _note_pass_failure("panel-rigidity/post", _pe2)
                 # Clip-risk telemetry: verts still INSIDE the body after the
                 # final pass (deep verts past max_push, or capped regions) are
                 # the residual in-game clip risk. Greppable in the run log.
@@ -25025,10 +25994,43 @@ def convert_nif_phase2(
     # rides what's beneath it, preserving source offsets). See _ride_layers_on_reference.
     if shape_jobs:
         try:
+            # #panel-rigid-ride needs the WHOLE placed stack to judge a panel
+            # against, and the ride only ever has the layers BENEATH the one it
+            # is working on. So ride TWICE: once plain, to get a complete
+            # baseline placement, then again with panels enabled and each panel
+            # judged against that baseline. Two runs of a pass that costs ~0.5%
+            # of the conversion; the alternative is a panel that punches into an
+            # outer layer with nothing able to see it.
+            _stack = None
+            if PANEL_RIGID_RIDE:
+                _snap = {}
+                try:
+                    for _j in shape_jobs:
+                        _v = _j.get("verts")
+                        if _v is not None:
+                            _snap[id(_j)] = (np.array(_v, copy=True),
+                                             _j.get("verts_modified", False))
+                    _ride_layers_on_reference(
+                        shape_jobs, body_verts=body_verts_for_p2,
+                        softbody_names=hdt_softbody_names,
+                        collider_names=hdt_collider_names,
+                        body_norms=body_norms_for_p2, enable_panels=False)
+                    _stack = _stack_probe(
+                        shape_jobs,
+                        {j["src"].name: j["verts"] for j in shape_jobs
+                         if j.get("verts") is not None})
+                finally:
+                    # RESTORE, always. Leaving the baseline ride's output in
+                    # place would silently ship a double-ridden stack.
+                    for _j in shape_jobs:
+                        _s = _snap.get(id(_j))
+                        if _s is not None:
+                            _j["verts"], _j["verts_modified"] = _s[0], _s[1]
             n_ride_l = _ride_layers_on_reference(
                 shape_jobs, body_verts=body_verts_for_p2,
                 softbody_names=hdt_softbody_names,
-                collider_names=hdt_collider_names)
+                collider_names=hdt_collider_names,
+                body_norms=body_norms_for_p2, stack=_stack)
             if n_ride_l:
                 import sys as _sys
                 print(f"  layer ride: re-placed {n_ride_l} vert(s) on the layer "
