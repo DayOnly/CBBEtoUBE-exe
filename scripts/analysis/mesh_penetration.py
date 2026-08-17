@@ -109,7 +109,7 @@ def classify_exposure(exposed, surf_dist, rim_dist, near=2.0, rim=4.0):
     return (e & near_m & far_rim), (e & near_m & ~far_rim), (e & ~near_m)
 
 
-def ray_exposure(origins, dirs, verts, tris, tmax=25.0, chunk=2048):
+def ray_exposure(origins, dirs, verts, tris, tmax=25.0, chunk=None):
     """True where the ray from origins[i] along dirs[i] hits NO triangle.
 
     The sound penetration test: a body vertex whose outward normal escapes without
@@ -118,6 +118,14 @@ def ray_exposure(origins, dirs, verts, tris, tmax=25.0, chunk=2048):
 
     Möller-Trumbore, batched over rays so a whole region is one set of array ops
     rather than a Python loop per vertex.
+
+    `chunk` defaults to `_auto_chunk`, exactly as in `ray_first_hit`. It used to be
+    a FIXED 2048, which is the failure `_auto_chunk` was written for and which this
+    function never received: the (R,T,3) temporaries are R*T*24 bytes, so 2048 rays
+    against a 60k-triangle garment -- one piece's shapes merged for a union cast --
+    allocate 2.9 GB EACH, several at once. Measured: one worker at a 6.7 GB resident
+    set, paging so hard the run made no visible progress in 16 minutes. Batching is
+    over rays and every ray is independent, so this changes cost, never a result.
     """
     V = np.asarray(verts, dtype=np.float64)
     T = np.asarray(tris, dtype=np.int64).reshape(-1, 3)
@@ -127,6 +135,8 @@ def ray_exposure(origins, dirs, verts, tris, tmax=25.0, chunk=2048):
     D = np.divide(D, np.where(n > 1e-12, n, 1.0))
     if not len(T) or not len(O):
         return np.ones(len(O), dtype=bool)
+    if chunk is None:
+        chunk = _auto_chunk(len(T))
 
     a = V[T[:, 0]]
     e1 = V[T[:, 1]] - a
@@ -237,21 +247,34 @@ def closest_point_on_triangles(pts, a, b, c):
         w_int = np.where(np.abs(denom) > 1e-20, vc / denom, 0.0)
     out = a + ab * v_int[:, None] + ac * w_int[:, None]
 
-    # region overrides, applied last-to-first so earlier regions win
+    # Region overrides. The interior formula above is the UNCLAMPED projection
+    # onto the triangle's PLANE, so any region that fails to fire does not
+    # degrade gracefully -- it returns a point that can be arbitrarily far
+    # outside the triangle, and the caller reads that as a near-zero distance.
+    # Measured on a shipped piece: a body vertex on the SHIN came back 0.098u
+    # from a corset panel whose lowest vertex is 59u above it, because the
+    # panel is near-planar and its plane runs down the front of the legs.
+    #
+    # Applied last-to-first of Ericson's sequence (a, b, ab, c, ac, bc,
+    # interior) so that earlier regions win: `vertex c` must therefore be
+    # written BEFORE `edge ab`, not after it.
     with np.errstate(divide="ignore", invalid="ignore"):
         w_ac = np.where((d2 - d6) != 0, d2 / (d2 - d6), 0.0)
         w_bc = np.where(((d4 - d3) + (d5 - d6)) != 0,
                         (d4 - d3) / ((d4 - d3) + (d5 - d6)), 0.0)
         v_ab = np.where((d1 - d3) != 0, d1 / (d1 - d3), 0.0)
 
-    m = (va < 0) & ((d4 - d3) >= 0) & ((d5 - d6) >= 0)          # edge bc
+    m = (va <= 0) & ((d4 - d3) >= 0) & ((d5 - d6) >= 0)         # edge bc
     out[m] = (b + (c - b) * w_bc[:, None])[m]
-    m = (vb < 0) & (d2 >= 0) & (d6 <= 0)                        # edge ac
+    m = (vb <= 0) & (d2 >= 0) & (d6 <= 0)                       # edge ac
     out[m] = (a + ac * w_ac[:, None])[m]
-    m = (vc < 0) & (d1 >= 0) & (d3 <= 0)                        # edge ab
-    out[m] = (a + ab * v_ab[:, None])[m]
-    m = (d5 > 0) & (d6 >= d5)                                   # vertex c
+    # `(d5 > 0) & (d6 >= d5)` here was WRONG and is the defect above: it is a
+    # strict SUBSET of the real condition, so every vertex-c point with d5 <= 0
+    # fell through to the plane projection.
+    m = (d6 >= 0) & (d5 <= d6)                                  # vertex c
     out[m] = c[m]
+    m = (vc <= 0) & (d1 >= 0) & (d3 <= 0)                       # edge ab
+    out[m] = (a + ab * v_ab[:, None])[m]
     m = (d3 >= 0) & (d4 <= d3)                                  # vertex b
     out[m] = b[m]
     m = (d1 <= 0) & (d2 <= 0)                                   # vertex a
