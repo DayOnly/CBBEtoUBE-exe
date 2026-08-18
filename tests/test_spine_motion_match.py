@@ -49,7 +49,13 @@ def test_pass_is_wired_into_both_convert_paths():
     # Count CALL sites only -- the `def` line also contains the name, and taking
     # the raw count once hid that only one of the two convert paths was wired.
     calls = src.count("_match_spine_motion_to_body(dst_path, biped_slots,")
-    assert calls >= 2, f"only {calls} call site(s)"
+    assert calls >= 1, f"not wired at all ({calls} call sites)"
+    # BOTH paths reach it: the pass lives in the shared tail, and both
+    # conversion paths call that tail. One site, no drift possible.
+    tail = inspect.getsource(nc._finalize_physics_and_motion_match)
+    assert "_match_spine_motion_to_body(dst_path, biped_slots," in tail
+    assert all("_finalize_physics_and_motion_match(" in inspect.getsource(f)
+               for f in (nc.convert_nif, nc.convert_nif_phase2))
 
 
 def test_all_three_spine_bones_are_managed_together():
@@ -89,7 +95,7 @@ def test_spine_runs_before_arm_in_both_convert_paths():
     a_call = "_match_arm_motion_to_body(dst_path, biped_slots,"
     spine = [i for i in range(len(src)) if src.startswith(s_call, i)]
     arm = [i for i in range(len(src)) if src.startswith(a_call, i)]
-    assert len(spine) >= 2 and len(arm) >= 2
+    assert len(spine) >= 1 and len(arm) >= 1
     for s_at, a_at in zip(spine, arm):
         assert s_at < a_at, (
             "spine match must be called BEFORE the arm match in every convert "
@@ -122,7 +128,7 @@ def test_full_pass_order_is_leg_then_spine_then_arm():
     at = {k: [i for i in range(len(src)) if src.startswith(v, i)]
           for k, v in calls.items()}
     for k, v in at.items():
-        assert len(v) >= 2, f"{k} is not wired into both convert paths"
+        assert len(v) >= 1, f"{k} is not wired in at all"
     # one (leg, spine, arm) triple per convert path, in that order
     for leg, spine, arm in zip(at["leg"], at["spine"], at["arm"]):
         assert leg < spine < arm, (

@@ -44,9 +44,20 @@ import pytest
 from src import nif_convert as nc
 
 # Prefixes that mark a fit/geometry PASS -- the things that must not diverge.
+# Prefixes that mark a fit/geometry PASS -- the things that must not diverge.
+#
+# WIDENED 2026-08-18. The list used to end at "_refresh_", and the omissions
+# were not harmless: the check saw 6 of the 35 stages the body-swap path calls
+# and the copy path does not. `_inflate_cloth_over_bust_butt` was recorded here
+# as an OPEN question purely because its name starts with "_inflate" -- while
+# `clear_armor_outside_body`, the OTHER BRANCH OF ITS OWN if/elif, was invisible.
+# A guard that reports three divergences when there are a dozen is worse than
+# no guard, because it is read as assurance.
 PASS_PREFIXES = ("_match_", "_conform", "_repair", "_weld", "_transfer_",
                  "_graft", "_seed_", "_separate_", "_inflate", "_strip_",
-                 "_refresh_")
+                 "_refresh_", "_ride_", "_rigidify", "_sync_", "_cap_",
+                 "clear_armor", "rebury_", "fit_armor", "bake_preset",
+                 "repair_collapsed", "_recompute_")
 ENTRY_A = "convert_nif"
 ENTRY_B = "convert_nif_phase2"
 # Guard against a vacuous pass. If the walk finds fewer passes than this, the
@@ -110,13 +121,42 @@ KNOWN_PHASE2_ONLY = {
     # that structure; the copy path hands `_copy_shape` one shape at a time, so
     # there is nothing for them to operate on there.
     "_repair_layer_order": "needs shape_jobs (whole-piece view)",
-    "_conform_cords_to_host": "needs shape_jobs (whole-piece view)",
-    # NOT structurally excluded -- this one is per-shape and could run on the
-    # copy path. No comment in the source explains the asymmetry, so it is
-    # recorded as an open question rather than blessed. Wiring it in is a
-    # behaviour change and needs its own A/B plus the clearance counter-metric,
-    # not a quiet edit. See the 2026-08-05 path-parity review.
-    "_inflate_cloth_over_bust_butt": "OPEN: per-shape, no documented reason",
+    # RESOLVED 2026-08-18 -- this was recorded as "OPEN: per-shape, no
+    # documented reason". It is not an anomaly. It is the `elif` branch of the
+    # SAME if/elif as `clear_armor_outside_body`: the anti-poke moves every
+    # vert and so is skipped for physics cloth, and this covers the bust/butt
+    # bands for that cloth instead. Both branches are body-swap-only. It looked
+    # asymmetric only because the old prefix list could see this name and not
+    # its sibling.
+    "_inflate_cloth_over_bust_butt": "soft-cloth branch of the anti-poke "
+                                     "if/elif; whole stage is body-driven",
+
+    # ---- THE BODY-DRIVEN GEOMETRY STAGE ------------------------------------
+    #
+    # One structural reason covers this block, and it is the real shape of the
+    # two paths: THE COPY PATH DOES NO BODY-DRIVEN GEOMETRY WORK. It warps by
+    # the CBBE->UBE body delta with snap-outside (`min_standoff=
+    # ARMOR_TO_SKIN_BUFFER`) and stops. Every pass that needs the UBE body as a
+    # TARGET SURFACE -- clearance, ride, rigidify, rebury, preset bake -- can
+    # only exist where the body was injected.
+    #
+    # These were ALL invisible to this check until the prefix list was widened
+    # on 2026-08-18. They are documented, not blessed: wiring any of them into
+    # the copy path is a behaviour change over the ~78% of the pack that takes
+    # it, and needs an A/B plus the clearance counter-metric.
+    "clear_armor_outside_body": "anti-poke; body-driven clearance",
+    "rebury_authored_verts": "needs BOTH source and UBE body to restore "
+                             "authored insideness",
+    "fit_armor_to_ube_body": "the body-swap fit itself",
+    "bake_preset_into_armor": "bakes the preset onto the injected body",
+    "_rigidify_within_clearance": "needs the body clearance field",
+    "_sync_bust_plate_follow_postwrite": "post-write, needs the injected body",
+    # The layer-ride machinery rides shapes on a reference layer, which only
+    # the whole-piece `shape_jobs` view provides -- same reason as
+    # `_repair_layer_order` above.
+    "_ride_layers_on_reference": "needs shape_jobs (whole-piece view)",
+    "_ride_disp_barycentric": "helper of the layer ride",
+    "_feather_ride_disp": "helper of the layer ride",
     # #panel-rigidity. Per-shape, so it COULD run on the copy path -- it is here
     # only because it is OPT-IN (`CBBE2UBE_PANEL_RIGIDITY`, default 0) and has
     # not had its first in-game verdict, and wiring an unjudged pass into both

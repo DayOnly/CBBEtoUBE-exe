@@ -110,7 +110,7 @@ def test_both_call_sites_order_shape_finalize_xml_graft():
         r"(?<!def )_finalize_hdt_physics\(dst_path", src)]
     graft_calls = [m.start() for m in re.finditer(
         r"(?<!def )_transfer_body_jiggle_to_fitted\(dst_path", src)]
-    assert len(shape_calls) == 2 and len(xml_calls) == 2
+    assert len(shape_calls) == 1 and len(xml_calls) == 1
     for sc, xc in zip(shape_calls, xml_calls):
         fins = [f for f in fin_calls if sc < f < xc]
         assert fins, "pass 1 must run BEFORE finalize, pass 2 AFTER it"

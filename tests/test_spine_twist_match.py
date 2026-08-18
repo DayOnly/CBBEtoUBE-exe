@@ -59,7 +59,15 @@ def test_flag_defaults_off_and_opts_in(monkeypatch):
 def test_pass_is_wired_into_both_convert_paths():
     src = inspect.getsource(nc)
     calls = src.count("_match_spine_twist_to_body(dst_path, biped_slots,")
-    assert calls >= 2, f"only {calls} call site(s)"
+    # ONE call site now: both paths run the shared tail
+    # `_finalize_physics_and_motion_match`, so a single site reaches both.
+    assert calls >= 1, f"not wired at all ({calls} call sites)"
+    # BOTH paths reach it: the pass lives in the shared tail, and both
+    # conversion paths call that tail. One site, no drift possible.
+    tail = inspect.getsource(nc._finalize_physics_and_motion_match)
+    assert "_match_spine_twist_to_body(dst_path, biped_slots," in tail
+    assert all("_finalize_physics_and_motion_match(" in inspect.getsource(f)
+               for f in (nc.convert_nif, nc.convert_nif_phase2))
 
 
 def test_it_runs_last_of_the_family_matches_in_both_paths():
@@ -77,7 +85,7 @@ def test_it_runs_last_of_the_family_matches_in_both_paths():
     at = {k: [i for i in range(len(src)) if src.startswith(v, i)]
           for k, v in calls.items()}
     for k, v in at.items():
-        assert len(v) >= 2, f"{k} is not wired into both convert paths"
+        assert len(v) >= 1, f"{k} is not wired in at all"
     for leg, spine, arm, twist in zip(at["leg"], at["spine"], at["arm"],
                                       at["twist"]):
         assert leg < spine < arm < twist, (

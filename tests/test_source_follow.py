@@ -208,7 +208,7 @@ def test_the_measurement_reads_the_SOURCE_not_the_converted_state():
     calls = [c for c in _re.findall(
         r"_match_rigid_leg_bend_to_body\((?:[^()]|\([^()]*\))*\)", whole)
         if "biped_slots: int" not in c]          # drop the def line
-    assert len(calls) == 2, f"expected 2 call sites, found {len(calls)}"
+    assert len(calls) == 1, f"expected the one shared call site, found {len(calls)}"
     assert all("src_nif_path=src_path" in c for c in calls), (
         "both conversion paths must pass the source through")
 

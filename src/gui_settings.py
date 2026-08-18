@@ -638,6 +638,24 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "the reported outfit it took those 73 vertices to 5, and the "
                     "repaired vertices ended up CLOSER to the author's own "
                     "weighting than before."),
+    Setting("panel_rigidity", "Keep layered armour plates straight",
+            "Armor", "Fit and clearance", kind="float", default=0.0,
+            env="CBBE2UBE_PANEL_RIGIDITY", advanced=True,
+            min=0.0, max=1.0, step=0.05,
+            hint="0 = off. 0.75 is the setting confirmed in game.",
+            tooltip="Layered armour is often ONE mesh holding many separate "
+                    "plates. Fitting it to the new body moves every vertex on "
+                    "its own, so a plate that should simply travel gets "
+                    "STRETCHED and the authored line between plates distorts. "
+                    "Measured on a reported cuirass: the chest plate was "
+                    "deformed MORE than it was moved. This finds each plate and "
+                    "gives it back this fraction of its rigidity. Confirmed in "
+                    "game at 0.75 together with the plate-aware layer ride "
+                    "below -- over-stretched edges fell from 24.9% to 4.2% with "
+                    "no loss of body clearance. Full strength is WORSE, not "
+                    "better: a plate here is a closed BAND, so forcing it rigid "
+                    "drives its back half into the spine (buried vertices "
+                    "doubled). Leave it at 0.75."),
     Setting("author_deviation_skin",
             "Let a part bend only as much as its author made it bend",
             "Armor", "Fit and clearance", default=True,
