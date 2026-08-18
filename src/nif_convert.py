@@ -7927,49 +7927,6 @@ def _hide_virtual_body(nif) -> bool:
     return found
 
 
-def _strip_alpha_property(shape) -> None:
-    """Detach the shape's NiAlphaProperty reference.
-
-    Empirical finding: hand-authored BodySlide UBE morphable shapes
-    have `alphaPropertyID = 0xFFFFFFFF` (no alpha property), while
-    source CBBE armor shapes often have an alpha property attached
-    for translucent leather/cloth stitching detail. With every other
-    structural difference between hand-authored and ours eliminated
-    (flags, shader env-mapping, BODYTRI presence, scale-bone
-    weights), alpha property is the remaining suspect — NioOverride's
-    BodyMorph appears to skip shapes with NiAlphaProperty,
-    presumably because Skyrim's renderer treats alpha-blended shapes
-    as transparency overlays that shouldn't deform with the body.
-
-    Cost: the shape loses its translucent rendering — transparent
-    UV regions render opaque. For most CBBE armor pieces this is
-    invisible (the alpha property was used for trim detail or
-    alpha-tested edges that already look fine opaque). Worth the
-    trade-off versus the shape never morphing.
-
-    Idempotent. Safe to call on shapes that already lack an alpha
-    property (no-op)."""
-    try:
-        props = shape.properties
-        current = int(getattr(props, "alphaPropertyID", 0xFFFFFFFF))
-        if current == 0xFFFFFFFF or current == -1:
-            return  # already none
-        try:
-            props.alphaPropertyID = 0xFFFFFFFF
-        except Exception:
-            return
-        # Persist via save_shader_attributes — same path that worked
-        # for Shader_Flags_1 mutations. The alpha-property reference
-        # lives in the same BSTriShape header block as the shader
-        # property reference, so the same save call covers it.
-        try:
-            shape.save_shader_attributes()
-        except Exception:
-            pass
-    except Exception:
-        pass
-
-
 def _normalize_shader_for_morph(shape) -> None:
     """DISABLED (no-op). The env-map flag (Shader_Flags_1 bit 7) does NOT
     block NioOverride morphing. The former flag-clear also caused
@@ -13089,35 +13046,22 @@ _RIGID_PART_GATE = float(
 # Below this a "part" is a stray sliver, not an ornament worth rigidifying.
 _RIGID_PART_MIN_VERTS = int(
     os.environ.get("CBBE2UBE_RIGID_PART_MIN_VERTS", "8") or "8")
-# #rigid-part-cap -- OPT-IN, DEFAULT OFF, and the measurement is why.
+# DO NOT REBUILD `#rigid-part-cap` HERE -- it was written, measured and DELETED.
 #
-# The idea: a part may deform as much as its author made it deform and no more,
-# imposed by pulling every row toward the part mean by `t = 1 - author/ours`
-# (which scales every pairwise L1 by exactly (1 - t)). It does remove the
-# over-deformation -- and it stiffens EVERYTHING ELSE with it. Measured on the
-# reported piece, summed intra-part spread per shape, author vs capped:
+# It bounded a part's deformation by pulling every row toward the part MEAN by
+# `t = 1 - author/ours`, which scales every pairwise L1 by exactly (1 - t). The
+# operation is exact; the TARGET was wrong. Aiming at the mean aims at ZERO
+# variation, so it fixed the reported buckles by freezing the fabric:
 #
-#     3Fabric        6.49 -> 3.73     <- CLOTH, now far stiffer than authored
+#     3Fabric        6.49 -> 3.73     <- CLOTH, far stiffer than authored
 #     4Panties       2.67 -> 0.83
-#     5Lace          2.51 -> 0.59
-#     3RopeTied      1.95 -> 0.61
 #     total |ours-author|  29.45 -> 34.11  (over 21.65 -> 0.10,
 #                                           under  7.79 -> 34.01)
 #
-# So it trades a modest over-deformation for a large UNDER-deformation, and
-# fabric that will not move is a worse defect than a buckle that moves a little
-# too much. The symmetric error is the honest scorekeeper here precisely because
-# "make everything rigid" scores well on the one-sided one.
-#
-# Kept because the operation is exact and a future design may want it scoped to
-# ornaments only -- but it must never default ON without a per-part material or
-# ornament classifier in front of it. `CBBE2UBE_RIGID_PART_CAP=1` to experiment,
-# `CBBE2UBE_RIGID_PART_TOL` to loosen the ceiling.
-RIGID_PART_CAP = (
-    os.environ.get("CBBE2UBE_RIGID_PART_CAP", "").strip().lower()
-    in ("1", "true", "yes", "on"))
-_RIGID_PART_TOL = float(
-    os.environ.get("CBBE2UBE_RIGID_PART_TOL", "1.0") or "1.0")
+# It traded a modest over-deformation for a large UNDER-deformation, and fabric
+# that will not move is a worse defect than a buckle that moves a little too
+# much. `#author-deviation-skin` below supersedes it by aiming at the AUTHOR'S
+# OWN deviation instead of at zero, which is what makes cloth a fixed point.
 # #part-pair-align -- two ADJACENT parts must not diverge in MEAN follow more
 # than the author had them. Off with CBBE2UBE_NO_PART_PAIR_ALIGN=1.
 PART_PAIR_ALIGN = (
@@ -13378,8 +13322,10 @@ def _match_coincident_cross_shape_skin(dst_path, src_nif_path=None) -> int:
                     _all_parts.append((k, idx))
                     if worst > _RIGID_PART_GATE:
                         # The author meant this part to deform -- but not
-                        # necessarily as much as we do. Hand it to the CAP below
-                        # instead of walking away.
+                        # necessarily as much as we do. Hand it to
+                        # `#author-deviation-skin` below instead of walking
+                        # away. NOTE `worst` is TRUNCATED: the loop above breaks
+                        # at the gate, so it is a lower bound, not the spread.
                         _soft_parts.append((k, idx, worst))
                         continue
                     root = int(idx[0]) + _offs[k]
@@ -13656,89 +13602,6 @@ def _match_coincident_cross_shape_skin(dst_path, src_nif_path=None) -> int:
             e["rows"][i] = dict(tgt)
             changed[k].add(i)
 
-    # ---- NEVER DEFORM A PART MORE THAN ITS AUTHOR DID ----------------------
-    #
-    # REPORTED IN GAME after `#rigid-part-skin` shipped: "the metal buckles
-    # along the top belts still move incorrectly instead of staying solid".
-    # Those sit on `3ButtonsWaist`, which the author skinned SEMI-deformably
-    # (0.289) -- above the rigid gate, so the rigid branch correctly walked
-    # away, and nothing then bounded how far WE deformed it (1.465, 5x).
-    #
-    # Rigid/not-rigid was the wrong shape for the rule. The real invariant is
-    # the AUTHOR'S OWN VARIATION as a CEILING: a part may deform as much as they
-    # made it deform, and no more. Rigidity is just its limiting case.
-    #
-    # THE OPERATION IS EXACT, which is why it is a cap and not a nudge. Pulling
-    # every row toward the part's mean by `t`
-    #     row_i := (1 - t) * row_i + t * mean
-    # scales EVERY pairwise L1 in the part by exactly (1 - t) -- the mean
-    # cancels in each difference -- so `t = 1 - author/ours` lands the part on
-    # the author's own spread by construction, not by iteration. It is a convex
-    # combination of rows that each sum to 1, so the sum stays 1 and no weight
-    # goes negative.
-    #
-    # The 4-influence cap is taken on the PART'S MEAN, so every vertex in the
-    # part keeps the SAME bone set and only the magnitudes vary. Capping each
-    # vertex independently would let the cap itself re-introduce exactly the
-    # divergence being removed.
-    n_capped = 0
-    if RIGID_PART_SKIN_MATCH and RIGID_PART_CAP and _soft_parts:
-        for k, idx, auth_spread in _soft_parts:
-            e = ents[k]
-            rows_k = e["rows"]
-            smp = (idx if len(idx) <= 48
-                   else idx[np.linspace(0, len(idx) - 1, 48).astype(int)])
-            ours = 0.0
-            for _a in range(len(smp)):
-                ra_ = rows_k[smp[_a]]
-                for _b in range(_a + 1, len(smp)):
-                    rb_ = rows_k[smp[_b]]
-                    d_ = sum(abs(ra_.get(x, 0.0) - rb_.get(x, 0.0))
-                             for x in set(ra_) | set(rb_))
-                    if d_ > ours:
-                        ours = d_
-            ceiling = auth_spread * _RIGID_PART_TOL
-            if ours <= ceiling or ours <= 1e-6:
-                continue
-            tt = 1.0 - (ceiling / ours)
-            mean: dict = _dd(float)
-            for vi in idx:
-                for b, w in rows_k[vi].items():
-                    mean[b] += w / len(idx)
-            pal = e["pal"]
-            mean = {b: w for b, w in mean.items()
-                    if b in pal and w > _WRITE_MIN}
-            if not mean:
-                continue
-            # BLEND OVER THE UNION, then cap PER VERTEX. Restricting every row
-            # to the MEAN's top-4 first was measured and rejected: the
-            # restriction removes far more variation than the (1 - t) scaling
-            # intends, so parts landed well BELOW their author -- over-deform
-            # 21.65 -> 6.47 but under-deform 7.79 -> 25.55, a net LOSS. The
-            # blend is the exact operation; the cap must stay a small
-            # perturbation on top of it, not a second, larger one underneath.
-            for vi in idx:
-                cur = rows_k[int(vi)]
-                blended: dict = {}
-                for b in set(cur) | set(mean):
-                    if b not in pal:
-                        continue
-                    v = (1.0 - tt) * cur.get(b, 0.0) + tt * mean.get(b, 0.0)
-                    if v > _WRITE_MIN:
-                        blended[b] = v
-                if len(blended) > _SKIN_MAX_INFLUENCES:
-                    blended = dict(sorted(blended.items(),
-                                          key=lambda kv: (-kv[1], kv[0]))
-                                   [:_SKIN_MAX_INFLUENCES])
-                tot_r = sum(blended.values())
-                if tot_r <= _WRITE_MIN:
-                    continue
-                blended = {b: w / tot_r for b, w in blended.items()}
-                e["old"].setdefault(int(vi), cur)
-                rows_k[int(vi)] = blended
-                changed[k].add(int(vi))
-            n_capped += 1
-
     total = 0
     dirty = False
     for k, e in enumerate(ents):
@@ -13830,7 +13693,7 @@ def _match_coincident_cross_shape_skin(dst_path, src_nif_path=None) -> int:
         dirty = True
     if os.environ.get("CBBE2UBE_COINCIDENT_SKIN_DEBUG"):
         print(f"  [coincident-skin] shapes={len(ents)} edges-cut={n_cut} "
-              f"clusters-skipped={n_weak} parts-capped={n_capped} "
+              f"clusters-skipped={n_weak} "
               f"parts-devmatched={n_devmatch} "
               f"verts-unified={total}", file=sys.stderr)
     if dirty:
@@ -16194,19 +16057,6 @@ def _seed_flat_chain_anchors(dst_nif, src_nif) -> int:
     except Exception as _e:
         _note_pass_failure("_seed_flat_chain_anchors", _e)
         return 0
-
-
-def _node_is_flat_parented(nd) -> bool:
-    """True when a node hangs directly off the NIF root (no skeleton parent), so
-    its LOCAL transform IS its global and may be overwritten with a global."""
-    try:
-        par = getattr(nd, "parent", None)
-    except Exception:
-        return False
-    if par is None:
-        return True
-    pn = getattr(par, "name", None)
-    return pn is None or pn in ("Scene Root", "NPC")
 
 
 def _precreate_custom_bone_chains(dst_nif, src_nif, bone_names) -> int:
