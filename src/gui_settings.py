@@ -511,6 +511,57 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "morphable. Trade-off: the flap stops swinging. "
                     "Experimental -- changes physics, so check for equip "
                     "crashes and collapsing cloth, not just clipping."),
+    Setting("ride_feather",
+            "Smooth how layered outfits are placed on each other",
+            "Armor", "Fit and clearance", default=False,
+            env="CBBE2UBE_RIDE_FEATHER", invert=False,
+            hint="For jagged belts, ropes and straps on a layered outfit.",
+            tooltip="Layers above the innermost one are placed by copying how "
+                    "the layer beneath them moved. That copy is made for each "
+                    "vertex on its own, and neighbouring vertices can copy "
+                    "from different parts of the layer below -- which shows up "
+                    "as a jagged edge on narrow straps. Every other pass that "
+                    "moves cloth already smooths its movement into the "
+                    "neighbouring vertices; this one did not. Measured on a "
+                    "reported outfit, the belt family's creased vertices fell "
+                    "by 22%% and its overstretched edges by 30%%, with the "
+                    "worst strap going from 205 creases to 26. The smoothing "
+                    "preserves how far each layer sits from the one below, so "
+                    "it removes the jaggedness without flattening the "
+                    "layering."),
+    Setting("panel_rigid_ride",
+            "Keep rigid plates rigid when stacking layers",
+            "Armor", "Fit and clearance", default=False,
+            env="CBBE2UBE_PANEL_RIGID_RIDE", invert=False,
+            hint="For armour plates that arrive bent or rippled on a layered "
+                 "piece.",
+            tooltip="Placing an outer layer on an inner one moves each vertex "
+                    "separately, which bends a solid plate that should stay "
+                    "flat. This moves each connected plate as one piece "
+                    "instead, so it keeps the shape the author gave it. "
+                    "Measured on one cuirass, the bust plate's deviation from "
+                    "the authored shape fell to zero in every band. A plate it "
+                    "cannot place clear of the body is left alone rather than "
+                    "frozen half inside it."),
+    Setting("smooth_reach",
+            "Feather the same DISTANCE on finely-modelled detail",
+            "Armor", "Fit and clearance", default=False,
+            env="CBBE2UBE_SMOOTH_REACH", invert=False,
+            hint="For jagged buckles, buttons, laces and cords on an outfit "
+                 "whose larger panels look fine.",
+            tooltip="When a pass moves cloth it feathers that movement into "
+                    "the surrounding vertices so it does not become a spike. "
+                    "The feathering is counted in RINGS of neighbouring "
+                    "vertices rather than in distance -- so on a finely "
+                    "modelled buckle strip, whose vertices sit twenty times "
+                    "closer together than a leather panel's, it covers twenty "
+                    "times less surface and barely feathers at all. Measured "
+                    "on one reported outfit: every shape moved more than six "
+                    "times its own vertex spacing was torn, and every shape "
+                    "under about two and a half times was clean. This scales "
+                    "the feathering to each shape's own spacing so it covers "
+                    "the same distance everywhere. It never feathers LESS "
+                    "than before, so coarser pieces are untouched."),
     Setting("per_anchor_seed", "Place each physics chain's anchor separately",
             "Armor", "Physics chains (HDT-SMP)", default=False,
             env="CBBE2UBE_PER_ANCHOR_SEED", invert=False,
@@ -565,23 +616,74 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "which on a reported top took clipping into the body from "
                     "790 vertices to 1. Confirmed in game. Turn it off only if "
                     "a layered outfit looks worse than it did before."),
+    Setting("coincident_skin_match",
+            "Skin touching parts of one outfit the same way",
+            "Armor", "Fit and clearance", default=True,
+            env="CBBE2UBE_NO_COINCIDENT_SKIN", invert=True,
+            hint="Stops a belt and its buckle pulling in different directions "
+                 "once the character moves.",
+            tooltip="An outfit is built from many separate pieces, and each one "
+                    "is fitted to the body on its own. Where two pieces touch -- "
+                    "a belt and its buckle, a strap and the bodice under it -- "
+                    "the two touching vertices can end up following different "
+                    "bones, so they pull apart the moment the skeleton moves, "
+                    "and look correct only in the poses where the disagreement "
+                    "happens to cancel. Measured on a reported outfit: 73 "
+                    "vertices followed almost completely different bones from "
+                    "the vertex they touch, the worst pair split between the "
+                    "PELVIS and the SPINE; the outfit's own author has none. "
+                    "This gives touching vertices one shared weighting, and only "
+                    "where the author skinned them alike -- a deliberate seam "
+                    "between two differently-weighted parts is left alone. On "
+                    "the reported outfit it took those 73 vertices to 5, and the "
+                    "repaired vertices ended up CLOSER to the author's own "
+                    "weighting than before."),
+    Setting("author_deviation_skin",
+            "Let a part bend only as much as its author made it bend",
+            "Armor", "Fit and clearance", default=True,
+            env="CBBE2UBE_NO_AUTHOR_DEVIATION_SKIN", invert=True,
+            hint="For a metal buckle or clasp where part of it moves with the "
+                 "body and the rest stays put, distorting the shape.",
+            tooltip="Fitting an outfit to a new body decides each vertex's "
+                    "weighting largely on its own. Across a solid part -- the "
+                    "metal buckle on a belt, a clasp, a stud -- neighbouring "
+                    "vertices can then land on quite different bones, so part of "
+                    "the buckle travels with the stomach and the rest does not, "
+                    "and it visibly distorts as the character moves. Measured on "
+                    "a reported outfit: buckles whose author varies by 0.18 "
+                    "across the part were coming out at 1.78, ten times as much. "
+                    "This restores the author's OWN variation across each part "
+                    "while keeping the new body's fit, so a rigid buckle goes "
+                    "back to being rigid and cloth keeps bending exactly as much "
+                    "as it was drawn to. An earlier attempt simply made "
+                    "over-bending parts stiffer, which fixed the buckles by "
+                    "freezing the fabric; this aims at the author's value "
+                    "instead of at zero. It only ever removes bending the "
+                    "conversion introduced, never adds any, and a part already "
+                    "smoother than the author's is left untouched."),
     Setting("seed_spine_anchors", "Place chains that hang from the spine",
-            "Armor", "Physics chains (HDT-SMP)", default=False,
-            env="CBBE2UBE_SEED_SPINE_ANCHORS", invert=False,
+            "Armor", "Physics chains (HDT-SMP)", default=True,
+            env="CBBE2UBE_NO_SEED_SPINE_ANCHORS", invert=True,
             hint="For fur, capes and mantles that hang off the chest or back "
-                 "and collapse downward.",
-            tooltip="Chains hanging from a spine bone are left unplaced, on the "
-                    "grounds that anything on the upper body has to swing with "
-                    "it. That is true of a sleeve on an arm, which swings far "
-                    "from the body's centre; it is not true of the spine, which "
-                    "sits on the body's own axis and moves much as the hips do "
-                    "-- and placing hip chains is already known good. Left "
-                    "unplaced, such a chain starts at chest height and lands "
-                    "near the floor: measured on a fur cuirass, its two chest "
-                    "chains sit about 90 units low while every hip chain on the "
-                    "same piece is correct. Affects 20 pieces in the pack. "
-                    "Shoulder, collar, neck and arm chains are still left "
-                    "alone."),
+                 "and collapse downward. Confirmed in game.",
+            tooltip="Chains hanging from a spine bone used to be left unplaced, "
+                    "on the grounds that anything on the upper body has to swing "
+                    "with it. That is true of a sleeve on an arm, which swings "
+                    "far from the body's centre; it is not true of the spine, "
+                    "which sits on the body's own axis and moves much as the "
+                    "hips do -- and placing hip chains was already known good. "
+                    "Left unplaced, such a chain starts at chest height and "
+                    "lands near the floor. Measured across the pack: 18 pieces "
+                    "still carry chains more than 5 units from where their "
+                    "author put them, the worst 92 units low, and 16 of those 18 "
+                    "hang from the spine. Confirmed in game on a bandit armour, "
+                    "which is why it now runs by default. It moves the chain "
+                    "SKELETON only -- not one vertex changes -- so it cannot "
+                    "cause clipping. Shoulder, collar, neck and arm chains are "
+                    "still left alone, because placing those the same way was "
+                    "reported in game as sleeves bound in a fixed pose. Turn it "
+                    "off only if a cape or fur that hangs off the back starts "
+                    "lagging behind you when you lean."),
     Setting("chain_rest_lift", "Lift physics chains out of the body",
             "Armor", "Physics chains (HDT-SMP)", default=True,
             env="CBBE2UBE_NO_CHAIN_REST_LIFT", invert=True,

@@ -326,11 +326,17 @@ def surface_penetration(body_verts, garment_verts, garment_tris,
         # surface produces. CHECK `dist` (or the None in slot 4) before
         # trusting a zero depth out of this function.
         #
-        # Left as zeros DELIBERATELY: this is the reference implementation
-        # that `tests/test_fit_metrics_matches_reference.py` pins
-        # `src/fit_metrics` against, so changing these return values would
-        # move the anchor rather than fix a defect. The honest fix belongs in
-        # the callers, which is why the tell is documented instead.
+        # Left as zeros DELIBERATELY: this is the REFERENCE implementation of
+        # the clip metric, so changing these return values would move the
+        # anchor rather than fix a defect. The honest fix belongs in the
+        # callers, which is why the tell is documented instead.
+        #
+        # This used to claim `tests/test_fit_metrics_matches_reference.py` pins
+        # `src/fit_metrics` against it. THAT FILE DOES NOT EXIST and no test
+        # asserts that equality -- what exists is
+        # `tests/test_clip_tester_exactness.py` (the src/ tester vs brute-force
+        # Moller-Trumbore) and `tests/test_mesh_penetration.py`. So the "do not
+        # change this" above rests on the anchor argument alone, not on a test.
         z = np.zeros(len(bv))
         return z, np.full(len(bv), np.inf), np.zeros(len(bv), dtype=bool), None
 

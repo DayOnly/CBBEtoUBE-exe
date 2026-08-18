@@ -2381,7 +2381,23 @@ def _third_party_ube_covered_armos(mods_root, enabled_names=None,
                     continue
                 for r in g.records:
                     for sig, dd in _esp.iter_subrecords(r.payload):
-                        if sig in (b"MOD2", b"MOD3", b"MOD4", b"MOD5"):
+                        # MOD4 ONLY -- the FEMALE WORLD model. The four slots
+                        # are MOD2 male world, MOD3 male first person, MOD4
+                        # female world, MOD5 female first person, and only MOD4
+                        # decides what renders on a female body. Accepting any
+                        # of them marked an armour "already covered by another
+                        # mod" -- so #skip-already-ube left it entirely alone --
+                        # on the strength of a `!UBE\` path in a slot that is
+                        # never drawn on the body.
+                        #
+                        # REPORTED IN GAME as an invisible armour. A colour
+                        # variant carried `!UBE\...` in MOD5 while its MOD4 was
+                        # still the CBBE path: skipped, so it never received a
+                        # UBE armature and matched none for a UBE-race actor.
+                        # Its sibling variant, the same mesh without the stray
+                        # MOD5, converted correctly -- which is why only one of
+                        # the two was invisible.
+                        if sig == b"MOD4":
                             s = dd.rstrip(bytes(1)).decode("cp1252", "replace")
                             if _is_already_ube_model(s):
                                 ube_fids.add(r.formid)

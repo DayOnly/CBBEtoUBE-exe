@@ -80,6 +80,45 @@ def test_a_cycle_is_broken_at_its_weakest_edge():
         f"the strong edges must survive the cycle break, got {depth}")
 
 
+def test_relation_weight_is_a_confidence_not_a_distance():
+    """The reported defect: a bra clipping through the shirt worn over it.
+
+    `_stack_depth_from_relation` sacrifices the lowest-weighted edge when the
+    relation contains a cycle. That is only correct if the weight measures how
+    much we BELIEVE the verdict. It used to be the authored separation -- a
+    length -- so on the reported piece a sliver overlapping 10% of its
+    neighbour, with a wide gap, outranked
+
+        3Belts       OUTSIDE 3Fabric   agreement 1.00 over  47% coverage
+        3LeatherMain OUTSIDE 3Fabric   agreement 0.99 over 100% coverage
+
+    and both of those were dropped instead. The shirt then rode the two layers
+    the author places on top of it and sank beneath them at the under-bust.
+
+    This is the discriminating half of the fix, and it is deliberately a
+    CONTRACT test rather than a scenario one: handing the sorter pre-computed
+    confidences passes whichever weight `_authored_layer_depth` stores, so such
+    a test cannot fail and proves nothing. Storing a separation again would
+    restore the defect silently -- both are floats and both sort.
+    """
+    entries = [_entry(r, 0.0, 20.0) for r in (8.0, 8.6, 9.2)]
+    captured = {}
+    real = nc._stack_depth_from_relation
+
+    def spy(n, rel):
+        captured["rel"] = dict(rel)
+        return real(n, rel)
+
+    nc._stack_depth_from_relation = spy
+    try:
+        nc._authored_layer_depth(entries, near=2.0)
+    finally:
+        nc._stack_depth_from_relation = real
+    assert captured.get("rel"), "the relation was never built"
+    bad = {k: w for k, w in captured["rel"].items() if not 0.0 <= w <= 1.0}
+    assert not bad, f"relation weights must be confidences in [0, 1], got {bad}"
+
+
 def test_every_layer_gets_a_depth_even_with_no_relation():
     depth = nc._stack_depth_from_relation(3, {})
     assert depth == {0: 0, 1: 0, 2: 0}

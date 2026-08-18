@@ -434,7 +434,7 @@ WARP_SHEAR_MAX_GROWTH = float(
     os.environ.get("CBBE2UBE_WARP_SHEAR_MAX_GROWTH", "") or 2.0)
 WARP_SHEAR_STEPS = int(os.environ.get("CBBE2UBE_WARP_SHEAR_STEPS", "") or 8)
 
-# #warp-delta-outlier -- OPT-IN. Stop the warp flinging a LONE vertex.
+# #warp-delta-outlier -- DEFAULT ON. Stop the warp flinging a LONE vertex.
 #
 # Distinct from #warp-shear-limit, which bounds how much a TRIANGLE stretches.
 # This bounds how far one VERTEX may move relative to its own neighbours, and
@@ -1662,8 +1662,12 @@ def _cached_body_morph_stack(osd_path: Path, n_verts: int) -> "np.ndarray | None
 # MO2 instance and propagated to worker processes via the CBBE2UBE_MODS_ROOT
 # env var. The CBBE base body and UBE body are then found by SCANNING that
 # root by content + name hint, never by a fixed mod name — so the tool works
-# in any modpack. Env-var overrides (CBBE2UBE_CBBE_BODY / CBBE2UBE_UBE_BODY)
-# are the escape hatch for unusual layouts.
+# in any modpack. Env-var overrides are the escape hatch for unusual layouts,
+# and they are NOT spelled the same way: the CBBE body is weight-specific only
+# (CBBE2UBE_CBBE_BODY_0 / _1 — a bare CBBE2UBE_CBBE_BODY is read by nothing),
+# while the UBE body takes CBBE2UBE_UBE_BODY_0 / _1 OR the bare
+# CBBE2UBE_UBE_BODY the GUI picker writes, from which the weight sibling is
+# derived.
 from . import paths as _paths  # noqa: E402
 
 _CBBE_3BA_VERTS = 18436  # canonical CBBE 3BA femalebody topology
@@ -3168,7 +3172,7 @@ def warp_armor_by_body_delta(
                 # under-pushed neighbours, never reduce a vert below its standoff.
                 push_mag = _smooth_push_field(
                     push_mag, raw_mag, tris,
-                    iters=WARP_STANDOFF_SMOOTH_ITERS)
+                    iters=WARP_STANDOFF_SMOOTH_ITERS, verts=warped)
             unsmoothed = warped.copy()
             unsmoothed[raw_mag > 0] += (
                 near_n[raw_mag > 0] * raw_mag[raw_mag > 0][:, None])
@@ -3564,7 +3568,7 @@ def rebury_authored_verts(
     vec = nrm * move[:, None]
     if tris is not None:
         try:
-            vec = _smooth_vertex_field(vec, tris, iters=2)
+            vec = _smooth_vertex_field(vec, tris, iters=2, verts=cur_cloth)
         except Exception as _pe:
             _note_pass_failure("rebury/smooth", _pe)
     out = cur + vec
@@ -3889,7 +3893,7 @@ def conform_to_source_standoff(
                         r = np.where(kb, dj - du[:, None], -np.inf).max(axis=1)
                         np.maximum(resid_b, r, out=resid_b)
                     # SEPARATE ARRAY, NOT `req`. `req` is handed whole to
-                    # `_bust_surface_deficit` below, which evaluates per garment
+                    # `_surface_deficit` below, which evaluates per garment
                     # TRIANGLE -- so a triangle in the bust band that happens to
                     # own one back-band vertex would read that vertex's inflated
                     # requirement and demand a push for it. That pass's own
@@ -4197,14 +4201,94 @@ CLEARANCE_FIELD_DEBUG = os.environ.get(
         "1", "true", "yes", "on")
 
 
+# #smooth-reach -- OPT-IN, `CBBE2UBE_SMOOTH_REACH=1`.
+#
+# Both feathering helpers below spread a displacement by EDGE-NEIGHBOUR
+# averaging, so `iters` is a RING count and the distance actually covered is
+# `iters * median_edge`. Authored tessellation varies ~20x WITHIN ONE PIECE, so
+# the same call reaches 2.4u on a leather panel and 0.11u on a buckle strip --
+# the pass that exists to stop a displacement becoming a spike barely reaches at
+# all on precisely the shapes that spike.
+#
+# MEASURED on the piece reported in game ("the belt verts are still jagged"),
+# displacement in units of each shape's OWN authored edge:
+#
+#     shape           authored edge   move p99 / edge   >2x edges   NEW folds
+#     5BraBuckles           0.056          35.4            119           9
+#     3ButtonsWaist         0.136          21.0            491          97
+#     4Panties              0.322          11.0            805         615
+#     3Fabric               1.028           1.7             30          33
+#     3LeatherMain          1.207           1.2              0           2
+#
+# Everything above ~6x is damaged, everything below ~2.6x is clean.
+#
+# The lever is REACH, not magnitude. Scaling the displacement (relative
+# reweighting) and bounding it (a displacement cap) were both built and both
+# died here: each improved the edge COUNT while worsening worst-edge and folds
+# (PIPELINE.md, #collar-fine-tessellation). This changes neither -- only how far
+# the feather carries.
+#
+# Applied as a MULTIPLIER on the caller's own `iters`, not a global reach, so
+# every pass keeps its own relative strength; and floored at `iters`, so a
+# coarse shape is bit-identical to today and only fine meshes get more rings.
+#
+# THE SCALING IS QUADRATIC, AND THAT IS PHYSICS, NOT A TUNING CHOICE. Neighbour
+# averaging is DIFFUSION: after `n` rounds a displacement has spread about
+# `sqrt(n) * edge`, not `n * edge`. Scaling the ring count LINEARLY with the
+# tessellation ratio therefore does not restore the distance -- measured on a
+# flat grid, a 20x finer mesh came back to 0.20u of feather against the coarse
+# mesh's 0.92u (better than the 0.07u it started with, still 4.6x short).
+# Matching an `r`-fold finer mesh needs `r**2` times the rounds. Caught by
+# `test_feathering_reaches_the_same_distance_on_both`, which measures the
+# feather's MASS-WEIGHTED RADIUS in units -- a peak-amplitude threshold reports
+# a wider feather as a narrower one, because spreading the same displacement
+# further lowers every individual vertex.
+_SMOOTH_REF_EDGE = 1.0        # the tessellation the current ring counts assume
+_SMOOTH_REACH_MAX = 400       # bound the cost; the finest strip here asks ~320
+SMOOTH_REACH = os.environ.get(
+    "CBBE2UBE_SMOOTH_REACH", "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _reach_iters(verts, tris, iters: int) -> int:
+    """Ring count that carries the feather the SAME DISTANCE on this mesh.
+
+    Returns `iters` unchanged when disabled, when the verts were not threaded
+    through, or on any failure -- never fewer rings than the caller asked for.
+    """
+    if not SMOOTH_REACH or verts is None:
+        return iters
+    try:
+        v = np.asarray(verts, dtype=np.float64)
+        t = np.asarray(tris, dtype=np.int64).reshape(-1, 3)
+        if len(t) == 0 or len(v) < 3:
+            return iters
+        e = np.vstack([t[:, [0, 1]], t[:, [1, 2]], t[:, [2, 0]]])
+        e = e[(e[:, 0] < len(v)) & (e[:, 1] < len(v))]
+        if not len(e):
+            return iters
+        L = np.linalg.norm(v[e[:, 0]] - v[e[:, 1]], axis=1)
+        L = L[L > 1e-9]
+        if not len(L):
+            return iters
+        med = float(np.median(L))
+        if not np.isfinite(med) or med <= 1e-9:
+            return iters
+        ratio = max(_SMOOTH_REF_EDGE / med, 1.0)
+        scale = min(ratio * ratio, float(_SMOOTH_REACH_MAX))   # diffusion
+        return int(max(1, round(int(iters) * scale)))
+    except Exception:
+        return iters
+
+
 def _smooth_push_field(push: np.ndarray, needed: np.ndarray, tris,
                        iters: int = ANTIPOKE_SMOOTH_ITERS,
-                       blend: float = 0.5) -> np.ndarray:
+                       blend: float = 0.5, verts=None) -> np.ndarray:
     """Feather an anti-poke push scalar over the armor mesh adjacency (see
     ANTIPOKE_SMOOTH_ENABLED). Each iteration blends toward the neighbor average
     then re-floors at `needed` (the original per-vert requirement), so a poke can
     never reopen; verts with no push near no pushed verts stay exactly 0.
     Returns `push` unchanged on any failure (never worse than no smoothing)."""
+    iters = _reach_iters(verts, tris, iters)          # #smooth-reach
     try:
         t = np.asarray(tris, dtype=np.int64)
         n = len(push)
@@ -4815,7 +4899,7 @@ def clear_armor_outside_body(
         # Gated on its own flag: `tris` may now be present only for the
         # #clearance-field solve above (which returns early on success), so this
         # scalar feather must not switch itself on off the back of that.
-        push = np.clip(_smooth_push_field(push, push, tris, smooth_iters),
+        push = np.clip(_smooth_push_field(push, push, tris, smooth_iters, verts=verts),
                        0.0, max_push)
     push = np.where(dd[:, 0] < max_body_dist, push, 0.0)  # leave far drapes alone
     push_vec = nrm * push[:, None]
@@ -6727,6 +6811,19 @@ def convert_nif(
                                         src_nif_path=src_path)
         except Exception as _pe:
             _note_pass_failure("_match_full_weights_to_body", _pe)
+        # Coincident-vertex skin unification (#coincident-skin-match). Same
+        # placement rule as the phase-2 site: after every weight pass, because
+        # each of them pairs to the body PER SHAPE and would re-diverge an
+        # earlier repair.
+        try:
+            n_cs = _match_coincident_cross_shape_skin(dst_path,
+                                                      src_nif_path=src_path)
+            if n_cs:
+                import sys as _sys
+                print(f"  coincident skin: unified {n_cs} cross-shape vert(s)",
+                      file=_sys.stderr)
+        except Exception as _pe:
+            _note_pass_failure("_match_coincident_cross_shape_skin", _pe)
 
         # Verbatim-copied NIFs carry raw block structure the renderer can reject.
         # Re-author for a clean pynifly structure identical to body shapes.
@@ -8588,7 +8685,8 @@ def _is_leg_rigid_bone(bone_name: str) -> bool:
 # Chains anchored on the lower body (pelvis/thigh) work FLAT (actor-driven).
 _UPPER_BODY_ANCHOR_KEYWORDS = ("spine", "neck", "head", "clavicle", "shoulder")
 
-# #seed-spine-anchors -- OPT-IN, `CBBE2UBE_SEED_SPINE_ANCHORS=1`.
+# #seed-spine-anchors -- DEFAULT ON since 2026-08-17.
+# Kill switch: `CBBE2UBE_NO_SEED_SPINE_ANCHORS=1`.
 #
 # SPINE is the one keyword above the arm argument does not cover. That argument
 # is explicitly about distance from the actor root: "an arm swings far from the
@@ -8613,11 +8711,24 @@ _UPPER_BODY_ANCHOR_KEYWORDS = ("spine", "neck", "head", "clavicle", "shoulder")
 # hang from `NPC Spine2` and land 89.78u low -- source z 101.67, shipped z 12.00
 # -- while every pelvis-anchored chain on the same mesh is correct to 0.9u.
 #
-# OPT-IN because spine seeding is UNTESTED in game. Pelvis seeding is proven
-# good and arm seeding is proven bad; spine sits between them and only an
-# in-game verdict can place it.
+# CONFIRMED IN GAME 2026-08-16 on the bandit armour ("the bandit armor does work
+# that is correct"), which is what moved this from opt-in to default. Re-censused
+# on the shipped pack 2026-08-17 (1-in-3 sample, 892 pieces carrying chains):
+# 18 pieces still ship chains >5u off source, worst 92.60u, and 16 of those 18 --
+# 231 of the 238 displaced chains -- hang from a SPINE anchor. The bandit meshes
+# themselves currently carry a hand-deployed fix (0.90u), so leaving this OFF
+# through a reconvert would have REGRESSED an already-approved piece.
+#
+# It moves NODES only: measured geometry delta off-vs-on is 0.000000u on every
+# piece tested, so it cannot introduce a clip/fold/stretch regression.
+#
+# STILL EXCLUDED, deliberately: arm, clavicle, shoulder, neck, head. Arm seeding
+# is proven BAD in game (sleeves "disconnected from the body, bound in a pose"),
+# and clavicle/shoulder ride the arm. The residual pelvis/Scene-Root anomaly
+# (2 pieces at 68.91u in the same census) is a DIFFERENT defect this does not
+# touch -- those anchors should already seed and do not.
 SEED_SPINE_ANCHORS = os.environ.get(
-    "CBBE2UBE_SEED_SPINE_ANCHORS", "").strip().lower() in (
+    "CBBE2UBE_NO_SEED_SPINE_ANCHORS", "").strip().lower() not in (
         "1", "true", "yes", "on")
 
 
@@ -9228,8 +9339,8 @@ _CONFORM_SKIP_NAMES = _CONFORM_SKIP_STRUCTURAL + _CONFORM_SKIP_DRAPING
 # proof only if every simulated shape were named in it; C1's cloth was BONE-driven, and
 # a bone-driven shape can in principle be simulated through `<bone>` constraints without
 # being named. `LEG_CHAIN_GUARD` does NOT close that hole -- it skips verts driven by
-# CUSTOM bones, while C1's robe was driven by SKELETON bones. Default OFF; judge it by
-# equipping robes, not by reading a metric.
+# CUSTOM bones, while C1's robe was driven by SKELETON bones. Judge it by equipping
+# robes, not by reading a metric.
 # DEFAULT ON since 1.2. The failure mode is a crash when equipping a robe, so
 # CBBE2UBE_NO_DRAPE_XML_GATE=1 restores the blanket skip if one appears.
 DRAPE_SKIP_XML_GATED = (
@@ -10922,7 +11033,7 @@ def _relax_shape_self_intersection(V, tris, chain_vert, Vb, Nb, tree, target):
         # each one must move its neighbourhood with it. Chain verts stay pinned: they
         # are zeroed after smoothing so a physics rest pose is never disturbed.
         try:
-            step = _smooth_vertex_field(step, tris, iters=_SELFINT_SMOOTH)
+            step = _smooth_vertex_field(step, tris, iters=_SELFINT_SMOOTH, verts=V)
             step[chain_vert] = 0.0
         except Exception as _pe:
             _note_pass_failure("_smooth_vertex_field", _pe)
@@ -12871,6 +12982,871 @@ def _match_limb_motion_to_body(dst_path, biped_slots: int = 0, *,
     return total
 
 
+# ---- Cross-shape coincident-vertex skin unification -----------------------
+#
+# REPORTED IN GAME on a converted romper: "the belt and belt buckle verts pull
+# in different directions and look to be weighed differently". Both halves were
+# right. Verts that TOUCH but belong to DIFFERENT shapes come out skinned
+# differently, so neighbouring parts of one garment shear apart the moment the
+# skeleton moves. It survived a whole session of fit work because every metric
+# in the project compares ONE shape against its own author -- not one shape
+# against ANOTHER.
+#
+# MEASURED on that piece (verts coincident within 0.15u; L1 summed over the bone
+# axis, so 0 = identically skinned and 2 = no bone in common):
+#
+#     pair                          touching  L1 med  L1 p90  >0.5  worst bone
+#     OURS    3ButtonsWaist/3RopeTied     77   0.207   1.115    32  NPC Pelvis
+#     AUTHOR  3ButtonsWaist/3RopeTied     71   0.000   0.061     0  NPC Spine1
+#
+# The author has ZERO verts above 0.5 on ANY pair; we shipped 73 across four. The
+# worst-divergent bones are PELVIS vs SPINE1/SPINE2 -- neighbouring parts of one
+# belt following different sections of the skeleton, which is literally "pulling
+# in different directions", and it is why the belts read correct in some poses
+# only: at another pose the disagreement cancels differently.
+#
+# CAUSE, traced by scoring the WRITTEN nif after every weight pass rather than
+# deducing it (`shear_trace.py`):
+#     _conform_fitted_to_body           0 verts over L1 0.5
+#     _match_rigid_leg_bend_to_body     7
+#     _match_full_weights_to_body      73        <- the bulk
+# Both pair each garment vert to a BODY vert independently PER SHAPE -- by KD, or
+# by a ray along that vert's OWN normal. Two verts at the same position in
+# different shapes have different normals, so they hit different body triangles,
+# copy different body rows, and are then capped to 4 bones and renormalised
+# differently. The author skinned them alike because they were authored as one
+# garment. Nothing downstream can undo it, so the repair belongs after them all.
+#
+# THE CLASS PROPERTY, falsifiable with no in-game verdict: coincident verts
+# across shapes must carry IDENTICAL weights, with the author's own divergence
+# as the reference.
+#
+# FIX: join cross-shape coincident verts into clusters and give each cluster ONE
+# row. Two things make that a RESTORATION rather than an invention:
+#
+#   * THE EDGE GATE IS THE AUTHOR'S OWN AGREEMENT. Two verts are joined only if
+#     the author skinned them alike (L1 <= _COINCIDENT_SKIN_GATE), so a genuine
+#     authored skin discontinuity is never welded shut. Gating per EDGE rather
+#     than per CLUSTER is load-bearing: union-find chains transitively, so one
+#     discontinuity anywhere in a chain would veto the whole cluster -- and those
+#     are exactly the clusters we diverge on most (measured on the reported
+#     piece: per-cluster gating left 40 verts over 0.5, per-edge left 5).
+#     A shape that cannot be paired to its source shape is excluded outright:
+#     with no authored answer there is no gate, and unifying on faith is how a
+#     safety rail becomes decoration.
+#
+#   * THE ROW IS AVERAGED OVER THE INTERSECTION of the member shapes' bone
+#     palettes, so no shape ever gains a bone -- no `add_bone`, hence none of the
+#     add_bone-resets-every-STB class. A cluster the shared palette cannot carry
+#     (< _COINCIDENT_SKIN_MIN_SHARE of EVERY member's row) is left alone rather
+#     than unified by discarding weight.
+#
+# MEASURED on the reported piece at the pack recipe:
+#     verts over L1 0.5    73 -> 5        (author: 0)
+#     worst pair median    0.207 -> 0.029 (author: 0.149)
+# with an INDEPENDENT counter-metric, because "the rows now agree" is the
+# quantity this pass optimises and quoting it as evidence would be a tautology:
+# mean L1 to the AUTHOR's own row for the same vertex went 0.2681 -> 0.2430 over
+# 3161 repaired verts. The unified rows move TOWARD the author, not off into
+# something invented.
+#
+# Coincidence is measured on the OUTPUT -- both the population the defect lives
+# in and the one the acceptance test measures. Measuring it in SOURCE space
+# instead structurally misses the verts the warp brings together (measured: two
+# of the five worst verts on the reported pair sit 0.42u apart in the source) and
+# scored worse on every axis. Safety comes from the author gate, not from the
+# positions.
+#
+# CBBE2UBE_NO_COINCIDENT_SKIN=1 turns it off. #coincident-skin-match
+COINCIDENT_SKIN_MATCH = (
+    os.environ.get("CBBE2UBE_NO_COINCIDENT_SKIN", "").strip().lower()
+    not in ("1", "true", "yes", "on"))
+# The acceptance test's own coincidence radius -- the repair covers exactly the
+# population the metric judges.
+_COINCIDENT_SKIN_TOL = float(
+    os.environ.get("CBBE2UBE_COINCIDENT_SKIN_TOL", "0.15") or "0.15")
+# How far the AUTHOR may disagree across an edge before it reads as a deliberate
+# skin boundary. The author's own cross-shape agreement on the reported piece is
+# median 0.005 / p90 0.074, so 0.10 sits above the noise and below any real
+# discontinuity.
+_COINCIDENT_SKIN_GATE = float(
+    os.environ.get("CBBE2UBE_COINCIDENT_SKIN_GATE", "0.10") or "0.10")
+# Fraction of EVERY member's row the shared palette must carry.
+_COINCIDENT_SKIN_MIN_SHARE = float(
+    os.environ.get("CBBE2UBE_COINCIDENT_SKIN_MIN_SHARE", "0.75") or "0.75")
+# #rigid-part-skin -- a welded part the AUTHOR skinned as one unit must stay one
+# unit. Off with CBBE2UBE_NO_RIGID_PART_SKIN=1. See the block inside the pass.
+RIGID_PART_SKIN_MATCH = (
+    os.environ.get("CBBE2UBE_NO_RIGID_PART_SKIN", "").strip().lower()
+    not in ("1", "true", "yes", "on"))
+# How far the AUTHOR's own rows may vary inside a part before it counts as
+# DEFORMABLE and is left alone. The measured separation is wide: the reported
+# buttons/buckles sit at 0.02-0.11 in the author while `3Fabric` -- cloth that
+# IS supposed to deform -- sits at 0.43-0.58, so 0.15 splits them cleanly and
+# sits nowhere near either edge.
+_RIGID_PART_GATE = float(
+    os.environ.get("CBBE2UBE_RIGID_PART_GATE", "0.15") or "0.15")
+# Below this a "part" is a stray sliver, not an ornament worth rigidifying.
+_RIGID_PART_MIN_VERTS = int(
+    os.environ.get("CBBE2UBE_RIGID_PART_MIN_VERTS", "8") or "8")
+# #rigid-part-cap -- OPT-IN, DEFAULT OFF, and the measurement is why.
+#
+# The idea: a part may deform as much as its author made it deform and no more,
+# imposed by pulling every row toward the part mean by `t = 1 - author/ours`
+# (which scales every pairwise L1 by exactly (1 - t)). It does remove the
+# over-deformation -- and it stiffens EVERYTHING ELSE with it. Measured on the
+# reported piece, summed intra-part spread per shape, author vs capped:
+#
+#     3Fabric        6.49 -> 3.73     <- CLOTH, now far stiffer than authored
+#     4Panties       2.67 -> 0.83
+#     5Lace          2.51 -> 0.59
+#     3RopeTied      1.95 -> 0.61
+#     total |ours-author|  29.45 -> 34.11  (over 21.65 -> 0.10,
+#                                           under  7.79 -> 34.01)
+#
+# So it trades a modest over-deformation for a large UNDER-deformation, and
+# fabric that will not move is a worse defect than a buckle that moves a little
+# too much. The symmetric error is the honest scorekeeper here precisely because
+# "make everything rigid" scores well on the one-sided one.
+#
+# Kept because the operation is exact and a future design may want it scoped to
+# ornaments only -- but it must never default ON without a per-part material or
+# ornament classifier in front of it. `CBBE2UBE_RIGID_PART_CAP=1` to experiment,
+# `CBBE2UBE_RIGID_PART_TOL` to loosen the ceiling.
+RIGID_PART_CAP = (
+    os.environ.get("CBBE2UBE_RIGID_PART_CAP", "").strip().lower()
+    in ("1", "true", "yes", "on"))
+_RIGID_PART_TOL = float(
+    os.environ.get("CBBE2UBE_RIGID_PART_TOL", "1.0") or "1.0")
+# #part-pair-align -- two ADJACENT parts must not diverge in MEAN follow more
+# than the author had them. Off with CBBE2UBE_NO_PART_PAIR_ALIGN=1.
+PART_PAIR_ALIGN = (
+    os.environ.get("CBBE2UBE_NO_PART_PAIR_ALIGN", "").strip().lower()
+    not in ("1", "true", "yes", "on"))
+# Closest approach at which two parts count as adjacent.
+_PART_PAIR_NEAR = float(
+    os.environ.get("CBBE2UBE_PART_PAIR_NEAR", "1.0") or "1.0")
+# Headroom over the author before a pair is pulled back together.
+_PART_PAIR_MARGIN = float(
+    os.environ.get("CBBE2UBE_PART_PAIR_MARGIN", "0.10") or "0.10")
+# #author-deviation-skin -- a part deforms INTERNALLY the way its author made it
+# deform. Off with CBBE2UBE_NO_AUTHOR_DEVIATION_SKIN=1.
+#
+# This is the answer to the defect `#rigid-part-cap` above could not solve
+# without wrecking cloth, and WHAT IT AIMS AT is the whole difference. The cap
+# pulled rows toward the part MEAN -- toward ZERO internal variation -- with the
+# author's spread only choosing how far, so everything it touched got stiffer
+# and fabric stopped moving. This TRANSPLANTS the author's own deviation:
+#
+#     row_i := our_part_mean + (author_i - author_part_mean)
+#
+# Our mean says WHERE the part rides: it carries the UBE retarget, the fit chain
+# and `#part-pair-align`, all of which are right and none of which the author
+# knows about. The author's deviation says HOW the part deforms about that mean.
+# Neither term is a compromise between the two rigs -- each is taken from
+# whichever rig is authoritative for it
+# ([[feedback_preserve_authored_relationships]]).
+#
+# So the target is the author's variation, not zero, and cloth is a FIXED POINT
+# rather than a casualty. Measured on the reported piece, summed intra-part
+# spread, against the same scorekeeper that condemned the cap:
+#
+#     3Fabric        author  6.49   ours 14.71   ->  6.71   (cap gave 3.73)
+#     3ButtonsWaist  author 10.09   ours 12.24   ->  6.51
+#     3Belts         author  6.68   ours  8.96   ->  6.21
+#     total |x - author|    13.92  ->  7.17      (cap: 29.45 -> 34.11)
+#
+# Per fired part it lands ON the author, not under -- the worst offenders read
+# author 0.179 / ours 1.776 -> 0.178 and author 0.369 / ours 1.437 -> 0.409.
+# The residual shape-level gap is parts where we already vary LESS than the
+# author (sub-1u studs, 0.030 vs 0.098) and which this pass never touches: it
+# only ever fires where we OVER-deform.
+AUTHOR_DEVIATION_SKIN = (
+    os.environ.get("CBBE2UBE_NO_AUTHOR_DEVIATION_SKIN", "").strip().lower()
+    not in ("1", "true", "yes", "on"))
+# Headroom over the author's own spread before a part is rebuilt. Shares the
+# rigid gate's value for the same reason: under it the difference is noise.
+_AUTHOR_DEV_MARGIN = float(
+    os.environ.get("CBBE2UBE_AUTHOR_DEV_MARGIN", "0.15") or "0.15")
+# The author's deviation is only meaningful on bones BOTH rigs have. Under this
+# share of the author's palette the transplant would be mostly guesswork, so the
+# part is left alone rather than rebuilt from a fragment.
+_AUTHOR_DEV_MIN_PALETTE = float(
+    os.environ.get("CBBE2UBE_AUTHOR_DEV_MIN_PALETTE", "0.5") or "0.5")
+
+
+def _match_coincident_cross_shape_skin(dst_path, src_nif_path=None) -> int:
+    """Give cross-shape coincident verts ONE weight row. Returns verts unified.
+
+    Runs LAST of the weight passes: every pass above pairs to the body per
+    shape, so anything placed before them would simply be re-diverged. See the
+    block comment for the measurements. #coincident-skin-match"""
+    if not COINCIDENT_SKIN_MATCH or src_nif_path is None:
+        return 0
+    try:
+        from scipy.spatial import cKDTree
+    except Exception:
+        return 0
+    try:
+        pyn = _pynifly()
+        nf = pyn.NifFile(filepath=str(dst_path))
+    except Exception:
+        return 0
+    if _nif_has_fx_shape(nf):
+        return 0  # effect-shader NIF: a reload+re-save corrupts its controller -> CTD
+
+    def _rows_of(shape, n):
+        """Per-vert {bone: weight}. `bone_weights`, never `get_weights`
+        ([[project_shape_weight_accessor]])."""
+        out = [dict() for _ in range(n)]
+        for b, prs in (shape.bone_weights or {}).items():
+            for vi, w in prs:
+                iv = int(vi)
+                if 0 <= iv < n and float(w) > 0.0:
+                    out[iv][b] = out[iv].get(b, 0.0) + float(w)
+        return out
+
+    # Authored physics geometry is off limits to every skin pass here.
+    collider_names = _hdt_collider_shape_names(dst_path, nif=nf)
+    softbody_names = _hdt_softbody_shape_names(dst_path, nif=nf)
+
+    cand = [s for s in nf.shapes
+            if (s.name or "") not in RESKIN_SKIP_NAMES
+            and (s.name or "") not in collider_names
+            and (s.name or "") not in softbody_names
+            and getattr(s, "bone_weights", None) and len(s.verts) >= 3]
+    if len(cand) < 2:
+        return 0
+    want = {s.name or "": len(s.verts) for s in cand}
+
+    # THE AUTHOR'S ROWS ARE THE GATE. Vert indices survive conversion -- the
+    # passes move positions and reweight, they do not renumber -- so a source
+    # shape with the same name and vert count maps 1:1 (same pairing rule as
+    # `_source_bust_weight_map`). Only the shapes still in play are read: the
+    # source also carries the author's BODY, and parsing tens of thousands of
+    # rows nothing can use is pure cost.
+    src_rows: dict = {}
+    try:
+        snf = pyn.NifFile(filepath=str(src_nif_path))
+        for ss in snf.shapes:
+            nm = ss.name or ""
+            if (want.get(nm) == len(ss.verts)
+                    and getattr(ss, "bone_weights", None)):
+                src_rows[nm] = _rows_of(ss, len(ss.verts))
+    except Exception as _se:
+        _note_pass_failure("_match_coincident_cross_shape_skin/source", _se)
+        return 0
+    if not src_rows:
+        return 0
+
+    ents: list = []          # keyed by INDEX: shape names are not unique
+    for s in cand:
+        sr = src_rows.get(s.name or "")
+        if sr is None:
+            continue         # no authored answer -> no gate -> leave it alone
+        try:
+            wv = _verts_skin_to_world(np.asarray(s.verts, dtype=np.float64),
+                                      _shape_global_to_skin(s))
+            rr = _rows_of(s, len(sr))
+        except Exception:
+            continue
+        # `old` is filled in lazily, only for the rows actually rewritten --
+        # snapshotting every row of every shape doubled the pass's memory for
+        # the sake of the ~1% it ends up needing.
+        ents.append({"s": s, "wv": wv, "rows": rr, "old": {},
+                     "pal": set(s.bone_weights or {}), "src": sr})
+    if len(ents) < 2:
+        return 0
+
+    owner: list = []
+    for k, e in enumerate(ents):
+        owner.extend((k, i) for i in range(len(e["wv"])))
+    try:
+        allv = np.concatenate([e["wv"] for e in ents])
+        pairs = cKDTree(allv).query_pairs(_COINCIDENT_SKIN_TOL,
+                                          output_type="ndarray")
+    except Exception:
+        return 0
+    if not len(pairs):
+        return 0
+
+    parent = list(range(len(owner)))
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    n_cut = 0
+    joined: set = set()
+    for a, b in pairs:
+        a, b = int(a), int(b)
+        ka, ia = owner[a]
+        kb, ib = owner[b]
+        if ka == kb:
+            continue
+        ra, rb = ents[ka]["src"][ia], ents[kb]["src"][ib]
+        if sum(abs(ra.get(x, 0.0) - rb.get(x, 0.0))
+               for x in set(ra) | set(rb)) > _COINCIDENT_SKIN_GATE:
+            n_cut += 1
+            continue          # the author drew a skin boundary here -- keep it
+        joined.add(a)
+        joined.add(b)
+        pa, pb = find(a), find(b)
+        if pa != pb:
+            parent[pa] = pb
+    # ---- A PART THE AUTHOR SKINNED RIGID MUST STAY RIGID --------------------
+    #
+    # REPORTED IN GAME after the cross-shape fix shipped: "the belts look better
+    # but the buckles are still distorted / some verts are morphed in strange
+    # ways". Correct, and it is the SAME defect one level in. Unifying only the
+    # verts that TOUCH ACROSS shapes fixes a buckle's contact ring and leaves
+    # the rest of the buckle on its own rows -- so the ring follows the belt,
+    # the body of the buckle follows something else, and the part shears
+    # INTERNALLY under motion. A rigid ornament has no business deforming at all.
+    #
+    # MEASURED on the shipped romper (max pairwise L1 WITHIN a welded part,
+    # against the author's own value for that part):
+    #
+    #     part                 verts   AUTHOR   OURS
+    #     6BraSideButtons_1       52    0.025   1.033
+    #     6BraSideButtons_1       52    0.037   0.706
+    #     3ButtonsWaist          364    0.180   0.859
+    #     summed over 154 parts          60.15  89.31
+    #
+    # So the gate is the AUTHOR'S OWN RIGIDITY, not a size heuristic: a part the
+    # author skinned as one unit is re-unified, a part they skinned to deform is
+    # left alone. `3Fabric` reads 0.43-0.58 in the author and is correctly never
+    # touched. Same "restore the authored relationship" move as the cross-shape
+    # half, and it shares its cluster machinery -- so a buckle welded to its belt
+    # ring ends up in ONE cluster with it, which is exactly the author's rig.
+    #
+    # PARTS ARE WELDED COMPONENTS (1e-3u), never raw topological ones: authors
+    # split verts at hard edges, so one buckle is many islands
+    # ([[project_component_is_not_an_object]]).
+    _rigid_nodes: set = set()
+    _soft_parts: list = []          # (ent, vert idx, the AUTHOR's own spread)
+    _all_parts: list = []           # (ent, vert idx) -- every welded part
+    if RIGID_PART_SKIN_MATCH:
+        try:
+            from scipy.sparse import coo_matrix as _coo
+            from scipy.sparse.csgraph import connected_components as _cc
+            _base = 0
+            _offs = []
+            for e in ents:
+                _offs.append(_base)
+                _base += len(e["wv"])
+            for k, e in enumerate(ents):
+                sv = np.asarray(e["s"].verts, dtype=np.float64)
+                try:
+                    tri = np.asarray(e["s"].tris, dtype=np.int64)
+                except Exception:
+                    continue
+                if not len(tri):
+                    continue
+                ed = np.vstack([tri[:, [0, 1]], tri[:, [1, 2]], tri[:, [2, 0]]])
+                wp = cKDTree(sv).query_pairs(1e-3, output_type="ndarray")
+                if len(wp):
+                    ed = np.vstack([ed, wp])
+                n = len(sv)
+                _n, lab = _cc(_coo((np.ones(len(ed)), (ed[:, 0], ed[:, 1])),
+                                   shape=(n, n)), directed=False)
+                src_rows_k = e["src"]
+                for pid in range(_n):
+                    idx = np.flatnonzero(lab == pid)
+                    if len(idx) < _RIGID_PART_MIN_VERTS:
+                        continue
+                    # The AUTHOR's spread inside this part decides. Sampled --
+                    # the answer is a max over pairs and a 60-vert sample of a
+                    # rigid part is still ~0.
+                    smp = (idx if len(idx) <= 48
+                           else idx[np.linspace(0, len(idx) - 1, 48).astype(int)])
+                    worst = 0.0
+                    for _a in range(len(smp)):
+                        ra_ = src_rows_k[smp[_a]]
+                        for _b in range(_a + 1, len(smp)):
+                            rb_ = src_rows_k[smp[_b]]
+                            d_ = sum(abs(ra_.get(x, 0.0) - rb_.get(x, 0.0))
+                                     for x in set(ra_) | set(rb_))
+                            if d_ > worst:
+                                worst = d_
+                            if worst > _RIGID_PART_GATE:
+                                break
+                        if worst > _RIGID_PART_GATE:
+                            break
+                    _all_parts.append((k, idx))
+                    if worst > _RIGID_PART_GATE:
+                        # The author meant this part to deform -- but not
+                        # necessarily as much as we do. Hand it to the CAP below
+                        # instead of walking away.
+                        _soft_parts.append((k, idx, worst))
+                        continue
+                    root = int(idx[0]) + _offs[k]
+                    for vi in idx[1:]:
+                        gid = int(vi) + _offs[k]
+                        _rigid_nodes.add(gid)
+                        pa, pb = find(root), find(gid)
+                        if pa != pb:
+                            parent[pa] = pb
+                    _rigid_nodes.add(root)
+                    joined.add(root)
+                    joined.update(int(v) + _offs[k] for v in idx[1:])
+        except Exception as _re:
+            _note_pass_failure(
+                "_match_coincident_cross_shape_skin/rigid-part", _re)
+
+    # ---- ADJACENT PARTS MUST TRAVEL TOGETHER (#part-pair-align) -----------
+    #
+    # REPORTED IN GAME: "the metal buckles along the top belts still move
+    # incorrectly instead of staying solid" -- after both the cross-shape fix
+    # and the rigid-part fix. Neither can see this defect. The cross-shape one
+    # only unifies verts within 0.15u of each other; the rigid one only looks
+    # WITHIN a part. A buckle can be internally rigid AND agree with its belt
+    # where they touch, and still ride a different AVERAGE bone from the belt --
+    # so the whole buckle slides across the whole belt as the skeleton moves.
+    #
+    # MEASURED on the shipped piece (`part_pair_offset.py`, L1 between the MEAN
+    # rows of parts whose closest approach is <= 1u):
+    #
+    #     3BeltWaist / 3ButtonsWaist    author 0.273   ours 0.892
+    #     3ButtonsWaist / 3LeatherMain  author 0.679   ours 1.120
+    #     3Belts / 3ButtonsWaist        author 0.416   ours 0.834
+    #     10 pairs exceed the author by >0.3; 472 pairs total
+    #
+    # THE OPERATION IS AN ADDITIVE SHIFT, NOT A BLEND. Each part is moved
+    # bodily toward the pair's joint mean:  row_i += s * (M - mean_part).
+    # That changes the part's MEAN while leaving every within-part difference
+    # untouched, so it cannot stiffen the part -- which is exactly how the
+    # blend-based `#rigid-part-cap` failed (it flattened cloth: 3Fabric 6.49 ->
+    # 3.73 against the author). A shift whose components sum to zero also keeps
+    # every row summing to 1 by construction.
+    #
+    # Runs BEFORE the cluster unification below, so the cross-shape agreement
+    # gets the LAST word on verts that touch -- a shift applied afterwards would
+    # pull those apart again and undo the fix it is built on top of.
+    from collections import defaultdict as _dd
+    changed: dict = _dd(set)
+    n_aligned = 0
+    if PART_PAIR_ALIGN and len(_all_parts) > 1:
+        try:
+            _pmean = []
+            for k, idx in _all_parts:
+                e = ents[k]
+                mo: dict = _dd(float)
+                ma: dict = _dd(float)
+                for vi in idx:
+                    for b, w in e["rows"][int(vi)].items():
+                        mo[b] += w / len(idx)
+                    for b, w in e["src"][int(vi)].items():
+                        ma[b] += w / len(idx)
+                _pmean.append((k, idx, dict(mo), dict(ma),
+                               cKDTree(e["wv"][idx])))
+            for _i in range(len(_pmean)):
+                ki, ii, moi, mai, ti = _pmean[_i]
+                for _j in range(_i + 1, len(_pmean)):
+                    kj, ij, moj, maj, tj = _pmean[_j]
+                    # adjacency, cheapest test first
+                    d, _q = ti.query(ents[kj]["wv"][ij])
+                    if d.min() > _PART_PAIR_NEAR:
+                        continue
+                    lo = sum(abs(moi.get(b, 0.0) - moj.get(b, 0.0))
+                             for b in set(moi) | set(moj))
+                    la = sum(abs(mai.get(b, 0.0) - maj.get(b, 0.0))
+                             for b in set(mai) | set(maj))
+                    if lo <= la + _PART_PAIR_MARGIN or lo <= 1e-6:
+                        continue
+                    s = 0.5 * (1.0 - (la + _PART_PAIR_MARGIN) / lo)
+                    if s <= 0:
+                        continue
+                    for (kk, idxk, mk) in ((ki, ii, moi), (kj, ij, moj)):
+                        other = moj if kk is ki and idxk is ii else moi
+                        M = {b: 0.5 * (mk.get(b, 0.0) + other.get(b, 0.0))
+                             for b in set(mk) | set(other)}
+                        e = ents[kk]
+                        pal = e["pal"]
+                        for vi in idxk:
+                            vi = int(vi)
+                            cur = e["rows"][vi]
+                            row = {}
+                            for b in set(cur) | set(M):
+                                if b not in pal:
+                                    continue
+                                v = cur.get(b, 0.0) + s * (M.get(b, 0.0)
+                                                           - mk.get(b, 0.0))
+                                if v > _WRITE_MIN:
+                                    row[b] = v
+                            if len(row) > _SKIN_MAX_INFLUENCES:
+                                row = dict(sorted(row.items(),
+                                                  key=lambda kv: (-kv[1], kv[0]))
+                                           [:_SKIN_MAX_INFLUENCES])
+                            tot_r = sum(row.values())
+                            if tot_r <= _WRITE_MIN:
+                                continue
+                            row = {b: w / tot_r for b, w in row.items()}
+                            e["old"].setdefault(vi, cur)
+                            e["rows"][vi] = row
+                            changed[kk].add(vi)
+                    n_aligned += 1
+        except Exception as _ae:
+            _note_pass_failure(
+                "_match_coincident_cross_shape_skin/part-pair", _ae)
+
+    # ---- A PART DEFORMS THE WAY ITS AUTHOR MADE IT (#author-deviation-skin) --
+    #
+    # REPORTED IN GAME, after the cross-shape, rigid-part and part-pair fixes
+    # had all shipped: "the metal buckles on the belts across the stomach --
+    # SOME VERTS SHIFT BASED ON MOVEMENT WHILE OTHERS DON'T, making a distortion
+    # during movement". That is neither of the defects above. The buckle agrees
+    # with its belt where they touch, it rides the right average bone, and it is
+    # still torn apart from the inside, because nothing bounds how far OUR rows
+    # diverge WITHIN a part the author skinned semi-deformably -- above
+    # `_RIGID_PART_GATE`, so the rigid branch deliberately walked away.
+    #
+    # `#rigid-part-cap` was built for exactly this and MEASURED ITS WAY TO A
+    # REJECTION: aiming at the part mean aims at zero variation, so it fixed the
+    # buckles by freezing the fabric. See its constant above for the numbers.
+    # The fix is not a weaker cap, it is a different TARGET -- the author's own
+    # per-vertex deviation, transplanted onto our mean. Rationale and the
+    # measured result are on `AUTHOR_DEVIATION_SKIN`.
+    #
+    # ONLY EVER FIRES WHERE WE OVER-DEFORM (`ours > author + margin`), so a part
+    # we already skin more smoothly than the author is left exactly as it is --
+    # this pass may remove variation we invented, never add variation they did
+    # not ask for.
+    #
+    # Runs BEFORE the cluster unification below, for the same reason
+    # `#part-pair-align` does: the cross-shape agreement is the in-game-verified
+    # fix this is built on top of, and it must get the LAST word on verts that
+    # touch across shapes.
+    #
+    # Reads `_soft_parts`, so it is inert when `#rigid-part-skin` is off -- that
+    # branch is what separates "the author meant this to deform" from "the
+    # author meant this rigid", and rigid parts are already unified outright.
+    n_devmatch = 0
+    if AUTHOR_DEVIATION_SKIN and _soft_parts:
+        try:
+            for k, idx, _partial in _soft_parts:
+                e = ents[k]
+                rows_k, src_k, pal = e["rows"], e["src"], e["pal"]
+                smp = (idx if len(idx) <= 48
+                       else idx[np.linspace(0, len(idx) - 1,
+                                            48).astype(int)])
+
+                def _worst(rows):
+                    w = 0.0
+                    for _a in range(len(smp)):
+                        ra_ = rows[smp[_a]]
+                        for _b in range(_a + 1, len(smp)):
+                            rb_ = rows[smp[_b]]
+                            d_ = sum(abs(ra_.get(x, 0.0) - rb_.get(x, 0.0))
+                                     for x in set(ra_) | set(rb_))
+                            if d_ > w:
+                                w = d_
+                    return w
+
+                # RECOMPUTED, NOT taken from `_soft_parts`. The spread stored
+                # there stops as soon as it clears `_RIGID_PART_GATE` -- right
+                # for a rigid/deformable verdict, and a TRUNCATED LOWER BOUND as
+                # a number. Using it made this gate fire on parts already within
+                # the author's margin, and it would have fired on more of the
+                # pack than the census the defaults were chosen from.
+                auth_spread = _worst(src_k)
+                if _worst(rows_k) <= auth_spread + _AUTHOR_DEV_MARGIN:
+                    continue
+                a_set: set = set()
+                o_set: set = set()
+                for vi in idx:
+                    a_set |= set(src_k[int(vi)])
+                    o_set |= set(rows_k[int(vi)])
+                if not a_set:
+                    continue
+                # A bone we cannot WRITE is not usable however well it matches:
+                # weighting to a bone outside the shape's palette skins the
+                # vertex to the origin ([[project_shape_weight_accessor]]).
+                shared = (a_set & o_set) & pal
+                if len(shared) < _AUTHOR_DEV_MIN_PALETTE * len(a_set):
+                    continue
+                mo: dict = _dd(float)
+                ma: dict = _dd(float)
+                for vi in idx:
+                    for b, w in rows_k[int(vi)].items():
+                        mo[b] += w / len(idx)
+                    for b, w in src_k[int(vi)].items():
+                        ma[b] += w / len(idx)
+                base = {b: w for b, w in mo.items() if b in pal}
+                if not base:
+                    continue
+                for vi in idx:
+                    vi = int(vi)
+                    cur = rows_k[vi]
+                    row = dict(base)
+                    for b in shared:
+                        # Clamped at zero: a deviation deeper than our mean
+                        # holds cannot be represented, and a negative weight is
+                        # not a weight. The renormalise below absorbs it.
+                        v = row.get(b, 0.0) + (src_k[vi].get(b, 0.0)
+                                               - ma.get(b, 0.0))
+                        row[b] = v if v > 0.0 else 0.0
+                    row = {b: w for b, w in row.items() if w > _WRITE_MIN}
+                    if len(row) > _SKIN_MAX_INFLUENCES:
+                        # Total order, never weight alone -- symmetric bones tie
+                        # EXACTLY. #deterministic-set-iteration
+                        row = dict(sorted(row.items(),
+                                          key=lambda kv: (-kv[1], kv[0]))
+                                   [:_SKIN_MAX_INFLUENCES])
+                    tot_r = sum(row.values())
+                    if tot_r <= _WRITE_MIN:
+                        continue
+                    row = {b: w / tot_r for b, w in row.items()}
+                    e["old"].setdefault(vi, cur)
+                    rows_k[vi] = row
+                    changed[k].add(vi)
+                n_devmatch += 1
+        except Exception as _de:
+            _note_pass_failure(
+                "_match_coincident_cross_shape_skin/author-deviation", _de)
+
+    # Only nodes an accepted edge actually touched can be in a cluster of two or
+    # more; walking every vertex here built one throwaway list per vertex on a
+    # 163k-vert piece to find the ~1% that matter.
+    groups = _dd(list)
+    for g in sorted(joined):
+        groups[find(g)].append(g)
+
+    n_weak = 0
+    for mem in groups.values():
+        if len(mem) < 2:
+            continue
+        cluster = [owner[m] for m in mem]
+        if len({k for k, _ in cluster}) < 2 and not (
+                _rigid_nodes and any(m in _rigid_nodes for m in mem)):
+            continue   # one shape and not an author-rigid part -- nothing to do
+        basis = None
+        for k, _i in cluster:
+            basis = ents[k]["pal"] if basis is None else (basis & ents[k]["pal"])
+        if not basis:
+            n_weak += 1
+            continue
+        ro = [ents[k]["rows"][i] for k, i in cluster]
+        if any(sum(w for b, w in r.items() if b in basis)
+               < _COINCIDENT_SKIN_MIN_SHARE for r in ro):
+            n_weak += 1
+            continue
+        avg: dict = _dd(float)
+        for r in ro:
+            for b, w in r.items():
+                if b in basis:
+                    avg[b] += w / len(ro)
+        kept = {b: w for b, w in avg.items() if w > _WRITE_MIN}
+        if len(kept) > _SKIN_MAX_INFLUENCES:
+            # Total order, never weight alone: symmetric bones tie EXACTLY and
+            # the survivor would follow set iteration order.
+            # #deterministic-set-iteration
+            kept = dict(sorted(kept.items(), key=lambda kv: (-kv[1], kv[0]))
+                        [:_SKIN_MAX_INFLUENCES])
+        tot = sum(kept.values())
+        if tot <= _WRITE_MIN:
+            n_weak += 1
+            continue
+        tgt = {b: w / tot for b, w in kept.items()}
+        for k, i in cluster:
+            e = ents[k]
+            e["old"].setdefault(i, e["rows"][i])
+            e["rows"][i] = dict(tgt)
+            changed[k].add(i)
+
+    # ---- NEVER DEFORM A PART MORE THAN ITS AUTHOR DID ----------------------
+    #
+    # REPORTED IN GAME after `#rigid-part-skin` shipped: "the metal buckles
+    # along the top belts still move incorrectly instead of staying solid".
+    # Those sit on `3ButtonsWaist`, which the author skinned SEMI-deformably
+    # (0.289) -- above the rigid gate, so the rigid branch correctly walked
+    # away, and nothing then bounded how far WE deformed it (1.465, 5x).
+    #
+    # Rigid/not-rigid was the wrong shape for the rule. The real invariant is
+    # the AUTHOR'S OWN VARIATION as a CEILING: a part may deform as much as they
+    # made it deform, and no more. Rigidity is just its limiting case.
+    #
+    # THE OPERATION IS EXACT, which is why it is a cap and not a nudge. Pulling
+    # every row toward the part's mean by `t`
+    #     row_i := (1 - t) * row_i + t * mean
+    # scales EVERY pairwise L1 in the part by exactly (1 - t) -- the mean
+    # cancels in each difference -- so `t = 1 - author/ours` lands the part on
+    # the author's own spread by construction, not by iteration. It is a convex
+    # combination of rows that each sum to 1, so the sum stays 1 and no weight
+    # goes negative.
+    #
+    # The 4-influence cap is taken on the PART'S MEAN, so every vertex in the
+    # part keeps the SAME bone set and only the magnitudes vary. Capping each
+    # vertex independently would let the cap itself re-introduce exactly the
+    # divergence being removed.
+    n_capped = 0
+    if RIGID_PART_SKIN_MATCH and RIGID_PART_CAP and _soft_parts:
+        for k, idx, auth_spread in _soft_parts:
+            e = ents[k]
+            rows_k = e["rows"]
+            smp = (idx if len(idx) <= 48
+                   else idx[np.linspace(0, len(idx) - 1, 48).astype(int)])
+            ours = 0.0
+            for _a in range(len(smp)):
+                ra_ = rows_k[smp[_a]]
+                for _b in range(_a + 1, len(smp)):
+                    rb_ = rows_k[smp[_b]]
+                    d_ = sum(abs(ra_.get(x, 0.0) - rb_.get(x, 0.0))
+                             for x in set(ra_) | set(rb_))
+                    if d_ > ours:
+                        ours = d_
+            ceiling = auth_spread * _RIGID_PART_TOL
+            if ours <= ceiling or ours <= 1e-6:
+                continue
+            tt = 1.0 - (ceiling / ours)
+            mean: dict = _dd(float)
+            for vi in idx:
+                for b, w in rows_k[vi].items():
+                    mean[b] += w / len(idx)
+            pal = e["pal"]
+            mean = {b: w for b, w in mean.items()
+                    if b in pal and w > _WRITE_MIN}
+            if not mean:
+                continue
+            # BLEND OVER THE UNION, then cap PER VERTEX. Restricting every row
+            # to the MEAN's top-4 first was measured and rejected: the
+            # restriction removes far more variation than the (1 - t) scaling
+            # intends, so parts landed well BELOW their author -- over-deform
+            # 21.65 -> 6.47 but under-deform 7.79 -> 25.55, a net LOSS. The
+            # blend is the exact operation; the cap must stay a small
+            # perturbation on top of it, not a second, larger one underneath.
+            for vi in idx:
+                cur = rows_k[int(vi)]
+                blended: dict = {}
+                for b in set(cur) | set(mean):
+                    if b not in pal:
+                        continue
+                    v = (1.0 - tt) * cur.get(b, 0.0) + tt * mean.get(b, 0.0)
+                    if v > _WRITE_MIN:
+                        blended[b] = v
+                if len(blended) > _SKIN_MAX_INFLUENCES:
+                    blended = dict(sorted(blended.items(),
+                                          key=lambda kv: (-kv[1], kv[0]))
+                                   [:_SKIN_MAX_INFLUENCES])
+                tot_r = sum(blended.values())
+                if tot_r <= _WRITE_MIN:
+                    continue
+                blended = {b: w / tot_r for b, w in blended.items()}
+                e["old"].setdefault(int(vi), cur)
+                rows_k[int(vi)] = blended
+                changed[k].add(int(vi))
+            n_capped += 1
+
+    total = 0
+    dirty = False
+    for k, e in enumerate(ents):
+        ch = changed.get(k)
+        if not ch:
+            continue
+        s, rr, old = e["s"], e["rows"], e["old"]
+        n = len(e["wv"])
+        touched: set = set()
+        removed: dict = _dd(set)
+        for i in ch:
+            o, w = old[i], rr[i]
+            for b in set(o) | set(w):
+                if abs(o.get(b, 0.0) - w.get(b, 0.0)) > _WRITE_MIN:
+                    touched.add(b)
+                # `setShapeWeights` is an UPDATE, not a REPLACE -- a vert simply
+                # omitted KEEPS its old value, so a bone this row gives up has
+                # to be written explicitly at 0.0
+                # ([[project_setshapeweights_update_semantics]]).
+                if o.get(b, 0.0) > _WRITE_MIN and w.get(b, 0.0) <= _WRITE_MIN:
+                    removed[b].add(i)
+        if not touched:
+            continue
+        # NEVER EMPTY A BONE, and decide it BEFORE writing anything: a bone left
+        # in the shape's list but with no weighted vertex is absent from the
+        # regenerated skin-partition palette, and the per-vert index then runs
+        # past that palette on equip. Such a bone is left ENTIRELY alone -- both
+        # its removals and its values -- rather than half-written.
+        # #zeroweight-bone-desync
+        write_bones = sorted(         # sorted: #deterministic-weight-write
+            b for b in touched
+            if any(rr[i].get(b, 0.0) > _WRITE_MIN for i in range(n)))
+        if not write_bones:
+            continue
+        # STBs: setShapeWeights can reset them, so save every bone we write and
+        # restore afterwards. If any cannot be read, skip this shape rather than
+        # ship an identity-reset bone (identity STB = origin spike = explosion).
+        saved_stb = {}
+        ok = True
+        for b in write_bones:
+            try:
+                st = s.get_shape_skin_to_bone(b)
+            except Exception:
+                st = None
+            if st is None:
+                ok = False
+                break
+            saved_stb[b] = st
+        if not ok:
+            continue
+        try:
+            # REMOVALS FIRST, IN THEIR OWN PASS. The native skin buffer holds
+            # FOUR influences per vertex and `setShapeWeights` MERGES, so a bone
+            # this row ADDS arrives while the bones it is replacing still hold
+            # their OLD, larger values -- it loses the four-way contest
+            # immediately and is gone before those get lowered, and the row then
+            # ships light while the bones that did land were scaled as a share
+            # of a total that counted it. Measured here before this was split
+            # in two: vertex 655 of a waist belt shipped summing 0.9621 with its
+            # `NPC L Thigh` 0.0379 simply missing. Zeroing first frees the slots,
+            # so every newcomer has somewhere to land. #family-weight-invariant
+            for b in write_bones:
+                rem = removed.get(b)
+                if rem:
+                    s.setShapeWeights(b, [(i, 0.0) for i in sorted(rem)])
+            for b in write_bones:
+                s.setShapeWeights(b, [(i, rr[i][b]) for i in range(n)
+                                      if rr[i].get(b, 0.0) > _WRITE_MIN])
+        except Exception as _we:
+            for b, st in saved_stb.items():
+                try:
+                    s.set_skin_to_bone_xform(b, st)
+                except Exception as _pe:
+                    _note_pass_failure("set_skin_to_bone_xform", _pe)
+            print(f"  WARN: coincident-skin write failed mid-shape on "
+                  f"{s.name!r} ({_we!r}) -- STBs restored, shape left "
+                  f"partially unified", file=sys.stderr)
+            continue
+        for b, st in saved_stb.items():
+            try:
+                s.set_skin_to_bone_xform(b, st)
+            except Exception as _pe:
+                _note_pass_failure("set_skin_to_bone_xform", _pe)
+        # setShapeWeights writes the NATIVE skin buffer and leaves pynifly's
+        # cached `bone_weights` stale; anything re-authoring from this in-memory
+        # nf would copy the PRE-unification weights.
+        s._weights = None
+        total += len(ch)
+        dirty = True
+    if os.environ.get("CBBE2UBE_COINCIDENT_SKIN_DEBUG"):
+        print(f"  [coincident-skin] shapes={len(ents)} edges-cut={n_cut} "
+              f"clusters-skipped={n_weak} parts-capped={n_capped} "
+              f"parts-devmatched={n_devmatch} "
+              f"verts-unified={total}", file=sys.stderr)
+    if dirty:
+        # A re-save must never silently un-hide an SMP collision proxy.
+        _hide_virtual_body(nf)
+        try:
+            atomic_nif_save(nf, dst_path)
+        except Exception as _se:
+            # `return 0` already means "nothing unified", so a swallowed save
+            # would read as a clean no-op.
+            _note_pass_failure("_match_coincident_cross_shape_skin/save",
+                               _se, dst_path)
+            return 0
+    return total
+
+
 def _transfer_body_jiggle_to_fitted(dst_path, biped_slots: int = 0,
                                     src_nif_path=None) -> int:
     """Graft the UBE body's jiggle (butt/belly/breast) weight onto a fitted
@@ -13950,9 +14926,8 @@ def _add_butt_collider_patch(dst_path) -> int:
                     # defect this guards. Decline the whole patch -- a missing
                     # butt collider is a state the pack shipped in for its whole
                     # life; a collider FSMP cannot resolve collapses the cloth.
-                    raise RuntimeError(
-                        f"no XML-declared ancestor for {bname!r} -- declining "
-                        f"rather than registering an unresolvable collider")
+                    raise _ColliderDeclined(
+                        f"no XML-declared ancestor for {bname!r}")
                 _redirects[bname] = tgt
             d = _acc.setdefault(tgt, {})
             for vi, w in sub:
@@ -14020,6 +14995,10 @@ def _add_butt_collider_patch(dst_path) -> int:
             pr.flags = _BUST_SPLIT_HIDDEN_FLAGS
         if hasattr(ns, "flags"):
             ns.flags = _BUST_SPLIT_HIDDEN_FLAGS
+    except _ColliderDeclined as _dc:
+        # A correct refusal, not a defect -- see `_ColliderDeclined`.
+        print(f"    [butt-col] {p.name}: DECLINED -- {_dc}", file=sys.stderr)
+        return 0
     except Exception as _ce:
         _note_pass_failure("_add_butt_collider_patch/author", _ce)
         return 0
@@ -14110,6 +15089,28 @@ _SKIRT_PROXY_TARGET = int(
 _SKIRT_PROXY_CHAIN_MIN = float(
     os.environ.get("CBBE2UBE_SKIRT_PROXY_CHAIN_MIN", "0.5"))
 _SKIRT_PROXY_GAP = float(os.environ.get("CBBE2UBE_SKIRT_PROXY_GAP", "3.0"))
+# #collider-declared-bones on this proxy: how much of its weight may be moved
+# onto kinematic XML-declared ancestors before the proxy is DECLINED instead.
+# The proxy exists to FOLLOW simulated cloth, so past some share it is no longer
+# doing that and a stale collision surface is worse than none. 0.25 is the
+# conservative end -- the audited offenders carry undeclared bones on a small
+# minority of their mass (twist/neck/thigh-detail trim), so the cap declines the
+# pathological case without touching them.
+_SKIRT_PROXY_REDIRECT_MAX = float(
+    os.environ.get("CBBE2UBE_SKIRT_PROXY_REDIRECT_MAX", "0.25"))
+
+
+class _ColliderDeclined(Exception):
+    """A collider patch REFUSING to ship, which is a correct outcome, not a bug.
+
+    Both collider patches decline rather than register a collider whose bones
+    the piece's own physics XML cannot resolve -- that is the whole point of
+    `#collider-declared-bones`. Raising a bare `RuntimeError` for it routed the
+    decline into `_note_pass_failure`, so an intentional, healthy refusal was
+    counted and printed as a PASS FAILURE. That is the same inversion as
+    [[feedback_grep_shape_copy_errors]] read backwards: a working design
+    reported as broken teaches you to ignore the one channel that matters.
+    Caught separately, logged as a decline, no failure recorded."""
 _SKIRT_PROXY_MIN_UNREPRESENTED = int(
     os.environ.get("CBBE2UBE_SKIRT_PROXY_MIN_UNREPRESENTED", "60"))
 
@@ -14271,12 +15272,62 @@ def _add_skirt_collider_proxy(dst_path) -> int:
         # VALIDATE, THEN MUTATE -- see `#identity-stb-collider` in
         # `_add_butt_collider_patch` for the three failure modes this ordering
         # is avoiding at once.
-        plan = []
+        # #collider-declared-bones, EXTENDED TO THIS PROXY 2026-08-17.
+        #
+        # A registered collider may only carry bones the piece's OWN physics XML
+        # declares -- an influence with no rigid body in the system it is
+        # registered into is what collapsed the cloth, bisected in game on
+        # ButtCol ([[project_collider_declared_bones]]). That fix went to ButtCol
+        # only, and the postrun audit still finds 19 of 64 `SkirtCol` shapes
+        # carrying undeclared bones: `NPC L/R UpperarmTwist1+2` on a dragonbone
+        # cuirass, `NPC Neck` on a Tullius robe, `NPC R Front/RearThigh` on a
+        # belt, `SkirtB/FBone*` on a farm robe, `cocob09`/`cococ09` on a towel.
+        #
+        # The redirect is SOUND here for the same reason it is on ButtCol: a bone
+        # the XML does not declare is not simulated by this piece at all, so it
+        # is kinematic either way, and every bone's STB is its own bind inverse
+        # -- so which bone carries the weight does not move the skinned point.
+        #
+        # THE ONE THING BUTTCOL DOES NOT NEED. This proxy is CHAIN-DRIVEN: its
+        # job is to follow the simulated cloth. Redirecting a lot of its mass
+        # onto kinematic skeleton ancestors would leave a proxy that no longer
+        # tracks what it proxies -- worse than no proxy, because the cloth would
+        # then collide against a stale surface. So the redirect is capped by
+        # SHARE OF TOTAL WEIGHT, and over the cap the proxy is DECLINED. That is
+        # why this could not simply be copied across from ButtCol.
+        _declared = set(re.findall(r'<bone\s+name="([^"]+)"', txt))
+        _avail = set((src_sh.bone_weights or {}).keys())
+        _acc: "dict[str, list]" = {}
+        _redirects: "dict[str, str]" = {}
+        _w_total = _w_moved = 0.0
         for bname, pairs in (src_sh.bone_weights or {}).items():
             s_pairs = [(rep_pos[int(vi)], float(w)) for vi, w in pairs
                        if int(vi) in rep_pos and float(w) > 1e-4]
             if not s_pairs:
                 continue
+            _w_total += sum(w for _v, w in s_pairs)
+            tgt = bname
+            if _declared and bname not in _declared:
+                tgt = _nearest_declared_ancestor(bname, _declared, _avail)
+                if tgt is None:
+                    raise _ColliderDeclined(
+                        f"no XML-declared ancestor for {bname!r}")
+                _redirects[bname] = tgt
+                _w_moved += sum(w for _v, w in s_pairs)
+            _acc.setdefault(tgt, []).extend(s_pairs)
+        if _w_total > 0 and (_w_moved / _w_total) > _SKIRT_PROXY_REDIRECT_MAX:
+            raise _ColliderDeclined(
+                f"{_w_moved / _w_total:.0%} of the proxy's weight would move to "
+                f"kinematic ancestors (cap {_SKIRT_PROXY_REDIRECT_MAX:.0%}); a "
+                f"proxy that no longer follows the cloth it proxies is worse "
+                f"than no proxy")
+        plan = []
+        for bname, s_pairs in _acc.items():
+            # ACCUMULATE per vertex -- two redirected bones can land on the same
+            # ancestor, and the second must not overwrite the first.
+            merged: "dict[int, float]" = {}
+            for vi, w in s_pairs:
+                merged[vi] = merged.get(vi, 0.0) + w
             try:
                 _stb = src_sh.get_shape_skin_to_bone(bname)
             except Exception as _be:
@@ -14284,7 +15335,13 @@ def _add_skirt_collider_proxy(dst_path) -> int:
                     f"skin-to-bone unreadable for {bname!r}: {_be!r}") from _be
             if _stb is None:
                 raise RuntimeError(f"skin-to-bone missing for {bname!r}")
-            plan.append((bname, _stb, s_pairs))
+            plan.append((bname, _stb, sorted(merged.items())))
+        if _redirects:
+            print(f"    [skirt-proxy] {p.name}: redirected "
+                  f"{len(_redirects)} undeclared bone(s) onto their nearest "
+                  f"XML-declared ancestor "
+                  f"({_w_moved / max(_w_total, 1e-9):.1%} of weight): "
+                  f"{sorted(_redirects.items())[:4]}", file=sys.stderr)
         # Add-all-then-set-all, same as `_add_butt_collider_patch` and for the
         # same measured reason (#identity-stb-collider): `add_bone` resets the
         # STBs already on the shape, so interleaving ships every bone but the
@@ -14317,6 +15374,9 @@ def _add_skirt_collider_proxy(dst_path) -> int:
             pr.flags = _BUST_SPLIT_HIDDEN_FLAGS
         if hasattr(ns, "flags"):
             ns.flags = _BUST_SPLIT_HIDDEN_FLAGS
+    except _ColliderDeclined as _dc:
+        print(f"    [skirt-proxy] {p.name}: DECLINED -- {_dc}", file=sys.stderr)
+        return 0
     except Exception as _ce:
         _note_pass_failure("_add_skirt_collider_proxy/author", _ce)
         return 0
@@ -14557,7 +15617,7 @@ def _chain_root_subtrees(chain: dict, custom_only: bool = False) -> dict:
     return out
 
 
-# -------------------------------------- #chain-rest-outside-body (opt-in)
+# ------------------------------------ #chain-rest-outside-body (default ON)
 # Lift a physics chain whose REST POSE sits INSIDE the body it drapes over.
 #
 # THE DEFECT. Chain bone globals move 0.000000u through the conversion (measured
@@ -22612,7 +23672,7 @@ def _conform_cords_to_host(shape_jobs, softbody_names=frozenset(),
             corr[touched] = new_pos[touched] - cfv[touched]
             try:
                 ctris = np.asarray(c["src"].tris, dtype=np.int64)
-                corr = _smooth_vertex_field(corr, ctris, iters=_CORD_SMOOTH)
+                corr = _smooth_vertex_field(corr, ctris, iters=_CORD_SMOOTH, verts=cfv)
             except Exception as _pe:
                 _note_pass_failure("_smooth_vertex_field", _pe)
             cfv = cfv + corr
@@ -23002,7 +24062,7 @@ def _rigidify_within_clearance(src_v, cur_v, tris, body_v, body_n,
 
 
 def _smooth_vertex_field(vec: np.ndarray, tris, iters: int = 2,
-                         blend: float = 0.5) -> np.ndarray:
+                         blend: float = 0.5, verts=None) -> np.ndarray:
     """Feather a per-vert VECTOR field over the mesh adjacency.
 
     Vector sibling of _smooth_push_field (which handles a scalar push). Each round
@@ -23011,6 +24071,7 @@ def _smooth_vertex_field(vec: np.ndarray, tris, iters: int = 2,
     Verts whose neighbourhood has no correction stay ~0. Returns `vec` unchanged on
     any failure (never worse than not smoothing).
     """
+    iters = _reach_iters(verts, tris, iters)          # #smooth-reach
     try:
         t = np.asarray(tris, dtype=np.int64)
         v = np.asarray(vec, dtype=np.float64)
@@ -23189,7 +24250,8 @@ def _repair_layer_order(shape_jobs, softbody_names=frozenset(),
             # the k=1 ride. #layer-order
             mv = moves[i]
             try:
-                mv = _smooth_vertex_field(mv, x["tris"], iters=_LAYER_ORDER_SMOOTH)
+                mv = _smooth_vertex_field(mv, x["tris"], iters=_LAYER_ORDER_SMOOTH,
+                                         verts=x["dv"])
             except Exception as _pe:
                 _note_pass_failure("_smooth_vertex_field", _pe)
             x["dv"] = x["dv"] + mv
@@ -23300,10 +24362,17 @@ def _ride_disp_barycentric(sv, base_src, base_fin, base_tris, ride_max):
         return None, None
 
 
-def _authored_layer_depth(entries, near=None, agree_min=0.70,
-                          coincident_eps=1e-3, min_overlap=3):
-    """Stack depth per layer, read off the AUTHOR's own geometry.
+def _authored_layer_relation(entries, near=None, agree_min=0.70,
+                             coincident_eps=1e-3, min_overlap=3):
+    """The AUTHOR's over/under relation, {(outer, inner): confidence}.
     #authored-ride-order
+
+    SPLIT OUT SO THERE IS ONE COPY. `pack_ride_order_census.py` had its own
+    reimplementation of everything below, under a docstring promising "the same
+    probe and the same thresholds ... so the two cannot drift". It drifted the
+    moment this was fixed, and the census then scored the new ordering against a
+    stale copy of the old relation -- crediting nothing and looking like a
+    no-op. Any scorer must import THIS, never restate it.
 
     Replaces ranking by median distance to the body, which is one global scalar
     standing in for a question that is local and pairwise -- and which inverts
@@ -23382,23 +24451,60 @@ def _authored_layer_depth(entries, near=None, agree_min=0.70,
             # "a sits on b". Keep a and b named for what they are -- calling
             # them outer/inner before the verdict is decided is how the sign
             # branches below get read backwards.
-            if mA is not None and (mB is None or cA >= cB):
-                med, agr, a, b = mA, gA, ia, ib
-            else:
-                med, agr, a, b = mB, gB, ib, ia
-            if abs(med) < coincident_eps:
-                continue                       # one surface twice -> tie
-            if med > 0 and agr >= agree_min:
-                rel[(a, b)] = abs(med)         # a sits ON b
-            elif med < 0 and (1.0 - agr) >= agree_min:
-                rel[(b, a)] = abs(med)         # b sits ON a
-    return _stack_depth_from_relation(n, rel)
+            first = (mA is not None and (mB is None or cA >= cB))
+            order = [(mA, gA, cA, ia, ib), (mB, gB, cB, ib, ia)]
+            if not first:
+                order.reverse()
+            # COVERAGE PICKS THE DIRECTION, BUT IT DOES NOT GET A VETO. The
+            # subset rationale above is a prior, not evidence, and it was
+            # overriding evidence: on the reported piece the preferred direction
+            # missed `agree_min` by two points (0.68 vs 0.70) while the other
+            # direction agreed at 0.99, and the pair emitted NO edge at all.
+            # A bra and the shirt over it were then ordered only through a
+            # transitive path, which put the bra outside the shirt.
+            #
+            # So fall back to the other direction when the preferred one cannot
+            # decide. Strictly additive: wherever the preferred direction
+            # already decides, this changes nothing.
+            for med, agr, cov, a, b in order:
+                if med is None or abs(med) < coincident_eps:
+                    continue                   # no overlap, or one surface twice
+                # The weight is CONFIDENCE, not separation --
+                # `_stack_depth_from_relation` uses it only to choose which edge
+                # to sacrifice in a cycle, and how far apart two layers sit says
+                # nothing about how sure we are of their order. Agreement times
+                # coverage is what we actually know: how consistently the offset
+                # pointed one way, over how much of the shape had a counterpart.
+                if med > 0 and agr >= agree_min:
+                    rel[(a, b)] = agr * cov              # a sits ON b
+                    break
+                if med < 0 and (1.0 - agr) >= agree_min:
+                    rel[(b, a)] = (1.0 - agr) * cov      # b sits ON a
+                    break
+    return rel
+
+
+def _authored_layer_depth(entries, near=None, agree_min=0.70,
+                          coincident_eps=1e-3, min_overlap=3):
+    """Stack depth per layer, from the authored relation. depth 0 = innermost.
+
+    Returns None when the relation could not be built at all, which the caller
+    must treat as "fall back to the old ranking", not as "no layers overlap".
+    """
+    rel = _authored_layer_relation(entries, near=near, agree_min=agree_min,
+                                   coincident_eps=coincident_eps,
+                                   min_overlap=min_overlap)
+    if rel is None:
+        return None
+    return _stack_depth_from_relation(len(entries), rel)
 
 
 def _stack_depth_from_relation(n, rel):
     """Order the pairwise verdicts into a stack depth. #authored-ride-order
 
-    `rel` maps (outer, inner) -> the authored separation that decided the pair.
+    `rel` maps (outer, inner) -> CONFIDENCE in that verdict, in [0, 1]
+    (agreement x coverage). It used to map to the authored SEPARATION, which is
+    a length, and the difference decides which edge gets sacrificed below.
 
     LONGEST PATH, not a count. The first version did `depth[outer] += 1` -- how
     many layers each shape is outside of -- which is not an ordering of the
@@ -23420,10 +24526,28 @@ def _stack_depth_from_relation(n, rel):
     exactly the 20 pieces whose relation contains a CYCLE. A sash that crosses
     over a coat at the front and tucks under it at the back genuinely has no
     consistent stack order, and no linear ranking can satisfy every verdict on
-    such a piece. Where a cycle must be cut, cut it at the WEAKEST edge -- the
-    pair with the smallest authored separation, i.e. the verdict we have least
-    evidence for -- by adding edges strongest-first and dropping any that would
-    close a loop.
+    such a piece. Where a cycle must be cut, cut it at the WEAKEST edge, by
+    adding edges strongest-first and dropping any that would close a loop.
+
+    WEAKEST MEANS LEAST CONFIDENT, NOT NARROWEST. This ranked by the authored
+    separation and called it "the verdict we have least evidence for" -- but a
+    separation is a LENGTH. A sliver that overlaps 10% of its neighbour with a
+    wide gap outranked a verdict taken over the neighbour's whole surface at 99%
+    agreement, and when the two conflicted it was the confident one that got
+    dropped. Reported in game as an inner layer coming through an outer one.
+
+    MEASURED, on the piece that was reported: a bra visibly clipping through the
+    shirt over it. The relation held, correctly,
+
+        3Belts       OUTSIDE 3Fabric    agreement 1.00 over 47% coverage
+        3LeatherMain OUTSIDE 3Fabric    agreement 0.99 over 100% coverage
+
+    and BOTH were discarded as cycle-closing, because a chain through a panty
+    piece decided over TEN PERCENT coverage had been added first on the strength
+    of a wider gap (1.196u vs 0.889u). The two outer layers landed at depths 0
+    and 2 with the shirt at 4, so the shirt rode geometry the author puts on top
+    of it and sank at the under-bust. Confidence ordering drops the 10% edge
+    instead and both survive.
     """
     below = {i: [] for i in range(n)}          # below[x] = layers x sits on
 
@@ -23676,153 +24800,70 @@ _PANEL_RIDE_MAX_DEEPEN = float(
     os.environ.get("CBBE2UBE_PANEL_RIDE_MAX_DEEPEN", "") or 0.35)
 
 
-# #ride-body-clamp -- OPT-IN, `CBBE2UBE_RIDE_BODY_CLAMP=1`.
+# #ride-feather -- OPT-IN, `CBBE2UBE_RIDE_FEATHER=1`.
 #
-# THE RIDE PUTS GARMENTS INSIDE THE BODY, and on every piece measured it is the
-# dominant source of body clipping in the finished mesh:
+# The ride is the ONLY pass with no feathering of its own. Every other pass that
+# moves cloth spreads the movement into the surrounding verts so it cannot
+# become a spike; the ride assigns `source + interpolated displacement` per
+# vertex and applies it raw. Neighbouring verts can take their displacement from
+# different reference triangles, and on a finely modelled strip that
+# discontinuity IS the jagged edge.
 #
-#     piece              ride ON   ride OFF
-#     ruby   corset          469        0
-#     ruby   top             560        0
-#     khajiit cuirass          92        8
+# WHY THIS AND NOT #smooth-reach: on the piece reported jagged, the ride is the
+# ONLY pass that fires (46096 verts; cleavage, overlay-lift, layer-order,
+# ride-clamp, panel-ride and joint-solve all zero). Scaling the OTHER passes'
+# feather reach therefore could not touch the three worst shapes -- measured,
+# `3ButtonsWaist` 100 folds, `3PocketsWaist` 222 and `3RopeTied` 205 were
+# byte-for-byte unchanged by it. There was no feathering there to scale.
 #
-# 1029 of one piece's 1031 body-inside verts, and 84 of another's 92. The
-# authored corset is 100% clear of its source body (worst +0.16u) and ours ships
-# 469 verts inside.
+# NORMALISED (Shepard) SMOOTHING, not plain smoothing. The displacement is zero
+# outside the ridden mask, so averaging against those zeros would drag the field
+# DOWN at the mask rim -- shrinking the very offset the ride exists to hold and
+# opening a gap exactly at the layer boundary. Smoothing the field and its own
+# indicator and dividing keeps the magnitude at the boundary and only removes
+# the vert-to-vert discontinuity.
 #
-# Cause is the ride's assignment itself: `cur = source + disp_of_layer_beneath`
-# discards the entire fit chain for every vert it touches -- the ANTI-POKE's
-# clearance work included -- and nothing downstream re-checks the body. It
-# concentrates at the WAIST because that is where the UBE body is widest
-# relative to the source (+0.23u at the waist, +1.64u at the low waist), so that
-# is where the discarded push mattered most.
-#
-# NOT FIXABLE BY DISABLING THE RIDE: off is on record as making surface
-# roughness worse, and it is what keeps layers from crossing. Instead clamp its
-# OUTPUT -- pull each vert back toward the position the fit chain gave it, by
-# the minimum needed to restore the clearance that position had.
-#
-# PUSH OUT ALONG THE BODY NORMAL -- do NOT blend back toward the fitted
-# position. That was the first form and it MEASURED WORSE: reverting a vert
-# toward where the fit chain had it undoes the ride's TANGENTIAL placement,
-# which is the layer coherence itself. Body-inside fell 1031 -> 17 while the
-# layers came apart -- corset into the fabric 18 -> 208, belts into the fabric
-# 46 -> 176, z-fight contacts up across the piece.
-#
-# Pushing along the body normal fixes the penetration and leaves the ride's
-# tangential placement untouched, so the stack stays coherent. It is the same
-# operation the anti-poke performs, run after the pass that was discarding it --
-# which is arguably where it always belonged.
-#
-# THE PUSH IS SMOOTHED, and that is not optional: a raw per-vertex push is a
-# crinkle (the `_LAYER_ORDER_SMOOTH` lesson). `_smooth_push_field` feathers it
-# over the mesh and re-floors at the per-vert requirement each iteration, so
-# smoothing can never reopen a poke.
-#
-# STILL OPT-IN, AND STILL UNDECIDED. `#authored-ride-order` removes most of this
-# defect on the piece it was tuned on (790 -> 1) but NOT across a 12-piece
-# layered sweep, where the two available metrics disagree in sign. So the clamp
-# is kept rather than retired with the joint solve and the inequality form.
-RIDE_BODY_CLAMP = os.environ.get(
-    "CBBE2UBE_RIDE_BODY_CLAMP", "").strip().lower() in ("1", "true", "yes", "on")
-_RIDE_CLAMP_MAX = float(os.environ.get("CBBE2UBE_RIDE_CLAMP_MAX", "") or 2.0)
-# How close an outer layer must be to the layer beneath to inherit its lift. A
-# pauldron floating well above a cuirass shares no surface with it and must not
-# be dragged along.
-_RIDE_CLAMP_COUPLE = float(
-    os.environ.get("CBBE2UBE_RIDE_CLAMP_COUPLE", "") or 3.0)
+# Kept deliberately SHALLOW (1 round before the tessellation scaling). The ride's
+# job is holding each layer's authored offset to the one beneath AT EVERY POINT,
+# so this may take the jaggedness out of the field, not flatten it.
+RIDE_FEATHER = os.environ.get(
+    "CBBE2UBE_RIDE_FEATHER", "").strip().lower() in ("1", "true", "yes", "on")
+_RIDE_FEATHER_ITERS = int(os.environ.get("CBBE2UBE_RIDE_FEATHER_ITERS", "") or 1)
 
 
-# How far a lift propagates to the layers sitting on top of it. TIGHT on
-# purpose: an earlier attempt coupled layers at 3.0u and dragged half the piece.
-_RIDE_LIFT_PROP = float(
-    os.environ.get("CBBE2UBE_RIDE_LIFT_PROP", "") or 1.0)
+def _feather_ride_disp(disp, mask, tris, sv, stats=None):
+    """Smooth the ride's displacement field WITHIN the ridden mask.
 
-
-def _propagate_lift(ranked, lifts, stats=None):
-    """Carry each layer's body-lift up into the layers resting on it.
-
-    The ride only moves an outer layer where its own ride mask reaches, so a
-    layer lifted out of the body can rise straight into a neighbour that was
-    never told to follow. Measured on the reported piece: the corset lifted
-    0.398u while the belts over it moved 0.022u, and the corset came up through
-    them. User: "the belts now clip heavy into the corset."
-
-    Propagates the ACTUAL APPLIED LIFT, not a recomputed requirement, and only
-    to layers placed AFTER the lifted one, within `_RIDE_LIFT_PROP`. Both
-    differences matter: an earlier version recomputed a need and coupled at
-    3.0u, which dragged geometry that shared no surface at all.
-    """
-    from scipy.spatial import cKDTree as _KDp
-    for i in range(len(ranked)):
-        j = ranked[i][1]
-        try:
-            v = np.asarray(j["verts"], dtype=np.float64)
-            inherit = np.zeros_like(v)
-            mag = np.zeros(len(v))
-            for k in range(i):
-                rec = lifts.get(k)
-                if rec is None:
-                    continue
-                pre, lift = rec
-                d, jj = _KDp(pre).query(v)
-                lm = np.linalg.norm(lift[jj], axis=1)
-                take = (d < _RIDE_LIFT_PROP) & (lm > mag)
-                if np.any(take):
-                    inherit[take] = lift[jj][take]
-                    mag[take] = lm[take]
-            if not np.any(mag > 1e-4):
-                continue
-            t = np.asarray(j["src"].tris, dtype=np.int64).reshape(-1, 3)
-            try:
-                inherit = np.asarray(_smooth_vertex_field(inherit, t),
-                                     dtype=np.float64)
-            except Exception:
-                pass
-            j["verts"] = v + inherit
-            j["verts_modified"] = True
-            if stats is not None:
-                stats["propagated"] = stats.get("propagated", 0) + int(
-                    np.sum(mag > 1e-4))
-        except Exception as e:
-            if stats is not None:
-                stats.setdefault("errors", []).append(repr(e))
-
-
-def _ride_body_clamp_one(v, tris, kd, body_v, body_n, stats=None):
-    """Lift ONE layer out of the body along the body normal.
-
-    MUST BE CALLED INLINE, as each layer is placed -- not as a post-pass over
-    the finished stack. The ride derives every outer layer's displacement from
-    the geometry beneath it, so a layer lifted DURING the ride is a layer the
-    outer ones then ride on and follow. Lifting everything afterwards gives them
-    nothing to follow: measured on the same piece and the same lift, inline
-    scored `corset -> top` 77 and the post-pass form 241. Same arithmetic, and
-    a 3x difference purely from where it sits in the sequence.
+    Returns `disp` unchanged on any failure or when nothing is ridden -- never
+    worse than not feathering.
     """
     try:
-        v = np.asarray(v, dtype=np.float64)
+        m = np.asarray(mask, dtype=bool)
+        d = np.asarray(disp, dtype=np.float64)
+        if not m.any() or d.ndim != 2:
+            return disp
         t = np.asarray(tris, dtype=np.int64).reshape(-1, 3)
-        if v.ndim != 2 or len(v) < 3 or not t.size:
-            return v
-        _, jb = kd.query(v)
-        need = np.clip(-np.einsum('ij,ij->i', v - body_v[jb], body_n[jb]),
-                       0.0, _RIDE_CLAMP_MAX)
-        if not np.any(need > 1e-4):
-            return v
-        push = np.asarray(_smooth_push_field(need, need, t), dtype=np.float64)
-        push = np.maximum(push, need)          # never reopen what it fixed
+        w = m.astype(np.float64)[:, None]
+        num = _smooth_vertex_field(d * w, t, iters=_RIDE_FEATHER_ITERS,
+                                   verts=sv)
+        den = _smooth_vertex_field(np.repeat(w, d.shape[1], axis=1), t,
+                                   iters=_RIDE_FEATHER_ITERS, verts=sv)
+        num = np.asarray(num, dtype=np.float64)
+        den = np.asarray(den, dtype=np.float64)
+        good = den > 1e-9
+        out = d.copy()
+        sm = np.where(good, num / np.where(good, den, 1.0), d)
+        out[m] = sm[m]
         if stats is not None:
-            stats["clamped"] = stats.get("clamped", 0) + int(np.sum(need > 1e-4))
-            stats["clamp_max"] = max(stats.get("clamp_max", 0.0),
-                                     float(need.max()))
-        return v + body_n[jb] * push[:, None]
-    except Exception as e:
-        if stats is not None:
-            stats.setdefault("errors", []).append(repr(e))
-        return v
-
-
+            moved = np.linalg.norm(out - d, axis=1)
+            stats["ride_feather"] = (stats.get("ride_feather", 0)
+                                     + int((moved > 1e-4).sum()))
+            stats["ride_feather_max"] = max(
+                stats.get("ride_feather_max", 0.0), float(moved.max()))
+        return out
+    except Exception as _pe:
+        _note_pass_failure("_feather_ride_disp", _pe)
+        return disp
 
 
 def _stack_probe(shape_jobs, verts_by_name):
@@ -24121,32 +25162,35 @@ def _ride_layers_on_reference(shape_jobs, body_verts=None,
                         "tris": np.asarray(j["src"].tris,
                                            np.int64).reshape(-1, 3)}
                        for _d, j, sv, fv in ranked]
-            depth = _authored_layer_depth(entries)
+            rel = _authored_layer_relation(entries)
+            depth = (None if rel is None
+                     else _stack_depth_from_relation(len(entries), rel))
             if depth is None:
                 _note_pass_failure(
                     "_authored_layer_depth",
                     RuntimeError("no relation built; kept median ranking"))
             else:
+                # THE REFERENCE MUST NOT BE A LAYER THE AUTHOR PUTS ON TOP OF
+                # ANOTHER. Depth alone does not guarantee it: where a cycle had
+                # to be broken, the layer whose "sits on" edge was sacrificed
+                # can land at depth 0, and depth 0 is the reference -- the only
+                # layer that keeps its own fit, with every other layer
+                # re-derived from it. Measured pack-wide, that happened on 9 of
+                # 167 pieces.
+                #
+                # Demote such layers WITHIN their depth band. This is purely a
+                # tiebreak: every surviving edge imposes a strict depth
+                # inequality, so reordering inside one band cannot violate one.
+                outer_of = {o for (o, _i) in rel}
                 order = sorted(range(len(ranked)),
-                               key=lambda i: (depth[i], ranked[i][0]))
+                               key=lambda i: (depth[i], i in outer_of,
+                                              ranked[i][0]))
                 ranked = [ranked[i] for i in order]
         except Exception as _pe:
             _note_pass_failure("_authored_layer_depth", _pe)
 
     n_rebound = 0
-    # #ride-body-clamp: one body tree for every rider, built once.
-    _body_kd = None
-    _cst = {}
-    _lifts = {}      # ride-order index -> (pre-lift verts, lift vector)
-    if RIDE_BODY_CLAMP and body_verts is not None and body_norms is not None:
-        try:
-            from scipy.spatial import cKDTree as _KDb
-            body_verts = np.asarray(body_verts, dtype=np.float64)
-            body_norms = np.asarray(body_norms, dtype=np.float64)
-            if body_verts.shape == body_norms.shape and len(body_verts):
-                _body_kd = _KDb(body_verts)
-        except Exception:
-            _body_kd = None
+    _cst = {}        # this pass's own counters (#ride-feather)
     # Accumulated geometry already placed (innermost outward), in lockstep.
     ref_src = [ranked[0][2]]
     ref_fin = [ranked[0][3]]
@@ -24233,13 +25277,9 @@ def _ride_layers_on_reference(shape_jobs, body_verts=None,
                           + (f", min clearance {_st['min_clear']:.2f}u"
                              if "min_clear" in _st else ""),
                           file=_sys.stderr)
+            if RIDE_FEATHER:
+                _rd = _feather_ride_disp(_rd, _apply, j["src"].tris, sv, _cst)
             cur[_apply] = sv[_apply] + _rd[_apply]
-            if RIDE_BODY_CLAMP and _body_kd is not None:
-                _pre = cur
-                cur = _ride_body_clamp_one(cur, j["src"].tris, _body_kd,
-                                           body_verts, body_norms, _cst)
-                if cur is not _pre:
-                    _lifts[_ri] = (_pre.copy(), cur - _pre)
             j["verts"] = cur
             j["verts_modified"] = True
             n_rebound += int(_apply.sum())
@@ -24252,33 +25292,11 @@ def _ride_layers_on_reference(shape_jobs, body_verts=None,
         except Exception:
             ref_tris.append(np.zeros((0, 3), dtype=np.int64))
         _voff.append(len(sv))
-    # #ride-body-clamp. The per-layer lift runs INLINE in the loop above -- see
-    # `_ride_body_clamp_one`, placement in the sequence is worth 3x on the layer
-    # metric. Two things remain once every layer is placed.
-    if RIDE_BODY_CLAMP and _body_kd is not None:
-        # 1. The innermost layer is never a rider, so the inline clamp never
-        #    reaches it. It has nothing above it to disturb.
-        try:
-            _j0 = ranked[0][1]
-            _pre0 = np.asarray(_j0["verts"], dtype=np.float64)
-            _new0 = _ride_body_clamp_one(
-                _pre0, _j0["src"].tris, _body_kd, body_verts,
-                body_norms, _cst)
-            if _new0 is not _pre0:
-                _lifts[0] = (_pre0.copy(), _new0 - _pre0)
-            _j0["verts"] = _new0
-            _j0["verts_modified"] = True
-        except Exception as _pe:
-            _cst.setdefault("errors", []).append(repr(_pe))
-        # 2. Carry every lift up into whatever rests on it.
-        _propagate_lift(ranked, _lifts, _cst)
-        if _cst.get("clamped"):
-            import sys as _sys
-            print(f"  [ride-clamp] lifted {_cst['clamped']} vert(s) out of the "
-                  f"body (deepest {_cst.get('clamp_max', 0.0):.2f}u)"
-                  + (f"  ** {len(_cst['errors'])} FAILED: "
-                     f"{_cst['errors'][0]} **" if _cst.get("errors") else ""),
-                  file=_sys.stderr)
+    if _cst.get("ride_feather"):
+        import sys as _sys
+        print(f"  [ride-feather] smoothed {_cst['ride_feather']} vert(s) of "
+              f"ride displacement (largest change "
+              f"{_cst.get('ride_feather_max', 0.0):.3f}u)", file=_sys.stderr)
     return n_rebound
 
 
@@ -26585,6 +27603,19 @@ def convert_nif_phase2(
                   f"cloth's breast follow", file=_sys.stderr)
     except Exception as _pe:
         _note_pass_failure("_sync_bust_plate_follow_postwrite", _pe)
+    # Coincident-vertex skin unification (#coincident-skin-match). Runs after
+    # EVERY weight pass on purpose: each one pairs to the body per shape, so two
+    # touching verts in different shapes get different rows, and a repair placed
+    # earlier would simply be re-diverged by the next pass.
+    try:
+        n_cs = _match_coincident_cross_shape_skin(dst_path,
+                                                  src_nif_path=src_path)
+        if n_cs:
+            import sys as _sys
+            print(f"  coincident skin: unified {n_cs} cross-shape vert(s)",
+                  file=_sys.stderr)
+    except Exception as _pe:
+        _note_pass_failure("_match_coincident_cross_shape_skin", _pe)
 
     # The TRI above was generated BEFORE _finalize_hdt_physics re-imported the
     # textureless collision / physics-framework proxies, so they shipped with no

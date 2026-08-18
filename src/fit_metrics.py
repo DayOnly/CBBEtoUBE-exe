@@ -136,10 +136,17 @@ def standoff(body_verts, body_normals, garment_verts, garment_tris,
 
 # ---------------------------------------------------------------- CLIP TEST
 # The validated skin-through-armour test, ported into src/ so a conversion pass
-# can use it (src must not import from scripts/). The authority on its
-# correctness is `tests/test_fit_metrics_matches_reference.py`, which asserts
-# equality against `scripts/mesh_penetration.clipping_report` on the calibration
-# pair -- a runtime import would be the wrong coupling, a test is the right one.
+# can use it (src must not import from scripts/) -- a runtime import would be the
+# wrong coupling, a test is the right one.
+#
+# WHAT ACTUALLY GUARDS THE PORT: `tests/test_clip_tester_exactness.py`, which
+# compares `_ClipTester` against exhaustive all-pairs Moller-Trumbore on geometry
+# chosen to stress its bounds, plus `tests/test_mesh_penetration.py`. Until
+# 2026-08-17 this named `tests/test_fit_metrics_matches_reference.py` as "the
+# authority on its correctness" -- NO SUCH FILE EXISTS, and nothing asserts
+# equality against `scripts/mesh_penetration.clipping_report`. A cited safety net
+# that is not there is worse than an uncited one: it stops the next reader from
+# looking for the real one.
 #
 # ORIENTATION GATE is ON for the pass. The base test calls a body vert clipping
 # when its outward ray escapes and its inward ray hits garment within tmax. That

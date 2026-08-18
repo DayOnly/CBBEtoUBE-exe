@@ -34,7 +34,7 @@ def _plugin(path, arma_model, armo_refs_arma=True, masters=("Skyrim.esm",)):
     """A mod plugin defining one ARMA (given model path) + one ARMO using it."""
     arma = esp.Record(sig=b"ARMA", flags=0, formid=0x01000800, timestamp_vc=0,
                       version_unk=0,
-                      payload=esp.encode_subrecord(b"MOD3",
+                      payload=esp.encode_subrecord(b"MOD4",
                                                    arma_model.encode() + bytes(1)))
     modl = esp.encode_subrecord(b"MODL", struct.pack("<I", 0x01000800))
     armo = esp.Record(sig=b"ARMO", flags=0, formid=0x00012E46, timestamp_vc=0,

@@ -27,6 +27,7 @@ import struct
 
 from src import esp
 from src.esp import encode_subrecord, encode_zstring
+from src import auto_convert
 from src.auto_convert import _player_armor_mesh_bases
 
 DEFAULT_RACE = 0x00000019
@@ -37,7 +38,7 @@ def _arma(fid, edid, mesh, slot=BODY):
     payload = (encode_subrecord(b"EDID", encode_zstring(edid))
                + encode_subrecord(b"BOD2", struct.pack("<II", slot, 0))
                + encode_subrecord(b"RNAM", struct.pack("<I", DEFAULT_RACE))
-               + encode_subrecord(b"MOD3", encode_zstring(mesh)))
+               + encode_subrecord(b"MOD4", encode_zstring(mesh)))
     return esp.Record(sig=b"ARMA", flags=0, formid=fid, timestamp_vc=0,
                       version_unk=0x2C, payload=payload)
 
@@ -166,3 +167,44 @@ def test_covered_scan_failure_converts_everything_rather_than_nothing():
     assert "converting everything" in tail, (
         "and must say so -- a silently-empty exclusion set looks identical to "
         "'nothing to skip'")
+
+
+def test_a_ube_path_in_a_slot_nobody_renders_does_not_count_as_covered(tmp_path):
+    """The invisible colour variant, reported in game.
+
+    An ARMA's four model slots are MOD2 male world, MOD3 male first person,
+    MOD4 female world, MOD5 female first person. Only MOD4 is drawn on a female
+    body. This detector accepted `!UBE\` in ANY of them, so a variant carrying
+    a stray `!UBE\` first-person path -- with its MOD4 still the CBBE mesh --
+    was judged already covered by a third-party patch and skipped. It then had
+    no UBE armature at all and rendered nothing, while its sibling variant, the
+    same mesh without the stray path, converted correctly.
+    """
+    mods = tmp_path / "mods"
+    md = mods / "Some Outfit"
+    md.mkdir(parents=True)
+
+    arma = esp.Record(
+        sig=b"ARMA", flags=0, formid=0x01000800, timestamp_vc=0, version_unk=0,
+        payload=(encode_subrecord(b"EDID", encode_zstring("VariantArma"))
+                 + encode_subrecord(b"BOD2", struct.pack("<II", BODY, 0))
+                 + encode_subrecord(b"RNAM", struct.pack("<I", DEFAULT_RACE))
+                 # what actually renders: still the unconverted mesh
+                 + encode_subrecord(b"MOD4", encode_zstring(
+                     r"Outfit\thing_1.nif"))
+                 # a slot nobody sees, pointing at a UBE path
+                 + encode_subrecord(b"MOD5", encode_zstring(
+                     r"!UBE\Outfit\thing_1.nif"))))
+    armo = esp.Record(
+        sig=b"ARMO", flags=0, formid=0x00012E46, timestamp_vc=0, version_unk=0,
+        payload=(encode_subrecord(b"EDID", encode_zstring("VariantArmor"))
+                 + encode_subrecord(b"MODL", struct.pack("<I", 0x01000800))))
+    e = esp.ESP(header=esp.TES4Header(masters=["Skyrim.esm"]),
+                groups=[esp.Group(label=b"ARMO", records=[armo]),
+                        esp.Group(label=b"ARMA", records=[arma])])
+    e.save(md / "Outfit.esp")
+
+    covered = auto_convert._third_party_ube_covered_armos(mods)
+    assert not covered, (
+        "an armour whose FEMALE WORLD model is still the CBBE mesh is not "
+        f"covered for UBE, whatever a first-person slot says -- got {covered}")
