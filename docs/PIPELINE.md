@@ -181,10 +181,31 @@ curvature cap at R is **refuted as a sufficient fix**. The discrete condition
 `_conform_fitted_to_body` → `_match_rigid_leg_bend_to_body` →
 `_match_leg_motion_to_body` → `_match_spine_motion_to_body` →
 `_match_arm_motion_to_body` → `_match_spine_twist_to_body` →
-`_match_full_weights_to_body` → `validate_dst_nif`.
+`_match_full_weights_to_body` → `_sync_bust_plate_follow_postwrite` →
+`_cap_weight_roughness_to_author` → `_match_coincident_cross_shape_skin` →
+`_refresh_armor_tri_after_reimport` → `validate_dst_nif`.
+
+Everything from `_normalize_partitions_on_disk` through
+`_match_full_weights_to_body` lives in `_finalize_physics_and_motion_match`,
+which BOTH convert paths call — one copy, so the two cannot drift apart.
 
 `_finalize_hdt_physics` must stay before the graft (which reads the XML to decide
 what is a collider) and last among the extra-data writers.
+
+The three weight passes after the shared tail are ordered deliberately:
+
+- `_sync_bust_plate_follow_postwrite` needs the FINAL follow split, which the
+  motion matches above it only just settle.
+- `_cap_weight_roughness_to_author` eases a shape's INTERIOR back to the
+  author's own local smoothness. It has to run after everything that rewrites
+  weights, or the next such pass simply re-roughens what it fixed.
+- `_match_coincident_cross_shape_skin` settles shape BOUNDARIES — vertices that
+  touch across two shapes. It runs LAST of the three because it is the one with
+  an in-game verdict, so it keeps the final word where interiors meet edges.
+
+`_refresh_armor_tri_after_reimport` is after all of them because
+`_finalize_hdt_physics` re-imports collision proxies that were not in the NIF
+when the TRI was first written.
 
 The three collider passes (added 2026-08-10) sit straight after
 `_split_bust_collider_xml` for the same reason it does: `_finalize_hdt_physics`

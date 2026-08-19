@@ -2,6 +2,78 @@
 
 ## Unreleased
 
+### Fixed — converting the same mod twice now produces the same meshes
+
+Two identical runs disagreed on 29 of 84 meshes, by up to 3.4 units. Nothing was
+wrong with either result; the converter simply had no reason to pick the same one
+twice. That made measuring any change impossible — a fix worth half a unit could
+not be told apart from the noise — and it meant a rebuild of your armour could
+differ from the one you approved.
+
+The cause was the order the converter walked its own internal name lists. That
+order is deliberately unpredictable in Python, it changes every time the program
+starts, and here it decided the order things were written into the file. Two
+sources of it are now closed: the order is fixed for the whole program, and the
+handful of places where it reached the output are sorted.
+
+**Underneath sat a worse defect that this uncovered.** Every armour is built in
+two weight variants, and three internal caches stored a body measurement under a
+key that could not tell the two apart. Whichever variant a worker happened to
+build first pinned that measurement for every piece it built afterwards — so the
+low-weight version of an outfit was routinely fitted against the *high-weight*
+body's shape. It affected 14 of 84 meshes on the test mod, every one of them the
+low-weight variant, and moved a fitted torso by as much as 2.2 units. Slim
+characters were getting armour cleared for a body they do not have.
+
+Converting the same mod twice now gives byte-identical results, and the same is
+true across the 16 parallel workers a real run uses.
+
+### Fixed — a single vertex bending the wrong way
+
+Reported in game on a leather panel above and below its belts: one vertex pulled
+against the surface around it, poking through the layer over it.
+
+A vertex can be attached to at most four bones. Making an outfit follow the body
+fills nearly every vertex to that limit, and where the result is a near-tie for
+the fourth place, neighbouring vertices can end up keeping *different* bones. The
+surface then bends at the waist while one vertex in the middle of it bends at the
+chest.
+
+Weighting is now held to the smoothness the original author gave it, and eased
+back toward its neighbours only where ours came out rougher than theirs. It is
+measured against the author rather than against perfect smoothness on purpose:
+flattening everything would erase the panel edges and seams the author put there
+deliberately. On the reported outfit this fixed 802 of 830 rough vertices, and the
+belts, buckles and metal buttons — already smooth — were left completely
+untouched. Nothing moves; only weighting changes.
+
+Two likelier explanations were measured and ruled out first: the way vertices are
+paired to the body is not at fault here, and no vertex was shipping underweighted.
+
+### Added — four more settings that could not be switched on
+
+Same class as the two below: finished work the settings file had no entry for, so
+no run could reach it however it was described elsewhere.
+
+- **Cap how far the upper-back allowance may push.** The allowance that keeps the
+  upper back covered raises cloth in one step, and where the garment already sat
+  close it overshot — the measured piece stood 2.12 units off the back where its
+  author put about half that. Capping it brought the standoff to 1.16 while
+  showing *less* skin than before, not more. Roughly the worst tenth of pieces.
+- **Match a top's twist-follow to the body**, and **let rigid bust plates ride the
+  breast chain.** Both are experiments with real measurements behind them and no
+  in-game verdict, because until now no run could turn them on to get one. Both
+  ship off.
+- **Keep weighting as smooth as the author made it** — the fix above, on by
+  default.
+
+### Fixed — an empty setting could stop the run
+
+One numeric setting crashed the converter outright if it was set to an empty
+value rather than left alone. It has a row in the settings window, so this was
+reachable by hand-editing a recipe. It now falls back to its default like every
+other setting.
+
 ### Fixed — physics cloth no longer falls away from the body, and the collider that caused it is kept
 
 Reported in game as legs sinking away from the body and falling forever, on
