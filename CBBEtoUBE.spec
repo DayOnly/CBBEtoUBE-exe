@@ -66,7 +66,11 @@ a = Analysis(
     # The exe is what end users actually receive, so the GPL requires the
     # licence travel WITH it (GPLv3 §4/§5) -- shipping it only in the repo is
     # not enough. Third-party notices ride along for the same reason.
-    datas=[("LICENSE", "."), ("THIRD-PARTY-NOTICES.md", ".")],
+    # The .ico is bundled as DATA as well as being the exe's own icon: the exe
+    # resource gives the file its icon in Explorer and MO2, but Tk needs a real
+    # file on disk to set the WINDOW and taskbar icon at runtime.
+    datas=[("LICENSE", "."), ("THIRD-PARTY-NOTICES.md", "."),
+           ("assets/CBBEtoUBE.ico", "assets")],
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
@@ -121,6 +125,11 @@ exe = EXE(
     upx=False,            # UPX can corrupt numpy/scipy DLLs — leave off
     console=False,        # windowed: double-click / MO2 launches the GUI, no console window
     disable_windowed_traceback=False,
+    # Regenerate with `python scripts/make_icon.py <logo.png>` -- it crops the
+    # artwork to its own alpha bounds, squares it without stretching, and
+    # writes every size Windows asks for (a missing size gets resampled and
+    # looks soft wherever the shell picks it).
+    icon="assets/CBBEtoUBE.ico",
 )
 
 coll = COLLECT(

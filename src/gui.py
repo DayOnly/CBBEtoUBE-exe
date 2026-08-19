@@ -326,6 +326,51 @@ _THEMES = {
 THEME_NAMES = tuple(_THEMES)
 THEME_LABELS = tuple(n.capitalize() for n in THEME_NAMES)
 
+ICON_REL = "assets/CBBEtoUBE.ico"
+
+
+def icon_path() -> "Path | None":
+    """The bundled .ico on disk, or None.
+
+    The exe carries the icon twice for two different jobs: as a PE resource
+    (what Explorer and MO2 draw for the FILE) and as a bundled data file (what
+    Tk needs to set the WINDOW and taskbar icon). Only the second one has to be
+    found at runtime, and where it lives differs between a frozen build and a
+    source checkout -- PyInstaller unpacks datas next to the executable in a
+    onedir build, while a checkout has them in the repo root.
+    """
+    import sys as _sys
+    roots = []
+    if getattr(_sys, "frozen", False):
+        exe_dir = Path(_sys.executable).resolve().parent
+        # PyInstaller 6 puts a onedir build's datas under `_internal/`, NOT
+        # beside the exe -- checked explicitly rather than trusting _MEIPASS,
+        # which has moved between major versions.
+        roots += [exe_dir / "_internal", exe_dir]
+        meipass = getattr(_sys, "_MEIPASS", None)
+        if meipass:
+            roots.append(Path(meipass))
+    roots.append(Path(__file__).resolve().parent.parent)
+    for r in roots:
+        p = r / ICON_REL
+        if p.is_file():
+            return p
+    return None
+
+
+def _apply_window_icon(win) -> bool:
+    """Set the window/taskbar icon. Never fails the GUI over decoration."""
+    p = icon_path()
+    if p is None:
+        return False
+    try:
+        win.iconbitmap(default=str(p))
+        return True
+    except Exception:
+        # A Tk built without the Windows .ico path, or a locked file. The
+        # window simply keeps the default icon -- not worth a traceback.
+        return False
+
 
 def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
     # auto_close_ms: test hook -- window auto-destroys after that many ms.
@@ -345,6 +390,7 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
 
     root = tk.Tk()
     root.title(f"CBBE/3BA to UBE Converter  v{_app_version}")
+    _apply_window_icon(root)
     # Restore the last window SIZE. Size only, never position: a saved position
     # from a monitor that is no longer attached opens the window off-screen with
     # no way to drag it back, and the size is what actually matters here (the
