@@ -89,17 +89,164 @@ def _set_iterating_writes(path: Path):
     return out
 
 
-def test_no_skin_write_iterates_a_set_directly():
-    """A set's iteration order is UNDEFINED, so no correct code can depend on
-    it -- which is exactly why wrapping in sorted() is always safe here and why
-    leaving it unsorted is always a latent bug."""
-    offenders = []
+# --- order-sensitive write loops: PROVE ORDER, don't try to prove set-ness ---
+#
+# The original guard here asked "is this iterable a set?" and could prove it
+# for almost nothing: measured 2026-08-19, it classified 11 of 1278 candidate
+# loops and its intersection with the write set was EMPTY. It asserted over
+# nothing and reported clean for months.
+#
+# Inverted: every loop that performs an order-sensitive write must have a
+# PROVABLY ORDERED iterable, or be pinned below with a reason. `sorted()` and
+# `range()` are unconditionally ordered; `list()`, `tuple()`, `enumerate()`,
+# `reversed()` and comprehensions only inherit their source's order --
+# `[x for x in a_set]` is exactly as arbitrary as the set, which is the bug.
+_UNCONDITIONAL_ORDER = {"sorted", "range"}
+_PASSTHROUGH_ORDER = {"list", "tuple", "enumerate", "reversed"}
+# Dict views are insertion-ordered (py3.7+), so deterministic given
+# deterministic insertion -- and if the dict was filled by iterating a set,
+# THAT loop is the offender and this guard catches it there instead.
+_ORDERED_METHODS = {"items", "keys", "values"}
+_ORDERED_ATTRS = {"shapes", "bone_names"}      # pynifly returns lists
+
+# Loops whose iterable this walker cannot prove, each judged by hand. Keyed by
+# "file:function:variable" and pinned to an exact site count, so a new
+# unproven loop fails even if it reuses one of these names.
+_KNOWN_UNPROVEN_ORDER = {
+    # `bone_names` is a PARAMETER; the callers build it as
+    # `bones = list(src_shape.bone_names or [])` -> a list. Cross-function, so
+    # a per-function walker cannot see it.
+    "nif_convert.py:_install_skin:surviving": 3,
+    # `list(s.bone_names or list(bw.keys()))`, later `bone_list + want` --
+    # ordered, but through a BoolOp and a BinOp this walker does not model.
+    "nif_convert.py:_sync_bust_plate_follow_postwrite:bone_list": 1,
+    # *** A GENUINE OFFENDER, KEPT VISIBLE ON PURPOSE. ***
+    # `need` is a real set (`need: "set" = set()`), so `to_add` inherits its
+    # arbitrary order and feeds `add_bone` -- which fixes the bone PALETTE
+    # order in the written NIF. Today this is masked by the interpreter's
+    # hash seed being pinned in the spec, so shipped output is stable; remove
+    # that pin and this varies per run. Wrapping it in sorted() is the fix,
+    # but it CHANGES the palette order and therefore the output bytes, so it
+    # needs an A/B and an in-game verdict rather than a silent edit.
+    "nif_convert.py:_match_rigid_leg_bend_to_body:to_add": 3,
+}
+
+
+def _iter_is_ordered(node, assigns, depth=0):
+    if depth > 6 or node is None:
+        return False
+    if isinstance(node, (ast.List, ast.Tuple)):
+        return True
+    if isinstance(node, (ast.ListComp, ast.GeneratorExp)):
+        return bool(node.generators) and _iter_is_ordered(
+            node.generators[0].iter, assigns, depth + 1)
+    if isinstance(node, ast.Call):
+        f = node.func
+        if isinstance(f, ast.Name):
+            if f.id in _UNCONDITIONAL_ORDER:
+                return True
+            if f.id in _PASSTHROUGH_ORDER:
+                return bool(node.args) and _iter_is_ordered(
+                    node.args[0], assigns, depth + 1)
+        if isinstance(f, ast.Attribute):
+            return f.attr in _ORDERED_METHODS or f.attr in _UNCONDITIONAL_ORDER
+        return False
+    if isinstance(node, ast.Attribute):
+        return node.attr in _ORDERED_ATTRS
+    if isinstance(node, ast.Name):
+        vals = assigns.get(node.id)
+        return bool(vals) and all(
+            _iter_is_ordered(v, assigns, depth + 1) for v in vals)
+    return False
+
+
+def _order_sensitive_loops(path):
+    """(func, variable-or-expr, ordered?) for every loop that writes skin."""
+    tree = ast.parse(path.read_text(encoding="utf-8", errors="ignore"))
+    out = []
+    for fn in [n for n in ast.walk(tree)
+               if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]:
+        assigns = {}
+        for n in ast.walk(fn):
+            tgts, val = [], None
+            if isinstance(n, ast.Assign):
+                tgts, val = n.targets, n.value
+            elif isinstance(n, (ast.AnnAssign, ast.AugAssign)):
+                tgts, val = [n.target], n.value
+            for t in tgts:
+                if isinstance(t, ast.Name) and val is not None:
+                    assigns.setdefault(t.id, []).append(val)
+        for n in ast.walk(fn):
+            if not isinstance(n, ast.For):
+                continue
+            calls = {c.func.attr for c in ast.walk(n)
+                     if isinstance(c, ast.Call)
+                     and isinstance(c.func, ast.Attribute)}
+            if not (calls & set(ORDER_SENSITIVE)):
+                continue
+            name = (n.iter.id if isinstance(n.iter, ast.Name)
+                    else ast.unparse(n.iter)[:40])
+            out.append((fn.name, name, n.lineno,
+                        _iter_is_ordered(n.iter, assigns)))
+    return out
+
+
+def test_every_skin_write_loop_has_a_provably_ordered_iterable():
+    """Set iteration order is undefined, and here it reaches the mesh: the
+    bone-add order becomes the palette order in the written NIF.
+
+    Coverage is asserted, not assumed -- the guard this replaced classified 11
+    of 1278 loops and intersected the write set at ZERO.
+    """
+    total, unproven = 0, []
     for path in sorted(_SRC_DIR.glob("*.py")):
-        for ln, fn, name in _set_iterating_writes(path):
-            offenders.append(f"{path.name}:{ln} {fn}() iterates set {name!r}")
-    assert not offenders, (
-        "skin-writing loop iterates a set directly (order reaches the mesh); "
-        "wrap in sorted(): " + "; ".join(offenders))
+        for fn, name, ln, ordered in _order_sensitive_loops(path):
+            total += 1
+            if not ordered:
+                unproven.append((f"{path.name}:{fn}:{name}", ln))
+    assert total >= 40, (
+        f"only {total} order-sensitive write loops found -- the AST walker "
+        f"broke; there were 47 on 2026-08-19 and this guard would be vacuous")
+    seen = {}
+    for key, _ln in unproven:
+        seen[key] = seen.get(key, 0) + 1
+    new = {k: v for k, v in seen.items() if k not in _KNOWN_UNPROVEN_ORDER}
+    assert not new, (
+        "a skin-writing loop iterates something this guard cannot prove is "
+        "ordered -- wrap it in sorted(), or pin it in _KNOWN_UNPROVEN_ORDER "
+        f"with the reason: {new}")
+    drift = {k: (v, _KNOWN_UNPROVEN_ORDER[k]) for k, v in seen.items()
+             if _KNOWN_UNPROVEN_ORDER.get(k) != v}
+    missing = {k for k in _KNOWN_UNPROVEN_ORDER if k not in seen}
+    assert not drift and not missing, (
+        f"pinned unproven loops changed -- found-vs-pinned {drift}, "
+        f"pinned but gone {missing}; update the pin deliberately")
+
+
+def test_the_order_guard_can_actually_fail():
+    """Control: the classifier must reject a set-derived iterable. Without
+    this, every assertion above could be passing because the walker says
+    'ordered' to everything."""
+    src = ("def f(s):\n"
+           "    want = set()\n"
+           "    want |= other\n"
+           "    for b in want:\n"
+           "        s.setShapeWeights(b, [])\n")
+    tree = ast.parse(src)
+    fn = tree.body[0]
+    assigns = {}
+    for n in ast.walk(fn):
+        if isinstance(n, ast.Assign):
+            for t in n.targets:
+                if isinstance(t, ast.Name):
+                    assigns.setdefault(t.id, []).append(n.value)
+        elif isinstance(n, ast.AugAssign) and isinstance(n.target, ast.Name):
+            assigns.setdefault(n.target.id, []).append(n.value)
+    loop = next(n for n in ast.walk(fn) if isinstance(n, ast.For))
+    assert not _iter_is_ordered(loop.iter, assigns), (
+        "the classifier called a set-derived iterable ordered")
+    assert _iter_is_ordered(ast.parse("sorted(want)").body[0].value, assigns), (
+        "the classifier failed to recognise sorted() as ordered")
 
 
 def test_influence_cap_breaks_ties_deterministically():
