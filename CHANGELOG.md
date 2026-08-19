@@ -1,6 +1,11 @@
 # Changelog
 
-## Unreleased
+## 1.3 — 2026-08-19
+
+Everything below shipped in the pack built on 2026-08-19: 162 mods, 3931
+meshes, no failures. The headline is that conversion is now **reproducible** —
+converting the same mod twice produces the same bytes — which is what makes
+every measurement in this release trustworthy rather than approximate.
 
 ### Fixed — converting the same mod twice now produces the same meshes
 
