@@ -334,18 +334,28 @@ def test_every_gui_env_is_read_by_src():
     import re
     from pathlib import Path
     src = Path(__file__).resolve().parent.parent / "src"
-    read = set()
+    raw, helper = set(), set()
     for f in src.glob("*.py"):
         text = f.read_text(encoding="utf-8", errors="replace")
         # Raw reads AND the _flag()/_knob() helpers the 2026-08-18 idiom
         # collapse routed most reads through.
-        read |= set(re.findall(
+        raw |= set(re.findall(
             r'os\.environ\.get\(\s*["\'](CBBE2UBE_[A-Z0-9_]+)["\']', text))
-        read |= set(re.findall(
+        helper |= set(re.findall(
             r'_(?:flag|knob)\(\s*["\'](CBBE2UBE_[A-Z0-9_]+)["\']', text))
-    assert len(read) >= 250, (
-        f"only {len(read)} env reads found across src/ -- a read idiom "
-        f"changed and this scan went blind to it; widen the regexes")
+    read = raw | helper
+    # PER-IDIOM floors: an aggregate floor cannot fire when ONE idiom goes
+    # blind, because the other alone clears it. Today 11 GUI-exposed envs are
+    # raw-only, so raw-blindness happens to fail this test through `dead` --
+    # but as the idiom collapse continues that accident disappears and the
+    # guard would go silent. Measured 2026-08-18: helper 289, raw 34.
+    assert len(helper) >= 250, (
+        f"only {len(helper)} _flag/_knob env reads found across src/ -- that "
+        f"idiom's regex went blind; widen it")
+    assert len(raw) >= 25, (
+        f"only {len(raw)} raw os.environ env reads found across src/ -- that "
+        f"idiom's regex went blind (if the last raw reads genuinely migrated, "
+        f"delete the raw regex deliberately rather than lowering this)")
     exposed = {s.env for s in gs.SETTINGS if s.env}
     dead = sorted(e for e in exposed if e not in read)
     assert not dead, f"GUI rows whose env nothing in src/ reads: {dead}"

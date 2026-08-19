@@ -13598,6 +13598,7 @@ def _cap_weight_roughness_to_author(dst_path, src_nif_path=None) -> int:
 
     total = 0
     dirty = False
+    n_skipped_stb = 0
     for s in nf.shapes:
         a = src_by_name.get(s.name)
         if a is None or len(a.verts) != len(s.verts):
@@ -13656,7 +13657,7 @@ def _cap_weight_roughness_to_author(dst_path, src_nif_path=None) -> int:
         # qualified" while 2300 vertices were queued for repair. Record, never
         # swallow ([[feedback_method_traps]]).
         saved_stb: dict = {}
-        ok = True
+        skipped_for = None
         for b in (s.bone_names or []):
             try:
                 st = s.get_shape_skin_to_bone(b)
@@ -13664,10 +13665,21 @@ def _cap_weight_roughness_to_author(dst_path, src_nif_path=None) -> int:
                 _note_pass_failure("_cap_weight_roughness_to_author/stb", _xe)
                 st = None
             if st is None:
-                ok = False
+                # `get_shape_skin_to_bone` returns None rather than raising, so
+                # this branch is the SAME silent path that made v1 a no-op --
+                # one layer down. Bailing the shape is correct (an unrestorable
+                # STB would ship at identity = origin spike) but it must never
+                # be silent: unrecorded, a whole shape's repair vanishes and
+                # `total` still reads like "nothing qualified".
+                skipped_for = b
                 break
             saved_stb[b] = st
-        if not ok:
+        if skipped_for is not None:
+            n_skipped_stb += 1
+            print(f"  roughness cap: SKIPPED {s.name!r} -- cannot read the "
+                  f"skin-to-bone xform for {skipped_for!r}, so "
+                  f"{len(changed)} queued vert(s) were left unrepaired",
+                  file=sys.stderr)
             continue
         write_bones = set()
         removed: dict = {}

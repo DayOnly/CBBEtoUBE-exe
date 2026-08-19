@@ -178,11 +178,23 @@ def test_env_prefix_scan_covers_the_real_converter_surface():
     # Both read idioms: raw os.environ reads AND the _flag()/_knob() helpers
     # the 2026-08-18 idiom collapse routed 287 reads through. A read hiding in
     # either form under a foreign prefix would evade the fingerprint.
-    names = set(re.findall(r'os\.environ(?:\.get)?\(\s*"([A-Z0-9_]+)"', src))
-    names |= set(re.findall(r'_(?:flag|knob)\(\s*"([A-Z0-9_]+)"', src))
-    assert len(names) >= 250, (
-        f"only {len(names)} env names found -- a read idiom changed and this "
-        f"scan went blind to it; widen the regexes")
+    raw = set(re.findall(r'os\.environ(?:\.get)?\(\s*"([A-Z0-9_]+)"', src))
+    helper = set(re.findall(r'_(?:flag|knob)\(\s*"([A-Z0-9_]+)"', src))
+    names = raw | helper
+    # PER-IDIOM floors, not one aggregate. An aggregate floor is defeated by
+    # the very failure it guards: the helper idiom alone clears any total-based
+    # bar, so if the RAW regex went blind the test would pass in silence and a
+    # foreign-prefix raw read would be invisible to the cache fingerprint.
+    # (Measured 2026-08-18: helper 289, raw 34, total 323 -- a >=250 total floor
+    # did NOT fire when raw-blindness was simulated.) Each idiom carries its own
+    # floor so losing either one fails loudly.
+    assert len(helper) >= 250, (
+        f"only {len(helper)} _flag/_knob env names found -- that idiom's regex "
+        f"went blind; widen it")
+    assert len(raw) >= 25, (
+        f"only {len(raw)} raw os.environ env names found -- that idiom's regex "
+        f"went blind (or the last raw reads moved to _flag/_knob; if genuinely "
+        f"zero, delete the raw regex deliberately rather than lowering this)")
     stray = sorted(n for n in names if not n.startswith("CBBE2UBE_"))
     assert not stray, (
         f"nif_convert reads env var(s) the CBBE2UBE_ prefix scan cannot see: "
