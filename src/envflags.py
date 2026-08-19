@@ -36,8 +36,24 @@ The contract, for both helpers:
 
 `flag(name, default=True)` is the NO_*-style kill switch read: the feature
 runs unless the variable is set truthy -- callers write
-`FEATURE = not flag("CBBE2UBE_NO_FEATURE", default=False)` for that family,
-keeping the polarity visible at the call site.
+`FEATURE = not flag("CBBE2UBE_EXAMPLE_SWITCH", default=False)` for that
+family, keeping the polarity visible at the call site.
+
+TWO SHARP EDGES, both measured on the old-vs-new resolved-default diff and
+neither reachable from the GUI (it writes "1" or unsets) -- they bite a
+HAND-WRITTEN recipe only:
+
+  * AN UNRECOGNISED VALUE NOW MEANS OFF, INCLUDING FOR DEFAULT-ON FLAGS.
+    The old `X not in ("0","false","no","off")` spelling left a default-ON
+    feature ON for anything it did not recognise; `in _ON` turns it OFF. So
+    `CBBE2UBE_TORSO_JIGGLE=2` (or `=01`, `=1.0`, `=y`, `=enabled`) now
+    DISABLES what it used to leave running. Verified: 4 default-ON flags flip
+    this way. Write "1" or leave it unset.
+  * `knob(cast=float)` ACCEPTS "inf" AND "nan", because `float()` does. A NaN
+    knob poisons downstream float maths silently instead of raising. Nothing
+    in the shipped surface passes either, so this is documented rather than
+    guarded -- add a finite check here if a knob ever reaches a comparison
+    where NaN would read as "no violation".
 """
 from __future__ import annotations
 

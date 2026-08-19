@@ -360,17 +360,19 @@ def _nif_config_fingerprint(args) -> str:
     """Stable hash of every setting that can change a converted NIF's bytes.
 
     WHY THIS EXISTS. The `--incremental` floor only ever compared mtimes:
-    source NIF, converter code, body ref. But `nif_convert.py` reads **135
-    distinct `CBBE2UBE_*` environment variables** (counted, not estimated) --
-    clearance margins, follow ratios, jiggle strengths, pass on/off switches --
-    and NONE of them were in the floor. Flip one, re-run incrementally, and the
+    source NIF, converter code, body ref. But `nif_convert.py` reads **323
+    distinct `CBBE2UBE_*` environment variables** (re-counted 2026-08-18; it
+    was 135 when this was written, which is the point) -- clearance margins,
+    follow ratios, jiggle strengths, pass on/off switches -- and NONE of them
+    were in the floor. Flip one, re-run incrementally, and the
     converter reports "reusing N up-to-date NIFs" while the setting you changed
     never reached a single mesh. That is this project's documented dominant
     failure mode (a check that comes back clean because it measured nothing)
     wearing a new hat, and it is the thing that blocked making reuse a default.
 
-    Env vars are collected BY PREFIX, never from a hand-maintained list. A
-    literal list of 135 names would drift the first time someone adds a flag --
+    Env vars are collected BY PREFIX, never from a hand-maintained list, and
+    that is why the count above tripling did not break anything. A literal
+    list would drift the first time someone adds a flag --
     exactly the staleness that made the four-module whitelist in the project
     notes wrong (it predated `nif_convert` importing `fit_metrics`). A prefix
     scan cannot go stale.
@@ -2745,7 +2747,7 @@ def _cmd_convert(args):
 
     # Incremental floor = newest of (converter source code, UBE body ref,
     # CONFIG FINGERPRINT). The fingerprint closes the gap that kept this
-    # opt-in: 135 CBBE2UBE_* env vars and the NIF-relevant args were invisible
+    # opt-in: every CBBE2UBE_* env var and the NIF-relevant args were invisible
     # to a pure-mtime floor, so changing one and re-running incrementally
     # reported "reusing N NIFs" while the change reached nothing.
     incremental_floor = None

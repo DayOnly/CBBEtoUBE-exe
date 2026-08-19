@@ -3424,7 +3424,10 @@ def _damp_to_avoid_inversion(cur, disp, tris, steps=CONFORM_FOLD_GUARD_STEPS,
 # inside the skin is invisible, so this cannot create a visible artifact of its
 # own; the risk it does carry is stretching the triangles that bridge a buried
 # vert and an exposed neighbour, which is why the move field is feathered and
-# capped. DEFAULT OFF pending the in-game verdict.
+# capped. DEFAULT OFF -- and no longer "pending": the verdict came back and it
+# was BAD. Enabled, this destroyed a reported cuirass's shoulders and arms in
+# game (a known clamp bug in this pass). Do not flip it without fixing that
+# first; the flag is kept so the measurement reproduces, not as a candidate.
 REBURY_AUTHORED = _flag("CBBE2UBE_REBURY_AUTHORED", False)
 REBURY_MAX_MOVE = _knob("CBBE2UBE_REBURY_MAX_MOVE", 1.5)
 # INSIDE is not the only hidden state, and on the reported piece it is not even
@@ -9864,8 +9867,13 @@ _CHEST_FOLLOW_RIGID = _knob("CBBE2UBE_CHEST_FOLLOW_RIGID", 0.35)
 # choice (jiggling steel looks wrong), not a measured necessity, so raising this
 # trades "unlabelled armour may look rubbery" for "unlabelled armour stops clipping".
 # That is the user's call to make, which is why it is a knob and not a new default.
-_CHEST_FOLLOW_UNKNOWN = float(
-    os.environ.get("CBBE2UBE_CHEST_FOLLOW_UNKNOWN", str(_CHEST_FOLLOW_RIGID)))
+# Reads through the helper like every other knob. It was the ONE numeric read
+# the 2026-08-18 collapse left raw, and the only one in this module that still
+# crashed the import when set to an empty string -- which matters because it
+# HAS a GUI row (`chest_follow_unknown`), so an empty value in a hand-written
+# recipe killed the run instead of falling back to the default.
+_CHEST_FOLLOW_UNKNOWN = _knob("CBBE2UBE_CHEST_FOLLOW_UNKNOWN",
+                              _CHEST_FOLLOW_RIGID)
 
 # #source-follow -- classify by what the OUTFIT AUTHOR did, not by what the garment
 # is called. Measured over 581 bust-covering shapes joined from converted output back
