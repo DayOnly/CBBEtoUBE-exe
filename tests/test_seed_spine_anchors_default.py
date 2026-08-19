@@ -41,8 +41,10 @@ ENV = "CBBE2UBE_NO_SEED_SPINE_ANCHORS"
 
 
 def _decl(name):
+    # 2026-08-18 idiom collapse: flags now read through _flag(), not a raw
+    # os.environ.get chain.
     src = inspect.getsource(nc)
-    i = src.index(f"{name} = os.environ.get(")
+    i = src.index(f"{name} = ")
     return src[i:i + 240]
 
 
@@ -53,9 +55,9 @@ def test_spine_seeding_is_ON_by_default():
 def test_it_takes_a_NO_kill_switch_read_the_default_ON_way():
     d = _decl("SEED_SPINE_ANCHORS")
     assert f'"{ENV}"' in d, "a default-ON flag takes a NO_* kill switch"
-    assert "not in (" in d, (
-        "read with `in (...)` this would be default OFF and every piece would "
-        "keep shipping its spine chains ~90u low")
+    assert "not _flag(" in d, (
+        "read without the negation this would be default OFF and every piece "
+        "would keep shipping its spine chains ~90u low")
 
 
 def test_the_kill_switch_actually_turns_it_off(monkeypatch):

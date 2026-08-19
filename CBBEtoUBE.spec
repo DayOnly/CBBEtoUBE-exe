@@ -99,7 +99,20 @@ pyz = PYZ(a.pure)
 exe = EXE(
     pyz,
     a.scripts,
-    [],
+    # Pin the interpreter's string-hash seed. The frozen bootloader IGNORES the
+    # PYTHONHASHSEED environment variable, so every process (workers included)
+    # otherwise draws a RANDOM seed — and set/dict iteration order is a live
+    # input to the output bytes (proven 2026-08-18: same-seed interpreted runs
+    # are byte-identical over the whole output tree; different seeds differ;
+    # two exe runs differed on 29/84 meshes on a VFS-broadened mod). One seed,
+    # one canonical output. Workers inherit it because spawn re-executes this
+    # same exe.
+    #
+    # The option MUST be the bare "hash_seed=<n>" form. "X hash_seed=1" parses
+    # as a CPython -X option, which CPython silently ignores — measured: a probe
+    # exe built with both spellings froze at the bare form's seed, and a
+    # no-options control varied per run.
+    [("hash_seed=1", None, "OPTION")],
     exclude_binaries=True,
     name="CBBEtoUBE",
     debug=False,

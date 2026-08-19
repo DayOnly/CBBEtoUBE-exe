@@ -112,7 +112,9 @@ def test_guard_defaults_ON_and_ONLY_WITH_THE_LOCALITY_FIX():
     assert '"CBBE2UBE_NO_FULL_WEIGHT_LAYER_GUARD"' in decl, (
         "a default-ON flag takes a NO_* kill-switch, matching the convention "
         "CHAIN_ANCHOR_RECREATE already uses")
-    assert "not in (" in decl, "the default must be ON"
+    # 2026-08-18 idiom collapse: default-ON now reads `not _flag(NO_X, False)`
+    # (previously the raw `not in (...)` tuple test).
+    assert "not _flag(" in decl, "the default must be ON"
     assert '_plan["near_ok"]' in src, (
         "the default may only be ON while the shared anchor is applied LOCALLY; "
         "wholesale substitution with this ON is what bound the sleeves")

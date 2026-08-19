@@ -122,6 +122,27 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "upper back was given no allowance for the body growing "
                     "under it at runtime. Charges the back the same allowance "
                     "the bust already gets."),
+    Setting("author_roughness_cap",
+            "Keep weighting as smooth as the author made it",
+            "Armor", "Seams", default=True,
+            env="CBBE2UBE_NO_AUTHOR_ROUGHNESS_CAP", invert=True,
+            hint="Fixes a lone vertex bending the wrong way -- a pucker or "
+                 "spike in an otherwise smooth panel.",
+            tooltip="Making a garment follow the body rewrites its weighting, "
+                    "and a vertex only holds four bones. Where the rewritten "
+                    "weighting holds a near tie for that fourth slot, "
+                    "neighbouring vertices can keep DIFFERENT bones -- so one "
+                    "vertex bends on the chest while the surface around it "
+                    "bends at the waist, and it pokes through whatever covers "
+                    "it. This compares each vertex against the ones touching "
+                    "it and, where our weighting came out rougher than the "
+                    "author's own, eases it back toward its neighbours. It is "
+                    "measured against the AUTHOR rather than against perfect "
+                    "smoothness, so real panel edges and seams the author put "
+                    "there are preserved. On the reported outfit it fixed 802 "
+                    "of 830 rough vertices and left the belts, buckles and "
+                    "metal buttons -- already smooth -- completely untouched. "
+                    "Changes weighting only; nothing moves."),
     Setting("back_bound_edit",
             "...and cap how far that allowance may push",
             "Armor", "Fit and clearance", default=False,

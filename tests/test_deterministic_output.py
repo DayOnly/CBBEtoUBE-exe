@@ -40,6 +40,7 @@ NOT enough to catch (3), so use four.
 """
 import ast
 import inspect
+import re
 from pathlib import Path
 
 import src.nif_convert as nc
@@ -227,33 +228,98 @@ def _silent_handlers_wrapping(names, path):
     return out
 
 
+def _all_silent_handlers(path):
+    """Every `except: pass` Try in the module, with the call names its try
+    body makes. The unfiltered population -- callers assert their own floor on
+    it, so a broken walker reads as a FAILURE, not as a clean sweep."""
+    tree = ast.parse(Path(path).read_text(encoding="utf-8", errors="ignore"))
+    parents = {c: p for p in ast.walk(tree) for c in ast.iter_child_nodes(p)}
+    out = []
+    for n in ast.walk(tree):
+        if not isinstance(n, ast.Try):
+            continue
+        if not any(len(h.body) == 1 and isinstance(h.body[0], ast.Pass)
+                   for h in n.handlers):
+            continue
+        called = set()
+        for c in ast.walk(ast.Module(body=n.body, type_ignores=[])):
+            if isinstance(c, ast.Call):
+                f = c.func
+                called.add(f.id if isinstance(f, ast.Name) else
+                           (f.attr if isinstance(f, ast.Attribute) else ""))
+        fn = "?"
+        cur = n
+        while cur in parents:
+            cur = parents[cur]
+            if isinstance(cur, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                fn = cur.name
+                break
+        out.append((n.lineno, fn, called))
+    return out
+
+
 def test_no_fit_pass_failure_is_swallowed_silently():
     """A pass that RAISES must never be indistinguishable from one that ran and
     did nothing -- the shape of the failure that cost three wrong verdicts.
 
-    Swept the whole module: 30 such handlers existed, all now record. This
-    fails if a new one appears.
+    THE POPULATION IS DERIVED, NOT HAND-LISTED. The first version of this
+    guard listed 16 pass names by hand; an audit (2026-08-18) found the module
+    had grown to 111 silent handlers wrapping 40 distinct converter functions,
+    and the list matched ZERO of them -- the guard policed an empty set for
+    months and read as assurance. Now the protected set is every name the
+    module itself records via `_note_pass_failure("<name>", ...)`: if a
+    function records at one call site, a bare `except: pass` around it at
+    another site is exactly the sibling-drift defect this test exists for.
     """
-    PASSES = ("_match_limb_motion_to_body", "_match_leg_motion_to_body",
-              "_match_arm_motion_to_body", "_match_spine_motion_to_body",
-              "_transfer_body_jiggle_to_fitted", "_conform_fitted_to_body",
-              "_match_rigid_leg_bend_to_body", "_weld_cross_shape_seams",
-              "_repair_layer_order", "_conform_cords_to_host",
-              "_sync_abdomen_layered_cloth_weights",
-              "_sync_chest_layered_cloth_weights",
-              "_split_bust_collider_shape", "_split_bust_collider_xml",
-              "_smooth_warp_grooves", "_precreate_custom_bone_chains")
-    bad = _silent_handlers_wrapping(PASSES, nc.__file__)
+    src = Path(nc.__file__).read_text(encoding="utf-8", errors="ignore")
+    recorded = {m.group(1).split("/")[0] for m in
+                re.finditer(r'_note_pass_failure\(\s*[\'"]([^\'"]+)[\'"]', src)}
+    # Population sanity: the recording convention is in heavy use. A collapse
+    # here means the derivation broke, not that the module got clean.
+    assert len(recorded) >= 40, (
+        f"only {len(recorded)} recorded pass names found -- the population "
+        f"derivation is broken, this guard would be vacuous")
+    handlers = _all_silent_handlers(nc.__file__)
+    assert len(handlers) >= 60, (
+        f"only {len(handlers)} silent handlers found (there were 111 on "
+        f"2026-08-18) -- the AST walker is broken, not the module clean")
+    bad = [(ln, fn, sorted(called & recorded))
+           for ln, fn, called in handlers if called & recorded]
     assert not bad, (
-        "fit-pass failure swallowed silently at " +
+        "a pass that records via _note_pass_failure elsewhere is swallowed "
+        "bare here -- route it through _note_pass_failure: " +
         "; ".join(f"{f}():{ln} ({','.join(h)})" for ln, f, h in bad))
 
 
 def test_no_mesh_write_is_swallowed_silently():
     """A swallowed SAVE is worse than a swallowed pass: the piece ships
-    unconverted or half-written while reporting success."""
+    unconverted or half-written while reporting success.
+
+    Each guarded name must EXIST as a call in the module -- a renamed write
+    API would otherwise rot this list into policing nothing (the 2026-08-18
+    audit's defect class: a filter whose coverage nobody asserts).
+    """
     WRITES = ("atomic_nif_save", "setShapeWeights", "add_bone")
-    bad = _silent_handlers_wrapping(WRITES, nc.__file__)
+    handlers = _all_silent_handlers(nc.__file__)
+    assert len(handlers) >= 60, (
+        f"only {len(handlers)} silent handlers found -- walker broken")
+    all_calls = set()
+    for _, _, called in handlers:
+        all_calls |= called
+    tree = ast.parse(Path(nc.__file__).read_text(encoding="utf-8",
+                                                 errors="ignore"))
+    module_calls = set()
+    for c in ast.walk(tree):
+        if isinstance(c, ast.Call):
+            f = c.func
+            module_calls.add(f.id if isinstance(f, ast.Name) else
+                             (f.attr if isinstance(f, ast.Attribute) else ""))
+    for w in WRITES:
+        assert w in module_calls, (
+            f"{w!r} is not called anywhere in nif_convert -- the WRITES list "
+            f"has rotted; update it to the current write API")
+    bad = [(ln, fn, sorted(called & set(WRITES)))
+           for ln, fn, called in handlers if called & set(WRITES)]
     assert not bad, (
         "mesh write swallowed silently at " +
         "; ".join(f"{f}():{ln} ({','.join(h)})" for ln, f, h in bad))

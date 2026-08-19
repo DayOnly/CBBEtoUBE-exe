@@ -41,8 +41,10 @@ from src import nif_convert as nc
 
 
 def _decl(name):
+    # 2026-08-18 idiom collapse: flags read through _flag(), not a raw
+    # os.environ.get chain -- polarity is the leading `not`.
     src = inspect.getsource(nc)
-    i = src.index(f"{name} = os.environ.get(")
+    i = src.index(f"{name} = ")
     return src[i:i + 200]
 
 
@@ -52,7 +54,7 @@ def test_the_outlier_cap_is_ON_by_default():
     assert '"CBBE2UBE_NO_WARP_DELTA_OUTLIER"' in d, (
         "a default-ON flag takes a NO_* kill-switch, matching the convention "
         "CHAIN_ANCHOR_RECREATE and the layer guard already use")
-    assert "not in (" in d
+    assert "not _flag(" in d
 
 
 def test_the_shell_cap_is_OFF_and_the_measurement_is_why():
@@ -62,7 +64,7 @@ def test_the_shell_cap_is_OFF_and_the_measurement_is_why():
     assert '"CBBE2UBE_WARP_PUSH_SHELL_CAP"' in d, (
         "must stay an opt-IN: it is inert on every large spike measured and "
         "regresses two shapes, while moving geometry by 1.38u")
-    assert "not in (" not in d
+    assert "not _flag(" not in d and "_flag(" in d
 
 
 def test_the_asymmetry_is_recorded_next_to_the_flag():
@@ -73,7 +75,7 @@ def test_the_asymmetry_is_recorded_next_to_the_flag():
     figure is that it touched nothing where the spikes were.
     """
     src = inspect.getsource(nc)
-    i = src.index("WARP_DELTA_OUTLIER = os.environ.get(")
+    i = src.index("WARP_DELTA_OUTLIER = ")
     why = src[max(0, i - 2200):i]
     assert "10.335" in why and "6.439" in why, (
         "the improvement that earned the default must be quoted at the flag")
