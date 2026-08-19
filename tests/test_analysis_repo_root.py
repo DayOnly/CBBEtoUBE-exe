@@ -58,6 +58,35 @@ def test_some_scripts_declare_a_repo_root():
         f"drifted and the checks below would be vacuous")
 
 
+_NEEDS_ROOT = re.compile(
+    r"^\s*(?:import\s+src\b|from\s+src\b|import\s+pyn\b|from\s+pyn\b)",
+    re.MULTILINE)
+
+
+def test_every_script_that_imports_src_declares_the_canonical_root():
+    """THE FILTER IS THE POPULATION -- 2026-08-18 audit fix.
+
+    The parametrized check below runs only over scripts that MATCH the _REPO
+    pattern, so a script with a WRONG or differently-spelled root declaration
+    was invisible to it: six scripts imported `src`/`pyn` off a root that
+    pointed at `scripts/` (one of them then built
+    `scripts/scripts/convert_one_armor.py` and could never have run). This
+    test closes the gap from the other side: every script whose imports NEED
+    the repo root must declare it in the one canonical, checkable form.
+    """
+    matched = {p for p, _ in _scripts_declaring_repo()}
+    missing = []
+    for p in sorted(_ANALYSIS.glob("*.py")):
+        text = p.read_text(encoding="utf-8")
+        if _NEEDS_ROOT.search(text) and p not in matched:
+            missing.append(p.name)
+    assert not missing, (
+        "these scripts import src/pyn but do not declare the canonical "
+        "`_REPO = Path(__file__).resolve().parent...` root (so the root check "
+        "cannot see them, and a wrong root fails only at runtime): "
+        + ", ".join(missing))
+
+
 @pytest.mark.parametrize("path,levels", _scripts_declaring_repo(),
                          ids=lambda v: v.name if isinstance(v, Path) else str(v))
 def test_repo_root_owns_src_and_pynifly(path, levels):

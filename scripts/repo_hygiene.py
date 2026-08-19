@@ -142,7 +142,15 @@ CONTENT_EXEMPT = (
     "tests/test_repo_hygiene_hooks.py",
 )
 
-SKIP_PREFIXES = ("dist/", ".pynifly/")
+# .pynifly/ ONLY: vendored third-party code, updated wholesale -- upstream's
+# own author emails / doc examples are not this repo's leak surface, and
+# flagging them would fail hygiene on every vendor update. dist/ is NOT
+# exempt (2026-08-18 audit): it is OUR committed PyInstaller output, exactly
+# where a build-machine path would bake in, and it was skipped wholesale with
+# no per-entry reason -- 1,126 tracked files invisible to the content rules.
+# Binary members are already excluded by TEXT_SUFFIXES; the text members are
+# few and cheap to scan.
+SKIP_PREFIXES = (".pynifly/",)
 
 
 def path_is_never_tracked(path: str) -> str | None:

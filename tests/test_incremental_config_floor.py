@@ -175,8 +175,14 @@ def test_env_prefix_scan_covers_the_real_converter_surface():
     import re
     src = (_REPO / "src" / "nif_convert.py").read_text(encoding="utf-8",
                                                        errors="replace")
+    # Both read idioms: raw os.environ reads AND the _flag()/_knob() helpers
+    # the 2026-08-18 idiom collapse routed 287 reads through. A read hiding in
+    # either form under a foreign prefix would evade the fingerprint.
     names = set(re.findall(r'os\.environ(?:\.get)?\(\s*"([A-Z0-9_]+)"', src))
-    assert names, "found no env reads at all -- the regex or the file moved"
+    names |= set(re.findall(r'_(?:flag|knob)\(\s*"([A-Z0-9_]+)"', src))
+    assert len(names) >= 250, (
+        f"only {len(names)} env names found -- a read idiom changed and this "
+        f"scan went blind to it; widen the regexes")
     stray = sorted(n for n in names if not n.startswith("CBBE2UBE_"))
     assert not stray, (
         f"nif_convert reads env var(s) the CBBE2UBE_ prefix scan cannot see: "

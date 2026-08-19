@@ -50,6 +50,10 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
+_REPO = Path(__file__).resolve().parent.parent.parent
+sys.path.insert(0, str(_REPO))
+sys.path.insert(0, str(_REPO / ".pynifly"))
+
 from scripts.analysis import _census_common as C     # noqa: E402
 import numpy as np                                   # noqa: E402
 from src import nif_convert as nc                    # noqa: E402

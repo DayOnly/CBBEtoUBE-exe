@@ -122,6 +122,23 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "upper back was given no allowance for the body growing "
                     "under it at runtime. Charges the back the same allowance "
                     "the bust already gets."),
+    Setting("back_bound_edit",
+            "...and cap how far that allowance may push",
+            "Armor", "Fit and clearance", default=False,
+            env="CBBE2UBE_BACK_BOUND_EDIT", invert=False,
+            hint="For the upper back standing too far OFF the body on pieces "
+                 "the allowance above helped.",
+            tooltip="The upper-back allowance raises cloth to its required "
+                    "clearance in one step, and where the garment was already "
+                    "close that step can overshoot -- the measured piece stood "
+                    "2.12 units off the back where its author put about half "
+                    "that. This caps each vertex's move at the allowance "
+                    "itself, so the charge still clears skin but cannot "
+                    "overshoot: on the measured piece the standoff fell from "
+                    "2.12 to 1.16 units while showing LESS skin than before "
+                    "(4 clipped vertices against 7). Touches roughly the "
+                    "worst tenth of pieces; the rest already sit inside the "
+                    "cap."),
     Setting("clearance_differential",
             "Base clearance on reshaping, not just growth",
             "Armor", "Fit and clearance", default=True,
@@ -771,6 +788,38 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "Most armour in a large pack is unidentifiable, and this is "
                     "what limits it -- raise it if chests still clip when moving, "
                     "lower it if stiff armour starts looking rubbery."),
+    Setting("spine_twist_match",
+            "Match a top's twist-follow to the body (experimental)",
+            "Armor", "Body follow and morphs", default=False,
+            env="CBBE2UBE_SPINE_TWIST_MATCH", invert=False,
+            hint="For tops that lag or lead the chest in swings and twists. A "
+                 "measured trade, not a free win.",
+            tooltip="When the spine twists, a garment follows however its "
+                    "author weighted the twist bones; where that differs from "
+                    "the UBE body's own weighting, the top lags or leads the "
+                    "chest mid-swing. This blends the garment's twist "
+                    "weighting toward the body's at the best measured "
+                    "strength. It is a genuine trade: on the one piece "
+                    "measured, twists and swings improved (twist error 7.3 to "
+                    "3.8, swing windup 5.3 to 2.3, bow draw to zero) while a "
+                    "hard forward lean got worse at ANY non-zero strength "
+                    "(sprint 13.8 to 17.3). Measured on one piece, never "
+                    "judged in game -- which is why it ships off."),
+    Setting("bust_plate_chain_transplant",
+            "Let rigid bust plates ride the breast chain (experimental)",
+            "Armor", "Jiggle transfer", default=False,
+            env="CBBE2UBE_BUST_PLATE_CHAIN_TRANSPLANT", invert=False,
+            hint="For a breastplate that jiggling cloth beneath swings out "
+                 "through.",
+            tooltip="A rigid plate over jiggling cloth carries no breast-chain "
+                    "weight of its own, so the cloth's chain motion carries "
+                    "the cloth out through the plate. This relabels part of "
+                    "the plate's weight onto the first two breast-chain bones "
+                    "wherever the cloth beneath carries them, so plate and "
+                    "cloth swing together: on the measured piece it closed "
+                    "about half the follow gap (mean lever error 0.60 to "
+                    "0.31). Changes weights only -- the geometry is "
+                    "byte-identical with this off. Never judged in game."),
     Setting("chain_torso", "Chest follow on skirt-welded cuirasses (experimental)",
             "Armor", "Physics chains (HDT-SMP)", default=False,
             env="CBBE2UBE_CHAIN_TORSO", invert=False,

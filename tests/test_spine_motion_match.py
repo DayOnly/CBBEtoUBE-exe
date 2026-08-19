@@ -96,6 +96,10 @@ def test_spine_runs_before_arm_in_both_convert_paths():
     spine = [i for i in range(len(src)) if src.startswith(s_call, i)]
     arm = [i for i in range(len(src)) if src.startswith(a_call, i)]
     assert len(spine) >= 1 and len(arm) >= 1
+    # equal lengths make the zip total -- see test_full_weight_match
+    assert len(spine) == len(arm), (
+        f"call-site counts diverge ({len(spine)} spine vs {len(arm)} arm) -- "
+        f"zip would silently skip the extras")
     for s_at, a_at in zip(spine, arm):
         assert s_at < a_at, (
             "spine match must be called BEFORE the arm match in every convert "
@@ -129,6 +133,10 @@ def test_full_pass_order_is_leg_then_spine_then_arm():
           for k, v in calls.items()}
     for k, v in at.items():
         assert len(v) >= 1, f"{k} is not wired in at all"
+    # equal lengths make the zip total -- see test_full_weight_match
+    assert len({len(v) for v in at.values()}) == 1, (
+        f"call-site counts diverge: { {k: len(v) for k, v in at.items()} } -- "
+        f"zip would silently skip the extras")
     # one (leg, spine, arm) triple per convert path, in that order
     for leg, spine, arm in zip(at["leg"], at["spine"], at["arm"]):
         assert leg < spine < arm, (

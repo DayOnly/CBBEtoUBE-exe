@@ -336,9 +336,16 @@ def test_every_gui_env_is_read_by_src():
     src = Path(__file__).resolve().parent.parent / "src"
     read = set()
     for f in src.glob("*.py"):
+        text = f.read_text(encoding="utf-8", errors="replace")
+        # Raw reads AND the _flag()/_knob() helpers the 2026-08-18 idiom
+        # collapse routed most reads through.
         read |= set(re.findall(
-            r'os\.environ\.get\(\s*["\'](CBBE2UBE_[A-Z0-9_]+)["\']',
-            f.read_text(encoding="utf-8", errors="replace")))
+            r'os\.environ\.get\(\s*["\'](CBBE2UBE_[A-Z0-9_]+)["\']', text))
+        read |= set(re.findall(
+            r'_(?:flag|knob)\(\s*["\'](CBBE2UBE_[A-Z0-9_]+)["\']', text))
+    assert len(read) >= 250, (
+        f"only {len(read)} env reads found across src/ -- a read idiom "
+        f"changed and this scan went blind to it; widen the regexes")
     exposed = {s.env for s in gs.SETTINGS if s.env}
     dead = sorted(e for e in exposed if e not in read)
     assert not dead, f"GUI rows whose env nothing in src/ reads: {dead}"

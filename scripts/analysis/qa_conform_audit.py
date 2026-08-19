@@ -43,9 +43,11 @@ import argparse
 import sys
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO))
-sys.path.insert(0, str(REPO / ".pynifly"))
+# parents[1] was `scripts/`, which owns neither src/ nor .pynifly/.
+_REPO = Path(__file__).resolve().parent.parent.parent
+REPO = _REPO
+sys.path.insert(0, str(_REPO))
+sys.path.insert(0, str(_REPO / ".pynifly"))
 
 import numpy as np                                  # noqa: E402
 from src import nif_convert as nc                   # noqa: E402

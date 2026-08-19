@@ -37,9 +37,11 @@ cancels in the difference. Do not read the absolute numbers as world positions.
 import sys
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(REPO / ".pynifly"))
-sys.path.insert(0, str(REPO))
+# Canonical spelling so test_analysis_repo_root can verify the level.
+_REPO = Path(__file__).resolve().parent.parent.parent
+REPO = _REPO
+sys.path.insert(0, str(_REPO / ".pynifly"))
+sys.path.insert(0, str(_REPO))
 
 import numpy as np                                     # noqa: E402
 from src import nif_convert as nc                      # noqa: E402

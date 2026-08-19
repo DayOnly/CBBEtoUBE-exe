@@ -44,9 +44,13 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(REPO))
-sys.path.insert(0, str(REPO / ".pynifly"))
+# parent.parent was `scripts/`: imports only worked with the root already on
+# sys.path, and REPO/"scripts"/"convert_one_armor.py" below resolved to
+# scripts/scripts/... -- this sweep could never actually launch a convert.
+_REPO = Path(__file__).resolve().parent.parent.parent
+REPO = _REPO
+sys.path.insert(0, str(_REPO))
+sys.path.insert(0, str(_REPO / ".pynifly"))
 
 
 def _resolve_source(sub: str, stem: str):

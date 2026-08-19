@@ -65,6 +65,12 @@ def test_pass_is_wired_into_both_convert_paths_and_runs_LAST():
           for k, v in calls.items()}
     for k, v in at.items():
         assert len(v) >= 1, f"{k} is not wired in at all"
+    # zip() truncates to the SHORTEST list: a pass gaining a second call site
+    # the others lack would silently drop out of the order check (2026-08-18
+    # audit). Equal lengths make the zip total.
+    assert len({len(v) for v in at.values()}) == 1, (
+        f"call-site counts diverge: { {k: len(v) for k, v in at.items()} } -- "
+        f"zip would silently skip the extras")
     for leg, spine, arm, twist, full in zip(*(at[k] for k in
                                               ("leg", "spine", "arm", "twist", "full"))):
         assert leg < spine < arm < twist < full, (

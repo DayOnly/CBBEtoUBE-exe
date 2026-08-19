@@ -65,7 +65,11 @@ from pathlib import Path
 import numpy as np
 
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+# parent.parent was `scripts/`, which owns neither src/ nor .pynifly/ -- this
+# only ever imported when the repo root happened to be on sys.path already.
+_REPO = Path(__file__).resolve().parent.parent.parent
+sys.path.insert(0, str(_REPO))
+sys.path.insert(0, str(_REPO / ".pynifly"))
 
 from src import nif_io           # noqa: E402
 from src import sliderset_gen    # noqa: E402

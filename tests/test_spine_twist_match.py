@@ -86,6 +86,10 @@ def test_it_runs_last_of_the_family_matches_in_both_paths():
           for k, v in calls.items()}
     for k, v in at.items():
         assert len(v) >= 1, f"{k} is not wired in at all"
+    # equal lengths make the zip total -- see test_full_weight_match
+    assert len({len(v) for v in at.values()}) == 1, (
+        f"call-site counts diverge: { {k: len(v) for k, v in at.items()} } -- "
+        f"zip would silently skip the extras")
     for leg, spine, arm, twist in zip(at["leg"], at["spine"], at["arm"],
                                       at["twist"]):
         assert leg < spine < arm < twist, (

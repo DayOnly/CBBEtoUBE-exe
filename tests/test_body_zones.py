@@ -95,6 +95,22 @@ def test_belly_and_butt_masks_pick_their_own_sides():
 # moment they moved into scripts/analysis/, and the suite stayed GREEN while
 # checking less. Parametrised on the path relative to scripts/ so the test id
 # names the subfolder and a future move is visible in the diff.
+# Pose-harness scripts that carry a PRIVATE anatomy table. Each is pinned to
+# the EXACT number of upper-chest band starts it contains today: their bands
+# deliberately differ from src.body_zones (upper_chest starts at 99, not
+# UPPER_CHEST_Z[0]=102) and every recorded pose census was measured with them,
+# so silently "fixing" the numbers would break comparability with those
+# results. The pin means: an unlisted script fails, a listed script whose
+# count CHANGES fails, and removing the table lets the entry be deleted.
+# 2026-08-18 audit: the old regex only matched `[..., 2] >= N`, so these three
+# `z >= N` tables were invisible and the guard passed while checking nothing.
+_KNOWN_POSE_BAND_TABLES = {
+    "analysis/collect_penetration_census.py": 1,
+    "analysis/pose_amplitude.py": 1,
+    "analysis/pose_set.py": 1,
+}
+
+
 @pytest.mark.parametrize("script", sorted(
     str(p.relative_to(_SCRIPTS)).replace("\\", "/")
     for p in _SCRIPTS.rglob("*.py")))
@@ -106,10 +122,29 @@ def test_no_script_redefines_a_breast_band(script):
     # that band cannot be the breast. An UPPER bound of 100 is fine and common (a torso
     # slice ending at the chest), so matching any appearance of these numbers
     # false-positives on `(z >= 60) & (z <= 100)`.
-    offenders = re.findall(r"2\]\s*>=?\s*(?:99|10[0-8])\b", src)
-    assert not offenders, (
-        f"{script} starts a z-band in the upper chest ({offenders}); the breast is "
-        f"z{BREAST_Z[0]:.0f}-{BREAST_Z[1]:.0f} -- import it from src.body_zones")
+    # Two spellings reach the same mistake: `verts[:, 2] >= N` and a local
+    # `z >= N` on an unpacked column -- the 2026-08-18 audit found three whole
+    # anatomy tables in the second spelling that the first-only regex missed.
+    offenders = re.findall(r"(?:2\]|\bz)\s*>=?\s*(?:99|10[0-8])(?:\.\d*)?\b", src)
+    expected = _KNOWN_POSE_BAND_TABLES.get(script, 0)
+    assert len(offenders) == expected, (
+        f"{script} starts {len(offenders)} z-band(s) in the upper chest "
+        f"({offenders}), expected {expected}; the breast is "
+        f"z{BREAST_Z[0]:.0f}-{BREAST_Z[1]:.0f} -- import it from src.body_zones, "
+        f"or update _KNOWN_POSE_BAND_TABLES with the comparability reason")
+
+
+def test_known_pose_band_tables_still_exist():
+    """A pinned exception whose file lost its table (or was deleted) must be
+    removed from the dict, or the allowlist rots into covering nothing."""
+    for rel, expected in _KNOWN_POSE_BAND_TABLES.items():
+        p = _SCRIPTS / rel
+        assert p.is_file(), f"{rel} is pinned but no longer exists"
+        src = p.read_text(encoding="utf-8", errors="ignore")
+        n = len(re.findall(r"(?:2\]|\bz)\s*>=?\s*(?:99|10[0-8])(?:\.\d*)?\b", src))
+        assert n == expected, (
+            f"{rel}: pinned at {expected} band start(s), found {n} -- update "
+            f"the pin deliberately, with the census-comparability note")
 
 
 # --- the same guard, extended to src/ -----------------------------------------

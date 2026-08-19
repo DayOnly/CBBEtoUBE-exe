@@ -57,7 +57,10 @@ from pathlib import Path
 import numpy as np
 
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+# parent.parent was `scripts/`, which owns neither src/ nor .pynifly/.
+_REPO = Path(__file__).resolve().parent.parent.parent
+sys.path.insert(0, str(_REPO))
+sys.path.insert(0, str(_REPO / ".pynifly"))
 
 from src.tri import TriFile  # noqa: E402
 
