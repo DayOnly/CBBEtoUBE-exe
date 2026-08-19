@@ -5675,6 +5675,14 @@ def convert_nif(
     _hdt_xml_cache_clear()
 
     nif = nif_io.load_nif(src_path)
+    # #xml-source-of-truth. Bind the piece's physics XML from the SOURCE now,
+    # while the only copy that exists is one no write can race. Every later
+    # lookup goes through `dst_path`, whose pointer conversion has rewritten to
+    # `Meshes\!UBE\...`, and resolving that depends on this run's own write
+    # order. Losing that race used to fail OPEN and free-fall the armour
+    # (BUG-00). Must stay AFTER the load so the already-parsed nif is reused,
+    # and BEFORE any pass that reads a collider/soft-body set.
+    _hdt_xml_bind_piece_source(src_path, nif=nif)
     body_names, armor_names = classify_shapes(nif)
 
     # HH_OFFSET is a NiFloatExtraData that pynifly silently drops on load.
@@ -7626,6 +7634,84 @@ def _finalize_physics_and_motion_match(dst_path, src_path, biped_slots) -> None:
                                     src_nif_path=src_path)
     except Exception as _pe:
         _note_pass_failure("_match_full_weights_to_body", _pe)
+
+    # LAST, after every weight pass: the invariant that decides whether the
+    # armour stays on the actor. #registered-shape-declared-bones
+    _audit_registered_shape_declared_bones(dst_path, src_path)
+
+
+def _audit_registered_shape_declared_bones(dst_path, src_path) -> int:
+    """A shape the piece's physics XML REGISTERS must not carry a bone that XML
+    never DECLARES. Records a violation; returns how many it found.
+
+    WHY IT IS A GUARD AND NOT A REPAIR. An undeclared influence on a registered
+    shape has no rigid body in FSMP's system, and the piece free-falls off the
+    actor -- confirmed in game twice now (iron, 2026-08-14; the bandit cuirass,
+    2026-08-19). The repair EXISTS for shapes we generate: relabel the bone onto
+    its nearest XML-declared ancestor, decline when there is none
+    (`_add_butt_collider_patch` / `_add_skirt_collider_proxy`). Applying the same
+    move to an AUTHORED shape means rewriting weights already written, which
+    walks straight into the `setShapeWeights`-is-an-update trap, the
+    add_bone-resets-STBs trap, and a pack-wide weight change no measurement can
+    clear without an in-game verdict. So this reports and does not touch.
+
+    It is scored as a DIFFERENTIAL against the author: 336 registered shapes in
+    the pack carry undeclared bones their own AUTHOR shipped, so "undeclared" is
+    not by itself a defect. Only bones WE added are counted.
+
+    Runs at the very end of the shared tail, because anything earlier can be
+    re-diverged by a later weight pass -- the same placement rule
+    `#coincident-skin-match` had to follow."""
+    try:
+        pyn = _pynifly()
+        dn = pyn.NifFile(filepath=str(dst_path))
+        registered = (set(_hdt_collider_shape_names(dst_path, nif=dn))
+                      | set(_hdt_softbody_shape_names(dst_path, nif=dn)))
+        # DECLARED BONES COME FROM THE SAME SIDE AS `registered` -- the
+        # DESTINATION. Reading them from `src_path` instead made this guard FAIL
+        # OPEN in exactly the way the bug it exists to catch does: on a piece
+        # whose XML resolves only from the output side, the source read returned
+        # None, the guard returned "0 violations", and 44 real BaseShape
+        # offenders went unreported (22 warnings raised against 64 pieces the
+        # census sees). Measured on `0cce/f/dress/0cce_dress3_1.nif`:
+        # source-side NONE, output-side 19 declared bones.
+        txt = _read_source_hdt_xml_text(dst_path, nif=dn)
+        declared = set(re.findall(r'<bone\s+name="([^"]+)"', txt or ""))
+        if not declared:
+            # Cannot CHECK is not the same as nothing to report. Say so, but
+            # only when the piece actually registers shapes -- otherwise every
+            # physics-free piece would log noise.
+            if registered:
+                _note_pass_failure(
+                    "registered_shape_bones_UNCHECKED", RuntimeError(
+                        f"{Path(dst_path).name}: registers {sorted(registered)} "
+                        f"but no XML bone declarations could be read, so the "
+                        f"declared-bone invariant was NOT verified"), dst_path)
+            return 0
+        if not registered:
+            return 0
+        sn = pyn.NifFile(filepath=str(src_path))
+        author = {s.name: set((getattr(s, "bone_weights", None) or {}).keys())
+                  for s in sn.shapes}
+        bad = {}
+        for s in dn.shapes:
+            if s.name not in registered:
+                continue
+            ours = set((getattr(s, "bone_weights", None) or {}).keys())
+            added = (ours - declared) - (author.get(s.name, set()) - declared)
+            if added:
+                bad[s.name] = sorted(added)
+        if bad:
+            _note_pass_failure(
+                "registered_shape_undeclared_bones", RuntimeError(
+                    f"{Path(dst_path).name}: physics-registered shape(s) carry "
+                    f"bones this piece's XML does not declare, which FSMP "
+                    f"cannot resolve (cloth free-falls): {bad}"), dst_path)
+        return len(bad)
+    except Exception as _pe:                                 # pragma: no cover
+        _note_pass_failure("_audit_registered_shape_declared_bones", _pe,
+                           dst_path)
+        return 0
 
 
 def _collect_tri_inputs(nif):
@@ -11671,8 +11757,17 @@ def _match_rigid_leg_bend_to_body(dst_path, biped_slots: int = 0,
         if WEIGHT_INVARIANT_ENABLED:
             _cap_and_renormalise_rows(
                 vw, n, set(existing) | {b for b in need if b in graft_stb})
-        to_add = [b for b in need if b in graft_stb and b not in existing
-                  and any(vw[i].get(b, 0.0) > 1e-4 for i in range(n))]
+        # SORTED, not `need`'s own order. `need` is a real set, and a list
+        # comprehension over a set is exactly as arbitrary as the set -- so this
+        # decided `add_bone` order, which IS the written NIF's bone palette
+        # order, which decides which bone the 4-influence cap evicts on a tie.
+        # It was stable only because the build spec pins the interpreter's hash
+        # seed; remove that pin and the palette varied per run. Sorting makes the
+        # order INTRINSIC, so the output no longer depends on a build flag.
+        # (BUG-04. Changes palette order and therefore output BYTES, which is why
+        # it was held until a reconvert was due rather than slipped in mid-pack.)
+        to_add = sorted(b for b in need if b in graft_stb and b not in existing
+                        and any(vw[i].get(b, 0.0) > 1e-4 for i in range(n)))
         # CRITICAL: add_bone (pynifly) RESETS every existing bone's skin-to-bone xform
         # to identity, which would skin the armor's OWN Thigh/Calf-weighted verts (most
         # of the leg) to the origin -> the whole plate explodes (the in-game spike that
@@ -22744,16 +22839,104 @@ def _hdt_softbody_shape_names(src_nif_path: Path, nif=None) -> set:
         return set()  # soft-body mode: nothing is preserved; reskin all cloth
     txt = _read_source_hdt_xml_text(src_nif_path, nif=nif)
     if not txt:
-        return set()
+        return _hdt_protect_all_or_none(src_nif_path, nif=nif)
     return set(re.findall(r'<per-vertex-shape\s+name="([^"]+)"', txt))
 
 
+def _hdt_protect_all_or_none(src_nif_path: Path, nif=None) -> set:
+    """The FAIL-CLOSED answer when a piece's physics XML cannot be read.
+
+    A piece that declares no physics XML has no colliders and no soft-bodies,
+    and the empty set is the honest answer -- reskin everything.
+
+    A piece that DECLARES one we could not read is the dangerous case, and the
+    empty set is the WRONG answer: every protection downstream is a membership
+    test, so an empty set silently un-protects every shape at once. When we
+    cannot tell WHICH shapes are collision geometry, the safe answer is that ALL
+    of them are -- the passes then leave the piece's authored skinning alone,
+    which is exactly what the protections would have done for the real collider
+    set plus some harmless extra caution on ordinary cloth.
+
+    Returns a REAL set of the NIF's shape names (not a magic always-contains
+    object) so callers that iterate it, union it or take its length keep
+    working. #hdt-fail-closed"""
+    if not _nif_declares_hdt_xml(src_nif_path, nif=nif):
+        return set()
+    try:
+        _nfq = nif if nif is not None else \
+            _pynifly().NifFile(filepath=str(src_nif_path))
+        return {s.name for s in _nfq.shapes if s.name}
+    except Exception:                                        # pragma: no cover
+        return set()
+
+
 _HDT_XML_TEXT_CACHE: "dict" = {}
+# This piece's authored physics XML text, captured from the SOURCE nif at the
+# top of `convert_nif`. See `_hdt_xml_bind_piece_source`. #xml-source-of-truth
+_PIECE_HDT_XML_TEXT: "str | None" = None
 
 
 def _hdt_xml_cache_clear() -> None:
     """Drop the per-armor HDT-XML memo. Called at the top of every `convert_nif`."""
     _HDT_XML_TEXT_CACHE.clear()
+
+
+def _nif_declares_hdt_xml(src_nif_path: Path, nif=None) -> bool:
+    """Does this NIF carry an `HDT Skinned Mesh Physics Object` extra-data
+    string? True means the piece CLAIMS physics, so a failure to READ the XML is
+    a RESOLUTION FAILURE and not "this piece has no physics" -- the distinction
+    the collider/soft-body protections live or die on."""
+    try:
+        _nfq = nif if nif is not None else \
+            _pynifly().NifFile(filepath=str(src_nif_path))
+        for _ed in _nfq.rootNode.extra_data():
+            if (getattr(_ed, "name", None) == "HDT Skinned Mesh Physics Object"
+                    and getattr(_ed, "string_data", None)):
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def _hdt_xml_bind_piece_source(src_nif_path: Path, nif=None) -> None:
+    """Capture this piece's authored physics XML from the SOURCE, once, at the
+    start of its conversion. #xml-source-of-truth
+
+    WHY THIS EXISTS (BUG-00, 2026-08-19, confirmed by exact fingerprint
+    reproduction). Conversion REWRITES the NIF's physics pointer to the
+    output-relative `Meshes\\!UBE\\...\\<stem>.xml`. The later weight passes then
+    ask for the collider / soft-body sets via `dst_path`, so they re-resolve
+    THAT pointer -- against a file this same run is still writing. When the
+    lookup loses that race it returns None, `_hdt_collider_shape_names` and
+    `_hdt_softbody_shape_names` both return the EMPTY SET, and because every
+    protection is spelled `if s.name in collider_names: continue`, ALL of them
+    disengage at once. The jiggle passes then graft breast/butt bones onto the
+    registered collision proxies; those bones are not XML-declared, FSMP has no
+    rigid body for them, and the cloth free-falls off the actor.
+
+    The SOURCE nif is never written by the converter, so its resolution is
+    immutable for the whole conversion -- which is exactly what the memo's own
+    docstring already relies on. Binding it here makes every downstream lookup
+    independent of the destination's write order.
+
+    Deliberately silent on absence: a piece with no physics XML binds None, and
+    every lookup keeps returning an honest empty set.
+
+    `nif` is used ONLY if it is a real pynifly NifFile. `convert_nif` has an
+    `nif_io.load_nif` result to hand, which is this project's `Nif` dataclass and
+    has no `rootNode.extra_data()` -- passing it made the read throw and bound
+    nothing, i.e. the whole recovery was INERT while looking wired up. Caught by
+    asserting the bind actually populates, not by reading the code."""
+    global _PIECE_HDT_XML_TEXT
+    _PIECE_HDT_XML_TEXT = None
+    _pyn_nif = nif if hasattr(nif, "rootNode") else None
+    try:
+        # Memoised call: this also warms the per-armor memo for every later
+        # SOURCE-path query, so the extra parse is paid once per piece.
+        _PIECE_HDT_XML_TEXT = _read_source_hdt_xml_text(
+            src_nif_path, nif=_pyn_nif)
+    except Exception as _e:                                  # pragma: no cover
+        _note_pass_failure("_hdt_xml_bind_piece_source", _e, src_nif_path)
 
 
 def _read_source_hdt_xml_text(src_nif_path: Path, nif=None) -> "str | None":
@@ -22811,19 +22994,25 @@ def _read_source_hdt_xml_text_uncached(src_nif_path: Path, nif=None) -> "str | N
             # collider/softbody skip downstream silently disengages on the
             # empty set (audit 2026-07-28: grafting onto colliders is the
             # in-game-proven tear-off class). Distinguish the two loudly.
-            try:
-                _nfq = nif if nif is not None else \
-                    _pynifly().NifFile(filepath=str(src_nif_path))
-                for _ed in _nfq.rootNode.extra_data():
-                    if (getattr(_ed, "name", None)
-                            == "HDT Skinned Mesh Physics Object"):
-                        print(f"  WARN: {Path(src_nif_path).name} declares an "
-                              f"HDT physics XML but it did not resolve -- "
-                              f"collider/softbody protections will treat this "
-                              f"piece as physics-free", file=sys.stderr)
-                        break
-            except Exception:
-                pass
+            if not _nif_declares_hdt_xml(src_nif_path, nif=nif):
+                return None          # honestly physics-free: empty set is right
+            # #xml-source-of-truth: recover from the copy bound at the top of
+            # this conversion, off the SOURCE nif, which no write can race.
+            # This is the whole reason that binding exists -- the destination
+            # pointer resolving is a function of WRITE ORDER, and losing that
+            # race used to fail OPEN (BUG-00).
+            if _PIECE_HDT_XML_TEXT:
+                return _PIECE_HDT_XML_TEXT
+            # Nothing left to fall back to. Say so where a real run can SEE it:
+            # this warning used to go to a pool worker's stderr, which the
+            # frozen exe discards ([[feedback_worker_prints_invisible]]), so the
+            # one condition that silently disarms every physics protection was
+            # unobservable in the runs that mattered.
+            _note_pass_failure(
+                "hdt_xml_unresolved", RuntimeError(
+                    f"{Path(src_nif_path).name} declares an HDT physics XML "
+                    f"that did not resolve; collider/soft-body protections "
+                    f"FAIL CLOSED for this piece"), src_nif_path)
             return None
         return xml_disk.read_text(errors="ignore")
     except Exception:
@@ -22842,7 +23031,7 @@ def _hdt_collider_shape_names(src_nif_path: Path, nif=None) -> set:
     exactly as the source authored them. #smp-collider-graft"""
     txt = _read_source_hdt_xml_text(src_nif_path, nif=nif)
     if not txt:
-        return set()
+        return _hdt_protect_all_or_none(src_nif_path, nif=nif)
     return set(re.findall(r'<per-triangle-shape\s+name="([^"]+)"', txt))
 
 
@@ -23641,6 +23830,27 @@ PANEL_RIGIDITY = _knob("CBBE2UBE_PANEL_RIGIDITY", 0.0)
 # over a handful of verts is noise.
 PANEL_RIGIDITY_MIN_VERTS = int(
     os.environ.get("CBBE2UBE_PANEL_RIGIDITY_MIN_VERTS", "24") or "24")
+# #panel-local-rigid -- OPT-IN. Fit the rigid transform over a NEIGHBOURHOOD
+# instead of over the whole welded component.
+#
+# WHY, measured on the reported bodysuit. One transform per component is exact
+# only if the whole component needs the same motion. It does not: on a 4309-vert
+# panel spanning 46u, rigidifying pushed the BUTT out 0.726u while the rest of
+# the same panel moved 0.183u -- the single transform splits the difference and
+# the butt pays. Two 729-vert panels spanning 33u read 0.88u at the butt against
+# 0.16u elsewhere. Panels under ~3u of extent showed ~0.00u: small panels
+# rigidify harmlessly, large ones cannot.
+#
+# So the transform is solved PER VERTEX over its K nearest neighbours in SOURCE
+# space (moving-least-squares rigid deformation). Local shape is preserved --
+# each neighbourhood moves by a rotation, no stretch or shear -- while the panel
+# as a whole may bend and tighten to follow the body. K is the shape/fit dial:
+# large K tends to the old whole-component behaviour, small K to the conform.
+#
+# Neighbourhoods come from the SOURCE, not the current state, so the support of
+# each fit cannot drift as the panel moves.
+_PANEL_LOCAL_RIGID = _flag("CBBE2UBE_PANEL_LOCAL_RIGID", False)
+_PANEL_LOCAL_K = int(_knob("CBBE2UBE_PANEL_LOCAL_K", 64.0))
 
 
 def _weld_components(verts, tris, tol: float = 1e-3):
@@ -23675,6 +23885,47 @@ def _weld_components(verts, tris, tol: float = 1e-3):
         return np.array([find(i) for i in range(len(v))])
     except Exception:
         return None
+
+
+def _locally_rigid_panel(P, Q, k: int):
+    """Moving-least-squares rigid fit: every vertex takes the rigid motion of its
+    own K-nearest neighbourhood, not of the whole panel.
+
+    P = source positions, Q = current (conformed) positions, same length.
+    Returns the locally-rigid target for every vertex.
+
+    The neighbourhood is defined on P (the source) so the support of each fit is
+    fixed by the authored geometry and cannot drift as the panel moves -- the
+    same reason the cross-shape skin match clusters in a stable space.
+
+    Batched: one stacked SVD over (n, 3, 3) covariances, so this costs a few
+    milliseconds on a 4k panel rather than a Python loop of 4k SVDs.
+    """
+    from scipy.spatial import cKDTree
+    P = np.asarray(P, dtype=np.float64)
+    Q = np.asarray(Q, dtype=np.float64)
+    n = len(P)
+    kk = int(max(4, min(int(k), n)))
+    _, nbr = cKDTree(P).query(P, k=kk)
+    if nbr.ndim == 1:
+        nbr = nbr[:, None]
+    Pn, Qn = P[nbr], Q[nbr]                      # (n, k, 3)
+    Pm, Qm = Pn.mean(1), Qn.mean(1)
+    Pc, Qc = Pn - Pm[:, None, :], Qn - Qm[:, None, :]
+    H = np.einsum('nki,nkj->nij', Pc, Qc)        # (n, 3, 3)
+    U, _S, Vt = np.linalg.svd(H)
+    # Reflection guard, per vertex: a neighbourhood that is nearly planar can
+    # otherwise solve a mirror, which would fold the surface.
+    det = np.sign(np.linalg.det(np.einsum('nij,njk->nik',
+                                          Vt.transpose(0, 2, 1),
+                                          U.transpose(0, 2, 1))))
+    D = np.zeros((n, 3, 3))
+    D[:, 0, 0] = 1.0
+    D[:, 1, 1] = 1.0
+    D[:, 2, 2] = det
+    R = np.einsum('nij,njk,nkl->nil', Vt.transpose(0, 2, 1), D,
+                  U.transpose(0, 2, 1))
+    return np.einsum('nij,nj->ni', R, P - Pm) + Qm
 
 
 def _partial_rigid_panels(src_v, dst_v, tris, strength: float,
@@ -23722,6 +23973,14 @@ def _partial_rigid_panels(src_v, dst_v, tris, strength: float,
             det = np.sign(np.linalg.det(Vt.T @ U.T))
             R = Vt.T @ np.diag([1.0, 1.0, det]) @ U.T
             rigid = (R @ Pc.T).T + Q.mean(0)   # panel's own motion, shape kept
+            if _PANEL_LOCAL_RIGID:
+                # Solve the same idea LOCALLY -- see #panel-local-rigid. Falls
+                # back to the whole-panel fit above on any failure, so a bad
+                # neighbourhood can never leave the panel unrigidified silently.
+                try:
+                    rigid = _locally_rigid_panel(P, Q, _PANEL_LOCAL_K)
+                except Exception as _le:
+                    _note_pass_failure("panel-local-rigid", _le)
             resid = np.linalg.norm(Q - rigid, axis=1)
             worst = max(worst, float(resid.max()))
             out[free] = Q + (rigid - Q) * float(strength)
@@ -23729,6 +23988,7 @@ def _partial_rigid_panels(src_v, dst_v, tris, strength: float,
         return out, touched, worst
     except Exception:
         return dst_v, 0, 0.0
+
 
 
 # THREE TOGGLES DELETED HERE, 2026-08-16. DO NOT REBUILD THEM.

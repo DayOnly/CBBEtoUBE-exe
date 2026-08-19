@@ -120,15 +120,13 @@ _KNOWN_UNPROVEN_ORDER = {
     # `list(s.bone_names or list(bw.keys()))`, later `bone_list + want` --
     # ordered, but through a BoolOp and a BinOp this walker does not model.
     "nif_convert.py:_sync_bust_plate_follow_postwrite:bone_list": 1,
-    # *** A GENUINE OFFENDER, KEPT VISIBLE ON PURPOSE. ***
-    # `need` is a real set (`need: "set" = set()`), so `to_add` inherits its
-    # arbitrary order and feeds `add_bone` -- which fixes the bone PALETTE
-    # order in the written NIF. Today this is masked by the interpreter's
-    # hash seed being pinned in the spec, so shipped output is stable; remove
-    # that pin and this varies per run. Wrapping it in sorted() is the fix,
-    # but it CHANGES the palette order and therefore the output bytes, so it
-    # needs an A/B and an in-game verdict rather than a silent edit.
-    "nif_convert.py:_match_rigid_leg_bend_to_body:to_add": 3,
+    # `_match_rigid_leg_bend_to_body:to_add` WAS PINNED HERE as a genuine
+    # offender: `need` is a real set, so `to_add` inherited its arbitrary order
+    # and fed `add_bone`, which fixes the written NIF's bone PALETTE order.
+    # FIXED 2026-08-19 with `sorted()`, taken alongside a due reconvert because
+    # it changes output bytes. The entry is REMOVED rather than set to 0 -- a
+    # stale pin is a hole that would silently re-admit the same bug under the
+    # same name.
 }
 
 
