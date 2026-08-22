@@ -31,10 +31,26 @@ from src import auto_convert, esp
 
 
 def _plugin(path, arma_model, armo_refs_arma=True, masters=("Skyrim.esm",)):
-    """A mod plugin defining one ARMA (given model path) + one ARMO using it."""
+    r"""A mod plugin defining one ARMA (given model path) + one ARMO using it.
+
+    MOD3, NOT MOD4. MOD3 is the FEMALE WORLD model and the only slot drawn on a
+    female body. These fixtures said MOD4 because the detector did, and both
+    were wrong -- corrected 2026-08-22 from the data: across 4822 minted ARMA
+    records the `!UBE\` path sits in MOD3 (93.7%) and MOD5 (93.8%) while
+    MOD2/MOD4 carry `...\Male\...` paths.
+
+    The MESH is written too, because the detector now only trusts a
+    third-party UBE claim when the mesh it names actually RESOLVES. A patch
+    claiming a mesh it does not ship would otherwise suppress our conversion
+    and leave the armour invisible, and a fixture with nothing on disk is
+    exactly that unresolvable claim.
+    """
+    mesh = Path(path).parent / "meshes" / arma_model.replace("\\", "/")
+    mesh.parent.mkdir(parents=True, exist_ok=True)
+    mesh.write_bytes(b"presence is all the detector reads")
     arma = esp.Record(sig=b"ARMA", flags=0, formid=0x01000800, timestamp_vc=0,
                       version_unk=0,
-                      payload=esp.encode_subrecord(b"MOD4",
+                      payload=esp.encode_subrecord(b"MOD3",
                                                    arma_model.encode() + bytes(1)))
     modl = esp.encode_subrecord(b"MODL", struct.pack("<I", 0x01000800))
     armo = esp.Record(sig=b"ARMO", flags=0, formid=0x00012E46, timestamp_vc=0,

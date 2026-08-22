@@ -2341,6 +2341,50 @@ def _third_party_ube_covered_armos(mods_root, enabled_names=None,
 
     root = Path(mods_root)
     skip = {s.lower() for s in skip_mods}
+
+    # SAFETY GATE for the MOD3 test below. SKIPPING IS THE DANGEROUS DIRECTION:
+    # a false "already covered" removes an armour from the only delivery path
+    # there is and it renders NOTHING, while a false negative merely
+    # double-covers. So only believe a third-party UBE claim when the mesh it
+    # names actually EXISTS.
+    #
+    # Measured 2026-08-22 over the live order: of the 259 coverages the old
+    # MOD4 test missed, 242 have the mesh present and 17 do NOT. Without this
+    # gate those 17 would go straight from "converted" to "invisible" the first
+    # time the corrected slot test ran.
+    #
+    # LOOSE FILES ONLY, and the asymmetry is deliberate: a mesh that lives only
+    # in a BSA reads as unresolved here and therefore falls through to
+    # CONVERTING, which is the safe direction. Built lazily and once -- the
+    # whole function is memoised per (root, skip, enabled).
+    _ube_mesh_index: "set[str] | None" = None
+
+    def _ube_mesh_resolves(model_rel: str) -> bool:
+        nonlocal _ube_mesh_index
+        if _ube_mesh_index is None:
+            idx: "set[str]" = set()
+            try:
+                for _md in root.iterdir():
+                    if not _md.is_dir() or _md.name.lower() in skip:
+                        continue
+                    if enabled_names is not None and _md.name not in enabled_names:
+                        continue
+                    if _is_our_own_output(_md):
+                        continue
+                    for _sub in ("meshes", "Meshes"):
+                        _d = _md / _sub
+                        if not _d.is_dir():
+                            continue
+                        for _p in _d.rglob("*.nif"):
+                            _rel = str(_p.relative_to(_d)).lower().replace("\\", "/")
+                            if _rel.startswith("!ube/"):
+                                idx.add(_rel)
+                        break
+            except Exception:
+                pass            # an unreadable tree must not fail the scan
+            _ube_mesh_index = idx
+        return (model_rel.lower().replace("\\", "/").lstrip("/")
+                in _ube_mesh_index)
     try:
         mod_dirs = [d for d in root.iterdir() if d.is_dir()]
     except OSError:
@@ -2383,25 +2427,35 @@ def _third_party_ube_covered_armos(mods_root, enabled_names=None,
                     continue
                 for r in g.records:
                     for sig, dd in _esp.iter_subrecords(r.payload):
-                        # MOD4 ONLY -- the FEMALE WORLD model. The four slots
-                        # are MOD2 male world, MOD3 male first person, MOD4
-                        # female world, MOD5 female first person, and only MOD4
-                        # decides what renders on a female body. Accepting any
-                        # of them marked an armour "already covered by another
-                        # mod" -- so #skip-already-ube left it entirely alone --
-                        # on the strength of a `!UBE\` path in a slot that is
-                        # never drawn on the body.
+                        # MOD3 ONLY -- the FEMALE WORLD model. Testing ONE slot
+                        # is right (accepting any of the four marked an armour
+                        # "already covered" on the strength of a `!UBE\` path in
+                        # a slot that is never drawn on the body -- REPORTED IN
+                        # GAME as an invisible colour variant whose MOD3 was
+                        # still the CBBE path). Testing MOD4 was the WRONG one.
                         #
-                        # REPORTED IN GAME as an invisible armour. A colour
-                        # variant carried `!UBE\...` in MOD5 while its MOD4 was
-                        # still the CBBE path: skipped, so it never received a
-                        # UBE armature and matched none for a UBE-race actor.
-                        # Its sibling variant, the same mesh without the stray
-                        # MOD5, converted correctly -- which is why only one of
-                        # the two was invisible.
-                        if sig == b"MOD4":
+                        # THE SLOTS ARE MOD2 male world, MOD3 FEMALE WORLD, MOD4
+                        # male first person, MOD5 female first person. Corrected
+                        # 2026-08-22 FROM THE DATA, not from a comment: across
+                        # our own 4822 minted ARMA records the `!UBE\` path sits
+                        # in MOD3 (93.7%) and MOD5 (93.8%) while MOD2/MOD4 carry
+                        # `...\Male\...` paths, and the examples name themselves
+                        # (`..._F_1.nif` vs `Male\1stPersonbody_1.nif`). This
+                        # converter is female-only, so the slot carrying `!UBE`
+                        # IS the female slot. Cross-checked against Mutagen:
+                        # WorldModel[0]/[1] = MOD2/MOD3, FirstPersonModel[0]/[1]
+                        # = MOD4/MOD5.
+                        #
+                        # MEASURED COST OF THE OLD TEST, over the live order:
+                        #   !UBE in BOTH MOD3 and MOD4   79   caught, by luck
+                        #   !UBE in MOD3 ONLY           259   MISSED
+                        #   !UBE in MOD4 ONLY             0   caught nothing new
+                        # So MOD4 found nothing MOD3 does not, and missed 77% of
+                        # real third-party female coverage -- which is why 226
+                        # of our meshes still shadow a hand-made UBE conversion.
+                        if sig == b"MOD3":
                             s = dd.rstrip(bytes(1)).decode("cp1252", "replace")
-                            if _is_already_ube_model(s):
+                            if _is_already_ube_model(s) and _ube_mesh_resolves(s):
                                 ube_fids.add(r.formid)
                                 ube_armas.add(_abs(r.formid))
                                 break
