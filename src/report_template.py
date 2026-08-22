@@ -175,7 +175,11 @@ def build_report(version: str,
         add(f"  [x] {diagnostics_zip}")
         add("      attach this file to the issue, or upload it to the chat")
     else:
-        add("  [ ] CBBEtoUBE_diagnostics_<timestamp>.zip  (GUI -> Export diagnostics)")
+        # MENU PATH, not a button label: the three report-ish buttons were
+        # replaced by a Results tab and a Help menu, and a report that names a
+        # button nobody can find sends the reporter hunting instead of helping.
+        add("  [ ] CBBEtoUBE_diagnostics_<timestamp>.zip"
+            "  (GUI: Help > Save diagnostics zip)")
     add("      it holds your MO2 paths, profile name, and load-order mod names -")
     add("      look it over before posting it publicly.")
     add("")

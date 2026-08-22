@@ -61,6 +61,23 @@ _DONE = object()  # sentinel; the worker pushes (_DONE, exit_code) when finished
 # which only works if the address is in front of them at export time.
 ISSUES_URL = "https://github.com/DayOnly/CBBEtoUBE-exe/issues"
 
+# Status colours + glyphs, shared by the setup check, the Results scoreboard
+# and the settings-tab "changed from defaults" markers. MODULE LEVEL because
+# the settings tabs are built long before the preflight section that used to
+# own them -- as function locals they were a referenced-before-assignment
+# closure error the moment anything earlier wanted the same warn colour.
+_PF_COLOR = {"ok": "#4caf50", "warn": "#e0a030", "fail": "#e0574f"}
+_PF_ICON = {"ok": "✓", "warn": "!", "fail": "✕"}
+
+# A settings tab with at least this many controls is a WALL OF KNOBS: it gets
+# the "the defaults are the tuned values" banner and its sections start
+# collapsed. Below it, a tab is short enough to read at a glance, and both the
+# banner and the collapsing would be pure friction -- a warning shown on a
+# 2-setting tab is noise, and noise teaches people to skip the banner that
+# matters. A count, not a tab name, so a tab that GROWS gets the treatment
+# automatically instead of when someone remembers.
+_WALL_OF_KNOBS = 12
+
 
 def mod_name_matches(name: str, query: str) -> bool:
     """Case-insensitive, multi-token AND match for the checklist Filter box:
@@ -119,6 +136,26 @@ def set_ticks_for_visible(items, tick_vars, query, value) -> int:
             tick_vars[name].set(value)
             n += 1
     return n
+
+
+def preflight_scope(want_overlays: bool, overlay_copy_opt: bool) -> tuple:
+    """The (want_overlays, want_overlay_copy) pair a setup check would cover.
+
+    Module level and pure so it can be TESTED: the GUI's copy of this rule
+    lives in a closure that no test can reach, and getting it wrong is silent.
+
+    WHY IT MATTERS. `preflight.run_checks` gates exactly two checks on these
+    flags -- texconv and the Papyrus compiler, both overlay-only. The launch
+    check runs ONCE, so a verdict cached under one scope and read under another
+    reports on checks it never ran, and reads as a pass. The GUI compares the
+    stored scope against this to notice.
+
+    `overlay_copy` is meaningless with overlays off, so it is ANDed rather than
+    passed through -- otherwise toggling a dormant option would invalidate a
+    perfectly good verdict.
+    """
+    on = bool(want_overlays)
+    return (on, on and bool(overlay_copy_opt))
 
 
 def _fmt_eta(seconds: float) -> str:
@@ -502,12 +539,34 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
                     text="⛔ review exclusions before converting",
                     foreground=_BAD_FG)
 
+    def _preflight_scope():
+        """What a setup check WOULD examine for the options as they stand.
+        The rule itself is the module-level `preflight_scope` so it is unit
+        testable; this only reads the Tk vars."""
+        return preflight_scope(convert_overlays.get(), overlay_copy.get())
+
     def _sync_run(*_a):
         _sync_domain(convert_armor, mode, mods_box, armor_excl,
                      armor_excl_lbl, "armor")
         _sync_domain(convert_overlays, overlay_sel_mode, ov_box, overlay_excl,
                      overlay_excl_lbl, "overlay")
         _refresh_run_button()
+        # THE CACHED SETUP VERDICT CAN GO STALE, and stale reads as a PASS.
+        # The launch-time check runs ONCE, for whatever the toggles were then.
+        # Turning overlays on afterwards means texconv / Papyrus were never
+        # examined -- yet `state["preflight"]` still says "ok" and the Convert
+        # gate only blocks on "fail", so nothing would ever mention it.
+        # Re-running here is not an option: the scan walks the whole mod tree
+        # (~35s on a real modlist), which is far too costly for a checkbox.
+        # So SAY it is stale rather than pretend it still applies.
+        try:
+            scoped = state.get("preflight_for")
+            if (convert_overlays.get() and scoped is not None
+                    and scoped != _preflight_scope()):
+                status.set("Overlays enabled since the setup check — run "
+                           "'Check setup' to verify texconv / Papyrus.")
+        except Exception:
+            pass
 
     _matches = mod_name_matches   # module-level matcher (unit-tested)
 
@@ -716,12 +775,44 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
     # from the gui_settings registry and bound to state["settings"] (persisted on
     # every change; applied to the child env in _worker). Rendered as inline
     # notebook tabs alongside the Run tab (added after the log below).
+    def _repaint_settings_tabs():
+        """Repaint every settings tab so its changed counts stay true.
+
+        DEFERRED AND DEBOUNCED, and both halves matter:
+
+        * DEFERRED (`after`) because this is called from a Tk variable trace --
+          i.e. from inside the callback of a widget the repaint is about to
+          DESTROY. Rebuilding the group area synchronously would tear down the
+          checkbutton whose own trace is still on the stack.
+        * DEBOUNCED because a spinbox fires this on every keystroke, and each
+          repaint rebuilds every visible control on the tab.
+        """
+        pend = state.get("_settings_repaint")
+        if pend is not None:
+            try:
+                root.after_cancel(pend)
+            except Exception:
+                pass
+
+        def _go():
+            state["_settings_repaint"] = None
+            for obs in list(state.get("_settings_observers", ())):
+                try:
+                    obs()          # one dead tab must not stop the others
+                except Exception:
+                    pass
+        try:
+            state["_settings_repaint"] = root.after(150, _go)
+        except Exception:
+            state["_settings_repaint"] = None
+
     def _settings_set(key, value):
         state["settings"][key] = value
         try:
             gui_settings.save_values(state["settings"])
         except Exception:
             pass
+        _repaint_settings_tabs()
 
     def _numset(key, var, kind):
         try:
@@ -867,16 +958,46 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
                 pass
         if "_canvases" in state:
             state["_canvases"][:] = _live
+        # Menu bar, LATE-BOUND through `state`: the menus are built further down
+        # than this function, so it cannot close over them directly -- but it
+        # runs again on every theme switch, and a menu left at the Tk default is
+        # the same white-on-dark bug the canvases above are pruned for.
+        _tm = state.get("theme_menus")
+        if _tm is not None:
+            try:
+                _tm(p)
+            except Exception:
+                pass
 
     def _apply_setting_values(vals):
-        # Push a dict of values into the live settings vars (their write-traces
-        # persist + apply). Used by reset-to-defaults and import.
+        """Push a dict of values into THE SETTINGS THEMSELVES, then repaint.
+
+        NOT through the widget vars, and that is the whole point:
+        `_setting_var_by_key` only holds vars for controls that are currently
+        BUILT, and settings-tab sections are COLLAPSED by default. Driving a
+        reset through the widgets therefore reset only the sections that
+        happened to be open, while the button said "Reset ALL" -- silently, and
+        differently depending on what you had clicked earlier.
+
+        Used by reset-to-defaults and import.
+        """
+        scope = gui_settings.displayed_keys()
+        for k, v in vals.items():
+            if k in scope:
+                state["settings"][k] = v
+        try:
+            gui_settings.save_values(state["settings"])
+        except Exception:
+            pass
+        # Any control that IS built gets the new value straight away; the
+        # repaint rebuilds the rest from `state["settings"]`.
         for k, var in state["_setting_var_by_key"].items():
-            if k in vals:
+            if k in vals and k in scope:
                 try:
                     var.set(vals[k])
                 except Exception:
                     pass
+        _repaint_settings_tabs()
 
     def _reset_settings():
         if not messagebox.askokcancel(
@@ -942,10 +1063,43 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
         if prefix is not None:
             prefix(body)
 
-        # ---- filter bar: search + "show advanced" ----
-        # 37 settings on one tab; the armour checklist already proved a live
-        # filter here. `advanced` hides the numeric tuning knobs, which is what
-        # the field was added for -- it had never been wired to anything.
+        # ---- the defaults disclaimer ----
+        # THIS TAB IS 76 SETTINGS, 39 of them in one group. Presented flat it
+        # reads as an invitation to tune, and it is not one: every default here
+        # was chosen against measured in-game results, and the usual outcome of
+        # changing one blind is a WORSE conversion, not a better one.
+        # Only on tabs that actually carry a wall of knobs -- on a 2-setting tab
+        # a warning banner is just noise, and noise trains people to skip
+        # banners that matter.
+        _tab_total = sum(len(gui_settings.settings_in(tab, g))
+                         for g in gui_settings.groups_in_tab(tab))
+        changed_lbl = None
+        if _tab_total >= _WALL_OF_KNOBS:
+            warn = ttk.Frame(body)
+            warn.pack(fill="x", padx=10, pady=(10, 0))
+            ttk.Label(warn, text="⚠  The defaults are the tuned values",
+                      font=_SEMI, foreground=_PF_COLOR["warn"]).pack(anchor="w")
+            ttk.Label(
+                warn,
+                text=("Every setting on this tab was measured against how the "
+                      "armour actually looked in game, and the defaults are "
+                      "what won. Changing one without knowing what it does "
+                      "usually makes conversions worse, not better — and the "
+                      "damage often shows on a different piece than the one "
+                      "you were trying to fix.\n"
+                      "If you do change something: change ONE thing, convert, "
+                      "and look at it in game. If it did not help, put it back."),
+                style="Hint.TLabel", wraplength=620,
+                justify="left").pack(anchor="w", pady=(2, 4))
+            crow = ttk.Frame(warn)
+            crow.pack(fill="x", pady=(0, 2))
+            changed_lbl = ttk.Label(crow, text="", style="Hint.TLabel")
+            changed_lbl.pack(side="left")
+
+        # ---- filter bar: search + "show advanced" + "only changed" ----
+        # A live filter over the wall, plus the two views that matter when the
+        # defaults are the recommendation: hide the tuning knobs, or show only
+        # what you have moved away from them.
         fbar = ttk.Frame(body)
         fbar.pack(fill="x", padx=10, pady=(8, 0))
         ttk.Label(fbar, text="Find:").pack(side="left")
@@ -955,12 +1109,22 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
         q_entry.bind("<Escape>", lambda e: q_var.set(""))
         adv_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(fbar, text="Show advanced", variable=adv_var).pack(side="left")
+        chg_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(fbar, text="Only changed",
+                        variable=chg_var).pack(side="left", padx=(10, 0))
         found_lbl = ttk.Label(fbar, text="", style="Hint.TLabel")
         found_lbl.pack(side="left", padx=(10, 0))
-        state["_setting_vars"].extend([q_var, adv_var])
+        state["_setting_vars"].extend([q_var, adv_var, chg_var])
 
         groups_area = ttk.Frame(body)
         groups_area.pack(fill="x")
+        # Which sections are open. Collapsed by default on a wall-of-knobs tab:
+        # the point of the disclaimer is that you should not be reading 62
+        # controls unless you came looking for one, and an index of eight
+        # section headers is one screen instead of four.
+        open_groups = state.setdefault("_open_groups", {}).setdefault(tab, set())
+        if _tab_total < _WALL_OF_KNOBS:
+            open_groups.update(gui_settings.groups_in_tab(tab))
 
         def _matches(s, q):
             if not q:
@@ -969,22 +1133,67 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
             return (q in s.label.lower() or q in s.key.lower()
                     or q in (s.tooltip or "").lower())
 
+        def _toggle_group(group):
+            if group in open_groups:
+                open_groups.discard(group)
+            else:
+                open_groups.add(group)
+            _render()
+
         def _render():
             for w in groups_area.winfo_children():
                 w.destroy()
             q = q_var.get().strip()
+            only_changed = bool(chg_var.get())
+            changed = gui_settings.changed_from_default(state["settings"])
+            # A FILTER IMPLIES INTENT, so it overrides the collapsed default:
+            # searching a wall and being shown eight closed headers reads as
+            # "no matches". Same for "only changed" -- you asked to see them.
+            force_open = bool(q) or only_changed
             shown = hidden_adv = 0
             for group in gui_settings.groups_in_tab(tab):
-                items = [s for s in gui_settings.settings_in(tab, group)
-                         if _matches(s, q)]
+                all_items = gui_settings.settings_in(tab, group)
+                items = [s for s in all_items if _matches(s, q)]
                 vis = [s for s in items if adv_var.get() or not s.advanced]
                 hidden_adv += len(items) - len(vis)
+                if only_changed:
+                    # DELIBERATELY from `items`, not `vis`: "only changed"
+                    # bypasses the advanced filter. Asking to see what you
+                    # moved and being shown nothing because the knob you moved
+                    # is flagged advanced is the worst of both -- and the group
+                    # badge would still be counting it.
+                    vis = [s for s in items if s.key in changed]
                 if not vis:
                     continue          # empty group disappears while filtering
                 shown += len(vis)
-                _render_group(groups_area, group, vis)
+                _render_group(groups_area, group, vis,
+                              opened=force_open or group in open_groups,
+                              n_changed=sum(1 for s in all_items
+                                            if s.key in changed),
+                              # what OPENING would actually show, not the
+                              # group's full size: a header promising 39 that
+                              # reveals 31 is a header that lies.
+                              n_total=len(vis),
+                              on_toggle=(None if force_open else _toggle_group))
+            n_changed_tab = sum(
+                1 for g in gui_settings.groups_in_tab(tab)
+                for s in gui_settings.settings_in(tab, g) if s.key in changed)
+            if changed_lbl is not None:
+                changed_lbl.configure(
+                    text=("Everything on this tab is at its default."
+                          if not n_changed_tab else
+                          f"{n_changed_tab} setting(s) changed from the "
+                          f"defaults — tick 'Only changed' to see them."),
+                    foreground=(_PF_COLOR["warn"] if n_changed_tab else
+                                _PF_COLOR["ok"]))
+            if only_changed and not shown:
+                ttk.Label(groups_area,
+                          text="Nothing is changed from its default.",
+                          style="Hint.TLabel").pack(anchor="w", padx=16, pady=8)
             if q:
                 found_lbl.configure(text=f"{shown} match(es)")
+            elif only_changed:
+                found_lbl.configure(text=f"{shown} changed")
             elif hidden_adv:
                 found_lbl.configure(text=f"{hidden_adv} advanced hidden")
             else:
@@ -996,16 +1205,46 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
 
         q_var.trace_add("write", lambda *a: _render())
         adv_var.trace_add("write", lambda *a: _render())
+        chg_var.trace_add("write", lambda *a: _render())
+        # Re-render when ANY setting changes, so the changed counts stay true
+        # the moment a box is ticked rather than at the next filter keystroke.
+        state.setdefault("_settings_observers", []).append(_render)
         _render()
 
-    def _render_group(parent, group, items):
-        """One LabelFrame of controls. Split out of `_build_settings_tab` so the
-        group area can be rebuilt when the search text or "show advanced"
-        changes."""
+    def _render_group(parent, group, items, opened=True, n_changed=0,
+                      n_total=None, on_toggle=None):
+        """One collapsible section of controls.
+
+        `on_toggle=None` means the header is not clickable -- used while a
+        filter is active, where every section is forced open and a collapse
+        control would fight the filter.
+
+        The header carries the group's CHANGED COUNT even when collapsed. That
+        is the whole point of collapsing: with the defaults being the
+        recommendation, the only thing you need from a closed section is
+        whether you have moved anything in it.
+        """
         av = state["_setting_vars"]        # keep tk vars alive for the window
         for group in [group]:
-            gf = ttk.LabelFrame(parent, text=group)
-            gf.pack(fill="x", padx=10, pady=6)
+            if on_toggle is not None:
+                hdr = ttk.Frame(parent)
+                hdr.pack(fill="x", padx=10, pady=(6, 0))
+                caret = "▾" if opened else "▸"
+                badge = "" if not n_changed else f"   ✎ {n_changed} changed"
+                count = "" if n_total is None else f"   ({n_total})"
+                h = ttk.Label(hdr, text=f"{caret}  {group}{count}{badge}",
+                              font=_SEMI, cursor="hand2",
+                              foreground=(_PF_COLOR["warn"] if n_changed
+                                          else None))
+                h.pack(anchor="w")
+                h.bind("<Button-1>", lambda _e, g=group: on_toggle(g))
+                if not opened:
+                    continue                  # header only; body stays unbuilt
+                gf = ttk.Frame(parent)
+                gf.pack(fill="x", padx=10, pady=(0, 6))
+            else:
+                gf = ttk.LabelFrame(parent, text=group)
+                gf.pack(fill="x", padx=10, pady=6)
             for s in items:
                 cur = state["settings"].get(s.key, s.default)
                 ctl = None
@@ -1076,15 +1315,77 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
     check_btn.pack(side="left", padx=6)
     open_out_btn = ttk.Button(bar, text="Open output folder", state="disabled")
     open_out_btn.pack(side="left", padx=6)
-    open_rep_btn = ttk.Button(bar, text="Report",
-                              command=lambda: _open_report())
-    open_rep_btn.pack(side="left", padx=4)
-    diag_btn = ttk.Button(bar, text="Export diagnostics",
+
+    # THE ACTION BAR IS RUN CONTROLS ONLY. It used to carry three more buttons --
+    # "Report", "Export diagnostics" and "Copy report" -- and the first and third
+    # were routinely confused, because the word meant two unrelated things: one
+    # showed how YOUR RUN WENT, the other built a PROBLEM REPORT to send someone.
+    # They are now separated by INTENT, not by format:
+    #   * how the run went  -> the Results TAB (always there, no modal)
+    #   * asking for help   -> the Help MENU (both deliveries in one place)
+    # `Copy report` and `Export diagnostics` also emitted the SAME text -- the
+    # old code said so itself ("REPORT.txt inside the zip is the same text") --
+    # so they were never two features, only two ways to hand over one payload.
+
+    # ---- menu bar: File / Tools / Help ----
+    # Commands are late-bound lambdas: every handler below is defined further
+    # down in this same function, and a menu command is only resolved when it is
+    # CLICKED. Same trick the buttons above already rely on.
+    menubar = tk.Menu(root)
+
+    file_menu = tk.Menu(menubar, tearoff=0)
+    file_menu.add_command(label="Open output folder",
+                          command=lambda: _open_output_folder())
+    file_menu.add_separator()
+    file_menu.add_command(label="Exit", command=lambda: root.destroy())
+    menubar.add_cascade(label="File", menu=file_menu)
+
+    tools_menu = tk.Menu(menubar, tearoff=0)
+    tools_menu.add_command(label="Check setup…",
+                           command=lambda: _open_preflight())
+    tools_menu.add_command(label="Re-verify output",
+                           command=lambda: _verify_results())
+    menubar.add_cascade(label="Tools", menu=tools_menu)
+
+    help_menu = tk.Menu(menubar, tearoff=0)
+    # ORDER IS THE ADVICE. Copy first: it is the cheap one that answers most
+    # questions, and the zip is only worth asking someone to handle when the
+    # copy was not enough.
+    help_menu.add_command(label="Copy problem report",
+                          command=lambda: _copy_report())
+    help_menu.add_command(label="Save diagnostics zip…",
                           command=lambda: _export_diagnostics())
-    diag_btn.pack(side="left", padx=(12, 0))
-    copy_rep_btn = ttk.Button(bar, text="Copy report",
-                              command=lambda: _copy_report())
-    copy_rep_btn.pack(side="left", padx=4)
+    help_menu.add_separator()
+    help_menu.add_command(
+        label="Report an issue (web)",
+        command=lambda: _open_url(ISSUES_URL))
+    help_menu.add_command(
+        label="Ask a question (web)",
+        command=lambda: _open_url(_rt.DISCUSSIONS_URL))
+    menubar.add_cascade(label="Help", menu=help_menu)
+
+    try:
+        root.config(menu=menubar)
+    except Exception:
+        pass       # a menu hiccup must never block the converter window
+
+    def _theme_menus(p):
+        """Recolour the menu bar for the active theme.
+
+        Best-effort ON PURPOSE: Windows may draw the menu BAR natively and
+        ignore these, while the drop-downs do honour them. Colouring what we
+        can beats a white drop-down on the dark theme; failing here must never
+        take the window down."""
+        for m in (menubar, file_menu, tools_menu, help_menu):
+            try:
+                m.configure(bg=p["bg"], fg=p["fg"],
+                            activebackground=p["accent"],
+                            activeforeground=p["tabselfg"],
+                            bd=0)
+            except Exception:
+                pass
+
+    state["theme_menus"] = _theme_menus
 
     # theme selector (right-aligned)
     theme_var = tk.StringVar(
@@ -1299,9 +1600,15 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
                                                        pady=(0, 8))
         g2 = ttk.LabelFrame(f, text="Options")
         g2.pack(fill="x")
+        # `command=_sync_run` so flipping this re-checks the run gate AND the
+        # setup-check scope: this option is the ONLY thing that pulls the
+        # Papyrus compiler into the preflight, and without a callback it could
+        # be turned on with the cached verdict still reading "ok" for a scan
+        # that never looked for Papyrus at all.
         ttk.Checkbutton(g2, text="Keep originals; add \"UBE (name)\" copies",
-                        variable=overlay_copy).pack(anchor="w", padx=8,
-                                                    pady=(6, 0))
+                        variable=overlay_copy,
+                        command=_sync_run).pack(anchor="w", padx=8,
+                                                pady=(6, 0))
         ttk.Label(g2, text="Lists UBE versions in RaceMenu instead of "
                   "overwriting, so non-UBE races keep theirs. Needs the "
                   "Papyrus compiler.", style="Hint.TLabel", wraplength=560,
@@ -1356,6 +1663,32 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
             os.startfile(str(p))    # Windows shell open
         except Exception as e:
             _append(f"\n[could not open {p}: {e}]\n")
+
+    def _open_url(url):
+        """Open a link in the default browser (the Help menu's web entries)."""
+        import webbrowser
+        try:
+            webbrowser.open(url)
+        except Exception as e:
+            _append(f"\n[could not open {url}: {e}]\n")
+
+    def _current_output_dir():
+        """The output mod folder this window is pointed at, as a string.
+
+        ONE definition, because three separate places used to derive it and a
+        drift between them is how a report gets read from a different folder
+        than the one the run wrote."""
+        return (state.get("output_dir") or out_var.get().strip() or default_out)
+
+    def _open_output_folder():
+        """File ▸ Open output folder. Unlike the toolbar button (which is only
+        armed after a successful run) this works whenever the folder exists, so
+        you can go look at a PREVIOUS run's output."""
+        od = _current_output_dir()
+        if od and Path(od).is_dir():
+            _open_path(od)
+        else:
+            status.set("No output folder yet — run a conversion first.")
 
     def _open_exclusions(domain):
         """Modal editor: tick mods to EXCLUDE from an All-mods run of `domain`.
@@ -1607,20 +1940,31 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
         threading.Thread(target=work, daemon=True).start()
 
     # ---- preflight ("Check setup") ----
-    _PF_COLOR = {"ok": "#4caf50", "warn": "#e0a030", "fail": "#e0574f"}
-    _PF_ICON = {"ok": "✓", "warn": "!", "fail": "✕"}
+    # `_PF_COLOR` / `_PF_ICON` are module level (see the top of this file): the
+    # settings tabs are built long before this point and the defaults banner
+    # uses the same warn colour, so keeping them here made them a
+    # referenced-before-assignment closure error.
 
     def _run_preflight(callback):
+        # Read the scope ONCE, here, and hand the same tuple to the scan and to
+        # the record of what it covered. Reading the Tk vars inside the worker
+        # (as this did) meant a checkbox flipped WHILE THE SCAN WAS IN FLIGHT
+        # produced a verdict labelled with options it never tested.
+        scope = _preflight_scope()
+
         def work():
             try:
-                checks = pf.run_checks(
-                    want_overlays=convert_overlays.get(),
-                    want_overlay_copy=(convert_overlays.get()
-                                       and overlay_copy.get()))
+                checks = pf.run_checks(want_overlays=scope[0],
+                                       want_overlay_copy=scope[1])
             except Exception as e:
                 checks = None
                 q.put(f"\n[setup check failed: {e}]\n")
-            root.after(0, lambda: callback(checks))
+
+            def _fin():
+                # WHAT THIS SCAN COVERED, not what the toggles say now.
+                state["preflight_for"] = scope if checks else None
+                callback(checks)
+            root.after(0, _fin)
         threading.Thread(target=work, daemon=True).start()
 
     def _pf_auto(checks):
@@ -1724,8 +2068,9 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
         # is the only thing a user sees after the export.
         _append(f"  want it fixed?  attach it to an issue at {ISSUES_URL}\n"
                 f"  want an answer? {_rt.DISCUSSIONS_URL}\n"
-                "  either way, send the report from the 'Copy report' button\n"
-                "  with it -- REPORT.txt inside the zip is the same text.\n"
+                "  the zip already carries the write-up as REPORT.txt, so the\n"
+                "  zip ALONE is enough -- Help > Copy problem report gives you\n"
+                "  the same text if you would rather paste it than attach it.\n"
                 "  it holds your MO2 paths, profile name, and load-order mod\n"
                 "  names -- look it over before posting it publicly.\n")
         try:
@@ -1829,126 +2174,164 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
 
         threading.Thread(target=work, daemon=True).start()
 
-    def _open_report(output_dir=None):
-        """Post-run health panel: a scoreboard read from conversion_report.json,
-        with a 'Re-verify output' button that re-runs the invisibility-risk scan
-        against the current meshes without reconverting."""
+    # ---- Results tab: the run scoreboard, always present ----
+    # WAS a modal behind a "Report" button that sat beside a "Copy report"
+    # button meaning something else entirely. A TAB is the honest shape: how
+    # your last run went is STATE, not an event -- it should still be there when
+    # you come back to it, and it should be readable while the log scrolls
+    # underneath instead of grabbing the window.
+    results_tab = ttk.Frame(nb)
+    nb.add(results_tab, text="Results")
+    _res_head = ttk.Label(results_tab, text="Last run", font=_SEMI)
+    _res_head.pack(anchor="w", padx=12, pady=(12, 4))
+    _res_mid = ttk.Frame(results_tab)
+    _res_mid.pack(fill="both", expand=True, padx=(12, 0))
+    _res_cvs = tk.Canvas(_res_mid, highlightthickness=0)
+    _res_sb = ttk.Scrollbar(_res_mid, orient="vertical",
+                            command=_res_cvs.yview)
+    _res_body = ttk.Frame(_res_cvs)
+    _res_body.bind(
+        "<Configure>",
+        lambda e: _res_cvs.configure(scrollregion=_res_cvs.bbox("all")))
+    _res_cvs.create_window((0, 0), window=_res_body, anchor="nw")
+    _res_cvs.configure(yscrollcommand=_res_sb.set)
+    _res_cvs.pack(side="left", fill="both", expand=True)
+    _res_sb.pack(side="left", fill="y")
+    _bind_mousewheel(_res_cvs)
+    _register_scroll_canvas(_res_cvs)
+    _res_btns = ttk.Frame(results_tab)
+    _res_btns.pack(side="bottom", fill="x", padx=12, pady=8)
+
+    def _render_results(data=None):
+        """Paint the scoreboard from a `verify_output` result, or from
+        conversion_report.json on disk when there is none.
+
+        `content` is aliased below so the row building reads UNCHANGED from
+        when this was a modal: the layout moved, the scoring did not, and a
+        rewrite of both at once would have made a regression unattributable."""
         import json as _json
-        od = (output_dir or state.get("output_dir")
-              or out_var.get().strip() or default_out)
-        win = tk.Toplevel(root)
-        _theme_popup(win)
-        win.title("Conversion report")
-        win.transient(root)
-        win.geometry("580x540")
+        od = _current_output_dir()
+        content = _res_body
+        # BOTH frames clear here, not further down: on the no-report path this
+        # function returns early, and buttons left behind from a previous render
+        # would point at an output folder that is no longer being described.
+        for w in content.winfo_children():
+            w.destroy()
+        for w in _res_btns.winfo_children():
+            w.destroy()
+        rep = (data or {}).get("report")
+        rj = Path(od) / "conversion_report.json"
+        if rep is None:
+            try:
+                if rj.is_file():
+                    rep = _json.loads(rj.read_text(encoding="utf-8"))
+            except Exception:
+                rep = None
+        if not rep:
+            _res_head.configure(text="No run yet")
+            ttk.Label(content, text="No conversion_report.json yet — run a "
+                      "conversion first.", style="Hint.TLabel",
+                      wraplength=520, justify="left").pack(anchor="w", pady=8)
+            return
+        # WHEN, not only what. This panel PERSISTS across sessions now, unlike
+        # the modal it replaced, so an undated scoreboard invites reading a
+        # stale run as a fresh one. conversion_report.json carries no timestamp
+        # field, but its mtime is exactly when the run wrote it.
         try:
-            win.grab_set()
+            import time as _time
+            _when = _time.strftime("%Y-%m-%d %H:%M",
+                                   _time.localtime(rj.stat().st_mtime))
+            _res_head.configure(text=f"Last run — {_when}")
         except Exception:
-            pass
-        head = ttk.Label(win, text="Conversion report", font=_SEMI)
-        head.pack(anchor="w", padx=12, pady=(12, 4))
-        mid = ttk.Frame(win)
-        mid.pack(fill="both", expand=True, padx=(12, 0))
-        cvs = tk.Canvas(mid, highlightthickness=0)
-        sb = ttk.Scrollbar(mid, orient="vertical", command=cvs.yview)
-        content = ttk.Frame(cvs)
-        content.bind("<Configure>",
-                     lambda e: cvs.configure(scrollregion=cvs.bbox("all")))
-        cvs.create_window((0, 0), window=content, anchor="nw")
-        cvs.configure(yscrollcommand=sb.set)
-        cvs.pack(side="left", fill="both", expand=True)
-        sb.pack(side="left", fill="y")
-        _bind_mousewheel(cvs)
-        _register_scroll_canvas(cvs)
-        btns = ttk.Frame(win)
-        btns.pack(side="bottom", fill="x", padx=12, pady=8)
+            _res_head.configure(text="Last run")
+        wp = (data or {}).get("weight_partner_warnings")
+        if wp is None:
+            wp = rep.get("weight_partner_warnings", [])
+        rows = [
+            ("Source mods", rep.get("source_mods", 0), "ok"),
+            ("Converted OK", rep.get("converted_ok", 0), "ok"),
+            ("Hard failures", rep.get("hard_failures", 0),
+             "fail" if rep.get("hard_failures") else "ok"),
+            ("Armor NIFs written", rep.get("armor_nifs", 0), "ok"),
+            ("ESP patches", rep.get("esp_patches", 0), "ok"),
+            ("NIF errors", rep.get("nif_errors", 0),
+             "warn" if rep.get("nif_errors") else "ok"),
+            ("Zero-mesh (likely missing)",
+             len(rep.get("zero_mesh_mods", [])),
+             "warn" if rep.get("zero_mesh_mods") else "ok"),
+            ("Invisibility risk (weight-partner)", len(wp),
+             "warn" if wp else "ok"),
+        ]
+        for label, val, st in rows:
+            row = ttk.Frame(content)
+            row.pack(anchor="w", fill="x", pady=(4, 0))
+            ttk.Label(row, text=_PF_ICON.get(st, ""), width=2,
+                      foreground=_PF_COLOR.get(st)).pack(side="left")
+            ttk.Label(row, text=f"{label}: ", font=_SEMI).pack(side="left")
+            ttk.Label(row, text=str(val)).pack(side="left")
+        for title, names in (
+                ("Likely-missing mods", rep.get("zero_mesh_mods", [])),
+                ("Failed mods",
+                 [m.get("name") for m in rep.get("failed_mods", [])]),
+                ("Weight-partner divergence", list(wp))):
+            if names:
+                ttk.Label(content, text=title + ":", font=_SEMI).pack(
+                    anchor="w", padx=6, pady=(8, 0))
+                for n in names[:20]:
+                    ttk.Label(content, text="  • " + str(n),
+                              style="Hint.TLabel", wraplength=520,
+                              justify="left").pack(anchor="w", padx=6)
+                if len(names) > 20:
+                    ttk.Label(content, text=f"  … and {len(names) - 20} more",
+                              style="Hint.TLabel").pack(anchor="w", padx=6)
 
-        def _render(data):
-            if not win.winfo_exists():
-                return                            # report modal closed mid-verify
-            for w in content.winfo_children():
-                w.destroy()
-            rep = (data or {}).get("report")
-            if rep is None:
-                try:
-                    rj = Path(od) / "conversion_report.json"
-                    if rj.is_file():
-                        rep = _json.loads(rj.read_text(encoding="utf-8"))
-                except Exception:
-                    rep = None
-            if not rep:
-                ttk.Label(content, text="No conversion_report.json yet — run a "
-                          "conversion first.", style="Hint.TLabel",
-                          wraplength=520, justify="left").pack(anchor="w", pady=8)
-                return
-            wp = (data or {}).get("weight_partner_warnings")
-            if wp is None:
-                wp = rep.get("weight_partner_warnings", [])
-            rows = [
-                ("Source mods", rep.get("source_mods", 0), "ok"),
-                ("Converted OK", rep.get("converted_ok", 0), "ok"),
-                ("Hard failures", rep.get("hard_failures", 0),
-                 "fail" if rep.get("hard_failures") else "ok"),
-                ("Armor NIFs written", rep.get("armor_nifs", 0), "ok"),
-                ("ESP patches", rep.get("esp_patches", 0), "ok"),
-                ("NIF errors", rep.get("nif_errors", 0),
-                 "warn" if rep.get("nif_errors") else "ok"),
-                ("Zero-mesh (likely missing)",
-                 len(rep.get("zero_mesh_mods", [])),
-                 "warn" if rep.get("zero_mesh_mods") else "ok"),
-                ("Invisibility risk (weight-partner)", len(wp),
-                 "warn" if wp else "ok"),
-            ]
-            for label, val, st in rows:
-                row = ttk.Frame(content)
-                row.pack(anchor="w", fill="x", pady=(4, 0))
-                ttk.Label(row, text=_PF_ICON.get(st, ""), width=2,
-                          foreground=_PF_COLOR.get(st)).pack(side="left")
-                ttk.Label(row, text=f"{label}: ", font=_SEMI).pack(side="left")
-                ttk.Label(row, text=str(val)).pack(side="left")
-            for title, names in (
-                    ("Likely-missing mods", rep.get("zero_mesh_mods", [])),
-                    ("Failed mods",
-                     [m.get("name") for m in rep.get("failed_mods", [])]),
-                    ("Weight-partner divergence", list(wp))):
-                if names:
-                    ttk.Label(content, text=title + ":", font=_SEMI).pack(
-                        anchor="w", padx=6, pady=(8, 0))
-                    for n in names[:20]:
-                        ttk.Label(content, text="  • " + str(n),
-                                  style="Hint.TLabel", wraplength=520,
-                                  justify="left").pack(anchor="w", padx=6)
-                    if len(names) > 20:
-                        ttk.Label(content, text=f"  … and {len(names) - 20} more",
-                                  style="Hint.TLabel").pack(anchor="w", padx=6)
-
-        def _verify():
-            head.configure(text="Re-verifying output…")
-            for w in content.winfo_children():
-                w.destroy()
-
-            def work():
-                try:
-                    data = auto_convert.verify_output(od)
-                except Exception as e:
-                    data = None
-                    q.put(f"\n[verify output failed: {e}]\n")
-                def _fin():
-                    _render(data)                 # guards on win existing
-                    if win.winfo_exists():
-                        head.configure(text="Conversion report")
-                root.after(0, _fin)
-            threading.Thread(target=work, daemon=True).start()
-
-        ttk.Button(btns, text="Re-verify output", command=_verify).pack(
-            side="left")
+        # The tab's own buttons are rebuilt on every render (cleared at the top
+        # of this function), so "Open summary" appears the moment a run produces
+        # one -- it used to depend on whether the file happened to exist when
+        # you opened the modal.
+        ttk.Button(_res_btns, text="Re-verify output",
+                   command=lambda: _verify_results()).pack(side="left")
         _sumtxt = Path(od) / "conversion_summary.txt"
         if _sumtxt.is_file():
-            ttk.Button(btns, text="Open summary (.txt)",
-                       command=lambda: _open_path(_sumtxt)).pack(side="left",
-                                                                 padx=6)
-        ttk.Button(btns, text="Close", command=win.destroy).pack(side="right")
-        _render(None)
+            ttk.Button(_res_btns, text="Open summary (.txt)",
+                       command=lambda p=_sumtxt: _open_path(p)).pack(
+                           side="left", padx=6)
+        if od and Path(od).is_dir():
+            ttk.Button(_res_btns, text="Open output folder",
+                       command=lambda: _open_output_folder()).pack(side="left",
+                                                                   padx=6)
+
+    def _verify_results():
+        """Re-run the invisibility-risk scan against the meshes on disk, without
+        reconverting. Also reachable from Tools ▸ Re-verify output."""
+        od = _current_output_dir()
+        _res_head.configure(text="Re-verifying output…")
+        for w in _res_body.winfo_children():
+            w.destroy()
+
+        def work():
+            try:
+                data = auto_convert.verify_output(od)
+            except Exception as e:
+                data = None
+                q.put(f"\n[verify output failed: {e}]\n")
+
+            def _fin():
+                if not root.winfo_exists():
+                    return            # window closed while the scan was running
+                _render_results(data)
+                _res_head.configure(text="Last run")
+            root.after(0, _fin)
+        threading.Thread(target=work, daemon=True).start()
+
+    def _show_results_tab():
+        """Bring the Results tab forward (used when a run finishes)."""
+        try:
+            nb.select(results_tab)
+        except Exception:
+            pass
+
+    _render_results()          # paint whatever the last run left on disk
 
     def _build_argv():
         a = ["auto"]
@@ -2130,7 +2513,13 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
         run_btn.configure(state="disabled")
         cancel_btn.configure(state="normal")
         open_out_btn.configure(state="disabled")
-        open_rep_btn.configure(state="disabled")
+        # The Results tab STAYS READABLE during a run -- it shows the LAST run,
+        # which is exactly what you want to compare against while this one goes.
+        # Only its heading changes, so nobody reads stale numbers as live ones.
+        try:
+            _res_head.configure(text="Last run (a conversion is running…)")
+        except Exception:
+            pass
         # Lock the selection UI: stop a mid-run Refresh from starting + flip the
         # "...then tick" frame label so it doesn't linger while converting.
         try:
@@ -2231,11 +2620,20 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
         _ov_update_title()   # restore the overlay checklist count label
         _sync_run()          # re-gate the Convert button + checklist visibility
         od = state.get("output_dir")
-        open_rep_btn.configure(state="normal")
+        # Repaint the scoreboard from the report this run just wrote, and bring
+        # it forward. The old flow ended with a button going from grey to
+        # enabled and nothing else -- easy to miss, and the numbers that decide
+        # whether a run was any good stayed one click away.
+        try:
+            _render_results()
+            _res_head.configure(text="Last run")
+            _show_results_tab()
+        except Exception:
+            pass
         if od and Path(od).is_dir():
             open_out_btn.configure(state="normal", command=lambda p=od: _open_path(p))
         if rc == 0:
-            status.set("Done - success (exit 0). Review the log + report for any coverage notes.")
+            status.set("Done - success (exit 0). See the Results tab for coverage notes.")
         else:
             status.set(f"Finished with exit code {rc} - check the log for errors/warnings.")
         _append(f"\n=== finished (exit {rc}) ===\n")

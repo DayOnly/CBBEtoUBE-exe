@@ -1026,6 +1026,42 @@ def by_key() -> "dict[str, Setting]":
     return {s.key: s for s in SETTINGS}
 
 
+def displayed_keys() -> "set[str]":
+    """Keys that a settings TAB actually renders.
+
+    The scope for "Reset ALL conversion settings" and for import, and for any
+    per-tab changed count. It excludes registered-but-hidden state -- `theme`
+    and `window_geometry` sit on an "Appearance" tab that `tabs_present()` does
+    not list -- because a reset must not silently change your theme, and a
+    window resize must not read as a tuned setting.
+    """
+    return {s.key for t in tabs_present()
+            for g in groups_in_tab(t)
+            for s in settings_in(t, g)}
+
+
+def changed_from_default(values: "dict[str, object]") -> "set[str]":
+    """Registered keys in `values` whose value DIFFERS from their default.
+
+    The same comparison `save_values` uses to decide what to persist, so the
+    GUI's "changed from defaults" count can never disagree with what actually
+    ends up in the settings file.
+
+    Unregistered keys are ignored -- the saved file also carries
+    `_known_settings`, which is bookkeeping, not a tuned value. A key absent
+    from `values` is at its default by definition, so it is not changed.
+
+    NOTE it DOES report registered-but-undisplayed keys, `window_geometry`
+    among them: that is right here, because `save_values` persists them too.
+    A per-TAB count must therefore be built from the settings that tab
+    actually renders, not from this set -- window geometry is rewritten on
+    every resize, and a "1 setting changed" banner earned by dragging a window
+    corner is the false alarm that teaches people to ignore banners.
+    """
+    reg = by_key()
+    return {k for k, v in values.items() if k in reg and v != reg[k].default}
+
+
 HINT_MAX = 110
 
 

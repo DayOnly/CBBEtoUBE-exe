@@ -49,6 +49,14 @@ IN_GAME_BUGS.md
 # Local by definition: naming them is exactly what it is for.
 LOCAL_ASSET_SAMPLES.md
 AUDIT_REDUNDANCY_*.md
+# Session working directories: measurement harnesses, A/B captures, pre-deploy
+# binary backups and pre-reconvert manifests. They name real armours and mods
+# and carry absolute local paths, so they are local by definition.
+#
+# IGNORED, not merely untracked. Being untracked is not protection -- one
+# `git add -A` publishes the lot, and these have sat untracked next to a tracked
+# tree for months relying on nobody typing it.
+scratchpad_handoff_*/
 CONVERTER_AUDIT_*.md
 DESIGN_JIGGLE_PLAN.md
 DESIGN_P5_*.md
