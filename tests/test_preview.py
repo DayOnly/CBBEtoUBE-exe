@@ -587,12 +587,20 @@ def test_generate_xml_emits_chain_physics():
     assert ("Skirt 1_01", "Skirt 1_00") in pairs
     assert ("Skirt 1_02", "Skirt 1_01") in pairs
 
-    # Cloth weight-threshold for chain bone = 0.3, for body bone = 1.0
+    # Cloth weight-threshold: DYNAMIC chain bone = 0.3, static bone = 1.0, and
+    # the chain ANCHOR counts as static (#chain-anchor-threshold).
+    #
+    # This used to expect 0.3 on `Skirt 1_00` too, and it CAUGHT the change
+    # that fixed a real in-game report -- so it is updated, not deleted. Bone
+    # _00 is emitted at mass 0 so the rest of the chain hangs off it; a 0.3
+    # threshold there pins every vertex with even 30% weight to a bone that
+    # never moves, freezing a band across the middle of a cloak ("half way down
+    # it is pinned in place") while the hem below it still swung.
     cloth = root.find("per-vertex-shape")
     thresholds = {wt.get("bone"): float(wt.text)
                   for wt in cloth.findall("weight-threshold")}
-    assert thresholds["Skirt 1_00"] == 0.3
-    assert thresholds["Skirt 1_02"] == 0.3
+    assert thresholds["Skirt 1_00"] == 1.0    # anchor: static, like the body bones
+    assert thresholds["Skirt 1_02"] == 0.3    # dynamic link: secondary motion
     assert thresholds["NPC Pelvis [Pelv]"] == 1.0
 
 

@@ -481,6 +481,30 @@ WARP_DELTA_OUTLIER = not _flag("CBBE2UBE_NO_WARP_DELTA_OUTLIER", False)
 # fix. It is also a NO-OP whenever the order already matches the author, so the
 # blast radius is only the pieces that were actually wrong.
 AUTHORED_SHAPE_ORDER = not _flag("CBBE2UBE_NO_AUTHORED_SHAPE_ORDER", False)
+# #no-invented-chains -- REPLICATE THE SOURCE'S PHYSICS, do not improve on it.
+#
+# A garment can be RIGGED for a chain (skinned to SkirtBBone01..03, Skirt 1_NN,
+# ...) and still ship NO physics reference of any kind -- no SMP XML, no HDT-PE
+# path, nothing. The Campfire travel cloaks are the measured example: 8 NIFs,
+# zero root or shape extra-data, no XML anywhere for the source path, no global
+# SMP config, and the chain bones are not even in the actor skeleton. In game
+# that garment is STATIC.
+#
+# The generate-fresh path used to treat those dead bones as intent and drive
+# them with a generated chain, so the piece swung in a way its mod never did.
+# That reached 149 of the pack's 357 physics XMLs -- every generated one. The
+# authored 208 are copied from source and are NOT affected by this flag.
+#
+# With chains suppressed, the EXISTING `#chainless-softbody-gate` below takes
+# over and emits NO XML at all, leaving the piece kinematic with its baked
+# geometric clearance. That is deliberate and it is the only safe shape: a
+# literal "collision only" XML (cloth per-vertex + body per-triangle, no
+# constrained chain) is the documented FSMP equip-CTD pattern -- an
+# unconstrained soft body diverges and the collision SIMD reads out of bounds.
+# See `_is_unconstrained_collision_pair`.
+#
+# Set CBBE2UBE_INVENT_CHAINS=1 to restore the old behaviour for an A/B.
+INVENT_CHAINS_FROM_DEAD_BONES = _flag("CBBE2UBE_INVENT_CHAINS", False)
 # An outlier FENCE, not a tuned parameter: it sits between the mesh's own
 # roughness and the fliers, and the numbers either side differ by a factor of
 # four. 1.0u was the first choice, from the traced piece's p99 of 1.77u (that is
@@ -22110,7 +22134,17 @@ def _generate_hdt_xml_for_dst(dst_path: "Path", only_loose: bool = False) -> "st
     # group blocks so the chain actually swings in HDT-SMP. We don't
     # need to add new bones — they're already in the source mod's
     # skeleton, just unused without this XML.
-    chains = hdt_xml_gen.detect_physics_chains(all_bones_seen)
+    #
+    # #no-invented-chains: NOT on the generate-fresh path. `only_loose` means
+    # the source shipped no physics XML at all, so those chain bones are dead
+    # in the source too and the garment is STATIC in its own mod. Driving them
+    # is inventing motion, not converting it. Suppressing the chain here lets
+    # the `#chainless-softbody-gate` below emit NO XML, which keeps the piece
+    # kinematic with its baked clearance — the same outcome the source has.
+    if only_loose and not INVENT_CHAINS_FROM_DEAD_BONES:
+        chains = []
+    else:
+        chains = hdt_xml_gen.detect_physics_chains(all_bones_seen)
 
     # #chainless-softbody-gate: on the GENERATE-fresh path (only_loose -- the
     # source shipped NO authored physics XML), a carrier set with NO detectable
