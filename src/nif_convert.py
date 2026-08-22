@@ -464,6 +464,23 @@ WARP_SHEAR_STEPS = _knob("CBBE2UBE_WARP_SHEAR_STEPS", 8, int)
 # -> 4.127, and yet accounts for a 1.38u geometry change on its own. Cost without
 # a demonstrated benefit.
 WARP_DELTA_OUTLIER = not _flag("CBBE2UBE_NO_WARP_DELTA_OUTLIER", False)
+# #authored-shape-order (BUG-09). SHAPE ORDER IS OUTPUT STATE, not cosmetics: an
+# ARMA `AlternateTextures` entry picks its target shape by INDEX, so permuting a
+# NIF's shapes silently re-points every colour variant that names it. Reported in
+# game on a white top that loaded the wrong texture AND broke the actor's skin
+# texture -- one cause: our injected `BaseShape` had taken index 0, so the white
+# fabric swap landed on the BODY and the garment never got its own.
+#
+# TWO routes moved shapes and both are closed: the body injection now runs after
+# pass 2 (that one is structural, no flag), and the textureless collision proxies
+# that `_finalize_hdt_physics` drops and re-appends `sorted()` are put back in
+# their AUTHORED slots by `_restore_authored_shape_order`, which this flag gates.
+#
+# A SAFETY INVARIANT, not a preference -- so it is DEFAULT ON with a kill switch
+# and deliberately gets no `Setting(...)` row, exactly like the BUG-00 fail-closed
+# fix. It is also a NO-OP whenever the order already matches the author, so the
+# blast radius is only the pieces that were actually wrong.
+AUTHORED_SHAPE_ORDER = not _flag("CBBE2UBE_NO_AUTHORED_SHAPE_ORDER", False)
 # An outlier FENCE, not a tuned parameter: it sits between the mesh's own
 # roughness and the fliers, and the numbers either side differ by a factor of
 # four. 1.0u was the first choice, from the traced piece's p99 of 1.77u (that is
@@ -4172,6 +4189,159 @@ _SMOOTH_REF_EDGE = 1.0        # the tessellation the current ring counts assume
 _SMOOTH_REACH_MAX = 400       # bound the cost; the finest strip here asks ~320
 SMOOTH_REACH = _flag("CBBE2UBE_SMOOTH_REACH", False)
 
+# A weld edge is ~0 long and is NOT tessellation: two coincident verts at a UV
+# seam are one point of surface, so counting the join between them as an
+# incident edge reads every seam vertex as infinitely fine. Excluded everywhere
+# a local scale is measured.
+_REACH_WELD_EPS = 1e-4
+
+
+def _local_edge_length(verts, tris=None, *, src=None, dst=None, lengths=None):
+    """Per-vertex LOCAL EDGE LENGTH -- the local scale of the surface.
+    #edge-scaled-reach
+
+    Returns `(elen, has)`, or `(None, None)` on any degenerate input. `has` is
+    False wherever a vertex carries no real (non-weld) edge; those vertices
+    have NO measurable local scale, and a caller must leave them at whatever it
+    does today rather than read the 0 as "infinitely fine".
+
+    ONE DEFINITION OF "how fine is the surface here", so the places that ask
+    cannot disagree. `_relax_conform_field` computed exactly this inline and
+    now calls it. `_reach_iters` deliberately still does NOT: it needs one
+    number per shape and takes the median EDGE LENGTH, which is a different
+    statistic from the median of the per-vertex means and would change an
+    opt-in feature's behaviour with no measurement behind it.
+
+    MEAN of the incident edges, not the median, for two reasons. It is what
+    `_relax_conform_field` already computed, so adopting it here is provably
+    byte-neutral rather than argued; and on the reported suit the two differ by
+    a p50 of 20% (mean 0.496u against median 0.595u), a near-constant offset
+    that any reach expressed in units absorbs into its own calibration.
+
+    Pass `src`/`dst`/`lengths` when the caller has already built its adjacency
+    (`_welded_edges` returns exactly that pair, both directions) so the scale
+    is measured over the SAME notion of "next to" the solve itself uses.
+    """
+    try:
+        v = np.asarray(verts, dtype=np.float64)
+        n = len(v)
+        if n < 3:
+            return None, None
+        if src is None or dst is None:
+            t = np.asarray(tris, dtype=np.int64).reshape(-1, 3)
+            if not len(t):
+                return None, None
+            e = np.vstack([t[:, [0, 1]], t[:, [1, 2]], t[:, [2, 0]]])
+            e = np.vstack([e, e[:, ::-1]])
+            e = e[(e[:, 0] >= 0) & (e[:, 0] < n)
+                  & (e[:, 1] >= 0) & (e[:, 1] < n)]
+            if not len(e):
+                return None, None
+            s, d = e[:, 0], e[:, 1]
+            L = np.linalg.norm(v[s] - v[d], axis=1)
+        else:
+            s = np.asarray(src, dtype=np.int64)
+            d = np.asarray(dst, dtype=np.int64)
+            L = (np.linalg.norm(v[s] - v[d], axis=1) if lengths is None
+                 else np.asarray(lengths, dtype=np.float64))
+        keep = L > _REACH_WELD_EPS
+        if not keep.any():
+            return None, None
+        cnt = np.bincount(s[keep], minlength=n).astype(np.float64)
+        tot = np.bincount(s[keep], weights=L[keep], minlength=n)
+        has = cnt > 0
+        if not has.any():
+            return None, None
+        return np.where(has, tot / np.maximum(cnt, 1.0), 0.0), has
+    except Exception:
+        return None, None
+
+
+# #edge-scaled-reach -- OPT-IN, `CBBE2UBE_EDGE_SCALED_REACH=1`.
+#
+# EVERY SMOOTHING NEIGHBOURHOOD IN THIS FILE IS SIZED IN GRAPH STEPS, WHICH IS
+# A MESH-DEPENDENT UNIT. A ring count reaches `rings * edge` units, and a
+# screened Laplacian's `lam` gives a decay length of `edge / sqrt(lam)` units --
+# so ONE constant means one distance on a leather panel and a twentieth of it
+# on a buckle strip. That is the shared cause under three open defects:
+# BUG-08 (a 0.49u skin-tight suit that cannot be tightened without folding),
+# BUG-01 (a pointwise correction to a smooth field relocating its
+# discontinuity), and #collar-fine-tessellation ("passes work in ABSOLUTE
+# units; TWO fixes dead, only smoothing-REACH untried").
+#
+# TWO PARTIAL ANSWERS WERE ALREADY HERE, and neither is this one:
+#   `#smooth-reach`             ABSOLUTE, but ONE median per SHAPE, and only
+#                               for ring counts.
+#   `#conform-adaptive-reach`   PER VERTEX, but RELATIVE to the shape's own
+#                               median -- it equalises reach WITHIN a shape and
+#                               still gives a uniformly fine shape a shorter
+#                               world-space reach than a coarse one.
+# The missing primitive is a reach stated in UNITS and resolved PER VERTEX, so
+# a 0.49u mesh and a 2.5u mesh behave the same way relative to their own
+# detail, and a shape that is fine in one region and coarse in another gets
+# both right at once.
+#
+# THE MECHANISM. For the screened solve this file already runs -- `(deg + lam)
+# u_i = sum_j u_j + lam * D_i`, i.e. `sum_j (u_j - u_i) - lam * u_i = -lam D_i`
+# -- substituting a decaying response `u_i ~ exp(-x / delta)` on a chain of
+# spacing `elen` gives `2 (cosh(elen / delta) - 1) = lam`, so for small `lam`
+#
+#       delta = elen / sqrt(lam)        units
+#
+# Setting `delta` to a stated reach `R` therefore needs
+#
+#       lam_i = (elen_i / R) ** 2
+#
+# which is the whole change: a per-vertex mass term proportional to the SQUARE
+# of the local edge length. On a 1.0u mesh, today's constant `lam = 0.5` is
+# exactly `R = 1.414u`, which is where the default below comes from -- so a
+# coarse mesh keeps roughly the behaviour it has and fine geometry gains reach.
+# The 2-D constant is valence-dependent (a valence-6 umbrella puts the true
+# decay nearer 1.2 R than R), so `R` is a CALIBRATED distance, not a certified
+# one; it is named in units because units are the thing that must not depend on
+# the mesh, not because 1.414 is exact.
+#
+# WHY NOT SCALE THE RING COUNT INSTEAD, which is what `#smooth-reach` does: a
+# ring loop applies ONE count to every vertex, so raising it to serve the fine
+# tail over-smooths the coarse regions of the same shape. Per-vertex reach is
+# not expressible as a ring count at all -- it has to live in the OPERATOR.
+# That is why this wires into the screened solve and not into `_reach_iters`.
+EDGE_SCALED_REACH = _flag("CBBE2UBE_EDGE_SCALED_REACH", False)
+# The reach in UNITS. 1.414 reproduces today's `lam = 0.5` on a 1.0u mesh.
+REACH_UNITS = _knob("CBBE2UBE_REACH_UNITS", 1.414)
+
+
+def _reach_screen(elen, has, reach_u, iters, *, fallback):
+    """Per-vertex `lam` whose smoothing decay length is `reach_u` UNITS
+    everywhere on the mesh.  #edge-scaled-reach
+
+    `fallback` is used wherever a vertex has no measurable local scale, so this
+    can never make a vertex smoother OR stiffer than the caller's own constant
+    on geometry it could not measure.
+
+    FLOORED AT `1 / iters`, which is not a fudge: it is the reach the solver
+    can actually deliver. A Jacobi sweep is a DIFFUSION step, so `k` sweeps
+    spread a response about `sqrt(k)` rings, not `k` -- the same physics the
+    `#smooth-reach` note above states for neighbour averaging. Setting
+    `sqrt(k) * elen = elen / sqrt(lam)` gives `lam = 1/k`. Below that the solve
+    is simply under-converged and the extra reach is never realised.
+
+    MEASURED, because the first cut of this floor was `1 / iters**2` -- the
+    limit if a sweep carried information a full ring -- and the end-to-end
+    decay test caught it: at `lam` under the true floor a 400-sweep solve on a
+    0.1u chain reached 1.30u where the formula promised 2.00u, while the coarse
+    chain, whose `lam` was well above its floor, landed exactly. An
+    unconverged solve does not fail loudly; it quietly returns a shorter reach
+    than the caller asked for.
+    """
+    base = np.full(len(elen), float(fallback), dtype=np.float64)
+    R = float(reach_u)
+    if not np.isfinite(R) or R <= 1e-6:
+        return base
+    lam = np.square(np.asarray(elen, dtype=np.float64) / R)
+    lam = np.maximum(lam, 1.0 / max(float(iters), 1.0))
+    return np.where(has, lam, base)
+
 
 def _reach_iters(verts, tris, iters: int) -> int:
     """Ring count that carries the feather the SAME DISTANCE on this mesh.
@@ -4343,13 +4513,19 @@ def _relax_conform_field(cur, disp, move, normals, tris, *,
         #
         # Weld edges are ~0 long and are not geometry, so they are excluded
         # from the local scale or every seam vertex would read as ultra-fine.
-        real = l0 > 1e-4
-        cnt = np.bincount(src[real], minlength=n).astype(np.float64)
-        tot = np.bincount(src[real], weights=l0[real], minlength=n)
-        has = cnt > 0
-        elen = np.where(has, tot / np.maximum(cnt, 1.0), 0.0)
+        elen, has = _local_edge_length(P, src=src, dst=dst, lengths=l0)
+        if elen is None:
+            elen = np.zeros(n, dtype=np.float64)
+            has = np.zeros(n, dtype=bool)
         med = float(np.median(elen[has])) if has.any() else 0.0
-        if CONFORM_STRETCH_ADAPTIVE and med > 1e-6:
+        if EDGE_SCALED_REACH:
+            # #edge-scaled-reach supersedes the relative form below: the reach
+            # is stated in UNITS and resolved per vertex, so a uniformly fine
+            # shape stops being smoothed over fewer units of body than a coarse
+            # one. `lam` remains the fallback wherever a vertex has no
+            # measurable local scale.
+            lam_v = _reach_screen(elen, has, REACH_UNITS, iters, fallback=lam)
+        elif CONFORM_STRETCH_ADAPTIVE and med > 1e-6:
             ratio = np.where(has, elen / med, 1.0)
             lam_v = np.clip(lam * ratio * ratio,
                             lam / CONFORM_STRETCH_REACH_MAX,
@@ -7635,9 +7811,88 @@ def _finalize_physics_and_motion_match(dst_path, src_path, biped_slots) -> None:
     except Exception as _pe:
         _note_pass_failure("_match_full_weights_to_body", _pe)
 
+    # Put the shapes back in the order the AUTHOR wrote them (#authored-shape-order,
+    # BUG-09). Must run after `_finalize_hdt_physics`, which is what re-appends the
+    # dropped collision proxies -- anything earlier would be undone by it. Before
+    # the audit below so that guard reads the bytes that actually ship.
+    try:
+        _restore_authored_shape_order(dst_path, src_path)
+    except Exception as _pe:
+        _note_pass_failure("_restore_authored_shape_order", _pe)
+
     # LAST, after every weight pass: the invariant that decides whether the
     # armour stays on the actor. #registered-shape-declared-bones
     _audit_registered_shape_declared_bones(dst_path, src_path)
+
+
+def _restore_authored_shape_order(dst_path, src_nif_path) -> int:
+    """Re-emit the NIF with its AUTHORED shapes back in the AUTHOR's order, and
+    anything we added after them. Returns how many shapes changed index.
+
+    WHY THIS IS CORRECTNESS AND NOT TIDINESS. An ARMA `AlternateTextures` entry
+    selects the shape it re-textures by INDEX, not by the 3D name it also
+    stores. So permuting a converted mesh's shapes silently re-points every
+    colour-variant swap in the load order that names that mesh -- including
+    swaps in THIRD-PARTY patches we do not own and cannot edit. Confirmed in
+    game (BUG-09): a white top loaded the default fabric texture while the
+    actor's SKIN texture broke, because the swap bound to index 0 and our
+    injected `BaseShape` was sitting there instead of the garment.
+
+    TWO ROUTES PERMUTED THE SHAPES, and this pass only has to repair the second:
+
+      1. the UBE body was injected BEFORE pass 2, taking index 0 and shifting
+         every authored shape by +1. Fixed structurally by moving the injection
+         after pass 2 -- no repair needed, so nothing here depends on it;
+      2. `_finalize_hdt_physics` DROPS textureless collision proxies during the
+         copy and re-appends them `sorted()` at the END. That is this pass's
+         job: they are authored shapes and belong at their authored indices.
+         Measured on a college robe -- author `robes, sash, bcol, rear, col,
+         body` shipped as `robes, body, bcol, col, rear, sash`, i.e. the two
+         textured shapes followed by the four dropped proxies in sorted order.
+
+    Shapes the SOURCE does not have (the injected body, generated colliders like
+    ButtCol/SkirtCol) keep their relative order and follow the authored ones --
+    they have no authored index to preserve, and putting them last is what the
+    author's own mesh and every hand-made UBE conversion already do.
+
+    A NO-OP WHEN THE ORDER ALREADY MATCHES, and that is load-bearing: the rebuild
+    is only paid by pieces that were actually wrong. Gated by
+    AUTHORED_SHAPE_ORDER (`CBBE2UBE_NO_AUTHORED_SHAPE_ORDER=1` to disable).
+    """
+    if not AUTHORED_SHAPE_ORDER:
+        return 0
+    pyn = _pynifly()
+    dn = pyn.NifFile(filepath=str(dst_path))
+    dst_names = [s.name for s in dn.shapes]
+    if len(dst_names) < 2:
+        return 0                      # nothing to permute
+    try:
+        sn = pyn.NifFile(filepath=str(src_nif_path))
+        src_names = [s.name for s in sn.shapes]
+    except Exception:
+        return 0                      # no source to be faithful TO -> leave it
+    if not src_names:
+        return 0
+    src_set, dst_set = set(src_names), set(dst_names)
+    authored = [n for n in src_names if n in dst_set]
+    extras = [n for n in dst_names if n not in src_set]
+    desired = authored + extras
+    if desired == dst_names:
+        return 0                      # already faithful -- do NOT rebuild
+    moved = sum(1 for a, b in zip(desired, dst_names) if a != b)
+    # Hand over the ALREADY-OPEN NifFile: `_reauthor_nif_fresh` preserves the
+    # BODYTRI and root HDT extra-data, the Hidden bits and the authored skin of
+    # colliders/soft-bodies/layered cloth, and re-seeds the flat chain anchors.
+    if not _reauthor_nif_fresh(dst_path, nif=dn, shape_order=desired):
+        _note_pass_failure(
+            "_restore_authored_shape_order",
+            RuntimeError(f"re-author declined; {dst_path.name} ships with "
+                         f"{moved} shape(s) at the wrong index"))
+        return 0
+    import sys as _sys
+    print(f"  #authored-shape-order: {dst_path.name} restored {moved} shape(s) "
+          f"to the author's order", file=_sys.stderr)
+    return moved
 
 
 def _audit_registered_shape_declared_bones(dst_path, src_path) -> int:
@@ -22660,10 +22915,17 @@ def _finalize_hdt_physics(dst_path: Path, src_nif_path: Path) -> bool:
 
 
 def _reauthor_nif_fresh(dst_path: Path, override_verts_by_name=None,
-                        exclude_shapes=None, nif=None) -> bool:
+                        exclude_shapes=None, nif=None, shape_order=None) -> bool:
     """Re-author a NIF from scratch into a fresh NifFile — copy every shape
     via _copy_shape (clean pynifly authoring) instead of leaving the
     source-derived bytes produced by the verbatim `shutil.copy2` path.
+
+    `shape_order`: optional list of shape NAMES giving the order to emit them
+    in. Shape order IS output state — an ARMA `AlternateTextures` entry selects
+    its target by INDEX, so re-emitting a NIF with its shapes permuted silently
+    re-points every colour-variant swap that names it (BUG-09). Names absent
+    from the NIF are ignored; shapes absent from the list keep their current
+    relative order and follow the listed ones, so a partial list is safe.
 
     `override_verts_by_name`: optional {shape_name -> (N,3) verts} to write NEW
     vertex positions for those shapes (same count/order). Used by the cross-shape
@@ -22691,6 +22953,13 @@ def _reauthor_nif_fresh(dst_path: Path, override_verts_by_name=None,
         shapes = list(old.shapes)
         if not shapes:
             return False
+        if shape_order:
+            # Stable permutation: listed names first in the order given, then
+            # everything else in its existing relative order. Never drops a
+            # shape -- a name in `shape_order` that this NIF does not have is
+            # skipped, and a shape the list does not mention still ships.
+            _rank = {n: i for i, n in enumerate(shape_order)}
+            shapes.sort(key=lambda s: (_rank.get(s.name, len(_rank)),))
         # Capture extra-data + hidden flags to re-apply after rebuild.
         bodytri_str = None
         bodytri_owner = None
@@ -23851,7 +24120,6 @@ PANEL_RIGIDITY_MIN_VERTS = int(
 # each fit cannot drift as the panel moves.
 _PANEL_LOCAL_RIGID = _flag("CBBE2UBE_PANEL_LOCAL_RIGID", False)
 _PANEL_LOCAL_K = int(_knob("CBBE2UBE_PANEL_LOCAL_K", 64.0))
-
 
 def _weld_components(verts, tris, tol: float = 1e-3):
     """Connected components over WELDED topology. Welding first is required:
@@ -25599,34 +25867,31 @@ def convert_nif_phase2(
     src_morph_shapes = (_source_morph_tri_shape_names(src_path)
                         if RESKIN_PREFER_SOURCE_WHEN_MORPH_TRI else set())
 
+    # #authored-shape-order (BUG-09). The UBE body used to be COPIED HERE --
+    # before a single authored shape was written -- so it took shape index 0 and
+    # shifted every authored shape by +1. An ARMA `AlternateTextures` entry
+    # binds by INDEX, not by name, so that silently re-pointed every colour
+    # variant in the load order: the swap landed on the injected body (breaking
+    # the actor's skin texture) while the garment kept its default texture.
+    # Reported in game on a white top whose body texture broke at the same time.
+    #
+    # The COPY now happens AFTER pass 2, so every authored shape keeps the index
+    # it had in the source and the body lands LAST -- which is what the author's
+    # own mesh and every hand-made UBE conversion already do.
+    #
+    # Only the PRECONDITION is checked here: an unusable UBE reference must
+    # still fail fast, before ~1600 lines of fitting work, not after it.
     injected: list[str] = []
-    copy_err = _inject_ube_baseshape(
-        ube_nif, dst_nif, body_inject_names, inject_baseshape, injected,
-    )
-    if copy_err is not None:
-        shape_name, exc_repr = copy_err
-        return ConvertResult(
-            src_path=src_path, dst_path=None,
-            status="skipped",
-            reason=f"failed to copy UBE shape {shape_name!r}: {exc_repr}",
-        )
-
-    # Hands/Feet NOT injected: slot 33/37 ARMAs stay live alongside slot 32.
-    # UBE_AllRace.esp already routes those slots to UBE meshes; injecting
-    # them here would duplicate geometry and cause z-fight.
-
-    # Disable VirtualBody rendering — see `_hide_virtual_body` docstring.
-    _hide_virtual_body(dst_nif)
-
-    # BODYTRI attached to the first armor shape (not BaseShape), mirroring
-    # hand-authored UBE NIFs where NioOverride morphs all TRI shapes via
-    # an armor-shape carrier. Added after armor shapes are copied below.
-
-    if not injected and inject_baseshape:
+    _injectable = [
+        s.name for s in ube_nif.shapes
+        if s.name in body_inject_names
+        and not (s.name == "BaseShape" and not inject_baseshape)
+    ]
+    if not _injectable and inject_baseshape:
         # Only a FAILURE when we actually wanted to inject the UBE body (slot-32
         # body armor). For a non-body slot (inject_baseshape=False -- boots/
         # panties/underwear whose inline CBBE body we DROP, letting the actor's
-        # own nude UBE body show), an empty `injected` is EXPECTED: we're not
+        # own nude UBE body show), an empty set is EXPECTED: we're not
         # replacing the body, just removing the stray one and copying the armor.
         # Without this gate, routing a "3BA Ref"-body piece here (see
         # #3ba-ref-body) skips the whole conversion -> the CBBE body survives.
@@ -25636,6 +25901,14 @@ def convert_nif_phase2(
             reason=f"UBE ref {ube_body_ref_path.name} has no shapes in "
                    f"{body_inject_names}",
         )
+
+    # Hands/Feet NOT injected: slot 33/37 ARMAs stay live alongside slot 32.
+    # UBE_AllRace.esp already routes those slots to UBE meshes; injecting
+    # them here would duplicate geometry and cause z-fight.
+
+    # BODYTRI attached to the first armor shape (not BaseShape), mirroring
+    # hand-authored UBE NIFs where NioOverride morphs all TRI shapes via
+    # an armor-shape carrier. Added after armor shapes are copied below.
 
     # Build body MeshIndexes for the armor-fit pass (if enabled + refs available).
     # CBBE body: inline shape from source or cbbe_body_ref_path fallback.
@@ -27296,6 +27569,28 @@ def convert_nif_phase2(
             # piece). Tag DROPPED so it's reported as a partial conversion.
             failed.append((s.name, f"DROPPED (copy failed): {e!r}"))
             continue
+
+    # #authored-shape-order (BUG-09). Inject the UBE body AFTER every authored
+    # shape, so authored shapes keep the indices they had in the source and the
+    # body lands last. Moved down from before pass 2 -- the precondition check
+    # up there records why, and it is the only thing left at the old site.
+    # Nothing between the two sites touched `dst_nif` except `_hide_virtual_body`,
+    # which travels with the injection because VirtualBody only exists once this
+    # has run. `_pick_bodytri_carriers` below DOES need BaseShape present, so
+    # this must stay above it -- it does.
+    copy_err = _inject_ube_baseshape(
+        ube_nif, dst_nif, body_inject_names, inject_baseshape, injected,
+    )
+    if copy_err is not None:
+        shape_name, exc_repr = copy_err
+        return ConvertResult(
+            src_path=src_path, dst_path=None,
+            status="skipped",
+            reason=f"failed to copy UBE shape {shape_name!r}: {exc_repr}",
+        )
+
+    # Disable VirtualBody rendering — see `_hide_virtual_body` docstring.
+    _hide_virtual_body(dst_nif)
 
     # Attach BODYTRI via _pick_bodytri_carriers: single carrier for slot-49/no-body
     # NIFs, multi-carrier for slot-32+BaseShape NIFs so NioOverride morphs all shapes.
