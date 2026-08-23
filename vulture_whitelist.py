@@ -35,7 +35,12 @@ _.by_name           # OsdFile name-index accessor -- public parser API
 FEMINIZE_MALE_ARMOR             # wiring switch for feminize_male_armor_conform (tested, parked)
 SHADER_TYPE_DEFAULT             # documents the Shader_Type=0 fix for NioOverride morphing
 SHADER_FLAGS_1_ENV_MAPPING_BIT  # documents the 0x80 env-map bit that blocks morphing
-_strip_alpha_property           # empirical NiAlphaProperty/BodyMorph finding; cross-ref'd in-code
+# `_strip_alpha_property` REMOVED from this whitelist 2026-08-23: the function
+# was deleted in 682284f, so the entry suppressed a name that no longer exists,
+# and its stated justification ("cross-ref'd in-code") had stopped being true
+# too -- the single comment referencing it misdescribed what it did. A whitelist
+# entry for a deleted symbol is not harmless: it is a standing exemption that
+# can only ever hide a FUTURE real finding under the same name.
 
 # ---- False positives: written but not read back (schema fields / struct writes) ----
 cli                 # Setting dataclass field, set via constructor kwargs

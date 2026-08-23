@@ -53,6 +53,21 @@ PROMOTED = {
 }
 
 
+def test_the_in_code_record_matches_this_test():
+    """`nif_convert._DEFAULTS_PROMOTED_2026_08_22` is the block four comments in
+    that file point at, and it must not drift from the set pinned here.
+
+    It exists because those comments cited it while it existed NOWHERE -- a
+    cross-reference the reader cannot follow still reads as corroboration, and
+    cannot be checked. Consuming it here is what keeps it honest: a record
+    nothing reads is just a comment with extra syntax, and the next cleanup
+    would delete it as a dead constant."""
+    assert set(nc._DEFAULTS_PROMOTED_2026_08_22) == {
+        attr for attr, _want in PROMOTED.values()}, (
+        "the in-code promotion record and this test disagree about WHICH "
+        "defaults were promoted on 2026-08-22")
+
+
 @pytest.mark.parametrize("key", sorted(PROMOTED))
 def test_code_and_gui_agree_on_the_new_default(key):
     """Two sources of truth for one default is how a GUI ends up reporting

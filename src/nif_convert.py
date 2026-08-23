@@ -73,6 +73,38 @@ from .correspondence import MeshIndex, compute_deformation
 from .envflags import flag as _flag, knob as _knob
 
 
+# ---- DEFAULTS PROMOTED 2026-08-22 ------------------------------------------
+# THE BLOCK FOUR COMMENTS ELSEWHERE POINT AT. Until 2026-08-23 they cited
+# `_DEFAULTS_PROMOTED_2026_08_22` and it did not exist anywhere -- four dangling
+# cross-references, the same "cited thing that is not there" class the
+# 2026-08-17 comment audit found six of. It is a real symbol now, and
+# `tests/test_promoted_defaults.py` asserts its contents match the set that test
+# pins, so the record and the test cannot drift apart.
+#
+# WHY THESE FOUR MOVED. All had been ON in the live recipe for weeks while the
+# code shipped them OFF, so a defaults-only convert produced a configuration
+# NOBODY HAD EVER RUN -- while the 2026-08-22 reconvert, built with all four ON
+# across 163 mods, is the pack the user judged "everything looks as it should".
+# The defaults now match the only configuration that has ever been judged.
+#
+#     mixed_cloth_clearance   False -> True
+#     panel_rigidity          0.0   -> 0.75
+#     panel_rigid_ride        False -> True
+#     per_anchor_seed         False -> True
+#
+# `warp_push_shell_cap` was in the same recipe and was REFUSED: its own test
+# records it inert on every large spike measured and REGRESSING two shapes while
+# moving geometry 1.38u. A general "looks fine so far" does not overturn a
+# specific negative measurement. It is still True in the live recipe and False
+# in code, which is the one remaining recipe/code divergence.
+_DEFAULTS_PROMOTED_2026_08_22 = (
+    "MIXED_CLOTH_CLEARANCE",
+    "PANEL_RIGIDITY",
+    "PANEL_RIGID_RIDE",
+    "PER_ANCHOR_ANCHOR_SEED",
+)
+
+
 # ---------- module-level caches (one per process) -----------------------
 # These avoid re-doing expensive work per-NIF during a batch convert.
 # A typical armor mod has 18-24 NIFs; without caching we'd parse the
@@ -8517,11 +8549,20 @@ def _hide_virtual_body(nif) -> bool:
     Hand-authored BodySlide UBE armor ships VirtualBody with
     Shader_Flags_1 = 0 so the shader is skipped entirely. Pynifly's
     shader property setter doesn't reliably persist on textureless
-    shapes (same C-level binding gap as `_strip_alpha_property`).
-    Setting the NiAVObject Hidden bit (bit 0 of `flags`) is the
-    workaround that DOES persist: Skyrim's renderer skips Hidden
+    shapes. Setting the NiAVObject Hidden bit (bit 0 of `flags`) is
+    the workaround that DOES persist: Skyrim's renderer skips Hidden
     shapes outright; HDT-SMP reads geometry for collision
     registration independently of the render flags.
+
+    This used to read "same C-level binding gap as
+    `_strip_alpha_property`", and that was wrong twice over: the
+    function was DELETED in 682284f, and it documented something
+    else -- NioOverride's BodyMorph skipping shapes that carry a
+    NiAlphaProperty, not a setter-persistence gap. A cross-reference
+    that names a missing symbol AND misdescribes it is worse than
+    none, because it reads as corroboration and cannot be checked.
+    The claim above rests on the Hidden-bit workaround actually
+    holding, which is what was verified.
 
     Called from both Phase 1 (copy mode) and Phase 2 (body-swap)
     paths because either can produce a NIF carrying a source-
@@ -26584,8 +26625,16 @@ def convert_nif_phase2(
     # Build body MeshIndexes for the armor-fit pass (if enabled + refs available).
     # CBBE body: inline shape from source or cbbe_body_ref_path fallback.
     cbbe_idx = ube_idx = None
-    # Source body verts+normals for standoff-preserving conform. Detected
-    # unconditionally: the conform runs regardless of `fit_armor`.
+    # Source body verts+normals for standoff-preserving conform. Detection stays
+    # unconditional: it does not depend on `fit_armor`, and it must still happen
+    # when the conform is off, so switching `PHASE2_CONFORM` changes ONLY whether
+    # the pass runs -- never what it would have seen.
+    #
+    # This read "the conform runs regardless of `fit_armor`" until 2026-08-23,
+    # when `#phase2-conform` gave the pass a kill switch. Left alone it would
+    # tell a reader the pass cannot be disabled -- the exact confusion that
+    # switch exists to end, since `CBBE2UBE_NO_CONFORM` gates a DIFFERENT pass
+    # of the same name.
     src_body_v_p2 = src_body_n_p2 = None
 
     def _is_body_pynifly_shape(s):
