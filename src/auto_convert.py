@@ -579,6 +579,42 @@ def count_pass_failures(nif_results) -> dict:
     return out
 
 
+def count_pass_failure_pieces(nif_results) -> dict:
+    """{pass name -> [pieces it failed on]}. The counts' missing half.
+
+    `count_pass_failures` returns "hdt_xml_unresolved: 30" and throws the piece
+    names away, so answering "WHICH 30, and is any of them ours?" meant trying
+    to re-derive the population from the pack afterwards. That was attempted on
+    2026-08-23 and the attempt was MIS-SCOPED in a way worth recording: the
+    probe looked at pack NIFs that DECLARE a physics XML, but a piece whose XML
+    never resolved ships WITHOUT a pointer -- so the failing population was
+    invisible to the filter by construction, and the probe returned a confident
+    "0 unresolved". The filter was the population, again.
+
+    The converter already knows the answer at the moment it fails. Recording it
+    costs nothing and replaces a census that cannot be scoped correctly from
+    outside.
+
+    NEVER RAISES, for the same reason as its siblings.
+    """
+    out: dict = {}
+    for r in nif_results or ():
+        try:
+            name = Path(str(getattr(r, "dst_path", "") or "")).name
+        except Exception:
+            name = ""
+        for part in (getattr(r, "reason", "") or "").split("; "):
+            part = part.strip()
+            if not part.startswith("PASS FAILED "):
+                continue
+            label = part[len("PASS FAILED "):].split(" (", 1)[0].strip()
+            if label:
+                out.setdefault(label, [])
+                if name and name not in out[label]:
+                    out[label].append(name)
+    return out
+
+
 def count_pass_effects(nif_results) -> dict:
     """{change tag -> [pieces it touched]}. The SIBLING of the failures counter.
 
@@ -633,14 +669,23 @@ def _pack_pass_failures(ok) -> dict:
 
 def _pack_pass_effects(ok) -> dict:
     """`count_pass_effects` rolled up across the pack. Never raises."""
+    return _roll_up_named(ok, count_pass_effects)
+
+
+def _pack_pass_failure_pieces(ok) -> dict:
+    """`count_pass_failure_pieces` rolled up across the pack. Never raises."""
+    return _roll_up_named(ok, count_pass_failure_pieces)
+
+
+def _roll_up_named(ok, fn) -> dict:
+    """{key -> merged, de-duplicated piece list} across mods. Never raises."""
     out: dict = {}
     for _s, r in ok or ():
-        for tag, pieces in count_pass_effects(
-                getattr(r, "nif_results", None)).items():
-            out.setdefault(tag, [])
+        for key, pieces in fn(getattr(r, "nif_results", None)).items():
+            out.setdefault(key, [])
             for p in pieces:
-                if p not in out[tag]:
-                    out[tag].append(p)
+                if p not in out[key]:
+                    out[key].append(p)
     return out
 
 
@@ -2308,6 +2353,10 @@ def write_conversion_report_json(output_dir, results,
             # failures on purpose: a change with many effects and no failures is
             # working, one with no effects is not reaching anything.
             "pass_effects": _pack_pass_effects(ok),
+            # WHICH pieces each pass failed on, beside how many. `pass_failures`
+            # stays a {name: count} map because the GUI and the post-reconvert
+            # audit read that shape; this is additive.
+            "pass_failure_pieces": _pack_pass_failure_pieces(ok),
         }
         out = Path(output_dir) / "conversion_report.json"
         out.write_text(json.dumps(rep, indent=2), encoding="utf-8")
