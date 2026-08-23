@@ -129,6 +129,32 @@ TEXT_SUFFIXES = frozenset((
     ".py", ".md", ".ps1", ".yml", ".yaml", ".json", ".txt", ".spec",
     ".cfg", ".toml", ".ini", ".bat", ".pas"))
 
+# Trees scanned REGARDLESS of suffix. BUG-05(a): `dist/` was un-exempted in the
+# 08-18 audit, but the suffix gate above still made it mostly symbolic -- the
+# rules reached 6 of 1127 tracked files, because PyInstaller writes most members
+# with no suffix at all (631 extensionless, plus .pyd/.enc/.tcl/.msg/.dll).
+# This is OUR committed build output, exactly where a build-machine path bakes
+# in, so scannability here is decided by CONTENT, not by filename.
+SCAN_ANY_SUFFIX_UNDER = ("dist/",)
+
+# Vendored third-party trees inside that build output. Upstream's own author
+# addresses are not this repo's leak surface and they are rewritten wholesale on
+# every rebuild, so flagging them would fail hygiene on each one -- the same
+# reason `.pynifly/` is skipped entirely.
+#
+# Scoped to the EMAIL rule ONLY, which is what makes this an exemption rather
+# than another hole: the local-path rule still applies to every one of these
+# files, and that is the rule that actually protects `dist/`. Measured
+# 2026-08-22 over all 937 text-decodable members: 14 vendor emails in 12 files,
+# and ZERO local-path hits -- so the path rule is switched on here at no cost.
+#
+# All 14 are accounted for by these three trees: Tk's script library, Tcl's
+# module library, and installed-package METADATA. The first version of this list
+# omitted `/tcl8/` because it was built from a census printout truncated to ten
+# rows -- the 14th hit failed the suite immediately, which is the only reason
+# the omission did not ship.
+VENDOR_EMAIL_TREES = ("/_tk_data/", "/tcl8/", ".dist-info/")
+
 # Paths exempt from the CONTENT rules. This module and its tests necessarily
 # contain examples of what they match -- a rule is only trustworthy if something
 # proves it still fires, and that proof has to hold the very strings the rule
@@ -174,14 +200,40 @@ def _exempt(path: str) -> bool:
     return p.startswith(SKIP_PREFIXES) or p.endswith(CONTENT_EXEMPT)
 
 
+def should_scan(path: str) -> bool:
+    """Whether `path`'s CONTENT is subject to the rules.
+
+    The single place that decides. The pre-commit hook used to keep its own copy
+    of the suffix test, which is precisely how a newly covered tree stays
+    invisible on one side -- the same duplicate-list mistake this module's
+    exemption comment warns about.
+    """
+    p = path.replace("\\", "/")
+    if _exempt(p):
+        return False
+    return p.startswith(SCAN_ANY_SUFFIX_UNDER) or p.lower().endswith(
+        tuple(TEXT_SUFFIXES))
+
+
+def is_binary(blob: bytes) -> bool:
+    """A NUL in the first 8 KiB -- git's own heuristic. Needed now that scanning
+    is not gated on suffix: `dist/` holds .pyd/.dll members whose bytes would
+    otherwise be decoded into noise and matched against."""
+    return b"\x00" in blob[:8192]
+
+
 def scan_text(path: str, text: str) -> list[str]:
     """Violations in one file's content, as human-readable lines."""
-    if _exempt(path) or not path.lower().endswith(tuple(TEXT_SUFFIXES)):
+    if not should_scan(path):
         return []
+    p = path.replace("\\", "/")
+    vendor = any(t in p for t in VENDOR_EMAIL_TREES)
     out = []
     for n, line in enumerate(text.splitlines(), 1):
         if LOCAL_PATH_RE.search(line) and not PLACEHOLDER.search(line):
             out.append(f"{path}:{n}: absolute local path -- {line.strip()[:90]}")
+        if vendor:
+            continue           # upstream authorship metadata; see VENDOR_EMAIL_TREES
         for m in EMAIL_RE.finditer(line):
             if not EMAIL_ALLOWED.search(m.group()):
                 out.append(f"{path}:{n}: personal email address in tracked content")

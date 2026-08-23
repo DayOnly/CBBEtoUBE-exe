@@ -73,6 +73,21 @@ def test_resort_roundtrips_and_clears_master_ordering_warning(tmp_path):
                 groups=[esp.Group(label=b"ARMO",
                                   records=[_armo((2 << 24) | 0x800,
                                                  [(1 << 24) | 0x5])])])
+    # CONTROL, added 2026-08-22. The assertion at the end of this test is
+    # `not any(...)`, which is TRUE for an empty warning list -- so on its own it
+    # cannot tell "the resort cleared the warning" from "validate_patch stopped
+    # emitting this warning" or "it returned nothing at all". Nothing else in
+    # this file asserts the prefix positively. Prove the mechanism can FIRE on
+    # the UNSORTED plugin first, or the check below is unfloored.
+    # (`feedback_measurement_discipline`: the control must be able to abort.)
+    _pre = tmp_path / "pre.esp"
+    e.save(_pre)
+    assert any(x.startswith("master-ordering")
+               for x in ube_patcher.validate_patch(_pre, check_nifs=False)), (
+        "control failed: validate_patch raised no master-ordering warning for "
+        "an UNSORTED master list, so the post-resort assertion below proves "
+        "nothing")
+
     ube_patcher.resort_masters(e, master_data_dirs=None)
     p = tmp_path / "t.esp"
     e.save(p)

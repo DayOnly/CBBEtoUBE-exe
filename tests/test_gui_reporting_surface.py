@@ -351,3 +351,34 @@ def test_with_no_report_the_tab_says_so_rather_than_going_blank(tmp_path):
     assert "No run yet" in labels, f"empty-state heading missing: {labels[:20]}"
     assert any("No conversion_report.json" in str(l) for l in labels), (
         "the empty Results tab explains nothing")
+
+
+@needs_display
+def test_the_results_tab_paints_the_swallowed_pass_failures(tmp_path):
+    """A swallowed pass failure lands in NO other counter -- the piece still
+    converted -- so without this row a pass broken on EVERY piece looks exactly
+    like a pass that had nothing to do. Painted, not merely present: the
+    scoreboard has silently rendered nothing once already."""
+    labels = _spy_labels_with_report(tmp_path, {
+        "source_mods": 2, "converted_ok": 2, "armor_nifs": 9,
+        "pass_failures": {"_cap_weights_map": 12,
+                          "registered_shape_undeclared_bones": 3},
+    })
+    assert labels, "no labels recorded at all -- this check would be vacuous"
+    assert "Swallowed pass failures: " in labels, (
+        f"the row never painted: {[l for l in labels if ':' in str(l)][:20]}")
+    assert any("15" == str(l) for l in labels), (
+        "the count is not the SUM across passes (12 + 3 = 15)")
+    assert any("12 x  _cap_weights_map" in str(l) for l in labels), (
+        "the per-pass breakdown did not paint")
+
+
+@needs_display
+def test_a_report_from_an_older_build_still_paints(tmp_path):
+    """`pass_failures` did not exist before 2026-08-22. Opening the tab against
+    an older conversion_report.json must not blow up the whole scoreboard."""
+    labels = _spy_labels_with_report(tmp_path, {
+        "source_mods": 1, "converted_ok": 1, "armor_nifs": 3,
+    })
+    assert "Source mods: " in labels, "the scoreboard died on a missing key"
+    assert "Swallowed pass failures: " in labels

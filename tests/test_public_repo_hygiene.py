@@ -135,11 +135,27 @@ def test_no_absolute_local_paths_in_tracked_text():
         p = REPO_ROOT / rel
         if not p.is_file():
             continue
+        # Ask the shared gate BEFORE any IO -- exempt trees cost nothing.
+        if not H.should_scan(rel):
+            continue
+        # Read BYTES and drop binaries first. Scanning is no longer gated on
+        # suffix (BUG-05(a)), so `dist/` .pyd/.dll members reach here now, and
+        # decoding those with errors="replace" would match the rules against
+        # noise -- the same call the hook makes, for the same reason.
+        #
+        # PROBE FIRST, then read the rest. Slurping every member whole made this
+        # test read 137 MB per run -- including two 20 MB OpenBLAS DLLs read in
+        # full only to discover a NUL in their first 8 KiB -- and added ~50s to
+        # the suite. `is_binary` never looks past 8 KiB, so neither do we.
         try:
-            text = p.read_text(encoding="utf-8", errors="replace")
+            with p.open("rb") as fh:
+                head = fh.read(8192)
+                if H.is_binary(head):
+                    continue
+                raw = head + fh.read()
         except OSError:
             continue
-        offenders.extend(H.scan_text(rel, text))
+        offenders.extend(H.scan_text(rel, raw.decode("utf8", "replace")))
     assert not offenders, (
         "tracked files hardcode an absolute local path (public repo + breaks "
         "on other machines):\n  " + "\n  ".join(offenders[:10]))

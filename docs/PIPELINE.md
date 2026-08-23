@@ -278,6 +278,28 @@ Most "this pass doesn't work" reports are really "this pass never ran".
 | will the body punch through under morph? | follow ratio | `scripts/analysis/find_morph_follow_gaps.py` |
 | did a pass survive to the shipped verts? | `CBBE2UBE_SURVIVAL_TRACE=1` | names the canceller |
 
+**The trace covers BOTH convert paths and BOTH of their sub-branches, but the
+stage LABELS are the only thing that lines up.** `warp inflate conform
+groove_smooth panel_rigidity chain_blend` are the copy path's main chain; phase 2
+adds `bake_preset` first and `antipoke`, `panel_rigidity_post`, `softcloth`,
+`rebury`, `min_push`, `seam_weld`, `coherence_repair` after. The `sNN_` prefix in
+a `CBBE2UBE_STAGE_DUMP` file is assigned by checkpoint ORDER, so the same pass
+has a different index on each path — **key on the label, never the index.**
+
+`warp_hf` / `inflate_hf` are the FINE-ANIMATION sub-branch (gauntlets, boots,
+heels, and any shape carrying finger/toe bones), present in both `convert_nif`
+and `convert_nif_phase2`. They are the same two functions as `warp` / `inflate`
+but called with `ARMOR_INFLATION_MAGNITUDE_HANDS_FEET` /
+`HAND_FOOT_INFLATION_FALLOFF` and blended through the extremity mask, which is
+why they carry their own labels rather than being pooled into the main rows.
+That sub-branch runs NO conform, NO groove-smooth, NO panel-rigidity and NO
+chain blend — so `panel_rigidity`, default 0.75, does not reach it at all.
+
+Three populations legitimately produce NO row and must not be read as "the pass
+moved nothing": collision proxies (no textures, dropped), body-skin `Hands` /
+`Feet` (replaced with the UBE shape before the fit loop), and — on the body-swap
+path — the inline body shapes the swap replaces.
+
 **Split any clipping number by depth before concluding.** Sub-0.2u and >1u need
 corrections an order of magnitude apart. Depth is NOT a cosmetic/real
 discriminator — sub-0.2u penetration is visible in game; only the zoom test
@@ -351,6 +373,35 @@ it — a hand-verified promise in a doc is exactly what failed here.
 The env-only opt-ins remain the number that matters: several document
 themselves as "default OFF until proven in game" while being impossible to turn
 on in game. That is a deadlock, not caution.
+
+**THE SAME CLASS BIT AGAIN, FROM THE OTHER END — 2026-08-22.** Promoting four
+opt-ins to default-ON exposed the mirror image of the `warp_delta_outlier`
+defect above. `env_string_for`'s bool branch emitted `"1"` or `None` and never
+`"0"`. That is indistinguishable from correct while every bool default is
+`False` (value == default == False falls through to `None` by coincidence) — but
+against a **default-ON** flag `None` means "leave it on", so the GUI checkbox
+could not turn the feature off **at all**. Exactly the inert-checkbox symptom,
+reached by the opposite route.
+
+Fixed: the bool branch now returns `None` when the value equals the default (so
+the code default applies, and a future default change actually reaches users)
+and an explicit `"1"`/`"0"` when it differs — `envflags.flag()` reads `"0"` as
+false. `tests/test_promoted_defaults.py` ratchets both halves, including a
+STRUCTURAL check that no bool setting anywhere can express only one of its two
+states.
+
+**THE DEFAULTS NOW MATCH THE CONFIGURATION THAT WAS JUDGED.** Four flags —
+`mixed_cloth_clearance`, `panel_rigidity` (0.75), `panel_rigid_ride`,
+`per_anchor_seed` — had sat in the live recipe for weeks while the code shipped
+them OFF. A defaults-only convert therefore produced something nobody had ever
+run, and every "defaults-only" baseline described an unjudged configuration. The
+2026-08-22 reconvert ran them ON across 163 mods and the in-game verdict was
+"everything looks as it should", so they were promoted.
+
+`warp_push_shell_cap` was in that same recipe and was **not** promoted: it is
+inert on every large spike measured and regresses two shapes while moving
+geometry by 1.38u (`tests/test_warp_flag_defaults.py`). A general "looks fine so
+far" does not overturn a specific negative measurement.
 
 Re-count rather than trusting these figures — they drift with every commit, and a
 stale count here survived several audits. The method: collect

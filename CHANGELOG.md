@@ -1,5 +1,67 @@
 # Changelog
 
+## Unreleased
+
+Built and reconverted on 2026-08-22 (163 mods, 3673 meshes under `meshes/!UBE`,
+no failures) and judged in game: *"everything looks as it should"*.
+
+### Fixed — eight armours had no cloth physics at all
+
+Eight pieces shipped a physics file the engine could not read, so they simply had
+no physics in game — two of them cloaks, which is where you would notice first.
+
+The cause was an encoding round trip. When the converter adjusted an author's
+physics file it read the text using Windows' regional default and wrote it back
+as UTF-8. For a file that begins with the invisible marker most editors put there,
+that marker was re-encoded into six bytes of garbage sitting *before* the opening
+tag, and the file stopped being valid XML. Nothing reported it, because the file
+was still there and still looked fine in a text editor.
+
+Fixed by reading and writing the file in the same encoding. If you keep old
+output, those eight files are repaired by reconverting.
+
+Ten other unreadable physics files remain and are **not** ours — they end with
+stray text the original mod author left in. We copy those faithfully rather than
+silently rewriting someone else's file, and they have no physics in the source
+mod either.
+
+### Fixed — "keep layered armour plates straight" only worked on a quarter of your armour
+
+Armour built as one piece with many rigid plates gets each plate held straight
+rather than bent around the body. That only ran on armours the converter rebuilds
+around a new body — about a quarter of a typical pack. The other three quarters
+silently went without, so the same setting behaved differently from piece to
+piece with nothing to explain why.
+
+It now runs on both kinds. Only the first half moved: the second half exists to
+undo damage from a pass that does not run on the other kind, so copying it across
+would have invented work rather than matching behaviour.
+
+### Changed — the defaults are now the settings that were actually tested
+
+Four options had been switched on in testing for weeks while shipping switched
+off, which meant a fresh install produced something nobody had ever looked at.
+They are now on by default: keeping cloth clear of the body on mixed physics
+garments, keeping layered plates straight, keeping plate stacks aligned, and
+placing each physics chain's anchor separately.
+
+One option from the same set was deliberately left off — it was measured, made no
+difference to the problem it targeted, and made two garments worse.
+
+### Fixed — a checkbox for an on-by-default option could not turn it off
+
+Turning something off in the GUI wrote nothing at all, which for a newly
+on-by-default option meant "leave it on". Any such checkbox would have been inert.
+Fixed before it could ship.
+
+### Fixed — seven passes could fail without saying so
+
+Seven places could hit an error and continue in complete silence, so a pass that
+BROKE looked exactly like a pass that had nothing to do. Three of them wrapped
+code that already reported failures carefully, and threw that reporting away.
+They now record, and the run report lists them.
+
+
 ## 1.3 — 2026-08-19
 
 Everything below shipped in the pack built on 2026-08-19: 162 mods, 3931

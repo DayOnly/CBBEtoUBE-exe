@@ -75,11 +75,22 @@ def test_every_script_that_imports_src_declares_the_canonical_root():
     the repo root must declare it in the one canonical, checkable form.
     """
     matched = {p for p, _ in _scripts_declaring_repo()}
-    missing = []
+    missing, needs_root = [], 0
     for p in sorted(_ANALYSIS.glob("*.py")):
         text = p.read_text(encoding="utf-8")
-        if _NEEDS_ROOT.search(text) and p not in matched:
+        if not _NEEDS_ROOT.search(text):
+            continue
+        needs_root += 1
+        if p not in matched:
             missing.append(p.name)
+    # This test exists because the FILTER WAS THE POPULATION -- and its own
+    # population was equally unfloored: move or rename `scripts/analysis` and
+    # the glob yields nothing, `missing` is empty, and this passes while
+    # checking no script at all. 43 of 51 needed the root on 2026-08-22.
+    assert needs_root >= 30, (
+        f"only {needs_root} analysis scripts import src/pyn -- the population "
+        f"collapsed (renamed dir? changed import idiom?), so 'none are missing' "
+        f"would be a claim about an empty set")
     assert not missing, (
         "these scripts import src/pyn but do not declare the canonical "
         "`_REPO = Path(__file__).resolve().parent...` root (so the root check "

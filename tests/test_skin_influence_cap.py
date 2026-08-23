@@ -176,8 +176,59 @@ def test_authored_smp_skins_are_exempt():
 
 
 def test_a_failure_cannot_break_the_conversion():
-    """Weight hygiene is not worth failing a mesh over."""
+    """Weight hygiene is not worth failing a mesh over.
+
+    Asserted STRUCTURALLY, not as a substring. The old version looked for the
+    literal `except Exception:` in the 200 characters after the call, so it
+    broke the moment the handler bound the exception (`as _e`) in order to
+    RECORD it -- and, worse, it would have passed just as happily on a handler
+    that re-raised, which is the thing it exists to forbid.
+    """
+    import ast
     import inspect
-    src = inspect.getsource(nc._install_skin)
-    i = src.index("_cap_weights_map(")
-    assert "except Exception:" in src[i:i + 200]
+    import textwrap
+    tree = ast.parse(textwrap.dedent(inspect.getsource(nc._install_skin)))
+    guarded = []
+    for t in ast.walk(tree):
+        if not isinstance(t, ast.Try):
+            continue
+        calls = {getattr(c.func, "id", None) or getattr(c.func, "attr", None)
+                 for c in ast.walk(t) if isinstance(c, ast.Call)}
+        if "_cap_weights_map" not in calls:
+            continue
+        for h in t.handlers:
+            catches = h.type is None or (isinstance(h.type, ast.Name)
+                                         and h.type.id == "Exception")
+            reraises = any(isinstance(x, ast.Raise) for x in ast.walk(h))
+            if catches and not reraises:
+                guarded.append(h)
+    assert guarded, (
+        "the _cap_weights_map call is not wrapped in a handler that swallows -- "
+        "a weight-hygiene failure would take the whole mesh down")
+
+
+def test_a_swallowed_cap_failure_is_recorded():
+    """Fail-soft must not mean invisible. A silent swallow cannot be told apart
+    from 'nothing qualified', which is exactly how a pass that throws on EVERY
+    piece reads as a design that does nothing."""
+    import ast
+    import inspect
+    import textwrap
+    # Structural, not a character window: the first version searched 400 chars
+    # after the call and failed the moment a comment was added above the
+    # recorder -- measuring formatting, not behaviour.
+    tree = ast.parse(textwrap.dedent(inspect.getsource(nc._install_skin)))
+    recorded = False
+    for t in ast.walk(tree):
+        if not isinstance(t, ast.Try):
+            continue
+        calls = {getattr(c.func, "id", None) or getattr(c.func, "attr", None)
+                 for c in ast.walk(t) if isinstance(c, ast.Call)}
+        if "_cap_weights_map" not in calls:
+            continue
+        for h in t.handlers:
+            names = {getattr(c.func, "id", None) or getattr(c.func, "attr", None)
+                     for c in ast.walk(h) if isinstance(c, ast.Call)}
+            if "_note_pass_failure" in names:
+                recorded = True
+    assert recorded, "the cap's failure path swallows without recording it"

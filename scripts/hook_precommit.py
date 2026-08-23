@@ -34,6 +34,12 @@ def _run(*args: str) -> str:
                           errors="replace").stdout
 
 
+def _run_bytes(*args: str) -> bytes:
+    """Raw staged bytes. Text mode would decode a .pyd/.dll into replacement
+    characters before `is_binary` ever got to see the NULs."""
+    return subprocess.run(args, capture_output=True).stdout
+
+
 def main() -> int:
     staged = [p for p in _run("git", "diff", "--cached", "--name-only",
                               "--diff-filter=ACMR").splitlines() if p]
@@ -47,11 +53,16 @@ def main() -> int:
                 "specific mods or a user's setup and this repo is public")
 
     for path in staged:
-        if not path.lower().endswith(tuple(H.TEXT_SUFFIXES)):
+        # `H.should_scan` is the ONLY gate. This loop used to keep its own copy
+        # of the suffix test, so widening coverage in repo_hygiene silently left
+        # the hook behind -- the duplicate-list mistake, in the one place where
+        # it matters most: the hook is what actually blocks a leaking commit.
+        if not H.should_scan(path):
             continue
-        blob = _run("git", "show", f":{path}")
-        if blob:
-            problems.extend(H.scan_text(path, blob))
+        raw = _run_bytes("git", "show", f":{path}")
+        if not raw or H.is_binary(raw):
+            continue
+        problems.extend(H.scan_text(path, raw.decode("utf8", "replace")))
 
     ident = H.check_identity(_run("git", "config", "user.email").strip())
     if ident:

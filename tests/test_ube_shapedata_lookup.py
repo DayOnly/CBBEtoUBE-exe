@@ -86,6 +86,9 @@ def test_extension_reaches_the_glob(monkeypatch):
     """The only real difference between the template and the OSD lookup."""
     seen = _stub(monkeypatch, {})
     nc._find_ube_shapedata("a", "NOPE", "osd")
+    # `all()` over an empty `seen` is True: if the lookup ever stopped globbing
+    # (an early return, a changed stub) this would pass while checking nothing.
+    assert seen, "the lookup issued no glob at all -- nothing was verified"
     assert all(p.endswith("/*.osd") for p, _h in seen), seen
 
 

@@ -2247,6 +2247,10 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
         wp = (data or {}).get("weight_partner_warnings")
         if wp is None:
             wp = rep.get("weight_partner_warnings", [])
+        # Tolerate a report written by an older build, which has no such key.
+        _pass_fails = rep.get("pass_failures") or {}
+        if not isinstance(_pass_fails, dict):
+            _pass_fails = {}
         rows = [
             ("Source mods", rep.get("source_mods", 0), "ok"),
             ("Converted OK", rep.get("converted_ok", 0), "ok"),
@@ -2261,6 +2265,11 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
              "warn" if rep.get("zero_mesh_mods") else "ok"),
             ("Invisibility risk (weight-partner)", len(wp),
              "warn" if wp else "ok"),
+            # A pass that raised was swallowed, so the piece still converted and
+            # appears in NO count above. Without this row a pass broken on every
+            # piece looks exactly like a pass that had nothing to do.
+            ("Swallowed pass failures", sum(_pass_fails.values()),
+             "warn" if _pass_fails else "ok"),
         ]
         for label, val, st in rows:
             row = ttk.Frame(content)
@@ -2273,7 +2282,10 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
                 ("Likely-missing mods", rep.get("zero_mesh_mods", [])),
                 ("Failed mods",
                  [m.get("name") for m in rep.get("failed_mods", [])]),
-                ("Weight-partner divergence", list(wp))):
+                ("Weight-partner divergence", list(wp)),
+                ("Swallowed pass failures",
+                 [f"{n} x  {label}" for label, n in
+                  sorted(_pass_fails.items(), key=lambda kv: (-kv[1], kv[0]))])):
             if names:
                 ttk.Label(content, text=title + ":", font=_SEMI).pack(
                     anchor="w", padx=6, pady=(8, 0))

@@ -37,6 +37,20 @@ generation for RaceMenu body morphs. Every add_bone pass SAVES/RESTORES the
 existing bones' skin-to-bone transforms (add_bone resets them -> collapse).
 
 `warp_armor=` selects the warp-vs-snap fit heuristic on the armor-only path.
+
+NAVIGATING THIS FILE. It is ~28k lines and its topic banners say what a thing
+IS, never what runs WHEN -- the execution order has had to be reconstructed by
+hand more than once. `docs/PASS_MAP.md` answers that: per entry point, in source
+order, every module-level pass call with the flag/knob guards wrapping it, the
+traced stage chain for each path, and an index of every banner in this file.
+
+    python scripts/pass_map.py            # regenerate
+    python scripts/pass_map.py --check    # is it current?
+
+It is GENERATED and pinned by `tests/test_pass_map.py`, so it cannot drift from
+the code the way a hand-kept index would. A pointer is used here rather than an
+inline copy for the same reason: a copy is a comment that can go stale, and this
+project has already paid for one that did.
 """
 from __future__ import annotations
 
@@ -622,6 +636,13 @@ STRAP_SCALE_ANCHOR = 0.05
 # ray escapes -- the only case in which skin can actually be seen -- nothing
 # changes. That is a strictly stronger safety argument than the existing
 # smooth-then-revert, which trades a clip for a spike and keeps the spike.
+# STAYS OPT-IN. Considered for promotion 2026-08-22 with the other four
+# recipe flags and REJECTED: `test_the_shell_cap_is_OFF_and_the_
+# measurement_is_why` records that it is INERT on every large spike
+# measured and REGRESSES TWO SHAPES while moving geometry by 1.38u.
+# A general "looks fine so far" does not overturn a specific negative
+# measurement. NOTE: the live user recipe has it ON -- that is worth
+# raising with them, not silently blessing.
 WARP_PUSH_SHELL_CAP = _flag("CBBE2UBE_WARP_PUSH_SHELL_CAP", False)
 # Stop just SHORT of the occluder, so a capped vertex rests inside its own
 # shell instead of landing exactly on it and z-fighting.
@@ -923,10 +944,17 @@ SMP_COLLISION_ONLY_ANTIPOKE = not _flag("CBBE2UBE_NO_SMP_ANTIPOKE", False)
 #
 # So the pass runs, and then every SIMULATED vertex is restored to its
 # pre-pass position -- the sim's rest state is bit-identical, and only cloth
-# that carries no chain weight at all is allowed to move. DEFAULT OFF because
-# this touches clearance on 392 shapes and the last two defaults flipped on a
-# single piece's verdict both shipped bugs.
-MIXED_CLOTH_CLEARANCE = _flag("CBBE2UBE_MIXED_CLOTH_CLEARANCE", False)
+# that carries no chain weight at all is allowed to move.
+#
+# DEFAULT ON since 2026-08-22. It was OFF "because this touches clearance on 392
+# shapes and the last two defaults flipped on a single piece's verdict both
+# shipped bugs" -- a good reason, and the thing that answers it is NOT another
+# single piece. It is a WHOLE-PACK verdict: this flag had been ON in the live
+# recipe for weeks, the 2026-08-22 reconvert was built with it ON across all
+# 163 mods, and the user's in-game verdict on that pack was "everything looks as
+# it should". The default now MATCHES THE ONLY CONFIGURATION ANYONE HAS EVER
+# JUDGED. See the block comment above `_DEFAULTS_PROMOTED_2026_08_22`.
+MIXED_CLOTH_CLEARANCE = _flag("CBBE2UBE_MIXED_CLOTH_CLEARANCE", True)
 # A vert is SIMULATED (and therefore untouchable) at or above this weight on any
 # bone the ACTOR skeleton cannot resolve, i.e. a custom physics-chain bone.
 MIXED_CLOTH_CHAIN_EPS = _knob("CBBE2UBE_MIXED_CLOTH_CHAIN_EPS", 0.01)
@@ -2107,8 +2135,12 @@ def _install_skin(new_shape, dst_nif, src_shape, bone_names, xforms_map,
     if SKIN_INFLUENCE_CAP_ENABLED and not preserve_authored_skin:
         try:
             weights_map = _cap_weights_map(weights_map, len(use_verts))
-        except Exception:
-            pass          # never fail the conversion over a weight-hygiene pass
+        except Exception as _e:
+            # Still fail-soft -- never fail the conversion over a weight-hygiene
+            # pass -- but RECORDED. A silent swallow cannot be told apart from
+            # "nothing qualified", which is exactly how a pass that throws on
+            # every piece reads as a design that does nothing.
+            _note_pass_failure("_cap_weights_map", _e)
     surviving = [bn for bn in bone_names
                  if weights_map.get(bn)
                  and any(w > 0.0 for _, w in weights_map[bn])]
@@ -3163,8 +3195,11 @@ def warp_armor_by_body_delta(
                 try:
                     push_mag, _n_cap = _cap_push_at_own_shell(
                         warped, tris, near_n, push_mag)
-                except Exception:
-                    pass                 # measurement failure must not move geometry
+                except Exception as _e:
+                    # measurement failure must not move geometry -- but record
+                    # it, or a cap that never runs looks like a cap that never
+                    # had anything to do.
+                    _note_pass_failure("_cap_push_at_own_shell", _e)
             raw_mag = push_mag.copy()
             if WARP_STANDOFF_SMOOTH_ENABLED and tris is not None:
                 # Floored at the raw requirement: smoothing may only ADD push to
@@ -6100,7 +6135,12 @@ def convert_nif(
                     # shell) and render; the only structural thing GAUNTLETS had
                     # that boots didn't was this extra body-skin "Hands" shape.
                     # Dropping it makes a gauntlet structurally match a boot.
-                    # Only inject a UBE replacement when the (now-off) flag is on.
+                    # Then put the UBE version back. The flag is ON by default
+                    # and this comment used to call it "(now-off)" -- wrong, and
+                    # wrong in the dangerous direction: with it off the shape is
+                    # dropped with NO replacement and the bare hand is invisible
+                    # under the gauntlet. Measured 2026-08-22 on the output pack:
+                    # 172/172 shipped `Hands` shapes are UBE topology, 0 CBBE.
                     if INJECT_UBE_EXTREMITY_REPLACEMENT:
                         if _is_body_skin_hand(s.name):
                             extremity_slots_to_replace.append("Hands")
@@ -6124,6 +6164,49 @@ def convert_nif(
                         np.asarray(s.verts, dtype=np.float64), _shape_g2s)
                     hf_verts = hf_orig
                     hf_verts_modified = False
+
+                    # ---- DIAGNOSTICS ON THE FINE-ANIMATION SUB-BRANCH -------
+                    # This branch `continue`s before the copy path's own
+                    # arming below, so until 2026-08-23 it took NO checkpoint
+                    # at all -- and it is not a small corner: the 08-23
+                    # pass-usefulness re-run measured 17 of 84 sampled copy
+                    # `_1` shapes here (20.2%), and SIX of 28 sampled copy
+                    # pieces produced no survival row whatsoever, one of them
+                    # a slot-32 first-person torso whose two shapes both carry
+                    # hand bones. A shape with no row reads downstream exactly
+                    # like a pass that moved nothing, which is the confusion
+                    # both tools exist to end
+                    # ([[project_pass_usefulness_audit_2026_08_17]]).
+                    #
+                    # LABELS ARE `warp_hf` / `inflate_hf`, NOT `warp` /
+                    # `inflate`, deliberately. They ARE the same two functions,
+                    # but called with different constants
+                    # (ARMOR_INFLATION_MAGNITUDE_HANDS_FEET,
+                    # HAND_FOOT_INFLATION_FALLOFF) and blended through the
+                    # extremity mask, so pooling them under the main labels
+                    # would silently move published copy-path numbers by
+                    # changing the population underneath them. Separate rows
+                    # can always be added up; a pooled one cannot be split.
+                    _surv_hf = fit_metrics.DisplacementSurvival()
+                    if not _surv_hf.armed:
+                        _surv_hf = None
+                    else:
+                        _surv_hf.checkpoint("entry", hf_orig)
+                    _dump_hf = fit_metrics.GeometryDump()
+                    if not _dump_hf.armed:
+                        _dump_hf = None
+                    else:
+                        _dump_hf.checkpoint("entry", hf_orig)
+
+                    def _stage_hf(label, v, _s=_surv_hf, _d=_dump_hf):
+                        """A pass boundary on the fine-animation sub-branch."""
+                        if v is None:
+                            return
+                        if _s is not None:
+                            _s.checkpoint(label, v)
+                        if _d is not None:
+                            _d.checkpoint(label, v)
+
                     # Extremity fraction: forearm/calf(~0)=full warp;
                     # fingers/toes(~1)=no warp (UBE has no digit mesh); wrist blends.
                     hf_ef = _extremity_vert_fraction(s, len(hf_orig))
@@ -6147,6 +6230,12 @@ def convert_nif(
                             hf_verts_modified = True
                         except Exception as e:
                             failed.append((f"{s.name}:warp-hf", repr(e)))
+                        # OUTSIDE the try, matching the main chain's
+                        # `_stage_p1('warp', ...)`: if the warp raised,
+                        # `hf_verts` is still the entry geometry and the row
+                        # correctly reads "pass moved nothing" rather than
+                        # vanishing.
+                        _stage_hf('warp_hf', hf_verts)
                     if body_verts_for_fit is not None:
                         try:
                             inflated = inflate_armor_outward(
@@ -6164,7 +6253,43 @@ def convert_nif(
                             hf_verts_modified = True
                         except Exception as e:
                             failed.append((f"{s.name}:inflate-hf", repr(e)))
+                        _stage_hf('inflate_hf', hf_verts)
 
+                    # THE GEOMETRY CHAIN ENDS HERE, AND THAT IS AN UNCLOSED GAP,
+                    # NOT A DESIGN. #panel-rigidity, #phase1-conform, the groove
+                    # smooth and the chain blend all run on the main chain below
+                    # and none of them runs here.
+                    #
+                    # `_partial_rigid_panels` is the one that matters, because it
+                    # is DEFAULT 0.75 since 2026-08-22 and its whole purpose was
+                    # to stop a knob silently splitting the pack. It splits it
+                    # again here, one level down.
+                    #
+                    # THE OBVIOUS REASON IS FALSE AND WAS MEASURED, NOT ASSUMED.
+                    # "Gauntlets and boots are single rigid shells, so panel
+                    # rigidity would be a no-op" is wrong. Replaying the pass
+                    # offline on this branch's own stage dumps (51 fine-animation
+                    # shapes, 2026-08-23, probe validated by reproducing the real
+                    # result EXACTLY on 485 main-chain shapes) it would fire on
+                    # 51 of 51, finding 568 qualifying panels and moving verts by
+                    # a median 0.214u -- the same order as the 0.211u it moves on
+                    # the copy main chain. `Arcane_Mage_Boots` alone offers 88
+                    # panels at 0.82u worst deformation. So this is live work
+                    # being skipped, not work with nothing to do.
+                    #
+                    # DO NOT PORT IT AS A TIDY-UP. It is a behaviour change on
+                    # ~20% of copy-path shapes, #panel-rigidity is explicitly a
+                    # TRADE (a rigid plate cannot follow a growing body), and
+                    # `warp_hf` here is ALREADY 30-45% cancelled by `inflate_hf`
+                    # -- a third pass pulling back toward the source would
+                    # compound that. It needs an in-game verdict of its own.
+                    #
+                    # AND THE PARITY GUARD CANNOT SEE THIS. `tests/
+                    # test_convert_path_parity.py` walks the CALL GRAPH between
+                    # two entry points; both fine-animation branches live INSIDE
+                    # those same two functions, so a sub-branch asymmetry is
+                    # invisible to it by construction. Measured via the survival
+                    # trace instead ([[project_pass_usefulness_audit_2026_08_17]]).
                     hf_override_skin = None
                     if (ube_base_for_reskin is not None
                             and (s.bone_names or [])
@@ -6219,11 +6344,77 @@ def convert_nif(
                         "verts_modified": hf_verts_modified,
                         "g2s": _shape_g2s,
                     })
+                    # Flush BEFORE the `continue` -- the main chain's flush is
+                    # past it and would never run for this shape. Same contract
+                    # as that one: a flush error is RECORDED and an EMPTY dump
+                    # is called out rather than passing as a clean run. Scope is
+                    # the per-shape chain only; the cross-shape passes run later
+                    # over `shape_jobs_p1` and are outside it either way.
+                    if _surv_hf is not None:
+                        try:
+                            _surv_hf.flush(dst_path, s.name, hf_verts)
+                        except Exception as e:
+                            failed.append((f"{s.name}:survival-hf", repr(e)))
+                        finally:
+                            _surv_hf.release()
+                    if _dump_hf is not None:
+                        try:
+                            if not _dump_hf.flush(dst_path, s.name, s.tris,
+                                                  hf_verts):
+                                failed.append((f"{s.name}:stagedump-hf",
+                                               "wrote nothing"))
+                        except Exception as e:
+                            failed.append((f"{s.name}:stagedump-hf", repr(e)))
+                        finally:
+                            _dump_hf.release()
                     continue
                 # World-frame verts for the fit (see the top-of-loop note);
                 # _shape_g2s was computed once above. Identity -> no-op.
                 sv_world = _verts_skin_to_world(
                     np.asarray(s.verts, dtype=np.float64), _shape_g2s)
+
+                # ---- DIAGNOSTICS ON THE COPY PATH (both default OFF) --------
+                # Until 2026-08-22 `DisplacementSurvival` and `GeometryDump`
+                # armed ONLY in phase 2, so the project's two first-reach
+                # measurement tools could not see the ~74% of the pack that
+                # takes this path. That is why an earlier population test read
+                # "UNMEASURED" rather than "no change", and why the 2026-08-17
+                # pass-usefulness audit ("`inflate` is 69% UNDONE by `conform`")
+                # describes ONLY the body-swap population -- its numbers were
+                # never measurable here.
+                #
+                # It is not merely unmeasured, it is expected to DIFFER: that
+                # audit's canceller is `conform`, and on this path
+                # `conform_to_source_standoff` is behind `PHASE1_CONFORM`,
+                # DEFAULT OFF. If the canceller does not run, inflate's motion
+                # may fully survive here.
+                #
+                # SCOPE, stated so the trace is not over-read: this covers the
+                # PER-SHAPE chain only (warp -> inflate -> conform ->
+                # groove_smooth -> panel_rigidity -> chain_blend). The
+                # cross-shape passes run later over `shape_jobs_p1` as a whole
+                # and are outside it, exactly as phase 2's per-shape trace is.
+                _surv_p1 = fit_metrics.DisplacementSurvival()
+                if not _surv_p1.armed:
+                    _surv_p1 = None
+                else:
+                    _surv_p1.checkpoint("entry", sv_world)
+                _dump_p1 = fit_metrics.GeometryDump()
+                if not _dump_p1.armed:
+                    _dump_p1 = None
+                else:
+                    _dump_p1.checkpoint("entry", sv_world)
+
+                def _stage_p1(label, v, _s=_surv_p1, _d=_dump_p1):
+                    """A pass boundary on the copy path. Same labels phase 2
+                    uses, so the two populations are directly comparable."""
+                    if v is None:
+                        return
+                    if _s is not None:
+                        _s.checkpoint(label, v)
+                    if _d is not None:
+                        _d.checkpoint(label, v)
+
                 try:
                     if (cbbe_verts_for_warp is not None
                             and body_delta_for_warp is not None):
@@ -6241,6 +6432,7 @@ def convert_nif(
                             min_standoff=ARMOR_TO_SKIN_BUFFER,
                             tris=np.asarray(s.tris, dtype=np.int64),
                         )
+                        _stage_p1('warp', snapped)
                         # Post-warp inflation: adds standoff so body morphs don't
                         # grow past the author's CBBE drape and poke through cloth.
                         # Magnitude is slot-aware; see _slot_aware_inflation_magnitude.
@@ -6282,6 +6474,7 @@ def convert_nif(
                                 # RECORDED. The pack's main clearance provider;
                                 # a silent failure ships a garment with none.
                                 failed.append((f"{s.name}:inflate", repr(e)))
+                        _stage_p1('inflate', snapped)
                         # Reel the inflation back to the AUTHORED standoff. Phase 2
                         # has always done this; phase 1 inflated with no counter-
                         # pass, so a tightly-fitted piece just stood off the body.
@@ -6318,6 +6511,7 @@ def convert_nif(
                                 # identical to "nothing to conform".
                                 failed.append((f"{s.name}:phase1-conform",
                                                repr(e)))
+                        _stage_p1('conform', snapped)
                         # Groove-smooth: flatten warp-induced indent grooves on
                         # tight bust cloth. Near-body verts only; decorative shapes unaffected.
                         # Source body passed for #groove-authored-cap -- same
@@ -6337,6 +6531,7 @@ def convert_nif(
                             ube_body_normals=body_normals_for_fit,
                             src_body_verts=cbbe_verts_for_warp,
                             src_body_normals=_gc_bn)
+                        _stage_p1('groove_smooth', snapped)
                     else:
                         # Legacy fallback: no CBBE base body; push inside-body verts
                         # outward along UBE normals.
@@ -6345,6 +6540,65 @@ def convert_nif(
                             body_verts_for_fit,
                             body_normals_for_fit,
                         )
+                        _stage_p1('snap_legacy', snapped)
+                    # #panel-rigidity on the COPY path. Phase 2 has run this
+                    # since 2026-08-16; without it here the setting SPLITS THE
+                    # PACK -- layered plates straightened on the ~26% of pieces
+                    # that body-swap and not on the other ~74%. The guard's own
+                    # debt note anticipated a DEFAULT FLIP, but a user recipe
+                    # override does the same damage, and `panel_rigidity` has
+                    # been 0.75 in the live recipe. #convert-path-parity
+                    #
+                    # ONLY THE FIRST HALF PORTS, and that is deliberate:
+                    #   * `_rigidify_within_clearance` is phase 2's SECOND half
+                    #     and exists to recover what the ANTI-POKE re-deforms.
+                    #     The copy path runs no anti-poke (`clear_armor_outside_
+                    #     body` is body-swap-only, correctly), so there is
+                    #     nothing for it to recover and porting it would be
+                    #     inventing a pass, not achieving parity.
+                    #   * `_panel_rigid_disp` belongs to `_ride_layers_on_
+                    #     reference`, i.e. the LAYER-RIDE machinery -- a
+                    #     separate, separately-owed debt. Not this fix.
+                    #
+                    # Runs BEFORE the chain blend below, matching phase 2, which
+                    # also rigidifies before its chain/mixed-cloth restore. The
+                    # `skip_mask` is built the same way phase 2 builds it: any
+                    # vert carrying weight from a bone the ACTOR SKELETON cannot
+                    # resolve is SMP chain cloth and must not be rigidified.
+                    if PANEL_RIGIDITY > 0 and snapped is not None:
+                        _skip_p1 = None
+                        try:
+                            _cw_p1 = np.zeros(len(s.verts), dtype=np.float64)
+                            for _b_p1, _pr_p1 in (s.bone_weights or {}).items():
+                                if _actor_can_resolve_bone(_b_p1):
+                                    continue
+                                for _vi_p1, _w_p1 in _pr_p1:
+                                    _vi_p1 = int(_vi_p1)
+                                    if _vi_p1 < len(_cw_p1):
+                                        _cw_p1[_vi_p1] = max(
+                                            _cw_p1[_vi_p1], float(_w_p1))
+                            _skip_p1 = _cw_p1 > MIXED_CLOTH_CHAIN_EPS
+                        except Exception:
+                            _skip_p1 = None
+                        # Its OWN try: the block below is inside the big phase-1
+                        # fit try whose handler sets `snapped = None`, so an
+                        # escape here would discard the warp, inflate AND conform
+                        # for this shape and read as the fit being switched off.
+                        try:
+                            _pv_p1, _npan_p1, _wd_p1 = _partial_rigid_panels(
+                                sv_world, snapped,
+                                np.asarray(s.tris, dtype=np.int64),
+                                PANEL_RIGIDITY, skip_mask=_skip_p1,
+                                min_verts=PANEL_RIGIDITY_MIN_VERTS)
+                            if _npan_p1:
+                                snapped = _pv_p1
+                                _stage_p1('panel_rigidity', snapped)
+                                print(f"    [panel-rigidity] {s.name}: "
+                                      f"{_npan_p1} panel(s) re-rigidified at "
+                                      f"{PANEL_RIGIDITY:.2f} (worst deformation "
+                                      f"was {_wd_p1:.3f}u)")
+                        except Exception as _pe_p1:
+                            _note_pass_failure("panel-rigidity/phase1", _pe_p1)
                     # Keep chain-bone cloth (skirt/belt/cape) at SOURCE position so
                     # it stays aligned with its chain bones; warping it onto UBE
                     # while bones stay at source breaks the SMP rest pose.
@@ -6352,6 +6606,7 @@ def convert_nif(
                     if snapped is not None:
                         # source_verts must match snapped's frame (world).
                         snapped = _physics_chain_nowarp_blend(s, sv_world, snapped)
+                        _stage_p1('chain_blend', snapped)
                 except Exception:
                     snapped = None
 
@@ -6415,6 +6670,32 @@ def convert_nif(
                     "verts_modified": snapped is not None,
                     "g2s": _shape_g2s,
                 })
+
+                # Flush the copy-path trace for THIS shape. Without this the
+                # checkpoints accumulate and nothing is ever written, which
+                # reads exactly like "no pass moved anything" -- the failure
+                # mode both tools exist to prevent. Same reporting contract as
+                # phase 2: a flush error is RECORDED, and an EMPTY dump is
+                # called out rather than passing as a clean run.
+                _final_p1 = (np.asarray(snapped, dtype=np.float64)
+                             if snapped is not None else sv_world)
+                if _surv_p1 is not None:
+                    try:
+                        _surv_p1.flush(dst_path, s.name, _final_p1)
+                    except Exception as e:
+                        failed.append((f"{s.name}:survival", repr(e)))
+                    finally:
+                        _surv_p1.release()
+                if _dump_p1 is not None:
+                    try:
+                        if not _dump_p1.flush(dst_path, s.name, s.tris,
+                                              _final_p1):
+                            failed.append((f"{s.name}:stagedump",
+                                           "wrote nothing"))
+                    except Exception as e:
+                        failed.append((f"{s.name}:stagedump", repr(e)))
+                    finally:
+                        _dump_p1.release()
 
             # Z-fight auto-offset.
             if shape_jobs_p1:
@@ -11279,8 +11560,10 @@ def _selfint_overrides(nf, dst_path, src_path) -> dict:
                 try:
                     Vr, _nfix = repair_collapsed_tris(
                         np.asarray(Vr, np.float64), src[0], T)
-                except Exception:
-                    pass  # best-effort; leave relaxed verts as-is on failure
+                except Exception as _e:
+                    # best-effort; leave relaxed verts as-is on failure -- but
+                    # recorded, so a repair that always throws is visible.
+                    _note_pass_failure("repair_collapsed_tris/selfint", _e)
             overrides[nm] = Vr
     return overrides
 
@@ -13112,7 +13395,13 @@ def _match_limb_motion_to_body(dst_path, biped_slots: int = 0, *,
                     _note_pass_failure("set_skin_to_bone_xform", _pe)
             total += len(rows)
             dirty = True
-        except Exception:
+        except Exception as _se:
+            # Was `continue`. The weight-write handler above restores the STBs,
+            # prints a WARN and records -- but anything failing OUTSIDE that
+            # inner try (building `rows`, reading weights) skipped the whole
+            # SHAPE mutely, and a shape that never got limb-motion matched looks
+            # exactly like a shape that did not need it.
+            _note_pass_failure(f"{family}-motion/shape:{s.name}", _se, dst_path)
             continue
     if dirty:
         # A re-save must never silently un-hide an SMP collision proxy.
@@ -16301,7 +16590,12 @@ CHAIN_ANCHOR_RECREATE = (
 # OPT-IN until censused. The blast radius is every NIF that mixes a pelvis chain
 # with ANY upper-body chain, which is unmeasured, and this area has regressed
 # TWICE (the June skirt sag; arm-anchor nesting).
-PER_ANCHOR_ANCHOR_SEED = _flag("CBBE2UBE_PER_ANCHOR_SEED", False)
+# DEFAULT ON since 2026-08-22 -- promoted with the other four recipe
+# opt-ins. The 08-22 reconvert ran all five ON over 163 mods and the
+# in-game verdict was "everything looks as it should", so the defaults
+# now match the only configuration that has EVER been judged. Details in
+# the `_DEFAULTS_PROMOTED_2026_08_22` block.
+PER_ANCHOR_ANCHOR_SEED = _flag("CBBE2UBE_PER_ANCHOR_SEED", True)
 
 
 def _seed_flat_chain_anchors(dst_nif, src_nif) -> int:
@@ -16407,7 +16701,9 @@ def _seed_flat_chain_anchors(dst_nif, src_nif) -> int:
             # PER_ANCHOR_ANCHOR_SEED off this is unreachable -- the early return
             # above already took the file -- so the default path is unchanged.
             # #seed-spine-anchors: a SPINE anchor is torso-axis and behaves like
-            # the pelvis, so it may be seeded when the opt-in is on. Arm,
+            # the pelvis, so it may be seeded when `SEED_SPINE_ANCHORS` is on --
+            # which is the DEFAULT. It is opt-OUT (CBBE2UBE_NO_SEED_SPINE_ANCHORS)
+            # and confirmed in game; this used to call it "the opt-in". Arm,
             # clavicle, shoulder, neck and head stay excluded either way.
             if _is_arm_anchor(a) or (
                     _is_upper_body_anchor(a)
@@ -21887,7 +22183,12 @@ def _carrier_is_body_conforming(shape, weight_suffix: str) -> bool:
         frac = float((d < _SOFTBODY_CONFORM_STANDOFF).mean())
         p95 = float(np.percentile(d, 95))
         return frac >= _SOFTBODY_CONFORM_FRAC and p95 <= _SOFTBODY_CONFORM_P95_CAP
-    except Exception:
+    except Exception as _ce:
+        # Was a bare `return False`. This is a CLASSIFIER, so a swallowed
+        # exception does not merely skip work -- it answers "not body-conforming"
+        # and routes the carrier down the other branch. A wrong answer is worse
+        # than no answer, and it left no trace at all.
+        _note_pass_failure("_carrier_is_body_conforming", _ce)
         return False
 
 
@@ -22507,6 +22808,37 @@ STATIC_CHAINS = (
 )
 
 
+def _read_xml_roundtrip(xml_path) -> "tuple[str, str] | None":
+    """Read an HDT-SMP XML as (text, codec) so it can be written back BYTE-FOR-
+    BYTE where we did not deliberately change it. Returns None if unreadable.
+
+    #bug-12. Three passes used to spell this `Path(x).read_text(errors="ignore")`
+    and write back `.encode("utf-8")`. `read_text()` with no encoding uses
+    `locale.getpreferredencoding()`, which on Windows is **cp1252** — so an
+    author's UTF-8 BOM (`EF BB BF`) decoded to `ï»¿` and re-encoded to SIX bytes
+    (`C3 AF C2 BB C2 BF`) sitting BEFORE the `<?xml` declaration. That is not
+    well-formed XML, so FSMP loaded no physics at all for the piece: 8 shipped
+    XMLs in the 2026-08-22 pack, two of them cloaks. `errors="ignore"` made it
+    worse by SILENTLY DROPPING any byte cp1252 could not decode.
+
+    Decode as UTF-8 and fall back to latin-1, remembering which — the pattern
+    `_add_butt_collider_patch`, `_add_skirt_collider_proxy` and
+    `_split_bust_collider_xml` already use. The BOM is deliberately NOT stripped:
+    round-tripping the author's file unchanged is the whole point, and stripping
+    it would be a second unrequested edit to their XML."""
+    try:
+        raw = Path(xml_path).read_bytes()
+    except Exception:
+        return None
+    try:
+        return raw.decode("utf-8"), "utf-8"
+    except UnicodeDecodeError:
+        try:
+            return raw.decode("latin-1"), "latin-1"
+        except Exception:
+            return None
+
+
 def _make_chains_static(xml_path: Path) -> None:
     """Gated (STATIC_CHAINS). Zero every dynamic chain mass in the XML so the
     chain bones become static/kinematic — they hold their bind pose following
@@ -22517,10 +22849,10 @@ def _make_chains_static(xml_path: Path) -> None:
     so this never touches body physics."""
     if not STATIC_CHAINS:
         return
-    try:
-        t = Path(xml_path).read_text(errors="ignore")
-    except Exception:
+    _rt = _read_xml_roundtrip(xml_path)
+    if _rt is None:
         return
+    t, _codec = _rt
 
     def _zero(m):
         try:
@@ -22530,7 +22862,7 @@ def _make_chains_static(xml_path: Path) -> None:
     t2 = re.sub(r'<mass>\s*([0-9.]+)\s*</mass>', _zero, t)
     if t2 != t:
         try:
-            atomic_write_bytes(xml_path, t2.encode("utf-8"))
+            atomic_write_bytes(xml_path, t2.encode(_codec))
         except Exception:
             pass
 
@@ -22560,9 +22892,12 @@ def _ensure_cloth_body_collider(xml_path: Path, nif) -> bool:
         return False
     try:
         from . import hdt_xml_gen
-        text = Path(xml_path).read_text(errors="ignore")
     except Exception:
         return False
+    _rt = _read_xml_roundtrip(xml_path)          # #bug-12
+    if _rt is None:
+        return False
+    text, _codec = _rt
     shape_names = {s.name for s in nif.shapes}
     body_name = hdt_xml_gen.pick_body_collision_shape_name(shape_names)
     if not body_name or body_name not in shape_names:
@@ -22614,8 +22949,12 @@ def _ensure_cloth_body_collider(xml_path: Path, nif) -> bool:
                        for ct in sorted(cloth_tags or {"Fabric"}))
              + '\t</per-triangle-shape>\n')
     try:
-        Path(xml_path).write_text(
-            text.replace("</system>", block + "</system>", 1))
+        # atomic_write_bytes + the SOURCE codec: `write_text()` with no encoding
+        # wrote cp1252 on Windows, so a UTF-8 author file came back mangled
+        # (#bug-12).
+        atomic_write_bytes(
+            xml_path,
+            text.replace("</system>", block + "</system>", 1).encode(_codec))
         return True
     except Exception:
         return False
@@ -22639,10 +22978,10 @@ def _harden_hdt_xml_for_fsmp(xml_path: Path, nif) -> None:
     and `<generic-constraint>` blocks are left untouched (removing one could
     break an authored chain — a NIF that lost its chain bones is regenerated
     upstream via _source_hdt_needs_missing_chain_bones instead)."""
-    try:
-        text = Path(xml_path).read_text(errors="ignore")
-    except Exception:
+    _rt = _read_xml_roundtrip(xml_path)          # #bug-12
+    if _rt is None:
         return
+    text, _codec = _rt
     nif_shapes = {s.name for s in nif.shapes}
     nif_bones: "set[str]" = set()
     for s in nif.shapes:
@@ -22675,7 +23014,8 @@ def _harden_hdt_xml_for_fsmp(xml_path: Path, nif) -> None:
         out.append(line)
     if changed:
         try:
-            atomic_write_bytes(xml_path, ("\n".join(out) + "\n").encode("utf-8"))
+            atomic_write_bytes(xml_path,
+                               ("\n".join(out) + "\n").encode(_codec))
         except Exception:
             pass
 
@@ -22899,8 +23239,16 @@ def _finalize_hdt_physics(dst_path: Path, src_nif_path: Path) -> bool:
                         _note_pass_failure(
                             f"_finalize_hdt_physics/collider:{cn}", _e,
                             dst_path)
-        except Exception:
-            pass
+        except Exception as _ce:
+            # Was `pass`. The inner handler above is carefully voiced (WARN +
+            # recorder, `#worker-print-vanishes`), and this outer one threw all
+            # of that away: if the LOOP SETUP failed -- reading the XML, listing
+            # shapes -- then EVERY collision-proxy re-import was skipped in
+            # silence, which breaks SMP at runtime exactly as a per-proxy
+            # failure does. A voiced inner handler is worthless inside a mute
+            # outer one.
+            _note_pass_failure("_finalize_hdt_physics/collider-scan", _ce,
+                               dst_path)
 
         if dirty:
             # Terminal NIF save on the merge/body-swap path: re-assert the
@@ -23561,10 +23909,18 @@ def _inject_ube_extremity_replacement(
             try:
                 _copy_shape(sh, dst_nif)
                 injected.append(sh.name)
-            except Exception:
-                pass
-    except Exception:
-        pass
+            except Exception as _ie:
+                # Was `pass`. This pass is DEFAULT ON, and a silent failure here
+                # means the UBE Hands/Feet are simply absent from the piece --
+                # the BUG-06 "vambraces hide the HANDS" class -- with nothing in
+                # the report to say so.
+                _note_pass_failure(
+                    f"_inject_ube_extremity_replacement/shape:{sh.name}", _ie)
+    except Exception as _oe:
+        # Was `pass`, so BOTH levels were mute: if the reference NIF failed to
+        # open, NO extremity was injected on the whole piece and the run looked
+        # identical to "this piece needed none".
+        _note_pass_failure("_inject_ube_extremity_replacement", _oe)
 
 
 def _inject_ube_baseshape(
@@ -24128,7 +24484,12 @@ _LAYER_ORDER_SMOOTH = int(os.environ.get("CBBE2UBE_LAYER_ORDER_SMOOTH", "2") or 
 # SIMULATED cloth is excluded per VERTEX, not per shape: a component carrying any
 # chain weight is left alone entirely, because rigidifying cloth would fight the
 # solver (#mixed-cloth-clearance records the same distinction).
-PANEL_RIGIDITY = _knob("CBBE2UBE_PANEL_RIGIDITY", 0.0)
+# DEFAULT 0.75 (was 0.0) since 2026-08-22 -- promoted with the other four recipe
+# opt-ins. The 08-22 reconvert ran all five ON over 163 mods and the
+# in-game verdict was "everything looks as it should", so the defaults
+# now match the only configuration that has EVER been judged. Details in
+# the `_DEFAULTS_PROMOTED_2026_08_22` block.
+PANEL_RIGIDITY = _knob("CBBE2UBE_PANEL_RIGIDITY", 0.75)
 # A component smaller than this is a stud or a buckle, not a panel; a rigid fit
 # over a handful of verts is noise.
 PANEL_RIGIDITY_MIN_VERTS = int(
@@ -24288,7 +24649,13 @@ def _partial_rigid_panels(src_v, dst_v, tris, strength: float,
             out[free] = Q + (rigid - Q) * float(strength)
             touched += 1
         return out, touched, worst
-    except Exception:
+    except Exception as _pe:
+        # Was a bare `return dst_v, 0, 0.0`. Both call sites act only `if
+        # touched:`, so a crash in here returned "0 panels" and was
+        # indistinguishable from "no panel qualified" -- and #panel-rigidity now
+        # runs on BOTH convert paths, so a silent failure would look like the
+        # feature simply not applying to three quarters of the pack.
+        _note_pass_failure("_partial_rigid_panels", _pe)
         return dst_v, 0, 0.0
 
 
@@ -24419,7 +24786,10 @@ def _rigidify_within_clearance(src_v, cur_v, tris, body_v, body_n,
             touched += 1
             used.append(best)
         return out, touched, (float(np.mean(used)) if used else 0.0)
-    except Exception:
+    except Exception as _re:
+        # Same shape as `_partial_rigid_panels` above: a crash returned
+        # "0 panels" and read as "nothing qualified".
+        _note_pass_failure("_rigidify_within_clearance", _re)
         return cur_v, 0, 0.0
 
 
@@ -24980,7 +25350,12 @@ def _stack_depth_from_relation(n, rel):
 # putting a step INSIDE one connected surface. Between components a step is
 # invisible -- they share no vertex, and the boundary is the authored edge
 # between plates -- so the coverage gate is what keeps this from tearing.
-PANEL_RIGID_RIDE = _flag("CBBE2UBE_PANEL_RIGID_RIDE", False)
+# DEFAULT ON since 2026-08-22 -- promoted with the other four recipe
+# opt-ins. The 08-22 reconvert ran all five ON over 163 mods and the
+# in-game verdict was "everything looks as it should", so the defaults
+# now match the only configuration that has EVER been judged. Details in
+# the `_DEFAULTS_PROMOTED_2026_08_22` block.
+PANEL_RIGID_RIDE = _flag("CBBE2UBE_PANEL_RIGID_RIDE", True)
 _PANEL_RIDE_COVERAGE = _knob("CBBE2UBE_PANEL_RIDE_COVERAGE", 0.9)
 # WHERE in the panel's displacement spread to sit the plate, as a quantile along
 # the panel's own ride direction. 0.5 is the plain mean: the plate lands in the
@@ -26163,6 +26538,35 @@ def convert_nif_phase2(
             hf_orig = np.asarray(s.verts, dtype=np.float64)
             hf_verts = hf_orig
             hf_verts_modified = False
+
+            # ---- DIAGNOSTICS ON THE FINE-ANIMATION SUB-BRANCH -------------
+            # Phase 2's copy of the same blind spot as `convert_nif`'s: this
+            # branch `continue`s before the per-shape arming below, so a
+            # gauntlet or boot shape produced no row here either. Smaller than
+            # on the copy path (3.8% of sampled body-swap source shapes vs
+            # 20.2%) but the same defect, and armed with the SAME labels so the
+            # two paths stay directly comparable
+            # ([[project_pass_usefulness_audit_2026_08_17]]).
+            _surv_hf2 = fit_metrics.DisplacementSurvival()
+            if not _surv_hf2.armed:
+                _surv_hf2 = None
+            else:
+                _surv_hf2.checkpoint("entry", hf_orig)
+            _dump_hf2 = fit_metrics.GeometryDump()
+            if not _dump_hf2.armed:
+                _dump_hf2 = None
+            else:
+                _dump_hf2.checkpoint("entry", hf_orig)
+
+            def _stage_hf2(label, v, _s=_surv_hf2, _d=_dump_hf2):
+                """A pass boundary on phase 2's fine-animation sub-branch."""
+                if v is None:
+                    return
+                if _s is not None:
+                    _s.checkpoint(label, v)
+                if _d is not None:
+                    _d.checkpoint(label, v)
+
             # Extremity fraction: limb gets full warp; digits stay put (no UBE digit mesh).
             hf_ef = _extremity_vert_fraction(s, len(hf_orig))
 
@@ -26187,6 +26591,9 @@ def convert_nif_phase2(
                     hf_verts_modified = True
                 except Exception as e:
                     failed.append((f"{s.name}:warp-hf", repr(e)))
+                # Outside the try, so a raised warp reads as "moved nothing"
+                # rather than as a missing stage.
+                _stage_hf2('warp_hf', hf_verts)
 
             # Inflation with tight falloff — adds standoff against
             # body growth without puffing fingertips outward.
@@ -26206,6 +26613,14 @@ def convert_nif_phase2(
                     hf_verts_modified = True
                 except Exception as e:
                     failed.append((f"{s.name}:inflate-hf", repr(e)))
+                _stage_hf2('inflate_hf', hf_verts)
+
+            # Geometry chain ends here on this branch too, and phase 2 skips
+            # MORE than the copy path does: no conform, no groove smooth, no
+            # panel rigidity, no anti-poke, no chain blend. Same unclosed gap,
+            # same measurement, same caution -- see the sibling site in
+            # `convert_nif` for the numbers and for why the parity guard cannot
+            # see either of them. #panel-rigidity is the one to settle first.
 
             # Scale-bone weight injection so the whole shape follows
             # body morph sliders proportionally at runtime. Reduced
@@ -26270,6 +26685,26 @@ def convert_nif_phase2(
                 "override_skin": hf_override_skin,
                 "verts_modified": hf_verts_modified,
             })
+            # Flush BEFORE the `continue`; phase 2's own flush is past it and
+            # would never run for this shape. Same reporting contract as the
+            # sibling sites: a flush error is RECORDED and an EMPTY dump is
+            # called out rather than passing as a clean run.
+            if _surv_hf2 is not None:
+                try:
+                    _surv_hf2.flush(dst_path, s.name, hf_verts)
+                except Exception as e:
+                    failed.append((f"{s.name}:survival-hf", repr(e)))
+                finally:
+                    _surv_hf2.release()
+            if _dump_hf2 is not None:
+                try:
+                    if not _dump_hf2.flush(dst_path, s.name, s.tris, hf_verts):
+                        failed.append((f"{s.name}:stagedump-hf",
+                                       "wrote nothing"))
+                except Exception as e:
+                    failed.append((f"{s.name}:stagedump-hf", repr(e)))
+                finally:
+                    _dump_hf2.release()
             continue
         override = None
         # Body-space offset: shapes with non-identity transforms must have
@@ -27461,8 +27896,10 @@ def convert_nif_phase2(
                     j["verts_modified"] = True
                     _nfix_tot += _nfix
                     _nshapes += 1
-            except Exception:
-                pass  # best-effort; a failed repair leaves the shape as-is
+            except Exception as _e:
+                # best-effort; a failed repair leaves the shape as-is -- but
+                # recorded, so a repair failing on every shape is visible.
+                _note_pass_failure("repair_collapsed_tris/postrelax", _e)
         if _nfix_tot:
             import sys as _sys
             print(f"  degenerate-tri repair ({_tag}): un-pinched {_nfix_tot} "

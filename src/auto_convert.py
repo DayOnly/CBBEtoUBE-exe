@@ -553,6 +553,47 @@ def _find_ube_body_ref(search_roots: list[Path] | None = None) -> Path | None:
     return shapedata_with_both or template_p or shapedata_base_only or any_match
 
 
+def count_pass_failures(nif_results) -> dict:
+    """Swallowed pass failures, counted per pass name.
+
+    Read from the per-piece `reason` string ON PURPOSE.
+    `nif_convert.pass_failure_summary()` reads that module's counters, which
+    live in the WORKER process; the parent never sees them, so a report built on
+    it would report nothing and read as "no failures". `reason` is the only
+    channel that crosses the pool boundary -- see `_piece_pass_failures`.
+
+    NEVER RAISES. `write_conversion_summary` wraps everything in a blanket
+    `except Exception: return None`, so a throw here would not surface as an
+    error -- it would silently delete the whole summary file. That exact shape
+    (a NameError swallowed into a missing report) has happened here before.
+    """
+    out: dict = {}
+    for r in nif_results or ():
+        for part in (getattr(r, "reason", "") or "").split("; "):
+            part = part.strip()
+            if not part.startswith("PASS FAILED "):
+                continue          # a fragment of some other reason; ignore
+            label = part[len("PASS FAILED "):].split(" (", 1)[0].strip()
+            if label:
+                out[label] = out.get(label, 0) + 1
+    return out
+
+
+def _pack_pass_failures(ok) -> dict:
+    """`count_pass_failures` rolled up across `[(source_dir, AutoConvertResult)]`.
+
+    Never raises, for the same reason as `count_pass_failures`: both callers sit
+    inside a blanket `except Exception: return None` that would turn a throw into
+    a silently missing report file rather than a visible error.
+    """
+    out: dict = {}
+    for _s, r in ok or ():
+        for label, n in count_pass_failures(
+                getattr(r, "nif_results", None)).items():
+            out[label] = out.get(label, 0) + n
+    return out
+
+
 @dataclass
 class AutoConvertResult:
     source_dir: Path
@@ -685,6 +726,23 @@ class AutoConvertResult:
                          "(zero-vert / over-cap partition on final output)")
             for w in self.nif_invariant_warnings:
                 lines.append(f"      {w}")
+        # A pass that RAISED and was swallowed still converted the piece, so it
+        # shows up in NO bucket above -- the run reads as clean while a pass may
+        # have failed on every single piece. That is the "a BROKEN pass reads as
+        # a failed design" trap, and it has cost verdicts here before.
+        #
+        # `nif_convert.pass_failure_summary()` CANNOT serve this: it reads the
+        # WORKER's module state, which the parent process never sees, so calling
+        # it here would report an empty dict and read as "no failures". The
+        # per-piece `reason` string is the only channel that crosses the pool
+        # boundary (see `_piece_pass_failures`), so aggregate from that.
+        pass_fails = count_pass_failures(self.nif_results)
+        if pass_fails:
+            lines.append(f"  ! pass failures : {sum(pass_fails.values())} "
+                         f"across {len(pass_fails)} pass(es) -- the piece still "
+                         f"converted, so these are NOT counted as errors")
+            for label, n in sorted(pass_fails.items(), key=lambda kv: (-kv[1], kv[0])):
+                lines.append(f"      {n:>5} x  {label}")
         lines.append(f"  textures copied : {self.textures_copied}")
         if self.notes:
             lines.append("")
@@ -2106,6 +2164,21 @@ def write_conversion_summary(output_dir: Path, results: list) -> Path | None:
                 L.append(f"     - {s.name}: {e!r}")
             L.append("")
 
+        # PACK-WIDE swallowed pass failures. The per-mod reports carry this too,
+        # but a pass that fails on every piece would be spread across ~162 files
+        # and read as noise in each one. Rolled up here it is one line, and a
+        # systematically broken pass becomes obvious instead of invisible.
+        pack_fails = _pack_pass_failures(ok)
+        if pack_fails:
+            L.append(f"** swallowed PASS FAILURES: {sum(pack_fails.values())} "
+                     f"across {len(pack_fails)} pass(es) and {len(ok)} mod(s).")
+            L.append("   These pieces still CONVERTED, so they are in no error "
+                     "count above -- but the pass did not do its job.")
+            for _label, _n in sorted(pack_fails.items(),
+                                     key=lambda kv: (-kv[1], kv[0])):
+                L.append(f"     {_n:>6} x  {_label}")
+            L.append("")
+
         L.append("per-mod detail")
         for s, r in ok:
             if len(r.nif_results) == 0:
@@ -2171,6 +2244,12 @@ def write_conversion_report_json(output_dir, results,
             "failed_mods": [{"name": s.name, "error": repr(e)}
                             for s, e in failed],
             "weight_partner_warnings": list(weight_warnings or []),
+            # Passes that RAISED and were swallowed. Same shape as
+            # nif_morph_losses above and for the same reason: the piece still
+            # converted, so it is absent from every counter above -- and a pass
+            # broken on every piece would otherwise look like a design that
+            # simply does nothing.
+            "pass_failures": _pack_pass_failures(ok),
         }
         out = Path(output_dir) / "conversion_report.json"
         out.write_text(json.dumps(rep, indent=2), encoding="utf-8")

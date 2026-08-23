@@ -125,3 +125,56 @@ def test_content_exemptions_stay_short_and_are_all_controls():
     for path in H.CONTENT_EXEMPT:
         assert "hygiene" in path, f"{path} is not a hygiene control file"
         assert (PROJ / path).is_file(), f"exemption names a missing file: {path}"
+
+
+# --- BUG-05(a): dist/ was un-exempted but the SUFFIX GATE kept it invisible ---
+# The rules reached 6 of 1127 tracked dist/ files. PyInstaller writes most
+# members with no suffix at all, so "dist/ is not exempt" was true and
+# meaningless at the same time. These tests are the mutation proof the bug entry
+# demanded: plant the violation, prove the guard names it.
+
+BAKED_PATH = r'basedir = "D:\Modlists\ARR\mods\CBBEtoUBE Auto"'
+
+
+def test_a_baked_build_path_in_dist_is_caught_whatever_the_suffix():
+    """The real leak risk for our committed build output: a build-machine path.
+    Every one of these returned [] before the gate stopped being suffix-based."""
+    for rel in ("dist/CBBEtoUBE/_internal/base_library.zip.manifest",
+                "dist/CBBEtoUBE/CBBEtoUBE.exe.manifest",
+                "dist/CBBEtoUBE/_internal/no_suffix_member"):
+        assert H.scan_text(rel, BAKED_PATH), (
+            f"a baked build-machine path in {rel} is not caught")
+
+
+def test_the_vendor_email_exemption_is_scoped_to_emails_only():
+    """The exemption exists so a rebuild does not fail hygiene on upstream's own
+    author addresses. It must NOT switch off the path rule, which is the rule
+    that actually protects dist/."""
+    vendor = "dist/CBBEtoUBE/_internal/_tk_data/console.tcl"
+    assert not H.scan_text(vendor, "contact someone@gmail.com"), (
+        "vendor email should be exempt")
+    assert H.scan_text(vendor, BAKED_PATH), (
+        "the vendor exemption must not disable the LOCAL PATH rule")
+
+
+def test_our_own_dist_files_are_still_email_checked():
+    """Only vendored trees are exempt. Anything else under dist/ is ours."""
+    assert H.scan_text("dist/CBBEtoUBE/_internal/ours.dat",
+                       "contact someone@gmail.com"), (
+        "a personal address in OUR build output must still be caught")
+
+
+def test_binaries_are_dropped_before_the_rules_see_them():
+    """Scanning is no longer gated on suffix, so .pyd/.dll members reach the
+    readers. Decoding those with errors='replace' would match rules on noise."""
+    assert H.is_binary(b"MZ\x90\x00\x03\x00\x00\x00")
+    assert not H.is_binary(b"plain text, no NULs")
+
+
+def test_the_hook_and_the_test_share_one_gate():
+    """The hook kept its own copy of the suffix test, so widening coverage in
+    repo_hygiene left the hook behind -- in the one place it matters most."""
+    src = (PROJ / "scripts" / "hook_precommit.py").read_text(encoding="utf8")
+    assert "should_scan" in src, "the hook must use the shared gate"
+    assert "TEXT_SUFFIXES" not in src, (
+        "the hook is deciding scannability on its own again")

@@ -569,7 +569,7 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "layering."),
     Setting("panel_rigid_ride",
             "Keep rigid plates rigid when stacking layers",
-            "Armor", "Fit and clearance", default=False,
+            "Armor", "Fit and clearance", default=True,
             env="CBBE2UBE_PANEL_RIGID_RIDE", invert=False,
             hint="For armour plates that arrive bent or rippled on a layered "
                  "piece.",
@@ -601,7 +601,7 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "the same distance everywhere. It never feathers LESS "
                     "than before, so coarser pieces are untouched."),
     Setting("per_anchor_seed", "Place each physics chain's anchor separately",
-            "Armor", "Physics chains (HDT-SMP)", default=False,
+            "Armor", "Physics chains (HDT-SMP)", default=True,
             env="CBBE2UBE_PER_ANCHOR_SEED", invert=False,
             hint="Fixes skirts hanging far below the body on outfits that mix "
                  "a hip chain with a chest one.",
@@ -617,7 +617,7 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "correctly whatever else the outfit carries."),
     Setting("mixed_cloth_clearance",
             "Give the fitted parts of physics outfits body clearance",
-            "Armor", "Fit and clearance", default=False,
+            "Armor", "Fit and clearance", default=True,
             env="CBBE2UBE_MIXED_CLOTH_CLEARANCE", invert=False,
             hint="For a piece that is part simulated cloth, part fitted cloth: "
                  "the fitted part gets no clearance.",
@@ -677,7 +677,7 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "repaired vertices ended up CLOSER to the author's own "
                     "weighting than before."),
     Setting("panel_rigidity", "Keep layered armour plates straight",
-            "Armor", "Fit and clearance", kind="float", default=0.0,
+            "Armor", "Fit and clearance", kind="float", default=0.75,
             env="CBBE2UBE_PANEL_RIGIDITY", advanced=True,
             min=0.0, max=1.0, step=0.05,
             hint="0 = off. 0.75 is the setting confirmed in game.",
@@ -1163,8 +1163,21 @@ def env_string_for(s: Setting, value) -> "str | None":
         return None
     if s.kind == "bool":
         on = bool(value)
+        # AT THE DEFAULT -> emit NOTHING, so the code's own default applies and a
+        # future default change actually reaches the user. The numeric branch
+        # below has always done this; the bool branch did not, and the omission
+        # was INVISIBLE while every bool default was False (value == default ==
+        # False took the `else None` path by coincidence).
+        if on == bool(s.default):
+            return None
+        # DIFFERS -> say so EXPLICITLY, including the OFF case. Returning None
+        # for OFF was safe only while defaults were False; against a DEFAULT-ON
+        # flag it silently means "leave it on", so the GUI could not turn the
+        # feature off AT ALL. `envflags.flag()` reads "0" as false (only
+        # 1/true/yes/on are true), so "0" is how OFF is expressed.
+        # #defaults-promoted-2026-08-22
         trigger = (not on) if s.invert else on
-        return "1" if trigger else None
+        return "1" if trigger else "0"
     # numeric / string / path: only write a real override (skip default / blank).
     if value is None or value == s.default or (isinstance(value, str) and not value.strip()):
         return None
