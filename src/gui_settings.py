@@ -694,6 +694,40 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "better: a plate here is a closed BAND, so forcing it rigid "
                     "drives its back half into the spine (buried vertices "
                     "doubled). Leave it at 0.75."),
+    Setting("panel_rigidity_fine_anim",
+            "Also keep plates straight on gauntlets, boots and heels",
+            "Armor", "Fit and clearance", default=False,
+            env="CBBE2UBE_PANEL_RIGIDITY_FINE_ANIM", advanced=True,
+            hint="OFF by default and NOT yet judged in game. Turn it on for a "
+                 "build of its own, so a problem can be traced to it.",
+            tooltip="The setting above does not currently reach gauntlets, "
+                    "boots, heels, or anything else built around finger and toe "
+                    "bones -- those take a separate route through the "
+                    "converter that skips it. Measured on 51 such shapes: the "
+                    "pass WOULD find 568 plates there and move them about as "
+                    "much as it moves plates elsewhere, so it is real work being "
+                    "skipped rather than nothing to do. Fingers and toes are "
+                    "left alone either way. It is off by default only because it "
+                    "has no in-game verdict yet: enable it ALONE, look at your "
+                    "gauntlets and boots, and report back."),
+    Setting("phase2_conform",
+            "Reel over-projected cloth back to its authored clearance",
+            "Armor", "Fit and clearance", default=True,
+            env="CBBE2UBE_NO_PHASE2_CONFORM", invert=True, advanced=True,
+            hint="ON, as it has always been. Turn it OFF only to test whether "
+                 "this pass is still earning its place.",
+            tooltip="On outfits that replace the body, this pulls cloth that "
+                    "the fit pushed too far out back to the distance its author "
+                    "left it at. It has always run and this switch does not "
+                    "change that -- it exists so the pass can be TESTED. "
+                    "Measured over 28 outfits, it moves more than any other "
+                    "step (0.70 units) and keeps the least of what it does "
+                    "(about a third survives to the finished mesh), while the "
+                    "other three quarters of your armour runs no equivalent at "
+                    "all and looks right. Whether it still earns its place can "
+                    "only be settled by looking in game with it off. Note this "
+                    "is NOT the same as \"Conform fitted cloth to body\", which "
+                    "controls a different pass."),
     Setting("author_deviation_skin",
             "Let a part bend only as much as its author made it bend",
             "Armor", "Fit and clearance", default=True,

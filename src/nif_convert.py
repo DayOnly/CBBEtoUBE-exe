@@ -1273,6 +1273,25 @@ PHASE1_CONFORM = (
     _flag("CBBE2UBE_PHASE1_CONFORM", False)
 )
 
+# --- Phase-2 source-standoff conform (#phase2-conform) --------------------
+# The SIBLING of the flag above, on the body-swap path, where this pass has
+# always run UNCONDITIONALLY. DEFAULT ON: adding the switch changes nothing by
+# construction, it only makes the pass reachable for an A/B.
+#
+# DO NOT CONFUSE IT WITH `CBBE2UBE_NO_CONFORM`, which gates
+# `CONFORM_FITTED_CLOTH` -> `_conform_fitted_to_body`, a WEIGHTS pass in the
+# shared tail. Two passes, both called "conform"; the older, obvious-looking
+# flag is the other one, so an A/B run against it measures nothing and reads as
+# "conform does not matter".
+#
+# Measured 2026-08-23 over 28 pieces per path: on body-swap this pass has the
+# LARGEST motion of any stage (0.70u median) and the LOWEST survival (0.38
+# pooled, 0.32 per piece), while the copy path -- 78% of the pack, judged good
+# in game -- runs no equivalent at all. Whether it earns its place is a real
+# question with a natural control, and only an in-game A/B can settle it: a
+# bind-pose survival number cannot judge a motion pass.
+PHASE2_CONFORM = not _flag("CBBE2UBE_NO_PHASE2_CONFORM", False)
+
 _CBBE_BODY_NORMALS_CACHE: dict = {}
 
 
@@ -5359,14 +5378,64 @@ def _note_pass_failure(label: str, exc: BaseException, dst=None) -> None:
         pass
 
 
+# ---- WHICH CHANGE TOUCHED THIS PIECE (#change-attribution) ------------------
+# The failure channel above answers "what broke". This answers the other
+# question a build raises: when a piece looks wrong in game, WHICH of the
+# changes in that build could have done it?
+#
+# Without this the answer is guesswork. The 2026-08-22 build shipped two
+# behaviour changes and its own notes had to say "these are the only two
+# candidates, in order of blast radius" -- a build with three would not have
+# been attributable at all.
+#
+# Rides `reason` for the same reason failures do: the module counters live in
+# the WORKER process and the parent never sees them, so `reason` is the only
+# channel that crosses the pool boundary. NEVER raises -- a recorder that can
+# throw would turn a successful pass into a lost piece.
+_PASS_EFFECTS: "dict[str, int]" = {}
+_PASS_EFFECTS_THIS_PIECE: "list[str]" = []
+
+
+def _note_pass_effect(tag: str, detail: str = "", dst=None) -> None:
+    """Record that `tag` CHANGED something on this piece.
+
+    `tag` is the change's own hashtag (`#collider-declared-bones`), not a
+    function name: the question being answered is "which CHANGE did this", and
+    one change can span several functions.
+    """
+    try:
+        _PASS_EFFECTS[tag] = _PASS_EFFECTS.get(tag, 0) + 1
+        entry = f"CHANGED BY {tag}" + (f" ({detail})" if detail else "")
+        if entry not in _PASS_EFFECTS_THIS_PIECE:
+            _PASS_EFFECTS_THIS_PIECE.append(entry)
+    except Exception:
+        pass
+
+
+def _piece_pass_effects() -> "list[str]":
+    return list(_PASS_EFFECTS_THIS_PIECE)
+
+
+def pass_effect_summary() -> "dict[str, int]":
+    """{tag -> pieces touched} for THIS PROCESS. For the BATCH read
+    `ConvertResult.reason` -- a worker's copy of this dict never reaches the
+    parent, the same trap `pass_failure_summary` documents."""
+    return dict(_PASS_EFFECTS)
+
+
 def _begin_piece_pass_log() -> None:
-    """Reset the per-conversion list. Called at the ONE entry point
+    """Reset the per-conversion lists. Called at the ONE entry point
     (`convert_nif`) -- phase 2 is reached THROUGH it, so resetting there as well
     would discard everything phase 1 recorded."""
     del _PASS_FAILURES_THIS_PIECE[:]
+    del _PASS_EFFECTS_THIS_PIECE[:]
 
 
 def _piece_pass_failures() -> "list[str]":
+    """FAILURES ONLY. Effects have their own accessor on purpose -- folding them
+    in here would make every caller of a function named `..._failures` silently
+    also report successes, which is the exact confusion this pair exists to
+    prevent."""
     return list(_PASS_FAILURES_THIS_PIECE)
 
 
@@ -6254,6 +6323,28 @@ def convert_nif(
                         except Exception as e:
                             failed.append((f"{s.name}:inflate-hf", repr(e)))
                         _stage_hf('inflate_hf', hf_verts)
+
+                    # #panel-rigidity-fine-anim, opt-in. Digits masked out.
+                    if PANEL_RIGIDITY_FINE_ANIM and PANEL_RIGIDITY > 0:
+                        try:
+                            _pv_hf, _np_hf, _wd_hf = _partial_rigid_panels(
+                                hf_orig, hf_verts,
+                                np.asarray(s.tris, dtype=np.int64),
+                                PANEL_RIGIDITY,
+                                skip_mask=_extremity_vert_mask(
+                                    s, len(hf_verts)),
+                                min_verts=PANEL_RIGIDITY_MIN_VERTS)
+                            if _np_hf:
+                                hf_verts = _pv_hf
+                                hf_verts_modified = True
+                                _stage_hf('panel_rigidity_hf', hf_verts)
+                                _note_pass_effect(
+                                    "#panel-rigidity-fine-anim",
+                                    f"{s.name}: {_np_hf} panel(s), worst "
+                                    f"deform {_wd_hf:.3f}u", dst_path)
+                        except Exception as _pe_hf:
+                            _note_pass_failure(
+                                "panel-rigidity/fine-anim", _pe_hf)
 
                     # THE GEOMETRY CHAIN ENDS HERE, AND THAT IS AN UNCLOSED GAP,
                     # NOT A DESIGN. #panel-rigidity, #phase1-conform, the groove
@@ -7199,8 +7290,11 @@ def convert_nif(
 
         # A pass that RAISED must reach the caller. The parent process cannot
         # see this worker's module state or its stderr, so `reason` is the only
-        # channel -- see _PASS_FAILURES_THIS_PIECE.
+        # channel -- see _PASS_FAILURES_THIS_PIECE. Effects ride the same channel
+        # for the same reason, and are listed SEPARATELY so "what broke" and
+        # "which change touched this" never blur (#change-attribution).
         reason_parts.extend(_piece_pass_failures())
+        reason_parts.extend(_piece_pass_effects())
 
         return ConvertResult(
             src_path=src_path,
@@ -9882,6 +9976,44 @@ _BUST_SPLIT_FOLLOW_FLOOR = _knob("CBBE2UBE_BUST_SPLIT_FOLLOW_FLOOR", 0.5)
 _BUST_SPLIT_PROX = 4.0           # garment vert counts only when this close to body
 _BUST_SPLIT_COL_SUFFIX = "Col"
 _BUST_SPLIT_HIDDEN_FLAGS = 15    # matches the hand-authored hidden colliders
+
+# #collider-declared-bones, on the BUST-SPLIT CLONE. Default ON, kill switch
+# CBBE2UBE_NO_SPLIT_COL_DECLARED_BONES, no Setting row -- a safety invariant,
+# not an option, exactly as #authored-shape-order is.
+#
+# A shape the piece's physics XML REGISTERS must not carry a bone that XML never
+# DECLARES: FSMP cannot resolve the influence and the piece free-falls off the
+# actor (confirmed in game twice). `_add_butt_collider_patch` and
+# `_add_skirt_collider_proxy` already relabel such a bone onto its nearest
+# XML-declared ancestor and DECLINE when there is none. This clone did not, and
+# it is the same class -- we CREATE the registered shape, so every undeclared
+# bone on it is ours by construction.
+#
+# MEASURED ON THE SHIPPED PACK, 2026-08-23: 1536 `_1` NIFs, 175 pieces register
+# a shape at all, and 10 GENERATED `<name>Col` clones across 8 pieces carry
+# undeclared bones -- 19 bones relabellable, 4 not:
+#
+#     TorsoCol / BaronArmorCol / collisionCol / collision2Col
+#                       UpperarmTwist1,2  ->  UpperArm
+#     coatCol           Finger00          ->  Hand
+#     CloakCol          UpperArm          ->  Clavicle
+#     Low_Skirt:1Col    Pelvis            ->  NONE, x4  -> the clone is DECLINED
+#
+# (The pack also shows 127 AUTHORED registered shapes with undeclared bones.
+# Those are NOT in scope and must not be swept in: the author shipped them that
+# way, `_audit_registered_shape_declared_bones` scores only bones WE added, and
+# rewriting authored weights walks into the setShapeWeights-is-an-update and
+# add_bone-resets-STBs traps for no measured defect.)
+#
+# THE REDIRECT IS POSITION- AND SIMULATION-NEUTRAL, which is why it is safe: a
+# bone the XML does not declare is not simulated by this piece at all, so it is
+# kinematic either way, and every bone's STB is its own bind inverse -- so which
+# bone carries the weight does not move the skinned point. The ancestor must
+# already be ON THIS SHAPE (so an STB for it exists); checked per shape, not
+# against the NIF's union, which would over-report by finding a bone the clone
+# cannot weight to.
+SPLIT_COL_DECLARED_BONES = not _flag(
+    "CBBE2UBE_NO_SPLIT_COL_DECLARED_BONES", False)
 
 # Make a rigid leg plate track the body's leg bend: match each leg vert's Thigh/Calf
 # split to its nearest body vert and graft the body's detail bones (Front/Rear thigh,
@@ -14750,6 +14882,36 @@ def _transfer_body_jiggle_to_fitted(dst_path, biped_slots: int = 0,
     return total
 
 
+def _bust_split_xml_text(dst_path, nf, src_path=None) -> "str | None":
+    """The physics XML the bust split reasons against, resolved ONCE.
+
+    THE ORDER MATTERS AND IS WHY THIS IS SHARED. Bust-split pass 1 runs BEFORE
+    the physics finalize installs the output XML, so the DESTINATION pointer
+    does not resolve yet -- `_read_source_hdt_xml_text(dst_path)` returns None at
+    this point. The authored source copy is the only view available, and it is
+    also the correct one: it is the XML the finalize will install.
+
+    Measured, not assumed: reading only the destination made
+    `#collider-declared-bones` report `split_col_declared_bones_UNCHECKED` on
+    every piece it was meant to repair, i.e. silently do nothing.
+
+    Shared by `_bust_split_candidates` and the declared-bone redirect so the two
+    cannot disagree about which XML this piece has -- the same duplicate-list
+    mistake `repo_hygiene.should_scan` exists to prevent.
+    """
+    txt = None
+    if src_path is not None and not CHAIN_TO_SOFTBODY:
+        try:
+            authored = _read_source_hdt_xml_disk(Path(src_path))
+            if authored is not None:
+                txt = Path(authored).read_text(errors="ignore")
+        except Exception:
+            txt = None
+    if txt is None:
+        txt = _read_source_hdt_xml_text(Path(dst_path), nif=nf)
+    return txt
+
+
 def _bust_split_candidates(dst_path, nf, src_path=None) -> list:
     """Garment shapes in `nf` that are their own per-triangle collider AND
     measurably fail to follow the bust -- the split class. Reads the XML the
@@ -14772,14 +14934,7 @@ def _bust_split_candidates(dst_path, nf, src_path=None) -> list:
     if not (BUST_COLLIDER_SPLIT and TORSO_JIGGLE_TRANSFER
             and TRANSFER_BODY_JIGGLE):
         return []
-    txt = None
-    if src_path is not None and not CHAIN_TO_SOFTBODY:
-        try:
-            authored = _read_source_hdt_xml_disk(Path(src_path))
-            if authored is not None:
-                txt = Path(authored).read_text(errors="ignore")
-        except Exception:
-            txt = None
+    txt = _bust_split_xml_text(dst_path, nf, src_path)
     if txt is None:
         txt = _read_source_hdt_xml_text(Path(dst_path), nif=nf)
     if not txt:
@@ -14899,12 +15054,90 @@ def _split_bust_collider_shape(dst_path, src_path=None) -> int:
         src_by = {s.name: s for s in nf_src.shapes}
     except Exception:
         return 0
+    # #collider-declared-bones. Declarations come from the SAME resolution the
+    # candidate scan uses -- see `_bust_split_xml_text` for why the destination
+    # alone is not enough HERE (pass 1 precedes the finalize that writes it),
+    # even though `_audit_registered_shape_declared_bones`, which runs at the
+    # very END of the tail, correctly reads the destination.
+    _decl_txt = (_bust_split_xml_text(dst_path, nf, src_path)
+                 if SPLIT_COL_DECLARED_BONES else None)
+    _declared = set(re.findall(r'<bone\s+name="([^"]+)"', _decl_txt or ""))
+
+    def _redirect_undeclared(sh):
+        """`(override_skin | None, declined_bone | None)` for a clone of `sh`.
+
+        `(None, None)` means nothing needed redirecting, or the XML could not be
+        read -- clone exactly as before. A bone with no declared ancestor ON THIS
+        SHAPE returns it as `declined`, and the caller must not create the clone:
+        shipping it re-creates the free-fall this exists to prevent.
+        """
+        bw = getattr(sh, "bone_weights", None) or {}
+        if not bw:
+            return None, None
+        if not _declared:
+            # CANNOT CHECK IS NOT THE SAME AS NOTHING TO REPORT -- the same rule
+            # `_audit_registered_shape_declared_bones` follows. Silence here
+            # would look exactly like "every bone was already declared".
+            _note_pass_failure(
+                "split_col_declared_bones_UNCHECKED", RuntimeError(
+                    f"{Path(dst_path).name}: cloning {sh.name!r} into a "
+                    f"registered collider but no XML bone declarations could be "
+                    f"read, so the declared-bone invariant was NOT verified"),
+                dst_path)
+            return None, None
+        avail = set(bw.keys())
+        if not (avail - _declared):
+            return None, None                  # every bone already declared
+        acc: "dict[str, dict[int, float]]" = {}
+        for bname, pairs in bw.items():
+            rows = (pairs.tolist() if hasattr(pairs, "tolist") else pairs)
+            tgt = bname
+            if bname not in _declared:
+                tgt = _nearest_declared_ancestor(bname, _declared, avail)
+                if tgt is None:
+                    return None, bname
+            # ACCUMULATE per vertex -- two redirected bones can land on the same
+            # ancestor and the second must not overwrite the first.
+            m = acc.setdefault(tgt, {})
+            for vi, w in rows:
+                vi = int(vi)
+                m[vi] = m.get(vi, 0.0) + float(w)
+        bones, xforms, weights = [], {}, {}
+        for bname, m in acc.items():
+            try:
+                stb = sh.get_shape_skin_to_bone(bname)
+            except Exception:
+                return None, bname             # unreadable STB -> decline
+            if stb is None:
+                return None, bname
+            bones.append(bname)
+            xforms[bname] = stb
+            weights[bname] = sorted(m.items())
+        return {"bones": bones, "xforms": xforms, "weights": weights}, None
+
     added = []
     for name in cands:
         gsh = src_by.get(name)
         if gsh is None:
             continue
-        clone = _copy_shape(gsh, nf, preserve_authored_skin=True)
+        _skin, _declined = _redirect_undeclared(gsh)
+        if _declined is not None:
+            print(f"    [bust-split] {Path(dst_path).name}: DECLINED {name} -- "
+                  f"no XML-declared ancestor for {_declined!r}; a registered "
+                  f"collider carrying it cannot be resolved by FSMP and the "
+                  f"piece free-falls", file=sys.stderr)
+            # A DECLINE is the loudest thing this change does -- the piece loses
+            # a collider it used to ship -- so it is recorded even though
+            # nothing was written. #change-attribution
+            _note_pass_effect("#collider-declared-bones",
+                              f"DECLINED {name} ({_declined})", dst_path)
+            continue
+        if _skin is not None:
+            _note_pass_effect("#collider-declared-bones",
+                              f"redirected undeclared bone(s) on {name}Col",
+                              dst_path)
+        clone = _copy_shape(gsh, nf, preserve_authored_skin=True,
+                            override_skin=_skin)
         if clone is None:
             return 0        # nothing saved yet -> file untouched
         try:
@@ -24494,6 +24727,35 @@ PANEL_RIGIDITY = _knob("CBBE2UBE_PANEL_RIGIDITY", 0.75)
 # over a handful of verts is noise.
 PANEL_RIGIDITY_MIN_VERTS = int(
     os.environ.get("CBBE2UBE_PANEL_RIGIDITY_MIN_VERTS", "24") or "24")
+
+# #panel-rigidity-fine-anim -- OPT-IN, DEFAULT OFF,
+# CBBE2UBE_PANEL_RIGIDITY_FINE_ANIM=1. Reachable from the GUI so a real run can
+# turn it on for a dedicated A/B.
+#
+# THE GAP IT CLOSES. `panel_rigidity` is 0.75 by default since 2026-08-22, but
+# the FINE-ANIMATION sub-branch (gauntlets, boots, heels, any shape carrying
+# finger/toe bones) calls none of `_partial_rigid_panels`,
+# `_rigidify_within_clearance` or `_physics_chain_nowarp_blend`. So the knob
+# splits the pack one level below the split its 2026-08-22 parity fix closed.
+#
+# IT IS NOT A NO-OP THERE, and that was measured rather than assumed -- the
+# obvious reason ("gauntlets are single rigid shells") is FALSE. Replaying the
+# pass offline on this branch's own stage dumps, 51 fine-animation shapes, with
+# the probe validated by reproducing the real result EXACTLY on 485 main-chain
+# shapes: it would fire on 51 of 51, find 568 qualifying panels and move verts a
+# median 0.214u -- against the 0.211u it actually moves on the copy main chain.
+#
+# WHY DEFAULT OFF, unlike the 08-22 parity fix which shipped ON: that one had
+# the recipe already running the knob for weeks, so the configuration was
+# already judged. This is NEW geometry on ~20% of copy-path shapes with no
+# verdict at all, and it would ship alongside #collider-declared-bones -- two
+# unjudged geometry changes in one build cannot be told apart from one bad
+# report. Turn it on for a build of its own.
+#
+# DIGITS ARE PROTECTED: the skip mask is the extremity mask, so the limb shell
+# rigidifies and fingers/toes are left exactly where the branch put them. That
+# is the same contract every other pass on this branch honours.
+PANEL_RIGIDITY_FINE_ANIM = _flag("CBBE2UBE_PANEL_RIGIDITY_FINE_ANIM", False)
 # #panel-local-rigid -- OPT-IN. Fit the rigid transform over a NEIGHBOURHOOD
 # instead of over the whole welded component.
 #
@@ -26615,6 +26877,26 @@ def convert_nif_phase2(
                     failed.append((f"{s.name}:inflate-hf", repr(e)))
                 _stage_hf2('inflate_hf', hf_verts)
 
+            # #panel-rigidity-fine-anim, opt-in. Same contract as the copy-path
+            # sibling: digits masked out, effect recorded for attribution.
+            if PANEL_RIGIDITY_FINE_ANIM and PANEL_RIGIDITY > 0:
+                try:
+                    _pv_h2, _np_h2, _wd_h2 = _partial_rigid_panels(
+                        hf_orig, hf_verts,
+                        np.asarray(s.tris, dtype=np.int64), PANEL_RIGIDITY,
+                        skip_mask=_extremity_vert_mask(s, len(hf_verts)),
+                        min_verts=PANEL_RIGIDITY_MIN_VERTS)
+                    if _np_h2:
+                        hf_verts = _pv_h2
+                        hf_verts_modified = True
+                        _stage_hf2('panel_rigidity_hf', hf_verts)
+                        _note_pass_effect(
+                            "#panel-rigidity-fine-anim",
+                            f"{s.name}: {_np_h2} panel(s), worst deform "
+                            f"{_wd_h2:.3f}u", dst_path)
+                except Exception as _pe_h2:
+                    _note_pass_failure("panel-rigidity/fine-anim-p2", _pe_h2)
+
             # Geometry chain ends here on this branch too, and phase 2 skips
             # MORE than the copy path does: no conform, no groove smooth, no
             # panel rigidity, no anti-poke, no chain blend. Same unclosed gap,
@@ -26889,7 +27171,32 @@ def convert_nif_phase2(
                         failed.append((f"{s.name}:inflate", repr(e)))
                 # Standoff-preserving conform: reel over-projected verts back to
                 # their source clearance (pull-in only, >= min clearance).
-                if (src_body_v_p2 is not None and body_verts_for_p2 is not None
+                #
+                # #phase2-conform -- DEFAULT ON, kill switch
+                # CBBE2UBE_NO_PHASE2_CONFORM. Adding the switch is a NO-OP by
+                # construction (it defaults to the previous behaviour); it
+                # exists because this pass could not be A/B'd in game at all.
+                #
+                # AND `CBBE2UBE_NO_CONFORM` IS NOT IT. That flag gates
+                # `CONFORM_FITTED_CLOTH` -> `_conform_fitted_to_body`, a WEIGHTS
+                # pass in the shared tail. Two different passes both called
+                # "conform", and the obvious-looking flag switches the other
+                # one -- so an A/B run against it would have measured nothing
+                # and read as "conform does not matter".
+                #
+                # WHY IT IS WORTH A SWITCH: on the body-swap path this pass
+                # MOVES THE MOST of any stage (0.70u median) and KEEPS THE LEAST
+                # (survival 0.38 pooled / 0.32 per piece), measured over 28
+                # pieces ([[project_pass_usefulness_audit_2026_08_17]]). The copy
+                # path, 78% of the pack, runs no equivalent at all
+                # (`PHASE1_CONFORM` is default off) and is judged good in game --
+                # so "is this pass earning its place" is a real question with a
+                # natural control. A bind-pose survival number CANNOT settle it;
+                # only an in-game A/B can, and until now there was no way to run
+                # one.
+                if (PHASE2_CONFORM
+                        and src_body_v_p2 is not None
+                        and body_verts_for_p2 is not None
                         and body_norms_for_p2 is not None):
                     try:
                         # Morph map lets the conform restore the AUTHORED fit in
@@ -28337,7 +28644,7 @@ def convert_nif_phase2(
     # A pass that RAISED must reach the caller. The parent process cannot see
     # this worker's module state or its stderr, so `reason` is the only channel
     # -- see _PASS_FAILURES_THIS_PIECE.
-    _pf = _piece_pass_failures()
+    _pf = _piece_pass_failures() + _piece_pass_effects()
     if _pf:
         result_reason = ((result_reason + "; " if result_reason else "")
                          + "; ".join(_pf))

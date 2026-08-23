@@ -5,6 +5,54 @@
 Built and reconverted on 2026-08-22 (163 mods, 3673 meshes under `meshes/!UBE`,
 no failures) and judged in game: *"everything looks as it should"*.
 
+### Fixed — some outfits shipped a collision shape the physics engine could not use
+
+The converter builds a hidden collision copy of a garment so the bust has
+something to collide against. On a few outfits that copy inherited a bone the
+outfit's own physics file never mentions — a finger bone on a coat, an arm-twist
+bone on a cuirass. The physics engine cannot resolve a bone it was not told
+about, and the piece falls off the character.
+
+Ten such copies across nine outfits. Six are repaired by moving the weight onto
+the nearest bone the physics file DOES mention, which is invisible in the bind
+pose: an untold bone is not simulated either way, so nothing moves. The other
+four had no usable bone to move to, and for those the hidden copy is simply not
+made any more — those outfits go back to the arrangement their own author ships,
+which is the one their mod is known to run. Those four lose the bust collision
+improvement; that is the trade, and a falling outfit is worse.
+
+Only copies the converter itself creates are touched. Where an author's own
+shape carries an unmentioned bone, that is their arrangement and it is left
+alone.
+
+### Added — two switches so a change can be tested on its own
+
+Neither changes anything by default.
+
+*Reel over-projected cloth back to its authored clearance* has always run on
+body-replacing outfits and still does — but it could not be switched off, so it
+could never be tested. It now can. It moves more than any other fitting step and
+keeps the least of what it does, while three quarters of your armour runs no
+equivalent at all and looks right, so whether it still earns its place is a fair
+question. (This is a DIFFERENT pass from "Conform fitted cloth to body", which
+already had a switch. The names are unhelpfully similar.)
+
+*Also keep plates straight on gauntlets, boots and heels* is off, and new.
+Gauntlets and boots take a separate route through the converter that skips the
+plate-straightening entirely. Measured on 51 such shapes, the pass would find
+568 plates there — so it is real work being skipped, not nothing to do. It is off
+because it has no in-game verdict yet: turn it on for a build of its own, look at
+your gauntlets and boots, and report back. Fingers and toes are left alone.
+
+### Added — the run now records which change touched which outfit
+
+When something looks wrong in game, the useful question is which of the build's
+changes could have caused it. Each change now leaves a mark on every piece it
+alters, and those marks survive into the run report. "What broke" and "what
+changed" are reported separately, because a change that alters three hundred
+pieces and breaks none is working, while one that alters nothing is not
+reaching anything.
+
 ### Fixed — eight armours had no cloth physics at all
 
 Eight pieces shipped a physics file the engine could not read, so they simply had

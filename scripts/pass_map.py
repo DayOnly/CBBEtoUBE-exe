@@ -34,6 +34,14 @@ it. Guards are what make a pass conditional, so a map without them says a pass
 runs when it may not.
 
 DELIBERATE LIMITS, stated so the map is not over-read:
+  * DEPTH 1. Only calls made DIRECTLY in the entry function's own body are
+    listed. A pass reached through a helper does NOT appear -- and that is not
+    hypothetical: `_split_bust_collider_shape` runs on both paths via
+    `_finalize_physics_and_motion_match`, so grepping this map for it returns
+    NOTHING and reads as "never called". It cost a wrong conclusion within a day
+    of the map existing. `SHARED_TAILS` below are expanded one extra level for
+    exactly that reason; anything else, confirm with a grep before concluding a
+    pass is dead.
   * SOURCE order, not runtime order. A loop body is listed once; a call inside a
     branch is listed with its branch condition, not resolved.
   * Only functions defined in THIS module. Numpy, scipy and sibling modules are
@@ -55,6 +63,12 @@ SRC = REPO / "src" / "nif_convert.py"
 OUT = REPO / "docs" / "PASS_MAP.md"
 
 ENTRIES = ("convert_nif", "convert_nif_phase2")
+
+# Helpers both paths funnel through. Expanded ONE extra level so the passes
+# inside them are not invisible; listed explicitly rather than recursing,
+# because an unbounded walk across the dispatch boundary makes every stage
+# read as shared by both paths (feedback_method_traps).
+SHARED_TAILS = ("_finalize_physics_and_motion_match",)
 
 # Calls that are bookkeeping rather than a pass. Kept SHORT and explicit: a
 # generous filter would quietly hide a real pass, which is the failure this file
@@ -223,7 +237,7 @@ def render(text) -> str:
             L.append(f"- {i}: {m.group(1)}")
     L.append("")
 
-    for entry in ENTRIES:
+    for entry in (*ENTRIES, *SHARED_TAILS):
         fn = fns.get(entry)
         if fn is None:
             continue
@@ -231,6 +245,13 @@ def render(text) -> str:
         staged = [r for r in rows if r["stage"]]
         L.append(f"## `{entry}` — line {fn.lineno}")
         L.append("")
+        if entry in SHARED_TAILS:
+            L.append("**Shared tail, reached from BOTH entry points above.** "
+                     "It is listed separately because this map is depth-1: "
+                     "these passes do not appear in either entry's own table, "
+                     "and grepping for one there wrongly reads as "
+                     "\"never called\".")
+            L.append("")
         L.append(f"{len(rows)} call(s) to module-level passes; "
                  f"{len(staged)} traced stage boundary/-ies.")
         L.append("")

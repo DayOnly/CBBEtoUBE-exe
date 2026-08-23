@@ -300,6 +300,28 @@ moved nothing": collision proxies (no textures, dropped), body-skin `Hands` /
 `Feet` (replaced with the UBE shape before the fit loop), and — on the body-swap
 path — the inline body shapes the swap replaces.
 
+**WHICH CHANGE TOUCHED WHICH PIECE.** `nif_convert._note_pass_effect(tag, ...)`
+records that a change ALTERED a piece; `_note_pass_failure` records that
+something BROKE. Both ride the per-piece `reason` string, which is the only
+channel crossing the worker-pool boundary -- module counters live in the worker
+and the parent never sees them. Roll them up with
+`scripts/analysis/change_attribution.py`, which reports the two separately on
+purpose: a change with many effects and no failures is working, one with no
+effects is not reaching anything. Tag with the change's own hashtag, not a
+function name -- one change can span several functions, and the question being
+answered is "which CHANGE did this".
+
+**TWO PASSES ARE CALLED "CONFORM" AND THE OBVIOUS FLAG GATES THE OTHER ONE.**
+
+| pass | what it does | flag |
+|---|---|---|
+| `_conform_fitted_to_body` | WEIGHTS: conforms garment verts to the body's per-vert skinning, shared tail | `CBBE2UBE_NO_CONFORM` (`conform_to_body`) |
+| `conform_to_source_standoff` | GEOMETRY: reels over-projected verts back to the authored standoff; the `conform` stage in the survival trace | `CBBE2UBE_PHASE1_CONFORM` (copy, default OFF) / `CBBE2UBE_NO_PHASE2_CONFORM` (body-swap, default ON) |
+
+An A/B run against `CBBE2UBE_NO_CONFORM` expecting to move the traced `conform`
+stage measures nothing and reads as "conform does not matter". The body-swap one
+had NO switch at all until 2026-08-23.
+
 **Split any clipping number by depth before concluding.** Sub-0.2u and >1u need
 corrections an order of magnitude apart. Depth is NOT a cosmetic/real
 discriminator — sub-0.2u penetration is visible in game; only the zoom test
