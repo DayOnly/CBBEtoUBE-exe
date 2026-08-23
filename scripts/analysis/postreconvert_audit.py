@@ -91,6 +91,12 @@ def measure(out_mod: Path) -> dict:
         wp = d.get("weight_partner_warnings")
         if isinstance(wp, list):
             m["weight_partner_warnings"] = len(wp)
+            # KEEP THE LIST, not only the count. When this went 18 -> 19 on the
+            # 2026-08-23 run there was no way to say WHICH warning was new, so a
+            # one-item delta could not be told from a real regression without
+            # re-deriving the old list from a pack that no longer existed. A
+            # count answers "did it change"; only the list answers "is it mine".
+            m["_list:weight_partner_warnings"] = sorted(str(x) for x in wp)
         pf = d.get("pass_failures")
         if isinstance(pf, dict):
             for name, n in pf.items():
@@ -179,7 +185,10 @@ def main() -> int:
     print(f"\n{'metric':<40}{'baseline':>10}{'now':>10}  verdict")
     print("-" * 92)
     regressions = []
-    for key in sorted(set(now) | set(base)):
+    # `_list:` entries are EVIDENCE, not metrics: diffed by name below, and
+    # never scored as a number.
+    for key in sorted(k for k in set(now) | set(base)
+                      if not k.startswith("_list:")):
         b, n = base.get(key), now.get(key)
         d = direction(key)
         if b is None:
@@ -196,6 +205,29 @@ def main() -> int:
             if not better:
                 regressions.append((key, b, n))
         print(f"{key:<40}{str(b):>10}{str(n):>10}  {verdict}")
+
+    # NAME what actually moved, for every list kept. A delta the reader cannot
+    # attribute is one they argue about instead of acting on -- 18 -> 19 on the
+    # 2026-08-23 run took a separate investigation to establish was not ours.
+    for key in sorted(k for k in set(now) | set(base) if k.startswith("_list:")):
+        label = key[len("_list:"):]
+        if key not in base:
+            # ABSENT IS NOT EMPTY. A baseline recorded before this list was
+            # captured has no entry, and diffing against `set()` would print
+            # every current item as an addition -- 19 "new" warnings on a run
+            # that added one. Say which it is.
+            print(f"\n{label} -- no list in the baseline (recorded before this "
+                  f"metric existed), so it CANNOT be diffed. Re-record once "
+                  f"this pack is judged.")
+            continue
+        b_l, n_l = set(base.get(key) or ()), set(now.get(key) or ())
+        added, gone = sorted(n_l - b_l), sorted(b_l - n_l)
+        if added or gone:
+            print(f"\n{label} -- what changed:")
+            for x in added:
+                print(f"  + {x[:150]}")
+            for x in gone:
+                print(f"  - {x[:150]}")
 
     print("\nNOT COVERED HERE (run these separately, a clean result above is "
           "not a clean pack):")

@@ -2449,6 +2449,21 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
             else:
                 _log_dir = Path(__file__).resolve().parent.parent
             log_path = str(_log_dir / "CBBEtoUBE_last_run.log")
+            # HAND THE LOG TO THE CHILD BEFORE TOUCHING IT. This process
+            # installed its own tee on the same path at startup, so without this
+            # there are TWO `"w"` handles on one file with independent offsets,
+            # and the parent's later writes land mid-line over the child's. On
+            # 2026-08-23 that cut the startup flag echo in half and left the
+            # unseen-settings NOTE as a fragment. It also makes the delete below
+            # actually work: on Windows the open handle is why it was failing
+            # silently. See `release_log_tee` for the full account.
+            try:
+                _rel = getattr(sys.modules.get("__main__"),
+                               "release_log_tee", None)
+                if callable(_rel):
+                    _rel()
+            except Exception:
+                pass          # logging bookkeeping must never stop a run
             try:
                 if os.path.exists(log_path):
                     os.remove(log_path)

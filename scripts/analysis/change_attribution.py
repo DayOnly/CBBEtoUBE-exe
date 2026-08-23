@@ -49,6 +49,24 @@ FAILED = re.compile(r"PASS FAILED ([\w/-]+)")
 PIECE = re.compile(r"([^\s/\\]+_[01]\.nif|[^\s/\\]+_[01]):")
 
 
+def scan_report(path):
+    """Read `pass_effects` / `pass_failures` out of a conversion_report.json.
+
+    THE LOG IS NOT A CHANNEL FOR THIS and the 2026-08-23 reconvert proved it:
+    the effect markers ride the per-piece `reason`, the batch log carries only
+    worker prints (which the frozen exe drops) and interleaves what it does
+    carry, so scanning it returned "none recorded" on a run where the change had
+    demonstrably fired. The report is written by the parent from `reason`, so it
+    is the only place these survive.
+    """
+    d = json.loads(Path(path).read_text(encoding="utf-8"))
+    effects = collections.defaultdict(set)
+    for tag, pieces in (d.get("pass_effects") or {}).items():
+        effects[tag] |= set(pieces or ())
+    failures = collections.Counter(d.get("pass_failures") or {})
+    return effects, failures, collections.defaultdict(list)
+
+
 def scan(text):
     effects = collections.defaultdict(set)
     failures = collections.Counter()
@@ -78,6 +96,9 @@ def main() -> int:
     for raw in args.paths:
         p = Path(raw)
         if p.is_dir():
+            # conversion_report.json FIRST -- it is the durable channel; the
+            # logs are a best-effort extra.
+            files += sorted(p.rglob("conversion_report.json"))
             files += sorted(p.rglob("*.log")) + sorted(p.rglob("*.txt"))
         elif p.is_file():
             files.append(p)
@@ -90,8 +111,11 @@ def main() -> int:
     detail = collections.defaultdict(list)
     for f in files:
         try:
-            e, fa, d = scan(f.read_text(encoding="utf-8", errors="replace"))
-        except OSError:
+            if f.suffix.lower() == ".json":
+                e, fa, d = scan_report(f)
+            else:
+                e, fa, d = scan(f.read_text(encoding="utf-8", errors="replace"))
+        except (OSError, ValueError):
             continue
         for k, v in e.items():
             effects[k] |= v

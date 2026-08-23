@@ -579,6 +579,43 @@ def count_pass_failures(nif_results) -> dict:
     return out
 
 
+def count_pass_effects(nif_results) -> dict:
+    """{change tag -> [pieces it touched]}. The SIBLING of the failures counter.
+
+    WHY IT EXISTS, and it is not hypothetical. `nif_convert._note_pass_effect`
+    records WHICH CHANGE altered a piece, riding the same `reason` channel
+    failures use -- and the 2026-08-23 reconvert proved that half a mechanism is
+    none of it. The worker recorded its effects correctly; nothing on the PARENT
+    side ever read them, so they reached neither the log nor the report, and
+    `change_attribution.py` reported "none recorded" on a run where the change
+    demonstrably fired (18 violations -> 0). The failures counter had this
+    collector from the start; the effects one did not.
+
+    Returns the PIECE NAMES, not merely a count: "which change touched
+    something" is only actionable if it can name what to go and look at.
+
+    NEVER RAISES, for the same reason as `count_pass_failures`: the caller sits
+    inside a blanket `except Exception: return None` that would turn a throw
+    into a silently missing report rather than a visible error.
+    """
+    out: dict = {}
+    for r in nif_results or ():
+        try:
+            name = Path(str(getattr(r, "dst_path", "") or "")).name
+        except Exception:
+            name = ""
+        for part in (getattr(r, "reason", "") or "").split("; "):
+            part = part.strip()
+            if not part.startswith("CHANGED BY "):
+                continue          # a fragment of some other reason; ignore
+            tag = part[len("CHANGED BY "):].split(" (", 1)[0].strip()
+            if tag:
+                out.setdefault(tag, [])
+                if name and name not in out[tag]:
+                    out[tag].append(name)
+    return out
+
+
 def _pack_pass_failures(ok) -> dict:
     """`count_pass_failures` rolled up across `[(source_dir, AutoConvertResult)]`.
 
@@ -591,6 +628,19 @@ def _pack_pass_failures(ok) -> dict:
         for label, n in count_pass_failures(
                 getattr(r, "nif_results", None)).items():
             out[label] = out.get(label, 0) + n
+    return out
+
+
+def _pack_pass_effects(ok) -> dict:
+    """`count_pass_effects` rolled up across the pack. Never raises."""
+    out: dict = {}
+    for _s, r in ok or ():
+        for tag, pieces in count_pass_effects(
+                getattr(r, "nif_results", None)).items():
+            out.setdefault(tag, [])
+            for p in pieces:
+                if p not in out[tag]:
+                    out[tag].append(p)
     return out
 
 
@@ -2250,6 +2300,14 @@ def write_conversion_report_json(output_dir, results,
             # broken on every piece would otherwise look like a design that
             # simply does nothing.
             "pass_failures": _pack_pass_failures(ok),
+            # WHAT CHANGED, beside what BROKE. A build carrying several changes
+            # cannot be debugged from a bad in-game report unless each change
+            # says which pieces it touched -- and the run log cannot carry it,
+            # because those are worker prints and the frozen exe drops them.
+            # This is the only durable channel. Reported SEPARATELY from
+            # failures on purpose: a change with many effects and no failures is
+            # working, one with no effects is not reaching anything.
+            "pass_effects": _pack_pass_effects(ok),
         }
         out = Path(output_dir) / "conversion_report.json"
         out.write_text(json.dumps(rep, indent=2), encoding="utf-8")
