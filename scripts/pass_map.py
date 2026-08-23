@@ -198,6 +198,19 @@ def render(text) -> str:
     src_lines = text.splitlines()
     defs = module_level_defs(tree)
     consts = flag_consts(tree, text, src_lines)
+    # POPULATION FLOOR. This generator is coupled to two idioms -- the
+    # module-level `def` and the `_flag()/_knob()` binding -- and if either moves
+    # it emits a SMALL, TIDY, WRONG map instead of failing. That is exactly how
+    # `flag_extract.py` came to report 11 flags against a real surface of 287
+    # and still read as an answer; `scripts/tool_audit.py` exists for the class.
+    # 298 defs / 287 constants on 2026-08-23, so these floors sit far below the
+    # truth and catch only a collapse.
+    if len(defs) < 100 or len(consts) < 100:
+        raise SystemExit(
+            f"pass_map: POPULATION COLLAPSED -- {len(defs)} module-level def(s) "
+            f"and {len(consts)} flag/knob constant(s) in {SRC.name}. The idiom "
+            f"this generator greps for has moved, so the map it would write is "
+            f"not slightly wrong; it describes a different codebase.")
     parents = build_parents(tree)
     fns = {n.name: n for n in tree.body
            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
