@@ -143,6 +143,28 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "of 830 rough vertices and left the belts, buckles and "
                     "metal buttons -- already smooth -- completely untouched. "
                     "Changes weighting only; nothing moves."),
+    Setting("smp_boundary_weight_hold",
+            "Keep layers together where cloth physics meets solid armour",
+            "Armor", "Seams", default=True,
+            env="CBBE2UBE_NO_SMP_BOUNDARY_HOLD", invert=True,
+            hint="Fixes a belt or skirt and the armour above it pulling apart "
+                 "at the waist when the character bends.",
+            tooltip="A skirt or belt driven by cloth physics has to keep the "
+                    "weighting its author gave it -- rewrite it and the cloth "
+                    "comes loose from the body and drifts. The armour beside "
+                    "it has no such rule, so it gets refitted onto the new "
+                    "body while its neighbour stays put, and the two end up "
+                    "riding different bones at the same height: on the "
+                    "reported cuirass one layer moved toward the chest while "
+                    "the layer touching it moved toward the hips, so they "
+                    "sheared apart at the waist every time the character "
+                    "bent. This eases the armour's weighting back toward its "
+                    "author's near the physics cloth, fading out over about "
+                    "six units so the fit further in is untouched. Across "
+                    "every affected outfit it removed 65% of the disagreement "
+                    "with the author, better on 39 and slightly worse on 3, "
+                    "and outfits without cloth physics are left byte-for-byte "
+                    "identical. Changes weighting only; nothing moves."),
     Setting("back_bound_edit",
             "...and cap how far that allowance may push",
             "Armor", "Fit and clearance", default=False,

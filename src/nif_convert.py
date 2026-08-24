@@ -7331,6 +7331,19 @@ def convert_nif(
                       f"the author", file=_sys.stderr)
         except Exception as _pe:
             _note_pass_failure("_cap_weight_roughness_to_author", _pe)
+        # Hold a reskinned layer to the author where it meets an SMP layer that
+        # KEPT the author's rig (#smp-boundary-weight-hold). After the body
+        # matches, for the same reason the coincident match is: each of them
+        # pairs to the body per shape and would re-diverge this.
+        try:
+            n_sb = _hold_weights_at_smp_boundary(dst_path,
+                                                 src_nif_path=src_path)
+            if n_sb:
+                import sys as _sys
+                print(f"  smp-boundary hold: held {n_sb} vert(s) toward the "
+                      f"author", file=_sys.stderr)
+        except Exception as _pe:
+            _note_pass_failure("_hold_weights_at_smp_boundary", _pe)
         # Coincident-vertex skin unification (#coincident-skin-match). Same
         # placement rule as the phase-2 site: after every weight pass, because
         # each of them pairs to the body PER SHAPE and would re-diverge an
@@ -14666,6 +14679,227 @@ def _cap_weight_roughness_to_author(dst_path, src_nif_path=None) -> int:
             _note_pass_failure("_cap_weight_roughness_to_author/save",
                                _se, dst_path)
             return 0
+    return total
+
+
+_SMP_HOLD_NEAR = _knob("CBBE2UBE_SMP_HOLD_NEAR", 0.5)
+_SMP_HOLD_FAR = _knob("CBBE2UBE_SMP_HOLD_FAR", 6.0)
+_SMP_HOLD_MIN_SHARE = _knob("CBBE2UBE_SMP_HOLD_MIN_SHARE", 0.75)
+SMP_BOUNDARY_HOLD = not _flag("CBBE2UBE_NO_SMP_BOUNDARY_HOLD", False)
+
+
+def _hold_weights_at_smp_boundary(dst_path, src_nif_path=None) -> int:
+    """Stop a reskinned layer shearing away from the SMP layer it touches.
+
+    THE DEFECT, reported in game twice: "disconnect between the belt and
+    abdomen ... they are weighted wrong between layers", then again after the
+    2026-08-24 reconvert, "weight issues especially near the abdomen". On a
+    MIXED-CLOTH piece the two layers of ONE garment end up rigged to different
+    bones at the same body height, so they travel opposite ways the moment the
+    actor bends.
+
+    THE MECHANISM, measured on the reported cuirass. Vert counts are identical
+    there, so every shape is scored against its own author BY INDEX and no
+    matching heuristic is involved:
+
+        shape        verts   mean L1 vs author   >0.5   declared in the XML?
+        Plane.001     9836        0.0000            0   per-vertex-shape
+        ColLegs        539        0.0000            0   per-triangle-shape
+        Plane.002     9504        0.3956         2248   no
+        awdaw.012    18228        0.1841         1692   no
+
+    The shapes at EXACTLY zero are exactly the shapes the physics XML declares.
+    That is `_hdt_softbody_shape_names` working as designed -- an SMP soft body
+    must keep its authored rig or it un-anchors and drifts. But the layer
+    against it has no such protection and is fitted onto the UBE body, and the
+    seam between them is the waist: 1327 of `Plane.002`'s 2614 abdomen verts
+    land past 0.5 from the author. Per bone over z 70-90 the two layers moved
+    in OPPOSITE directions -- Spine -> Spine2 (+0.117) against Spine/Spine1 ->
+    Pelvis (+0.137). Row sums stay a clean 1.0000: nothing is malformed, the
+    ASSIGNMENT split.
+
+    THE PROPERTY, class-level: a vertex sitting against an immovable layer may
+    not drift from the author either. Weights ramp back to the author's over
+    `_SMP_HOLD_NEAR`..`_SMP_HOLD_FAR` from the nearest protected surface -- a
+    FALLOFF, not a cap, because a hard cap only relocates the shear to the edge
+    of the capped region. Body-follow is left untouched further in.
+
+    NOT the seam-agreement defect an earlier note claimed. Scoring the AUTHOR's
+    coincident verts against OURS read "4x the author's divergence"; evaluated
+    on THE SAME vertex pairs it is 0.404 vs 0.408. `#coincident-skin-match` is
+    not at fault and its gate does not want loosening -- it unifies verts
+    within 0.15u (152 on this piece) while the defect lives in the layer
+    BODIES, ~4000 verts each.
+
+    Self-controlling twice over: a piece whose XML drives no per-vertex shape
+    returns 0 before reading a single vertex (1358 of 1536 pack NIFs, and 112
+    more whose XML drives only colliders), and a vertex already carrying its
+    author's row takes no write.
+
+    NEVER ADDS A BONE -- the blend is restricted to the destination shape's own
+    palette, and a vertex whose author row that palette cannot carry to
+    `_SMP_HOLD_MIN_SHARE` is left alone. `add_bone` resets every skin-to-bone
+    xform, which would ship colliders at the origin.
+
+    WEIGHTS ONLY: no vertex moves, so every clearance result upstream stands.
+    Off with CBBE2UBE_NO_SMP_BOUNDARY_HOLD=1.  #smp-boundary-weight-hold
+    """
+    if not SMP_BOUNDARY_HOLD or src_nif_path is None:
+        return 0
+    try:
+        pyn = _pynifly()
+        nf = pyn.NifFile(filepath=str(dst_path))
+        snf = pyn.NifFile(filepath=str(src_nif_path))
+    except Exception as _oe:
+        _note_pass_failure("_hold_weights_at_smp_boundary/open", _oe)
+        return 0
+    try:
+        protected = _hdt_softbody_shape_names(Path(src_nif_path), nif=snf)
+    except Exception as _xe:
+        _note_pass_failure("_hold_weights_at_smp_boundary/xml", _xe)
+        return 0
+    if not protected:
+        return 0            # not a mixed-cloth piece: nothing to hold against
+    from scipy.spatial import cKDTree      # imported per-function in this file
+
+    def _world(shape):
+        v = np.asarray(shape.verts, dtype=np.float64)
+        try:
+            return np.asarray(_verts_skin_to_world(
+                v, _shape_global_to_skin(shape)), dtype=np.float64)
+        except Exception:
+            return v
+
+    anchor = [_world(s) for s in nf.shapes
+              if (s.name or "") in protected and len(s.verts)]
+    if not anchor:
+        return 0            # the XML names shapes this NIF does not carry
+    tree = cKDTree(np.vstack(anchor))
+    src_by_name = {s.name: s for s in snf.shapes}
+    span = max(_SMP_HOLD_FAR - _SMP_HOLD_NEAR, 1e-6)
+
+    def _rows(shape):
+        out = [dict() for _ in range(len(shape.verts))]
+        for bn, pairs in (shape.bone_weights or {}).items():
+            for i, w in pairs:
+                if 0 <= i < len(out) and w > 0:
+                    out[i][bn] = out[i].get(bn, 0.0) + float(w)
+        return out
+
+    total = 0
+    dirty = False
+    for s in nf.shapes:
+        name = s.name or ""
+        if name in protected or name == "BaseShape":
+            continue
+        a = src_by_name.get(name)
+        if a is None or len(a.verts) != len(s.verts) or not len(s.verts):
+            continue        # reauthored/injected shape: no author to hold to
+        d, _hit = tree.query(_world(s))
+        alpha = np.clip((_SMP_HOLD_FAR - np.asarray(d, dtype=np.float64))
+                        / span, 0.0, 1.0)
+        if not float(alpha.max()) > 0.0:
+            continue        # nothing on this shape is near the protected layer
+        ours, auth = _rows(s), _rows(a)
+        palette = set(s.bone_names or [])
+        changed: dict = {}
+        for _vi in np.nonzero(alpha > 0.0)[0]:
+            i = int(_vi)
+            src_row = auth[i]
+            if not src_row:
+                continue
+            tot = sum(src_row.values())
+            keep = {b: w for b, w in src_row.items() if b in palette}
+            if tot <= 0 or sum(keep.values()) < _SMP_HOLD_MIN_SHARE * tot:
+                continue    # our palette cannot carry the author's row
+            k = sum(keep.values())
+            tgt = {b: w / k for b, w in keep.items()}
+            f = float(alpha[i])
+            row = dict(ours[i])
+            for b in set(row) | set(tgt):
+                row[b] = (1.0 - f) * row.get(b, 0.0) + f * tgt.get(b, 0.0)
+            row = {b: w for b, w in row.items() if w > _WRITE_MIN}
+            if len(row) > 4:
+                row = dict(sorted(row.items(), key=lambda kv: -kv[1])[:4])
+            t = sum(row.values())
+            if t <= 0:
+                continue
+            row = {b: w / t for b, w in row.items()}
+            if max((abs(row.get(b, 0.0) - ours[i].get(b, 0.0))
+                    for b in set(row) | set(ours[i])), default=0.0) > 1e-3:
+                changed[i] = row
+        if not changed:
+            continue
+        # STBs are saved around setShapeWeights and restored after; the reader
+        # returns None rather than raising when an xform is missing, and that
+        # silent path is what made an earlier pass of this family a no-op.
+        # Record, never swallow.
+        saved_stb: dict = {}
+        skipped_for = None
+        for b in (s.bone_names or []):
+            try:
+                st = s.get_shape_skin_to_bone(b)
+            except Exception as _be:
+                _note_pass_failure("_hold_weights_at_smp_boundary/stb", _be)
+                st = None
+            if st is None:
+                skipped_for = b
+                break
+            saved_stb[b] = st
+        if skipped_for is not None:
+            print(f"  smp-boundary hold: SKIPPED {name!r} -- cannot read the "
+                  f"skin-to-bone xform for {skipped_for!r}, so "
+                  f"{len(changed)} queued vert(s) were left unheld",
+                  file=sys.stderr)
+            continue
+        # REMOVALS IN THEIR OWN PASS, BEFORE THE ADDITIONS. `setShapeWeights`
+        # UPDATES rather than replaces, so a row that drops a bone must write
+        # that bone to 0.0 first or the 4-slot merge ships a row summing wrong.
+        write_bones = set()
+        removed: dict = {}
+        for i, new in changed.items():
+            write_bones |= set(new) | set(ours[i])
+            for b in set(ours[i]) - set(new):
+                removed.setdefault(b, set()).add(i)
+        try:
+            for b in sorted(write_bones):
+                rem = removed.get(b)
+                if rem:
+                    s.setShapeWeights(b, [(i, 0.0) for i in sorted(rem)])
+            for b in sorted(write_bones):
+                pairs = [(i, changed[i][b]) for i in sorted(changed)
+                         if changed[i].get(b, 0.0) > _WRITE_MIN]
+                if pairs:
+                    s.setShapeWeights(b, pairs)
+        except Exception as _we:
+            for b, st in saved_stb.items():
+                try:
+                    s.set_skin_to_bone_xform(b, st)
+                except Exception as _pe:
+                    _note_pass_failure("set_skin_to_bone_xform", _pe)
+            print(f"  WARN: smp-boundary-hold write failed on {name!r} "
+                  f"({_we!r}) -- STBs restored, shape left partly held",
+                  file=sys.stderr)
+            continue
+        for b, st in saved_stb.items():
+            try:
+                s.set_skin_to_bone_xform(b, st)
+            except Exception as _pe:
+                _note_pass_failure("set_skin_to_bone_xform", _pe)
+        s._weights = None
+        total += len(changed)
+        dirty = True
+    if dirty:
+        _hide_virtual_body(nf)
+        try:
+            atomic_nif_save(nf, dst_path)
+        except Exception as _se:
+            _note_pass_failure("_hold_weights_at_smp_boundary/save",
+                               _se, dst_path)
+            return 0
+    if total:
+        _note_pass_effect("#smp-boundary-weight-hold",
+                          f"held {total} vert(s) toward the author")
     return total
 
 
@@ -29021,6 +29255,18 @@ def convert_nif_phase2(
                   f"author", file=_sys.stderr)
     except Exception as _pe:
         _note_pass_failure("_cap_weight_roughness_to_author", _pe)
+    # Hold a reskinned layer to the author where it meets an SMP layer that KEPT
+    # the author's rig (#smp-boundary-weight-hold). Placed with the other
+    # author-relative passes, after the body matches, because each of those
+    # pairs to the body per shape and would re-diverge this one.
+    try:
+        n_sb = _hold_weights_at_smp_boundary(dst_path, src_nif_path=src_path)
+        if n_sb:
+            import sys as _sys
+            print(f"  smp-boundary hold: held {n_sb} vert(s) toward the author",
+                  file=_sys.stderr)
+    except Exception as _pe:
+        _note_pass_failure("_hold_weights_at_smp_boundary", _pe)
     # Coincident-vertex skin unification (#coincident-skin-match). Runs after
     # EVERY weight pass on purpose: each one pairs to the body per shape, so two
     # touching verts in different shapes get different rows, and a repair placed

@@ -56,7 +56,7 @@ PASS_PREFIXES = ("_match_", "_conform", "_repair", "_weld", "_transfer_",
                  "_graft", "_seed_", "_separate_", "_inflate", "_strip_",
                  "_refresh_", "_ride_", "_rigidify", "_sync_", "_cap_",
                  "clear_armor", "rebury_", "fit_armor", "bake_preset",
-                 "repair_collapsed", "_recompute_")
+                 "repair_collapsed", "_recompute_", "_hold_")
 ENTRY_A = "convert_nif"
 ENTRY_B = "convert_nif_phase2"
 # Guard against a vacuous pass. If the walk finds fewer passes than this, the
