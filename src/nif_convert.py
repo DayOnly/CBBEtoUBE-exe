@@ -16000,6 +16000,76 @@ def _add_butt_collider_patch(dst_path) -> int:
 SKIRT_PROXY_REBUILD = (
     not _flag("CBBE2UBE_NO_SKIRT_PROXY_REBUILD", False))
 _SKIRT_PROXY_NAME = "SkirtCol"
+# --- #proxy-encloses-chain -- the proxy must not CONTAIN what it collides with
+#
+# CONFIRMED IN GAME 2026-08-23. On a cuirass whose generated proxy contained 11
+# of the skirt's own 71 chain nodes, the skirt showed an intermittent spike --
+# "roughly 2/3 of the time and sometimes vanishes", oriented relative to the
+# character -- and the skirt as a whole behaved wrongly. Building the same piece
+# with `CBBE2UBE_NO_SKIRT_PROXY_REBUILD=1` fixed both, reported as "that fixed it
+# as well as the entire skirt working as it should".
+#
+# WHY: a chain node that starts INSIDE its own collider is a constraint violated
+# on frame one. SMP ejects it every frame; the solve may settle or diverge, which
+# is exactly an intermittent, character-relative artefact. The block above
+# already names this risk -- "a cloth proxy is chain-driven and a bad one can
+# balloon, collapse, or pull to the origin" -- and the pass was cleared on ONE
+# piece judged perfect. It is DEFAULT ON, so every other piece took it on faith.
+#
+# THE CLASS PROPERTY, falsifiable with no in-game verdict: a generated collision
+# proxy must not contain the chain nodes it exists to collide with. Pack census
+# at the shipping recipe: 32 proxies scored, **16 enclose a chain node** -- half
+# of every proxy this pass has ever produced.
+#
+# Inside/outside by RAY PARITY, never a nearest-vertex normal: the normal test
+# flips sign on a concave surface and has produced void numbers here before
+# (#closest-point-plane-bug).
+#
+# DECLINE rather than shrink. The pass's own contract already prefers that --
+# "past some share it is no longer doing that and a stale collision surface is
+# worse than none" -- and an inset proxy is a new shape nobody has judged.
+PROXY_ENCLOSE_GUARD = not _flag("CBBE2UBE_NO_PROXY_ENCLOSE_GUARD", False)
+
+
+def _proxy_encloses_chain_nodes(verts, tris, nodes) -> list:
+    """Chain-node names that fall INSIDE the proxy hull. Ray parity along +X."""
+    try:
+        V = np.asarray(verts, dtype=np.float64)
+        T = np.asarray(tris, dtype=np.int64).reshape(-1, 3)
+        if len(V) < 4 or len(T) < 4 or not nodes:
+            return []
+        names = list(nodes)
+        P = np.asarray([nodes[k] for k in names], dtype=np.float64)
+        a, b, c = V[T[:, 0]], V[T[:, 1]], V[T[:, 2]]
+        e1, e2 = b - a, c - a
+        # A GENERIC RAY DIRECTION, not an axis. An axis-aligned ray exits through
+        # a shared triangle EDGE whenever the mesh is symmetric about that axis
+        # -- both triangles then register a hit and the parity flips, reporting
+        # a contained node as outside. Reproduced exactly on an axis-aligned
+        # cube. Nothing here is axis-dependent, so an irrational-ish direction
+        # costs nothing and makes an exact edge hit vanishingly unlikely.
+        d = np.array([1.0, 0.3178123, 0.1290551])
+        d = d / np.linalg.norm(d)
+        h = np.cross(np.broadcast_to(d, e2.shape), e2)
+        det = np.einsum('ij,ij->i', e1, h)
+        ok = np.abs(det) > 1e-12
+        if not ok.any():
+            return []
+        out = []
+        for i, pt in enumerate(P):
+            s = pt - a
+            u = np.einsum('ij,ij->i', s, h) / np.where(ok, det, 1.0)
+            q = np.cross(s, e1)
+            v = np.einsum('j,ij->i', d, q) / np.where(ok, det, 1.0)
+            tt = np.einsum('ij,ij->i', e2, q) / np.where(ok, det, 1.0)
+            hit = ok & (u >= 0.0) & (u <= 1.0) & (v >= 0.0)                 & (u + v <= 1.0) & (tt > 1e-6)
+            if int(hit.sum()) % 2:
+                out.append(names[i])
+        return out
+    except Exception as e:
+        # A guard that fails silently is a guard that is not there.
+        _note_pass_failure("skirt-proxy/encloses-chain", e)
+        return []
 _SKIRT_PROXY_TARGET = _knob("CBBE2UBE_SKIRT_PROXY_TARGET", 500, int)
 # A vert is "cloth" when the SIM drives it: weight on bones the body does not have.
 _SKIRT_PROXY_CHAIN_MIN = _knob("CBBE2UBE_SKIRT_PROXY_CHAIN_MIN", 0.5)
@@ -16175,6 +16245,34 @@ def _add_skirt_collider_proxy(dst_path) -> int:
             except Exception:
                 pass
         return out
+
+    # #proxy-encloses-chain: test the hull BEFORE creating the shape. A proxy
+    # containing the chain nodes it exists to collide with starts the solver in
+    # violation, and the cost of that is an intermittent in-game artefact no
+    # offline clip metric sees. Declining is cheaper than shipping it.
+    if PROXY_ENCLOSE_GUARD:
+        try:
+            _cn = {}
+            for _nm, _nd in (nf.nodes or {}).items():
+                if _nm == _SKIRT_PROXY_NAME:
+                    continue
+                if not any(_w in _nm.lower() for _w in
+                           ("skirt", "chain", "hdt", "smp", "cloth")):
+                    continue
+                _tr = _nd.global_transform.translation
+                _cn[_nm] = np.asarray([_tr[0], _tr[1], _tr[2]], dtype=np.float64)
+            if len(_cn) >= 3:
+                _in = _proxy_encloses_chain_nodes(nverts, ntris, _cn)
+                if _in:
+                    print(f"    [skirt-proxy] {p.name}: DECLINED -- the proxy "
+                          f"would CONTAIN {len(_in)} of {len(_cn)} chain "
+                          f"node(s) ({', '.join(_in[:4])}"
+                          f"{'...' if len(_in) > 4 else ''}); a node inside its "
+                          f"own collider starts the solver in violation",
+                          file=sys.stderr)
+                    return 0
+        except Exception as _ee:
+            _note_pass_failure("skirt-proxy/enclose-guard", _ee)
 
     pre_extra, pre_shapes = _all_extra(nf), set(names)
     try:
