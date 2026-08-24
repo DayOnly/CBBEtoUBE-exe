@@ -709,6 +709,22 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "the conversion time, and the meshes come out byte-for-byte "
                     "identical either way. Turn it on if you are chasing a fit "
                     "problem and want the numbers without reconverting twice."),
+    Setting("ride_body_floor",
+            "Stop layered armour being pushed into the body as it is stacked",
+            "Armor", "Fit and clearance", default=False,
+            env="CBBE2UBE_RIDE_BODY_FLOOR", advanced=True,
+            hint="OFF by default and NOT yet judged in game. Turn it on for a "
+                 "build of its own, so a problem can be traced to it.",
+            tooltip="When a garment has several layers, the converter re-places "
+                    "each layer on the one beneath so they stack correctly. That "
+                    "step does not check the body, and it is where most visible "
+                    "clipping comes from: measured over 28 outfits it put 3596 "
+                    "vertices through the skin, and the fitting done before it "
+                    "had left them clean. This lets a layer slide along the body "
+                    "or away from it, never into it. Measured: clipping down 69%, "
+                    "19 outfits better and none worse. The layers still stack "
+                    "exactly as before -- only the inward part of the movement is "
+                    "held back. Enable it ALONE and look at layered cuirasses."),
     Setting("panel_rigid_early_clear",
             "Keep plates straight without pressing them into the body",
             "Armor", "Fit and clearance", default=False,
