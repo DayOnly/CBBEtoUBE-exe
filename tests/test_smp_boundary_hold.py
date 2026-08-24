@@ -52,6 +52,7 @@ SPINE = "NPC Spine [Spn0]"
 SPINE1 = "NPC Spine1 [Spn1]"
 SPINE2 = "NPC Spine2 [Spn2]"
 BELLY = "NPC Belly"
+RARE = "NPC L Clavicle [LClv]"
 _MAX_INFLUENCES = 4
 
 
@@ -165,10 +166,22 @@ OURS_ROW = {PELV: 0.10, SPINE: 0.20, SPINE1: 0.30, SPINE2: 0.40}
 
 
 def _pair(offsets):
-    """A free shape at the given x offsets from the skirt, plus its author."""
-    verts = [(float(x), 0.0, 77.0) for x in offsets]
-    dst = FakeShape("Cuirass", verts, [dict(OURS_ROW) for _ in offsets])
-    src = FakeShape("Cuirass", verts, [dict(AUTHOR_ROW) for _ in offsets])
+    """A free shape at the given x offsets from the skirt, plus its author.
+
+    FILLER VERTS ARE NOT DECORATION. They sit far beyond the falloff, so the
+    pass leaves them alone, and they keep `SPINE2` alive somewhere in the shape.
+    Without them every fixture is a shape whose ONLY vertex carries SPINE2 --
+    holding it to the author empties that bone out of the whole shape, the
+    zero-weight rescue correctly reverts the vertex, and the pass looks broken
+    when it is the fixture that is degenerate. A real garment carries a bone on
+    hundreds of verts.
+    """
+    verts = [(float(x), 0.0, 77.0) for x in offsets] + [(60.0, 0.0, 77.0)] * 2
+    dst = FakeShape("Cuirass", verts,
+                    [dict(OURS_ROW) for _ in range(len(verts))])
+    src = FakeShape("Cuirass", verts,
+                    [dict(AUTHOR_ROW) for _ in offsets]
+                    + [dict(OURS_ROW) for _ in range(2)])
     return dst, src
 
 
@@ -291,3 +304,52 @@ def test_the_pass_never_raises_on_a_broken_shape():
     assert isinstance(n, int)
     assert _l1(dst.row(0), AUTHOR_ROW) < 0.02, (
         "one broken shape stopped the good shape being repaired")
+
+
+# --------------------------------------------------------------------------
+# #zeroweight-bone-desync -- found by the pack-wide gate AFTER the first
+# reconvert that shipped this pass, not by these tests. That is the gap this
+# section closes.
+# --------------------------------------------------------------------------
+
+def test_the_pass_never_takes_a_bones_LAST_vertex():
+    """A bone left in the shape carrying no weight is dropped from the
+    regenerated skin-partition palette, so a per-vertex bone index can run past
+    it -- an equip CTD.
+
+    The 4-influence cap causes this WITHOUT the pass ever meaning to remove a
+    bone: it evicts the lightest, and on the one vertex that was a bone's last
+    carrier that eviction empties it out of the shape.
+    """
+    near = (0.2, 0.0, 77.0)
+    far = (60.0, 0.0, 77.0)
+    # RARE is carried on the NEAR vertex only, lightly enough that blending the
+    # author's row in evicts it.
+    dst = FakeShape("Cuirass", [near, far, far],
+                    [{PELV: 0.30, SPINE: 0.30, SPINE1: 0.30, RARE: 0.10}]
+                    + [dict(OURS_ROW) for _ in range(2)])
+    src = FakeShape("Cuirass", [near, far, far],
+                    [{PELV: 0.34, SPINE: 0.33, SPINE1: 0.33}]
+                    + [dict(OURS_ROW) for _ in range(2)])
+    assert RARE in dst.bone_names, "fixture is inert: RARE is not on the shape"
+    _n, _saved = _run([_skirt(), dst], [_skirt(), src], {"Skirt"})
+    live = [w for _i, w in (dst.bone_weights.get(RARE) or []) if w > 1e-4]
+    assert live, (
+        f"{RARE} was left in the shape with no weight -- palette desync, the "
+        f"#zeroweight-bone-desync class")
+
+
+def test_a_bone_already_empty_before_the_pass_is_not_resurrected():
+    """The rescue must not adopt bones an EARLIER pass emptied -- that would
+    make this pass responsible for every upstream leftover, and it would revert
+    vertices for a defect it did not cause."""
+    dst, src = _pair([0.2])
+    dst._rows[0][RARE] = 0.0          # present in name only, already empty
+    # The fake builds its xform table at construction, so a bone injected
+    # afterwards has none and the shape is skipped WHOLE by the STB guard --
+    # which would make this test pass while measuring nothing.
+    dst._stb.setdefault(RARE, object())
+    n, _saved = _run([_skirt(), dst], [_skirt(), src], {"Skirt"})
+    assert n >= 1, "the pass should still hold the near vertex to the author"
+    assert _l1(dst.row(0), AUTHOR_ROW) < 0.02, (
+        "an already-empty bone made the pass revert a vertex it should hold")

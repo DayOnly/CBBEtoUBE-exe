@@ -14682,6 +14682,54 @@ def _cap_weight_roughness_to_author(dst_path, src_nif_path=None) -> int:
     return total
 
 
+def _restore_emptied_bones(ours, changed) -> int:
+    """Never let a weight pass take a bone's LAST vertex.
+
+    A bone that stays in a shape's bone list while carrying no weight above the
+    write threshold is left out of the regenerated skin-partition palette, so a
+    per-vertex bone index can run past that palette -- an equip CTD
+    (#zeroweight-bone-desync). `_match_coincident_cross_shape_skin` has always
+    honoured this; the two 2026-08-24 passes did not, and the pack-wide gate
+    `verify_zero_weight_bones.py` caught it on the first reconvert that shipped
+    them: 19 newly-emptied bones across the 101 comparable files.
+
+    ANY pass that CAPS a row to four influences can do this, not just one that
+    removes a bone deliberately -- the cap evicts the lightest bone, and on the
+    one vertex where that bone was the shape's last carrier the eviction empties
+    it. Both new passes cap, so both need this.
+
+    THE REPAIR IS TO LEAVE THAT VERTEX ALONE, not to re-add a token weight: a
+    synthesised weight is an invention, while the authored row is already
+    correct and already sums to 1. Dropping the vertex from `changed` costs one
+    vertex of the pass's effect and keeps the palette sound.
+
+    Mutates `changed` in place; returns how many bones were rescued.
+    """
+    if not changed:
+        return 0
+    bones = set()
+    for r in ours:
+        bones |= set(r)
+    for r in changed.values():
+        bones |= set(r)
+    rescued = 0
+    for b in sorted(bones):
+        if any((changed.get(i, ours[i])).get(b, 0.0) > _WRITE_MIN
+               for i in range(len(ours))):
+            continue                      # still carried somewhere: fine
+        # Give it back the vertex where the AUTHOR-side row weighted it most.
+        best_i, best_w = -1, _WRITE_MIN
+        for i in changed:
+            w = ours[i].get(b, 0.0)
+            if w > best_w:
+                best_i, best_w = i, w
+        if best_i < 0:
+            continue     # it was already empty before this pass: not ours
+        del changed[best_i]
+        rescued += 1
+    return rescued
+
+
 _SMP_HOLD_NEAR = _knob("CBBE2UBE_SMP_HOLD_NEAR", 0.5)
 _SMP_HOLD_FAR = _knob("CBBE2UBE_SMP_HOLD_FAR", 6.0)
 _SMP_HOLD_MIN_SHARE = _knob("CBBE2UBE_SMP_HOLD_MIN_SHARE", 0.75)
@@ -14828,6 +14876,11 @@ def _hold_weights_at_smp_boundary(dst_path, src_nif_path=None) -> int:
             if max((abs(row.get(b, 0.0) - ours[i].get(b, 0.0))
                     for b in set(row) | set(ours[i])), default=0.0) > 1e-3:
                 changed[i] = row
+        if not changed:
+            continue
+        # The 4-influence cap above can evict a bone on the one vertex that was
+        # its last carrier, which empties it out of the skin partition palette.
+        _restore_emptied_bones(ours, changed)
         if not changed:
             continue
         # STBs are saved around setShapeWeights and restored after; the reader
@@ -15072,6 +15125,14 @@ def _sync_weight_partner_jiggle(path0, path1) -> int:
                 if max((abs(row.get(b, 0.0) - ours[i].get(b, 0.0))
                         for b in set(row) | set(ours[i])), default=0.0) > 1e-4:
                     changed[i] = row
+            if not changed:
+                continue
+            # BEFORE `to_add`, because rescuing a vertex can remove the only
+            # weight a grafted bone would have had -- and then it must not be
+            # added either. The 4-influence cap above can evict a bone on the
+            # one vertex that was its last carrier, emptying it out of the skin
+            # partition palette.
+            _restore_emptied_bones(ours, changed)
             if not changed:
                 continue
             # Only add a bone that actually lands with weight: an add_bone'd
