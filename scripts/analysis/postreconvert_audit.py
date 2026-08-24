@@ -73,7 +73,84 @@ SPEC = {
     "physics_xmls":            ("NEUTRAL", "physics configs shipped"),
     "xml_bom_double_encoded":  ("LOWER",  "BUG-12: unparseable, FSMP loads no physics"),
     "xml_unparseable":         ("LOWER",  "10 of these are the AUTHORS' and expected"),
+    # #proxy-encloses-chain. A generated collision proxy that CONTAINS the chain
+    # nodes it exists to collide with starts the solver in violation -- confirmed
+    # in game 2026-08-23 as an intermittent skirt spike. The guard declines those,
+    # so this must be 0; it was 16 of 32 before the guard existed.
+    "proxy_encloses_chain":    ("LOWER",  "proxies containing their own chain -- must be 0"),
+    "skirt_proxies":           ("NEUTRAL", "generated collision proxies; falls as bad ones are declined"),
 }
+
+
+_PROXY_NAMES = ("skirtcol",)
+_CHAINY = ("skirt", "chain", "hdt", "smp", "cloth")
+
+
+def _inside(pts, V, T):
+    """Ray parity. Direction deliberately NOT axis-aligned: an axis ray exits
+    through a shared triangle EDGE on a mesh symmetric about that axis, both
+    triangles register a hit, and parity flips so a contained point reads as
+    outside."""
+    import numpy as _np
+    a, b, c = V[T[:, 0]], V[T[:, 1]], V[T[:, 2]]
+    e1, e2 = b - a, c - a
+    d = _np.array([1.0, 0.3178123, 0.1290551])
+    d = d / _np.linalg.norm(d)
+    h = _np.cross(_np.broadcast_to(d, e2.shape), e2)
+    det = _np.einsum("ij,ij->i", e1, h)
+    ok = _np.abs(det) > 1e-12
+    n = 0
+    for pt in pts:
+        s = pt - a
+        u = _np.einsum("ij,ij->i", s, h) / _np.where(ok, det, 1.0)
+        q = _np.cross(s, e1)
+        v = _np.einsum("j,ij->i", d, q) / _np.where(ok, det, 1.0)
+        tt = _np.einsum("ij,ij->i", e2, q) / _np.where(ok, det, 1.0)
+        hit = ok & (u >= 0) & (u <= 1) & (v >= 0) & (u + v <= 1) & (tt > 1e-6)
+        n += int(int(hit.sum()) % 2)
+    return n
+
+
+def _proxy_metrics(meshes: Path) -> dict:
+    """Generated proxies, and how many contain their own chain. #proxy-encloses-chain
+
+    Only pieces that HAVE a proxy are opened past the shape list, so this is ~32
+    meshes of ~1500 rather than a pack-wide ray cast.
+    """
+    out = {"skirt_proxies": 0, "proxy_encloses_chain": 0}
+    try:
+        import numpy as _np
+        from pyn import pynifly as _pyn
+    except Exception:
+        return {}
+    for f in sorted(meshes.rglob("*_1.nif")):
+        try:
+            nf = _pyn.NifFile(filepath=str(f))
+            prox = [s for s in nf.shapes
+                    if (s.name or "").lower() in _PROXY_NAMES]
+            if not prox:
+                continue
+            nodes = {}
+            for nm, nd in (nf.nodes or {}).items():
+                if not any(w in nm.lower() for w in _CHAINY):
+                    continue
+                if (nm or "").lower() in _PROXY_NAMES:
+                    continue
+                tr = nd.global_transform.translation
+                nodes[nm] = _np.asarray([tr[0], tr[1], tr[2]], dtype=float)
+            for s in prox:
+                out["skirt_proxies"] += 1
+                if len(nodes) < 3:
+                    continue
+                V = _np.asarray(s.verts, dtype=float)
+                T = _np.asarray(s.tris, dtype="int64").reshape(-1, 3)
+                if len(V) < 4 or len(T) < 4:
+                    continue
+                if _inside(_np.asarray(list(nodes.values())), V, T):
+                    out["proxy_encloses_chain"] += 1
+        except Exception:
+            continue
+    return out
 
 
 def measure(out_mod: Path) -> dict:
@@ -103,6 +180,7 @@ def measure(out_mod: Path) -> dict:
                 m[f"pass_failure:{name}"] = n
     meshes = out_mod / "meshes"
     if meshes.is_dir():
+        m.update(_proxy_metrics(meshes))
         m["pack_nifs"] = sum(1 for _ in meshes.rglob("*.nif"))
         xmls = list(meshes.rglob("*.xml"))
         m["physics_xmls"] = len(xmls)
