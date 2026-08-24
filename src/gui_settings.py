@@ -165,6 +165,26 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "with the author, better on 39 and slightly worse on 3, "
                     "and outfits without cloth physics are left byte-for-byte "
                     "identical. Changes weighting only; nothing moves."),
+    Setting("weight_partner_jiggle_sync",
+            "Give an outfit the same jiggle at both body weights",
+            "Armor", "Seams", default=True,
+            env="CBBE2UBE_NO_WEIGHT_PARTNER_JIGGLE_SYNC", invert=True,
+            hint="Fixes a belt or skirt that jiggles on a curvy character but "
+                 "sits rigid on a slim one, or the reverse.",
+            tooltip="Every outfit ships as two meshes, one for the slimmest "
+                    "body and one for the fullest, and the game blends between "
+                    "them. Armour that hugs the belly, backside or bust is "
+                    "given the body's jiggle so it moves with it instead of "
+                    "letting the body poke through -- but whether a piece "
+                    "counts as hugging is decided for each of the two meshes "
+                    "separately, and the fuller body naturally sits closer. "
+                    "About twenty outfits land either side of that line, so "
+                    "they get the jiggle at one body weight and not the other. "
+                    "This gives the mesh that missed out the same jiggle bone "
+                    "its partner already has, copied across exactly. Measured: "
+                    "20 mismatched outfits down to 1, which is declined on "
+                    "purpose because its data cannot be read safely. Changes "
+                    "weighting only; nothing moves."),
     Setting("back_bound_edit",
             "...and cap how far that allowance may push",
             "Armor", "Fit and clearance", default=False,

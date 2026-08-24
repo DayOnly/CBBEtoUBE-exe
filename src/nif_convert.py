@@ -14903,6 +14903,267 @@ def _hold_weights_at_smp_boundary(dst_path, src_nif_path=None) -> int:
     return total
 
 
+_WP_JIGGLE_PRESENT_MIN = _knob("CBBE2UBE_WP_JIGGLE_PRESENT_MIN", 8, int)
+_WP_JIGGLE_ABSENT_MAX = _knob("CBBE2UBE_WP_JIGGLE_ABSENT_MAX", 1, int)
+_WP_JIGGLE_PEAK_MIN = _knob("CBBE2UBE_WP_JIGGLE_PEAK_MIN", 0.10)
+_WP_JIGGLE_MAX_SHARE = _knob("CBBE2UBE_WP_JIGGLE_MAX_SHARE", 0.9)
+WEIGHT_PARTNER_JIGGLE_SYNC = not _flag(
+    "CBBE2UBE_NO_WEIGHT_PARTNER_JIGGLE_SYNC", False)
+
+
+def _sync_weight_partner_jiggle(path0, path1) -> int:
+    """Give a garment the SAME jiggle bones at both body weights.
+
+    THE DEFECT, every one of the 20 `weight_partner_warnings` on the 2026-08-24
+    pack. `_transfer_body_jiggle_to_fitted` grafts butt/belly/breast weight onto
+    a garment that HUGS a jiggling body region, gated on a fit FRACTION
+    (`_TORSO_JIGGLE_FIT_FRAC`, 0.5). That gate is evaluated PER FILE -- but `_0`
+    and `_1` are ONE garment at two body weights, with different geometry and so
+    different fit fractions. Around twenty pieces straddle the threshold, so the
+    graft fires on one weight and not the other:
+
+        piece                          bone        OURS _0/_1   AUTHOR _0/_1
+        armor/imperial/f/cuirassheavy  NPC Belly      . / Y        . / .
+        armor/imperial/f/cuirasslight  NPC Belly      Y / .        . / .
+
+    **WE add the bone to one weight; the author has it in NEITHER**, and the
+    direction FLIPS between the heavy and light cuirass -- a straddled
+    threshold, not a bias. `_CONFORM_MIN_JIGGLE_VERTS` (8) is exactly the
+    detector's `present_min`: the two constants describe the same edge.
+
+    UNION, NOT INTERSECTION. Removing the bone from the side that has it would
+    throw away the anti-poke the graft exists for, so the deficient side gets it
+    instead.
+
+    THE PARTNER IS THE SOURCE, and both halves of that are measured:
+
+      * the WEIGHTS come from the partner BY VERTEX INDEX -- `_0` and `_1` are
+        the same mesh, so the pairing is exact and no proximity guess is needed;
+      * the new bone's SKIN-TO-BONE XFORM is copied from the partner, verified
+        identical across variants on every shared scale bone in a 60-pair sample
+        (611 identical, 0 different, 0 unreadable). The two files carry the same
+        skeleton and bind pose; only vertex positions differ.
+
+    ONLY THE BONE IS GRAFTED, NOT THE ROW. The rest of a vertex's weighting
+    legitimately differs between weights (measured: mean L1 0.03-0.29 apart from
+    the missing bone, and most rows differ), so copying the partner's whole row
+    would overwrite each variant's own body-follow. The existing row is scaled
+    down to make room, the graft added, then re-capped to four influences --
+    never evicting a bone being grafted, or the pass would undo itself.
+
+    `add_bone` RESETS EVERY SKIN-TO-BONE XFORM ([[project_identity_stb_collider]]
+    -- the class that shipped 174 of 176 colliders at identity), so every
+    existing STB is saved first and restored last, and a shape with even ONE
+    unreadable STB is skipped whole rather than shipped reset. A bone is also
+    never added unless it lands with weight: an `add_bone`'d bone with an empty
+    weight list desyncs the partition palette -> equip CTD.
+
+    WEIGHTS ONLY: no vertex moves. Returns verts changed across both files.
+    Off with CBBE2UBE_NO_WEIGHT_PARTNER_JIGGLE_SYNC=1.  #weight-partner-jiggle-sync
+    """
+    if not WEIGHT_PARTNER_JIGGLE_SYNC:
+        return 0
+    try:
+        pyn = _pynifly()
+        nf = {"0": pyn.NifFile(filepath=str(path0)),
+              "1": pyn.NifFile(filepath=str(path1))}
+    except Exception as _oe:
+        _note_pass_failure("_sync_weight_partner_jiggle/open", _oe)
+        return 0
+
+    def _rows(shape):
+        n = len(shape.verts)
+        out = [dict() for _ in range(n)]
+        for bn, prs in (shape.bone_weights or {}).items():
+            pl = prs.tolist() if hasattr(prs, "tolist") else prs
+            for i, w in pl:
+                i = int(i)
+                if 0 <= i < n and w > 0:
+                    out[i][bn] = out[i].get(bn, 0.0) + float(w)
+        return out
+
+    by = {w: {(s.name or ""): s for s in nf[w].shapes} for w in ("0", "1")}
+    # weight-that-is-DEFICIENT -> {shape name: [bones to graft]}
+    plan: dict = {"0": {}, "1": {}}
+    for name, s0 in by["0"].items():
+        s1 = by["1"].get(name)
+        if not name or s1 is None:
+            continue
+        try:
+            if len(s0.verts) != len(s1.verts) or not len(s0.verts):
+                continue
+            r0, r1 = _rows(s0), _rows(s1)
+        except Exception as _re:
+            _note_pass_failure("_sync_weight_partner_jiggle/rows", _re)
+            continue
+        cand = {b for b in (list(s0.bone_names or []) + list(s1.bone_names or []))
+                if _is_scale_bone(b)}
+        for bn in sorted(cand):
+            c0 = sum(1 for r in r0 if r.get(bn, 0.0) > _WRITE_MIN)
+            c1 = sum(1 for r in r1 if r.get(bn, 0.0) > _WRITE_MIN)
+            p0 = max((r.get(bn, 0.0) for r in r0), default=0.0)
+            p1 = max((r.get(bn, 0.0) for r in r1), default=0.0)
+            # Same rule as the detector: substantially present on one side,
+            # effectively absent on the other, and actually MOVING the mesh.
+            if (c0 >= _WP_JIGGLE_PRESENT_MIN and c1 <= _WP_JIGGLE_ABSENT_MAX
+                    and p0 >= _WP_JIGGLE_PEAK_MIN):
+                plan["1"].setdefault(name, []).append(bn)
+            elif (c1 >= _WP_JIGGLE_PRESENT_MIN and c0 <= _WP_JIGGLE_ABSENT_MAX
+                    and p1 >= _WP_JIGGLE_PEAK_MIN):
+                plan["0"].setdefault(name, []).append(bn)
+
+    total = 0
+    for side in ("0", "1"):
+        if not plan[side]:
+            continue
+        other = "1" if side == "0" else "0"
+        dirty = False
+        for name, bones in sorted(plan[side].items()):
+            s, src = by[side][name], by[other][name]
+            ours, theirs = _rows(s), _rows(src)
+            existing = list(s.bone_names or [])
+            # The new bones' STBs, from the partner, BEFORE anything is written.
+            new_stb: dict = {}
+            unreadable = None
+            for b in bones:
+                if b in existing:
+                    continue
+                try:
+                    st = src.get_shape_skin_to_bone(b)
+                except Exception as _pe:
+                    _note_pass_failure("_sync_weight_partner_jiggle/stb", _pe)
+                    st = None
+                if st is None:
+                    unreadable = b
+                    break
+                new_stb[b] = st
+            if unreadable is not None:
+                print(f"  weight-partner jiggle: SKIPPED {name!r} -- the "
+                      f"partner has no skin-to-bone xform for {unreadable!r}, "
+                      f"so the graft would ship it at the origin",
+                      file=sys.stderr)
+                continue
+            changed: dict = {}
+            for i in range(len(ours)):
+                add = {b: theirs[i][b] for b in bones
+                       if theirs[i].get(b, 0.0) > _WRITE_MIN}
+                if not add:
+                    continue
+                share = sum(add.values())
+                if share >= _WP_JIGGLE_MAX_SHARE:
+                    # The graft must never annihilate the row it lands on.
+                    k = _WP_JIGGLE_MAX_SHARE / share
+                    add = {b: w * k for b, w in add.items()}
+                    share = _WP_JIGGLE_MAX_SHARE
+                row = {b: w * (1.0 - share) for b, w in ours[i].items()}
+                for b, w in add.items():
+                    row[b] = row.get(b, 0.0) + w
+                row = {b: w for b, w in row.items() if w > _WRITE_MIN}
+                if len(row) > 4:
+                    # Evict the lightest, but NEVER a bone being grafted -- that
+                    # would leave the divergence exactly as it was found.
+                    for _w, b in sorted((w, b) for b, w in row.items()
+                                        if b not in add)[:len(row) - 4]:
+                        row.pop(b, None)
+                t = sum(row.values())
+                if t <= 0:
+                    continue
+                row = {b: w / t for b, w in row.items()}
+                if max((abs(row.get(b, 0.0) - ours[i].get(b, 0.0))
+                        for b in set(row) | set(ours[i])), default=0.0) > 1e-4:
+                    changed[i] = row
+            if not changed:
+                continue
+            # Only add a bone that actually lands with weight: an add_bone'd
+            # bone shipped with an EMPTY weight list desyncs the partition
+            # palette -> out-of-range read -> equip CTD.
+            #
+            # SORTED, and that is not cosmetic (BUG-04): add_bone order IS the
+            # written NIF's bone palette order, which decides which bone the
+            # 4-influence cap evicts on a tie. Sorting makes the output
+            # INTRINSICALLY ordered instead of depending on how `bones` was
+            # accumulated.
+            to_add = sorted(b for b in bones if b not in existing
+                            and any(r.get(b, 0.0) > _WRITE_MIN
+                                    for r in changed.values()))
+            if not to_add and not any(b in existing for b in bones):
+                continue
+            saved_stb: dict = {}
+            missing_for = None
+            for eb in existing:
+                try:
+                    st = s.get_shape_skin_to_bone(eb)
+                except Exception as _xe:
+                    _note_pass_failure("_sync_weight_partner_jiggle/stb", _xe)
+                    st = None
+                if st is None:
+                    missing_for = eb
+                    break
+                saved_stb[eb] = st
+            if missing_for is not None:
+                print(f"  weight-partner jiggle: SKIPPED {name!r} -- cannot "
+                      f"read the skin-to-bone xform for {missing_for!r}, so "
+                      f"add_bone would leave it at identity",
+                      file=sys.stderr)
+                continue
+            try:
+                for b in to_add:
+                    s.add_bone(b)
+            except Exception as _ae:
+                _note_pass_failure("add_bone", _ae)
+                for eb, st in saved_stb.items():
+                    try:
+                        s.set_skin_to_bone_xform(eb, st)
+                    except Exception as _pe:
+                        _note_pass_failure("set_skin_to_bone_xform", _pe)
+                continue
+            write_bones = set()
+            removed: dict = {}
+            for i, new in changed.items():
+                write_bones |= set(new) | set(ours[i])
+                for b in set(ours[i]) - set(new):
+                    removed.setdefault(b, set()).add(i)
+            try:
+                for b in sorted(write_bones):
+                    rem = removed.get(b)
+                    if rem:
+                        s.setShapeWeights(b, [(i, 0.0) for i in sorted(rem)])
+                for b in sorted(write_bones):
+                    prs = [(i, changed[i][b]) for i in sorted(changed)
+                           if changed[i].get(b, 0.0) > _WRITE_MIN]
+                    if prs:
+                        s.setShapeWeights(b, prs)
+            except Exception as _we:
+                print(f"  WARN: weight-partner jiggle write failed on "
+                      f"{name!r} ({_we!r}) -- STBs restored",
+                      file=sys.stderr)
+            # STBs LAST: add_bone AND setShapeWeights can each reset them.
+            for eb, st in saved_stb.items():
+                try:
+                    s.set_skin_to_bone_xform(eb, st)
+                except Exception as _pe:
+                    _note_pass_failure("set_skin_to_bone_xform", _pe)
+            for b in to_add:
+                try:
+                    s.set_skin_to_bone_xform(b, new_stb[b])
+                except Exception as _pe:
+                    _note_pass_failure("set_skin_to_bone_xform", _pe)
+            s._weights = None
+            total += len(changed)
+            dirty = True
+        if dirty:
+            dst = path0 if side == "0" else path1
+            try:
+                atomic_nif_save(nf[side], dst)
+            except Exception as _se:
+                _note_pass_failure("_sync_weight_partner_jiggle/save", _se, dst)
+                return 0
+    if total:
+        _note_pass_effect("#weight-partner-jiggle-sync",
+                          f"synced {total} vert(s) across the weight pair")
+    return total
+
+
 def _transfer_body_jiggle_to_fitted(dst_path, biped_slots: int = 0,
                                     src_nif_path=None) -> int:
     """Graft the UBE body's jiggle (butt/belly/breast) weight onto a fitted

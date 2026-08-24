@@ -3248,6 +3248,20 @@ def _cmd_convert(args):
     except Exception as _wpe:
         print(f"  !! postflight weight-partner scan skipped: {_wpe!r}")
 
+    # Postflight REPAIR, and it runs BEFORE the detector below so that detector
+    # reports the state that actually ships. The jiggle graft's fit gate is
+    # judged per FILE, but `_0` and `_1` are ONE garment: ~20 pieces straddle
+    # the threshold and end up with belly or butt jiggle at one body weight
+    # only. This gives the deficient weight its partner's bone.
+    # #weight-partner-jiggle-sync
+    try:
+        _wp_sync = _postflight_sync_weight_partner_jiggle(output)
+        if _wp_sync:
+            print(f"\n  weight-partner jiggle sync: {_wp_sync} vert(s) given "
+                  f"their partner's scale bone")
+    except Exception as _wps:
+        print(f"  !! postflight weight-partner jiggle sync skipped: {_wps!r}")
+
     # Postflight: flag `_0`/`_1` partners whose converted scale-bone set diverges
     # (per-file metadata leaking to one weight -> the two morph differently; e.g.
     # the #slot0-weight-partner slot-0 bug). Read-only NIF pass; disable for speed
@@ -4056,6 +4070,37 @@ def _postflight_weight_partner_divergence(output_dir) -> "list[str]":
         out.extend(_weight_partner_scale_divergence(
             list(n0.shapes), list(n1.shapes), label))
     return out
+
+
+def _postflight_sync_weight_partner_jiggle(output_dir) -> int:
+    """REPAIR the divergence `_postflight_weight_partner_divergence` detects:
+    walk every `_0`/`_1` pair and give the deficient weight its partner's jiggle
+    bone. The mechanism, the evidence for copying the partner's skin-to-bone
+    xform, and why UNION rather than removal is the right resolution are all in
+    `nif_convert._sync_weight_partner_jiggle`.
+
+    Pairs are grouped exactly as the detector groups them, so the two agree on
+    what a pair IS. Returns verts changed; a pair that raises is skipped rather
+    than aborting the batch. #weight-partner-jiggle-sync"""
+    import re as _re
+    meshes = Path(output_dir) / "meshes"
+    if not meshes.is_dir():
+        return 0
+    groups: "dict[tuple, dict]" = {}
+    for p in meshes.glob("**/*.nif"):
+        m = _re.match(r"(.*)_([01])\.nif$", p.name, _re.IGNORECASE)
+        if m:
+            groups.setdefault((str(p.parent), m.group(1)), {})[m.group(2)] = p
+    total = 0
+    for _key, byw in sorted(groups.items()):
+        if "0" not in byw or "1" not in byw:
+            continue
+        try:
+            total += nif_convert._sync_weight_partner_jiggle(
+                byw["0"], byw["1"])
+        except Exception:
+            continue
+    return total
 
 
 _BATCH_BSA_INDEX = None   # set per-batch by _cmd_convert; lazy BSA mesh resolver
