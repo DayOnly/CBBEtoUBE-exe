@@ -694,6 +694,44 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "better: a plate here is a closed BAND, so forcing it rigid "
                     "drives its back half into the spine (buried vertices "
                     "doubled). Leave it at 0.75."),
+    Setting("standoff_band_audit",
+            "Record detailed fit measurements while converting (slower)",
+            "Armor", "Fit and clearance", default=False,
+            env="CBBE2UBE_STANDOFF_BAND_AUDIT", advanced=True,
+            hint="OFF by default. Changes no vertex -- it only writes extra "
+                 "measurements to read later.",
+            tooltip="The converter can measure how far each piece sits off the "
+                    "body, band by band, and write it to a log beside the "
+                    "output. Nothing in the conversion or its checks reads that "
+                    "log -- the final check re-measures the finished mesh "
+                    "itself -- so it is purely for diagnosing a problem after "
+                    "the fact. Measured on a five-shape cuirass it costs 17% of "
+                    "the conversion time, and the meshes come out byte-for-byte "
+                    "identical either way. Turn it on if you are chasing a fit "
+                    "problem and want the numbers without reconverting twice."),
+    Setting("panel_rigid_early_clear",
+            "Keep plates straight without pressing them into the body",
+            "Armor", "Fit and clearance", default=False,
+            env="CBBE2UBE_PANEL_RIGID_EARLY_CLEAR", advanced=True,
+            hint="OFF by default and NOT yet judged in game. Turn it on for a "
+                 "build of its own, so a problem can be traced to it.",
+            tooltip="Straightening a plate can drag part of it under the skin; "
+                    "the converter currently lets that happen and pushes "
+                    "everything back out afterwards. Measured on three garments, "
+                    "0 vertices inside the body became 491, 83 and 38 before "
+                    "being pushed clear again. Nothing is visibly wrong -- but "
+                    "the push that cleans it up is the same one holding clothing "
+                    "off the skin, so it cannot be tightened while it is also "
+                    "doing this repair. This solves each plate against the body "
+                    "instead, so it is never pressed in to begin with. The plate "
+                    "still moves as one piece. Measured: clothing sits through "
+                    "the skin far less both standing still and with the body "
+                    "morphed -- on the majority of armours it improved every "
+                    "piece tested, one of them by 40%. The risk is the opposite "
+                    "defect: a plate that sits close to the skin gets "
+                    "straightened less, so a crisp indent could soften. That is "
+                    "the part no measurement can settle. Enable it ALONE, look "
+                    "at layered cuirasses, and report back."),
     Setting("panel_rigidity_fine_anim",
             "Also keep plates straight on gauntlets, boots and heels",
             "Armor", "Fit and clearance", default=False,

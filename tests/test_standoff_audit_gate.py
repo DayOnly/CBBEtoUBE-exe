@@ -40,9 +40,15 @@ def test_the_audit_flag_is_consulted_before_the_cast_is_built():
     src = inspect.getsource(nc.convert_nif_phase2)
     i = src.index("_TorsoCast(")
     head = src[:i]
-    # the nearest enclosing condition must already have consulted the flag
-    assert "fit_metrics._enabled()" in head, (
-        "_TorsoCast is built before the audit flag is checked -- the off-switch "
+    # The nearest enclosing condition must already have consulted A gate.
+    # It is `_band_enabled()` since 2026-08-23: one switch over two very
+    # different costs meant turning the rays off also discarded the 88% of
+    # records that are free, so nobody turned it off. Either gate satisfies the
+    # PROPERTY this test exists for -- the cast must not be built ungated -- and
+    # naming both keeps it from failing on a legitimate re-split.
+    assert ("fit_metrics._band_enabled()" in head
+            or "fit_metrics._enabled()" in head), (
+        "_TorsoCast is built before any audit flag is checked -- the off-switch "
         "would skip the write but still pay for the rays")
 
 
@@ -52,7 +58,12 @@ def test_the_recorders_still_guard_themselves():
     reintroduce the write."""
     for fn in (fit_metrics.record_standoff, fit_metrics.record_torso_bands):
         body = inspect.getsource(fn)
+        # `_band_enabled()` contains `_enabled()` as a substring, so this holds
+        # for either gate -- which is what "self-guards" means here.
         assert "_enabled()" in body, f"{fn.__name__} no longer self-guards"
+        assert "_band_enabled()" in body, (
+            f"{fn.__name__} writes RAY-CAST records but answers to the cheap "
+            f"gate -- it would drift from the branch that pays for them")
 
 
 def test_the_flag_actually_flips(monkeypatch):

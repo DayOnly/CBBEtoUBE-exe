@@ -97,6 +97,41 @@ def _enabled() -> bool:
     return os.environ.get("CBBE2UBE_NO_STANDOFF_AUDIT") != "1"
 
 
+def _band_enabled() -> bool:
+    """Is the RAY-CAST half of the audit on?  #standoff-band-audit
+
+    ONE GATE OVER TWO VERY DIFFERENT COSTS was the wrong granularity. Measured
+    2026-08-23 on the shipped 26.1 MB sink of a full reconvert:
+
+        kind             records      MB   share of file   cost
+        chain_shift        71478    21.9        84.1%      ~free (no rays)
+        standoff_band       9684     2.6        10.1%      the ray casts
+        chain               4577     1.1         4.2%      ~free
+        frame                  4     0.0         0.0%      ~free
+
+    The expensive records are a TENTH of the file and, interleaved medians over
+    a 5-shape body-swap cuirass, **17.5% of the whole conversion** (44.0s ->
+    36.3s) -- with output byte-identical, because this is telemetry and cannot
+    move a vertex. Turning the single old switch off also threw away the 88% of
+    records that cost nothing, so nobody ever turned it off.
+
+    DEFAULT OFF, because nothing in the SHIPPING pipeline reads these: postflight
+    check E recomputes clipping and standoff from the finished NIF rather than
+    reading the sink. Their consumers are all explicitly-run analysis tools
+    (`audit_sink.py`, `survival_report.py`). Turn them back on for a run you
+    intend to analyse:
+
+        CBBE2UBE_STANDOFF_BAND_AUDIT=1
+
+    WHAT YOU LOSE: post-hoc bust/torso standoff per shape. If a fit question
+    comes up later you must re-run that piece with the flag on rather than
+    reading the pack's sink -- cheap for one piece, not for 1500.
+    """
+    if not _enabled():
+        return False
+    return os.environ.get("CBBE2UBE_STANDOFF_BAND_AUDIT") == "1"
+
+
 def standoff(body_verts, body_normals, garment_verts, garment_tris,
              idx, tmax: float = TMAX, chunk: int = 512):
     """Distance along +normal from each body vert in `idx` to the garment.
@@ -1468,8 +1503,13 @@ def record_torso_bands(dst_path, shape_name, garment_verts, garment_tris,
     cuirass when measuring several bands. `tests/test_torso_bands.py` asserts
     the two agree on the same index, so the mixed implementation is justified
     rather than assumed.
+
+    Gated on `_band_enabled()` -- these are the RAY-CAST records. The caller
+    already skips the cast, but a writer answering to a looser gate than its own
+    cost drifts from it the first time someone calls it directly.
+    #standoff-band-audit
     """
-    if not _enabled():
+    if not _band_enabled():
         return []
     out = []
     try:
@@ -1519,8 +1559,10 @@ def record_standoff(dst_path, shape_name, garment_verts, garment_tris,
     Returns the record, or None when there was nothing to measure. A failure
     is recorded with its exception rather than dropped: a measurement that
     could not run must not be indistinguishable from one that found nothing.
+
+    Gated on `_band_enabled()`, the RAY-CAST gate -- see `record_torso_bands`.
     """
-    if not _enabled():
+    if not _band_enabled():
         return None
     try:
         if body_verts is None or body_normals is None:

@@ -1150,16 +1150,53 @@ ADAPTIVE_CLEARANCE_MORPH_MAX = _knob("CBBE2UBE_CLEARANCE_MORPH_MAX", 1.1)
 
 # --- Authored-aware outward push (#authored-inflate) ----------------------
 #
-# WARNING, MEASURED 2026-08-13: THIS FLAG CANNOT FIRE AT THE SHIPPING DEFAULTS.
-# The floor below is implemented in the ADDITIVE path, and `#clearance-field`
-# replaced that path with a solve -- `CLEARANCE_FIELD_INFLATE`, DEFAULT ON since
-# the fold-class fix -- which returns before the floor is consulted. Traced on a
-# skin-tight layer: `AUTHORED_INFLATE=1` alone changed its standoff by NOTHING
-# (0.791u either way), and only `AUTHORED_INFLATE=1 CLEARANCE_FIELD_INFLATE=0`
-# moved it (0.689u). So the census below is real but the feature is unreachable:
-# an opt-in that cannot fire is a fix that does not ship (#audit-2026-08-01-flags).
-# To make it count, carry the floor INTO `_solve_clearance_field`'s constraint
-# rather than applying it to `push_len` beforehand.
+# RE-MEASURED 2026-08-23: THE FLAG FIRES ON THE COPY PATH AND IS INERT ON THE
+# BODY-SWAP PATH. It splits the pack, which is worse than being uniformly dead
+# because a verdict measured on one path does not transfer to the other.
+#
+#   copy       16 shapes / 6 pieces: median |shipped - authored| 0.077u -> 0.043u
+#              (-44%), 10/16 shapes closer to the author, clipping +36 verts
+#              (+2.1%) -- the small clip rise is the MONOTONE design working,
+#              since a reduced push leaves cloth nearer the skin by construction.
+#   body-swap   9 shapes / 5 pieces: 0.081u -> 0.092u, 2/9 closer, and the
+#              census's own defect shape does not move at all (a bra the author
+#              held 0.33u off the skin ships at 1.19u in BOTH arms).
+#
+# THERE ARE TWO REASONS, AND FIXING ONLY THE FIRST CHANGES NOTHING.
+#
+# (1) THE FLOOR IS BLIND ON PHASE 2. The floor reads
+# the authored standoff as `dot(src_armor - src_body, src_body_normal)`, so a
+# zero normal makes `authored` zero for every vertex and the floor collapses to
+# the plain buffer, carrying no authored information at all. The copy path builds
+# that normal with `_cached_cbbe_body_normals`, which RECOMPUTES when the stored
+# ones are unusable; phase 2 uses the STORED normals unless `_SRC_NORMAL_FIX` is
+# on, and it is default off. Measured on this modlist's CBBE base: 18436 of
+# 18436 stored normals are zero-length (100%), matching the "18 of 21 sampled
+# inline bodies" already recorded at the phase-2 site.
+#
+# (2) A LATER PASS OVERWRITES THE RESULT, which is why (1) is not worth fixing on
+# its own. Stage-traced on that bra (author 0.33u, ships 1.19u):
+#
+#     s02_warp 0.370 -> s03_inflate 1.241 (+0.872) -> s04_conform 0.952
+#     -> s06_panel_rigidity 0.851 -> s07_antipoke 1.294 (+0.443) -> ships 1.193
+#
+# TWO passes set the standoff, not one. This floor is monotone at `s03` only, so
+# `s07_antipoke` pushes back out regardless of what it does. Measured: turning on
+# the source-normal fix alone moved the aggregate 0.257u -> 0.262u, adding this
+# floor 0.264u, and adding `#authored-antipoke` as well 0.264u -- the bra reads
+# 1.19 -> 1.20 in every one of those arms. Anti-poke's own floor deliberately
+# refuses to relax where the body morphs outward, and a bra is on the bust, so
+# the bust case is policy (morph headroom) rather than an oversight. Any real fix
+# here has to move BOTH pushes, and has to be judged in game against poke-through
+# rather than on bind-pose standoff alone.
+#
+# The superseded 2026-08-13 note claimed the flag "CANNOT FIRE AT THE SHIPPING
+# DEFAULTS" because `CLEARANCE_FIELD_INFLATE`'s solve "returns before the floor
+# is consulted". That is not what the code does: the floor rewrites `push_len`,
+# and the solve then takes `push_len` as its lower bound (a8a70b2 says so at the
+# call). What the solve skips is the ADDITIVE APPLICATION below it, not the
+# floor. Anyone re-reading that note would have skipped the one lever aimed at
+# this defect.
 #
 # `inflate_armor_outward` is ADDITIVE: it adds its per-vert magnitude to
 # whatever standoff a vertex already has, and it has never known where the
@@ -1503,6 +1540,25 @@ WARP_DELTA_SMOOTH_WEIGHT = float(
 #
 # It also explains `#unified-offset`: that solver was asked for
 # clip(target, floor, ceiling) with target identically ZERO.
+#
+# WHAT IT COSTS THE REST OF THE CHAIN, measured 2026-08-23 with the damage/repair
+# ledger over 34 body-swap shapes. With the target zeroed, `conform` is a net
+# damage CREATOR; with the normals fixed it is roughly neutral, which is what a
+# pass with a correct target should look like:
+#
+#     s04_conform            default   SRC_NORMAL_FIX=1
+#       creates penetration      476        46   (-90%)
+#       creates stretch         1831       540   (-71%)
+#
+# and the passes downstream do less work for it -- `panel_rigidity` creates
+# 4721 -> 4055, `antipoke` repairs 4902 -> 3894. So the broken target is not only
+# wrong for conform, it is manufacturing the load the repair passes carry.
+#
+# READ THE SHIPPED NUMBER WITH WEIGHTING. Pooled, the final mesh looks worse
+# (1031 -> 1327 stretched edges) -- but that total is carried by ONE garment
+# counted twice (its `_0` and `_1` weight variants, +315 between them) while
+# everything else nets negative. Per shape it is 6 better / 6 worse / 22
+# unchanged, and the median stretched-edge RATE goes 0.005% -> 0.000%.
 #
 # STILL DEFAULT OFF, but now for a different and smaller reason: every fit
 # constant here was tuned over dozens of in-game cycles WITH the zeroed normals
@@ -6359,13 +6415,34 @@ def convert_nif(
                     # #panel-rigidity-fine-anim, opt-in. Digits masked out.
                     if PANEL_RIGIDITY_FINE_ANIM and PANEL_RIGIDITY > 0:
                         try:
-                            _pv_hf, _np_hf, _wd_hf = _partial_rigid_panels(
-                                hf_orig, hf_verts,
-                                np.asarray(s.tris, dtype=np.int64),
-                                PANEL_RIGIDITY,
-                                skip_mask=_extremity_vert_mask(
-                                    s, len(hf_verts)),
-                                min_verts=PANEL_RIGIDITY_MIN_VERTS)
+                            # #panel-rigid-early-clearance reaches here too.
+                            # This site is behind a DIFFERENT opt-in
+                            # (PANEL_RIGIDITY_FINE_ANIM), so leaving it on the
+                            # blind form would plant the same body-blind
+                            # penetration for whoever promotes that flag later
+                            # -- the exact shape of gap that let `inflate_hf`
+                            # skip the authored floor unnoticed.
+                            if (PANEL_RIGID_EARLY_CLEAR
+                                    and body_verts_for_fit is not None
+                                    and body_normals_for_fit is not None):
+                                _pv_hf, _np_hf, _wd_hf = (
+                                    _rigidify_within_clearance(
+                                        hf_orig, hf_verts,
+                                        np.asarray(s.tris, dtype=np.int64),
+                                        body_verts_for_fit,
+                                        body_normals_for_fit,
+                                        PANEL_RIGIDITY,
+                                        skip_mask=_extremity_vert_mask(
+                                            s, len(hf_verts)),
+                                        min_verts=PANEL_RIGIDITY_MIN_VERTS))
+                            else:
+                                _pv_hf, _np_hf, _wd_hf = _partial_rigid_panels(
+                                    hf_orig, hf_verts,
+                                    np.asarray(s.tris, dtype=np.int64),
+                                    PANEL_RIGIDITY,
+                                    skip_mask=_extremity_vert_mask(
+                                        s, len(hf_verts)),
+                                    min_verts=PANEL_RIGIDITY_MIN_VERTS)
                             if _np_hf:
                                 hf_verts = _pv_hf
                                 hf_verts_modified = True
@@ -6571,10 +6648,14 @@ def convert_nif(
                                 # it does have the body the garment was authored
                                 # against -- the CBBE base it warps from, the
                                 # same pair the phase-1 conform reads below.
-                                # Without this the floor would reach only
-                                # phase 2, i.e. 4400 of the census's 13,889
-                                # shape-pairs, and quietly leave the other
-                                # two thirds on the blind additive push.
+                                # This is the ONLY reason the floor carries
+                                # authored information at all: it RECOMPUTES the
+                                # source-body normals, which ship zero-length,
+                                # and a zero normal silently zeroes the authored
+                                # standoff. Phase 2 reads the stored ones and is
+                                # inert for exactly that reason -- so the claim
+                                # this comment used to make, that without it the
+                                # floor "would reach only phase 2", is backwards.
                                 _a_bn = None
                                 try:
                                     _a_bn = _cached_cbbe_body_normals(
@@ -6708,11 +6789,29 @@ def convert_nif(
                         # escape here would discard the warp, inflate AND conform
                         # for this shape and read as the fit being switched off.
                         try:
-                            _pv_p1, _npan_p1, _wd_p1 = _partial_rigid_panels(
-                                sv_world, snapped,
-                                np.asarray(s.tris, dtype=np.int64),
-                                PANEL_RIGIDITY, skip_mask=_skip_p1,
-                                min_verts=PANEL_RIGIDITY_MIN_VERTS)
+                            # #panel-rigid-early-clearance: same panels, same
+                            # blend, but the strength is solved against the body
+                            # so this pass never hands the anti-poke a mess to
+                            # clean up. Falls back to the blind form whenever the
+                            # body is unavailable, so the OFF path and the
+                            # no-body path stay byte-identical.
+                            if (PANEL_RIGID_EARLY_CLEAR
+                                    and body_verts_for_fit is not None
+                                    and body_normals_for_fit is not None):
+                                _pv_p1, _npan_p1, _wd_p1 = (
+                                    _rigidify_within_clearance(
+                                        sv_world, snapped,
+                                        np.asarray(s.tris, dtype=np.int64),
+                                        body_verts_for_fit,
+                                        body_normals_for_fit,
+                                        PANEL_RIGIDITY, skip_mask=_skip_p1,
+                                        min_verts=PANEL_RIGIDITY_MIN_VERTS))
+                            else:
+                                _pv_p1, _npan_p1, _wd_p1 = _partial_rigid_panels(
+                                    sv_world, snapped,
+                                    np.asarray(s.tris, dtype=np.int64),
+                                    PANEL_RIGIDITY, skip_mask=_skip_p1,
+                                    min_verts=PANEL_RIGIDITY_MIN_VERTS)
                             if _npan_p1:
                                 snapped = _pv_p1
                                 _stage_p1('panel_rigidity', snapped)
@@ -24764,6 +24863,78 @@ _LAYER_ORDER_SMOOTH = int(os.environ.get("CBBE2UBE_LAYER_ORDER_SMOOTH", "2") or 
 # now match the only configuration that has EVER been judged. Details in
 # the `_DEFAULTS_PROMOTED_2026_08_22` block.
 PANEL_RIGIDITY = _knob("CBBE2UBE_PANEL_RIGIDITY", 0.75)
+# --- #panel-rigid-early-clearance -- OPT-IN, CBBE2UBE_PANEL_RIGID_EARLY_CLEAR=1
+#
+# MEASURED 2026-08-23. `_partial_rigid_panels` is BODY-BLIND -- it takes no body
+# argument and cannot avoid penetrating. The comment above accepts that on the
+# grounds that it "runs BEFORE the final anti-poke, so anything pulled back into
+# the body is pushed clear again", and that is true: stage-traced on three
+# body-swap shapes, verts inside the body go 0 -> 491 (Outfit), 0 -> 83 (Belt),
+# 0 -> 38 (Bra) across this pass, and the anti-poke returns them to 3 / 0 / 0.
+# Penetration does stay ~0 at the shipping defaults, exactly as claimed.
+#
+# THE HIDDEN COST IS THAT ANTI-POKE'S BUDGET IS SPENT ON THE CLEANUP, so it can
+# never be tightened to respect the author's fit. That is what blocks snugness:
+#
+#     arm                                  author error   garment clip
+#     defaults                                 0.257u          147
+#     morph headroom removed                   0.072u (-72%)   317  (+116%)
+#     headroom removed + PANEL_RIGIDITY=0      0.085u (-67%)    89  (-39%)
+#
+# Nearly the whole snugness gain survives without this pass, and the clipping
+# regression goes with it -- so the +116% was never the price of the headroom,
+# it was this pass's penetration surviving once the anti-poke could no longer
+# mask it.
+#
+# Turning the pass off is NOT the fix: it exists for a reported defect (a
+# distorted indent on a khajiit cuirass) and shipped in the only configuration
+# ever judged good in game. Instead, run the CLEARANCE-AWARE form here too.
+# `_rigidify_within_clearance` already solves precisely this -- per panel,
+# bisect the largest strength whose result leaves no vertex deeper inside the
+# body than it already was -- and already ships as phase 2's SECOND half at the
+# `panel_rigidity_post` site. It runs AFTER the anti-poke, which is why it
+# spares the anti-poke nothing. This flag reuses that same solved pass at the
+# EARLY site, so the penetration is never created rather than repaired.
+#
+# NOT a rebuild of `#relative-displacement-cap` (BUILT/MEASURED/REVERTED
+# 2026-08-15, above): that capped displacement by local EDGE LENGTH and died
+# with the "hold fine verts back" family, worsening p99 edge, spikiness and
+# folds. This changes nothing per vertex -- one scalar per panel, so the plate
+# still moves as a unit -- and its constraint is the BODY, not edge length.
+#
+# VERIFIED ON THE MORPH AXIS TOO, which is the one that matters for clearance and
+# which bind-pose numbers cannot see. Body and garment morphed together at full
+# strength, bust band:
+#
+#     copy       BIND -65%   MORPH better on 5/5 pieces, worst case -40%
+#     body-swap  BIND -41%   MORPH neutral (2 better, 2 worse, median flat)
+#
+# WIDENED TO 28 BODY-SWAP PIECES, and read PER PIECE rather than pooled, because
+# a percentage over a whole sample hides which pieces moved:
+#
+#     copy       6 pieces: 6 better, 0 worse -- and -67% with the biggest piece
+#                removed, so the win is uniform rather than outlier-driven
+#     body-swap  28 pieces: 12 better, 6 WORSE, 10 unchanged; the pooled -41%
+#                is 85% ONE bodysuit (2844 -> 668), and -11% without it.
+#                Fit is FLAT (0.288u -> 0.293u, 99/204 shapes closer) -- the
+#                small fit gain seen at 7 pieces did not survive.
+#
+# That asymmetry IS the mechanism: the copy path has no anti-poke, so penetration
+# this pass creates ships. Preventing it there is a straight win. On body-swap the
+# anti-poke already cleaned up, so prevention mostly relieves it.
+#
+# The copy path gains most because it has NO anti-poke: penetration this pass
+# creates there has nothing to repair it and ships. Note that the morph harness
+# could not measure the copy path at all before 2026-08-23 -- it aborted on every
+# phase-1 piece -- so any earlier "no morph evidence of harm" covered 22% of the
+# pack, not the pack.
+#
+# DEFAULT OFF ANYWAY. It can only REDUCE how rigid a panel gets, so the risk it
+# carries is the indent distortion coming back on pieces whose panels sit near
+# the skin -- and NO metric here can see that; it is what eyes are for.
+# #panel-rigidity's own verdict is still pending, so this ships off until both
+# are judged together in game.
+PANEL_RIGID_EARLY_CLEAR = _flag("CBBE2UBE_PANEL_RIGID_EARLY_CLEAR", False)
 # A component smaller than this is a stud or a buckle, not a panel; a rigid fit
 # over a handful of verts is noise.
 PANEL_RIGIDITY_MIN_VERTS = int(
@@ -25659,6 +25830,40 @@ def _stack_depth_from_relation(n, rel):
 # now match the only configuration that has EVER been judged. Details in
 # the `_DEFAULTS_PROMOTED_2026_08_22` block.
 PANEL_RIGID_RIDE = _flag("CBBE2UBE_PANEL_RIGID_RIDE", True)
+
+# --- #ride-body-floor -- OPT-IN, CBBE2UBE_RIDE_BODY_FLOOR=1 -----------------
+#
+# MEASURED 2026-08-23, and it is where the clipping a player actually sees comes
+# from. Stage dumps end before this pass, so every clip census taken from them
+# was blind to it. On a layered cuirass, verts inside the body:
+#
+#     end of the fit chain (last stage dumped)        0
+#     the file that ships                           110
+#     ...with the layer ride disabled                  8
+#
+# **The ride causes 102 of the 110 -- 93%.** The fit chain finishes clean and
+# this pass puts cloth back into the body, which is the same finding as
+# project_layer_ride_discards_fit ("the layer ride DISCARDS the fit chain")
+# quantified against the body rather than against the fit.
+#
+# WHY THE EXISTING GUARD DOES NOT CATCH IT. `_panel_rigid_disp` does test body
+# clearance, but only for panels it fully rides; a partly-ridden panel takes an
+# early `continue`, and verts in no qualifying panel never reach it. Both fall
+# through to the plain application below, which had no body test at all. Proof
+# it is not the panel budget: `_PANEL_RIDE_MAX_NEW_INSIDE=0.0` leaves the count
+# at 111 against 110 -- the knob is aimed at a different path.
+#
+# THE FIX IS ONE-SIDED, the idiom `_smooth_warp_grooves` already uses: a ridden
+# vert may move along the surface or AWAY from the body, never INTO it. The
+# tangential motion is what makes layers cohere, so it is kept in full; only the
+# inward component is clamped, and only where the vert would end up deeper than
+# THE FIT CHAIN ALREADY HAD IT (`min(fitted clearance, 0)`), so a vert the fit
+# chain left inside is not dragged out and nothing NEW goes in.
+#
+# DEFAULT OFF: it changes the shipped position of ridden verts on a stack, which
+# is exactly what #layer-ride exists to control, so it needs an in-game verdict
+# on layer coherence before it moves.
+RIDE_BODY_FLOOR = _flag("CBBE2UBE_RIDE_BODY_FLOOR", False)
 _PANEL_RIDE_COVERAGE = _knob("CBBE2UBE_PANEL_RIDE_COVERAGE", 0.9)
 # WHERE in the panel's displacement spread to sit the plate, as a quantile along
 # the panel's own ride direction. 0.5 is the plain mean: the plate lands in the
@@ -26311,6 +26516,33 @@ def _ride_layers_on_reference(shape_jobs, body_verts=None,
                           file=_sys.stderr)
             if RIDE_FEATHER:
                 _rd = _feather_ride_disp(_rd, _apply, j["src"].tris, sv, _cst)
+            # #ride-body-floor: clamp the INWARD component of the ride so this
+            # pass cannot put cloth into the body. Applied after the feather so
+            # nothing downstream re-introduces what it removes.
+            if RIDE_BODY_FLOOR and body_verts is not None and body_norms is not None:
+                try:
+                    _cand = sv + _rd
+                    _bvv = np.asarray(body_verts, dtype=np.float64)
+                    _bnn = np.asarray(body_norms, dtype=np.float64)
+                    _, _bj = btree.query(_cand[_apply])
+                    _n = _bnn[_bj]
+                    _sd = np.einsum('ij,ij->i', _cand[_apply] - _bvv[_bj], _n)
+                    # Never deeper than the FIT CHAIN already had this vert:
+                    # a vert it left inside stays where it was rather than being
+                    # hauled out by a pass that is not the anti-poke.
+                    _, _fj = btree.query(fv[_apply])
+                    _fd = np.einsum('ij,ij->i', fv[_apply] - _bvv[_fj],
+                                    _bnn[_fj])
+                    _floor = np.minimum(_fd, 0.0) - 1e-4
+                    _short = np.clip(_floor - _sd, 0.0, None)
+                    if float(_short.max(initial=0.0)) > 0.0:
+                        _fix = np.zeros_like(_rd)
+                        _fix[_apply] = _n * _short[:, None]
+                        _rd = _rd + _fix
+                        _cst["body_floor"] = _cst.get("body_floor", 0) + int(
+                            (_short > 0.0).sum())
+                except Exception as _rbe:
+                    _note_pass_failure("ride/body-floor", _rbe)
             cur[_apply] = sv[_apply] + _rd[_apply]
             j["verts"] = cur
             j["verts_modified"] = True
@@ -26930,11 +27162,25 @@ def convert_nif_phase2(
             # sibling: digits masked out, effect recorded for attribution.
             if PANEL_RIGIDITY_FINE_ANIM and PANEL_RIGIDITY > 0:
                 try:
-                    _pv_h2, _np_h2, _wd_h2 = _partial_rigid_panels(
-                        hf_orig, hf_verts,
-                        np.asarray(s.tris, dtype=np.int64), PANEL_RIGIDITY,
-                        skip_mask=_extremity_vert_mask(s, len(hf_verts)),
-                        min_verts=PANEL_RIGIDITY_MIN_VERTS)
+                    # #panel-rigid-early-clearance -- see the copy-path hf
+                    # sibling. All four panel-rigidity sites now take the same
+                    # form, so the flag cannot reach three quarters of them.
+                    if (PANEL_RIGID_EARLY_CLEAR
+                            and body_verts_for_p2 is not None
+                            and body_norms_for_p2 is not None):
+                        _pv_h2, _np_h2, _wd_h2 = _rigidify_within_clearance(
+                            hf_orig, hf_verts,
+                            np.asarray(s.tris, dtype=np.int64),
+                            body_verts_for_p2, body_norms_for_p2,
+                            PANEL_RIGIDITY,
+                            skip_mask=_extremity_vert_mask(s, len(hf_verts)),
+                            min_verts=PANEL_RIGIDITY_MIN_VERTS)
+                    else:
+                        _pv_h2, _np_h2, _wd_h2 = _partial_rigid_panels(
+                            hf_orig, hf_verts,
+                            np.asarray(s.tris, dtype=np.int64), PANEL_RIGIDITY,
+                            skip_mask=_extremity_vert_mask(s, len(hf_verts)),
+                            min_verts=PANEL_RIGIDITY_MIN_VERTS)
                     if _np_h2:
                         hf_verts = _pv_h2
                         hf_verts_modified = True
@@ -27339,10 +27585,22 @@ def convert_nif_phase2(
                     _skip = _cw > MIXED_CLOTH_CHAIN_EPS
                 except Exception:
                     _skip = None
-                _pv, _np_, _wd = _partial_rigid_panels(
-                    _sv_body, override, np.asarray(s.tris, dtype=np.int64),
-                    PANEL_RIGIDITY, skip_mask=_skip,
-                    min_verts=PANEL_RIGIDITY_MIN_VERTS)
+                # #panel-rigid-early-clearance -- see the copy-path sibling.
+                # Wiring BOTH paths together, because a fit flag that reaches one
+                # path splits the pack and makes every later verdict
+                # untransferable (#panel-rigidity spent a release like that).
+                if (PANEL_RIGID_EARLY_CLEAR and body_verts_for_p2 is not None
+                        and body_norms_for_p2 is not None):
+                    _pv, _np_, _wd = _rigidify_within_clearance(
+                        _sv_body, override, np.asarray(s.tris, dtype=np.int64),
+                        body_verts_for_p2, body_norms_for_p2,
+                        PANEL_RIGIDITY, skip_mask=_skip,
+                        min_verts=PANEL_RIGIDITY_MIN_VERTS)
+                else:
+                    _pv, _np_, _wd = _partial_rigid_panels(
+                        _sv_body, override, np.asarray(s.tris, dtype=np.int64),
+                        PANEL_RIGIDITY, skip_mask=_skip,
+                        min_verts=PANEL_RIGIDITY_MIN_VERTS)
                 if _np_:
                     override = _pv
                     _stage('panel_rigidity', override)
@@ -27866,9 +28124,13 @@ def convert_nif_phase2(
         # of the run and 61% of ALL its ray casting -- spent purely on
         # telemetry the flag claimed to have disabled. Gate it where the cost
         # is, not only where the write is.
+        # `_band_enabled()`, not `_enabled()`: this branch is the RAY CASTING,
+        # and it is 17.5% of a conversion while the records it feeds are a tenth
+        # of the sink and have no reader in the shipping pipeline. The cheap
+        # record kinds keep their own gate and stay on. #standoff-band-audit
         if (override is not None and body_verts_for_p2 is not None
                 and body_norms_for_p2 is not None
-                and fit_metrics._enabled()):
+                and fit_metrics._band_enabled()):
             try:
                 _ov = np.asarray(override, dtype=np.float64)
                 _tr = np.asarray(s.tris, dtype=np.int64).reshape(-1, 3)

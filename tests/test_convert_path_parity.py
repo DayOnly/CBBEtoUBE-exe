@@ -173,12 +173,15 @@ KNOWN_PHASE2_ONLY = {
     # STRUCTURAL, not debt (re-derived 2026-08-22 when the first half of
     # #panel-rigidity was wired into the copy path): this is the SECOND half,
     # and it exists to recover the panel deformation the ANTI-POKE re-introduces.
-    # `clear_armor_outside_body` is body-swap-only, so the copy path has no
-    # anti-poke and there is nothing here to recover. Porting it would be
-    # inventing a pass, not achieving parity.
-    "_rigidify_within_clearance": "2nd half of #panel-rigidity; recovers what "
-                                  "the anti-poke re-deforms, and the copy path "
-                                  "has no anti-poke",
+    # `_rigidify_within_clearance` WAS listed here, on the grounds that it only
+    # recovers what the anti-poke re-deforms and the copy path has no anti-poke.
+    # That reason still holds for its POST-ANTI-POKE call site, which is still
+    # phase-2 only -- but 2026-08-23 gave the function a SECOND job on both
+    # paths (#panel-rigid-early-clearance), so it is no longer phase-2-only as a
+    # FUNCTION and listing it here would be a false claim. The surviving
+    # asymmetry is now pinned per CALL SITE by the test below, which is the
+    # right granularity: a function can serve one role on both paths and another
+    # on one.
     "_sync_bust_plate_follow_postwrite": "post-write, needs the injected body",
     # The layer-ride machinery. Its old reason -- "which only the whole-piece
     # `shape_jobs` view provides" -- is FALSE for the same reason as
@@ -429,20 +432,56 @@ def test_panel_rigidity_runs_on_both_paths():
 
 
 def test_the_second_half_is_absent_for_a_REASON_THAT_IS_TRUE():
-    """`_rigidify_within_clearance` stays phase-2 only, and its documented
-    reason is that it recovers what the ANTI-POKE re-deforms. Check the reason
-    itself: the anti-poke really must be body-swap-only. A reason in
-    KNOWN_PHASE2_ONLY is a CLAIM -- four of them were false for four days -- so
-    where a reason can be machine-checked, check it."""
+    """The RECOVERY role stays phase-2 only, and its reason stays true.
+
+    `_rigidify_within_clearance` now has two jobs. The original one -- recover
+    what the ANTI-POKE re-deforms -- belongs to phase 2 alone, and its reason is
+    that the copy path has no anti-poke to recover from. The second, added
+    2026-08-23, runs the SAME solver at the EARLY panel-rigidity site on BOTH
+    paths so the pass never hands the anti-poke penetration to clean up.
+
+    So the assertion is per CALL SITE, not per function: reachability alone
+    would now report "on both paths" and silently stop checking the asymmetry
+    that still exists. A reason here is a CLAIM -- four were false for four days
+    -- so where it can be machine-checked, check it.
+    """
+    import ast as _ast
     g = _call_graph(_module_ast())
     a = _reachable(g, ENTRY_A, stop={ENTRY_B})
     b = _reachable(g, ENTRY_B)
     assert "clear_armor_outside_body" in b and "clear_armor_outside_body" not in a, (
         "the anti-poke now runs on the copy path too, so the stated reason for "
-        "keeping `_rigidify_within_clearance` off it is no longer true -- wire "
-        "the second half in as well, or rewrite the reason")
-    assert "_rigidify_within_clearance" in b
-    assert "_rigidify_within_clearance" not in a
+        "keeping the RECOVERY call phase-2-only is no longer true -- wire it in "
+        "as well, or rewrite the reason")
+
+    tree = _module_ast()
+    calls = [n for n in _ast.walk(tree)
+             if isinstance(n, _ast.Call)
+             and getattr(n.func, "id", None) == "_rigidify_within_clearance"]
+    assert len(calls) == 5, (
+        f"expected 5 call sites -- the EARLY solver at all four panel-rigidity "
+        f"sites (main + fine-animation, on each convert path) plus the ONE "
+        f"phase-2 recovery call after the anti-poke -- found {len(calls)}. If a "
+        f"site was added or removed, decide which role it plays and update this "
+        f"test rather than the count.")
+
+    # Every early site must have kept its blind fallback, or the flag stops
+    # being an opt-in and the OFF path is no longer byte-identical.
+    blind = [n for n in _ast.walk(tree)
+             if isinstance(n, _ast.Call)
+             and getattr(n.func, "id", None) == "_partial_rigid_panels"]
+    assert len(blind) == 4, (
+        f"expected the blind form to remain as the OFF-path fallback at all "
+        f"four early sites, found {len(blind)}")
+
+    # The recovery call is the one taking the CURRENT verts straight after the
+    # anti-poke; the two early calls are guarded by the opt-in flag. Tell them
+    # apart by the guard, not by line order, which shifts with any edit above.
+    src = Path(inspect.getfile(nc)).read_text(encoding="utf8")
+    guarded = src.count("PANEL_RIGID_EARLY_CLEAR")
+    assert guarded >= 5, (
+        "the early-clearance sites must stay behind their flag: found "
+        f"{guarded} occurrence(s) of the guard")
 
 
 def test_the_copy_path_call_passes_the_same_gates_as_phase2():

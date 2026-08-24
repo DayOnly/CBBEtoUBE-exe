@@ -34,6 +34,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 _REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_REPO))
@@ -61,6 +62,18 @@ def _scene(gap=1.3):
     gV, gT, _n = _sheet(76.0, 116.0, n=44, y=3.0 + gap)
     return bV, bN, gV, gT
 
+
+
+@pytest.fixture(autouse=True)
+def _band_audit_on(monkeypatch):
+    """These tests exercise the RAY-CAST recorders, which default OFF.
+
+    `#standoff-band-audit` split one gate into two on 2026-08-23: the cast is
+    17% of a conversion and nothing in the shipping pipeline reads what it
+    produces, so it is opt-in. A test of the recorder has to opt in, or it is
+    asserting on the gate rather than on the measurement.
+    """
+    monkeypatch.setenv("CBBE2UBE_STANDOFF_BAND_AUDIT", "1")
 
 def test_the_union_covers_every_consumer_ray_set():
     bV, bN, gV, gT = _scene()

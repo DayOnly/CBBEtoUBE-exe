@@ -78,6 +78,15 @@ def _load_pieces(spec: str):
         raw = json.loads((REPO / "golden" / "pieces.json").read_text("utf-8"))
     else:
         raw = json.loads(Path(spec).read_text("utf-8"))
+    # A DICT HERE IS THE COMMON MISTAKE -- several sample files in this project
+    # are `{"copy": [...], "swap": [...]}`, and iterating one yields its KEYS, so
+    # the list comprehension below dies on `int('y')` with no hint of the real
+    # problem. Name it instead, and name the keys so the fix is obvious.
+    if isinstance(raw, dict):
+        raise SystemExit(
+            f"{spec}: expected a LIST of [label, subdir, stem, slots] rows, got "
+            f"an object with keys {sorted(raw)!r} -- pass one of those groups as "
+            f"its own file, or flatten them.")
     return [(r[0], r[1], r[2], int(r[3])) for r in raw]
 
 
