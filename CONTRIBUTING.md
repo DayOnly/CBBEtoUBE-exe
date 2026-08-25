@@ -44,6 +44,21 @@ request at all. Reporting is deliberately manual and file-based.
 
 ## Working on the code
 
+### Before you add a pass, read the governing rule
+
+**A pass that exists to clean up after another pass is a design failure, not a
+fix.** If your justification starts "an earlier pass leaves…", the change
+belongs in the pass that produced the problem, or in what that pass is allowed
+to do. `docs/DESIGN.md` opens with the rule, the three ways a repair pass costs
+you, and the measurements behind it — including a guard that took its target
+pass from 10 defects to 0 while the pack-wide total did not move at all, because
+the defect simply relocated to the next pass that caps a weight row.
+
+Name the producer with a trace before writing anything
+(`passaudit/zeroweight_trace.py` is the template: wrap every stage, re-score the
+written NIF after each). Attribution by reasoning has been wrong here more than
+once.
+
 ```bash
 git clone https://github.com/DayOnly/CBBEtoUBE-exe
 cd CBBEtoUBE-exe

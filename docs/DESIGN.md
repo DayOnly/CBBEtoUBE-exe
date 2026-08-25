@@ -19,6 +19,73 @@ re-fitted, re-skinned, and re-cleared.
 
 ---
 
+## The governing rule: prevent the defect, do not add a pass that repairs it
+
+**A pass that exists to clean up after another pass is a design failure, not a
+fix.** When a stage produces something wrong, the change belongs in the stage
+that produced it — or in what that stage is allowed to do — not in a new stage
+downstream. Read this before adding any pass whose justification begins "an
+earlier pass leaves…".
+
+This is the rule the chain most often breaks, and it costs three ways.
+
+**1. The repair's budget cannot be spent on anything else.**
+`panel_rigidity` drove 491 verts into the body and the anti-poke push was spent
+undoing that, so the push could never be tightened to respect the author's
+standoff. Making panel rigidity body-aware (`#panel-rigid-early-clearance`) did
+not just remove a repair — it freed the anti-poke to do its actual job. The
+repair was not merely redundant; it was occupying the budget.
+
+**2. Repairs fight each other, and the chain oscillates.**
+`PASS_MAP.md` and the damage ledger show stages alternating between penetration
+and stretch, each fixing one by causing the other. The observable outcome is not
+"mostly fixed" — it is a chain whose final state depends on which repair ran
+last. **Judge the FINAL stage, never the flow.**
+
+**3. A downstream repair chases a defect it cannot corner.**
+Worked end to end on 2026-08-24, on zero-weight bones (a bone left in a shape's
+list with no weight drops out of the skin-partition palette — an equip CTD):
+
+- `_match_limb_motion_to_body` stranded 10 of 12 on the traced piece. Guarding
+  that one pass took it to **0 — and the total did not move.** The roughness cap
+  then stranded 7 and the coincident match 5. Every pass that caps a row to four
+  influences can strand a bone, so a per-pass guard is a game with no last move.
+- A single final sweep is the better architecture, and it still caps at **19%**:
+  45% of stranded bones sit on shapes with no index-pairable author, and 36% were
+  minted by a graft the author never weighted, so there is no authored row to
+  restore and `pynifly` exposes no `remove_bone` to take them out.
+
+Both attempts were reverted. The fix that would actually work is at the source:
+**do not let a graft add a bone whose weight cannot survive four influences
+downstream.** A sink-side repair could never have reached the 81%.
+
+### What to do instead
+
+- Give the producing pass the information it lacked. Most of these defects are a
+  stage acting blind — `panel_rigidity` could not see the body; the jiggle graft
+  cannot see the cap that will evict it.
+- Constrain what a pass may do, rather than repairing what it did. A pass that
+  cannot create the defect needs no cleanup and no budget for one.
+- If a repair is genuinely the cheapest correct option, say so **in its
+  docstring, with the measurement** that shows prevention was considered and
+  costed. `_rigidify_within_clearance` earns its place that way; a pass that
+  cannot make that argument does not.
+- Before adding a repair, run the producer's own trace
+  (`passaudit/zeroweight_trace.py` is the template: wrap every stage, re-score
+  the WRITTEN nif after each) and name the producer. Attribution by reasoning
+  has been wrong here repeatedly — most recently blaming
+  `_match_full_weights_to_body` for what its inner `_match_limb_motion_to_body`
+  did.
+
+### The honest exception
+
+Some defects are structural and have no producer to fix: an SMP `<per-vertex-shape>`
+must keep its authored rig, so the layer beside it diverges by construction
+(`#smp-boundary-weight-hold`). That is a boundary condition, not a pass cleaning
+up after a pass — and the docstring says so.
+
+---
+
 ## Pipeline overview
 
 `convert_nif()` chooses one of two paths from the source shapes:
