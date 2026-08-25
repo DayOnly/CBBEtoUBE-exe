@@ -59,11 +59,40 @@ Both attempts were reverted. The fix that would actually work is at the source:
 **do not let a graft add a bone whose weight cannot survive four influences
 downstream.** A sink-side repair could never have reached the 81%.
 
+### Two rules paid for on 2026-08-25
+
+**DECLINING TO WRITE SOMETHING DOES NOT PROTECT IT.** The coincident-skin match
+excluded a bone from its write list precisely so it would be "left entirely
+alone", and the bone was emptied anyway: the native skin buffer holds FOUR
+influences, so writing the other four evicts the untouched fifth. A guard phrased
+as *"we simply won't touch it"* is only sound if nothing else writes that slot —
+and here something always does. The same shape of error is available to any pass
+that reasons about its own writes without modelling the buffer they land in.
+
+**A PASS THAT REMOVES SOMETHING MUST SAY WHAT IT REMOVED.**
+`_harden_hdt_xml_for_fsmp` prunes physics-XML blocks whose shape is not in the
+converted NIF. That is correct — FSMP cannot attach to a shape that is not there
+— but a pruned `<per-triangle-shape>` is a COLLIDER the cloth no longer bounces
+off, and it was deleted in silence. It took an in-game screenshot to discover
+that one cuirass had lost the two surfaces its skirt drapes over, because the
+authored XML named `Tassets`/`Pants` while the mesh calls that shape `Tasset`
+and has no `Pants` at all. Deletion is a legitimate act; doing it quietly is
+not. Report through `_note_pass_failure`, which counts into
+`conversion_report.json` (that survives a lost run log) and lands a per-piece
+line in the per-mod report — so a class becomes countable rather than
+discoverable one screenshot at a time.
+
 ### What to do instead
 
 - Give the producing pass the information it lacked. Most of these defects are a
   stage acting blind — `panel_rigidity` could not see the body; the jiggle graft
-  cannot see the cap that will evict it.
+  cannot see the cap that will evict it; the butt-collider donor test could not
+  see that hands and feet are body bones, because it used the injected BODY
+  MESH's bone list and UBE ships hands and feet as separate meshes.
+- **Beware a set that stands in for a concept.** "The body's bones" and "the
+  bones of the body mesh" differ by six, and that gap cost one variant its butt
+  collider entirely. When a set is a proxy for an idea, write down which idea,
+  and check the two still agree.
 - Constrain what a pass may do, rather than repairing what it did. A pass that
   cannot create the defect needs no cleanup and no budget for one.
 - If a repair is genuinely the cheapest correct option, say so **in its
