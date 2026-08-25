@@ -7511,8 +7511,17 @@ def fit_armor_to_ube_body(
     disturbing accessories sitting >2 units out (pauldrons, fur collars).
 
     Uses translation-only (no surface-frame rotation) — for verts this
-    close, frame rotation adds more error than it fixes (validated in M3
-    measurements: see docs/M3_findings.md).
+    close, frame rotation adds more error than it fixes.
+
+    THAT CLAIM IS UNCITED. It used to read "validated in M3 measurements: see
+    docs/M3_findings.md" — a file that was never written (`tests/test_m3_belt.py`
+    is honest about it, saying "when written"). A cited safety net that is not
+    there is worse than an uncited one: it stops the next reader looking for the
+    real one, which is exactly the class the 2026-08-17 comment audit found six
+    of. What DOES bear on surface-frame rotation is
+    `scripts/analysis/normal_rotation.py` (how far the surface turned between a
+    source mesh and its refit), but it does not pin THIS threshold — so treat
+    the translation-only choice as untested rather than validated.
     """
     verts = np.asarray(verts, dtype=np.float64)
     if len(verts) == 0:

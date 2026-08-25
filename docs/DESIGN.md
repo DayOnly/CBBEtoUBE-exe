@@ -70,12 +70,32 @@ downstream.** A sink-side repair could never have reached the 81%.
   docstring, with the measurement** that shows prevention was considered and
   costed. `_rigidify_within_clearance` earns its place that way; a pass that
   cannot make that argument does not.
-- Before adding a repair, run the producer's own trace
-  (`passaudit/zeroweight_trace.py` is the template: wrap every stage, re-score
-  the WRITTEN nif after each) and name the producer. Attribution by reasoning
-  has been wrong here repeatedly — most recently blaming
+- Before adding a repair, **attribute the defect to a producer by measurement**,
+  and name it. Attribution by reasoning has been wrong here repeatedly — blaming
   `_match_full_weights_to_body` for what its inner `_match_limb_motion_to_body`
-  did.
+  did, and (2026-08-25) blaming an old exe for what `#smp-boundary-weight-hold`
+  caused.
+
+  Two tracked ways to do it, in increasing cost:
+
+  * **Pass-arm A/B.** Convert the affected piece with `scripts/convert_one_armor.py`
+    once per arm, disabling ONE pass per arm, and score each arm the same way.
+    This is what settled BUG-14 in four arms. Read the slot mask off the ARMA —
+    a slots=0 run silently disables every slot-gated pass and is not comparable.
+  * **Paired output A/B.** `scripts/analysis/zero_weight_pair_ab.py` for the
+    zero-weight class: it pairs two builds' output per (shape, bone) and reports
+    a delta, which is the only form in which a metric with a large pre-existing
+    population means anything.
+
+  **A pass being NECESSARY in an A/B is not proof it is the actor** — it may only
+  change rows so a later pass evicts. Narrowing further means wrapping the inner
+  pass and re-scoring the WRITTEN nif after each stage.
+
+  This bullet used to name `passaudit/zeroweight_trace.py` as "the template".
+  That file was an untracked session tool and is GONE, so the governing rule
+  pointed at something the reader could not open — the failure mode this
+  document spends a section warning about. See `docs/TOOL_MAP.md` for what is
+  actually tracked and runnable.
 
 ### The honest exception
 
