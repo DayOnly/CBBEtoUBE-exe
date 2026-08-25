@@ -231,6 +231,72 @@ def test_a_bone_whose_last_vertex_would_be_taken_is_left_in_place():
         _assert_no_bone_emptied(sh)
 
 
+def test_last_carrier_survives_even_when_the_unified_row_FILLS_all_four_slots():
+    """THE CASE THE TEST ABOVE CANNOT REACH, and the one that shipped.
+
+    2026-08-25, traced inside a real conversion: this pass emptied `NPC Belly`
+    off a corset that carried it on TWENTY-FIVE vertices. The guard above
+    (`write_bones`) had decided, correctly by its own logic, to leave the bone
+    alone -- it is excluded from the write, so neither its value nor its removal
+    is ever sent.
+
+    THAT IS NOT ENOUGH, because the native skin buffer holds FOUR influences.
+    "Not written" is not "unchanged": when the four bones of the rebuilt row ARE
+    written, a fifth resident is evicted, and the untouched bone is the one that
+    goes.
+
+    The test above misses it by a single slot. Its shared `basis` is
+    {PELV, SPINE, SPINE1} -- three bones -- so the stale BELLY lands in the
+    fourth slot and survives. Here the basis is FOUR bones, so there is no free
+    slot, which is the real geometry of the defect. The fixture's
+    `setShapeWeights` already models the eviction faithfully; only the fixture
+    was too small to exercise it.
+
+    Both shapes must therefore share four bones, and only `Buttons` carries
+    BELLY -- so BELLY cannot enter `basis` and is dropped from the merged row.
+
+    NOTE ON THE ASSERTION. `_assert_no_bone_emptied` cannot be used here: it
+    only checks bones the pass WROTE, and the whole point of this defect is a
+    bone that is deliberately NOT written. The check below is over the shape's
+    entire palette instead.
+    """
+    pos = [(0.0, 0.0, 77.0)]
+    shared4 = {PELV: 0.25, SPINE: 0.25, SPINE1: 0.25, LTHIGH: 0.25}
+    # BELLY's ONLY carrier is the vertex under test. It must not appear in the
+    # filler: a filler entry would keep the bone alive no matter what the pass
+    # did to this vertex, and the test would pass with the guard removed.
+    dst = [_shape("Buttons", pos,
+                  [{PELV: 0.30, SPINE: 0.30, SPINE1: 0.30, BELLY: 0.10}],
+                  filler=dict(shared4)),
+           _shape("Rope", pos, [dict(shared4)], filler=dict(shared4))]
+    src = [_shape("Buttons", pos, [dict(shared4)], filler=dict(shared4)),
+           _shape("Rope", pos, [dict(shared4)], filler=dict(shared4))]
+
+    before = {sh.name: {b for b, prs in sh.bone_weights.items() if prs}
+              for sh in dst}
+    assert BELLY in before["Buttons"], "fixture: BELLY must start carried"
+    _run(dst, src)
+
+    # EVERY bone that carried weight before must still carry weight -- not just
+    # the ones the pass chose to write. Without the last-carrier guard the
+    # merged row fills all four slots with {PELV, SPINE, SPINE1, LTHIGH}, and
+    # BELLY -- never written, so never removed -- is evicted by the buffer,
+    # leaving it in the bone list with no weight: absent from the regenerated
+    # partition palette, an equip CTD.
+    for sh in dst:
+        live = {b for b, prs in sh.bone_weights.items() if prs}
+        lost = sorted(before[sh.name] - live)
+        assert not lost, (
+            f"{sh.name}: {lost} lost every carrier -- the four-influence "
+            f"buffer evicted a bone the guard thought it was leaving alone")
+
+    # And no row may exceed what the buffer can hold, or the fixture would be
+    # hiding the eviction rather than reproducing it.
+    for sh in dst:
+        for i in range(len(sh._rows)):
+            assert len(sh.row(i)) <= _MAX_INFLUENCES
+
+
 def test_a_bone_only_one_shape_has_is_never_grafted_onto_the_other():
     # `NPC Belly` exists on Buttons and not on Rope. Unifying must not add it:
     # `add_bone` resets every STB ([[project_identity_stb_collider]]).

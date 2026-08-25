@@ -228,6 +228,49 @@ def test_rows_stay_normalised_and_within_the_four_influence_limit():
             f"vert {i} ships summing {sum(row.values()):.4f}")
 
 
+def test_the_cap_never_takes_a_bones_LAST_carrier():
+    """A CAP CAN EMPTY A BONE, and this one did.
+
+    2026-08-25, traced inside a real conversion: this pass emptied `NPC Belly`
+    off a `Chain` shape that carried it on two vertices. `top[:4]` above is a
+    cap, and on the one vertex where the evicted bone was the shape's LAST
+    carrier the eviction removes it from the shape entirely -- leaving it in the
+    bone list with no weight, absent from the regenerated skin-partition
+    palette, an equip CTD (#zeroweight-bone-desync).
+
+    The repair is `_restore_emptied_bones`: hand that one vertex back and let it
+    keep the row it already had. It never invents a weight, and it reads OUR
+    rows rather than the author's, so the vertex keeps the conversion's own
+    reskin.
+
+    THE FIXTURE HAS TO PUT THE BONE ON ONE VERTEX ONLY. Give it a second
+    carrier anywhere and the bone survives whatever the pass does here, and the
+    test passes with the guard removed -- which is exactly how the sibling test
+    in test_coincident_skin_match.py missed this class for a week.
+    """
+    BELLY = "NPC Belly"
+    rows = [{SPINE1: 0.6, PELV: 0.4},
+            # Rough, and BELLY's only carrier. Blending toward the neighbours'
+            # {SPINE1, PELV} makes five influences, and BELLY is the smallest.
+            {SPINE2: 0.5, SPINE: 0.3, SPINE1: 0.1, BELLY: 0.1},
+            {SPINE1: 0.6, PELV: 0.4},
+            {SPINE1: 0.6, PELV: 0.4}]
+    dst = _grid([dict(r) for r in rows])
+    before = {b for b, prs in dst.bone_weights.items() if prs}
+    assert BELLY in before, "fixture: BELLY must start carried"
+
+    n, _ = _run([dst], [_grid(_SMOOTH)])
+    assert n > 0, "the pass did not fire -- this proves nothing"
+
+    live = {b for b, prs in dst.bone_weights.items() if prs}
+    lost = sorted(before - live)
+    assert not lost, (
+        f"{lost} lost every carrier -- the four-influence cap took the bone's "
+        f"last vertex, which drops it from the skin-partition palette")
+    for i in range(4):
+        assert len(dst.row(i)) <= 4
+
+
 def test_removals_are_written_before_additions():
     """`setShapeWeights` MERGES and the buffer drops the smallest of five, so a
     newcomer arriving while the bone it replaces still holds its old value

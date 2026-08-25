@@ -14377,6 +14377,37 @@ def _match_coincident_cross_shape_skin(dst_path, src_nif_path=None) -> int:
             continue
         s, rr, old = e["s"], e["rows"], e["old"]
         n = len(e["wv"])
+        # ---- NEVER TAKE A BONE'S LAST CARRIER -----------------------------
+        #
+        # The `write_bones` guard below is NOT sufficient, and the 2026-08-25
+        # trace proved it: this pass emptied `NPC Belly` off a corset that held
+        # it on TWENTY-FIVE vertices. The guard's reasoning is that a bone it
+        # never writes is "left entirely alone" -- but the native skin buffer
+        # holds only FOUR influences, so when the other four bones of a rebuilt
+        # row ARE written, the unwritten bone is evicted anyway. Declining to
+        # write a bone does not protect it.
+        #
+        # WHY THE BONE LEAVES THE ROW AT ALL: `basis` is the INTERSECTION of the
+        # cluster's palettes, so a bone only ONE shape in the cluster carries is
+        # dropped from the merged row on every vertex of that cluster. That is
+        # correct for the merge -- the shared row has to be expressible in every
+        # palette -- but it must not cost the bone its existence in the shape.
+        #
+        # The repair is the same one the other capping passes use: hand back the
+        # ONE vertex where our own pre-pass row weighted the bone most, and let
+        # that vertex keep the row it already had. It costs one vertex of the
+        # unification and it never invents a weight. Note `ours` here is OUR
+        # rows, not the author's, so a vertex given back keeps the conversion's
+        # own reskin -- this cannot resurrect a bone an earlier pass retired.
+        # #zeroweight-bone-desync
+        pre = [old.get(i, rr[i]) for i in range(n)]
+        chg = {int(i): rr[int(i)] for i in ch}
+        if _restore_emptied_bones(pre, chg):
+            for i in sorted(set(ch) - set(chg)):
+                rr[int(i)] = old[int(i)]        # back to its pre-pass row
+                ch.discard(i)
+            if not ch:
+                continue
         touched: set = set()
         removed: dict = _dd(set)
         for i in ch:
@@ -14611,6 +14642,14 @@ def _cap_weight_roughness_to_author(dst_path, src_nif_path=None) -> int:
                 changed[i] = new
         if not changed:
             continue
+        # `top[:_ROUGHNESS_MAX_INFLUENCES]` above is a CAP, and a cap can take a
+        # bone's last carrier. MEASURED, not anticipated: the 2026-08-25 trace
+        # caught this pass emptying `L Breast03` off a `Chain` shape that held
+        # it on two vertices. Same rule as the other capping passes -- give that
+        # one vertex back rather than invent a weight for it. #zeroweight-bone-desync
+        _restore_emptied_bones(ours, changed)
+        if not changed:
+            continue
         # Same write contract as the coincident match: STBs saved and restored
         # around setShapeWeights, REMOVALS in their own pass first so a newcomer
         # has a free slot, and the stale pynifly weight cache dropped after.
@@ -14708,9 +14747,19 @@ def _restore_emptied_bones(ours, changed) -> int:
     it. Both new passes cap, so both need this.
 
     THE REPAIR IS TO LEAVE THAT VERTEX ALONE, not to re-add a token weight: a
-    synthesised weight is an invention, while the authored row is already
-    correct and already sums to 1. Dropping the vertex from `changed` costs one
-    vertex of the pass's effect and keeps the palette sound.
+    synthesised weight is an invention, while the row already there is correct
+    and already sums to 1. Dropping the vertex from `changed` costs one vertex
+    of the pass's effect and keeps the palette sound.
+
+    `ours` IS OUR OWN PRE-PASS ROWS, NOT THE AUTHOR'S, and the distinction
+    matters. A vertex handed back keeps whatever the conversion had already made
+    of it, so this can never resurrect a bone an earlier pass deliberately
+    retired, and never undoes a reskin -- it only declines THIS pass's change on
+    one vertex. (There is no CBBE->UBE bone renaming to worry about either:
+    measured 2026-08-25, the two rigs share 45 bone names at identical bind
+    positions, max deviation 0.0002u; only hands, feet and UpperarmTwist2 are
+    CBBE-side-only, and those are excluded from reskinning anyway by
+    `RESKIN_PRESERVE_BONE_KEYWORDS`.)
 
     Mutates `changed` in place; returns how many bones were rescued.
     """
@@ -14726,7 +14775,10 @@ def _restore_emptied_bones(ours, changed) -> int:
         if any((changed.get(i, ours[i])).get(b, 0.0) > _WRITE_MIN
                for i in range(len(ours))):
             continue                      # still carried somewhere: fine
-        # Give it back the vertex where the AUTHOR-side row weighted it most.
+        # Give back the vertex where OUR pre-pass row weighted it most. (This
+        # comment said "the AUTHOR-side row" until 2026-08-25 while the code
+        # read `ours` -- a mismatch that made the helper look like it restored
+        # authored weights, which would have been unsafe across the reskin.)
         best_i, best_w = -1, _WRITE_MIN
         for i in changed:
             w = ours[i].get(b, 0.0)
