@@ -78,9 +78,47 @@ def test_donor_must_be_a_KINEMATIC_collider():
     the skirt rest on it.
     """
     src = inspect.getsource(nc._add_butt_collider_patch)
-    assert "all(b in _body_bones for b in bwd)" in src, (
+    assert "all(_is_body_bone(b) for b in bwd)" in src, (
         "the donor must be selected by being KINEMATIC, not by declaration order")
     assert "if donor is None:" in src
+
+
+def test_hands_and_feet_COUNT_as_body_bones():
+    """THE BUG THIS PINS, measured on the piece that produced an in-game report.
+
+    The kinematic test used the INJECTED BODY MESH's bone list as the set of
+    "body bones". UBE ships hands and feet as SEPARATE meshes, so that list has
+    neither: across three bodies the CBBE body carries 51 bones and the UBE body
+    45, and the six missing are exactly `NPC L/R Hand`, `NPC L/R Foot` and
+    `NPC L/R UpperarmTwist2` -- every one of them in the actor skeleton.
+
+    So any collider touching a hand or a foot read as non-kinematic, and a leg
+    garment usually touches a foot. The heavy cuirass therefore received NO butt
+    collider at all: its only candidate, `Pants`, was rejected solely for using
+    `NPC L Foot` and `NPC R Foot`. With the family admitted it becomes the donor
+    and the piece gains 191 rear collider verts in the buttock band, against the
+    27 that `Pants` alone contributed.
+    """
+    src = inspect.getsource(nc._add_butt_collider_patch)
+    for fam in ("hand", "foot", "toe", "upperarmtwist2"):
+        assert f'"{fam}"' in src, f"the {fam!r} family is not admitted"
+    assert "_BODY_ADJACENT" in src
+
+
+def test_the_widening_did_NOT_reach_for_the_actor_skeleton():
+    """THE TRAP THE FIX HAD TO AVOID, and why it is a keyword family.
+
+    "A body bone is one the actor skeleton declares" is the obvious widening and
+    it is WRONG here: this modlist's skeleton declares `SkirtFBone01`, so that
+    test would accept a CHAIN-DRIVEN shape as a body collider -- exactly the
+    failure `test_donor_must_be_a_KINEMATIC_collider` above exists to prevent.
+    Measured before choosing the rule: 649 skeleton nodes, `SkirtFBone01` among
+    them.
+    """
+    src = inspect.getsource(nc._add_butt_collider_patch)
+    assert "_actor_skeleton_bone_names" not in src, (
+        "the donor test must not widen to the whole actor skeleton -- it "
+        "declares chain bones like SkirtFBone01")
 
 
 def test_it_clones_the_donor_block_rather_than_authoring_one():

@@ -16250,8 +16250,39 @@ def _add_butt_collider_patch(dst_path) -> int:
     # tagged as cloth the skirt is explicitly FORBIDDEN to collide with. Inert,
     # and silently so. A body collider must be cloned from a body collider; if
     # none of the declared shapes is kinematic, DECLINE rather than invent a tag.
+    # THE INJECTED BODY'S BONE LIST IS NOT THE SET OF "BODY BONES".
+    #
+    # UBE ships hands and feet as SEPARATE meshes, so the body mesh weights
+    # neither. Measured 2026-08-25 across three bodies: the CBBE body carries 51
+    # bones and the UBE body 45, and the six it lacks are exactly
+    # `NPC L/R Hand`, `NPC L/R Foot` and `NPC L/R UpperarmTwist2` -- all of them
+    # present in the actor skeleton, and all of them body bones by anatomy. They
+    # are simply not in THIS mesh. (There is no CBBE->UBE renaming: the 45
+    # shared names sit at identical bind positions, max deviation 0.0002u.)
+    #
+    # Using the body mesh's list as the test therefore rejects any collider that
+    # touches a hand or a foot -- which a leg garment usually does. MEASURED on
+    # the piece that produced the in-game report: the HEAVY cuirass got no butt
+    # collider at all, because its only kinematic candidate, `Pants`, was
+    # rejected solely for using `NPC L Foot` and `NPC R Foot`.
+    #
+    # WIDENED NARROWLY, to the hand/foot family only. Testing against the whole
+    # actor skeleton instead is WRONG and was rejected: this modlist's skeleton
+    # declares `SkirtFBone01`, so a skeleton test would accept a CHAIN-DRIVEN
+    # shape as a body collider -- precisely the failure the comment above
+    # records, where a `Proxy` tagged as Fabric (which the skirt is forbidden to
+    # collide with) shipped inert and silently so.
+    _BODY_ADJACENT = ("hand", "finger", "thumb", "foot", "toe",
+                      "upperarmtwist2")
     _shape_by = {s.name: s for s in nf.shapes}
     _body_bones = set(base.bone_names or [])
+
+    def _is_body_bone(b: str) -> bool:
+        if b in _body_bones:
+            return True
+        lb = b.lower()
+        return b.startswith("NPC ") and any(k in lb for k in _BODY_ADJACENT)
+
     donor = None
     for d in decls:
         s_ = _shape_by.get(d)
@@ -16261,7 +16292,7 @@ def _add_butt_collider_patch(dst_path) -> int:
             bwd = s_.bone_weights or {}
         except Exception:
             continue
-        if bwd and all(b in _body_bones for b in bwd):
+        if bwd and all(_is_body_bone(b) for b in bwd):
             donor = d                 # kinematic: every bone is a body bone
             break
     if donor is None:
@@ -24085,10 +24116,15 @@ def _harden_hdt_xml_for_fsmp(xml_path: Path, nif) -> None:
     out: list[str] = []
     drop_block = False
     changed = False
+    dropped_shapes: "list[tuple[str, str]]" = []   # (kind, name)
+    dropped_bones = 0
     for line in text.splitlines():
         m = re.search(r'<per-(?:triangle|vertex)-shape\s+name="([^"]+)"', line)
         if m:
             drop_block = m.group(1) not in nif_shapes
+            if drop_block:
+                kind = ("cloth" if "per-vertex-shape" in line else "collider")
+                dropped_shapes.append((kind, m.group(1)))
         if drop_block:
             changed = True
             if re.search(r'</per-(?:triangle|vertex)-shape>', line):
@@ -24098,8 +24134,46 @@ def _harden_hdt_xml_for_fsmp(xml_path: Path, nif) -> None:
             wt = re.search(r'<weight-threshold\s+bone="([^"]+)"', line)
             if wt and wt.group(1).lower() not in resolvable_bones:
                 changed = True
+                dropped_bones += 1
                 continue
         out.append(line)
+
+    # SAY WHAT WAS DELETED. This pruning is correct -- FSMP cannot attach to a
+    # shape that is not there -- but a dropped `<per-triangle-shape>` is a
+    # COLLIDER the cloth no longer bounces off, and until 2026-08-25 it happened
+    # in total silence. That silence is how it reached a screenshot: one piece
+    # shipped with its skirt passing through a tasset plate and through the
+    # pants, because the authored XML named `Tassets`/`Pants` while the mesh we
+    # convert calls that shape `Tasset` and has no `Pants` at all.
+    #
+    # `_note_pass_failure` is the channel deliberately: it counts pack-wide into
+    # `conversion_report.json` (which survives a lost run log) AND lands a
+    # per-piece line in the per-mod report, so the class is countable instead of
+    # discoverable one screenshot at a time.
+    #
+    # The NEAR-MATCH is reported, not acted on. A name that differs only in case
+    # or a trailing plural is almost certainly the same part under a re-export,
+    # and separating those from genuinely-absent shapes is what tells anyone
+    # whether a remap is worth building. Remapping without that measurement
+    # would be attaching physics to a guess.
+    if dropped_shapes:
+        def _norm(s: str) -> str:
+            return re.sub(r"[^a-z0-9]", "", s.lower()).rstrip("s")
+
+        parts = []
+        for kind, name in dropped_shapes:
+            hits = [s for s in nif_shapes if _norm(s) == _norm(name)]
+            near = f" [NEAR-MATCH in mesh: {hits[0]!r}]" if len(hits) == 1 else ""
+            parts.append(f"{kind} {name!r}{near}")
+        _note_pass_failure(
+            "hdt_xml_shape_dropped",
+            RuntimeError(
+                f"{xml_path.name}: {len(dropped_shapes)} shape block(s) pruned "
+                f"because the converted NIF has no such shape -- "
+                + "; ".join(parts)
+                + (f"; plus {dropped_bones} unresolvable weight-threshold "
+                   f"bone(s)" if dropped_bones else "")),
+            xml_path)
     if changed:
         try:
             atomic_write_bytes(xml_path,

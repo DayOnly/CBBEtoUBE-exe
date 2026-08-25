@@ -68,3 +68,66 @@ def test_harden_keeps_present_shape_intact(tmp_path):
         '</system>\n')
     assert "Skirt" in out
     assert "per-vertex-shape" in out
+
+
+# ---------------------------------------------------------------------------
+# A DROPPED COLLIDER MUST NOT BE SILENT (#hdt-xml-shape-dropped)
+#
+# The pruning above is correct, but a pruned `<per-triangle-shape>` is a
+# COLLIDER the cloth no longer bounces off, and it used to happen in total
+# silence. That silence is how it reached an in-game screenshot: a cuirass
+# shipped with its skirt passing through a tasset plate, because the authored
+# XML named `Tassets` while the mesh being converted calls that shape `Tasset`.
+# ---------------------------------------------------------------------------
+
+def _harden_and_capture(tmp_path, present_name, xml_body):
+    """Run the pruner with the failure channel cleared, and return its entries."""
+    nc._PASS_FAILURES.clear()
+    del nc._PASS_FAILURES_THIS_PIECE[:]
+    out = _harden_xml(tmp_path, present_name, xml_body)
+    return out, list(nc._PASS_FAILURES_THIS_PIECE)
+
+
+def test_a_dropped_collider_is_REPORTED_not_silent(tmp_path):
+    _out, notes = _harden_and_capture(
+        tmp_path, "Tasset",
+        '<system>\n'
+        '<per-triangle-shape name="Tassets">\n<x/>\n</per-triangle-shape>\n'
+        '</system>\n')
+    joined = " ".join(notes)
+    assert notes, "a collider was deleted and nothing was reported"
+    assert "hdt_xml_shape_dropped" in joined
+    assert "Tassets" in joined, "the report must name the shape it deleted"
+
+
+def test_the_report_separates_a_NEAR_MATCH_from_a_genuinely_absent_shape(tmp_path):
+    """This is the field that makes a remap decidable.
+
+    `Tassets` vs the mesh's `Tasset` is almost certainly the same part under a
+    re-export and could be remapped; `Ghost` is simply not there and no remap
+    can invent it. Reporting them identically would leave the next person
+    unable to tell how big the fixable half is."""
+    _out, notes = _harden_and_capture(
+        tmp_path, "Tasset",
+        '<system>\n'
+        '<per-triangle-shape name="Tassets">\n<x/>\n</per-triangle-shape>\n'
+        '<per-triangle-shape name="Ghost">\n<x/>\n</per-triangle-shape>\n'
+        '</system>\n')
+    joined = " ".join(notes)
+    near = joined.split("Ghost")[0]
+    assert "NEAR-MATCH" in near and "'Tasset'" in near, (
+        f"the near-miss was not flagged: {joined}")
+    assert "Ghost" in joined, "the genuinely-absent shape must still be named"
+    assert joined.count("NEAR-MATCH") == 1, (
+        f"'Ghost' has no near match and must not be flagged as one: {joined}")
+
+
+def test_nothing_dropped_reports_NOTHING(tmp_path):
+    """The control. A reporter that always fires is as useless as one that
+    never does -- and this one runs on every converted piece with an XML."""
+    _out, notes = _harden_and_capture(
+        tmp_path, "Skirt",
+        '<system>\n'
+        '<per-vertex-shape name="Skirt">\n<x/>\n</per-vertex-shape>\n'
+        '</system>\n')
+    assert not notes, f"nothing was pruned but it reported: {notes}"
