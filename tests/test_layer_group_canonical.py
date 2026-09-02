@@ -39,6 +39,7 @@ authored, not a consequence of which body they were fitted to.
 import inspect
 
 from src import nif_convert as nc
+from tests import _converter_sources as _cs  # set on every module that binds a name
 
 
 def test_both_weights_resolve_to_the_same_canonical_file(tmp_path):
@@ -99,8 +100,8 @@ def test_dst_groups_need_two_MEMBERS_PRESENT_HERE():
             self.name = name
             self.verts = [(float(i), 0.0, 0.0) for i in range(n)]
     orig_w, orig_g = nc._verts_skin_to_world, nc._shape_global_to_skin
-    nc._verts_skin_to_world = lambda sv, xf: __import__("numpy").asarray(sv, float)
-    nc._shape_global_to_skin = lambda s: None
+    _cs.set_all("_verts_skin_to_world", lambda sv, xf: __import__("numpy").asarray(sv, float))
+    _cs.set_all("_shape_global_to_skin", lambda s: None)
     try:
         got = nc._dst_groups_for_names(
             [_S("a"), _S("b")], [{"a", "b"}, {"a", "missing"}], set())
@@ -119,8 +120,8 @@ def test_excluded_names_never_enter_a_rebuilt_group():
             self.name = name
             self.verts = [(0.0, 0.0, 0.0)] * 4
     orig_w, orig_g = nc._verts_skin_to_world, nc._shape_global_to_skin
-    nc._verts_skin_to_world = lambda sv, xf: __import__("numpy").asarray(sv, float)
-    nc._shape_global_to_skin = lambda s: None
+    _cs.set_all("_verts_skin_to_world", lambda sv, xf: __import__("numpy").asarray(sv, float))
+    _cs.set_all("_shape_global_to_skin", lambda s: None)
     try:
         got = nc._dst_groups_for_names(
             [_S("a"), _S("ColBody")], [{"a", "ColBody"}], {"ColBody"})

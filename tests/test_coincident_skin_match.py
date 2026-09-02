@@ -44,6 +44,7 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import src.nif_convert as nc  # noqa: E402
+from tests import _converter_sources as _cs  # patch on every module that binds a name
 
 PELV = "NPC Pelvis [Pelv]"
 SPINE = "NPC Spine [Spn0]"
@@ -157,12 +158,12 @@ def _install(monkeypatch, dst_shapes, src_shapes, saved):
 
     monkeypatch.setattr(nc, "_pynifly", lambda: _Pyn)
     monkeypatch.setattr(nc, "_nif_has_fx_shape", lambda nf: False)
-    monkeypatch.setattr(nc, "_hdt_collider_shape_names",
+    _cs.patch(monkeypatch, "_hdt_collider_shape_names",
                         lambda p, nif=None: set())
-    monkeypatch.setattr(nc, "_hdt_softbody_shape_names",
+    _cs.patch(monkeypatch, "_hdt_softbody_shape_names",
                         lambda p, nif=None: set())
     monkeypatch.setattr(nc, "_hide_virtual_body", lambda nf: False)
-    monkeypatch.setattr(nc, "atomic_nif_save",
+    _cs.patch(monkeypatch, "atomic_nif_save",
                         lambda nf, p: saved.append(p))
 
 
@@ -475,7 +476,7 @@ def test_authored_physics_geometry_is_skipped(monkeypatch):
            _shape("Cloth", pos, [{PELV: 0.8, SPINE: 0.2}])]
     saved = []
     _install(monkeypatch, dst, src, saved)
-    monkeypatch.setattr(nc, "_hdt_softbody_shape_names",
+    _cs.patch(monkeypatch, "_hdt_softbody_shape_names",
                         lambda p, nif=None: {"Cloth"})
     assert nc._match_coincident_cross_shape_skin(
         "dst.nif", src_nif_path="src.nif") == 0

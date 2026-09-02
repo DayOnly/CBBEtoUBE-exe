@@ -119,7 +119,7 @@ _KNOWN_UNPROVEN_ORDER = {
     "nif_convert.py:_install_skin:surviving": 3,
     # `list(s.bone_names or list(bw.keys()))`, later `bone_list + want` --
     # ordered, but through a BoolOp and a BinOp this walker does not model.
-    "nif_convert.py:_sync_bust_plate_follow_postwrite:bone_list": 1,
+    "nif_convert_bust.py:_sync_bust_plate_follow_postwrite:bone_list": 1,   # moved 2026-09-01 (split step 6)
     # `_match_rigid_leg_bend_to_body:to_add` WAS PINNED HERE as a genuine
     # offender: `need` is a real set, so `to_add` inherited its arbitrary order
     # and fed `add_bone`, which fixes the written NIF's bone PALETTE order.
@@ -327,7 +327,8 @@ def test_pass_failures_travel_home_in_ConvertResult_reason():
     parent's pass_failure_summary() came back EMPTY (as it must) while
     ConvertResult.reason carried `PASS FAILED _match_arm_motion_to_body`.
     """
-    src = inspect.getsource(nc)
+    from tests import _converter_sources as cs
+    src = cs.whole_text()          # recorders live in nif_convert_telemetry.py
     assert "_begin_piece_pass_log()" in src
     assert "_piece_pass_failures()" in src
     # both result assemblies -- the copy path and the body-swap path
@@ -338,7 +339,8 @@ def test_pass_failures_travel_home_in_ConvertResult_reason():
 def test_piece_log_is_reset_at_the_single_entry_point_only():
     """phase 2 is reached THROUGH convert_nif, so resetting in both would throw
     away everything phase 1 recorded."""
-    src = inspect.getsource(nc)
+    from tests import _converter_sources as cs
+    src = cs.whole_text()          # the def is in nif_convert_telemetry.py
     assert src.count("_begin_piece_pass_log()") == 2, (
         "expected exactly one definition and one call site")
 

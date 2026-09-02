@@ -49,6 +49,54 @@ def tree() -> ast.Module:
     return ast.Module(body=body, type_ignores=[])
 
 
+def patch(monkeypatch, name: str, value) -> int:
+    """Fake `name` on EVERY declared converter module that binds it.
+
+    After a split, a function may be called both from nif_convert (through
+    its by-name import) and from inside the sibling that now defines it;
+    each looks the name up in its own module globals, so a patch on one of
+    them reaches only one caller. Returns how many modules were patched
+    (0 means the name exists nowhere -- a typo, not a silent no-op)."""
+    import importlib
+    n = 0
+    for rel in pass_map.CONVERTER_MODULES:
+        mod = importlib.import_module("src." + Path(rel).stem)
+        if hasattr(mod, name):
+            monkeypatch.setattr(mod, name, value)
+            n += 1
+    assert n, f"{name} is bound on no converter module"
+    return n
+
+
+def set_all(name: str, value) -> int:
+    """`patch()` without a monkeypatch: bare-assignment form for tests that
+    set `nc.<name> = fake` themselves (same lifetime semantics as before --
+    the caller restores, or does not, exactly as it did)."""
+    import importlib
+    n = 0
+    for rel in pass_map.CONVERTER_MODULES:
+        mod = importlib.import_module("src." + Path(rel).stem)
+        if hasattr(mod, name):
+            setattr(mod, name, value)
+            n += 1
+    assert n, f"{name} is bound on no converter module"
+    return n
+
+
+def source(obj) -> str:
+    """`inspect.getsource(obj)` for the split converter: the whole declared
+    source when `obj` is the nif_convert module, else the object's own text,
+    with the call-time `_nc().` prefix stripped so a pin written as
+    `if not FLAG:` still matches code that now reads `if not _nc().FLAG:`."""
+    import inspect
+    import types
+    if isinstance(obj, types.ModuleType) and obj.__name__.endswith("nif_convert"):
+        txt = whole_text()
+    else:
+        txt = inspect.getsource(obj)
+    return txt.replace("_nc().", "")
+
+
 def whole_text() -> str:
     """All files' text joined -- for guards that grep rather than parse."""
     return "\n".join(texts().values())

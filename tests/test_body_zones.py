@@ -177,7 +177,10 @@ def _scanned_modules():
 # CHANGES the softcloth inflation area, i.e. fit. Listed here so it is visible
 # and so any NEW wide band fails instead of joining it quietly. Removing the
 # entry requires measuring the fit change, not just editing the number.
-_KNOWN_WIDE_BREAST_BANDS = {"nif_convert.py": 1}
+# The one excused band lives in the anti-poke pass, which moved to
+# nif_convert_fitgeom.py on 2026-09-01 (split step 5); the band itself is
+# unchanged.
+_KNOWN_WIDE_BREAST_BANDS = {"nif_convert_fitgeom.py": 1}
 
 
 def _breastish_band_upper_bounds(text):
@@ -213,8 +216,9 @@ def test_src_breast_bands_do_not_reach_past_the_upper_chest(pkg, mod):
 def test_the_known_wide_band_still_exists():
     """The allowlist must not outlive what it excuses -- a stale entry silently
     weakens the guard for whatever replaces it."""
-    text = (_SRC / "nif_convert.py").read_text(encoding="utf-8", errors="ignore")
+    (mod, n), = _KNOWN_WIDE_BREAST_BANDS.items()
+    text = (_SRC / mod).read_text(encoding="utf-8", errors="ignore")
     wide = [b for b in _breastish_band_upper_bounds(text) if b > UPPER_CHEST_Z[1]]
-    assert len(wide) == _KNOWN_WIDE_BREAST_BANDS["nif_convert.py"], (
+    assert len(wide) == n, (
         "the known wide breast band changed; if it was narrowed (good), drop the "
         "_KNOWN_WIDE_BREAST_BANDS entry and record the measured fit change")

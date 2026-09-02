@@ -41,6 +41,7 @@ import numpy as np
 import pytest
 
 from src import nif_convert as nc
+from tests import _converter_sources as _cs  # patch on every module that binds a name
 
 BACK_Y = -6.0
 FRONT_Y = 0.0
@@ -99,8 +100,8 @@ def _stack_for(bv, bump=1.0):
 
 def _run(monkeypatch, bv, bnorm, cloth, *, on, stack, call=None, **over):
     monkeypatch.setattr(nc, "BACK_MORPH_RESIDUAL", bool(on))
-    monkeypatch.setattr(nc, "_find_ube_body_osd", lambda: "synthetic.osd")
-    monkeypatch.setattr(nc, "_cached_body_morph_stack",
+    _cs.patch(monkeypatch, "_find_ube_body_osd", lambda: "synthetic.osd")
+    _cs.patch(monkeypatch, "_cached_body_morph_stack",
                         lambda _p, _n: stack)
     for k, v in over.items():
         monkeypatch.setattr(nc, k, v)

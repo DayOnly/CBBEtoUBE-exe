@@ -41,6 +41,7 @@ import importlib
 import inspect
 
 import src.nif_convert as nc
+from tests import _converter_sources as _cs  # source text across the split modules
 
 
 def test_flag_defaults_off_and_opts_in(monkeypatch):
@@ -57,16 +58,16 @@ def test_flag_defaults_off_and_opts_in(monkeypatch):
 
 
 def test_pass_is_wired_into_both_convert_paths():
-    src = inspect.getsource(nc)
+    src = _cs.source(nc)
     calls = src.count("_match_spine_twist_to_body(dst_path, biped_slots,")
     # ONE call site now: both paths run the shared tail
     # `_finalize_physics_and_motion_match`, so a single site reaches both.
     assert calls >= 1, f"not wired at all ({calls} call sites)"
     # BOTH paths reach it: the pass lives in the shared tail, and both
     # conversion paths call that tail. One site, no drift possible.
-    tail = inspect.getsource(nc._finalize_physics_and_motion_match)
+    tail = _cs.source(nc._finalize_physics_and_motion_match)
     assert "_match_spine_twist_to_body(dst_path, biped_slots," in tail
-    assert all("_finalize_physics_and_motion_match(" in inspect.getsource(f)
+    assert all("_finalize_physics_and_motion_match(" in _cs.source(f)
                for f in (nc.convert_nif, nc.convert_nif_phase2))
 
 
@@ -75,7 +76,7 @@ def test_it_runs_last_of_the_family_matches_in_both_paths():
     manage, so the last one to run wins the overlapping rows. This is the
     narrowest band of the four; if a wider one runs after it, the scoping this
     whole change is about gets overwritten."""
-    src = inspect.getsource(nc)
+    src = _cs.source(nc)
     calls = {
         "leg": "_match_leg_motion_to_body(dst_path, biped_slots,",
         "spine": "_match_spine_motion_to_body(dst_path, biped_slots,",
@@ -117,7 +118,7 @@ def test_flank_scoping_is_OFF_because_it_was_measured_WORSE():
     """
     assert nc._SPINE_TWIST_LATERAL_X == 0.0, (
         "flank scoping measured WORSE than the whole torso band; not a default")
-    src = inspect.getsource(nc._match_spine_twist_to_body)
+    src = _cs.source(nc._match_spine_twist_to_body)
     assert "lateral_half_x=_SPINE_TWIST_LATERAL_X" in src, (
         "keep the knob wired so the negative result stays reproducible")
 
@@ -125,7 +126,7 @@ def test_flank_scoping_is_OFF_because_it_was_measured_WORSE():
 def test_it_covers_the_same_torso_band_as_the_shipped_spine_pass():
     """Same defect and same measured mismatch (Spine2 disagreement z
     80.9-110.7); only the strength and the morph-TRI gate differ."""
-    src = inspect.getsource(nc._match_spine_twist_to_body)
+    src = _cs.source(nc._match_spine_twist_to_body)
     assert "z_lo=_SPINE_MOTION_Z_LO" in src and "z_hi=_SPINE_MOTION_Z_HI" in src
     assert nc._SPINE_MOTION_Z_LO <= 80.9 and nc._SPINE_MOTION_Z_HI >= 110.7
 
@@ -140,7 +141,7 @@ def test_it_opts_out_of_the_morph_tri_skip():
     """The gated population IS the defect population -- 88% of the pack owns a
     source morph TRI, and the reported piece is one of them. Gated, this pass is
     a measured no-op, which is exactly why it ships default OFF."""
-    src = inspect.getsource(nc._match_spine_twist_to_body)
+    src = _cs.source(nc._match_spine_twist_to_body)
     assert "ignore_morph_tri=True" in src
 
 
@@ -149,7 +150,7 @@ def test_lateral_gate_narrows_and_never_widens_the_band():
     OR -- or applied before the z test -- it would pull in flank verts outside
     the z band, which is a wider reach than the unscoped pass, not a narrower
     one."""
-    src = inspect.getsource(nc._match_limb_motion_to_body)
+    src = _cs.source(nc._match_limb_motion_to_body)
     assert "band &= np.abs(wv[:, 0]) >= lateral_half_x" in src
 
 
@@ -159,10 +160,10 @@ def test_pairing_is_by_ray_and_reuses_the_shipped_ray_test():
     bone's weight. Measured: the ray hits 72.8-79.8% of band rows and re-pairs
     ~60% of them; outcome swing strike 7.79 -> 7.04, and the small upper_chest
     regression KD introduced (4.45 -> 4.75) goes away."""
-    src = inspect.getsource(nc._match_spine_twist_to_body)
+    src = _cs.source(nc._match_spine_twist_to_body)
     assert "pair_by_ray=_SPINE_TWIST_PAIR_RAY" in src
     assert nc._SPINE_TWIST_PAIR_RAY is True
-    body = inspect.getsource(nc._match_limb_motion_to_body)
+    body = _cs.source(nc._match_limb_motion_to_body)
     assert "fit_metrics._ClipTester" in body, (
         "use the shipped ray test, not a second implementation of one")
 
@@ -179,7 +180,7 @@ def test_ray_pairing_failure_is_REPORTED_not_swallowed():
 
     A swallowed exception is indistinguishable from 'nothing qualified'.
     """
-    body = inspect.getsource(nc._match_limb_motion_to_body)
+    body = _cs.source(nc._match_limb_motion_to_body)
     assert "_note_pass_failure(\"_match_limb_motion_to_body/ray-pair\"" in body
     assert "except Exception:\n                    pass" not in body
 
@@ -187,7 +188,7 @@ def test_ray_pairing_failure_is_REPORTED_not_swallowed():
 def test_ray_pairing_can_only_re_pair_never_drop_a_row():
     """A ray that misses must keep the KD answer. If a miss dropped the row, the
     pass would silently shrink to the 72-80% of rows the ray happens to hit."""
-    body = inspect.getsource(nc._match_limb_motion_to_body)
+    body = _cs.source(nc._match_limb_motion_to_body)
     assert "_fin = np.isfinite(_hit)" in body
     assert "near[_rows[_fin]] = _n2" in body, (
         "only rows with a finite hit may be re-paired")
@@ -200,7 +201,7 @@ def test_strength_blends_the_SPLIT_and_is_inert_at_one():
     region and every pose. Without a split blend there is no partial setting to
     trade with, and a pass that helps one pose family and hurts another has no
     middle to search."""
-    src = inspect.getsource(nc._match_limb_motion_to_body)
+    src = _cs.source(nc._match_limb_motion_to_body)
     assert "if strength < 1.0:" in src, (
         "the split blend must be guarded so strength 1.0 -- what every shipped "
         "instance uses -- stays byte-identical")
@@ -229,5 +230,5 @@ def test_morph_tri_opt_out_is_off_by_default_for_shipped_instances():
     exists because re-sharing a TRI-owned shape's limb mass regressed in game."""
     for fn in (nc._match_leg_motion_to_body, nc._match_arm_motion_to_body,
                nc._match_spine_motion_to_body):
-        assert "ignore_morph_tri" not in inspect.getsource(fn), (
+        assert "ignore_morph_tri" not in _cs.source(fn), (
             f"{fn.__name__} ships ON and must not opt out of the morph-TRI skip")

@@ -46,6 +46,7 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import src.nif_convert as nc  # noqa: E402
+from tests import _converter_sources as _cs  # patch on every module that binds a name
 # Reuse the sibling pass's duck-typed pynifly rather than writing a second one:
 # its setShapeWeights reproduces the MERGE + four-influence-overflow semantics
 # this pass is equally required to survive, and a fake that drifts from the
@@ -88,7 +89,7 @@ def _run(dst_shapes, src_shapes):
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(nc, "_pynifly", lambda: _Pyn)
         mp.setattr(nc, "_hide_virtual_body", lambda nf: False)
-        mp.setattr(nc, "atomic_nif_save", lambda nf, p: saved.append(p))
+        _cs.patch(mp, "atomic_nif_save", lambda nf, p: saved.append(p))
         n = nc._cap_weight_roughness_to_author("dst.nif",
                                                src_nif_path="src.nif")
     return n, saved
@@ -150,7 +151,7 @@ def test_the_kill_switch_and_the_missing_source_both_disable_it():
     assert off == 0, "the kill switch did not turn the pass off"
     saved = []
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(nc, "atomic_nif_save", lambda nf, p: saved.append(p))
+        _cs.patch(mp, "atomic_nif_save", lambda nf, p: saved.append(p))
         assert nc._cap_weight_roughness_to_author("dst.nif",
                                                   src_nif_path=None) == 0
     assert not saved, "it saved a NIF with no author to score against"

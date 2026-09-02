@@ -25,6 +25,7 @@ import pytest
 from pathlib import Path
 
 from src import nif_convert as nc
+from tests import _converter_sources as _cs  # patch on every module that binds a name
 
 
 class _FakeExtra:
@@ -77,7 +78,7 @@ def test_bind_populates_from_source(monkeypatch, tmp_path):
     """The bind must actually CAPTURE text. Guards the inert-bind regression."""
     src = tmp_path / "piece_1.nif"
     src.write_bytes(b"nif")
-    monkeypatch.setattr(nc, "_read_source_hdt_xml_text", lambda p, nif=None: XML)
+    _cs.patch(monkeypatch, "_read_source_hdt_xml_text", lambda p, nif=None: XML)
     nc._hdt_xml_bind_piece_source(src, nif=_FakeNif())
     assert nc._PIECE_HDT_XML_TEXT == XML
 
@@ -94,7 +95,7 @@ def test_bind_ignores_a_non_pynifly_nif(monkeypatch, tmp_path):
         seen["nif"] = nif
         return XML
 
-    monkeypatch.setattr(nc, "_read_source_hdt_xml_text", _reader)
+    _cs.patch(monkeypatch, "_read_source_hdt_xml_text", _reader)
 
     class _NoRootNode:
         shapes = []
@@ -111,8 +112,8 @@ def test_destination_lookup_recovers_from_the_bound_source(monkeypatch, tmp_path
     dst = tmp_path / "out" / "piece_1.nif"
     dst.parent.mkdir(parents=True)
     dst.write_bytes(b"nif")
-    monkeypatch.setattr(nc, "_read_source_hdt_xml_disk", lambda p, nif=None: None)
-    monkeypatch.setattr(nc, "_find_hdt_xml_for_armor", lambda p: None)
+    _cs.patch(monkeypatch, "_read_source_hdt_xml_disk", lambda p, nif=None: None)
+    _cs.patch(monkeypatch, "_find_hdt_xml_for_armor", lambda p: None)
     nc._PIECE_HDT_XML_TEXT = XML
     nc._hdt_xml_cache_clear()
 
@@ -126,8 +127,8 @@ def test_unresolvable_and_unbound_fails_CLOSED(monkeypatch, tmp_path):
     an empty set silently un-protects all of them."""
     dst = tmp_path / "piece_1.nif"
     dst.write_bytes(b"nif")
-    monkeypatch.setattr(nc, "_read_source_hdt_xml_disk", lambda p, nif=None: None)
-    monkeypatch.setattr(nc, "_find_hdt_xml_for_armor", lambda p: None)
+    _cs.patch(monkeypatch, "_read_source_hdt_xml_disk", lambda p, nif=None: None)
+    _cs.patch(monkeypatch, "_find_hdt_xml_for_armor", lambda p: None)
     nc._PIECE_HDT_XML_TEXT = None
     nc._hdt_xml_cache_clear()
 
@@ -144,8 +145,8 @@ def test_a_piece_with_no_physics_xml_still_answers_EMPTY(monkeypatch, tmp_path):
     NIF's own declaration, nothing else."""
     dst = tmp_path / "piece_1.nif"
     dst.write_bytes(b"nif")
-    monkeypatch.setattr(nc, "_read_source_hdt_xml_disk", lambda p, nif=None: None)
-    monkeypatch.setattr(nc, "_find_hdt_xml_for_armor", lambda p: None)
+    _cs.patch(monkeypatch, "_read_source_hdt_xml_disk", lambda p, nif=None: None)
+    _cs.patch(monkeypatch, "_find_hdt_xml_for_armor", lambda p: None)
     nc._PIECE_HDT_XML_TEXT = None
     nc._hdt_xml_cache_clear()
 
@@ -160,12 +161,12 @@ def test_unresolved_declaration_is_RECORDED(monkeypatch, tmp_path):
     invisible in exactly the runs that mattered. It must reach the pass log."""
     dst = tmp_path / "piece_1.nif"
     dst.write_bytes(b"nif")
-    monkeypatch.setattr(nc, "_read_source_hdt_xml_disk", lambda p, nif=None: None)
-    monkeypatch.setattr(nc, "_find_hdt_xml_for_armor", lambda p: None)
+    _cs.patch(monkeypatch, "_read_source_hdt_xml_disk", lambda p, nif=None: None)
+    _cs.patch(monkeypatch, "_find_hdt_xml_for_armor", lambda p: None)
     nc._PIECE_HDT_XML_TEXT = None
     nc._hdt_xml_cache_clear()
     noted = []
-    monkeypatch.setattr(nc, "_note_pass_failure",
+    _cs.patch(monkeypatch, "_note_pass_failure",
                         lambda name, exc, *a, **k: noted.append((name, exc)))
 
     nc._read_source_hdt_xml_text_uncached(dst, nif=_FakeNif())
@@ -207,10 +208,10 @@ def _guard(monkeypatch, tmp_path, ours, author):
     src = tmp_path / "src_1.nif"
     dst.write_bytes(b"n")
     src.write_bytes(b"n")
-    monkeypatch.setattr(nc, "_read_source_hdt_xml_text", lambda p, nif=None: XML)
-    monkeypatch.setattr(nc, "_hdt_collider_shape_names",
+    _cs.patch(monkeypatch, "_read_source_hdt_xml_text", lambda p, nif=None: XML)
+    _cs.patch(monkeypatch, "_hdt_collider_shape_names",
                         lambda p, nif=None: {"ClothCol"})
-    monkeypatch.setattr(nc, "_hdt_softbody_shape_names",
+    _cs.patch(monkeypatch, "_hdt_softbody_shape_names",
                         lambda p, nif=None: set())
 
     class _Pyn:
@@ -221,7 +222,7 @@ def _guard(monkeypatch, tmp_path, ours, author):
 
     monkeypatch.setattr(nc, "_pynifly", lambda: _Pyn)
     noted = []
-    monkeypatch.setattr(nc, "_note_pass_failure",
+    _cs.patch(monkeypatch, "_note_pass_failure",
                         lambda name, exc, *a, **k: noted.append(name))
     n = nc._audit_registered_shape_declared_bones(dst, src)
     return n, noted
@@ -299,10 +300,10 @@ def test_guard_reads_declared_bones_from_the_SAME_side_as_registered(
         seen_paths.append(Path(p).name)
         return XML if Path(p).name == dst.name else None   # source side is dead
 
-    monkeypatch.setattr(nc, "_read_source_hdt_xml_text", _reader)
-    monkeypatch.setattr(nc, "_hdt_collider_shape_names",
+    _cs.patch(monkeypatch, "_read_source_hdt_xml_text", _reader)
+    _cs.patch(monkeypatch, "_hdt_collider_shape_names",
                         lambda p, nif=None: {"ClothCol"})
-    monkeypatch.setattr(nc, "_hdt_softbody_shape_names",
+    _cs.patch(monkeypatch, "_hdt_softbody_shape_names",
                         lambda p, nif=None: set())
 
     class _Pyn:
@@ -314,7 +315,7 @@ def test_guard_reads_declared_bones_from_the_SAME_side_as_registered(
 
     monkeypatch.setattr(nc, "_pynifly", lambda: _Pyn)
     noted = []
-    monkeypatch.setattr(nc, "_note_pass_failure",
+    _cs.patch(monkeypatch, "_note_pass_failure",
                         lambda name, exc, *a, **k: noted.append(name))
 
     n = nc._audit_registered_shape_declared_bones(dst, src)
@@ -330,10 +331,10 @@ def test_guard_records_when_it_CANNOT_check(monkeypatch, tmp_path):
     src = tmp_path / "src_1.nif"
     dst.write_bytes(b"n")
     src.write_bytes(b"n")
-    monkeypatch.setattr(nc, "_read_source_hdt_xml_text", lambda p, nif=None: None)
-    monkeypatch.setattr(nc, "_hdt_collider_shape_names",
+    _cs.patch(monkeypatch, "_read_source_hdt_xml_text", lambda p, nif=None: None)
+    _cs.patch(monkeypatch, "_hdt_collider_shape_names",
                         lambda p, nif=None: {"ClothCol"})
-    monkeypatch.setattr(nc, "_hdt_softbody_shape_names",
+    _cs.patch(monkeypatch, "_hdt_softbody_shape_names",
                         lambda p, nif=None: set())
 
     class _Pyn:
@@ -343,7 +344,7 @@ def test_guard_records_when_it_CANNOT_check(monkeypatch, tmp_path):
 
     monkeypatch.setattr(nc, "_pynifly", lambda: _Pyn)
     noted = []
-    monkeypatch.setattr(nc, "_note_pass_failure",
+    _cs.patch(monkeypatch, "_note_pass_failure",
                         lambda name, exc, *a, **k: noted.append(name))
     nc._audit_registered_shape_declared_bones(dst, src)
     assert "registered_shape_bones_UNCHECKED" in noted

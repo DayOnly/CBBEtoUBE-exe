@@ -32,6 +32,7 @@ import inspect
 import numpy as np
 
 import src.nif_convert as nc
+from tests import _converter_sources as _cs  # source text across the split modules
 
 
 def test_flag_default_on_and_kill_switch(monkeypatch):
@@ -46,7 +47,7 @@ def test_flag_default_on_and_kill_switch(monkeypatch):
 
 
 def test_pass_is_wired_into_both_convert_paths():
-    src = inspect.getsource(nc)
+    src = _cs.source(nc)
     # One call site per convert path. A pass defined but never called is the
     # failure mode that made the UBE-native backstop dead code for weeks.
     assert src.count("_match_arm_motion_to_body(dst_path") >= 2
@@ -59,7 +60,7 @@ def test_flag_is_read_at_call_time_not_captured():
     import, a test (or a caller) flipping the global would be silently ignored
     and the pass would run anyway.
     """
-    src = inspect.getsource(nc._match_arm_motion_to_body)
+    src = _cs.source(nc._match_arm_motion_to_body)
     assert "if not MATCH_ARM_MOTION:" in src
     assert "return 0" in src
 
@@ -95,7 +96,7 @@ def test_hug_distance_is_tighter_than_the_leg_pass():
 
 
 def test_hands_and_feet_slots_are_skipped():
-    src = inspect.getsource(nc._match_limb_motion_to_body)
+    src = _cs.source(nc._match_limb_motion_to_body)
     assert "BIPED_SLOT33_BIT | BIPED_SLOT37_BIT" in src
 
 
@@ -103,8 +104,8 @@ def test_arm_and_leg_share_one_implementation():
     """Guards against the copy-paste alternative: two 200-line passes that drift
     apart, so a fix to the 4-influence cap or the normalise invariant lands in
     one and not the other."""
-    arm = inspect.getsource(nc._match_arm_motion_to_body)
-    leg = inspect.getsource(nc._match_leg_motion_to_body)
+    arm = _cs.source(nc._match_arm_motion_to_body)
+    leg = _cs.source(nc._match_leg_motion_to_body)
     assert "_match_limb_motion_to_body(" in arm
     assert "_match_limb_motion_to_body(" in leg
     # Wrappers only -- the maths lives in the shared core.

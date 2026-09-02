@@ -48,6 +48,7 @@ import numpy as np
 import pytest
 
 from src import nif_convert as nc
+from tests import _converter_sources as _cs  # patch on every module that binds a name
 
 
 class _FakeShape:
@@ -69,9 +70,8 @@ def _world_space(monkeypatch):
     test_guard_defaults_ON_and_ONLY_WITH_THE_LOCALITY_FIX). Without this, a
     future flip would make every test below pass vacuously on an empty group
     list instead of failing."""
-    monkeypatch.setattr(nc, "_shape_global_to_skin", lambda s: s)
-    monkeypatch.setattr(
-        nc, "_verts_skin_to_world",
+    _cs.patch(monkeypatch, "_shape_global_to_skin", lambda s: s)
+    _cs.patch(monkeypatch, "_verts_skin_to_world",
         lambda sv, xf: np.asarray(sv, dtype=np.float64) + xf.shift)
     monkeypatch.setattr(nc, "_FULL_WEIGHT_LAYER_GUARD", True)
 
@@ -106,7 +106,7 @@ def test_guard_defaults_ON_and_ONLY_WITH_THE_LOCALITY_FIX():
     Asserted on the SOURCE, not the module attribute, because the autouse
     fixture forces the flag on for the machinery tests below.
     """
-    src = inspect.getsource(nc)
+    src = _cs.source(nc)
     i = src.index("_FULL_WEIGHT_LAYER_GUARD = (")
     decl = src[i:i + 240]
     assert '"CBBE2UBE_NO_FULL_WEIGHT_LAYER_GUARD"' in decl, (
@@ -151,7 +151,7 @@ def test_the_basis_floor_guards_the_renormalisation():
     captures little turns a partial sample into a confident wrong answer. The
     floor is a SHARE of the body row, not an epsilon."""
     assert 0.0 <= nc._FULL_WEIGHT_BASIS_MIN <= 1.0
-    src = inspect.getsource(nc._match_limb_motion_to_body)
+    src = _cs.source(nc._match_limb_motion_to_body)
     assert "_okb = _bs > max(_FULL_WEIGHT_BASIS_MIN, 1e-6)" in src, \
         "the floor is defined but not applied to the row selection"
 
@@ -293,7 +293,7 @@ def test_anchor_arrays_are_per_vertex_of_THAT_member():
 
 def test_the_plan_is_built_and_USED_by_the_pass():
     """Computed-and-discarded is the failure mode this project keeps hitting."""
-    src = inspect.getsource(nc._match_limb_motion_to_body)
+    src = _cs.source(nc._match_limb_motion_to_body)
     assert "_stacked_layer_groups(" in src, "the plan is never built"
     assert "_stacked_layer_plan(" in src
     assert "_stack_plan.get(s.name)" in src, "the plan is never consulted"
@@ -316,14 +316,14 @@ def test_the_shared_anchor_is_applied_ONLY_WHERE_LAYERS_OVERLAP():
     KD query and for the ray origin/normal, or the sleeve fires its ray from a
     point on the torso.
     """
-    src = inspect.getsource(nc._match_limb_motion_to_body)
+    src = _cs.source(nc._match_limb_motion_to_body)
     # masked, not wholesale
     assert "_qv[_ok] = " in src, (
         "the anchor must be written only into the overlapping verts")
     assert "_src[_ok2] = " in src and "_gn[_ok2] = " in src, (
         "the ray origin AND normal must be masked the same way")
     # and the plan must actually carry the mask
-    plan = inspect.getsource(nc._stacked_layer_plan)
+    plan = _cs.source(nc._stacked_layer_plan)
     assert "near_ok" in plan and "_LAYER_STACK_RADIUS" in plan, (
         "the plan must bound the anchor by the stacking radius")
 
@@ -332,7 +332,7 @@ def test_the_guard_is_scoped_to_the_FULL_VECTOR_instance():
     """The four family passes rescale ONE family and leave the rest of the row
     proportional, so they decohere a stack far less -- and each was validated in
     game as it stands. Widening to them needs its own measurement."""
-    src = inspect.getsource(nc._match_limb_motion_to_body)
+    src = _cs.source(nc._match_limb_motion_to_body)
     i = src.index("_stack_plan: dict = {}")
     head = src[:i]
     assert "if full_vector and _FULL_WEIGHT_LAYER_GUARD:" in src[i:i + 400]
@@ -344,5 +344,5 @@ def test_the_own_distance_gate_survives_the_shared_anchor():
     """The anchor can hug the body while THIS layer hangs well off it. Dropping
     the member's own distance test would pull a free-hanging outer layer onto
     the body's motion -- the exact defect the hug gate exists to prevent."""
-    src = inspect.getsource(nc._match_limb_motion_to_body)
+    src = _cs.source(nc._match_limb_motion_to_body)
     assert "band &= np.asarray(tree.query(wv, k=1)[0]) <= max_dist" in src

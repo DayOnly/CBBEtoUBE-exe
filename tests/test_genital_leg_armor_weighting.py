@@ -27,6 +27,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import src.nif_convert as nc  # noqa: E402
+from tests import _converter_sources as _cs  # patch on every module that binds a name
 
 
 def test_genital_bones_excluded_from_scale_set():
@@ -276,7 +277,7 @@ def test_hdt_collider_vs_softbody_split(monkeypatch):
            '<per-vertex-shape name="Skirt_Big"></per-vertex-shape>'
            '<per-vertex-shape name="Skirt_Short"></per-vertex-shape>'
            '</system>')
-    monkeypatch.setattr(nc, "_read_source_hdt_xml_text", lambda p, nif=None: xml)
+    _cs.patch(monkeypatch, "_read_source_hdt_xml_text", lambda p, nif=None: xml)
     monkeypatch.setattr(nc, "CHAIN_TO_SOFTBODY", False)
     assert nc._hdt_collider_shape_names(Path("x.nif")) == {
         "WiDu_ColBodySkirt", "ColGround"}
@@ -285,7 +286,7 @@ def test_hdt_collider_vs_softbody_split(monkeypatch):
 
 
 def test_hdt_collider_names_empty_when_no_xml(monkeypatch):
-    monkeypatch.setattr(nc, "_read_source_hdt_xml_text", lambda p, nif=None: None)
+    _cs.patch(monkeypatch, "_read_source_hdt_xml_text", lambda p, nif=None: None)
     assert nc._hdt_collider_shape_names(Path("x.nif")) == set()
 
 

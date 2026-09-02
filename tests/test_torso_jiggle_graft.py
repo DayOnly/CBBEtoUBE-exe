@@ -47,6 +47,7 @@ import importlib
 import pytest
 
 import src.nif_convert as nc
+from tests import _converter_sources as _cs  # source text across the split modules
 
 
 def _reload(monkeypatch, value, legacy=None):
@@ -127,7 +128,7 @@ def test_a_collider_is_never_grafted_even_with_the_flag_on():
     standoff that helps, because the grafted region and the runaway collision are
     the same place. If someone re-introduces a conditional here, this fails."""
     import inspect
-    src = inspect.getsource(nc._transfer_body_jiggle_to_fitted)
+    src = _cs.source(nc._transfer_body_jiggle_to_fitted)
     i = src.index("if s.name in collider_names:")
     stmt = src[i:src.index("continue", i)]
     assert "TORSO_JIGGLE" not in stmt and "torso_mode" not in stmt, (
@@ -151,7 +152,7 @@ def test_simulated_cloth_is_never_grafted_regardless_of_mode():
     flag relaxes chain_frac, whole-shape fit and leg dominance -- never a rule about
     simulated cloth."""
     import inspect
-    src = inspect.getsource(nc._transfer_body_jiggle_to_fitted)
+    src = _cs.source(nc._transfer_body_jiggle_to_fitted)
     i = src.index("if (s.name in softbody_names")
     skip = src[i:src.index("continue", i)]
     # `_skip_keys` IS the name list, narrowed per piece by #drape-xml-gate; the
@@ -170,7 +171,7 @@ def test_chain_verts_are_skipped_per_vertex():
     import ast
     import inspect
     import textwrap
-    src = inspect.getsource(nc._transfer_body_jiggle_to_fitted)
+    src = _cs.source(nc._transfer_body_jiggle_to_fitted)
     assert "if is_chain[i]:" in src
 
     # The guard's BODY must be a bare `continue`, checked on the parse tree
@@ -199,7 +200,7 @@ def test_torso_mode_requires_all_three_conditions():
     """flag AND rigid-torso-armour AND a fit floor over the RIGID verts. Dropping
     any one of them admits a cape or a scarf."""
     import inspect
-    src = inspect.getsource(nc._transfer_body_jiggle_to_fitted)
+    src = _cs.source(nc._transfer_body_jiggle_to_fitted)
     i = src.index("torso_mode = bool(")
     gate = src[i:i + 320]
     assert "TORSO_JIGGLE_TRANSFER" in gate
@@ -214,7 +215,7 @@ def test_leg_path_gates_are_untouched_when_torso_mode_is_off():
     """The default path must keep chain_frac, whole-shape fit and leg dominance.
     This is the regression that would silently widen a shipped default."""
     import inspect
-    src = inspect.getsource(nc._transfer_body_jiggle_to_fitted)
+    src = _cs.source(nc._transfer_body_jiggle_to_fitted)
     i = src.index("if not torso_mode:")
     body = src[i:i + 800]
     assert "chain_frac > _CONFORM_CHAIN_MAX" in body
@@ -244,7 +245,7 @@ def test_graft_rows_are_capped_before_the_bones_are_added():
     before `addable`, or a graft the cap discards still gets add_bone'd and ships a
     zero-weight bone: exactly the ordering P6 had to learn on the leg pass."""
     import inspect
-    src = inspect.getsource(nc._transfer_body_jiggle_to_fitted)
+    src = _cs.source(nc._transfer_body_jiggle_to_fitted)
     cap = src.index("_cap_and_renormalise_rows(")
     add = src.index("addable = [(jb, stb)")
     loop = src.index("grafted_rows.append(i)")
@@ -260,7 +261,7 @@ def test_write_never_empties_an_existing_bone():
     cap can now zero an existing bone on every row it touched, so the write needs
     the same guard the leg pass carries."""
     import inspect
-    src = inspect.getsource(nc._transfer_body_jiggle_to_fitted)
+    src = _cs.source(nc._transfer_body_jiggle_to_fitted)
     i = src.index("for bn in sorted(touched):")
     body = src[i:src.index("s.setShapeWeights(bn, pairs)", i)]
     assert "if not pairs and bn in existing:" in body
@@ -284,7 +285,7 @@ def test_weight_write_order_is_deterministic():
     size. Bisected to this pass with CBBE2UBE_NO_JIGGLE_TRANSFER.
     """
     import inspect
-    src = inspect.getsource(nc._transfer_body_jiggle_to_fitted)
+    src = _cs.source(nc._transfer_body_jiggle_to_fitted)
     assert "for bn in sorted(touched):" in src
     assert "for bn in touched:" not in src, (
         "iterating the bone-name set directly reintroduces hash-seed-dependent "
@@ -295,5 +296,5 @@ def test_new_bone_emit_gate_still_present():
     """The sibling gate that stops an ADDED bone shipping with no written weight.
     It and the cap solve different halves of the same failure."""
     import inspect
-    src = inspect.getsource(nc._transfer_body_jiggle_to_fitted)
+    src = _cs.source(nc._transfer_body_jiggle_to_fitted)
     assert "any(vw[i].get(jb, 0.0) > 1e-4 for i in range(n))" in src

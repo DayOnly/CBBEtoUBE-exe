@@ -38,11 +38,14 @@ _REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_REPO))
 
 from src import nif_convert as nc  # noqa: E402
+# `_find_ube_shapedata` and `_glob_first_in_mods` live in the same sibling
+# module since split step 3; a patch has to land where the CALLER looks.
+from src import nif_convert_bodyrefs as nb  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
 def _clean_cache_and_env(monkeypatch):
-    monkeypatch.setattr(nc, "_BODY_DISCOVERY_CACHE", {})
+    nc._BODY_DISCOVERY_CACHE.clear()   # mutate, never rebind: the finders share this object
     monkeypatch.delenv("CBBE2UBE_UBE_TEMPLATE", raising=False)
     monkeypatch.delenv("CBBE2UBE_UBE_OSD", raising=False)
 
@@ -55,7 +58,7 @@ def _stub(monkeypatch, answers):
         seen.append((pattern, tuple(name_substrs)))
         return answers.get(tuple(name_substrs))
 
-    monkeypatch.setattr(nc, "_glob_first_in_mods", fake)
+    monkeypatch.setattr(nb, "_glob_first_in_mods", fake)
     return seen
 
 
@@ -128,7 +131,7 @@ def test_the_two_callers_do_not_share_a_cache_slot(monkeypatch):
     would hand the OSD lookup the template NIF."""
     _stub(monkeypatch, {("ube", "release", "body"): CANON})
     nif = nc._find_ube_template_body()
-    monkeypatch.setattr(nc, "_glob_first_in_mods",
+    monkeypatch.setattr(nb, "_glob_first_in_mods",
                         lambda p, name_substrs=(): Path("body.osd"))
     osd = nc._find_ube_body_osd()
     assert nif == CANON and osd == Path("body.osd")

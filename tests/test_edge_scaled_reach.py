@@ -31,6 +31,7 @@ import numpy as np
 import pytest
 
 from src import nif_convert as nc
+from tests import _converter_sources as _cs  # patch on every module that binds a name
 
 
 def _grid(nx, ny, step, x0=0.0):
@@ -251,7 +252,7 @@ def test_the_conform_relax_pass_uses_it_only_when_asked(monkeypatch):
         seen["elen"] = out[0]
         return out
 
-    monkeypatch.setattr(nc, "_local_edge_length", spy)
+    _cs.patch(monkeypatch, "_local_edge_length", spy)
     monkeypatch.setattr(nc, "EDGE_SCALED_REACH", True)
     normals = np.tile([0.0, 0.0, 1.0], (len(v), 1))
     disp = np.zeros_like(v)

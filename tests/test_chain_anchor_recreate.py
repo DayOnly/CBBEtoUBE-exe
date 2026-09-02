@@ -44,6 +44,7 @@ verts -- skirts, vests, robes, belts and a Skaal torso, not skirts alone.
 import inspect
 
 from src import nif_convert as nc
+from tests import _converter_sources as _cs  # source text across the split modules
 
 
 def test_flag_defaults_on_and_opts_out(monkeypatch):
@@ -60,7 +61,7 @@ def test_the_regression_had_no_hatch_and_this_one_does():
     as "not it" only because neither could switch the real cause off. A
     behaviour with no off-switch cannot be A/B'd.
     """
-    src = inspect.getsource(nc)
+    src = _cs.source(nc)
     assert "CBBE2UBE_NO_CHAIN_ANCHOR_RECREATE" in src
 
 
@@ -73,7 +74,7 @@ def test_the_add_is_guarded_on_ABSENCE_only():
     add must therefore fire ONLY when the node is absent, which also makes it a
     no-op on every piece whose anchor already survived.
     """
-    src = inspect.getsource(nc._precreate_custom_bone_chains)
+    src = _cs.source(nc._precreate_custom_bone_chains)
     i = src.index("#chain-anchor-recreate")
     j = src.index("continue", i)
     branch = src[i:j]
@@ -86,7 +87,7 @@ def test_the_add_is_guarded_on_ABSENCE_only():
 def test_it_is_in_the_FLAT_branch_not_the_nested_one():
     """The nested branch builds real parent links and was never implicated;
     seeding a nested rig flat is the June skirt-sag regression."""
-    src = inspect.getsource(nc._precreate_custom_bone_chains)
+    src = _cs.source(nc._precreate_custom_bone_chains)
     flat = src.index("# Flat mode: recreate full ancestor chain")
     nested = src.index("anc: list[tuple] = []")
     at = src.index("#chain-anchor-recreate")
@@ -98,7 +99,7 @@ def test_the_chain_writer_still_requires_the_parent_first():
     """This is the coupling the deletion broke, and the reason a missing anchor
     silently costs the WHOLE chain rather than one bone: the writer attaches a
     bone only once its parent exists, and gives up when a pass adds nothing."""
-    src = inspect.getsource(nc._precreate_custom_bone_chains)
+    src = _cs.source(nc._precreate_custom_bone_chains)
     assert "if par is None or par in existing:" in src
     assert "if not progressed:" in src, (
         "the writer must still bail out rather than spin")
@@ -107,7 +108,7 @@ def test_the_chain_writer_still_requires_the_parent_first():
 def test_transform_is_the_source_GLOBAL_for_a_flat_parent():
     """Flat-parented means parent=Scene Root, so the node's own transform has to
     BE its global or the chain hanging off it lands ~69u low."""
-    src = inspect.getsource(nc._precreate_custom_bone_chains)
+    src = _cs.source(nc._precreate_custom_bone_chains)
     i = src.index("# Flat mode: recreate full ancestor chain")
     j = src.index("#chain-anchor-recreate", i)
     assert "xf = src_c.global_transform" in src[i:j]

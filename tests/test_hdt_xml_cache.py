@@ -41,6 +41,7 @@ from pathlib import Path
 import pytest
 
 import src.nif_convert as nc
+from tests import _converter_sources as _cs  # patch on every module that binds a name
 
 
 @pytest.fixture(autouse=True)
@@ -58,7 +59,7 @@ def _stub(monkeypatch, values):
         v = values[min(calls["n"], len(values) - 1)]
         calls["n"] += 1
         return v
-    monkeypatch.setattr(nc, "_read_source_hdt_xml_text_uncached", fake)
+    _cs.patch(monkeypatch, "_read_source_hdt_xml_text_uncached", fake)
     return calls
 
 

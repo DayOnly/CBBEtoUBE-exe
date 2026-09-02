@@ -28,7 +28,11 @@ SPAN = 0.5
 
 
 def _tree(src: str | None = None):
-    return ast.parse(src or Path(inspect.getfile(nc)).read_text(encoding="utf8"))
+    """The whole converter (every declared module), or a given source text."""
+    if src is not None:
+        return ast.parse(src)
+    from tests import _converter_sources as cs
+    return cs.tree()
 
 
 def _labels(tree) -> set[str]:
@@ -92,11 +96,16 @@ def test_label_named_functions_do_not_swallow_their_own_body():
 def test_the_check_can_actually_fail():
     """Control: re-parse a mutated copy where one label-named function's
     handler is muted again; the check must report exactly that function."""
-    src = Path(inspect.getfile(nc)).read_text(encoding="utf8")
+    from tests import _converter_sources as cs
     needle = ('    except Exception as _e:\n'
               '        _note_pass_failure("_smooth_push_field", _e)\n'
               '        return push')
-    assert src.count(needle) == 1, "mutation anchor moved; update the control"
+    hits = [(p, t) for p, t in cs.texts().items() if t.count(needle) == 1]
+    assert len(hits) == 1, "mutation anchor moved; update the control"
+    _p, src = hits[0]
     mutated = src.replace(needle, '    except Exception:\n        return push')
+    # labels are collected from the same text, so the mutated module alone is
+    # a valid population: `_smooth_push_field` is a label there (its own caller
+    # wrapper) -- if it is not, the control has lost its footing.
     found = offenders(_tree(mutated))
     assert [fn for fn, _ in found] == ["_smooth_push_field"], found

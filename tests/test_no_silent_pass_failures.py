@@ -140,11 +140,12 @@ def test_the_check_can_actually_fail():
     """GUARD THE GUARD. Re-parse the module with one recorder replaced by
     `pass`; the check must then report that handler. Without this, a green
     result could mean 'the walk broke' rather than 'nothing is silent'."""
-    src = Path(inspect.getfile(nc)).read_text(encoding="utf8")
+    from tests import _converter_sources as cs
     needle = '        _note_pass_failure("_carrier_is_body_conforming", _ce)'
-    assert needle in src, (
+    hits = [txt for txt in cs.texts().values() if needle in txt]
+    assert len(hits) == 1, (
         "the mutation target moved; re-point this control at another recorder")
-    mutated = src.replace(needle, "        pass", 1)
+    mutated = hits[0].replace(needle, "        pass", 1)
     found = _silent_pass_handlers(ast.parse(mutated))
     assert any(fn == "_carrier_is_body_conforming" for _ln, fn, _g in found), (
         "muting a recorder did NOT make the check report it -- the check "

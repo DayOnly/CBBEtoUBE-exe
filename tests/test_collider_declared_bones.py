@@ -40,7 +40,8 @@ sys.path.insert(0, str(REPO / ".pynifly"))
 
 from src import nif_convert as nc  # noqa: E402
 
-SRC = (REPO / "src" / "nif_convert.py").read_text(encoding="utf-8")
+from tests import _converter_sources as _cs  # noqa: E402
+SRC = _cs.whole_text()          # every declared converter module (the bust split moved these)
 
 
 def _func(name):
@@ -92,8 +93,8 @@ def test_xml_text_prefers_authored_over_destination(monkeypatch, tmp_path):
     authored = tmp_path / "authored.xml"
     authored.write_text('<a><bone name="NPC L UpperArm [LUar]"/></a>',
                         encoding="utf-8")
-    monkeypatch.setattr(nc, "_read_source_hdt_xml_disk", lambda p: authored)
-    monkeypatch.setattr(nc, "_read_source_hdt_xml_text",
+    _cs.patch(monkeypatch, "_read_source_hdt_xml_disk", lambda p: authored)
+    _cs.patch(monkeypatch, "_read_source_hdt_xml_text",
                         lambda p, nif=None: "<DESTINATION/>")
     monkeypatch.setattr(nc, "CHAIN_TO_SOFTBODY", False)
     got = nc._bust_split_xml_text(tmp_path / "x_1.nif", None,
@@ -106,8 +107,8 @@ def test_xml_text_falls_back_to_destination_when_no_authored(monkeypatch,
                                                              tmp_path):
     """The fallback must survive: a piece whose XML resolves only from the
     output side must still be checkable."""
-    monkeypatch.setattr(nc, "_read_source_hdt_xml_disk", lambda p: None)
-    monkeypatch.setattr(nc, "_read_source_hdt_xml_text",
+    _cs.patch(monkeypatch, "_read_source_hdt_xml_disk", lambda p: None)
+    _cs.patch(monkeypatch, "_read_source_hdt_xml_text",
                         lambda p, nif=None: "<DESTINATION/>")
     monkeypatch.setattr(nc, "CHAIN_TO_SOFTBODY", False)
     got = nc._bust_split_xml_text(tmp_path / "x_1.nif", None,
@@ -126,14 +127,14 @@ def test_ancestor_walk_logic(monkeypatch):
     """
     chain = {"finger": "hand", "hand": "forearm", "forearm": "upperarm",
              "upperarm": None}
-    monkeypatch.setattr(nc, "_actor_skeleton_bone_parents", lambda: chain)
+    _cs.patch(monkeypatch, "_actor_skeleton_bone_parents", lambda: chain)
     f = nc._nearest_declared_ancestor
     assert f("finger", {"hand"}, {"hand"}) == "hand"          # nearest wins
     assert f("finger", {"upperarm"}, {"upperarm"}) == "upperarm"   # climbs past
     assert f("finger", {"hand"}, set()) is None               # not weightable
     assert f("finger", set(), set()) is None                  # nothing declared
     # A cycle must terminate, not hang: the walk is `seen`-guarded.
-    monkeypatch.setattr(nc, "_actor_skeleton_bone_parents",
+    _cs.patch(monkeypatch, "_actor_skeleton_bone_parents",
                         lambda: {"a": "b", "b": "a"})
     assert f("a", {"zzz"}, {"zzz"}) is None
 

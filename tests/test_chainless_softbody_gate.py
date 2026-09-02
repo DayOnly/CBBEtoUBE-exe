@@ -28,6 +28,7 @@ import pytest
 
 from src import nif_convert as nc
 from src import hdt_xml_gen
+from tests import _converter_sources as _cs  # patch on every module that binds a name
 
 
 class _Shape:
@@ -50,10 +51,10 @@ def _wire(monkeypatch, carriers):
                         lambda: type("P", (), {"NifFile": staticmethod(
                             lambda filepath: nif)}))
     monkeypatch.setattr(nc, "_is_first_person_mesh", lambda *a, **k: False)
-    monkeypatch.setattr(nc, "_pick_bodytri_carriers",
+    _cs.patch(monkeypatch, "_pick_bodytri_carriers",
                         lambda nf, exclude_body=False: carriers)
     # never let the tight-softbody gate drop our carriers (test the chain gate)
-    monkeypatch.setattr(nc, "_carrier_is_body_conforming", lambda *a, **k: False)
+    _cs.patch(monkeypatch, "_carrier_is_body_conforming", lambda *a, **k: False)
     wrote = {}
     monkeypatch.setattr(hdt_xml_gen, "write_armor_hdt_xml",
                         lambda path, shapes, **k: wrote.update(

@@ -41,8 +41,11 @@ from pathlib import Path
 
 import pytest
 
-SRC = (Path(__file__).resolve().parents[1] / "src" / "nif_convert.py"
-       ).read_text(encoding="utf-8")
+from tests import _converter_sources as _cs  # noqa: E402
+
+# Every declared converter module (the collider builders live in
+# nif_convert_physics.py since split step 9), call-time `_nc().` stripped.
+SRC = _cs.whole_text().replace("_nc().", "")
 
 BUILDERS = ("_add_butt_collider_patch", "_add_skirt_collider_proxy")
 

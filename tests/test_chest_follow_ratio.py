@@ -46,6 +46,7 @@ import importlib
 import pytest
 
 import src.nif_convert as nc
+from tests import _converter_sources as _cs  # source text across the split modules
 
 
 @pytest.fixture(autouse=True)
@@ -200,7 +201,7 @@ def test_rigid_gate_uses_a_fraction_in_ratio_mode():
     called a 3742-vert cuirass 'already jiggling' on 9 verts (0.24%) and dropped it
     before the graft ran. Genuinely jiggling shapes measure p10 0.70% / p50 8.35%."""
     import inspect
-    src = inspect.getsource(nc._match_rigid_leg_bend_to_body)
+    src = _cs.source(nc._match_rigid_leg_bend_to_body)
     assert "_CHEST_RIGID_JIGGLE_FRAC" in src
     assert "CHEST_FOLLOW_RATIO and (jig / _n_v) < _CHEST_RIGID_JIGGLE_FRAC" in src, (
         "the fraction test must be gated on the flag so the default is unchanged")
@@ -209,7 +210,7 @@ def test_rigid_gate_uses_a_fraction_in_ratio_mode():
 def test_full_count_when_ratio_mode_is_on():
     """A fraction cannot be judged from a short-circuited count."""
     import inspect
-    src = inspect.getsource(nc._match_rigid_leg_bend_to_body)
+    src = _cs.source(nc._match_rigid_leg_bend_to_body)
     assert "and not CHEST_FOLLOW_RATIO" in src
 
 
@@ -267,7 +268,7 @@ def test_material_ratio_is_only_a_CEILING_on_the_requirement():
     were wrong ("metal hugs tighter", then "named cases prove a difference"); this one
     claims no measurement it does not have."""
     import inspect
-    src = inspect.getsource(nc._chest_follow_target)
+    src = _cs.source(nc._chest_follow_target)
     assert "min(ceiling, float(np.percentile(reqs, 90)))" in src
 
 
@@ -278,9 +279,9 @@ def test_one_ratio_per_shape_not_per_vertex():
     garment deforms as one piece, so the ratio is resolved once per shape."""
     import inspect
     # resolved ONCE per shape, in the helper...
-    assert "np.percentile(reqs, 90)" in inspect.getsource(nc._chest_follow_target)
+    assert "np.percentile(reqs, 90)" in _cs.source(nc._chest_follow_target)
     # ...and the per-vert call site passes that shape-level value through.
-    src = inspect.getsource(nc._match_rigid_leg_bend_to_body)
+    src = _cs.source(nc._match_rigid_leg_bend_to_body)
     call = src[src.index("_chest_match_vert(vw[i]"):]
     assert "follow=_chest_follow" in call[:160]
     assert "_chest_follow_required(di" not in src, (
@@ -352,7 +353,7 @@ def test_handoff_is_decided_after_the_body_query():
     """The predicate needs `d`, which does not exist at the old skip point. If the
     decision moves back before the query it silently reverts to deferring blind."""
     import inspect
-    src = inspect.getsource(nc._match_rigid_leg_bend_to_body)
+    src = _cs.source(nc._match_rigid_leg_bend_to_body)
     assert src.index("_defer_to_conform = True") < src.index("d = d_k[:, 0]")
     assert src.index("d = d_k[:, 0]") < src.index("_conform_orphans_shape(")
 
@@ -360,7 +361,7 @@ def test_handoff_is_decided_after_the_body_query():
 def test_handoff_change_is_gated_on_the_flag():
     """With CHEST_FOLLOW_RATIO off, the old unconditional deferral must remain."""
     import inspect
-    src = inspect.getsource(nc._match_rigid_leg_bend_to_body)
+    src = _cs.source(nc._match_rigid_leg_bend_to_body)
     i = src.index("_defer_to_conform = True")
     assert "if not CHEST_FOLLOW_RATIO:" in src[i - 900:i], (
         "the ratio-mode branch must sit under an explicit flag check so the "

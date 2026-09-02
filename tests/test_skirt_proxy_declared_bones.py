@@ -37,6 +37,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import src.nif_convert as nc  # noqa: E402
+from tests import _converter_sources as _cs  # patch on every module that binds a name
 
 PELV = "NPC Pelvis [Pelv]"
 LTWIST = "NPC L UpperarmTwist1 [LUt1]"
@@ -65,7 +66,7 @@ _PARENTS = {
 
 
 def test_undeclared_bone_walks_to_its_nearest_DECLARED_ancestor(monkeypatch):
-    monkeypatch.setattr(nc, "_actor_skeleton_bone_parents", lambda: _PARENTS)
+    _cs.patch(monkeypatch, "_actor_skeleton_bone_parents", lambda: _PARENTS)
     # The XML declares UpperArm but not the twist -> the twist's weight lands
     # on UpperArm, the NEAREST declared ancestor, not on something further up.
     assert nc._nearest_declared_ancestor(LTWIST, {LUARM, PELV},
@@ -75,7 +76,7 @@ def test_undeclared_bone_walks_to_its_nearest_DECLARED_ancestor(monkeypatch):
 
 
 def test_no_declared_ancestor_returns_None_so_the_caller_can_decline(monkeypatch):
-    monkeypatch.setattr(nc, "_actor_skeleton_bone_parents", lambda: _PARENTS)
+    _cs.patch(monkeypatch, "_actor_skeleton_bone_parents", lambda: _PARENTS)
     # Nothing declared at all -> nowhere to put the weight.
     assert nc._nearest_declared_ancestor(LTWIST, set(), set()) is None
     # Declared but NOT available to weight onto -> still None. Both halves

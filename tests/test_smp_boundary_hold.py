@@ -46,6 +46,7 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import src.nif_convert as nc  # noqa: E402
+from tests import _converter_sources as _cs  # patch on every module that binds a name
 
 PELV = "NPC Pelvis [Pelv]"
 SPINE = "NPC Spine [Spn0]"
@@ -137,10 +138,10 @@ def _run(dst_shapes, src_shapes, protected, **patches):
 
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(nc, "_pynifly", lambda: _Pyn)
-        mp.setattr(nc, "_hdt_softbody_shape_names",
+        _cs.patch(mp, "_hdt_softbody_shape_names",
                    lambda p, nif=None: set(protected))
         mp.setattr(nc, "_hide_virtual_body", lambda nf: False)
-        mp.setattr(nc, "atomic_nif_save", lambda nf, p: saved.append(p))
+        _cs.patch(mp, "atomic_nif_save", lambda nf, p: saved.append(p))
         for k, v in patches.items():
             mp.setattr(nc, k, v)
         n = nc._hold_weights_at_smp_boundary("dst.nif", src_nif_path="src.nif")

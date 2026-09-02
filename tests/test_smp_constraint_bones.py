@@ -28,6 +28,7 @@ import pytest
 
 from tests.synthetic_nif import VERTS, TRIS, pynifly_available
 import src.nif_convert as nc  # noqa: E402
+from tests import _converter_sources as _cs  # patch on every module that binds a name
 
 pytestmark = pytest.mark.skipif(not pynifly_available(),
                                 reason="pynifly native lib unavailable")
@@ -86,7 +87,7 @@ def _run_precreate(tmp_path, xml_text):
 
 def test_zeroweight_xml_constraint_bones_are_recreated(tmp_path, monkeypatch):
     # With the physics XML naming them, the zero-weight chain must be rebuilt.
-    monkeypatch.setattr(nc, "_read_source_hdt_xml_text",
+    _cs.patch(monkeypatch, "_read_source_hdt_xml_text",
                         lambda p, nif=None: _XML)
     names = _run_precreate(tmp_path, _XML)
     assert "CustomSkirtBone01" in names, "SMP constraint bone dropped (skirt falls)"
@@ -95,7 +96,7 @@ def test_zeroweight_xml_constraint_bones_are_recreated(tmp_path, monkeypatch):
 
 def test_constraint_chain_parent_link_survives_save(tmp_path, monkeypatch):
     # SMP walks the NIF hierarchy: the chain must reload parented, not flat.
-    monkeypatch.setattr(nc, "_read_source_hdt_xml_text",
+    _cs.patch(monkeypatch, "_read_source_hdt_xml_text",
                         lambda p, nif=None: _XML)
     pyn = nc._pynifly()
     _run_precreate(tmp_path, _XML)
@@ -109,7 +110,7 @@ def test_no_xml_leaves_zeroweight_bones_dropped(tmp_path, monkeypatch):
     # Control: without a physics XML there's nothing to preserve them by, so the
     # zero-weight bones are (correctly) absent -- proving the XML seed is the
     # thing that saves the chain, not some incidental copy.
-    monkeypatch.setattr(nc, "_read_source_hdt_xml_text",
+    _cs.patch(monkeypatch, "_read_source_hdt_xml_text",
                         lambda p, nif=None: None)
     names = _run_precreate(tmp_path, None)
     assert "CustomSkirtBone01" not in names

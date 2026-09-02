@@ -221,7 +221,9 @@ def test_the_measurement_uses_the_same_verts_as_the_requirement():
     achieved-follow check."""
     import inspect
     tgt = inspect.getsource(nc._chest_follow_target)
-    assert "band = _chest_band(" in tgt
+    # `_chest_band` stayed in nif_convert; the moved target reaches it at call
+    # time as `_nc()._chest_band(` (split step 6) -- same band, same surface.
+    assert "band = _chest_band(" in tgt or "band = _nc()._chest_band(" in tgt
     assert tgt.count("band") >= 3
     assert "_chest_band(" in inspect.getsource(nc._match_rigid_leg_bend_to_body), (
         "the deferral's achieved-follow check must judge the same verts")

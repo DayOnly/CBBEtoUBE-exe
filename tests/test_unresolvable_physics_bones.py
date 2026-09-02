@@ -45,6 +45,7 @@ sys.path.insert(0, str(_REPO))
 
 from src import hdt_xml_gen as hx  # noqa: E402
 from src import nif_convert as nc  # noqa: E402
+from tests import _converter_sources as _cs  # patch on every module that binds a name
 
 
 # --- name normalisation -------------------------------------------------
@@ -93,7 +94,7 @@ def test_harvest_is_empty_on_junk_rather_than_raising():
 def test_custom_chain_bone_is_not_actor_resolvable(monkeypatch):
     """THE regression. `_is_skeleton_bone('LArmA 01')` is True because the name
     contains 'arm'; the actor has no such bone."""
-    monkeypatch.setattr(nc, "_actor_skeleton_bone_names",
+    _cs.patch(monkeypatch, "_actor_skeleton_bone_names",
                         lambda: {"npc l upperarm [luar]", "npc spine [spn0]"})
     assert nc._is_skeleton_bone("LArmA 01") is True, (
         "premise gone: the substring false positive is what this guards")
@@ -101,7 +102,7 @@ def test_custom_chain_bone_is_not_actor_resolvable(monkeypatch):
 
 
 def test_real_skeleton_bone_is_actor_resolvable_despite_spacing(monkeypatch):
-    monkeypatch.setattr(nc, "_actor_skeleton_bone_names",
+    _cs.patch(monkeypatch, "_actor_skeleton_bone_names",
                         lambda: {"NPC L Foot [Lft ]"})
     assert nc._actor_can_resolve_bone("NPC L Foot [Lft]") is True
 
@@ -110,7 +111,7 @@ def test_falls_back_to_the_heuristic_when_no_skeleton(monkeypatch):
     """No skeleton found must keep the OLD behaviour, not preserve everything
     -- over-preserving bakes a static skeleton copy into the armour, which is
     its own in-game failure."""
-    monkeypatch.setattr(nc, "_actor_skeleton_bone_names", lambda: set())
+    _cs.patch(monkeypatch, "_actor_skeleton_bone_names", lambda: set())
     assert nc._actor_can_resolve_bone("LArmA 01") is True
     assert nc._actor_can_resolve_bone("SkirtBone 03") is False
 
@@ -118,7 +119,7 @@ def test_falls_back_to_the_heuristic_when_no_skeleton(monkeypatch):
 def test_a_broken_skeleton_read_does_not_propagate(monkeypatch):
     def boom():
         raise RuntimeError("skeleton unreadable")
-    monkeypatch.setattr(nc, "_actor_skeleton_bone_names", boom)
+    _cs.patch(monkeypatch, "_actor_skeleton_bone_names", boom)
     assert nc._actor_can_resolve_bone("LArmA 01") is True   # heuristic fallback
 
 
@@ -131,7 +132,7 @@ def _write(tmp_path, text):
 
 
 def test_postflight_flags_the_unresolvable_anchor(tmp_path, monkeypatch):
-    monkeypatch.setattr(nc, "_actor_skeleton_bone_names",
+    _cs.patch(monkeypatch, "_actor_skeleton_bone_names",
                         lambda: {"npc l clavicle [lclv]"})
     w = hx.validate_armor_hdt_xml(
         _write(tmp_path, XML), ["LArmA 02", "NPC L Clavicle [LClv]"])
@@ -144,7 +145,7 @@ def test_postflight_stays_quiet_about_bones_the_actor_supplies(
         tmp_path, monkeypatch):
     """It used to warn on every declared bone absent from the NIF -- ~45 lines
     per file of pure noise, which is why the six real ones were invisible."""
-    monkeypatch.setattr(nc, "_actor_skeleton_bone_names",
+    _cs.patch(monkeypatch, "_actor_skeleton_bone_names",
                         lambda: {"npc l clavicle [lclv]", "larma 01"})
     w = hx.validate_armor_hdt_xml(
         _write(tmp_path, XML), ["LArmA 02"])

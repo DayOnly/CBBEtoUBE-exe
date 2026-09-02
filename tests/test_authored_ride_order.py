@@ -80,7 +80,7 @@ def test_a_cycle_is_broken_at_its_weakest_edge():
         f"the strong edges must survive the cycle break, got {depth}")
 
 
-def test_relation_weight_is_a_confidence_not_a_distance():
+def test_relation_weight_is_a_confidence_not_a_distance(monkeypatch):
     """The reported defect: a bra clipping through the shirt worn over it.
 
     `_stack_depth_from_relation` sacrifices the lowest-weighted edge when the
@@ -109,11 +109,11 @@ def test_relation_weight_is_a_confidence_not_a_distance():
         captured["rel"] = dict(rel)
         return real(n, rel)
 
-    nc._stack_depth_from_relation = spy
-    try:
-        nc._authored_layer_depth(entries, near=2.0)
-    finally:
-        nc._stack_depth_from_relation = real
+    # patch every module that binds the name: the caller lives in
+    # nif_convert_layers since split step 7 and resolves it in ITS globals.
+    from tests import _converter_sources as _cs
+    _cs.patch(monkeypatch, "_stack_depth_from_relation", spy)
+    nc._authored_layer_depth(entries, near=2.0)
     assert captured.get("rel"), "the relation was never built"
     bad = {k: w for k, w in captured["rel"].items() if not 0.0 <= w <= 1.0}
     assert not bad, f"relation weights must be confidences in [0, 1], got {bad}"

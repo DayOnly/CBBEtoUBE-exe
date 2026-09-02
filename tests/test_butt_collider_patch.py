@@ -36,6 +36,7 @@ import importlib
 import inspect
 
 import src.nif_convert as nc
+from tests import _converter_sources as _cs  # source text across the split modules
 
 
 def test_flag_defaults_on_since_the_equip_test_passed():
@@ -62,7 +63,7 @@ def test_flag_opts_out(monkeypatch):
 
 
 def test_wired_into_both_convert_paths():
-    src = inspect.getsource(nc)
+    src = _cs.source(nc)
     assert src.count("_add_butt_collider_patch(dst_path)") >= 2
 
 
@@ -77,7 +78,7 @@ def test_donor_must_be_a_KINEMATIC_collider():
     instead gives tag=Collision / can-collide-with=Fabric, which is what makes
     the skirt rest on it.
     """
-    src = inspect.getsource(nc._add_butt_collider_patch)
+    src = _cs.source(nc._add_butt_collider_patch)
     assert "all(_is_body_bone(b) for b in bwd)" in src, (
         "the donor must be selected by being KINEMATIC, not by declaration order")
     assert "if donor is None:" in src
@@ -99,7 +100,7 @@ def test_hands_and_feet_COUNT_as_body_bones():
     and the piece gains 191 rear collider verts in the buttock band, against the
     27 that `Pants` alone contributed.
     """
-    src = inspect.getsource(nc._add_butt_collider_patch)
+    src = _cs.source(nc._add_butt_collider_patch)
     for fam in ("hand", "foot", "toe", "upperarmtwist2"):
         assert f'"{fam}"' in src, f"the {fam!r} family is not admitted"
     assert "_BODY_ADJACENT" in src
@@ -115,7 +116,7 @@ def test_the_widening_did_NOT_reach_for_the_actor_skeleton():
     Measured before choosing the rule: 649 skeleton nodes, `SkirtFBone01` among
     them.
     """
-    src = inspect.getsource(nc._add_butt_collider_patch)
+    src = _cs.source(nc._add_butt_collider_patch)
     assert "_actor_skeleton_bone_names" not in src, (
         "the donor test must not widen to the whole actor skeleton -- it "
         "declares chain bones like SkirtFBone01")
@@ -125,7 +126,7 @@ def test_it_clones_the_donor_block_rather_than_authoring_one():
     """An invented collision block is how collision-pair equip-CTDs happen.
     Cloning carries margin / penetration / tag / can-collide-with-tag /
     no-collide-with-bone / weight-threshold across verbatim."""
-    src = inspect.getsource(nc._add_butt_collider_patch)
+    src = _cs.source(nc._add_butt_collider_patch)
     assert "re.escape(donor)" in src
     assert 'replace(f\'name="{donor}"\'' in src
 
@@ -133,7 +134,7 @@ def test_it_clones_the_donor_block_rather_than_authoring_one():
 def test_it_only_fires_where_the_gap_is_MEASURED():
     """A piece whose collider already covers the buttocks must be untouched --
     otherwise this ships extra collision geometry to 3897 meshes on spec."""
-    src = inspect.getsource(nc._add_butt_collider_patch)
+    src = _cs.source(nc._add_butt_collider_patch)
     assert "uncovered < _BUTT_COL_MIN_UNCOVERED" in src
     assert nc._BUTT_COL_MIN_UNCOVERED > 0 and nc._BUTT_COL_GAP > 0
 
@@ -142,7 +143,7 @@ def test_all_or_nothing_with_a_byte_restore():
     """Same contract as the bust split: rebuilding a NIF from shapes drops ALL
     extra data (BODYTRI + the physics link). If anything is lost, the original
     bytes go back and the patch is skipped."""
-    src = inspect.getsource(nc._add_butt_collider_patch)
+    src = _cs.source(nc._add_butt_collider_patch)
     assert "backup = p.read_bytes()" in src
     assert "atomic_write_bytes(p, backup)" in src
     assert "pre_extra <= _all_extra(nf2)" in src
@@ -159,7 +160,7 @@ def test_decimation_keeps_ORIGINAL_verts():
     """Representatives must be original body vertices, or weights, skin-to-bone
     transforms and g2s cannot be copied across and the patch needs re-rigging --
     which is where add_bone/STB damage comes from."""
-    src = inspect.getsource(nc._cluster_decimate)
+    src = _cs.source(nc._cluster_decimate)
     assert "argmin" in src, "representative = the vert nearest the cell centroid"
     doc = (nc._cluster_decimate.__doc__ or "")
     assert "original" in doc.lower()
@@ -177,7 +178,7 @@ def test_skirt_proxy_defaults_on_since_it_was_judged_in_motion():
 
 
 def test_skirt_proxy_wired_into_both_convert_paths():
-    src = inspect.getsource(nc)
+    src = _cs.source(nc)
     assert src.count("_add_skirt_collider_proxy(dst_path)") >= 2
 
 
@@ -186,7 +187,7 @@ def test_skirt_proxy_donor_must_be_CHAIN_DRIVEN():
     kinematic block here would tag the cloth as a body collider and it would
     collide with the wrong set entirely. ButtCol needs a kinematic donor; this
     needs a Fabric one."""
-    src = inspect.getsource(nc._add_skirt_collider_proxy)
+    src = _cs.source(nc._add_skirt_collider_proxy)
     assert "_chain_mass(s_).max() > 1e-3" in src
     assert "if donor is None:" in src
 
@@ -196,20 +197,20 @@ def test_skirt_proxy_leaves_the_AUTHORED_proxy_alone():
     z37.7-72.6) and replacing a working chain proxy is how a stable sim gets
     destabilised. Fabric shapes carry no-collide-with-tag Fabric, so the new
     proxy cannot fight the old one."""
-    src = inspect.getsource(nc._add_skirt_collider_proxy)
+    src = _cs.source(nc._add_skirt_collider_proxy)
     assert "createShapeFromData" in src
     for forbidden in ("set_verts", "override_verts"):
         assert forbidden not in src, "must not modify the authored proxy"
 
 
 def test_skirt_proxy_only_fires_where_the_cloth_is_UNREPRESENTED():
-    src = inspect.getsource(nc._add_skirt_collider_proxy)
+    src = _cs.source(nc._add_skirt_collider_proxy)
     assert "unrep < _SKIRT_PROXY_MIN_UNREPRESENTED" in src
     assert nc._SKIRT_PROXY_MIN_UNREPRESENTED > 0 and nc._SKIRT_PROXY_GAP > 0
 
 
 def test_skirt_proxy_all_or_nothing_with_byte_restore():
-    src = inspect.getsource(nc._add_skirt_collider_proxy)
+    src = _cs.source(nc._add_skirt_collider_proxy)
     assert "backup = p.read_bytes()" in src
     assert "atomic_write_bytes(p, backup)" in src
     assert "pre_extra <= _all_extra(nf2)" in src
@@ -218,6 +219,6 @@ def test_skirt_proxy_all_or_nothing_with_byte_restore():
 def test_skirt_proxy_sources_from_SIMULATED_verts_only():
     """A proxy built from the rigid part of a garment would be pinned to the
     body and could not represent cloth at all."""
-    src = inspect.getsource(nc._add_skirt_collider_proxy)
+    src = _cs.source(nc._add_skirt_collider_proxy)
     assert "cm >= _SKIRT_PROXY_CHAIN_MIN" in src
     assert 0.0 < nc._SKIRT_PROXY_CHAIN_MIN <= 1.0

@@ -71,6 +71,15 @@ OUT = REPO / "docs" / "PASS_MAP.md"
 # sibling-module pass already on a production path.
 CONVERTER_MODULES = (
     "src/nif_convert.py",
+    "src/nif_convert_telemetry.py",   # split step 1: recorders + their state
+    "src/nif_convert_skinframe.py",   # split step 2: skin <-> world frame helpers
+    "src/nif_convert_bodyrefs.py",    # split step 3: body / shapedata discovery + caches
+    "src/nif_convert_trigen.py",   # split step 4
+    "src/nif_convert_fitgeom.py",   # split step 5
+    "src/nif_convert_bust.py",   # split step 6
+    "src/nif_convert_layers.py",   # split step 7
+    "src/nif_convert_weights.py",   # split step 8
+    "src/nif_convert_physics.py",   # split step 9
     "src/fit_metrics.py",
 )
 

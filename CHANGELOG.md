@@ -55,6 +55,41 @@ armour" (Advanced). The switch "Read the author's real fit, not a flat one"
 now says that it reaches only armour with a built-in body — copied armour
 already reads the author's fit that way.
 
+### Changed (development only) — first module split out of the converter
+
+The run-telemetry recorders (`_note_pass_failure`, `_note_pass_effect`, the
+per-piece and per-process summaries) and their state now live in
+`src/nif_convert_telemetry.py`, imported by name into `nif_convert` so every
+existing caller, test and tool keeps its `nc.<name>` handle and the state
+objects stay the same instances. A pure leaf: nothing in it calls back into
+the converter. Proven by the golden set: every converted vertex identical.
+The skin-frame helpers (skin space <-> world space, the ebony-cuirass fix)
+followed the same way into `src/nif_convert_skinframe.py`, and body /
+ShapeData / preset discovery with the mod-tree lookups and their caches into
+`src/nif_convert_bodyrefs.py`, BODYTRI / morph-TRI generation with the
+body-morph caches into `src/nif_convert_trigen.py`, the whole per-shape fit
+chain (warp, inflate, conform, anti-poke, snap, panel rigidity and the knobs
+those passes take as defaults) into `src/nif_convert_fitgeom.py`, and the
+bust work (nipple map, breast chain levers, chest follow target, bust
+collider split, bust-plate follow sync) into `src/nif_convert_bust.py`,
+layered cloth (depth separation, stack grouping, the layer ride and order
+repair, the cross-shape seam weld) into `src/nif_convert_layers.py`, every
+skinning and weight pass (the reskin, scale-bone graft, the motion matches,
+the weight conform, roughness cap, SMP boundary hold, jiggle sync and
+transfer, the bone predicates) into `src/nif_convert_weights.py`, and the
+HDT-SMP physics work (skeleton caches, physics-XML lookup / bind / sanitise /
+harden, chain anchors, collider proxies, the physics finaliser) into
+`src/nif_convert_physics.py`. `nif_convert.py` went from 30,419 lines to
+about 16,000: the two convert paths, the writer, and what has not moved yet.
+Anything a moved function still needs from `nif_convert` is looked up when
+it runs, not when it is imported, and `nif_convert` re-executes every split
+module when it is itself reloaded — so flags, caches and the tests' way of
+flipping them all behave exactly as before. A test now refuses any
+test that patches a moved function on `nif_convert` when the code that
+calls it lives in the sibling — the one way a move can pass the suite while
+a test silently stops faking what it thinks it fakes; tests that need such
+a fake patch every module that binds the name through one helper.
+
 ### Changed (development only) — the guards now watch a declared list of files, not one
 
 Every structural guard on the converter — the generated pass map, the

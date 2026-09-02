@@ -173,8 +173,8 @@ def test_env_prefix_scan_covers_the_real_converter_surface():
     different prefix, this fails loudly instead of the fingerprint quietly
     going blind to them."""
     import re
-    src = (_REPO / "src" / "nif_convert.py").read_text(encoding="utf-8",
-                                                       errors="replace")
+    from tests import _converter_sources as _cs
+    src = _cs.whole_text()   # every declared converter module, not one file
     # Both read idioms: raw os.environ reads AND the _flag()/_knob() helpers
     # the 2026-08-18 idiom collapse routed 287 reads through. A read hiding in
     # either form under a foreign prefix would evade the fingerprint.

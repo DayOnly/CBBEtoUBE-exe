@@ -93,12 +93,79 @@ def test_siblings_carry_no_global_state_and_copy_none():
         "time instead:\n  " + "\n  ".join(bad))
 
 
+def test_reload_of_nif_convert_re_executes_every_split_module():
+    """`importlib.reload(nc)` is how 78 test sites re-read a flag after
+    changing the environment. The split modules must be re-executed by that
+    reload, or a flag/cache that moved keeps its stale value."""
+    import importlib
+    from src import nif_convert as nc
+    expected = tuple(Path(r).stem for r in pass_map.CONVERTER_MODULES
+                     if Path(r).stem not in ("nif_convert", "fit_metrics"))
+    assert tuple(nc._SPLIT_MODULES) == expected, (nc._SPLIT_MODULES, expected)
+    from src import nif_convert_telemetry as tel
+    before = tel._PASS_FAILURES_THIS_PIECE
+    importlib.reload(nc)
+    from src import nif_convert_telemetry as tel2
+    assert tel2._PASS_FAILURES_THIS_PIECE is not before, "sibling was not re-executed"
+    assert nc._PASS_FAILURES_THIS_PIECE is tel2._PASS_FAILURES_THIS_PIECE, "shim rebound to a stale object"
+
+
 @pytest.mark.parametrize("rel", pass_map.CONVERTER_MODULES)
 def test_each_declared_module_imports_alone(rel):
     mod = "src." + Path(rel).stem
     r = subprocess.run([sys.executable, "-c", f"import {mod}"], cwd=str(REPO),
                        capture_output=True, text=True, timeout=300)
     assert r.returncode == 0, f"`import {mod}` alone failed:\n{r.stderr[-1500:]}"
+
+
+_ALIAS = re.compile(r"(?:from src import nif_convert as (\w+)|import src\.nif_convert as (\w+))")
+
+
+def _setattr_re(text: str):
+    """setattr(<alias>, "name", ...) for every alias this test file binds to
+    nif_convert (nc, nc_mod, _nc, ... -- one test used `nc_mod` and slipped
+    past a fixed alias list)."""
+    aliases = {a or b for a, b in _ALIAS.findall(text)} | {"nc", "nif_convert", "_nc"}
+    al = "|".join(sorted(aliases))
+    # monkeypatch.setattr(nc, "x", ...)  OR a bare `nc.x = spy` assignment
+    return re.compile(r"setattr\(\s*(?:" + al + r")\s*,\s*[\"'](\w+)[\"']"
+                      r"|^\s*(?:" + al + r")\.(\w+)\s*=[^=]", re.M)
+
+
+def test_no_test_patches_a_moved_callee_on_nc():
+    """A `monkeypatch.setattr(nc, "X", fake)` reaches only code that looks X
+    up in nif_convert's namespace. If X was moved to a sibling module and is
+    called from INSIDE that sibling, the patch is invisible there and the
+    test measures the real function while believing it faked it (split step
+    3 broke six shapedata tests exactly this way). Patch the sibling."""
+    sib_calls = {}      # name -> sibling module that defines it AND calls it internally
+    for p, txt in cs.texts().items():
+        if p.name == "nif_convert.py":
+            continue
+        mod = ast.parse(txt)
+        # names the sibling resolves in ITS OWN globals: its defs, and what it
+        # binds by a module-level import (a replicated `from .x import y`)
+        defs = {n.name for n in mod.body if isinstance(n, ast.FunctionDef)}
+        for n in mod.body:
+            if isinstance(n, (ast.Import, ast.ImportFrom)):
+                for al in n.names:
+                    defs.add((al.asname or al.name).split(".")[0])
+        for fn in mod.body:
+            if not isinstance(fn, ast.FunctionDef):
+                continue
+            for c in ast.walk(fn):
+                if (isinstance(c, ast.Name) and isinstance(c.ctx, ast.Load)
+                        and c.id in defs and c.id != fn.name):
+                    sib_calls[c.id] = p.name
+    bad = []
+    for t in sorted((REPO / "tests").glob("test_*.py")):
+        text = t.read_text(encoding="utf-8")
+        for m in _setattr_re(text).finditer(text):
+            name = m.group(1) or m.group(2)
+            if name in sib_calls:
+                bad.append(f"{t.name}: nc.{name} -> patch src/{sib_calls[name]} instead")
+    assert not bad, "patches that cannot reach their callee:\n  " + "\n  ".join(bad)
+    assert sib_calls, "no intra-sibling calls found -- the hazard table is empty, check the walker"
 
 
 _WHOLE_FILE = re.compile(

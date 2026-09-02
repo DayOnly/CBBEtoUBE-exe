@@ -36,6 +36,7 @@ import numpy as np
 import pytest
 
 from src import nif_convert as nc
+from tests import _converter_sources as _cs  # patch on every module that binds a name
 
 
 def _wall(nx=7, nz=7, y=0.0):
@@ -61,7 +62,7 @@ def _stack_uniform(nv, vec=(0.4, 1.3, -0.7)):
 
 
 def _diff(monkeypatch, bv, bn, stack, path="synthetic.osd"):
-    monkeypatch.setattr(nc, "_cached_body_morph_stack", lambda _p, _n: stack)
+    _cs.patch(monkeypatch, "_cached_body_morph_stack", lambda _p, _n: stack)
     nc._BODY_MORPH_DIFF_CACHE.clear()
     return nc._cached_body_morph_differential(path, bv, bn)
 
@@ -97,7 +98,7 @@ def test_cache_keys_on_vertex_count_not_path_alone(monkeypatch):
     """
     big_bv, big_bn, _ = _wall(nx=7, nz=7)
     small_bv, small_bn, _ = _wall(nx=4, nz=4)
-    monkeypatch.setattr(nc, "_cached_body_morph_stack",
+    _cs.patch(monkeypatch, "_cached_body_morph_stack",
                         lambda _p, n: _stack_alternating(n, bump=0.6))
     nc._BODY_MORPH_DIFF_CACHE.clear()
     small = nc._cached_body_morph_differential("same.osd", small_bv, small_bn)

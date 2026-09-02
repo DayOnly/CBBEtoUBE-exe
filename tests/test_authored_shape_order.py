@@ -43,6 +43,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import src.nif_convert as nc  # noqa: E402
+from tests import _converter_sources as _cs  # source text across the split modules
 from tests.synthetic_nif import (  # noqa: E402
     TRIS, VERTS, pynifly_available,
 )
@@ -237,7 +238,7 @@ def test_body_injection_happens_after_the_armour_shapes():
     pack while every other test still passes. Verified to FAIL when the call is
     moved back above the loop.
     """
-    src = Path(nc.__file__).read_text(encoding="utf-8")
+    src = _cs.whole_text()
     phase2 = src.index("def convert_nif_phase2(")
     body = src[phase2:]
 
@@ -259,7 +260,7 @@ def test_the_precondition_check_stays_before_the_fit_work():
     """An unusable UBE reference must still fail FAST. The copy moved down; the
     precondition deliberately did not, or a broken reference is only discovered
     after ~1600 lines of fitting."""
-    src = Path(nc.__file__).read_text(encoding="utf-8")
+    src = _cs.whole_text()
     body = src[src.index("def convert_nif_phase2("):]
     assert body.index("_injectable") < body.index("# Pass 2: copy shapes")
 
@@ -268,7 +269,7 @@ def test_the_reimported_proxy_order_is_still_deterministic():
     """The `sorted()` on the re-import list is a determinism fix in its own right
     (hash-seed dependence, proven 2026-08-18). The order repair runs LATER and
     must not tempt anyone into removing it."""
-    src = Path(nc.__file__).read_text(encoding="utf-8")
+    src = _cs.whole_text()
     blk = src[src.index("def _finalize_hdt_physics("):]
     blk = blk[:blk.index("\ndef ", 10)]
     assert re.search(r"missing\s*=\s*sorted\(", blk), (

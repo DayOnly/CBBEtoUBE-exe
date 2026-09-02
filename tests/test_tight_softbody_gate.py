@@ -29,6 +29,7 @@ import pytest
 from scipy.spatial import cKDTree
 
 from src import nif_convert as nc
+from tests import _converter_sources as _cs  # patch on every module that binds a name
 
 
 class _Shape:
@@ -47,7 +48,7 @@ def _flat_body(n=40):
 @pytest.fixture
 def body_tree(monkeypatch):
     bv = _flat_body()
-    monkeypatch.setattr(nc, "_ube_conform_body_tree",
+    _cs.patch(monkeypatch, "_ube_conform_body_tree",
                         lambda suf: (bv, cKDTree(bv)))
     return bv
 
@@ -81,7 +82,7 @@ def test_outlier_verts_block_conforming(body_tree):
 
 def test_fails_open_without_body_ref(monkeypatch):
     # no body reference -> never claim conforming (keep soft-body, no regression)
-    monkeypatch.setattr(nc, "_ube_conform_body_tree", lambda suf: None)
+    _cs.patch(monkeypatch, "_ube_conform_body_tree", lambda suf: None)
     assert nc._carrier_is_body_conforming(_Shape(_grid(lambda z: 1.0)), "_1") is False
 
 
