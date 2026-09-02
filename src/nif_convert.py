@@ -3821,17 +3821,54 @@ def _fit_shapes_copy(ctx) -> None:
                 # would discard the whole phase-1 fit for this shape and read
                 # as the fit having been switched off.
                 try:
+                    # SMP OVERSHOOT CAP, ported from phase 2. A collision-only
+                    # SMP shape pushed by the full 3.0u default "spreads verts
+                    # on the convex bust and opens new gaps"
+                    # (#smp-collision-only-antipoke), so phase 2 clamps it to
+                    # the clearance target. Phase 2 also requires its local
+                    # `_smp_relax`, which does not exist here; this arms the cap
+                    # on the shape test alone, which is the CONSERVATIVE
+                    # direction -- capping the push on a shape that did not need
+                    # capping costs clearance, overshooting one that did opens
+                    # gaps.
+                    _ap_kw_p1 = {}
+                    try:
+                        if (s.name in hdt_collider_names
+                                or _shape_has_hdt_smp_rigging(
+                                    s, set(ube_base_for_reskin.bone_names or [])
+                                    if ube_base_for_reskin is not None else set())):
+                            _ap_kw_p1["max_push"] = SMP_ANTIPOKE_MAX_PUSH
+                    except Exception:
+                        _ap_kw_p1 = {}          # never fail the fit over a gate
                     _ap_p1 = clear_armor_outside_body(
                         np.asarray(snapped, dtype=np.float64),
                         body_verts_for_fit, body_normals_for_fit,
                         tris=(np.asarray(s.tris, dtype=np.int64)
                               if (ANTIPOKE_SMOOTH_ENABLED or CLEARANCE_FIELD_SOLVE)
                               else None),
+                        **_ap_kw_p1,
                     )
+                    # MIXED-CLOTH RESTORE, ported from phase 2. Pushing a
+                    # SIMULATED vert out of the body fights the sim: HDT-SMP
+                    # decides where that vert goes at runtime, so a pushed rest
+                    # position is simply wrong. `_skip_p1` is the same
+                    # chain-weight mask the panel rigidity above uses
+                    # (#mixed-cloth-clearance), so the clearance lands on the
+                    # non-simulated part of a mixed shape and the chain part is
+                    # put back exactly as it was.
+                    _pre_ap_p1 = np.asarray(snapped, dtype=np.float64)
+                    _ap_p1 = np.asarray(_ap_p1, dtype=np.float64)
+                    if (_skip_p1 is not None
+                            and len(_ap_p1) == len(_skip_p1) == len(_pre_ap_p1)):
+                        _nsim_p1 = int(_skip_p1.sum())
+                        if _nsim_p1:
+                            _ap_p1[_skip_p1] = _pre_ap_p1[_skip_p1]
+                            print(f"    [mixed-cloth] {s.name}: clearance on "
+                                  f"{int((~_skip_p1).sum())} non-simulated "
+                                  f"vert(s), {_nsim_p1} simulated vert(s) "
+                                  f"restored")
                     _moved_p1 = int((np.linalg.norm(
-                        np.asarray(_ap_p1, dtype=np.float64)
-                        - np.asarray(snapped, dtype=np.float64), axis=1)
-                        > 1e-4).sum())
+                        _ap_p1 - _pre_ap_p1, axis=1) > 1e-4).sum())
                     snapped = _ap_p1
                     _stage_p1('antipoke', snapped)
                     if _moved_p1:

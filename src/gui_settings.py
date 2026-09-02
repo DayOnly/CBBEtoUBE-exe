@@ -801,6 +801,27 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "gives the copied kind the same ramp. It moves chest "
                     "vertices on copied armour only; armour with a built-in "
                     "body is untouched."),
+    Setting("phase1_antipoke",
+            "Push armour out of the body on pieces converted by copying",
+            "Armor", "Fit and clearance", default=False,
+            env="CBBE2UBE_PHASE1_ANTIPOKE", invert=False,
+            hint="For armour that sinks into the hips or backside. Off can "
+                 "leave more than half a piece buried.",
+            tooltip="Armour that gets a new body built for it is pushed back "
+                    "out wherever the body would come through. Armour "
+                    "converted by copying -- about three quarters of a "
+                    "modlist -- never had that step at all, so whatever the "
+                    "fit leaves inside the body is what ships. Measured on a "
+                    "reported pair of trousers: the author's own version had "
+                    "no part of the seat inside their body, and ours had 59% "
+                    "of it, up to nine tenths of a unit deep. With this on, "
+                    "none. It only ever pushes outward, so it cannot pull "
+                    "cloth into the body, it leaves physics-simulated cloth "
+                    "alone, and it restores the rigid plates it moves. NEW "
+                    "and judged on one outfit so far: if a piece looks like "
+                    "it now stands too far off the skin, or shows bare skin "
+                    "at an edge it used to cover, turn this back off and say "
+                    "so."),
     Setting("phase1_bust_clearance",
             "Keep the bust covered on armour converted by copying",
             "Armor", "Fit and clearance", default=False,
