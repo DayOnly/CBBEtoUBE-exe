@@ -55,6 +55,19 @@ armour" (Advanced). The switch "Read the author's real fit, not a flat one"
 now says that it reaches only armour with a built-in body — copied armour
 already reads the author's fit that way.
 
+### Added (development only) — the fit stage table, and a test that holds both paths to it
+
+`FIT_STAGES` in `nif_convert.py` now states, in order, which fit passes each
+convert path runs per shape, and — for every stage that runs on one path
+only, or is called with different arguments on the two — the recorded
+reason (the audit finding or the parity note). A new test derives the real
+call sequence from both lifted loops and fails when they disagree with the
+table: a stage missing from one path, out of order, or called with
+different keywords without a reason. The table runs nothing — the two paths
+guard their stages on different state and treat a failing stage differently
+on purpose — so this is a contract, not a driver; it turns "a fix landed on
+one path only" into a red test.
+
 ### Changed (development only) — the two per-shape fit loops are now functions of their own
 
 Each convert path ran its per-shape fit chain as a loop inlined in a

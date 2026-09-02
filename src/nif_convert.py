@@ -3055,6 +3055,62 @@ def _load_body_mesh(ref_path: Path) -> MeshIndex:
     return MeshIndex.build(biggest.verts, biggest.tris)
 
 
+# --- The per-shape FIT STAGE TABLE: the contract both paths are held to ------
+#
+# `_fit_shapes_copy` and `_fit_shapes_swap` (lifted verbatim out of the two
+# entry functions, 2026-09-01) each call the fit passes below, in this order.
+# The 2026-09-01 audit found the two loops had drifted for years -- a fix
+# landed on one path and not the other, twice tearing 5% of the pack -- and
+# that nothing could say WHICH differences were deliberate. This table is
+# that statement, and `tests/test_fit_stage_table.py` derives the real call
+# sequence from both functions and fails when:
+#   * a stage marked for both paths is missing from one, or out of order;
+#   * a stage on both paths is called with different keyword arguments and
+#     no `reason` explains it;
+#   * a stage marked for one path has no `reason` for its absence on the other.
+# It does NOT execute anything: the guards around each call use path-specific
+# state and the two paths handle a failing stage differently on purpose (the
+# copy path abandons the shape's chain, phase 2 records the stage and goes on),
+# so driving the calls from here would encode those differences, not remove
+# them. Change the code and the table together; the test will say if you
+# only did one.
+#
+# Rows: (label, callee, paths, reason-for-difference-or-None). A callee may
+# appear more than once (the fine-animation sub-branch runs warp and panel
+# rigidity again on both paths).
+FIT_STAGES = (
+    ("warp_hf",             "warp_armor_by_body_delta",   ("copy", "swap"), None),
+    ("panel_rigid_hf",      "_rigidify_within_clearance", ("copy", "swap"), None),
+    ("panel_blind_hf",      "_partial_rigid_panels",      ("copy", "swap"), None),
+    ("warp",                "warp_armor_by_body_delta",   ("copy", "swap"), None),
+    ("conform",             "conform_to_source_standoff", ("copy", "swap"),
+     "F094 (audit 2026-09-01): phase 2 passes ube_body_nipple / conform_margin / "
+     "morph_differential; the copy path passes them only under "
+     "CBBE2UBE_PHASE1_NIPPLE_MAP (measured, OFF, in-game verdict owed) and runs a "
+     "second, push-out-only call (blend=0.0) under PHASE1_BUST_CLEARANCE."),
+    ("groove_smooth",       "_smooth_warp_grooves",       ("copy", "swap"), None),
+    ("snap",                "snap_armor_outside_body",    ("copy", "swap"), None),
+    ("panel_rigid",         "_rigidify_within_clearance", ("copy", "swap"), None),
+    ("panel_blind",         "_partial_rigid_panels",      ("copy", "swap"), None),
+    ("antipoke",            "clear_armor_outside_body",   ("swap",),
+     "F010 (audit 2026-09-01): the copy path runs no anti-poke; the recorded "
+     "PANEL_RIGID_EARLY_CLEAR=OFF verdict was measured on body-swap pieces only. "
+     "Re-measure on copy pieces before wiring it (geometry change, A/B first)."),
+    ("panel_rigid_post",    "_rigidify_within_clearance", ("swap",),
+     "Runs after the anti-poke, which the copy path does not have."),
+    ("inflate",             "_inflate_cloth_over_bust_butt", ("swap",),
+     "Soft-cloth inflate over bust/butt is a body-swap stage; the copy path's "
+     "inflation is `_slot_aware_inflation_magnitude` inside its warp block."),
+    ("chain_blend",         "_physics_chain_nowarp_blend", ("copy", "swap"), None),
+    ("uniformise_scale",    "_uniformise_local_scale",    ("swap",),
+     "Phase-2-only local-scale uniformising; parity reason recorded in "
+     "tests/test_convert_path_parity.py."),
+    ("short_edge",          "_cap_short_edge_stretch",    ("swap",),
+     "Phase-2-only short-edge cap; parity reason recorded in "
+     "tests/test_convert_path_parity.py."),
+)
+
+
 def _fit_shapes_copy(ctx) -> None:
     """The copy path's per-shape fit chain: warp, inflate, conform (the two clearance sites), groove smoothing, snap, panel rigidity and the chain blend, plus the fine-animation sub-branch, for every shape of a piece that gets no injected body.
 
