@@ -77,6 +77,85 @@ def test_shared_stages_take_the_same_keywords_unless_the_table_says_why():
                      "FIT_STAGES gives no reason:\n  " + "\n  ".join(bad))
 
 
+def _branch_gated(fn_name: str) -> set:
+    """Fit-stage callees that appear ONLY inside one arm of an if/else.
+
+    Such a call does not run whenever the function runs -- the other arm does
+    something else instead -- so listing it as a plain stage overstates what the
+    path does. This is not hypothetical: `snap_armor_outside_body` sat in the
+    copy path's legacy `else` (no CBBE base body) while the normal branch ran
+    groove-smooth and no snap at all, and the table read `(copy, swap)` with no
+    reason. That misreading was quoted as fact before it was measured
+    (docs/worklog/BUTT_COPY_PATH_RUBY_FLOWER.md).
+
+    A callee counts as branch-gated only when EVERY one of its call sites sits
+    inside an if/else arm and none of them is in the sibling arm. A callee that
+    also runs unconditionally somewhere (warp and panel rigidity both run again
+    in the fine-animation sub-branch) is NOT gated -- the path does run it."""
+    src = textwrap.dedent(inspect.getsource(getattr(nc, fn_name)))
+    tree = ast.parse(src)
+    # every call site -> the set of if/else arms containing it
+    sites: dict = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) \
+                and node.func.id in CALLEES:
+            sites.setdefault(node.func.id, []).append(node)
+    arms = []                       # (If node, 'body'|'orelse', {call nodes})
+    for node in ast.walk(tree):
+        if isinstance(node, ast.If) and node.orelse:
+            for which, stmts in (("body", node.body), ("orelse", node.orelse)):
+                mod = ast.Module(body=list(stmts), type_ignores=[])
+                arms.append((node, which, {c for c in ast.walk(mod)
+                                           if isinstance(c, ast.Call)}))
+    out = set()
+    for name, calls in sites.items():
+        covering = []               # per call: the arms it sits in
+        for c in calls:
+            covering.append({(id(n), w) for n, w, cs in arms if c in cs})
+        if any(not cov for cov in covering):
+            continue                # at least one call is unconditional
+        # gated only if no If has this callee in BOTH arms
+        both = False
+        for n, w, cs in arms:
+            if w != "body":
+                continue
+            sib = next((s for m, ww, s in arms if m is n and ww == "orelse"), set())
+            in_b = any(c in cs for c in calls)
+            in_o = any(c in sib for c in calls)
+            if in_b and in_o:
+                both = True
+        if not both:
+            out.add(name)
+    return out
+
+
+def test_a_branch_gated_stage_must_say_so():
+    """A stage that only runs in one arm of an if/else needs a reason saying so.
+
+    The table cannot infer this: `_calls` walks the AST and sees both arms, so a
+    fallback reads exactly like an unconditional stage."""
+    # A callee may hold SEVERAL rows (the fine-animation sub-branch repeats warp
+    # and panel rigidity), so a reason on ANY of its rows explains the gating --
+    # keying a dict by callee would let a later reasonless row hide an earlier
+    # explanation.
+    explained = {callee for _l, callee, _p, reason in nc.FIT_STAGES if reason}
+    bad = []
+    for fn in ("_fit_shapes_copy", "_fit_shapes_swap"):
+        for callee in sorted(_branch_gated(fn)):
+            if callee not in explained:
+                bad.append(f"{fn}: {callee} runs in ONE arm of an if/else and "
+                           f"FIT_STAGES gives no reason")
+    assert not bad, "\n  ".join([""] + bad)
+
+
+def test_the_branch_gate_check_can_actually_fail():
+    """Control: the detector must actually find the known branch-gated call."""
+    assert "snap_armor_outside_body" in _branch_gated("_fit_shapes_copy"), (
+        "the branch-gate detector no longer sees the copy path's legacy snap -- "
+        "either the code changed or the detector is broken; a silent pass here "
+        "is the whole failure mode this test exists for")
+
+
 def test_the_check_can_actually_fail():
     """Control: drop one shared stage from a copy of the copy path and the
     sequence check must say so."""

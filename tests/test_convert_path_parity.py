@@ -168,7 +168,14 @@ KNOWN_PHASE2_ONLY = {
     # on 2026-08-18. They are documented, not blessed: wiring any of them into
     # the copy path is a behaviour change over the ~78% of the pack that takes
     # it, and needs an A/B plus the clearance counter-metric.
-    "clear_armor_outside_body": "anti-poke; body-driven clearance",
+    # `clear_armor_outside_body` LEFT this list on 2026-09-02: it is now called
+    # from the copy path too, behind `#phase1-antipoke` (default OFF). It was
+    # here because wiring it in "is a behaviour change over the ~78% of the pack
+    # that takes it, and needs an A/B plus the clearance counter-metric" -- that
+    # remains exactly true, which is why the copy call is opt-in and unjudged.
+    # This list is about REACHABILITY, so a flagged-off call still counts as
+    # reachable and the entry had to go. The A/B it demands is the owed work,
+    # not this entry. docs/worklog/BUTT_COPY_PATH_RUBY_FLOWER.md
     "rebury_authored_verts": "needs BOTH source and UBE body to restore "
                              "authored insideness",
     "fit_armor_to_ube_body": "the body-swap fit itself",
@@ -459,21 +466,36 @@ def test_the_second_half_is_absent_for_a_REASON_THAT_IS_TRUE():
     g = _call_graph(_module_ast())
     a = _reachable(g, ENTRY_A, stop={ENTRY_B})
     b = _reachable(g, ENTRY_B)
-    assert "clear_armor_outside_body" in b and "clear_armor_outside_body" not in a, (
-        "the anti-poke now runs on the copy path too, so the stated reason for "
-        "keeping the RECOVERY call phase-2-only is no longer true -- wire it in "
-        "as well, or rewrite the reason")
+    # 2026-09-02: the anti-poke WAS wired into the copy path (#phase1-antipoke,
+    # default OFF), which this assertion used to forbid. Its own demand was
+    # "wire it in as well, or rewrite the reason", and the recovery WAS wired in
+    # alongside -- so the invariant is no longer "recovery is phase-2 only" but
+    # THE PAIR TRAVELS TOGETHER. That is the property worth guarding: phase 2
+    # pushes with the anti-poke and then recovers the panels it re-deformed, so
+    # a path that pushes without recovering ships the damage and not the repair.
+    assert "clear_armor_outside_body" in b, "the anti-poke left phase 2"
+    if "clear_armor_outside_body" in a:
+        assert "_rigidify_within_clearance" in a, (
+            "the copy path gained the anti-poke WITHOUT the recovery phase 2 "
+            "pairs with it -- a pushed panel stays deformed, which is the "
+            "defect #panel-rigidity exists to prevent")
+        assert "PHASE1_ANTIPOKE" in Path(
+            inspect.getfile(nc)).read_text(encoding="utf8"), (
+            "the copy-path anti-poke must stay behind its own flag while it is "
+            "unjudged")
 
     tree = _module_ast()
     calls = [n for n in _ast.walk(tree)
              if isinstance(n, _ast.Call)
              and getattr(n.func, "id", None) == "_rigidify_within_clearance"]
-    assert len(calls) == 5, (
-        f"expected 5 call sites -- the EARLY solver at all four panel-rigidity "
-        f"sites (main + fine-animation, on each convert path) plus the ONE "
-        f"phase-2 recovery call after the anti-poke -- found {len(calls)}. If a "
-        f"site was added or removed, decide which role it plays and update this "
-        f"test rather than the count.")
+    assert len(calls) == 6, (
+        f"expected 6 call sites -- the EARLY solver at all four panel-rigidity "
+        f"sites (main + fine-animation, on each convert path) plus TWO recovery "
+        f"calls after an anti-poke, one per path: phase 2's, and the copy "
+        f"path's added 2026-09-02 riding #phase1-antipoke (default OFF) so the "
+        f"push and its repair travel together -- found {len(calls)}. If a site "
+        f"was added or removed, decide which role it plays and update this test "
+        f"rather than the count.")
 
     # Every early site must have kept its blind fallback, or the flag stops
     # being an opt-in and the OFF path is no longer byte-identical.

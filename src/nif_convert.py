@@ -1410,6 +1410,37 @@ PHASE1_BUST_CLEARANCE = (
 # body-swap negative control (0 verts moved) say otherwise.
 PHASE1_NIPPLE_MAP = _flag("CBBE2UBE_PHASE1_NIPPLE_MAP", False)
 
+# --- #phase1-antipoke -- OPT-IN, `CBBE2UBE_PHASE1_ANTIPOKE=1` ---------------
+# GIVE THE COPY PATH THE BODY REPAIR IT HAS NEVER HAD (BUG-02).
+#
+# The copy path runs NOTHING that pushes a vert out of the body in its normal
+# branch. `snap_armor_outside_body` looks like it does -- `FIT_STAGES` even
+# listed it as a both-paths stage -- but it is the ELSE of "a CBBE base body
+# exists", so every BodySlide output takes the other arm and gets
+# warp/inflate/conform/groove-smooth and no body repair at all.
+# `clear_armor_outside_body` and `_inflate_cloth_over_bust_butt` are both
+# body-swap only. So the copy path, 78% of the pack, ships whatever the fit
+# chain leaves inside the body.
+#
+# SIZED, from an in-game report (ruby-flower pants: copy path, no physics XML,
+# one shape):
+#     the AUTHOR's own pants   0 of 2594 butt-band verts inside their CBBE body
+#     ours                  1535 of 2589 inside the UBE body (59.3%, worst 0.929u)
+# 687 of those sit at 0.2-0.6u. Pack census: butt bind-pose penetration is 75%
+# of copy pieces vs 32% of swap.
+#
+# This runs phase 2's own anti-poke, in phase 2's own position (after panel
+# rigidity, before the chain blend), against the body the copy chain already
+# uses. Parity, not a new pass. Push-out only by construction, so it cannot
+# produce the opposite defect.
+#
+# DEFAULT OFF until measured. F010 is the standing caution for this exact area:
+# a copy-path repair that looked like a uniform clipping win still could not
+# ship, because standoff inflated on 9 of 9 pieces and it stranded zero-weight
+# bones. Score clip AND standoff AND `verify_zero_weight_bones.py`, then in
+# game. docs/worklog/BUTT_COPY_PATH_RUBY_FLOWER.md
+PHASE1_ANTIPOKE = _flag("CBBE2UBE_PHASE1_ANTIPOKE", False)
+
 # --- #hdt-xml-sanitise -- OPT-IN, `CBBE2UBE_HDT_XML_SANITISE=1` -------------
 # Repair authored physics XMLs that are malformed OUTSIDE the root element.
 #
@@ -3081,23 +3112,56 @@ def _load_body_mesh(ref_path: Path) -> MeshIndex:
 FIT_STAGES = (
     ("warp_hf",             "warp_armor_by_body_delta",   ("copy", "swap"), None),
     ("panel_rigid_hf",      "_rigidify_within_clearance", ("copy", "swap"), None),
-    ("panel_blind_hf",      "_partial_rigid_panels",      ("copy", "swap"), None),
+    ("panel_blind_hf",      "_partial_rigid_panels",      ("copy", "swap"),
+     "BRANCH-GATED on both paths: it is the ELSE of `PANEL_RIGID_EARLY_CLEAR and "
+     "<body verts and normals available>`, i.e. the body-BLIND form that runs "
+     "when the guarded clearance form does not. PANEL_RIGID_EARLY_CLEAR is "
+     "default OFF (F010, re-measured 2026-09-02: still OFF), so this blind arm "
+     "is what actually runs today."),
     ("warp",                "warp_armor_by_body_delta",   ("copy", "swap"), None),
     ("conform",             "conform_to_source_standoff", ("copy", "swap"),
      "F094 (audit 2026-09-01): phase 2 passes ube_body_nipple / conform_margin / "
      "morph_differential; the copy path passes them only under "
      "CBBE2UBE_PHASE1_NIPPLE_MAP (measured, OFF, in-game verdict owed) and runs a "
      "second, push-out-only call (blend=0.0) under PHASE1_BUST_CLEARANCE."),
-    ("groove_smooth",       "_smooth_warp_grooves",       ("copy", "swap"), None),
-    ("snap",                "snap_armor_outside_body",    ("copy", "swap"), None),
+    ("groove_smooth",       "_smooth_warp_grooves",       ("copy", "swap"),
+     "BRANCH-GATED on both paths, by the SAME test that gates the snap below: "
+     "`cbbe_verts_for_warp is not None and body_delta_for_warp is not None`. "
+     "This is the IF arm (a CBBE base body exists -- the normal case); the ELSE "
+     "arm runs the legacy snap instead. The two are alternatives, never both."),
+    ("snap",                "snap_armor_outside_body",    ("copy", "swap"),
+     "READ THE BRANCH, NOT THE ROW: on the COPY path this call sits in the ELSE "
+     "of `cbbe_verts_for_warp is not None and body_delta_for_warp is not None` "
+     "-- the LEGACY no-CBBE-body fallback -- while the IF branch (the normal "
+     "case, and every BodySlide output) runs warp/inflate/conform/groove_smooth "
+     "and NO snap. The two are mutually exclusive, so a normal copy-path piece "
+     "gets NO body-relative push-out at all: no snap (wrong branch), no antipoke "
+     "and no bust/butt inflate (both swap-only below). Measured 2026-09-02 on "
+     "ruby-flower pants -- author 0.0% of the butt band inside its own body, "
+     "ours 59.3%, and 687 of those verts sit in 0.2-0.6u, exactly the window "
+     "`snap` exists to close. That is BUG-02. This row said `(copy, swap)` with "
+     "no reason until then, and the table's own test cannot catch it: it derives "
+     "calls by walking the AST, which sees both arms of an if/else. "
+     "docs/worklog/BUTT_COPY_PATH_RUBY_FLOWER.md"),
     ("panel_rigid",         "_rigidify_within_clearance", ("copy", "swap"), None),
     ("panel_blind",         "_partial_rigid_panels",      ("copy", "swap"), None),
-    ("antipoke",            "clear_armor_outside_body",   ("swap",),
-     "F010 (audit 2026-09-01): the copy path runs no anti-poke; the recorded "
-     "PANEL_RIGID_EARLY_CLEAR=OFF verdict was measured on body-swap pieces only. "
-     "Re-measure on copy pieces before wiring it (geometry change, A/B first)."),
-    ("panel_rigid_post",    "_rigidify_within_clearance", ("swap",),
-     "Runs after the anti-poke, which the copy path does not have."),
+    ("antipoke",            "clear_armor_outside_body",   ("copy", "swap"),
+     "AT DEFAULTS THIS IS SWAP-ONLY. The copy-path call is gated on "
+     "`#phase1-antipoke` (`CBBE2UBE_PHASE1_ANTIPOKE=1`), added 2026-09-02 and "
+     "DEFAULT OFF, so a default run still has no body repair on the copy path "
+     "-- which is BUG-02, measured at 59.3% of the butt band inside the body on "
+     "ruby-flower pants against the author's own 0.0%. The row says both paths "
+     "because the call now exists on both; the flag decides whether it runs. "
+     "The copy call passes far fewer kwargs than phase 2 (no nipple map, morph "
+     "amplitude/differential, jiggle amplitude or layer extra): those are all "
+     "body-swap-derived inputs the copy path does not compute, and the pass "
+     "documents its own fallback for each. Verdict owed on clip AND standoff "
+     "AND the zero-weight-bone gate. docs/worklog/BUTT_COPY_PATH_RUBY_FLOWER.md"),
+    ("panel_rigid_post",    "_rigidify_within_clearance", ("copy", "swap"),
+     "Rides `#phase1-antipoke` on the copy path, for the same reason phase 2 "
+     "pairs them: the anti-poke re-deforms every panel it pushes and this "
+     "recovers the rest. Porting the push without the recovery would ship the "
+     "damage and not the repair. Default OFF with its anti-poke."),
     ("inflate",             "_inflate_cloth_over_bust_butt", ("swap",),
      "Soft-cloth inflate over bust/butt is a body-swap stage; the copy path's "
      "inflation is `_slot_aware_inflation_magnitude` inside its warp block."),
@@ -3720,6 +3784,92 @@ def _fit_shapes_copy(ctx) -> None:
                               f"was {_wd_p1:.3f}u)")
                 except Exception as _pe_p1:
                     _note_pass_failure("panel-rigidity/phase1", _pe_p1)
+            # --- #phase1-antipoke: the copy path's MISSING body repair -------
+            #
+            # BUG-02, sized. The copy path has no pass that pushes a vert OUT
+            # of the body in its normal branch: `snap_armor_outside_body` is
+            # the ELSE of "a CBBE base body exists", so every BodySlide output
+            # takes the other arm; `clear_armor_outside_body` and
+            # `_inflate_cloth_over_bust_butt` are body-swap only. Phase 2 runs
+            # the anti-poke right here, after panel rigidity, and phase 1 runs
+            # nothing.
+            #
+            # Measured on the piece an in-game report named (ruby-flower pants,
+            # copy path, no physics XML): the AUTHOR's own pants are 0 of 2594
+            # butt-band verts inside their CBBE body; ours are 1535 of 2589
+            # inside the UBE body (59.3%, worst 0.929u). 687 of those sit at
+            # 0.2-0.6u -- the exact window a body repair closes. Pack census:
+            # butt bind-pose penetration is 75% of copy pieces vs 32% of swap.
+            #
+            # SAME pass, SAME position, SAME body the rest of this chain already
+            # uses (`body_verts_for_fit`) -- parity, not a new pass. The
+            # function is push-out only ("never pulls cloth in"), so it cannot
+            # create the opposite defect, and it carries the rear/thigh standoff
+            # terms the butt needs.
+            #
+            # OPT-IN, DEFAULT OFF. It is a geometry change on ~78% of the pack
+            # and F010 is the standing caution: a copy-path repair that looked
+            # like a uniform clipping win still could not ship, because it
+            # inflated standoff on 9 of 9 pieces and stranded zero-weight bones.
+            # Judge this one on clip AND standoff AND the bone gate, then in
+            # game -- never on clipping alone.
+            if (PHASE1_ANTIPOKE and snapped is not None
+                    and body_verts_for_fit is not None
+                    and body_normals_for_fit is not None):
+                # Its OWN try, like the panel-rigidity block above: the
+                # enclosing handler sets `snapped = None`, so an escape here
+                # would discard the whole phase-1 fit for this shape and read
+                # as the fit having been switched off.
+                try:
+                    _ap_p1 = clear_armor_outside_body(
+                        np.asarray(snapped, dtype=np.float64),
+                        body_verts_for_fit, body_normals_for_fit,
+                        tris=(np.asarray(s.tris, dtype=np.int64)
+                              if (ANTIPOKE_SMOOTH_ENABLED or CLEARANCE_FIELD_SOLVE)
+                              else None),
+                    )
+                    _moved_p1 = int((np.linalg.norm(
+                        np.asarray(_ap_p1, dtype=np.float64)
+                        - np.asarray(snapped, dtype=np.float64), axis=1)
+                        > 1e-4).sum())
+                    snapped = _ap_p1
+                    _stage_p1('antipoke', snapped)
+                    if _moved_p1:
+                        print(f"    [phase1-antipoke] {s.name}: cleared "
+                              f"{_moved_p1} vert(s) out of the body")
+                    # #panel-rigidity, SECOND half -- and it rides this flag
+                    # deliberately. Phase 2 pairs these: the anti-poke
+                    # re-deforms every panel it pushes, and this recovers the
+                    # rest where there is clearance for it. Porting the push
+                    # WITHOUT the recovery would ship the damage and not the
+                    # repair -- a softened plate is exactly the defect
+                    # `#panel-rigidity` exists to prevent, and it is what
+                    # `test_the_second_half_is_absent_for_a_REASON_THAT_IS_TRUE`
+                    # is guarding when it says "wire it in as well, or rewrite
+                    # the reason". Wired in.
+                    if PANEL_RIGIDITY > 0 and snapped is not None:
+                        try:
+                            _rv1, _rn1, _rs1 = _rigidify_within_clearance(
+                                sv_world, snapped,
+                                np.asarray(s.tris, dtype=np.int64),
+                                body_verts_for_fit, body_normals_for_fit,
+                                PANEL_RIGIDITY, skip_mask=_skip_p1,
+                                min_verts=PANEL_RIGIDITY_MIN_VERTS)
+                            if _rn1:
+                                snapped = _rv1
+                                _stage_p1('panel_rigidity_post', snapped)
+                                print(f"    [panel-rigidity] {s.name}: {_rn1} "
+                                      f"panel(s) re-rigidified AFTER anti-poke, "
+                                      f"mean strength {_rs1:.2f} of "
+                                      f"{PANEL_RIGIDITY:.2f}")
+                        except Exception as _pe2_p1:
+                            _note_pass_failure("panel-rigidity/post/phase1",
+                                               _pe2_p1)
+                except Exception as _ap_e:
+                    # Voiced, not swallowed: a silent failure here is
+                    # indistinguishable from "nothing was inside the body",
+                    # which is the state this flag exists to change.
+                    _note_pass_failure("phase1-antipoke", _ap_e)
             # Keep chain-bone cloth (skirt/belt/cape) at SOURCE position so
             # it stays aligned with its chain bones; warping it onto UBE
             # while bones stay at source breaks the SMP rest pose.
