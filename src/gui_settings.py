@@ -493,10 +493,10 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "layer steps themselves."),
     Setting("family_weight_invariant", "Fix stray broken vertices on layered "
                                        "garments",
-            "Armor", "Fit and clearance", default=False,
-            env="CBBE2UBE_FAMILY_WEIGHT_INVARIANT", invert=False,
+            "Armor", "Fit and clearance", default=True,
+            env="CBBE2UBE_NO_FAMILY_WEIGHT_INVARIANT", invert=True,
             hint="For single vertices dragged into a spike or a flickering "
-                 "sliver, usually on an under-layer.",
+                 "sliver on an under-layer. Off can crash on equip.",
             tooltip="A vertex is held by at most four bones, and the file "
                     "format enforces that by keeping the four strongest and "
                     "discarding the rest -- without redistributing what it "
@@ -508,7 +508,14 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "five-layer top: 288 such vertices on the under-layer, "
                     "none in the author's own mesh. This shares the four "
                     "strongest back out to the full amount. It changes only "
-                    "the amounts, never which bones hold a vertex."),
+                    "the amounts, never which bones hold a vertex. That last "
+                    "point is why it is now on by default: because it never "
+                    "displaces a bone a vertex already has, a bone can no "
+                    "longer lose its last weight and be left listed on the "
+                    "armour holding nothing -- which can crash the game as the "
+                    "piece is equipped. On a 38-mesh armour set that was 21 "
+                    "such bones, and 361 vertices whose weights did not add "
+                    "up, both down to none, with no vertex moved."),
     Setting("surface_warp_field", "Smooth the shape the body is warped onto",
             "Armor", "Fit and clearance", default=False,
             env="CBBE2UBE_SURFACE_WARP_FIELD", invert=False,

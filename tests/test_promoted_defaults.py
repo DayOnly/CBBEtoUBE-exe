@@ -44,6 +44,7 @@ import pytest
 from src import gui_settings as gs
 from src import nif_convert as nc
 from src.envflags import flag, knob
+from tests import _converter_sources as _cs  # source text across the split modules
 
 PROMOTED = {
     "mixed_cloth_clearance": ("MIXED_CLOTH_CLEARANCE", True),
@@ -74,6 +75,18 @@ PROMOTED_2026_08_26 = {
 }
 PROMOTED.update(PROMOTED_2026_08_26)
 
+# 2026-09-02. The first promotion made on a BOOKKEEPING measurement rather than
+# a fit one: it moves no vertex, so it is judged on the orphan-bone gate and the
+# report's bad-sum count, with bust follow held flat as the counter-metric.
+# On `Asura's Guard` through the deployed exe at defaults:
+#   zero-weight bones 21 -> 0, bad-sum verts 361 -> 0, verts moved 0,
+#   bust follow 1.033-1.082 -> 1.033-1.084 on the shape losing L/R Breast03.
+# See docs/worklog/ZEROWEIGHT_BONE_PRODUCER.md. In-game verdict OWED.
+PROMOTED_2026_09_02 = {
+    "family_weight_invariant": ("FAMILY_WEIGHT_INVARIANT", True),
+}
+PROMOTED.update(PROMOTED_2026_09_02)
+
 
 def test_the_in_code_record_matches_this_test():
     """`nif_convert._DEFAULTS_PROMOTED_2026_08_22` is the block four comments in
@@ -86,7 +99,8 @@ def test_the_in_code_record_matches_this_test():
     would delete it as a dead constant."""
     assert set(nc._DEFAULTS_PROMOTED_2026_08_22) == {
         attr for key, (attr, _want) in PROMOTED.items()
-        if key not in PROMOTED_2026_08_26}, (
+        if key not in PROMOTED_2026_08_26
+        and key not in PROMOTED_2026_09_02}, (
         "the in-code promotion record and this test disagree about WHICH "
         "defaults were promoted on 2026-08-22")
 
@@ -100,6 +114,38 @@ def test_the_2026_08_26_record_matches_this_test():
         attr for attr, _want in PROMOTED_2026_08_26.values()}, (
         "the in-code 2026-08-26 promotion record and this test disagree about "
         "WHICH defaults were promoted")
+
+
+def test_the_2026_09_02_record_matches_this_test():
+    """Same contract again, for the third promotion (#family-weight-invariant).
+
+    This one is the orphan-bone fix, so it also has a gate of its own:
+    `verify_zero_weight_bones.py` went 21 -> 0 on the measured mod. A promotion
+    whose record drifts from the test is how "the fix is written but not
+    enabled" gets read as fact -- which this file's own history records
+    happening twice."""
+    assert set(nc._DEFAULTS_PROMOTED_2026_09_02) == {
+        attr for attr, _want in PROMOTED_2026_09_02.values()}, (
+        "the in-code 2026-09-02 promotion record and this test disagree about "
+        "WHICH defaults were promoted")
+
+
+def test_the_family_invariant_is_what_stops_a_newcomer_stranding_a_bone():
+    """WHY it is on, in the form a future reader can check.
+
+    The family write filters on `_WRITE_MIN` while the SAVE keeps the four
+    largest influences per vertex, so a newcomer bone can displace an existing
+    bone's LAST weight -- leaving that bone in the shape's list carrying
+    nothing (`#zeroweight-bone-desync`, an equip CTD; 225 such bones shipped in
+    the 2026-08-28 pack). The invariant's rule -- keep the influences the vertex
+    already HAS, spend only FREE slots on newcomers -- is what makes that
+    impossible, so it must not be quietly switched back off.
+    See docs/worklog/ZEROWEIGHT_BONE_PRODUCER.md."""
+    assert nc.FAMILY_WEIGHT_INVARIANT is True
+    src = _cs.source(nc._match_limb_motion_to_body)
+    assert "FAMILY_WEIGHT_INVARIANT" in src, (
+        "the family-weight-invariant branch is no longer in the limb-motion "
+        "write -- the orphan-bone fix has been removed or moved")
 
 
 def test_early_clearance_was_NOT_promoted_and_the_reason_is_recorded():

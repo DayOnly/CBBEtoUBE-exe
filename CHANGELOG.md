@@ -10,6 +10,26 @@ floor. All three are ON by default but have NO in-game verdict yet — they are
 on so that the reconvert produces one. Everything above this line has been
 judged; they have not.
 
+### Fixed (on by default) — armour no longer ships bones that carry no weight
+
+A vertex can be held by at most four bones, and when a fifth turns up the file
+format keeps the four largest and silently discards the rest. One of the
+skinning passes could give a vertex a new bone that pushed an existing one out
+of that four — and where that was the last place the bone held any weight, the
+bone stayed listed on the armour carrying nothing at all. That is the state
+that can crash the game as the piece is equipped; the 2026-08-28 build left 225
+such bones across 163 shapes.
+
+The pass now keeps the bones a vertex already has and gives newcomers only the
+slots that are genuinely free, so nothing can be displaced this way. Measured
+on a 38-mesh armour set: 21 stranded bones down to none, and 361 vertices whose
+weights did not add up down to none. No vertex moves, and how the armour
+follows the body at the bust is unchanged. Setting: "Fix stray broken vertices
+on layered garments" (Armor → Fit and clearance), now on.
+
+This has NOT been judged in game yet — it is on so that the next conversion
+produces that verdict.
+
 ### Changed (on by default) — stacking layered armour no longer pushes it into the body
 
 When an outfit's layers are stacked on each other at write time (the "layer

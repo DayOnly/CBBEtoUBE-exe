@@ -138,13 +138,39 @@ def test_row_within_the_cap_is_left_alone():
     assert np.allclose(_survivors(g, new), new)
 
 
-def test_off_by_default():
+def test_on_by_default_with_a_working_kill_switch():
+    """DEFAULT ON since 2026-09-02. This test read `is False` until then.
+
+    It is on because leaving it off strands bones: the family write filters on
+    `_WRITE_MIN` while the SAVE keeps only the four largest influences per
+    vertex, so a newcomer could displace an existing bone's LAST weight and
+    leave that bone listed on the shape carrying nothing -- the
+    `#zeroweight-bone-desync` equip-CTD class, 225 of them in the 2026-08-28
+    pack. Measured on `Asura's Guard`: 21 stranded bones -> 0 and 361 bad-sum
+    verts -> 0, with 0 verts moved. docs/worklog/ZEROWEIGHT_BONE_PRODUCER.md.
+
+    The kill switch is asserted too: a promotion whose bisection lever does not
+    work leaves the next person with no way to split the change."""
+    import importlib
     import os
-    assert nc.FAMILY_WEIGHT_INVARIANT is False or (
-        os.environ.get("CBBE2UBE_FAMILY_WEIGHT_INVARIANT") == "1")
+    assert nc.FAMILY_WEIGHT_INVARIANT is True
+    os.environ["CBBE2UBE_NO_FAMILY_WEIGHT_INVARIANT"] = "1"
+    try:
+        importlib.reload(nc)
+        assert nc.FAMILY_WEIGHT_INVARIANT is False, (
+            "CBBE2UBE_NO_FAMILY_WEIGHT_INVARIANT=1 no longer turns the pass "
+            "off -- the documented bisection lever is dead")
+    finally:
+        del os.environ["CBBE2UBE_NO_FAMILY_WEIGHT_INVARIANT"]
+        importlib.reload(nc)
+    assert nc.FAMILY_WEIGHT_INVARIANT is True
 
 
 def test_reachable_from_the_gui():
     from src import gui_settings
-    assert any(s.env == "CBBE2UBE_FAMILY_WEIGHT_INVARIANT"
-               for s in gui_settings.SETTINGS)
+    row = next((s for s in gui_settings.SETTINGS
+                if s.key == "family_weight_invariant"), None)
+    assert row is not None, "no Setting row: the pass is unreachable from the GUI"
+    # Promoted defaults invert: the row is ON and the env var turns it OFF.
+    assert row.env == "CBBE2UBE_NO_FAMILY_WEIGHT_INVARIANT"
+    assert row.default is True and row.invert is True

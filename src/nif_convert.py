@@ -6662,8 +6662,29 @@ WEIGHT_INVARIANT_ENABLED = not _flag("CBBE2UBE_NO_WEIGHT_INVARIANT", False)
 
 
 # #family-weight-invariant -- the SAME defect in the family-match write, which
-# the flag above does not reach. Separate flag because the fix above is already
-# default ON and in-game verified, while this one is not yet.
+# the flag above does not reach.
+#
+# DEFAULT ON since 2026-09-02 (`CBBE2UBE_NO_FAMILY_WEIGHT_INVARIANT=1` restores
+# the previous write). It is the fix for `#zeroweight-bone-desync` at this site,
+# and the measurement that promoted it is in
+# docs/worklog/ZEROWEIGHT_BONE_PRODUCER.md. On `Asura's Guard` (38 NIFs, 294
+# shapes), converted through the deployed exe at defaults:
+#
+#     zero-weight bones   21 -> 0        (13 shapes -> 0)
+#     bad-sum verts      361 -> 0        (34 warnings -> 0)
+#     verts moved          0             (weights only; positions untouched)
+#     bust follow      1.033-1.082 -> 1.033-1.084 on the shape that was losing
+#                                        L/R Breast03 -- unchanged
+#
+# It beats the alternative of switching `#full-weight-match` OFF, which also
+# clears the orphans but leaves 26 bad-sum verts and moves 112,984 verts.
+# The reason it works is the rule it already stated for itself: keep the
+# influences the vertex already HAS and spend only FREE slots on newcomers, so
+# a newcomer can never displace an existing bone's last weight.
+#
+# IN-GAME VERDICT STILL OWED -- promoted on measurement, like the 2026-08-26
+# three. If the verdict is bad the honest fix is to move it back, not to
+# re-argue the numbers.
 #
 # ITS ORIGINAL SAFETY STORY WAS WRONG, and the correction is the whole point of
 # docs/worklog/ZEROWEIGHT_BONE_PRODUCER.md. This comment used to read "it adds no
@@ -6683,7 +6704,16 @@ WEIGHT_INVARIANT_ENABLED = not _flag("CBBE2UBE_NO_WEIGHT_INVARIANT", False)
 #     _match_full_weights_to_body    +218   worst 0.140
 # and the author's own mesh has ZERO on every shape, so all of it is ours.
 # Nothing weight-related runs after the second, so nothing repairs it.
-FAMILY_WEIGHT_INVARIANT = _flag("CBBE2UBE_FAMILY_WEIGHT_INVARIANT", False)
+FAMILY_WEIGHT_INVARIANT = (
+    not _flag("CBBE2UBE_NO_FAMILY_WEIGHT_INVARIANT", False))
+
+# The third promotion, and the first made on a BOOKKEEPING measurement rather
+# than a fit one: it moves no vertex, so the pair it is judged on is
+# `verify_zero_weight_bones.py` (21 -> 0) and the report's bad-sum count
+# (361 -> 0), with bust follow held flat as the counter-metric.
+_DEFAULTS_PROMOTED_2026_09_02 = (
+    "FAMILY_WEIGHT_INVARIANT",
+)
 
 
 # #skin-influence-cap -- apply the same 4-influence cap to the MAIN skin install.
