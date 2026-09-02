@@ -258,6 +258,8 @@ def main():
         sys.exit(1)
 
     nifs = sorted(meshes.rglob("*.nif"))
+    from scripts.analysis._census_common import require_population
+    require_population(nifs, "NIF(s) under the output")   # 0/0 is not a pass
     print(f"scanning {len(nifs)} NIFs under {meshes} ...")
 
     # Per-issue collectors (each is a list of (rel_nif, shape_name, detail))

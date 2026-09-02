@@ -67,9 +67,12 @@ if ($InstallTools) {
     }
     $destBundle = Join-Path $Mo2Root "tools\CBBEtoUBE"
     Write-Host "copying bundle -> $destBundle"
-    if (Test-Path $destBundle) { Remove-Item -Recurse -Force $destBundle }
-    New-Item -ItemType Directory -Force -Path $destBundle | Out-Null
-    Copy-Item -Recurse -Force (Join-Path $srcBundle "*") $destBundle
+    # NEVER wipe the destination: on a live instance it holds the user's
+    # CBBEtoUBE_settings.json, its backups and the last-run log. deploy_exe.ps1
+    # copies with robocopy /E (extras in dest are kept) and takes a settings
+    # snapshot first -- the same path every redeploy uses.
+    & (Join-Path $PSScriptRoot "deploy_exe.ps1") -Dest $destBundle
+    if (-not $?) { throw "deploy_exe.ps1 failed" }
     $ExePath = Join-Path $destBundle "CBBEtoUBE.exe"
 }
 

@@ -66,6 +66,8 @@ def main() -> int:
     files = [f for f in glob.glob(str(root / "**" / "*.nif"), recursive=True)]
     if limit:
         files = files[:limit]
+    from scripts.analysis._census_common import require_population
+    require_population(files, "NIF(s) under the output")   # 0/0 is not a pass
     print(f"scanning {len(files)} mesh(es) under {root}\n", flush=True)
 
     by_bone: collections.Counter = collections.Counter()

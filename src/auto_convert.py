@@ -775,8 +775,14 @@ class AutoConvertResult:
 
     def write_report(self, path: Path) -> None:
         from .version import __version__ as _app_version
+        try:
+            from .build_info import stamp_line as _stamp_line
+            _build = _stamp_line()
+        except Exception:
+            _build = f"build {_app_version}"
         lines = [
             f"CBBE-to-UBE auto-conversion report (v{_app_version})",
+            f"{_build}",
             f"source : {self.source_dir}",
             f"output : {self.output_dir}",
             "",
@@ -936,6 +942,12 @@ def _echo_active_experiment_flags() -> None:
                   + ", ".join(f"{k[9:]}={v}" for k, v in sorted(act.items())))
         else:
             print("\n  active flags: none (all defaults)")
+        # The env echo shows OVERRIDES only: a default promoted in code and a
+        # setting silently lost print the same line. These say which build
+        # this is and what every setting RESOLVES to.
+        from . import build_info
+        for ln in build_info.echo_lines():
+            print(ln)
     except Exception:
         pass          # never let a diagnostic line break a run
     _warn_unseen_settings()
@@ -2358,8 +2370,17 @@ def write_conversion_report_json(output_dir, results,
             # audit read that shape; this is additive.
             "pass_failure_pieces": _pack_pass_failure_pieces(ok),
         }
+        # Attribution: which build, which settings (RESOLVED, not just the
+        # env overrides), which settings file. Also written on its own as
+        # conversion_settings.json so a pack carries its recipe with it.
+        try:
+            from . import build_info
+            rep["run_config"] = build_info.run_config()
+            build_info.write_run_config(output_dir)
+        except Exception as _e:
+            rep["run_config"] = {"error": f"{type(_e).__name__}: {_e}"}
         out = Path(output_dir) / "conversion_report.json"
-        out.write_text(json.dumps(rep, indent=2), encoding="utf-8")
+        out.write_text(json.dumps(rep, indent=2, default=str), encoding="utf-8")
         return out
     except Exception:
         return None
@@ -2848,6 +2869,9 @@ def _emit_unified_coverage_patches(output, patches_dir, master_data_dirs,
 
 def _cmd_convert(args):
     _RUN_FAILURES.clear()   # fresh failure record for this run
+    # Same echo `auto` prints: the verdict harnesses run THIS subcommand, and
+    # a run has to say what it was carrying before anything can abort.
+    _echo_active_experiment_flags()
     # Export discovered layout to env so spawned workers inherit it without re-scanning.
     try:
         _layout = paths.discover_layout()

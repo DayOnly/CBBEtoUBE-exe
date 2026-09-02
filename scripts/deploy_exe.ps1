@@ -43,6 +43,20 @@ if (-not (Test-Path (Join-Path $src "CBBEtoUBE.exe"))) {
 Write-Host "source: $src"
 Write-Host "dest  : $Dest"
 
+# Snapshot the live settings file BEFORE the copy. The recipe a pack was
+# built with is what every in-game verdict is scored against, and until
+# 2026-09-01 that copy was made by hand under four naming schemes. One
+# scheme, taken by the deploy itself, newest 10 kept.
+$settings = Join-Path $Dest "CBBEtoUBE_settings.json"
+if ((Test-Path $settings) -and -not $WhatIf) {
+    $snap = "$settings.prebuild-" + (Get-Date).ToString("yyyyMMdd-HHmmss")
+    Copy-Item -Path $settings -Destination $snap
+    Write-Host "settings snapshot: $(Split-Path -Leaf $snap)"
+    Get-ChildItem -Path $Dest -Filter "CBBEtoUBE_settings.json.prebuild-*" |
+        Sort-Object Name -Descending | Select-Object -Skip 10 |
+        ForEach-Object { Remove-Item -Path $_.FullName; Write-Host "pruned $($_.Name)" }
+}
+
 # /E     = copy subdirs incl. empty (NO /MIR -> extras in dest are KEPT)
 # /COPY:DAT = data + attrs + timestamps (preserve build mtime for --incremental floor)
 # /R:2 /W:2 = brief retry; /NFL /NDL /NP = quieter

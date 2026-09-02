@@ -310,6 +310,8 @@ def main():
         sys.exit(1)
 
     nifs = sorted(meshes.rglob("*_1.nif"))
+    from scripts.analysis._census_common import require_population
+    require_population(nifs, "_1 NIF(s) under the output")   # 0/0 is not a pass
     print(f"fit-audit: {len(nifs)} NIFs under {meshes} (morph cap={cap})\n")
 
     n_critical = n_warning = 0

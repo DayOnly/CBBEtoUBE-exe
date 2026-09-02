@@ -67,10 +67,14 @@ TABS = ("Run", "Armor", "Overlays", "Paths", "Diagnostics")
 
 SETTINGS: "tuple[Setting, ...]" = (
     # ---- Armor: fit and conform --------------------------------------
-    Setting("conform_to_body", "Conform fitted cloth to body",
+    Setting("conform_to_body", "Match fitted cloth's skin weights to the body",
             "Armor", "Fit and clearance", default=True,
             env="CBBE2UBE_NO_CONFORM", invert=True,
-            tooltip="Snap body-hugging cloth onto the UBE body so it stops clipping."),
+            tooltip="Weights only, moves no vertex: body-hugging cloth takes the "
+                    "UBE body's per-vertex skinning so it bends with the body "
+                    "instead of pulling away from it. (The GEOMETRY conform that "
+                    "snaps cloth onto the body is a separate stage with no "
+                    "switch here.)"),
     Setting("leg_bend_match", "Rigid leg-plate knee conform",
             "Armor", "Limbs and extremities", default=True,
             env="CBBE2UBE_NO_LEG_BEND_MATCH", invert=True,
@@ -718,6 +722,95 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "the reported outfit it took those 73 vertices to 5, and the "
                     "repaired vertices ended up CLOSER to the author's own "
                     "weighting than before."),
+    Setting("bust_morph_chord",
+            "Keep the bust covered when body sliders reshape it",
+            "Armor", "Fit and clearance", default=True,
+            env="CBBE2UBE_BUST_MORPH_CHORD", invert=False,
+            hint="Stops skin showing through the chest on some body presets "
+                 "while others look fine.",
+            tooltip="Armour follows the body's sliders vertex by vertex, and "
+                    "each vertex follows correctly -- but the flat triangle "
+                    "BETWEEN three correct vertices cuts across a breast the "
+                    "slider has made rounder, so skin comes through between "
+                    "them. Measured on a reported cuirass: one triangle spans "
+                    "6.7 units of breast and its three corners follow body "
+                    "points that a preset moves up to 3.5 units differently. "
+                    "Nothing shows at rest, which is why every earlier check "
+                    "missed it. Across 6 pieces and 14 presets: 39 arms "
+                    "improved, none got worse, and all 22 that were already "
+                    "clean stayed clean."),
+    Setting("sleeve_garment_guard",
+            "Treat a long-sleeved robe as clothing, not as a gauntlet",
+            "Armor", "Fit and clearance", default=False,
+            env="CBBE2UBE_SLEEVE_GARMENT_GUARD", invert=False,
+            hint="For robes and coats that clip badly at the chest.",
+            tooltip="Armour whose sleeves reach the hands is currently mistaken "
+                    "for a gauntlet, because it is weighted to the hand bones "
+                    "just like one. Mistaken pieces skip the whole fitting "
+                    "step -- no conforming, no push-out -- so they ship "
+                    "wherever the first rough pass left them. The worst "
+                    "chest-clipping piece in the pack is one of these: a robe "
+                    "that gets three fitting steps instead of eleven, and shows "
+                    "skin through the chest on every body preset. Telling them "
+                    "apart is simple: a gauntlet is a tube around the forearm "
+                    "and carries no weight on the spine, while a robe hangs "
+                    "from it. Measured across 173 pieces, every real gauntlet, "
+                    "glove and boot has exactly zero spine weight, so none of "
+                    "them is affected. Three sleeved garments are, and on the "
+                    "worst the chest went from 8.9% skin showing to none at "
+                    "all."),
+    Setting("hdt_xml_sanitise",
+            "Repair broken physics files some armour mods ship",
+            "Armor", "Physics", default=False,
+            env="CBBE2UBE_HDT_XML_SANITISE", invert=False,
+            hint="For armour that has physics but does not move.",
+            tooltip="A few armour mods ship a physics file with stray text "
+                    "after the end of the document. That is not valid XML, so "
+                    "anything reading it strictly rejects the whole file -- and "
+                    "the converter copies it across unchanged, so the broken "
+                    "file ships. Measured on this pack: ten such files, and 94 "
+                    "meshes point at one, which means those pieces get no "
+                    "physics handling at all. This trims the stray text and "
+                    "nothing else. It only ever removes characters AFTER the "
+                    "document ends, keeps the file byte-for-byte otherwise, and "
+                    "leaves the file alone entirely unless the result is valid "
+                    "-- so a file it cannot fix is never half-changed. On all "
+                    "ten the physics declarations are identical afterwards and "
+                    "no armour moved by a single vertex."),
+    Setting("phase1_bust_clearance",
+            "Keep the bust covered on armour converted by copying",
+            "Armor", "Fit and clearance", default=False,
+            env="CBBE2UBE_PHASE1_BUST_CLEARANCE", invert=False,
+            hint="Extends the chest fix above to the pieces it cannot "
+                 "currently reach.",
+            tooltip="The chest fix above only runs on armour that gets a new "
+                    "body built into it. About three quarters of the pack is "
+                    "converted by COPYING instead, and those pieces get none "
+                    "of it. Measured across the pack, the same defect is just "
+                    "as common there -- 28 percent of pieces on both routes -- "
+                    "so roughly fifty pieces carry it today with no fix "
+                    "applied. This applies only the push-away part, never the "
+                    "pull-in part, because pulling these pieces in was "
+                    "measured to make clipping worse. On three converted "
+                    "pieces across five presets it removed up to 5.5 points of "
+                    "clipping, nothing got worse, and every preset that was "
+                    "already clean stayed clean."),
+    Setting("panel_rigid_surface_guard",
+            "Stop straightened plates sinking into the body between corners",
+            "Armor", "Fit and clearance", default=True,
+            env="CBBE2UBE_PANEL_RIGID_SURFACE_GUARD", invert=False,
+            hint="Applies to the plate-straightening below.",
+            tooltip="Straightening a plate is allowed while it stays clear of "
+                    "the body, but that check only ever looked at the plate's "
+                    "CORNERS -- and it let a corner standing 1.5 units clear "
+                    "drop to zero. Two corners at zero with a curved body "
+                    "between them puts the surface inside. This checks the "
+                    "middle of each triangle too, and measures the body over a "
+                    "small neighbourhood instead of one point. It can only "
+                    "make the straightening gentler, never stronger. Measured: "
+                    "a college robe went from 12.96%% to 3.47%% of its chest "
+                    "showing skin, and its at-rest clipping from 1.47%% to "
+                    "none, while sitting TIGHTER than before, not further out."),
     Setting("panel_rigidity", "Keep layered armour plates straight",
             "Armor", "Fit and clearance", kind="float", default=0.75,
             env="CBBE2UBE_PANEL_RIGIDITY", advanced=True,
@@ -753,10 +846,10 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "problem and want the numbers without reconverting twice."),
     Setting("ride_body_floor",
             "Stop layered armour being pushed into the body as it is stacked",
-            "Armor", "Fit and clearance", default=False,
+            "Armor", "Fit and clearance", default=True,
             env="CBBE2UBE_RIDE_BODY_FLOOR", advanced=True,
-            hint="OFF by default and NOT yet judged in game. Turn it on for a "
-                 "build of its own, so a problem can be traced to it.",
+            hint="ON by default. Layer coherence on stacked outfits is the "
+                 "thing to look at if you turn it off.",
             tooltip="When a garment has several layers, the converter re-places "
                     "each layer on the one beneath so they stack correctly. That "
                     "step does not check the body, and it is where most visible "
@@ -1385,6 +1478,23 @@ def load_values(path=None) -> "dict[str, object]":
 KNOWN_KEYS_FIELD = "_known_settings"
 
 
+def load_status(path=None) -> str:
+    """'ok' | 'absent' | 'malformed' -- what `load_values` will do with the file.
+
+    `load_values` returns pure defaults for an absent AND for a malformed
+    file, by design (the GUI must still open). The two must not LOOK the same
+    to a run, because a torn write followed by one toggle re-saves defaults
+    over the user's recipe. Callers print this next to the flag echo."""
+    p = Path(path) if path is not None else config_path()
+    if not p.is_file():
+        return "absent"
+    try:
+        raw = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return "malformed"
+    return "ok" if isinstance(raw, dict) else "malformed"
+
+
 def unseen_settings(path=None) -> "tuple[bool, list]":
     """`(baseline_known, settings this build has that the saved file never saw)`.
 
@@ -1433,8 +1543,18 @@ def save_values(values: "dict[str, object]", path=None) -> bool:
     out[KNOWN_KEYS_FIELD] = sorted(reg)   # ignored on load: not a registered key
     p = Path(path) if path is not None else config_path()
     try:
+        from .atomic_io import atomic_write_bytes
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps(out, indent=2, sort_keys=True), encoding="utf-8")
+        data = json.dumps(out, indent=2, sort_keys=True).encode("utf-8")
+        # Keep the previous GOOD file as .bak, then swap the new one into
+        # place atomically: the GUI saves on every control change, and a
+        # torn write here loads as pure defaults on the next start.
+        if p.is_file() and load_status(p) == "ok":
+            try:
+                atomic_write_bytes(p.with_suffix(p.suffix + ".bak"), p.read_bytes())
+            except Exception:
+                pass
+        atomic_write_bytes(p, data)
         return True
     except Exception:
         return False

@@ -828,3 +828,82 @@ def validate_armor_hdt_xml(xml_path: "Path",
             f"collide with the body; {why}")
 
     return warnings
+
+
+# -- Sanitising a malformed AUTHORED XML -------------------------------------
+
+def _hdt_xml_parse_check(data: bytes):
+    """The parsed root element, or None. STRUCTURAL CHECK ONLY.
+
+    Two attempts, because these files are not all UTF-8 and a bytes-mode parse
+    assumes it. The second decodes as latin-1 -- which maps every byte, so it
+    cannot fail on a cp1252 payload -- purely to ask "is the structure sound".
+    The DECODED STRING IS NEVER RETURNED and never reaches the output, so this
+    adds no transcode; that is the distinction BUG-12 was made of.
+    """
+    import re as _re
+    import xml.etree.ElementTree as _ET
+    try:
+        return _ET.fromstring(data)
+    except Exception:
+        pass
+    try:
+        # An encoding declaration is illegal on a str, so drop it for the check.
+        s = _re.sub(rb"<\?xml[^>]*\?>", b"", data, count=1).decode("latin-1")
+        return _ET.fromstring(s)
+    except Exception:
+        return None
+
+
+def sanitise_hdt_xml_bytes(data: bytes) -> "tuple[bytes, str | None]":
+    """Repair well-formedness damage OUTSIDE the root element. Returns
+    (bytes, note) -- `note` is None when nothing was changed.
+
+    WHY. Ten authored physics XMLs in this modlist end with junk after the
+    root close: `</system>undefined</xml>` (6) or `</system></xml>` (4). A
+    stray `</xml>` is a close for a wrapper its authoring tool never opened.
+    XML forbids ANY non-whitespace after the root element, so every strict
+    parser rejects the whole file -- and the converter copies these VERBATIM
+    into the pack, so 94 shipped NIFs referenced an XML that nothing can read.
+    Every collider/soft-body protection then runs on an empty set for those
+    pieces, which is the state BUG-00 recorded as disarming every guard.
+
+    ONLY content after the root's closing tag is removed. That content cannot
+    carry physics meaning -- it is outside the document element -- so this
+    cannot change what the file declares. Verified on all ten: the
+    per-vertex-shape / per-triangle-shape / bone declarations are identical
+    before and after, and the 170 well-formed XMLs are returned untouched.
+
+    BYTES IN, BYTES OUT, NO TRANSCODE. Decoding then re-encoding one of these
+    is precisely how BUG-12 double-encoded a BOM and made eight XMLs
+    unparseable. Truncation needs no decode, so the output is always a prefix
+    of the input.
+
+    FAIL-SAFE: the repair is returned ONLY if the result parses AND keeps the
+    same root tag. Anything else returns the input untouched -- a file this
+    cannot fix is left exactly as it was rather than half-mangled. In
+    particular, damage INSIDE the root is out of scope by construction.
+    """
+    import re as _re
+    if _hdt_xml_parse_check(data) is not None:
+        return data, None                      # already well-formed
+    m = _re.search(rb"<\s*([A-Za-z_][\w.:-]*)", data)
+    if not m:
+        return data, None
+    root = m.group(1)
+    close = b"</" + root + b">"
+    idx = data.rfind(close)
+    if idx < 0:
+        return data, None
+    repaired = data[:idx + len(close)] + b"\n"
+    if repaired == data:
+        return data, None
+    el = _hdt_xml_parse_check(repaired)
+    if el is None:
+        return data, None                      # could not fix -> leave alone
+    if el.tag.rsplit("}", 1)[-1].encode() != root:
+        return data, None
+    dropped = data[idx + len(close):]
+    return repaired, (f"dropped {len(dropped)} byte(s) after the root "
+                      f"</{root.decode('ascii', 'replace')}>: "
+                      f"{dropped[:40]!r}")

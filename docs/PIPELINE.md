@@ -83,11 +83,22 @@ chain-driven region cannot work, and has been tried.
 
 ### 2b. Skin and bone
 
-`_precreate_custom_bone_chains` (chain nodes; the pelvis re-anchor and the two
-optional root moves — `#chain-body-shift` then `#chain-rest-outside-body` — fire
-inside it, in that order, and compose) → `add_scale_bone_weights` →
-`compute_body_blend_skinning` (the "M6 reskin") → `_slot_aware_*` band/reach →
+Two lanes, not one chain.
+
+*Weight maps, computed in memory per shape, in this order:*
+`compute_body_blend_skinning` (the "M6 reskin") → `add_scale_bone_weights`
+(scale-bone graft) → `_slot_aware_*` band/reach →
 `_sync_chest_layered_cloth_weights` / `_sync_abdomen_...`.
+
+*Node creation, at WRITE time:* `_seed_flat_chain_anchors` first, into the
+still-empty output NIF; then per shape inside `_install_skin` (called from
+`_copy_shape` on both paths): `_precreate_custom_bone_chains` (chain nodes; the
+pelvis re-anchor and the two optional root moves — `#chain-body-shift` then
+`#chain-rest-outside-body` — fire inside it, in that order, and compose) →
+STB align → strip/fill → `add_bone`. The copy path additionally calls
+`_precreate_custom_bone_chains` once early, gated on
+`_has_nif_root_garment_chain(src)`, so a root-level garment chain exists
+before any shape is written.
 
 **Weight passes and position passes are different domains. Do not merge them.**
 Conflating them is the `_shape_has_hdt_smp_rigging` bug that cost a session.
@@ -113,8 +124,8 @@ unrecoverable) and silent about the case it also removed (one that does not).
 ### 2c. Cross-shape
 
 `_separate_chest_layered_cloth_depth` → `_separate_abdomen_...` →
-`_ride_layers_on_reference` → `_repair_layer_order` → `_conform_cords_to_host`
-(off) → `repair_collapsed_tris` → `_weld_cross_shape_seams` →
+`_ride_layers_on_reference` → `_repair_layer_order` → `repair_collapsed_tris`
+→ `_weld_cross_shape_seams` →
 `_ride_effect_overlays_on_plate`.
 
 **THIS LIST IS NOT THE END OF THE VERTEX CHAIN, and reading it as if it were
@@ -182,8 +193,13 @@ curvature cap at R is **refuted as a sufficient fix**. The discrete condition
 `_match_leg_motion_to_body` → `_match_spine_motion_to_body` →
 `_match_arm_motion_to_body` → `_match_spine_twist_to_body` →
 `_match_full_weights_to_body` → `_sync_bust_plate_follow_postwrite` →
-`_cap_weight_roughness_to_author` → `_match_coincident_cross_shape_skin` →
-`_refresh_armor_tri_after_reimport` → `validate_dst_nif`.
+`_cap_weight_roughness_to_author` → `_hold_weights_at_smp_boundary` →
+`_match_coincident_cross_shape_skin` → `_refresh_armor_tri_after_reimport` →
+`_restore_authored_shape_order` → `_audit_registered_shape_declared_bones` →
+`validate_dst_nif`. (The copy path re-authors the file fresh before this tail
+when a source-skin copy would otherwise ship; see `_reauthor_nif_fresh`.)
+`docs/PASS_MAP.md` is the generated, test-pinned version of this list — when
+the two disagree, PASS_MAP is right and this paragraph is stale.
 
 Everything from `_normalize_partitions_on_disk` through
 `_match_full_weights_to_body` lives in `_finalize_physics_and_motion_match`,
@@ -192,15 +208,20 @@ which BOTH convert paths call — one copy, so the two cannot drift apart.
 `_finalize_hdt_physics` must stay before the graft (which reads the XML to decide
 what is a collider) and last among the extra-data writers.
 
-The three weight passes after the shared tail are ordered deliberately:
+The four weight passes after the shared tail are ordered deliberately:
 
 - `_sync_bust_plate_follow_postwrite` needs the FINAL follow split, which the
   motion matches above it only just settle.
 - `_cap_weight_roughness_to_author` eases a shape's INTERIOR back to the
   author's own local smoothness. It has to run after everything that rewrites
   weights, or the next such pass simply re-roughens what it fixed.
+- `_hold_weights_at_smp_boundary` restores the AUTHOR's weights on the strip of
+  a mixed-cloth garment that touches a simulated shape: SMP keeps the author's
+  weights on the simulated shape, so a re-weighted neighbour shears away from
+  it under animation (`#smp-boundary-weight-hold`, confirmed in game). It runs
+  after the cap so the cap cannot smooth the held strip back out.
 - `_match_coincident_cross_shape_skin` settles shape BOUNDARIES — vertices that
-  touch across two shapes. It runs LAST of the three because it is the one with
+  touch across two shapes. It runs LAST of the four because it is the one with
   an in-game verdict, so it keeps the final word where interiors meet edges.
 
 `_refresh_armor_tri_after_reimport` is after all of them because
@@ -424,6 +445,31 @@ run, and every "defaults-only" baseline described an unjudged configuration. The
 inert on every large spike measured and regresses two shapes while moving
 geometry by 1.38u (`tests/test_warp_flag_defaults.py`). A general "looks fine so
 far" does not overturn a specific negative measurement.
+
+**SECOND PROMOTION, 2026-08-26 — AND THE ORDER IS INVERTED.** Three more flags
+went DEFAULT ON: `bust_morph_chord` and `panel_rigid_surface_guard`, both
+BUG-15(a)/(b) fixes, and `ride_body_floor` (the layer-ride body floor: the
+write-time layer ride was putting 93% of a piece's inside-body verts there;
+the floor refuses that push — 19 pieces better, 0 worse). Unlike the four
+above, **the two chest fixes were promoted BEFORE an
+in-game verdict, so that the reconvert which produces the verdict runs them.**
+They are measured, not judged: 72 arms over 6 pieces x 14 presets with 39
+improved, 0 regressed and all 22 already-clean arms unchanged; a defaults-only
+convert reproduces the measured arm to 0 verts. If the verdict is bad the
+honest fix is to move them back, not to re-argue the measurements.
+`_DEFAULTS_PROMOTED_2026_08_26` records them and the same test ratchets them.
+
+`panel_rigid_early_clear` was NOT promoted with them, and that is a measurement
+too: it was re-tested against the new guard (its 12-better/6-worse verdict
+predates it) and came back 1 better / 2 worse.
+
+**AND THE LIVE SETTINGS FILE HAD BEEN OVERRIDING ALL OF THIS.** On 2026-08-26 it
+still forced `panel_rigid_early_clear`, `warp_push_shell_cap` and
+`ride_body_floor` True against code defaults of False — so the shipped packs
+used a configuration no defaults-based measurement described. All three were
+removed; the file now carries no flag overrides at all. **A promoted default is
+only real if nothing downstream is quietly overriding it — read the deployed
+`CBBEtoUBE_settings.json`, do not infer it from this document.**
 
 Re-count rather than trusting these figures — they drift with every commit, and a
 stale count here survived several audits. The method: collect

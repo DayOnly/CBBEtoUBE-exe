@@ -52,6 +52,21 @@ OUT_SCATTERED = 0.30
 THIN_EXTENT = 3.0
 
 
+def require_population(items, what: str, min_n: int = 1) -> None:
+    """Refuse to report on an empty measured set.
+
+    A gate that scores 0 items and exits 0 has said "clean" about nothing --
+    0/0 is not a pass. Call this right after the population is built; it
+    prints the standard line and exits 3 so a driver can tell "nothing
+    measured" from "measured and clean" (1 = defects found).
+    """
+    n = len(items)
+    if n < min_n:
+        print(f"measured NOTHING -- {n} {what} (need {min_n}); "
+              "0/0 is not a pass. Check the output dir / filters.")
+        raise SystemExit(3)
+
+
 def layout():
     """(mods_root, profile_dir, out_mod_ube_root). Raises with a clear message
     rather than silently measuring an empty tree."""

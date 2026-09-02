@@ -52,6 +52,28 @@ PROMOTED = {
     "panel_rigidity": ("PANEL_RIGIDITY", 0.75),
 }
 
+# #defaults-promoted-2026-08-26 -- the two BUG-15(a)/(b) fixes, plus
+# `ride_body_floor` (see its own note below). Pinned in the
+# SAME structure as the 2026-08-22 four so every guarantee above applies to them
+# too: code and GUI agree, at-default emits no env, and the OFF case is still
+# expressible. That last one is the whole point of this file -- a default-ON
+# bool the GUI cannot switch off is the bug it was written for.
+#
+# THESE WERE PROMOTED WITHOUT AN IN-GAME VERDICT, which is the reverse of the
+# 2026-08-22 order, at the user's explicit instruction so the reconvert that
+# produces the verdict runs them. Measured, not judged. If the verdict is bad,
+# the honest fix is to move them back, not to re-argue the measurements.
+PROMOTED_2026_08_26 = {
+    "bust_morph_chord": ("BUST_MORPH_CHORD", True),
+    "panel_rigid_surface_guard": ("PANEL_RIGID_SURFACE_GUARD", True),
+    # Added later the same day. Unlike the other two this one HAD been in
+    # the live recipe for weeks while the code shipped it OFF, so it is
+    # the 2026-08-22 situation repeating -- and `verify_reconvert.py`
+    # failed a pack built without it.
+    "ride_body_floor": ("RIDE_BODY_FLOOR", True),
+}
+PROMOTED.update(PROMOTED_2026_08_26)
+
 
 def test_the_in_code_record_matches_this_test():
     """`nif_convert._DEFAULTS_PROMOTED_2026_08_22` is the block four comments in
@@ -63,9 +85,29 @@ def test_the_in_code_record_matches_this_test():
     nothing reads is just a comment with extra syntax, and the next cleanup
     would delete it as a dead constant."""
     assert set(nc._DEFAULTS_PROMOTED_2026_08_22) == {
-        attr for attr, _want in PROMOTED.values()}, (
+        attr for key, (attr, _want) in PROMOTED.items()
+        if key not in PROMOTED_2026_08_26}, (
         "the in-code promotion record and this test disagree about WHICH "
         "defaults were promoted on 2026-08-22")
+
+
+def test_the_2026_08_26_record_matches_this_test():
+    """Same contract as the 2026-08-22 record above, for the second promotion.
+
+    A promotion record nothing reads is a comment with extra syntax; consuming
+    it here is what stops the two drifting apart."""
+    assert set(nc._DEFAULTS_PROMOTED_2026_08_26) == {
+        attr for attr, _want in PROMOTED_2026_08_26.values()}, (
+        "the in-code 2026-08-26 promotion record and this test disagree about "
+        "WHICH defaults were promoted")
+
+
+def test_early_clearance_was_NOT_promoted_and_the_reason_is_recorded():
+    """It is the obvious third candidate and it stays OFF because a MEASUREMENT
+    says so -- re-tested WITH the surface guard (its old 12-better/6-worse
+    verdict predates it) and still 1 better / 2 worse: velothisteel
+    6.486 -> 10.813, cowarchrobe 3.466 -> 8.443."""
+    assert nc.PANEL_RIGID_EARLY_CLEAR is False
 
 
 @pytest.mark.parametrize("key", sorted(PROMOTED))

@@ -5,6 +5,194 @@
 Built and reconverted on 2026-08-22 (163 mods, 3673 meshes under `meshes/!UBE`,
 no failures) and judged in game: *"everything looks as it should"*.
 
+Rebuilt 2026-08-26 with the two chest fixes below and the layer-ride body
+floor. All three are ON by default but have NO in-game verdict yet — they are
+on so that the reconvert produces one. Everything above this line has been
+judged; they have not.
+
+### Changed (on by default) — stacking layered armour no longer pushes it into the body
+
+When an outfit's layers are stacked on each other at write time (the "layer
+ride"), the ride used to be allowed to push a layer through the body: on the
+worst piece 102 of its 110 inside-body vertices were put there by the ride,
+after the fit had already finished clean. The ride now refuses any move that
+would take a vertex inside the body. 19 pieces improved, none regressed.
+Setting: "Stop layered armour being pushed into the body as it is stacked"
+(Advanced).
+
+### Fixed — a broken pass no longer ships as a clean one
+
+A 2026-09-01 audit of the code (`docs/worklog/AUDIT_2026_09_01.md`) found
+fourteen places where a failing step was swallowed and the result read as
+"nothing to do": the chest-chord fix and its surface-deficit sibling returned
+"no demand" on any error; three smoothing helpers returned their input
+untouched; the shader transplant in the shape writer could ship a glow shape
+white and static; the copy path discarded a shape's whole fit chain, its
+reskin and its z-fight fix without a word, and shipped a shape with its
+SOURCE vertices and skin under a "converted" status when the fitted copy
+failed; the physics-XML copy, the stripped-chain-bone check and the output
+validator's z-fight census all failed silently. Every one of these now
+records the failure on the piece's report line (`PASS FAILED ...`,
+`UNFITTED ...`), exactly as the body-swap path already did. No converted
+vertex, weight or physics byte changes — only what is reported.
+
+Two new tests pin this: one raises inside each helper and asserts the record
+appears; the other forbids any function that is itself a failure label from
+swallowing its own body (which is how three of the fourteen hid from the
+existing guard).
+
+### Added — a run now says which build it is and what it resolved every setting to
+
+Twelve different builds have shipped calling themselves "1.3", and the only
+configuration a run wrote down was the list of environment overrides — so a
+default promoted in code and a setting silently lost looked identical in the
+log. Every run now prints, right after the flag echo: a build line (version,
+git commit, dirty flag, build time, sha256 of the exe) and the effective
+value of every setting that differs from its default; `convert` prints it
+too, not only `auto`. The same block goes into `conversion_report.json`
+(`run_config`) and into a new `conversion_settings.json` next to the summary,
+so a pack carries its own recipe. `scripts/build_exe.ps1` writes the stamp
+just before PyInstaller runs, and now pins the build's hash seed as well as
+the runtime's.
+
+### Fixed — the settings file can no longer be lost quietly
+
+`install_mo2_entry.ps1 -InstallTools` deleted the whole tools folder —
+settings, backups and logs — before copying the bundle; it now goes through
+`deploy_exe.ps1`, which never deletes what is already there and takes a
+timestamped snapshot of the settings file first (newest ten kept). The GUI
+saved the settings file in place on every control change; a torn write
+loaded as pure defaults and the next toggle wrote those defaults back. It
+now writes atomically, keeps the previous good file as `.bak`, and a
+malformed file is announced at the top of the run instead of read as
+"all defaults".
+
+### Fixed — a single-piece convert now fails the way the batch does
+
+`scripts/convert_one_armor.py` exited 0 whatever happened to the piece, and
+two A/B tools trusted that exit code, so a shape whose fit had failed could be
+scored as geometry. It now exits 3 when a shape was dropped and 4 when a pass
+failed or a shape shipped unfitted, after both weights have been converted.
+Five gate tools that reported PASS on an empty measured set now exit 3 with
+"measured NOTHING", and the tool index no longer credits a tool with a
+population floor because its docstring mentions one.
+
+### Added (off by default) — robes with long sleeves are no longer mistaken for gauntlets
+
+Armour whose sleeves reach the hands is weighted to the hand bones, exactly as
+a gauntlet is — and the converter was treating it as one. A mistaken piece
+skips the entire fitting stage: no conforming to the body, no pushing clear of
+it. It ships wherever the first rough pass left it.
+
+The worst chest-clipping piece in the whole pack turned out to be one of these:
+a robe that received three fitting steps instead of eleven, and showed skin
+through the chest on every body preset.
+
+Telling the two apart is simple, and it mirrors a check already here for legs
+(a full-length trouser was being mistaken for a boot the same way). A gauntlet
+is a tube around the forearm and carries no weight at all on the spine; a robe
+hangs from it. Across 173 pieces every real gauntlet, glove and boot measured
+exactly zero spine weight, so none of them is touched. Three sleeved garments
+are.
+
+On the worst one the chest went from 8.9% of the area showing skin to none at
+all, on every preset tested, and it now sits at a normal fitted distance from
+the body instead of being pulled too tight. Real gauntlets and boots came out
+of the change without a single vertex moved.
+
+OFF by default, pending an in-game verdict. Turn it on with "Treat a
+long-sleeved robe as clothing, not as a gauntlet".
+
+### Added (off by default) — physics files that name what does not exist are trimmed
+
+Ninety-four converted meshes point at a physics file that names shapes or
+bones the mesh does not carry. The physics engine tolerates that (the cloth
+still swings), but every collider guard in the converter then runs against
+an empty set, so nothing it is meant to protect is protected. With this on,
+the converter removes the entries that cannot resolve and keeps the rest,
+and records what it removed. OFF by default, pending an in-game verdict.
+Turn it on with "Repair broken physics files some armour mods ship".
+
+### Fixed — a physics warning that cried wolf
+
+The check for "this armour's physics file names a bone that doesn't exist" was
+looking only at the bones the armour is skinned to, and not at the rest of the
+skeleton stored in the file. The first link of a physics chain normally carries
+no skin weight at all, so healthy chains were being reported as broken: 1839 of
+4449 warnings across a third of the affected pieces were false. Those warnings
+exist to make a handful of real problems visible, which they cannot do buried
+in noise.
+
+### Added (off by default) — the chest fix, on armour converted by copying
+
+The chest fix below only runs on armour that gets a new body built into it.
+About three quarters of the pack is converted by COPYING the original mesh
+instead, and none of those pieces were getting any of it.
+
+Measured across the pack on 2026-08-27, the defect is just as common on the
+copied pieces as on the rebuilt ones — 28 percent of pieces either way — so
+roughly fifty pieces carry it today with nothing applied. The exclusion had
+been recorded as "out of scope", which was never the same as "these are fine".
+
+This applies only the push-away half of the fit, never the pull-in half:
+pulling copied pieces in toward the body was measured separately and made
+clipping worse, so that stays off.
+
+Across three copied pieces and five body presets: clipping fell by up to 5.5
+points, nothing got worse anywhere, and every preset that was already clean
+stayed at zero. The armour did not balloon to get it — the widest gap shrank on
+all three pieces.
+
+OFF by default, pending an in-game verdict. Turn it on with "Keep the bust
+covered on armour converted by copying".
+
+### Fixed — skin showing through the chest on about half of body presets
+
+Reported on one cuirass: the breast came through the chest armour on some body
+presets while others looked perfectly fine, and the heavy version of the same
+armour showed a milder form of the same thing. Nothing looked wrong with the
+character standing at rest and no preset applied, which is why several earlier
+attempts to find this came back empty-handed.
+
+The armour does follow the body's sliders, and every corner of it follows
+correctly. What fails is the flat surface BETWEEN three correct corners. One
+triangle of that cuirass spans about seven units across the breast, and its
+three corners follow points on the body that a preset can move three and a half
+units differently from each other. The flat triangle cuts the corner across a
+breast the preset has just made rounder, and skin appears between corners that
+are each individually in exactly the right place.
+
+The fit now accounts for that, so the surface between the corners gets the
+clearance too, instead of only the corners.
+
+Measured across six pieces and fourteen body presets: 39 cases improved, none
+got worse, and all 22 that were already clean stayed exactly as they were. On
+the reported cuirass the chest went from 2.9% of the band showing skin to 0.8%,
+and the fuller body presets improved most — which is where it was reported.
+
+### Fixed — straightened armour plates could sink into the body between corners
+
+Layered armour is straightened back into plates after fitting, and that is only
+allowed while the plate stays clear of the body. But the check looked at the
+plate's CORNERS and nothing else, and it let a corner standing well clear drop
+all the way down to touching. Two corners at zero with a curved body between
+them puts the surface itself inside the body, and the anti-poke pass then had to
+repair the damage afterwards.
+
+The check now looks at the middle of each triangle as well. It can only ever
+make the straightening gentler, never stronger.
+
+On a college robe this took the chest from 13.0% showing skin to 3.5%, and its
+at-rest clipping from 1.5% to none — while the armour sits slightly TIGHTER to
+the body than before, not further out. A body preset that had been clipping that
+robe comes out clean.
+
+### Not changed — a related switch that measurement says to leave alone
+
+*Keep plates straight without pressing them into the body* (Advanced) stays off. It is the
+obvious companion to the fix above, so it was re-tested against it, because its
+original verdict predates it. It still helps one piece and hurts two.
+
 ### Fixed — some outfits shipped a collision shape the physics engine could not use
 
 The converter builds a hidden collision copy of a garment so the bust has

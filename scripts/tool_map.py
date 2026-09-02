@@ -240,8 +240,27 @@ def _has_floor(text: str) -> bool:
     """
     probes = ("measured NOTHING", "measured nothing", "empty set",
               "NOTHING WAS", "no survival records", "is not a pass",
-              "population floor", "MIN_COVER")
-    return any(p in text for p in probes)
+              "population floor", "MIN_COVER", "require_population")
+    # Probe the CODE, not the prose: a docstring that merely mentions an
+    # "empty set" is not a floor (golden_output.py read as floored that way).
+    # Only DOCSTRINGS are blanked -- a multi-line print("""...""") that
+    # carries the floor message is code and must still count.
+    lines = text.splitlines()
+    try:
+        for node in ast.walk(ast.parse(text)):
+            if isinstance(node, (ast.Module, ast.FunctionDef,
+                                 ast.AsyncFunctionDef, ast.ClassDef)):
+                body = getattr(node, "body", None)
+                if (body and isinstance(body[0], ast.Expr)
+                        and isinstance(body[0].value, ast.Constant)
+                        and isinstance(body[0].value.value, str)):
+                    d = body[0]
+                    for i in range(d.lineno - 1, d.end_lineno):
+                        lines[i] = ""
+    except SyntaxError:
+        pass
+    code = "\n".join(lines).lower()
+    return any(p.lower() in code for p in probes)
 
 
 def scan(repo: Path = REPO) -> list[dict]:

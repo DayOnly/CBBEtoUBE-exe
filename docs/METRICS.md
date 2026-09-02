@@ -441,6 +441,35 @@ On a piece whose pose behaviour is clean, a full breast slider takes exposure
 4.5% → 12.1%. The morph path is a separate class, unexamined, and on that piece the
 larger one.
 
+> **EXAMINED 2026-08-26, and it is the larger class on more than that piece.**
+> `morph_clip_test.py --preset` applies a real BodySlide/RaceMenu preset to the
+> BODY AND THE GARMENT together. Over a 6-piece x 14-preset grid and a 90-piece
+> pack census, the finding is structural rather than incidental:
+>
+> **BIND-POSE CLIPPING IS 0.000% AT EVERY STAGE OF THE CHAIN on a piece whose
+> morphed clipping runs 2-7%.** Not small — ZERO, at entry, warp, inflate,
+> conform, groove-smooth, panel-rigidity, anti-poke, seam-weld and in the
+> written NIF. So every bind-pose column in this document, and every stage
+> ledger built on one, is not merely a best case for this class; it is
+> identically blind to it. Five separate metrics returned clean against a user
+> who could see the defect for exactly this reason.
+>
+> Pack census, body-swap pieces only (the copy path has no injected body to
+> morph against, so it is out of scope, NOT healthy): **21 of 90 are clean at
+> bind and clip under a preset** — replicated at 23 of 100 on a second run
+> through a different densify implementation. The metric DISCRIMINATES: 69 of
+> 90 are not in the class.
+>
+> Split that bucket before quoting it. It mixes three defects: follow ~1 with
+> low chain weight (the chord class), follow ~0 (a morph-FOLLOW gap, a
+> different bug), and high chain share (physics cloth, which this model states
+> outright it does not cover). The census tail — a 72.8% dress — turned out to
+> be follow 0.00 on SMP cloth, and its CLEAN preset clipped MORE than its
+> clipping one, so it was never this class at all.
+>
+> **Ask FIRST whether a report is preset-dependent.** If it is, no bind-pose
+> number is evidence either way.
+
 ---
 
 ## ~~Sound~~: containment census over the rigid population

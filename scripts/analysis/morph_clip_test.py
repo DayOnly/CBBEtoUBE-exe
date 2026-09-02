@@ -244,7 +244,7 @@ def _resolve_preset(pv, bm):
     return sel, missing, fuzzy
 
 
-def _garment_parts(nf, p, hits_provider):
+def _garment_parts(nf, p, bV):
     """[(shape, bind verts, tris, per-slider morph table)] for rendered shapes."""
     out = []
     for s in nf.shapes:
@@ -284,7 +284,7 @@ def _sweep(a, nf, bV, bT, bN, bm, p) -> int:
     if len(idx) < 20:
         print(f"ABORT: {a.band} band has {len(idx)} verts", file=sys.stderr)
         return 3
-    parts = _garment_parts(nf, p, None)
+    parts = _garment_parts(nf, p, bV)
     if not parts:
         print("ABORT: no rendered garment shape", file=sys.stderr)
         return 3

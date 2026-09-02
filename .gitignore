@@ -4,6 +4,10 @@ __pycache__/
 *.pyc
 .pytest_cache/
 
+# Written by scripts/build_exe.ps1 just before PyInstaller runs (git sha,
+# dirty flag, build time); read by src/build_info.py. Never commit it.
+src/_build_stamp.py
+
 # Editors
 .vscode/
 .idea/

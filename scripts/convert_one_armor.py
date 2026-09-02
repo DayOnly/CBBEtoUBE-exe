@@ -227,6 +227,7 @@ def main():
     print(f"  body ref: {ref}")
     print(f"  output : {dst_dir}")
 
+    results = []
     for w in ("_0", "_1"):
         src = srcd / f"{stem}{w}.nif"
         if not src.exists():
@@ -238,6 +239,29 @@ def main():
         r = ac._nif_convert_worker(item)
         _say(f"  {stem}{w}: {getattr(r, 'status', r)}"
              + (f"  -- {r.reason}" if getattr(r, "reason", "") else ""))
+        results.append(r)
+
+    # Exit code AFTER the loop (never abort mid-pair -- a half-converted
+    # _0/_1 pair is worse than a reported one). The batch CLI already counts
+    # a dropped shape or a failed pass as a failure; a single-piece run must
+    # not report success where the batch would not, or every A/B tool that
+    # gates on this exit code scores a broken shape as geometry.
+    #   3 = a shape was dropped / the piece errored
+    #   4 = a pass failed or a shape shipped unfitted (see `reason`)
+    broken = []
+    for r in results:
+        status = str(getattr(r, "status", ""))
+        reason = str(getattr(r, "reason", "") or "")
+        if status == "error" or getattr(r, "dropped_shapes", None):
+            broken.append((3, "dropped"))
+        elif ("PASS FAILED" in reason or "errors during shape copy" in reason
+              or "UNFITTED" in reason):
+            broken.append((4, "pass"))
+    if broken:
+        code = min(c for c, _ in broken)
+        kinds = sorted({k for _, k in broken})
+        _say(f"BROKEN {len(broken)} {'+'.join(kinds)}")
+        sys.exit(code)
 
 
 if __name__ == "__main__":

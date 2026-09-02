@@ -36,6 +36,27 @@ standoff. Making panel rigidity body-aware (`#panel-rigid-early-clearance`) did
 not just remove a repair — it freed the anti-poke to do its actual job. The
 repair was not merely redundant; it was occupying the budget.
 
+> **CORRECTION 2026-08-26 — THE RULE STANDS, THIS EXAMPLE DOES NOT.**
+> `#panel-rigid-early-clearance` was re-measured under a metric that applies
+> the body preset's morph, and it is **1 better / 2 worse**: it helps one piece
+> and regresses two, one of which had a clean preset that starts clipping. It
+> is still DEFAULT OFF and should stay there. The paragraph above is right that
+> the repair was occupying the anti-poke's budget; it is wrong that freeing the
+> budget was a net win on this evidence.
+>
+> WHY, and it sharpens the rule rather than weakening it: the body-blind pass
+> was not only wasting budget, it was incidentally pushing panels OUTWARD, and
+> that push is MORPH HEADROOM. Guarding the producer removed the waste AND the
+> headroom together. **Fixing the producer is still correct — but measure what
+> else the producer's mistake was accidentally buying you.**
+>
+> A cleaner example of the same rule from the same work:
+> `#panel-rigid-surface-guard` fixed `_rigidify_within_clearance`'s own
+> clearance test (it checked a panel's CORNERS and let a corner standing 1.5u
+> clear sink to zero) instead of adding a pass to undo the result. A hold that
+> *did* run downstream to repair it was built the same day, measured, and
+> DELETED — it regressed a piece the in-place guard leaves untouched.
+
 **2. Repairs fight each other, and the chain oscillates.**
 `PASS_MAP.md` and the damage ledger show stages alternating between penetration
 and stretch, each fixing one by causing the other. The observable outcome is not
@@ -379,9 +400,14 @@ which grafts the scale bones as part of the blend.
 
 ## Clearance & anti-poke
 
-`clear_armor_outside_body()` runs **last**, after every vertex op, and pushes
-armor clear of the injected UBE body so the live actor morph can't punch
-through. Push-out only; it never pulls cloth in. Several terms stack into one
+`clear_armor_outside_body()` is the anti-poke stage of the per-shape fit chain
+(after warp, inflate and conform) and pushes armor clear of the injected UBE
+body so the live actor morph can't punch through. It is NOT the last vertex
+op: panel rigidity, softcloth, rebury, chain blend, min-push, seam weld and the
+cross-shape passes run after it, and the write-time layer ride can put verts
+back inside (that is what `#ride-body-floor` exists for — see PIPELINE §2c and
+the traced chain in PASS_MAP). Push-out only; it never pulls cloth in. Several
+terms stack into one
 required-clearance value per vert:
 
 ### Adaptive clearance
