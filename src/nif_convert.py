@@ -6662,10 +6662,21 @@ WEIGHT_INVARIANT_ENABLED = not _flag("CBBE2UBE_NO_WEIGHT_INVARIANT", False)
 
 
 # #family-weight-invariant -- the SAME defect in the family-match write, which
-# the flag above does not reach. Separate flag because it is a separate pass
-# with a different safety story (it adds no bones, so it cannot strand one
-# unweighted) and because the fix above is already default ON and in-game
-# verified, while this one is not yet.
+# the flag above does not reach. Separate flag because the fix above is already
+# default ON and in-game verified, while this one is not yet.
+#
+# ITS ORIGINAL SAFETY STORY WAS WRONG, and the correction is the whole point of
+# docs/worklog/ZEROWEIGHT_BONE_PRODUCER.md. This comment used to read "it adds no
+# bones, so it cannot strand one unweighted". A pass does not have to ADD a bone
+# to strand one: the family write filters only on `_WRITE_MIN` (1e-4) while the
+# SAVE keeps the largest FOUR influences per vertex, so demoting an existing
+# bone's last weight to 5th place -- e.g. `_match_full_weights_to_body` taking
+# `L Breast03` on one vertex from 0.02432 to 0.00020, traced 2026-09-02 -- writes
+# a weight that clears the filter and is then dropped at save, leaving a bone
+# `_install_skin` legitimately added carrying an EMPTY weight list. That is
+# `#zeroweight-bone-desync`, the equip-CTD class, and the 2026-08-28 pack ships
+# 225 of them across 163 shapes. Do not reason about stranding from add_bone
+# alone; reason about what survives the 4-influence cap at SAVE.
 #
 # Traced per pass over the reported piece, bad-sum verts added to `top`:
 #     _match_rigid_leg_bend_to_body   +76   worst 0.032

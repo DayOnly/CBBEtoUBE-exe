@@ -1741,7 +1741,17 @@ def _match_full_weights_to_body(dst_path, biped_slots: int = 0,
     The family matches each fix one bone family and fund it out of the rest; this
     one has nothing left over to fund it from, so its ideal is follow = 1.0 in
     every pose simultaneously. See MATCH_FULL_WEIGHTS for the gap measurements
-    that motivate it and for why it is default OFF.
+    that motivate it, and for why it SHIPPED off and has been DEFAULT ON since
+    2026-08-11 (`CBBE2UBE_NO_FULL_WEIGHT_MATCH=1` disables). This line used to
+    read "why it is default OFF", which stopped being true on 2026-08-11.
+
+    KNOWN DEFECT, traced 2026-09-02 (docs/worklog/ZEROWEIGHT_BONE_PRODUCER.md):
+    the shared write in `_match_limb_motion_to_body` filters only on `_WRITE_MIN`
+    and never re-applies the 4-influence cap that the SAVE applies. So this pass
+    can demote an EXISTING bone's last weight to 5th place on its vertex --
+    written, then dropped at save -- stranding a bone `_install_skin` had
+    legitimately added (`#zeroweight-bone-desync`, an equip CTD). Proven here for
+    `L/R Breast03`; 225 such bones on 163 shapes in the 2026-08-28 pack.
 
     `bones` is still the spine family, and is used ONLY for the caller-facing
     family label -- the full-vector branch manages every shared bone.
