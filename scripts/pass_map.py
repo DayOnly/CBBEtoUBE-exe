@@ -80,6 +80,7 @@ CONVERTER_MODULES = (
     "src/nif_convert_layers.py",   # split step 7
     "src/nif_convert_weights.py",   # split step 8
     "src/nif_convert_physics.py",   # split step 9
+    "src/nif_convert_writer.py",   # split step 10
     "src/fit_metrics.py",
 )
 

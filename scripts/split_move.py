@@ -111,6 +111,8 @@ for f in NAMES + STATE:
         assert ln[x.col_offset:x.end_col_offset] == x.id, (f, x.lineno, ln)
         lines[x.lineno - 1] = ln[:x.col_offset] + "_nc()." + x.id + ln[x.end_col_offset:]
         rewrites += 1
+    if "_nc" in bound:
+        refused.append(f"{f}: binds a local named _nc, which would shadow the call-time accessor -- rename it first")
     body_names = [x for x in ast.walk(node) if isinstance(x, ast.Name) and isinstance(x.ctx, ast.Load)]
     for x in sorted(body_names, key=lambda x: (x.lineno, x.col_offset), reverse=True):
         nm = x.id

@@ -116,7 +116,7 @@ _KNOWN_UNPROVEN_ORDER = {
     # `bone_names` is a PARAMETER; the callers build it as
     # `bones = list(src_shape.bone_names or [])` -> a list. Cross-function, so
     # a per-function walker cannot see it.
-    "nif_convert.py:_install_skin:surviving": 3,
+    "nif_convert_writer.py:_install_skin:surviving": 3,   # moved 2026-09-01 (split step 10)
     # `list(s.bone_names or list(bw.keys()))`, later `bone_list + want` --
     # ordered, but through a BoolOp and a BinOp this walker does not model.
     "nif_convert_bust.py:_sync_bust_plate_follow_postwrite:bone_list": 1,   # moved 2026-09-01 (split step 6)
@@ -456,8 +456,8 @@ def test_no_mesh_write_is_swallowed_silently():
     all_calls = set()
     for _, _, called in handlers:
         all_calls |= called
-    tree = ast.parse(Path(nc.__file__).read_text(encoding="utf-8",
-                                                 errors="ignore"))
+    from tests import _converter_sources as cs
+    tree = cs.tree()          # the write API lives in the writer module now
     module_calls = set()
     for c in ast.walk(tree):
         if isinstance(c, ast.Call):

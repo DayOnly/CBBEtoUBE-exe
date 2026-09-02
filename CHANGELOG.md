@@ -79,8 +79,12 @@ the weight conform, roughness cap, SMP boundary hold, jiggle sync and
 transfer, the bone predicates) into `src/nif_convert_weights.py`, and the
 HDT-SMP physics work (skeleton caches, physics-XML lookup / bind / sanitise /
 harden, chain anchors, collider proxies, the physics finaliser) into
-`src/nif_convert_physics.py`. `nif_convert.py` went from 30,419 lines to
-about 16,000: the two convert paths, the writer, and what has not moved yet.
+`src/nif_convert_physics.py`, and the NIF writer with its per-shape repairs
+(shape copy with shader transplant, skin installation, the fresh re-author,
+partition normalisation, shape-order restore, coherence / normal / winding
+repairs, vertex-colour flags, z-fight detection and the output validator)
+into `src/nif_convert_writer.py`. `nif_convert.py` went from 30,419 lines to
+under 14,000: the two convert paths and their orchestration.
 Anything a moved function still needs from `nif_convert` is looked up when
 it runs, not when it is imported, and `nif_convert` re-executes every split
 module when it is itself reloaded — so flags, caches and the tests' way of
