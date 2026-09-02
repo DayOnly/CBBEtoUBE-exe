@@ -106,10 +106,34 @@ class Piece:
         self.path = Path(path)
         nf = nc._pynifly().NifFile(filepath=str(path))
         self.body = next((s for s in nf.shapes if s.name == "BaseShape"), None)
+        self.body_src = "injected BaseShape"
         if self.body is None:
-            raise SystemExit(f"ABORT: {self.path.name} has no injected "
-                             f"BaseShape (copy-path piece); there is no body "
-                             f"in the file to morph against")
+            # THE COPY PATH HAS NO INJECTED BODY. Refusing here made this A/B
+            # structurally blind to ~78% of the pack -- the majority, and the
+            # half where `#panel-rigid-early-clearance` shows its largest
+            # bind-pose gain, so that flag's copy-path verdict could not be
+            # taken with the one harness that names regressions.
+            # `morph_clip_test` has resolved it this way since the chord
+            # census; this is that fallback, not a new reference. A phase-1
+            # piece was fitted against the UBE TEMPLATE body, so that is the
+            # correct reference for it, and the OSD morphs key by vertex count
+            # and apply to it unchanged.
+            #
+            # SAY WHICH BODY IS IN USE. A clip number means something different
+            # against a preset-baked injected body than against the slider-zero
+            # template, so silently swapping them would read as a real
+            # difference. Both arms of a pair are the same piece and resolve the
+            # same way, so an A/B stays internally consistent -- but copy and
+            # swap pieces are NOT like-for-like and must not share a column.
+            ext = nc._find_ube_femalebody("_1")
+            if not ext:
+                raise SystemExit(
+                    f"ABORT: {self.path.name} has no injected BaseShape and no "
+                    f"UBE template body resolved -- nothing to morph against")
+            bn_nif = nc._pynifly().NifFile(filepath=str(ext))
+            self.body = max(bn_nif.shapes, key=lambda s: len(s.verts))
+            self.body_src = (f"UBE template body ({Path(ext).name}, "
+                             f"no injected BaseShape)")
         self.bV = mct._world(self.body)
         self.bT = np.asarray(self.body.tris, np.int64).reshape(-1, 3)
         bN = np.asarray(self.body.normals, np.float64)
@@ -194,6 +218,14 @@ def main() -> int:
         label, both = spec.split("=", 1)
         off_p, on_p = both.split(",", 1)
         off, on = Piece(off_p), Piece(on_p)
+        # The band, the standoff and every clip number below are measured
+        # against `off.bV`. If the two arms did not resolve the SAME reference
+        # body, the pair compares two references as well as two flags.
+        if off.body_src != on.body_src:
+            raise SystemExit(
+                f"ABORT: {label} arms resolved different reference bodies "
+                f"(off: {off.body_src}; on: {on.body_src}) -- that pair would "
+                f"score the reference, not the flag")
         bV, bT, bN = off.bV, off.bT, off.bN
         idx = np.flatnonzero(mct.BANDS[a.band](bV))
         if len(idx) < 20:
@@ -205,7 +237,8 @@ def main() -> int:
             so[nm] = ((float(np.median(t)), float(np.percentile(t, 90)))
                       if len(t) else (float("nan"), float("nan")))
         print(f"### {label}   standoff p50/p90  off {so['off'][0]:.3f}/"
-              f"{so['off'][1]:.3f}   on {so['on'][0]:.3f}/{so['on'][1]:.3f}",
+              f"{so['off'][1]:.3f}   on {so['on'][0]:.3f}/{so['on'][1]:.3f}"
+              f"   [body: {off.body_src}]",
               flush=True)
 
         for pre in presets:
