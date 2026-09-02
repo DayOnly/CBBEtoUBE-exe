@@ -155,7 +155,8 @@ def test_smp_antipoke_relaxation_is_collision_only(monkeypatch):
     later."""
     import inspect
     import src.nif_convert as nc
-    src = inspect.getsource(nc.convert_nif_phase2)
+    from tests import _converter_sources as _cs
+    src = _cs.orchestrator_source(nc.convert_nif_phase2)   # the loop is lifted; splice it back
     i = src.index("_smp_relax = (")
     gate = src[i:i + 220]
     assert "s.name in hdt_collider_names" in gate, (

@@ -9,6 +9,7 @@ from pathlib import Path
 
 from src import gui_settings as gs
 from src import nif_convert as nc
+from tests import _converter_sources as _cs  # entry source with the lifted loop spliced back
 
 
 def test_default_off_and_gui_row_agrees():
@@ -43,6 +44,6 @@ def test_both_copy_path_sites_take_the_map_and_phase2_is_untouched():
 
 def test_kwargs_are_empty_at_defaults():
     """The flag off => `_nip_kw` stays `{}` => the call is the old call."""
-    src = inspect.getsource(nc.convert_nif)
+    src = _cs.orchestrator_source(nc.convert_nif)
     assert "_nip_kw: dict = {}" in src
     assert "if PHASE1_NIPPLE_MAP and ube_base_for_reskin is not None:" in src

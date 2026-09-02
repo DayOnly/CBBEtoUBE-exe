@@ -97,6 +97,24 @@ def source(obj) -> str:
     return txt.replace("_nc().", "")
 
 
+def orchestrator_source(fn) -> str:
+    """The source of an entry function AS IT READS: the per-shape loop that
+    was lifted out of it (`_fit_shapes_copy` / `_fit_shapes_swap`, 2026-09-01)
+    is spliced back in at its call site, so a pin that checks what comes
+    before or after a stage still sees one ordered text. `_nc().` stripped."""
+    import inspect
+    import re
+    from src import nif_convert as nc
+    src = inspect.getsource(fn)
+    for name in ("_fit_shapes_copy", "_fit_shapes_swap"):
+        if name + "(" in src and hasattr(nc, name):
+            lifted = inspect.getsource(getattr(nc, name))
+            src, n = re.subn(r"^[ 	]*" + name + r"\(_types\.SimpleNamespace\([\s\S]*?^[ 	]*\)\)[ 	]*$",
+                             lambda m: lifted, src, count=1, flags=re.M)
+            assert n == 1, f"call site of {name} not found in {fn.__name__}"
+    return src.replace("_nc().", "")
+
+
 def whole_text() -> str:
     """All files' text joined -- for guards that grep rather than parse."""
     return "\n".join(texts().values())

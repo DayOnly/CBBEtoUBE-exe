@@ -141,7 +141,7 @@ def test_convert_nif_clears_it_per_armor():
     """BOUND 2. Even if the mtime key were somehow wrong, staleness cannot cross from
     one armour to the next."""
     import inspect
-    src = inspect.getsource(nc.convert_nif)
+    src = _cs.orchestrator_source(nc.convert_nif)
     assert "_hdt_xml_cache_clear()" in src
     body = src[src.index("dst_path = Path(dst_path)"):]
     assert body.index("_hdt_xml_cache_clear()") < body.index("load_nif"), \

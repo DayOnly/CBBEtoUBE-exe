@@ -102,6 +102,15 @@ def sibling_defs() -> dict:
 
 ENTRIES = ("convert_nif", "convert_nif_phase2")
 
+# The per-shape fit loops were lifted out of the entry functions on
+# 2026-09-01 (audit step 6, increment 1). They are the entry's own body, so
+# their rows are spliced IN PLACE of the call row -- the map still reads as
+# one source-ordered chain per path, and the per-entry row floor still holds.
+ENTRY_INLINE = {
+    "convert_nif": ("_fit_shapes_copy",),
+    "convert_nif_phase2": ("_fit_shapes_swap",),
+}
+
 # Helpers both paths funnel through. Expanded ONE extra level so the passes
 # inside them are not invisible; listed explicitly rather than recursing,
 # because an unbounded walk across the dispatch boundary makes every stage
@@ -307,8 +316,26 @@ def render(text) -> str:
         if fn is None:
             continue
         rows = collect(fn, defs, consts, parents, text)
+        inline = [n for n in ENTRY_INLINE.get(entry, ()) if n in fns]
+        if inline:
+            spliced = []
+            for r in rows:
+                if r["name"] in inline:
+                    sub = collect(fns[r["name"]], defs, consts, parents, text)
+                    for s in sub:
+                        s["via"] = r["name"]
+                    spliced.extend(sub)
+                else:
+                    spliced.append(r)
+            rows = spliced
         staged = [r for r in rows if r["stage"]]
         L.append(f"## `{entry}` — line {fn.lineno}")
+        if inline:
+            L.append("")
+            L.append("The per-shape fit loop was lifted into `"
+                     + "`, `".join(inline) + "` on 2026-09-01; its rows are "
+                     "listed below at the call site, in source order, as if "
+                     "still inline.")
         L.append("")
         if entry in SHARED_TAILS:
             L.append("**Shared tail, reached from BOTH entry points above.** "

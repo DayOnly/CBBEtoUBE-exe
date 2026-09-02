@@ -32,12 +32,13 @@ import inspect
 
 from src import fit_metrics
 from src import nif_convert as nc
+from tests import _converter_sources as _cs  # entry source with the lifted loop spliced back
 
 
 def test_the_audit_flag_is_consulted_before_the_cast_is_built():
     """The gate must sit on the branch that CONSTRUCTS `_TorsoCast`, not only
     inside the recorders it feeds."""
-    src = inspect.getsource(nc.convert_nif_phase2)
+    src = _cs.orchestrator_source(nc.convert_nif_phase2)
     i = src.index("_TorsoCast(")
     head = src[:i]
     # The nearest enclosing condition must already have consulted A gate.

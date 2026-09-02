@@ -55,6 +55,18 @@ armour" (Advanced). The switch "Read the author's real fit, not a flat one"
 now says that it reaches only armour with a built-in body — copied armour
 already reads the author's fit that way.
 
+### Changed (development only) — the two per-shape fit loops are now functions of their own
+
+Each convert path ran its per-shape fit chain as a loop inlined in a
+1,500 / 2,300-line orchestrator. Those loops are now `_fit_shapes_copy` and
+`_fit_shapes_swap`, lifted out verbatim: each takes one context object
+carrying exactly the orchestrator locals it read (16 and 30 of them), and
+the loop text itself is unchanged, so a diff of the two functions is now the
+complete, readable list of where the two paths differ — the audit's finding
+that "every fix has to land twice" has a place to be looked at. The pass map
+splices each loop's rows back in at its call site, so it still reads as one
+ordered chain per path. Every converted vertex identical.
+
 ### Changed (development only) — first module split out of the converter
 
 The run-telemetry recorders (`_note_pass_failure`, `_note_pass_effect`, the

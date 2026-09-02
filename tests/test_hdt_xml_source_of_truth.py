@@ -179,7 +179,7 @@ def test_convert_nif_binds_before_it_dispatches():
     2 is reached through -- and before the paths diverge, or one path converts
     with the protections still able to fail open."""
     import inspect
-    src = inspect.getsource(nc.convert_nif)
+    src = _cs.orchestrator_source(nc.convert_nif)
     assert "_hdt_xml_bind_piece_source(" in src
     bind_at = src.index("_hdt_xml_bind_piece_source(")
     dispatch_at = src.index("convert_nif_phase2(")
