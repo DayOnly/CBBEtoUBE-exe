@@ -472,7 +472,10 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "away from it, and the smoothing pass has far less to "
                     "clean up. Measured on a five-layer top: layers on the "
                     "wrong side of each other 1074 -> 706, roughness and "
-                    "distortion both down."),
+                    "distortion both down. Reaches armour that gets a body "
+                    "built into it only (about three quarters of a pack): "
+                    "armour converted by copying already reads the author's "
+                    "fit this way, and this switch does not change it."),
     Setting("layer_order_last", "Let the layer fix have the last word",
             "Armor", "Fit and clearance", default=False,
             env="CBBE2UBE_LAYER_ORDER_LAST", invert=False,
@@ -777,6 +780,20 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "-- so a file it cannot fix is never half-changed. On all "
                     "ten the physics declarations are identical afterwards and "
                     "no armour moved by a single vertex."),
+    Setting("phase1_nipple_map",
+            "Shape the chest clearance around the nipple on copied armour",
+            "Armor", "Fit and clearance", default=False,
+            env="CBBE2UBE_PHASE1_NIPPLE_MAP", invert=False, advanced=True,
+            hint="OFF by default and NOT yet judged: a paired A/B on the "
+                 "copied-armour sample comes first.",
+            tooltip="Armour that gets a body built into it has its chest "
+                    "clearance ramp up toward the nipple, where a live body "
+                    "preset pushes hardest; armour converted by copying got "
+                    "the flat clearance instead, so the same fit rule ran as "
+                    "two different algorithms on the two kinds of armour. This "
+                    "gives the copied kind the same ramp. It moves chest "
+                    "vertices on copied armour only; armour with a built-in "
+                    "body is untouched."),
     Setting("phase1_bust_clearance",
             "Keep the bust covered on armour converted by copying",
             "Armor", "Fit and clearance", default=False,

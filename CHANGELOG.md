@@ -41,6 +41,34 @@ appears; the other forbids any function that is itself a failure label from
 swallowing its own body (which is how three of the fourteen hid from the
 existing guard).
 
+### Added (off by default) — copied armour can get the nipple-shaped chest clearance
+
+Armour that gets a body built into it has its chest clearance ramp up
+toward the nipple, where a live body preset pushes hardest. Armour converted
+by copying — a quarter of a pack — ran the same fit step with a flat
+clearance instead, so one rule was two algorithms, and a verdict on one kind
+of armour said nothing about the other. With this on, the copied kind gets
+the same ramp from the same body. OFF by default: it moves chest vertices on
+copied armour, so it needs a paired measurement and an in-game look first.
+Turn it on with "Shape the chest clearance around the nipple on copied
+armour" (Advanced). The switch "Read the author's real fit, not a flat one"
+now says that it reaches only armour with a built-in body — copied armour
+already reads the author's fit that way.
+
+### Changed (development only) — the guards now watch a declared list of files, not one
+
+Every structural guard on the converter — the generated pass map, the
+two-path parity walker and the three scans for swallowed failures — resolved
+"the converter" to the single file `src/nif_convert.py`. A function moved to
+a sibling module would have dropped out of all of them with the suite still
+green. They now read one declared module list (`scripts/pass_map.py`), keep
+a floor of rows and reachable helpers per entry point so a loss is loud, and
+a new test pins the list against the files on disk, forbids module-level
+state in a sibling, and imports each module on its own. The parity test also
+stopped re-splitting the 1.2 MB source per function, which was costing about
+half the suite's running time. This is the groundwork for splitting the
+file; nothing has moved yet.
+
 ### Added — a run now says which build it is and what it resolved every setting to
 
 Twelve different builds have shipped calling themselves "1.3", and the only

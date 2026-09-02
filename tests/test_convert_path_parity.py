@@ -66,7 +66,10 @@ MIN_PASSES = 20
 
 
 def _module_ast():
-    return ast.parse(Path(inspect.getfile(nc)).read_text(encoding="utf8"))
+    # Every DECLARED converter module, not just nif_convert.py: a pass moved
+    # to a sibling must stay in both reach sets (split precondition A).
+    from tests import _converter_sources as cs
+    return cs.tree()
 
 
 def _call_graph(tree):
@@ -339,9 +342,16 @@ NOT_A_FIT_PASS = {
 def _mesh_writers(graph):
     """Reachable helpers that write mesh data -- the structural definition of a
     stage, independent of what anyone remembered to name it."""
-    src = Path(inspect.getfile(nc)).read_text(encoding="utf8")
-    bodies = {n.name: ast.get_source_segment(src, n) or ""
-              for n in ast.parse(src).body if isinstance(n, ast.FunctionDef)}
+    # Slice by lineno, NOT ast.get_source_segment: that re-splits the 1.2 MB
+    # source on every call and cost ~43 s per invocation (half the suite).
+    from tests import _converter_sources as cs
+    from scripts.pass_map import _segment
+    bodies = {}
+    for path, src in cs.texts().items():
+        lines = src.splitlines()
+        for n in ast.parse(src).body:
+            if isinstance(n, ast.FunctionDef):
+                bodies[n.name] = _segment(lines, n)
     writes = ("set_verts", "setShapeWeights", "override_verts",
               "transform_verts", "_copy_shape(", "atomic_nif_save", "save(")
     reach = _reachable(graph, ENTRY_A) | _reachable(graph, ENTRY_B)

@@ -62,6 +62,34 @@ REPO = Path(__file__).resolve().parent.parent
 SRC = REPO / "src" / "nif_convert.py"
 OUT = REPO / "docs" / "PASS_MAP.md"
 
+# THE CONVERTER IS THIS LIST OF FILES, not the one file above. Every guard
+# that walks "the converter" (this generator, the two-path parity walker, the
+# three swallowed-handler scans) reads the list from here, so a pass moved to
+# a sibling module stays in every guard's view. `tests/test_split_preconditions`
+# pins the list against `src/nif_convert*.py` on disk; a new module must be
+# declared here or that test fails. `fit_metrics.minimum_push` is the one
+# sibling-module pass already on a production path.
+CONVERTER_MODULES = (
+    "src/nif_convert.py",
+    "src/fit_metrics.py",
+)
+
+
+def sibling_defs() -> dict:
+    """name -> lineno for module-level functions in every declared module
+    other than SRC. A call to one of these from an entry point is a pass and
+    must keep its row."""
+    out = {}
+    for rel in CONVERTER_MODULES:
+        p = REPO / rel
+        if p.resolve() == SRC.resolve() or not p.is_file():
+            continue
+        tree = ast.parse(p.read_text(encoding="utf-8"))
+        for n in tree.body:
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                out.setdefault(n.name, n.lineno)
+    return out
+
 ENTRIES = ("convert_nif", "convert_nif_phase2")
 
 # Helpers both paths funnel through. Expanded ONE extra level so the passes
@@ -82,9 +110,21 @@ NOISE = {
 
 
 def module_level_defs(tree) -> dict:
-    """name -> lineno for every function defined at module level."""
-    return {n.name: n.lineno for n in tree.body
-            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    """name -> lineno for every function defined at module level, plus every
+    name bound by a module-level `from .<converter sibling> import ...` --
+    a pass that moved out of this file keeps its row, anchored at the
+    import."""
+    sib = {Path(rel).stem for rel in CONVERTER_MODULES}
+    out = {}
+    for n in tree.body:
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            out[n.name] = n.lineno
+        elif (isinstance(n, ast.ImportFrom) and n.module
+              and n.module.split(".")[-1] in sib):
+            for a in n.names:
+                if a.name != "*":
+                    out.setdefault(a.asname or a.name, n.lineno)
+    return out
 
 
 def _segment(lines, node) -> str:
@@ -197,6 +237,8 @@ def render(text) -> str:
     tree = ast.parse(text)
     src_lines = text.splitlines()
     defs = module_level_defs(tree)
+    for name, ln in sibling_defs().items():     # a sibling's pass keeps its row
+        defs.setdefault(name, ln)
     consts = flag_consts(tree, text, src_lines)
     # POPULATION FLOOR. This generator is coupled to two idioms -- the
     # module-level `def` and the `_flag()/_knob()` binding -- and if either moves

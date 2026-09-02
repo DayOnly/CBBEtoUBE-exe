@@ -337,7 +337,7 @@ answered is "which CHANGE did this".
 | pass | what it does | flag |
 |---|---|---|
 | `_conform_fitted_to_body` | WEIGHTS: conforms garment verts to the body's per-vert skinning, shared tail | `CBBE2UBE_NO_CONFORM` (`conform_to_body`) |
-| `conform_to_source_standoff` | GEOMETRY: reels over-projected verts back to the authored standoff; the `conform` stage in the survival trace | `CBBE2UBE_PHASE1_CONFORM` (copy, default OFF) / `CBBE2UBE_NO_PHASE2_CONFORM` (body-swap, default ON) |
+| `conform_to_source_standoff` | GEOMETRY: reels over-projected verts back to the authored standoff; the `conform` stage in the survival trace. NOTE the two paths call it differently: body-swap passes the body's nipple map and `conform_margin` (nipple-ramped bust clearance); the copy path passes neither unless `CBBE2UBE_PHASE1_NIPPLE_MAP=1` (flat clearance otherwise), and its source body is the CBBE slider-zero base rather than the inline preset body | `CBBE2UBE_PHASE1_CONFORM` (copy, default OFF) / `CBBE2UBE_NO_PHASE2_CONFORM` (body-swap, default ON) |
 
 An A/B run against `CBBE2UBE_NO_CONFORM` expecting to move the traced `conform`
 stage measures nothing and reads as "conform does not matter". The body-swap one

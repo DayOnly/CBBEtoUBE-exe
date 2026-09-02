@@ -1462,6 +1462,20 @@ PHASE1_BUST_CLEARANCE = (
     _flag("CBBE2UBE_PHASE1_BUST_CLEARANCE", False)
 )
 
+# --- #phase1-nipple-map -- OPT-IN, `CBBE2UBE_PHASE1_NIPPLE_MAP=1` -----------
+#
+# The copy path's conform runs WITHOUT the body's nipple map (and without
+# `conform_margin`), so its bust clearance is the FLAT requirement while the
+# body-swap path's ramps up toward the nipple. Same function, two algorithms:
+# a verdict on one population does not transfer to the other (2026-09-01
+# audit, F094). With this on, both copy-path conform sites receive the same
+# `ube_body_nipple` / `conform_margin` the body-swap site passes, computed
+# once per piece from the UBE reference body (the same array the copy path
+# fits against, so the map is aligned). DEFAULT OFF until a paired A/B on the
+# copy-path sample (bust-band morph clip under >= 2 presets) and the
+# body-swap negative control (0 verts moved) say otherwise.
+PHASE1_NIPPLE_MAP = _flag("CBBE2UBE_PHASE1_NIPPLE_MAP", False)
+
 # --- #hdt-xml-sanitise -- OPT-IN, `CBBE2UBE_HDT_XML_SANITISE=1` -------------
 # Repair authored physics XMLs that are malformed OUTSIDE the root element.
 #
@@ -6590,6 +6604,20 @@ def convert_nif(
                  if x.name == "BaseShape"), None,
             )
 
+            # #phase1-nipple-map: the same nipple-ramped bust clearance the
+            # body-swap conform gets, computed ONCE per piece. Empty kwargs
+            # when the flag is off, so the call sites are byte-for-byte the
+            # old ones at defaults.
+            _nip_kw: dict = {}
+            if PHASE1_NIPPLE_MAP and ube_base_for_reskin is not None:
+                try:
+                    _nip_p1 = _body_nipple_weight(ube_base_for_reskin)
+                    if _nip_p1 is not None:
+                        _nip_kw = {"ube_body_nipple": _nip_p1,
+                                   "conform_margin": CONFORM_MARGIN}
+                except Exception as _e:
+                    _note_pass_failure("phase1-nipple-map", _e, dst_path)
+
             # Two-pass conversion so z-fight fixup can run across all
             # final verts (see phase-2 for the same pattern).
             shape_jobs_p1: list[dict] = []
@@ -7034,6 +7062,7 @@ def convert_nif(
                                         morph_amplitude=_amp1,
                                         tris=np.asarray(s.tris,
                                                         dtype=np.int64),
+                                        **_nip_kw,
                                     )
                             except Exception as e:
                                 # RECORDED, not swallowed -- the phase-2 sibling
@@ -7075,6 +7104,7 @@ def convert_nif(
                                         blend=0.0,
                                         tris=np.asarray(s.tris,
                                                         dtype=np.int64),
+                                        **_nip_kw,
                                     )
                             except Exception as e:
                                 # RECORDED for the same reason as the

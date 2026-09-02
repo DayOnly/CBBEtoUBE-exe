@@ -416,7 +416,8 @@ def test_no_fit_pass_failure_is_swallowed_silently():
     function records at one call site, a bare `except: pass` around it at
     another site is exactly the sibling-drift defect this test exists for.
     """
-    src = Path(nc.__file__).read_text(encoding="utf-8", errors="ignore")
+    from tests import _converter_sources as cs
+    src = cs.whole_text()
     recorded = {m.group(1).split("/")[0] for m in
                 re.finditer(r'_note_pass_failure\(\s*[\'"]([^\'"]+)[\'"]', src)}
     # Population sanity: the recording convention is in heavy use. A collapse
@@ -424,7 +425,8 @@ def test_no_fit_pass_failure_is_swallowed_silently():
     assert len(recorded) >= 40, (
         f"only {len(recorded)} recorded pass names found -- the population "
         f"derivation is broken, this guard would be vacuous")
-    handlers = _all_silent_handlers(nc.__file__)
+    from tests import _converter_sources as cs
+    handlers = [h for f in cs.files() for h in _all_silent_handlers(f)]
     assert len(handlers) >= 60, (
         f"only {len(handlers)} silent handlers found (there were 111 on "
         f"2026-08-18) -- the AST walker is broken, not the module clean")
@@ -445,7 +447,8 @@ def test_no_mesh_write_is_swallowed_silently():
     audit's defect class: a filter whose coverage nobody asserts).
     """
     WRITES = ("atomic_nif_save", "setShapeWeights", "add_bone")
-    handlers = _all_silent_handlers(nc.__file__)
+    from tests import _converter_sources as cs
+    handlers = [h for f in cs.files() for h in _all_silent_handlers(f)]
     assert len(handlers) >= 60, (
         f"only {len(handlers)} silent handlers found -- walker broken")
     all_calls = set()

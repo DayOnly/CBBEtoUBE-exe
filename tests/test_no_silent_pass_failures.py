@@ -53,7 +53,9 @@ PASS_HINTS = (
 
 
 def _tree():
-    return ast.parse(Path(inspect.getfile(nc)).read_text(encoding="utf8"))
+    # All declared converter modules (split precondition A), not one file.
+    from tests import _converter_sources as cs
+    return cs.tree()
 
 
 def _is_silent(handler):

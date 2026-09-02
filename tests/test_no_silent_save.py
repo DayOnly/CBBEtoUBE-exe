@@ -42,28 +42,29 @@ REPORTERS = ("_note_pass_failure", "print", "raise", "warn", "log",
 
 
 def _save_handlers():
-    """(lineno, function, handler-source) for every except wrapping a save."""
-    path = Path(inspect.getsourcefile(nc))
-    src = path.read_text(encoding="utf-8")
-    lines = src.splitlines()
-    tree = ast.parse(src)
-    fn_of = {}
-    for fn in ast.walk(tree):
-        if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            for n in ast.walk(fn):
-                fn_of[id(n)] = fn.name
+    """(lineno, function, handler-source) for every except wrapping a save,
+    over every DECLARED converter module (split precondition A)."""
+    from tests import _converter_sources as cs
     out = []
-    for t in ast.walk(tree):
-        if not isinstance(t, ast.Try):
-            continue
-        lo = t.body[0].lineno
-        hi = max(getattr(n, "end_lineno", n.lineno) for n in t.body)
-        if "atomic_nif_save" not in " ".join(lines[lo - 1:hi]):
-            continue
-        for h in t.handlers:
-            body = "\n".join(lines[n.lineno - 1] for n in h.body
-                             if getattr(n, "lineno", None))
-            out.append((h.lineno, fn_of.get(id(h), "<module>"), body))
+    for _path, src in cs.texts().items():
+        lines = src.splitlines()
+        tree = ast.parse(src)
+        fn_of = {}
+        for fn in ast.walk(tree):
+            if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                for n in ast.walk(fn):
+                    fn_of[id(n)] = fn.name
+        for t in ast.walk(tree):
+            if not isinstance(t, ast.Try):
+                continue
+            lo = t.body[0].lineno
+            hi = max(getattr(n, "end_lineno", n.lineno) for n in t.body)
+            if "atomic_nif_save" not in " ".join(lines[lo - 1:hi]):
+                continue
+            for h in t.handlers:
+                body = "\n".join(lines[n.lineno - 1] for n in h.body
+                                 if getattr(n, "lineno", None))
+                out.append((h.lineno, fn_of.get(id(h), "<module>"), body))
     return out
 
 
