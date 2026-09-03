@@ -195,6 +195,28 @@ folds with a real target. **F011(b) is answered: a true target does not rescue
 its own change, not folded into the producer flip, and noting it is currently
 unreachable (no Setting row).
 
+### REPLICATED on a second, unrelated population
+
+The fold result above is one mod of clothes and robes. Repeated on the
+collider-bearing population used for the contract measurement -- 102 NIFs of
+vanilla armour resolved through an overriding ESP, a different asset class
+entirely:
+
+| population | folded | inverted |
+|---|---|---|
+| clothes, 34 NIFs | 10976 -> 10267 (**-6.5%**) | 703 -> 367 (-48%) |
+| vanilla armour, 102 NIFs | 12415 -> 11740 (**-5.4%**) | 640 -> 575 (-10%) |
+
+Folds move the same way and by a similar fraction, on 102 pieces that share no
+assets with the first sample. That is the producer fix's surface-quality win
+replicating, not a property of one author's robes.
+
+The INVERTED gain does not replicate in magnitude -- 48% against 10%. That is
+consistent with what inverted triangles are: robes have long, loosely draped
+spans that cross themselves when conform reels them inward, and plate does not.
+Reporting the 48% alone would have implied a general result the second
+population does not support.
+
 ### Scope caveat on the cap result: WHICH PATH was measured
 
 `#groove-authored-cap` is NOT equally live on the two paths, and the sample
