@@ -38,6 +38,7 @@ green.
 from __future__ import annotations
 
 import os
+import re
 
 import pytest
 
@@ -229,3 +230,76 @@ def test_the_off_case_is_expressible_for_every_bool_setting():
             broken.append(s.key)
     assert not broken, (
         f"these bool settings cannot express the non-default state: {broken}")
+
+
+# --- F031: a banner that still says "opt-in" above a flag that is now ON -----
+#
+# The header line is what a reader sees first, and what the generated,
+# test-pinned PASS_MAP index reproduces verbatim; the "DEFAULT ON since ..."
+# correction is usually buried 20-40 lines further down. A maintainer skimming
+# banners sets `CBBE2UBE_<FLAG>=1` for an A/B and gets an arm IDENTICAL TO ITS
+# CONTROL -- the broken-arm trap this project has hit more than once, including
+# twice on 2026-09-02 (`#full-weight-match`'s docstring still said "why it is
+# default OFF" four weeks after it went ON, and #family-weight-invariant's
+# comment carried a safety story that its own promotion had falsified).
+#
+# Six such banners were found by the 2026-09-01 audit and fixed. This is the
+# guard that stops the seventh, because the instances are cheap and the CLASS
+# is not.
+
+_OPTIN_WORDS = re.compile(r"opt-in|default off", re.I)
+# A header may mention opt-in RETROSPECTIVELY -- "DEFAULT ON since X (was
+# opt-in)" is correct and must not trip the check.
+_CURRENT_WORDS = re.compile(r"default on|was opt|no longer opt|promoted", re.I)
+_FLAG_BINDING = re.compile(r"^([A-Z_][A-Z0-9_]*)\s*=\s*\(?\s*(?:not\s+)?_flag\(")
+
+
+def _flag_headers():
+    """(name, header line) for every module-level `_flag` binding, with the
+    FIRST line of the contiguous comment block above it."""
+    lines = _cs.whole_text().splitlines()
+    for i, ln in enumerate(lines):
+        m = _FLAG_BINDING.match(ln)
+        if not m:
+            continue
+        j, block = i - 1, []
+        while j >= 0 and (lines[j].lstrip().startswith("#") or not lines[j].strip()):
+            if lines[j].strip():
+                block.append(lines[j])
+            j -= 1
+            if len(block) > 60:
+                break
+        if block:
+            yield m.group(1), block[-1]
+
+
+def _stale_optin_headers(headers):
+    return [(n, h.strip()) for n, h in headers
+            if getattr(nc, n, None) is True
+            and _OPTIN_WORDS.search(h) and not _CURRENT_WORDS.search(h)]
+
+
+def test_no_default_on_flag_still_advertises_itself_as_opt_in():
+    """A banner saying OPT-IN above a flag that is ON sends the next A/B into a
+    control-identical arm, which reads exactly like "the change does nothing"."""
+    bad = _stale_optin_headers(_flag_headers())
+    assert not bad, (
+        "these flags default to True but their comment BANNER still calls them "
+        "opt-in / default off -- state the current default in the header, and "
+        "keep the history as '(was opt-in ...)':\n  "
+        + "\n  ".join(f"{n}: {h}" for n, h in bad))
+
+
+def test_the_stale_header_scan_can_actually_fail():
+    """Control. The scan above passing means nothing unless it can fail: a
+    default-True flag under a bare opt-in banner MUST be reported, and the same
+    flag under a corrected banner must NOT."""
+    on = next(n for n, _w in PROMOTED.items() if PROMOTED[n][1] is True
+              and getattr(nc, PROMOTED[n][0], None) is True)
+    attr = PROMOTED[on][0]
+    assert _stale_optin_headers([(attr, f"# #{on} -- OPT-IN, `CBBE2UBE_{attr}=1`")]), (
+        "the scan no longer flags a bare OPT-IN banner over a default-ON flag")
+    assert not _stale_optin_headers(
+        [(attr, f"# #{on} -- DEFAULT ON since 2026-01-01 (was opt-in)")]), (
+        "the scan now flags a CORRECTED banner, so it would fire on every "
+        "promotion that documents its own history")

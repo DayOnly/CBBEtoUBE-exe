@@ -72,6 +72,20 @@ def _module_ast():
     return cs.tree()
 
 
+def _all_source() -> str:
+    """Source TEXT of every declared converter module, same scope as
+    `_module_ast` (split precondition A).
+
+    A guard that greps `nif_convert.py` alone goes VACUOUS the moment the pass
+    it guards moves to a sibling -- or, for an `in` check, fails for a reason
+    that has nothing to do with what it guards. Both flag greps below ask "is
+    this site still behind its flag", which is a question about the converter,
+    not about one file.
+    """
+    from tests import _converter_sources as cs
+    return cs.whole_text()
+
+
 def _call_graph(tree):
     top = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
 
@@ -479,8 +493,7 @@ def test_the_second_half_is_absent_for_a_REASON_THAT_IS_TRUE():
             "the copy path gained the anti-poke WITHOUT the recovery phase 2 "
             "pairs with it -- a pushed panel stays deformed, which is the "
             "defect #panel-rigidity exists to prevent")
-        assert "PHASE1_ANTIPOKE" in Path(
-            inspect.getfile(nc)).read_text(encoding="utf8"), (
+        assert "PHASE1_ANTIPOKE" in _all_source(), (
             "the copy-path anti-poke must stay behind its own flag while it is "
             "unjudged")
 
@@ -509,7 +522,7 @@ def test_the_second_half_is_absent_for_a_REASON_THAT_IS_TRUE():
     # The recovery call is the one taking the CURRENT verts straight after the
     # anti-poke; the two early calls are guarded by the opt-in flag. Tell them
     # apart by the guard, not by line order, which shifts with any edit above.
-    src = Path(inspect.getfile(nc)).read_text(encoding="utf8")
+    src = _all_source()
     guarded = src.count("PANEL_RIGID_EARLY_CLEAR")
     assert guarded >= 5, (
         "the early-clearance sites must stay behind their flag: found "

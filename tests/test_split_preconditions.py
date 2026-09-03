@@ -36,9 +36,21 @@ SRC = REPO / "src"
 # (the `_finalize_physics_and_motion_match` shared tail is its own section);
 # parity reach 261 / 279. Set ~10% below so only a real loss trips them --
 # and raise them when the truth grows.
-PASS_MAP_ROW_FLOOR = {"convert_nif": 120, "convert_nif_phase2": 155}
+PASS_MAP_ROW_FLOOR = {"convert_nif": 120, "convert_nif_phase2": 155,
+                      # The shared tail BOTH paths call. It was the only entry
+                      # with no floor, and it is the one that collapses hardest
+                      # when a module goes undeclared: 29 rows -> 1.
+                      "_finalize_physics_and_motion_match": 24}
+# Rows carrying a `guarded by` value. That column is how the map answers "does
+# this pass run at DEFAULTS", and it empties independently of the row count --
+# it is read from flag constants, so it can go blank while every row survives.
+PASS_MAP_GUARD_FLOOR = 70          # 85 on 2026-09-02
 REACH_FLOOR = {"convert_nif": 235, "convert_nif_phase2": 250}
-WHOLE_FILE_READ_CEILING = 45      # 40 on 2026-09-01; migrate, do not add
+WHOLE_FILE_READ_CEILING = 20      # 18 on 2026-09-02; migrate, do not add.
+# Was 45 against a stated 40. Re-counted with THIS file's own regex: 18.
+# A ceiling 27 above the real count is not a ratchet -- it silently
+# permits 27 new whole-file reads, every one of which breaks on the next
+# extraction. Lower it whenever sites migrate; never raise it.
 
 _STATE = re.compile(r"^(?:[A-Z][A-Z0-9_]+|_[A-Za-z0-9_]*_CACHE|_PIECE_HDT_XML_TEXT)$")
 
@@ -182,3 +194,59 @@ def test_whole_file_text_reads_do_not_grow():
         f"{WHOLE_FILE_READ_CEILING}); every one breaks on a split -- use "
         f"tests/_converter_sources.py instead of adding another")
     assert n >= 10, "the pattern matched almost nothing; the ratchet is void"
+
+
+def test_pass_map_keeps_its_guard_column():
+    """A row floor cannot see the `guarded by` column emptying.
+
+    `pass_map` fills it from the flag constants it can resolve, so a
+    reorganisation that moves the flag bindings while leaving the passes put
+    yields a full-length map in which nothing appears to be behind a flag --
+    and 'does this pass run at defaults' is the question this project gets
+    wrong most often (feedback_deployed_build_runs_at_defaults)."""
+    text = (REPO / "docs" / "PASS_MAP.md").read_text(encoding="utf-8")
+    guarded = sum(1 for ln in text.splitlines()
+                  if re.match(r"^\| *\d+ *\|", ln)
+                  and ln.rstrip().rstrip("|").rsplit("|", 1)[-1].strip())
+    assert guarded >= PASS_MAP_GUARD_FLOOR, (
+        f"only {guarded} pass-map rows name a guard (< {PASS_MAP_GUARD_FLOOR}): "
+        "the flag constants stopped resolving, so the map now reports every "
+        "pass as unconditional")
+
+
+def test_a_pass_living_in_a_SIBLING_module_still_gets_a_row():
+    """Cross-file resolution, proved on the case that already exists rather
+    than on a throwaway module: `minimum_push` is defined in src/fit_metrics.py
+    and called on the body-swap path. It had NO row in the map until
+    fit_metrics was added to CONVERTER_MODULES."""
+    text = (REPO / "docs" / "PASS_MAP.md").read_text(encoding="utf-8")
+    assert "`minimum_push`" in text, (
+        "the sibling-module pass lost its row -- cross-file resolution is the "
+        "whole reason CONVERTER_MODULES is a list and not a filename")
+
+
+def test_the_row_floors_can_actually_fire(monkeypatch):
+    """CONTROL. A floor that has never been seen to fail is decoration.
+
+    Undeclare every sibling module -- exactly what an extraction that forgets
+    to add its new module looks like -- and re-render. Measured 2026-09-02:
+    348 rows -> 122, a 65% loss, and all three floors fire. This is what makes
+    the floors above load-bearing rather than aspirational, and it is the
+    class AUDIT_MAIN_LAYOUT.md already paid for once ("Moving those 35 files
+    silently removed 29 tests, and the suite stayed green")."""
+    text = pass_map.SRC.read_text(encoding="utf-8")
+    monkeypatch.setattr(pass_map, "CONVERTER_MODULES", ("src/nif_convert.py",))
+    doc = pass_map.render(text)
+
+    assert "`minimum_push`" not in doc, (
+        "undeclaring fit_metrics no longer drops its pass, so the sibling test "
+        "above proves nothing")
+    fired = []
+    for entry, floor in PASS_MAP_ROW_FLOOR.items():
+        sec = doc.split(f"## `{entry}`", 1)[1].split("\n## ", 1)[0]
+        if len(re.findall(r"^\| *\d+ *\|", sec, re.M)) < floor:
+            fired.append(entry)
+    assert set(fired) == set(PASS_MAP_ROW_FLOOR), (
+        "undeclaring every sibling module did NOT push these entries under "
+        f"their floor: {sorted(set(PASS_MAP_ROW_FLOOR) - set(fired))} -- the "
+        "floor is set too low to catch the failure it exists for")
