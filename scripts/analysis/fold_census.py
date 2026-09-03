@@ -218,6 +218,28 @@ def main() -> int:
             if src_root:
                 sp = srcs.get(p.name.lower())
                 if sp is None:
+                    # VFS FALLBACK. Pairing by filename inside --source-root finds
+                    # NOTHING for a mod whose meshes are resolved from ELSEWHERE:
+                    # BodySlide writes the built garment into its own output mod, so
+                    # the converted mod's folder holds only the first-person meshes.
+                    # Measured 2026-09-03 on a clothes sample: folder pairing matched
+                    # 31 shapes and ALL 31 were `1stperson`; excluding those correctly
+                    # left ZERO, and the census reported NO AUTHOR BASELINE -- which I
+                    # then wrote down as a property of the sample. It was not. Resolving
+                    # the output's data-relative path through the MO2 load order, the
+                    # way the CONVERTER itself finds the source, pairs 234 shapes.
+                    try:
+                        from src import nif_convert as _nc
+                        _rel = p.relative_to(root).as_posix().replace(
+                            "meshes/!UBE/", "meshes/", 1)
+                        _hit = _nc._resolve_data_rel_in_vfs(
+                            _rel, (src_root / 'x.nif') if src_root else p)
+                        if _hit is not None and Path(_hit).is_file():
+                            sp = Path(_hit)
+                            tot['shapes: author found via VFS'] += 1
+                    except Exception:
+                        sp = None
+                if sp is None:
                     tot["shapes: no author mesh to compare"] += 1
                     continue
                 try:

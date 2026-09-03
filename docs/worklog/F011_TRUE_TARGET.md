@@ -131,69 +131,39 @@ reported here:
 `pieces with folds` is 28/34 on every arm: this is a change in fold COUNT
 within the same pieces, not pieces crossing in or out of the defect.
 
-### There is NO author baseline for this sample, and the first one was fake
+### CORRECTION: an author baseline DOES exist, and it is informative
 
-The uncorrected census printed "AUTHOR CONTROL over 31 paired shapes, author
-folded 67", which invites the reading "the author ships 67 folds where we ship
-10976". **That comparison would have been between two disjoint sets of
-assets.** All 31 paired shapes were `1stperson` meshes -- arms-only meshes that
-the corrected population excludes. With those gone, the sample pairs ZERO
-shapes, because every garment that actually ships here was VFS-resolved from
-OTHER mods and is not under the `--source-root`.
+**An earlier version of this worklog concluded "there is no author baseline for
+this sample". That was wrong**, and it was load-bearing -- it was the stated
+reason the fold metric had to carry the argument alone.
 
-So the fold counts above have no author comparison, and the arm-to-arm deltas
-are the only thing they support. That is enough for F011(b), which is a
-question about two flags, not about absolute quality.
+What is true is narrower: pairing by filename inside the CONVERTED mod's own
+folder finds nothing usable. Those garments are VFS-resolved from a BodySlide
+output mod, so the converted mod ships only the first-person meshes -- which is
+why the uncorrected census matched 31 shapes that were ALL `1stperson`, and why
+excluding those correctly left zero. "Folder pairing found nothing" is not
+"there is no author".
 
-### Fit: clip and standoff, 252 shapes, paired mask
+Resolving each output's data-relative path through the MO2 load order -- the way
+the CONVERTER finds its source -- pairs **234 shapes**. `fold_census` now falls
+back to that automatically.
 
-`clip_stats` / `standoff_stats` over a mask built ONCE from the control arm
-(body verts within 8u of the control garment) and reused for every arm, capped
-at 1500 verts by a deterministic stride. The cap is what makes a 4-arm run
-finish; because the SAME subsample scores every arm, the comparison stays
-paired and the deltas keep their meaning -- only the absolute percentages gain
-sampling noise.
+| | folded | inverted |
+|---|---|---|
+| **the author's own meshes** | 1596 | **0** |
+| `ctrl` | 10976 | 703 |
+| `fix` | 10267 | **367** |
 
-| comparison | standoff: shapes moved >0.01u | median | p90 | max | clip: shapes moved >0.02pp |
-|---|---|---|---|---|---|
-| `fix` vs `ctrl` (producer fix) | 152 / 252 | **+0.0048u** | +0.128u | +1.067u | 20 / 252 |
-| `nocap` vs `ctrl` (cap off, zero target) | 92 / 252 | +0.0021u | +0.037u | +0.250u | 6 / 252 |
-| `fix_nocap` vs `fix` (cap off, real target) | 62 / 252 | +0.0009u | +0.014u | +0.260u | 3 / 252 |
+This reframes both numbers:
 
-**THIS IS NOT THE F010 PATTERN, and the counts alone would have said it was.**
-Counting shapes, `fix` reads "standoff further on 110, closer on 42" and the
-summed delta is +8.7u -- which looks exactly like the inflation that killed the
-copy-path change. The magnitudes say otherwise: F010 moved p50 standoff
-1.414 -> 1.863u, **+0.45u on every piece**; this moves a MEDIAN of +0.0048u,
-five thousandths of a unit, with the sum carried by a thin tail. Clipping is
-unchanged on 232 of 252 shapes with a median delta of exactly 0.
-
-So the producer fix costs essentially nothing in fit and buys 6.5% fewer folds
-and 48% fewer inverted triangles. A count of better/worse shapes is the right
-headline when the effect is uniform (F010) and actively misleading when it is
-not; both belong in the table.
-
-One thing this population CANNOT settle: whether the outward tail is right.
-Conform's defect is that a zero target reads every source garment as skin-tight
-and reels loose drape INWARD, so cloth moving outward under the fix is the
-expected correction -- but "further from the body" can only be scored as good
-or bad against the AUTHOR's standoff, and this sample has no author baseline
-(above). The fold metric carries the argument precisely because it needs no
-baseline.
-
-### The cap: near-inert on fit, and MORE inert once the target is real
-
-`#groove-authored-cap` changes clipping on **3 of 252** shapes with a real
-target (6 with a zero one) and moves standoff by a median of 0.0009u. Its
-remaining effect SHRINKS as the target becomes real -- 92 shapes -> 62, p90
-0.037u -> 0.014u -- which is what the mechanism predicts, since a real
-`s_auth` is a looser bound than `max(s_in, 0)`.
-
-Put beside the folds: the cap buys nothing measurable in fit and costs 125
-folds with a real target. **F011(b) is answered: a true target does not rescue
-`#groove-authored-cap`.** It is a candidate for default-off or deletion -- as
-its own change, not folded into the producer flip, and noting it is currently
-unreachable (no Setting row).
+* **Folds are partly inherent to the asset.** The author ships 1596 of them in
+  the same 234 shapes, so "10976 folds" is not 10976 defects. Against EXCESS
+  over the author, the fix removes 9380 -> 8671, **-7.6%** -- a slightly larger
+  effect than the -6.5% of the raw total.
+* **Inverted triangles are NOT inherent. The author has zero.** Every one of
+  our 703 is introduced by the conversion, and the fix removes 48% of them.
+  That is the strongest single number here, and it was invisible while the
+  baseline was believed to be missing.
 
 ### REPLICATED on a second, unrelated population
 
