@@ -105,4 +105,34 @@ may well be the large lever the comment describes -- pulling 30% of the way
 toward zero is a big move when zero is wrong. That case was not swept here, so
 the comment is qualified rather than contradicted.
 
-<!-- CLIP/STANDOFF SWEEP PENDING -->
+### Clip and standoff across the sweep -- the trade is in the TAIL
+
+252 shapes, paired mask, 0.30 as reference:
+
+| blend | standoff median | p90 | clip median | **clip worst** | shapes moved |
+|---|---|---|---|---|---|
+| 0.15 | +0.0002u | +0.019 | +0.0000 | +0.131 | 65/252 |
+| **0.30** | reference | | | | |
+| 0.50 | -0.0000u | +0.010 | +0.0000 | +0.213 | 79/252 |
+| 0.70 | -0.0006u | +0.019 | +0.0000 | **+0.311** | 98/252 |
+
+Medians are flat to four decimal places -- consistent with the seat-error
+result, and with folds. What moves is the TAIL: the worst single clipping
+regression grows monotonically as the knob rises (0.131 -> 0.213 -> 0.311
+pct-pt), and so does the number of shapes touched (65 -> 79 -> 98).
+
+That is exactly the trade the mechanism predicts. Restoring more of the
+authored standoff lifts cloth off the body, and where the author's own fit was
+looser than the UBE body needs, lifting it further lets skin through.
+
+**So 0.70 buys 0.0025u of seat error and costs +0.311 pct-pt on the worst
+shape.** Two-thousandths of a unit closer to the author, against a third of a
+percentage point more skin showing on the piece that can least afford it. The
+sweep does not merely fail to justify raising the knob -- it argues against it.
+
+## Verdict, with the fit numbers in
+
+**`CONFORM_BLEND_TIGHT` stays at 0.30.** F011(c) is answered: the constant
+survives its target becoming real, on the metric it is named for (seat error),
+on surface quality (flat), and on fit (medians flat, tail worsening upward).
+
