@@ -98,5 +98,13 @@ Write-Host "BUILD OK"
 Write-Host "  exe   : $exe"
 Write-Host "  folder: $(Split-Path -Parent $exe)"
 Write-Host ""
-Write-Host "Next: register it as an MO2 executable with"
-Write-Host "  .\scripts\install_mo2_entry.ps1 -Mo2Root <path-to-your-modlist>"
+# Send an EXISTING install to deploy_exe.ps1, not the installer. The installer
+# is for FIRST registration; naming it here pointed sessions at a script that
+# used to wipe the live tools directory -- settings file, its backups and the
+# run log with it -- and that still rewrites the MO2 INI, which a redeploy has
+# no business touching.
+Write-Host "Next:"
+Write-Host "  already registered?  .\scripts\deploy_exe.ps1 -Dest <the path in"
+Write-Host "                       ModOrganizer.ini's customExecutables binary=>"
+Write-Host "                       robocopy /E, so your settings and logs survive"
+Write-Host "  first time?          .\scripts\install_mo2_entry.ps1 -Mo2Root <modlist>"
