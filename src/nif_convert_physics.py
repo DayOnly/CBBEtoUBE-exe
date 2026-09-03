@@ -241,6 +241,40 @@ def _actor_can_resolve_bone(name: str) -> bool:
             skel, frozenset(_norm_bone(b) for b in skel))
     return _norm_bone(name) in _nc()._SKELETON_BONES_NORM_CACHE[1]
 
+
+def simulated_vert_mask(shape, eps: float):
+    """Which of a shape's vertices are driven by HDT-SMP cloth simulation.
+
+    A vertex carrying weight from a bone the ACTOR SKELETON cannot resolve is
+    chain cloth: the simulation owns it, and any pass that rigidifies, pushes
+    or re-weights it is fighting the solver rather than fixing anything.
+
+    Written out THREE TIMES in nif_convert (audit F102) -- once on the copy
+    path and twice on the body-swap path -- as the same loop with three sets of
+    identifier names (`_cw_p1`/`_cw`/`_cwv`). Identical logic under three names
+    is exactly the shape that lets a fix land in two of three places, which the
+    file's own history records happening twice.
+
+    Takes the eps rather than reading the knob, because one caller compares
+    against a DIFFERENT concept (`_sim`, simulated-ness for mixed-cloth
+    clearance) than the other two (`_skip`, do-not-rigidify). Same arithmetic,
+    two meanings -- keeping the threshold at the call site keeps that visible.
+
+    RAISES rather than returning None on a malformed shape: all three call
+    sites already sit inside their own `try` and each has its OWN fallback
+    (two set the mask to None, one abandons a wider block). Swallowing here
+    would silently pick one of those for all of them.
+    """
+    cw = np.zeros(len(shape.verts), dtype=np.float64)
+    for b, pr in (shape.bone_weights or {}).items():
+        if _actor_can_resolve_bone(b):
+            continue
+        for vi, w in pr:
+            vi = int(vi)
+            if vi < len(cw):
+                cw[vi] = max(cw[vi], float(w))
+    return cw > eps
+
 def _xml_referenced_bone_names(xml_text: str) -> "set[str]":
     """Every bone name a physics XML refers to, by ANY route.
 

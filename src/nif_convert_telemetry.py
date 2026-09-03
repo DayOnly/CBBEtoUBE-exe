@@ -120,3 +120,48 @@ def pass_failure_summary() -> "dict[str, int]":
 
 
 # Lazy pynifly import — used by phase 2. Phase 1 doesn't need it.
+
+
+def make_stage_hook(*, tracer=None, chain=None, surv=None, dump=None,
+                    skip_none: bool = False):
+    """ONE pass-boundary hook for BOTH convert paths, with the per-path
+    contract stated instead of implied by which copy you happen to read.
+
+    Step (0) of the two-path unification (audit F103). The two paths each had
+    their own hook -- `_stage` on the body-swap path, `_stage_p1` on the copy
+    path -- and F103's own verifier flagged the trap: **the two do not have the
+    same contract.** Phase 2's feeds `_tracer` and `_chain`, and `_chain` is
+    the rollback checkpoint that wraps seam-weld / coherence / strap /
+    short-edge. The copy path's feeds only survival and dump. A shared runner
+    that quietly hands the copy path a chain checkpoint would give it ROLLBACK
+    SEMANTICS IT HAS NEVER HAD -- a behaviour change wearing a refactor's
+    clothes. So the recorders are parameters: a path gets exactly what it
+    passes, and gaining one has to be written down.
+
+    `skip_none` is the second difference, and it is NOT cosmetic. The copy
+    path's hook returned early on a None snapshot; phase 2's did not, so phase
+    2 would call `chain.checkpoint(label, None)`. Folding that guard in for
+    everyone would change when the rollback chain records a checkpoint. It
+    stays per-path, defaulting to phase 2's behaviour, and is flagged here as
+    an unexamined difference rather than silently normalised.
+
+    Both paths bind their recorders BEFORE defining the hook and never rebind
+    them afterwards (verified 2026-09-03 over every assignment to the six
+    names), so capturing them here is equivalent to the closure and default-arg
+    capture this replaces. If that ever stops being true, this factory must be
+    called after the last rebinding, or the capture will go stale.
+
+    Order is preserved exactly: tracer, chain, survival, dump.
+    """
+    def _stage(label, v):
+        if skip_none and v is None:
+            return
+        if tracer is not None:
+            tracer.mark(label, v)
+        if chain is not None:
+            chain.checkpoint(label, v)
+        if surv is not None:
+            surv.checkpoint(label, v)
+        if dump is not None:
+            dump.checkpoint(label, v)
+    return _stage

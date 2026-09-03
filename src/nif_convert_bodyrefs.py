@@ -71,6 +71,24 @@ def _shape_has_3ba_topology(nif_path: Path) -> bool:
         return False
 
 
+def weight_suffix_of(path) -> str:
+    """`_0` or `_1` for a NIF, from its stem, defaulting to `_1`.
+
+    Written out THREE TIMES in nif_convert (audit F102) -- twice on the copy
+    path, once on the body-swap path -- as the same generator expression with
+    three different local names. It feeds `_find_cbbe_base_body` and
+    `_find_ube_femalebody` below, so it belongs next to them.
+
+    The `_1` default is load-bearing and is why this is a named function rather
+    than an inline conditional: a NIF with NEITHER suffix must be treated as
+    weight 1, not weight 0. Analysis tooling elsewhere writes
+    `"_1" if stem.endswith("_1") else "_0"`, which defaults the other way --
+    the two must not be confused, and having one of them named makes that
+    visible.
+    """
+    return next((s for s in ("_0", "_1") if Path(path).stem.endswith(s)), "_1")
+
+
 def _find_cbbe_base_body(weight: str = "_1") -> "Path | None":
     """Locate the CBBE 3BA base (template, slider-zero) femalebody NIF by
     scanning installed mods for a femalebody with the 18,436-vert 3BA

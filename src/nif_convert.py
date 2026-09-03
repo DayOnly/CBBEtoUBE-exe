@@ -187,6 +187,7 @@ from .nif_convert_trigen import (  # noqa: E402
    _MORPH_SIZE_KEYWORDS, _cached_osd_load, _cached_body_morph_stack,
    _cached_body_morph_amplitude, _cached_body_morph_differential,
    _body_array_digest, _tri_is_owning_variant, _reset_morph_flags,
+   armor_relpath_under_meshes,
    _collect_tri_inputs, _normalize_shader_for_morph, _pick_bodytri_carriers,
    _source_morph_tri_shape_names, _refresh_armor_tri_after_reimport,
    check_ube_nude_morph_files,
@@ -1790,6 +1791,7 @@ from .nif_convert_bodyrefs import (  # noqa: E402
     _BODYSLIDE_OUT_HINTS, _FEMBODY_REL, _BODY_DISCOVERY_CACHE,
     _MOD_DIR_LIST_CACHE, _GLOB_FIRST_MEMO,
     _iter_femalebody_nifs, _shape_has_3ba_topology, _find_cbbe_base_body,
+    weight_suffix_of,
     _find_ube_femalebody, _sorted_mod_dirs, _glob_first_in_mods,
     _find_ube_shapedata, _find_ube_template_body, _find_ube_body_osd,
     _find_user_preset_body,
@@ -2903,7 +2905,7 @@ from .nif_convert_telemetry import (  # noqa: E402
     _PASS_FAILURES, _PASS_FAILURES_THIS_PIECE, _PASS_EFFECTS,
     _PASS_EFFECTS_THIS_PIECE, _note_pass_failure, _note_pass_effect,
     _piece_pass_effects, pass_effect_summary, _begin_piece_pass_log,
-    _piece_pass_failures, pass_failure_summary,
+    _piece_pass_failures, pass_failure_summary, make_stage_hook,
 )
 def _pynifly():
     """Return the pyn.pynifly module, importing lazily so phase 1 stays
@@ -3558,15 +3560,12 @@ def _fit_shapes_copy(ctx) -> None:
         else:
             _dump_p1.checkpoint("entry", sv_world)
 
-        def _stage_p1(label, v, _s=_surv_p1, _d=_dump_p1):
-            """A pass boundary on the copy path. Same labels phase 2
-            uses, so the two populations are directly comparable."""
-            if v is None:
-                return
-            if _s is not None:
-                _s.checkpoint(label, v)
-            if _d is not None:
-                _d.checkpoint(label, v)
+        # A pass boundary on the copy path. Same labels phase 2 uses, so the
+        # two populations are directly comparable. Deliberately NO tracer and
+        # NO chain: the chain is the rollback checkpoint, and this path has
+        # never had it (see make_stage_hook).
+        _stage_p1 = make_stage_hook(surv=_surv_p1, dump=_dump_p1,
+                                    skip_none=True)
 
         try:
             if (cbbe_verts_for_warp is not None
@@ -3771,16 +3770,7 @@ def _fit_shapes_copy(ctx) -> None:
             if PANEL_RIGIDITY > 0 and snapped is not None:
                 _skip_p1 = None
                 try:
-                    _cw_p1 = np.zeros(len(s.verts), dtype=np.float64)
-                    for _b_p1, _pr_p1 in (s.bone_weights or {}).items():
-                        if _actor_can_resolve_bone(_b_p1):
-                            continue
-                        for _vi_p1, _w_p1 in _pr_p1:
-                            _vi_p1 = int(_vi_p1)
-                            if _vi_p1 < len(_cw_p1):
-                                _cw_p1[_vi_p1] = max(
-                                    _cw_p1[_vi_p1], float(_w_p1))
-                    _skip_p1 = _cw_p1 > MIXED_CLOTH_CHAIN_EPS
+                    _skip_p1 = simulated_vert_mask(s, MIXED_CLOTH_CHAIN_EPS)
                 except Exception:
                     _skip_p1 = None
                 # Its OWN try: the block below is inside the big phase-1
@@ -4252,8 +4242,7 @@ def convert_nif(
         # Per-shape recoverable failures. Defined at outer scope so it's
         # visible to both the rebuild-path handlers and the shared return.
         failed: list[tuple[str, str]] = []
-        weight_suf = next(
-            (s for s in ("_0", "_1") if src_path.stem.endswith(s)), "_1")
+        weight_suf = weight_suffix_of(src_path)
         cbbe_body_path_p1 = _find_cbbe_base_body(weight=weight_suf)
         ube_femalebody_path_p1 = _find_ube_femalebody(weight=weight_suf)
         if cbbe_body_path_p1 and ube_femalebody_path_p1:
@@ -4510,10 +4499,7 @@ def convert_nif(
             # Inject UBE Hands/Feet to replace the CBBE-topology body-skin shapes.
             # Safe: slot 33/37 hides the actor's nude hands/feet; no z-fight.
             if extremity_slots_to_replace:
-                weight_suf_for_inj = next(
-                    (sx for sx in ("_0", "_1") if src_path.stem.endswith(sx)),
-                    "_1",
-                )
+                weight_suf_for_inj = weight_suffix_of(src_path)
                 inject_log: list[str] = []
                 # sorted(): injection order = shape order in the written NIF;
                 # bare set iteration follows the hash seed.
@@ -4559,16 +4545,7 @@ def convert_nif(
                 hdt_xml = _generate_hdt_xml_for_dst(dst_path, only_loose=True)
 
         # Figure out armor-specific TRI path (same logic as phase 2).
-        armor_relpath = None
-        try:
-            parts = src_path.parts
-            for marker in ("meshes", "Meshes"):
-                if marker in parts:
-                    i = parts.index(marker)
-                    armor_relpath = Path(*parts[i + 1:])
-                    break
-        except Exception:
-            pass
+        armor_relpath = armor_relpath_under_meshes(src_path)
         bodytri_path = None
         auto_tri_dst_phase1: Path | None = None
         # Carrier shape name is set during BODYTRI injection below and passed to
@@ -5665,6 +5642,7 @@ def _finalize_physics_and_motion_match(dst_path, src_path, biped_slots) -> None:
 # since 2026-09-01. Imported BY NAME so `nc.<name>` keeps working everywhere.
 from .nif_convert_physics import (  # noqa: E402
     _ColliderDeclined, _actor_can_resolve_bone, _actor_skeleton_bone_names,
+    simulated_vert_mask,
     _actor_skeleton_bone_parents, _add_butt_collider_patch,
     _add_skirt_collider_proxy, _audit_registered_shape_declared_bones,
     _cluster_decimate, _finalize_hdt_physics, _find_hdt_xml_for_armor,
@@ -12323,21 +12301,15 @@ def _fit_shapes_swap(ctx) -> None:
                 _tracer = None
                 _chain = None
 
-        def _stage(label, v):
-            """A pass boundary: trace it (opt-in) and snapshot it (always).
-
-            The snapshot is an array copy -- microseconds against ~120ms for a
-            measurement -- so the chain can afford to remember every pass and
-            pay for measurements only if the final verify fails.
-            """
-            if _tracer is not None:
-                _tracer.mark(label, v)
-            if _chain is not None:
-                _chain.checkpoint(label, v)
-            if _surv is not None:
-                _surv.checkpoint(label, v)
-            if _dump is not None:
-                _dump.checkpoint(label, v)
+        # A pass boundary: trace it (opt-in) and snapshot it (always). The
+        # snapshot is an array copy -- microseconds against ~120ms for a
+        # measurement -- so the chain can afford to remember every pass and pay
+        # for measurements only if the final verify fails. `skip_none` stays
+        # False here: this path has always let a None snapshot reach
+        # `_chain.checkpoint`, and changing that changes when the rollback
+        # chain records one.
+        _stage = make_stage_hook(tracer=_tracer, chain=_chain, surv=_surv,
+                                 dump=_dump, skip_none=False)
 
         if preset_template_verts is not None and preset_user_verts is not None:
             try:
@@ -12516,15 +12488,7 @@ def _fit_shapes_swap(ctx) -> None:
         if PANEL_RIGIDITY > 0 and override is not None and _sv_body is not None:
             try:
                 try:
-                    _cw = np.zeros(len(s.verts), dtype=np.float64)
-                    for _b, _pr in (s.bone_weights or {}).items():
-                        if _actor_can_resolve_bone(_b):
-                            continue
-                        for _vi, _w in _pr:
-                            _vi = int(_vi)
-                            if _vi < len(_cw):
-                                _cw[_vi] = max(_cw[_vi], float(_w))
-                    _skip = _cw > MIXED_CLOTH_CHAIN_EPS
+                    _skip = simulated_vert_mask(s, MIXED_CLOTH_CHAIN_EPS)
                 except Exception:
                     _skip = None
                 # #panel-rigid-early-clearance -- see the copy-path sibling.
@@ -12628,15 +12592,7 @@ def _fit_shapes_swap(ctx) -> None:
         _mixed_relax = False
         if MIXED_CLOTH_CLEARANCE and s.name not in hdt_softbody_names:
             try:
-                _cwv = np.zeros(len(s.verts), dtype=np.float64)
-                for _b, _pr in (s.bone_weights or {}).items():
-                    if _actor_can_resolve_bone(_b):
-                        continue          # ordinary skeleton bone, not simulated
-                    for _vi, _w in _pr:
-                        _vi = int(_vi)
-                        if _vi < len(_cwv):
-                            _cwv[_vi] = max(_cwv[_vi], float(_w))
-                _sim = _cwv > MIXED_CLOTH_CHAIN_EPS
+                _sim = simulated_vert_mask(s, MIXED_CLOTH_CHAIN_EPS)
                 # Only relevant when the shape is genuinely MIXED. A wholly
                 # chain-driven shape stays excluded exactly as before.
                 if _sim.any() and not _sim.all():
@@ -13324,17 +13280,7 @@ def convert_nif_phase2(
 
     # BODYTRI path: use a pre-built armor TRI if found (has _ForOutfits slider
     # bridges for RaceMenu), otherwise fall back to the body TRI.
-    armor_relpath = None
-    try:
-        # Compute relative path from a meshes root marker if present
-        parts = src_path.parts
-        for marker in ("meshes", "Meshes"):
-            if marker in parts:
-                i = parts.index(marker)
-                armor_relpath = Path(*parts[i + 1:])
-                break
-    except Exception:
-        pass
+    armor_relpath = armor_relpath_under_meshes(src_path)
     body_tri_path = UBE_BODY_TRI_PATH
     # Always auto-generate the armor TRI from CBBE source + UBE body
     # OSD slider data (see module-level UBE_BODY_TRI_PATH note).
@@ -13602,8 +13548,7 @@ def convert_nif_phase2(
     # Body-delta warp: prefer the principled per-vert CBBE -> UBE
     # delta over the snap heuristic when both 18k-vert bodies are
     # available. See `warp_armor_by_body_delta`.
-    weight_suf_p2 = next(
-        (s for s in ("_0", "_1") if src_path.stem.endswith(s)), "_1")
+    weight_suf_p2 = weight_suffix_of(src_path)
     cbbe_body_path_p2 = _find_cbbe_base_body(weight=weight_suf_p2)
     ube_femalebody_path_p2 = _find_ube_femalebody(weight=weight_suf_p2)
     cbbe_verts_for_warp_p2 = None

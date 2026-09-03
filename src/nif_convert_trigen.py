@@ -30,6 +30,32 @@ from .nif_convert_telemetry import (  # noqa: E402
 )
 
 
+
+def armor_relpath_under_meshes(src_path) -> "Path | None":
+    """A NIF's path RELATIVE to its `meshes` root, or None if it has no such
+    root -- the key every armour-TRI lookup is done under.
+
+    Written out twice, line for line (audit F102): once on the copy path and
+    once on the body-swap path, one of them under the comment "same logic as
+    phase 2". That comment is the tell -- a copy that ANNOUNCES it is a copy is
+    one edit away from being wrong, and the two entry functions have already
+    drifted in five other places this way.
+
+    Both cases are tried because mod authors ship either capitalisation, and
+    the FIRST marker wins: a path containing `meshes` twice (a mod folder
+    literally named "meshes") must resolve against the outermost, which is what
+    `parts.index` returns.
+    """
+    try:
+        parts = Path(src_path).parts
+        for marker in ("meshes", "Meshes"):
+            if marker in parts:
+                i = parts.index(marker)
+                return Path(*parts[i + 1:])
+    except Exception:
+        pass
+    return None
+
 def _nc():
     """The monolith, resolved at call time (never at import: circular)."""
     return sys.modules[__package__ + ".nif_convert"]
