@@ -803,8 +803,8 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "body is untouched."),
     Setting("phase1_antipoke",
             "Push armour out of the body on pieces converted by copying",
-            "Armor", "Fit and clearance", default=False,
-            env="CBBE2UBE_PHASE1_ANTIPOKE", invert=False,
+            "Armor", "Fit and clearance", default=True,
+            env="CBBE2UBE_NO_PHASE1_ANTIPOKE", invert=True,
             hint="For armour that sinks into the hips or backside. Off can "
                  "leave more than half a piece buried.",
             tooltip="Armour that gets a new body built for it is pushed back "
@@ -817,10 +817,11 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "of it, up to nine tenths of a unit deep. With this on, "
                     "none. It only ever pushes outward, so it cannot pull "
                     "cloth into the body, it leaves physics-simulated cloth "
-                    "alone, and it restores the rigid plates it moves. NEW "
-                    "and judged on one outfit so far: if a piece looks like "
-                    "it now stands too far off the skin, or shows bare skin "
-                    "at an edge it used to cover, turn this back off and say "
+                    "alone, and it restores the rigid plates it moves. On by "
+                    "default since 2026-09-02, after two armour sets were "
+                    "measured and one was checked in game. If a piece looks "
+                    "like it now stands too far off the skin, or shows bare "
+                    "skin at an edge it used to cover, turn this off and say "
                     "so."),
     Setting("phase1_bust_clearance",
             "Keep the bust covered on armour converted by copying",

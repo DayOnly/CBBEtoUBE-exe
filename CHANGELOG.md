@@ -10,6 +10,33 @@ floor. All three are ON by default but have NO in-game verdict yet — they are
 on so that the reconvert produces one. Everything above this line has been
 judged; they have not.
 
+### Fixed (on by default) — armour converted by copying is no longer left inside the body
+
+Armour that gets a new body built for it has always been pushed back out
+wherever the body would otherwise come through. Armour converted by *copying* —
+about three quarters of a modlist — never had that step at all, so whatever the
+fit left inside the body is what shipped.
+
+It was reported as trousers sitting inside the backside. Measured on that piece:
+the author's own version had **no** part of the seat inside their body, and ours
+had **59%** of it, up to nine tenths of a unit deep. With the fix, none.
+
+The same repair the other path uses now runs here, in the same place, and the
+step that restores rigid plates afterwards runs with it. It only ever pushes
+outward, so it cannot pull cloth into the body; it leaves physics-simulated
+cloth where the simulation wants it; and physics files are untouched.
+
+Measured across two armour sets (86 heavy plate pieces, and 40 with HDT-SMP
+cloth) before being turned on: fewer vertices inside the body on every piece
+that had any, no piece worse, chest fit unchanged, and no armour left carrying a
+broken bone. One outfit was checked in game. Setting: "Push armour out of the
+body on pieces converted by copying" (Armor → Fit and clearance), now on.
+
+Known and unexplained: on large torso pieces, slightly less of the seat is
+covered than before (about three points). It is not a uniform loss — coverage
+rises on other pieces — but if something looks like it has pulled away from skin
+it used to cover, turn this off and say so.
+
 ### Fixed (on by default) — armour no longer ships bones that carry no weight
 
 A vertex can be held by at most four bones, and when a fifth turns up the file

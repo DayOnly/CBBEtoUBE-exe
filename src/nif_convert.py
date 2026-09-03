@@ -1439,7 +1439,30 @@ PHASE1_NIPPLE_MAP = _flag("CBBE2UBE_PHASE1_NIPPLE_MAP", False)
 # ship, because standoff inflated on 9 of 9 pieces and it stranded zero-weight
 # bones. Score clip AND standoff AND `verify_zero_weight_bones.py`, then in
 # game. docs/worklog/BUTT_COPY_PATH_RUBY_FLOWER.md
-PHASE1_ANTIPOKE = _flag("CBBE2UBE_PHASE1_ANTIPOKE", False)
+#
+# DEFAULT ON since 2026-09-02 (`CBBE2UBE_NO_PHASE1_ANTIPOKE=1` restores the
+# previous behaviour exactly). Promoted on two populations plus an in-game
+# verdict, and specifically on the two axes that killed the last copy-path
+# repair (F010: standoff inflated 9 of 9, and it stranded 16 bones):
+#
+#   New Legion (86 NIFs, 86 copy / 0 swap, heavy plate)
+#     BUST 15 arms  inside 1 better/0 worse   clip 0/0 (already 0.000)
+#                   standoff 8 out 0.03-0.23u  coverage 0 dropped
+#     BUTT 11 arms  inside 11 better/0 worse  clip 4 better/0 worse
+#                   standoff 2 out / 8 IN     coverage 7 dropped (~3pt, torsos)
+#     best: ArmorPenitusF pauldrons clip 32.258% -> 0.265%
+#   MAGECORE hdt SMP (40 NIFs, 4 physics XMLs, 48 chain-carrying shapes)
+#     simulated verts moved 130 of 42994 (0.3%), ZERO fully-chain
+#     physics XMLs 4 of 4 byte-identical; rigid verts moved 2093
+#   zero-weight bones 0 -> 0 on every arm of both mods
+#   in game: ruby-flower pants, "looks good" (author 0.0% inside, ours was 59.3%)
+#
+# THE ONE THING NOT EXPLAINED: butt coverage drops ~3 points on the big torso
+# pieces (82.7 -> 80.0 and similar). It is NOT uniform -- coverage RISES
+# elsewhere (11.3 -> 38.8 on a pauldron) -- but nobody has traced it. If a piece
+# ever looks like it has pulled off skin it used to cover, start there.
+PHASE1_ANTIPOKE = (
+    not _flag("CBBE2UBE_NO_PHASE1_ANTIPOKE", False))
 
 # --- #hdt-xml-sanitise -- OPT-IN, `CBBE2UBE_HDT_XML_SANITISE=1` -------------
 # Repair authored physics XMLs that are malformed OUTSIDE the root element.
@@ -3146,22 +3169,26 @@ FIT_STAGES = (
     ("panel_rigid",         "_rigidify_within_clearance", ("copy", "swap"), None),
     ("panel_blind",         "_partial_rigid_panels",      ("copy", "swap"), None),
     ("antipoke",            "clear_armor_outside_body",   ("copy", "swap"),
-     "AT DEFAULTS THIS IS SWAP-ONLY. The copy-path call is gated on "
-     "`#phase1-antipoke` (`CBBE2UBE_PHASE1_ANTIPOKE=1`), added 2026-09-02 and "
-     "DEFAULT OFF, so a default run still has no body repair on the copy path "
-     "-- which is BUG-02, measured at 59.3% of the butt band inside the body on "
-     "ruby-flower pants against the author's own 0.0%. The row says both paths "
-     "because the call now exists on both; the flag decides whether it runs. "
+     "BOTH PATHS AT DEFAULTS since 2026-09-02, when `#phase1-antipoke` was "
+     "promoted (`CBBE2UBE_NO_PHASE1_ANTIPOKE=1` restores the old behaviour). "
+     "Before it the copy path had NO body repair at all -- BUG-02, measured at "
+     "59.3% of the butt band inside the body on ruby-flower pants against the "
+     "author's own 0.0%. "
      "The copy call passes far fewer kwargs than phase 2 (no nipple map, morph "
      "amplitude/differential, jiggle amplitude or layer extra): those are all "
      "body-swap-derived inputs the copy path does not compute, and the pass "
-     "documents its own fallback for each. Verdict owed on clip AND standoff "
-     "AND the zero-weight-bone gate. docs/worklog/BUTT_COPY_PATH_RUBY_FLOWER.md"),
+     "documents its own fallback for each. "
+     "docs/worklog/BUTT_COPY_PATH_RUBY_FLOWER.md"),
     ("panel_rigid_post",    "_rigidify_within_clearance", ("copy", "swap"),
      "Rides `#phase1-antipoke` on the copy path, for the same reason phase 2 "
      "pairs them: the anti-poke re-deforms every panel it pushes and this "
      "recovers the rest. Porting the push without the recovery would ship the "
-     "damage and not the repair. Default OFF with its anti-poke."),
+     "damage and not the repair. Default ON with its anti-poke since "
+     "2026-09-02. The pair is ordered exactly as phase 2 orders it: push, "
+     "restore simulated verts, then recover -- so the ~0.3% of barely-chained "
+     "verts the per-panel recovery moves is inherent to the pair, not to this "
+     "path (measured on 48 chain-carrying shapes: 130 of 42994, none of them "
+     "fully chain-driven)."),
     ("inflate",             "_inflate_cloth_over_bust_butt", ("swap",),
      "Soft-cloth inflate over bust/butt is a body-swap stage; the copy path's "
      "inflation is `_slot_aware_inflation_magnitude` inside its warp block."),
@@ -6894,12 +6921,19 @@ WEIGHT_INVARIANT_ENABLED = not _flag("CBBE2UBE_NO_WEIGHT_INVARIANT", False)
 FAMILY_WEIGHT_INVARIANT = (
     not _flag("CBBE2UBE_NO_FAMILY_WEIGHT_INVARIANT", False))
 
-# The third promotion, and the first made on a BOOKKEEPING measurement rather
-# than a fit one: it moves no vertex, so the pair it is judged on is
-# `verify_zero_weight_bones.py` (21 -> 0) and the report's bad-sum count
-# (361 -> 0), with bust follow held flat as the counter-metric.
+# The third promotion. `FAMILY_WEIGHT_INVARIANT` is the first made on a
+# BOOKKEEPING measurement rather than a fit one: it moves no vertex, so the pair
+# it is judged on is `verify_zero_weight_bones.py` (21 -> 0) and the report's
+# bad-sum count (361 -> 0), with bust follow held flat as the counter-metric.
+#
+# `PHASE1_ANTIPOKE` is the opposite kind: it MOVES GEOMETRY on ~78% of the pack,
+# and it is here because the copy path ran no body repair at all (BUG-02). Two
+# populations, an in-game verdict, and clean results on both axes that killed
+# F010 -- see its own comment for the numbers. Unlike the 2026-08-26 three, this
+# one WAS judged in game before promotion, on the piece that reported it.
 _DEFAULTS_PROMOTED_2026_09_02 = (
     "FAMILY_WEIGHT_INVARIANT",
+    "PHASE1_ANTIPOKE",
 )
 
 

@@ -84,6 +84,13 @@ PROMOTED.update(PROMOTED_2026_08_26)
 # See docs/worklog/ZEROWEIGHT_BONE_PRODUCER.md. In-game verdict OWED.
 PROMOTED_2026_09_02 = {
     "family_weight_invariant": ("FAMILY_WEIGHT_INVARIANT", True),
+    # Added later the same day, and the FIRST promotion here that was judged in
+    # game BEFORE the flip rather than after: the copy path had no body repair
+    # at all (BUG-02), the reporting piece went 59.3% of its butt band inside
+    # the body to 0.0% against the author's own 0.0%, and two populations came
+    # back clean on the axes that killed F010 -- standoff moved INWARD on 8 of
+    # 11 butt arms, and no bone was stranded on any arm of either mod.
+    "phase1_antipoke": ("PHASE1_ANTIPOKE", True),
 }
 PROMOTED.update(PROMOTED_2026_09_02)
 

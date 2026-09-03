@@ -27,21 +27,29 @@ def _copy_src() -> str:
     return textwrap.dedent(inspect.getsource(nc._fit_shapes_copy))
 
 
-def test_off_by_default_with_a_working_switch():
-    """OFF until judged on a population. One in-game look at one outfit is a
-    verdict on that outfit, not on 78% of the pack."""
+def test_on_by_default_with_a_working_kill_switch():
+    """DEFAULT ON since 2026-09-02. This test read `is False` until then.
+
+    Promoted on two populations (New Legion 86 NIFs heavy plate, MAGECORE 40
+    NIFs with physics) plus an in-game verdict on the piece that reported the
+    defect -- and specifically clean on the two axes that killed F010: standoff
+    moved INWARD on 8 of 11 butt arms rather than inflating, and no bone was
+    stranded on any arm.
+
+    The kill switch is asserted too: a promotion whose bisection lever does not
+    work leaves the next person no way to split the change."""
     import importlib
-    assert nc.PHASE1_ANTIPOKE is False
-    os.environ["CBBE2UBE_PHASE1_ANTIPOKE"] = "1"
+    assert nc.PHASE1_ANTIPOKE is True
+    os.environ["CBBE2UBE_NO_PHASE1_ANTIPOKE"] = "1"
     try:
         importlib.reload(nc)
-        assert nc.PHASE1_ANTIPOKE is True, (
-            "CBBE2UBE_PHASE1_ANTIPOKE=1 no longer turns the pass on -- the "
-            "documented way to reproduce every measurement is dead")
+        assert nc.PHASE1_ANTIPOKE is False, (
+            "CBBE2UBE_NO_PHASE1_ANTIPOKE=1 no longer turns the pass off -- the "
+            "documented way to restore the previous behaviour is dead")
     finally:
-        del os.environ["CBBE2UBE_PHASE1_ANTIPOKE"]
+        del os.environ["CBBE2UBE_NO_PHASE1_ANTIPOKE"]
         importlib.reload(nc)
-    assert nc.PHASE1_ANTIPOKE is False
+    assert nc.PHASE1_ANTIPOKE is True
 
 
 def test_it_is_reachable_from_the_gui():
@@ -52,8 +60,9 @@ def test_it_is_reachable_from_the_gui():
     on by a normal run at all, however correct the code is."""
     row = next((s for s in gs.SETTINGS if s.key == "phase1_antipoke"), None)
     assert row is not None, "no Setting row: unreachable from a normal run"
-    assert row.env == "CBBE2UBE_PHASE1_ANTIPOKE"
-    assert row.default is False and row.invert is False
+    # promoted defaults invert: the row is ON and the env var turns it OFF
+    assert row.env == "CBBE2UBE_NO_PHASE1_ANTIPOKE"
+    assert row.default is True and row.invert is True
 
 
 def test_the_push_and_its_repair_travel_together():
