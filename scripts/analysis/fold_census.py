@@ -170,13 +170,27 @@ def main() -> int:
         for p in src_root.rglob("*.nif"):
             srcs.setdefault(p.name.lower(), p)
 
-    files = sorted(root.rglob("*_1.nif"))
+    # POPULATION: both weights, no first-person. This used to be
+    # `root.rglob("*_1.nif")`, which is the exact idiom
+    # `standoff_audit.output_nifs` was written to end -- weight 0 is a
+    # SEPARATELY AUTHORED mesh, not a scaled copy, and it has measured WORSE
+    # than weight 1 on the same piece (4.52% vs 9.48% bust-front clipping), so
+    # a weight-1-only census reports on half the shipped output and calls it
+    # "the pack". `1stperson`/`1stp` meshes are arms-only and produce
+    # meaningless whole-garment numbers. `_bsa_staging` is the converter's own
+    # extraction scratch INSIDE the output, so counting it scores the same
+    # asset twice.
+    import standoff_audit as _sa
+    files = [f for f in _sa.output_nifs(root)
+             if "_bsa_staging" not in f.as_posix()]
     if limit:
         files = files[:limit]
     if not files:
-        print(f"no *_1.nif under {root} -- nothing measured, which is NOT a "
-              f"pass")
+        print(f"no converted NIFs under {root} -- nothing measured, which is "
+              f"NOT a pass")
         return 2
+    print(f"population: {len(files)} NIF(s) (both weights, no 1stperson, "
+          f"no _bsa_staging)")
 
     tot = defaultdict(int)
     worst = []
@@ -238,10 +252,28 @@ def main() -> int:
     print(f"pieces with inverted      {tot['pieces with inverted']} / "
           f"{tot['pieces']}")
     if src_root:
-        print(f"\nAUTHOR CONTROL over {tot['shapes compared']} paired shapes")
-        print(f"  author folded           {tot['author folded']}")
-        print(f"  author inverted         {tot['author inverted']}")
-        print("  (a defect the author shipped is not the converter's)")
+        paired = tot["shapes compared"]
+        print(f"\nAUTHOR CONTROL over {paired} paired shapes")
+        if not paired:
+            # A control over zero shapes is NOT "the author is clean" -- it
+            # is NO CONTROL, and printing "author folded 0" beside our own
+            # count invites exactly that reading. Measured 2026-09-02: with
+            # first-person meshes correctly excluded from the population, a
+            # clothes sample paired ZERO shapes, because every garment that
+            # actually ships was VFS-resolved from OTHER mods and is not
+            # under the --source-root given. The previous weight-1-only
+            # population paired 31 shapes and ALL of them were `1stperson`
+            # meshes, so the baseline it printed described a DISJOINT set of
+            # assets from the ones it was being compared against.
+            print("  !! NO AUTHOR BASELINE -- nothing paired, so the counts")
+            print("     above have no author comparison. This is 0/0, not a")
+            print("     pass. Usual cause: the meshes were resolved from")
+            print("     OTHER mods (VFS broadening) and are not under the")
+            print("     --source-root you passed.")
+        else:
+            print(f"  author folded           {tot['author folded']}")
+            print(f"  author inverted         {tot['author inverted']}")
+            print("  (a defect the author shipped is not the converter's)")
     skipped = {k: v for k, v in tot.items()
                if k.startswith(("shapes:", "pieces unreadable"))}
     if skipped:
