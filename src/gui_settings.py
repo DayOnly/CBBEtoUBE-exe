@@ -489,9 +489,10 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "clean up. Measured on a five-layer top: layers on the "
                     "wrong side of each other 1074 -> 706, roughness and "
                     "distortion both down. Reaches armour that gets a body "
-                    "built into it only (about three quarters of a pack): "
-                    "armour converted by copying already reads the author's "
-                    "fit this way, and this switch does not change it."),
+                    "built into it only -- about a FIFTH of a pack (measured "
+                    "on the last full run: 800 of 3664 meshes). The other four "
+                    "fifths, converted by copying, already read the author's "
+                    "fit this way and this switch does not change them."),
     Setting("layer_order_last", "Let the layer fix have the last word",
             "Armor", "Fit and clearance", default=False,
             env="CBBE2UBE_LAYER_ORDER_LAST", invert=False,

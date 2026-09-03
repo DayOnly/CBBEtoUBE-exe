@@ -195,6 +195,22 @@ folds with a real target. **F011(b) is answered: a true target does not rescue
 its own change, not folded into the producer flip, and noting it is currently
 unreachable (no Setting row).
 
+### Scope caveat on the cap result: WHICH PATH was measured
+
+`#groove-authored-cap` is NOT equally live on the two paths, and the sample
+here is body-swap heavy (38 of 49 NIFs on the mod converted). The copy path
+builds its source-body normals with `_cached_cbbe_body_normals`, which
+recomputes UNCONDITIONALLY -- `_SRC_NORMAL_FIX` appears nowhere in it -- so on
+the copy path (four fifths of a pack) the cap has ALWAYS had a real target.
+Phase 2 is the only place it reads zeros.
+
+That makes `fix_nocap` vs `fix` the right analogue for copy-path behaviour, and
+it is the arm that says the cap changes clipping on 3 of 252 shapes. But it is
+an analogue measured on swap-heavy pieces, not a copy-path measurement. **The
+cap's near-inertness is established for the body-swap path and only inferred
+for the copy path**, and a copy-path-only population would settle it. Do not
+delete the cap on the strength of this alone.
+
 ## Where F011 stands
 
 **Blocker (a) retired** (`F011_COLLIDER_DELTA.md`), **(b) answered here.**
