@@ -431,6 +431,22 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "and backside -- what the step exists for -- it keeps the "
                     "full clearance. It can never push armour further out than "
                     "it does today."),
+    Setting("groove_authored_cap",
+            "Limit groove smoothing to the author's own clearance",
+            "Armor", "Fit and clearance", default=True,
+            env="CBBE2UBE_NO_GROOVE_CAP", invert=True, advanced=True,
+            hint="ON, and until now it had no switch. Measured 2026-09-02: it "
+                 "buys almost nothing.",
+            tooltip="After the converter smooths the creases the body makes in "
+                    "cloth, this step stops that smoothing from pushing a "
+                    "vertex further out than the author's own garment sat. It "
+                    "exists because the step before it can otherwise hand back "
+                    "clearance that the fit had just removed. Measured over "
+                    "252 shapes it changes how much skin shows on 3 of them "
+                    "and moves the average garment by under a hundredth of a "
+                    "unit, while slightly increasing the number of places the "
+                    "surface folds through itself. It had NO switch at all "
+                    "until now, so no build could be run without it."),
     Setting("authored_inflate", "Only add clearance where it is missing",
             "Armor", "Fit and clearance", default=False,
             env="CBBE2UBE_AUTHORED_INFLATE", invert=False,

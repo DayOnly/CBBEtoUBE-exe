@@ -242,6 +242,26 @@ of the change without a single vertex moved.
 OFF by default, pending an in-game verdict. Turn it on with "Treat a
 long-sleeved robe as clothing, not as a gauntlet".
 
+### Added — a switch for a step that never had one
+
+*Limit groove smoothing to the author's own clearance* (Advanced) is ON, as it
+has always been, and now appears as a checkbox.
+
+After the converter smooths the creases the body presses into cloth, this step
+stops that smoothing pushing a vertex further out than the author's own garment
+sat. It shipped on from the day it was written and had **no switch at all**, so
+no build could be run without it and nothing could measure what it was worth.
+
+Now that one can: over 252 shapes it changes how much skin shows on **three**
+of them, moves the average garment by under a hundredth of a unit, and slightly
+increases the number of places the surface folds through itself. Its effect
+also *shrinks* when the step feeding it is given correct information, which is
+what you would expect from a limit that has been reading a blank input.
+
+Nothing changes in this build unless you untick it. It is left on because
+turning it off is a change to how armour is shaped, and that deserves its own
+build and its own look in game rather than riding along with everything else.
+
 ### Added (off by default) — physics files that name what does not exist are trimmed
 
 Ninety-four converted meshes point at a physics file that names shapes or
