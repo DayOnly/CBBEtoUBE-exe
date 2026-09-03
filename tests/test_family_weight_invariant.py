@@ -146,7 +146,7 @@ def test_on_by_default_with_a_working_kill_switch():
     vertex, so a newcomer could displace an existing bone's LAST weight and
     leave that bone listed on the shape carrying nothing -- the
     `#zeroweight-bone-desync` equip-CTD class, 225 of them in the 2026-08-28
-    pack. Measured on `Asura's Guard`: 21 stranded bones -> 0 and 361 bad-sum
+    pack. Measured on a 38-NIF outfit: 21 stranded bones -> 0 and 361 bad-sum
     verts -> 0, with 0 verts moved. docs/worklog/ZEROWEIGHT_BONE_PRODUCER.md.
 
     The kill switch is asserted too: a promotion whose bisection lever does not

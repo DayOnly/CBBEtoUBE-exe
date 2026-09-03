@@ -79,7 +79,7 @@ PROMOTED.update(PROMOTED_2026_08_26)
 # 2026-09-02. The first promotion made on a BOOKKEEPING measurement rather than
 # a fit one: it moves no vertex, so it is judged on the orphan-bone gate and the
 # report's bad-sum count, with bust follow held flat as the counter-metric.
-# On `Asura's Guard` through the deployed exe at defaults:
+# On a 38-NIF outfit through the deployed exe at defaults:
 #   zero-weight bones 21 -> 0, bad-sum verts 361 -> 0, verts moved 0,
 #   bust follow 1.033-1.082 -> 1.033-1.084 on the shape losing L/R Breast03.
 # See docs/worklog/ZEROWEIGHT_BONE_PRODUCER.md. In-game verdict OWED.

@@ -1418,11 +1418,20 @@ PHASE1_NIPPLE_MAP = _flag("CBBE2UBE_PHASE1_NIPPLE_MAP", False)
 # listed it as a both-paths stage -- but it is the ELSE of "a CBBE base body
 # exists", so every BodySlide output takes the other arm and gets
 # warp/inflate/conform/groove-smooth and no body repair at all.
-# `clear_armor_outside_body` and `_inflate_cloth_over_bust_butt` are both
-# body-swap only. So the copy path, 78% of the pack, ships whatever the fit
-# chain leaves inside the body.
+# `clear_armor_outside_body` and `_inflate_cloth_over_bust_butt` WERE both
+# body-swap only. So the copy path, 78% of the pack, shipped whatever the fit
+# chain left inside the body.
 #
-# SIZED, from an in-game report (ruby-flower pants: copy path, no physics XML,
+# ONLY THE FIRST OF THE PAIR MOVED. `#phase1-antipoke` (below) brought
+# `clear_armor_outside_body` to the copy path on 2026-09-02; its `elif`
+# sibling `_inflate_cloth_over_bust_butt` -- the branch phase 2 runs INSTEAD
+# for physics/soft cloth, which the anti-poke must skip -- did NOT. So on the
+# copy path that cloth is restored to its pre-anti-poke position and gets no
+# body repair at all, where phase 2 gives it the bust/butt inflate. The
+# asymmetry is narrower than it was, not closed; it is the same "clearance
+# skipped PER SHAPE" class as the unreachable chest cloth. Unmeasured.
+#
+# SIZED, from an in-game report (the reported trousers: copy path, no physics XML,
 # one shape):
 #     the AUTHOR's own pants   0 of 2594 butt-band verts inside their CBBE body
 #     ours                  1535 of 2589 inside the UBE body (59.3%, worst 0.929u)
@@ -1438,24 +1447,24 @@ PHASE1_NIPPLE_MAP = _flag("CBBE2UBE_PHASE1_NIPPLE_MAP", False)
 # a copy-path repair that looked like a uniform clipping win still could not
 # ship, because standoff inflated on 9 of 9 pieces and it stranded zero-weight
 # bones. Score clip AND standoff AND `verify_zero_weight_bones.py`, then in
-# game. docs/worklog/BUTT_COPY_PATH_RUBY_FLOWER.md
+# game. docs/worklog/BUTT_COPY_PATH_TROUSERS.md
 #
 # DEFAULT ON since 2026-09-02 (`CBBE2UBE_NO_PHASE1_ANTIPOKE=1` restores the
 # previous behaviour exactly). Promoted on two populations plus an in-game
 # verdict, and specifically on the two axes that killed the last copy-path
 # repair (F010: standoff inflated 9 of 9, and it stranded 16 bones):
 #
-#   New Legion (86 NIFs, 86 copy / 0 swap, heavy plate)
+#   a heavy-plate set (86 NIFs, 86 copy / 0 swap, heavy plate)
 #     BUST 15 arms  inside 1 better/0 worse   clip 0/0 (already 0.000)
 #                   standoff 8 out 0.03-0.23u  coverage 0 dropped
 #     BUTT 11 arms  inside 11 better/0 worse  clip 4 better/0 worse
 #                   standoff 2 out / 8 IN     coverage 7 dropped (~3pt, torsos)
-#     best: ArmorPenitusF pauldrons clip 32.258% -> 0.265%
-#   MAGECORE hdt SMP (40 NIFs, 4 physics XMLs, 48 chain-carrying shapes)
+#     best: one cuirass's pauldrons clip 32.258% -> 0.265%
+#   an HDT-SMP cloth set (40 NIFs, 4 physics XMLs, 48 chain-carrying shapes)
 #     simulated verts moved 130 of 42994 (0.3%), ZERO fully-chain
 #     physics XMLs 4 of 4 byte-identical; rigid verts moved 2093
 #   zero-weight bones 0 -> 0 on every arm of both mods
-#   in game: ruby-flower pants, "looks good" (author 0.0% inside, ours was 59.3%)
+#   in game: the reported trousers, "looks good" (author 0.0% inside, ours was 59.3%)
 #
 # THE ONE THING NOT EXPLAINED: butt coverage drops ~3 points on the big torso
 # pieces (82.7 -> 80.0 and similar). It is NOT uniform -- coverage RISES
@@ -3160,25 +3169,25 @@ FIT_STAGES = (
      "and NO snap. The two are mutually exclusive, so a normal copy-path piece "
      "gets NO body-relative push-out at all: no snap (wrong branch), no antipoke "
      "and no bust/butt inflate (both swap-only below). Measured 2026-09-02 on "
-     "ruby-flower pants -- author 0.0% of the butt band inside its own body, "
+     "the reported trousers -- author 0.0% of the butt band inside its own body, "
      "ours 59.3%, and 687 of those verts sit in 0.2-0.6u, exactly the window "
      "`snap` exists to close. That is BUG-02. This row said `(copy, swap)` with "
      "no reason until then, and the table's own test cannot catch it: it derives "
      "calls by walking the AST, which sees both arms of an if/else. "
-     "docs/worklog/BUTT_COPY_PATH_RUBY_FLOWER.md"),
+     "docs/worklog/BUTT_COPY_PATH_TROUSERS.md"),
     ("panel_rigid",         "_rigidify_within_clearance", ("copy", "swap"), None),
     ("panel_blind",         "_partial_rigid_panels",      ("copy", "swap"), None),
     ("antipoke",            "clear_armor_outside_body",   ("copy", "swap"),
      "BOTH PATHS AT DEFAULTS since 2026-09-02, when `#phase1-antipoke` was "
      "promoted (`CBBE2UBE_NO_PHASE1_ANTIPOKE=1` restores the old behaviour). "
      "Before it the copy path had NO body repair at all -- BUG-02, measured at "
-     "59.3% of the butt band inside the body on ruby-flower pants against the "
+     "59.3% of the butt band inside the body on the reported trousers against the "
      "author's own 0.0%. "
      "The copy call passes far fewer kwargs than phase 2 (no nipple map, morph "
      "amplitude/differential, jiggle amplitude or layer extra): those are all "
      "body-swap-derived inputs the copy path does not compute, and the pass "
      "documents its own fallback for each. "
-     "docs/worklog/BUTT_COPY_PATH_RUBY_FLOWER.md"),
+     "docs/worklog/BUTT_COPY_PATH_TROUSERS.md"),
     ("panel_rigid_post",    "_rigidify_within_clearance", ("copy", "swap"),
      "Rides `#phase1-antipoke` on the copy path, for the same reason phase 2 "
      "pairs them: the anti-poke re-deforms every panel it pushes and this "
@@ -3821,7 +3830,7 @@ def _fit_shapes_copy(ctx) -> None:
             # the anti-poke right here, after panel rigidity, and phase 1 runs
             # nothing.
             #
-            # Measured on the piece an in-game report named (ruby-flower pants,
+            # Measured on the piece an in-game report named (the reported trousers,
             # copy path, no physics XML): the AUTHOR's own pants are 0 of 2594
             # butt-band verts inside their CBBE body; ours are 1535 of 2589
             # inside the UBE body (59.3%, worst 0.929u). 687 of those sit at
@@ -6881,7 +6890,7 @@ WEIGHT_INVARIANT_ENABLED = not _flag("CBBE2UBE_NO_WEIGHT_INVARIANT", False)
 # DEFAULT ON since 2026-09-02 (`CBBE2UBE_NO_FAMILY_WEIGHT_INVARIANT=1` restores
 # the previous write). It is the fix for `#zeroweight-bone-desync` at this site,
 # and the measurement that promoted it is in
-# docs/worklog/ZEROWEIGHT_BONE_PRODUCER.md. On `Asura's Guard` (38 NIFs, 294
+# docs/worklog/ZEROWEIGHT_BONE_PRODUCER.md. On a 38-NIF outfit (38 NIFs, 294
 # shapes), converted through the deployed exe at defaults:
 #
 #     zero-weight bones   21 -> 0        (13 shapes -> 0)

@@ -113,7 +113,7 @@ affected verts sit at z 95.2 (breast height, apex) but y ~= -1.0, BEHIND
 
 **Follow, on the shapes that do have breast surface.** `follow_bands.py` at the
 `bust` band (needs `CBBE2UBE_SKELETON_NIF`; the band is `bust`, not `breast`),
-`Asura's Guard` converted both ways AT DEFAULTS -- 21 zero-weight bones with the
+a 38-NIF outfit converted both ways AT DEFAULTS -- 21 zero-weight bones with the
 pass on, 0 with it off:
 
     ChestPlateBellyTop (228 bust verts, loses L+R Breast03)

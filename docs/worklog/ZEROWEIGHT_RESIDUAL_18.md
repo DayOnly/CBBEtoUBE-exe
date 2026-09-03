@@ -4,7 +4,7 @@ Measured 2026-09-02 on the pack built by exe `10639cfd` (git `f6d87a0`), the
 first carrying `#family-weight-invariant`. Pack-wide the class went
 **225 -> 18** (163 -> 15 shapes), but the gate still exits 1.
 
-I predicted 0. That was an over-extrapolation from one mod (`Asura's Guard`,
+I predicted 0. That was an over-extrapolation from one mod (a 38-NIF outfit,
 21 -> 0), which happened to contain only the class the fix covers.
 
 ## They are all ONE class: a bone the AUTHOR held on a handful of vertices

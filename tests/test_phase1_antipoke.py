@@ -3,7 +3,7 @@
 The copy path ran NOTHING that pushes a vert out of the body in its normal
 branch: `snap_armor_outside_body` is the ELSE of "a CBBE base body exists", and
 the anti-poke and the bust/butt inflate are body-swap only. Measured on the
-piece an in-game report named (ruby-flower pants): the author's own trousers
+piece an in-game report named (the reported trousers): the author's own trousers
 have 0 of 2594 butt-band verts inside their CBBE body, ours had 1535 of 2589
 inside the UBE body. With this flag: 0.
 
@@ -30,7 +30,7 @@ def _copy_src() -> str:
 def test_on_by_default_with_a_working_kill_switch():
     """DEFAULT ON since 2026-09-02. This test read `is False` until then.
 
-    Promoted on two populations (New Legion 86 NIFs heavy plate, MAGECORE 40
+    Promoted on two populations (a heavy-plate set 86 NIFs heavy plate, an HDT-SMP cloth set 40
     NIFs with physics) plus an in-game verdict on the piece that reported the
     defect -- and specifically clean on the two axes that killed F010: standoff
     moved INWARD on 8 of 11 butt arms rather than inflating, and no bone was

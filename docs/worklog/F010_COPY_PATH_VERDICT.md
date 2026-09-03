@@ -16,7 +16,7 @@ Both arms through one harness — `scratchpad_handoff_2026_08_13/exe_parity_conv
 on the deployed exe, live settings (`phase1_bust_clearance` only), the ON arm
 adding `CBBE2UBE_PANEL_RIGID_EARLY_CLEAR=1`.
 
-Population: **`New Legion` — 86 NIFs, 86 copy / 0 body-swap.** A pure copy-path
+Population: **a heavy-plate set — 86 NIFs, 86 copy / 0 body-swap.** A pure copy-path
 mod, so the global flag's effect there *is* the copy-path effect and no
 stratification is needed. Nine torso pieces × 26 UBE presets = 234 scored arms
 through `scripts/analysis/preset_ab_score.py --band bust`.

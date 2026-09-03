@@ -157,9 +157,17 @@ KNOWN_PHASE2_ONLY = {
     # documented reason". It is not an anomaly. It is the `elif` branch of the
     # SAME if/elif as `clear_armor_outside_body`: the anti-poke moves every
     # vert and so is skipped for physics cloth, and this covers the bust/butt
-    # bands for that cloth instead. Both branches are body-swap-only. It looked
-    # asymmetric only because the old prefix list could see this name and not
-    # its sibling.
+    # bands for that cloth instead. It looked asymmetric only because the old
+    # prefix list could see this name and not its sibling.
+    #
+    # UPDATED 2026-09-02: "both branches are body-swap-only" is no longer true.
+    # `#phase1-antipoke` took the IF branch to the copy path and left the ELIF
+    # here, so the copy path now repairs rigid cloth and still does nothing for
+    # the physics/soft cloth this branch exists to serve -- it is restored to
+    # its pre-anti-poke position instead. That is a DEBT with a measurable
+    # shape, not a structural fact: the inputs this pass needs
+    # (`body_verts_for_fit`, `body_normals_for_fit`, per-shape soft-cloth
+    # classification) are all in scope at the copy-path anti-poke site.
     "_inflate_cloth_over_bust_butt": "soft-cloth branch of the anti-poke "
                                      "if/elif; whole stage is body-driven",
 
@@ -189,7 +197,7 @@ KNOWN_PHASE2_ONLY = {
     # remains exactly true, which is why the copy call is opt-in and unjudged.
     # This list is about REACHABILITY, so a flagged-off call still counts as
     # reachable and the entry had to go. The A/B it demands is the owed work,
-    # not this entry. docs/worklog/BUTT_COPY_PATH_RUBY_FLOWER.md
+    # not this entry. docs/worklog/BUTT_COPY_PATH_TROUSERS.md
     "rebury_authored_verts": "needs BOTH source and UBE body to restore "
                              "authored insideness",
     "fit_armor_to_ube_body": "the body-swap fit itself",

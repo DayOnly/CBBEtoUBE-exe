@@ -1,6 +1,6 @@
 # #phase1-antipoke: the population A/B, and a measurement bug that voided the first one
 
-2026-09-02. `New Legion` (86 NIFs, **86 copy / 0 body-swap**, so the copy path is
+2026-09-02. a heavy-plate set (86 NIFs, **86 copy / 0 body-swap**, so the copy path is
 isolated by construction), both arms through one harness on a fresh `dist` build
 of `35a1dfe`. The deployed tool was left alone -- it predates the flag and an arm
 run on it is VOID by construction.
@@ -39,8 +39,8 @@ zero-weight-bone gate.
 
 Per-shape highlights:
 
-    ArmorPenitusF  PauldronsPenitus  butt  clip 32.258% -> 0.265%   inside 18 -> 0
-    ArmorPenitusF  d                 butt  clip  3.470% -> 0.000%   inside 89 -> 11
+    cuirass-A        pauldrons         butt  clip 32.258% -> 0.265%   inside 18 -> 0
+    cuirass-A        skirt                 butt  clip  3.470% -> 0.000%   inside 89 -> 11
     ArmorF         PantsPenitus_1    butt  clip  4.546% -> 0.000%   inside 34 -> 0
     ArmorOfficerF  Armor001          butt  inside 45 -> 0
     DragonArmorF   Torso001          butt  inside 67 -> 2
@@ -70,7 +70,7 @@ could have undone `#bust-morph-chord` and the surface guard. It does not.
   (11.3 -> 38.8 on a pauldron, 19.9 -> 22.6, 77.5 -> 78.5), so it is not a
   uniform loss, but the torso drop is unexplained. A garment pushed out can let
   a grazing ray miss it; whether any of that is visible is unknown.
-* ONE mod. `New Legion` is heavy plate; soft-cloth and layered outfits are not
+* ONE mod. a heavy-plate set is heavy plate; soft-cloth and layered outfits are not
   represented, and the physics paths (mixed-cloth restore, SMP push cap) are
-  built but UNEXERCISED here -- New Legion has no physics XML.
-* In game: only the ruby-flower pants have been looked at ("looks good").
+  built but UNEXERCISED here -- a heavy-plate set has no physics XML.
+* In game: only the the reported trousers have been looked at ("looks good").

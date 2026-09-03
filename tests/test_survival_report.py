@@ -18,7 +18,7 @@
 
 THE FAILURE BEING PINNED, in full: the 2026-08-17 pass-usefulness audit reported
 "`inflate` is 69% UNDONE by `conform`" from a row-pooled median of 0.31. A
-survival record is per SHAPE, and one garment (`AsurasCombined`) contributed 116
+survival record is per SHAPE, and one garment (`one multi-shape garment`) contributed 116
 of 442 rows at median 0.103. Weighted per PIECE the same data reads 0.69 and the
 two convert paths agree. The headline stood six days, was quoted as settled, and
 was never true.

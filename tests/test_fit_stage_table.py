@@ -86,7 +86,7 @@ def _branch_gated(fn_name: str) -> set:
     copy path's legacy `else` (no CBBE base body) while the normal branch ran
     groove-smooth and no snap at all, and the table read `(copy, swap)` with no
     reason. That misreading was quoted as fact before it was measured
-    (docs/worklog/BUTT_COPY_PATH_RUBY_FLOWER.md).
+    (docs/worklog/BUTT_COPY_PATH_TROUSERS.md).
 
     A callee counts as branch-gated only when EVERY one of its call sites sits
     inside an if/else arm and none of them is in the sibling arm. A callee that

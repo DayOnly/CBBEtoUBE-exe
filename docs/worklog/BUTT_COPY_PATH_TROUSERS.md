@@ -1,11 +1,11 @@
 # Copy-path pants bury 59% of the butt band — and the author's did not
 
-Reported in game 2026-09-02 ("ruby flower pants sit inside the butt"), on the
+Reported in game 2026-09-02 ("trousers sit inside the backside"), on the
 pack built by exe `10639cfd`. Reproduced, measured, and attributed.
 
 ## The numbers
 
-`DDV - Ruby flower Pants_1.nif`, butt band (`body_zones.butt_mask`), garment
+`<the reported trousers>_1.nif`, butt band (`body_zones.butt_mask`), garment
 verts whose nearest body vertex they sit BEHIND:
 
     AUTHOR's CBBE pants vs the CBBE body        0 of 2594   ( 0.0%)   worst 0.000u
