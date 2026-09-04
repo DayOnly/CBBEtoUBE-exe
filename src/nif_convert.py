@@ -5620,7 +5620,11 @@ def _finalize_physics_and_motion_match(dst_path, src_path, biped_slots) -> None:
             # Give the VISIBLE cloth a collision proxy
             # (#skirt-proxy-rebuild). After the butt patch: it clones a
             # FABRIC block from the XML that patch may just have extended.
-            _add_skirt_collider_proxy(dst_path)
+            # Under #skirt-proxy-after-weights this moves below the weight
+            # passes instead, because the source it picks is ranked on weights
+            # those passes rewrite.
+            if not SKIRT_PROXY_AFTER_WEIGHTS:
+                _add_skirt_collider_proxy(dst_path)
         except Exception as _pe:
             _note_pass_failure("_split_bust_collider_xml", _pe)
 
@@ -5687,6 +5691,17 @@ def _finalize_physics_and_motion_match(dst_path, src_path, biped_slots) -> None:
                                     src_nif_path=src_path)
     except Exception as _pe:
         _note_pass_failure("_match_full_weights_to_body", _pe)
+
+    # #skirt-proxy-after-weights: the same pass, ranked on the weights that
+    # actually ship. See the flag for the measurement -- a 7% ranking margin
+    # decided before four weight passes rewrite the ranked quantity is how a
+    # skirt collider ended up built from a potion bottle's net.
+    if SKIRT_PROXY_AFTER_WEIGHTS and not (
+            biped_slots & (BIPED_SLOT33_BIT | BIPED_SLOT37_BIT)):
+        try:
+            _add_skirt_collider_proxy(dst_path)
+        except Exception as _pe:
+            _note_pass_failure("_add_skirt_collider_proxy/after-weights", _pe)
 
     # Put the shapes back in the order the AUTHOR wrote them (#authored-shape-order,
     # BUG-09). Must run after `_finalize_hdt_physics`, which is what re-appends the
@@ -6231,6 +6246,54 @@ def _boot_far_thigh_scale_exclusions(src_shape, biped_slots: int) -> tuple[str, 
 
 # Don't re-skin these shapes — they ARE the body / VirtualBody. We inject
 # them from the UBE ref so their skinning is already correct.
+# --- #body-lookup-prefers-baseshape -- OPT-IN, default OFF -------------------
+#
+# `UBE_BODY_INJECT_NAMES` holds BOTH "BaseShape" and "VirtualBody", and four
+# passes find "the body" with
+#     next(s for s in nf.shapes if s.name in UBE_BODY_INJECT_NAMES)
+# which takes whichever comes FIRST IN SHAPE ORDER. `VirtualBody` is an HDT-SMP
+# COLLISION PROXY, not a body -- and on every piece that has one, it precedes
+# the real BaseShape.
+#
+# REPORTED IN GAME 2026-09-04: "breasts and muscle mass disappear when
+# equipped", on pieces that have physics. Root-caused to this, arithmetically:
+#
+#   piece         picked as "body"   verts    max vert index in its TRI
+#   DressA        VirtualBody         5041            5040
+#   DressB        VirtualBody         5776            5775
+#   DressC        VirtualBody         5019            5018
+#   DressALewd    BaseShape          29298           29297   (no VirtualBody)
+#
+# One-to-one. `generate_armor_tri` bounds-filters the body OSD's 202 morphs to
+# the body vert count (#osd-bounds, correctly -- an out-of-range index is a
+# runtime CTD), so with a 5k proxy standing in for a 29,298-vert body, every
+# offset past ~5000 is dropped and any morph living entirely above it vanishes.
+# DressA keeps 78 of 202 morphs; the ones lost include every breast slider
+# (BreastsBigger, BreastFlat, BreastUnderCurve, Big_SaggyBreasts ...). The
+# variant with no VirtualBody keeps all 202 and is correct -- which is why the
+# defect tracks "has physics" and looked like a physics bug.
+#
+# The same mis-pick reaches three other passes: the butt-collider patch, the
+# skirt-proxy source ranking (its `body_bones` becomes VirtualBody's 11 bones,
+# so nearly every bone reads as "chain"), and the collider conform.
+#
+# OFF because it changes the TRI on every physics piece, which is a change to
+# how bodies morph in game and needs its own verdict.
+BODY_LOOKUP_PREFERS_BASESHAPE = _flag(
+    "CBBE2UBE_BODY_LOOKUP_PREFERS_BASESHAPE", False)
+
+
+def ube_body_shape(nif):
+    """The actual injected BODY, never a collision proxy that shares its name
+    list. See `#body-lookup-prefers-baseshape` above for why this exists."""
+    shapes = list(getattr(nif, "shapes", ()) or ())
+    if BODY_LOOKUP_PREFERS_BASESHAPE:
+        for s in shapes:
+            if s.name == "BaseShape":
+                return s
+    return next((s for s in shapes if s.name in UBE_BODY_INJECT_NAMES), None)
+
+
 RESKIN_SKIP_NAMES = set(UBE_BODY_INJECT_NAMES)
 
 # Source-shape bone names that signal "this shape is rigged for fine
@@ -8395,7 +8458,7 @@ def _conform_collider_to_body(dst_path) -> int:
     collider_names = _hdt_collider_shape_names(p, nif=nf)
     if not collider_names:
         return 0
-    base = next((s for s in nf.shapes if s.name in UBE_BODY_INJECT_NAMES), None)
+    base = ube_body_shape(nf)
     if base is None:
         return 0
     try:
@@ -8576,6 +8639,49 @@ _BUTT_COL_MIN_UNCOVERED = _knob("CBBE2UBE_BUTT_COLLIDER_MIN_UNCOVERED", 150, int
 # equip test AND the look at the skirt in motion are both done -- the piece
 # carrying it was judged "perfect", which is the only check that could clear a
 # chain-driven proxy.
+# --- #skirt-proxy-after-weights -- OPT-IN, default OFF ------------------------
+#
+# `_add_skirt_collider_proxy` picks its SOURCE as the shape with the most
+# vertices weighted to bones the body does not have -- and it runs BEFORE the
+# four passes that rewrite exactly those weights:
+#
+#     _add_skirt_collider_proxy      <- picks here
+#     _transfer_body_jiggle_to_fitted
+#     _match_leg_motion_to_body
+#     _match_spine/arm_motion_to_body
+#     _match_full_weights_to_body
+#
+# So the pick is made on a weight state that does not survive the same
+# function. Measured 2026-09-04 on three dresses of one mod, in the SHIPPED
+# weights:
+#
+#     piece    dress chain-verts   potion-net   margin
+#     DressA        5830              1519      3.8x
+#     DressB        4708              1519      3.1x
+#     DressC        1634              1519      1.08x   <- 115 verts
+#
+# DressA and DressB win by nearly 4x and are correct in the shipped output.
+# DressC's margin is 7%, and it shipped a "SkirtCol" built from the POTION
+# BOTTLE NET -- 1 bone (`MCPotion 1`), coincident with `4_belt_potion_net` at
+# 0.000u, 4.085u from the skirt -- while its actual skirt (45 chain bones,
+# z 34.8..111.3) got no collision proxy at all. A 7% margin does not survive
+# four passes rewriting the quantity being ranked; a 380% margin does. That is
+# the whole difference between the three.
+#
+# This moves the pick to AFTER the weight passes in the same shared tail, so it
+# ranks on the weights that ship. It stays after `_add_butt_collider_patch`
+# (whose FABRIC block it clones) and before `_restore_authored_shape_order`
+# (which must see every shape that ships) and the declared-bone audit.
+#
+# NOT A NO-OP: it changes which shape the proxy is built from wherever the
+# ranking flips, so it moves geometry and needs its own verdict. Three later
+# weight passes still run after this point in the CALLER
+# (`_cap_weight_roughness_to_author`, `_hold_weights_at_smp_boundary`,
+# `_match_coincident_cross_shape_skin`); moving past those as well would take
+# the pass out of the shared tail that both convert paths call, which is a
+# bigger change and is not attempted here.
+SKIRT_PROXY_AFTER_WEIGHTS = _flag("CBBE2UBE_SKIRT_PROXY_AFTER_WEIGHTS", False)
+
 SKIRT_PROXY_REBUILD = (
     not _flag("CBBE2UBE_NO_SKIRT_PROXY_REBUILD", False))
 _SKIRT_PROXY_NAME = "SkirtCol"

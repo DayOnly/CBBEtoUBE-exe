@@ -357,7 +357,7 @@ def _add_butt_collider_patch(dst_path) -> int:
     names = {s.name for s in nf.shapes}
     if _nc()._BUTT_COL_NAME in names:
         return 0
-    base = next((s for s in nf.shapes if s.name in _nc().UBE_BODY_INJECT_NAMES), None)
+    base = _nc().ube_body_shape(nf)
     if base is None:
         return 0
     try:
@@ -771,7 +771,7 @@ def _add_skirt_collider_proxy(dst_path) -> int:
     names = {s.name for s in nf.shapes}
     if _nc()._SKIRT_PROXY_NAME in names:
         return 0
-    base = next((s for s in nf.shapes if s.name in _nc().UBE_BODY_INJECT_NAMES), None)
+    base = _nc().ube_body_shape(nf)
     if base is None:
         return 0
     try:

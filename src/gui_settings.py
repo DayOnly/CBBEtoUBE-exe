@@ -365,6 +365,42 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "pieces that currently sit closer than the new value. NOT "
                     "the same number as the conform ceiling below, which is a "
                     "different pass. Was 1.0."),
+    Setting("body_lookup_prefers_baseshape",
+            "Fix body sliders on armour that has physics",
+            "Armor", "Physics", default=False,
+            env="CBBE2UBE_BODY_LOOKUP_PREFERS_BASESHAPE", invert=False,
+            hint="For breasts/muscle going flat when a physics outfit is worn.",
+            tooltip="Armour carries its own copy of the body's slider data so "
+                    "your shape survives being dressed. On outfits that use "
+                    "HDT-SMP the converter was reading that data against the "
+                    "outfit's small collision proxy instead of the real body -- "
+                    "about 5,000 points instead of 29,000 -- so every slider "
+                    "that shapes anything outside that small region was thrown "
+                    "away. Measured on one outfit: 78 of 202 sliders survived, "
+                    "and the ones lost were the breast set almost entirely. An "
+                    "otherwise identical piece with no physics kept all 202, "
+                    "which is why this looked like a physics problem. With "
+                    "this on the real body is used. Off by default because it "
+                    "rewrites the slider data on every physics piece and you "
+                    "should see it work before it becomes the default."),
+    Setting("skirt_proxy_after_weights",
+            "Choose the skirt collider after the weights are final",
+            "Armor", "Physics", default=False,
+            env="CBBE2UBE_SKIRT_PROXY_AFTER_WEIGHTS", invert=False,
+            hint="For a skirt whose collider ended up on the wrong part. OFF.",
+            tooltip="When an outfit's own physics file has no collider for its "
+                    "skirt, the converter builds one, and picks which part of "
+                    "the outfit to build it from by looking at which part is "
+                    "most cloth-driven. It makes that choice BEFORE four later "
+                    "steps rewrite the very weights it looked at. On a "
+                    "measured dress the margin between the skirt and a potion "
+                    "bottle's net was 7%, and the collider was built from the "
+                    "bottle -- leaving the skirt with none. Two other dresses "
+                    "in the same outfit won by nearly four times and were "
+                    "correct. With this on the choice is made after those "
+                    "steps, on the weights that ship. It is off because it "
+                    "changes which part the collider is built from wherever "
+                    "the two are close, and that deserves its own look."),
     Setting("ride_outward_cap",
             "Don't let a stacked layer drag the one above it outward",
             "Armor", "Fit and clearance", default=False,

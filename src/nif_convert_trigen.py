@@ -542,8 +542,7 @@ def _refresh_armor_tri_after_reimport(
             return False
         body_osd = _cached_osd_load(osd_path)
 
-        body_shape = next(
-            (s for s in nf.shapes if s.name in _nc().UBE_BODY_INJECT_NAMES), None)
+        body_shape = _nc().ube_body_shape(nf)
         if body_shape is not None:
             body_verts_arr = np.asarray(body_shape.verts, dtype=np.float64)
         elif fallback_body_verts is not None:
