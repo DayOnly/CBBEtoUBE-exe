@@ -365,6 +365,25 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "pieces that currently sit closer than the new value. NOT "
                     "the same number as the conform ceiling below, which is a "
                     "different pass. Was 1.0."),
+    Setting("ride_outward_cap",
+            "Don't let a stacked layer drag the one above it outward",
+            "Armor", "Fit and clearance", default=False,
+            env="CBBE2UBE_RIDE_OUTWARD_CAP", invert=False,
+            hint="For a shape showing through the layer over it. OFF, unjudged.",
+            tooltip="When armour has stacked layers, the converter moves each "
+                    "outer layer to follow the one beneath it, keeping the "
+                    "spacing its author gave them. That is right while the "
+                    "inner layer is where its author put it -- and wrong when "
+                    "it is not, because the outer layer then faithfully copies "
+                    "a bulge that should not be there. It is how the shape of "
+                    "a nipple ends up outlined through a rigid plate that sits "
+                    "well clear of the body. With this on, an outer layer is "
+                    "still never allowed to sink into what it covers, but it "
+                    "is no longer dragged further out than its own fit "
+                    "decided. Measured on a reported piece, the plate's own "
+                    "fit was already close to the author's shape and the "
+                    "follow step was adding four fifths of the visible "
+                    "defect."),
     Setting("bust_authored_nipple_cap",
             "Don't lift armour at the nipple further than its author did",
             "Armor", "Fit and clearance", default=False,

@@ -113,3 +113,36 @@ artifact.
   run concurrent arms.
 * The stage dump's frame is checked against the written NIF before any number
   is read from it; disagreement would make every distance in the table void.
+
+## The fix built: `#ride-outward-cap` (OFF) -- real, partial, and bounded
+
+The mirror of `#ride-body-floor`: that one stops the ride putting cloth INTO
+the body, this stops it hauling cloth OUT past what the rider's own fit chain
+decided. It pulls the rider back toward its own standoff but never closer to
+the geometry beneath than `RIDE_MIN_GAP` (0.05u), so non-crossing is kept.
+
+A/B from source, both arms, 21229 verts held on the reported piece:
+
+| axis | control | cap on |
+|---|---|---|
+| plate lift (author -0.059u) | +0.1143u | **+0.0888u** (-22%) |
+| inner `top` lift | +0.1047u | +0.1047u (base layer, correctly untouched) |
+| nipple poke-through | 0.0000% | 0.0000% |
+| layer gap at the nipple | 0.0933u | 0.0503u |
+
+**It recovers 22%, not the 74% that removing the ride entirely gives, and the
+third row says why: the pull-back hit its own non-crossing floor.** The plate
+came back until it was 0.05u from the layer beneath and stopped. It cannot
+reach its own fit standoff because the bulged inner layer is physically in the
+way.
+
+So this CONFIRMS the diagnosis rather than completing the fix. Lowering
+`RIDE_MIN_GAP` would buy more lift by spending the last of the separation
+margin -- and the minimum gap on this piece is already 0.0000u somewhere even
+in the control, so that is not a trade worth making.
+
+**The inner layer's bulge remains the binding constraint**, and it resisted
+every lever tried (see the table above): reducing any one push hands the work
+to the next pass. That is the damage-ledger oscillation, and it needs a
+different kind of change than a knob -- which is why nothing further was built
+here.

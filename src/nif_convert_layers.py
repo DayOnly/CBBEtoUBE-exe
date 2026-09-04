@@ -1624,6 +1624,48 @@ def _ride_layers_on_reference(shape_jobs, body_verts=None,
                             (_short > 0.0).sum())
                 except Exception as _rbe:
                     _note_pass_failure("ride/body-floor", _rbe)
+            # #ride-outward-cap: the mirror of the body floor above. That
+            # one stops the ride putting cloth INTO the body; this stops it
+            # hauling cloth OUT past what the rider's own fit chain decided.
+            #
+            # The ride preserves the rider's SOURCE OFFSET to whatever is
+            # beneath it. That is right when the layer beneath is where its
+            # author put it, and wrong when it is not -- the offset then
+            # faithfully transmits someone else's deviation, which is how a
+            # nipple bulge on an inner layer arrives on the plate above it.
+            # NON-CROSSING is the guarantee that matters; the full offset is
+            # stronger than needed. So pull back toward the rider's own
+            # chain standoff, but never closer to the geometry beneath than
+            # RIDE_MIN_GAP.
+            if (_nc().RIDE_OUTWARD_CAP and body_verts is not None
+                    and body_norms is not None and len(base_fin)):
+                try:
+                    _cand = sv + _rd
+                    _bv2 = np.asarray(body_verts, dtype=np.float64)
+                    _bn2 = np.asarray(body_norms, dtype=np.float64)
+                    _, _cj = btree.query(_cand[_apply])
+                    _n2 = _bn2[_cj]
+                    # where the ride wants it, and where its OWN chain left it
+                    _sd2 = np.einsum('ij,ij->i', _cand[_apply] - _bv2[_cj], _n2)
+                    _, _fj2 = btree.query(fv[_apply])
+                    _fd2 = np.einsum('ij,ij->i', fv[_apply] - _bv2[_fj2],
+                                     _bn2[_fj2])
+                    _excess = np.clip(
+                        _sd2 - (_fd2 + _nc().RIDE_OUTWARD_ALLOW), 0.0, None)
+                    if float(_excess.max(initial=0.0)) > 0.0:
+                        # room available before we would touch what is beneath
+                        _dbase, _ = cKDTree(base_fin).query(_cand[_apply])
+                        _room = np.clip(_dbase - _nc().RIDE_MIN_GAP, 0.0, None)
+                        _pull = np.minimum(_excess, _room)
+                        if float(_pull.max(initial=0.0)) > 0.0:
+                            _fix2 = np.zeros_like(_rd)
+                            _fix2[_apply] = -_n2 * _pull[:, None]
+                            _rd = _rd + _fix2
+                            _cst["ride_outward_cap"] = (
+                                _cst.get("ride_outward_cap", 0)
+                                + int((_pull > 0.0).sum()))
+                except Exception as _roe:
+                    _note_pass_failure("ride/outward-cap", _roe)
             cur[_apply] = sv[_apply] + _rd[_apply]
             j["verts"] = cur
             j["verts_modified"] = True
@@ -1637,6 +1679,11 @@ def _ride_layers_on_reference(shape_jobs, body_verts=None,
         except Exception:
             ref_tris.append(np.zeros((0, 3), dtype=np.int64))
         _voff.append(len(sv))
+    if _cst.get("ride_outward_cap"):
+        import sys as _sys
+        print(f"  [ride-outward-cap] held {_cst['ride_outward_cap']} vert(s) at "
+              f"their own fit standoff instead of riding further out",
+              file=_sys.stderr)
     if _cst.get("ride_feather"):
         import sys as _sys
         print(f"  [ride-feather] smoothed {_cst['ride_feather']} vert(s) of "

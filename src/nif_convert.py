@@ -11835,6 +11835,40 @@ PANEL_RIGID_RIDE = _flag("CBBE2UBE_PANEL_RIGID_RIDE", True)
 # exactly that -- which is the check working. Promoting it is the correct
 # resolution: it keeps the measured behaviour AND leaves the settings file free
 # of overrides.
+# --- #ride-outward-cap -- OPT-IN, default OFF --------------------------------
+#
+# The mirror of `#ride-body-floor` below. That one stops the ride pushing cloth
+# INTO the body; this one stops it hauling cloth OUT past what the rider's own
+# fit chain decided.
+#
+# TRACED FROM AN IN-GAME REPORT (nipple outlines through a plate,
+# docs/worklog/NIPPLE_OUTLINE_THROUGH_PLATE.md). On the reported piece the
+# plate's own chain finished at +0.0295u of nipple lift -- nearly the author's
+# own shape. The ride then placed it over the layer beneath, which was still
+# bulging at +0.1044u, and the plate inherited it: +0.1143u shipped.
+# `CBBE2UBE_NO_LAYER_RIDE=1` returns it to +0.0293u, an identity with its own
+# chain result, so the ride is the ENTIRE gap. EIGHT other levers were measured
+# against this defect -- every conform-side knob, both authored pushes,
+# PANEL_RIGIDITY=1.0 -- and none moved it.
+#
+# WHY THE RIDE IS NOT SIMPLY WRONG. It preserves the rider's SOURCE OFFSET to
+# whatever is beneath it, which is right when that layer is where its author put
+# it, and wrong when it is not: the offset then faithfully transmits someone
+# else's deviation. Preserving NON-CROSSING is the guarantee that matters;
+# preserving the full offset is stronger than needed. Measured on this piece the
+# plate clears the layer beneath by 0.30u at the tip and would still clear it by
+# 0.22u at its own chain position -- so the outward push bought no separation.
+#
+# So: pull the rider back toward its own fit-chain standoff, but NEVER closer to
+# the layer beneath than `_MIN_GAP`. The anti-crossing guarantee is kept; only
+# the redundant outward travel is dropped.
+RIDE_OUTWARD_CAP = _flag("CBBE2UBE_RIDE_OUTWARD_CAP", False)
+# How far past its own fit-chain standoff the ride may still take a vert.
+RIDE_OUTWARD_ALLOW = _knob("CBBE2UBE_RIDE_OUTWARD_ALLOW", 0.0)
+# Never pull a rider closer than this to the geometry it is riding on. This is
+# the non-crossing guarantee the cap must not break.
+RIDE_MIN_GAP = _knob("CBBE2UBE_RIDE_MIN_GAP", 0.05)
+
 RIDE_BODY_FLOOR = _flag("CBBE2UBE_RIDE_BODY_FLOOR", True)
 _PANEL_RIDE_COVERAGE = _knob("CBBE2UBE_PANEL_RIDE_COVERAGE", 0.9)
 # WHERE in the panel's displacement spread to sit the plate, as a quantile along
