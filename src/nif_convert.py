@@ -865,6 +865,22 @@ SEAM_WELD_SELF = not _flag("CBBE2UBE_NO_SEAM_WELD_SELF", False)
 # other 1.0 -- and BOTH tuck in at the nipple in the author's own mesh. The
 # axis that separates them is not the material, it is the AUTHORED RELATIONSHIP.
 #
+# MEASURED INERT ON THE DEFECT IT WAS BUILT FOR (2026-09-03). Turning it on
+# moved the reported plate's nipple lift +0.1143u -> +0.1145u: nothing. The
+# reason is in the stage dump -- conform REDUCES the lift (-0.059), and the
+# requirement is applied as `move = max(move, req - worst)`, so lowering `req`
+# only bites when the conform's own movement is SMALLER. It is not.
+#
+# The real cause is elsewhere and is now traced: the plate's own chain ends at
+# +0.0295u, and the LAYER RIDE then lifts it onto a still-bulging inner layer,
+# which it inherits (74% of the visible defect). See
+# docs/worklog/NIPPLE_OUTLINE_THROUGH_PLATE.md.
+#
+# Kept, default OFF, because the invariant is still sound on its own terms --
+# do not demand more room than the author left -- and it may earn its keep on a
+# piece whose conform DOES bind. But it does not fix nipple outlines, and
+# anyone reaching for it for that reason should stop here.
+#
 # WHAT THIS DOES. Caps the nipple ramp at the extra room the author actually
 # left over the same shape's flat chest. Where they left none, the ramp is
 # suppressed and the requirement falls back to the flat clearance. It can only
