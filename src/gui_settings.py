@@ -365,6 +365,26 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "pieces that currently sit closer than the new value. NOT "
                     "the same number as the conform ceiling below, which is a "
                     "different pass. Was 1.0."),
+    Setting("bust_authored_nipple_cap",
+            "Don't lift armour at the nipple further than its author did",
+            "Armor", "Fit and clearance", default=False,
+            env="CBBE2UBE_BUST_AUTHORED_NIPPLE_CAP", invert=False,
+            hint="For nipple outlines showing through a plate. OFF, unjudged.",
+            tooltip="To stop a nipple poking through cloth, the converter "
+                    "demands extra room right at the tip -- about five times "
+                    "what it asks for across the rest of the chest. On soft "
+                    "cloth that is what you want. On a rigid plate it pushes "
+                    "the plate outward at the tip instead, which shows in game "
+                    "as the shape of the nipple outlined through the armour. "
+                    "Measured on a reported piece: the author's own plate sits "
+                    "CLOSER at the nipple than across its flat chest, and ours "
+                    "sat further out -- so the step was working against the "
+                    "shape its author built. With this on, the extra room "
+                    "asked for at the tip is limited to what the author left "
+                    "there themselves. It can only ever ask for LESS, never "
+                    "more. Turn it on for a build of its own and look at "
+                    "plate chestpieces: the risk it trades against is the tip "
+                    "poking through, which is worse than an outline."),
     Setting("conform_bust_clear", "Bust clearance ceiling at the nipple",
             "Armor", "Fit and clearance", kind="float", default=0.9,
             env="CBBE2UBE_CONFORM_BUST_CLEAR", min=0.0, max=2.0, step=0.05,

@@ -1358,6 +1358,32 @@ def conform_to_source_standoff(
             nipw = np.zeros(len(ui))
         req = np.clip(_nc().BUST_FLAT_CLEARANCE + nipw * _nc().BUST_NIPPLE_GAIN,
                       _nc().BUST_FLAT_CLEARANCE, bust_clearance)
+        # #bust-authored-nipple-cap: never demand MORE room at the nipple than
+        # the author left there. See the constant for the in-game report and
+        # the numbers -- on the reported piece the author's plate sits CLOSER
+        # at the nipple than on its own flat chest, so the ramp above is
+        # pushing against what they built and embossing the tip through it.
+        #
+        # Distance, not signed standoff: the source body's normals are zeroed
+        # at defaults on this path (F011), and a normal-based measure would
+        # read every authored clearance as 0 and flatten `req` to nothing.
+        if _nc().BUST_AUTHORED_NIPPLE_CAP:
+            try:
+                # `sd` is already the authored clearance by distance -- the
+                # function computes it at the top as
+                #     sd, si = cKDTree(src_body_verts).query(src_cloth, k=1)
+                # so this reuses it rather than rebuilding the same tree.
+                _flat = in_bust & (nipw < _nc().BUST_AUTHORED_FLAT_NIPW)
+                if int(_flat.sum()) >= 20:
+                    # the author's OWN baseline for THIS shape, so a garment
+                    # that simply sits far out everywhere is not penalised
+                    _base = float(np.median(sd[_flat]))
+                    _extra = np.clip(sd - _base, 0.0, None)
+                    _allow = (_nc().BUST_FLAT_CLEARANCE + _extra
+                              + _nc().BUST_AUTHORED_NIPPLE_GROWTH)
+                    req = np.minimum(req, _allow)   # only ever LOWERS it
+            except Exception as _e:
+                _nc()._note_pass_failure("bust-authored-nipple-cap", _e)
         # #bust-morph-residual (see the constants): `req` above is a BIND-pose
         # requirement, and the character in game is morphed. `generate_armor_tri`
         # hands a hugging garment vert the delta of ITS OWN nearest body vert,

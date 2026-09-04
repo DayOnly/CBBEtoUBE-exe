@@ -837,6 +837,57 @@ SEAM_WELD_SELF = not _flag("CBBE2UBE_NO_SEAM_WELD_SELF", False)
 # read it as clean.
 # So: add the residual to the required clearance. Requiring the full 5u travel
 # would balloon every garment; the residual is small and affordable.
+# --- #bust-authored-nipple-cap -- OPT-IN, default OFF ------------------------
+#
+# REPORTED IN GAME 2026-09-03: "nipples on certain armor create outlines through
+# the plate". Measured on the reported piece, against the author's own mesh:
+#
+#     lift at the nipple, relative to the same shape's flat chest
+#       chest_plate   AUTHOR -0.059u   OURS +0.114u   (we over-lift 0.174u)
+#       top           AUTHOR -0.139u   OURS +0.105u   (we over-lift 0.243u)
+#     correlation(nipple weight, extra standoff vs author) = +0.44 / +0.50
+#
+# The author's garment sits CLOSER at the nipple than on the flat chest. Ours
+# pushes OUT there. So the bust requirement is not merely too strong -- on these
+# shapes it has the WRONG SIGN against what the author built, and the outline
+# the user sees is the nipple map embossed into a plate.
+#
+# WHY IT HAPPENS. `req` ramps with nipple weight (0.12u flat -> 0.68u at the
+# tip) and is applied as a hard floor on the push-out:
+#     move = np.where(in_bust, np.maximum(move, req - worst), move)
+# Nothing in that chain asks what the AUTHOR's clearance was. The ramp exists so
+# a tip cannot poke through CLOTH; on a rigid plate it embosses instead, trading
+# a defect the plate cannot have for one it visibly does.
+#
+# WHY NOT A CLOTH/PLATE GATE, which is where this started: the two worst shapes
+# on the reported piece disagree about which they are -- `_shape_is_rigid_torso_
+# armor` calls both rigid, `_chest_follow_for_shape` calls one 0.35 and the
+# other 1.0 -- and BOTH tuck in at the nipple in the author's own mesh. The
+# axis that separates them is not the material, it is the AUTHORED RELATIONSHIP.
+#
+# WHAT THIS DOES. Caps the nipple ramp at the extra room the author actually
+# left over the same shape's flat chest. Where they left none, the ramp is
+# suppressed and the requirement falls back to the flat clearance. It can only
+# LOWER `req`, never raise it.
+#
+# Measured by DISTANCE, not along the source body's normal, deliberately: those
+# normals are identically zero at defaults on this path (F011), so a
+# normal-based cap would read "the author had zero clearance everywhere" and
+# flatten the requirement to nothing. Distance needs no normals and works today.
+#
+# THE COUNTER-METRIC IS NIPPLE POKE-THROUGH. Lowering a clearance floor can let
+# the tip through, which is worse than an outline. `_GROWTH` allows extra above
+# the author's own room for a UBE bust larger than the CBBE one they fitted --
+# the `#authored-inflate` pattern ("the author's spacing, or enough for the body
+# to grow there, whichever is larger"). Default 0.0: prove the cap first, then
+# tune the allowance against measured clipping.
+BUST_AUTHORED_NIPPLE_CAP = _flag("CBBE2UBE_BUST_AUTHORED_NIPPLE_CAP", False)
+BUST_AUTHORED_NIPPLE_GROWTH = _knob(
+    "CBBE2UBE_BUST_AUTHORED_NIPPLE_GROWTH", 0.0)
+# Nipple weight below which a bust vert counts as "flat chest" when measuring
+# the author's own baseline clearance for this shape.
+BUST_AUTHORED_FLAT_NIPW = _knob("CBBE2UBE_BUST_AUTHORED_FLAT_NIPW", 0.15)
+
 BUST_MORPH_RESIDUAL = not _flag("CBBE2UBE_NO_BUST_MORPH_RESIDUAL", False)
 BUST_MORPH_RESIDUAL_MAX = 1.5   # u -- ceiling on what the residual may demand
 # Nipple weight at which the residual is charged IN FULL. Not a taste knob:
