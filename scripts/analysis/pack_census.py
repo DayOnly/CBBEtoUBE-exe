@@ -138,9 +138,23 @@ def main():
             tagged = set(s.name for s in shapes if bodytri_of(s))
             if tagged & BODY_NAMES:
                 body_tagged += 1
+            # XML-declared shapes are COLLIDERS (and simulated cloth the XML
+            # already drives). A collider must NOT be tagged to morph -- the
+            # pack has CTD history around altering collider shapes -- so
+            # counting them as untagged cloth over-reports. Mods name theirs
+            # anything (`ColLegs`, `Colision`, `collision body`), so the name
+            # list alone cannot find them; read the piece's own XML.
+            declared = set()
+            _stem = p[:-6] if p[-6:-4] in ("_0", "_1") else p[:-4]
+            _x = _stem + ".xml"
+            if os.path.exists(_x):
+                _t = open(_x, "rb").read().decode("utf-8", "ignore")
+                declared = set(re.findall(
+                    r'<per-(?:triangle|vertex)-shape\s+name="([^"]+)"', _t))
             cloth = [s.name for s in shapes
                      if (s.textures or {})
-                     and s.name not in BODY_NAMES and s.name not in PROXY]
+                     and s.name not in BODY_NAMES and s.name not in PROXY
+                     and s.name not in declared]
             if [c for c in cloth if c not in tagged]:
                 untagged_cloth += 1
 
