@@ -1356,7 +1356,59 @@ def conform_to_source_standoff(
             nipw = np.asarray(ube_body_nipple, dtype=np.float64)[ui]
         else:
             nipw = np.zeros(len(ui))
-        req = np.clip(_nc().BUST_FLAT_CLEARANCE + nipw * _nc().BUST_NIPPLE_GAIN,
+        # #nipple-ramp-sharpness. The ramp is linear in the body's nipple
+        # WEIGHT, and that weight is broad: on the shipped UBE body 94% of the
+        # bust band carries some, p50 0.119 and p90 0.537 against a maximum of
+        # 0.563. So `req` lifts the whole breast DOME, not the tip -- band
+        # median 0.239u where the flat floor is 0.12u -- and the garment sits
+        # proud everywhere. Measured across the pack, our bust standoff runs
+        # +0.467u (p50) over the AUTHOR's on 88% of shapes.
+        #
+        # The comment on CONFORM_BUST_CLEARANCE names this exact fix and says
+        # it is unbuilt: "a narrower nipple region with a steeper ramp, so the
+        # tip keeps its clearance without dragging the whole bust band out with
+        # it". Lowering the ceiling instead was tried and reverted the same day
+        # -- it clips the TIP, and a nipple came through a leather cuirass.
+        #
+        # Sharpening alone would lower the tip too, so the gain is SOLVED from
+        # the body's own maximum weight to hold the tip's requirement exactly
+        # where it is today. The tip column is therefore constant by
+        # construction, and only the shoulder of the ramp moves:
+        #
+        #     k     gain      p50     p75     p90     tip
+        #     1.0   1.00    0.239   0.566   0.657   0.683   <- today
+        #     2.0   1.77    0.145   0.473   0.632   0.683
+        #     3.0   3.15    0.125   0.399   0.608   0.683
+        #
+        # Calibrated on the WHOLE body's weight array, not this shape's subset,
+        # so a garment covering only the flat chest cannot solve a huge gain off
+        # a local maximum of nearly zero.
+        #
+        # MEASURED INERT ON THE FINAL MESH, DEFAULT 1.0. On the piece it was
+        # built for it changes `req` exactly as modelled and then does not
+        # survive: bust median 1.087u -> 1.084u. `s07_antipoke` re-pushes AFTER
+        # conform (+0.691u on that piece), so a lower conform requirement is
+        # overwritten -- the same "two pushes, a floor on one is UNDONE
+        # downstream" that `#snugness-two-pushes` records, hit from the other
+        # side.
+        #
+        # It is kept, off, because the modelled narrowing is real and this pass
+        # IS the last word on shapes that skip anti-poke. It is NOT a fix for
+        # the bust gap. Five clearance knobs are now measured inert on that
+        # piece -- inflate magnitude, ANTIPOKE_FLAT_CLEAR, CBBE2UBE_BUST_CLEAR,
+        # this ramp, and CLEARANCE_MORPH_MAX (1.1 -> 0.7 moved the median only
+        # 1.087 -> 1.006, and 0.4 was no better). The gap is +0.467u over the
+        # AUTHOR at p50 across 296 shapes on 88% of them, and closing it needs
+        # the producer changed, not a knob turned.
+        _k = float(_nc().BUST_NIPPLE_SHARPNESS)
+        _gain = float(_nc().BUST_NIPPLE_GAIN)
+        if _k > 1.0 and ube_body_nipple is not None:
+            _wmax = float(np.max(np.asarray(ube_body_nipple, dtype=np.float64))
+                          or 0.0)
+            if _wmax > 0.2:                 # a real nipple map, not a flat panel
+                _gain = (_wmax * _nc().BUST_NIPPLE_GAIN) / (_wmax ** _k)
+                nipw = nipw ** _k
+        req = np.clip(_nc().BUST_FLAT_CLEARANCE + nipw * _gain,
                       _nc().BUST_FLAT_CLEARANCE, bust_clearance)
         # #bust-authored-nipple-cap: never demand MORE room at the nipple than
         # the author left there. See the constant for the in-game report and

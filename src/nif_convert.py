@@ -346,6 +346,11 @@ from .nif_convert_fitgeom import (  # noqa: E402
 )
 
 BUST_NIPPLE_GAIN = 1.0
+# --- #nipple-ramp-sharpness -- exponent on the nipple ramp. 1.0 = today.
+# Above 1 narrows the high-clearance region toward the tip; the gain is solved
+# so the TIP requirement is unchanged. See `_conform_to_body` for the numbers
+# and for why lowering the ceiling instead was reverted.
+BUST_NIPPLE_SHARPNESS = _knob("CBBE2UBE_BUST_NIPPLE_SHARPNESS", 1.0)
 BUST_NEIGHBORHOOD_K = 6
 BUST_NEIGHBORHOOD_RADIUS = 4.0
 # #bust-neighbourhood-spacing.
