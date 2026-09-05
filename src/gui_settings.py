@@ -365,10 +365,61 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "pieces that currently sit closer than the new value. NOT "
                     "the same number as the conform ceiling below, which is a "
                     "different pass. Was 1.0."),
+    # --- promoted to default ON 2026-09-04, all three confirmed in game -------
+    Setting("bodytri_all_shapes",
+            "Keep body sliders working on dressed characters",
+            "Armor", "Physics", default=True,
+            env="CBBE2UBE_NO_BODYTRI_ALL_SHAPES", invert=True,
+            hint="For sliders resetting to the base shape when clothes go on.",
+            tooltip="Hand-authored outfits attach the slider link to the body "
+                    "AND to every cloth piece. The converter attached one, and "
+                    "a later step then destroyed all but one of those, keeping "
+                    "whichever piece happened to come first. A full-length "
+                    "dress is the whole silhouette, so the body underneath "
+                    "could be perfectly shaped and still look flat. Ships the "
+                    "authored arrangement instead."),
+    Setting("proxy_weight_invariant",
+            "Match generated collision at both body weights",
+            "Armor", "Physics", default=True,
+            env="CBBE2UBE_NO_PROXY_WEIGHT_INVARIANT", invert=True,
+            hint="For physics that works at one weight and not the other.",
+            tooltip="Skyrim blends an outfit's two weight meshes point by "
+                    "point, and one morph file serves both, so the two have to "
+                    "agree. The generated collision shape was built from each "
+                    "file's own positions, so the two disagreed on 14 of 28 "
+                    "outfits -- against zero for hand-built ones. Builds it "
+                    "from the mesh's connectivity instead, which is identical "
+                    "at both weights."),
+    Setting("softcloth_own_plane",
+            "Measure cloth clearance where the push is applied",
+            "Armor", "Physics", default=True, advanced=True,
+            env="CBBE2UBE_NO_SOFTCLOTH_OWN_PLANE", invert=True,
+            hint="Stops physics cloth being pushed further out than intended.",
+            tooltip="The pass measured how far cloth sat from one point on the "
+                    "body and then pushed it away from a different one, so it "
+                    "overshot its own target. Can only ever reduce the push."),
+    Setting("softcloth_smooth_dir",
+            "Move neighbouring cloth points together",
+            "Armor", "Physics", default=True, advanced=True,
+            env="CBBE2UBE_NO_SOFTCLOTH_SMOOTH_DIR", invert=True,
+            hint="For buckling on straps and thin trim.",
+            tooltip="The push strength was smoothed but its DIRECTION was not, "
+                    "so neighbouring points on a thin strap moved apart even "
+                    "where they were pushed equally hard, and the strip "
+                    "buckled. Still push-out only."),
+    Setting("coherence_kink",
+            "Repair cloth that has folded over as a group",
+            "Armor", "Fit", default=True, advanced=True,
+            env="CBBE2UBE_NO_COHERENCE_KINK", invert=True,
+            hint="For a strip that has turned the wrong way as a whole.",
+            tooltip="The existing repair looks for a surface that has gone "
+                    "scattered. A strip that turns cleanly as one piece stays "
+                    "smooth, so it slipped past unrepaired even while turning "
+                    "three times harder than the cloth it is attached to."),
     Setting("body_lookup_prefers_baseshape",
             "Fix body sliders on armour that has physics",
-            "Armor", "Physics", default=False,
-            env="CBBE2UBE_BODY_LOOKUP_PREFERS_BASESHAPE", invert=False,
+            "Armor", "Physics", default=True,
+            env="CBBE2UBE_NO_BODY_LOOKUP_PREFERS_BASESHAPE", invert=True,
             hint="For breasts/muscle going flat when a physics outfit is worn.",
             tooltip="Armour carries its own copy of the body's slider data so "
                     "your shape survives being dressed. On outfits that use "

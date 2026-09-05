@@ -299,6 +299,9 @@ def test_topo_decimation_keeps_ORIGINAL_verts():
     assert lab.min() >= 0, "a vertex was left unassigned"
 
 
-def test_proxy_weight_invariant_is_OPT_IN_until_it_has_a_verdict():
-    """It moves geometry on every piece carrying a generated proxy."""
-    assert nc.PROXY_WEIGHT_INVARIANT is False
+def test_proxy_weight_invariant_is_DEFAULT_ON_since_its_verdict():
+    """Promoted 2026-09-04: the A/B went 2 vert-count mismatches + 2
+    out-of-bounds TRI offsets -> 0 and 0, and the build carrying it was judged
+    good in game. It moves geometry on every piece carrying a generated proxy,
+    so the kill switch stays."""
+    assert nc.PROXY_WEIGHT_INVARIANT is True

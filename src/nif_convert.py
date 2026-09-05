@@ -2779,7 +2779,8 @@ INFLATE_SOFTCLOTH = (
     not _flag("CBBE2UBE_NO_SOFTCLOTH_INFLATE", False))
 # (moved to nif_convert_fitgeom.py, 2026-09-01)
 # (moved to nif_convert_fitgeom.py, 2026-09-01)
-# --- #softcloth-own-plane -- OPT-IN, `CBBE2UBE_SOFTCLOTH_OWN_PLANE=1` -------
+# --- #softcloth-own-plane -- DEFAULT ON since 2026-09-04 --------------------
+# Kill switch: CBBE2UBE_NO_SOFTCLOTH_OWN_PLANE=1
 # The pass above measures a cloth vert's deficit against the POKING body
 # vertex's tangent plane, then applies the push along the CLOTH vertex's OWN
 # nearest body normal. Those are two different vertices, up to `radius` (4.0u)
@@ -2801,21 +2802,24 @@ INFLATE_SOFTCLOTH = (
 # on its own plane). So this pass can give clearance back, never take more --
 # the same safety property that made `#panel-rigid-surface-guard` shippable.
 #
-# DEFAULT OFF pending an A/B and an in-game verdict: this is physics cloth, and
-# the clearance it trims is jiggle headroom, which a bind-pose number cannot
-# judge on its own.
-SOFTCLOTH_OWN_PLANE = _flag("CBBE2UBE_SOFTCLOTH_OWN_PLANE", False)
-# --- #softcloth-smooth-direction -- OPT-IN, default OFF ----------------------
+# The A/B it was held for was run 2026-09-04 on a reported piece (folds in the
+# band 109 -> 98, max push 3.71u -> 2.10u, 6 pieces better / 0 worse) and the
+# build carrying it was judged good in game. DEFAULT ON.
+# PROMOTED TO DEFAULT ON 2026-09-04 after the in-game verdict on the strap
+# defect; monotone by construction (it can only LOWER the push).
+SOFTCLOTH_OWN_PLANE = not _flag("CBBE2UBE_NO_SOFTCLOTH_OWN_PLANE", False)
+# --- #softcloth-smooth-direction -- DEFAULT ON since 2026-09-04 -------------
+# Kill switch: CBBE2UBE_NO_SOFTCLOTH_SMOOTH_DIR=1
 # The softcloth push smooths its MAGNITUDE but aims every vert along its own
 # body normal, so a thin feature crossing a curving body buckles on the
 # direction differential alone. Smooths the direction field too, re-projected
 # so the pass stays push-out only. See `_inflate_cloth_over_bust_butt`.
-SOFTCLOTH_SMOOTH_DIR = _flag("CBBE2UBE_SOFTCLOTH_SMOOTH_DIR", False)
+SOFTCLOTH_SMOOTH_DIR = not _flag("CBBE2UBE_NO_SOFTCLOTH_SMOOTH_DIR", False)
 # Max EXTRA lift softcloth may add to a vert that is already OUTSIDE the body.
 # 0 disables the cap (ship behaviour: everything is raised to the bust headroom
 # `clear`, which lifts correctly-seated straps off the collarbone).
 # See #softcloth-seated-cap in `_inflate_cloth_over_bust_butt`.
-SOFTCLOTH_SEATED_CAP = _knob("CBBE2UBE_SOFTCLOTH_SEATED_CAP", 0.0)
+SOFTCLOTH_SEATED_CAP = _knob("CBBE2UBE_SOFTCLOTH_SEATED_CAP", 0.3)
 # Minimum fraction of BREAST-BAND vertex weight that must be carried by CHAIN
 # (non-body) bones for the bust to count as physics-driven. Below this the bust is
 # rigid/body-skinned -> use the normal anti-poke (clearance cap) not the softcloth
@@ -6292,8 +6296,11 @@ def _boot_far_thigh_scale_exclusions(src_shape, biped_slots: int) -> tuple[str, 
 #
 # OFF because it changes the TRI on every physics piece, which is a change to
 # how bodies morph in game and needs its own verdict.
-BODY_LOOKUP_PREFERS_BASESHAPE = _flag(
-    "CBBE2UBE_BODY_LOOKUP_PREFERS_BASESHAPE", False)
+# PROMOTED TO DEFAULT ON 2026-09-04: without it the injected body is looked
+# up as a collision proxy and the armour ships a fraction of the body's
+# morphs -- sliders collapse on every physics outfit. Confirmed in game.
+BODY_LOOKUP_PREFERS_BASESHAPE = not _flag(
+    "CBBE2UBE_NO_BODY_LOOKUP_PREFERS_BASESHAPE", False)
 
 
 def ube_body_shape(nif):
@@ -8714,7 +8721,8 @@ _BUTT_COL_MIN_UNCOVERED = _knob("CBBE2UBE_BUTT_COLLIDER_MIN_UNCOVERED", 150, int
 #
 # So this is a HYPOTHESIS TEST, not a fix, and the prior is against it. If it
 # changes nothing the carrier is eliminated and the cause is outside the mesh.
-# --- #bodytri-all-shapes -- OPT-IN, default OFF -------------------------------
+# --- #bodytri-all-shapes -- DEFAULT ON since 2026-09-04 ----------------------
+# Kill switch: CBBE2UBE_NO_BODYTRI_ALL_SHAPES=1
 #
 # The authored arrangement, read at BLOCK level: BODYTRI on the body AND on
 # every cloth shape. Both earlier readings were wrong --
@@ -8749,7 +8757,7 @@ _BUTT_COL_MIN_UNCOVERED = _knob("CBBE2UBE_BUTT_COLLIDER_MIN_UNCOVERED", 150, int
 #
 # IN-GAME: `#bodytri-carrier-cloth` (cloth only, body excluded) was tested and
 # changed NOTHING, which this model predicts -- it swaps which half is broken.
-BODYTRI_ALL_SHAPES = _flag("CBBE2UBE_BODYTRI_ALL_SHAPES", False)
+BODYTRI_ALL_SHAPES = not _flag("CBBE2UBE_NO_BODYTRI_ALL_SHAPES", False)
 BODYTRI_CARRIER_CLOTH = _flag("CBBE2UBE_BODYTRI_CARRIER_CLOTH", False)
 
 SKIRT_PROXY_AFTER_WEIGHTS = _flag("CBBE2UBE_SKIRT_PROXY_AFTER_WEIGHTS", False)
@@ -8757,7 +8765,8 @@ SKIRT_PROXY_AFTER_WEIGHTS = _flag("CBBE2UBE_SKIRT_PROXY_AFTER_WEIGHTS", False)
 SKIRT_PROXY_REBUILD = (
     not _flag("CBBE2UBE_NO_SKIRT_PROXY_REBUILD", False))
 _SKIRT_PROXY_NAME = "SkirtCol"
-# --- #proxy-weight-invariant -- OPT-IN, default OFF ---------------------------
+# --- #proxy-weight-invariant -- DEFAULT ON since 2026-09-04 ------------------
+# Kill switch: CBBE2UBE_NO_PROXY_WEIGHT_INVARIANT=1
 #
 # Generated collision proxies are decimated on a POSITION grid, so the `_0` and
 # `_1` files of one garment -- same topology, different body weight -- decimate
@@ -8770,9 +8779,9 @@ _SKIRT_PROXY_NAME = "SkirtCol"
 # ON, the proxy clusters on the edge graph instead. See `_topo_decimate` in
 # nif_convert_physics.py for the mechanism and the full measurement.
 #
-# It MOVES GEOMETRY on every piece that carries a generated proxy, so it needs
-# its own in-game verdict before the default flips.
-PROXY_WEIGHT_INVARIANT = _flag("CBBE2UBE_PROXY_WEIGHT_INVARIANT", False)
+# It MOVES GEOMETRY on every piece that carries a generated proxy. The build
+# carrying it was judged good in game 2026-09-04, so the default is ON.
+PROXY_WEIGHT_INVARIANT = not _flag("CBBE2UBE_NO_PROXY_WEIGHT_INVARIANT", False)
 # Cell budget multiplier for the invariant path -- see `_decimate`. 1.5 recovers
 # the grid's coverage at fewer triangles; 2.0 buys nothing further.
 PROXY_TOPO_TARGET_SCALE = _knob("CBBE2UBE_PROXY_TOPO_TARGET_SCALE", 1.5)
@@ -10737,7 +10746,8 @@ COHERENCE_THIN_AREA_SCALE = _knob("CBBE2UBE_COHERENCE_THIN_AREA_SCALE", 1.0)
 # For a THIN strip, gate on how far coherence FELL rather than its absolute
 # value -- a rim that reorients coherently is still a defect. #coherence-rigid
 COHERENCE_THIN_DROP = _knob("CBBE2UBE_COHERENCE_THIN_DROP", 0.30)
-# --- #coherence-kink -- OPT-IN, default OFF ----------------------------------
+# --- #coherence-kink -- DEFAULT ON since 2026-09-04 --------------------------
+# Kill switch: CBBE2UBE_NO_COHERENCE_KINK=1
 # The kink test was DOCUMENTED beside `_repair_coherence_collapse` but never
 # implemented: `kink` was assigned False and never set True, so a patch that
 # rotates COHERENTLY fell through every gate -- collapse (needs out<=0.30) and
@@ -10746,7 +10756,7 @@ COHERENCE_THIN_DROP = _knob("CBBE2UBE_COHERENCE_THIN_DROP", 0.30)
 # 16 shoulder-strap patches turning 68-113 deg against neighbours at 26-48.
 # Repaired by SMOOTHING, never rigidly -- rigid preserves a kink by
 # construction.
-COHERENCE_KINK = _flag("CBBE2UBE_COHERENCE_KINK", False)
+COHERENCE_KINK = not _flag("CBBE2UBE_NO_COHERENCE_KINK", False)
 COHERENCE_KINK_DEG = _knob("CBBE2UBE_COHERENCE_KINK_DEG", 40.0)
 COHERENCE_KINK_RATIO = _knob("CBBE2UBE_COHERENCE_KINK_RATIO", 2.0)
 # A patch turning this many degrees AND this many times harder than the surface
