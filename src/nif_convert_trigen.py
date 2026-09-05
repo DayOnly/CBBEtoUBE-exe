@@ -274,18 +274,74 @@ def _tri_is_owning_variant(src_path) -> bool:
 
     A piece with no `_0` source partner owns its own TRI whatever its suffix,
     so a `_1`-only armour never silently loses body morphs.
+
+    A NO-SUFFIX variant does NOT own it when a `_0` sibling exists.
+    #tri-variant-collision. `foo.nif`, `foo_0.nif` and `foo_1.nif` all derive
+    the same `foo.tri`, and the no-suffix stem does not end in `_1`, so it and
+    `_0` BOTH returned True here -- two writers, last one wins. Where the
+    no-suffix file is a lower-poly variant (a first-person or world model) the
+    survivor's morphs address vertices it does not have. Measured on the shipped
+    pack, 5 such entries across 3 stems:
+
+        GauntletsF   1544 verts   TRI indexes to  3013
+        Outfit       2467 verts   TRI indexes to 13705
+        ClothF1st     495 verts   TRI indexes to  1544
+
+    The worn pair keeps the TRI; see `_tri_fits_variant` for whether the
+    no-suffix file may still POINT at it.
     """
     try:
         p = Path(src_path)
         stem = p.stem
     except Exception:
         return True                      # unparseable -> generate, never skip
-    if not stem.endswith("_1"):
-        return True                      # `_0`, or single-variant: it owns it
+    if stem.endswith("_1"):
+        try:
+            return not p.with_name(stem[:-2] + "_0" + p.suffix).is_file()
+        except Exception:
+            return True                  # cannot tell -> generate rather than skip
+    if not stem.endswith("_0"):
+        # no-suffix variant: the weight pair owns the shared TRI if it exists
+        try:
+            return not p.with_name(stem + "_0" + p.suffix).is_file()
+        except Exception:
+            return True
+    return True                          # `_0` owns it
+
+
+def _tri_fits_variant(src_path) -> bool:
+    """May this NIF POINT at the shared `.tri` its stem derives?
+
+    Only if the variant that OWNS that TRI has the same per-shape vertex
+    counts. A first-person or low-poly file sharing a stem with the worn pair
+    does not, and a BODYTRI pointing at the pair's TRI then asks NioOverride to
+    move vertices the shape does not have. See #tri-variant-collision.
+
+    Read from the SOURCE pair, which is complete on disk before conversion
+    starts -- the destination sibling may still be unwritten, and in a worker
+    pool is being written by a different process.
+    """
     try:
-        return not p.with_name(stem[:-2] + "_0" + p.suffix).is_file()
+        p = Path(src_path)
+        stem = p.stem
     except Exception:
-        return True                      # cannot tell -> generate rather than skip
+        return True
+    if stem.endswith("_0") or stem.endswith("_1"):
+        return True                      # the pair shares one mesh by design
+    try:
+        owner = p.with_name(stem + "_0" + p.suffix)
+        if not owner.is_file():
+            return True                  # nothing else claims the TRI
+        pyn = _nc()._pynifly()
+        mine = {s.name: len(s.verts) for s in pyn.NifFile(filepath=str(p)).shapes}
+        theirs = {s.name: len(s.verts)
+                  for s in pyn.NifFile(filepath=str(owner)).shapes}
+    except Exception:
+        return True                      # cannot tell -> behave as before
+    shared = set(mine) & set(theirs)
+    if not shared:
+        return True
+    return all(mine[n] == theirs[n] for n in shared)
 
 def _reset_morph_flags(shape) -> None:
     """Set shape.flags to match the hand-built UBE convention:

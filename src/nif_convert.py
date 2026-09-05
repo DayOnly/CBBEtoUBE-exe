@@ -186,7 +186,8 @@ from .nif_convert_trigen import (  # noqa: E402
    _BODY_MORPH_DIFF_CACHE, _MORPH_TRI_NAME_CACHE, _MORPH_STACK_MIN,
    _MORPH_SIZE_KEYWORDS, _cached_osd_load, _cached_body_morph_stack,
    _cached_body_morph_amplitude, _cached_body_morph_differential,
-   _body_array_digest, _tri_is_owning_variant, _reset_morph_flags,
+   _body_array_digest, _tri_is_owning_variant, _tri_fits_variant,
+   _reset_morph_flags,
    armor_relpath_under_meshes,
    _collect_tri_inputs, _normalize_shader_for_morph, _pick_bodytri_carriers,
    _source_morph_tri_shape_names, _refresh_armor_tri_after_reimport,
@@ -4678,7 +4679,11 @@ def convert_nif(
                 # whatever textured shape iterates first and the real cloth stops
                 # morphing. Rigid single-bone pieces still morph via the M6 reskin's
                 # bone-driven skinning.  [DESIGN: BODYTRI / body-morph generation]
-                if bodytri_path:
+                # #tri-variant-collision: a low-poly variant sharing a
+                # stem with the worn pair derives the SAME `.tri`, whose
+                # offsets address vertices it does not have. Pointing at
+                # it is worse than having no morphs.
+                if bodytri_path and _tri_fits_variant(src_path):
                     from pyn.pynifly import NiStringExtraData  # type: ignore
                     # Single-carrier BODYTRI matching hand-authored
                     # UBE convention. See `_pick_bodytri_carriers`.
@@ -14345,11 +14350,14 @@ def convert_nif_phase2(
     # Rigid single-bone pieces follow morphs via M6 re-skin (standard skinning).
     # Falls back to first_armor_shape if the filter returns empty.
     _bodytri_err = None
+    # #tri-variant-collision -- see the phase-1 guard above.
     carriers_p2 = _pick_bodytri_carriers(
         dst_nif, exclude_body=BODYTRI_CARRIER_CLOTH,
         all_cloth=(BODYTRI_ALL_SHAPES or BODYTRI_CARRIER_CLOTH))
     if not carriers_p2 and first_armor_shape is not None:
         carriers_p2 = [first_armor_shape]
+    if not _tri_fits_variant(src_path):
+        carriers_p2 = []
     if carriers_p2:
         try:
             from pyn.pynifly import NiStringExtraData  # type: ignore
