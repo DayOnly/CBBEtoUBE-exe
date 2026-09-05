@@ -5385,10 +5385,22 @@ def _cmd_auto(args):
         plugins_only=getattr(args, "plugins_only", False),
     )
     rc = _cmd_convert(conv)
-    # The post-merge coverage phases below generate the REQUIRED race-compat /
-    # mod-coverage ESPs, but they run AFTER rc was fixed by the convert above.
-    # Track their failures so an exception there still fails the run instead of
-    # silently exiting 0 with armor that's invisible on UBE races.
+    # Failures of anything that runs AFTER `rc` was fixed by the convert above,
+    # so an exception down here still fails the run instead of exiting 0.
+    #
+    # THIS COUNTER WENT DEAD. It was written for the standalone race-compat and
+    # mod-coverage phases that used to live below; both were removed (vanilla
+    # race coverage 2026-07-03, and the `#fsp-dedup` block along with the
+    # standalone coverage passes), unified coverage moved INSIDE `_cmd_convert`
+    # where its rc IS checked, and nothing was left to increment it -- while
+    # the comment went on claiming the guard was live. Found 2026-09-04 by an
+    # audit for gates assigned a constant and never set: the same shape as the
+    # `#coherence-kink` branch, which was documented in full and never
+    # implemented.
+    #
+    # The one post-convert step that CAN still fail is the opt-in overlay
+    # transfer, which caught its own exception and let the run exit 0. It now
+    # counts, so `--convert-overlays` failing is visible in the exit code.
     post_merge_failures = 0
 
     # Vanilla race coverage (Vanilla_UBE_Race_Compat.esp) REMOVED 2026-07-03:
@@ -5424,7 +5436,11 @@ def _cmd_auto(args):
                       f"overlay mods so the loose textures override their BSAs. "
                       f"***")
         except Exception as e:
-            print(f"  !! overlay transfer skipped: {e!r}")
+            # Counted: the user explicitly asked for this with
+            # --convert-overlays, so exiting 0 hides that the textures they
+            # expect were never written.
+            post_merge_failures += 1
+            print(f"  !! overlay transfer FAILED: {e!r}")
 
     # Pre-flight: missing hands/feet .tri makes them stay CBBE-shaped while the
     # body morphs UBE (built without 'Build Morphs'). Surface the warning loudly.
@@ -5439,8 +5455,8 @@ def _cmd_auto(args):
 
     _enable = f"'{output.name}' + its Combined ESP(s)"
     if post_merge_failures:
-        print(f"\n  !! {post_merge_failures} post-merge coverage phase(s) FAILED "
-              "-- some armor may be invisible on UBE races (see errors above).")
+        print(f"\n  !! {post_merge_failures} post-convert phase(s) FAILED "
+              "-- see the errors above; the run is reported as failed.")
     # Re-write with any coverage-phase failures appended (same in-process
     # _RUN_FAILURES list _cmd_convert already wrote).
     _write_failures_file()
