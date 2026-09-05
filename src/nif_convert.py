@@ -2805,6 +2805,17 @@ INFLATE_SOFTCLOTH = (
 # the clearance it trims is jiggle headroom, which a bind-pose number cannot
 # judge on its own.
 SOFTCLOTH_OWN_PLANE = _flag("CBBE2UBE_SOFTCLOTH_OWN_PLANE", False)
+# --- #softcloth-smooth-direction -- OPT-IN, default OFF ----------------------
+# The softcloth push smooths its MAGNITUDE but aims every vert along its own
+# body normal, so a thin feature crossing a curving body buckles on the
+# direction differential alone. Smooths the direction field too, re-projected
+# so the pass stays push-out only. See `_inflate_cloth_over_bust_butt`.
+SOFTCLOTH_SMOOTH_DIR = _flag("CBBE2UBE_SOFTCLOTH_SMOOTH_DIR", False)
+# Max EXTRA lift softcloth may add to a vert that is already OUTSIDE the body.
+# 0 disables the cap (ship behaviour: everything is raised to the bust headroom
+# `clear`, which lifts correctly-seated straps off the collarbone).
+# See #softcloth-seated-cap in `_inflate_cloth_over_bust_butt`.
+SOFTCLOTH_SEATED_CAP = _knob("CBBE2UBE_SOFTCLOTH_SEATED_CAP", 0.0)
 # Minimum fraction of BREAST-BAND vertex weight that must be carried by CHAIN
 # (non-body) bones for the bust to count as physics-driven. Below this the bust is
 # rigid/body-skinned -> use the normal anti-poke (clearance cap) not the softcloth
@@ -4667,7 +4678,9 @@ def convert_nif(
                     from pyn.pynifly import NiStringExtraData  # type: ignore
                     # Single-carrier BODYTRI matching hand-authored
                     # UBE convention. See `_pick_bodytri_carriers`.
-                    carriers = _pick_bodytri_carriers(nf)
+                    carriers = _pick_bodytri_carriers(
+                        nf, exclude_body=BODYTRI_CARRIER_CLOTH,
+                        all_cloth=(BODYTRI_ALL_SHAPES or BODYTRI_CARRIER_CLOTH))
                     carrier_name_for_tri = carriers[0].name if carriers else None
                     # Apply morph-readiness cleanup to ALL cloth shapes
                     # — not just the carrier. See Phase 2 equivalent
@@ -8680,11 +8693,89 @@ _BUTT_COL_MIN_UNCOVERED = _knob("CBBE2UBE_BUTT_COLLIDER_MIN_UNCOVERED", 150, int
 # `_match_coincident_cross_shape_skin`); moving past those as well would take
 # the pass out of the shared tail that both convert paths call, which is a
 # bigger change and is not attempted here.
+# --- #bodytri-carrier-cloth -- EXPERIMENT, default OFF -----------------------
+#
+# `_pick_bodytri_carriers` prefers the BODY shape (BaseShape/3BA) and says why:
+# "matches the dominant hand-built convention (88/93 sampled slot-32 UBE NIFs)"
+# and "on a cloth shape NioOverride often skips other shapes". That evidence is
+# real and this flag does NOT overturn it.
+#
+# It exists because an in-game report survived everything else. On the reported
+# outfit the armour's body morph data is now a byte-for-byte copy of the nude
+# body's -- same 196 names, same offset counts, same peaks, ratio 1.00x on every
+# breast/glute/ab slider -- the injected body is identical to the user's own
+# BodySlide build, the weight pair is correct, and the dress follows the breast
+# sliders at ~1.00x. And the sliders still collapse when it is worn.
+#
+# The ONE structural difference left from the author's own file is which shape
+# carries the BODYTRI tag:
+#     author (a CBBE/3BA mod)   1_dress      -- the visible garment
+#     ours   (UBE convention)   BaseShape    -- the injected body
+#
+# So this is a HYPOTHESIS TEST, not a fix, and the prior is against it. If it
+# changes nothing the carrier is eliminated and the cause is outside the mesh.
+# --- #bodytri-all-shapes -- OPT-IN, default OFF -------------------------------
+#
+# The authored arrangement, read at BLOCK level: BODYTRI on the body AND on
+# every cloth shape. Both earlier readings were wrong --
+#
+#   "body shape, 88/93 hand-built NIFs"  did not describe carrier choice
+#   "18 of 18 EXCLUDE the body"          was a TOOL ARTEFACT: pynifly's
+#                                        `extra_data()` stops at the first
+#                                        block it cannot build, and a
+#                                        BodySlide body carries a
+#                                        NiIntegersExtraData `LOCKEDNORM` at
+#                                        index 0, so every body reported no
+#                                        extra data at all
+#
+# Enumerated properly (`get_extra_data(target_index=i)` over extraDataCount):
+# the nude body's BaseShape carries LOCKEDNORM + BODYTRI, a hand-built armor's
+# BaseShape carries LOCKEDNORM + BODYTRI twice, and all 14 of its cloth shapes
+# carry BODYTRI.
+#
+# WHY IT PLAUSIBLY MATTERS. If NioOverride morphs a shape only when THAT shape
+# carries a BODYTRI, then a single carrier morphs half the piece:
+#
+#     carrier      body morphs   cloth morphs   full-coverage garment looks
+#     body only        yes           no         unmorphed cloth over a correct
+#                                               body -- the body is HIDDEN
+#     cloth only       no            yes        morphed cloth over base skin
+#     body + cloth     yes           yes        correct  (what authors ship)
+#
+# That is consistent with the in-game reports: a report of lost sliders on
+# full-length dresses, while smaller pieces on the same build looked right --
+# on a bra or a top the correctly-morphed body IS what you see, so a
+# body-only carrier hides its own defect.
+#
+# IN-GAME: `#bodytri-carrier-cloth` (cloth only, body excluded) was tested and
+# changed NOTHING, which this model predicts -- it swaps which half is broken.
+BODYTRI_ALL_SHAPES = _flag("CBBE2UBE_BODYTRI_ALL_SHAPES", False)
+BODYTRI_CARRIER_CLOTH = _flag("CBBE2UBE_BODYTRI_CARRIER_CLOTH", False)
+
 SKIRT_PROXY_AFTER_WEIGHTS = _flag("CBBE2UBE_SKIRT_PROXY_AFTER_WEIGHTS", False)
 
 SKIRT_PROXY_REBUILD = (
     not _flag("CBBE2UBE_NO_SKIRT_PROXY_REBUILD", False))
 _SKIRT_PROXY_NAME = "SkirtCol"
+# --- #proxy-weight-invariant -- OPT-IN, default OFF ---------------------------
+#
+# Generated collision proxies are decimated on a POSITION grid, so the `_0` and
+# `_1` files of one garment -- same topology, different body weight -- decimate
+# differently. Measured on the shipped pack: 14 of 28 pairs carrying a
+# generated skirt proxy disagree on its vertex count. Skyrim blends the pair per
+# vertex and one `.tri` serves both, so the disagreement ships a broken weight
+# blend AND morph offsets addressing vertices the other weight lacks (seen: an
+# offset for vertex 478 of a proxy with 428 vertices).
+#
+# ON, the proxy clusters on the edge graph instead. See `_topo_decimate` in
+# nif_convert_physics.py for the mechanism and the full measurement.
+#
+# It MOVES GEOMETRY on every piece that carries a generated proxy, so it needs
+# its own in-game verdict before the default flips.
+PROXY_WEIGHT_INVARIANT = _flag("CBBE2UBE_PROXY_WEIGHT_INVARIANT", False)
+# Cell budget multiplier for the invariant path -- see `_decimate`. 1.5 recovers
+# the grid's coverage at fewer triangles; 2.0 buys nothing further.
+PROXY_TOPO_TARGET_SCALE = _knob("CBBE2UBE_PROXY_TOPO_TARGET_SCALE", 1.5)
 # --- #proxy-encloses-chain -- the proxy must not CONTAIN what it collides with
 #
 # CONFIRMED IN GAME 2026-08-23. On a cuirass whose generated proxy contained 11
@@ -10646,6 +10737,18 @@ COHERENCE_THIN_AREA_SCALE = _knob("CBBE2UBE_COHERENCE_THIN_AREA_SCALE", 1.0)
 # For a THIN strip, gate on how far coherence FELL rather than its absolute
 # value -- a rim that reorients coherently is still a defect. #coherence-rigid
 COHERENCE_THIN_DROP = _knob("CBBE2UBE_COHERENCE_THIN_DROP", 0.30)
+# --- #coherence-kink -- OPT-IN, default OFF ----------------------------------
+# The kink test was DOCUMENTED beside `_repair_coherence_collapse` but never
+# implemented: `kink` was assigned False and never set True, so a patch that
+# rotates COHERENTLY fell through every gate -- collapse (needs out<=0.30) and
+# thin-drop (needs a fall >=0.30) both miss a strip whose coherence went
+# 0.96 -> 0.90 while the strip turned 88 degrees. Measured on a reported robe:
+# 16 shoulder-strap patches turning 68-113 deg against neighbours at 26-48.
+# Repaired by SMOOTHING, never rigidly -- rigid preserves a kink by
+# construction.
+COHERENCE_KINK = _flag("CBBE2UBE_COHERENCE_KINK", False)
+COHERENCE_KINK_DEG = _knob("CBBE2UBE_COHERENCE_KINK_DEG", 40.0)
+COHERENCE_KINK_RATIO = _knob("CBBE2UBE_COHERENCE_KINK_RATIO", 2.0)
 # A patch turning this many degrees AND this many times harder than the surface
 # it attaches to is a KINK -- rigid rotation, so the coherence gates miss it.
 #
@@ -14232,7 +14335,9 @@ def convert_nif_phase2(
     # Rigid single-bone pieces follow morphs via M6 re-skin (standard skinning).
     # Falls back to first_armor_shape if the filter returns empty.
     _bodytri_err = None
-    carriers_p2 = _pick_bodytri_carriers(dst_nif)
+    carriers_p2 = _pick_bodytri_carriers(
+        dst_nif, exclude_body=BODYTRI_CARRIER_CLOTH,
+        all_cloth=(BODYTRI_ALL_SHAPES or BODYTRI_CARRIER_CLOTH))
     if not carriers_p2 and first_armor_shape is not None:
         carriers_p2 = [first_armor_shape]
     if carriers_p2:
@@ -14391,7 +14496,7 @@ def convert_nif_phase2(
                     (armor_shape_verts, body_in_dst,
                      armor_vert_ef) = _collect_tri_inputs(dst_check)
                     # Carrier-first TRI (hand-authored UBE convention).
-                    p2_carriers = _pick_bodytri_carriers(dst_check)
+                    p2_carriers = _pick_bodytri_carriers(dst_check, exclude_body=BODYTRI_CARRIER_CLOTH)
                     p2_carrier_name = p2_carriers[0].name if p2_carriers else None
                     # Include BaseShape so one BODYTRI delivers both cloth + body morphs.
                     tri = generate_armor_tri(

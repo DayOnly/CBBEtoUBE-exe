@@ -333,6 +333,270 @@ def _cluster_decimate(verts, tris, target):
           & (t >= 0).all(axis=1))
     return np.asarray(reps, np.int64), old2new, t[ok]
 
+# --- #proxy-weight-invariant -- the two weights must decimate IDENTICALLY -----
+#
+# `_cluster_decimate` grids on `v.min(0)` and the SPAN of the verts it is given.
+# A `_0` and a `_1` file hold the SAME garment at two body weights: identical
+# vertex count, identical indexing, identical triangle set -- different
+# POSITIONS. So both the cell size and the cell membership differ, and the two
+# weights get proxies with different vertex counts and different topology.
+#
+# Skyrim blends an armour's `_0` and `_1` meshes per vertex, and one `.tri`
+# serves the pair. A proxy that differs across the pair therefore ships two
+# defects at once: a weight blend over mismatched vertex arrays, and morph
+# offsets addressing vertices the other weight does not have.
+#
+# MEASURED on the shipped pack (2026-09-04), every `_0`/`_1` pair in the output:
+#     generated skirt proxy   14 of 28 pairs mismatched   (50%)
+#     generated butt patch     0 of 41 pairs mismatched
+#     hand-authored control    0 of 12 pairs
+# and on 13 of those 14 the decimator's INPUT is identical at both weights --
+# same source shape, same chain mask, same triangle set, same vertex set. Only
+# the positions differ. The 14th differs only in triangle ORDER (same set, same
+# checksum). The decimator is the whole cause.
+#
+# THE FIX: cluster on TOPOLOGY, which is identical across the pair. A greedy
+# BFS cover over the edge graph, seeded in vertex-index order, assigns every
+# vertex to a representative using only `tris` and vertex indices. The
+# representative stays an ORIGINAL vertex -- weights, skin-to-bone transforms
+# and g2s still copy across with no re-rigging, which is the property
+# `_cluster_decimate`'s docstring exists to protect.
+#
+# It is also better on thin cloth: a POSITION grid merges the front and back of
+# a skirt into one cell wherever the two surfaces pass within a cell of each
+# other, collapsing the sheet. A topological cover cannot, because the two
+# surfaces are far apart in the graph.
+def _topo_decimate(verts, tris, target):
+    """Weight-INVARIANT decimation keeping representative original verts.
+
+    Clusters on the edge graph, not on positions, so a `_0` and a `_1` file --
+    same topology, different positions -- produce the SAME vertex count, the
+    SAME correspondence and the SAME triangles. See #proxy-weight-invariant.
+    Returns (rep_old_indices, old->new map, new_tris), the same contract as
+    `_cluster_decimate`.
+    """
+    t = np.asarray(tris, np.int64)
+    n = int(np.asarray(verts).shape[0])
+    if not len(t) or n <= 0:
+        return (np.zeros(0, np.int64), np.full(max(n, 0), -1, np.int64),
+                np.zeros((0, 3), np.int64))
+
+    # Undirected adjacency in CSR form, built from a SORTED unique edge list so
+    # it does not inherit the triangle ORDER -- which is not stable across the
+    # weight pair (measured: same triangle set, 82% of rows in a different
+    # order).
+    e = np.vstack([t[:, [0, 1]], t[:, [1, 2]], t[:, [2, 0]]])
+    e = np.vstack([e, e[:, ::-1]])
+    e = e[np.lexsort((e[:, 1], e[:, 0]))]
+    e = e[np.r_[True, (e[1:] != e[:-1]).any(axis=1)]]
+    deg = np.bincount(e[:, 0], minlength=n)
+    start = np.r_[0, np.cumsum(deg)].astype(np.int64)
+    nbr = np.ascontiguousarray(e[:, 1])
+
+    # A breadth-first traversal from the lowest-index vertex, continued into
+    # every further component in index order. Purely topological, and it walks
+    # the surface, so striding it spreads seeds ACROSS the cloth instead of
+    # clumping them wherever the vertex numbering happens to start.
+    order = np.empty(n, np.int64)
+    seen = np.zeros(n, bool)
+    pos = 0
+    for s0 in range(n):
+        if seen[s0]:
+            continue
+        seen[s0] = True
+        order[pos] = s0
+        pos += 1
+        head = pos - 1
+        while head < pos:
+            u = order[head]
+            head += 1
+            for w in nbr[start[u]:start[u + 1]]:
+                if not seen[w]:
+                    seen[w] = True
+                    order[pos] = w
+                    pos += 1
+
+    def _cover(nseeds):
+        """Multi-source BFS from strided seeds -- a graph Voronoi partition.
+
+        Cells come out compact and of even size, which is what makes the DUAL
+        triangulation dense: a proxy triangle exists only where a source
+        triangle spans three DIFFERENT cells, so a ragged partition yields a
+        sparse collider. Frontier vertices are visited in index order, so ties
+        on a cell boundary resolve the same way at both weights.
+        """
+        step = max(1, n // max(nseeds, 1))
+        seeds = order[::step]
+        lab = np.full(n, -1, np.int64)
+        lab[seeds] = np.arange(len(seeds))
+        frontier = sorted(int(x) for x in seeds)
+        while frontier:
+            nxt = []
+            for u in frontier:
+                lu = lab[u]
+                for w in nbr[start[u]:start[u + 1]]:
+                    if lab[w] == -1:
+                        lab[w] = lu
+                        nxt.append(int(w))
+            frontier = sorted(nxt)
+        nlab = len(seeds)
+        stray = np.flatnonzero(lab < 0)          # isolated verts, no edges
+        if len(stray):
+            lab[stray] = nlab + np.arange(len(stray))
+            nlab += len(stray)
+        return lab, nlab
+
+    def _merge_fragments(lab, nlab, floor):
+        """Absorb undersized cells into a neighbour, by lowest neighbouring
+        label -- topological, so still invariant. A cell too small to reach
+        three-way junctions contributes no proxy triangle."""
+        for _ in range(4):
+            sizes = np.bincount(lab, minlength=nlab)
+            small = set(int(x) for x in np.flatnonzero(sizes < floor))
+            if not small:
+                break
+            la, lb = lab[e[:, 0]], lab[e[:, 1]]
+            cross = la != lb
+            best_nb = {}
+            for x, y in zip(la[cross], lb[cross]):
+                x = int(x)
+                if x not in small:
+                    continue
+                y = int(y)
+                if y in small and y >= x:
+                    continue                      # prefer merging INTO a keeper
+                if x not in best_nb or y < best_nb[x]:
+                    best_nb[x] = y
+            if not best_nb:
+                break
+            remap = np.arange(nlab)
+            for x, y in best_nb.items():
+                remap[x] = y
+            for _ in range(4):                    # collapse merge chains
+                remap = remap[remap]
+            lab = remap[lab]
+            _uniq, lab = np.unique(lab, return_inverse=True)
+            nlab = len(_uniq)
+        return lab, nlab
+
+    def _reps_for(lab, nlab):
+        """rep[r] = the LOWEST-INDEX member of cell r -- an ORIGINAL vertex,
+        picked without reading a position, so both weights pick the same one
+        and weights / skin-to-bone transforms / g2s still copy straight
+        across."""
+        o = np.lexsort((np.arange(n), lab))
+        ls = lab[o]
+        firsts = np.r_[True, ls[1:] != ls[:-1]]
+        rep = np.zeros(nlab, np.int64)
+        rep[ls[firsts]] = o[firsts]
+        return rep
+
+    def _grow(seeds):
+        """Graph Voronoi: multi-source BFS from `seeds`, index order breaking
+        ties on a cell boundary so both weights partition identically."""
+        lab = np.full(n, -1, np.int64)
+        lab[seeds] = np.arange(len(seeds))
+        frontier = sorted(int(x) for x in seeds)
+        while frontier:
+            nxt = []
+            for u in frontier:
+                lu = lab[u]
+                for w in nbr[start[u]:start[u + 1]]:
+                    if lab[w] == -1:
+                        lab[w] = lu
+                        nxt.append(int(w))
+            frontier = sorted(nxt)
+        return lab
+
+    def _recenter(lab, nlab):
+        """Each cell's new seed = its vertex FURTHEST (in hops) from any other
+        cell -- one multi-source BFS out of every boundary vertex. This is the
+        graph analogue of a Lloyd step: it pulls seeds off the cell edges, and
+        even cells are what make the DUAL dense, which is where the collider's
+        triangles come from."""
+        la, lb = lab[e[:, 0]], lab[e[:, 1]]
+        bnd = np.unique(e[:, 0][la != lb])
+        if not len(bnd):
+            return None
+        dist = np.full(n, -1, np.int64)
+        dist[bnd] = 0
+        frontier = sorted(int(x) for x in bnd)
+        while frontier:
+            nxt = []
+            for u in frontier:
+                du = dist[u] + 1
+                for w in nbr[start[u]:start[u + 1]]:
+                    if dist[w] == -1:
+                        dist[w] = du
+                        nxt.append(int(w))
+            frontier = sorted(nxt)
+        # per cell: argmax depth, ties to the lowest vertex index
+        o = np.lexsort((np.arange(n), -dist, lab))
+        ls = lab[o]
+        return o[np.r_[True, ls[1:] != ls[:-1]]]
+
+    # Strided seeds along the traversal, then two Lloyd steps to even the cells.
+    step = max(1, n // max(target, 1))
+    seeds = order[::step]
+    lab = _grow(seeds)
+    for _ in range(2):
+        nxt_seeds = _recenter(lab, len(seeds))
+        if nxt_seeds is None or len(nxt_seeds) != len(seeds):
+            break
+        if np.array_equal(np.sort(nxt_seeds), np.sort(seeds)):
+            break
+        seeds = nxt_seeds
+        lab = _grow(seeds)
+    nlab = len(seeds)
+    stray = np.flatnonzero(lab < 0)               # isolated verts, no edges
+    if len(stray):
+        lab[stray] = nlab + np.arange(len(stray))
+        nlab += len(stray)
+    lab, nlab = _merge_fragments(lab, nlab, max(2, step // 2))
+    reps = _reps_for(lab, nlab)
+
+    tt = lab[t]
+    ok = ((tt[:, 0] != tt[:, 1]) & (tt[:, 1] != tt[:, 2]) & (tt[:, 0] != tt[:, 2])
+          & (tt >= 0).all(axis=1))
+    tt = tt[ok]
+    # Canonical triangle order. The SOURCE triangle order is not stable across
+    # the weight pair, and an unsorted proxy would inherit that difference even
+    # though its vertices now match. Rotating to lowest-index-first keeps the
+    # winding (it is a cyclic shift), so normals are unaffected.
+    if len(tt):
+        rot = np.argmin(tt, axis=1)
+        idx = (np.arange(3)[None, :] + rot[:, None]) % 3
+        tt = np.take_along_axis(tt, idx, axis=1)
+        tt = tt[np.lexsort((tt[:, 2], tt[:, 1], tt[:, 0]))]
+        tt = tt[np.r_[True, (tt[1:] != tt[:-1]).any(axis=1)]]
+    return reps, lab, tt
+
+
+def _decimate(verts, tris, target):
+    """Dispatch to the weight-invariant decimator when #proxy-weight-invariant
+    is on, else the legacy position grid.
+
+    The invariant path gets a LARGER cell budget. Its cells are even, so the
+    partition's dual runs about one triangle per cell on an open sheet, where
+    the position grid reaches ~2.8 -- but most of that surplus is spurious:
+    it comes from cells that weld two disconnected patches, whose triangles
+    bridge the gap between the front and back of the cloth. Measured on four
+    pieces, exact point-to-triangle distance from every cloth vertex:
+
+        legacy            ~460 verts / 830-1400 tris   99.7% within GAP
+        invariant x1.0    ~500 verts /  500-650 tris   95.5%
+        invariant x1.5    ~720-840   /  810-1080 tris  98.5%
+        invariant x2.0    ~900       / 810-1550 tris   98.6%  (not monotonic)
+
+    x1.5 recovers the coverage at FEWER triangles than the grid it replaces,
+    so it costs less collision work, not more; x2.0 buys nothing further.
+    """
+    if _nc().PROXY_WEIGHT_INVARIANT:
+        scale = _nc().PROXY_TOPO_TARGET_SCALE
+        return _topo_decimate(verts, tris, max(1, int(round(target * scale))))
+    return _cluster_decimate(verts, tris, target)
+
+
 def _add_butt_collider_patch(dst_path) -> int:
     """Add a hidden buttock collider derived from the UBE body. See
     #butt-collider-patch. Returns 1 if a patch was added."""
@@ -470,7 +734,7 @@ def _add_butt_collider_patch(dst_path) -> int:
         used = np.unique(sub_tris)
         remap = np.full(len(bv), -1, np.int64)
         remap[used] = np.arange(len(used))
-        reps, _o2n, new_tris = _cluster_decimate(
+        reps, _o2n, new_tris = _decimate(
             bv[used], remap[sub_tris], _nc()._BUTT_COL_TARGET)
         if not len(new_tris) or not len(reps):
             return 0
@@ -802,13 +1066,36 @@ def _add_skirt_collider_proxy(dst_path) -> int:
     # DONOR: a CHAIN-DRIVEN per-triangle shape -- the mirror of ButtCol's rule.
     # Cloning a kinematic block here would tag the cloth as a body collider and
     # it would collide with the wrong things.
+    #
+    # "Chain-driven" was tested as "carries weight on a bone the BODY does not
+    # have". That admits a KINEMATIC GROUND PLANE: it is weighted to a skeleton
+    # root the body shape has no weights on, so it scored as chain mass. On a
+    # reported piece the donor picked that way was the 4-vertex ground plane,
+    # and the generated proxy inherited its block verbatim --
+    #
+    #     ours    <tag>ground</tag>   margin 1  prenetration 4
+    #     authored <tag>Fabric</tag>  margin 0  penetration -1  shared private
+    #
+    # -- so a 589-vertex "ground" was planted inside the character's skirt, and
+    # the piece's own body collider carries `no-collide-with-tag ground`. The
+    # comment above predicted exactly this failure; the TEST did not implement
+    # it. #donor-must-be-simulated
+    #
+    # THE CLASS PROPERTY: a bone is chain-driven only if the XML actually
+    # SIMULATES it, i.e. it appears as a `generic-constraint` body. A skeleton
+    # root never does. So require a bone that is BOTH outside the body's own
+    # bone set AND a constraint body. Where no donor qualifies, DECLINE the
+    # proxy -- which is what the authored file ships for such a piece.
+    _sim_bones = set(re.findall(r'body[AB]="([^"]+)"', txt or ""))
     donor = None
     for d in decls:
         s_ = shape_by.get(d)
         if s_ is None or d == base.name:
             continue
         try:
-            if (s_.bone_weights or {}) and _chain_mass(s_).max() > 1e-3:
+            if not (s_.bone_weights or {}) or _chain_mass(s_).max() <= 1e-3:
+                continue
+            if (set(s_.bone_names or []) - body_bones) & _sim_bones:
                 donor = d
                 break
         except Exception:
@@ -865,7 +1152,7 @@ def _add_skirt_collider_proxy(dst_path) -> int:
         used = np.unique(sub)
         remap = np.full(len(gv), -1, np.int64)
         remap[used] = np.arange(len(used))
-        reps, _o2n, new_tris = _cluster_decimate(
+        reps, _o2n, new_tris = _decimate(
             gv[used], remap[sub], _nc()._SKIRT_PROXY_TARGET)
         if not len(new_tris) or not len(reps):
             return 0

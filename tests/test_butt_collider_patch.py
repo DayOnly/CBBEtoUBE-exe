@@ -222,3 +222,83 @@ def test_skirt_proxy_sources_from_SIMULATED_verts_only():
     src = _cs.source(nc._add_skirt_collider_proxy)
     assert "cm >= _SKIRT_PROXY_CHAIN_MIN" in src
     assert 0.0 < nc._SKIRT_PROXY_CHAIN_MIN <= 1.0
+
+
+# --- #proxy-weight-invariant -------------------------------------------------
+
+def _weight_pair_mesh():
+    """A thin tube -- the shape of a skirt -- and the SAME mesh under a body
+    weight morph: identical topology and indexing, different positions. That is
+    exactly the relationship between an armour's `_0` and `_1` files."""
+    import numpy as np
+    nu, nv = 40, 30
+    u = np.linspace(0, 2 * np.pi, nu, endpoint=False)
+    v = np.linspace(0, 30, nv)
+    U, V = np.meshgrid(u, v, indexing="ij")
+    P = np.stack([np.cos(U) * 8, np.sin(U) * 3, V], -1).reshape(-1, 3)
+    tris = []
+    for i in range(nu):
+        for j in range(nv - 1):
+            a = i * nv + j
+            b = ((i + 1) % nu) * nv + j
+            tris += [[a, b, a + 1], [b, b + 1, a + 1]]
+    P1 = P.copy()
+    P1[:, 0] *= 1.06
+    P1[:, 1] *= 1.09
+    P1 += 0.15 * np.sin(P[:, 2:3] / 7.0)
+    return P, P1, np.asarray(tris, dtype=np.int64)
+
+
+def test_topo_decimation_is_IDENTICAL_across_the_weight_pair():
+    """Skyrim blends `_0` and `_1` PER VERTEX and one `.tri` serves the pair, so
+    a proxy that differs across the two ships a blend over mismatched vertex
+    arrays AND morph offsets addressing vertices the other weight lacks.
+    Measured on the shipped pack: 14 of 28 pairs carrying a generated skirt
+    proxy disagreed. This is the property that makes that impossible."""
+    import numpy as np
+    from src import nif_convert_physics as ph
+    P0, P1, tris = _weight_pair_mesh()
+    r0, _l0, t0 = ph._topo_decimate(P0, tris, 300)
+    r1, _l1, t1 = ph._topo_decimate(P1, tris, 300)
+    assert len(r0) == len(r1), f"vertex COUNT differs: {len(r0)} vs {len(r1)}"
+    assert np.array_equal(np.asarray(r0), np.asarray(r1)), \
+        "same count but different SOURCE vertices -- the blend would lerp " \
+        "between points that do not correspond"
+    assert np.array_equal(t0, t1), "triangles differ across the pair"
+    assert len(r0) > 0 and len(t0) > 0, "decimator produced nothing to compare"
+
+
+def test_the_position_grid_is_NOT_invariant_so_the_test_above_can_fail():
+    """The control. A property test that nothing can fail proves nothing --
+    this pins that the weight morph really does move the legacy decimator, so
+    the assertion above is doing work."""
+    import numpy as np
+    from src import nif_convert_physics as ph
+    P0, P1, tris = _weight_pair_mesh()
+    r0, _l0, t0 = ph._cluster_decimate(P0, tris, 300)
+    r1, _l1, t1 = ph._cluster_decimate(P1, tris, 300)
+    same = (len(r0) == len(r1)
+            and np.array_equal(np.asarray(r0), np.asarray(r1))
+            and np.array_equal(t0, t1))
+    assert not same, \
+        "the position grid came out invariant on this mesh -- pick a harsher " \
+        "morph, or the invariance test above is vacuous"
+
+
+def test_topo_decimation_keeps_ORIGINAL_verts():
+    """Same contract as the legacy decimator: representatives must be original
+    vertex indices, or weights, skin-to-bone transforms and g2s cannot be
+    copied across and the proxy needs re-rigging."""
+    import numpy as np
+    from src import nif_convert_physics as ph
+    P0, _P1, tris = _weight_pair_mesh()
+    reps, lab, _t = ph._topo_decimate(P0, tris, 300)
+    reps = np.asarray(reps)
+    assert reps.min() >= 0 and reps.max() < len(P0)
+    assert len(np.unique(reps)) == len(reps), "a vertex represents two cells"
+    assert lab.min() >= 0, "a vertex was left unassigned"
+
+
+def test_proxy_weight_invariant_is_OPT_IN_until_it_has_a_verdict():
+    """It moves geometry on every piece carrying a generated proxy."""
+    assert nc.PROXY_WEIGHT_INVARIANT is False

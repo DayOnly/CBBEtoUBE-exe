@@ -389,15 +389,28 @@ def validate_dst_nif(dst_path: "Path",
             # reverts to its _0 shape" class -- and the old check was
             # presence-conditional, so the lost-link case validated clean.
             # BODYTRI lives on its carrier SHAPE, not the root.
+            # Enumerate by index over `extraDataCount`, never `extra_data()`:
+            # that generator stops at the first block it cannot build, and a
+            # BodySlide body carries a NiIntegersExtraData `LOCKEDNORM` at
+            # index 0 -- so a NIF whose only carrier is the body read as
+            # having no BODYTRI at all, which is exactly the case this check
+            # exists to catch.
             _has_bodytri = False
             for s in nf.shapes:
                 try:
-                    if any(getattr(ed, "name", None) == "BODYTRI"
-                           for ed in s.extra_data()):
+                    _n = int(getattr(s.properties, "extraDataCount", 0) or 0)
+                except Exception:
+                    _n = 0
+                for _i in range(_n):
+                    try:
+                        _ed = s.get_extra_data(target_index=_i)
+                    except Exception:
+                        continue
+                    if _ed is not None and getattr(_ed, "name", None) == "BODYTRI":
                         _has_bodytri = True
                         break
-                except Exception:
-                    pass
+                if _has_bodytri:
+                    break
             if not _has_bodytri:
                 warnings.append(
                     f"{name} :: TRI written but NO shape carries a BODYTRI "
@@ -1221,6 +1234,46 @@ def _repair_coherence_collapse(src_verts, out_verts, tris):
             # 10.3 deg. Must be SMOOTHED, never made rigid: rigid preserves the
             # kink by construction. #coherence-kink
             kink = False
+            if not ok and _nc().COHERENCE_KINK:
+                # IMPLEMENTED 2026-09-04. The comment above specified this test
+                # and named its worked example, but `kink` was assigned False
+                # and never set True anywhere -- the branch was dead, so a patch
+                # that turns COHERENTLY fell through every gate.
+                #
+                # Measured on a reported robe's shoulder straps: 16 damaged
+                # patches turning 68-113 deg while the surface they attach to
+                # turns 26-48 -- coherence 0.96 -> 0.90, i.e. a DROP of 0.05,
+                # far under COHERENCE_THIN_DROP (0.30), and an output coherence
+                # of 0.90 nowhere near COHERENCE_OUT_MAX (0.30). Nothing else
+                # here can see that shape of damage.
+                if _v2t is None:
+                    _v2t = defaultdict(list)
+                    for _i, (_a, _b, _c) in enumerate(t):
+                        _v2t[int(_a)].append(_i)
+                        _v2t[int(_b)].append(_i)
+                        _v2t[int(_c)].append(_i)
+                try:
+                    _turn = np.degrees(np.arccos(np.clip(
+                        np.einsum('ij,ij->i', no, ns), -1.0, 1.0)))
+                    _ring = set()
+                    for _v in np.unique(t[comp]):
+                        _ring.update(_v2t[int(_v)])
+                    _ring -= set(int(x) for x in comp)
+                    if _ring:
+                        _r = np.fromiter(_ring, dtype=np.int64)
+                        _pd = float(np.average(_turn[comp], weights=ao[comp]))
+                        _nd = float(np.average(_turn[_r], weights=ao[_r]))
+                        # BOTH conditions: an absolute turn (so a surface that
+                        # merely followed a big refit is not a kink) AND a turn
+                        # far harder than its own neighbourhood (so a panel
+                        # legitimately reoriented WITH the body is not either).
+                        if (_pd >= _nc().COHERENCE_KINK_DEG
+                                and _pd >= _nc().COHERENCE_KINK_RATIO
+                                * max(_nd, 1e-6)):
+                            kink = True
+                            ok = True
+                except Exception as _ke:
+                    _note_pass_failure("_coherence_kink", _ke)
             if not ok and thin_extent < _nc().COHERENCE_THIN:
                 # A THIN strip that reorients COHERENTLY is still wrong. A 2u hem
                 # rim has no business turning relative to the surface it edges --
@@ -2124,19 +2177,33 @@ def _reauthor_nif_fresh(dst_path: Path, override_verts_by_name=None,
             _rank = {n: i for i, n in enumerate(shape_order)}
             shapes.sort(key=lambda s: (_rank.get(s.name, len(_rank)),))
         # Capture extra-data + hidden flags to re-apply after rebuild.
-        bodytri_str = None
-        bodytri_owner = None
+        #
+        # ALL of them, not the first. This used to keep a single
+        # (bodytri_str, bodytri_owner) and break out of both loops, so a
+        # re-author COLLAPSED every BODYTRI in the NIF down to one and handed
+        # it to whichever shape came first in `shape_order`. Hand-authored
+        # slot-32 UBE armour tags the body AND every cloth shape, so the
+        # collapse silently undid that arrangement no matter what
+        # `_pick_bodytri_carriers` returned -- a pass destroying another
+        # pass's output. See #bodytri-all-shapes.
+        #
+        # Enumerated by index over `extraDataCount`: `extra_data()` stops at
+        # the first block it cannot build, and a BodySlide body carries a
+        # NiIntegersExtraData `LOCKEDNORM` at index 0, which made every body
+        # shape read as having no extra data -- BODYTRI included.
+        bodytri_owners: "list[tuple[str, str]]" = []
         for s in shapes:
             try:
-                for ed in s.extra_data():
-                    if getattr(ed, "name", None) == "BODYTRI":
-                        bodytri_str = ed.string_data
-                        bodytri_owner = s.name
-                        break
+                n_ed = int(getattr(s.properties, "extraDataCount", 0) or 0)
             except Exception:
-                pass
-            if bodytri_str:
-                break
+                n_ed = 0
+            for i in range(n_ed):
+                try:
+                    ed = s.get_extra_data(target_index=i)
+                except Exception:
+                    continue
+                if ed is not None and getattr(ed, "name", None) == "BODYTRI":
+                    bodytri_owners.append((s.name, ed.string_data))
         hdt_str = None
         try:
             for ed in old.rootNode.extra_data():
@@ -2219,11 +2286,11 @@ def _reauthor_nif_fresh(dst_path: Path, override_verts_by_name=None,
                 except Exception:
                     pass
         from pyn.pynifly import NiStringExtraData  # type: ignore
-        if bodytri_str and bodytri_owner:
-            tgt = next((x for x in new.shapes if x.name == bodytri_owner), None)
-            if tgt is not None:
+        for _bt_owner, _bt_str in bodytri_owners:
+            tgt = next((x for x in new.shapes if x.name == _bt_owner), None)
+            if tgt is not None and _bt_str:
                 NiStringExtraData.New(
-                    new, name="BODYTRI", string_value=bodytri_str, parent=tgt)
+                    new, name="BODYTRI", string_value=_bt_str, parent=tgt)
         if hdt_str:
             NiStringExtraData.New(
                 new, name="HDT Skinned Mesh Physics Object",

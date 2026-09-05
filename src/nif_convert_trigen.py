@@ -349,7 +349,8 @@ def _normalize_shader_for_morph(shape) -> None:
     """
     return
 
-def _pick_bodytri_carriers(nif, *, exclude_body: bool = False) -> "list[object]":
+def _pick_bodytri_carriers(nif, *, exclude_body: bool = False,
+                           all_cloth: bool = False) -> "list[object]":
     """Pick exactly ONE shape per NIF to receive a BODYTRI extra-data
     block, matching the hand-authored BodySlide UBE convention.
 
@@ -371,25 +372,47 @@ def _pick_bodytri_carriers(nif, *, exclude_body: bool = False) -> "list[object]"
     Single-carrier: NioOverride opens the TRI once via the BODYTRI
     reference and applies per-name morphs to every shape in the TRI.
 
-    Returns a list with 0 or 1 entry.
+    Returns a list with 0 or 1 entry -- or, with `all_cloth=True`, every cloth
+    candidate in ranked order (the hand-authored majority convention).
     """
-    # Preference 1: BODY SHAPE as carrier. Matches the dominant
-    # hand-built convention (88/93 sampled slot-32 UBE NIFs).
-    # VirtualBody is excluded — it's a Hidden physics proxy, not
-    # the visible body shape NioOverride wants to morph.
+    # Preference 1: BODY SHAPE as carrier.
+    #
+    # The "88/93 sampled slot-32 UBE NIFs" figure this used to cite does not
+    # describe carrier choice, and a re-census that tried to correct it was
+    # itself wrong: pynifly's `extra_data()` walks by index and STOPS at the
+    # first block it cannot build, and a BodySlide body carries a
+    # NiIntegersExtraData `LOCKEDNORM` at index 0 -- so every body shape read
+    # as carrying NO extra data at all, BODYTRI included. Enumerating by
+    # `get_extra_data(target_index=i)` for i in range(extraDataCount) instead:
+    #
+    #     nude body BaseShape        LOCKEDNORM + BODYTRI
+    #     hand-built armor BaseShape LOCKEDNORM + BODYTRI x2
+    #     that armor's cloth shapes  BODYTRI, on EVERY one
+    #
+    # So the authored arrangement is BODYTRI on the body AND on every cloth
+    # shape -- not one or the other. `all_cloth=True` reproduces it.
+    # VirtualBody is excluded -- it's a Hidden physics proxy, not the visible
+    # body shape NioOverride wants to morph.
     BODY_CARRIER_NAMES = ("BaseShape", "3BA")
-    if not exclude_body:
-        for s in nif.shapes:
-            if s.name in BODY_CARRIER_NAMES:
-                return [s]
+    body_shapes = [s for s in nif.shapes if s.name in BODY_CARRIER_NAMES]
+    if not exclude_body and body_shapes and not all_cloth:
+        return [body_shapes[0]]
 
     candidates: list = []
     hand_fallbacks: list = []
+    # `all_cloth` keeps a SEPARATE, relaxed list. The keyword and
+    # extremity drops below exist to stop a rigid prop being chosen as THE
+    # single carrier; when every shape is tagged that rationale does not
+    # apply, and applying it anyway leaves a garment's own metal trim
+    # untagged while the garment morphs -- the trim then detaches from the
+    # cloth it sits on. Hand-authored armour tags its metal shapes too.
+    relaxed: list = []
     for s in nif.shapes:
         if not (s.textures or {}):
             continue
         if s.name in _nc().BODYTRI_CARRIER_EXCLUDE:
             continue
+        relaxed.append(s)
         nlow = s.name.lower()
         if any(kw in nlow for kw in _nc().NON_CLOTH_SHAPE_KEYWORDS):
             continue
@@ -431,6 +454,13 @@ def _pick_bodytri_carriers(nif, *, exclude_body: bool = False) -> "list[object]"
         return (kw_match, -len(s.verts))
     if candidates:
         candidates.sort(key=rank_key)
+        if all_cloth:
+            # Authored arrangement: the BODY (unless excluded) AND every cloth
+            # shape. The body goes FIRST so shapes[0] -- which orders the TRI --
+            # is still the body, matching the single-carrier path.
+            head = [] if exclude_body else list(body_shapes[:1])
+            ranked = sorted(relaxed, key=rank_key)
+            return head + [c for c in ranked if c not in head]
         return [candidates[0]]
     # Carrier-of-last-resort: NIF contains only hand/foot shapes. The per-armor
     # TRI for these NIFs only contains hand/foot morph entries — no body deltas

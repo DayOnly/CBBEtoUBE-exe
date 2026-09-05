@@ -2515,6 +2515,25 @@ def _inflate_cloth_over_bust_butt(
     _, ib = btree.query(v)
     own_clear = np.einsum('ij,ij->i', v - bv[ib], bn[ib])
     push = np.zeros(len(v))
+    # #softcloth-seated-cap. `clear` is BUST JIGGLE HEADROOM (1.8u). Applied as
+    # `need = clear - standoff` it does not merely cover a body that is poking
+    # through -- it LIFTS cloth that is already seated correctly. Measured on a
+    # reported robe's shoulder straps, against the author's own build:
+    #
+    #     author strap -> its body   median 0.32u  p90 0.48u  MAX 0.83u
+    #     ours          -> UBE body  median 0.34u  p90 2.24u  MAX 2.55u
+    #
+    # The median is right; the TAIL is the defect the user sees as bumps along
+    # the collarbone. A strap the author holds within 0.83u of the body has no
+    # jiggle headroom to preserve, and inflating it to 1.8u is simply wrong
+    # there -- headroom is a BUST property, not a property of every vert the
+    # bust band's radius happens to reach.
+    #
+    # ON, a vert already OUTSIDE the body is capped at `seated_cap` of extra
+    # lift instead of being raised to `clear`; a vert the body genuinely
+    # penetrates is still pushed out to cover, which is what the pass is for.
+    # Strictly reduces push, so it can only lower the standoff tail.
+    _seated = _nc().SOFTCLOTH_SEATED_CAP if _nc().SOFTCLOTH_SEATED_CAP > 0 else None
     for band, clear in ((breast, float(bust_clear)), (butt, float(butt_clear))):
         for bi in np.where(band & (poke > 0.1))[0]:
             for av in atree.query_ball_point(bv[bi], radius):
@@ -2528,6 +2547,9 @@ def _inflate_cloth_over_bust_butt(
                     if own_clear[av] >= clear:
                         continue
                     need = min(need, clear - float(own_clear[av]))
+                if _seated is not None and own_clear[av] > 0.0:
+                    # already outside the body: cover, do not inflate
+                    need = min(need, _seated)
                 if need > push[av]:
                     push[av] = need
     push = np.clip(push, 0.0, max_push)
@@ -2541,7 +2563,41 @@ def _inflate_cloth_over_bust_butt(
         except Exception as _pe:
             _note_pass_failure("_smooth_push_field", _pe)
     # `ib` was computed above; push each vert along its own body normal.
-    return (v + bn[ib] * push[:, None]).astype(np.float32)
+    #
+    # #softcloth-smooth-direction. `push` is a SCALAR and is smoothed above, but
+    # the DIRECTION `bn[ib]` is per-vertex, so neighbouring cloth verts move
+    # along diverging body normals even where the magnitude is already uniform.
+    # On a thin feature -- a shoulder strap crossing a curving chest -- that
+    # differential is what buckles the surface, which is the same mechanism
+    # `#coherence-rigid` documents ("a strip under 3u thick takes ONE
+    # displacement for the whole strip"). Smoothing the DIRECTION field over the
+    # mesh, not just the magnitude, removes the differential while leaving the
+    # magnitude the smoother already agreed on.
+    #
+    # PUSH-OUT ONLY IS PRESERVED: the smoothed direction is re-projected onto
+    # each vert's own body normal and the component clipped at >= 0, so a vert
+    # can never be pulled IN by its neighbours' directions -- the property that
+    # makes this shippable next to a clearance pass.
+    dirs = bn[ib]
+    if _nc().SOFTCLOTH_SMOOTH_DIR and tris is not None and smooth_iters > 0:
+        try:
+            t_ = np.asarray(tris, np.int64)
+            sm = np.empty_like(dirs)
+            for _c in range(3):
+                sm[:, _c] = _smooth_push_field(
+                    dirs[:, _c].copy(), dirs[:, _c].copy(), t_, smooth_iters)
+            ln = np.linalg.norm(sm, axis=1, keepdims=True)
+            ok = ln[:, 0] > 1e-6
+            sm[ok] = sm[ok] / ln[ok]
+            sm[~ok] = dirs[~ok]
+            # keep it a PUSH: never let the smoothed direction oppose the vert's
+            # own outward normal.
+            along = np.einsum('ij,ij->i', sm, dirs)
+            sm[along < 0.0] = dirs[along < 0.0]
+            dirs = sm
+        except Exception as _de:
+            _note_pass_failure("_softcloth_smooth_direction", _de)
+    return (v + dirs * push[:, None]).astype(np.float32)
 
 def repair_collapsed_tris(cur_verts: np.ndarray, src_verts: np.ndarray,
                           tris: np.ndarray, *, area_eps: float = 1e-4,

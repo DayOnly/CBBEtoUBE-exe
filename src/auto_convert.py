@@ -1507,6 +1507,7 @@ def auto_convert_mod(
         _kept_pairs = []
         _guard_dropped = 0
         _nonstd_kept: list[str] = []   # cape/cloak on a non-standard slot
+        _guard_names: list[str] = []   # WHICH meshes the guard dropped
         for _gsrc, _grel in resolved_pairs:
             _gslot = slot_bits_for(_grel)
             if (_gslot & _BODY_SLOT_BITS) != 0 or _nif_has_bodyfit_skin(_gsrc):
@@ -1517,10 +1518,19 @@ def auto_convert_mod(
                     _nonstd_kept.append(_weight_base_key(_grel))
             else:
                 _guard_dropped += 1
+                _guard_names.append(_weight_base_key(_grel))
         if _guard_dropped:
+            # NAME them. A bare count invites the wrong inference: a dropped
+            # accessory still SHIPS -- race coverage points a UBE-race ARMA at
+            # its ORIGINAL mesh, which keeps its own HDT physics reference --
+            # so "dropped" costs a UBE-shaped refit, NOT visibility and NOT
+            # physics. Reading a count alone, that is easy to get backwards.
+            _gu = sorted(set(_guard_names))
             result.notes.append(
                 f"crash guard: dropped {_guard_dropped} non-body accessory "
-                "mesh(es) on ambiguous modder slots (not body-skinned)")
+                "mesh(es) on ambiguous modder slots (not body-skinned; they "
+                "still ship via race coverage on their original mesh): "
+                + ", ".join(_gu[:10]) + (" ..." if len(_gu) > 10 else ""))
         if _nonstd_kept:
             _u = sorted(set(_nonstd_kept))
             result.notes.append(
