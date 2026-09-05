@@ -377,3 +377,57 @@ the defect is a POSITION relationship, not a surface-quality one. Measure the
 AUTHORED distance and restore it. Three passes were tuned against fold counts
 here before the authored standoff was measured -- and that one measurement
 named both the cause and its correct magnitude in a single step.
+
+## 9. SHIPPED: promoted, registered, built, deployed
+
+All three defects were confirmed in game, so the seven flags carrying them were
+promoted to default ON -- each to the codebase's `CBBE2UBE_NO_*` kill-switch
+idiom, each with a `Setting()` row.
+
+**The registration was the load-bearing half.** Six of the seven had NO
+`Setting()` row, so they were env-var only: invisible to the GUI and unreachable
+from the settings json. The build the user judged good could not be reproduced
+by a normal run. A fix nobody can turn on has not shipped.
+
+The suite caught the promotion honestly rather than rubber-stamping it:
+`test_no_default_on_flag_still_advertises_itself_as_opt_in` failed on three
+stale "OPT-IN, default OFF" headers, and this session's own
+`test_proxy_weight_invariant_is_OPT_IN_until_it_has_a_verdict` failed because
+the verdict now existed.
+
+**Verified at pure defaults, not asserted.** The deployed exe reconverted the
+reported mod with no env overrides; its `conversion_settings.json` records the
+build, `dirty=false`, the exe sha, and all seven reading True with one unrelated
+non-default. Parity 0/0/0, BODYTRI on the body 12/12, physics present, the
+ground-tagged proxy gone. Against the source build judged good in game: 62 of 65
+byte-identical, the other 3 geometrically identical (0.000000u; bone-list ORDER
+only).
+
+### The risk that was named and then measured
+
+`#softcloth-seated-cap` trades bust jiggle headroom for a seated strap, and that
+trade was flagged when it shipped. Measured afterwards, cap OFF vs 0.3 over the
+breast band: **2 shapes changed at all, worst median loss 0.021u, and the
+MINIMUM standoff -- the number that decides poke-through -- was identical**
+(0.188 -> 0.188, 0.219 -> 0.219). It trimmed excess lift where cloth was already
+clear, not clearance where the body is close. Caveat recorded: on that mod
+softcloth moves 0 verts in the breast core, so it is a weak test of the bust
+case; the pack census now carries a `--headroom` mode that answers it properly.
+
+## 10. A GATE THAT CANNOT FIRE: the audit
+
+`#coherence-kink` was found by accident. `scripts/analysis/dead_gate_audit.py`
+finds the class -- a local assigned only a constant then read as a condition; a
+`_flag`/`_knob` constant nothing references; a live constant with no `Setting()`
+row.
+
+It found one: `post_merge_failures`, assigned 0, read by both its warning and
+the exit code, never incremented. Less alarming than the name suggests -- the
+standalone coverage phases it guarded had been removed and unified coverage
+moved somewhere whose rc IS checked -- so nothing live was being swallowed. But
+its comment still claimed the guard was live, and the opt-in overlay transfer
+did exit 0 on failure. It now counts.
+
+Pinned by `tests/test_dead_gate_audit.py` at 0 and 0, with a CONTROL asserting
+the checker finds >200 flag constants -- a checker returning an empty list would
+pass both assertions while measuring nothing.
