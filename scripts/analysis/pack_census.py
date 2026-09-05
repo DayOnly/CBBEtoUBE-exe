@@ -41,10 +41,10 @@ import collections
 
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parent.parent.parent
-sys.path.insert(0, str(REPO))
-sys.path.insert(0, str(REPO / ".pynifly"))
-sys.path.insert(0, str(REPO / "scripts" / "analysis"))
+_REPO = Path(__file__).resolve().parent.parent.parent
+sys.path.insert(0, str(_REPO))
+sys.path.insert(0, str(_REPO / ".pynifly"))
+sys.path.insert(0, str(_REPO / "scripts" / "analysis"))
 import logging  # noqa: E402
 logging.disable(logging.WARNING)
 import numpy as np  # noqa: E402
