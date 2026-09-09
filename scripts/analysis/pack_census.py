@@ -94,6 +94,31 @@ def _same_bytes(a, b) -> bool:
         return False
 
 
+_PARTNER_CACHE: dict = {}
+
+
+def _partner_shape_names(nif_path) -> set:
+    """Shape names of the `_0`/`_1` weight partner of `nif_path`, empty when
+    there is none. Cached -- the same partner is asked about once from each
+    half."""
+    key = str(nif_path)
+    if key in _PARTNER_CACHE:
+        return _PARTNER_CACHE[key]
+    out: set = set()
+    base = key[:-4] if key.lower().endswith(".nif") else key
+    for a, b in (("_0", "_1"), ("_1", "_0")):
+        if base.endswith(a):
+            q = base[: -len(a)] + b + ".nif"
+            if os.path.exists(q):
+                try:
+                    out = set(sh.name for sh in NifFile(q).shapes)
+                except Exception:
+                    out = set()
+            break
+    _PARTNER_CACHE[key] = out
+    return out
+
+
 def main():
     if len(sys.argv) < 2:
         print(__doc__)
@@ -128,6 +153,7 @@ def main():
     # is DEAD sliders rather than dangerous ones, but it must not read as a pass.
     name_agree = 0
     name_partial = []
+    name_alias = []
     name_disjoint = []
     tri_unreferenced = 0
     tri_missing = []
@@ -333,9 +359,21 @@ def main():
                         % (rel_p, ",".join(sorted(counts)[:4]),
                            ",".join(sorted(tri_names)[:4])))
                 elif matched != tri_names:
-                    name_partial.append(
-                        "%s: tri-only %s"
-                        % (rel_p, ",".join(sorted(tri_names - matched)[:4])))
+                    # #pair-tri-names makes the shared tri carry BOTH halves'
+                    # shape names on purpose, so each half finds its own. The
+                    # partner's names are then "tri-only" for this half BY
+                    # DESIGN. Ask the pack rather than re-deriving a suffix
+                    # rule: load the weight partner and see whose names those
+                    # are. Anything left over is a real mismatch.
+                    extra = tri_names - matched
+                    if extra and extra <= _partner_shape_names(p):
+                        name_alias.append(
+                            "%s: partner-only %s"
+                            % (rel_p, ",".join(sorted(extra)[:4])))
+                    else:
+                        name_partial.append(
+                            "%s: tri-only %s"
+                            % (rel_p, ",".join(sorted(extra)[:4])))
                 else:
                     name_agree += 1
                 for sh in tri.shapes:
@@ -474,11 +512,20 @@ def main():
     print("TRI / NIF SHAPE-NAME AGREEMENT  (a tri whose names the NIF lacks is")
     print("scored CLEAN by the out-of-bounds check above -- it has nothing to")
     print("compare. The morph never matches at runtime: DEAD sliders.)")
-    _named = name_agree + len(name_partial) + len(name_disjoint)
+    _named = (name_agree + len(name_alias) + len(name_partial)
+              + len(name_disjoint))
     print("  NIFs scored (their own BODYTRI resolved)  : %d" % _named)
     print("  every tri shape named in the NIF          : %d" % name_agree)
+    print("  tri also carries the PARTNER's names      : %d   OK, by design"
+          % len(name_alias))
+    print("      ^ #pair-tri-names aliases both halves into the shared tri so")
+    print("        each half names its own shapes. The other half's names are")
+    print("        then tri-only HERE, which is the fix working, not a defect.")
+    for line in name_alias[:4]:
+        print("      " + line)
     print("  SOME tri shapes the NIF does not have     : %d%s"
-          % (len(name_partial), "   <== dead sliders" if name_partial else "   OK"))
+          % (len(name_partial),
+             "   <== dead sliders" if name_partial else "   OK"))
     for line in name_partial[:8]:
         print("      " + line)
     print("  NO tri shape the NIF has                  : %d%s"

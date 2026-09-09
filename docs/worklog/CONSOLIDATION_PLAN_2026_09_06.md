@@ -2707,3 +2707,188 @@ Each promoted flag's row still wrote the old env name and would have gone inert
 in BOTH directions while displaying a default-ON feature as off -- the
 `warp_delta_outlier` bug, which `test_every_gui_env_is_read_by_src` exists to
 catch and did. All six now carry the `NO_` env, `invert=True` and `default=True`.
+
+## 32. BUILT AND DEPLOYED FOR THE NEXT RECONVERT (2026-09-09)
+
+Section 31's change set is now the exe the next run will execute. The point of
+this section is that "deployed" was VERIFIED rather than assumed: a robocopy
+that prints OK and an exe that carries the intended code are two different
+claims, and only the second one matters.
+
+### What shipped
+
+    build stamp   git a22f094   dirty=False   built 2026-09-09T06:53:01Z
+    PyInstaller   6.20.0
+    exe sha256    AB431C38C923   8669050 bytes   (previous: 91037895252D)
+
+Destination read from the LIVE MO2 ini's `customExecutables` `binary=` line, as
+the deploy note requires -- it has moved before.
+
+### The copy is byte-exact, and runtime state survived
+
+`deploy_exe.ps1` uses robocopy `/E` with `/XF` on the settings, backups and
+logs. **Robocopy exit 3 is a SUCCESS code** (copied + dest extras present); the
+script prints `DEPLOY OK` and the raw 3 propagates, which reads as a failure to
+anything that only checks the number.
+
+    source files          1127
+    present at dest       1127
+    MISSING at dest          0
+    byte-DIFFERENT           0
+    dest extras preserved   32   (settings json, 20 backups, run logs)
+
+### The exe was asked what it contains, not assumed
+
+A plain byte search of the deployed folder for the stamp found 0 hits -- and so
+did its CONTROL (the PREVIOUS build's timestamp, which is certainly not there
+either). Two zeroes with the same method is a blind method, not evidence, and
+the control is what said so. The stamp lives in a compiled module inside the
+compressed PYZ.
+
+Read out of the deployed exe with PyInstaller's own archive reader:
+
+    BUILD = {'git': 'a22f094', 'dirty': False,
+             'built_utc': '2026-09-09T06:53:01Z', 'pyinstaller': '6.20.0'}
+
+and, from the same archive, the five promoted flags plus `#pair-tri-names`:
+
+    CBBE2UBE_NO_PAIR_TRI_NAMES                  present
+    CBBE2UBE_NO_AUTHORED_ANTIPOKE               present
+    CBBE2UBE_NO_AUTHORED_INFLATE                present
+    CBBE2UBE_NO_PHASE1_BUST_CLEARANCE           present
+    CBBE2UBE_NO_COHERENCE_REPAIR_OUTSIDE_BODY   present
+    CBBE2UBE_NO_FIELD_SCREEN_PHYSICAL           present
+    every OLD positive-form name                gone
+    CBBE2UBE_NO_BUTT_MATCH (retired)            gone
+    CBBE2UBE_NIPPLE_GAIN, _CLEARANCE_TERM_AUDIT present
+
+`scripts/` contributes 0 modules to the bundle (41 `src` modules), so analysis
+tooling cannot change what the exe does -- worth stating once, because it is the
+reason a dirty `scripts/` file does not invalidate a `dirty=False` stamp.
+
+### The recipe still agrees, measured against the DEPLOYED json
+
+    flags whose code default DISAGREES with the recipe : 0
+    settings keys no `_flag` binding claims            : 0
+
+The live file holds 7 keys: `_known_settings`, `window_geometry`, and the five
+authored/clearance flags, all `true`.
+
+### One option is genuinely new, and the tool that exists to say so said it
+
+`unseen_settings()` against the deployed file names exactly one env-bearing
+option the saved recipe never chose: `pair_tri_names`, default now True. That
+is the 2026-07-27 mechanism working -- an option promoted in code between saves
+is NAMED instead of being inferred from an absent line. No stale keys: every
+key in the file still maps to a registry row.
+
+### A trap fixed in the checker itself
+
+`flag_retirement --recipe --settings X` acted on `--recipe` before the parser
+had read `--settings`, and reported NOT MEASURED. It exited 3 rather than
+claiming "no drift", so it never lied -- but the failing order is the one a
+reader writes first, and a checker that answers 3 to its own documented usage
+gets stopped trusting. Every argument is read before any of them acts now; two
+tests pin both orders and keep the 3 and the 2.
+
+## 33. THE RECONVERT, VERIFIED (2026-09-09)
+
+The pack was rebuilt with the section-32 exe. Every falsifiable prediction on
+record for this reconvert is discharged here, plus one measurement tool that was
+calling a shipped fix's SUCCESS a defect.
+
+### It ran the build we think it ran
+
+`conversion_settings.json` records it from inside the process:
+
+    build     git a22f094  dirty False  frozen True  exe_sha256 ab431c38c923
+    settings  D:\...\CBBEtoUBE_settings.json  status ok  sha256 0d57201f4e4d
+    effective all six promoted flags True; debug_glow_ctrl False
+    non_default  0 keys
+
+**`non_default` is EMPTY, and that is the promotion working**: `save_values`
+writes only what differs from a default, and the five authored/clearance flags
+now equal theirs. See the hazard note at the end.
+
+    0 failures, 43 warnings, postflight clean
+    7810 files written (4699 nif, 2121 tri) -- a full pass, not incremental
+
+### Every prediction on record, discharged
+
+    prediction                              expected      measured
+    dead sliders (weight_pair_tri_names)    54 -> 1       0
+    pairs >1 day apart AND differing        11 -> 0       0
+    zero-weight bones                        6 -> 2       2
+    pairs with a vert-count mismatch         -> 0         0
+
+The dead-slider row beat its own prediction: the pair that
+`pair_shape_aliases` refuses by design (5 shapes vs 4) did not survive as a
+defect. Population is real -- 1532 of 1536 pairs scored, 4 exclusions counted.
+
+**Two scares I raised and then disproved, recorded so neither is re-raised:**
+
+  * 2 zero-weight bones on 1 shape -- IDENTICAL to the recorded baseline, same
+    shape, same two breast bones. Not a regression.
+  * 11 `_0` halves with old mtimes beside fresh `_1` partners looked exactly
+    like `#stale-weight-partner` recurring. **All 11 are BYTE-IDENTICAL to
+    their partners**, which is the census's own documented exclusion. The
+    counted row is 0. The mtime is not the metric; the bytes are.
+
+### The 43 warnings are on files that do not ship
+
+41 are `master-ordering: master-tier plugin after a regular one`. They sit on
+the per-source patches in `_unmerged_patches/`, and MO2 loads only plugins at a
+mod's ROOT -- there are exactly 3 there.
+
+**The first check of those 3 was WRONG and said 27 violations.** It used the
+file EXTENSION as the master-tier test. Two masters involved are an ESL-flagged
+and an ESM-flagged `.esp` -- master-tier despite the extension. Under the
+header-FLAG rule all three shipped plugins are clean, with 52/49/12 masters all
+resolved on disk. The postflight validator was right; the ad-hoc check was not.
+
+### A census was calling a shipped fix a defect
+
+`pack_census` reported `SOME tri shapes the NIF does not have : 90 <== dead
+sliders` while `weight_pair_tri_names` reported ZERO dead halves on the same
+pack. Two tools, one pack, opposite verdicts -- so the tris were read directly:
+
+    alchemistrobe.tri  ->  BaseShape, Robe_0, Robe_1
+    akavirarmorf.tri   ->  BodyF_0, BodyF_1, SkinF_0, SkinF_1
+
+`#pair-tri-names` aliases BOTH halves into the shared tri on purpose, so each
+half names its own shapes and the OTHER half's names are tri-only here BY
+DESIGN. The row's label predates the fix and now indicts it.
+
+Split into two rows. The classifier asks the PACK -- load the weight partner,
+are the tri-only names exactly its names? -- rather than re-deriving a `_0`/`_1`
+suffix rule, the same discipline as `inline_body_name_strip` calling the
+detector's own prefix tuple. Re-run:
+
+    tri also carries the PARTNER's names      90   OK, by design
+    SOME tri shapes the NIF does not have      0   OK
+    NO tri shape the NIF has                   2   <== whole tri is dead
+
+All 90 were the alias case; none was a real partial. The two censuses now
+agree. `tests/test_pack_census_pair_alias.py` (9) pins the DIRECTION of the
+classifier's errors: a missing or unreadable partner yields an empty set, so
+the NIF counts as a DEFECT. The dangerous direction is over-classifying, which
+would hide the very thing the row exists to find, and the cache and subset
+tests guard it.
+
+### Still open, and NOT introduced by this run
+
+**2 pieces whose whole tri is dead** -- `qparmrf.nif` (nif ArmorF,ClothF,PantsF
+vs tri ArmMetal,ChestMetal,Pants,ShoulderMetal) and `psiijicglovesf.nif` (nif
+PsiijicGlovesF:0 vs tri Gloves,Hands). Not a weight split: the tri belongs to a
+different outfit entirely. **There is NO prior recorded reading of this row, so
+whether it is new is UNMEASURED -- and unmeasured is not "long-standing".**
+
+### THE HAZARD THE PROMOTION CREATED
+
+The GUI saved at 05:14, five minutes after the run, and the settings file went
+from 7 keys to 2: the five flags equal their code defaults now, so they are no
+longer written. The effective config is unchanged **and the recipe no longer
+RECORDS them.** Roll back to any exe before a22f094 and all five default OFF
+with nothing on disk to say otherwise -- the 2026-07-27 failure mode exactly.
+Eight backups still hold them explicitly, `bak-2026-09-09` and
+`prebuild-20260909-025605` among them.

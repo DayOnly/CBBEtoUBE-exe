@@ -154,9 +154,23 @@ def scan(out_dir: str, limit: int = 0):
                 "shape": s.name,
                 "verts": nv,
                 "body_skin": is_body_skin(s),
+                # What the LIVE detector decides, which is the only thing that
+                # deletes anything. Before the gate this equalled "the prefix
+                # matched"; after it, a garment-diffuse shape is spared.
+                "stripped": bool(nc._looks_like_inline_body(s)),
                 "origin": origin_of(src),
             })
     return rows, dropped, len(seen_src)
+
+
+def stripped_wrongly(rows) -> list:
+    """Shapes the LIVE detector strips that are NOT body skin -- real armour
+    deleted. Distinct from `at_risk`: that is what a NAME-ONLY test WOULD take,
+    which is the hazard the gate exists to stop and does not shrink when the
+    gate lands (the sources are unchanged). Keying the exit on the hazard makes
+    a fixed checker fail forever, and a checker that always fails is one nobody
+    reads."""
+    return [r for r in rows if r.get("stripped") and not r["body_skin"]]
 
 
 def report(rows, dropped, sources, out=print) -> int:
@@ -177,14 +191,23 @@ def report(rows, dropped, sources, out=print) -> int:
             % (org, len(o), len(ow)))
     out("")
     out("  body-skin diffuse -> CORRECT strip        : %d" % len(right))
-    out("  garment diffuse   -> WRONG strip          : %d%s"
-        % (len(wrong), "   <== real armour deleted" if wrong else "   OK"))
+    out("  garment diffuse   -> AT RISK from a name-only test : %d" % len(wrong))
     for r in sorted(wrong, key=lambda x: (x["rel"], x["shape"]))[:40]:
         out("      %-46s %-26s verts %6d  [%s]"
             % (r["rel"][:46], r["shape"], r["verts"], r["origin"]))
     if len(wrong) > 40:
         out("      ... and %d more" % (len(wrong) - 40))
-    return 1 if wrong else 0
+    out("      ^ the HAZARD, not a defect. These sources do not change when the")
+    out("        gate lands, so this number stays put -- it is what would be")
+    out("        deleted if the texture test were ever removed.")
+    out("")
+    bad = stripped_wrongly(rows)
+    out("  the LIVE detector strips it anyway        : %d%s"
+        % (len(bad), "   <== real armour deleted" if bad else "   OK, gate holding"))
+    for r in sorted(bad, key=lambda x: (x["rel"], x["shape"]))[:40]:
+        out("      %-46s %-26s verts %6d  [%s]"
+            % (r["rel"][:46], r["shape"], r["verts"], r["origin"]))
+    return 1 if bad else 0
 
 
 def main(argv=None) -> int:

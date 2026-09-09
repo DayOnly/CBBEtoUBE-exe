@@ -108,21 +108,48 @@ def test_a_clean_result_is_a_PASS_not_an_empty_population(capsys):
     assert ibs.report([], {}, sources=120) == 0
     out = capsys.readouterr().out
     assert "distinct author sources read              : 120" in out
-    assert "WRONG strip          : 0   OK" in out
+    assert "the LIVE detector strips it anyway        : 0   OK, gate holding" in out
 
 
-def test_a_wrong_strip_exits_1(capsys):
+def test_a_shape_the_LIVE_detector_strips_wrongly_exits_1(capsys):
+    """The gate removed, or a future edit that bypasses it: the detector takes a
+    garment-diffuse shape and the checker fails."""
     rows = [{"rel": "a/b.nif", "shape": "FemaleUnderwearBody:0", "verts": 1473,
-             "body_skin": False, "origin": "bsa"}]
+             "body_skin": False, "origin": "bsa", "stripped": True}]
     assert ibs.report(rows, {}, sources=1) == 1
     out = capsys.readouterr().out
     assert "real armour deleted" in out
     assert "FemaleUnderwearBody:0" in out
 
 
+def test_the_HAZARD_alone_is_not_a_failure(capsys):
+    """The pack's 2 at-risk shapes are still at risk from a NAME-ONLY test --
+    the sources did not change when the gate landed. Keying the exit on that
+    would make this checker fail forever, and a checker that can never pass is
+    one nobody reads. It fails only if the LIVE detector actually takes one."""
+    rows = [{"rel": "a/b.nif", "shape": "FemaleUnderwearBody:0", "verts": 1473,
+             "body_skin": False, "origin": "bsa", "stripped": False}]
+    assert ibs.report(rows, {}, sources=1) == 0
+    out = capsys.readouterr().out
+    assert "AT RISK from a name-only test : 1" in out
+    assert "OK, gate holding" in out
+
+
+def test_the_two_populations_are_not_the_same_question():
+    """Mutation control on the split: a shape can be at risk and spared, and
+    only the second list gates."""
+    at_risk_spared = {"rel": "a", "shape": "s", "verts": 1, "origin": "bsa",
+                      "body_skin": False, "stripped": False}
+    really_taken = dict(at_risk_spared, stripped=True)
+    assert ibs.stripped_wrongly([at_risk_spared]) == []
+    assert ibs.stripped_wrongly([really_taken]) == [really_taken]
+    # a body shape the detector strips is CORRECT, never a defect
+    assert ibs.stripped_wrongly([dict(really_taken, body_skin=True)]) == []
+
+
 def test_a_correct_strip_alone_exits_0(capsys):
     rows = [{"rel": "a/b.nif", "shape": "FemaleUnderwearBody:0", "verts": 292,
-             "body_skin": True, "origin": "loose"}]
+             "body_skin": True, "origin": "loose", "stripped": True}]
     assert ibs.report(rows, {}, sources=1) == 0
     assert "real armour deleted" not in capsys.readouterr().out
 

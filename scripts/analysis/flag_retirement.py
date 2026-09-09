@@ -258,39 +258,46 @@ def report(rs, live, show_all=False, out=print) -> int:
 
 def main(argv=None) -> int:
     raw = list(argv if argv is not None else sys.argv[1:])
-    settings, show_all, i = os.environ.get("CBBE2UBE_CONFIG", ""), False, 0
+    settings = os.environ.get("CBBE2UBE_CONFIG", "")
+    show_all = recipe = False
+    i = 0
+    # EVERY arg is read before ANY of them acts. Acting inside the parse loop
+    # made `--recipe --settings X` report "NOT MEASURED" -- an honest exit 3,
+    # but a wrong one, and the natural argument order is the one that hit it.
     while i < len(raw):
         if raw[i] == "--settings" and i + 1 < len(raw):
             settings = raw[i + 1]; i += 2; continue
         if raw[i] == "--all":
             show_all = True; i += 1; continue
         if raw[i] == "--recipe":
-            drift, unknown = recipe_drift(settings)
-            print("=" * 76)
-            print("CODE DEFAULT vs THE LIVE RECIPE   (the deployed settings json)")
-            print("=" * 76)
-            if not settings:
-                print("  NO SETTINGS FILE GIVEN -- set CBBE2UBE_CONFIG or pass")
-                print("  --settings. NOT MEASURED is not 'no drift'.")
-                return 3
-            print("  flags whose code default DISAGREES with the recipe : %d"
-                  % len(drift))
-            for d in drift:
-                print("    %-34s code=%-5s live=%-5s  (%s)"
-                      % (d["const"], d["code"], d["live"], d["module"]))
-            print("  settings keys no `_flag` binding claims            : %d"
-                  % len(unknown))
-            for k in unknown:
-                print("    %s" % k)
-            print()
-            print("  A disagreement is not automatically a bug -- but the pack")
-            print("  ships the LIVE column, and every reader of the code sees")
-            print("  the other one.")
-            return 0
+            recipe = True; i += 1; continue
         if raw[i].startswith("--"):
             i += 1; continue
         print(__doc__)
         return 2
+    if recipe:
+        drift, unknown = recipe_drift(settings)
+        print("=" * 76)
+        print("CODE DEFAULT vs THE LIVE RECIPE   (the deployed settings json)")
+        print("=" * 76)
+        if not settings:
+            print("  NO SETTINGS FILE GIVEN -- set CBBE2UBE_CONFIG or pass")
+            print("  --settings. NOT MEASURED is not 'no drift'.")
+            return 3
+        print("  flags whose code default DISAGREES with the recipe : %d"
+              % len(drift))
+        for d in drift:
+            print("    %-34s code=%-5s live=%-5s  (%s)"
+                  % (d["const"], d["code"], d["live"], d["module"]))
+        print("  settings keys no `_flag` binding claims            : %d"
+              % len(unknown))
+        for k in unknown:
+            print("    %s" % k)
+        print()
+        print("  A disagreement is not automatically a bug -- but the pack")
+        print("  ships the LIVE column, and every reader of the code sees")
+        print("  the other one.")
+        return 0
     rs, live = rows(settings)
     # The population is the BINDINGS. Zero of them means the regex stopped
     # matching, which must not read as "nothing to retire".

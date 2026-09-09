@@ -206,3 +206,24 @@ def test_an_unreadable_settings_file_is_not_silently_clean(tmp_path):
     p.write_text("{ not json", encoding="utf-8")
     drift, unknown = fr.recipe_drift(str(p))
     assert drift == [] and unknown == []
+
+
+def test_the_flag_ORDER_does_not_change_the_verdict(tmp_path, capsys):
+    """`--recipe --settings X` used to act on `--recipe` before the parser had
+    read `--settings`, so it reported NOT MEASURED -- an honest exit 3, but a
+    wrong one, and it is the order a reader writes first. Every arg is read
+    before any of them acts now, so both orders answer the same question."""
+    p = tmp_path / "s.json"
+    p.write_text('{"authored_antipoke": true}', encoding="utf-8")
+    codes = []
+    for argv in (["--recipe", "--settings", str(p)],
+                 ["--settings", str(p), "--recipe"]):
+        codes.append(fr.main(argv))
+        assert "NOT MEASURED" not in capsys.readouterr().out, argv
+    assert codes == [0, 0]
+
+
+def test_a_stray_positional_is_still_refused_after_a_recognised_flag():
+    """The parse loop returns 2 on an unknown positional. Deferring the action
+    must not turn a typo into a silent run over the wrong file."""
+    assert fr.main(["--recipe", "junk"]) == 2
