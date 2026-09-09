@@ -277,7 +277,10 @@ with `morph_sweep` + an in-game plan, and only after A4. Effort L.
 **C1. The stage table (audit F103).** Three sub-tables over a `FitContext` /
 `ShapeState` — per-shape geometry, cross-shape, post-write tail — ~3,800 lines
 re-expressed as ~30 stage functions. Vert-neutral by design; the verifier's
-confidence is LOW. Step (0) already landed (`make_stage_hook`, commit `0181bc8`)
+confidence is LOW. **SIZED 2026-09-09, section 28: the measured overlap
+between the two entry functions is 126 shape-identical lines over 11 runs,
+longest 22 -- not 3,800 lines of parallel structure. C1's case therefore
+rests on the ~30-stage reorganisation, NOT on removing that duplication.** Step (0) already landed (`make_stage_hook`, commit `0181bc8`)
 and pinned the one trap: the copy path must NOT acquire the body-swap path's
 `_chain` ROLLBACK semantics (rollback fires only when a later verify fails, so a
 naive merge passes every golden check and changes 78% of the pack invisibly).
@@ -2454,3 +2457,72 @@ Doing neither leaves five flags whose documented default is not the one in use.
 
 `settings keys no binding claims: 0` is the other half of that check and it is
 clean -- the settings file has no dead entries.
+
+## 28. F102 RE-MEASURED, AND ITS PROBE IS TRACKED NOW (2026-09-09)
+
+F102's own verifier set the next step: "the dup_probe counts (24 runs, 276
+lines, 0.346) were not re-run -- treat the numbers as unverified", and "the
+probe counts should be regenerated and attached before the refactor is scoped".
+C1 is that refactor, so this is the gate in front of it.
+
+**THE PROBE WAS GONE.** `dup_probe.py` lived in an untracked scratchpad and does
+not exist anywhere in the tree or in git history -- the same trap that hid three
+"mandatory" tools before, and it means F102's three numbers were unreproducible
+by anyone. Rebuilt as `scripts/analysis/two_path_dup.py`, tracked, 13 tests.
+
+**F102'S EVIDENCE NO LONGER RESOLVES EITHER.** Every line number in it
+(L6622, L28432, L29553...) is against the PRE-SPLIT file. `f03466b` cut
+`nif_convert.py` from ~29.5k lines to 15k on the same day the audit is dated, so
+the cited blocks are at different addresses and some now live in sibling
+modules. The finding has to be re-derived, not looked up.
+
+### Re-measured, with the rule written down
+
+    copy path      convert_nif                             552 code lines
+    body-swap path convert_nif_phase2 + _fit_shapes_swap  1451 code lines
+    runs at >= 6 lines
+
+    measure    runs   lines   ratio
+    literal       6      46   0.083
+    shape        11     126   0.228
+
+    runs that are a PURE RENAME (0 lines identical)  : 0
+    runs MIXED  (some lines identical, some not)     : 9
+
+`literal` is the same text; `shape` is the same code with every identifier
+collapsed, which is what a refactor would have to merge. **Not comparable to
+F102's 24 / 276 / 0.346** -- different tool, unrecorded normalisation, and a
+tree that has since been split. Quote these, not those.
+
+### The finding itself STANDS, and is sharper than the count
+
+**Nine of the eleven shape-identical runs are MIXED** -- some lines byte-for-byte
+the same, others not -- and NOT ONE is a pure rename. That is exactly F102's
+claim: a reader cannot tell a deliberate difference from a missed port, because
+every shared block has both. The longest is 22 lines with 13 identical; the next
+is 17 lines with only 1.
+
+### Two wrong numbers this tool produced before it produced a right one
+
+Worth recording, because both were the instrument's fault and both were caught
+by its own tests rather than by reading it:
+
+* **It reported ZERO literal duplication** while an eleven-line block was
+  identical word for word. The two paths sit at different nesting depths, so
+  comparing raw indented lines can never match them. Fixed by stripping leading
+  whitespace for the literal compare; a test now asserts the indented compare
+  misses it and the stripped one finds it.
+* **It deleted every line carrying a trailing comment**, which removes real code
+  from both sides and under-reports the duplication it exists to measure. Fixed
+  to cut the comment rather than the line; the population moved 548 -> 552 and
+  1434 -> 1451 lines.
+
+### What this means for C1
+
+C1 is scoped as ~3,800 lines becoming ~30 stage functions, Effort XL, verifier
+confidence LOW. The measured overlap between the two entry functions is **126
+shape-identical lines across 11 runs**, of which the largest is 22. That is the
+duplication a stage table would actually merge in these two functions -- it is
+not 3,800 lines of parallel structure, and the refactor's case has to be made on
+the ~30-stage reorganisation, not on removing this. **The number to argue C1
+from is now measurable and tracked; before today it was a scratchpad memory.**
