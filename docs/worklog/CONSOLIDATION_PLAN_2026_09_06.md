@@ -178,7 +178,10 @@ profile: `python -m cProfile -o piece.prof scripts/convert_one_armor.py ...`.
 check whether the body-side morph stack work is recomputed per shape. Effort S.
 Gate: byte-identical.
 
-Together D1+D2 are ~10% of a body-swap piece. Do NOT chase: body-reference
+Together D1+D2 are ~10% of a body-swap piece. **RETRACTED 2026-09-08 -- see
+section 24. BOTH are no-ops: D2 had nothing to fix, and D1's 1.5s + 0.7s are
+the cached functions' own compute, while the hashing it blamed is 0.035s of a
+31.2s piece. The caches HIT: 22 of 24 and 35 of 36 calls.** Do NOT chase: body-reference
 discovery (11% here, amortised once per worker in the pool), NIF I/O (6%, and
 one-open-many-passes loses per-pass atomicity), the `ChainGuard` casts (already
 the consolidated form).
@@ -2225,3 +2228,66 @@ Nothing was flipped; `AUTHORED_NIPPLE_EXEMPT` stays at 0.5. Whether 0.072u of
 bust fidelity is worth 19 tighter tips is the user's call, and it is the same
 shape of call as A1 -- which is not a coincidence, since A1's three FAIL rows
 are the same bust-side rows.
+
+## 24. D1 IS CLOSED: ITS PREMISE WAS A MIS-ATTRIBUTED PROFILE (2026-09-08)
+
+D1 said: `_cached_body_morph_differential` (24 calls, 1.5s of a 31.8s piece) and
+`_cached_body_morph_amplitude` (63 calls, 0.7s) key on `_body_array_digest` of a
+29298x3 array, "so every HIT first hashes the body". Proposed fix: memoise the
+digest by array identity. Effort S, gate byte-identical then the profile.
+
+**BUILT, GATED, AND REVERTED, because the profile says the premise is wrong.**
+
+### What the profile actually attributes
+
+Same piece, same plugin, one process, `cProfile`:
+
+    function                            calls   tottime   cumtime
+    _cached_body_morph_differential        24     0.884     1.466
+    _cached_body_morph_amplitude           63     0.276     0.710
+    _cached_body_morph_stack               32     0.022     0.175
+    _body_array_digest                    111     0.001     0.035
+
+**The 1.5s and the 0.7s are the CACHED FUNCTIONS' own compute. The digest is
+0.035s of a 31.22s piece -- 0.11%.** D1 read the two cached functions' cumtime
+and attributed it to the hashing inside them.
+
+### And the caches HIT, which is the other half of the premise
+
+Counted directly rather than inferred, by wrapping both functions for one piece:
+
+    differential : 24 calls,  2 MISSES   (one real compute per weight half)
+    amplitude    : 36 calls,  1 MISS
+
+So 22 of 24 and 35 of 36 calls return from cache. The 1.5s is two legitimate
+computations of a 29298-vert differential field, not repeated hashing.
+
+### The memo was built and gated anyway, and it earns 0.1%
+
+Identity-keyed memo, entry holding the array (an id can be reused once its
+array is freed -- the rule `_AUTHORED_SRC_TREE` already had to learn), bounded
+at 16 slots, plus a default-off in-place-mutation self-check.
+
+    gate                    two arms, 184 NIFs and 92 tris BYTE-IDENTICAL
+    self-check              ARMED in all 16 workers, 0 stale digests
+    profile                 111 digest calls -> 5 actual hashes
+    saving                  0.035s -> 0.002s on a 31.2s piece  (0.1%)
+
+**REVERTED.** 0.1% does not justify carrying an identity cache -- with an
+in-place-mutation assumption -- in front of the one function that exists to
+prevent a cache-key poisoning class. The class it guards flipped ~22 physics
+pieces per pool scheduling and was invisible in serial runs.
+
+### The lesson, which is D2's lesson again
+
+D2 was closed because a stale docstring sent a reader hunting a bug that was
+not there. D1 is closed because a profile line was read as the cost of the
+thing INSIDE it. Both plan items promised ~10% of a body-swap piece between
+them; both are no-ops. **Before optimising a cache, count its MISSES** -- the
+count took one instrumented run and would have closed this item without the
+build.
+
+Where the piece's time actually goes is unchanged and already recorded: fit
+chain 37%, weight tail 27%, copy/install/reauthor 15%, body-ref discovery 11%
+(amortised per worker), NIF I/O 6%. D1 and D2 are not in that list, and the
+plan's "D1+D2 are ~10% of a body-swap piece" should be read as retracted.
