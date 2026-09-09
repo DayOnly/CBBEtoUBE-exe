@@ -1807,9 +1807,10 @@ made while investigating a bug.
   build that produced the pack landed on the no-split side.
 
 **What is NOT established**: which file that second branch actually resolved in
-the arms where the split DID fire. It found two per-triangle colliders from
-somewhere. Proving that needs instrumentation and another arm pair, and given
-the basename retraction above it must not be guessed at.
+the arms where the split DID fire. **RESOLVED 2026-09-09 -- see section 29. It
+needed no arm at all: the resolver takes a same-stem XML from ANY directory
+when exactly one exists in the destination tree, and that tree grows from 0 to
+6 such files during a run.**
 
 ### Why this matters beyond one garment
 
@@ -2037,7 +2038,7 @@ with for a day.
 
 ### State at hand-off (2026-09-08, third pass)
 
-    suite                 2933 passed / 2 skipped, exit captured DIRECTLY
+    suite                 2955 passed / 2 skipped, exit captured DIRECTLY
     pyflakes undefined    0
     TOOL_MAP / PASS_MAP   current (86 tools)
     zero-weight bones     2 on 1 shape, both breast bones on the same
@@ -2526,3 +2527,76 @@ duplication a stage table would actually merge in these two functions -- it is
 not 3,800 lines of parallel structure, and the refactor's case has to be made on
 the ~30-stage reorganisation, not on removing this. **The number to argue C1
 from is now measurable and tracked; before today it was a scratchpad memory.**
+
+## 29. THE BUST-SPLIT COIN FLIP IS ROOT-CAUSED (2026-09-09)
+
+Section 18 reproduced it and named two suspects; section 18's own note said
+which file the fallback resolved was NOT established and must not be guessed
+at. It is established now, and it took no further arms -- every link is
+checkable directly, and the last one is a test.
+
+### The chain, link by link
+
+1. **The SOURCE nif carries no physics link at all.** Its bytes contain no
+   `HDT Skinned Mesh Physics Object` string and no `.xml` string, so
+   `_read_source_hdt_xml_disk` returns None on it -- deterministically, 3 of 3.
+2. **The OUTPUT nif declares none either** -- 0 root extra-data blocks.
+3. So `_bust_split_xml_text` falls to its second branch, which calls
+   `_read_source_hdt_xml_text(dst_path)`, and that falls through in turn to
+   **`_find_hdt_xml_for_armor(dst_path)` -- a glob over the mod tree the path
+   lives in, and the path handed to it is the DESTINATION.**
+4. That resolver's highest-confidence rule is a stem match:
+
+        exact = [x for x in xmls if x.stem.lower() == nif_stem]
+        same_dir_exact = [x for x in exact if x.parent == nif.parent]
+        if same_dir_exact:  best = same_dir_exact[0]
+        elif len(exact) == 1:  best = exact[0]     # <== ANY directory
+
+   The piece's stem is `cuirass`. **Its own directory holds no XML, and the
+   finished output tree holds SIX `cuirass.xml` in six directories.** During a
+   run that count grows from 0 to 6 -- and 1 is inside that range.
+5. **`_mod_xml_index` memoises the glob per mod root**, so each worker freezes
+   whatever the tree looked like when it first asked. Its docstring states the
+   assumption that would make that safe: *"The XML set is static for the
+   duration of a conversion run."* **True of a SOURCE mod. False of the
+   destination, which the run is writing into.**
+
+### Demonstrated without an arm
+
+`tests/test_bust_split_xml_race.py` (7) resolves ONE fixed NIF against three
+trees that differ only in how many same-stem XMLs exist elsewhere:
+
+    same-stem XMLs elsewhere    resolved
+    0                           None
+    1                           an UNRELATED garment's config
+    6                           None
+
+One piece, three answers, decided by what else had been written yet. The memo
+test shows the freeze directly: add an XML after the first call and the index
+does not see it until the cache is cleared. A fifth test keeps the safe case
+visible -- an XML beside the NIF wins and is unaffected by the count -- so this
+is not read as "the resolver is always wrong".
+
+### Why the split, specifically
+
+With one unrelated `cuirass.xml` resolved, `_bust_split_candidates` finds
+per-triangle colliders in it, the garment matches one by name, and the split
+fires -- moving the 6 breast and 2 butt jiggle bones onto a hidden `CuirassCol`
+clone. With 0 or 6 resolved, no colliders, no split. That is the whole of the
+observed 2-NIF difference between two identical arms.
+
+### NOT FIXED, on purpose
+
+The repair changes which physics XML a piece resolves. That is a behaviour
+change on the class that tore breasts off in game (2026-07-26), and the
+resolver's own comment records that this fallback exists so a piece whose
+authored XML ships in a different mod is still found. Three shapes of fix are
+available and they are not equivalent -- refuse a stem match from another
+directory; refuse to index a DESTINATION root at all; or make the index
+non-memoised for the destination. **Choosing between them is a decision, and it
+wants the pack-wide count of pieces that currently resolve their XML this way
+before anyone picks.** That count is measurable and is the natural next step.
+
+Meanwhile the finding stands as an A/B hazard: any arm pair covering this piece
+can show a spurious 2-NIF difference, and a repeat control is the only thing
+that tells it from a real one.
