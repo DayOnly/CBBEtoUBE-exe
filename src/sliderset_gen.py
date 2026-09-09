@@ -129,6 +129,7 @@ def generate_armor_tri(
     carrier_shape_name: str | None = None,
     extra_body_osds: "dict[str, OsdFile] | None" = None,
     armor_vert_extremity_fractions: "dict[str, np.ndarray] | None" = None,
+    also_named: "dict[str, str] | None" = None,
 ) -> TriFile:  # noqa: docstring continues below
     """Build a BODYTRI for the armor by propagating UBE body slider deltas.
 
@@ -165,6 +166,15 @@ def generate_armor_tri(
                        nude Hands NIF via its own TRI. Without this,
                        Hands/Feet inside armor stay at default while
                        nude Hands/Feet morph per RaceMenu sliders.
+
+    `also_named`: {shape name -> a SECOND name to emit the same morph
+                   table under}. One tri serves both halves of a `_0`/`_1`
+                   pair, and the author may have named the two halves'
+                   shapes differently, in which case the half the tri was
+                   not built from names nothing in it and morphs nothing.
+                   Built by `nif_convert_trigen.pair_shape_aliases`, which
+                   is where the topology precondition is proven; here it is
+                   a pure alias. #pair-tri-names
 
     Output TRI: one TriShape per armor shape (plus optional BaseShape).
     Each TriShape has TriMorphs named after the body slider — e.g.
@@ -509,6 +519,23 @@ def generate_armor_tri(
             if extra_morphs:
                 tri_shapes.append(TriShape(
                     name=shape_name, morphs=extra_morphs))
+
+    # #pair-tri-names -- the `_0`/`_1` halves of one garment are one mesh saved
+    # twice, but the author may have named their shapes differently. ONE tri
+    # serves both halves, so a shape whose partner carries a different name
+    # needs its morph table under BOTH names or that half morphs nothing. The
+    # caller has already proven the topology matches index for index (see
+    # `nif_convert_trigen.pair_shape_aliases`), so the same delta table is
+    # correct for both -- this is an ALIAS, not a second computation.
+    if also_named:
+        by_name = {sh.name: sh for sh in tri_shapes}
+        for mine, theirs in sorted(also_named.items()):
+            sh = by_name.get(mine)
+            if sh is None or theirs in by_name:
+                continue                 # nothing to alias, or it would shadow
+            alias = TriShape(name=theirs, morphs=list(sh.morphs))
+            tri_shapes.append(alias)
+            by_name[theirs] = alias
 
     # The `version` kwarg is effectively cosmetic: bytes 4-5 are the shape count
     # written from `len(self.shapes)` by TriFile.save() regardless.

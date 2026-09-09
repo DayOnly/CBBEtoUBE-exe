@@ -1120,9 +1120,99 @@ def _geometry_repair_allowed(shape, skip_geometry_repair=False) -> bool:
         return False
     return True
 
-def _repair_coherence_collapse(src_verts, out_verts, tris):
+# A REPAIR PASS MAY NOT PUT A GARMENT VERTEX INSIDE THE BODY.
+# #coherence-repair-outside-body
+#
+# `_repair_coherence_collapse` runs LAST, after anti-poke, panel-rigidity,
+# chain-blend, min-push and the seam weld -- and it takes no body at all. It
+# smooths the DISPLACEMENT field across a buckled patch and restores the patch's
+# MEAN displacement, which keeps the garment where the fit put it ON AVERAGE but
+# redistributes it per vertex. A vertex the anti-poke pushed clear on purpose is
+# just a large outward displacement to this pass, and averaging it against
+# quieter neighbours pulls it back in. Nothing runs after it to catch that.
+#
+# Traced with CBBE2UBE_STAGE_DUMP on the one piece carrying every bust-band
+# penetration the authored floors added (signed standoff along the body normal):
+#
+#     stage                    Torso v1615        Shell 4 v121
+#     s07_antipoke                 +0.9555             +0.3061
+#     ... panel_rigidity_post, chain_blend, min_push, seam_weld: unchanged ...
+#     s12_coherence_repair         -0.0214             -1.0018
+#
+# The pass moves those verts 0.98u and 1.31u INWARD, straight through the skin.
+# It does the same in the control (+1.0652 -> +0.2003 on that Torso vert): the
+# authored floor does not create this, it spends the margin that was absorbing
+# it. So the floors are not the defect -- this is, and it was there all along.
+#
+# The guard is one-sided and monotone: a vertex may not be moved from outside the
+# body to inside, and one already inside may not be driven deeper. Everything
+# else the repair asks for is granted, so the un-buckling it exists for is
+# untouched wherever it does not cost clearance. Same contract as the anti-poke
+# feather's own "never reopen a poke" floor.
+#
+# WITHOUT A BODY IT IS EXACTLY TODAY'S BEHAVIOUR. `_copy_shape`'s call site has
+# no body in scope, so that one is unguarded and stays a known gap rather than a
+# silent half-fix -- see the note at that call.
+#
+# The flag itself lives in nif_convert.py with every other one and is read
+# through `_nc()`, so `importlib.reload(nc)` keeps reaching it.
+
+
+def _hold_repair_outside_body(before, after, body_verts, body_normals):
+    """Clamp a repair so it cannot reduce a vertex's clearance past the skin.
+
+    `before`/`after` are the pass's own input and output. Only vertices the
+    repair actually MOVED are tested, so a shape it did not touch costs one
+    array comparison and no tree query.
+
+    Returns `after` unchanged when disabled, when no body was supplied, or on
+    any failure -- never worse than not running.
+    """
+    if not _nc().COHERENCE_REPAIR_OUTSIDE_BODY:
+        return after
+    if body_verts is None or body_normals is None:
+        return after
+    try:
+        B = np.asarray(body_verts, np.float64)
+        BN = np.asarray(body_normals, np.float64)
+        if B.ndim != 2 or B.shape != BN.shape or not len(B):
+            return after
+        b4 = np.asarray(before, np.float64)
+        af = np.asarray(after, np.float64)
+        if b4.shape != af.shape:
+            return after
+        moved = np.where(np.any(np.abs(af - b4) > 1e-6, axis=1))[0]
+        if not len(moved):
+            return after
+        BN = BN / np.clip(np.linalg.norm(BN, axis=1, keepdims=True), 1e-9, None)
+        from scipy.spatial import cKDTree
+        tree = cKDTree(B)
+        # Each vertex against the SAME body vertex before and after, so this
+        # measures what the repair did rather than a change of reference.
+        _d, j = tree.query(b4[moved], k=1)
+        n_at = BN[j]
+        s0 = np.einsum('ij,ij->i', b4[moved] - B[j], n_at)
+        s1 = np.einsum('ij,ij->i', af[moved] - B[j], n_at)
+        floor = np.minimum(s0, 0.0)          # never worse, and never past zero
+        short = np.clip(floor - s1, 0.0, None)
+        if not np.any(short > 0):
+            return after
+        out = af.copy()
+        out[moved] = af[moved] + n_at * short[:, None]
+        return out
+    except Exception as _e:
+        _note_pass_failure("_hold_repair_outside_body", _e)
+        return after
+
+
+def _repair_coherence_collapse(src_verts, out_verts, tris, *,
+                               body_verts=None, body_normals=None):
     """Un-buckle thin features whose surface normals went from COHERENT to
     SCATTERED during the fit. Returns (verts, n_patches_repaired).
+
+    `body_verts`/`body_normals` are optional and arm `#coherence-repair-outside
+    -body`, which stops the repair pulling a vertex through the skin. Omitted,
+    this behaves exactly as it did.
 
     IN-GAME VALIDATED on two independent pieces (a cuirass hem rim seen as "a
     bent piece at the end, bent at a 90 degree angle", and a trousers rear seam
@@ -1163,8 +1253,10 @@ def _repair_coherence_collapse(src_verts, out_verts, tris):
         ns, as_ = _nrm(sv)
         no, ao = _nrm(ov)
         rot = (ns * no).sum(axis=1)
-        rot_deg = np.degrees(np.arccos(np.clip(rot, -1.0, 1.0)))
-        turned = np.where(rot < 0.866)[0]          # > 30 degrees
+        # The test is done on the COSINE directly; a `rot_deg` conversion used
+        # to be computed here and never read -- an arccos over every triangle of
+        # every shape for nothing. Removed 2026-09-06.
+        turned = np.where(rot < 0.866)[0]          # cos 30deg -- > 30 degrees
         if len(turned) == 0:
             return out_verts, 0
 
@@ -1351,7 +1443,8 @@ def _repair_coherence_collapse(src_verts, out_verts, tris):
 
         if repaired == 0:
             return out_verts, 0
-        return sv + disp, repaired
+        return _hold_repair_outside_body(
+            ov, sv + disp, body_verts, body_normals), repaired
     except Exception as _e:
         # REPORTED, not swallowed. A silent return here is indistinguishable
         # from "no patch qualified", and that is exactly how this pass spent a

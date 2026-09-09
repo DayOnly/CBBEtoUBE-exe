@@ -187,6 +187,7 @@ from .nif_convert_trigen import (  # noqa: E402
    _MORPH_SIZE_KEYWORDS, _cached_osd_load, _cached_body_morph_stack,
    _cached_body_morph_amplitude, _cached_body_morph_differential,
    _body_array_digest, _tri_is_owning_variant, _tri_fits_variant,
+   pair_shape_aliases, pair_alias_map,
    _reset_morph_flags,
    armor_relpath_under_meshes,
    _collect_tri_inputs, _normalize_shader_for_morph, _pick_bodytri_carriers,
@@ -221,10 +222,24 @@ ARMOR_TO_SKIN_BUFFER = 0.15
 # After the body-delta warp (which preserves the source CBBE drape exactly),
 # this pass adds a uniform outward inflation with linear falloff so armor
 # retains clearance when body morph sliders grow the mesh at runtime.
-# 0 = disable. Reconvert any affected mod after changing.
-# Env override is for ABLATION: this pass is only justifiable while the passes
-# around it cannot deliver the authored standoff themselves, so "set it to 0 and
-# measure" has to be one command. Numeric knob, so env-only is allowed (§6).
+# **0 DOES NOT DISABLE THIS PASS, AND THIS KNOB IS NOT AN ABLATION LEVER.**
+# That is what this comment claimed until 2026-09-06 and it was false in both
+# halves. On the adaptive path -- every piece, since `ADAPTIVE_CLEARANCE_ENABLED`
+# is a hardcoded True and the OSD amplitude map is always found -- the pass
+# computes `cap = max(magnitude, ADAPTIVE_CLEARANCE_MORPH_MAX)` and then
+# `clip(BASE + FACTOR*amp, BASE, cap)`. With morph_max 1.1, ANY magnitude at or
+# below 1.1 -- including 0.0 -- drops out of the arithmetic entirely and every
+# vert still gets BASE..1.1u of push. Only the BELT variant (1.5) exceeds the cap
+# and actually binds; SLOT49 0.5, HANDS_FEET 0.6 and SKIRT 0.7 are all inert,
+# so `_slot_aware_inflation_magnitude` is a no-op on 4 of its 5 branches.
+#
+# MEASURED: an arm at 0.35 is BYTE-IDENTICAL to one at 0.7 across all 184 NIFs of
+# the acceptance population. So every "inflate magnitude is inert" line in the
+# record was measuring a knob that cannot reach the pass, and inflate has never
+# actually been ablated. To ablate it, or to attack the over-standoff class, use
+# `CBBE2UBE_CLEARANCE_BASE` / `CBBE2UBE_CLEARANCE_MORPH_FACTOR` /
+# `CBBE2UBE_CLEARANCE_MORPH_MAX` -- see ADAPTIVE_CLEARANCE_BASE.
+# Reconvert any affected mod after changing.
 ARMOR_INFLATION_MAGNITUDE = _knob("CBBE2UBE_INFLATION_MAGNITUDE", 0.7)
 ARMOR_INFLATION_FALLOFF_DISTANCE = 3.0
 
@@ -311,8 +326,15 @@ BELT_OVERLAY_KEYWORDS = (
 # So this is not a knob with a right answer, it is a trade, and the tip wins:
 # a visible nipple through armour is a worse defect than a layer sitting proud.
 # Splitting them needs a narrower nipple region with a steeper ramp, so the tip
-# keeps its clearance without dragging the whole bust band out with it -- that
-# is a design change, not a retune, and it is unbuilt.
+# keeps its clearance without dragging the whole bust band out with it.
+#
+# THAT IS NOW BUILT -- `#nipple-ramp-sharpness` / `BUST_NIPPLE_SHARPNESS` below,
+# which raises `nipw` to an exponent and SOLVES the gain so the tip requirement
+# is held exactly where it is. This line read "it is unbuilt" long after it
+# shipped, and `_conform_to_body` quotes it as if current. Corrected 2026-09-06.
+# It defaults to 1.0 (off) not because it is unfinished but because it was
+# MEASURED INERT ON THE FINAL MESH: `s07_antipoke` re-pushes after conform, so a
+# lower conform requirement is overwritten -- see the numbers at its call site.
 #
 # NEITHER default was reachable from the GUI before 2026-08-13, and neither is
 # the same number as `ANTIPOKE_BUST_CLEAR`, which is a different pass.
@@ -325,6 +347,7 @@ from .nif_convert_fitgeom import (  # noqa: E402
     _SOFTCLOTH_BUST_CLEAR, _SOFTCLOTH_BUTT_CLEAR, WARP_SHEAR_MAX_GROWTH,
     WARP_SHEAR_STEPS, ANTIPOKE_SMOOTH_ITERS, ADAPTIVE_CLEARANCE_BASE,
     ADAPTIVE_CLEARANCE_MORPH_FACTOR, ADAPTIVE_CLEARANCE_MORPH_MAX,
+    _authored_floor_amp_room, _authored_normals_usable, _feathered_authored,
     ANTIPOKE_BUST_CLEAR, ANTIPOKE_FLAT_CLEAR, ANTIPOKE_NIPPLE_GAIN,
     CALF_STANDOFF, CALF_STANDOFF_Z_HI, CALF_STANDOFF_Z_LO,
     JIGGLE_CLEARANCE_GAIN, JIGGLE_CLEARANCE_MAX, REAR_STANDOFF,
@@ -1280,7 +1303,24 @@ ADAPTIVE_CLEARANCE_ENABLED = True
 #              census's own defect shape does not move at all (a bra the author
 #              held 0.33u off the skin ships at 1.19u in BOTH arms).
 #
-# THERE ARE TWO REASONS, AND FIXING ONLY THE FIRST CHANGES NOTHING.
+# THERE WERE THREE REASONS. (3), FOUND 2026-09-05, IS THE ONE THAT MATTERED:
+# NEITHER OF THE OTHER TWO COULD HAVE HELPED WHILE IT STOOD.
+#
+# (3) THE FLOOR WAS DISARMED ON EXACTLY THE BANDS IT WAS AIMED AT. It read
+# `floor = max(authored, ARMOR_TO_SKIN_BUFFER + min(amp, AUTHORED_INFLATE_AMP_CAP))`,
+# i.e. the FULL outward morph amplitude, while the push it caps allocates
+# `ADAPTIVE_CLEARANCE_BASE + ADAPTIVE_CLEARANCE_MORPH_FACTOR * amp` -- a fifth of
+# it. On the UBE body this pack fits, breast amplitude p50 is 3.944u, so the
+# floor stood at 0.15 + 1.5 = 1.650u: ABOVE our own shipped 1.436u and the
+# author's 0.948u alike. `authored` could not win that `maximum` on a breast for
+# any author and any garment, so the pass was inert there by construction --
+# which is why the census's own defect shape "does not move at all in BOTH
+# arms". Same shape as the BUST_CLEAR ceiling found inside a `maximum`.
+# Fixed by `_authored_floor_amp_room`: the floor now allocates headroom by the
+# same rule as the ramp it caps. Bust floor 1.650 -> 1.039, belly 1.650 -> 0.800,
+# butt 0.265 -> 0.273 (the low-morph bands were already tighter and do not move).
+#
+# THE OTHER TWO ARE REAL AND BOTH ARE NOW CLOSED.
 #
 # (1) THE FLOOR IS BLIND ON PHASE 2. The floor reads
 # the authored standoff as `dot(src_armor - src_body, src_body_normal)`, so a
@@ -1291,6 +1331,11 @@ ADAPTIVE_CLEARANCE_ENABLED = True
 # on, and it is default off. Measured on this modlist's CBBE base: 18436 of
 # 18436 stored normals are zero-length (100%), matching the "18 of 21 sampled
 # inline bodies" already recorded at the phase-2 site.
+# CLOSED 2026-09-05 two ways: phase 2 now builds `src_body_n_authored` with the
+# hardened fetch UNCONDITIONALLY and hands that to both authored floors (leaving
+# `conform` on `_SRC_NORMAL_FIX`, whose constants were tuned around the zeros),
+# and `_authored_normals_usable` makes a floor REFUSE rather than silently
+# degrade to its constant term when it cannot read the author at all.
 #
 # (2) A LATER PASS OVERWRITES THE RESULT, which is why (1) is not worth fixing on
 # its own. Stage-traced on that bra (author 0.33u, ships 1.19u):
@@ -1344,12 +1389,56 @@ ADAPTIVE_CLEARANCE_ENABLED = True
 # 5.6% of verts against inflate's 75% reach) -- AND it was computed when
 # `conform`'s authored standoff read identically ZERO, so "authored" carried no
 # information at all. Both halves of that are different here.
+#
+# PROMOTED AND THEN REVERTED ON 2026-09-05, SAME DAY. The floor is now correct
+# and can bind (see (3) above); what is NOT settled is whether the surface cost
+# of arming it is acceptable, and the answer from the only judge that counts was
+# no -- "we can't use that in its current state". DEFAULT OFF until the fold
+# regression is designed out, not tuned away.
+#
+# The mechanism stays fixed and armable so the next attempt starts from a floor
+# that works rather than re-deriving why it never did. Arm BOTH halves together
+# (`CBBE2UBE_AUTHORED_INFLATE=1 CBBE2UBE_AUTHORED_ANTIPOKE=1`) and read the table
+# below before drawing anything from a single-flag arm.
+#
+# Measured over 51 shapes (38 body-swap, 13 copy), pinned seed, repeat control
+# identical:
+#
+#     arm                     copy path    body-swap    folds    inverted
+#     control                   +0.288       +0.572     16355      2060
+#     this flag ALONE           +0.178       +0.606     16383      2062
+#     both floors               +0.178       +0.483     16795      2194
+#
+# ON ITS OWN THIS FLAG MAKES THE BODY-SWAP PATH WORSE. Capping inflate leaves
+# the cloth nearer the body at `s03`, and anti-poke's push is `req - worst`, so
+# it simply pushes further from the lower start. Ship both or neither.
+#
+# Together: 44 shapes of 51 closer to the author, 4 worse, median -0.124u; the
+# whole penetration cost is 6 verts on 3 shapes; zero-weight bones 0 in both
+# arms; and the `[clip-risk]` counter improves (a torso 43 verts inside -> 0, a
+# panty 136 -> 91). The cost is surface -- folds +2.7%, inverted +6.5%, carried
+# entirely by the anti-poke half and concentrated on loose dresses (48 pieces
+# improve, 44 worsen), where the author ships ZERO inverted triangles. That cost
+# is why the default is back off.
+#
+# WHAT NOT TO TRY NEXT, both already paid for: feathering the authored target
+# (`#authored-floor-feather`, kept at 0 with its numbers) recovers 22% of the
+# folds and gives up 94% of the copy-path win, so the rise is not target
+# roughness; and arming one half alone is worse than arming neither. The open
+# lead is the per-shape property separating the 48 pieces that IMPROVED from the
+# 44 that worsened -- same prescription F068 and `#surface-warp-field` got.
 AUTHORED_INFLATE = _flag("CBBE2UBE_AUTHORED_INFLATE", False)
 # The same floor for the ANTI-POKE (`clear_armor_outside_body`). Separate flag
 # because it is a separate pass with a different safety story: anti-poke is the
 # LAST line against skin through steel, so its floor must never drop below the
 # body-growth allowance, and it is judged on the morph counters rather than at
 # bind pose. See `#authored-antipoke` at the push site.
+# DEFAULT OFF, reverted with `AUTHORED_INFLATE` on 2026-09-05 -- see the table
+# there. This half is what reaches the BODY-SWAP path (+0.572 -> +0.483) and it
+# is also what carries the whole surface cost (+440 folds, +134 inverted; the
+# inflate half alone is +28/+2), so it is the half any future guard has to
+# target. It must be armed and disarmed TOGETHER with the inflate floor: alone,
+# either one is worse than neither on one of the two paths.
 AUTHORED_ANTIPOKE = _flag("CBBE2UBE_AUTHORED_ANTIPOKE", False)
 # How much of the body's local outward morph the floor must cover. The margin
 # has to be the body's OWN morph amplitude -- the converter never sees the
@@ -1357,6 +1446,117 @@ AUTHORED_ANTIPOKE = _flag("CBBE2UBE_AUTHORED_ANTIPOKE", False)
 # and a floor that tracked it would fling loose drape outward. Same lesson as
 # `#chain-rest-outside-body`.
 AUTHORED_INFLATE_AMP_CAP = _knob("CBBE2UBE_AUTHORED_INFLATE_AMP_CAP", 1.5)
+
+# Fraction of the BODY's maximum nipple weight above which a vertex counts as
+# the TIP, where neither authored floor may relax the clearance rules.
+# #authored-nipple-exempt
+#
+# The author fitted their garment over a CBBE bust; UBE's protrudes further, so
+# their spacing under-provisions ours at the tip by a fixed amount however
+# careful they were, and `_authored_floor_amp_room` does not cover it (that
+# reserves headroom for the body's MORPH amplitude; this is a STATIC difference
+# between two bodies). Reported in game as nipples through a leather cuirass
+# "by the smallest amount" -- measured as tip clearance p50 1.193u -> 1.085u
+# over the 36 pack pieces that cover the nipple, 26 of 36 tighter.
+#
+# 0.5, so the exemption is the tip and its immediate shoulder rather than the
+# whole breast: the bust-gap win these floors exist for comes from the DOME, and
+# exempting the dome would give the win back. Raise it toward 1.0 to exempt less
+# (more gap win, less tip clearance), lower it to exempt more.
+AUTHORED_NIPPLE_EXEMPT = _knob("CBBE2UBE_AUTHORED_NIPPLE_EXEMPT", 0.5)
+
+# How far from a tip body vertex a garment vertex still counts as "over the
+# tip", in units.  #authored-nipple-exempt
+#
+# A RADIUS, NOT THE NEAREST VERTEX, AND NOT THE k-NEIGHBOURHOOD EITHER. The
+# garment is coarser than the body, so "my nearest body vertex is a tip vertex"
+# selected 1 garment vert of 1700; widening to the anti-poke's own 6 nearest
+# body verts only reached 3, because those six sit in a patch smaller than the
+# nipple. Both under-select the thing being protected. Measured tip counts on
+# one shape as the rule widens: 1 -> 3 -> the radius form below.
+#
+# 2.0u is a nipple-sized neighbourhood rather than the anti-poke's 4.0u search
+# radius: at 4.0 the exemption covers much of the breast dome, which is where
+# the bust-gap win these floors exist for actually comes from.
+AUTHORED_NIPPLE_RADIUS = _knob("CBBE2UBE_AUTHORED_NIPPLE_RADIUS", 2.0)
+
+# Mesh rings the tip mask is grown by after the radius test.
+# #authored-nipple-exempt
+#
+# A garment is far coarser than the body and what needs protecting is a SURFACE.
+# On the worst-affected piece the nearest garment vertex to the tip is 1.64u away
+# and only 6 of 1700 fall within 2u -- yet rays from the tip still strike it,
+# because the triangle spanning the nipple has all three corners outside any
+# sensible radius. Without the dilation the exemption leaves exactly that
+# triangle free to be relaxed.
+AUTHORED_NIPPLE_RINGS = _knob("CBBE2UBE_AUTHORED_NIPPLE_RINGS", 2, int)
+
+
+def _nipple_tip_mask(armor_verts, body_verts, body_nipple, *, frac, radius,
+                     tris=None, rings=None):
+    """Per-vertex WEIGHT in [0,1] for how much a garment vert covers the body's
+    nipple TIP: 1 at the tip, 0 by `radius`, spread over the mesh's topology.
+
+    Returns None when there is no usable nipple map, which leaves the caller on
+    exactly the unexempted behaviour. Calibrated on the BODY's own maximum
+    weight, never the shape's subset: a garment over the flat chest has a local
+    maximum near zero and a fraction of that would exempt the whole piece.
+
+    THE DILATION IS THE LOAD-BEARING PART, because a garment is far coarser than
+    the body and what needs protecting is a SURFACE, not a vertex set. On the
+    worst-affected piece the garment's nearest vertex to the tip is 1.64u away
+    and only 6 of its 1700 verts fall within 2u -- yet rays cast from the tip
+    still strike it, because the triangle spanning the nipple has all three
+    corners outside any sensible radius. Masking vertices alone therefore leaves
+    exactly the triangle covering the nipple free to be relaxed; growing the mask
+    over the 1-ring pulls in the corners of every triangle that touches the
+    region, which is what actually holds that surface up.
+    """
+    if body_nipple is None:
+        return None
+    try:
+        nw = np.asarray(body_nipple, dtype=np.float64)
+        bv = np.asarray(body_verts, dtype=np.float64)
+        av = np.asarray(armor_verts, dtype=np.float64)
+        if nw.shape[0] != bv.shape[0] or not len(av):
+            return None
+        wmax = float(nw.max()) if nw.size else 0.0
+        if wmax <= 0.2:              # a flat panel's noise, not a nipple map
+            return None
+        tip = np.where(nw >= float(frac) * wmax)[0]
+        if not len(tip):
+            return None
+        from scipy.spatial import cKDTree
+        d = np.asarray(cKDTree(bv[tip]).query(av, k=1)[0], dtype=np.float64)
+        # A HARD MASK, and the softer alternatives were MEASURED AND REJECTED.
+        # Ramping the weight from 1 at the tip to 0 at `radius` looks more
+        # principled and scores worse where it matters: tip clearance p05 0.439u
+        # feathered against 0.454u hard (the old build is 0.451u), because a
+        # partial exemption is still a partial relaxation of the one feature that
+        # must not be relaxed. Dropping the topology spread entirely is not
+        # merely weaker but DANGEROUS -- the weight then exists on a handful of
+        # scattered verts and the bust-band penetration counter went to 465
+        # against 12, which is a spiky requirement field, not a gentler one.
+        w = (np.asarray(d) <= float(radius)).astype(np.float64)
+        rings = AUTHORED_NIPPLE_RINGS if rings is None else rings
+        if tris is not None and int(rings) > 0 and (w > 0).any():
+            t = np.asarray(tris, dtype=np.int64).reshape(-1, 3)
+            if len(t):
+                # Spread by the 1-ring MAXIMUM, so every corner of a triangle
+                # that touches the tip inherits the tip's weight. Without this
+                # the triangle actually covering the nipple keeps three low
+                # corners and is relaxed anyway.
+                for _ in range(int(rings)):
+                    tw = w[t].max(axis=1)
+                    nxt = w.copy()
+                    np.maximum.at(nxt, t.ravel(), np.repeat(tw, 3))
+                    if np.allclose(nxt, w):
+                        break
+                    w = nxt
+        return w
+    except Exception as _e:
+        _note_pass_failure("_nipple_tip_mask", _e)
+        return None
 
 # The source body is the SAME array for every shape in a NIF, and the CBBE base
 # is the same for the whole run, so building its KD-tree per shape is pure
@@ -1645,8 +1845,11 @@ JIGGLE_CLEARANCE_ENABLED = (
 # (moved to nif_convert_fitgeom.py, 2026-09-01)
 
 # (moved to nif_convert_fitgeom.py, 2026-09-01)
-if _flag("CBBE2UBE_NO_REAR_STANDOFF", False):
-    REAR_STANDOFF = 0.0
+# The `CBBE2UBE_NO_REAR_STANDOFF` kill switch used to live HERE as
+# `if _flag(...): REAR_STANDOFF = 0.0`. It was DEAD: `REAR_STANDOFF` is imported
+# from fitgeom above, and `clear_armor_outside_body` binds it as a parameter
+# default at FITGEOM import time, so rebinding this module's name changed
+# nothing any pass reads. Applied at the definition in fitgeom instead.
 # (moved to nif_convert_fitgeom.py, 2026-09-01)
 # (moved to nif_convert_fitgeom.py, 2026-09-01)
 # (moved to nif_convert_fitgeom.py, 2026-09-01)
@@ -1654,8 +1857,8 @@ if _flag("CBBE2UBE_NO_REAR_STANDOFF", False):
 # (moved to nif_convert_fitgeom.py, 2026-09-01)
 
 # (moved to nif_convert_fitgeom.py, 2026-09-01)
-if _flag("CBBE2UBE_NO_CALF_STANDOFF", False):
-    CALF_STANDOFF = 0.0
+# `CBBE2UBE_NO_CALF_STANDOFF` was dead here for the same reason as
+# `CBBE2UBE_NO_REAR_STANDOFF` above; applied at the definition in fitgeom.
 # (moved to nif_convert_fitgeom.py, 2026-09-01)
 # (moved to nif_convert_fitgeom.py, 2026-09-01)
 
@@ -2650,6 +2853,17 @@ CLEARANCE_FIELD_ITERS = _knob("CBBE2UBE_CLEARANCE_FIELD_ITERS", 256, int)
 # feather's MASS-WEIGHTED RADIUS in units -- a peak-amplitude threshold reports
 # a wider feather as a narrower one, because spreading the same displacement
 # further lowers every individual vertex.
+#
+# AND IT REACHES ONLY THE SCALAR FEATHER, WHICH THE DEFAULT PATH DOES NOT RUN.
+# `_reach_iters` is called from `_smooth_push_field` alone, and both callers of
+# that sit BELOW a `#clearance-field` solve that returns early whenever it
+# succeeds -- and `CLEARANCE_FIELD_SOLVE`/`CLEARANCE_FIELD_INFLATE` are both
+# default ON. So on the shipped path this knob has never had anything to
+# compensate. The field solve needs a different remedy anyway: it is SCREENED, so
+# its reach is set by `lam` rather than by the ring count, and it already reports
+# `converged=True` at the default 256 iterations on the very meshes that crease.
+# More rings do nothing there. See `#field-screen-physical` in
+# nif_convert_fitgeom.py, which scales the mass term instead.
 _SMOOTH_REF_EDGE = 1.0        # the tessellation the current ring counts assume
 _SMOOTH_REACH_MAX = 400       # bound the cost; the finest strip here asks ~320
 SMOOTH_REACH = _flag("CBBE2UBE_SMOOTH_REACH", False)
@@ -4137,8 +4351,16 @@ def convert_nif(
     ube_body_ref_path: str | Path | None = None,
     biped_slots: int = 0,
     alt_texture_shape_names: "set[str] | None" = None,
+    variant_sources: "dict[str, str] | None" = None,
 ) -> ConvertResult:
     """Convert one CBBE armor NIF to a UBE-targeted NIF.
+
+    `variant_sources`: this stem's OTHER weight variants (`"_0"` / `"_1"` /
+    `""` -> resolved source path), resolved by the caller through the same mod
+    list / VFS / BSA chain that found `src_path`. It decides which variant owns
+    the shared `.tri` and whether this one may point at it -- see
+    `_tri_is_owning_variant`. None (a single-file convert) falls back to
+    probing for a sibling next to `src_path`. #tri-variant-collision
 
     `alt_texture_shape_names`: shape names an ESP alt-texture set targets by
     name (collected from the source mod's ARMO MO2S/MO3S entries). These are
@@ -4281,6 +4503,7 @@ def convert_nif(
                                   or _is_first_person_mesh(src_path, nif)),
                 alt_texture_shape_names=alt_texture_shape_names,
                 extra_body_drop_names=tuple(exposed_skin_names),
+                variant_sources=variant_sources,
             )
         return ConvertResult(
             src_path=src_path,
@@ -4688,7 +4911,7 @@ def convert_nif(
                 # stem with the worn pair derives the SAME `.tri`, whose
                 # offsets address vertices it does not have. Pointing at
                 # it is worse than having no morphs.
-                if bodytri_path and _tri_fits_variant(src_path):
+                if bodytri_path and _tri_fits_variant(src_path, variant_sources):
                     from pyn.pynifly import NiStringExtraData  # type: ignore
                     # Single-carrier BODYTRI matching hand-authored
                     # UBE convention. See `_pick_bodytri_carriers`.
@@ -4773,7 +4996,7 @@ def convert_nif(
         # that reference would cost it body morphs outright -- worse than the
         # race being fixed.
         if (auto_tri_dst_phase1 is not None and _TRI_WRITE_ONCE
-                and not _tri_is_owning_variant(src_path)):
+                and not _tri_is_owning_variant(src_path, variant_sources)):
             auto_tri_dst_phase1 = None
         if auto_tri_dst_phase1 is not None:
             try:
@@ -4787,7 +5010,8 @@ def convert_nif(
                         pyn = _pynifly()
                         dst_check = pyn.NifFile(filepath=str(dst_path))
                         (armor_shape_verts, body_in_dst,
-                         armor_vert_ef) = _collect_tri_inputs(dst_check)
+                         armor_vert_ef) = _collect_tri_inputs(
+                            dst_check, len(body_verts_arr))
                         # Unified TRI: include a BaseShape entry so the
                         # single cloth-carrier BODYTRI delivers body
                         # morphs to the injected BaseShape too.
@@ -4802,6 +5026,11 @@ def convert_nif(
                             include_body_shapes=body_in_dst,
                             carrier_shape_name=carrier_name_for_tri,
                             armor_vert_extremity_fractions=armor_vert_ef,
+                            # #pair-tri-names: this ONE tri serves both halves
+                            # of the weight pair, so a shape the partner names
+                            # differently needs its table under that name too.
+                            also_named=pair_alias_map(src_path,
+                                                      variant_sources),
                         )
                         atomic_tri_save(tri, auto_tri_dst_phase1)
             except Exception as _e_tri:
@@ -5081,9 +5310,14 @@ def inflate_armor_outward(
     src_body_verts: "np.ndarray | None" = None,
     src_body_normals: "np.ndarray | None" = None,
     tris: "np.ndarray | None" = None,
+    body_nipple: "np.ndarray | None" = None,
 ) -> np.ndarray:
     """Push body-hugging armor verts outward to avoid z-fighting with a
     morphed body.
+
+    `body_nipple` is optional and only feeds `#authored-nipple-exempt`: without
+    it the authored floor behaves exactly as it did, so a caller that cannot
+    supply the map loses nothing else.
 
     For each armor vertex:
       - find nearest body vert
@@ -5165,9 +5399,15 @@ def inflate_armor_outward(
     # floor. Needs the author's own mesh AND their body; without either it
     # cannot know the authored standoff, so it leaves the additive behaviour
     # exactly as it was rather than guessing a floor.
+    #
+    # AND IT MUST ACTUALLY BE ABLE TO READ IT. `src_body_normals` reaching here
+    # all-zero (this pack's source body: 18436 of 18436) made `authored` read 0
+    # everywhere and collapsed the floor to its constant term -- a flat clearance
+    # rule wearing the author's name, which is worse than not running. Refuse.
     if (AUTHORED_INFLATE and body_normals is not None
             and src_armor_verts is not None and src_body_verts is not None
-            and src_body_normals is not None):
+            and src_body_normals is not None
+            and _authored_normals_usable(src_body_normals)):
         try:
             sa = np.asarray(src_armor_verts, dtype=np.float64)
             sb = np.asarray(src_body_verts, dtype=np.float64)
@@ -5181,20 +5421,47 @@ def inflate_armor_outward(
                 # tucked it under the surface; a floor must not honour that, so
                 # it is clamped at zero.
                 _, si = _authored_src_tree(sb).query(sa, k=1, workers=-1)
-                authored = np.maximum(
-                    np.einsum('ij,ij->i', sa - sb[si], sn[si]), 0.0)
-                amp_room = np.zeros(len(armor_verts))
+                # Feathered for the same reason every other clearance term is.
+                # #authored-floor-feather
+                authored = _feathered_authored(
+                    np.maximum(np.einsum('ij,ij->i', sa - sb[si], sn[si]), 0.0),
+                    tris, armor_verts)
+                # Headroom by the SAME rule as the ramp this floor caps. The old
+                # `ARMOR_TO_SKIN_BUFFER + min(amp, AMP_CAP)` was five times more
+                # generous than the push, so on a breast it stood at 1.650u --
+                # above our own 1.436u result and the author's 0.948u alike, and
+                # `authored` could never win the maximum. See
+                # `_authored_floor_amp_room`.
+                amp_room = np.full(len(armor_verts), ARMOR_TO_SKIN_BUFFER)
                 if (ADAPTIVE_CLEARANCE_ENABLED and morph_amplitude is not None
                         and len(morph_amplitude) > idxs.max()):
-                    amp_room = np.minimum(
-                        np.asarray(morph_amplitude, dtype=np.float64)[idxs],
-                        AUTHORED_INFLATE_AMP_CAP)
-                floor = np.maximum(authored, ARMOR_TO_SKIN_BUFFER + amp_room)
+                    amp_room = _authored_floor_amp_room(
+                        np.asarray(morph_amplitude, dtype=np.float64)[idxs])
+                floor = np.maximum(authored, amp_room)
                 # The additive result is the CEILING: this may reduce a push,
                 # never raise one, so over-inflation cannot get worse.
                 required = np.minimum(s_cur + push_len,
                                       np.maximum(s_cur, floor))
-                push_len = np.maximum(required - s_cur, 0.0)
+                _relaxed = np.maximum(required - s_cur, 0.0)
+                # #authored-nipple-exempt: the tip keeps the full additive push.
+                # Measured, this floor is what costs the nipple's WORST case --
+                # tip clearance p05 0.466u -> 0.421u with it armed, while the
+                # median barely moves; the anti-poke floor is the mirror image
+                # (median 1.205 -> 1.107, tail intact). They have to be exempted
+                # together or the tip loses one end of its distribution.
+                _tip = _nipple_tip_mask(
+                    armor_verts, body_verts, body_nipple,
+                    frac=AUTHORED_NIPPLE_EXEMPT, radius=AUTHORED_NIPPLE_RADIUS,
+                    tris=tris)
+                # `push_len` is still the raw additive push at this point, so
+                # `where` keeps it verbatim on the tip and takes the floored one
+                # everywhere else.
+                if os.environ.get("CBBE2UBE_NIPPLE_PROBE"):
+                    print(f"    [nip-inf] verts={len(push_len)} "
+                          f"tipw={0.0 if _tip is None else float(_tip.sum()):.1f} "
+                          f"nipple_map={'no' if body_nipple is None else 'yes'}")
+                push_len = (_relaxed if _tip is None
+                            else np.where(_tip > 0.5, push_len, _relaxed))
         except Exception as e:
             # A silently-failed floor is indistinguishable from "the floor was
             # already satisfied", and would ship as a quiet loss of clearance.
@@ -7068,6 +7335,51 @@ WEIGHT_INVARIANT_ENABLED = not _flag("CBBE2UBE_NO_WEIGHT_INVARIANT", False)
 FAMILY_WEIGHT_INVARIANT = (
     not _flag("CBBE2UBE_NO_FAMILY_WEIGHT_INVARIANT", False))
 
+
+# --- #last-carrier-hold: the 4-influence cap may not strand a bone ------------
+#
+# `#family-weight-invariant` above states the rule that works -- keep the
+# influences a vertex already HAS, spend only FREE slots on newcomers -- and
+# implements it inside `_match_limb_motion_to_body` only. This is the same rule
+# in `_cap_and_renormalise_rows`, the SHARED cap both "capped" write sites use,
+# so it covers them without a per-pass guard.
+#
+# THE RESIDUAL IT CLOSES, and the attribution here CORRECTS the record. The
+# 2026-09-02 analysis put the surviving zero-weight bones on the five UNCAPPED
+# post-write sites and named `_match_limb_motion_to_body` the actor. Bisected
+# 2026-09-06 on the piece that actually ships one -- `Top_Wrap` / `SkirtBBone02`,
+# a bone the author holds on ONE vertex at 0.03467:
+#
+#     defaults                          zero-weight 2   SkirtBBone02 live 0
+#     CBBE2UBE_NO_LEG_BEND_MATCH=1      zero-weight 0   SkirtBBone02 live 1
+#     CBBE2UBE_NO_FULL_WEIGHT_MATCH=1   zero-weight 2   (not the actor)
+#
+# So the producer is `_match_rigid_leg_bend_to_body`, one of the two CAPPED
+# sites. The cap is not missing; the cap is the eviction. It grafts `NPC R Butt`
+# onto that vertex at 0.04747, the row goes to five influences, and "keep the
+# largest four" drops the author's 0.03467 -- which was that bone's only weight
+# in the shape.
+#
+# WHY THE GUARD ALREADY THERE COULD NOT WORK. The caller's own "NEVER EMPTY A
+# BONE" check declines to WRITE a bone the cap zeroed everywhere and leaves the
+# stale weight in the file. But `setShapeWeights` MERGES and the SAVE resolves an
+# overflowing row itself, so the fifth influence is still written over it and the
+# eviction simply happens at save time instead. Declining to write does not
+# protect a bone -- the same lesson `#family-weight-invariant` records.
+#
+# BOUNDED ON PURPOSE: weight alone still decides the first three survivors, so a
+# dominant bone can never be displaced by this. Only the smallest surviving
+# influence is contested, which is exactly where the class lives -- a bone
+# stranded this way was carrying 0.004% of the shape's weight mass (measured,
+# docs/worklog/ZEROWEIGHT_BONE_PRODUCER.md), so the fit cost is bounded by
+# construction and the bone-list bookkeeping is the whole defect.
+#
+# `CBBE2UBE_NO_LAST_CARRIER_HOLD=1` restores the previous survivor choice
+# byte-for-byte: with the hold off no carrier counts are built and the sort key
+# degenerates to the old `(-weight, name)`.
+LAST_CARRIER_HOLD = (
+    not _flag("CBBE2UBE_NO_LAST_CARRIER_HOLD", False))
+
 # The third promotion. `FAMILY_WEIGHT_INVARIANT` is the first made on a
 # BOOKKEEPING measurement rather than a fit one: it moves no vertex, so the pair
 # it is judged on is `verify_zero_weight_bones.py` (21 -> 0) and the report's
@@ -8769,6 +9081,26 @@ _BUTT_COL_MIN_UNCOVERED = _knob("CBBE2UBE_BUTT_COLLIDER_MIN_UNCOVERED", 150, int
 # changed NOTHING, which this model predicts -- it swaps which half is broken.
 BODYTRI_ALL_SHAPES = not _flag("CBBE2UBE_NO_BODYTRI_ALL_SHAPES", False)
 BODYTRI_CARRIER_CLOTH = _flag("CBBE2UBE_BODYTRI_CARRIER_CLOTH", False)
+
+# #pair-tri-names -- emit each armour shape's morph table under the PARTNER
+# half's name for it as well, so one tri serves a `_0`/`_1` pair whose author
+# named the two halves' shapes differently.
+#
+# MEASURED on the 2026-09-06 pack, whole population: of 1536 pairs, 1482 name
+# their shapes identically and 54 do not -- and in EVERY one of those 54 it is
+# the `_1` half that names nothing in the tri it points at (42 lose every
+# morph, 12 lose some; `_0` never loses anything, because `_0` is the half the
+# tri is built from). `_1` is the half that ships, since actors sit near weight
+# 100. The precondition was measured too, not assumed: 53 of the 54 have the
+# same shape count AND the same per-shape vert counts, so one delta table is
+# correct under both names. The 54th has 5 shapes vs 4 and is refused by
+# `pair_shape_aliases` -- it is the same piece the census already reports under
+# `pairs with a vert-count mismatch`.
+#
+# DEFAULT OFF: it changes shipped `.tri` bytes on 53 pieces, so it needs an arm
+# through the gate before it can be promoted. See
+# [[project_weight_pair_tri_name_split]].
+PAIR_TRI_NAMES = _flag("CBBE2UBE_PAIR_TRI_NAMES", False)
 
 SKIRT_PROXY_AFTER_WEIGHTS = _flag("CBBE2UBE_SKIRT_PROXY_AFTER_WEIGHTS", False)
 
@@ -10723,6 +11055,13 @@ PUBIC_HOLE_X_BOUND = 6.0
 # differential, not the warp. CBBE2UBE_NO_COHERENCE_REPAIR=1 is the hatch.
 COHERENCE_REPAIR = (
     not _flag("CBBE2UBE_NO_COHERENCE_REPAIR", False))
+
+# Stop the coherence repair pulling a garment vertex through the skin.
+# #coherence-repair-outside-body -- the reasoning and the stage trace live beside
+# `_hold_repair_outside_body` in nif_convert_writer.py, which reads this through
+# `_nc()`. Default OFF pending a measured A/B.
+COHERENCE_REPAIR_OUTSIDE_BODY = _flag(
+    "CBBE2UBE_COHERENCE_REPAIR_OUTSIDE_BODY", False)
 COHERENCE_MIN_AREA = _knob("CBBE2UBE_COHERENCE_MIN_AREA", 4.0)
 COHERENCE_SRC_MIN = _knob("CBBE2UBE_COHERENCE_SRC_MIN", 0.70)
 COHERENCE_OUT_MAX = _knob("CBBE2UBE_COHERENCE_OUT_MAX", 0.30)
@@ -12283,6 +12622,14 @@ def _fit_shapes_swap(ctx) -> None:
     """
     _layer_extra = ctx._layer_extra
     _rebury_motion_w = ctx._rebury_motion_w
+    # The `[clip-risk]` telemetry's lazy KD-tree. It was initialised in
+    # `convert_nif_phase2` and never handed over, and because the block below
+    # ASSIGNS it, it was an unbound LOCAL here rather than a global -- so every
+    # shape raised UnboundLocalError straight into that block's `except`, and
+    # the residual-verts-inside-the-body diagnostic has never once printed on
+    # the body-swap path. Pre-existing; found by the same pyflakes sweep that
+    # caught `src_body_n_authored` below.
+    _antipoke_stat_tree = None
     biped_slots = ctx.biped_slots
     body_delta_for_warp_p2 = ctx.body_delta_for_warp_p2
     body_names = ctx.body_names
@@ -12304,6 +12651,13 @@ def _fit_shapes_swap(ctx) -> None:
     reskin_near_dist = ctx.reskin_near_dist
     shape_jobs = ctx.shape_jobs
     skipped_collision = ctx.skipped_collision
+    # Hardened twin of `src_body_n_p2`, read ONLY by the two authored floors.
+    # It has to come through `ctx` like everything else here: bound as a plain
+    # local in `convert_nif_phase2`, it is simply an undefined global at the two
+    # call sites below, and the resulting NameError is swallowed by the
+    # per-shape handler -- so the floors quietly did not run on ANY body-swap
+    # piece while the A/B table showed a clean, believable zero.
+    src_body_n_authored = ctx.src_body_n_authored
     src_body_n_p2 = ctx.src_body_n_p2
     src_body_v_p2 = ctx.src_body_v_p2
     src_morph_shapes = ctx.src_morph_shapes
@@ -12694,14 +13048,19 @@ def _fit_shapes_swap(ctx) -> None:
                             morph_max=ADAPTIVE_CLEARANCE_MORPH_MAX,
                             # #authored-inflate: the author's own mesh and body,
                             # so the push can be a floor rather than a blind
-                            # addition. Same pair `conform` reads just below --
-                            # and the same caveat applies, that the stored
-                            # source-body normals are routinely all zero, so
-                            # this is only informative with _SRC_NORMAL_FIX on.
+                            # addition. Same pair `conform` reads just below,
+                            # except for the normals: the floor takes the
+                            # HARDENED array, because the stored one is all zero
+                            # on this pack's source body and a floor that reads
+                            # `authored == 0` everywhere is not a floor.
                             src_armor_verts=_sv_body,
                             src_body_verts=src_body_v_p2,
-                            src_body_normals=src_body_n_p2,
+                            src_body_normals=src_body_n_authored,
                             tris=np.asarray(s.tris, dtype=np.int64),
+                            # #authored-nipple-exempt: the tip keeps the full
+                            # additive push -- the author's CBBE bust cannot
+                            # inform clearance over UBE's larger nipple.
+                            body_nipple=body_nipple_for_p2,
                         )
                         _stage('inflate', override)
                     except Exception as e:
@@ -13000,12 +13359,13 @@ def _fit_shapes_swap(ctx) -> None:
                     # #authored-antipoke: the author's own mesh and body, so the
                     # clearance requirement can be relaxed where they had the
                     # vertex tighter AND the body does not grow there. Same pair
-                    # conform and inflate read; only informative with
-                    # _SRC_NORMAL_FIX on, since the stored source-body normals
-                    # are routinely all zero.
+                    # conform and inflate read, and like inflate's floor it takes
+                    # the HARDENED normals -- the stored ones are all zero on
+                    # this pack's source body, which reads as "the author fitted
+                    # everything skin-tight" and disarms the relaxation.
                     src_armor_verts=_sv_body,
                     src_body_verts=src_body_v_p2,
-                    src_body_normals=src_body_n_p2,
+                    src_body_normals=src_body_n_authored,
                     **_ap_kw)
                 # #mixed-cloth-clearance: hand every SIMULATED vertex straight
                 # back. The sim's authored rest state must be bit-identical --
@@ -13271,8 +13631,15 @@ def _fit_shapes_swap(ctx) -> None:
                 # left 5% of the pack torn last time; both sites, both passes.
                 # #coherence-repair
                 if override is not None:
+                    # #coherence-repair-outside-body: hand it the body so the
+                    # last pass in the chain cannot undo the clearance every
+                    # pass before it just established. Traced here: this pass
+                    # moved a Torso vert from +0.9555 to -0.0214 and a shell
+                    # vert from +0.3061 to -1.0018, in BOTH arms.
                     override, _nc = _repair_coherence_collapse(
-                        _sv_body, override, s.tris)
+                        _sv_body, override, s.tris,
+                        body_verts=body_verts_for_p2,
+                        body_normals=body_norms_for_p2)
                     if _nc:
                         _stage('coherence_repair', override)
                         print(f"    [coherence-repair] {s.name}: "
@@ -13536,6 +13903,7 @@ def convert_nif_phase2(
     biped_slots: int = 0,
     alt_texture_shape_names: "set[str] | None" = None,
     extra_body_drop_names: "tuple[str, ...]" = (),
+    variant_sources: "dict[str, str] | None" = None,
 ) -> ConvertResult:
     """Phase-2 conversion: swap inline CBBE body shapes for UBE body shapes.
 
@@ -13652,7 +14020,8 @@ def convert_nif_phase2(
         # body morphs outright, which is worse than the race. (Nulling the path
         # here instead would also have crashed on the very next line.)
         _tri_write_this_variant = (
-            (not _TRI_WRITE_ONCE) or _tri_is_owning_variant(src_path))
+            (not _TRI_WRITE_ONCE)
+            or _tri_is_owning_variant(src_path, variant_sources))
         # Compute Skyrim-relative path from auto_tri_dst by finding
         # the "meshes" segment.
         dst_parts = auto_tri_dst.parts
@@ -13729,6 +14098,9 @@ def convert_nif_phase2(
     # switch exists to end, since `CBBE2UBE_NO_CONFORM` gates a DIFFERENT pass
     # of the same name.
     src_body_v_p2 = src_body_n_p2 = None
+    # Hardened twin of `src_body_n_p2`, for the authored floors only. See where
+    # it is filled in for why it is not simply `_SRC_NORMAL_FIX`.
+    src_body_n_authored = None
 
     def _is_body_pynifly_shape(s):
         if s.name in BODY_SHAPE_NAMES:
@@ -13800,6 +14172,24 @@ def convert_nif_phase2(
         if _sbn is not None and len(_sbn) == len(cbbe_body_shape.verts):
             src_body_v_p2 = np.asarray(cbbe_body_shape.verts, dtype=np.float64)
             src_body_n_p2 = np.asarray(_sbn, dtype=np.float64)
+        # The two AUTHORED FLOORS get the hardened normals regardless of
+        # `_SRC_NORMAL_FIX`, in their own variable. That gate is off because
+        # flipping it moves ~20% of verts modlist-wide through `conform`, whose
+        # constants were all tuned with the zeroed normals in play -- a real
+        # reason to keep it, and no reason at all to hand a floor an input it
+        # cannot read. Without this the floors see `authored == 0` on every
+        # body-swap piece (18436 of 18436 zero-length on this pack's source
+        # body) and either refuse or, before `_authored_normals_usable`,
+        # silently degrade. `conform` still reads `src_body_n_p2` as it did.
+        #
+        # Skipped entirely when neither floor is armed, so the OFF path does not
+        # even pay for the recompute -- it is a normals-from-triangles pass over
+        # an 18k-vert body, per piece, per weight.
+        if AUTHORED_INFLATE or AUTHORED_ANTIPOKE:
+            _sbn_authored = _body_normals_or_compute(cbbe_body_shape)
+            if (_sbn_authored is not None
+                    and len(_sbn_authored) == len(cbbe_body_shape.verts)):
+                src_body_n_authored = np.asarray(_sbn_authored, dtype=np.float64)
 
     if fit_armor:
         ube_body_shape = next((s for s in ube_nif.shapes if s.name == "BaseShape"), None)
@@ -13906,7 +14296,6 @@ def convert_nif_phase2(
     # layer i an extra +i*EPSILON anti-poke floor. Mirrors the anti-poke's own
     # eligibility gates so decorative/softbody/collider shapes never rank.
     _layer_extra: "dict[str, float]" = {}
-    _antipoke_stat_tree = None            # lazy shared tree for clip telemetry
     if (LAYERED_ANTIPOKE_ENABLED and body_verts_for_p2 is not None
             and (biped_slots & (BIPED_SLOT32_BIT | BIPED_SLOT49_BIT))):
         try:
@@ -13946,6 +14335,7 @@ def convert_nif_phase2(
         reskin_near_dist=reskin_near_dist,
         shape_jobs=shape_jobs,
         skipped_collision=skipped_collision,
+        src_body_n_authored=src_body_n_authored,
         src_body_n_p2=src_body_n_p2,
         src_body_v_p2=src_body_v_p2,
         src_morph_shapes=src_morph_shapes,
@@ -14266,7 +14656,14 @@ def convert_nif_phase2(
                     continue
                 for _fn in (_repair_coherence_collapse, _uniformise_local_scale,
                             _cap_short_edge_stretch):
-                    _ov2, _n = _fn(_sv, _ov, _s.tris)
+                    # Only the coherence repair takes the body today
+                    # (#coherence-repair-outside-body); the other two keep the
+                    # bare signature, so the kwargs go in per function rather
+                    # than to all three.
+                    _kw = ({"body_verts": body_verts_for_p2,
+                            "body_normals": body_norms_for_p2}
+                           if _fn is _repair_coherence_collapse else {})
+                    _ov2, _n = _fn(_sv, _ov, _s.tris, **_kw)
                     if _n:
                         _ov = _ov2
                         j["verts"] = _ov
@@ -14361,7 +14758,7 @@ def convert_nif_phase2(
         all_cloth=(BODYTRI_ALL_SHAPES or BODYTRI_CARRIER_CLOTH))
     if not carriers_p2 and first_armor_shape is not None:
         carriers_p2 = [first_armor_shape]
-    if not _tri_fits_variant(src_path):
+    if not _tri_fits_variant(src_path, variant_sources):
         carriers_p2 = []
     if carriers_p2:
         try:
@@ -14517,7 +14914,8 @@ def convert_nif_phase2(
                     body_verts_arr = np.asarray(
                         ube_basereshape.verts, dtype=np.float64)
                     (armor_shape_verts, body_in_dst,
-                     armor_vert_ef) = _collect_tri_inputs(dst_check)
+                     armor_vert_ef) = _collect_tri_inputs(
+                        dst_check, len(body_verts_arr))
                     # Carrier-first TRI (hand-authored UBE convention).
                     p2_carriers = _pick_bodytri_carriers(dst_check, exclude_body=BODYTRI_CARRIER_CLOTH)
                     p2_carrier_name = p2_carriers[0].name if p2_carriers else None
@@ -14530,6 +14928,8 @@ def convert_nif_phase2(
                         include_body_shapes=body_in_dst,
                         carrier_shape_name=p2_carrier_name,
                         armor_vert_extremity_fractions=armor_vert_ef,
+                        # #pair-tri-names -- see the phase 1 call site.
+                        also_named=pair_alias_map(src_path, variant_sources),
                     )
                     atomic_tri_save(tri, auto_tri_dst)
         except Exception as e:

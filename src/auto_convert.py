@@ -73,16 +73,25 @@ def _nif_convert_worker(item: tuple) -> "nif_convert.ConvertResult":
 
     Args (in tuple form for ProcessPoolExecutor compatibility):
       src_path, dst_path, ube_body_ref_path, biped_slots,
-      [alt_texture_shape_names]
+      [alt_texture_shape_names], [variant_sources]
+
+    `variant_sources` maps a weight suffix (`"_0"` / `"_1"` / `""`) to the
+    resolved SOURCE path of that variant of the same stem. It has to be
+    computed in the PARENT, where the mod list / VFS / BSA index live: a worker
+    is a spawned process that inherits none of them, and the destination
+    siblings it could see instead are being written by this same batch.
+    #tri-variant-collision
     """
     src, dst, ube_body_ref_path, biped_slots = item[:4]
     alt_tex = item[4] if len(item) > 4 else None
+    variant_sources = item[5] if len(item) > 5 else None
     try:
         return nif_convert.convert_nif(
             src, dst,
             ube_body_ref_path=ube_body_ref_path,
             biped_slots=biped_slots,
             alt_texture_shape_names=alt_tex,
+            variant_sources=variant_sources,
         )
     except Exception as e:
         return nif_convert.ConvertResult(
@@ -182,6 +191,46 @@ def _prewarm_pool(
               f"{len(pids)} distinct worker PID(s))")
 
 
+def _pair_units(items: "list[tuple]") -> "list[list[tuple]]":
+    """Group work items into the UNITS one worker converts in sequence.
+
+    A `_0` and its `_1` (and a no-suffix `foo.nif`) SHARE files at the
+    destination: one physics XML (`<stem>.xml` -- the finalize copies the
+    authored one over it, then the collider patches rewrite it) and one `.tri`.
+    The weight passes read that XML through `dst_path` to learn which shapes
+    are colliders. With the pair on two workers, a `_1` whose leg-bend match
+    reads the XML inside the window where its sibling's finalize has just
+    restored the authored copy -- split collider not yet re-added -- sees no
+    collider there and reweights it. Measured 2026-09-06 on three identical
+    16-worker arms of the acceptance population: 5 shapes of 144 files bimodal,
+    every one a `_1` collider proxy, 0 vertices moved, the same 0.8486 worst
+    delta in each odd arm, while `--workers 1` is byte-identical run to run.
+    One unit per base, in list order, gives the pool serial's sequence for
+    exactly the files that share state and changes nothing else.
+    #pair-unit-dispatch
+
+    Keyed on the DESTINATION (`item[1]`), weight-agnostic. Units keep
+    first-appearance order and list order within -- `_1`, `_0`, then the
+    no-suffix model, which is the order `_resolve_armor_meshes` emits and the
+    serial path runs.
+    """
+    units: "dict[str, list]" = {}
+    order: "list[str]" = []
+    for it in items:
+        key = _weight_base_key(str(it[1]))
+        if key not in units:
+            units[key] = []
+            order.append(key)
+        units[key].append(it)
+    return [units[k] for k in order]
+
+
+def _run_unit(fn, unit: "list[tuple]") -> list:
+    """One worker, one unit, in order: one result per item. Module-level so the
+    spawn-mode pool can pickle it. #pair-unit-dispatch"""
+    return [fn(it) for it in unit]
+
+
 class _NifPool:
     """Self-healing wrapper around the batch-shared NIF-conversion process pool.
 
@@ -242,7 +291,11 @@ class _NifPool:
     def run_batch(self, work_items, on_result, *, fn=None):
         """Run `fn` (default `_nif_convert_worker`) over every item, calling
         `on_result(ConvertResult)` exactly once per item. Survives worker process
-        death: the crasher surfaces as an error result, all others convert."""
+        death: the crasher surfaces as an error result, all others convert.
+
+        Items are dispatched as UNITS (`_pair_units`): every weight variant of
+        one base runs on ONE worker, in list order, so a `_1` and its `_0` are
+        never converted concurrently. #pair-unit-dispatch"""
         fn = fn or _nif_convert_worker
         items = list(work_items)
         if not items:
@@ -252,28 +305,33 @@ class _NifPool:
             self._run_isolated(remaining, on_result, fn)
 
     def _run_parallel(self, items, on_result, fn):
-        """Submit all items at once; deliver every result that completed cleanly,
-        and return the items whose futures broke (the crasher + any in-flight
-        bystanders) for isolated recovery. Rebuilds the pool if anything broke."""
+        """Submit every unit at once; deliver every result that completed
+        cleanly, and return the items of the units whose futures broke (the
+        crasher, its unit-mates, any in-flight bystanders) for isolated
+        recovery -- in the original list order, so a pair still re-runs in
+        sequence. Rebuilds the pool if anything broke."""
         self._ensure()
+        units = _pair_units(items)
         try:
-            fut_to_item = {self.pool.submit(fn, it): it for it in items}
+            fut_to_unit = {self.pool.submit(_run_unit, fn, u): u for u in units}
         except Exception:
             # Pool already broken at submit time -> nothing ran; recover all.
             self._rebuild()
             return items
-        remaining = []
-        broke = False
-        for fut in as_completed(fut_to_item):
-            it = fut_to_item[fut]
+        broken: "list[list]" = []
+        for fut in as_completed(fut_to_unit):
+            unit = fut_to_unit[fut]
             try:
-                on_result(fut.result())
+                results = fut.result()
             except Exception:
-                broke = True          # worker death: this item didn't complete
-                remaining.append(it)
-        if broke:
+                broken.append(unit)   # worker death: nothing in this unit is certain
+                continue
+            for r in results:
+                on_result(r)
+        if broken:
             self._rebuild()
-        return remaining
+        lost = {id(it) for u in broken for it in u}
+        return [it for it in items if id(it) in lost]
 
     def _run_isolated(self, items, on_result, fn):
         """Re-run the uncertain items one at a time on a healthy pool. With a
@@ -715,6 +773,11 @@ class AutoConvertResult:
     # Armour meshes resolved from a DIFFERENT mod via the VFS (BodySlide output /
     # replacer / patch). Surfaced in the coverage report.
     vfs_other_mod_count: int = 0
+    # {weight-agnostic dest base -> the weight suffixes the SOURCE actually
+    # ships}. `_complete_weight_partners` needs it to tell a `_0` it FILLED
+    # from one the converter genuinely produced. Empty = no knowledge, which
+    # that function treats as "never refresh". #stale-weight-partner
+    source_weight_variants: dict = field(default_factory=dict)
     # Postflight per-NIF invariant violations on the FINAL output (zero-vertex
     # shapes; over-cap single-partition shapes). Surfaced + counted as warnings.
     nif_invariant_warnings: list = field(default_factory=list)
@@ -1710,6 +1773,25 @@ def auto_convert_mod(
             print(f"  protecting {len(alt_tex_shape_names)} alt-texture-target "
                   f"shape(s) from merge (color variants)")
 
+        # #tri-variant-collision -- WHO WRITES EACH `.tri`, resolved the way
+        # SOURCES are resolved. `foo.nif`, `foo_0.nif` and `foo_1.nif` all
+        # derive `foo.tri`, so exactly one of them may write it and the others
+        # may only point at it when their vertex counts agree.
+        #
+        # The first fix for this asked the filesystem NEXT TO the source, and
+        # was INERT on the real pack: the competing variant routinely lives in
+        # a DIFFERENT MOD (a vanilla BSA ships the no-suffix model alone while a
+        # body-replacer mod ships the `_0`/`_1` pair), and a BSA-resolved source
+        # is staged ALONE, so the probe saw no sibling and let every variant
+        # claim the TRI. `resolved_pairs` is the correct source of truth because
+        # it came out of the SAME mod list / VFS / BSA chain that found the file
+        # being converted, so it sees across mods by construction.
+        #
+        variant_sources_by_base = _variant_sources_by_base(resolved_pairs)
+        # Same map, reduced to the SUFFIXES, for the batch-level partner fill.
+        for _b, _vs in variant_sources_by_base.items():
+            result.source_weight_variants.setdefault(_b, set()).update(_vs)
+
         work_items: list[tuple] = []
         skipped_collisions: list[tuple[Path, Path]] = []
         skipped_incremental = 0
@@ -1753,6 +1835,7 @@ def auto_convert_mod(
                 str(ube_body_ref_path) if ube_body_ref_path else None,
                 int(slot_bits),
                 alt_tex_shape_names,
+                variant_sources_by_base.get(_weight_base_key(rel)),
             ))
         if skipped_incremental:
             print(f"  incremental: reusing {skipped_incremental} up-to-date "
@@ -3147,10 +3230,24 @@ def _cmd_convert(args):
     # Guarantee both _0 and _1 exist: a missing weight partner breaks the piece
     # at that body weight. Fill any single-weight base from its present partner.
     try:
-        _filled = _complete_weight_partners(output)
+        # UNION across every source: if ANY mod ships a real `_0` for a base,
+        # that `_0` is authoritative and must never be overwritten.
+        _src_variants: dict = {}
+        # `_errs`, not `_e`: five `except ... as _e` handlers live in this same
+        # function, and an unused loop variable of that name collides with them
+        # -- which is why pyflakes reported the "unused _e" against one of the
+        # HANDLERS (whose `_e` is used) instead of against this line.
+        for _s, _r, _errs in results:
+            for _b, _sufs in getattr(_r, "source_weight_variants", {}).items():
+                _src_variants.setdefault(_b, set()).update(_sufs)
+        _filled, _refreshed = _complete_weight_partners(
+            output, source_variants=_src_variants)
         if _filled:
             print(f"  weight-partner completion: filled {_filled} missing "
                   "_0/_1 partner mesh(es) (would otherwise break at one weight)")
+        if _refreshed:
+            print(f"  weight-partner completion: refreshed {_refreshed} STALE "
+                  "filled partner(s) left by an earlier build")
     except Exception as _e:
         print(f"  (weight-partner completion skipped: {_e!r})")
 
@@ -3881,7 +3978,8 @@ def _meshes_rel(p: Path) -> str:
     return p.name
 
 
-def _complete_weight_partners(output_dir: "str | Path") -> int:
+def _complete_weight_partners(output_dir: "str | Path",
+                              source_variants: "dict | None" = None):
     """Safety net (#180): Skyrim needs BOTH ``_0`` and ``_1`` on disk for a
     weighted body mesh -- it derives the absent weight from the present one's
     PATH, so a missing partner makes the piece break / vanish at that body
@@ -3894,35 +3992,81 @@ def _complete_weight_partners(output_dir: "str | Path") -> int:
     The copied partner is identical geometry (no weight-morph between _0/_1 for
     those pieces) -- acceptable versus the missing-partner breakage, and the
     common case (the user's heavy-preset actors sit near weight 100, using _1).
-    Returns the number of partners filled. Meshes shipped weight-agnostic
-    (``name.nif`` with no ``_0``/``_1``) don't match and are untouched."""
+    Meshes shipped weight-agnostic (``name.nif`` with no ``_0``/``_1``) don't
+    match and are untouched.
+
+    #stale-weight-partner. THE FILL USED TO HAPPEN ONCE, EVER: the copy was
+    guarded by `if miss.exists(): continue`, so a partner written by an OLD
+    build was never refreshed. Every later run rewrote the real half and left
+    the copy alone, and the two halves of one piece came from converter builds
+    WEEKS apart -- the engine blends between them by body weight. Measured on
+    the 2026-09-06 pack: 11 of 1536 pairs were 12-15 DAYS apart, every one a
+    piece whose source ships only `_1`. It also poisons any pack-wide census:
+    4 of the 6 zero-weight bones in that pack sat on those stale files, so they
+    read as the current build's defects and were not.
+
+    `source_variants` ({dest base -> the weight suffixes the SOURCE ships}) is
+    what makes refreshing SAFE. A partner is refreshed ONLY when the source has
+    no such variant, i.e. it is a copy this function made rather than a mesh
+    the converter produced. **Dropping the guard without that test would
+    overwrite a legitimately converted low-weight `_0` with the high one,
+    pack-wide, silently deleting the low-weight shape.** With no
+    `source_variants` nothing is ever refreshed and the behaviour is exactly
+    as before.
+
+    Returns ``(filled, refreshed)``."""
     import re as _re
     ube_root = Path(output_dir) / "meshes" / "!UBE"
     if not ube_root.is_dir():
-        return 0
+        return 0, 0
     groups: "dict[tuple, dict]" = {}
     for p in ube_root.glob("**/*.nif"):
         m = _re.match(r"(.*)_([01])\.nif$", p.name, _re.IGNORECASE)
         if m:
             groups.setdefault((str(p.parent).lower(), m.group(1).lower()),
                               {})[m.group(2)] = p
-    filled = 0
+    from .atomic_io import atomic_copy
+    filled = refreshed = 0
     for have in groups.values():
-        if "0" in have and "1" in have:
+        both = "0" in have and "1" in have
+        anchor = have.get("1") or have.get("0")
+        try:
+            base = _weight_base_key(anchor.relative_to(ube_root).as_posix())
+        except ValueError:
+            base = None
+        src_sufs = (source_variants or {}).get(base)
+        if both:
+            # Refresh a partner this function FILLED. Only the source can say
+            # which one that is; without it, never touch an existing file.
+            if not src_sufs:
+                continue
+            stale_w = next((w for w in ("0", "1")
+                            if f"_{w}" not in src_sufs), None)
+            if stale_w is None:
+                continue          # the source ships both -> both are real
+            real = have["1" if stale_w == "0" else "0"]
+            stale = have[stale_w]
+            try:
+                if (stale.stat().st_size == real.stat().st_size
+                        and stale.read_bytes() == real.read_bytes()):
+                    continue      # already a current copy; leave the mtime alone
+                atomic_copy(real, stale)
+                refreshed += 1
+            except OSError:
+                pass
             continue
-        present = have.get("1") or have.get("0")
+        present = anchor
         miss_w = "0" if "1" in have else "1"
         miss = present.parent / _re.sub(
             r"_[01]\.nif$", f"_{miss_w}.nif", present.name, flags=_re.IGNORECASE)
         if miss.exists():
             continue
         try:
-            from .atomic_io import atomic_copy
             atomic_copy(present, miss)
             filled += 1
         except OSError:
             pass
-    return filled
+    return filled, refreshed
 
 
 def _nif_invariant_issues(nif_name, shapes, cap) -> "list[str]":
@@ -4305,6 +4449,65 @@ def _resolve_armor_meshes(
                 seen.add(key)
                 pairs.append(hit)
     return pairs
+
+
+def _near_mod_names(missing: str, all_names: "list[str]", n: int = 3) -> "list[str]":
+    """Mod names close to one `--only-mods` value that matched nothing.
+
+    A bare "NOT FOUND" sent the reader to `scan`, which lists mods that merely
+    LOOK like armour -- a different, wider set than the plugin-driven
+    CONVERSION candidates this flag filters. A mod can appear in one and not
+    the other, and chasing that cost three arms on 2026-09-07.
+
+    Case-insensitive, and returns the names in their REAL casing so the answer
+    can be pasted straight back into the flag.
+    """
+    import difflib
+    low = {name.lower(): name for name in all_names}
+    hits = difflib.get_close_matches(missing.lower(), list(low), n=n, cutoff=0.4)
+    return [low[h] for h in hits]
+
+
+def _variant_sources_by_base(
+    resolved_pairs: "list[tuple[Path, str]]",
+) -> "dict[str, dict[str, str]]":
+    """Group resolved sources by weight-agnostic stem: {base -> {suffix -> src}}.
+
+    WHO WRITES EACH `.tri`, answered where SOURCES are resolved. `foo.nif`,
+    `foo_0.nif` and `foo_1.nif` all derive `foo.tri`, so exactly one of them may
+    write it and the others may only point at it when their vertex counts agree
+    (`_tri_is_owning_variant` / `_tri_fits_variant`). #tri-variant-collision
+
+    THE FIRST FIX FOR THIS ASKED THE FILESYSTEM NEXT TO THE SOURCE, AND WAS
+    INERT: the competing variant routinely ships in a DIFFERENT MOD -- a vanilla
+    BSA ships the no-suffix model alone while a body-replacer ships the
+    `_0`/`_1` pair -- and a BSA-resolved source is staged ALONE, so the probe saw
+    no sibling and every variant claimed the TRI. The same five out-of-bounds
+    entries shipped after it.
+
+    `resolved_pairs` is the right source of truth because it came out of the
+    SAME mod list / VFS / BSA chain that found the file being converted, so it
+    sees across mods by construction. It has to be computed HERE, in the parent:
+    a conversion worker is a spawned process that inherits none of those indices,
+    and the destination siblings it could see instead are being written by this
+    same batch.
+
+    A VARIANT ONLY COUNTS IF IT IS ACTUALLY GOING TO BE CONVERTED. Deferring to
+    a `_0` that yields nothing at the destination would leave the whole stem with
+    no TRI and no BODYTRI -- morphs lost outright, which is worse than the
+    collision -- so an already-UBE model is dropped here. Callers pass the
+    CRASH-GUARDED pairs (a dropped accessory converts nothing and writes no TRI)
+    but do not pre-apply the collision or incremental skips, whose destinations
+    exist regardless of which source wrote them.
+    """
+    out: "dict[str, dict[str, str]]" = {}
+    for src, rel in resolved_pairs:
+        if _is_already_ube_model(rel):
+            continue
+        stem = Path(rel).stem
+        suffix = stem[-2:] if stem.endswith(("_0", "_1")) else ""
+        out.setdefault(_weight_base_key(rel), {})[suffix] = str(src)
+    return out
 
 
 # #worker-mem-budget -- steady-state private footprint of ONE conversion worker.
@@ -5309,13 +5512,29 @@ def _cmd_auto(args):
         _sweep_only_requested = "vanilla" in wanted
         wanted.discard("vanilla")
         before = len(candidates)
+        all_names = [c["name"] for c in candidates]
         candidates = [c for c in candidates if c["name"].lower() in wanted]
         missing = sorted(wanted - {c["name"].lower() for c in candidates})
         print(f"  --only-mods: {len(candidates)}/{before} mod(s) selected"
               + (f"; NOT FOUND: {missing}" if missing else ""))
+        if missing:
+            # THE OLD MESSAGE SENT THE READER TO THE WRONG LIST. `scan` prints
+            # mods that merely LOOK like armour (ESP + NIFs under armour paths);
+            # this filter matches the CONVERSION candidates, which is a
+            # different, plugin-driven set. A mod can sit in `scan`'s table and
+            # be absent here -- that cost three arms on 2026-09-07 -- so name
+            # the right list and show the near misses instead of a bare refusal.
+            for miss in missing:
+                real = _near_mod_names(miss, all_names)
+                if real:
+                    print(f"    {miss!r} -- did you mean: "
+                          + ", ".join(repr(n) for n in real))
         if not candidates and not _sweep_only_requested:
-            print("error: --only-mods matched no discovered armor mods. Run "
-                  "`scan` or the GUI 'Refresh mod list' for the exact names.")
+            print("error: --only-mods matched no CONVERSION candidates. That is "
+                  "NOT the same list as `scan`, which shows anything that looks "
+                  "like armour; use the GUI 'Refresh mod list', or "
+                  "`auto_convert.list_convertible_mods()`, which mirrors this "
+                  "filter exactly.")
             return 2
 
     # Order by MO2 load priority (highest first) so the first-writer-wins collision

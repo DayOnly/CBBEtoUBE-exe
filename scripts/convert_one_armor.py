@@ -227,6 +227,15 @@ def main():
     print(f"  body ref: {ref}")
     print(f"  output : {dst_dir}")
 
+    # WHO WRITES THE SHARED `.tri`, resolved the way the batch resolves it --
+    # from the set of variants this run will actually convert, not by probing
+    # the filesystem next to the source. #tri-variant-collision. Only the pair
+    # is converted here, so `_0` owns it and `_1` points at it, which is what
+    # the batch does for a pair shipped in one mod. Passing it explicitly keeps
+    # the harness's parity claim true by construction rather than by luck.
+    variant_sources = {w: str(srcd / f"{stem}{w}.nif") for w in ("_0", "_1")
+                       if (srcd / f"{stem}{w}.nif").exists()}
+
     results = []
     for w in ("_0", "_1"):
         src = srcd / f"{stem}{w}.nif"
@@ -235,7 +244,8 @@ def main():
             continue
         # THE work item the batch builds -- same tuple, same worker, so there
         # is exactly one conversion path. #single-vs-batch-parity
-        item = (src, dst_dir / f"{stem}{w}.nif", ref, int(slots), alt_tex)
+        item = (src, dst_dir / f"{stem}{w}.nif", ref, int(slots), alt_tex,
+                variant_sources)
         r = ac._nif_convert_worker(item)
         _say(f"  {stem}{w}: {getattr(r, 'status', r)}"
              + (f"  -- {r.reason}" if getattr(r, "reason", "") else ""))

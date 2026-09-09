@@ -371,6 +371,31 @@ change), `INFLATION_MAGNITUDE` 0.7→0.2 (−0.024), `AUTHORED_INFLATE` (no chan
 lowered. Both arms land at ~0.78 because the conform's floor is what binds. Dump
 the stages before concluding a knob does nothing.
 
+**OR THE KNOB NEVER REACHED THE PASS (2026-09-06).** The other explanation for
+"inert", and it has to be excluded first, because no amount of stage-dumping
+finds it. `inflate_armor_outward` on the adaptive path — which is every piece
+with an OSD amplitude map, and `ADAPTIVE_CLEARANCE_ENABLED` is a hardcoded
+`True` — computes
+
+    cap          = max(magnitude, ADAPTIVE_CLEARANCE_MORPH_MAX)   # morph_max 1.1
+    per_vert_mag = clip(BASE + MORPH_FACTOR*amp, BASE, cap)
+
+so `magnitude` enters ONLY through that `max` and every value at or below 1.1 —
+including **0.0** — drops out. MEASURED: an arm at `INFLATION_MAGNITUDE=0.35` is
+BYTE-IDENTICAL to one at 0.7 over all 184 NIFs of the acceptance population, and
+that held with `SRC_NORMAL_FIX=1` too. So on that path the knob is not a weak
+lever, it is not a lever. Only BELT's 1.5 exceeds the cap; SLOT49 0.5,
+HANDS_FEET 0.6 and SKIRT/default 0.7 are all inert, which makes
+`_slot_aware_inflation_magnitude` a no-op on four of its five branches.
+
+**This puts a caveat on any older result whose ARMS differed only by
+`CBBE2UBE_INFLATION_MAGNITUDE`** — including the `#inflate-census` deletion
+study below, whose arms are described exactly that way. Either those runs took
+the no-amplitude-map fallback (where `magnitude` does bind), or the arms were
+closer than intended. Re-derive before leaning on that number again; the levers
+that DO reach the pass are `CBBE2UBE_CLEARANCE_BASE`,
+`CBBE2UBE_CLEARANCE_MORPH_FACTOR` and `CBBE2UBE_CLEARANCE_MORPH_MAX`.
+
 ---
 
 ## 6. The flag surface

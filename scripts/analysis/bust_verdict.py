@@ -413,8 +413,8 @@ def verdict(r, anchor=None):
     bad = (sa.check(so, anc_so, keys=("median", "p90"))
            if so.get("n") and anc_so.get("n") else [])
     if bad:
-        print(f"  OVERINFLATED: it covers, but it stands off further than a "
-              f"correctly-fitted armour:")
+        print("  OVERINFLATED: it covers, but it stands off further than a "
+              "correctly-fitted armour:")
         for b in bad:
             print(f"    {b}")
         print("  Not visible to a clipping test at any threshold. Re-solve "
@@ -434,10 +434,10 @@ def verdict(r, anchor=None):
         print("  NOTE: no --anchor, so OVERINFLATED could not be tested. A "
               "garment inflated until nothing pokes reads 0.0% clipping, so "
               "'clean at rest' alone does not mean well fitted.")
-    print(f"  MOTION (by elimination): clean at rest, fit within the reference, "
-          f"and no degradation under morph. What remains is SMP travel, which "
-          f"nothing in this repo can measure -- the harness poses a skeleton, "
-          f"it does not simulate.")
+    print("  MOTION (by elimination): clean at rest, fit within the reference, "
+          "and no degradation under morph. What remains is SMP travel, which "
+          "nothing in this repo can measure -- the harness poses a skeleton, "
+          "it does not simulate.")
     print("  Do NOT chase this with more weight or clearance on the strength "
           "of an offline number: that is what produced three reverts. Next "
           "step is an in-game A/B of ONE lever.")

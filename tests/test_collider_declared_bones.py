@@ -147,7 +147,12 @@ def test_nearest_declared_ancestor_relabels_and_declines():
     occur ([[feedback_method_traps]] -- a fake can make an assertion vacuous)."""
     parents = nc._actor_skeleton_bone_parents()
     if len(parents) < 100:
-        pytest.skip("actor skeleton not loaded in this environment")
+        pytest.skip(
+            "actor skeleton not loaded -- set CBBE2UBE_SKELETON_NIF to a "
+            "skeleton_female.nif (and CBBE2UBE_MO2_INI to the live instance) "
+            "and this test RUNS AND PASSES. Verified 2026-09-06: the bare "
+            "suite skips it, the gate environment does not. A skip message "
+            "that does not say how to un-skip becomes permanent.")
     hand = "NPC L Hand [LHnd]"
     finger = "NPC L Finger00 [LF00]"
     if parents.get(finger) is None:

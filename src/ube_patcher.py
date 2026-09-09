@@ -3553,7 +3553,8 @@ def generate_modded_nonbody_ube_coverage_patch(
     new_arma_records: list[esp.Record] = []
     _mint_rec: dict = {}   # arma_abs -> minted Record (for post-prune sidecar fids)
     next_id = ESL_OWN_FORMID_MIN
-    mint_name = out_path.with_suffix(".esp").name
+    # (a `mint_name = out_path.with_suffix(".esp").name` was computed here and
+    # never read; both mint blocks carried the same dead copy. Removed 2026-09-06.)
     preserved_count = 0
     preserve_fallbacks: list = []
     for arma_abs in mint_set:
@@ -3851,7 +3852,8 @@ def generate_modded_body_ube_coverage_patch(
     new_arma_records: list = []
     _mint_rec: dict = {}   # arma_abs -> minted Record (for post-prune sidecar fids)
     next_id = ESL_OWN_FORMID_MIN
-    mint_name = out_path.with_suffix(".esp").name
+    # (a `mint_name = out_path.with_suffix(".esp").name` was computed here and
+    # never read; both mint blocks carried the same dead copy. Removed 2026-09-06.)
     preserved_count = 0
     preserve_fallbacks: list = []
     for arma_abs in mint_set:

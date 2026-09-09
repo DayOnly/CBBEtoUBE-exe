@@ -150,7 +150,7 @@ mod_txt = "\n".join(hdr) + "\n" + block_txt
 out_mod = REPO / "src" / f"{a.module}.py"
 names_all = STATE + NAMES
 shim = [f"# ({a.step}) {', '.join(names_all[:4])}{' ...' if len(names_all) > 4 else ''} live in {a.module}.py",
-        f"# since 2026-09-01. Imported BY NAME so `nc.<name>` keeps working everywhere.",
+        "# since 2026-09-01. Imported BY NAME so `nc.<name>` keeps working everywhere.",
         f"from .{a.module} import (  # noqa: E402"]
 row = "   "
 for nm in names_all:

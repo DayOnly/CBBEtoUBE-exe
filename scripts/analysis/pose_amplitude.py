@@ -154,7 +154,7 @@ def _main():
     sh = next((s for s in nif.shapes if s.name == shape), None) if shape else \
         max(nif.shapes, key=lambda s: len(s.verts))
     v = np.asarray(sh.verts, dtype=np.float64)
-    z, ny = v[:, 2], np.zeros(len(v))
+    z = v[:, 2]          # (an unused `ny = np.zeros(len(v))` was dropped here)
     print(f"{Path(body).name} / {sh.name}: {len(v)} verts, {len(each)} poses")
     print(f"  amplitude  mean {amp.mean():5.2f}u  p95 {np.percentile(amp,95):5.2f}u  "
           f"max {amp.max():5.2f}u")

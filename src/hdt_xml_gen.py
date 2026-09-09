@@ -236,8 +236,10 @@ CHAIN_RESTITUTION = 0.5        # authored mode 0.5 (was 0.2)
 # smoothly" sway (vs the old stiff/under-damped profile).
 CHAIN_LINEAR_LOWER = (-0.05, -0.05, -0.05)   # near-rigid link length
 CHAIN_LINEAR_UPPER = (0.05, 0.05, 0.05)      # was (0.1, 0.5, 0.1) -> over-stretch
-CHAIN_ANGULAR_LOWER = (-0.1, -0.1, -0.1)     # authored common +/-0.1
-CHAIN_ANGULAR_UPPER = (0.1, 0.1, 0.1)
+# NO angular tuple here: the angular limit is PER CHAIN, not a constant.
+# `chain_angular_limit(joints)` below (#chain-deflection-norm) computes it and
+# the emitter reads it from there. The authored per-joint +/-0.1 this block used
+# to hardcode survives as `CHAIN_ANGULAR_LIMIT_MIN`, that function's clamp floor.
 CHAIN_LINEAR_STIFFNESS = 20.0   # authored mode 20 (was 500 -> too rigid)
 CHAIN_ANGULAR_STIFFNESS = 20.0  # authored mode 20 (was 500)
 CHAIN_CONSTRAINT_DAMPING = 0.5

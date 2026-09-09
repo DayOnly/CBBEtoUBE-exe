@@ -806,6 +806,34 @@ def _add_butt_collider_patch(dst_path) -> int:
         return 0
 
     def _all_extra(nf_):
+        # KNOWN BLIND SPOT, now MEASURED (2026-09-07). `extra_data()` stops
+        # at the first block it cannot build, so everything after that block
+        # is invisible here. The guard is `pre_extra <= post_extra`
+        # ("nothing that was there has gone"), and a block hidden on BOTH
+        # sides is simply outside its cover -- it neither protects it nor
+        # falsely fires on it.
+        #
+        # HOW BIG THE HOLE IS, counted against the index-enumerated reader:
+        #
+        #     SOURCE NIFs   1200 read, 5319 shapes
+        #        1 block :   865 shapes,  46 blind
+        #        2 blocks:    16 shapes,  10 blind   <- 62%
+        #        hidden  :   BODYTRI x10, unnamed x56
+        #     OUR OUTPUT  1200 read, 2885 shapes
+        #        blind   :     4 shapes (0.14%) -- we rarely write 2 blocks
+        #
+        # CORRECTION to the earlier note here: the block that stops the walk
+        # does NOT read as LOCKEDNORM through this accessor. In every blind
+        # case its name comes back None -- it is unbuildable, so it has no
+        # readable name -- which is also why a probe cannot simply skip it.
+        #
+        # STILL NOT swapped to the index-enumerated reader: that makes the
+        # invariant STRICTER, and this is a safety guard, so the number that
+        # decides it is the ROLLBACK RATE over a real convert, before and
+        # after. That has not been measured. Three identical copies exist
+        # (nif_convert_bust.py and twice here) -- fix them together.
+        # See feedback_pynifly_extra_data_stops, and `_census_common.bodytri_of`
+        # for the correct reader.
         out = {(None, getattr(ed, "name", None))
                for ed in nf_.rootNode.extra_data()}
         for s_ in nf_.shapes:
@@ -1172,6 +1200,34 @@ def _add_skirt_collider_proxy(dst_path) -> int:
         return 0
 
     def _all_extra(nf_):
+        # KNOWN BLIND SPOT, now MEASURED (2026-09-07). `extra_data()` stops
+        # at the first block it cannot build, so everything after that block
+        # is invisible here. The guard is `pre_extra <= post_extra`
+        # ("nothing that was there has gone"), and a block hidden on BOTH
+        # sides is simply outside its cover -- it neither protects it nor
+        # falsely fires on it.
+        #
+        # HOW BIG THE HOLE IS, counted against the index-enumerated reader:
+        #
+        #     SOURCE NIFs   1200 read, 5319 shapes
+        #        1 block :   865 shapes,  46 blind
+        #        2 blocks:    16 shapes,  10 blind   <- 62%
+        #        hidden  :   BODYTRI x10, unnamed x56
+        #     OUR OUTPUT  1200 read, 2885 shapes
+        #        blind   :     4 shapes (0.14%) -- we rarely write 2 blocks
+        #
+        # CORRECTION to the earlier note here: the block that stops the walk
+        # does NOT read as LOCKEDNORM through this accessor. In every blind
+        # case its name comes back None -- it is unbuildable, so it has no
+        # readable name -- which is also why a probe cannot simply skip it.
+        #
+        # STILL NOT swapped to the index-enumerated reader: that makes the
+        # invariant STRICTER, and this is a safety guard, so the number that
+        # decides it is the ROLLBACK RATE over a real convert, before and
+        # after. That has not been measured. Three identical copies exist
+        # (nif_convert_bust.py and twice here) -- fix them together.
+        # See feedback_pynifly_extra_data_stops, and `_census_common.bodytri_of`
+        # for the correct reader.
         out = {(None, getattr(ed, "name", None))
                for ed in nf_.rootNode.extra_data()}
         for s_ in nf_.shapes:
@@ -1372,7 +1428,12 @@ def _lift_chain_roots_off_body(chain: dict, src_nif, dst_path=None) -> int:
     """Translate each physics chain until no bone of it rests inside the body.
 
     Mutates `chain` in place (ROOT entries only) and returns the number of
-    chains lifted. Default OFF -- see CHAIN_REST_LIFT.
+    chains lifted. Gated on `CHAIN_REST_LIFT`, DEFAULT ON since 2026-08-11.
+
+    This line described the opposite for the four weeks after that flip, i.e.
+    for the whole time the pass has been shipping the in-game butt-clip fix.
+    The binding in `nif_convert.py` is the authority; a sentence never is.
+    `tests/test_flag_default_prose.py` now checks this one against it.
 
     `dst_path` is telemetry only: every root's decision, INCLUDING the skips and
     their reason, goes to the run's JSONL sink. Without it the pass is
@@ -1823,10 +1884,15 @@ def _precreate_custom_bone_chains(dst_nif, src_nif, bone_names) -> int:
         # discarded.
         _before = {b: tuple(float(c) for c in x.translation)
                    for b, (x, _p) in chain.items()}
-        for _label, _fn, _flag in (
+        # `_on`, not `_flag`: this module imports `flag as _flag`, and a loop
+        # variable of that name shadows it for the rest of the function. Nothing
+        # in this function calls `_flag(...)` today, so it was harmless -- but
+        # the next person to add a flag lookup here would silently get a
+        # BOOLEAN instead of the function.
+        for _label, _fn, _on in (
                 ("chain-rest-lift", _lift_chain_roots_off_body,
                  _nc().CHAIN_REST_LIFT),):
-            if not _flag:
+            if not _on:
                 continue
             try:
                 _n = _fn(chain, src_nif, dst_path=_dp)

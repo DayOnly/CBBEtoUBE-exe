@@ -238,6 +238,15 @@ class _Tooltip:
         if self.tip is not None or not self.text:
             return
         try:
+            # Imported HERE, not at module scope: `launch_gui()` imports tkinter
+            # lazily so that importing this module never needs a display, and
+            # this class must not break that contract. It was reading a module
+            # -global `tk` that only `launch_gui` ever binds, so every tooltip
+            # raised NameError straight into the `except` below and silently
+            # never rendered -- the silently-dead-code class the undefined-name
+            # sweep exists to catch. `_show` only runs behind a live widget, so
+            # a local import needs no display that is not already open.
+            import tkinter as tk
             x = self.widget.winfo_rootx() + 18
             y = self.widget.winfo_rooty() + self.widget.winfo_height() + 6
             self.tip = tk.Toplevel(self.widget)

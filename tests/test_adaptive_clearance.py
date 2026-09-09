@@ -59,6 +59,15 @@ def test_adaptive_clearance_tightens_static_keeps_morph():
     push_s = _push_distance(armor_static, out_s, normals[0])
     push_m = _push_distance(armor_morph, out_m, normals[1])
 
+    # THE CLAMP MUST ACTUALLY BIND, or `push_m == cap` below is a coincidence
+    # rather than evidence: the unclamped ramp wants `base + factor * amp`, and
+    # that has to EXCEED the cap for the clamp to be what produced the result.
+    # `factor` was read here and never used, so nothing checked the setup was
+    # even capable of testing a clamp.
+    assert base + factor * 4.0 > cap, (
+        f"setup cannot reach the cap: base {base} + factor {factor} * 4.0 = "
+        f"{base + factor * 4.0} <= cap {cap}")
+
     # Static vert pushed by ~base (tight), morph vert pushed to the cap.
     assert abs(push_s - base) < 1e-3, f"static push {push_s} != base {base}"
     assert abs(push_m - cap) < 1e-3, f"morph push {push_m} != cap {cap}"

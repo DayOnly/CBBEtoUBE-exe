@@ -56,23 +56,42 @@ BODY_NAMES = {"BaseShape", "3BA"}
 PROXY = {"VirtualBody", "VirtualGround", "SkirtCol", "ButtCol"}
 
 
-def bodytri_of(shape):
-    """Enumerate by INDEX. `extra_data()` stops at the first block it cannot
-    build, and a BodySlide body carries LOCKEDNORM at index 0 -- so it reports
-    no BODYTRI on exactly the shapes that are bodies."""
-    out = []
+def is_textured(shape) -> bool:
+    """Does this shape carry a REAL texture path?
+
+    `bool(shape.textures)` is not that question, and answering it that way put
+    40 of the census's 42 "untagged cloth shape" NIFs there. A source COLLISION
+    shape ships textureless (`{}`), the converter re-adds it with the slot
+    STRUCTURE but no paths (`{'Diffuse': '', 'Normal': ''}`), and a dict of
+    empty strings is truthy -- so an invisible physics helper scored as cloth
+    that should have been morphing. Measured on the pack: `Stabilizer` (180
+    verts, the same shape in 20 outfits) reads `{}` at the source and
+    `{'Diffuse': '', 'Normal': ''}` in our output.
+
+    Note the converter's own carrier picker asks the truthy question too. It is
+    not wrong today only because those shapes are dropped as "textureless
+    collision shapes" during copy and re-added AFTER the BODYTRI step, so it
+    never sees them -- a latent trap, not a fix."""
     try:
-        n = int(getattr(shape.properties, "extraDataCount", 0) or 0)
+        return any(str(v).strip() for v in (shape.textures or {}).values())
     except Exception:
-        return out
-    for i in range(n):
-        try:
-            ed = shape.get_extra_data(target_index=i)
-        except Exception:
-            continue
-        if ed is not None and getattr(ed, "name", None) == "BODYTRI":
-            out.append(str(getattr(ed, "string_data", "")))
-    return out
+        return False
+
+
+# Enumerated by INDEX, and shared so no census re-derives the version that
+# silently reads empty. See `_census_common.bodytri_of`.
+from _census_common import bodytri_of  # noqa: E402,F401
+
+
+def _same_bytes(a, b) -> bool:
+    """Are two files byte-identical? Size first, so the read is rare."""
+    try:
+        if os.path.getsize(a) != os.path.getsize(b):
+            return False
+        with open(a, "rb") as fa, open(b, "rb") as fb:
+            return fa.read() == fb.read()
+    except OSError:
+        return False
 
 
 def main():
@@ -102,6 +121,30 @@ def main():
     proxy_pieces = ground_tagged = 0
     parity_bad = []
     oob = []
+    # TRI/NIF SHAPE-NAME AGREEMENT. The out-of-bounds check above can only score
+    # a tri shape the NIF also has (`counts.get(sh.name)` is None otherwise and
+    # the shape is skipped) -- so a tri written for a DIFFERENT outfit entirely
+    # scored CLEAN. The morph never matches at runtime either way, so this class
+    # is DEAD sliders rather than dangerous ones, but it must not read as a pass.
+    name_agree = 0
+    name_partial = []
+    name_disjoint = []
+    tri_unreferenced = 0
+    tri_missing = []
+    # A shape NAMED `BaseShape` that is NOT the injected body. A mod may call one
+    # of its own armour shapes that, and picked by NAME it is handed to every
+    # consumer of `ube_body_shape` as the body -- which is how the UBE body's OSD
+    # morphs came to be embedded verbatim on a 3618-vert cuirass part.
+    # `_collect_tri_inputs` now splits by TOPOLOGY, but the pick ITSELF is still
+    # name-only, so this class must stay VISIBLE rather than be assumed gone.
+    baseshape_counts = collections.Counter()
+    baseshape_where = collections.defaultdict(list)
+    # Every `.tri` a NIF points at -- so the ones NOTHING points at can be found.
+    # The reverse of `tri_missing`: correct morph data written, then orphaned by
+    # a NIF that shipped without the BODYTRI string. Silent DEAD sliders.
+    referenced_tris = set()
+    # `_0`/`_1` written more than a day apart -- two builds in one garment.
+    stale_pairs = []
     worst = []
     load_fail = []
     seen_pairs = set()
@@ -115,6 +158,15 @@ def main():
             continue
         shapes = list(nf.shapes)
         names = [s.name for s in shapes]
+
+        for s in shapes:
+            if s.name == "BaseShape":
+                try:
+                    n = len(s.verts)
+                except Exception:
+                    continue
+                baseshape_counts[n] += 1
+                baseshape_where[n].append(os.path.relpath(p, root))
 
         f_here = i_here = 0
         for s in shapes:
@@ -152,7 +204,7 @@ def main():
                 declared = set(re.findall(
                     r'<per-(?:triangle|vertex)-shape\s+name="([^"]+)"', _t))
             cloth = [s.name for s in shapes
-                     if (s.textures or {})
+                     if is_textured(s)
                      and s.name not in BODY_NAMES and s.name not in PROXY
                      and s.name not in declared]
             if [c for c in cloth if c not in tagged]:
@@ -201,6 +253,34 @@ def main():
             if os.path.exists(p0) and os.path.exists(p1):
                 seen_pairs.add(base)
                 stat["pairs"] += 1
+                # #stale-weight-partner. `_complete_weight_partners` used to
+                # fill a missing partner ONCE, EVER, so a `_0` copied by an old
+                # build was never refreshed: the two halves of one piece came
+                # from converter builds WEEKS apart and the engine blends
+                # between them by body weight. It also poisons every pack-wide
+                # census -- 4 of the 6 zero-weight bones in the 2026-09-06 pack
+                # sat on those stale files and read as this build's defects.
+                # A day of slack absorbs a long batch; anything more is a pair
+                # no single run wrote.
+                #
+                # MTIME IS ONLY THE TRIGGER, NEVER THE VERDICT. The fix's
+                # refresh deliberately SKIPS a partner that already matches
+                # ("already a current copy; leave the mtime alone"), so a pair
+                # can be weeks apart on disk and byte-identical in content --
+                # current, and not a defect. Scoring the mtime alone reports a
+                # permanent false positive that no run can ever clear, and it
+                # gets re-investigated every time. So compare the BYTES and
+                # count the identical ones separately, as an exclusion.
+                try:
+                    dt = abs(os.path.getmtime(p0) - os.path.getmtime(p1))
+                    if dt > 86400:
+                        if _same_bytes(p0, p1):
+                            stat["pairs_mtime_skew_same_bytes"] += 1
+                        else:
+                            stale_pairs.append(
+                                (os.path.relpath(p0, root), dt / 86400.0))
+                except OSError:
+                    pass
                 try:
                     a = [(s.name, len(s.verts)) for s in NifFile(p0).shapes]
                     b = [(s.name, len(s.verts)) for s in NifFile(p1).shapes]
@@ -217,12 +297,47 @@ def main():
                 except Exception:
                     pass
 
-        stem = p[:-6] if p[-6:-4] in ("_0", "_1") else p[:-4]
-        trip = stem + ".tri"
-        if os.path.exists(trip):
+        # SCORE THE TRI THE NIF POINTS AT, not the one its stem derives.
+        # Those are different files whenever a low-poly variant shares a stem
+        # with the worn pair -- and that gap is exactly where the fix for
+        # #tri-variant-collision lands: the variant that cannot carry the shared
+        # TRI's offsets now ships with NO BODYTRI, so NioOverride is never asked
+        # to move a vertex it lacks. Scored off the stem, that file still reads
+        # as out of bounds and the fix reads as INERT. It is the same trap that
+        # let the FIRST fix ship without anyone noticing it did nothing.
+        #
+        # A NIF with no BODYTRI cannot morph at runtime and so cannot index past
+        # anything -- counted as an exclusion below, never as a pass.
+        _refs = sorted({bt.strip().replace("\\", "/").lstrip("/")
+                        for s in shapes for bt in bodytri_of(s) if bt.strip()})
+        referenced_tris.update(r.lower() for r in _refs)
+        trip = next((c for c in (os.path.join(root, r) for r in _refs)
+                     if os.path.exists(c)), None)
+        if not _refs:
+            tri_unreferenced += 1
+        elif trip is None:
+            tri_missing.append("%s -> %s"
+                               % (os.path.relpath(p, root), ", ".join(_refs)))
+        if trip is not None:
             try:
                 counts = dict((s.name, len(s.verts)) for s in shapes)
                 tri = TriFile.load(trip)
+                tri_names = set(sh.name for sh in tri.shapes)
+                matched = tri_names & set(counts)
+                rel_p = os.path.relpath(p, root)
+                if not tri_names:
+                    pass                       # an empty tri is its own problem
+                elif not matched:
+                    name_disjoint.append(
+                        "%s: nif %s | tri %s"
+                        % (rel_p, ",".join(sorted(counts)[:4]),
+                           ",".join(sorted(tri_names)[:4])))
+                elif matched != tri_names:
+                    name_partial.append(
+                        "%s: tri-only %s"
+                        % (rel_p, ",".join(sorted(tri_names - matched)[:4])))
+                else:
+                    name_agree += 1
                 for sh in tri.shapes:
                     n = counts.get(sh.name)
                     if n is None:
@@ -237,6 +352,42 @@ def main():
                                    % (os.path.relpath(p, root), sh.name, mx, n))
             except Exception:
                 pass
+
+    # ORPHANED `.tri`: written, correct, and pointed at by NOTHING.
+    #
+    # The scored population deliberately drops `1stperson*`, but those NIFs
+    # still REFERENCE tris -- so their refs have to be collected here or every
+    # first-person tri reads as an orphan. This is the only place the census
+    # opens an excluded NIF, and it reads nothing but the BODYTRI strings.
+    excluded = sorted(set(glob.glob(os.path.join(root, "**", "*.nif"),
+                                    recursive=True))
+                      - set(nifs))
+    excluded = [q for q in excluded if "_bsa_staging" not in q]
+    for q in excluded:
+        try:
+            for s in NifFile(q).shapes:
+                for bt in bodytri_of(s):
+                    if bt.strip():
+                        referenced_tris.add(
+                            bt.strip().replace("\\", "/").lstrip("/").lower())
+        except Exception:
+            pass
+    tris_on_disk = [t for t in glob.glob(os.path.join(root, "**", "*.tri"),
+                                         recursive=True)
+                    if "_bsa_staging" not in t]
+    orphan_tris = sorted(
+        t for t in tris_on_disk
+        if os.path.relpath(t, root).replace("\\", "/").lower()
+        not in referenced_tris)
+    orphan_bytes = sum(os.path.getsize(t) for t in orphan_tris)
+
+    # AUTHORED `BaseShape`: the modal vert count is the injected body; anything
+    # else carrying that name is an armour shape that merely shares it.
+    body_verts = (baseshape_counts.most_common(1)[0][0]
+                  if baseshape_counts else None)
+    authored_base = sorted(
+        (n, f) for n, fs in baseshape_where.items() if n != body_verts
+        for f in fs)
 
     bar = "=" * 78
     print(bar)
@@ -271,10 +422,72 @@ def main():
           % (len(parity_bad), "   <== should be 0" if parity_bad else "   OK"))
     for r, m in parity_bad[:10]:
         print("      %s: %s" % (r, m))
+    print("  pairs >1 DAY apart AND differing           : %d%s"
+          % (len(stale_pairs),
+             "   <== two builds in one garment" if stale_pairs else "   OK"))
+    for r, d in sorted(stale_pairs, key=lambda x: -x[1])[:10]:
+        print("      %s: %.1f days" % (r, d))
+    print("    excluded: >1 day apart but BYTE-IDENTICAL: %d   (current copies"
+          " the refresh deliberately left alone)"
+          % stat["pairs_mtime_skew_same_bytes"])
     print("  TRI offsets out of bounds                 : %d%s"
           % (len(oob), "   <== should be 0" if oob else "   OK"))
     for line in oob[:10]:
         print("      " + line)
+    print("  NIFs with no BODYTRI (cannot morph, not at risk) : %d"
+          % tri_unreferenced)
+    print("  BODYTRI pointing at a MISSING tri         : %d%s"
+          % (len(tri_missing), "   <== should be 0" if tri_missing else "   OK"))
+    for line in tri_missing[:8]:
+        print("      " + line)
+    # An orphan carrying NO SHAPES is a 6-byte header stub: inert, and the pack
+    # ships five. Only an orphan WITH shapes is a piece whose sliders were
+    # generated and then lost. Judged by parsing, not by byte count -- kept
+    # apart so the row does not cry wolf every run and stop being read.
+    fat_orphans = []
+    for t in orphan_tris:
+        try:
+            if TriFile.load(t).shapes:
+                fat_orphans.append(t)
+        except Exception:
+            fat_orphans.append(t)      # unreadable -> not dismissable
+    print("  tri files on disk NOTHING points at       : %d (%d empty stub%s)%s"
+          % (len(orphan_tris), len(orphan_tris) - len(fat_orphans),
+             "" if len(orphan_tris) - len(fat_orphans) == 1 else "s",
+             "   <== dead sliders, %.1f MB" % (orphan_bytes / 1048576.0)
+             if fat_orphans else "   OK"))
+    for t in (fat_orphans or orphan_tris)[:8]:
+        print("      %s  (%d bytes)"
+              % (os.path.relpath(t, root), os.path.getsize(t)))
+    print("")
+    print("BODY IDENTITY  (`ube_body_shape` picks the body by NAME, so a shape")
+    print("a mod happens to call BaseShape is handed to every consumer as the")
+    print("body. Halve the count for `_0`/`_1`.)")
+    print("  injected-body vert count (modal)          : %s"
+          % (body_verts if body_verts is not None else "n/a"))
+    print("  BaseShape shapes at another vert count    : %d%s"
+          % (len(authored_base),
+             "   <== authored, NOT the body" if authored_base else "   OK"))
+    for n, f in authored_base[:8]:
+        print("      %s  (%d verts)" % (f, n))
+    print("")
+    print("TRI / NIF SHAPE-NAME AGREEMENT  (a tri whose names the NIF lacks is")
+    print("scored CLEAN by the out-of-bounds check above -- it has nothing to")
+    print("compare. The morph never matches at runtime: DEAD sliders.)")
+    _named = name_agree + len(name_partial) + len(name_disjoint)
+    print("  NIFs scored (their own BODYTRI resolved)  : %d" % _named)
+    print("  every tri shape named in the NIF          : %d" % name_agree)
+    print("  SOME tri shapes the NIF does not have     : %d%s"
+          % (len(name_partial), "   <== dead sliders" if name_partial else "   OK"))
+    for line in name_partial[:8]:
+        print("      " + line)
+    print("  NO tri shape the NIF has                  : %d%s"
+          % (len(name_disjoint),
+             "   <== whole tri is dead" if name_disjoint else "   OK"))
+    for line in name_disjoint[:8]:
+        print("      " + line)
+    if _named == 0:
+        print("      (no BODYTRI resolved on any NIF -- 0/0 IS NOT A PASS)")
     if headroom:
         print("BUST HEADROOM  (closest approach in the breast band, z 90-102 front)")
         print("  cloth shapes measured                     : %d" % len(bust_min))

@@ -240,6 +240,38 @@ def _split_bust_collider_shape(dst_path, src_path=None) -> int:
     def _all_extra(nf_):
         # BODYTRI lives on its CARRIER SHAPE, not the root -- snapshot both, or
         # the morph invariant is checked against the wrong place.
+        #
+        # KNOWN BLIND SPOT, now MEASURED (2026-09-07). `extra_data()` walks
+        # blocks by index and STOPS at the first it cannot build, so every
+        # later block is invisible ([[feedback_pynifly_extra_data_stops]]). The
+        # guard below is `pre_extra <= post_extra`, i.e. "nothing that was there
+        # has gone", so a block hidden on BOTH sides is outside its cover: it is
+        # neither protected nor falsely flagged.
+        #
+        # HOW BIG THE HOLE IS, counted against the index-enumerated reader:
+        #
+        #     SOURCE NIFs   1200 read, 5319 shapes
+        #        1 block :   865 shapes,  46 blind
+        #        2 blocks:    16 shapes,  10 blind   <- 62%
+        #        hidden  :   BODYTRI x10, unnamed x56
+        #     OUR OUTPUT  1200 read, 2885 shapes
+        #        blind   :     4 shapes (0.14%) -- we rarely write 2 blocks
+        #
+        # So the loss is REAL but rare, and concentrated on the SOURCE side.
+        # CORRECTION to the earlier note here: the block that stops the walk
+        # does NOT read as `LOCKEDNORM` through this accessor -- in every blind
+        # case its name comes back None, because an unbuildable block has no
+        # readable name.
+        #
+        # NOT swapped to the index-enumerated reader yet, and deliberately: that
+        # makes the invariant STRICTER, and the write-time BODYTRI re-author
+        # legitimately COLLAPSES every tag to one
+        # ([[project_bodytri_carrier_convention]]), so a full enumeration could
+        # start rolling back pieces that are fine. This is a SAFETY guard, so
+        # the number that decides it is the ROLLBACK RATE over a real convert,
+        # before and after -- still unmeasured. Three identical copies of this
+        # helper exist (here and twice in nif_convert_physics.py); fix them
+        # together. `_census_common.bodytri_of` is the correct reader.
         out = {(None, getattr(ed, "name", None))
                for ed in nf_.rootNode.extra_data()}
         for s_ in nf_.shapes:

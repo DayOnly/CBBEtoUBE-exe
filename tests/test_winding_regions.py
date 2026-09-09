@@ -183,7 +183,9 @@ def test_an_already_correct_mesh_is_returned_untouched():
 def test_non_manifold_edges_join_nothing():
     """Three triangles on one edge: the orientation there is undecidable, and
     guessing is how a repair starts inventing damage."""
-    v = np.array([[0.0, 0, 0], [1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1]])
+    # No vertex array: `_winding_regions` is purely TOPOLOGICAL -- it takes
+    # triangles only, so positions cannot change its answer. A `v` was built
+    # here and never passed, which read as though geometry mattered.
     t = np.array([[0, 1, 2], [0, 3, 1], [0, 1, 4]], dtype=np.int64)
     lab, seams = nc._winding_regions(t)
     assert seams == 0, "a >2-shared edge is not counted as a seam"

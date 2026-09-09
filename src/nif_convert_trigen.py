@@ -125,9 +125,13 @@ def _cached_body_morph_differential(osd_path: Path,
     (_MORPH_SIZE_KEYWORDS): 105 of the OSD's 202 sliders against the stack's 145,
     so the two morph-aware mechanisms have never read the same sliders.
 
-    Cached on (osd path, vert count). Note the sibling cache
-    `_BODY_MORPH_STACK_CACHE` keys on the path ALONE while its value depends on
-    `n_verts`, so a first call with a different count poisons every later one.
+    Cached on (osd path, vert count, both array digests). The sibling cache
+    `_BODY_MORPH_STACK_CACHE` USED TO key on the path ALONE while its value
+    depended on `n_verts`, so a first call with a different count poisoned every
+    later one -- closed 2026-08-18 with the rest of the body-blind-key class; it
+    now keys on `(path, count)`. Re-verified 2026-09-06. This note stated the
+    defect in the PRESENT tense long after it was fixed, which sends a reader
+    hunting a bug that is not there.
     """
     if osd_path is None or body_verts is None or body_normals is None:
         return None
@@ -248,7 +252,42 @@ def _cached_body_morph_stack(osd_path: Path, n_verts: int) -> "np.ndarray | None
     _BODY_MORPH_STACK_CACHE[skey] = out
     return out
 
-def _tri_is_owning_variant(src_path) -> bool:
+# Weight variants of one stem, in the order they may claim the shared `.tri`.
+# `_0` FIRST, and that is measured, not reasoned -- see `_tri_is_owning_variant`.
+_TRI_VARIANT_PRIORITY = ("_0", "_1", "")
+
+
+def _variant_suffix(stem: str) -> str:
+    """`"_0"`, `"_1"` or `""` -- which weight variant this stem is."""
+    return stem[-2:] if stem.endswith(("_0", "_1")) else ""
+
+
+def _tri_owner_path(src_path, variant_sources):
+    """Absolute SOURCE path of the variant that OWNS this stem's `.tri`, or
+    None when the variant set was not resolved for this conversion.
+
+    `variant_sources` maps a weight suffix (`"_0"` / `"_1"` / `""`) to the
+    resolved source path of that variant. It is built where sources are
+    resolved -- through the mod list / VFS / BSA index, exactly as the file
+    being converted was resolved. Passing it is what makes this correct ACROSS
+    MODS: the competing variant routinely ships in a DIFFERENT mod than the one
+    being converted, and a BSA-resolved source is staged ALONE, so probing for
+    a sibling next to `src_path` sees nothing and the guard passes everything.
+    #tri-variant-collision
+
+    None means "not resolved" (a single-file convert, or a test), and the
+    caller falls back to the on-disk sibling probe.
+    """
+    if not variant_sources:
+        return None
+    for suf in _TRI_VARIANT_PRIORITY:
+        hit = variant_sources.get(suf)
+        if hit:
+            return Path(hit)
+    return None
+
+
+def _tri_is_owning_variant(src_path, variant_sources=None) -> bool:
     """Is this the weight variant that OWNS the shared `.tri`?
 
     **`_0` owns it.** That is measured, not reasoned. This first shipped picking
@@ -266,16 +305,16 @@ def _tri_is_owning_variant(src_path) -> bool:
     applies ONE tri across the whole weight range, so this choice is a real fit
     decision at the chest, not bookkeeping.
 
-    Decided from the SOURCE path, never the destination. The source pair is
-    complete on disk before conversion starts, whereas a destination sibling may
-    not be written yet and, in a worker pool, is being written by a DIFFERENT
-    PROCESS -- so any shared in-memory hint would not reach it. That is the same
+    Decided from the SOURCE side, never the destination. The source set is
+    complete before conversion starts, whereas a destination sibling may not be
+    written yet and, in a worker pool, is being written by a DIFFERENT PROCESS
+    -- so any shared in-memory hint would not reach it. That is the same
     cross-process assumption that made this a race in the first place.
 
-    A piece with no `_0` source partner owns its own TRI whatever its suffix,
+    A piece with no other resolved variant owns its own TRI whatever its suffix,
     so a `_1`-only armour never silently loses body morphs.
 
-    A NO-SUFFIX variant does NOT own it when a `_0` sibling exists.
+    A NO-SUFFIX variant does NOT own it when a `_0` or `_1` sibling exists.
     #tri-variant-collision. `foo.nif`, `foo_0.nif` and `foo_1.nif` all derive
     the same `foo.tri`, and the no-suffix stem does not end in `_1`, so it and
     `_0` BOTH returned True here -- two writers, last one wins. Where the
@@ -287,14 +326,27 @@ def _tri_is_owning_variant(src_path) -> bool:
         Outfit       2467 verts   TRI indexes to 13705
         ClothF1st     495 verts   TRI indexes to  1544
 
-    The worn pair keeps the TRI; see `_tri_fits_variant` for whether the
-    no-suffix file may still POINT at it.
+    The owning variant keeps the TRI; see `_tri_fits_variant` for whether the
+    others may still POINT at it.
+
+    `variant_sources`: the resolved variant set for this stem (see
+    `_tri_owner_path`). WITHOUT it this falls back to probing for a sibling file
+    NEXT TO `src_path`, which is only correct when every variant ships in one
+    mod -- and they routinely do not. The probe also cannot see the
+    no-suffix-plus-`_1`-only case at all (neither ends in a claimed suffix, so
+    both answered True); resolving the set closes that hole too.
     """
     try:
         p = Path(src_path)
         stem = p.stem
     except Exception:
         return True                      # unparseable -> generate, never skip
+    owner = _tri_owner_path(src_path, variant_sources)
+    if owner is not None:
+        try:
+            return _variant_suffix(owner.stem) == _variant_suffix(stem)
+        except Exception:
+            return True
     if stem.endswith("_1"):
         try:
             return not p.with_name(stem[:-2] + "_0" + p.suffix).is_file()
@@ -309,7 +361,7 @@ def _tri_is_owning_variant(src_path) -> bool:
     return True                          # `_0` owns it
 
 
-def _tri_fits_variant(src_path) -> bool:
+def _tri_fits_variant(src_path, variant_sources=None) -> bool:
     """May this NIF POINT at the shared `.tri` its stem derives?
 
     Only if the variant that OWNS that TRI has the same per-shape vertex
@@ -317,21 +369,58 @@ def _tri_fits_variant(src_path) -> bool:
     does not, and a BODYTRI pointing at the pair's TRI then asks NioOverride to
     move vertices the shape does not have. See #tri-variant-collision.
 
-    Read from the SOURCE pair, which is complete on disk before conversion
-    starts -- the destination sibling may still be unwritten, and in a worker
-    pool is being written by a different process.
+    Read from the SOURCE side, which is complete before conversion starts -- the
+    destination sibling may still be unwritten, and in a worker pool is being
+    written by a different process.
+
+    `variant_sources` resolves the owner ACROSS MODS (see `_tri_owner_path`).
+    Without it this probes for a sibling next to `src_path`; for a BSA-resolved
+    source that is a staging directory holding that source ALONE, which is the
+    shape the first version of this guard had and why it was inert on the real
+    pack -- the same five out-of-bounds entries shipped after it.
+
+    `_0` and `_1` are the same mesh at two weights and share the TRI by design,
+    so a pair member never withholds its BODYTRI. That short-circuit is also
+    what keeps the guard cheap: no NIF is read on the common path.
+
+    **THAT ARGUMENT IS TRUE OF THE GEOMETRY AND FALSE OF THE SHAPE NAMES**, and
+    the gap it leaves is measured: on the 2026-09-06 pack, 54 of 1536 pairs are
+    named differently in their two halves (`BodyF_0`/`BodyF_1`,
+    `BootsF:0`/`BootsF:1`, `Dress`/`Dress1`), and the half the tri was not built
+    from names NOTHING in it -- 42 losing every morph. This guard waves all of
+    them through, because it compares vertex counts and never names.
+
+    Deliberately still does. Withholding the BODYTRI would not rescue those
+    pieces; they would morph nothing either way, and the 12 partial cases would
+    additionally lose the body morphs they still get. The fix belongs at the
+    PRODUCER: `#pair-tri-names` puts both halves' names in the one tri. See
+    `pair_shape_aliases`.
     """
     try:
         p = Path(src_path)
         stem = p.stem
     except Exception:
         return True
-    if stem.endswith("_0") or stem.endswith("_1"):
-        return True                      # the pair shares one mesh by design
+    owner = _tri_owner_path(src_path, variant_sources)
+    if owner is None:
+        if stem.endswith("_0") or stem.endswith("_1"):
+            return True
+        try:
+            owner = p.with_name(stem + "_0" + p.suffix)
+            if not owner.is_file():
+                return True              # nothing else claims the TRI
+        except Exception:
+            return True
     try:
-        owner = p.with_name(stem + "_0" + p.suffix)
-        if not owner.is_file():
-            return True                  # nothing else claims the TRI
+        if owner.resolve() == p.resolve():
+            return True                  # this file IS the owner
+    except Exception:
+        if str(owner) == str(p):
+            return True
+    if (_variant_suffix(stem) in ("_0", "_1")
+            and _variant_suffix(owner.stem) in ("_0", "_1")):
+        return True                      # the weight pair, by design
+    try:
         pyn = _nc()._pynifly()
         mine = {s.name: len(s.verts) for s in pyn.NifFile(filepath=str(p)).shapes}
         theirs = {s.name: len(s.verts)
@@ -367,7 +456,7 @@ def _reset_morph_flags(shape) -> None:
     except Exception:
         pass
 
-def _collect_tri_inputs(nif):
+def _collect_tri_inputs(nif, body_vert_count=None):
     """Split a written NIF's shapes into the three inputs `generate_armor_tri`
     takes: armour verts IN BODY SPACE, the injected body shapes, and per-vert
     extremity fractions.
@@ -382,14 +471,40 @@ def _collect_tri_inputs(nif):
     would otherwise sample the wrong body region. The extremity fraction damps
     finger/toe verts to ~0 morph while a sleeve or boot spanning forearm and
     hand keeps full morph over its forearm half.
+
+    `body_vert_count`: the vertex count of the body the TRI's verbatim body
+    morphs are indexed against. THE INJECTED BODY IS IDENTIFIED BY TOPOLOGY, NOT
+    BY NAME. A mod is free to call one of its own armour shapes `BaseShape`, and
+    4 NIFs in the pack do -- two of them a 3618-vert cuirass part. Classified by
+    name alone that shape was pulled out of the armour set and handed to
+    `generate_armor_tri` as a body shape, which then embedded the UBE body's OSD
+    morphs VERBATIM: offsets indexing to 29297 on a 3618-vertex mesh, two of the
+    five out-of-bounds entries the pack census reports. `generate_armor_tri`
+    bounds-filters those offsets against the body REFERENCE's vert count (its
+    `#osd-bounds` guard), and its comment states the assumption that broke here
+    -- "body_verts shares the injected BaseShape's topology".
+
+    So a shape carrying the injected-body name at a DIFFERENT vertex count is an
+    authored shape that merely shares the name: it goes in the armour set and
+    gets its own K-NN-propagated morphs, at its own vertex count.
+
+    `VirtualBody` is never armour whatever it measures -- it is the SMP collision
+    proxy we generate ourselves, its topology is per-piece by construction, and
+    it must not morph. It is also inert on the other side: `generate_armor_tri`
+    only ever emits a verbatim body TriShape for `BaseShape`.
+
+    With no `body_vert_count` (an unmeasured caller) this falls back to the
+    name-only split, i.e. the behaviour before the topology check.
     """
     armor_shape_verts: "dict[str, np.ndarray]" = {}
     armor_vert_ef: "dict[str, np.ndarray]" = {}
     body_in_dst: "set[str]" = set()
     for s in nif.shapes:
         if s.name in _nc().UBE_BODY_INJECT_NAMES:
-            body_in_dst.add(s.name)
-            continue
+            if not (s.name == "BaseShape" and body_vert_count
+                    and len(s.verts) != int(body_vert_count)):
+                body_in_dst.add(s.name)
+                continue
         armor_shape_verts[s.name] = (
             np.asarray(s.verts, dtype=np.float64) + _nc().shape_body_offset(s))
         ef = _nc()._extremity_vert_fraction(s, len(s.verts))
@@ -454,6 +569,26 @@ def _pick_bodytri_carriers(nif, *, exclude_body: bool = False,
     if not exclude_body and body_shapes and not all_cloth:
         return [body_shapes[0]]
 
+    def _with_body(picked):
+        """`all_cloth` means "the BODY (unless excluded) AND every cloth shape",
+        so the body belongs on EVERY return path -- not just the one that found
+        cloth candidates.
+
+        MEASURED: 2 body-swap NIFs in the pack shipped with no BODYTRI on their
+        `BaseShape` at all, which is what the census's "BODYTRI present on the
+        body: 589/591" counts. Traced on one of them: at BODYTRI time the NIF
+        held exactly two shapes, `BaseShape` and a cloth shape whose name
+        contains "chain" -- a NON_CLOTH_SHAPE_KEYWORD. So `candidates` was empty
+        (the cloth keyword-excluded, the body in BODYTRI_CARRIER_EXCLUDE), and
+        the carrier-of-last-resort branch below returned that one cloth shape and
+        silently dropped the body. Preference 1 in this docstring says the body
+        is the carrier NioOverride morphs every TRI shape from, so losing it is
+        the opposite of the intent."""
+        if not all_cloth or exclude_body:
+            return picked
+        head = list(body_shapes[:1])
+        return head + [s for s in picked if s not in head]
+
     candidates: list = []
     hand_fallbacks: list = []
     # `all_cloth` keeps a SEPARATE, relaxed list. The keyword and
@@ -493,8 +628,8 @@ def _pick_bodytri_carriers(nif, *, exclude_body: bool = False,
                    if not _nc()._shape_is_extremity_dominant(s)]
         pool = non_ext or rigid_named
         if not pool:
-            return []
-        return [max(pool, key=lambda s: len(s.verts))]
+            return _with_body([])
+        return _with_body([max(pool, key=lambda s: len(s.verts))])
 
     CLOTH_KEYWORDS = (
         "corset", "leather", "fabric", "tabard", "panties", "panty",
@@ -522,7 +657,7 @@ def _pick_bodytri_carriers(nif, *, exclude_body: bool = False,
     # TRI for these NIFs only contains hand/foot morph entries — no body deltas
     # leak onto fingers — so picking the hand/foot shape is safe.
     hand_fallbacks.sort(key=rank_key)
-    return [hand_fallbacks[0]]
+    return _with_body([hand_fallbacks[0]])
 
 # #morphtri-name-cache. The morph-TRI gate is consulted by SEVEN passes, and
 # each consultation re-parsed the whole source TRI. Profiled on a five-layer
@@ -539,6 +674,102 @@ def _pick_bodytri_carriers(nif, *, exclude_body: bool = False,
 # cannot slow ray casting, so the pair carries too much noise to support a
 # wall-clock claim. Output is byte-identical (verts 0.000000).
 _MORPH_TRI_NAME_CACHE: "dict[tuple, set]" = {}
+
+
+def pair_shape_aliases(mine, theirs) -> "dict[str, str]":
+    """{my shape name -> the PARTNER's name for the same shape}. #pair-tri-names
+
+    THE PROBLEM THIS SOLVES, measured on the 2026-09-06 pack: authors routinely
+    give the `_0` and `_1` halves of one garment DIFFERENT shape names --
+    `BodyF_0`/`BodyF_1`, `BootsF:0`/`BootsF:1`, `Robe_0`/`Robe_1`,
+    `Dress`/`Dress1`. We build ONE tri per garment from the `_0` half (which is
+    correct and measured -- see `_tri_is_owning_variant`) and point BOTH halves
+    at it, so the `_1` half names NOTHING in the tri it points at and its
+    sliders move nothing. **54 of 1536 pairs: 42 lose every morph, 12 lose
+    some, and `_0` never loses anything.** `_1` is the half that ships, since
+    actors sit near weight 100.
+
+    `_tri_fits_variant` is the guard that should have caught it and does not:
+    it checks per-shape vertex counts for every OTHER variant and
+    short-circuits the weight pair on the argument that the two halves are "the
+    same mesh at two weights". True of the GEOMETRY, false of the NAMES.
+
+    `mine` / `theirs` are ORDERED `[(shape name, vert count), ...]` for the two
+    halves. Alignment is BY INDEX -- the halves are one mesh saved twice and
+    authored shape order is preserved, so index i is the same shape.
+
+    FAILS CLOSED, and each refusal is a case where an alias would be wrong:
+
+      * different shape COUNTS -> `{}`. The halves are not the same mesh (this
+        is the one pair of the 54 that cannot take this fix: 5 shapes vs 4).
+      * any index whose vert counts DISAGREE -> `{}` for the whole pair. One
+        delta table can only serve both names if the topology matches, and a
+        partial map would emit morphs against the wrong vertex indices.
+      * a partner name already used by one of MY shapes -> that entry only is
+        dropped, so an alias can never shadow a real shape's own morphs.
+    """
+    mine = list(mine or ())
+    theirs = list(theirs or ())
+    if not mine or len(mine) != len(theirs):
+        return {}
+    if any(int(a[1]) != int(b[1]) for a, b in zip(mine, theirs)):
+        return {}
+    own = {str(n) for n, _ in mine}
+    out: "dict[str, str]" = {}
+    for (a, _), (b, _) in zip(mine, theirs):
+        a, b = str(a), str(b)
+        if a != b and b not in own:
+            out[a] = b
+    return out
+
+
+def pair_alias_map(src_path, variant_sources) -> "dict[str, str]":
+    """`pair_shape_aliases` for THIS half, read off the two SOURCE NIFs.
+
+    Returns `{}` -- never raises, never blocks a conversion -- when the flag is
+    off, when this file is not a weight variant, when no partner was resolved,
+    or when the two halves fail the topology precondition.
+
+    **SOURCE, and paired BY PATH.** `variant_sources` maps a weight suffix to
+    the source path resolved through the same mod list / VFS / BSA chain that
+    found this file, so it sees ACROSS MODS -- the two halves of one garment
+    routinely ship in different mods, and probing for a sibling next to
+    `src_path` is what made the first `#tri-variant-collision` guard inert.
+
+    It cannot read the partner's DESTINATION instead: `_0` owns the tri and is
+    converted first, so when the owner writes it the `_1` destination does not
+    exist yet. The source names are the right answer anyway, because authored
+    shape names are preserved through conversion; the shapes we ADD (the
+    injected body, the collision proxy) carry the same name in both halves and
+    so never produce an alias.
+    """
+    try:
+        if not _nc().PAIR_TRI_NAMES or not variant_sources:
+            return {}
+        p = Path(src_path)
+        mine_suf = _variant_suffix(p.stem)
+        if mine_suf not in ("_0", "_1"):
+            return {}
+        other = variant_sources.get("_1" if mine_suf == "_0" else "_0")
+        if not other:
+            return {}
+        other = Path(other)
+        try:
+            if other.resolve() == p.resolve():
+                return {}
+        except Exception:
+            if str(other) == str(p):
+                return {}
+        pyn = _nc()._pynifly()
+        mine = [(s.name, len(s.verts))
+                for s in pyn.NifFile(filepath=str(p)).shapes]
+        theirs = [(s.name, len(s.verts))
+                  for s in pyn.NifFile(filepath=str(other)).shapes]
+        return pair_shape_aliases(mine, theirs)
+    except Exception as _e:
+        _note_pass_failure("pair_alias_map", _e)
+        return {}
+
 
 def _source_morph_tri_shape_names(src_path: "Path") -> "set[str]":
     """Shape names covered by the SOURCE mod's own BodySlide morph TRI (it sits
@@ -639,7 +870,7 @@ def _refresh_armor_tri_after_reimport(
             return False
 
         (armor_shape_verts, body_in_dst,
-         armor_vert_ef) = _collect_tri_inputs(nf)
+         armor_vert_ef) = _collect_tri_inputs(nf, len(body_verts_arr))
         if not armor_shape_verts:
             return False
 

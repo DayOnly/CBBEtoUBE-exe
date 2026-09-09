@@ -45,7 +45,7 @@ and the answer at the tip is correctly "no".
 
 ## 2. Four files carried a local path in older revisions — LOW
 
-    scripts/armor_clip_diag.py        clean at the tip
+    scripts/analysis/armor_clip_diag.py        clean at the tip
     scripts/analysis/underbust_census.py  clean at the tip (fixed 9671641)
     scripts/diag_jiggle_batch.py      deleted; history only
     scripts/fix_overlay_mod.py        deleted; history only

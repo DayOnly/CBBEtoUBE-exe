@@ -452,7 +452,7 @@ def main():
         under = [f for f in follows if f[0] < 0.5]
         print(f"     median {med:.3f}   under 0.5: {len(under)}   "
               f"over 1.5: {len([v for v in vals if v > 1.5])}")
-        print(f"     lowest 10:")
+        print("     lowest 10:")
         for v, rel, n in follows[:10]:
             print(f"       {v:6.3f}  {rel}  {n}")
     if args.baseline and Path(args.baseline).is_file():

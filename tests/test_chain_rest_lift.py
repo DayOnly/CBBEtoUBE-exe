@@ -364,6 +364,16 @@ def test_globals_compose_through_the_chain_dict_not_the_source_tree():
     assert np.isclose(g["Skirt 1_01"][1], -4.0), "the child must follow the root"
 
 
-def test_a_cycle_cannot_hang_the_walk():
+def test_a_cycle_yields_no_position_at_all():
+    """A cyclic parent link must drop the bone, not invent a frame for it.
+
+    The old version of this test only called the walk and let "it returned" be
+    the pass -- which asserts nothing: the guard could start handing back an
+    identity frame for a cycle and this would still be green, and a chain
+    positioned at the origin is exactly the pull-to-origin defect the physics
+    work keeps chasing. `_g` is RECURSIVE, so a deleted guard raises
+    RecursionError rather than hanging; the thing actually worth pinning is the
+    RESULT, so pin it.
+    """
     ch = {"A": (_Xf(), "B"), "B": (_Xf(), "A")}
-    nc._chain_rest_globals(ch, {})          # must return
+    assert nc._chain_rest_globals(ch, {}) == {}

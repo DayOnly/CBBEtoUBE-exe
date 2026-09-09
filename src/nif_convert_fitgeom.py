@@ -146,7 +146,18 @@ ANTIPOKE_FLAT_CLEAR = _knob("CBBE2UBE_FLAT_CLEAR", 0.8)
 ANTIPOKE_BUST_CLEAR = float(
     os.environ.get("CBBE2UBE_BUST_CLEAR", "").strip() or "1.0")
 
-ANTIPOKE_NIPPLE_GAIN = 1.5
+# The SLOPE of the bust ramp: `clip(FLAT_CLEAR + nipw * GAIN, FLAT_CLEAR,
+# BUST_CLEAR)`. It was a BARE LITERAL until 2026-09-08, so it could not be
+# swept at all -- an A/B can only move a NAMED env, which is exactly why the
+# conform retune had to add three knobs before it could finish.
+#
+# It is the third and last lever on the bust floor, and the only one never
+# tried: `FLAT_CLEAR` moved the population p50 by 0.002u and `BUST_CLEAR` is a
+# ceiling. Note the ramp SATURATES almost immediately at the defaults -- 0.8 +
+# 1.5*nipw reaches the 1.0 ceiling at nipw 0.133 -- so on most of the bust band
+# the gain is already clipped away and only the CEILING is live there. Measure
+# the headroom (`#clearance-term-audit` reports it) before spending an arm.
+ANTIPOKE_NIPPLE_GAIN = _knob("CBBE2UBE_NIPPLE_GAIN", 1.5)
 
 def _is_belt_overlay(shape) -> bool:
     """True if the shape is a decorative waist belt/sash that rides ON TOP of
@@ -177,9 +188,33 @@ def _is_skirt_like(shape) -> bool:
     except Exception:
         return False
 
-ADAPTIVE_CLEARANCE_BASE = 0.25       # minimum clearance in static zones
+# THE ACTUAL PRODUCER OF PACK-WIDE STANDOFF, and until 2026-09-06 neither of
+# these had an env name, so neither could be moved by an A/B arm.
+#
+# On the adaptive path -- which is EVERY piece, `ADAPTIVE_CLEARANCE_ENABLED` is
+# a hardcoded True and the OSD amplitude map is always found -- the per-vert
+# push is
+#
+#     per_vert_mag = clip(BASE + MORPH_FACTOR * amp, BASE, cap)
+#     cap          = max(slot magnitude, ADAPTIVE_CLEARANCE_MORPH_MAX)
+#
+# so `magnitude` enters ONLY through that `max`. With morph_max 1.1 every slot
+# magnitude in the table (default 0.7, SKIRT 0.7, HANDS_FEET 0.6, SLOT49 0.5)
+# is BELOW it and drops out entirely; only BELT 1.5 binds. `CBBE2UBE_INFLATION_MAGNITUDE=0`
+# does NOT disable the pass -- it still pushes every vert BASE..cap -- even
+# though that knob's own comment claims "0 = disable" and offers itself as the
+# one-command ABLATION. Measured 2026-09-06: an arm at magnitude 0.35 is
+# byte-identical to one at 0.7 over all 184 NIFs. Every "inflate magnitude is
+# inert" result in the record was therefore measuring a knob that cannot reach
+# the pass, and no ablation of inflate has actually been performed.
+#
+# These two are the levers that DO reach it: BASE is the floor every hugging
+# vert gets whatever the body does, MORPH_FACTOR is the slope on morph
+# amplitude. The over-standoff class (+0.467u over the author at p50 on 88% of
+# shapes) is produced here.
+ADAPTIVE_CLEARANCE_BASE = _knob("CBBE2UBE_CLEARANCE_BASE", 0.25)
 
-ADAPTIVE_CLEARANCE_MORPH_FACTOR = 0.20  # clearance added per unit of outward body morph
+ADAPTIVE_CLEARANCE_MORPH_FACTOR = _knob("CBBE2UBE_CLEARANCE_MORPH_FACTOR", 0.20)
 
 # Cap for the high-morph ramp. Was 0.8, which sat BELOW the fixed bust target it
 # replaced (ANTIPOKE_BUST_CLEAR = 1.0), so the breast ended up with less clearance
@@ -194,6 +229,143 @@ ADAPTIVE_CLEARANCE_MORPH_FACTOR = 0.20  # clearance added per unit of outward bo
 # 1.0 bust floor without letting the belly's outlier verts (amp up to 8.7) run to
 # ~2u. Tune with CBBE2UBE_CLEARANCE_MORPH_MAX (no rebuild needed for a reconvert).
 ADAPTIVE_CLEARANCE_MORPH_MAX = _knob("CBBE2UBE_CLEARANCE_MORPH_MAX", 1.1)
+
+
+def _authored_floor_amp_room(amp_at_vert):
+    """Morph headroom the AUTHORED floors leave, allocated by the SAME rule as
+    the push they cap.  #authored-floor-same-rule
+
+    Both authored floors (`#authored-inflate` in `inflate_armor_outward`,
+    `#authored-antipoke` in `clear_armor_outside_body`) were written as
+
+        floor = max(authored, ARMOR_TO_SKIN_BUFFER + min(amp, AMP_CAP))
+
+    -- the FULL outward morph amplitude, capped at 1.5u. The push each one caps
+    allocates `ADAPTIVE_CLEARANCE_BASE + ADAPTIVE_CLEARANCE_MORPH_FACTOR * amp`,
+    a fifth of it. A cap computed by a five-times-more-generous rule than the
+    thing it caps cannot cap it, and on the two bands these passes exist for it
+    provably never did (amplitudes measured on the UBE body this pack fits):
+
+        band     amp p50    old floor    this floor
+        bust       3.944        1.650         0.939
+        belly      2.750        1.650         0.700
+        butt       0.115        0.265         0.173
+
+    The pack ships the bust at p50 1.436u against the author's 0.948u, so the old
+    floor sat 0.21u ABOVE our own over-inflated result and 0.70u above the
+    author's: `authored` could never win that `maximum` on a breast no matter
+    what the author did, and no source-normal repair or flag flip could change
+    it. Same shape as the BUST_CLEAR ceiling found sitting inside a `maximum`.
+
+    THE BUST ROW IS THE CHECK ON THIS RULE, NOT A TARGET FITTED TO IT. Allocating
+    headroom by the ramp's own morph factor lands the breast floor at 0.939u
+    against an authored 0.948u measured independently over 38 shapes -- within
+    0.01u, from constants that were tuned years apart and never against each
+    other. A rule invented to hit that number would not be worth much; one that
+    arrives there from the ramp's own arithmetic is evidence the ramp's factor
+    was right all along and only the floor was reading it wrong.
+
+    THE STATIC MINIMUM STAYS `ARMOR_TO_SKIN_BUFFER`, NOT `ADAPTIVE_CLEARANCE_BASE`.
+    The ramp's base is what the ramp gives when it knows nothing about the piece;
+    the author is better information than that, so where the body does not morph
+    a tighter author must still win. Using the base here instead cost exactly
+    that -- an author at 0.2u was overridden to 0.25u, which
+    `test_a_tight_author_over_a_still_body_is_left_tighter` catches.
+
+    MONOTONE IS PRESERVED. Both callers use the floor as
+    `required = min(additive_result, max(current, floor))`, so a floor can only
+    ever reduce a push. Raising it cannot push a vertex further than the additive
+    pass already would; lowering it reduces the push.
+
+    `AUTHORED_INFLATE_AMP_CAP` stays an upper bound so the knob keeps working and
+    an A/B can tighten further. At its 1.5 default `ADAPTIVE_CLEARANCE_MORPH_MAX`
+    binds first (from amp 4.75u up), which is the point: the ramp's own cap now
+    governs the floor that caps the ramp.
+    """
+    amp = np.clip(np.asarray(amp_at_vert, dtype=np.float64), 0.0, None)
+    buf = float(_nc().ARMOR_TO_SKIN_BUFFER)
+    room = buf + ADAPTIVE_CLEARANCE_MORPH_FACTOR * amp
+    ceiling = min(float(ADAPTIVE_CLEARANCE_MORPH_MAX),
+                  float(_nc().AUTHORED_INFLATE_AMP_CAP))
+    return np.clip(room, buf, ceiling)
+
+
+# Laplacian iterations applied to the AUTHORED standoff before either floor
+# uses it.  #authored-floor-feather
+#
+# Every other term feeding the clearance solve is smooth by construction -- a
+# flat clear, a z-banded standoff, a ramp over the body's own morph amplitude.
+# The authored standoff is not: on a draped garment it carries the drape's own
+# high-frequency detail, and handing that to a minimum-stretch solve as a
+# per-vertex target makes the solve stretch the mesh to chase it.
+#
+# Measured with `#authored-antipoke` UNFEATHERED over 184 NIFs: bust gap better
+# on 44 shapes of 51 (median -0.124u), but folds +440 and inverted triangles
+# +134 -- with 864 of that fold rise on FIVE pieces, all loose dresses, while 48
+# other pieces improved. A redistribution concentrated exactly where the
+# authored target is roughest is the signature of target ROUGHNESS, not of the
+# relaxation being wrong.
+#
+# FEATHER ONCE is the standing rule here, so this looked like the authored
+# target's turn. IT IS NOT: MEASURED AND REFUTED 2026-09-05, DEFAULT 0.
+#
+#     feather   gap p50   copy-path gap   folds    inverted
+#        0       +0.420      +0.178       16795      2194
+#        4       +0.417      +0.265       16799      2184
+#        8       +0.414      +0.281       16696      2156
+#     control    +0.471      +0.288       16355      2060
+#
+# Eight iterations recover 99 of the 440 extra folds (22%) while giving up 103
+# of the 110 thousandths the copy path had gained (94%) -- it walks the copy
+# path most of the way back to the control for almost none of the surface. So
+# the fold rise is NOT target roughness, and the hypothesis that produced this
+# knob is wrong. Kept, off, because the numbers are the point: the next reader
+# should not have to re-run three converts to learn that smoothing the authored
+# standoff mostly just deletes the authored information.
+#
+# Where the folds DO come from is still open. What is known: 48 pieces improve
+# and 44 worsen, and the rise concentrates on loose dresses -- one of which is
+# also the single largest improvement (-186 folds). A per-shape property, not a
+# global one. Same prescription as `#surface-warp-field`: build the guard.
+AUTHORED_FLOOR_FEATHER = int(_knob("CBBE2UBE_AUTHORED_FLOOR_FEATHER", 0))
+
+
+def _feathered_authored(authored, tris, verts):
+    """Smooth the authored standoff over mesh adjacency. See the constant.
+
+    MONOTONICITY IS UNAFFECTED. Both callers apply the result as
+    `min(existing_requirement, max(current, floor))`, so whatever comes back can
+    only ever REDUCE a push. Smoothing may raise the floor locally, which just
+    means less relaxation there -- never more push than the pass already gave.
+    """
+    if AUTHORED_FLOOR_FEATHER <= 0 or tris is None:
+        return authored
+    return _smooth_push_field(authored, np.zeros(len(authored)), tris,
+                              iters=AUTHORED_FLOOR_FEATHER, verts=verts)
+
+
+def _authored_normals_usable(src_body_normals) -> bool:
+    """Can an authored standoff actually be READ from these normals?
+
+    The floors measure it as `dot(src_armor - src_body, src_body_normal)`, so a
+    zero-length normal makes that read 0 -- indistinguishable from "the author
+    fitted this vertex skin-tight". This pack's own source body ships 18436 of
+    18436 zero-length normals, so an unguarded floor silently degrades to its
+    constant term on every piece that reads it: the BUG-00 fail-open shape, where
+    an empty input disarms a guard and reads as a satisfied one.
+
+    Refuse rather than degrade. A floor that cannot see the author must leave the
+    additive behaviour alone, not quietly become a flat clearance rule wearing
+    the author's name.
+    """
+    try:
+        n = np.asarray(src_body_normals, dtype=np.float64)
+    except Exception:
+        return False
+    if n.ndim != 2 or n.shape[0] == 0 or n.shape[1] != 3:
+        return False
+    return float((np.linalg.norm(n, axis=1) > 1e-6).mean()) >= 0.5
+
 
 # Outward morph amplitude (units) at/above which a vert counts as a MORPH zone
 # and keeps today's behaviour. Measured per-zone amplitudes: breast 3.48 mean,
@@ -222,6 +394,30 @@ STATIC_AUTHORED_AMP = _knob("CBBE2UBE_STATIC_AUTHORED_AMP", 2.0)
 # back whatever inflate pushes out.
 CONFORM_BLEND_TIGHT = _knob("CBBE2UBE_CONFORM_BLEND_TIGHT", 0.3)
 
+# The three remaining conform-shape knobs, exposed 2026-09-06 for the
+# `#src-normal-fix` retune. They were BARE LITERALS in
+# `conform_to_source_standoff`'s signature, which made them unsweepable: every
+# A/B in this project is two arms of ONE code state differing only by a trailing
+# `VAR=VALUE`, so a constant with no env name cannot be moved by an arm at all.
+# The A1 measurement stalled exactly there -- the flip wins big on folds
+# (-7.5%) and inverted (-24%) and loses two BUST rows, and the levers that
+# address the bust had no handles.
+#
+# Defaults are the literals they replace, so this is a no-op until an arm names
+# one (`tests/test_conform_knobs.py` pins that, and no call site passes any of
+# them -- checked, all three call sites take the defaults).
+#
+#   tight_standoff  source clearance at or below which a vert counts as
+#                   SKIN-HUGGING and is reeled toward its authored standoff.
+#   loose_standoff  clearance at or above which it counts as DRAPING and is
+#                   left alone. Between the two the blend ramps.
+#   max_pull        the furthest conform may pull a vert INWARD. This is the
+#                   direct lever on "conform put the garment inside the body":
+#                   the pull is clipped to it in `_relax_conform_field`.
+CONFORM_TIGHT_STANDOFF = _knob("CBBE2UBE_CONFORM_TIGHT_STANDOFF", 1.0)
+CONFORM_LOOSE_STANDOFF = _knob("CBBE2UBE_CONFORM_LOOSE_STANDOFF", 4.0)
+CONFORM_MAX_PULL = _knob("CBBE2UBE_CONFORM_MAX_PULL", 4.0)
+
 # Floor the authored fit may reach in a fully static zone. Not 0: coincident
 # surfaces z-fight, and the warp's own error is not zero either.
 STATIC_AUTHORED_MIN_CLEARANCE = _knob("CBBE2UBE_STATIC_AUTHORED_MIN", 0.06)
@@ -233,7 +429,18 @@ JIGGLE_CLEARANCE_MAX = _knob("CBBE2UBE_JIGGLE_CLEARANCE_MAX", 0.5)    # hard cap
 # Flat clearance floor on rear-facing verts at butt/upper-thigh height, so leg armor
 # isn't punched through when the thigh swings back mid-stride. Raises below-floor
 # verts only. Default on; CBBE2UBE_NO_REAR_STANDOFF=1 off.  [DESIGN: Flex-zone standoffs]
-REAR_STANDOFF = _knob("CBBE2UBE_REAR_BUTT_STANDOFF", 1.0)
+#
+# THE KILL SWITCH IS APPLIED HERE, and it has to be. It used to live in
+# `nif_convert.py` as `if _flag(...): REAR_STANDOFF = 0.0`, which rebound the
+# name in THAT module -- after this module had already been imported and after
+# `clear_armor_outside_body` bound `rear_standoff=REAR_STANDOFF` as a PARAMETER
+# DEFAULT. Nothing reads `nc.REAR_STANDOFF` at call time, so the switch zeroed a
+# name no pass consults. Proven 2026-09-06 with both env vars set:
+# `nc.REAR_STANDOFF` 0.0 while `fitgeom.REAR_STANDOFF` and the pass default
+# stayed 1.0. Same defect on CALF_STANDOFF below. A constant that moved modules
+# takes its switches with it.
+REAR_STANDOFF = (0.0 if _flag("CBBE2UBE_NO_REAR_STANDOFF", False)
+                 else _knob("CBBE2UBE_REAR_BUTT_STANDOFF", 1.0))
 
 REAR_STANDOFF_NY = -0.15      # nearest body normal.y below this = rear-facing
 
@@ -250,7 +457,9 @@ REAR_STANDOFF_FEATHER_NY = _knob("CBBE2UBE_REAR_STANDOFF_FEATHER_NY", 0.25)
 # Flat clearance floor over the lower-leg band (all-round), so calf/knee flex doesn't
 # punch through leg armor. Raises below-floor verts only. Default on;
 # CBBE2UBE_NO_CALF_STANDOFF=1 off.  [DESIGN: Flex-zone standoffs]
-CALF_STANDOFF = _knob("CBBE2UBE_CALF_STANDOFF", 0.6)
+# Kill switch applied HERE for the same reason as REAR_STANDOFF above.
+CALF_STANDOFF = (0.0 if _flag("CBBE2UBE_NO_CALF_STANDOFF", False)
+                 else _knob("CBBE2UBE_CALF_STANDOFF", 0.6))
 
 CALF_STANDOFF_Z_LO = 20.0     # lower-leg band (above the ankle/boot line)
 
@@ -1145,9 +1354,9 @@ def conform_to_source_standoff(
     min_clearance: float = 0.25,
     blend: "float | None" = None,
     blend_tight: float = CONFORM_BLEND_TIGHT,
-    tight_standoff: float = 1.0,
-    loose_standoff: float = 4.0,
-    max_pull: float = 4.0,
+    tight_standoff: float = CONFORM_TIGHT_STANDOFF,
+    loose_standoff: float = CONFORM_LOOSE_STANDOFF,
+    max_pull: float = CONFORM_MAX_PULL,
     max_body_dist: float = 12.0,
     bust_clearance: float = CONFORM_BUST_CLEARANCE,
     bust_z: "tuple[float, float]" = (84.0, 100.0),
@@ -1364,11 +1573,13 @@ def conform_to_source_standoff(
         # proud everywhere. Measured across the pack, our bust standoff runs
         # +0.467u (p50) over the AUTHOR's on 88% of shapes.
         #
-        # The comment on CONFORM_BUST_CLEARANCE names this exact fix and says
-        # it is unbuilt: "a narrower nipple region with a steeper ramp, so the
-        # tip keeps its clearance without dragging the whole bust band out with
-        # it". Lowering the ceiling instead was tried and reverted the same day
-        # -- it clips the TIP, and a nipple came through a leather cuirass.
+        # The comment on CONFORM_BUST_CLEARANCE names this exact fix -- "a
+        # narrower nipple region with a steeper ramp, so the tip keeps its
+        # clearance without dragging the whole bust band out with it" -- and
+        # used to call it UNBUILT. It is built: that is the sharpening applied
+        # just below. Both notes corrected 2026-09-06. Lowering the ceiling
+        # instead was tried and reverted the same day -- it clips the TIP, and a
+        # nipple came through a leather cuirass.
         #
         # Sharpening alone would lower the tip too, so the gain is SOLVED from
         # the body's own maximum weight to hold the tip's requirement exactly
@@ -1535,7 +1746,11 @@ def conform_to_source_standoff(
         # in both bands takes the larger of the two, with only the back half
         # bounded. See BACK_MOVE_MAX for what the uncapped version did.
         if req_back is not None and in_back.any():
-            _move_pre = move.copy()
+            # (a `_move_pre = move.copy()` snapshot used to be taken here and
+            # was never read -- a per-shape allocation of the whole move array
+            # for nothing. Removed 2026-09-06. If back-residual telemetry ever
+            # needs "how many verts this charge actually moved" rather than the
+            # `_applied` deficit count below, re-add it AND use it.)
             # MEASURE FIRST, act only if there is enough to gain, and SAY what
             # was done. `minimum_push` is conditional by construction because a
             # census found only 6% of pieces need it; this charge fired on every
@@ -2187,6 +2402,402 @@ def _relax_conform_field(cur, disp, move, normals, tris, *,
         _note_pass_failure("_relax_conform_field", _pe)
         return disp
 
+# Reference tessellation the clearance-field's `lam` was tuned at, and the bound
+# on how far a fine mesh may stretch the iteration count.  #field-screen-physical
+#
+# THE SCREEN, NOT THE RING COUNT, SETS THIS SOLVE'S REACH. `_solve_clearance_field`
+# is a screened Jacobi: `u_i <- (sum_j u_j) / (deg_i + lam)`. Its steady state
+# decays over `sqrt(deg/lam)` EDGES -- about 3.5 at deg 6, lam 0.5 -- so the
+# feather's reach in WORLD units is that edge count times the edge LENGTH, and a
+# mesh tessellated ten times finer gets a tenth of the feather. Measured on one
+# flat 20x20u patch, same constraint, tessellation the only variable:
+#
+#     edge     reach (u)    steepest displacement gradient per world unit
+#     1.000      4.387                     0.500
+#     0.500      2.693                     0.905
+#     0.250      1.903                     1.712
+#     0.125      1.578                     3.290
+#
+# The gradient is the fold driver, and it rises 6.6x on geometry that is
+# otherwise identical. Every one of those rows reports `converged=True` at the
+# default 256 iterations, which is the part that matters for the fix: this pass
+# is NOT iteration-starved, so `#smooth-reach`'s remedy (more rings, quadratic in
+# the tessellation ratio) is inert here. That knob was written for the SCALAR
+# feather, where `blend=0.5` with no screening really does make reach ring-bound
+# -- and which this solve early-returns past whenever it succeeds, so on the
+# default path nothing has ever compensated this solve for tessellation at all.
+#
+# In FEM terms the bug is a units mismatch: the stiffness term (`deg`, unit edge
+# weights) is the dimensionless 2D Laplacian, while the mass term (`lam`) carries
+# an area and must scale as h^2. Written that way the world reach is
+# `sqrt(deg/lam)`, with the edge length cancelling -- resolution-invariant, which
+# is what a geometric solve should be. So scale `lam` by the vertex's OWN local
+# edge length squared, per vertex rather than per shape, because the mixed case
+# (a fine trim on a coarse panel) is the common one and a shape median gets both
+# halves wrong.
+#
+# CLAMPED AT 1.0, SO IT ONLY EVER LENGTHENS REACH. A coarse mesh keeps today's
+# numbers exactly -- the change is bit-identical above the reference tessellation
+# -- and only meshes finer than the reference are touched. Same discipline as
+# `_reach_iters`, and it holds the blast radius to the class being fixed.
+#
+# The longer decay length then IS iteration-bound (Jacobi spreads ~sqrt(n) edges),
+# so the ring count is raised by the same ratio and capped for cost. The cap
+# binds only on the finest meshes, which in this pack are also the smallest.
+_FIELD_REF_EDGE = _knob("CBBE2UBE_FIELD_REF_EDGE", 1.0)
+_FIELD_ITERS_MAX = _knob("CBBE2UBE_FIELD_ITERS_MAX", 4096, int)
+
+# A FEATHER MAY NOT BE WIDER THAN THE SURFACE IT HAS TO FEATHER ACROSS.
+# #field-reach-fits-the-piece
+#
+# Asking for a physical reach is right only where there is somewhere to spread
+# the displacement TO. On a piece smaller than the reach there is no far field:
+# the solve couples the whole part at once, the constraint still pins some of it,
+# and the two fight. Measured over 660 shapes with the floors OFF in both arms,
+# grouped by the surface's own size -- and the bands come from the physics
+# (`sqrt(deg/lam) * ref_edge` is 3.46u), not from fitting this table:
+#
+#     sqrt(area)      shapes   folds before   delta
+#     < 3.46u   (smaller than the feather)  28    535    +81   +15.1%
+#     3.46 - 8u                             63   1453    +38    +2.6%
+#     8 - 16u                              107   2010   -500   -24.9%
+#     > 16u                                462   8549   -231    -2.7%
+#
+# The damage sits exactly where the piece is smaller than the reach being asked
+# for -- pins, strings, buckles, the small metal trim -- which are also the parts
+# a player sees closest. sqrt(AREA) is what separates them: graph diameter and
+# vertex count both come back with no positive band at all, and a bounding-box
+# diagonal is not monotone (a garment is a SHELL, so its box is thin whatever its
+# surface measures). Area is also the only candidate in the same units as the
+# reach, over the surface the feather actually travels across.
+#
+# So floor the scale at the point where the decay length equals the piece's own
+# size. A piece too small for any lengthening reverts to today's screen exactly,
+# which is the same discipline as the clamp at 1.
+_FIELD_REACH_AREA_FRAC = _knob("CBBE2UBE_FIELD_REACH_AREA_FRAC", 1.0)
+
+FIELD_SCREEN_PHYSICAL = _flag("CBBE2UBE_FIELD_SCREEN_PHYSICAL", False)
+
+# #clearance-term-audit. TELEMETRY ONLY, DEFAULT OFF, moves no vertex.
+#
+# Every attempt to close the bust gap so far has flipped a knob and measured the
+# result. Five clearance knobs came back INERT on the population, and the reason
+# was worked out afterwards each time -- `ANTIPOKE_BUST_CLEAR` is a ceiling
+# inside a `np.maximum`, `ANTIPOKE_FLAT_CLEAR` is dominated by the morph terms,
+# `INFLATION_MAGNITUDE` drops out of its own clip. What nobody has measured is
+# the thing that decides all of them: on a bust vertex, WHICH TERM IS THE ARGMAX
+# of `req`. A knob on a term that never wins cannot move the mesh, and that is
+# knowable BEFORE an arm is spent rather than after.
+#
+# With this on, the pass reports the argmax over the three FLOOR terms, how many
+# verts sit exactly at `adaptive_cap`, and what the authored relaxation actually
+# took off. Off, none of it is computed and no array is copied.
+CLEARANCE_TERM_AUDIT = _flag("CBBE2UBE_CLEARANCE_TERM_AUDIT", False)
+
+# The floor terms of `req`, in the order they are applied. Named once so the
+# report and its reader cannot drift apart.
+CLEARANCE_TERMS = ("amp-ramp", "morph-diff", "bust-floor")
+
+
+def clearance_relax_split(relax, in_bust, req_prerelax, req_final):
+    """WHY `#authored-antipoke` took what it took, on the bust band.
+
+    A bare "it relaxed 0.0000u" cannot tell three different situations apart,
+    and they want opposite work:
+
+      exempt      the TIP exemption refused the relaxation. BY DESIGN -- the
+                  author fitted over a CBBE bust and their spacing
+                  under-provisions UBE's, so their number is the wrong
+                  reference exactly there.
+      relaxed     it actually lowered the requirement.
+
+    ...and "allowed but changed nothing" is FOUR different answers, only one of
+    which is a defect. Collapsing them into one `no_bind` bucket -- which this
+    function did in its first draft -- reads as a defect four times larger than
+    it is:
+
+      already-out the garment ALREADY meets the requirement, so the push is
+                  zero anyway and the relaxation is moot. NOT a defect.
+      floor-auth  the AUTHOR's own standoff is at or above our requirement --
+                  we are not proud of the author here, so there is nothing to
+                  relax toward. NOT a defect.
+      floor-bust  the BUST RAMP blocks it (`#authored-keeps-the-bust-floor`,
+                  which exists so the relaxation cannot take the bust below
+                  what the fixed path guaranteed). BY DESIGN.
+      floor-amp   the morph-headroom reservation blocks it. THE DEFECT CLASS:
+                  this is the term that stood above every reachable value until
+                  2026-09-05, and it can still win where amplitude is high.
+
+    `relax` is None when the authored block never ran for this shape, which is
+    another answer and is reported as `off` rather than folded in.
+    """
+    if relax is None or in_bust is None:
+        return None
+    m = np.asarray(in_bust, dtype=bool)
+    if not bool(m.any()):
+        return None
+    ex = np.asarray(relax["exempt"], dtype=bool)[m]
+    bound = np.asarray(relax["bound"], dtype=np.float64)[m]
+    pre = np.asarray(req_prerelax, dtype=np.float64)[m]
+    fin = np.asarray(req_final, dtype=np.float64)[m]
+    moved = (pre - fin) > 1e-12
+    out = {
+        "exempt": int(np.count_nonzero(ex)),
+        "relaxed": int(np.count_nonzero(~ex & moved)),
+    }
+    stuck = ~ex & ~moved
+    # Allowed, changed nothing, and NOT because anything was high enough --
+    # keeps an unexplained residue visible instead of rounding it away.
+    out["other"] = int(np.count_nonzero(stuck & (bound < pre - 1e-12)))
+    held = stuck & (bound >= pre - 1e-12)
+    comps = {k: relax.get(k) for k in ("worst", "authored", "amp_room", "bust")}
+    if any(c is None for c in comps.values()):
+        out["no_bind"] = int(np.count_nonzero(held))
+        return out
+    w = np.asarray(comps["worst"], dtype=np.float64)[m]
+    # ORDER IS THE CLAIM. `worst` first because if the garment already sits at
+    # the requirement the pass pushes nothing and no floor matters; then the
+    # two BY-DESIGN blockers; `amp_room` last, so it is only credited when it
+    # is the sole reason -- an over-count there would invent a defect.
+    a = np.asarray(comps["authored"], dtype=np.float64)[m]
+    b = np.asarray(comps["bust"], dtype=np.float64)[m]
+    r = np.asarray(comps["amp_room"], dtype=np.float64)[m]
+    lim = pre - 1e-12
+    out["already_out"] = int(np.count_nonzero(held & (w >= lim)))
+    rest = held & (w < lim)
+    out["floor_auth"] = int(np.count_nonzero(rest & (a >= lim)))
+    rest = rest & (a < lim)
+    out["floor_bust"] = int(np.count_nonzero(rest & (b >= lim)))
+    rest = rest & (b < lim)
+    out["floor_amp"] = int(np.count_nonzero(rest & (r >= lim)))
+    out["floor_none"] = int(np.count_nonzero(rest & (r < lim)))
+    return out
+
+
+def exempt_headroom(relax, in_bust, req_prerelax):
+    """What `#authored-nipple-exempt` actually REFUSES, in units.
+
+    The exemption covers a large SHARE of the bust band, and a share is not a
+    budget: on a vertex where the relaxation would have changed nothing anyway,
+    exempting it costs zero. Collapsing those two together is exactly the
+    mistake the `no_bind` bucket made -- it reported a lever four times its real
+    size, and this is the same shape of claim.
+
+      real   the relaxation WOULD have lowered `req`, and the exemption said no.
+             This is the entire cost of the exemption in author fidelity.
+      moot   it would have changed nothing anyway; exempting it is free.
+
+    `head_*` are over `real` ONLY, and are the whole budget any change to the
+    exemption could ever spend.
+    """
+    if relax is None or in_bust is None or "bound" not in relax:
+        return None
+    m = np.asarray(in_bust, dtype=bool)
+    if not bool(m.any()):
+        return None
+    ex = np.asarray(relax["exempt"], dtype=bool)[m]
+    if not bool(ex.any()):
+        return {"real": 0, "moot": 0, "head_p50": 0.0, "head_sum": 0.0}
+    bound = np.asarray(relax["bound"], dtype=np.float64)[m][ex]
+    pre = np.asarray(req_prerelax, dtype=np.float64)[m][ex]
+    real = bound < pre - 1e-12
+    head = (pre - bound)[real]
+    return {
+        "real": int(real.sum()),
+        "moot": int((~real).sum()),
+        "head_p50": float(np.median(head)) if head.size else 0.0,
+        "head_sum": float(head.sum()),
+    }
+
+
+def bust_floor_headroom(terms, in_bust, bust_clear):
+    """How far a BUST-FLOOR knob could lower `req`, before any arm is spent.
+
+    On the verts where `bust-floor` is the argmax, the requirement falls to the
+    RUNNER-UP the moment the bust term is lowered past it -- so
+    `bust_req - max(amp-ramp, morph-diff)` is the ENTIRE budget available to
+    `FLAT_CLEAR`, `BUST_CLEAR` and `NIPPLE_GAIN` together. A knob cannot spend
+    more than that no matter what it is set to.
+
+    `at_ceiling` splits which knob is even live: a vert whose `bust_req` sits on
+    `BUST_CLEAR` has had the ramp clipped away, so `FLAT_CLEAR` and
+    `NIPPLE_GAIN` cannot touch it and only the ceiling can.
+    """
+    if in_bust is None or "bust-floor" not in terms:
+        return None
+    m = np.asarray(in_bust, dtype=bool)
+    if not bool(m.any()):
+        return None
+    bust = np.asarray(terms["bust-floor"], dtype=np.float64)[m]
+    others = [np.asarray(terms[t], dtype=np.float64)[m]
+              for t in CLEARANCE_TERMS if t != "bust-floor" and t in terms]
+    if not others:
+        return None
+    runner = np.maximum.reduce(others)
+    wins = bust > runner
+    if not bool(wins.any()):
+        return {"wins": 0, "head_p50": 0.0, "head_sum": 0.0, "at_ceiling": 0}
+    head = bust[wins] - runner[wins]
+    return {
+        "wins": int(wins.sum()),
+        "head_p50": float(np.median(head)),
+        "head_sum": float(head.sum()),
+        "at_ceiling": int(np.count_nonzero(
+            np.isclose(bust[wins], float(bust_clear), atol=1e-9))),
+    }
+
+
+def clearance_term_stats(terms, in_bust, req_final, req_prerelax,
+                         adaptive_cap, worst, relax=None, bust_clear=None):
+    """Which term set `req` on the bust band. Pure; never mutates its inputs.
+
+    `terms` is `{name: per-vertex value}` for the FLOOR terms only -- the
+    additive ones (jiggle, layer extra) cannot be an argmax, they stack on
+    whatever won. A term absent from the dict was not computed for this shape,
+    which is itself an answer and is reported rather than defaulted.
+
+    Returns None when no vertex is in the bust band: 0/0 is not a pass, and the
+    caller says so in its own line.
+    """
+    if in_bust is None:
+        return None
+    m = np.asarray(in_bust, dtype=bool)
+    if not bool(m.any()):
+        return None
+    present = [t for t in CLEARANCE_TERMS if t in terms]
+    if not present:
+        return None
+    stack = np.vstack([np.asarray(terms[t], dtype=np.float64)[m]
+                       for t in present])
+    win = stack.argmax(axis=0)
+    counts = {t: int((win == i).sum()) for i, t in enumerate(present)}
+    rq = np.asarray(req_final, dtype=np.float64)[m]
+    pre = np.asarray(req_prerelax, dtype=np.float64)[m]
+    wo = np.asarray(worst, dtype=np.float64)[m]
+    return {
+        "bust": int(m.sum()),
+        # AT THE CAP is the whole question for the ramp terms: if the winner is
+        # pinned there, no BASE or FACTOR knob can move it and only the cap can.
+        "at_cap": int(np.count_nonzero(
+            np.isclose(stack.max(axis=0), float(adaptive_cap), atol=1e-9))),
+        "counts": counts,
+        "missing": [t for t in CLEARANCE_TERMS if t not in terms],
+        "req_p50": float(np.median(rq)),
+        "relax_p50": float(np.median(pre - rq)),
+        "worst_p50": float(np.median(wo)),
+        "split": clearance_relax_split(relax, in_bust, req_prerelax, req_final),
+        "head": (None if bust_clear is None
+                 else bust_floor_headroom(terms, in_bust, bust_clear)),
+        "exhead": exempt_headroom(relax, in_bust, req_prerelax),
+    }
+
+
+def _clearance_term_report(stats):
+    """One machine-readable line per shape. `scripts/analysis/clearance_terms`
+    is the reader; the label lives in ONE place so they cannot drift."""
+    if stats is None:
+        print("    [clear-terms] bust=0  (no vertex in the bust band)")
+        return
+    sp = stats.get("split")
+    print("    [clear-terms] bust=%d at_cap=%d %s req_p50=%.4f "
+          "relax_p50=%.4f worst_p50=%.4f missing=%s relax=%s"
+          % (stats["bust"], stats["at_cap"],
+             " ".join("%s=%d" % (t, n) for t, n in stats["counts"].items()),
+             stats["req_p50"], stats["relax_p50"], stats["worst_p50"],
+             ",".join(stats["missing"]) or "none",
+             "off" if sp is None else
+             ",".join("%s:%d" % (k.replace("_", "-"), sp[k])
+                      for k in sorted(sp))))
+    hd = stats.get("head")
+    if hd is not None:
+        # The BUDGET any bust-floor knob has, measured before an arm is spent.
+        print("    [clear-head] wins=%d at_ceiling=%d head_p50=%.4f "
+              "head_sum=%.4f"
+              % (hd["wins"], hd["at_ceiling"], hd["head_p50"], hd["head_sum"]))
+    xh = stats.get("exhead")
+    if xh is not None:
+        # A SHARE IS NOT A BUDGET. `real` is what the exemption actually
+        # refuses; `moot` is what it costs nothing to refuse.
+        print("    [clear-exempt] real=%d moot=%d head_p50=%.4f head_sum=%.4f"
+              % (xh["real"], xh["moot"], xh["head_p50"], xh["head_sum"]))
+
+
+def _field_screen_scale(verts, src, dst, n, deg=None, lam=None, tris=None):
+    """Per-vertex `lam` multiplier that makes the screen's reach physical.
+
+    `(h_i / ref)^2`, clamped into [floor, 1], where `h_i` is the mean length of
+    the vertex's own incident edges and `floor` is the point at which the decay
+    length would exceed the piece's own size (`#field-reach-fits-the-piece`).
+    Returns None when disabled or unusable, which leaves the caller on exactly
+    today's arithmetic.
+
+    WELD EDGES ARE EXCLUDED. `_welded_edges` chains coincident verts at a UV
+    seam with ~zero-length edges; those are one point of surface, not
+    tessellation, and averaging them in drags `h_i` toward zero on precisely the
+    seams that already need the most care.
+    """
+    if not FIELD_SCREEN_PHYSICAL:
+        return None
+    try:
+        V = np.asarray(verts, np.float64)
+        L = np.linalg.norm(V[src] - V[dst], axis=1)
+        real = L > 1e-6
+        if not real.any():
+            return None
+        acc = np.zeros(n)
+        cnt = np.zeros(n)
+        np.add.at(acc, src[real], L[real])
+        np.add.at(cnt, src[real], 1.0)
+        ref = float(_FIELD_REF_EDGE)
+        if not np.isfinite(ref) or ref <= 1e-9:
+            return None
+        # A vert with no real edge of its own keeps today's screen (scale 1).
+        h = np.where(cnt > 0, acc / np.maximum(cnt, 1e-9), ref)
+        scale = (h / ref) ** 2
+
+        # The reach may not outgrow the piece. decay = sqrt(deg/(lam*scale)) * h,
+        # required <= frac * sqrt(area), which rearranges to a floor on `scale`.
+        #
+        # PER SHAPE, AND PER CONNECTED COMPONENT WAS MEASURED AND REJECTED.
+        # "A component is not an object" argues the piece a vertex lives on is
+        # its island, not its shape, and the shapes agree it would matter: over
+        # 498 converted shapes, 60% carry more than one island and 27% would get
+        # a different verdict per vertex, one boot holding 43 islands whose total
+        # reads 16.29u against a smallest of 0.53u. Built it (islands over the
+        # WELDED graph, `scipy.sparse.csgraph.connected_components`) and measured
+        # it over the whole population:
+        #
+        #                              folds   inverted   bust gap   pen
+        #     floors OFF, per shape    15318      1793          -     -
+        #     floors OFF, per island   15649      1910          -     -
+        #     candidate, per shape     15899      1902     +0.431     13
+        #     candidate, per island    15740      1961     +0.431     13
+        #
+        # It buys NOTHING on the fit -- gap and penetration are identical to
+        # three decimals on both paths -- and on the surface it is worse without
+        # the floors (+331 folds, +117 inverted) and a trade with them (-159
+        # folds for +59 INVERTED, which is the side the author ships at zero).
+        # It also costs 74% more in this helper. So the damage this guard exists
+        # to stop is a property of the SHAPE being small, not of a small island
+        # inside a large shape: a stud on a boot has the boot's solve around it
+        # and does not need holding back. Kept per shape, which is also simpler.
+        floor = 1e-6
+        if deg is not None and lam is not None and tris is not None:
+            T = np.asarray(tris, np.int64).reshape(-1, 3)
+            frac = float(_FIELD_REACH_AREA_FRAC)
+            if len(T) and float(lam) > 1e-9 and frac > 1e-9:
+                area = float(np.linalg.norm(
+                    np.cross(V[T[:, 1]] - V[T[:, 0]],
+                             V[T[:, 2]] - V[T[:, 0]]), axis=1).sum() * 0.5)
+                if np.isfinite(area) and area > 1e-9:
+                    d = np.clip(np.asarray(deg, np.float64), 1.0, None)
+                    floor = (d * h * h) / (float(lam) * frac * frac * area)
+        return np.clip(scale, floor, 1.0)
+    except Exception as _e:
+        _note_pass_failure("_field_screen_scale", _e)
+        return None
+
+
 def _solve_clearance_field(verts, normals, need, tris, *,
                            max_push=3.0, lam=None, iters=None,
                            tol=1e-4, weld_tol=1e-3):
@@ -2230,7 +2841,37 @@ def _solve_clearance_field(verts, normals, need, tris, *,
         src, dst, deg, live = _nc()._welded_edges(V, T, weld_tol)
         if src is None:
             return np.zeros((n, 3)), stats
-        denom = deg + lam
+        # #field-screen-physical: the mass term carries an area, so scale it by
+        # the vertex's own edge length squared. Reach then comes out in world
+        # units instead of edges. Clamped at 1, so a coarse mesh is unchanged.
+        _scale = _field_screen_scale(V, src, dst, n, deg=deg, lam=lam, tris=T)
+        if _scale is None:
+            denom = deg + lam
+        else:
+            denom = deg + lam * _scale
+            # A weaker screen decays over more EDGES, and Jacobi carries a field
+            # about sqrt(iters) edges -- so the reach only materialises if the
+            # ring count grows with it. Raised by the same ratio, never lowered,
+            # and capped for cost; the `tol` break below means a shape that
+            # settles early does not pay it.
+            # OFF A LOW PERCENTILE, NOT THE MINIMUM. The rings needed go as
+            # 1/scale, so a single near-degenerate vertex -- one whose own edges
+            # are a thousandth of its mesh's -- would claim the whole shape's
+            # budget. Measured over 444 converted shapes: `min` sent 247 of them
+            # (56%) straight to the cap, while the same shapes' MEDIAN scale
+            # asked for no increase at all; median/min is 15x at p50 and 715x at
+            # p90. That is one vertex writing the whole shape's cost.
+            #
+            # It changes nothing on this pack and is not meant to -- the `tol`
+            # break ends the solve at 100 iterations on average and 543 at
+            # worst, so neither bound binds and the output is byte-identical.
+            # It is for the population where `tol` is NOT reached early, where
+            # `min` is a 40x bill on behalf of the finest 1% of a mesh.
+            _drive = float(np.percentile(_scale, 5))
+            _ratio = max(1.0, 1.0 / max(_drive, 1e-6))
+            iters = int(min(round(int(iters) * _ratio), int(_FIELD_ITERS_MAX)))
+            stats["screen_min"] = float(_scale.min())
+            stats["screen_p5"] = _drive
         denom[~live] = 1.0
 
         # Projected Jacobi. Each step: relax toward the screened neighbour
@@ -2258,6 +2899,10 @@ def _solve_clearance_field(verts, normals, need, tris, *,
         stats["n_moved"] = int((mv > 1e-6).sum())
         stats["max_move"] = float(mv.max())
         stats["ok"] = True
+        if os.environ.get("CBBE2UBE_FIELD_STATS"):
+            print(f"    [field-stats] n={n} asked={iters} used={stats['iters']}"
+                  f" conv={stats['converged']}"
+                  f" screen_min={stats.get('screen_min', 1.0):.6f}")
         return u, stats
     except Exception as _pe:
         _note_pass_failure("_solve_clearance_field", _pe)
@@ -2335,6 +2980,28 @@ def clear_armor_outside_body(
     s_k = np.where(dd <= radius, s_k, np.inf)
     worst = np.min(s_k, axis=1)
     worst = np.where(np.isfinite(worst), worst, s_cur)   # fallback: nearest only
+    # The BUST FLOOR, kept for `#authored-antipoke` to honour. Both branches
+    # below compute it; hoisted so the authored relaxation can be held above it
+    # rather than cutting through it. See `#authored-keeps-the-bust-floor`.
+    _bust_req = None
+    _in_bust = None
+    # #clearance-term-audit: `{}` only when armed, so the OFF path allocates
+    # nothing and copies nothing.
+    _terms = {} if CLEARANCE_TERM_AUDIT else None
+    # The NIPPLE TIP, for `#authored-nipple-exempt`.
+    #
+    # BY RADIUS, not by the nearest body vertex and not by this pass's k nearest
+    # either. A garment is coarser than the body, so "my nearest body vertex is
+    # a tip vertex" selected 1 garment vert of 1700, and widening to the 6
+    # nearest reached only 3 -- those six sit in a patch smaller than the nipple.
+    # Both under-select the feature being protected, and the exemption then did
+    # nothing on the pieces that needed it most.
+    _nipw = None
+    if body_nipple is not None and len(body_nipple) == len(bv):
+        _nipw = _nc()._nipple_tip_mask(
+                v, bv, body_nipple,
+                frac=_nc().AUTHORED_NIPPLE_EXEMPT,
+                radius=_nc().AUTHORED_NIPPLE_RADIUS, tris=tris)
     if morph_amplitude is not None and len(morph_amplitude) == len(bv):
         # ADAPTIVE: only ramp clearance where the body actually grows at runtime
         # (high morph amplitude). Static zones get just the z-fight floor, so
@@ -2346,6 +3013,8 @@ def clear_armor_outside_body(
         amp_worst = np.max(amp_k, axis=1)
         req = np.clip(adaptive_base + adaptive_factor * amp_worst,
                       adaptive_base, adaptive_cap)
+        if _terms is not None:
+            _terms["amp-ramp"] = req.copy()
         # #clearance-differential (see the constant): the amp ramp above pays for
         # GROWTH; clipping is caused by the DIFFERENTIAL. Charge the clearance
         # the worst slider actually takes away, as a MONOTONE FLOOR so no zone
@@ -2358,8 +3027,10 @@ def clear_armor_outside_body(
         # not.
         if morph_differential is not None and len(morph_differential) == len(bv):
             _diff = np.asarray(morph_differential, dtype=np.float64)[nearest]
-            req = np.maximum(req, np.minimum(adaptive_base + _diff,
-                                             adaptive_cap))
+            _diff_req = np.minimum(adaptive_base + _diff, adaptive_cap)
+            if _terms is not None:
+                _terms["morph-diff"] = _diff_req
+            req = np.maximum(req, _diff_req)
         # BUST FLOOR. The adaptive ramp REPLACED the bust ramp below, and its cap
         # sat under the bust target -- so switching adaptive clearance on gave the
         # breast LESS room than the fixed path it replaced, on the one zone that
@@ -2385,15 +3056,23 @@ def clear_armor_outside_body(
             bust_req = np.clip(flat_clear + nipw * nipple_gain,
                                flat_clear, bust_clear)
             req = np.where(in_bust, np.maximum(req, bust_req), req)
+            _bust_req, _in_bust = bust_req, in_bust
+            if _terms is not None:
+                # OUTSIDE the band this term does not compete, and -inf keeps
+                # it out of the argmax without a second mask.
+                _terms["bust-floor"] = np.where(in_bust, bust_req, -np.inf)
     else:
         req = np.full(len(v), float(flat_clear))
         if body_nipple is not None and len(body_nipple) == len(bv):
             z = bv[nearest][:, 2]
             in_bust = (z >= bust_z[0]) & (z <= bust_z[1])
             nipw = np.asarray(body_nipple, dtype=np.float64)[nearest]
-            req = np.where(in_bust,
-                           np.clip(flat_clear + nipw * nipple_gain, flat_clear, bust_clear),
-                           req)
+            bust_req = np.clip(flat_clear + nipw * nipple_gain,
+                               flat_clear, bust_clear)
+            req = np.where(in_bust, bust_req, req)
+            _bust_req, _in_bust = bust_req, in_bust
+            if _terms is not None:
+                _terms["bust-floor"] = np.where(in_bust, bust_req, -np.inf)
     if jiggle_amplitude is not None and len(jiggle_amplitude) == len(bv):
         # JIGGLE overshoot term (see JIGGLE_CLEARANCE_ENABLED): SMP softbody
         # swings past the rest surface, so ADD clearance where the body's jiggle
@@ -2459,6 +3138,12 @@ def clear_armor_outside_body(
         # standoff so stacked garments don't converge to the same surface.
         # Added AFTER the morph/jiggle clips so the cap can't swallow it.
         req = req + float(req_extra)
+    # Snapshot BEFORE `#authored-antipoke` so the report can say what the
+    # relaxation actually took off, rather than assuming it took anything.
+    _req_prerelax = req.copy() if _terms is not None else None
+    # Filled by the authored block below when it runs at all. Staying None is
+    # itself the answer: the floor never reached this shape.
+    _relax = None
 
     # #authored-antipoke. Everything above builds the requirement from
     # clearance rules alone -- it has never known where the AUTHOR put the
@@ -2476,31 +3161,127 @@ def clear_armor_outside_body(
     # come out too low" -- which the census clearance counters measure directly.
     #
     # It relaxes only where BOTH hold: the author had this vertex tighter than
-    # the flat floor, AND the body does not grow much here. Where the body
-    # morphs outward -- the bust, belly and butt this pass exists for --
-    # `amp_room` holds the requirement up.
+    # the flat floor, AND the body does not grow much here.
+    #
+    # THAT SECOND CONDITION USED TO EXCLUDE THE BUST AND BELLY OUTRIGHT. The
+    # headroom term was `ARMOR_TO_SKIN_BUFFER + min(amp, AUTHORED_INFLATE_AMP_CAP)`
+    # -- the full outward amplitude -- which on a breast is 0.15 + 1.5 = 1.650u,
+    # ABOVE both what we ship (1.436u) and what the author ships (0.948u). So
+    # `authored` could never win the `maximum` on the two bands this pass exists
+    # for, and the relaxation was structurally unreachable there. See
+    # `_authored_floor_amp_room`, which now allocates the headroom by the same
+    # rule as the ramp it caps.
     if (_nc().AUTHORED_ANTIPOKE and src_armor_verts is not None
-            and src_body_verts is not None and src_body_normals is not None):
+            and src_body_verts is not None and src_body_normals is not None
+            # A floor that cannot read the author must NOT quietly become a flat
+            # clearance rule wearing the author's name.
+            and _authored_normals_usable(src_body_normals)):
         try:
             sa = np.asarray(src_armor_verts, dtype=np.float64)
             sb = np.asarray(src_body_verts, dtype=np.float64)
             sn = np.asarray(src_body_normals, dtype=np.float64)
             if sa.shape == v.shape and sb.shape == sn.shape and len(sb):
                 _, si = _nc()._authored_src_tree(sb).query(sa, k=1, workers=-1)
-                authored = np.maximum(
-                    np.einsum('ij,ij->i', sa - sb[si], sn[si]), 0.0)
-                amp_room = np.zeros(len(v))
+                authored = _feathered_authored(
+                    np.maximum(np.einsum('ij,ij->i', sa - sb[si], sn[si]), 0.0),
+                    tris, v)
+                amp_room = np.full(len(v), _nc().ARMOR_TO_SKIN_BUFFER)
                 if morph_amplitude is not None and len(morph_amplitude):
                     _amp = np.asarray(morph_amplitude, dtype=np.float64)
                     if len(_amp) > int(nearest.max()):
-                        amp_room = np.minimum(_amp[nearest],
-                                              _nc().AUTHORED_INFLATE_AMP_CAP)
-                floor = np.maximum(authored, _nc().ARMOR_TO_SKIN_BUFFER + amp_room)
-                req = np.minimum(req, np.maximum(floor, worst))
+                        amp_room = _authored_floor_amp_room(_amp[nearest])
+                floor = np.maximum(authored, amp_room)
+                # #authored-keeps-the-bust-floor. THE BUST RAMP IS NOT NEGOTIABLE
+                # BY THE AUTHOR. Its own comment above says it exists so adaptive
+                # clearance "can never take the bust below what the fixed path
+                # guaranteed", and this relaxation was doing exactly that one
+                # block later -- reported in game as nipples poking through a
+                # leather cuirass "by the smallest amount", which is what a
+                # median 0.067u of lost tip clearance looks like.
+                #
+                # WHY THE AUTHOR IS THE WRONG REFERENCE *HERE* SPECIFICALLY. The
+                # relaxation's premise is that the author knew how much room this
+                # garment needs. At the nipple that premise fails: they fitted it
+                # over a CBBE bust, and UBE's protrudes further, so their spacing
+                # under-provisions ours by a fixed amount no matter how careful
+                # they were. `amp_room` does not cover it either -- that reserves
+                # headroom for the body's MORPH amplitude, and this is a STATIC
+                # shape difference between the two bodies.
+                #
+                # Measured over the 36 pack pieces that cover the nipple: tip
+                # clearance p50 1.193u shipped -> 1.085u with the floors armed,
+                # 26 of 36 pieces tighter. The screen fix alone is neutral there
+                # (1.205u), so this is the floors and nothing else.
+                if _bust_req is not None and _in_bust is not None:
+                    floor = np.where(_in_bust, np.maximum(floor, _bust_req),
+                                     floor)
+                # #authored-nipple-exempt. THE TIP IS NOT RELAXED AT ALL.
+                #
+                # Flooring at the bust ramp above is a correct invariant and is
+                # nowhere near sufficient: measured, `in_bust` covers 38 of 1700
+                # and 111 of 3952 garment verts -- about 2% -- and the ramp is
+                # often not even the binding term there. The requirement lost to
+                # this relaxation is in fact SMALLER on the bust band (0.017u
+                # mean) than over the shape as a whole (0.034u), so the tip does
+                # not lose its clearance directly. The whole cup settles closer
+                # and the tip is simply where the margin was thinnest.
+                #
+                # So refuse the relaxation on the TIP itself and let it have
+                # everything else. That keeps the fit win where it comes from --
+                # the breast DOME and the rest of the garment -- while the one
+                # feature whose clearance the author cannot inform stays where
+                # the clearance rules put it. Same shape as the fix
+                # `#nipple-ramp-sharpness` describes for conform: hold the tip,
+                # move the shoulder of the ramp.
+                #
+                # Calibrated on the BODY's own maximum weight, never this
+                # shape's subset -- a garment covering only the flat chest has a
+                # local maximum near zero and would exempt everything.
+                if os.environ.get("CBBE2UBE_NIPPLE_PROBE"):
+                    print(f"    [nip-ap] verts={len(req)} "
+                          f"tipw={0.0 if _nipw is None else float(_nipw.sum()):.1f} "
+                          f"nipple_map={'no' if body_nipple is None else 'yes'}")
+                _relaxed_req = np.minimum(req, np.maximum(floor, worst))
+                # HARD, not blended -- see `_nipple_tip_mask` for the measured
+                # rejection of the ramp: a partial exemption is still a partial
+                # relaxation of the one feature that must not be relaxed.
+                req = (_relaxed_req if _nipw is None
+                       else np.where(_nipw > 0.5, req, _relaxed_req))
+                if _terms is not None:
+                    # WHY the relaxation took what it took. A bare "it relaxed
+                    # 0.0000u on the bust" cannot tell REFUSED (the tip
+                    # exemption, by design) from COULD NOT BIND (the floor sat
+                    # above the requirement) -- and those want opposite work.
+                    #
+                    # The floor's three COMPONENTS are carried too, because
+                    # "could not bind" is itself three different answers and
+                    # only ONE of them is a defect. See `clearance_relax_split`.
+                    _relax = {
+                        "bound": np.maximum(floor, worst),
+                        "exempt": (np.zeros(len(req), dtype=bool)
+                                   if _nipw is None else (_nipw > 0.5)),
+                        "worst": worst,
+                        "authored": authored,
+                        "amp_room": amp_room,
+                        "bust": (_terms.get("bust-floor")
+                                 if _terms.get("bust-floor") is not None
+                                 else np.full(len(req), -np.inf)),
+                    }
         except Exception as e:
             # A silently-failed floor here reads as "the requirement was
             # already satisfied" and would ship as a quiet loss of clearance.
             _note_pass_failure("clear_armor_outside_body/authored-floor", e)
+
+    if _terms is not None:
+        # TELEMETRY ONLY. Wrapped because a report that can raise would turn a
+        # measurement run into a lost piece, and every fit pass here is already
+        # wrapped for exactly that reason.
+        try:
+            _clearance_term_report(clearance_term_stats(
+                _terms, _in_bust, req, _req_prerelax, adaptive_cap, worst,
+                _relax, bust_clear))
+        except Exception as e:                             # pragma: no cover
+            _note_pass_failure("clear_armor_outside_body/term-audit", e)
 
     push = np.clip(req - worst, 0.0, max_push)            # push OUT only
     # #clearance-field: solve ONE minimum-stretch displacement that meets every

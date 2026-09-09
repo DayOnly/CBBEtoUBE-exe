@@ -378,6 +378,20 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "dress is the whole silhouette, so the body underneath "
                     "could be perfectly shaped and still look flat. Ships the "
                     "authored arrangement instead."),
+    Setting("pair_tri_names",
+            "Keep body sliders working at high body weight",
+            "Armor", "Physics", default=False,
+            env="CBBE2UBE_PAIR_TRI_NAMES",
+            hint="For sliders that work on a thin character and not a heavy one.",
+            tooltip="An outfit ships as two meshes, one for each end of the "
+                    "body-weight slider, and they share ONE slider-data file. "
+                    "Some authors give the two meshes different internal names, "
+                    "and then the file only names the shapes in the light one -- "
+                    "so at high body weight the sliders find nothing to move and "
+                    "the outfit stays at its base shape. Measured on this pack: "
+                    "54 of 1536 outfits, 42 of them losing every slider. Writes "
+                    "the same slider data under both names. Changes the slider "
+                    "files it ships, so it is off until judged."),
     Setting("proxy_weight_invariant",
             "Match generated collision at both body weights",
             "Armor", "Physics", default=True,
@@ -573,6 +587,43 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "unit, while slightly increasing the number of places the "
                     "surface folds through itself. It had NO switch at all "
                     "until now, so no build could be run without it."),
+    Setting("coherence_repair_outside_body",
+            "Never let the un-buckling step pull armour into the body",
+            "Armor", "Fit and clearance", default=False,
+            env="CBBE2UBE_COHERENCE_REPAIR_OUTSIDE_BODY", invert=False,
+            hint="The last step in the chain could undo the clearance every "
+                 "step before it had just established.",
+            tooltip="After fitting, one step un-buckles thin features the fit "
+                    "crumpled -- a rim bent at a right angle, a crease up a "
+                    "seam. It works by evening out how far neighbouring points "
+                    "moved, keeping the average the same. But it never knew "
+                    "where the body was, so a point the anti-clipping step had "
+                    "deliberately pushed clear just looked like a point that "
+                    "had moved unusually far, and evening it out pulled it "
+                    "back in -- through the skin. Traced on a layered cuirass, "
+                    "it moved points nearly a unit inward after every earlier "
+                    "step had held them clear, and nothing runs after it to "
+                    "catch that. This lets it do everything it asks for except "
+                    "move a point from outside the body to inside."),
+    Setting("field_screen_physical",
+            "Smooth clearance over the same DISTANCE on any mesh",
+            "Armor", "Fit and clearance", default=False,
+            env="CBBE2UBE_FIELD_SCREEN_PHYSICAL", invert=False,
+            hint="Fixes finely-detailed pieces creasing where plainer ones do "
+                 "not. Helps most on lace, trim, buckles and straps.",
+            tooltip="When the converter pushes armour clear of the body, it "
+                    "blends that push into the surrounding surface so the "
+                    "cloth does not step. How far that blend spreads is "
+                    "currently counted in EDGES rather than in distance -- so "
+                    "on a piece cut into very small triangles, such as lace or "
+                    "a buckle, it fades out over a fraction of the distance it "
+                    "would on a plain panel, and the surface creases there. "
+                    "Measured on one flat patch with nothing changing but how "
+                    "finely it was cut, the steepness that creases a surface "
+                    "rose more than sevenfold. This measures the blend in "
+                    "distance instead. Pieces at or below the usual level of "
+                    "detail are left exactly as they are, so only the fine "
+                    "ones change. Finely-cut pieces take longer to convert."),
     Setting("authored_inflate", "Only add clearance where it is missing",
             "Armor", "Fit and clearance", default=False,
             env="CBBE2UBE_AUTHORED_INFLATE", invert=False,
@@ -634,6 +685,26 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "from 248 vertices to 80. It costs a little smoothness, "
                     "because those repairs are also cleaning up after the "
                     "layer steps themselves."),
+    Setting("last_carrier_hold", "Keep a bone the outfit author used on only "
+                                 "one or two vertices",
+            "Armor", "Fit and clearance", default=True,
+            env="CBBE2UBE_NO_LAST_CARRIER_HOLD", invert=True,
+            hint="Leave on. Off can crash on equip, and turning it off "
+                 "changes nothing else.",
+            tooltip="A vertex is held by at most four bones. When the "
+                    "converter adds a fifth -- a hip or chest bone it "
+                    "grafts on so the piece moves with the body -- "
+                    "something has to go, and the file format simply "
+                    "drops the smallest. The smallest is very often a "
+                    "bone the outfit author used on a single vertex, and "
+                    "losing that one vertex leaves the bone listed in the "
+                    "mesh with nothing attached to it -- which is the "
+                    "shape of crash the game gives when you equip the "
+                    "piece. This makes the bone the converter is adding "
+                    "give way instead, and only on that vertex. Measured "
+                    "on the pack: no vertex moves at all, 250 of 3.3 "
+                    "million bone weights change, and how the armour "
+                    "follows the body in motion is unchanged."),
     Setting("family_weight_invariant", "Fix stray broken vertices on layered "
                                        "garments",
             "Armor", "Fit and clearance", default=True,
@@ -1524,7 +1595,7 @@ LAYOUT: "dict[str, tuple]" = {
             "authored_antipoke",
             "authored_inflate",
             "authored_inflate_amp_cap", "layer_order_last",
-            "family_weight_invariant",
+            "family_weight_invariant", "last_carrier_hold",
             "full_weight_match", "full_weight_strength",
             "smp_antipoke", "smp_antipoke_push",
             "antipoke_smooth", "layered_antipoke")),

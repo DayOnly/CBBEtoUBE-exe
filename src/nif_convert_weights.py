@@ -557,7 +557,8 @@ def _cap_weights_map(weights_map, n_verts: int):
     # Preserve the caller's bone ordering for the bones that survived.
     return {bn: out[bn] for bn in (weights_map or {}) if bn in out}
 
-def _cap_and_renormalise_rows(vw, n, writable, rows=None) -> None:
+def _cap_and_renormalise_rows(vw, n, writable, rows=None,
+                              incumbents=None) -> None:
     """Cap each row to the 4 largest influences among `writable`, then renormalise
     the survivors to exactly 1.0. Mutates `vw` (a list of {bone: weight} dicts).
 
@@ -572,8 +573,56 @@ def _cap_and_renormalise_rows(vw, n, writable, rows=None) -> None:
     None means every vertex -- only correct for a caller that rewrites the whole
     shape. A row whose writable mass is already zero is left ALONE, not zeroed: an
     unweighted vertex skins to the origin, which is a visible spike.
+
+    #last-carrier-hold. `incumbents` = the bones each row ALREADY HELD before
+    the calling pass touched it, one set per vertex. A row may not evict an
+    incumbent whose LAST carrier it is in order to seat a bone that row did not
+    have; between two incumbents, weight decides exactly as before. Omit it and
+    this function is byte-identical to its old self.
+
+    THAT NARROWNESS IS THE DESIGN, and the first attempt was wider and wrong. A
+    version that simply preferred last carriers for the smallest surviving slot
+    -- never displacing a dominant bone, so it looked safe -- changed 2771 weight
+    rows on a 184-NIF population, 2643 of them on ONE SMP collider shape, worst
+    per-influence delta 0.849. The mechanism is a CASCADE: flipping which bone
+    survives a cap changes whether a vertex is in a LATER pass's matched set, and
+    that pass then re-derives the whole row from the body. Reordering two bones
+    the row already had is never a local edit. Refusing a NEWCOMER a slot is.
+
+    NEWCOMER IS PER ROW, not per shape, and the second attempt got that wrong
+    too: passing the pass's graft list fixed nothing, because the bone doing the
+    displacing (`NPC R Butt`) was already in the shape's bone list and merely new
+    to THAT VERTEX. This is the same rule `#family-weight-invariant` states --
+    keep the influences a vertex already HAS, spend only free slots on newcomers
+    -- applied at the cap instead of inside one pass.
+
+    WHY, and it is measured, not reasoned. A bone the AUTHOR held on ONE vertex
+    is by construction the lightest influence there, so "keep the largest four"
+    evicts it and the bone is left in the shape's bone list with no weight at
+    all: `#zeroweight-bone-desync`, the equip-CTD class. Bisected on the piece
+    that ships it -- `CBBE2UBE_NO_LEG_BEND_MATCH=1` gives `SkirtBBone02` back its
+    single authored row (v757, 0.03467) and takes the shape to 0 zero-weight
+    bones; at defaults it is evicted by `NPC R Butt` at 0.04747, a bone the same
+    pass GRAFTS and which carries weight on plenty of other vertices.
+
+    DECLINING TO WRITE DOES NOT PROTECT IT, which is why the caller's own "NEVER
+    EMPTY A BONE" guard could not. `setShapeWeights` MERGES and the SAVE resolves
+    an overflowing row itself, so leaving the stale 0.03467 in the file while
+    writing a fifth influence over it just moves the eviction to save time. The
+    only move that saves the bone is refusing the newcomer the slot.
     """
-    for i in (range(n) if rows is None else rows):
+    idxs = range(n) if rows is None else rows
+    hold = bool(incumbents) and _nc().LAST_CARRIER_HOLD
+    # Live rows per bone across the WHOLE shape, not just `rows`: a bone with
+    # weight on a vertex this pass never touched is not being stranded, so it
+    # must not be protected.
+    carriers: "dict[str, int]" = {}
+    if hold:
+        for i in range(n):
+            for b, w in vw[i].items():
+                if b in writable and w > _nc()._WRITE_MIN:
+                    carriers[b] = carriers.get(b, 0) + 1
+    for i in idxs:
         live = {b: w for b, w in vw[i].items()
                 if b in writable and w > _nc()._WRITE_MIN}
         if len(live) > _nc()._SKIN_MAX_INFLUENCES:
@@ -585,8 +634,28 @@ def _cap_and_renormalise_rows(vw, n, writable, rows=None) -> None:
             # and which survived flipped between seeds. Breaking the tie on the
             # bone NAME settles the whole class here instead of chasing every
             # producer that feeds `vw`.  #deterministic-set-iteration
-            keep = set(sorted(live, key=lambda b: (-live[b], b))
-                       [:_nc()._SKIN_MAX_INFLUENCES])
+            order = sorted(live, key=lambda b: (-live[b], b))
+            kept = order[:_nc()._SKIN_MAX_INFLUENCES]
+            dropped = order[_nc()._SKIN_MAX_INFLUENCES:]
+            if hold:
+                # Seat every stranded incumbent that a NEWCOMER is displacing,
+                # cheapest newcomer first. Walking `dropped` in weight order and
+                # `kept` from the back keeps the whole thing a total order.
+                had = incumbents[i]
+                for pos, b in enumerate(dropped):
+                    if b not in had or carriers.get(b, 0) != 1:
+                        continue       # only an INCUMBENT is ever held
+                    give = next((j for j in range(len(kept) - 1, -1, -1)
+                                 if kept[j] not in had), None)
+                    if give is None:
+                        break          # nothing left that this rule may unseat
+                    dropped[pos], kept[give] = kept[give], b
+            keep = set(kept)
+            # A bone this row just lost is one row closer to being stranded, so
+            # the count has to follow the cap -- otherwise a bone holding TWO
+            # vertices is evicted from both, each time looking safe.
+            for b in dropped:
+                carriers[b] = max(0, carriers.get(b, 0) - 1)
             for b in list(vw[i]):
                 if b in writable and b not in keep:
                     vw[i][b] = 0.0
@@ -1339,6 +1408,11 @@ def _match_rigid_leg_bend_to_body(dst_path, biped_slots: int = 0,
                 iv = int(vi)
                 if 0 <= iv < n:
                     vw[iv][b] = vw[iv].get(b, 0.0) + float(w)
+        # What each vertex ALREADY HELD, snapshotted before the match loop
+        # mutates `vw`. #last-carrier-hold reads it to tell an incumbent
+        # from a bone that is new to this row.
+        _pre_live = [frozenset(b for b, w in r.items()
+                               if w > _nc()._WRITE_MIN) for r in vw]
         # #chain-welded-torso: which verts are SIMULATED cloth. Needed both for the
         # per-vert guard in the match loop and for judging a chain-welded torso on
         # its rigid verts below.
@@ -1474,8 +1548,13 @@ def _match_rigid_leg_bend_to_body(dst_path, biped_slots: int = 0,
         # does not survive then simply fails the test below, is never added, and
         # falls into `unsafe` to be folded onto its anchor by the existing loop.
         if _nc().WEIGHT_INVARIANT_ENABLED:
+            # #last-carrier-hold applies HERE TOO, and this is the call that
+            # actually evicts: the graft is already in `vw` by now, so this is
+            # where a five-influence row first appears. Wiring only the re-cap
+            # below fixed nothing -- traced, the bone was already gone.
             _cap_and_renormalise_rows(
-                vw, n, set(existing) | {b for b in need if b in graft_stb})
+                vw, n, set(existing) | {b for b in need if b in graft_stb},
+                incumbents=_pre_live)
         # SORTED, not `need`'s own order. `need` is a real set, and a list
         # comprehension over a set is exactly as arbitrary as the set -- so this
         # decided `add_bone` order, which IS the written NIF's bone palette
@@ -1586,7 +1665,15 @@ def _match_rigid_leg_bend_to_body(dst_path, biped_slots: int = 0,
         # can push a row back over 4 if the anchor was not already in it, and leaks
         # mass outright when a bone had no anchor). Idempotent on rows that are
         # already capped and normalised.
-        _cap_and_renormalise_rows(vw, n, _writable)
+        # #last-carrier-hold: `_pre_live` is what each vertex held BEFORE this
+        # pass, so a bone new to a vertex may not take the slot of one whose
+        # only vertex that is. BISECTED to here -- `CBBE2UBE_NO_LEG_BEND_MATCH=1`
+        # gives `SkirtBBone02` back its single authored row and takes the piece
+        # to 0 zero-weight bones, while `CBBE2UBE_NO_FULL_WEIGHT_MATCH=1`
+        # changes nothing. Passing `to_add` instead does NOT work: the bone that
+        # displaces it (`NPC R Butt`) is already in the shape's bone list and is
+        # only new to that VERTEX.
+        _cap_and_renormalise_rows(vw, n, _writable, incumbents=_pre_live)
         _orig: dict = {}
         for _b, _pairs in bw.items():
             if _b not in _writable:

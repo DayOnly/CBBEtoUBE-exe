@@ -603,7 +603,10 @@ def minimum_push(garment_verts, garment_tris, garment_normals,
     gV = np.asarray(garment_verts, np.float64)
     gT = np.asarray(garment_tris, np.int64).reshape(-1, 3)
     bV = np.asarray(body_verts, np.float64)
-    bT = np.asarray(body_tris, np.int64).reshape(-1, 3)
+    # `body_tris` is NOT used by this pass -- it was converted into a `bT` that
+    # nothing read, reshaping the body's ~58k triangles on every call. The
+    # conversion is gone; the PARAMETER stays because callers pass it
+    # positionally, and dropping it would silently shift `body_normals`.
     bN = np.asarray(body_normals, np.float64)
     bN = bN / np.clip(np.linalg.norm(bN, axis=1, keepdims=True), 1e-9, None)
     stats = {"moved": 0, "iters": 0, "exposed_before": 0, "exposed_after": 0,

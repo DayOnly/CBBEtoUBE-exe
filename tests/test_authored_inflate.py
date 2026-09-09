@@ -107,16 +107,32 @@ def test_the_morph_term_is_capped():
     `base` is raised so the additive CEILING is not the binding constraint in
     either arm -- otherwise this compares two different ceilings and passes or
     fails for a reason that has nothing to do with the cap. That is what the
-    first version of this test did."""
+    first version of this test did.
+
+    REWRITTEN 2026-09-05 with `#authored-floor-same-rule`. It used to assert the
+    floor equalled `ARMOR_TO_SKIN_BUFFER + AUTHORED_INFLATE_AMP_CAP` = 1.650u --
+    pinning the exact constant that made the floor unreachable on a breast
+    (shipped 1.436u, authored 0.948u). The cap it was written to prove still
+    exists and still binds; it now binds at the ramp's own ceiling, from an
+    amplitude of (MORPH_MAX - BUFFER) / MORPH_FACTOR = 4.75u up. The two probes
+    below straddle that, which is what the test was ever really checking."""
     # `magnitude` too, not just `base`: the additive cap is
     # max(magnitude, morph_max), so raising `base` alone leaves it at 1.1 and
     # the ceiling still decides the answer.
-    at_cap = _run([0.1], [0.0], amp=nc.AUTHORED_INFLATE_AMP_CAP,
-                  base=4.0, magnitude=4.0)
+    ceiling = min(nc.ADAPTIVE_CLEARANCE_MORPH_MAX, nc.AUTHORED_INFLATE_AMP_CAP)
+    at_cap = _run([0.1], [0.0], amp=5.5, base=4.0, magnitude=4.0)
     way_over = _run([0.1], [0.0], amp=8.7, base=4.0, magnitude=4.0)
-    assert at_cap[0] == pytest.approx(
-        nc.ARMOR_TO_SKIN_BUFFER + nc.AUTHORED_INFLATE_AMP_CAP, abs=1e-6)
-    assert way_over[0] == pytest.approx(at_cap[0], abs=1e-9)
+    assert at_cap[0] == pytest.approx(ceiling, abs=1e-6)
+    assert way_over[0] == pytest.approx(at_cap[0], abs=1e-9), (
+        "an amplitude 58% larger must not buy a single unit more headroom -- "
+        "that is the whole point of a cap")
+    # And below the cap the floor tracks the ramp's own allocation, so the
+    # belly's outliers are the only thing being clipped.
+    under = _run([0.1], [0.0], amp=2.0, base=4.0, magnitude=4.0)
+    assert under[0] == pytest.approx(
+        nc.ARMOR_TO_SKIN_BUFFER + nc.ADAPTIVE_CLEARANCE_MORPH_FACTOR * 2.0,
+        abs=1e-6)
+    assert under[0] < at_cap[0]
 
 
 def test_authored_tuck_under_the_skin_is_not_honoured():
@@ -134,10 +150,31 @@ def test_no_source_means_unchanged_behaviour():
                        _run(cur, cur, authored=False))
 
 
-def test_off_by_default():
+def test_off_by_default_and_PAIRED_with_the_antipoke_floor():
+    """THE PAIRING IS THE INVARIANT, NOT THE VALUE.
+
+    Measured over 51 shapes, this flag ALONE takes the body-swap bust gap from
+    +0.572 to +0.606 -- WORSE than the control -- because capping inflate leaves
+    the cloth nearer the body at `s03` and anti-poke's push is `req - worst`, so
+    it pushes further from the lower start. Only with `AUTHORED_ANTIPOKE` as well
+    does it reach +0.483. Half of this change is worse than none of it, so the
+    two defaults must move TOGETHER, in either direction.
+
+    Both were promoted on 2026-09-05 and reverted the same day: the floor is now
+    correct and able to bind (`#authored-floor-same-rule`), but arming it costs
+    +440 folds and +134 inverted triangles on loose dresses, and that was judged
+    unusable. The value here will move again when that is designed out; the
+    pairing must not."""
     import os
-    assert nc.AUTHORED_INFLATE is False or (
-        os.environ.get("CBBE2UBE_AUTHORED_INFLATE") == "1")
+    env = {k: os.environ.get("CBBE2UBE_AUTHORED_" + k.upper())
+           for k in ("inflate", "antipoke")}
+    if any(v is not None for v in env.values()):
+        pytest.skip("an env override is in play: %r" % env)
+    assert nc.AUTHORED_INFLATE is False
+    assert nc.AUTHORED_ANTIPOKE is nc.AUTHORED_INFLATE, (
+        "the two authored floors have drifted apart. Running `inflate` without "
+        "`antipoke` measured WORSE than running neither on the body-swap path; "
+        "whichever way one moves, move both.")
 
 
 def test_reachable_from_the_gui():

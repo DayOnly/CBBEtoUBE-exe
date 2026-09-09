@@ -130,7 +130,8 @@ def test_modded_nonbody_skips_already_covered_and_deforming(tmp_path):
     own = 1 << 24
     DEFAULT = 0x00000019
     BODY = 1 << 2   # deforming slot -> must be skipped
-    HEAD = 1 << 0
+    # (no HEAD here: this case only needs the deforming slot. The constant was
+    # copy-pasted in from the tests above that do use it.)
     # A BODY-slot item (deforming) must be skipped; an already-UBE item too.
     body_arma = own | 0x800
     body_armo = own | 0x801

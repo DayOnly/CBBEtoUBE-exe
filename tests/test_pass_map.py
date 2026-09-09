@@ -71,6 +71,12 @@ def test_detector_can_still_fire():
 
 
 def test_both_entry_points_are_covered():
+    # POPULATION FLOOR. Every assertion below is inside the loop, so an empty
+    # (or shrunken) `ENTRIES` would make this pass while checking nothing --
+    # "0/0 is not a pass", applied to the test itself. The name says BOTH.
+    assert len(pass_map.ENTRIES) >= 2, (
+        f"ENTRIES has {len(pass_map.ENTRIES)} entry point(s); the per-entry "
+        "assertions below would be vacuous")
     tree = ast.parse(pass_map.SRC.read_text(encoding="utf-8"))
     names = {n.name for n in tree.body
              if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
