@@ -1292,7 +1292,7 @@ def _match_rigid_leg_bend_to_body(dst_path, biped_slots: int = 0,
     # anchor to Thigh/Calf; the butt-jiggle bones to the Pelvis; the breast bones to Spine2.
     # graft_anchor also drives the fold-back of any bone we can't safely anchor.
     graft_anchor = {b: anc for leg in _nc()._LEG_DEFORM_BONES for b, anc in leg["detail"]}
-    _do_jiggle = _nc()._BUTT_MATCH and _nc()._BUTT_JIGGLE and _nc()._BUTT_JIGGLE_STRENGTH > 0.0
+    _do_jiggle = _nc()._BUTT_JIGGLE and _nc()._BUTT_JIGGLE_STRENGTH > 0.0
     if _do_jiggle:
         for jb in _nc()._BUTT_JIGGLE_BONES:
             graft_anchor[jb] = _nc()._BUTT_PELVIS
@@ -1504,7 +1504,7 @@ def _match_rigid_leg_bend_to_body(dst_path, biped_slots: int = 0,
             #  - BUTT: Thigh<->Pelvis rebalance + matched butt-jiggle graft.
             #  - CHEST: matched, capped breast-jiggle graft (self-gates to the front).
             sgi = _nc()._leg_bend_strength(zi) if di <= _nc()._LEG_BEND_PROX else 0.0
-            bgi = (_butt_match_strength(zi) if (_nc()._BUTT_MATCH and di <= _nc()._BUTT_PROX) else 0.0)
+            bgi = (_butt_match_strength(zi) if di <= _nc()._BUTT_PROX else 0.0)
             cgi = (_chest_match_strength(zi) if (_do_chest and di <= _nc()._CHEST_PROX) else 0.0)
             if sgi <= 0.0 and bgi <= 0.0 and cgi <= 0.0:
                 continue

@@ -2030,14 +2030,14 @@ with for a day.
 
 ### State at hand-off (2026-09-08, third pass)
 
-    suite                 2918 passed / 2 skipped, exit captured DIRECTLY
+    suite                 2920 passed / 2 skipped, exit captured DIRECTLY
     pyflakes undefined    0
     TOOL_MAP / PASS_MAP   current (86 tools)
     zero-weight bones     2 on 1 shape, both breast bones on the same
                           first-person cloth shape as before -- UNCHANGED,
                           exit captured directly (a pipe masks it)
     deployed exe          91037895252D (09-06 22:20) -- still PREDATES the source
-    arms                  ALL DELETED after scoring (23 arms this session)
+    arms                  ALL DELETED after scoring (27 arms this session)
     committed             NOTHING; tree UNCOMMITTED on `testing`
 
 The one `src/` change is `#clearance-term-audit`, DEFAULT OFF telemetry, and it
@@ -2291,3 +2291,91 @@ Where the piece's time actually goes is unchanged and already recorded: fit
 chain 37%, weight tail 27%, copy/install/reauthor 15%, body-ref discovery 11%
 (amortised per worker), NIF I/O 6%. D1 and D2 are not in that list, and the
 plan's "D1+D2 are ~10% of a body-swap piece" should be read as retracted.
+
+## 25. E1 JUDGED: 76 KILL SWITCHES, ONE RETIREMENT (2026-09-08)
+
+E1's census has existed since 09-06 and its numbers have held through two
+re-runs. What was never done is the part the census cannot do: JUDGE the
+candidates. Done here, and the answer is much smaller than "retire the dead
+weight" implies.
+
+### The mechanical half, as a tracked tool
+
+`scripts/analysis/flag_retirement.py` computes the two conditions a count CAN
+decide -- default ON in a scrubbed environment, and no reference outside the
+flag's own binding -- and disqualifies anything the LIVE settings json throws.
+It never says "retire this": whether a feature has an in-game verdict on record,
+and whether its OFF branch is measured WORSE, are judgements against the record.
+
+    kill-switch bindings                        76
+    resolve ON in a clean env                   75
+    resolve OFF -- not candidates                1   (excluded)
+    thrown by the live settings json             0   (excluded)
+    STILL STANDING after the mechanical checks   9
+    referenced elsewhere, judge case by case    66
+
+The one that resolves OFF is `LAYER_ORDER_REPAIR_ENABLED`, and it is the
+shadow-force case the source already documents: the clearance-field default
+reassigns it after declaration. Not a new defect -- but worth noting that the
+census now SURFACES it instead of a reader having to know.
+
+### The nine, judged against the record
+
+    flag                    verdict on record?   OFF measured worse?   call
+    _BUTT_MATCH             YES, in game         YES                   RETIRE
+    PROXY_ENCLOSE_GUARD     a user report        contract, not measured KEEP
+    GROOVE_SMOOTH_ENABLED   no                   A TRADE, not worse     KEEP
+    BUST_MORPH_RESIDUAL     no                   NEUTRAL (+-0.005u)     keep
+    _TIGHT_SOFTBODY_GATE    PENDING in game      no                     keep
+    BUST_SPACING_AWARE      none on record       none                   keep
+    BUST_SURFACE_REQ        none on record       none                   keep
+    STATIC_AUTHORED_FIT     none on record       none                   keep
+    BACK_RESIDUAL_VERBOSE   n/a -- VERBOSITY, not a pass                n/a
+
+Three of those are worth stating in full because they look retirable and are
+not:
+
+* **`GROOVE_SMOOTH_ENABLED`** has the most complete evidence of any flag here,
+  and it argues for KEEPING the switch. Measured with it off: stretched edges
+  1151 -> 1329 (+15%), 0 shapes better / 25 worse / 35 unchanged -- but fit
+  IMPROVES (0.257u -> 0.253u, clipping 147 -> 143). The OFF branch is a live
+  TRADE, not a worse state, and the switch is the only way to reproduce it.
+* **`PROXY_ENCLOSE_GUARD`** is a safety gate that was verified to DISCRIMINATE
+  (declines 11 of 71, still builds on clean pieces). Its OFF state is "a stale
+  collision surface", which the pass's own contract calls worse than none --
+  but that is a contract, not a measurement, and a guard's kill switch has
+  diagnostic value.
+* **`BACK_RESIDUAL_VERBOSE`** is a log-quieting switch. The retirement rule asks
+  whether the OFF branch reproduces a measured-worse STATE; a verbosity flag has
+  no state. The rule does not fit it, and it should not be forced through.
+
+### The one retirement
+
+`CBBE2UBE_NO_BUTT_MATCH` meets all four conditions. The record carries an
+IN-GAME verdict: the user-approved build of the piece that has one requires the
+butt-match ON, and turning it off "made it WORSE ... and cost ~10 deploy
+rounds", with the record calling that a misdiagnosis rather than a trade. The
+switch has no GUI row, no reference outside its binding, no test, and the live
+recipe does not set it.
+
+It was two conjunctions, not an `else` branch:
+
+    _do_jiggle = _BUTT_MATCH and _BUTT_JIGGLE and _BUTT_JIGGLE_STRENGTH > 0.0
+    bgi = (_butt_match_strength(zi) if (_BUTT_MATCH and di <= _BUTT_PROX) ...)
+
+Both lost the always-true conjunct; the rebalance is unchanged and still
+tunable through `_BUTT_Z_LO/_HI/_RAMP/_STRENGTH/_PROX`. Census after:
+**138 flags (was 139), 75 kill switches (was 76), 57 unreachable (was 58).**
+
+### What E1 is actually worth
+
+**One flag of seventy-six.** The 66 "referenced elsewhere" are referenced
+because they have GUI rows, tests and worklog entries -- which is what a live
+switch looks like, not dead weight. The nine that survive the mechanical filter
+mostly fail on the record, and two of them fail because the evidence says the
+switch EARNS its place.
+
+So E1 should not be planned as a cleanup sweep. The remaining half of the item
+-- "decide the 20 GUI bools that are default-off, unticked, and carry tooltips
+citing measured wins: promote or retire, never leave" -- is a different and
+probably larger question, and it is untouched.

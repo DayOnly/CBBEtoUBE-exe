@@ -7471,7 +7471,13 @@ _LEG_BEND_CUTOFF_Z = _knob("CBBE2UBE_LEG_BEND_CUTOFF_Z", 66.0) # above this: no 
 # NO add_bone, NO jiggle graft (the plate stays rigid). Reduced strength for the same
 # larger-radius overshoot reason as the leg. Trapezoid by world-Z (ramp in/out so no
 # seam, and we never touch the lower back/spine above _BUTT_Z_HI). Tunable.
-_BUTT_MATCH = (not _flag("CBBE2UBE_NO_BUTT_MATCH", False))
+# RETIRED 2026-09-08 (plan item E1). `CBBE2UBE_NO_BUTT_MATCH` was the one
+# kill switch of 76 that met all four retirement conditions: default ON,
+# an IN-GAME verdict on record, unused since, and an OFF branch measured
+# WORSE. Turning it off on the piece that has the verdict traded a correct
+# Thigh->Pelvis drain for skirt-vs-greaves layer clipping and cost ~10
+# deploy rounds; the record calls that a misdiagnosis, not a trade. The
+# rebalance itself is unchanged and still tunable through the knobs below.
 _BUTT_Z_LO = _knob("CBBE2UBE_BUTT_Z_LO", 60.0)     # ramp-in start
 _BUTT_Z_HI = _knob("CBBE2UBE_BUTT_Z_HI", 78.0)     # ramp-out end (above = spine/back, left alone)
 _BUTT_RAMP = _knob("CBBE2UBE_BUTT_RAMP", 4.0)      # ramp width at each end
