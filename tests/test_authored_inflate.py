@@ -164,13 +164,23 @@ def test_off_by_default_and_PAIRED_with_the_antipoke_floor():
     correct and able to bind (`#authored-floor-same-rule`), but arming it costs
     +440 folds and +134 inverted triangles on loose dresses, and that was judged
     unusable. The value here will move again when that is designed out; the
-    pairing must not."""
+    pairing must not.
+
+    PROMOTED TO DEFAULT ON 2026-09-09, on the user's call, to match what the
+    deployed recipe has been running since before the 2026-09-06 reconvert --
+    the shipped pack was already built with both floors armed while the code
+    said OFF. The +440 folds / +134 inverted cost recorded above was measured
+    BEFORE `#authored-nipple-exempt` existed; that exemption was written after
+    the revert, and the floors were re-enabled in the recipe once it did. THE
+    PAIRING BELOW IS THE PART THAT MUST NOT MOVE."""
     import os
     env = {k: os.environ.get("CBBE2UBE_AUTHORED_" + k.upper())
            for k in ("inflate", "antipoke")}
+    env.update({k: os.environ.get("CBBE2UBE_NO_AUTHORED_" + k.upper())
+                for k in ("inflate", "antipoke")})
     if any(v is not None for v in env.values()):
         pytest.skip("an env override is in play: %r" % env)
-    assert nc.AUTHORED_INFLATE is False
+    assert nc.AUTHORED_INFLATE is True
     assert nc.AUTHORED_ANTIPOKE is nc.AUTHORED_INFLATE, (
         "the two authored floors have drifted apart. Running `inflate` without "
         "`antipoke` measured WORSE than running neither on the body-swap path; "
@@ -179,7 +189,7 @@ def test_off_by_default_and_PAIRED_with_the_antipoke_floor():
 
 def test_reachable_from_the_gui():
     from src import gui_settings
-    assert any(s.env == "CBBE2UBE_AUTHORED_INFLATE"
+    assert any(s.env == "CBBE2UBE_NO_AUTHORED_INFLATE"
                for s in gui_settings.SETTINGS)
 
 

@@ -21,58 +21,58 @@ The file's own topic banners, in order — generated, so it cannot drift from th
 - 948: #back-morph-residual: the same charge, on the UPPER BACK
 - 1281: Adaptive (morph-aware) armor clearance
 - 1292: Authored-aware outward push (#authored-inflate)
-- 1584: Authored fit in STATIC zones (#static-authored-fit)
-- 1617: Phase-1 source-standoff conform (#phase1-conform)
-- 1638: #phase1-bust-clearance -- OPT-IN, `CBBE2UBE_PHASE1_BUST_CLEARANCE=1`
-- 1673: #phase1-nipple-map -- OPT-IN, `CBBE2UBE_PHASE1_NIPPLE_MAP=1`
-- 1687: #phase1-antipoke -- OPT-IN, `CBBE2UBE_PHASE1_ANTIPOKE=1`
-- 1750: #hdt-xml-sanitise -- OPT-IN, `CBBE2UBE_HDT_XML_SANITISE=1`
-- 1775: Phase-2 source-standoff conform (#phase2-conform)
-- 2059: Portable body discovery (no hardcoded modpack paths)
-- 2078: Shape skin-frame reconciliation
-- 2089: Non-identity SHAPE-TRANSFORM bake
-- 2187: The warp field's SMOOTHNESS (#warp-field-staircase)
-- 2377: Authored-standoff cap on the groove smooth (#groove-authored-cap)
-- 2565: #rebury-authored: a vert the AUTHOR hid INSIDE the body stays inside
-- 3002: #softcloth-own-plane -- DEFAULT ON since 2026-09-04
-- 3031: #softcloth-smooth-direction -- DEFAULT ON since 2026-09-04
-- 3199: broken pass vs failed design
-- 3425: The per-shape FIT STAGE TABLE: the contract both paths are held to
-- 5227: Armor body-fit (per-vertex snap to swapped body)
-- 5283: M3 phase 2.5: inflate armor verts away from body
-- 5493: M3 phase 2.5: bake user's UBE preset into armor verts
-- 5554: M3 phase 2: body swap via pynifly deep-copy
-- 5570: #tri-write-once
-- 6199: M6: per-vertex proximity-blend re-skin
-- 6298: Scale-bone (morph-driven) reskin
-- 6543: #body-lookup-prefers-baseshape -- OPT-IN, default OFF
-- 6610: Custom (armor-specific) physics-bone preservation
-- 6707: Fitted-cloth body conform
-- 7009: #spine-twist-partial: the same split, at PARTIAL strength
-- 7071: #full-weight-match: match the whole vector, not one family
-- 7131: #breast-follow-keep: push-up only on the BREAST family
-- 7339: #last-carrier-hold: the 4-influence cap may not strand a bone
-- 8018: Warp-introduced torso self-intersection repair
-- 8505: Cross-shape coincident-vertex skin unification
-- 8735: #collider-shrinkwrap: grow the SMP collider onto the UBE body
-- 8901: #butt-collider-patch: ADD the collision surface the buttocks never had
-- 8955: #skirt-proxy-rebuild: give the VISIBLE cloth a collision proxy
-- 8990: #skirt-proxy-after-weights -- OPT-IN, default OFF
-- 9031: #bodytri-carrier-cloth -- EXPERIMENT, default OFF
-- 9052: #bodytri-all-shapes -- DEFAULT ON since 2026-09-04
-- 9116: #proxy-weight-invariant -- DEFAULT ON since 2026-09-04
-- 9980: Exposed body-skin detection (task: open-cleavage breast clip)
-- 10093: Layered-cloth weight sync (cleavage anti-intersection)
-- 10115: #bust-plate-sync: a rigid bust PLATE follows the jiggle cloth beneath it
-- 10248: ABDOMEN/BUTT layer jiggle sync (sibling of the chest sync above)
-- 10333: ABDOMEN / waist multi-layer depth separation
-- 10571: Chain-cloth -> soft-body conversion (gated option)
-- 11104: #coherence-kink -- DEFAULT ON since 2026-09-04
-- 11361: Tight-vs-loose gate for GENERATED soft-body physics
-- 12366: #ride-body-floor -- DEFAULT ON since 2026-08-26 (was opt-in =1)
-- 12412: #ride-outward-cap -- OPT-IN, default OFF
+- 1597: Authored fit in STATIC zones (#static-authored-fit)
+- 1630: Phase-1 source-standoff conform (#phase1-conform)
+- 1651: #phase1-bust-clearance -- OPT-IN, `CBBE2UBE_PHASE1_BUST_CLEARANCE=1`
+- 1692: #phase1-nipple-map -- OPT-IN, `CBBE2UBE_PHASE1_NIPPLE_MAP=1`
+- 1706: #phase1-antipoke -- OPT-IN, `CBBE2UBE_PHASE1_ANTIPOKE=1`
+- 1769: #hdt-xml-sanitise -- OPT-IN, `CBBE2UBE_HDT_XML_SANITISE=1`
+- 1794: Phase-2 source-standoff conform (#phase2-conform)
+- 2078: Portable body discovery (no hardcoded modpack paths)
+- 2097: Shape skin-frame reconciliation
+- 2108: Non-identity SHAPE-TRANSFORM bake
+- 2206: The warp field's SMOOTHNESS (#warp-field-staircase)
+- 2396: Authored-standoff cap on the groove smooth (#groove-authored-cap)
+- 2584: #rebury-authored: a vert the AUTHOR hid INSIDE the body stays inside
+- 3021: #softcloth-own-plane -- DEFAULT ON since 2026-09-04
+- 3050: #softcloth-smooth-direction -- DEFAULT ON since 2026-09-04
+- 3218: broken pass vs failed design
+- 3459: The per-shape FIT STAGE TABLE: the contract both paths are held to
+- 5261: Armor body-fit (per-vertex snap to swapped body)
+- 5317: M3 phase 2.5: inflate armor verts away from body
+- 5527: M3 phase 2.5: bake user's UBE preset into armor verts
+- 5588: M3 phase 2: body swap via pynifly deep-copy
+- 5604: #tri-write-once
+- 6233: M6: per-vertex proximity-blend re-skin
+- 6332: Scale-bone (morph-driven) reskin
+- 6577: #body-lookup-prefers-baseshape -- OPT-IN, default OFF
+- 6644: Custom (armor-specific) physics-bone preservation
+- 6741: Fitted-cloth body conform
+- 7043: #spine-twist-partial: the same split, at PARTIAL strength
+- 7105: #full-weight-match: match the whole vector, not one family
+- 7165: #breast-follow-keep: push-up only on the BREAST family
+- 7373: #last-carrier-hold: the 4-influence cap may not strand a bone
+- 8052: Warp-introduced torso self-intersection repair
+- 8539: Cross-shape coincident-vertex skin unification
+- 8769: #collider-shrinkwrap: grow the SMP collider onto the UBE body
+- 8935: #butt-collider-patch: ADD the collision surface the buttocks never had
+- 8989: #skirt-proxy-rebuild: give the VISIBLE cloth a collision proxy
+- 9024: #skirt-proxy-after-weights -- OPT-IN, default OFF
+- 9065: #bodytri-carrier-cloth -- EXPERIMENT, default OFF
+- 9086: #bodytri-all-shapes -- DEFAULT ON since 2026-09-04
+- 9156: #proxy-weight-invariant -- DEFAULT ON since 2026-09-04
+- 10020: Exposed body-skin detection (task: open-cleavage breast clip)
+- 10133: Layered-cloth weight sync (cleavage anti-intersection)
+- 10155: #bust-plate-sync: a rigid bust PLATE follows the jiggle cloth beneath it
+- 10288: ABDOMEN/BUTT layer jiggle sync (sibling of the chest sync above)
+- 10373: ABDOMEN / waist multi-layer depth separation
+- 10611: Chain-cloth -> soft-body conversion (gated option)
+- 11150: #coherence-kink -- DEFAULT ON since 2026-09-04
+- 11407: Tight-vs-loose gate for GENERATED soft-body physics
+- 12412: #ride-body-floor -- DEFAULT ON since 2026-08-26 (was opt-in =1)
+- 12458: #ride-outward-cap -- OPT-IN, default OFF
 
-## `convert_nif` — line 4342
+## `convert_nif` — line 4376
 
 The per-shape fit loop was lifted into `_fit_shapes_copy` on 2026-09-01; its rows are listed below at the call site, in source order, as if still inline.
 
@@ -82,350 +82,351 @@ Traced chain, in source order: `warp_hf` → `inflate_hf` → `panel_rigidity_hf
 
 | line | stage | pass | guarded by |
 |---:|---|---|---|
-| 4388 |  | `_begin_piece_pass_log` |  |
-| 4393 |  | `_hdt_xml_cache_clear` |  |
-| 4403 |  | `_hdt_xml_bind_piece_source` |  |
-| 4404 |  | `classify_shapes` |  |
-| 4471 |  | `_find_cbbe_base_body` |  |
-| 4472 |  | `_find_ube_femalebody` |  |
-| 4475 |  | `_cached_cbbe_to_ube_delta` |  |
-| 4476 |  | `_exposed_body_skin_shape_names` |  |
-| 4486 |  | `_weight_matched_ube_ref` |  |
-| 4487 |  | `convert_nif_phase2` — **DISPATCH: a body-swap piece returns here; everything below is the COPY path only** |  |
-| 4503 |  | `_is_first_person_mesh` |  |
-| 4540 |  | `_cached_ube_body_verts` |  |
-| 4556 |  | `weight_suffix_of` |  |
-| 4557 |  | `_find_cbbe_base_body` |  |
-| 4558 |  | `_find_ube_femalebody` |  |
-| 4561 |  | `_cached_cbbe_to_ube_delta` |  |
-| 4580 |  | `_pynifly` |  |
-| 4586 |  | `_cached_ube_body_verts` |  |
-| 4600 |  | `_body_nipple_weight` | `PHASE1_NIPPLE_MAP` |
-| 4605 |  | `_note_pass_failure` | `PHASE1_NIPPLE_MAP` |
-| 4618 |  | `_hdt_softbody_shape_names` |  |
-| 4622 |  | `_hdt_collider_shape_names` |  |
-| 4625 |  | `_layered_cloth_shape_names` |  |
-| 3544 |  | `_should_drop_shape` |  |
-| 3546 |  | `_is_body_skin_extremity` |  |
-| 3559 |  | `_is_body_skin_hand` |  |
-| 3569 |  | `_shape_global_to_skin` |  |
-| 3572 |  | `_shape_has_fine_animation_bones` |  |
-| 3577 |  | `_verts_skin_to_world` |  |
-| 3626 |  | `_extremity_vert_fraction` |  |
-| 3630 |  | `warp_armor_by_body_delta` |  |
-| 3652 | **warp_hf** | `_stage_hf` *(stage marker)* |  |
-| 3655 |  | `inflate_armor_outward` |  |
-| 3670 | **inflate_hf** | `_stage_hf` *(stage marker)* |  |
-| 3686 |  | `_rigidify_within_clearance` | `PANEL_RIGIDITY`, `PANEL_RIGIDITY_FINE_ANIM`, `PANEL_RIGID_EARLY_CLEAR` |
-| 3692 |  | `_extremity_vert_mask` | `PANEL_RIGIDITY`, `PANEL_RIGIDITY_FINE_ANIM`, `PANEL_RIGID_EARLY_CLEAR` |
-| 3696 |  | `_partial_rigid_panels` | `PANEL_RIGIDITY`, `PANEL_RIGIDITY_FINE_ANIM`, `PANEL_RIGID_EARLY_CLEAR` |
-| 3700 |  | `_extremity_vert_mask` | `PANEL_RIGIDITY`, `PANEL_RIGIDITY_FINE_ANIM`, `PANEL_RIGID_EARLY_CLEAR` |
-| 3706 | **panel_rigidity_hf** | `_stage_hf` *(stage marker)* | `PANEL_RIGIDITY`, `PANEL_RIGIDITY_FINE_ANIM` |
-| 3707 |  | `_note_pass_effect` | `PANEL_RIGIDITY`, `PANEL_RIGIDITY_FINE_ANIM` |
-| 3712 |  | `_note_pass_failure` | `PANEL_RIGIDITY`, `PANEL_RIGIDITY_FINE_ANIM` |
-| 3775 |  | `add_scale_bone_weights` |  |
-| 3782 |  | `_extremity_vert_mask` |  |
-| 3786 |  | `_boot_far_thigh_scale_exclusions` |  |
-| 3830 |  | `_verts_skin_to_world` |  |
-| 3869 |  | `make_stage_hook` |  |
-| 3880 |  | `warp_armor_by_body_delta` |  |
-| 3889 | **warp** | `_stage_p1` *(stage marker)* |  |
-| 3893 |  | `_slot_aware_inflation_magnitude` |  |
-| 3897 |  | `_cached_body_morph_amplitude` |  |
-| 3898 |  | `_find_ube_body_osd` |  |
-| 3915 |  | `_cached_cbbe_body_normals` |  |
-| 3919 |  | `inflate_armor_outward` |  |
-| 3935 | **inflate** | `_stage_p1` *(stage marker)* |  |
-| 3945 |  | `_cached_cbbe_body_normals` | `PHASE1_CONFORM` |
-| 3950 |  | `_cached_body_morph_amplitude` | `PHASE1_CONFORM` |
-| 3951 |  | `_find_ube_body_osd` | `PHASE1_CONFORM` |
-| 3956 |  | `conform_to_source_standoff` | `PHASE1_CONFORM` |
-| 3986 |  | `_cached_cbbe_body_normals` | `PHASE1_CONFORM`, `PHASE1_BUST_CLEARANCE` |
-| 3991 |  | `_cached_body_morph_amplitude` | `PHASE1_CONFORM`, `PHASE1_BUST_CLEARANCE` |
-| 3992 |  | `_find_ube_body_osd` | `PHASE1_CONFORM`, `PHASE1_BUST_CLEARANCE` |
-| 3997 |  | `conform_to_source_standoff` | `PHASE1_CONFORM`, `PHASE1_BUST_CLEARANCE` |
-| 4018 | **conform** | `_stage_p1` *(stage marker)* |  |
-| 4025 |  | `_cached_cbbe_body_normals` |  |
-| 4033 |  | `_smooth_warp_grooves` |  |
-| 4038 | **groove_smooth** | `_stage_p1` *(stage marker)* |  |
-| 4042 |  | `snap_armor_outside_body` |  |
-| 4047 | **snap_legacy** | `_stage_p1` *(stage marker)* |  |
-| 4075 |  | `simulated_vert_mask` | `PANEL_RIGIDITY` |
-| 4093 |  | `_rigidify_within_clearance` | `PANEL_RIGIDITY`, `PANEL_RIGID_EARLY_CLEAR` |
-| 4101 |  | `_partial_rigid_panels` | `PANEL_RIGIDITY`, `PANEL_RIGID_EARLY_CLEAR` |
-| 4108 | **panel_rigidity** | `_stage_p1` *(stage marker)* | `PANEL_RIGIDITY` |
-| 4114 |  | `_note_pass_failure` | `PANEL_RIGIDITY` |
-| 4165 |  | `_shape_has_hdt_smp_rigging` | `PHASE1_ANTIPOKE` |
-| 4171 |  | `clear_armor_outside_body` | `PHASE1_ANTIPOKE` |
-| 4201 | **antipoke** | `_stage_p1` *(stage marker)* | `PHASE1_ANTIPOKE` |
-| 4217 |  | `_rigidify_within_clearance` | `PHASE1_ANTIPOKE`, `PANEL_RIGIDITY` |
-| 4225 | **panel_rigidity_post** | `_stage_p1` *(stage marker)* | `PHASE1_ANTIPOKE`, `PANEL_RIGIDITY` |
-| 4231 |  | `_note_pass_failure` | `PHASE1_ANTIPOKE`, `PANEL_RIGIDITY` |
-| 4237 |  | `_note_pass_failure` | `PHASE1_ANTIPOKE` |
-| 4244 |  | `_physics_chain_nowarp_blend` |  |
-| 4245 | **chain_blend** | `_stage_p1` *(stage marker)* |  |
-| 4263 |  | `_shape_has_fine_animation_bones` |  |
-| 4264 |  | `_shape_is_head_dominant` |  |
-| 4266 |  | `_shape_has_hdt_smp_rigging` |  |
-| 4272 |  | `_slot_aware_reskin_band` |  |
-| 4273 |  | `compute_body_blend_skinning` |  |
-| 4286 |  | `_is_exposed_body_skin_shape` |  |
-| 4288 |  | `add_scale_bone_weights` |  |
-| 4291 |  | `_slot_aware_scale_bone_reach` |  |
-| 4652 |  | `detect_zfight_pairs` |  |
-| 4676 |  | `_separate_chest_layered_cloth_depth` |  |
-| 4686 |  | `_separate_abdomen_layered_cloth_depth` |  |
-| 4697 |  | `_note_pass_failure` |  |
-| 4706 |  | `_sync_chest_layered_cloth_weights` |  |
-| 4711 |  | `_sync_abdomen_layered_cloth_weights` |  |
-| 4717 |  | `_note_pass_failure` |  |
-| 4732 |  | `_weld_cross_shape_seams` |  |
-| 4739 |  | `_note_pass_failure` |  |
-| 4749 |  | `_ride_effect_overlays_on_plate` |  |
-| 4756 |  | `_note_pass_failure` |  |
-| 4764 |  | `_has_nif_root_garment_chain` |  |
-| 4772 |  | `_precreate_custom_bone_chains` |  |
-| 4783 |  | `_verts_world_to_skin` |  |
-| 4787 |  | `_copy_shape` |  |
-| 4792 |  | `_copy_shape` |  |
-| 4813 |  | `weight_suffix_of` |  |
-| 4818 |  | `_inject_ube_extremity_replacement` |  |
-| 4830 |  | `_find_hdt_xml_for_armor` |  |
-| 4835 |  | `_pynifly` |  |
-| 4844 |  | `_source_hdt_needs_missing_chain_bones` |  |
-| 4845 |  | `_generate_hdt_xml_for_dst` |  |
-| 4856 |  | `_generate_hdt_xml_for_dst` |  |
-| 4859 |  | `armor_relpath_under_meshes` |  |
-| 4886 |  | `_pynifly` |  |
-| 4914 |  | `_tri_fits_variant` |  |
-| 4918 |  | `_pick_bodytri_carriers` |  |
-| 4945 |  | `_hdt_collider_shape_names` |  |
-| 4947 |  | `_reset_morph_flags` |  |
-| 4948 |  | `_normalize_shader_for_morph` |  |
-| 4957 |  | `_normalize_partitions` |  |
-| 4977 |  | `_hide_virtual_body` |  |
-| 4999 |  | `_tri_is_owning_variant` | `_TRI_WRITE_ONCE` |
-| 5003 |  | `_find_ube_body_osd` |  |
-| 5006 |  | `_cached_osd_load` |  |
-| 5007 |  | `_cached_ube_body_verts` |  |
-| 5010 |  | `_pynifly` |  |
-| 5013 |  | `_collect_tri_inputs` |  |
-| 5032 |  | `pair_alias_map` |  |
-| 5046 |  | `_pynifly` |  |
-| 5048 |  | `_hide_virtual_body` |  |
-| 5054 |  | `_note_pass_failure` |  |
-| 5057 |  | `_finalize_physics_and_motion_match` |  |
-| 5063 |  | `_cap_weight_roughness_to_author` |  |
-| 5070 |  | `_note_pass_failure` |  |
-| 5076 |  | `_hold_weights_at_smp_boundary` |  |
-| 5083 |  | `_note_pass_failure` |  |
-| 5089 |  | `_match_coincident_cross_shape_skin` |  |
-| 5096 |  | `_note_pass_failure` |  |
-| 5102 |  | `_reauthor_nif_fresh` |  |
-| 5107 |  | `_note_pass_failure` |  |
-| 5119 |  | `_make_chains_static` | `STATIC_CHAINS` |
-| 5129 |  | `_cached_ube_body_verts` |  |
-| 5133 |  | `_refresh_armor_tri_after_reimport` |  |
-| 5139 |  | `validate_dst_nif` |  |
-| 5177 |  | `_piece_pass_failures` |  |
-| 5178 |  | `_piece_pass_effects` |  |
-| 5194 |  | `_load_body_mesh` |  |
-| 5198 |  | `_load_body_mesh` |  |
-| 5202 |  | `_looks_like_inline_body` |  |
+| 4422 |  | `_begin_piece_pass_log` |  |
+| 4427 |  | `_hdt_xml_cache_clear` |  |
+| 4437 |  | `_hdt_xml_bind_piece_source` |  |
+| 4438 |  | `classify_shapes` |  |
+| 4505 |  | `_find_cbbe_base_body` |  |
+| 4506 |  | `_find_ube_femalebody` |  |
+| 4509 |  | `_cached_cbbe_to_ube_delta` |  |
+| 4510 |  | `_exposed_body_skin_shape_names` |  |
+| 4520 |  | `_weight_matched_ube_ref` |  |
+| 4521 |  | `convert_nif_phase2` — **DISPATCH: a body-swap piece returns here; everything below is the COPY path only** |  |
+| 4537 |  | `_is_first_person_mesh` |  |
+| 4574 |  | `_cached_ube_body_verts` |  |
+| 4590 |  | `weight_suffix_of` |  |
+| 4591 |  | `_find_cbbe_base_body` |  |
+| 4592 |  | `_find_ube_femalebody` |  |
+| 4595 |  | `_cached_cbbe_to_ube_delta` |  |
+| 4614 |  | `_pynifly` |  |
+| 4620 |  | `_cached_ube_body_verts` |  |
+| 4634 |  | `_body_nipple_weight` | `PHASE1_NIPPLE_MAP` |
+| 4639 |  | `_note_pass_failure` | `PHASE1_NIPPLE_MAP` |
+| 4652 |  | `_hdt_softbody_shape_names` |  |
+| 4656 |  | `_hdt_collider_shape_names` |  |
+| 4659 |  | `_layered_cloth_shape_names` |  |
+| 3578 |  | `_should_drop_shape` |  |
+| 3580 |  | `_is_body_skin_extremity` |  |
+| 3593 |  | `_is_body_skin_hand` |  |
+| 3603 |  | `_shape_global_to_skin` |  |
+| 3606 |  | `_shape_has_fine_animation_bones` |  |
+| 3611 |  | `_verts_skin_to_world` |  |
+| 3660 |  | `_extremity_vert_fraction` |  |
+| 3664 |  | `warp_armor_by_body_delta` |  |
+| 3686 | **warp_hf** | `_stage_hf` *(stage marker)* |  |
+| 3689 |  | `inflate_armor_outward` |  |
+| 3704 | **inflate_hf** | `_stage_hf` *(stage marker)* |  |
+| 3720 |  | `_rigidify_within_clearance` | `PANEL_RIGIDITY`, `PANEL_RIGIDITY_FINE_ANIM`, `PANEL_RIGID_EARLY_CLEAR` |
+| 3726 |  | `_extremity_vert_mask` | `PANEL_RIGIDITY`, `PANEL_RIGIDITY_FINE_ANIM`, `PANEL_RIGID_EARLY_CLEAR` |
+| 3730 |  | `_partial_rigid_panels` | `PANEL_RIGIDITY`, `PANEL_RIGIDITY_FINE_ANIM`, `PANEL_RIGID_EARLY_CLEAR` |
+| 3734 |  | `_extremity_vert_mask` | `PANEL_RIGIDITY`, `PANEL_RIGIDITY_FINE_ANIM`, `PANEL_RIGID_EARLY_CLEAR` |
+| 3740 | **panel_rigidity_hf** | `_stage_hf` *(stage marker)* | `PANEL_RIGIDITY`, `PANEL_RIGIDITY_FINE_ANIM` |
+| 3741 |  | `_note_pass_effect` | `PANEL_RIGIDITY`, `PANEL_RIGIDITY_FINE_ANIM` |
+| 3746 |  | `_note_pass_failure` | `PANEL_RIGIDITY`, `PANEL_RIGIDITY_FINE_ANIM` |
+| 3809 |  | `add_scale_bone_weights` |  |
+| 3816 |  | `_extremity_vert_mask` |  |
+| 3820 |  | `_boot_far_thigh_scale_exclusions` |  |
+| 3864 |  | `_verts_skin_to_world` |  |
+| 3903 |  | `make_stage_hook` |  |
+| 3914 |  | `warp_armor_by_body_delta` |  |
+| 3923 | **warp** | `_stage_p1` *(stage marker)* |  |
+| 3927 |  | `_slot_aware_inflation_magnitude` |  |
+| 3931 |  | `_cached_body_morph_amplitude` |  |
+| 3932 |  | `_find_ube_body_osd` |  |
+| 3949 |  | `_cached_cbbe_body_normals` |  |
+| 3953 |  | `inflate_armor_outward` |  |
+| 3969 | **inflate** | `_stage_p1` *(stage marker)* |  |
+| 3979 |  | `_cached_cbbe_body_normals` | `PHASE1_CONFORM` |
+| 3984 |  | `_cached_body_morph_amplitude` | `PHASE1_CONFORM` |
+| 3985 |  | `_find_ube_body_osd` | `PHASE1_CONFORM` |
+| 3990 |  | `conform_to_source_standoff` | `PHASE1_CONFORM` |
+| 4020 |  | `_cached_cbbe_body_normals` | `PHASE1_CONFORM`, `PHASE1_BUST_CLEARANCE` |
+| 4025 |  | `_cached_body_morph_amplitude` | `PHASE1_CONFORM`, `PHASE1_BUST_CLEARANCE` |
+| 4026 |  | `_find_ube_body_osd` | `PHASE1_CONFORM`, `PHASE1_BUST_CLEARANCE` |
+| 4031 |  | `conform_to_source_standoff` | `PHASE1_CONFORM`, `PHASE1_BUST_CLEARANCE` |
+| 4052 | **conform** | `_stage_p1` *(stage marker)* |  |
+| 4059 |  | `_cached_cbbe_body_normals` |  |
+| 4067 |  | `_smooth_warp_grooves` |  |
+| 4072 | **groove_smooth** | `_stage_p1` *(stage marker)* |  |
+| 4076 |  | `snap_armor_outside_body` |  |
+| 4081 | **snap_legacy** | `_stage_p1` *(stage marker)* |  |
+| 4109 |  | `simulated_vert_mask` | `PANEL_RIGIDITY` |
+| 4127 |  | `_rigidify_within_clearance` | `PANEL_RIGIDITY`, `PANEL_RIGID_EARLY_CLEAR` |
+| 4135 |  | `_partial_rigid_panels` | `PANEL_RIGIDITY`, `PANEL_RIGID_EARLY_CLEAR` |
+| 4142 | **panel_rigidity** | `_stage_p1` *(stage marker)* | `PANEL_RIGIDITY` |
+| 4148 |  | `_note_pass_failure` | `PANEL_RIGIDITY` |
+| 4199 |  | `_shape_has_hdt_smp_rigging` | `PHASE1_ANTIPOKE` |
+| 4205 |  | `clear_armor_outside_body` | `PHASE1_ANTIPOKE` |
+| 4235 | **antipoke** | `_stage_p1` *(stage marker)* | `PHASE1_ANTIPOKE` |
+| 4251 |  | `_rigidify_within_clearance` | `PHASE1_ANTIPOKE`, `PANEL_RIGIDITY` |
+| 4259 | **panel_rigidity_post** | `_stage_p1` *(stage marker)* | `PHASE1_ANTIPOKE`, `PANEL_RIGIDITY` |
+| 4265 |  | `_note_pass_failure` | `PHASE1_ANTIPOKE`, `PANEL_RIGIDITY` |
+| 4271 |  | `_note_pass_failure` | `PHASE1_ANTIPOKE` |
+| 4278 |  | `_physics_chain_nowarp_blend` |  |
+| 4279 | **chain_blend** | `_stage_p1` *(stage marker)* |  |
+| 4297 |  | `_shape_has_fine_animation_bones` |  |
+| 4298 |  | `_shape_is_head_dominant` |  |
+| 4300 |  | `_shape_has_hdt_smp_rigging` |  |
+| 4306 |  | `_slot_aware_reskin_band` |  |
+| 4307 |  | `compute_body_blend_skinning` |  |
+| 4320 |  | `_is_exposed_body_skin_shape` |  |
+| 4322 |  | `add_scale_bone_weights` |  |
+| 4325 |  | `_slot_aware_scale_bone_reach` |  |
+| 4686 |  | `detect_zfight_pairs` |  |
+| 4710 |  | `_separate_chest_layered_cloth_depth` |  |
+| 4720 |  | `_separate_abdomen_layered_cloth_depth` |  |
+| 4731 |  | `_note_pass_failure` |  |
+| 4740 |  | `_sync_chest_layered_cloth_weights` |  |
+| 4745 |  | `_sync_abdomen_layered_cloth_weights` |  |
+| 4751 |  | `_note_pass_failure` |  |
+| 4766 |  | `_weld_cross_shape_seams` |  |
+| 4773 |  | `_note_pass_failure` |  |
+| 4783 |  | `_ride_effect_overlays_on_plate` |  |
+| 4790 |  | `_note_pass_failure` |  |
+| 4798 |  | `_has_nif_root_garment_chain` |  |
+| 4806 |  | `_precreate_custom_bone_chains` |  |
+| 4817 |  | `_verts_world_to_skin` |  |
+| 4821 |  | `_copy_shape` |  |
+| 4826 |  | `_copy_shape` |  |
+| 4847 |  | `weight_suffix_of` |  |
+| 4852 |  | `_inject_ube_extremity_replacement` |  |
+| 4864 |  | `_find_hdt_xml_for_armor` |  |
+| 4869 |  | `_pynifly` |  |
+| 4878 |  | `_source_hdt_needs_missing_chain_bones` |  |
+| 4879 |  | `_generate_hdt_xml_for_dst` |  |
+| 4890 |  | `_generate_hdt_xml_for_dst` |  |
+| 4893 |  | `armor_relpath_under_meshes` |  |
+| 4920 |  | `_pynifly` |  |
+| 4948 |  | `_tri_fits_variant` |  |
+| 4952 |  | `_pick_bodytri_carriers` |  |
+| 4979 |  | `_hdt_collider_shape_names` |  |
+| 4981 |  | `_reset_morph_flags` |  |
+| 4982 |  | `_normalize_shader_for_morph` |  |
+| 4991 |  | `_normalize_partitions` |  |
+| 5011 |  | `_hide_virtual_body` |  |
+| 5033 |  | `_tri_is_owning_variant` | `_TRI_WRITE_ONCE` |
+| 5037 |  | `_find_ube_body_osd` |  |
+| 5040 |  | `_cached_osd_load` |  |
+| 5041 |  | `_cached_ube_body_verts` |  |
+| 5044 |  | `_pynifly` |  |
+| 5047 |  | `_collect_tri_inputs` |  |
+| 5066 |  | `pair_alias_map` |  |
+| 5080 |  | `_pynifly` |  |
+| 5082 |  | `_hide_virtual_body` |  |
+| 5088 |  | `_note_pass_failure` |  |
+| 5091 |  | `_finalize_physics_and_motion_match` |  |
+| 5097 |  | `_cap_weight_roughness_to_author` |  |
+| 5104 |  | `_note_pass_failure` |  |
+| 5110 |  | `_hold_weights_at_smp_boundary` |  |
+| 5117 |  | `_note_pass_failure` |  |
+| 5123 |  | `_match_coincident_cross_shape_skin` |  |
+| 5130 |  | `_note_pass_failure` |  |
+| 5136 |  | `_reauthor_nif_fresh` |  |
+| 5141 |  | `_note_pass_failure` |  |
+| 5153 |  | `_make_chains_static` | `STATIC_CHAINS` |
+| 5163 |  | `_cached_ube_body_verts` |  |
+| 5167 |  | `_refresh_armor_tri_after_reimport` |  |
+| 5173 |  | `validate_dst_nif` |  |
+| 5211 |  | `_piece_pass_failures` |  |
+| 5212 |  | `_piece_pass_effects` |  |
+| 5228 |  | `_load_body_mesh` |  |
+| 5232 |  | `_load_body_mesh` |  |
+| 5236 |  | `_looks_like_inline_body` |  |
 
-## `convert_nif_phase2` — line 13891
+## `convert_nif_phase2` — line 13937
 
 The per-shape fit loop was lifted into `_fit_shapes_swap` on 2026-09-01; its rows are listed below at the call site, in source order, as if still inline.
 
-181 call(s) to module-level passes; 20 traced stage boundary/-ies.
+182 call(s) to module-level passes; 20 traced stage boundary/-ies.
 
 Traced chain, in source order: `warp_hf` → `inflate_hf` → `panel_rigidity_hf` → `bake_preset` → `warp` → `inflate` → `conform` → `groove_smooth` → `snap_legacy` → `panel_rigidity` → `antipoke` → `panel_rigidity_post` → `softcloth` → `rebury` → `chain_blend` → `min_push` → `seam_weld` → `coherence_repair` → `strap_scale` → `short_edge`
 
 | line | stage | pass | guarded by |
 |---:|---|---|---|
-| 13941 |  | `_pynifly` |  |
-| 13948 |  | `classify_shapes` |  |
-| 13981 |  | `_seed_flat_chain_anchors` |  |
-| 13983 |  | `_note_pass_failure` |  |
-| 13987 |  | `armor_relpath_under_meshes` |  |
-| 14030 |  | `_tri_is_owning_variant` |  |
-| 14047 |  | `_source_morph_tri_shape_names` |  |
-| 14127 |  | `_shape_diffuse_is_body_skin` |  |
-| 14176 |  | `_body_normals_or_compute` |  |
-| 14195 |  | `_body_normals_or_compute` | `AUTHORED_ANTIPOKE`, `AUTHORED_INFLATE` |
-| 14223 |  | `_find_ube_template_body` |  |
-| 14224 |  | `_find_user_preset_body` |  |
-| 14263 |  | `_body_normals_or_compute` |  |
-| 14264 |  | `_body_nipple_weight` |  |
-| 14269 |  | `_body_breast_motion_weight` | `REBURY_AUTHORED` |
-| 14277 |  | `weight_suffix_of` |  |
-| 14278 |  | `_find_cbbe_base_body` |  |
-| 14279 |  | `_find_ube_femalebody` |  |
-| 14284 |  | `_cached_cbbe_to_ube_delta` |  |
-| 14290 |  | `_hdt_softbody_shape_names` |  |
-| 14294 |  | `_hdt_collider_shape_names` |  |
-| 14297 |  | `_layered_cloth_shape_names` |  |
-| 14308 |  | `_rank_body_layers` | `LAYERED_ANTIPOKE_ENABLED` |
-| 12678 |  | `_should_drop_shape` |  |
-| 12687 |  | `_shape_has_fine_animation_bones` |  |
-| 12724 |  | `_extremity_vert_fraction` |  |
-| 12730 |  | `warp_armor_by_body_delta` |  |
-| 12749 | **warp_hf** | `_stage_hf2` *(stage marker)* |  |
-| 12755 |  | `inflate_armor_outward` |  |
-| 12769 | **inflate_hf** | `_stage_hf2` *(stage marker)* |  |
-| 12781 |  | `_rigidify_within_clearance` | `PANEL_RIGIDITY`, `PANEL_RIGIDITY_FINE_ANIM`, `PANEL_RIGID_EARLY_CLEAR` |
-| 12786 |  | `_extremity_vert_mask` | `PANEL_RIGIDITY`, `PANEL_RIGIDITY_FINE_ANIM`, `PANEL_RIGID_EARLY_CLEAR` |
-| 12789 |  | `_partial_rigid_panels` | `PANEL_RIGIDITY`, `PANEL_RIGIDITY_FINE_ANIM`, `PANEL_RIGID_EARLY_CLEAR` |
-| 12792 |  | `_extremity_vert_mask` | `PANEL_RIGIDITY`, `PANEL_RIGIDITY_FINE_ANIM`, `PANEL_RIGID_EARLY_CLEAR` |
-| 12797 | **panel_rigidity_hf** | `_stage_hf2` *(stage marker)* | `PANEL_RIGIDITY`, `PANEL_RIGIDITY_FINE_ANIM` |
-| 12798 |  | `_note_pass_effect` | `PANEL_RIGIDITY`, `PANEL_RIGIDITY_FINE_ANIM` |
-| 12803 |  | `_note_pass_failure` | `PANEL_RIGIDITY`, `PANEL_RIGIDITY_FINE_ANIM` |
-| 12818 |  | `_cached_ube_body_verts` |  |
-| 12849 |  | `add_scale_bone_weights` |  |
-| 12855 |  | `_extremity_vert_mask` |  |
-| 12859 |  | `_boot_far_thigh_scale_exclusions` |  |
-| 12905 |  | `shape_body_offset` |  |
-| 12919 |  | `frame_report` |  |
-| 12921 |  | `shape_body_offset` |  |
-| 12923 |  | `record_frame` |  |
-| 13001 |  | `make_stage_hook` |  |
-| 13006 |  | `bake_preset_into_armor` |  |
-| 13011 | **bake_preset** | `_stage` *(stage marker)* |  |
-| 13017 |  | `fit_armor_to_ube_body` |  |
-| 13030 |  | `warp_armor_by_body_delta` |  |
-| 13039 | **warp** | `_stage` *(stage marker)* |  |
-| 13041 |  | `_slot_aware_inflation_magnitude` |  |
-| 13045 |  | `_cached_body_morph_amplitude` |  |
-| 13046 |  | `_find_ube_body_osd` |  |
-| 13048 |  | `inflate_armor_outward` |  |
-| 13071 | **inflate** | `_stage` *(stage marker)* |  |
-| 13110 |  | `_cached_body_morph_amplitude` | `PHASE2_CONFORM` |
-| 13111 |  | `_find_ube_body_osd` | `PHASE2_CONFORM` |
-| 13121 |  | `_cached_body_morph_differential` | `PHASE2_CONFORM` |
-| 13122 |  | `_find_ube_body_osd` | `PHASE2_CONFORM` |
-| 13125 |  | `_note_pass_failure` | `PHASE2_CONFORM` |
-| 13128 |  | `conform_to_source_standoff` | `PHASE2_CONFORM` |
-| 13138 | **conform** | `_stage` *(stage marker)* | `PHASE2_CONFORM` |
-| 13155 |  | `_smooth_warp_grooves` |  |
-| 13161 | **groove_smooth** | `_stage` *(stage marker)* |  |
-| 13163 |  | `_note_pass_failure` |  |
-| 13171 |  | `snap_armor_outside_body` |  |
-| 13174 | **snap_legacy** | `_stage` *(stage marker)* |  |
-| 13186 |  | `simulated_vert_mask` | `PANEL_RIGIDITY` |
-| 13195 |  | `_rigidify_within_clearance` | `PANEL_RIGIDITY`, `PANEL_RIGID_EARLY_CLEAR` |
-| 13201 |  | `_partial_rigid_panels` | `PANEL_RIGIDITY`, `PANEL_RIGID_EARLY_CLEAR` |
-| 13207 | **panel_rigidity** | `_stage` *(stage marker)* | `PANEL_RIGIDITY` |
-| 13212 |  | `_note_pass_failure` | `PANEL_RIGIDITY` |
-| 13219 |  | `_shape_bust_is_softbody_driven` |  |
-| 13279 |  | `_smp_rigging_is_structural_only` |  |
-| 13290 |  | `simulated_vert_mask` | `MIXED_CLOTH_CLEARANCE` |
-| 13306 |  | `_shape_has_hdt_smp_rigging` |  |
-| 13315 |  | `_cached_body_morph_amplitude` |  |
-| 13316 |  | `_find_ube_body_osd` |  |
-| 13325 |  | `_cached_body_morph_differential` | `CLEARANCE_DIFFERENTIAL` |
-| 13326 |  | `_find_ube_body_osd` | `CLEARANCE_DIFFERENTIAL` |
-| 13336 |  | `_body_jiggle_weight` | `JIGGLE_CLEARANCE_ENABLED` |
-| 13345 |  | `_shape_has_hdt_smp_rigging` |  |
-| 13351 |  | `clear_armor_outside_body` |  |
-| 13396 |  | `_note_pass_failure` |  |
-| 13397 | **antipoke** | `_stage` *(stage marker)* |  |
-| 13406 |  | `_rigidify_within_clearance` | `PANEL_RIGIDITY` |
-| 13414 | **panel_rigidity_post** | `_stage` *(stage marker)* | `PANEL_RIGIDITY` |
-| 13419 |  | `_note_pass_failure` | `PANEL_RIGIDITY` |
-| 13448 |  | `_shape_has_hdt_smp_rigging` | `INFLATE_SOFTCLOTH` |
-| 13459 |  | `_inflate_cloth_over_bust_butt` | `INFLATE_SOFTCLOTH` |
-| 13462 | **softcloth** | `_stage` *(stage marker)* | `INFLATE_SOFTCLOTH` |
-| 13478 |  | `rebury_authored_verts` | `REBURY_AUTHORED` |
-| 13484 | **rebury** | `_stage` *(stage marker)* | `REBURY_AUTHORED` |
-| 13489 |  | `_note_pass_failure` | `REBURY_AUTHORED` |
-| 13494 |  | `_physics_chain_nowarp_blend` |  |
-| 13495 | **chain_blend** | `_stage` *(stage marker)* |  |
-| 13548 |  | `push_region_mask` |  |
-| 13552 |  | `choose_aligned` |  |
-| 13562 |  | `_chain_vert_mask` |  |
-| 13569 |  | `_recompute_vertex_normals` |  |
-| 13575 |  | `minimum_push` |  |
-| 13591 | **min_push** | `_stage` *(stage marker)* |  |
-| 13631 |  | `_weld_source_coincident_verts` | `SEAM_WELD_SELF` |
-| 13634 | **seam_weld** | `_stage` *(stage marker)* | `SEAM_WELD_SELF` |
-| 13645 |  | `_repair_coherence_collapse` |  |
-| 13650 | **coherence_repair** | `_stage` *(stage marker)* |  |
-| 13662 |  | `_geometry_repair_allowed` |  |
-| 13664 |  | `_uniformise_local_scale` |  |
-| 13667 | **strap_scale** | `_stage` *(stage marker)* |  |
-| 13671 |  | `_cap_short_edge_stretch` |  |
-| 13674 | **short_edge** | `_stage` *(stage marker)* |  |
-| 13734 |  | `_band_enabled` |  |
-| 13745 |  | `record_standoff` |  |
-| 13752 |  | `record_torso_bands` |  |
-| 13786 |  | `_shape_has_fine_animation_bones` | `_MORPHTRI_SCALE` |
-| 13787 |  | `_shape_is_head_dominant` | `_MORPHTRI_SCALE` |
-| 13796 |  | `_shape_has_hdt_smp_rigging` | `_MORPHTRI_SCALE` |
-| 13830 |  | `_slot_aware_reskin_band` | `_MORPHTRI_SCALE` |
-| 13833 |  | `compute_body_blend_skinning` | `_MORPHTRI_SCALE` |
-| 13857 |  | `_is_exposed_body_skin_shape` | `_MORPHTRI_SCALE` |
-| 13859 |  | `_shape_diffuse_is_body_skin` | `_MORPHTRI_SCALE` |
-| 13860 |  | `add_scale_bone_weights` | `_MORPHTRI_SCALE` |
-| 13863 |  | `_slot_aware_scale_bone_reach` | `_MORPHTRI_SCALE` |
-| 14361 |  | `detect_zfight_pairs` |  |
-| 14385 |  | `_body_normals_or_compute` |  |
-| 14387 |  | `_separate_chest_layered_cloth_depth` |  |
-| 14399 |  | `_separate_abdomen_layered_cloth_depth` |  |
-| 14415 |  | `_note_pass_failure` |  |
-| 14473 |  | `_sync_chest_layered_cloth_weights` |  |
-| 14478 |  | `_sync_abdomen_layered_cloth_weights` |  |
-| 14485 |  | `_note_pass_failure` |  |
-| 14509 |  | `_ride_layers_on_reference` | `PANEL_RIGID_RIDE` |
-| 14514 |  | `_stack_probe` | `PANEL_RIGID_RIDE` |
-| 14525 |  | `_ride_layers_on_reference` |  |
-| 14537 |  | `_note_pass_failure` |  |
-| 14546 |  | `_repair_layer_order` |  |
-| 14554 |  | `_note_pass_failure` |  |
-| 14576 |  | `repair_collapsed_tris` |  |
-| 14585 |  | `_note_pass_failure` |  |
-| 14605 |  | `_weld_cross_shape_seams` |  |
-| 14612 |  | `_note_pass_failure` |  |
-| 14621 |  | `_ride_effect_overlays_on_plate` |  |
-| 14627 |  | `_note_pass_failure` |  |
-| 14657 |  | `_geometry_repair_allowed` | `LAYER_ORDER_LAST` |
-| 14681 |  | `_note_pass_failure` | `LAYER_ORDER_LAST` |
-| 14683 |  | `_repair_layer_order` | `LAYER_ORDER_LAST` |
-| 14691 |  | `_note_pass_failure` | `LAYER_ORDER_LAST` |
-| 14701 |  | `_copy_shape` |  |
-| 14742 |  | `_inject_ube_baseshape` |  |
-| 14754 |  | `_hide_virtual_body` |  |
-| 14762 |  | `_pick_bodytri_carriers` |  |
-| 14767 |  | `_tri_fits_variant` |  |
-| 14775 |  | `_pick_bodytri_carriers` |  |
-| 14794 |  | `_hdt_collider_shape_names` |  |
-| 14796 |  | `_reset_morph_flags` |  |
-| 14797 |  | `_normalize_shader_for_morph` |  |
-| 14799 |  | `_normalize_partitions` |  |
-| 14829 |  | `_find_hdt_xml_for_armor` |  |
-| 14837 |  | `_source_hdt_needs_missing_chain_bones` |  |
-| 14893 |  | `_find_ube_body_osd` |  |
-| 14896 |  | `_cached_osd_load` |  |
-| 14900 |  | `_pynifly` |  |
-| 14923 |  | `_collect_tri_inputs` |  |
-| 14926 |  | `_pick_bodytri_carriers` |  |
-| 14938 |  | `pair_alias_map` |  |
-| 14954 |  | `_generate_hdt_xml_for_dst` |  |
-| 14957 |  | `_pynifly` |  |
-| 14979 |  | `_finalize_physics_and_motion_match` |  |
-| 14987 |  | `_sync_bust_plate_follow_postwrite` |  |
-| 14993 |  | `_note_pass_failure` |  |
-| 14999 |  | `_cap_weight_roughness_to_author` |  |
-| 15005 |  | `_note_pass_failure` |  |
-| 15011 |  | `_hold_weights_at_smp_boundary` |  |
-| 15017 |  | `_note_pass_failure` |  |
-| 15023 |  | `_match_coincident_cross_shape_skin` |  |
-| 15030 |  | `_note_pass_failure` |  |
-| 15037 |  | `_refresh_armor_tri_after_reimport` |  |
-| 15040 |  | `validate_dst_nif` |  |
-| 15050 |  | `_piece_pass_failures` |  |
-| 15050 |  | `_piece_pass_effects` |  |
+| 13987 |  | `_pynifly` |  |
+| 13994 |  | `classify_shapes` |  |
+| 14027 |  | `_seed_flat_chain_anchors` |  |
+| 14029 |  | `_note_pass_failure` |  |
+| 14033 |  | `armor_relpath_under_meshes` |  |
+| 14076 |  | `_tri_is_owning_variant` |  |
+| 14093 |  | `_source_morph_tri_shape_names` |  |
+| 14169 |  | `_shape_diffuse_is_body_skin` |  |
+| 14180 |  | `_shape_diffuse_is_body_skin` |  |
+| 14229 |  | `_body_normals_or_compute` |  |
+| 14248 |  | `_body_normals_or_compute` | `AUTHORED_ANTIPOKE`, `AUTHORED_INFLATE` |
+| 14276 |  | `_find_ube_template_body` |  |
+| 14277 |  | `_find_user_preset_body` |  |
+| 14316 |  | `_body_normals_or_compute` |  |
+| 14317 |  | `_body_nipple_weight` |  |
+| 14322 |  | `_body_breast_motion_weight` | `REBURY_AUTHORED` |
+| 14330 |  | `weight_suffix_of` |  |
+| 14331 |  | `_find_cbbe_base_body` |  |
+| 14332 |  | `_find_ube_femalebody` |  |
+| 14337 |  | `_cached_cbbe_to_ube_delta` |  |
+| 14343 |  | `_hdt_softbody_shape_names` |  |
+| 14347 |  | `_hdt_collider_shape_names` |  |
+| 14350 |  | `_layered_cloth_shape_names` |  |
+| 14361 |  | `_rank_body_layers` | `LAYERED_ANTIPOKE_ENABLED` |
+| 12724 |  | `_should_drop_shape` |  |
+| 12733 |  | `_shape_has_fine_animation_bones` |  |
+| 12770 |  | `_extremity_vert_fraction` |  |
+| 12776 |  | `warp_armor_by_body_delta` |  |
+| 12795 | **warp_hf** | `_stage_hf2` *(stage marker)* |  |
+| 12801 |  | `inflate_armor_outward` |  |
+| 12815 | **inflate_hf** | `_stage_hf2` *(stage marker)* |  |
+| 12827 |  | `_rigidify_within_clearance` | `PANEL_RIGIDITY`, `PANEL_RIGIDITY_FINE_ANIM`, `PANEL_RIGID_EARLY_CLEAR` |
+| 12832 |  | `_extremity_vert_mask` | `PANEL_RIGIDITY`, `PANEL_RIGIDITY_FINE_ANIM`, `PANEL_RIGID_EARLY_CLEAR` |
+| 12835 |  | `_partial_rigid_panels` | `PANEL_RIGIDITY`, `PANEL_RIGIDITY_FINE_ANIM`, `PANEL_RIGID_EARLY_CLEAR` |
+| 12838 |  | `_extremity_vert_mask` | `PANEL_RIGIDITY`, `PANEL_RIGIDITY_FINE_ANIM`, `PANEL_RIGID_EARLY_CLEAR` |
+| 12843 | **panel_rigidity_hf** | `_stage_hf2` *(stage marker)* | `PANEL_RIGIDITY`, `PANEL_RIGIDITY_FINE_ANIM` |
+| 12844 |  | `_note_pass_effect` | `PANEL_RIGIDITY`, `PANEL_RIGIDITY_FINE_ANIM` |
+| 12849 |  | `_note_pass_failure` | `PANEL_RIGIDITY`, `PANEL_RIGIDITY_FINE_ANIM` |
+| 12864 |  | `_cached_ube_body_verts` |  |
+| 12895 |  | `add_scale_bone_weights` |  |
+| 12901 |  | `_extremity_vert_mask` |  |
+| 12905 |  | `_boot_far_thigh_scale_exclusions` |  |
+| 12951 |  | `shape_body_offset` |  |
+| 12965 |  | `frame_report` |  |
+| 12967 |  | `shape_body_offset` |  |
+| 12969 |  | `record_frame` |  |
+| 13047 |  | `make_stage_hook` |  |
+| 13052 |  | `bake_preset_into_armor` |  |
+| 13057 | **bake_preset** | `_stage` *(stage marker)* |  |
+| 13063 |  | `fit_armor_to_ube_body` |  |
+| 13076 |  | `warp_armor_by_body_delta` |  |
+| 13085 | **warp** | `_stage` *(stage marker)* |  |
+| 13087 |  | `_slot_aware_inflation_magnitude` |  |
+| 13091 |  | `_cached_body_morph_amplitude` |  |
+| 13092 |  | `_find_ube_body_osd` |  |
+| 13094 |  | `inflate_armor_outward` |  |
+| 13117 | **inflate** | `_stage` *(stage marker)* |  |
+| 13156 |  | `_cached_body_morph_amplitude` | `PHASE2_CONFORM` |
+| 13157 |  | `_find_ube_body_osd` | `PHASE2_CONFORM` |
+| 13167 |  | `_cached_body_morph_differential` | `PHASE2_CONFORM` |
+| 13168 |  | `_find_ube_body_osd` | `PHASE2_CONFORM` |
+| 13171 |  | `_note_pass_failure` | `PHASE2_CONFORM` |
+| 13174 |  | `conform_to_source_standoff` | `PHASE2_CONFORM` |
+| 13184 | **conform** | `_stage` *(stage marker)* | `PHASE2_CONFORM` |
+| 13201 |  | `_smooth_warp_grooves` |  |
+| 13207 | **groove_smooth** | `_stage` *(stage marker)* |  |
+| 13209 |  | `_note_pass_failure` |  |
+| 13217 |  | `snap_armor_outside_body` |  |
+| 13220 | **snap_legacy** | `_stage` *(stage marker)* |  |
+| 13232 |  | `simulated_vert_mask` | `PANEL_RIGIDITY` |
+| 13241 |  | `_rigidify_within_clearance` | `PANEL_RIGIDITY`, `PANEL_RIGID_EARLY_CLEAR` |
+| 13247 |  | `_partial_rigid_panels` | `PANEL_RIGIDITY`, `PANEL_RIGID_EARLY_CLEAR` |
+| 13253 | **panel_rigidity** | `_stage` *(stage marker)* | `PANEL_RIGIDITY` |
+| 13258 |  | `_note_pass_failure` | `PANEL_RIGIDITY` |
+| 13265 |  | `_shape_bust_is_softbody_driven` |  |
+| 13325 |  | `_smp_rigging_is_structural_only` |  |
+| 13336 |  | `simulated_vert_mask` | `MIXED_CLOTH_CLEARANCE` |
+| 13352 |  | `_shape_has_hdt_smp_rigging` |  |
+| 13361 |  | `_cached_body_morph_amplitude` |  |
+| 13362 |  | `_find_ube_body_osd` |  |
+| 13371 |  | `_cached_body_morph_differential` | `CLEARANCE_DIFFERENTIAL` |
+| 13372 |  | `_find_ube_body_osd` | `CLEARANCE_DIFFERENTIAL` |
+| 13382 |  | `_body_jiggle_weight` | `JIGGLE_CLEARANCE_ENABLED` |
+| 13391 |  | `_shape_has_hdt_smp_rigging` |  |
+| 13397 |  | `clear_armor_outside_body` |  |
+| 13442 |  | `_note_pass_failure` |  |
+| 13443 | **antipoke** | `_stage` *(stage marker)* |  |
+| 13452 |  | `_rigidify_within_clearance` | `PANEL_RIGIDITY` |
+| 13460 | **panel_rigidity_post** | `_stage` *(stage marker)* | `PANEL_RIGIDITY` |
+| 13465 |  | `_note_pass_failure` | `PANEL_RIGIDITY` |
+| 13494 |  | `_shape_has_hdt_smp_rigging` | `INFLATE_SOFTCLOTH` |
+| 13505 |  | `_inflate_cloth_over_bust_butt` | `INFLATE_SOFTCLOTH` |
+| 13508 | **softcloth** | `_stage` *(stage marker)* | `INFLATE_SOFTCLOTH` |
+| 13524 |  | `rebury_authored_verts` | `REBURY_AUTHORED` |
+| 13530 | **rebury** | `_stage` *(stage marker)* | `REBURY_AUTHORED` |
+| 13535 |  | `_note_pass_failure` | `REBURY_AUTHORED` |
+| 13540 |  | `_physics_chain_nowarp_blend` |  |
+| 13541 | **chain_blend** | `_stage` *(stage marker)* |  |
+| 13594 |  | `push_region_mask` |  |
+| 13598 |  | `choose_aligned` |  |
+| 13608 |  | `_chain_vert_mask` |  |
+| 13615 |  | `_recompute_vertex_normals` |  |
+| 13621 |  | `minimum_push` |  |
+| 13637 | **min_push** | `_stage` *(stage marker)* |  |
+| 13677 |  | `_weld_source_coincident_verts` | `SEAM_WELD_SELF` |
+| 13680 | **seam_weld** | `_stage` *(stage marker)* | `SEAM_WELD_SELF` |
+| 13691 |  | `_repair_coherence_collapse` |  |
+| 13696 | **coherence_repair** | `_stage` *(stage marker)* |  |
+| 13708 |  | `_geometry_repair_allowed` |  |
+| 13710 |  | `_uniformise_local_scale` |  |
+| 13713 | **strap_scale** | `_stage` *(stage marker)* |  |
+| 13717 |  | `_cap_short_edge_stretch` |  |
+| 13720 | **short_edge** | `_stage` *(stage marker)* |  |
+| 13780 |  | `_band_enabled` |  |
+| 13791 |  | `record_standoff` |  |
+| 13798 |  | `record_torso_bands` |  |
+| 13832 |  | `_shape_has_fine_animation_bones` | `_MORPHTRI_SCALE` |
+| 13833 |  | `_shape_is_head_dominant` | `_MORPHTRI_SCALE` |
+| 13842 |  | `_shape_has_hdt_smp_rigging` | `_MORPHTRI_SCALE` |
+| 13876 |  | `_slot_aware_reskin_band` | `_MORPHTRI_SCALE` |
+| 13879 |  | `compute_body_blend_skinning` | `_MORPHTRI_SCALE` |
+| 13903 |  | `_is_exposed_body_skin_shape` | `_MORPHTRI_SCALE` |
+| 13905 |  | `_shape_diffuse_is_body_skin` | `_MORPHTRI_SCALE` |
+| 13906 |  | `add_scale_bone_weights` | `_MORPHTRI_SCALE` |
+| 13909 |  | `_slot_aware_scale_bone_reach` | `_MORPHTRI_SCALE` |
+| 14414 |  | `detect_zfight_pairs` |  |
+| 14438 |  | `_body_normals_or_compute` |  |
+| 14440 |  | `_separate_chest_layered_cloth_depth` |  |
+| 14452 |  | `_separate_abdomen_layered_cloth_depth` |  |
+| 14468 |  | `_note_pass_failure` |  |
+| 14526 |  | `_sync_chest_layered_cloth_weights` |  |
+| 14531 |  | `_sync_abdomen_layered_cloth_weights` |  |
+| 14538 |  | `_note_pass_failure` |  |
+| 14562 |  | `_ride_layers_on_reference` | `PANEL_RIGID_RIDE` |
+| 14567 |  | `_stack_probe` | `PANEL_RIGID_RIDE` |
+| 14578 |  | `_ride_layers_on_reference` |  |
+| 14590 |  | `_note_pass_failure` |  |
+| 14599 |  | `_repair_layer_order` |  |
+| 14607 |  | `_note_pass_failure` |  |
+| 14629 |  | `repair_collapsed_tris` |  |
+| 14638 |  | `_note_pass_failure` |  |
+| 14658 |  | `_weld_cross_shape_seams` |  |
+| 14665 |  | `_note_pass_failure` |  |
+| 14674 |  | `_ride_effect_overlays_on_plate` |  |
+| 14680 |  | `_note_pass_failure` |  |
+| 14710 |  | `_geometry_repair_allowed` | `LAYER_ORDER_LAST` |
+| 14734 |  | `_note_pass_failure` | `LAYER_ORDER_LAST` |
+| 14736 |  | `_repair_layer_order` | `LAYER_ORDER_LAST` |
+| 14744 |  | `_note_pass_failure` | `LAYER_ORDER_LAST` |
+| 14754 |  | `_copy_shape` |  |
+| 14795 |  | `_inject_ube_baseshape` |  |
+| 14807 |  | `_hide_virtual_body` |  |
+| 14815 |  | `_pick_bodytri_carriers` |  |
+| 14820 |  | `_tri_fits_variant` |  |
+| 14828 |  | `_pick_bodytri_carriers` |  |
+| 14847 |  | `_hdt_collider_shape_names` |  |
+| 14849 |  | `_reset_morph_flags` |  |
+| 14850 |  | `_normalize_shader_for_morph` |  |
+| 14852 |  | `_normalize_partitions` |  |
+| 14882 |  | `_find_hdt_xml_for_armor` |  |
+| 14890 |  | `_source_hdt_needs_missing_chain_bones` |  |
+| 14946 |  | `_find_ube_body_osd` |  |
+| 14949 |  | `_cached_osd_load` |  |
+| 14953 |  | `_pynifly` |  |
+| 14976 |  | `_collect_tri_inputs` |  |
+| 14979 |  | `_pick_bodytri_carriers` |  |
+| 14991 |  | `pair_alias_map` |  |
+| 15007 |  | `_generate_hdt_xml_for_dst` |  |
+| 15010 |  | `_pynifly` |  |
+| 15032 |  | `_finalize_physics_and_motion_match` |  |
+| 15040 |  | `_sync_bust_plate_follow_postwrite` |  |
+| 15046 |  | `_note_pass_failure` |  |
+| 15052 |  | `_cap_weight_roughness_to_author` |  |
+| 15058 |  | `_note_pass_failure` |  |
+| 15064 |  | `_hold_weights_at_smp_boundary` |  |
+| 15070 |  | `_note_pass_failure` |  |
+| 15076 |  | `_match_coincident_cross_shape_skin` |  |
+| 15083 |  | `_note_pass_failure` |  |
+| 15090 |  | `_refresh_armor_tri_after_reimport` |  |
+| 15093 |  | `validate_dst_nif` |  |
+| 15103 |  | `_piece_pass_failures` |  |
+| 15103 |  | `_piece_pass_effects` |  |
 
-## `_finalize_physics_and_motion_match` — line 5861
+## `_finalize_physics_and_motion_match` — line 5895
 
 **Shared tail, reached from BOTH entry points above.** It is listed separately because this map is depth-1: these passes do not appear in either entry's own table, and grepping for one there wrongly reads as "never called".
 
@@ -433,35 +434,35 @@ Traced chain, in source order: `warp_hf` → `inflate_hf` → `panel_rigidity_hf
 
 | line | stage | pass | guarded by |
 |---:|---|---|---|
-| 5874 |  | `_normalize_partitions_on_disk` |  |
-| 5881 |  | `_split_bust_collider_shape` |  |
-| 5883 |  | `_note_pass_failure` |  |
-| 5892 |  | `_finalize_hdt_physics` |  |
-| 5897 |  | `_note_pass_failure` |  |
-| 5904 |  | `_split_bust_collider_xml` |  |
-| 5909 |  | `_conform_collider_to_body` |  |
-| 5913 |  | `_add_butt_collider_patch` |  |
-| 5921 |  | `_add_skirt_collider_proxy` | `SKIRT_PROXY_AFTER_WEIGHTS` |
-| 5923 |  | `_note_pass_failure` |  |
-| 5930 |  | `_transfer_body_jiggle_to_fitted` |  |
-| 5933 |  | `_note_pass_failure` |  |
-| 5937 |  | `_conform_fitted_to_body` |  |
-| 5939 |  | `_note_pass_failure` |  |
-| 5943 |  | `_match_rigid_leg_bend_to_body` |  |
-| 5946 |  | `_note_pass_failure` |  |
-| 5950 |  | `_match_leg_motion_to_body` |  |
-| 5953 |  | `_note_pass_failure` |  |
-| 5962 |  | `_match_spine_motion_to_body` |  |
-| 5965 |  | `_note_pass_failure` |  |
-| 5970 |  | `_match_arm_motion_to_body` |  |
+| 5908 |  | `_normalize_partitions_on_disk` |  |
+| 5915 |  | `_split_bust_collider_shape` |  |
+| 5917 |  | `_note_pass_failure` |  |
+| 5926 |  | `_finalize_hdt_physics` |  |
+| 5931 |  | `_note_pass_failure` |  |
+| 5938 |  | `_split_bust_collider_xml` |  |
+| 5943 |  | `_conform_collider_to_body` |  |
+| 5947 |  | `_add_butt_collider_patch` |  |
+| 5955 |  | `_add_skirt_collider_proxy` | `SKIRT_PROXY_AFTER_WEIGHTS` |
+| 5957 |  | `_note_pass_failure` |  |
+| 5964 |  | `_transfer_body_jiggle_to_fitted` |  |
+| 5967 |  | `_note_pass_failure` |  |
+| 5971 |  | `_conform_fitted_to_body` |  |
 | 5973 |  | `_note_pass_failure` |  |
-| 5977 |  | `_match_spine_twist_to_body` |  |
+| 5977 |  | `_match_rigid_leg_bend_to_body` |  |
 | 5980 |  | `_note_pass_failure` |  |
-| 5984 |  | `_match_full_weights_to_body` |  |
+| 5984 |  | `_match_leg_motion_to_body` |  |
 | 5987 |  | `_note_pass_failure` |  |
-| 5996 |  | `_add_skirt_collider_proxy` | `SKIRT_PROXY_AFTER_WEIGHTS` |
-| 5998 |  | `_note_pass_failure` | `SKIRT_PROXY_AFTER_WEIGHTS` |
-| 6005 |  | `_restore_authored_shape_order` |  |
+| 5996 |  | `_match_spine_motion_to_body` |  |
+| 5999 |  | `_note_pass_failure` |  |
+| 6004 |  | `_match_arm_motion_to_body` |  |
 | 6007 |  | `_note_pass_failure` |  |
-| 6011 |  | `_audit_registered_shape_declared_bones` |  |
+| 6011 |  | `_match_spine_twist_to_body` |  |
+| 6014 |  | `_note_pass_failure` |  |
+| 6018 |  | `_match_full_weights_to_body` |  |
+| 6021 |  | `_note_pass_failure` |  |
+| 6030 |  | `_add_skirt_collider_proxy` | `SKIRT_PROXY_AFTER_WEIGHTS` |
+| 6032 |  | `_note_pass_failure` | `SKIRT_PROXY_AFTER_WEIGHTS` |
+| 6039 |  | `_restore_authored_shape_order` |  |
+| 6041 |  | `_note_pass_failure` |  |
+| 6045 |  | `_audit_registered_shape_declared_bones` |  |
 

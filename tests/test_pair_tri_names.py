@@ -48,6 +48,17 @@ from src.sliderset_gen import generate_armor_tri           # noqa: E402
 from src.tri import TriFile                                # noqa: E402
 
 
+
+
+def _monolith() -> str:
+    """The monolith's source through the shared helper. A guard that opens
+    `src/nif_convert.py` by name breaks the day a function moves to a sibling,
+    which is what `test_split_preconditions` ratchets against."""
+    from tests import _converter_sources as _cs
+    for p, text in _cs.texts().items():
+        if p.name == "nif_convert.py":
+            return text
+    raise AssertionError("nif_convert.py is not in the converter file list")
 # --------------------------------------------------------------------------
 # the pure rule
 # --------------------------------------------------------------------------
@@ -215,9 +226,14 @@ class TestEmission:
 # the wiring
 # --------------------------------------------------------------------------
 
-def test_the_flag_exists_and_ships_off():
-    """It changes shipped `.tri` bytes on 53 pieces, so it must not arm itself
-    before an arm through the gate. Resolved from the CODE, in a clean import."""
+def test_the_flag_ships_ON_and_keeps_a_kill_switch():
+    """PROMOTED 2026-09-09 on the user's call, after two arms covering 53 of the
+    54 affected pairs: dead halves 48 -> 0 and 5 -> 1, 769 NIFs byte-identical,
+    only the affected `.tri` files changing. Resolved from the CODE, in a clean
+    import -- a default is a dated claim everywhere else.
+
+    The kill switch has to survive the promotion: a feature that ships ON with
+    no way back is one nobody can bisect."""
     import os
     import json
     import subprocess
@@ -229,14 +245,15 @@ def test_the_flag_exists_and_ships_off():
                        text=True, env=env, cwd=str(REPO_ROOT))
     if r.returncode != 0:
         pytest.skip("clean import failed:\n" + r.stderr[-600:])
-    assert json.loads(r.stdout.strip().splitlines()[-1]) is False
+    assert json.loads(r.stdout.strip().splitlines()[-1]) is True
+    src = _monolith()
+    assert 'not _flag("CBBE2UBE_NO_PAIR_TRI_NAMES", False)' in src
 
 
 def test_both_tri_call_sites_pass_the_map():
     """A fix wired into ONE of the two convert paths is a fix for half the
     pack. Both `generate_armor_tri` calls must pass `also_named`."""
-    src = (REPO_ROOT / "src" / "nif_convert.py").read_text(
-        encoding="utf-8", errors="replace")
+    src = _monolith()
     calls = src.count("tri = generate_armor_tri(")
     assert calls == 2, "expected 2 call sites, found %d" % calls
     assert src.count("also_named=pair_alias_map(") == 2, (

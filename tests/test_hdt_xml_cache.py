@@ -55,7 +55,7 @@ def _stub(monkeypatch, values):
     """Make the underlying resolution return successive values, counting calls."""
     calls = {"n": 0}
 
-    def fake(path, nif=None):
+    def fake(path, nif=None, stem_scan=True):
         v = values[min(calls["n"], len(values) - 1)]
         calls["n"] += 1
         return v

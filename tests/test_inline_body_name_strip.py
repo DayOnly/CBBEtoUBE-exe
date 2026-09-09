@@ -45,6 +45,17 @@ class _Shape:
         self.verts = verts
 
 
+
+
+def _monolith() -> str:
+    """The monolith's source through the shared helper. A guard that opens
+    `src/nif_convert.py` by name breaks the day a function moves to a sibling,
+    which is what `test_split_preconditions` ratchets against."""
+    from tests import _converter_sources as _cs
+    for p, text in _cs.texts().items():
+        if p.name == "nif_convert.py":
+            return text
+    raise AssertionError("nif_convert.py is not in the converter file list")
 # ------------------------------------------------ it asks the DETECTOR's question
 
 def test_the_prefix_filter_is_the_detectors_own_prefix_tuple():
@@ -133,3 +144,37 @@ def test_a_missing_output_dir_is_refused(tmp_path):
 def test_a_valued_flag_eats_its_value(tmp_path):
     """`--limit 5 <dir>` must leave ONE positional."""
     assert ibs.main(["--limit", "5"]) == 2
+
+
+# ================================================================= THE FIX
+
+def test_the_prefix_branch_is_gated_on_the_texture_test():
+    """#body-name-prefix, fixed 2026-09-09. The branch used to `return True` on
+    the NAME ALONE, which is precisely what the `3BA`-family branch below it
+    refuses to do -- its own comment says a name without a geometry gate
+    over-fires, and it did: one garment's cuirass and arms were deleted."""
+    src = _monolith()
+    assert src.count(
+        "if name_low.startswith(prefix) and _shape_diffuse_is_body_skin(") == 2, (
+        "both prefix branches must be gated -- the strip site AND the one that "
+        "picks the CBBE body reference. A fix that lands once is a fix for half "
+        "the problem, which is what audit F102 is about.")
+    assert "for prefix in BODY_SHAPE_NAME_PREFIXES:\n        if name_low.startswith(prefix):\n" not in src
+
+
+def test_a_prefix_named_shape_on_ARMOUR_diffuse_is_no_longer_a_body():
+    body = _Shape("FemaleUnderwearBody:0",
+                  {"Diffuse": r"textures\actors\character\female\femalebody_1.dds"})
+    garment = _Shape("FemaleUnderwearBody:0",
+                     {"Diffuse": r"textures\x\armor\cuirassfi.dds"})
+    assert nc._looks_like_inline_body(body) is True
+    assert nc._looks_like_inline_body(garment) is False
+
+
+def test_the_placeholder_body_it_was_written_for_is_STILL_stripped():
+    """32 of the 34 prefix matches on this pack are real placeholder bodies.
+    The fix must not cost them -- that is what the texture test separates."""
+    for name in ("FemaleUnderwearBody", "FemaleUnderwearBody:0_2", "femalebody99"):
+        s = _Shape(name, {"Diffuse":
+                          r"textures\actors\character\female\femalebody_1.dds"})
+        assert nc._looks_like_inline_body(s) is True, name

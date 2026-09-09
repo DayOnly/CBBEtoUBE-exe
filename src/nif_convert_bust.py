@@ -116,7 +116,9 @@ def _bust_split_xml_text(dst_path, nf, src_path=None) -> "str | None":
         except Exception:
             txt = None
     if txt is None:
-        txt = _nc()._read_source_hdt_xml_text(Path(dst_path), nif=nf)
+        # DESTINATION path: no filename fallback. See #hdt-xml-race.
+        txt = _nc()._read_source_hdt_xml_text(Path(dst_path), nif=nf,
+                                              stem_scan=False)
     return txt
 
 def _bust_split_candidates(dst_path, nf, src_path=None) -> list:
@@ -143,7 +145,9 @@ def _bust_split_candidates(dst_path, nf, src_path=None) -> list:
         return []
     txt = _bust_split_xml_text(dst_path, nf, src_path)
     if txt is None:
-        txt = _nc()._read_source_hdt_xml_text(Path(dst_path), nif=nf)
+        # DESTINATION path: no filename fallback. See #hdt-xml-race.
+        txt = _nc()._read_source_hdt_xml_text(Path(dst_path), nif=nf,
+                                              stem_scan=False)
     if not txt:
         return []
     colliders = set(re.findall(r'<per-triangle-shape\s+name="([^"]+)"', txt))

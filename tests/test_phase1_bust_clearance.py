@@ -44,7 +44,7 @@ from src import gui_settings as gs
 from src import nif_convert as nc
 
 KEY = "phase1_bust_clearance"
-ENV = "CBBE2UBE_PHASE1_BUST_CLEARANCE"
+ENV = "CBBE2UBE_NO_PHASE1_BUST_CLEARANCE"
 
 
 def _setting():
@@ -54,17 +54,20 @@ def _setting():
     raise AssertionError(f"no GUI Setting named {KEY!r}")
 
 
-def test_flag_is_default_off():
-    assert nc.PHASE1_BUST_CLEARANCE is False
+def test_flag_is_default_ON_matching_the_recipe():
+    assert nc.PHASE1_BUST_CLEARANCE is True
 
 
 def test_gui_setting_exists_and_agrees_on_polarity():
     s = _setting()
     assert s.env == ENV
-    assert s.default is False
-    # A default-OFF flag read with a plain `_flag(...)` must NOT be inverted;
+    assert s.default is True
+    # PROMOTED 2026-09-09: a default-ON flag read as `not _flag(NO_X)` MUST
+    # be inverted, or the row goes inert in both directions -- the
+    # `warp_delta_outlier` bug. This asserted the opposite, correctly, for
+    # the opt-in form it used to have.
     # get this backwards and the option does the opposite of its own label.
-    assert getattr(s, "invert", False) is False
+    assert getattr(s, "invert", False) is True
 
 
 def test_setting_is_reachable_from_a_real_run():

@@ -2038,7 +2038,7 @@ with for a day.
 
 ### State at hand-off (2026-09-08, third pass)
 
-    suite                 2970 passed / 2 skipped, exit captured DIRECTLY
+    suite                 2979 passed / 2 skipped, exit captured DIRECTLY
     pyflakes undefined    0
     TOOL_MAP / PASS_MAP   current (86 tools)
     zero-weight bones     2 on 1 shape, both breast bones on the same
@@ -2647,3 +2647,63 @@ stem match from a DIFFERENT directory when the tree being searched is the
 destination -- would move all 207 from AT RISK to `no-match`, which is the
 answer they get today whenever the tree is already full. **Still not built: it
 changes which XML 207 NIFs resolve, on the class that tore breasts off in game.**
+
+## 31. THREE FIXES SHIPPED, AND FIVE DEFAULTS PROMOTED (2026-09-09)
+
+All on the user's call after the decision review. Gated on one population of
+769 NIFs, against the state before any of it.
+
+    NIFs common / byte-DIFFERENT      769 / 0     no geometry moves at all
+    TRI files common / byte-DIFFERENT 659 / 48    exactly the affected pairs
+    files added or removed                  0
+    dead slider halves                 48 -> 0
+
+### What shipped
+
+* **`#pair-tri-names` promoted to default ON**, with `CBBE2UBE_NO_PAIR_TRI_NAMES`
+  as the kill switch. 48 -> 0 on this population.
+* **`#body-name-prefix` gated on the texture test**, at BOTH sites -- the strip
+  in `_looks_like_inline_body` AND the body-reference pick in
+  `_is_body_pynifly_shape`. The second was found only by looking: fixing one
+  would have left the other choosing a garment as the body a piece is fitted
+  against, which is the "every fix lands twice" shape audit F102 is about.
+* **`#hdt-xml-race` refused at the two BUST-SPLIT destination callers.**
+
+### The XML fix was scoped back after it was measured, not before
+
+The first attempt gated all THREE destination callers, including the
+declared-bone GUARD. Measured on this population that moved **421 of 769 NIFs,
+62 of them by BONE COUNT** -- because refusing the fallback there does not make
+the guard read the right XML, it makes it read NONE, and the guard then reports
+"cannot check" and stops filtering bones at all. A wrong-but-active guard and an
+inactive guard are both wrong. That site is now explicitly NOT gated, carries
+the number in a comment, and a test pins which callers are gated and which is
+not. **The race at that site is a SECOND instance needing its own decision.**
+
+### The five defaults
+
+`AUTHORED_ANTIPOKE`, `AUTHORED_INFLATE`, `COHERENCE_REPAIR_OUTSIDE_BODY`,
+`PHASE1_BUST_CLEARANCE`, `FIELD_SCREEN_PHYSICAL` are now default ON with kill
+switches, matching what the deployed recipe has set since before the 09-06
+reconvert. The arm's own echo is the proof it landed:
+
+    before   active flags (5): AUTHORED_ANTIPOKE=1, ...
+    after    active flags: none (all defaults)
+
+and `flag_retirement --recipe` now reports **0 disagreements, 0 unclaimed keys**.
+
+**A REVERSAL WORTH RECORDING.** The review recommended UNTICKING the two
+authored floors, on the reasoning that the pack shipped a configuration the user
+had rejected. The user asked whether that was right, and it was not: the pack's
+own build record shows the 09-06 reconvert ran with both floors as deliberate
+non-default overrides, so the enabling POSTDATES the 09-05 revert and is the
+later decision. The tip exemption that answers the revert's objection was also
+written after it. The untick was reverted from a backup before any convert used
+it. **Check which decision is more recent before calling one of them stale.**
+
+### Six GUI rows repointed, because a promotion breaks them silently
+
+Each promoted flag's row still wrote the old env name and would have gone inert
+in BOTH directions while displaying a default-ON feature as off -- the
+`warp_delta_outlier` bug, which `test_every_gui_env_is_read_by_src` exists to
+catch and did. All six now carry the `NO_` env, `invert=True` and `default=True`.

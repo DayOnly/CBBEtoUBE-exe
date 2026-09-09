@@ -95,7 +95,7 @@ def test_xml_text_prefers_authored_over_destination(monkeypatch, tmp_path):
                         encoding="utf-8")
     _cs.patch(monkeypatch, "_read_source_hdt_xml_disk", lambda p: authored)
     _cs.patch(monkeypatch, "_read_source_hdt_xml_text",
-                        lambda p, nif=None: "<DESTINATION/>")
+                        lambda p, nif=None, stem_scan=True: "<DESTINATION/>")
     monkeypatch.setattr(nc, "CHAIN_TO_SOFTBODY", False)
     got = nc._bust_split_xml_text(tmp_path / "x_1.nif", None,
                                   src_path=tmp_path / "src_1.nif")
@@ -109,7 +109,7 @@ def test_xml_text_falls_back_to_destination_when_no_authored(monkeypatch,
     output side must still be checkable."""
     _cs.patch(monkeypatch, "_read_source_hdt_xml_disk", lambda p: None)
     _cs.patch(monkeypatch, "_read_source_hdt_xml_text",
-                        lambda p, nif=None: "<DESTINATION/>")
+                        lambda p, nif=None, stem_scan=True: "<DESTINATION/>")
     monkeypatch.setattr(nc, "CHAIN_TO_SOFTBODY", False)
     got = nc._bust_split_xml_text(tmp_path / "x_1.nif", None,
                                   src_path=tmp_path / "src_1.nif")

@@ -380,8 +380,8 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "authored arrangement instead."),
     Setting("pair_tri_names",
             "Keep body sliders working at high body weight",
-            "Armor", "Physics", default=False,
-            env="CBBE2UBE_PAIR_TRI_NAMES",
+            "Armor", "Physics", default=True,
+            env="CBBE2UBE_NO_PAIR_TRI_NAMES", invert=True,
             hint="For sliders that work on a thin character and not a heavy one.",
             tooltip="An outfit ships as two meshes, one for each end of the "
                     "body-weight slider, and they share ONE slider-data file. "
@@ -554,8 +554,8 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "rather than a fix for anything you can see."),
     Setting("authored_antipoke",
             "Keep the author's tight fit where the body doesn't grow",
-            "Armor", "Fit and clearance", default=False,
-            env="CBBE2UBE_AUTHORED_ANTIPOKE", invert=False,
+            "Armor", "Fit and clearance", default=True,
+            env="CBBE2UBE_NO_AUTHORED_ANTIPOKE", invert=True,
             hint="Stops the last anti-clipping step loosening a deliberately "
                  "tight garment. Needs the two settings above.",
             tooltip="The final step against skin showing through pushes armour "
@@ -589,8 +589,8 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "until now, so no build could be run without it."),
     Setting("coherence_repair_outside_body",
             "Never let the un-buckling step pull armour into the body",
-            "Armor", "Fit and clearance", default=False,
-            env="CBBE2UBE_COHERENCE_REPAIR_OUTSIDE_BODY", invert=False,
+            "Armor", "Fit and clearance", default=True,
+            env="CBBE2UBE_NO_COHERENCE_REPAIR_OUTSIDE_BODY", invert=True,
             hint="The last step in the chain could undo the clearance every "
                  "step before it had just established.",
             tooltip="After fitting, one step un-buckles thin features the fit "
@@ -607,8 +607,8 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "move a point from outside the body to inside."),
     Setting("field_screen_physical",
             "Smooth clearance over the same DISTANCE on any mesh",
-            "Armor", "Fit and clearance", default=False,
-            env="CBBE2UBE_FIELD_SCREEN_PHYSICAL", invert=False,
+            "Armor", "Fit and clearance", default=True,
+            env="CBBE2UBE_NO_FIELD_SCREEN_PHYSICAL", invert=True,
             hint="Fixes finely-detailed pieces creasing where plainer ones do "
                  "not. Helps most on lace, trim, buckles and straps.",
             tooltip="When the converter pushes armour clear of the body, it "
@@ -625,8 +625,8 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "detail are left exactly as they are, so only the fine "
                     "ones change. Finely-cut pieces take longer to convert."),
     Setting("authored_inflate", "Only add clearance where it is missing",
-            "Armor", "Fit and clearance", default=False,
-            env="CBBE2UBE_AUTHORED_INFLATE", invert=False,
+            "Armor", "Fit and clearance", default=True,
+            env="CBBE2UBE_NO_AUTHORED_INFLATE", invert=True,
             hint="Stops armour being pushed off the body where the author "
                  "already left room. Needs the setting above.",
             tooltip="To keep skin from showing through when body sliders grow "
@@ -1039,8 +1039,8 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "so."),
     Setting("phase1_bust_clearance",
             "Keep the bust covered on armour converted by copying",
-            "Armor", "Fit and clearance", default=False,
-            env="CBBE2UBE_PHASE1_BUST_CLEARANCE", invert=False,
+            "Armor", "Fit and clearance", default=True,
+            env="CBBE2UBE_NO_PHASE1_BUST_CLEARANCE", invert=True,
             hint="Extends the chest fix above to the pieces it cannot "
                  "currently reach.",
             tooltip="The chest fix above only runs on armour that gets a new "

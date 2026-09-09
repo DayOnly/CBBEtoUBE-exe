@@ -78,7 +78,8 @@ def test_bind_populates_from_source(monkeypatch, tmp_path):
     """The bind must actually CAPTURE text. Guards the inert-bind regression."""
     src = tmp_path / "piece_1.nif"
     src.write_bytes(b"nif")
-    _cs.patch(monkeypatch, "_read_source_hdt_xml_text", lambda p, nif=None: XML)
+    _cs.patch(monkeypatch, "_read_source_hdt_xml_text",
+              lambda p, nif=None, stem_scan=True: XML)
     nc._hdt_xml_bind_piece_source(src, nif=_FakeNif())
     assert nc._PIECE_HDT_XML_TEXT == XML
 
@@ -91,7 +92,7 @@ def test_bind_ignores_a_non_pynifly_nif(monkeypatch, tmp_path):
     src.write_bytes(b"nif")
     seen = {}
 
-    def _reader(p, nif=None):
+    def _reader(p, nif=None, stem_scan=True):
         seen["nif"] = nif
         return XML
 
@@ -208,7 +209,8 @@ def _guard(monkeypatch, tmp_path, ours, author):
     src = tmp_path / "src_1.nif"
     dst.write_bytes(b"n")
     src.write_bytes(b"n")
-    _cs.patch(monkeypatch, "_read_source_hdt_xml_text", lambda p, nif=None: XML)
+    _cs.patch(monkeypatch, "_read_source_hdt_xml_text",
+              lambda p, nif=None, stem_scan=True: XML)
     _cs.patch(monkeypatch, "_hdt_collider_shape_names",
                         lambda p, nif=None: {"ClothCol"})
     _cs.patch(monkeypatch, "_hdt_softbody_shape_names",
@@ -296,7 +298,7 @@ def test_guard_reads_declared_bones_from_the_SAME_side_as_registered(
 
     seen_paths = []
 
-    def _reader(p, nif=None):
+    def _reader(p, nif=None, stem_scan=True):
         seen_paths.append(Path(p).name)
         return XML if Path(p).name == dst.name else None   # source side is dead
 
@@ -331,7 +333,8 @@ def test_guard_records_when_it_CANNOT_check(monkeypatch, tmp_path):
     src = tmp_path / "src_1.nif"
     dst.write_bytes(b"n")
     src.write_bytes(b"n")
-    _cs.patch(monkeypatch, "_read_source_hdt_xml_text", lambda p, nif=None: None)
+    _cs.patch(monkeypatch, "_read_source_hdt_xml_text",
+              lambda p, nif=None, stem_scan=True: None)
     _cs.patch(monkeypatch, "_hdt_collider_shape_names",
                         lambda p, nif=None: {"ClothCol"})
     _cs.patch(monkeypatch, "_hdt_softbody_shape_names",

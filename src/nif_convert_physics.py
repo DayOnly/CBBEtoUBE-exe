@@ -141,6 +141,16 @@ def _audit_registered_shape_declared_bones(dst_path, src_path) -> int:
         # offenders went unreported (22 warnings raised against 64 pieces the
         # census sees). Measured on `0cce/f/dress/0cce_dress3_1.nif`:
         # source-side NONE, output-side 19 declared bones.
+        # NOT gated with `stem_scan=False`, deliberately. This is a GUARD,
+        # and refusing the fallback here does not make it read the right
+        # XML -- it makes it read NONE, and the guard then returns "cannot
+        # check" and stops filtering bones at all. Measured 2026-09-09 on a
+        # 769-NIF arm: gating this site moved 421 NIFs, 62 of them by BONE
+        # COUNT, because pieces that were being filtered against a
+        # stem-matched XML stopped being filtered against anything. A
+        # wrong-but-active guard and an inactive guard are both wrong, and
+        # swapping one for the other is not a fix. #hdt-xml-race, second
+        # instance -- it needs its own decision, with that number attached.
         txt = _read_source_hdt_xml_text(dst_path, nif=dn)
         declared = set(re.findall(r'<bone\s+name="([^"]+)"', txt or ""))
         if not declared:
@@ -3380,7 +3390,8 @@ def _hdt_sanitise(data: bytes) -> "tuple[bytes, str | None]":
     except Exception:
         return data, None
 
-def _read_source_hdt_xml_text(src_nif_path: Path, nif=None) -> "str | None":
+def _read_source_hdt_xml_text(src_nif_path: Path, nif=None,
+                              stem_scan: bool = True) -> "str | None":
     """The armor's authored HDT-SMP XML text, resolved via the NIF's own
     extra-data first, then a keyword match. None on any failure.
     `nif` (optional) reuses an already-loaded NifFile for the extra-data read.
@@ -3402,21 +3413,47 @@ def _read_source_hdt_xml_text(src_nif_path: Path, nif=None) -> "str | None":
     _key = None
     try:
         _st = os.stat(src_nif_path)
-        _key = (str(src_nif_path), _st.st_mtime_ns, _st.st_size)
+        # `stem_scan` IS PART OF THE KEY. Two callers can ask about the
+        # same path and mean different questions, and a memo that
+        # conflated them would hand a destination caller the very
+        # answer this parameter exists to refuse.
+        _key = (str(src_nif_path), _st.st_mtime_ns, _st.st_size, stem_scan)
         if _key in _nc()._HDT_XML_TEXT_CACHE:
             return _nc()._HDT_XML_TEXT_CACHE[_key]
     except OSError:
         _key = None                      # unstatable -> never cache, always re-read
-    _out = _read_source_hdt_xml_text_uncached(src_nif_path, nif=nif)
+    _out = _read_source_hdt_xml_text_uncached(src_nif_path, nif=nif,
+                                              stem_scan=stem_scan)
     if _key is not None:
         _nc()._HDT_XML_TEXT_CACHE[_key] = _out
     return _out
 
-def _read_source_hdt_xml_text_uncached(src_nif_path: Path, nif=None) -> "str | None":
-    """The real resolution. Split out so the memo above stays trivially auditable."""
+def _read_source_hdt_xml_text_uncached(src_nif_path: Path, nif=None,
+                                       stem_scan: bool = True
+                                       ) -> "str | None":
+    """The real resolution. Split out so the memo above stays trivially auditable.
+
+    `stem_scan=False` REFUSES the filename fallback.  #hdt-xml-race
+
+    That fallback globs the mod tree the path lives in and, when exactly
+    one same-stem XML exists, takes it from ANY directory. Against a
+    SOURCE mod that is safe and useful -- the tree is static and the match
+    catches authored configs the keyword map misses. Against the
+    DESTINATION it is a race: the run is still writing XMLs into that
+    tree, `_mod_xml_index` memoises whatever each worker saw first, and
+    the same-stem count for one piece climbs from 0 to 6 during a
+    conversion. Measured 2026-09-09: two arms of identical code differed
+    on two NIFs because one run caught the window where the count was 1
+    and resolved an unrelated garment's physics; 207 NIFs (104 garments,
+    5.6% of the pack) sit in that class.
+
+    Callers holding a DESTINATION path pass False. The destination's own
+    extra-data pointer is still read first and is unaffected -- that is
+    the legitimate destination route, and it is deterministic.
+    """
     try:
         xml_disk = _read_source_hdt_xml_disk(src_nif_path, nif=nif)
-        if xml_disk is None:
+        if xml_disk is None and stem_scan:
             rel = _find_hdt_xml_for_armor(src_nif_path)
             if rel:
                 norm = _nc()._safe_data_rel(rel)

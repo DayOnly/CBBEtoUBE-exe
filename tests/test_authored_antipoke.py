@@ -127,19 +127,29 @@ def test_off_by_default_and_PAIRED_with_the_inflate_floor():
     """See that flag's twin test for why the two may only move together. This
     half is the one that reaches the body-swap path at all, and also the one
     carrying the whole surface cost (+440 folds against the inflate half's +28)
-    that sent both defaults back off the day they were promoted."""
+    that sent both defaults back off the day they were promoted.
+
+    PROMOTED TO DEFAULT ON 2026-09-09, on the user's call, to match what the
+    deployed recipe has been running since before the 2026-09-06 reconvert --
+    the shipped pack was already built with both floors armed while the code
+    said OFF. The +440 folds / +134 inverted cost recorded above was measured
+    BEFORE `#authored-nipple-exempt` existed; that exemption was written after
+    the revert, and the floors were re-enabled in the recipe once it did. THE
+    PAIRING BELOW IS THE PART THAT MUST NOT MOVE."""
     import os
     env = {k: os.environ.get("CBBE2UBE_AUTHORED_" + k.upper())
            for k in ("inflate", "antipoke")}
+    env.update({k: os.environ.get("CBBE2UBE_NO_AUTHORED_" + k.upper())
+                for k in ("inflate", "antipoke")})
     if any(v is not None for v in env.values()):
         pytest.skip("an env override is in play: %r" % env)
-    assert nc.AUTHORED_ANTIPOKE is False
+    assert nc.AUTHORED_ANTIPOKE is True
     assert nc.AUTHORED_INFLATE is nc.AUTHORED_ANTIPOKE
 
 
 def test_reachable_from_the_gui():
     from src import gui_settings
-    assert any(s.env == "CBBE2UBE_AUTHORED_ANTIPOKE"
+    assert any(s.env == "CBBE2UBE_NO_AUTHORED_ANTIPOKE"
                for s in gui_settings.SETTINGS)
 
 

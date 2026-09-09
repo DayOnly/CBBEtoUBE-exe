@@ -1427,19 +1427,32 @@ ADAPTIVE_CLEARANCE_ENABLED = True
 # roughness; and arming one half alone is worse than arming neither. The open
 # lead is the per-shape property separating the 48 pieces that IMPROVED from the
 # 44 that worsened -- same prescription F068 and `#surface-warp-field` got.
-AUTHORED_INFLATE = _flag("CBBE2UBE_AUTHORED_INFLATE", False)
+# PROMOTED TO DEFAULT ON 2026-09-09, to match what actually ships. The
+# deployed recipe has set this since before the 2026-09-06 reconvert, so
+# the pack has been built with it ON while the code said OFF -- and the
+# code is what every reader consults. `flag_retirement --recipe` now
+# measures that split; it was 5 flags, all in this direction.
+# Kill switch: CBBE2UBE_NO_AUTHORED_INFLATE=1
+AUTHORED_INFLATE = (not _flag("CBBE2UBE_NO_AUTHORED_INFLATE", False))
 # The same floor for the ANTI-POKE (`clear_armor_outside_body`). Separate flag
 # because it is a separate pass with a different safety story: anti-poke is the
 # LAST line against skin through steel, so its floor must never drop below the
 # body-growth allowance, and it is judged on the morph counters rather than at
 # bind pose. See `#authored-antipoke` at the push site.
-# DEFAULT OFF, reverted with `AUTHORED_INFLATE` on 2026-09-05 -- see the table
-# there. This half is what reaches the BODY-SWAP path (+0.572 -> +0.483) and it
+# Was reverted alongside its inflate twin on 2026-09-05 and PROMOTED WITH IT
+# again on 2026-09-09 -- see the table there, and the note below for why the
+# revert's cost figure predates the fix that answered it. This half is what reaches the BODY-SWAP path (+0.572 -> +0.483) and it
 # is also what carries the whole surface cost (+440 folds, +134 inverted; the
 # inflate half alone is +28/+2), so it is the half any future guard has to
 # target. It must be armed and disarmed TOGETHER with the inflate floor: alone,
 # either one is worse than neither on one of the two paths.
-AUTHORED_ANTIPOKE = _flag("CBBE2UBE_AUTHORED_ANTIPOKE", False)
+# PROMOTED TO DEFAULT ON 2026-09-09, to match what actually ships. The
+# deployed recipe has set this since before the 2026-09-06 reconvert, so
+# the pack has been built with it ON while the code said OFF -- and the
+# code is what every reader consults. `flag_retirement --recipe` now
+# measures that split; it was 5 flags, all in this direction.
+# Kill switch: CBBE2UBE_NO_AUTHORED_ANTIPOKE=1
+AUTHORED_ANTIPOKE = (not _flag("CBBE2UBE_NO_AUTHORED_ANTIPOKE", False))
 # How much of the body's local outward morph the floor must cover. The margin
 # has to be the body's OWN morph amplitude -- the converter never sees the
 # player's preset -- and it has to be CAPPED, because the belly's runs to 8.7u
@@ -1666,8 +1679,14 @@ PHASE1_CONFORM = (
 # SAFE BY CONSTRUCTION: with no deficit anywhere `move` stays 0, `disp` is 0,
 # and the relax + fold guard operate on a zero field, so the pass is a true
 # no-op. DEFAULT OFF pending an A/B and an in-game verdict.
+# PROMOTED TO DEFAULT ON 2026-09-09, to match what actually ships. The
+# deployed recipe has set this since before the 2026-09-06 reconvert, so
+# the pack has been built with it ON while the code said OFF -- and the
+# code is what every reader consults. `flag_retirement --recipe` now
+# measures that split; it was 5 flags, all in this direction.
+# Kill switch: CBBE2UBE_NO_PHASE1_BUST_CLEARANCE=1
 PHASE1_BUST_CLEARANCE = (
-    _flag("CBBE2UBE_PHASE1_BUST_CLEARANCE", False)
+    not _flag("CBBE2UBE_NO_PHASE1_BUST_CLEARANCE", False)
 )
 
 # --- #phase1-nipple-map -- OPT-IN, `CBBE2UBE_PHASE1_NIPPLE_MAP=1` -----------
@@ -3347,9 +3366,24 @@ def _looks_like_inline_body(shape: "nif_io.Shape") -> bool:
     # with replacer NIFs (FemaleUnderwearBody:0 etc.). These are
     # CBBE-sized and below the 4000-vert heuristic, so we need the
     # explicit name match to catch them.
+    #
+    # #body-name-prefix: GATED ON THE TEXTURE, 2026-09-09. This branch used to
+    # `return True` on the NAME ALONE -- the exact thing the `3BA`-family branch
+    # below refuses to do, because its own comment says a name without a
+    # geometry gate over-fires. It does: an author named one garment's CUIRASS
+    # `FemaleUnderwearBody:0` and its ARMS `...:0_1`, both on armour diffuse,
+    # and both were deleted and replaced with one injected body -- so that
+    # piece's `_1` half, the one actors near weight 100 use, shipped with no
+    # cuirass and no arms.
+    #
+    # Measured over every source behind the pack, loose and archived: 34 shapes
+    # match these prefixes, 32 carry a body-skin diffuse and are stripped
+    # correctly, 2 do not and are this defect. The texture test below is the
+    # detector's OWN, already applied to the general heuristic, and it separates
+    # all 34 with no exceptions.
     name_low = (shape.name or "").lower()
     for prefix in BODY_SHAPE_NAME_PREFIXES:
-        if name_low.startswith(prefix):
+        if name_low.startswith(prefix) and _shape_diffuse_is_body_skin(shape):
             return True
     if shape.name == "BaseShape" and len(shape.verts) >= _UBE_BASESHAPE_MIN_VERTS:
         return True
@@ -9103,10 +9137,16 @@ BODYTRI_CARRIER_CLOTH = _flag("CBBE2UBE_BODYTRI_CARRIER_CLOTH", False)
 # `pair_shape_aliases` -- it is the same piece the census already reports under
 # `pairs with a vert-count mismatch`.
 #
-# DEFAULT OFF: it changes shipped `.tri` bytes on 53 pieces, so it needs an arm
-# through the gate before it can be promoted. See
-# [[project_weight_pair_tri_name_split]].
-PAIR_TRI_NAMES = _flag("CBBE2UBE_PAIR_TRI_NAMES", False)
+# PROMOTED TO DEFAULT ON, 2026-09-09, on the user's call. Measured across 53 of
+# the 54 affected pairs over two arms: halves losing every morph went 48 -> 0 on
+# one population and 5 -> 1 on the other, with 769 NIFs BYTE-IDENTICAL and only
+# the affected `.tri` files changing. The one survivor was the 5-shapes-vs-4
+# piece, whose own cause is `#body-name-prefix` -- fixed in the same cycle, so
+# the pack-wide prediction is now 54 -> 0 rather than 54 -> 1.
+#
+# The kill switch keeps the old behaviour: CBBE2UBE_NO_PAIR_TRI_NAMES=1.
+# See [[project_weight_pair_tri_name_split]].
+PAIR_TRI_NAMES = (not _flag("CBBE2UBE_NO_PAIR_TRI_NAMES", False))
 
 SKIRT_PROXY_AFTER_WEIGHTS = _flag("CBBE2UBE_SKIRT_PROXY_AFTER_WEIGHTS", False)
 
@@ -11066,8 +11106,14 @@ COHERENCE_REPAIR = (
 # #coherence-repair-outside-body -- the reasoning and the stage trace live beside
 # `_hold_repair_outside_body` in nif_convert_writer.py, which reads this through
 # `_nc()`. Default OFF pending a measured A/B.
-COHERENCE_REPAIR_OUTSIDE_BODY = _flag(
-    "CBBE2UBE_COHERENCE_REPAIR_OUTSIDE_BODY", False)
+# PROMOTED TO DEFAULT ON 2026-09-09, to match what actually ships. The
+# deployed recipe has set this since before the 2026-09-06 reconvert, so
+# the pack has been built with it ON while the code said OFF -- and the
+# code is what every reader consults. `flag_retirement --recipe` now
+# measures that split; it was 5 flags, all in this direction.
+# Kill switch: CBBE2UBE_NO_COHERENCE_REPAIR_OUTSIDE_BODY=1
+COHERENCE_REPAIR_OUTSIDE_BODY = (not _flag(
+    "CBBE2UBE_NO_COHERENCE_REPAIR_OUTSIDE_BODY", False))
 COHERENCE_MIN_AREA = _knob("CBBE2UBE_COHERENCE_MIN_AREA", 4.0)
 COHERENCE_SRC_MIN = _knob("CBBE2UBE_COHERENCE_SRC_MIN", 0.70)
 COHERENCE_OUT_MAX = _knob("CBBE2UBE_COHERENCE_OUT_MAX", 0.30)
@@ -14111,9 +14157,16 @@ def convert_nif_phase2(
     def _is_body_pynifly_shape(s):
         if s.name in BODY_SHAPE_NAMES:
             return True
+        # #body-name-prefix: the SAME gate as `_looks_like_inline_body`, and for
+        # the same reason. The texture test three lines below already exists to
+        # stop a full-length robe being picked as the CBBE body reference; the
+        # prefix shortcut was jumping over it, so a garment an author named
+        # `FemaleUnderwearBody:0` could be chosen as the body the whole piece is
+        # fitted against. Fixing only the strip site would leave this one -- the
+        # "every fix has to land twice" shape audit F102 is about.
         name_low = (s.name or "").lower()
         for prefix in BODY_SHAPE_NAME_PREFIXES:
-            if name_low.startswith(prefix):
+            if name_low.startswith(prefix) and _shape_diffuse_is_body_skin(s):
                 return True
         if len(s.verts) < _BODY_HEURISTIC_MIN_VERTS:
             return False

@@ -144,22 +144,42 @@ def recipe_drift(settings_path):
             if isinstance(v, bool)}
     except Exception:
         return [], []
-    by_mod = {}
+    # KEY -> ENV comes from the GUI registry, which is the authority on that
+    # mapping. Deriving it by stripping the `CBBE2UBE_` prefix works only while
+    # a flag is a plain opt-in: the moment one is promoted and becomes
+    # `CBBE2UBE_NO_X`, the derived key is `no_x`, the settings key `x` matches
+    # nothing, and five real entries read as "claimed by no binding". That is
+    # what this tool did for an hour on 2026-09-09.
+    key_to_env = {}
+    try:
+        from src import gui_settings as gs
+        for row in gs.SETTINGS:
+            if getattr(row, "env", None):
+                key_to_env[row.key] = row.env
+    except Exception:
+        pass
+
+    env_to = {}
     for r in fs.declared_all():
         if r["const"]:
-            by_mod.setdefault(r["module"], {})[r["const"]] = r["env"]
+            env_to[r["env"]] = (r["module"], r["const"])
+
+    vals_by_mod = {}
     out, claimed = [], set()
-    for mod, consts in sorted(by_mod.items()):
-        vals = fs.resolved_values(sorted(consts), mod)
-        for const, env in sorted(consts.items()):
-            key = env.replace("CBBE2UBE_", "").lower()
-            if key not in live_raw:
-                continue
-            claimed.add(key)
-            code_on = vals.get(const) is True
-            if live_raw[key] != code_on:
-                out.append({"module": mod, "const": const, "env": env,
-                            "code": code_on, "live": live_raw[key]})
+    for key, live_on in sorted(live_raw.items()):
+        env = key_to_env.get(key) or ("CBBE2UBE_" + key.upper())
+        hit = env_to.get(env)
+        if hit is None:
+            continue
+        mod, const = hit
+        if mod not in vals_by_mod:
+            vals_by_mod[mod] = fs.resolved_values(
+                sorted(c for m, c in env_to.values() if m == mod), mod)
+        claimed.add(key)
+        code_on = vals_by_mod[mod].get(const) is True
+        if live_on != code_on:
+            out.append({"module": mod, "const": const, "env": env,
+                        "code": code_on, "live": live_on})
     unknown = sorted(k for k in live_raw if k not in claimed)
     return out, unknown
 

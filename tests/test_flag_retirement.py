@@ -136,13 +136,39 @@ def test_the_retired_switch_is_really_gone():
 
 # --------------------------------------------------------- recipe drift
 
+def _code_default(key: str) -> bool:
+    """What the CODE resolves this setting to. Derived, never hard-coded: a
+    literal here becomes wrong the day the flag is promoted, and these tests
+    then fail for a reason that has nothing to do with what they check. That
+    happened on 2026-09-09."""
+    from src import gui_settings as gs
+    env = {r.key: r.env for r in gs.SETTINGS if getattr(r, "env", None)}[key]
+    for r in fs.declared_all():
+        if r["env"] == env and r["const"]:
+            return fs.resolved_values([r["const"]], r["module"])[r["const"]] is True
+    raise AssertionError("no binding for %s" % key)
+
+
 def test_recipe_drift_finds_a_planted_disagreement(tmp_path):
+    key = "authored_antipoke"
     p = tmp_path / "settings.json"
-    p.write_text(json.dumps({"authored_antipoke": True}), encoding="utf-8")
+    p.write_text(json.dumps({key: not _code_default(key)}), encoding="utf-8")
     drift, unknown = fr.recipe_drift(str(p))
     assert [d["const"] for d in drift] == ["AUTHORED_ANTIPOKE"]
-    assert drift[0]["code"] is False and drift[0]["live"] is True
+    assert drift[0]["code"] != drift[0]["live"]
     assert unknown == []
+
+
+def test_a_PROMOTED_flags_settings_key_still_maps_to_its_binding(tmp_path):
+    """A kill-switch env cannot be derived from the settings key by stripping a
+    prefix: `CBBE2UBE_NO_AUTHORED_ANTIPOKE` gives `no_authored_antipoke`, which
+    matches no settings key. This tool did exactly that for an hour and reported
+    five live entries as claimed by no binding. The GUI registry is the
+    authority on key -> env."""
+    p = tmp_path / "settings.json"
+    p.write_text(json.dumps({"authored_antipoke": True}), encoding="utf-8")
+    _drift, unknown = fr.recipe_drift(str(p))
+    assert unknown == [], "a promoted flag's settings key went unclaimed"
 
 
 def test_a_setting_no_flag_claims_is_reported(tmp_path):
@@ -155,8 +181,9 @@ def test_a_setting_no_flag_claims_is_reported(tmp_path):
 
 
 def test_a_setting_that_AGREES_is_not_reported_as_drift(tmp_path):
+    key = "authored_antipoke"
     p = tmp_path / "settings.json"
-    p.write_text(json.dumps({"authored_antipoke": False}), encoding="utf-8")
+    p.write_text(json.dumps({key: _code_default(key)}), encoding="utf-8")
     drift, _unknown = fr.recipe_drift(str(p))
     assert drift == []
 

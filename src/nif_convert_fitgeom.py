@@ -2476,7 +2476,14 @@ _FIELD_ITERS_MAX = _knob("CBBE2UBE_FIELD_ITERS_MAX", 4096, int)
 # which is the same discipline as the clamp at 1.
 _FIELD_REACH_AREA_FRAC = _knob("CBBE2UBE_FIELD_REACH_AREA_FRAC", 1.0)
 
-FIELD_SCREEN_PHYSICAL = _flag("CBBE2UBE_FIELD_SCREEN_PHYSICAL", False)
+# PROMOTED TO DEFAULT ON 2026-09-09, to match what actually ships. The
+# deployed recipe has set this since before the 2026-09-06 reconvert, so
+# the pack has been built with it ON while the code said OFF -- and the
+# code is what every reader consults. `flag_retirement --recipe` now
+# measures that split; it was 5 flags, all in this direction.
+# Kill switch: CBBE2UBE_NO_FIELD_SCREEN_PHYSICAL=1
+FIELD_SCREEN_PHYSICAL = (not _flag("CBBE2UBE_NO_FIELD_SCREEN_PHYSICAL",
+                                   False))
 
 # #clearance-term-audit. TELEMETRY ONLY, DEFAULT OFF, moves no vertex.
 #
