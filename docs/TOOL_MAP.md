@@ -98,7 +98,7 @@ Two more tracked scripts are excluded as doc GENERATORS rather than measurements
 | tool | gate | floor | what it measures |
 |---|---|---|---|
 | `scripts/analysis/dead_gate_audit.py` | — | yes | A GATE THAT CANNOT FIRE -- documented, reviewed, and dead |
-| `scripts/analysis/flag_retirement.py` | 2 | yes | WHICH KILL SWITCHES COULD BE RETIRED -- the mechanical half of plan item E1 |
+| `scripts/analysis/flag_retirement.py` | 2, 3 | yes | WHICH KILL SWITCHES COULD BE RETIRED -- the mechanical half of plan item E1 |
 | `scripts/analysis/flag_surface.py` | 2 | yes | The converter's boolean flag surface, resolved from the CODE. |
 | `scripts/extract_loop.py` | 2 | yes | Lift a per-shape loop out of an orchestrator into its own function, byte-for-byte (step 6 increment 1 of the 2026-09-01 audit plan) |
 | `scripts/split_move.py` | 2 | yes | Move named functions / module-level state out of src/nif_convert.py into a sibling module, behaviour-neutrally. |

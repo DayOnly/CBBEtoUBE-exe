@@ -154,7 +154,11 @@ against SERIAL and not against a pre-fix pool arm — do not "A/B" it that way.
 ### Step 1 — byte-identical work, ships with any verdict cycle
 
 **E1. Flag-surface census and retirement.** `python -m scripts.analysis.flag_surface`
-(138 boolean flags, 89 ON / 49 off, 76 in kill-switch form, 58 unreachable from
+(**CORRECTED 2026-09-09: the surface is 152 flags, not 138 -- the census could
+not see 14 of them, see section 26. After the one retirement in section 25:
+138 bound in the monolith, 75 kill switches, 57 unreachable.** The pre-09-09
+figures below are the monolith-only count: 138 boolean flags, 89 ON / 49 off,
+76 in kill-switch form, 58 unreachable from
 the GUI, 16 of those default-off opt-ins -- resolved from the code on
 2026-09-06; the first draft of the census read 122 because it could not see the
 16 private-prefixed flags, which is its own lesson). Retire a flag only when ALL hold: default ON; an
@@ -2030,7 +2034,7 @@ with for a day.
 
 ### State at hand-off (2026-09-08, third pass)
 
-    suite                 2920 passed / 2 skipped, exit captured DIRECTLY
+    suite                 2933 passed / 2 skipped, exit captured DIRECTLY
     pyflakes undefined    0
     TOOL_MAP / PASS_MAP   current (86 tools)
     zero-weight bones     2 on 1 shape, both breast bones on the same
@@ -2379,3 +2383,74 @@ So E1 should not be planned as a cleanup sweep. The remaining half of the item
 -- "decide the 20 GUI bools that are default-off, unticked, and carry tooltips
 citing measured wins: promote or retire, never leave" -- is a different and
 probably larger question, and it is untouched.
+
+## 26. THE FLAG CENSUS COULD NOT SEE 14 OF ITS OWN FLAGS (2026-09-09)
+
+Going after E1's other half -- "the GUI bools that are default-off, unticked,
+and carry tooltips citing measured wins: promote or retire, never leave" -- ran
+straight into the census underneath it.
+
+**The surface is 152 flags, not 138.** `flag_surface` matched bindings with a
+single-line regex over `src/nif_convert.py` alone, and missed 14 for two
+unrelated reasons:
+
+    eight live in modules the census never opened   fitgeom 4, layers 3, physics 1
+    six are written in forms one line cannot hold   a binding split across lines,
+                                                    an `X = (0.0 if _flag(...))`
+                                                    ternary, and five `_flag`
+                                                    reads used INLINE as a
+                                                    condition with no constant
+
+That is the same class as the first draft missing 16 private-prefixed flags --
+the trap the file's own docstring says it is built against -- and it reappeared
+because `nif_convert.py` stopped being the whole surface at the 2026-09-01
+split. **One of the 14 is turned ON by the live recipe.**
+
+FIXED by parsing instead of matching: `flag_surface.declared_all()` walks the
+AST of every flag-binding module, maps each `_flag` call to the Assign that
+encloses it (so a ternary still reports its constant), and reports `const=None`
+for an inline read rather than dropping it for having the wrong shape. The
+regex is KEPT as a control and the suite asserts CONTAINMENT -- the parse must
+find everything it finds, and strictly more. Verified: 152 call sites, 152
+distinct env names, nothing regex-only, 14 newly visible, 5 inline.
+
+## 27. THE CODE DEFAULT DISAGREES WITH THE SHIPPED RECIPE ON FIVE FLAGS
+
+`flag_retirement --recipe` compares every binding's resolved default against
+the DEPLOYED settings json. This makes mechanical a trap that has cost verdicts
+from both directions: read only the code and you are wrong about the pack, read
+only a memory and you are wrong twice, because a memory's default is dated.
+
+    flag                            code    live    module
+    AUTHORED_ANTIPOKE               False   True    nif_convert
+    AUTHORED_INFLATE                False   True    nif_convert
+    COHERENCE_REPAIR_OUTSIDE_BODY   False   True    nif_convert
+    PHASE1_BUST_CLEARANCE           False   True    nif_convert
+    FIELD_SCREEN_PHYSICAL           False   True    nif_convert_fitgeom
+
+    settings keys no `_flag` binding claims : 0
+
+**All five of the live recipe's non-default flags are default-OFF in the code.**
+Every one of them ships ON. `FIELD_SCREEN_PHYSICAL` was invisible to the census
+until section 26, so the drift could not even have been listed before today.
+
+**This is E1's second half, answered for five flags: the recipe has already
+promoted them.** "Promote or retire, never leave" is not a hypothetical for
+these -- they are promoted in practice and unpromoted in the code, which is the
+worst of both, because the code is what a reader consults.
+
+Two of them carry a documented history that makes the split sharper, not
+softer. `AUTHORED_ANTIPOKE` and `AUTHORED_INFLATE` were promoted to default ON
+on 2026-09-05 and REVERTED the same hour on the user's call ("we can't use that
+in its current state"), on a measured +2.7% folds / +6.5% inverted. The code
+carries that reversal. The deployed recipe does not. **Every bust number
+measured this session was taken with both floors ARMED**, which is stated in
+sections 20 and 22 and is only correct because the recipe, not the code, decides
+what runs.
+
+**NOT RESOLVED HERE, and it is a decision, not a defect to fix quietly:** either
+the code defaults move to match what ships, or the recipe stops setting them.
+Doing neither leaves five flags whose documented default is not the one in use.
+
+`settings keys no binding claims: 0` is the other half of that check and it is
+clean -- the settings file has no dead entries.

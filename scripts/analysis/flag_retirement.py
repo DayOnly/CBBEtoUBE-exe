@@ -124,6 +124,46 @@ def live_overrides(path) -> dict:
     return out
 
 
+def recipe_drift(settings_path):
+    """Flags whose CODE default disagrees with the LIVE settings json.
+
+    THE TRAP THIS MAKES MECHANICAL. A flag's default has to be resolved from the
+    code, and the shipped pack is built from the code default PLUS whatever the
+    deployed settings file overrides. Read only the code and you are wrong about
+    the pack; read only the record and you are wrong twice, because a memory's
+    default is dated. Both halves of that have cost verdicts here.
+
+    Returns (rows, unknown) -- `unknown` is every boolean key in the settings
+    file that no `_flag` binding claims, because a setting nothing reads is
+    just as much a defect as a default nothing matches.
+    """
+    live_raw = {}
+    try:
+        live_raw = {k: v for k, v in json.loads(
+            Path(settings_path).read_text(encoding="utf-8")).items()
+            if isinstance(v, bool)}
+    except Exception:
+        return [], []
+    by_mod = {}
+    for r in fs.declared_all():
+        if r["const"]:
+            by_mod.setdefault(r["module"], {})[r["const"]] = r["env"]
+    out, claimed = [], set()
+    for mod, consts in sorted(by_mod.items()):
+        vals = fs.resolved_values(sorted(consts), mod)
+        for const, env in sorted(consts.items()):
+            key = env.replace("CBBE2UBE_", "").lower()
+            if key not in live_raw:
+                continue
+            claimed.add(key)
+            code_on = vals.get(const) is True
+            if live_raw[key] != code_on:
+                out.append({"module": mod, "const": const, "env": env,
+                            "code": code_on, "live": live_raw[key]})
+    unknown = sorted(k for k in live_raw if k not in claimed)
+    return out, unknown
+
+
 def rows(settings_path=None):
     src = (_REPO / "src" / "nif_convert.py").read_text(encoding="utf-8",
                                                        errors="replace")
@@ -204,6 +244,29 @@ def main(argv=None) -> int:
             settings = raw[i + 1]; i += 2; continue
         if raw[i] == "--all":
             show_all = True; i += 1; continue
+        if raw[i] == "--recipe":
+            drift, unknown = recipe_drift(settings)
+            print("=" * 76)
+            print("CODE DEFAULT vs THE LIVE RECIPE   (the deployed settings json)")
+            print("=" * 76)
+            if not settings:
+                print("  NO SETTINGS FILE GIVEN -- set CBBE2UBE_CONFIG or pass")
+                print("  --settings. NOT MEASURED is not 'no drift'.")
+                return 3
+            print("  flags whose code default DISAGREES with the recipe : %d"
+                  % len(drift))
+            for d in drift:
+                print("    %-34s code=%-5s live=%-5s  (%s)"
+                      % (d["const"], d["code"], d["live"], d["module"]))
+            print("  settings keys no `_flag` binding claims            : %d"
+                  % len(unknown))
+            for k in unknown:
+                print("    %s" % k)
+            print()
+            print("  A disagreement is not automatically a bug -- but the pack")
+            print("  ships the LIVE column, and every reader of the code sees")
+            print("  the other one.")
+            return 0
         if raw[i].startswith("--"):
             i += 1; continue
         print(__doc__)

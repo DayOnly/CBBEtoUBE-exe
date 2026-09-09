@@ -58,27 +58,89 @@ _BIND = re.compile(
 
 
 def declared(src_text: str) -> list[tuple[str, str, bool, bool]]:
-    """(constant, env name, is_kill_switch, declared_default) per binding."""
+    """(constant, env name, is_kill_switch, declared_default) per binding.
+
+    THE REGEX FORM. Kept, and `declared_all` is checked against it: whatever
+    this matches, the parse must also match. A control that can only ever agree
+    is not a control, so the test asserts CONTAINMENT rather than equality.
+    """
     out = []
     for name, neg, env, dflt in _BIND.findall(src_text):
         out.append((name, env, bool(neg), dflt == "True"))
     return out
 
 
-def resolved_values(names: list[str]) -> dict[str, object]:
-    """Import `src.nif_convert` in a SCRUBBED subprocess and read each constant.
+# Modules that bind pass flags. `nif_convert.py` stopped being the whole
+# surface at the 2026-09-01 split, and a census reading only the monolith
+# reports the flag surface as smaller than it is.
+_FLAG_MODULES = ("nif_convert", "nif_convert_fitgeom", "nif_convert_layers",
+                 "nif_convert_physics")
+
+
+def declared_all() -> "list[dict]":
+    """Every `_flag("ENV", default)` call in `src/`, PARSED rather than matched.
+
+    WHY A PARSE, WHEN A REGEX ALREADY EXISTED. The single-line pattern missed 14
+    of 152 flags for two unrelated reasons: eight live in modules the census
+    never opened, and six are written in forms one line cannot hold -- a binding
+    split across lines, an `X = (0.0 if _flag(...) else ...)` ternary, and a
+    `_flag` read inline in a condition with no constant at all. That is the same
+    class as the first draft missing 16 private-prefixed flags, which this
+    file's own docstring calls the trap it is built against. One of the 14 is
+    turned ON by the live recipe.
+
+    `const` is None for a call READ INLINE and never bound -- a real flag with
+    no constant to resolve, reported rather than dropped for not fitting the
+    shape of the others.
+    """
+    import ast
+    out = []
+    for mod in _FLAG_MODULES:
+        p = _REPO / "src" / (mod + ".py")
+        if not p.is_file():
+            continue
+        tree = ast.parse(p.read_text(encoding="utf-8", errors="replace"))
+        # Every node mapped to the Assign that encloses it, so a `_flag` buried
+        # in a ternary still reports the constant it ends up in.
+        holder = {}
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Assign) and len(node.targets) == 1
+                    and isinstance(node.targets[0], ast.Name)):
+                for sub in ast.walk(node.value):
+                    holder[id(sub)] = node.targets[0].id
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Name)
+                    and node.func.id == "_flag"):
+                continue
+            if not node.args or not isinstance(node.args[0], ast.Constant):
+                continue
+            env = node.args[0].value
+            if not isinstance(env, str):
+                continue
+            dflt = None
+            if len(node.args) > 1 and isinstance(node.args[1], ast.Constant):
+                dflt = node.args[1].value
+            out.append({"module": mod, "const": holder.get(id(node)),
+                        "env": env, "declared_default": dflt})
+    return out
+
+
+def resolved_values(names: list[str], module: str = "nif_convert") -> dict:
+    """Import the module in a SCRUBBED subprocess and read each constant.
     A subprocess, so this process's own env cannot leak into the answer."""
     code = (
         "import sys, json; sys.path.insert(0, %r)\n"
-        "import src.nif_convert as nc\n"
+        "import src.%s as nc\n"
         "print(json.dumps({n: getattr(nc, n, None) for n in %r}))\n"
-        % (str(_REPO), names))
+        % (str(_REPO), module, names))
     env = {k: v for k, v in os.environ.items() if not k.startswith("CBBE2UBE_")}
     env["PYTHONHASHSEED"] = "1"
     r = subprocess.run([sys.executable, "-c", code], capture_output=True,
                        text=True, env=env, cwd=str(_REPO))
     if r.returncode != 0:
-        raise SystemExit("could not import src.nif_convert:\n" + r.stderr[-2000:])
+        raise SystemExit("could not import src.%s:\n%s"
+                         % (module, r.stderr[-2000:]))
     import json
     return json.loads(r.stdout.strip().splitlines()[-1])
 
