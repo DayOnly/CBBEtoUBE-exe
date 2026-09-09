@@ -2038,7 +2038,7 @@ with for a day.
 
 ### State at hand-off (2026-09-08, third pass)
 
-    suite                 2955 passed / 2 skipped, exit captured DIRECTLY
+    suite                 2970 passed / 2 skipped, exit captured DIRECTLY
     pyflakes undefined    0
     TOOL_MAP / PASS_MAP   current (86 tools)
     zero-weight bones     2 on 1 shape, both breast bones on the same
@@ -2600,3 +2600,50 @@ before anyone picks.** That count is measurable and is the natural next step.
 Meanwhile the finding stands as an A/B hazard: any arm pair covering this piece
 can show a spurious 2-NIF difference, and a repeat control is the only thing
 that tells it from a real one.
+
+## 30. THE EXPOSURE IS 104 GARMENTS, NOT ONE (2026-09-09)
+
+Section 29 said the fix decision wants the pack-wide count of pieces that
+resolve their physics XML through the cross-directory stem match. Measured:
+`scripts/analysis/hdt_xml_resolution_census.py` (tracked, 13 tests), over the
+shipped pack, 3673 NIFs, no exclusions.
+
+    pointer      358   names its own XML in extra-data -- deterministic
+    own-dir        0   an XML beside it -- deterministic
+    no-match    3108   no same-stem XML anywhere -- resolves to none
+    AT RISK      207   resolved by a CROSS-DIRECTORY stem match
+
+    AT RISK as garments (both weight halves are one) : 104
+
+**5.6% of the pack, not one garment.** And the stems are exactly the generic
+names a modlist collides on:
+
+    armorf              38 NIFs, 8 other directories
+    1stpersonarmorf     38 NIFs, 1
+    cuirassf            33 NIFs, 3
+    cuirass             24 NIFs, 6
+    torso               14 NIFs, 2
+    bodyf               10 NIFs, 5
+
+For each of those, whether the piece resolves an XML at all -- and if so, WHOSE
+-- depends on how much of the destination tree its worker had seen. That reaches
+further than the bust split: the same resolution feeds the collider set, the
+soft-body gate and the jiggle transfer.
+
+**THE COUNT LEANS THE SAFE WAY.** `extra_data()` stops at the first unbuildable
+block, so a hidden pointer reads as absent and its piece is counted AT RISK when
+it may not be. 207 is therefore an upper bound, and the tool says so rather than
+presenting it as exact.
+
+`own-dir 0` is precedence, not absence: a piece with an XML beside it also
+names it, so it classifies as `pointer` first.
+
+### What this changes
+
+Section 29 called the repair a decision and listed three non-equivalent shapes.
+The count says it is worth making: 104 garments whose physics resolution is
+order-dependent is not a curiosity, and the cheapest safe repair -- refusing a
+stem match from a DIFFERENT directory when the tree being searched is the
+destination -- would move all 207 from AT RISK to `no-match`, which is the
+answer they get today whenever the tree is already full. **Still not built: it
+changes which XML 207 NIFs resolve, on the class that tore breasts off in game.**
