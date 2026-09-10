@@ -83,8 +83,24 @@ def _undefined(out):
 def test_pyflakes_is_available():
     """The control. A missing checker makes every assertion below vacuous, and
     this exact failure mode -- a detector that reports zero because it is not
-    running -- is why the audit sweeps here all carry one."""
+    running -- is why the audit sweeps here all carry one.
+
+    IT COULD NOT DO THAT JOB UNTIL 2026-09-10. `python -m <missing module>`
+    exits **1** with empty stdout, and this test allowed 0 or 1 -- so an
+    uninstalled pyflakes read as "ran, found nothing to report". CI had never
+    installed it: every `test_no_undefined_names_in_src` case passed there on an
+    empty string, and the only test that noticed was the catches-a-defect
+    control below, which is what actually went red.
+
+    The returncode alone therefore cannot carry this. An interpreter that cannot
+    find the module says so on stderr, and that is the signal this now reads.
+    """
     r = _pyflakes(str(REPO / "tests" / "test_no_undefined_names.py"))
+    assert "No module named" not in r.stderr, (
+        "pyflakes is NOT INSTALLED, so every sweep in this file scores an empty "
+        "string and passes on nothing. Install it -- CI does that in the test "
+        "job rather than requirements.txt, because it is a test dependency and "
+        "not a runtime one.\n%s" % r.stderr[:400])
     assert r.returncode in (0, 1), (
         "pyflakes did not run (%s): install it, or this file measures nothing\n%s"
         % (r.returncode, r.stderr[:400]))

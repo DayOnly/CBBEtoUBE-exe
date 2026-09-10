@@ -43,7 +43,13 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt pytest
+          # pyflakes is a TEST dependency, not a runtime one, so it sits here
+          # rather than in requirements.txt -- but it is not optional:
+          # tests/test_no_undefined_names.py shells out to it for every module
+          # in src/. Without it `python -m pyflakes` exits 1 with empty stdout,
+          # every one of those sweeps passes on NOTHING, and only that file's
+          # own catches-a-defect control notices.
+          pip install -r requirements.txt pytest pyflakes
 
       - name: Verify pynifly loads
         # The vendored DLL is the one dependency pip cannot supply. If it fails
