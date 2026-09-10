@@ -117,19 +117,19 @@ Setting: "Stop layered armour being pushed into the body as it is stacked"
 
 ### Fixed — a broken pass no longer ships as a clean one
 
-A 2026-09-01 audit of the code (`docs/worklog/AUDIT_2026_09_01.md`) found
-fourteen places where a failing step was swallowed and the result read as
-"nothing to do": the chest-chord fix and its surface-deficit sibling returned
-"no demand" on any error; three smoothing helpers returned their input
-untouched; the shader transplant in the shape writer could ship a glow shape
-white and static; the copy path discarded a shape's whole fit chain, its
-reskin and its z-fight fix without a word, and shipped a shape with its
+A 2026-09-01 audit of the code — a working note, so it lives on the `testing`
+branch only — found fourteen places where a failing step was swallowed and the
+result read as "nothing to do": the chest-chord fix and its surface-deficit
+sibling returned "no demand" on any error; three smoothing helpers returned
+their input untouched; the shader transplant in the shape writer could ship a
+glow shape white and static; the copy path discarded a shape's whole fit chain,
+its reskin and its z-fight fix without a word, and shipped a shape with its
 SOURCE vertices and skin under a "converted" status when the fitted copy
 failed; the physics-XML copy, the stripped-chain-bone check and the output
-validator's z-fight census all failed silently. Every one of these now
-records the failure on the piece's report line (`PASS FAILED ...`,
-`UNFITTED ...`), exactly as the body-swap path already did. No converted
-vertex, weight or physics byte changes — only what is reported.
+validator's z-fight census all failed silently. Every one of these now records
+the failure on the piece's report line (`PASS FAILED ...`, `UNFITTED ...`),
+exactly as the body-swap path already did. No converted vertex, weight or
+physics byte changes — only what is reported.
 
 Two new tests pin this: one raises inside each helper and asserts the record
 appears; the other forbids any function that is itself a failure label from
