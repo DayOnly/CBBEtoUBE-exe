@@ -52,7 +52,15 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-# The binding form the converter uses for every boolean pass flag.
+
+def _flag_surface():
+    """Imported lazily: `scripts/` is not a package on every path setup."""
+    sys.path.insert(0, str(REPO_ROOT))
+    from scripts.analysis import flag_surface
+    return flag_surface
+
+# The single-line binding form. NO LONGER how `_bindings()` finds flags -- kept
+# only so the control below can show what it misses.
 _BIND = re.compile(
     r'^(_?[A-Z][A-Z0-9_]+)\s*=\s*\(?\s*(?:not\s+)?_flag\("([A-Z0-9_]+)",\s*'
     r'(?:True|False)\)', re.M)
@@ -109,16 +117,24 @@ def _claim_side(text: str):
 def _bindings() -> dict[str, list[str]]:
     """{module dotted name -> [constant, ...]} for every `_flag(...)` binding.
 
-    Scans ALL of `src/`, not just `nif_convert.py`: a flag bound in another
-    module is exactly as capable of drifting away from its prose.
+    PARSED, via `flag_surface.declared_all()`, not matched. This used to use the
+    single-line `_BIND` regex below while its own sibling's docstring already
+    recorded that pattern as broken: "the single-line pattern missed 14 of 152
+    flags ... six are written in forms one line cannot hold". Six bindings were
+    therefore invisible to a test whose entire job is to catch a constant
+    drifting away from the prose beside it -- among them
+    COHERENCE_REPAIR_OUTSIDE_BODY, whose prose then went stale unnoticed.
+
+    The population floor could not see the gap either: 142 of 148 resolving is
+    comfortably over `>= 100`. A floor catches a collapse, never a shortfall.
     """
     out: dict[str, list[str]] = {}
-    for f in sorted((REPO_ROOT / "src").glob("*.py")):
-        names = [m[0] for m in _BIND.findall(
-            f.read_text(encoding="utf-8", errors="replace"))]
-        if names:
-            out["src." + f.stem] = names
-    return out
+    for row in _flag_surface().declared_all():
+        const = row.get("const")
+        if not const:
+            continue          # read inline, never bound -- no constant to resolve
+        out.setdefault("src." + row["module"], []).append(const)
+    return {m: sorted(set(v)) for m, v in sorted(out.items())}
 
 
 def _resolve(bindings: dict[str, list[str]]) -> dict[str, bool]:
@@ -322,3 +338,32 @@ def test_an_opt_in_banner_for_a_REAL_opt_in_is_not_flagged(state):
     assert any(on is False for *_rest, on in rows), (
         "no genuinely default-off opt-in banner survives the check, which "
         "means it is rejecting all of them rather than the stale ones")
+
+
+def test_the_parse_is_a_strict_superset_of_the_single_line_pattern():
+    """Control for the repoint above. `_bindings()` used the `_BIND` regex while
+    `flag_surface.declared_all()`'s own docstring already recorded that pattern
+    as missing six bindings one line cannot hold -- a split binding, two float
+    ternaries, and reads with no constant at all.
+
+    Asserting "the parse finds MORE" rather than a fixed count, so this stays
+    true as flags come and go. The named six are spelled out because they are
+    the ones that were actually invisible, and one of them
+    (COHERENCE_REPAIR_OUTSIDE_BODY) had gone stale unnoticed while it was.
+    """
+    parsed = {c for v in _bindings().values() for c in v}
+    regexed = set()
+    for f in sorted((REPO_ROOT / "src").glob("*.py")):
+        regexed.update(m[0] for m in _BIND.findall(
+            f.read_text(encoding="utf-8", errors="replace")))
+
+    assert regexed - parsed == set(), (
+        "the single-line pattern sees bindings the parse does not -- the parse "
+        "was supposed to be a superset:\n  " + "\n  ".join(sorted(regexed - parsed)))
+    assert len(parsed) > len(regexed), (
+        "the parse no longer finds more than the regex; either every "
+        "multi-line binding was rewritten, or _bindings() has been repointed "
+        "back at the pattern")
+    for name in ("COHERENCE_REPAIR_OUTSIDE_BODY", "WEIGHT_PARTNER_JIGGLE_SYNC",
+                 "BODY_LOOKUP_PREFERS_BASESHAPE", "SPLIT_COL_DECLARED_BONES"):
+        assert name in parsed, f"{name} is bound in src/ and must be scored"

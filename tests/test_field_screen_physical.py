@@ -337,7 +337,24 @@ def test_the_guard_does_not_bind_on_a_piece_with_room(monkeypatch):
     assert np.array_equal(guarded, unguarded)
 
 
-def test_the_default_is_off():
+def test_the_default_is_on():
     """Resolve the default from the CODE. A flag default written anywhere else
-    is a dated claim."""
-    assert fg._flag("CBBE2UBE_FIELD_SCREEN_PHYSICAL", False) is False
+    is a dated claim.
+
+    This test used to assert the OPPOSITE and pass. It read
+    `fg._flag("CBBE2UBE_FIELD_SCREEN_PHYSICAL", False) is False` while the
+    constant has been bound to the KILL switch
+    (`not _flag("CBBE2UBE_NO_FIELD_SCREEN_PHYSICAL", False)`) since a22f094, so
+    the positive name is read nowhere -- the assertion only proved that an unset
+    env with default False returns False.
+
+    Read the CONSTANT, in a subprocess with every `CBBE2UBE_*` stripped.
+    """
+    import sys
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent
+    sys.path.insert(0, str(root))
+    from scripts.analysis import flag_surface
+    got = flag_surface.resolved_values(
+        ["FIELD_SCREEN_PHYSICAL"], "nif_convert_fitgeom")
+    assert got["FIELD_SCREEN_PHYSICAL"] is True

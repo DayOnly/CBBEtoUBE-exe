@@ -118,17 +118,35 @@ def test_without_a_body_it_is_todays_behaviour():
     assert w._hold_repair_outside_body(b, a, None, BODY_N) is a
 
 
-def test_off_by_default_and_the_flag_is_what_switches_it(monkeypatch):
+def test_the_flag_is_what_switches_it(monkeypatch):
     monkeypatch.setattr(nc, "COHERENCE_REPAIR_OUTSIDE_BODY", False)
     b, a = _pair([1.0], [-0.25])
     assert w._hold_repair_outside_body(b, a, BODY, BODY_N) is a
 
 
-def test_the_default_is_off():
+def test_the_default_is_on():
     """Resolve the default from the CODE -- a default written anywhere else is a
-    dated claim."""
-    from src.envflags import flag
-    assert flag("CBBE2UBE_COHERENCE_REPAIR_OUTSIDE_BODY", False) is False
+    dated claim.
+
+    This test used to assert the OPPOSITE and pass, which is the exact failure
+    its own docstring is about. It read
+    `flag("CBBE2UBE_COHERENCE_REPAIR_OUTSIDE_BODY", False) is False` -- but
+    since a22f094 the constant is bound to the KILL switch
+    (`not _flag("CBBE2UBE_NO_COHERENCE_REPAIR_OUTSIDE_BODY", False)`), so the
+    positive name is read nowhere in src/. The assertion had stopped being about
+    this flag at all and only proved that an unset env with default False
+    returns False.
+
+    Read the CONSTANT, in a subprocess with every `CBBE2UBE_*` stripped, so no
+    env name can go dead under it again.
+    """
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from scripts.analysis import flag_surface
+    got = flag_surface.resolved_values(
+        ["COHERENCE_REPAIR_OUTSIDE_BODY"], "nif_convert")
+    assert got["COHERENCE_REPAIR_OUTSIDE_BODY"] is True
 
 
 def test_it_fails_soft_on_a_malformed_body():

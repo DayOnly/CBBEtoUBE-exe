@@ -47,12 +47,17 @@ from src import nif_convert as nc
 from src.envflags import flag, knob
 from tests import _converter_sources as _cs  # source text across the split modules
 
-PROMOTED = {
+PROMOTED_2026_08_22 = {
     "mixed_cloth_clearance": ("MIXED_CLOTH_CLEARANCE", True),
     "panel_rigid_ride": ("PANEL_RIGID_RIDE", True),
     "per_anchor_seed": ("PER_ANCHOR_ANCHOR_SEED", True),
     "panel_rigidity": ("PANEL_RIGIDITY", 0.75),
 }
+# The union every check below is parametrized over. Named per promotion first,
+# because the 2026-08-22 record used to be derived by SUBTRACTING the later
+# dicts from this union -- so adding a fourth promotion broke the FIRST record's
+# test, which is a fragility, not a finding.
+PROMOTED = dict(PROMOTED_2026_08_22)
 
 # #defaults-promoted-2026-08-26 -- the two BUG-15(a)/(b) fixes, plus
 # `ride_body_floor` (see its own note below). Pinned in the
@@ -96,6 +101,48 @@ PROMOTED_2026_09_02 = {
 }
 PROMOTED.update(PROMOTED_2026_09_02)
 
+# 2026-09-09. THE PROMOTION THAT WAS NEVER PINNED. a22f094 flipped six flags to
+# default ON and added neither a `_DEFAULTS_PROMOTED_*` record nor a dict here,
+# and because every test below asserts set-equality against these hard-coded
+# lists, nothing could notice: all six shipped with none of this file's
+# guarantees held. Added during the 1.4 tidy.
+#
+# Five were promotions in the 2026-08-22 sense -- ON in the live recipe for
+# weeks while the code shipped them OFF. `pair_tri_names` is new work that
+# flipped in the same commit (dead sliders at weight 100 on 54 of 1536 pairs,
+# A/B 5 -> 0).
+#
+# All six bind to a KILL switch, and TWO tests elsewhere asserted the POSITIVE
+# env name's default and passed while claiming the opposite of the truth. A
+# default resolved from anything but the CONSTANT is a dated claim.
+PROMOTED_2026_09_09 = {
+    "authored_inflate": ("AUTHORED_INFLATE", True),
+    "authored_antipoke": ("AUTHORED_ANTIPOKE", True),
+    "phase1_bust_clearance": ("PHASE1_BUST_CLEARANCE", True),
+    "pair_tri_names": ("PAIR_TRI_NAMES", True),
+    "coherence_repair_outside_body": ("COHERENCE_REPAIR_OUTSIDE_BODY", True),
+    "field_screen_physical": ("FIELD_SCREEN_PHYSICAL", True),
+}
+PROMOTED.update(PROMOTED_2026_09_09)
+
+# Constants NOT reachable as `nc.<NAME>`. The module split left some flags bound
+# in a sibling module and not re-exported, so `getattr(nc, attr)` returns the
+# default and the check quietly passes on nothing.
+_MODULE_OF = {"FIELD_SCREEN_PHYSICAL": "src.nif_convert_fitgeom"}
+
+
+def _const(attr):
+    """The live value of a promoted constant, wherever it is bound."""
+    if attr in _MODULE_OF:
+        import importlib
+        mod = importlib.import_module(_MODULE_OF[attr])
+    else:
+        mod = nc
+    assert hasattr(mod, attr), (
+        f"{attr} is not bound on {mod.__name__} -- either it moved and "
+        "_MODULE_OF needs the new home, or the promotion record is stale")
+    return getattr(mod, attr)
+
 
 def test_the_in_code_record_matches_this_test():
     """`nif_convert._DEFAULTS_PROMOTED_2026_08_22` is the block four comments in
@@ -107,9 +154,7 @@ def test_the_in_code_record_matches_this_test():
     nothing reads is just a comment with extra syntax, and the next cleanup
     would delete it as a dead constant."""
     assert set(nc._DEFAULTS_PROMOTED_2026_08_22) == {
-        attr for key, (attr, _want) in PROMOTED.items()
-        if key not in PROMOTED_2026_08_26
-        and key not in PROMOTED_2026_09_02}, (
+        attr for attr, _want in PROMOTED_2026_08_22.values()}, (
         "the in-code promotion record and this test disagree about WHICH "
         "defaults were promoted on 2026-08-22")
 
@@ -170,7 +215,7 @@ def test_code_and_gui_agree_on_the_new_default(key):
     """Two sources of truth for one default is how a GUI ends up reporting
     'changed from default' for a value that IS the default."""
     attr, want = PROMOTED[key]
-    assert getattr(nc, attr) == want, f"{attr} is not {want!r}"
+    assert _const(attr) == want, f"{attr} is not {want!r}"
     assert gs.defaults()[key] == want, f"GUI default for {key} is not {want!r}"
 
 
@@ -304,3 +349,46 @@ def test_the_stale_header_scan_can_actually_fail():
         [(attr, f"# #{on} -- DEFAULT ON since 2026-01-01 (was opt-in)")]), (
         "the scan now flags a CORRECTED banner, so it would fire on every "
         "promotion that documents its own history")
+
+
+def test_the_2026_09_09_record_matches_this_test():
+    """Same contract as the three records above, for the fourth promotion.
+
+    This one is why the contract is worth having: a22f094 promoted six defaults
+    and wrote NEITHER side of it, so for eight days six flags shipped ON with
+    none of this file's guarantees pinned -- and two tests elsewhere asserted
+    they were OFF, and passed."""
+    assert set(nc._DEFAULTS_PROMOTED_2026_09_09) == {
+        attr for attr, _want in PROMOTED_2026_09_09.values()}, (
+        "the in-code 2026-09-09 promotion record and this test disagree about "
+        "WHICH defaults were promoted")
+
+
+def test_every_in_code_promotion_record_is_pinned_here():
+    """THE GAP ITSELF, closed. Every record above is checked by a test named
+    after its date -- which is exactly why a promotion with NO record went
+    unnoticed for eight days: nothing enumerated the records.
+
+    Discovered from the module, so the next `_DEFAULTS_PROMOTED_*` that lands
+    without a dict here fails on arrival instead of on the next audit.
+    """
+    records = {n for n in dir(nc) if n.startswith("_DEFAULTS_PROMOTED_")}
+    pinned = {"_DEFAULTS_PROMOTED_2026_08_22", "_DEFAULTS_PROMOTED_2026_08_26",
+              "_DEFAULTS_PROMOTED_2026_09_02", "_DEFAULTS_PROMOTED_2026_09_09"}
+    assert records == pinned, (
+        "a promotion record exists that this file does not pin (or one it "
+        "pins has gone): " + repr(records ^ pinned) + ". Add a "
+        "PROMOTED_<date> dict and a record-matches test in the same change "
+        "as the promotion -- that is the convention the 2026-09-09 six broke.")
+
+
+def test_a_promoted_constant_is_read_from_the_module_that_binds_it():
+    """Control for `_const`. `FIELD_SCREEN_PHYSICAL` binds in
+    `nif_convert_fitgeom` and is not re-exported, so `getattr(nc, attr)` -- what
+    every check here used before -- sees nothing at all."""
+    assert not hasattr(nc, "FIELD_SCREEN_PHYSICAL"), (
+        "it is re-exported now; drop it from _MODULE_OF rather than keeping "
+        "two ways to reach one constant")
+    assert _const("FIELD_SCREEN_PHYSICAL") is True
+    assert _const("AUTHORED_INFLATE") is nc.AUTHORED_INFLATE
+

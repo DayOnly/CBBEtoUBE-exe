@@ -7434,6 +7434,40 @@ _DEFAULTS_PROMOTED_2026_09_02 = (
 )
 
 
+# ---- DEFAULTS PROMOTED 2026-09-09 ------------------------------------------
+# The fourth promotion, and it broke the convention the three above set: a22f094
+# flipped SIX flags to default ON and added NEITHER a record here NOR a pinned
+# dict in `tests/test_promoted_defaults.py`. That test asserts set-equality
+# against its own hard-coded lists, so it could not notice the omission, and the
+# guarantees it exists to hold -- code and GUI agree, at-default emits no env,
+# and the OFF case is still expressible -- were unpinned for all six. Recorded
+# here 2026-09-09 during the 1.4 release tidy, and consumed by that test.
+#
+# WHY THEY MOVED. Five had been ON in the live recipe for weeks while the code
+# shipped them OFF: the same situation as 2026-08-22, and the same argument --
+# a defaults-only convert produced a configuration nobody had ever run, while
+# the judged packs were all built with them on. The sixth, `PAIR_TRI_NAMES`, is
+# new work rather than a promotion (dead sliders at weight 100 on 54 of 1536
+# pairs, A/B 5 -> 0) and is here because it flipped in the same commit.
+#
+# Every one of the six is bound to a KILL switch (`not _flag("CBBE2UBE_NO_...")`)
+# rather than to the positive name. Two tests still asserted the positive name's
+# default and passed while asserting the OPPOSITE of the truth -- see
+# `tests/test_coherence_repair_outside_body.py` and
+# `tests/test_field_screen_physical.py`. Resolve a default from the CONSTANT.
+#
+# `FIELD_SCREEN_PHYSICAL` binds in `nif_convert_fitgeom` and is NOT re-exported
+# here; the test resolves it from that module by name.
+_DEFAULTS_PROMOTED_2026_09_09 = (
+    "AUTHORED_INFLATE",
+    "AUTHORED_ANTIPOKE",
+    "PHASE1_BUST_CLEARANCE",
+    "PAIR_TRI_NAMES",
+    "COHERENCE_REPAIR_OUTSIDE_BODY",
+    "FIELD_SCREEN_PHYSICAL",
+)
+
+
 # #skin-influence-cap -- apply the same 4-influence cap to the MAIN skin install.
 # `_install_skin` gates on "only add bones that still carry weight", but it measures
 # that BEFORE the save, and the save keeps only the 4 largest influences per vertex

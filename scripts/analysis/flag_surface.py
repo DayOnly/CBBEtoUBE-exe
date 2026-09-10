@@ -70,11 +70,25 @@ def declared(src_text: str) -> list[tuple[str, str, bool, bool]]:
     return out
 
 
-# Modules that bind pass flags. `nif_convert.py` stopped being the whole
-# surface at the 2026-09-01 split, and a census reading only the monolith
-# reports the flag surface as smaller than it is.
-_FLAG_MODULES = ("nif_convert", "nif_convert_fitgeom", "nif_convert_layers",
-                 "nif_convert_physics")
+def _discover_flag_modules() -> "tuple[str, ...]":
+    """Every `src/` module that binds a pass flag, DISCOVERED rather than listed.
+
+    `nif_convert.py` stopped being the whole surface at the 2026-09-01 split,
+    and a census reading only the monolith reports the flag surface as smaller
+    than it is. The replacement was a hard-coded four-module tuple, which is the
+    same failure one release later: it was correct at the moment it was written
+    and would have gone silently short the first time a flag was bound in a
+    fifth module. Discovered, it cannot.
+    """
+    src = _REPO / "src"
+    if not src.is_dir():
+        return ()
+    return tuple(sorted(
+        p.stem for p in src.glob("*.py")
+        if "_flag(" in p.read_text(encoding="utf-8", errors="replace")))
+
+
+_FLAG_MODULES = _discover_flag_modules()
 
 
 def declared_all() -> "list[dict]":
