@@ -66,8 +66,19 @@ BANDS = ("underbust", "bust", "upperchest", "strap")
 
 
 def load(path: Path):
-    """Records plus a torn-line count. The sink is appended by pool workers, so
-    the last line can be mid-write; that is one lost record, not a failure."""
+    """Records plus a torn-line count. The sink is appended by pool workers
+    with no line-atomic append, so a line can tear; that is a lost record, not
+    a failure.
+
+    CORRECTED 2026-09-08: this said "the LAST line can be mid-write", which
+    reads as a truncated tail. Measured on two 1502-NIF arms of the SAME code,
+    the torn lines were MID-FILE -- line 355 of 1763 in one arm, lines 419 and
+    747 of 1764 in the other -- because concurrent workers INTERLEAVE, splicing
+    one record into another. Two consequences before this file is used as
+    evidence: the tear count differs between two arms of one code state (1 vs 2
+    here), and a record present in one arm can be absent from the other purely
+    because it was spliced. **`standoff_audit.jsonl` cannot serve as an A/B
+    artefact, and a diff on it is not a finding.**"""
     rows, torn = [], 0
     with open(path, encoding="utf-8", errors="replace") as f:
         for line in f:

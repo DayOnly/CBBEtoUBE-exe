@@ -66,6 +66,18 @@ def _body():
     return bV, bN, fm.front_slab(bV, bN, 90.0, 102.0)
 
 
+
+@pytest.fixture(autouse=True)
+def _band_audit_on(monkeypatch):
+    """These tests exercise the RAY-CAST recorders, which default OFF.
+
+    `#standoff-band-audit` split one gate into two on 2026-08-23: the cast is
+    17% of a conversion and nothing in the shipping pipeline reads what it
+    produces, so it is opt-in. A test of the recorder has to opt in, or it is
+    asserting on the gate rather than on the measurement.
+    """
+    monkeypatch.setenv("CBBE2UBE_STANDOFF_BAND_AUDIT", "1")
+
 def test_gate_admits_a_garment_on_the_band():
     bV, bN, idx = _body()
     gV, _gT, _n = _sheet(90.0, 102.0, y=1.0)

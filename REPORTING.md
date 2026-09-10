@@ -12,9 +12,9 @@ and don't post the same thing in two of them.
 Not sure? **If you want it fixed, open an issue. If you want an answer, start a
 discussion.** Posting a question as an issue is not a problem — it gets moved.
 
-Whichever you pick, start in the GUI: click **Copy report**. It fills in your
-version and the last run's numbers and puts the whole thing on your clipboard.
-Then fill in the two `<...>` lines and the `[ ]` checkboxes.
+Whichever you pick, start in the GUI: **Help ▸ Copy problem report**. It fills
+in your version and the last run's numbers and puts the whole thing on your
+clipboard. Then fill in the two `<...>` lines and the `[ ]` checkboxes.
 
 ---
 
@@ -57,8 +57,8 @@ For anything that isn't a confirmed bug: setup trouble, "is this supposed to
 happen?", asking whether a modlist is supported, or showing off a conversion
 that came out well.
 
-Paste the **Copy report** output into a discussion the same way you would into
-chat — wrap it in a triple-backtick code fence. Discussions render Markdown, so
+Paste the **Help ▸ Copy problem report** output into a discussion the same way
+you would into chat — wrap it in a triple-backtick code fence. Discussions render Markdown, so
 the fence keeps the indentation and checkboxes intact, and you can drag the
 diagnostics zip straight in.
 
@@ -68,12 +68,12 @@ which a chat message scrolling out of history does not.
 
 ## Option 3 — Paste into chat
 
-Click **Copy report** in the GUI and paste. It looks like this:
+Use **Help ▸ Copy problem report** in the GUI and paste. It looks like this:
 
 ```
 CBBEtoUBE problem report
 ========================
-Version:  1.3-alpha
+Version:  1.4
 Type:     Conversion problem - output looks wrong in game
 Symptom:  Armor is invisible / does not render
 
@@ -103,12 +103,12 @@ LAST RUN
   FAILED: OtherMod: RuntimeError('bad nif')
 
 DIAGNOSTICS
-  [ ] CBBEtoUBE_diagnostics_<timestamp>.zip  (GUI -> Export diagnostics)
+  [ ] CBBEtoUBE_diagnostics_<timestamp>.zip  (GUI: Help > Save diagnostics zip)
       it holds your MO2 paths, profile name, and load-order mod names -
       look it over before posting it publicly.
 
 WHERE TO SEND THIS
-  want it fixed  -> .../issues/new?template=conversion_problem.yml&version=1.3-alpha
+  want it fixed  -> .../issues/new?template=conversion_problem.yml&version=1.4
   want an answer -> https://github.com/DayOnly/CBBEtoUBE-exe/discussions
 ```
 
@@ -122,7 +122,7 @@ The format is plain ASCII on purpose, so it survives a paste anywhere.
 
 ## Attach the diagnostics zip
 
-Click **Export diagnostics** in the GUI. It writes
+In the GUI, choose **Help ▸ Save diagnostics zip**. It writes
 `CBBEtoUBE_diagnostics_<timestamp>.zip` and opens the folder. Inside:
 
 | File | What it is |

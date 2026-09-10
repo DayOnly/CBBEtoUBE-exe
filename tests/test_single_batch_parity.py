@@ -39,6 +39,7 @@ harness cannot quietly grow a second pipeline again.
 """
 import ast
 import inspect
+import re
 from pathlib import Path
 
 import pytest
@@ -64,14 +65,26 @@ def test_harness_dispatches_through_the_batch_worker(src_text):
 
 
 def test_work_item_matches_what_the_worker_unpacks(src_text):
-    """The worker unpacks (src, dst, ube_ref, slots[, alt_tex]); the harness
-    must build exactly that, in that order."""
+    """The harness must build exactly the tuple the worker unpacks.
+
+    The ARITY IS READ OFF THE WORKER, not written down here, so growing the work
+    item cannot leave this test pinning a stale shape -- which is precisely what
+    happened when `variant_sources` was added as element 6 for
+    #tri-variant-collision. Every optional element the worker reads is one the
+    harness must supply, or the single-piece path silently converts with a
+    different contract than the batch.
+    """
     worker = inspect.getsource(ac._nif_convert_worker)
-    assert "item[:4]" in worker and "item[4]" in worker
+    head = re.search(r"item\[:(\d+)\]", worker)
+    assert head, "the worker no longer unpacks a fixed head of the work item"
+    arity = max([int(head.group(1))]
+                + [int(m) + 1 for m in re.findall(r"item\[(\d+)\]", worker)])
     tree = ast.parse(src_text)
     tuples = [n for n in ast.walk(tree)
-              if isinstance(n, ast.Tuple) and len(n.elts) == 5]
-    assert tuples, "expected a 5-element work-item tuple in the harness"
+              if isinstance(n, ast.Tuple) and len(n.elts) == arity]
+    assert tuples, (
+        f"the worker reads {arity} work-item elements; expected a "
+        f"{arity}-element tuple in the harness")
 
 
 def test_slots_use_the_shared_resolver_not_a_private_scan(src_text):

@@ -70,6 +70,8 @@ def main() -> int:
              if "1stperson" not in f.lower()]
     if limit:
         files = files[:limit]
+    from scripts.analysis._census_common import require_population
+    require_population(files, "_1 NIF(s) under the output")  # 0/0 is not a pass
     print(f"checking {len(files)} mesh(es) under {root}\n", flush=True)
 
     tot_over = tot_bad = n_shapes = 0

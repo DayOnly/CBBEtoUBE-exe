@@ -52,12 +52,27 @@ is the failure mode this project keeps hitting:
     the body moved, that IS the finding, not a broken harness.
 """
 import argparse
+import os
 import sys
 from pathlib import Path
 
 _REPO = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(_REPO))
 sys.path.insert(0, str(_REPO / ".pynifly"))
+
+# RESOLVE THE MO2 LAYOUT BEFORE `nif_convert` IS ASKED FOR ANY PATH. Without
+# this, `_find_ube_body_osd()` returns nothing and the tool aborts with "no body
+# OSD resolved" -- which reads like the modlist is missing the file rather than
+# like the tool never looked. It cost a session's worth of confusion on the one
+# harness that can answer the question every clearance verdict here is blocked
+# on. Set CBBE2UBE_MO2_INI to point at a different instance.
+from src import paths                                  # noqa: E402
+try:
+    paths.export_to_env(paths.discover_layout())
+except Exception as _le:                               # noqa: BLE001
+    print(f"WARNING: could not resolve an MO2 layout ({_le}); body/garment "
+          f"lookups will fall back to whatever is already in the environment",
+          file=sys.stderr)
 
 import numpy as np                                    # noqa: E402
 from scripts.analysis import standoff_audit as sa              # noqa: E402
@@ -78,6 +93,39 @@ BANDS = {"bust": bz.breast_mask, "butt": bz.butt_mask, "back": bz.back_mask}
 def _world(shape):
     return nc._verts_skin_to_world(np.asarray(shape.verts, np.float64),
                                    nc._shape_global_to_skin(shape))
+
+
+def _aligned(shape, ref):
+    """Shape verts in whichever frame lands them ON the reference body.
+
+    `_verts_skin_to_world` is a NORMALIZER: a shape already stored in world
+    carries an identity transform and is untouched. But the converter's OUTPUT
+    routinely stores world verts WITH a non-identity transform still attached,
+    and transforming those again throws them hundreds of units away. Measured on
+    a copy-path cuirass: raw z 11..119 (on the body, 11..114) became world z
+    -320..292, and the harness then reported 0.00% band coverage -- a FALSE ZERO
+    that reads exactly like "this garment does not clip".
+
+    So the frame is chosen by evidence, per shape: whichever candidate lands
+    nearer the reference wins. Frames that agree (identity transform) are not
+    ambiguous -- either will do.
+    """
+    raw = np.asarray(shape.verts, np.float64)
+    try:
+        w = _world(shape)
+    except Exception:
+        return raw
+    if float(np.abs(raw - w).max()) < 1e-6:
+        return raw
+    # PROXIMITY, not a z-range test. A z-range check is too permissive -- a
+    # shape squashed near the origin still falls inside a padded body range, so
+    # it "passes" and the wrong frame is kept. That heuristic was tried and
+    # rejected once already this session; use the distance to the body itself.
+    from scipy.spatial import cKDTree
+    tree = cKDTree(np.asarray(ref, np.float64))
+    dr = float(np.median(tree.query(raw)[0]))
+    dw = float(np.median(tree.query(w)[0]))
+    return raw if dr <= dw else w
 
 
 def _sparse_to_dense(offsets, n):
@@ -196,7 +244,7 @@ def _resolve_preset(pv, bm):
     return sel, missing, fuzzy
 
 
-def _garment_parts(nf, p, hits_provider):
+def _garment_parts(nf, p, bV):
     """[(shape, bind verts, tris, per-slider morph table)] for rendered shapes."""
     out = []
     for s in nf.shapes:
@@ -207,7 +255,7 @@ def _garment_parts(nf, p, hits_provider):
             continue
         if not any(v for v in (s.textures or {}).values()):
             continue
-        gV = _world(s)
+        gV = _aligned(s, bV)
         gT = np.asarray(s.tris, np.int64).reshape(-1, 3)
         gm, _tn = garment_morphs(p, nm, len(gV))
         out.append((nm, gV, gT, gm))
@@ -236,7 +284,7 @@ def _sweep(a, nf, bV, bT, bN, bm, p) -> int:
     if len(idx) < 20:
         print(f"ABORT: {a.band} band has {len(idx)} verts", file=sys.stderr)
         return 3
-    parts = _garment_parts(nf, p, None)
+    parts = _garment_parts(nf, p, bV)
     if not parts:
         print("ABORT: no rendered garment shape", file=sys.stderr)
         return 3
@@ -304,6 +352,10 @@ def main() -> int:
     ap.add_argument("--band", default="bust", choices=sorted(BANDS))
     ap.add_argument("--list", action="store_true",
                     help="list the body sliders that match and exit")
+    ap.add_argument("--body",
+                    help="body NIF to morph against; defaults to the piece's "
+                         "injected BaseShape, or the UBE template body for a "
+                         "copy-path piece that has none")
     ap.add_argument("--sweep", action="store_true",
                     help="score EVERY slider that moves the band, ranked by the "
                          "clipping it costs")
@@ -321,10 +373,26 @@ def main() -> int:
     p = Path(a.nif)
     nf = nc._pynifly().NifFile(filepath=str(p))
     body = next((s for s in nf.shapes if s.name == "BaseShape"), None)
+    body_src = "injected BaseShape"
     if body is None:
-        print("ABORT: no injected BaseShape -- phase-1 piece, nothing to morph "
-              "against", file=sys.stderr)
-        return 3
+        # THE COPY PATH HAS NO INJECTED BODY, and refusing here made this metric
+        # structurally blind to ~78% of the pack -- the majority, and the half
+        # where `#panel-rigid-early-clearance` shows its largest bind-pose gain.
+        # A phase-1 piece was fitted against the UBE TEMPLATE body, so that is
+        # the correct reference for it; the OSD morphs key by vertex count and
+        # apply to it unchanged. Say which body is in use on every run: a clip
+        # number means something different against a preset-baked injected body
+        # than against the slider-zero template, and silently swapping them would
+        # be the kind of substitution that reads as a real difference.
+        ext = a.body or nc._find_ube_femalebody("_1")
+        if not ext:
+            print("ABORT: no injected BaseShape and no UBE template body "
+                  "resolved -- nothing to morph against", file=sys.stderr)
+            return 3
+        bn_nif = nc._pynifly().NifFile(filepath=str(ext))
+        body = max(bn_nif.shapes, key=lambda s: len(s.verts))
+        body_src = f"UBE template body ({Path(ext).name}, no injected BaseShape)"
+    print(f"body source  : {body_src}")
     bV = _world(body)
     bT = np.asarray(body.tris, np.int64).reshape(-1, 3)
     bN = np.asarray(body.normals, np.float64)
@@ -388,7 +456,7 @@ def main() -> int:
             continue
         if not any(v for v in (s.textures or {}).values()):
             continue
-        gV = _world(s)
+        gV = _aligned(s, bV)
         gT = np.asarray(s.tris, np.int64).reshape(-1, 3)
         gm, tri_name = garment_morphs(p, nm, len(gV))
         dG = np.zeros_like(gV)

@@ -20,10 +20,14 @@
 #
 #     python -m vulture src tests scripts cbbe_to_ube_main.py vulture_whitelist.py
 #
-# A NEW dead symbol that isn't in this file will still surface. Removing a symbol
-# from the codebase and forgetting its whitelist line is harmless (vulture ignores
-# unknown names here). Do NOT add a symbol here to silence it without proving it is
-# genuinely intentional -- that defeats the tool.
+# A NEW dead symbol that isn't in this file will still surface. Do NOT add a symbol
+# here to silence it without proving it is genuinely intentional -- that defeats the
+# tool. And when you DELETE a symbol, delete its line here in the same change: an
+# entry for a name that no longer exists is a standing exemption that can only ever
+# hide a future real finding under that name. (This paragraph used to say the
+# opposite -- "harmless (vulture ignores unknown names here)" -- while the note at
+# the end of the next section said the true thing. Three stale entries were living
+# in the gap; they were removed 2026-09-09.)
 
 # ---- Public/symmetric API kept for completeness (no live caller today) ----
 _.nif_converted     # one leg of the converted/skipped/errors result triple (siblings live)
@@ -32,10 +36,16 @@ _.offsets_dict      # OsdMorph dict-view accessor -- public parser API
 _.by_name           # OsdFile name-index accessor -- public parser API
 
 # ---- Documented design knowledge / staged features (deliberately unwired) ----
-FEMINIZE_MALE_ARMOR             # wiring switch for feminize_male_armor_conform (tested, parked)
-SHADER_TYPE_DEFAULT             # documents the Shader_Type=0 fix for NioOverride morphing
-SHADER_FLAGS_1_ENV_MAPPING_BIT  # documents the 0x80 env-map bit that blocks morphing
-_strip_alpha_property           # empirical NiAlphaProperty/BodyMorph finding; cross-ref'd in-code
+# `FEMINIZE_MALE_ARMOR`, `SHADER_TYPE_DEFAULT` and `SHADER_FLAGS_1_ENV_MAPPING_BIT`
+# REMOVED 2026-09-09, for the reason the note below already gives: all three were
+# deleted from the tree (ba73f12, 87daf2a) BEFORE this file's own last edit, which
+# removed `_strip_alpha_property` on exactly that reasoning and missed these.
+# `_strip_alpha_property` REMOVED from this whitelist 2026-08-23: the function
+# was deleted in 682284f, so the entry suppressed a name that no longer exists,
+# and its stated justification ("cross-ref'd in-code") had stopped being true
+# too -- the single comment referencing it misdescribed what it did. A whitelist
+# entry for a deleted symbol is not harmless: it is a standing exemption that
+# can only ever hide a FUTURE real finding under the same name.
 
 # ---- False positives: written but not read back (schema fields / struct writes) ----
 cli                 # Setting dataclass field, set via constructor kwargs

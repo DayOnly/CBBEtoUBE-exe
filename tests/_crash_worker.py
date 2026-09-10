@@ -31,6 +31,15 @@ class R:
     reason: str = ""
 
 
+def echo_pid(item):
+    """Where and when this item ran: `reason` = "<pid>:<perf_counter_ns>". The
+    pair-unit test reads it to assert a `_1` and its `_0` shared a process and
+    ran in order."""
+    from time import perf_counter_ns
+    return R(src_path=item[0], dst_path=str(item[1]),
+             reason=f"{os.getpid()}:{perf_counter_ns()}")
+
+
 def crash_or_echo(item):
     # item = (src, dst, ...). Simulate a native pynifly crash -- abrupt process
     # death the worker's own try/except can't catch -- for any "POISON" item.

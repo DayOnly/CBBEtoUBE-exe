@@ -24,8 +24,12 @@ Given:
 
 Produces a TriFile that NioOverride loads at runtime: one TriShape per armor
 shape, each carrying a TriMorph per UBE slider. Deltas are propagated from
-the body to each armor vert via adaptive-K nearest-body-vertex IDW (K varies
-1 / 4 / 16 by per-vert standoff distance from the body; see generate_armor_tri).
+the body to each armor vert via K=16 nearest-body-vertex IDW -- BUT read
+`_BODY_MOTION_MATCH` before reasoning about that support: at stand-off
+<= _MATCH_NEAR (4.0u) the IDW result is DISCARDED and the vert copies its
+SINGLE nearest body vert verbatim, so on fitted clothing K never enters the
+answer. There is no adaptive K; the "1 / 4 / 16 by stand-off" this docstring
+used to claim was removed and only the exponent still adapts (see #bug-01).
 
 This replaces the BodySlide build-time workflow with runtime morph
 application, so users only need to ship the TRI + ESP patch rather than
@@ -125,6 +129,7 @@ def generate_armor_tri(
     carrier_shape_name: str | None = None,
     extra_body_osds: "dict[str, OsdFile] | None" = None,
     armor_vert_extremity_fractions: "dict[str, np.ndarray] | None" = None,
+    also_named: "dict[str, str] | None" = None,
 ) -> TriFile:  # noqa: docstring continues below
     """Build a BODYTRI for the armor by propagating UBE body slider deltas.
 
@@ -162,6 +167,15 @@ def generate_armor_tri(
                        Hands/Feet inside armor stay at default while
                        nude Hands/Feet morph per RaceMenu sliders.
 
+    `also_named`: {shape name -> a SECOND name to emit the same morph
+                   table under}. One tri serves both halves of a `_0`/`_1`
+                   pair, and the author may have named the two halves'
+                   shapes differently, in which case the half the tri was
+                   not built from names nothing in it and morphs nothing.
+                   Built by `nif_convert_trigen.pair_shape_aliases`, which
+                   is where the topology precondition is proven; here it is
+                   a pure alias. #pair-tri-names
+
     Output TRI: one TriShape per armor shape (plus optional BaseShape).
     Each TriShape has TriMorphs named after the body slider — e.g.
     'BreastsBigger', 'BigButt'. Per-shape morphs share the slider name,
@@ -183,8 +197,16 @@ def generate_armor_tri(
         if name not in extra_names
     }
 
-    # Precompute per-shape K-NN data with K=16 neighbors. Adaptive K per vert
-    # (1 for body-hugging, up to 16 for far stand-off) is selected during propagation.
+    # Precompute per-shape K-NN data with K=16 neighbors. K is FIXED -- there is
+    # no adaptive-K selection anywhere; what varies per vert is (a) the IDW
+    # exponent below and (b) the body-motion-match blend, which at stand-off
+    # <= _MATCH_NEAR REPLACES the whole IDW average with neighbors[:, 0] alone.
+    # So for any hugging vert this support set is computed and then thrown away.
+    # Do not reason about QUERY_K as the lever for cross-layer morph shear
+    # (#bug-01): both layers of a fitted garment sit inside the pure-copy zone,
+    # where widening or narrowing K changes NOTHING. Measured 2026-08-22 on the
+    # real UBE body: inner layer stand-off 1.26u, outer 3.12u, match_w 1.000 on
+    # 100% of both.
     QUERY_K = 16
     qk = min(QUERY_K, body_n)
     shape_knn: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
@@ -295,14 +317,24 @@ def generate_armor_tri(
     #
     # NOT for body-hugging bands. This pass exists because the bare IDW diluted
     # each shape by its OWN stand-off, so a band and its layer moved by different
-    # amounts and the band re-sank. Body-motion match removes that cause: every
-    # hugging shape now copies the body exactly (ratio 1.0), so a hugging band and
-    # its hugging layer already move in lockstep. Re-syncing them here instead
-    # OVERWRITES the exact match with the under-layer's delta sampled at a
+    # amounts and the band re-sank. Body-motion match removes THAT cause: every
+    # hugging shape now copies the body exactly (ratio 1.0). Re-syncing them here
+    # instead OVERWRITES the exact match with the under-layer's delta sampled at a
     # different body location -- measured on a steel cuirass: the breast plates
     # (small enough to look like bands) dropped to 0.85x while the one shape too
     # large to qualify held 1.00x, and the body poked through the breasts. Only
     # bands genuinely lifted off the body (beyond the pure-copy zone) still need it.
+    #
+    # CORRECTION 2026-08-22 -- this comment used to go one step further and claim
+    # that because each hugging shape copies the body exactly, "a hugging band and
+    # its hugging layer already move in lockstep". THAT INFERENCE IS FALSE and it
+    # is #bug-01. Ratio 1.0 each does NOT imply lockstep with each other: the two
+    # layers copy DIFFERENT body verts, and where the outer layer's nearest-vert
+    # lookup flips to another patch of anatomy the two deltas diverge by the full
+    # difference between those patches (measured up to 4.5u under the big-breast
+    # sliders). The gate below is still RIGHT -- syncing hugging bands regressed a
+    # real cuirass in game -- but it is right for the dilution/poke reason above,
+    # NOT because hugging layers track each other. Do not cite lockstep here.
     try:
         from scipy.spatial import cKDTree as _cKDTree
         _OM_SIZE_FRAC, _OM_R, _OM_MIN, _OM_THRESH, _OM_SYNC_R = 0.40, 3.0, 30, 0.20, 5.0
@@ -487,6 +519,23 @@ def generate_armor_tri(
             if extra_morphs:
                 tri_shapes.append(TriShape(
                     name=shape_name, morphs=extra_morphs))
+
+    # #pair-tri-names -- the `_0`/`_1` halves of one garment are one mesh saved
+    # twice, but the author may have named their shapes differently. ONE tri
+    # serves both halves, so a shape whose partner carries a different name
+    # needs its morph table under BOTH names or that half morphs nothing. The
+    # caller has already proven the topology matches index for index (see
+    # `nif_convert_trigen.pair_shape_aliases`), so the same delta table is
+    # correct for both -- this is an ALIAS, not a second computation.
+    if also_named:
+        by_name = {sh.name: sh for sh in tri_shapes}
+        for mine, theirs in sorted(also_named.items()):
+            sh = by_name.get(mine)
+            if sh is None or theirs in by_name:
+                continue                 # nothing to alias, or it would shadow
+            alias = TriShape(name=theirs, morphs=list(sh.morphs))
+            tri_shapes.append(alias)
+            by_name[theirs] = alias
 
     # The `version` kwarg is effectively cosmetic: bytes 4-5 are the shape count
     # written from `len(self.shapes)` by TriFile.save() regardless.

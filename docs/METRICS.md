@@ -8,6 +8,12 @@ trusting it. A metric that reports "no problem" is indistinguishable from a metr
 that cannot see the problem, and we shipped decisions on that ambiguity three times
 in one day.
 
+**Tool names below are not all in the repo.** Several metrics were first written
+as one-off session tools that were never tracked; the sections keep them because
+the *metric* is the durable part, but a bare name like `layerfollow.py` is not a
+file you can run. Anything under `scripts/analysis/` is real and tracked;
+anything else is marked at its section.
+
 ---
 
 ## Sound
@@ -99,6 +105,110 @@ them.** The converter already knows this on the write side —
 frequently ship ZERO/absent vertex normals" — so the analysis side has no excuse.
 A result that is *exactly* zero to full precision across a whole population is
 almost never a measurement; check the operand before believing it.
+
+### A census over an EMPTY population — **FOOTGUN, 2026-08-11**
+A verification conversion aborted (the single-piece script *requires* `--esp` or
+`--slots` and errors rather than guessing). It left no output. The census then
+walked that empty directory and printed `0 broken / 0 bones / 0 verts` — which
+is character-for-character what a successful fix looks like. It was one step
+from being reported as "the fix generalises".
+
+**Rule: a scan must refuse an empty population, not score it.** Any harness that
+reports a rate must print its denominator and abort when it is zero. Same family
+as the shrinking-denominator rule below: 0/0 is not a pass.
+
+### Diffing against a STALE artifact — **FOOTGUN, 2026-08-11**
+Two censuses and a "the skirt has no physics XML" finding were all produced
+against an output mod that had not been rebuilt in three weeks. The live output
+is a **different mod directory**; the stale one still existed, still parsed, and
+still answered every question plausibly.
+
+**Rule: establish which artifact is live before measuring it** — newest mtime
+across candidates, or the path the tool is actually configured to write. A mod
+folder full of valid NIFs is not evidence that they are *this build's* NIFs.
+
+### "Flipped normals" counted a PASS FIRING, not a defect — **RETRACTED, 2026-08-11**
+`normcheck.py` (never tracked; a session tool, and the finding below retracted it
+anyway) reports a vertex as *flipped* when its stored normal disagrees with
+the one its triangles imply. That reads like a shading defect. It is not: the
+stored normal **is** the triangle-implied recompute, after
+`_recompute_vertex_normals` sign-aligns it to the source. So the count is exactly
+the number of vertices where that sign-alignment fired, and the source scores 0 by
+construction rather than by being clean.
+
+It was used all session as a quality number — "belts 332 → 84 → 50" — including as
+evidence for a change that was then partly justified by it. On the reported strap
+**all 84 were boundary verts**, which is the one case the sign-align exists to
+handle, so the "defect" may well have been the repair working.
+
+**Rule: before quoting a count as quality, ask what a passing score would require.**
+If the answer is "the pass never fired", it is an activity counter. Two independent
+detectors here disagreed 40× (2 vs 82) — that gap was the tell, and the cheaper
+detector was the honest one.
+
+### Surface roughness cannot see crumple on a TEXTURED shape — **INSUFFICIENT, 2026-08-11**
+Absolute Laplacian |v − mean(1-ring)| is a sound quantity (it caught the warp
+outlier defect). It is the wrong instrument for "is this strap crumpled", because
+the author's own strap is studded and textured: 451 of its 3234 verts already
+exceed the 0.5 threshold. Output 631 vs source 451 is a real difference, but the
+signal is buried in authored detail, and every parameter that removed it touched
+17–65% of the shape — a resurfacing, not a repair.
+
+**What worked instead: edge length.** A belt bends, and bending preserves every
+edge; stretching does not. Frame-free, no rigid fit, so — unlike every Kabsch-based
+test on this project — it does not degenerate on a 2u-wide strap where the 1-ring
+is nearly collinear. It separated the strap (mean |ratio−1| **0.219**, edges from
+0.517× to 1.514×) from the chest plate on the same garment (**0.060**), and read
+exactly **0.000** on a shape a rigid pass had just made isometric, which is the
+sanity check that the instrument works.
+
+**Rule: pick the metric that a correct-but-different shape scores well on.** A
+textured surface must be allowed to be bumpy; nothing is allowed to have its edges
+halved.
+
+**...but WEIGHT IT BY LENGTH — FOOTGUN, 2026-08-11.** The ratio divides by the
+authored length, so a 0.02u edge stretched to 0.06u scores 3.0. On the reported
+buckle **1% of edges (29 of 2938) inflated its mean deviation by 75%**: raw 0.364,
+short edges dropped 0.209, length-weighted **0.174**. Every belt number quoted
+during that session was the raw one, including a "the buckle is worse than the
+strap ever was" comparison that does not survive the correction.
+
+Not a general rule that short edges are noise: a chest plate on the same garment
+is 10.8% short edges and its raw and weighted values agree to 0.002. The
+contamination needs short edges AND large stretch together — which is itself a
+signal worth looking at, since those edges are real geometry being blown up.
+Report both; if they disagree, the raw one is wrong.
+
+---
+
+## Sound
+
+### Inter-layer follow divergence — `layerfollow.py` (2026-08-11) — **TOOL GONE, metric stands**
+> Never tracked; a session tool. Nothing in `scripts/analysis/` replaces it —
+> `follow_bands.py` measures garment-vs-BODY follow, not layer-vs-layer. Rebuild
+> from the definition below if the question comes back.
+For each vertex of layer A, the nearest vertex of layer B; if within 2.0u they
+are STACKED, and the metric is the mean L1 distance between their weight rows in
+a common bone basis. 0 = the two points deform identically; 2 = completely
+different bones. This is what catches "layers clipping into other layers", which
+**no position metric can see** — the stored vertices are correct and the layers
+separate only once animated.
+
+Its counter-metric is mandatory and lives beside it: total breast/butt/belly
+weight per shape, plus the mean row distance to the body underneath. A change
+can drive divergence to zero by making every layer follow nothing, and one did.
+
+### Weighted chain bones flat at the origin — `chaincensus.py` (2026-08-11) — **TOOL GONE, metric stands**
+> Never tracked. `scripts/analysis/chain_flag_census.py` is a different question
+> (which pieces a given chain flag can reach), not this one.
+A bone some shape is WEIGHTED to, that the actor cannot resolve, whose node is
+parented to `Scene Root` at identity. Broken by definition: a real chain bone
+has a position on the body, and at the origin it drags its verts to the
+character's feet. Self-contained — needs no source mapping, so it is independent
+of which mod a piece came from.
+
+Controlled both ways before it was trusted: **0 broken** on a known-good 1.2
+build of a piece, **23 bones / 22,306 verts** on the known-broken build.
 
 ---
 
@@ -331,6 +441,35 @@ On a piece whose pose behaviour is clean, a full breast slider takes exposure
 4.5% → 12.1%. The morph path is a separate class, unexamined, and on that piece the
 larger one.
 
+> **EXAMINED 2026-08-26, and it is the larger class on more than that piece.**
+> `morph_clip_test.py --preset` applies a real BodySlide/RaceMenu preset to the
+> BODY AND THE GARMENT together. Over a 6-piece x 14-preset grid and a 90-piece
+> pack census, the finding is structural rather than incidental:
+>
+> **BIND-POSE CLIPPING IS 0.000% AT EVERY STAGE OF THE CHAIN on a piece whose
+> morphed clipping runs 2-7%.** Not small — ZERO, at entry, warp, inflate,
+> conform, groove-smooth, panel-rigidity, anti-poke, seam-weld and in the
+> written NIF. So every bind-pose column in this document, and every stage
+> ledger built on one, is not merely a best case for this class; it is
+> identically blind to it. Five separate metrics returned clean against a user
+> who could see the defect for exactly this reason.
+>
+> Pack census, body-swap pieces only (the copy path has no injected body to
+> morph against, so it is out of scope, NOT healthy): **21 of 90 are clean at
+> bind and clip under a preset** — replicated at 23 of 100 on a second run
+> through a different densify implementation. The metric DISCRIMINATES: 69 of
+> 90 are not in the class.
+>
+> Split that bucket before quoting it. It mixes three defects: follow ~1 with
+> low chain weight (the chord class), follow ~0 (a morph-FOLLOW gap, a
+> different bug), and high chain share (physics cloth, which this model states
+> outright it does not cover). The census tail — a 72.8% dress — turned out to
+> be follow 0.00 on SMP cloth, and its CLEAN preset clipped MORE than its
+> clipping one, so it was never this class at all.
+>
+> **Ask FIRST whether a report is preset-dependent.** If it is, no bind-pose
+> number is evidence either way.
+
 ---
 
 ## ~~Sound~~: containment census over the rigid population
@@ -514,3 +653,67 @@ that 4% of pairs survive (2.0× on the cast).
 That is what makes an in-converter fit contract affordable at all — but the contract
 still measures twice per shape, not once per pass, and for a reason that is about
 correctness rather than cost: see `DESIGN.md`.
+
+# 2026-09-09 — the gate judged one row backwards, and a stage it could not see
+
+Two findings about the ACCEPTANCE GATE rather than about a single metric. Both
+matter more than a metric bug, because the gate is what turns a metric into a
+verdict, and a gate that scores the wrong direction launders a regression into
+a pass.
+
+## Wrong: the bust-gap row rewarded drifting AWAY from the author
+
+`bust gap vs author` is a SIGNED distance, `ours - author`. It was judged with
+the ordinary `ge` rule — candidate must be `>=` control — which is right for a
+row where bigger is better and exactly wrong for this one: the goal is
+`|gap| -> 0`, so a candidate that drifted from +0.682 to +0.900 scored `ok`
+while moving further from the thing it is measured against.
+
+The rule is now its own comparator:
+
+```
+elif rule == "author":
+    ok = abs(b) <= abs(a) + TOL
+```
+
+and the SIGNED pair is still printed beside the judged magnitude, because
+`|gap|` alone cannot distinguish "closed toward the author" from "crossed past
+them and penetrated" — the same two cases the rear/penetration rebuild above had
+to separate.
+
+**Every bust-gap verdict taken before this is void in the direction that
+matters**: a row that read `ok` may have been a regression. The re-score of the
+first flag put through the corrected gate flipped its bust-gap row from `ok` to
+FAIL and took the overall verdict from 2 failing rows to 3.
+
+The same row was independently blind to DEAD SLIDERS: a piece whose morph never
+fires has no gap to measure, so it contributed nothing and could not fail.
+
+## The gate could not see the LAST stage
+
+The working notes (kept on the `testing` branch under `docs/worklog/`, not
+here) record that the pass chain OSCILLATES — a pass introduces a defect
+and a later pass cleans it up — so a metric read off a stage dump
+describes an intermediate mesh nobody ships. The gate had no measurement of
+edge stretch on the WRITTEN file at all.
+
+`scripts/analysis/stretched_edges.py` closes it. It judges the written NIF
+against the AUTHOR's own mesh (resolved through `canonical_body.find_source`,
+BSA fallback included), never a stage dump. Three rows are judged `le`:
+
+```
+stretch rate p50 (% of edges)        candidate <= control
+stretch rate p90 (% of edges)        candidate <= control
+edge deviation p50 (len-weighted)    candidate <= control
+```
+
+**The judged rows are per-shape RATES; the pooled count is INFO only.** A rate
+is comparable between arms whatever the population does; a pooled count moves
+when the number of scored shapes moves, so judging it would let a shape-count
+change read as a quality change. `shapes / garments scored` and
+`pooled stretched edges` print for the reader and score nothing.
+
+Reference figures on the acceptance population: rate p50 0.1495%, p90 2.0217%,
+edge deviation p50 0.0331, over 598 shapes = 299 garments, 0 sources
+unresolved. A garment is TWO shapes — halve any shape count before comparing it
+with a garment count.

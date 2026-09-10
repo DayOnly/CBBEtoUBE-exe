@@ -66,7 +66,11 @@ a = Analysis(
     # The exe is what end users actually receive, so the GPL requires the
     # licence travel WITH it (GPLv3 §4/§5) -- shipping it only in the repo is
     # not enough. Third-party notices ride along for the same reason.
-    datas=[("LICENSE", "."), ("THIRD-PARTY-NOTICES.md", ".")],
+    # The .ico is bundled as DATA as well as being the exe's own icon: the exe
+    # resource gives the file its icon in Explorer and MO2, but Tk needs a real
+    # file on disk to set the WINDOW and taskbar icon at runtime.
+    datas=[("LICENSE", "."), ("THIRD-PARTY-NOTICES.md", "."),
+           ("assets/CBBEtoUBE.ico", "assets")],
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
@@ -99,7 +103,20 @@ pyz = PYZ(a.pure)
 exe = EXE(
     pyz,
     a.scripts,
-    [],
+    # Pin the interpreter's string-hash seed. The frozen bootloader IGNORES the
+    # PYTHONHASHSEED environment variable, so every process (workers included)
+    # otherwise draws a RANDOM seed — and set/dict iteration order is a live
+    # input to the output bytes (proven 2026-08-18: same-seed interpreted runs
+    # are byte-identical over the whole output tree; different seeds differ;
+    # two exe runs differed on 29/84 meshes on a VFS-broadened mod). One seed,
+    # one canonical output. Workers inherit it because spawn re-executes this
+    # same exe.
+    #
+    # The option MUST be the bare "hash_seed=<n>" form. "X hash_seed=1" parses
+    # as a CPython -X option, which CPython silently ignores — measured: a probe
+    # exe built with both spellings froze at the bare form's seed, and a
+    # no-options control varied per run.
+    [("hash_seed=1", None, "OPTION")],
     exclude_binaries=True,
     name="CBBEtoUBE",
     debug=False,
@@ -108,6 +125,11 @@ exe = EXE(
     upx=False,            # UPX can corrupt numpy/scipy DLLs — leave off
     console=False,        # windowed: double-click / MO2 launches the GUI, no console window
     disable_windowed_traceback=False,
+    # Regenerate with `python scripts/make_icon.py <logo.png>` -- it crops the
+    # artwork to its own alpha bounds, squares it without stretching, and
+    # writes every size Windows asks for (a missing size gets resampled and
+    # looks soft wherever the shell picks it).
+    icon="assets/CBBEtoUBE.ico",
 )
 
 coll = COLLECT(

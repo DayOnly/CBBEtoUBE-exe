@@ -39,6 +39,34 @@ import numpy as np                                    # noqa: E402
 from src import discovery, paths                      # noqa: E402
 
 # Shape names that are a BODY, not a garment. Excluded from garment metrics.
+# LOWERCASE: every caller must match with `name.lower() in BODY_SHAPE_NAMES`.
+#
+# SURVEYED 2026-09-06 -- THIS CONSTANT HAS ZERO IMPORTERS, and seven tools each
+# define their own `BODY_NAMES`. That is precisely the drift this module's
+# header rule exists to stop, so the state is written down rather than left to
+# be rediscovered:
+#
+#   verbatim copies of this set (lowercase, matched with `.lower()`) --
+#     authored_offset_ledger.py, inflate_census.py, pass_ledger.py
+#     -> these SHOULD import from here. They are byte-equal today; the only
+#        reason they still duplicate it is that they do not put
+#        `scripts/analysis` on `sys.path` the way pack_census.py does.
+#
+#   DELIBERATELY DIFFERENT, do NOT merge them into this one --
+#     pack_census.py   {"BaseShape", "3BA"}  CamelCase, exact match. It wants
+#                      only the INJECTED body names, not every mesh a mod calls
+#                      "body".
+#     fit_audit.py     adds VirtualBody / VirtualGround: it excludes generated
+#                      PROXIES from garment metrics as well as the body.
+#     bust_gap_score.py / nipple_clearance.py derive theirs from
+#                      `nc.UBE_BODY_INJECT_NAMES`, i.e. from the converter's own
+#                      list rather than a hardcoded copy -- arguably the best of
+#                      the five, and a candidate for what this constant becomes.
+#
+# So "consolidate them all" is the WRONG fix: three of the five sets answer a
+# different question, and forcing them together would silently change what those
+# tools measure. Consolidate the three verbatim copies; leave the rest, and keep
+# the scope difference stated wherever they are defined.
 BODY_SHAPE_NAMES = {"baseshape", "3ba", "cbbe", "femalebody", "body", "ubebody"}
 
 # The validated crumple metric. Rotation alone fires on 53% of the pack; a
@@ -50,6 +78,21 @@ ROT_DEG = 30.0
 SRC_COHERENT = 0.70
 OUT_SCATTERED = 0.30
 THIN_EXTENT = 3.0
+
+
+def require_population(items, what: str, min_n: int = 1) -> None:
+    """Refuse to report on an empty measured set.
+
+    A gate that scores 0 items and exits 0 has said "clean" about nothing --
+    0/0 is not a pass. Call this right after the population is built; it
+    prints the standard line and exits 3 so a driver can tell "nothing
+    measured" from "measured and clean" (1 = defects found).
+    """
+    n = len(items)
+    if n < min_n:
+        print(f"measured NOTHING -- {n} {what} (need {min_n}); "
+              "0/0 is not a pass. Check the output dir / filters.")
+        raise SystemExit(3)
 
 
 def layout():
@@ -100,6 +143,41 @@ def meshes_rel(relative_path) -> Path:
     rel = Path(str(relative_path))
     parts = rel.parts
     return Path(*parts[1:]) if parts and parts[0].lower() == "meshes" else rel
+
+
+def bodytri_of(shape) -> "list[str]":
+    """Every BODYTRI string on a shape. THE ONLY CORRECT WAY TO READ ONE.
+
+    `shape.extra_data` walks blocks by index and STOPS at the first one it
+    cannot build. A BodySlide shape routinely carries a NiIntegersExtraData
+    `LOCKEDNORM` at index 0, so that accessor reports NO extra data at all --
+    BODYTRI included -- on exactly the shapes most likely to have one. It does
+    not raise and it does not warn; it returns an empty list, so a census built
+    on it reads "no BODYTRI anywhere" and looks like a clean, decisive result.
+
+    That has now produced a wrong answer twice: once on the body-carrier
+    re-census the `_pick_bodytri_carriers` docstring records, and again on
+    2026-09-06 when a probe using it concluded that four shipped NIFs carried no
+    BODYTRI and were shipping 2.2 MB of orphaned morph data. Enumerated by index
+    the same four carry a BODYTRI on every shape, pointing at a clean in-bounds
+    TRI. A perfectly one-sided result is a reason to doubt the INSTRUMENT.
+
+    So it lives here, once, and every census imports it rather than re-deriving
+    the two-line version that happens to be wrong.
+    """
+    out: "list[str]" = []
+    try:
+        n = int(getattr(shape.properties, "extraDataCount", 0) or 0)
+    except Exception:
+        return out
+    for i in range(n):
+        try:
+            ed = shape.get_extra_data(target_index=i)
+        except Exception:
+            continue
+        if ed is not None and getattr(ed, "name", None) == "BODYTRI":
+            out.append(str(getattr(ed, "string_data", "")))
+    return out
 
 
 def baked_verts(shape):

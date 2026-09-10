@@ -41,6 +41,7 @@ from pathlib import Path
 import pytest
 
 import src.nif_convert as nc
+from tests import _converter_sources as _cs  # patch on every module that binds a name
 
 
 @pytest.fixture(autouse=True)
@@ -54,11 +55,11 @@ def _stub(monkeypatch, values):
     """Make the underlying resolution return successive values, counting calls."""
     calls = {"n": 0}
 
-    def fake(path, nif=None):
+    def fake(path, nif=None, stem_scan=True):
         v = values[min(calls["n"], len(values) - 1)]
         calls["n"] += 1
         return v
-    monkeypatch.setattr(nc, "_read_source_hdt_xml_text_uncached", fake)
+    _cs.patch(monkeypatch, "_read_source_hdt_xml_text_uncached", fake)
     return calls
 
 
@@ -140,7 +141,7 @@ def test_convert_nif_clears_it_per_armor():
     """BOUND 2. Even if the mtime key were somehow wrong, staleness cannot cross from
     one armour to the next."""
     import inspect
-    src = inspect.getsource(nc.convert_nif)
+    src = _cs.orchestrator_source(nc.convert_nif)
     assert "_hdt_xml_cache_clear()" in src
     body = src[src.index("dst_path = Path(dst_path)"):]
     assert body.index("_hdt_xml_cache_clear()") < body.index("load_nif"), \

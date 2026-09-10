@@ -19,6 +19,155 @@ re-fitted, re-skinned, and re-cleared.
 
 ---
 
+## The governing rule: prevent the defect, do not add a pass that repairs it
+
+**A pass that exists to clean up after another pass is a design failure, not a
+fix.** When a stage produces something wrong, the change belongs in the stage
+that produced it — or in what that stage is allowed to do — not in a new stage
+downstream. Read this before adding any pass whose justification begins "an
+earlier pass leaves…".
+
+This is the rule the chain most often breaks, and it costs three ways.
+
+**1. The repair's budget cannot be spent on anything else.**
+`panel_rigidity` drove 491 verts into the body and the anti-poke push was spent
+undoing that, so the push could never be tightened to respect the author's
+standoff. Making panel rigidity body-aware (`#panel-rigid-early-clearance`) did
+not just remove a repair — it freed the anti-poke to do its actual job. The
+repair was not merely redundant; it was occupying the budget.
+
+> **CORRECTION 2026-08-26 — THE RULE STANDS, THIS EXAMPLE DOES NOT.**
+> `#panel-rigid-early-clearance` was re-measured under a metric that applies
+> the body preset's morph, and it is **1 better / 2 worse**: it helps one piece
+> and regresses two, one of which had a clean preset that starts clipping. It
+> is still DEFAULT OFF and should stay there. The paragraph above is right that
+> the repair was occupying the anti-poke's budget; it is wrong that freeing the
+> budget was a net win on this evidence.
+>
+> WHY, and it sharpens the rule rather than weakening it: the body-blind pass
+> was not only wasting budget, it was incidentally pushing panels OUTWARD, and
+> that push is MORPH HEADROOM. Guarding the producer removed the waste AND the
+> headroom together. **Fixing the producer is still correct — but measure what
+> else the producer's mistake was accidentally buying you.**
+>
+> A cleaner example of the same rule from the same work:
+> `#panel-rigid-surface-guard` fixed `_rigidify_within_clearance`'s own
+> clearance test (it checked a panel's CORNERS and let a corner standing 1.5u
+> clear sink to zero) instead of adding a pass to undo the result. A hold that
+> *did* run downstream to repair it was built the same day, measured, and
+> DELETED — it regressed a piece the in-place guard leaves untouched.
+
+**2. Repairs fight each other, and the chain oscillates.**
+`PASS_MAP.md` and the damage ledger show stages alternating between penetration
+and stretch, each fixing one by causing the other. The observable outcome is not
+"mostly fixed" — it is a chain whose final state depends on which repair ran
+last. **Judge the FINAL stage, never the flow.**
+
+**3. A downstream repair chases a defect it cannot corner.**
+Worked end to end on 2026-08-24, on zero-weight bones (a bone left in a shape's
+list with no weight drops out of the skin-partition palette — an equip CTD):
+
+- `_match_limb_motion_to_body` stranded 10 of 12 on the traced piece. Guarding
+  that one pass took it to **0 — and the total did not move.** The roughness cap
+  then stranded 7 and the coincident match 5. Every pass that caps a row to four
+  influences can strand a bone, so a per-pass guard is a game with no last move.
+- A single final sweep is the better architecture, and it still caps at **19%**:
+  45% of stranded bones sit on shapes with no index-pairable author, and 36% were
+  minted by a graft the author never weighted, so there is no authored row to
+  restore and `pynifly` exposes no `remove_bone` to take them out.
+
+Both attempts were reverted. The fix that would actually work is at the source:
+**do not let a graft add a bone whose weight cannot survive four influences
+downstream.** A sink-side repair could never have reached the 81%.
+
+### Two rules paid for on 2026-08-25
+
+**DECLINING TO WRITE SOMETHING DOES NOT PROTECT IT.** The coincident-skin match
+excluded a bone from its write list precisely so it would be "left entirely
+alone", and the bone was emptied anyway: the native skin buffer holds FOUR
+influences, so writing the other four evicts the untouched fifth. A guard phrased
+as *"we simply won't touch it"* is only sound if nothing else writes that slot —
+and here something always does. The same shape of error is available to any pass
+that reasons about its own writes without modelling the buffer they land in.
+
+**A PASS THAT REMOVES SOMETHING MUST SAY WHAT IT REMOVED.**
+`_harden_hdt_xml_for_fsmp` prunes physics-XML blocks whose shape is not in the
+converted NIF. That is correct — FSMP cannot attach to a shape that is not there
+— but a pruned `<per-triangle-shape>` is a COLLIDER the cloth no longer bounces
+off, and it was deleted in silence. It took an in-game screenshot to discover
+that one cuirass had lost the two surfaces its skirt drapes over, because the
+authored XML named `Tassets`/`Pants` while the mesh calls that shape `Tasset`
+and has no `Pants` at all. Deletion is a legitimate act; doing it quietly is
+not. Report through `_note_pass_failure`, which counts into
+`conversion_report.json` (that survives a lost run log) and lands a per-piece
+line in the per-mod report — so a class becomes countable rather than
+discoverable one screenshot at a time.
+
+### What to do instead
+
+- Give the producing pass the information it lacked. Most of these defects are a
+  stage acting blind — `panel_rigidity` could not see the body; the jiggle graft
+  cannot see the cap that will evict it; the butt-collider donor test could not
+  see that hands and feet are body bones, because it used the injected BODY
+  MESH's bone list and UBE ships hands and feet as separate meshes.
+- **Beware a set that stands in for a concept.** "The body's bones" and "the
+  bones of the body mesh" differ by six, and that gap cost one variant its butt
+  collider entirely. When a set is a proxy for an idea, write down which idea,
+  and check the two still agree.
+- Constrain what a pass may do, rather than repairing what it did. A pass that
+  cannot create the defect needs no cleanup and no budget for one.
+- If a repair is genuinely the cheapest correct option, say so **in its
+  docstring, with the measurement** that shows prevention was considered and
+  costed. `_rigidify_within_clearance` earns its place that way; a pass that
+  cannot make that argument does not.
+- Before adding a repair, **attribute the defect to a producer by measurement**,
+  and name it. Attribution by reasoning has been wrong here repeatedly — blaming
+  `_match_full_weights_to_body` for what its inner `_match_limb_motion_to_body`
+  did, and (2026-08-25) blaming an old exe for what `#smp-boundary-weight-hold`
+  caused.
+
+  Two tracked ways to do it, in increasing cost:
+
+  * **Pass-arm A/B.** Convert the affected piece with `scripts/convert_one_armor.py`
+    once per arm, disabling ONE pass per arm, and score each arm the same way.
+    This is what settled BUG-14 in four arms. Read the slot mask off the ARMA —
+    a slots=0 run silently disables every slot-gated pass and is not comparable.
+  * **Paired output A/B.** `scripts/analysis/zero_weight_pair_ab.py` for the
+    zero-weight class: it pairs two builds' output per (shape, bone) and reports
+    a delta, which is the only form in which a metric with a large pre-existing
+    population means anything.
+
+  **RUN A REPEAT CONTROL BEFORE BLAMING A FLAG.** Two arms of IDENTICAL code and
+  identical flags have been observed producing different meshes, so a small arm
+  difference is not by itself evidence about the flag under test. The mechanism is
+  known and is still only half fixed: a piece with no physics file of its own
+  resolves one by FILENAME against the DESTINATION tree, which the run is
+  concurrently writing, and the per-worker index memoises whatever the tree
+  looked like when that worker first looked. **104 garments currently resolve
+  their physics that way** — measure the population with
+  `scripts/analysis/hdt_xml_resolution_census.py`. A repeat control is a second
+  arm at the SAME settings as the first; anything that differs between those two
+  is noise, and only what exceeds it can be attributed.
+
+  **A pass being NECESSARY in an A/B is not proof it is the actor** — it may only
+  change rows so a later pass evicts. Narrowing further means wrapping the inner
+  pass and re-scoring the WRITTEN nif after each stage.
+
+  This bullet used to name `passaudit/zeroweight_trace.py` as "the template".
+  That file was an untracked session tool and is GONE, so the governing rule
+  pointed at something the reader could not open — the failure mode this
+  document spends a section warning about. See `docs/TOOL_MAP.md` for what is
+  actually tracked and runnable.
+
+### The honest exception
+
+Some defects are structural and have no producer to fix: an SMP `<per-vertex-shape>`
+must keep its authored rig, so the layer beside it diverges by construction
+(`#smp-boundary-weight-hold`). That is a boundary condition, not a pass cleaning
+up after a pass — and the docstring says so.
+
+---
+
 ## Pipeline overview
 
 `convert_nif()` chooses one of two paths from the source shapes:
@@ -263,9 +412,14 @@ which grafts the scale bones as part of the blend.
 
 ## Clearance & anti-poke
 
-`clear_armor_outside_body()` runs **last**, after every vertex op, and pushes
-armor clear of the injected UBE body so the live actor morph can't punch
-through. Push-out only; it never pulls cloth in. Several terms stack into one
+`clear_armor_outside_body()` is the anti-poke stage of the per-shape fit chain
+(after warp, inflate and conform) and pushes armor clear of the injected UBE
+body so the live actor morph can't punch through. It is NOT the last vertex
+op: panel rigidity, softcloth, rebury, chain blend, min-push, seam weld and the
+cross-shape passes run after it, and the write-time layer ride can put verts
+back inside (that is what `#ride-body-floor` exists for — see PIPELINE §2c and
+the traced chain in PASS_MAP). Push-out only; it never pulls cloth in. Several
+terms stack into one
 required-clearance value per vert:
 
 ### Adaptive clearance

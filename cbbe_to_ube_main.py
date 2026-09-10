@@ -119,6 +119,50 @@ def _install_log_tee() -> None:
         pass
 
 
+def release_log_tee() -> bool:
+    """Give up this process's claim on the run log. True if it had one.
+
+    ONE FILE, ONE OWNER. The GUI process installs the tee at startup like any
+    other, then spawns a CHILD to do the run and pins `CBBE2UBE_RUN_LOG` to the
+    same path -- so two processes hold `"w"` handles on one file, each with its
+    OWN write offset, and whichever writes second lands wherever its offset
+    happens to be. Not theoretical: on the 2026-08-23 run it cut the startup
+    flag echo mid-token --
+
+        active flags (3): GLOW_LOG=...\\glowdebug.log, RUN  duplicate-plugin
+        dedup: dropped 41 lower-priority source(s) ...
+
+    -- and mangled the unseen-settings NOTE the same way, leaving only its tail
+    ("once to record them."). Both diagnostics RAN correctly; the log destroyed
+    the evidence. That is worse than cosmetic: `_echo_active_experiment_flags`
+    exists precisely so "did my setting apply?" is a fact you can READ instead
+    of infer, after an hour-long run was once spent on a flag that never got
+    set. With the echo unreadable, the 08-23 run's configuration had to be
+    established by arithmetic.
+
+    The child does the run, so the child keeps the log; the GUI calls this
+    before spawning it. Never raises -- losing the parent's tee must not be able
+    to stop a run from starting.
+    """
+    global _LOG_FILE, _LOG_PATH
+    if _LOG_FILE is None:
+        return False
+    for nm in ("stdout", "stderr"):
+        inner = getattr(getattr(sys, nm, None), "_stream", None)
+        if inner is not None:
+            try:
+                setattr(sys, nm, inner)
+            except Exception:
+                pass
+    try:
+        _LOG_FILE.close()
+    except Exception:
+        pass
+    _LOG_FILE = None
+    _LOG_PATH = None
+    return True
+
+
 def _log_dir_candidates():
     """Directories to try for the log file, best first."""
     out = []

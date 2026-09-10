@@ -118,18 +118,31 @@ def main():
     print(f"  target body : {ube_shape}  {Path(ube_path).name}")
 
     t0, n, reg, gated, nosrc = time.time(), 0, 0, 0, 0
+    nogar = failed = selfint = 0
     with out.open("w", encoding="utf-8") as fh:
         for i, p in enumerate(files, 1):
             rel = str(p.relative_to(root)).replace("\\", "/")
             try:
                 gnames = converted_garment_names(p)
                 if not gnames:
+                    nogar += 1
                     continue
                 conv, ic = analyse_with_body(p, gnames, ube_path, ube_shape,
                                              sample=sample)
-            except (Exception, SystemExit):
+            # SystemExit is NO LONGER caught here. It used to be lumped in
+            # with Exception, so a helper calling sys.exit() to report that
+            # the reference body was unusable was swallowed whole and the
+            # census carried on publishing rates over whatever survived. A
+            # deliberate hard stop has to stop this too.
+            except Exception as e:
+                # COUNTED, never silent -- a piece dropped without a tally
+                # shrinks the denominator of every rate printed below.
+                failed += 1
+                if failed <= 10:
+                    print(f"  dropped {rel}: {e!r}")
                 continue
             if ic > 1e-4:
+                selfint += 1
                 continue
             worst = max((r["worst_pct"] for r in conv.values()), default=0.0)
             row = {"armor": rel, "conv_worst": round(worst, 3)}
@@ -184,6 +197,15 @@ def main():
                       f"~{el/i*(len(files)-i)/60:.0f}m left", flush=True)
     print(f"\n{n} rows -> {out}   {reg} regressions >5pt, {gated} gated clean, "
           f"{nosrc} without a matched source   ({(time.time()-t0)/60:.0f} min)")
+    # THE DENOMINATOR, stated. Every rate above is over `n`, and these are the
+    # pieces that never reached it. Printing the excluded counts is what makes
+    # `n` readable as a population rather than as "everything there was".
+    print(f"  population: {len(files)} armors seen -> {n} scored")
+    print(f"    {nogar:5d} no converted garment shapes")
+    print(f"    {failed:5d} dropped on an error while analysing")
+    print(f"    {selfint:5d} skipped: reference body self-intersects")
+    if n == 0:
+        print("  NOTHING WAS SCORED -- 0/0 is not a clean result")
 
 
 if __name__ == "__main__":

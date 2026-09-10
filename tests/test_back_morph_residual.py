@@ -41,6 +41,7 @@ import numpy as np
 import pytest
 
 from src import nif_convert as nc
+from tests import _converter_sources as _cs  # patch on every module that binds a name
 
 BACK_Y = -6.0
 FRONT_Y = 0.0
@@ -99,8 +100,8 @@ def _stack_for(bv, bump=1.0):
 
 def _run(monkeypatch, bv, bnorm, cloth, *, on, stack, call=None, **over):
     monkeypatch.setattr(nc, "BACK_MORPH_RESIDUAL", bool(on))
-    monkeypatch.setattr(nc, "_find_ube_body_osd", lambda: "synthetic.osd")
-    monkeypatch.setattr(nc, "_cached_body_morph_stack",
+    _cs.patch(monkeypatch, "_find_ube_body_osd", lambda: "synthetic.osd")
+    _cs.patch(monkeypatch, "_cached_body_morph_stack",
                         lambda _p, _n: stack)
     for k, v in over.items():
         monkeypatch.setattr(nc, k, v)
@@ -303,7 +304,13 @@ def test_overlapping_bands_take_the_larger_charge_not_the_sum(monkeypatch):
     body = np.array([(x, BACK_Y, z) for x in xs for z in kz])
     bv = body.astype(np.float64)
     bnorm = np.tile([0.0, -1.0, 0.0], (len(bv), 1)).astype(np.float64)
-    cloth = (body + np.array([0.0, -0.3, 0.0])).astype(np.float32)
+    # Start the cloth WELL INSIDE the bust requirement so the bust charge has
+    # room to fire. Derived from the constant rather than hardcoded: this was a
+    # flat 0.3, comfortably under the old 0.9 ceiling, and when that ceiling
+    # moved to 0.3 the cloth started exactly AT the requirement -- the charge
+    # measured zero and the control below correctly aborted the test as vacuous.
+    cloth = (body + np.array([0.0, -0.3 * nc.CONFORM_BUST_CLEARANCE, 0.0])
+             ).astype(np.float32)
     mask = np.ones(len(cloth), bool)
     nip = np.ones(len(bv))                          # full bust requirement
     st = _stack_for(bv)
@@ -363,24 +370,29 @@ def test_defaults_are_the_measured_configuration():
     configuration that was already rejected with numbers."""
     # Band floor. 102 was chosen on Body3F ALONE and is the bad config: on the
     # golden set it scored back 16.1 (vs 8.0) and net front +254 verts (vs -3),
-    # with robes-thalmor upper chest 53 -> 119 on Punk UBE.
+    # with robes-thalmor upper chest 53 -> 119 on the reference UBE preset.
     assert nc.BACK_RESIDUAL_Z[0] == 95.0
     assert nc.BACK_RESIDUAL_Z[1] == 112.0
     # Feathering the band edge: back 8.0 -> 10.8, front 11 -> 12 regressions.
     assert nc.BACK_RESIDUAL_FEATHER == 0.0
     # Bounding the edit: travel 4.03u -> 1.67u but front 11 -> 18 regressions.
     assert nc.BACK_BOUND_EDIT is False
-    # Surface rule: back 50.0 -> 20.5 where the vertex rule reached 8.9.
-    assert nc.BACK_SURFACE_REQ is False
     assert nc.BACK_MIN_VERTS == 24
+    # The cap was measured at 0.8, and it must STAY 0.8. It used to be written
+    # as `BUST_FLAT_CLEARANCE + BACK_MORPH_RESIDUAL_MAX`, which quietly made a
+    # BACK number follow a BUST knob: retuning the bust floor to 0.12 for a
+    # chest defect dragged this to 0.62 with nothing re-measured, and then broke
+    # the overlap test outright when the bust ceiling went back to 0.9. The back
+    # now carries its own base, so this pins the measured value AND the fact
+    # that a bust retune can no longer reach it.
     assert nc.BACK_MOVE_MAX == pytest.approx(
-        nc.BUST_FLAT_CLEARANCE + nc.BACK_MORPH_RESIDUAL_MAX)
+        nc.BACK_MOVE_BASE_CLEARANCE + nc.BACK_MORPH_RESIDUAL_MAX)
+    assert nc.BACK_MOVE_MAX == pytest.approx(0.8)
 
 
 def test_diagnostics_are_off_by_default_and_do_not_print():
     """The dumps are diagnostic scaffolding; a shipping run must not pay for them
-    or write files. `BACK_DEBUG_LOG` exists because
+    or write files. `BACK_DEBUG_LOG` (a log PATH, still live) exists because
     `golden_output._convert` runs the worker under `redirect_stdout`, which
     silently discards anything a pass prints."""
-    assert nc.BACK_DEBUG is False
     assert nc.BACK_DUMP_DISP == ""

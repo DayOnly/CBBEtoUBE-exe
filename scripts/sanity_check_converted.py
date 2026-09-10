@@ -28,8 +28,15 @@ Feet shapes against the source UBE refs and reports:
   * vert max-abs delta (expected: 0.0 — bake is disabled, inject should
     be byte-identical)
   * normals max-abs delta (expected: 0.0 — same)
-  * boundary-vert normal flip count (expected: 0 — sign-fix should keep
-    boundary normals aligned with source even when verts move)
+  * UNDETERMINED-vert normal flip count (expected: 0 — the sign guard should
+    keep a normal aligned with the source WHERE THE GEOMETRY CANNOT DETERMINE
+    IT). Narrowed 2026-08-12: this check used to require EVERY normal to stay
+    within 90° of the source, which encoded the old blanket sign-flip as a
+    requirement. That blanket flip was the defect — it stored normals pointing
+    into the surface on vertices with a full, agreeing triangle fan, and they
+    shade as if lit from behind. A determined normal is now ALLOWED to disagree
+    with the source, so demanding otherwise here would fail correct output and
+    blame "sign-fix not working" for it.
   * presence of all three injected shapes (BaseShape + Hands + Feet)
   * absence of stale CBBE plug-meshes (3BA_Vagina / 3BA_Anus should NOT
     appear in pure-UBE pipeline output)
@@ -52,7 +59,9 @@ import numpy as np
 # Make the project importable for nif_io.
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent / "analysis"))
 from src import nif_io  # noqa: E402
+from fold_census import score as _fold_score  # noqa: E402
 
 DEFAULT_OUTPUT = Path(os.environ.get("CBBE2UBE_MODS_ROOT", "") + r"\mods\CBBEtoUBE Auto")
 SOURCE_BODY = Path(
@@ -159,11 +168,28 @@ def check_nif(conv_path: Path, refs: dict) -> list[str]:
             cn = np.asarray(s.normals, dtype=np.float64)
             if cn.shape == ref_normals.shape:
                 dot = (cn * ref_normals).sum(axis=1)
-                flipped = int((dot < -0.5).sum())
+                # Only where the geometry CANNOT determine the normal is the
+                # source's sign the right answer. Elsewhere the recompute wins
+                # and disagreeing with the source is correct, not a failure.
+                ct = np.asarray(s.tris, dtype=np.int64).reshape(-1, 3) \
+                    if s.tris is not None else None
+                if ct is not None and len(ct):
+                    _, inverted, undetermined = _fold_score(cv, ct, cn)
+                else:
+                    undetermined = np.ones(len(cn), bool)
+                    inverted = np.zeros(len(cn), bool)
+                flipped = int(((dot < -0.5) & undetermined).sum())
                 if flipped > 0:
                     failures.append(
-                        f"{name}: {flipped} normals flipped >90 deg "
-                        "from source (boundary-vert sign-fix not working)")
+                        f"{name}: {flipped} UNDETERMINED normals flipped "
+                        ">90 deg from source (sign guard not working)")
+                # The defect the old check could not see: a normal that
+                # contradicts its own geometry. Nothing else in the gate
+                # looks for this, and 876 of 1656 pieces shipped with it.
+                if int(inverted.sum()) > 0:
+                    failures.append(
+                        f"{name}: {int(inverted.sum())} normals contradict "
+                        "their own geometry (shade as if lit from behind)")
 
     return failures
 

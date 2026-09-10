@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+import time
 from pathlib import Path
 
 
@@ -42,20 +43,48 @@ class OutputLockedError(OSError):
     disk is left intact (never half-overwritten)."""
 
 
+# Windows fails a rename when ANYTHING holds the destination open, including for
+# a moment: another converter worker writing the same path, an antivirus or the
+# search indexer touching a file we just created, or MO2's VFS. Most of those
+# clear in milliseconds, and the old code gave up on the first refusal.
+#
+# MEASURED on a full pack reconvert (161 mods, 3907 NIFs): 24 `.tri` writes lost
+# this race. It is not random -- SEVERAL NIFs regenerate the SAME `.tri` (one
+# armour's `_0`/`_1` plus its 1st-person variants; a glass cuirass has ten NIFs
+# over one TRI), so with a worker pool two of them collide on the swap. Where one
+# writer won, the file is correct and the loser's error is noise; where all lost,
+# the piece shipped with NO body-morph TRI and will not follow body sliders.
+#
+# Retry before surfacing. Bounded and short: this must not mask a genuinely held
+# file (the running game) by hanging a batch for minutes.
+_SWAP_RETRIES = 6
+_SWAP_BACKOFF = 0.05          # seconds; doubles each try -> ~3.1s worst case
+
+
 def _swap_into_place(tmp: str, dst: Path) -> None:
-    """os.replace(tmp -> dst) with lock-aware error + temp cleanup on failure."""
-    try:
-        os.replace(tmp, str(dst))
-    except PermissionError as e:
-        _quiet_unlink(tmp)
-        raise OutputLockedError(
-            f"cannot write '{dst}': it is locked by another process. Close the "
-            f"game, Mod Organizer, and the housecarl-mcp server, then retry. "
-            f"(the existing file was left unchanged)"
-        ) from e
-    except BaseException:
-        _quiet_unlink(tmp)
-        raise
+    """os.replace(tmp -> dst), retrying a transient lock, with temp cleanup."""
+    delay = _SWAP_BACKOFF
+    for attempt in range(_SWAP_RETRIES):
+        try:
+            os.replace(tmp, str(dst))
+            return
+        except PermissionError as e:
+            if attempt == _SWAP_RETRIES - 1:
+                _quiet_unlink(tmp)
+                raise OutputLockedError(
+                    f"cannot write '{dst}': still locked after "
+                    f"{_SWAP_RETRIES} attempts over "
+                    f"{_SWAP_BACKOFF * (2 ** _SWAP_RETRIES - 1):.1f}s. "
+                    f"If the GAME is running, close it and re-run. Mod Organizer "
+                    f"itself does NOT need closing -- it launches this tool, so "
+                    f"it is always running. (the existing file was left "
+                    f"unchanged)"
+                ) from e
+            time.sleep(delay)
+            delay *= 2
+        except BaseException:
+            _quiet_unlink(tmp)
+            raise
 
 
 def _quiet_unlink(p) -> None:

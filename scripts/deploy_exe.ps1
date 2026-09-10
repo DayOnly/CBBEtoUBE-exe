@@ -43,10 +43,46 @@ if (-not (Test-Path (Join-Path $src "CBBEtoUBE.exe"))) {
 Write-Host "source: $src"
 Write-Host "dest  : $Dest"
 
+# Snapshot the live settings file BEFORE the copy. The recipe a pack was
+# built with is what every in-game verdict is scored against, and until
+# 2026-09-01 that copy was made by hand under four naming schemes. One
+# scheme, taken by the deploy itself, newest 10 kept.
+$settings = Join-Path $Dest "CBBEtoUBE_settings.json"
+if ((Test-Path $settings) -and -not $WhatIf) {
+    $snap = "$settings.prebuild-" + (Get-Date).ToString("yyyyMMdd-HHmmss")
+    Copy-Item -Path $settings -Destination $snap
+    Write-Host "settings snapshot: $(Split-Path -Leaf $snap)"
+    Get-ChildItem -Path $Dest -Filter "CBBEtoUBE_settings.json.prebuild-*" |
+        Sort-Object Name -Descending | Select-Object -Skip 10 |
+        ForEach-Object { Remove-Item -Path $_.FullName; Write-Host "pruned $($_.Name)" }
+}
+
+# RUNTIME STATE THE EXE WRITES NEXT TO ITSELF -- excluded from the copy.
+# "/E is not /MIR" protects against DELETION, never against OVERWRITE: /E still
+# replaces a dest file whose name exists in the SOURCE, and the source acquires
+# these the moment anyone RUNS the exe out of dist\. A bare `--help` leaves a
+# CBBEtoUBE_last_run.log there; launching the GUI from dist would leave a
+# CBBEtoUBE_settings.json. The next deploy then copies those over the live ones.
+# MEASURED 2026-09-02 on a throwaway instance: a sentinel run log in the
+# destination came back holding dist's `--help` output. The settings file
+# survived that test only because dist happened not to have one -- which is
+# luck, not protection, and losing it is the class
+# feedback_deployed_build_runs_at_defaults exists for.
+$stateFiles = @(
+    "CBBEtoUBE_settings.json",
+    "CBBEtoUBE_exclusions.json",
+    "CBBEtoUBE_last_run.log",
+    "CBBEtoUBE_last_failures.json",
+    "CBBEtoUBE_settings.json.bak-*",
+    "CBBEtoUBE_settings.json.prebuild-*"
+)
+
 # /E     = copy subdirs incl. empty (NO /MIR -> extras in dest are KEPT)
 # /COPY:DAT = data + attrs + timestamps (preserve build mtime for --incremental floor)
+# /XF    = never copy the runtime state above OVER the deployed copy
 # /R:2 /W:2 = brief retry; /NFL /NDL /NP = quieter
-$roboArgs = @($src, $Dest, "/E", "/COPY:DAT", "/R:2", "/W:2", "/NFL", "/NDL", "/NP")
+$roboArgs = @($src, $Dest, "/E", "/COPY:DAT", "/XF") + $stateFiles +
+            @("/R:2", "/W:2", "/NFL", "/NDL", "/NP")
 if ($WhatIf) { $roboArgs += "/L" }   # list only, change nothing
 
 & robocopy @roboArgs | Out-Host
@@ -61,5 +97,7 @@ if (-not $WhatIf) {
     Write-Host ""
     Write-Host "DEPLOY OK (robocopy exit $code)"
     Write-Host ("  exe   : {0}  ({1} bytes, {2})" -f $exe, $i.Length, $i.LastWriteTime)
-    Write-Host "  note  : runtime state files in the dest were preserved (/E, not /MIR)."
+    Write-Host "  note  : runtime state (settings, backups, logs) left untouched:"
+    Write-Host "          /E does not delete dest extras, and /XF stops a copy in"
+    Write-Host "          the SOURCE bundle overwriting the deployed one."
 }

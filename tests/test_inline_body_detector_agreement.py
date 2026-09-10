@@ -45,6 +45,7 @@ _REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_REPO))
 
 from src import nif_convert as nc  # noqa: E402
+from tests import _converter_sources as _cs  # entry source with the lifted loop spliced back
 
 
 class _Shape:
@@ -105,7 +106,7 @@ def test_fallback_is_wired_and_guarded_by_the_strict_detector():
     shapes in the census ran conform fine, and one was verified byte-identical
     after this change."""
     import inspect
-    src = inspect.getsource(nc.convert_nif_phase2)
+    src = _cs.orchestrator_source(nc.convert_nif_phase2)
     i = src.index("cbbe_body_shape = next(")
     tail = src[i:i + 2400]
     assert "if cbbe_body_shape is None and body_names:" in tail, (

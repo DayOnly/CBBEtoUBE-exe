@@ -179,11 +179,23 @@ class ClipTester:
             # armpit). Two predicates for one concept drift apart, so this one
             # DELEGATES the body cast rather than reimplementing it.
             i_t = i_t.copy()
-            far = mp.ray_first_hit(
-                np.asarray(bV)[idx], -np.asarray(bN)[idx],
-                bV, np.asarray(bT, np.int64).reshape(-1, 3),
-                tmax=mp.BODY_TMAX, tmin=mp.BODY_EPS)
-            i_t[in_hit & ~(i_t < far)] = np.inf
+            # CAST ONLY THE RAYS WHOSE ANSWER IS USED. `far` is consumed solely
+            # through `in_hit & ~(i_t < far)`, and wherever `in_hit` is False
+            # that term is False whatever `far` holds -- so those rows were
+            # being computed and thrown away. This is the dominant cost of every
+            # analysis built on this tester: the cast is brute force over the
+            # WHOLE body (~58k tris) at BODY_TMAX=200u, so no bounding-box cull
+            # can touch it, and it measured 75% of a morph-clip census run.
+            # `in_hit` is a small fraction of a band, so the saving is large and
+            # EXACT -- the rows not cast keep the inf they already had.
+            hi = np.flatnonzero(in_hit)
+            if len(hi):
+                sub = np.asarray(idx)[hi]
+                far_h = mp.ray_first_hit(
+                    np.asarray(bV)[sub], -np.asarray(bN)[sub],
+                    bV, np.asarray(bT, np.int64).reshape(-1, 3),
+                    tmax=mp.BODY_TMAX, tmin=mp.BODY_EPS)
+                i_t[hi[~(i_t[hi] < far_h)]] = np.inf
             in_hit = np.isfinite(i_t)
         clip = in_hit & ~out_hit & same
         A = vert_area[idx].sum()

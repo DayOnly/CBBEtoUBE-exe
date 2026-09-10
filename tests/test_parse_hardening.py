@@ -152,3 +152,58 @@ def test_validate_flags_out_of_range_kwda(tmp_path):
     e.save(p)
     w = ube_patcher.validate_patch(p, check_nifs=False)
     assert any(x.startswith("formid-out-of-range") for x in w), w
+
+
+# ---- normalize_modt: the REPAIR, not just the detector ---------------------
+# `modt-malformed` (above) is the detector, and it was tested. The REPAIR --
+# `normalize_modt`, which stops the bad bytes ever being written -- was not,
+# although it is the fix the project records as the one that "finally let the
+# game reach the main menu": a headerless LE-port MO?T whose offset-4 u32 lands
+# on the first entry's "dds\0" extension reads as 7,562,340 entries, and the
+# engine overreads a 24-byte buffer -> EXCEPTION_ACCESS_VIOLATION at model init.
+#
+# It is called on every ARMA build and every merge rewrite, so an off-by-one in
+# `len == 12 * (1 + count)` would ship malformed blocks pack-wide. The
+# CTD-gated detector would fail the build afterwards, which is a real net --
+# but the arithmetic that decides what gets written deserves its own pin.
+
+def test_normalize_modt_replaces_the_historical_headerless_block():
+    """The exact shape that crashed: raw 12-byte entries, no header, first
+    bytes 'dds\0' so the count field reads 7,562,340."""
+    bad = b"dds\x00" * 6                      # 24 bytes, no header
+    assert struct.unpack_from("<I", bad, 4)[0] == 0x00736464 == 7562340
+    out = ube_patcher.normalize_modt(bad)
+    assert out != bad
+    count = struct.unpack_from("<I", out, 4)[0]
+    assert len(out) == 12 * (1 + count), "replacement must itself be valid"
+
+
+def test_normalize_modt_keeps_a_valid_block_byte_for_byte():
+    """A repair that rewrote healthy blocks would churn every ARMA in the pack
+    and lose real texture hashes."""
+    good = struct.pack("<III", 2, 1, 0) + b"\xAA" * 12      # count=1 -> 24 bytes
+    assert len(good) == 12 * (1 + 1)
+    assert ube_patcher.normalize_modt(good) is good or \
+        ube_patcher.normalize_modt(good) == good
+
+
+@pytest.mark.parametrize("bad", [
+    b"",                                   # empty
+    b"\x00" * 11,                          # shorter than one entry
+    struct.pack("<III", 2, 5, 0),          # count says 5, only 1 entry present
+    struct.pack("<III", 2, 0, 0) + b"\x00",   # one trailing byte
+])
+def test_normalize_modt_rejects_anything_that_fails_the_invariant(bad):
+    out = ube_patcher.normalize_modt(bad)
+    count = struct.unpack_from("<I", out, 4)[0]
+    assert len(out) == 12 * (1 + count)
+    assert out != bad
+
+
+def test_normalize_modt_is_what_the_detector_would_have_flagged():
+    """Ties the two halves together: the repair's output must be clean by the
+    detector's own rule, so repair and detection cannot drift apart."""
+    for bad in (b"dds\x00" * 6, b"", struct.pack("<III", 2, 9, 0)):
+        out = ube_patcher.normalize_modt(bad)
+        count = struct.unpack_from("<I", out, 4)[0]
+        assert len(out) == 12 * (1 + count)

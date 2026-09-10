@@ -67,10 +67,14 @@ TABS = ("Run", "Armor", "Overlays", "Paths", "Diagnostics")
 
 SETTINGS: "tuple[Setting, ...]" = (
     # ---- Armor: fit and conform --------------------------------------
-    Setting("conform_to_body", "Conform fitted cloth to body",
+    Setting("conform_to_body", "Match fitted cloth's skin weights to the body",
             "Armor", "Fit and clearance", default=True,
             env="CBBE2UBE_NO_CONFORM", invert=True,
-            tooltip="Snap body-hugging cloth onto the UBE body so it stops clipping."),
+            tooltip="Weights only, moves no vertex: body-hugging cloth takes the "
+                    "UBE body's per-vertex skinning so it bends with the body "
+                    "instead of pulling away from it. (The GEOMETRY conform that "
+                    "snaps cloth onto the body is a separate stage with no "
+                    "switch here.)"),
     Setting("leg_bend_match", "Rigid leg-plate knee conform",
             "Armor", "Limbs and extremities", default=True,
             env="CBBE2UBE_NO_LEG_BEND_MATCH", invert=True,
@@ -122,6 +126,86 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "upper back was given no allowance for the body growing "
                     "under it at runtime. Charges the back the same allowance "
                     "the bust already gets."),
+    Setting("author_roughness_cap",
+            "Keep weighting as smooth as the author made it",
+            "Armor", "Seams", default=True,
+            env="CBBE2UBE_NO_AUTHOR_ROUGHNESS_CAP", invert=True,
+            hint="Fixes a lone vertex bending the wrong way -- a pucker or "
+                 "spike in an otherwise smooth panel.",
+            tooltip="Making a garment follow the body rewrites its weighting, "
+                    "and a vertex only holds four bones. Where the rewritten "
+                    "weighting holds a near tie for that fourth slot, "
+                    "neighbouring vertices can keep DIFFERENT bones -- so one "
+                    "vertex bends on the chest while the surface around it "
+                    "bends at the waist, and it pokes through whatever covers "
+                    "it. This compares each vertex against the ones touching "
+                    "it and, where our weighting came out rougher than the "
+                    "author's own, eases it back toward its neighbours. It is "
+                    "measured against the AUTHOR rather than against perfect "
+                    "smoothness, so real panel edges and seams the author put "
+                    "there are preserved. On the reported outfit it fixed 802 "
+                    "of 830 rough vertices and left the belts, buckles and "
+                    "metal buttons -- already smooth -- completely untouched. "
+                    "Changes weighting only; nothing moves."),
+    Setting("smp_boundary_weight_hold",
+            "Keep layers together where cloth physics meets solid armour",
+            "Armor", "Seams", default=True,
+            env="CBBE2UBE_NO_SMP_BOUNDARY_HOLD", invert=True,
+            hint="Fixes a belt or skirt and the armour above it pulling apart "
+                 "at the waist when the character bends.",
+            tooltip="A skirt or belt driven by cloth physics has to keep the "
+                    "weighting its author gave it -- rewrite it and the cloth "
+                    "comes loose from the body and drifts. The armour beside "
+                    "it has no such rule, so it gets refitted onto the new "
+                    "body while its neighbour stays put, and the two end up "
+                    "riding different bones at the same height: on the "
+                    "reported cuirass one layer moved toward the chest while "
+                    "the layer touching it moved toward the hips, so they "
+                    "sheared apart at the waist every time the character "
+                    "bent. This eases the armour's weighting back toward its "
+                    "author's near the physics cloth, fading out over about "
+                    "six units so the fit further in is untouched. Across "
+                    "every affected outfit it removed 65% of the disagreement "
+                    "with the author, better on 39 and slightly worse on 3, "
+                    "and outfits without cloth physics are left byte-for-byte "
+                    "identical. Changes weighting only; nothing moves."),
+    Setting("weight_partner_jiggle_sync",
+            "Give an outfit the same jiggle at both body weights",
+            "Armor", "Seams", default=True,
+            env="CBBE2UBE_NO_WEIGHT_PARTNER_JIGGLE_SYNC", invert=True,
+            hint="Fixes a belt or skirt that jiggles on a curvy character but "
+                 "sits rigid on a slim one, or the reverse.",
+            tooltip="Every outfit ships as two meshes, one for the slimmest "
+                    "body and one for the fullest, and the game blends between "
+                    "them. Armour that hugs the belly, backside or bust is "
+                    "given the body's jiggle so it moves with it instead of "
+                    "letting the body poke through -- but whether a piece "
+                    "counts as hugging is decided for each of the two meshes "
+                    "separately, and the fuller body naturally sits closer. "
+                    "About twenty outfits land either side of that line, so "
+                    "they get the jiggle at one body weight and not the other. "
+                    "This gives the mesh that missed out the same jiggle bone "
+                    "its partner already has, copied across exactly. Measured: "
+                    "20 mismatched outfits down to 1, which is declined on "
+                    "purpose because its data cannot be read safely. Changes "
+                    "weighting only; nothing moves."),
+    Setting("back_bound_edit",
+            "...and cap how far that allowance may push",
+            "Armor", "Fit and clearance", default=False,
+            env="CBBE2UBE_BACK_BOUND_EDIT", invert=False,
+            hint="For the upper back standing too far OFF the body on pieces "
+                 "the allowance above helped.",
+            tooltip="The upper-back allowance raises cloth to its required "
+                    "clearance in one step, and where the garment was already "
+                    "close that step can overshoot -- the measured piece stood "
+                    "2.12 units off the back where its author put about half "
+                    "that. This caps each vertex's move at the allowance "
+                    "itself, so the charge still clears skin but cannot "
+                    "overshoot: on the measured piece the standoff fell from "
+                    "2.12 to 1.16 units while showing LESS skin than before "
+                    "(4 clipped vertices against 7). Touches roughly the "
+                    "worst tenth of pieces; the rest already sit inside the "
+                    "cap."),
     Setting("clearance_differential",
             "Base clearance on reshaping, not just growth",
             "Armor", "Fit and clearance", default=True,
@@ -181,9 +265,16 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "vertex still travels the full local body delta, it just "
                     "stops shearing away from its neighbours -- so it cannot "
                     "leave armour CBBE-shaped."),
+    # POLARITY CORRECTED 2026-08-12. This row wrote CBBE2UBE_WARP_DELTA_OUTLIER,
+    # which `src/` does not read: the flag is `CBBE2UBE_NO_WARP_DELTA_OUTLIER`
+    # and its default went ON when the feature was defaulted on. So the row was
+    # dead in BOTH directions -- ticking it did nothing, unticking it did
+    # nothing, and the GUI showed a default-ON feature as off. Found by counting
+    # GUI envs against the ones `src/` actually reads; `test_every_gui_env_is_
+    # read_by_src` now keeps it honest.
     Setting("warp_delta_outlier", "Stop the warp flinging a lone vertex",
-            "Armor", "Fit and clearance", default=False,
-            env="CBBE2UBE_WARP_DELTA_OUTLIER", invert=False,
+            "Armor", "Fit and clearance", default=True,
+            env="CBBE2UBE_NO_WARP_DELTA_OUTLIER", invert=True,
             hint="Fixes small pure-black spots, usually a mirrored pair, that survive other fixes.",
             tooltip="A single vertex can be driven several units away from its "
                     "own neighbours -- mostly by the clearance push, which "
@@ -205,6 +296,24 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "0.25 -> 19.6, at about 0.004u of median standoff "
                     "throughout. Below ~0.25 the worst case keeps shrinking "
                     "but the COUNT of inward-facing triangles starts rising."),
+    Setting("normal_determinacy", "Trust the mesh's own shading where it is clear",
+            "Armor", "Fit and clearance", default=True,
+            env="CBBE2UBE_NO_NORMAL_DETERMINACY", invert=True,
+            hint="Fixes dark shards that survive every geometry fix, because the geometry was never the problem.",
+            tooltip="After the fit moves vertices, their normals are "
+                    "recomputed from the new shape -- except that any normal "
+                    "disagreeing with the ORIGINAL by more than 90 degrees was "
+                    "flipped back, on the assumption this only ever happened "
+                    "where the recompute was ambiguous. It also happened at "
+                    "vertices with a full, agreeing set of triangles, storing "
+                    "a normal that points INTO the surface: those shade as if "
+                    "lit from behind, which reads as broken angular verts and "
+                    "is invisible to every position-based check. Measured on "
+                    "one garment against the author's own mesh, which had "
+                    "none. This limits the flip to vertices whose normal "
+                    "genuinely cannot be determined -- too few triangles, or "
+                    "triangles that cancel -- which is the case it was written "
+                    "for."),
     Setting("warp_push_shell_cap", "Never push a vertex through its own armour",
             "Armor", "Fit and clearance", default=False,
             env="CBBE2UBE_WARP_PUSH_SHELL_CAP", invert=False,
@@ -218,6 +327,427 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "push at the garment's own surface. It only ever binds "
                     "where armour is already in front of the vertex, so it "
                     "cannot reopen clipping."),
+    Setting("breast_follow_keep", "Keep the author's bust follow",
+            "Armor", "Fit and clearance", default=True,
+            env="CBBE2UBE_NO_BREAST_FOLLOW_KEEP", invert=True,
+            hint="Untick only if bust cloth over-follows the breast.",
+            tooltip="A garment's layers are matched to the body's skinning so "
+                    "they travel with it. That is right for arms and legs and "
+                    "wrong for the bust, where the author deliberately makes an "
+                    "inner layer follow the breast MORE than the body does so "
+                    "it hugs. Without this every layer converges on the body's "
+                    "own share, and an inner layer ends up out-travelling the "
+                    "one over it -- so the underlayer swings out through the "
+                    "outer one whenever the breasts move. Nothing moves at "
+                    "rest, so this cannot change the fit; it only changes what "
+                    "travels with what."),
+    Setting("bust_flat_clear", "Bust clearance floor",
+            "Armor", "Fit and clearance", kind="float", default=0.12,
+            env="CBBE2UBE_BUST_FLAT_CLEAR", min=0.0, max=1.5, step=0.01,
+            advanced=True,
+            hint="Raise toward 0.3 if a bust pokes through; lower to hug.",
+            tooltip="How far off the skin the chest conform holds a garment "
+                    "everywhere in the bust band, before the nipple ramp and "
+                    "the measured morph allowance are added on top. Was 0.3, "
+                    "which held a skin-tight bodysuit six times further from "
+                    "the body than its author did, so it read as a dark shell "
+                    "over the skin. NOT the same number as the anti-poke's own "
+                    "bust target, which is untouched."),
+    Setting("bust_clear", "Anti-poke bust target at the nipple",
+            "Armor", "Fit and clearance", kind="float", default=1.0,
+            env="CBBE2UBE_BUST_CLEAR", min=0.0, max=3.0, step=0.05,
+            advanced=True,
+            hint="How far the bust of a garment is held off the body.",
+            tooltip="The anti-poke pass holds a garment this far off the body "
+                    "at the nipple, ramping down to the flat-chest value away "
+                    "from it. It is a FLOOR, so a garment already sitting "
+                    "further out is left alone -- raising it only affects "
+                    "pieces that currently sit closer than the new value. NOT "
+                    "the same number as the conform ceiling below, which is a "
+                    "different pass. Was 1.0."),
+    # --- promoted to default ON 2026-09-04, all three confirmed in game -------
+    Setting("bodytri_all_shapes",
+            "Keep body sliders working on dressed characters",
+            "Armor", "Physics", default=True,
+            env="CBBE2UBE_NO_BODYTRI_ALL_SHAPES", invert=True,
+            hint="For sliders resetting to the base shape when clothes go on.",
+            tooltip="Hand-authored outfits attach the slider link to the body "
+                    "AND to every cloth piece. The converter attached one, and "
+                    "a later step then destroyed all but one of those, keeping "
+                    "whichever piece happened to come first. A full-length "
+                    "dress is the whole silhouette, so the body underneath "
+                    "could be perfectly shaped and still look flat. Ships the "
+                    "authored arrangement instead."),
+    Setting("pair_tri_names",
+            "Keep body sliders working at high body weight",
+            "Armor", "Physics", default=True,
+            env="CBBE2UBE_NO_PAIR_TRI_NAMES", invert=True,
+            hint="For sliders that work on a thin character and not a heavy one.",
+            tooltip="An outfit ships as two meshes, one for each end of the "
+                    "body-weight slider, and they share ONE slider-data file. "
+                    "Some authors give the two meshes different internal names, "
+                    "and then the file only names the shapes in the light one -- "
+                    "so at high body weight the sliders find nothing to move and "
+                    "the outfit stays at its base shape. Measured on this pack: "
+                    "54 of 1536 outfits, 42 of them losing every slider. Writes "
+                    "the same slider data under both names. Changes the slider "
+                    "files it ships, so it is off until judged."),
+    Setting("proxy_weight_invariant",
+            "Match generated collision at both body weights",
+            "Armor", "Physics", default=True,
+            env="CBBE2UBE_NO_PROXY_WEIGHT_INVARIANT", invert=True,
+            hint="For physics that works at one weight and not the other.",
+            tooltip="Skyrim blends an outfit's two weight meshes point by "
+                    "point, and one morph file serves both, so the two have to "
+                    "agree. The generated collision shape was built from each "
+                    "file's own positions, so the two disagreed on 14 of 28 "
+                    "outfits -- against zero for hand-built ones. Builds it "
+                    "from the mesh's connectivity instead, which is identical "
+                    "at both weights."),
+    Setting("softcloth_own_plane",
+            "Measure cloth clearance where the push is applied",
+            "Armor", "Physics", default=True, advanced=True,
+            env="CBBE2UBE_NO_SOFTCLOTH_OWN_PLANE", invert=True,
+            hint="Stops physics cloth being pushed further out than intended.",
+            tooltip="The pass measured how far cloth sat from one point on the "
+                    "body and then pushed it away from a different one, so it "
+                    "overshot its own target. Can only ever reduce the push."),
+    Setting("softcloth_smooth_dir",
+            "Move neighbouring cloth points together",
+            "Armor", "Physics", default=True, advanced=True,
+            env="CBBE2UBE_NO_SOFTCLOTH_SMOOTH_DIR", invert=True,
+            hint="For buckling on straps and thin trim.",
+            tooltip="The push strength was smoothed but its DIRECTION was not, "
+                    "so neighbouring points on a thin strap moved apart even "
+                    "where they were pushed equally hard, and the strip "
+                    "buckled. Still push-out only."),
+    Setting("coherence_kink",
+            "Repair cloth that has folded over as a group",
+            "Armor", "Fit", default=True, advanced=True,
+            env="CBBE2UBE_NO_COHERENCE_KINK", invert=True,
+            hint="For a strip that has turned the wrong way as a whole.",
+            tooltip="The existing repair looks for a surface that has gone "
+                    "scattered. A strip that turns cleanly as one piece stays "
+                    "smooth, so it slipped past unrepaired even while turning "
+                    "three times harder than the cloth it is attached to."),
+    Setting("body_lookup_prefers_baseshape",
+            "Fix body sliders on armour that has physics",
+            "Armor", "Physics", default=True,
+            env="CBBE2UBE_NO_BODY_LOOKUP_PREFERS_BASESHAPE", invert=True,
+            hint="For breasts/muscle going flat when a physics outfit is worn.",
+            tooltip="Armour carries its own copy of the body's slider data so "
+                    "your shape survives being dressed. On outfits that use "
+                    "HDT-SMP the converter was reading that data against the "
+                    "outfit's small collision proxy instead of the real body -- "
+                    "about 5,000 points instead of 29,000 -- so every slider "
+                    "that shapes anything outside that small region was thrown "
+                    "away. Measured on one outfit: 78 of 202 sliders survived, "
+                    "and the ones lost were the breast set almost entirely. An "
+                    "otherwise identical piece with no physics kept all 202, "
+                    "which is why this looked like a physics problem. With "
+                    "this on the real body is used. Off by default because it "
+                    "rewrites the slider data on every physics piece and you "
+                    "should see it work before it becomes the default."),
+    Setting("skirt_proxy_after_weights",
+            "Choose the skirt collider after the weights are final",
+            "Armor", "Physics", default=False,
+            env="CBBE2UBE_SKIRT_PROXY_AFTER_WEIGHTS", invert=False,
+            hint="For a skirt whose collider ended up on the wrong part. OFF.",
+            tooltip="When an outfit's own physics file has no collider for its "
+                    "skirt, the converter builds one, and picks which part of "
+                    "the outfit to build it from by looking at which part is "
+                    "most cloth-driven. It makes that choice BEFORE four later "
+                    "steps rewrite the very weights it looked at. On a "
+                    "measured dress the margin between the skirt and a potion "
+                    "bottle's net was 7%, and the collider was built from the "
+                    "bottle -- leaving the skirt with none. Two other dresses "
+                    "in the same outfit won by nearly four times and were "
+                    "correct. With this on the choice is made after those "
+                    "steps, on the weights that ship. It is off because it "
+                    "changes which part the collider is built from wherever "
+                    "the two are close, and that deserves its own look."),
+    Setting("ride_outward_cap",
+            "Don't let a stacked layer drag the one above it outward",
+            "Armor", "Fit and clearance", default=False,
+            env="CBBE2UBE_RIDE_OUTWARD_CAP", invert=False,
+            hint="For a shape showing through the layer over it. OFF, unjudged.",
+            tooltip="When armour has stacked layers, the converter moves each "
+                    "outer layer to follow the one beneath it, keeping the "
+                    "spacing its author gave them. That is right while the "
+                    "inner layer is where its author put it -- and wrong when "
+                    "it is not, because the outer layer then faithfully copies "
+                    "a bulge that should not be there. It is how the shape of "
+                    "a nipple ends up outlined through a rigid plate that sits "
+                    "well clear of the body. With this on, an outer layer is "
+                    "still never allowed to sink into what it covers, but it "
+                    "is no longer dragged further out than its own fit "
+                    "decided. Measured on a reported piece, the plate's own "
+                    "fit was already close to the author's shape and the "
+                    "follow step was adding four fifths of the visible "
+                    "defect."),
+    Setting("bust_authored_nipple_cap",
+            "Don't lift armour at the nipple further than its author did",
+            "Armor", "Fit and clearance", default=False,
+            env="CBBE2UBE_BUST_AUTHORED_NIPPLE_CAP", invert=False,
+            hint="For nipple outlines showing through a plate. OFF, unjudged.",
+            tooltip="To stop a nipple poking through cloth, the converter "
+                    "demands extra room right at the tip -- about five times "
+                    "what it asks for across the rest of the chest. On soft "
+                    "cloth that is what you want. On a rigid plate it pushes "
+                    "the plate outward at the tip instead, which shows in game "
+                    "as the shape of the nipple outlined through the armour. "
+                    "Measured on a reported piece: the author's own plate sits "
+                    "CLOSER at the nipple than across its flat chest, and ours "
+                    "sat further out -- so the step was working against the "
+                    "shape its author built. With this on, the extra room "
+                    "asked for at the tip is limited to what the author left "
+                    "there themselves. It can only ever ask for LESS, never "
+                    "more. Turn it on for a build of its own and look at "
+                    "plate chestpieces: the risk it trades against is the tip "
+                    "poking through, which is worse than an outline."),
+    Setting("conform_bust_clear", "Bust clearance ceiling at the nipple",
+            "Armor", "Fit and clearance", kind="float", default=0.9,
+            env="CBBE2UBE_CONFORM_BUST_CLEAR", min=0.0, max=2.0, step=0.05,
+            advanced=True,
+            hint="The most the floor above may ramp to at the nipple.",
+            tooltip="The chest conform ramps its clearance toward this value as "
+                    "it approaches the nipple, so a tip cannot poke through a "
+                    "garment that is otherwise hugging. Was 0.9."),
+    # These three shipped OPT-IN "until judged in game" and were then impossible
+    # to switch on in game -- the deadlock PIPELINE section 6 describes. They are
+    # deployed in a test mesh awaiting exactly that verdict, so they need to be
+    # reachable for anyone to give one.
+    Setting("strap_scale_uniform", "Un-crumple stretched straps",
+            "Armor", "Fit and clearance", default=False,
+            env="CBBE2UBE_STRAP_SCALE_UNIFORM", invert=False,
+            hint="For a belt or strap that came out rippled rather than bent.",
+            tooltip="Refitting a narrow strap onto a different body can leave "
+                    "its edges running anywhere from half to one and a half "
+                    "times the length the author gave them. That is not the "
+                    "strap bending, it is the strap crumpling. This gives each "
+                    "edge the length its own neighbourhood agrees on. Reaches "
+                    "about one shape in six across a load order, so it is worth "
+                    "a look on more than the piece it was written for."),
+    Setting("short_edge_cap", "Stop tiny detail being blown up",
+            "Armor", "Fit and clearance", default=False,
+            env="CBBE2UBE_SHORT_EDGE_CAP", invert=False,
+            hint="For small studs, buckles and trim that came out oversized.",
+            tooltip="The smallest details in a mesh -- the edges making up a "
+                    "stud or a line of stitching -- can be stretched many times "
+                    "their original size by the refit, because a tiny edge "
+                    "magnifies any error in where its two ends land. This pulls "
+                    "those back toward the size the author gave them, while "
+                    "leaving any edge that already agrees with its neighbours "
+                    "alone, so it stays a repair rather than a resurfacing."),
+    Setting("layer_ride_bary", "Ride layers on the surface, not on vertices",
+            "Armor", "Fit and clearance", default=False,
+            env="CBBE2UBE_LAYER_RIDE_BARY", invert=False,
+            hint="Slightly steadier placement for belts and trim sitting on "
+                 "another layer.",
+            tooltip="When a belt or a piece of trim sits on top of another "
+                    "layer, it is moved to follow whatever is underneath it. "
+                    "That following is worked out from the nearby POINTS of the "
+                    "layer below, which shift about slightly; this follows the "
+                    "actual spot on its SURFACE instead, which does not. "
+                    "Measured as a small reduction in stray spikes with no "
+                    "visible change otherwise, so treat it as a refinement "
+                    "rather than a fix for anything you can see."),
+    Setting("authored_antipoke",
+            "Keep the author's tight fit where the body doesn't grow",
+            "Armor", "Fit and clearance", default=True,
+            env="CBBE2UBE_NO_AUTHORED_ANTIPOKE", invert=True,
+            hint="Stops the last anti-clipping step loosening a deliberately "
+                 "tight garment. Needs the two settings above.",
+            tooltip="The final step against skin showing through pushes armour "
+                    "out to a set distance from the body. It does that even "
+                    "where the author deliberately fitted the garment tight "
+                    "and the body does not change shape -- so a corset that "
+                    "should hug ends up standing off it. Measured across a set "
+                    "of garments, this is the only step that moves armour "
+                    "AWAY from the shape its author built, and it is also the "
+                    "single biggest source of surface roughness. This lets it "
+                    "settle back toward the author's spacing, but ONLY where "
+                    "the body underneath does not grow; over the bust, belly "
+                    "and backside -- what the step exists for -- it keeps the "
+                    "full clearance. It can never push armour further out than "
+                    "it does today."),
+    Setting("groove_authored_cap",
+            "Limit groove smoothing to the author's own clearance",
+            "Armor", "Fit and clearance", default=True,
+            env="CBBE2UBE_NO_GROOVE_CAP", invert=True, advanced=True,
+            hint="ON, and until now it had no switch. Measured 2026-09-02: it "
+                 "buys almost nothing.",
+            tooltip="After the converter smooths the creases the body makes in "
+                    "cloth, this step stops that smoothing from pushing a "
+                    "vertex further out than the author's own garment sat. It "
+                    "exists because the step before it can otherwise hand back "
+                    "clearance that the fit had just removed. Measured over "
+                    "252 shapes it changes how much skin shows on 3 of them "
+                    "and moves the average garment by under a hundredth of a "
+                    "unit, while slightly increasing the number of places the "
+                    "surface folds through itself. It had NO switch at all "
+                    "until now, so no build could be run without it."),
+    Setting("coherence_repair_outside_body",
+            "Never let the un-buckling step pull armour into the body",
+            "Armor", "Fit and clearance", default=True,
+            env="CBBE2UBE_NO_COHERENCE_REPAIR_OUTSIDE_BODY", invert=True,
+            hint="The last step in the chain could undo the clearance every "
+                 "step before it had just established.",
+            tooltip="After fitting, one step un-buckles thin features the fit "
+                    "crumpled -- a rim bent at a right angle, a crease up a "
+                    "seam. It works by evening out how far neighbouring points "
+                    "moved, keeping the average the same. But it never knew "
+                    "where the body was, so a point the anti-clipping step had "
+                    "deliberately pushed clear just looked like a point that "
+                    "had moved unusually far, and evening it out pulled it "
+                    "back in -- through the skin. Traced on a layered cuirass, "
+                    "it moved points nearly a unit inward after every earlier "
+                    "step had held them clear, and nothing runs after it to "
+                    "catch that. This lets it do everything it asks for except "
+                    "move a point from outside the body to inside."),
+    Setting("field_screen_physical",
+            "Smooth clearance over the same DISTANCE on any mesh",
+            "Armor", "Fit and clearance", default=True,
+            env="CBBE2UBE_NO_FIELD_SCREEN_PHYSICAL", invert=True,
+            hint="Fixes finely-detailed pieces creasing where plainer ones do "
+                 "not. Helps most on lace, trim, buckles and straps.",
+            tooltip="When the converter pushes armour clear of the body, it "
+                    "blends that push into the surrounding surface so the "
+                    "cloth does not step. How far that blend spreads is "
+                    "currently counted in EDGES rather than in distance -- so "
+                    "on a piece cut into very small triangles, such as lace or "
+                    "a buckle, it fades out over a fraction of the distance it "
+                    "would on a plain panel, and the surface creases there. "
+                    "Measured on one flat patch with nothing changing but how "
+                    "finely it was cut, the steepness that creases a surface "
+                    "rose more than sevenfold. This measures the blend in "
+                    "distance instead. Pieces at or below the usual level of "
+                    "detail are left exactly as they are, so only the fine "
+                    "ones change. Finely-cut pieces take longer to convert."),
+    Setting("authored_inflate", "Only add clearance where it is missing",
+            "Armor", "Fit and clearance", default=True,
+            env="CBBE2UBE_NO_AUTHORED_INFLATE", invert=True,
+            hint="Stops armour being pushed off the body where the author "
+                 "already left room. Needs the setting above.",
+            tooltip="To keep skin from showing through when body sliders grow "
+                    "the body, the converter pushes armour outward. It does "
+                    "that blindly -- it adds the same clearance whether or not "
+                    "the garment already had plenty. Measured across the whole "
+                    "load order (13,889 shapes): on the shapes it moves, that "
+                    "push takes two thirds of them FURTHER from the shape "
+                    "their author built. This asks instead how much room each "
+                    "spot actually needs -- the author's own spacing, or "
+                    "enough for the body to grow there, whichever is larger -- "
+                    "and tops up only what is short. It can never push a "
+                    "vertex further than before, so armour cannot end up "
+                    "floating more than it does today."),
+    Setting("authored_inflate_amp_cap",
+            "  ...room reserved for body growth (units)",
+            "Armor", "Fit and clearance", kind="float", default=1.5,
+            env="CBBE2UBE_AUTHORED_INFLATE_AMP_CAP", advanced=True,
+            min=0.0, max=4.0, step=0.1,
+            tooltip="Upper limit on how much room the setting above reserves "
+                    "for the body growing at runtime. Uncapped it would track "
+                    "the belly, which can grow 8.7 units, and push loose "
+                    "clothing away from the body."),
+    Setting("src_normal_fix", "Read the author's real fit, not a flat one",
+            "Armor", "Fit and clearance", default=False,
+            env="CBBE2UBE_SRC_NORMAL_FIX", invert=False,
+            hint="Keeps a garment's spacing closer to how its author built it.",
+            tooltip="To keep the author's fit, the converter has to know how "
+                    "far each part of the garment stood off their body. It "
+                    "reads that using the body's surface directions -- and "
+                    "BodySlide routinely ships bodies with those left blank "
+                    "(measured: 18 of 21 sampled). Blank reads as ZERO, so the "
+                    "converter believes the garment was skin-tight everywhere "
+                    "and reels loose drape inward. With it on, the fit step "
+                    "moves the garment TOWARD the author's spacing instead of "
+                    "away from it, and the smoothing pass has far less to "
+                    "clean up. Measured on a five-layer top: layers on the "
+                    "wrong side of each other 1074 -> 706, roughness and "
+                    "distortion both down. Reaches armour that gets a body "
+                    "built into it only -- about a FIFTH of a pack (measured "
+                    "on the last full run: 800 of 3664 meshes). The other four "
+                    "fifths, converted by copying, already read the author's "
+                    "fit this way and this switch does not change them."),
+    Setting("layer_order_last", "Let the layer fix have the last word",
+            "Armor", "Fit and clearance", default=False,
+            env="CBBE2UBE_LAYER_ORDER_LAST", invert=False,
+            hint="For an under-layer poking through the layer above it.",
+            tooltip="Three small repairs -- un-buckling, evening out a "
+                    "stretched strap, and pulling back blown-up detail -- run "
+                    "again as the garment is written out, AFTER the step that "
+                    "puts the layers back in the author's order. On a belt "
+                    "they move three quarters of its vertices, which undoes "
+                    "that ordering. This runs those repairs first and the "
+                    "ordering last. Measured on the piece it was reported "
+                    "against: the under-layer poking through the belts went "
+                    "from 248 vertices to 80. It costs a little smoothness, "
+                    "because those repairs are also cleaning up after the "
+                    "layer steps themselves."),
+    Setting("last_carrier_hold", "Keep a bone the outfit author used on only "
+                                 "one or two vertices",
+            "Armor", "Fit and clearance", default=True,
+            env="CBBE2UBE_NO_LAST_CARRIER_HOLD", invert=True,
+            hint="Leave on. Off can crash on equip, and turning it off "
+                 "changes nothing else.",
+            tooltip="A vertex is held by at most four bones. When the "
+                    "converter adds a fifth -- a hip or chest bone it "
+                    "grafts on so the piece moves with the body -- "
+                    "something has to go, and the file format simply "
+                    "drops the smallest. The smallest is very often a "
+                    "bone the outfit author used on a single vertex, and "
+                    "losing that one vertex leaves the bone listed in the "
+                    "mesh with nothing attached to it -- which is the "
+                    "shape of crash the game gives when you equip the "
+                    "piece. This makes the bone the converter is adding "
+                    "give way instead, and only on that vertex. Measured "
+                    "on the pack: no vertex moves at all, 250 of 3.3 "
+                    "million bone weights change, and how the armour "
+                    "follows the body in motion is unchanged."),
+    Setting("family_weight_invariant", "Fix stray broken vertices on layered "
+                                       "garments",
+            "Armor", "Fit and clearance", default=True,
+            env="CBBE2UBE_NO_FAMILY_WEIGHT_INVARIANT", invert=True,
+            hint="For single vertices dragged into a spike or a flickering "
+                 "sliver on an under-layer. Off can crash on equip.",
+            tooltip="A vertex is held by at most four bones, and the file "
+                    "format enforces that by keeping the four strongest and "
+                    "discarding the rest -- without redistributing what it "
+                    "discarded. A vertex that ends up holding five is then "
+                    "short of the full amount, so it is placed by a partial "
+                    "sum of its bones and drifts away from the surface, "
+                    "dragging a long thin triangle that flickers depending on "
+                    "the angle you view it from. Measured on a reported "
+                    "five-layer top: 288 such vertices on the under-layer, "
+                    "none in the author's own mesh. This shares the four "
+                    "strongest back out to the full amount. It changes only "
+                    "the amounts, never which bones hold a vertex. That last "
+                    "point is why it is now on by default: because it never "
+                    "displaces a bone a vertex already has, a bone can no "
+                    "longer lose its last weight and be left listed on the "
+                    "armour holding nothing -- which can crash the game as the "
+                    "piece is equipped. On a 38-mesh armour set that was 21 "
+                    "such bones, and 361 vertices whose weights did not add "
+                    "up, both down to none, with no vertex moved."),
+    Setting("surface_warp_field", "Smooth the shape the body is warped onto",
+            "Armor", "Fit and clearance", default=False,
+            env="CBBE2UBE_SURFACE_WARP_FIELD", invert=False,
+            hint="Removes a stair-step in the field every garment is refit "
+                 "through. Biggest at the bust and the hips.",
+            tooltip="The refit moves armour by the amount the BODY changes "
+                    "shape between CBBE and UBE. That amount is worked out by "
+                    "matching each point of one body to the nearest POINT of "
+                    "the other -- and points are discrete, so two neighbouring "
+                    "spots can be handed changes that do not match, leaving a "
+                    "stair-step. Measured: both bodies are smooth (about 4 "
+                    "degrees between neighbouring faces) while the shape they "
+                    "are warped onto reads 43. Matching to the nearest point "
+                    "on the SURFACE instead brings that back to 4.6. In "
+                    "practice the refit already averages over four "
+                    "neighbours, which hides most of it, so expect a small "
+                    "improvement on tight chest pieces and none on a belt. It "
+                    "does not change how far armour sits off the body."),
     Setting("full_weight_match", "Match armour skinning to the body it covers",
             "Armor", "Fit and clearance", default=True,
             env="CBBE2UBE_NO_FULL_WEIGHT_MATCH", invert=True,
@@ -289,22 +819,410 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "morphable. Trade-off: the flap stops swinging. "
                     "Experimental -- changes physics, so check for equip "
                     "crashes and collapsing cloth, not just clipping."),
-    Setting("chain_body_shift", "Shift physics chains onto the new body "
-            "(experimental)",
-            "Armor", "Physics chains (HDT-SMP)", default=False,
-            env="CBBE2UBE_CHAIN_BODY_SHIFT", invert=False,
-            hint="Move a skirt's chain bones onto the new body instead of leaving them at source.",
-            tooltip="Chain-driven cloth (skirts, drapes) is pinned to its "
-                    "SOURCE rest position so it stays aligned with its bones, "
-                    "which means no clearance pass can reach it -- a skirt "
-                    "keeps a source-shaped rest pose over a differently-shaped "
-                    "body. This moves each chain's ROOT bone by the local body "
-                    "delta instead, so the whole chain translates rigidly "
-                    "(measured worst inter-bone change 0.000000u -- warping "
-                    "chain bones individually is what makes a chain explode). "
-                    "Took bind-pose skirt clipping 7.5%% to 1.1%% on the test "
-                    "piece, but showed no visible in-game change, so it is "
-                    "unproven where it counts. Experimental."),
+    Setting("ride_feather",
+            "Smooth how layered outfits are placed on each other",
+            "Armor", "Fit and clearance", default=False,
+            env="CBBE2UBE_RIDE_FEATHER", invert=False,
+            hint="For jagged belts, ropes and straps on a layered outfit.",
+            tooltip="Layers above the innermost one are placed by copying how "
+                    "the layer beneath them moved. That copy is made for each "
+                    "vertex on its own, and neighbouring vertices can copy "
+                    "from different parts of the layer below -- which shows up "
+                    "as a jagged edge on narrow straps. Every other pass that "
+                    "moves cloth already smooths its movement into the "
+                    "neighbouring vertices; this one did not. Measured on a "
+                    "reported outfit, the belt family's creased vertices fell "
+                    "by 22%% and its overstretched edges by 30%%, with the "
+                    "worst strap going from 205 creases to 26. The smoothing "
+                    "preserves how far each layer sits from the one below, so "
+                    "it removes the jaggedness without flattening the "
+                    "layering."),
+    Setting("panel_rigid_ride",
+            "Keep rigid plates rigid when stacking layers",
+            "Armor", "Fit and clearance", default=True,
+            env="CBBE2UBE_PANEL_RIGID_RIDE", invert=False,
+            hint="For armour plates that arrive bent or rippled on a layered "
+                 "piece.",
+            tooltip="Placing an outer layer on an inner one moves each vertex "
+                    "separately, which bends a solid plate that should stay "
+                    "flat. This moves each connected plate as one piece "
+                    "instead, so it keeps the shape the author gave it. "
+                    "Measured on one cuirass, the bust plate's deviation from "
+                    "the authored shape fell to zero in every band. A plate it "
+                    "cannot place clear of the body is left alone rather than "
+                    "frozen half inside it."),
+    Setting("smooth_reach",
+            "Feather the same DISTANCE on finely-modelled detail",
+            "Armor", "Fit and clearance", default=False,
+            env="CBBE2UBE_SMOOTH_REACH", invert=False,
+            hint="For jagged buckles, buttons, laces and cords on an outfit "
+                 "whose larger panels look fine.",
+            tooltip="When a pass moves cloth it feathers that movement into "
+                    "the surrounding vertices so it does not become a spike. "
+                    "The feathering is counted in RINGS of neighbouring "
+                    "vertices rather than in distance -- so on a finely "
+                    "modelled buckle strip, whose vertices sit twenty times "
+                    "closer together than a leather panel's, it covers twenty "
+                    "times less surface and barely feathers at all. Measured "
+                    "on one reported outfit: every shape moved more than six "
+                    "times its own vertex spacing was torn, and every shape "
+                    "under about two and a half times was clean. This scales "
+                    "the feathering to each shape's own spacing so it covers "
+                    "the same distance everywhere. It never feathers LESS "
+                    "than before, so coarser pieces are untouched."),
+    Setting("per_anchor_seed", "Place each physics chain's anchor separately",
+            "Armor", "Physics chains (HDT-SMP)", default=True,
+            env="CBBE2UBE_PER_ANCHOR_SEED", invert=False,
+            hint="Fixes skirts hanging far below the body on outfits that mix "
+                 "a hip chain with a chest one.",
+            tooltip="Chain anchors are placed in one pass for the whole "
+                    "outfit, and that pass gives up entirely if ANY of the "
+                    "outfit's chains hangs from the upper body. On an outfit "
+                    "that mixes the two -- a skirt from the hips plus a small "
+                    "chest chain, which is common -- nothing is placed at all "
+                    "and every chain lands about 69 units low, at floor "
+                    "level. Measured on vanilla iron armour: 38 chain nodes, "
+                    "most of them below the ground. This places each anchor on "
+                    "its own merits, so the hip chains are positioned "
+                    "correctly whatever else the outfit carries."),
+    Setting("mixed_cloth_clearance",
+            "Give the fitted parts of physics outfits body clearance",
+            "Armor", "Fit and clearance", default=True,
+            env="CBBE2UBE_MIXED_CLOTH_CLEARANCE", invert=False,
+            hint="For a piece that is part simulated cloth, part fitted cloth: "
+                 "the fitted part gets no clearance.",
+            tooltip="Clearance is skipped for anything carrying physics "
+                    "rigging, because moving simulated cloth fights the "
+                    "simulation. But one piece often holds BOTH a simulated "
+                    "skirt and an ordinary fitted top, and the whole piece is "
+                    "skipped on account of the skirt -- so the top never "
+                    "receives a bust or body clearance target and the body can "
+                    "push through it. Measured across the pack: 392 of 482 "
+                    "skipped pieces are mixed this way, 57%% of their vertices "
+                    "carry no physics weight at all, and 198 pieces have chest "
+                    "cloth no clearance can currently reach. This clears only "
+                    "the vertices carrying no physics weight; every simulated "
+                    "vertex is put back exactly where the simulation expects "
+                    "it."),
+    Setting("authored_ride_order",
+            "Stack layers in the order the author built them",
+            "Armor", "Fit and clearance", default=True,
+            env="CBBE2UBE_NO_AUTHORED_RIDE_ORDER", invert=True,
+            hint="For multi-layer outfits: decides which layer the rest of the "
+                 "outfit is fitted around.",
+            tooltip="Layered outfits are placed one layer at a time, starting "
+                    "from whichever layer sits closest to the body -- and every "
+                    "layer above it is rebuilt from that one, so it is the only "
+                    "layer that keeps its own fit. 'Closest' is currently the "
+                    "average distance to the body, which a narrow strap wins "
+                    "over the garment it is worn on top of: on a reported top, "
+                    "the waist belts became the base of the outfit and the "
+                    "bodysuit underneath was rebuilt from them. Measured across "
+                    "167 shipped layered pieces, that average picks a layer the "
+                    "outfit is actually worn UNDER on 39%% of them. This reads "
+                    "the over/under relation off the author's own mesh instead, "
+                    "which on a reported top took clipping into the body from "
+                    "790 vertices to 1. Confirmed in game. Turn it off only if "
+                    "a layered outfit looks worse than it did before."),
+    Setting("coincident_skin_match",
+            "Skin touching parts of one outfit the same way",
+            "Armor", "Fit and clearance", default=True,
+            env="CBBE2UBE_NO_COINCIDENT_SKIN", invert=True,
+            hint="Stops a belt and its buckle pulling in different directions "
+                 "once the character moves.",
+            tooltip="An outfit is built from many separate pieces, and each one "
+                    "is fitted to the body on its own. Where two pieces touch -- "
+                    "a belt and its buckle, a strap and the bodice under it -- "
+                    "the two touching vertices can end up following different "
+                    "bones, so they pull apart the moment the skeleton moves, "
+                    "and look correct only in the poses where the disagreement "
+                    "happens to cancel. Measured on a reported outfit: 73 "
+                    "vertices followed almost completely different bones from "
+                    "the vertex they touch, the worst pair split between the "
+                    "PELVIS and the SPINE; the outfit's own author has none. "
+                    "This gives touching vertices one shared weighting, and only "
+                    "where the author skinned them alike -- a deliberate seam "
+                    "between two differently-weighted parts is left alone. On "
+                    "the reported outfit it took those 73 vertices to 5, and the "
+                    "repaired vertices ended up CLOSER to the author's own "
+                    "weighting than before."),
+    Setting("bust_morph_chord",
+            "Keep the bust covered when body sliders reshape it",
+            "Armor", "Fit and clearance", default=True,
+            env="CBBE2UBE_BUST_MORPH_CHORD", invert=False,
+            hint="Stops skin showing through the chest on some body presets "
+                 "while others look fine.",
+            tooltip="Armour follows the body's sliders vertex by vertex, and "
+                    "each vertex follows correctly -- but the flat triangle "
+                    "BETWEEN three correct vertices cuts across a breast the "
+                    "slider has made rounder, so skin comes through between "
+                    "them. Measured on a reported cuirass: one triangle spans "
+                    "6.7 units of breast and its three corners follow body "
+                    "points that a preset moves up to 3.5 units differently. "
+                    "Nothing shows at rest, which is why every earlier check "
+                    "missed it. Across 6 pieces and 14 presets: 39 arms "
+                    "improved, none got worse, and all 22 that were already "
+                    "clean stayed clean."),
+    Setting("sleeve_garment_guard",
+            "Treat a long-sleeved robe as clothing, not as a gauntlet",
+            "Armor", "Fit and clearance", default=False,
+            env="CBBE2UBE_SLEEVE_GARMENT_GUARD", invert=False,
+            hint="For robes and coats that clip badly at the chest.",
+            tooltip="Armour whose sleeves reach the hands is currently mistaken "
+                    "for a gauntlet, because it is weighted to the hand bones "
+                    "just like one. Mistaken pieces skip the whole fitting "
+                    "step -- no conforming, no push-out -- so they ship "
+                    "wherever the first rough pass left them. The worst "
+                    "chest-clipping piece in the pack is one of these: a robe "
+                    "that gets three fitting steps instead of eleven, and shows "
+                    "skin through the chest on every body preset. Telling them "
+                    "apart is simple: a gauntlet is a tube around the forearm "
+                    "and carries no weight on the spine, while a robe hangs "
+                    "from it. Measured across 173 pieces, every real gauntlet, "
+                    "glove and boot has exactly zero spine weight, so none of "
+                    "them is affected. Three sleeved garments are, and on the "
+                    "worst the chest went from 8.9% skin showing to none at "
+                    "all."),
+    Setting("hdt_xml_sanitise",
+            "Repair broken physics files some armour mods ship",
+            "Armor", "Physics", default=False,
+            env="CBBE2UBE_HDT_XML_SANITISE", invert=False,
+            hint="For armour that has physics but does not move.",
+            tooltip="A few armour mods ship a physics file with stray text "
+                    "after the end of the document. That is not valid XML, so "
+                    "anything reading it strictly rejects the whole file -- and "
+                    "the converter copies it across unchanged, so the broken "
+                    "file ships. Measured on this pack: ten such files, and 94 "
+                    "meshes point at one, which means those pieces get no "
+                    "physics handling at all. This trims the stray text and "
+                    "nothing else. It only ever removes characters AFTER the "
+                    "document ends, keeps the file byte-for-byte otherwise, and "
+                    "leaves the file alone entirely unless the result is valid "
+                    "-- so a file it cannot fix is never half-changed. On all "
+                    "ten the physics declarations are identical afterwards and "
+                    "no armour moved by a single vertex."),
+    Setting("phase1_nipple_map",
+            "Shape the chest clearance around the nipple on copied armour",
+            "Armor", "Fit and clearance", default=False,
+            env="CBBE2UBE_PHASE1_NIPPLE_MAP", invert=False, advanced=True,
+            hint="OFF by default and NOT yet judged: a paired A/B on the "
+                 "copied-armour sample comes first.",
+            tooltip="Armour that gets a body built into it has its chest "
+                    "clearance ramp up toward the nipple, where a live body "
+                    "preset pushes hardest; armour converted by copying got "
+                    "the flat clearance instead, so the same fit rule ran as "
+                    "two different algorithms on the two kinds of armour. This "
+                    "gives the copied kind the same ramp. It moves chest "
+                    "vertices on copied armour only; armour with a built-in "
+                    "body is untouched."),
+    Setting("phase1_antipoke",
+            "Push armour out of the body on pieces converted by copying",
+            "Armor", "Fit and clearance", default=True,
+            env="CBBE2UBE_NO_PHASE1_ANTIPOKE", invert=True,
+            hint="For armour that sinks into the hips or backside. Off can "
+                 "leave more than half a piece buried.",
+            tooltip="Armour that gets a new body built for it is pushed back "
+                    "out wherever the body would come through. Armour "
+                    "converted by copying -- about three quarters of a "
+                    "modlist -- never had that step at all, so whatever the "
+                    "fit leaves inside the body is what ships. Measured on a "
+                    "reported pair of trousers: the author's own version had "
+                    "no part of the seat inside their body, and ours had 59% "
+                    "of it, up to nine tenths of a unit deep. With this on, "
+                    "none. It only ever pushes outward, so it cannot pull "
+                    "cloth into the body, it leaves physics-simulated cloth "
+                    "alone, and it restores the rigid plates it moves. On by "
+                    "default since 2026-09-02, after two armour sets were "
+                    "measured and one was checked in game. If a piece looks "
+                    "like it now stands too far off the skin, or shows bare "
+                    "skin at an edge it used to cover, turn this off and say "
+                    "so."),
+    Setting("phase1_bust_clearance",
+            "Keep the bust covered on armour converted by copying",
+            "Armor", "Fit and clearance", default=True,
+            env="CBBE2UBE_NO_PHASE1_BUST_CLEARANCE", invert=True,
+            hint="Extends the chest fix above to the pieces it cannot "
+                 "currently reach.",
+            tooltip="The chest fix above only runs on armour that gets a new "
+                    "body built into it. About three quarters of the pack is "
+                    "converted by COPYING instead, and those pieces get none "
+                    "of it. Measured across the pack, the same defect is just "
+                    "as common there -- 28 percent of pieces on both routes -- "
+                    "so roughly fifty pieces carry it today with no fix "
+                    "applied. This applies only the push-away part, never the "
+                    "pull-in part, because pulling these pieces in was "
+                    "measured to make clipping worse. On three converted "
+                    "pieces across five presets it removed up to 5.5 points of "
+                    "clipping, nothing got worse, and every preset that was "
+                    "already clean stayed clean."),
+    Setting("panel_rigid_surface_guard",
+            "Stop straightened plates sinking into the body between corners",
+            "Armor", "Fit and clearance", default=True,
+            env="CBBE2UBE_PANEL_RIGID_SURFACE_GUARD", invert=False,
+            hint="Applies to the plate-straightening below.",
+            tooltip="Straightening a plate is allowed while it stays clear of "
+                    "the body, but that check only ever looked at the plate's "
+                    "CORNERS -- and it let a corner standing 1.5 units clear "
+                    "drop to zero. Two corners at zero with a curved body "
+                    "between them puts the surface inside. This checks the "
+                    "middle of each triangle too, and measures the body over a "
+                    "small neighbourhood instead of one point. It can only "
+                    "make the straightening gentler, never stronger. Measured: "
+                    "a college robe went from 12.96%% to 3.47%% of its chest "
+                    "showing skin, and its at-rest clipping from 1.47%% to "
+                    "none, while sitting TIGHTER than before, not further out."),
+    Setting("panel_rigidity", "Keep layered armour plates straight",
+            "Armor", "Fit and clearance", kind="float", default=0.75,
+            env="CBBE2UBE_PANEL_RIGIDITY", advanced=True,
+            min=0.0, max=1.0, step=0.05,
+            hint="0 = off. 0.75 is the setting confirmed in game.",
+            tooltip="Layered armour is often ONE mesh holding many separate "
+                    "plates. Fitting it to the new body moves every vertex on "
+                    "its own, so a plate that should simply travel gets "
+                    "STRETCHED and the authored line between plates distorts. "
+                    "Measured on a reported cuirass: the chest plate was "
+                    "deformed MORE than it was moved. This finds each plate and "
+                    "gives it back this fraction of its rigidity. Confirmed in "
+                    "game at 0.75 together with the plate-aware layer ride "
+                    "below -- over-stretched edges fell from 24.9% to 4.2% with "
+                    "no loss of body clearance. Full strength is WORSE, not "
+                    "better: a plate here is a closed BAND, so forcing it rigid "
+                    "drives its back half into the spine (buried vertices "
+                    "doubled). Leave it at 0.75."),
+    Setting("standoff_band_audit",
+            "Record detailed fit measurements while converting (slower)",
+            "Armor", "Fit and clearance", default=False,
+            env="CBBE2UBE_STANDOFF_BAND_AUDIT", advanced=True,
+            hint="OFF by default. Changes no vertex -- it only writes extra "
+                 "measurements to read later.",
+            tooltip="The converter can measure how far each piece sits off the "
+                    "body, band by band, and write it to a log beside the "
+                    "output. Nothing in the conversion or its checks reads that "
+                    "log -- the final check re-measures the finished mesh "
+                    "itself -- so it is purely for diagnosing a problem after "
+                    "the fact. Measured on a five-shape cuirass it costs 17% of "
+                    "the conversion time, and the meshes come out byte-for-byte "
+                    "identical either way. Turn it on if you are chasing a fit "
+                    "problem and want the numbers without reconverting twice."),
+    Setting("ride_body_floor",
+            "Stop layered armour being pushed into the body as it is stacked",
+            "Armor", "Fit and clearance", default=True,
+            env="CBBE2UBE_RIDE_BODY_FLOOR", advanced=True,
+            hint="ON by default. Layer coherence on stacked outfits is the "
+                 "thing to look at if you turn it off.",
+            tooltip="When a garment has several layers, the converter re-places "
+                    "each layer on the one beneath so they stack correctly. That "
+                    "step does not check the body, and it is where most visible "
+                    "clipping comes from: measured over 28 outfits it put 3596 "
+                    "vertices through the skin, and the fitting done before it "
+                    "had left them clean. This lets a layer slide along the body "
+                    "or away from it, never into it. Measured: clipping down 69%, "
+                    "19 outfits better and none worse. The layers still stack "
+                    "exactly as before -- only the inward part of the movement is "
+                    "held back. Enable it ALONE and look at layered cuirasses."),
+    Setting("panel_rigid_early_clear",
+            "Keep plates straight without pressing them into the body",
+            "Armor", "Fit and clearance", default=False,
+            env="CBBE2UBE_PANEL_RIGID_EARLY_CLEAR", advanced=True,
+            hint="OFF by default and NOT yet judged in game. Turn it on for a "
+                 "build of its own, so a problem can be traced to it.",
+            tooltip="Straightening a plate can drag part of it under the skin; "
+                    "the converter currently lets that happen and pushes "
+                    "everything back out afterwards. Measured on three garments, "
+                    "0 vertices inside the body became 491, 83 and 38 before "
+                    "being pushed clear again. Nothing is visibly wrong -- but "
+                    "the push that cleans it up is the same one holding clothing "
+                    "off the skin, so it cannot be tightened while it is also "
+                    "doing this repair. This solves each plate against the body "
+                    "instead, so it is never pressed in to begin with. The plate "
+                    "still moves as one piece. Measured: clothing sits through "
+                    "the skin far less both standing still and with the body "
+                    "morphed -- on the majority of armours it improved every "
+                    "piece tested, one of them by 40%. The risk is the opposite "
+                    "defect: a plate that sits close to the skin gets "
+                    "straightened less, so a crisp indent could soften. That is "
+                    "the part no measurement can settle. Enable it ALONE, look "
+                    "at layered cuirasses, and report back."),
+    Setting("panel_rigidity_fine_anim",
+            "Also keep plates straight on gauntlets, boots and heels",
+            "Armor", "Fit and clearance", default=False,
+            env="CBBE2UBE_PANEL_RIGIDITY_FINE_ANIM", advanced=True,
+            hint="OFF by default and NOT yet judged in game. Turn it on for a "
+                 "build of its own, so a problem can be traced to it.",
+            tooltip="The setting above does not currently reach gauntlets, "
+                    "boots, heels, or anything else built around finger and toe "
+                    "bones -- those take a separate route through the "
+                    "converter that skips it. Measured on 51 such shapes: the "
+                    "pass WOULD find 568 plates there and move them about as "
+                    "much as it moves plates elsewhere, so it is real work being "
+                    "skipped rather than nothing to do. Fingers and toes are "
+                    "left alone either way. It is off by default only because it "
+                    "has no in-game verdict yet: enable it ALONE, look at your "
+                    "gauntlets and boots, and report back."),
+    Setting("phase2_conform",
+            "Reel over-projected cloth back to its authored clearance",
+            "Armor", "Fit and clearance", default=True,
+            env="CBBE2UBE_NO_PHASE2_CONFORM", invert=True, advanced=True,
+            hint="ON, as it has always been. Turn it OFF only to test whether "
+                 "this pass is still earning its place.",
+            tooltip="On outfits that replace the body, this pulls cloth that "
+                    "the fit pushed too far out back to the distance its author "
+                    "left it at. It has always run and this switch does not "
+                    "change that -- it exists so the pass can be TESTED. "
+                    "Measured over 28 outfits, it moves more than any other "
+                    "step (0.70 units) and keeps the least of what it does "
+                    "(about a third survives to the finished mesh), while the "
+                    "other three quarters of your armour runs no equivalent at "
+                    "all and looks right. Whether it still earns its place can "
+                    "only be settled by looking in game with it off. Note this "
+                    "is NOT the same as \"Conform fitted cloth to body\", which "
+                    "controls a different pass."),
+    Setting("author_deviation_skin",
+            "Let a part bend only as much as its author made it bend",
+            "Armor", "Fit and clearance", default=True,
+            env="CBBE2UBE_NO_AUTHOR_DEVIATION_SKIN", invert=True,
+            hint="For a metal buckle or clasp where part of it moves with the "
+                 "body and the rest stays put, distorting the shape.",
+            tooltip="Fitting an outfit to a new body decides each vertex's "
+                    "weighting largely on its own. Across a solid part -- the "
+                    "metal buckle on a belt, a clasp, a stud -- neighbouring "
+                    "vertices can then land on quite different bones, so part of "
+                    "the buckle travels with the stomach and the rest does not, "
+                    "and it visibly distorts as the character moves. Measured on "
+                    "a reported outfit: buckles whose author varies by 0.18 "
+                    "across the part were coming out at 1.78, ten times as much. "
+                    "This restores the author's OWN variation across each part "
+                    "while keeping the new body's fit, so a rigid buckle goes "
+                    "back to being rigid and cloth keeps bending exactly as much "
+                    "as it was drawn to. An earlier attempt simply made "
+                    "over-bending parts stiffer, which fixed the buckles by "
+                    "freezing the fabric; this aims at the author's value "
+                    "instead of at zero. It only ever removes bending the "
+                    "conversion introduced, never adds any, and a part already "
+                    "smoother than the author's is left untouched."),
+    Setting("seed_spine_anchors", "Place chains that hang from the spine",
+            "Armor", "Physics chains (HDT-SMP)", default=True,
+            env="CBBE2UBE_NO_SEED_SPINE_ANCHORS", invert=True,
+            hint="For fur, capes and mantles that hang off the chest or back "
+                 "and collapse downward. Confirmed in game.",
+            tooltip="Chains hanging from a spine bone used to be left unplaced, "
+                    "on the grounds that anything on the upper body has to swing "
+                    "with it. That is true of a sleeve on an arm, which swings "
+                    "far from the body's centre; it is not true of the spine, "
+                    "which sits on the body's own axis and moves much as the "
+                    "hips do -- and placing hip chains was already known good. "
+                    "Left unplaced, such a chain starts at chest height and "
+                    "lands near the floor. Measured across the pack: 18 pieces "
+                    "still carry chains more than 5 units from where their "
+                    "author put them, the worst 92 units low, and 16 of those 18 "
+                    "hang from the spine. Confirmed in game on a bandit armour, "
+                    "which is why it now runs by default. It moves the chain "
+                    "SKELETON only -- not one vertex changes -- so it cannot "
+                    "cause clipping. Shoulder, collar, neck and arm chains are "
+                    "still left alone, because placing those the same way was "
+                    "reported in game as sleeves bound in a fixed pose. Turn it "
+                    "off only if a cape or fur that hangs off the back starts "
+                    "lagging behind you when you lean."),
     Setting("chain_rest_lift", "Lift physics chains out of the body",
             "Armor", "Physics chains (HDT-SMP)", default=True,
             env="CBBE2UBE_NO_CHAIN_REST_LIFT", invert=True,
@@ -328,19 +1246,6 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "author intended. Confirmed in game, in motion. If a skirt "
                     "looks like it is held too far off the hips, this is the "
                     "one to untick."),
-    Setting("unified_offset", "Unified clearance floor (experimental)",
-            "Armor", "Fit and clearance", default=False,
-            env="CBBE2UBE_UNIFIED_OFFSET", invert=False,
-            hint="Solve one clearance floor per vertex instead of inflating then conforming.",
-            tooltip="Solve one clearance floor per vertex and apply it once, "
-                    "instead of inflating before the standoff conform and "
-                    "pushing again after it. The inflate is additive and the "
-                    "conform is absolute, so today the conform overwrites the "
-                    "inflate on about a third of shapes; stated as a floor "
-                    "AFTER the conform the same clearance survives. Feathers "
-                    "once rather than twice, and spends one budget per vertex "
-                    "instead of several. Experimental: changes the fit of "
-                    "body-slot armour, so test it before a full reconvert."),
     Setting("chest_follow", "Chest follow ratio",
             "Armor", "Body follow and morphs", default=True,
             env="CBBE2UBE_NO_CHEST_FOLLOW", invert=True,
@@ -387,6 +1292,38 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "Most armour in a large pack is unidentifiable, and this is "
                     "what limits it -- raise it if chests still clip when moving, "
                     "lower it if stiff armour starts looking rubbery."),
+    Setting("spine_twist_match",
+            "Match a top's twist-follow to the body (experimental)",
+            "Armor", "Body follow and morphs", default=False,
+            env="CBBE2UBE_SPINE_TWIST_MATCH", invert=False,
+            hint="For tops that lag or lead the chest in swings and twists. A "
+                 "measured trade, not a free win.",
+            tooltip="When the spine twists, a garment follows however its "
+                    "author weighted the twist bones; where that differs from "
+                    "the UBE body's own weighting, the top lags or leads the "
+                    "chest mid-swing. This blends the garment's twist "
+                    "weighting toward the body's at the best measured "
+                    "strength. It is a genuine trade: on the one piece "
+                    "measured, twists and swings improved (twist error 7.3 to "
+                    "3.8, swing windup 5.3 to 2.3, bow draw to zero) while a "
+                    "hard forward lean got worse at ANY non-zero strength "
+                    "(sprint 13.8 to 17.3). Measured on one piece, never "
+                    "judged in game -- which is why it ships off."),
+    Setting("bust_plate_chain_transplant",
+            "Let rigid bust plates ride the breast chain (experimental)",
+            "Armor", "Jiggle transfer", default=False,
+            env="CBBE2UBE_BUST_PLATE_CHAIN_TRANSPLANT", invert=False,
+            hint="For a breastplate that jiggling cloth beneath swings out "
+                 "through.",
+            tooltip="A rigid plate over jiggling cloth carries no breast-chain "
+                    "weight of its own, so the cloth's chain motion carries "
+                    "the cloth out through the plate. This relabels part of "
+                    "the plate's weight onto the first two breast-chain bones "
+                    "wherever the cloth beneath carries them, so plate and "
+                    "cloth swing together: on the measured piece it closed "
+                    "about half the follow gap (mean lever error 0.60 to "
+                    "0.31). Changes weights only -- the geometry is "
+                    "byte-identical with this off. Never judged in game."),
     Setting("chain_torso", "Chest follow on skirt-welded cuirasses (experimental)",
             "Armor", "Physics chains (HDT-SMP)", default=False,
             env="CBBE2UBE_CHAIN_TORSO", invert=False,
@@ -572,6 +1509,42 @@ def by_key() -> "dict[str, Setting]":
     return {s.key: s for s in SETTINGS}
 
 
+def displayed_keys() -> "set[str]":
+    """Keys that a settings TAB actually renders.
+
+    The scope for "Reset ALL conversion settings" and for import, and for any
+    per-tab changed count. It excludes registered-but-hidden state -- `theme`
+    and `window_geometry` sit on an "Appearance" tab that `tabs_present()` does
+    not list -- because a reset must not silently change your theme, and a
+    window resize must not read as a tuned setting.
+    """
+    return {s.key for t in tabs_present()
+            for g in groups_in_tab(t)
+            for s in settings_in(t, g)}
+
+
+def changed_from_default(values: "dict[str, object]") -> "set[str]":
+    """Registered keys in `values` whose value DIFFERS from their default.
+
+    The same comparison `save_values` uses to decide what to persist, so the
+    GUI's "changed from defaults" count can never disagree with what actually
+    ends up in the settings file.
+
+    Unregistered keys are ignored -- the saved file also carries
+    `_known_settings`, which is bookkeeping, not a tuned value. A key absent
+    from `values` is at its default by definition, so it is not changed.
+
+    NOTE it DOES report registered-but-undisplayed keys, `window_geometry`
+    among them: that is right here, because `save_values` persists them too.
+    A per-TAB count must therefore be built from the settings that tab
+    actually renders, not from this set -- window geometry is rewritten on
+    every resize, and a "1 setting changed" banner earned by dragging a window
+    corner is the false alarm that teaches people to ignore banners.
+    """
+    reg = by_key()
+    return {k for k, v in values.items() if k in reg and v != reg[k].default}
+
+
 HINT_MAX = 110
 
 
@@ -617,9 +1590,15 @@ LAYOUT: "dict[str, tuple]" = {
             "drape_xml_gate", "conform_to_body", "conform_fold_guard",
             "warp_shear_limit", "warp_delta_outlier",
             "warp_delta_outlier_max", "warp_push_shell_cap",
+            "surface_warp_field", "src_normal_fix",
+            "strap_scale_uniform", "short_edge_cap", "layer_ride_bary",
+            "authored_antipoke",
+            "authored_inflate",
+            "authored_inflate_amp_cap", "layer_order_last",
+            "family_weight_invariant", "last_carrier_hold",
             "full_weight_match", "full_weight_strength",
             "smp_antipoke", "smp_antipoke_push",
-            "antipoke_smooth", "layered_antipoke", "unified_offset")),
+            "antipoke_smooth", "layered_antipoke")),
         ("Body follow and morphs", (
             "chest_follow", "chest_follow_unknown", "source_follow",
             "rigid_majority_softbody")),
@@ -631,7 +1610,7 @@ LAYOUT: "dict[str, tuple]" = {
         ("Physics chains (HDT-SMP)", (
             "butt_collider_patch", "skirt_proxy_rebuild",
             "leg_chain_guard", "chain_to_softbody", "static_chains",
-            "nested_chain_anchors", "chain_torso", "chain_body_shift")),
+            "nested_chain_anchors", "chain_torso")),
         ("Limbs and extremities", ("leg_bend_match", "boot_far_thigh")),
         ("Seams", ("seam_weld", "seam_weld_tol", "seam_skin_match")),
         ("Glow and effect shaders", (
@@ -667,8 +1646,21 @@ def env_string_for(s: Setting, value) -> "str | None":
         return None
     if s.kind == "bool":
         on = bool(value)
+        # AT THE DEFAULT -> emit NOTHING, so the code's own default applies and a
+        # future default change actually reaches the user. The numeric branch
+        # below has always done this; the bool branch did not, and the omission
+        # was INVISIBLE while every bool default was False (value == default ==
+        # False took the `else None` path by coincidence).
+        if on == bool(s.default):
+            return None
+        # DIFFERS -> say so EXPLICITLY, including the OFF case. Returning None
+        # for OFF was safe only while defaults were False; against a DEFAULT-ON
+        # flag it silently means "leave it on", so the GUI could not turn the
+        # feature off AT ALL. `envflags.flag()` reads "0" as false (only
+        # 1/true/yes/on are true), so "0" is how OFF is expressed.
+        # #defaults-promoted-2026-08-22
         trigger = (not on) if s.invert else on
-        return "1" if trigger else None
+        return "1" if trigger else "0"
     # numeric / string / path: only write a real override (skip default / blank).
     if value is None or value == s.default or (isinstance(value, str) and not value.strip()):
         return None
@@ -746,6 +1738,23 @@ def load_values(path=None) -> "dict[str, object]":
 KNOWN_KEYS_FIELD = "_known_settings"
 
 
+def load_status(path=None) -> str:
+    """'ok' | 'absent' | 'malformed' -- what `load_values` will do with the file.
+
+    `load_values` returns pure defaults for an absent AND for a malformed
+    file, by design (the GUI must still open). The two must not LOOK the same
+    to a run, because a torn write followed by one toggle re-saves defaults
+    over the user's recipe. Callers print this next to the flag echo."""
+    p = Path(path) if path is not None else config_path()
+    if not p.is_file():
+        return "absent"
+    try:
+        raw = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return "malformed"
+    return "ok" if isinstance(raw, dict) else "malformed"
+
+
 def unseen_settings(path=None) -> "tuple[bool, list]":
     """`(baseline_known, settings this build has that the saved file never saw)`.
 
@@ -794,8 +1803,18 @@ def save_values(values: "dict[str, object]", path=None) -> bool:
     out[KNOWN_KEYS_FIELD] = sorted(reg)   # ignored on load: not a registered key
     p = Path(path) if path is not None else config_path()
     try:
+        from .atomic_io import atomic_write_bytes
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps(out, indent=2, sort_keys=True), encoding="utf-8")
+        data = json.dumps(out, indent=2, sort_keys=True).encode("utf-8")
+        # Keep the previous GOOD file as .bak, then swap the new one into
+        # place atomically: the GUI saves on every control change, and a
+        # torn write here loads as pure defaults on the next start.
+        if p.is_file() and load_status(p) == "ok":
+            try:
+                atomic_write_bytes(p.with_suffix(p.suffix + ".bak"), p.read_bytes())
+            except Exception:
+                pass
+        atomic_write_bytes(p, data)
         return True
     except Exception:
         return False

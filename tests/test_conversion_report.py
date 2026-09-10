@@ -30,7 +30,9 @@ def _res(nifs=3, err=0, notes=None):
     return NS(nif_results=[None] * nifs, nif_copy_count=nifs, nif_swap_count=0,
               nif_skipped=0, nif_errors=err, nif_load_failures=[],
               vfs_other_mod_count=0, output_esps=["a.esp"], source_esps=["s.esp"],
-              notes=notes or [], textures_copied=0)
+              notes=notes or [], textures_copied=0,
+              # a converted piece that lost its BODYTRI is counted now
+              nif_morph_losses=0, nif_morph_loss_results=[])
 
 
 def test_write_conversion_report_json(tmp_path):

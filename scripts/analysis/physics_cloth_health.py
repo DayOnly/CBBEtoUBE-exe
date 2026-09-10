@@ -44,9 +44,11 @@ import xml.etree.ElementTree as ET
 from collections import Counter
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(REPO / ".pynifly"))
-sys.path.insert(0, str(REPO))
+# Canonical spelling so test_analysis_repo_root can verify the level.
+_REPO = Path(__file__).resolve().parent.parent.parent
+REPO = _REPO
+sys.path.insert(0, str(_REPO / ".pynifly"))
+sys.path.insert(0, str(_REPO))
 
 import numpy as np                                     # noqa: E402
 from scipy.spatial import cKDTree                      # noqa: E402
@@ -170,7 +172,10 @@ def main():
         print(f"  EXCLUDED {reason:<34}: {n}")
     print(f"  MEASURED simulated pieces  : {len(rows)}")
     if not rows:
-        return 0
+        # Exit 3, not 0: an empty measured set is not a clean one.
+        from scripts.analysis._census_common import require_population
+        require_population(rows, "simulated piece(s)")
+        return 3
 
     no_body_tag = [r for r in rows
                    if any(not (t & BODY_TAGS) for t in r["cloth"].values())]

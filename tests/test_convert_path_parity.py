@@ -44,9 +44,19 @@ import pytest
 from src import nif_convert as nc
 
 # Prefixes that mark a fit/geometry PASS -- the things that must not diverge.
+#
+# WIDENED 2026-08-18. The list used to end at "_refresh_", and the omissions
+# were not harmless: the check saw 6 of the 35 stages the body-swap path calls
+# and the copy path does not. `_inflate_cloth_over_bust_butt` was recorded here
+# as an OPEN question purely because its name starts with "_inflate" -- while
+# `clear_armor_outside_body`, the OTHER BRANCH OF ITS OWN if/elif, was invisible.
+# A guard that reports three divergences when there are a dozen is worse than
+# no guard, because it is read as assurance.
 PASS_PREFIXES = ("_match_", "_conform", "_repair", "_weld", "_transfer_",
                  "_graft", "_seed_", "_separate_", "_inflate", "_strip_",
-                 "_refresh_")
+                 "_refresh_", "_ride_", "_rigidify", "_sync_", "_cap_",
+                 "clear_armor", "rebury_", "fit_armor", "bake_preset",
+                 "repair_collapsed", "_recompute_", "_hold_")
 ENTRY_A = "convert_nif"
 ENTRY_B = "convert_nif_phase2"
 # Guard against a vacuous pass. If the walk finds fewer passes than this, the
@@ -56,7 +66,24 @@ MIN_PASSES = 20
 
 
 def _module_ast():
-    return ast.parse(Path(inspect.getfile(nc)).read_text(encoding="utf8"))
+    # Every DECLARED converter module, not just nif_convert.py: a pass moved
+    # to a sibling must stay in both reach sets (split precondition A).
+    from tests import _converter_sources as cs
+    return cs.tree()
+
+
+def _all_source() -> str:
+    """Source TEXT of every declared converter module, same scope as
+    `_module_ast` (split precondition A).
+
+    A guard that greps `nif_convert.py` alone goes VACUOUS the moment the pass
+    it guards moves to a sibling -- or, for an `in` check, fails for a reason
+    that has nothing to do with what it guards. Both flag greps below ask "is
+    this site still behind its flag", which is a question about the converter,
+    not about one file.
+    """
+    from tests import _converter_sources as cs
+    return cs.whole_text()
 
 
 def _call_graph(tree):
@@ -105,18 +132,108 @@ def _passes_from(graph, entry, stop=()):
 # Passes that legitimately run on the phase-2 path only, each with the reason.
 # A new name may ONLY be added here with a reason -- that is the whole point.
 KNOWN_PHASE2_ONLY = {
-    # Cross-shape passes: they take `shape_jobs`, the whole-piece view, and
-    # decide layering / host relationships BETWEEN shapes. Only phase 2 builds
-    # that structure; the copy path hands `_copy_shape` one shape at a time, so
-    # there is nothing for them to operate on there.
-    "_repair_layer_order": "needs shape_jobs (whole-piece view)",
-    "_conform_cords_to_host": "needs shape_jobs (whole-piece view)",
-    # NOT structurally excluded -- this one is per-shape and could run on the
-    # copy path. No comment in the source explains the asymmetry, so it is
-    # recorded as an open question rather than blessed. Wiring it in is a
-    # behaviour change and needs its own A/B plus the clearance counter-metric,
-    # not a quiet edit. See the 2026-08-05 path-parity review.
-    "_inflate_cloth_over_bust_butt": "OPEN: per-shape, no documented reason",
+    # CORRECTED 2026-08-22. This block used to read: "Cross-shape passes: they
+    # take `shape_jobs`, the whole-piece view ... Only phase 2 builds that
+    # structure; the copy path hands `_copy_shape` one shape at a time, so there
+    # is nothing for them to operate on there."
+    #
+    # THAT REASON IS FALSE. The copy path builds `shape_jobs_p1`
+    # (`nif_convert.py:6084`) with the same dict schema phase 2 builds at
+    # `:27243` (src / verts / override_skin / verts_modified, plus g2s), and it
+    # ALREADY runs four cross-shape passes over it -- including a ride
+    # (`_ride_effect_overlays_on_plate`) and `_weld_cross_shape_seams`.
+    # `_ride_layers_on_reference`'s other argument, `body_verts`, is
+    # `body_verts_for_fit`, also in scope there.
+    #
+    # So these four are UNBLOCKED plumbing-wise and stay phase-2 only because
+    # nobody has run the A/B -- a DEBT, not a structural fact. See BUG-02.
+    #
+    # AND A WARNING FOR WHOEVER EXTENDS THIS DICT: the tests below assert every
+    # entry HAS a reason. Nothing can assert a reason is TRUE. These four were
+    # wrong for four days and were quoted as fact in two memories and a bug-log
+    # root cause. A reason here is a claim, not a finding.
+    "_repair_layer_order": "DEBT: copy path HAS shape_jobs_p1; needs an A/B",
+    # RESOLVED 2026-08-18 -- this was recorded as "OPEN: per-shape, no
+    # documented reason". It is not an anomaly. It is the `elif` branch of the
+    # SAME if/elif as `clear_armor_outside_body`: the anti-poke moves every
+    # vert and so is skipped for physics cloth, and this covers the bust/butt
+    # bands for that cloth instead. It looked asymmetric only because the old
+    # prefix list could see this name and not its sibling.
+    #
+    # UPDATED 2026-09-02: "both branches are body-swap-only" is no longer true.
+    # `#phase1-antipoke` took the IF branch to the copy path and left the ELIF
+    # here, so the copy path now repairs rigid cloth and still does nothing for
+    # the physics/soft cloth this branch exists to serve -- it is restored to
+    # its pre-anti-poke position instead. That is a DEBT with a measurable
+    # shape, not a structural fact: the inputs this pass needs
+    # (`body_verts_for_fit`, `body_normals_for_fit`, per-shape soft-cloth
+    # classification) are all in scope at the copy-path anti-poke site.
+    "_inflate_cloth_over_bust_butt": "soft-cloth branch of the anti-poke "
+                                     "if/elif; whole stage is body-driven",
+
+    # ---- THE BODY-DRIVEN GEOMETRY STAGE ------------------------------------
+    #
+    # CORRECTED 2026-08-22 -- this block used to claim "THE COPY PATH DOES NO
+    # BODY-DRIVEN GEOMETRY WORK. It warps by the CBBE->UBE body delta with
+    # snap-outside and stops." **That is false.** The copy path also inflates
+    # (`inflate_armor_outward`, slot-aware), conforms
+    # (`conform_to_source_standoff` + `_finalize_physics_and_motion_match` ->
+    # `_conform_fitted_to_body`), groove-smooths, and since 2026-08-22
+    # rigidifies panels. The two paths share 53 of 64 passes.
+    #
+    # What is ACTUALLY true of the remaining entries is narrower: they need the
+    # INJECTED body -- the surface a slot-32 piece HIDES and therefore must be
+    # measured against. A copy-path piece is worn over the actor's own rendering
+    # UBE body, which is why the gate for BUG-02 is the SLOT, not the path.
+    #
+    # These were ALL invisible to this check until the prefix list was widened
+    # on 2026-08-18. They are documented, not blessed: wiring any of them into
+    # the copy path is a behaviour change over the ~78% of the pack that takes
+    # it, and needs an A/B plus the clearance counter-metric.
+    # `clear_armor_outside_body` LEFT this list on 2026-09-02: it is now called
+    # from the copy path too, behind `#phase1-antipoke` (default OFF). It was
+    # here because wiring it in "is a behaviour change over the ~78% of the pack
+    # that takes it, and needs an A/B plus the clearance counter-metric" -- that
+    # remains exactly true, which is why the copy call is opt-in and unjudged.
+    # This list is about REACHABILITY, so a flagged-off call still counts as
+    # reachable and the entry had to go. The A/B it demands is the owed work,
+    # not this entry. docs/worklog/BUTT_COPY_PATH_TROUSERS.md
+    "rebury_authored_verts": "needs BOTH source and UBE body to restore "
+                             "authored insideness",
+    "fit_armor_to_ube_body": "the body-swap fit itself",
+    "bake_preset_into_armor": "bakes the preset onto the injected body",
+    # STRUCTURAL, not debt (re-derived 2026-08-22 when the first half of
+    # #panel-rigidity was wired into the copy path): this is the SECOND half,
+    # and it exists to recover the panel deformation the ANTI-POKE re-introduces.
+    # `_rigidify_within_clearance` WAS listed here, on the grounds that it only
+    # recovers what the anti-poke re-deforms and the copy path has no anti-poke.
+    # That reason still holds for its POST-ANTI-POKE call site, which is still
+    # phase-2 only -- but 2026-08-23 gave the function a SECOND job on both
+    # paths (#panel-rigid-early-clearance), so it is no longer phase-2-only as a
+    # FUNCTION and listing it here would be a false claim. The surviving
+    # asymmetry is now pinned per CALL SITE by the test below, which is the
+    # right granularity: a function can serve one role on both paths and another
+    # on one.
+    "_sync_bust_plate_follow_postwrite": "post-write, needs the injected body",
+    # The layer-ride machinery. Its old reason -- "which only the whole-piece
+    # `shape_jobs` view provides" -- is FALSE for the same reason as
+    # `_repair_layer_order` above: the copy path builds `shape_jobs_p1` and
+    # already rides overlays on it. DEBT, not a structural fact.
+    "_ride_layers_on_reference": "DEBT: copy path HAS shape_jobs_p1 and "
+                                 "body_verts_for_fit; needs an A/B",
+    "_ride_disp_barycentric": "helper of the layer ride",
+    "_feather_ride_disp": "helper of the layer ride",
+    # `_weld_components` WAS here, with the note "wire it into the copy path
+    # BEFORE the default is ever flipped, or the two paths will split the pack".
+    # PAID 2026-08-22. The debt note keyed on the wrong event: the default was
+    # never flipped, but the user's RECIPE carried `panel_rigidity = 0.75`, which
+    # splits the pack exactly the same way -- 26% of pieces rigidified, 74% not.
+    # `_partial_rigid_panels` now runs on the copy path too, so
+    # `_weld_components` and `_locally_rigid_panel` reach both and are no longer
+    # listed here.
+    #
+    # WHEN YOU ADD AN OPT-IN PASS TO ONE PATH: a recipe override is as dangerous
+    # as a default flip. Do not write a debt note that only guards the default.
 }
 
 
@@ -194,3 +311,244 @@ def test_pass_prefixes_still_match_real_helpers():
     found = _passes_from(g, ENTRY_B)
     assert len(found) >= MIN_PASSES, (
         f"PASS_PREFIXES matched only {len(found)} helpers -- update the list")
+
+
+# ---------------------------------------------------------------------------
+# THE HOLE THE COUNT CHECK ABOVE LEAVES OPEN
+#
+# `test_pass_prefixes_still_match_real_helpers` asserts only a COUNT. A new pass
+# whose name matches no prefix keeps that count perfectly healthy and is invisible
+# to BOTH divergence tests -- it lands in neither `a` nor `b`, so nothing can
+# fire. That is how the list went stale on 2026-08-18, and a floor cannot fix it:
+# the omissions were never about how many, but which.
+#
+# So classify STRUCTURALLY instead of by name -- a helper that writes mesh data
+# is a stage -- and require every such helper to be either matched by the prefix
+# list or named below with its path and a reason.
+MIN_MESH_WRITERS = 15
+
+# Mesh-writing helpers that are NOT body-driven fit passes.
+#   name: (where it runs, why it is not a fit pass)
+# `where` is one of "both" / "phase2" / "copy" / "entry", and is ASSERTED against
+# the call graph below -- so an entry cannot sit here while quietly changing
+# which path it runs on. Reasons come from each helper's own docstring.
+NOT_A_FIT_PASS = {
+    "convert_nif_phase2": (
+        "entry", "the phase-2 entry point itself, not a pass"),
+    "_copy_shape": (
+        "both", "shared plumbing; most passes are reached THROUGH it"),
+    "_reauthor_nif_fresh": (
+        "both", "shared plumbing; the writer both paths end in"),
+    "_install_skin": (
+        "both", "bones/xforms/weights/partitions onto a fresh shape"),
+    "_finalize_hdt_physics": (
+        "both", "physics extra-data + authored XML; shared tail"),
+    "_add_butt_collider_patch": (
+        "both", "builds a collider; declines XML-undeclared bones"),
+    "_add_skirt_collider_proxy": (
+        "both", "builds a collider; declines XML-undeclared bones"),
+    "_split_bust_collider_shape": (
+        "both", "splits a collider shape; not a body fit"),
+    "_normalize_partitions_on_disk": (
+        "both", "partition hygiene on a post-save reload"),
+    "_audit_registered_shape_declared_bones": (
+        "both", "an AUDIT -- a guard, deliberately not a repair"),
+    # The two body-INSTALL stages. Neither is a fit pass: they put geometry in
+    # place, they do not conform anything to it. They are also the only pair in
+    # this file that legitimately splits one to each path.
+    "_inject_ube_baseshape": (
+        "phase2", "installs the UBE body; the copy path has no body to install"),
+    "_inject_ube_extremity_replacement": (
+        "copy",
+        "swaps a slot 33/37 CBBE-topology Hands/Feet shape for the UBE one. "
+        "Phase 2 installs a whole body instead, so it needs no extremity-only "
+        "swap. This is the ONE documented copy-path-only stage, and it is live: "
+        "measured 2026-08-22, 172/172 Hands shapes in the output pack are UBE "
+        "topology (15500 verts), 0 CBBE."),
+}
+
+
+def _mesh_writers(graph):
+    """Reachable helpers that write mesh data -- the structural definition of a
+    stage, independent of what anyone remembered to name it."""
+    # Slice by lineno, NOT ast.get_source_segment: that re-splits the 1.2 MB
+    # source on every call and cost ~43 s per invocation (half the suite).
+    from tests import _converter_sources as cs
+    from scripts.pass_map import _segment
+    bodies = {}
+    for path, src in cs.texts().items():
+        lines = src.splitlines()
+        for n in ast.parse(src).body:
+            if isinstance(n, ast.FunctionDef):
+                bodies[n.name] = _segment(lines, n)
+    writes = ("set_verts", "setShapeWeights", "override_verts",
+              "transform_verts", "_copy_shape(", "atomic_nif_save", "save(")
+    reach = _reachable(graph, ENTRY_A) | _reachable(graph, ENTRY_B)
+    return {f for f in reach
+            if any(w in bodies.get(f, "") for w in writes)
+            and ("verts" in bodies.get(f, "") or "weights" in bodies.get(f, ""))}
+
+
+def _escapees(writers, allow):
+    return sorted(f for f in writers
+                  if not any(f.startswith(p) or p in f for p in PASS_PREFIXES)
+                  and f not in allow)
+
+
+def test_no_mesh_writing_stage_escapes_the_prefix_list():
+    """A new stage must not be able to hide from this file just by being named
+    something the prefix list does not happen to cover."""
+    g = _call_graph(_module_ast())
+    writers = _mesh_writers(g)
+    assert len(writers) >= MIN_MESH_WRITERS, (
+        f"only {len(writers)} mesh-writing helpers found; the classifier has "
+        f"broken, so 'nothing escaped' would be a claim about an empty set")
+    escaped = _escapees(writers, set(NOT_A_FIT_PASS))
+    assert not escaped, (
+        f"mesh-writing helper(s) invisible to the parity check: {escaped}\n"
+        f"Add a PASS_PREFIXES prefix so divergence IS checked, or add to "
+        f"NOT_A_FIT_PASS with its path and a reason if it is not a fit pass.")
+
+
+def test_the_not_a_fit_pass_allowlist_matches_reality():
+    """Every allowlisted helper must still exist AND still run where it says.
+    Otherwise the allowlist becomes the blind spot it was added to remove."""
+    g = _call_graph(_module_ast())
+    a = _reachable(g, ENTRY_A, stop={ENTRY_B})
+    b = _reachable(g, ENTRY_B)
+    missing = sorted(n for n in NOT_A_FIT_PASS if n not in g)
+    assert not missing, (
+        f"NOT_A_FIT_PASS names helpers that no longer exist: {missing}")
+    wrong = []
+    for n, (where, _why) in sorted(NOT_A_FIT_PASS.items()):
+        if where == "entry":
+            continue  # the dispatch boundary; in `a` by construction
+        actual = ("both" if (n in a and n in b) else
+                  "copy" if n in a else
+                  "phase2" if n in b else "UNREACHABLE")
+        if actual != where:
+            wrong.append(f"{n}: documented {where!r}, actually {actual!r}")
+    assert not wrong, (
+        "allowlisted helper(s) changed which path they run on:\n  "
+        + "\n  ".join(wrong)
+        + "\nThat is a real divergence: fix the code, or update the entry.")
+
+
+def test_the_escape_check_can_actually_fail():
+    """GUARD THE GUARD: prove the escape check notices a mesh-writing stage that
+    matches no prefix and sits on no allowlist."""
+    g = _call_graph(_module_ast())
+    writers = _mesh_writers(g)
+    victims = sorted(writers & set(NOT_A_FIT_PASS))
+    assert victims, "no allowlisted mesh writer to mutate -- cannot verify"
+    victim = victims[0]
+    assert victim in _escapees(writers, set(NOT_A_FIT_PASS) - {victim}), (
+        f"dropping {victim!r} from the allowlist did NOT make it escape -- the "
+        f"check cannot fail and proves nothing")
+
+
+# ---------------------------------------------------------------------------
+# #panel-rigidity path parity, wired 2026-08-22.
+#
+# The recipe carried `panel_rigidity = 0.75` while every pass implementing it
+# was body-swap-only, so layered plates were straightened on ~26% of the pack
+# and not the other ~74%. The old debt note said "wire it in before the DEFAULT
+# is ever flipped" -- but a USER RECIPE OVERRIDE splits the pack identically and
+# nothing was watching for that. These tests pin the fix.
+# ---------------------------------------------------------------------------
+
+def test_panel_rigidity_runs_on_both_paths():
+    """The first half of #panel-rigidity must be reachable from BOTH entries."""
+    g = _call_graph(_module_ast())
+    a = _reachable(g, ENTRY_A, stop={ENTRY_B})
+    b = _reachable(g, ENTRY_B)
+    for fn in ("_partial_rigid_panels", "_weld_components",
+               "_locally_rigid_panel"):
+        assert fn in a, (
+            f"{fn} is no longer reachable from {ENTRY_A}: #panel-rigidity is "
+            f"back to splitting the pack (26% rigidified, 74% not)")
+        assert fn in b, f"{fn} unreachable from {ENTRY_B}"
+
+
+def test_the_second_half_is_absent_for_a_REASON_THAT_IS_TRUE():
+    """The RECOVERY role stays phase-2 only, and its reason stays true.
+
+    `_rigidify_within_clearance` now has two jobs. The original one -- recover
+    what the ANTI-POKE re-deforms -- belongs to phase 2 alone, and its reason is
+    that the copy path has no anti-poke to recover from. The second, added
+    2026-08-23, runs the SAME solver at the EARLY panel-rigidity site on BOTH
+    paths so the pass never hands the anti-poke penetration to clean up.
+
+    So the assertion is per CALL SITE, not per function: reachability alone
+    would now report "on both paths" and silently stop checking the asymmetry
+    that still exists. A reason here is a CLAIM -- four were false for four days
+    -- so where it can be machine-checked, check it.
+    """
+    import ast as _ast
+    g = _call_graph(_module_ast())
+    a = _reachable(g, ENTRY_A, stop={ENTRY_B})
+    b = _reachable(g, ENTRY_B)
+    # 2026-09-02: the anti-poke WAS wired into the copy path (#phase1-antipoke,
+    # default OFF), which this assertion used to forbid. Its own demand was
+    # "wire it in as well, or rewrite the reason", and the recovery WAS wired in
+    # alongside -- so the invariant is no longer "recovery is phase-2 only" but
+    # THE PAIR TRAVELS TOGETHER. That is the property worth guarding: phase 2
+    # pushes with the anti-poke and then recovers the panels it re-deformed, so
+    # a path that pushes without recovering ships the damage and not the repair.
+    assert "clear_armor_outside_body" in b, "the anti-poke left phase 2"
+    if "clear_armor_outside_body" in a:
+        assert "_rigidify_within_clearance" in a, (
+            "the copy path gained the anti-poke WITHOUT the recovery phase 2 "
+            "pairs with it -- a pushed panel stays deformed, which is the "
+            "defect #panel-rigidity exists to prevent")
+        assert "PHASE1_ANTIPOKE" in _all_source(), (
+            "the copy-path anti-poke must stay behind its own flag while it is "
+            "unjudged")
+
+    tree = _module_ast()
+    calls = [n for n in _ast.walk(tree)
+             if isinstance(n, _ast.Call)
+             and getattr(n.func, "id", None) == "_rigidify_within_clearance"]
+    assert len(calls) == 6, (
+        f"expected 6 call sites -- the EARLY solver at all four panel-rigidity "
+        f"sites (main + fine-animation, on each convert path) plus TWO recovery "
+        f"calls after an anti-poke, one per path: phase 2's, and the copy "
+        f"path's added 2026-09-02 riding #phase1-antipoke (default OFF) so the "
+        f"push and its repair travel together -- found {len(calls)}. If a site "
+        f"was added or removed, decide which role it plays and update this test "
+        f"rather than the count.")
+
+    # Every early site must have kept its blind fallback, or the flag stops
+    # being an opt-in and the OFF path is no longer byte-identical.
+    blind = [n for n in _ast.walk(tree)
+             if isinstance(n, _ast.Call)
+             and getattr(n.func, "id", None) == "_partial_rigid_panels"]
+    assert len(blind) == 4, (
+        f"expected the blind form to remain as the OFF-path fallback at all "
+        f"four early sites, found {len(blind)}")
+
+    # The recovery call is the one taking the CURRENT verts straight after the
+    # anti-poke; the two early calls are guarded by the opt-in flag. Tell them
+    # apart by the guard, not by line order, which shifts with any edit above.
+    src = _all_source()
+    guarded = src.count("PANEL_RIGID_EARLY_CLEAR")
+    assert guarded >= 5, (
+        "the early-clearance sites must stay behind their flag: found "
+        f"{guarded} occurrence(s) of the guard")
+
+
+def test_the_copy_path_call_passes_the_same_gates_as_phase2():
+    """Same skip_mask + min_verts contract on both sides. Rigidifying an SMP
+    chain vert would fight the sim, so the mask is not optional."""
+    import ast as _ast
+    tree = _module_ast()
+    calls = [n for n in _ast.walk(tree)
+             if isinstance(n, _ast.Call)
+             and getattr(n.func, "id", None) == "_partial_rigid_panels"]
+    assert len(calls) >= 2, (
+        f"expected a _partial_rigid_panels call on each path, found {len(calls)}")
+    for c in calls:
+        kw = {k.arg for k in c.keywords}
+        assert "skip_mask" in kw and "min_verts" in kw, (
+            f"a _partial_rigid_panels call at line {c.lineno} omits skip_mask/"
+            f"min_verts -- the two paths would rigidify different populations")

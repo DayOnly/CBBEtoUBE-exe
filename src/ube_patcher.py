@@ -2258,7 +2258,14 @@ def validate_patch(esp_path: str | Path,
       "esl-overflow"           ESL flag set but own record count > 2048.
       "formid-zero"            Record has FormID 0x00000000 (player-reserved).
       "formid-out-of-range"    FormID references master index past the list end.
-      "missing-nif"            ARMA MOD3/MOD5 path not found on disk.
+      "missing-nif"            An ARMA `!UBE\\` model path with no mesh on
+                               disk. STARTUP-CTD cause #1, not "invisible":
+                               the engine reads a freed/garbage string when an
+                               actor wearing it loads. Only `!UBE\\` paths are
+                               counted -- source paths resolve from masters'
+                               BSAs and belong to "unconverted-mesh-linked" --
+                               so every hit is a path this tool wrote aimed at
+                               a mesh this tool did not write.
       "unconverted-mesh-linked" ARMA MOD3/MOD5 points to a SOURCE mesh while a
                                converted !UBE mesh exists for it -> wears the
                                un-converted mesh (invisible/distorted, no morphs).
@@ -2481,7 +2488,11 @@ def validate_patch(esp_path: str | Path,
                 warnings.append(
                     f"missing-nif: {missing} ARMA model path(s) point to "
                     f"!UBE\\ NIF(s) not present under {meshes_root}. "
-                    f"Armor will render empty. Examples: {missing_examples}"
+                    f"The engine reads a freed/garbage model path when an "
+                    f"actor wearing one loads -- startup-CTD cause #1 "
+                    f"(EXCEPTION_ACCESS_VIOLATION), NOT merely empty armour. "
+                    f"Only paths THIS tool wrote are counted. "
+                    f"Examples: {missing_examples}"
                 )
             if unconv:
                 warnings.append(
@@ -3542,7 +3553,8 @@ def generate_modded_nonbody_ube_coverage_patch(
     new_arma_records: list[esp.Record] = []
     _mint_rec: dict = {}   # arma_abs -> minted Record (for post-prune sidecar fids)
     next_id = ESL_OWN_FORMID_MIN
-    mint_name = out_path.with_suffix(".esp").name
+    # (a `mint_name = out_path.with_suffix(".esp").name` was computed here and
+    # never read; both mint blocks carried the same dead copy. Removed 2026-09-06.)
     preserved_count = 0
     preserve_fallbacks: list = []
     for arma_abs in mint_set:
@@ -3840,7 +3852,8 @@ def generate_modded_body_ube_coverage_patch(
     new_arma_records: list = []
     _mint_rec: dict = {}   # arma_abs -> minted Record (for post-prune sidecar fids)
     next_id = ESL_OWN_FORMID_MIN
-    mint_name = out_path.with_suffix(".esp").name
+    # (a `mint_name = out_path.with_suffix(".esp").name` was computed here and
+    # never read; both mint blocks carried the same dead copy. Removed 2026-09-06.)
     preserved_count = 0
     preserve_fallbacks: list = []
     for arma_abs in mint_set:

@@ -40,6 +40,7 @@ NOT enough to catch (3), so use four.
 """
 import ast
 import inspect
+import re
 from pathlib import Path
 
 import src.nif_convert as nc
@@ -88,17 +89,162 @@ def _set_iterating_writes(path: Path):
     return out
 
 
-def test_no_skin_write_iterates_a_set_directly():
-    """A set's iteration order is UNDEFINED, so no correct code can depend on
-    it -- which is exactly why wrapping in sorted() is always safe here and why
-    leaving it unsorted is always a latent bug."""
-    offenders = []
+# --- order-sensitive write loops: PROVE ORDER, don't try to prove set-ness ---
+#
+# The original guard here asked "is this iterable a set?" and could prove it
+# for almost nothing: measured 2026-08-19, it classified 11 of 1278 candidate
+# loops and its intersection with the write set was EMPTY. It asserted over
+# nothing and reported clean for months.
+#
+# Inverted: every loop that performs an order-sensitive write must have a
+# PROVABLY ORDERED iterable, or be pinned below with a reason. `sorted()` and
+# `range()` are unconditionally ordered; `list()`, `tuple()`, `enumerate()`,
+# `reversed()` and comprehensions only inherit their source's order --
+# `[x for x in a_set]` is exactly as arbitrary as the set, which is the bug.
+_UNCONDITIONAL_ORDER = {"sorted", "range"}
+_PASSTHROUGH_ORDER = {"list", "tuple", "enumerate", "reversed"}
+# Dict views are insertion-ordered (py3.7+), so deterministic given
+# deterministic insertion -- and if the dict was filled by iterating a set,
+# THAT loop is the offender and this guard catches it there instead.
+_ORDERED_METHODS = {"items", "keys", "values"}
+_ORDERED_ATTRS = {"shapes", "bone_names"}      # pynifly returns lists
+
+# Loops whose iterable this walker cannot prove, each judged by hand. Keyed by
+# "file:function:variable" and pinned to an exact site count, so a new
+# unproven loop fails even if it reuses one of these names.
+_KNOWN_UNPROVEN_ORDER = {
+    # `bone_names` is a PARAMETER; the callers build it as
+    # `bones = list(src_shape.bone_names or [])` -> a list. Cross-function, so
+    # a per-function walker cannot see it.
+    "nif_convert_writer.py:_install_skin:surviving": 3,   # moved 2026-09-01 (split step 10)
+    # `list(s.bone_names or list(bw.keys()))`, later `bone_list + want` --
+    # ordered, but through a BoolOp and a BinOp this walker does not model.
+    "nif_convert_bust.py:_sync_bust_plate_follow_postwrite:bone_list": 1,   # moved 2026-09-01 (split step 6)
+    # `_match_rigid_leg_bend_to_body:to_add` WAS PINNED HERE as a genuine
+    # offender: `need` is a real set, so `to_add` inherited its arbitrary order
+    # and fed `add_bone`, which fixes the written NIF's bone PALETTE order.
+    # FIXED 2026-08-19 with `sorted()`, taken alongside a due reconvert because
+    # it changes output bytes. The entry is REMOVED rather than set to 0 -- a
+    # stale pin is a hole that would silently re-admit the same bug under the
+    # same name.
+}
+
+
+def _iter_is_ordered(node, assigns, depth=0):
+    if depth > 6 or node is None:
+        return False
+    if isinstance(node, (ast.List, ast.Tuple)):
+        return True
+    if isinstance(node, (ast.ListComp, ast.GeneratorExp)):
+        return bool(node.generators) and _iter_is_ordered(
+            node.generators[0].iter, assigns, depth + 1)
+    if isinstance(node, ast.Call):
+        f = node.func
+        if isinstance(f, ast.Name):
+            if f.id in _UNCONDITIONAL_ORDER:
+                return True
+            if f.id in _PASSTHROUGH_ORDER:
+                return bool(node.args) and _iter_is_ordered(
+                    node.args[0], assigns, depth + 1)
+        if isinstance(f, ast.Attribute):
+            return f.attr in _ORDERED_METHODS or f.attr in _UNCONDITIONAL_ORDER
+        return False
+    if isinstance(node, ast.Attribute):
+        return node.attr in _ORDERED_ATTRS
+    if isinstance(node, ast.Name):
+        vals = assigns.get(node.id)
+        return bool(vals) and all(
+            _iter_is_ordered(v, assigns, depth + 1) for v in vals)
+    return False
+
+
+def _order_sensitive_loops(path):
+    """(func, variable-or-expr, ordered?) for every loop that writes skin."""
+    tree = ast.parse(path.read_text(encoding="utf-8", errors="ignore"))
+    out = []
+    for fn in [n for n in ast.walk(tree)
+               if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]:
+        assigns = {}
+        for n in ast.walk(fn):
+            tgts, val = [], None
+            if isinstance(n, ast.Assign):
+                tgts, val = n.targets, n.value
+            elif isinstance(n, (ast.AnnAssign, ast.AugAssign)):
+                tgts, val = [n.target], n.value
+            for t in tgts:
+                if isinstance(t, ast.Name) and val is not None:
+                    assigns.setdefault(t.id, []).append(val)
+        for n in ast.walk(fn):
+            if not isinstance(n, ast.For):
+                continue
+            calls = {c.func.attr for c in ast.walk(n)
+                     if isinstance(c, ast.Call)
+                     and isinstance(c.func, ast.Attribute)}
+            if not (calls & set(ORDER_SENSITIVE)):
+                continue
+            name = (n.iter.id if isinstance(n.iter, ast.Name)
+                    else ast.unparse(n.iter)[:40])
+            out.append((fn.name, name, n.lineno,
+                        _iter_is_ordered(n.iter, assigns)))
+    return out
+
+
+def test_every_skin_write_loop_has_a_provably_ordered_iterable():
+    """Set iteration order is undefined, and here it reaches the mesh: the
+    bone-add order becomes the palette order in the written NIF.
+
+    Coverage is asserted, not assumed -- the guard this replaced classified 11
+    of 1278 loops and intersected the write set at ZERO.
+    """
+    total, unproven = 0, []
     for path in sorted(_SRC_DIR.glob("*.py")):
-        for ln, fn, name in _set_iterating_writes(path):
-            offenders.append(f"{path.name}:{ln} {fn}() iterates set {name!r}")
-    assert not offenders, (
-        "skin-writing loop iterates a set directly (order reaches the mesh); "
-        "wrap in sorted(): " + "; ".join(offenders))
+        for fn, name, ln, ordered in _order_sensitive_loops(path):
+            total += 1
+            if not ordered:
+                unproven.append((f"{path.name}:{fn}:{name}", ln))
+    assert total >= 40, (
+        f"only {total} order-sensitive write loops found -- the AST walker "
+        f"broke; there were 47 on 2026-08-19 and this guard would be vacuous")
+    seen = {}
+    for key, _ln in unproven:
+        seen[key] = seen.get(key, 0) + 1
+    new = {k: v for k, v in seen.items() if k not in _KNOWN_UNPROVEN_ORDER}
+    assert not new, (
+        "a skin-writing loop iterates something this guard cannot prove is "
+        "ordered -- wrap it in sorted(), or pin it in _KNOWN_UNPROVEN_ORDER "
+        f"with the reason: {new}")
+    drift = {k: (v, _KNOWN_UNPROVEN_ORDER[k]) for k, v in seen.items()
+             if _KNOWN_UNPROVEN_ORDER.get(k) != v}
+    missing = {k for k in _KNOWN_UNPROVEN_ORDER if k not in seen}
+    assert not drift and not missing, (
+        f"pinned unproven loops changed -- found-vs-pinned {drift}, "
+        f"pinned but gone {missing}; update the pin deliberately")
+
+
+def test_the_order_guard_can_actually_fail():
+    """Control: the classifier must reject a set-derived iterable. Without
+    this, every assertion above could be passing because the walker says
+    'ordered' to everything."""
+    src = ("def f(s):\n"
+           "    want = set()\n"
+           "    want |= other\n"
+           "    for b in want:\n"
+           "        s.setShapeWeights(b, [])\n")
+    tree = ast.parse(src)
+    fn = tree.body[0]
+    assigns = {}
+    for n in ast.walk(fn):
+        if isinstance(n, ast.Assign):
+            for t in n.targets:
+                if isinstance(t, ast.Name):
+                    assigns.setdefault(t.id, []).append(n.value)
+        elif isinstance(n, ast.AugAssign) and isinstance(n.target, ast.Name):
+            assigns.setdefault(n.target.id, []).append(n.value)
+    loop = next(n for n in ast.walk(fn) if isinstance(n, ast.For))
+    assert not _iter_is_ordered(loop.iter, assigns), (
+        "the classifier called a set-derived iterable ordered")
+    assert _iter_is_ordered(ast.parse("sorted(want)").body[0].value, assigns), (
+        "the classifier failed to recognise sorted() as ordered")
 
 
 def test_influence_cap_breaks_ties_deterministically():
@@ -181,7 +327,8 @@ def test_pass_failures_travel_home_in_ConvertResult_reason():
     parent's pass_failure_summary() came back EMPTY (as it must) while
     ConvertResult.reason carried `PASS FAILED _match_arm_motion_to_body`.
     """
-    src = inspect.getsource(nc)
+    from tests import _converter_sources as cs
+    src = cs.whole_text()          # recorders live in nif_convert_telemetry.py
     assert "_begin_piece_pass_log()" in src
     assert "_piece_pass_failures()" in src
     # both result assemblies -- the copy path and the body-swap path
@@ -192,7 +339,8 @@ def test_pass_failures_travel_home_in_ConvertResult_reason():
 def test_piece_log_is_reset_at_the_single_entry_point_only():
     """phase 2 is reached THROUGH convert_nif, so resetting in both would throw
     away everything phase 1 recorded."""
-    src = inspect.getsource(nc)
+    from tests import _converter_sources as cs
+    src = cs.whole_text()          # the def is in nif_convert_telemetry.py
     assert src.count("_begin_piece_pass_log()") == 2, (
         "expected exactly one definition and one call site")
 
@@ -227,33 +375,101 @@ def _silent_handlers_wrapping(names, path):
     return out
 
 
+def _all_silent_handlers(path):
+    """Every `except: pass` Try in the module, with the call names its try
+    body makes. The unfiltered population -- callers assert their own floor on
+    it, so a broken walker reads as a FAILURE, not as a clean sweep."""
+    tree = ast.parse(Path(path).read_text(encoding="utf-8", errors="ignore"))
+    parents = {c: p for p in ast.walk(tree) for c in ast.iter_child_nodes(p)}
+    out = []
+    for n in ast.walk(tree):
+        if not isinstance(n, ast.Try):
+            continue
+        if not any(len(h.body) == 1 and isinstance(h.body[0], ast.Pass)
+                   for h in n.handlers):
+            continue
+        called = set()
+        for c in ast.walk(ast.Module(body=n.body, type_ignores=[])):
+            if isinstance(c, ast.Call):
+                f = c.func
+                called.add(f.id if isinstance(f, ast.Name) else
+                           (f.attr if isinstance(f, ast.Attribute) else ""))
+        fn = "?"
+        cur = n
+        while cur in parents:
+            cur = parents[cur]
+            if isinstance(cur, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                fn = cur.name
+                break
+        out.append((n.lineno, fn, called))
+    return out
+
+
 def test_no_fit_pass_failure_is_swallowed_silently():
     """A pass that RAISES must never be indistinguishable from one that ran and
     did nothing -- the shape of the failure that cost three wrong verdicts.
 
-    Swept the whole module: 30 such handlers existed, all now record. This
-    fails if a new one appears.
+    THE POPULATION IS DERIVED, NOT HAND-LISTED. The first version of this
+    guard listed 16 pass names by hand; an audit (2026-08-18) found the module
+    had grown to 111 silent handlers wrapping 40 distinct converter functions,
+    and the list matched ZERO of them -- the guard policed an empty set for
+    months and read as assurance. Now the protected set is every name the
+    module itself records via `_note_pass_failure("<name>", ...)`: if a
+    function records at one call site, a bare `except: pass` around it at
+    another site is exactly the sibling-drift defect this test exists for.
     """
-    PASSES = ("_match_limb_motion_to_body", "_match_leg_motion_to_body",
-              "_match_arm_motion_to_body", "_match_spine_motion_to_body",
-              "_transfer_body_jiggle_to_fitted", "_conform_fitted_to_body",
-              "_match_rigid_leg_bend_to_body", "_weld_cross_shape_seams",
-              "_repair_layer_order", "_conform_cords_to_host",
-              "_sync_abdomen_layered_cloth_weights",
-              "_sync_chest_layered_cloth_weights",
-              "_split_bust_collider_shape", "_split_bust_collider_xml",
-              "_smooth_warp_grooves", "_precreate_custom_bone_chains")
-    bad = _silent_handlers_wrapping(PASSES, nc.__file__)
+    from tests import _converter_sources as cs
+    src = cs.whole_text()
+    recorded = {m.group(1).split("/")[0] for m in
+                re.finditer(r'_note_pass_failure\(\s*[\'"]([^\'"]+)[\'"]', src)}
+    # Population sanity: the recording convention is in heavy use. A collapse
+    # here means the derivation broke, not that the module got clean.
+    assert len(recorded) >= 40, (
+        f"only {len(recorded)} recorded pass names found -- the population "
+        f"derivation is broken, this guard would be vacuous")
+    from tests import _converter_sources as cs
+    handlers = [h for f in cs.files() for h in _all_silent_handlers(f)]
+    assert len(handlers) >= 60, (
+        f"only {len(handlers)} silent handlers found (there were 111 on "
+        f"2026-08-18) -- the AST walker is broken, not the module clean")
+    bad = [(ln, fn, sorted(called & recorded))
+           for ln, fn, called in handlers if called & recorded]
     assert not bad, (
-        "fit-pass failure swallowed silently at " +
+        "a pass that records via _note_pass_failure elsewhere is swallowed "
+        "bare here -- route it through _note_pass_failure: " +
         "; ".join(f"{f}():{ln} ({','.join(h)})" for ln, f, h in bad))
 
 
 def test_no_mesh_write_is_swallowed_silently():
     """A swallowed SAVE is worse than a swallowed pass: the piece ships
-    unconverted or half-written while reporting success."""
+    unconverted or half-written while reporting success.
+
+    Each guarded name must EXIST as a call in the module -- a renamed write
+    API would otherwise rot this list into policing nothing (the 2026-08-18
+    audit's defect class: a filter whose coverage nobody asserts).
+    """
     WRITES = ("atomic_nif_save", "setShapeWeights", "add_bone")
-    bad = _silent_handlers_wrapping(WRITES, nc.__file__)
+    from tests import _converter_sources as cs
+    handlers = [h for f in cs.files() for h in _all_silent_handlers(f)]
+    assert len(handlers) >= 60, (
+        f"only {len(handlers)} silent handlers found -- walker broken")
+    all_calls = set()
+    for _, _, called in handlers:
+        all_calls |= called
+    from tests import _converter_sources as cs
+    tree = cs.tree()          # the write API lives in the writer module now
+    module_calls = set()
+    for c in ast.walk(tree):
+        if isinstance(c, ast.Call):
+            f = c.func
+            module_calls.add(f.id if isinstance(f, ast.Name) else
+                             (f.attr if isinstance(f, ast.Attribute) else ""))
+    for w in WRITES:
+        assert w in module_calls, (
+            f"{w!r} is not called anywhere in nif_convert -- the WRITES list "
+            f"has rotted; update it to the current write API")
+    bad = [(ln, fn, sorted(called & set(WRITES)))
+           for ln, fn, called in handlers if called & set(WRITES)]
     assert not bad, (
         "mesh write swallowed silently at " +
         "; ".join(f"{f}():{ln} ({','.join(h)})" for ln, f, h in bad))

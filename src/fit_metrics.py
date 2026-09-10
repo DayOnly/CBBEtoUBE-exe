@@ -97,6 +97,41 @@ def _enabled() -> bool:
     return os.environ.get("CBBE2UBE_NO_STANDOFF_AUDIT") != "1"
 
 
+def _band_enabled() -> bool:
+    """Is the RAY-CAST half of the audit on?  #standoff-band-audit
+
+    ONE GATE OVER TWO VERY DIFFERENT COSTS was the wrong granularity. Measured
+    2026-08-23 on the shipped 26.1 MB sink of a full reconvert:
+
+        kind             records      MB   share of file   cost
+        chain_shift        71478    21.9        84.1%      ~free (no rays)
+        standoff_band       9684     2.6        10.1%      the ray casts
+        chain               4577     1.1         4.2%      ~free
+        frame                  4     0.0         0.0%      ~free
+
+    The expensive records are a TENTH of the file and, interleaved medians over
+    a 5-shape body-swap cuirass, **17.5% of the whole conversion** (44.0s ->
+    36.3s) -- with output byte-identical, because this is telemetry and cannot
+    move a vertex. Turning the single old switch off also threw away the 88% of
+    records that cost nothing, so nobody ever turned it off.
+
+    DEFAULT OFF, because nothing in the SHIPPING pipeline reads these: postflight
+    check E recomputes clipping and standoff from the finished NIF rather than
+    reading the sink. Their consumers are all explicitly-run analysis tools
+    (`audit_sink.py`, `survival_report.py`). Turn them back on for a run you
+    intend to analyse:
+
+        CBBE2UBE_STANDOFF_BAND_AUDIT=1
+
+    WHAT YOU LOSE: post-hoc bust/torso standoff per shape. If a fit question
+    comes up later you must re-run that piece with the flag on rather than
+    reading the pack's sink -- cheap for one piece, not for 1500.
+    """
+    if not _enabled():
+        return False
+    return os.environ.get("CBBE2UBE_STANDOFF_BAND_AUDIT") == "1"
+
+
 def standoff(body_verts, body_normals, garment_verts, garment_tris,
              idx, tmax: float = TMAX, chunk: int = 512):
     """Distance along +normal from each body vert in `idx` to the garment.
@@ -136,10 +171,17 @@ def standoff(body_verts, body_normals, garment_verts, garment_tris,
 
 # ---------------------------------------------------------------- CLIP TEST
 # The validated skin-through-armour test, ported into src/ so a conversion pass
-# can use it (src must not import from scripts/). The authority on its
-# correctness is `tests/test_fit_metrics_matches_reference.py`, which asserts
-# equality against `scripts/mesh_penetration.clipping_report` on the calibration
-# pair -- a runtime import would be the wrong coupling, a test is the right one.
+# can use it (src must not import from scripts/) -- a runtime import would be the
+# wrong coupling, a test is the right one.
+#
+# WHAT ACTUALLY GUARDS THE PORT: `tests/test_clip_tester_exactness.py`, which
+# compares `_ClipTester` against exhaustive all-pairs Moller-Trumbore on geometry
+# chosen to stress its bounds, plus `tests/test_mesh_penetration.py`. Until
+# 2026-08-17 this named `tests/test_fit_metrics_matches_reference.py` as "the
+# authority on its correctness" -- NO SUCH FILE EXISTS, and nothing asserts
+# equality against `scripts/mesh_penetration.clipping_report`. A cited safety net
+# that is not there is worse than an uncited one: it stops the next reader from
+# looking for the real one.
 #
 # ORIENTATION GATE is ON for the pass. The base test calls a body vert clipping
 # when its outward ray escapes and its inward ray hits garment within tmax. That
@@ -561,7 +603,10 @@ def minimum_push(garment_verts, garment_tris, garment_normals,
     gV = np.asarray(garment_verts, np.float64)
     gT = np.asarray(garment_tris, np.int64).reshape(-1, 3)
     bV = np.asarray(body_verts, np.float64)
-    bT = np.asarray(body_tris, np.int64).reshape(-1, 3)
+    # `body_tris` is NOT used by this pass -- it was converted into a `bT` that
+    # nothing read, reshaping the body's ~58k triangles on every call. The
+    # conversion is gone; the PARAMETER stays because callers pass it
+    # positionally, and dropping it would silently shift `body_normals`.
     bN = np.asarray(body_normals, np.float64)
     bN = bN / np.clip(np.linalg.norm(bN, axis=1, keepdims=True), 1e-9, None)
     stats = {"moved": 0, "iters": 0, "exposed_before": 0, "exposed_after": 0,
@@ -695,7 +740,7 @@ def record_frame(dst_path, shape_name, report: dict) -> None:
 
 
 def record_chain_shift(dst_path, report: dict) -> None:
-    """Append one #chain-body-shift decision to the run's sink.
+    """Append one chain root-shift decision to the run's sink.
 
     This pass is unusually easy to misjudge, in both directions. It moves BONES,
     not vertices, so a clip test on `shape.verts` shows nothing and the pass
@@ -982,6 +1027,76 @@ class DisplacementSurvival:
 
     def release(self) -> None:
         """Drop snapshots -- a torso holds several passes' worth of verts."""
+        self._snaps = []
+
+
+# ------------------------------------------------- GEOMETRY DUMP (diagnostic)
+# Every pass boundary's verts to disk, so a geometric question can be BISECTED
+# over the chain from ONE conversion instead of N kill-switch runs.
+#
+# The siblings above each answer a fixed question (does it clip, did it survive,
+# how far off the body). A new question -- how far the SURFACE TURNED -- needed
+# neither a new guard nor nine more conversions; it needed the geometry the
+# chain already holds in memory, written out. Single-disable bisects also
+# MISATTRIBUTE where passes cancel each other, and passes 4 and 5 here are
+# documented as doing exactly that.
+#
+# Diagnostic, not telemetry: it writes megabytes per shape, so it is off unless
+# a directory is named, and it never runs in a batch.
+STAGE_DUMP_DIR = os.environ.get("CBBE2UBE_STAGE_DUMP")
+
+
+class GeometryDump:
+    """Pass-boundary geometry to `<dir>/<nif stem>__<shape>.npz`.
+
+    One file per shape holding EVERY stage (`s00_entry`, `s01_warp`, ...) plus
+    the triangles, because the consumer's questions are all per-shape and a
+    stage-major layout would force it to reopen every file per shape.
+    """
+
+    def __init__(self, *, dest=None):
+        self.dest = dest if dest is not None else STAGE_DUMP_DIR
+        self.armed = bool(self.dest)
+        self._snaps = []
+
+    def checkpoint(self, label, verts) -> None:
+        if not self.armed or verts is None:
+            return
+        try:
+            v = np.asarray(verts, dtype=np.float32)
+        except Exception:
+            return
+        if v.ndim != 2 or v.shape[1] != 3:
+            return
+        self._snaps.append((str(label), v.copy()))
+
+    def flush(self, dst_path, shape_name, tris, final_verts) -> int:
+        """Write the shape's stages. Returns the count so a caller can assert
+        it dumped something -- an empty dump must never read as 'no pass moved
+        anything'."""
+        if not self.armed or len(self._snaps) < 2:
+            return 0
+        snaps = list(self._snaps)
+        # The SHIPPED verts, for the same reason DisplacementSurvival appends
+        # them: anything after the last checkpoint still moved the mesh.
+        if final_verts is not None:
+            f = np.asarray(final_verts, dtype=np.float32)
+            if f.shape == snaps[-1][1].shape and not np.array_equal(
+                    f, snaps[-1][1]):
+                snaps.append(("final", f))
+        d = Path(self.dest)
+        d.mkdir(parents=True, exist_ok=True)
+        safe = "".join(c if (c.isalnum() or c in "-_. ") else "_"
+                       for c in str(shape_name))
+        payload = {f"s{i:02d}_{lbl}": v for i, (lbl, v) in enumerate(snaps)}
+        try:
+            payload["tris"] = np.asarray(tris, dtype=np.int32).reshape(-1, 3)
+        except Exception:
+            return 0
+        np.savez_compressed(d / f"{Path(dst_path).stem}__{safe}.npz", **payload)
+        return len(snaps)
+
+    def release(self) -> None:
         self._snaps = []
 
 
@@ -1391,8 +1506,13 @@ def record_torso_bands(dst_path, shape_name, garment_verts, garment_tris,
     cuirass when measuring several bands. `tests/test_torso_bands.py` asserts
     the two agree on the same index, so the mixed implementation is justified
     rather than assumed.
+
+    Gated on `_band_enabled()` -- these are the RAY-CAST records. The caller
+    already skips the cast, but a writer answering to a looser gate than its own
+    cost drifts from it the first time someone calls it directly.
+    #standoff-band-audit
     """
-    if not _enabled():
+    if not _band_enabled():
         return []
     out = []
     try:
@@ -1442,8 +1562,10 @@ def record_standoff(dst_path, shape_name, garment_verts, garment_tris,
     Returns the record, or None when there was nothing to measure. A failure
     is recorded with its exception rather than dropped: a measurement that
     could not run must not be indistinguishable from one that found nothing.
+
+    Gated on `_band_enabled()`, the RAY-CAST gate -- see `record_torso_bands`.
     """
-    if not _enabled():
+    if not _band_enabled():
         return None
     try:
         if body_verts is None or body_normals is None:

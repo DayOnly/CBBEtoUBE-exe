@@ -85,7 +85,7 @@ def test_zero_valued_sliders_are_not_engaged():
 
 def test_unresolvable_sliders_are_reported_not_dropped():
     """A preset built for a different slider set is a COVERAGE fact -- 68 of
-    Punk UBE's 183 engaged sliders do not exist on the UBE body. Silently
+    the reference UBE preset's 183 engaged sliders do not exist on the UBE body. Silently
     dropping them would make a 62%-coverage run look complete."""
     sel, missing, fuzzy = _resolve_preset({"NotAThing": 0.9}, {"BaseShapeBoobs": None})
     assert not sel

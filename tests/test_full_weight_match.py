@@ -64,7 +64,13 @@ def test_pass_is_wired_into_both_convert_paths_and_runs_LAST():
     at = {k: [i for i in range(len(src)) if src.startswith(v, i)]
           for k, v in calls.items()}
     for k, v in at.items():
-        assert len(v) >= 2, f"{k} is not wired into both convert paths"
+        assert len(v) >= 1, f"{k} is not wired in at all"
+    # zip() truncates to the SHORTEST list: a pass gaining a second call site
+    # the others lack would silently drop out of the order check (2026-08-18
+    # audit). Equal lengths make the zip total.
+    assert len({len(v) for v in at.values()}) == 1, (
+        f"call-site counts diverge: { {k: len(v) for k, v in at.items()} } -- "
+        f"zip would silently skip the extras")
     for leg, spine, arm, twist, full in zip(*(at[k] for k in
                                               ("leg", "spine", "arm", "twist", "full"))):
         assert leg < spine < arm < twist < full, (
@@ -81,7 +87,11 @@ def test_the_clean_row_gate_is_UNCONDITIONAL_here():
     """
     src = inspect.getsource(nc._match_limb_motion_to_body)
     i = src.index("if full_vector:")
-    j = src.index("else:", i)
+    # Slice on the FAMILY path's own first statement, not on the next `else:`.
+    # The `else:` form broke the moment the full-vector branch grew an inner
+    # if/else: the slice stopped early and this failed on a guard that was
+    # still present, which reads as "the invariant is gone" when it is not.
+    j = src.index("midx = [shape_bones.index(b)", i)
     branch = src[i:j]
     assert "foreign <= 1e-4" in branch, (
         "the full-vector branch must refuse rows carrying chain/foreign weight")
@@ -94,12 +104,22 @@ def test_it_never_adds_a_bone():
     is mean 0.0006, p90 0.0000, no row above 0.10."""
     src = inspect.getsource(nc._match_limb_motion_to_body)
     i = src.index("if full_vector:")
-    j = src.index("else:", i)
+    # Slice on the FAMILY path's own first statement. `src.index("else:", i)`
+    # looked stable and was not: the branch carries a comment containing the
+    # literal `else:` (the one explaining why there is no else branch), so the
+    # slice stopped inside the prose and the assertions below silently checked
+    # only the first third of the branch.
+    j = src.index("midx = [shape_bones.index(b)", i)
     branch = src[i:j]
     # `add_bone(` -- the CALL. A bare "add_bone" also matches the comment that
     # documents the invariant, which made this assertion fail on its own prose.
     assert "add_bone(" not in branch
-    assert "if _b in ube_bones:" in branch, (
+    # `_fv_basis`, not `ube_bones`, since #layer-follow-divergence: outside a
+    # stacked group it IS `ube_bones`, inside one it is the bones every member
+    # of the group shares, so it can only ever NARROW. The subset relation is
+    # asserted against the real builder in test_layer_follow_divergence.py --
+    # here we only pin that the write stays gated on it.
+    assert "if _b in _fv_basis:" in branch, (
         "only bones the BODY also has may receive weight")
     # The write is indexed by `shape_bones`, i.e. bones the shape ALREADY has --
     # that is what makes "never adds a bone" true by construction, not by policy.

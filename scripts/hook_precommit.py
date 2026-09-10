@@ -34,10 +34,18 @@ def _run(*args: str) -> str:
                           errors="replace").stdout
 
 
+def _run_bytes(*args: str) -> bytes:
+    """Raw staged bytes. Text mode would decode a .pyd/.dll into replacement
+    characters before `is_binary` ever got to see the NULs."""
+    return subprocess.run(args, capture_output=True).stdout
+
+
 def main() -> int:
     staged = [p for p in _run("git", "diff", "--cached", "--name-only",
                               "--diff-filter=ACMR").splitlines() if p]
     problems: list[str] = []
+    root = Path(__file__).resolve().parent.parent
+    denylist, _deny_n = H.load_denylist(root)
 
     for path in staged:
         banned = H.path_is_never_tracked(path)
@@ -47,11 +55,26 @@ def main() -> int:
                 "specific mods or a user's setup and this repo is public")
 
     for path in staged:
-        if not path.lower().endswith(tuple(H.TEXT_SUFFIXES)):
+        # `H.should_scan` is the ONLY gate. This loop used to keep its own copy
+        # of the suffix test, so widening coverage in repo_hygiene silently left
+        # the hook behind -- the duplicate-list mistake, in the one place where
+        # it matters most: the hook is what actually blocks a leaking commit.
+        if not H.should_scan(path):
             continue
-        blob = _run("git", "show", f":{path}")
-        if blob:
-            problems.extend(H.scan_text(path, blob))
+        raw = _run_bytes("git", "show", f":{path}")
+        if not raw or H.is_binary(raw):
+            continue
+        problems.extend(H.scan_text(path, raw.decode("utf8", "replace")))
+
+    # Asset names, from the untracked denylist. The PATH is checked even for
+    # a file whose content is not scannable -- two of the 2026-09-09 leaks
+    # named the mod in the FILENAME and nowhere else.
+    if denylist is not None:
+        for path in staged:
+            raw = _run_bytes("git", "show", f":{path}")
+            text = "" if (not raw or H.is_binary(raw)) else raw.decode(
+                "utf8", "replace")
+            problems.extend(H.scan_names(path, text, denylist))
 
     ident = H.check_identity(_run("git", "config", "user.email").strip())
     if ident:
@@ -59,6 +82,11 @@ def main() -> int:
 
     if problems:
         sys.stderr.write("\nCOMMIT BLOCKED -- public-repo hygiene\n\n")
+        if denylist is None:
+            sys.stderr.write(
+                f"  (no {H.DENYLIST_FILE} on this machine, so NO "
+                "asset-name check ran -- zero coverage, not a pass)"
+                + chr(10) * 2)
         for p in problems:
             sys.stderr.write(f"  {p}\n")
         sys.stderr.write(

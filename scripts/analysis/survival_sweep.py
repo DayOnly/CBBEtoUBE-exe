@@ -38,15 +38,20 @@ downstream, and reading one as the other has cost this project several sessions.
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(REPO))
-sys.path.insert(0, str(REPO / ".pynifly"))
+# parent.parent was `scripts/`: imports only worked with the root already on
+# sys.path, and REPO/"scripts"/"convert_one_armor.py" below resolved to
+# scripts/scripts/... -- this sweep could never actually launch a convert.
+_REPO = Path(__file__).resolve().parent.parent.parent
+REPO = _REPO
+sys.path.insert(0, str(_REPO))
+sys.path.insert(0, str(_REPO / ".pynifly"))
 
 
 def _resolve_source(sub: str, stem: str):
@@ -73,7 +78,49 @@ def _load_pieces(spec: str):
         raw = json.loads((REPO / "golden" / "pieces.json").read_text("utf-8"))
     else:
         raw = json.loads(Path(spec).read_text("utf-8"))
+    # A DICT HERE IS THE COMMON MISTAKE -- several sample files in this project
+    # are `{"copy": [...], "swap": [...]}`, and iterating one yields its KEYS, so
+    # the list comprehension below dies on `int('y')` with no hint of the real
+    # problem. Name it instead, and name the keys so the fix is obvious.
+    if isinstance(raw, dict):
+        raise SystemExit(
+            f"{spec}: expected a LIST of [label, subdir, stem, slots] rows, got "
+            f"an object with keys {sorted(raw)!r} -- pass one of those groups as "
+            f"its own file, or flatten them.")
     return [(r[0], r[1], r[2], int(r[3])) for r in raw]
+
+
+_STATUS = re.compile(r"^  (\S.*?_[01]):\s(.+)$", re.M)
+
+
+def convert_paths(text) -> dict:
+    """`{<stem>_0: 'copy'|'body-swap', ...}` from the harness's own status lines.
+
+    WHICH PATH A PIECE TOOK IS THE FIRST THING ANY SURVIVAL NUMBER MUST BE SPLIT
+    BY, and this sweep did not record it -- which is why the 2026-08-23 per-path
+    audit had to hand-roll its own runner instead of using this. A pack-wide mean
+    over both paths hides the difference it exists to measure: `conform` moves
+    NOTHING on the copy path (PHASE1_CONFORM is default off) and 0.70u on
+    body-swap.
+
+    The `converted (...)` line is AUTHORITATIVE -- never infer the path from
+    shape names. Two details, both learned the hard way: the key must start
+    NON-BLANK, because `_partial_rigid_panels` prints `    [panel-rigidity]
+    <shape>: ...` at four spaces and a shape called `ArmorF_1` collides exactly
+    with the weight file `ArmorF_1.nif`; and stems contain spaces and
+    parentheses ("Cumulative Vest (City)_1"), so a `\\S+` key silently matches
+    nothing for those pieces and the run reads as unclassifiable.
+    """
+    out = {}
+    for m in _STATUS.finditer(text or ""):
+        head = m.group(2).split("  -- ")[0]
+        if "(copy)" in head:
+            out[m.group(1)] = "copy"
+        elif "(body-swap)" in head:
+            out[m.group(1)] = "body-swap"
+        elif "converted" in head:
+            out[m.group(1)] = "other"
+    return out
 
 
 def _run_one(piece, out_root, env, sink):
@@ -85,6 +132,13 @@ def _run_one(piece, out_root, env, sink):
     e = dict(os.environ)
     e.update(env)
     e["CBBE2UBE_SURVIVAL_TRACE"] = "1"
+    # A SOURCE RUN IS ONLY DETERMINISTIC WITHIN ONE PROCESS, and every piece
+    # here is its own process. The frozen build pins `hash_seed=1` in its spec;
+    # `python convert_one_armor.py` does not, so set iteration reaches the
+    # output bytes and two arms of an A/B differ for reasons unrelated to the
+    # change ([[project_converter_nondeterministic_on_vfs_mods]]). Without this
+    # the sweep is unusable for exactly the comparison it exists to make.
+    e.setdefault("PYTHONHASHSEED", "1")
     # ONE sink for the whole sweep. `_append` stamps each record with the tail
     # of its output path, so records stay attributable without a file per piece.
     e["CBBE2UBE_STANDOFF_LOG"] = str(sink)
@@ -105,10 +159,18 @@ def _run_one(piece, out_root, env, sink):
                 "err": (p.stderr or p.stdout or "")[-400:]}
     # The converter records a pass exception and CARRIES ON, so a broken pass
     # reads as a clean run unless this is checked. #shape-copy-errors
-    bad = [ln for ln in (p.stdout + p.stderr).splitlines()
+    txt = (p.stdout or "") + (p.stderr or "")
+    bad = [ln for ln in txt.splitlines()
            if "errors during shape copy" in ln.lower()]
+    # KEEP THE WHOLE CONSOLE. Classification is re-derivable from it offline, so
+    # a parsing bug costs a re-read rather than another hour of converts.
+    try:
+        (out / "console.txt").write_text(txt, encoding="utf-8")
+    except Exception:
+        pass
     return {"piece": label, "status": "ok", "secs": round(dt, 1),
-            "shape_copy_errors": bad[:3], "out": str(out)}
+            "shape_copy_errors": bad[:3], "out": str(out),
+            "paths": convert_paths(txt)}
 
 
 def main() -> int:

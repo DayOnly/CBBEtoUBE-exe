@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 
 from src import nif_convert as nc
+from tests import _converter_sources as _cs  # patch on every module that binds a name
 
 
 class _FakeShape:
@@ -40,11 +41,11 @@ def _mk(monkeypatch, nif_shapes, tri_shape_names, *, generated):
     monkeypatch.setattr(nc, "_pynifly",
                         lambda: type("M", (), {"NifFile": staticmethod(
                             lambda filepath: _FakeNif(nif_shapes))}))
-    monkeypatch.setattr(nc, "_find_ube_body_osd", lambda: "osd")
-    monkeypatch.setattr(nc, "_cached_osd_load", lambda p: object())
+    _cs.patch(monkeypatch, "_find_ube_body_osd", lambda: "osd")
+    _cs.patch(monkeypatch, "_cached_osd_load", lambda p: object())
     monkeypatch.setattr(nc, "shape_body_offset", lambda s: np.zeros(3))
     monkeypatch.setattr(nc, "_extremity_vert_fraction", lambda s, n: None)
-    monkeypatch.setattr(nc, "_pick_bodytri_carriers", lambda nf: [])
+    _cs.patch(monkeypatch, "_pick_bodytri_carriers", lambda nf: [])
     monkeypatch.setattr(nc, "UBE_BODY_INJECT_NAMES", {"BaseShape"})
 
     import src.tri as tri_mod
@@ -53,7 +54,7 @@ def _mk(monkeypatch, nif_shapes, tri_shape_names, *, generated):
     import src.sliderset_gen as sg
     monkeypatch.setattr(sg, "generate_armor_tri",
                         lambda *a, **k: _FakeTri(generated))
-    monkeypatch.setattr(nc, "atomic_tri_save",
+    _cs.patch(monkeypatch, "atomic_tri_save",
                         lambda tri, path: saved.update(
                             names=[s.name for s in tri.shapes]))
     return saved

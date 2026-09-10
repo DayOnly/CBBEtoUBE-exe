@@ -44,6 +44,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import src.nif_convert as nc  # noqa: E402
+from tests import _converter_sources as _cs  # set on every module that binds a name
 
 
 class _Xf:
@@ -149,11 +150,11 @@ def _run(chain, fake, amp_value=0.5, osd=True):
              nc._cached_ube_body_verts, nc._cached_body_morph_amplitude,
              nc._find_ube_body_osd, nc._shape_global_to_skin)
     nc.CHAIN_REST_LIFT = True
-    nc._find_user_preset_body = lambda *a, **k: "ube"
+    _cs.set_all("_find_user_preset_body", lambda *a, **k: "ube")
     nc._cached_ube_body_verts = lambda *a, **k: (None, V, N)
-    nc._cached_body_morph_amplitude = lambda *a, **k: amp
-    nc._find_ube_body_osd = lambda *a, **k: "osd"
-    nc._shape_global_to_skin = lambda s: _Xf()
+    _cs.set_all("_cached_body_morph_amplitude", lambda *a, **k: amp)
+    _cs.set_all("_find_ube_body_osd", lambda *a, **k: "osd")
+    _cs.set_all("_shape_global_to_skin", lambda s: _Xf())
     try:
         return nc._lift_chain_roots_off_body(chain, fake)
     finally:
@@ -363,6 +364,16 @@ def test_globals_compose_through_the_chain_dict_not_the_source_tree():
     assert np.isclose(g["Skirt 1_01"][1], -4.0), "the child must follow the root"
 
 
-def test_a_cycle_cannot_hang_the_walk():
+def test_a_cycle_yields_no_position_at_all():
+    """A cyclic parent link must drop the bone, not invent a frame for it.
+
+    The old version of this test only called the walk and let "it returned" be
+    the pass -- which asserts nothing: the guard could start handing back an
+    identity frame for a cycle and this would still be green, and a chain
+    positioned at the origin is exactly the pull-to-origin defect the physics
+    work keeps chasing. `_g` is RECURSIVE, so a deleted guard raises
+    RecursionError rather than hanging; the thing actually worth pinning is the
+    RESULT, so pin it.
+    """
     ch = {"A": (_Xf(), "B"), "B": (_Xf(), "A")}
-    nc._chain_rest_globals(ch, {})          # must return
+    assert nc._chain_rest_globals(ch, {}) == {}

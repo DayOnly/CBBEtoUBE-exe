@@ -24,10 +24,16 @@ make the suite itself the guard, so the violation fails CI on the same push
 that introduces it instead of surfacing in a public diff later.
 
 Scope note: a test can enforce that the KNOWN local-only files stay untracked
-and that the ignore entries protecting them stay present. It cannot enforce
-"no third-party mod is ever named in tracked content" in general -- a denylist
-of mod names would itself be tracked content naming mods. That last line stays
-a review judgement; these tests fence everything mechanical around it.
+and that the ignore entries protecting them stay present. This file used to end
+here, recording "no third-party mod is ever named in tracked content" as the one
+rule a test could not enforce, because a denylist of mod names would itself be
+tracked content naming mods.
+
+That is enforced too now (2026-09-09), by putting the NAMES outside the repo in
+a gitignored `.asset-denylist` and tracking only the mechanism -- see the last
+section. It stopped being a review judgement because review demonstrably could
+not do it: a hand sweep before the 1.4 push found fifteen live leaks, four of
+them already public.
 """
 import fnmatch
 import re
@@ -98,10 +104,10 @@ def test_gitignore_still_protects_the_local_only_set(entry):
 # that is how a developer's absolute modlist path reached three harness scripts
 # and a doc on a public branch: the files themselves are perfectly legitimate.
 #
-# An absolute local path is the leak class worth enforcing mechanically -- it is
-# objective, it names a machine and a user, and (unlike a mod name) a pattern
-# for it does not itself have to name anything. Naming mods stays a review
-# judgement, as the module docstring says.
+# An absolute local path is the leak class this section enforces: it is
+# objective, it names a machine and a user, and a pattern for it does not
+# itself have to name anything. Mod names need a denylist and so are handled
+# separately, in the last section of this file.
 
 # Fires only on a path that identifies a PERSON or a NAMED modlist -- those are
 # what leak. A generic drive path (C:\Games\..., C:\mods\...) identifies nobody
@@ -135,11 +141,27 @@ def test_no_absolute_local_paths_in_tracked_text():
         p = REPO_ROOT / rel
         if not p.is_file():
             continue
+        # Ask the shared gate BEFORE any IO -- exempt trees cost nothing.
+        if not H.should_scan(rel):
+            continue
+        # Read BYTES and drop binaries first. Scanning is no longer gated on
+        # suffix (BUG-05(a)), so `dist/` .pyd/.dll members reach here now, and
+        # decoding those with errors="replace" would match the rules against
+        # noise -- the same call the hook makes, for the same reason.
+        #
+        # PROBE FIRST, then read the rest. Slurping every member whole made this
+        # test read 137 MB per run -- including two 20 MB OpenBLAS DLLs read in
+        # full only to discover a NUL in their first 8 KiB -- and added ~50s to
+        # the suite. `is_binary` never looks past 8 KiB, so neither do we.
         try:
-            text = p.read_text(encoding="utf-8", errors="replace")
+            with p.open("rb") as fh:
+                head = fh.read(8192)
+                if H.is_binary(head):
+                    continue
+                raw = head + fh.read()
         except OSError:
             continue
-        offenders.extend(H.scan_text(rel, text))
+        offenders.extend(H.scan_text(rel, raw.decode("utf8", "replace")))
     assert not offenders, (
         "tracked files hardcode an absolute local path (public repo + breaks "
         "on other machines):\n  " + "\n  ".join(offenders[:10]))
@@ -162,3 +184,121 @@ def test_the_local_path_rule_actually_catches_one():
     assert clean(r"e.g. <MO2Root>\mods")                # placeholder
     assert clean(r'"output_mod": r"C:\mods\CBBEtoUBE Auto"')   # fixture
     assert clean(r'f(r"C:\Users\someone\.ssh\id_rsa")')        # fixture name
+
+
+# --- third-party asset names, from an UNTRACKED denylist --------------------
+# The module docstring above used to end "naming mods stays a review judgement".
+# It stopped being one on 2026-09-09: sweeping tracked content by hand before
+# the 1.4 push found FIFTEEN live mod-name leaks, four of them already public,
+# and review had let every one through. Two of the fifteen had the name ONLY in
+# the FILENAME, which no content grep would have found.
+#
+# What made it enforceable is that the NAMES live outside the repo
+# (`.asset-denylist`, gitignored and in NEVER_TRACKED) and only the MECHANISM is
+# tracked. The check is therefore real on the author's machine and absent on a
+# fresh clone -- so it reports which of the two it got, out loud.
+
+
+@needs_git
+def test_no_denylisted_asset_name_in_tracked_content():
+    """No tracked file may name a real third-party asset, in its path or body.
+
+    Uses `repo_hygiene.scan_names` -- the same call the pre-commit hook makes --
+    so a commit the hook would block cannot pass here.
+    """
+    pattern, count = H.load_denylist(REPO_ROOT)
+    if pattern is None:
+        pytest.skip(
+            f"no {H.DENYLIST_FILE} in this checkout, so this test scanned "
+            "NOTHING. That is zero coverage, not a pass: the file is "
+            "gitignored by design and exists only on a machine that has one. "
+            "Build it from the tables in LOCAL_ASSET_SAMPLES.md.")
+    assert count >= 5, (
+        f"{H.DENYLIST_FILE} holds only {count} entr(y/ies) -- a denylist that "
+        "small is not covering the substitution tables it is built from")
+
+    offenders = []
+    for rel in tracked:
+        p = REPO_ROOT / rel
+        if not p.is_file():
+            continue
+        text = ""
+        if H.should_scan(rel):
+            try:
+                with p.open("rb") as fh:
+                    head = fh.read(8192)
+                    if not H.is_binary(head):
+                        text = (head + fh.read()).decode("utf8", "replace")
+            except OSError:
+                pass
+        # The PATH is checked even when the content is not scannable.
+        offenders.extend(H.scan_names(rel, text, pattern))
+    assert not offenders, (
+        f"tracked content names a real third-party asset ({count} names "
+        "checked). Substitute it and record the row in "
+        "LOCAL_ASSET_SAMPLES.md:\n  " + "\n  ".join(offenders[:10]))
+
+
+def test_the_denylist_check_can_actually_fail(tmp_path):
+    """Control, and it runs WITHOUT a local denylist -- so the mechanism stays
+    proven on a fresh clone where the test above can only skip.
+
+    The word-start rule is the whole design: a real asset name is routinely
+    a PREFIX of a longer identifier, so the obvious `\\b...\\b` fence would
+    have missed both 2026-09-02 leaks -- while a fence-free substring match
+    turns an ordinary English word into a hit. Both halves are asserted
+    below, with a SYNTHETIC name: real ones live only in the untracked
+    denylist, because this file is scanned too.
+    """
+    (tmp_path / H.DENYLIST_FILE).write_text(
+        "# comment\n\nsure\nre:^fit[ _]\n", encoding="utf-8")
+    pattern, count = H.load_denylist(tmp_path)
+    assert count == 2, "comments and blank lines must not become entries"
+
+    # catches the name as a PREFIX, in content and in a filename alike
+    assert H.scan_names("src/x.py", "the SureheartCuirass piece", pattern)
+    assert H.scan_names("docs/worklog/SUREHEART_NOTES.md", "", pattern)
+    # ...and not mid-word, which is what a fence-free match would do
+    assert not H.scan_names("src/x.py", "the measured value", pattern)
+    # a clean file stays clean, and no denylist means no findings at all
+    assert not H.scan_names("src/x.py", "nothing to see", pattern)
+    assert not H.scan_names("src/x.py", "the SureheartCuirass piece", None)
+
+
+def test_an_absent_denylist_is_reported_as_absent_not_as_clean():
+    """`(None, 0)` is the ONLY absent signal, and every caller branches on it.
+    A loader that returned an empty pattern instead would make every caller
+    silently report a clean tree -- the 0/0 failure, wearing a green tick."""
+    pattern, count = H.load_denylist(tmp_path_that_does_not_exist())
+    assert pattern is None and count == 0
+
+
+def tmp_path_that_does_not_exist():
+    return REPO_ROOT / "no_such_directory_for_the_denylist_control"
+
+def test_a_bare_entry_cannot_see_a_name_inside_a_longer_identifier(tmp_path):
+    """The blind spot, pinned so the fix is not silently undone.
+
+    A bare entry matches at a WORD START, and that is deliberate -- it is what
+    stops a short name matching ordinary English. The cost is that it cannot see
+    the name when something is CONCATENATED IN FRONT of it, which is exactly how
+    asset names appear in shape and file names. Two commit messages carrying one
+    such name scanned clean on 2026-09-10 and were one push from permanent.
+
+    So both halves are asserted: the bare form misses the infix (that is the
+    documented limit, not a bug to fix in the matcher), and a `re:` entry
+    catches it (that is the answer, and the denylist must use it for any name
+    distinctive enough).
+    """
+    (tmp_path / H.DENYLIST_FILE).write_text("sure\n", encoding="utf-8")
+    bare, _ = H.load_denylist(tmp_path)
+    assert H.scan_names("src/x.py", "the Sureheart piece", bare)
+    assert not H.scan_names("src/x.py", "the ArmorSureheartF piece", bare), (
+        "a bare entry is word-START anchored; if this now matches, the fence "
+        "was removed and short names will match ordinary English across the "
+        "whole tree")
+
+    (tmp_path / H.DENYLIST_FILE).write_text("re:sure\n", encoding="utf-8")
+    fenceless, _ = H.load_denylist(tmp_path)
+    assert H.scan_names("src/x.py", "the ArmorSureheartF piece", fenceless), (
+        "a `re:` entry must match anywhere -- that is the whole reason it exists")

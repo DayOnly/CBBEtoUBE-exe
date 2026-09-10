@@ -289,13 +289,13 @@ def test_ube_body_single_path_override_derives_weight_sibling(monkeypatch, tmp_p
     b1 = tmp_path / "femalebody_1.nif"
     b0.write_bytes(b"0")
     b1.write_bytes(b"1")
-    monkeypatch.setattr(nc, "_BODY_DISCOVERY_CACHE", {})
+    nc._BODY_DISCOVERY_CACHE.clear()   # mutate, never rebind: the finders share this object
     monkeypatch.delenv("CBBE2UBE_UBE_BODY_0", raising=False)
     monkeypatch.delenv("CBBE2UBE_UBE_BODY_1", raising=False)
     # User picks the _1 body; both weights must resolve to their own sibling.
     monkeypatch.setenv("CBBE2UBE_UBE_BODY", str(b1))
     assert nc._find_ube_femalebody("_1") == b1
-    monkeypatch.setattr(nc, "_BODY_DISCOVERY_CACHE", {})
+    nc._BODY_DISCOVERY_CACHE.clear()   # mutate, never rebind: the finders share this object
     assert nc._find_ube_femalebody("_0") == b0
 
 
@@ -305,7 +305,7 @@ def test_ube_body_weight_specific_env_takes_priority(monkeypatch, tmp_path):
     generic = tmp_path / "femalebody_0.nif"
     specific.write_bytes(b"s")
     generic.write_bytes(b"g")
-    monkeypatch.setattr(nc, "_BODY_DISCOVERY_CACHE", {})
+    nc._BODY_DISCOVERY_CACHE.clear()   # mutate, never rebind: the finders share this object
     monkeypatch.setenv("CBBE2UBE_UBE_BODY_0", str(specific))
     monkeypatch.setenv("CBBE2UBE_UBE_BODY", str(generic))
     assert nc._find_ube_femalebody("_0") == specific   # suffixed var wins

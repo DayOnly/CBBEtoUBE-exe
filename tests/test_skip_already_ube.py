@@ -27,6 +27,7 @@ import struct
 
 from src import esp
 from src.esp import encode_subrecord, encode_zstring
+from src import auto_convert
 from src.auto_convert import _player_armor_mesh_bases
 
 DEFAULT_RACE = 0x00000019
@@ -37,7 +38,7 @@ def _arma(fid, edid, mesh, slot=BODY):
     payload = (encode_subrecord(b"EDID", encode_zstring(edid))
                + encode_subrecord(b"BOD2", struct.pack("<II", slot, 0))
                + encode_subrecord(b"RNAM", struct.pack("<I", DEFAULT_RACE))
-               + encode_subrecord(b"MOD3", encode_zstring(mesh)))
+               + encode_subrecord(b"MOD4", encode_zstring(mesh)))
     return esp.Record(sig=b"ARMA", flags=0, formid=fid, timestamp_vc=0,
                       version_unk=0x2C, payload=payload)
 
@@ -166,3 +167,131 @@ def test_covered_scan_failure_converts_everything_rather_than_nothing():
     assert "converting everything" in tail, (
         "and must say so -- a silently-empty exclusion set looks identical to "
         "'nothing to skip'")
+
+
+def test_a_ube_path_in_a_slot_nobody_renders_does_not_count_as_covered(tmp_path):
+    r"""The invisible colour variant, reported in game.
+
+    An ARMA's four model slots are MOD2 male world, **MOD3 FEMALE WORLD**,
+    MOD4 male first person, MOD5 female first person. Only MOD3 is drawn on a
+    female body. This detector accepted `!UBE\` in ANY of them, so a variant
+    carrying a stray `!UBE\` first-person path -- with its FEMALE WORLD model
+    still the CBBE mesh -- was judged already covered and skipped. It then had
+    no UBE armature at all and rendered nothing, while its sibling variant, the
+    same mesh without the stray path, converted correctly.
+
+    SLOT NUMBERS CORRECTED 2026-08-22. This test, its fixture AND the shipped
+    detector all called MOD4 the female world model. They were wrong, and this
+    fixture kept passing because it asserts a NEGATIVE -- an ARMA with no MOD3
+    at all is uncovered either way. Established from the data: across 4822
+    minted ARMA records the `!UBE\` path sits in MOD3 (93.7%) and MOD5 (93.8%)
+    while MOD2/MOD4 carry `...\Male\...` paths.
+    """
+    mods = tmp_path / "mods"
+    md = mods / "Some Outfit"
+    md.mkdir(parents=True)
+
+    arma = esp.Record(
+        sig=b"ARMA", flags=0, formid=0x01000800, timestamp_vc=0, version_unk=0,
+        payload=(encode_subrecord(b"EDID", encode_zstring("VariantArma"))
+                 + encode_subrecord(b"BOD2", struct.pack("<II", BODY, 0))
+                 + encode_subrecord(b"RNAM", struct.pack("<I", DEFAULT_RACE))
+                 # FEMALE WORLD, what actually renders: still unconverted
+                 + encode_subrecord(b"MOD3", encode_zstring(
+                     r"Outfit\thing_1.nif"))
+                 # a slot nobody sees on a female body, pointing at a UBE path
+                 + encode_subrecord(b"MOD5", encode_zstring(
+                     r"!UBE\Outfit\thing_1.nif"))))
+    armo = esp.Record(
+        sig=b"ARMO", flags=0, formid=0x00012E46, timestamp_vc=0, version_unk=0,
+        payload=(encode_subrecord(b"EDID", encode_zstring("VariantArmor"))
+                 + encode_subrecord(b"MODL", struct.pack("<I", 0x01000800))))
+    e = esp.ESP(header=esp.TES4Header(masters=["Skyrim.esm"]),
+                groups=[esp.Group(label=b"ARMO", records=[armo]),
+                        esp.Group(label=b"ARMA", records=[arma])])
+    e.save(md / "Outfit.esp")
+
+    covered = auto_convert._third_party_ube_covered_armos(mods)
+    assert not covered, (
+        "an armour whose FEMALE WORLD model is still the CBBE mesh is not "
+        f"covered for UBE, whatever a first-person slot says -- got {covered}")
+
+
+def _outfit_mod(mods, name, female_world, mesh_exists):
+    """A mod whose ARMA claims `female_world` as its MOD3, optionally shipping
+    the mesh that path names."""
+    md = mods / name
+    md.mkdir(parents=True, exist_ok=True)
+    arma = esp.Record(
+        sig=b"ARMA", flags=0, formid=0x01000800, timestamp_vc=0, version_unk=0,
+        payload=(encode_subrecord(b"EDID", encode_zstring("Arma"))
+                 + encode_subrecord(b"BOD2", struct.pack("<II", BODY, 0))
+                 + encode_subrecord(b"RNAM", struct.pack("<I", DEFAULT_RACE))
+                 + encode_subrecord(b"MOD3", encode_zstring(female_world))))
+    armo = esp.Record(
+        sig=b"ARMO", flags=0, formid=0x00012E46, timestamp_vc=0, version_unk=0,
+        payload=(encode_subrecord(b"EDID", encode_zstring("Armor"))
+                 + encode_subrecord(b"MODL", struct.pack("<I", 0x01000800))))
+    e = esp.ESP(header=esp.TES4Header(masters=["Skyrim.esm"]),
+                groups=[esp.Group(label=b"ARMO", records=[armo]),
+                        esp.Group(label=b"ARMA", records=[arma])])
+    e.save(md / "Outfit.esp")
+    if mesh_exists:
+        p = md / "meshes" / female_world.replace("\\", "/")
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(b"not a real nif, only its presence is read")
+    return md
+
+
+def test_a_ube_female_world_model_counts_as_covered(tmp_path):
+    """The positive case the old MOD4 test MISSED on 259 armours: a UBE patch
+    that sets the female world model, which is the only slot drawn on a female
+    body."""
+    mods = tmp_path / "mods"
+    _outfit_mod(mods, "Some UBE Patch", r"!UBE\Outfit\thing_1.nif",
+                mesh_exists=True)
+    covered = auto_convert._third_party_ube_covered_armos(mods)
+    assert covered, ("a third-party patch whose FEMALE WORLD model is a !UBE "
+                     "mesh covers that armour -- converting it again "
+                     "double-covers and z-fights")
+
+
+def test_a_ube_claim_whose_mesh_is_missing_is_not_trusted(tmp_path):
+    """THE SAFETY GATE. Skipping is the DANGEROUS direction: a false 'already
+    covered' removes an armour from the only delivery path there is and it
+    renders NOTHING, while a false negative merely double-covers.
+
+    Measured 2026-08-22: of the 259 coverages the old test missed, 242 have the
+    mesh present and 17 do NOT. Without this gate, correcting the slot would
+    have taken those 17 straight from converted to invisible.
+    """
+    mods = tmp_path / "mods"
+    _outfit_mod(mods, "Broken UBE Patch", r"!UBE\Outfit\ghost_1.nif",
+                mesh_exists=False)
+    covered = auto_convert._third_party_ube_covered_armos(mods)
+    assert not covered, (
+        "a patch claiming a !UBE mesh it does not ship must NOT suppress our "
+        f"conversion -- that is an invisible armour, got {covered}")
+
+
+def test_the_gate_discriminates_rather_than_refusing_everything(tmp_path):
+    """Anti-vacuity for the test above: the same fixture with the mesh PRESENT
+    must come back covered, or 'not covered' would prove nothing."""
+    mods = tmp_path / "mods"
+    _outfit_mod(mods, "Good UBE Patch", r"!UBE\Outfit\real_1.nif",
+                mesh_exists=True)
+    assert auto_convert._third_party_ube_covered_armos(mods)
+
+
+def test_the_detector_reads_the_female_world_slot_not_first_person():
+    """Pin the slot itself. Reading MOD4 caught nothing MOD3 does not and
+    missed 77% of real coverage; a silent revert would restore 226 shadowed
+    meshes."""
+    import inspect
+    from src import auto_convert as ac
+    src = inspect.getsource(ac._third_party_ube_covered_armos)
+    assert 'if sig == b"MOD3":' in src, (
+        "the coverage scan must test MOD3, the FEMALE WORLD model")
+    assert 'if sig == b"MOD4":' not in src, (
+        "MOD4 is the MALE FIRST PERSON slot -- testing it misses 259 of 338 "
+        "real third-party coverages")

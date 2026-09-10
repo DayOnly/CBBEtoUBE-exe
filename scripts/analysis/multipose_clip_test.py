@@ -469,7 +469,9 @@ def analyse_with_body(garment_path, garment_names, body_path, body_shape,
     # (CBBE), re-read twice per armour. Caching it took a pack sweep from 133s/armour
     # to a fraction of that. Keyed on (path, shape) so a different reference is a
     # different entry, never a stale hit.
-    global _BODY_SKIN_CACHE
+    # (no `global _BODY_SKIN_CACHE` here: this function only MUTATES the dict,
+    # and mutation never needs the declaration. Stating it implied a rebind that
+    # does not happen, and pyflakes flags it as unused. Removed 2026-09-06.)
     gnif = pynifly.NifFile(str(garment_path))
     have = {s.name: s for s in gnif.shapes}
     missing = [n for n in garment_names if n not in have]

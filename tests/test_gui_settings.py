@@ -319,3 +319,52 @@ def test_rigid_majority_softbody_still_ships_off():
     s = gs.by_key()["rigid_majority_softbody"]
     assert s.default is False
     assert s.invert is False and s.env == "CBBE2UBE_RIGID_MAJORITY_SOFTBODY"
+
+
+def test_every_gui_env_is_read_by_src():
+    """A GUI row whose env var nothing reads is a toggle that does nothing.
+
+    `warp_delta_outlier` shipped that way: the row wrote
+    CBBE2UBE_WARP_DELTA_OUTLIER while the code read
+    CBBE2UBE_NO_WARP_DELTA_OUTLIER, so the checkbox was inert in BOTH
+    directions and displayed a default-ON feature as off. The registry's own
+    docstring promises this mapping is verified against the source; this is
+    that verification, as a ratchet rather than a promise.
+    """
+    import re
+    from pathlib import Path
+    src = Path(__file__).resolve().parent.parent / "src"
+    raw, helper = set(), set()
+    for f in src.glob("*.py"):
+        text = f.read_text(encoding="utf-8", errors="replace")
+        # Raw reads AND the _flag()/_knob() helpers the 2026-08-18 idiom
+        # collapse routed most reads through.
+        raw |= set(re.findall(
+            r'os\.environ\.get\(\s*["\'](CBBE2UBE_[A-Z0-9_]+)["\']', text))
+        helper |= set(re.findall(
+            r'_(?:flag|knob)\(\s*["\'](CBBE2UBE_[A-Z0-9_]+)["\']', text))
+    read = raw | helper
+    # PER-IDIOM floors: an aggregate floor cannot fire when ONE idiom goes
+    # blind, because the other alone clears it. Today 11 GUI-exposed envs are
+    # raw-only, so raw-blindness happens to fail this test through `dead` --
+    # but as the idiom collapse continues that accident disappears and the
+    # guard would go silent. Measured 2026-08-18: helper 289, raw 34.
+    assert len(helper) >= 250, (
+        f"only {len(helper)} _flag/_knob env reads found across src/ -- that "
+        f"idiom's regex went blind; widen it")
+    assert len(raw) >= 25, (
+        f"only {len(raw)} raw os.environ env reads found across src/ -- that "
+        f"idiom's regex went blind (if the last raw reads genuinely migrated, "
+        f"delete the raw regex deliberately rather than lowering this)")
+    exposed = {s.env for s in gs.SETTINGS if s.env}
+    dead = sorted(e for e in exposed if e not in read)
+    assert not dead, f"GUI rows whose env nothing in src/ reads: {dead}"
+
+# A "NO_* env <=> invert=True" ratchet was written here and REMOVED the same
+# day: it fails on three rows that are all correct, because this registry
+# expresses a negation three different ways -- a NO_ var
+# (`CBBE2UBE_NO_SOFTBODY_SCALES`), a KEEP_ var
+# (`CBBE2UBE_KEEP_BOOT_THIGH_SCALE`), and a negatively-phrased LABEL ("Disable
+# soft-body scale bones", whose feature really is the disabling). A test that
+# fails on correct design only teaches people to suppress it. The property
+# worth ratcheting is the one above: an env var nothing reads is always a bug.

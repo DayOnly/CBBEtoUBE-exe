@@ -236,11 +236,65 @@ CHAIN_RESTITUTION = 0.5        # authored mode 0.5 (was 0.2)
 # smoothly" sway (vs the old stiff/under-damped profile).
 CHAIN_LINEAR_LOWER = (-0.05, -0.05, -0.05)   # near-rigid link length
 CHAIN_LINEAR_UPPER = (0.05, 0.05, 0.05)      # was (0.1, 0.5, 0.1) -> over-stretch
-CHAIN_ANGULAR_LOWER = (-0.1, -0.1, -0.1)     # authored common +/-0.1
-CHAIN_ANGULAR_UPPER = (0.1, 0.1, 0.1)
+# NO angular tuple here: the angular limit is PER CHAIN, not a constant.
+# `chain_angular_limit(joints)` below (#chain-deflection-norm) computes it and
+# the emitter reads it from there. The authored per-joint +/-0.1 this block used
+# to hardcode survives as `CHAIN_ANGULAR_LIMIT_MIN`, that function's clamp floor.
 CHAIN_LINEAR_STIFFNESS = 20.0   # authored mode 20 (was 500 -> too rigid)
 CHAIN_ANGULAR_STIFFNESS = 20.0  # authored mode 20 (was 500)
 CHAIN_CONSTRAINT_DAMPING = 0.5
+
+# -- Deflection normalisation (#chain-deflection-norm) ----------------------
+#
+# THE 2026-06-05 TUNING COPIED THE AUTHORED PER-JOINT VALUES AND MISSED THE
+# AUTHORED JOINT COUNT. Measured over the 2026-08-21 pack:
+#
+#     OURS (149 generated)   joints per chain: min 1  MEDIAN 2   max 8
+#     AUTHORED (208)         joints per chain: min 2  MEDIAN 58  max 720
+#     both at the same per-joint angular limit, median 0.1 rad
+#
+# Visible sway is roughly `joints x per-joint limit`: authored cloth flows
+# because ~58 joints each contribute a little. A cloak with 2 joints gets
+# +/-0.2 rad ~ 11 degrees for the WHOLE chain. Reported in game as "one segment
+# where it bends but no physics (or the physics are so slim its not
+# noticable)", which is what 11 degrees looks like.
+#
+# THE CEILING IS THE SOURCE MESH: chains are built from the chain bones the
+# source NIF already has, so a cloak skinned to three skirt bones can never
+# have more than two joints however the springs are tuned. Rather than
+# synthesise bones (a recorded dead end, and it moves geometry), give a SHORT
+# chain more travel per joint so the chain as a whole deflects visibly.
+#
+# THE FLOOR IS WHAT MAKES THIS SAFE. `TARGET / joints` is clamped below at the
+# current 0.1, so any chain with >= 8 joints keeps EXACTLY today's value and
+# cannot change. Only the short chains -- the ones that visibly fail -- move.
+#
+# NO AUTHORED PRECEDENT EXISTS FOR THE SHORT CASE, so the target is a
+# JUDGEMENT, not a measurement: splitting the authored corpus by length gives
+# n=201 for >=8 joints but n=1 for <=3. Authors never build a 2-joint cloth
+# chain, so there is no authored answer to copy. 0.8 rad (~46 degrees across
+# the chain) is chosen as clearly visible while well short of letting a 2-link
+# chain fold back through itself. This needs an IN-GAME VERDICT, not a proof.
+CHAIN_TARGET_DEFLECTION = 0.8    # radians across the WHOLE chain
+CHAIN_ANGULAR_LIMIT_MIN = 0.1    # never tighter than the authored per-joint value
+CHAIN_ANGULAR_LIMIT_MAX = 0.5    # per-joint ceiling; 2 joints -> 0.4, 1 -> 0.5
+
+
+def chain_angular_limit(joints: int) -> float:
+    """Per-joint angular limit (radians) for a chain with `joints` constraints.
+
+    Normalises TOTAL deflection instead of holding the per-joint value fixed,
+    so a short chain is not silently ~29x stiffer than an authored one. Pure
+    and unit-tested: the emission is a formatting detail, THIS is the rule.
+
+    Clamped at both ends, and the floor is load-bearing -- it is what keeps
+    every chain of 8+ joints byte-identical to the previous behaviour.
+    """
+    if joints <= 0:
+        return CHAIN_ANGULAR_LIMIT_MIN
+    v = CHAIN_TARGET_DEFLECTION / joints
+    v = min(max(v, CHAIN_ANGULAR_LIMIT_MIN), CHAIN_ANGULAR_LIMIT_MAX)
+    return round(v, 4)
 
 
 # -- Generation -------------------------------------------------------------
@@ -325,8 +379,22 @@ def generate_armor_hdt_xml(
     # apply default mass=0 to them and they wouldn't swing.
     chains = chains or []
     chain_bone_set: set[str] = set()
+    # THE ANCHOR IS STATIC, SO IT MUST NOT GET THE CHAIN THRESHOLD.
+    # `<weight-threshold bone="X">v</weight-threshold>` pins any vertex whose
+    # weight to X reaches v. Bone 0 of every chain is emitted at mass 0 (see
+    # section 1) precisely so it stays put and the rest hangs off it -- giving
+    # it the low 0.3 chain threshold therefore FREEZES every vertex with even
+    # 30% weight to it. On a 3-bone cloak chain the anchor's influence covers
+    # the upper-middle of the cloth, so a band halfway down the cloak stops
+    # moving while the hem below it swings. Reported in game exactly that way:
+    # "it appears that half way down it it is pinned in place".
+    # Static bones already use the 1.0 threshold for this same reason; the
+    # anchor is static, so it belongs with them. #chain-anchor-threshold
+    chain_anchor_set: set[str] = set()
     for ch in chains:
         chain_bone_set.update(ch.bones)
+        if ch.bones:
+            chain_anchor_set.add(ch.bones[0])
     static_bones = [b for b in all_bones if b not in chain_bone_set]
 
     # Per-cloth tags. Numbered so each cloth has its own tag — the
@@ -419,29 +487,37 @@ def generate_armor_hdt_xml(
     # which bone pairs to apply them to.
     if chains:
         lines.append("\t<!-- chain constraints (sequential springs) -->")
-        lines.append("\t<generic-constraint-default>")
-        lines.append("\t\t<frameInB>")
-        lines.append('\t\t\t<basis x="0" y="0" z="0" w="1"/>')
-        lines.append('\t\t\t<origin x="0" y="0" z="0"/>')
-        lines.append("\t\t</frameInB>")
-        lines.append("\t\t<useLinearReferenceFrameA>false</useLinearReferenceFrameA>")
-        ll = CHAIN_LINEAR_LOWER; lu = CHAIN_LINEAR_UPPER
-        al = CHAIN_ANGULAR_LOWER; au = CHAIN_ANGULAR_UPPER
-        lines.append(f'\t\t<linearLowerLimit x="{ll[0]}" y="{ll[1]}" z="{ll[2]}"/>')
-        lines.append(f'\t\t<linearUpperLimit x="{lu[0]}" y="{lu[1]}" z="{lu[2]}"/>')
-        lines.append(f'\t\t<angularLowerLimit x="{al[0]}" y="{al[1]}" z="{al[2]}"/>')
-        lines.append(f'\t\t<angularUpperLimit x="{au[0]}" y="{au[1]}" z="{au[2]}"/>')
-        s = CHAIN_LINEAR_STIFFNESS; a = CHAIN_ANGULAR_STIFFNESS
-        lines.append(f'\t\t<linearStiffness x="{s}" y="{s}" z="{s}"/>')
-        lines.append(f'\t\t<angularStiffness x="{a}" y="{a}" z="{a}"/>')
-        d = CHAIN_CONSTRAINT_DAMPING
-        lines.append(f'\t\t<linearDamping x="{d}" y="{d}" z="{d}"/>')
-        lines.append(f'\t\t<angularDamping x="{d}" y="{d}" z="{d}"/>')
-        lines.append('\t\t<linearEquilibrium x="0" y="0" z="0"/>')
-        lines.append('\t\t<angularEquilibrium x="0" y="0" z="0"/>')
-        lines.append("\t</generic-constraint-default>")
-        lines.append("")
+        # ONE DEFAULT BLOCK PER CHAIN, not one for the file: the angular limit
+        # is now a function of THAT chain's joint count (#chain-deflection-norm),
+        # and a NIF can carry chains of different lengths. `<generic-constraint
+        # -default>` applies to the constraints that FOLLOW it, the same way
+        # this file already switches `<bone-default>` between the anchor and the
+        # dynamic links above.
         for ch in chains:
+            joints = max(0, len(ch.bones) - 1)
+            lim = chain_angular_limit(joints)
+            lines.append("\t<generic-constraint-default>")
+            lines.append("\t\t<frameInB>")
+            lines.append('\t\t\t<basis x="0" y="0" z="0" w="1"/>')
+            lines.append('\t\t\t<origin x="0" y="0" z="0"/>')
+            lines.append("\t\t</frameInB>")
+            lines.append("\t\t<useLinearReferenceFrameA>false</useLinearReferenceFrameA>")
+            ll = CHAIN_LINEAR_LOWER; lu = CHAIN_LINEAR_UPPER
+            lines.append(f'\t\t<linearLowerLimit x="{ll[0]}" y="{ll[1]}" z="{ll[2]}"/>')
+            lines.append(f'\t\t<linearUpperLimit x="{lu[0]}" y="{lu[1]}" z="{lu[2]}"/>')
+            lines.append(f'\t\t<angularLowerLimit x="{-lim}" y="{-lim}" z="{-lim}"/>')
+            lines.append(f'\t\t<angularUpperLimit x="{lim}" y="{lim}" z="{lim}"/>')
+            s = CHAIN_LINEAR_STIFFNESS; a = CHAIN_ANGULAR_STIFFNESS
+            lines.append(f'\t\t<linearStiffness x="{s}" y="{s}" z="{s}"/>')
+            lines.append(f'\t\t<angularStiffness x="{a}" y="{a}" z="{a}"/>')
+            d = CHAIN_CONSTRAINT_DAMPING
+            lines.append(f'\t\t<linearDamping x="{d}" y="{d}" z="{d}"/>')
+            lines.append(f'\t\t<angularDamping x="{d}" y="{d}" z="{d}"/>')
+            lines.append('\t\t<linearEquilibrium x="0" y="0" z="0"/>')
+            lines.append('\t\t<angularEquilibrium x="0" y="0" z="0"/>')
+            lines.append("\t</generic-constraint-default>")
+            lines.append(f"\t<!-- {joints} joint(s) -> {lim} rad each, "
+                         f"~{round(joints * lim, 2)} rad across the chain -->")
             lines.append("\t<constraint-group>")
             for i in range(1, len(ch.bones)):
                 a_name = ch.bones[i]
@@ -451,7 +527,7 @@ def generate_armor_hdt_xml(
                     f' bodyB="{_xml_escape(b_name)}"/>'
                 )
             lines.append("\t</constraint-group>")
-        lines.append("")
+            lines.append("")
 
     # 3. Body collision shape — declares which body bones to test
     # against cloth verts. The cloth weight thresholds in section 4
@@ -501,11 +577,17 @@ def generate_armor_hdt_xml(
         lines.append("\t\t<can-collide-with-tag>body</can-collide-with-tag>")
         lines.append("")
         # Emit thresholds in the same alphabetical order for diff stability.
-        # Chain bones get the lower 0.3 threshold (secondary motion);
-        # everything else uses the standard classifier (1.0 or 0.3).
+        # DYNAMIC chain bones get the lower 0.3 threshold (secondary motion).
+        # The chain ANCHOR does not: it is emitted at mass 0, so a low
+        # threshold there pins every vertex it partly weights to a bone that
+        # never moves (#chain-anchor-threshold). It takes the same 1.0 the
+        # other static bones take, which leaves only fully-anchored verts
+        # pinned -- the attachment seam, not a band across the cloth.
         shape_bones = sorted(set(bones or []))
         for b in shape_bones:
-            if b in chain_bone_set:
+            if b in chain_anchor_set:
+                thresh = PRIMARY_BONE_THRESHOLD
+            elif b in chain_bone_set:
                 thresh = CHAIN_BONE_THRESHOLD
             else:
                 thresh = classify_bone_threshold(b)
@@ -748,3 +830,82 @@ def validate_armor_hdt_xml(xml_path: "Path",
             f"collide with the body; {why}")
 
     return warnings
+
+
+# -- Sanitising a malformed AUTHORED XML -------------------------------------
+
+def _hdt_xml_parse_check(data: bytes):
+    """The parsed root element, or None. STRUCTURAL CHECK ONLY.
+
+    Two attempts, because these files are not all UTF-8 and a bytes-mode parse
+    assumes it. The second decodes as latin-1 -- which maps every byte, so it
+    cannot fail on a cp1252 payload -- purely to ask "is the structure sound".
+    The DECODED STRING IS NEVER RETURNED and never reaches the output, so this
+    adds no transcode; that is the distinction BUG-12 was made of.
+    """
+    import re as _re
+    import xml.etree.ElementTree as _ET
+    try:
+        return _ET.fromstring(data)
+    except Exception:
+        pass
+    try:
+        # An encoding declaration is illegal on a str, so drop it for the check.
+        s = _re.sub(rb"<\?xml[^>]*\?>", b"", data, count=1).decode("latin-1")
+        return _ET.fromstring(s)
+    except Exception:
+        return None
+
+
+def sanitise_hdt_xml_bytes(data: bytes) -> "tuple[bytes, str | None]":
+    """Repair well-formedness damage OUTSIDE the root element. Returns
+    (bytes, note) -- `note` is None when nothing was changed.
+
+    WHY. Ten authored physics XMLs in this modlist end with junk after the
+    root close: `</system>undefined</xml>` (6) or `</system></xml>` (4). A
+    stray `</xml>` is a close for a wrapper its authoring tool never opened.
+    XML forbids ANY non-whitespace after the root element, so every strict
+    parser rejects the whole file -- and the converter copies these VERBATIM
+    into the pack, so 94 shipped NIFs referenced an XML that nothing can read.
+    Every collider/soft-body protection then runs on an empty set for those
+    pieces, which is the state BUG-00 recorded as disarming every guard.
+
+    ONLY content after the root's closing tag is removed. That content cannot
+    carry physics meaning -- it is outside the document element -- so this
+    cannot change what the file declares. Verified on all ten: the
+    per-vertex-shape / per-triangle-shape / bone declarations are identical
+    before and after, and the 170 well-formed XMLs are returned untouched.
+
+    BYTES IN, BYTES OUT, NO TRANSCODE. Decoding then re-encoding one of these
+    is precisely how BUG-12 double-encoded a BOM and made eight XMLs
+    unparseable. Truncation needs no decode, so the output is always a prefix
+    of the input.
+
+    FAIL-SAFE: the repair is returned ONLY if the result parses AND keeps the
+    same root tag. Anything else returns the input untouched -- a file this
+    cannot fix is left exactly as it was rather than half-mangled. In
+    particular, damage INSIDE the root is out of scope by construction.
+    """
+    import re as _re
+    if _hdt_xml_parse_check(data) is not None:
+        return data, None                      # already well-formed
+    m = _re.search(rb"<\s*([A-Za-z_][\w.:-]*)", data)
+    if not m:
+        return data, None
+    root = m.group(1)
+    close = b"</" + root + b">"
+    idx = data.rfind(close)
+    if idx < 0:
+        return data, None
+    repaired = data[:idx + len(close)] + b"\n"
+    if repaired == data:
+        return data, None
+    el = _hdt_xml_parse_check(repaired)
+    if el is None:
+        return data, None                      # could not fix -> leave alone
+    if el.tag.rsplit("}", 1)[-1].encode() != root:
+        return data, None
+    dropped = data[idx + len(close):]
+    return repaired, (f"dropped {len(dropped)} byte(s) after the root "
+                      f"</{root.decode('ascii', 'replace')}>: "
+                      f"{dropped[:40]!r}")

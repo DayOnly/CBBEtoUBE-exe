@@ -303,7 +303,7 @@ def main():
         print(f"ABORT: output not found at {root}", file=sys.stderr)
         sys.exit(3)
 
-    # "1stp" as well as "1stperson": the Ysmir set uses the short prefix and a
+    # "1stp" as well as "1stperson": one armour set uses the short prefix and a
     # first-person mesh slipped into E's population on the first run.
     excl = re.compile(r"1stperson|1stp", re.I)
     pats = {"both": ("*_1.nif", "*_0.nif"), "1": ("*_1.nif",),
@@ -452,7 +452,7 @@ def main():
         under = [f for f in follows if f[0] < 0.5]
         print(f"     median {med:.3f}   under 0.5: {len(under)}   "
               f"over 1.5: {len([v for v in vals if v > 1.5])}")
-        print(f"     lowest 10:")
+        print("     lowest 10:")
         for v, rel, n in follows[:10]:
             print(f"       {v:6.3f}  {rel}  {n}")
     if args.baseline and Path(args.baseline).is_file():

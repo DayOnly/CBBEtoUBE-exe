@@ -4,6 +4,10 @@ __pycache__/
 *.pyc
 .pytest_cache/
 
+# Written by scripts/build_exe.ps1 just before PyInstaller runs (git sha,
+# dirty flag, build time); read by src/build_info.py. Never commit it.
+src/_build_stamp.py
+
 # Editors
 .vscode/
 .idea/
@@ -48,22 +52,35 @@ IN_GAME_BUGS.md
 # The map from published synthetic names back to the REAL assets they stand in for.
 # Local by definition: naming them is exactly what it is for.
 LOCAL_ASSET_SAMPLES.md
+# The denylist scripts/repo_hygiene.py reads to catch a mod name reaching
+# tracked content. It IS a list of mod names, so it is the one input to a
+# public-repo guard that can never be public itself. Built from the
+# substitution tables in LOCAL_ASSET_SAMPLES.md.
+.asset-denylist
 AUDIT_REDUNDANCY_*.md
+# Session working directories: measurement harnesses, A/B captures, pre-deploy
+# binary backups and pre-reconvert manifests. They name real armours and mods
+# and carry absolute local paths, so they are local by definition.
+#
+# IGNORED, not merely untracked. Being untracked is not protection -- one
+# `git add -A` publishes the lot, and these have sat untracked next to a tracked
+# tree for months relying on nobody typing it.
+scratchpad_handoff_*/
 CONVERTER_AUDIT_*.md
 DESIGN_JIGGLE_PLAN.md
 DESIGN_P5_*.md
 DESIGN_P6_*.md
 
-# Development measurement data (scripts/collect_fit_dataset.py).
+# Development measurement data (scripts/analysis/collect_fit_dataset.py).
 # Generated artefacts, sometimes large; regenerate rather than commit.
 fit_dataset*.jsonl
 fit_census*.jsonl
-# scripts/collect_penetration_census.py -- one row per ARMOR, keyed by its mesh path,
-# so it names mods by construction.
+# scripts/analysis/collect_penetration_census.py -- one row per ARMOR, keyed by its
+# mesh path, so it names mods by construction.
 penetration_census*.jsonl
 multipose_census*.jsonl
 source_delta_census*.jsonl
-# scripts/underbust_census.py writes beside itself; same rule -- keyed by mesh path.
+# scripts/analysis/underbust_census.py writes beside itself; same rule -- by mesh path.
 scripts/underbust_census*.json
 *.census.jsonl
 

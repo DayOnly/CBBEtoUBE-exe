@@ -33,7 +33,10 @@ import io, struct, sys, glob
 from pathlib import Path
 
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+# parent.parent was `scripts/`, which owns neither src/ nor .pynifly/.
+_REPO = Path(__file__).resolve().parent.parent.parent
+sys.path.insert(0, str(_REPO))
+sys.path.insert(0, str(_REPO / ".pynifly"))
 from src import esp  # noqa: E402
 
 ARR_MODS = Path(os.environ.get("CBBE2UBE_MODS_ROOT", "") + r"\mods")

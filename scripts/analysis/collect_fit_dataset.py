@@ -150,7 +150,13 @@ def shape_row(s, path, nf, ctx, col, soft, lay, do_rays):
     try:
         tris = np.asarray(s.tris, np.int32)
         row["tris"] = int(len(tris))
-        a, b2, c = Vw[tris[:, 0]], Vw[tris[:, 1]], Vw[tris[:, 2]]
+        # NOTE `edge_mean` is the mean of ONE edge per triangle (corner 0 -> 1),
+        # not the mean of all three. That is a fine proxy for local scale and it
+        # is what every stored row already holds, so it is left as it is -- but
+        # do not read it as "mean edge length" when comparing against a metric
+        # that averages all three. The third corner used to be unpacked here as
+        # an unused `c`, which gathered a whole array for nothing and hid this.
+        a, b2 = Vw[tris[:, 0]], Vw[tris[:, 1]]
         row["edge_mean"] = float(np.linalg.norm(a - b2, axis=1).mean())
     except Exception:
         pass

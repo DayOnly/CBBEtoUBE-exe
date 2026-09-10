@@ -162,13 +162,43 @@ def test_oversized_subrecord_is_refused_not_silently_truncated():
 
 # ---- real-data round-trip (opt-in, skipped cleanly when unavailable) ------
 
-def _real_plugin_path():
+# Cap so pointing this at a whole Data folder stays a test rather than a batch
+# job; the sweep is ordered so the run is reproducible.
+_REAL_PLUGIN_CAP = int(os.environ.get("CBBE2UBE_TEST_ESP_CAP", "40") or 40)
+
+
+def _real_plugin_paths():
+    """Every plugin to round-trip: one FILE, or every plugin in a DIRECTORY.
+
+    Directory support exists because the single-file form meant this never ran.
+    It was opt-in, it needed a path nobody had to hand, and the ESP writer is
+    the component whose bugs have produced STARTUP CRASHES here (a headerless
+    MODT block, un-remapped master bytes, a localized FULL copied raw). When it
+    was finally pointed at real data it passed on 64 plugins including all four
+    vanilla masters -- but "never run" and "passes" had been indistinguishable
+    for as long as nobody set the variable.
+    """
     env = os.environ.get("CBBE2UBE_TEST_ESP")
-    return Path(env) if env and Path(env).is_file() else None
+    if not env:
+        return []
+    p = Path(env)
+    if p.is_file():
+        return [p]
+    if p.is_dir():
+        found = sorted(q for pat in ("*.esp", "*.esm", "*.esl")
+                       for q in p.rglob(pat))
+        return found[:_REAL_PLUGIN_CAP]
+    return []
 
 
-@pytest.mark.skipif(_real_plugin_path() is None,
-                    reason="set CBBE2UBE_TEST_ESP to a real plugin to run")
+def _real_plugin_path():
+    got = _real_plugin_paths()
+    return got[0] if got else None
+
+
+@pytest.mark.skipif(not _real_plugin_paths(),
+                    reason="set CBBE2UBE_TEST_ESP to a plugin or a "
+                           "directory of plugins to run")
 def test_real_plugin_roundtrips_without_content_drift():
     """Synthetic fixtures cannot cover every quirk of an authored plugin. Point
     CBBE2UBE_TEST_ESP at a real one to exercise the writer against it."""

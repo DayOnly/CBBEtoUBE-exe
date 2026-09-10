@@ -63,6 +63,58 @@ def test_closest_point_interior_edge_and_vertex():
     assert np.allclose(got[2], [0.5, 0.0, 0.0])
 
 
+def test_closest_point_past_vertex_c():
+    """The region the three cases above never reach, and where it was wrong.
+
+    The vertex-c test read `(d5 > 0) & (d6 >= d5)`, a strict SUBSET of the real
+    condition, so a point past c with `d5 <= 0` fell through to the interior
+    branch -- which is the UNCLAMPED projection onto the triangle's plane. On a
+    near-planar garment panel that plane runs the length of the body, and the
+    caller read the result as a sub-unit distance to a panel 59u away.
+    """
+    a = np.array([[0.0, 0, 0]])
+    b = np.array([[1.0, 0, 0]])
+    c = np.array([[0.0, 1, 0]])
+    got = closest_point_on_triangles(np.array([[-2.0, 4.0, 0.0]]), a, b, c)
+    assert np.allclose(got[0], [0.0, 1.0, 0.0])
+
+
+def test_closest_point_never_leaves_the_triangle():
+    """The invariant that makes a wrong region cheap to catch: the result is
+    always IN the triangle. A plane projection is not, and that is the whole
+    failure mode -- it reports a tiny distance to a surface that is far away."""
+    rng = np.random.default_rng(20260816)
+    n = 20000
+    a, b, c = (rng.normal(size=(n, 3)) for _ in range(3))
+    # A wide spread of scales, so both grazing and far-field points are covered.
+    pts = rng.normal(size=(n, 3)) * rng.choice([1.0, 4.0, 40.0], size=(n, 1))
+    got = closest_point_on_triangles(pts, a, b, c)
+
+    ab, ac = b - a, c - a
+    ap = got - a
+    d00 = np.einsum("ij,ij->i", ab, ab)
+    d01 = np.einsum("ij,ij->i", ab, ac)
+    d11 = np.einsum("ij,ij->i", ac, ac)
+    d20 = np.einsum("ij,ij->i", ap, ab)
+    d21 = np.einsum("ij,ij->i", ap, ac)
+    den = d00 * d11 - d01 * d01
+    v = (d11 * d20 - d01 * d21) / den
+    w = (d00 * d21 - d01 * d20) / den
+    tol = 1e-6
+    assert (v >= -tol).all() and (w >= -tol).all() and (v + w <= 1 + tol).all(), (
+        f"{int(((v < -tol) | (w < -tol) | (v + w > 1 + tol)).sum())} of {n} "
+        f"closest points landed OUTSIDE their own triangle")
+
+    # And it really is the nearest point: no vertex, edge point or interior
+    # sample of the triangle may beat it.
+    d = np.linalg.norm(got - pts, axis=1)
+    s = rng.random((40, 2))
+    s[s.sum(axis=1) > 1] = 1.0 - s[s.sum(axis=1) > 1]
+    for sv, sw in s:
+        cand = a + ab * sv + ac * sw
+        assert (np.linalg.norm(cand - pts, axis=1) >= d - 1e-9).all()
+
+
 # --- the metric ---------------------------------------------------------------
 
 def test_body_inside_garment_reads_negative():

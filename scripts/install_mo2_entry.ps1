@@ -41,7 +41,11 @@ param(
     [string]$Mo2Root,
     [string]$ExePath,
     [switch]$InstallTools,
-    [string]$Title = "CBBEtoUBE Converter"
+    [string]$Title = "CBBEtoUBE Converter",
+    # Refresh this [customExecutables] index explicitly. Only needed when an
+    # instance carries several entries for the same tool and you want a
+    # specific one; normally the binary-path match below finds it.
+    [int]$Index
 )
 
 $ErrorActionPreference = "Stop"
@@ -67,9 +71,12 @@ if ($InstallTools) {
     }
     $destBundle = Join-Path $Mo2Root "tools\CBBEtoUBE"
     Write-Host "copying bundle -> $destBundle"
-    if (Test-Path $destBundle) { Remove-Item -Recurse -Force $destBundle }
-    New-Item -ItemType Directory -Force -Path $destBundle | Out-Null
-    Copy-Item -Recurse -Force (Join-Path $srcBundle "*") $destBundle
+    # NEVER wipe the destination: on a live instance it holds the user's
+    # CBBEtoUBE_settings.json, its backups and the last-run log. deploy_exe.ps1
+    # copies with robocopy /E (extras in dest are kept) and takes a settings
+    # snapshot first -- the same path every redeploy uses.
+    & (Join-Path $PSScriptRoot "deploy_exe.ps1") -Dest $destBundle
+    if (-not $?) { throw "deploy_exe.ps1 failed" }
     $ExePath = Join-Path $destBundle "CBBEtoUBE.exe"
 }
 
@@ -91,6 +98,8 @@ if ($mo2Running) {
 # Values for the entry. MO2 stores paths with forward slashes in the INI.
 $binaryVal  = ($ExePath -replace '\\', '/')
 $workdirVal = ($Mo2Root -replace '\\', '/')
+# Normalised form used to recognise an entry that ALREADY points at this exe.
+$binaryNorm = $binaryVal.TrimEnd('/')
 
 # Read the INI as text lines and locate [customExecutables].
 $lines = [System.Collections.Generic.List[string]]::new()
@@ -100,6 +109,8 @@ $inSection    = $false
 $sectionStart = -1
 $sectionEnd   = $lines.Count
 $existingIdx  = $null
+$titleIdx     = $null
+$binaryIdx    = $null
 $maxIdx       = 0
 $sizeLineIdx  = -1
 for ($i = 0; $i -lt $lines.Count; $i++) {
@@ -119,7 +130,24 @@ for ($i = 0; $i -lt $lines.Count; $i++) {
         } elseif ($line -match "^(\d+)\\title=(.*)$") {
             $idx = [int]$matches[1]
             if ($idx -gt $maxIdx) { $maxIdx = $idx }
-            if ($matches[2] -eq $Title) { $existingIdx = $idx }
+            # Case-INSENSITIVE and trimmed: an MO2 title is user-editable text.
+            if ($matches[2].Trim() -ieq $Title.Trim()) { $titleIdx = $idx }
+        } elseif ($line -match "^(\d+)\\binary=(.*)$") {
+            $idx = [int]$matches[1]
+            if ($idx -gt $maxIdx) { $maxIdx = $idx }
+            # MATCH ON THE BINARY FIRST. Matching only an EXACT title appended a
+            # SECOND entry whenever the live title differed from this script's
+            # default by so much as a word -- and it does: the live entry reads
+            # `title=CBBEtoUBE` while the default here is "CBBEtoUBE Converter".
+            # MO2 then shows two launchers for one tool, `size=` grows on every
+            # re-run, and the one the user clicks may be the stale one. The
+            # binary path is what actually identifies the entry.
+            $binHere = $matches[2].Trim()
+            if ($binHere.StartsWith("@ByteArray(") -and $binHere.EndsWith(")")) {
+                $binHere = $binHere.Substring(11, $binHere.Length - 12)
+            }
+            $binHere = $binHere.Replace("\\", "/").Replace("\", "/").TrimEnd("/")
+            if ($binHere -ieq $binaryNorm) { $binaryIdx = $idx }
         } elseif ($line -match "^(\d+)\\") {
             $idx = [int]$matches[1]
             if ($idx -gt $maxIdx) { $maxIdx = $idx }
@@ -127,12 +155,33 @@ for ($i = 0; $i -lt $lines.Count; $i++) {
     }
 }
 
+# Precedence: an explicit -Index, then the entry ALREADY pointing at this exe,
+# then a title match. Anything else is a genuinely new registration.
+if ($PSBoundParameters.ContainsKey("Index")) {
+    $existingIdx = $Index
+    Write-Host "using -Index $Index"
+} elseif ($null -ne $binaryIdx) {
+    $existingIdx = $binaryIdx
+    Write-Host "matched existing entry $binaryIdx by binary path"
+} elseif ($null -ne $titleIdx) {
+    $existingIdx = $titleIdx
+    Write-Host "matched existing entry $titleIdx by title"
+}
+
 if (-not $inSection) {
     throw "[customExecutables] section not found in $mo2Ini"
 }
 
-if ($existingIdx -ne $null) {
-    Write-Host "refreshing existing entry $existingIdx ('$Title')"
+if ($null -ne $existingIdx) {
+    # Report the entry's OWN title, not this script's default -- when the match
+    # came from the binary path those differ, and printing the default would
+    # claim we refreshed an entry that is not the one on screen in MO2. The
+    # title itself is deliberately NOT rewritten: the user may have renamed it.
+    $liveTitle = $Title
+    for ($i = $sectionStart; $i -lt $sectionEnd; $i++) {
+        if ($lines[$i] -match "^$existingIdx\\title=(.*)$") { $liveTitle = $matches[1] }
+    }
+    Write-Host "refreshing existing entry $existingIdx ('$liveTitle')"
     for ($i = $sectionStart; $i -lt $sectionEnd; $i++) {
         if ($lines[$i] -match "^$existingIdx\\binary=") {
             $lines[$i] = "$existingIdx\binary=$binaryVal"

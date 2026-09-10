@@ -22,6 +22,7 @@ from pathlib import Path
 
 import numpy as np
 import src.nif_convert as nc_mod
+from tests import _converter_sources as _cs  # patch on every module that binds a name
 from src.nif_convert import conform_to_source_standoff
 
 
@@ -308,8 +309,8 @@ def test_morph_residual_demands_more_over_a_reshaping_slider(monkeypatch):
     bv, bn, nip, c = _nipple_body(n=34)
     cur = _coarse_garment(spacing=1.2, half=3)
     src = cur.copy()
-    monkeypatch.setattr(nc_mod, "_find_ube_body_osd", lambda: Path("fake.osd"))
-    monkeypatch.setattr(nc_mod, "_cached_osd_load",
+    _cs.patch(monkeypatch, "_find_ube_body_osd", lambda: Path("fake.osd"))
+    _cs.patch(monkeypatch, "_cached_osd_load",
                         lambda _p: _reshaping_osd(bv, c, bn))
     nc_mod._BODY_MORPH_STACK_CACHE.clear()
     monkeypatch.setattr(nc_mod, "BUST_MORPH_RESIDUAL", False)
@@ -338,8 +339,8 @@ def test_morph_residual_costs_nothing_for_a_pure_inflate(monkeypatch):
     src = cur.copy()
     offs = [(i, float(bn[i, 0]), float(bn[i, 1]), float(bn[i, 2]))
             for i in range(len(bv))]                    # uniform outward = inflate
-    monkeypatch.setattr(nc_mod, "_find_ube_body_osd", lambda: Path("fake.osd"))
-    monkeypatch.setattr(nc_mod, "_cached_osd_load",
+    _cs.patch(monkeypatch, "_find_ube_body_osd", lambda: Path("fake.osd"))
+    _cs.patch(monkeypatch, "_cached_osd_load",
                         lambda _p: _FakeOsd([_FakeOsdMorph("BaseShapeInflate", offs)]))
     nc_mod._BODY_MORPH_STACK_CACHE.clear()
     monkeypatch.setattr(nc_mod, "BUST_MORPH_RESIDUAL", False)
@@ -354,7 +355,7 @@ def test_morph_residual_is_a_no_op_without_an_osd(monkeypatch):
     bv, bn, nip, _c = _nipple_body(n=34)
     cur = _coarse_garment(spacing=1.2, half=3)
     src = cur.copy()
-    monkeypatch.setattr(nc_mod, "_find_ube_body_osd", lambda: None)
+    _cs.patch(monkeypatch, "_find_ube_body_osd", lambda: None)
     nc_mod._BODY_MORPH_STACK_CACHE.clear()
     monkeypatch.setattr(nc_mod, "BUST_MORPH_RESIDUAL", True)
     a = conform_to_source_standoff(src, bv, bn, cur, bv, bn, ube_body_nipple=nip)

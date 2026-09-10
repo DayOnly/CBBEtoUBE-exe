@@ -14,8 +14,14 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-"""Which SHIPPED pieces could `CBBE2UBE_SMP_CHAIN_ANTIPOKE` reach, and which of
-those cover the CONVEX BUST -- the population for its A/B.
+"""Which SHIPPED pieces carry physics cloth over the CONVEX BUST.
+
+THE FLAG THIS WAS BUILT FOR IS GONE. It censused `CBBE2UBE_SMP_CHAIN_ANTIPOKE`,
+which no longer exists anywhere in `src/` -- so read this as a population probe,
+not as an A/B harness: nothing can be turned on to compare against. The
+selection rule below (physics XML present, cloth over the convex bust) is still
+the right population for ANY chain/cloth change in this family, which is why the
+script is kept rather than deleted.
 
     python scripts/analysis/chain_flag_census.py <output mod root> [-o pieces.json]
 

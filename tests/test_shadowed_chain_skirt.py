@@ -29,6 +29,7 @@ Skirt} emitted physics normally.
 import inspect
 
 import src.nif_convert as nc
+from tests import _converter_sources as _cs  # source text across the split modules
 
 
 class _FakeShape:
@@ -72,7 +73,7 @@ def test_generator_adds_back_only_chain_carrying_shapes():
     """Deliberately narrow: a shadowed shape is restored ONLY if it carries real
     physics chains. Adding chainless shapes would invent soft-body for rigid
     pieces -- the #fur-auto-smp / #chainless-cloth-only explosion class."""
-    src = inspect.getsource(nc._generate_hdt_xml_for_dst)
+    src = _cs.source(nc._generate_hdt_xml_for_dst)
     assert "_cloth_candidate_shapes" in src
     assert "detect_physics_chains" in src
     i = src.index("_cloth_candidate_shapes")
@@ -89,7 +90,7 @@ def test_chain_skirt_physics_is_off_by_default():
     we cannot predict which. A collapse is worse than the clipping it fixes."""
     import src.nif_convert as nc_
     assert nc_.CHAIN_SKIRT_PHYSICS is False
-    src = inspect.getsource(nc_._generate_hdt_xml_for_dst)
+    src = _cs.source(nc_._generate_hdt_xml_for_dst)
     assert "if CHAIN_SKIRT_PHYSICS:" in src, (
         "the shadowed-chain add-back must be gated -- ungated it invents physics "
         "that collapses")
@@ -112,7 +113,7 @@ def test_inert_chain_allows_leg_motion_match():
     plain skinning, so the leg-motion match must be allowed to track the leg --
     otherwise the leg walks through a skirt that never moves. Measured on the
     kinematic dress: 113 -> 37 newly-exposed verts."""
-    src = inspect.getsource(nc._match_limb_motion_to_body)
+    src = _cs.source(nc._match_limb_motion_to_body)
     assert "_piece_has_physics_xml" in src
     # Target the CALL, not the mention in the explanatory comment above it.
     i = src.index("if _shape_has_hdt_smp_rigging(")
@@ -127,6 +128,6 @@ def test_inert_chain_allows_leg_motion_match():
 def test_chainless_gate_still_present():
     """The guard that keeps the converter from inventing physics for rigid
     pieces must survive this change."""
-    src = inspect.getsource(nc._generate_hdt_xml_for_dst)
+    src = _cs.source(nc._generate_hdt_xml_for_dst)
     assert "chainless-softbody gate" in src
     assert "_is_unconstrained_collision_pair" in src

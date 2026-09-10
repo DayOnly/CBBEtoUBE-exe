@@ -57,7 +57,10 @@ from pathlib import Path
 import numpy as np
 
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+# parent.parent was `scripts/`, which owns neither src/ nor .pynifly/.
+_REPO = Path(__file__).resolve().parent.parent.parent
+sys.path.insert(0, str(_REPO))
+sys.path.insert(0, str(_REPO / ".pynifly"))
 
 from src.tri import TriFile  # noqa: E402
 
@@ -255,6 +258,8 @@ def main():
         sys.exit(1)
 
     nifs = sorted(meshes.rglob("*.nif"))
+    from scripts.analysis._census_common import require_population
+    require_population(nifs, "NIF(s) under the output")   # 0/0 is not a pass
     print(f"scanning {len(nifs)} NIFs under {meshes} ...")
 
     # Per-issue collectors (each is a list of (rel_nif, shape_name, detail))

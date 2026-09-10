@@ -73,16 +73,25 @@ def _nif_convert_worker(item: tuple) -> "nif_convert.ConvertResult":
 
     Args (in tuple form for ProcessPoolExecutor compatibility):
       src_path, dst_path, ube_body_ref_path, biped_slots,
-      [alt_texture_shape_names]
+      [alt_texture_shape_names], [variant_sources]
+
+    `variant_sources` maps a weight suffix (`"_0"` / `"_1"` / `""`) to the
+    resolved SOURCE path of that variant of the same stem. It has to be
+    computed in the PARENT, where the mod list / VFS / BSA index live: a worker
+    is a spawned process that inherits none of them, and the destination
+    siblings it could see instead are being written by this same batch.
+    #tri-variant-collision
     """
     src, dst, ube_body_ref_path, biped_slots = item[:4]
     alt_tex = item[4] if len(item) > 4 else None
+    variant_sources = item[5] if len(item) > 5 else None
     try:
         return nif_convert.convert_nif(
             src, dst,
             ube_body_ref_path=ube_body_ref_path,
             biped_slots=biped_slots,
             alt_texture_shape_names=alt_tex,
+            variant_sources=variant_sources,
         )
     except Exception as e:
         return nif_convert.ConvertResult(
@@ -182,6 +191,46 @@ def _prewarm_pool(
               f"{len(pids)} distinct worker PID(s))")
 
 
+def _pair_units(items: "list[tuple]") -> "list[list[tuple]]":
+    """Group work items into the UNITS one worker converts in sequence.
+
+    A `_0` and its `_1` (and a no-suffix `foo.nif`) SHARE files at the
+    destination: one physics XML (`<stem>.xml` -- the finalize copies the
+    authored one over it, then the collider patches rewrite it) and one `.tri`.
+    The weight passes read that XML through `dst_path` to learn which shapes
+    are colliders. With the pair on two workers, a `_1` whose leg-bend match
+    reads the XML inside the window where its sibling's finalize has just
+    restored the authored copy -- split collider not yet re-added -- sees no
+    collider there and reweights it. Measured 2026-09-06 on three identical
+    16-worker arms of the acceptance population: 5 shapes of 144 files bimodal,
+    every one a `_1` collider proxy, 0 vertices moved, the same 0.8486 worst
+    delta in each odd arm, while `--workers 1` is byte-identical run to run.
+    One unit per base, in list order, gives the pool serial's sequence for
+    exactly the files that share state and changes nothing else.
+    #pair-unit-dispatch
+
+    Keyed on the DESTINATION (`item[1]`), weight-agnostic. Units keep
+    first-appearance order and list order within -- `_1`, `_0`, then the
+    no-suffix model, which is the order `_resolve_armor_meshes` emits and the
+    serial path runs.
+    """
+    units: "dict[str, list]" = {}
+    order: "list[str]" = []
+    for it in items:
+        key = _weight_base_key(str(it[1]))
+        if key not in units:
+            units[key] = []
+            order.append(key)
+        units[key].append(it)
+    return [units[k] for k in order]
+
+
+def _run_unit(fn, unit: "list[tuple]") -> list:
+    """One worker, one unit, in order: one result per item. Module-level so the
+    spawn-mode pool can pickle it. #pair-unit-dispatch"""
+    return [fn(it) for it in unit]
+
+
 class _NifPool:
     """Self-healing wrapper around the batch-shared NIF-conversion process pool.
 
@@ -242,7 +291,11 @@ class _NifPool:
     def run_batch(self, work_items, on_result, *, fn=None):
         """Run `fn` (default `_nif_convert_worker`) over every item, calling
         `on_result(ConvertResult)` exactly once per item. Survives worker process
-        death: the crasher surfaces as an error result, all others convert."""
+        death: the crasher surfaces as an error result, all others convert.
+
+        Items are dispatched as UNITS (`_pair_units`): every weight variant of
+        one base runs on ONE worker, in list order, so a `_1` and its `_0` are
+        never converted concurrently. #pair-unit-dispatch"""
         fn = fn or _nif_convert_worker
         items = list(work_items)
         if not items:
@@ -252,28 +305,33 @@ class _NifPool:
             self._run_isolated(remaining, on_result, fn)
 
     def _run_parallel(self, items, on_result, fn):
-        """Submit all items at once; deliver every result that completed cleanly,
-        and return the items whose futures broke (the crasher + any in-flight
-        bystanders) for isolated recovery. Rebuilds the pool if anything broke."""
+        """Submit every unit at once; deliver every result that completed
+        cleanly, and return the items of the units whose futures broke (the
+        crasher, its unit-mates, any in-flight bystanders) for isolated
+        recovery -- in the original list order, so a pair still re-runs in
+        sequence. Rebuilds the pool if anything broke."""
         self._ensure()
+        units = _pair_units(items)
         try:
-            fut_to_item = {self.pool.submit(fn, it): it for it in items}
+            fut_to_unit = {self.pool.submit(_run_unit, fn, u): u for u in units}
         except Exception:
             # Pool already broken at submit time -> nothing ran; recover all.
             self._rebuild()
             return items
-        remaining = []
-        broke = False
-        for fut in as_completed(fut_to_item):
-            it = fut_to_item[fut]
+        broken: "list[list]" = []
+        for fut in as_completed(fut_to_unit):
+            unit = fut_to_unit[fut]
             try:
-                on_result(fut.result())
+                results = fut.result()
             except Exception:
-                broke = True          # worker death: this item didn't complete
-                remaining.append(it)
-        if broke:
+                broken.append(unit)   # worker death: nothing in this unit is certain
+                continue
+            for r in results:
+                on_result(r)
+        if broken:
             self._rebuild()
-        return remaining
+        lost = {id(it) for u in broken for it in u}
+        return [it for it in items if id(it) in lost]
 
     def _run_isolated(self, items, on_result, fn):
         """Re-run the uncertain items one at a time on a healthy pool. With a
@@ -360,17 +418,19 @@ def _nif_config_fingerprint(args) -> str:
     """Stable hash of every setting that can change a converted NIF's bytes.
 
     WHY THIS EXISTS. The `--incremental` floor only ever compared mtimes:
-    source NIF, converter code, body ref. But `nif_convert.py` reads **135
-    distinct `CBBE2UBE_*` environment variables** (counted, not estimated) --
-    clearance margins, follow ratios, jiggle strengths, pass on/off switches --
-    and NONE of them were in the floor. Flip one, re-run incrementally, and the
+    source NIF, converter code, body ref. But `nif_convert.py` reads **323
+    distinct `CBBE2UBE_*` environment variables** (re-counted 2026-08-18; it
+    was 135 when this was written, which is the point) -- clearance margins,
+    follow ratios, jiggle strengths, pass on/off switches -- and NONE of them
+    were in the floor. Flip one, re-run incrementally, and the
     converter reports "reusing N up-to-date NIFs" while the setting you changed
     never reached a single mesh. That is this project's documented dominant
     failure mode (a check that comes back clean because it measured nothing)
     wearing a new hat, and it is the thing that blocked making reuse a default.
 
-    Env vars are collected BY PREFIX, never from a hand-maintained list. A
-    literal list of 135 names would drift the first time someone adds a flag --
+    Env vars are collected BY PREFIX, never from a hand-maintained list, and
+    that is why the count above tripling did not break anything. A literal
+    list would drift the first time someone adds a flag --
     exactly the staleness that made the four-module whitelist in the project
     notes wrong (it predated `nif_convert` importing `fit_metrics`). A prefix
     scan cannot go stale.
@@ -551,6 +611,142 @@ def _find_ube_body_ref(search_roots: list[Path] | None = None) -> Path | None:
     return shapedata_with_both or template_p or shapedata_base_only or any_match
 
 
+def count_pass_failures(nif_results) -> dict:
+    """Swallowed pass failures, counted per pass name.
+
+    Read from the per-piece `reason` string ON PURPOSE.
+    `nif_convert.pass_failure_summary()` reads that module's counters, which
+    live in the WORKER process; the parent never sees them, so a report built on
+    it would report nothing and read as "no failures". `reason` is the only
+    channel that crosses the pool boundary -- see `_piece_pass_failures`.
+
+    NEVER RAISES. `write_conversion_summary` wraps everything in a blanket
+    `except Exception: return None`, so a throw here would not surface as an
+    error -- it would silently delete the whole summary file. That exact shape
+    (a NameError swallowed into a missing report) has happened here before.
+    """
+    out: dict = {}
+    for r in nif_results or ():
+        for part in (getattr(r, "reason", "") or "").split("; "):
+            part = part.strip()
+            if not part.startswith("PASS FAILED "):
+                continue          # a fragment of some other reason; ignore
+            label = part[len("PASS FAILED "):].split(" (", 1)[0].strip()
+            if label:
+                out[label] = out.get(label, 0) + 1
+    return out
+
+
+def count_pass_failure_pieces(nif_results) -> dict:
+    """{pass name -> [pieces it failed on]}. The counts' missing half.
+
+    `count_pass_failures` returns "hdt_xml_unresolved: 30" and throws the piece
+    names away, so answering "WHICH 30, and is any of them ours?" meant trying
+    to re-derive the population from the pack afterwards. That was attempted on
+    2026-08-23 and the attempt was MIS-SCOPED in a way worth recording: the
+    probe looked at pack NIFs that DECLARE a physics XML, but a piece whose XML
+    never resolved ships WITHOUT a pointer -- so the failing population was
+    invisible to the filter by construction, and the probe returned a confident
+    "0 unresolved". The filter was the population, again.
+
+    The converter already knows the answer at the moment it fails. Recording it
+    costs nothing and replaces a census that cannot be scoped correctly from
+    outside.
+
+    NEVER RAISES, for the same reason as its siblings.
+    """
+    out: dict = {}
+    for r in nif_results or ():
+        try:
+            name = Path(str(getattr(r, "dst_path", "") or "")).name
+        except Exception:
+            name = ""
+        for part in (getattr(r, "reason", "") or "").split("; "):
+            part = part.strip()
+            if not part.startswith("PASS FAILED "):
+                continue
+            label = part[len("PASS FAILED "):].split(" (", 1)[0].strip()
+            if label:
+                out.setdefault(label, [])
+                if name and name not in out[label]:
+                    out[label].append(name)
+    return out
+
+
+def count_pass_effects(nif_results) -> dict:
+    """{change tag -> [pieces it touched]}. The SIBLING of the failures counter.
+
+    WHY IT EXISTS, and it is not hypothetical. `nif_convert._note_pass_effect`
+    records WHICH CHANGE altered a piece, riding the same `reason` channel
+    failures use -- and the 2026-08-23 reconvert proved that half a mechanism is
+    none of it. The worker recorded its effects correctly; nothing on the PARENT
+    side ever read them, so they reached neither the log nor the report, and
+    `change_attribution.py` reported "none recorded" on a run where the change
+    demonstrably fired (18 violations -> 0). The failures counter had this
+    collector from the start; the effects one did not.
+
+    Returns the PIECE NAMES, not merely a count: "which change touched
+    something" is only actionable if it can name what to go and look at.
+
+    NEVER RAISES, for the same reason as `count_pass_failures`: the caller sits
+    inside a blanket `except Exception: return None` that would turn a throw
+    into a silently missing report rather than a visible error.
+    """
+    out: dict = {}
+    for r in nif_results or ():
+        try:
+            name = Path(str(getattr(r, "dst_path", "") or "")).name
+        except Exception:
+            name = ""
+        for part in (getattr(r, "reason", "") or "").split("; "):
+            part = part.strip()
+            if not part.startswith("CHANGED BY "):
+                continue          # a fragment of some other reason; ignore
+            tag = part[len("CHANGED BY "):].split(" (", 1)[0].strip()
+            if tag:
+                out.setdefault(tag, [])
+                if name and name not in out[tag]:
+                    out[tag].append(name)
+    return out
+
+
+def _pack_pass_failures(ok) -> dict:
+    """`count_pass_failures` rolled up across `[(source_dir, AutoConvertResult)]`.
+
+    Never raises, for the same reason as `count_pass_failures`: both callers sit
+    inside a blanket `except Exception: return None` that would turn a throw into
+    a silently missing report file rather than a visible error.
+    """
+    out: dict = {}
+    for _s, r in ok or ():
+        for label, n in count_pass_failures(
+                getattr(r, "nif_results", None)).items():
+            out[label] = out.get(label, 0) + n
+    return out
+
+
+def _pack_pass_effects(ok) -> dict:
+    """`count_pass_effects` rolled up across the pack. Never raises."""
+    return _roll_up_named(ok, count_pass_effects)
+
+
+def _pack_pass_failure_pieces(ok) -> dict:
+    """`count_pass_failure_pieces` rolled up across the pack. Never raises."""
+    return _roll_up_named(ok, count_pass_failure_pieces)
+
+
+def _roll_up_named(ok, fn) -> dict:
+    """{key -> merged, de-duplicated piece list} across mods. Never raises."""
+    out: dict = {}
+    for _s, r in ok or ():
+        for key, pieces in fn(getattr(r, "nif_results", None)).items():
+            out.setdefault(key, [])
+            for p in pieces:
+                if p not in out[key]:
+                    out[key].append(p)
+    return out
+
+
 @dataclass
 class AutoConvertResult:
     source_dir: Path
@@ -577,6 +773,11 @@ class AutoConvertResult:
     # Armour meshes resolved from a DIFFERENT mod via the VFS (BodySlide output /
     # replacer / patch). Surfaced in the coverage report.
     vfs_other_mod_count: int = 0
+    # {weight-agnostic dest base -> the weight suffixes the SOURCE actually
+    # ships}. `_complete_weight_partners` needs it to tell a `_0` it FILLED
+    # from one the converter genuinely produced. Empty = no knowledge, which
+    # that function treats as "never refresh". #stale-weight-partner
+    source_weight_variants: dict = field(default_factory=dict)
     # Postflight per-NIF invariant violations on the FINAL output (zero-vertex
     # shapes; over-cap single-partition shapes). Surfaced + counted as warnings.
     nif_invariant_warnings: list = field(default_factory=list)
@@ -602,6 +803,25 @@ class AutoConvertResult:
     def nif_error_results(self) -> "list[nif_convert.ConvertResult]":
         return [r for r in self.nif_results if r.status == "error"]
 
+    # A piece that fails to write its BODYTRI still CONVERTS -- the mesh is
+    # fine, it just has no body morphs, so it stops following the player's
+    # sliders. That is a visible defect in game, and it was invisible in every
+    # counter here: a 161-mod run reported "0 hard failures / 0 nif errors"
+    # while 4 pieces had silently lost their TRI to a locked-rename race. The
+    # detail sat in a per-mod .txt reason that nobody reads. Count it.
+    _MORPH_LOSS_MARKERS = ("auto-TRI", "body-morph unavailable",
+                           "BODYTRI injection failed")
+
+    @property
+    def nif_morph_loss_results(self) -> "list[nif_convert.ConvertResult]":
+        """Converted NIFs that came out WITHOUT working body morphs."""
+        return [r for r in self.nif_results
+                if any(m in (r.reason or "") for m in self._MORPH_LOSS_MARKERS)]
+
+    @property
+    def nif_morph_losses(self) -> int:
+        return len(self.nif_morph_loss_results)
+
     @property
     def nif_partial(self) -> int:
         """NIFs that converted but dropped >=1 shape (invisible piece in-game)."""
@@ -618,8 +838,14 @@ class AutoConvertResult:
 
     def write_report(self, path: Path) -> None:
         from .version import __version__ as _app_version
+        try:
+            from .build_info import stamp_line as _stamp_line
+            _build = _stamp_line()
+        except Exception:
+            _build = f"build {_app_version}"
         lines = [
             f"CBBE-to-UBE auto-conversion report (v{_app_version})",
+            f"{_build}",
             f"source : {self.source_dir}",
             f"output : {self.output_dir}",
             "",
@@ -650,6 +876,12 @@ class AutoConvertResult:
                          f"(conversion raised an exception)")
             for r in self.nif_error_results:
                 lines.append(f"      {r.src_path.name}: {r.reason}")
+        if self.nif_morph_losses:
+            lines.append(f"  ! NO BODY MORPH : {self.nif_morph_losses} "
+                         f"(converted, but the .tri was not written -- these "
+                         f"will NOT follow body sliders in game)")
+            for r in self.nif_morph_loss_results:
+                lines.append(f"      {r.src_path.name}")
         if self.nif_load_failures:
             lines.append(f"  ! load failures : {len(self.nif_load_failures)} "
                          f"(re-load the output via pynifly failed)")
@@ -658,6 +890,23 @@ class AutoConvertResult:
                          "(zero-vert / over-cap partition on final output)")
             for w in self.nif_invariant_warnings:
                 lines.append(f"      {w}")
+        # A pass that RAISED and was swallowed still converted the piece, so it
+        # shows up in NO bucket above -- the run reads as clean while a pass may
+        # have failed on every single piece. That is the "a BROKEN pass reads as
+        # a failed design" trap, and it has cost verdicts here before.
+        #
+        # `nif_convert.pass_failure_summary()` CANNOT serve this: it reads the
+        # WORKER's module state, which the parent process never sees, so calling
+        # it here would report an empty dict and read as "no failures". The
+        # per-piece `reason` string is the only channel that crosses the pool
+        # boundary (see `_piece_pass_failures`), so aggregate from that.
+        pass_fails = count_pass_failures(self.nif_results)
+        if pass_fails:
+            lines.append(f"  ! pass failures : {sum(pass_fails.values())} "
+                         f"across {len(pass_fails)} pass(es) -- the piece still "
+                         f"converted, so these are NOT counted as errors")
+            for label, n in sorted(pass_fails.items(), key=lambda kv: (-kv[1], kv[0])):
+                lines.append(f"      {n:>5} x  {label}")
         lines.append(f"  textures copied : {self.textures_copied}")
         if self.notes:
             lines.append("")
@@ -756,6 +1005,12 @@ def _echo_active_experiment_flags() -> None:
                   + ", ".join(f"{k[9:]}={v}" for k, v in sorted(act.items())))
         else:
             print("\n  active flags: none (all defaults)")
+        # The env echo shows OVERRIDES only: a default promoted in code and a
+        # setting silently lost print the same line. These say which build
+        # this is and what every setting RESOLVES to.
+        from . import build_info
+        for ln in build_info.echo_lines():
+            print(ln)
     except Exception:
         pass          # never let a diagnostic line break a run
     _warn_unseen_settings()
@@ -1315,6 +1570,7 @@ def auto_convert_mod(
         _kept_pairs = []
         _guard_dropped = 0
         _nonstd_kept: list[str] = []   # cape/cloak on a non-standard slot
+        _guard_names: list[str] = []   # WHICH meshes the guard dropped
         for _gsrc, _grel in resolved_pairs:
             _gslot = slot_bits_for(_grel)
             if (_gslot & _BODY_SLOT_BITS) != 0 or _nif_has_bodyfit_skin(_gsrc):
@@ -1325,10 +1581,19 @@ def auto_convert_mod(
                     _nonstd_kept.append(_weight_base_key(_grel))
             else:
                 _guard_dropped += 1
+                _guard_names.append(_weight_base_key(_grel))
         if _guard_dropped:
+            # NAME them. A bare count invites the wrong inference: a dropped
+            # accessory still SHIPS -- race coverage points a UBE-race ARMA at
+            # its ORIGINAL mesh, which keeps its own HDT physics reference --
+            # so "dropped" costs a UBE-shaped refit, NOT visibility and NOT
+            # physics. Reading a count alone, that is easy to get backwards.
+            _gu = sorted(set(_guard_names))
             result.notes.append(
                 f"crash guard: dropped {_guard_dropped} non-body accessory "
-                "mesh(es) on ambiguous modder slots (not body-skinned)")
+                "mesh(es) on ambiguous modder slots (not body-skinned; they "
+                "still ship via race coverage on their original mesh): "
+                + ", ".join(_gu[:10]) + (" ..." if len(_gu) > 10 else ""))
         if _nonstd_kept:
             _u = sorted(set(_nonstd_kept))
             result.notes.append(
@@ -1508,6 +1773,25 @@ def auto_convert_mod(
             print(f"  protecting {len(alt_tex_shape_names)} alt-texture-target "
                   f"shape(s) from merge (color variants)")
 
+        # #tri-variant-collision -- WHO WRITES EACH `.tri`, resolved the way
+        # SOURCES are resolved. `foo.nif`, `foo_0.nif` and `foo_1.nif` all
+        # derive `foo.tri`, so exactly one of them may write it and the others
+        # may only point at it when their vertex counts agree.
+        #
+        # The first fix for this asked the filesystem NEXT TO the source, and
+        # was INERT on the real pack: the competing variant routinely lives in
+        # a DIFFERENT MOD (a vanilla BSA ships the no-suffix model alone while a
+        # body-replacer mod ships the `_0`/`_1` pair), and a BSA-resolved source
+        # is staged ALONE, so the probe saw no sibling and let every variant
+        # claim the TRI. `resolved_pairs` is the correct source of truth because
+        # it came out of the SAME mod list / VFS / BSA chain that found the file
+        # being converted, so it sees across mods by construction.
+        #
+        variant_sources_by_base = _variant_sources_by_base(resolved_pairs)
+        # Same map, reduced to the SUFFIXES, for the batch-level partner fill.
+        for _b, _vs in variant_sources_by_base.items():
+            result.source_weight_variants.setdefault(_b, set()).update(_vs)
+
         work_items: list[tuple] = []
         skipped_collisions: list[tuple[Path, Path]] = []
         skipped_incremental = 0
@@ -1551,6 +1835,7 @@ def auto_convert_mod(
                 str(ube_body_ref_path) if ube_body_ref_path else None,
                 int(slot_bits),
                 alt_tex_shape_names,
+                variant_sources_by_base.get(_weight_base_key(rel)),
             ))
         if skipped_incremental:
             print(f"  incremental: reusing {skipped_incremental} up-to-date "
@@ -1873,7 +2158,9 @@ def _build_parser():
             "reserved for player); formid-out-of-range (FormID master byte "
             ">= master list length - guaranteed crash on equip); missing-nif "
             "(ARMA MOD3/MOD5 path points to a !UBE\\ NIF that isn't on disk "
-            "- armor renders empty); armo-missing-full (ARMO override has "
+            "- the engine reads a freed/garbage model path; this is "
+            "startup-CTD cause #1, not merely invisible armour); "
+            "armo-missing-full (ARMO override has "
             "no FULL subrecord - inventory UI silently hides the item)."
         ))
     val.add_argument("mod_dir", type=Path,
@@ -2077,6 +2364,21 @@ def write_conversion_summary(output_dir: Path, results: list) -> Path | None:
                 L.append(f"     - {s.name}: {e!r}")
             L.append("")
 
+        # PACK-WIDE swallowed pass failures. The per-mod reports carry this too,
+        # but a pass that fails on every piece would be spread across ~162 files
+        # and read as noise in each one. Rolled up here it is one line, and a
+        # systematically broken pass becomes obvious instead of invisible.
+        pack_fails = _pack_pass_failures(ok)
+        if pack_fails:
+            L.append(f"** swallowed PASS FAILURES: {sum(pack_fails.values())} "
+                     f"across {len(pack_fails)} pass(es) and {len(ok)} mod(s).")
+            L.append("   These pieces still CONVERTED, so they are in no error "
+                     "count above -- but the pass did not do its job.")
+            for _label, _n in sorted(pack_fails.items(),
+                                     key=lambda kv: (-kv[1], kv[0])):
+                L.append(f"     {_n:>6} x  {_label}")
+            L.append("")
+
         L.append("per-mod detail")
         for s, r in ok:
             if len(r.nif_results) == 0:
@@ -2129,6 +2431,12 @@ def write_conversion_report_json(output_dir, results,
             "armor_nifs": sum(len(r.nif_results) for _, r in ok),
             "esp_patches": sum(len(r.output_esps) for _, r in ok),
             "nif_errors": sum(r.nif_errors for _, r in ok),
+            # Converted but WITHOUT body morphs -- not an "error", and so absent
+            # from every counter above until 4 pieces shipped that way unseen.
+            "nif_morph_losses": sum(r.nif_morph_losses for _, r in ok),
+            "nif_morph_loss_pieces": sorted(
+                str(n.src_path.name)
+                for _, r in ok for n in r.nif_morph_loss_results)[:50],
             "load_failures": sum(len(r.nif_load_failures) for _, r in ok),
             "vfs_resolved": sum(r.vfs_other_mod_count for _, r in ok),
             "zero_mesh_mods": zero,
@@ -2136,9 +2444,36 @@ def write_conversion_report_json(output_dir, results,
             "failed_mods": [{"name": s.name, "error": repr(e)}
                             for s, e in failed],
             "weight_partner_warnings": list(weight_warnings or []),
+            # Passes that RAISED and were swallowed. Same shape as
+            # nif_morph_losses above and for the same reason: the piece still
+            # converted, so it is absent from every counter above -- and a pass
+            # broken on every piece would otherwise look like a design that
+            # simply does nothing.
+            "pass_failures": _pack_pass_failures(ok),
+            # WHAT CHANGED, beside what BROKE. A build carrying several changes
+            # cannot be debugged from a bad in-game report unless each change
+            # says which pieces it touched -- and the run log cannot carry it,
+            # because those are worker prints and the frozen exe drops them.
+            # This is the only durable channel. Reported SEPARATELY from
+            # failures on purpose: a change with many effects and no failures is
+            # working, one with no effects is not reaching anything.
+            "pass_effects": _pack_pass_effects(ok),
+            # WHICH pieces each pass failed on, beside how many. `pass_failures`
+            # stays a {name: count} map because the GUI and the post-reconvert
+            # audit read that shape; this is additive.
+            "pass_failure_pieces": _pack_pass_failure_pieces(ok),
         }
+        # Attribution: which build, which settings (RESOLVED, not just the
+        # env overrides), which settings file. Also written on its own as
+        # conversion_settings.json so a pack carries its recipe with it.
+        try:
+            from . import build_info
+            rep["run_config"] = build_info.run_config()
+            build_info.write_run_config(output_dir)
+        except Exception as _e:
+            rep["run_config"] = {"error": f"{type(_e).__name__}: {_e}"}
         out = Path(output_dir) / "conversion_report.json"
-        out.write_text(json.dumps(rep, indent=2), encoding="utf-8")
+        out.write_text(json.dumps(rep, indent=2, default=str), encoding="utf-8")
         return out
     except Exception:
         return None
@@ -2306,6 +2641,50 @@ def _third_party_ube_covered_armos(mods_root, enabled_names=None,
 
     root = Path(mods_root)
     skip = {s.lower() for s in skip_mods}
+
+    # SAFETY GATE for the MOD3 test below. SKIPPING IS THE DANGEROUS DIRECTION:
+    # a false "already covered" removes an armour from the only delivery path
+    # there is and it renders NOTHING, while a false negative merely
+    # double-covers. So only believe a third-party UBE claim when the mesh it
+    # names actually EXISTS.
+    #
+    # Measured 2026-08-22 over the live order: of the 259 coverages the old
+    # MOD4 test missed, 242 have the mesh present and 17 do NOT. Without this
+    # gate those 17 would go straight from "converted" to "invisible" the first
+    # time the corrected slot test ran.
+    #
+    # LOOSE FILES ONLY, and the asymmetry is deliberate: a mesh that lives only
+    # in a BSA reads as unresolved here and therefore falls through to
+    # CONVERTING, which is the safe direction. Built lazily and once -- the
+    # whole function is memoised per (root, skip, enabled).
+    _ube_mesh_index: "set[str] | None" = None
+
+    def _ube_mesh_resolves(model_rel: str) -> bool:
+        nonlocal _ube_mesh_index
+        if _ube_mesh_index is None:
+            idx: "set[str]" = set()
+            try:
+                for _md in root.iterdir():
+                    if not _md.is_dir() or _md.name.lower() in skip:
+                        continue
+                    if enabled_names is not None and _md.name not in enabled_names:
+                        continue
+                    if _is_our_own_output(_md):
+                        continue
+                    for _sub in ("meshes", "Meshes"):
+                        _d = _md / _sub
+                        if not _d.is_dir():
+                            continue
+                        for _p in _d.rglob("*.nif"):
+                            _rel = str(_p.relative_to(_d)).lower().replace("\\", "/")
+                            if _rel.startswith("!ube/"):
+                                idx.add(_rel)
+                        break
+            except Exception:
+                pass            # an unreadable tree must not fail the scan
+            _ube_mesh_index = idx
+        return (model_rel.lower().replace("\\", "/").lstrip("/")
+                in _ube_mesh_index)
     try:
         mod_dirs = [d for d in root.iterdir() if d.is_dir()]
     except OSError:
@@ -2348,9 +2727,35 @@ def _third_party_ube_covered_armos(mods_root, enabled_names=None,
                     continue
                 for r in g.records:
                     for sig, dd in _esp.iter_subrecords(r.payload):
-                        if sig in (b"MOD2", b"MOD3", b"MOD4", b"MOD5"):
+                        # MOD3 ONLY -- the FEMALE WORLD model. Testing ONE slot
+                        # is right (accepting any of the four marked an armour
+                        # "already covered" on the strength of a `!UBE\` path in
+                        # a slot that is never drawn on the body -- REPORTED IN
+                        # GAME as an invisible colour variant whose MOD3 was
+                        # still the CBBE path). Testing MOD4 was the WRONG one.
+                        #
+                        # THE SLOTS ARE MOD2 male world, MOD3 FEMALE WORLD, MOD4
+                        # male first person, MOD5 female first person. Corrected
+                        # 2026-08-22 FROM THE DATA, not from a comment: across
+                        # our own 4822 minted ARMA records the `!UBE\` path sits
+                        # in MOD3 (93.7%) and MOD5 (93.8%) while MOD2/MOD4 carry
+                        # `...\Male\...` paths, and the examples name themselves
+                        # (`..._F_1.nif` vs `Male\1stPersonbody_1.nif`). This
+                        # converter is female-only, so the slot carrying `!UBE`
+                        # IS the female slot. Cross-checked against Mutagen:
+                        # WorldModel[0]/[1] = MOD2/MOD3, FirstPersonModel[0]/[1]
+                        # = MOD4/MOD5.
+                        #
+                        # MEASURED COST OF THE OLD TEST, over the live order:
+                        #   !UBE in BOTH MOD3 and MOD4   79   caught, by luck
+                        #   !UBE in MOD3 ONLY           259   MISSED
+                        #   !UBE in MOD4 ONLY             0   caught nothing new
+                        # So MOD4 found nothing MOD3 does not, and missed 77% of
+                        # real third-party female coverage -- which is why 226
+                        # of our meshes still shadow a hand-made UBE conversion.
+                        if sig == b"MOD3":
                             s = dd.rstrip(bytes(1)).decode("cp1252", "replace")
-                            if _is_already_ube_model(s):
+                            if _is_already_ube_model(s) and _ube_mesh_resolves(s):
                                 ube_fids.add(r.formid)
                                 ube_armas.add(_abs(r.formid))
                                 break
@@ -2414,12 +2819,19 @@ def _print_coverage_warnings(label: str, stats: dict) -> None:
 
     The standalone coverage blocks printed these; when coverage moved inside
     the merge the key was simply ignored, silently losing the diagnostics for
-    the ONLY coverage model. `missing-nif` is filtered out because it fires in
-    bulk on retexture mods that ship no meshes of their own -- noise that would
-    bury the real entries."""
+    the ONLY coverage model.
+
+    `missing-nif` USED TO BE FILTERED OUT HERE, on the reasoning that it "fires
+    in bulk on retexture mods that ship no meshes of their own". That rationale
+    describes SOURCE paths -- and the check no longer counts those: it skips
+    anything without the `!UBE` path prefix, so it now reports only paths
+    TOOL produced pointing at meshes THIS TOOL did not write. That is the
+    condition behind startup-CTD cause #1 (an ARMA aimed at an absent !UBE
+    hood -> EXCEPTION_ACCESS_VIOLATION when an actor wearing it loads), which
+    the project notes say never to dismiss. Measured on the live shipped
+    Combined ESPs: 0 occurrences, so it is not noisy today either. Printed."""
     try:
-        ws = [w for w in (stats.get("validation_warnings") or [])
-              if "missing-nif" not in str(w)]
+        ws = [w for w in (stats.get("validation_warnings") or [])]
     except Exception:
         return
     if not ws:
@@ -2550,6 +2962,9 @@ def _emit_unified_coverage_patches(output, patches_dir, master_data_dirs,
 
 def _cmd_convert(args):
     _RUN_FAILURES.clear()   # fresh failure record for this run
+    # Same echo `auto` prints: the verdict harnesses run THIS subcommand, and
+    # a run has to say what it was carrying before anything can abort.
+    _echo_active_experiment_flags()
     # Export discovered layout to env so spawned workers inherit it without re-scanning.
     try:
         _layout = paths.discover_layout()
@@ -2689,7 +3104,7 @@ def _cmd_convert(args):
 
     # Incremental floor = newest of (converter source code, UBE body ref,
     # CONFIG FINGERPRINT). The fingerprint closes the gap that kept this
-    # opt-in: 135 CBBE2UBE_* env vars and the NIF-relevant args were invisible
+    # opt-in: every CBBE2UBE_* env var and the NIF-relevant args were invisible
     # to a pure-mtime floor, so changing one and re-running incrementally
     # reported "reusing N NIFs" while the change reached nothing.
     incremental_floor = None
@@ -2815,10 +3230,24 @@ def _cmd_convert(args):
     # Guarantee both _0 and _1 exist: a missing weight partner breaks the piece
     # at that body weight. Fill any single-weight base from its present partner.
     try:
-        _filled = _complete_weight_partners(output)
+        # UNION across every source: if ANY mod ships a real `_0` for a base,
+        # that `_0` is authoritative and must never be overwritten.
+        _src_variants: dict = {}
+        # `_errs`, not `_e`: five `except ... as _e` handlers live in this same
+        # function, and an unused loop variable of that name collides with them
+        # -- which is why pyflakes reported the "unused _e" against one of the
+        # HANDLERS (whose `_e` is used) instead of against this line.
+        for _s, _r, _errs in results:
+            for _b, _sufs in getattr(_r, "source_weight_variants", {}).items():
+                _src_variants.setdefault(_b, set()).update(_sufs)
+        _filled, _refreshed = _complete_weight_partners(
+            output, source_variants=_src_variants)
         if _filled:
             print(f"  weight-partner completion: filled {_filled} missing "
                   "_0/_1 partner mesh(es) (would otherwise break at one weight)")
+        if _refreshed:
+            print(f"  weight-partner completion: refreshed {_refreshed} STALE "
+                  "filled partner(s) left by an earlier build")
     except Exception as _e:
         print(f"  (weight-partner completion skipped: {_e!r})")
 
@@ -2949,6 +3378,20 @@ def _cmd_convert(args):
             overall_warnings += len(_wp_miss)
     except Exception as _wpe:
         print(f"  !! postflight weight-partner scan skipped: {_wpe!r}")
+
+    # Postflight REPAIR, and it runs BEFORE the detector below so that detector
+    # reports the state that actually ships. The jiggle graft's fit gate is
+    # judged per FILE, but `_0` and `_1` are ONE garment: ~20 pieces straddle
+    # the threshold and end up with belly or butt jiggle at one body weight
+    # only. This gives the deficient weight its partner's bone.
+    # #weight-partner-jiggle-sync
+    try:
+        _wp_sync = _postflight_sync_weight_partner_jiggle(output)
+        if _wp_sync:
+            print(f"\n  weight-partner jiggle sync: {_wp_sync} vert(s) given "
+                  f"their partner's scale bone")
+    except Exception as _wps:
+        print(f"  !! postflight weight-partner jiggle sync skipped: {_wps!r}")
 
     # Postflight: flag `_0`/`_1` partners whose converted scale-bone set diverges
     # (per-file metadata leaking to one weight -> the two morph differently; e.g.
@@ -3330,10 +3773,30 @@ _ENV_PATH_HINTS = ("landscape", "architecture", "caves", "cave", "interiors",
                    "dungeons", "actors\\character\\character assets",
                    "static", "props", "creatures", "monsters", "vfx")
 # Mod-name substrings that mark a mod as NOT a conversion source. Lowercased.
-# Excludes already-UBE content, body/BodySlide mods, our own output, and
-# khajiit/beast-race body/fur-overlay mods (target is human female UBE body).
-_NONSOURCE_NAME_HINTS = ("bodyslide output", "cbbetoube",
-                         "khajiit", "ohmes", "fur morph", "fur_morph")
+#
+# HARD: never a source whatever they contain -- our own output and the
+# BodySlide output the VFS resolves THROUGH. Converting either is a feedback
+# loop, and no evidence inside them can change that.
+_NONSOURCE_NAME_HINTS_HARD = ("bodyslide output", "cbbetoube",
+                              "fur morph", "fur_morph")
+# BEAST-RACE: body / fur-overlay / race mods, excluded because the target is the
+# human female UBE body. Applied ONLY where there is no positive ARMA evidence,
+# because these words also appear in the names of ordinary ARMOUR mods.
+#
+# "khajiit" silently dropped every khajiit ARMOUR mod in a 161-mod run, and the
+# user reported it as "all khajiiti armor is invisible" -- an armour whose mesh
+# was never converted, wearing an armature minted anyway. MEASURED over the live
+# modlist: 35 enabled mods match one of these hints, and 33 of them have ZERO
+# player-armour ARMA bases, so `require_arma` drops them WITHOUT any help from
+# the name. The hint was therefore redundant for every mod it was written for
+# and wrong for the two it was not.
+#
+# Same lesson as the retired "ube" hint below: a name is neither necessary nor
+# sufficient. Evidence decides; the name only breaks ties where there is none.
+_NONSOURCE_NAME_HINTS_BEAST = ("khajiit", "ohmes")
+# Preserved as the union for the `scan` preview, which has no ESP parse and so
+# has no evidence to weigh -- and for anything still importing this name.
+_NONSOURCE_NAME_HINTS = _NONSOURCE_NAME_HINTS_HARD + _NONSOURCE_NAME_HINTS_BEAST
 # "ube" was RETIRED from this list. It guarded against converting already-UBE
 # armor, but it did so by matching the MOD NAME, which is neither necessary nor
 # sufficient: mods shipping !UBE meshes under a name with no "ube" in it slipped
@@ -3515,7 +3978,8 @@ def _meshes_rel(p: Path) -> str:
     return p.name
 
 
-def _complete_weight_partners(output_dir: "str | Path") -> int:
+def _complete_weight_partners(output_dir: "str | Path",
+                              source_variants: "dict | None" = None):
     """Safety net (#180): Skyrim needs BOTH ``_0`` and ``_1`` on disk for a
     weighted body mesh -- it derives the absent weight from the present one's
     PATH, so a missing partner makes the piece break / vanish at that body
@@ -3528,35 +3992,81 @@ def _complete_weight_partners(output_dir: "str | Path") -> int:
     The copied partner is identical geometry (no weight-morph between _0/_1 for
     those pieces) -- acceptable versus the missing-partner breakage, and the
     common case (the user's heavy-preset actors sit near weight 100, using _1).
-    Returns the number of partners filled. Meshes shipped weight-agnostic
-    (``name.nif`` with no ``_0``/``_1``) don't match and are untouched."""
+    Meshes shipped weight-agnostic (``name.nif`` with no ``_0``/``_1``) don't
+    match and are untouched.
+
+    #stale-weight-partner. THE FILL USED TO HAPPEN ONCE, EVER: the copy was
+    guarded by `if miss.exists(): continue`, so a partner written by an OLD
+    build was never refreshed. Every later run rewrote the real half and left
+    the copy alone, and the two halves of one piece came from converter builds
+    WEEKS apart -- the engine blends between them by body weight. Measured on
+    the 2026-09-06 pack: 11 of 1536 pairs were 12-15 DAYS apart, every one a
+    piece whose source ships only `_1`. It also poisons any pack-wide census:
+    4 of the 6 zero-weight bones in that pack sat on those stale files, so they
+    read as the current build's defects and were not.
+
+    `source_variants` ({dest base -> the weight suffixes the SOURCE ships}) is
+    what makes refreshing SAFE. A partner is refreshed ONLY when the source has
+    no such variant, i.e. it is a copy this function made rather than a mesh
+    the converter produced. **Dropping the guard without that test would
+    overwrite a legitimately converted low-weight `_0` with the high one,
+    pack-wide, silently deleting the low-weight shape.** With no
+    `source_variants` nothing is ever refreshed and the behaviour is exactly
+    as before.
+
+    Returns ``(filled, refreshed)``."""
     import re as _re
     ube_root = Path(output_dir) / "meshes" / "!UBE"
     if not ube_root.is_dir():
-        return 0
+        return 0, 0
     groups: "dict[tuple, dict]" = {}
     for p in ube_root.glob("**/*.nif"):
         m = _re.match(r"(.*)_([01])\.nif$", p.name, _re.IGNORECASE)
         if m:
             groups.setdefault((str(p.parent).lower(), m.group(1).lower()),
                               {})[m.group(2)] = p
-    filled = 0
+    from .atomic_io import atomic_copy
+    filled = refreshed = 0
     for have in groups.values():
-        if "0" in have and "1" in have:
+        both = "0" in have and "1" in have
+        anchor = have.get("1") or have.get("0")
+        try:
+            base = _weight_base_key(anchor.relative_to(ube_root).as_posix())
+        except ValueError:
+            base = None
+        src_sufs = (source_variants or {}).get(base)
+        if both:
+            # Refresh a partner this function FILLED. Only the source can say
+            # which one that is; without it, never touch an existing file.
+            if not src_sufs:
+                continue
+            stale_w = next((w for w in ("0", "1")
+                            if f"_{w}" not in src_sufs), None)
+            if stale_w is None:
+                continue          # the source ships both -> both are real
+            real = have["1" if stale_w == "0" else "0"]
+            stale = have[stale_w]
+            try:
+                if (stale.stat().st_size == real.stat().st_size
+                        and stale.read_bytes() == real.read_bytes()):
+                    continue      # already a current copy; leave the mtime alone
+                atomic_copy(real, stale)
+                refreshed += 1
+            except OSError:
+                pass
             continue
-        present = have.get("1") or have.get("0")
+        present = anchor
         miss_w = "0" if "1" in have else "1"
         miss = present.parent / _re.sub(
             r"_[01]\.nif$", f"_{miss_w}.nif", present.name, flags=_re.IGNORECASE)
         if miss.exists():
             continue
         try:
-            from .atomic_io import atomic_copy
             atomic_copy(present, miss)
             filled += 1
         except OSError:
             pass
-    return filled
+    return filled, refreshed
 
 
 def _nif_invariant_issues(nif_name, shapes, cap) -> "list[str]":
@@ -3740,6 +4250,37 @@ def _postflight_weight_partner_divergence(output_dir) -> "list[str]":
     return out
 
 
+def _postflight_sync_weight_partner_jiggle(output_dir) -> int:
+    """REPAIR the divergence `_postflight_weight_partner_divergence` detects:
+    walk every `_0`/`_1` pair and give the deficient weight its partner's jiggle
+    bone. The mechanism, the evidence for copying the partner's skin-to-bone
+    xform, and why UNION rather than removal is the right resolution are all in
+    `nif_convert._sync_weight_partner_jiggle`.
+
+    Pairs are grouped exactly as the detector groups them, so the two agree on
+    what a pair IS. Returns verts changed; a pair that raises is skipped rather
+    than aborting the batch. #weight-partner-jiggle-sync"""
+    import re as _re
+    meshes = Path(output_dir) / "meshes"
+    if not meshes.is_dir():
+        return 0
+    groups: "dict[tuple, dict]" = {}
+    for p in meshes.glob("**/*.nif"):
+        m = _re.match(r"(.*)_([01])\.nif$", p.name, _re.IGNORECASE)
+        if m:
+            groups.setdefault((str(p.parent), m.group(1)), {})[m.group(2)] = p
+    total = 0
+    for _key, byw in sorted(groups.items()):
+        if "0" not in byw or "1" not in byw:
+            continue
+        try:
+            total += nif_convert._sync_weight_partner_jiggle(
+                byw["0"], byw["1"])
+        except Exception:
+            continue
+    return total
+
+
 _BATCH_BSA_INDEX = None   # set per-batch by _cmd_convert; lazy BSA mesh resolver
 
 
@@ -3908,6 +4449,65 @@ def _resolve_armor_meshes(
                 seen.add(key)
                 pairs.append(hit)
     return pairs
+
+
+def _near_mod_names(missing: str, all_names: "list[str]", n: int = 3) -> "list[str]":
+    """Mod names close to one `--only-mods` value that matched nothing.
+
+    A bare "NOT FOUND" sent the reader to `scan`, which lists mods that merely
+    LOOK like armour -- a different, wider set than the plugin-driven
+    CONVERSION candidates this flag filters. A mod can appear in one and not
+    the other, and chasing that cost three arms on 2026-09-07.
+
+    Case-insensitive, and returns the names in their REAL casing so the answer
+    can be pasted straight back into the flag.
+    """
+    import difflib
+    low = {name.lower(): name for name in all_names}
+    hits = difflib.get_close_matches(missing.lower(), list(low), n=n, cutoff=0.4)
+    return [low[h] for h in hits]
+
+
+def _variant_sources_by_base(
+    resolved_pairs: "list[tuple[Path, str]]",
+) -> "dict[str, dict[str, str]]":
+    """Group resolved sources by weight-agnostic stem: {base -> {suffix -> src}}.
+
+    WHO WRITES EACH `.tri`, answered where SOURCES are resolved. `foo.nif`,
+    `foo_0.nif` and `foo_1.nif` all derive `foo.tri`, so exactly one of them may
+    write it and the others may only point at it when their vertex counts agree
+    (`_tri_is_owning_variant` / `_tri_fits_variant`). #tri-variant-collision
+
+    THE FIRST FIX FOR THIS ASKED THE FILESYSTEM NEXT TO THE SOURCE, AND WAS
+    INERT: the competing variant routinely ships in a DIFFERENT MOD -- a vanilla
+    BSA ships the no-suffix model alone while a body-replacer ships the
+    `_0`/`_1` pair -- and a BSA-resolved source is staged ALONE, so the probe saw
+    no sibling and every variant claimed the TRI. The same five out-of-bounds
+    entries shipped after it.
+
+    `resolved_pairs` is the right source of truth because it came out of the
+    SAME mod list / VFS / BSA chain that found the file being converted, so it
+    sees across mods by construction. It has to be computed HERE, in the parent:
+    a conversion worker is a spawned process that inherits none of those indices,
+    and the destination siblings it could see instead are being written by this
+    same batch.
+
+    A VARIANT ONLY COUNTS IF IT IS ACTUALLY GOING TO BE CONVERTED. Deferring to
+    a `_0` that yields nothing at the destination would leave the whole stem with
+    no TRI and no BODYTRI -- morphs lost outright, which is worse than the
+    collision -- so an already-UBE model is dropped here. Callers pass the
+    CRASH-GUARDED pairs (a dropped accessory converts nothing and writes no TRI)
+    but do not pre-apply the collision or incremental skips, whose destinations
+    exist regardless of which source wrote them.
+    """
+    out: "dict[str, dict[str, str]]" = {}
+    for src, rel in resolved_pairs:
+        if _is_already_ube_model(rel):
+            continue
+        stem = Path(rel).stem
+        suffix = stem[-2:] if stem.endswith(("_0", "_1")) else ""
+        out.setdefault(_weight_base_key(rel), {})[suffix] = str(src)
+    return out
 
 
 # #worker-mem-budget -- steady-state private footprint of ONE conversion worker.
@@ -4318,7 +4918,14 @@ def _find_armor_mod_dirs_uncached(mods_root: Path,
             return False
         if enabled_names is not None and mod_dir.name not in enabled_names:
             return False  # disabled in the active MO2 profile
-        if any(h in nl for h in _NONSOURCE_NAME_HINTS):
+        # The beast-race hints are a TIE-BREAKER, not a veto: under
+        # `require_arma` the ARMA test is the evidence and it decides, so a
+        # khajiit ARMOUR mod is admitted while a khajiit body/fur/race mod still
+        # yields no armour base and is dropped below. The `scan` preview has no
+        # ESP parse, hence no evidence, so there the name is all we have.
+        _hints = (_NONSOURCE_NAME_HINTS_HARD if require_arma
+                  else _NONSOURCE_NAME_HINTS)
+        if any(h in nl for h in _hints):
             return False
         if _is_child_content_mod(mod_dir.name):
             return False  # child clothing — not armour "for the player"
@@ -4905,13 +5512,29 @@ def _cmd_auto(args):
         _sweep_only_requested = "vanilla" in wanted
         wanted.discard("vanilla")
         before = len(candidates)
+        all_names = [c["name"] for c in candidates]
         candidates = [c for c in candidates if c["name"].lower() in wanted]
         missing = sorted(wanted - {c["name"].lower() for c in candidates})
         print(f"  --only-mods: {len(candidates)}/{before} mod(s) selected"
               + (f"; NOT FOUND: {missing}" if missing else ""))
+        if missing:
+            # THE OLD MESSAGE SENT THE READER TO THE WRONG LIST. `scan` prints
+            # mods that merely LOOK like armour (ESP + NIFs under armour paths);
+            # this filter matches the CONVERSION candidates, which is a
+            # different, plugin-driven set. A mod can sit in `scan`'s table and
+            # be absent here -- that cost three arms on 2026-09-07 -- so name
+            # the right list and show the near misses instead of a bare refusal.
+            for miss in missing:
+                real = _near_mod_names(miss, all_names)
+                if real:
+                    print(f"    {miss!r} -- did you mean: "
+                          + ", ".join(repr(n) for n in real))
         if not candidates and not _sweep_only_requested:
-            print("error: --only-mods matched no discovered armor mods. Run "
-                  "`scan` or the GUI 'Refresh mod list' for the exact names.")
+            print("error: --only-mods matched no CONVERSION candidates. That is "
+                  "NOT the same list as `scan`, which shows anything that looks "
+                  "like armour; use the GUI 'Refresh mod list', or "
+                  "`auto_convert.list_convertible_mods()`, which mirrors this "
+                  "filter exactly.")
             return 2
 
     # Order by MO2 load priority (highest first) so the first-writer-wins collision
@@ -4981,10 +5604,22 @@ def _cmd_auto(args):
         plugins_only=getattr(args, "plugins_only", False),
     )
     rc = _cmd_convert(conv)
-    # The post-merge coverage phases below generate the REQUIRED race-compat /
-    # mod-coverage ESPs, but they run AFTER rc was fixed by the convert above.
-    # Track their failures so an exception there still fails the run instead of
-    # silently exiting 0 with armor that's invisible on UBE races.
+    # Failures of anything that runs AFTER `rc` was fixed by the convert above,
+    # so an exception down here still fails the run instead of exiting 0.
+    #
+    # THIS COUNTER WENT DEAD. It was written for the standalone race-compat and
+    # mod-coverage phases that used to live below; both were removed (vanilla
+    # race coverage 2026-07-03, and the `#fsp-dedup` block along with the
+    # standalone coverage passes), unified coverage moved INSIDE `_cmd_convert`
+    # where its rc IS checked, and nothing was left to increment it -- while
+    # the comment went on claiming the guard was live. Found 2026-09-04 by an
+    # audit for gates assigned a constant and never set: the same shape as the
+    # `#coherence-kink` branch, which was documented in full and never
+    # implemented.
+    #
+    # The one post-convert step that CAN still fail is the opt-in overlay
+    # transfer, which caught its own exception and let the run exit 0. It now
+    # counts, so `--convert-overlays` failing is visible in the exit code.
     post_merge_failures = 0
 
     # Vanilla race coverage (Vanilla_UBE_Race_Compat.esp) REMOVED 2026-07-03:
@@ -5020,7 +5655,11 @@ def _cmd_auto(args):
                       f"overlay mods so the loose textures override their BSAs. "
                       f"***")
         except Exception as e:
-            print(f"  !! overlay transfer skipped: {e!r}")
+            # Counted: the user explicitly asked for this with
+            # --convert-overlays, so exiting 0 hides that the textures they
+            # expect were never written.
+            post_merge_failures += 1
+            print(f"  !! overlay transfer FAILED: {e!r}")
 
     # Pre-flight: missing hands/feet .tri makes them stay CBBE-shaped while the
     # body morphs UBE (built without 'Build Morphs'). Surface the warning loudly.
@@ -5035,8 +5674,8 @@ def _cmd_auto(args):
 
     _enable = f"'{output.name}' + its Combined ESP(s)"
     if post_merge_failures:
-        print(f"\n  !! {post_merge_failures} post-merge coverage phase(s) FAILED "
-              "-- some armor may be invisible on UBE races (see errors above).")
+        print(f"\n  !! {post_merge_failures} post-convert phase(s) FAILED "
+              "-- see the errors above; the run is reported as failed.")
     # Re-write with any coverage-phase failures appended (same in-process
     # _RUN_FAILURES list _cmd_convert already wrote).
     _write_failures_file()

@@ -117,17 +117,17 @@ def test_helmet_mint_ube_primary_keeps_vanilla_path():
 
 
 def test_unconverted_female_model_redirected_to_converted_male():
-    # #174 (Penitus invisible): the MALE model converts (!UBE mesh exists) but
+    # #174 (a cuirass invisible): the MALE model converts (!UBE mesh exists) but
     # the female model did NOT (its mesh name doesn't match the converted one /
     # is a dead path). UBE is female-only, so the female actor uses MOD3 -> dead
     # path -> INVISIBLE. Fix: redirect MOD3 to the converted male mesh and drop
     # its now-mismatched texture hash, so the female actor always renders a valid
     # converted mesh.
     payload = (
-        encode_subrecord(b"EDID", encode_zstring("PenitusCuirassAA"))
+        encode_subrecord(b"EDID", encode_zstring("GuardCuirassAA"))
         + encode_subrecord(b"RNAM", struct.pack("<I", 0x00000019))
         + encode_subrecord(b"MOD2", encode_zstring("Armor\\Foo\\malearmor_1.nif"))
-        + encode_subrecord(b"MOD3", encode_zstring("Armor\\GeneralTulius\\penitusF_1.nif"))
+        + encode_subrecord(b"MOD3", encode_zstring("Armor\\GeneralGuard\\guardF_1.nif"))
         + encode_subrecord(b"MO3T", b"\x00" * 24)   # female tex-hash for the dead mesh
     )
     conv = lambda p: "malearmor" in p.lower()        # only the male mesh converted

@@ -55,10 +55,12 @@ from pathlib import Path
 import numpy as np
 from scipy.spatial import cKDTree
 
-_HERE = Path(__file__).resolve().parent
+_HERE = Path(__file__).resolve().parent          # sibling imports (pose_set)
+# _HERE.parent was `scripts/`, which owns neither src/ nor .pynifly/.
+_REPO = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(_HERE))
-sys.path.insert(0, str(_HERE.parent))
-sys.path.insert(0, str(_HERE.parent / ".pynifly"))
+sys.path.insert(0, str(_REPO))
+sys.path.insert(0, str(_REPO / ".pynifly"))
 
 from posed_clip_test import (build_pose, read_skin, bone_parents,        # noqa: E402
                              apply_pose, DEFAULT_SKELETON)

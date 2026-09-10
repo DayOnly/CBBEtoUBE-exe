@@ -208,7 +208,7 @@ def test_the_measurement_reads_the_SOURCE_not_the_converted_state():
     calls = [c for c in _re.findall(
         r"_match_rigid_leg_bend_to_body\((?:[^()]|\([^()]*\))*\)", whole)
         if "biped_slots: int" not in c]          # drop the def line
-    assert len(calls) == 2, f"expected 2 call sites, found {len(calls)}"
+    assert len(calls) == 1, f"expected the one shared call site, found {len(calls)}"
     assert all("src_nif_path=src_path" in c for c in calls), (
         "both conversion paths must pass the source through")
 
@@ -221,7 +221,9 @@ def test_the_measurement_uses_the_same_verts_as_the_requirement():
     achieved-follow check."""
     import inspect
     tgt = inspect.getsource(nc._chest_follow_target)
-    assert "band = _chest_band(" in tgt
+    # `_chest_band` stayed in nif_convert; the moved target reaches it at call
+    # time as `_nc()._chest_band(` (split step 6) -- same band, same surface.
+    assert "band = _chest_band(" in tgt or "band = _nc()._chest_band(" in tgt
     assert tgt.count("band") >= 3
     assert "_chest_band(" in inspect.getsource(nc._match_rigid_leg_bend_to_body), (
         "the deferral's achieved-follow check must judge the same verts")
