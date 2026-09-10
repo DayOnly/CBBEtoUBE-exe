@@ -2,23 +2,34 @@
 
 ## Unreleased
 
-Built and reconverted on 2026-08-22 (163 mods, 3673 meshes under `meshes/!UBE`,
-no failures) and judged in game: *"everything looks as it should"*.
+_Nothing yet._
 
-Rebuilt 2026-08-26 with the two chest fixes below and the layer-ride body
-floor. All three are ON by default. They were carried into the 2026-09-09 pack,
-which was judged in game — see the verdict below.
+## 1.4 — 2026-09-09
 
-Rebuilt and reconverted 2026-09-09 (3673 meshes, **no failures**) with the four
-entries at the end of this section. Every number quoted for them was measured on
-the finished pack, not predicted: sliders dead on 54 outfits went to 0, the two
-wrongly-deleted armour pieces are present, and no outfit ships mismatched
-halves.
+Everything below shipped in the pack built on 2026-09-09: 163 sources (162 mods
+plus the base game and its DLC), **3673 meshes** under `meshes/!UBE`, **no
+failures**. The headline is the chest — armour left sitting inside the body at
+the bust is halved, by the first change measured to move the standoff back
+toward where the author put it rather than further away.
 
-**That pack was then judged in game: armour "sits too far off the body".** The
-verdict is recorded here rather than pinned on any one change — nothing measured
-since points at a single cause, and the standoff has several. The layer fix in
-this release is the first thing measured to move it back the other way.
+This release accumulated over four packs, each built and judged before the next
+was started. 2026-08-22 (163 sources, 3673 meshes, no failures), judged
+*"everything looks as it should"*. 2026-08-26, adding the two chest fixes and
+the layer-ride body floor. 2026-09-09, adding the four entries at the end of
+this section — every number quoted for them was measured on the finished pack
+rather than predicted: sliders dead on 54 outfits went to 0, the two wrongly
+deleted armour pieces are present, and no outfit ships mismatched halves. That
+pack was judged in game and the verdict was that **armour "sits too far off the
+body"**. It is recorded against the pack rather than pinned on any one change:
+nothing measured since points at a single cause, and the standoff has several.
+
+The release pack is the answer to that verdict, and the only thing it changes is
+the layer fix described at the end of this section. Measured on the finished
+pack: armour the converter could not write, meshes that lost their morphs,
+`_0`/`_1` pairs that diverged, and collision proxies containing the very chain
+they exist to collide with are all **zero**; two bones carrying no weight
+survive on one shape out of 9,653, unchanged from the pack before it. **This
+pack has not been judged in game yet.**
 
 ### Fixed (on by default) — armour converted by copying is no longer left inside the body
 
