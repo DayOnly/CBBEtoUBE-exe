@@ -183,7 +183,7 @@ redeploy.
 Several settings are worth calling out, because they target the hardest symptom
 to fix — chest or butt clipping that only shows up **in motion**. Most of them
 are **on by default** now; the column says so per row, because which ones ship on
-has changed twice and turning on something already on wastes a run.
+has changed four times and turning on something already on wastes a run.
 
 | Setting (Armor tab) | Default | What it does |
 |---|---|---|
@@ -195,10 +195,10 @@ has changed twice and turning on something already on wastes a run.
 | **Match armour skinning to the body it covers** | **on** (new) | The strongest of these. Instead of fixing one bone family and rescaling the rest, it copies the covered body's *whole* weight vector wherever the garment hugs it, so nothing is left over to pay with. Measured on a leather cuirass: bust exposure in motion 50.9% → 3.1%, and it moves no vertices, so resting fit is untouched. Confirmed in game on soft leather and on rigid glass plate. |
 | **Lift physics chains out of the body** | **on** (new) | **This is the buttock fix** — see below. |
 | **Keep weighting as smooth as the author made it** | **on** (new) | Fixes a lone vertex bending against the surface it sits in — see §6. Held to the *author's* own local smoothness rather than to perfect smoothness, so real panel edges and seams survive. On the reported outfit, 802 of 830 rough vertices fixed, while shapes already as smooth as their author took no changes at all. Weighting only; nothing moves. Confirmed in game. |
-| **Chest follow on skirt-welded cuirasses** | off | Some cuirasses are one piece with their own physics skirt, which drags the whole piece below the "hugs the body" test. This judges such a piece on its non-skirt part. **Unproven: on every armour tested it changed nothing** — the ceiling setting above it is what actually moves these pieces. Left in as an off-by-default experiment. |
-| **...cap how far the back allowance may push** | off | The allowance that keeps the upper back covered raises cloth in one step, and where the garment already sat close it overshoots — 2.12 units off the back on the measured piece, against roughly half that from its author. Capping it gave 1.16 while showing *less* skin, not more. Roughly the worst tenth of pieces; off until it has an in-game verdict. |
-| **Match a top's twist-follow to the body** | off | Blends a top's spine-twist weighting toward the body's so it stops lagging or leading the chest mid-swing. A genuine trade, not a free win: on the one piece measured, twists and swings improved while a hard forward lean got worse at *any* strength. One piece, never judged in game — which is why it ships off. |
-| **Let rigid bust plates ride the breast chain** | off | A rigid plate over jiggling cloth carries no breast-chain weight of its own, so the cloth swings out through it. This relabels part of the plate's weight onto the chain the cloth uses, closing about half the follow gap on the measured piece. Weighting only. Never judged in game. |
+| **Chest follow on skirt-welded cuirasses (experimental)** | off | Some cuirasses are one piece with their own physics skirt, which drags the whole piece below the "hugs the body" test. This judges such a piece on its non-skirt part. **Unproven: on every armour tested it changed nothing** — the ceiling setting above it is what actually moves these pieces. Left in as an off-by-default experiment. |
+| **...and cap how far that allowance may push** | off | The allowance that keeps the upper back covered raises cloth in one step, and where the garment already sat close it overshoots — 2.12 units off the back on the measured piece, against roughly half that from its author. Capping it gave 1.16 while showing *less* skin, not more. Roughly the worst tenth of pieces; off until it has an in-game verdict. |
+| **Match a top's twist-follow to the body (experimental)** | off | Blends a top's spine-twist weighting toward the body's so it stops lagging or leading the chest mid-swing. A genuine trade, not a free win: on the one piece measured, twists and swings improved while a hard forward lean got worse at *any* strength. One piece, never judged in game — which is why it ships off. |
+| **Let rigid bust plates ride the breast chain (experimental)** | off | A rigid plate over jiggling cloth carries no breast-chain weight of its own, so the cloth swings out through it. This relabels part of the plate's weight onto the chain the cloth uses, closing about half the follow gap on the measured piece. Weighting only. Never judged in game. |
 
 The measured win on a skirt-welded cuirass came from the **ceiling** setting alone:
 bare skin visible under motion went from **71% to 9%**.

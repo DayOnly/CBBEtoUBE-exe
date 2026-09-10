@@ -71,16 +71,16 @@ DESIGN_JIGGLE_PLAN.md
 DESIGN_P5_*.md
 DESIGN_P6_*.md
 
-# Development measurement data (scripts/collect_fit_dataset.py).
+# Development measurement data (scripts/analysis/collect_fit_dataset.py).
 # Generated artefacts, sometimes large; regenerate rather than commit.
 fit_dataset*.jsonl
 fit_census*.jsonl
-# scripts/collect_penetration_census.py -- one row per ARMOR, keyed by its mesh path,
-# so it names mods by construction.
+# scripts/analysis/collect_penetration_census.py -- one row per ARMOR, keyed by its
+# mesh path, so it names mods by construction.
 penetration_census*.jsonl
 multipose_census*.jsonl
 source_delta_census*.jsonl
-# scripts/underbust_census.py writes beside itself; same rule -- keyed by mesh path.
+# scripts/analysis/underbust_census.py writes beside itself; same rule -- by mesh path.
 scripts/underbust_census*.json
 *.census.jsonl
 

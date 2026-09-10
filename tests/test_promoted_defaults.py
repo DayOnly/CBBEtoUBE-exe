@@ -70,8 +70,9 @@ PROMOTED_2026_08_26 = {
     "panel_rigid_surface_guard": ("PANEL_RIGID_SURFACE_GUARD", True),
     # Added later the same day. Unlike the other two this one HAD been in
     # the live recipe for weeks while the code shipped it OFF, so it is
-    # the 2026-08-22 situation repeating -- and `verify_reconvert.py`
-    # failed a pack built without it.
+    # the 2026-08-22 situation repeating -- and that day's reconvert
+    # gate failed a pack built without it. (An untracked scratchpad
+    # tool; the tracked one is scripts/analysis/postreconvert_audit.py.)
     "ride_body_floor": ("RIDE_BODY_FLOOR", True),
 }
 PROMOTED.update(PROMOTED_2026_08_26)

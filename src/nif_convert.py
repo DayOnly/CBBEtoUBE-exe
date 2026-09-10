@@ -124,8 +124,10 @@ _DEFAULTS_PROMOTED_2026_08_22 = (
 # The first two are new work. This one had been ON in the live recipe
 # for weeks while the code shipped it OFF -- the SAME situation the
 # 2026-08-22 four were promoted to fix. Aligning the settings to the
-# code defaults removed it, and `verify_reconvert.py` failed the pack
-# for its absence. Promoting keeps the measured behaviour (-69%
+# code defaults removed it, and the day's reconvert gate failed the
+# pack for its absence (that gate was an untracked scratchpad tool;
+# `scripts/analysis/postreconvert_audit.py` is the tracked one).
+# Promoting keeps the measured behaviour (-69%
 # clipping, 19 better / 0 worse over 28 pieces) and still leaves the
 # settings file free of overrides.
 #
@@ -197,14 +199,15 @@ from .nif_convert_trigen import (  # noqa: E402
 )
 
 _UBE_BODY_REF_CACHE: "dict[Path, tuple[object, np.ndarray]]" = {}  # path -> (NifFile, BaseShape_verts)
+
 # (moved to nif_convert_trigen.py, 2026-09-01)
+
 # (id(body_shape), leg_region_only) -> (scale_bones, {bone: (verts, cKDTree, wts)}).
 # The per-scale-bone KD-trees are BODY-derived (independent of the armour shape),
 # so they're identical for every shape converted against the same body — building
 # them once per body instead of once per shape removes the #1 per-NIF hotspot
 # (add_scale_bone_weights was ~27% of warm convert time, almost all KD-tree builds).
 _SCALE_BONE_DATA_CACHE: dict = {}
-_HDT_DIR_SCAN_CACHE: "dict[Path, list]" = {}  # mod_root -> [(xml_path, rel_path)]
 _CBBE_UBE_DELTA_CACHE: "dict[tuple[Path, Path], tuple[np.ndarray, np.ndarray]]" = {}
 # Keyed by (cbbe_body_path, ube_body_path) -> (cbbe_verts, per_vert_delta).
 # Used by warp_armor_by_body_delta to avoid re-parsing the two 18k-vert
@@ -12497,8 +12500,10 @@ PANEL_RIGID_RIDE = _flag("CBBE2UBE_PANEL_RIGID_RIDE", True)
 # an in-game verdict has to judge. Promoting it does not discharge that.
 #
 # It was briefly removed from the live settings on 2026-08-26 while aligning them
-# to the code defaults, and `verify_reconvert.py` FAILED the resulting pack for
-# exactly that -- which is the check working. Promoting it is the correct
+# to the code defaults, and the day's reconvert gate FAILED the resulting pack
+# for exactly that -- which is the check working. That gate was an untracked
+# scratchpad tool and is not reproducible from this repo; the tracked
+# equivalent is `scripts/analysis/postreconvert_audit.py`. Promoting it is the correct
 # resolution: it keeps the measured behaviour AND leaves the settings file free
 # of overrides.
 # --- #ride-outward-cap -- OPT-IN, default OFF --------------------------------
