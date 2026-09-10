@@ -56,6 +56,66 @@ narrower region than the fix acts on.
     bind clip      5.316 -> 3.585    shallow 3.966 -> 1.685   buried 0.555 -> 0.125
     write time drove 14 bust verts INSIDE the body; now 0
 
+## THE RUN HAPPENED — 2026-09-09, and the recipe held
+
+Finished 23:55. **163 sources (162 mods plus the base game and its DLC), 3673
+meshes, 0 failures, 43 warnings.** The pack records what built it, so none of
+this is inferred:
+
+    build      1.3 @ 4080558, dirty=false, PyInstaller 6.20.0
+               built_utc 2026-09-10T00:35:12Z, exe sha256 e63f751eed7f
+    settings   the deployed json, status ok, sha256 190cb065c7bc
+    non_default  {"layer_order_last": true}      <- the ONE change, as written
+    effective    layer_order_last, authored_antipoke, authored_inflate,
+                 coherence_repair_outside_body, field_screen_physical,
+                 phase1_bust_clearance, pair_tri_names  -- all True
+
+Read that block out of `<pack>/conversion_report.json` -> `run_config` before
+trusting any figure below. It is the only thing that proves the pack you are
+scoring is the pack the recipe describes.
+
+**The release exe is NOT the exe that built this pack.** 1.4 was cut after the
+run, so the shipped binary is a later build of the same behaviour. That is the
+1.3 pattern too; it matters only if you are bisecting.
+
+### What the always-run layer said
+
+    postreconvert_audit.py   exit 1
+      armor_nifs 3664, pack_nifs 3673, converted_ok 163, physics_xmls 180
+      hard_failures / nif_errors / nif_morph_losses / load_failures        0
+      weight_partner_warnings / proxy_encloses_chain / xml_bom_double      0
+      xml_unparseable 10          (the AUTHORS' own, expected)
+      pass_failure:hdt_xml_shape_dropped   160 -> 168     REGRESSED
+      skirt_proxies                         28 ->   2     changed (neutral)
+
+    verify_zero_weight_bones.py --all
+      3673 meshes / 9653 shapes -> 2 zero-weight bones on 1 shape
+      unchanged from the pack before it
+
+**The baseline that audit compares against is from 2026-08-28 and TWO packs
+old.** A delta against it is not this run's doing without further evidence.
+Re-baseline with `--record` only once the pack is judged, never on a pack the
+converter might still be writing.
+
+### The 43 warnings are ONE false alarm
+
+All 43 are `master-ordering ... (load-order/FormID resolution crash)` on the
+per-source patches in `<pack>/_unmerged_patches/`. A plugin in a subfolder is
+not in `Data/`, so none of them is ever loaded. 229 checked on disk, exactly 43
+mis-ordered — a 1:1 match. The three plugins that DO ship are correctly ordered
+and `postflight_validate_combined` returns 0 CTD / 0 soft.
+
+**Set `CBBE2UBE_MO2_INI` before classifying master order or the answer
+inverts:** `_is_esm_tier_master` opens each master to read its TES4 flags, and
+with no plugin index every ESL-flagged `.esp` reads as regular. Full write-up
+and the proposed fix are in the master-ordering memory.
+
+### Still to score against the control figures below
+
+The control figures were taken on the 10-mod / 479-NIF acceptance ARM, not on a
+whole pack, so a pack-wide number is NOT comparable to them. Scope to the same
+population or say plainly that you did not.
+
 ## VERIFY AFTER THE RUN
 
 Control figures for this population, so a regression is visible:
