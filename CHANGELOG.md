@@ -2,7 +2,34 @@
 
 ## Unreleased
 
-_Nothing yet._
+### Fixed — small skirts were shipping with no collision at all
+
+A garment whose physics cloth needs a collision shape gets one built for it: a
+simplified copy of the garment, cheap enough for the simulation to test every
+frame. Building it means thinning the mesh down to a few hundred points.
+
+For any cloth piece with fewer than about 1500 points there was nothing to thin
+— it was already small enough — and the thinning step handled that case by
+discarding **everything**. The piece then shipped with no collision shape, and
+nothing in the run said so. On the last pack that was **eight skirts with no
+collision, and a ninth whose collision shape was a single triangle** stretched
+across the whole garment.
+
+In game that reads as a skirt that ignores the legs it is wrapped around, or
+one that snags on a shape far larger than itself. Small pieces now keep their
+mesh as their collision shape, which is the correct answer when there is
+nothing to remove, and the step refuses to return an empty result silently.
+
+The number of collision shapes in a pack fell from 28 to 2 between the last two
+builds, and **most of that fall was correct**: two guards added on 2026-09-04
+decline a shape that would have been cloned from the ground plane, or that
+would have contained the very chain it exists to collide with. Eighteen of the
+twenty-six were those guards working. These nine were not, and they are what
+this fixes.
+
+Found by scoring the shipped pack rather than by reading the code: the only
+test covering that step used a mesh comfortably above the size that broke it.
+It now sweeps across the boundary.
 
 ## 1.4 — 2026-09-09
 

@@ -110,6 +110,39 @@ inverts:** `_is_esm_tier_master` opens each master to read its TES4 flags, and
 with no plugin index every ESL-flagged `.esp` reads as regular. Full write-up
 and the proposed fix are in the master-ordering memory.
 
+### SCORED. What the pack discharged, and what it did not
+
+**DISCHARGED -- the headline bind-clip prediction, like-for-like.** The control
+arm's own bust census and the pack's census share 21 pieces by mesh subpath,
+above `acceptance.py`'s own 20-piece floor. Over those 21:
+
+    ctrl  bind>0.05 4  morph>0.05 11  morph>1.0 9  morph_p90 8.8751  bind_p90 3.3064
+    pack  bind>0.05 4  morph>0.05 11  morph>1.0 9  morph_p90 8.8751  bind_p90 1.2892
+
+**bind clip p90 3.306 -> 1.289, exactly as predicted.** Only 2 of the 21 moved
+at all, and the other 19 reproduce bit-identically -- which is the strongest
+available evidence that the pack differs from the control by the one flag and
+nothing else.
+
+**NOT DISCHARGED, and do not let anyone say otherwise:** bust-band penetration
+108 -> 56, bust gap 0.553 -> 0.543, inverted 2612 -> 2447, folds, stretch rate.
+Those need `bust_gap_score`, `pack_census` and `stretched_edges` scoped to the
+ARM, and nothing scoped to the arm.
+
+**CANNOT be discharged by a single-arm run at all:** the tip regression (`tip
+p50 1.071 -> 1.032`, 7 pieces tighter). `nipple_clearance` prints the per-piece
+tighter/looser/flat block ONLY when given TWO arms; one arm stops after the
+pooled p50/p05/min. The flag's main RISK is therefore still untested. Pack-wide
+it reads p50 1.265 / p05 0.312 / **min 0.000** -- that zero is one tip ray
+sitting exactly on a garment triangle, unnameable from a single arm, and worth a
+two-arm run rather than leaving at "probably a tail".
+
+Pack-wide figures, for the record and NOT as a comparison (1220 tip-scorable
+pieces, 138 bust-scored of a 1-in-4 stride over 1536): morph clip 42 pieces
+>0.05% and 21 >1.0%; bind clip 6; morph p50 0.0 / p90 2.2107; bind p90 0.0. The
+pack reads cleaner than the arm because it is mostly simple clothing, not
+because anything improved.
+
 ### Still to score against the control figures below
 
 The control figures were taken on the 10-mod / 479-NIF acceptance ARM, not on a
