@@ -275,3 +275,30 @@ def test_an_absent_denylist_is_reported_as_absent_not_as_clean():
 
 def tmp_path_that_does_not_exist():
     return REPO_ROOT / "no_such_directory_for_the_denylist_control"
+
+def test_a_bare_entry_cannot_see_a_name_inside_a_longer_identifier(tmp_path):
+    """The blind spot, pinned so the fix is not silently undone.
+
+    A bare entry matches at a WORD START, and that is deliberate -- it is what
+    stops a short name matching ordinary English. The cost is that it cannot see
+    the name when something is CONCATENATED IN FRONT of it, which is exactly how
+    asset names appear in shape and file names. Two commit messages carrying one
+    such name scanned clean on 2026-09-10 and were one push from permanent.
+
+    So both halves are asserted: the bare form misses the infix (that is the
+    documented limit, not a bug to fix in the matcher), and a `re:` entry
+    catches it (that is the answer, and the denylist must use it for any name
+    distinctive enough).
+    """
+    (tmp_path / H.DENYLIST_FILE).write_text("sure\n", encoding="utf-8")
+    bare, _ = H.load_denylist(tmp_path)
+    assert H.scan_names("src/x.py", "the Sureheart piece", bare)
+    assert not H.scan_names("src/x.py", "the ArmorSureheartF piece", bare), (
+        "a bare entry is word-START anchored; if this now matches, the fence "
+        "was removed and short names will match ordinary English across the "
+        "whole tree")
+
+    (tmp_path / H.DENYLIST_FILE).write_text("re:sure\n", encoding="utf-8")
+    fenceless, _ = H.load_denylist(tmp_path)
+    assert H.scan_names("src/x.py", "the ArmorSureheartF piece", fenceless), (
+        "a `re:` entry must match anywhere -- that is the whole reason it exists")

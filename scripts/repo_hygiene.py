@@ -136,6 +136,15 @@ PLACEHOLDER = re.compile(
 #     re:^fit[ _]           a raw regex, for a name too short or too common to
 #                           fence with a word start alone
 #
+# **A BARE ENTRY IS BLIND TO A NAME INSIDE A LONGER IDENTIFIER.** Word START
+# means the character in front of it has to be a non-word character, so a bare
+# `sure` matches `Sureheart` and NOT `ArmorSureheartF`. Two commit messages
+# carrying exactly that shape scanned clean on 2026-09-10, one push from
+# permanent. Use a fence-free `re:` entry for any name distinctive enough not
+# to collide with English, and keep the bare form only for the ones that do --
+# fence-free, one real entry here matches an ordinary English word 60+ times
+# across the tree, which is what the fence exists for.
+#
 # (Those two are synthetic. Real names go in the file, never in this comment --
 # this module is itself scanned, see `should_scan_names`.)
 #
