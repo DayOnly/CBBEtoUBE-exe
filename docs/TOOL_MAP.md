@@ -112,7 +112,7 @@ Two more tracked scripts are excluded as doc GENERATORS rather than measurements
 | tool | gate | floor | what it measures |
 |---|---|---|---|
 | `scripts/analysis/audit_sink.py` | 2, 3 | — | Read `standoff_audit.jsonl` and say what the run actually did |
-| `scripts/analysis/change_attribution.py` | 2 | — | WHICH CHANGE TOUCHED WHICH PIECE -- read after a run, used after a verdict |
+| `scripts/analysis/change_attribution.py` | 2 | yes | WHICH CHANGE TOUCHED WHICH PIECE -- read after a run, used after a verdict |
 | `scripts/analysis/inflate_census_report.py` | 1 | yes | Read `inflate_census.py`'s JSON and answer: does removing inflate pay? |
 | `scripts/analysis/survival_report.py` | 1, 2 | yes | Read the `survival` records out of a run's audit sink and table them |
 
@@ -155,8 +155,8 @@ Only tools whose docstring carries a `python ...` line. A tool missing from this
 - `scripts/analysis/chain_flag_census.py`
   - `python scripts/analysis/chain_flag_census.py <output mod root> [-o pieces.json]`
 - `scripts/analysis/change_attribution.py`
-  - `python scripts/analysis/change_attribution.py <run.log|report.json>...`
-  - `python scripts/analysis/change_attribution.py <dir>          # *.log under it`
+  - `python scripts/analysis/change_attribution.py <pack>/conversion_report.json`
+  - `python scripts/analysis/change_attribution.py <dir>   # report FIRST, then *.log`
   - `python scripts/analysis/change_attribution.py ... --tag '#collider-declared-bones'`
 - `scripts/analysis/clearance_terms.py`
   - `python -m scripts.analysis.clearance_terms <arm console log> ...`

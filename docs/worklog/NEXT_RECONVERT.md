@@ -118,15 +118,30 @@ population or say plainly that you did not.
 
 ## VERIFY AFTER THE RUN
 
-Control figures for this population, so a regression is visible:
+Control figures for this population, so a regression is visible. **The tool is
+named on every row, because it was not and that was nearly a wrong verdict:**
+`fold_census` and `pack_census` both print `FOLDED`/`INVERTED` and they are NOT
+the same metric -- `pack_census` skips the generated collision proxies
+(`VirtualBody`, `VirtualGround`, `SkirtCol`, `ButtCol`), `fold_census` has no
+proxy handling at all, so it scores decimated proxies as surface defects. On the
+release pack it reported MORE inverted verts over a STRICTLY SMALLER population
+(26380 over 2424 NIFs, against 22355 over 2960). **These rows are `pack_census`,
+which is what `acceptance.py` parses. Never cross-cite the two.**
 
-    folds 30542   inverted 2612   BODYTRI on the body 118
-    bust gap body-swap 0.553 / copy 0.197
-    bust-band pen body-swap 108 / copy 51
-    tip clearance p50 1.071 / p05 0.105
-    stretch rate p50 0.1089 / p90 1.7021    edge deviation p50 0.0308
-    morph clip 46 / 34 pieces, bind clip 23 pieces, over 92 scored
-    morph clip p50 0.0759 / p90 8.6961   bind clip p90 3.3064
+`fold_census` carries a second trap: its population comes from
+`standoff_audit.output_nifs()`, which globs only `*_1.nif`/`*_0.nif`, so every
+single-weight mesh is dropped silently -- 507 of the pack's 2960, and its
+printed population line reads as full coverage. Both of the pack's dead-slider
+pieces are single-weight, i.e. exactly the class it cannot see.
+
+    folds 30542   inverted 2612   BODYTRI on the body 118      pack_census
+    bust gap body-swap 0.553 / copy 0.197                     bust_gap_score
+    bust-band pen body-swap 108 / copy 51                     bust_gap_score
+    tip clearance p50 1.071 / p05 0.105                       nipple_clearance
+    stretch rate p50 0.1089 / p90 1.7021                      stretched_edges
+    edge deviation p50 0.0308                                 stretched_edges
+    morph clip 46 / 34 pieces, bind clip 23, over 92 scored   band_class_census
+    morph clip p50 0.0759 / p90 8.6961   bind clip p90 3.3064 band_class_census
 
 Score with `scripts/analysis/acceptance.py`; set `CBBE2UBE_CLIP_PRESET` or the
 three clip rows skip. `CBBE2UBE_CLIP_EVERY` above 2 makes the census abort and

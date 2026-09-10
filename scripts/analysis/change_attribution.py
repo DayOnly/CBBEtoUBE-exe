@@ -16,9 +16,18 @@
 
 """WHICH CHANGE TOUCHED WHICH PIECE -- read after a run, used after a verdict.
 
-    python scripts/analysis/change_attribution.py <run.log|report.json>...
-    python scripts/analysis/change_attribution.py <dir>          # *.log under it
+    python scripts/analysis/change_attribution.py <pack>/conversion_report.json
+    python scripts/analysis/change_attribution.py <dir>   # report FIRST, then *.log
     python scripts/analysis/change_attribution.py ... --tag '#collider-declared-bones'
+
+**POINT IT AT conversion_report.json, NOT AT THE RUN LOG.** A `.log` is accepted
+because a source-run log can carry the markers, but the FROZEN exe drops worker
+prints, so a log from a real pack build contains none of them and this tool
+answers "none recorded" -- a reassuring zero on a run that changed 115 pieces.
+Measured on the 2026-09-09 release pack: the log scored 0 effects / 0 failures
+while the report beside it scored 99 + 16 effects and 198 failures. The tool now
+says so when a log-only input comes back empty; it did not before, and the usage
+line above offered both as if they were equivalent.
 
 When a piece looks wrong in game, the question is which of the build's changes
 could have done it. Guessing has cost this project real time: the 2026-08-22
@@ -124,6 +133,15 @@ def main() -> int:
             detail[k] += v
 
     print(f"scanned {len(files)} file(s)")
+    # 0/0 IS NOT A PASS. A log-only input that finds nothing is the documented
+    # frozen-exe blind spot, not evidence that nothing changed -- say which.
+    if not effects and not failures and not any(
+            f.suffix.lower() == ".json" for f in files):
+        _nl = chr(10)
+        print(_nl + "!! NOTHING SCORED, and every input was a LOG. The frozen "
+              "exe drops worker prints, so a pack" + _nl + "   build's log carries no markers at all. This is NOT 'nothing changed'." + _nl +
+              "   Re-run against the pack's conversion_report.json before "
+              "reading any of it.", file=sys.stderr)
     if args.tag:
         pieces = sorted(effects.get(args.tag, ()))
         print(f"\n{args.tag} touched {len(pieces)} piece(s):")
