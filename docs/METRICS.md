@@ -691,8 +691,9 @@ fires has no gap to measure, so it contributed nothing and could not fail.
 
 ## The gate could not see the LAST stage
 
-`docs/worklog` records that the pass chain OSCILLATES — a pass introduces a
-defect and a later pass cleans it up — so a metric read off a stage dump
+The working notes (kept on the `testing` branch under `docs/worklog/`, not
+here) record that the pass chain OSCILLATES — a pass introduces a defect
+and a later pass cleans it up — so a metric read off a stage dump
 describes an intermediate mesh nobody ships. The gate had no measurement of
 edge stretch on the WRITTEN file at all.
 

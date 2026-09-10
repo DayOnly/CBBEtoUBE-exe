@@ -31,6 +31,11 @@ Found by scoring the shipped pack rather than by reading the code: the only
 test covering that step used a mesh comfortably above the size that broke it.
 It now sweeps across the boundary.
 
+**The converter in `dist/` already has this fix** — it was rebuilt and
+redeployed after the 1.4 pack was scored. Armour you convert from here on
+gets its collision shapes; armour converted before it does not, so those
+nine pieces stay uncollided until you convert them again.
+
 ## 1.4 — 2026-09-09
 
 Everything below shipped in the pack built on 2026-09-09: 163 sources (162 mods

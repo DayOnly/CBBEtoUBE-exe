@@ -420,6 +420,9 @@ cbbe-to-ube/
   src/
     auto_convert.py       # the full MO2-aware pipeline (the exe's main)
     nif_convert.py        # core CBBE/3BA -> UBE NIF conversion (refit, physics, bakes)
+    nif_convert_*.py      # ten modules split out of that core: bodyrefs, bust,
+                          # fitgeom, layers, physics, skinframe, telemetry,
+                          # trigen, weights, writer
     ube_patcher.py        # generate UBE patch ESP from a source armor ESP
     overlay_transfer.py   # rebake CBBE/3BA RaceMenu overlays (tattoos) to UBE UV
     esp.py                # Skyrim SE ESP/ESM read + write
