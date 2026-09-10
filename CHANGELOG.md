@@ -209,7 +209,8 @@ harden, chain anchors, collider proxies, the physics finaliser) into
 partition normalisation, shape-order restore, coherence / normal / winding
 repairs, vertex-colour flags, z-fight detection and the output validator)
 into `src/nif_convert_writer.py`. `nif_convert.py` went from 30,419 lines to
-under 14,000: the two convert paths and their orchestration.
+13,931 at the split, and ships at 15,210 as the rest of this release landed
+on it: the two convert paths and their orchestration.
 Anything a moved function still needs from `nif_convert` is looked up when
 it runs, not when it is imported, and `nif_convert` re-executes every split
 module when it is itself reloaded — so flags, caches and the tests' way of
@@ -681,7 +682,9 @@ low-weight variant, and moved a fitted torso by as much as 2.2 units. Slim
 characters were getting armour cleared for a body they do not have.
 
 Converting the same mod twice now gives byte-identical results, and the same is
-true across the 16 parallel workers a real run uses.
+true across the 16 parallel workers a real run uses — with one source of
+disagreement still open, described under 1.4 in "two identical runs could
+produce different physics".
 
 ### Fixed — a single vertex bending the wrong way
 
