@@ -6,15 +6,19 @@ Built and reconverted on 2026-08-22 (163 mods, 3673 meshes under `meshes/!UBE`,
 no failures) and judged in game: *"everything looks as it should"*.
 
 Rebuilt 2026-08-26 with the two chest fixes below and the layer-ride body
-floor. All three are ON by default but have NO in-game verdict yet — they are
-on so that the reconvert produces one. Everything above this line has been
-judged; they have not.
+floor. All three are ON by default. They were carried into the 2026-09-09 pack,
+which was judged in game — see the verdict below.
 
 Rebuilt and reconverted 2026-09-09 (3673 meshes, **no failures**) with the four
 entries at the end of this section. Every number quoted for them was measured on
 the finished pack, not predicted: sliders dead on 54 outfits went to 0, the two
 wrongly-deleted armour pieces are present, and no outfit ships mismatched
-halves. **No in-game verdict yet** — that is being taken now.
+halves.
+
+**That pack was then judged in game: armour "sits too far off the body".** The
+verdict is recorded here rather than pinned on any one change — nothing measured
+since points at a single cause, and the standoff has several. The layer fix in
+this release is the first thing measured to move it back the other way.
 
 ### Fixed (on by default) — armour converted by copying is no longer left inside the body
 
@@ -60,8 +64,8 @@ weights did not add up down to none. No vertex moves, and how the armour
 follows the body at the bust is unchanged. Setting: "Fix stray broken vertices
 on layered garments" (Armor → Fit and clearance), now on.
 
-This has NOT been judged in game yet — it is on so that the next conversion
-produces that verdict.
+This rode into the 2026-09-09 pack and so is covered by that pack's verdict
+below; nothing in the report singled it out either way.
 
 ### Changed (on by default) — stacking layered armour no longer pushes it into the body
 
@@ -288,7 +292,7 @@ no skin weight at all, so healthy chains were being reported as broken: 1839 of
 exist to make a handful of real problems visible, which they cannot do buried
 in noise.
 
-### Added (off by default) — the chest fix, on armour converted by copying
+### Added — the chest fix, on armour converted by copying
 
 The chest fix below only runs on armour that gets a new body built into it.
 About three quarters of the pack is converted by COPYING the original mesh
@@ -308,8 +312,10 @@ points, nothing got worse anywhere, and every preset that was already clean
 stayed at zero. The armour did not balloon to get it — the widest gap shrank on
 all three pieces.
 
-OFF by default, pending an in-game verdict. Turn it on with "Keep the bust
-covered on armour converted by copying".
+It shipped off by default while it waited for an in-game verdict, and is ON by
+default in this release — see the promotion entry at the end of these notes. The
+switch is "Keep the bust covered on armour converted by copying" (Armor ▸ Fit and
+clearance) if you want it off.
 
 ### Fixed — skin showing through the chest on about half of body presets
 
@@ -507,15 +513,89 @@ decision, not a quiet edit.
 
 Five options the shipped recipe had been switching on for months were still
 written in the code as off-by-default. Anyone reading the code saw one answer
-and the pack shipped the other. The code now says what the pack does.
+and the pack shipped the other. The code now says what the pack does for those
+five.
 
-**Nothing about a conversion changes** — the settings were already on. But the
-settings file no longer needs to say so, and therefore no longer does: if you
-roll back to a build older than this one, those five revert to off with nothing
-on disk to object. The backup files beside the settings still record them.
+**Nothing about a conversion changes** — the settings were already on. The
+settings file was then written back out with all five named explicitly, so that
+rolling back to a build older than this one cannot quietly revert them: an older
+build reads the file and honours it. The backup files beside the settings record
+every step.
+
+One setting is deliberately NOT in agreement: the layer fix below is off in the
+code and on in the settings file, because it is a trade this pack takes and not
+one every pack should. That disagreement is intentional and should not be
+"tidied" away.
 
 (The slider fix above is a sixth setting turned on in this build, but it is a
 new one rather than a promotion — it was never in the recipe.)
+
+### Changed (on in the shipped recipe, off by default) — half as much armour is left inside the body at the bust
+
+Near the end of a conversion the layers of an outfit are put back in the order
+their author gave them — the shirt inside the belts, the belts inside the coat.
+Three small repairs then run *again* as the piece is written out: un-buckling a
+strap, evening out one that has been stretched, and pulling back detail that has
+been blown up. On a belt those repairs move three quarters of its vertices, so
+whatever the ordering step had just settled, they unsettled.
+
+This build runs those repairs first and the ordering last, so nothing moves a
+vertex after the layers have been put in order. The switch has been in the
+settings window since August with only the one reported garment behind it, and
+was absent from this changelog entirely. It has now been measured across ten
+mods (479 meshes), and **the pack is built with it on**. Setting: "Let the layer
+fix have the last word" (Armor → Fit and clearance), now on in the shipped
+settings file.
+
+What it buys, on that population:
+
+- Armour left sitting inside the body at the bust: **108 vertices down to 56** —
+  halved.
+- On the worst tenth of pieces, the share of the bust band coming through the
+  armour with the body at rest fell from **3.3% to 1.3%**.
+- Vertices lit as though the surface faced inward: 2612 down to 2447, **6.3%
+  fewer**.
+- The bust ends up very slightly *closer* to where the author put it, not
+  further off.
+
+On the cuirass this was reported against, the bust band coming through at rest
+fell from **5.3% to 3.6%**, and the write-out step that had been burying **14
+bust vertices in the body** now buries none. That last figure is one piece, not
+a class: two more pieces of the same kind were checked and neither had any
+vertices buried that way to begin with.
+
+**What it costs, and it is not nothing.** Seven pieces end up tighter over the
+nipple than they were — the middle of the range there goes from 1.07 units of
+clearance to 1.03. On the worst tenth of pieces, the share of edges stretched
+further than the author left them rises from 1.70% to 1.72%. Places where the
+surface folds through itself rise 0.03% across the pack, 30542 to 30552.
+
+And the honest limit: **the number of pieces that clip did not fall at all.** The
+same 23 pieces come through at rest and the same 46 come through under a body
+preset, out of 92 scored in both configurations — what changed is how much they
+come through, and under a live preset that improved by only about a percent.
+This is a fix for how armour sits at rest far more than for what a full slider
+does to it.
+
+The offline scoring calls those four measures a regression and it is being
+shipped anyway, deliberately: it is the only change measured this cycle that
+moves how much armour ends up inside the body at all, the losses are fractions
+of a percent on surface quality, and it points the same way as the report that
+started it — armour standing too far off the body — by closing the gap to the
+author rather than widening it. Until this build the scoring could not see
+clipping under a body preset at all, so a change that improved it and cost
+anything else could only ever be marked down.
+
+**Out of the box it is still off.** The default in the code is unchanged, because
+on those four measures it does not earn a default; the pack is built with it
+ticked because on this pack the trade is worth taking. If you convert mods
+yourself with a fresh install you are not running the configuration the pack was
+built with — tick it on the Armor tab to match, or leave it off if you would
+rather keep the surface exactly as it was.
+
+**No in-game verdict on this one yet.** It is on so that this reconvert produces
+one. The reported cuirass is improved, not fixed. If something looks pinched or
+flattened over the chest where it did not before, untick it and say so.
 
 ## 1.3 — 2026-08-19
 
