@@ -35,6 +35,8 @@ rearmost collider -11.43 -> -12.63 against a body at -12.43.
 import importlib
 import inspect
 
+import pytest
+
 import src.nif_convert as nc
 from tests import _converter_sources as _cs  # source text across the split modules
 
@@ -305,3 +307,78 @@ def test_proxy_weight_invariant_is_DEFAULT_ON_since_its_verdict():
     good in game. It moves geometry on every piece carrying a generated proxy,
     so the kill switch stays."""
     assert nc.PROXY_WEIGHT_INVARIANT is True
+
+
+def _grid_mesh(nx, ny):
+    """A connected triangulated grid: nx*ny verts, 2*(nx-1)*(ny-1) triangles.
+    Size is the whole point here, so it is a parameter and nothing else is."""
+    import numpy as np
+    v = np.array([[x, y, 0.0] for y in range(ny) for x in range(nx)], np.float64)
+    t = []
+    for y in range(ny - 1):
+        for x in range(nx - 1):
+            a = y * nx + x
+            t += [[a, a + 1, a + nx], [a + 1, a + nx + 1, a + nx]]
+    return v, np.asarray(t, dtype=np.int64)
+
+
+@pytest.mark.parametrize("nx,ny", [(20, 20), (30, 30), (38, 38), (39, 39),
+                                   (40, 40), (50, 50)])
+def test_a_mesh_at_or_below_target_still_produces_a_proxy(nx, ny):
+    """THE CLIFF. `step = max(1, n // target)` is 1 for any mesh at or below
+    target, so every vertex becomes its own seed and every cell has size 1.
+    `_merge_fragments(..., max(2, step // 2))` then evaluated floor 2, condemned
+    100% of the cells, and four merge rounds collapsed the dual to NOTHING --
+    the piece shipped with no collision proxy and nothing said so.
+
+    Measured on the 2026-09-09 pack, a clean boundary at step 1 -> 2: n=1444
+    returned 0 triangles from 2738, n=1521 returned 721 from 2888. The caller
+    asks for target 500 x scale 1.5, so EVERY cloth submesh under 1500 verts was
+    losing its proxy. Eight of that pack's 28 skirt proxies vanished this way
+    and a ninth shipped as a single triangle spanning the whole garment.
+
+    WHY THE EXISTING COVERAGE MISSED IT: the invariance test above builds 1200
+    verts and asks for target 300, so `step` is 4 and it sits comfortably above
+    the boundary. The one decimator test in the suite could not reach the one
+    input size that broke it. Hence a size sweep, not a single fixture.
+    """
+    from src import nif_convert_physics as ph
+    verts, tris = _grid_mesh(nx, ny)
+    n = len(verts)
+    _reps, _lab, out = ph._topo_decimate(verts, tris, 750)
+    step = max(1, n // 750)
+    assert len(out) > 0, (
+        f"n={n} (step={step}) decimated {len(tris)} triangles to NOTHING -- "
+        "the piece would ship with no collision proxy")
+
+
+def test_below_the_target_the_proxy_is_the_mesh_itself():
+    """What "no decimation needed" has to mean. A mesh already at or below
+    target has nothing to remove, so the honest result is every vertex kept and
+    every triangle kept -- not a smaller proxy, and emphatically not an empty
+    one."""
+    from src import nif_convert_physics as ph
+    verts, tris = _grid_mesh(30, 30)          # 900 verts, under the 750*2 cliff
+    reps, _lab, out = ph._topo_decimate(verts, tris, 750)
+    assert len(reps) == len(verts), f"{len(reps)} of {len(verts)} verts kept"
+    assert len(out) == len(tris), f"{len(out)} of {len(tris)} tris kept"
+
+
+def test_the_weight_pair_stays_invariant_BELOW_the_cliff_too():
+    """The invariance test above only ever ran above the boundary, and the fix
+    changes which branch small meshes take -- so the property has to be
+    re-asserted on the branch that changed, or the fix could trade an empty
+    proxy for a mismatched one, which is worse."""
+    import numpy as np
+    from src import nif_convert_physics as ph
+    v0, tris = _grid_mesh(30, 30)             # 900 verts -> step 1
+    v1 = v0.copy()
+    v1[:, 0] *= 1.06
+    v1[:, 1] *= 1.09
+    v1 += 0.15 * np.sin(v0[:, 2:3] / 7.0)
+    r0, _l0, t0 = ph._topo_decimate(v0, tris, 750)
+    r1, _l1, t1 = ph._topo_decimate(v1, tris, 750)
+    assert np.array_equal(np.asarray(r0), np.asarray(r1)), \
+        "the weight pair kept DIFFERENT source vertices below the cliff"
+    assert np.array_equal(np.asarray(t0), np.asarray(t1)), \
+        "the weight pair produced DIFFERENT triangles below the cliff"

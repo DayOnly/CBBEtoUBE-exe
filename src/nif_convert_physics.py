@@ -562,7 +562,22 @@ def _topo_decimate(verts, tris, target):
     if len(stray):
         lab[stray] = nlab + np.arange(len(stray))
         nlab += len(stray)
-    lab, nlab = _merge_fragments(lab, nlab, max(2, step // 2))
+    # FLOOR 1 WHEN THERE IS NOTHING TO DECIMATE. `step` is 1 for any mesh at
+    # or below `target`, so `seeds = order[::1]` makes EVERY vertex its own
+    # cell -- and `max(2, 0)` then condemns all of them as undersized. Four
+    # merge rounds collapse the lot and the dual triangulation comes back
+    # EMPTY: the piece silently ships with no collision proxy at all.
+    #
+    # Measured 2026-09-10 on the shipped pack: a clean cliff at the
+    # step 1 -> 2 boundary. n=1444 returned 0 triangles from 2738; n=1521
+    # returned 721 from 2888. The caller asks for target 500 x scale 1.5,
+    # so EVERY cloth submesh under 1500 verts was losing its proxy -- 8 of
+    # the pack's 28 skirt proxies vanished this way and a 9th shipped as a
+    # single triangle. With floor 1 no cell is undersized, the merge loop
+    # breaks on its first pass, and the result is identity decimation --
+    # correct for a mesh that is already at or below target.
+    lab, nlab = _merge_fragments(lab, nlab, 1 if step <= 1
+                                 else max(2, step // 2))
     reps = _reps_for(lab, nlab)
 
     tt = lab[t]
@@ -579,6 +594,15 @@ def _topo_decimate(verts, tris, target):
         tt = np.take_along_axis(tt, idx, axis=1)
         tt = tt[np.lexsort((tt[:, 2], tt[:, 1], tt[:, 0]))]
         tt = tt[np.r_[True, (tt[1:] != tt[:-1]).any(axis=1)]]
+    # POSTCONDITION. A non-empty input that decimates to NO triangles is a
+    # bug, not a small proxy, and it is invisible downstream -- the caller
+    # just builds nothing and the piece ships uncollided. Say so instead of
+    # returning the empty set quietly; that silence cost 9 proxies once.
+    if len(t) and not len(tt):
+        import sys as _sys
+        print("  !! proxy decimation returned NO triangles from %d vert(s) / "
+              "%d tri(s) (step=%d, cells=%d) -- the piece will ship with no "
+              "collision proxy" % (n, len(t), step, nlab), file=_sys.stderr)
     return reps, lab, tt
 
 
