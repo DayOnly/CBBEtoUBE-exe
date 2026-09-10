@@ -354,9 +354,16 @@ def scan_text(path: str, text: str) -> list[str]:
     return out
 
 
-def scan_message(msg: str) -> list[str]:
+def scan_message(msg: str, pattern: re.Pattern | None = None) -> list[str]:
     """Violations in a commit message. Messages cannot be edited later without
-    rewriting history, and no test covers them -- 11 carried a deploy path."""
+    rewriting history, and no test covers them -- 11 carried a deploy path.
+
+    `pattern` is the asset-name denylist. It is optional only because the
+    other three rules need no input; pass it whenever you have one. The
+    commit that ADDED the name rule leaked a real asset name in its own
+    message, because this function checked paths and emails and the name
+    rule had been wired into content scanning alone.
+    """
     out = []
     for n, line in enumerate(msg.splitlines(), 1):
         if line.lstrip().startswith("#"):
@@ -367,6 +374,11 @@ def scan_message(msg: str) -> list[str]:
             if not EMAIL_ALLOWED.search(m.group()):
                 out.append(f"commit message line {n}: personal email address")
                 break
+        if pattern is not None:
+            m = pattern.search(line)
+            if m:
+                out.append(f"commit message line {n}: denylisted asset "
+                           f"name ({m.group()!r})")
     return out
 
 

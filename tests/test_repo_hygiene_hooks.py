@@ -178,3 +178,35 @@ def test_the_hook_and_the_test_share_one_gate():
     assert "should_scan" in src, "the hook must use the shared gate"
     assert "TEXT_SUFFIXES" not in src, (
         "the hook is deciding scannability on its own again")
+
+
+def test_the_message_rule_checks_asset_names_too(tmp_path):
+    """The commit that INTRODUCED the asset-name rule leaked a real name in its
+    own message. The rule had been wired into content scanning and not here, and
+    a message is the more expensive of the two to fix -- it cannot be changed
+    afterwards without rewriting history.
+
+    A synthetic denylist, so this file names nothing real.
+    """
+    (tmp_path / H.DENYLIST_FILE).write_text(
+        "sure\n", encoding="utf-8")
+    pattern, count = H.load_denylist(tmp_path)
+    assert count == 1
+
+    assert H.scan_message("catches SureheartCuirass and not measured", pattern)
+    # ...and the same message is clean when no denylist was supplied, which is
+    # exactly how the leak got through
+    assert not H.scan_message("catches SureheartCuirass and not measured")
+    assert not H.scan_message("an ordinary message about a measured value",
+                              pattern)
+
+
+def test_the_commit_msg_hook_actually_loads_the_denylist():
+    """A rule wired into `scan_message` but not passed by the hook is a rule
+    that never fires on a real commit -- the same duplicate/omission shape as
+    the pre-commit gate above."""
+    src = (PROJ / "scripts" / "hook_commitmsg.py").read_text(encoding="utf8")
+    assert "load_denylist" in src, (
+        "the commit-msg hook must load the denylist and pass it to scan_message")
+    assert "scan_message(msg, denylist)" in src, (
+        "the commit-msg hook loads the denylist but does not pass it on")
