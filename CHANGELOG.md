@@ -533,6 +533,16 @@ rolling back to a build older than this one cannot quietly revert them: an older
 build reads the file and honours it. The backup files beside the settings record
 every step.
 
+**That protection does not survive the settings window, and you should know it.**
+Saving settings writes back only the values that differ from the code default,
+so the moment this build saves them, those five names drop out of the file
+again — measured on the release pack: the file the conversion ran with named all
+six, and the file five minutes later named one. Nothing about a conversion
+changes either way, because on this build all five ARE the default. It matters
+only if you roll back to a build older than this one, and then only if the file
+has not been saved since. If you want that guarantee, keep a copy of the file
+that names them.
+
 One setting is deliberately NOT in agreement: the layer fix below is off in the
 code and on in the settings file, because it is a trade this pack takes and not
 one every pack should. That disagreement is intentional and should not be
