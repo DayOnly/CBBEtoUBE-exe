@@ -1648,7 +1648,7 @@ PHASE1_CONFORM = (
     _flag("CBBE2UBE_PHASE1_CONFORM", False)
 )
 
-# --- #phase1-bust-clearance -- OPT-IN, `CBBE2UBE_PHASE1_BUST_CLEARANCE=1` ---
+# --- #phase1-bust-clearance -- kill switch `CBBE2UBE_NO_PHASE1_BUST_CLEARANCE=1` ---
 # THE CLEARANCE HALF OF THE CONFORM, WITHOUT THE PULL-IN HALF, on the copy path.
 #
 # WHY IT IS NOT `PHASE1_CONFORM`. That flag runs the WHOLE pass, whose dominant
@@ -1703,7 +1703,7 @@ PHASE1_BUST_CLEARANCE = (
 # body-swap negative control (0 verts moved) say otherwise.
 PHASE1_NIPPLE_MAP = _flag("CBBE2UBE_PHASE1_NIPPLE_MAP", False)
 
-# --- #phase1-antipoke -- OPT-IN, `CBBE2UBE_PHASE1_ANTIPOKE=1` ---------------
+# --- #phase1-antipoke -- kill switch `CBBE2UBE_NO_PHASE1_ANTIPOKE=1` ------
 # GIVE THE COPY PATH THE BODY REPAIR IT HAS NEVER HAD (BUG-02).
 #
 # The copy path runs NOTHING that pushes a vert out of the body in its normal
@@ -12300,6 +12300,49 @@ _PANEL_LOCAL_K = int(_knob("CBBE2UBE_PANEL_LOCAL_K", 64.0))
 # 0.000, and it earns its place independently of the chord charge (Steelheart
 # 2.865 -> 2.239 with the chord OFF). Standoff p90 goes DOWN, i.e. tighter.
 PANEL_RIGID_SURFACE_GUARD = _flag("CBBE2UBE_PANEL_RIGID_SURFACE_GUARD", True)
+
+# --- #panel-rigid-keep-clearance -- OPT-IN, numeric, DEFAULT 0.0 -------------
+# WHAT FRACTION OF THE ANTI-POKE'S CLEARANCE THE RE-RIGIDIFICATION MAY NOT SPEND.
+#
+# The guard above is a ZERO-CROSSING guard: its floor is
+# `min(clear_of(Q), 0.0) - 1e-4`, so a vertex standing 0.5u clear may be pulled
+# all the way to the skin and still pass. Its contract is only "nothing NEWLY
+# enters the body and nothing already in gets deeper" -- it says nothing about
+# clearance the pass before it just bought.
+#
+# MEASURED on the reported cuirass, bust band, 477 verts (stage dump, the same
+# one-nearest-vertex measure the guard itself uses):
+#
+#     s07_antipoke              p50 1.8141   p05 1.1654   min 0.6719
+#     s08_panel_rigidity_post   p50 1.7581   p05 0.3930   min 0.0007
+#     nothing after s08 moves bust clearance at all on this shape
+#
+#     the anti-poke ADDS   238.32 u-verts across the band
+#     this pass SPENDS      94.42 u-verts  = 40% of it
+#     334 of 477 verts (70%) lose clearance; p50 0.1907u, max 1.2862u
+#
+# So the median barely moves while the TAIL is destroyed: p05 -66% and the
+# minimum lands at 0.0007u, which is the floor doing exactly what it permits.
+#
+# `keep` raises the floor to `clear_of(Q) * keep` on vertices that are OUTSIDE
+# the body, leaving vertices already inside on the old "no deeper" rule.
+# **AT 0.0 THIS IS ARITHMETICALLY TODAY'S FLOOR** (`where(c > 0, c*0, c)` is
+# `minimum(c, 0)`), so the OFF path is unchanged by construction rather than by
+# measurement.
+#
+# IT ONLY EVER REFUSES RIGIDIFICATION -- it never pushes. That keeps it in the
+# class this file has found safe ("a guard that only ever refuses is safe by
+# construction; a hold that pushes is not") and OUT of the class that was built,
+# measured and REMOVED (`#panel-rigid-bust-hold`, which broke a clean preset
+# 0.000 -> 0.632).
+#
+# THE RISK IS THE OSCILLATION, NOT THE BIND POSE. Refusing rigidification leaves
+# the panel at its tighter conformed shape and the MORPH can then push through:
+# that is exactly how the body-side `clear_k` guard cost a college robe
+# 3.466 -> 5.218 and how `#panel-rigid-early-clearance` scored 1 better / 2
+# worse. Any sweep of this MUST score morphed clip on those same pieces and on a
+# CLEAN preset, not just the bind pose.
+PANEL_RIGID_KEEP_CLEARANCE = _knob("CBBE2UBE_PANEL_RIGID_KEEP_CLEARANCE", 0.0)
 
 
 # (moved to nif_convert_fitgeom.py, 2026-09-01)

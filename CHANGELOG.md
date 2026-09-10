@@ -10,6 +10,12 @@ floor. All three are ON by default but have NO in-game verdict yet — they are
 on so that the reconvert produces one. Everything above this line has been
 judged; they have not.
 
+Rebuilt and reconverted 2026-09-09 (3673 meshes, **no failures**) with the four
+entries at the end of this section. Every number quoted for them was measured on
+the finished pack, not predicted: sliders dead on 54 outfits went to 0, the two
+wrongly-deleted armour pieces are present, and no outfit ships mismatched
+halves. **No in-game verdict yet** — that is being taken now.
+
 ### Fixed (on by default) — armour converted by copying is no longer left inside the body
 
 Armour that gets a new body built for it has always been pushed back out
@@ -456,6 +462,60 @@ BROKE looked exactly like a pass that had nothing to do. Three of them wrapped
 code that already reported failures carefully, and threw that reporting away.
 They now record, and the run report lists them.
 
+
+### Fixed (on by default) — body sliders did nothing on 54 outfits at high weight
+
+An outfit ships as two meshes, one for each end of the weight slider, and the
+two share a single morph file built from the light one. Authors routinely give
+the two meshes' pieces DIFFERENT internal names, and when they differ the heavy
+mesh names nothing in the morph file it points at — so its sliders move
+nothing. The heavy mesh is the one that matters, because characters sit near
+the top of the weight range.
+
+Measured before the fix: **54 of 1536 outfits** affected — 42 lost every
+slider, 12 lost some. After: **0**. The morph file now carries both meshes'
+names, so each finds its own.
+
+### Fixed (on by default) — a piece of armour could be deleted for being named like a body
+
+The converter strips placeholder bodies that some outfits ship inside them. It
+recognised them BY NAME ALONE. One outfit's cuirass and arms happened to carry
+such a name while being real armour, and were deleted — the two halves of that
+piece ended up with different vertex counts, which is how it was found.
+
+The name test now also requires the piece to be wearing body skin, which is
+what the sibling test beside it had always done. Checked across every source in
+a 3567-source pack: 34 pieces match by name, 32 are genuine placeholder bodies
+and are still stripped, and the 2 that are real armour now survive.
+
+### Fixed — two identical runs could produce different physics
+
+A piece with no physics file of its own could be given one belonging to an
+unrelated garment, purely because that file happened to be the only matching
+name in the output folder AT THE MOMENT that piece was converted. The folder is
+being written while the run reads it, so the answer changed with timing: two
+runs of identical code produced different meshes.
+
+The two places that caused it no longer guess by filename. **This is a partial
+fix and the rest is deliberate**: a third place still uses the filename search,
+because refusing it there does not make it find the right file — it makes it
+find none, and a check that cannot run stops filtering at all. Measured cost of
+changing that one: 421 of 769 meshes moved, 62 by bone count. It needs a
+decision, not a quiet edit.
+
+### Changed — five settings that were already on are now on by DEFAULT
+
+Five options the shipped recipe had been switching on for months were still
+written in the code as off-by-default. Anyone reading the code saw one answer
+and the pack shipped the other. The code now says what the pack does.
+
+**Nothing about a conversion changes** — the settings were already on. But the
+settings file no longer needs to say so, and therefore no longer does: if you
+roll back to a build older than this one, those five revert to off with nothing
+on disk to object. The backup files beside the settings still record them.
+
+(The slider fix above is a sixth setting turned on in this build, but it is a
+new one rather than a promotion — it was never in the recipe.)
 
 ## 1.3 — 2026-08-19
 

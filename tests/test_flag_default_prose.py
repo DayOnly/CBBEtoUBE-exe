@@ -252,3 +252,73 @@ def test_it_catches_the_bug_it_was_written_for():
     assert _claim_side(stale) == "OFF"          # the claim is read
     # ... and it disagrees with the flag as the code actually resolves it
     assert "CHAIN_REST_LIFT" in stale
+
+
+# ---------------------------------------------------------- the OPT-IN banner
+
+_OPT_IN = re.compile(r"OPT-IN,?\s*`?(CBBE2UBE_[A-Z0-9_]+)=1`?")
+
+
+def _opt_in_claims(state):
+    """`--- #tag -- OPT-IN, `CBBE2UBE_X=1` ---` banners, paired with the truth.
+
+    A DIFFERENT shape of claim from the one above and invisible to it: there is
+    no ON/OFF token anywhere in the sentence, so `_claim_side` returns None and
+    the window is skipped. But "opt-in via this env var" says default-OFF as
+    plainly as "Default OFF" does, and it NAMES the variable, so there is none
+    of the attribution ambiguity the window heuristic exists to avoid.
+
+    Both stale ones were section BANNERS -- the first line a reader sees when
+    they scroll to a flag -- and both were contradicted by a correcting line
+    ~40 lines further down, which is exactly the part a reader skips.
+    """
+    for f in sorted((REPO_ROOT / "src").glob("*.py")):
+        if "__pycache__" in f.parts:
+            continue
+        for i, line in enumerate(
+                f.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
+            m = _OPT_IN.search(line)
+            if not m:
+                continue
+            env = m.group(1)
+            const = env[len("CBBE2UBE_"):]
+            kill = "CBBE2UBE_NO_" + const
+            # The claim is "OFF unless you set `env`". It is false when the
+            # flag is really bound as a kill switch (default ON).
+            actual_on = state.get(const)
+            yield (f.relative_to(REPO_ROOT).as_posix(), i, const, env, kill,
+                   actual_on)
+
+
+def test_the_opt_in_banner_reader_finds_something(state):
+    """The genuine opt-ins keep this from passing vacuously."""
+    found = list(_opt_in_claims(state))
+    assert len(found) >= 3, (
+        "found only %d OPT-IN banners -- the regex has stopped matching; "
+        "0/0 is not a pass" % len(found))
+
+
+def test_no_OPT_IN_banner_names_a_flag_that_defaults_ON(state):
+    """#phase1-bust-clearance and #phase1-antipoke both carried
+    `OPT-IN, CBBE2UBE_X=1` banners while resolving default-ON through
+    `CBBE2UBE_NO_X`. The env var in the banner did not exist. The project's
+    rule is that the CODE is the authority on a default, so a lying comment
+    breaks the rule at its source -- and PASS_MAP.md had copied both."""
+    wrong = [(f, ln, const, env)
+             for f, ln, const, env, kill, on in _opt_in_claims(state)
+             if on is True]
+    if wrong:
+        msg = "\n".join(
+            "  %s:%d  banner says OPT-IN via %s, but %s resolves ON"
+            % (f, ln, env, const) for f, ln, const, env in wrong)
+        raise AssertionError(
+            "a section banner advertises an opt-in env var for a flag that is "
+            "really default-ON. Fix the BANNER:\n" + msg)
+
+
+def test_an_opt_in_banner_for_a_REAL_opt_in_is_not_flagged(state):
+    """Mutation control: the check must not simply reject every banner."""
+    rows = list(_opt_in_claims(state))
+    assert any(on is False for *_rest, on in rows), (
+        "no genuinely default-off opt-in banner survives the check, which "
+        "means it is rejecting all of them rather than the stale ones")

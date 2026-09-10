@@ -63,7 +63,7 @@ def _base():
 def test_identical_arms_pass():
     c, d, g, tp, zw, fo = _base()
     rows, ok = acc.verdict_table(c, d, g, tp, zw, fo, weights_only=False,
-                                 st=_st_identical())
+                                 st=_st_identical(), cl=_cl_identical())
     assert ok
     assert all(v in ("ok", "info") for _n, _a, _b, v in rows)
 
@@ -454,7 +454,8 @@ def test_a_path_the_scorer_refused_reads_SKIPPED_not_FAIL():
               "pen_copy_control", "pen_copy_candidate"):
         g.pop(k)
     g["skipped_copy"] = 3
-    rows, ok = acc.verdict_table(c, d, g, tp, zw, fo, False, st=_st_identical())
+    rows, ok = acc.verdict_table(c, d, g, tp, zw, fo, False,
+                                 st=_st_identical(), cl=_cl_identical())
     assert ok, "a path that could not be measured must not fail the arm"
     skipped = [r for r in rows if r[3] == "SKIPPED"]
     assert len(skipped) == 2, "the gap AND the penetration row for that path"
@@ -703,6 +704,20 @@ def _stretch_of(text: str) -> dict:
     return out
 
 
+def _cl_identical() -> dict:
+    """A morphed-clip dict for two arms that measured the SAME thing.
+
+    Without it the clip rows read SKIPPED (no preset configured in a test env),
+    and the identical-arms assertions below would have to be loosened to accept
+    SKIPPED -- which would stop them checking the new rows at all.
+    """
+    one = {"bind": 23, "morph05": 46, "morph10": 34,
+           "morph_p50": 0.4, "morph_p90": 3.1, "bind_p90": 1.2}
+    return {"preset": "p.xml", "every": "1", "common": 92,
+            "scored_ctrl": 92, "scored_cand": 92, "biased": False,
+            "ctrl": dict(one), "cand": dict(one)}
+
+
 def _st_identical() -> dict:
     """A stretch dict for two arms that measured the SAME thing."""
     st = _stretch_of(_REAL_STRETCH)
@@ -819,4 +834,12 @@ def test_the_gate_actually_calls_the_stretch_scorer():
     """A row wired into the table but never fed is a row that always SKIPs."""
     src = _SRCS[acc.__name__]
     assert "st = stretch(ctrl, cand)" in src
-    assert "weights_only, geometry, st)" in src
+    assert "weights_only, geometry," in src and "st, cl)" in src
+
+
+def test_the_gate_actually_calls_the_clip_scorer():
+    """Same guard for the morphed-clip rows -- they are the only ones taken
+    under a body preset, and a row wired in but never fed always SKIPs."""
+    src = _SRCS[acc.__name__]
+    assert "cl = None if no_clip else clip(ctrl, cand)" in src
+    assert "st, cl)" in src

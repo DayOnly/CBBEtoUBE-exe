@@ -33,10 +33,26 @@ geometry and fabricated a 226-vertex "defect" at 4.633u on a glove that the ray
 scores at 0.000% -- see `project_extremity_digit_refit_gap`. `ray_first_hit` is
 the same primitive the containment metric settled on.
 
-The tip mask is `_body_nipple_weight >= 0.75 * max`, which is the SAME mask
-`#authored-nipple-exempt` exempts in the converter. That is deliberate: this
-harness has to score the exact region the fix acts on, or a fix that moved a
-neighbouring band would read as a win here.
+The tip mask is `_body_nipple_weight >= 0.75 * max`. It is NARROWER than the
+region `#authored-nipple-exempt` protects, and this docstring used to claim the
+two were the SAME mask -- they are not, in three independent ways. Measured on
+the UBE body (peak weight 0.5635) on 2026-09-09:
+
+    >= 0.75 * max   TIP_WEIGHT_FRAC, what this harness SCORES     1020 verts
+    >= 0.50 * max   AUTHORED_NIPPLE_EXEMPT, where the converter's
+                    exemption STARTS                              1294 verts
+    the 0.50-0.75 band, scored by NEITHER                          274 (+27%)
+
+and the converter then DILATES its mask by `AUTHORED_NIPPLE_RADIUS` (2.0u) and
+`AUTHORED_NIPPLE_RINGS` (2) over the garment's own topology, so the protected
+SURFACE is wider again.
+
+SO A CHANGE CONFINED TO THAT BAND MOVES THE FIX AND NOT THIS ROW. Read the tip
+figures as "the innermost 1020 verts", never as "the region the exemption acts
+on". The constant is deliberately NOT moved to 0.5: every tip number on record
+was taken at 0.75, and silently redefining the metric would void them all
+without saying so. `tests/test_nipple_clearance_mask.py` pins both constants so
+they cannot drift apart unnoticed again.
 
 EXCLUSIONS ARE COUNTED, never silent. A piece is scored only where at least 20
 tip rays hit garment within 12u -- below that the garment does not cover the
@@ -120,13 +136,30 @@ def garment_mesh(path):
     return np.vstack(verts), np.vstack(tris)
 
 
-def clearance(path, origins, directions):
-    """Tip clearances for one piece, or None when it does not cover the nipple."""
+def clearance_full(path, origins, directions):
+    """(distance, hit) per ray -- NOTHING dropped, so two arms stay PAIRED.
+
+    `clearance()` below returns only the rays that struck garment, which is the
+    right input for a single arm's distribution and the WRONG one for comparing
+    two: a ray that misses in one arm and hits in the other silently leaves the
+    sample, so a per-piece delta of medians compares two different populations.
+    Measured on a reported cuirass, floors ON vs OFF: 371 rays in front against
+    473, and the per-piece delta reads -0.1424u where the SAME rays read
+    -0.3665u. The direction survived; the size did not.
+    """
     verts, tris = garment_mesh(path)
     if verts is None:
-        return None
+        return None, None
     d = np.asarray(ray_first_hit(origins, directions, verts, tris), np.float64)
     hit = np.isfinite(d) & (d > 0) & (d < MAX_HIT)
+    return d, hit
+
+
+def clearance(path, origins, directions):
+    """Tip clearances for one piece, or None when it does not cover the nipple."""
+    d, hit = clearance_full(path, origins, directions)
+    if d is None:
+        return None
     return d[hit] if int(hit.sum()) >= MIN_TIP_HITS else None
 
 
@@ -143,6 +176,7 @@ def main(argv) -> int:
             if "1stperson" not in os.path.basename(p).lower()]
 
     rows, skip_missing, skip_uncovered = [], 0, 0
+    full = {}          # rel -> {label: (distance, hit)}, for the PAIRED block
     for rel in rels:
         vals = {}
         for arm_dir, label in arms:
@@ -151,12 +185,13 @@ def main(argv) -> int:
                 skip_missing += 1
                 vals = {}
                 break
-            c = clearance(p, origins, directions)
-            if c is None:
+            d, hit = clearance_full(p, origins, directions)
+            if d is None or int(hit.sum()) < MIN_TIP_HITS:
                 skip_uncovered += 1
                 vals = {}
                 break
-            vals[label] = c
+            vals[label] = d[hit]
+            full.setdefault(rel, {})[label] = (d, hit)
         if len(vals) == len(arms):
             rows.append((rel, vals))
 
@@ -188,6 +223,41 @@ def main(argv) -> int:
           f"{np.median([d for d, _ in deltas]):+.4f}u")
     for d, r in sorted(deltas)[:10]:
         print(f"   {d:+.4f}u  {r}")
+
+    # ---- PAIRED, on rays in front in BOTH arms. INFO -- NOT the gated row.
+    #
+    # The block above is a difference of medians over each arm's OWN surviving
+    # rays, so a piece whose garment COVERS MORE of the nipple admits more
+    # (tighter) rays and its median falls -- it scores as "tighter" for getting
+    # better. This block removes that by comparing the SAME rays, and prints the
+    # coverage change that causes it.
+    #
+    # DELIBERATELY DIFFERENT WORDS. `acceptance.py` greps `tighter\\s+(\\d+)`
+    # over this whole output and takes the FIRST match, so a second line saying
+    # "tighter N" would silently re-gate the run on whichever came first.
+    paired, cov = [], {a: 0, b: 0}
+    for rel, per in full.items():
+        if a not in per or b not in per:
+            continue
+        (da, ha), (db, hb) = per[a], per[b]
+        cov[a] += int(ha.sum())
+        cov[b] += int(hb.sum())
+        both = ha & hb
+        if int(both.sum()) < MIN_TIP_HITS:
+            continue
+        paired.append((float(np.median(db[both]) - np.median(da[both])), rel))
+    if paired:
+        vals = [d for d, _r in paired]
+        closer = len([d for d in vals if d < -0.005])
+        further = len([d for d in vals if d > 0.005])
+        print(f"\nPAIRED on rays in front in BOTH arms -- INFO, not the gated "
+              f"row ({len(paired)} of {len(rows)} pieces):")
+        print(f"  per piece: closer {closer}   further {further}   level "
+              f"{len(vals) - closer - further}   median paired "
+              f"{np.median(vals):+.4f}u")
+        print(f"  tip rays with garment IN FRONT: {a} {cov[a]}  "
+              f"{b} {cov[b]}  (a rise means the garment covers MORE of the "
+              f"nipple, which DROPS the unpaired median above)")
     return 0
 
 

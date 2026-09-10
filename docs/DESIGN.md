@@ -137,6 +137,18 @@ discoverable one screenshot at a time.
     a delta, which is the only form in which a metric with a large pre-existing
     population means anything.
 
+  **RUN A REPEAT CONTROL BEFORE BLAMING A FLAG.** Two arms of IDENTICAL code and
+  identical flags have been observed producing different meshes, so a small arm
+  difference is not by itself evidence about the flag under test. The mechanism is
+  known and is still only half fixed: a piece with no physics file of its own
+  resolves one by FILENAME against the DESTINATION tree, which the run is
+  concurrently writing, and the per-worker index memoises whatever the tree
+  looked like when that worker first looked. **104 garments currently resolve
+  their physics that way** — measure the population with
+  `scripts/analysis/hdt_xml_resolution_census.py`. A repeat control is a second
+  arm at the SAME settings as the first; anything that differs between those two
+  is noise, and only what exceeds it can be attributed.
+
   **A pass being NECESSARY in an A/B is not proof it is the actor** — it may only
   change rows so a later pass evicts. Narrowing further means wrapping the inner
   pass and re-scoring the WRITTEN nif after each stage.

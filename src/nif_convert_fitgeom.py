@@ -159,6 +159,47 @@ ANTIPOKE_BUST_CLEAR = float(
 # the headroom (`#clearance-term-audit` reports it) before spending an arm.
 ANTIPOKE_NIPPLE_GAIN = _knob("CBBE2UBE_NIPPLE_GAIN", 1.5)
 
+# --- #antipoke-surface-req -- OPT-IN, `CBBE2UBE_ANTIPOKE_SURFACE_REQ=1` -----
+# THE THIRD SITE OF THE VERTEX-vs-SURFACE GAP (BUG-16).
+#
+# `#bust-surface-req` closed it in the conform and `#panel-rigid-surface-guard`
+# in panel rigidity. The ANTI-POKE -- the last pass, and the one whose whole job
+# is "no body through the garment" -- still asks the question per VERTEX.
+# Measured on the reported cuirass: the WRITTEN mesh has essentially no garment
+# vertex inside the body (1 vert, -0.000u) while 556 BODY verts escape through
+# it, 93.2% of them carrying nipple weight > 0.5. `s07_antipoke` lifts every
+# vertex clear (p1 +0.681) and the flat triangle between them still cuts across
+# the nipple. A vertex test cannot see that by construction.
+#
+# THE SURFACE IS HELD TO ITS OWN, LOWER BAR -- deliberately NOT to `req`.
+# `req` is the full stacked VERTEX requirement (median 1.1498u by
+# `#clearance-term-audit`), and a surface sags below the vertices that span it,
+# so holding the SURFACE to `req` would lift those vertices past `req` and ADD
+# standoff -- on a pack whose reported in-game defect is already "sits too far
+# off the body". This asks only that the surface not come CLOSER than
+# ANTIPOKE_SURFACE_CLEAR, so the term is exactly zero wherever the body is not
+# actually coming through. That is the ZONE SELECTIVITY
+# `#overstandoff-is-morph-headroom` demands of any fix in this band, and it is
+# why this is not the rejected global clearance ramp.
+#
+# INERT ON THE COPY PATH, and honestly so: `_in_bust` is only assigned when the
+# caller passes `body_nipple`, and the phase-1 call site does not (nor does
+# `#phase1-nipple-map` reach it -- that flag's only use site is the conform).
+# So this lands on the body-swap path alone until the copy path is given a
+# nipple map. Do not read a copy-path zero as a negative result.
+ANTIPOKE_SURFACE_REQ = _flag("CBBE2UBE_ANTIPOKE_SURFACE_REQ", False)
+# What the SURFACE must clear. Far below the vertex requirement on purpose:
+# this exists to stop the body coming THROUGH, not to set the standoff.
+ANTIPOKE_SURFACE_CLEAR = _knob("CBBE2UBE_ANTIPOKE_SURFACE_CLEAR", 0.1)
+# Ceiling on what this term may demand -- a safety rail, the same role
+# BUST_SURFACE_MAX_PUSH plays for the conform, and tighter because this pass
+# runs LAST and nothing downstream can take an overshoot back.
+ANTIPOKE_SURFACE_MAX_PUSH = _knob("CBBE2UBE_ANTIPOKE_SURFACE_MAX_PUSH", 0.5)
+# Per-shape trace. On by default WHILE the pass is opt-in: an armed pass that
+# silently does nothing is the failure mode this band keeps producing, so the
+# INERT reason is printed too. `CBBE2UBE_ANTIPOKE_SURFACE_QUIET=1` silences it.
+_ANTIPOKE_SURFACE_TRACE = not _flag("CBBE2UBE_ANTIPOKE_SURFACE_QUIET", False)
+
 def _is_belt_overlay(shape) -> bool:
     """True if the shape is a decorative waist belt/sash that rides ON TOP of
     the waist garment (by shape name OR diffuse texture keyword). Gets extra
@@ -3291,6 +3332,40 @@ def clear_armor_outside_body(
             _note_pass_failure("clear_armor_outside_body/term-audit", e)
 
     push = np.clip(req - worst, 0.0, max_push)            # push OUT only
+    # #antipoke-surface-req (see the constants): the SAME rule the conform
+    # already runs, asked here about the garment SURFACE. Placed BEFORE the
+    # #clearance-field solve on purpose -- the solve returns early on success,
+    # so a term added after it would never reach the written mesh, which is the
+    # dead-pass class this file keeps re-learning. Held to its own low bar, so
+    # it is zero wherever the body is not coming through and cannot act as a
+    # standoff ramp.
+    if ANTIPOKE_SURFACE_REQ and _ANTIPOKE_SURFACE_TRACE:
+        # WHY IT DID NOT RUN is the thing worth printing. Every earlier fix in
+        # this band that "measured nothing" was a guard refusing silently, so
+        # the armed-but-inert case is reported, not just the firing one.
+        _why = ("no tris" if tris is None
+                else "no bust mask (caller passed no body_nipple)"
+                if _in_bust is None
+                else "bust mask empty" if not bool(_in_bust.any()) else None)
+        if _why:
+            print(f"    [antipoke-surface] INERT: {_why}")
+    if (ANTIPOKE_SURFACE_REQ and tris is not None
+            and _in_bust is not None and bool(_in_bust.any())):
+        _req_surf = np.full(len(v), float(ANTIPOKE_SURFACE_CLEAR))
+        _need_surf = _surface_deficit(v, tris, bv, bn, _in_bust, _req_surf,
+                                      tree, bust_z,
+                                      max_push=ANTIPOKE_SURFACE_MAX_PUSH)
+        if _need_surf is None:
+            if _ANTIPOKE_SURFACE_TRACE:
+                print(f"    [antipoke-surface] no deficit over "
+                      f"{int(_in_bust.sum())} bust vert(s)")
+        else:
+            _raised = int((_need_surf > push + 1e-9).sum())
+            push = np.clip(np.maximum(push, _need_surf), 0.0, max_push)
+            if _ANTIPOKE_SURFACE_TRACE:
+                print(f"    [antipoke-surface] raised {_raised} vert(s), "
+                      f"max +{float(_need_surf.max()):.4f}u over "
+                      f"{int(_in_bust.sum())} bust vert(s)")
     # #clearance-field: solve ONE minimum-stretch displacement that meets every
     # vertex's outward requirement, instead of pushing each vertex along its own
     # (diverging) body normal and then feathering/re-projecting the damage. `push`
@@ -3817,7 +3892,13 @@ def _rigidify_within_clearance(src_v, cur_v, tris, body_v, body_n,
             # current clearance, or 0 if the anti-poke already left it inside --
             # so nothing NEWLY enters the body and nothing already in gets
             # deeper.
-            floor = np.minimum(clear_of(Q), 0.0) - 1e-4
+            # #panel-rigid-keep-clearance: the floor may KEEP a fraction of the
+            # clearance the anti-poke just bought, instead of conceding all of
+            # it. At keep=0.0, `where(c > 0, c*0, c)` IS `minimum(c, 0)` -- the
+            # OFF path is unchanged ARITHMETICALLY, not merely by measurement.
+            _kc = float(_nc().PANEL_RIGID_KEEP_CLEARANCE)
+            _cq = clear_of(Q)
+            floor = np.where(_cq > 0.0, _cq * _kc, _cq) - 1e-4
 
             # #panel-rigid-surface-guard: the same floor, applied to the points
             # BETWEEN the vertices. `tl` is this panel's triangles in local
@@ -3831,7 +3912,8 @@ def _rigidify_within_clearance(src_v, cur_v, tris, body_v, body_n,
                 _keep = free[_t_all].all(axis=1)
                 if _keep.any():
                     tl = _pos[_t_all[_keep]]
-                    floor_s = np.minimum(clear_of(_samples(Q, tl)), 0.0) - 1e-4
+                    _cs = clear_of(_samples(Q, tl))
+                    floor_s = np.where(_cs > 0.0, _cs * _kc, _cs) - 1e-4
 
             def feasible(sv):
                 moved = Q + (rigid - Q) * sv

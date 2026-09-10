@@ -17,7 +17,7 @@
 """THE GATE. Two arms in, one verdict out, exit code = the verdict.
 
     python -m scripts.analysis.acceptance <control_dir> <candidate_dir>
-                                          [--follow-top N] [--no-follow]
+                            [--follow-top N] [--no-follow] [--no-clip]
 
 Runs every scorer this project judges a change on, over the SAME two output
 dirs, and prints one table: metric | control | candidate | verdict. A candidate
@@ -56,6 +56,42 @@ Rows and their rule (tolerance 0.005u on the float rows):
     posed follow, worst delta   follow_bands       <= 0.010 median, on the
                                                    files whose weights moved
                                                    most (needs a skeleton NIF)
+    morph clip > 0.05% (pieces) band_class_census  candidate <= control
+    morph clip > 1.0%  (pieces) band_class_census  candidate <= control
+    bind  clip > 0.05% (pieces) band_class_census  candidate <= control
+    morph clip p50 / p90        band_class_census  candidate <= control
+    bind  clip p90              band_class_census  candidate <= control
+      ^ the counts are PREVALENCE (how many pieces clip) and the percentiles
+        are MAGNITUDE (how much). A count cannot see a piece clipping LESS:
+        5.316% -> 3.585% crosses no threshold and moves no count.
+      ^ pieces scored in BOTH                      info (the denominator, plus a
+        arms, per-arm scored,                      divergence warning and the
+        biased-sample warning                      census's own bias flag)
+
+THE ONLY MORPHED ROWS THIS GATE HAS. The first two are taken under a body
+preset; the third is the BIND number from the same census run, kept beside them
+so a change that trades bind for morph shows both. Everything above them reads the
+BIND pose: `pack_census` reads `.tri` offsets for bounds and naming only, and
+`follow_bands` poses a SKELETON, which is not a slider. Until 2026-09-09 the
+gate therefore had NO row for body-through-garment under a preset -- the form
+every in-game bust report arrives in -- so a candidate that IMPROVED morphed
+clipping and cost any surface row could only ever FAIL, the benefit having
+nowhere to appear. Judged as SHARES of the scored population for the reason the
+stretch rows are rates: a count moves when the population moves.
+
+COUNTED OVER THE PIECES BOTH ARMS SCORED. Each arm's census re-applies its own
+per-piece exclusions to its OWN geometry, so a candidate that pushes garments off
+the body drops the very pieces that were clipping out of its denominator and the
+share improves for a reason that is not quality. The rows intersect first (the
+fix `stretched_edges` already uses) and then COUNT, which also gets them an exact
+comparison -- the gate's 0.005 tolerance applies to non-integer floats, and on a
+share it swallows whole pieces once the population passes ~200.
+
+They need `CBBE2UBE_CLIP_PRESET` (a BodySlide preset xml -- machine-local, so it
+cannot be named here) and cost one census per arm. `CBBE2UBE_CLIP_EVERY` strides
+the population, but NOTE the census's own floor: stride too far and it ABORTs and
+the rows SKIP while the gate still exits 0. `--no-clip` skips them. Unset or
+unavailable, they print SKIPPED with the reason rather than vanishing.
 
 THREE THINGS THIS REFUSES TO DO, each because it produced a wrong verdict here:
 
@@ -88,6 +124,7 @@ from __future__ import annotations
 
 import glob
 import hashlib
+import json
 import os
 import re
 import subprocess
@@ -349,6 +386,149 @@ def stretch(ctrl: str, cand: str) -> dict:
     return out
 
 
+# --- MORPHED CLIP ------------------------------------------------------------
+# THE GAP THIS CLOSES. Every other scorer here reads the BIND pose. `pack_census`
+# touches `.tri` offsets only for bounds and naming, `follow_bands` poses a
+# SKELETON (not a morph), and nothing else applies a slider at all -- so until
+# 2026-09-09 the gate had NO row for body-through-garment under a body preset,
+# which is the form every in-game bust report arrives in. `morph_clip_test`'s own
+# header says it: "Every clip number in this project is taken at BIND POSE, and
+# bind pose is not what ships."
+#
+# The consequence was structural, not cosmetic: a candidate that IMPROVED
+# morphed clipping and cost any surface or penetration row could only ever FAIL,
+# because the benefit had nowhere to appear. `#panel-rigid-keep-clearance` is the
+# worked example -- morph clip 50% -> 45% of scored pieces, and 10 FAIL rows.
+#
+# SHARES, NOT COUNTS -- the rule `stretched_edges` already follows. A count moves
+# when the scored population moves, so a piece dropping out would read as a
+# quality change. Both arms are strided identically (sorted, `--every N`), and
+# the scored counts print as info so a reader can see when they diverge anyway.
+#
+# MACHINE-LOCAL BY NECESSITY. The preset is a modlist file, so it cannot be named
+# in tracked content. Set `CBBE2UBE_CLIP_PRESET`; without it these rows SKIP
+# LOUDLY rather than vanishing, because a row that silently disappears reads as
+# a pass.
+
+def _clip_arm(arm: str, preset: str, every: str, out_json: str) -> dict:
+    """One arm's PER-PIECE census rows, or a NAMED reason there are none.
+
+    Returns the rows, not shares. The shares have to be taken over the pieces
+    BOTH arms scored -- see `clip()`.
+    """
+    t = _run("scripts.analysis.band_class_census", "--pack",
+             os.path.join(arm, "meshes", "!UBE"), "--preset", preset,
+             "--band", "bust", "--every", every, "--floor", "20",
+             "--out", out_json)
+    if "ABORT" in t:
+        m = re.search(r"^ABORT: (.+)$", t, re.M)
+        return {"skip": (m.group(1).strip() if m else "the census aborted")}
+    # The census's OWN warning that its exclusions have biased the sample. It
+    # prints this and still reports; passing it through unnoticed is how a
+    # biased subset reads as a clean row.
+    biased = "HIGH: treat every share below as a biased subset" in t
+    try:
+        with open(out_json, encoding="utf-8") as f:
+            doc = json.load(f)
+    except Exception as e:                                   # noqa: BLE001
+        return {"skip": "could not read the census json (%s)" % type(e).__name__}
+    root = os.path.join(arm, "meshes")
+    rows = {}
+    for r in doc.get("rows", []):
+        nif = str(r.get("nif") or "")
+        if not nif:
+            continue
+        try:
+            rel = os.path.relpath(nif, root).replace("\\", "/").lower()
+        except ValueError:
+            rel = os.path.basename(nif).lower()
+        rows[rel] = r
+    if not rows:
+        return {"skip": "the census json carried no rows"}
+    return {"rows": rows, "scored": int(doc.get("scored", len(rows))),
+            "biased": biased}
+
+
+def clip(ctrl: str, cand: str) -> dict:
+    preset = os.environ.get("CBBE2UBE_CLIP_PRESET", "").strip()
+    # ORDER MATTERS: "is not a file" also contains "CLIP_PRESET", so the
+    # not-a-file case must be distinguishable from the unset case -- a
+    # configured-but-broken path reading as "nobody set it up" is how the rows
+    # stay dark run after run.
+    if not preset:
+        return {"skip": "SKIPPED: CLIP_PRESET_UNSET -- set CBBE2UBE_CLIP_PRESET "
+                        "(a BodySlide preset xml) to score morphed clip"}
+    if not os.path.isfile(preset):
+        return {"skip": "SKIPPED: CLIP_PRESET_MISSING -- CBBE2UBE_CLIP_PRESET "
+                        "is set but is not a file: %s" % preset}
+    every = os.environ.get("CBBE2UBE_CLIP_EVERY", "1").strip() or "1"
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        a = _clip_arm(ctrl, preset, every, os.path.join(td, "ctrl.json"))
+        b = _clip_arm(cand, preset, every, os.path.join(td, "cand.json"))
+    for lab, arm in (("control", a), ("candidate", b)):
+        if "skip" in arm:
+            return {"skip": "SKIPPED: %s census -- %s" % (lab, arm["skip"])}
+
+    # THE POPULATION MUST BE THE INTERSECTION, and this is not a nicety.
+    #
+    # Each arm's census rglobs its OWN tree and re-applies its own per-piece
+    # exclusions against its OWN geometry -- a piece whose band coverage falls
+    # under the census's minimum is dropped from THAT arm only. So a candidate
+    # that pushes garments off the body removes pieces from its denominator,
+    # and the pieces it removes are exactly the ones that were clipping: the
+    # share improves for a reason that is not quality. Scored 92 against 41
+    # scored `ok` on all three rows with only an `info` row beside it.
+    #
+    # `stretched_edges` already solved this by reporting "shapes scored in
+    # EVERY arm". Same fix: intersect, then count.
+    common = sorted(set(a["rows"]) & set(b["rows"]))
+    if len(common) < 20:
+        return {"skip": "SKIPPED: only %d piece(s) scored in BOTH arms "
+                        "-- 0/0 IS NOT A PASS" % len(common)}
+
+    def counts(rows):
+        bind = sum(1 for k in common if float(rows[k].get("bind", 0.0)) > 0.05)
+        m05 = sum(1 for k in common if float(rows[k].get("morph", 0.0)) > 0.05)
+        m10 = sum(1 for k in common if float(rows[k].get("morph", 0.0)) > 1.0)
+        # MAGNITUDE, beside the prevalence.
+        #
+        # The three counts above measure HOW MANY pieces clip. They are blind to
+        # HOW MUCH: a piece improving 5.316% -> 3.585% stays above both
+        # thresholds and moves no count, so a change that halved the clip on
+        # every piece in the pack without taking any of them under a threshold
+        # would score as no change at all. Measured: `#layer-order-last` cut the
+        # reported piece 33% and the count rows read 46/46, 34/34, 23/23.
+        #
+        # p50 and p90 over the SHARED pieces, which is the shape `stretched_edges`
+        # already uses for its rates -- and for the same reason, that a
+        # percentile is comparable between arms while a pooled total is a
+        # mesh-size ranking.
+        mo = sorted(float(rows[k].get("morph", 0.0)) for k in common)
+        bi = sorted(float(rows[k].get("bind", 0.0)) for k in common)
+
+        def pct(v, q):
+            if not v:
+                return None
+            i = min(len(v) - 1, max(0, int(round((len(v) - 1) * q))))
+            return round(v[i], 4)
+
+        return {"bind": bind, "morph05": m05, "morph10": m10,
+                "morph_p50": pct(mo, 0.50), "morph_p90": pct(mo, 0.90),
+                "bind_p90": pct(bi, 0.90)}
+
+    # COUNTS, not shares -- and that is only correct BECAUSE the denominator is
+    # now fixed by construction. Counts also get an exact comparison: `add()`
+    # applies its 0.005 tolerance to non-integer floats only, and on a share
+    # that tolerance silently swallows whole pieces once the population passes
+    # ~200 (a share is an exact k/n ratio with no float noise to absorb).
+    return {"preset": os.path.basename(preset), "every": every,
+            "common": len(common),
+            "scored_ctrl": a["scored"], "scored_cand": b["scored"],
+            "biased": bool(a.get("biased") or b.get("biased")),
+            "ctrl": counts(a["rows"]), "cand": counts(b["rows"])}
+
+
 def follow(ctrl: str, cand: str, rels: list[str]) -> dict:
     """Worst change in posed follow MEDIAN over (shape, band, pose), on the
     files whose weights moved most. None when no skeleton is configured.
@@ -427,7 +607,8 @@ def follow(ctrl: str, cand: str, rels: list[str]) -> dict:
 def verdict_table(c: dict, d: dict, g: dict, tp: dict, zw: dict, fo: dict,
                   weights_only: bool,
                   geometry: bool = False,
-                  st: "dict | None" = None) -> tuple[list[tuple], bool]:
+                  st: "dict | None" = None,
+                  cl: "dict | None" = None) -> tuple[list[tuple], bool]:
     rows = []
     ok_all = True
 
@@ -531,6 +712,52 @@ def verdict_table(c: dict, d: dict, g: dict, tp: dict, zw: dict, fo: dict,
             rows.append(("  ^ worst single tip", round(_ma, 4), round(_mb, 4),
                          "info" if _mb >= _ma - TOL else "FAIL"))
             ok_all = ok_all and _mb >= _ma - TOL
+    # MORPHED CLIP. Two of the three rows are taken under a body preset; the
+    # BIND row beside them is the unmorphed number the census reports from the
+    # same run, kept because a change that trades bind for morph should show
+    # both. Counted over the pieces BOTH arms scored -- see `clip()`.
+    if cl is None or "skip" in cl:
+        # A SHORT tag in the cell, the FULL reason in the footer. The census's
+        # own refusal runs to three lines and shoved the table out of
+        # alignment; truncating it in the row while dropping it entirely would
+        # be the worse trade, so it moves below.
+        _why = (cl or {}).get("skip", "SKIPPED (--no-clip)")
+        _short = ("no preset" if "CLIP_PRESET_UNSET" in _why
+                  else "preset missing" if "CLIP_PRESET_MISSING" in _why
+                  else "census floor" if "floor is" in _why
+                  else "no shared pieces" if "scored in BOTH" in _why
+                  else "--no-clip" if "--no-clip" in _why
+                  else "not measured")
+        for _n in ("morph clip > 0.05% (pieces)", "morph clip > 1.0% (pieces)",
+                   "bind clip > 0.05% (pieces)"):
+            rows.append((_n, "-", _short, "SKIPPED"))
+    else:
+        add("morph clip > 0.05% (pieces)",
+            cl["ctrl"]["morph05"], cl["cand"]["morph05"], "le")
+        add("morph clip > 1.0% (pieces)",
+            cl["ctrl"]["morph10"], cl["cand"]["morph10"], "le")
+        add("bind clip > 0.05% (pieces)",
+            cl["ctrl"]["bind"], cl["cand"]["bind"], "le")
+        # MAGNITUDE beside prevalence -- the counts above cannot see a piece
+        # clipping LESS, only a piece crossing a threshold.
+        add("morph clip p50 (% of band)",
+            cl["ctrl"]["morph_p50"], cl["cand"]["morph_p50"], "le")
+        add("morph clip p90 (% of band)",
+            cl["ctrl"]["morph_p90"], cl["cand"]["morph_p90"], "le")
+        add("bind clip p90 (% of band)",
+            cl["ctrl"]["bind_p90"], cl["cand"]["bind_p90"], "le")
+        rows.append(("  ^ pieces scored in BOTH arms", cl["common"],
+                     cl["common"], "info"))
+        # Each arm's OWN scored count. Equal counts do not prove equal
+        # populations, but a divergence is the first sign the candidate's
+        # geometry changed which pieces the census would even look at -- the
+        # reason these rows are counted over the intersection at all.
+        if cl["scored_ctrl"] != cl["scored_cand"]:
+            rows.append(("  ^ census scored per arm", cl["scored_ctrl"],
+                         cl["scored_cand"], "info"))
+        if cl.get("biased"):
+            rows.append(("  ^ census called its own sample BIASED", "-",
+                         "see the census output", "info"))
     # THE LAST STAGE, not the flow. Judged as a per-shape RATE and never as the
     # pooled count: a pooled total is a mesh-size ranking, and reading one is
     # how a 6-better / 6-worse / 22-unchanged wash was once written up as a
@@ -628,6 +855,9 @@ def main(argv: list[str]) -> int:
     # instead. Never use it for a change that claims to move nothing.
     geometry = "--geometry" in argv
     no_follow = "--no-follow" in argv
+    # The clip rows cost a full census per arm, so a quick structural A/B
+    # can opt out -- and the rows then say SKIPPED rather than vanishing.
+    no_clip = "--no-clip" in argv
     follow_top = 3
     if "--follow-top" in argv:
         follow_top = int(argv[argv.index("--follow-top") + 1])
@@ -670,6 +900,7 @@ def main(argv: list[str]) -> int:
     tp = tip(ctrl, cand)
     zw = zero_weight(ctrl, cand)
     st = stretch(ctrl, cand)
+    cl = None if no_clip else clip(ctrl, cand)
     top = [rel for _n, rel in d[5][:follow_top]]
     # Name the reason: a skip must never read as a flag the caller did not
     # pass. No differing rows = no file to pose, which is the identical-arm
@@ -682,11 +913,17 @@ def main(argv: list[str]) -> int:
     else:
         fo = follow(ctrl, cand, top)
 
-    rows, ok = verdict_table(c, d, g, tp, zw, fo, weights_only, geometry, st)
+    rows, ok = verdict_table(c, d, g, tp, zw, fo, weights_only, geometry,
+                             st, cl)
     print(f"\n{'=' * 78}\nVERDICT   (candidate must be no worse than control on every row)\n{'=' * 78}")
     print(f"  {'metric':<38}{'control':>12}{'candidate':>14}   verdict")
     for name, x, y, v in rows:
         print(f"  {name:<38}{str(x):>12}{str(y):>14}   {v}")
+    if cl and "skip" not in cl:
+        print(f"  morph clip: preset {cl['preset']}, --every {cl['every']}"
+              f", {cl['common']} piece(s) scored in BOTH arms")
+    elif cl and "skip" in cl:
+        print("  morph clip: " + cl["skip"])
     print(f"\n  posed follow: {fo.get('follow_note')}")
     print(f"  zero-weight absolute (reported): rescued {zw.get('rescued')}, "
           f"both-empty {zw.get('both_empty')}")

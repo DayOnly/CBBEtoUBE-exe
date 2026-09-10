@@ -653,3 +653,66 @@ that 4% of pairs survive (2.0× on the cast).
 That is what makes an in-converter fit contract affordable at all — but the contract
 still measures twice per shape, not once per pass, and for a reason that is about
 correctness rather than cost: see `DESIGN.md`.
+
+# 2026-09-09 — the gate judged one row backwards, and a stage it could not see
+
+Two findings about the ACCEPTANCE GATE rather than about a single metric. Both
+matter more than a metric bug, because the gate is what turns a metric into a
+verdict, and a gate that scores the wrong direction launders a regression into
+a pass.
+
+## Wrong: the bust-gap row rewarded drifting AWAY from the author
+
+`bust gap vs author` is a SIGNED distance, `ours - author`. It was judged with
+the ordinary `ge` rule — candidate must be `>=` control — which is right for a
+row where bigger is better and exactly wrong for this one: the goal is
+`|gap| -> 0`, so a candidate that drifted from +0.682 to +0.900 scored `ok`
+while moving further from the thing it is measured against.
+
+The rule is now its own comparator:
+
+```
+elif rule == "author":
+    ok = abs(b) <= abs(a) + TOL
+```
+
+and the SIGNED pair is still printed beside the judged magnitude, because
+`|gap|` alone cannot distinguish "closed toward the author" from "crossed past
+them and penetrated" — the same two cases the rear/penetration rebuild above had
+to separate.
+
+**Every bust-gap verdict taken before this is void in the direction that
+matters**: a row that read `ok` may have been a regression. The re-score of the
+first flag put through the corrected gate flipped its bust-gap row from `ok` to
+FAIL and took the overall verdict from 2 failing rows to 3.
+
+The same row was independently blind to DEAD SLIDERS: a piece whose morph never
+fires has no gap to measure, so it contributed nothing and could not fail.
+
+## The gate could not see the LAST stage
+
+`docs/worklog` records that the pass chain OSCILLATES — a pass introduces a
+defect and a later pass cleans it up — so a metric read off a stage dump
+describes an intermediate mesh nobody ships. The gate had no measurement of
+edge stretch on the WRITTEN file at all.
+
+`scripts/analysis/stretched_edges.py` closes it. It judges the written NIF
+against the AUTHOR's own mesh (resolved through `canonical_body.find_source`,
+BSA fallback included), never a stage dump. Three rows are judged `le`:
+
+```
+stretch rate p50 (% of edges)        candidate <= control
+stretch rate p90 (% of edges)        candidate <= control
+edge deviation p50 (len-weighted)    candidate <= control
+```
+
+**The judged rows are per-shape RATES; the pooled count is INFO only.** A rate
+is comparable between arms whatever the population does; a pooled count moves
+when the number of scored shapes moves, so judging it would let a shape-count
+change read as a quality change. `shapes / garments scored` and
+`pooled stretched edges` print for the reader and score nothing.
+
+Reference figures on the acceptance population: rate p50 0.1495%, p90 2.0217%,
+edge deviation p50 0.0331, over 598 shapes = 299 garments, 0 sources
+unresolved. A garment is TWO shapes — halve any shape count before comparing it
+with a garment count.
