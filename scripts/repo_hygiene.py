@@ -16,9 +16,15 @@
 
 """The public-repo rules, in ONE place.
 
-This repository is public. Three things must never reach a commit: a file that
+This repository is public. Four things must never reach a commit: a file that
 is local-only by policy (they name specific mods), an absolute path that
-identifies a person or their modlist, and a personal email address.
+identifies a person or their modlist, a personal email address, and the name of
+a real third-party asset -- in a file's CONTENT or in its FILENAME.
+
+The fourth is the newest (2026-09-09) and works differently from the other
+three: its input is a denylist of real names, which cannot itself be tracked
+here, so only the mechanism lives in this file and the names live in an
+untracked `.asset-denylist`. See `load_denylist`.
 
 **Why this module exists rather than the rules living in the test.** On
 2026-08-02 an audit found all three already in `main`'s history. The working
@@ -41,6 +47,7 @@ from __future__ import annotations
 
 import fnmatch
 import re
+from pathlib import Path
 
 # --- files that are LOCAL ONLY by policy, not merely by convenience ----------
 # ARMOR_WORKLIST.md names specific mods and modlists; the rest are per-machine
@@ -57,6 +64,9 @@ NEVER_TRACKED = (
     # The map from the synthetic names in tracked fixtures back to the REAL
     # assets. Publishing it would undo every substitution it records.
     "LOCAL_ASSET_SAMPLES.md",
+    # The denylist the name check below reads. It IS a list of mod names, so it
+    # is the one input to a public-repo guard that can never be public itself.
+    ".asset-denylist",
     "AUDIT_REDUNDANCY_*.md",
     "CONVERTER_AUDIT_*.md",
     "DESIGN_JIGGLE_PLAN.md",
@@ -107,6 +117,109 @@ PLACEHOLDER = re.compile(
     r"|Users[\\/](?:someone|username|user|you|yourname|test|example)[\\/]"
     r"|path[\\/]to|your[\\/-]|example|MO2Root",
     re.IGNORECASE)
+
+# --- third-party asset names, from an UNTRACKED denylist --------------------
+# The docstring of tests/test_public_repo_hygiene.py used to record this as the
+# one rule a test could not enforce: "a denylist of mod names would itself be
+# tracked content naming mods". It can be enforced if the NAMES live outside the
+# repo and only the MECHANISM is tracked -- which is what this is.
+#
+# Why it exists: on 2026-09-09, sweeping tracked content by hand before the 1.4
+# push found FIFTEEN live mod-name leaks. Four were already public. Review had
+# been the only guard, and review had missed every one -- including two whose
+# only occurrence was in the FILENAME, which no content grep would ever see.
+#
+# Format, one entry per line, `#` comments and blanks ignored:
+#     sure                  a literal name; matched case-insensitively at a WORD
+#                           START, so it catches `SureheartCuirass` and does NOT
+#                           catch `measured`
+#     re:^fit[ _]           a raw regex, for a name too short or too common to
+#                           fence with a word start alone
+#
+# (Those two are synthetic. Real names go in the file, never in this comment --
+# this module is itself scanned, see `should_scan_names`.)
+#
+# Build it from the substitution tables in LOCAL_ASSET_SAMPLES.md, which is the
+# record of what every synthetic name in this repo stands in for.
+DENYLIST_FILE = ".asset-denylist"
+
+
+def load_denylist(root) -> tuple[re.Pattern | None, int]:
+    """(compiled pattern, entry count) from the untracked denylist file.
+
+    Returns (None, 0) when the file is absent -- a fresh clone or CI has no
+    local names to check against. **Absent is not a pass**, and every caller
+    must say which of the two it got: a check that silently degrades to zero
+    coverage is the 0/0 failure this project has been bitten by repeatedly.
+    """
+    path = Path(root) / DENYLIST_FILE
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError:
+        return None, 0
+    parts = []
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("re:"):
+            parts.append(line[3:])
+        else:
+            # Word START only, never a trailing boundary: a real asset name is
+            # routinely a PREFIX of a longer identifier (`<name>Combined`,
+            # `<name>F_1.nif`), and requiring a trailing boundary would miss
+            # exactly the concatenated forms that leak most often. Both of the
+            # 2026-09-02 leaks were of that shape.
+            parts.append(r"\b" + re.escape(line))
+    if not parts:
+        return None, 0
+    return re.compile("|".join(parts), re.IGNORECASE), len(parts)
+
+
+def should_scan_names(path: str) -> bool:
+    """Whether `path`'s CONTENT is subject to the ASSET-NAME rule.
+
+    Deliberately NOT `should_scan`. That gate exempts this module and its own
+    tests, and the reason it gives is specific to the other two rules: a control
+    for the path and email patterns has to HOLD a string those patterns reject.
+    A control for this rule does not -- it builds a synthetic denylist and
+    matches a made-up name against it -- so the exemption here would be a pure
+    hole. It was one for about twenty minutes on 2026-09-09: the first draft
+    reused `should_scan`, and the real asset names sitting in this file's own
+    comments as illustration scanned clean.
+
+    Vendored code (`SKIP_PREFIXES`) stays exempt: it is upstream's content,
+    replaced wholesale, and not this repo's leak surface.
+    """
+    p = path.replace("\\", "/")
+    if p.startswith(SKIP_PREFIXES):
+        return False
+    return p.startswith(SCAN_ANY_SUFFIX_UNDER) or p.lower().endswith(
+        tuple(TEXT_SUFFIXES))
+
+
+def scan_names(path: str, text: str, pattern: re.Pattern | None) -> list[str]:
+    """Denylisted asset names in one file's PATH and content.
+
+    The path is checked whether or not the content is scannable: two of the
+    2026-09-09 leaks were filenames over bodies that never named the mod at all.
+    """
+    if pattern is None:
+        return []
+    out = []
+    m = pattern.search(path.replace("\\", "/"))
+    if m:
+        out.append(f"{path}: FILENAME carries a denylisted asset name "
+                   f"({m.group()!r})")
+    if not should_scan_names(path):
+        return out
+    for n, line in enumerate(text.splitlines(), 1):
+        m = pattern.search(line)
+        if m:
+            out.append(f"{path}:{n}: denylisted asset name ({m.group()!r}) -- "
+                       "substitute it and add the row to LOCAL_ASSET_SAMPLES.md")
+    return out
+
 
 # --- email addresses --------------------------------------------------------
 # Author identity is public on every commit of a public repo and is served by

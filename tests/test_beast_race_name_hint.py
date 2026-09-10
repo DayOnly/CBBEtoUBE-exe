@@ -17,7 +17,7 @@ from src import auto_convert as ac
 def test_our_own_output_is_excluded_by_name_whatever_it_contains():
     """These must stay HARD: converting our own output, or the BodySlide output
     the VFS resolves through, is a feedback loop no evidence can justify."""
-    for n in ("CBBEtoUBE Auto", "Authoria - Bodyslide Output - 3BA",
+    for n in ("CBBEtoUBE Auto", "SomeMod - Bodyslide Output - 3BA",
               "Dynamic Fur Morph"):
         assert any(h in n.lower() for h in ac._NONSOURCE_NAME_HINTS_HARD), n
 

@@ -139,7 +139,7 @@ def _audit_registered_shape_declared_bones(dst_path, src_path) -> int:
         # whose XML resolves only from the output side, the source read returned
         # None, the guard returned "0 violations", and 44 real BaseShape
         # offenders went unreported (22 warnings raised against 64 pieces the
-        # census sees). Measured on `0cce/f/dress/0cce_dress3_1.nif`:
+        # census sees). Measured on `<an SMP dress piece>_1.nif`:
         # source-side NONE, output-side 19 declared bones.
         # NOT gated with `stem_scan=False`, deliberately. This is a GUARD,
         # and refusing the fallback here does not make it read the right

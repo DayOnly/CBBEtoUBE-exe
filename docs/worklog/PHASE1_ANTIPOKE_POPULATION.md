@@ -12,7 +12,7 @@ run on it is VOID by construction.
 `np.flatnonzero(band(bV))` -- already-converted indices -- so `flatnonzero` ran
 on an index array and selected a meaningless vertex set.
 
-Proof on one shape (`PantsPenitus`, a trouser shape):
+Proof on one shape (`PantsA`, a trouser shape):
 
     band   passing INDICES      passing a BOOL MASK
     bust   covered 35.3%        covered  0.0%     <- trousers cover no bust
@@ -41,7 +41,7 @@ Per-shape highlights:
 
     cuirass-A        pauldrons         butt  clip 32.258% -> 0.265%   inside 18 -> 0
     cuirass-A        skirt                 butt  clip  3.470% -> 0.000%   inside 89 -> 11
-    ArmorF         PantsPenitus_1    butt  clip  4.546% -> 0.000%   inside 34 -> 0
+    ArmorF         PantsA_1          butt  clip  4.546% -> 0.000%   inside 34 -> 0
     ArmorOfficerF  Armor001          butt  inside 45 -> 0
     DragonArmorF   Torso001          butt  inside 67 -> 2
 

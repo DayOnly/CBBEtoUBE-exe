@@ -35,7 +35,7 @@ READ THE `survPC` COLUMN, NOT `surv`. A record is per SHAPE, and shapes per
 garment vary by two orders of magnitude, so pooling rows lets ONE many-shape
 piece write the answer. That is not hypothetical: the 2026-08-17 audit reported
 "`inflate` is 69% UNDONE by `conform`" from a row-pooled 0.31, and the number
-came from a single 116-row garment (`AsurasCombined`, median 0.103) inside 442
+came from a single 116-row garment (median 0.103) inside 442
 rows. Weighted per PIECE the same data reads 0.69, and the two convert paths
 agree. That headline stood for six days and was never true.
 

@@ -303,7 +303,7 @@ def main():
         print(f"ABORT: output not found at {root}", file=sys.stderr)
         sys.exit(3)
 
-    # "1stp" as well as "1stperson": the Ysmir set uses the short prefix and a
+    # "1stp" as well as "1stperson": one armour set uses the short prefix and a
     # first-person mesh slipped into E's population on the first run.
     excl = re.compile(r"1stperson|1stp", re.I)
     pats = {"both": ("*_1.nif", "*_0.nif"), "1": ("*_1.nif",),

@@ -54,10 +54,15 @@ you, and the measurements behind it — including a guard that took its target
 pass from 10 defects to 0 while the pack-wide total did not move at all, because
 the defect simply relocated to the next pass that caps a weight row.
 
-Name the producer with a trace before writing anything
-(`passaudit/zeroweight_trace.py` is the template: wrap every stage, re-score the
-written NIF after each). Attribution by reasoning has been wrong here more than
-once.
+Name the producer with a measurement before writing anything: convert the
+affected piece once per arm with `scripts/convert_one_armor.py`, disabling ONE
+pass per arm, and score every arm the same way — or, for the zero-weight class,
+pair two builds' output with `scripts/analysis/zero_weight_pair_ab.py`. Score
+the WRITTEN NIF, not an intermediate. Run a repeat control at identical settings
+first: two identical arms have been seen to differ, so anything smaller than
+that gap is noise. `docs/DESIGN.md` carries the full version of this rule and
+`docs/TOOL_MAP.md` lists what is tracked and runnable. Attribution by reasoning
+has been wrong here more than once.
 
 ```bash
 git clone https://github.com/DayOnly/CBBEtoUBE-exe
@@ -70,9 +75,10 @@ python -m pytest -q
 ```
 
 **That `core.hooksPath` line is not optional housekeeping.** This repository is
-public, and three kinds of thing must never reach a commit: a file that is
+public, and four kinds of thing must never reach a commit: a file that is
 local-only by policy (they name specific mods), an absolute path identifying
-your machine or modlist, and a personal email address. The hooks in
+your machine or modlist, a personal email address, and the name of a real
+third-party asset — in a file's content or in its filename. The hooks in
 `.githooks/` refuse a commit that carries any of them.
 
 The suite checks the same rules — but only *after* a commit exists, and by then
@@ -85,6 +91,14 @@ Hook config is per-clone and git cannot enable it for you, which is why it is a
 setup step rather than something the repo does silently. The rules themselves
 live in `scripts/repo_hygiene.py`, imported by both the hooks and the tests so
 the two cannot drift.
+
+The fourth rule needs one thing you have to supply: a list of the real asset
+names to refuse. That list cannot live in a public repo, so it is read from an
+untracked, gitignored `.asset-denylist` at the repo root — one name per line,
+`#` comments allowed, `re:` for a raw pattern. **Without that file the check
+runs against nothing**, and both the hook and the test say so rather than
+reporting a clean tree. Substitute a real name in tracked content the way the
+existing fixtures do, and keep a local record of what stands in for what.
 
 Also set your commit identity to your GitHub noreply address — author email is
 public on every commit and the hook will refuse a personal one:

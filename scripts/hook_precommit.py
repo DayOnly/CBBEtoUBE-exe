@@ -44,6 +44,8 @@ def main() -> int:
     staged = [p for p in _run("git", "diff", "--cached", "--name-only",
                               "--diff-filter=ACMR").splitlines() if p]
     problems: list[str] = []
+    root = Path(__file__).resolve().parent.parent
+    denylist, _deny_n = H.load_denylist(root)
 
     for path in staged:
         banned = H.path_is_never_tracked(path)
@@ -64,12 +66,27 @@ def main() -> int:
             continue
         problems.extend(H.scan_text(path, raw.decode("utf8", "replace")))
 
+    # Asset names, from the untracked denylist. The PATH is checked even for
+    # a file whose content is not scannable -- two of the 2026-09-09 leaks
+    # named the mod in the FILENAME and nowhere else.
+    if denylist is not None:
+        for path in staged:
+            raw = _run_bytes("git", "show", f":{path}")
+            text = "" if (not raw or H.is_binary(raw)) else raw.decode(
+                "utf8", "replace")
+            problems.extend(H.scan_names(path, text, denylist))
+
     ident = H.check_identity(_run("git", "config", "user.email").strip())
     if ident:
         problems.append(ident)
 
     if problems:
         sys.stderr.write("\nCOMMIT BLOCKED -- public-repo hygiene\n\n")
+        if denylist is None:
+            sys.stderr.write(
+                f"  (no {H.DENYLIST_FILE} on this machine, so NO "
+                "asset-name check ran -- zero coverage, not a pass)"
+                + chr(10) * 2)
         for p in problems:
             sys.stderr.write(f"  {p}\n")
         sys.stderr.write(

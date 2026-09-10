@@ -138,8 +138,9 @@ _DEFAULTS_PROMOTED_2026_08_22 = (
 #
 # NOT promoted alongside them, and the reason is a measurement:
 # `PANEL_RIGID_EARLY_CLEAR` was re-tested WITH the guard (its 12-better/6-worse
-# verdict predates it) and came back 1 better / 2 worse -- velothisteel
-# 6.486 -> 10.813, cowarchrobe 3.466 -> 8.443. Same shape as its old verdict.
+# verdict predates it) and came back 1 better / 2 worse -- a steel
+# cuirass 6.486 -> 10.813, the college robe 3.466 -> 8.443. Same shape as
+# its old verdict.
 _DEFAULTS_PROMOTED_2026_08_26 = (
     "BUST_MORPH_CHORD",
     "PANEL_RIGID_SURFACE_GUARD",
@@ -678,7 +679,7 @@ AUTHORED_SHAPE_ORDER = not _flag("CBBE2UBE_NO_AUTHORED_SHAPE_ORDER", False)
 #
 # A garment can be RIGGED for a chain (skinned to SkirtBBone01..03, Skirt 1_NN,
 # ...) and still ship NO physics reference of any kind -- no SMP XML, no HDT-PE
-# path, nothing. The Campfire travel cloaks are the measured example: 8 NIFs,
+# path, nothing. One mod's travel cloaks are the measured example: 8 NIFs,
 # zero root or shape extra-data, no XML anywhere for the source path, no global
 # SMP config, and the chain bones are not even in the actor skeleton. In game
 # that garment is STATIC.
@@ -7070,7 +7071,7 @@ _SPINE_MOTION_BONES = ("NPC Spine [Spn0]", "NPC Spine1 [Spn1]",
 # `lateral_half_x` is kept as a knob and defaults to OFF for that reason.
 #
 # WHAT DOES WORK IS PARTIAL STRENGTH -- but only since `strength` was made to
-# reach the SPLIT (see _match_limb_motion_to_body). breast_side, Punk UBE,
+# reach the SPLIT (see _match_limb_motion_to_body). breast_side, the reference UBE preset,
 # same build, weights-only:
 #
 #     strength      0.00     0.35     0.60     1.00
@@ -7125,7 +7126,7 @@ _SPINE_TWIST_BONES = _SPINE_MOTION_BONES
 # So: copy the whole vector. Its ideal is follow = 1.0 in EVERY pose at once.
 #
 # MEASURED, and the prediction held -- NO pose is worse than production at either
-# strength, which no family match managed at any setting. breast_side, Punk UBE,
+# strength, which no family match managed at any setting. breast_side, the reference UBE preset,
 # same build, weights-only (zero vertex movement, so every bind-pose clearance
 # result from the earlier passes survives by construction):
 #
@@ -9412,7 +9413,7 @@ def _chain_root_subtrees(chain: dict, custom_only: bool = False) -> dict:
 #
 #     against the BUILT UBE body            2 of 63 bones inside, max 0.778u
 #     against that body under the user's    8 of 63 inside, mean 0.900u,
-#       RaceMenu preset (Punk UBE, w100)      max 2.000u
+#       RaceMenu preset (the reference UBE preset, w100)      max 2.000u
 #
 # Always the `_01` segment at the fullest part of the buttock; `_02.._04` hang
 # clear (+0.3 to +7.6u) and the front/stabilizer chains clear everywhere. An
@@ -9426,7 +9427,7 @@ def _chain_root_subtrees(chain: dict, custom_only: bool = False) -> dict:
 # pass a preset it cannot know, it clears the body's OWN outward morph headroom
 # (`_cached_body_morph_amplitude` -- the same map adaptive clearance uses). Over
 # the at-risk bones on the test piece that map reads mean 1.009u against an
-# actual Punk UBE growth of mean 0.879u / max 1.615u, so it is a fair proxy.
+# actual the reference UBE preset growth of mean 0.879u / max 1.615u, so it is a fair proxy.
 # Adaptive clearance takes only 20% of that amplitude for GARMENT verts because
 # those verts morph too; a chain bone has no morph channel at all, so it needs
 # the whole of it. Hence FACTOR 1.0 here against 0.20 there.
@@ -10170,8 +10171,9 @@ CHEST_SYNC_MIN_BREAST_FRAC = 0.25
 # was a partly-reachable layer being raised in half; see that constant). Fires on
 # 21 of 1658 censused pieces, 0 new bones anywhere.
 # WHAT THIS PASS IS, HONESTLY: a DOWNSTREAM COMPENSATOR. The conversion does not
-# preserve the AUTHORED breast follow -- measured source vs converted, the ruby
-# flower's plate/cloth order INVERTS (0.181 > 0.135 becomes 0.095 < 0.212) and the
+# preserve the AUTHORED breast follow -- measured source vs converted, the
+# reported trousers' plate/cloth order INVERTS (0.181 > 0.135 becomes
+# 0.095 < 0.212) and the
 # the layered robe's layers are wiped outright (BodyStock 0.681 -> 0.000). This
 # pass copies follow from a surviving layer to paper over that, which is why it
 # cannot help a piece where the layers it would copy FROM were also wiped. The
@@ -12297,8 +12299,9 @@ _PANEL_LOCAL_K = int(_knob("CBBE2UBE_PANEL_LOCAL_K", 64.0))
 # exactly what this pass exists to buy.
 # DEFAULT ON 2026-08-26 (#defaults-promoted-2026-08-26). No regressions on any
 # piece measured; a college robe 12.957 -> 3.466 with its BIND clip 1.473 ->
-# 0.000, and it earns its place independently of the chord charge (Steelheart
-# 2.865 -> 2.239 with the chord OFF). Standoff p90 goes DOWN, i.e. tighter.
+# 0.000, and it earns its place independently of the chord charge (the traced
+# heavy cuirass 2.865 -> 2.239 with the chord OFF). Standoff p90 goes DOWN,
+# i.e. tighter.
 PANEL_RIGID_SURFACE_GUARD = _flag("CBBE2UBE_PANEL_RIGID_SURFACE_GUARD", True)
 
 # --- #panel-rigid-keep-clearance -- OPT-IN, numeric, DEFAULT 0.0 -------------

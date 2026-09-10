@@ -1856,8 +1856,9 @@ def conform_to_source_standoff(
                 # double-charge the same headroom -- principled, and REFUTED by
                 # measurement: it saved 0.029u of standoff (+0.066 -> +0.037u
                 # median) and cost 1.6 points of clip across 5 arms, giving back
-                # a third of the win on the reported piece (Punk 1.059 -> 1.441,
-                # Alenye 4.934 -> 5.796). The extra push earns its keep. Do not
+                # a third of the win on the reported piece (that piece
+                # 1.059 -> 1.441, a second 4.934 -> 5.796). The extra push
+                # earns its keep. Do not
                 # re-derive this from first principles without re-measuring.
                 req = req + _chord
         # #bust-surface-req (see the constants): the same requirement, evaluated

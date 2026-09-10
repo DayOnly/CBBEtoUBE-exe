@@ -2,7 +2,7 @@
 
 Closes the reference `../PIPELINE.md` §7 makes to this tag. Test piece
 throughout: `armor/studded/female/body`, source a 3BA BodySlide output, preset
-Punk UBE at weight 100. Every number below was produced by running the pass, not
+the reference UBE preset at weight 100. Every number below was produced by running the pass, not
 by reasoning about its gates.
 
 ## The defect
@@ -65,7 +65,7 @@ rests inside the body. Criterion, margin and caps:
   (`_cached_body_morph_amplitude`, the map adaptive clearance already uses). The
   converter never sees the player's RaceMenu preset, and 6 of the 8 penetrations
   exist only under it. Over the at-risk bones that map reads mean 1.009u against
-  an actual Punk UBE growth of mean 0.879u / max 1.615u. Adaptive clearance takes
+  an actual the reference UBE preset growth of mean 0.879u / max 1.615u. Adaptive clearance takes
   20% of that amplitude for garment verts because those verts morph too; a chain
   bone has no morph channel, so it takes all of it.
 * **that margin is CAPPED** (`CHAIN_LIFT_WANT_MAX`, 1.75u), and the cap is the

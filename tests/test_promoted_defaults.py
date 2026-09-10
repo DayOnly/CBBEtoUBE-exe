@@ -159,8 +159,8 @@ def test_the_family_invariant_is_what_stops_a_newcomer_stranding_a_bone():
 def test_early_clearance_was_NOT_promoted_and_the_reason_is_recorded():
     """It is the obvious third candidate and it stays OFF because a MEASUREMENT
     says so -- re-tested WITH the surface guard (its old 12-better/6-worse
-    verdict predates it) and still 1 better / 2 worse: velothisteel
-    6.486 -> 10.813, cowarchrobe 3.466 -> 8.443."""
+    verdict predates it) and still 1 better / 2 worse: a steel cuirass
+    6.486 -> 10.813, the college robe 3.466 -> 8.443."""
     assert nc.PANEL_RIGID_EARLY_CLEAR is False
 
 

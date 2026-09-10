@@ -558,7 +558,7 @@ gap 0.553 / 0.197, pen 108 / 51, tip 1.071 / 0.105, stretch 0.1089 / 1.7021).
 
 ### ONE PIECE SAID YES. THE POPULATION SAID NO.
 
-    keep    Punk bind   Punk morph      keep=0.5 through the GATE
+    keep    pre bind    pre morph       keep=0.5 through the GATE
     0.0       5.316       9.365         folds        30542 -> 30796  FAIL
     0.25      4.513       7.921         inverted      2612 ->  2762  FAIL
     0.50      4.320       7.371         gap body-swap 0.553 -> 0.562 FAIL

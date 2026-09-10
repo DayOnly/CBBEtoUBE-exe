@@ -571,7 +571,7 @@ in the same commit, or it does not get written.**
   | verts grazing (<0.1u) | 1.069% | **1.303%** | |
   | shapes gaining inside-verts | — | **2300 vs 556 losing** | 4.1:1 |
 
-  Worst single regressions are real armour, not slivers: a VIGILANT robe torso
+  Worst single regressions are real armour, not slivers: a quest-mod robe torso
   +454 verts newly inside the body, Dwarven armour +213/+211, several +200.
   **Verdict: inflate STAYS.** The rule was fixed before the run — removal is
   justified only if the clearance counters do not materially worsen — and they

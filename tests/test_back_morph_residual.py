@@ -370,7 +370,7 @@ def test_defaults_are_the_measured_configuration():
     configuration that was already rejected with numbers."""
     # Band floor. 102 was chosen on Body3F ALONE and is the bad config: on the
     # golden set it scored back 16.1 (vs 8.0) and net front +254 verts (vs -3),
-    # with robes-thalmor upper chest 53 -> 119 on Punk UBE.
+    # with robes-thalmor upper chest 53 -> 119 on the reference UBE preset.
     assert nc.BACK_RESIDUAL_Z[0] == 95.0
     assert nc.BACK_RESIDUAL_Z[1] == 112.0
     # Feathering the band edge: back 8.0 -> 10.8, front 11 -> 12 regressions.

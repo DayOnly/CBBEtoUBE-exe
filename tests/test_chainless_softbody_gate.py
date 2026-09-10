@@ -89,7 +89,7 @@ def test_a_chain_carrier_with_no_source_physics_stays_static(tmp_path, monkeypat
     CAUGHT the change, so it is updated rather than deleted.
 
     A garment can be RIGGED for a chain and still ship no physics reference of
-    any kind. Measured on the Campfire travel cloaks: 8 NIFs, zero root/shape
+    any kind. Measured on the travel cloaks from one mod: 8 NIFs, zero root/shape
     extra-data, no XML anywhere for the source path, no global SMP config, and
     the chain bones absent from the actor skeleton. That garment is STATIC in
     its own mod, so driving those bones INVENTS motion rather than converting

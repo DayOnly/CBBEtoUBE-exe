@@ -18,7 +18,7 @@
 
 Verts with no bone weight skin to the origin -> a spike to (0,0,0). The fix gives
 each zero-weight vert the weights of its nearest weighted vert. Seen on guard-armor
-reskins (qwib) and decoration/1st-person shapes.
+reskins and decoration/1st-person shapes.
 """
 import os
 import sys

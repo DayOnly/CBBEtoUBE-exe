@@ -479,9 +479,9 @@ def validate_dst_nif(dst_path: "Path",
                 # healthy chain anchor as unresolvable. Measured on the
                 # shipped pack: 4449 'in NEITHER the NIF nor the actor
                 # skeleton' warnings over 122 pieces, of which **1839 (41%)
-                # on 33 pieces are this false positive** -- e.g. Magecore's
-                # `MCTome_R 0`, which IS a node in the NIF and in the
-                # author's source alike. The validator's own comment says
+                # on 33 pieces are this false positive** -- e.g. an
+                # SMP cloth set's `<Tome>_R 0` chain node, which IS a
+                # node in the NIF and in the author's source alike. The validator's own comment says
                 # it was narrowed so 'the SIX that actually mattered' stayed
                 # visible; drowning them in 1839 spurious lines defeats that.
                 try:
