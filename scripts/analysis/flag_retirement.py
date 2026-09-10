@@ -184,6 +184,37 @@ def recipe_drift(settings_path):
     return out, unknown
 
 
+def raw_env_kill_switches() -> "list[tuple[str, str]]":
+    """(module, env) for every `CBBE2UBE_NO_*` read by RAW `os.environ`.
+
+    These are kill switches this census cannot score and must not pretend it
+    has. `rows()` below parses `_flag(...)` calls, so a switch read straight off
+    `os.environ` is invisible to it -- and to `dead_gate_audit.py` and
+    `flag_surface.declared_all()` alike. Eight of them existed when this was
+    written, which means "kill-switch bindings : 79" was a count over the
+    `_flag` surface and not over the whole one. The report now says so instead
+    of quietly being short.
+
+    The real fix is upstream -- `envflags` exists BECAUSE 12 inline spellings
+    disagreed on what "0"/"true"/empty meant -- but converting a read changes
+    how that switch parses its value, so it is a measured change, not a tidy.
+    """
+    import re as _re
+    pat = _re.compile(r"os\.environ(?:\.get\(|\[)\s*[\"']"
+                      r"(CBBE2UBE_NO_[A-Z0-9_]+)")
+    out = []
+    src_dir = _REPO / "src"
+    if not src_dir.is_dir():
+        return out
+    for p in sorted(src_dir.glob("*.py")):
+        if p.stem == "envflags":
+            continue                       # the helper itself, by definition
+        text = p.read_text(encoding="utf-8", errors="replace")
+        for env in sorted(set(pat.findall(text))):
+            out.append((p.stem, env))
+    return out
+
+
 def rows(settings_path=None):
     src = (_REPO / "src" / "nif_convert.py").read_text(encoding="utf-8",
                                                        errors="replace")
@@ -220,6 +251,15 @@ def report(rs, live, show_all=False, out=print) -> int:
     out("KILL-SWITCH RETIREMENT EVIDENCE   (plan item E1, mechanical half)")
     out("=" * 76)
     out("  kill-switch bindings                       : %d" % len(rs))
+    _raw = raw_env_kill_switches()
+    if _raw:
+        out("  NOT COUNTED -- read by raw os.environ      : %d   (invisible"
+            % len(_raw))
+        out("        to this census; the number above is the `_flag` surface,")
+        out("        not the whole one. Retiring any of these needs a manual")
+        out("        read of the site.)")
+        for _m, _e in _raw:
+            out("        %-40s src/%s.py" % (_e, _m))
     out("  of those, RESOLVE to ON in a clean env     : %d" % len(on))
     out("  resolve OFF -- NOT retirement candidates   : %d   (excluded)"
         % len(off))

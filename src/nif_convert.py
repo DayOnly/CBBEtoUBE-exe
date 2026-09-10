@@ -71,10 +71,19 @@ from . import fit_metrics, nif_io, nif_patch
 from .atomic_io import (
     atomic_nif_save, atomic_copy, atomic_write_bytes, atomic_tri_save)
 from .correspondence import MeshIndex, compute_deformation
-# The ONE way to read a CBBE2UBE_* env flag/knob -- 287 inline spellings in 12
+# The way a CBBE2UBE_* env flag/knob SHOULD be read -- 287 inline spellings in 12
 # variants collapsed 2026-08-18; the variants disagreed on what "0"/"true"/
 # empty meant, and the sprawl is why flag audits kept finding wrong-polarity
 # comments. See envflags docstring for the exact contract.
+#
+# THIS SAID "THE ONE WAY" UNTIL 2026-09-09 AND IT WAS NOT TRUE. Counted that day
+# over src/*.py excluding envflags.py itself: 83 raw `os.environ` reads of 78
+# distinct CBBE2UBE_* names, 11 of them `CBBE2UBE_NO_*` kill switches. That last
+# number is why `flag_retirement` counts a smaller kill-switch surface than
+# exists -- it parses `_flag(` calls -- and it now prints the shortfall instead
+# of being quietly short. The remaining reads are NOT a tidy: converting one
+# changes how that switch parses its value, which is the exact disagreement this
+# helper was written to end, so each is a measured change.
 from .envflags import flag as _flag, knob as _knob
 
 

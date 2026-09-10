@@ -227,3 +227,52 @@ def test_a_stray_positional_is_still_refused_after_a_recognised_flag():
     """The parse loop returns 2 on an unknown positional. Deferring the action
     must not turn a typo into a silent run over the wrong file."""
     assert fr.main(["--recipe", "junk"]) == 2
+
+
+def test_the_census_names_the_switches_it_cannot_see():
+    """A count over a SUBSET, printed as the count, is the failure this project
+    keeps paying for. `rows()` parses `_flag(` calls, so a kill switch read
+    straight off `os.environ` is invisible to it -- "kill-switch bindings: 79"
+    was the `_flag` surface, not the whole one.
+
+    Asserting there are SOME and that they are named, not a fixed number: the
+    number should fall as sites are converted, and the point is that whatever it
+    is, the report states it.
+    """
+    raw = fr.raw_env_kill_switches()
+    assert raw, (
+        "no raw os.environ kill switches found -- either every site was "
+        "converted to _flag (delete this and the report block) or the pattern "
+        "stopped matching, which is the same silent shortfall in a new place")
+    for mod, env in raw:
+        assert env.startswith("CBBE2UBE_NO_"), env
+        assert mod != "envflags", "the helper itself is not a raw read"
+
+    printed = []
+    rs, live = fr.rows()
+    fr.report(rs, live, out=printed.append)
+    text = "\n".join(printed)
+    assert "NOT COUNTED" in text, (
+        "the census prints a kill-switch count without saying what it cannot "
+        "see")
+    for _mod, env in raw:
+        assert env in text, f"{env} is invisible to the census and unnamed in it"
+
+
+def test_the_raw_read_pattern_actually_matches_both_forms(tmp_path, monkeypatch):
+    """Control. Both `os.environ.get("X")` and `os.environ["X"]` are used in
+    src/, and a pattern that quietly caught only one would under-report exactly
+    the way the census did."""
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "a.py").write_text(
+        'import os\n'
+        'x = os.environ.get("CBBE2UBE_NO_GETFORM")\n'
+        'y = os.environ["CBBE2UBE_NO_ITEMFORM"]\n'
+        "z = os.environ.get('CBBE2UBE_NO_SINGLEQUOTE')\n"
+        'k = os.environ.get("CBBE2UBE_SOME_KNOB")   # not a kill switch\n',
+        encoding="utf-8")
+    monkeypatch.setattr(fr, "_REPO", tmp_path)
+    got = {e for _m, e in fr.raw_env_kill_switches()}
+    assert got == {"CBBE2UBE_NO_GETFORM", "CBBE2UBE_NO_ITEMFORM",
+                   "CBBE2UBE_NO_SINGLEQUOTE"}, got
