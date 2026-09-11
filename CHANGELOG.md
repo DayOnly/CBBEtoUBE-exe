@@ -2,6 +2,90 @@
 
 ## Unreleased
 
+## 1.4.1 — 2026-09-11
+
+### Fixed — memory errors on machines with a small or disabled page file
+
+Reported against 1.4. **Nothing in 1.4 caused it** — every mechanism below is
+byte-identical in 1.3, and the largest one has been there since 1.2. More
+people ran it, and more of them had the machine setting that turns it from
+"slow" into "failed".
+
+The tool imports numpy and scipy, and doing so **committed 1,516 MB of memory
+in every process** on a 24-thread machine, of which about 97% was maths-library
+thread scratch space that is reserved at load and never read. Measured on one
+box, same interpreter, before and after:
+
+| | memory committed | memory actually used |
+|---|---|---|
+| starting Python | 5.9 MB | 11.1 MB |
+| loading the converter | **1,516.3 MB** | 54.0 MB |
+| after this fix | **37.9 MB** | 51.1 MB |
+
+The "actually used" column barely moves, which is why this never showed up as
+high memory usage and went unnoticed for four releases. But **Windows fails an
+allocation against your RAM plus your page file**, not against free RAM, and
+reserved memory counts in full. Each worker is a separate process paying the
+whole amount, so a pool of 8 plus the two helper processes reserved about
+15 GB before reading a single mesh. With a system-managed page file that is
+merely wasteful. With the page file disabled or pinned small — advice that
+circulates widely as a performance tweak — it is the entire failure.
+
+Also fixed, all three found by auditing the same path:
+
+- **One fit step allocated up to 3.7 GB on a single garment.** It measures
+  distance from the body to the garment's cut edges, in slices of body
+  vertices — but the edge side of that was unbounded, so the cost grew with
+  the garment. Across a local 383-mesh sample (not shipped): half peak under
+  56 MiB, but the worst reaches 3.71 GiB on a shape with 16,217 edges. Now
+  capped at 64 MiB for every mesh. **Output is unchanged, bit for bit** —
+  each result depends only on its own body vertex, so the slice size cannot
+  alter a number, and the tests check that against slices from 1 to 100,000.
+- **It failed silently when it did run out.** The error was caught as a
+  generic per-shape failure, so the piece shipped without that fit step, the
+  run carried on, and the word "MemoryError" never reached you — while the
+  actual exhaustion surfaced in some other worker, possibly on another mod.
+- **The final cleanup pass ignored the memory budget.** It sized its own
+  process pool on CPU count alone, so on a 16-thread machine it started 14
+  fresh processes where the budgeted pool had run 8 — with no setting to
+  lower it, at the very end of a run, and falling back to a slow serial walk
+  if it died, so the run still reported success.
+
+### Changed — the worker count no longer promises more memory than you have
+
+The count is capped by RAM as well as CPUs, but it **rounded up**: a machine
+reporting 15.85 GB was granted 8 workers at 2 GB each, i.e. 101% of the
+machine, before Windows, MO2 or the tool's own two processes took a byte. It
+now rounds down, and a second cap reads the page-file headroom and lowers the
+count when the run would not fit. On a normally configured machine nothing
+changes; with the page file off, the pool shrinks instead of failing.
+
+The 2 GB-per-worker figure is now **conservative** rather than optimistic —
+about 1.5 GB of what it was calibrated on was the reserved scratch space that
+no longer exists. It is deliberately left alone until a worker's real
+footprint is measured again mid-run.
+
+### Added — a run now says what machine it ran on
+
+A memory report was previously impossible to act on: no log line, no report
+field and no setup check recorded how much RAM, how many CPU threads or how
+large a page file the machine had. The one line that would have said anything
+was printed only when the worker count was chosen automatically — which never
+happens from the GUI, because it always passes the count explicitly.
+
+- **Setup check** gained a memory row, so a tight machine is flagged *before*
+  a three-hour run rather than during it.
+- **Every run** prints its RAM, thread count, page-file limit and projected
+  memory use, and warns when the run wants more than is comfortably free.
+- **`conversion_report.json`** carries the same figures in a `machine` block.
+- **A worker killed for memory** now says so and names the setting that fixes
+  it, instead of reporting the tool as broken.
+- **The bug-report form** asks for RAM, threads and the page-file setting.
+
+If a run still dies: lower **Worker processes** on the Run tab, or set the
+page file back to system-managed. The second is the better fix.
+
+
 ### Fixed — small skirts were shipping with no collision at all
 
 A garment whose physics cloth needs a collision shape gets one built for it: a
@@ -31,10 +115,15 @@ Found by scoring the shipped pack rather than by reading the code: the only
 test covering that step used a mesh comfortably above the size that broke it.
 It now sweeps across the boundary.
 
-**The converter in `dist/` already has this fix** — it was rebuilt and
-redeployed after the 1.4 pack was scored. Armour you convert from here on
-gets its collision shapes; armour converted before it does not, so those
-nine pieces stay uncollided until you convert them again.
+**The 1.4 download already has this fix** — the binary was rebuilt after the
+1.4 pack was scored but before the release was published (source fix
+`6241bee`, rebuilt into the shipped exe by `6f80b20`, both ancestors of the
+`v1.4` tag), and only its changelog entry was left uncredited. It is recorded here so the release it shipped in is written down
+somewhere. You do not need 1.4.1 for it.
+
+What does still apply: armour converted from here on gets its collision
+shapes; armour converted before that rebuild does not, so those nine pieces
+stay uncollided until you convert them again.
 
 ## 1.4 — 2026-09-09
 

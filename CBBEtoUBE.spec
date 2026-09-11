@@ -53,6 +53,11 @@ hiddenimports += ["lz4", "lz4.frame", "lz4.block"]
 # Optional Tkinter GUI (the `gui` subcommand, src/gui.py). tkinter is imported
 # lazily inside launch_gui(), so name src.gui + the tkinter submodules
 # explicitly or the frozen exe ships without them and `CBBEtoUBE.exe gui` fails.
+# src.blas_env is imported at the top of the entry script, so Analysis
+# finds it statically -- named here anyway because if it were EVER missed
+# the exe would die on its first line, and 1.5 GB of per-process commit
+# charge rides on it. #blas-thread-cap
+hiddenimports += ["src.blas_env"]
 hiddenimports += ["src.gui", "src.gui_settings", "src.exclusions",
                   "src.preflight",
                   "tkinter", "tkinter.ttk",

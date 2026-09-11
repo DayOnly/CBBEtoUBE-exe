@@ -237,6 +237,38 @@ def run_checks(layout=None, *, want_overlays=False, want_overlay_copy=False,
     lay = layout if layout is not None else _paths.discover_layout()
     checks: "list[Check]" = []
 
+    # #commit-headroom -- the only check here that can save a user three hours.
+    # Every other memory safeguard acts once the run is under way; this one
+    # fires in the setup pane, before they commit an evening. It reports the
+    # machine unconditionally too, so a submitted diagnostics zip finally says
+    # how much RAM, how many threads and how big the page file was -- none of
+    # which any artefact carried before 2026-09-11.
+    try:
+        from .auto_convert import memory_plan, default_worker_count
+        p = memory_plan(default_worker_count())
+        if p["total_ram_gb"]:
+            _d = f"{p['total_ram_gb']:.1f} GB RAM, {p['cpu_count']} CPU threads"
+            if p["commit_limit_gb"]:
+                _d += (f"; page file gives a {p['commit_limit_gb']:.1f} GB "
+                       f"commit limit, {p['commit_free_gb']:.1f} GB free now")
+            _d += f". A run here uses {p['workers']} worker processes."
+            checks.append(_c(
+                "memory", "System memory and page file",
+                WARN if p["tight"] else OK, _d,
+                "" if not p["tight"] else
+                (f"Tight: {p['workers']} workers plus 2 helper processes need "
+                 f"roughly {p['projected_commit_gb']:.1f} GB of Windows commit "
+                 f"charge against {p['commit_free_gb']:.1f} GB free. Lower "
+                 "\"Worker processes\" on the Run tab, or set your page file "
+                 "back to system-managed (System > Advanced system settings > "
+                 "Performance > Advanced > Virtual memory) — Windows fails an "
+                 "allocation against RAM plus page file, so a disabled or "
+                 "pinned-small page file is the usual cause of a memory error "
+                 "on a machine with plenty of RAM.")))
+    except Exception:
+        pass
+
+
     mr = lay.mods_root
     if mr is None or not Path(mr).is_dir():
         checks.append(_c(

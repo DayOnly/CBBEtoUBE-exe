@@ -30,7 +30,21 @@ import os
 from src import auto_convert as ac
 
 
-def _dc(monkeypatch, *, gb, cpus, budget=None):
+def _dc(monkeypatch, *, gb, cpus, budget=None, commit_free=None):
+    """Pin BOTH memory readings, so the answer cannot depend on the box the
+    suite happens to run on.
+
+    `commit_free` defaults to effectively unlimited (#commit-headroom) so the
+    RAM-cap cases below measure the RAM cap alone. A CI runner has a real page
+    file and real commit pressure, and leaving that unpatched would make these
+    assertions pass or fail according to the agent's spare memory -- the exact
+    class of test that reports a number nobody else can reproduce."""
+    st = None if gb is None else {
+        "total_gb": gb,
+        "avail_gb": gb / 2.0,
+        "commit_limit_gb": gb * 2.0,
+        "commit_free_gb": 1e6 if commit_free is None else commit_free}
+    monkeypatch.setattr(ac, "_memory_status", lambda: st)
     monkeypatch.setattr(ac, "_total_physical_gb", lambda: gb)
     monkeypatch.setattr(os, "cpu_count", lambda: cpus)
     if budget is None:
@@ -42,7 +56,29 @@ def _dc(monkeypatch, *, gb, cpus, budget=None):
 
 def test_ram_caps_the_pool_below_cpu_count(monkeypatch):
     # The measured case: 24 threads, 32 GB. Old default 23 -> thrashing.
-    assert _dc(monkeypatch, gb=31.8, cpus=24) == 16
+    # 15, not 16: the count FLOORS now. `int(31.8/2.0 + 0.5)` rounded a 15.9
+    # entitlement UP to 16 workers x 2.0 = 32.0 GB, i.e. 101% of a machine that
+    # reports 31.8 -- granting more than the box physically has, before Windows,
+    # MO2, the GUI or the child converter took a byte. #worker-mem-budget
+    assert _dc(monkeypatch, gb=31.8, cpus=24) == 15
+
+
+def test_the_pool_never_exceeds_the_machines_own_ram(monkeypatch):
+    """The property the round-to-nearest broke, stated directly.
+
+    This is the regression guard that matters: whatever the arithmetic, the
+    pool's nominal claim must not exceed physical RAM. It is deliberately a
+    PROPERTY over a sweep and not another hand-computed row, because the
+    previous defect was invisible in exactly the rows someone chose to write
+    down."""
+    for gb in (4.0, 7.85, 8.0, 12.0, 15.85, 16.0, 24.0, 31.8, 32.0, 64.0):
+        for cpus in (4, 8, 12, 16, 24, 32):
+            n = _dc(monkeypatch, gb=gb, cpus=cpus)
+            assert n >= 1
+            # n == 1 is the floor and may legitimately overcommit a tiny box.
+            assert n == 1 or n * ac.WORKER_MEM_BUDGET_GB <= gb, (
+                f"{n} workers x {ac.WORKER_MEM_BUDGET_GB} GB exceeds {gb} GB "
+                f"of RAM at {cpus} threads")
 
 
 def test_cpu_caps_the_pool_when_ram_is_plentiful(monkeypatch):
@@ -72,6 +108,86 @@ def test_budget_is_tunable_for_ab_testing(monkeypatch):
 
 def test_garbage_budget_env_does_not_crash(monkeypatch):
     assert _dc(monkeypatch, gb=32.0, cpus=24, budget="not-a-number") == 16
+
+
+# --- #commit-headroom -------------------------------------------------------
+#
+# Windows fails an allocation against the COMMIT LIMIT (physical RAM + page
+# file), not against free RAM, so untouched-but-committed bytes count in full.
+# Two machines with the same RAM behave completely differently depending on
+# whether the page file is system-managed or pinned small -- which is why the
+# same build produces memory errors for some users and not others. The RAM cap
+# alone cannot see that; this guard can, and may only ever LOWER the count.
+
+
+def test_a_healthy_page_file_does_not_change_anything(monkeypatch):
+    """The guard must be invisible on a normally-configured machine.
+
+    If this ever starts binding on a stock setup it is a throughput regression
+    affecting every user, so it is pinned rather than left to chance."""
+    assert _dc(monkeypatch, gb=31.8, cpus=24, commit_free=88.0) == 15
+    assert _dc(monkeypatch, gb=15.85, cpus=16, commit_free=28.0) == 7
+
+
+def test_a_disabled_page_file_shrinks_the_pool(monkeypatch):
+    """With the page file off, commit limit ~= RAM and the pool must shrink.
+
+    16 GB / 16 threads with 9.5 GB committable: the RAM cap alone still says 7,
+    which would ask for roughly 9 GB of commit charge from the pool plus 2 GB
+    from the two helper processes -- over the limit, and a hard MemoryError
+    rather than paging."""
+    assert _dc(monkeypatch, gb=15.85, cpus=16, commit_free=9.5) == 5
+    assert _dc(monkeypatch, gb=15.85, cpus=16, commit_free=9.5) < \
+        _dc(monkeypatch, gb=15.85, cpus=16, commit_free=64.0)
+
+
+def test_the_guard_can_only_lower_never_raise(monkeypatch):
+    """A vast page file must not license a pool the RAM cap refused.
+
+    The failure this forbids is a 16 GB box with a 200 GB page file being told
+    it may run 60 workers: it would not raise MemoryError, it would page itself
+    to a standstill for hours, which is a worse user experience than the error."""
+    for cf in (1.0, 8.0, 50.0, 1000.0):
+        assert _dc(monkeypatch, gb=15.85, cpus=16, commit_free=cf) <= 7
+
+
+def test_the_guard_never_returns_zero_or_negative(monkeypatch):
+    """`int(free*0.8/1.0) - 2` goes negative on a nearly-full machine.
+
+    Returning 0 would build an empty pool and 'convert' a modlist by doing
+    nothing; a negative would raise inside ProcessPoolExecutor. Either is worse
+    than one slow worker."""
+    for cf in (0.05, 0.5, 1.0, 2.0, 2.5):
+        assert _dc(monkeypatch, gb=15.85, cpus=16, commit_free=cf) >= 1
+
+
+def test_a_machine_that_cannot_report_commit_still_works(monkeypatch):
+    """Linux and any failed probe report None -- fall back to the RAM cap."""
+    st = {"total_gb": 31.8, "avail_gb": 16.0,
+          "commit_limit_gb": None, "commit_free_gb": None}
+    monkeypatch.setattr(ac, "_memory_status", lambda: st)
+    monkeypatch.setattr(os, "cpu_count", lambda: 24)
+    monkeypatch.delenv("CBBE2UBE_WORKER_MEM_GB", raising=False)
+    assert ac.default_worker_count() == 15
+
+
+def test_memory_status_reports_commit_on_this_machine():
+    """The probe must actually read the two commit counters.
+
+    `ullTotalPageFile` / `ullAvailPageFile` sat declared-but-unread in the
+    struct for the life of the project. A probe that silently returns None for
+    them would make every guard above dead code on real hardware while the
+    monkeypatched tests stayed green -- 0/0 is not a pass."""
+    st = ac._memory_status()
+    if st is None:                       # non-Windows / probe unavailable
+        return
+    assert st["total_gb"] and 0.5 < st["total_gb"] < 4096
+    if os.name == "nt":
+        assert st["commit_limit_gb"] and st["commit_free_gb"] is not None
+        # The commit limit is physical RAM plus the page file, so it can never
+        # be less than RAM. A smaller value means the fields are misread.
+        assert st["commit_limit_gb"] >= st["total_gb"] * 0.9
+        assert 0 <= st["commit_free_gb"] <= st["commit_limit_gb"]
 
 
 def test_total_physical_gb_is_plausible_on_this_machine():

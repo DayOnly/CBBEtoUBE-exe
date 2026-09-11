@@ -45,10 +45,26 @@ def _install_skypatcher(mods, ini="[Patcher]\niEnableArmorPatching=1\n"):
 
 
 def test_no_modlist_fails_fast():
+    """Without a modlist, run NOTHING that needs one -- and still report memory.
+
+    The bail exists because every other probe needs the mods folder, so a
+    length of 1 used to be the cheapest way to say "we stopped". The memory
+    check (#commit-headroom) is the one row that needs no modlist at all, and
+    it is deliberately ABOVE the bail: a user whose MO2 was not detected is
+    exactly the user who most needs their diagnostics zip to say how much RAM,
+    how many threads and how large a page file they have.
+
+    So assert the INTENT rather than the count -- the set of checks, which
+    still catches any expensive probe creeping in above the bail."""
     checks = pf.run_checks(_Lay(None))
-    assert len(checks) == 1
-    assert checks[0].id == "modlist" and checks[0].status == pf.FAIL
-    assert pf.overall(checks) == pf.FAIL
+    # `==`, not `<=`. A subset test is an upper bound only: it stayed green
+    # with the memory row absent entirely, or moved back below the bail.
+    assert {c.id for c in checks} == {"memory", "modlist"}, (
+        "a check that needs a modlist is running before the fail-fast bail")
+    ml = [c for c in checks if c.id == "modlist"]
+    assert len(ml) == 1 and ml[0].status == pf.FAIL
+    assert pf.overall(checks) == pf.FAIL, (
+        "the memory row must not be able to mask the modlist failure")
 
 
 def test_full_run_all_present(tmp_path, monkeypatch):

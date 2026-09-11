@@ -402,12 +402,39 @@ def _rim_edges(T):
     return np.array([k for k, v in ecount.items() if v == 1], np.int64)
 
 
+# Working-set ceiling for ONE _rim_distance chunk. #rim-chunk-budget
+# MEASURED 2026-09-11 with tracemalloc at M = 500 / 2000 / 8000 rim edges:
+# 120.06 / 120.05 / 120.04 bytes per (chunk slot x rim edge) -- exactly linear,
+# because the loop body holds `ap`, `t`, `q` and the norm temporary live at once
+# and each is (chunk, M, *) float64.
+_RIM_CHUNK_BUDGET = 64 << 20          # 64 MiB
+
+
 def _rim_distance(bV, gV, rim_e, chunk: int = 2048):
     if not len(rim_e):
         return np.full(len(bV), np.inf)
     a, b = gV[rim_e[:, 0]], gV[rim_e[:, 1]]
     ab = b - a
     L = np.clip(np.einsum("mj,mj->m", ab, ab), 1e-12, None)
+    # The loop chunks the BODY axis; the rim-edge axis M was unbounded, so peak
+    # was 120 * chunk * M and scaled with the GARMENT. MEASURED over a LOCAL
+    # 383-NIF sample (4250 shapes) -- NOT shipped, the repo tracks no .nif,
+    # so this is not reproducible from a clone: p50 56 MiB, p90 342 MiB, p99 1.40
+    # GiB, max 3.71 GiB on a 33k-vert shape with 16,217 rim edges. "Rim" is not
+    # a thin hem -- Skyrim NIFs split vertices at every UV seam and hard edge,
+    # so "edge used by exactly one triangle" catches about half the mesh.
+    # Failures here were INVISIBLE until 2026-09-11: the caller's
+    # `except Exception` swallowed MemoryError into an ANONYMOUS per-shape
+    # pass failure, so the shape shipped un-pushed and the run carried on
+    # while the exhaustion surfaced in whichever worker allocated next.
+    # nif_convert.py now catches MemoryError by name there. #rim-chunk-budget
+    #
+    # SAFE BY CONSTRUCTION: `out[s:s + chunk]` depends only on its own body
+    # vertices and ALL M edges, and nothing reduces across chunks, so the chunk
+    # size cannot change a single output value. VERIFIED bitwise equal for
+    # chunk = 1 / 37 / 777 / 2048 / 100000 (max abs diff 0.0), and
+    # tests/test_rim_distance_bounded.py holds that.
+    chunk = max(1, min(chunk, _RIM_CHUNK_BUDGET // (120 * len(rim_e))))
     out = np.full(len(bV), np.inf)
     for s in range(0, len(bV), chunk):
         p = bV[s:s + chunk]

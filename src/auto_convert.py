@@ -53,7 +53,15 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import ube_patcher, nif_convert, paths, discovery
+# MUST precede the `nif_convert` import below -- that is what pulls in numpy and
+# scipy, and the cap only has any effect before their FIRST import. About 1.5 GB
+# of per-process Windows commit charge on a 24-thread box rides on these two
+# lines; see src/blas_env.py for the measurement. #blas-thread-cap
+from .blas_env import cap_blas_threads
+
+cap_blas_threads()
+
+from . import ube_patcher, nif_convert, paths, discovery  # noqa: E402
 
 
 # ---------- Multiprocessing worker -------------------------------------
@@ -352,14 +360,42 @@ class _NifPool:
                 on_result(self.pool.submit(fn, it).result())
                 consec_crashes = 0
             except Exception as e:
+                # A worker killed by the OS for memory raises BrokenProcessPool
+                # with no Python traceback, and the wording here ("died",
+                # "systemic crash") was written for a broken pynifly DLL -- so
+                # an out-of-memory death read to the user as the TOOL being
+                # broken, and nothing pointed at the one lever that fixes it.
+                # Attach the machine's live memory reading instead of guessing.
+                # #commit-headroom
                 on_result(nif_convert.ConvertResult(
                     src_path=it[0], dst_path=None, status="error",
                     reason=f"worker process died (isolated convert): "
-                           f"{type(e).__name__}: {e}"))
+                           f"{type(e).__name__}: {e}{_memory_hint()}"))
                 self._rebuild()
                 consec_crashes += 1
                 if consec_crashes >= self.GIVE_UP_AFTER:
                     give_up = True
+
+
+def _memory_hint() -> str:
+    """Live memory reading to append to a worker-death message. #commit-headroom
+
+    A worker killed by Windows for memory leaves NO Python exception -- the
+    parent sees only BrokenProcessPool -- so the only way to tell that death
+    apart from a native crash is to say what memory looked like when it
+    happened. Returns "" when it cannot read, never raises: a diagnostic must
+    not be able to turn one failed NIF into a failed run."""
+    try:
+        st = _memory_status()
+        if not st or st.get("commit_free_gb") is None:
+            return ""          # cannot read -- say nothing rather than guess
+        if st["commit_free_gb"] > 4.0:
+            return ""          # plenty free; this death was not about memory
+        return (f" [low memory at the time: {st['avail_gb']:.1f} GB RAM and "
+                f"{st['commit_free_gb']:.1f} GB commit charge free -- lower "
+                f'"Worker processes" on the Run tab and try again]')
+    except Exception:
+        return ""
 
 
 def _incremental_code_mtime() -> float:
@@ -2411,7 +2447,8 @@ def write_conversion_summary(output_dir: Path, results: list) -> Path | None:
 
 
 def write_conversion_report_json(output_dir, results,
-                                 weight_warnings=None) -> "Path | None":
+                                 weight_warnings=None,
+                                 workers=None) -> "Path | None":
     """Machine-readable sibling of conversion_summary.txt, for the GUI health
     panel. Same batch stats plus the postflight invisibility-risk signal
     (weight-partner divergence). Best-effort; never raises."""
@@ -2468,7 +2505,7 @@ def write_conversion_report_json(output_dir, results,
         # conversion_settings.json so a pack carries its recipe with it.
         try:
             from . import build_info
-            rep["run_config"] = build_info.run_config()
+            rep["run_config"] = build_info.run_config(workers=workers)
             build_info.write_run_config(output_dir)
         except Exception as _e:
             rep["run_config"] = {"error": f"{type(_e).__name__}: {_e}"}
@@ -3001,6 +3038,20 @@ def _cmd_convert(args):
               "sources (each source gets its own ESP name derived from "
               "its source ESP filename).")
 
+    # THE MACHINE, ON EVERY PATH. #commit-headroom
+    # Printed before the branch, not inside the pooled arm: the serial
+    # (`--workers 1`) and `--plugins-only` paths build no pool, and those are
+    # exactly the runs a user is told to try after a memory error -- so the run
+    # they submit as evidence would have been the one log with no machine in
+    # it. `--workers 1` still runs one in-process converter plus the GUI, which
+    # is 2 processes, so the figures remain meaningful.
+    _planned_workers = (args.workers if args.workers is not None
+                        else default_worker_count())
+    if getattr(args, "plugins_only", False) or (
+            args.workers is not None and args.workers <= 1):
+        for _ln in describe_memory_plan(_planned_workers):
+            print(f"  {_ln}")
+
     # One shared pool for the whole batch: per-worker caches (pynifly, body OSD,
     # CBBE->UBE delta) persist across mods instead of being rebuilt per mod.
     if getattr(args, "plugins_only", False):
@@ -3015,17 +3066,23 @@ def _cmd_convert(args):
         if _auto_workers:
             pool_workers = default_worker_count()
         shared_pool = _NifPool(pool_workers, args.ube_body_ref)
-        _why = ""
-        if _auto_workers:
-            _gb = _total_physical_gb()
-            _cpu = max(1, (os.cpu_count() or 4) - 1)
-            if _gb and pool_workers < _cpu:
-                _why = (f"; capped by RAM ({_gb:.0f} GB / "
-                        f"{WORKER_MEM_BUDGET_GB:g} GB per worker, "
-                        f"cpu allows {_cpu})")
+        # The old "; capped by RAM (...)" suffix is GONE, not moved. It
+        # attributed every reduction to RAM even when the commit guard was what
+        # bound, and printed the RAM as `{:.0f}` (32) directly above the
+        # `{:.1f}` (31.8) that describe_memory_plan prints -- two adjacent
+        # lines disagreeing about the same machine. The lines below say what
+        # the machine is and what the run intends to use, on EVERY run rather
+        # than only when the count was chosen automatically. #commit-headroom
         print(f"  batch worker pool: {pool_workers} workers "
-              f"(shared across all sources, self-healing on worker crash)"
-              f"{_why}")
+              f"(shared across all sources, self-healing on worker crash)")
+        # UNCONDITIONAL, and that is the whole point. #commit-headroom
+        # Everything above is inside `if _auto_workers`, which is ALWAYS FALSE
+        # on a GUI run -- gui.py appends `--workers` on every launch -- so the
+        # RAM cap's only user-visible evidence was invisible to its entire
+        # audience, and a submitted log could not say what pool ran or on what
+        # machine. A memory-error report is undiagnosable without these numbers.
+        for _ln in describe_memory_plan(pool_workers):
+            print(f"  {_ln}")
         try:
             shared_pool.prewarm()
         except Exception as e:
@@ -3422,7 +3479,20 @@ def _cmd_convert(args):
     if meshes_out.is_dir():
         print("\n--- sanitizing vertex-color shader flags ---")
         try:
-            vc = nif_convert.sanitize_output_vertex_color_flags(meshes_out)
+            # Budget this pool the SAME way as the conversion pool. Left to
+            # itself the sweep picks `min(16, cpu_count - 2)` on CPU count
+            # alone (nif_convert_writer.py), so on a 16-thread box it spawned
+            # 14 fresh processes where the RAM-capped pool had run 8 -- and the
+            # user had no way to lower it: no CLI flag, no GUI control, no env
+            # var. Worst of all it fires at the END, after hours of work, and
+            # its own `except Exception` falls back to serial, so an
+            # out-of-memory death here left the run "successful" and silent.
+            # `pool_workers` is bound only on the pooled branch above, so
+            # re-derive rather than reach for it. #worker-mem-budget
+            _sanitize_workers = (args.workers if args.workers is not None
+                                 else default_worker_count())
+            vc = nif_convert.sanitize_output_vertex_color_flags(
+                meshes_out, workers=_sanitize_workers)
             print(f"  scanned {vc['files']} nifs; "
                   f"fixed {vc['shapes_fixed']} shape(s) in "
                   f"{vc['files_changed']} file(s)")
@@ -3751,7 +3821,13 @@ def _cmd_convert(args):
     summary_path = write_conversion_summary(output, results)
     if summary_path is not None:
         print(f"\n  coverage report: {summary_path}")
-    write_conversion_report_json(output, results, weight_warnings=_wp_div)
+    write_conversion_report_json(
+        output, results, weight_warnings=_wp_div,
+        # What RAN, not what this machine would pick now. `pool_workers` is
+        # unbound on the serial and --plugins-only branches, so re-derive the
+        # same way the pool did. #commit-headroom
+        workers=(args.workers if args.workers is not None
+                 else default_worker_count()))
 
     if overall_failures or overall_warnings:
         print(f"\n=== {overall_failures} failure(s), "
@@ -4517,13 +4593,43 @@ def _variant_sources_by_base(
 # not an allocation.
 WORKER_MEM_BUDGET_GB = 2.0
 
+# #commit-headroom -- per-process WINDOWS COMMIT CHARGE, which is a different
+# quantity from WORKER_MEM_BUDGET_GB above and is used for a different job. The
+# budget bounds RAM, deciding whether the box THRASHES; this bounds commit,
+# deciding whether an allocation FAILS.
+#
+# PROVISIONAL, and honestly labelled as such: it is the 2.36 GB/worker figure
+# above MINUS the ~1.5 GB of untouched OpenBLAS arena that #blas-thread-cap
+# removed (measured 1516.3 -> 37.9 MB at import on a 24-thread box), rounded up.
+# That is an attribution by subtraction and therefore weaker evidence than a
+# direct reading. REPLACE IT with a real mid-run measurement of one worker's
+# PrivateUsage the next time a full pack is converted.
+#
+# WHICH WAY IS SAFE: this is the DIVISOR in the guard below, so erring HIGH
+# yields FEWER workers -- the guard binds MORE often, costing throughput but
+# never memory. Erring LOW is the dangerous direction: it under-protects
+# exactly the starved machines the guard exists for. (An earlier draft of this
+# comment had that backwards.)
+WORKER_COMMIT_GB = 1.0
 
-def _total_physical_gb() -> "float | None":
-    """Total physical RAM in GB, or None if it can't be determined.
+
+def _memory_status() -> "dict | None":
+    """Physical RAM and Windows COMMIT figures in GB, or None if unavailable.
 
     Stdlib only, ON PURPOSE: `psutil` is EXCLUDED from the frozen build
     (CBBEtoUBE.spec), so importing it here would work in a source run and blow up
-    in the exe every user actually runs."""
+    in the exe every user actually runs.
+
+    Returns `total_gb`, `avail_gb`, `commit_limit_gb`, `commit_free_gb`. The
+    commit pair is the one that decides whether a run DIES rather than merely
+    slows down, and until 2026-09-11 nothing read it: Windows fails an
+    allocation against the commit limit (physical RAM + page file), not against
+    free RAM, so two machines with identical RAM behave completely differently
+    depending on whether the page file is system-managed or pinned small. That
+    is the difference between a user who reports a memory error and one who
+    reports nothing. `ullAvailPageFile` is the amount that can still be
+    committed; despite the name it is NOT "free space in pagefile.sys".
+    #commit-headroom"""
     try:
         if sys.platform == "win32":
             import ctypes
@@ -4542,9 +4648,23 @@ def _total_physical_gb() -> "float | None":
             st.dwLength = ctypes.sizeof(_MS)
             if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(st)):
                 return None
-            return st.ullTotalPhys / (1024 ** 3)
-        return (os.sysconf("SC_PHYS_PAGES")
-                * os.sysconf("SC_PAGE_SIZE")) / (1024 ** 3)
+            g = 1024.0 ** 3
+            return {"total_gb": st.ullTotalPhys / g,
+                    "avail_gb": st.ullAvailPhys / g,
+                    "commit_limit_gb": st.ullTotalPageFile / g,
+                    "commit_free_gb": st.ullAvailPageFile / g}
+        tot = (os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE")) / 1024 ** 3
+        return {"total_gb": tot, "avail_gb": None,
+                "commit_limit_gb": None, "commit_free_gb": None}
+    except Exception:
+        return None
+
+
+def _total_physical_gb() -> "float | None":
+    """Total physical RAM in GB, or None if it can't be determined."""
+    try:
+        st = _memory_status()
+        return st["total_gb"] if st else None
     except Exception:
         return None
 
@@ -4569,9 +4689,16 @@ def default_worker_count() -> int:
     needs two FULL runs. Treat this as insurance (and a genuine help on low-RAM
     machines), not a speed-up.
 
-    Lands somewhere sensible on hybrid CPUs as a side effect: 32 GB yields 16,
-    which on a 12th-gen i9 is exactly the P-core thread count -- workers past
-    that run on the much slower E-cores.
+    THE 2.0 CONSTANT IS NOW CONSERVATIVE, and deliberately left alone. The
+    2.4 GB/worker it was calibrated on was measured BEFORE #blas-thread-cap, and
+    about 1.5 GB of that figure was untouched OpenBLAS arena (see
+    src/blas_env.py) which no longer exists. The honest post-cap number is
+    nearer 0.9 GB, so this now errs about 2x toward safety. Re-measure a single
+    worker's private bytes mid-run before retuning it -- do NOT reason from the
+    old figure, and note that the two comments that record it disagree with each
+    other (the header above says 25 workers held 58.9 GB, the paragraph above
+    says 23 workers held the same 58.9 GB; one of them is wrong and which is
+    unrecoverable).
 
     `--workers` (CLI) and the GUI spinbox still override this outright; the
     budget itself can be retuned with CBBE2UBE_WORKER_MEM_GB for A/B testing."""
@@ -4583,12 +4710,114 @@ def default_worker_count() -> int:
         budget = WORKER_MEM_BUDGET_GB
     if budget <= 0:
         return cpu
-    gb = _total_physical_gb()
+    st = _memory_status()
+    gb = st["total_gb"] if st else None
     if not gb:
         return cpu                      # unknown RAM -> old behaviour
-    # Round to NEAREST, not down: a "32 GB" machine reports ~31.8 GB (firmware
-    # reserve), and flooring would drop a worker over 0.2 GB of accounting.
-    return max(1, min(cpu, int(gb / budget + 0.5)))
+    # FLOOR, not round-to-nearest. The old `int(gb/budget + 0.5)` granted a
+    # 15.85 GB machine 8 workers x 2.0 = 16.0 GB, i.e. 101% of physical RAM
+    # before Windows, MO2, the GUI or the child converter had taken a byte. The
+    # comment defending it -- that a "32 GB" box reports 31.8 GB and flooring
+    # loses a worker to firmware reserve -- was true and beside the point:
+    # rounding UP past the machine's own capacity to recover that worker is a
+    # worse trade than losing it. #worker-mem-budget
+    n = max(1, min(cpu, int(gb / budget)))
+
+    # COMMIT GUARD. #commit-headroom  The cap above bounds RAM, which decides
+    # whether the box THRASHES. This one bounds Windows commit charge, which
+    # decides whether an allocation FAILS -- a different quantity, and the one
+    # behind an actual memory error. It can only ever LOWER the count, so a
+    # machine with a healthy page file sees no change; a machine with the page
+    # file disabled or pinned small (common "gaming performance" advice) sees
+    # the pool shrink to what it can actually commit. +2 covers the GUI process
+    # and the child converter, which are live for the whole run. The 0.8 leaves
+    # room for everything else the user is running.
+    free_commit = (st or {}).get("commit_free_gb")
+    # `is not None`: at exactly 0.0 committable, truthiness skipped the guard
+    # and handed back the full RAM-capped pool on the one machine least able to
+    # run it. Gated on commit_limit_gb too, so a probe that reports 0 for both
+    # (a VM, a sandbox) falls back to the RAM cap instead of being pinned to a
+    # single worker forever. #commit-headroom
+    if (free_commit is not None and (st or {}).get("commit_limit_gb")
+            and WORKER_COMMIT_GB > 0):
+        n = max(1, min(n, int(free_commit * 0.8 / WORKER_COMMIT_GB) - 2))
+    return n
+
+
+def memory_plan(workers: int) -> dict:
+    """The machine's memory facts plus what this run intends to use.
+
+    Kept separate from the printing so `run_config()` and the report can carry
+    the same numbers into `conversion_report.json` -- a memory error is
+    diagnosable only if the artefacts say how much RAM, how many CPU threads and
+    how big the page file was, and before 2026-09-11 not one of them did.
+    #commit-headroom"""
+    st = _memory_status() or {}
+    try:
+        budget = float(os.environ.get("CBBE2UBE_WORKER_MEM_GB", "").strip()
+                       or WORKER_MEM_BUDGET_GB)
+    except ValueError:
+        budget = WORKER_MEM_BUDGET_GB
+    # +2: the GUI process and the child converter are live for the whole run.
+    # Priced at WORKER_COMMIT_GB, not the RAM budget -- this line is about
+    # commit charge, and pricing it at the RAM budget double-counts the margin.
+    need = (max(0, int(workers)) + 2) * max(WORKER_COMMIT_GB, 0.0)
+    free_commit = st.get("commit_free_gb")
+    return {"workers": int(workers),
+            "cpu_count": os.cpu_count(),
+            "budget_gb_per_worker": budget,
+            "projected_commit_gb": need,
+            "blas_threads": os.environ.get("OPENBLAS_NUM_THREADS"),
+            "total_ram_gb": st.get("total_gb"),
+            "avail_ram_gb": st.get("avail_gb"),
+            "commit_limit_gb": st.get("commit_limit_gb"),
+            "commit_free_gb": free_commit,
+            # `is not None`, NOT truthiness. A machine with 0.0 GB committable
+            # is the most starved one there is, and `bool(0.0)` read that as
+            # "no data" and silently dropped the warning. #commit-headroom
+            # 0.85, ABOVE the 0.8 the guard itself targets. At 0.7 the banner
+            # fired by construction on every machine where the guard bound: the
+            # guard leaves the pool at 0.8 of free commit, 0.8 > 0.7, so the run
+            # told the user to "lower Worker processes" on a pool it had just
+            # lowered for them. Above the guard's own target it fires only when
+            # the count came from somewhere else -- an explicit --workers or the
+            # GUI spinbox -- which is the only case where the advice is
+            # actionable. #commit-headroom
+            "tight": (free_commit is not None
+                      and need > free_commit * 0.85)}
+
+
+def describe_memory_plan(workers: int) -> "list[str]":
+    """Human-readable form of `memory_plan` for the run log."""
+    p = memory_plan(workers)
+    out = []
+    if p["total_ram_gb"]:
+        _ram = f"{p['total_ram_gb']:.1f} GB RAM"
+        if p["avail_ram_gb"]:
+            _ram += f" ({p['avail_ram_gb']:.1f} GB free)"
+        _pf = ""
+        if p["commit_limit_gb"]:
+            _pf = (f"; page file: {p['commit_limit_gb']:.1f} GB commit limit, "
+                   f"{p['commit_free_gb']:.1f} GB free")
+        out.append(f"machine: {_ram}, {p['cpu_count']} CPU threads{_pf}")
+        _w = p["workers"]
+        out.append(f"memory plan: {_w} worker{'' if _w == 1 else 's'} + 2 "
+                   f"helper processes at about {WORKER_COMMIT_GB:g} GB each = "
+                   f"roughly {p['projected_commit_gb']:.1f} GB of commit charge")
+    if p["tight"]:
+        out.append("!! LOW MEMORY: this run wants more Windows commit charge "
+                   "than you have comfortably free.")
+        # NAME NO NUMBER. "lower it to 4" was printed verbatim to machines
+        # whose pool the guard had ALREADY cut to 1 or 2 -- telling a starved
+        # user to RAISE their worker count, in the banner warning them about
+        # memory. preflight.py phrases it the same way for the same reason.
+        out.append("   If it dies with a memory error, lower \"Worker "
+                   "processes\" on the Run tab and run again.")
+        out.append("   Setting your page file back to system-managed (System > "
+                   "Advanced system settings >")
+        out.append("   Performance > Advanced > Virtual memory) also fixes it, "
+                   "and is the better answer.")
+    return out
 
 
 def _skip_esp_less_fallback(armor_bases, src_esps) -> bool:

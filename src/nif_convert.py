@@ -13734,6 +13734,28 @@ def _fit_shapes_swap(ctx) -> None:
                           f"{_mp_st['exposed_after']}, max "
                           f"{_mp_st['max_push']:.2f}u, frame={_mp_lbl} "
                           f"(reach {_mp_med:.2f}u)")
+            except MemoryError as e:
+                # NAMED, not swallowed into an anonymous pass failure.
+                # #commit-headroom  MemoryError subclasses Exception, so the
+                # generic handler below used to record it as one more repr()
+                # among thousands: the shape shipped without its minimum-push
+                # fit, the run carried on, and the word "MemoryError" never
+                # reached the user -- while the real exhaustion surfaced in
+                # whichever worker allocated next, possibly on a different mod.
+                # That is why "memory errors on 1.4" arrived with no usable
+                # detail attached.
+                # ALSO through the recorder. `failed` is a per-shape list;
+                # the run-level aggregators in auto_convert only read fragments
+                # beginning "PASS FAILED ", so a MemoryError recorded here and
+                # nowhere else never reaches the run summary or the report --
+                # exactly the silence this release exists to end.
+                _note_pass_failure("min_push_memory", e, s.name)
+                failed.append((
+                    f"{s.name}:min-push",
+                    f"MemoryError: ran out of memory fitting this shape, so it "
+                    f"shipped WITHOUT its minimum-push fit. Lower \"Worker "
+                    f"processes\" on the Run tab and convert this mod again. "
+                    f"({e!r})"))
             except Exception as e:
                 failed.append((f"{s.name}:min-push", repr(e)))
         # STANDOFF ASSERTION -- the last point where this shape's FINISHED
