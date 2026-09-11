@@ -36,7 +36,7 @@ Also fixed, all three found by auditing the same path:
 - **One fit step allocated up to 3.7 GB on a single garment.** It measures
   distance from the body to the garment's cut edges, in slices of body
   vertices — but the edge side of that was unbounded, so the cost grew with
-  the garment. Across the 383 meshes in the repository: half peak under
+  the garment. Across a local 383-mesh sample (not shipped): half peak under
   56 MiB, but the worst reaches 3.71 GiB on a shape with 16,217 edges. Now
   capped at 64 MiB for every mesh. **Output is unchanged, bit for bit** —
   each result depends only on its own body vertex, so the slice size cannot
@@ -116,9 +116,9 @@ test covering that step used a mesh comfortably above the size that broke it.
 It now sweeps across the boundary.
 
 **The 1.4 download already has this fix** — the binary was rebuilt after the
-1.4 pack was scored but before the release was published (commit `6241bee`,
-an ancestor of the `v1.4` tag), and only its changelog entry was left
-uncredited. It is recorded here so the release it shipped in is written down
+1.4 pack was scored but before the release was published (source fix
+`6241bee`, rebuilt into the shipped exe by `6f80b20`, both ancestors of the
+`v1.4` tag), and only its changelog entry was left uncredited. It is recorded here so the release it shipped in is written down
 somewhere. You do not need 1.4.1 for it.
 
 What does still apply: armour converted from here on gets its collision

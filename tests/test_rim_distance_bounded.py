@@ -18,7 +18,8 @@
 
 The loop chunks the BODY axis at 2048 and left the RIM-EDGE axis M unbounded,
 so the peak was 120 bytes x 2048 x M and grew with the mesh being converted.
-MEASURED over the 383 real NIFs in this repo (4250 shapes): p50 56 MiB, p90
+MEASURED over a LOCAL 383-NIF sample (4250 shapes) -- not shipped, the repo
+tracks no .nif, so these are not reproducible from a clone: p50 56 MiB, p90
 342 MiB, p99 1.40 GiB, max 3.71 GiB on a 33k-vert shape with 16,217 rim edges.
 "Rim" is not a thin hem: Skyrim NIFs split vertices at every UV seam and hard
 edge, so "edge used by exactly one triangle" captures roughly half the mesh.
@@ -60,7 +61,10 @@ def test_chunk_size_cannot_change_a_single_value():
 
 
 def test_peak_is_bounded_regardless_of_rim_size():
-    """The regression guard. Before the fix this peaked at 1,876 MiB."""
+    """The regression guard. Before the fix the 12000-edge case peaked at
+    2,061 MiB (120 B x 2048-slot chunk clipped to the 1500 body verts x 12000
+    edges); the earlier figure in this docstring described no case run here."""
+    # 12000 edges x 1500 body verts x 120 B = 2,061 MiB before the fix.
     for n_rim in (500, 4000, 12000):
         bV, gV, rim = _case(n_rim=n_rim)
         tracemalloc.start()

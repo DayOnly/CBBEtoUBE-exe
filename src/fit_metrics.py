@@ -417,15 +417,17 @@ def _rim_distance(bV, gV, rim_e, chunk: int = 2048):
     ab = b - a
     L = np.clip(np.einsum("mj,mj->m", ab, ab), 1e-12, None)
     # The loop chunks the BODY axis; the rim-edge axis M was unbounded, so peak
-    # was 120 * chunk * M and scaled with the GARMENT. MEASURED over the 383
-    # real NIFs in this repo (4250 shapes): p50 56 MiB, p90 342 MiB, p99 1.40
+    # was 120 * chunk * M and scaled with the GARMENT. MEASURED over a LOCAL
+    # 383-NIF sample (4250 shapes) -- NOT shipped, the repo tracks no .nif,
+    # so this is not reproducible from a clone: p50 56 MiB, p90 342 MiB, p99 1.40
     # GiB, max 3.71 GiB on a 33k-vert shape with 16,217 rim edges. "Rim" is not
     # a thin hem -- Skyrim NIFs split vertices at every UV seam and hard edge,
     # so "edge used by exactly one triangle" catches about half the mesh.
-    # Failures here were INVISIBLE: the caller's `except Exception` swallows
-    # MemoryError into a per-shape pass failure, so the shape shipped un-pushed
-    # and the run carried on -- the error surfaced in whichever worker allocated
-    # next. #rim-chunk-budget
+    # Failures here were INVISIBLE until 2026-09-11: the caller's
+    # `except Exception` swallowed MemoryError into an ANONYMOUS per-shape
+    # pass failure, so the shape shipped un-pushed and the run carried on
+    # while the exhaustion surfaced in whichever worker allocated next.
+    # nif_convert.py now catches MemoryError by name there. #rim-chunk-budget
     #
     # SAFE BY CONSTRUCTION: `out[s:s + chunk]` depends only on its own body
     # vertices and ALL M edges, and nothing reduces across chunks, so the chunk

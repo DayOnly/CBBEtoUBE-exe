@@ -128,8 +128,14 @@ def settings_file_status() -> dict:
         return {"path": None, "status": f"unknown ({type(e).__name__})", "sha256": None}
 
 
-def run_config() -> dict:
-    """The whole attribution block. Never raises."""
+def run_config(workers: "int | None" = None) -> dict:
+    """The whole attribution block. Never raises.
+
+    `workers`: the pool this run ACTUALLY used. Without it the machine block
+    below reports a number re-derived at report time, which is not what ran
+    whenever the user passed --workers or moved the GUI spinbox -- i.e. on
+    every GUI run, since the GUI always passes it. A memory report naming the
+    wrong pool size is worse than one naming none. #commit-headroom"""
     try:
         from . import paths
         mr = paths.mods_root()
@@ -147,7 +153,12 @@ def run_config() -> dict:
     # the three. Wrapped, because attribution must never be what breaks a run.
     try:
         from .auto_convert import memory_plan, default_worker_count
-        machine = memory_plan(default_worker_count())
+        _dflt = default_worker_count()
+        machine = memory_plan(_dflt if workers is None else workers)
+        # Both, so a report says what ran AND what this machine would have
+        # chosen on its own -- the pair is what tells you whether the user
+        # overrode a cap that was protecting them.
+        machine["workers_default"] = _dflt
     except Exception as e:
         machine = {"_error": f"{type(e).__name__}: {e}"}
     return {

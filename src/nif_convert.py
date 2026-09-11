@@ -13744,6 +13744,12 @@ def _fit_shapes_swap(ctx) -> None:
                 # whichever worker allocated next, possibly on a different mod.
                 # That is why "memory errors on 1.4" arrived with no usable
                 # detail attached.
+                # ALSO through the recorder. `failed` is a per-shape list;
+                # the run-level aggregators in auto_convert only read fragments
+                # beginning "PASS FAILED ", so a MemoryError recorded here and
+                # nowhere else never reaches the run summary or the report --
+                # exactly the silence this release exists to end.
+                _note_pass_failure("min_push_memory", e, s.name)
                 failed.append((
                     f"{s.name}:min-push",
                     f"MemoryError: ran out of memory fitting this shape, so it "

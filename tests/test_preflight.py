@@ -57,7 +57,9 @@ def test_no_modlist_fails_fast():
     So assert the INTENT rather than the count -- the set of checks, which
     still catches any expensive probe creeping in above the bail."""
     checks = pf.run_checks(_Lay(None))
-    assert {c.id for c in checks} <= {"memory", "modlist"}, (
+    # `==`, not `<=`. A subset test is an upper bound only: it stayed green
+    # with the memory row absent entirely, or moved back below the bail.
+    assert {c.id for c in checks} == {"memory", "modlist"}, (
         "a check that needs a modlist is running before the fail-fast bail")
     ml = [c for c in checks if c.id == "modlist"]
     assert len(ml) == 1 and ml[0].status == pf.FAIL

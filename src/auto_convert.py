@@ -387,8 +387,8 @@ def _memory_hint() -> str:
     not be able to turn one failed NIF into a failed run."""
     try:
         st = _memory_status()
-        if not st or not st.get("commit_free_gb"):
-            return ""
+        if not st or st.get("commit_free_gb") is None:
+            return ""          # cannot read -- say nothing rather than guess
         if st["commit_free_gb"] > 4.0:
             return ""          # plenty free; this death was not about memory
         return (f" [low memory at the time: {st['avail_gb']:.1f} GB RAM and "
@@ -2447,7 +2447,8 @@ def write_conversion_summary(output_dir: Path, results: list) -> Path | None:
 
 
 def write_conversion_report_json(output_dir, results,
-                                 weight_warnings=None) -> "Path | None":
+                                 weight_warnings=None,
+                                 workers=None) -> "Path | None":
     """Machine-readable sibling of conversion_summary.txt, for the GUI health
     panel. Same batch stats plus the postflight invisibility-risk signal
     (weight-partner divergence). Best-effort; never raises."""
@@ -2504,7 +2505,7 @@ def write_conversion_report_json(output_dir, results,
         # conversion_settings.json so a pack carries its recipe with it.
         try:
             from . import build_info
-            rep["run_config"] = build_info.run_config()
+            rep["run_config"] = build_info.run_config(workers=workers)
             build_info.write_run_config(output_dir)
         except Exception as _e:
             rep["run_config"] = {"error": f"{type(_e).__name__}: {_e}"}
@@ -3037,6 +3038,20 @@ def _cmd_convert(args):
               "sources (each source gets its own ESP name derived from "
               "its source ESP filename).")
 
+    # THE MACHINE, ON EVERY PATH. #commit-headroom
+    # Printed before the branch, not inside the pooled arm: the serial
+    # (`--workers 1`) and `--plugins-only` paths build no pool, and those are
+    # exactly the runs a user is told to try after a memory error -- so the run
+    # they submit as evidence would have been the one log with no machine in
+    # it. `--workers 1` still runs one in-process converter plus the GUI, which
+    # is 2 processes, so the figures remain meaningful.
+    _planned_workers = (args.workers if args.workers is not None
+                        else default_worker_count())
+    if getattr(args, "plugins_only", False) or (
+            args.workers is not None and args.workers <= 1):
+        for _ln in describe_memory_plan(_planned_workers):
+            print(f"  {_ln}")
+
     # One shared pool for the whole batch: per-worker caches (pynifly, body OSD,
     # CBBE->UBE delta) persist across mods instead of being rebuilt per mod.
     if getattr(args, "plugins_only", False):
@@ -3051,17 +3066,15 @@ def _cmd_convert(args):
         if _auto_workers:
             pool_workers = default_worker_count()
         shared_pool = _NifPool(pool_workers, args.ube_body_ref)
-        _why = ""
-        if _auto_workers:
-            _gb = _total_physical_gb()
-            _cpu = max(1, (os.cpu_count() or 4) - 1)
-            if _gb and pool_workers < _cpu:
-                _why = (f"; capped by RAM ({_gb:.0f} GB / "
-                        f"{WORKER_MEM_BUDGET_GB:g} GB per worker, "
-                        f"cpu allows {_cpu})")
+        # The old "; capped by RAM (...)" suffix is GONE, not moved. It
+        # attributed every reduction to RAM even when the commit guard was what
+        # bound, and printed the RAM as `{:.0f}` (32) directly above the
+        # `{:.1f}` (31.8) that describe_memory_plan prints -- two adjacent
+        # lines disagreeing about the same machine. The lines below say what
+        # the machine is and what the run intends to use, on EVERY run rather
+        # than only when the count was chosen automatically. #commit-headroom
         print(f"  batch worker pool: {pool_workers} workers "
-              f"(shared across all sources, self-healing on worker crash)"
-              f"{_why}")
+              f"(shared across all sources, self-healing on worker crash)")
         # UNCONDITIONAL, and that is the whole point. #commit-headroom
         # Everything above is inside `if _auto_workers`, which is ALWAYS FALSE
         # on a GUI run -- gui.py appends `--workers` on every launch -- so the
@@ -3475,7 +3488,7 @@ def _cmd_convert(args):
             # its own `except Exception` falls back to serial, so an
             # out-of-memory death here left the run "successful" and silent.
             # `pool_workers` is bound only on the pooled branch above, so
-            # re-derive rather than reach for it. #blas-thread-cap
+            # re-derive rather than reach for it. #worker-mem-budget
             _sanitize_workers = (args.workers if args.workers is not None
                                  else default_worker_count())
             vc = nif_convert.sanitize_output_vertex_color_flags(
@@ -3808,7 +3821,13 @@ def _cmd_convert(args):
     summary_path = write_conversion_summary(output, results)
     if summary_path is not None:
         print(f"\n  coverage report: {summary_path}")
-    write_conversion_report_json(output, results, weight_warnings=_wp_div)
+    write_conversion_report_json(
+        output, results, weight_warnings=_wp_div,
+        # What RAN, not what this machine would pick now. `pool_workers` is
+        # unbound on the serial and --plugins-only branches, so re-derive the
+        # same way the pool did. #commit-headroom
+        workers=(args.workers if args.workers is not None
+                 else default_worker_count()))
 
     if overall_failures or overall_warnings:
         print(f"\n=== {overall_failures} failure(s), "
@@ -4584,9 +4603,13 @@ WORKER_MEM_BUDGET_GB = 2.0
 # removed (measured 1516.3 -> 37.9 MB at import on a 24-thread box), rounded up.
 # That is an attribution by subtraction and therefore weaker evidence than a
 # direct reading. REPLACE IT with a real mid-run measurement of one worker's
-# PrivateUsage the next time a full pack is converted. Erring HIGH is the safe
-# direction -- it only makes the guard bind less often, degrading to the RAM cap
-# alone, which is what shipped before.
+# PrivateUsage the next time a full pack is converted.
+#
+# WHICH WAY IS SAFE: this is the DIVISOR in the guard below, so erring HIGH
+# yields FEWER workers -- the guard binds MORE often, costing throughput but
+# never memory. Erring LOW is the dangerous direction: it under-protects
+# exactly the starved machines the guard exists for. (An earlier draft of this
+# comment had that backwards.)
 WORKER_COMMIT_GB = 1.0
 
 
@@ -4710,7 +4733,13 @@ def default_worker_count() -> int:
     # and the child converter, which are live for the whole run. The 0.8 leaves
     # room for everything else the user is running.
     free_commit = (st or {}).get("commit_free_gb")
-    if free_commit and WORKER_COMMIT_GB > 0:
+    # `is not None`: at exactly 0.0 committable, truthiness skipped the guard
+    # and handed back the full RAM-capped pool on the one machine least able to
+    # run it. Gated on commit_limit_gb too, so a probe that reports 0 for both
+    # (a VM, a sandbox) falls back to the RAM cap instead of being pinned to a
+    # single worker forever. #commit-headroom
+    if (free_commit is not None and (st or {}).get("commit_limit_gb")
+            and WORKER_COMMIT_GB > 0):
         n = max(1, min(n, int(free_commit * 0.8 / WORKER_COMMIT_GB) - 2))
     return n
 
@@ -4743,7 +4772,19 @@ def memory_plan(workers: int) -> dict:
             "avail_ram_gb": st.get("avail_gb"),
             "commit_limit_gb": st.get("commit_limit_gb"),
             "commit_free_gb": free_commit,
-            "tight": bool(free_commit) and need > free_commit * 0.7}
+            # `is not None`, NOT truthiness. A machine with 0.0 GB committable
+            # is the most starved one there is, and `bool(0.0)` read that as
+            # "no data" and silently dropped the warning. #commit-headroom
+            # 0.85, ABOVE the 0.8 the guard itself targets. At 0.7 the banner
+            # fired by construction on every machine where the guard bound: the
+            # guard leaves the pool at 0.8 of free commit, 0.8 > 0.7, so the run
+            # told the user to "lower Worker processes" on a pool it had just
+            # lowered for them. Above the guard's own target it fires only when
+            # the count came from somewhere else -- an explicit --workers or the
+            # GUI spinbox -- which is the only case where the advice is
+            # actionable. #commit-headroom
+            "tight": (free_commit is not None
+                      and need > free_commit * 0.85)}
 
 
 def describe_memory_plan(workers: int) -> "list[str]":
@@ -4759,14 +4800,19 @@ def describe_memory_plan(workers: int) -> "list[str]":
             _pf = (f"; page file: {p['commit_limit_gb']:.1f} GB commit limit, "
                    f"{p['commit_free_gb']:.1f} GB free")
         out.append(f"machine: {_ram}, {p['cpu_count']} CPU threads{_pf}")
-        out.append(f"memory plan: {p['workers']} workers + 2 helper processes "
-                   f"at about {WORKER_COMMIT_GB:g} GB each = roughly "
-                   f"{p['projected_commit_gb']:.1f} GB of commit charge")
+        _w = p["workers"]
+        out.append(f"memory plan: {_w} worker{'' if _w == 1 else 's'} + 2 "
+                   f"helper processes at about {WORKER_COMMIT_GB:g} GB each = "
+                   f"roughly {p['projected_commit_gb']:.1f} GB of commit charge")
     if p["tight"]:
         out.append("!! LOW MEMORY: this run wants more Windows commit charge "
                    "than you have comfortably free.")
+        # NAME NO NUMBER. "lower it to 4" was printed verbatim to machines
+        # whose pool the guard had ALREADY cut to 1 or 2 -- telling a starved
+        # user to RAISE their worker count, in the banner warning them about
+        # memory. preflight.py phrases it the same way for the same reason.
         out.append("   If it dies with a memory error, lower \"Worker "
-                   "processes\" on the Run tab to 4 and run again.")
+                   "processes\" on the Run tab and run again.")
         out.append("   Setting your page file back to system-managed (System > "
                    "Advanced system settings >")
         out.append("   Performance > Advanced > Virtual memory) also fixes it, "
