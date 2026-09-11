@@ -140,10 +140,21 @@ def run_config() -> dict:
         nd = non_default_settings()
     except Exception as e:
         eff, nd = {}, {"_error": f"{type(e).__name__}: {e}"}
+    # #commit-headroom -- the machine, recorded on every run.
+    # A memory-error report was undiagnosable without this: RAM, thread count
+    # and page-file size are what separate "this box thrashes" from "this
+    # allocation fails", and not one artefact a user could send carried any of
+    # the three. Wrapped, because attribution must never be what breaks a run.
+    try:
+        from .auto_convert import memory_plan, default_worker_count
+        machine = memory_plan(default_worker_count())
+    except Exception as e:
+        machine = {"_error": f"{type(e).__name__}: {e}"}
     return {
         "build": stamp(),
         "settings_file": settings_file_status(),
         "mods_root": str(mr) if mr else None,
+        "machine": machine,
         "non_default": nd,
         "effective": eff,
         "env_overrides": {k: v for k, v in os.environ.items()

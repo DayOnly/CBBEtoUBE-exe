@@ -40,6 +40,16 @@ import multiprocessing
 import os
 import sys
 
+# MODULE LEVEL, and deliberately so: on Windows every pool worker RE-LAUNCHES
+# this exe, and multiprocessing's spawn re-imports this module in the child
+# before freeze_support() diverts it -- so running the cap here is what makes
+# every worker inherit it, not just the process the user started. It must also
+# be above any import that reaches numpy (`src.auto_convert` at _run(), line
+# ~186), because the cap does nothing once numpy is loaded. #blas-thread-cap
+from src.blas_env import cap_blas_threads
+
+cap_blas_threads()
+
 
 # Kept alive for the life of the process so the tee target isn't GC'd /
 # closed mid-run. Path is surfaced in _finish so the user can find the log.

@@ -66,6 +66,36 @@ body:
       required: false
 
   - type: textarea
+    id: machine
+    attributes:
+      label: Machine and memory
+      description: >-
+        Needed for any "out of memory", "MemoryError", freeze or vanished-worker
+        report, and cheap to give. Windows fails an allocation against RAM PLUS
+        page file, so a disabled or pinned-small page file causes memory errors
+        on a machine with plenty of RAM free — which is why two people with the
+        same RAM get different results from the same build.
+
+
+        1. RAM and CPU threads — Task Manager > Performance > CPU shows
+        "Logical processors".
+
+        2. Page file — System > Advanced system settings > Performance >
+        Advanced > Virtual memory. Is it "Automatically manage", and if not,
+        what size?
+
+        3. The "Worker processes" number on the Run tab.
+
+
+        The run log's `machine:` line has all of this, and so does the `machine`
+        block in `conversion_report.json`, if you would rather paste than look
+        it up.
+      placeholder: |
+        32 GB RAM, 24 threads, page file system-managed, 15 workers
+    validations:
+      required: false
+
+  - type: textarea
     id: diagnostics
     attributes:
       label: Diagnostics zip
