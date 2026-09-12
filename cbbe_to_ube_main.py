@@ -68,11 +68,24 @@ def _rotate_previous(path):
     try:
         if not os.path.exists(path):
             return
-        # Split on the EXTENSION, not with str.replace: a mods root containing
-        # ".log" anywhere in a directory name would be mangled by a blind
-        # replace, and this path comes from the user's own layout.
-        stem, ext = os.path.splitext(path)
-        os.replace(path, stem + "_previous" + (ext or ".previous"))
+        # ONE NAME, BOTH LAUNCH PATHS. The GUI rotates to
+        # "CBBEtoUBE_previous_run.log" and that is the name the changelog and
+        # REPORTING tell a user to attach; a plain splitext form here would
+        # produce "CBBEtoUBE_last_run_previous.log" instead, so whoever ran the
+        # exe directly would end up with a file no document mentions. Swap
+        # "_last_" for "_previous_" when it is there, and fall back to a suffix
+        # for an arbitrary CBBE2UBE_RUN_LOG path.
+        #
+        # Split on the EXTENSION rather than str.replace(".log", ""): the path
+        # comes from the user's own layout and a directory named e.g. "my.logs"
+        # would be mangled by a blind replace.
+        d, name = os.path.split(path)
+        if "_last_" in name:
+            prev = name.replace("_last_", "_previous_", 1)
+        else:
+            stem, ext = os.path.splitext(name)
+            prev = stem + "_previous" + (ext or ".previous")
+        os.replace(path, os.path.join(d, prev))
     except Exception:
         pass
 

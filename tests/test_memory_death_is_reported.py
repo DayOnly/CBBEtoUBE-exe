@@ -137,7 +137,7 @@ def test_the_run_log_is_rotated_not_truncated():
     with open(p, "w", encoding="utf-8") as f:
         f.write("the run that died")
     m._rotate_previous(p)
-    prev = os.path.join(d, "CBBEtoUBE_last_run_previous.log")
+    prev = os.path.join(d, "CBBEtoUBE_previous_run.log")
     assert os.path.exists(prev), "the previous run's log was destroyed"
     with open(prev, encoding="utf-8") as f:
         assert f.read() == "the run that died"
@@ -156,7 +156,50 @@ def test_rotation_does_not_mangle_a_path_containing_the_extension():
         f.write("x")
     m._rotate_previous(p)
     assert os.path.isdir(sub), "the directory name was mangled"
-    assert os.path.exists(os.path.join(sub, "CBBEtoUBE_last_run_previous.log"))
+    assert os.path.exists(os.path.join(sub, "CBBEtoUBE_previous_run.log"))
+
+
+def test_both_launch_paths_rotate_to_the_same_filename():
+    """THE DEFECT THIS CAUGHT. The GUI rotates to CBBEtoUBE_previous_run.log and
+    that is the name the changelog tells a user to attach. A plain splitext form
+    in the entry point produced CBBEtoUBE_last_run_previous.log instead -- so
+    whoever launched the exe directly rather than through MO2 ended up with a
+    file no document mentions, and would report "there is no previous log".
+
+    Pinned as a table because the fallback for an arbitrary CBBE2UBE_RUN_LOG
+    path has to keep working too."""
+    m = _entry_module()
+    for name, want in [
+            ("CBBEtoUBE_last_run.log", "CBBEtoUBE_previous_run.log"),
+            ("CBBEtoUBE_last_failures.json", "CBBEtoUBE_previous_failures.json"),
+            ("mylog.txt", "mylog_previous.txt"),          # CBBE2UBE_RUN_LOG
+            ("noext", "noext_previous.previous")]:
+        d = tempfile.mkdtemp()
+        p = os.path.join(d, name)
+        with open(p, "w", encoding="utf-8") as f:
+            f.write("x")
+        m._rotate_previous(p)
+        assert os.listdir(d) == [want], (
+            f"{name} rotated to {os.listdir(d)}, expected {want}")
+
+
+def test_the_gui_and_the_entry_point_agree_on_the_name():
+    """Read the GUI's literal and the entry point's result, and compare them.
+
+    Two independent implementations of the same naming rule is exactly how they
+    drift apart again; this fails the moment either side is edited alone."""
+    import inspect
+    from src import gui
+    m = _entry_module()
+    d = tempfile.mkdtemp()
+    p = os.path.join(d, "CBBEtoUBE_last_run.log")
+    with open(p, "w", encoding="utf-8") as f:
+        f.write("x")
+    m._rotate_previous(p)
+    entry_name = os.listdir(d)[0]
+    assert entry_name in inspect.getsource(gui), (
+        f"the entry point rotates to {entry_name}, which appears nowhere in "
+        f"gui.py -- the two launch paths have drifted apart")
 
 
 def test_rotation_is_a_no_op_when_there_is_nothing_to_rotate():
