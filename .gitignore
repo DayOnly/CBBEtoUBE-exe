@@ -29,6 +29,7 @@ _tmp_regen*/
 
 # Per-run failure record (written every run next to the run log)
 CBBEtoUBE_last_failures.json
+CBBEtoUBE_previous_failures.json
 
 # Packaged release archives
 CBBEtoUBE-*.zip

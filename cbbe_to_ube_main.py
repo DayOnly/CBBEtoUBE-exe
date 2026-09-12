@@ -51,6 +51,45 @@ from src.blas_env import cap_blas_threads
 cap_blas_threads()
 
 
+def _rotate_previous(path):
+    """Move an existing log aside instead of letting "w" truncate it.
+
+    THE RUN LOG IS THE ONLY ARTEFACT THAT SURVIVES A HARD KILL. It is
+    line-buffered, so it holds everything up to the instant the process died --
+    including the machine and memory-plan lines. Everything else a user could
+    send (conversion_report.json, conversion_settings.json,
+    conversion_summary.txt) is written at the END of a batch and simply does not
+    exist after an out-of-memory death.
+
+    And the advice the tool itself gives after such a death is "run again with
+    fewer workers" -- which, with a truncating open, DESTROYED the only evidence
+    of the failure it was reacting to. One rename fixes that. Best-effort: a
+    failure here must never stop a run from starting. #commit-headroom"""
+    try:
+        if not os.path.exists(path):
+            return
+        # ONE NAME, BOTH LAUNCH PATHS. The GUI rotates to
+        # "CBBEtoUBE_previous_run.log" and that is the name the changelog and
+        # REPORTING tell a user to attach; a plain splitext form here would
+        # produce "CBBEtoUBE_last_run_previous.log" instead, so whoever ran the
+        # exe directly would end up with a file no document mentions. Swap
+        # "_last_" for "_previous_" when it is there, and fall back to a suffix
+        # for an arbitrary CBBE2UBE_RUN_LOG path.
+        #
+        # Split on the EXTENSION rather than str.replace(".log", ""): the path
+        # comes from the user's own layout and a directory named e.g. "my.logs"
+        # would be mangled by a blind replace.
+        d, name = os.path.split(path)
+        if "_last_" in name:
+            prev = name.replace("_last_", "_previous_", 1)
+        else:
+            stem, ext = os.path.splitext(name)
+            prev = stem + "_previous" + (ext or ".previous")
+        os.replace(path, os.path.join(d, prev))
+    except Exception:
+        pass
+
+
 # Kept alive for the life of the process so the tee target isn't GC'd /
 # closed mid-run. Path is surfaced in _finish so the user can find the log.
 _LOG_FILE = None
@@ -109,11 +148,26 @@ def _install_log_tee() -> None:
     # process) pin the log to a known path it can tail -- the reliable way to
     # capture a windowed-exe run's output, whose stdout is a null sink.
     _override = os.environ.get("CBBE2UBE_RUN_LOG", "").strip()
+    # THE SETTINGS WINDOW IS NOT A RUN. #commit-headroom
+    # With no subcommand (or `gui`) and no CBBE2UBE_RUN_LOG pinned, this process
+    # is the GUI PARENT: it spawns a child to do the conversion, and that child
+    # owns the run log. When the parent ALSO teed to CBBEtoUBE_last_run.log it
+    # rotated the dead run aside at startup, and then the first Run click
+    # rotated the parent's ~80 bytes of startup chatter OVER it -- destroying
+    # the one artefact an out-of-memory death leaves behind, on exactly the path
+    # the tool's own "run again with fewer workers" advice sends the user down.
+    # So the parent keeps its own session log under a separate name and does not
+    # rotate: it is not a run, and no document points a bug report at it.
+    _gui_parent = (not _override
+                   and (not sys.argv[1:] or sys.argv[1] == "gui"))
+    _name = ("CBBEtoUBE_gui_session.log" if _gui_parent
+             else "CBBEtoUBE_last_run.log")
     _paths = ([_override] if _override else [])
-    _paths += [os.path.join(base, "CBBEtoUBE_last_run.log")
-               for base in _log_dir_candidates()]
+    _paths += [os.path.join(base, _name) for base in _log_dir_candidates()]
     for path in _paths:
         try:
+            if not _gui_parent:
+                _rotate_previous(path)
             f = open(path, "w", encoding="utf-8", buffering=1)  # line-buffered
             _LOG_PATH = path
             break

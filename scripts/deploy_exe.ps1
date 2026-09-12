@@ -71,8 +71,8 @@ if ((Test-Path $settings) -and -not $WhatIf) {
 $stateFiles = @(
     "CBBEtoUBE_settings.json",
     "CBBEtoUBE_exclusions.json",
-    "CBBEtoUBE_last_run.log",
-    "CBBEtoUBE_last_failures.json",
+    "CBBEtoUBE_*run.log",
+    "CBBEtoUBE_*failures.json",
     "CBBEtoUBE_settings.json.bak-*",
     "CBBEtoUBE_settings.json.prebuild-*"
 )

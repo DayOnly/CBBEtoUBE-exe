@@ -58,6 +58,11 @@ body:
     attributes:
       label: Error output
       description: >-
+        **If the run DIED, attach `CBBEtoUBE_previous_run.log`** — relaunching the
+        tool starts a new `CBBEtoUBE_last_run.log`, so the one that holds the failure
+        is the previous one.
+
+
         Paste the traceback or the last ~30 lines of output. `CBBEtoUBE_last_run.log`
         sits next to the exe and holds the full run; `CBBEtoUBE_last_failures.json`
         records per-armor failures. This is rendered as code — no backticks needed.
@@ -81,7 +86,8 @@ body:
         "Logical processors".
 
         2. Page file — System > Advanced system settings > Performance >
-        Advanced > Virtual memory. Is it "Automatically manage", and if not,
+        Settings > Advanced > Virtual memory > Change. Is it "Automatically
+        manage", and if not,
         what size?
 
         3. The "Worker processes" number on the Run tab.

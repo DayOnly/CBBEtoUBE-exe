@@ -874,18 +874,38 @@ def sanitize_output_vertex_color_flags(meshes_root, workers: "int | None" = None
                 "shapes_fixed": shapes_fixed}
 
     files_changed = shapes_fixed = 0
+    pool_error = None
+    # Imported BEFORE the try: the except clause below names BrokenProcessPool,
+    # and a name bound inside the try is not available to its own handler.
+    from concurrent.futures import ProcessPoolExecutor
+    from concurrent.futures.process import BrokenProcessPool
     try:
-        from concurrent.futures import ProcessPoolExecutor
         with ProcessPoolExecutor(max_workers=workers) as ex:
             for n in ex.map(_sanitize_one_nif_worker, files_list, chunksize=16):
                 if n:
                     files_changed += 1
                     shapes_fixed += n
-    except Exception:
-        # Any pool failure (spawn issue, etc.) -> safe serial fallback.
+    except (BrokenProcessPool, MemoryError) as _me:
+        # A WORKER WAS KILLED, and this is the likeliest moment in the whole run
+        # for it: the sweep fires at the very end, spawning a fresh pool that
+        # re-imports numpy in every process while the machine is at its most
+        # fragmented. It used to fall into the bare handler below, which
+        # restarts serially and returns a clean stats dict -- so an
+        # out-of-memory death here reported SUCCESS, printed nothing, and left
+        # no entry in the failures file. The serial fallback is still the right
+        # recovery; what was missing was saying it happened. #commit-headroom
+        pool_error = (f"{type(_me).__name__}: a worker died during the "
+                      f"vertex-colour sweep (most often out of memory). Redone "
+                      f"serially, so the output is correct, but if this run was "
+                      f"slow or unstable, lower \"Worker processes\" on the "
+                      f"Run tab.")
+        files_changed, shapes_fixed = _run_serial()
+    except Exception as _pe:
+        # Any other pool failure (spawn issue, etc.) -> safe serial fallback.
+        pool_error = f"{type(_pe).__name__}: {_pe}"
         files_changed, shapes_fixed = _run_serial()
     return {"files": files, "files_changed": files_changed,
-            "shapes_fixed": shapes_fixed}
+            "shapes_fixed": shapes_fixed, "pool_error": pool_error}
 
 def detect_zfight_pairs(
     armor_shape_verts: dict[str, np.ndarray],

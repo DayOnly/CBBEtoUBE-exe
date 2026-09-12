@@ -142,6 +142,10 @@ In the GUI, choose **Help ▸ Save diagnostics zip**. It writes
 A normal run also leaves these behind, useful if the GUI won't start:
 
 - `CBBEtoUBE_last_run.log`, `CBBEtoUBE_last_failures.json` — next to the exe
+- `CBBEtoUBE_previous_run.log` — **the one to attach if a run DIED.** It is
+  written line by line, so it survives a hard kill (an out-of-memory death
+  writes no report at all); relaunching starts a fresh `last_run.log`, which
+  belongs to the run *after* the failure.
 - `conversion_report.json`, `conversion_summary.txt`,
   `conversion_report_<mod>.txt` — at the output mod root
 
