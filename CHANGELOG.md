@@ -51,6 +51,34 @@ Also fixed, all three found by auditing the same path:
   lower it, at the very end of a run, and falling back to a slow serial walk
   if it died, so the run still reported success.
 
+### Changed — the memory budget is now measured, not estimated
+
+The worker count is bounded by how much memory Windows will let the run commit.
+Setting that bound needed a number nobody had: what one worker actually uses
+mid-run. It has now been measured against a real 3,800-mod pack, sampling each
+process from outside:
+
+| | |
+|---|---:|
+| worker, idle after start-up | 0.36 GB |
+| worker, converting | 0.6 – 1.3 GB |
+| worker, peak on a sampled population | 1.05 – 1.98 GB |
+| worker, peak on the largest single mesh (14 MB) | 3.79 GB |
+| the converter process itself, peak | 2.7 – 2.8 GB |
+| the settings window, after listing your mods | 0.71 GB |
+
+The first release of this guard priced a worker at 1.0 GB, a figure reached by
+subtracting the memory the thread-cap fix had just removed. That was **1.7 to
+3.7 times too low**, and it was too low in both directions that matter: it let
+the tool start too many workers, and it understated the projection, which
+suppressed the low-memory warning that was supposed to catch the rest. It also
+charged the converter process and the settings window as if each were one more
+worker; the converter alone peaks at nearly three times that.
+
+On a normally configured machine nothing changes — the RAM cap still decides.
+On a machine with the page file disabled the pool is now smaller and the
+arithmetic behind it is printed, so you can see why.
+
 ### Changed — the worker count no longer promises more memory than you have
 
 The count is capped by RAM as well as CPUs, but it **rounded up**: a machine
