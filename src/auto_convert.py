@@ -4593,24 +4593,50 @@ def _variant_sources_by_base(
 # not an allocation.
 WORKER_MEM_BUDGET_GB = 2.0
 
-# #commit-headroom -- per-process WINDOWS COMMIT CHARGE, which is a different
-# quantity from WORKER_MEM_BUDGET_GB above and is used for a different job. The
-# budget bounds RAM, deciding whether the box THRASHES; this bounds commit,
-# deciding whether an allocation FAILS.
+# #commit-headroom -- WINDOWS COMMIT CHARGE, a different quantity from
+# WORKER_MEM_BUDGET_GB above and used for a different job. The budget bounds RAM
+# and decides whether the box THRASHES; these bound commit and decide whether an
+# allocation FAILS.
 #
-# PROVISIONAL, and honestly labelled as such: it is the 2.36 GB/worker figure
-# above MINUS the ~1.5 GB of untouched OpenBLAS arena that #blas-thread-cap
-# removed (measured 1516.3 -> 37.9 MB at import on a 24-thread box), rounded up.
-# That is an attribution by subtraction and therefore weaker evidence than a
-# direct reading. REPLACE IT with a real mid-run measurement of one worker's
-# PrivateUsage the next time a full pack is converted.
+# MEASURED 2026-09-11 against a real 3,849-mod pack, PrivateUsage sampled from
+# outside each process, BLAS already capped. These are no longer derived by
+# subtraction; the earlier 1.0 provisional figure WAS, and it was 1.7-3.7x too
+# low:
 #
-# WHICH WAY IS SAFE: this is the DIVISOR in the guard below, so erring HIGH
-# yields FEWER workers -- the guard binds MORE often, costing throughput but
-# never memory. Erring LOW is the dangerous direction: it under-protects
-# exactly the starved machines the guard exists for. (An earlier draft of this
-# comment had that backwards.)
-WORKER_COMMIT_GB = 1.0
+#   worker steady floor                              0.36 GB
+#   worker steady, converting                        0.6 - 1.3 GB
+#   worker peak, 97-mesh sample                      1.05 - 1.18 GB
+#   worker peak, 419-mesh sample                     1.66 - 1.98 GB
+#   worker peak, largest single source (14 MB)       3.79 GB
+#   parent peak (postflight, after workers exit)     2.7 - 2.8 GB
+#   GUI, idle 0.15 GB / after one mod-list refresh   0.71 GB
+#
+# Peak tracks source mesh size at roughly 236 MB per source MB, so the 3.79 GB
+# outlier is one 14 MB NIF and not the common case; 2.0 covers the sampled peaks
+# without pricing every worker at the worst mesh in a pack.
+#
+# WHICH WAY IS SAFE, stated per consumer because they differ and an earlier
+# version of this comment gave only one of them:
+#   * as the DIVISOR in the guard below, erring low yields TOO MANY workers;
+#   * as the MULTIPLIER in `memory_plan`, erring low UNDERSTATES the projection,
+#     which suppresses the LOW MEMORY banner, the preflight warning and the
+#     figure in conversion_report.json.
+# Low is dangerous in both. Erring high only costs throughput.
+WORKER_COMMIT_GB = 2.0
+
+# The two processes that live for the whole run beside the pool. Priced
+# explicitly because the old `+2 workers` term charged them WORKER_COMMIT_GB
+# each, and they are not workers: the parent peaks in the postflight block
+# AFTER every worker has exited, and the GUI holds its mod-list scan for the
+# whole session.
+PARENT_COMMIT_GB = 3.0
+GUI_COMMIT_GB = 0.75
+
+# Share of free commit the guard may plan against. 0.9, not 0.8: the constants
+# above are now PEAK figures rather than optimistic ones, so a second large
+# haircut would double-count the conservatism and strand throughput on exactly
+# the machines that need it most.
+COMMIT_PLAN_FRACTION = 0.9
 
 
 def _memory_status() -> "dict | None":
@@ -4689,16 +4715,18 @@ def default_worker_count() -> int:
     needs two FULL runs. Treat this as insurance (and a genuine help on low-RAM
     machines), not a speed-up.
 
-    THE 2.0 CONSTANT IS NOW CONSERVATIVE, and deliberately left alone. The
-    2.4 GB/worker it was calibrated on was measured BEFORE #blas-thread-cap, and
-    about 1.5 GB of that figure was untouched OpenBLAS arena (see
-    src/blas_env.py) which no longer exists. The honest post-cap number is
-    nearer 0.9 GB, so this now errs about 2x toward safety. Re-measure a single
-    worker's private bytes mid-run before retuning it -- do NOT reason from the
-    old figure, and note that the two comments that record it disagree with each
-    other (the header above says 25 workers held 58.9 GB, the paragraph above
-    says 23 workers held the same 58.9 GB; one of them is wrong and which is
-    unrecoverable).
+    KEEP 2.0. DO NOT LOWER IT. An earlier version of this docstring reasoned
+    that the BLAS cap had removed ~1.5 GB of the 2.4 GB it was calibrated on, so
+    it "errs about 2x toward safety". That was wrong, and acting on it would
+    have broken the cap: 0.9 GB is a floor-plus-a-bit figure, while the quantity
+    this constant bounds is WORKING SET -- measured 2026-09-11 at 0.6-1.3 GB
+    steady and 1.53-1.69 GB peak. 2.0 errs about 1.2x safe, not 2x.
+
+    The old 58.9 GB reading IS attributable after all: the default it was taken
+    under was `cpu_count() - 1`, which on that 24-thread box is 23, so
+    58.9/23 = 2.56 GB/worker -- corroborated independently by the pre-cap binary
+    measuring 2.02-2.04 GB peak commit per worker. The "25 workers" in the
+    header comment above is the misremembered figure.
 
     `--workers` (CLI) and the GUI spinbox still override this outright; the
     budget itself can be retuned with CBBE2UBE_WORKER_MEM_GB for A/B testing."""
@@ -4740,7 +4768,11 @@ def default_worker_count() -> int:
     # single worker forever. #commit-headroom
     if (free_commit is not None and (st or {}).get("commit_limit_gb")
             and WORKER_COMMIT_GB > 0):
-        n = max(1, min(n, int(free_commit * 0.8 / WORKER_COMMIT_GB) - 2))
+        # Solve need(w) <= fraction * free, pricing the parent and the GUI
+        # separately rather than as two more workers.
+        room = (free_commit * COMMIT_PLAN_FRACTION
+                - PARENT_COMMIT_GB - GUI_COMMIT_GB)
+        n = max(1, min(n, int(room / WORKER_COMMIT_GB)))
     return n
 
 
@@ -4758,10 +4790,11 @@ def memory_plan(workers: int) -> dict:
                        or WORKER_MEM_BUDGET_GB)
     except ValueError:
         budget = WORKER_MEM_BUDGET_GB
-    # +2: the GUI process and the child converter are live for the whole run.
-    # Priced at WORKER_COMMIT_GB, not the RAM budget -- this line is about
-    # commit charge, and pricing it at the RAM budget double-counts the margin.
-    need = (max(0, int(workers)) + 2) * max(WORKER_COMMIT_GB, 0.0)
+    # The parent and the GUI priced at their own measured figures. They were
+    # previously charged as two extra WORKERS, which understated them: the
+    # parent alone peaks at 2.7-2.8 GB in the postflight block.
+    need = (max(0, int(workers)) * max(WORKER_COMMIT_GB, 0.0)
+            + PARENT_COMMIT_GB + GUI_COMMIT_GB)
     free_commit = st.get("commit_free_gb")
     return {"workers": int(workers),
             "cpu_count": os.cpu_count(),
@@ -4775,7 +4808,7 @@ def memory_plan(workers: int) -> dict:
             # `is not None`, NOT truthiness. A machine with 0.0 GB committable
             # is the most starved one there is, and `bool(0.0)` read that as
             # "no data" and silently dropped the warning. #commit-headroom
-            # 0.85, ABOVE the 0.8 the guard itself targets. At 0.7 the banner
+            # 0.95, ABOVE the COMMIT_PLAN_FRACTION the guard targets. At 0.7 it
             # fired by construction on every machine where the guard bound: the
             # guard leaves the pool at 0.8 of free commit, 0.8 > 0.7, so the run
             # told the user to "lower Worker processes" on a pool it had just
@@ -4784,7 +4817,7 @@ def memory_plan(workers: int) -> dict:
             # GUI spinbox -- which is the only case where the advice is
             # actionable. #commit-headroom
             "tight": (free_commit is not None
-                      and need > free_commit * 0.85)}
+                      and need > free_commit * 0.95)}
 
 
 def describe_memory_plan(workers: int) -> "list[str]":
@@ -4801,8 +4834,9 @@ def describe_memory_plan(workers: int) -> "list[str]":
                    f"{p['commit_free_gb']:.1f} GB free")
         out.append(f"machine: {_ram}, {p['cpu_count']} CPU threads{_pf}")
         _w = p["workers"]
-        out.append(f"memory plan: {_w} worker{'' if _w == 1 else 's'} + 2 "
-                   f"helper processes at about {WORKER_COMMIT_GB:g} GB each = "
+        out.append(f"memory plan: {_w} worker{'' if _w == 1 else 's'} at about "
+                   f"{WORKER_COMMIT_GB:g} GB each, plus {PARENT_COMMIT_GB:g} GB "
+                   f"for this process and {GUI_COMMIT_GB:g} GB for the window = "
                    f"roughly {p['projected_commit_gb']:.1f} GB of commit charge")
     if p["tight"]:
         out.append("!! LOW MEMORY: this run wants more Windows commit charge "

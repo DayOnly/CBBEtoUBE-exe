@@ -132,11 +132,17 @@ def test_a_healthy_page_file_does_not_change_anything(monkeypatch):
 def test_a_disabled_page_file_shrinks_the_pool(monkeypatch):
     """With the page file off, commit limit ~= RAM and the pool must shrink.
 
-    16 GB / 16 threads with 9.5 GB committable: the RAM cap alone still says 7,
-    which would ask for roughly 9 GB of commit charge from the pool plus 2 GB
-    from the two helper processes -- over the limit, and a hard MemoryError
-    rather than paging."""
-    assert _dc(monkeypatch, gb=15.85, cpus=16, commit_free=9.5) == 5
+    16 GB / 16 threads with 9.5 GB committable. The RAM cap alone still says 7,
+    which at the MEASURED 2.0 GB peak per worker plus 3.0 for the parent and
+    0.75 for the window is 17.8 GB against 9.5 -- a hard MemoryError, not
+    paging.
+
+    2, not the 5 this asserted before 2026-09-11. The constants were re-priced
+    from a real mid-run reading: per-worker commit is 1.05-1.98 GB on sampled
+    populations (3.79 GB on the largest single source), not the 1.0 GB derived
+    by subtraction, and the parent peaks at 2.7-2.8 GB rather than the 1.0 it
+    was charged as one more worker."""
+    assert _dc(monkeypatch, gb=15.85, cpus=16, commit_free=9.5) == 2
     assert _dc(monkeypatch, gb=15.85, cpus=16, commit_free=9.5) < \
         _dc(monkeypatch, gb=15.85, cpus=16, commit_free=64.0)
 
@@ -152,7 +158,7 @@ def test_the_guard_can_only_lower_never_raise(monkeypatch):
 
 
 def test_the_guard_never_returns_zero_or_negative(monkeypatch):
-    """`int(free*0.8/1.0) - 2` goes negative on a nearly-full machine.
+    """The room term goes negative on a nearly-full machine.
 
     Returning 0 would build an empty pool and 'convert' a modlist by doing
     nothing; a negative would raise inside ProcessPoolExecutor. Either is worse
