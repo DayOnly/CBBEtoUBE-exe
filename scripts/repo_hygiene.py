@@ -55,6 +55,7 @@ from pathlib import Path
 NEVER_TRACKED = (
     "ARMOR_WORKLIST.md",
     "CBBEtoUBE_last_failures.json",
+    "CBBEtoUBE_previous_failures.json",
     "output/",
     "samples/",
     # In-game working notes. CLIPPING_LOG.md alone carries 17 mod-naming lines;

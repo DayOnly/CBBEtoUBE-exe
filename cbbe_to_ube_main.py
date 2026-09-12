@@ -148,12 +148,26 @@ def _install_log_tee() -> None:
     # process) pin the log to a known path it can tail -- the reliable way to
     # capture a windowed-exe run's output, whose stdout is a null sink.
     _override = os.environ.get("CBBE2UBE_RUN_LOG", "").strip()
+    # THE SETTINGS WINDOW IS NOT A RUN. #commit-headroom
+    # With no subcommand (or `gui`) and no CBBE2UBE_RUN_LOG pinned, this process
+    # is the GUI PARENT: it spawns a child to do the conversion, and that child
+    # owns the run log. When the parent ALSO teed to CBBEtoUBE_last_run.log it
+    # rotated the dead run aside at startup, and then the first Run click
+    # rotated the parent's ~80 bytes of startup chatter OVER it -- destroying
+    # the one artefact an out-of-memory death leaves behind, on exactly the path
+    # the tool's own "run again with fewer workers" advice sends the user down.
+    # So the parent keeps its own session log under a separate name and does not
+    # rotate: it is not a run, and no document points a bug report at it.
+    _gui_parent = (not _override
+                   and (not sys.argv[1:] or sys.argv[1] == "gui"))
+    _name = ("CBBEtoUBE_gui_session.log" if _gui_parent
+             else "CBBEtoUBE_last_run.log")
     _paths = ([_override] if _override else [])
-    _paths += [os.path.join(base, "CBBEtoUBE_last_run.log")
-               for base in _log_dir_candidates()]
+    _paths += [os.path.join(base, _name) for base in _log_dir_candidates()]
     for path in _paths:
         try:
-            _rotate_previous(path)
+            if not _gui_parent:
+                _rotate_previous(path)
             f = open(path, "w", encoding="utf-8", buffering=1)  # line-buffered
             _LOG_PATH = path
             break

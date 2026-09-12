@@ -3502,8 +3502,14 @@ def _cmd_convert(args):
                 # a clean finish. #commit-headroom
                 print(f"  !! {vc['pool_error']}")
                 overall_warnings += 1
-                _record_failure("vertex-colour sweep pool died", "",
-                                "sanitize", vc["pool_error"])
+                # Named source and item: with an empty source the GUI popup
+                # titles this "1 item(s) failed to convert" and tells the user
+                # the armour is invisible on UBE actors -- the opposite of what
+                # happened, under a blank heading. A severity field and its own
+                # popup heading is the proper fix and is not a release-evening
+                # change.
+                _record_failure("warning", "vertex-colour sweep",
+                                "worker pool died", vc["pool_error"])
         except Exception as e:
             print(f"!! vertex-color sanitize failed: {e!r}")
 
@@ -4608,7 +4614,7 @@ WORKER_MEM_BUDGET_GB = 2.0
 #
 # MEASURED 2026-09-11 against a real 3,849-mod pack, PrivateUsage sampled from
 # outside each process, BLAS already capped. These are no longer derived by
-# subtraction; the earlier 1.0 provisional figure WAS, and it was 1.7-3.7x too
+# subtraction; the earlier 1.0 provisional figure WAS, and it was 1.7-3.8x too
 # low:
 #
 #   worker steady floor                              0.36 GB
@@ -4842,8 +4848,9 @@ def describe_memory_plan(workers: int) -> "list[str]":
                    f"{p['commit_free_gb']:.1f} GB free")
         out.append(f"machine: {_ram}, {p['cpu_count']} CPU threads{_pf}")
         _w = p["workers"]
+        _ea = "" if _w == 1 else " each"
         out.append(f"memory plan: {_w} worker{'' if _w == 1 else 's'} at about "
-                   f"{WORKER_COMMIT_GB:g} GB each, plus {PARENT_COMMIT_GB:g} GB "
+                   f"{WORKER_COMMIT_GB:g} GB{_ea}, plus {PARENT_COMMIT_GB:g} GB "
                    f"for this process and {GUI_COMMIT_GB:g} GB for the window = "
                    f"roughly {p['projected_commit_gb']:.1f} GB of commit charge")
     if p["tight"]:
@@ -4853,12 +4860,21 @@ def describe_memory_plan(workers: int) -> "list[str]":
         # whose pool the guard had ALREADY cut to 1 or 2 -- telling a starved
         # user to RAISE their worker count, in the banner warning them about
         # memory. preflight.py phrases it the same way for the same reason.
-        out.append("   If it dies with a memory error, lower \"Worker "
-                   "processes\" on the Run tab and run again.")
+        # At one worker there is nothing left to lower, and repeating the
+        # advice anyway is how the first version of this banner told starved
+        # users to RAISE their count. Below that floor the page file is the
+        # only remedy, so say only that.
+        if p["workers"] > 1:
+            out.append("   If it dies with a memory error, lower \"Worker "
+                       "processes\" on the Run tab and run again.")
+        else:
+            out.append("   This run is already down to a single worker, so "
+                       "there is nothing left to lower.")
         out.append("   Setting your page file back to system-managed (System > "
-                   "Advanced system settings >")
-        out.append("   Performance > Advanced > Virtual memory) also fixes it, "
-                   "and is the better answer.")
+                   "Advanced system settings > Performance >")
+        out.append("   Settings > Advanced > Virtual memory > Change) "
+                   + ("also fixes it, and is the better answer."
+                      if p["workers"] > 1 else "is the fix."))
     return out
 
 

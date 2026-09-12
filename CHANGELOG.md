@@ -99,15 +99,16 @@ process from outside:
 
 The first release of this guard priced a worker at 1.0 GB, a figure reached by
 subtracting the memory the thread-cap fix had just removed. That was **1.7 to
-3.7 times too low**, and it was too low in both directions that matter: it let
+3.8 times too low**, and it was too low in both directions that matter: it let
 the tool start too many workers, and it understated the projection, which
 suppressed the low-memory warning that was supposed to catch the rest. It also
 charged the converter process and the settings window as if each were one more
 worker; the converter alone peaks at nearly three times that.
 
-On a normally configured machine nothing changes — the RAM cap still decides.
-On a machine with the page file disabled the pool is now smaller and the
-arithmetic behind it is printed, so you can see why.
+The cap reads how much memory Windows will let the run commit **at the moment
+the tool starts**, so a machine that is merely busy — a browser open, a game
+running — can also get a smaller pool than its RAM alone would allow. The
+arithmetic is printed, and the Worker processes box on the Run tab overrides it.
 
 ### Changed — the worker count no longer promises more memory than you have
 
@@ -115,13 +116,16 @@ The count is capped by RAM as well as CPUs, but it **rounded up**: a machine
 reporting 15.85 GB was granted 8 workers at 2 GB each, i.e. 101% of the
 machine, before Windows, MO2 or the tool's own two processes took a byte. It
 now rounds down, and a second cap reads the page-file headroom and lowers the
-count when the run would not fit. On a normally configured machine nothing
-changes; with the page file off, the pool shrinks instead of failing.
+count when the run would not fit. With the page file off the pool shrinks
+instead of failing; on any machine, a large amount already committed by other
+programs lowers it too.
 
-The 2 GB-per-worker figure is now **conservative** rather than optimistic —
-about 1.5 GB of what it was calibrated on was the reserved scratch space that
-no longer exists. It is deliberately left alone until a worker's real
-footprint is measured again mid-run.
+The 2 GB-per-worker figure stays. It bounds a worker's *working set*, which the
+same mid-run measurement put at 0.6 – 1.3 GB steady and 1.53 – 1.69 GB at peak,
+so 2 GB errs about 1.2× toward safety — not the 2× an earlier draft of this note
+claimed by subtracting the scratch space the thread-cap fix removed. That
+subtraction compared two different quantities and was wrong; lowering the budget
+on it would have broken the cap.
 
 ### Added — a run now says what machine it ran on
 

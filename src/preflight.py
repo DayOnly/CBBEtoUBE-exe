@@ -261,7 +261,8 @@ def run_checks(layout=None, *, want_overlays=False, want_overlay_copy=False,
                  f"charge against {p['commit_free_gb']:.1f} GB free. Lower "
                  "\"Worker processes\" on the Run tab, or set your page file "
                  "back to system-managed (System > Advanced system settings > "
-                 "Performance > Advanced > Virtual memory) — Windows fails an "
+                 "Performance > Settings > Advanced > Virtual memory > Change) — "
+                 "Windows fails an "
                  "allocation against RAM plus page file, so a disabled or "
                  "pinned-small page file is the usual cause of a memory error "
                  "on a machine with plenty of RAM.")))

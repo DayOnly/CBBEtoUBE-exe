@@ -113,19 +113,33 @@ def test_the_sweep_still_falls_back_to_serial(monkeypatch, tmp_path):
 
 
 def test_the_call_site_surfaces_it(monkeypatch):
-    """A stats key nobody reads is not a fix. Pin the call site."""
+    """A stats key nobody reads is not a fix. Pin the call site.
+
+    Scoped by INDENTATION, not by a character count. The first version of this
+    test took a fixed 900-character window after the call, and adding a comment
+    to the handler pushed `_record_failure` out of it -- a test that fails on
+    prose is a test that gets weakened to shut it up."""
     import inspect
     from src import auto_convert as ac
-    src = inspect.getsource(ac._cmd_convert)
-    i = src.find("sanitize_output_vertex_color_flags")
-    assert i != -1
-    after = src[i:i + 900]
-    assert "pool_error" in after, (
+    lines = inspect.getsource(ac._cmd_convert).splitlines()
+    starts = [k for k, ln in enumerate(lines) if 'vc.get("pool_error")' in ln]
+    assert starts, (
         "the sanitize result's pool_error is never read, so a dead worker is "
         "still silent to the user")
-    assert "_record_failure" in after, (
+    head = lines[starts[0]]
+    indent = len(head) - len(head.lstrip())
+    body = []
+    for ln in lines[starts[0] + 1:]:
+        if ln.strip() and (len(ln) - len(ln.lstrip())) <= indent:
+            break
+        body.append(ln)
+    body = chr(10).join(body)
+    assert "print(" in body, "a dead worker must be printed to the run log"
+    assert "_record_failure" in body, (
         "it must reach the failures file too -- that is the artefact the bug "
         "report asks for")
+    assert "overall_warnings" in body, (
+        "it must count as a warning, or the end-of-run tally still reads clean")
 
 
 # --- 2. the run log must survive the next run -------------------------------

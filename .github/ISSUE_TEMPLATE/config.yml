@@ -21,7 +21,7 @@ contact_links:
       RaceMenu) and every optional tool (texconv, Papyrus compiler). Run "Check
       setup" in the GUI first — it verifies all of them.
   - name: How the refit works
-    url: https://github.com/DayOnly/CBBEtoUBE-exe/blob/main/DESIGN.md
+    url: https://github.com/DayOnly/CBBEtoUBE-exe/blob/main/docs/DESIGN.md
     about: >-
       Why a piece was fitted, skipped, or body-swapped the way it was. docs/DESIGN.md
       documents the clearance passes, physics preservation, and delivery model.
