@@ -51,6 +51,36 @@ Also fixed, all three found by auditing the same path:
   lower it, at the very end of a run, and falling back to a slow serial walk
   if it died, so the run still reported success.
 
+### Fixed — a run that died of memory could report success, and erased its own evidence
+
+Two separate silences, both found by asking what a user could actually *send*
+after a failure rather than by reading the conversion code.
+
+**The final cleanup pass reported success after a worker was killed.** It runs
+at the very end of a conversion and starts a fresh set of processes to do it —
+the likeliest moment in a whole run for one to be killed for memory. That
+failure was caught by a catch-all that quietly redid the work one file at a
+time and returned a clean result: nothing printed, nothing counted, nothing in
+the failure summary. The output was still correct, so this was never a
+correctness bug — but a run that nearly died looked identical to one that
+sailed through. It now says so, counts as a warning, and lands in the failure
+summary, naming the setting that fixes it.
+
+**The run log was deleted before each run.** It is the only file that survives
+a hard out-of-memory death: it is written line by line as the run goes, so it
+holds everything up to the instant the process died, including the new machine
+and memory-plan lines. Every other artefact — the report, the settings dump,
+the summary — is written when a batch *finishes* and simply does not exist
+afterwards.
+
+Both the command-line tool and the settings window destroyed it at startup, the
+window by deleting it outright. So the advice the tool itself gives after a
+memory death — run again with fewer workers — erased the evidence of the
+failure it was reacting to. The previous run's log and failure summary are now
+kept alongside the current ones as `CBBEtoUBE_previous_run.log` and
+`CBBEtoUBE_previous_failures.json`. If a run dies, that pair is what to attach
+to a report.
+
 ### Changed — the memory budget is now measured, not estimated
 
 The worker count is bounded by how much memory Windows will let the run commit.

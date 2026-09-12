@@ -51,6 +51,32 @@ from src.blas_env import cap_blas_threads
 cap_blas_threads()
 
 
+def _rotate_previous(path):
+    """Move an existing log aside instead of letting "w" truncate it.
+
+    THE RUN LOG IS THE ONLY ARTEFACT THAT SURVIVES A HARD KILL. It is
+    line-buffered, so it holds everything up to the instant the process died --
+    including the machine and memory-plan lines. Everything else a user could
+    send (conversion_report.json, conversion_settings.json,
+    conversion_summary.txt) is written at the END of a batch and simply does not
+    exist after an out-of-memory death.
+
+    And the advice the tool itself gives after such a death is "run again with
+    fewer workers" -- which, with a truncating open, DESTROYED the only evidence
+    of the failure it was reacting to. One rename fixes that. Best-effort: a
+    failure here must never stop a run from starting. #commit-headroom"""
+    try:
+        if not os.path.exists(path):
+            return
+        # Split on the EXTENSION, not with str.replace: a mods root containing
+        # ".log" anywhere in a directory name would be mangled by a blind
+        # replace, and this path comes from the user's own layout.
+        stem, ext = os.path.splitext(path)
+        os.replace(path, stem + "_previous" + (ext or ".previous"))
+    except Exception:
+        pass
+
+
 # Kept alive for the life of the process so the tee target isn't GC'd /
 # closed mid-run. Path is surfaced in _finish so the user can find the log.
 _LOG_FILE = None
@@ -114,6 +140,7 @@ def _install_log_tee() -> None:
                for base in _log_dir_candidates()]
     for path in _paths:
         try:
+            _rotate_previous(path)
             f = open(path, "w", encoding="utf-8", buffering=1)  # line-buffered
             _LOG_PATH = path
             break

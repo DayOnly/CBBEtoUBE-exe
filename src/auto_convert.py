@@ -3496,6 +3496,14 @@ def _cmd_convert(args):
             print(f"  scanned {vc['files']} nifs; "
                   f"fixed {vc['shapes_fixed']} shape(s) in "
                   f"{vc['files_changed']} file(s)")
+            if vc.get("pool_error"):
+                # Printed, counted and recorded. Silence here is what made an
+                # out-of-memory death at the end of a multi-hour run look like
+                # a clean finish. #commit-headroom
+                print(f"  !! {vc['pool_error']}")
+                overall_warnings += 1
+                _record_failure("vertex-colour sweep pool died", "",
+                                "sanitize", vc["pool_error"])
         except Exception as e:
             print(f"!! vertex-color sanitize failed: {e!r}")
 

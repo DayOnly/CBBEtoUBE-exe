@@ -2473,9 +2473,16 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
                     _rel()
             except Exception:
                 pass          # logging bookkeeping must never stop a run
+            # RENAME, do not remove. The GUI deleted the previous run's log
+            # before spawning the child, so the tool's own "re-run with fewer
+            # workers" advice destroyed the only artefact that survives an
+            # out-of-memory death -- everything else is written at end of batch.
+            # Renaming keeps the old run's evidence and still hands the child a
+            # clean path. #commit-headroom
             try:
                 if os.path.exists(log_path):
-                    os.remove(log_path)
+                    os.replace(log_path, str(_log_dir /
+                                             "CBBEtoUBE_previous_run.log"))
             except Exception:
                 pass
             # Failure summary the child writes at end of run (empty on a clean
@@ -2483,9 +2490,14 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
             # end-of-run popup show a PREVIOUS run's failures.
             fail_path = str(_log_dir / "CBBEtoUBE_last_failures.json")
             state["fail_path"] = fail_path
+            # Also renamed rather than removed, for the same reason. The
+            # popup still keys on `fail_path`, which no longer exists, so a
+            # crash-before-write cannot show a previous run's failures -- the
+            # behaviour the deletion was there for is unchanged.
             try:
                 if os.path.exists(fail_path):
-                    os.remove(fail_path)
+                    os.replace(fail_path, str(
+                        _log_dir / "CBBEtoUBE_previous_failures.json"))
             except Exception:
                 pass
             # Registry settings win over the inherited environment (they're the
