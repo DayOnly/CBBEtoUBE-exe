@@ -10,5 +10,12 @@
 # Rules live in scripts/repo_hygiene.py, shared with tests/, so the hook and the
 # test cannot drift apart.
 #
+# Two more refusals live in the same body (#worktree-per-branch): a commit on
+# main or testing, and a commit in the primary checkout on any branch -- work is
+# committed on a lane in a linked worktree (python scripts/lane.py new <name>).
+# And with no .asset-denylist to read, the hook refuses rather than passes on
+# nothing (#hook-fail-closed). CBBE2UBE_HOOKS_COMMIT_HERE=1 and
+# CBBE2UBE_HOOKS_NO_DENYLIST=1 each allow one deliberate exception.
+#
 # Bypass with `git commit --no-verify` when you genuinely mean to.
 exec python "$(git rev-parse --show-toplevel)/scripts/hook_precommit.py"

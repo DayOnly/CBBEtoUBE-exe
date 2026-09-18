@@ -73,6 +73,9 @@ NOT_A_TOOL = {
     "scripts/repo_hygiene.py",
     "scripts/hook_precommit.py",
     "scripts/hook_commitmsg.py",
+    "scripts/hook_prepush.py",
+    "scripts/onboard.py",
+    "scripts/lane.py",
     "scripts/make_icon.py",
 }
 

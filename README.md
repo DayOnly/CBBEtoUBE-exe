@@ -328,6 +328,11 @@ python cbbe_to_ube_main.py            # launches the GUI (default)
 python cbbe_to_ube_main.py auto       # headless full pipeline
 ```
 
+To work on the code rather than run it, `python scripts/onboard.py` configures
+the clone (the hooks, fast-forward-only pulls, an LF-only checkout) and reports
+what it cannot set for you; [CONTRIBUTING.md](CONTRIBUTING.md) describes the
+branch and worktree flow.
+
 ### Installing pynifly
 
 `pynifly` is BadDog's Python binding for `nifly`, distributed alongside the

@@ -25,6 +25,11 @@ message, its author and committer addresses, and every file it adds or changes,
 read AT that commit (a name added in one commit and deleted in the next is still
 published history).
 
+The denylist is looked up the way pre-commit looks it up, and a push from a
+checkout that has none anywhere is refused unless the gap is acknowledged for
+this one command (#hook-fail-closed): a name pushed to a lane is public the
+moment it lands.
+
 git passes the remote's name and URL as arguments, and one line per ref on
 stdin: `<local ref> <local sha> <remote ref> <remote sha>`.
 """
@@ -67,8 +72,8 @@ def commit_problems(sha: str, denylist) -> "list[str]":
 
 def main(argv, stdin=None) -> int:
     remote = argv[1] if len(argv) > 1 else "origin"
-    denylist, _n = H.load_denylist(Path(__file__).resolve().parent.parent)
     problems, seen = [], set()
+    denylist = P.denylist_for_hook(Path(__file__).resolve().parent.parent, problems)
     try:
         for line in (stdin or sys.stdin).read().splitlines():
             parts = line.split()
@@ -84,9 +89,6 @@ def main(argv, stdin=None) -> int:
     if not problems:
         return 0
     sys.stderr.write("\nPUSH BLOCKED -- public-repo hygiene\n\n")
-    if denylist is None:
-        sys.stderr.write(f"  (no {H.DENYLIST_FILE} on this machine, so NO asset-name "
-                         "check ran -- zero coverage, not a pass)\n\n")
     for p in problems:
         sys.stderr.write(f"  {p}\n")
     sys.stderr.write(

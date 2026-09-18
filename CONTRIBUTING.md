@@ -76,11 +76,16 @@ cd CBBEtoUBE-exe
 python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt pytest pyflakes vulture==2.16
-git config core.hooksPath .githooks
+python scripts/onboard.py
 python -m pytest -q
 ```
 
-**That `core.hooksPath` line is not optional housekeeping.** This repository is
+`scripts/onboard.py` points git at the repository's hooks, sets fast-forward-only
+pulls, an LF-only checkout and the blame ignore file, and then reports what only
+you can supply: a GitHub noreply commit identity and the asset denylist described
+below. Run it again whenever you like; it changes nothing that is already set.
+
+**The hooks are not optional housekeeping.** This repository is
 public, and four kinds of thing must never reach a commit: a file that is
 local-only by policy (they name specific mods), an absolute path identifying
 your machine or modlist, a personal email address, and the name of a real
@@ -107,10 +112,15 @@ the two cannot drift.
 The fourth rule needs one thing you have to supply: a list of the real asset
 names to refuse. That list cannot live in a public repo, so it is read from an
 untracked, gitignored `.asset-denylist` at the repo root — one name per line,
-`#` comments allowed, `re:` for a raw pattern. **Without that file the check
-runs against nothing**, and both the hook and the test say so rather than
-reporting a clean tree. Substitute a real name in tracked content the way the
-existing fixtures do, and keep a local record of what stands in for what.
+`#` comments allowed, `re:` for a raw pattern. **Without that file the hooks
+refuse to commit and to push**, and say so: a check that runs against nothing is
+zero coverage, not a pass. Ask the maintainer for the file; it is never tracked,
+so no clone has it, and a linked worktree reads the primary checkout's copy.
+`CBBE2UBE_HOOKS_NO_DENYLIST=1` lets one command through with the other three
+rules still enforced and a warning that names were not checked -- but a name
+pushed to a lane is already public, so get the file first. Substitute a real
+name in tracked content the way the existing fixtures do, and keep a local
+record of what stands in for what.
 
 Messages written before that hygiene work predate the asset-name rule and have
 not been rewritten. Rewriting them would re-hash every commit and every tag, and
@@ -137,9 +147,37 @@ status, not pytest's own.
 Rebuilding the tracked `dist/` bundle and pushing have an order that the release
 gate enforces; [docs/RELEASING.md](docs/RELEASING.md) says what it is and why.
 
+### Branches, lanes and worktrees
+
+`main` and `testing` are integration branches. On GitHub a ruleset lets them
+change only by a merged pull request with the three `pytest` checks green, and
+only as a merge commit: a squash or rebase merge re-hashes the commit that built
+the tracked exe, and the release gate then cannot find the commit the exe's
+stamp names. Nobody pushes to them directly, the maintainer included; the
+primary checkout tracks `testing` and moves by `git pull --ff-only`.
+
+Work happens on a lane: one branch in its own worktree beside the primary
+checkout.
+
+```bash
+python scripts/lane.py new my-change     # ../<checkout>.my-change on branch my-change, from origin/testing
+python scripts/lane.py list
+python scripts/lane.py rm my-change      # after the merge
+```
+
+The lane gets a copy of the denylist and shares the primary checkout's build
+environment, so a rebuild in a lane reproduces byte for byte. The pre-commit
+hook refuses a commit on `main` or `testing` and a commit in the primary
+checkout on any branch, and names that command in the refusal; for a deliberate
+exception set `CBBE2UBE_HOOKS_COMMIT_HERE=1` for the one command.
+
+Pull requests from a lane target `testing`. `main` receives `testing` through
+release pull requests only, so pick the base when you open the PR: GitHub
+offers `main` first because it is the default branch.
+
 ### Pull requests
 
-Branch off `main`, and open the PR against `main`. Keep the diff scoped to one
+Work on a lane and open the PR against `testing`. Keep the diff scoped to one
 change — this codebase encodes a lot of hard-won geometry behaviour, and a small
 diff is far easier to reason about against a symptom nobody can reproduce
 without the exact modlist.
