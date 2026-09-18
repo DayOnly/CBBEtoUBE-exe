@@ -1,0 +1,38 @@
+# The toolchain every release is built from. scripts/build_exe.ps1 creates
+# .venv-build from this file with `pip install --require-hashes` and refuses to
+# build once that environment stops matching it; CI's 3.10 lane installs it too.
+#
+# WHY PINS AND HASHES. requirements.txt asked for numpy>=1.24, scipy>=1.10 and
+# lz4>=4.0, and the build script installed "the latest PyInstaller" when it was
+# missing, so nothing recorded which libraries produced a release -- and a
+# different numpy or scipy is a geometry change until a parity run says
+# otherwise. scipy ships no dist-info in the bundle, so this file is the only
+# record of the version inside the exe.
+#
+# These are the versions the shipped 1.4.1 bundle carries: numpy, lz4 and
+# setuptools verified against dist/CBBEtoUBE/_internal/*.dist-info, scipy and
+# PyInstaller against the build stamp. To move the toolchain, edit a version and
+# its hash, delete .venv-build, rebuild, and re-run the parity harness.
+#
+# Generated 2026-09-15 on CPython 3.10.6, Windows x86-64, pip 22.2.1.
+
+numpy==2.2.6 \
+    --hash=sha256:f0fd6321b839904e15c46e0d257fdd101dd7f530fe03fd6359c1ea63738703f3
+scipy==1.15.3 \
+    --hash=sha256:9d61e97b186a57350f6d6fd72640f9e99d5a4a2b8fbf4b9ee9a841eab327dc13
+lz4==4.4.5 \
+    --hash=sha256:7c4e7c44b6a31de77d4dc9772b7d2561937c9588a734681f70ec547cfbc51ecd
+setuptools==63.2.0 \
+    --hash=sha256:0d33c374d41c7863419fc8f6c10bfe25b7b498aa34164d135c622e52580c6b16
+pyinstaller==6.20.0 \
+    --hash=sha256:d588844e890ee80c4365867f98146636e1849bbca8e4284bbf0c809aff0f161a
+pyinstaller-hooks-contrib==2026.5 \
+    --hash=sha256:ea1535783fbdac4626351709e83f3ea80b681d3a4745763ebb407b5e27342eb9
+altgraph==0.17.5 \
+    --hash=sha256:f3a22400bce1b0c701683820ac4f3b159cd301acab067c51c653e06961600597
+packaging==26.2 \
+    --hash=sha256:5fc45236b9446107ff2415ce77c807cee2862cb6fac22b8a73826d0693b0980e
+pefile==2024.8.26 \
+    --hash=sha256:76f8b485dcd3b1bb8166f1128d395fa3d87af26360c2358fb75b80019b957c6f
+pywin32-ctypes==0.2.3 \
+    --hash=sha256:8a1513379d709975552d202d942d9837758905c8d01eb82b8bcc30918929e7b8

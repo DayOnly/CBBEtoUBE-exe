@@ -1,0 +1,539 @@
+# CBBEtoUBE - CBBE/3BA to UBE armor converter
+# Copyright (C) 2026 DayOnly
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+"""Morph the BODY and the GARMENT together, then measure the clip.
+
+    python scripts/analysis/morph_clip_test.py <converted.nif> [--strength 1.0]
+        [--slider Breast] [--band bust|butt] [--list]
+
+WHY THIS EXISTS. Every clip number in this project is taken at BIND POSE, and
+bind pose is not what ships: in game the body is morphed by the player's sliders.
+A garment that clears the bind body perfectly can still be punched through by the
+morphed one, and -- the case that motivated this -- a fix that RESTORES morph
+following moves no vertex at all, so a bind-pose metric reads 0.000 change and
+looks like nothing happened. Measured on three cuirasses whose breast follow went
+0.0000 -> 0.23 with bind-pose clipping identical to four decimal places.
+
+THE MODEL, and it mirrors how the game actually does it:
+
+  * the BODY morphs from the UBE body's own slider data (`.osd`, or its sibling
+    `.tri`) -- these are the BodySlide sliders RaceMenu drives at runtime;
+  * the GARMENT morphs from ITS OWN `.tri`, by the SAME slider name. That is
+    what makes armour track the body: BodySlide bakes matching morphs into the
+    armour, and skee applies them through the BODYTRI reference.
+
+So a garment fails to follow when its `.tri` has no morph for that slider, when
+it has no `.tri` at all, or when something overrides its verts at runtime --
+which is exactly what a GENERATED per-vertex soft-body does
+(see #rigid-majority-softbody-gate).
+
+WHAT IT DOES NOT MODEL: physics. Jiggle bones, SMP cloth and collision are
+runtime-only. A skirt that swings clear in game will look clipped here, so read
+this for FITTED armour and treat draping/simulated cloth with suspicion -- the
+`chain%` column is printed so you can see which you are looking at.
+
+CONTROLS, printed every run because a morph harness that silently morphs nothing
+is the failure mode this project keeps hitting:
+  * the body must actually MOVE (non-zero displacement) or the run aborts;
+  * the garment's own displacement is reported beside it -- if it is 0.000 while
+    the body moved, that IS the finding, not a broken harness.
+"""
+import argparse
+import os
+import sys
+from pathlib import Path
+
+_REPO = Path(__file__).resolve().parent.parent.parent
+sys.path.insert(0, str(_REPO))
+sys.path.insert(0, str(_REPO / ".pynifly"))
+
+# RESOLVE THE MO2 LAYOUT BEFORE `nif_convert` IS ASKED FOR ANY PATH. Without
+# this, `_find_ube_body_osd()` returns nothing and the tool aborts with "no body
+# OSD resolved" -- which reads like the modlist is missing the file rather than
+# like the tool never looked. It cost a session's worth of confusion on the one
+# harness that can answer the question every clearance verdict here is blocked
+# on. Set CBBE2UBE_MO2_INI to point at a different instance.
+from src import paths                                  # noqa: E402
+try:
+    paths.export_to_env(paths.discover_layout())
+except Exception as _le:                               # noqa: BLE001
+    print(f"WARNING: could not resolve an MO2 layout ({_le}); body/garment "
+          f"lookups will fall back to whatever is already in the environment",
+          file=sys.stderr)
+
+import numpy as np                                    # noqa: E402
+from scripts.analysis import standoff_audit as sa              # noqa: E402
+import src.nif_convert as nc                          # noqa: E402
+from src import body_zones as bz                      # noqa: E402
+
+# A band IS the project's own zone predicate, not a second copy of one. What this
+# replaced was an inline (z-range, front-flag) re-derivation of breast_mask and
+# butt_mask -- identical today, and exactly the way two detectors for one concept
+# drift apart later. Calling the real predicate keeps there being only one.
+#
+# `back` is body_zones.back_mask: z 90..110, rear-facing. Its ceiling of 110 sits
+# BELOW the shoulder blades, so a back number here is a LOWER BOUND on the region
+# the defect was reported in -- do not read a clean back band as a clean upper back.
+BANDS = {"bust": bz.breast_mask, "butt": bz.butt_mask, "back": bz.back_mask}
+
+
+def _world(shape):
+    return nc._verts_skin_to_world(np.asarray(shape.verts, np.float64),
+                                   nc._shape_global_to_skin(shape))
+
+
+def _aligned(shape, ref):
+    """Shape verts in whichever frame lands them ON the reference body.
+
+    `_verts_skin_to_world` is a NORMALIZER: a shape already stored in world
+    carries an identity transform and is untouched. But the converter's OUTPUT
+    routinely stores world verts WITH a non-identity transform still attached,
+    and transforming those again throws them hundreds of units away. Measured on
+    a copy-path cuirass: raw z 11..119 (on the body, 11..114) became world z
+    -320..292, and the harness then reported 0.00% band coverage -- a FALSE ZERO
+    that reads exactly like "this garment does not clip".
+
+    So the frame is chosen by evidence, per shape: whichever candidate lands
+    nearer the reference wins. Frames that agree (identity transform) are not
+    ambiguous -- either will do.
+    """
+    raw = np.asarray(shape.verts, np.float64)
+    try:
+        w = _world(shape)
+    except Exception:
+        return raw
+    if float(np.abs(raw - w).max()) < 1e-6:
+        return raw
+    # PROXIMITY, not a z-range test. A z-range check is too permissive -- a
+    # shape squashed near the origin still falls inside a padded body range, so
+    # it "passes" and the wrong frame is kept. That heuristic was tried and
+    # rejected once already this session; use the distance to the body itself.
+    from scipy.spatial import cKDTree
+    tree = cKDTree(np.asarray(ref, np.float64))
+    dr = float(np.median(tree.query(raw)[0]))
+    dw = float(np.median(tree.query(w)[0]))
+    return raw if dr <= dw else w
+
+
+def _sparse_to_dense(offsets, n):
+    d = np.zeros((n, 3), np.float64)
+    for idx, dx, dy, dz in offsets:
+        if 0 <= idx < n:
+            d[idx] = (dx, dy, dz)
+    return d
+
+
+def body_morphs(n_verts):
+    """{slider: dense delta} for the UBE body, from its OSD."""
+    osd_p = nc._find_ube_body_osd()
+    if not osd_p:
+        return {}, None
+    osd = nc._cached_osd_load(Path(osd_p))
+    out = {}
+    for m in osd.morphs:
+        d = _sparse_to_dense(m.offsets, n_verts)
+        if np.abs(d).max() > 1e-6:
+            out[m.name] = d
+    return out, Path(osd_p).name
+
+
+def garment_morphs(nif_path, shape_name, n_verts):
+    """{slider: dense delta} for one garment shape, from its sibling .tri."""
+    stem = Path(nif_path).stem
+    for s in ("_0", "_1"):
+        if stem.endswith(s):
+            stem = stem[:-2]
+    tri = Path(nif_path).parent / f"{stem}.tri"
+    if not tri.is_file():
+        return {}, None
+    from src.tri import TriFile
+    t = TriFile.load(tri)
+    for sh in t.shapes:
+        if sh.name != shape_name:
+            continue
+        return ({m.name: _sparse_to_dense(m.offsets, n_verts)
+                 for m in sh.morphs}, tri.name)
+    return {}, tri.name
+
+
+def _match(slider, keys):
+    """The garment names its morphs the same way the body does, but not
+    always identically -- match case-insensitively, then by suffix."""
+    low = slider.lower()
+    for k in keys:
+        if k.lower() == low:
+            return k
+    for k in keys:
+        if k.lower().endswith(low) or low.endswith(k.lower()):
+            return k
+    return None
+
+
+def _load_preset(path):
+    """{slider -> value} from a BodySlide SliderPresets XML or a RaceMenu .jslot.
+
+    A preset is the population that actually ships. Scoring sliders ONE AT A TIME
+    was the wrong population once already: a preset engages them together and the
+    residuals ADD, so the combination pokes where no single slider does.
+
+    BodySlide stores a percent on two weight sides; we take `big`, the weight-100
+    side, because that is the side a `_1` mesh is measured against. RaceMenu stores
+    a per-mod key list per morph, whose values SUM to the applied value.
+    """
+    p = Path(path)
+    if p.suffix.lower() == ".jslot":
+        import json
+        d = json.loads(p.read_text(encoding="utf-8-sig"))
+        out = {}
+        for e in d.get("bodyMorphs") or []:
+            nm = e.get("name")
+            if not nm:
+                continue
+            out[nm] = out.get(nm, 0.0) + sum(
+                float(k.get("value", 0.0)) for k in (e.get("keys") or []))
+        return out, "racemenu jslot"
+    import xml.etree.ElementTree as ET
+    out = {}
+    for pr in ET.parse(str(p)).getroot().iter("Preset"):
+        for s in pr.iter("SetSlider"):
+            if (s.get("size") or "").lower() != "big":
+                continue
+            nm = s.get("name")
+            if nm:
+                out[nm] = float(s.get("value", "0")) / 100.0
+    return out, "bodyslide xml (big/weight-100 side)"
+
+
+def _resolve_preset(pv, bm):
+    """{body OSD morph -> value}, plus what did NOT resolve.
+
+    EXACT match on the name with the shape prefix stripped, because the loose
+    suffix rule `_match` uses for a single slider is unsafe over a whole preset:
+    'Butt' would silently bind to 'BaseShapeBigButt'. Anything that needs the
+    loose rule is recorded as FUZZY and printed, never folded in quietly.
+    """
+    idx = {}
+    for k in bm:
+        n = k[len("BaseShape"):] if k.lower().startswith("baseshape") else k
+        idx.setdefault(n.lower(), k)
+    sel, missing, fuzzy = {}, [], []
+    for nm, v in pv.items():
+        if abs(v) < 1e-9:
+            continue
+        k = idx.get(nm.lower())
+        if k is None:
+            k = _match(nm, list(bm))
+            if k is None:
+                missing.append(nm)
+                continue
+            fuzzy.append((nm, k))
+        sel[k] = sel.get(k, 0.0) + v
+    return sel, missing, fuzzy
+
+
+def _garment_parts(nf, p, bV):
+    """[(shape, bind verts, tris, per-slider morph table)] for rendered shapes."""
+    out = []
+    for s in nf.shapes:
+        nm = s.name or ""
+        if nm == "BaseShape" or nc._is_inline_body_name(nm):
+            continue
+        if int(getattr(s, "flags", 0) or 0) & 0x1:
+            continue
+        if not any(v for v in (s.textures or {}).values()):
+            continue
+        gV = _aligned(s, bV)
+        gT = np.asarray(s.tris, np.int64).reshape(-1, 3)
+        gm, _tn = garment_morphs(p, nm, len(gV))
+        out.append((nm, gV, gT, gm))
+    return out
+
+
+def _union(parts):
+    V = np.concatenate([v for v, _t in parts])
+    off, tl = 0, []
+    for v, t in parts:
+        tl.append(t + off)
+        off += len(v)
+    return V, np.concatenate(tl)
+
+
+def _sweep(a, nf, bV, bT, bN, bm, p) -> int:
+    """Score every slider that actually moves the band.
+
+    Sliders are ranked by the clipping they COST, so the output is a list of
+    suspects ordered by how much they matter -- not 202 numbers to read.
+    `--min-body-move` drops sliders that barely touch the band: they cannot be
+    responsible, and including them would bury the real ones in noise.
+    """
+    mask = BANDS[a.band](bV)
+    idx = np.flatnonzero(mask)
+    if len(idx) < 20:
+        print(f"ABORT: {a.band} band has {len(idx)} verts", file=sys.stderr)
+        return 3
+    parts = _garment_parts(nf, p, bV)
+    if not parts:
+        print("ABORT: no rendered garment shape", file=sys.stderr)
+        return 3
+    va = sa.vert_areas(bV, bT)
+    gV0, gT0 = _union([(v, t) for _n, v, t, _m in parts])
+    base = sa.ClipTester(gV0, gT0).report(bV, bT, bN, idx, va,
+                                          oriented=True)["clipping_pct"]
+    print(f"{a.band.upper()} band {len(idx)} verts   BIND clipping "
+          f"{base:.3f}%   strength {a.strength}")
+    print(f"scoring sliders that move the band by >= {a.min_body_move}u ...",
+          flush=True)
+
+    rows, skipped = [], 0
+    for name, dB in bm.items():
+        move = np.linalg.norm(dB[idx], axis=1)
+        if move.max() < a.min_body_move:
+            skipped += 1
+            continue
+        dBs = dB * float(a.strength)
+        moved_parts, gmove = [], 0.0
+        for _nm, gV, gT, gm in parts:
+            mk = _match(name, gm.keys())
+            dG = (gm[mk] * float(a.strength) if mk is not None
+                  else np.zeros_like(gV))
+            gmove = max(gmove, float(np.linalg.norm(dG, axis=1).max()))
+            moved_parts.append((gV + dG, gT))
+        gVm, gTm = _union(moved_parts)
+        r = sa.ClipTester(gVm, gTm).report(bV + dBs, bT, bN, idx,
+                                           sa.vert_areas(bV + dBs, bT),
+                                           oriented=True)
+        rows.append({"slider": name, "clip": r["clipping_pct"],
+                     "d": r["clipping_pct"] - base,
+                     "buried": r["clip_buried_pct"],
+                     "bmove": float(np.median(move)), "gmove": gmove})
+    if not rows:
+        print("ABORT: no slider moved the band -- nothing was measured",
+              file=sys.stderr)
+        return 3
+    rows.sort(key=lambda r: -r["d"])
+    print(f"{len(rows)} sliders scored ({skipped} skipped as too small)\n")
+    print(f"{'slider':<42}{'clip%':>8}{'delta':>8}{'buried':>8}"
+          f"{'body':>7}{'garment':>8}{'follow':>8}")
+    print("-" * 89)
+    for r in rows[:20]:
+        fol = (r["gmove"] / r["bmove"]) if r["bmove"] > 1e-6 else float("nan")
+        print(f"{r['slider'][:41]:<42}{r['clip']:>8.3f}{r['d']:>+8.3f}"
+              f"{r['buried']:>8.3f}{r['bmove']:>7.3f}{r['gmove']:>8.3f}"
+              f"{fol:>8.2f}")
+    worst = rows[0]
+    nofollow = [r for r in rows if r["gmove"] < 1e-4]
+    print(f"\nworst: {worst['slider']}  {worst['d']:+.3f} points")
+    print(f"sliders the garment does NOT follow at all (0.000u): "
+          f"{len(nofollow)} of {len(rows)}")
+    for r in nofollow[:8]:
+        print(f"   {r['d']:+7.3f}  {r['slider']}")
+    return 0
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("nif")
+    ap.add_argument("--slider", default="breast",
+                    help="substring of the slider name (default: breast)")
+    ap.add_argument("--strength", type=float, default=1.0)
+    ap.add_argument("--band", default="bust", choices=sorted(BANDS))
+    ap.add_argument("--list", action="store_true",
+                    help="list the body sliders that match and exit")
+    ap.add_argument("--body",
+                    help="body NIF to morph against; defaults to the piece's "
+                         "injected BaseShape, or the UBE template body for a "
+                         "copy-path piece that has none")
+    ap.add_argument("--sweep", action="store_true",
+                    help="score EVERY slider that moves the band, ranked by the "
+                         "clipping it costs")
+    ap.add_argument("--min-body-move", type=float, default=0.15,
+                    help="sweep only sliders that move the band at least this "
+                         "much (default 0.15u) -- a slider that barely moves "
+                         "the band cannot be responsible for a clip")
+    ap.add_argument("--preset",
+                    help="apply a whole preset at once (BodySlide SliderPresets "
+                         ".xml or RaceMenu .jslot) instead of one slider. This is "
+                         "the population that ships: residuals ADD across the "
+                         "sliders a preset engages together.")
+    a = ap.parse_args()
+
+    p = Path(a.nif)
+    nf = nc._pynifly().NifFile(filepath=str(p))
+    body = next((s for s in nf.shapes if s.name == "BaseShape"), None)
+    body_src = "injected BaseShape"
+    if body is None:
+        # THE COPY PATH HAS NO INJECTED BODY, and refusing here made this metric
+        # structurally blind to ~78% of the pack -- the majority, and the half
+        # where `#panel-rigid-early-clearance` shows its largest bind-pose gain.
+        # A phase-1 piece was fitted against the UBE TEMPLATE body, so that is
+        # the correct reference for it; the OSD morphs key by vertex count and
+        # apply to it unchanged. Say which body is in use on every run: a clip
+        # number means something different against a preset-baked injected body
+        # than against the slider-zero template, and silently swapping them would
+        # be the kind of substitution that reads as a real difference.
+        ext = a.body or nc._find_ube_femalebody("_1")
+        if not ext:
+            print("ABORT: no injected BaseShape and no UBE template body "
+                  "resolved -- nothing to morph against", file=sys.stderr)
+            return 3
+        bn_nif = nc._pynifly().NifFile(filepath=str(ext))
+        body = max(bn_nif.shapes, key=lambda s: len(s.verts))
+        body_src = f"UBE template body ({Path(ext).name}, no injected BaseShape)"
+    print(f"body source  : {body_src}")
+    bV = _world(body)
+    bT = np.asarray(body.tris, np.int64).reshape(-1, 3)
+    bN = np.asarray(body.normals, np.float64)
+    bN = bN / np.clip(np.linalg.norm(bN, axis=1, keepdims=True), 1e-9, None)
+
+    bm, osd_name = body_morphs(len(bV))
+    if not bm:
+        print("ABORT: no body OSD resolved -- cannot morph the body",
+              file=sys.stderr)
+        return 3
+    if a.sweep:
+        return _sweep(a, nf, bV, bT, bN, bm, p)
+    if a.preset:
+        pv, pkind = _load_preset(a.preset)
+        sel, missing, fuzzy = _resolve_preset(pv, bm)
+        engaged = sum(1 for v in pv.values() if abs(v) > 1e-9)
+        # COVERAGE, printed beside the verdict: a clean number from a preset that
+        # only resolved a handful of its sliders is vacuous.
+        print(f"preset       : {Path(a.preset).name}  [{pkind}]")
+        print(f"             : {len(pv)} sliders, {engaged} engaged, "
+              f"{len(sel)} resolved against the body OSD "
+              f"({100.0 * len(sel) / max(engaged, 1):.1f}% coverage), "
+              f"{len(missing)} unresolved, {len(fuzzy)} fuzzy")
+        if fuzzy:
+            for nm, k in fuzzy[:6]:
+                print(f"    FUZZY  {nm}  ->  {k}")
+        if missing:
+            print(f"    unresolved (first 8): {', '.join(sorted(missing)[:8])}")
+        if not sel:
+            print("ABORT: the preset resolved to NO body slider -- nothing "
+                  "would be measured", file=sys.stderr)
+            return 3
+        hits = sorted(sel)
+    else:
+        hits = [k for k in bm if a.slider.lower() in k.lower()]
+        if a.list or not hits:
+            print(f"body slider source: {osd_name}   {len(bm)} sliders")
+            for k in sorted(hits or bm)[:40]:
+                print(f"   {k}")
+            return 0 if a.list else 3
+        sel = {k: 1.0 for k in hits}
+
+    # --- morph the body ---
+    dB = np.zeros_like(bV)
+    for k in hits:
+        dB += bm[k] * sel[k]
+    dB *= float(a.strength)
+    moved_b = np.linalg.norm(dB, axis=1)
+    if moved_b.max() < 1e-4:
+        print("ABORT: the chosen sliders move the body by 0.000u -- the run "
+              "would measure nothing", file=sys.stderr)
+        return 3
+
+    # --- morph each rendered garment shape from its OWN tri ---
+    parts_bind, parts_morph, report = [], [], []
+    for s in nf.shapes:
+        nm = s.name or ""
+        if nm == "BaseShape" or nc._is_inline_body_name(nm):
+            continue
+        if int(getattr(s, "flags", 0) or 0) & 0x1:
+            continue
+        if not any(v for v in (s.textures or {}).values()):
+            continue
+        gV = _aligned(s, bV)
+        gT = np.asarray(s.tris, np.int64).reshape(-1, 3)
+        gm, tri_name = garment_morphs(p, nm, len(gV))
+        dG = np.zeros_like(gV)
+        used = []
+        for k in hits:
+            mk = _match(k, gm.keys())
+            if mk is not None:
+                dG += gm[mk] * sel[k]
+                used.append(mk)
+        dG *= float(a.strength)
+        parts_bind.append((gV, gT))
+        parts_morph.append((gV + dG, gT))
+        n = len(gV)
+        vw = [dict() for _ in range(n)]
+        for b, prs in (s.bone_weights or {}).items():
+            for vi, w in prs:
+                iv = int(vi)
+                if 0 <= iv < n:
+                    vw[iv][b] = vw[iv].get(b, 0.0) + float(w)
+        chain = sum(nc._chain_vert_mask(vw, n)) / max(n, 1)
+        report.append((nm, len(gV), tri_name, len(used),
+                       float(np.linalg.norm(dG, axis=1).max()), chain))
+
+    if not parts_bind:
+        print("ABORT: no rendered garment shape", file=sys.stderr)
+        return 3
+
+    def _union(parts):
+        V = np.concatenate([v for v, _t in parts])
+        off, tl = 0, []
+        for v, t in parts:
+            tl.append(t + off)
+            off += len(v)
+        return V, np.concatenate(tl)
+
+    mask = BANDS[a.band](bV)
+    idx = np.flatnonzero(mask)
+    if len(idx) < 20:
+        print(f"ABORT: {a.band} band has {len(idx)} verts", file=sys.stderr)
+        return 3
+
+    if a.preset:
+        print(f"body sliders : {len(hits)} from the preset  "
+              f"(strength {a.strength})")
+    else:
+        print(f"body sliders : {', '.join(hits)}  (strength {a.strength})")
+    print(f"body moves   : max {moved_b.max():.3f}u   "
+          f"median-in-band {np.median(moved_b[idx]):.3f}u")
+    print(f"{'garment shape':<24}{'verts':>7}{'tri':>16}{'morphs':>8}"
+          f"{'max move':>10}{'chain%':>8}")
+    for nm, nv, tn, nu, mx, ch in report:
+        print(f"  {nm[:22]:<22}{nv:>7}{(tn or '-'):>16}{nu:>8}{mx:>10.3f}"
+              f"{100 * ch:>7.1f}%")
+
+    rows = []
+    for lbl, parts, body_v in (("BIND ", parts_bind, bV),
+                               ("MORPH", parts_morph, bV + dB)):
+        gV, gT = _union(parts)
+        r = sa.ClipTester(gV, gT).report(body_v, bT, bN, idx,
+                                         sa.vert_areas(body_v, bT),
+                                         oriented=True)
+        rows.append((lbl, r))
+    print(f"\n{a.band.upper()} band, {len(idx)} verts")
+    print(f"{'':<7}{'clip%':>9}{'coinc':>8}{'shal':>8}{'buried':>8}"
+          f"{'cover%':>9}")
+    for lbl, r in rows:
+        print(f"{lbl:<7}{r['clipping_pct']:>9.3f}{r['clip_coincident_pct']:>8.3f}"
+              f"{r['clip_shallow_pct']:>8.3f}{r['clip_buried_pct']:>8.3f}"
+              f"{r['covered_pct']:>9.2f}")
+    d = rows[1][1]["clipping_pct"] - rows[0][1]["clipping_pct"]
+    print(f"{'delta':<7}{d:>+9.3f}")
+    if all(r[4] < 1e-4 for r in report):
+        print("\nNOTE: every garment shape moved 0.000u while the body moved. "
+              "That is the FOLLOW defect, not a broken harness -- the garment "
+              "has no matching morph, or none at all.")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

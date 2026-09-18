@@ -1,0 +1,482 @@
+--- a/pyn/pynifly.py
++++ b/pyn/pynifly.py
+@@ -184,8 +184,8 @@
+ 
+ class FO4Subsegment(FO4Segment):
+     fo4subsegm1 = re.compile(r'(FO4 Seg [0-9]+) \| ([^\|]+)( \| (.+))?\Z')
+-    fo4subsegm = re.compile('\AFO4 *.*')
+-    fo4bpm = re.compile('\AFO4 *(\d+) - ')
++    fo4subsegm = re.compile(r'\AFO4 *.*')
++    fo4bpm = re.compile(r'\AFO4 *(\d+) - ')
+ 
+     def __init__(self, part_id, user_slot, material=-1, parent=None, namedict=fo4Dict, name=None):
+         """ 
+@@ -608,8 +608,6 @@
+     @property
+     def mopp_data(self):
+         """Return (mopp_bytes, origin, scale) or (b'', (0,0,0), 0) if unavailable."""
+-        if nifly.getCollMoppCodeLen is None:
+-            return b"", (0.0, 0.0, 0.0), 0.0
+         length = nifly.getCollMoppCodeLen(self.file._handle, self.id)
+         if length <= 0:
+             return b"", (0.0, 0.0, 0.0), 0.0
+@@ -644,6 +642,7 @@
+         # Create MOPP block (child shape ID will be set by child creation)
+         buf = bhkMoppBvTreeShapeBuf()
+         buf.shapeID = NODEID_NONE
++        buf.buildType = 1  # placeholder; real value set in setCollMoppCode below
+         mopp_id = check_msg(nifly.addBlock, file._handle, None, byref(buf),
+                             parent.id if parent else NODEID_NONE)
+         mopp_shape = cls(file=file, id=mopp_id, properties=buf, parent=parent)
+@@ -658,20 +657,30 @@
+                 parent=mopp_shape)
+             output_ids = list(range(len(tris)))
+         else:
++            # For SE, pass default material via face_materials if no per-face
++            # materials are provided.
++            if not face_materials and material != 0:
++                face_materials = [material] * len(tris)
+             child, output_ids = bhkCompressedMeshShape.Create(
+                 file, verts, tris, radius=radius,
+-                face_materials=face_materials, parent=mopp_shape)
++                face_materials=face_materials, parent=mopp_shape,
++                target=file.rootNode)
+ 
+         # Compile MOPP bytecode
+         mopp_bytes, origin, scale = compile_mopp(verts, tris, radius=radius,
+                                                   output_ids=output_ids)
+ 
+-        # Set MOPP code on the block
+-        if nifly.setCollMoppCode is not None:
+-            origin_buf = (c_float * 3)(*origin)
+-            mopp_buf = (c_uint8 * len(mopp_bytes))(*mopp_bytes)
+-            check_msg(nifly.setCollMoppCode, file._handle, mopp_id,
+-                      origin_buf, c_float(scale), mopp_buf, len(mopp_bytes))
++        # Set MOPP code on the block.
++        # The 'scale' parameter is stored in offset.w and used by the engine
++        # for MOPP spatial quantisation (254*256*256 / largest_dim).
++        # buildType: 0=BUILT_WITH_CHUNK_SUBDIVISION,
++        #            1=BUILT_WITHOUT_CHUNK_SUBDIVISION, 2=BUILD_NOT_SET
++        # Vanilla always uses 1 (BUILT_WITHOUT_CHUNK_SUBDIVISION).
++        origin_buf = (c_float * 3)(*origin)
++        mopp_buf = (c_uint8 * len(mopp_bytes))(*mopp_bytes)
++        check_msg(nifly.setCollMoppCode, file._handle, mopp_id,
++                  origin_buf, c_float(scale), mopp_buf, len(mopp_bytes),
++                  c_uint8(1))
+ 
+         return mopp_shape
+ 
+@@ -789,7 +798,8 @@
+         self._triangles = None
+ 
+     @classmethod
+-    def Create(cls, file, verts, tris, radius=0.005, face_materials=None, parent=None):
++    def Create(cls, file, verts, tris, radius=0.005, face_materials=None,
++               parent=None, target=None):
+         """Create a bhkCompressedMeshShape with chunked geometry data.
+ 
+         Segments the mesh into chunks (<=255 verts, <=255 tris each),
+@@ -802,6 +812,8 @@
+             radius: Collision radius.
+             face_materials: Optional per-face HavokMaterial uint32 list.
+             parent: Parent block (bhkMoppBvTreeShape).
++            target: NiNode this collision belongs to. Defaults to file.rootNode.
++                Vanilla SE nifs set Target to the root node.
+ 
+         Returns:
+             (bhkCompressedMeshShape, output_ids)
+@@ -809,21 +821,6 @@
+         """
+         from .mesh_segment import segment_mesh
+         from .tri_strip import stripify
+-        import math
+-
+-        buf = bhkCompressedMeshShapeBuf()
+-        buf.radius = radius
+-        shape_id = check_msg(nifly.addBlock, file._handle, None, byref(buf),
+-                             parent.id if parent else NODEID_NONE)
+-
+-        if nifly.getCollCompressedMeshShapeDataID is None:
+-            shape = cls(file=file, id=shape_id, properties=buf, parent=parent)
+-            return shape, list(range(len(tris)))
+-
+-        data_id = nifly.getCollCompressedMeshShapeDataID(file._handle, shape_id)
+-        if data_id < 0:
+-            shape = cls(file=file, id=shape_id, properties=buf, parent=parent)
+-            return shape, list(range(len(tris)))
+ 
+         # Build materials array from per-face materials
+         # materials_list[i] = (havok_material, layer) — chunks reference by index
+@@ -834,12 +831,6 @@
+             unique_mats = [0]  # single default material
+             mat_to_idx = {0: 0}
+             face_materials = None  # treat as uniform
+-
+-        # Set materials array on the data block
+-        if nifly.setCollCompressedMeshMaterials is not None and len(unique_mats) > 0:
+-            mat_buf = (c_uint32 * len(unique_mats))(*unique_mats)
+-            check_msg(nifly.setCollCompressedMeshMaterials, file._handle,
+-                      data_id, mat_buf, None, len(unique_mats))
+ 
+         # Segment mesh into chunks — split by material first if multi-material
+         if face_materials and len(unique_mats) > 1:
+@@ -859,18 +850,39 @@
+         else:
+             groups = segment_mesh(verts, tris)
+ 
+-        # Compute bitsPerIndex and related params from chunk sizes
+-        max_tri_in_chunk = max(
+-            (len(g) for g in groups), default=0)
+-        bits_per_index = max(1, math.ceil(math.log2(max(max_tri_in_chunk, 1) + 1)))
+-        bits_per_w_index = bits_per_index + 1  # +1 for winding bit
+-        mask_index = (1 << bits_per_index) - 1
+-        mask_w_index = (1 << bits_per_w_index) - 1
+-
+-        if nifly.setCollCompressedMeshParams is not None:
+-            check_msg(nifly.setCollCompressedMeshParams, file._handle,
+-                      data_id, bits_per_index, bits_per_w_index,
+-                      mask_index, mask_w_index)
++        # Vanilla Havok toolchain always uses fixed bit-field widths for
++        # shape-key encoding, regardless of actual chunk sizes.  The engine
++        # may assume these constants when decoding MOPP output IDs.
++        bits_per_index = 17
++        bits_per_w_index = 18
++        mask_index = 0x1FFFF
++        mask_w_index = 0x3FFFF
++
++        # Set up buffer with data-block params and create shape + data blocks
++        if target is None:
++            target = file.rootNode
++        buf = bhkCompressedMeshShapeBuf()
++        buf.radius = radius
++        buf.bitsPerIndex = bits_per_index
++        buf.bitsPerWIndex = bits_per_w_index
++        buf.maskIndex = mask_index
++        buf.maskWIndex = mask_w_index
++        buf.error = 0.001  # standard quantization tolerance for Skyrim SE
++        buf.materialType = 1 if face_materials else 0
++        buf.targetID = target.id if target else NODEID_NONE
++        shape_id = check_msg(nifly.addBlock, file._handle, None, byref(buf),
++                             parent.id if parent else NODEID_NONE)
++
++        data_id = nifly.getCollCompressedMeshShapeDataID(file._handle, shape_id)
++        if data_id < 0:
++            shape = cls(file=file, id=shape_id, properties=buf, parent=parent)
++            return shape, list(range(len(tris)))
++
++        # Set materials array on the data block
++        if len(unique_mats) > 0:
++            mat_buf = (c_uint32 * len(unique_mats))(*unique_mats)
++            check_msg(nifly.setCollCompressedMeshMaterials, file._handle,
++                      data_id, mat_buf, None, len(unique_mats))
+ 
+         # Build MOPP output IDs per input triangle
+         output_ids = [0] * len(tris)
+@@ -879,11 +891,10 @@
+         all_x = [verts[i][0] for tri in tris for i in tri]
+         all_y = [verts[i][1] for tri in tris for i in tri]
+         all_z = [verts[i][2] for tri in tris for i in tri]
+-        if nifly.setCollCompressedMeshAABB is not None:
+-            bmin = (c_float * 3)(min(all_x), min(all_y), min(all_z))
+-            bmax = (c_float * 3)(max(all_x), max(all_y), max(all_z))
+-            check_msg(nifly.setCollCompressedMeshAABB, file._handle,
+-                      data_id, bmin, bmax)
++        bmin = (c_float * 3)(min(all_x), min(all_y), min(all_z))
++        bmax = (c_float * 3)(max(all_x), max(all_y), max(all_z))
++        check_msg(nifly.setCollCompressedMeshAABB, file._handle,
++                  data_id, bmin, bmax)
+ 
+         # Process each chunk
+         for chunk_idx, face_group in enumerate(groups):
+@@ -939,34 +950,36 @@
+                 indices.extend([a, b, c])
+ 
+             # Add chunk via DLL
+-            if nifly.addCollCompressedMeshChunk is not None:
+-                translation_buf = (c_float * 4)(tx, ty, tz, 0.0)
+-                vert_buf = (c_uint16 * len(quant_verts))(*quant_verts)
+-                idx_buf = (c_uint16 * len(indices))(*indices)
+-                strip_buf = (c_uint16 * len(strip_lengths))(*strip_lengths) if strip_lengths else None
+-                # Determine material index for this chunk
+-                chunk_mat_idx = 0
+-                if face_materials:
+-                    chunk_mat = face_materials[face_group[0]]
+-                    chunk_mat_idx = mat_to_idx.get(chunk_mat, 0)
+-                check_msg(nifly.addCollCompressedMeshChunk,
+-                          file._handle, data_id,
+-                          translation_buf,
+-                          vert_buf, len(local_verts),
+-                          idx_buf, len(indices),
+-                          strip_buf, len(strip_lengths),
+-                          chunk_mat_idx)
++            translation_buf = (c_float * 4)(tx, ty, tz, 0.0)
++            vert_buf = (c_uint16 * len(quant_verts))(*quant_verts)
++            idx_buf = (c_uint16 * len(indices))(*indices)
++            strip_buf = (c_uint16 * len(strip_lengths))(*strip_lengths) if strip_lengths else None
++            # Determine material index for this chunk
++            chunk_mat_idx = 0
++            if face_materials:
++                chunk_mat = face_materials[face_group[0]]
++                chunk_mat_idx = mat_to_idx.get(chunk_mat, 0)
++            check_msg(nifly.addCollCompressedMeshChunk,
++                      file._handle, data_id,
++                      translation_buf,
++                      vert_buf, len(local_verts),
++                      idx_buf, len(indices),
++                      strip_buf, len(strip_lengths),
++                      chunk_mat_idx)
+ 
+             # Compute output IDs for MOPP.
+             # chunk_index is 1-based (0 is for bigTris).
+-            # output = ((chunk_idx + 1) << bits_per_w_index) | (winding << bits_per_index) | tri_in_chunk
+-            # Decompose strips back into triangle order to map output IDs.
+-            # Compare triangles as frozensets since strip winding reorders vertices.
++            # tri_in_chunk = INDEX POSITION within the indices array, NOT
++            # the sequential triangle number.  For strip triangle k in a
++            # strip starting at index offset strip_start: tri_in_chunk =
++            # strip_start + k.  For flat triangle k: flat_start + k*3.
++            # output = ((chunk_idx+1) << bits_per_w_index) | (winding << bits_per_index) | tri_in_chunk
+             local_tri_sets = [frozenset(lt) for lt in local_tris]
+-            tri_in_chunk = 0
++            idx_pos = 0  # current position in the indices array
+             for strip in strips:
+                 for k in range(len(strip) - 2):
+                     winding = k & 1
++                    tri_in_chunk = idx_pos + k
+                     oid = ((chunk_idx + 1) << bits_per_w_index) | (winding << bits_per_index) | tri_in_chunk
+                     if k % 2 == 0:
+                         tri_set = frozenset((strip[k], strip[k+1], strip[k+2]))
+@@ -977,8 +990,10 @@
+                             output_ids[fi] = oid
+                             local_tri_sets[gi] = None  # prevent double-match
+                             break
+-                    tri_in_chunk += 1
+-            for a, b, c in leftovers:
++                idx_pos += len(strip)
++            # Flat triangles: each occupies 3 index positions
++            for li, (a, b, c) in enumerate(leftovers):
++                tri_in_chunk = idx_pos + li * 3
+                 oid = ((chunk_idx + 1) << bits_per_w_index) | (0 << bits_per_index) | tri_in_chunk
+                 leftover_set = frozenset((a, b, c))
+                 for gi, fi in enumerate(face_group):
+@@ -986,7 +1001,6 @@
+                         output_ids[fi] = oid
+                         local_tri_sets[gi] = None
+                         break
+-                tri_in_chunk += 1
+ 
+         shape = cls(file=file, id=shape_id, properties=buf, parent=parent)
+         return shape, output_ids
+@@ -994,9 +1008,6 @@
+     @property
+     def vertices(self):
+         if self._vertices is None:
+-            if nifly.getCollCompressedMeshShapeVerts is None:
+-                self._vertices = []
+-                return self._vertices
+             count = nifly.getCollCompressedMeshShapeVerts(
+                 self.file._handle, self.properties.dataID, None, 0)
+             if count > 0:
+@@ -1012,13 +1023,10 @@
+     @property
+     def triangles(self):
+         if self._triangles is None:
+-            if nifly.getCollCompressedMeshShapeTris is None:
+-                self._triangles = []
+-                return self._triangles
+             count = nifly.getCollCompressedMeshShapeTris(
+                 self.file._handle, self.properties.dataID, None, 0)
+             if count > 0:
+-                buf = (c_uint16 * (count * 3))()
++                buf = (c_uint32 * (count * 3))()
+                 nifly.getCollCompressedMeshShapeTris(
+                     self.file._handle, self.properties.dataID, buf, count)
+                 self._triangles = [(buf[i*3], buf[i*3+1], buf[i*3+2])
+@@ -1030,8 +1038,6 @@
+     @property
+     def material_ids(self):
+         """Return per-triangle HavokMaterial uint32, same order as triangles."""
+-        if nifly.getCollCompressedMeshTriMaterials is None:
+-            return []
+         count = nifly.getCollCompressedMeshTriMaterials(
+             self.file._handle, self.properties.dataID, None, 0)
+         if count <= 0:
+@@ -2838,6 +2844,53 @@
+         p.behaviorGraphFileID = nifly.addString(file._handle, behavior_graph_file.encode('utf-8'))
+         p.controlsBaseSkeleton = 1 if controls_base_skeleton else 0
+         return file.add_block(name, p, parent)
++
++
++class BSDecalPlacementVectorExtraData(NiExtraData):
++    buffer_type = PynBufferTypes.BSDecalPlacementVectorExtraDataBufType
++
++    def __init__(self, handle=None, file=None, id=NODEID_NONE, properties=None, parent=None):
++        super().__init__(handle=handle, file=file, id=id, properties=properties, parent=parent)
++
++    @classmethod
++    def getbuf(cls, values=None):
++        return BSDecalPlacementVectorExtraDataBuf(values)
++
++    @property
++    def vector_blocks(self):
++        """Return list of vector blocks; each block is a list of (point, normal) tuples.
++
++        point and normal are each (x, y, z) float tuples.
++        """
++        blocks = []
++        for bi in range(self.properties.numVectorBlocks):
++            count = c_uint16()
++            nifly.getDecalVectorBlockCount(
++                self.file._handle, self.id, bi, byref(count))
++            vectors = []
++            for vi in range(count.value):
++                vbuf = DecalVectorBuf()
++                nifly.getDecalVector(
++                    self.file._handle, self.id, bi, vi, byref(vbuf))
++                vectors.append((tuple(vbuf.point), tuple(vbuf.normal)))
++            blocks.append(vectors)
++        return blocks
++
++    @classmethod
++    def New(cls, file, name='', vector_blocks=None, parent=None):
++        p = BSDecalPlacementVectorExtraDataBuf()
++        p.numVectorBlocks = len(vector_blocks) if vector_blocks else 0
++        node = file.add_block(name, p, parent)
++        if vector_blocks:
++            for bi, block in enumerate(vector_blocks):
++                nifly.addDecalVectorBlock(file._handle, node.id)
++                for point, normal in block:
++                    vbuf = DecalVectorBuf()
++                    vbuf.point[:] = point
++                    vbuf.normal[:] = normal
++                    nifly.addDecalVector(
++                        file._handle, node.id, bi, byref(vbuf))
++        return node
+ 
+ 
+ class NiStringExtraData(NiExtraData):
+@@ -3759,11 +3812,22 @@
+                     else:
+                         altpaths.append(alternate_paths)
+                 
+-                fullpath = find_referenced_file(self.name, self.file.filepath, root='materials', 
++                fullpath = find_referenced_file(self.name, self.file.filepath, root='materials',
+                                                 alt_pathlist=altpaths)
+                 if fullpath:
+-                    self._materials = bgsmaterial.MaterialFile.Open(fullpath)
+-                    self._load_properties_from_materials()
++                    try:
++                        self._materials = bgsmaterial.MaterialFile.Open(fullpath)
++                    except Exception:
++                        log.exception(
++                            f"Could not read materials file '{fullpath}' "
++                            f"referenced by shader '{self.name}'")
++                        self._materials = None
++                    if self._materials:
++                        self._load_properties_from_materials()
++                else:
++                    log.warning(
++                        f"Could not find materials file '{self.name}' "
++                        f"(searched nif filetree and {len(altpaths)} alternate path(s))")
+             self._checked_for_materials = True
+         return self._materials
+     
+@@ -4299,7 +4363,10 @@
+         """ Set the partitions for a shape
+             partitionlist = list of Partition objects, either Skyrim or FO. Any Subsegments in the
+                 list are ignored. Subsegments are found separately under Partitions.
+-            trilist = 1:1 with shape tris, gives the ID of the tri's partition
++            trilist = 1:1 with shape tris. For Skyrim, each entry is either a partition ID
++                (e.g. 130, 143) or an index into partitionlist (0, 1, ...) — the values from
++                NiShape.partition_tris are accepted directly. For FO4, entries must be
++                segment/subsegment IDs (the partition_tris values).
+             """
+         if len(partitionlist) == 0:
+             return
+@@ -4336,27 +4403,34 @@
+         tbuf = (c_uint16 * len(trilist))()
+ 
+         if self.file.game in ['SKYRIM', 'SKYRIMSE']:
+-            # the trilist passed in refers to partition IDs, but nifly wants indices into
+-            # the given partition list.
++            # nifly wants indices into the partition list. The trilist may already be
++            # indices (as returned by partition_tris) or partition IDs (the older idiom).
+             pbuf = (c_uint16 * 2 * len(parts))()
+             for i, p in enumerate(parts):
+                 pbuf[i][0] = 0
+-                pbuf[i][1] = p.id 
++                pbuf[i][1] = p.id
+                 parts_lookup[p.id] = i
+ 
++            # Auto-detect: if every value matches a partition ID, treat as IDs;
++            # otherwise if every value is a valid index, treat as indices.
++            n = len(parts)
++            all_ids = all(t in parts_lookup for t in trilist)
++            all_indices = all(0 <= t < n for t in trilist)
++            as_indices = all_indices and not all_ids
++
+             for i, t in enumerate(trilist):
+-                try:
+-                    tbuf[i] = parts_lookup[trilist[i]]
+-                except:
+-                    # Report the error unless the id is 0--that means we couldn't assign the 
+-                    # partition and that error has already been reported
+-                    if not trilist[i] == 0:
+-                        if i < len(trilist):
+-                            log.error(f"Tri at index {i} assigned partition id {trilist[i]}, but no such partition defined")
++                if as_indices:
++                    tbuf[i] = t
++                else:
++                    try:
++                        tbuf[i] = parts_lookup[t]
++                    except KeyError:
++                        # Report the error unless the id is 0--that means we couldn't assign the
++                        # partition and that error has already been reported
++                        if t != 0:
++                            log.error(f"Tri at index {i} assigned partition id {t}, but no such partition defined")
+                             log.error(f"Partitions are {parts_lookup.items()}")
+-                        else:
+-                            log.error(f"Tri at index {i} assigned partition, but only {len(trilist)} tris defined")
+-                    tbuf[i] = pbuf[0][1] # Export with the first partition so we get something out
++                        tbuf[i] = pbuf[0][1] # Export with the first partition so we get something out
+ 
+             nifly.setPartitions(self.file._handle, self._handle,
+                                         pbuf, len(parts),
+@@ -4517,6 +4591,7 @@
+         self.node_ids = {}
+         self._nodes = None
+         self._shapes = None
++        self._max_string_len = None
+         self._load_shapes()
+ 
+     def __del__(self):
+@@ -4527,11 +4602,17 @@
+     def max_string_len(self):
+         """Length of buffer required for the longest string stored in the nif + one for
+         the trailing null byte. Return at least 128 because reasons.
+-        """
++
++        Cached after first call: the DLL scans every string to compute this, and it's
++        called once per string read. Recomputing each time is O(strings²).
++        """
++        if self._max_string_len is not None:
++            return self._max_string_len
+         if self._handle:
+-            return max(128, nifly.getMaxStringLen(self._handle)+1)
++            self._max_string_len = max(128, nifly.getMaxStringLen(self._handle)+1)
+         else:
+-            return 128
++            self._max_string_len = 128
++        return self._max_string_len
+         
+     @property
+     def reference_skel(self):
+@@ -4651,7 +4732,7 @@
+ 
+         UVBUFDEF = c_float * 2 * len(uvs)
+         uvbuf = UVBUFDEF()
+-        for i, u in enumerate(uvs): uvbuf[i] = (u[0], 1-u[1])
++        for i, u in enumerate(uvs): uvbuf[i] = (u[0], u[1])
+ 
+         shape_handle = nifly.createNifShapeFromData(
+             self._handle, 

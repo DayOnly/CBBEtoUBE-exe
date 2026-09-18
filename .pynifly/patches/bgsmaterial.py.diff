@@ -1,0 +1,11 @@
+--- a/pyn/bgsmaterial.py
++++ b/pyn/bgsmaterial.py
+@@ -498,7 +498,3 @@
+         print(mdict)
+ 
+     # ----------------------------------------------------------------------
+-
+-if __name__ == "__main__":
+-    tester = TestModule()
+-    tester.run()
+\ No newline at end of file

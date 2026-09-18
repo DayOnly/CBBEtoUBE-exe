@@ -1,0 +1,209 @@
+# CBBEtoUBE - CBBE/3BA to UBE armor converter
+# Copyright (C) 2026 DayOnly
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+"""Binary-parse hardening: the central subrecord walker must tolerate a
+truncated/malformed source record (stop cleanly, never raise mid-pass nor yield
+a short slice a verbatim-copy pass would re-emit corrupt), and validate_patch
+must flag the headerless-MODT and out-of-range-KWDA crash classes."""
+import struct
+
+import pytest
+
+from src import esp, tri, ube_patcher
+from src.esp import encode_subrecord, encode_zstring, iter_subrecords
+
+
+# ---- iter_subrecords bounds ------------------------------------------------
+
+def test_iter_wellformed_unchanged():
+    payload = (encode_subrecord(b"EDID", b"Hi\x00")
+               + encode_subrecord(b"DATA", b"\x01\x02\x03\x04"))
+    assert list(iter_subrecords(payload)) == [
+        (b"EDID", b"Hi\x00"), (b"DATA", b"\x01\x02\x03\x04")]
+
+
+def test_iter_truncated_header_stops_no_raise():
+    # a valid EDID then 3 trailing bytes (< the 6-byte sig+size header)
+    payload = encode_subrecord(b"EDID", b"X\x00") + b"\xAA\xBB\xCC"
+    assert list(iter_subrecords(payload)) == [(b"EDID", b"X\x00")]
+
+
+def test_iter_oversized_declared_size_does_not_yield_short_slice():
+    # header declares 100 data bytes but only 4 are present -> must stop, NOT
+    # yield (DESC, 4-bytes) which a verbatim copy would re-emit as a corrupt
+    # subrecord whose size header overstates its data.
+    payload = (encode_subrecord(b"EDID", b"X\x00")
+               + b"DESC" + struct.pack("<H", 100) + b"\x01\x02\x03\x04")
+    assert list(iter_subrecords(payload)) == [(b"EDID", b"X\x00")]
+
+
+def test_iter_xxxx_large_size_override():
+    big = b"A" * 70000   # > 0xFFFF -> requires the XXXX size override
+    payload = (b"XXXX" + struct.pack("<H", 4) + struct.pack("<I", len(big))
+               + b"DATA" + struct.pack("<H", 0) + big)
+    assert list(iter_subrecords(payload)) == [(b"DATA", big)]
+
+
+def test_iter_truncated_xxxx_stops():
+    # XXXX header says 4 bytes of override but none present -> stop cleanly
+    payload = b"XXXX" + struct.pack("<H", 4)
+    assert list(iter_subrecords(payload)) == []
+
+
+# ---- validate_patch: MODT structure + KWDA range ---------------------------
+
+def _save_arma(tmp_path, modt_bytes):
+    payload = (encode_subrecord(b"EDID", encode_zstring("TestAA"))
+               + encode_subrecord(b"BOD2", struct.pack("<II", 1 << 2, 0))
+               + encode_subrecord(b"RNAM", struct.pack("<I", 0x19))
+               + encode_subrecord(b"MOD3", encode_zstring("a.nif"))
+               + encode_subrecord(b"MO3T", modt_bytes))
+    arma = esp.Record(sig=b"ARMA", flags=0, formid=(1 << 24) | 0x800,
+                      timestamp_vc=0, version_unk=0x2C, payload=payload)
+    e = esp.ESP(header=esp.TES4Header(masters=["Skyrim.esm"],
+                                      next_object_id=0xFFFFFF),
+                groups=[esp.Group(label=b"ARMA", records=[arma])])
+    p = tmp_path / "t.esp"
+    e.save(p)
+    return p
+
+
+def test_validate_flags_headerless_modt(tmp_path):
+    # Headerless LE-port MODT: 24 raw bytes; offset-4 u32 lands on "dds\0" =
+    # 7.5M -> 12*(1+7.5M) != 24 -> malformed (the overread CTD class).
+    p = _save_arma(tmp_path, b"dds\x00" * 6)
+    w = ube_patcher.validate_patch(p, check_nifs=False)
+    assert any(x.startswith("modt-malformed") for x in w), w
+
+
+def test_validate_clean_modt_no_warning(tmp_path):
+    p = _save_arma(tmp_path, struct.pack("<III", 2, 0, 0))   # valid empty MODT
+    w = ube_patcher.validate_patch(p, check_nifs=False)
+    assert not any(x.startswith("modt-malformed") for x in w), w
+
+
+# ---- record / TES4-header / TRI parse hardening ----------------------------
+# These raise a clean, catchable ValueError on truncated/malformed untrusted
+# input instead of a cryptic struct.error or a strip-able assert (the file's
+# stated convention).
+
+def test_record_parse_truncated_payload_raises_valueerror():
+    # Header declares 100 payload bytes but only 4 follow -> ValueError, not a
+    # silently-short payload a verbatim-copy pass would re-emit corrupt.
+    data = (b"ARMO" + struct.pack("<I", 100) + struct.pack("<I", 0)
+            + struct.pack("<I", 0x01000800) + struct.pack("<I", 0)
+            + struct.pack("<I", 0) + b"\x01\x02\x03\x04")
+    with pytest.raises(ValueError):
+        esp.Record.parse(data, 0)
+
+
+def test_tes4header_rejects_non_tes4_record():
+    # Was `assert rec.sig == b"TES4"` -> stripped under `python -O`.
+    rec = esp.Record(sig=b"ARMO", flags=0, formid=0, timestamp_vc=0,
+                     version_unk=0, payload=b"")
+    with pytest.raises(ValueError):
+        esp.TES4Header.parse_from_record(rec)
+
+
+def test_tes4header_short_hedr_keeps_defaults_no_struct_error():
+    # A HEDR with < 12 data bytes must not raise struct.error; defaults stand.
+    rec = esp.Record(sig=b"TES4", flags=0, formid=0, timestamp_vc=0,
+                     version_unk=0,
+                     payload=encode_subrecord(b"HEDR", b"\x00\x00\x00\x00"))
+    h = esp.TES4Header.parse_from_record(rec)   # must not raise
+    assert h.next_object_id == 0x800            # default preserved
+
+
+def test_tri_truncated_header_raises_valueerror():
+    # Valid 4-byte magic with no shape-count field -> ValueError, not struct.error.
+    with pytest.raises(ValueError):
+        tri.TriFile.parse(tri.TRI_MAGIC)
+
+
+def test_validate_flags_out_of_range_kwda(tmp_path):
+    # ARMO whose KWDA array references a master index past the master list.
+    kwda = (struct.pack("<I", 0x06BBD9)            # in-range (Skyrim.esm idx 0)
+            + struct.pack("<I", 0x05000001))       # top byte 5 >> own_byte 1
+    payload = (encode_subrecord(b"EDID", encode_zstring("TestArmor"))
+               + encode_subrecord(b"BOD2", struct.pack("<II", 1 << 2, 0))
+               + encode_subrecord(b"FULL", encode_zstring("Test Armor"))
+               + encode_subrecord(b"KSIZ", struct.pack("<I", 2))
+               + encode_subrecord(b"KWDA", kwda)
+               + encode_subrecord(b"DATA", struct.pack("<If", 100, 1.0)))
+    armo = esp.Record(sig=b"ARMO", flags=0, formid=(1 << 24) | 0x801,
+                      timestamp_vc=0, version_unk=0x2C, payload=payload)
+    e = esp.ESP(header=esp.TES4Header(masters=["Skyrim.esm"],
+                                      next_object_id=0xFFFFFF),
+                groups=[esp.Group(label=b"ARMO", records=[armo])])
+    p = tmp_path / "t.esp"
+    e.save(p)
+    w = ube_patcher.validate_patch(p, check_nifs=False)
+    assert any(x.startswith("formid-out-of-range") for x in w), w
+
+
+# ---- normalize_modt: the REPAIR, not just the detector ---------------------
+# `modt-malformed` (above) is the detector, and it was tested. The REPAIR --
+# `normalize_modt`, which stops the bad bytes ever being written -- was not,
+# although it is the fix the project records as the one that "finally let the
+# game reach the main menu": a headerless LE-port MO?T whose offset-4 u32 lands
+# on the first entry's "dds\0" extension reads as 7,562,340 entries, and the
+# engine overreads a 24-byte buffer -> EXCEPTION_ACCESS_VIOLATION at model init.
+#
+# It is called on every ARMA build and every merge rewrite, so an off-by-one in
+# `len == 12 * (1 + count)` would ship malformed blocks pack-wide. The
+# CTD-gated detector would fail the build afterwards, which is a real net --
+# but the arithmetic that decides what gets written deserves its own pin.
+
+def test_normalize_modt_replaces_the_historical_headerless_block():
+    """The exact shape that crashed: raw 12-byte entries, no header, first
+    bytes 'dds\0' so the count field reads 7,562,340."""
+    bad = b"dds\x00" * 6                      # 24 bytes, no header
+    assert struct.unpack_from("<I", bad, 4)[0] == 0x00736464 == 7562340
+    out = ube_patcher.normalize_modt(bad)
+    assert out != bad
+    count = struct.unpack_from("<I", out, 4)[0]
+    assert len(out) == 12 * (1 + count), "replacement must itself be valid"
+
+
+def test_normalize_modt_keeps_a_valid_block_byte_for_byte():
+    """A repair that rewrote healthy blocks would churn every ARMA in the pack
+    and lose real texture hashes."""
+    good = struct.pack("<III", 2, 1, 0) + b"\xAA" * 12      # count=1 -> 24 bytes
+    assert len(good) == 12 * (1 + 1)
+    assert ube_patcher.normalize_modt(good) is good or \
+        ube_patcher.normalize_modt(good) == good
+
+
+@pytest.mark.parametrize("bad", [
+    b"",                                   # empty
+    b"\x00" * 11,                          # shorter than one entry
+    struct.pack("<III", 2, 5, 0),          # count says 5, only 1 entry present
+    struct.pack("<III", 2, 0, 0) + b"\x00",   # one trailing byte
+])
+def test_normalize_modt_rejects_anything_that_fails_the_invariant(bad):
+    out = ube_patcher.normalize_modt(bad)
+    count = struct.unpack_from("<I", out, 4)[0]
+    assert len(out) == 12 * (1 + count)
+    assert out != bad
+
+
+def test_normalize_modt_is_what_the_detector_would_have_flagged():
+    """Ties the two halves together: the repair's output must be clean by the
+    detector's own rule, so repair and detection cannot drift apart."""
+    for bad in (b"dds\x00" * 6, b"", struct.pack("<III", 2, 9, 0)):
+        out = ube_patcher.normalize_modt(bad)
+        count = struct.unpack_from("<I", out, 4)[0]
+        assert len(out) == 12 * (1 + count)

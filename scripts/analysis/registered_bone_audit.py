@@ -1,0 +1,188 @@
+# CBBEtoUBE - CBBE/3BA to UBE armor converter
+# Copyright (C) 2026 DayOnly
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+"""POST-RECONVERT GATE: XML-registered shapes carrying bones WE ADDED that the
+piece's own physics XML never declares. The AUTHOR DIFFERENTIAL, which is what the guard scores and what the
+defect actually is.
+
+COUNTING EVERY UNDECLARED BONE IS THE WRONG MEASURE and reads 250 where the
+defect is 10: `_audit_registered_shape_declared_bones`
+already records that 336 registered shapes in the pack carry undeclared bones
+their own AUTHOR shipped, so "undeclared" is not by itself wrong. Only bones WE
+added can free-fall a piece that used to work.
+
+So this pairs every registering pack NIF with its SOURCE (the VFS winner, the
+same rule the converter uses) and reports `ours - declared - (author - declared)`,
+exactly as the guard computes it -- then splits by shape class and, for the ones
+we can act on, by whether a declared ancestor exists ON THAT SHAPE.
+
+    python scripts/analysis/registered_bone_audit.py [<pack meshes/!UBE>] [<MO2 ini>]
+
+Exit 0 clean / 1 a violation we caused / 2 nothing measured.
+
+MEASURED 2026-08-23 on the pre-fix pack: 10 violating shapes over 174 checked
+pieces, every one a shape WE create (a `<name>Col` bust-split clone), and ZERO
+authored shapes carrying bones we added. After #collider-declared-bones the
+expected result is 0.
+
+Do NOT widen this to "any undeclared bone on a registered shape": that counts the
+AUTHOR's own arrangement and reads 250 where the defect is 10. Only bones we
+added can free-fall a piece that previously worked.
+
+SKELETON DISCIPLINE: paths exported before the first nif_convert call, bone count
+asserted -- an unloaded skeleton makes every bone read as unparented.
+"""
+import collections
+import json
+import os
+import re
+import sys
+from pathlib import Path
+
+# `_REPO` is the CANONICAL spelling and it is not cosmetic:
+# `tests/test_analysis_repo_root.py` scans for exactly this form, and a script
+# declaring its root any other way is INVISIBLE to that check -- which is how
+# six scripts once ran off a root pointing at `scripts/`.
+_REPO = Path(__file__).resolve().parent.parent.parent
+sys.path.insert(0, str(_REPO / ".pynifly"))
+sys.path.insert(0, str(_REPO))
+if len(sys.argv) > 2:
+    os.environ["CBBE2UBE_MO2_INI"] = sys.argv[2]
+
+from src import paths                                   # noqa: E402
+_lay = paths.discover_layout()
+paths.export_to_env(_lay)
+from pyn import pynifly                                 # noqa: E402
+from src import nif_convert as nc                       # noqa: E402
+
+_parents = nc._actor_skeleton_bone_parents()
+print(f"actor skeleton: {len(_parents)} parent link(s)")
+if len(_parents) < 100:
+    raise SystemExit("SKELETON UNLOADED -- refusing to report.")
+
+PACK = Path(sys.argv[1]) if len(sys.argv) > 1 else (
+    Path(paths.mods_root()) / "CBBEtoUBE Auto" / "meshes" / "!UBE")
+_en = paths.enabled_mods(_lay)
+_mods = [d for d in sorted(_lay.mods_root.iterdir())
+         if d.is_dir() and (_en is None or d.name in _en)
+         and "CBBEtoUBE" not in d.name and "UBE Converter" not in d.name]
+
+
+def source_for(rel: Path):
+    """VFS winner providing meshes/<rel> -- LAST enabled mod wins."""
+    sub = rel.parent.as_posix()
+    hit = None
+    for d in _mods:
+        if (d / "meshes" / sub.replace("/", os.sep) / rel.name).is_file():
+            hit = d
+    return (hit / "meshes" / sub.replace("/", os.sep) / rel.name) if hit else None
+
+
+tot = collections.Counter()
+by_shape = collections.Counter()
+by_bone = collections.Counter()
+rows = []
+
+nifs = sorted(PACK.rglob("*_1.nif"))
+print(f"{len(nifs)} `_1` pack NIF(s)", flush=True)
+for i, p in enumerate(nifs):
+    if i % 300 == 0:
+        print(f"  ...{i}", flush=True)
+    try:
+        dn = pynifly.NifFile(filepath=str(p))
+        reg = (set(nc._hdt_collider_shape_names(p, nif=dn))
+               | set(nc._hdt_softbody_shape_names(p, nif=dn)))
+    except Exception:
+        tot["unreadable (EXCLUDED)"] += 1
+        continue
+    if not reg:
+        continue
+    txt = nc._read_source_hdt_xml_text(p, nif=dn)
+    declared = set(re.findall(r'<bone\s+name="([^"]+)"', txt or ""))
+    if not declared:
+        tot["registers but NO declarations readable (UNCHECKED)"] += 1
+        continue
+    rel = p.relative_to(PACK)
+    src = source_for(rel)
+    if src is None:
+        tot["source NOT resolvable (EXCLUDED, cannot diff vs author)"] += 1
+        continue
+    tot["pieces checked"] += 1
+    try:
+        sn = pynifly.NifFile(filepath=str(src))
+    except Exception:
+        tot["source unreadable (EXCLUDED)"] += 1
+        continue
+    author = {s.name: set((getattr(s, "bone_weights", None) or {}).keys())
+              for s in sn.shapes}
+    hit = False
+    for s in dn.shapes:
+        if s.name not in reg:
+            continue
+        ours = set((getattr(s, "bone_weights", None) or {}).keys())
+        added = sorted((ours - declared) - (author.get(s.name, set()) - declared))
+        if not added:
+            continue
+        hit = True
+        in_src = s.name in author
+        kind = "AUTHORED shape, bones WE added" if in_src else "SHAPE WE CREATED"
+        tot[kind] += 1
+        tot[f"bones: {kind}"] += len(added)
+        by_shape[f"{kind[:18]}  {s.name}"] += 1
+        fixable = sum(1 for b in added
+                      if nc._nearest_declared_ancestor(b, declared, ours))
+        tot[f"...relabellable ({kind[:18]})"] += fixable
+        for b in added:
+            by_bone[b] += 1
+        rows.append({"nif": str(rel), "shape": s.name, "kind": kind,
+                     "added": added, "relabellable": fixable,
+                     "in_source": in_src})
+    if hit:
+        tot["pieces WITH a real (author-differential) violation"] += 1
+
+print("\n=== POPULATION ===")
+for k, v in tot.most_common():
+    print(f"  {v:6}  {k}")
+print("\n=== SHAPES ===")
+for k, v in by_shape.most_common(25):
+    print(f"  {v:5}  {k}")
+print("\n=== BONES WE ADDED ===")
+for k, v in by_bone.most_common(15):
+    print(f"  {v:5}  {k}")
+# BESIDE THE PACK, not in the repo: an audit must not leave artefacts in
+# the source tree (repo hygiene fails on them, and they go stale).
+out = PACK.parent.parent / "registered_bone_audit.json"
+out.write_text(json.dumps(rows, indent=1), encoding="utf-8")
+print(f"\nwrote {out} ({len(rows)} violating shape instance(s))")
+
+# EXIT CODE so a reconvert can be GATED on this, not merely informed by it.
+#   0 clean   1 a violation WE caused   2 nothing measured
+# The third is the one that matters: an empty result and a clean result are
+# indistinguishable downstream, and reading one as the other is the failure this
+# whole family of audits exists to prevent ([[feedback_census_population]]).
+if not tot["pieces checked"]:
+    print("NO PIECE WAS CHECKED -- this audit measured NOTHING.",
+          file=sys.stderr)
+    raise SystemExit(2)
+_ours = tot["SHAPE WE CREATED"] + tot["AUTHORED shape, bones WE added"]
+print(f"\nVERDICT: {_ours} shape(s) carry a bone WE added that the piece's own "
+      f"physics XML never declares, over {tot['pieces checked']} piece(s) "
+      f"checked.")
+if _ours:
+    print("  Each one can free-fall its piece in game -- see "
+          "#collider-declared-bones.", file=sys.stderr)
+    raise SystemExit(1)
+raise SystemExit(0)

@@ -1,0 +1,614 @@
+# CBBEtoUBE
+
+Batch-converts Skyrim SE armor and clothing built for **CBBE / 3BA** so it fits
+the **UBE** body without clipping, and emits the plugin patches needed for the
+converted meshes to show up in game. It can also (opt-in) re-align CBBE/3BA
+RaceMenu **body / hands / feet overlays** (tattoos, body paints) to the UBE UV
+layout. Pure-Python pipeline on top of `pynifly` + `numpy` + `scipy`.
+
+It is **not** a Synthesis/Mutagen patcher. Clipping is a mesh-geometry problem,
+not a plugin-record problem, so the tool rewrites NIF vertices and bone weights
+directly, then generates the minimal ESP records that point the armor at the new
+meshes.
+
+> **New here? Start with [USING.md](USING.md)** — a start-to-finish walkthrough:
+> what to check before converting, how to run it, **how to wire the output into
+> MO2** (the step that most often goes wrong), and how to read a problem when one
+> shows up. This README is the reference for commands, flags and internals.
+>
+> **Working on the converter?** [docs/](docs/README.md) holds the design and
+> measurement references — [DESIGN.md](docs/DESIGN.md) for why each pass exists,
+> [METRICS.md](docs/METRICS.md) for which measurements can be trusted and which
+> were wrong.
+
+## What it does
+
+Given a Mod Organizer 2 setup, the full pipeline (`auto`):
+
+1. **Discovers** candidate CBBE/3BA armor mods by walking the MO2 mod tree, and
+   resolves every armor mesh through the full virtual file system (BodySlide
+   output, BSAs, and loose files all count). Only **player-equippable** armor on
+   body slots is selected — non-equippable items (gore / dismemberment effect
+   "armor" flagged non-playable) are skipped. Because UBE is a female body, only
+   the **female** mesh of each piece is converted; the male mesh is skipped unless
+   the piece is male-only (a female actor falls back to the male mesh, so it still
+   needs the refit).
+2. **Refits** each armor NIF to the UBE body (see *How the refit works*),
+   preserving HDT-SMP physics chains, high-heel offsets, and body morphs.
+   Armor that bakes exposed body skin (open cleavage, cutouts) is converted via
+   a **body-swap**: the baked skin slice is dropped and the real UBE body is
+   injected, so exposed skin morphs and jiggles like the actual body.
+3. Writes the converted meshes under `meshes/!UBE/...` in a single output mod.
+4. Generates a **per-mod UBE patch ESP** for each source, then merges them into
+   one **ESL-flagged combined plugin** with a correct master order. If the
+   merge outgrows the 2048-record ESL cap it **splits** into numbered pieces
+   (`CBBE_to_UBE_Combined.esp`, `CBBE_to_UBE_Combined2.esp`, ...) — enable
+   **all** of them. Every generator emits within the cap, so a piece is
+   normally still ESL-flagged and costs a light slot rather than a load-order
+   slot; a full-ESP downgrade is a last resort. The plugin only *holds* the
+   minted UBE armatures; an
+   **active SkyPatcher INI** (shipped in `SKSE/Plugins/SkyPatcher/armor/`)
+   attaches each one to its armor at runtime. The converter uses **no ESP
+   overrides**, so **SkyPatcher (SKSE) is required** — without it converted
+   armor is invisible.
+5. Adds **race coverage** so armatures defined by other mods —
+   overhaul-rearmatured helmets, circlets, jewelry, and mod-defined body
+   variants — still render on UBE races. That coverage is folded **into the
+   Combined plugin family**, so there are no standalone coverage plugins and
+   nothing extra to enable beyond the Combined piece(s). The winner scan is
+   also the sole generator for the merge, which roughly halves the ARMA count
+   and so needs fewer ESL pieces.
+6. **Coexists with armors that already have a UBE patch.** If another mod
+   already gives an armor a UBE armature — a hand-made UBE patch, or another
+   converter's output — that armor is left **entirely alone**. Adding a second
+   armature would make the actor render two bodies for the slot (z-fighting /
+   doubled cloth), and a hand-made patch is usually a better fit than an
+   automatic conversion anyway. Both delivery styles are detected: plugins that
+   define a UBE armature and reference it, and other mods' SkyPatcher
+   `armorAddonsToAdd` INIs. The run prints how many armors were skipped this
+   way. Output from **this tool** (any version, under any folder name) is never
+   mistaken for a third-party patch.
+7. **(Opt-in) RaceMenu overlay transfer.** Rebakes CBBE/3BA **body, hands, and
+   feet** overlays (tattoos / body paints) into UBE's UV layout — UBE re-UVs the
+   body, so CBBE-authored overlays otherwise land in the wrong place. The
+   converted DDS are written **loose at their original texture paths** in the
+   output mod, so RaceMenu picks them up by load order with no ESP (the output
+   mod wins because it sits at the end of your load order). Off by default; turn
+   it on with `--convert-overlays` / the GUI checkbox, or `--overlays-only` to
+   refresh just the overlays without the slow armor reconvert.
+   - **Multi-slot feet.** A tattoo that reuses one **body** texture on the **feet**
+     slot can't share a single rebake (the feet need their own UV). For those, the
+     pass bakes a feet-UV variant to a new path and **recompiles the RaceMenuBase
+     script** so its `AddFeetPaint` points there. Needs the Papyrus compiler
+     (auto-located via the registry / MO2 gamePath); cleanly skipped if absent.
+     Feet-only overlays already convert at their own path and are left untouched.
+
+The result is a self-contained output mod (default name: `CBBEtoUBE Auto`) you
+enable at the end of your load order. Coverage is inside the Combined plugin
+family, so the Combined piece(s) are the only plugins to enable.
+
+## How the refit works
+
+For each shape in an armor NIF:
+
+1. Find the closest point on the CBBE reference body for every armor vertex —
+   a triangle on the CBBE mesh plus barycentric coordinates inside it.
+2. Evaluate the same (triangle, barycentric) on the UBE reference body. The
+   delta between the two surface points is the per-vertex deformation.
+3. Apply the deformation to the armor vertex.
+4. Copy bone weights from the nearest UBE reference vertices (a weighted blend
+   across the k nearest neighbours) and renormalize.
+5. Recompute normals + tangents.
+6. Carry through shader (including additive glow / effect-shader overlays and
+   their scroll/pulse animation), textures, vertex colors (an overlay's fade is
+   a per-vertex alpha gradient), alpha, partitions, and physics rigging.
+
+`_0.nif` (weight-0 / slim) and `_1.nif` (weight-1 / full) pairs are processed
+together so the in-game weight slider keeps working.
+
+### Fit-correction passes
+
+The raw warp alone is not enough — UBE is larger than the 3BA build body, and
+a per-shape warp scrambles things the source author got right. A stack of
+correction passes runs after it (all in world frame, offset
+`global_to_skin` transforms reconciled; non-identity scale/translation on
+skinned shapes is baked into the verts):
+
+- **Anti-poke / adaptive clearance** — body verts that poke through armor are
+  cleared along the body normal; the clearance floor is *morph-aware* (tight
+  in static zones, real clearance only where breast/butt/belly sliders move).
+- **Body-motion match** — where armor hugs the body, each armor vertex copies
+  the morph/pose delta of the body surface it covers (follow ratio ~1.0), so its
+  clearance is preserved as sliders and physics move the body: the armor can
+  neither be left behind (body pokes through) nor overshoot (armor balloons).
+  Blends from exact-copy at the hugging surface to smoothed drape farther out.
+- **Jiggle clearance** — clears armor against the body's *moving* envelope, not
+  just its rest pose, so soft-body jiggle can't push skin through at the peak of
+  motion. On by default; `CBBE2UBE_NO_JIGGLE_CLEARANCE=1` disables it.
+
+  > Three separate passes graft jiggle weight, each scaled differently, and their
+  > sliders do **not** state the ratio they deliver — the same nominal `1.0` yields
+  > 0.35 on the chest and 1.00 on the butt. **[docs/DESIGN_JIGGLE.md](docs/DESIGN_JIGGLE.md)**
+  > documents all of it with measured numbers, and proposed a single "follow ratio"
+  > so a slider means what it says. The **chest** third of that shipped (the
+  > follow-ratio pass, on by default); the butt and the transfer pass still run
+  > on the old absolute caps.
+- **Source-standoff conform** — a piece that hugged the 3BA body is reeled
+  back to hug UBE instead of floating at the over-projected distance;
+  pull-in only, with a bust-band exception so the nipple can't poke through.
+  The bust exception is a **morph** requirement, not a bind-pose one: a nipple
+  travels up to 5.35u at runtime, the armour follows it via its own BODYTRI, and
+  what survives is the *residual* between the body point that pokes and the
+  garment vert covering it — zero for a slider that merely inflates, positive
+  for one that reshapes. That residual is added to the required clearance,
+  weighted by nipple weight so it costs the torso nothing. Without it a poke is
+  **preset-dependent** and invisible to every bind-pose metric. The requirement is
+  also evaluated against the garment **surface**, not its vertices: the tightest
+  point sits in a triangle interior, so a surface can sag 0.855u below vertices
+  that all pass, and the vertex form of the test never fired at all. Measured
+  across 112 installed BodySlide presets, poking presets went 19 -> 1.
+  `CBBE2UBE_NO_BUST_MORPH_RESIDUAL=1` disables it. (The measurements and the dead
+  ends live in a working note that is local-only by policy — it names specific
+  mods — so this list is the published record.)
+- **Bust neighbourhood sizing** — the anti-poke samples the body over the patch
+  each garment vertex actually spans (its own local vertex spacing), not a fixed
+  count. `BUST_NEIGHBORHOOD_RADIUS` was previously inert: with `k=6` and a
+  0.359u body the sample only ever reached 0.673u, so a tip poking *between*
+  coarse garment verts was never seen. `CBBE2UBE_NO_BUST_SPACING=1` disables.
+- **Groove-smooth authored cap** — the smoothing runs last, so being outward-only
+  it could only hand back clearance the conform had just removed. Its outward
+  motion is bounded at the authored standoff. `CBBE2UBE_NO_GROOVE_CAP=1` disables.
+- **Warp groove smoothing** — roughness-weighted smoothing of the warp
+  *displacement* removes localized warp noise (breast "indent lines") without
+  flattening real detail. **One-sided since 1.2**: a vert may be smoothed along
+  the surface or *away* from the body, never toward it. Smoothing a displacement
+  field flattens whatever it peaks over, and over a convex feature it peaks at
+  the bust apex — so the pass used to pull the garment back onto the skin
+  exactly where that does most harm. `CBBE2UBE_GROOVE_ONESIDED=0` restores the
+  old behaviour.
+- **Multi-layer order restoration** — the warp's min-standoff clamp collapses
+  a layered outfit's radial stacking (belts sink into corsets, trim sinks
+  under breastplates). The pass re-imposes the **source** layer order
+  per-region: each vertex's order constraints are gated by a local
+  consistency field and bound to the specific partner vertices that sat
+  below/above it *in the source*, so region-dependent stacking (fabric under
+  a plate on the torso but tucked over it at the neckline) and three-sheet
+  sandwiches survive, while genuine weaves stay co-planar. Lift-only, so it
+  can never push cloth into the body. Set `CBBE2UBE_LAYER_DEBUG=1` for
+  per-round resolution stats on stderr.
+- **Cleavage passes** — co-planar bust layers (bra under fabric) are depth-
+  separated (source-order-gated, so it never buries a layer the source put on
+  top) and their bone weights synced so they jiggle identically under
+  HDT-SMP instead of intersecting in motion.
+- **Fitted-cloth body conform** — a skin-tight garment (leggings, pantyhose,
+  bodysuit) has to deform *with* the body or the body clips through it where a
+  limb swings most (measured: a pantyhose's inner-back-thigh followed the
+  leg-swing bone only ~54% as much as the body's ~65%). Garment-class shapes —
+  detected, never hardcoded per armor: they carry soft-body jiggle weight, hug
+  the body, and aren't physics chains — have their *divergent* verts conformed
+  to the body's own per-vertex skinning, gated by a per-bone weight delta so
+  already-matched verts are left alone and the per-vert bone set can only shrink
+  (partition-safe). Rigid plate armor carries no jiggle weight / stands off the
+  body, so it's excluded and stays rigid. SMP per-triangle colliders are excluded
+  *precisely* — read from the armor's own HDT-SMP XML, not by name — so the conform
+  can never re-weight a collision proxy (which would re-graft the over-jiggle the
+  reskin pass avoids). Disable with `CBBE2UBE_NO_CONFORM=1`; tune the gates via
+  `CBBE2UBE_CONFORM_*`.
+- **Soft-cloth bust/butt inflation** — the anti-poke can't move sim-driven verts
+  (it would disturb the physics), so for cloth whose bust/butt is genuinely
+  physics-driven the breast/butt bands are nudged outward instead, so the larger
+  UBE body can't punch through the sim. A *rigid* bust (an HDT-rigged robe whose
+  chains drive only the skirt) is excluded so it isn't ballooned. Disable with
+  `CBBE2UBE_NO_SOFTCLOTH_INFLATE=1`.
+- **Full-vector weight match** — the strongest form of the body-motion match
+  above, and its successor. The per-family matches each fix one bone family and
+  rescale the rest, so every one trades a pose for another pose; this copies the
+  covered body's **whole** weight vector on hugging rows, leaving nothing to pay
+  with. Measured on a leather cuirass: bust exposure under a swing 12.8% → 3.5%
+  and under a sprint 50.9% → 3.1%, with **zero** vertex movement — the bind mesh
+  is byte-identical, only the motion changes. Above the shoulder the hug test is
+  CONTACT rather than proximity, because at proximity it gave a standing
+  decorative plate arm weight it never had and the plate visibly moved wrong.
+  Confirmed in game on soft leather and on rigid glass plate.
+  `CBBE2UBE_NO_FULL_WEIGHT_MATCH=1` disables it.
+- **Chain rest-pose lift** — the fix for a skirt clipping the buttocks. A
+  physics chain's bones keep their **source** rest position while the body grows
+  to UBE, so on a fuller body they end up *inside* it; the solver then pulls the
+  cloth toward them every frame while collision pushes out, and it settles
+  part-way inside — identically at rest and in motion, which is why more
+  collision never finished it. Each affected chain's **root** is translated
+  outward until no bone of it rests inside the body, including the room the body
+  still has to grow under RaceMenu sliders. Roots only: displacing a root moves
+  the chain rigidly (measured worst inter-bone change 0.000000u), while warping
+  bones individually changes rest lengths and is how a chain explodes. Costs
+  0.5u of extra standoff on the free-hanging part of the chain.
+  `CBBE2UBE_NO_CHAIN_REST_LIFT=1` disables it.
+- **Rear collision surface + visible-skirt proxy** — the body-side half of the
+  same defect. Many CBBE-authored armours ship a collider that stops at the
+  smaller CBBE buttock, and represent their cloth in the physics with a coarse
+  stand-in that does not reach the skirt you actually see. Both are rebuilt from
+  the real geometry, and only on pieces measured to need it.
+  `CBBE2UBE_NO_BUTT_COLLIDER_PATCH=1` / `CBBE2UBE_NO_SKIRT_PROXY_REBUILD=1`.
+- **Z-fight split, degenerate-triangle repair, normal recompute** — final
+  cleanup so moved verts don't shimmer, pinch flat, or shade wrong.
+- **Minimum push** — the only corrective pass driven by *measured* skin-through-
+  armor rather than by proximity to the body. Every pass above keys off "how
+  close is this vert" against a constant, so it fires whether or not anything is
+  actually exposed. This one measures first, moves only what the measurement
+  calls for, never touches physics-chain verts, and reverts itself on
+  regression. On most shapes it correctly does nothing.
+- **Physics & morphs carried through** — HDT-SMP chains are blended back
+  un-warped (no collapsed skirts), BODYTRI morph data is regenerated to match
+  the new geometry, and hem verts grazing foot bones are kept off the
+  hand/foot misclassification path.
+
+### How the refit checks itself
+
+Added in 1.2. Before this, twelve passes computed against the body, every one
+assumed the garment shared its coordinate frame, none asserted it, and nothing
+between them measured whether a pass helped — so a single bad transform could
+corrupt all twelve in silence, and an over-inflated mesh could ship because each
+pass capped only its own contribution.
+
+- **Frame precondition** — a shape's transform translation is only a
+  body-space correction if applying it moves the shape *closer* to the body.
+  If it moves it further away it is discarded and reported. This is the
+  cheapest check in the chain.
+- **Diagnose → treat → verify, per shape** — one measurement before the chain,
+  one after. If the chain *as a whole* left more skin exposed than it found, the
+  best intermediate state is shipped instead. Checkpoints between passes are
+  array copies, not measurements, so the whole contract costs two measurements
+  rather than one per pass.
+
+  It is applied to the chain rather than to each pass deliberately. Intermediate
+  regressions are legitimate: the source-standoff conform pulls *in* by design
+  and later passes push back out, so reverting per pass would block a correct
+  pass and bias every garment looser.
+
+  It also does **not** skip passes when the entry measurement looks clean.
+  Bind-pose clipping is blind to animation — "at rest" in game is an animated
+  pose — so gating passes on it would trade a measurable defect for an
+  unmeasurable one.
+- **Two metrics, not one** — clipping (skin behind the garment) has no upper
+  bound, so an over-inflated garment scores a perfect 0.0%. **Standoff** is the
+  counter-metric: how far off the body the finished garment actually sits,
+  against a ceiling calibrated on a piece confirmed correct in game.
+- **Telemetry is a file, not a print** — conversion fans out across a process
+  pool, and in the frozen windowed exe a worker's `print()` can be discarded
+  outright. Frame corrections, chain verdicts and standoff distributions are
+  appended to `standoff_audit.jsonl` at the output mod root. Failed measurements
+  are recorded too: a measurement that *errored* must not look like one that
+  found nothing.
+
+## Install (release zip)
+
+1. Download the zip from the
+   [Releases page](https://github.com/DayOnly/CBBEtoUBE-exe/releases) and
+   extract it to a folder you can write to, not under `Program Files`: the tool
+   keeps its settings, exclusions and logs in its own folder. With MO2,
+   `<MO2Root>\tools\CBBEtoUBE` is a good home. Keep `CBBEtoUBE.exe` next to its
+   `_internal` folder.
+2. Add `CBBEtoUBE.exe` to MO2's executables and start it from MO2, so it sees
+   your modlist.
+3. **Tools ▸ Check setup…** confirms what it found; one of its rows names the
+   build you are running.
+
+`USING.md` and `REPORTING.md` sit beside the exe in the zip: how to run it, and
+what to include when something goes wrong.
+
+To update, extract the newer zip over the same folder. The zip carries no
+settings, exclusions or logs, so yours stay. **Help ▸ Check for a newer
+version** opens the Releases page to compare with that build row; the tool
+itself never goes online.
+
+## Quick start (standalone exe)
+
+The built executable is self-contained (`pynifly` + `NiflyDLL.dll` are bundled).
+
+```
+# graphical front-end (default — what MO2 launches or a double-click opens)
+dist\CBBEtoUBE\CBBEtoUBE.exe
+
+# headless one-click pipeline over the whole modlist
+dist\CBBEtoUBE\CBBEtoUBE.exe auto
+```
+
+Running the exe with **no arguments** launches the GUI — the default when MO2
+runs it or you double-click it. Run the headless one-click pipeline directly
+with the `auto` subcommand (what the GUI's convert button runs under the hood).
+Point MO2 at `CBBEtoUBE.exe` and the tool auto-discovers the modlist layout.
+
+## Running from source
+
+```
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+python cbbe_to_ube_main.py            # launches the GUI (default)
+python cbbe_to_ube_main.py auto       # headless full pipeline
+```
+
+### Installing pynifly
+
+`pynifly` is BadDog's Python binding for `nifly`, distributed alongside the
+PyNifly Blender plugin:
+
+  https://github.com/BadDogSkyrim/PyNifly
+
+Place `pynifly` (the `pyn` package) plus `NiflyDLL.dll` in `.pynifly/` at the
+repo root (already vendored here), or on `sys.path`.
+
+## Commands
+
+| Command | Purpose |
+|---|---|
+| *(none)* / `gui` | Tkinter front-end — the default when run with no arguments |
+| `auto` | Full headless pipeline: convert all candidate mods, merge, add coverage |
+| `convert -o OUT SRC …` | Convert one or more specific source mod folders |
+| `scan MODS_ROOT` | Pre-flight: list candidate CBBE armor mods without converting |
+| `merge -o OUT PATCH PATCH …` | Re-merge the per-mod patch ESPs into the combined plugin (needs 2+ patches) |
+| `validate MOD_DIR` | Re-load and sanity-check converted output |
+| `discover-body-ref` | Locate a usable UBE body reference NIF |
+
+Arguments shown in caps are required — `auto` is the only subcommand that
+takes none.
+
+Useful `auto` flags:
+
+- `-o, --output` — output mod folder (default: `<mods>/CBBEtoUBE Auto`)
+- `--workers N` — parallel worker processes (default: CPU − 1)
+- `--copy-textures` — copy source textures into the output (off by default;
+  textures otherwise resolve from the source mods via the VFS)
+- `--only-mods NAME …` — reconvert **only** the named mod folders (repeat the
+  flag or comma-separate). The merge still rebuilds the Combined ESP over
+  *all* existing per-mod patches, so everything else keeps its current meshes
+  and records. Needs a prior full run. The fast way to iterate on one armor.
+- `--incremental` — skip mods whose output is already current (a code or body
+  change forces a full reconvert automatically)
+- `--list-only` — dry run: list the mods that *would* convert, then stop
+- `--merged-name NAME` — filename of the merged Combined ESP
+- `--exclude-mods NAME …` — never convert the named mod folders. Use this for
+  armor **already built for UBE**: converting it again would double-convert and
+  break it.
+- `--no-ube-native-scan` — turn off the geometry check that skips mods whose
+  armor **already fits the UBE body**. Meshes under `meshes/!UBE/` are skipped
+  by path regardless; this check is the backstop for UBE-native armor shipped
+  at ordinary paths, where nothing in the name or path gives it away. It is
+  deliberately conservative — only a decisive fit against the UBE body skips a
+  mod, an ambiguous one converts as normal — because wrongly skipping a real
+  CBBE mod leaves its armor unfitted in game. Use this if it ever misjudges.
+- `--plugins-only` — rebuild only the plugins (ESP + SkyPatcher INI) from the
+  last run's snapshots, skipping all mesh work. Minutes instead of hours when
+  only the plugin side changed.
+- `--no-auto-merge` — convert without rebuilding the Combined ESP
+- `--no-textures` — skip the texture copy
+- `--convert-overlays` — also rebake CBBE/3BA RaceMenu **body/hands/feet
+  overlays** (tattoos, body paints) into UBE UV space (loose DDS in the output
+  mod; RaceMenu loads them by load order, no ESP). **Needs `texconv`** — see
+  Requirements.
+- `--overlays-only` — run **only** the overlay rebake, skipping the armor
+  convert/merge entirely (implies `--convert-overlays`) — the fast refresh once
+  armor is already converted
+- `--overlay-copy` — non-destructive overlay mode that keeps the originals
+  working on non-UBE races (needs the Papyrus compiler)
+- `--overlay-skip-male`, `--overlay-mods NAME …`, `--overlay-exclude-mods NAME …`
+  — limit which overlay packs get processed
+
+### Discovery overrides
+
+The tool anchors on `ModOrganizer.ini` (walking up from the exe / CWD).
+When running it from outside the instance, point it explicitly:
+
+- `CBBE2UBE_MO2_INI` — path to the instance's `ModOrganizer.ini`
+- `CBBE2UBE_MODS_ROOT` — the `mods/` folder directly (skips INI parsing)
+- `CBBE2UBE_GAME_DATA` — game `Data` folder(s), `;`-separated
+- `CBBE2UBE_LAYER_DEBUG=1` — per-round stats from the layer-order pass
+
+> **Environment variables do not reach an MO2 launch.** MO2 does not pass your
+> environment to the program it starts, so `CBBE2UBE_*` set in a shell (or in your
+> user environment) has **no effect** on a run launched from MO2 — it applies only
+> when you invoke the converter directly from that shell. Every behaviour toggle
+> **listed above** therefore also has a **GUI row** (Armor / Overlays / Paths tabs;
+> tick *Show advanced* for the less common ones), which is the supported way to
+> change one; the GUI writes the variable into the run itself. Internal flags this
+> README does not list may still be environment-only.
+> Settings persist to `CBBEtoUBE_settings.json` beside the exe.
+>
+> This is not a hypothetical: a measured fit improvement sat unused for weeks
+> because it was reachable only by environment variable, and so could never be
+> switched on by a normal launch. If you add a flag meant to be play-tested, give it
+> a row in `src/gui_settings.py`.
+
+## Reference bodies
+
+The converter needs the source (CBBE) and target (UBE) base body meshes — the
+CBBE 3BA body and the matching UBE body built via BodySlide (the
+`femalebody_0.nif` / `femalebody_1.nif` pair from each), for example:
+
+- CBBE: `<modlist>/mods/CBBE 3BA (3BBB)/meshes/actors/character/character assets/femalebody_{0,1}.nif`
+- UBE (BodySlide output): `<modlist>/mods/<UBE BodySlide Output>/meshes/actors/character/character assets/femalebody_{0,1}.nif`
+
+The `auto` pipeline auto-discovers both from the modlist (and `convert` takes
+`--ube-body-ref` to pin the UBE reference explicitly). The low-level
+single-NIF CLI (`src/cli.py`) takes the parent folders via
+`--cbbe-dir` / `--ube-dir`, defaulting to the same auto-discovery.
+
+## Layout
+
+```
+cbbe-to-ube/
+  cbbe_to_ube_main.py       # entry point (-> src.auto_convert.main); what the exe runs
+  CBBEtoUBE.spec            # PyInstaller build spec
+  requirements.txt          # what a source checkout needs to run and test
+  requirements-build.lock   # the hashed toolchain the exe is built from
+  release-markers.json      # what each release's exe must and must not contain
+  vulture_whitelist.py      # names the dead-code check must not flag, with reasons
+  README.md USING.md REPORTING.md CONTRIBUTING.md CHANGELOG.md SECURITY.md
+  LICENSE THIRD-PARTY-NOTICES.md
+  .pynifly/                 # vendored pynifly (pyn) + NiflyDLL.dll, plus the local patches
+  .githooks/                # commit-msg, pre-commit, pre-merge-commit, pre-push (public-repo hygiene)
+  .github/                  # issue templates, PR template, dependabot, CI workflows
+  assets/                   # CBBEtoUBE.ico
+  src/                      # the converter package (below)
+  tests/                    # the pytest suite
+  scripts/                  # build, release, hygiene and maintenance tools
+    analysis/               # measurement tools -- indexed in docs/TOOL_MAP.md
+  research/                 # prototypes kept out of the shipped package
+  docs/                     # DESIGN, PIPELINE, METRICS, RELEASING, the generated maps
+    worklog/                # dated investigation records
+  dist/CBBEtoUBE/           # the tracked exe bundle, checked by scripts/release_gate.py
+
+  src/
+    auto_convert.py         # the full MO2-aware pipeline (the exe's main)
+    nif_convert.py          # core CBBE/3BA -> UBE NIF conversion (refit, physics, bakes)
+    nif_convert_*.py        # ten modules split out of that core: bodyrefs, bust,
+                            # fitgeom, layers, physics, skinframe, telemetry,
+                            # trigen, weights, writer
+    ube_patcher.py          # generate UBE patch ESP from a source armor ESP
+    overlay_transfer.py     # rebake CBBE/3BA RaceMenu overlays (tattoos) to UBE UV
+    overlay_slots.py        # overlay slot identification, the way RaceMenu does it
+    esp.py                  # Skyrim SE ESP/ESM read + write
+    atomic_io.py            # crash-safe atomic writes for all game-loaded output
+    hdt_xml_gen.py          # per-armor HDT-SMP collision XML generator
+    discovery.py / paths.py # MO2 mod-tree discovery + layout auto-detect
+    bsa_strings.py          # localized ARMO names from .STRINGS tables
+    tri.py / osd.py / sliderset_gen.py   # BODYTRI / OutfitStudio / slider data
+    hh_offset.py / nif_patch.py          # high-heel offset, binary NIF patching
+    preview.py              # headless morph-preview renderer
+    gui.py / gui_settings.py             # Tkinter GUI, and the settings registry behind it
+    build_mod.py            # output-mod assembly helpers
+    cli.py / refit.py / correspondence.py / weights.py / nif_io.py
+                            # low-level single-armor refit interface
+    preflight.py / diagnostics.py / report_template.py / failure_summary.py
+                            # Check setup, the diagnostics zip, the problem report, the
+                            # failures file in words
+    envflags.py / exclusions.py / user_warnings.py / fit_metrics.py / body_zones.py
+                            # the one way to read a setting, per-mod exclusions, the one
+                            # way a warning reaches a user, standoff telemetry, body zones
+    blas_env.py / child_lifetime.py / build_info.py / version.py
+                            # BLAS thread cap, workers die with their parent, the build
+                            # stamp, the version
+```
+
+## Dependencies
+
+**To run the converter (dev machine):**
+
+- Python 3.10+
+- `numpy`, `scipy`, `lz4` (pip — see `requirements.txt`). `lz4` is **not
+  optional**: Skyrim SE BSA archives are LZ4-frame compressed, and without it
+  BSA mesh reads silently return nothing, so vanilla-armor conversion produces
+  no output.
+- `pynifly` + `NiflyDLL.dll` (vendored in `.pynifly/`; not on PyPI)
+- **`texconv`** — only for the overlay features (`--convert-overlays` /
+  `--overlays-only`). Put it in the MO2 `tools/` folder or beside the exe, or
+  point `CBBE2UBE_TEXCONV` at it. Without it the overlay pass is skipped.
+- **Papyrus compiler** — only for `--overlay-copy` and the multi-slot feet
+  overlay path. Auto-located via the registry / MO2 gamePath; override with
+  `CBBE2UBE_PAPYRUS_COMPILER`.
+
+**In-game (the converted output requires these on the target modlist):**
+
+- **SkyPatcher** (SKSE plugin) — the converter attaches every armature via a
+  SkyPatcher INI, not ESP overrides, so converted armor is invisible without it.
+  This is a hard dependency with no fallback. It also needs
+  **`iEnableArmorPatching=1`** in `SKSE/Plugins/SkyPatcher.ini` — with it set to
+  `0` you get exactly the same symptom as not having SkyPatcher at all (every
+  converted piece invisible, no other diagnostic). The converter's setup check
+  fails on both cases.
+- **RaceCompatibility** — a UBE prerequisite; the Light build carries the
+  RaceDispatcher that puts converted armatures on the UBE races at runtime.
+- **UBE** and its **`UBE_AllRace.esp`** — the target body/race the minted
+  armatures point at.
+- **RaceMenu** — drives the BODYTRI body-morph data the converter regenerates
+  (and the optional overlay transfer).
+
+Run **Check setup** in the GUI to verify all of the above before converting, or
+`CBBEtoUBE.exe check-setup > setup.txt` without it.
+
+## Reporting problems
+
+**Full instructions: [REPORTING.md](REPORTING.md).** The short version:
+
+1. In the GUI, choose **Help ▸ Copy problem report** — it fills in your version
+   and the last run's numbers and puts the whole report on your clipboard.
+2. Fill in the two `<...>` lines and tick the checkboxes.
+3. Send it to **one** place, not several. If you want it fixed,
+   [file an issue](https://github.com/DayOnly/CBBEtoUBE-exe/issues/new/choose).
+   If you want an answer, [start a discussion](https://github.com/DayOnly/CBBEtoUBE-exe/discussions).
+   Chat works too — wrap it in a triple-backtick code fence for Discord, or the
+   indentation collapses.
+4. Attach the zip from **Help ▸ Save diagnostics zip**.
+
+Direct links, with your version pre-filled:
+[converter errored](https://github.com/DayOnly/CBBEtoUBE-exe/issues/new?template=bug_report.yml)
+· [armor looks wrong in game](https://github.com/DayOnly/CBBEtoUBE-exe/issues/new?template=conversion_problem.yml)
+· [feature request](https://github.com/DayOnly/CBBEtoUBE-exe/issues/new?template=feature_request.yml)
+
+Before filing an *invisible armor* report, rule out the two causes that account
+for nearly all of them: **SkyPatcher must be installed**, and
+**`iEnableArmorPatching=1`** must be set in `SKSE/Plugins/SkyPatcher.ini` — with
+it at `0` you get exactly the same symptom as no SkyPatcher at all. Then confirm
+**every** `CBBE_to_UBE_Combined*.esp` is enabled; the merge splits into numbered
+pieces past the ESL cap, and a disabled piece means missing armor.
+
+**Help ▸ Save diagnostics zip** writes `CBBEtoUBE_diagnostics_<timestamp>.zip` — the
+filled-in report as `REPORT.txt`, plus the last and previous run logs and failure
+lists, the output mod's `conversion_report.json` and `conversion_settings.json`, a
+`machine.txt` with your RAM and page-file setting, settings, exclusions, the
+discovered MO2 layout, and a fresh setup check — which answers most of the first
+round of questions on its own. **Glance at it before attaching**: it contains your
+MO2 paths, profile name, and the mods in your load order.
+
+A normal run also leaves `CBBEtoUBE_last_run.log` and
+`CBBEtoUBE_last_failures.json` beside the exe, and `conversion_report.json` /
+`conversion_summary.txt` / `conversion_report_<mod>.txt` at the output mod root
+(the GUI's **Results** tab reads the first as a health scoreboard).
+
+There is no automatic crash upload, by design — the exe excludes the `ssl`
+extension for license reasons (see [Building the exe](#building-the-exe)) and so
+cannot make a network request at all. Reporting is manual and file-based.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the dev setup and pull-request notes.
+
+## Building the exe
+
+```
+scripts\build_exe.ps1            # -Clean also wipes build\ and dist\ first
+```
+
+The build runs from `.venv-build`, a dedicated environment the script creates
+from `requirements-build.lock` in pip's hash-checking mode, and it refuses to
+build once that environment stops matching the lock. The lock pins every library
+that ends up in the bundle and the tools that assemble it, because a rebuild on a
+different numpy or scipy is a geometry change until a parity run says otherwise —
+and scipy leaves no version behind in the bundle at all.
+
+To move the toolchain, edit the version and its `sha256` line in the lock, delete
+`.venv-build`, rebuild, and re-run the parity harness before trusting the output.
+Produces a self-contained onedir build at `dist/CBBEtoUBE/` (`CBBEtoUBE.exe` +
+`_internal/`).
+
+`LICENSE` and `THIRD-PARTY-NOTICES.md` are bundled into the build so the binary
+is distributed with its licence; PyInstaller places them in
+`dist/CBBEtoUBE/_internal/`. The build also deliberately **excludes** the `_ssl`
+and `_hashlib` extensions — they are the only things that pull in OpenSSL, whose
+1.1.x licence is GPL-incompatible, and nothing here needs them. Note the
+exclusion targets those C extensions, **not** the pure-Python `hashlib` module,
+which the stdlib imports unconditionally.
+
+## License
+
+CBBEtoUBE is licensed under the **GNU General Public License v3.0** — see
+[LICENSE](LICENSE). Copyright (C) 2026 DayOnly.
+
+This project uses BadDog's **PyNifly** (the `pyn` package + `NiflyDLL.dll`),
+which is **GPL-3.0** — source: <https://github.com/BadDogSkyrim/PyNifly>.
+Because PyNifly is GPL-3.0 and is included here (vendored in `.pynifly/` and
+frozen into the built exe), CBBEtoUBE as a whole is distributed under GPL-3.0
+to stay license-compatible. `NiflyDLL.dll` is the compiled binary of that
+project; its corresponding source is available at the link above.
+
+Other bundled components — numpy, scipy, OpenBLAS, Tcl/Tk in the PyInstaller
+bundle (`dist/CBBEtoUBE/_internal/`) — are under their own permissive
+(BSD-style) licenses. See [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).

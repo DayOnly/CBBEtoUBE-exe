@@ -1,0 +1,178 @@
+name: release gate
+
+# scripts/release_gate.py stamp-check: does the tagged exe come from the tree it
+# is tagged on? On a tag push the release zip does not exist yet, so that clause
+# reads NOT CHECKED; when the release is published the zip is downloaded and
+# checked file for file as well.
+#
+# The second job builds the exe AGAIN, on a runner, from the commit the stamp
+# names and with the interpreter the stamp names, and compares the result with
+# the tagged bundle (release_gate.py rebuild-check): the exe, the file list, the
+# repository's own files and the hash-locked libraries must be identical, so the
+# tracked exe is proven to come from its source rather than trusted to. A build
+# made before the build time was pinned cannot be reproduced; the job says so and
+# does nothing else. #reproducible-build
+on:
+  push:
+    tags: ['v*']
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to check, e.g. v1.4.1"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  stamp-check:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5
+        with:
+          # The gate walks history and compares against tags.
+          fetch-depth: 0
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
+        with:
+          # The exe's modules are bytecode for the Python it was frozen with
+          # (dist/CBBEtoUBE/_internal/python310.dll). The gate refuses any other
+          # version rather than pass; tests pin this line to that DLL.
+          python-version: "3.10"
+
+      - name: Download the release zip
+        if: github.event_name == 'release'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: gh release download "$TAG" --pattern "*.zip" --dir asset
+
+      - name: Stamp check
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          case "$EVENT" in
+            release)           python scripts/release_gate.py stamp-check "$RELEASE_TAG" --asset asset/*.zip ;;
+            workflow_dispatch) python scripts/release_gate.py stamp-check "$INPUT_TAG" ;;
+            *)                 python scripts/release_gate.py stamp-check "$REF_NAME" ;;
+          esac
+
+      - name: The tagged exe carries what the release claims
+        # release-markers.json: a module or a name per claimed fix, and what must
+        # never ship, read from the exe's own archive (PYZ and entry script).
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          case "$EVENT" in
+            release)           python scripts/release_gate.py bundle-scan "$RELEASE_TAG" ;;
+            workflow_dispatch) python scripts/release_gate.py bundle-scan "$INPUT_TAG" ;;
+            *)                 python scripts/release_gate.py bundle-scan "$REF_NAME" ;;
+          esac
+
+      - name: The release zip against its own SHA256SUMS
+        # What a stranger can run on the zip they downloaded, without the
+        # repository or the gate: coreutils over the unpacked bundle. A build
+        # older than the manifest has none; the stamp check above still
+        # compares that zip with the tagged bundle file for file.
+        if: github.event_name == 'release'
+        shell: bash
+        run: |
+          python -m zipfile -e asset/*.zip unpacked
+          manifest=$(find unpacked -name SHA256SUMS -print -quit)
+          if [ -z "$manifest" ]; then
+            echo "NOT CHECKED: the zip has no SHA256SUMS (a build older than the manifest)"
+          else
+            cd "$(dirname "$manifest")"
+            sha256sum -c --quiet SHA256SUMS
+            echo "every file matches SHA256SUMS; $(cat VERSION.txt)"
+          fi
+
+  rebuild:
+    runs-on: windows-latest
+    needs: stamp-check
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
+        with:
+          # To READ the stamp: the gate needs the 3.10 the exe was frozen with.
+          python-version: "3.10"
+
+      - name: What the rebuild needs
+        id: plan
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          case "$EVENT" in
+            release)           ref="$RELEASE_TAG" ;;
+            workflow_dispatch) ref="$INPUT_TAG" ;;
+            *)                 ref="$REF_NAME" ;;
+          esac
+          python scripts/release_gate.py rebuild-plan "$ref" > plan.txt
+          cat plan.txt
+          cat plan.txt >> "$GITHUB_OUTPUT"
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+
+      - name: The interpreter the stamp names
+        # The exact version, not "3.10": the PYZ holds the standard library's
+        # own modules compiled from this interpreter's Lib/, so a patch release
+        # apart is a different exe.
+        if: steps.plan.outputs.reproducible == 'true'
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
+        with:
+          python-version: ${{ steps.plan.outputs.python }}
+
+      - name: Build from the stamp commit
+        # build_exe.ps1 creates .venv-build from requirements-build.lock with
+        # pip's hash checking, pins SOURCE_DATE_EPOCH to HEAD's commit time --
+        # the stamp commit's, after this checkout -- and wipes dist/ first.
+        if: steps.plan.outputs.reproducible == 'true'
+        shell: bash
+        env:
+          COMMIT: ${{ steps.plan.outputs.commit }}
+        run: |
+          git checkout --detach "$COMMIT"
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build_exe.ps1 -Clean
+
+      - name: The rebuilt bundle against the tagged one
+        if: steps.plan.outputs.reproducible == 'true'
+        shell: bash
+        env:
+          REF: ${{ steps.plan.outputs.ref }}
+        run: |
+          python scripts/release_gate.py manifest-check dist/CBBEtoUBE
+          python scripts/release_gate.py rebuild-check "$REF" dist/CBBEtoUBE
+
+      - name: The rebuilt exe runs and carries what the release claims
+        # A windowed exe prints to a redirected stdout only.
+        if: steps.plan.outputs.reproducible == 'true'
+        shell: bash
+        run: |
+          ./dist/CBBEtoUBE/CBBEtoUBE.exe --version > version.txt
+          cat version.txt
+          grep -q "^build " version.txt
+          python scripts/release_gate.py bundle-scan dist/CBBEtoUBE/CBBEtoUBE.exe
+
+      - name: No rebuild can reproduce this exe
+        if: steps.plan.outputs.reproducible != 'true'
+        shell: bash
+        env:
+          REASON: ${{ steps.plan.outputs.reason }}
+        run: echo "$REASON"

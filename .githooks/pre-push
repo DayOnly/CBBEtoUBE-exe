@@ -1,0 +1,7 @@
+#!/bin/sh
+# Public-repo guard over every commit a push would publish. pre-commit and
+# commit-msg run when a commit is created; a rebase, a cherry-pick or a merge can
+# produce commits neither saw. Rules: scripts/repo_hygiene.py. #prepush-range
+#
+# Bypass with `git push --no-verify` when you genuinely mean to.
+exec python "$(git rev-parse --show-toplevel)/scripts/hook_prepush.py" "$@"

@@ -1,0 +1,217 @@
+# Reporting a problem
+
+Three places to send a report. **All three use the same format** — pick one,
+and don't post the same thing in two of them.
+
+| Where | Best for |
+| --- | --- |
+| **[Issue](#option-1--file-an-issue)** | Something is broken and needs fixing or tracking |
+| **[Discussion](#option-2--start-a-discussion)** | "Is this normal?", setup help, questions, showing results |
+| **[Chat](#option-3--paste-into-chat)** | Quick back-and-forth, screenshots |
+
+Not sure? **If you want it fixed, open an issue. If you want an answer, start a
+discussion.** Posting a question as an issue is not a problem — it gets moved.
+
+Whichever you pick, start in the GUI: **Help ▸ Copy problem report**. It fills
+in your version and the last run's numbers and puts the whole thing on your
+clipboard. Then fill in the two `<...>` lines and the `[ ]` checkboxes.
+
+---
+
+## First: two things that cause most invisible-armor reports
+
+Check these before writing anything. They account for nearly every
+"converted armor doesn't show up" report:
+
+1. **SkyPatcher must be installed.** The converter attaches every armature
+   through a SkyPatcher INI, never an ESP override. Without SkyPatcher, every
+   converted piece is invisible.
+2. **`iEnableArmorPatching=1`** in `SKSE/Plugins/SkyPatcher.ini`. Set to `0` it
+   produces the *exact same symptom* as SkyPatcher being missing entirely.
+
+Then confirm **every** `CBBE_to_UBE_Combined*.esp` is enabled. The merge splits
+into numbered pieces when it outgrows the ESL cap, and one disabled piece means
+a chunk of missing armor.
+
+Running **Check setup** in the GUI verifies all of this for you. If the GUI will
+not start, `CBBEtoUBE.exe check-setup > setup.txt` writes the same checks to a
+file.
+
+---
+
+## Option 1 — File an issue
+
+For something that is actually broken. These links open the right form with your
+version already filled in:
+
+- **[The converter errored or crashed](https://github.com/DayOnly/CBBEtoUBE-exe/issues/new?template=bug_report.yml)**
+- **[Armor looks wrong in game](https://github.com/DayOnly/CBBEtoUBE-exe/issues/new?template=conversion_problem.yml)**
+- **[Feature request](https://github.com/DayOnly/CBBEtoUBE-exe/issues/new?template=feature_request.yml)**
+
+The form asks for everything below, so you can fill it in directly instead of
+pasting. Drag your diagnostics zip into the issue to attach it.
+
+## Option 2 — Start a discussion
+
+**<https://github.com/DayOnly/CBBEtoUBE-exe/discussions>**
+
+For anything that isn't a confirmed bug: setup trouble, "is this supposed to
+happen?", asking whether a modlist is supported, or showing off a conversion
+that came out well.
+
+Paste the **Help ▸ Copy problem report** output into a discussion the same way
+you would into chat — wrap it in a triple-backtick code fence. Discussions render Markdown, so
+the fence keeps the indentation and checkboxes intact, and you can drag the
+diagnostics zip straight in.
+
+This is the better home for a report that starts as a question. Discussions
+stay searchable, so the next person hitting the same thing finds your answer —
+which a chat message scrolling out of history does not.
+
+## Option 3 — Paste into chat
+
+Use **Help ▸ Copy problem report** in the GUI and paste. It looks like this:
+
+```
+CBBEtoUBE problem report
+========================
+Version:  1.4
+Type:     Conversion problem - output looks wrong in game
+Symptom:  Armor is invisible / does not render
+
+WHAT HAPPENS
+  <what you see, on which armor, and when>
+  standing still / only in motion / only when zoomed out: <which>
+  body preset and weight: <preset, weight>
+
+AFFECTED ARMOR / SOURCE MOD
+  <armor piece, and the mod it came from>
+
+PREREQUISITES  (put an x in the brackets once checked)
+  [ ] SkyPatcher installed
+  [ ] iEnableArmorPatching=1 in SKSE/Plugins/SkyPatcher.ini
+  [ ] every CBBE_to_UBE_Combined*.esp enabled
+  [ ] UBE + UBE_AllRace.esp, RaceCompatibility, RaceMenu installed
+  [ ] output mod last in load order and winning its file conflicts
+
+LAST RUN
+  source mods:     37
+  converted ok:    35
+  armor nifs:      412
+  esp patches:     35
+  hard failures:   1
+  nif errors:      0
+  load failures:   0
+  zero-mesh mods:  1 (SomeArmorMod)
+  weight-partner warnings: 1  <- invisibility risk
+  FAILED: OtherMod: RuntimeError('bad nif')
+
+DIAGNOSTICS
+  [ ] CBBEtoUBE_diagnostics_<timestamp>.zip  (GUI: Help > Save diagnostics zip)
+      it holds your MO2 paths, profile name, and load-order mod names -
+      look it over before posting it publicly.
+
+WHERE TO SEND THIS
+  want it fixed  -> .../issues/new?template=conversion_problem.yml&version=1.4
+  want an answer -> https://github.com/DayOnly/CBBEtoUBE-exe/discussions
+```
+
+**Wrap it in a code fence when you paste it into Discord** — put a line with
+three backticks above and below. Without the fence Discord collapses the
+indentation and eats the `[ ]` boxes, and it becomes much harder to read.
+
+The format is plain ASCII on purpose, so it survives a paste anywhere.
+
+---
+
+## Attach the diagnostics zip
+
+In the GUI, choose **Help ▸ Save diagnostics zip**. It writes
+`CBBEtoUBE_diagnostics_<timestamp>.zip` and opens the folder. Inside:
+
+| File | What it is |
+| --- | --- |
+| `REPORT.txt` | The same report as above, already filled in |
+| `gui_log.txt` | What the GUI's log panel showed this session (empty after a restart) |
+| `CBBEtoUBE_last_run.log`, `CBBEtoUBE_previous_run.log` | The last run's log, and the one before it — the one that matters if a run died |
+| `CBBEtoUBE_last_failures.json`, `CBBEtoUBE_previous_failures.json` | What those runs reported as failures and warnings |
+| `conversion_report.json`, `conversion_settings.json` | The output mod's report, and the settings that run used. Both exist from before the first mod; a report from a run that died says `"complete": false` and how many of the planned mods it covers |
+| `machine.txt` | RAM, commit limit, CPU threads, and whether the page file is system-managed, a fixed size or off |
+| `settings.json` | Your conversion settings |
+| `exclusions.json` | Armors you excluded |
+| `layout.json` | Discovered MO2 mods root, profile, game data dirs |
+| `preflight.txt` | A fresh **Check setup** run |
+
+A file that no run has written yet is left out.
+
+> **Look inside before you post it.** It contains your MO2 paths, your profile
+> name, and the names of mods in your load order. GitHub issues are public and
+> so is most of Discord. Nothing in it is secret, but it is *yours* — decide
+> that deliberately rather than by accident.
+
+A normal run also leaves these behind, useful if the GUI won't start:
+
+- `CBBEtoUBE_last_run.log`, `CBBEtoUBE_last_failures.json` — next to the exe
+- `CBBEtoUBE_settings.json`, `CBBEtoUBE_exclusions.json` — next to the exe
+  too. The tool keeps nothing anywhere else (no AppData, no temp files), so
+  replacing its folder resets it.
+- `CBBEtoUBE_previous_run.log` — **the one to attach if a run DIED.** It is
+  written line by line, so it survives a hard kill; starting the next run
+  moves it aside and begins a fresh `last_run.log`, which belongs to the run
+  *after* the failure.
+  `CBBEtoUBE_last_failures.json` is written only when a run reaches its end,
+  so a log with no failures file beside it is a run that stopped early —
+  killed, or refused at startup (the log says which). Each entry in it has a
+  `severity`: `failure` (that item did not convert) or `warning` (it
+  converted, but something needs your attention first, such as SkyPatcher
+  missing, an unreadable settings file or no race coverage).
+- `CBBEtoUBE_cli.log` — the output of anything that is not a run: `--help`, a
+  mistyped command, `validate`, `scan`. It never touches the run files above,
+  so checking something after a failure cannot erase the evidence.
+- `conversion_report.json`, `conversion_summary.txt`,
+  `conversion_report_<mod>.txt` — at the output mod root.
+  `conversion_report.json` is rewritten after every mod, so after a run that
+  died it describes *that* run up to the last finished mod, with
+  `"complete": false` — attach it with the log. The summary is written only
+  when a run reaches its end.
+
+## What makes a report actionable
+
+The difference between a report that gets fixed and one that stalls is almost
+always specificity:
+
+- **Name the armor and the mod it came from.** "Some armors clip" cannot be
+  reproduced; "the left pauldron on X from mod Y clips at the shoulder" can.
+- **Say what you expected.** Some things that look wrong are deliberate — armor
+  another mod already patched for UBE is skipped on purpose, and male meshes are
+  skipped unless the piece is male-only.
+- **Screenshots for anything visual.** For clipping, gaps, or seams, one
+  screenshot beats a paragraph. Say which body slider and weight if it only
+  happens at particular settings.
+- **For clipping, say whether you were STANDING STILL or MOVING.** This one word
+  changes the diagnosis more than anything else in the report, because the two are
+  different faults with different fixes:
+
+  | | what it means |
+  |---|---|
+  | clips while **standing still** | the armor is fitted too close to the body |
+  | clips **only in motion** | the fit is fine, but the body *travels* further than the armor was given room for |
+  | body shows **only when zoomed out** | not clipping at all — distance z-fighting, cosmetic |
+
+  A piece can measure perfectly clear at rest and still be passed straight through
+  once breast or butt physics starts moving, so "it clips" without this detail can
+  send the fix in entirely the wrong direction. If you can, say which motion does
+  it — running, jumping, combat, or turning.
+- **One report per problem.** Two unrelated bugs in one thread means one of
+  them gets forgotten.
+
+## Why there's no "send report" button
+
+The shipped exe has no network stack at all. The build deliberately excludes the
+`ssl` extension: OpenSSL 1.1.x's license is incompatible with GPL-3.0, and this
+project vendors GPL-3.0 PyNifly. Removing it is what keeps the binary legally
+distributable, so an automatic upload isn't a missing feature — it's a
+consequence of that license decision, and it isn't coming back.
+
+Nothing is collected, transmitted, or phoned home. Every file above stays on
+your machine until you choose to attach it.

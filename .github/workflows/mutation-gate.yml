@@ -1,0 +1,41 @@
+name: mutation gate
+
+# scripts/mutation_gate.py: every seeded mutation is applied in a detached
+# worktree and must turn its named tests red. On demand only -- it is minutes of
+# pytest, and it belongs to the release checklist (docs/RELEASING.md), not to every
+# push. #mutation-gate
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5
+        with:
+          # The gate makes a worktree of HEAD; some targeted tests read tags.
+          fetch-depth: 0
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
+        with:
+          python-version: "3.10"
+          cache: pip
+          cache-dependency-path: requirements-build.lock
+
+      - name: Install dependencies
+        # The production lane's lock, as tests.yml installs for 3.10; pyflakes
+        # and vulture because targeted test files shell out to them.
+        run: |
+          python -m pip install --upgrade pip
+          pip install --require-hashes -r requirements-build.lock
+          pip install pytest pyflakes vulture==2.16
+
+      - name: Verify pynifly loads
+        run: python -c "import sys; sys.path.insert(0, '.pynifly'); from pyn import pynifly; print('pynifly OK')"
+
+      - name: Run the gate
+        shell: bash
+        run: python scripts/mutation_gate.py run --json mutation-gate.json

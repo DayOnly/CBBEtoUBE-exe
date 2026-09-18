@@ -1,0 +1,4 @@
+#!/bin/sh
+# A merge commit runs commit-msg but not pre-commit; run the same checks on the
+# merged index. #prepush-range
+exec "$(git rev-parse --show-toplevel)/.githooks/pre-commit"

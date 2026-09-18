@@ -1,0 +1,218 @@
+# CBBEtoUBE - CBBE/3BA to UBE armor converter
+# Copyright (C) 2026 DayOnly
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+"""SkyPatcher delivery (the only path): the per-source patch mints the SAME
+armatures but emits NO ARMO overrides -- links go to a .skypatcher.json sidecar,
+and the merge turns them into armorAddonsToAdd INI lines against final Combined
+FormIDs."""
+import json
+import struct
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from src.esp import ESP, TES4Header, Group, Record, encode_subrecord, \
+    encode_zstring, iter_subrecords
+from src import ube_patcher as up
+
+DEFAULT = 0x00000019
+BODY = up._BIPED_SLOT_BODY_BIT
+HEAD = 1 << (30 - 30)
+OWN = 1 << 24
+
+
+def _arma(fid, edid, slot, mesh):
+    return Record(sig=b"ARMA", flags=0, formid=fid, timestamp_vc=0,
+                  version_unk=0x2C, payload=(
+        encode_subrecord(b"EDID", encode_zstring(edid))
+        + encode_subrecord(b"BOD2", struct.pack("<II", slot, 0))
+        + encode_subrecord(b"RNAM", struct.pack("<I", DEFAULT))
+        + encode_subrecord(b"MOD3", encode_zstring(mesh))))
+
+
+def _armo(fid, edid, arma_fid, slot):
+    return Record(sig=b"ARMO", flags=0, formid=fid, timestamp_vc=0,
+                  version_unk=0x2C, payload=(
+        encode_subrecord(b"EDID", encode_zstring(edid))
+        + encode_subrecord(b"BOD2", struct.pack("<II", slot, 0))
+        + encode_subrecord(b"RNAM", struct.pack("<I", DEFAULT))
+        + encode_subrecord(b"MODL", struct.pack("<I", arma_fid))
+        + encode_subrecord(b"DATA", struct.pack("<If", 100, 5.0))))
+
+
+def _mk_env(tmp):
+    tmp.mkdir(parents=True, exist_ok=True)
+    ESP(header=TES4Header(masters=[], num_records=0, next_object_id=0x900,
+                          version=1.7, flags=0x1), groups=[]).save(tmp / "Skyrim.esm")
+    ESP(header=TES4Header(masters=["Skyrim.esm"], num_records=0,
+                          next_object_id=0x900, version=1.7),
+        groups=[]).save(tmp / "UBE_AllRace.esp")
+
+
+def _mk_source(tmp, name, mesh_stem):
+    src = ESP(header=TES4Header(masters=["Skyrim.esm"], num_records=0,
+                                next_object_id=0x900, version=1.7), groups=[
+        Group(label=b"ARMA", records=[
+            _arma(OWN | 0x800, "BodyAA", BODY, f"armor/{mesh_stem}/body_0.nif"),
+            _arma(OWN | 0x802, "HelmAA", HEAD, f"armor/{mesh_stem}/helm_0.nif")]),
+        Group(label=b"ARMO", records=[
+            _armo(OWN | 0x801, "Body", OWN | 0x800, BODY),
+            _armo(OWN | 0x803, "Helm", OWN | 0x802, HEAD)])])
+    src.save(tmp / name)
+    return tmp / name
+
+
+def _gen(tmp, name, mesh_stem):
+    src = _mk_source(tmp, name, mesh_stem)
+    out = tmp / (name.replace(".esp", "") + " UBE patch.esp")
+    stats = up.generate_ube_patch(
+        src, out, master_data_dirs=[tmp],
+        converted_rel_paths={f"armor/{mesh_stem}/body_0.nif",
+                             f"armor/{mesh_stem}/helm_0.nif"})
+    return out, stats
+
+
+def test_no_overrides_sidecar_links(tmp_path):
+    _mk_env(tmp_path)
+    out, stats = _gen(tmp_path, "ModA.esp", "a")
+    e = ESP.load(out)
+    assert e.group(b"ARMO") is None, "patch must carry NO ARMO overrides"
+    assert e.group(b"ARMA") is not None and len(e.group(b"ARMA").records) >= 2
+    assert stats["armo_override_count"] == 0
+    assert stats["skypatcher_link_targets"] == 2          # Body + Helm ARMOs
+    sc = json.loads(Path(str(out) + ".skypatcher.json").read_text("utf-8"))
+    targets = {tuple(x["armo"]) for x in sc}
+    assert ("moda.esp", 0x801) in targets and ("moda.esp", 0x803) in targets
+    # every linked fid exists in the patch's ARMA group
+    fids = {r.formid for r in e.group(b"ARMA").records}
+    for x in sc:
+        for a in x["adds"]:
+            assert a["fid"] in fids, "sidecar fid must match post-prune records"
+
+
+def test_merge_emits_final_ini_lines(tmp_path):
+    _mk_env(tmp_path)
+    p1, _ = _gen(tmp_path, "ModA.esp", "a")
+    p2, _ = _gen(tmp_path, "ModB.esp", "b")
+    comb = tmp_path / "Combined.esp"
+    stats = up.merge_patches_split([p1, p2], comb, master_data_dirs=[tmp_path])
+    lines = stats.get("skypatcher_ini_lines") or []
+    assert stats.get("skypatcher_targets") == 4, stats.get("skypatcher_targets")
+    assert len(lines) == 4, lines
+    e = ESP.load(comb)
+    fids = {r.formid & 0xFFFFFF for g in e.groups if g.label == b"ARMA"
+            for r in g.records}
+    for l in lines:
+        assert l.startswith("filterByArmors=mod"), l
+        add = l.split("armorAddonsToAdd=", 1)[1]
+        for part in add.split(","):
+            plug, fid = part.rsplit("|", 1)
+            assert plug == comb.name, part
+            assert int(fid, 16) in fids, "INI fid must exist in the Combined"
+    # both source ARMOs of each mod covered
+    tgts = {l.split("=", 1)[1].split(":", 1)[0] for l in lines}
+    assert tgts == {"moda.esp|000801", "moda.esp|000803",
+                    "modb.esp|000801", "modb.esp|000803"}, tgts
+    print("  test_merge_emits_final_ini_lines OK")
+
+
+def test_coverage_excludes_ini_linked_armos(tmp_path):
+    # #fsp-dedup: an ARMO the Combined INI already links must NOT be re-covered
+    # by the fallback coverage (double armature = body renders twice /
+    # UBE-primary hands mint = invisible gauntlets).
+    _mk_env(tmp_path)
+    src = _mk_source(tmp_path, "ModC.esp", "c")
+    res = up.generate_modded_body_ube_coverage_patch(
+        tmp_path / "Cov.esp", [tmp_path / "Skyrim.esm",
+                               tmp_path / "UBE_AllRace.esp", src],
+        converted_rel_paths={"armor/c/body_0.nif"},
+        exclude_names={"cov.esp"}, master_data_dirs=[tmp_path])
+    assert res["armo_targets"] >= 1, res            # covered without exclusion
+    res2 = up.generate_modded_body_ube_coverage_patch(
+        tmp_path / "Cov2.esp", [tmp_path / "Skyrim.esm",
+                                tmp_path / "UBE_AllRace.esp", src],
+        converted_rel_paths={"armor/c/body_0.nif"},
+        exclude_armo_abs={("modc.esp", 0x801)},
+        exclude_names={"cov2.esp"}, master_data_dirs=[tmp_path])
+    assert res2["armo_targets"] == res["armo_targets"] - 1, \
+        (res["armo_targets"], res2["armo_targets"])
+    print("  test_coverage_excludes_ini_linked_armos OK")
+
+
+# ---- startup-CTD cause #1: never mint a UBE ARMA for a mesh we did not
+# convert ------------------------------------------------------------------
+# The recorded crash: a hood ARMA whose model path was rewritten to `!UBE\`
+# for a mesh the converter never produced, then given the 16 UBE body races, so
+# it fired for actors that load it and the engine read a freed/garbage string
+# -> EXCEPTION_ACCESS_VIOLATION about two minutes into a game.
+#
+# The fix (project notes call it "THE REAL FIX", after an earlier partial one
+# was measured insufficient) is the guard in `generate_ube_patch`: skip the
+# armature entirely when NONE of its model paths are in `converted_rel_paths`.
+# It had no test, so nothing stopped it being refactored away.
+
+
+def _gen_partial(tmp, name, mesh_stem, converted):
+    """Same source as `_gen`, but only `converted` is declared converted."""
+    src = _mk_source(tmp, name, mesh_stem)
+    out = tmp / (name.replace(".esp", "") + " UBE patch.esp")
+    stats = up.generate_ube_patch(src, out, master_data_dirs=[tmp],
+                                  converted_rel_paths=converted)
+    return out, stats
+
+
+def test_no_ube_arma_is_minted_for_an_unconverted_mesh(tmp_path):
+    """The BODY mesh converts, the HELM mesh does not. The helm armature must
+    not appear -- minting it is the crash."""
+    _mk_env(tmp_path)
+    out, _ = _gen_partial(tmp_path, "ModP.esp", "p",
+                          {"armor/p/body_0.nif"})          # helm NOT converted
+    e = ESP.load(out)
+    grp = e.group(b"ARMA")
+    paths = []
+    for r in (grp.records if grp else []):
+        for sig, sd in iter_subrecords(r.payload):
+            if sig in (b"MOD3", b"MOD5"):
+                paths.append(sd.rstrip(bytes(1)).decode("latin1"))
+    # Assert the armature is ABSENT, not merely that its path lacks the !UBE
+    # prefix. Checked against the guard disabled (converted_rel_paths=None):
+    # the armature is minted AND does carry the !UBE prefix, so a prefix-only
+    # assertion would in fact have failed here too. Absence is still the right
+    # property, because it is the one that holds for BOTH halves of the fix --
+    # the project notes record that the path-prefix half "ALONE WAS
+    # INSUFFICIENT", since a real unconverted mesh keeps its original path,
+    # which does not exist either, while the armature still carries UBE races.
+    assert not any("helm_0.nif" in q for q in paths), (
+        f"minted an armature for a mesh that was never converted: {paths}")
+
+
+def test_control_the_same_armature_IS_minted_once_its_mesh_converts(tmp_path):
+    """NEGATIVE CONTROL. If the helm armature were absent for some unrelated
+    reason, the assertion above would pass while defending nothing."""
+    _mk_env(tmp_path)
+    out, _ = _gen_partial(tmp_path, "ModQ.esp", "q",
+                          {"armor/q/body_0.nif", "armor/q/helm_0.nif"})
+    e = ESP.load(out)
+    grp = e.group(b"ARMA")
+    paths = []
+    for r in (grp.records if grp else []):
+        for sig, sd in iter_subrecords(r.payload):
+            if sig in (b"MOD3", b"MOD5"):
+                paths.append(sd.rstrip(bytes(1)).decode("latin1"))
+    assert any("helm_0.nif" in q for q in paths), (
+        f"control failed: the helm armature is missing even when converted, "
+        f"so the test above proves nothing. paths={paths}")

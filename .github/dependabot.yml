@@ -1,0 +1,25 @@
+# Dependency updates. The point is to be TOLD, not to be bumped silently.
+# #workflow-hardening
+version: 2
+updates:
+  # Action tags move; the workflows pin commit shas, so an update here is how a
+  # pinned sha gets a reviewed bump instead of ageing out of sight.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "ci"
+
+  # requirements.txt is what a contributor installs. The BUILD toolchain
+  # (requirements-build.lock) is deliberately NOT watched here: it is hash-pinned
+  # to the libraries inside the shipped exe, and moving one of those is a
+  # geometry change that has to be regenerated and re-verified by a rebuild and a
+  # parity run -- not merged as a bot PR. Dependabot's pip ecosystem would not
+  # read that filename anyway.
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    commit-message:
+      prefix: "deps"

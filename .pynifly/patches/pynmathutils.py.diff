@@ -1,0 +1,10 @@
+--- a/pyn/pynmathutils.py
++++ b/pyn/pynmathutils.py
+@@ -330,7 +330,3 @@
+     else:
+         return sum( (-1 if i&1 else 1) * mat[i][0] * matCofactor(mat, i, 0)
+                     for i in range(dim) )
+-
+-if __name__ == "__main__":
+-    import doctest
+-    doctest.testmod()

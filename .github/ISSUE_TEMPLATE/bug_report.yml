@@ -1,0 +1,140 @@
+name: Bug report — the converter errored or crashed
+description: The tool itself failed. It stopped with a traceback, hung, or produced no output mod at all.
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For armor that converted but looks *wrong in game* (invisible, clipping,
+        no physics), use **Conversion problem** instead — it asks for different
+        information.
+
+        **Please attach a diagnostics zip.** In the GUI, choose
+        **Help ▸ Save diagnostics zip**. It writes `CBBEtoUBE_diagnostics_<timestamp>.zip`
+        containing the run log, your settings, the discovered MO2 layout, and a
+        fresh setup check. Drag the zip into this issue.
+
+        It is collected from your machine, so glance at it first — the layout
+        snapshot contains your MO2 paths and profile name.
+
+        The GUI's **Help ▸ Copy problem report** fills in your version and the
+        last run's numbers if you would rather paste than type. Full guide:
+        [REPORTING.md](https://github.com/DayOnly/CBBEtoUBE-exe/blob/main/REPORTING.md).
+
+  - type: input
+    id: version
+    attributes:
+      label: CBBEtoUBE version
+      description: The GUI title bar shows it, and it is stamped into the conversion report. Newer builds also keep `VERSION.txt` beside the exe, naming the exact build — paste its line if you have one.
+      placeholder: "1.4.1"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: how_run
+    attributes:
+      label: How were you running it?
+      options:
+        - Standalone exe — GUI
+        - Standalone exe — command line
+        - From source (Python)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: launch
+    attributes:
+      label: How did you launch the converter?
+      description: It reads your mods, load order and game data through MO2's virtual file system, so launched outside MO2 it sees none of them (USING.md).
+      options:
+        - Through MO2 (added as an MO2 executable)
+        - Outside MO2 (double-clicked in Explorer, a shortcut, or a terminal)
+    validations:
+      required: true
+
+  - type: textarea
+    id: what_happened
+    attributes:
+      label: What happened
+      description: What you did, and where it stopped. Include the subcommand if you ran it headless.
+      placeholder: |
+        Clicked Convert with defaults. It ran through discovery, then stopped
+        partway through refitting with a traceback.
+    validations:
+      required: true
+
+  - type: textarea
+    id: error
+    attributes:
+      label: Error output
+      description: >-
+        **If the run DIED, attach `CBBEtoUBE_previous_run.log`** — relaunching the
+        tool starts a new `CBBEtoUBE_last_run.log`, so the one that holds the failure
+        is the previous one.
+
+
+        Paste the traceback or the last ~30 lines of output. `CBBEtoUBE_last_run.log`
+        sits next to the exe and holds the full run; `CBBEtoUBE_last_failures.json`
+        records per-armor failures. This is rendered as code — no backticks needed.
+      render: text
+    validations:
+      required: false
+
+  - type: textarea
+    id: machine
+    attributes:
+      label: Machine and memory
+      description: >-
+        Needed for any "out of memory", "MemoryError", freeze or vanished-worker
+        report, and cheap to give. Windows fails an allocation against RAM PLUS
+        page file, so a disabled or pinned-small page file causes memory errors
+        on a machine with plenty of RAM free — which is why two people with the
+        same RAM get different results from the same build.
+
+
+        1. RAM and CPU threads — Task Manager > Performance > CPU shows
+        "Logical processors".
+
+        2. Page file — System > Advanced system settings > Performance >
+        Settings > Advanced > Virtual memory > Change. Is it "Automatically
+        manage", and if not,
+        what size?
+
+        3. The "Worker processes" number on the Run tab.
+
+
+        The run log's `machine:` line has all of this, and so does the `machine`
+        block in `conversion_report.json`, if you would rather paste than look
+        it up.
+      placeholder: |
+        32 GB RAM, 24 threads, page file system-managed, 15 workers
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: machine_given
+    attributes:
+      label: Machine block
+      options:
+        - label: I filled in **Machine and memory** above, or this report is not about a memory error, a freeze, or a vanished worker.
+          required: true
+
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics zip
+      description: Drag `CBBEtoUBE_diagnostics_<timestamp>.zip` into this box to attach it.
+      placeholder: Attach the zip here.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: setup
+    attributes:
+      label: Setup check
+      options:
+        - label: I ran **Check setup** in the GUI and it passed (or I have said below which checks failed).
+          required: false
+        - label: I searched existing issues and did not find this one.
+          required: false

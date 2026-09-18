@@ -1,0 +1,102 @@
+{
+  "_read_by": "scripts/release_gate.py bundle-scan -- docs/RELEASING.md, 'Release markers'. A present marker is a module (in the exe's PYZ) or a name (in our own modules or the entry script) that exists only with the fix it claims; an absent one must never ship. Add one with every CHANGELOG entry that claims a fix, `since` the version that will carry it.",
+  "present": [
+    {
+      "module": "src.blas_env",
+      "since": "1.4.1",
+      "claims": "the BLAS thread cap that took 1.5 GB of committed memory off every process (1.4.1)"
+    },
+    {
+      "name": "cap_blas_threads",
+      "since": "1.4.1",
+      "claims": "the same cap, by the function that applies it before numpy loads"
+    },
+    {
+      "name": "WORKER_COMMIT_GB",
+      "since": "1.4.1",
+      "claims": "the worker count is bounded by what Windows will let the run commit (1.4.1)"
+    },
+    {
+      "name": "_rotate_previous",
+      "since": "1.4.1",
+      "claims": "the run log is kept as CBBEtoUBE_previous_run.log instead of truncated (1.4.1); defined in the entry script"
+    },
+    {
+      "name": "pool_error",
+      "since": "1.4.1",
+      "claims": "a run whose worker pool broke is reported as such, not as success (1.4.1)"
+    },
+    {
+      "module": "src._build_stamp",
+      "since": "1.4.1",
+      "claims": "the exe carries the build stamp the release gate and --version read"
+    },
+    {
+      "module": "pyn.pynifly",
+      "since": "1.4.1",
+      "claims": "the vendored NIF layer, which the spec collects by hand because nothing imports it statically"
+    },
+    {
+      "module": "lz4.frame",
+      "since": "1.4.1",
+      "claims": "BSA mesh extraction; a lazy import the spec names so PyInstaller cannot drop it"
+    },
+    {
+      "module": "scipy.ndimage",
+      "since": "1.4.1",
+      "claims": "overlay transfer's UV gutter padding; a lazy import the spec names"
+    },
+    {
+      "module": "tkinter",
+      "since": "1.4.1",
+      "claims": "the GUI"
+    },
+    {
+      "module": "src.child_lifetime",
+      "since": "1.4.2",
+      "claims": "pool workers die with their parent (Unreleased)"
+    },
+    {
+      "module": "src.failure_summary",
+      "since": "1.4.2",
+      "claims": "run-level warnings are counted and worded for the report (Unreleased)"
+    },
+    {
+      "name": "check-setup",
+      "since": "1.4.2",
+      "claims": "the check-setup subcommand (Unreleased)"
+    },
+    {
+      "name": "tool_dir",
+      "since": "1.4.2",
+      "claims": "every state file lives in the tool folder, nothing under AppData (Unreleased)"
+    },
+    {
+      "name": "machine.txt",
+      "since": "1.4.2",
+      "claims": "the diagnostics zip records the page-file mode (Unreleased)"
+    }
+  ],
+  "absent": [
+    {
+      "module": "psutil",
+      "claims": "not a dependency; it once leaked in from the build environment, and the spec excludes it"
+    },
+    {
+      "module": "ssl",
+      "claims": "OpenSSL is excluded for its licence conflict with the GPL; nothing here does networking"
+    },
+    {
+      "module": "pytest",
+      "claims": "the test framework"
+    },
+    {
+      "module": "scripts.release_gate",
+      "claims": "the release tooling"
+    },
+    {
+      "module": "scripts.repo_hygiene",
+      "claims": "the repository's own hygiene checks"
+    }
+  ]
+}

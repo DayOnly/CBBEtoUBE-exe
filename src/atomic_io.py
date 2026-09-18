@@ -1,0 +1,264 @@
+# CBBEtoUBE - CBBE/3BA to UBE armor converter
+# Copyright (C) 2026 DayOnly
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+"""Atomic file output.
+
+Every plugin/mesh this tool emits is loaded by the Skyrim engine. A partial
+write (crash, killed process, full disk, or destination locked by the game /
+Mod Organizer) leaves a truncated file that CTDs on load.
+
+The fix is write-to-temp-then-rename: data goes to a temp file in the SAME
+directory (so `os.replace` is atomic on the volume); only a fully-written
+temp is swapped into place. The destination is always either the complete old
+file or the complete new file.
+
+If the destination is locked, `os.replace` raises and we surface a clear
+`OutputLockedError` while leaving the existing file intact.
+"""
+from __future__ import annotations
+
+import os
+
+from .envflags import flag as _flag
+import re
+import tempfile
+import time
+from pathlib import Path
+
+
+class OutputLockedError(OSError):
+    """Raised when an output file can't be written because it (or its folder)
+    is locked by another process -- typically the running game, Mod Organizer,
+    or the housecarl-mcp server holding the MO2 output. The existing file on
+    disk is left intact (never half-overwritten)."""
+
+
+# Windows fails a rename when ANYTHING holds the destination open, including for
+# a moment: another converter worker writing the same path, an antivirus or the
+# search indexer touching a file we just created, or MO2's VFS. Most of those
+# clear in milliseconds, and the old code gave up on the first refusal.
+#
+# MEASURED on a full pack reconvert (161 mods, 3907 NIFs): 24 `.tri` writes lost
+# this race. It is not random -- SEVERAL NIFs regenerate the SAME `.tri` (one
+# armour's `_0`/`_1` plus its 1st-person variants; a glass cuirass has ten NIFs
+# over one TRI), so with a worker pool two of them collide on the swap. Where one
+# writer won, the file is correct and the loser's error is noise; where all lost,
+# the piece shipped with NO body-morph TRI and will not follow body sliders.
+#
+# Retry before surfacing. Bounded and short: this must not mask a genuinely held
+# file (the running game) by hanging a batch for minutes.
+_SWAP_RETRIES = 6
+_SWAP_BACKOFF = 0.05          # seconds; doubles each try -> ~3.1s worst case
+
+
+def _swap_into_place(tmp: str, dst: Path) -> None:
+    """os.replace(tmp -> dst), retrying a transient lock, with temp cleanup."""
+    delay = _SWAP_BACKOFF
+    for attempt in range(_SWAP_RETRIES):
+        try:
+            os.replace(tmp, str(dst))
+            return
+        except PermissionError as e:
+            if attempt == _SWAP_RETRIES - 1:
+                _quiet_unlink(tmp)
+                raise OutputLockedError(
+                    f"cannot write '{dst}': still locked after "
+                    f"{_SWAP_RETRIES} attempts over "
+                    f"{_SWAP_BACKOFF * (2 ** _SWAP_RETRIES - 1):.1f}s. "
+                    f"If the GAME is running, close it and re-run. Mod Organizer "
+                    f"itself does NOT need closing -- it launches this tool, so "
+                    f"it is always running. (the existing file was left "
+                    f"unchanged)"
+                ) from e
+            time.sleep(delay)
+            delay *= 2
+        except BaseException:
+            _quiet_unlink(tmp)
+            raise
+
+
+def _quiet_unlink(p) -> None:
+    try:
+        os.unlink(p)
+    except OSError:
+        pass
+
+
+# Every temp name a writer below leaves when its process is killed mid-write:
+# the fixed `<name>.nifsave.tmp` / `<name>.trisave.tmp`, and mkstemp's
+# `<name>.<8 random chars>.tmp` (tempfile draws them from [a-z0-9_]). `<name>`
+# always carries its own extension, which keeps a user's `notes.tmp` out.
+# #orphan-temps
+_ORPHAN_TEMP = re.compile(r"^.+\.[A-Za-z0-9]+\.(?:nifsave|trisave|[a-z0-9_]{8})\.tmp$")
+
+
+def orphan_temps(root, older_than: float) -> "list[Path]":
+    """Temp files under `root` that a writer here left behind, last modified
+    before `older_than` (a time.time() value). A newer one can belong to a write
+    still in progress, so it is never returned."""
+    root = Path(root)
+    if not root.is_dir():
+        return []
+    found = []
+    for p in root.rglob("*.tmp"):
+        try:
+            if (_ORPHAN_TEMP.match(p.name) and p.is_file()
+                    and p.stat().st_mtime < older_than):
+                found.append(p)
+        except OSError:
+            continue
+    return sorted(found)
+
+
+def sweep_orphan_temps(root, older_than: float) -> "list[Path]":
+    """Delete `orphan_temps(root, older_than)`; return the ones removed."""
+    removed = []
+    for p in orphan_temps(root, older_than):
+        try:
+            p.unlink()
+            removed.append(p)
+        except OSError:
+            pass
+    return removed
+
+
+def atomic_write_bytes(path, data: bytes) -> None:
+    """Write `data` to `path` atomically (temp in the same dir, flush+fsync,
+    then os.replace). Never leaves a truncated destination. Raises
+    OutputLockedError if the destination is locked."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent),
+                               prefix=path.name + ".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+    except BaseException:
+        _quiet_unlink(tmp)
+        raise
+    _swap_into_place(tmp, path)
+
+
+def atomic_copy(src, dst) -> None:
+    """Copy `src` -> `dst` atomically (copy to a temp in dst's dir, then
+    os.replace), preserving metadata. Never leaves a truncated destination;
+    raises OutputLockedError if the destination is locked."""
+    import shutil
+    dst = Path(dst)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=str(dst.parent),
+                               prefix=dst.name + ".", suffix=".tmp")
+    os.close(fd)
+    try:
+        shutil.copy2(src, tmp)
+    except BaseException:
+        _quiet_unlink(tmp)
+        raise
+    # Durability: best-effort flush to disk before the rename (matches
+    # atomic_write_bytes -- else a power loss just after os.replace can leave the
+    # directory entry pointing at not-yet-flushed data). fsync needs a WRITABLE
+    # fd on Windows; never let a durability flush failure break the copy itself.
+    try:
+        _fd = os.open(tmp, os.O_RDWR)
+        try:
+            os.fsync(_fd)
+        finally:
+            os.close(_fd)
+    except OSError:
+        pass
+    _swap_into_place(tmp, dst)
+
+
+def atomic_nif_save(nif, dst_path) -> None:
+    """Save a pynifly NifFile to `dst_path` atomically: point its filepath at a
+    temp file in the same directory, let pynifly write that, then os.replace it
+    into place. A crash/kill during pynifly's (native) write corrupts only the
+    temp -- the destination stays the previous complete file. Raises
+    OutputLockedError if the destination is locked."""
+    dst_path = Path(dst_path)
+    dst_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dst_path.with_name(dst_path.name + ".nifsave.tmp")
+    try:
+        nif.filepath = str(tmp)
+        nif.save()
+    except BaseException:
+        _quiet_unlink(str(tmp))
+        raise
+    _swap_into_place(str(tmp), dst_path)
+    # Restore the real destination on the object so any post-save code that
+    # reads nif.filepath sees the final path, not the temp.
+    try:
+        nif.filepath = str(dst_path)
+    except Exception:
+        pass
+    _debug_glow_controller_check(nif, dst_path)
+
+
+def _debug_glow_controller_check(nif, dst_path) -> None:
+    """DEBUG (CBBE2UBE_DEBUG_GLOW_CTRL=1): after a save, flag any shape whose
+    shape-level controllerID == its shaderPropertyID (the dangling effect-shader
+    self-reference that CTDs Daedric MaleTorsoGlow on equip) and log the calling
+    pass via a stack trace. Off by default -> zero cost. Names the introducing
+    pass so we can fix it at the source instead of only repairing in postflight."""
+    if not _flag("CBBE2UBE_DEBUG_GLOW_CTRL", False):
+        return
+    try:
+        hits = []
+        for s in nif.shapes:
+            pr = s.properties
+            cid = getattr(pr, "controllerID", 0xFFFFFFFF)
+            spid = getattr(pr, "shaderPropertyID", 0xFFFFFFFF)
+            if cid != 0xFFFFFFFF and cid == spid:
+                hits.append(getattr(s, "name", "?"))
+        if not hits:
+            return
+        import traceback
+        # Trimmed caller chain (skip this fn + atomic_nif_save), name the pass.
+        frames = traceback.format_stack()[:-2][-10:]
+        # The tool's own folder, not %TEMP% (under AppData). #tool-folder-only
+        from .paths import tool_dir as _tool_dir
+        log = Path(os.environ.get(
+            "CBBE2UBE_GLOW_LOG",
+            str(_tool_dir() / "CBBEtoUBE_glowdebug.log")))
+        with open(log, "a", encoding="utf-8", errors="replace") as f:
+            f.write(f"\n=== CORRUPT glow controller after save: {dst_path}\n")
+            f.write(f"    shapes: {hits}\n")
+            f.write("    call stack (most recent last):\n")
+            for fr in frames:
+                f.write("      " + fr.rstrip().replace("\n", "\n      ") + "\n")
+    except Exception:
+        pass
+
+
+def atomic_tri_save(tri, dst_path) -> None:
+    """Save a pynifly TriFile (auto-generated body-morph TRI) to `dst_path`
+    atomically: write to a temp file in the same directory, then os.replace it
+    into place. A crash/kill during the (native) write corrupts only the temp --
+    the destination stays the previous complete file. A truncated .tri breaks
+    RaceMenu/BodyMorph loading (the armor stops following body sliders, or worse),
+    so this closes the last non-atomic game-loaded-output write. Raises
+    OutputLockedError if the destination is locked."""
+    dst_path = Path(dst_path)
+    dst_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dst_path.with_name(dst_path.name + ".trisave.tmp")
+    try:
+        tri.save(str(tmp))
+    except BaseException:
+        _quiet_unlink(str(tmp))
+        raise
+    _swap_into_place(str(tmp), dst_path)

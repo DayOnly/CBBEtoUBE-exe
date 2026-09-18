@@ -1,0 +1,212 @@
+# -*- mode: python ; coding: utf-8 -*-
+# CBBEtoUBE - CBBE/3BA to UBE armor converter
+# Copyright (C) 2026 DayOnly
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+"""PyInstaller spec for CBBEtoUBE.exe (the standalone CBBE/3BA -> UBE converter).
+
+Build:  pyinstaller CBBEtoUBE.spec          (or: scripts\build_exe.ps1)
+Output: dist\CBBEtoUBE\CBBEtoUBE.exe        (onedir bundle)
+
+ONEDIR (not onefile) on purpose: the converter fans NIF work out across a
+ProcessPoolExecutor. On Windows (spawn) every worker re-launches CBBEtoUBE.exe;
+with onefile each of those re-launches would re-extract the whole ~hundreds-of-MB
+bundle to a fresh temp dir (slow, wasteful, and racy). With onedir the workers
+share the already-unpacked dist folder, so worker startup is instant.
+
+Bundled bits that PyInstaller can't find on its own:
+  * pyn (pynifly) — imported dynamically from .pynifly/ at runtime, invisible to
+    static analysis, so it's added via pathex + collect_submodules('pyn').
+  * NiflyDLL.dll — placed at the bundle root so pyn's own loader finds it at
+    dirname(dirname(niflydll.__file__))/NiflyDLL.dll == <bundle>/NiflyDLL.dll.
+"""
+from PyInstaller.utils.hooks import collect_submodules
+import os
+import shutil
+import sys
+
+# BUILD IDENTITY, GENERATED HERE FOR EVERY BUILD. #build-identity
+# scripts/build_exe.ps1 used to write src/_build_stamp.py before calling
+# PyInstaller, so a direct `pyinstaller CBBEtoUBE.spec` silently reused whatever
+# stamp an earlier build had left -- a committed exe once shipped that way.
+sys.path.insert(0, SPECPATH)
+from scripts import build_identity  # noqa: E402
+
+build_stamp = build_identity.build_stamp(SPECPATH)
+build_identity.write_stamp(os.path.join(SPECPATH, "src", "_build_stamp.py"), build_stamp)
+with open(os.path.join(SPECPATH, "src", "version.py"), "rb") as _version_file:
+    build_version = build_identity.version_from_source(_version_file.read())
+print("build stamp:", build_identity.version_line(build_version, build_stamp))
+
+# pyn is a small, pure-Python package (no submodule imports bpy) — collecting
+# all of it is safe and guarantees pynifly's relative imports resolve.
+hiddenimports = collect_submodules("pyn")
+# scipy.spatial.cKDTree (armor fit + overlay correspondence) and scipy.ndimage
+# (distance_transform_edt -> UV gutter padding in the overlay transfer). The
+# official scipy hook collects the spatial extensions, but name the surfaces we
+# use explicitly so the frozen exe never ships without them (the overlay
+# feature imports scipy.ndimage lazily, exactly the case PyInstaller misses).
+hiddenimports += ["scipy.spatial", "scipy.spatial._ckdtree"]
+hiddenimports += collect_submodules("scipy.ndimage")
+# lz4 (frame) decompresses Skyrim SE BSA (v105) mesh entries so the converter
+# can pull vanilla armor meshes straight from the base-game Skyrim - Meshes
+# BSAs (standalone vanilla-armor coverage, no replacer mod required). It's
+# imported lazily inside bsa_strings.read_file, so name it explicitly or the
+# frozen exe ships without it and BSA mesh extraction silently returns None.
+hiddenimports += ["lz4", "lz4.frame", "lz4.block"]
+# Optional Tkinter GUI (the `gui` subcommand, src/gui.py). tkinter is imported
+# lazily inside launch_gui(), so name src.gui + the tkinter submodules
+# explicitly or the frozen exe ships without them and `CBBEtoUBE.exe gui` fails.
+# src.blas_env is imported at the top of the entry script, so Analysis
+# finds it statically -- named here anyway because if it were EVER missed
+# the exe would die on its first line, and 1.5 GB of per-process commit
+# charge rides on it. #blas-thread-cap
+hiddenimports += ["src.blas_env"]
+hiddenimports += ["src.gui", "src.gui_settings", "src.exclusions",
+                  "src.preflight",
+                  "tkinter", "tkinter.ttk",
+                  "tkinter.scrolledtext", "tkinter.filedialog",
+                  "tkinter.messagebox"]
+
+a = Analysis(
+    ["cbbe_to_ube_main.py"],
+    pathex=[".", ".pynifly"],
+    binaries=[(".pynifly/NiflyDLL.dll", ".")],
+    # The exe is what end users actually receive, so the GPL requires the
+    # licence travel WITH it (GPLv3 §4/§5) -- shipping it only in the repo is
+    # not enough. Third-party notices ride along for the same reason.
+    # The .ico is bundled as DATA as well as being the exe's own icon: the exe
+    # resource gives the file its icon in Explorer and MO2, but Tk needs a real
+    # file on disk to set the WINDOW and taskbar icon at runtime.
+    datas=[("LICENSE", "."), ("THIRD-PARTY-NOTICES.md", "."),
+           ("assets/CBBEtoUBE.ico", "assets")],
+    hiddenimports=hiddenimports,
+    hookspath=[],
+    hooksconfig={},
+    runtime_hooks=[],
+    excludes=[
+        "bpy", "bpy_extras", "bmesh", "mathutils",  # Blender — never needed
+        # tkinter is NOW bundled (the `gui` subcommand needs it).
+        "matplotlib", "PIL", "pytest", "IPython", "pandas",
+        # libssl/libcrypto are OpenSSL 1.1.1n, whose licence carries an
+        # advertising clause the FSF considers INCOMPATIBLE with the GPL. They
+        # are pulled in ONLY by the `_ssl` and `_hashlib` C extensions, and
+        # nothing here does networking or cryptographic hashing, so excluding
+        # those two drops both DLLs and removes the conflict outright rather
+        # than needing a licence exception.
+        # DO NOT add "hashlib" here: it is a pure-Python module that parts of
+        # the stdlib import unconditionally. It only *tries* `_hashlib` and
+        # falls back to the built-in `_sha256`/`_md5`/`_blake2` extensions, so
+        # dropping the C extension alone is safe -- excluding `hashlib` itself
+        # makes the exe die at startup with ModuleNotFoundError (verified).
+        "ssl", "_ssl", "_hashlib",
+        # psutil is not imported anywhere and is not a declared dependency; it
+        # leaked in from the build environment.
+        "psutil",
+    ],
+    noarchive=False,
+)
+
+pyz = PYZ(a.pure)
+
+exe = EXE(
+    pyz,
+    a.scripts,
+    # Pin the interpreter's string-hash seed. The frozen bootloader IGNORES the
+    # PYTHONHASHSEED environment variable, so every process (workers included)
+    # otherwise draws a RANDOM seed — and set/dict iteration order is a live
+    # input to the output bytes (proven 2026-08-18: same-seed interpreted runs
+    # are byte-identical over the whole output tree; different seeds differ;
+    # two exe runs differed on 29/84 meshes on a VFS-broadened mod). One seed,
+    # one canonical output. Workers inherit it because spawn re-executes this
+    # same exe.
+    #
+    # The option MUST be the bare "hash_seed=<n>" form. "X hash_seed=1" parses
+    # as a CPython -X option, which CPython silently ignores — measured: a probe
+    # exe built with both spellings froze at the bare form's seed, and a
+    # no-options control varied per run.
+    [("hash_seed=1", None, "OPTION")],
+    exclude_binaries=True,
+    name="CBBEtoUBE",
+    debug=False,
+    bootloader_ignore_signals=False,
+    strip=False,
+    upx=False,            # UPX can corrupt numpy/scipy DLLs — leave off
+    console=False,        # windowed: double-click / MO2 launches the GUI, no console window
+    disable_windowed_traceback=False,
+    # Regenerate with `python scripts/make_icon.py <logo.png>` -- it crops the
+    # artwork to its own alpha bounds, squares it without stretching, and
+    # writes every size Windows asks for (a missing size gets resampled and
+    # looks soft wherever the shell picks it).
+    icon="assets/CBBEtoUBE.ico",
+    # What Explorer's Details tab and (Get-Item ...).VersionInfo show; it was
+    # blank. From src/version.py and the stamp. #build-identity
+    version=build_identity.version_resource(build_version, build_stamp),
+)
+
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.datas,
+    strip=False,
+    upx=False,
+    name="CBBEtoUBE",
+)
+
+# The instructions, BESIDE the exe. PyInstaller's `datas` land in `_internal/`
+# (that is where LICENSE and the notices go), which is a folder of program files
+# nobody opens -- so the download shipped no readable instructions at all. Copied
+# before the manifest below, so SHA256SUMS lists them. #bundled-docs
+_BUNDLED_DOCS = ("USING.md", "REPORTING.md")
+for _doc in _BUNDLED_DOCS:
+    shutil.copy2(os.path.join(SPECPATH, _doc),
+                 os.path.join(DISTPATH, "CBBEtoUBE", _doc))
+
+# The licence texts the notice promises, in one folder a reader can find.
+# CPython's carries the texts for what CPython itself bundles (libffi among them);
+# SciPy ships no dist-info in the bundle, so without this its licence -- and its
+# version -- would be unrecoverable from the artefact; one Tcl/Tk text covers both.
+# NumPy and python-lz4 carry their own inside their dist-info. Resolved from THIS
+# interpreter and its site-packages, so the bundle documents what built it, and a
+# missing source FAILS the build rather than shipping a false claim.
+# #bundled-licences
+_LICENSE_DIR = os.path.join(DISTPATH, "CBBEtoUBE", "_internal", "licenses")
+os.makedirs(_LICENSE_DIR, exist_ok=True)
+
+
+def _scipy_license_path():
+    import importlib.metadata as _md
+    dist = _md.distribution("scipy")
+    for f in dist.files or ():
+        if f.name.upper().startswith("LICENSE"):
+            return str(dist.locate_file(f))
+    raise SystemExit("scipy ships no LICENSE file in this environment")
+
+
+_LICENSE_SOURCES = {
+    "CPython-LICENSE.txt": os.path.join(sys.base_prefix, "LICENSE.txt"),
+    "Tcl-Tk-license.terms": os.path.join(sys.base_prefix, "tcl", "tk8.6", "license.terms"),
+    "SciPy-LICENSE.txt": _scipy_license_path(),
+}
+for _name, _src in _LICENSE_SOURCES.items():
+    if not os.path.isfile(_src):
+        raise SystemExit(f"licence text missing, refusing to build: {_name} <- {_src}")
+    shutil.copy2(_src, os.path.join(_LICENSE_DIR, _name))
+
+# VERSION.txt and SHA256SUMS beside the exe, for anyone without the repository:
+# `python scripts/release_gate.py manifest-check <folder>` checks a copy against
+# them, and an overlay upgrade that left an old file behind shows up there.
+build_identity.write_manifest(os.path.join(DISTPATH, "CBBEtoUBE"),
+                              build_identity.version_line(build_version, build_stamp))

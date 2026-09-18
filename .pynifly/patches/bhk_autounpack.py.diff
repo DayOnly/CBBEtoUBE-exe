@@ -1,0 +1,10 @@
+--- a/pyn/bhk_autounpack.py
++++ b/pyn/bhk_autounpack.py
+@@ -1399,6 +1399,5 @@
+     print(out_path)
+     return 0
+ 
+-
+ if __name__ == "__main__":
+-    raise SystemExit(_main())
++    sys.exit(_main())

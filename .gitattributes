@@ -1,0 +1,17 @@
+# Keep bytes EXACTLY as committed: `-text` tells git never to convert or renormalize,
+# whatever core.autocrlf says. That preserves endings; it does not keep CRLF out.
+# Tracked text outside dist/ and .pynifly/ is LF-only, and the pre-commit hook and the
+# test suite enforce it (scripts/repo_hygiene.py, #lf-only). dist/ and .pynifly/ keep
+# the endings their upstream bytes carry.
+* -text
+
+# Tracked binaries: also never diff as text.
+*.exe  binary
+*.dll  binary
+*.pyd  binary
+*.zip  binary
+*.nif  binary
+*.tri  binary
+*.osd  binary
+*.dds  binary
+*.bsa  binary
