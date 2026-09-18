@@ -180,6 +180,18 @@ comment — do not reach for `SKIP_PREFIXES`, which switches off the path rule t
 
 ## Pushing
 
+Nothing is pushed to `main` or `testing` directly: a ruleset on GitHub refuses
+a direct push, a force-push and a deletion, requires the three `pytest` checks,
+and allows merge commits only. A rebuild is the last commit on its lane, the
+lane becomes a pull request into `testing`, and the merge commit keeps the stamp
+chain intact: the gate finds the commit that set the exe through a merge,
+because a merge that changes nothing in `dist/` is skipped by the first-parent
+walk. A release is a pull request from `testing` into `main`, tagged on the
+merge commit. Squash and rebase merges are switched off at the repository
+because either re-hashes the rebuild commit, and the stamp would then name a
+commit that no longer exists. `scripts/lane.py` makes the lane; CONTRIBUTING.md
+describes the flow.
+
 `pre-push` scans **every commit the push would publish**, not just the tip, because
 a commit can reach a push without ever passing `pre-commit` (`git rebase`,
 `git merge`, `git commit --no-verify`). A push of a long unpushed run therefore

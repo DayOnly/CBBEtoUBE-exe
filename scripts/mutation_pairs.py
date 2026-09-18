@@ -678,4 +678,58 @@ PAIRS = (
          tests=('tests/test_postflight_releases_nif_pairs.py',),
          expect=('test_the_jiggle_sync_pass_leaves_no_file_open',),
     ),
+    # #worktree-per-branch and #hook-fail-closed (2026-09-17): the hooks refuse
+    # to run without the denylist, look for it in the primary checkout from a
+    # linked worktree, and refuse a commit on an integration branch or in the
+    # primary checkout; the lane and onboard helpers give a clone what the
+    # hooks need. Measured on a cold copy before the commit.
+    Pair('HK-a', 'a missing denylist no longer refuses (the shared check)',
+         edits=(
+             ('scripts/hook_precommit.py', '        absent = H.no_denylist_problem(os.environ.get(H.NO_DENYLIST_ENV) == "1")\n', '        absent = None  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_repo_hygiene_hooks.py',),
+         expect=('test_precommit_refuses_without_a_denylist_unless_acknowledged', 'test_commitmsg_refuses_without_a_denylist_unless_acknowledged', 'test_prepush_refuses_without_a_denylist_unless_acknowledged'),
+    ),
+    Pair('HK-b', 'the commit-msg hook bypasses the shared denylist check',
+         edits=(
+             ('scripts/hook_commitmsg.py', '    denylist = P.denylist_for_hook(root, problems)\n', '    denylist, _n, _w = P.find_denylist(root)  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_repo_hygiene_hooks.py',),
+         expect=('test_commitmsg_refuses_without_a_denylist_unless_acknowledged',),
+    ),
+    Pair('HK-c', 'the pre-push hook bypasses the shared denylist check',
+         edits=(
+             ('scripts/hook_prepush.py', '    denylist = P.denylist_for_hook(Path(__file__).resolve().parent.parent, problems)\n', '    denylist, _n, _w = P.find_denylist(Path(__file__).resolve().parent.parent)  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_repo_hygiene_hooks.py',),
+         expect=('test_prepush_refuses_without_a_denylist_unless_acknowledged',),
+    ),
+    Pair('HK-d', 'a linked worktree no longer reads the primary checkout\'s denylist',
+         edits=(
+             ('scripts/hook_precommit.py', '    primary = primary_checkout_root()\n', '    primary = None  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_repo_hygiene_hooks.py',),
+         expect=('test_a_linked_worktree_finds_the_primary_checkouts_denylist',),
+    ),
+    Pair('HK-e', 'a commit on an integration branch or in the primary checkout is no longer refused',
+         edits=(
+             ('scripts/repo_hygiene.py', '    if acknowledged:\n        return None\n    if branch in INTEGRATION_BRANCHES:\n', '    if True:  # MUTATED\n        return None\n    if branch in INTEGRATION_BRANCHES:\n', 1),
+         ),
+         tests=('tests/test_repo_hygiene_hooks.py',),
+         expect=('test_a_commit_is_refused_on_an_integration_branch_and_in_the_primary_checkout',),
+    ),
+    Pair('WF-a', 'a new lane does not get the denylist',
+         edits=(
+             ('scripts/lane.py', '        shutil.copy2(deny, lane / H.DENYLIST_FILE)\n', '        pass  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_lane_workflow.py',),
+         expect=('test_lane_new_and_rm_make_and_unmake_a_worktree_with_what_the_hooks_need',),
+    ),
+    Pair('WF-b', 'onboarding points git at the wrong hooks directory',
+         edits=(
+             ('scripts/onboard.py', '    ("core.hooksPath", ".githooks"),\n', '    ("core.hooksPath", ".git/hooks"),  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_lane_workflow.py',),
+         expect=('test_onboard_configures_the_clone_and_reports_what_it_cannot_supply',),
+    ),
 )

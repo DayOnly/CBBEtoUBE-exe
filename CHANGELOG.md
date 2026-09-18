@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+### Development only — commits are made on lanes, the hooks refuse to run without the denylist, and a clone sets itself up with one command
+
+`main` and `testing` now change only by a merged pull request: a ruleset on
+GitHub refuses direct pushes, force-pushes and deletions, requires the three
+`pytest` lanes and allows merge commits only, because a squash or rebase merge
+re-hashes the commit the exe's stamp names. On the client side the pre-commit
+hook refuses a commit on either branch and a commit in the primary checkout on
+any branch: work is committed on a lane, one branch in its own linked worktree,
+which `scripts/lane.py new <name>` creates beside the checkout with the asset
+denylist copied in and the build environment joined, so a rebuild there
+reproduces. A checkout without the denylist used to run the other three rules
+and skip the asset-name rule in silence (measured: a file and a message naming
+a real asset were committed and pushed with exit 0); all three hooks now refuse
+and say why, and a linked worktree reads the primary checkout's copy. One
+environment variable each allows a deliberate exception without switching every
+rule off. `scripts/onboard.py` configures a fresh clone (the hooks path,
+fast-forward-only pulls, an LF-only checkout, the blame ignore file) and reports
+what only the person can supply. CONTRIBUTING.md and docs/RELEASING.md describe
+the flow; pull requests target `testing`. Nothing in the converter changes.
+
 ### Development only — the suite passes on a runner's one-commit checkout and on every interpreter lane
 
 The first CI run of this history failed on all three lanes for reasons that

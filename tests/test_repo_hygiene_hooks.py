@@ -91,12 +91,24 @@ def _prepush_repo(tmp_path):
     return repo, git, commit
 
 
-def _push(repo, git, lines=None):
+def _push(repo, git, lines=None, env=None):
+    import os
     tip = git("rev-parse", "HEAD").strip()
     stdin = lines if lines is not None else f"refs/heads/lane {tip} refs/heads/lane {'0' * 40}\n"
     return subprocess.run([sys.executable, str(repo / "scripts" / "hook_prepush.py"),
                            "origin", "https://example.invalid/repo.git"],
-                          input=stdin, cwd=str(repo), capture_output=True, text=True)
+                          input=stdin, cwd=str(repo), capture_output=True, text=True,
+                          env=dict(os.environ, **(env or {})))
+
+
+def _precommit(repo, cwd=None, **env_extra):
+    """Run the pre-commit body of `repo` (or of the worktree at `cwd`, which
+    must carry the scripts) as git would, from the checkout root."""
+    import os
+    where = Path(cwd) if cwd else repo
+    return subprocess.run([sys.executable, str(where / "scripts" / "hook_precommit.py")],
+                          cwd=str(where), capture_output=True, text=True,
+                          env=dict(os.environ, **env_extra))
 
 
 def test_prepush_refuses_a_rebased_commit_whose_message_names_an_asset(tmp_path):
@@ -417,8 +429,9 @@ def test_the_hook_refuses_a_staged_exe_whose_bundle_names_an_asset(tmp_path):
         subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True)
 
     def hook():
-        return subprocess.run([sys.executable, str(repo / "scripts" / "hook_precommit.py")],
-                              cwd=str(repo), capture_output=True, text=True)
+        # A throwaway repository is a primary checkout, which the location rule
+        # refuses on its own (it has its own test); this test is about the bundle.
+        return _precommit(repo, **{H.COMMIT_HERE_ENV: "1"})
 
     git("init", "-q")
     git("config", "core.autocrlf", "false")
@@ -450,8 +463,9 @@ def test_the_hook_refuses_a_staged_crlf_file(tmp_path):
         subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True)
 
     def hook():
-        return subprocess.run([sys.executable, str(repo / "scripts" / "hook_precommit.py")],
-                              cwd=str(repo), capture_output=True, text=True)
+        # A throwaway repository is a primary checkout, which the location rule
+        # refuses on its own (it has its own test); this test is about endings.
+        return _precommit(repo, **{H.COMMIT_HERE_ENV: "1"})
 
     git("init", "-q")
     # A Windows runner defaults to autocrlf=true, which would convert on `add`
@@ -459,6 +473,8 @@ def test_the_hook_refuses_a_staged_crlf_file(tmp_path):
     git("config", "core.autocrlf", "false")
     git("config", "user.email", "noreply@example.invalid")
     git("config", "user.name", "hook test")
+    # A synthetic denylist, so the absence rule (its own test) stays out of this one.
+    (repo / H.DENYLIST_FILE).write_text("re:sure\\s+heart\n", encoding="utf-8")
     (repo / "tool.py").write_bytes(b"a = 1\r\nb = 2\r\n")
     (repo / "dist" / "CBBEtoUBE").mkdir(parents=True)
     (repo / "dist" / "CBBEtoUBE" / "LICENSE.txt").write_bytes(b"upstream text\r\n")
@@ -501,7 +517,123 @@ def test_the_commit_msg_hook_actually_loads_the_denylist():
     that never fires on a real commit -- the same duplicate/omission shape as
     the pre-commit gate above."""
     src = (PROJ / "scripts" / "hook_commitmsg.py").read_text(encoding="utf8")
-    assert "load_denylist" in src, (
-        "the commit-msg hook must load the denylist and pass it to scan_message")
+    assert "denylist_for_hook" in src, (
+        "the commit-msg hook must look the denylist up the way pre-commit does "
+        "and pass it to scan_message")
     assert "scan_message(msg, denylist)" in src, (
         "the commit-msg hook loads the denylist but does not pass it on")
+    body = (PROJ / "scripts" / "hook_precommit.py").read_text(encoding="utf8")
+    assert "load_denylist" in body, (
+        "the lookup the hooks share must read the file through repo_hygiene")
+
+
+# --- #worktree-per-branch and #hook-fail-closed (2026-09-17) ---------------------
+
+def test_precommit_refuses_without_a_denylist_unless_acknowledged(tmp_path):
+    """A checkout without the denylist ran the other three rules and skipped the
+    fourth in silence (measured 2026-09-17 in a throwaway clone: a file naming a
+    real asset, and a message naming it, committed and pushed with exit 0). Zero
+    coverage is not a pass: the hook refuses, says what to do, and lets the gap
+    be acknowledged for one command."""
+    repo, git, commit = _prepush_repo(tmp_path)
+    git("config", "user.email", "noreply@example.invalid")
+    (repo / H.DENYLIST_FILE).unlink()
+    (repo / "a.txt").write_bytes(b"plain\n")
+    git("add", "a.txt")
+    here = {H.COMMIT_HERE_ENV: "1"}            # a throwaway repo is a primary checkout
+    r = _precommit(repo, **here)
+    assert r.returncode == 1, r.stderr[-1500:]
+    assert H.DENYLIST_FILE in r.stderr and H.NO_DENYLIST_ENV in r.stderr, r.stderr[-1500:]
+    assert "NOTHING was checked" not in r.stderr, "that is the git-failure report, not this"
+    r = _precommit(repo, **here, **{H.NO_DENYLIST_ENV: "1"})
+    assert r.returncode == 0, r.stderr[-1500:]
+    assert "WARNING" in r.stderr and H.DENYLIST_FILE in r.stderr, "the gap is said out loud"
+
+
+def test_commitmsg_refuses_without_a_denylist_unless_acknowledged(tmp_path):
+    import os
+    import shutil
+    repo, git, commit = _prepush_repo(tmp_path)
+    shutil.copy2(PROJ / "scripts" / "hook_commitmsg.py", repo / "scripts" / "hook_commitmsg.py")
+    msg = tmp_path / "msg.txt"
+    msg.write_text("a clean message\n", encoding="utf-8")
+
+    def hook(**env_extra):
+        return subprocess.run([sys.executable, str(repo / "scripts" / "hook_commitmsg.py"), str(msg)],
+                              cwd=str(repo), capture_output=True, text=True,
+                              env=dict(os.environ, **env_extra))
+
+    (repo / H.DENYLIST_FILE).unlink()
+    r = hook()
+    assert r.returncode == 1 and H.DENYLIST_FILE in r.stderr, r.stderr[-1500:]
+    r = hook(**{H.NO_DENYLIST_ENV: "1"})
+    assert r.returncode == 0 and "WARNING" in r.stderr, r.stderr[-1500:]
+    # with the file back, the rule itself fires again
+    (repo / H.DENYLIST_FILE).write_text("re:sure\\s+heart\n", encoding="utf-8")
+    msg.write_text("fix: the Sure heart piece\n", encoding="utf-8")
+    r = hook()
+    assert r.returncode == 1 and "denylisted asset name" in r.stderr, r.stderr[-1500:]
+
+
+def test_prepush_refuses_without_a_denylist_unless_acknowledged(tmp_path):
+    repo, git, commit = _prepush_repo(tmp_path)
+    commit("a.txt", "plain\n", "base")
+    (repo / H.DENYLIST_FILE).unlink()
+    r = _push(repo, git)
+    assert r.returncode == 1, r.stderr[-1500:]
+    assert "PUSH BLOCKED" in r.stderr and H.DENYLIST_FILE in r.stderr, r.stderr[-1500:]
+    r = _push(repo, git, env={H.NO_DENYLIST_ENV: "1"})
+    assert r.returncode == 0 and "WARNING" in r.stderr, r.stderr[-1500:]
+
+
+def test_a_linked_worktree_finds_the_primary_checkouts_denylist(tmp_path):
+    """The denylist is untracked, so a linked worktree starts without a copy;
+    the hooks look in the primary checkout before concluding there is none."""
+    repo, git, commit = _prepush_repo(tmp_path)
+    git("config", "user.email", "noreply@example.invalid")
+    git("add", "scripts")
+    git("commit", "-q", "-m", "hook scripts")
+    wt = tmp_path / "lane"
+    git("worktree", "add", str(wt), "-b", "lane")
+    (wt / "notes.txt").write_bytes(b"the Sure heart piece\n")
+    subprocess.run(["git", "-C", str(wt), "add", "notes.txt"], check=True, capture_output=True)
+    r = _precommit(repo, cwd=wt)
+    assert r.returncode == 1 and "denylisted asset name" in r.stderr, r.stderr[-1500:]
+    assert H.NO_DENYLIST_ENV not in r.stderr, "found in the primary checkout, not waved through"
+    (repo / H.DENYLIST_FILE).unlink()
+    r = _precommit(repo, cwd=wt)
+    assert r.returncode == 1 and H.NO_DENYLIST_ENV in r.stderr, r.stderr[-1500:]
+    assert "denylisted asset name" not in r.stderr
+
+
+def test_a_commit_is_refused_on_an_integration_branch_and_in_the_primary_checkout(tmp_path):
+    """Level 2 of #worktree-per-branch (decision D-8, 2026-09-17): main and
+    testing change by merged pull request only, and every commit is made on a
+    lane in a linked worktree. The hook refuses both mistakes, names the lane
+    command, and allows one deliberate exception through the environment."""
+    repo, git, commit = _prepush_repo(tmp_path)
+    git("config", "user.email", "noreply@example.invalid")
+    git("add", "scripts")
+    git("commit", "-q", "-m", "hook scripts")
+    git("checkout", "-q", "-b", "work")          # free the integration names for worktrees
+    (repo / "a.txt").write_bytes(b"plain\n")
+    git("add", "a.txt")
+    r = _precommit(repo)                          # the primary checkout, on a lane-like branch
+    assert r.returncode == 1, r.stderr[-1500:]
+    assert "primary checkout" in r.stderr and "lane.py" in r.stderr, r.stderr[-1500:]
+    r = _precommit(repo, **{H.COMMIT_HERE_ENV: "1"})
+    assert r.returncode == 0, r.stderr[-1500:]
+    for branch in H.INTEGRATION_BRANCHES:         # a linked worktree, on an integration branch
+        wt = tmp_path / f"wt-{branch}"
+        git("worktree", "add", str(wt), "-b", branch)
+        (wt / "b.txt").write_bytes(b"plain\n")
+        subprocess.run(["git", "-C", str(wt), "add", "b.txt"], check=True, capture_output=True)
+        r = _precommit(repo, cwd=wt)
+        assert r.returncode == 1, r.stderr[-1500:]
+        assert f"`{branch}`" in r.stderr and "pull request" in r.stderr, r.stderr[-1500:]
+    lane = tmp_path / "wt-lane"                   # a linked worktree, on a lane: the one right place
+    git("worktree", "add", str(lane), "-b", "lane")
+    (lane / "c.txt").write_bytes(b"plain\n")
+    subprocess.run(["git", "-C", str(lane), "add", "c.txt"], check=True, capture_output=True)
+    r = _precommit(repo, cwd=lane)
+    assert r.returncode == 0, r.stderr[-1500:]

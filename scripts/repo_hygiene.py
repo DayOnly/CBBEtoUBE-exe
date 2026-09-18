@@ -461,3 +461,61 @@ def check_identity(email: str) -> str | None:
         return ("git user.email is a personal address; use your GitHub noreply "
                 "form so it is not published on every commit")
     return None
+
+
+# --- where a commit may be made ---------------------------------------------
+# main and testing change only by a merged pull request: a ruleset on the
+# server refuses a direct push, a force-push and a deletion (2026-09-17). Work
+# happens on a lane, one branch in its own linked worktree beside the primary
+# checkout, so the checkout that tracks an integration branch only ever moves
+# by a fast-forward pull. The hooks refuse the two mistakes git itself cannot:
+# a commit on an integration branch, and a commit in the primary checkout on
+# any branch. #worktree-per-branch
+INTEGRATION_BRANCHES = ("main", "testing")
+
+# One deliberate exception per command, spelled out, rather than --no-verify,
+# which would switch the public-repo rules off with it.
+COMMIT_HERE_ENV = "CBBE2UBE_HOOKS_COMMIT_HERE"
+
+# A checkout without the denylist has zero coverage on the asset-name rule.
+# The hooks refuse rather than pass on nothing (#hook-fail-closed); this
+# variable acknowledges the gap for one command, with the other three rules
+# still enforced. Measured 2026-09-17 in a throwaway clone without the file: a
+# file naming a real asset, and a message naming it, were committed and pushed
+# with exit 0 and no word about it.
+NO_DENYLIST_ENV = "CBBE2UBE_HOOKS_NO_DENYLIST"
+
+LANE_COMMAND = "python scripts/lane.py new <name>"
+
+
+def commit_location_problem(branch, in_primary_checkout, acknowledged=False):
+    """Why a commit may not be made here, or None. `branch` is None when HEAD
+    is detached; a detached HEAD in a linked worktree is allowed."""
+    if acknowledged:
+        return None
+    if branch in INTEGRATION_BRANCHES:
+        return (f"HEAD is `{branch}`, which changes only by a merged pull request -- "
+                f"commit on a lane in its own worktree ({LANE_COMMAND}), or set "
+                f"{COMMIT_HERE_ENV}=1 for a deliberate exception")
+    if in_primary_checkout:
+        return ("this is the primary checkout -- work is committed on a lane in a "
+                f"linked worktree ({LANE_COMMAND}), or set {COMMIT_HERE_ENV}=1 for "
+                "a deliberate exception")
+    return None
+
+
+def no_denylist_problem(acknowledged=False):
+    """Why a hook may not run without the denylist, or None."""
+    if acknowledged:
+        return None
+    return (f"no {DENYLIST_FILE} in this checkout or in the primary checkout, so the "
+            "asset-name rule would check nothing -- zero coverage is not a pass. Get "
+            "the file from the maintainer (it is never tracked, so no clone has it), "
+            f"or set {NO_DENYLIST_ENV}=1 to go on without it for this one command; "
+            "the other rules still run")
+
+
+def no_denylist_warning():
+    """What a hook prints when it runs on the acknowledged gap."""
+    return (f"WARNING: no {DENYLIST_FILE} found, so the asset-name rule checked "
+            f"nothing ({NO_DENYLIST_ENV}=1 acknowledged); every other rule ran\n")
