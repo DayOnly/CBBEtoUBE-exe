@@ -41,6 +41,16 @@ jobs:
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5
 
+      - name: Fetch the full history of this ref
+        # The checkout above is one commit deep. tests/test_release_gate.py runs
+        # the gate against the tracked exe, and the gate needs the commit the
+        # exe's stamp names -- the first CI run of this history failed on
+        # exactly that ("the stamp names ..., which is not a commit here").
+        # Deepen THIS ref only: fetch-depth 0 would also pull every archived
+        # branch and tag, which is unrelated history several hundred MB long.
+        shell: bash
+        run: git fetch --unshallow origin "$GITHUB_REF" || git fetch origin "$GITHUB_REF"
+
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
         with:
           python-version: ${{ matrix.python-version }}

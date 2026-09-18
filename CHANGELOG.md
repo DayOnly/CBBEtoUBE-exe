@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Development only — the suite passes on a runner's one-commit checkout and on every interpreter lane
+
+The first CI run of this history failed on all three lanes for reasons that
+never showed on a maintainer's machine. The runner checks out a single commit,
+so the release-gate test that reads the tracked exe's stamp could not find the
+commit the stamp names; the workflow now fetches the full history of the ref it
+tests, and only that ref, before the suite runs. And two tests that read the
+executable's bundled modules ran on the 3.11 and 3.12 lanes, where that
+bytecode cannot be read; both now skip there, as the other gate tests already
+did, and still run on the 3.10 lane, which is the interpreter the exe is frozen
+with. Nothing in the converter changes.
+
 ### Fixed — the end of a run no longer holds every mesh pair in memory until it finishes
 
 Two checks at the end of a run (the `_0`/`_1` jiggle sync and the parity

@@ -51,8 +51,16 @@ _TEXTS = {
 def bundled_top_level():
     """Top-level non-stdlib packages inside the executable, read from its own
     module archive -- not from a list someone maintains by hand."""
+    import pytest
+
     from scripts import release_gate as rg
-    _off, index = rg._pyz_index((BUNDLE / "CBBEtoUBE.exe").read_bytes())
+    try:
+        _off, index = rg._pyz_index((BUNDLE / "CBBEtoUBE.exe").read_bytes())
+    except rg.ArchiveError as e:
+        # The archive holds bytecode for the interpreter the exe was frozen
+        # with; the 3.11 and 3.12 CI lanes cannot read it, as the release-gate
+        # tests already say for themselves.
+        pytest.skip(f"cannot read the tracked exe with this interpreter: {e}")
     tops = {str(name).split(".")[0] for name in index}
     return sorted(t for t in tops
                   if t not in sys.stdlib_module_names and not t.startswith("_")

@@ -397,6 +397,14 @@ def test_the_hook_refuses_a_staged_exe_whose_bundle_names_an_asset(tmp_path):
     exe = PROJ / "dist" / "CBBEtoUBE" / "CBBEtoUBE.exe"
     if shutil.which("git") is None or not exe.is_file():
         pytest.skip("needs git and the tracked exe")
+    from scripts import release_gate as rg
+    try:
+        rg._pyz_index(exe.read_bytes())
+    except rg.ArchiveError as e:
+        # The hook reports NOT CHECKED on an interpreter that cannot read the
+        # exe's bytecode (the 3.11 and 3.12 CI lanes); that is the hook doing
+        # its job, not the refusal this test is about.
+        pytest.skip(f"cannot read the tracked exe with this interpreter: {e}")
     repo = tmp_path / "repo"
     (repo / "scripts").mkdir(parents=True)
     for name in ("__init__.py", "hook_precommit.py", "repo_hygiene.py",
