@@ -39,14 +39,29 @@ PAIRS = (
          tests=('tests/test_seat_error_transform_guard.py',),
          expect=('test_the_guard_applies_to_BOTH_arms',),
     ),
-    Pair('SEG-c', 'an excluded shape is dropped silently',
+    # SEG-c first targeted the print in main() and read MISSED: the test asserted
+    # the word EXCLUDED appeared in the source, which the module docstring
+    # satisfied on its own. The report is a pure function now and the test reads
+    # its RETURN, so gutting it goes red.
+    Pair('SEG-c', 'the excluded shapes are never reported',
          edits=(
              ('scripts/analysis/seat_error_vs_author.py',
-              'print(f"EXCLUDED {len(unplaced)} shape(s): `_world` put them over "',
-              'print(f"{len(unplaced)} shape(s) skipped "  # MUTATED: no reason', 1),
+              '    if not unplaced:',
+              '    if True:  # MUTATED: report silenced', 1),
          ),
          tests=('tests/test_seat_error_transform_guard.py',),
-         expect=('test_excluded_shapes_are_reported_not_silently_dropped',),
+         expect=('test_excluded_shapes_are_reported_not_silently_dropped',
+                 'test_the_report_names_the_worst_offenders_largest_first',
+                 'test_a_long_report_is_truncated_but_says_how_many_it_held_back'),
+    ),
+    Pair('SEG-d', 'a truncated report does not say how many it held back',
+         edits=(
+             ('scripts/analysis/seat_error_vs_author.py',
+              'out.append(f"      ... and {len(unplaced) - top} more")',
+              'pass  # MUTATED: truncation is silent', 1),
+         ),
+         tests=('tests/test_seat_error_transform_guard.py',),
+         expect=('test_a_long_report_is_truncated_but_says_how_many_it_held_back',),
     ),
     # The lens measured this pair with two call sites, before B-7 (0d868e0,
     # 2026-09-15) moved the cap into src/__init__.py; the gate's first full run

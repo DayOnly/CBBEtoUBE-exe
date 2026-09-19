@@ -94,6 +94,26 @@ def _unplaced(off) -> bool:
     return bool(float(np.mean(off)) > _MAX_PLAUSIBLE_OFF)
 
 
+def _report_unplaced(unplaced, top=5) -> list:
+    """The lines a run prints for shapes `_world` could not place.
+
+    Pure and returns the lines rather than printing them, so the REPORT is
+    testable behaviour and not a substring of the module docstring -- the first
+    version of this guard asserted "EXCLUDED" appeared somewhere in the source,
+    which the docstring satisfied on its own, and the mutation gate caught it."""
+    if not unplaced:
+        return []
+    out = [f"EXCLUDED {len(unplaced)} shape(s): `_world` put them over "
+           f"{_MAX_PLAUSIBLE_OFF:.0f}u from the body, so their transform did "
+           f"not resolve and no seat error can be read from them. The shipped "
+           f"mesh is NOT implicated."]
+    for _rel, _nm, _off, _which in sorted(unplaced, key=lambda t: -t[2])[:top]:
+        out.append(f"      {_off:9.1f}u  {_nm}  [{_which}]  {_rel}")
+    if len(unplaced) > top:
+        out.append(f"      ... and {len(unplaced) - top} more")
+    return out
+
+
 def _world(sh):
     return nc._verts_skin_to_world(np.asarray(sh.verts, np.float64),
                                    nc._shape_global_to_skin(sh))
@@ -184,16 +204,8 @@ def main(argv) -> int:
               f"resolved) -- that is 0/0, not a pass.")
         return 1
     print(f"paired {len(rows)} shape(s) against the author")
-    if unplaced:
-        print(f"EXCLUDED {len(unplaced)} shape(s): `_world` put them over "
-              f"{_MAX_PLAUSIBLE_OFF:.0f}u from the body, so their transform "
-              f"did not resolve and no seat error can be read from them. "
-              f"The shipped mesh is NOT implicated.")
-        for _rel, _nm, _off, _which in sorted(unplaced,
-                                              key=lambda t: -t[2])[:5]:
-            print(f"      {_off:9.1f}u  {_nm}  [{_which}]  {_rel}")
-        if len(unplaced) > 5:
-            print(f"      ... and {len(unplaced) - 5} more")
+    for _line in _report_unplaced(unplaced):
+        print(_line)
     print()
     print(f"{'arm':<24} {'mean seat error':>16} {'median':>10}")
     for root in roots:

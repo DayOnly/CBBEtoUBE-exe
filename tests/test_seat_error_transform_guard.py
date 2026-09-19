@@ -73,11 +73,42 @@ def test_the_guard_applies_to_BOTH_arms():
     assert "_unplaced(o_off)" in _SRC
 
 
+_SAMPLE = [("meshes/a/x_1.nif", "Cylinder.002", 2476.95, "ours"),
+           ("meshes/a/y_0.nif", "ColBack", 2316.86, "ours"),
+           ("meshes/b/z_1.nif", "HDTBag", 1846.86, "author")]
+
+
+def test_nothing_is_reported_when_nothing_was_excluded():
+    assert se._report_unplaced([]) == []
+
+
 def test_excluded_shapes_are_reported_not_silently_dropped():
-    """A scorer that quietly drops 146 shapes is how a population shrinks
-    without anyone noticing."""
-    assert "EXCLUDED" in _SRC
-    assert "unplaced" in _SRC
+    """A scorer that quietly drops 162 shapes is how a population shrinks
+    without anyone noticing. Asserted on the RETURNED lines, not on a substring
+    of the source: the first version of this test accepted the word "EXCLUDED"
+    anywhere in the file, which the module docstring satisfied by itself, and
+    the mutation gate caught it as MISSED."""
+    lines = se._report_unplaced(_SAMPLE)
+    assert lines, "three excluded shapes must produce a report"
+    head = lines[0]
+    assert "3" in head                      # how many
+    assert "50" in head                     # against what threshold
+    assert "not resolve" in head            # why
+    assert "NOT implicated" in head         # and that the mesh is not to blame
+
+
+def test_the_report_names_the_worst_offenders_largest_first():
+    lines = se._report_unplaced(_SAMPLE)
+    body = "".join(lines[1:])
+    assert "Cylinder.002" in body and "ColBack" in body and "HDTBag" in body
+    assert body.index("Cylinder.002") < body.index("ColBack") < body.index("HDTBag")
+
+
+def test_a_long_report_is_truncated_but_says_how_many_it_held_back():
+    many = [(f"m/{i}.nif", f"S{i}", 100.0 + i, "ours") for i in range(9)]
+    lines = se._report_unplaced(many, top=5)
+    assert sum(1 for line in lines if line.startswith("      ") and "..." not in line) == 5
+    assert "and 4 more" in lines[-1]
 
 
 def test_the_guard_does_not_implicate_the_mesh():

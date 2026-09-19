@@ -28,7 +28,10 @@ the guard excludes 162 in total because it reads the author arm too.
 Measured on the same pack: **mean 9.1811u → 0.4181u**, median 0.3466u → 0.3505u
 (the median was always the robust read), 4499 → 4353 shapes scored. The shipped
 meshes are not implicated and nothing in the converter changes. Guarded by
-`tests/test_seat_error_transform_guard.py` and mutation pairs `SEG-a`/`b`/`c`.
+`tests/test_seat_error_transform_guard.py` and mutation pairs `SEG-a`..`SEG-d`.
+The report is a pure function returning its lines, because the first version
+of its test asserted the word `EXCLUDED` appeared somewhere in the file — which
+the module docstring satisfied by itself — and the mutation gate read `MISSED`.
 
 ### Development only — commits are made on lanes, the hooks refuse to run without the denylist, and a clone sets itself up with one command
 
