@@ -16,6 +16,38 @@ gate applies is byte for byte what was measured); edited by hand since."""
 from scripts.mutation_gate import Pair
 
 PAIRS = (
+    # #seat-unplaced-guard (2026-09-19): the scorer reported mean 9.1811u on a
+    # 0.3466u median because `_world` scattered 162 collider/HDT-helper shapes
+    # up to 2477u; 44 shapes carried 95.7% of the total. Guard is on PLACEMENT,
+    # not name -- a name list left the mean at 7.3669u.
+    Pair('SEG-a', 'the unplaced-shape guard never fires',
+         edits=(
+             ('scripts/analysis/seat_error_vs_author.py',
+              '_MAX_PLAUSIBLE_OFF = 50.0',
+              '_MAX_PLAUSIBLE_OFF = 1e9  # MUTATED: guard disabled', 1),
+         ),
+         tests=('tests/test_seat_error_transform_guard.py',),
+         expect=('test_a_shape_the_transform_did_not_place_is_excluded',
+                 'test_the_threshold_sits_inside_the_measured_empty_gap'),
+    ),
+    Pair('SEG-b', 'the guard skips our arm only, leaving the author arm unguarded',
+         edits=(
+             ('scripts/analysis/seat_error_vs_author.py',
+              'if _unplaced(a_off):',
+              'if False:  # MUTATED: author arm unguarded', 1),
+         ),
+         tests=('tests/test_seat_error_transform_guard.py',),
+         expect=('test_the_guard_applies_to_BOTH_arms',),
+    ),
+    Pair('SEG-c', 'an excluded shape is dropped silently',
+         edits=(
+             ('scripts/analysis/seat_error_vs_author.py',
+              'print(f"EXCLUDED {len(unplaced)} shape(s): `_world` put them over "',
+              'print(f"{len(unplaced)} shape(s) skipped "  # MUTATED: no reason', 1),
+         ),
+         tests=('tests/test_seat_error_transform_guard.py',),
+         expect=('test_excluded_shapes_are_reported_not_silently_dropped',),
+    ),
     # The lens measured this pair with two call sites, before B-7 (0d868e0,
     # 2026-09-15) moved the cap into src/__init__.py; the gate's first full run
     # found it MISSED (8 passed): the package now caps on any import, so the

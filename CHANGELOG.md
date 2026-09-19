@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+### Development only — the seat-error scorer no longer averages in shapes its own transform could not place
+
+`scripts/analysis/seat_error_vs_author.py` reported a **mean seat error of
+9.1811u** against a median of 0.3466u. Over its own 4499 paired shapes, the top
+44 carried **95.7%** of that total, at up to 2473u — and the meshes were fine.
+`_world` fails to resolve the transform of SMP collider and HDT helper shapes
+and scatters their vertices: one such shape's raw vertices sit at z 90.6–118.6,
+exactly where a neck scarf belongs, while `_world` spreads them over
+z −319.9…144.3. The mean was reporting that, not fit.
+
+A shape whose mean distance from the body exceeds `_MAX_PLAUSIBLE_OFF` (50u) is
+now excluded from scoring on either arm, and the run prints how many and why
+with the worst five named, so the population cannot shrink unnoticed. The
+threshold is not tuned: the measured population has **nothing between 28.69u
+and 103.14u**, so every value in that gap gives the same partition.
+
+A name list does not do this job, and measuring it is what showed that —
+excluding the converter's structural keys (`baseshape`, `3ba`, `virtual`, `col`,
+`ground`, `ref`) left the mean at 7.3669u and the maximum at 2473u, because the
+worst offenders are named `Cylinder.00N` and `HDTBag` and match no key. Of the
+146 shapes our own arm places implausibly, only 130 match a structural name;
+the guard excludes 162 in total because it reads the author arm too.
+
+Measured on the same pack: **mean 9.1811u → 0.4181u**, median 0.3466u → 0.3505u
+(the median was always the robust read), 4499 → 4353 shapes scored. The shipped
+meshes are not implicated and nothing in the converter changes. Guarded by
+`tests/test_seat_error_transform_guard.py` and mutation pairs `SEG-a`/`b`/`c`.
+
 ### Development only — commits are made on lanes, the hooks refuse to run without the denylist, and a clone sets itself up with one command
 
 `main` and `testing` now change only by a merged pull request: a ruleset on

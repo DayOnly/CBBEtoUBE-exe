@@ -45,6 +45,13 @@ order, the way the CONVERTER finds its own source, pairs 234 shapes.
 
 Prints mean and median seat error per arm; lower is closer to the author.
 Needs CBBE2UBE_MO2_INI. Exit 1 if NOTHING paired -- that is 0/0, not a pass.
+
+SHAPES `_world` COULD NOT PLACE ARE EXCLUDED AND COUNTED. `_world` fails to
+resolve the transform of SMP collider and HDT helper shapes and scatters their
+vertices; before the guard, 44 such shapes carried 95.7% of the total and the
+MEAN read 9.1811u against a 0.3466u median. Their RAW vertices are correct, so
+this says nothing about the shipped mesh -- read it as "not measurable here",
+never as a fit defect. The run names how many and the worst five.
 """
 from __future__ import annotations
 
@@ -63,6 +70,28 @@ sys.path.insert(0, str(_REPO / "scripts" / "analysis"))
 from src import nif_io, nif_convert as nc                 # noqa: E402
 import standoff_audit as sa                               # noqa: E402
 from scipy.spatial import cKDTree                         # noqa: E402
+
+
+# A shape whose vertices land this far from the body was not FITTED there --
+# `_world` failed to resolve its transform. Measured 2026-09-19 over 4499 paired
+# shapes: 146 land 103u-2477u out (SMP colliders named `Cylinder.00N`, a
+# `ColBack`, an `HDTBag`), while the legitimate population tops out at 28.69u.
+# The gap between 28.69u and 103.14u is EMPTY, so every threshold inside it
+# gives the same partition and this number is not tuned. Their RAW verts are
+# correct -- the shipped mesh is fine -- so this is a SCORING guard and never an
+# output verdict. A name list does NOT do this job: `Cylinder.00N` and `HDTBag`
+# match none of the converter's structural keys, and excluding by name alone
+# still left the mean at 7.37u.
+_MAX_PLAUSIBLE_OFF = 50.0
+
+
+def _unplaced(off) -> bool:
+    """True when a shape's mean offset says `_world` did not place it.
+
+    Takes the nearest-body distances for one shape. Kept a named predicate
+    rather than two inline comparisons so the guard is one definition with one
+    test, and so a run can say WHY a shape was dropped."""
+    return bool(float(np.mean(off)) > _MAX_PLAUSIBLE_OFF)
 
 
 def _world(sh):
@@ -100,6 +129,7 @@ def main(argv) -> int:
           f"no _bsa_staging)")
     rows: list = []
     resolved = 0
+    unplaced: list = []
     for f in files:
         rel = f.relative_to(ref).as_posix()
         w = "_1" if Path(rel).stem.endswith("_1") else "_0"
@@ -123,6 +153,9 @@ def main(argv) -> int:
                 a_off, _ = ct.query(aV, k=1)
             except Exception:
                 continue
+            if _unplaced(a_off):
+                unplaced.append((rel, nm, float(np.mean(a_off)), "author"))
+                continue
             row, ok = {}, True
             for root in roots:
                 p = root / rel
@@ -136,6 +169,10 @@ def main(argv) -> int:
                     if len(oV) != len(aV):
                         ok = False; break     # retopologised: not comparable
                     o_off, _ = ut.query(oV, k=1)
+                    if _unplaced(o_off):
+                        unplaced.append((rel, nm, float(np.mean(o_off)),
+                                         root.name))
+                        ok = False; break
                     row[root.name] = float(np.mean(np.abs(o_off - a_off)))
                 except Exception:
                     ok = False; break
@@ -146,7 +183,18 @@ def main(argv) -> int:
         print(f"NOTHING PAIRED against an author mesh ({resolved} NIF(s) "
               f"resolved) -- that is 0/0, not a pass.")
         return 1
-    print(f"paired {len(rows)} shape(s) against the author\n")
+    print(f"paired {len(rows)} shape(s) against the author")
+    if unplaced:
+        print(f"EXCLUDED {len(unplaced)} shape(s): `_world` put them over "
+              f"{_MAX_PLAUSIBLE_OFF:.0f}u from the body, so their transform "
+              f"did not resolve and no seat error can be read from them. "
+              f"The shipped mesh is NOT implicated.")
+        for _rel, _nm, _off, _which in sorted(unplaced,
+                                              key=lambda t: -t[2])[:5]:
+            print(f"      {_off:9.1f}u  {_nm}  [{_which}]  {_rel}")
+        if len(unplaced) > 5:
+            print(f"      ... and {len(unplaced) - 5} more")
+    print()
     print(f"{'arm':<24} {'mean seat error':>16} {'median':>10}")
     for root in roots:
         v = np.array([r[root.name] for r in rows if root.name in r])
