@@ -16,6 +16,44 @@ gate applies is byte for byte what was measured); edited by hand since."""
 from scripts.mutation_gate import Pair
 
 PAIRS = (
+    # #covered-skin-target (2026-09-17): the pure target, its reach test and the
+    # switch's default. The wiring itself is proven by the exe A/B on the
+    # reported mod, not by a unit test (it needs the live UBE body).
+    Pair('CST-a', 'the covered-skin target ignores how close each skin vertex is',
+         edits=(
+             ('src/nif_convert_weights.py', 'wgt = 1.0 / (max(c, 0.0) + eps)', 'wgt = 1.0  # MUTATED: uniform', 1),
+         ),
+         tests=('tests/test_covered_skin_target.py',),
+         expect=('test_a_gusset_over_static_cleft_skin_targets_the_pelvis', 'test_a_vertex_over_thigh_skin_keeps_the_thigh'),
+    ),
+    Pair('CST-b', 'the covered-skin target ships switched OFF',
+         edits=(
+             ('src/nif_convert.py', 'COVERED_SKIN_TARGET = (not _flag("CBBE2UBE_NO_COVERED_SKIN_TARGET", False))', 'COVERED_SKIN_TARGET = (_flag("CBBE2UBE_NO_COVERED_SKIN_TARGET", False))  # MUTATED', 1),
+         ),
+         tests=('tests/test_covered_skin_target.py',),
+         expect=('test_the_switch_defaults_on_and_the_env_turns_it_off',),
+    ),
+    Pair('CST-e', 'the body-swap reskin ignores the covered-skin target',
+         edits=(
+             ('src/nif_convert_weights.py', 'propagated[_gi] = float((body_arr[_bis] * _w).sum())', 'pass  # MUTATED: nearest only', 1),
+         ),
+         tests=('tests/test_covered_skin_target.py',),
+         expect=('test_the_reskin_aims_a_covering_vertex_at_the_skin_it_covers',),
+    ),
+    Pair('CST-d', 'the fitted-cloth conform ignores the covered-skin target',
+         edits=(
+             ('src/nif_convert_weights.py', 'bd = _cov_target.get(i) or body_w[idx[i]]', 'bd = body_w[idx[i]]  # MUTATED: nearest only', 1),
+         ),
+         tests=('tests/test_covered_skin_target.py',),
+         expect=('test_the_conform_core_aims_at_the_covered_skin_when_it_has_one',),
+    ),
+    Pair('CST-c', 'the cover map charges a garment vertex with skin any distance away',
+         edits=(
+             ('src/nif_convert_weights.py', 'if dist > reach:', 'if False:  # MUTATED: no reach', 1),
+         ),
+         tests=('tests/test_covered_skin_target.py',),
+         expect=('test_the_map_pairs_each_body_vertex_with_its_nearest_garment_vertex_within_reach',),
+    ),
     # The lens measured this pair with two call sites, before B-7 (0d868e0,
     # 2026-09-15) moved the cap into src/__init__.py; the gate's first full run
     # found it MISSED (8 passed): the package now caps on any import, so the
