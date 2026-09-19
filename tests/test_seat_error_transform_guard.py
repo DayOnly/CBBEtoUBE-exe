@@ -132,3 +132,89 @@ def test_no_machine_specific_paths_or_mod_names():
     assert not drive.search(_SRC)
     assert "Modlists" not in _SRC
     assert "Users" not in _SRC
+
+class _Stub:
+    """Minimal stand-in for a pynifly shape: the two attributes read here."""
+    def __init__(self, verts, textures=None):
+        self.verts = verts
+        self.textures = textures or {}
+
+
+def test_a_shape_with_no_texture_is_not_garment():
+    """A collision proxy or helper has no seat. Both gate scorers already use
+    this idiom; here it also keeps a legitimate ground plane from being
+    reported as a transform failure."""
+    assert not se._renders(_Stub([], {"Diffuse": ""}))
+    assert not se._renders(_Stub([], {}))
+    assert se._renders(_Stub([], {"Diffuse": "textures/x.dds"}))
+
+
+def _tree_at_origin():
+    from scipy.spatial import cKDTree
+    return cKDTree(np.zeros((4, 3)))
+
+
+def test_the_frame_is_chosen_by_evidence_not_assumed(monkeypatch):
+    """Whichever frame lands nearer the body wins -- neither arm is uniformly
+    raw or world, so a per-arm rule would be as wrong as a global one."""
+    tree = _tree_at_origin()
+    raw_near = _Stub(np.full((8, 3), 0.5))
+    monkeypatch.setattr(se, "_world", lambda sh: np.full((8, 3), 900.0))
+    verts, which = se._pick_frame(raw_near, tree)
+    assert which == "raw" and float(verts.max()) == 0.5
+
+    raw_far = _Stub(np.full((8, 3), 900.0))
+    monkeypatch.setattr(se, "_world", lambda sh: np.full((8, 3), 0.5))
+    verts, which = se._pick_frame(raw_far, tree)
+    assert which == "world" and float(verts.max()) == 0.5
+
+
+def test_identical_frames_agree_rather_than_being_called_ambiguous(monkeypatch):
+    """Most shapes have an identity transform. Reading agreement as ambiguity
+    once cut a 20-shape sample to 3."""
+    tree = _tree_at_origin()
+    sh = _Stub(np.full((8, 3), 1.0))
+    monkeypatch.setattr(se, "_world", lambda s: np.full((8, 3), 1.0))
+    _verts, which = se._pick_frame(sh, tree)
+    assert which == "agree"
+
+
+def test_a_shape_whose_transform_raises_falls_back_to_raw(monkeypatch):
+    tree = _tree_at_origin()
+    def boom(sh):
+        raise RuntimeError("no skin data")
+    monkeypatch.setattr(se, "_world", boom)
+    verts, which = se._pick_frame(_Stub(np.full((4, 3), 2.0)), tree)
+    assert which == "raw" and float(verts.max()) == 2.0
+
+def test_a_proxy_name_is_recognised():
+    for n in ("Proxy", "TopProxy", "Collision", "Colision", "ColBack",
+              "VirtualGround", "Stabilizer", "3BA Ref"):
+        assert se._is_proxy_name(n), n
+
+
+def test_a_collar_is_a_garment_not_a_collider():
+    """`col` is a real proxy token and `Collar` is a real garment part.
+    DESIGN.md records this collision in the converter's own skip list, where it
+    is load-bearing by accident; in a SCORER it would silently delete a
+    garment."""
+    for n in ("Collar", "Tri Collar", "Collar.002", "shawlBeltC"):
+        assert not se._is_proxy_name(n), n
+
+
+def test_garment_names_are_not_proxy_names():
+    for n in ("Cuirass", "Greaves", "pants", "sash", "HDTSkirt", "rear"):
+        assert not se._is_proxy_name(n), n
+
+
+def test_the_COMPOSED_rule_keeps_an_untextured_garment():
+    """Scored as a composed rule, not as two predicates. "Renders nothing"
+    alone dropped 72 plainly-garment shapes -- `Cuirass`, `Greaves`, `pants` --
+    because a plugin alt-texture garment has empty embedded paths. A shape is a
+    proxy only when it renders nothing AND says so in its name."""
+    cuirass = _Stub([], {})                      # untextured garment
+    proxy = _Stub([], {})                        # untextured proxy
+    assert not (not se._renders(cuirass) and se._is_proxy_name("Cuirass"))
+    assert (not se._renders(proxy) and se._is_proxy_name("Proxy"))
+    textured = _Stub([], {"Diffuse": "textures/x.dds"})
+    assert not (not se._renders(textured) and se._is_proxy_name("Proxy"))

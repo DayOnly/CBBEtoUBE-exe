@@ -2,36 +2,50 @@
 
 ## Unreleased
 
-### Development only — the seat-error scorer no longer averages in shapes its own transform could not place
+### Development only — the seat-error scorer chooses its frame by evidence and stops scoring proxies as garment
 
 `scripts/analysis/seat_error_vs_author.py` reported a **mean seat error of
-9.1811u** against a median of 0.3466u. Over its own 4499 paired shapes, the top
+9.1811u** against a median of 0.3466u. Over its own 4499 paired shapes the top
 44 carried **95.7%** of that total, at up to 2473u — and the meshes were fine.
-`_world` fails to resolve the transform of SMP collider and HDT helper shapes
-and scatters their vertices: one such shape's raw vertices sit at z 90.6–118.6,
-exactly where a neck scarf belongs, while `_world` spreads them over
-z −319.9…144.3. The mean was reporting that, not fit.
 
-A shape whose mean distance from the body exceeds `_MAX_PLAUSIBLE_OFF` (50u) is
-now excluded from scoring on either arm, and the run prints how many and why
-with the worst five named, so the population cannot shrink unnoticed. The
-threshold is not tuned: the measured population has **nothing between 28.69u
-and 103.14u**, so every value in that gap gives the same partition.
+The cause was an assumed coordinate frame. A source NIF stores verts in the
+shape's skin frame and needs `_verts_skin_to_world`; a converted output already
+stores world verts, so applying the same rule to both transforms the output
+twice. `snugness_census.py` records this and says assuming it "made every
+number it printed void". Most shapes have an identity transform and are
+unaffected, which is why only the collider and helper shapes blew up: one of
+them has raw vertices at z 90.6–118.6, exactly where a neck scarf belongs,
+while the doubled transform spread them over z −319.9…144.3.
 
-A name list does not do this job, and measuring it is what showed that —
-excluding the converter's structural keys (`baseshape`, `3ba`, `virtual`, `col`,
-`ground`, `ref`) left the mean at 7.3669u and the maximum at 2473u, because the
-worst offenders are named `Cylinder.00N` and `HDTBag` and match no key. Of the
-146 shapes our own arm places implausibly, only 130 match a structural name;
-the guard excludes 162 in total because it reads the author arm too.
+Neither arm is uniformly one frame or the other — measured over a 220-file
+sample, our own output wanted `raw` on 14 shapes and `world` on 26, with 281
+ties — so `_pick_frame` now measures both candidates per shape per arm and
+keeps whichever lands nearer that arm's body, the approach `snugness_census`
+already uses. A shape neither frame can place is excluded and reported;
+in practice none now are.
 
-Measured on the same pack: **mean 9.1811u → 0.4181u**, median 0.3466u → 0.3505u
-(the median was always the robust read), 4499 → 4353 shapes scored. The shipped
-meshes are not implicated and nothing in the converter changes. Guarded by
-`tests/test_seat_error_transform_guard.py` and mutation pairs `SEG-a`..`SEG-d`.
-The report is a pure function returning its lines, because the first version
-of its test asserted the word `EXCLUDED` appeared somewhere in the file — which
-the module docstring satisfied by itself — and the mutation gate read `MISSED`.
+A shape is treated as a proxy only when it **both** renders nothing **and**
+says so in its name. "Renders nothing" alone is the idiom `bust_gap_score` and
+`morph_clip_test` use, and measuring its exclusions is what showed it is not
+sufficient here: of 666 non-rendering shapes, 72 carried no proxy token and
+were plainly garment — a cuirass, greaves, pants, a sash, four shawl parts. A
+garment textured from the plugin's alternate-texture list has empty embedded
+paths and is not a proxy. Requiring both signals keeps those 72 and still
+skips 594, and every skipped name was checked in the other direction too: all
+54 are colliders, proxies or virtual helpers, with no `Color`/`Refined`-style
+false match. `collar` is excluded from the token list deliberately — `col` is a
+real token and a collar is a real garment part.
+
+The run prints what it skipped, what it kept, and which frames it chose, so
+neither population can shrink unnoticed.
+
+    mean     9.1811u -> 0.4269u
+    median   0.3466u -> 0.3505u   (the median was always the robust read)
+    scored   4499    -> 4053
+
+The shipped meshes are not implicated and nothing in the converter changes.
+Guarded by `tests/test_seat_error_transform_guard.py` (19 tests) and mutation
+pairs `SEG-a`..`SEG-h`.
 
 ### Development only — commits are made on lanes, the hooks refuse to run without the denylist, and a clone sets itself up with one command
 
