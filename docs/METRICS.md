@@ -850,9 +850,15 @@ distribution means, `golden_output` and `verify_chain_shift` both print `max`
 beside the mean, so the tail is already visible. **Do not mechanize this one** —
 at ~30% precision it is a reading aid, not a gate.
 
-The one survivor is `find_morph_follow_gaps.py`, which THRESHOLDS on a mean
-(`follow < 0.15` over covered verts) and reports no spread. A garment whose
-covered verts are half at 0.30 and half at 0.00 passes that test with half the
-piece carrying no follow at all. Unmeasured, and left open deliberately rather
-than changed on a hunch: it needs the per-vertex follow distribution over the
-pack before anyone touches the threshold.
+The one candidate worth measuring was `find_morph_follow_gaps.py`, which
+THRESHOLDS on a mean (`follow < 0.15` over covered verts) and reports no spread.
+A garment whose covered verts sat half at 0.30 and half at 0.00 would pass that
+test with half the piece carrying no follow at all.
+
+**Measured, and REFUTED.** Over 500 pieces, mirroring the tool's own scoring:
+288 zone rows scored, 186 flagged, 102 passed as clean — and of those 102,
+**zero** carry no-follow on more than 40% of their covered verts. The
+distribution is not bimodal in this population, the mean is hiding nothing, and
+the threshold stands. Recorded because the hunch is plausible and cheap to
+re-form: it has been checked. Do not re-open it without a population where that
+number is not zero.
