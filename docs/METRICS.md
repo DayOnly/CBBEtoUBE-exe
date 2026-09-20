@@ -717,3 +717,90 @@ Reference figures on the acceptance population: rate p50 0.1495%, p90 2.0217%,
 edge deviation p50 0.0331, over 598 shapes = 299 garments, 0 sources
 unresolved. A garment is TWO shapes — halve any shape count before comparing it
 with a garment count.
+
+---
+
+# 2026-09-20 — the harness assumed a coordinate frame, and four tools inherited it
+
+`seat_error_vs_author` was found double-transforming its converted arm. That is
+a defect in one tool; the question this audit asked is whether it is a CLASS.
+It is. Every tracked consumer of `_verts_skin_to_world` outside the converter
+was read, and four of the seven were placing shapes by assumption.
+
+## The population, and why the first answer was wrong
+
+7246 shapes in 2605 NIFs of the shipped pack (both weights, no `_bsa_staging`,
+no first-person), 0 unreadable.
+
+The first cut counted NON-IDENTITY TRANSFORMS and found 534, 7.4% of the pack.
+**That number is not the defect and must not be quoted as one.** A converted
+shape may genuinely store skin-space verts, and then the transform is correct.
+Splitting by which frame actually lands the shape on the body:
+
+| | shapes | naive `_world()` is |
+|---|---|---|
+| genuinely stored in skin | 403 | correct |
+| agrees either way | 47 | harmless |
+| **already on the body** | **84** | **wrong — throws it off** |
+
+Median throw for those 84 is 11.3u, max 2496.7u, across 56 files.
+
+**No name filter substitutes for the measurement.** Of the 84, ZERO match the
+proxy-name idiom and ZERO are `BaseShape`. They are `robe`, `Boots`,
+`Gauntlets`, `ArmorF`. The class is NOT colliders, which is what the first
+reading of the `seat_error` fix suggested. 78 of the 84 RENDER, so the
+"renders nothing" filter three tools rely on catches 6 of them.
+
+## Verdicts
+
+| tool | verdict | the number |
+|---|---|---|
+| `bust_verdict.py` | **BROKEN → fixed** | 6 of 486 subjects; a shipped robe read covered 0.0%, standoff over 9 verts, and returned "clean at rest ... next step is an in-game A/B" at exit 0 with all four controls passing. Correctly framed: covered 34.8%, 459 verts, 0.43% clipping. |
+| `survey_motion_clipping.py` | **BROKEN → fixed** | four silent exclusions; 55 colliders scored as garment, 463 of 5939 shapes dropped with no trace, `skipped` never printed, and `*_1.nif` only so half the pack was never surveyed. |
+| `postflight_1_2.py` | **BROKEN → fixed** | 78 of the 84 survive its collider and not-rendered filters. NOT on the suspect list — found by following the call sites. |
+| `qa_conform_audit.py` | **BROKEN (latent) → fixed** | 1 of the 84 changes class; 0 jiggle-strip suspects missed, 0 `matched_frac` corrupted, hug error median 0.053. Small because 60 of the 84 are RIGID on weight alone, decided before `hug` is read — not because the code was right. |
+| `chain_flag_census.py` | **BROKEN (latent) → fixed** | same insufficient "renders" filter; placed garments before it placed the body. |
+| `phase1_antipoke_population_ab.py` | **BROKEN (latent) → fixed** | same. |
+| `snugness_census.py` | **SOUND** | already chooses by evidence, documents the exact trap, and asserts its reference stands upright. Nothing to do. |
+| `collect_fit_dataset.py` | **SOUND** | records `ident` as a COLUMN instead of branching on it, so a consumer can filter. |
+| `scripts/tool_audit.py` | **SOUND, scope-limited** | clean on all tracked tools — but it only audits SOURCE-PARSING tools for a population floor. Every defect above is in a NIF-READING tool, which it does not look at. A clean `tool_audit` is not evidence about this class. |
+
+## What actually found these
+
+Not the frame. Three of the four were found by asking **what does this tool
+refuse to report on, and does it say so** — the exclusion, not the arithmetic.
+
+- An exclusion that prints only a COUNT, or no count at all. `survey`'s
+  `skipped` list was built and then discarded; its identity check excluded 7.8%
+  of the pack with no line anywhere.
+- **A control that cannot fail is not a control.** `bust_verdict` has four, and
+  every one passed on a garment sitting 42u off the body: the calf control
+  expects ~0% and got it, the body-vs-itself control never touches the garment,
+  and the equality selftest compared two identical zeros. The file's own note
+  above the ORIENTATION control says a control that can be skipped is not a
+  control — it had been applied to the body and never to the garment.
+- **Score the COMPOSED rule, never its components.** `Cylinder.015` reads like
+  a collider and carries a full texture set over 33k verts; `ButtCol` reads like
+  a garment suffix and has none. Token alone and rendering alone each pick the
+  wrong one.
+
+## The guard, and the one that generalises
+
+`standoff_audit.pick_frame` places a shape by proximity, so the decision exists
+once instead of five times. But the frame fix only removes a CAUSE. The guard
+that removes the class is `bust_verdict`'s COVERAGE control: a garment covering
+less than 1% of the band it is judged on has not been measured, and 0.00%
+clipping is then indistinguishable from a perfect fit — whatever put it there.
+
+Mutation pairs TFF-a..e, all CAUGHT. The chooser is armed in BOTH directions on
+purpose: a pair arming only one would pass for a chooser hardcoded to the other.
+
+**No in-game verdict is owed.** Every change here is to a measurement tool;
+none can move a vertex.
+
+## Still open
+
+`morph_clip_test._aligned`, `snugness_census.pick_frame` and the fix on PR #9
+are three more copies of this decision, left alone deliberately: #9 is open and
+rebasing under it would re-hash the commit the exe stamp names. Fold them into
+`pick_frame` once #9 lands.
