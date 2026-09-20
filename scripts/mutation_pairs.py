@@ -843,8 +843,12 @@ PAIRS = (
          edits=(
              ('scripts/golden_output.py', '            "DEBUG_GLOW_CTRL", "GLOW_LOG", "DEBUG_FINALIZE",', '            # MUTATED: diagnostics recorded again', 1),
          ),
+         # Anchored on the UNPARAMETRIZED test: pytest reports a parametrized
+         # case as `name[PARAM]`, the gate matches ids exactly, and naming the
+         # bare `test_a_diagnostic_flag_does_not_enter_the_recorded_set` read as
+         # MISSED while the mutation was in fact breaking four tests.
          tests=('tests/test_golden_flag_scope.py',),
-         expect=('test_a_diagnostic_flag_does_not_enter_the_recorded_set', 'test_the_persisted_pair_no_longer_blocks_a_comparison'),
+         expect=('test_the_persisted_pair_no_longer_blocks_a_comparison',),
     ),
     Pair('GFS-b', 'the skip list widens until the baseline is blind',
          edits=(
