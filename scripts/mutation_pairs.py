@@ -857,4 +857,23 @@ PAIRS = (
          tests=('tests/test_golden_flag_scope.py',),
          expect=('test_a_flag_that_changes_output_is_still_recorded',),
     ),
+    # #glow-diagnostic-path (2026-09-20): the diagnostic wrote nothing for an
+    # unknown length of time, because its configured directory did not exist
+    # and the caller swallows every exception. Both halves are armed: creating
+    # the directory, and SAYING SO when nothing could be written -- silence
+    # from a diagnostic gets read as evidence of absence.
+    Pair('GLP-a', 'the glow log stops creating its directory',
+         edits=(
+             ('src/atomic_io.py', '            path.parent.mkdir(parents=True, exist_ok=True)', '            pass  # MUTATED: no directory', 1),
+         ),
+         tests=('tests/test_glow_log_path.py',),
+         expect=('test_a_missing_directory_is_created_rather_than_swallowed',),
+    ),
+    Pair('GLP-b', 'a diagnostic that records nothing goes back to silence',
+         edits=(
+             ('src/atomic_io.py', '    if not _GLOW_LOG_WARNED:', '    if False:  # MUTATED: silent again', 1),
+         ),
+         tests=('tests/test_glow_log_path.py',),
+         expect=('test_when_nothing_can_be_written_it_says_so',),
+    ),
 )
