@@ -19,7 +19,7 @@ Two more tracked scripts are excluded as doc GENERATORS rather than measurements
 | tool | gate | floor | what it measures |
 |---|---|---|---|
 | `scripts/analysis/exe_parity_convert.py` | 2 | — | Convert ONE MOD with the DEPLOYED EXE -- byte-parity with a real GUI run |
-| `scripts/mutation_pairs.py` | — | — | The mutation pairs scripts/mutation_gate.py runs. |
+| `scripts/mutation_pairs.py` | — | yes | The mutation pairs scripts/mutation_gate.py runs. |
 
 ## Reads the shipped pack
 
@@ -51,7 +51,7 @@ Two more tracked scripts are excluded as doc GENERATORS rather than measurements
 | `scripts/analysis/source_delta_census.py` | — | yes | What did the CONVERTER make worse? Source-vs-converted pose delta, pack-wide |
 | `scripts/analysis/stage_morph_ledger.py` | 3 | — | WHICH PASS creates the clip that only appears UNDER A BODY PRESET. |
 | `scripts/analysis/stretched_edges.py` | 2 | yes | STRETCHED EDGES IN THE WRITTEN NIF, against the author's own mesh |
-| `scripts/analysis/survey_motion_clipping.py` | — | — | Pack-wide survey: which armour lets skin show once the body MOVES? |
+| `scripts/analysis/survey_motion_clipping.py` | 2 | yes | Pack-wide survey: which armour lets skin show once the body MOVES? |
 | `scripts/analysis/survival_sweep.py` | 2 | yes | Run the displacement-survival trace over MANY pieces, one arm of an A/B. |
 | `scripts/analysis/underbust_census.py` | — | — | Narrow-band CLIPPING census over the BREAST UNDER-CURVE. |
 | `scripts/analysis/verify_bodymatch.py` | 1 | — | Post-reconvert check for the body-match source-selection fix (#body-match-source) |
@@ -75,7 +75,7 @@ Two more tracked scripts are excluded as doc GENERATORS rather than measurements
 |---|---|---|---|
 | `scripts/analysis/acceptance.py` | 2, 3, 4 | yes | THE GATE. Two arms in, one verdict out, exit code = the verdict |
 | `scripts/analysis/armor_clip_diag.py` | 2 | — | Armor clip/crinkle/gap diagnostic — catches the classes my per-vert-delta and body-poke checks MISSED this session (crinkle = local push-field unevenness at a boundary; gap = skin visible between two shapes both outside the body; off-target = a change bleeding into a region it should have left alone) |
-| `scripts/analysis/authored_offset_ledger.py` | 2 | — | Does each pass move the garment TOWARD the author's fit, and what does it cost in smoothness? |
+| `scripts/analysis/authored_offset_ledger.py` | 2 | yes | Does each pass move the garment TOWARD the author's fit, and what does it cost in smoothness? |
 | `scripts/analysis/bust_verdict.py` | 3 | yes | Decide WHY a piece still shows breast-through-armour in game, when its bust FOLLOW is already at the in-game-validated level |
 | `scripts/analysis/chain_flag_census.py` | — | — | Which SHIPPED pieces carry physics cloth over the CONVEX BUST. |
 | `scripts/analysis/coherence_repair_ab.py` | — | — | Does `#coherence-repair` over-fire? Same-build flag A/B, with the counter-metric |

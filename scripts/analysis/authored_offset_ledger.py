@@ -61,6 +61,30 @@ from pyn import pynifly                                 # noqa: E402
 # Shape names that are a BODY rather than a garment.
 BODY_NAMES = {"baseshape", "3ba", "cbbe", "femalebody", "body", "ubebody"}
 
+# An authored offset this large is NOT a loose fit -- it means this shape was
+# paired with the wrong reference body, and every pass column below it would be
+# measured against that. On 2026-09-19 eight of thirty-four shapes read 13-16u
+# here and had to be thrown out BY HAND; a reader who did not know to check
+# that column would have averaged them in.
+#
+# NOT tuned, and the bracketing numbers are this repo's own calibration in
+# `standoff_audit`: a correctly fitted cuirass reads median 1.15u / p90 1.52u /
+# max 2.01u, and the deliberately OVER-INFLATED probe -- the worst legitimate
+# fit anyone has built here -- still only reaches median 2.88u / max 4.70u. So
+# the real population lives under 5u and the wrong-reference one starts at 13u.
+# Every threshold in that empty gap gives the same partition.
+MAX_PLAUSIBLE_AUTHORED = 5.0
+
+
+def is_wrong_reference(authored_p50: float) -> bool:
+    """True when this shape's authored offset cannot be a fit at all.
+
+    A predicate rather than an inline `if`, so it can be judged without a stage
+    dump on disk -- a guard nothing can test is the same decoration as a guard
+    that cannot fire.
+    """
+    return abs(float(authored_p50)) > MAX_PLAUSIBLE_AUTHORED
+
 
 def _load(p):
     nf = pynifly.NifFile(filepath=str(p))
@@ -162,6 +186,8 @@ def main() -> int:
     SB = Body(*src[src_body])
     OB = Body(*out[out_body])
 
+    implausible = []
+    scored = 0
     for f in sorted(stages.glob("*.npz")):
         shape = f.stem.split("__", 1)[-1]
         if (names and shape not in names) or shape not in src:
@@ -173,10 +199,18 @@ def main() -> int:
         t = z["tris"].reshape(-1, 3)
         sv = src[shape][0]
         authored = SB.offset(sv)
+        a_p50 = float(np.median(authored))
         print(f"\n=== {f.stem}   {len(sv)} verts")
-        print(f"    authored offset: p50 {np.median(authored):+.3f}  "
+        print(f"    authored offset: p50 {a_p50:+.3f}  "
               f"p10 {np.percentile(authored, 10):+.3f}  "
               f"p90 {np.percentile(authored, 90):+.3f}")
+        if is_wrong_reference(a_p50):
+            implausible.append((f.stem, a_p50))
+            print(f"    !! DISCARDED: an authored offset of {a_p50:+.1f}u is "
+                  f"not a fit, it is the wrong reference body for this shape "
+                  f"-- every row below would be measured against it")
+            continue
+        scored += 1
         print(f"    {'pass':20s} {'|err| p50':>9s} {'p90':>7s} "
               f"{'too CLOSE':>10s} {'(of which >0.2u)':>17s} "
               f"{'dihedral':>9s} {'edge dev':>9s}")
@@ -200,6 +234,17 @@ def main() -> int:
                   f"{100 * (err < 0).mean():9.1f}% "
                   f"{100 * (err < -0.2).mean():16.1f}% "
                   f"{dihedral(ov, t):9.2f} {edge_dev(sv, ov, t):9.4f}")
+
+    # STATE THE POPULATION. A ledger read as "the passes do X across N shapes"
+    # is a claim about N, so N and every discard are named rather than counted.
+    print(f"\npopulation: {scored} shape(s) scored, "
+          f"{len(implausible)} discarded as wrong-reference")
+    for nm, p50 in implausible:
+        print(f"  discarded  {nm:<44} authored p50 {p50:+.1f}u")
+    if not scored:
+        print("NOTHING WAS SCORED -- every shape was discarded or unreadable. "
+              "This is a broken pairing, not a clean ledger.")
+        return 2
     return 0
 
 

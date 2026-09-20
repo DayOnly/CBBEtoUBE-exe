@@ -854,4 +854,110 @@ PAIRS = (
          tests=('tests/test_lane_workflow.py',),
          expect=('test_onboard_configures_the_clone_and_reports_what_it_cannot_supply',),
     ),
+    # #tool-frame-floors (2026-09-20): the harness guards. These mutate a
+    # MEASUREMENT tool, not the converter, so no in-game verdict is owed --
+    # none of them can move a vertex. Both directions of the frame chooser are
+    # armed separately: a pair arming only one would pass for a chooser
+    # hardcoded to the other, which is exactly the bug being guarded.
+    Pair('TFF-a', 'the frame chooser always transforms, as three tools used to',
+         edits=(
+             ('scripts/analysis/standoff_audit.py', '    return (raw, "raw") if dr < dw else (world, "world")', '    return world, "world"  # MUTATED: always transform', 1),
+         ),
+         tests=('tests/test_frame_chooser.py',),
+         expect=('test_a_world_stored_shape_with_a_stale_transform_keeps_its_raw_verts',),
+    ),
+    Pair('TFF-b', 'the frame chooser never transforms, stranding 403 shapes',
+         edits=(
+             ('scripts/analysis/standoff_audit.py', '    return (raw, "raw") if dr < dw else (world, "world")', '    return raw, "raw"  # MUTATED: never transform', 1),
+         ),
+         tests=('tests/test_frame_chooser.py',),
+         expect=('test_a_skin_stored_shape_is_transformed',),
+    ),
+    Pair('TFF-c', 'the coverage floor is present but can never fire',
+         edits=(
+             ('scripts/analysis/bust_verdict.py', 'CTRL_MIN_COVERED = 1.0', 'CTRL_MIN_COVERED = 0.0  # MUTATED: dead guard', 1),
+         ),
+         tests=('tests/test_tool_exclusion_guards.py',),
+         expect=('test_a_garment_covering_nothing_is_a_control_failure', 'test_the_floor_is_above_zero'),
+    ),
+    Pair('TFF-d', 'the proxy rule drops its rendering half and keeps the token',
+         edits=(
+             ('scripts/analysis/survey_motion_clipping.py', '    return bool(PROXY_TOKEN.search(nm)) and not renders(s)', '    return bool(PROXY_TOKEN.search(nm))  # MUTATED: token alone', 1),
+         ),
+         tests=('tests/test_tool_exclusion_guards.py',),
+         expect=('test_a_rendered_shape_is_never_a_proxy_however_it_is_named',),
+    ),
+    Pair('TFF-e', 'the proxy rule stops exempting collar',
+         edits=(
+             ('scripts/analysis/survey_motion_clipping.py', '    if "collar" in nm.lower():', '    if False:  # MUTATED: no collar exemption', 1),
+         ),
+         tests=('tests/test_tool_exclusion_guards.py',),
+         expect=('test_collar_is_exempt',),
+    ),
+    # #half-pack-ratchet (2026-09-20): the frozen list is only worth having if
+    # the DETECTOR behind it still detects. A detector that matched nothing
+    # would leave every ratchet assertion passing forever, which is the exact
+    # failure mode this audit exists to find -- so it is armed directly.
+    Pair('HPK-a', 'the half-pack detector stops detecting anything',
+         edits=(
+             ('scripts/tool_audit.py', '    return not DECLARES_WEIGHTS.search(doc)', '    return False  # MUTATED: detects nothing', 1),
+         ),
+         tests=('tests/test_pack_population_declared.py',),
+         expect=('test_the_detector_finds_the_thing_it_is_looking_for', 'test_the_frozen_list_does_not_rot'),
+    ),
+    Pair('HPK-b', 'using the shared enumerator stops counting as declaring',
+         edits=(
+             ('scripts/tool_audit.py', '    if "output_nifs" in text:', '    if False:  # MUTATED', 1),
+         ),
+         tests=('tests/test_pack_population_declared.py',),
+         expect=('test_no_new_tool_surveys_half_the_pack_silently', 'test_using_output_nifs_counts_as_declaring'),
+    ),
+    Pair('AOL-a', 'the ledger averages in a shape paired with the wrong body',
+         edits=(
+             ('scripts/analysis/authored_offset_ledger.py', '    return abs(float(authored_p50)) > MAX_PLAUSIBLE_AUTHORED', '    return False  # MUTATED: nothing is wrong-reference', 1),
+         ),
+         tests=('tests/test_tool_exclusion_guards.py',),
+         expect=('test_a_wrong_reference_pairing_is_discarded',),
+    ),
+    # #golden-flag-scope (2026-09-20): armed in BOTH directions, because the
+    # two failures are opposite and a pair covering one would pass for the
+    # other. Recording a diagnostic flag makes `check` REFUSE (reads like a
+    # clean run); skipping a real one makes the baseline BLIND (worse).
+    Pair('GFS-a', 'a diagnostic flag re-enters the recorded golden flag set',
+         edits=(
+             ('scripts/golden_output.py', '            "DEBUG_GLOW_CTRL", "GLOW_LOG", "DEBUG_FINALIZE",', '            # MUTATED: diagnostics recorded again', 1),
+         ),
+         # Anchored on the UNPARAMETRIZED test: pytest reports a parametrized
+         # case as `name[PARAM]`, the gate matches ids exactly, and naming the
+         # bare `test_a_diagnostic_flag_does_not_enter_the_recorded_set` read as
+         # MISSED while the mutation was in fact breaking four tests.
+         tests=('tests/test_golden_flag_scope.py',),
+         expect=('test_the_persisted_pair_no_longer_blocks_a_comparison',),
+    ),
+    Pair('GFS-b', 'the skip list widens until the baseline is blind',
+         edits=(
+             ('scripts/golden_output.py', '            if k.startswith("CBBE2UBE_") and str(v).strip()', '            if False  # MUTATED: nothing is recorded', 1),
+         ),
+         tests=('tests/test_golden_flag_scope.py',),
+         expect=('test_a_flag_that_changes_output_is_still_recorded',),
+    ),
+    # #glow-diagnostic-path (2026-09-20): the diagnostic wrote nothing for an
+    # unknown length of time, because its configured directory did not exist
+    # and the caller swallows every exception. Both halves are armed: creating
+    # the directory, and SAYING SO when nothing could be written -- silence
+    # from a diagnostic gets read as evidence of absence.
+    Pair('GLP-a', 'the glow log stops creating its directory',
+         edits=(
+             ('src/atomic_io.py', '            path.parent.mkdir(parents=True, exist_ok=True)', '            pass  # MUTATED: no directory', 1),
+         ),
+         tests=('tests/test_glow_log_path.py',),
+         expect=('test_a_missing_directory_is_created_rather_than_swallowed',),
+    ),
+    Pair('GLP-b', 'a diagnostic that records nothing goes back to silence',
+         edits=(
+             ('src/atomic_io.py', '    if not _GLOW_LOG_WARNED:', '    if False:  # MUTATED: silent again', 1),
+         ),
+         tests=('tests/test_glow_log_path.py',),
+         expect=('test_when_nothing_can_be_written_it_says_so',),
+    ),
 )
