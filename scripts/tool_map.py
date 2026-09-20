@@ -94,7 +94,14 @@ DOC_GENERATORS = {
 # most specific marker has to come first: a tool that opens the pack AND parses
 # our source is a pack tool with a source-shaped implementation detail.
 READS = (
-    ("the run log", ("last_run.log", "RUN_LOG", "run_log")),
+    # The env marker is the FULL name. A bare `RUN_LOG` matched any source that
+    # merely mentions the string, and `golden_output.py` -- which reads the pack
+    # and never opens a run log -- was filed here the moment it listed
+    # "RUN_LOG" among the flags it declines to record. Same self-match hazard as
+    # the DOC_GENERATORS note above. Checked before narrowing: no tool in
+    # `scripts/` matches the bare form legitimately, and the real members of
+    # this category are caught by `last_run.log` / `run_log` anyway.
+    ("the run log", ("last_run.log", "CBBE2UBE_RUN_LOG", "run_log")),
     # `scan_output_health.py` reads the pack through `sys.argv[1]` with a
     # CBBE2UBE_MODS_ROOT fallback and named no marker in the first three, so it
     # was filed under "reads nothing on disk" -- a tool that scans every mesh in

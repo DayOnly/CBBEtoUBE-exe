@@ -176,9 +176,9 @@ def _flags() -> dict:
     #   DEBUG_FINALIZE              prints a traceback on an already-failed path
     #   RUN_LOG / STANDOFF_LOG      pin where a log is written, nothing else
     #
-    # Listed by FULL NAME rather than by a `DEBUG_`/`_LOG` prefix on purpose: a
-    # new diagnostic flag should have to be checked and added deliberately, not
-    # swept in by its name.
+    # Listed by FULL NAME rather than by a debug-or-log name prefix on purpose:
+    # a new diagnostic flag should have to be checked and added deliberately,
+    # not swept in by what it happens to be called.
     skip = ("MO2_INI", "MODS_ROOT", "GAME_DATA", "CONFIG", "OUT_MOD",
             "NO_PAUSE", "GOLDEN_",
             "DEBUG_GLOW_CTRL", "GLOW_LOG", "DEBUG_FINALIZE",
