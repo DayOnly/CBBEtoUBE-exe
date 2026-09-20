@@ -81,6 +81,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+from scipy.spatial import cKDTree
 
 _REPO = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(_REPO))
@@ -97,6 +98,13 @@ BUST = BREAST_Z              # (90.0, 102.0), apex ~95.5
 CALF = (10.0, 30.0)          # negative-control band a bust garment cannot cover
 CTRL_CALF_COVERED_MAX = 5.0      # % area; a bust garment cannot cover a calf
 CTRL_SELF_EXPOSED_MIN = 0.80
+# A bust garment that covers LESS than this much of the band was not measured.
+# Not tuned: the subject here is chosen as the largest non-body shape in a
+# cuirass/robe NIF, so it covers the bust by construction, and the shipped
+# population separates cleanly -- a correctly framed piece reads 11.9% while a
+# mis-framed one reads exactly 0.0%. Anything in between is still reported;
+# this only refuses to issue a VERDICT on a garment that touches nothing.
+CTRL_MIN_COVERED = 1.0
 # A clean armour reads 0.0% clipping, so this is a real threshold rather than a
 # tuned one; the margin is for mesh-resolution noise only.
 CLIP_BAD = 1.0               # % area of the bust band clipping = CUT
@@ -119,6 +127,22 @@ def _shape(nf, name=None, exclude=()):
 def _world(s):
     g2s = nc._shape_global_to_skin(s)
     return nc._verts_skin_to_world(np.asarray(s.verts, np.float64), g2s)
+
+
+def _upright(s):
+    """The body's verts in whichever frame stands it at human height.
+
+    The body is the reference, so it cannot be placed by proximity to itself.
+    Height is the evidence instead, and asserting it is cheap: a mis-framed
+    REFERENCE corrupts every number in the run rather than one shape's.
+    """
+    raw = np.asarray(s.verts, np.float64)
+    for V in (raw, _world(s)):
+        if (V[:, 2].max() - V[:, 2].min()) > 50.0 and V[:, 2].min() > -20.0:
+            return V
+    print(f"ABORT: body {s.name!r} stands upright in NEITHER frame -- every "
+          f"distance below would be void")
+    sys.exit(3)
 
 
 def _normals(s, V):
@@ -238,10 +262,15 @@ def analyse(path, garment_name=None, label="", cap=900, resolution=True):
         print(f"ABORT: no garment shape found in {path}")
         sys.exit(3)
 
-    bV = _world(body)
+    bV = _upright(body)
     bN = _normals(body, bV)
     bT = np.asarray(body.tris)
-    gV = _world(garment)
+    # The garment's frame is CHOSEN, not assumed. Body and garment routinely
+    # disagree inside one NIF: 6 of the 486 shipped pieces that have a
+    # BaseShape pick a garment whose raw verts are already on the body, and
+    # transforming those threw the subject clean off it.
+    gV, gframe = sa.pick_frame(np.asarray(garment.verts, np.float64),
+                               _world(garment), cKDTree(bV))
     gT = np.asarray(garment.tris)
     if bN is None:
         print("ABORT: body normals unavailable -- cannot cast rays")
@@ -249,7 +278,7 @@ def analyse(path, garment_name=None, label="", cap=900, resolution=True):
 
     print(f"\n=== {label or path}")
     print(f"    body={body.name!r} ({len(bV)} v)  "
-          f"garment={garment.name!r} ({len(gV)} v)")
+          f"garment={garment.name!r} ({len(gV)} v)  [frame: {gframe}]")
 
     bust_all = _band(bV, *BUST)
     bust = _sample(bust_all, cap)
@@ -322,6 +351,22 @@ def analyse(path, garment_name=None, label="", cap=900, resolution=True):
     print(f"    AT REST   bust verts {n_b}: CLIPPING "
           f"{rest['clipping_pct']:.2f}% of area  (covered "
           f"{rest['covered_pct']:.1f}%, uncovered {rest['uncovered_pct']:.1f}%)")
+
+    # --- CONTROL: the garment must cover the band it is being judged on ---
+    # The companion to the ORIENTATION control above, which asks whether the
+    # BODY had data and deliberately cannot be skipped. Nothing asked the same
+    # of the GARMENT, and a garment that touches nothing reads 0.00% clipping
+    # -- identical to a perfect fit. On a shipped robe thrown off the body by a
+    # frame error this printed "covered 0.0%", measured standoff over NINE
+    # verts, passed all four controls, and returned "clean at rest ... next
+    # step is an in-game A/B" at exit 0. The frame fix removes that cause; this
+    # removes the CLASS, whatever the cause.
+    if rest["covered_pct"] is not None and rest["covered_pct"] < CTRL_MIN_COVERED:
+        fails.append(
+            f"COVERAGE control: the garment covers only "
+            f"{rest['covered_pct']:.1f}% of the bust band (floor "
+            f"{CTRL_MIN_COVERED:.1f}%) -- it is not over the skin it is being "
+            f"judged against, so 0.00% clipping means NOT MEASURED, not clean")
     if so["n"]:
         print(f"    STANDOFF  over covered skin: median {so['median']:.2f}u  "
               f"p90 {so['p90']:.2f}u  max {so['max']:.2f}u  ({so['n']} verts)")
