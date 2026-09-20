@@ -19,7 +19,7 @@ Two more tracked scripts are excluded as doc GENERATORS rather than measurements
 | tool | gate | floor | what it measures |
 |---|---|---|---|
 | `scripts/analysis/exe_parity_convert.py` | 2 | — | Convert ONE MOD with the DEPLOYED EXE -- byte-parity with a real GUI run |
-| `scripts/mutation_pairs.py` | — | — | The mutation pairs scripts/mutation_gate.py runs. |
+| `scripts/mutation_pairs.py` | — | yes | The mutation pairs scripts/mutation_gate.py runs. |
 
 ## Reads the shipped pack
 
@@ -51,7 +51,7 @@ Two more tracked scripts are excluded as doc GENERATORS rather than measurements
 | `scripts/analysis/source_delta_census.py` | — | yes | What did the CONVERTER make worse? Source-vs-converted pose delta, pack-wide |
 | `scripts/analysis/stage_morph_ledger.py` | 3 | — | WHICH PASS creates the clip that only appears UNDER A BODY PRESET. |
 | `scripts/analysis/stretched_edges.py` | 2 | yes | STRETCHED EDGES IN THE WRITTEN NIF, against the author's own mesh |
-| `scripts/analysis/survey_motion_clipping.py` | — | — | Pack-wide survey: which armour lets skin show once the body MOVES? |
+| `scripts/analysis/survey_motion_clipping.py` | 2 | yes | Pack-wide survey: which armour lets skin show once the body MOVES? |
 | `scripts/analysis/survival_sweep.py` | 2 | yes | Run the displacement-survival trace over MANY pieces, one arm of an A/B. |
 | `scripts/analysis/underbust_census.py` | — | — | Narrow-band CLIPPING census over the BREAST UNDER-CURVE. |
 | `scripts/analysis/verify_bodymatch.py` | 1 | — | Post-reconvert check for the body-match source-selection fix (#body-match-source) |
