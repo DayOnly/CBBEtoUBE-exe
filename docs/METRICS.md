@@ -804,3 +804,55 @@ none can move a vertex.
 are three more copies of this decision, left alone deliberately: #9 is open and
 rebasing under it would re-hash the commit the exe stamp names. Fold them into
 `pick_frame` once #9 lands.
+
+## The second class the same day — half the pack, undeclared
+
+Same audit, different heuristic: **an exclusion you cannot explain.** The frame
+class was about placing a shape wrongly. This one is about never looking at it.
+
+`standoff_audit.output_nifs` was written because validation scripts glob
+`*_1.nif` only, and weight 0 is a SEPARATELY AUTHORED mesh, not a scaled copy.
+Its own docstring records the measurement and the count at the time:
+
+    bust-front clipping, one cuirass:  weight 1  4.52%    weight 0  9.48%
+    "Fifteen validation scripts in this repo independently glob *_1.nif only"
+
+Counted 2026-09-20: **23 tools enumerate the pack that way, and 21 never say
+so.** On the shipped pack that is **1032 of 2064 NIFs — exactly 50.0%**, and by
+the measurement above the missing half is the WORSE half. The number went from
+fifteen to twenty-three with nobody deciding it should.
+
+**The fix is NOT "always read both weights", and that distinction carries the
+design.** `morph_sweep` scopes to `_1` for a real reason — `_0` and `_1` are one
+garment at two weights, so scoring both double-counts a per-garment RATE — and
+it says so in its docstring. That is all that is asked: declare the population.
+Using `output_nifs` counts as declaring it.
+
+So `tool_audit.py` grew a fourth section and `tests/test_pack_population_declared.py`
+freezes the 21 by name. It is a RATCHET, not a cleanup: it fails when a new tool
+joins the list, or when a listed one stops qualifying and the list starts lying
+about the tree. Rewriting 21 populations blind would change what every one of
+them reports with nothing to validate the new numbers against — and several feed
+leads that are currently open.
+
+Mutation pairs HPK-a and HPK-b, both CAUGHT. HPK-a mutates the DETECTOR rather
+than the list, because a detector that matched nothing would leave every
+assertion in that file passing forever — which is precisely the failure this
+audit exists to find.
+
+### What did NOT survive triage, recorded so it is not re-run
+
+**"Reports a MEAN with no MEDIAN"** sounds like the heuristic that found
+`seat_error` (9.18 vs 0.35). Swept over every tool it yields 13 hits and
+roughly 3 are real: most are `(d < PROX).mean()`, which is a PROPORTION, where
+the mean is exactly right and a median would be 0 or 1. Of the four genuine
+distribution means, `golden_output` and `verify_chain_shift` both print `max`
+beside the mean, so the tail is already visible. **Do not mechanize this one** —
+at ~30% precision it is a reading aid, not a gate.
+
+The one survivor is `find_morph_follow_gaps.py`, which THRESHOLDS on a mean
+(`follow < 0.15` over covered verts) and reports no spread. A garment whose
+covered verts are half at 0.30 and half at 0.00 passes that test with half the
+piece carrying no follow at all. Unmeasured, and left open deliberately rather
+than changed on a hunch: it needs the per-vertex follow distribution over the
+pack before anyone touches the threshold.
