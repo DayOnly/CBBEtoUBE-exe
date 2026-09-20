@@ -2,6 +2,40 @@
 
 ## Unreleased
 
+### Fixed — a leg plate's crotch panel no longer swings into the buttock on every stride
+
+Every pass that decides a garment vertex's thigh/pelvis split aimed it at the
+body vertices nearest to that vertex: the body-swap reskin first, then the
+fitted-cloth conform, the leg-plate butt rebalance and the limb-motion push-up.
+On a coarse crotch panel the nearest skin is the inner thigh, less than a unit
+away, while the same panel passes over the buttock cleft a few units further
+on, skin that never moves with a leg. One leather greave's rear gusset, 75% on
+the right thigh as the author weighted it, was reskinned to 42% right thigh
+over skin that is 100% pelvis, and a 50-degree swing of that leg carried the
+panel 2.5u into the lower buttock and the top of the inner thigh (869 body
+vertices lost more than 0.5u of clearance; the left leg moved nothing). Of the
+224 body-swap pieces whose crotch band a garment covers, 55 lose more than 1u
+under a single 45-degree swing, and 50 of those came from a source whose author
+shipped only a partial body under the garment, so the author never saw it.
+
+Each of those passes now aims at the skin the vertex actually covers, the body
+vertices whose nearest garment vertex it is, weighted by how close that skin
+is, inside the crotch and hip band. `CBBE2UBE_NO_COVERED_SKIN_TARGET=1`
+(settings window: "Leg plates follow the skin they cover") restores the
+nearest-vertex targets. Measured through the
+built exe on the reported set, at the shipped recipe and again at the defaults
+(identical numbers): under a single 45-degree swing of the right thigh, the
+clearance lost over the covered crotch band falls from 1.00u to 0.36u (90th
+percentile), covered skin newly inside the garment from 7.5% to 2.8%, and
+vertices losing more than 0.5u from 18.9% to 7.6%. No vertex moves, no bone is
+newly emptied, the acceptance gate passes on every scored row, and with the
+switch off the new build reproduces the previous one byte for byte on all 24
+game files. Over four more mods (13 body-swap pieces with a covered crotch
+band) one piece improves from 2.36u to 0.64u, three improve slightly and none
+worsens; the seven robes among them do not change, because a shape on the
+draping-name list keeps its authored skin by the standing physics rule. The
+census behind the class sizes is the new `scripts/analysis/single_swing_census.py`.
+
 ### Development only — commits are made on lanes, the hooks refuse to run without the denylist, and a clone sets itself up with one command
 
 `main` and `testing` now change only by a merged pull request: a ruleset on

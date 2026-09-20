@@ -79,6 +79,15 @@ SETTINGS: "tuple[Setting, ...]" = (
             "Armor", "Limbs and extremities", default=True,
             env="CBBE2UBE_NO_LEG_BEND_MATCH", invert=True,
             tooltip="Make rigid greaves follow the knee/thigh so plates don't split when posed."),
+    Setting("covered_skin_target", "Leg plates follow the skin they cover",
+            "Armor", "Limbs and extremities", default=True,
+            env="CBBE2UBE_NO_COVERED_SKIN_TARGET", invert=True, advanced=True,
+            hint="Untick to aim each plate vertex at the nearest skin instead.",
+            tooltip="A crotch panel sits closest to the inner thigh but also passes "
+                    "over the buttock cleft, which never moves with a leg. Aimed at "
+                    "the nearest skin, one greave's gusset swung 2.5u into the lower "
+                    "buttock on every stride of that leg. Each vertex now follows "
+                    "the skin it actually covers, weighted by how close it is."),
     Setting("disable_softbody_scales", "Disable soft-body scale bones",
             "Armor", "Jiggle transfer", default=False,
             env="CBBE2UBE_NO_SOFTBODY_SCALES", invert=False,
