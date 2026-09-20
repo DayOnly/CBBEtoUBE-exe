@@ -16,6 +16,90 @@ gate applies is byte for byte what was measured); edited by hand since."""
 from scripts.mutation_gate import Pair
 
 PAIRS = (
+    # #seat-unplaced-guard (2026-09-19): the scorer reported mean 9.1811u on a
+    # 0.3466u median because `_world` scattered 162 collider/HDT-helper shapes
+    # up to 2477u; 44 shapes carried 95.7% of the total. Guard is on PLACEMENT,
+    # not name -- a name list left the mean at 7.3669u.
+    Pair('SEG-a', 'the unplaced-shape guard never fires',
+         edits=(
+             ('scripts/analysis/seat_error_vs_author.py',
+              '_MAX_PLAUSIBLE_OFF = 50.0',
+              '_MAX_PLAUSIBLE_OFF = 1e9  # MUTATED: guard disabled', 1),
+         ),
+         tests=('tests/test_seat_error_transform_guard.py',),
+         expect=('test_a_shape_the_transform_did_not_place_is_excluded',
+                 'test_the_threshold_sits_inside_the_measured_empty_gap'),
+    ),
+    Pair('SEG-b', 'the guard skips our arm only, leaving the author arm unguarded',
+         edits=(
+             ('scripts/analysis/seat_error_vs_author.py',
+              'if _unplaced(a_off):',
+              'if False:  # MUTATED: author arm unguarded', 1),
+         ),
+         tests=('tests/test_seat_error_transform_guard.py',),
+         expect=('test_the_guard_applies_to_BOTH_arms',),
+    ),
+    # SEG-c first targeted the print in main() and read MISSED: the test asserted
+    # the word EXCLUDED appeared in the source, which the module docstring
+    # satisfied on its own. The report is a pure function now and the test reads
+    # its RETURN, so gutting it goes red.
+    Pair('SEG-c', 'the excluded shapes are never reported',
+         edits=(
+             ('scripts/analysis/seat_error_vs_author.py',
+              '    if not unplaced:',
+              '    if True:  # MUTATED: report silenced', 1),
+         ),
+         tests=('tests/test_seat_error_transform_guard.py',),
+         expect=('test_excluded_shapes_are_reported_not_silently_dropped',
+                 'test_the_report_names_the_worst_offenders_largest_first',
+                 'test_a_long_report_is_truncated_but_says_how_many_it_held_back'),
+    ),
+    Pair('SEG-g', 'a shape is called a proxy on the texture signal alone',
+         edits=(
+             ('scripts/analysis/seat_error_vs_author.py',
+              '    return any(t in low for t in _PROXY_TOKENS)',
+              '    return True  # MUTATED: every untextured shape is a proxy', 1),
+         ),
+         tests=('tests/test_seat_error_transform_guard.py',),
+         expect=('test_garment_names_are_not_proxy_names',
+                 'test_the_COMPOSED_rule_keeps_an_untextured_garment'),
+    ),
+    Pair('SEG-h', 'a Collar is deleted as a collider',
+         edits=(
+             ('scripts/analysis/seat_error_vs_author.py',
+              '    if "collar" in low:',
+              '    if False:  # MUTATED: collar is a collider again', 1),
+         ),
+         tests=('tests/test_seat_error_transform_guard.py',),
+         expect=('test_a_collar_is_a_garment_not_a_collider',),
+    ),
+    Pair('SEG-e', 'the frame is assumed instead of chosen by evidence',
+         edits=(
+             ('scripts/analysis/seat_error_vs_author.py',
+              'return (raw, "raw") if dr <= dw else (w, "world")',
+              'return (w, "world")  # MUTATED: frame assumed', 1),
+         ),
+         tests=('tests/test_seat_error_transform_guard.py',),
+         expect=('test_the_frame_is_chosen_by_evidence_not_assumed',),
+    ),
+    Pair('SEG-f', 'a collision proxy is scored as garment',
+         edits=(
+             ('scripts/analysis/seat_error_vs_author.py',
+              'return any(v for v in (shape.textures or {}).values())',
+              'return True  # MUTATED: everything counts as garment', 1),
+         ),
+         tests=('tests/test_seat_error_transform_guard.py',),
+         expect=('test_a_shape_with_no_texture_is_not_garment',),
+    ),
+    Pair('SEG-d', 'a truncated report does not say how many it held back',
+         edits=(
+             ('scripts/analysis/seat_error_vs_author.py',
+              'out.append(f"      ... and {len(unplaced) - top} more")',
+              'pass  # MUTATED: truncation is silent', 1),
+         ),
+         tests=('tests/test_seat_error_transform_guard.py',),
+         expect=('test_a_long_report_is_truncated_but_says_how_many_it_held_back',),
+    ),
     # #covered-skin-target (2026-09-17): the pure target, its reach test and the
     # switch's default. The wiring itself is proven by the exe A/B on the
     # reported mod, not by a unit test (it needs the live UBE body).

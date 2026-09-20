@@ -45,10 +45,18 @@ order, the way the CONVERTER finds its own source, pairs 234 shapes.
 
 Prints mean and median seat error per arm; lower is closer to the author.
 Needs CBBE2UBE_MO2_INI. Exit 1 if NOTHING paired -- that is 0/0, not a pass.
+
+SHAPES `_world` COULD NOT PLACE ARE EXCLUDED AND COUNTED. `_world` fails to
+resolve the transform of SMP collider and HDT helper shapes and scatters their
+vertices; before the guard, 44 such shapes carried 95.7% of the total and the
+MEAN read 9.1811u against a 0.3466u median. Their RAW vertices are correct, so
+this says nothing about the shipped mesh -- read it as "not measurable here",
+never as a fit defect. The run names how many and the worst five.
 """
 from __future__ import annotations
 
 import sys
+from collections import Counter
 from pathlib import Path
 
 import numpy as np
@@ -63,6 +71,120 @@ sys.path.insert(0, str(_REPO / "scripts" / "analysis"))
 from src import nif_io, nif_convert as nc                 # noqa: E402
 import standoff_audit as sa                               # noqa: E402
 from scipy.spatial import cKDTree                         # noqa: E402
+
+
+# A shape whose vertices land this far from the body was not FITTED there --
+# `_world` failed to resolve its transform. Measured 2026-09-19 over 4499 paired
+# shapes: 146 land 103u-2477u out (SMP colliders named `Cylinder.00N`, a
+# `ColBack`, an `HDTBag`), while the legitimate population tops out at 28.69u.
+# The gap between 28.69u and 103.14u is EMPTY, so every threshold inside it
+# gives the same partition and this number is not tuned. Their RAW verts are
+# correct -- the shipped mesh is fine -- so this is a SCORING guard and never an
+# output verdict. A name list does NOT do this job: `Cylinder.00N` and `HDTBag`
+# match none of the converter's structural keys, and excluding by name alone
+# still left the mean at 7.37u.
+_MAX_PLAUSIBLE_OFF = 50.0
+
+
+_AGREE_U = 0.25          # closer than this and the two frames agree
+
+# A shape is skipped as a proxy only when it BOTH renders nothing AND says so
+# in its name. "Renders nothing" alone was the idiom inherited from
+# `bust_gap_score` / `morph_clip_test`, and measuring its exclusions is what
+# showed it is not sufficient here: of 666 non-rendering shapes, 72 carried no
+# proxy token and were plainly garment -- `Cuirass`, `Greaves`, `pants`, `sash`,
+# `HDTSkirt`, four `shawl` parts. A garment textured from the plugin's
+# alt-texture list has empty embedded paths and is not a proxy
+# (#alt-texture-index). Requiring both signals drops the false positives to
+# none while still catching 594 of the 666.
+#
+# `collar` is excluded deliberately: `col` is a real token here, and a `Collar`
+# is a real garment part. DESIGN.md records the same collision in the
+# converter's own skip list, where it is load-bearing by accident; in a SCORER
+# it would just silently delete a garment.
+_PROXY_TOKENS = ("col", "colis", "proxy", "virtual", "stabilizer", "ref",
+                 "ground", "occlusion", "proxyshape")
+
+
+def _is_proxy_name(name: str) -> bool:
+    low = (name or "").lower()
+    if "collar" in low:
+        return False
+    return any(t in low for t in _PROXY_TOKENS)
+
+
+def _renders(shape) -> bool:
+    """A shape with no texture is a collision proxy or a helper, not garment.
+
+    The idiom `bust_gap_score` and `morph_clip_test` already use. It matters
+    here for a second reason: `VirtualGround` is a four-vertex ground plane
+    spanning x -80..80, so it sits a legitimate ~105u from the body and would
+    otherwise be reported as a transform failure, which it is not.
+
+    IT HAS A FALSE-POSITIVE CLASS, so the run NAMES what it skipped. A garment
+    whose textures come from the plugin's alternate-texture list carries empty
+    embedded paths and is not a proxy at all (#alt-texture-index). Measured
+    over a 400-file sample, 180 shapes were skipped across 24 distinct names:
+    `Stabilizer`, `Proxy`, `Collision`, `VirtualGround`, `3BA Ref` and `*Col*`
+    account for all but two -- a `Greaves` (4) and a `2` (2), which are the
+    class this warning is about. Read the printed names before trusting a
+    population, rather than assuming the filter only caught proxies."""
+    return any(v for v in (shape.textures or {}).values())
+
+
+def _pick_frame(shape, tree):
+    """(verts, which) -- the frame that lands this shape nearer `tree`.
+
+    THE FRAME IS CHOSEN BY EVIDENCE, NOT ASSUMED. A SOURCE nif stores verts in
+    the shape's SKIN frame and needs `_verts_skin_to_world`; a converted OUTPUT
+    already stores WORLD verts, so applying the same rule to both transforms the
+    output twice and throws it hundreds of units off the body. Neither arm is
+    uniformly one or the other -- measured over a 220-file sample, our own
+    output wanted `raw` on 14 shapes and `world` on 26, with 281 ties -- so a
+    per-arm rule is as wrong as a global one. The approach and this reasoning
+    are `snugness_census.py`'s, whose docstring records that assuming the frame
+    "made every number it printed void".
+
+    Most shapes have an identity transform and tie, in which case either does."""
+    raw = np.asarray(shape.verts, np.float64)
+    try:
+        w = _world(shape)
+    except Exception:
+        return raw, "raw"
+    dr = float(np.median(tree.query(raw)[0]))
+    dw = float(np.median(tree.query(w)[0]))
+    if abs(dr - dw) < _AGREE_U:
+        return raw, "agree"
+    return (raw, "raw") if dr <= dw else (w, "world")
+
+
+def _unplaced(off) -> bool:
+    """True when a shape's mean offset says `_world` did not place it.
+
+    Takes the nearest-body distances for one shape. Kept a named predicate
+    rather than two inline comparisons so the guard is one definition with one
+    test, and so a run can say WHY a shape was dropped."""
+    return bool(float(np.mean(off)) > _MAX_PLAUSIBLE_OFF)
+
+
+def _report_unplaced(unplaced, top=5) -> list:
+    """The lines a run prints for shapes `_world` could not place.
+
+    Pure and returns the lines rather than printing them, so the REPORT is
+    testable behaviour and not a substring of the module docstring -- the first
+    version of this guard asserted "EXCLUDED" appeared somewhere in the source,
+    which the docstring satisfied on its own, and the mutation gate caught it."""
+    if not unplaced:
+        return []
+    out = [f"EXCLUDED {len(unplaced)} shape(s): `_world` put them over "
+           f"{_MAX_PLAUSIBLE_OFF:.0f}u from the body, so their transform did "
+           f"not resolve and no seat error can be read from them. The shipped "
+           f"mesh is NOT implicated."]
+    for _rel, _nm, _off, _which in sorted(unplaced, key=lambda t: -t[2])[:top]:
+        out.append(f"      {_off:9.1f}u  {_nm}  [{_which}]  {_rel}")
+    if len(unplaced) > top:
+        out.append(f"      ... and {len(unplaced) - top} more")
+    return out
 
 
 def _world(sh):
@@ -100,6 +222,10 @@ def main(argv) -> int:
           f"no _bsa_staging)")
     rows: list = []
     resolved = 0
+    unplaced: list = []
+    frames: Counter = Counter()
+    nonrender: Counter = Counter()
+    kept_untextured: Counter = Counter()
     for f in files:
         rel = f.relative_to(ref).as_posix()
         w = "_1" if Path(rel).stem.endswith("_1") else "_0"
@@ -119,9 +245,18 @@ def main(argv) -> int:
             return 2
         for nm, a in {s.name: s for s in anf.shapes}.items():
             try:
-                aV = _world(a)
+                if not _renders(a) and _is_proxy_name(nm):
+                    nonrender[nm] += 1
+                    continue
+                if not _renders(a):
+                    kept_untextured[nm] += 1
+                aV, _af = _pick_frame(a, ct)
+                frames[f"author={_af}"] += 1
                 a_off, _ = ct.query(aV, k=1)
             except Exception:
+                continue
+            if _unplaced(a_off):
+                unplaced.append((rel, nm, float(np.mean(a_off)), "author"))
                 continue
             row, ok = {}, True
             for root in roots:
@@ -132,10 +267,15 @@ def main(argv) -> int:
                     m = {s.name: s for s in nif_io.open_nif_retry(str(p)).shapes}
                     if nm not in m:
                         ok = False; break
-                    oV = _world(m[nm])
+                    oV, _of = _pick_frame(m[nm], ut)
+                    frames[f"ours={_of}"] += 1
                     if len(oV) != len(aV):
                         ok = False; break     # retopologised: not comparable
                     o_off, _ = ut.query(oV, k=1)
+                    if _unplaced(o_off):
+                        unplaced.append((rel, nm, float(np.mean(o_off)),
+                                         root.name))
+                        ok = False; break
                     row[root.name] = float(np.mean(np.abs(o_off - a_off)))
                 except Exception:
                     ok = False; break
@@ -146,7 +286,32 @@ def main(argv) -> int:
         print(f"NOTHING PAIRED against an author mesh ({resolved} NIF(s) "
               f"resolved) -- that is 0/0, not a pass.")
         return 1
-    print(f"paired {len(rows)} shape(s) against the author\n")
+    print(f"paired {len(rows)} shape(s) against the author")
+    for _line in _report_unplaced(unplaced):
+        print(_line)
+    if nonrender:
+        print(f"skipped {sum(nonrender.values())} shape(s) that render nothing "
+              f"(no texture), {len(nonrender)} distinct name(s): a collision "
+              f"proxy or helper is not garment and has no seat. NAMED, because "
+              f"a garment whose textures come from the plugin's alt-texture "
+              f"list also has empty embedded paths and is NOT a proxy:")
+        print("      " + ", ".join(f"{k} x{v}" for k, v
+                                   in nonrender.most_common(10))
+              + (f", +{len(nonrender) - 10} more name(s)"
+                 if len(nonrender) > 10 else ""))
+    if kept_untextured:
+        print(f"KEPT {sum(kept_untextured.values())} untextured shape(s) whose "
+              f"name is not a proxy name, {len(kept_untextured)} distinct: an "
+              f"empty embedded texture is how a plugin alt-texture garment "
+              f"looks, so these are SCORED rather than dropped.")
+        print("      " + ", ".join(f"{k} x{v}" for k, v
+                                   in kept_untextured.most_common(10))
+              + (f", +{len(kept_untextured) - 10} more"
+                 if len(kept_untextured) > 10 else ""))
+    if frames:
+        print("frames chosen: "
+              + ", ".join(f"{k} {v}" for k, v in sorted(frames.items())))
+    print()
     print(f"{'arm':<24} {'mean seat error':>16} {'median':>10}")
     for root in roots:
         v = np.array([r[root.name] for r in rows if root.name in r])

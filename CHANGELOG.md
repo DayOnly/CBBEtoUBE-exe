@@ -2,6 +2,51 @@
 
 ## Unreleased
 
+### Development only — the seat-error scorer chooses its frame by evidence and stops scoring proxies as garment
+
+`scripts/analysis/seat_error_vs_author.py` reported a **mean seat error of
+9.1811u** against a median of 0.3466u. Over its own 4499 paired shapes the top
+44 carried **95.7%** of that total, at up to 2473u — and the meshes were fine.
+
+The cause was an assumed coordinate frame. A source NIF stores verts in the
+shape's skin frame and needs `_verts_skin_to_world`; a converted output already
+stores world verts, so applying the same rule to both transforms the output
+twice. `snugness_census.py` records this and says assuming it "made every
+number it printed void". Most shapes have an identity transform and are
+unaffected, which is why only the collider and helper shapes blew up: one of
+them has raw vertices at z 90.6–118.6, exactly where a neck scarf belongs,
+while the doubled transform spread them over z −319.9…144.3.
+
+Neither arm is uniformly one frame or the other — measured over a 220-file
+sample, our own output wanted `raw` on 14 shapes and `world` on 26, with 281
+ties — so `_pick_frame` now measures both candidates per shape per arm and
+keeps whichever lands nearer that arm's body, the approach `snugness_census`
+already uses. A shape neither frame can place is excluded and reported;
+in practice none now are.
+
+A shape is treated as a proxy only when it **both** renders nothing **and**
+says so in its name. "Renders nothing" alone is the idiom `bust_gap_score` and
+`morph_clip_test` use, and measuring its exclusions is what showed it is not
+sufficient here: of 666 non-rendering shapes, 72 carried no proxy token and
+were plainly garment — a cuirass, greaves, pants, a sash, four shawl parts. A
+garment textured from the plugin's alternate-texture list has empty embedded
+paths and is not a proxy. Requiring both signals keeps those 72 and still
+skips 594, and every skipped name was checked in the other direction too: all
+54 are colliders, proxies or virtual helpers, with no `Color`/`Refined`-style
+false match. `collar` is excluded from the token list deliberately — `col` is a
+real token and a collar is a real garment part.
+
+The run prints what it skipped, what it kept, and which frames it chose, so
+neither population can shrink unnoticed.
+
+    mean     9.1811u -> 0.4269u
+    median   0.3466u -> 0.3505u   (the median was always the robust read)
+    scored   4499    -> 4053
+
+The shipped meshes are not implicated and nothing in the converter changes.
+Guarded by `tests/test_seat_error_transform_guard.py` (19 tests) and mutation
+pairs `SEG-a`..`SEG-h`.
+
 ### Fixed — a leg plate's crotch panel no longer swings into the buttock on every stride
 
 Every pass that decides a garment vertex's thigh/pelvis split aimed it at the
