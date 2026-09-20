@@ -810,4 +810,22 @@ PAIRS = (
          tests=('tests/test_tool_exclusion_guards.py',),
          expect=('test_collar_is_exempt',),
     ),
+    # #half-pack-ratchet (2026-09-20): the frozen list is only worth having if
+    # the DETECTOR behind it still detects. A detector that matched nothing
+    # would leave every ratchet assertion passing forever, which is the exact
+    # failure mode this audit exists to find -- so it is armed directly.
+    Pair('HPK-a', 'the half-pack detector stops detecting anything',
+         edits=(
+             ('scripts/tool_audit.py', '    return not DECLARES_WEIGHTS.search(doc)', '    return False  # MUTATED: detects nothing', 1),
+         ),
+         tests=('tests/test_pack_population_declared.py',),
+         expect=('test_the_detector_finds_the_thing_it_is_looking_for', 'test_the_frozen_list_does_not_rot'),
+    ),
+    Pair('HPK-b', 'using the shared enumerator stops counting as declaring',
+         edits=(
+             ('scripts/tool_audit.py', '    if "output_nifs" in text:', '    if False:  # MUTATED', 1),
+         ),
+         tests=('tests/test_pack_population_declared.py',),
+         expect=('test_no_new_tool_surveys_half_the_pack_silently', 'test_using_output_nifs_counts_as_declaring'),
+    ),
 )
