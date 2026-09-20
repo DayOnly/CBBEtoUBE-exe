@@ -18,6 +18,18 @@ sys.path.insert(0, str(_REPO))
 from src import atomic_io  # noqa: E402
 
 
+def _unwritable(base, name):
+    """A path whose PARENT is a regular file, so mkdir cannot create it.
+
+    Portable across versions, unlike an embedded NUL: Python 3.11 rejects a NUL
+    in `os.environ[...]` before the code under test ever runs, so a NUL fixture
+    passed on 3.10 and failed CI on 3.11/3.12 while testing nothing.
+    """
+    blocker = base / name
+    blocker.write_text("not a directory", encoding="utf-8")
+    return blocker / "glow.log"
+
+
 @pytest.fixture(autouse=True)
 def _reset_warned():
     atomic_io._GLOW_LOG_WARNED = False
