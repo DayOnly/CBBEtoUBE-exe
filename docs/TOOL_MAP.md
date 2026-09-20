@@ -75,7 +75,7 @@ Two more tracked scripts are excluded as doc GENERATORS rather than measurements
 |---|---|---|---|
 | `scripts/analysis/acceptance.py` | 2, 3, 4 | yes | THE GATE. Two arms in, one verdict out, exit code = the verdict |
 | `scripts/analysis/armor_clip_diag.py` | 2 | — | Armor clip/crinkle/gap diagnostic — catches the classes my per-vert-delta and body-poke checks MISSED this session (crinkle = local push-field unevenness at a boundary; gap = skin visible between two shapes both outside the body; off-target = a change bleeding into a region it should have left alone) |
-| `scripts/analysis/authored_offset_ledger.py` | 2 | — | Does each pass move the garment TOWARD the author's fit, and what does it cost in smoothness? |
+| `scripts/analysis/authored_offset_ledger.py` | 2 | yes | Does each pass move the garment TOWARD the author's fit, and what does it cost in smoothness? |
 | `scripts/analysis/bust_verdict.py` | 3 | yes | Decide WHY a piece still shows breast-through-armour in game, when its bust FOLLOW is already at the in-game-validated level |
 | `scripts/analysis/chain_flag_census.py` | — | — | Which SHIPPED pieces carry physics cloth over the CONVEX BUST. |
 | `scripts/analysis/coherence_repair_ab.py` | — | — | Does `#coherence-repair` over-fire? Same-build flag A/B, with the counter-metric |

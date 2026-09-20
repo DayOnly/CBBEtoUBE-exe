@@ -89,3 +89,32 @@ def test_an_ordinary_garment_is_not_a_proxy(sm):
     for nm in ("robe", "Boots", "Greaves", "Cuirass", "ArmorF"):
         assert not sm.is_proxy(_Shape(nm, _TEXTURED)), nm
         assert not sm.is_proxy(_Shape(nm)), nm
+
+
+# ------------------------------------------------ the wrong-reference discard
+@pytest.fixture(scope="module")
+def aol():
+    from scripts.analysis import authored_offset_ledger
+    return authored_offset_ledger
+
+
+def test_a_wrong_reference_pairing_is_discarded(aol):
+    """The 2026-09-19 case: eight of thirty-four shapes read 13-16u here and
+    were thrown out BY HAND. A reader who did not know to check that column
+    would have averaged them into the ledger."""
+    for p50 in (13.0, 16.0, -14.5, 2477.0):
+        assert aol.is_wrong_reference(p50), p50
+
+
+def test_a_real_fit_is_kept_however_loose(aol):
+    """Bracketed by this repo's own calibration in `standoff_audit`: a correctly
+    fitted cuirass reads median 1.15u, and the deliberately OVER-INFLATED probe
+    -- the worst legitimate fit built here -- still only reaches 2.88u."""
+    for p50 in (0.0, -0.43, 0.21, 1.15, 2.88, 4.70):
+        assert not aol.is_wrong_reference(p50), p50
+
+
+def test_the_threshold_sits_in_the_empty_gap(aol):
+    """Not tuned: the real population tops out under 5u and the wrong-reference
+    one starts at 13u, so every threshold between them gives one partition."""
+    assert 4.70 < aol.MAX_PLAUSIBLE_AUTHORED < 13.0

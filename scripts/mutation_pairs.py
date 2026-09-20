@@ -828,4 +828,11 @@ PAIRS = (
          tests=('tests/test_pack_population_declared.py',),
          expect=('test_no_new_tool_surveys_half_the_pack_silently', 'test_using_output_nifs_counts_as_declaring'),
     ),
+    Pair('AOL-a', 'the ledger averages in a shape paired with the wrong body',
+         edits=(
+             ('scripts/analysis/authored_offset_ledger.py', '    return abs(float(authored_p50)) > MAX_PLAUSIBLE_AUTHORED', '    return False  # MUTATED: nothing is wrong-reference', 1),
+         ),
+         tests=('tests/test_tool_exclusion_guards.py',),
+         expect=('test_a_wrong_reference_pairing_is_discarded',),
+    ),
 )
