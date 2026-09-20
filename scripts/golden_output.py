@@ -159,8 +159,30 @@ def _flags() -> dict:
     # changed the recorded flag set, so `check` refused with "FLAG SET DIFFERS"
     # -- and three such refusals in a row look exactly like three identical
     # clean runs. A control that cannot be exercised is not a control.
+    #
+    # THE SAME THING HAPPENED AGAIN, from the user's environment rather than
+    # from a harness switch. `CBBE2UBE_DEBUG_GLOW_CTRL` and `CBBE2UBE_GLOW_LOG`
+    # are persisted in the WINDOWS USER scope, so they enter every new shell:
+    # the baseline recorded `{}` and any run since records those two, and
+    # `check` returns 2 before it compares a single vertex. Measured 2026-09-20
+    # -- the harness was unusable from any ordinary shell, and its refusal reads
+    # like a tidy "not comparable" rather than like a broken tool.
+    #
+    # Every name below was checked to be OUTPUT-NEUTRAL before it was added,
+    # because skipping a flag that CAN move a vertex would make the baseline
+    # blind instead of usable:
+    #   DEBUG_GLOW_CTRL / GLOW_LOG  read the NIF AFTER the save and append to a
+    #                               log, inside try/except: pass
+    #   DEBUG_FINALIZE              prints a traceback on an already-failed path
+    #   RUN_LOG / STANDOFF_LOG      pin where a log is written, nothing else
+    #
+    # Listed by FULL NAME rather than by a `DEBUG_`/`_LOG` prefix on purpose: a
+    # new diagnostic flag should have to be checked and added deliberately, not
+    # swept in by its name.
     skip = ("MO2_INI", "MODS_ROOT", "GAME_DATA", "CONFIG", "OUT_MOD",
-            "NO_PAUSE", "GOLDEN_")
+            "NO_PAUSE", "GOLDEN_",
+            "DEBUG_GLOW_CTRL", "GLOW_LOG", "DEBUG_FINALIZE",
+            "RUN_LOG", "STANDOFF_LOG")
     return {k: v for k, v in sorted(os.environ.items())
             if k.startswith("CBBE2UBE_") and str(v).strip()
             and not any(s in k for s in skip)}

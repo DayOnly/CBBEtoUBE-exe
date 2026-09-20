@@ -835,4 +835,22 @@ PAIRS = (
          tests=('tests/test_tool_exclusion_guards.py',),
          expect=('test_a_wrong_reference_pairing_is_discarded',),
     ),
+    # #golden-flag-scope (2026-09-20): armed in BOTH directions, because the
+    # two failures are opposite and a pair covering one would pass for the
+    # other. Recording a diagnostic flag makes `check` REFUSE (reads like a
+    # clean run); skipping a real one makes the baseline BLIND (worse).
+    Pair('GFS-a', 'a diagnostic flag re-enters the recorded golden flag set',
+         edits=(
+             ('scripts/golden_output.py', '            "DEBUG_GLOW_CTRL", "GLOW_LOG", "DEBUG_FINALIZE",', '            # MUTATED: diagnostics recorded again', 1),
+         ),
+         tests=('tests/test_golden_flag_scope.py',),
+         expect=('test_a_diagnostic_flag_does_not_enter_the_recorded_set', 'test_the_persisted_pair_no_longer_blocks_a_comparison'),
+    ),
+    Pair('GFS-b', 'the skip list widens until the baseline is blind',
+         edits=(
+             ('scripts/golden_output.py', '            if k.startswith("CBBE2UBE_") and str(v).strip()', '            if False  # MUTATED: nothing is recorded', 1),
+         ),
+         tests=('tests/test_golden_flag_scope.py',),
+         expect=('test_a_flag_that_changes_output_is_still_recorded',),
+    ),
 )
