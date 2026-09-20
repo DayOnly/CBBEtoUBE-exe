@@ -7672,6 +7672,33 @@ _BUTT_REBALANCE = (_flag("CBBE2UBE_BUTT_REBALANCE", True))
 # Pelvis<->Thigh rebalance can't overshoot the body's own ratio.
 _BUTT_PROX = _knob("CBBE2UBE_BUTT_PROX", 5.0)
 _BUTT_MATCH_BONES = ("NPC L Thigh [LThg]", "NPC R Thigh [RThg]", "NPC Pelvis [Pelv]")
+# #covered-skin-target. Four passes aim a garment vertex's thigh/pelvis split at
+# the body vertices NEAREST to it: the body-swap reskin (K=4, the first
+# decision -- traced), the fitted-cloth conform (nearest), the butt rebalance
+# above (K=6) and the limb-motion push-up (nearest or ray hit). On a coarse
+# crotch panel the nearest skin is the inner thigh, 0.65u away, while the same
+# panel passes over the buttock cleft 4u further on -- skin that is Pelvis 1.0
+# and never moves with a leg. Measured 2026-09-17 on a leather greave: its rear
+# gusset shipped 0.444 on one thigh (the author's 0.749, reskinned to the
+# nearest skin), and a 50-degree swing of that leg carried it 2.5u into the
+# lower buttock and the top of the inner thigh (869 body vertices lost over
+# 0.5u of clearance; the other leg moved nothing). Pack-wide, 55 of the 224
+# body-swap pieces with a covered crotch band lose more than 1u under a single
+# 45-degree swing, and a one-sided split over pelvis-only skin discriminates
+# them 3.7x. The target at all four sites is now the CLEARANCE-WEIGHTED mean of
+# the skin the vertex COVERS: the body vertices whose nearest garment vertex it
+# is, each weighted by 1 / (outward clearance + _COVER_EPS), so the skin the
+# panel would touch first decides. The butt rebalance applies it at
+# _COVER_STRENGTH, whatever its z-ramp says. Default ON;
+# CBBE2UBE_NO_COVERED_SKIN_TARGET=1 restores the nearest-vertex targets.
+COVERED_SKIN_TARGET = (not _flag("CBBE2UBE_NO_COVERED_SKIN_TARGET", False))
+_COVER_EPS = _knob("CBBE2UBE_COVER_EPS", 0.5)            # clearance softening (u)
+_COVER_Z_LO = _knob("CBBE2UBE_COVER_Z_LO", 45.0)         # body band the cover map spans
+_COVER_Z_HI = _knob("CBBE2UBE_COVER_Z_HI", 80.0)
+_COVER_X = _knob("CBBE2UBE_COVER_X", 10.0)               # |x| limit: crotch, glutes, hips
+_COVER_REACH = _knob("CBBE2UBE_COVER_REACH", 6.0)        # skin further than this is not covered
+_COVER_MIN_VERTS = _knob("CBBE2UBE_COVER_MIN_VERTS", 3, int)
+_COVER_STRENGTH = _knob("CBBE2UBE_COVER_STRENGTH", 1.0)
 # Chest/breast-jiggle transfer -- the upper-body mirror of the butt-jiggle graft, onto
 # a rigid Spine2-dominant chest plate. Jiggle-only (no skeletal rebalance), capped low
 # so a metal cuirass doesn't bounce like flesh, self-gated to the front chest. Default
@@ -8480,6 +8507,30 @@ def _selfint_overrides(nf, dst_path, src_path) -> dict:
                     _note_pass_failure("repair_collapsed_tris/selfint", _e)
             overrides[nm] = Vr
     return overrides
+
+
+_BODY_CONFORM_NORMALS_CACHE: dict = {}
+
+
+def _body_conform_normals(weight: str):
+    """Per-vertex outward normals of the SAME body (and vertex order) that
+    _body_conform_ref serves for this weight, or None when that body cannot be
+    read or its skin frame is not the world frame. Cached. #covered-skin-target"""
+    if weight in _BODY_CONFORM_NORMALS_CACHE:
+        return _BODY_CONFORM_NORMALS_CACHE[weight]
+    out = None
+    try:
+        p = _find_ube_femalebody(weight) or _find_ube_femalebody("_1")
+        if p is not None and Path(p).is_file():
+            nf = _pynifly().NifFile(filepath=str(p))
+            body = max(nf.shapes, key=lambda s: len(s.verts))
+            g2s = _shape_global_to_skin(body)
+            if g2s is None or _g2s_is_identity(g2s):
+                out = _body_normals_or_compute(body)
+    except Exception:
+        out = None
+    _BODY_CONFORM_NORMALS_CACHE[weight] = out
+    return out
 
 
 def _body_leg_detail_ref(weight: str):

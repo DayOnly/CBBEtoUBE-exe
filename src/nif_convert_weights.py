@@ -840,6 +840,9 @@ def _conform_weights_core(nf, dst_path, weight,
     if ref is None:
         return False, 0
     _Vb, body_w, _body_bones, tree = ref  # chain test uses _is_skeleton_bone now
+    # #covered-skin-target, second site: see _match_rigid_leg_bend_to_body.
+    _body_nrm = (_nc()._body_conform_normals(weight)
+                 if _nc().COVERED_SKIN_TARGET else None)
     # Precise SMP-collider exclusion. The _CONFORM_SKIP_NAMES substring gate below
     # only catches name-tagged colliders ("...Col..."); re-weighting an UNTAGGED
     # per-triangle collider would re-introduce the exact over-graft the reskin pass
@@ -900,6 +903,25 @@ def _conform_weights_core(nf, dst_path, weight,
         # (c) HUGS the body (a flaring skirt/robe sits away -> excluded)
         if float((d < _nc()._CONFORM_FIT_PROX).mean()) < _nc()._CONFORM_FIT_FRAC:
             continue
+        # #covered-skin-target: the blend below aimed each vertex at the ONE
+        # nearest body vertex. On a coarse crotch panel that is the inner-thigh
+        # skin, while the panel also covers the pelvis-static cleft: the reported
+        # gusset's shipped row IS this blend (0.1 x author + 0.9 x nearest, to
+        # 0.02). Where a vertex covers skin, the clearance-weighted mean of that
+        # skin is the target instead.
+        _cov_target: dict = {}
+        if _body_nrm is not None and len(_body_nrm) == len(_Vb):
+            _zb, _xb = _Vb[:, 2], _Vb[:, 0]
+            _cband = ((_zb >= _nc()._COVER_Z_LO) & (_zb <= _nc()._COVER_Z_HI)
+                      & (np.abs(_xb) < _nc()._COVER_X))
+            _cover, _clr = _covered_skin_map(Vw, _Vb, _body_nrm, _cband,
+                                             _nc()._COVER_REACH)
+            for _gi, _bis in _cover.items():
+                if len(_bis) < _nc()._COVER_MIN_VERTS:
+                    continue
+                _ct0 = _covered_skin_target(_bis, _clr, body_w, _nc()._COVER_EPS)
+                if _ct0:
+                    _cov_target[_gi] = _ct0
         touched: "set" = set()
         removed: dict = {}   # bone -> vert indices that LOST it in the blend
         conf = 0
@@ -911,7 +933,7 @@ def _conform_weights_core(nf, dst_path, weight,
                 continue
             if any(w > 0.1 and not _is_skeleton_bone(b) for b, w in dv.items()):
                 continue  # custom-chain vert -> leave it (partition safety)
-            bd = body_w[idx[i]]
+            bd = _cov_target.get(i) or body_w[idx[i]]
             new = _nc()._conform_blend_vert(dv, bd, _nc()._CONFORM_BLEND, _nc()._CONFORM_DELTA)
             if new is None:
                 continue
@@ -1189,6 +1211,48 @@ def _source_bust_weight_map(src_nif_path, shape_name, n_verts):
     except Exception:
         return None
 
+def _covered_skin_target(cover, clearance, body_w, eps):
+    """The skin a garment vertex COVERS decides its split. `cover` lists the body
+    vertices whose nearest garment vertex this is; `clearance` holds each one's
+    outward distance to the vertex (negative = the vertex sits inside the skin
+    there, which counts as touching). Returns the 1/(max(clearance, 0) + eps)-
+    weighted mean of their weight rows, so the skin the panel would touch first
+    has the most say -- or None for an empty cover. Pure. #covered-skin-target"""
+    if not cover:
+        return None
+    acc: dict = {}
+    tot = 0.0
+    for b in cover:
+        c = float(clearance[b])
+        wgt = 1.0 / (max(c, 0.0) + eps)
+        tot += wgt
+        for bone, w in body_w[b].items():
+            acc[bone] = acc.get(bone, 0.0) + float(w) * wgt
+    if tot <= 0.0:
+        return None
+    return {bone: w / tot for bone, w in acc.items()}
+
+
+def _covered_skin_map(Vg, Vb, Nb, band, reach):
+    """Which body vertices each garment vertex COVERS: for every body vertex in
+    `band`, its nearest garment vertex within `reach`. Returns ({garment vertex:
+    [body vertices]}, clearance per body vertex = dot(garment - body, body normal),
+    NaN where uncovered). Pure. #covered-skin-target"""
+    from scipy.spatial import cKDTree
+    cover: dict = {}
+    clearance = np.full(len(Vb), np.nan)
+    idx = np.flatnonzero(band)
+    if len(idx) == 0 or len(Vg) == 0:
+        return cover, clearance
+    d, j = cKDTree(Vg).query(Vb[idx], k=1)
+    for bi, dist, gi in zip(idx, d, j):
+        if dist > reach:
+            continue
+        cover.setdefault(int(gi), []).append(int(bi))
+        clearance[bi] = float(np.dot(Vg[gi] - Vb[bi], Nb[bi]))
+    return cover, clearance
+
+
 def _match_rigid_leg_bend_to_body(dst_path, biped_slots: int = 0,
                                   src_nif_path=None) -> int:
     """Conform a RIGID plate's deformation to the UBE body so it deforms/bounces WITH the
@@ -1226,6 +1290,11 @@ def _match_rigid_leg_bend_to_body(dst_path, biped_slots: int = 0,
         return 0
     _Vb, body_w, _bones, tree = ref
     body_stbs, _body_ident = dref
+    # #covered-skin-target: the body's outward normals give each covered skin
+    # vertex a clearance; None (no body, or a non-world skin frame) means the
+    # six-nearest target is used everywhere, as before.
+    _body_nrm = (_nc()._body_conform_normals(weight)
+                 if _nc().COVERED_SKIN_TARGET else None)
     # Body leg-bone STB matrices (anchor + detail) -- inputs to the re-anchoring.
     body_mat: dict = {}
     body_proto = None
@@ -1394,6 +1463,23 @@ def _match_rigid_leg_bend_to_body(dst_path, biped_slots: int = 0,
             d_k = d_k[:, None]
             idx_k = idx_k[:, None]
         d = d_k[:, 0]                # nearest distance still gates the passes
+        # #covered-skin-target: the cover map is body -> garment (which garment
+        # vertex is nearest to each body vertex in the crotch/hip band), the
+        # inverse of the query above, so a coarse panel is charged with every
+        # skin vertex it passes over, not only the six nearest to it.
+        _cov_target: dict = {}
+        if _body_nrm is not None and len(_body_nrm) == len(_Vb):
+            _zb, _xb = _Vb[:, 2], _Vb[:, 0]
+            _cband = ((_zb >= _nc()._COVER_Z_LO) & (_zb <= _nc()._COVER_Z_HI)
+                      & (np.abs(_xb) < _nc()._COVER_X))
+            _cover, _clr = _covered_skin_map(Vw, _Vb, _body_nrm, _cband,
+                                             _nc()._COVER_REACH)
+            for _gi, _bis in _cover.items():
+                if len(_bis) < _nc()._COVER_MIN_VERTS:
+                    continue
+                _ct0 = _covered_skin_target(_bis, _clr, body_w, _nc()._COVER_EPS)
+                if _ct0:
+                    _cov_target[_gi] = _ct0
         # #chest-follow-ratio target, computed HERE (it used to sit below the
         # deferral) because the deferral decision needs it: "does this shape
         # already follow well enough" is a question about FOLLOW, and answering
@@ -1475,6 +1561,11 @@ def _match_rigid_leg_bend_to_body(dst_path, biped_slots: int = 0,
             #  - CHEST: matched, capped breast-jiggle graft (self-gates to the front).
             sgi = _nc()._leg_bend_strength(zi) if di <= _nc()._LEG_BEND_PROX else 0.0
             bgi = (_butt_match_strength(zi) if di <= _nc()._BUTT_PROX else 0.0)
+            # #covered-skin-target: a vertex with a covered-skin target is matched
+            # to THAT skin at full strength, whatever the z-ramp above says.
+            _ct = _cov_target.get(i) if di <= _nc()._BUTT_PROX else None
+            if _ct is not None:
+                bgi = max(bgi, _nc()._COVER_STRENGTH)
             cgi = (_chest_match_strength(zi) if (_do_chest and di <= _nc()._CHEST_PROX) else 0.0)
             if sgi <= 0.0 and bgi <= 0.0 and cgi <= 0.0:
                 continue
@@ -1486,7 +1577,7 @@ def _match_rigid_leg_bend_to_body(dst_path, biped_slots: int = 0,
                 need |= added
             if bgi > 0.0:
                 t2, jadded = _butt_match_vert(
-                    vw[i], bwi, strength=bgi,
+                    vw[i], _ct if _ct is not None else bwi, strength=bgi,
                     jiggle=_do_jiggle, jiggle_strength=_nc()._BUTT_JIGGLE_STRENGTH,
                     rebalance=_nc()._BUTT_REBALANCE)
                 t |= t2
@@ -2207,6 +2298,28 @@ def _match_limb_motion_to_body(dst_path, biped_slots: int = 0, *,
                     # qualified"; make it observable.
                     _note_pass_failure("_match_limb_motion_to_body/ray-pair", _re)
 
+            # #covered-skin-target: a vertex that covers skin is matched to that
+            # skin's shares, not to the ONE body vertex nearest to it (or the ray
+            # hit). This pass may only RAISE a family share, and raising a crotch
+            # panel toward the inner thigh's share is what re-armed the reported
+            # gusset (0.421 -> 0.463) after the reskin had already put it there.
+            _cov_t: dict = {}
+            if _nc().COVERED_SKIN_TARGET and body_tris is not None and len(body_tris):
+                try:
+                    _nb = _nc()._vertex_normals_from_tris(Vb, body_tris)
+                    _zb, _xb = Vb[:, 2], Vb[:, 0]
+                    _cband = ((_zb >= _nc()._COVER_Z_LO) & (_zb <= _nc()._COVER_Z_HI)
+                              & (np.abs(_xb) < _nc()._COVER_X))
+                    _cover, _clr = _covered_skin_map(wv, Vb, _nb, _cband,
+                                                     _nc()._COVER_REACH)
+                    for _gi, _bis in _cover.items():
+                        if len(_bis) < _nc()._COVER_MIN_VERTS:
+                            continue
+                        _t = _covered_skin_target(_bis, _clr, body_pv, _nc()._COVER_EPS)
+                        if _t:
+                            _cov_t[_gi] = _t
+                except Exception as _ce:
+                    _note_pass_failure("_match_limb_motion_to_body/covered-skin", _ce)
             G = np.zeros((n, len(shape_bones)), dtype=np.float64)
             for j, b in enumerate(shape_bones):
                 for vi, w in bw[b]:
@@ -2266,6 +2379,10 @@ def _match_limb_motion_to_body(dst_path, biped_slots: int = 0, *,
                 # divergence narrows the basis to what a stacked group shares,
                 # so the weak gate became reachable. Below the floor the vert
                 # keeps its authored row, which is the conservative answer.
+                for _gi, _t in _cov_t.items():
+                    for _j, _b in enumerate(shape_bones):
+                        if _b in _fv_basis:
+                            BF[_gi, _j] = _t.get(_b, 0.0)
                 _bs = BF.sum(axis=1)
                 _okb = _bs > max(_nc()._FULL_WEIGHT_BASIS_MIN, 1e-6)
                 BF[_okb] /= _bs[_okb, None]
@@ -2338,6 +2455,9 @@ def _match_limb_motion_to_body(dst_path, biped_slots: int = 0, *,
                 B = np.zeros((n, len(managed)), dtype=np.float64)
                 for k, b in enumerate(managed):
                     B[:, k] = [body_pv[int(i)].get(b, 0.0) for i in near]
+                for _gi, _t in _cov_t.items():
+                    for _k, _b in enumerate(managed):
+                        B[_gi, _k] = _t.get(_b, 0.0)
 
                 g_mass = G[:, midx].sum(axis=1)
                 b_mass = np.clip(B.sum(axis=1), 0.0, 1.0)
@@ -4447,6 +4567,28 @@ def compute_body_blend_skinning(
     inv_d = 1.0 / (knn_d + 1e-6)
     inv_d /= inv_d.sum(axis=1, keepdims=True)
 
+    # #covered-skin-target. This K-NN propagation is the FIRST decision on a
+    # body-swap garment's row (traced 2026-09-17: it wrote the reported gusset's
+    # R Thigh 0.421 / Pelvis 0.549 from the inner-thigh skin 0.65u away, while the
+    # same panel passes over the pelvis-static cleft 4u further on). A vertex
+    # that COVERS skin -- the body vertices whose nearest garment vertex it is --
+    # takes the clearance-weighted mean of THAT skin instead, inside the crotch
+    # and hip band. The K-NN answer stands everywhere else.
+    _cov_rows: dict = {}
+    if _nc().COVERED_SKIN_TARGET:
+        _nb = _nc()._body_normals_or_compute(body_shape)
+        if _nb is not None and len(_nb) == body_n:
+            _zb, _xb = body_verts[:, 2], body_verts[:, 0]
+            _cband = ((_zb >= _nc()._COVER_Z_LO) & (_zb <= _nc()._COVER_Z_HI)
+                      & (np.abs(_xb) < _nc()._COVER_X))
+            _cover, _clr = _covered_skin_map(armor_verts, body_verts, _nb, _cband,
+                                             _nc()._COVER_REACH)
+            for _gi, _bis in _cover.items():
+                if len(_bis) < _nc()._COVER_MIN_VERTS:
+                    continue
+                _w = 1.0 / (np.maximum(_clr[_bis], 0.0) + _nc()._COVER_EPS)
+                _cov_rows[_gi] = (np.asarray(_bis, dtype=np.int64), _w / _w.sum())
+
     # Dense body bone-weights for fast K-NN lookup.
     body_weights_dense: dict[str, np.ndarray] = {}
     for bn, pairs in (body_shape.bone_weights or {}).items():
@@ -4512,7 +4654,10 @@ def compute_body_blend_skinning(
         if _nc().RESKIN_EXCLUDE_SCALE_BONES and _is_scale_bone(bn):
             continue
         # K-NN propagation
-        propagated = (body_arr[knn_idx] * inv_d).sum(axis=1) * blend
+        propagated = (body_arr[knn_idx] * inv_d).sum(axis=1)
+        for _gi, (_bis, _w) in _cov_rows.items():
+            propagated[_gi] = float((body_arr[_bis] * _w).sum())
+        propagated *= blend
         if not np.any(propagated > 1e-7):
             continue
         if bn in final_dense:
