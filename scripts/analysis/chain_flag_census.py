@@ -52,6 +52,7 @@ sys.path.insert(0, str(_REPO))
 sys.path.insert(0, str(_REPO / ".pynifly"))
 
 import numpy as np                                        # noqa: E402
+from scipy.spatial import cKDTree                         # noqa: E402
 from scripts.analysis import standoff_audit as sa                  # noqa: E402
 # The bust band and its vert floor are IMPORTED, not restated. Two definitions of
 # one concept drift -- `clipping_report` and `ClipTester` disagreed for a whole
@@ -68,7 +69,7 @@ def _world(s):
     return nc._verts_skin_to_world(np.asarray(s.verts, np.float64), g2s)
 
 
-def _visible(nf, colliders):
+def _visible(nf, colliders, tree=None):
     """The rendered garment shapes, as the fit measurement unions them."""
     out = []
     for s in nf.shapes:
@@ -80,8 +81,12 @@ def _visible(nf, colliders):
         if not any(v for v in (s.textures or {}).values()):
             continue                                  # not rendered
         try:
-            out.append((_world(s),
-                        np.asarray(s.tris, np.int64).reshape(-1, 3)))
+            V = _world(s)
+            if tree is not None:
+                # "renders" does NOT stand in for placing the shape: 78 of the
+                # 84 double-transformed shapes in the shipped pack render.
+                V, _fr = sa.pick_frame(np.asarray(s.verts, np.float64), V, tree)
+            out.append((V, np.asarray(s.tris, np.int64).reshape(-1, 3)))
         except Exception:
             continue
     return out
@@ -94,10 +99,11 @@ def measure(path):
     body = next((s for s in nf.shapes if s.name == "BaseShape"), None)
     if body is None:
         return {"skip": "no injected BaseShape"}
-    parts = _visible(nf, set())
+    # The body is placed FIRST, so the garments can be placed against it.
+    bV = _world(body)
+    parts = _visible(nf, set(), cKDTree(bV))
     if not parts:
         return {"skip": "no visible garment shape"}
-    bV = _world(body)
     bT = np.asarray(body.tris, np.int64).reshape(-1, 3)
     bN = np.asarray(body.normals, np.float64)
     bN = bN / np.clip(np.linalg.norm(bN, axis=1, keepdims=True), 1e-9, None)

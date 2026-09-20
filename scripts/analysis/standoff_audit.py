@@ -229,6 +229,42 @@ class ClipTester:
         return o[np.isfinite(o)]
 
 
+AGREE_U = 0.25           # closer than this and the two frames agree
+
+
+def pick_frame(raw, world, tree, *, agree_u: float = AGREE_U):
+    """(verts, which) -- whichever candidate frame actually lands on `tree`.
+
+    `_verts_skin_to_world` is a NORMALIZER, not a conversion: a shape already
+    stored in world carries an identity transform and comes back untouched. The
+    trap is that the converter's OUTPUT is not uniformly one frame, so neither
+    "always transform" nor "never transform" is right -- and both failures are
+    silent, because each produces a plausible number rather than an error.
+
+    Measured 2026-09-20 over the shipped pack (7246 shapes in 2605 NIFs): 534
+    carry a NON-IDENTITY transform. Of those, 403 genuinely store skin verts
+    and NEED the call, 47 land in the same place either way, and 84 already sit
+    on the body -- transforming those throws them a median 11.3u, max 2496.7u,
+    off it. So branching on the transform is wrong 84 times; branching on
+    proximity is wrong none.
+
+    NO NAME FILTER SUBSTITUTES FOR THE MEASUREMENT. Of those 84, ZERO match the
+    proxy-name idiom and zero are BaseShape: they are `robe`, `Boots`,
+    `Gauntlets`, `ArmorF`. The class is not colliders.
+
+    Frames that AGREE are not ambiguous -- either will do. A previous guard that
+    excluded "ambiguous" shapes cut a 20-shape sample to 3, because agreement
+    was being read as disagreement.
+    """
+    raw = np.asarray(raw, np.float64)
+    world = np.asarray(world, np.float64)
+    dr = float(np.median(tree.query(raw)[0]))
+    dw = float(np.median(tree.query(world)[0]))
+    if abs(dr - dw) < agree_u:
+        return raw, "agree"
+    return (raw, "raw") if dr < dw else (world, "world")
+
+
 def output_nifs(root, weights: str = "both", exclude_first_person: bool = True):
     """Every converted NIF under `root`, BOTH weight files by default.
 
