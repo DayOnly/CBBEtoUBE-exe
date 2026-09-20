@@ -770,4 +770,44 @@ PAIRS = (
          tests=('tests/test_lane_workflow.py',),
          expect=('test_onboard_configures_the_clone_and_reports_what_it_cannot_supply',),
     ),
+    # #tool-frame-floors (2026-09-20): the harness guards. These mutate a
+    # MEASUREMENT tool, not the converter, so no in-game verdict is owed --
+    # none of them can move a vertex. Both directions of the frame chooser are
+    # armed separately: a pair arming only one would pass for a chooser
+    # hardcoded to the other, which is exactly the bug being guarded.
+    Pair('TFF-a', 'the frame chooser always transforms, as three tools used to',
+         edits=(
+             ('scripts/analysis/standoff_audit.py', '    return (raw, "raw") if dr < dw else (world, "world")', '    return world, "world"  # MUTATED: always transform', 1),
+         ),
+         tests=('tests/test_frame_chooser.py',),
+         expect=('test_a_world_stored_shape_with_a_stale_transform_keeps_its_raw_verts',),
+    ),
+    Pair('TFF-b', 'the frame chooser never transforms, stranding 403 shapes',
+         edits=(
+             ('scripts/analysis/standoff_audit.py', '    return (raw, "raw") if dr < dw else (world, "world")', '    return raw, "raw"  # MUTATED: never transform', 1),
+         ),
+         tests=('tests/test_frame_chooser.py',),
+         expect=('test_a_skin_stored_shape_is_transformed',),
+    ),
+    Pair('TFF-c', 'the coverage floor is present but can never fire',
+         edits=(
+             ('scripts/analysis/bust_verdict.py', 'CTRL_MIN_COVERED = 1.0', 'CTRL_MIN_COVERED = 0.0  # MUTATED: dead guard', 1),
+         ),
+         tests=('tests/test_tool_exclusion_guards.py',),
+         expect=('test_a_garment_covering_nothing_is_a_control_failure', 'test_the_floor_is_above_zero'),
+    ),
+    Pair('TFF-d', 'the proxy rule drops its rendering half and keeps the token',
+         edits=(
+             ('scripts/analysis/survey_motion_clipping.py', '    return bool(PROXY_TOKEN.search(nm)) and not renders(s)', '    return bool(PROXY_TOKEN.search(nm))  # MUTATED: token alone', 1),
+         ),
+         tests=('tests/test_tool_exclusion_guards.py',),
+         expect=('test_a_rendered_shape_is_never_a_proxy_however_it_is_named',),
+    ),
+    Pair('TFF-e', 'the proxy rule stops exempting collar',
+         edits=(
+             ('scripts/analysis/survey_motion_clipping.py', '    if "collar" in nm.lower():', '    if False:  # MUTATED: no collar exemption', 1),
+         ),
+         tests=('tests/test_tool_exclusion_guards.py',),
+         expect=('test_collar_is_exempt',),
+    ),
 )

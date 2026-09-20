@@ -129,6 +129,21 @@ def _world(s):
     return nc._verts_skin_to_world(np.asarray(s.verts, np.float64), g2s)
 
 
+def coverage_failure(covered_pct):
+    """The COVERAGE control, as a predicate: the message, or None if it passes.
+
+    A predicate rather than an inline `if` so it can be judged without a NIF
+    and a body on disk -- a control nothing can test is the same kind of
+    decoration as a control that cannot fire.
+    """
+    if covered_pct is None or covered_pct >= CTRL_MIN_COVERED:
+        return None
+    return (f"COVERAGE control: the garment covers only {covered_pct:.1f}% of "
+            f"the bust band (floor {CTRL_MIN_COVERED:.1f}%) -- it is not over "
+            f"the skin it is being judged against, so 0.00% clipping means NOT "
+            f"MEASURED, not clean")
+
+
 def _upright(s):
     """The body's verts in whichever frame stands it at human height.
 
@@ -361,12 +376,9 @@ def analyse(path, garment_name=None, label="", cap=900, resolution=True):
     # verts, passed all four controls, and returned "clean at rest ... next
     # step is an in-game A/B" at exit 0. The frame fix removes that cause; this
     # removes the CLASS, whatever the cause.
-    if rest["covered_pct"] is not None and rest["covered_pct"] < CTRL_MIN_COVERED:
-        fails.append(
-            f"COVERAGE control: the garment covers only "
-            f"{rest['covered_pct']:.1f}% of the bust band (floor "
-            f"{CTRL_MIN_COVERED:.1f}%) -- it is not over the skin it is being "
-            f"judged against, so 0.00% clipping means NOT MEASURED, not clean")
+    cov_fail = coverage_failure(rest["covered_pct"])
+    if cov_fail:
+        fails.append(cov_fail)
     if so["n"]:
         print(f"    STANDOFF  over covered skin: median {so['median']:.2f}u  "
               f"p90 {so['p90']:.2f}u  max {so['max']:.2f}u  ({so['n']} verts)")
