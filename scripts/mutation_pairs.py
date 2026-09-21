@@ -75,8 +75,13 @@ PAIRS = (
     ),
     Pair('SEG-e', 'the frame is assumed instead of chosen by evidence',
          edits=(
+             # Re-anchored when this third copy of the rule was folded into
+             # `standoff_audit.pick_frame`. It still judges the same thing from
+             # this tool's side -- that seat_error CHOOSES rather than assumes
+             # -- while TFF-a/TFF-b arm the shared rule itself, in both
+             # directions.
              ('scripts/analysis/seat_error_vs_author.py',
-              'return (raw, "raw") if dr <= dw else (w, "world")',
+              'return sa.pick_frame(raw, w, tree, agree_u=_AGREE_U)',
               'return (w, "world")  # MUTATED: frame assumed', 1),
          ),
          tests=('tests/test_seat_error_transform_guard.py',),
@@ -861,14 +866,17 @@ PAIRS = (
     # hardcoded to the other, which is exactly the bug being guarded.
     Pair('TFF-a', 'the frame chooser always transforms, as three tools used to',
          edits=(
-             ('scripts/analysis/standoff_audit.py', '    return (raw, "raw") if dr < dw else (world, "world")', '    return world, "world"  # MUTATED: always transform', 1),
+             # Re-anchored on the DECIDING branch when `with_margin` split the
+             # single return into three. Same mutation in effect: raw is never
+             # chosen, so every non-agreeing shape is transformed.
+             ('scripts/analysis/standoff_audit.py', '    if dr < dw:', '    if False:  # MUTATED: never picks raw, always transforms', 1),
          ),
          tests=('tests/test_frame_chooser.py',),
          expect=('test_a_world_stored_shape_with_a_stale_transform_keeps_its_raw_verts',),
     ),
     Pair('TFF-b', 'the frame chooser never transforms, stranding 403 shapes',
          edits=(
-             ('scripts/analysis/standoff_audit.py', '    return (raw, "raw") if dr < dw else (world, "world")', '    return raw, "raw"  # MUTATED: never transform', 1),
+             ('scripts/analysis/standoff_audit.py', '    if dr < dw:', '    if True:  # MUTATED: always picks raw, never transforms', 1),
          ),
          tests=('tests/test_frame_chooser.py',),
          expect=('test_a_skin_stored_shape_is_transformed',),

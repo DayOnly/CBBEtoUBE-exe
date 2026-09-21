@@ -73,6 +73,7 @@ _lay = paths.discover_layout()
 paths.export_to_env(_lay)
 from pyn import pynifly                                  # noqa: E402
 from src import nif_convert as nc                        # noqa: E402
+from scripts.analysis import standoff_audit as sa        # noqa: E402
 
 # NO HARD-CODED MODLIST PATH. This repo is public, and the deployed output dir
 # moves with the MO2 instance -- resolve it, or take --pack.
@@ -130,13 +131,14 @@ def pick_frame(shape, tree):
         w = nc._verts_skin_to_world(raw, nc._shape_global_to_skin(shape))
     except Exception:
         return raw, "raw", float("inf")
-    dr = float(np.median(tree.query(raw)[0]))
-    dw = float(np.median(tree.query(w)[0]))
-    if abs(dr - dw) < AGREE_U:
-        return raw, "agree", float("inf")
-    if dr <= dw:
-        return raw, "raw", dw / max(dr, 1e-6)
-    return w, "world", dr / max(dw, 1e-6)
+    # THE RULE LIVES IN `standoff_audit`, ONCE. This file is where the rule was
+    # first worked out, and its docstring above still records why -- but a rule
+    # kept in three places is one that gets changed in one of them. The margin
+    # this file needs for its AMBIGUOUS exclusion is what `with_margin` is for.
+    # Byte-identical: the copy read `dr <= dw` where the shared one reads
+    # `dr < dw`, and that branch is unreachable -- an exact tie has
+    # `abs(dr - dw) == 0`, which the agree test takes first.
+    return sa.pick_frame(raw, w, tree, agree_u=AGREE_U, with_margin=True)
 
 
 def source_for(rel: Path):
