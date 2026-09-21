@@ -998,3 +998,58 @@ morph cap still exists as a concept in this codebase**. `sliderset_gen:413`
 still orders shapes so that "if the per-NIF morph cap ever fires, low-impact
 rigid props are dropped first", so something believes in it. Resolve that
 before assigning a value.
+
+# 2026-09-20 — conform CANNOT manufacture the too-close population it is blamed for
+
+Read-only follow-up to the open caveat on the crotch-band lead, which read:
+*"reading `conform_to_source_standoff` at defaults it should be a no-op on
+already-too-close verts, so either the stage covers more or the two measure
+offset differently; resolve before editing that function."*
+
+**Resolved: the two measure offset differently. The stage does not cover more.**
+
+`authored_offset_ledger` counts "too CLOSE" as `err < 0`, where `err = ours −
+authored`. It attributes the growth 24.1% → 64.8% to the `conform` stage. But at
+defaults the arithmetic bounds the result:
+
+```
+tight   = max(min(s_src, s_cur), min_clear_v)        # min_clearance = 0.25
+blend_v = blend_tight + _b*(1 - blend_tight)         # blend_tight = 0.3, so blend_v <= 1
+target  = s_cur + (tight - s_cur) * blend_v
+move    = min(target - s_cur, 0.0)                   # pull IN only
+```
+
+When `move < 0` we need `tight < s_cur`, which forces `min(s_src, s_cur) = s_src`,
+hence `tight >= s_src`; and `blend_v <= 1` gives `target >= tight`. So
+**`target >= s_src` always** — conform can never land a vertex closer to the body
+than the author's own standoff, as conform measures it.
+
+Brute-forced over 2,000,000 random `(s_src, s_cur)` pairs on `[-2, 6]u`, replicating
+`nif_convert_fitgeom.py:1469-1537` exactly:
+
+| | |
+|---|---|
+| verts conform MOVED | 920,618 of 2,000,000 (46.0%) |
+| of those, ending closer than the author (`err_after < 0`) | **0** |
+| worst `err_after` among moved verts | **+0.000000** (bound is tight, never crossed) |
+| pushed from not-too-close INTO too-close | **0** |
+| already too close, and moved | **0** — max `abs(move)` = 0.000000 |
+
+The bust anti-poke block further down the same function pushes **out**, so it cannot
+create `err < 0` either, and `conform_margin` only raises `tight`.
+
+**So do NOT edit `conform_to_source_standoff` on the strength of the ledger's
+attribution.** The number to chase is the disagreement between the two
+measurements, not the function. Candidates, in the order they are cheap to check:
+
+1. conform derives `s_src` from its **own** nearest-neighbour correspondence
+   (`cKDTree(src_body_verts).query(src_cloth)`); the ledger pairs independently, so
+   the same vertex can carry two different "authored" values.
+2. the ledger measures the **shipped** garment — after anti-poke, panel rigidity and
+   coherence repair — not conform's immediate output.
+3. the stage dump labelled `conform` may bracket neighbouring passes, so the label
+   attributes more than the function.
+
+This does not touch the finding itself: we still sit −0.432u deeper at p05 over
+n=97. It removes one candidate mechanism, and it removes the temptation to "fix" a
+function whose arithmetic already forbids the defect.
