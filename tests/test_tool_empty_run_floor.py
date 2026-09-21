@@ -134,3 +134,185 @@ def test_the_fatal_guard_is_reachable_and_not_dead(tmp_path):
     _rc, out = _run("scripts/analysis/scan_nude_skin_chain.py",
                     env_extra={"CBBE2UBE_MODS_ROOT": str(tmp_path)})
     assert "UBE_AllRace.esp providers on disk: 0" in out
+
+
+# ------------------------------------------------- disable_unconstrained_smp
+_GOOD_XML = ('<system><per-vertex-shape name="a">'
+             '<generic-constraint/></per-vertex-shape></system>')
+
+
+def test_smp_patcher_separates_bad_path_from_nothing_found(tmp_path):
+    """rglob on a missing dir yields nothing and raises nothing.
+
+    A typo therefore read exactly like a pack with no crash pattern left.
+    Three outcomes must be three exit codes.
+    """
+    rc_bad, _ = _run("scripts/disable_unconstrained_smp.py", tmp_path / "nope")
+    assert rc_bad == 2, "a path that does not exist is a usage error"
+
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    rc_empty, out = _run("scripts/disable_unconstrained_smp.py", empty)
+    assert rc_empty == 3, "examined nothing is not a clean verdict"
+    assert "examined NO xml" in out
+
+
+def test_smp_patcher_still_exits_zero_on_a_genuinely_clean_pack(tmp_path):
+    """THE CONTROL FOR THIS WHOLE LANE.
+
+    A guard that turns healthy runs red is worse than the bug. A directory
+    holding a properly constrained XML must still be a pass.
+    """
+    (tmp_path / "ok.xml").write_text(_GOOD_XML, encoding="utf-8")
+    rc, out = _run("scripts/disable_unconstrained_smp.py", tmp_path)
+    assert rc == 0, out
+    assert "examined=1" in out, "the population is stated even when clean"
+
+
+# ------------------------------------------------------- strip_nude_handfeet
+def test_strip_usage_error_is_not_success():
+    rc, out = _run("scripts/strip_nude_handfeet.py")
+    assert rc == 2
+    assert "need esp path" in out
+
+
+# -------------------------------------------------- build_body_collider_proxy
+def test_collider_batch_over_no_candidates_is_not_success(tmp_path):
+    """"batch: 0 armors ... processed 0 NIFs" used to exit 0."""
+    rc_bad, _ = _run("scripts/build_body_collider_proxy.py",
+                     "--batch", tmp_path / "nope")
+    assert rc_bad == 2
+    (tmp_path / "ok.xml").write_text(_GOOD_XML, encoding="utf-8")
+    rc, out = _run("scripts/build_body_collider_proxy.py", "--batch", tmp_path)
+    assert rc == 3
+    assert "Not a verdict about that pack" in out
+
+
+@pytest.mark.parametrize("nif_msg,xml_msg,broken", [
+    ("ok: VirtualBody 2500v/4800t", "xml-repointed", False),
+    ("ok: VirtualBody 2500v/4800t", "xml-not-baseshape-collider", True),
+    ("ok: VirtualBody 2500v/4800t", "no-xml", True),
+    ("skip: no BaseShape", "xml-repointed", True),
+    # the ordinary re-run: both halves already done, neither changes
+    ("skip: already has VirtualBody", "xml-not-baseshape-collider", False),
+])
+def test_half_applied_armor_is_detected(nif_msg, xml_msg, broken):
+    """A NIF with a proxy whose XML still names BaseShape still OOB-crashes.
+
+    Both halves must land together or the armor is in the exact state the
+    tool exists to remove, while the tool reports having done its job.
+    """
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "_bcp", _REPO / "scripts" / "build_body_collider_proxy.py")
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    assert m.pair_is_broken(nif_msg, xml_msg) is broken
+
+
+# ------------------------------------------------------------ augment_nude_tri
+class _Morph:
+    def __init__(self, name, offsets):
+        self.name, self.offsets = name, offsets
+
+
+class _Shape:
+    def __init__(self, name, morphs):
+        self.name, self.morphs = name, morphs
+
+
+class _Tri:
+    def __init__(self, shapes):
+        self.shapes = shapes
+        self.saved = False
+
+    def save(self, _p):
+        self.saved = True
+
+
+@pytest.fixture()
+def ant_mod():
+    """Import the tool WITHOUT letting it keep pytest's stdout.
+
+    Function-scoped on purpose: the save/restore has to pair with ONE test.
+    At module scope it restored the FIRST test's capture object, which pytest
+    closes at that test's end, and every later test then wrote to a closed
+    file ("I/O operation on closed file" during teardown).
+
+    augment_nude_tri rebinds `sys.stdout` to a TextIOWrapper at import. Left
+    alone that silently disables output capture for the rest of the session --
+    which is how the first version of these tests came to assert on an empty
+    string while only the exit code was really being checked. Both the
+    no-seam path and the nothing-augmented path exit 3, so without the
+    message the test could not tell which guard had fired.
+    """
+    import sys as _sys
+    saved = _sys.stdout
+    try:
+        from scripts import augment_nude_tri as ant
+    finally:
+        _sys.stdout = saved
+    return ant
+
+
+def _stub_augment(monkeypatch, tmp_path, part_offset, ant):
+    """Wire the tool onto fake meshes `part_offset` units from the body."""
+    import io as _io
+    import sys as _sys
+    import numpy as np
+
+    pdir = tmp_path / "Hands"
+    pdir.mkdir()
+    (pdir / "h.tri").write_bytes(b"x")     # only existence is checked
+    (pdir / "h_1.nif").write_bytes(b"x")
+
+    body = _Tri([_Shape("Body", [_Morph("SliderA", [(0, 1.0, 0.0, 0.0),
+                                                    (1, 1.0, 0.0, 0.0)])])])
+    part = _Tri([_Shape("Hand", [])])
+    body_v = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
+    part_v = body_v + np.array([0.0, 0.0, float(part_offset)])
+
+    monkeypatch.setattr(ant.tri_mod.TriFile, "load",
+                        staticmethod(lambda p: body if "h.tri" not in str(p)
+                                     else part))
+    monkeypatch.setattr(ant, "nif_verts",
+                        lambda p, want=None: ("Body", body_v)
+                        if "h_1" not in str(p) else ("Hand", part_v))
+    monkeypatch.setattr(ant, "PARTS", {"HANDS": (pdir, "h")})
+    monkeypatch.setattr(ant, "BODY_TRI", tmp_path / "b.tri")
+    monkeypatch.setattr(ant, "BODY_NIF", tmp_path / "b_1.nif")
+    monkeypatch.setattr(ant.sys, "argv", ["augment_nude_tri.py", "--apply"])
+    # print() resolves sys.stdout at call time, so this captures the tool's
+    # output despite the import-time rebinding.
+    buf = _io.StringIO()
+    monkeypatch.setattr(_sys, "stdout", buf)
+    return part, buf
+
+
+def test_no_seam_coincidence_refuses_to_write(tmp_path, monkeypatch, ant_mod):
+    """seam_n WAS PRINTED AND IGNORED -- the control this method rests on.
+
+    With the part 40u from the body nothing is seam-coincident, every
+    transferred delta is ~0, every slider prunes, and --apply rewrote the
+    .tri unchanged and printed WROTE. That reads as a fix.
+    """
+    part, buf = _stub_augment(monkeypatch, tmp_path, 40.0, ant_mod)
+    with pytest.raises(SystemExit) as ex:
+        ant_mod.main()
+    assert ex.value.code == 3
+    out = buf.getvalue()
+    assert out, "captured nothing -- the test cannot tell which guard fired"
+    assert "NO seam-coincident vert" in out, out
+    assert "WROTE" not in out
+    assert part.saved is False, "must not rewrite the .tri on a no-op transfer"
+
+
+def test_a_coincident_seam_still_transfers_and_writes(tmp_path, monkeypatch,
+                                                      ant_mod):
+    """The control: the guard must not block the case it exists to protect."""
+    part, buf = _stub_augment(monkeypatch, tmp_path, 0.0, ant_mod)
+    ant_mod.main()
+    out = buf.getvalue()
+    assert "WROTE" in out, out
+    assert part.saved is True
+    assert "parts augmented: 1/1" in out

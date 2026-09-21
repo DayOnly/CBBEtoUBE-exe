@@ -29,10 +29,15 @@ Reports per-UBE-race coverage for slots 32 (body) / 33 (hands) /
 """
 from __future__ import annotations
 import os
-import io, struct, sys, glob
+import struct, sys, glob
 from pathlib import Path
 
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+# See the note in augment_nude_tri.py: wrapping sys.stdout.buffer makes the
+# wrapper close that buffer on GC, under whoever else is holding it.
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+except (AttributeError, ValueError):
+    pass
 # parent.parent was `scripts/`, which owns neither src/ nor .pynifly/.
 _REPO = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(_REPO))
