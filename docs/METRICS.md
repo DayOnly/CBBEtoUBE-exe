@@ -1486,3 +1486,170 @@ neither is imported anywhere. They run as `python <path> [pack]`, so a CLI
 before/after capture IS possible for them.
 
 KNOWN_HALF_PACK: **21 -> 3.** HPK-a and HPK-b both CAUGHT.
+
+# 2026-09-21 — weight-aware reference bodies: the gate now sees weight 0
+
+The half-pack work (above) left seven tools DECLARED as blind spots: each
+measured every file against a reference body pinned to weight 1, so widening
+its population would have scored `_0` garments in the wrong frame. Most of them
+traced to one module. This fixes the root cause, converts the tools that
+depended on it, and teaches the acceptance gate to judge weight 0.
+
+## The root cause, and the rule that replaces it
+
+`canonical_body.canonical_ube()` / `canonical_cbbe()` took no weight and cached
+ONE body each. They now take `weight="_1"` (default, unchanged) or `"_0"`, and
+resolve weight 0 through one rule, `weight_sibling`:
+
+* **Weight 0 is the SIBLING of the chosen weight-1 file, from the same
+  directory** -- not a second lookup. Each body is chosen by a rule (3BA first,
+  shortest path; first mod with a tangent output); running it again for weight
+  0 can land on a different preset in a modlist with two body mods, which is
+  exactly what `nif_convert_bodyrefs._find_user_preset_body` does (an
+  independent glob per weight).
+* **It never falls back.** A missing sibling raises. `nif_convert.
+  _weight_matched_ube_ref` DOES return the weight-1 body when the sibling is
+  missing -- right for the converter, which must inject something; wrong for a
+  measurement, which would print a believable number in the wrong frame.
+
+Control: the default calls are byte-identical before and after. And each
+weight-0 body is a genuine variant, not a stray copy -- identical topology,
+different geometry:
+
+    CBBE  18436/18436 verts, all move, max 1.74u, mean radius 10.00 -> 9.47
+    UBE   29298/29298 verts, 1800 move, max 0.91u, mean radius  9.57 -> 9.56
+
+That also bounds what the old pin cost on this pack: up to 1.74u over the whole
+SOURCE body, up to 0.91u over ~6% of the CONVERTED body.
+
+**Copy-path bodies use the converter's own resolver instead.** For a copy-path
+garment the right reference is the body the converter FITTED it to, and every
+tier of `nc._find_ube_femalebody(weight)` is weight-specific (it never returns
+the other weight). On this pack it resolves the same file as the sibling rule;
+all four UBE resolutions share one directory.
+
+## Two gate instruments, and the gate
+
+The weight-1 output of both scorers is byte-for-byte unchanged, because
+`acceptance.py` parses it. Weight 0 follows in its own block, worded so the
+gate's patterns cannot land on it -- and the patterns are different per tool:
+
+* `nipple_clearance` -- the gate takes the FIRST `^control|candidate` row and
+  the FIRST `tighter N`, and ANY "0/0 IS NOT A PASS" marks the whole tip row
+  unmeasured. Printed in the weight-0 block, that phrase would switch the tip
+  gate off for weight 1 too.
+* `bust_gap_score` -- the dangerous one. The parser's section is STICKY and its
+  LAST row match wins, so a matching weight-0 row would silently OVERWRITE a
+  gated weight-1 value.
+
+Both use a `w0 ` label prefix and their own wording, pinned by tests that run
+the REAL parser. Measured on the shipped pack (control = candidate = the pack):
+
+    bust_gap_score            weight 1    weight 0
+      population (shapes)        677         675
+      author standoff p50     1.104u      1.310u
+      gap to author p50       +0.624u     +0.325u
+      penetrating verts         3410        3464   (+1.6%)
+
+    nipple_clearance          weight 1    weight 0
+      pieces covering tip        424         422
+      tip clearance p50       1.379u      1.221u   (-11%)
+      tip clearance p05       0.296u      0.216u   (-27%)
+
+In both the weight-1 report is BYTE-IDENTICAL before and after, and fed through
+the real parser the AFTER output yields the same weight-1 keys as the BEFORE
+output (8 and 7 keys).
+
+**The gate now judges weight 0** under the same rules as weight 1: bust gap per
+path, bust-band penetration, tip p50 / p05, pieces with less tip room, worst
+single tip. A candidate worse at weight 0 ALONE fails. An unmeasured weight
+reads SKIPPED with its reason -- never ok, never FAIL -- but a weight-0 row that
+simply vanished still reads UNPARSED and fails, because treating "no weight-0
+keys" as SKIPPED would let a silent parse failure through.
+
+## collect_fit_dataset
+
+Both weights, first-person kept (it is a column), each against its own body
+via the converter's resolver. 2897 -> 5794 shape rows; all 2897 weight-1 rows
+identical to the pre-change run with the new `weight` field removed. Paired by
+garment and shape (2788 pairs; 109 shapes carry different names at the two
+weights and cannot pair):
+
+                       median w1   median w0
+    bust clear p10       1.028u      0.970u
+    bust clear p50       1.735u      1.626u
+    butt clear p50       1.239u      1.229u
+
+## source_delta_census
+
+Both sides of the delta posed on the file's OWN weight: `canonical_cbbe(w)` for
+the source, `canonical_ube(w)` for the converted side. Population: 235 armours
+per weight -> 470 files, 468 scored (one per weight has no converted garment
+shapes), 0 skipped for want of a body. CONTROL: all 234 weight-1 rows are
+IDENTICAL to the pre-change run with the new `weight` field removed.
+
+                              weight 1    weight 0
+    scored                       234         234
+    regressions > 5pt             55          59
+      > 8pt / > 10pt / > 15pt  34/25/16    34/28/16
+    gated clean                   52          49
+    no matched source             13          14
+
+**No weight-0 penalty in pose-induced exposure.** Paired by garment (234
+pairs), 44 regress at both weights, 15 at weight 0 only, 11 at weight 1 only --
+and 8 of those 15 and 6 of those 11 sit within 1pt of the 5pt line. Over the
+167 pairs with a source at both weights, worst delta w0 - w1 has median
++0.03pt; weight 0 is worse in 85, better in 76 (sign test p = 0.53).
+
+**The one region that moves is the source side learning to see the bust.**
+breast_side is the worst region of 3 weight-1 regressions and 14 weight-0 ones,
+but the CONVERTED side does not change between weights (median conv w0 - w1
+0.00pt, coverage 287 -> 287 breast, 300 -> 300 breast_side). The SOURCE side
+does, and through its denominator: coverage is a ray test (a body vert is
+covered when its outward ray hits the garment), and at weight 1 the CBBE
+reference body pokes through most source garments at the bust.
+
+    garments with < 150 of 300 sampled verts covered, source side
+                     weight 1    weight 0     median covered w1 -> w0
+    breast            98/143      12/143           83 -> 291
+    breast_side       67/148       6/148          157 -> 295
+
+So weight 0 is the first half where both sides see the whole bust, and the
+breast_side rise is where the census can now look, not evidence the converter
+does worse at weight 0. The flip side is OPEN: the weight-1 bust deltas have
+always been measured over a minority of bust verts on the source side -- the
+ones the reference body happens not to poke through -- so weight-1 bust
+regressions may be undercounted. The weight-1 CBBE body is the larger of the two
+(mean radius 10.00 vs 9.47); whether it is larger than the bodies those garments
+were built for is not measured.
+
+`--limit` counts FILES, so a limited run now covers about half as many
+garments, each at both weights. The header's source-body label printed
+`meshes` (four levels up); the mod folder is five.
+
+## What all four instruments say about weight 0
+
+Every tool that can see it agrees: **at weight 0 the bust sits closer to the
+body** -- less tip room (-11% p50, -27% p05), lower bust clearance, slightly more
+penetration -- while sitting closer to what the author built. The butt barely
+moves. `find_overinflation` (standoff) is still the exception from the half-pack
+work: weight 0 is not the worse half there.
+
+## Method notes
+
+* **Exit codes must stay literal in `main()`.** `tool_map` reads a tool's gate
+  column from the int returns of `main`; a refactor that passed `rc` through
+  silently dropped exit 1 from `bust_gap_score`'s row. Caught on regeneration.
+* **`git stash --keep-index` recorded a staged file too** and conflicted on pop.
+  Each commit's tree was then proved in a temporary detached worktree holding
+  exactly the staged contents, which cannot collide with the working tree.
+
+## Not done yet
+
+* `band_class_census` (five acceptance rows) -- the code path is clear (template
+  per weight, the preset's `small` side for weight 0, `--every` stepping by
+  garment pair), but its runs need `CBBE2UBE_CLIP_PRESET`, a machine-local
+  BodySlide preset that is not configured on this machine, and choosing one is
+  the user's call.
+* `single_swing_census` / `snugness_census` feed the open crotch-band lead;
+  widening them would move numbers it has recorded. Left declared.

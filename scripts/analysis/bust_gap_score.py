@@ -60,29 +60,25 @@ NOTHING HERE IS HARDCODED TO ONE MACHINE OR ONE MOD. The bodies come from
 the BSA index -- so a source shipped inside an archive is scored rather than
 silently dropped.
 
-WEIGHTS: `_1` only -- and that is a DECLARED BLIND SPOT, not a correct scoping.
-It is defect 1 above again, on the weight axis: this scores shapes and counts
-penetrating VERTICES, so a `_0` mesh (separately authored, fitted by its own
-run of the clearance code) can be independently defective, and a converter
-change landing mostly on `_0` geometry reads here as "NOT FIRED". It is the
-worse half for this exact quantity: `standoff_audit.output_nifs` records
-bust-front clipping at 4.52% on weight 1 against 9.48% on weight 0.
+WEIGHTS: both weights, each against its OWN bodies, reported SEPARATELY. It is
+defect 1 above again, on the weight axis: this scores shapes and counts
+penetrating VERTICES, and a `_0` mesh is separately authored and fitted by its
+own run of the clearance code, so it is scored too -- otherwise a change landing
+mostly on `_0` geometry reads as "NOT FIRED".
 
-It is NOT fixed by swapping the glob for `output_nifs`, because two references
-are pinned to weight 1 and would silently corrupt every `_0` row:
-  * the AUTHOR body -- `canonical_body.canonical_cbbe` globs
-    `femalebody_1.nif` only, so a `_0` garment would be read against a weight-1
-    author body and the whole `gap` column would be in the wrong frame;
-  * the COPY-PATH body -- `_body_for(nf, "_1")` in `measure_arm`, so every
-    copy-path `_0` piece would be measured against the weight-1 UBE body.
-Both fail as a believable wrong number, never an error. And this is a GATE
-instrument: `acceptance.py` reads two of its rows (bust gap per path,
-bust-band penetration), so widening the population re-baselines both with
-nothing to validate the new numbers against.
+Each weight is measured against the bodies THAT weight was built on:
+  * body-swap pieces -- the body injected into the NIF itself, as always;
+  * copy-path pieces -- `nc._find_ube_femalebody(weight)`, the converter's own
+    resolver, i.e. exactly the body the converter fitted that weight to (every
+    tier of it is weight-specific; it never returns the other weight);
+  * the AUTHOR -- `canonical_body.canonical_cbbe(weight=...)`, whose weight 0 is
+    the SIBLING of the weight-1 body and never falls back to it.
 
-To close it: resolve the author and copy-path bodies from each file's own
-weight suffix, then widen the population, then re-baseline the two acceptance
-rows in the same change with an A/B of old-population against new.
+The GATED rows are still weight 1, byte-for-byte what this tool always printed:
+`acceptance.py` reads the per-path `control|candidate bust p50 ... gap p50 ...
+pen N` rows under the "body-swap only" / "copy path only" headers. Weight 0
+follows in its own block, worded so the gate cannot read it (see
+`_table_lines`). Gating on weight 0 is a separate change to `acceptance.py`.
 """
 from __future__ import annotations
 
@@ -192,8 +188,11 @@ def _renders(shape):
     return any(v for v in (shape.textures or {}).values())
 
 
-def measure_arm(root):
+def measure_arm(root, weight="_1"):
     """`rel|shape` -> (bust median, penetrating verts, worst), plus a path map.
+
+    `weight` picks the files (`*_1.nif` or `*_0.nif`) AND the copy-path body
+    they are measured against, which must be the one that weight was fitted to.
 
     Also returns a tally of every shape NOT scored and why. 0/0 is not a pass,
     and neither is a population whose exclusions are invisible: `VirtualBody` is
@@ -203,7 +202,7 @@ def measure_arm(root):
     out, is_swap = {}, {}
     dropped = collections.Counter()
     meshes = os.path.join(root, "meshes")
-    for p in sorted(glob.glob(os.path.join(meshes, "**", "*_1.nif"),
+    for p in sorted(glob.glob(os.path.join(meshes, "**", "*" + weight + ".nif"),
                               recursive=True)):
         rel = os.path.relpath(p, meshes)
         if not rel.lower().startswith("!ube" + os.sep):
@@ -214,7 +213,7 @@ def measure_arm(root):
             nf = nif_io.open_nif_retry(p)
         except Exception:
             continue
-        ref, swap = _body_for(nf, "_1")
+        ref, swap = _body_for(nf, weight)
         if ref is None:
             dropped["no body reference could be resolved"] += 1
             continue
@@ -234,7 +233,7 @@ def measure_arm(root):
     return out, is_swap, dropped
 
 
-def author_baseline(keys, mods_root=None):
+def author_baseline(keys, mods_root=None, weight="_1"):
     """The SAME shapes from the author's own build, against the body they were
     fitted to -- the authored relationship, measured in the author's own frame.
 
@@ -247,7 +246,7 @@ def author_baseline(keys, mods_root=None):
     """
     if mods_root is None:
         mods_root = cb._resolve_mods_root()
-    bpath, bname = cb.canonical_cbbe(mods_root)
+    bpath, bname = cb.canonical_cbbe(mods_root, weight=weight)
     b3 = nif_io.open_nif_retry(str(bpath))
     ref = _make_ref(next(s for s in b3.shapes if s.name == bname))
 
@@ -277,12 +276,32 @@ def author_baseline(keys, mods_root=None):
     return out
 
 
-def _print_table(arms, data, common, a_vals, swap):
+# Every weight-0 arm label starts with this, so no weight-0 row can match the
+# `control|candidate bust p50 ...` pattern acceptance.py reads the gate from.
+W0_PREFIX = "w0 "
+
+
+def _table_lines(arms, data, common, a_vals, swap, w0=False):
+    """The score table, as lines. Weight 1 is exactly what this always printed.
+
+    `w0=True` WORDS IT SO acceptance.py CANNOT READ IT. That parser walks the
+    whole output line by line: "body-swap only" / "copy path only" switch a
+    section that then STAYS switched for every later line, a matching
+    `control|candidate bust p50 ... gap p50 ... pen N` row OVERWRITES the value
+    it read before (last match wins, not first), and a line matching its
+    `SKIP_NOTE` marks that path's row as unmeasured. A weight-0 row matching
+    any of them would silently replace or switch off a gated weight-1 value. So
+    weight 0 prefixes every label with `w0 `, names its paths "weight 0 /
+    body-swap" and "weight 0 / copy path", and words its too-few note
+    differently.
+    """
+    tag = W0_PREFIX if w0 else ""
+    out = []
     hdr = ("%-26s %9s %9s %9s %10s %10s %9s  %-12s"
-           % ("arm", "bust p50", "gap p50", "gap p90", "shapes >", "pen verts",
-              "worst", "moved"))
-    print(hdr)
-    print("-" * len(hdr))
+           % ("arm, weight 0" if w0 else "arm", "bust p50", "gap p50",
+              "gap p90", "shapes >", "pen verts", "worst", "moved"))
+    out.append(hdr)
+    out.append("-" * len(hdr))
     ctrl = base_pen = None
     for lab, _d in arms:
         m = data[lab]
@@ -296,22 +315,37 @@ def _print_table(arms, data, common, a_vals, swap):
             n = int((np.abs(b - ctrl) > MOVED_EPS).sum())
             moved = "%d/%d" % (n, len(common)) if n else "0 <== NOT FIRED"
         mark = "" if pen <= base_pen else "  (+%d)" % (pen - base_pen)
-        print("%-26s %9.3f %+9.3f %+9.3f %10d %10d %9.3f  %-12s%s"
-              % (lab, np.median(b), np.median(gap), np.percentile(gap, 90),
-                 int((gap > 0.05).sum()), pen, worst, moved, mark))
+        out.append("%-26s %9.3f %+9.3f %+9.3f %10d %10d %9.3f  %-12s%s"
+                   % (tag + lab, np.median(b), np.median(gap),
+                      np.percentile(gap, 90), int((gap > 0.05).sum()), pen,
+                      worst, moved, mark))
 
     for want, name in ((True, "body-swap"), (False, "copy path")):
         idx = [i for i, k in enumerate(common) if bool(swap.get(k)) is want]
         if len(idx) < 5:
-            print("\n  %s: only %d shapes -- not reported" % (name, len(idx)))
+            if w0:
+                out.append("\n  weight 0 / %s: %d shapes, too few to report"
+                           % (name, len(idx)))
+            else:
+                out.append("\n  %s: only %d shapes -- not reported"
+                           % (name, len(idx)))
             continue
-        print("\n  %s only (%d shapes)" % (name, len(idx)))
+        if w0:
+            out.append("\n  weight 0 / %s: %d shapes" % (name, len(idx)))
+        else:
+            out.append("\n  %s only (%d shapes)" % (name, len(idx)))
         av = a_vals[idx]
         for lab, _d in arms:
             b = np.array([data[lab][k][0] for k in common])[idx]
             pen = sum(data[lab][common[i]][1] for i in idx)
-            print("    %-24s bust p50 %6.3f   gap p50 %+6.3f   pen %d"
-                  % (lab, np.median(b), np.median(b - av), pen))
+            out.append("    %-24s bust p50 %6.3f   gap p50 %+6.3f   pen %d"
+                       % (tag + lab, np.median(b), np.median(b - av), pen))
+    return out
+
+
+def _print_table(arms, data, common, a_vals, swap):
+    for line in _table_lines(arms, data, common, a_vals, swap):
+        print(line)
 
 
 def main(argv=None):
@@ -324,7 +358,71 @@ def main(argv=None):
     for a in args:
         d, _, lab = a.partition("=")
         arms.append((lab or os.path.basename(d.rstrip("/\\")), d))
+    # The exit codes are spelled out HERE, not passed through: `tool_map` reads
+    # a tool's gate from the literal returns of `main`, and `return rc` would
+    # hide that this tool exits 1 on an empty population.
+    rc = _report_weight1(arms)
+    if rc == 2:
+        return 2                   # an arm dir is missing; nothing to add
+    for line in _weight0_block(arms):
+        print(line)
+    if rc == 1:
+        return 1                   # 0/0 at weight 1 is not a pass
+    return 0
 
+
+def _weight0_block(arms):
+    """Score the `_0` files and return the report lines.
+
+    INFO in this tool: it never changes the exit code, which stays the gated
+    weight-1 verdict. A weight-0 author body that cannot be resolved is reported
+    as NOT MEASURED rather than aborting -- the gated report has already printed
+    by the time this runs. Every line is worded for `_table_lines(w0=True)`'s
+    reason: nothing here may match what acceptance.py parses.
+    """
+    out = ["", "=== WEIGHT 0: `_0` files, each against the bodies weight 0 was "
+               "built on (info; acceptance.py does not gate on this yet) ==="]
+    data, swap_of, drops = {}, {}, {}
+    for lab, d in arms:
+        data[lab], swap_of[lab], drops[lab] = measure_arm(d, "_0")
+        out.append("  weight 0: measured %-24s %d shapes"
+                   % (lab, len(data[lab])))
+    first = arms[0][0]
+    for reason, n in sorted(drops[first].items(), key=lambda kv: -kv[1]):
+        out.append("    weight 0: not scored in %-14s %5d  %s"
+                   % (first, n, reason))
+    common = set.intersection(*[set(v) for v in data.values()])
+    try:
+        auth = author_baseline(common, weight="_0")
+    except FileNotFoundError as e:
+        out.append("weight 0 NOT MEASURED -- %s" % e)
+        return out
+    dropped = len(common) - len(set(common) & set(auth))
+    common = sorted(k for k in common if k in auth)
+    swap = swap_of[first]
+    n_swap = sum(1 for k in common if swap.get(k))
+    out.append("")
+    out.append("WEIGHT-0 POPULATION: %d shapes in every arm AND in the author's "
+               "weight-0 build" % len(common))
+    out.append("  weight 0: dropped, no matching author shape : %d" % dropped)
+    out.append("  weight 0: body-swap / copy path             : %d / %d"
+               % (n_swap, len(common) - n_swap))
+    if not common:
+        out.append("  weight 0: nothing measured")
+        return out
+    a_vals = np.array([auth[k] for k in common])
+    out.append("  weight 0: AUTHOR bust standoff p50          : %.3fu"
+               % np.median(a_vals))
+    out.append("")
+    out += _table_lines(arms, data, common, a_vals, swap, w0=True)
+    return out
+
+
+def _report_weight1(arms):
+    """The GATED report: weight 1, byte-for-byte what this tool always printed.
+
+    `acceptance.py` parses its per-path rows, so nothing here may change
+    without changing the gate with it."""
     data, swap_of, drops = {}, {}, {}
     for lab, d in arms:
         if not os.path.isdir(os.path.join(d, "meshes")):

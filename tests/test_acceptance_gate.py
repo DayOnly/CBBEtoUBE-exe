@@ -52,8 +52,13 @@ def _base():
          "gap_copy_control": 0.2, "gap_copy_candidate": 0.2,
          "pen_swap_control": 3.0, "pen_swap_candidate": 3.0,
          "pen_copy_control": 0.0, "pen_copy_candidate": 0.0}
+    # Weight 0, identical arms too: the gate judges the `_0` block as well.
+    g.update({"w0_" + k: v for k, v in list(g.items())})
     tp = {"tip_p50_control": 1.2, "tip_p50_candidate": 1.2,
-          "tip_p05_control": 0.4, "tip_p05_candidate": 0.4, "tighter": 0.0}
+          "tip_p05_control": 0.4, "tip_p05_candidate": 0.4, "tighter": 0.0,
+          "w0_tip_p50_control": 1.1, "w0_tip_p50_candidate": 1.1,
+          "w0_tip_p05_control": 0.3, "w0_tip_p05_candidate": 0.3,
+          "w0_less_room": 0.0}
     zw = {"newly_emptied": 0.0, "rescued": 0.0, "both_empty": 0.0}
     fo = {"follow_worst_delta": 0.0, "follow_note": ""}
     d = (0, 0.0, 0, 100, 0.0, [])
@@ -583,7 +588,9 @@ def test_a_skipped_path_never_reads_as_ok():
         g.pop(k)
     g["skipped_copy"] = 4
     rows, _ok = acc.verdict_table(c, d, g, tp, zw, fo, False)
-    copy_rows = [r for r in rows if "copy path" in r[0] and r[3] != "info"]
+    # Weight 1's copy rows -- weight 0 has its own copy rows and its own data.
+    copy_rows = [r for r in rows if "copy path" in r[0] and r[3] != "info"
+                 and "weight 0" not in r[0]]
     assert copy_rows and all(r[3] == "SKIPPED" for r in copy_rows)
 
 
@@ -682,9 +689,12 @@ def test_no_piece_covering_the_tip_is_SKIPPED_not_FAILED():
     for k in list(tp):
         tp.pop(k)
     tp["tip_skipped"] = True
+    # The scorer refused at weight 1, and its weight-0 block says so too.
+    tp["w0_tip_skipped"] = True
     rows, ok = acc.verdict_table(c, d, g, tp, zw, fo, False)
     assert ok, "an empty tip population must not fail the arm"
-    sk = [r for r in rows if r[3] == "SKIPPED" and "tip" in r[0]]
+    sk = [r for r in rows if r[3] == "SKIPPED" and "tip" in r[0]
+          and "weight 0" not in r[0]]
     assert len(sk) == 3, "p50, p05 and the tighter count"
 
 

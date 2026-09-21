@@ -55,6 +55,12 @@ Rows and their rule (tolerance 0.005u on the float rows):
     bust-band penetration       bust_gap_score     candidate <= control
     tip clearance p50 / p05     nipple_clearance   candidate >= control
     pieces tighter at the tip   nipple_clearance   0
+    the four rows above, at     bust_gap_score,    the SAME rules, over the
+      WEIGHT 0 (bust gap per    nipple_clearance   `_0` files, each against the
+      path, bust-band pen,                         bodies weight 0 was built on.
+      tip p50 / p05, pieces                        SKIPPED when the scorer did
+      with less tip room)                          not measure weight 0 -- never
+                                                   ok then, and never FAIL
     stretch rate p50 / p90      stretched_edges    candidate <= control
     edge deviation p50          stretched_edges    candidate <= control
       ^ shapes / garments,                         info (a garment is TWO
@@ -352,6 +358,17 @@ def _num(text: str, pat: str):
 SKIP_NOTE = re.compile(r"\s*(body-swap|copy path): only (\d+) shapes"
                        r" -- not reported")
 
+# WEIGHT 0. `bust_gap_score` and `nipple_clearance` print the `_0` files in a
+# block of their own after the gated weight-1 report, worded so none of the
+# weight-1 patterns here can land on it (every arm label prefixed `w0 `, paths
+# named "weight 0 / ...", "less room" in place of "tighter"). These are the
+# patterns that read it -- module level for the same reason as SKIP_NOTE.
+W0_SECTION = re.compile(r"\s*weight 0 / (body-swap|copy path): \d+ shapes\s*$")
+W0_SKIP_NOTE = re.compile(r"\s*weight 0 / (body-swap|copy path): (\d+) shapes,"
+                          r" too few to report")
+W0_NOT_MEASURED = re.compile(r"weight 0 NOT MEASURED|nothing was measured at "
+                             r"weight 0|weight 0: nothing measured")
+
 
 def census(arm: str) -> dict:
     t = _run("scripts.analysis.pack_census", arm)
@@ -380,7 +397,7 @@ def census(arm: str) -> dict:
 def bust_gap(ctrl: str, cand: str) -> dict:
     t = _run("scripts.analysis.bust_gap_score", f"{ctrl}=control", f"{cand}=candidate")
     out = {}
-    section = None
+    section = section0 = None
     for line in t.splitlines():
         if "body-swap only" in line:
             section = "swap"
@@ -407,6 +424,22 @@ def bust_gap(ctrl: str, cand: str) -> dict:
         if m and section:
             out[f"gap_{section}_{m.group(1)}"] = float(m.group(3))
             out[f"pen_{section}_{m.group(1)}"] = float(m.group(4))
+        # WEIGHT 0, read with its OWN section: the weight-1 `section` above is
+        # sticky and is still set when the weight-0 block begins.
+        s0 = W0_SECTION.match(line)
+        if s0:
+            section0 = "swap" if s0.group(1) == "body-swap" else "copy"
+        n0 = W0_SKIP_NOTE.match(line)
+        if n0:
+            out["w0_skipped_" + ("swap" if n0.group(1) == "body-swap"
+                                 else "copy")] = int(n0.group(2))
+        m0 = re.match(r"\s*w0 (control|candidate)\s+bust p50\s+" + _NUMCOL +
+                      r"\s+gap p50\s+" + _NUMCOL + r"\s+pen\s+(\d+)", line)
+        if m0 and section0:
+            out[f"w0_gap_{section0}_{m0.group(1)}"] = float(m0.group(3))
+            out[f"w0_pen_{section0}_{m0.group(1)}"] = float(m0.group(4))
+    if W0_NOT_MEASURED.search(t):
+        out["w0_bust_skipped"] = True
     return out
 
 
@@ -433,6 +466,17 @@ def tip(ctrl: str, cand: str) -> dict:
     if "0/0 IS NOT A PASS" in t:
         out["tip_skipped"] = True
     out["tighter"] = _num(t, r"tighter\s+(\d+)")
+    # WEIGHT 0: the `w0 `-prefixed arm rows and the "less room" count of the
+    # scorer's weight-0 block. An unmeasured weight 0 is an unjudged row.
+    for lab in ("control", "candidate"):
+        m = re.search(_TIP_ROW % ("w0 " + lab), t, re.M)
+        if m:
+            out[f"w0_tip_p50_{lab}"] = float(m.group(1))
+            out[f"w0_tip_p05_{lab}"] = float(m.group(2))
+            out[f"w0_tip_min_{lab}"] = float(m.group(3))
+    if W0_NOT_MEASURED.search(t):
+        out["w0_tip_skipped"] = True
+    out["w0_less_room"] = _num(t, r"less room\s+(\d+)")
     return out
 
 
@@ -756,9 +800,10 @@ def verdict_table(c: dict, d: dict, g: dict, tp: dict, zw: dict, fo: dict,
     # SKIPPED never reads as ok either -- it says, with the count, that this
     # path went unjudged, which is what "0/0 is not a pass" means in both
     # directions.
-    def add_path(name, key, rule):
-        a, b = g.get("gap_%s_control" % key), g.get("gap_%s_candidate" % key)
-        n = g.get("skipped_" + key)
+    def add_path(name, key, rule, pre=""):
+        a, b = (g.get(pre + "gap_%s_control" % key),
+                g.get(pre + "gap_%s_candidate" % key))
+        n = g.get(pre + "skipped_" + key)
         if a is None and b is None and n is not None:
             rows.append((name, "-", "%d shapes (<5)" % n, "SKIPPED"))
             return
@@ -774,9 +819,10 @@ def verdict_table(c: dict, d: dict, g: dict, tp: dict, zw: dict, fo: dict,
             rows.append(("  ^ signed move (%s)" % _lab, round(_a, 4),
                          round(_b, 4), "info"))
 
-    def add_pen(name, key):
-        a, b = g.get("pen_%s_control" % key), g.get("pen_%s_candidate" % key)
-        n = g.get("skipped_" + key)
+    def add_pen(name, key, pre=""):
+        a, b = (g.get(pre + "pen_%s_control" % key),
+                g.get(pre + "pen_%s_candidate" % key))
+        n = g.get(pre + "skipped_" + key)
         if a is None and b is None and n is not None:
             rows.append((name, "-", "%d shapes (<5)" % n, "SKIPPED"))
             return
@@ -800,6 +846,43 @@ def verdict_table(c: dict, d: dict, g: dict, tp: dict, zw: dict, fo: dict,
         _ma, _mb = tp.get("tip_min_control"), tp.get("tip_min_candidate")
         if _ma is not None and _mb is not None:
             rows.append(("  ^ worst single tip", round(_ma, 4), round(_mb, 4),
+                         "info" if _mb >= _ma - TOL else "FAIL"))
+            ok_all = ok_all and _mb >= _ma - TOL
+    # WEIGHT 0 -- the same bust and tip rows over the `_0` files, each against
+    # the bodies weight 0 was built on. Until 2026-09-21 this gate could not see
+    # weight 0 at all: both scorers read `_1` only, so a change that regressed
+    # the weight-0 half PASSED here, and one that repaired it had nowhere to
+    # show. Same rules as weight 1. A weight the scorer did not measure reads
+    # SKIPPED with its reason -- never ok, and never FAIL.
+    if (g.get("w0_bust_skipped") and g.get("w0_gap_swap_control") is None
+            and g.get("w0_gap_copy_control") is None):
+        for _n in ("bust gap vs author, body-swap, weight 0",
+                   "bust gap vs author, copy path, weight 0",
+                   "bust-band pen, body-swap, weight 0",
+                   "bust-band pen, copy path, weight 0"):
+            rows.append((_n, "-", "weight 0 not measured", "SKIPPED"))
+    else:
+        add_path("bust gap vs author, body-swap, weight 0", "swap", "author",
+                 pre="w0_")
+        add_path("bust gap vs author, copy path, weight 0", "copy", "author",
+                 pre="w0_")
+        add_pen("bust-band pen, body-swap, weight 0", "swap", pre="w0_")
+        add_pen("bust-band pen, copy path, weight 0", "copy", pre="w0_")
+    if tp.get("w0_tip_skipped") and tp.get("w0_tip_p50_control") is None:
+        for _n in ("tip clearance p50, weight 0", "tip clearance p05, weight 0",
+                   "pieces with less room at the tip, weight 0"):
+            rows.append((_n, "-", "weight 0 not measured", "SKIPPED"))
+    else:
+        add("tip clearance p50, weight 0", tp.get("w0_tip_p50_control"),
+            tp.get("w0_tip_p50_candidate"), "ge")
+        add("tip clearance p05, weight 0", tp.get("w0_tip_p05_control"),
+            tp.get("w0_tip_p05_candidate"), "ge")
+        add("pieces with less room at the tip, weight 0", 0,
+            tp.get("w0_less_room"), "zero")
+        _ma, _mb = tp.get("w0_tip_min_control"), tp.get("w0_tip_min_candidate")
+        if _ma is not None and _mb is not None:
+            rows.append(("  ^ worst single tip, weight 0", round(_ma, 4),
+                         round(_mb, 4),
                          "info" if _mb >= _ma - TOL else "FAIL"))
             ok_all = ok_all and _mb >= _ma - TOL
     # MORPHED CLIP. Two of the three rows are taken under a body preset; the

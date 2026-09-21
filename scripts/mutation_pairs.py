@@ -1073,4 +1073,215 @@ PAIRS = (
          tests=('tests/test_tool_empty_run_floor.py',),
          expect=('test_no_tool_wraps_sys_stdout_buffer',),
     ),
+    # #weight-aware-bodies (2026-09-21): `canonical_body` resolves a weight-0
+    # reference body as the SIBLING of the chosen weight-1 file. The two ways
+    # that goes quietly wrong are the two a census cannot see from its output:
+    # handing back the weight-1 body when the sibling is missing, and a cache
+    # that answers a weight-0 request with the weight-1 entry.
+    Pair('CBW-a', 'a missing weight-0 body falls back to the weight-1 body',
+         edits=(
+             ('scripts/analysis/canonical_body.py',
+              '        raise FileNotFoundError(_NO_SIBLING.format(sib=sib.name, p=p))',
+              '        return p  # MUTATED: fall back to weight 1', 1),
+         ),
+         tests=('tests/test_canonical_body_weights.py',),
+         expect=('test_a_missing_sibling_raises_and_never_falls_back_to_weight1',),
+    ),
+    Pair('CBW-b', 'the reference-body cache ignores the weight',
+         edits=(
+             ('scripts/analysis/canonical_body.py',
+              '    k = key + weight',
+              '    k = key  # MUTATED: the cache ignores the weight', 1),
+         ),
+         tests=('tests/test_canonical_body_weights.py',),
+         expect=('test_canonical_cbbe_keys_its_cache_by_weight',
+                 'test_canonical_ube_keys_its_cache_by_weight'),
+    ),
+    # bust_gap_score's weight-0 block sits in the same output acceptance.py
+    # parses. That parser's section is STICKY and its last row match WINS, so
+    # the three wording pairs below are each a way for weight 0 to silently
+    # overwrite or switch off a gated weight-1 value. The last two are the
+    # weight-1 pins coming back.
+    Pair('BGW-a', 'weight-0 arm rows lose their prefix and overwrite the gate',
+         edits=(
+             ('scripts/analysis/bust_gap_score.py',
+              'W0_PREFIX = "w0 "',
+              'W0_PREFIX = ""  # MUTATED', 1),
+         ),
+         tests=('tests/test_bust_gap_score_weights.py',),
+         expect=('test_appending_weight0_changes_nothing_the_gate_reads',),
+    ),
+    Pair('BGW-b', 'a weight-0 path header switches the parser section',
+         edits=(
+             ('scripts/analysis/bust_gap_score.py',
+              '            out.append("\\n  weight 0 / %s: %d shapes" % (name, len(idx)))',
+              '            out.append("\\n  %s only (%d shapes)" % (name, len(idx)))  # MUTATED', 1),
+         ),
+         tests=('tests/test_bust_gap_score_weights.py',),
+         expect=('test_no_weight0_line_switches_the_parsers_section',),
+    ),
+    Pair('BGW-c', 'a weight-0 too-few note marks the gated path unmeasured',
+         edits=(
+             ('scripts/analysis/bust_gap_score.py',
+              '                out.append("\\n  weight 0 / %s: %d shapes, too few to report"',
+              '                out.append("\\n  %s: only %d shapes -- not reported"  # MUTATED', 1),
+         ),
+         tests=('tests/test_bust_gap_score_weights.py',),
+         expect=('test_a_weight0_too_few_note_does_not_mark_a_path_unmeasured',),
+    ),
+    Pair('BGW-d', 'copy-path weight-0 pieces are measured on the weight-1 body',
+         edits=(
+             ('scripts/analysis/bust_gap_score.py',
+              '        ref, swap = _body_for(nf, weight)',
+              '        ref, swap = _body_for(nf, "_1")  # MUTATED', 1),
+         ),
+         tests=('tests/test_bust_gap_score_weights.py',),
+         expect=('test_measure_arm_scores_weight0_files_against_the_weight0_body',),
+    ),
+    Pair('BGW-e', 'the weight-0 author baseline is read on the weight-1 author body',
+         edits=(
+             ('scripts/analysis/bust_gap_score.py',
+              '    bpath, bname = cb.canonical_cbbe(mods_root, weight=weight)',
+              '    bpath, bname = cb.canonical_cbbe(mods_root)  # MUTATED', 1),
+         ),
+         tests=('tests/test_bust_gap_score_weights.py',),
+         expect=('test_author_baseline_uses_the_weight0_author_body',),
+    ),
+    # nipple_clearance's weight-0 block is read by acceptance.py too. Three ways
+    # it could hijack the gated tip rows -- a row that parses as one, a "tighter"
+    # the gate takes first, and the 0/0 phrase that switches the whole tip row
+    # off -- and the weight-1 pin coming back.
+    Pair('NCW-a', 'weight-0 tip rows lose their prefix and parse as gated rows',
+         edits=(
+             ('scripts/analysis/nipple_clearance.py',
+              'W0_PREFIX = "w0 "',
+              'W0_PREFIX = ""  # MUTATED', 1),
+         ),
+         tests=('tests/test_nipple_clearance_weights.py',),
+         expect=('test_no_weight0_line_parses_as_a_gated_arm_row',),
+    ),
+    Pair('NCW-b', 'the weight-0 per-piece line says "tighter"',
+         edits=(
+             ('scripts/analysis/nipple_clearance.py',
+              '        out.append(f"  per piece at weight 0, {b} minus {a}: less room {less}"',
+              '        out.append(f"  per piece at weight 0, {b} minus {a}: tighter {less}"  # MUTATED', 1),
+         ),
+         tests=('tests/test_nipple_clearance_weights.py',),
+         expect=('test_the_weight0_block_never_says_tighter',),
+    ),
+    Pair('NCW-c', 'an empty weight 0 prints the phrase that turns the tip gate off',
+         edits=(
+             ('scripts/analysis/nipple_clearance.py',
+              '        out.append("  weight 0: no piece covers the tip in every arm, so "',
+              '        out.append("  0/0 IS NOT A PASS -- no piece covers the tip, so "  # MUTATED', 1),
+         ),
+         tests=('tests/test_nipple_clearance_weights.py',),
+         expect=('test_an_empty_weight0_never_marks_the_tip_row_unmeasured',),
+    ),
+    Pair('NCW-d', 'weight-0 files are scored on the weight-1 tip rays',
+         edits=(
+             ('scripts/analysis/nipple_clearance.py',
+              '        origins, directions = tip_rays("_0")',
+              '        origins, directions = tip_rays("_1")  # MUTATED', 1),
+         ),
+         tests=('tests/test_nipple_clearance_weights.py',),
+         expect=('test_the_weight0_block_asks_for_the_weight0_body',),
+    ),
+    # THE GATE JUDGES WEIGHT 0. Each pair is a way the weight-0 rows go back to
+    # being blind: read the weight-1 rows instead, stop judging a regression, or
+    # stop telling "not measured" from "failed".
+    Pair('ACW-a', 'the gate reads the weight-1 tip rows as if they were weight 0',
+         edits=(
+             ('scripts/analysis/acceptance.py',
+              '        m = re.search(_TIP_ROW % ("w0 " + lab), t, re.M)',
+              '        m = re.search(_TIP_ROW % lab, t, re.M)  # MUTATED', 1),
+         ),
+         tests=('tests/test_acceptance_weight0.py',),
+         expect=('test_the_gate_reads_nipple_clearances_weight0_block',),
+    ),
+    Pair('ACW-b', 'a piece losing tip room at weight 0 no longer fails',
+         edits=(
+             ('scripts/analysis/acceptance.py',
+              '            tp.get("w0_less_room"), "zero")',
+              '            tp.get("w0_less_room"), "info")  # MUTATED', 1),
+         ),
+         tests=('tests/test_acceptance_weight0.py',),
+         expect=('test_a_piece_losing_tip_room_at_weight0_FAILS',),
+    ),
+    Pair('ACW-c', 'the weight-0 penetration row reads the weight-1 values',
+         edits=(
+             ('scripts/analysis/acceptance.py',
+              '        add_pen("bust-band pen, body-swap, weight 0", "swap", pre="w0_")',
+              '        add_pen("bust-band pen, body-swap, weight 0", "swap")  # MUTATED', 1),
+         ),
+         tests=('tests/test_acceptance_weight0.py',),
+         expect=('test_more_bust_penetration_at_weight0_alone_FAILS_the_gate',),
+    ),
+    Pair('ACW-d', 'an unmeasured weight 0 stops reading SKIPPED',
+         edits=(
+             ('scripts/analysis/acceptance.py',
+              '    if tp.get("w0_tip_skipped") and tp.get("w0_tip_p50_control") is None:',
+              '    if False:  # MUTATED', 1),
+         ),
+         tests=('tests/test_acceptance_weight0.py',),
+         expect=('test_an_unmeasured_weight0_is_SKIPPED_never_ok_never_FAIL',),
+    ),
+    Pair('ACW-e', 'weight-0 bust rows are filed under the sticky weight-1 section',
+         edits=(
+             ('scripts/analysis/acceptance.py',
+              '            out[f"w0_gap_{section0}_{m0.group(1)}"] = float(m0.group(3))',
+              '            out[f"w0_gap_{section}_{m0.group(1)}"] = float(m0.group(3))  # MUTATED', 1),
+         ),
+         tests=('tests/test_acceptance_weight0.py',),
+         expect=('test_the_gate_reads_bust_gap_scores_weight0_block',),
+    ),
+    Pair('ACW-f', 'less tip room at weight 0 no longer fails the gate',
+         edits=(
+             ('scripts/analysis/acceptance.py',
+              '            tp.get("w0_tip_p50_candidate"), "ge")',
+              '            tp.get("w0_tip_p50_candidate"), "info")  # MUTATED', 1),
+         ),
+         tests=('tests/test_acceptance_weight0.py',),
+         expect=('test_less_tip_room_at_weight0_alone_FAILS_the_gate',),
+    ),
+    # collect_fit_dataset: each file on its own weight's body, and a weight
+    # with no body skipped rather than measured on the other one.
+    Pair('CFW-a', 'every file is measured on the weight-1 body again',
+         edits=(
+             ('scripts/analysis/collect_fit_dataset.py',
+              '            w = nc.weight_suffix_of(f)',
+              '            w = "_1"  # MUTATED', 1),
+         ),
+         tests=('tests/test_collect_fit_dataset_weights.py',),
+         expect=('test_each_file_is_measured_on_its_own_weights_body',),
+    ),
+    Pair('CFW-b', 'a file with no body for its weight is measured anyway',
+         edits=(
+             ('scripts/analysis/collect_fit_dataset.py',
+              '            if ctx is None:',
+              '            if ctx is None and False:  # MUTATED', 1),
+         ),
+         tests=('tests/test_collect_fit_dataset_weights.py',),
+         expect=('test_an_unresolvable_weight0_body_skips_its_files',),
+    ),
+    # source_delta_census: both sides of the delta on the file's own weight,
+    # and a missing weight-0 body skips the file instead of falling back.
+    Pair('SDW-a', 'every file is posed on the weight-1 bodies again',
+         edits=(
+             ('scripts/analysis/source_delta_census.py',
+              '            w = weight_suffix_of(p)',
+              '            w = "_1"  # MUTATED', 1),
+         ),
+         tests=('tests/test_source_delta_census_weights.py',),
+         expect=('test_each_file_is_posed_on_its_own_weights_bodies',),
+    ),
+    Pair('SDW-b', 'a missing weight-0 body falls back to the weight-1 bodies',
+         edits=(
+             ('scripts/analysis/source_delta_census.py',
+              '                bodies[w] = None',
+              '                bodies[w] = bodies_for("_1")  # MUTATED', 1),
+         ),
+         tests=('tests/test_source_delta_census_weights.py',),
+         expect=('test_a_missing_weight0_body_skips_its_files',),
+    ),
 )
