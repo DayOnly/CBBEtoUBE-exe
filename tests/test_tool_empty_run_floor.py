@@ -157,6 +157,27 @@ def test_smp_patcher_separates_bad_path_from_nothing_found(tmp_path):
     assert "examined NO xml" in out
 
 
+_CRASH_XML = ('<system><per-vertex-shape name="a"/>'
+              '<per-triangle-shape name="BaseShape"/></system>')
+
+
+def test_smp_patcher_reports_renames_that_failed(tmp_path):
+    """Every rename failing printed ERR lines and still exited 0.
+
+    The armors that were NOT renamed are exactly the ones that still
+    OOB-crash FSMP, so a partial patch reading as a complete one is the
+    dangerous direction. Collision with an existing target makes rename
+    raise deterministically, with no reliance on file permissions.
+    """
+    (tmp_path / "crash.xml").write_text(_CRASH_XML, encoding="utf-8")
+    (tmp_path / "crash.xml.nosmp").write_text("blocks the rename",
+                                              encoding="utf-8")
+    rc, out = _run("scripts/disable_unconstrained_smp.py", tmp_path, "--apply")
+    assert rc == 1, out
+    assert "FAILED to rename 1 of 1" in out
+    assert "STILL the crash pattern" in out
+
+
 def test_smp_patcher_still_exits_zero_on_a_genuinely_clean_pack(tmp_path):
     """THE CONTROL FOR THIS WHOLE LANE.
 
@@ -176,6 +197,62 @@ def test_strip_usage_error_is_not_success():
     assert "need esp path" in out
 
 
+def _esp_with(tmp_path, name, armas):
+    """Write a minimal ESP; `armas` of None means NO ARMA group at all."""
+    sys.path.insert(0, str(_REPO))
+    import struct as _struct
+    from src import esp
+    from src.esp import encode_subrecord, encode_zstring
+
+    def _arma(fid, edid, mesh):
+        payload = (encode_subrecord(b"EDID", encode_zstring(edid))
+                   + encode_subrecord(b"BOD2", _struct.pack("<II", 1 << 2, 0))
+                   + encode_subrecord(b"MOD3", encode_zstring(mesh)))
+        return esp.Record(sig=b"ARMA", flags=0, formid=fid, timestamp_vc=0,
+                          version_unk=0x002C, payload=payload)
+
+    groups = ([] if armas is None
+              else [esp.Group(label=b"ARMA",
+                              records=[_arma(*a) for a in armas])])
+    e = esp.ESP(header=esp.TES4Header(masters=["Skyrim.esm"]), groups=groups)
+    e.save(tmp_path / name)
+    return tmp_path / name
+
+
+def test_strip_on_a_plugin_with_no_arma_group_is_not_a_clean_strip(tmp_path):
+    """Every loop ran over an empty list and reported 0/0/0 as a success."""
+    p = _esp_with(tmp_path, "NoArma.esp", None)
+    rc, out = _run("scripts/strip_nude_handfeet.py", p, "--apply")
+    assert rc == 3
+    assert "no ARMA group" in out
+
+
+def test_strip_does_not_rewrite_a_plugin_it_changed_nothing_in(tmp_path):
+    """--apply used to re-serialise a deployed ESP for a no-op edit and print
+    "saved", which reads as a strip that happened."""
+    p = _esp_with(tmp_path, "NoNude.esp",
+                  [(0x801, "ArmorGauntlet", "Armor\\Steel\\Gauntlets_1.nif")])
+    before = p.read_bytes()
+    rc, out = _run("scripts/strip_nude_handfeet.py", p, "--apply")
+    assert rc == 3
+    assert "NOTHING MATCHED" in out
+    assert "saved" not in out
+    assert p.read_bytes() == before, "a no-op run must not rewrite the plugin"
+
+
+def test_strip_still_succeeds_when_there_is_something_to_strip(tmp_path):
+    """THE CONTROL: the new guards must not block the real job."""
+    p = _esp_with(tmp_path, "HasNude.esp", [
+        (0x801, "NakedHands",
+         "Actors\\Character\\Character Assets\\femalehands_1.nif"),
+        (0x802, "ArmorGauntlet", "Armor\\Steel\\Gauntlets_1.nif"),
+    ])
+    rc, out = _run("scripts/strip_nude_handfeet.py", p, "--apply")
+    assert rc == 0, out
+    assert "nude/actor-skin ARMAs to remove: 1" in out
+    assert "saved" in out
+
+
 # -------------------------------------------------- build_body_collider_proxy
 def test_collider_batch_over_no_candidates_is_not_success(tmp_path):
     """"batch: 0 armors ... processed 0 NIFs" used to exit 0."""
@@ -188,26 +265,32 @@ def test_collider_batch_over_no_candidates_is_not_success(tmp_path):
     assert "Not a verdict about that pack" in out
 
 
-@pytest.mark.parametrize("nif_msg,xml_msg,broken", [
-    ("ok: VirtualBody 2500v/4800t", "xml-repointed", False),
-    ("ok: VirtualBody 2500v/4800t", "xml-not-baseshape-collider", True),
-    ("ok: VirtualBody 2500v/4800t", "no-xml", True),
-    ("skip: no BaseShape", "xml-repointed", True),
-    # the ordinary re-run: both halves already done, neither changes
-    ("skip: already has VirtualBody", "xml-not-baseshape-collider", False),
-])
-def test_half_applied_armor_is_detected(nif_msg, xml_msg, broken):
+def test_half_applied_armor_is_detected():
     """A NIF with a proxy whose XML still names BaseShape still OOB-crashes.
 
     Both halves must land together or the armor is in the exact state the
     tool exists to remove, while the tool reports having done its job.
+
+    Deliberately NOT parametrized: pytest reports a parametrized case as
+    `name[PARAM]` and the mutation gate matches test ids exactly, so a pair
+    anchored on the bare name reads MISSED while the mutation is in fact
+    breaking every case. That cost a gate round on GFS-a.
     """
     import importlib.util
     spec = importlib.util.spec_from_file_location(
         "_bcp", _REPO / "scripts" / "build_body_collider_proxy.py")
     m = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(m)
-    assert m.pair_is_broken(nif_msg, xml_msg) is broken
+    cases = [
+        ("ok: VirtualBody 2500v/4800t", "xml-repointed", False),
+        ("ok: VirtualBody 2500v/4800t", "xml-not-baseshape-collider", True),
+        ("ok: VirtualBody 2500v/4800t", "no-xml", True),
+        ("skip: no BaseShape", "xml-repointed", True),
+        # the ordinary re-run: both halves already done, neither changes
+        ("skip: already has VirtualBody", "xml-not-baseshape-collider", False),
+    ]
+    for nif_msg, xml_msg, broken in cases:
+        assert m.pair_is_broken(nif_msg, xml_msg) is broken, (nif_msg, xml_msg)
 
 
 # ------------------------------------------------------------ augment_nude_tri
