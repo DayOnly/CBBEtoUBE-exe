@@ -93,3 +93,73 @@ def test_an_explicit_override_still_wins(monkeypatch, tmp_path):
     monkeypatch.setenv("CBBE2UBE_UBE_BODY", str(mine))
     assert br._find_cbbe_base_body("_1") == mine
     assert br._find_ube_femalebody("_1") == mine
+
+
+def test_the_injected_body_follows_an_explicit_ube_pick(monkeypatch, tmp_path):
+    """The Reference bodies dialog pins CBBE2UBE_UBE_BODY_1. The body injected
+    under a body-swap garment must be that body too -- it used to read no
+    override at all, so a pick moved the fit target but not the body swapped in."""
+    from src import auto_convert as ac
+    picked = tmp_path / "femalebody_tangent_1.nif"
+    picked.write_bytes(b"nif")
+    monkeypatch.setattr(zb, "zeroed_body", _zeroed([]))
+    monkeypatch.setenv("CBBE2UBE_UBE_BODY_1", str(picked))
+    assert ac._find_ube_body_ref() == picked
+    assert br._find_ube_femalebody("_1") == picked
+
+
+def test_an_empty_override_reads_as_unset(monkeypatch, capsys):
+    """The dialog blanks the variables of a kind it left unchosen; blank must
+    mean 'no override', with no missing-file warning."""
+    monkeypatch.setattr(zb, "zeroed_body", _zeroed([]))
+    for v in ("CBBE2UBE_CBBE_BODY_1", "CBBE2UBE_UBE_BODY_1", "CBBE2UBE_UBE_BODY"):
+        monkeypatch.setenv(v, "")
+    assert br._find_cbbe_base_body("_1") == Path("zeroed_cbbe_1.nif")
+    assert br._find_ube_femalebody("_1") == Path("zeroed_ube_1.nif")
+    assert "does not exist" not in capsys.readouterr().err
+
+
+def test_the_run_log_says_which_body_an_override_made_it_use(monkeypatch, capsys, tmp_path):
+    """With every body pinned by the dialog the resolver's own line never
+    prints, so the override branch states the file -- once."""
+    mine = tmp_path / "chosen_1.nif"
+    mine.write_bytes(b"nif")
+    monkeypatch.setenv("CBBE2UBE_CBBE_BODY_1", str(mine))
+    br._find_cbbe_base_body("_1")
+    br._BODY_DISCOVERY_CACHE.clear()
+    br._find_cbbe_base_body("_1")
+    err = capsys.readouterr().err
+    assert err.count(f"[body-ref] CBBE2UBE_CBBE_BODY_1 = {mine} (explicit override)") == 1
+
+
+def test_a_missing_weight_sibling_is_named_as_the_sibling(monkeypatch, capsys, tmp_path):
+    """CBBE2UBE_UBE_BODY names X_1.nif, which exists and IS used at weight 1;
+    only X_0.nif is missing. It used to say X_1.nif did not exist."""
+    monkeypatch.setattr(zb, "zeroed_body", _zeroed([]))
+    x1 = tmp_path / "femalebody_tangent_1.nif"
+    x1.write_bytes(b"nif")
+    monkeypatch.setenv("CBBE2UBE_UBE_BODY", str(x1))
+    assert br._ube_body_override("_1") == x1
+    assert br._ube_body_override("_0") is None
+    err = capsys.readouterr().err
+    x0 = tmp_path / "femalebody_tangent_0.nif"
+    assert f"CBBE2UBE_UBE_BODY: its weight-0 file does not exist ({x0})" in err
+    assert "names a body that does not exist" not in err
+
+
+def test_a_missing_ube_override_is_said_out_loud(monkeypatch, capsys, tmp_path):
+    monkeypatch.setattr(zb, "zeroed_body", _zeroed([]))
+    monkeypatch.setenv("CBBE2UBE_UBE_BODY_1", str(tmp_path / "gone_1.nif"))
+    assert br._find_ube_femalebody("_1") == Path("zeroed_ube_1.nif")
+    assert "CBBE2UBE_UBE_BODY_1 names a body that does not exist" in capsys.readouterr().err
+
+
+def test_an_override_naming_a_missing_file_is_said_out_loud(monkeypatch, capsys, tmp_path):
+    """It used to fall through to another body without a word."""
+    monkeypatch.setattr(zb, "zeroed_body", _zeroed([]))
+    monkeypatch.setenv("CBBE2UBE_CBBE_BODY_1", str(tmp_path / "gone_1.nif"))
+    assert br._find_cbbe_base_body("_1") == Path("zeroed_cbbe_1.nif")
+    br._BODY_DISCOVERY_CACHE.clear()
+    br._find_cbbe_base_body("_1")
+    err = capsys.readouterr().err
+    assert err.count("CBBE2UBE_CBBE_BODY_1 names a body that does not exist") == 1

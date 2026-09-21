@@ -2,6 +2,35 @@
 
 ## Unreleased
 
+### Added — Convert shows the reference bodies it will use, and lets you pick others
+
+Pressing Convert now opens a "Reference bodies" window before anything runs.
+It shows the two bodies the fit uses -- the CBBE 3BA body garments are moved
+from and the UBE body they are moved onto -- each in a list that starts on the
+zeroed BodySlide build the game loads, checked vertex for vertex, and offers
+every other copy of that body the modlist has, each marked with what it is:
+"[zeroed]", or "[NOT zeroed, off by up to 1.97u]" for a build at some preset.
+Bodies of another family, half-installed pairs and unreadable files are named
+with the reason instead of offered. Picking anything but the verified body the
+game loads asks once more, naming the difference. The choice applies to that
+conversion only, and it also sets the UBE body injected under body-swap
+armour -- which until now ignored every body override, including the "UBE body
+reference NIF" setting, so a chosen UBE body moved the fit's target but not
+the body swapped in. A body override that names a missing file is now reported
+instead of silently replaced. If the choice means a body you set in Settings
+will not be used for this run, the window says so before converting. A
+Settings body named without a weight is offered as one file for both weights,
+which is how the converter uses it. Your BodySlide preset is still baked in
+from the UBE body your build installed; the window picks the fit's reference
+bodies, not your preset. The window is skipped for a dry run and when
+"Fit against the zeroed BodySlide bodies" is off. Checking takes a few
+seconds; the window stays responsive meanwhile.
+
+An "All mods" conversion now recognises body mods by the body files they ship
+-- any mod carrying the CBBE 3BA or UBE body BodySlide builds is skipped, and
+the mod list shows the same set -- instead of by which body the fit uses,
+which would have let the choice in this window change which mods convert.
+
 ### Fixed — cloaks, capes and belt pieces no longer sit closer to the body at weight 1 than at weight 0
 
 The converter moves a garment from the CBBE body it was built on to the UBE

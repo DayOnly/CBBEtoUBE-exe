@@ -606,6 +606,33 @@ def _combined_output_names(merged_name: str, plugin_names_or_paths) -> "set[str]
     return names
 
 
+def _body_mod_names(mods_root: Path) -> "set[str]":
+    """Mod folders that ship a race body -- the CBBE 3BA or the UBE body file
+    BodySlide builds (src/zeroed_body.KINDS) -- so an `auto` run skips them:
+    they are 3BA-rigged and pass the content filter, but they ARE the body,
+    not armour. #body-mod-exclusion
+
+    By what a folder SHIPS, not by which body the fit uses. The exclusion used
+    to be the folders of the three body lookups, so it moved with the
+    reference: once the fit used BodySlide's zeroed build, the 3BA body mod
+    itself fell out of the exclusion and its collision-body NIFs entered
+    All-mods runs; and a Reference bodies pick changed which mods converted,
+    while the GUI's mod list (built without the pick) could not show it."""
+    from . import zeroed_body as _zb
+    out = set()
+    try:
+        dirs = [d for d in mods_root.iterdir() if d.is_dir()]
+    except OSError:
+        return out
+    for kind, (out_path, out_file, _verts, _label) in _zb.KINDS.items():
+        for w in ("_0", "_1"):
+            parts = [p for p in f"{out_path}/{out_file}{w}.nif".split("/") if p]
+            for d in dirs:
+                if _zb._ci_join(d, parts) is not None:
+                    out.add(d.name)
+    return out
+
+
 def _find_ube_body_ref(search_roots: list[Path] | None = None) -> Path | None:
     """Scan MO2 mods folders for the best UBE body reference NIF —
     preferring sources that DON'T have the user's BodySlide preset
@@ -641,7 +668,12 @@ def _find_ube_body_ref(search_roots: list[Path] | None = None) -> Path | None:
         # priority and verified, not the first mod alphabetically that ships
         # the path (#zeroed-body-refs). An explicit search_roots (tests, other
         # instances) keeps the scan below.
-        from .nif_convert_bodyrefs import _zeroed_ref
+        from .nif_convert_bodyrefs import _ube_body_override, _zeroed_ref
+        # An explicit UBE body (the Reference bodies dialog, the settings
+        # picker, CBBE2UBE_UBE_BODY_1) is injected too -- not only aimed at.
+        override = _ube_body_override("_1")
+        if override is not None:
+            return override
         zeroed = _zeroed_ref("ube", "_1")
         if zeroed is not None:
             return zeroed
@@ -5829,16 +5861,7 @@ def list_convertible_mods(output_dir: "Path | None" = None,
         return []
     output = output_dir if output_dir else (mr / "CBBEtoUBE Auto")
     enabled = paths.enabled_mods(lay)
-    exclude = {output.name}
-    for _bf in (nif_convert._find_cbbe_base_body("_1"),
-                nif_convert._find_ube_femalebody("_1"),
-                _find_ube_body_ref()):
-        try:
-            if _bf is not None:
-                exclude.add(Path(_bf).resolve().relative_to(
-                    mr.resolve()).parts[0])
-        except Exception:
-            pass
+    exclude = {output.name} | _body_mod_names(mr)
     try:
         cands = _find_armor_mod_dirs(
             mr, extra_exclude_names=exclude, enabled_names=enabled,
@@ -6183,18 +6206,9 @@ def _cmd_auto(args):
         return 0 if (ovl.get("converted")
                      or ovl.get("reason") == "none-found") else 1
 
-    # Exclude body mods (CBBE + UBE): 3BA-rigged, pass the content filter, but
-    # ARE the body, not armour. Derive names from discovered NIFs — no hardcoding.
-    exclude = {output.name}
-    for _bf in (nif_convert._find_cbbe_base_body("_1"),
-                nif_convert._find_ube_femalebody("_1"),
-                _find_ube_body_ref()):
-        try:
-            if _bf is not None:
-                exclude.add(Path(_bf).resolve().relative_to(
-                    mr.resolve()).parts[0])
-        except Exception:
-            pass
+    # Exclude body mods (CBBE + UBE) -- by what each folder ships, never by
+    # which body the fit uses (see _body_mod_names).
+    exclude = {output.name} | _body_mod_names(mr)
     # User exclusions (mods already built for UBE, or ones to leave alone).
     _user_excl = _split_mod_arg(getattr(args, "exclude_mods", None)) or []
     if _user_excl:
