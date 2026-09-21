@@ -36,7 +36,20 @@ Exit 0 clean / 1 a violation we caused / 2 nothing measured.
 MEASURED 2026-08-23 on the pre-fix pack: 10 violating shapes over 174 checked
 pieces, every one a shape WE create (a `<name>Col` bust-split clone), and ZERO
 authored shapes carrying bones we added. After #collider-declared-bones the
-expected result is 0.
+expected result is 0. Those numbers were counted over WEIGHT 1 ONLY (this
+enumerated `*_1.nif` until 2026-09-21) and are not comparable to a run now.
+
+WEIGHTS: both weights, first-person INCLUDED, via
+`standoff_audit.output_nifs(PACK, exclude_first_person=False)`. This is a
+per-SHAPE physics census, and `x_0.nif` carries its own registered shapes and
+its own bones: a bone that lands on the weight-0 half free-falls that piece
+exactly as one on weight 1 would. Weight 0 is also where a post-guard repair
+can act -- `_postflight_sync_weight_partner_jiggle` grafts a partner's jiggle
+bone onto whichever weight lacks it, after the in-converter guard has run -- so
+a `_1`-only census was blind to a plausible producer, not just to half a count.
+First-person is kept ON PURPOSE: `output_nifs` drops it by default for a
+BUST-COVERAGE reason, which has nothing to do with a physics bone. A
+first-person mesh that registers physics can free-fall like any other.
 
 Do NOT widen this to "any undeclared bone on a registered shape": that counts the
 AUTHOR's own arrangement and reads 250 where the defect is 10. Only bones we
@@ -67,6 +80,7 @@ _lay = paths.discover_layout()
 paths.export_to_env(_lay)
 from pyn import pynifly                                 # noqa: E402
 from src import nif_convert as nc                       # noqa: E402
+from scripts.analysis import standoff_audit as sa       # noqa: E402
 
 _parents = nc._actor_skeleton_bone_parents()
 print(f"actor skeleton: {len(_parents)} parent link(s)")
@@ -96,8 +110,10 @@ by_shape = collections.Counter()
 by_bone = collections.Counter()
 rows = []
 
-nifs = sorted(PACK.rglob("*_1.nif"))
-print(f"{len(nifs)} `_1` pack NIF(s)", flush=True)
+# BOTH weights, first-person KEPT -- see WEIGHTS: in the docstring.
+nifs = sa.output_nifs(PACK, exclude_first_person=False)
+print(f"{len(nifs)} pack NIF(s), both weights, first-person included",
+      flush=True)
 for i, p in enumerate(nifs):
     if i % 300 == 0:
         print(f"  ...{i}", flush=True)

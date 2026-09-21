@@ -26,15 +26,12 @@ from scripts import tool_audit  # noqa: E402
 # in its docstring which weights it reads and why -- then delete the line.
 KNOWN_HALF_PACK = frozenset({
     "scripts/analysis/band_class_census.py",
-    "scripts/analysis/bust_gap_score.py",
     "scripts/analysis/collect_fit_dataset.py",
     "scripts/analysis/collect_penetration_census.py",
     "scripts/analysis/fit_audit.py",
     "scripts/analysis/multipose_census.py",
     "scripts/analysis/nipple_clearance.py",
     "scripts/analysis/phase1_antipoke_population_ab.py",
-    "scripts/analysis/postreconvert_audit.py",
-    "scripts/analysis/registered_bone_audit.py",
     "scripts/analysis/single_swing_census.py",
     "scripts/analysis/snugness_census.py",
     "scripts/analysis/source_delta_census.py",
