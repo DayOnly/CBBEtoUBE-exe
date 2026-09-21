@@ -862,3 +862,96 @@ distribution is not bimodal in this population, the mean is hiding nothing, and
 the threshold stands. Recorded because the hunch is plausible and cheap to
 re-form: it has been checked. Do not re-open it without a population where that
 number is not zero.
+
+# 2026-09-20 — six tools could not report failure, and four of them write to disk
+
+The frame audit closed on a question it could not answer about itself: `bust_verdict`
+returned "clean at rest ... next step is an in-game A/B" at **exit 0** on a robe 42u
+from the body. Nothing consumed that exit code — a person read the sentence. So the
+follow-up question is not "which tools are wrong" but **which tools are incapable of
+being wrong**.
+
+## The census
+
+An AST pass over the 101 script paths named in `docs/TOOL_MAP.md`, collecting every
+`sys.exit` / `exit` / `raise SystemExit` argument and flagging files where every
+argument is a constant `0`/`None`:
+
+| | count |
+|---|---|
+| library modules (no `__main__`) | 15 |
+| runnable tools that CAN exit nonzero | 80 |
+| **runnable tools that CANNOT** | **6** |
+
+The predicate misses `argparse`'s `.error()`, which exits 2. Re-checked by hand:
+one of the six (`build_body_collider_proxy`) has one, and it is a *usage* guard.
+None of the six could report a **semantic** failure. An uncaught exception still
+exits nonzero, so these tools failed loudly when they crashed and silently when
+they did nothing — which is the wrong way round.
+
+## Measured before the fix, each pointed at an empty pack
+
+```
+scan_output_health          rc=0  "=== SCAN DONE ==="
+disable_unconstrained_smp   rc=0  "(dry-run; pass --apply to rename)"
+build_body_collider_proxy   rc=0  "processed 0 NIFs"
+strip_nude_handfeet         rc=0  "need esp path"
+scan_nude_skin_chain        rc=0  "FATAL: no UBE_AllRace.esp found"
+```
+
+The last one prints the word FATAL and returns success. The first prints an
+affirmative all-clear over zero NIFs.
+
+## Verdicts
+
+| tool | verdict | the number |
+|---|---|---|
+| `scan_output_health` | **BROKEN** | `=== SCAN DONE ===` over 0 NIFs, rc=0; a wrong `out_dir` = a healthy pack |
+| `scan_nude_skin_chain` | **BROKEN** | two `FATAL` paths, both `return` → rc=0 |
+| `disable_unconstrained_smp` | **BROKEN** | rglob on a missing dir yields nothing, raises nothing → "0 to disable"; all renames failing → rc=0 |
+| `strip_nude_handfeet` | **BROKEN** | no ARMA group → every loop empty → `--apply` re-serialises a deployed ESP and prints "saved" |
+| `build_body_collider_proxy` | **BROKEN** | "processed N" counted NIFs VISITED; NIF and XML halves could diverge unreported |
+| `augment_nude_tri` | **BROKEN** | `seam_n` — the control the whole method rests on — printed and never acted on |
+
+`TOOL_MAP.md`'s `gate` column now reads a real exit code for all six, where it
+read `—` for every one of them before.
+
+## What the fix is, and what it is not
+
+None of the six is invoked by another script or by CI — the consumer is a **person
+reading a terminal**. So an exit code alone would not have helped; the no-data case
+also has to *look* different from the clean case. Both halves were applied: the
+existing shared `require_population` (exit 3, "0/0 is not a pass") where there is a
+countable population, and verdict lines that carry the population instead of a bare
+`DONE`.
+
+**Not done, deliberately:** `scan_nude_skin_chain`'s coverage matrix is not graded
+into an exit code. `--MISSING` cells are legitimate mid-build, and turning them red
+would change what an existing run reports with no measurement behind it.
+
+**Named, not fixed:** `augment_nude_tri.nif_verts` reads `shape.verts` RAW. Body and
+part are separate NIFs with their own transforms, so a non-identity global-to-skin on
+either drives `seam_n` to 0 — the `standoff_audit.pick_frame` class again, reached
+from the other side (a tool that *should* normalise and never did). Measuring it needs
+a nude build; the new guard at least makes the symptom impossible to miss.
+
+## A landmine found on the way
+
+Six tools carry `sys.stdout = io.TextIOWrapper(sys.stdout.buffer, ...)`. The new
+wrapper **owns** that buffer and closes it when garbage-collected, under whoever else
+holds it. Importing one inside pytest closes the global capture file and every later
+test dies on "I/O operation on closed file" — which is how the first draft of these
+tests came to assert on an empty string while only the exit code was really checked.
+Both the no-seam path and the nothing-augmented path exit 3, so without the message
+the test could not tell which guard had fired. Replaced with `sys.stdout.reconfigure()`
+in the three tools this lane touches; non-ascii output verified unchanged. **Still
+present in `fit_audit.py`, `scan_morph_issues.py` and `sanity_check_converted.py`.**
+
+## The control
+
+Every guard was checked in the direction that matters *and* the direction that does
+not: a directory holding a properly constrained XML still exits 0, a plugin that does
+have a nude-skin ARMA still strips and saves, and a seam-coincident part still
+transfers and writes. A guard that turns healthy runs red is worse than the bug.
+
+10 mutation pairs, CAC-a..j, all CAUGHT.
