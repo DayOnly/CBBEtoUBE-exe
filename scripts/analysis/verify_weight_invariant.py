@@ -31,13 +31,23 @@ triangles that flicker with view angle.
 Run this on the OUTPUT (post-save), never on in-memory shapes: the truncation
 happens during the write, which is exactly what an in-memory check cannot see.
 
+WEIGHTS: both weights, via `standoff_audit.output_nifs`. This counts OFFENDING
+VERTICES, not a per-garment rate, and `_0` is a separately authored mesh whose
+rows overflow the 4-influence cap independently of `_1` -- so the `_1`-only glob
+this used to run was not a sample of the pack, it was a blind spot over half of
+it. Measured on the shipped pack when the scoping was fixed: bad-sum verts went
+868 -> 2469 while the file count only doubled, so weight 0 carries ROUGHLY 1.8x
+the damage weight 1 does. Spot-checked per piece first and it holds there too --
+on the two worst greave/combined pairs, 984 bad verts at weight 0 against 420 at
+weight 1, and 593 against 426. This tool GATES (exit 1), so the half it could
+not see was half a gate.
+
     python scripts/analysis/verify_weight_invariant.py [--limit N] [--all]
 
 Read-only. Resolves the output via the live MO2 instance (CBBE2UBE_MO2_INI).
 """
 from __future__ import annotations
 
-import glob
 import os
 import sys
 from pathlib import Path
@@ -49,6 +59,7 @@ sys.path.insert(0, str(_REPO / ".pynifly"))
 from pyn import pynifly                                    # noqa: E402
 from src import paths                                      # noqa: E402
 from src.weights import check_weight_invariant             # noqa: E402
+from scripts.analysis import standoff_audit as sa          # noqa: E402
 
 OUT_MOD = os.environ.get("CBBE2UBE_OUT_MOD", "CBBEtoUBE Auto")
 
@@ -66,12 +77,14 @@ def main() -> int:
         print("output not found (set CBBE2UBE_MO2_INI + convert first).")
         return 1
 
-    files = [f for f in glob.glob(str(root / "**" / "*_1.nif"), recursive=True)
-             if "1stperson" not in f.lower()]
+    # BOTH weights -- see WEIGHTS: above. `output_nifs` also owns the
+    # first-person filter, which the hand-rolled `"1stperson" not in f` here
+    # spelled too narrowly: it let 7 short-prefix `1stp*` meshes through.
+    files = [str(p) for p in sa.output_nifs(root)]
     if limit:
         files = files[:limit]
     from scripts.analysis._census_common import require_population
-    require_population(files, "_1 NIF(s) under the output")  # 0/0 is not a pass
+    require_population(files, "converted NIF(s) under the output, both weights")
     print(f"checking {len(files)} mesh(es) under {root}\n", flush=True)
 
     tot_over = tot_bad = n_shapes = 0

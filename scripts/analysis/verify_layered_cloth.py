@@ -22,6 +22,13 @@ carry NO body HDT-SMP jiggle bones that weren't in their SOURCE -- i.e. the graf
 CTDs FSMP on equip is gone. Any mesh that still shows grafted SMP bones means the fix
 did NOT land for it (stale exe / incremental skip) -- fix that before testing in-game.
 
+WEIGHTS: both weights, via `standoff_audit.output_nifs`. The failure this hunts is
+named in the line above -- a STALE EXE or an INCREMENTAL SKIP -- and both are
+per-FILE: `x_1.nif` can be rebuilt by the fixed exe in the same run that skips
+`x_0.nif`, leaving the grafted SMP bones in place on the half nobody looked at.
+Equipping either half CTDs FSMP, so a `_1`-only scan could report "safe to
+equip-test" over exactly the file that crashes.
+
     python scripts/analysis/verify_layered_cloth.py
 
 Read-only; resolves sources via the live MO2 instance (CBBE2UBE_MO2_INI).
@@ -29,7 +36,6 @@ Read-only; resolves sources via the live MO2 instance (CBBE2UBE_MO2_INI).
 import os
 import re
 import sys
-import glob
 from pathlib import Path
 
 _REPO = Path(__file__).resolve().parent.parent.parent
@@ -37,6 +43,7 @@ sys.path.insert(0, str(_REPO))
 sys.path.insert(0, str(_REPO / ".pynifly"))
 from pyn import pynifly                        # noqa: E402
 from src import paths, discovery               # noqa: E402
+from scripts.analysis import standoff_audit as sa   # noqa: E402
 
 OUT_MOD = os.environ.get("CBBE2UBE_OUT_MOD", "CBBEtoUBE Auto")
 _SUFFIX = re.compile(r"^(.*?)[_ ]([A-Za-z]|\d{1,2})$")
@@ -71,8 +78,9 @@ def main():
         print(f"output not found: {out_root}\n(run a reconvert first)")
         return 1
 
-    files = [f for f in glob.glob(str(out_root / "**" / "*_1.nif"), recursive=True)
-             if "1stperson" not in f.lower()]
+    # BOTH weights -- see WEIGHTS: above. `output_nifs` also owns the
+    # first-person filter, which the hand-rolled test here spelled too narrowly.
+    files = [str(p) for p in sa.output_nifs(out_root)]
     print(f"scanning {len(files)} converted meshes for layered cloth...", flush=True)
     layered = {}
     for f in files:

@@ -25,27 +25,9 @@ from scripts import tool_audit  # noqa: E402
 # Frozen 2026-09-20. To remove a name: make the tool use `output_nifs`, or say
 # in its docstring which weights it reads and why -- then delete the line.
 KNOWN_HALF_PACK = frozenset({
-    "scripts/analysis/band_class_census.py",
-    "scripts/analysis/bust_gap_score.py",
-    "scripts/analysis/collect_fit_dataset.py",
-    "scripts/analysis/collect_penetration_census.py",
-    "scripts/analysis/find_morph_follow_gaps.py",
-    "scripts/analysis/find_overinflation.py",
     "scripts/analysis/fit_audit.py",
     "scripts/analysis/multipose_census.py",
-    "scripts/analysis/nipple_clearance.py",
     "scripts/analysis/phase1_antipoke_population_ab.py",
-    "scripts/analysis/postreconvert_audit.py",
-    "scripts/analysis/registered_bone_audit.py",
-    "scripts/analysis/single_swing_census.py",
-    "scripts/analysis/snugness_census.py",
-    "scripts/analysis/source_delta_census.py",
-    "scripts/analysis/verify_bodymatch.py",
-    "scripts/analysis/verify_bust_clearance.py",
-    "scripts/analysis/verify_layered_cloth.py",
-    "scripts/analysis/verify_motion_match.py",
-    "scripts/analysis/verify_weight_invariant.py",
-    "scripts/sanity_check_converted.py",
 })
 
 

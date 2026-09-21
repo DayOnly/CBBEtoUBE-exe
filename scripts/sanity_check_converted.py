@@ -44,6 +44,17 @@ Feet shapes against the source UBE refs and reports:
 Exits 0 on all-clear, 1 on any check failure. Suitable for chaining
 after the batch convert in a build script.
 
+WEIGHTS: both weights, via `standoff_audit.output_nifs`. Every check above is
+per-FILE -- a shape either got injected into THIS NIF or it did not, a stale
+plug-mesh is either in THIS NIF or it is not -- and `x_0.nif` is written by its
+own pass, so it can lose BaseShape/Hands/Feet while `x_1.nif` is perfect. The
+`_1`-only glob this used to run made the catastrophic-regression check blind to
+half the files it exists to protect, which is the worst place in the tree for
+that blind spot: this is the gate you run INSTEAD of loading a savegame.
+`output_nifs` also drops first-person meshes, which the old glob did not filter
+at all -- `1stpersonmournoutfitf_1.nif` was being sanity-checked as if it were a
+body-slot armor.
+
 Usage:
   python scripts/sanity_check_converted.py
   python scripts/sanity_check_converted.py --output 'D:\\path\\to\\mod' --max 8
@@ -66,6 +77,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent / "analysis"))
 from src import nif_io  # noqa: E402
 from fold_census import score as _fold_score  # noqa: E402
+import standoff_audit as _sa  # noqa: E402
 
 DEFAULT_OUTPUT = Path(os.environ.get("CBBE2UBE_MODS_ROOT", "") + r"\mods\CBBEtoUBE Auto")
 SOURCE_BODY = Path(
@@ -104,7 +116,8 @@ def find_body_nifs(mod_dir: Path):
     meshes = mod_dir / "meshes"
     if not meshes.is_dir():
         return
-    for p in meshes.rglob("*_1.nif"):
+    # BOTH weights, and first-person excluded -- see WEIGHTS: above.
+    for p in _sa.output_nifs(meshes):
         try:
             nif = nif_io.load_nif(p)
         except Exception:

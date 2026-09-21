@@ -16,6 +16,33 @@ before any census number is believed.
 POPULATION DISCIPLINE: every piece that is not scored is counted under a named
 reason and printed. A census that cannot say why it looked at N and scored M
 cannot tell "nothing is wrong" from "I measured nothing".
+
+WEIGHTS: `_1` only -- a DECLARED BLIND SPOT, not a correct scoping, and the one
+exclusion the discipline above never counted. This widened the census across
+BOTH convert PATHS; it never widened it across both WEIGHTS. It scores per-file
+clip area, and a `_0` mesh is separately authored: `standoff_audit.output_nifs`
+records bust-front clipping at 4.52% on weight 1 against 9.48% on weight 0 --
+the very metric `--band bust` measures here.
+
+DO NOT fix it by swapping the glob. Three things are pinned to weight 1, and each
+would turn `_0` rows into believable wrong numbers:
+  1. the COPY-PATH template body is `nc._find_ube_femalebody("_1")` -- and the
+     copy path is most of the pack;
+  2. the preset comes from `morph_clip_test._load_preset`, which reads the
+     BodySlide `big` (weight-100) side only -- a `_0` mesh would be morphed with
+     slider values that never ship on it;
+  3. `--every N` strides a SORTED list (`cands[::a.every]`). With both weights
+     `foo_0` sorts beside `foo_1`, so any EVEN stride silently becomes a
+     weight-0-ONLY census. Measured on the shipped pack (1032 garments, every
+     one with both weights): `--every 2` picks 1032 files, 100.0% of them
+     `_0`; `--every 4` the same; `--every 3` splits 50/50. `acceptance.py`
+     passes this stride straight through from `CBBE2UBE_CLIP_EVERY`.
+It also feeds FIVE rows of `acceptance.py` (morph/bind clip shares and
+percentiles), so widening re-baselines all five with nothing to check them by.
+
+To close it: resolve the template and the preset side from each file's own
+weight suffix, stride by garment PAIR rather than by file, then widen, then
+re-baseline the acceptance rows in the same change with an old-vs-new A/B.
 """
 import argparse
 import json

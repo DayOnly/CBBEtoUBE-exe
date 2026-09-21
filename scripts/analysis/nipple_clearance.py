@@ -62,6 +62,27 @@ dropped too, so every arm is scored on ONE population.
 
 Nothing here is hardcoded to a machine or a mod: the body comes from
 `canonical_body.canonical_ube()`.
+
+WEIGHTS: `_1` only -- a DECLARED BLIND SPOT, and the one exclusion the paragraph
+above never counts: the whole weight-0 half. Tip clearance is measured per file,
+and a `_0` mesh is separately authored; `standoff_audit.output_nifs` records
+bust-front clipping at 4.52% on weight 1 against 9.48% on weight 0, and the
+nipple tip is where that bust sits.
+
+DO NOT fix it by swapping the glob. `canonical_ube()` takes no weight and
+caches ONE body, resolved through `auto_convert._find_ube_body_ref`, whose first
+choice is `femalebody_tangent_1.nif`. `tip_rays()` builds its origins and
+directions from that weight-1 body once, and every file is scored against them.
+This tool also discards the body injected into each NIF when it collects garment
+shapes, so a `_0` file would hit the weight-1 tip on BOTH convert paths and read
+a believable wrong clearance, never an error.
+
+It is a GATE: `acceptance.py` gates tip p50, tip p05 and "pieces tighter at the
+tip" on it, so widening re-baselines those rows with nothing to check them by.
+
+To close it: give `canonical_ube` a weight (and a per-weight cache key), build
+the tip rays per weight from each file's suffix, then widen, then re-baseline the
+acceptance rows in the same change with an old-vs-new A/B.
 """
 from __future__ import annotations
 

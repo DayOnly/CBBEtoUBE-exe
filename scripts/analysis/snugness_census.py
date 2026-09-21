@@ -52,6 +52,25 @@ void numbers here once ([[project_closest_point_plane_bug]]). Nearest-vertex is
 a slight over-estimate on coarse bodies, but it is the SAME estimator on both
 sides of the ratio, so the bias cancels in the comparison -- which is the number
 being read.
+
+WEIGHTS: `_1` only -- a DECLARED BLIND SPOT, not a correct scope. The unit is
+PER SHAPE (a median ratio over its hugging verts), not a per-garment rate: the
+converter fits each weight separately against its own body, so the two halves'
+standoff is not one shared quantity, and a lost fit at weight 0 is invisible.
+
+DO NOT fix it by swapping the glob. BOTH bodies in the ratio above are pinned
+to weight 1 at their call sites: the CBBE base body is
+`nc._find_cbbe_base_body("_1")` and the UBE body is
+`nc._find_ube_femalebody("_1")`. A `_0` garment would be read against weight-1
+bodies on both sides, and the hug mask and the ambiguous-frame exclusion are
+taken against the same pinned bodies. Unlike the estimator bias above, that
+error does NOT cancel -- it is a different body on each side for every `_0` row.
+
+The fix is small, because both helpers already take a weight and cache per
+weight; only these two call sites pass the literal `"_1"`. Resolve both from
+each file's own suffix, then widen. This census feeds an open investigation;
+widening it moves numbers already recorded there, so do it as its own change
+with an old-vs-new comparison.
 """
 import argparse
 import collections

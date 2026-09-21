@@ -59,6 +59,30 @@ NOTHING HERE IS HARDCODED TO ONE MACHINE OR ONE MOD. The bodies come from
 `canonical_body.find_source`, which matches on GARMENT NAMES and falls back to
 the BSA index -- so a source shipped inside an archive is scored rather than
 silently dropped.
+
+WEIGHTS: `_1` only -- and that is a DECLARED BLIND SPOT, not a correct scoping.
+It is defect 1 above again, on the weight axis: this scores shapes and counts
+penetrating VERTICES, so a `_0` mesh (separately authored, fitted by its own
+run of the clearance code) can be independently defective, and a converter
+change landing mostly on `_0` geometry reads here as "NOT FIRED". It is the
+worse half for this exact quantity: `standoff_audit.output_nifs` records
+bust-front clipping at 4.52% on weight 1 against 9.48% on weight 0.
+
+It is NOT fixed by swapping the glob for `output_nifs`, because two references
+are pinned to weight 1 and would silently corrupt every `_0` row:
+  * the AUTHOR body -- `canonical_body.canonical_cbbe` globs
+    `femalebody_1.nif` only, so a `_0` garment would be read against a weight-1
+    author body and the whole `gap` column would be in the wrong frame;
+  * the COPY-PATH body -- `_body_for(nf, "_1")` in `measure_arm`, so every
+    copy-path `_0` piece would be measured against the weight-1 UBE body.
+Both fail as a believable wrong number, never an error. And this is a GATE
+instrument: `acceptance.py` reads two of its rows (bust gap per path,
+bust-band penetration), so widening the population re-baselines both with
+nothing to validate the new numbers against.
+
+To close it: resolve the author and copy-path bodies from each file's own
+weight suffix, then widen the population, then re-baseline the two acceptance
+rows in the same change with an A/B of old-population against new.
 """
 from __future__ import annotations
 
