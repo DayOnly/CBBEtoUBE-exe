@@ -44,6 +44,27 @@ run that scores nothing exits 2 rather than printing a clean table.
 Read-only. Needs a skeleton NIF (CBBE2UBE_SKELETON_NIF, else the discovered
 XPMSSE skeleton) -- an armour NIF's bone list is flat, so without a real
 skeleton nothing below the hip poses and every piece reads clean.
+
+WEIGHTS: `_1` only -- a DECLARED BLIND SPOT, and the one excluded population the
+"counted under a named reason" rule above never counts. A piece here is one
+FILE: its own verts, skin weights and injected body. That is not a rate the two
+weights share, so a single-swing defect at weight 0 is invisible. The 224 pieces
+cited above are weight-1 files.
+
+DO NOT fix it by swapping the glob. The CONVERTED side is measured on the body
+injected into the same NIF, which would be correct for a `_0` file -- but the
+SOURCE side, which is what separates "inherited" from "introduced", is posed on
+`canonical_body.canonical_cbbe()`: it globs `femalebody_1.nif` only and caches
+one body with no weight in the key. A `_0` source garment would be posed on the
+weight-1 CBBE body, and the source-vs-converted block would pool those
+mismatched comparisons into a believable number.
+
+To close it: resolve the source body from each file's own weight suffix
+(`canonical_cbbe` needs a weight and a per-weight cache key), keep this file's
+first-person stem rule on top of `output_nifs` (it is broader than that helper's
+regex), then widen. This census feeds an open investigation; widening it will
+move numbers that investigation has already recorded, so do it as its own
+change with an old-vs-new comparison.
 """
 from __future__ import annotations
 

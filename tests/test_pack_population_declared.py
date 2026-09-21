@@ -29,8 +29,6 @@ KNOWN_HALF_PACK = frozenset({
     "scripts/analysis/fit_audit.py",
     "scripts/analysis/multipose_census.py",
     "scripts/analysis/phase1_antipoke_population_ab.py",
-    "scripts/analysis/single_swing_census.py",
-    "scripts/analysis/snugness_census.py",
 })
 
 
