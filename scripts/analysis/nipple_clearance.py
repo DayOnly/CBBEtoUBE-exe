@@ -63,26 +63,17 @@ dropped too, so every arm is scored on ONE population.
 Nothing here is hardcoded to a machine or a mod: the body comes from
 `canonical_body.canonical_ube()`.
 
-WEIGHTS: `_1` only -- a DECLARED BLIND SPOT, and the one exclusion the paragraph
-above never counts: the whole weight-0 half. Tip clearance is measured per file,
-and a `_0` mesh is separately authored; `standoff_audit.output_nifs` records
-bust-front clipping at 4.52% on weight 1 against 9.48% on weight 0, and the
-nipple tip is where that bust sits.
+WEIGHTS: both weights, each on its OWN body, reported SEPARATELY. Tip clearance
+is measured per file and a `_0` mesh is separately authored, so the weight-0
+half is scored too: `_0` files against the tip rays of the weight-0 body
+(`canonical_ube(weight="_0")`, the sibling of the weight-1 body -- never the
+weight-1 body itself, which would be the wrong frame).
 
-DO NOT fix it by swapping the glob. `canonical_ube()` takes no weight and
-caches ONE body, resolved through `auto_convert._find_ube_body_ref`, whose first
-choice is `femalebody_tangent_1.nif`. `tip_rays()` builds its origins and
-directions from that weight-1 body once, and every file is scored against them.
-This tool also discards the body injected into each NIF when it collects garment
-shapes, so a `_0` file would hit the weight-1 tip on BOTH convert paths and read
-a believable wrong clearance, never an error.
-
-It is a GATE: `acceptance.py` gates tip p50, tip p05 and "pieces tighter at the
-tip" on it, so widening re-baselines those rows with nothing to check them by.
-
-To close it: give `canonical_ube` a weight (and a per-weight cache key), build
-the tip rays per weight from each file's suffix, then widen, then re-baseline the
-acceptance rows in the same change with an old-vs-new A/B.
+The GATED rows are still weight 1, byte-for-byte what this tool always printed:
+`acceptance.py` gates tip p50, tip p05 and "pieces tighter at the tip" by
+parsing them, and those baselines keep their meaning. Weight 0 follows in its
+own block, worded so the gate cannot mistake it for those rows (see
+`_weight0_lines`). Gating on weight 0 is a separate change to `acceptance.py`.
 """
 from __future__ import annotations
 
@@ -118,9 +109,13 @@ BODY_NAMES = set(nc.UBE_BODY_INJECT_NAMES) | {"3BA"}
 PROXY_NAMES = {"virtualbody", "virtualground", "skirtcol", "buttcol"}
 
 
-def tip_rays():
-    """(origins, directions) for the body's nipple-tip vertices, world space."""
-    body_path, body_shape_name = canonical_ube()
+def tip_rays(weight: str = "_1"):
+    """(origins, directions) for the body's nipple-tip vertices, world space.
+
+    `weight` picks the body: weight 1 as always, or its weight-0 sibling. A
+    missing weight-0 body raises FileNotFoundError rather than quietly reusing
+    the weight-1 rays."""
+    body_path, body_shape_name = canonical_ube(weight)
     shape = next(s for s in NifFile(str(body_path)).shapes
                  if s.name == body_shape_name)
     verts = np.asarray(shape.verts, np.float64)
@@ -184,18 +179,24 @@ def clearance(path, origins, directions):
     return d[hit] if int(hit.sum()) >= MIN_TIP_HITS else None
 
 
-def main(argv) -> int:
-    arms = [(a.split("=", 1) + [a.split("=", 1)[0]])[:2] for a in argv]
-    if not arms:
-        print(__doc__)
-        return 2
-    origins, directions = tip_rays()
-    base = arms[0][0]
-    rels = [os.path.relpath(p, os.path.join(base, "meshes"))
+def _population(base, weight):
+    """Arm 1's `weight` NIFs, meshes-relative, first-person dropped by name.
+
+    For weight 1 this is exactly the population the tool has always scored --
+    the same glob and the same `1stperson` filter -- so the gated rows stay
+    comparable with every recorded run."""
+    return [os.path.relpath(p, os.path.join(base, "meshes"))
             for p in sorted(glob.glob(
-                os.path.join(base, "meshes", "**", "*_1.nif"), recursive=True))
+                os.path.join(base, "meshes", "**", "*" + weight + ".nif"),
+                recursive=True))
             if "1stperson" not in os.path.basename(p).lower()]
 
+
+def _score(arms, rels, origins, directions):
+    """(rows, skip_missing, skip_uncovered, full) over `rels` in EVERY arm.
+
+    A piece missing from, or not covering the tip in, ANY arm is dropped from
+    all of them, so every arm is scored on one population."""
     rows, skip_missing, skip_uncovered = [], 0, 0
     full = {}          # rel -> {label: (distance, hit)}, for the PAIRED block
     for rel in rels:
@@ -215,6 +216,101 @@ def main(argv) -> int:
             full.setdefault(rel, {})[label] = (d, hit)
         if len(vals) == len(arms):
             rows.append((rel, vals))
+    return rows, skip_missing, skip_uncovered, full
+
+
+# Every weight-0 arm row starts with this, so no weight-0 line can match the
+# `^control ...` / `^candidate ...` pattern acceptance.py reads the gate from.
+W0_PREFIX = "w0 "
+
+
+def _weight0_lines(labels, rows, n_rays, n_rels, skip_missing, skip_uncovered):
+    """The weight-0 report, as lines. Pure, so its wording can be tested.
+
+    WORDED SO acceptance.py CANNOT READ IT AS THE GATED ROWS, because it reads
+    three things out of this tool's whole output: the first `^control` and
+    `^candidate` line carrying three numbers, the FIRST `tighter N`, and ANY
+    "0/0 IS NOT A PASS" -- which marks the entire tip row as unmeasured. So each
+    arm row here is prefixed `w0 `, the per-piece line says "less room" / "more
+    room", and an empty weight 0 says so in other words. That last one matters
+    most: printed here, the 0/0 phrase would silently switch off the gate for
+    weight 1 as well.
+    """
+    out = [f"tip vertices cast, weight 0   : {n_rays}",
+           f"`_0` pieces found in arm 1     : {n_rels}",
+           f"  not present in every arm     : {skip_missing}",
+           f"  garment does not cover the tip: {skip_uncovered}",
+           f"pieces covering the nipple in every arm, weight 0: {len(rows)}"]
+    if not rows:
+        out.append("  weight 0: no piece covers the tip in every arm, so "
+                   "nothing was measured at weight 0")
+        return out
+    out.append(f"{'arm, weight 0':<22} {'tip clearance p50':>18} "
+               f"{'p05':>8} {'min':>8}")
+    for lab in labels:
+        allv = np.concatenate([v[lab] for _r, v in rows])
+        out.append(f"{W0_PREFIX + lab:<22} {np.median(allv):>18.3f} "
+                   f"{np.percentile(allv, 5):>8.3f} {allv.min():>8.3f}")
+    if len(labels) >= 2:
+        a, b = labels[0], labels[-1]
+        deltas = [float(np.median(v[b]) - np.median(v[a])) for _r, v in rows]
+        less = len([d for d in deltas if d < -0.005])
+        more = len([d for d in deltas if d > 0.005])
+        out.append(f"  per piece at weight 0, {b} minus {a}: less room {less}"
+                   f"   more room {more}   same {len(deltas) - less - more}"
+                   f"   median delta {np.median(deltas):+.4f}u")
+    return out
+
+
+def _weight0_block(arms):
+    """Score the `_0` files on the weight-0 body and return the report lines.
+
+    INFO in this tool: it never changes the exit code, which stays the gated
+    weight-1 verdict. A weight-0 body that cannot be found, or that the ray
+    setup refuses, is reported as NOT MEASURED instead of aborting the run --
+    by the time this runs the gated report has already printed, and an abort
+    here would hand acceptance.py a failing exit for a weight it does not gate.
+    """
+    out = ["", "=== WEIGHT 0: `_0` files on the weight-0 body "
+               "(info; acceptance.py does not gate on this block yet) ==="]
+    try:
+        origins, directions = tip_rays("_0")
+    except (FileNotFoundError, SystemExit) as e:
+        out.append(f"weight 0 NOT MEASURED -- {e}")
+        return out
+    rels = _population(arms[0][0], "_0")
+    rows, skip_missing, skip_uncovered, _full = _score(
+        arms, rels, origins, directions)
+    return out + _weight0_lines([lab for _d, lab in arms], rows, len(origins),
+                                len(rels), skip_missing, skip_uncovered)
+
+
+def main(argv) -> int:
+    arms = [(a.split("=", 1) + [a.split("=", 1)[0]])[:2] for a in argv]
+    if not arms:
+        print(__doc__)
+        return 2
+    # The exit codes are spelled out HERE, not passed through: `tool_map` reads
+    # a tool's gate from the literal returns of `main`, and `return rc` would
+    # hide that this tool exits 1 when no piece covers the tip.
+    rc = _report_weight1(arms)
+    for line in _weight0_block(arms):
+        print(line)
+    if rc == 1:
+        return 1                   # 0/0 at weight 1 is not a pass
+    return 0
+
+
+def _report_weight1(arms) -> int:
+    """The GATED report: weight 1, byte-for-byte what this tool always printed.
+
+    `acceptance.py` parses its arm rows, its first `tighter N` and its 0/0
+    line, so nothing here may change without changing the gate with it."""
+    origins, directions = tip_rays()
+    base = arms[0][0]
+    rels = _population(base, "_1")
+    rows, skip_missing, skip_uncovered, full = _score(
+        arms, rels, origins, directions)
 
     print(f"tip vertices cast              : {len(origins)}")
     print(f"`_1` pieces found in arm 1     : {len(rels)}")

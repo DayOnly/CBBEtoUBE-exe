@@ -1147,4 +1147,44 @@ PAIRS = (
          tests=('tests/test_bust_gap_score_weights.py',),
          expect=('test_author_baseline_uses_the_weight0_author_body',),
     ),
+    # nipple_clearance's weight-0 block is read by acceptance.py too. Three ways
+    # it could hijack the gated tip rows -- a row that parses as one, a "tighter"
+    # the gate takes first, and the 0/0 phrase that switches the whole tip row
+    # off -- and the weight-1 pin coming back.
+    Pair('NCW-a', 'weight-0 tip rows lose their prefix and parse as gated rows',
+         edits=(
+             ('scripts/analysis/nipple_clearance.py',
+              'W0_PREFIX = "w0 "',
+              'W0_PREFIX = ""  # MUTATED', 1),
+         ),
+         tests=('tests/test_nipple_clearance_weights.py',),
+         expect=('test_no_weight0_line_parses_as_a_gated_arm_row',),
+    ),
+    Pair('NCW-b', 'the weight-0 per-piece line says "tighter"',
+         edits=(
+             ('scripts/analysis/nipple_clearance.py',
+              '        out.append(f"  per piece at weight 0, {b} minus {a}: less room {less}"',
+              '        out.append(f"  per piece at weight 0, {b} minus {a}: tighter {less}"  # MUTATED', 1),
+         ),
+         tests=('tests/test_nipple_clearance_weights.py',),
+         expect=('test_the_weight0_block_never_says_tighter',),
+    ),
+    Pair('NCW-c', 'an empty weight 0 prints the phrase that turns the tip gate off',
+         edits=(
+             ('scripts/analysis/nipple_clearance.py',
+              '        out.append("  weight 0: no piece covers the tip in every arm, so "',
+              '        out.append("  0/0 IS NOT A PASS -- no piece covers the tip, so "  # MUTATED', 1),
+         ),
+         tests=('tests/test_nipple_clearance_weights.py',),
+         expect=('test_an_empty_weight0_never_marks_the_tip_row_unmeasured',),
+    ),
+    Pair('NCW-d', 'weight-0 files are scored on the weight-1 tip rays',
+         edits=(
+             ('scripts/analysis/nipple_clearance.py',
+              '        origins, directions = tip_rays("_0")',
+              '        origins, directions = tip_rays("_1")  # MUTATED', 1),
+         ),
+         tests=('tests/test_nipple_clearance_weights.py',),
+         expect=('test_the_weight0_block_asks_for_the_weight0_body',),
+    ),
 )
