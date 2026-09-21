@@ -170,7 +170,9 @@ def test_a_build_ten_times_the_tolerance_off_is_refused(tmp_path, monkeypatch):
     the reference."""
     ml = Modlist(tmp_path, monkeypatch)
     near = {w: v.copy() for w, v in ZEROED.items()}
-    near["_1"][2] += (0.0, 10 * zb.TOL, 0.0)
+    # A LITERAL 1e-3u, ten times the round-off allowance. Written as
+    # 10 * zb.TOL it grew with any loosened TOL and could never catch one.
+    near["_1"][2] += (0.0, 1e-3, 0.0)
     ml.body("Out", near)
     with pytest.raises(zb.ZeroedBodyError, match="NOT a zeroed"):
         ml.resolve(["Out", "Body Mod"], "_1")
