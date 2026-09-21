@@ -1345,6 +1345,17 @@ other write into the instance. The wrapper was self-tested on a fake path first,
 and the instance was checked afterwards: the file was never created there.
 Flagged as its own task — where the report *should* go is a design decision.
 
+**RESOLVED (same day, the user's call): it writes only to an explicit
+`--out PATH`.** A default run prints its tables and verdict and writes nothing.
+`tests/test_registered_bone_audit_writes.py` runs the real script end to end
+against a stand-in instance and fingerprints it before and after. Each run must
+reach its VERDICT line first, because a run that died early would also write
+nothing. Against the old script the guard fails for the right reason (it
+reaches the verdict at exit 1, then finds the instance changed), and mutation
+pair RBW-a reinstates the old default write. `postreconvert_audit --record`
+writes into the pack's mod folder too, but only when asked; the user kept that
+behaviour and it is now stated in the tool's docstring.
+
 ## Four more declared blind spots — the swap-safety test decides it
 
 A keyword scan flagged weight-1 pin signals in ALL SEVEN remaining expensive

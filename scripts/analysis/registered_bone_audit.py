@@ -29,9 +29,16 @@ same rule the converter uses) and reports `ours - declared - (author - declared)
 exactly as the guard computes it -- then splits by shape class and, for the ones
 we can act on, by whether a declared ancestor exists ON THAT SHAPE.
 
-    python scripts/analysis/registered_bone_audit.py [<pack meshes/!UBE>] [<MO2 ini>]
+    python scripts/analysis/registered_bone_audit.py [<pack meshes/!UBE>] [<MO2 ini>] [--out PATH]
 
 Exit 0 clean / 1 a violation we caused / 2 nothing measured.
+
+WRITES NOTHING unless `--out PATH` is given; then the per-shape rows go to
+PATH as JSON, and only there. The default pack lives INSIDE the modlist
+instance, and a measuring tool must not change what it measures: until
+2026-09-21 this wrote `registered_bone_audit.json` beside the pack on every
+run -- into the instance, and before the verdict printed. The tables and the
+verdict on stdout are the report; the JSON is an opt-in extract.
 
 MEASURED 2026-08-23 on the pre-fix pack: 10 violating shapes over 174 checked
 pieces, every one a shape WE create (a `<name>Col` bust-split clone), and ZERO
@@ -58,6 +65,7 @@ added can free-fall a piece that previously worked.
 SKELETON DISCIPLINE: paths exported before the first nif_convert call, bone count
 asserted -- an unloaded skeleton makes every bone read as unparented.
 """
+import argparse
 import collections
 import json
 import os
@@ -72,8 +80,19 @@ from pathlib import Path
 _REPO = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(_REPO / ".pynifly"))
 sys.path.insert(0, str(_REPO))
-if len(sys.argv) > 2:
-    os.environ["CBBE2UBE_MO2_INI"] = sys.argv[2]
+_ap = argparse.ArgumentParser(
+    description="Collider/softbody bones WE added that the piece's own physics "
+                "XML never declares. Exit 0 clean / 1 violation / 2 nothing "
+                "measured.")
+_ap.add_argument("pack", nargs="?", type=Path,
+                 help="pack meshes/!UBE (default: the CBBEtoUBE Auto mod's)")
+_ap.add_argument("mo2_ini", nargs="?", help="ModOrganizer.ini to resolve sources")
+_ap.add_argument("--out", type=Path, metavar="PATH",
+                 help="write the violating rows as JSON to PATH (default: "
+                      "write nothing)")
+ARGS = _ap.parse_args()
+if ARGS.mo2_ini:
+    os.environ["CBBE2UBE_MO2_INI"] = ARGS.mo2_ini
 
 from src import paths                                   # noqa: E402
 _lay = paths.discover_layout()
@@ -87,7 +106,7 @@ print(f"actor skeleton: {len(_parents)} parent link(s)")
 if len(_parents) < 100:
     raise SystemExit("SKELETON UNLOADED -- refusing to report.")
 
-PACK = Path(sys.argv[1]) if len(sys.argv) > 1 else (
+PACK = ARGS.pack or (
     Path(paths.mods_root()) / "CBBEtoUBE Auto" / "meshes" / "!UBE")
 _en = paths.enabled_mods(_lay)
 _mods = [d for d in sorted(_lay.mods_root.iterdir())
@@ -178,11 +197,14 @@ for k, v in by_shape.most_common(25):
 print("\n=== BONES WE ADDED ===")
 for k, v in by_bone.most_common(15):
     print(f"  {v:5}  {k}")
-# BESIDE THE PACK, not in the repo: an audit must not leave artefacts in
-# the source tree (repo hygiene fails on them, and they go stale).
-out = PACK.parent.parent / "registered_bone_audit.json"
-out.write_text(json.dumps(rows, indent=1), encoding="utf-8")
-print(f"\nwrote {out} ({len(rows)} violating shape instance(s))")
+# ONLY where the caller says. Never beside the pack (that is inside the modlist
+# instance) and never in the repo (hygiene fails on artefacts, and they go stale).
+if ARGS.out:
+    ARGS.out.write_text(json.dumps(rows, indent=1), encoding="utf-8")
+    print(f"\nwrote {ARGS.out} ({len(rows)} violating shape instance(s))")
+else:
+    print(f"\n{len(rows)} violating shape instance(s); no file written "
+          f"(--out PATH writes them as JSON)")
 
 # EXIT CODE so a reconvert can be GATED on this, not merely informed by it.
 #   0 clean   1 a violation WE caused   2 nothing measured
