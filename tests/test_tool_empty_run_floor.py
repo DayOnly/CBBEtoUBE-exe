@@ -96,9 +96,20 @@ def test_no_tool_wraps_sys_stdout_buffer():
     a no-op on one that does not support it, so there is no reason to
     reintroduce the wrapper. Frozen by absence: the count may go down.
     """
+    # mutation_pairs.py is a CATALOGUE of deliberately-broken code: CAC-k arms
+    # this very ratchet by carrying the banned idiom as a replacement string.
+    # Any source-scanning ratchet collides with it, so it is skipped -- but
+    # only after checking it really is the pair catalogue, so the exemption
+    # cannot silently widen to a file that merely gets renamed into place.
+    catalogue = _REPO / "scripts" / "mutation_pairs.py"
+    assert "from scripts.mutation_gate import Pair" in catalogue.read_text(
+        encoding="utf-8"), "the skipped file is no longer the pair catalogue"
+
     bad = []
     for d in ("scripts", "src"):
         for p in sorted((_REPO / d).rglob("*.py")):
+            if p == catalogue:
+                continue
             if "TextIOWrapper(sys.stdout.buffer" in p.read_text(
                     encoding="utf-8", errors="replace"):
                 bad.append(str(p.relative_to(_REPO)))
