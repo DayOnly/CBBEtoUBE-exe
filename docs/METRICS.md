@@ -1053,3 +1053,200 @@ measurements, not the function. Candidates, in the order they are cheap to check
 This does not touch the finding itself: we still sit −0.432u deeper at p05 over
 n=97. It removes one candidate mechanism, and it removes the temptation to "fix" a
 function whose arithmetic already forbids the defect.
+
+# 2026-09-20 — seven of the 21 half-pack tools resolved, and one of them was right all along
+
+The ratchet (`tests/test_pack_population_declared.py`) froze 21 tools that
+enumerate the pack with a `*_1.nif` glob and never say so. Freezing stops the
+count growing; it fixes nothing. This is the first tranche actually resolved,
+in small groups with the tool's output captured on the shipped pack BEFORE and
+AFTER each change.
+
+**The rule is DECLARE, not "always both weights".** Six of the seven here read
+both weights now. The seventh was already correct and only needed to say so —
+and finding that is the result, not a failure to convert it.
+
+## The population, and why the ratio is not 2.0
+
+    raw rglob("*_1.nif") on the shipped pack        1295
+      of those, first-person (1stperson OR 1stp)     263
+    output_nifs(root) default, BOTH weights         2064   (1032 + 1032)
+    output_nifs(root, weights="1")                  1032
+
+So a tool that already filtered first-person moves **1039 -> 2064 = x1.987**
+(+1032 weight-0, MINUS 7 short-prefix `1stp*` meshes), and a tool that did not
+filter at all moves **1295 -> 2064 = x1.594**. Every count below is one of
+those two cases; where a headline moved differently, the reason is stated.
+
+**A second, uncounted bug fell out of this.** Four of the five hand-rolled the
+first-person test as `"1stperson" not in f.lower()`; the fifth,
+`sanity_check_converted`, had no such filter AT ALL. `output_nifs` uses the
+regex `1stperson|1stp`, and the short prefix is real: it leaked 7 weight-1
+meshes into the four that filtered, and first-person meshes accounted for **94
+of the 336 rows in `sanity_check_converted`'s body-slot population**. Routing
+the enumeration through the shared helper fixes that for free and puts the rule
+in one place instead of five.
+
+## Verdicts
+
+| tool | verdict | headline before -> after |
+|---|---|---|
+| `verify_weight_invariant` | BOTH WEIGHTS | bad-sum verts **868 -> 2469** |
+| `verify_bodymatch` | BOTH WEIGHTS | re-sourced 18 -> 36; cut-in **0 -> 1** |
+| `verify_layered_cloth` | BOTH WEIGHTS | layered 12 -> 24; grafted 0 -> 0 |
+| `verify_motion_match` | `_1` ONLY, CORRECT | findings **byte-identical** |
+| `sanity_check_converted` | BOTH WEIGHTS | body-slot NIFs 336 -> 484 |
+| `find_morph_follow_gaps` | BOTH WEIGHTS | zone-flags 386 -> 772, **different sets** |
+| `find_overinflation` | BOTH WEIGHTS | flagged 9 -> 15; weight 0 NOT the worse half |
+
+## `verify_weight_invariant` — it was half a gate
+
+    meshes         1039 -> 2064   (x1.99)
+    shapes         3134 -> 6242   (x1.99)
+    bad-sum verts   868 -> 2469   (x2.84)   <- the finding
+    worst dev     +0.171 -> +0.173
+    exit code         1 -> 1
+
+The file count doubled and the defect count nearly TRIPLED. Weight 0 carries
+about **1601 of the 2469** offending verts against weight 1's 868 — roughly
+1.8x the damage on the half that was never read. Spot-checked per piece first,
+using the repo's own `check_weight_invariant`, and it held there too: on the
+two worst pairs, 984 bad verts at weight 0 vs 420 at weight 1, and 593 vs 426.
+
+This tool EXITS 1. It was gating the build over half its own defect population.
+
+## `verify_bodymatch` — a real defect was hiding at weight 0
+
+    scanned              1039 -> 2064   (x1.99)
+    re-sourced             18 ->   36   (exactly x2)
+    cut in over an area     0 ->    1
+
+The re-sourced set doubling exactly is itself a result: the body-match rule
+re-sources both halves of every pair, as it should. The new flag is a weight-0
+draugr cuirass cutting in over **12 vertices**; its `_1` partner reads 6, under
+the `>=8` area threshold. The piece sat just below the flag line on the half
+that was measured and above it on the half that was not, and the tool printed
+"the rest sit clean" over it.
+
+## `verify_layered_cloth` — a clean negative worth having
+
+    scanned        1039 -> 2064
+    layered meshes   12 ->   24   (exactly x2)
+    grafted SMP       0 ->    0
+
+The failure this hunts is a stale exe or an incremental skip, and both are
+per-FILE: a `_0` half could have kept the graft that CTDs FSMP while its `_1`
+was rebuilt. It did not. That is now measured instead of assumed.
+
+## `verify_motion_match` — `_1` only is CORRECT, and now says so
+
+The rubric's per-file heuristic points at "both weights" and is WRONG here.
+What the tool measures is not the `_1` mesh, it is the per-garment BODYTRI:
+
+* `#tri-write-once` — the tri stem drops the weight suffix, so `x_0.nif` and
+  `x_1.nif` derive the SAME `x.tri`.
+* Confirmed on the shipped pack: **1889 `.tri` files, ZERO carrying a `_0`/`_1`
+  suffix.** One table per garment pair.
+* `_tri_is_owning_variant` records that **`_0` owns it**, measured.
+* The tool builds the tri path by stripping `_1.nif`, so the glob is a PAIRING
+  KEY onto that one shared file.
+
+Enumerating `_0` too would re-open the identical table and print every row
+twice. Worse, the hugging mask is taken against a body pinned to weight 100, so
+feeding `_0` meshes through it would measure a low-weight garment against a
+high-weight body and manufacture false hits.
+
+Routed through `output_nifs(root, weights="1")` anyway, to own the first-person
+rule in one place:
+
+    scanned  1039 -> 1032        (-7 short-prefix `1stp*`)
+    hugging shapes off ratio       12 -> 12
+    rigid props at shear risk       0 ->  0
+
+**The whole before/after diff is ONE LINE, the scan count.** Every finding is
+byte-identical — the proof that the 7 dropped meshes were arms-only and
+contributed nothing.
+
+DECLARED BLIND SPOT, not fixed: the hug mask is weight-dependent, so a shape
+that hugs only on the LOW-weight silhouette is never scored. Closing that needs
+a second body load, not a glob change.
+
+## `sanity_check_converted` — reconciles to zero residual
+
+    body-slot NIFs (--max 100000)   336 -> 484
+    all pass                        336 -> 484
+    exit code                         0 ->   0
+
+336 -> 484 is x1.44, neither of the two expected ratios, and it reconciles
+exactly:
+
+    BEFORE  336 = 242 non-first-person + 94 FIRST-PERSON
+    AFTER   484 = 242 weight-1         + 242 weight-0, first-person 0
+
+The weight-1 set is **identical across the change: 0 rows added, 0 removed.**
+The delta is exactly -94 first-person +242 weight-0. This tool had NO
+first-person filter at all, so **28% of what it sanity-checked as body-slot
+armor was first-person arm meshes**, while the entire weight-0 half went
+unchecked. It is the gate you run INSTEAD of loading a savegame.
+
+## The two triage tools — and a result that points the other way
+
+Both measure per-shape against the body injected into the SAME NIF, so a `_0`
+file brings its own weight-0 body and its own separately authored garment.
+Neither loads a weight-pinned reference body and neither parses a preset, so
+the population swap alone is sound. Both keep the `/m/` male-path exclusion.
+
+    find_morph_follow_gaps   scanned 1038 -> 2062   zone-flags 386 -> 772
+    find_overinflation       scanned 1038 -> 2062   flagged      9 ->  15
+
+`find_morph_follow_gaps`: the total doubled, **but the sets are not the same.**
+In the printed worst-ranked rows, 10 zone-flags exist ONLY at weight 0 and 2
+ONLY at weight 1. Equal counts, different content — weight 0 was not a copy of
+what was already reported, it was 386 unexamined observations that happen to
+number the same. The tool's own first line names the morph it is about as
+`_0<->_1`, the weight slider, so reading one weight was measuring the
+follow-through of one silhouette and calling it the pack's.
+
+`find_overinflation`: **weight 0 is NOT the worse half here, and that is the
+result.**
+
+    weight-1 flag set   IDENTICAL before and after (all 9 kept, none added)
+    flagged at BOTH      6
+    flagged at w1 only   3
+    flagged at w0 only   0
+
+Every weight-0 flag belongs to a piece already flagged at weight 1, and three
+pieces stand off at weight 1 while sitting clean at weight 0. The class thesis
+— "the missing half is the WORSE half" — was measured on bust-front CLIPPING.
+It does not transfer to STANDOFF. The gain here is coverage, and an unchanged
+weight-1 set proving no regression; it is not a bigger number.
+
+Why 2062 and not 2064: `output_nifs` returns 2064 and the `/m/` filter removes
+2 male-path meshes. Before was 1038 for the same reason. 1038 -> 2062 is
+x1.986, i.e. +1031 weight-0 MINUS the 7 leaked `1stp*` meshes — and those 7
+contributed no flags, which is why both weight-1 halves are unchanged.
+
+## What was NOT done, and why
+
+* `fit_audit.py` is **DEAD and stays on the list.** It raises AttributeError at
+  line 310 (`sliderset_gen.MORPH_SHAPE_CAP` exists nowhere in the repo) on
+  every run, so no before/after is possible. Recorded BLOCKED, not fixed.
+* `single_swing_census` and `snugness_census` feed the live crotch-band lead and
+  were deliberately left alone: changing their population would move the lead's
+  numbers mid-investigation.
+* **`band_class_census` must NOT be converted by a glob swap.** Three things in
+  it are pinned to weight 1 and would manufacture numbers: the copy-path
+  template body (`_find_ube_femalebody("_1")`, and the copy path is most of the
+  pack), the preset (`_load_preset` takes the `big` / weight-100 side only), and
+  `--every N`, which strides a SORTED list where `foo_0` and `foo_1` are
+  adjacent — so `--every 2` would silently become a weight-0-only census.
+
+## Correction to the record
+
+`registered_bone_audit.py` and `phase1_antipoke_population_ab.py` have been
+described as LIBRARY MODULES. They are not. Neither has a `__main__` guard, but
+both are top-level scripts with module-level code that reads `sys.argv`, and
+neither is imported anywhere. They run as `python <path> [pack]`, so a CLI
+before/after capture IS possible for them.
+
+KNOWN_HALF_PACK: **21 -> 14.** HPK-a and HPK-b both CAUGHT.
