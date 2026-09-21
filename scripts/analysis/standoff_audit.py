@@ -232,8 +232,16 @@ class ClipTester:
 AGREE_U = 0.25           # closer than this and the two frames agree
 
 
-def pick_frame(raw, world, tree, *, agree_u: float = AGREE_U):
+def pick_frame(raw, world, tree, *, agree_u: float = AGREE_U,
+               with_margin: bool = False):
     """(verts, which) -- whichever candidate frame actually lands on `tree`.
+
+    With `with_margin`, returns (verts, which, margin): how DECISIVE the choice
+    was, as the ratio of the loser's distance to the winner's, and `inf` when
+    the frames agree. `snugness_census` excludes a shape whose margin is under
+    3.0 rather than guessing at it, and that exclusion is the only reason this
+    third value exists -- the default stays a 2-tuple so the other callers are
+    untouched.
 
     `_verts_skin_to_world` is a NORMALIZER, not a conversion: a shape already
     stored in world carries an identity transform and comes back untouched. The
@@ -261,8 +269,11 @@ def pick_frame(raw, world, tree, *, agree_u: float = AGREE_U):
     dr = float(np.median(tree.query(raw)[0]))
     dw = float(np.median(tree.query(world)[0]))
     if abs(dr - dw) < agree_u:
-        return raw, "agree"
-    return (raw, "raw") if dr < dw else (world, "world")
+        return (raw, "agree", float("inf")) if with_margin else (raw, "agree")
+    if dr < dw:
+        return (raw, "raw", dw / max(dr, 1e-6)) if with_margin else (raw, "raw")
+    return ((world, "world", dr / max(dw, 1e-6)) if with_margin
+            else (world, "world"))
 
 
 def output_nifs(root, weights: str = "both", exclude_first_person: bool = True):

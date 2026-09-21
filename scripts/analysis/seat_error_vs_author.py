@@ -151,11 +151,12 @@ def _pick_frame(shape, tree):
         w = _world(shape)
     except Exception:
         return raw, "raw"
-    dr = float(np.median(tree.query(raw)[0]))
-    dw = float(np.median(tree.query(w)[0]))
-    if abs(dr - dw) < _AGREE_U:
-        return raw, "agree"
-    return (raw, "raw") if dr <= dw else (w, "world")
+    # THE RULE LIVES IN `standoff_audit`, ONCE. This was a third copy of it,
+    # and a rule kept in three places is one that gets changed in one of them.
+    # Byte-identical behaviour: the copy read `dr <= dw` where the shared one
+    # reads `dr < dw`, and that branch is unreachable -- an exact tie has
+    # `abs(dr - dw) == 0`, which the agree test takes first.
+    return sa.pick_frame(raw, w, tree, agree_u=_AGREE_U)
 
 
 def _unplaced(off) -> bool:

@@ -29,12 +29,21 @@ chooser gets pinned here rather than trusted, including the case that a naive
 "the margin must be decisive" guard gets wrong.
 """
 import re
+import sys
 from pathlib import Path
 
 import numpy as np
 import pytest
 
 _REPO = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(_REPO))
+sys.path.insert(0, str(_REPO / "scripts" / "analysis"))
+
+# The REAL shared rule, not a stand-in. `pick_frame` here now delegates to
+# `standoff_audit.pick_frame`, so these tests judge the composed behaviour --
+# this file's wrapper plus the rule it calls. Substituting a fake would let the
+# wrapper pass while the rule it delegates to was broken.
+import standoff_audit as sa  # noqa: E402
 
 
 _SRC = (_REPO / "scripts" / "analysis" / "snugness_census.py").read_text(
@@ -50,7 +59,7 @@ def _load():
     namespace would make every test below a KeyError rather than a pass, and a
     silently-renamed constant should fail loudly here.
     """
-    ns = {"np": np}
+    ns = {"np": np, "sa": sa}
     consts = re.findall(r"^([A-Z][A-Z_]*) = ([0-9.]+)\s", _SRC, re.M)
     assert len(consts) >= 4, f"expected the census constants, found {consts}"
     for name, val in consts:
