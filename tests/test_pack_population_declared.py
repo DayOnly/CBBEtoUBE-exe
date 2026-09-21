@@ -25,14 +25,12 @@ from scripts import tool_audit  # noqa: E402
 # Frozen 2026-09-20. To remove a name: make the tool use `output_nifs`, or say
 # in its docstring which weights it reads and why -- then delete the line.
 KNOWN_HALF_PACK = frozenset({
-    "scripts/analysis/collect_fit_dataset.py",
     "scripts/analysis/collect_penetration_census.py",
     "scripts/analysis/fit_audit.py",
     "scripts/analysis/multipose_census.py",
     "scripts/analysis/phase1_antipoke_population_ab.py",
     "scripts/analysis/single_swing_census.py",
     "scripts/analysis/snugness_census.py",
-    "scripts/analysis/source_delta_census.py",
 })
 
 

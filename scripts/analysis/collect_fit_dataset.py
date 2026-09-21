@@ -31,6 +31,30 @@ number.
     python scripts/analysis/collect_fit_dataset.py [--out FILE] [--limit N] [--no-rays]
 
 One JSON object per line. Read-only; safe to run while a conversion is in progress.
+
+WEIGHTS: `_1` only -- a DECLARED BLIND SPOT, and it contradicts "the WHOLE
+converted output" above: this sweeps half of it. Every row is a per-shape
+measurement, and a `_0` mesh is separately authored, so the half it skips can
+be independently wrong.
+
+DO NOT fix it by swapping the glob for `standoff_audit.output_nifs`. The body
+every garment is measured against is `body_context()`, which calls
+`nc._find_ube_femalebody("_1")` and is built ONCE for the whole run. A `_0` file
+on either convert path would be measured against the weight-1 body, and so
+would the nipple-apex and butt ray origins derived from it. Nothing errors: the
+clearance columns read the wrong frame, and the exposure rays start outside a
+`_0` garment that sits inside the fuller weight-1 bust, so they escape and read
+as exposed -- a believable "weight 0 is far worse" that the geometry does not
+support.
+
+To close it: build `body_context` per weight from each file's own suffix, add a
+`weight` column so rows stay separable, then widen. Two cautions for whoever
+does: the output is opened for writing BEFORE the first NIF is read, so pass a
+fresh `--out` or a failed run truncates the previous dataset; and
+`output_nifs` returns Path objects, on which the `rel = f.replace(...)` string
+edit becomes `Path.replace` (the rename method) with too many arguments -- it
+raises TypeError on the FIRST file, after the output is already truncated.
+Convert with `str(p)`.
 """
 from __future__ import annotations
 

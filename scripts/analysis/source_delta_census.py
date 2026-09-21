@@ -36,6 +36,28 @@ inverted one armour from +0.7 to +83.3, i.e. from "authored" to "our fault". The
 is chosen by GARMENT SHAPE-NAME OVERLAP with the output, which ties both sides to the
 same garment.
 
+WEIGHTS: `_1` only -- a DECLARED BLIND SPOT, and "pack-wide" in the first line
+means half the pack. The delta is per file, and a `_0` mesh is separately
+authored: the converter can regress a garment at one weight and not the other.
+
+DO NOT fix it by swapping the glob. BOTH sides of the delta are posed on a body
+pinned to weight 1, and both come from `canonical_body`, which caches one body
+per side with no weight in the key:
+  * the CONVERTED side uses `canonical_ube()`, resolved through
+    `auto_convert._find_ube_body_ref`, whose first choice is
+    `femalebody_tangent_1.nif`;
+  * the SOURCE side uses `canonical_cbbe()`, which globs `femalebody_1.nif` only.
+The pose pivots, the arm-weight mask and the region vertex selection are all
+read off that same pinned body too, so a `_0` garment would be posed and scored
+in the weight-1 frame on both sides -- a believable delta, never an error.
+
+To close it: give both `canonical_*` helpers a weight and a per-weight cache key
+(otherwise whichever weight is asked for first wins for the whole run), pose
+each file on the bodies matching its own suffix, then widen. The region
+constants were measured on the UBE body without a stated weight; weight moves
+the radius more than the height, so the z-bands should carry over, but the
+lateral arm cut deserves a check on `_0`.
+
 Read-only. Resolves the output via the live MO2 instance (CBBE2UBE_MO2_INI).
 """
 from __future__ import annotations
