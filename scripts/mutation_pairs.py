@@ -968,4 +968,109 @@ PAIRS = (
          tests=('tests/test_glow_log_path.py',),
          expect=('test_when_nothing_can_be_written_it_says_so',),
     ),
+    # #cannot-abort-controls (2026-09-20): an AST census over the 101 script
+    # paths in docs/TOOL_MAP.md found six runnable tools with no nonzero exit
+    # path at all. On an empty pack every one returned 0 -- scan_output_health
+    # printing "=== SCAN DONE ===" over zero NIFs, scan_nude_skin_chain
+    # printing the word FATAL. Each guard below is armed in the direction that
+    # restores the false success, because that is the direction a person acts
+    # on: a tool that wrongly reports a problem gets investigated, one that
+    # wrongly reports success gets shipped.
+    Pair('CAC-a', 'the health scan all-clears a directory it read nothing from',
+         edits=(
+             ('scripts/scan_output_health.py',
+              '    require_population(nifs, f"NIFs under {meshes}")',
+              '    pass  # MUTATED: 0 NIFs is a pass again', 1),
+         ),
+         tests=('tests/test_tool_empty_run_floor.py',),
+         expect=('test_health_scan_over_zero_nifs_is_not_a_pass',),
+    ),
+    Pair('CAC-b', 'an incomplete scope outranks a real defect',
+         edits=(
+             ('scripts/scan_output_health.py', '    if flagged or missing:',
+              '    if False:  # MUTATED: defects lose to scope', 1),
+         ),
+         tests=('tests/test_tool_empty_run_floor.py',),
+         expect=('test_a_real_defect_outranks_an_incomplete_scope',),
+    ),
+    Pair('CAC-c', 'FATAL goes back to exiting 0',
+         edits=(
+             ('scripts/analysis/scan_nude_skin_chain.py',
+              '        # (or a person skimming) read success from a scan that traced nothing.',
+              '        return  # MUTATED: FATAL reports success again', 1),
+         ),
+         tests=('tests/test_tool_empty_run_floor.py',),
+         expect=('test_fatal_does_not_exit_zero',),
+    ),
+    Pair('CAC-d', 'the SMP patcher treats an unread directory as clean',
+         edits=(
+             ('scripts/disable_unconstrained_smp.py',
+              '    if len(broken) + kept == 0:',
+              '    if False:  # MUTATED: examined nothing is a verdict again', 1),
+         ),
+         tests=('tests/test_tool_empty_run_floor.py',),
+         expect=('test_smp_patcher_separates_bad_path_from_nothing_found',),
+    ),
+    Pair('CAC-e', 'renames that failed are reported as a completed patch',
+         edits=(
+             ('scripts/disable_unconstrained_smp.py', '    if errs:',
+              '    if False:  # MUTATED: partial patch reads as complete', 1),
+         ),
+         tests=('tests/test_tool_empty_run_floor.py',),
+         expect=('test_smp_patcher_reports_renames_that_failed',),
+    ),
+    Pair('CAC-f', 'a half-applied collider pair stops being detected',
+         edits=(
+             ('scripts/build_body_collider_proxy.py',
+              '    return injected != repointed',
+              '    return False  # MUTATED: every pair looks consistent', 1),
+         ),
+         tests=('tests/test_tool_empty_run_floor.py',),
+         expect=('test_half_applied_armor_is_detected',),
+    ),
+    Pair('CAC-g', 'a batch with no candidates reports success',
+         edits=(
+             ('scripts/build_body_collider_proxy.py', '        if not xmls:',
+              '        if False:  # MUTATED: 0 armors is done', 1),
+         ),
+         tests=('tests/test_tool_empty_run_floor.py',),
+         expect=('test_collider_batch_over_no_candidates_is_not_success',),
+    ),
+    Pair('CAC-h', 'a plugin with no ARMA group is a clean strip again',
+         edits=(
+             ('scripts/strip_nude_handfeet.py', '    if arma_g is None:',
+              '    if False:  # MUTATED: nothing to examine is success', 1),
+         ),
+         tests=('tests/test_tool_empty_run_floor.py',),
+         expect=('test_strip_on_a_plugin_with_no_arma_group_is_not_a_clean_strip',),
+    ),
+    Pair('CAC-i', 'a no-op strip rewrites the deployed plugin anyway',
+         edits=(
+             ('scripts/strip_nude_handfeet.py', '    if not nuke_fids:',
+              '    if False:  # MUTATED: re-serialise for nothing', 1),
+         ),
+         tests=('tests/test_tool_empty_run_floor.py',),
+         expect=('test_strip_does_not_rewrite_a_plugin_it_changed_nothing_in',),
+    ),
+    Pair('CAC-j', 'the seam control goes back to being printed and ignored',
+         edits=(
+             ('scripts/augment_nude_tri.py', '        if seam_n == 0:',
+              '        if False:  # MUTATED: write the no-op transfer', 1),
+         ),
+         tests=('tests/test_tool_empty_run_floor.py',),
+         expect=('test_no_seam_coincidence_refuses_to_write',),
+    ),
+    # The ratchet, armed by REINTRODUCING the idiom it bans. The wrapper takes
+    # ownership of sys.stdout.buffer and closes it on GC, under whoever else
+    # holds it; under pytest that is the global capture file, and every later
+    # test dies in teardown. Six tools carried it, all six are converted.
+    Pair('CAC-k', 'a tool goes back to wrapping sys.stdout.buffer',
+         edits=(
+             ('scripts/analysis/fit_audit.py',
+              '    sys.stdout.reconfigure(encoding="utf-8", errors="replace")',
+              '    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")  # MUTATED', 1),
+         ),
+         tests=('tests/test_tool_empty_run_floor.py',),
+         expect=('test_no_tool_wraps_sys_stdout_buffer',),
+    ),
 )

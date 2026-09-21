@@ -862,3 +862,194 @@ distribution is not bimodal in this population, the mean is hiding nothing, and
 the threshold stands. Recorded because the hunch is plausible and cheap to
 re-form: it has been checked. Do not re-open it without a population where that
 number is not zero.
+
+# 2026-09-20 — six tools could not report failure, and four of them write to disk
+
+The frame audit closed on a question it could not answer about itself: `bust_verdict`
+returned "clean at rest ... next step is an in-game A/B" at **exit 0** on a robe 42u
+from the body. Nothing consumed that exit code — a person read the sentence. So the
+follow-up question is not "which tools are wrong" but **which tools are incapable of
+being wrong**.
+
+## The census
+
+An AST pass over the 101 script paths named in `docs/TOOL_MAP.md`, collecting every
+`sys.exit` / `exit` / `raise SystemExit` argument and flagging files where every
+argument is a constant `0`/`None`:
+
+| | count |
+|---|---|
+| library modules (no `__main__`) | 15 |
+| runnable tools that CAN exit nonzero | 80 |
+| **runnable tools that CANNOT** | **6** |
+
+The predicate misses `argparse`'s `.error()`, which exits 2. Re-checked by hand:
+one of the six (`build_body_collider_proxy`) has one, and it is a *usage* guard.
+None of the six could report a **semantic** failure. An uncaught exception still
+exits nonzero, so these tools failed loudly when they crashed and silently when
+they did nothing — which is the wrong way round.
+
+## Measured before the fix, each pointed at an empty pack
+
+```
+scan_output_health          rc=0  "=== SCAN DONE ==="
+disable_unconstrained_smp   rc=0  "(dry-run; pass --apply to rename)"
+build_body_collider_proxy   rc=0  "processed 0 NIFs"
+strip_nude_handfeet         rc=0  "need esp path"
+scan_nude_skin_chain        rc=0  "FATAL: no UBE_AllRace.esp found"
+```
+
+The last one prints the word FATAL and returns success. The first prints an
+affirmative all-clear over zero NIFs.
+
+## Verdicts
+
+| tool | verdict | the number |
+|---|---|---|
+| `scan_output_health` | **BROKEN** | `=== SCAN DONE ===` over 0 NIFs, rc=0; a wrong `out_dir` = a healthy pack |
+| `scan_nude_skin_chain` | **BROKEN** | two `FATAL` paths, both `return` → rc=0 |
+| `disable_unconstrained_smp` | **BROKEN** | rglob on a missing dir yields nothing, raises nothing → "0 to disable"; all renames failing → rc=0 |
+| `strip_nude_handfeet` | **BROKEN** | no ARMA group → every loop empty → `--apply` re-serialises a deployed ESP and prints "saved" |
+| `build_body_collider_proxy` | **BROKEN** | "processed N" counted NIFs VISITED; NIF and XML halves could diverge unreported |
+| `augment_nude_tri` | **BROKEN** | `seam_n` — the control the whole method rests on — printed and never acted on |
+
+`TOOL_MAP.md`'s `gate` column now reads a real exit code for all six, where it
+read `—` for every one of them before.
+
+## What the fix is, and what it is not
+
+None of the six is invoked by another script or by CI — the consumer is a **person
+reading a terminal**. So an exit code alone would not have helped; the no-data case
+also has to *look* different from the clean case. Both halves were applied: the
+existing shared `require_population` (exit 3, "0/0 is not a pass") where there is a
+countable population, and verdict lines that carry the population instead of a bare
+`DONE`.
+
+**Not done, deliberately:** `scan_nude_skin_chain`'s coverage matrix is not graded
+into an exit code. `--MISSING` cells are legitimate mid-build, and turning them red
+would change what an existing run reports with no measurement behind it.
+
+**Named, not fixed:** `augment_nude_tri.nif_verts` reads `shape.verts` RAW. Body and
+part are separate NIFs with their own transforms, so a non-identity global-to-skin on
+either drives `seam_n` to 0 — the `standoff_audit.pick_frame` class again, reached
+from the other side (a tool that *should* normalise and never did). Measuring it needs
+a nude build; the new guard at least makes the symptom impossible to miss.
+
+## A landmine found on the way
+
+Six tools carry `sys.stdout = io.TextIOWrapper(sys.stdout.buffer, ...)`. The new
+wrapper **owns** that buffer and closes it when garbage-collected, under whoever else
+holds it. Importing one inside pytest closes the global capture file and every later
+test dies on "I/O operation on closed file" — which is how the first draft of these
+tests came to assert on an empty string while only the exit code was really checked.
+Both the no-seam path and the nothing-augmented path exit 3, so without the message
+the test could not tell which guard had fired.
+
+All six converted to `sys.stdout.reconfigure()`, which mutates the existing stream
+instead and is a no-op on one that does not support it; non-ascii output verified
+unchanged. The other three — `fit_audit`, `scan_morph_issues`,
+`sanity_check_converted` — had no test importing them *yet*; the first one to do so
+would have hit it.
+
+Ratcheted, with the **mechanism pinned rather than assumed**: a test wraps a
+`BytesIO`, drops the wrapper, collects, and asserts the buffer is closed. If CPython
+ever stops doing that the test fails and says the ratchet's reason is gone, instead
+of a banned string outliving the justification nobody can any longer explain.
+`mutation_pairs.py` is exempt — CAC-k arms this ratchet by carrying the banned idiom
+as a replacement string — and the exemption asserts the file really is the pair
+catalogue before skipping it. That collision was caught by the ratchet itself, and
+the gate correctly refused to judge anything while the baseline was red.
+
+## The control
+
+Every guard was checked in the direction that matters *and* the direction that does
+not: a directory holding a properly constrained XML still exits 0, a plugin that does
+have a nude-skin ARMA still strips and saves, and a seam-coincident part still
+transfers and writes. A guard that turns healthy runs red is worse than the bug.
+
+11 mutation pairs, CAC-a..k, all CAUGHT.
+
+## Found while converting the three: `fit_audit.py` has never run
+
+Smoke-testing the three tools converted off the stdout wrapper turned up a
+different defect in one of them, and it is the opposite of this lane's class:
+
+```
+fit_audit.py  rc=1  AttributeError: module 'src.sliderset_gen'
+                    has no attribute 'MORPH_SHAPE_CAP'
+```
+
+Line 306, before any work. Reproduced on unmodified `testing`, so it is not
+this lane's doing. `MORPH_SHAPE_CAP` appears **nowhere else in the repo** —
+not in `sliderset_gen`, not anywhere — and `git log -S` finds nothing because
+the constant predates the clean-slate re-root. **The tool has not run since.**
+
+Verdict: **BROKEN — dead reference.** Deliberately NOT patched. `cap` feeds
+`morphing = set(tri_order[:cap])`, which is what makes `CUT_NO_FALLBACK` and
+`CUT_HIGH_MORPH` fire at all. The nearest real constant, `tri.TRI_MAX_SHAPES
+= 0xFFFF`, is the PIRT header's encoding ceiling, not a per-NIF morph cap;
+substituting it would let every shape morph, so both checks would never fire
+again — a tool that runs, reports, and cannot find anything. That is strictly
+worse than one that crashes, and it is the exact failure this audit exists to
+remove.
+
+The open question is not "what number goes there" but **whether the per-NIF
+morph cap still exists as a concept in this codebase**. `sliderset_gen:413`
+still orders shapes so that "if the per-NIF morph cap ever fires, low-impact
+rigid props are dropped first", so something believes in it. Resolve that
+before assigning a value.
+
+# 2026-09-20 — conform CANNOT manufacture the too-close population it is blamed for
+
+Read-only follow-up to the open caveat on the crotch-band lead, which read:
+*"reading `conform_to_source_standoff` at defaults it should be a no-op on
+already-too-close verts, so either the stage covers more or the two measure
+offset differently; resolve before editing that function."*
+
+**Resolved: the two measure offset differently. The stage does not cover more.**
+
+`authored_offset_ledger` counts "too CLOSE" as `err < 0`, where `err = ours −
+authored`. It attributes the growth 24.1% → 64.8% to the `conform` stage. But at
+defaults the arithmetic bounds the result:
+
+```
+tight   = max(min(s_src, s_cur), min_clear_v)        # min_clearance = 0.25
+blend_v = blend_tight + _b*(1 - blend_tight)         # blend_tight = 0.3, so blend_v <= 1
+target  = s_cur + (tight - s_cur) * blend_v
+move    = min(target - s_cur, 0.0)                   # pull IN only
+```
+
+When `move < 0` we need `tight < s_cur`, which forces `min(s_src, s_cur) = s_src`,
+hence `tight >= s_src`; and `blend_v <= 1` gives `target >= tight`. So
+**`target >= s_src` always** — conform can never land a vertex closer to the body
+than the author's own standoff, as conform measures it.
+
+Brute-forced over 2,000,000 random `(s_src, s_cur)` pairs on `[-2, 6]u`, replicating
+`nif_convert_fitgeom.py:1469-1537` exactly:
+
+| | |
+|---|---|
+| verts conform MOVED | 920,618 of 2,000,000 (46.0%) |
+| of those, ending closer than the author (`err_after < 0`) | **0** |
+| worst `err_after` among moved verts | **+0.000000** (bound is tight, never crossed) |
+| pushed from not-too-close INTO too-close | **0** |
+| already too close, and moved | **0** — max `abs(move)` = 0.000000 |
+
+The bust anti-poke block further down the same function pushes **out**, so it cannot
+create `err < 0` either, and `conform_margin` only raises `tight`.
+
+**So do NOT edit `conform_to_source_standoff` on the strength of the ledger's
+attribution.** The number to chase is the disagreement between the two
+measurements, not the function. Candidates, in the order they are cheap to check:
+
+1. conform derives `s_src` from its **own** nearest-neighbour correspondence
+   (`cKDTree(src_body_verts).query(src_cloth)`); the ledger pairs independently, so
+   the same vertex can carry two different "authored" values.
+2. the ledger measures the **shipped** garment — after anti-poke, panel rigidity and
+   coherence repair — not conform's immediate output.
+3. the stage dump labelled `conform` may bracket neighbouring passes, so the label
+   attributes more than the function.
+
+This does not touch the finding itself: we still sit −0.432u deeper at p05 over
+n=97. It removes one candidate mechanism, and it removes the temptation to "fix" a
+function whose arithmetic already forbids the defect.

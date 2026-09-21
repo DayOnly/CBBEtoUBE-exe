@@ -50,14 +50,18 @@ Usage:
 """
 import os
 import argparse
-import io
 import sys
 from pathlib import Path
 
 import numpy as np
 
 # Make the project importable for nif_io.
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+# See the note in augment_nude_tri.py: wrapping sys.stdout.buffer makes the
+# wrapper close that buffer on GC, under whoever else is holding it.
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+except (AttributeError, ValueError):
+    pass
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent / "analysis"))
 from src import nif_io  # noqa: E402

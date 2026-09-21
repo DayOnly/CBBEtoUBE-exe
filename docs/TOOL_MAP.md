@@ -45,7 +45,7 @@ Two more tracked scripts are excluded as doc GENERATORS rather than measurements
 | `scripts/analysis/preset_ab_score.py` | 3 | yes | A/B TWO BUILDS OF A PIECE under many body presets, and name the REGRESSIONS. |
 | `scripts/analysis/registered_bone_audit.py` | 1, 2 | yes | POST-RECONVERT GATE: XML-registered shapes carrying bones WE ADDED that the piece's own physics XML never declares. |
 | `scripts/analysis/scan_morph_issues.py` | 1 | yes | Programmatic scan of converted NIFs for morph issues across the whole output mod |
-| `scripts/analysis/scan_nude_skin_chain.py` | — | — | COMPLETE scan: what governs nude hands/feet/body rendering on a UBE race |
+| `scripts/analysis/scan_nude_skin_chain.py` | 3 | — | COMPLETE scan: what governs nude hands/feet/body rendering on a UBE race |
 | `scripts/analysis/single_swing_census.py` | 2 | yes | PACK CENSUS of the SINGLE-THIGH SWING class: garment vertices over the crotch and gluteal band that carry ONE thigh's weight over skin that moves with neither, so one leg swinging drags them into the buttock and the inner thigh |
 | `scripts/analysis/snugness_census.py` | 2 | yes | IS THE CLOTHING AS SNUG AS ITS AUTHOR MADE IT? -- author-relative, per path |
 | `scripts/analysis/source_delta_census.py` | — | yes | What did the CONVERTER make worse? Source-vs-converted pose delta, pack-wide |
@@ -66,7 +66,7 @@ Two more tracked scripts are excluded as doc GENERATORS rather than measurements
 | `scripts/install_rcs.py` | — | — | Install RaceCompatibility SKSE + UBE compatibility mods into MO2 |
 | `scripts/postflight_1_2.py` | 3 | yes | Post-reconvert health check for the 1.2 bust-follow release |
 | `scripts/sanity_check_converted.py` | 1 | — | Pre-test sanity check on converted body-slot armor NIFs |
-| `scripts/scan_output_health.py` | — | — | Health scan of a converted UBE output mod. |
+| `scripts/scan_output_health.py` | 1, 3 | yes | Health scan of a converted UBE output mod. |
 | `scripts/verify_install.py` | — | — | Verify the RCS / UBE install: - modlist.txt structure (entries present, no duplicates, AIO state) - plugins.txt structure (ESMs first, no duplicates, our entries enabled) - Mod folder contents (DLLs, ESPs, scripts present) - Master dependency chain (every ESP/ESM's masters are themselves enabled) - File-conflict priorities (newer mods win where needed) |
 
 ## Reads NIFs given to it
@@ -97,7 +97,7 @@ Two more tracked scripts are excluded as doc GENERATORS rather than measurements
 | `scripts/analysis/qa_conform_audit.py` | 2 | — | QA audit for the fitted-cloth body-conform pass. |
 | `scripts/analysis/verify_chain_shift.py` | 2 | — | Did #chain-body-shift actually move the cloth? A/B two converted NIFs |
 | `scripts/analysis/weight_pair_tri_names.py` | 2, 3 | yes | DEAD SLIDERS AT WEIGHT 100: does each `_0`/`_1` half name anything in its own tri? #pair-tri-names |
-| `scripts/build_body_collider_proxy.py` | — | — | Generate a low-poly body-collider proxy and inject it into converted armors whose HDT-SMP XML uses the FULL 29k-vert BaseShape as the per-triangle collider (280 such armors). |
+| `scripts/build_body_collider_proxy.py` | 1, 2, 3 | yes | Generate a low-poly body-collider proxy and inject it into converted armors whose HDT-SMP XML uses the FULL 29k-vert BaseShape as the per-triangle collider (280 such armors). |
 | `scripts/build_identity.py` | — | — | Build identity: what a build stamps into the exe and leaves beside it |
 | `scripts/release_gate.py` | 2 | — | Release gate: does a tagged build come from the tree it is tagged on? |
 
@@ -137,11 +137,11 @@ Two more tracked scripts are excluded as doc GENERATORS rather than measurements
 | `scripts/analysis/seat_error_vs_author.py` | 1, 2 | — | HOW FAR IS THE GARMENT FROM WHERE ITS AUTHOR PUT IT -- the one fit metric that measures fidelity rather than a side effect |
 | `scripts/analysis/standoff_audit.py` | — | — | The validated fit metrics: CLIPPING (is skin coming through) and STANDOFF (how far off the body does it sit). |
 | `scripts/analysis/verify_skin_exposure.py` | — | — | Ray-based skin exposure: is a patch of BODY visible through the armour? |
-| `scripts/augment_nude_tri.py` | — | — | Augment UBE nude hands/feet .tri morph tables so they follow EVERY body slider that moves the shared wrist/ankle seam |
-| `scripts/disable_unconstrained_smp.py` | — | — | Live-patch: disable the converter's UNCONSTRAINED HDT-SMP XMLs (a per-vertex / per-triangle collision setup with NO <generic-constraint> = no spring forces). |
+| `scripts/augment_nude_tri.py` | 3 | yes | Augment UBE nude hands/feet .tri morph tables so they follow EVERY body slider that moves the shared wrist/ankle seam |
+| `scripts/disable_unconstrained_smp.py` | 1, 2, 3 | yes | Live-patch: disable the converter's UNCONSTRAINED HDT-SMP XMLs (a per-vertex / per-triangle collision setup with NO <generic-constraint> = no spring forces). |
 | `scripts/inspect_archives.py` | — | — | Peek inside the new UBE-related archives to see what they ship |
 | `scripts/mutation_gate.py` | 2 | — | Mutation gate: prove that the guards can fail. |
-| `scripts/strip_nude_handfeet.py` | — | — | Surgically remove nude/actor-skin hand/feet (and any body-skin) ARMAs from a deployed ESP, plus any ARMO armature (MODL) refs to them. |
+| `scripts/strip_nude_handfeet.py` | 2, 3 | — | Surgically remove nude/actor-skin hand/feet (and any body-skin) ARMAs from a deployed ESP, plus any ARMO armature (MODL) refs to them. |
 
 ## Invocations, as each tool documents itself
 

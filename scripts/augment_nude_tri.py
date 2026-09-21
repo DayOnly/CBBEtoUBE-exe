@@ -38,11 +38,20 @@ Usage:
 """
 from __future__ import annotations
 import os
-import io, sys, shutil
+import sys, shutil
 from pathlib import Path
 import numpy as np
 from scipy.spatial import cKDTree
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+# reconfigure(), NOT a fresh TextIOWrapper around sys.stdout.buffer: the
+# wrapper takes ownership of that buffer and CLOSES it when garbage-collected,
+# underneath whoever else holds it. Importing this module inside pytest closed
+# the global capture file and killed every later test with "I/O operation on
+# closed file". reconfigure mutates the existing stream; on a stream that does
+# not support it (an already-wrapped capture object) it is a no-op.
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+except (AttributeError, ValueError):
+    pass
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from src import nif_io
 from src import tri as tri_mod
@@ -97,11 +106,13 @@ def main():
     print(f"BODY: shape={body_shape.name!r} verts={nB} sliders={len(body_shape.morphs)}")
     body_morphs = {m.name: m for m in body_shape.morphs}
 
+    missing, augmented = [], []
     for label, (pdir, stem) in PARTS.items():
         ptri_path = pdir / f"{stem}.tri"
         pnif = pdir / f"{stem}_1.nif"
         if not ptri_path.is_file() or not pnif.is_file():
             print(f"\n{label}: MISSING ({ptri_path.name} / {pnif.name}) -- skip")
+            missing.append(label)
             continue
         ptri = tri_mod.TriFile.load(ptri_path)
         pshape = ptri.shapes[0]
@@ -122,6 +133,25 @@ def main():
         near_n = int((falloff > 0).sum())
         print(f"   seam-coincident verts (d<0.5): {seam_n}; "
               f"within falloff (d<{R_FALL:g}): {near_n}/{nP}")
+
+        # seam_n IS the control for this whole method, and it was printed and
+        # then ignored. The transfer works by the wrist/ankle ring being
+        # spatially coincident with the body's: with no coincident vert there
+        # is no correspondence, every transferred delta is ~0, every slider is
+        # pruned, and --apply rewrote the .tri unchanged and reported success.
+        #
+        # NOTE (named, not fixed): `nif_verts` reads shape.verts RAW. Body and
+        # part are separate NIFs with their own transforms, so a non-identity
+        # global-to-skin on either would put them in different frames and drive
+        # seam_n to 0 -- the same class as the standoff_audit.pick_frame work.
+        # Fixing that needs a nude build to measure against; this guard at
+        # least makes the symptom impossible to miss.
+        if seam_n == 0:
+            print(f"   {label}: NO seam-coincident vert -- the body and this "
+                  "part are not in a shared frame, or were built at different "
+                  "presets. Transfer would be a no-op; refusing to write.")
+            missing.append(label + "(no-seam)")
+            continue
 
         added = 0
         pruned = 0
@@ -149,6 +179,13 @@ def main():
         print(f"   pruned (no effect on this part): {pruned}")
         print(f"   resulting slider count: {len(new_morphs)}")
 
+        if added == 0:
+            # Nothing to transfer: rewriting the .tri would produce a file
+            # identical to the backup and print WROTE, which reads as a fix.
+            print(f"   {label}: 0 sliders transferred -- nothing to write.")
+            missing.append(label + "(0-transferred)")
+            continue
+
         if apply:
             bak = ptri_path.with_suffix(".tri.preaug.bak")
             if not bak.exists():
@@ -162,6 +199,17 @@ def main():
                   f"reload sliders={len(chk.shapes[0].morphs)}")
         else:
             print("   (dry run -- pass --apply to write)")
+        augmented.append(label)
+
+    # State the population. "two skip lines and exit 0" was a successful run.
+    print(f"\nparts augmented: {len(augmented)}/{len(PARTS)} "
+          f"{augmented if augmented else ''}")
+    if missing:
+        print(f"NOT augmented: {missing}")
+    if not augmented:
+        print("NOTHING was augmented -- this run changed no morph table. "
+              "Check CBBE2UBE_NUDE_BUILD and the reasons above.")
+        raise SystemExit(3)
 
 if __name__ == "__main__":
     main()

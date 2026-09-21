@@ -29,10 +29,15 @@ Reports per-UBE-race coverage for slots 32 (body) / 33 (hands) /
 """
 from __future__ import annotations
 import os
-import io, struct, sys, glob
+import struct, sys, glob
 from pathlib import Path
 
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+# See the note in augment_nude_tri.py: wrapping sys.stdout.buffer makes the
+# wrapper close that buffer on GC, under whoever else is holding it.
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+except (AttributeError, ValueError):
+    pass
 # parent.parent was `scripts/`, which owns neither src/ nor .pynifly/.
 _REPO = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(_REPO))
@@ -128,7 +133,10 @@ def main():
     for rk, mod, p in all_cands[:8]:
         print(f"   rank={rk if rk<10**9 else 'NOT-ENABLED'}  {mod}")
     if win is None:
-        print("FATAL: no UBE_AllRace.esp found"); return
+        # This printed the word FATAL and then `return`ed -- exit 0. A shell
+        # (or a person skimming) read success from a scan that traced nothing.
+        print("FATAL: no UBE_AllRace.esp found")
+        raise SystemExit(3)
     print(f"\n=> WINNING UBE_AllRace.esp: {win[1]}  ({win[2]})\n")
 
     e = esp.ESP.load(win[2])
@@ -163,7 +171,9 @@ def main():
     if skin is None:
         print("FATAL: 00UBE_SkinNaked ARMO not found in winning file "
               "(may be defined in a master / overridden elsewhere)")
-        # still try: scan all ARMAs for slot 33/37 coverage below
+        # still try: scan all ARMAs for slot 33/37 coverage below -- but the
+        # chain this tool exists to trace was NOT traced, so the run cannot
+        # end in success. Carried to the exit at the bottom of main().
     else:
         # SkinNaked armatures = MODL 4-byte FID list
         arm_fids = [struct.unpack("<I", d)[0]
@@ -235,6 +245,15 @@ def main():
         variants = [v[1]["edid"] for v in arma_by_low.values()
                     if v[1]["edid"] == base or v[1]["edid"].startswith(base + "_")]
         print(f"  {base}: {len(variants)} variant(s) -> {sorted(variants)[:6]}{'...' if len(variants)>6 else ''}")
+
+    # Exit 3 = "could not trace the chain", distinct from 0 = "traced it".
+    # NOT graded here: the coverage matrix above can legitimately show
+    # --MISSING / CBBE!! cells on a pack that is mid-build, and turning those
+    # into exit 1 would change what an existing run reports without a
+    # measurement to justify it. Grading them is a separate, measured change.
+    if skin is None:
+        print("\n=== INCOMPLETE: SkinNaked chain not traced (see FATAL above) ===")
+        raise SystemExit(3)
 
 
 if __name__ == "__main__":
