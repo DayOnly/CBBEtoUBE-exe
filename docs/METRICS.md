@@ -1054,7 +1054,7 @@ This does not touch the finding itself: we still sit −0.432u deeper at p05 ove
 n=97. It removes one candidate mechanism, and it removes the temptation to "fix" a
 function whose arithmetic already forbids the defect.
 
-# 2026-09-20 — eleven of the 21 half-pack tools resolved, and one of them was right all along
+# 2026-09-20 — fifteen of the 21 half-pack tools resolved, and one of them was right all along
 
 The ratchet (`tests/test_pack_population_declared.py`) froze 21 tools that
 enumerate the pack with a `*_1.nif` glob and never say so. Freezing stops the
@@ -1062,10 +1062,11 @@ count growing; it fixes nothing. This is the first tranche actually resolved,
 in small groups with the tool's output captured on the shipped pack BEFORE and
 AFTER each change.
 
-**The rule is DECLARE, not "always both weights".** Nine of the eleven here
-read both weights now. One was already correct and only needed to say so; one
-is a declared blind spot that a glob swap would have corrupted. Finding those
-is the result, not a failure to convert them.
+**The rule is DECLARE, not "always both weights".** Nine of the fifteen here
+read both weights now. One was already correct and only needed to say so; FIVE
+are declared blind spots that a glob swap would have corrupted, because they
+measure every file against a body pinned to weight 1. Finding those is the
+result, not a failure to convert them.
 
 ## The population, and why the ratio is not 2.0
 
@@ -1103,6 +1104,10 @@ in one place instead of five.
 | `bust_gap_score` | **`_1` ONLY, DECLARED BLIND SPOT** | AST byte-identical (docstring only) |
 | `registered_bone_audit` | BOTH WEIGHTS, first-person kept | checked 144 -> 288; violations 1 -> 2 (one garment) |
 | `postreconvert_audit` | BOTH WEIGHTS, first-person kept | skirt_proxies 6 -> 12; encloses 0 -> 0 |
+| `band_class_census` | **`_1` ONLY, DECLARED BLIND SPOT** | AST byte-identical; 3 pins, 5 gate rows |
+| `nipple_clearance` | **`_1` ONLY, DECLARED BLIND SPOT** | AST byte-identical; gate |
+| `collect_fit_dataset` | **`_1` ONLY, DECLARED BLIND SPOT** | AST byte-identical |
+| `source_delta_census` | **`_1` ONLY, DECLARED BLIND SPOT** | AST byte-identical; both sides pinned |
 
 ## `verify_weight_invariant` — it was half a gate
 
@@ -1337,6 +1342,47 @@ other write into the instance. The wrapper was self-tested on a fake path first,
 and the instance was checked afterwards: the file was never created there.
 Flagged as its own task — where the report *should* go is a design decision.
 
+## Four more declared blind spots — the swap-safety test decides it
+
+A keyword scan flagged weight-1 pin signals in ALL SEVEN remaining expensive
+tools. That was not evidence: a pin only matters if a `_0` file is actually
+measured against it. Each tool got an independent trace of every reference it
+measures a garment against, plus an adversarial pass trying to refute the
+verdict. All verdicts survived, and three of the seven turned out SAFE — the
+keyword hits were per-weight calls taking a variable, not literal pins.
+
+**The rule that falls out:** a population swap is sound only when every
+reference is either taken from the NIF itself (its own injected `BaseShape`) or
+resolved from the file's own weight suffix. `canonical_body` is the recurring
+trap — `canonical_ube()` and `canonical_cbbe()` take no weight, cache ONE body
+each, and resolve to `femalebody_tangent_1.nif` / `femalebody_1.nif`.
+
+| tool | pin a `_0` file would hit | consumer |
+|---|---|---|
+| `band_class_census` | copy-path template `_find_ube_femalebody("_1")`; preset `big` side only; `--every` stride | 5 acceptance rows |
+| `nipple_clearance` | tip rays from `canonical_ube()`, in-file body discarded | 3 acceptance rows |
+| `collect_fit_dataset` | `body_context()` -> `_find_ube_femalebody("_1")`, built once | none |
+| `source_delta_census` | BOTH sides: `canonical_ube()` and `canonical_cbbe()`, plus pose inputs | none |
+
+**Measured, not asserted — the stride trap.** On the shipped pack all 1032
+garments have both weights, and after a naive widening:
+
+    --every 2   1032 picked, 100.0% `_0`
+    --every 3    688 picked,  50.0% `_0`
+    --every 4    516 picked, 100.0% `_0`
+
+Every change here is docstring-only and proved neutral by AST equality with the
+module docstring removed (band_class `889ca57f`, nipple `cfbef515`, fit_dataset
+`1ba22813`, source_delta `2b298377`). Two claims were caught and corrected
+before commit: "stride 2 is the acceptance setting" (the code default is 1) and
+"`Path.replace` would rename the file" (it raises TypeError — verified).
+
+**Ratchet hole checked and found empty.** The detector clears any tool whose
+text merely contains `output_nifs`. Audited every tool still globbing `*_1.nif`:
+none is cleared by a bare mention — each is on the list, calls `output_nifs`,
+or declares in its docstring. The ratchet's own test treats an IMPORT as
+declaring, so the looseness is by design.
+
 ## What was NOT done, and why
 
 * `fit_audit.py` is **DEAD and stays on the list.** It raises AttributeError at
@@ -1388,4 +1434,4 @@ both are top-level scripts with module-level code that reads `sys.argv`, and
 neither is imported anywhere. They run as `python <path> [pack]`, so a CLI
 before/after capture IS possible for them.
 
-KNOWN_HALF_PACK: **21 -> 10.** HPK-a and HPK-b both CAUGHT.
+KNOWN_HALF_PACK: **21 -> 6.** HPK-a and HPK-b both CAUGHT.
