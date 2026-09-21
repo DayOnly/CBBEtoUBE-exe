@@ -1580,6 +1580,53 @@ weights and cannot pair):
     bust clear p50       1.735u      1.626u
     butt clear p50       1.239u      1.229u
 
+## source_delta_census
+
+Both sides of the delta posed on the file's OWN weight: `canonical_cbbe(w)` for
+the source, `canonical_ube(w)` for the converted side. Population: 235 armours
+per weight -> 470 files, 468 scored (one per weight has no converted garment
+shapes), 0 skipped for want of a body. CONTROL: all 234 weight-1 rows are
+IDENTICAL to the pre-change run with the new `weight` field removed.
+
+                              weight 1    weight 0
+    scored                       234         234
+    regressions > 5pt             55          59
+      > 8pt / > 10pt / > 15pt  34/25/16    34/28/16
+    gated clean                   52          49
+    no matched source             13          14
+
+**No weight-0 penalty in pose-induced exposure.** Paired by garment (234
+pairs), 44 regress at both weights, 15 at weight 0 only, 11 at weight 1 only --
+and 8 of those 15 and 6 of those 11 sit within 1pt of the 5pt line. Over the
+167 pairs with a source at both weights, worst delta w0 - w1 has median
++0.03pt; weight 0 is worse in 85, better in 76 (sign test p = 0.53).
+
+**The one region that moves is the source side learning to see the bust.**
+breast_side is the worst region of 3 weight-1 regressions and 14 weight-0 ones,
+but the CONVERTED side does not change between weights (median conv w0 - w1
+0.00pt, coverage 287 -> 287 breast, 300 -> 300 breast_side). The SOURCE side
+does, and through its denominator: coverage is a ray test (a body vert is
+covered when its outward ray hits the garment), and at weight 1 the CBBE
+reference body pokes through most source garments at the bust.
+
+    garments with < 150 of 300 sampled verts covered, source side
+                     weight 1    weight 0     median covered w1 -> w0
+    breast            98/143      12/143           83 -> 291
+    breast_side       67/148       6/148          157 -> 295
+
+So weight 0 is the first half where both sides see the whole bust, and the
+breast_side rise is where the census can now look, not evidence the converter
+does worse at weight 0. The flip side is OPEN: the weight-1 bust deltas have
+always been measured over a minority of bust verts on the source side -- the
+ones the reference body happens not to poke through -- so weight-1 bust
+regressions may be undercounted. The weight-1 CBBE body is the larger of the two
+(mean radius 10.00 vs 9.47); whether it is larger than the bodies those garments
+were built for is not measured.
+
+`--limit` counts FILES, so a limited run now covers about half as many
+garments, each at both weights. The header's source-body label printed
+`meshes` (four levels up); the mod folder is five.
+
 ## What all four instruments say about weight 0
 
 Every tool that can see it agrees: **at weight 0 the bust sits closer to the

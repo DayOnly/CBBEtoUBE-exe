@@ -1264,4 +1264,24 @@ PAIRS = (
          tests=('tests/test_collect_fit_dataset_weights.py',),
          expect=('test_an_unresolvable_weight0_body_skips_its_files',),
     ),
+    # source_delta_census: both sides of the delta on the file's own weight,
+    # and a missing weight-0 body skips the file instead of falling back.
+    Pair('SDW-a', 'every file is posed on the weight-1 bodies again',
+         edits=(
+             ('scripts/analysis/source_delta_census.py',
+              '            w = weight_suffix_of(p)',
+              '            w = "_1"  # MUTATED', 1),
+         ),
+         tests=('tests/test_source_delta_census_weights.py',),
+         expect=('test_each_file_is_posed_on_its_own_weights_bodies',),
+    ),
+    Pair('SDW-b', 'a missing weight-0 body falls back to the weight-1 bodies',
+         edits=(
+             ('scripts/analysis/source_delta_census.py',
+              '                bodies[w] = None',
+              '                bodies[w] = bodies_for("_1")  # MUTATED', 1),
+         ),
+         tests=('tests/test_source_delta_census_weights.py',),
+         expect=('test_a_missing_weight0_body_skips_its_files',),
+    ),
 )
