@@ -40,11 +40,8 @@ KNOWN_HALF_PACK = frozenset({
     "scripts/analysis/single_swing_census.py",
     "scripts/analysis/snugness_census.py",
     "scripts/analysis/source_delta_census.py",
-    "scripts/analysis/verify_bodymatch.py",
     "scripts/analysis/verify_bust_clearance.py",
-    "scripts/analysis/verify_layered_cloth.py",
     "scripts/analysis/verify_motion_match.py",
-    "scripts/analysis/verify_weight_invariant.py",
     "scripts/sanity_check_converted.py",
 })
 
