@@ -1073,4 +1073,28 @@ PAIRS = (
          tests=('tests/test_tool_empty_run_floor.py',),
          expect=('test_no_tool_wraps_sys_stdout_buffer',),
     ),
+    # #weight-aware-bodies (2026-09-21): `canonical_body` resolves a weight-0
+    # reference body as the SIBLING of the chosen weight-1 file. The two ways
+    # that goes quietly wrong are the two a census cannot see from its output:
+    # handing back the weight-1 body when the sibling is missing, and a cache
+    # that answers a weight-0 request with the weight-1 entry.
+    Pair('CBW-a', 'a missing weight-0 body falls back to the weight-1 body',
+         edits=(
+             ('scripts/analysis/canonical_body.py',
+              '        raise FileNotFoundError(_NO_SIBLING.format(sib=sib.name, p=p))',
+              '        return p  # MUTATED: fall back to weight 1', 1),
+         ),
+         tests=('tests/test_canonical_body_weights.py',),
+         expect=('test_a_missing_sibling_raises_and_never_falls_back_to_weight1',),
+    ),
+    Pair('CBW-b', 'the reference-body cache ignores the weight',
+         edits=(
+             ('scripts/analysis/canonical_body.py',
+              '    k = key + weight',
+              '    k = key  # MUTATED: the cache ignores the weight', 1),
+         ),
+         tests=('tests/test_canonical_body_weights.py',),
+         expect=('test_canonical_cbbe_keys_its_cache_by_weight',
+                 'test_canonical_ube_keys_its_cache_by_weight'),
+    ),
 )

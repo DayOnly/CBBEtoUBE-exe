@@ -60,6 +60,62 @@ PHYSICS_NAMES = {"collision", "hidecollision", "proxy", "proxy2", "proxy3",
 
 _CACHE: dict = {}
 
+_WEIGHTS = ("_0", "_1")
+
+_NO_SIBLING = (
+    "no weight-0 body beside {p}: {sib} is missing. Refusing to fall back to "
+    "weight 1 -- that would measure a `_0` garment in the wrong frame and "
+    "print a believable number instead of an error.")
+
+
+def weight_sibling(path_1, weight: str = "_1") -> Path:
+    """The `weight` variant of a weight-1 body file, from the SAME directory.
+
+    WHY A SIBLING, not a fresh lookup per weight. Every body here is chosen by a
+    rule -- 3BA first then shortest path, the first mod carrying a tangent
+    output. Run that rule again for weight 0 and a modlist with two body mods
+    can hand back a weight-0 body from a DIFFERENT preset than the weight-1 one,
+    so the two halves of one garment are measured against two unrelated bodies.
+    Deriving `_0` from the chosen `_1` file's own directory keeps them a matched
+    pair, and leaves every existing weight-1 choice byte-identical.
+
+    NEVER FALLS BACK. A missing sibling raises. `nif_convert.
+    _weight_matched_ube_ref` DOES fall back to the weight-1 body, deliberately,
+    because the converter must inject something; a measurement must not, so do
+    not use that helper to pick a reference body for scoring.
+    """
+    if weight not in _WEIGHTS:
+        raise ValueError(f"weight must be one of {_WEIGHTS}, not {weight!r}")
+    p = Path(path_1)
+    if weight == "_1":
+        return p
+    if not p.stem.endswith("_1"):
+        raise ValueError(f"not a weight-1 body, so it has no weight-0 sibling "
+                         f"to derive: {p.name}")
+    sib = p.with_name(p.stem[:-len("_1")] + weight + p.suffix)
+    if not sib.is_file():
+        raise FileNotFoundError(_NO_SIBLING.format(sib=sib.name, p=p))
+    return sib
+
+
+def _weighted(key: str, weight: str):
+    """The cached `weight` variant of the weight-1 body cached under `key`.
+
+    Weight 1 keeps its original cache key, so every existing caller -- which
+    passes no weight -- gets exactly the tuple it always got.
+    """
+    if weight not in _WEIGHTS:
+        raise ValueError(f"weight must be one of {_WEIGHTS}, not {weight!r}")
+    if weight == "_1":
+        return _CACHE[key]
+    k = key + weight
+    if k not in _CACHE:
+        p = str(weight_sibling(_CACHE[key][0], weight))
+        nif = pynifly.NifFile(p)
+        sh = max(nif.shapes, key=lambda s: len(s.verts))
+        _CACHE[k] = (p, sh.name)
+    return _CACHE[k]
+
 
 def _resolve_mods_root():
     """The mods root, resolved the way the converter itself resolves it.
@@ -77,12 +133,15 @@ def _resolve_mods_root():
     return root
 
 
-def canonical_cbbe(mods_root=None):
+def canonical_cbbe(mods_root=None, weight: str = "_1"):
     """(path, shape_name) of the CBBE/3BA reference body -- the SOURCE-side body.
 
     `mods_root` defaults to the SAME discovery the converter uses
     (`paths.mods_root()`: the CBBE2UBE_MODS_ROOT env var, else a fresh MO2
     layout discovery), so this works on any machine.
+
+    `weight` is `"_1"` (default, unchanged) or `"_0"`, which returns the
+    weight-0 sibling of the chosen weight-1 body -- see `weight_sibling`.
     """
     if mods_root is None:
         mods_root = _resolve_mods_root()
@@ -96,18 +155,22 @@ def canonical_cbbe(mods_root=None):
         nif = pynifly.NifFile(cands[0])
         sh = max(nif.shapes, key=lambda s: len(s.verts))
         _CACHE["cbbe"] = (cands[0], sh.name)
-    return _CACHE["cbbe"]
+    return _weighted("cbbe", weight)
 
 
-def canonical_ube():
-    """(path, shape_name) of the UBE reference body -- the CONVERTED-side body."""
+def canonical_ube(weight: str = "_1"):
+    """(path, shape_name) of the UBE reference body -- the CONVERTED-side body.
+
+    `weight` is `"_1"` (default, unchanged) or `"_0"`, which returns the
+    weight-0 sibling of the chosen weight-1 body -- see `weight_sibling`.
+    """
     if "ube" not in _CACHE:
         from src import auto_convert as ac
         p = str(ac._find_ube_body_ref())
         nif = pynifly.NifFile(p)
         sh = max(nif.shapes, key=lambda s: len(s.verts))
         _CACHE["ube"] = (p, sh.name)
-    return _CACHE["ube"]
+    return _weighted("ube", weight)
 
 
 def converted_garment_names(conv_path):
