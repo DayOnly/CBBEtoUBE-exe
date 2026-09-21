@@ -29,8 +29,6 @@ KNOWN_HALF_PACK = frozenset({
     "scripts/analysis/bust_gap_score.py",
     "scripts/analysis/collect_fit_dataset.py",
     "scripts/analysis/collect_penetration_census.py",
-    "scripts/analysis/find_morph_follow_gaps.py",
-    "scripts/analysis/find_overinflation.py",
     "scripts/analysis/fit_audit.py",
     "scripts/analysis/multipose_census.py",
     "scripts/analysis/nipple_clearance.py",
