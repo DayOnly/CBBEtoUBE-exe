@@ -32,6 +32,16 @@ wrong. Measured failures of the obvious rules:
 So pair EVERY source garment with the canonical CBBE/3BA body and EVERY converted
 garment with the canonical UBE body. Both sides then differ only in what we changed.
 
+WHICH CANONICAL BODY: BodySlide's ZEROED build, as the game loads it, at the
+file's own weight -- `src/zeroed_body.py`, found by what the slider set builds
+and verified vertex for vertex, never picked by mod name. It used to be "3BA in
+the path, then the shortest path", which on a real modlist chose the 3BA mod
+folder's own femalebody: a preset build the game never loads, up to 1.97u off
+the zeroed body over 16,061 torso vertices. At weight 1 it grew THROUGH
+garments built on the zeroed body, so the source side of source_delta_census
+saw a median 83 of 300 breast vertices as covered, against 291 on the body the
+game loads (measured 2026-09-21).
+
 AND DO NOT DETECT THE BUNDLED BODY AT ALL. The converted output already names its
 garment shapes; the source's garments are the shapes with the SAME names. That is
 exact, needs no threshold, and guarantees both sides measure the same garment --
@@ -40,7 +50,6 @@ geometric rule above, including the robe.
 """
 from __future__ import annotations
 
-import glob
 import sys
 from pathlib import Path
 
@@ -58,8 +67,6 @@ from src.nif_convert import UBE_BODY_INJECT_NAMES                # noqa: E402
 PHYSICS_NAMES = {"collision", "hidecollision", "proxy", "proxy2", "proxy3",
                  "stabilizer"}
 
-_CACHE: dict = {}
-
 _WEIGHTS = ("_0", "_1")
 
 _NO_SIBLING = (
@@ -71,13 +78,13 @@ _NO_SIBLING = (
 def weight_sibling(path_1, weight: str = "_1") -> Path:
     """The `weight` variant of a weight-1 body file, from the SAME directory.
 
-    WHY A SIBLING, not a fresh lookup per weight. Every body here is chosen by a
-    rule -- 3BA first then shortest path, the first mod carrying a tangent
-    output. Run that rule again for weight 0 and a modlist with two body mods
-    can hand back a weight-0 body from a DIFFERENT preset than the weight-1 one,
-    so the two halves of one garment are measured against two unrelated bodies.
-    Deriving `_0` from the chosen `_1` file's own directory keeps them a matched
-    pair, and leaves every existing weight-1 choice byte-identical.
+    WHY A SIBLING, not a fresh lookup per weight. Run a body-picking rule again
+    for weight 0 and a modlist with two body mods can hand back a weight-0 body
+    from a DIFFERENT preset than the weight-1 one, so the two halves of one
+    garment are measured against two unrelated bodies. Deriving `_0` from the
+    chosen `_1` file's own directory keeps them a matched pair. (The canonical
+    bodies below now come from src/zeroed_body.py, which enforces the same rule
+    itself: a weight-0 body from a different folder than weight 1 is refused.)
 
     NEVER FALLS BACK. A missing sibling raises. `nif_convert.
     _weight_matched_ube_ref` DOES fall back to the weight-1 body, deliberately,
@@ -98,23 +105,25 @@ def weight_sibling(path_1, weight: str = "_1") -> Path:
     return sib
 
 
-def _weighted(key: str, weight: str):
-    """The cached `weight` variant of the weight-1 body cached under `key`.
-
-    Weight 1 keeps its original cache key, so every existing caller -- which
-    passes no weight -- gets exactly the tuple it always got.
-    """
-    if weight not in _WEIGHTS:
-        raise ValueError(f"weight must be one of {_WEIGHTS}, not {weight!r}")
-    if weight == "_1":
-        return _CACHE[key]
-    k = key + weight
-    if k not in _CACHE:
-        p = str(weight_sibling(_CACHE[key][0], weight))
-        nif = pynifly.NifFile(p)
-        sh = max(nif.shapes, key=lambda s: len(s.verts))
-        _CACHE[k] = (p, sh.name)
-    return _CACHE[k]
+def _zeroed(kind: str, weight: str, mods_root=None):
+    """(path, shape_name) of BodySlide's zeroed `kind` body at `weight`, as the
+    game loads it. Raises (a FileNotFoundError) rather than hand back another
+    body -- see src/zeroed_body.py for how it is found and verified."""
+    from src import zeroed_body as zb
+    if mods_root is None:
+        z = zb.zeroed_body(kind, weight)
+    else:
+        from src import paths as _p
+        lay = _p.discover_layout()
+        order = _p.enabled_mods_ordered(lay)
+        if order is None:
+            raise zb.ZeroedBodyError(
+                "no MO2 profile found (set CBBE2UBE_MO2_INI): without load "
+                "order it cannot be said which body the game loads")
+        z = zb.zeroed_body(kind, weight, mods_root=Path(mods_root), order=order,
+                           overwrite=_p.overwrite_dir(lay),
+                           data_dirs=lay.game_data_dirs)
+    return str(z.path), z.shape
 
 
 def _resolve_mods_root():
@@ -134,43 +143,18 @@ def _resolve_mods_root():
 
 
 def canonical_cbbe(mods_root=None, weight: str = "_1"):
-    """(path, shape_name) of the CBBE/3BA reference body -- the SOURCE-side body.
-
-    `mods_root` defaults to the SAME discovery the converter uses
-    (`paths.mods_root()`: the CBBE2UBE_MODS_ROOT env var, else a fresh MO2
-    layout discovery), so this works on any machine.
-
-    `weight` is `"_1"` (default, unchanged) or `"_0"`, which returns the
-    weight-0 sibling of the chosen weight-1 body -- see `weight_sibling`.
-    """
-    if mods_root is None:
-        mods_root = _resolve_mods_root()
-    if "cbbe" not in _CACHE:
-        cands = [c for c in glob.glob(
-            str(Path(mods_root) / "**" / "character assets" / "femalebody_1.nif"),
-            recursive=True) if "CBBEtoUBE" not in c and "!UBE" not in c]
-        if not cands:
-            raise FileNotFoundError("no CBBE femalebody_1.nif found")
-        cands.sort(key=lambda p: (0 if ("3BA" in p or "3BBB" in p) else 1, len(p)))
-        nif = pynifly.NifFile(cands[0])
-        sh = max(nif.shapes, key=lambda s: len(s.verts))
-        _CACHE["cbbe"] = (cands[0], sh.name)
-    return _weighted("cbbe", weight)
+    """(path, shape_name) of the CBBE/3BA reference body -- the SOURCE-side body:
+    BodySlide's zeroed 3BA build as the game loads it, at `weight` ("_1"
+    default, or "_0"). `mods_root` defaults to the converter's own discovery;
+    load order always comes from the MO2 profile, because "which body does the
+    game load" has no answer without it."""
+    return _zeroed("cbbe", weight, mods_root)
 
 
 def canonical_ube(weight: str = "_1"):
-    """(path, shape_name) of the UBE reference body -- the CONVERTED-side body.
-
-    `weight` is `"_1"` (default, unchanged) or `"_0"`, which returns the
-    weight-0 sibling of the chosen weight-1 body -- see `weight_sibling`.
-    """
-    if "ube" not in _CACHE:
-        from src import auto_convert as ac
-        p = str(ac._find_ube_body_ref())
-        nif = pynifly.NifFile(p)
-        sh = max(nif.shapes, key=lambda s: len(s.verts))
-        _CACHE["ube"] = (p, sh.name)
-    return _weighted("ube", weight)
+    """(path, shape_name) of the UBE reference body -- the CONVERTED-side body:
+    BodySlide's zeroed UBE build as the game loads it, at `weight`."""
+    return _zeroed("ube", weight)
 
 
 def converted_garment_names(conv_path):
