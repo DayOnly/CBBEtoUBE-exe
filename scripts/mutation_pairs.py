@@ -1406,4 +1406,14 @@ PAIRS = (
          tests=('tests/test_paths_overwrite_dir.py',),
          expect=('test_a_moved_mods_folder_keeps_overwrite_at_the_base_directory',),
     ),
+    # inflate_census: both references at the converted file's own weight.
+    Pair('ICW-a', 'every file is scored against weight-1 references again',
+         edits=(
+             ('scripts/analysis/inflate_census.py',
+              '    w = _weight_of(out_path)',
+              '    w = "_1"  # MUTATED', 1),
+         ),
+         tests=('tests/test_inflate_census_weights.py',),
+         expect=('test_references_follow_the_files_own_weight',),
+    ),
 )

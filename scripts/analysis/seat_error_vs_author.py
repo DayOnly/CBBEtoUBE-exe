@@ -70,6 +70,8 @@ sys.path.insert(0, str(_REPO / "scripts" / "analysis"))
 
 from src import nif_io, nif_convert as nc                 # noqa: E402
 import standoff_audit as sa                               # noqa: E402
+from scripts.analysis.canonical_body import (canonical_cbbe,  # noqa: E402
+                                             canonical_ube)
 from scipy.spatial import cKDTree                         # noqa: E402
 
 
@@ -207,13 +209,18 @@ def main(argv) -> int:
     bodies: dict = {}
 
     def body(kind, w):
+        # BodySlide's zeroed bodies as the game loads them, at the file's own
+        # weight (src/zeroed_body.py). The author side was the converter's
+        # `_find_cbbe_base_body`, which picked a preset femalebody up to 1.97u
+        # off the body the garments were built on.
         if (kind, w) not in bodies:
-            p = (nc._find_ube_femalebody(w) if kind == "ube"
-                 else nc._find_cbbe_base_body(weight=w))
-            if p is None:
+            try:
+                p, name = (canonical_ube(weight=w) if kind == "ube"
+                           else canonical_cbbe(weight=w))
+            except FileNotFoundError as e:
+                print(f"no {kind.upper()} reference body at weight {w[1]}: {e}")
                 return None
-            b = max(nif_io.open_nif_retry(str(p)).shapes,
-                    key=lambda s: len(s.verts))
+            b = next(s for s in nif_io.open_nif_retry(p).shapes if s.name == name)
             bodies[(kind, w)] = cKDTree(_world(b))
         return bodies[(kind, w)]
 
@@ -242,7 +249,7 @@ def main(argv) -> int:
         resolved += 1
         ct, ut = body("cbbe", w), body("ube", w)
         if ct is None or ut is None:
-            print("no reference body found -- set CBBE2UBE_MO2_INI")
+            print("no reference body -- the census cannot run (reason above)")
             return 2
         for nm, a in {s.name: s for s in anf.shapes}.items():
             try:

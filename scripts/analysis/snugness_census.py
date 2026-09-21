@@ -59,18 +59,23 @@ converter fits each weight separately against its own body, so the two halves'
 standoff is not one shared quantity, and a lost fit at weight 0 is invisible.
 
 DO NOT fix it by swapping the glob. BOTH bodies in the ratio above are pinned
-to weight 1 at their call sites: the CBBE base body is
-`nc._find_cbbe_base_body("_1")` and the UBE body is
-`nc._find_ube_femalebody("_1")`. A `_0` garment would be read against weight-1
+to weight 1 at their call sites: `canonical_cbbe(weight="_1")` and
+`canonical_ube(weight="_1")`. A `_0` garment would be read against weight-1
 bodies on both sides, and the hug mask and the ambiguous-frame exclusion are
 taken against the same pinned bodies. Unlike the estimator bias above, that
 error does NOT cancel -- it is a different body on each side for every `_0` row.
 
-The fix is small, because both helpers already take a weight and cache per
-weight; only these two call sites pass the literal `"_1"`. Resolve both from
-each file's own suffix, then widen. This census feeds an open investigation;
-widening it moves numbers already recorded there, so do it as its own change
-with an old-vs-new comparison.
+The fix is small, because both helpers already take a weight; only these two
+call sites pass the literal `"_1"`. Resolve both from each file's own suffix,
+then widen. This census feeds an open investigation; widening it moves numbers
+already recorded there, so do it as its own change with an old-vs-new
+comparison.
+
+REFERENCE BODIES: BodySlide's zeroed builds as the game loads them
+(src/zeroed_body.py, via canonical_body). The AUTHOR side used to be the
+converter's `_find_cbbe_base_body`, which picked the 3BA mod folder's own
+preset femalebody -- up to 1.97u off the body the garments were built on --
+so every authored standoff here was read against the wrong body.
 """
 import argparse
 import collections
@@ -93,6 +98,8 @@ paths.export_to_env(_lay)
 from pyn import pynifly                                  # noqa: E402
 from src import nif_convert as nc                        # noqa: E402
 from scripts.analysis import standoff_audit as sa        # noqa: E402
+from scripts.analysis.canonical_body import (canonical_cbbe,  # noqa: E402
+                                             canonical_ube)
 
 # NO HARD-CODED MODLIST PATH. This repo is public, and the deployed output dir
 # moves with the MO2 instance -- resolve it, or take --pack.
@@ -170,10 +177,11 @@ def source_for(rel: Path):
 
 
 def main():
-    cb = nc._find_cbbe_base_body("_1")
-    ub = nc._find_ube_femalebody("_1")
-    if not cb or not ub:
-        raise SystemExit("cannot locate both bodies -- census impossible")
+    try:
+        cb = canonical_cbbe(weight="_1")[0]
+        ub = canonical_ube(weight="_1")[0]
+    except FileNotFoundError as e:
+        raise SystemExit(f"cannot locate both bodies -- census impossible: {e}")
     cbt, cbn = body_tree(cb)
     ubt, ubn = body_tree(ub)
     print(f"CBBE base : {cbn} verts  {Path(cb).name}")
