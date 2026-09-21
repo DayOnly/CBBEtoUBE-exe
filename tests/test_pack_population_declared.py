@@ -41,8 +41,6 @@ KNOWN_HALF_PACK = frozenset({
     "scripts/analysis/snugness_census.py",
     "scripts/analysis/source_delta_census.py",
     "scripts/analysis/verify_bust_clearance.py",
-    "scripts/analysis/verify_motion_match.py",
-    "scripts/sanity_check_converted.py",
 })
 
 

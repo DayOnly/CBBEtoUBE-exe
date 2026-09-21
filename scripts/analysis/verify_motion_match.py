@@ -39,13 +39,30 @@ Two checks:
     gradient was gentler. Flags props whose per-vertex delta spread is large relative
     to their size. A hit here is cosmetic (a bending sword), not a crash.
 
+WEIGHTS: `_1` only, and that is CORRECT here rather than the usual oversight --
+but it is not a free pass, so read the blind spot at the end.
+
+What this measures is not the `_1` mesh, it is the per-garment BODYTRI, and
+`x_0.nif` and `x_1.nif` share ONE `x.tri` (#tri-write-once, nif_convert.py: the
+stem drops the weight suffix). Measured on the shipped pack: 1889 `.tri` files,
+NONE carrying a `_0`/`_1` suffix -- one table per garment pair. Line ~106 turns
+each `_1` path into that tri by stripping the suffix, so the glob is a PAIRING
+KEY onto a single shared file, not a half-pack sample. Enumerating `_0` as well
+would re-open the identical table and print every row a second time. Worse, the
+hugging mask is taken against a body pinned to weight 100
+(`_find_user_preset_body("_1")`), so feeding `_0` meshes through it would measure
+a low-weight garment against a high-weight body and manufacture false hits.
+
+BLIND SPOT, declared rather than fixed: because that mask is weight-dependent, a
+shape that hugs only on the LOW-weight silhouette is never scored. Closing it
+needs a second body load, not a glob change.
+
     python scripts/analysis/verify_motion_match.py
 
 Read-only. Resolves the body via the live MO2 instance (CBBE2UBE_MO2_INI).
 """
 import os
 import sys
-import glob
 import numpy as np
 from pathlib import Path
 from scipy.spatial import cKDTree
@@ -58,6 +75,7 @@ from src import paths                                      # noqa: E402
 from src.tri import TriFile                                # noqa: E402
 from src.nif_convert import shape_body_offset              # noqa: E402
 from src import sliderset_gen as sg                        # noqa: E402
+from scripts.analysis import standoff_audit as sa          # noqa: E402
 
 OUT_MOD = os.environ.get("CBBE2UBE_OUT_MOD", "CBBEtoUBE Auto")
 # Sliders that actually drive the chest are mostly NOT breast-named -- never filter
@@ -96,8 +114,12 @@ def main():
     if bv is None:
         print("UBE reference body not found.")
         return 1
-    files = [f for f in glob.glob(str(root / "**" / "*_1.nif"), recursive=True)
-             if "1stperson" not in f.lower()]
+    # `_1` ONLY, DELIBERATELY -- see WEIGHTS: above; the glob is a pairing key
+    # onto the shared per-garment `.tri`. Routed through `output_nifs` anyway so
+    # the first-person rule is owned in ONE place: the hand-rolled
+    # `"1stperson" not in f` here was too narrow and leaked 7 short-prefix
+    # `1stp*` meshes into the scan.
+    files = [str(p) for p in sa.output_nifs(root, weights="1")]
     print(f"scanning {len(files)} meshes (MATCH_NEAR={sg._MATCH_NEAR}, "
           f"MATCH_FAR={sg._MATCH_FAR})...", flush=True)
 
