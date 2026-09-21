@@ -32,33 +32,25 @@ number.
 
 One JSON object per line. Read-only; safe to run while a conversion is in progress.
 
-WEIGHTS: `_1` only -- a DECLARED BLIND SPOT, and it contradicts "the WHOLE
-converted output" above: this sweeps half of it. Every row is a per-shape
-measurement, and a `_0` mesh is separately authored, so the half it skips can
-be independently wrong.
+WEIGHTS: both weights -- the whole converted output, as promised above. Every
+row is a per-shape measurement and a `_0` mesh is separately authored, so both
+halves are swept, first-person included (it is a column, `first_person`).
 
-DO NOT fix it by swapping the glob for `standoff_audit.output_nifs`. The body
-every garment is measured against is `body_context()`, which calls
-`nc._find_ube_femalebody("_1")` and is built ONCE for the whole run. A `_0` file
-on either convert path would be measured against the weight-1 body, and so
-would the nipple-apex and butt ray origins derived from it. Nothing errors: the
-clearance columns read the wrong frame, and the exposure rays start outside a
-`_0` garment that sits inside the fuller weight-1 bust, so they escape and read
-as exposed -- a believable "weight 0 is far worse" that the geometry does not
-support.
+Each file is measured against the body of ITS OWN weight: `body_context(w)`
+calls `nc._find_ube_femalebody(w)`, the converter's own resolver, so a `_0`
+garment is read against the weight-0 body it was fitted to -- as are the
+nipple-apex and butt ray origins derived from that body. Measuring `_0` against
+the weight-1 body would put the clearance columns in the wrong frame and start
+the exposure rays outside a `_0` garment, reading it as exposed. A weight whose
+body cannot be resolved has its files counted and skipped, never measured on the
+other weight. Every row carries `weight`, and the `_meta` header names both
+bodies. `--limit` counts FILES, so it now covers about half as many garments.
 
-To close it: build `body_context` per weight from each file's own suffix, add a
-`weight` column so rows stay separable, then widen. Two cautions for whoever
-does: the output is opened for writing BEFORE the first NIF is read, so pass a
-fresh `--out` or a failed run truncates the previous dataset; and
-`output_nifs` returns Path objects, on which the `rel = f.replace(...)` string
-edit becomes `Path.replace` (the rename method) with too many arguments -- it
-raises TypeError on the FIRST file, after the output is already truncated.
-Convert with `str(p)`.
+The output is opened for writing BEFORE the first NIF is read, so pass a fresh
+`--out`: a failed run truncates whatever dataset was there.
 """
 from __future__ import annotations
 
-import glob
 import json
 import os
 import re
@@ -76,6 +68,7 @@ from scipy.spatial import cKDTree                            # noqa: E402
 from pyn import pynifly                                      # noqa: E402
 from src import nif_convert as nc, paths                     # noqa: E402
 from scripts.analysis.verify_skin_exposure import ray_blocked         # noqa: E402
+from scripts.analysis import standoff_audit as sa                    # noqa: E402
 
 BREAST = re.compile(r'breast', re.I)
 BUTT = re.compile(r'butt', re.I)
@@ -84,8 +77,13 @@ BOUNCE_VEC = np.array([0.0, 0.6, -0.8])     # forward+down: a bust bounce
 BUTT_VEC = np.array([0.0, -0.6, -0.8])      # back+down: a butt bounce
 
 
-def body_context():
-    p = nc._find_ube_femalebody("_1")
+def body_context(weight="_1"):
+    """The measuring context of the UBE body for `weight`. Every tier of
+    `nc._find_ube_femalebody` is weight-specific, so this never hands back the
+    other weight's body; an unresolvable one raises instead."""
+    p = nc._find_ube_femalebody(weight)
+    if p is None:
+        raise FileNotFoundError(f"no UBE body resolves for weight {weight}")
     nf = pynifly.NifFile(filepath=str(p))
     sb = max(nf.shapes, key=lambda x: len(x.verts))
     V = np.asarray(sb.verts, np.float64)
@@ -253,10 +251,28 @@ def main() -> int:
     limit = int(sys.argv[sys.argv.index("--limit") + 1]) if "--limit" in sys.argv else None
     do_rays = "--no-rays" not in sys.argv
     root = paths.discover_layout().mods_root / "CBBEtoUBE Auto" / "meshes" / "!UBE"
-    files = sorted(glob.glob(str(root / "**" / "*_1.nif"), recursive=True))
+    # BOTH weights, first-person KEPT (it is a column here, not an exclusion).
+    # As strings: `rel` below is a str edit, and on a Path it would call
+    # `Path.replace` -- the rename method.
+    files = [str(p) for p in sa.output_nifs(root, exclude_first_person=False)]
     if limit:
         files = files[:limit]
-    ctx = body_context()
+    ctxs, body_paths = {}, {}
+
+    def ctx_for(w):
+        """The body context for weight `w`, built once; None if unresolvable."""
+        if w not in ctxs:
+            try:
+                ctxs[w] = body_context(w)
+                body_paths[w] = str(nc._find_ube_femalebody(w))
+            except FileNotFoundError as e:
+                print(f"  weight {w[1]}: NO UBE body, its files are skipped "
+                      f"-- {e}", flush=True)
+                ctxs[w] = None
+        return ctxs[w]
+
+    for w in ("_1", "_0"):
+        ctx_for(w)
     # A dataset is only comparable to another if you know what produced it. First
     # line is a header record, not a shape.
     import datetime, subprocess
@@ -270,6 +286,7 @@ def main() -> int:
         "when": datetime.datetime.now().isoformat(timespec="seconds"),
         "converter_version": ver,
         "meshes": len(files),
+        "bodies": body_paths,
         "rays": do_rays,
         "flags": {k: v for k, v in os.environ.items()
                   if k.startswith("CBBE2UBE_") and "INI" not in k and "ROOT" not in k},
@@ -283,12 +300,19 @@ def main() -> int:
           flush=True)
     t0 = time.time()
     n_rows = 0
+    rows_by_w = {"_1": 0, "_0": 0}
+    no_body = 0
     with open(out, "w", encoding="utf-8") as fh:
         fh.write(json.dumps(meta) + chr(10))
         for k, f in enumerate(files):
             if k and k % 250 == 0:
                 print(f"  {k}/{len(files)}  rows={n_rows}  "
                       f"{time.time()-t0:.0f}s", flush=True)
+            w = nc.weight_suffix_of(f)
+            ctx = ctx_for(w)
+            if ctx is None:
+                no_body += 1
+                continue
             try:
                 nf = pynifly.NifFile(filepath=f)
             except Exception:
@@ -307,9 +331,13 @@ def main() -> int:
                     row = shape_row(s, rel, nf, ctx, col, soft, lay, do_rays)
                 except Exception:
                     continue
+                row["weight"] = w
                 fh.write(json.dumps(row) + "\n")
                 n_rows += 1
+                rows_by_w[w] += 1
     print(f"done: {n_rows} shape rows in {time.time()-t0:.0f}s -> {out}")
+    print(f"  weight 1: {rows_by_w['_1']} rows   weight 0: {rows_by_w['_0']} rows"
+          f"   files skipped for want of a body: {no_body}")
     return 0
 
 

@@ -1244,4 +1244,24 @@ PAIRS = (
          tests=('tests/test_acceptance_weight0.py',),
          expect=('test_less_tip_room_at_weight0_alone_FAILS_the_gate',),
     ),
+    # collect_fit_dataset: each file on its own weight's body, and a weight
+    # with no body skipped rather than measured on the other one.
+    Pair('CFW-a', 'every file is measured on the weight-1 body again',
+         edits=(
+             ('scripts/analysis/collect_fit_dataset.py',
+              '            w = nc.weight_suffix_of(f)',
+              '            w = "_1"  # MUTATED', 1),
+         ),
+         tests=('tests/test_collect_fit_dataset_weights.py',),
+         expect=('test_each_file_is_measured_on_its_own_weights_body',),
+    ),
+    Pair('CFW-b', 'a file with no body for its weight is measured anyway',
+         edits=(
+             ('scripts/analysis/collect_fit_dataset.py',
+              '            if ctx is None:',
+              '            if ctx is None and False:  # MUTATED', 1),
+         ),
+         tests=('tests/test_collect_fit_dataset_weights.py',),
+         expect=('test_an_unresolvable_weight0_body_skips_its_files',),
+    ),
 )
