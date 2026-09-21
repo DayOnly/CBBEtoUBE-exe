@@ -1097,4 +1097,54 @@ PAIRS = (
          expect=('test_canonical_cbbe_keys_its_cache_by_weight',
                  'test_canonical_ube_keys_its_cache_by_weight'),
     ),
+    # bust_gap_score's weight-0 block sits in the same output acceptance.py
+    # parses. That parser's section is STICKY and its last row match WINS, so
+    # the three wording pairs below are each a way for weight 0 to silently
+    # overwrite or switch off a gated weight-1 value. The last two are the
+    # weight-1 pins coming back.
+    Pair('BGW-a', 'weight-0 arm rows lose their prefix and overwrite the gate',
+         edits=(
+             ('scripts/analysis/bust_gap_score.py',
+              'W0_PREFIX = "w0 "',
+              'W0_PREFIX = ""  # MUTATED', 1),
+         ),
+         tests=('tests/test_bust_gap_score_weights.py',),
+         expect=('test_appending_weight0_changes_nothing_the_gate_reads',),
+    ),
+    Pair('BGW-b', 'a weight-0 path header switches the parser section',
+         edits=(
+             ('scripts/analysis/bust_gap_score.py',
+              '            out.append("\\n  weight 0 / %s: %d shapes" % (name, len(idx)))',
+              '            out.append("\\n  %s only (%d shapes)" % (name, len(idx)))  # MUTATED', 1),
+         ),
+         tests=('tests/test_bust_gap_score_weights.py',),
+         expect=('test_no_weight0_line_switches_the_parsers_section',),
+    ),
+    Pair('BGW-c', 'a weight-0 too-few note marks the gated path unmeasured',
+         edits=(
+             ('scripts/analysis/bust_gap_score.py',
+              '                out.append("\\n  weight 0 / %s: %d shapes, too few to report"',
+              '                out.append("\\n  %s: only %d shapes -- not reported"  # MUTATED', 1),
+         ),
+         tests=('tests/test_bust_gap_score_weights.py',),
+         expect=('test_a_weight0_too_few_note_does_not_mark_a_path_unmeasured',),
+    ),
+    Pair('BGW-d', 'copy-path weight-0 pieces are measured on the weight-1 body',
+         edits=(
+             ('scripts/analysis/bust_gap_score.py',
+              '        ref, swap = _body_for(nf, weight)',
+              '        ref, swap = _body_for(nf, "_1")  # MUTATED', 1),
+         ),
+         tests=('tests/test_bust_gap_score_weights.py',),
+         expect=('test_measure_arm_scores_weight0_files_against_the_weight0_body',),
+    ),
+    Pair('BGW-e', 'the weight-0 author baseline is read on the weight-1 author body',
+         edits=(
+             ('scripts/analysis/bust_gap_score.py',
+              '    bpath, bname = cb.canonical_cbbe(mods_root, weight=weight)',
+              '    bpath, bname = cb.canonical_cbbe(mods_root)  # MUTATED', 1),
+         ),
+         tests=('tests/test_bust_gap_score_weights.py',),
+         expect=('test_author_baseline_uses_the_weight0_author_body',),
+    ),
 )
