@@ -1054,7 +1054,7 @@ This does not touch the finding itself: we still sit −0.432u deeper at p05 ove
 n=97. It removes one candidate mechanism, and it removes the temptation to "fix" a
 function whose arithmetic already forbids the defect.
 
-# 2026-09-20 — seven of the 21 half-pack tools resolved, and one of them was right all along
+# 2026-09-20 — eight of the 21 half-pack tools resolved, and one of them was right all along
 
 The ratchet (`tests/test_pack_population_declared.py`) froze 21 tools that
 enumerate the pack with a `*_1.nif` glob and never say so. Freezing stops the
@@ -1062,9 +1062,9 @@ count growing; it fixes nothing. This is the first tranche actually resolved,
 in small groups with the tool's output captured on the shipped pack BEFORE and
 AFTER each change.
 
-**The rule is DECLARE, not "always both weights".** Six of the seven here read
-both weights now. The seventh was already correct and only needed to say so —
-and finding that is the result, not a failure to convert it.
+**The rule is DECLARE, not "always both weights".** Seven of the eight here
+read both weights now. The eighth was already correct and only needed to say so
+— and finding that is the result, not a failure to convert it.
 
 ## The population, and why the ratio is not 2.0
 
@@ -1098,6 +1098,7 @@ in one place instead of five.
 | `sanity_check_converted` | BOTH WEIGHTS | body-slot NIFs 336 -> 484 |
 | `find_morph_follow_gaps` | BOTH WEIGHTS | zone-flags 386 -> 772, **different sets** |
 | `find_overinflation` | BOTH WEIGHTS | flagged 9 -> 15; weight 0 NOT the worse half |
+| `verify_bust_clearance` | BOTH WEIGHTS | **poking 54 -> 116**; measured 221 -> 441 |
 
 ## `verify_weight_invariant` — it was half a gate
 
@@ -1226,6 +1227,56 @@ Why 2062 and not 2064: `output_nifs` returns 2064 and the `/m/` filter removes
 x1.986, i.e. +1031 weight-0 MINUS the 7 leaked `1stp*` meshes — and those 7
 contributed no flags, which is why both weight-1 halves are unchanged.
 
+## `verify_bust_clearance` — the tool this rule was written about
+
+`output_nifs`' own docstring cites bust-front clipping at **4.52% on weight 1
+against 9.48% on weight 0**, and this tool's check 1, "body poking through at
+the breast", IS that measurement. The check most known to be worse at weight 0
+was the one still never run there.
+
+Safe to swap the population alone: the body is the BaseShape injected into THAT
+SAME NIF — the file says so itself at `_SKIP` ("The armor's own injected body is
+the reference") — so a `_0` file measures its own separately authored garment
+against its own weight-0 body. No preset, no weight-pinned reference body.
+
+    scanned                     1039 -> 2064   (x1.987)
+    body-armor meshes measured   221 ->  441
+    mean breast clearance      +1.18u -> +1.13u
+    mean back clearance        +1.14u -> +1.12u   (over 220 -> 439)
+    1) POKING THROUGH AT BREAST   54 ->  116 armors
+    2) REAR CLEARANCE LEAKED      44 ->   89 armors
+
+**Poking went 54 -> 116 — MORE than double — and it splits exactly: weight 1
+still contributes 54, weight 0 contributes 62.** Weight 0 carries **1.15x** the
+bust-front poke-through of weight 1. That is the class thesis confirmed on the
+metric it was originally measured on. Rear leak splits 43 + 46 = 89.
+
+EVERY COUNT RECONCILES TO ZERO RESIDUAL. 441 is not 2x221 because of the 7
+short-prefix `1stp*` meshes the hand-rolled filter leaked: run each through the
+tool's own `_measure`, and **exactly one** returns a result. It reads breast
+frac 0.0053 (under the 0.01 poking threshold) and back +2.45u (over the 1.5u
+leak threshold), so it sat in the rear-leak list and NOT the poking list —
+which is exactly how the two headlines move:
+
+    weight 1 measured   221 -> 220   (-1, the dropped first-person cuirass)
+    weight 0 measured           221
+                                ---
+                                441
+
+Weight 0 ends with ONE MORE measurable mesh than weight 1: one garment carries
+a qualifying BaseShape and panel in its `_0` file but not its `_1`.
+
+### METHOD NOTE — rc=0 is not evidence that a tool reported anything
+
+The first BEFORE capture of this tool returned **rc=0 with only the header line
+and no traceback.** It prints its results in one block at the end, and that
+block was lost; a stderr RuntimeWarning was the only other output. Taken at face
+value it would have produced a confidently wrong before/after. Re-run in the
+foreground with `PYTHONUNBUFFERED=1` it produces all 58 lines. **Check that the
+output is COMPLETE, not just that the exit code is 0** — this is the same
+family as the closed cannot-abort class, arriving from the opposite direction:
+there the tool said "clean" over nothing; here it said nothing at all, cleanly.
+
 ## What was NOT done, and why
 
 * `fit_audit.py` is **DEAD and stays on the list.** It raises AttributeError at
@@ -1277,4 +1328,4 @@ both are top-level scripts with module-level code that reads `sys.argv`, and
 neither is imported anywhere. They run as `python <path> [pack]`, so a CLI
 before/after capture IS possible for them.
 
-KNOWN_HALF_PACK: **21 -> 14.** HPK-a and HPK-b both CAUGHT.
+KNOWN_HALF_PACK: **21 -> 13.** HPK-a and HPK-b both CAUGHT.
