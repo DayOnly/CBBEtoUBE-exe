@@ -1060,4 +1060,17 @@ PAIRS = (
          tests=('tests/test_tool_empty_run_floor.py',),
          expect=('test_no_seam_coincidence_refuses_to_write',),
     ),
+    # The ratchet, armed by REINTRODUCING the idiom it bans. The wrapper takes
+    # ownership of sys.stdout.buffer and closes it on GC, under whoever else
+    # holds it; under pytest that is the global capture file, and every later
+    # test dies in teardown. Six tools carried it, all six are converted.
+    Pair('CAC-k', 'a tool goes back to wrapping sys.stdout.buffer',
+         edits=(
+             ('scripts/analysis/fit_audit.py',
+              '    sys.stdout.reconfigure(encoding="utf-8", errors="replace")',
+              '    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")  # MUTATED', 1),
+         ),
+         tests=('tests/test_tool_empty_run_floor.py',),
+         expect=('test_no_tool_wraps_sys_stdout_buffer',),
+    ),
 )

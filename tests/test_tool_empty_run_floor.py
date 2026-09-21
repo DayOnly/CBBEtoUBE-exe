@@ -67,6 +67,46 @@ def empty_pack(tmp_path):
     return tmp_path
 
 
+# --------------------------------------------- the stdout-wrapping landmine
+def test_wrapping_a_buffer_hands_over_ownership_and_closes_it():
+    """THE MECHANISM the ratchet below exists for -- proven, not assumed.
+
+    io.TextIOWrapper takes ownership of the buffer it is given and closes it
+    when collected. Applied to `sys.stdout.buffer` under pytest that closes
+    the global capture file, and every later test dies in teardown with
+    "I/O operation on closed file".
+
+    If CPython ever stops doing this, this test fails and the ratchet's
+    reason is gone -- which is the point of pinning the mechanism rather
+    than just banning the string.
+    """
+    import gc
+    import io as _io
+    buf = _io.BytesIO()
+    wrapper = _io.TextIOWrapper(buf, encoding="utf-8")
+    del wrapper
+    gc.collect()
+    assert buf.closed, "the wrapper no longer closes the buffer it was given"
+
+
+def test_no_tool_wraps_sys_stdout_buffer():
+    """RATCHET. Six tools carried this; all six are converted.
+
+    `sys.stdout.reconfigure(...)` mutates the existing stream instead and is
+    a no-op on one that does not support it, so there is no reason to
+    reintroduce the wrapper. Frozen by absence: the count may go down.
+    """
+    bad = []
+    for d in ("scripts", "src"):
+        for p in sorted((_REPO / d).rglob("*.py")):
+            if "TextIOWrapper(sys.stdout.buffer" in p.read_text(
+                    encoding="utf-8", errors="replace"):
+                bad.append(str(p.relative_to(_REPO)))
+    assert bad == [], (
+        "these wrap sys.stdout.buffer, which closes it on GC under whoever "
+        f"else holds it -- use sys.stdout.reconfigure(): {bad}")
+
+
 # ------------------------------------------------------- scan_output_health
 def test_health_scan_over_zero_nifs_is_not_a_pass(empty_pack):
     """THE MEASURED DEFECT: rc=0 and "=== SCAN DONE ===" over an empty dir."""
