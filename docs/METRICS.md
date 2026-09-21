@@ -1054,7 +1054,7 @@ This does not touch the finding itself: we still sit −0.432u deeper at p05 ove
 n=97. It removes one candidate mechanism, and it removes the temptation to "fix" a
 function whose arithmetic already forbids the defect.
 
-# 2026-09-20 — fifteen of the 21 half-pack tools resolved, and one of them was right all along
+# 2026-09-20 — eighteen of the 21 half-pack tools resolved, and one of them was right all along
 
 The ratchet (`tests/test_pack_population_declared.py`) froze 21 tools that
 enumerate the pack with a `*_1.nif` glob and never say so. Freezing stops the
@@ -1062,8 +1062,8 @@ count growing; it fixes nothing. This is the first tranche actually resolved,
 in small groups with the tool's output captured on the shipped pack BEFORE and
 AFTER each change.
 
-**The rule is DECLARE, not "always both weights".** Nine of the fifteen here
-read both weights now. One was already correct and only needed to say so; FIVE
+**The rule is DECLARE, not "always both weights".** Ten of the eighteen here
+read both weights now. One was already correct and only needed to say so; SEVEN
 are declared blind spots that a glob swap would have corrupted, because they
 measure every file against a body pinned to weight 1. Finding those is the
 result, not a failure to convert them.
@@ -1108,6 +1108,9 @@ in one place instead of five.
 | `nipple_clearance` | **`_1` ONLY, DECLARED BLIND SPOT** | AST byte-identical; gate |
 | `collect_fit_dataset` | **`_1` ONLY, DECLARED BLIND SPOT** | AST byte-identical |
 | `source_delta_census` | **`_1` ONLY, DECLARED BLIND SPOT** | AST byte-identical; both sides pinned |
+| `single_swing_census` | **`_1` ONLY, DECLARED BLIND SPOT** (live lead) | AST byte-identical; lead unmoved |
+| `snugness_census` | **`_1` ONLY, DECLARED BLIND SPOT** (live lead) | AST byte-identical; lead unmoved |
+| `collect_penetration_census` | BOTH WEIGHTS | rows 236 -> 472; **w0 worse in all 6 regions** |
 
 ## `verify_weight_invariant` — it was half a gate
 
@@ -1383,20 +1386,68 @@ none is cleared by a bare mention — each is on the list, calls `output_nifs`,
 or declares in its docstring. The ratchet's own test treats an IMPORT as
 declaring, so the looseness is by design.
 
-## What was NOT done, and why
+## The last four — two live-lead declarations, one conversion, one rule confirmed
 
-* `fit_audit.py` is **DEAD and stays on the list.** It raises AttributeError at
-  line 310 (`sliderset_gen.MORPH_SHAPE_CAP` exists nowhere in the repo) on
-  every run, so no before/after is possible. Recorded BLOCKED, not fixed.
-* `single_swing_census` and `snugness_census` feed the live crotch-band lead and
-  were deliberately left alone: changing their population would move the lead's
-  numbers mid-investigation.
-* **`band_class_census` must NOT be converted by a glob swap.** Three things in
-  it are pinned to weight 1 and would manufacture numbers: the copy-path
-  template body (`_find_ube_femalebody("_1")`, and the copy path is most of the
-  pack), the preset (`_load_preset` takes the `big` / weight-100 side only), and
-  `--every N`, which strides a SORTED list where `foo_0` and `foo_1` are
-  adjacent — so `--every 2` would silently become a weight-0-only census.
+**The two live-lead censuses are declared WITHOUT moving the lead.**
+`single_swing_census` and `snugness_census` feed the open crotch-band
+investigation, so their population was not touched. Both are blind spots, not
+correct scopings — per-file and per-shape units respectively, neither a rate the
+two weights share — and both are measured against weight-1 bodies:
+
+* `single_swing_census` — converted side uses the in-file body (fine), but the
+  SOURCE side is `canonical_body.canonical_cbbe()` (`femalebody_1.nif`, one key);
+* `snugness_census` — `nc._find_cbbe_base_body("_1")` and
+  `nc._find_ube_femalebody("_1")` at the call sites. Both helpers already take a
+  weight and cache per weight (`cbbe{weight}`, `ube{weight}`), so its fix is
+  two call sites; the `canonical_body` tools need that module changed first.
+
+Both changes are docstring-only and AST byte-identical, so **nothing moved**: the
+lead stands at -0.432u deeper than the author at p05 over n=97 (70 deeper / 2
+shallower), bulk p50 +0.206u further off, single-swing class at 1 clean residual
+of 224. TOOL_MAP byte-identical too.
+
+**`collect_penetration_census`: BOTH WEIGHTS.** Body from the same NIF, no
+external reference, verified first-hand. First-person left to its OWN stem rule
+(broader than `output_nifs`' regex), so the change is the weight axis only.
+
+    scanned 1295 -> 2590   rows 236 -> 472   skipped 1059 -> 2118   (all exactly x2)
+
+All 236 weight-1 rows are BYTE-IDENTICAL before and after. Paired over 236
+garments, pieces with >5% of a region exposed-and-near:
+
+    region        w1        w0        median dist_p50 w1 / w0
+    breast        55/233    59/233    1.258 / 1.240
+    upper_chest  137/234   144/234    1.322 / 1.276
+    belly         44/235    46/235    1.208 / 1.197
+    butt          17/235    19/235    2.949 / 2.684
+    lower_back    56/235    58/235    1.431 / 1.418
+    thigh         25/234    26/234    1.620 / 1.612
+
+**Weight 0 is worse in all six regions** (334 -> 352 region-flags, +5.4%) and
+closer to the body at the median in all six. Modest, and the regions share
+garments so it is not six independent votes — but the direction is uniform, and
+it sides with `verify_bust_clearance` (clipping) rather than `find_overinflation`
+(standoff).
+
+## What was NOT done, and why — the three left on the list
+
+* `fit_audit.py` — **BLOCKED.** Dead: AttributeError at line 310
+  (`sliderset_gen.MORPH_SHAPE_CAP` exists nowhere). No before/after is possible.
+* `multipose_census.py` — **convertible, deferred.** References are safe (body
+  from the NIF itself). Two costs kept it out: ~1.2-1.5 h before and ~2.5-3 h
+  after, and a DOWNSTREAM consumer — `underbust_census` reads its default
+  `multipose_census.jsonl` and uses an under-curve band calibrated on the
+  weight-1 body, so widening this silently widens that consumer too. Needs its
+  own change that checks the band on `_0`. Keep its own first-person stem rule
+  (broader than `output_nifs`') on top of any swap.
+* `phase1_antipoke_population_ab.py` — **references safe (the body resolves per
+  weight), deferred.** It is an A/B of an OFF build against an ON build; the
+  shipped pack is only the ON arm, so a real before/after needs a full reconvert
+  with `CBBE2UBE_NO_PHASE1_ANTIPOKE=1`. And its aggregate tallies count PIECES, so
+  a naive widening makes each garment vote twice — the tallies need splitting by
+  weight first.
+Neither deferred tool is declared: both are safe to widen, so calling them blind
+spots would misstate them. The ratchet keeps them visible, which is its job.
 
 ## OPEN, found while converting: `output_nifs`' first-person filter misses a SUFFIX form
 
@@ -1434,4 +1485,4 @@ both are top-level scripts with module-level code that reads `sys.argv`, and
 neither is imported anywhere. They run as `python <path> [pack]`, so a CLI
 before/after capture IS possible for them.
 
-KNOWN_HALF_PACK: **21 -> 6.** HPK-a and HPK-b both CAUGHT.
+KNOWN_HALF_PACK: **21 -> 3.** HPK-a and HPK-b both CAUGHT.
