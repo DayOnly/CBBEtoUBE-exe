@@ -13,11 +13,13 @@ both modules keep seeing the same objects.
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 
 from . import nif_io
 from . import paths as _paths
+from .envflags import flag as _flag
 
 # --- Portable body discovery (no hardcoded modpack paths) -------------
 # The mods root is auto-discovered at runtime (see src/paths.py) from the
@@ -41,6 +43,40 @@ _FEMBODY_REL = ("meshes", "actors", "character", "character assets")
 
 # Per-process cache so the scan runs once.
 _BODY_DISCOVERY_CACHE: "dict[str, Path | None]" = {}
+
+# #zeroed-body-refs. The CBBE body the warp morphs FROM, the UBE body it morphs
+# TOWARD and the UBE body injected on the body-swap path are BodySlide's ZEROED
+# builds as the game loads them (src/zeroed_body.py: found by what the slider set
+# builds, checked vertex for vertex, never picked by mod name). Name discovery
+# picked the 3BA mod folder's own femalebody on a real modlist: a preset build
+# the game never loads, up to 1.97u off the zeroed body over 16,061 torso
+# vertices, whose weight morph grows the bust ~1.0u -- so the warp moved
+# weight-1 garments ~0.6u further in than weight 0, and ~30 pieces (capes,
+# cloaks, scarves) shipped that shift untouched. If the game's body is NOT a
+# zeroed build, the resolver refuses and discovery by name runs as before, with
+# a warning. CBBE2UBE_NO_ZEROED_BODY_REFS=1 (settings window: "Fit against the
+# zeroed BodySlide bodies") skips the zeroed resolver entirely -- the off-switch
+# control for this change.
+ZEROED_BODY_REFS = not _flag("CBBE2UBE_NO_ZEROED_BODY_REFS", False)
+_ZEROED_WARNED: "set[str]" = set()
+
+
+def _zeroed_ref(kind: str, weight: str) -> "Path | None":
+    """The zeroed `kind` ("cbbe"/"ube") body at `weight` as the game loads it,
+    or None -- with ONE warning per body and weight -- when it cannot be
+    established, so the caller falls back to discovery by name."""
+    if not ZEROED_BODY_REFS:
+        return None
+    from . import zeroed_body as _zb
+    try:
+        return _zb.zeroed_body(kind, weight).path
+    except _zb.ZeroedBodyError as e:
+        key = kind + weight
+        if key not in _ZEROED_WARNED:
+            _ZEROED_WARNED.add(key)
+            print(f"  !! no zeroed {kind.upper()} body at weight {weight[-1]}: {e}"
+                  f" -- falling back to discovery by name", file=sys.stderr)
+        return None
 
 
 def _iter_femalebody_nifs(weight: str):
@@ -87,12 +123,16 @@ def weight_suffix_of(path) -> str:
 
 
 def _find_cbbe_base_body(weight: str = "_1") -> "Path | None":
-    """Locate the CBBE 3BA base (template, slider-zero) femalebody NIF by
-    scanning installed mods for a femalebody with the 18,436-vert 3BA
-    topology, preferring a CBBE/3BA-named mod and EXCLUDING BodySlide-output
-    mods (those carry the morphed UBE body, not the CBBE template). This is
-    the baseline the CBBE->UBE warp morphs FROM. Returns None if no CBBE 3BA
-    base mod is installed (callers degrade to snap_armor_outside_body)."""
+    """The CBBE 3BA femalebody the CBBE->UBE warp morphs FROM.
+
+    An explicit CBBE2UBE_CBBE_BODY_0/_1 wins. Then BodySlide's ZEROED 3BA build
+    as the game loads it (#zeroed-body-refs, src/zeroed_body.py). Only when
+    that cannot be established: the old discovery, which scans installed mods
+    for an 18,436-vert femalebody, prefers a CBBE/3BA-named mod and SKIPS mods
+    named like a BodySlide output -- on the assumption they carry a UBE body,
+    which is wrong for a 3BA BodySlide output; that skip is how it landed on a
+    preset build the game never loads. Returns None if nothing is found
+    (callers degrade to snap_armor_outside_body)."""
     ck = f"cbbe{weight}"
     if ck in _BODY_DISCOVERY_CACHE:
         return _BODY_DISCOVERY_CACHE[ck]
@@ -100,6 +140,10 @@ def _find_cbbe_base_body(weight: str = "_1") -> "Path | None":
     if env and Path(env).is_file():
         _BODY_DISCOVERY_CACHE[ck] = Path(env)
         return Path(env)
+    zeroed = _zeroed_ref("cbbe", weight)
+    if zeroed is not None:
+        _BODY_DISCOVERY_CACHE[ck] = zeroed
+        return zeroed
     cands: list[tuple[int, Path]] = []
     for mod, p in _iter_femalebody_nifs(weight):
         nm = mod.name.lower()
@@ -149,7 +193,12 @@ def _find_ube_femalebody(weight: str = "_1") -> "Path | None":
         if cand.is_file():
             _BODY_DISCOVERY_CACHE[ck] = cand
             return cand
-    # Preferred: the genuine UBE-topology body output (`!UBE\Body` tangent).
+    # BodySlide's zeroed UBE build as the game loads it (#zeroed-body-refs).
+    zeroed = _zeroed_ref("ube", weight)
+    if zeroed is not None:
+        _BODY_DISCOVERY_CACHE[ck] = zeroed
+        return zeroed
+    # Fallback: the genuine UBE-topology body output (`!UBE\Body` tangent).
     real = _find_user_preset_body(weight)
     if real is not None and Path(real).is_file():
         _BODY_DISCOVERY_CACHE[ck] = Path(real)

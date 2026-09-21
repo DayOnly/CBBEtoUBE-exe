@@ -20,3 +20,20 @@ SkyPatcher (armorAddonsToAdd) is the ONLY armor-delivery path -- the legacy
 ESP-override machinery was removed once SkyPatcher was proven in-game. The suite
 runs the default (SkyPatcher) path everywhere; nothing pins an escape hatch.
 """
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _zeroed_body_never_reads_the_host_instance(monkeypatch):
+    """The converter's body resolvers now try the zeroed-body resolver first,
+    which discovers the MO2 instance. A test must not depend on the machine
+    it runs on: with CBBE2UBE_MO2_INI set, unrelated tests would resolve that
+    modlist's real bodies (and pay a multi-second scan). Discovery is refused
+    here, so the DEFAULT path runs everywhere -- zeroed attempted, refused,
+    discovery by name as before. Tests of the resolver pass their own
+    instance explicitly and never reach this."""
+    from src import zeroed_body as zb
+
+    def _refuse():
+        raise zb.ZeroedBodyError("tests never read the host's MO2 instance")
+    monkeypatch.setattr(zb, "_layout_dirs", _refuse)

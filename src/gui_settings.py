@@ -1526,6 +1526,15 @@ SETTINGS: "tuple[Setting, ...]" = (
     Setting("ube_body", "UBE body reference NIF",
             "Paths", "Bodies", kind="path", default="", env="CBBE2UBE_UBE_BODY",
             tooltip="BodySlide-built UBE body NIF (BaseShape). Auto-detected from the modlist when blank."),
+    Setting("zeroed_body_refs", "Fit against the zeroed BodySlide bodies",
+            "Paths", "Bodies", default=True,
+            env="CBBE2UBE_NO_ZEROED_BODY_REFS", invert=True, advanced=True,
+            hint="Untick to find the reference bodies by name, as before.",
+            tooltip="The CBBE body the fit starts from and the UBE body it aims at are "
+                    "BodySlide's zeroed builds, as the game loads them, checked vertex "
+                    "for vertex. Found by name, the CBBE body was a preset build the "
+                    "game never loads, up to 2u off, and capes, cloaks and scarves then "
+                    "sat up to 0.9u closer at weight 1 than at weight 0."),
     Setting("texconv", "texconv.exe",
             "Paths", "Tools", kind="path", default="", env="CBBE2UBE_TEXCONV",
             tooltip="DirectXTex texconv for texture conversion. Auto-located when blank."),

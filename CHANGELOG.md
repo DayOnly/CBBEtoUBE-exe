@@ -2,6 +2,39 @@
 
 ## Unreleased
 
+### Fixed — cloaks, capes and belt pieces no longer sit closer to the body at weight 1 than at weight 0
+
+The converter moves a garment from the CBBE body it was built on to the UBE
+body it will be worn over, and it found that CBBE body by name: the first
+femalebody in a mod whose name reads like CBBE or 3BA, skipping any mod named
+like a BodySlide output on the assumption that such a mod holds a UBE body. On
+a real modlist that picked the 3BA mod's own femalebody -- a build at some
+preset that the game never loads (a 3BA BodySlide output wins that file) --
+instead of the zeroed body the garments were built on. It sat up to 1.97u off
+the zeroed body over 16,061 torso vertices, and its weight morph grows the bust
+about 1u, so the move pulled weight-1 garments about 0.6u further in than
+weight-0 ones. Most fit passes re-fit that away afterwards; pieces that skip
+them kept it whole. Six measured -- a cloak, a cape, belt bags, a book, a front
+pouch and a skirt front -- shipped their weight-1 version 0.25u to 0.47u closer
+than their weight-0 version (median; 0.3u to 0.95u at the closest 5%), a
+difference that exists only because of the wrong body.
+
+The CBBE body the move starts from, the UBE body it aims at and the UBE body
+injected under a body-swap garment are now BodySlide's zeroed builds, as the
+game loads them: found by what each body's slider set builds, then checked
+vertex for vertex against the base mesh plus the slider set's defaults. If the
+game's body is not a zeroed build, discovery by name runs as before and the
+log says so. An explicit body override still wins.
+`CBBE2UBE_NO_ZEROED_BODY_REFS=1` (settings window: "Fit against the zeroed
+BodySlide bodies") restores discovery by name.
+
+On the six pieces, the weight-1 minus weight-0 difference is now 0.000u
+(median) on every one, and with the switch off each reproduces the shipped
+pack exactly. Over the 15-piece golden set, all at weight 1, garment vertices
+near the body move by a median of 0.000u (5% move in by more than 0.19u, 5% out
+by more than 0.51u; the bust median is +0.014u), and with the switch off the
+output is identical to the previous build on all 15. Verdict in game owed.
+
 ### Development only — the seat-error scorer chooses its frame by evidence and stops scoring proxies as garment
 
 `scripts/analysis/seat_error_vs_author.py` reported a **mean seat error of

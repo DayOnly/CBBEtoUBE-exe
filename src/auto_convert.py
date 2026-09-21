@@ -637,6 +637,14 @@ def _find_ube_body_ref(search_roots: list[Path] | None = None) -> Path | None:
         → loincloth and other tight cloth clip into the body.
     """
     if search_roots is None:
+        # BodySlide's zeroed UBE build as the game loads it -- chosen by MO2
+        # priority and verified, not the first mod alphabetically that ships
+        # the path (#zeroed-body-refs). An explicit search_roots (tests, other
+        # instances) keeps the scan below.
+        from .nif_convert_bodyrefs import _zeroed_ref
+        zeroed = _zeroed_ref("ube", "_1")
+        if zeroed is not None:
+            return zeroed
         # Portable: the auto-discovered MO2 mods root (no hardcoded paths).
         mr = paths.mods_root()
         search_roots = [mr] if mr is not None else []
