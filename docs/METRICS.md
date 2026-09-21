@@ -943,9 +943,22 @@ holds it. Importing one inside pytest closes the global capture file and every l
 test dies on "I/O operation on closed file" — which is how the first draft of these
 tests came to assert on an empty string while only the exit code was really checked.
 Both the no-seam path and the nothing-augmented path exit 3, so without the message
-the test could not tell which guard had fired. Replaced with `sys.stdout.reconfigure()`
-in the three tools this lane touches; non-ascii output verified unchanged. **Still
-present in `fit_audit.py`, `scan_morph_issues.py` and `sanity_check_converted.py`.**
+the test could not tell which guard had fired.
+
+All six converted to `sys.stdout.reconfigure()`, which mutates the existing stream
+instead and is a no-op on one that does not support it; non-ascii output verified
+unchanged. The other three — `fit_audit`, `scan_morph_issues`,
+`sanity_check_converted` — had no test importing them *yet*; the first one to do so
+would have hit it.
+
+Ratcheted, with the **mechanism pinned rather than assumed**: a test wraps a
+`BytesIO`, drops the wrapper, collects, and asserts the buffer is closed. If CPython
+ever stops doing that the test fails and says the ratchet's reason is gone, instead
+of a banned string outliving the justification nobody can any longer explain.
+`mutation_pairs.py` is exempt — CAC-k arms this ratchet by carrying the banned idiom
+as a replacement string — and the exemption asserts the file really is the pair
+catalogue before skipping it. That collision was caught by the ratchet itself, and
+the gate correctly refused to judge anything while the baseline was red.
 
 ## The control
 
@@ -954,4 +967,4 @@ not: a directory holding a properly constrained XML still exits 0, a plugin that
 have a nude-skin ARMA still strips and saves, and a seam-coincident part still
 transfers and writes. A guard that turns healthy runs red is worse than the bug.
 
-10 mutation pairs, CAC-a..j, all CAUGHT.
+11 mutation pairs, CAC-a..k, all CAUGHT.
