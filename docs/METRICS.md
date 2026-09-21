@@ -1241,6 +1241,34 @@ contributed no flags, which is why both weight-1 halves are unchanged.
   `--every N`, which strides a SORTED list where `foo_0` and `foo_1` are
   adjacent — so `--every 2` would silently become a weight-0-only census.
 
+## OPEN, found while converting: `output_nifs`' first-person filter misses a SUFFIX form
+
+Its regex is `1stperson|1stp`, which is anchored on the marker appearing as a
+PREFIX. On the shipped pack **34 meshes (17 per weight) carry `1st` as a name
+SUFFIX** (`...f1st_1.nif`, `..._1st_1.nif`) and all 34 pass straight through.
+
+**It is NOT a one-line regex fix, and the tempting fix is wrong.** Measured the
+z-span of all 17 weight-1 candidates (UBE feet ~z11, head ~z114):
+
+    FULL-BODY  span ~103u, 29k-34k verts     8 of 17
+    arms-only  span 35-47u, 533-4290 verts   9 of 17
+
+So 9 really are first-person meshes leaking into fit censuses — exactly the
+trap `output_nifs`' own docstring describes ("a first-person mesh, arms only,
+no torso, flagged at 8.47u standoff — a meaningless number"). But the other 8
+are genuine full-body armors that merely have `1st` in the name, and excluding
+them by name would silently drop real meshes from every tool that now shares
+this helper.
+
+**The discriminator has to be GEOMETRIC (torso span / body coverage), not
+nominal.** Left OPEN deliberately: changing `output_nifs` now would move every
+number in this entry, and it needs its own before/after and its own mutation
+pair.
+
+Checked and REFUTED along the way: the two `_1st` rows among
+`find_overinflation`'s weight-1 flags are NOT false positives — both are
+full-body meshes (span 103.3u, ~30k verts), so the flags stand.
+
 ## Correction to the record
 
 `registered_bone_audit.py` and `phase1_antipoke_population_ab.py` have been
