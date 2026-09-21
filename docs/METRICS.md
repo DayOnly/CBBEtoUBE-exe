@@ -1054,7 +1054,7 @@ This does not touch the finding itself: we still sit −0.432u deeper at p05 ove
 n=97. It removes one candidate mechanism, and it removes the temptation to "fix" a
 function whose arithmetic already forbids the defect.
 
-# 2026-09-20 — eight of the 21 half-pack tools resolved, and one of them was right all along
+# 2026-09-20 — eleven of the 21 half-pack tools resolved, and one of them was right all along
 
 The ratchet (`tests/test_pack_population_declared.py`) froze 21 tools that
 enumerate the pack with a `*_1.nif` glob and never say so. Freezing stops the
@@ -1062,9 +1062,10 @@ count growing; it fixes nothing. This is the first tranche actually resolved,
 in small groups with the tool's output captured on the shipped pack BEFORE and
 AFTER each change.
 
-**The rule is DECLARE, not "always both weights".** Seven of the eight here
-read both weights now. The eighth was already correct and only needed to say so
-— and finding that is the result, not a failure to convert it.
+**The rule is DECLARE, not "always both weights".** Nine of the eleven here
+read both weights now. One was already correct and only needed to say so; one
+is a declared blind spot that a glob swap would have corrupted. Finding those
+is the result, not a failure to convert them.
 
 ## The population, and why the ratio is not 2.0
 
@@ -1099,6 +1100,9 @@ in one place instead of five.
 | `find_morph_follow_gaps` | BOTH WEIGHTS | zone-flags 386 -> 772, **different sets** |
 | `find_overinflation` | BOTH WEIGHTS | flagged 9 -> 15; weight 0 NOT the worse half |
 | `verify_bust_clearance` | BOTH WEIGHTS | **poking 54 -> 116**; measured 221 -> 441 |
+| `bust_gap_score` | **`_1` ONLY, DECLARED BLIND SPOT** | AST byte-identical (docstring only) |
+| `registered_bone_audit` | BOTH WEIGHTS, first-person kept | checked 144 -> 288; violations 1 -> 2 (one garment) |
+| `postreconvert_audit` | BOTH WEIGHTS, first-person kept | skirt_proxies 6 -> 12; encloses 0 -> 0 |
 
 ## `verify_weight_invariant` — it was half a gate
 
@@ -1277,6 +1281,62 @@ output is COMPLETE, not just that the exit code is 0** — this is the same
 family as the closed cannot-abort class, arriving from the opposite direction:
 there the tool said "clean" over nothing; here it said nothing at all, cleanly.
 
+## Three more — and the one that must NOT be glob-swapped
+
+**`bust_gap_score`: `_1` ONLY, DECLARED AS A BLIND SPOT — not a correct scoping.**
+It counts penetrating vertices per shape, so a `_0` mesh can be independently
+defective, and a change landing on `_0` reads as NOT FIRED — the tool's own
+defect 1 ("SCORE THE POPULATION THE CHANGE CAN REACH") on the weight axis. But
+it fails the safe-to-swap test twice, both verified in code:
+
+* the AUTHOR body — `canonical_body.canonical_cbbe` globs `femalebody_1.nif` only
+* the COPY-PATH body — `_body_for(nf, "_1")` in `measure_arm`
+
+Either would put every `_0` row in the wrong frame as a believable wrong number.
+It is also a GATE instrument — `acceptance.py` reads two of its rows — so
+widening re-baselines both with nothing to validate against. Declared, with the
+fix path written into the docstring.
+
+Neutrality PROVED for a docstring-only change: the AST with the module docstring
+removed is byte-identical before and after (`3728ab2d06458b9e...`, 43862). A
+control copy with one token changed hashes differently (`b890d2480fb0cf34...`),
+so the check does detect code changes.
+
+**`registered_bone_audit`: BOTH WEIGHTS, first-person KEPT.**
+
+    enumerated        1295 -> 2590   (exactly x2)
+    pieces checked     144 ->  288   (exactly x2)
+    violating shapes     1 ->    2
+
+The 2 is **one garment at both weights**: a robe whose generated `VirtualGround`
+shape carries an undeclared `NPC Root` bone in its `_0` and its `_1`. Weight 0
+surfaced the partner of a known defect, not a new one — said plainly because
+the SHAPES table prints "2 VirtualGround", which reads as two defects.
+
+First-person is kept on purpose: `output_nifs` excludes it for a BUST-COVERAGE
+reason, which has nothing to do with a physics bone.
+
+OPEN, independent of this change: this gate **already exits 1 on the shipped
+pack at weight 1 alone.** Its docstring's last measurement (10 over 174, then 0
+after the fix) predates the current pack.
+
+**`postreconvert_audit`: BOTH WEIGHTS for the proxy rows, first-person kept.**
+The entire before/after diff is one line — `skirt_proxies 6 -> 12`. Every other
+row is byte-identical, including `proxy_encloses_chain` 0 -> 0: the zero-target
+row that can exit 1 now covers both weights and stays clean. No baseline file
+existed yet, so nothing could falsely "regress".
+
+### SAFETY — a measuring tool that writes into what it measures
+
+`registered_bone_audit` writes its JSON **beside the pack, unconditionally** —
+for the shipped pack, inside the read-only modlist instance, and BEFORE its
+verdict prints. Every run here went through a wrapper that keeps all paths
+intact (physics-XML resolution depends on the NIF's real location, so a junction
+was ruled out), redirects that one write to the scratchpad, and refuses any
+other write into the instance. The wrapper was self-tested on a fake path first,
+and the instance was checked afterwards: the file was never created there.
+Flagged as its own task — where the report *should* go is a design decision.
+
 ## What was NOT done, and why
 
 * `fit_audit.py` is **DEAD and stays on the list.** It raises AttributeError at
@@ -1328,4 +1388,4 @@ both are top-level scripts with module-level code that reads `sys.argv`, and
 neither is imported anywhere. They run as `python <path> [pack]`, so a CLI
 before/after capture IS possible for them.
 
-KNOWN_HALF_PACK: **21 -> 13.** HPK-a and HPK-b both CAUGHT.
+KNOWN_HALF_PACK: **21 -> 10.** HPK-a and HPK-b both CAUGHT.
