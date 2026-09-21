@@ -968,3 +968,33 @@ have a nude-skin ARMA still strips and saves, and a seam-coincident part still
 transfers and writes. A guard that turns healthy runs red is worse than the bug.
 
 11 mutation pairs, CAC-a..k, all CAUGHT.
+
+## Found while converting the three: `fit_audit.py` has never run
+
+Smoke-testing the three tools converted off the stdout wrapper turned up a
+different defect in one of them, and it is the opposite of this lane's class:
+
+```
+fit_audit.py  rc=1  AttributeError: module 'src.sliderset_gen'
+                    has no attribute 'MORPH_SHAPE_CAP'
+```
+
+Line 306, before any work. Reproduced on unmodified `testing`, so it is not
+this lane's doing. `MORPH_SHAPE_CAP` appears **nowhere else in the repo** —
+not in `sliderset_gen`, not anywhere — and `git log -S` finds nothing because
+the constant predates the clean-slate re-root. **The tool has not run since.**
+
+Verdict: **BROKEN — dead reference.** Deliberately NOT patched. `cap` feeds
+`morphing = set(tri_order[:cap])`, which is what makes `CUT_NO_FALLBACK` and
+`CUT_HIGH_MORPH` fire at all. The nearest real constant, `tri.TRI_MAX_SHAPES
+= 0xFFFF`, is the PIRT header's encoding ceiling, not a per-NIF morph cap;
+substituting it would let every shape morph, so both checks would never fire
+again — a tool that runs, reports, and cannot find anything. That is strictly
+worse than one that crashes, and it is the exact failure this audit exists to
+remove.
+
+The open question is not "what number goes there" but **whether the per-NIF
+morph cap still exists as a concept in this codebase**. `sliderset_gen:413`
+still orders shapes so that "if the per-NIF morph cap ever fires, low-impact
+rigid props are dropped first", so something believes in it. Resolve that
+before assigning a value.
