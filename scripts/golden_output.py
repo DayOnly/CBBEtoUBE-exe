@@ -162,7 +162,8 @@ def _flags() -> dict:
     #
     # THE SAME THING HAPPENED AGAIN, from the user's environment rather than
     # from a harness switch. `CBBE2UBE_DEBUG_GLOW_CTRL` and `CBBE2UBE_GLOW_LOG`
-    # are persisted in the WINDOWS USER scope, so they enter every new shell:
+    # were persisted in the WINDOWS USER scope (removed from it by 2026-09-21;
+    # a shell started before then still carries them), so they entered every new shell:
     # the baseline recorded `{}` and any run since records those two, and
     # `check` returns 2 before it compares a single vertex. Measured 2026-09-20
     # -- the harness was unusable from any ordinary shell, and its refusal reads
