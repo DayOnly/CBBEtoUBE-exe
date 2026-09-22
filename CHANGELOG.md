@@ -19,14 +19,18 @@ kept that body's shape: the bust stood 2.8u further out than the author put it
 The switch is made only where it can be proven. The BodySlide output must be
 the folder that provides the zeroed CBBE body the fit uses; both weights of the
 piece must match the zeroed build of its BodySlide project, every shape,
-vertex for vertex; the mod's own meshes must not already be that build; and the
-two must agree on whether the piece has HDT physics. Anything else keeps the
+vertex for vertex; the mod's own meshes must not already be that build; the two
+must agree on whether the piece has HDT physics; and the build must have the
+same shapes as the mod's own meshes, so only the geometry changes (a build that
+bundles the body would convert down a different path). Anything else keeps the
 mod's own meshes, as before. The run log says how many pieces moved and why the
 others did not (`[zeroed-output-source] ...`). "Take armour from the zeroed
 BodySlide build" (Settings, Paths > Bodies, advanced) turns it off.
-On one modlist 224 pieces move; 65 more were looked at and kept (25 already
-were the build, 21 would change physics, 19 are not a verified zeroed build).
-Checking takes about four minutes of a full run.
+On one modlist 118 pieces move and 171 more were looked at and kept (106 have
+other shapes, 25 already were the build, 21 would change physics, 19 are not a
+verified zeroed build). A piece whose own meshes were oversized now fits as its
+author built it, which can mean less room in some poses. Checking takes about
+four minutes of a full run.
 
 ### Added — Convert shows the reference bodies it will use, and lets you pick others
 

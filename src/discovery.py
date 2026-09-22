@@ -185,7 +185,10 @@ def _has_3ba_body(nif_path: Path) -> bool:
 #      shape checked vertex for vertex (zeroed_body.zeroed_garment);
 #   3. today's source is a mod's own meshes (tier 0) and is NOT already that build;
 #   4. today's source and the output agree on whether the piece declares HDT
-#      physics -- a physics change is not this fix's to make.
+#      physics -- a physics change is not this fix's to make;
+#   5. the build has the same shapes, with the same vertex counts, as today's
+#      source at both weights -- only the geometry changes, never the pass chain
+#      (a build that bundles the 3BA body would switch the piece to body-swap).
 # CBBE2UBE_NO_ZEROED_OUTPUT_SOURCE=1 (settings window: "Take armour from the
 # zeroed BodySlide build") leaves the tiers alone -- the off-switch control.
 _HDT_MARKER = b"HDT Skinned Mesh Physics Object"
@@ -293,11 +296,21 @@ def _prefer_zeroed_outputs(index: "dict[str, Path]", win_tier: "dict[str, int]",
             keep("its physics would change")
             continue
         try:
-            already = all(_zb.matches_build(_zb._nif_shapes(cur[w]), zg.build[w])
-                          is not None for w in keys)
+            today = {w: _zb._nif_shapes(cur[w]) for w in keys}
         except Exception:
-            already = False
-        if already:
+            keep("today's source is unreadable")
+            continue
+        # Same shapes, same vertex counts, at both weights: only the geometry may
+        # change. A build that bundles the 3BA body (or other shapes) sends the
+        # piece down the body-swap path instead of the copy path -- a different
+        # pass chain, measured 2026-09-22 on four pieces of one armour overhaul:
+        # up to 4.2u moved at a weight whose source geometry barely differed, and
+        # 2-10% more of the body exposed in poses. Not this fix's to make.
+        if any({n: len(v) for n, v in today[w].items()}
+               != {n: len(v) for n, v in zg.build[w].items()} for w in keys):
+            keep("the build's shapes differ from today's source")
+            continue
+        if all(_zb.matches_build(today[w], zg.build[w]) is not None for w in keys):
             keep("today's source already is that build")
             continue
         for w, k in keys.items():

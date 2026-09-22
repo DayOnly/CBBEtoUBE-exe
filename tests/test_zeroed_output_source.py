@@ -226,7 +226,7 @@ class Selection:
     """A base mod and the user's 3BA BodySlide output both providing one piece;
     the zeroed-build verdict, today's geometry and the provider are stubbed."""
 
-    def __init__(self, root: Path, monkeypatch, *, verified=True, already=False,
+    def __init__(self, root: Path, monkeypatch, *, verified=True, today="off-body",
                  provider=OUT_MOD):
         self.mods = root / "mods"
         self.calls = []
@@ -241,11 +241,17 @@ class Selection:
                 raise zb.ZeroedBodyError("not a zeroed build")
             return zb.ZeroedGarment("Test Armor", 0.0, build)
 
+        def todays(p):
+            b = build["_0" if str(p).endswith("_0.nif") else "_1"]
+            if today == "already":                   # the source IS the build
+                return b
+            if today == "other-shapes":              # e.g. no bundled body, unzapped
+                return {"Cuirass": CUIRASS, "Pants": PANTS}
+            return {n: v + 0.5 for n, v in b.items()}    # same shapes, another body
+
         monkeypatch.setattr(zb, "zeroed_garment", fake_check)
         monkeypatch.setattr(zb, "_layout_dirs", lambda: [])
-        monkeypatch.setattr(zb, "_nif_shapes", lambda p: (
-            build["_0" if str(p).endswith("_0.nif") else "_1"] if already
-            else {"Cuirass": CUIRASS, "Pants": PANTS}))
+        monkeypatch.setattr(zb, "_nif_shapes", todays)
         monkeypatch.setattr(discovery, "_zeroed_output_provider",
                             lambda *a: (provider, "" if provider else "no zeroed body"))
         monkeypatch.delenv("CBBE2UBE_NO_ZEROED_OUTPUT_SOURCE", raising=False)
@@ -280,7 +286,14 @@ def test_a_piece_whose_physics_would_change_keeps_todays_source(tmp_path, monkey
 
 
 def test_a_source_that_already_is_the_zeroed_build_is_left_alone(tmp_path, monkeypatch):
-    sel = Selection(tmp_path, monkeypatch, already=True)
+    sel = Selection(tmp_path, monkeypatch, today="already")
+    assert set(Selection.owners(sel.index()).values()) == {BASE_MOD}
+
+
+def test_a_build_with_other_shapes_than_todays_source_is_not_taken(tmp_path, monkeypatch):
+    """A build that bundles the 3BA body, or has other shapes, would move the
+    piece to another pass chain; only the geometry is this fix's to change."""
+    sel = Selection(tmp_path, monkeypatch, today="other-shapes")
     assert set(Selection.owners(sel.index()).values()) == {BASE_MOD}
 
 

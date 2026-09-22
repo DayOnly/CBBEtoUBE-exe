@@ -1851,11 +1851,20 @@ PAIRS = (
     Pair('ZOS-i', 'a source that already is the zeroed build is replaced',
          edits=(
              ('src/discovery.py',
-              '        if already:',
+              '        if all(_zb.matches_build(today[w], zg.build[w]) is not None for w in keys):',
               '        if False:  # MUTATED', 1),
          ),
          tests=('tests/test_zeroed_output_source.py',),
          expect=('test_a_source_that_already_is_the_zeroed_build_is_left_alone',),
+    ),
+    Pair('ZOS-r', 'a build with other shapes than today\'s source is taken',
+         edits=(
+             ('src/discovery.py',
+              '            keep("the build\'s shapes differ from today\'s source")\n            continue',
+              '            pass  # MUTATED', 1),
+         ),
+         tests=('tests/test_zeroed_output_source.py',),
+         expect=('test_a_build_with_other_shapes_than_todays_source_is_not_taken',),
     ),
     Pair('ZOS-j', 'a piece already taken from a BodySlide output is moved',
          edits=(

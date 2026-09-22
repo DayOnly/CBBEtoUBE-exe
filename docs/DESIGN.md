@@ -368,11 +368,20 @@ single pass runs. Three rules encode this:
      weight, a default-on zap deletes its vertices, a morph index past the shape is
      skipped -- both as BodySlide builds; anything it cannot check is a refusal);
    - today's source is a tier-0 mod whose meshes are NOT already that build;
-   - both sides agree on whether the piece declares an HDT physics XML.
-   Measured on one real modlist: 289 pieces considered, 224 moved (all as whole weight
-   pairs, all to the one verified folder); 65 kept -- 25 already the build, 21 would
-   change physics, 19 not a verified zeroed build. With the switch off the index is
-   identical to the old one on all 2,205 keys. `GARMENT_TOL` is 1e-3, not the body's
+   - both sides agree on whether the piece declares an HDT physics XML;
+   - the build has the SAME shapes, with the same vertex counts, as today's source at
+     both weights. A build that bundles the 3BA body sends the piece down the
+     body-swap path instead of the copy path; on four pieces of one armour overhaul
+     that path change moved up to 4.2u at a weight whose source geometry barely
+     differed and exposed 2-10% more of the body in poses. Only the geometry is this
+     rule's to change.
+   Measured on one real modlist: 289 pieces considered, 118 moved (all as whole weight
+   pairs, all to the one verified folder); 171 kept -- 106 other shapes, 25 already
+   the build, 21 would change physics, 19 not a verified zeroed build. With the switch
+   off the index is identical to the old one on all 2,205 keys. Posed (zeroed UBE
+   body, 400 samples per region), 3 of 4 moved samples clip no more than before; a
+   vest whose own mesh was 2.6u oversized at the bust gained breast-side exposure
+   (<=1.3% -> 12.5%): its zeroed build is snug by design. `GARMENT_TOL` is 1e-3, not the body's
    1e-4: BodySlide adds weight 0's seam defaults in single precision, and 34 genuine
    builds sat 1.0-1.4e-4 off; every preset or stale build seen was 0.25u or more off.
    Off with `CBBE2UBE_NO_ZEROED_OUTPUT_SOURCE=1` (settings: "Take armour from the
