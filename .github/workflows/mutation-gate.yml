@@ -1,8 +1,9 @@
 name: mutation gate
 
 # scripts/mutation_gate.py: every seeded mutation is applied in a detached
-# worktree and must turn its named tests red. On demand only -- it is minutes of
-# pytest, and it belongs to the release checklist (docs/RELEASING.md), not to every
+# worktree and must turn its named tests red. On demand only -- about half an hour
+# of pytest (202 pairs took 1942 s on 2026-09-21), and it belongs to the release
+# checklist (docs/RELEASING.md), not to every
 # push. #mutation-gate
 on:
   workflow_dispatch:

@@ -59,18 +59,37 @@ converter fits each weight separately against its own body, so the two halves'
 standoff is not one shared quantity, and a lost fit at weight 0 is invisible.
 
 DO NOT fix it by swapping the glob. BOTH bodies in the ratio above are pinned
-to weight 1 at their call sites: the CBBE base body is
-`nc._find_cbbe_base_body("_1")` and the UBE body is
-`nc._find_ube_femalebody("_1")`. A `_0` garment would be read against weight-1
+to weight 1 at their call sites: `canonical_cbbe(weight="_1")` and
+`canonical_ube(weight="_1")`. A `_0` garment would be read against weight-1
 bodies on both sides, and the hug mask and the ambiguous-frame exclusion are
 taken against the same pinned bodies. Unlike the estimator bias above, that
 error does NOT cancel -- it is a different body on each side for every `_0` row.
 
-The fix is small, because both helpers already take a weight and cache per
-weight; only these two call sites pass the literal `"_1"`. Resolve both from
-each file's own suffix, then widen. This census feeds an open investigation;
-widening it moves numbers already recorded there, so do it as its own change
-with an old-vs-new comparison.
+The fix is small, because both helpers already take a weight; only these two
+call sites pass the literal `"_1"`. Resolve both from each file's own suffix,
+then widen. This census feeds an open investigation; widening it moves numbers
+already recorded there, so do it as its own change with an old-vs-new
+comparison.
+
+REFERENCE BODIES: BodySlide's zeroed builds as the game loads them
+(src/zeroed_body.py, via canonical_body). The AUTHOR side used to be the
+converter's `_find_cbbe_base_body`, which picked the 3BA mod folder's own
+preset femalebody -- up to 1.97u off the body the garments were built on --
+so every authored standoff here was read against the wrong body. Re-run on
+the zeroed body 2026-09-21 (1917 shapes scored, was 1957): body-swap median
+ratio 1.202 -> 1.058 (p90 1.934 -> 1.540), copy 1.150 -> 1.141, and the printed
+reading went from "LOOSER than authored" to "fit preserved" on both paths
+(copy by 0.009 under the 1.15 line).
+
+NO HELPER EXCLUSION -- an open gap. A body-reference or collision copy that
+sits ON the body passes every filter this census applies; on the right body its
+authored standoff is ~0, and the 0.05u floor in the ratio turns a 0.3-0.7u
+shipped offset into a ratio of 5-15. On that run 17 of the 40 loosest shapes
+carry a proxy-token name (seat_error_vs_author's `_is_proxy_name`: `3BA Ref`,
+`VirtualBody`, `collision body`), and 18 scored shapes have an authored median
+under 0.05u (none did on the old body). Dropping all 85 proxy-named shapes moves
+neither median by more than 0.004, so the per-path table stands -- but read the
+LOOSEST list as helpers first.
 """
 import argparse
 import collections
@@ -93,6 +112,8 @@ paths.export_to_env(_lay)
 from pyn import pynifly                                  # noqa: E402
 from src import nif_convert as nc                        # noqa: E402
 from scripts.analysis import standoff_audit as sa        # noqa: E402
+from scripts.analysis.canonical_body import (canonical_cbbe,  # noqa: E402
+                                             canonical_ube)
 
 # NO HARD-CODED MODLIST PATH. This repo is public, and the deployed output dir
 # moves with the MO2 instance -- resolve it, or take --pack.
@@ -154,9 +175,6 @@ def pick_frame(shape, tree):
     # first worked out, and its docstring above still records why -- but a rule
     # kept in three places is one that gets changed in one of them. The margin
     # this file needs for its AMBIGUOUS exclusion is what `with_margin` is for.
-    # Byte-identical: the copy read `dr <= dw` where the shared one reads
-    # `dr < dw`, and that branch is unreachable -- an exact tie has
-    # `abs(dr - dw) == 0`, which the agree test takes first.
     return sa.pick_frame(raw, w, tree, agree_u=AGREE_U, with_margin=True)
 
 
@@ -170,10 +188,11 @@ def source_for(rel: Path):
 
 
 def main():
-    cb = nc._find_cbbe_base_body("_1")
-    ub = nc._find_ube_femalebody("_1")
-    if not cb or not ub:
-        raise SystemExit("cannot locate both bodies -- census impossible")
+    try:
+        cb = canonical_cbbe(weight="_1")[0]
+        ub = canonical_ube(weight="_1")[0]
+    except FileNotFoundError as e:
+        raise SystemExit(f"cannot locate both bodies -- census impossible: {e}")
     cbt, cbn = body_tree(cb)
     ubt, ubn = body_tree(ub)
     print(f"CBBE base : {cbn} verts  {Path(cb).name}")

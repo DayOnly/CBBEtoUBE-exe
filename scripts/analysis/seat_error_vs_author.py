@@ -51,7 +51,10 @@ resolve the transform of SMP collider and HDT helper shapes and scatters their
 vertices; before the guard, 44 such shapes carried 95.7% of the total and the
 MEAN read 9.1811u against a 0.3466u median. Their RAW vertices are correct, so
 this says nothing about the shipped mesh -- read it as "not measurable here",
-never as a fit defect. The run names how many and the worst five.
+never as a fit defect. The run names how many and the worst five. Both
+2026-09-21 runs (4053 paired shapes, old and zeroed reference body) excluded no
+shape this way, so the 44 above and the 146 at `_MAX_PLAUSIBLE_OFF` describe the
+2026-09-19 population, not today's.
 """
 from __future__ import annotations
 
@@ -70,6 +73,8 @@ sys.path.insert(0, str(_REPO / "scripts" / "analysis"))
 
 from src import nif_io, nif_convert as nc                 # noqa: E402
 import standoff_audit as sa                               # noqa: E402
+from scripts.analysis.canonical_body import (canonical_cbbe,  # noqa: E402
+                                             canonical_ube)
 from scipy.spatial import cKDTree                         # noqa: E402
 
 
@@ -153,9 +158,6 @@ def _pick_frame(shape, tree):
         return raw, "raw"
     # THE RULE LIVES IN `standoff_audit`, ONCE. This was a third copy of it,
     # and a rule kept in three places is one that gets changed in one of them.
-    # Byte-identical behaviour: the copy read `dr <= dw` where the shared one
-    # reads `dr < dw`, and that branch is unreachable -- an exact tie has
-    # `abs(dr - dw) == 0`, which the agree test takes first.
     return sa.pick_frame(raw, w, tree, agree_u=_AGREE_U)
 
 
@@ -207,13 +209,18 @@ def main(argv) -> int:
     bodies: dict = {}
 
     def body(kind, w):
+        # BodySlide's zeroed bodies as the game loads them, at the file's own
+        # weight (src/zeroed_body.py). The author side was the converter's
+        # `_find_cbbe_base_body`, which picked a preset femalebody up to 1.97u
+        # off the body the garments were built on.
         if (kind, w) not in bodies:
-            p = (nc._find_ube_femalebody(w) if kind == "ube"
-                 else nc._find_cbbe_base_body(weight=w))
-            if p is None:
+            try:
+                p, name = (canonical_ube(weight=w) if kind == "ube"
+                           else canonical_cbbe(weight=w))
+            except FileNotFoundError as e:
+                print(f"no {kind.upper()} reference body at weight {w[1]}: {e}")
                 return None
-            b = max(nif_io.open_nif_retry(str(p)).shapes,
-                    key=lambda s: len(s.verts))
+            b = next(s for s in nif_io.open_nif_retry(p).shapes if s.name == name)
             bodies[(kind, w)] = cKDTree(_world(b))
         return bodies[(kind, w)]
 
@@ -242,7 +249,7 @@ def main(argv) -> int:
         resolved += 1
         ct, ut = body("cbbe", w), body("ube", w)
         if ct is None or ut is None:
-            print("no reference body found -- set CBBE2UBE_MO2_INI")
+            print("no reference body -- the census cannot run (reason above)")
             return 2
         for nm, a in {s.name: s for s in anf.shapes}.items():
             try:
