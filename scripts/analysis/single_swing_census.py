@@ -41,6 +41,13 @@ source matches by garment shape names, so "inherited" and "introduced" can be
 told apart per piece. Every excluded piece is counted under a named reason; a
 run that scores nothing exits 2 rather than printing a clean table.
 
+The canonical CBBE/3BA body is BodySlide's zeroed 3BA build since 2026-09-21
+(canonical_body). The preset build it replaced overstated the SOURCE loss: over
+the same n=200 source-matched pieces, source loss-p90 median 0.70 -> 0.56u and
+source pieces over 1u 66 -> 39 (converted 38), so "better after conversion
+(-0.3u)" fell 60 -> 37 and "worse (+0.3u)" rose 11 -> 28. The converted side
+did not move.
+
 Read-only. Needs a skeleton NIF (CBBE2UBE_SKELETON_NIF, else the discovered
 XPMSSE skeleton) -- an armour NIF's bone list is flat, so without a real
 skeleton nothing below the hip poses and every piece reads clean.
@@ -54,17 +61,17 @@ cited above are weight-1 files.
 DO NOT fix it by swapping the glob. The CONVERTED side is measured on the body
 injected into the same NIF, which would be correct for a `_0` file -- but the
 SOURCE side, which is what separates "inherited" from "introduced", is posed on
-`canonical_body.canonical_cbbe()`: it globs `femalebody_1.nif` only and caches
-one body with no weight in the key. A `_0` source garment would be posed on the
-weight-1 CBBE body, and the source-vs-converted block would pool those
+`canonical_cbbe()` called with no weight -- i.e. weight 1 -- and the module-level
+`_CBBE` holds that one body for every file. A `_0` source garment would be posed
+on the weight-1 CBBE body, and the source-vs-converted block would pool those
 mismatched comparisons into a believable number.
 
-To close it: resolve the source body from each file's own weight suffix
-(`canonical_cbbe` needs a weight and a per-weight cache key), keep this file's
-first-person stem rule on top of `output_nifs` (it is broader than that helper's
-regex), then widen. This census feeds an open investigation; widening it will
-move numbers that investigation has already recorded, so do it as its own
-change with an old-vs-new comparison.
+To close it: pass each file's own weight suffix to `canonical_cbbe(weight=...)`
+(it already resolves the zeroed body per weight) and cache `_CBBE` per weight,
+keep this file's first-person stem rule on top of `output_nifs` (it is broader
+than that helper's regex), then widen. This census feeds an open investigation;
+widening it will move numbers that investigation has already recorded, so do it
+as its own change with an old-vs-new comparison.
 """
 from __future__ import annotations
 

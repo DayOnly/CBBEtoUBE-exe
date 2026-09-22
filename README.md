@@ -313,9 +313,6 @@ dist\CBBEtoUBE\CBBEtoUBE.exe
 dist\CBBEtoUBE\CBBEtoUBE.exe auto
 ```
 
-Running the exe with **no arguments** launches the GUI — the default when MO2
-runs it or you double-click it. Run the headless one-click pipeline directly
-with the `auto` subcommand (what the GUI's convert button runs under the hood).
 Point MO2 at `CBBEtoUBE.exe` and the tool auto-discovers the modlist layout.
 
 ## Running from source
@@ -419,10 +416,8 @@ When running it from outside the instance, point it explicitly:
 > README does not list may still be environment-only.
 > Settings persist to `CBBEtoUBE_settings.json` beside the exe.
 >
-> This is not a hypothetical: a measured fit improvement sat unused for weeks
-> because it was reachable only by environment variable, and so could never be
-> switched on by a normal launch. If you add a flag meant to be play-tested, give it
-> a row in `src/gui_settings.py`.
+> Adding a flag meant to be play-tested? Give it a row in `src/gui_settings.py`
+> (docs/PIPELINE.md §0, rule 1).
 
 ## Reference bodies
 
@@ -550,29 +545,13 @@ Direct links, with your version pre-filled:
 · [armor looks wrong in game](https://github.com/DayOnly/CBBEtoUBE-exe/issues/new?template=conversion_problem.yml)
 · [feature request](https://github.com/DayOnly/CBBEtoUBE-exe/issues/new?template=feature_request.yml)
 
-Before filing an *invisible armor* report, rule out the two causes that account
-for nearly all of them: **SkyPatcher must be installed**, and
-**`iEnableArmorPatching=1`** must be set in `SKSE/Plugins/SkyPatcher.ini` — with
-it at `0` you get exactly the same symptom as no SkyPatcher at all. Then confirm
-**every** `CBBE_to_UBE_Combined*.esp` is enabled; the merge splits into numbered
-pieces past the ESL cap, and a disabled piece means missing armor.
-
-**Help ▸ Save diagnostics zip** writes `CBBEtoUBE_diagnostics_<timestamp>.zip` — the
-filled-in report as `REPORT.txt`, plus the last and previous run logs and failure
-lists, the output mod's `conversion_report.json` and `conversion_settings.json`, a
-`machine.txt` with your RAM and page-file setting, settings, exclusions, the
-discovered MO2 layout, and a fresh setup check — which answers most of the first
-round of questions on its own. **Glance at it before attaching**: it contains your
-MO2 paths, profile name, and the mods in your load order.
-
-A normal run also leaves `CBBEtoUBE_last_run.log` and
-`CBBEtoUBE_last_failures.json` beside the exe, and `conversion_report.json` /
-`conversion_summary.txt` / `conversion_report_<mod>.txt` at the output mod root
-(the GUI's **Results** tab reads the first as a health scoreboard).
-
-There is no automatic crash upload, by design — the exe excludes the `ssl`
-extension for license reasons (see [Building the exe](#building-the-exe)) and so
-cannot make a network request at all. Reporting is manual and file-based.
+Before filing an *invisible armor* report, rule out SkyPatcher and
+`iEnableArmorPatching=1` (see [Dependencies](#dependencies)) and confirm **every**
+`CBBE_to_UBE_Combined*.esp` is enabled — a disabled piece means missing armor.
+The diagnostics zip holds your MO2 paths, profile name and load-order mod names:
+**glance at it before attaching**. REPORTING.md lists what it contains and the
+files a normal run leaves behind. There is no automatic crash upload — the exe
+cannot make a network request at all (see [Building the exe](#building-the-exe)).
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the dev setup and pull-request notes.
 

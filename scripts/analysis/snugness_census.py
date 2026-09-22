@@ -75,7 +75,21 @@ REFERENCE BODIES: BodySlide's zeroed builds as the game loads them
 (src/zeroed_body.py, via canonical_body). The AUTHOR side used to be the
 converter's `_find_cbbe_base_body`, which picked the 3BA mod folder's own
 preset femalebody -- up to 1.97u off the body the garments were built on --
-so every authored standoff here was read against the wrong body.
+so every authored standoff here was read against the wrong body. Re-run on
+the zeroed body 2026-09-21 (1917 shapes scored, was 1957): body-swap median
+ratio 1.202 -> 1.058 (p90 1.934 -> 1.540), copy 1.150 -> 1.141, and the printed
+reading went from "LOOSER than authored" to "fit preserved" on both paths
+(copy by 0.009 under the 1.15 line).
+
+NO HELPER EXCLUSION -- an open gap. A body-reference or collision copy that
+sits ON the body passes every filter this census applies; on the right body its
+authored standoff is ~0, and the 0.05u floor in the ratio turns a 0.3-0.7u
+shipped offset into a ratio of 5-15. On that run 17 of the 40 loosest shapes
+carry a proxy-token name (seat_error_vs_author's `_is_proxy_name`: `3BA Ref`,
+`VirtualBody`, `collision body`), and 18 scored shapes have an authored median
+under 0.05u (none did on the old body). Dropping all 85 proxy-named shapes moves
+neither median by more than 0.004, so the per-path table stands -- but read the
+LOOSEST list as helpers first.
 """
 import argparse
 import collections
@@ -161,9 +175,6 @@ def pick_frame(shape, tree):
     # first worked out, and its docstring above still records why -- but a rule
     # kept in three places is one that gets changed in one of them. The margin
     # this file needs for its AMBIGUOUS exclusion is what `with_margin` is for.
-    # Byte-identical: the copy read `dr <= dw` where the shared one reads
-    # `dr < dw`, and that branch is unreachable -- an exact tie has
-    # `abs(dr - dw) == 0`, which the agree test takes first.
     return sa.pick_frame(raw, w, tree, agree_u=AGREE_U, with_margin=True)
 
 

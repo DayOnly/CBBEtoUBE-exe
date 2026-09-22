@@ -133,6 +133,9 @@ difference from a recipe difference.
 Reference, so a number has a scale: the 2026-09-06 build on the 184-NIF
 acceptance population scored folds 15974, inverted 1937, bust gap +0.682
 (body-swap) / +0.194 (copy), pen 12, tip 1.244 / 0.454, newly emptied 0.
+(The bust-gap values were read against the author through the old reference-body
+lookup, before the zeroed body of 2026-09-21; they are not comparable with
+bust-gap values taken since.)
 Added 2026-09-08 on the same population: stretch rate p50 0.1495% / p90
 2.0217%, edge deviation p50 0.0331, over 598 shapes = 299 garments.
 """

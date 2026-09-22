@@ -39,8 +39,9 @@ the path, then the shortest path", which on a real modlist chose the 3BA mod
 folder's own femalebody: a preset build the game never loads, up to 1.97u off
 the zeroed body over 16,061 torso vertices. At weight 1 it grew THROUGH
 garments built on the zeroed body, so the source side of source_delta_census
-saw a median 83 of 300 breast vertices as covered, against 291 on the body the
-game loads (measured 2026-09-21).
+saw a median 85 of 300 sampled breast vertices as covered, against 292 on the
+body the game loads (the same 145 weight-1 breast regions, measured
+2026-09-21).
 
 AND DO NOT DETECT THE BUNDLED BODY AT ALL. The converted output already names its
 garment shapes; the source's garments are the shapes with the SAME names. That is
@@ -64,6 +65,16 @@ from src.nif_convert import UBE_BODY_INJECT_NAMES                # noqa: E402
 
 # Physics helpers are not visible garment. Counting them as coverage makes the body
 # read as protected where nothing renders.
+# The match is EXACT, so most helpers still pass as garment through
+# `converted_garment_names` (source_delta_census, single_swing_census):
+# `3BA Ref`, `collision body`, `CollisionLegs` and other `Col*`/`Virtual*`
+# spellings (an exact `VirtualBody` is dropped as an injected-body name). Of the
+# 85 shapes with a helper-like name that snugness_census scored on 2026-09-21
+# (a token heuristic: `col` also catches a few real garments), 60 get through,
+# in 54 `_1` pieces: 14 source_delta_census weight-1 rows (6 with scored
+# regions) and 7 single_swing_census pieces with a scored source. seat_error_vs_author's
+# untextured-AND-proxy-name rule is the measured alternative; widening this set
+# changes what both censuses score, so do it with an old-vs-new run.
 PHYSICS_NAMES = {"collision", "hidecollision", "proxy", "proxy2", "proxy3",
                  "stabilizer"}
 
