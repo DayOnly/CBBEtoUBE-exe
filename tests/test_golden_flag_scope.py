@@ -2,8 +2,9 @@
 
 `golden_output.check` refuses when the recorded flag set differs from the
 baseline's -- correct, because output is then not comparable. But the refusal
-counts a flag that CANNOT change output, and two such flags are persisted in
-the Windows USER scope, so they enter every new shell. Measured 2026-09-20: the
+counts a flag that CANNOT change output, and two such flags were persisted in
+the Windows USER scope (gone from it by 2026-09-21; older shells still carry
+them), so they entered every new shell. Measured 2026-09-20: the
 baseline recorded `{}`, any run since records those two, and `check` returned 2
 before comparing a single vertex.
 
