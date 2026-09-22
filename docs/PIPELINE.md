@@ -363,6 +363,20 @@ normal; and one number per piece averages a destroyed shoulder into a fine bust
 and exits non-zero on any region that worsens — verify it fires on a known-bad
 build before trusting a clean result from it.
 
+**An ours-vs-author number is only as right as the body the author is read
+against.** Tools that pair garments with a canonical body read it through
+`scripts/analysis/canonical_body.py`, which returns BodySlide's zeroed build at
+the garment's weight, as the game loads it (`src/zeroed_body.py`). It used to
+return the 3BA body mod's own femalebody — a preset build up to 1.97u off over
+16,061 torso vertices that grows through garments at weight 1 — so every
+author-relative figure taken with the old resolver (bust gap, snugness, seat
+error, the crotch band) was not read on the body the game loads: from
+2026-09-15, when that file was last replaced, on the 3BA body mod's preset
+build; before then, on contents nobody recorded. Snugness's body-swap reading
+flipped from "looser than authored" to "fit preserved" (median ratio 1.202 ->
+1.058; the copy path only crosses the tool's 1.15 line, 1.150 -> 1.141).
+Re-measure before quoting one.
+
 **A pass measuring "inert" usually means a LATER pass undid it.** Four separate
 knobs read as no-ops on one chest standoff — `ANTIPOKE_FLAT_CLEAR` 0.8→0.25 (no
 change), `INFLATION_MAGNITUDE` 0.7→0.2 (−0.024), `AUTHORED_INFLATE` (no change),

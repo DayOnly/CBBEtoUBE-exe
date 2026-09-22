@@ -104,7 +104,7 @@ def parse_mo2_ini(ini_path: Path) -> dict:
         return out
     wanted = {
         "gamepath", "gamename", "base_directory", "mod_directory",
-        "selected_profile",
+        "selected_profile", "overwrite_directory",
     }
     for line in text.splitlines():
         line = line.strip()
@@ -214,6 +214,9 @@ class Layout:
     instance_dir: Path | None = None
     game_path: Path | None = None
     selected_profile: str | None = None
+    # MO2's overwrite folder, from the ini (see `overwrite_dir`). None when no
+    # ini was found.
+    overwrite_dir: Path | None = None
 
     def ok(self) -> bool:
         return self.mods_root is not None and self.mods_root.is_dir()
@@ -246,6 +249,11 @@ def discover_layout(start: Path | None = None) -> Layout:
         gp = cfg.get("gamepath")
         if gp:
             lay.game_path = Path(gp)
+        # MO2 sets Mods, Overwrite and Profiles independently, so overwrite is
+        # NOT beside a moved Mods folder: overwrite_directory, else its default.
+        lay.overwrite_dir = (_expand(base_dir, cfg["overwrite_directory"])
+                             if cfg.get("overwrite_directory")
+                             else base_dir / "overwrite")
 
     # 3. Name-based fallback for mods root.
     if lay.mods_root is None or not lay.mods_root.is_dir():
@@ -256,6 +264,20 @@ def discover_layout(start: Path | None = None) -> Layout:
     # ---- game Data dirs ----
     lay.game_data_dirs = _discover_game_data_dirs(lay)
     return lay
+
+
+def overwrite_dir(lay: "Layout") -> "Path | None":
+    """MO2's overwrite folder -- the highest-priority source in its virtual file
+    system, and where BodySlide run through MO2 writes by default.
+
+    From the ini's `overwrite_directory` (%BASE_DIR% expanded), else MO2's
+    default `<base_directory>/overwrite`. NOT `<mods>/../overwrite`: MO2 lets
+    the Mods path move on its own, and that guess then points at nothing. With
+    no ini at all, that guess is the only one left, so it is the fallback.
+    """
+    if lay.overwrite_dir is not None:
+        return lay.overwrite_dir
+    return lay.mods_root.parent / "overwrite" if lay.mods_root is not None else None
 
 
 def _discover_game_data_dirs(lay: Layout) -> list[Path]:

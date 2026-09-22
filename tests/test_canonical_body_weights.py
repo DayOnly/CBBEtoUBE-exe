@@ -47,8 +47,19 @@ def _pair(tmp_path, stem, both=True):
 
 @pytest.fixture(autouse=True)
 def _isolated(monkeypatch):
-    monkeypatch.setattr(cb, "_CACHE", {})
     monkeypatch.setattr(cb.pynifly, "NifFile", _FakeNif)
+
+
+def _fake_zeroed(calls):
+    """Stands in for src.zeroed_body.zeroed_body: records each request and
+    names the file after it, so a test can see which body came back."""
+    from src import zeroed_body as zb
+
+    def fake(kind, weight="_1", **_kw):
+        calls.append((kind, weight))
+        return zb.ZeroedBody(Path(f"{kind}_femalebody{weight}.nif"), kind.upper(),
+                             "set", 0.0)
+    return fake
 
 
 def test_weight_sibling_is_the_same_directorys_weight0_file(tmp_path):
@@ -84,24 +95,32 @@ def test_a_path_that_is_not_weight1_is_refused(tmp_path):
         cb.weight_sibling(p, "_0")
 
 
-def test_canonical_cbbe_keys_its_cache_by_weight(tmp_path, monkeypatch):
-    p1, p0 = _pair(tmp_path, "femalebody")
-    monkeypatch.setattr(cb.glob, "glob", lambda *a, **k: [str(p1)])
-    assert Path(cb.canonical_cbbe(tmp_path)[0]) == p1
-    assert Path(cb.canonical_cbbe(tmp_path, weight="_0")[0]) == p0
+def test_canonical_bodies_are_the_zeroed_bodies_at_each_weight(monkeypatch):
+    """Both sides come from the zeroed-body resolver, each at its own weight --
+    never from a body picked by mod name or path length."""
+    from src import zeroed_body as zb
+    calls = []
+    monkeypatch.setattr(zb, "zeroed_body", _fake_zeroed(calls))
+    assert cb.canonical_cbbe(weight="_0") == ("cbbe_femalebody_0.nif", "CBBE")
+    assert cb.canonical_cbbe() == ("cbbe_femalebody_1.nif", "CBBE")
+    assert cb.canonical_ube(weight="_0") == ("ube_femalebody_0.nif", "UBE")
+    assert cb.canonical_ube() == ("ube_femalebody_1.nif", "UBE")
+    assert calls == [("cbbe", "_0"), ("cbbe", "_1"), ("ube", "_0"), ("ube", "_1")]
 
 
-def test_canonical_ube_keys_its_cache_by_weight(tmp_path, monkeypatch):
-    p1, p0 = _pair(tmp_path, "femalebody_tangent")
-    from src import auto_convert as ac
-    monkeypatch.setattr(ac, "_find_ube_body_ref", lambda *a, **k: p1)
-    assert Path(cb.canonical_ube()[0]) == p1
-    assert Path(cb.canonical_ube(weight="_0")[0]) == p0
+def test_the_default_call_is_the_weight1_call(monkeypatch):
+    """Every existing caller passes no weight and must get weight 1."""
+    from src import zeroed_body as zb
+    monkeypatch.setattr(zb, "zeroed_body", _fake_zeroed([]))
+    assert cb.canonical_cbbe() == cb.canonical_cbbe(weight="_1")
 
 
-def test_the_default_call_is_the_weight1_call(tmp_path, monkeypatch):
-    """Every existing caller passes no weight and must get exactly what it got."""
-    p1, _ = _pair(tmp_path, "femalebody")
-    monkeypatch.setattr(cb.glob, "glob", lambda *a, **k: [str(p1)])
-    assert cb.canonical_cbbe(tmp_path) == cb.canonical_cbbe(tmp_path, weight="_1")
-    assert Path(cb.canonical_cbbe(tmp_path)[0]) == p1
+def test_no_zeroed_body_is_an_error_never_another_body(monkeypatch):
+    """What callers catch to skip a weight: a FileNotFoundError."""
+    from src import zeroed_body as zb
+
+    def refuse(kind, weight="_1", **_kw):
+        raise zb.ZeroedBodyError("not a zeroed build")
+    monkeypatch.setattr(zb, "zeroed_body", refuse)
+    with pytest.raises(FileNotFoundError, match="not a zeroed build"):
+        cb.canonical_cbbe(weight="_0")

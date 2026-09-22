@@ -41,6 +41,13 @@ by wrecking the surface:
 Reads the `CBBE2UBE_STAGE_DUMP` directory, so one conversion produces the whole
 ledger and passes that cancel each other are attributed correctly.
 
+THE SOURCE BODY IS THE ONE BUNDLED IN `--source` (a `BODY_NAMES` shape), not
+`canonical_body`'s, so moving the canonical CBBE body to BodySlide's zeroed build
+(2026-09-21) does not change this ledger. It carries the bundled-body risk
+instead: sources bundle bodies at different presets, and a preset body can sit
+~2u off the one the garment was built on (the 3BA body mod's own build: up to
+1.97u) -- well under the 5u `MAX_PLAUSIBLE_AUTHORED` refusal below.
+
 Usage:
   python scripts/analysis/authored_offset_ledger.py --stages <dir>
       --source <source.nif> --output <converted.nif> [--shape NAME]...

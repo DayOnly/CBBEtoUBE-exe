@@ -214,47 +214,49 @@ def source_index():
     return _SRCIDX["m"]
 
 
-def cbbe_reference():
-    """The CBBE base body -- the body a garment was authored against when its
-    own NIF carries no inline body (every phase-1 piece). Without it the
-    AUTHORED OFFSET, which is the whole point of `#authored-inflate`, could only
-    be computed for phase 2."""
-    if "c" not in _REF:
-        from src import nif_convert as nc, paths
-        lay = paths.discover_layout()
-        paths.export_to_env(lay)
-        p = nc._find_cbbe_base_body("_1")
-        if p is None:
-            raise RuntimeError("no CBBE base body found")
-        m = _load(p)
-        k = max(m, key=lambda k: len(m[k][0]))
-        _REF["c"] = m[k]
-    return _REF["c"]
+def _weight_of(path) -> str:
+    """`_0` or `_1` from the file's stem, `_1` when it has neither (the
+    converter's own rule, `weight_suffix_of`)."""
+    return "_0" if Path(path).stem.endswith("_0") else "_1"
 
 
-def ube_reference():
-    """The UBE body the converter itself fits to.
+def _reference(kind: str, weight: str):
+    """(verts, tris) of BodySlide's zeroed `kind` body at `weight`, as the game
+    loads it (src/zeroed_body.py via canonical_body), cached per weight."""
+    key = kind + weight
+    if key not in _REF:
+        # The census process needs the layout too, not just the subprocesses it
+        # spawns -- without it discovery returns None and every phase-1 piece
+        # lands in the exclusion ledger for the wrong reason.
+        from src import paths
+        paths.export_to_env(paths.discover_layout())
+        from scripts.analysis.canonical_body import canonical_cbbe, canonical_ube
+        p, name = (canonical_cbbe if kind == "cbbe" else canonical_ube)(weight=weight)
+        _REF[key] = _load(p)[name]
+    return _REF[key]
+
+
+def cbbe_reference(weight: str = "_1"):
+    """The CBBE body a garment was authored against when its own NIF carries no
+    inline body (every phase-1 piece), at the garment's OWN weight. Without it
+    the AUTHORED OFFSET, which is the whole point of `#authored-inflate`, could
+    only be computed for phase 2.
+
+    It was the converter's `_find_cbbe_base_body("_1")` for every file: a preset
+    femalebody up to 1.97u off the body the garments were built on, and the
+    wrong weight for every `_0` file."""
+    return _reference("cbbe", weight)
+
+
+def ube_reference(weight: str = "_1"):
+    """The UBE body a phase-1 piece is measured against, at its own weight.
 
     PHASE 1 pieces carry no injected `BaseShape`, so an in-file body is not a
     basis for them -- and phase 1 is not a rounding error (one shipped pack:
     201 of 311 physics candidates). Excluding them would drop most of the
     population and quietly change what the census is about, since `inflate`
-    runs on the phase-1 chain too. Measure them against the same reference the
-    converter used."""
-    if "b" not in _REF:
-        # The census process needs the layout too, not just the subprocesses it
-        # spawns -- without it discovery returns None and every phase-1 piece
-        # lands in the exclusion ledger for the wrong reason.
-        from src import nif_convert as nc, auto_convert as ac, paths
-        lay = paths.discover_layout()
-        paths.export_to_env(lay)
-        p = ac._find_ube_body_ref() or nc._find_ube_femalebody("_1")
-        if p is None:
-            raise RuntimeError("no UBE body reference found")
-        m = _load(p)
-        k = max(m, key=lambda k: len(m[k][0]))
-        _REF["b"] = m[k]
-    return _REF["b"]
+    runs on the phase-1 chain too. It was pinned to weight 1 for every file."""
+    return _reference("ube", weight)
 
 
 def score_nif(out_path, src_path):
@@ -263,13 +265,14 @@ def score_nif(out_path, src_path):
         out = _load(out_path)
     except Exception as e:
         return None, f"output unreadable: {type(e).__name__}"
+    w = _weight_of(out_path)
     body = next((k for k in out if k.lower() in BODY_NAMES), None)
     if body is not None:
         bv, bt = out[body]
         phase = 2
     else:
         try:
-            bv, bt = ube_reference()
+            bv, bt = ube_reference(w)
         except Exception as e:
             return None, f"no body basis: {e!r}"
         phase = 1
@@ -289,7 +292,7 @@ def score_nif(out_path, src_path):
     if src:
         k = next((k for k in src if k.lower() in BODY_NAMES), None)
         try:
-            sv_, st_ = src[k] if k else cbbe_reference()
+            sv_, st_ = src[k] if k else cbbe_reference(w)
             sbody = (sv_, _vnorm(sv_, st_), cKDTree(sv_))
         except Exception:
             sbody = None
