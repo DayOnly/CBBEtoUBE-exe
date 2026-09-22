@@ -38,6 +38,14 @@ measured while the converter is still writing it is a half-finished pack, and
 silently baselining that would poison every comparison afterwards with numbers
 nobody chose.
 
+`--record` WRITES INTO THE PACK'S MOD FOLDER: `<output mod dir>/
+postreconvert_baseline.json`. For the default output mod that folder is INSIDE
+the modlist instance, so a `--record` run against the shipped pack changes the
+instance. Without `--record` this audit only reads. Kept that way on purpose
+(2026-09-21): the write is explicit, and the baseline is per-pack state that
+has to sit with the pack it describes. (`registered_bone_audit.py`, which used
+to write beside the pack on EVERY run, now writes only to an explicit `--out`.)
+
 WHAT IT DOES NOT COVER, said plainly so a clean result is not over-read: order
 fidelity and third-party colour-variant bindings need every NIF opened and are
 left to their own scripts; the registered-bone invariant is
@@ -237,7 +245,9 @@ def main() -> int:
                     help="the converter's output mod dir; discovered from the "
                          "configured MO2 instance when omitted")
     ap.add_argument("--record", action="store_true",
-                    help="write the CURRENT measurement as the new baseline")
+                    help="write the CURRENT measurement as the new baseline, "
+                         "INTO the output mod dir (inside the instance for "
+                         "the default pack)")
     ap.add_argument("--note", default="",
                     help="provenance for the recorded baseline -- WHICH pack "
                          "and WHY it is trustworthy. A baseline whose origin "

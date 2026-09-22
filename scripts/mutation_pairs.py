@@ -1286,6 +1286,28 @@ PAIRS = (
          tests=('tests/test_source_delta_census_weights.py',),
          expect=('test_a_missing_weight0_body_skips_its_files',),
     ),
+    # registered_bone_audit (2026-09-21): its default pack is inside the modlist
+    # instance, and every run wrote its JSON beside it, before the verdict. It
+    # writes only to an explicit --out now.
+    Pair('RBW-a', 'a default run writes its JSON beside the pack again',
+         edits=(
+             ('scripts/analysis/registered_bone_audit.py',
+              'if ARGS.out:',
+              'ARGS.out = ARGS.out or PACK.parent.parent / "registered_bone_audit.json"'
+              '  # MUTATED\nif ARGS.out:', 1),
+         ),
+         tests=('tests/test_registered_bone_audit_writes.py',),
+         expect=('test_a_default_run_writes_nothing_into_the_instance',),
+    ),
+    Pair('RBW-b', '--out is ignored and nothing is written',
+         edits=(
+             ('scripts/analysis/registered_bone_audit.py',
+              'if ARGS.out:',
+              'if False:  # MUTATED', 1),
+         ),
+         tests=('tests/test_registered_bone_audit_writes.py',),
+         expect=('test_out_writes_the_rows_there_and_only_there',),
+    ),
     # zeroed_body: the game-loaded body, verified to be BodySlide's zeroed build.
     Pair('ZBW-a', 'weight 0 is built with the big defaults too',
          edits=(

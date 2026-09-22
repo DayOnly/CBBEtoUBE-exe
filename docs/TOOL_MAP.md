@@ -247,7 +247,7 @@ Only tools whose docstring carries a `python ...` line. A tool missing from this
 - `scripts/analysis/qa_conform_audit.py`
   - `python scripts/analysis/qa_conform_audit.py <armor_dir> [--body <femalebody_1.nif>]`
 - `scripts/analysis/registered_bone_audit.py`
-  - `python scripts/analysis/registered_bone_audit.py [<pack meshes/!UBE>] [<MO2 ini>]`
+  - `python scripts/analysis/registered_bone_audit.py [<pack meshes/!UBE>] [<MO2 ini>] [--out PATH]`
 - `scripts/analysis/scan_morph_issues.py`
   - `python scripts/analysis/scan_morph_issues.py`
   - `python scripts/analysis/scan_morph_issues.py --output 'D:\path\to\mod' --max-detail 20`
