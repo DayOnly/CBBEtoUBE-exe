@@ -308,14 +308,16 @@ armour mesh, resolving through the full MO2 VFS. The provider matters as much as
 fit: an armour is authored FLUSH on whatever body it was built against, and the
 converter conforms it onto the UBE body -- so if the chosen source was built on a body
 whose proportions differ from UBE, the piece is born gapping or clipping before a
-single pass runs. Two rules encode this:
+single pass runs. Three rules encode this:
 
 1. **Tier: deprioritise BodySlide OUTPUTS** (`#bodyslide-source`). A 3BA/HIMBO/NSFW
-   BodySlide output is the mesh morphed to a specific PRESET; feeding it into a UBE
-   conversion bakes the wrong body's shape in (squashed layers -> clipping; the New
-   Leather Armor bug). 3 tiers, MO2 priority within each: (0) base/replacers, (1) UBE
-   outputs, (2) other-body outputs. A BodySlide output still wins a mesh nothing else
-   provides.
+   BodySlide output was taken to be the mesh morphed to a specific PRESET; feeding it
+   into a UBE conversion would bake the wrong body's shape in (squashed layers ->
+   clipping, seen on one layered leather armour in 2026-07 -- while the CBBE reference
+   was itself a preset body). 3 tiers, MO2 priority within each: (0) base/replacers,
+   (1) UBE outputs, (2) other-body outputs. A BodySlide output still wins a mesh
+   nothing else provides. Rule 3 overrides the tier where the output is PROVEN to be
+   the zeroed build.
 
 2. **Within a tier: prefer the CANONICAL-body source over a BESPOKE-body source**
    (`#body-match-source`). Some mods (an HDT-SMP "vanilla armours" pack, a retexture)
@@ -344,7 +346,37 @@ single pass runs. Two rules encode this:
    `CBBE2UBE_NO_BODYMATCH_SELECT=1`. Measured pack impact: 42/2165 meshes re-source;
    the Fur Cuirass band standoff drops +1.77u -> +0.59u. The tier-2 3BA-OUTPUT source
    has both physics AND a matching body but promoting it would need overriding the tier
-   system -> deferred.
+   system -> deferred (rule 3 now does, where the output is proven the zeroed build).
+
+3. **Take the VERIFIED zeroed build over a mod's own meshes** (`#zeroed-output-source`,
+   2026-09-22). Rule 1's premise fails both ways: BodySlide builds from the ShapeData
+   project, not from a mod's loose meshes, and those loose meshes may be made for
+   ANOTHER body. One armour's were made for the vanilla body; the fit, which starts
+   from the zeroed CBBE body, kept their shape as the author's gap -- bust +3.58u off
+   the UBE body against the author's +0.82u, inner thigh +0.35u at weight 0 against
+   +0.90u: inflated breasts, inner-thigh and butt clipping in game. The user's
+   BodySlide output of that armour was its zeroed 3BA build to 0.000u; converted from
+   it the bust sits at +1.41u and the inner thigh at +0.99u. A post-pass
+   (`discovery._prefer_zeroed_outputs`) re-points a piece at the BodySlide output that
+   provides the zeroed CBBE body the fit uses, ONLY when all of these hold, and
+   otherwise leaves rule 1's answer alone:
+   - the fit's CBBE reference at both weights IS that zeroed body (found by content --
+     the folder the zeroed-body resolver verified it in -- so a male or UBE output is
+     never a candidate);
+   - both weights of the output are the zeroed build of ONE slider set, every shape
+     vertex for vertex within `GARMENT_TOL` (`zeroed_body.zeroed_garment`: defaults per
+     weight, a default-on zap deletes its vertices, a morph index past the shape is
+     skipped -- both as BodySlide builds; anything it cannot check is a refusal);
+   - today's source is a tier-0 mod whose meshes are NOT already that build;
+   - both sides agree on whether the piece declares an HDT physics XML.
+   Measured on one real modlist: 289 pieces considered, 224 moved (all as whole weight
+   pairs, all to the one verified folder); 65 kept -- 25 already the build, 21 would
+   change physics, 19 not a verified zeroed build. With the switch off the index is
+   identical to the old one on all 2,205 keys. `GARMENT_TOL` is 1e-3, not the body's
+   1e-4: BodySlide adds weight 0's seam defaults in single precision, and 34 genuine
+   builds sat 1.0-1.4e-4 off; every preset or stale build seen was 0.25u or more off.
+   Off with `CBBE2UBE_NO_ZEROED_OUTPUT_SOURCE=1` (settings: "Take armour from the
+   zeroed BodySlide build").
 
 ---
 

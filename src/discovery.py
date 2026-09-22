@@ -166,6 +166,149 @@ def _has_3ba_body(nif_path: Path) -> bool:
     return False
 
 
+# #zeroed-output-source. The tiers in build_mesh_index rank every BodySlide
+# output below a mod's own meshes, on the premise that an output is the mesh
+# morphed to a body preset and the mod's meshes are what BodySlide builds from.
+# Neither holds in general: BodySlide builds from the ShapeData project, and a
+# mod's loose meshes may be made for ANOTHER body. Measured 2026-09-22 on an
+# armour whose loose meshes were made for the vanilla body: the fit, which
+# starts from the zeroed CBBE body, kept their 2.6u-looser bust and 1.0u-tighter
+# inner thigh as the author's gap -- inflated breasts, inner-thigh and butt
+# clipping in game -- while the BodySlide output of the same armour was its
+# zeroed 3BA build to 0.000u (bust +3.58u -> +1.41u, author +0.82u).
+#
+# So a piece is taken from the BodySlide output that provides the zeroed CBBE
+# body the fit uses, and ONLY when every one of these holds; anything else
+# keeps today's source:
+#   1. the fit's CBBE reference at both weights IS that zeroed body;
+#   2. both weights of the output ARE the zeroed build of one slider set, every
+#      shape checked vertex for vertex (zeroed_body.zeroed_garment);
+#   3. today's source is a mod's own meshes (tier 0) and is NOT already that build;
+#   4. today's source and the output agree on whether the piece declares HDT
+#      physics -- a physics change is not this fix's to make.
+# CBBE2UBE_NO_ZEROED_OUTPUT_SOURCE=1 (settings window: "Take armour from the
+# zeroed BodySlide build") leaves the tiers alone -- the off-switch control.
+_HDT_MARKER = b"HDT Skinned Mesh Physics Object"
+_ZOS_SAID: "set[str]" = set()
+
+
+def _zos_say(msg: str) -> None:
+    """Once per message per process, on stderr -- no parsed report gains a line."""
+    import sys
+    if msg not in _ZOS_SAID:
+        _ZOS_SAID.add(msg)
+        print(msg, file=sys.stderr, flush=True)
+
+
+def _declares_physics(path: Path) -> "bool | None":
+    """Whether the NIF names an HDT physics XML, or None when it cannot be read.
+    A byte search, not pynifly's extra-data walk: that walk stops at the first
+    block it cannot build and would report a declared XML as absent."""
+    try:
+        return _HDT_MARKER in Path(path).read_bytes()
+    except OSError:
+        return None
+
+
+def _zeroed_output_provider(mods_root: Path, enabled_mods: "list[str]",
+                            skip: "set[str]") -> "tuple[str | None, str]":
+    """(the enabled mod that provides the zeroed CBBE body the fit uses, "")
+    or (None, why not). Found by CONTENT -- the folder the zeroed-body resolver
+    verified the game's CBBE body in -- never by the mod's name, so another
+    body's BodySlide output (a male or UBE build) is never a candidate."""
+    import os
+    from . import nif_convert_bodyrefs as _br
+    from . import zeroed_body as _zb
+    if not _br.ZEROED_BODY_REFS:
+        return None, "zeroed body references are off"
+    root = Path(os.path.realpath(mods_root))
+    provider = None
+    for w in ("_0", "_1"):
+        try:
+            zb = _zb.zeroed_body("cbbe", w)
+        except _zb.ZeroedBodyError as e:
+            return None, f"no zeroed CBBE body at weight {w[-1]} ({e})"
+        ref = _br._find_cbbe_base_body(w)
+        if ref is None or os.path.realpath(ref) != os.path.realpath(zb.path):
+            return None, (f"the fit's CBBE body at weight {w[-1]} is {ref}, "
+                          f"not the zeroed build {zb.path}")
+        try:
+            mod = Path(os.path.realpath(zb.path)).relative_to(root).parts[0]
+        except (ValueError, IndexError):
+            return None, f"the zeroed CBBE body is not in a mod folder ({zb.path})"
+        if provider is not None and mod.lower() != provider.lower():
+            return None, "the zeroed CBBE body's weights come from two mods"
+        provider = mod
+    names = {m.lower(): m for m in enabled_mods}
+    if provider.lower() not in names or provider.lower() in skip:
+        return None, f"{provider!r} is not an enabled mod this index reads"
+    return names[provider.lower()], ""
+
+
+def _prefer_zeroed_outputs(index: "dict[str, Path]", win_tier: "dict[str, int]",
+                           mods_root: Path, enabled_mods: "list[str]",
+                           skip: "set[str]") -> None:
+    """Re-point pieces at the verified zeroed BodySlide build, in place.
+    See the #zeroed-output-source block above for the rules."""
+    if _flag("CBBE2UBE_NO_ZEROED_OUTPUT_SOURCE", False):
+        return
+    stems = sorted({k[:-len("_0.nif")] for k, t in win_tier.items()
+                    if t == 0 and k.endswith(("_0.nif", "_1.nif"))})
+    if not stems:
+        return
+    provider, why = _zeroed_output_provider(mods_root, enabled_mods, skip)
+    if provider is None:
+        _zos_say(f"[zeroed-output-source] off -- {why}")
+        return
+    from . import zeroed_body as _zb
+    try:
+        dirs = _zb._layout_dirs()     # the instance the provider was verified in
+    except _zb.ZeroedBodyError as e:
+        _zos_say(f"[zeroed-output-source] off -- {e}")
+        return
+    out_root = Path(mods_root) / provider
+    moved: "list[str]" = []
+    kept: "dict[str, int]" = {}
+
+    def keep(reason: str) -> None:
+        kept[reason] = kept.get(reason, 0) + 1
+
+    for stem in stems:
+        keys = {w: f"{stem}{w}.nif" for w in ("_0", "_1")}
+        built = {w: _zb._ci_join(out_root, ["meshes", *k.split("/")])
+                 for w, k in keys.items()}
+        if any(b is None for b in built.values()):
+            continue                          # the output does not build this piece
+        cur = {w: index.get(k) for w, k in keys.items()}
+        if any(c is None for c in cur.values()):
+            keep("today's source lacks a weight")
+            continue
+        try:
+            zg = _zb.zeroed_garment(stem, built, dirs=dirs)
+        except _zb.ZeroedBodyError:
+            keep("the output is not a verified zeroed build")
+            continue
+        physics = {_declares_physics(p) for p in (*cur.values(), *built.values())}
+        if physics != {True} and physics != {False}:
+            keep("its physics would change")
+            continue
+        try:
+            already = all(_zb.matches_build(_zb._nif_shapes(cur[w]), zg.build[w])
+                          is not None for w in keys)
+        except Exception:
+            already = False
+        if already:
+            keep("today's source already is that build")
+            continue
+        for w, k in keys.items():
+            index[k] = built[w]
+        moved.append(stem)
+    held = ", ".join(f"{r}: {n}" for r, n in sorted(kept.items()))
+    _zos_say(f"[zeroed-output-source] {provider}: {len(moved)} piece(s) now "
+             f"converted from its verified zeroed BodySlide build; "
+             f"{sum(kept.values())} kept today's source" + (f" ({held})" if held else ""))
+
+
 def build_mesh_index(
     mods_root: Path,
     enabled_mods: list[str],
@@ -307,4 +450,5 @@ def build_mesh_index(
                         and inc == (False, True)     # incumbent: bespoke body, no canonical
                         and chal[0]):                # challenger: has canonical body
                     index[rel] = nif       # tier unchanged; priority already lost, body wins
+    _prefer_zeroed_outputs(index, win_tier, mods_root, enabled_mods, skip)
     return index
