@@ -16,7 +16,7 @@ ask for different evidence:
 ### Attach the diagnostics zip
 
 In the GUI, choose **Help ▸ Save diagnostics zip**. It writes
-`CBBEtoUBE_diagnostics_<timestamp>.zip` next to your output folder, containing:
+`CBBEtoUBE_diagnostics_<timestamp>.zip` in your output folder, containing:
 
 | File | What it is |
 | --- | --- |

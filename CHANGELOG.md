@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+### Development only — the analysis tools read the author on the zeroed bodies
+
+The analysis harness read every "where did the author put this garment" number
+against a CBBE body found by name: `scripts/analysis/canonical_body.py` took "3BA
+in the path, then the shortest path", which on a real modlist is the 3BA body
+mod's own preset `femalebody`, not the BodySlide build the game loads. It sits up
+to 1.97u off that body, and at weight 1 its bust grows through garments built on
+it. `canonical_body`, `snugness_census`, `seat_error_vs_author` and
+`inflate_census` now read `src/zeroed_body.py`, which resolves BodySlide's zeroed
+build as the game loads it and checks it vertex for vertex; `inflate_census` also
+takes a `_0` file's bodies at weight 0. Only the author side moves. On the shipped
+pack, before -> after:
+
+    bust gap to author p50   w1 +0.624u -> +0.297u; w0 +0.325u -> +0.392u (677 shapes)
+    snugness median ratio    body-swap 1.202 -> 1.058 ("LOOSER than authored" -> "fit
+                             preserved"); copy 1.150 -> 1.141, just under the 1.15 line
+    seat error, 4053 shapes  mean 0.4269u -> 0.4124u, median 0.3505u -> 0.3625u
+    crotch single swing      source loss-p90 median 0.70u -> 0.56u, source pieces over
+                             1u 66 -> 39 (200 paired); the converted side is unchanged
+    source coverage, w1      breast +125%, breast side +65%, belly +49%, butt +16%:
+                             the weight-1 "coverage collapse" was the wrong body
+
+Numbers read through the old lookup before 2026-09-15 used a file whose contents
+were never recorded, so they are not comparable either way. Open: the snugness
+census's loosest list is now topped by body stand-in and collision shapes that sit
+on the zeroed body. `inflate_census` was not re-run. Guarded by
+`tests/test_zeroed_body.py`, `tests/test_inflate_census_weights.py` and mutation
+pairs `ZBW-a`..`ZBW-l`, `PWO-a`, `CBZ-a` and `ICW-a`. No converter behaviour
+changes.
+
 ### Development only — the seat-error scorer chooses its frame by evidence and stops scoring proxies as garment
 
 `scripts/analysis/seat_error_vs_author.py` reported a **mean seat error of
@@ -10,34 +40,27 @@
 
 The cause was an assumed coordinate frame. A source NIF stores verts in the
 shape's skin frame and needs `_verts_skin_to_world`; a converted output already
-stores world verts, so applying the same rule to both transforms the output
-twice. `snugness_census.py` records this and says assuming it "made every
-number it printed void". Most shapes have an identity transform and are
-unaffected, which is why only the collider and helper shapes blew up: one of
-them has raw vertices at z 90.6–118.6, exactly where a neck scarf belongs,
-while the doubled transform spread them over z −319.9…144.3.
-
-Neither arm is uniformly one frame or the other — measured over a 220-file
-sample, our own output wanted `raw` on 14 shapes and `world` on 26, with 281
-ties — so `_pick_frame` now measures both candidates per shape per arm and
-keeps whichever lands nearer that arm's body, the approach `snugness_census`
-already uses. A shape neither frame can place is excluded and reported;
-in practice none now are.
+stores world verts, so applying one rule to both transformed the output twice.
+Most shapes have an identity transform and were unaffected, which is why only
+collider and helper shapes blew up: one with raw vertices at z 90.6–118.6,
+exactly where a neck scarf belongs, was spread over z −319.9…144.3. Neither arm
+is uniformly one frame — over a 220-file sample our own output wanted `raw` on
+14 shapes and `world` on 26, with 281 ties — so `_pick_frame` now measures both
+per shape per arm and keeps whichever lands nearer that arm's body, as
+`snugness_census` already does. A shape neither frame can place is excluded and
+reported; none now are.
 
 A shape is treated as a proxy only when it **both** renders nothing **and**
-says so in its name. "Renders nothing" alone is the idiom `bust_gap_score` and
-`morph_clip_test` use, and measuring its exclusions is what showed it is not
-sufficient here: of 666 non-rendering shapes, 72 carried no proxy token and
-were plainly garment — a cuirass, greaves, pants, a sash, four shawl parts. A
-garment textured from the plugin's alternate-texture list has empty embedded
-paths and is not a proxy. Requiring both signals keeps those 72 and still
-skips 594, and every skipped name was checked in the other direction too: all
-54 are colliders, proxies or virtual helpers, with no `Color`/`Refined`-style
-false match. `collar` is excluded from the token list deliberately — `col` is a
-real token and a collar is a real garment part.
-
-The run prints what it skipped, what it kept, and which frames it chose, so
-neither population can shrink unnoticed.
+says so in its name. "Renders nothing" alone, the idiom `bust_gap_score` and
+`morph_clip_test` use, is not enough: of 666 non-rendering shapes, 72 carried
+no proxy token and were plainly garment — a cuirass, greaves, pants, a sash,
+four shawl parts (a garment textured from the plugin's alternate-texture list
+has empty embedded paths). Both signals keep those 72 and still skip 594, and
+the 54 skipped names were checked the other way too: every one is a collider,
+proxy or virtual helper, with no `Color`/`Refined`-style false match. `collar`
+is kept off the token list on purpose — `col` is a real token and a collar is a
+real garment part. The run prints what it skipped, what it kept and which
+frames it chose, so neither population can shrink unnoticed.
 
     mean     9.1811u -> 0.4269u
     median   0.3466u -> 0.3505u   (the median was always the robust read)
@@ -171,7 +194,7 @@ One synthetic conversion per path (copy, and body-swap with an inline body)
 goes through the batch worker's door and reads the written NIF back; a pass
 that dies must show up in the result by name. The golden check on real meshes
 is written into docs/RELEASING.md as a release step. Nothing in the converter
-changed; the exe is rebuilt only because one source comment was corrected.
+changed.
 
 ### Changed — each worker holds the body's slider data in a tenth of the memory
 
@@ -317,11 +340,12 @@ reported but not judged. The rebuilt exe must also answer `--version`. Not
 measured yet: the job on GitHub itself, which runs only on a tag push.
 
 `release-markers.json` lists, for each fix a release claims, one module or one
-name that exists only with that fix, and what must never ship (`psutil`, the
-test framework, the release tooling). `python scripts/release_gate.py
-bundle-scan <tag, exe or folder>` reads the exe's bundled modules and its entry
-script and checks both lists, so a release cannot ship without the fixes it
-claims; the workflow runs it on the tagged exe and on the rebuilt one.
+name that exists only with that fix, and what must never ship (`psutil`,
+`ssl`, the test framework, the release and hygiene tooling). `python
+scripts/release_gate.py bundle-scan <tag, exe or folder>` reads the exe's
+bundled modules and its entry script and checks both lists, so a release cannot
+ship without the fixes it claims; the workflow runs it on the tagged exe and on
+the rebuilt one.
 
 ### Fixed — every armour conversion kept a copy of the body in memory until the run ended
 
@@ -366,10 +390,10 @@ For people building the exe: the build stamp is now written by
 `scripts/build_exe.ps1` wrote it, and a direct PyInstaller run reused whatever
 stamp an earlier build had left. The stamp's dirty flag now covers everything
 the build reads (`src`, the entry script, the spec, `.pynifly`, `assets`, the
-licence files and `scripts/build_identity.py`); it used to look at `src`, the
-spec and the entry script only. The release gate also checks the tagged bundle
-against its own `SHA256SUMS` and `VERSION.txt`, and the release workflow runs
-`sha256sum -c` over the published zip.
+licence files, `USING.md`, `REPORTING.md` and `scripts/build_identity.py`); it
+used to look at `src`, the spec and the entry script only. The release gate
+also checks the tagged bundle against its own `SHA256SUMS` and `VERSION.txt`,
+and the release workflow runs `sha256sum -c` over the published zip.
 
 ### Changed (development only) — tracked text is LF everywhere outside the build and vendor folders
 
@@ -383,8 +407,8 @@ change to `src/nif_convert.py` touched 28,745 lines, of which 41 were real, and
 converted in a commit of line endings only, in which every Python file compiles
 to identical bytecode. The pre-commit hook and the test suite now refuse a CRLF
 in tracked text outside `dist/` and `.pynifly/`, and `.git-blame-ignore-revs`
-names the conversion so GitHub's blame skips it (for local blame, run
-`git config blame.ignoreRevsFile .git-blame-ignore-revs`). `scripts/split_move.py` and
+names the conversion so GitHub's blame skips it (`scripts/onboard.py` points
+local blame at the same file). `scripts/split_move.py` and
 `scripts/extract_loop.py` asserted that `src/nif_convert.py` was CRLF and so
 stopped before doing anything; they now keep the file's own line endings.
 
@@ -624,9 +648,13 @@ production-runtime lane installs the same lock.
 A 2026-08-01 note measured the garment moving 1.25 to 3.7 times further than the
 body per slider and proposed rescaling every converted morph file; a later
 reading on another piece, pairing each garment vertex with the body vertex it
-covers, came back at 1.00. A new development tool prints both readings side by
-side over a whole arm, so the class is settled on data before anything is
-designed on top of it.
+covers, came back at 1.00. A new development tool
+(`scripts/analysis/paired_follow_ratio.py`) prints both readings side by side
+over a whole arm. Run over a fresh arm of the acceptance population (481 NIFs,
+121 pieces), the paired reading's per-piece median runs 0.961 to 1.194, with
+118 pieces inside 0.9-1.1, while the unpaired reading on the same rows spans
+0.067 to 1.112: the proposal rested on the unpaired form, and the converted
+morph files are not rescaled.
 
 ### Changed (development only) — CI runs read-only, on pinned actions
 
@@ -684,10 +712,11 @@ Older readers of the report see one extra field and ignore it.
 Every guard in the repository was proven by hand with a throwaway driver, and
 those hand-runs are what found the guards that could not fail. The driver is
 now tracked: `python scripts/mutation_gate.py run` applies each of the
-40 seeded mutations (`scripts/mutation_pairs.py`, the pairs measured when
-each guard landed) in a detached git worktree it creates and removes
-itself, and each must turn its named tests red. An anchor that no longer
-matches reads NOT_APPLIED rather than "still green"; a pair whose named
+seeded mutations (`scripts/mutation_pairs.py`, the pairs measured when
+each guard landed: 40 when the gate landed, about 200 by 2026-09-21) in a
+detached git worktree it creates and removes itself, and each must turn
+its named tests red. An anchor that no longer matches reads NOT_APPLIED
+rather than "still green"; a pair whose named
 tests stay green reads MISSED; either fails the gate. It never touches the
 checkout, and refuses to. Measured on the release machine: 40 pairs in
 879 s — and its first full run found one seeded pair gone stale the same

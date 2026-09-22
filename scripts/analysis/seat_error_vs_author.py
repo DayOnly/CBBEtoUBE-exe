@@ -51,7 +51,10 @@ resolve the transform of SMP collider and HDT helper shapes and scatters their
 vertices; before the guard, 44 such shapes carried 95.7% of the total and the
 MEAN read 9.1811u against a 0.3466u median. Their RAW vertices are correct, so
 this says nothing about the shipped mesh -- read it as "not measurable here",
-never as a fit defect. The run names how many and the worst five.
+never as a fit defect. The run names how many and the worst five. Both
+2026-09-21 runs (4053 paired shapes, old and zeroed reference body) excluded no
+shape this way, so the 44 above and the 146 at `_MAX_PLAUSIBLE_OFF` describe the
+2026-09-19 population, not today's.
 """
 from __future__ import annotations
 
@@ -155,9 +158,6 @@ def _pick_frame(shape, tree):
         return raw, "raw"
     # THE RULE LIVES IN `standoff_audit`, ONCE. This was a third copy of it,
     # and a rule kept in three places is one that gets changed in one of them.
-    # Byte-identical behaviour: the copy read `dr <= dw` where the shared one
-    # reads `dr < dw`, and that branch is unreachable -- an exact tie has
-    # `abs(dr - dw) == 0`, which the agree test takes first.
     return sa.pick_frame(raw, w, tree, agree_u=_AGREE_U)
 
 

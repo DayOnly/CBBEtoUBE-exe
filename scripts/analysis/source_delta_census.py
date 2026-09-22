@@ -28,7 +28,9 @@ that parts in a crouch does so on both sides and reads ~0. Only what WE changed
 survives, so every positive row is actionable by construction.
 
 Measured on the first five: three authored (delta +0.7 / +1.2 / +4.5), one where the
-converter IMPROVED the garment (-18.4), one real regression (+12.1).
+converter IMPROVED the garment (-18.4), one real regression (+12.1) -- by the first
+version (2026-07-27), which posed each source on the body its own NIF bundled, so
+not comparable with a run on today's canonical bodies.
 
 SOURCE SELECTION IS PART OF THE METRIC. Not "the last mod providing this mesh path" --
 two mods can ship the same path with different geometry, and picking the wrong one
@@ -51,6 +53,14 @@ about half as many garments, each at both weights.
 The region constants were measured on the UBE body without a stated weight;
 weight moves the radius more than the height, so the z-bands carry over, but
 the lateral arm cut is worth a look on `_0`.
+
+COMPARING TWO RUNS: region for region, never by the counts. The MIN_COV floor is
+JOINT -- a region is scored only when BOTH sides cover it -- so a change to either
+side's body changes WHICH regions are scored, not just their deltas. Moving the
+source side onto the body the game loads (2026-09-21) left the converted side
+identical on all 2431 shared regions but brought 37 regions in and dropped 11
+(weight-1 source breast coverage +125%: the old body grew through the garments),
+so regressions >5pt went 114 -> 121 over a different population.
 
 Read-only. Resolves the output via the live MO2 instance (CBBE2UBE_MO2_INI).
 """

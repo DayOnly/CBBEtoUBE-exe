@@ -14,7 +14,8 @@ So a rebuild is not "one of the commits" — it is **the last one**:
 
 1. commit every source, test and documentation change first;
 2. rebuild;
-3. commit the bundle immediately, touching nothing else.
+3. commit the bundle immediately, touching nothing else but
+   `release-markers.json` (see Release markers).
 
 Rebuilding before a source commit lands puts a commit between the stamp and the
 exe, and the gate reads `the exe was last set by <a>, whose first parent is <b>,
@@ -51,9 +52,10 @@ Every seeded mutation (`scripts/mutation_pairs.py`) is applied in a detached
 worktree and must turn its named tests red. An anchor that no longer matches
 reads NOT_APPLIED and fails the gate, because a test that stays green on a
 mutation that was never applied proves nothing; a MISSED pair is a guard that
-has become decoration -- fix the guard, never the pair. It is minutes of
-pytest: run it once per release, after the last source commit and before the
-rebuild, and from the mutation-gate workflow on demand. `tests/test_mutation_gate.py`
+has become decoration -- fix the guard, never the pair. It is slow (40 pairs
+took 879 s when the gate landed; 202 pairs took 1942 s on 2026-09-21): run it once
+per release, after the last source commit and before the rebuild, and from the
+mutation-gate workflow on demand. `tests/test_mutation_gate.py`
 keeps every anchor and test id current between releases.
 
 ## The golden check, on the maintainer machine
@@ -80,6 +82,20 @@ see: a class the piece list does not cover (the base-game set unless
 `golden/pieces.json` points it at more), and anything a float on another
 machine would round differently -- it is a same-machine, same-toolchain check.
 
+It is a same-session check too. MEASURED 2026-09-21: baselines captured
+between about 16:35 and 16:50 passed an off-switch check at 16:54; at about
+19:30 the same commits, checked against their own baselines, regressed on one
+piece on four repeats -- a soft-body dress whose top's weight total on one
+upper-arm bone moved 0.0024 and 0.0021, with no vertex moved. No instance file
+had changed and the glow debug variables were ruled out; the cause is not
+known. So to isolate one commit, capture the parent's baseline in the same
+session and check the child against it; a diff against an older baseline is
+not evidence against the commit until a same-session pair reproduces it. For
+an intended change that diff is the blast radius, and the pass/fail is the
+off-switch: with the change's switch set for both the capture and the check,
+`check` must read 15 of 15 ok. `golden/` is read from the checkout the script
+runs in, so copy the primary checkout's into a lane's worktree first.
+
 MEASURED 2026-09-16 on c43a54b: `capture` took 225 s; `check` on the same
 tree read 15 of 15 ok in 237 s and exited 0; the same check on a
 copy of that tree with a 0.2 u shift planted in the shape copy read REGRESSION
@@ -100,6 +116,14 @@ which is why the check uses `--all` and an explicit ignore list.
 
 Building from an unlocked interpreter is what put five packages from the build
 machine into the bundle that the notices file never mentioned.
+
+A lane builds with the primary checkout's `.venv-build`, which
+`scripts/lane.py new` joins into the worktree. MEASURED 2026-09-17: a build
+from a fresh venv at another path matched the tracked bundle in the exe and the
+file list but differed in one program file, numpy's dist-info `RECORD`, because
+pip's console-script launchers embed the venv's path; `rebuild-check` failed on
+that file alone, and a build sharing the primary checkout's venv passed every
+clause.
 
 ## The build reproduces, and CI checks that it does
 
@@ -135,26 +159,38 @@ the first tag after this change will say.
 ## Release markers
 
 `release-markers.json` lists, for each fix a release claims, one module or one
-name that exists only with that fix, and what must never ship (`psutil`, the
-test framework, the release tooling). `bundle-scan` reads the exe's bundled
-modules and its entry script — where the log rotation lives — and checks both
-lists; the workflow runs it on the tagged exe and on the rebuilt one.
+name that exists only with that fix, and what must never ship (`psutil`, `ssl`,
+the test framework, the release and hygiene tooling). `bundle-scan` reads the
+exe's bundled modules and its entry script — where the log rotation lives — and
+checks both lists; the workflow runs it on the tagged exe and on the rebuilt one.
 
     python scripts/release_gate.py bundle-scan dist/CBBEtoUBE
     python scripts/release_gate.py bundle-scan v1.4.1
 
-When a CHANGELOG entry claims a fix, add a marker for it in the same change,
-with `since` set to the version that will carry it. A marker claimed by a
-version after the exe's is reported as NOT CHECKED, so an older tag scans clean
-on what it actually claims -- and a version that claims none reads NOT CHECKED
-rather than passing on nothing. The list must always be able to fail:
-`tests/test_release_gate.py` checks every marker against the tracked exe, and
-the gate refuses a list with nothing to find or nothing to refuse.
+When a CHANGELOG entry claims a fix, add a marker for it, with `since` set to
+the version that will carry it, in the rebuild commit that first ships it --
+not in the source commit: `tests/test_release_gate.py` checks every marker
+against the tracked exe whatever `since` says, so a marker committed before the
+rebuild fails the suite on the old exe (the file is not a build input, so the
+stamp is unaffected). That test is also what keeps the list able to fail, and
+the gate refuses a list with nothing to find or nothing to refuse. In
+bundle-scan, a marker claimed by a version after the exe's is reported as NOT
+CHECKED, so an older tag scans clean on what it actually claims -- and a version
+that claims none reads NOT CHECKED rather than passing on nothing.
 
 ## Checking the result before committing it
 
     python scripts/release_gate.py manifest-check dist/CBBEtoUBE
     python scripts/release_gate.py bundle-scan dist/CBBEtoUBE
+
+Until the version is bumped, every marker added since the last release is
+claimed by a later version: bundle-scan reads `later markers` NOT CHECKED and
+still PASSes, so on a lane build it does not show that the new code is in the
+exe. Probe those markers directly with `test_every_marker_holds_on_the_tracked_exe`
+(see Release markers), on the 3.10 interpreter the exe is frozen with -- on any
+other it skips, which proves nothing. MEASURED 2026-09-21 on a lane rebuild
+still versioned 1.4.1: bundle-scan PASSed with the new markers NOT CHECKED, and
+only a direct probe showed them in the exe (and absent from the previous build).
 
 Then commit the bundle and check the whole gate against the commit:
 
