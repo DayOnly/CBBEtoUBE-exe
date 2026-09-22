@@ -449,6 +449,201 @@ def _apply_window_icon(win) -> bool:
         return False
 
 
+def body_dialog_wanted(settings: dict, dry_run: bool) -> bool:
+    """Whether Convert opens the Reference bodies dialog first: not for a dry
+    run, and not when the zeroed bodies are switched off -- then the off-switch
+    must stay a clean control, with no body pinned at all. #zeroed-body-refs"""
+    return not dry_run and bool((settings or {}).get("zeroed_body_refs", True))
+
+
+def child_env(settings: dict, body_env, log_path: str, base_env=None) -> dict:
+    """The environment a conversion child runs with.
+
+    Registry settings win over the inherited environment (they are the UI's
+    source of truth); a fresh child re-imports every module against this env,
+    so import-time flags apply too -- the whole point of the child-process
+    launch. Then the Reference bodies dialog's choice, for THIS run only: after
+    apply_env (which pops registry vars at their default), and never through
+    os.environ, which would carry it into later runs and into this window's
+    own setup check. #zeroed-body-refs"""
+    from . import gui_settings
+    env = gui_settings.apply_env(
+        settings or {}, base_env=dict(os.environ if base_env is None else base_env))
+    env["CBBE2UBE_NO_PAUSE"] = "1"       # child must not block on a keypress
+    env["CBBE2UBE_RUN_LOG"] = log_path
+    env.update(body_env or {})
+    return env
+
+
+def build_body_dialog(root, *, base_env, resolve, on_ok, on_cancel=None,
+                      theme_popup=None, heading_font=None, confirm=None,
+                      show_error=None, run_async=True):
+    """The Reference bodies dialog (#zeroed-body-refs), built on `root`.
+
+    One dropdown per body the fit uses -- the CBBE 3BA body it starts from and
+    the UBE body it aims at -- each starting on the zeroed BodySlide build the
+    game loads (src/body_choice.initial_choice) and listing every other
+    candidate the modlist has; bodies found but unusable (another body family,
+    a half-installed pair, unreadable) are named with their reason instead of
+    offered. `resolve(base_env)` is the slow check (~7s); with `run_async` it
+    runs on a thread and the dialog waits with a progress bar. OK calls
+    `on_ok(env, summary_lines)` with the four overrides for the child; a
+    choice that is not the verified default is confirmed first. Module level
+    so a test can build it with fake bodies; `confirm` / `show_error` default
+    to the message boxes.
+
+    Returns {"win", "ok", "cancel", "combos": {kind: (combobox, var, labels)}}."""
+    import threading
+    import tkinter as tk
+    from tkinter import ttk, messagebox
+    from . import body_choice
+
+    confirm = confirm or (lambda title, text, parent: messagebox.askokcancel(
+        title, text, parent=parent))
+    show_error = show_error or (lambda title, text, parent: messagebox.showerror(
+        title, text, parent=parent))
+    win = tk.Toplevel(root)
+    if theme_popup is not None:
+        theme_popup(win)
+    win.title("Reference bodies")
+    try:
+        win.transient(root)
+        win.grab_set()
+    except Exception:
+        pass
+    done = {"closed": False}
+    picks, combos = {}, {}
+
+    def _close():
+        done["closed"] = True
+        try:
+            win.grab_release()
+        except Exception:
+            pass
+        win.destroy()
+
+    def _cancel():
+        _close()
+        if on_cancel is not None:
+            on_cancel()
+
+    win.protocol("WM_DELETE_WINDOW", _cancel)
+    frm = ttk.Frame(win, padding=14)
+    frm.pack(fill="both", expand=True)
+    head = ttk.Label(frm, text="Check the bodies the fit uses")
+    if heading_font is not None:
+        head.configure(font=heading_font)
+    head.pack(anchor="w")
+    ttk.Label(frm, style="Hint.TLabel", wraplength=580, justify="left",
+              text="Each list starts on the zeroed BodySlide build the game "
+                   "loads, checked vertex for vertex. Pick another only if your "
+                   "garments were built on it. (Your BodySlide preset is still "
+                   "baked in from the UBE body your build installed.)"
+              ).pack(anchor="w", pady=(2, 10))
+    wait = ttk.Frame(frm)
+    wait.pack(fill="x")
+    ttk.Label(wait, text="Checking the bodies in your modlist (a few seconds)...",
+              style="Hint.TLabel").pack(anchor="w")
+    bar = ttk.Progressbar(wait, mode="indeterminate")
+    bar.pack(fill="x", pady=4)
+    bar.start(12)
+    rows = ttk.Frame(frm)
+    rows.pack(fill="both", expand=True)
+    btns = ttk.Frame(win, padding=(14, 0, 14, 14))
+    btns.pack(side="bottom", fill="x")
+    ok_btn = ttk.Button(btns, text="Convert with these bodies",
+                        style="Accent.TButton", state="disabled")
+    ok_btn.pack(side="right")
+    cancel_btn = ttk.Button(btns, text="Cancel", command=_cancel)
+    cancel_btn.pack(side="right", padx=(0, 8))
+
+    def _chosen(kind):
+        listing, var, sel, labels = picks[kind]
+        return sel[labels.index(var.get())] if var.get() in labels else None
+
+    def _ok():
+        choices = {k: _chosen(k) for k in picks}
+        warns = [w for w in (body_choice.warning_for(c, picks[k][0])
+                             for k, c in choices.items()) if w]
+        warns += body_choice.replaced(choices, base_env)
+        if warns and not confirm("Check the bodies", "\n\n".join(warns)
+                                 + "\n\nConvert with these bodies anyway?", win):
+            return
+        missing = body_choice.missing_files(choices)
+        if missing:
+            show_error("Body files missing", "These files are gone since the "
+                       "check -- run the check again:\n" + "\n".join(missing), win)
+            return
+        _close()
+        on_ok(body_choice.env_for(choices), body_choice.summary_lines(choices))
+
+    def _populate(listings, err):
+        if done["closed"] or not win.winfo_exists():
+            return
+        bar.stop()
+        wait.pack_forget()
+        if listings is None:
+            ttk.Label(rows, wraplength=580, justify="left",
+                      text=f"The body check failed ({err}). Convert anyway to let "
+                           "the converter find the bodies itself, or cancel."
+                      ).pack(anchor="w")
+
+            def _anyway():
+                _close()
+                on_ok({}, [f"  body check failed ({err}) -- found by the converter"])
+            ok_btn.configure(state="normal", text="Convert anyway", command=_anyway)
+            return
+        for kind in body_choice.KINDS:
+            listing = listings[kind]
+            box = ttk.LabelFrame(rows, text=body_choice.HEADINGS[kind], padding=8)
+            box.pack(fill="x", pady=(0, 8))
+            sel = [c for c in listing.candidates if c.selectable]
+            labels = body_choice.labels_for(sel)
+            var = tk.StringVar(master=win)
+            cb = ttk.Combobox(box, textvariable=var, state="readonly",
+                              values=labels, width=72)
+            cb.pack(fill="x")
+            detail = ttk.Label(box, text="", style="Hint.TLabel",
+                               wraplength=580, justify="left")
+            detail.pack(anchor="w", pady=(4, 0))
+            init = body_choice.initial_choice(listing, base_env)
+            if init is not None and init in sel:
+                var.set(labels[sel.index(init)])
+            picks[kind] = (listing, var, sel, labels)
+            combos[kind] = (cb, var, labels)
+
+            def _show(_e=None, kind=kind, detail=detail, cb=cb, n=len(sel)):
+                try:
+                    cb.selection_clear()
+                except Exception:
+                    pass
+                detail.configure(text=body_choice.detail_for(_chosen(kind), n))
+            cb.bind("<<ComboboxSelected>>", _show)
+            _show()
+            refused = body_choice.refused_lines(listing)
+            if refused:
+                ttk.Label(box, style="Hint.TLabel", wraplength=580, justify="left",
+                          text="Found but not offered:\n  "
+                               + "\n  ".join(refused)).pack(anchor="w", pady=(4, 0))
+        ok_btn.configure(state="normal", command=_ok)
+
+    def work():
+        try:
+            res, err = resolve(base_env), None
+        except Exception as e:               # show it in the dialog, never crash
+            res, err = None, f"{type(e).__name__}: {e}"
+        try:
+            root.after(0, lambda: _populate(res, err))
+        except Exception:
+            pass                              # the window closed meanwhile
+
+    if run_async:
+        threading.Thread(target=work, daemon=True).start()
+    else:
+        work()
+    return {"win": win, "ok": ok_btn, "cancel": cancel_btn, "combos": combos}
+
+
 def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
     # auto_close_ms: test hook -- window auto-destroys after that many ms.
     # _smoke_settings: test hook -- open the settings dialog once, so a smoke
@@ -460,6 +655,7 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
     from . import gui_settings
     from . import exclusions as excl
     from . import preflight as pf
+    from . import body_choice
     from . import paths as _paths
     from . import report_template as _rt
     from . import failure_summary
@@ -2514,7 +2710,7 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
                 except Exception:
                     pass
 
-    def _worker(argv_run):
+    def _worker(argv_run, body_env=None):
         rc = 1
         proc = None
         try:
@@ -2568,14 +2764,8 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
                         _log_dir / "CBBEtoUBE_previous_failures.json"))
             except Exception:
                 pass
-            # Registry settings win over the inherited environment (they're the
-            # UI's source of truth); a fresh child re-imports every module against
-            # this env, so import-time flags apply too -- the whole point of the
-            # child-process launch.
-            env = gui_settings.apply_env(state.get("settings") or {},
-                                         base_env=dict(os.environ))
-            env["CBBE2UBE_NO_PAUSE"] = "1"       # child must not block on a keypress
-            env["CBBE2UBE_RUN_LOG"] = log_path
+            # Registry settings, then this run's Reference bodies -- see child_env.
+            env = child_env(state.get("settings") or {}, body_env, log_path)
             kw = {"stdin": subprocess.DEVNULL,
                   "stdout": subprocess.DEVNULL,
                   "stderr": subprocess.DEVNULL,
@@ -2624,6 +2814,35 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
                 "Tick at least one overlay mod, or set Convert overlays to "
                 "'All mods'.\n(Use 'Refresh mod list' if the list is empty.)")
             return
+        # Confirm the reference bodies first (see body_dialog_wanted). Nothing
+        # is locked yet, so a Cancel has nothing to undo.
+        if body_dialog_wanted(state.get("settings") or {}, dry.get()):
+            _open_body_dialog(_launch)
+        else:
+            _launch({})
+
+    def _open_body_dialog(on_ok):
+        """Open the Reference bodies dialog (#zeroed-body-refs); OK launches
+        the run with the chosen bodies, Cancel leaves everything as it was."""
+        if state.get("_body_dialog"):
+            return                            # already open (a double click)
+        state["_body_dialog"] = True
+        base_env = gui_settings.apply_env(state.get("settings") or {},
+                                          base_env=dict(os.environ))
+
+        def _cancelled():
+            state["_body_dialog"] = False
+            status.set("Conversion not started.")
+
+        def _accepted(env, lines):
+            state["_body_dialog"] = False
+            on_ok(env, lines)
+
+        build_body_dialog(root, base_env=base_env, resolve=body_choice.resolve,
+                          on_ok=_accepted, on_cancel=_cancelled,
+                          theme_popup=_theme_popup, heading_font=_SEMI)
+
+    def _launch(body_env, body_lines=()):
         state["running"] = True
         state["output_dir"] = out_var.get().strip() or default_out
         run_btn.configure(state="disabled")
@@ -2656,9 +2875,12 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
         status.set("Converting... this can take many minutes; the window stays responsive.")
         argv_run = _build_argv()
         _append("> CBBEtoUBE " + " ".join(argv_run) + "\n\n")
+        if body_lines:
+            _append("Reference bodies:\n" + "\n".join(body_lines) + "\n\n")
         # Don't let the frozen entry pause for a keypress after the GUI closes.
         os.environ["CBBE2UBE_NO_PAUSE"] = "1"
-        threading.Thread(target=_worker, args=(argv_run,), daemon=True).start()
+        threading.Thread(target=_worker, args=(argv_run, body_env),
+                         daemon=True).start()
 
     run_btn.configure(command=_start)
 

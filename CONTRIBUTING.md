@@ -139,7 +139,7 @@ git config user.email YOUR_USERNAME@users.noreply.github.com
 plus `NiflyDLL.dll`) and added to `sys.path` at import time. `NiflyDLL.dll` is a
 Windows binary, so the suite is Windows-only.
 
-The suite is ~3,400 tests and takes three to five minutes depending on the
+The suite is ~3,800 tests and takes three to five minutes depending on the
 machine. Run it before you push; CI runs the same command on `windows-latest`.
 Capture the exit code directly -- piping pytest into anything reports the pipe's
 status, not pytest's own.

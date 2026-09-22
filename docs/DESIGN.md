@@ -408,6 +408,71 @@ the load-order winner (the copy the game loads), so the TRI is seen when it will
 actually be present at runtime. Shapes with no source TRI take the full re-skin,
 which grafts the scale bones as part of the blend.
 
+### Reference bodies: BodySlide's zeroed builds, as the game loads them
+
+**Why.** The warp moves each vert by the CBBE→UBE body deformation near it, so it
+is only as right as the two bodies. Garments built in BodySlide sit on the
+*zeroed* build — the slider set's ShapeData base mesh plus its slider defaults for
+that weight (`small` for `_0`, `big` for `_1`) — and that is the build the game
+loads; the preset arrives at runtime as body morphs. Discovery by name (an
+18,436-vert femalebody, preferring a CBBE/3BA-named mod and skipping mods named
+like a BodySlide output on the assumption they hold a UBE body) picked the 3BA body
+mod's own femalebody on a real modlist: a preset build the game never loads, up to
+1.97u off the zeroed body over 16,061 torso vertices, whose weight morph grows the
+bust ~1u. The warp therefore moved weight-1 garments ~0.6u further in than
+weight-0 ones. Most fit passes re-fit that away; pieces that skip them kept it —
+six measured (a cloak, a cape, belt bags, a book, a front pouch, a skirt front);
+five shipped their weight-1 version 0.25-0.47u closer than weight 0 (median), the
+cape 0.03u.
+
+**How** (`src/zeroed_body.py`, `#zeroed-body-refs`). Per body — 3BA
+`femalebody_{0,1}`, UBE `!UBE/Body/femalebody_tangent_{0,1}` — find the slider
+sets that BUILD that output path; keep the right family by base topology (18,436 /
+29,298 verts: a BHUNP or CBBE SE set builds the same femalebody path); build the
+zeroed geometry the way BodySlide does; find the file the game loads there (MO2
+overwrite, enabled mods by priority, game Data); accept it only if it IS that
+build to 1e-4u on every vertex, with weight 0 from the same folder as weight 1.
+Otherwise `ZeroedBodyError`, and the lookup falls back to discovery by name with
+a `!! no zeroed <KIND> body at weight N: … -- falling back to discovery by
+name` line (once per body and weight in each process). A GUI run does not reach
+that fallback: its Reference bodies window starts on the body the game loads,
+flagged as not zeroed, and asks before using it. Never by mod name. Every
+converter lookup of the CBBE or UBE reference body goes through it -- the warp's
+FROM and TOWARD bodies, the body injected under a body-swap garment, and the
+passes that read them (the copy path's authored-standoff reads, weight transfer,
+the collision-proxy warp, the UBE-native scan, the body overlay rebake, Check
+setup). The preset bake is the exception (`_find_user_preset_body`, the user's
+build). An explicit `CBBE2UBE_CBBE_BODY_0/_1` / `CBBE2UBE_UBE_BODY[_0/_1]` wins
+first, logged as `[body-ref] …` once per process; one naming a missing file is reported,
+not silently replaced. Off-switch: `CBBE2UBE_NO_ZEROED_BODY_REFS=1` ("Fit against
+the zeroed BodySlide bodies").
+
+Measured: on the six pieces weight 1 − weight 0 is now 0.000u (median) on every
+one, and the off-switch reproduces the shipped pack exactly. Over the 15-piece
+golden set (weight 1) garment verts near the body move median 0.000u, p05 −0.19u,
+p95 +0.51u, bust median +0.014u; off-switch identical 15/15. No in-game verdict
+yet.
+
+**The Reference bodies dialog** (`src/body_choice.py`, `gui.build_body_dialog`)
+lets the user confirm or change both bodies before a GUI run. The choice reaches
+the child as the four `CBBE2UBE_*_BODY_0/_1` overrides for that run only (never
+`os.environ`); a kind left blank writes them EMPTY, so an inherited override the
+dialog refused cannot win. It is skipped for a dry run and with the off-switch
+set, so the off-switch stays a clean control.
+
+**Deliberately NOT these bodies:** the body-swap preset bake and the chain
+rest-pose lift read `_find_user_preset_body` — the user's installed UBE build,
+preset included — because the bake adds (build − template) to the garment and the
+lift clears the body the player wears. That lookup still walks mod folders by name
+and does not skip disabled mods (known, not fixed).
+
+**Body mods are excluded by the files they ship, not by the fit.** `auto` skips
+any mod folder shipping either body file above (`auto_convert._body_mod_names`).
+It used to exclude the folders the body lookups returned, so the exclusion moved
+with the reference: on the zeroed bodies the 3BA body mod fell out of it (its
+collision-body NIFs would have entered All-mods runs), and a dialog pick could
+change which mods converted.
+
 ---
 
 ## Clearance & anti-poke
@@ -587,9 +652,10 @@ across the `_0`/`_1` pair, or verified weight-invariant.
 **Why.** Some armor bakes a slice of the nude body (open-cleavage skin, bare
 lower legs) or ships a full inline body. That geometry can't morph or connect to
 the neck on its own and must *be* the body. **How.** Drop the source body/skin
-shapes and inject the full UBE `BaseShape` (+ `VirtualBody`), then re-fit the
-armor around it. Exposed-skin slices are detected by geometric coincidence with
-the CBBE body surface (a shape whose verts overwhelmingly sit on the body *is*
+shapes and inject the full UBE `BaseShape` (+ `VirtualBody`) — the UBE reference
+body or an explicit override, see *Reference bodies* — then re-fit the armor
+around it. Exposed-skin slices are detected by geometric coincidence with the CBBE
+reference body surface (a shape whose verts overwhelmingly sit on the body *is*
 the body). This detection is weight-sensitive — see weight-pair consistency.
 
 ---

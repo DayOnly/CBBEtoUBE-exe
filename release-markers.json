@@ -75,6 +75,21 @@
       "name": "machine.txt",
       "since": "1.4.2",
       "claims": "the diagnostics zip records the page-file mode (Unreleased)"
+    },
+    {
+      "module": "src.zeroed_body",
+      "since": "1.4.2",
+      "claims": "the fit's reference bodies are BodySlide's zeroed builds, as the game loads them (Unreleased)"
+    },
+    {
+      "module": "src.body_choice",
+      "since": "1.4.2",
+      "claims": "Convert confirms the reference bodies first and lets the user pick others (Unreleased)"
+    },
+    {
+      "name": "_body_mod_names",
+      "since": "1.4.2",
+      "claims": "an All-mods run skips body mods by the race-body files they ship (Unreleased)"
     }
   ],
   "absent": [

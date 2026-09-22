@@ -22,12 +22,15 @@ them the conversion succeeds and the armor is invisible when you play:
 | **RaceCompatibility** | Puts converted armatures on the UBE races at runtime. The Light build carries the RaceDispatcher. |
 | **UBE + `UBE_AllRace.esp`** | The body and races the minted armatures point at. |
 
-You also need the **UBE body built in BodySlide** — that built body is the shape
-every armor is refitted onto. RaceMenu is needed for the body-morph data the
-converter regenerates.
+You also need the **UBE body built in BodySlide**. The fit moves each armor from
+the CBBE 3BA body onto the UBE body, using BodySlide's **zeroed** build of each
+(what a zeroed preset builds) as your game loads it. If the body your game loads
+is not a zeroed build, the Reference bodies window flags it before the run (§2);
+without the window, the log says so and a body found by name is used instead.
+RaceMenu is needed for the body-morph data the converter regenerates.
 
 **Run "Check setup" in the GUI before your first convert.** It verifies all of
-the above plus disk space and the body reference, and tells you what to fix. It
+the above plus disk space and both reference bodies, and tells you what to fix. It
 is much cheaper than discovering a missing dependency after an hour-long run.
 Without the GUI, `CBBEtoUBE.exe check-setup > setup.txt` writes the same checks to
 a file, one per line, and exits with code 1 if any check fails.
@@ -46,6 +49,19 @@ CBBEtoUBE.exe auto
 **Always launch it through MO2**, not by double-clicking it in Explorer. The
 converter finds your mods, load order, and game data through MO2's VFS; outside
 it, it sees nothing.
+
+**Pressing Convert first opens a *Reference bodies* window**, which checks your
+modlist for a few seconds. It shows the two bodies the fit uses — the CBBE 3BA
+body armor is moved from and the UBE body it is moved onto — each starting on the
+zeroed BodySlide build your game loads, marked `[zeroed]` (for UBE, on a body you
+set in the Paths tab, if you set one). Leave them unless your armor was built on
+another body: every other copy is marked with what it is
+(`[NOT zeroed, off by up to …u]`, `[not checked]`), and picking one asks once
+more. If the body your game loads is not a zeroed build, the list starts on it
+and says so. The choice applies to that run only, and your BodySlide preset is
+still baked in from the UBE body your build installed. The window is skipped for
+a dry run and when **Fit against the zeroed BodySlide bodies** (Paths tab,
+*Show advanced*) is unticked.
 
 A full modlist run takes a while — expect tens of minutes to a couple of hours
 depending on how much armor you have. The log line
@@ -143,9 +159,9 @@ automatic.
   equippable but *invisible*. This exists because a pack shipped with one mod's
   114 links silently missing, which surfaced only when a user reported a single
   invisible piece.
-  Every `!!` line the tool can print is listed in `docs/WARNINGS.md` with what it
-  means for the run and what to do next; the log prints those two lines under
-  the warning itself.
+  Most `!!` lines are listed in `docs/WARNINGS.md` with what they mean for the
+  run and what to do next; the log prints those two lines under the warning
+  itself.
 - **In game**: equip a converted piece. If it renders, delivery works end to end.
 
 **Force a mesh reload before judging anything.** Skyrim caches a worn armor's
@@ -204,9 +220,9 @@ has changed four times and turning on something already on wastes a run.
 | **Chest/butt jiggle on fitted torso armor** | **on** | Makes a fitted corset or bra *follow* the body's breast and butt instead of staying rigid. **It deliberately skips any armour that is also a physics collider** — grafting body motion onto a collider the body collides against causes a runaway feedback loop, so that case is permanently excluded. It therefore does nothing for a cuirass with its own physics; those want the clearance setting above. |
 | **Chest follow ratio** | **on** (since 1.2) | Lets a fitted top track the body's breast motion by the amount its own clearance actually needs, instead of a fixed cap that leaves it following about a third of the body. The ceiling below hangs off this one. |
 | **...its ceiling for unrecognised materials** | `0.35` | How much motion a top may follow when its material can't be identified from its name or texture. `0.35` treats it like metal; `1.0` treats it like cloth. **In a large pack most armour is unidentifiable, and this is what limits it** — of the pieces whose clearance says they need to follow more than they're allowed to, roughly 70% are unlabelled rather than actually metal. Raise it if chests still clip in motion; lower it if stiff armour starts looking rubbery. |
-| **Match armour skinning to the body it covers** | **on** (new) | The strongest of these. Instead of fixing one bone family and rescaling the rest, it copies the covered body's *whole* weight vector wherever the garment hugs it, so nothing is left over to pay with. Measured on a leather cuirass: bust exposure in motion 50.9% → 3.1%, and it moves no vertices, so resting fit is untouched. Confirmed in game on soft leather and on rigid glass plate. |
-| **Lift physics chains out of the body** | **on** (new) | **This is the buttock fix** — see below. |
-| **Keep weighting as smooth as the author made it** | **on** (new) | Fixes a lone vertex bending against the surface it sits in — see §6. Held to the *author's* own local smoothness rather than to perfect smoothness, so real panel edges and seams survive. On the reported outfit, 802 of 830 rough vertices fixed, while shapes already as smooth as their author took no changes at all. Weighting only; nothing moves. Confirmed in game. |
+| **Match armour skinning to the body it covers** | **on** (since 1.3) | The strongest of these. Instead of fixing one bone family and rescaling the rest, it copies the covered body's *whole* weight vector wherever the garment hugs it, so nothing is left over to pay with. Measured on a leather cuirass: bust exposure in motion 50.9% → 3.1%, and it moves no vertices, so resting fit is untouched. Confirmed in game on soft leather and on rigid glass plate. |
+| **Lift physics chains out of the body** | **on** (since 1.3) | **This is the buttock fix** — see below. |
+| **Keep weighting as smooth as the author made it** | **on** (since 1.3) | Fixes a lone vertex bending against the surface it sits in — see §6. Held to the *author's* own local smoothness rather than to perfect smoothness, so real panel edges and seams survive. On the reported outfit, 802 of 830 rough vertices fixed, while shapes already as smooth as their author took no changes at all. Weighting only; nothing moves. Confirmed in game. |
 | **Chest follow on skirt-welded cuirasses (experimental)** | off | Some cuirasses are one piece with their own physics skirt, which drags the whole piece below the "hugs the body" test. This judges such a piece on its non-skirt part. **Unproven: on every armour tested it changed nothing** — the ceiling setting above it is what actually moves these pieces. Left in as an off-by-default experiment. |
 | **...and cap how far that allowance may push** | off | The allowance that keeps the upper back covered raises cloth in one step, and where the garment already sat close it overshoots — 2.12 units off the back on the measured piece, against roughly half that from its author. Capping it gave 1.16 while showing *less* skin, not more. Roughly the worst tenth of pieces; off until it has an in-game verdict. |
 | **Match a top's twist-follow to the body (experimental)** | off | Blends a top's spine-twist weighting toward the body's so it stops lagging or leading the chest mid-swing. A genuine trade, not a free win: on the one piece measured, twists and swings improved while a hard forward lean got worse at *any* strength. One piece, never judged in game — which is why it ships off. |
@@ -235,13 +251,6 @@ moves out by the same amount (0.5u on the test piece). **If a skirt now looks
 held too far off the hips, that is the setting to untick** — it is the only one
 here that can cause that.
 
-**Why "in motion" is its own category.** Armour is fitted against a body that is
-standing still, but the body you actually see is animated and physics-driven. A
-piece can be measurably clear at rest and still be passed straight through once the
-breast or butt starts moving. That is why the triage table above separates "clipping
-while standing still" from "clipping only while moving" — they are different faults
-with different fixes, and a fix for one does nothing for the other.
-
 For a shell run, the same off-switches follow one pattern:
 
 ```
@@ -261,11 +270,13 @@ a screenshot alone.
 Path overrides, if auto-discovery gets it wrong: `CBBE2UBE_MO2_INI`,
 `CBBE2UBE_MODS_ROOT`, `CBBE2UBE_GAME_DATA`.
 
-For the reference bodies, note the two are **not** spelled the same way:
+For the reference bodies, use the Reference bodies window Convert opens (§2); it
+sets both for that run. For a shell run, note the two are **not** spelled the same
+way:
 
 | | |
 |---|---|
-| UBE body | `CBBE2UBE_UBE_BODY` (one path for both weights), or `CBBE2UBE_UBE_BODY_0` / `_1` |
+| UBE body | `CBBE2UBE_UBE_BODY` (one path; the other weight is its `_0`/`_1` sibling, or the same file when the name has no weight), or `CBBE2UBE_UBE_BODY_0` / `_1` |
 | CBBE/3BA body | `CBBE2UBE_CBBE_BODY_0` **and** `CBBE2UBE_CBBE_BODY_1` — weight-suffixed only; the bare name is **not** read |
 
 ---
@@ -276,9 +287,12 @@ Re-running is safe and is the normal workflow — the output mod is rewritten in
 place. Two things worth knowing:
 
 - Converting again after changing your **modlist** picks up the new mods.
-- Converting again after changing the **UBE body** in BodySlide re-fits
-  everything to the new shape. Do this whenever you change your body preset,
-  or armor will be fitted to a body you no longer use.
+- Converting again after rebuilding the **UBE body** in BodySlide picks up the
+  new build: armor converted with the body swapped in (open cleavage, cutouts)
+  has your preset baked in from it, and a build that is not zeroed is also the
+  body the fit aims at (the Reference bodies window flags it, §2). Do this
+  whenever you change your body preset, or armor will be fitted to a body you
+  no longer use.
 
 If a run is interrupted, just run it again — outputs are written atomically, so
 a killed run cannot leave a half-written mesh or plugin behind.

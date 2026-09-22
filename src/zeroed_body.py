@@ -41,9 +41,10 @@ Weight 0 must come from the same folder as weight 1 (the sibling rule of
 from __future__ import annotations
 
 import os
+import re
 import sys
 import xml.etree.ElementTree as ET
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import numpy as np
@@ -65,7 +66,9 @@ _WEIGHTS = ("_0", "_1")
 _SLIDERSETS = "calientetools/bodyslide/slidersets"
 _SHAPEDATA = "calientetools/bodyslide/shapedata"
 
-_CACHE: "dict[tuple, ZeroedBody]" = {}
+# (kind, weight, dirs) -> ZeroedBody, and ("builds", kind, weight, dirs) ->
+# the slider-set builds `_builds` made for that instance.
+_CACHE: "dict[tuple, object]" = {}
 
 
 class ZeroedBodyError(FileNotFoundError):
@@ -281,6 +284,60 @@ def _dirs(mods_root, order, overwrite=None, data_dirs=()) -> "list[Path]":
     return ow + [Path(mods_root) / m for m in order] + [Path(d) for d in data_dirs]
 
 
+def _builds(vfs: _Vfs, kind: str, weight: str, memo: dict):
+    """(builds, unusable, any_set) for `kind` at `weight` on this instance.
+
+    builds = [(slider set, body shape name, zeroed verts)] for every slider set
+    of the right FAMILY that could be built; unusable = one note per set that
+    could not (or is another body family); any_set = whether any slider set
+    builds the output path at all. Built ONCE per kind, weight and instance and
+    reused for every file checked against it -- the expensive part of the
+    resolver is here, not in the comparison."""
+    key = ("builds", kind, weight, tuple(str(d) for d in vfs.dirs))
+    if key in memo:
+        return memo[key]
+    out_path, out_file, body_verts, label = KINDS[kind]
+    sets = _slider_sets(vfs, out_path, out_file)
+    builds, unusable = [], []
+    for ss in sets:
+        set_name = ss.get("name", "?")
+        try:
+            name, zv = _zeroed_build(vfs, ss, weight)
+        except ZeroedBodyError as e:
+            unusable.append(str(e))
+            continue
+        except Exception as e:                # a broken, unrelated set: record it
+            unusable.append(f"slider set {set_name!r}: unreadable "
+                            f"({type(e).__name__}: {e})")
+            continue
+        if len(zv) != body_verts:
+            unusable.append(f"slider set {set_name!r}: a {len(zv)}-vertex body, "
+                            f"not {label} ({body_verts})")
+            continue
+        builds.append((set_name, name, zv))
+    memo[key] = (builds, unusable, bool(sets))
+    return memo[key]
+
+
+def _compare(file: Path, builds) -> "tuple[tuple | None, list[str]]":
+    """(match, notes): the first build `file` IS, within TOL, as
+    (slider set, shape name, max deviation) -- else None, with one note per
+    build saying why not."""
+    notes = []
+    for set_name, name, zv in builds:
+        gv = _shape_verts(file, name)
+        if gv is None or gv.shape != zv.shape:
+            notes.append(f"{set_name!r}: {Path(file).name} has no {name!r} "
+                         f"shape of {len(zv)} verts")
+            continue
+        dev = np.linalg.norm(gv - zv, axis=1)
+        if float(dev.max()) <= TOL:
+            return (set_name, name, float(dev.max())), notes
+        notes.append(f"{set_name!r}: off by up to {dev.max():.3f}u on "
+                     f"{int((dev > TOL).sum())} of {len(dev)} verts")
+    return None, notes
+
+
 def zeroed_body(kind: str, weight: str = "_1", *, mods_root=None, order=None,
                 overwrite=None, data_dirs=()) -> ZeroedBody:
     """The game-loaded `kind` body at `weight`, verified to be BodySlide's
@@ -318,45 +375,22 @@ def zeroed_body(kind: str, weight: str = "_1", *, mods_root=None, order=None,
     except Exception as e:
         raise ZeroedBodyError(f"{game_file} is unreadable "
                               f"({type(e).__name__}: {e})") from e
-    sets = _slider_sets(vfs, out_path, out_file)
-    if not sets:
+    builds, unusable, any_set = _builds(vfs, kind, weight, _CACHE)
+    if not any_set:
         raise ZeroedBodyError(f"no BodySlide slider set builds {out_path}/"
                               f"{out_file} -- install the body's BodySlide files")
-    compared, unusable = [], []
-    for ss in sets:
-        set_name = ss.get("name", "?")
-        try:
-            name, zv = _zeroed_build(vfs, ss, weight)
-        except ZeroedBodyError as e:
-            unusable.append(str(e))
-            continue
-        except Exception as e:                # a broken, unrelated set: record it
-            unusable.append(f"slider set {set_name!r}: unreadable "
-                            f"({type(e).__name__}: {e})")
-            continue
-        if len(zv) != body_verts:
-            unusable.append(f"slider set {set_name!r}: a {len(zv)}-vertex body, "
-                            f"not {label} ({body_verts})")
-            continue
-        gv = _shape_verts(game_file, name)
-        if gv is None or gv.shape != zv.shape:
-            compared.append(f"{set_name!r}: {game_file.name} has no {name!r} "
-                            f"shape of {len(zv)} verts")
-            continue
-        dev = np.linalg.norm(gv - zv, axis=1)
-        if float(dev.max()) <= TOL:
-            # realpath restores the on-disk casing the lowercase lookup lost
-            zb = ZeroedBody(Path(os.path.realpath(game_file)), name, set_name,
-                            float(dev.max()))
-            _CACHE[ck] = zb
-            # Once per body and weight per process: every run states what it
-            # measured against. stderr, so no parsed report gains a line.
-            print(f"[zeroed-body] {kind}{weight}: {zb.path} -- slider set "
-                  f"{zb.slider_set!r}, max deviation {zb.max_dev:.1e}u",
-                  file=sys.stderr, flush=True)
-            return zb
-        compared.append(f"{set_name!r}: off by up to {dev.max():.3f}u on "
-                        f"{int((dev > TOL).sum())} of {len(dev)} verts")
+    match, compared = _compare(game_file, builds)
+    if match is not None:
+        set_name, name, dev = match
+        # realpath restores the on-disk casing the lowercase lookup lost
+        zb = ZeroedBody(Path(os.path.realpath(game_file)), name, set_name, dev)
+        _CACHE[ck] = zb
+        # Once per body and weight per process: every run states what it
+        # measured against. stderr, so no parsed report gains a line.
+        print(f"[zeroed-body] {kind}{weight}: {zb.path} -- slider set "
+              f"{zb.slider_set!r}, max deviation {zb.max_dev:.1e}u",
+              file=sys.stderr, flush=True)
+        return zb
     where = f"{game_file} (from {provider.name!r})"
     if compared:
         raise ZeroedBodyError(
@@ -366,3 +400,163 @@ def zeroed_body(kind: str, weight: str = "_1", *, mods_root=None, order=None,
     raise ZeroedBodyError(
         f"{where} could not be checked against any {label} slider set that "
         f"builds it: " + "; ".join(unusable))
+
+
+# --- Listing every candidate body, for the pick dialog ----------------------
+
+@dataclass(frozen=True)
+class BodyCandidate:
+    """One body a user could pick for `kind`: a weight PAIR from one folder."""
+    kind: str
+    provider: str          # the mod folder, "MO2 overwrite", "game Data", or an override label
+    path_1: "Path | None"
+    path_0: "Path | None"
+    game_loads: bool       # the game loads THIS pair (both weights come from here)
+    status: str            # zeroed | not-zeroed | unchecked | other-family | half-pair | unreadable | missing
+    selectable: bool       # a same-family, complete, readable pair
+    slider_set: str        # the set it matched ("" when it matched none)
+    max_dev: "float | None"  # worst deviation from the zeroed build over both weights
+    reason: str            # why it is not a verified zeroed build ("" when it is)
+
+
+@dataclass(frozen=True)
+class BodyListing:
+    kind: str
+    label: str
+    candidates: "tuple[BodyCandidate, ...]"   # load order, highest first; overrides last
+    default: "BodyCandidate | None"            # the verified zeroed pair the game loads
+    notes: "tuple[str, ...]"                   # slider sets that could not be used, and why
+
+
+_OFF_BY = re.compile(r"off by up to ([0-9.]+)u")
+
+
+def _provider_label(d: Path) -> str:
+    low = d.name.lower()
+    if low == "overwrite":
+        return "MO2 overwrite"
+    if low == "data":
+        return "game Data folder"
+    return d.name
+
+
+def _candidate(vfs, kind, provider, pair, game_loads, memo) -> BodyCandidate:
+    """Check one weight pair against the kind's zeroed builds. The status rules
+    mirror what zeroed_body() will and will not accept."""
+    body_verts, label = KINDS[kind][2], KINDS[kind][3]
+    p1, p0 = pair.get("_1"), pair.get("_0")
+
+    def cand(status, selectable, reason, slider_set="", max_dev=None):
+        real = lambda p: Path(os.path.realpath(p)) if p is not None else None
+        return BodyCandidate(kind, provider, real(p1), real(p0), game_loads,
+                             status, selectable, slider_set, max_dev, reason)
+
+    if p1 is None and p0 is None:
+        return cand("missing", False, "names a file that does not exist")
+    if p1 is None or p0 is None:
+        have = "weight 1" if p1 is not None else "weight 0"
+        return cand("half-pair", False, f"only the {have} file is here -- a "
+                    f"half-installed pair is not a reference")
+    for p in (p1, p0):
+        try:
+            sizes = _shape_sizes(p)
+        except Exception as e:
+            return cand("unreadable", False, f"{Path(p).name} is unreadable "
+                        f"({type(e).__name__})")
+        # Family = SOME shape of the body's size, not the largest one: an extra
+        # bigger shape is no reason to refuse a body zeroed_body() accepts.
+        if body_verts not in sizes.values():
+            n = max(sizes.values(), default=0)
+            return cand("other-family", False, f"a {n}-vertex body, not {label} "
+                        f"({body_verts})")
+    # BOTH weights are judged before any verdict: a weight that cannot be
+    # checked must not hide one already measured as not zeroed.
+    matched, devs, why, unchecked = [], [], [], []
+    for w, p in (("_1", p1), ("_0", p0)):
+        builds, unusable, _any = _builds(vfs, kind, w, memo)
+        if not builds:
+            unchecked.append(f"weight {w[-1]}: " + (
+                unusable[0] if unusable else "no slider set builds it"))
+            continue
+        match, notes = _compare(p, builds)
+        if match is None:
+            why.append(f"weight {w[-1]}: " + "; ".join(notes))
+            # the CLOSEST set's worst vertex; None when no set had a comparable
+            # shape, so nothing was measured
+            offs = [float(x) for x in _OFF_BY.findall(" ".join(notes))]
+            devs.append(min(offs) if offs else None)
+        else:
+            matched.append(match[0])
+            devs.append(match[2])
+    if why:
+        # "up to" only when EVERY weight produced a number
+        worst = None if unchecked or None in devs else max(devs)
+        return cand("not-zeroed", True, "not the zeroed build -- " + "; ".join(
+            why + [u + " (could not be checked)" for u in unchecked]), max_dev=worst)
+    if unchecked:
+        return cand("unchecked", True, "cannot be checked: " + "; ".join(unchecked))
+    return cand("zeroed", True, "", matched[0], max(devs))
+
+
+def list_bodies(kinds=("cbbe", "ube"), *, mods_root=None, order=None,
+                overwrite=None, data_dirs=(), extra=()) -> "dict[str, BodyListing]":
+    """Every body the user could pick, per kind, each checked against the
+    zeroed builds -- for the dialog that lets the user confirm or change the
+    reference bodies before a conversion.
+
+    Candidates: every ENABLED provider of the kind's output path (MO2
+    overwrite, enabled mods by priority, the game Data folder), plus `extra`
+    = [(kind, label, path_1)] for bodies an override already names. Not
+    offered: BodySlide ShapeData templates (one file for both weights, never
+    loaded by the game) and NPC-specific femalebody files (not the race body).
+    The default is exactly what zeroed_body() returns at both weights.
+
+    A FRESH build memo per call: the dialog runs in a long-lived GUI process,
+    and BodySlide can rebuild the files between two conversions."""
+    if (mods_root is None) != (order is None):
+        raise ValueError("pass mods_root and order together, or neither")
+    dirs = (_layout_dirs() if mods_root is None
+            else _dirs(mods_root, order, overwrite, data_dirs))
+    vfs = _Vfs(dirs)
+    memo: dict = {}
+    listings = {}
+    for kind in kinds:
+        out_path, out_file, _verts, label = KINDS[kind]
+        parts = {w: [p for p in f"{out_path}/{out_file}{w}.nif".split("/") if p]
+                 for w in _WEIGHTS}
+        winner = {w: vfs.winner("/".join(parts[w])) for w in _WEIGHTS}
+        cands, seen = [], set()
+        for d in dirs:
+            pair = {w: _ci_join(d, parts[w]) for w in _WEIGHTS}
+            if pair["_0"] is None and pair["_1"] is None:
+                continue
+            loads = all(winner[w] is not None and winner[w][1] == d for w in _WEIGHTS)
+            c = _candidate(vfs, kind, _provider_label(d), pair, loads, memo)
+            cands.append(c)
+            seen.add(str(c.path_1).lower())
+        for k, lab, p in extra:
+            if k != kind or not p:
+                continue
+            p1 = Path(p)
+            if str(Path(os.path.realpath(p1))).lower() in seen:
+                continue                      # already listed as a provider
+            # A name with no weight is used AS-IS at both weights by the
+            # converter (_ube_body_override) -- list it as the pair it acts as.
+            one_file = not p1.stem.endswith(("_0", "_1"))
+            p0 = p1 if one_file else p1.with_name(p1.stem[:-2] + "_0" + p1.suffix)
+            pair = {"_1": p1 if p1.is_file() else None,
+                    "_0": p0 if p0.is_file() else None}
+            c = _candidate(vfs, kind, lab, pair, False, memo)
+            if one_file and c.status not in ("missing", "unreadable"):
+                note = "one file, used at both weights"
+                c = replace(c, reason=f"{c.reason}; {note}" if c.reason else note)
+            cands.append(c)
+            seen.add(str(Path(os.path.realpath(p1))).lower())
+        default = next((c for c in cands if c.game_loads and c.status == "zeroed"), None)
+        notes = []
+        for w in _WEIGHTS:
+            for n in _builds(vfs, kind, w, memo)[1]:
+                if n not in notes:
+                    notes.append(n)
+        listings[kind] = BodyListing(kind, label, tuple(cands), default, tuple(notes))
+    return listings

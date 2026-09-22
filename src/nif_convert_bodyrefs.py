@@ -13,11 +13,13 @@ both modules keep seeing the same objects.
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 
 from . import nif_io
 from . import paths as _paths
+from .envflags import flag as _flag
 
 # --- Portable body discovery (no hardcoded modpack paths) -------------
 # The mods root is auto-discovered at runtime (see src/paths.py) from the
@@ -41,6 +43,101 @@ _FEMBODY_REL = ("meshes", "actors", "character", "character assets")
 
 # Per-process cache so the scan runs once.
 _BODY_DISCOVERY_CACHE: "dict[str, Path | None]" = {}
+
+# #zeroed-body-refs. The CBBE body the warp morphs FROM, the UBE body it morphs
+# TOWARD and the UBE body injected on the body-swap path are BodySlide's ZEROED
+# builds as the game loads them (src/zeroed_body.py: found by what the slider set
+# builds, checked vertex for vertex, never picked by mod name). Name discovery
+# picked the 3BA mod folder's own femalebody on a real modlist: a preset build
+# the game never loads, up to 1.97u off the zeroed body over 16,061 torso
+# vertices, whose weight morph grows the bust ~1.0u -- so the warp moved
+# weight-1 garments ~0.6u further in than weight 0, and ~30 pieces (capes,
+# cloaks, scarves) shipped that shift untouched. If the game's body is NOT a
+# zeroed build, the resolver refuses and discovery by name runs as before, with
+# a warning. CBBE2UBE_NO_ZEROED_BODY_REFS=1 (settings window: "Fit against the
+# zeroed BodySlide bodies") skips the zeroed resolver entirely -- the off-switch
+# control for this change.
+ZEROED_BODY_REFS = not _flag("CBBE2UBE_NO_ZEROED_BODY_REFS", False)
+_ZEROED_WARNED: "set[str]" = set()
+
+
+def _warn_missing_override(name: str, value: str, weight: str = "") -> None:
+    """An override naming a file that is not there used to fall through to
+    another body without a word -- a run that looks clean while using a body
+    nobody chose. Say so, once per variable. With `weight`, only the weight
+    SIBLING derived from the variable is gone (the named file is used at its
+    own weight), and the message says exactly that."""
+    key = name + weight
+    if key in _ZEROED_WARNED:
+        return
+    _ZEROED_WARNED.add(key)
+    if weight:
+        print(f"  !! {name}: its weight-{weight[-1]} file does not exist ({value}) "
+              f"-- weight {weight[-1]} uses the converter's own lookup",
+              file=sys.stderr)
+    else:
+        print(f"  !! {name} names a body that does not exist ({value}) -- "
+              f"ignoring it", file=sys.stderr)
+
+
+def _note_override(name: str, path: Path) -> Path:
+    """Say once which file an explicit override made a lookup use. The
+    Reference bodies dialog pins every body, so the zeroed resolver's own
+    '[zeroed-body]' line never prints on a GUI run; without this the run log
+    would not say which bodies the run measured against."""
+    key = "used:" + name
+    if key not in _ZEROED_WARNED:
+        _ZEROED_WARNED.add(key)
+        print(f"[body-ref] {name} = {path} (explicit override)",
+              file=sys.stderr, flush=True)
+    return path
+
+
+def _ube_body_override(weight: str) -> "Path | None":
+    """The UBE body an explicit override names for `weight`, or None.
+
+    CBBE2UBE_UBE_BODY_0/_1 first; then the single-path CBBE2UBE_UBE_BODY (the
+    settings window's picker), whose weight sibling is derived by swapping a
+    trailing _0/_1 (used as-is when the name carries no weight). #ube-body-override
+    ONE helper for the UBE body the warp aims at AND the one injected under a
+    body-swap garment: before it, the injected body read no override at all,
+    so a picked UBE body moved the fit target but not the body swapped in."""
+    name = f"CBBE2UBE_UBE_BODY{weight.upper()}"
+    env = os.environ.get(f"CBBE2UBE_UBE_BODY{weight.upper()}")   # literal: raw-read audit
+    if env and Path(env).is_file():
+        return _note_override(name, Path(env))
+    if env:
+        _warn_missing_override(name, env)
+    bare = os.environ.get("CBBE2UBE_UBE_BODY")
+    if bare:
+        bp = Path(bare)
+        cand = (bp.with_name(bp.stem[:-2] + weight + bp.suffix)
+                if bp.stem.endswith(("_0", "_1")) else bp)
+        if cand.is_file():
+            return _note_override(f"CBBE2UBE_UBE_BODY (weight {weight[-1]})", cand)
+        if cand != bp and bp.is_file():
+            _warn_missing_override("CBBE2UBE_UBE_BODY", str(cand), weight)
+        else:
+            _warn_missing_override("CBBE2UBE_UBE_BODY", bare)
+    return None
+
+
+def _zeroed_ref(kind: str, weight: str) -> "Path | None":
+    """The zeroed `kind` ("cbbe"/"ube") body at `weight` as the game loads it,
+    or None -- with ONE warning per body and weight -- when it cannot be
+    established, so the caller falls back to discovery by name."""
+    if not ZEROED_BODY_REFS:
+        return None
+    from . import zeroed_body as _zb
+    try:
+        return _zb.zeroed_body(kind, weight).path
+    except _zb.ZeroedBodyError as e:
+        key = kind + weight
+        if key not in _ZEROED_WARNED:
+            _ZEROED_WARNED.add(key)
+            print(f"  !! no zeroed {kind.upper()} body at weight {weight[-1]}: {e}"
+                  f" -- falling back to discovery by name", file=sys.stderr)
+        return None
 
 
 def _iter_femalebody_nifs(weight: str):
@@ -87,19 +184,30 @@ def weight_suffix_of(path) -> str:
 
 
 def _find_cbbe_base_body(weight: str = "_1") -> "Path | None":
-    """Locate the CBBE 3BA base (template, slider-zero) femalebody NIF by
-    scanning installed mods for a femalebody with the 18,436-vert 3BA
-    topology, preferring a CBBE/3BA-named mod and EXCLUDING BodySlide-output
-    mods (those carry the morphed UBE body, not the CBBE template). This is
-    the baseline the CBBE->UBE warp morphs FROM. Returns None if no CBBE 3BA
-    base mod is installed (callers degrade to snap_armor_outside_body)."""
+    """The CBBE 3BA femalebody the CBBE->UBE warp morphs FROM.
+
+    An explicit CBBE2UBE_CBBE_BODY_0/_1 wins. Then BodySlide's ZEROED 3BA build
+    as the game loads it (#zeroed-body-refs, src/zeroed_body.py). Only when
+    that cannot be established: the old discovery, which scans installed mods
+    for an 18,436-vert femalebody, prefers a CBBE/3BA-named mod and SKIPS mods
+    named like a BodySlide output -- on the assumption they carry a UBE body,
+    which is wrong for a 3BA BodySlide output; that skip is how it landed on a
+    preset build the game never loads. Returns None if nothing is found
+    (callers degrade to snap_armor_outside_body)."""
     ck = f"cbbe{weight}"
     if ck in _BODY_DISCOVERY_CACHE:
         return _BODY_DISCOVERY_CACHE[ck]
     env = os.environ.get(f"CBBE2UBE_CBBE_BODY{weight.upper()}")
     if env and Path(env).is_file():
-        _BODY_DISCOVERY_CACHE[ck] = Path(env)
+        _BODY_DISCOVERY_CACHE[ck] = _note_override(
+            f"CBBE2UBE_CBBE_BODY{weight.upper()}", Path(env))
         return Path(env)
+    if env:
+        _warn_missing_override(f"CBBE2UBE_CBBE_BODY{weight.upper()}", env)
+    zeroed = _zeroed_ref("cbbe", weight)
+    if zeroed is not None:
+        _BODY_DISCOVERY_CACHE[ck] = zeroed
+        return zeroed
     cands: list[tuple[int, Path]] = []
     for mod, p in _iter_femalebody_nifs(weight):
         nm = mod.name.lower()
@@ -133,23 +241,16 @@ def _find_ube_femalebody(weight: str = "_1") -> "Path | None":
     ck = f"ube{weight}"
     if ck in _BODY_DISCOVERY_CACHE:
         return _BODY_DISCOVERY_CACHE[ck]
-    env = os.environ.get(f"CBBE2UBE_UBE_BODY{weight.upper()}")
-    if env and Path(env).is_file():
-        _BODY_DISCOVERY_CACHE[ck] = Path(env)
-        return Path(env)
-    # Single-path GUI override: the picker sets one NIF, but BodySlide bodies
-    # ship as a _0/_1 pair -- derive the weight-matching sibling from it (swap a
-    # trailing _0/_1; use as-is if the name isn't weight-suffixed). The
-    # weight-specific vars above still take priority. #ube-body-override
-    bare = os.environ.get("CBBE2UBE_UBE_BODY")
-    if bare:
-        bp = Path(bare)
-        cand = (bp.with_name(bp.stem[:-2] + weight + bp.suffix)
-                if bp.stem.endswith(("_0", "_1")) else bp)
-        if cand.is_file():
-            _BODY_DISCOVERY_CACHE[ck] = cand
-            return cand
-    # Preferred: the genuine UBE-topology body output (`!UBE\Body` tangent).
+    override = _ube_body_override(weight)
+    if override is not None:
+        _BODY_DISCOVERY_CACHE[ck] = override
+        return override
+    # BodySlide's zeroed UBE build as the game loads it (#zeroed-body-refs).
+    zeroed = _zeroed_ref("ube", weight)
+    if zeroed is not None:
+        _BODY_DISCOVERY_CACHE[ck] = zeroed
+        return zeroed
+    # Fallback: the genuine UBE-topology body output (`!UBE\Body` tangent).
     real = _find_user_preset_body(weight)
     if real is not None and Path(real).is_file():
         _BODY_DISCOVERY_CACHE[ck] = Path(real)
@@ -265,7 +366,12 @@ def _find_ube_body_osd() -> Path | None:
 def _find_user_preset_body(weight_suffix: str = "_1") -> Path | None:
     """Find the user's BodySlide-built UBE body NIF (the `!UBE\\Body` tangent
     output) at the requested weight, scanned across mods. No fixed mod name.
-    CACHED (per-NIF caller, scans all mods)."""
+    CACHED (per-NIF caller, scans all mods).
+
+    Deliberately NOT the Reference bodies pick (CBBE2UBE_UBE_BODY_0/_1): the
+    preset bake adds (this body - template) to the garment and the chain lift
+    clears the body the player wears, so both need the user's BUILD, preset
+    included -- not the zeroed fit reference. See src/body_choice.py."""
     ck = f"user_preset{weight_suffix}"
     if ck in _BODY_DISCOVERY_CACHE:
         return _BODY_DISCOVERY_CACHE[ck]
