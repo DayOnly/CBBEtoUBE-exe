@@ -133,9 +133,11 @@ def test_a_preset_armour_build_is_refused(tmp_path, monkeypatch):
 
 
 def test_a_build_ten_times_the_tolerance_off_is_refused(tmp_path, monkeypatch):
+    """A FIXED 0.01u, ten times the 1e-3 tolerance -- not a multiple of the
+    constant, or loosening the constant would move this offset with it."""
     inst = Instance(tmp_path, monkeypatch)
     off = {w: _zeroed(w) for w in ("_0", "_1")}
-    off["_1"]["Cuirass"][1] += (0.0, 10 * zb.GARMENT_TOL, 0.0)
+    off["_1"]["Cuirass"][1] += (0.0, 0.01, 0.0)
     with pytest.raises(zb.ZeroedBodyError):
         inst.check(inst.built(**off))
 
