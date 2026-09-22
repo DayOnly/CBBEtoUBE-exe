@@ -7,29 +7,42 @@
 Pressing Convert now opens a "Reference bodies" window before anything runs.
 It shows the two bodies the fit uses -- the CBBE 3BA body garments are moved
 from and the UBE body they are moved onto -- each in a list that starts on the
-zeroed BodySlide build the game loads, checked vertex for vertex, and offers
-every other copy of that body the modlist has, each marked with what it is:
-"[zeroed]", or "[NOT zeroed, off by up to 1.97u]" for a build at some preset.
-Bodies of another family, half-installed pairs and unreadable files are named
-with the reason instead of offered. Picking anything but the verified body the
-game loads asks once more, naming the difference. The choice applies to that
-conversion only, and it also sets the UBE body injected under body-swap
-armour -- which until now ignored every body override, including the "UBE body
-reference NIF" setting, so a chosen UBE body moved the fit's target but not
-the body swapped in. A body override that names a missing file is now reported
-instead of silently replaced. If the choice means a body you set in Settings
-will not be used for this run, the window says so before converting. A
-Settings body named without a weight is offered as one file for both weights,
-which is how the converter uses it. Your BodySlide preset is still baked in
-from the UBE body your build installed; the window picks the fit's reference
-bodies, not your preset. The window is skipped for a dry run and when
+zeroed BodySlide build the game loads, checked vertex for vertex (or on a body
+that Settings or an environment override already names, when that body is
+usable), and offers every other copy of that body the modlist has, each marked
+with what it is: "[zeroed]", "[NOT zeroed, off by up to 1.97u]" for a build at
+some preset, or "[not checked]" when no slider set can check it. Bodies of
+another family, half-installed pairs, unreadable files and overrides that name
+a missing file are listed with the reason instead of offered. Converting with
+anything but the verified body the game loads asks once more, naming the
+difference, and so does a choice that leaves a body set in Settings or by an
+override variable unused for this run. Just before the run starts, the chosen
+files are checked to still exist. The choice applies to that conversion only,
+and it also sets the UBE body injected under body-swap armour -- which until
+now ignored every body override, including the "UBE body reference NIF"
+setting, so a chosen UBE body moved the fit's target but not the body swapped
+in. A Settings body named without a weight is offered as one file for both
+weights, which is how the converter uses it. Your BodySlide preset is still
+baked in from the UBE body your build installed; the window picks the fit's
+reference bodies, not your preset. The window is skipped for a dry run and when
 "Fit against the zeroed BodySlide bodies" is off. Checking takes a few
-seconds; the window stays responsive meanwhile.
+seconds; the window stays responsive meanwhile, and if the check itself fails
+it says so and offers to convert with the bodies the converter finds itself.
+The log shown in the window names the bodies the run uses.
+
+Every body override a run uses is now named in the run log
+(`[body-ref] <variable> = <path> (explicit override)`). One that names a
+missing file is reported (`!! <variable> names a body that does not exist
+(...) -- ignoring it`) instead of being silently replaced by another body, and
+when the "UBE body reference NIF" names one weight and the other weight's file
+is missing, the log says that weight uses the converter's own lookup.
 
 An "All mods" conversion now recognises body mods by the body files they ship
--- any mod carrying the CBBE 3BA or UBE body BodySlide builds is skipped, and
-the mod list shows the same set -- instead of by which body the fit uses,
-which would have let the choice in this window change which mods convert.
+-- any mod folder carrying the CBBE 3BA or UBE body file at the path BodySlide
+builds it to is skipped, and the mod list shows the same set -- instead of by
+which body the fit uses, which would have let the choice in this window change
+which mods convert. On the modlist this was measured on, the set is the same as
+before: the two BodySlide outputs and the 3BA body mod.
 
 ### Fixed — cloaks, capes and belt pieces no longer sit closer to the body at weight 1 than at weight 0
 
@@ -43,19 +56,25 @@ instead of the zeroed body the garments were built on. It sat up to 1.97u off
 the zeroed body over 16,061 torso vertices, and its weight morph grows the bust
 about 1u, so the move pulled weight-1 garments about 0.6u further in than
 weight-0 ones. Most fit passes re-fit that away afterwards; pieces that skip
-them kept it whole. Six measured -- a cloak, a cape, belt bags, a book, a front
-pouch and a skirt front -- shipped their weight-1 version 0.25u to 0.47u closer
-than their weight-0 version (median; 0.3u to 0.95u at the closest 5%), a
-difference that exists only because of the wrong body.
+them (about 30, among them capes, cloaks and scarves) kept it whole. Six
+measured -- a cloak, a cape, belt bags, a book, a front pouch and a skirt front
+-- shipped their weight-1 version closer than their weight-0 version by 0.25u
+to 0.47u at the median (the cape by 0.03u) and by 0.3u to 0.95u at the closest
+5%, a difference that exists only because of the wrong body.
 
 The CBBE body the move starts from, the UBE body it aims at and the UBE body
 injected under a body-swap garment are now BodySlide's zeroed builds, as the
 game loads them: found by what each body's slider set builds, then checked
 vertex for vertex against the base mesh plus the slider set's defaults. If the
-game's body is not a zeroed build, discovery by name runs as before and the
-log says so. An explicit body override still wins.
-`CBBE2UBE_NO_ZEROED_BODY_REFS=1` (settings window: "Fit against the zeroed
-BodySlide bodies") restores discovery by name.
+game's body is not a zeroed build, a GUI run's Reference bodies window starts
+on that body, flagged, and asks before using it; outside the GUI, discovery by
+name runs as before and the log says so (`!! no zeroed CBBE body at weight 1:
+... -- falling back to discovery by name`). The same bodies feed every pass
+that reads a reference body (weight transfer, the collision-proxy warp, the
+UBE-native scan, the body overlay rebake); the preset bake still reads your
+installed UBE build. An explicit body override still wins.
+`CBBE2UBE_NO_ZEROED_BODY_REFS=1` (settings window, under *Show advanced*: "Fit
+against the zeroed BodySlide bodies") restores discovery by name.
 
 On the six pieces, the weight-1 minus weight-0 difference is now 0.000u
 (median) on every one, and with the switch off each reproduces the shipped

@@ -94,7 +94,8 @@ For each shape in an armor NIF:
 1. Find the closest point on the CBBE reference body for every armor vertex —
    a triangle on the CBBE mesh plus barycentric coordinates inside it.
 2. Evaluate the same (triangle, barycentric) on the UBE reference body. The
-   delta between the two surface points is the per-vertex deformation.
+   delta between the two surface points is the per-vertex deformation (which
+   two bodies: [Reference bodies](#reference-bodies)).
 3. Apply the deformation to the armor vertex.
 4. Copy bone weights from the nearest UBE reference vertices (a weighted blend
    across the k nearest neighbours) and renormalize.
@@ -421,17 +422,60 @@ When running it from outside the instance, point it explicitly:
 
 ## Reference bodies
 
-The converter needs the source (CBBE) and target (UBE) base body meshes — the
-CBBE 3BA body and the matching UBE body built via BodySlide (the
-`femalebody_0.nif` / `femalebody_1.nif` pair from each), for example:
+The fit moves each garment from the **CBBE 3BA** body it was built on to the
+**UBE** body it will be worn over, at both weights:
 
-- CBBE: `<modlist>/mods/CBBE 3BA (3BBB)/meshes/actors/character/character assets/femalebody_{0,1}.nif`
-- UBE (BodySlide output): `<modlist>/mods/<UBE BodySlide Output>/meshes/actors/character/character assets/femalebody_{0,1}.nif`
+- CBBE 3BA: `meshes/actors/character/character assets/femalebody_{0,1}.nif`
+- UBE: `meshes/!UBE/Body/femalebody_tangent_{0,1}.nif`
 
-The `auto` pipeline auto-discovers both from the modlist (and `convert` takes
-`--ube-body-ref` to pin the UBE reference explicitly). The low-level
-single-NIF CLI (`src/cli.py`) takes the parent folders via
-`--cbbe-dir` / `--ube-dir`, defaulting to the same auto-discovery.
+Each is **BodySlide's zeroed build, as the game loads it**: the copy that wins
+that path in MO2 (overwrite, then enabled mods by priority, then the game
+`Data` folder), accepted only if it matches, on every vertex, what BodySlide
+builds with zeroed sliders — the slider set's base mesh plus its defaults for
+that weight. Garments built in BodySlide sit on that body. This lookup never
+chooses by mod name, and both weights must come from the same mod.
+
+If that cannot be established — the body the game loads is not a zeroed build,
+no slider set builds it, or the load order cannot be read — a GUI run's Reference
+bodies window starts on the body the game loads, flagged, and asks first; outside
+the GUI the log says so once per body and weight in each process
+(`!! no zeroed CBBE body at weight 1: … -- falling back to discovery by name`)
+and the older lookup runs: an 18,436-vertex `femalebody`, preferring a mod named
+like CBBE/3BA, and for UBE your BodySlide-built body.
+
+**In the GUI, Convert first opens a *Reference bodies* window**: one list per
+body, starting on a usable body you already named (the Paths tab's UBE body, or
+an override), else on the verified zeroed build, else on the body the game loads,
+flagged. Each list offers every other copy in your load order, marked
+`[zeroed]`, `[NOT zeroed, off by up to N.NNu]` or `[not checked]`. Other body
+families, half-installed pairs and unreadable files are named with the reason
+instead of offered. Picking anything but the verified body asks once more, and
+names any Settings or override body the run will then not use. The choice
+applies to that run only. The window is skipped for a dry run and when the
+zeroed bodies are switched off (below).
+
+Not taken from these bodies: on body-swap armour your **BodySlide preset** is
+still baked in from the UBE body your build installed — the first mod folder, by
+name, that ships `meshes/!UBE/Body/femalebody_tangent_{0,1}.nif`, disabled mods
+not skipped — and the physics chain lift clears that same body.
+
+Explicit overrides win over the lookup (in the GUI, the window's pick replaces
+them for that run): `CBBE2UBE_CBBE_BODY_0` / `_1`, and
+`CBBE2UBE_UBE_BODY_0` / `_1` or the single `CBBE2UBE_UBE_BODY` (the Paths tab's
+*UBE body reference NIF*); the UBE one also sets the body injected under
+body-swap armour. A run logs each override it uses as
+`[body-ref] <VAR> = <path> (explicit override)`, and reports one that names a
+missing file (`!! <VAR> names a body that does not exist`) instead of quietly
+using another body. `CBBE2UBE_NO_ZEROED_BODY_REFS=1` (Paths tab, advanced:
+*Fit against the zeroed BodySlide bodies*) turns the zeroed lookup off and
+restores discovery by name.
+
+`convert` takes `--ube-body-ref` to pin the UBE reference explicitly. The
+low-level single-NIF CLI (`src/cli.py`) takes the parent folders via
+`--cbbe-dir` / `--ube-dir`, defaulting to the same lookup.
+
+An **All mods** run skips body mods — any mod folder that ships either body
+file above — because they are the body, not armour.
 
 ## Layout
 
@@ -471,6 +515,8 @@ cbbe-to-ube/
     atomic_io.py            # crash-safe atomic writes for all game-loaded output
     hdt_xml_gen.py          # per-armor HDT-SMP collision XML generator
     discovery.py / paths.py # MO2 mod-tree discovery + layout auto-detect
+    zeroed_body.py / body_choice.py      # the zeroed BodySlide reference bodies, and the
+                            # Reference bodies window's choice
     bsa_strings.py          # localized ARMO names from .STRINGS tables
     tri.py / osd.py / sliderset_gen.py   # BODYTRI / OutfitStudio / slider data
     hh_offset.py / nif_patch.py          # high-heel offset, binary NIF patching

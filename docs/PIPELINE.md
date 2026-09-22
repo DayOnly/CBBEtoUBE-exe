@@ -41,6 +41,11 @@ session or shipped a wrong mesh.
 * **Phase 2** (`convert_nif_phase2`) when the NIF has an inline body or exposed
   skin AND a UBE body reference exists. It injects the UBE `BaseShape` +
   `VirtualBody`, drops the CBBE body, and runs the full chain.
+  The injected body is `auto_convert._find_ube_body_ref()`'s (or
+  `--ube-body-ref`): an explicit UBE override — the GUI's Reference bodies pick
+  included — else BodySlide's zeroed UBE build as the game loads it, else the old
+  scan (`#zeroed-body-refs`). The exposed-skin test is keyed on the CBBE reference
+  body (`_find_cbbe_base_body`), so routing moves with that body too.
 * **Phase 1** otherwise — a copy or body-aware rebuild with a shorter chain.
 
 **The injected `BaseShape` is the phase marker.** A converted NIF without one is
@@ -56,9 +61,9 @@ structurally cannot be touched by any phase-2 pass.
 
 | # | pass | notes |
 |---|------|-------|
-| 1 | `bake_preset_into_armor` | k=4 IDW of the preset delta |
+| 1 | `bake_preset_into_armor` | k=4 IDW of the preset delta (installed UBE build − template, `_find_user_preset_body` — NOT the reference-body pick) |
 | 2 | `fit_armor_to_ube_body` | **OFF** (`fit_armor=False`) |
-| 3 | `warp_armor_by_body_delta` | k=4 IDW of the CBBE→UBE delta |
+| 3 | `warp_armor_by_body_delta` | k=4 IDW of the CBBE→UBE delta between the reference bodies (`#zeroed-body-refs`; DESIGN.md *Reference bodies*) |
 | 4 | `inflate_armor_outward` | push out |
 | 5 | `conform_to_source_standoff` | pulls IN *and* pushes OUT |
 | 6 | `_smooth_warp_grooves` | smoothing operator, not a target |
@@ -337,7 +342,7 @@ answered is "which CHANGE did this".
 | pass | what it does | flag |
 |---|---|---|
 | `_conform_fitted_to_body` | WEIGHTS: conforms garment verts to the body's per-vert skinning, shared tail | `CBBE2UBE_NO_CONFORM` (`conform_to_body`) |
-| `conform_to_source_standoff` | GEOMETRY: reels over-projected verts back to the authored standoff; the `conform` stage in the survival trace. NOTE the two paths call it differently: body-swap passes the body's nipple map and `conform_margin` (nipple-ramped bust clearance); the copy path passes neither unless `CBBE2UBE_PHASE1_NIPPLE_MAP=1` (flat clearance otherwise), and its source body is the CBBE slider-zero base rather than the inline preset body | `CBBE2UBE_PHASE1_CONFORM` (copy, default OFF) / `CBBE2UBE_NO_PHASE2_CONFORM` (body-swap, default ON) |
+| `conform_to_source_standoff` | GEOMETRY: reels over-projected verts back to the authored standoff; the `conform` stage in the survival trace. NOTE the two paths call it differently: body-swap passes the body's nipple map and `conform_margin` (nipple-ramped bust clearance); the copy path passes neither unless `CBBE2UBE_PHASE1_NIPPLE_MAP=1` (flat clearance otherwise), and its source body is the CBBE reference body (`_find_cbbe_base_body` — BodySlide's zeroed 3BA build since `#zeroed-body-refs`; before that, name discovery returned the 3BA body mod's own preset build, not a slider-zero body) rather than the inline preset body | `CBBE2UBE_PHASE1_CONFORM` (copy, default OFF) / `CBBE2UBE_NO_PHASE2_CONFORM` (body-swap, default ON) |
 
 An A/B run against `CBBE2UBE_NO_CONFORM` expecting to move the traced `conform`
 stage measures nothing and reads as "conform does not matter". The body-swap one

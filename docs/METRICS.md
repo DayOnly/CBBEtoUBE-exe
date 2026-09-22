@@ -1955,3 +1955,95 @@ alone.
 * The crotch-band lead's conform test is still an in-game A/B with
   `CBBE2UBE_NO_PHASE2_CONFORM=1`. The converter change removes the wrong-body
   warp keying; whether that moves the lead is unmeasured.
+
+
+# 2026-09-21 — the converter fits against the zeroed bodies
+
+The converter made the harness's wrong pick too: `_find_cbbe_base_body` skipped
+every mod named like a BodySlide output and landed on the 3BA body mod's own
+preset `femalebody`, up to 1.97u off the zeroed body the game loads. With the
+converter's own warp code that moves weight-1 garments ~0.6u further in than
+weight 0 (the zeroed-keyed control predicts 0.000). Downstream passes erase most
+of it; pieces that skip them ship it whole. Measured on the shipped pack: the
+w1-w0 bust shift survives at median -0.008u over 161 flat body-swap stems and
+-0.032u over 68 flat copy stems (the #00-keyed warp predicts -0.60u); a tail of
+22 of 103 flat copy stems and 8 of 162 flat body-swap stems ships it nearly whole,
+-0.26u to -0.92u (capes, cloaks, scarves, tomes, pouches, belts, skirts). The six
+pieces below come from that tail; which pass erases the shift for the rest is not
+measured. The harness entry of the same day
+records the finding; this one records the converter change.
+
+## What changed
+
+**906580e.** The CBBE body the warp morphs FROM, the UBE body it morphs TOWARD
+and the UBE body injected under body-swap garments come from
+`src/zeroed_body.py` first: BodySlide's zeroed builds, as the game loads them.
+An explicit override still wins. If the game's body is not a zeroed build, the
+old discovery by name runs and the log says so once per process ("!! no zeroed
+CBBE body at weight N: ... -- falling back to discovery by name"); a GUI run
+instead starts its Reference bodies window on the game's body, flagged. Every
+converter lookup of the two reference bodies goes through the resolver (weight
+transfer, the collision-proxy warp, the UBE-native scan, the overlay rebake
+too); only the body-mod exclusion set was compared before and after -- the
+UBE-native skip list was not. Off-switch
+`CBBE2UBE_NO_ZEROED_BODY_REFS=1`, also the Settings toggle "Fit against the
+zeroed BodySlide bodies" (Paths / Bodies, advanced). The UBE side resolves to
+the same files as before on this modlist, now by MO2 priority rather than first
+alphabetical match.
+
+**7876496.** Pressing Convert opens a "Reference bodies" window (skipped for a
+dry run and when the zeroed bodies are switched off): one dropdown per body,
+starting on the verified zeroed build and listing every other provider as
+`[zeroed]` / `[NOT zeroed, off by up to N.NNu]` / `[not checked]`; other-family
+bodies, half pairs, unreadable and missing files are listed with a reason, not
+offered. The choice reaches that run's child environment only. The body injected
+under body-swap armour now follows the UBE choice and overrides -- it ignored
+every override before, the Settings "UBE body reference NIF" included. All-mods
+runs skip body mods by the race-body files they ship
+(`auto_convert._body_mod_names`), not by which body the fit uses; 906580e alone
+would have let the 3BA body mod's 10 collision-body NIFs into All-mods runs.
+**Deliberately NOT following the pick:** the preset bake and the physics
+chain-rest lift keep `_find_user_preset_body`, because they need the user's
+preset, which a zeroed body lacks. That lookup walks mod folders alphabetically,
+disabled mods included -- a separate, pre-existing defect, not fixed here.
+
+## Measured
+
+Tail pieces, both weights, through the batch worker -- weight-1 minus weight-0
+along the UBE normal, median / p05:
+
+                     shipped            switch OFF    ZEROED (default)
+    cloak           -0.361 / -0.851     identical     +0.000 / +0.000
+    cape            -0.028 / -0.518     identical     +0.000 / -0.102
+    belt bags       -0.308 / -0.945     identical     +0.000 / +0.000
+    book            -0.471 / -0.814     identical     +0.000 / +0.000
+    front pouch     -0.247 / -0.314     identical     +0.000 / +0.000
+    skirt front     -0.325 / -0.885     identical     +0.000 / -0.000
+
+"identical" = the same numbers AND vertex counts as the shipped pack: the
+harness reproduces production, and the switch restores it exactly.
+
+Golden set, 15 pieces at weight 1, baseline captured at the lane's base:
+
+    REPEAT CONTROL   two captures of unchanged code: 0 arrays differ
+    OFF-SWITCH       CBBE2UBE_NO_ZEROED_BODY_REFS=1: identical 15/15 (1e-4u)
+    BLAST RADIUS     all 15 move -- intended. Garment verts within 4u of the
+                     body (n=117,842): median +0.000u, p05 -0.188, p95 +0.509;
+                     27% move out >0.05u, 17% in; bust median +0.014u
+                     (`layered-legion` +0.495, `hide-collider` +0.222).
+                     Three shapes gain one bone each (a thigh / skirt bone).
+
+**7876496, same-hour controls.** The earlier baselines drifted (see the harness
+entry), so fresh baselines were captured within the hour from 906580e (zeroed on)
+and from 019e0d3 with the off-switch set, and 7876496 was checked against each:
+**15/15 identical both.** Suite 3780 passed / 2 skipped; full mutation gate 202
+caught, 0 missed, 0 not applied; ZBR-a..e and BDP-a..ac CAUGHT.
+
+The rebuild's release markers gained `src.zeroed_body`, `src.body_choice` and
+`_body_mod_names` (since 1.4.2). The version string is still 1.4.1, so
+`release_gate`'s bundle-scan reports the later markers NOT CHECKED and cannot by
+itself show the new code shipped; a direct `_marker_found` probe did, and
+returned ABSENT on the previous build.
+
+**Owed: an acceptance-gate run on a full pack conversion, and the in-game
+verdict.** Nothing here has one.
