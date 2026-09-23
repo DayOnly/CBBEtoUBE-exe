@@ -2,6 +2,37 @@
 
 ## Unreleased
 
+### Fixed — leg cloth on BodySlide-built armour follows the legs, and a layered skirt follows the butt
+
+Armour converted from a BodySlide build ships a morph file for every shape, and
+the converter keeps such shapes on their author's weights. On one armour that
+left skin showing through the pants at the butt and the back of the thigh while
+running, on every preset. Four causes, each fixed:
+
+- The pass that makes leg cloth follow the thigh never reached these shapes, so
+  a pair of trousers kept a band of CBBE pelvis weight at the back of the thigh
+  and the trailing thigh opened mid-stride. It reaches them now (robes and
+  dresses still excepted).
+- The front and rear thigh jiggle bones were withheld from these shapes along
+  with the rear-calf bone they were withheld for. Only the rear-calf bone is
+  withheld now.
+- A pass that lines up touching parts moved a whole two-legged pair of trousers
+  toward a buckle on one leg, putting right-thigh weight on the left leg. A part
+  that spans both legs is no longer moved as a whole.
+- A quilted skirt made of layered cloth carried no butt jiggle at all, so the
+  butt bounced through it on the swinging leg. Layered cloth now takes butt
+  jiggle -- never breast or belly, whose weight on such cloth once ballooned a
+  chest -- on armour with no physics file.
+
+Measured on that armour, skin exposed in a sprint with the butt and thigh bones
+bouncing: 136 points before, 5 after; on the swinging leg's cheek, over the
+zeroed body and six UBE presets, 744 before and 0 after. Confirmed in game. Only weights change,
+never the shape of the armour; across a full pack the skirt change touches the
+two colour variants of that one armour. For troubleshooting,
+`CBBE2UBE_NO_LEG_MOTION_MORPHTRI`, `CBBE2UBE_NO_MORPHTRI_THIGH_GRAFT`,
+`CBBE2UBE_NO_PART_PAIR_BILATERAL_GUARD` and
+`CBBE2UBE_NO_LAYERED_CLOTH_BUTT_JIGGLE` (set to 1) turn the four off.
+
 ### Added — Convert shows the reference bodies it will use, and lets you pick others
 
 Pressing Convert now opens a "Reference bodies" window before anything runs.
