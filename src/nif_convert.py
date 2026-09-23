@@ -7051,6 +7051,20 @@ MATCH_RIGID_LEG_BEND = (
 # Default ON; CBBE2UBE_NO_LEG_MOTION_MATCH=1 off.
 MATCH_LEG_MOTION = (
     not _flag("CBBE2UBE_NO_LEG_MOTION_MATCH", False))
+# #leg-motion-morphtri. The LEG instance above was built FOR the keep-source-skin
+# population, and `#morphtri-no-leg-graft` later gated it off that same
+# population, through the predicate every limb-motion instance shares. The
+# evidence for that gate was a SPINE crease ("raises when leaning forward",
+# Spine1 4.86% -> 0.94%) and a calf-height flap tip on RIGID plates; nothing
+# implicated the leg family. What the gate cost, measured 2026-09-23 on a
+# leather suit whose pants keep the author's skin: a ring at the back of the
+# thigh carries Pelvis 0.17-0.21 (the author's own weights) over skin that is
+# Pelvis 0.00 on BOTH bodies, so a trailing leg's hip extension leaves the cloth
+# behind and the skin shows -- the user's reported clip, seen from the chase
+# camera. The spine and arm instances keep the gate. Default ON;
+# CBBE2UBE_NO_LEG_MOTION_MORPHTRI=1 restores the gated behaviour.
+LEG_MOTION_ON_MORPHTRI = (
+    not _flag("CBBE2UBE_NO_LEG_MOTION_MORPHTRI", False))
 # Fraction of the body-vs-garment leg-share gap to close (1.0 = full match).
 _LEG_MOTION_STRENGTH = _knob("CBBE2UBE_LEG_MOTION_STRENGTH", 1.0)
 # Only match verts within this distance of the body: beyond it the cloth is drape, not
@@ -8669,6 +8683,17 @@ def _chest_band(n, d, idx_k, body_w, is_chain) -> list:
 MORPHTRI_NO_LEG_GRAFT = (
     not _flag("CBBE2UBE_MORPHTRI_LEG_GRAFT", False))
 
+# #morphtri-thigh-graft. The gate above names three detail bones and its evidence
+# names ONE: `R/L RearCalf 0.00% -> ~1.26%` on a flap tip at CALF height. The two
+# THIGH detail bones (FrontThigh / RearThigh, anchored to the thigh) went with it,
+# and they are the ones CBPC bounces under trousers. Measured 2026-09-23 on a
+# leather suit whose trousers keep the author's skin: a FORWARD thigh bounce
+# pushed the front of the lower thigh through the cloth (pose harness, crouch
+# 47 -> 117 newly exposed, knee bend 9 -> 53). So a morph-TRI shape still skips
+# RearCalf and takes the thigh pair. Off with CBBE2UBE_NO_MORPHTRI_THIGH_GRAFT=1.
+MORPHTRI_THIGH_GRAFT = (
+    not _flag("CBBE2UBE_NO_MORPHTRI_THIGH_GRAFT", False))
+
 # #morphtri-keep-jiggle. The gate above is RIGHT for the LEG DETAIL bones and
 # WRONG for the jiggle bones; the two were only ever coupled by sharing a
 # predicate.
@@ -8842,6 +8867,23 @@ PART_PAIR_ALIGN = (
 _PART_PAIR_NEAR = _knob("CBBE2UBE_PART_PAIR_NEAR", 1.0)
 # Headroom over the author before a pair is pulled back together.
 _PART_PAIR_MARGIN = _knob("CBBE2UBE_PART_PAIR_MARGIN", 0.10)
+# #part-pair-bilateral. A part whose author rows put some verts on the LEFT limbs
+# and others on the RIGHT (trousers, a romper, a cuirass with both sleeves) has no
+# meaningful MEAN row: it averages two limbs that swing in opposite directions.
+# Shifting it bodily toward a pair mean adds ONE offset to both legs. Measured
+# 2026-09-23 on a leather suit, once `#leg-motion-morphtri` had moved the
+# trousers' rows: a thigh-strap buckle paired with the trousers put R Thigh 0.018
+# on EVERY left-leg vertex, and a sprint stride then dragged the forward knee's
+# cloth back through the skin. So a two-sided part is never shifted; a one-sided
+# partner is judged against, and moved toward, the two-sided part's rows NEAR it,
+# and two two-sided parts are not paired. Off with
+# CBBE2UBE_NO_PART_PAIR_BILATERAL_GUARD=1.
+PART_PAIR_BILATERAL_GUARD = (
+    not _flag("CBBE2UBE_NO_PART_PAIR_BILATERAL_GUARD", False))
+# Share of a part's verts that must sit mostly on EACH side for it to be two-sided.
+_PART_PAIR_BILATERAL_FRAC = _knob("CBBE2UBE_PART_PAIR_BILATERAL_FRAC", 0.10)
+# Radius around the one-sided partner that selects the two-sided part's local rows.
+_PART_PAIR_LOCAL = _knob("CBBE2UBE_PART_PAIR_LOCAL", 2.0)
 # #author-deviation-skin -- a part deforms INTERNALLY the way its author made it
 # deform. Off with CBBE2UBE_NO_AUTHOR_DEVIATION_SKIN=1.
 #

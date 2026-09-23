@@ -1253,6 +1253,20 @@ def _covered_skin_map(Vg, Vb, Nb, band, reach):
     return cover, clearance
 
 
+def _morphtri_gated_detail_bones() -> frozenset:
+    """The leg DETAIL bones a morph-TRI shape must not be grafted.
+
+    `#morphtri-no-leg-graft` gated all three detail bones per leg, on evidence
+    that named one: RearCalf landing on a flap tip at calf height. With
+    `#morphtri-thigh-graft` on, only the bones anchored to the CALF stay gated;
+    FrontThigh / RearThigh anchor to the thigh and are grafted like any other
+    shape's. Off, every detail bone is gated as before."""
+    if _nc().MORPHTRI_THIGH_GRAFT:
+        return frozenset(b for leg in _nc()._LEG_DEFORM_BONES
+                         for b, anc in leg["detail"] if anc == leg["calf"])
+    return frozenset(_nc()._LEG_DETAIL_BONE_NAMES)
+
+
 def _match_rigid_leg_bend_to_body(dst_path, biped_slots: int = 0,
                                   src_nif_path=None) -> int:
     """Conform a RIGID plate's deformation to the UBE body so it deforms/bounces WITH the
@@ -1344,7 +1358,9 @@ def _match_rigid_leg_bend_to_body(dst_path, biped_slots: int = 0,
                   | (set(_nc()._CHEST_JIGGLE_BONES) if _do_chest else set()))
     # The subset a morph-TRI shape must NOT receive -- see #morphtri-keep-jiggle
     # at the top of the loop. Everything else this pass grafts is still allowed.
-    _LEG_DETAIL_BONE_NAME_SET = frozenset(_nc()._LEG_DETAIL_BONE_NAMES)
+    # #morphtri-thigh-graft: only the CALF detail bone (RearCalf, the flap-tip
+    # defect) stays gated; the thigh pair anchors to the thigh and is let through.
+    _LEG_DETAIL_BONE_NAME_SET = _morphtri_gated_detail_bones()
     # Lazy: with the gate OFF this pass must do NO extra work at all.
     _has_xml = _nc()._piece_has_hdt_xml(dst_path, nif=nf) if _nc().DRAPE_SKIP_XML_GATED else None
     _skip_keys = _nc()._conform_skip_keys(_has_xml)
@@ -1799,6 +1815,30 @@ def _match_rigid_leg_bend_to_body(dst_path, biped_slots: int = 0,
             return 0
     return total
 
+def _limb_morph_tri_skip(dst_path, nf, src_nif_path, ignore_morph_tri: bool,
+                         keep_draping_skip: bool) -> set:
+    """Shapes a limb-motion instance must leave on their source skin because the
+    source ships a BodySlide morph TRI naming them (#morphtri-no-leg-graft).
+
+    An instance that ignores that gate gets an empty set -- unless it keeps the
+    DRAPING exemption (#leg-motion-morphtri): then the TRI-owning shapes whose
+    names the leg passes skip (robe / cloak / cape / dress / gown / sarong /
+    loincloth on a piece with no HDT XML, `_conform_skip_keys`) stay skipped.
+    The user kept that exemption on 2026-09-19, and before this instance ignored
+    the TRI gate it never reached them."""
+    if not (src_nif_path and _nc().MORPHTRI_NO_LEG_GRAFT):
+        return set()
+    if ignore_morph_tri and not keep_draping_skip:
+        return set()
+    names = _source_morph_tri_shape_names(Path(src_nif_path))
+    if not ignore_morph_tri:
+        return names
+    keys = _nc()._conform_skip_keys(
+        _nc()._piece_has_hdt_xml(dst_path, nif=nf)
+        if _nc().DRAPE_SKIP_XML_GATED else None)
+    return {n for n in names if any(k in (n or "").lower() for k in keys)}
+
+
 def _match_leg_motion_to_body(dst_path, biped_slots: int = 0, src_nif_path=None) -> int:
     """LEG instance of the limb-motion match -- see _match_limb_motion_to_body.
 
@@ -1816,7 +1856,11 @@ def _match_leg_motion_to_body(dst_path, biped_slots: int = 0, src_nif_path=None)
         # converted pieces: 39 leg-bearing shapes are gated out of this pass
         # entirely, and every one of them has rows that survive the per-row test,
         # so the shape gate was costing real work rather than protecting a chain.
-        smp_row_gate=True)
+        smp_row_gate=True,
+        # #leg-motion-morphtri: the population this instance was built for --
+        # minus the DRAPING-named shapes the leg passes already skip by name.
+        ignore_morph_tri=_nc().LEG_MOTION_ON_MORPHTRI,
+        keep_draping_skip=True)
 
 def _match_arm_motion_to_body(dst_path, biped_slots: int = 0, src_nif_path=None) -> int:
     """ARM instance of the limb-motion match  (#armhole-arm-follow).
@@ -1928,6 +1972,7 @@ def _match_limb_motion_to_body(dst_path, biped_slots: int = 0, *,
                                full_vector: bool = False,
                                shoulder_z: float = 0.0,
                                shoulder_max_dist: float = 0.0,
+                               keep_draping_skip: bool = False,
                                src_nif_path=None) -> int:
     """Raise a garment's LIMB-BONE share toward the body's so it travels WITH the
     limb instead of being left behind. Returns the number of verts matched.
@@ -1983,8 +2028,11 @@ def _match_limb_motion_to_body(dst_path, biped_slots: int = 0, *,
         flank mask can reach it.
       * `ignore_morph_tri` opts an instance out of the morph-TRI skip. It exists
         because for some defects the TRI-owning shapes ARE the population -- gated,
-        the pass is a measured no-op -- and it is the risk a default-OFF instance
-        carries. Never set it on an instance that ships ON.
+        the pass is a measured no-op. The gate's own evidence was a spine crease
+        and a calf-height flap tip on RIGID plates, so an instance that ships ON
+        with it set needs its own in-game verdict on a TRI-owning piece. The
+        LEG instance (`#leg-motion-morphtri`) takes it from
+        `LEG_MOTION_ON_MORPHTRI`.
       * skips colliders / soft-body / HDT-SMP-rigged shapes, per the standing rule
         that every skin pass leaves authored physics geometry alone.
     """
@@ -2005,9 +2053,8 @@ def _match_limb_motion_to_body(dst_path, biped_slots: int = 0, *,
     # that "raises when leaning forward" -- spine rotation -- while the bind pose
     # measured clean. Measured on a heavy cuirass rear band: Spine1 4.86% -> 0.94%.
     # Same rule as the reskin and the graft gates. #morphtri-no-leg-graft
-    morph_tri_names = (_source_morph_tri_shape_names(Path(src_nif_path))
-                       if (src_nif_path and _nc().MORPHTRI_NO_LEG_GRAFT
-                           and not ignore_morph_tri) else set())
+    morph_tri_names = _limb_morph_tri_skip(dst_path, nf, src_nif_path,
+                                           ignore_morph_tri, keep_draping_skip)
     # Does a physics XML exist for this piece at all? Drives the inert-chain
     # allowance below. Stem is per-armor (weight suffix stripped), matching where
     # both the generator and the source-XML copy write.
@@ -2754,6 +2801,48 @@ def _match_limb_motion_to_body(dst_path, biped_slots: int = 0, *,
             return 0
     return total
 
+def _bone_side(name: str) -> "str | None":
+    """'L' or 'R' for a sided bone -- a standalone L / R token, as in
+    `NPC L Thigh [LThg]` or `L Breast01` -- and None for a midline bone
+    (`NPC Pelvis [Pelv]`, and `NPC LB Anus2`, whose token is LB). #part-pair-bilateral"""
+    toks = (name or "").replace("[", " ").split()
+    if "L" in toks:
+        return "L"
+    if "R" in toks:
+        return "R"
+    return None
+
+
+def _part_is_bilateral(rows, idx, frac: float, sample: int = 600) -> bool:
+    """Does this part sit on BOTH sides of the body?
+
+    True when at least `frac` of its verts put more than half their weight on
+    LEFT-sided bones AND at least `frac` put more than half on RIGHT-sided ones.
+    Pass the AUTHOR's rows: the answer is a property of the garment, and no pass
+    of ours should be able to change it. Large parts are sampled evenly.
+    #part-pair-bilateral"""
+    idx = np.asarray(idx)
+    if not len(idx):
+        return False
+    if len(idx) > sample:
+        idx = idx[np.linspace(0, len(idx) - 1, sample).astype(int)]
+    n_l = n_r = 0
+    for vi in idx:
+        left = right = 0.0
+        for b, w in rows[int(vi)].items():
+            sd = _bone_side(b)
+            if sd == "L":
+                left += w
+            elif sd == "R":
+                right += w
+        if left > 0.5:
+            n_l += 1
+        elif right > 0.5:
+            n_r += 1
+    need = max(1, int(np.ceil(frac * len(idx))))
+    return n_l >= need and n_r >= need
+
+
 def _match_coincident_cross_shape_skin(dst_path, src_nif_path=None) -> int:
     """Give cross-shape coincident verts ONE weight row. Returns verts unified.
 
@@ -3010,6 +3099,7 @@ def _match_coincident_cross_shape_skin(dst_path, src_nif_path=None) -> int:
     changed: dict = _dd(set)
     if _nc().PART_PAIR_ALIGN and len(_all_parts) > 1:
         try:
+            _bil_guard = _nc().PART_PAIR_BILATERAL_GUARD
             _pmean = []
             for k, idx in _all_parts:
                 e = ents[k]
@@ -3020,29 +3110,69 @@ def _match_coincident_cross_shape_skin(dst_path, src_nif_path=None) -> int:
                         mo[b] += w / len(idx)
                     for b, w in e["src"][int(vi)].items():
                         ma[b] += w / len(idx)
+                bil = (_bil_guard and _part_is_bilateral(
+                    e["src"], idx, _nc()._PART_PAIR_BILATERAL_FRAC))
                 _pmean.append((k, idx, dict(mo), dict(ma),
-                               cKDTree(e["wv"][idx])))
+                               cKDTree(e["wv"][idx]), bil))
             for _i in range(len(_pmean)):
-                ki, ii, moi, mai, ti = _pmean[_i]
+                ki, ii, moi, mai, ti, bi = _pmean[_i]
                 for _j in range(_i + 1, len(_pmean)):
-                    kj, ij, moj, maj, _tj = _pmean[_j]
+                    kj, ij, moj, maj, tj, bj = _pmean[_j]
                     # adjacency, cheapest test first
                     d, _q = ti.query(ents[kj]["wv"][ij])
                     if d.min() > _nc()._PART_PAIR_NEAR:
                         continue
-                    lo = sum(abs(moi.get(b, 0.0) - moj.get(b, 0.0))
-                             for b in set(moi) | set(moj))
-                    la = sum(abs(mai.get(b, 0.0) - maj.get(b, 0.0))
-                             for b in set(mai) | set(maj))
-                    if lo <= la + _nc()._PART_PAIR_MARGIN or lo <= 1e-6:
-                        continue
-                    s = 0.5 * (1.0 - (la + _nc()._PART_PAIR_MARGIN) / lo)
-                    if s <= 0:
-                        continue
-                    for (kk, idxk, mk) in ((ki, ii, moi), (kj, ij, moj)):
-                        other = moj if kk is ki and idxk is ii else moi
-                        M = {b: 0.5 * (mk.get(b, 0.0) + other.get(b, 0.0))
-                             for b in set(mk) | set(other)}
+                    if bi and bj:
+                        continue    # #part-pair-bilateral: neither has a mean to move
+                    if bi or bj:
+                        # #part-pair-bilateral. The two-sided part never moves.
+                        # Its one-sided partner is judged against -- and moved
+                        # toward -- the two-sided part's rows NEAR it, ours and
+                        # the author's over the same verts. Moving one part the
+                        # whole step closes the same share of the excess as two
+                        # parts each moving half of it.
+                        (kb, ib), (ks, iks, mos, mas, ts) = (
+                            ((ki, ii), (kj, ij, moj, maj, tj)) if bi
+                            else ((kj, ij), (ki, ii, moi, mai, ti)))
+                        dl, _ql = ts.query(ents[kb]["wv"][ib])
+                        loc = np.asarray(ib)[dl <= _nc()._PART_PAIR_LOCAL]
+                        if not len(loc):
+                            continue
+                        eb = ents[kb]
+                        mob: dict = _dd(float)
+                        mab: dict = _dd(float)
+                        for vi in loc:
+                            for b, w in eb["rows"][int(vi)].items():
+                                mob[b] += w / len(loc)
+                            for b, w in eb["src"][int(vi)].items():
+                                mab[b] += w / len(loc)
+                        lo = sum(abs(mos.get(b, 0.0) - mob.get(b, 0.0))
+                                 for b in set(mos) | set(mob))
+                        la = sum(abs(mas.get(b, 0.0) - mab.get(b, 0.0))
+                                 for b in set(mas) | set(mab))
+                        if lo <= la + _nc()._PART_PAIR_MARGIN or lo <= 1e-6:
+                            continue
+                        s = 0.5 * (1.0 - (la + _nc()._PART_PAIR_MARGIN) / lo)
+                        if s <= 0:
+                            continue
+                        _moves = ((ks, iks, mos, dict(mob)),)
+                    else:
+                        lo = sum(abs(moi.get(b, 0.0) - moj.get(b, 0.0))
+                                 for b in set(moi) | set(moj))
+                        la = sum(abs(mai.get(b, 0.0) - maj.get(b, 0.0))
+                                 for b in set(mai) | set(maj))
+                        if lo <= la + _nc()._PART_PAIR_MARGIN or lo <= 1e-6:
+                            continue
+                        s = 0.5 * (1.0 - (la + _nc()._PART_PAIR_MARGIN) / lo)
+                        if s <= 0:
+                            continue
+                        _moves = tuple(
+                            (kk, idxk, mk,
+                             {b: 0.5 * (mk.get(b, 0.0) + other.get(b, 0.0))
+                              for b in set(mk) | set(other)})
+                            for (kk, idxk, mk, other) in (
+                                (ki, ii, moi, moj), (kj, ij, moj, moi)))
+                    for (kk, idxk, mk, M) in _moves:
                         e = ents[kk]
                         pal = e["pal"]
                         for vi in idxk:
