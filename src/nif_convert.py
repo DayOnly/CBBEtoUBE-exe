@@ -6963,6 +6963,32 @@ TORSO_JIGGLE_TRANSFER = (
 # 1.00 -- so any floor in 0.4-0.7 separates them; 0.5 takes the middle with margin.
 _TORSO_JIGGLE_FIT_FRAC = _knob("CBBE2UBE_TORSO_JIGGLE_FIT", 0.5)
 
+# #layered-cloth-butt-follow. `#layered-cloth-skin` keeps a multi-layer cloth
+# stack (Cuirass_A/_B/_C) off every body-follow graft, and the jiggle graft here
+# is one of them. The rule has two recorded reasons and neither is the BUTT:
+#   * the equip CTD it was written for (2026-07-09) was the FIRST-PERSON physics
+#     XML driving the third-person shapes by name -- fixed where it came from, by
+#     the first-person SMP gate, not by the skin strip;
+#   * the BALLOON it still prevents (2026-07-10) is BREAST weight on the cloth:
+#     the chest inflated in game at 0.66 and again at 0.15.
+# What the blanket rule costs is the butt. REPORTED IN GAME 2026-09-23 on a
+# layered leather cuirass: skin through the quilted skirt on the swinging leg's
+# cheek, mid-stride, on every preset. The trousers under the skirt DO follow the
+# butt -- this pass grafts them -- the skirt does not, and the body bounces
+# through it. Measured on that piece (zeroed UBE body, weight 1, the swing leg
+# flexed 40/45/60/75 degrees, butt and thigh bones 3u back): the cheek opens
+# 13/15/25/39 verts; with the skirt layers given butt jiggle by this pass's own
+# formula, 0 in all four. Matching their pelvis/thigh split instead leaves
+# 7/10/22/35, so the split is not the lever.
+# So layered cloth is let through for the BUTT region only -- breast and belly
+# stay stripped -- and only on a piece with no physics XML, which every SMP
+# interaction behind the original rule needed. Every other gate of the pass
+# still applies to it unchanged. CBBE2UBE_NO_LAYERED_CLOTH_BUTT_JIGGLE=1
+# restores the blanket skip.
+LAYERED_CLOTH_BUTT_JIGGLE = (
+    not _flag("CBBE2UBE_NO_LAYERED_CLOTH_BUTT_JIGGLE", False))
+_LAYERED_CLOTH_JIGGLE_REGIONS = ("butt",)
+
 # #bust-collider-split -- a bust garment that is ITS OWN per-triangle collider can
 # never carry jiggle: grafting onto it closes a feedback loop (cloth moves collider,
 # collider pushes cloth) that tore the breasts off in game and forced a revert. The
@@ -10880,6 +10906,8 @@ def _shape_has_hdt_smp_rigging(src_shape, body_bone_names: set[str]) -> bool:
 # bone after the fact, so prevention is the only reliable path). Detect structurally:
 # 2+ sibling shapes sharing a base stem + a short layer suffix. Off with
 # CBBE2UBE_NO_LAYERED_CLOTH_SKIN. #layered-cloth-skin
+# ONE carve-out: the jiggle graft may give such a shape BUTT weight, on a piece with
+# no physics XML -- see LAYERED_CLOTH_BUTT_JIGGLE (#layered-cloth-butt-follow).
 _LAYERED_CLOTH_SKIN = (
     not _flag("CBBE2UBE_NO_LAYERED_CLOTH_SKIN", False))
 _LAYER_SUFFIX_RE = re.compile(r"^(.*?)[_ ]([A-Za-z]|\d{1,2})$")

@@ -4262,6 +4262,38 @@ def _sync_weight_partner_jiggle_loaded(path0, path1, nf) -> int:
                           f"synced {total} vert(s) across the weight pair")
     return total
 
+def _layered_cloth_jiggle_regions(dst_path, nf, layered_cloth_names) -> frozenset:
+    """The jiggle REGIONS `_transfer_body_jiggle_to_fitted` may still graft onto
+    this piece's layered-cloth shapes; empty = skip them outright, as before.
+
+    #layered-cloth-butt-follow: the butt only, and only on a piece with no
+    physics XML -- every SMP interaction behind `#layered-cloth-skin` needed one.
+    See LAYERED_CLOTH_BUTT_JIGGLE for the measurements. The XML is read only when
+    the piece has layered cloth and the flag is on."""
+    if not (layered_cloth_names and _nc().LAYERED_CLOTH_BUTT_JIGGLE):
+        return frozenset()
+    if _nc()._piece_has_hdt_xml(dst_path, nif=nf):
+        return frozenset()
+    return frozenset(_nc()._LAYERED_CLOTH_JIGGLE_REGIONS)
+
+def _jiggle_regions_closed(bw, open_regions=None) -> set:
+    """The jiggle regions the graft must NOT touch on a shape with weights `bw`.
+
+    A region the shape already carries on `_CONFORM_MIN_JIGGLE_VERTS` or more
+    verts (#region-jiggle-gate) and, for a layered-cloth shape (`open_regions`
+    given), every region outside `open_regions` (#layered-cloth-butt-follow)."""
+    have = {kw: 0 for kw in _nc().PHYSICS_JIGGLE_SCALE_KEYWORDS}
+    for b, pairs in bw.items():
+        kw = _jiggle_region_of(b)
+        if kw is not None:
+            have[kw] += sum(1 for _vi, w in pairs if float(w) > 0.1)
+    closed = {kw for kw, c in have.items()
+              if c >= _nc()._CONFORM_MIN_JIGGLE_VERTS}
+    if open_regions is not None:
+        closed |= {kw for kw in _nc().PHYSICS_JIGGLE_SCALE_KEYWORDS
+                   if kw not in open_regions}
+    return closed
+
 def _transfer_body_jiggle_to_fitted(dst_path, biped_slots: int = 0,
                                     src_nif_path=None) -> int:
     """Graft the UBE body's jiggle (butt/belly/breast) weight onto a fitted
@@ -4278,7 +4310,9 @@ def _transfer_body_jiggle_to_fitted(dst_path, biped_slots: int = 0,
     identity global-to-skin (the graft is skipped otherwise, see _body_jiggle_ref).
     Leg-dominant garments plus fitted TORSO garments (corset / bra / cuirass);
     the torso path (default ON since 1.2, in-game validated via the bust collider
-    split) is opt-out behind CBBE2UBE_TORSO_JIGGLE=0.  #torso-jiggle-graft"""
+    split) is opt-out behind CBBE2UBE_TORSO_JIGGLE=0.  #torso-jiggle-graft
+    Layered cloth takes the BUTT region only, and only on a piece with no physics
+    XML (#layered-cloth-butt-follow); every other gate applies to it unchanged."""
     if not _nc().TRANSFER_BODY_JIGGLE:
         return 0
     if biped_slots & (_nc().BIPED_SLOT33_BIT | _nc().BIPED_SLOT37_BIT):
@@ -4318,6 +4352,9 @@ def _transfer_body_jiggle_to_fitted(dst_path, biped_slots: int = 0,
                        if (src_nif_path and _nc().MORPHTRI_NO_LEG_GRAFT
                            and not _nc().MORPHTRI_KEEP_JIGGLE) else set())
     layered_cloth_names = _layered_cloth_shape_names(nf.shapes)  # keep source skin
+    # #layered-cloth-butt-follow: what a layered-cloth shape may still take here --
+    # the butt, on a piece with no physics XML. Empty keeps the blanket skip.
+    layered_regions = _layered_cloth_jiggle_regions(dst_path, nf, layered_cloth_names)
     # Lazy: with the gate OFF this pass must do NO extra work at all.
     _skip_keys = _nc()._conform_skip_keys(
         _nc()._piece_has_hdt_xml(dst_path, nif=nf) if _nc().DRAPE_SKIP_XML_GATED else None)
@@ -4325,7 +4362,8 @@ def _transfer_body_jiggle_to_fitted(dst_path, biped_slots: int = 0,
     dirty = False
     for s in nf.shapes:
         nm = (s.name or "").lower()
-        if (s.name in softbody_names or s.name in layered_cloth_names
+        layered = s.name in layered_cloth_names
+        if (s.name in softbody_names or (layered and not layered_regions)
                 or s.name in morph_tri_names
                 or any(k in nm for k in _skip_keys)):
             continue
@@ -4383,14 +4421,10 @@ def _transfer_body_jiggle_to_fitted(dst_path, biped_slots: int = 0,
         #
         # `already` is then used to filter the per-vert graft below, so a region the
         # shape ALREADY carries is left untouched -- this must not re-graft over
-        # chest-follow's measured ratio.
-        have = {kw: 0 for kw in _nc().PHYSICS_JIGGLE_SCALE_KEYWORDS}
-        for b, pairs in bw.items():
-            kw = _jiggle_region_of(b)
-            if kw is not None:
-                have[kw] += sum(1 for _vi, w in pairs if float(w) > 0.1)
-        already = {kw for kw, c in have.items()
-                   if c >= _nc()._CONFORM_MIN_JIGGLE_VERTS}
+        # chest-follow's measured ratio. On a layered-cloth shape every region
+        # outside `layered_regions` counts as closed too, which is what keeps
+        # breast and belly off the cloth (#layered-cloth-butt-follow).
+        already = _jiggle_regions_closed(bw, layered_regions if layered else None)
         if len(already) >= len(_nc().PHYSICS_JIGGLE_SCALE_KEYWORDS):
             continue        # every region present -> genuinely the conform's job
         try:

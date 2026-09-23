@@ -621,7 +621,8 @@ def _layered_cloth_shape_names(shapes) -> "set[str]":
     stem and differ only by a short layer suffix (Cuirass_A/_B/_C, Robe_01/_02). Such
     authored cloth keeps its SOURCE skin -- every body-follow graft pass skips it, so the
     body's HDT-SMP jiggle bones aren't grafted on and the shape doesn't CTD on equip.
-    #layered-cloth-skin"""
+    One carve-out: the jiggle graft still gives it BUTT weight on a piece with no
+    physics XML (#layered-cloth-butt-follow).  #layered-cloth-skin"""
     if not _nc()._LAYERED_CLOTH_SKIN:
         return set()
     groups: "dict[str, list[str]]" = {}
