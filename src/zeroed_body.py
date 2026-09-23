@@ -40,6 +40,7 @@ Weight 0 must come from the same folder as weight 1 (the sibling rule of
 """
 from __future__ import annotations
 
+import functools
 import os
 import re
 import sys
@@ -188,12 +189,9 @@ def _slider_sets(vfs: _Vfs, out_path: str, out_file: str) -> "list[ET.Element]":
     return found
 
 
-def _zeroed_build(vfs: _Vfs, ss: ET.Element, weight: str) -> "tuple[str, np.ndarray]":
-    """(body shape name, zeroed vertices) for one slider set at one weight.
-
-    The body shape is named as BodySlide names it in the built file: the base
-    NIF's shape NAME (the <Shape> text). Its `target` attribute is only the key
-    slider data is filed under."""
+def _set_base(vfs: _Vfs, ss: ET.Element) -> "tuple[Path, dict]":
+    """(ShapeData base NIF, {shape name: (target, shared data folders)}) for one
+    slider set that builds both weights."""
     set_name = ss.get("name", "?")
     folder = (ss.findtext("DataFolder") or "").strip()
     src = (ss.findtext("SourceFile") or "").strip()
@@ -204,7 +202,6 @@ def _zeroed_build(vfs: _Vfs, ss: ET.Element, weight: str) -> "tuple[str, np.ndar
     if base is None:
         raise ZeroedBodyError(
             f"slider set {set_name!r}: ShapeData base {folder}/{src} not found")
-    base = base[0]
     # <Shape target="T" DataFolder="A;B">NAME</Shape>
     shapes = {}
     for e in ss.findall("Shape"):
@@ -212,57 +209,109 @@ def _zeroed_build(vfs: _Vfs, ss: ET.Element, weight: str) -> "tuple[str, np.ndar
         shapes[name] = (e.get("target", name),
                         [f.strip() for f in (e.get("DataFolder") or "").split(";")
                          if f.strip()])
+    return base[0], shapes
+
+
+def _apply_defaults(vfs: _Vfs, ss: ET.Element, weight: str,
+                    verts: "dict[str, np.ndarray]", shapes: dict,
+                    osds: "dict[Path, dict]", garment: bool = False
+                    ) -> "dict[str, set]":
+    """Add every slider's default at `weight` to `verts` ({shape name: vertices},
+    edited IN PLACE), the way BodySlide builds with zeroed sliders. Returns the
+    vertices a default-on zap slider deletes, per shape.
+
+    The BODY is strict: a default-on zap slider, or a morph indexing past its
+    base shape, makes a vertex-for-vertex check meaningless, so both raise. A
+    GARMENT (`garment=True`) is built the way BodySlide builds it: the zap's
+    vertices are returned for deletion, and an index past the base shape is
+    skipped. Measured 2026-09-22 on a real armour build: it matched the ShapeData
+    to 0.000u on every shape only with 162 such indices of one morph skipped."""
+    set_name = ss.get("name", "?")
+    folder = (ss.findtext("DataFolder") or "").strip()
+    by_target = {shapes[n][0]: n for n in verts}
+    zapped: "dict[str, set]" = {}
+
+    def morph(sl, d):
+        ref = (d.text or "").strip().replace("\\", "/")
+        if ".osd/" not in ref.lower():
+            raise ZeroedBodyError(f"slider set {set_name!r}: default slider "
+                                  f"{sl.get('name')!r} uses unsupported data {ref!r}")
+        fname, mname = ref.rsplit("/", 1)
+        # BodySlide: local data lives in the set's own folder; shared data
+        # in the shape's DataFolder(s), else the set's folder.
+        local = d.get("local", "false").lower() == "true"
+        shape_folders = shapes[by_target[d.get("target")]][1]
+        folders = [folder] if local else (shape_folders or [folder])
+        hit = next((h for h in (vfs.winner(f"{_SHAPEDATA}/{f}/{fname}")
+                                for f in folders) if h is not None), None)
+        if hit is None:
+            raise ZeroedBodyError(f"slider set {set_name!r}: {fname} not "
+                                  f"found in {folders}")
+        if hit[0] not in osds:
+            osds[hit[0]] = OsdFile.load(hit[0]).by_name()
+        m = osds[hit[0]].get(mname)
+        if m is None:
+            raise ZeroedBodyError(f"slider set {set_name!r}: morph {mname!r} "
+                                  f"missing from {fname}")
+        name = by_target[d.get("target")]
+        idx = m.idx.astype(np.int64)
+        delta = m.delta.astype(np.float64)
+        if len(idx) and int(idx.max()) >= len(verts[name]):
+            if not garment:
+                raise ZeroedBodyError(f"slider set {set_name!r}: morph {mname!r} "
+                                      f"indexes past the base shape")
+            keep = idx < len(verts[name])       # BodySlide skips them
+            idx, delta = idx[keep], delta[keep]
+        return name, idx, delta
+
+    key = "small" if weight == "_0" else "big"
+    for sl in ss.findall("Slider"):
+        raw = float(sl.get(key, "0") or 0)
+        if sl.get("zap", "false").lower() == "true":
+            if raw == 0.0:
+                continue
+            if not garment:         # a zap deletes vertices: nothing to compare
+                raise ZeroedBodyError(f"slider set {set_name!r}: zap slider "
+                                      f"{sl.get('name')!r} is on by default, so "
+                                      f"its build cannot be checked vertex by vertex")
+            if raw != 100.0 or sl.get("invert", "false").lower() == "true":
+                raise ZeroedBodyError(f"slider set {set_name!r}: zap slider "
+                                      f"{sl.get('name')!r} is only partly on or "
+                                      f"inverted by default")
+            for d in sl.findall("Data"):
+                if d.get("target") in by_target:
+                    name, idx, _ = morph(sl, d)
+                    zapped.setdefault(name, set()).update(idx.tolist())
+            continue
+        val = 100.0 - raw if sl.get("invert", "false").lower() == "true" else raw
+        if val == 0.0 or sl.get("uv", "false").lower() == "true":
+            continue                      # no geometry at this weight
+        for d in sl.findall("Data"):
+            if d.get("target") not in by_target:
+                continue
+            name, idx, delta = morph(sl, d)
+            np.add.at(verts[name], idx, (val / 100.0) * delta)
+    return zapped
+
+
+def _zeroed_build(vfs: _Vfs, ss: ET.Element, weight: str) -> "tuple[str, np.ndarray]":
+    """(body shape name, zeroed vertices) for one slider set at one weight.
+
+    The body shape is named as BodySlide names it in the built file: the base
+    NIF's shape NAME (the <Shape> text). Its `target` attribute is only the key
+    slider data is filed under."""
+    set_name = ss.get("name", "?")
+    base, shapes = _set_base(vfs, ss)
     sizes = _shape_sizes(base)
     present = [n for n in shapes if n in sizes]
     if not present:
         raise ZeroedBodyError(f"slider set {set_name!r}: none of its shapes "
                               f"are in {base.name}")
     name = max(present, key=lambda n: sizes[n])      # the body is the largest
-    target, shape_folders = shapes[name]
     # A COPY: the defaults are added in place below, and a reader that hands
     # back a cached array would otherwise carry one weight's build into the next.
     verts = np.array(_shape_verts(base, name), dtype=np.float64)
-    key = "small" if weight == "_0" else "big"
-    osds: "dict[Path, dict]" = {}
-    for sl in ss.findall("Slider"):
-        raw = float(sl.get(key, "0") or 0)
-        if sl.get("zap", "false").lower() == "true":
-            if raw != 0.0:          # a zap deletes vertices: nothing to compare
-                raise ZeroedBodyError(f"slider set {set_name!r}: zap slider "
-                                      f"{sl.get('name')!r} is on by default, so "
-                                      f"its build cannot be checked vertex by vertex")
-            continue
-        val = 100.0 - raw if sl.get("invert", "false").lower() == "true" else raw
-        if val == 0.0 or sl.get("uv", "false").lower() == "true":
-            continue                      # no geometry at this weight
-        for d in sl.findall("Data"):
-            if d.get("target") != target:
-                continue
-            ref = (d.text or "").strip().replace("\\", "/")
-            if ".osd/" not in ref.lower():
-                raise ZeroedBodyError(f"slider set {set_name!r}: default slider "
-                                      f"{sl.get('name')!r} uses unsupported data {ref!r}")
-            fname, morph = ref.rsplit("/", 1)
-            # BodySlide: local data lives in the set's own folder; shared data
-            # in the shape's DataFolder(s), else the set's folder.
-            local = d.get("local", "false").lower() == "true"
-            folders = [folder] if local else (shape_folders or [folder])
-            hit = next((h for h in (vfs.winner(f"{_SHAPEDATA}/{f}/{fname}")
-                                    for f in folders) if h is not None), None)
-            if hit is None:
-                raise ZeroedBodyError(f"slider set {set_name!r}: {fname} not "
-                                      f"found in {folders}")
-            if hit[0] not in osds:
-                osds[hit[0]] = OsdFile.load(hit[0]).by_name()
-            m = osds[hit[0]].get(morph)
-            if m is None:
-                raise ZeroedBodyError(f"slider set {set_name!r}: morph {morph!r} "
-                                      f"missing from {fname}")
-            if len(m.idx) and int(m.idx.max()) >= len(verts):
-                raise ZeroedBodyError(f"slider set {set_name!r}: morph {morph!r} "
-                                      f"indexes past the base shape")
-            np.add.at(verts, m.idx.astype(np.int64),
-                      (val / 100.0) * m.delta.astype(np.float64))
+    _apply_defaults(vfs, ss, weight, {name: verts}, shapes, {})
     return name, verts
 
 
@@ -400,6 +449,150 @@ def zeroed_body(kind: str, weight: str = "_1", *, mods_root=None, order=None,
     raise ZeroedBodyError(
         f"{where} could not be checked against any {label} slider set that "
         f"builds it: " + "; ".join(unusable))
+
+
+# --- Garments: is a BodySlide output the zeroed build of its armour? --------
+#
+# #zeroed-output-source. The fit starts FROM the zeroed CBBE body, so the armour
+# it converts has to sit on that body. A mod's own loose meshes need not:
+# measured 2026-09-22, one armour mod shipped meshes made for the vanilla body,
+# 2.6u further out at the bust and 1.0u closer at the inner thigh than its own
+# zeroed 3BA build, and the converter carried that across as the author's gap.
+# The BodySlide output of the same armour WAS the zeroed build, to 0.000u.
+# `zeroed_garment` says whether a built pair is that build: both weights, every
+# shape, from ONE slider set. Anything it cannot check is refused, so a caller
+# acting only on a positive answer never switches to a file nobody verified.
+
+# float32 round-off, measured on 289 real weight pairs: weight 1 matched to
+# 0.0-1.0e-4, but BodySlide adds weight 0's seam defaults in single precision
+# and 34 genuine weight-0 builds sat 1.01e-4..1.39e-4 off -- over the body's
+# TOL. Every preset or stale build seen was 0.25u or more off, 250x this.
+GARMENT_TOL = 1e-3
+
+
+@dataclass(frozen=True)
+class ZeroedGarment:
+    slider_set: str
+    max_dev: float
+    build: "dict[str, dict[str, np.ndarray]]"    # weight -> shape -> zeroed verts
+
+
+def _nif_shapes(path) -> "dict[str, np.ndarray]":
+    """Every shape's vertices from one read -- a garment has many shapes. The
+    file is released at once (#postflight-release): opened in the batch parent
+    and merely dropped, a NifFile is freed only by a full collection, and a run
+    checking hundreds of pieces climbed past 3.4 GB before this."""
+    nf = nif_io.open_nif_retry(str(path))
+    try:
+        return {s.name: np.array(s.verts, dtype=np.float64) for s in nf.shapes}
+    finally:
+        nif_io.release_nif(nf)
+
+
+@functools.lru_cache(maxsize=2)
+def _parse_sets(osp: Path) -> "ET.Element | None":
+    """One slider-set file, parsed; None if unreadable. Only the last two are
+    kept: a real modlist's 1,042 files are 128 MB of XML and held 2.5 GB parsed."""
+    try:
+        return ET.fromstring(osp.read_text(encoding="utf-8-sig", errors="replace"))
+    except (OSError, ET.ParseError):
+        return None
+
+
+def _slider_set_index(vfs: _Vfs) -> "dict[tuple[str, str], list[tuple[Path, str]]]":
+    """(output path, output file) -> [(slider-set file, set name)] for every set
+    that builds it, from the WINNING copy of each file. Built once per instance;
+    it keeps names, not parsed sets."""
+    ck = ("slider-set-index", tuple(str(d) for d in vfs.dirs))
+    if ck not in _CACHE:
+        found: "dict[tuple[str, str], list[tuple[Path, str]]]" = {}
+        for key, osp in sorted(vfs.walk(_SLIDERSETS).items()):
+            if not key.endswith((".osp", ".xml")):
+                continue
+            root = _parse_sets(osp)
+            if root is None:
+                continue
+            for ss in root.iter("SliderSet"):
+                out = (_norm(ss.findtext("OutputPath") or ""),
+                       (ss.findtext("OutputFile") or "").strip().lower())
+                found.setdefault(out, []).append((osp, ss.get("name", "?")))
+        _CACHE[ck] = found
+    return _CACHE[ck]
+
+
+def matches_build(shapes: "dict[str, np.ndarray]",
+                  build: "dict[str, np.ndarray]") -> "float | None":
+    """The worst vertex deviation if `shapes` IS `build` -- the same shapes,
+    the same vertex counts, every vertex within GARMENT_TOL -- else None."""
+    if set(shapes) != set(build):
+        return None
+    worst = 0.0
+    for name, zv in build.items():
+        gv = shapes[name]
+        if gv.shape != zv.shape:
+            return None
+        if len(zv):
+            worst = max(worst, float(np.linalg.norm(gv - zv, axis=1).max()))
+    return worst if worst <= GARMENT_TOL else None
+
+
+def zeroed_garment(stem: str, files: "dict[str, Path]", *, dirs=None) -> ZeroedGarment:
+    """`files` ({"_0": path, "_1": path}) ARE BodySlide's zeroed build of ONE
+    slider set that builds meshes/<stem>_0.nif and _1.nif -- every shape, both
+    weights -- or ZeroedBodyError says why not. `stem` is meshes-relative and
+    carries no weight suffix. `dirs` defaults to the discovered instance."""
+    if set(files) != set(_WEIGHTS):
+        raise ValueError("zeroed_garment checks both weights or neither")
+    vfs = _Vfs(_layout_dirs() if dirs is None else dirs)
+    parent, _, out_file = _norm(stem).rpartition("/")
+    refs = _slider_set_index(vfs).get((_norm(f"meshes/{parent}"), out_file), [])
+    sets = []
+    for osp, name in refs:
+        root = _parse_sets(osp)
+        if root is not None:
+            sets += [ss for ss in root.iter("SliderSet") if ss.get("name", "?") == name]
+    if not sets:
+        raise ZeroedBodyError(f"no BodySlide slider set builds meshes/{stem}")
+    try:
+        have = {w: _nif_shapes(f) for w, f in files.items()}
+    except Exception as e:
+        raise ZeroedBodyError(f"meshes/{stem}: unreadable "
+                              f"({type(e).__name__}: {e})") from e
+    notes = []
+    for ss in sets:
+        set_name = ss.get("name", "?")
+        try:
+            base, shapes = _set_base(vfs, ss)
+            base_verts = _nif_shapes(base)
+            osds: "dict[Path, dict]" = {}
+            build, worst = {}, 0.0
+            for w in _WEIGHTS:
+                verts = {n: np.array(base_verts[n], dtype=np.float64)
+                         for n in shapes if n in base_verts}
+                if not verts:
+                    raise ZeroedBodyError(f"slider set {set_name!r}: none of its "
+                                          f"shapes are in {base.name}")
+                zapped = _apply_defaults(vfs, ss, w, verts, shapes, osds, garment=True)
+                for n, gone in zapped.items():
+                    keep = np.ones(len(verts[n]), dtype=bool)
+                    keep[sorted(gone)] = False
+                    verts[n] = verts[n][keep]
+                verts = {n: v for n, v in verts.items() if len(v)}
+                dev = matches_build(have[w], verts)
+                if dev is None:
+                    raise ZeroedBodyError(f"slider set {set_name!r}: "
+                                          f"{Path(files[w]).name} is not its "
+                                          f"zeroed build")
+                build[w] = verts
+                worst = max(worst, dev)
+            return ZeroedGarment(set_name, worst, build)
+        except ZeroedBodyError as e:
+            notes.append(str(e))
+        except Exception as e:
+            notes.append(f"slider set {set_name!r}: could not be built "
+                         f"({type(e).__name__}: {e})")
+    raise ZeroedBodyError(f"meshes/{stem} is not a zeroed build of any slider "
+                          f"set that builds it: " + "; ".join(notes))
 
 
 # --- Listing every candidate body, for the pick dialog ----------------------
