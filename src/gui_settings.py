@@ -1535,6 +1535,16 @@ SETTINGS: "tuple[Setting, ...]" = (
                     "for vertex. Found by name, the CBBE body was a preset build the "
                     "game never loads, up to 2u off, and capes, cloaks and scarves then "
                     "sat up to 0.9u closer at weight 1 than at weight 0."),
+    Setting("zeroed_output_source", "Take armour from the zeroed BodySlide build",
+            "Paths", "Bodies", default=True,
+            env="CBBE2UBE_NO_ZEROED_OUTPUT_SOURCE", invert=True, advanced=True,
+            hint="Untick to prefer each mod's own meshes over your BodySlide build, as before.",
+            tooltip="When your BodySlide output holds an armour's zeroed 3BA build, checked "
+                    "vertex for vertex against its BodySlide project, that build is "
+                    "converted instead of the mod's own meshes, which can be made for "
+                    "another body. One armour's own meshes, made for the vanilla body, "
+                    "shipped with the bust 2.2u too far out and the inner thigh 0.6u too "
+                    "close. Pieces whose physics would change keep their own meshes."),
     Setting("texconv", "texconv.exe",
             "Paths", "Tools", kind="path", default="", env="CBBE2UBE_TEXCONV",
             tooltip="DirectXTex texconv for texture conversion. Auto-located when blank."),

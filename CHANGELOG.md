@@ -26,12 +26,42 @@ running, on every preset. Four causes, each fixed:
 
 Measured on that armour, skin exposed in a sprint with the butt and thigh bones
 bouncing: 136 points before, 5 after; on the swinging leg's cheek, over the
-zeroed body and six UBE presets, 744 before and 0 after. Confirmed in game. Only weights change,
-never the shape of the armour; across a full pack the skirt change touches the
-two colour variants of that one armour. For troubleshooting,
-`CBBE2UBE_NO_LEG_MOTION_MORPHTRI`, `CBBE2UBE_NO_MORPHTRI_THIGH_GRAFT`,
-`CBBE2UBE_NO_PART_PAIR_BILATERAL_GUARD` and
+zeroed body and six UBE presets, 744 before and 0 after. Confirmed in game.
+Only weights change, never the shape of the armour; across a full pack the
+skirt change touches the two colour variants of that one armour. For
+troubleshooting, `CBBE2UBE_NO_LEG_MOTION_MORPHTRI`,
+`CBBE2UBE_NO_MORPHTRI_THIGH_GRAFT`, `CBBE2UBE_NO_PART_PAIR_BILATERAL_GUARD` and
 `CBBE2UBE_NO_LAYERED_CLOTH_BUTT_JIGGLE` (set to 1) turn the four off.
+
+### Fixed — armour is converted from your zeroed BodySlide build, not from meshes made for another body
+
+When an armour mod ships its own meshes and your BodySlide output holds that
+armour built at zeroed sliders, the converter now converts the BodySlide build.
+It used to prefer a mod's own meshes over every BodySlide output, on the
+assumption that an output carries a body preset. But a mod's own meshes can be
+made for a different body altogether. One armour's were made for the vanilla
+body, and because the fit starts from the zeroed CBBE body, the converted piece
+kept that body's shape: the bust stood 2.8u further out than the author put it
+(inflated breasts in game) and the inner thigh sat 0.55u closer at weight 0
+(inner-thigh and butt clipping). Its BodySlide build -- the zeroed 3BA build to
+0.000u -- converts with the bust 0.6u off the author's gap and the inner thigh
+0.1u off it.
+
+The switch is made only where it can be proven. The BodySlide output must be
+the folder that provides the zeroed CBBE body the fit uses; both weights of the
+piece must match the zeroed build of its BodySlide project, every shape,
+vertex for vertex; the mod's own meshes must not already be that build; the two
+must agree on whether the piece has HDT physics; and the build must have the
+same shapes as the mod's own meshes, so only the geometry changes (a build that
+bundles the body would convert down a different path). Anything else keeps the
+mod's own meshes, as before. The run log says how many pieces moved and why the
+others did not (`[zeroed-output-source] ...`). "Take armour from the zeroed
+BodySlide build" (Settings, Paths > Bodies, advanced) turns it off.
+On one modlist 118 pieces move and 171 more were looked at and kept (106 have
+other shapes, 25 already were the build, 21 would change physics, 19 are not a
+verified zeroed build). A piece whose own meshes were oversized now fits as its
+author built it, which can mean less room in some poses. Checking takes about
+four minutes of a full run.
 
 ### Added — Convert shows the reference bodies it will use, and lets you pick others
 
