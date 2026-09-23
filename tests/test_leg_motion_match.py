@@ -423,3 +423,86 @@ def test_a_grafted_bone_is_dropped_by_the_cap_and_NOT_restored():
     # it and 5 influences ship. Same code, opposite outcome.
     out2, _ = _shipped_cap_then_floor(new)
     assert int((out2 > nc._WRITE_MIN).sum()) == 5
+
+
+# --------------------------------------------------------------------------
+# #leg-motion-morphtri -- the LEG instance reaches the shapes it was built for
+# --------------------------------------------------------------------------
+
+def test_leg_motion_morphtri_flag_default_on_and_kill_switch(monkeypatch):
+    assert nc.LEG_MOTION_ON_MORPHTRI is True
+    monkeypatch.setenv("CBBE2UBE_NO_LEG_MOTION_MORPHTRI", "1")
+    reloaded = importlib.reload(nc)
+    try:
+        assert reloaded.LEG_MOTION_ON_MORPHTRI is False
+    finally:
+        monkeypatch.delenv("CBBE2UBE_NO_LEG_MOTION_MORPHTRI", raising=False)
+        importlib.reload(nc)
+
+
+def _instance_kwargs(fn, **flags):
+    """Call one family instance with the shared limb pass faked out, and return
+    the keyword arguments it forwarded."""
+    import pytest
+    seen = {}
+
+    def fake(dst_path, biped_slots=0, **kw):
+        seen.update(kw)
+        return 0
+
+    with pytest.MonkeyPatch.context() as mp:
+        _cs.patch(mp, "_match_limb_motion_to_body", fake)
+        for name, value in flags.items():
+            mp.setattr(nc, name, value)
+        fn("piece_1.nif")
+    assert seen, "the instance never reached the shared pass -- nothing was tested"
+    return seen
+
+
+def test_the_leg_instance_follows_the_flag_onto_morph_tri_shapes():
+    """THE CHANGE. A trousers shape whose source ships a BodySlide TRI keeps the
+    author's skin, and a ring at the back of the thigh carried Pelvis 0.17-0.21
+    over skin that is Pelvis 0.00 -- the trailing leg's hip extension left the
+    cloth behind. The leg instance is the pass built to close that gap; the flag
+    decides whether the morph-TRI gate still keeps it away."""
+    on = _instance_kwargs(nc._match_leg_motion_to_body,
+                          MATCH_LEG_MOTION=True, LEG_MOTION_ON_MORPHTRI=True)
+    assert on.get("ignore_morph_tri") is True
+    assert on.get("keep_draping_skip") is True, (
+        "the leg instance must keep robes/cloaks/dresses on their source skin")
+    off = _instance_kwargs(nc._match_leg_motion_to_body,
+                           MATCH_LEG_MOTION=True, LEG_MOTION_ON_MORPHTRI=False)
+    assert off.get("ignore_morph_tri") is False
+
+
+def test_a_draping_morph_tri_shape_stays_skipped():
+    """#leg-motion-morphtri must not reach a robe. The leg passes skip draping
+    names on a piece with no HDT XML, the user kept that exemption (2026-09-19),
+    and before the leg instance ignored the TRI gate it never reached these
+    shapes. On a piece WITH an XML the leg passes skip structural names only, so
+    the draping names are reached there too -- same predicate, same answer."""
+    import pytest
+    from src import nif_convert_weights as ncw
+    tri_owned = {"RobesLower", "Greaves", "Cloak_1"}
+    with pytest.MonkeyPatch.context() as mp:
+        _cs.patch(mp, "_source_morph_tri_shape_names", lambda p: set(tri_owned))
+        mp.setattr(nc, "MORPHTRI_NO_LEG_GRAFT", True)
+        mp.setattr(nc, "DRAPE_SKIP_XML_GATED", True)
+        mp.setattr(nc, "_piece_has_hdt_xml", lambda p, nif=None: False)
+        skip = ncw._limb_morph_tri_skip("x_1.nif", None, "src_1.nif", True, True)
+        assert skip == {"RobesLower", "Cloak_1"}
+        # the gate as it always was, for an instance that does not ignore it
+        assert ncw._limb_morph_tri_skip("x_1.nif", None, "src_1.nif", False, True) == tri_owned
+        # an instance that ignores it without the draping retention: nothing
+        assert ncw._limb_morph_tri_skip("x_1.nif", None, "src_1.nif", True, False) == set()
+        mp.setattr(nc, "_piece_has_hdt_xml", lambda p, nif=None: True)
+        assert ncw._limb_morph_tri_skip("x_1.nif", None, "src_1.nif", True, True) == set()
+
+
+def test_the_spine_and_arm_instances_keep_the_gate():
+    """The gate's own evidence was a SPINE crease on a rigid cuirass. Only the
+    leg family was released; the flag must not leak into the others."""
+    for fn, enable in ((nc._match_spine_motion_to_body, "MATCH_SPINE_MOTION"),
+                       (nc._match_arm_motion_to_body, "MATCH_ARM_MOTION")):
+        kw = _instance_kwargs(fn, LEG_MOTION_ON_MORPHTRI=True, **{enable: True})
+        assert not kw.get("ignore_morph_tri", False), fn.__name__

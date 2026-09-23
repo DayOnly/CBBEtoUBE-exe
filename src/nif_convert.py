@@ -6963,6 +6963,32 @@ TORSO_JIGGLE_TRANSFER = (
 # 1.00 -- so any floor in 0.4-0.7 separates them; 0.5 takes the middle with margin.
 _TORSO_JIGGLE_FIT_FRAC = _knob("CBBE2UBE_TORSO_JIGGLE_FIT", 0.5)
 
+# #layered-cloth-butt-follow. `#layered-cloth-skin` keeps a multi-layer cloth
+# stack (Cuirass_A/_B/_C) off every body-follow graft, and the jiggle graft here
+# is one of them. The rule has two recorded reasons and neither is the BUTT:
+#   * the equip CTD it was written for (2026-07-09) was the FIRST-PERSON physics
+#     XML driving the third-person shapes by name -- fixed where it came from, by
+#     the first-person SMP gate, not by the skin strip;
+#   * the BALLOON it still prevents (2026-07-10) is BREAST weight on the cloth:
+#     the chest inflated in game at 0.66 and again at 0.15.
+# What the blanket rule costs is the butt. REPORTED IN GAME 2026-09-23 on a
+# layered leather cuirass: skin through the quilted skirt on the swinging leg's
+# cheek, mid-stride, on every preset. The trousers under the skirt DO follow the
+# butt -- this pass grafts them -- the skirt does not, and the body bounces
+# through it. Measured on that piece (zeroed UBE body, weight 1, the swing leg
+# flexed 40/45/60/75 degrees, butt and thigh bones 3u back): the cheek opens
+# 13/15/25/39 verts; with the skirt layers given butt jiggle by this pass's own
+# formula, 0 in all four. Matching their pelvis/thigh split instead leaves
+# 7/10/22/35, so the split is not the lever.
+# So layered cloth is let through for the BUTT region only -- breast and belly
+# stay stripped -- and only on a piece with no physics XML, which every SMP
+# interaction behind the original rule needed. Every other gate of the pass
+# still applies to it unchanged. CBBE2UBE_NO_LAYERED_CLOTH_BUTT_JIGGLE=1
+# restores the blanket skip.
+LAYERED_CLOTH_BUTT_JIGGLE = (
+    not _flag("CBBE2UBE_NO_LAYERED_CLOTH_BUTT_JIGGLE", False))
+_LAYERED_CLOTH_JIGGLE_REGIONS = ("butt",)
+
 # #bust-collider-split -- a bust garment that is ITS OWN per-triangle collider can
 # never carry jiggle: grafting onto it closes a feedback loop (cloth moves collider,
 # collider pushes cloth) that tore the breasts off in game and forced a revert. The
@@ -7051,6 +7077,20 @@ MATCH_RIGID_LEG_BEND = (
 # Default ON; CBBE2UBE_NO_LEG_MOTION_MATCH=1 off.
 MATCH_LEG_MOTION = (
     not _flag("CBBE2UBE_NO_LEG_MOTION_MATCH", False))
+# #leg-motion-morphtri. The LEG instance above was built FOR the keep-source-skin
+# population, and `#morphtri-no-leg-graft` later gated it off that same
+# population, through the predicate every limb-motion instance shares. The
+# evidence for that gate was a SPINE crease ("raises when leaning forward",
+# Spine1 4.86% -> 0.94%) and a calf-height flap tip on RIGID plates; nothing
+# implicated the leg family. What the gate cost, measured 2026-09-23 on a
+# leather suit whose pants keep the author's skin: a ring at the back of the
+# thigh carries Pelvis 0.17-0.21 (the author's own weights) over skin that is
+# Pelvis 0.00 on BOTH bodies, so a trailing leg's hip extension leaves the cloth
+# behind and the skin shows -- the user's reported clip, seen from the chase
+# camera. The spine and arm instances keep the gate. Default ON;
+# CBBE2UBE_NO_LEG_MOTION_MORPHTRI=1 restores the gated behaviour.
+LEG_MOTION_ON_MORPHTRI = (
+    not _flag("CBBE2UBE_NO_LEG_MOTION_MORPHTRI", False))
 # Fraction of the body-vs-garment leg-share gap to close (1.0 = full match).
 _LEG_MOTION_STRENGTH = _knob("CBBE2UBE_LEG_MOTION_STRENGTH", 1.0)
 # Only match verts within this distance of the body: beyond it the cloth is drape, not
@@ -8669,6 +8709,17 @@ def _chest_band(n, d, idx_k, body_w, is_chain) -> list:
 MORPHTRI_NO_LEG_GRAFT = (
     not _flag("CBBE2UBE_MORPHTRI_LEG_GRAFT", False))
 
+# #morphtri-thigh-graft. The gate above names three detail bones and its evidence
+# names ONE: `R/L RearCalf 0.00% -> ~1.26%` on a flap tip at CALF height. The two
+# THIGH detail bones (FrontThigh / RearThigh, anchored to the thigh) went with it,
+# and they are the ones CBPC bounces under trousers. Measured 2026-09-23 on a
+# leather suit whose trousers keep the author's skin: a FORWARD thigh bounce
+# pushed the front of the lower thigh through the cloth (pose harness, crouch
+# 47 -> 117 newly exposed, knee bend 9 -> 53). So a morph-TRI shape still skips
+# RearCalf and takes the thigh pair. Off with CBBE2UBE_NO_MORPHTRI_THIGH_GRAFT=1.
+MORPHTRI_THIGH_GRAFT = (
+    not _flag("CBBE2UBE_NO_MORPHTRI_THIGH_GRAFT", False))
+
 # #morphtri-keep-jiggle. The gate above is RIGHT for the LEG DETAIL bones and
 # WRONG for the jiggle bones; the two were only ever coupled by sharing a
 # predicate.
@@ -8842,6 +8893,23 @@ PART_PAIR_ALIGN = (
 _PART_PAIR_NEAR = _knob("CBBE2UBE_PART_PAIR_NEAR", 1.0)
 # Headroom over the author before a pair is pulled back together.
 _PART_PAIR_MARGIN = _knob("CBBE2UBE_PART_PAIR_MARGIN", 0.10)
+# #part-pair-bilateral. A part whose author rows put some verts on the LEFT limbs
+# and others on the RIGHT (trousers, a romper, a cuirass with both sleeves) has no
+# meaningful MEAN row: it averages two limbs that swing in opposite directions.
+# Shifting it bodily toward a pair mean adds ONE offset to both legs. Measured
+# 2026-09-23 on a leather suit, once `#leg-motion-morphtri` had moved the
+# trousers' rows: a thigh-strap buckle paired with the trousers put R Thigh 0.018
+# on EVERY left-leg vertex, and a sprint stride then dragged the forward knee's
+# cloth back through the skin. So a two-sided part is never shifted; a one-sided
+# partner is judged against, and moved toward, the two-sided part's rows NEAR it,
+# and two two-sided parts are not paired. Off with
+# CBBE2UBE_NO_PART_PAIR_BILATERAL_GUARD=1.
+PART_PAIR_BILATERAL_GUARD = (
+    not _flag("CBBE2UBE_NO_PART_PAIR_BILATERAL_GUARD", False))
+# Share of a part's verts that must sit mostly on EACH side for it to be two-sided.
+_PART_PAIR_BILATERAL_FRAC = _knob("CBBE2UBE_PART_PAIR_BILATERAL_FRAC", 0.10)
+# Radius around the one-sided partner that selects the two-sided part's local rows.
+_PART_PAIR_LOCAL = _knob("CBBE2UBE_PART_PAIR_LOCAL", 2.0)
 # #author-deviation-skin -- a part deforms INTERNALLY the way its author made it
 # deform. Off with CBBE2UBE_NO_AUTHOR_DEVIATION_SKIN=1.
 #
@@ -10838,6 +10906,8 @@ def _shape_has_hdt_smp_rigging(src_shape, body_bone_names: set[str]) -> bool:
 # bone after the fact, so prevention is the only reliable path). Detect structurally:
 # 2+ sibling shapes sharing a base stem + a short layer suffix. Off with
 # CBBE2UBE_NO_LAYERED_CLOTH_SKIN. #layered-cloth-skin
+# ONE carve-out: the jiggle graft may give such a shape BUTT weight, on a piece with
+# no physics XML -- see LAYERED_CLOTH_BUTT_JIGGLE (#layered-cloth-butt-follow).
 _LAYERED_CLOTH_SKIN = (
     not _flag("CBBE2UBE_NO_LAYERED_CLOTH_SKIN", False))
 _LAYER_SUFFIX_RE = re.compile(r"^(.*?)[_ ]([A-Za-z]|\d{1,2})$")

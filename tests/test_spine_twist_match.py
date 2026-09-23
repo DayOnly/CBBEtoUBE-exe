@@ -226,9 +226,20 @@ def test_split_blend_interpolates_between_garment_and_body():
 
 
 def test_morph_tri_opt_out_is_off_by_default_for_shipped_instances():
-    """A shipped-ON instance must never carry the opt-out: the morph-TRI skip
-    exists because re-sharing a TRI-owned shape's limb mass regressed in game."""
-    for fn in (nc._match_leg_motion_to_body, nc._match_arm_motion_to_body,
-               nc._match_spine_motion_to_body):
+    """A shipped-ON SPINE or ARM instance must never carry the opt-out: the
+    morph-TRI skip exists because re-sharing a TRI-owned shape's limb mass
+    regressed in game -- a spine crease on a rigid cuirass ("raises when leaning
+    forward", Spine1 4.86% -> 0.94%).
+
+    The LEG instance is the one exception, and only through its own switch
+    (#leg-motion-morphtri, CBBE2UBE_NO_LEG_MOTION_MORPHTRI=1 restores the skip):
+    it was built for exactly the keep-source-skin population, nothing in the
+    gate's evidence implicated the leg family, and gated it left a trousers ring
+    at Pelvis 0.17-0.21 over skin at 0.00 (2026-09-23). A hard-coded True would
+    lose the switch, so the argument must be the flag itself."""
+    for fn in (nc._match_arm_motion_to_body, nc._match_spine_motion_to_body):
         assert "ignore_morph_tri" not in _cs.source(fn), (
             f"{fn.__name__} ships ON and must not opt out of the morph-TRI skip")
+    leg = _cs.source(nc._match_leg_motion_to_body)
+    assert "ignore_morph_tri=LEG_MOTION_ON_MORPHTRI" in leg
+    assert "ignore_morph_tri=True" not in leg

@@ -428,12 +428,21 @@ already built RaceMenu/BodySlide morphs for it — the converter keeps its stabl
 source skin and skips the body-blend re-skin, preserving TRI-morph fidelity.
 
 A BodySlide TRI only supplies **body-slider** morphs (a static per-character shape
-offset), not leg/butt *flex during animation*. That flex-follow is added by a
-SEPARATE pass — the leg-conform / butt-match (`_match_rigid_leg_bend_to_body`,
-`[DESIGN: Leg-plate bend / butt-jiggle conform]`), which grafts UBE scale bones
-(FrontThigh / RearThigh / RearCalf / Butt) and runs **regardless** of the morph-TRI
-exemption. So an exempted morph-TRI leg shape still gets its animation follow from
-that pass — it does NOT lose its scale bones.
+offset), not leg/butt *flex during animation*. That flex-follow comes from SEPARATE
+passes, and what each gives an exempted morph-TRI shape is set per pass:
+
+- the leg-detail graft (`_match_rigid_leg_bend_to_body`,
+  `[DESIGN: Leg-plate bend / butt-jiggle conform]`) gives it FrontThigh / RearThigh
+  but withholds RearCalf, which bent a flap tip at calf height (`#morphtri-no-leg-graft`,
+  narrowed by `#morphtri-thigh-graft`);
+- the leg-motion match reaches it (`#leg-motion-morphtri`), except draping-named
+  shapes (robe, dress, ...), which the leg passes skip by name; the spine and arm
+  instances keep the exemption;
+- the butt / belly / breast jiggle graft reaches it (`#morphtri-keep-jiggle`).
+
+Withholding all three from BodySlide-built trousers left the author's CBBE pelvis
+weight at the back of the thigh and no thigh jiggle, and the trailing thigh opened
+in a sprint in game.
 
 History (2026-07-08): a change tried ALSO grafting scale bones inside the re-skin
 path for morph-TRI shapes (`CBBE2UBE_MORPHTRI_SCALE`), on the theory the exemption
@@ -735,6 +744,15 @@ replace, tried first, moved the inner-thigh skin and clipped). Sibling of the ch
 a layered leather cuirass it was correct but unneeded once the inner-thigh clip proved to be a
 pre-existing pose limit. No `add_bone` beyond copying the authority's already-valid
 bones+xforms, so the STB footgun does not apply.
+
+**Butt follow on layered cloth `#layered-cloth-butt-follow` (default on).** A
+name-detected layer stack (`Cuirass_A/_B/_C`) keeps its source skin in every graft
+pass (`#layered-cloth-skin`): breast weight on such cloth ballooned a chest in game.
+The butt is the one exception. A quilted skirt with no butt weight stayed still
+while the trousers under it and the body bounced, and skin showed through it on
+the swinging leg. The jiggle graft now gives layered cloth the BUTT region only,
+through the same gates as any other garment, and only on a piece with no physics
+XML. `CBBE2UBE_NO_LAYERED_CLOTH_BUTT_JIGGLE=1` restores the blanket skip.
 
 ---
 
