@@ -3588,8 +3588,9 @@ def _report_coverage_holds(stats: "list[dict]") -> None:
     female slots that did not take a converted MALE mesh
     (#coverage-female-guard), body armatures whose world mesh was not converted
     (#coverage-world-mesh), nude hands/feet swapped for the UBE body's own or
-    left out (#coverage-nude-skin), and slots pointed at a hand-made UBE twin
-    (#coverage-ube-twin). Silent when there is nothing to say."""
+    left out (#coverage-nude-skin), slots pointed at a hand-made UBE twin
+    (#coverage-ube-twin), and hoods drawn with their body armour
+    (#coverage-body-accessory). Silent when there is nothing to say."""
     withheld = [w for s in stats for w in (s.get("withheld") or [])]
     kept = [k for s in stats for k in (s.get("female_kept") or [])]
     dead = [k for s in stats for k in (s.get("female_dead_male") or [])]
@@ -3601,6 +3602,7 @@ def _report_coverage_holds(stats: "list[dict]") -> None:
     nskip = [k for s in stats for k in (s.get("nude_skipped") or [])]
     ndrop = [d for s in stats for d in (s.get("nude_dropped") or [])]
     twins = [k for s in stats for k in (s.get("ube_twin") or [])]
+    accs = [k for s in stats for k in (s.get("body_accessory") or [])]
     if withheld:
         warn(f"[unified] {len(withheld)} armour(s) of an excluded mod have no UBE "
              "armature from any mod",
@@ -3681,6 +3683,9 @@ def _report_coverage_holds(stats: "list[dict]") -> None:
             print(f"       {k['slot']} {k['path']}  ({k.get('mod') or '?'})")
         if len(twins) > 5:
             print(f"       ... and {len(twins) - 5} more")
+    if accs:
+        print(f"  [unified] {len(accs)} hood/accessory armature(s) of body armour "
+              "drawn on UBE with the body (their own mesh)")
 
 
 def _emit_unified_coverage_patches(output, patches_dir, master_data_dirs,

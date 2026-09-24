@@ -562,6 +562,24 @@ def _skip_built_ube_path() -> bool:
     return _coverage_ube_twin() and not _flag("CBBE2UBE_NO_SKIP_BUILT_UBE_PATH", False)
 
 
+def _coverage_body_accessory() -> bool:
+    r"""#coverage-body-accessory (2026-09-24): does a body or hands/feet armour's
+    NON-deforming armature -- a hooded robe's hood -- get a UBE armature too?
+    Yes, by default.
+
+    The body pass kept only armatures with a converted mesh or a hands/feet
+    slot, and the non-body pass skips any armour with a deforming slot, so a
+    hood armature (slots 31/41/43) on a robe was covered by neither: on a UBE
+    actor the robe drew and the hood did not. Live: 101 armours, 17 hood-style
+    armatures, 6 of which the non-body pass already mints for the standalone
+    hoods. Such an armature is minted exactly as that pass mints it:
+    UBE-primary, its own mesh. It rides along only when a deforming armature of
+    the armour is minted, so an armour the world-mesh or female rules leave out
+    stays out whole. CBBE2UBE_NO_COVERAGE_BODY_ACCESSORY=1 leaves the hood off
+    again."""
+    return not _flag("CBBE2UBE_NO_COVERAGE_BODY_ACCESSORY", False)
+
+
 # Subrecords that do NOT affect how the addon RENDERS, so they're excluded from
 # the merge record-dedup key: the editor id, and the CK-generated model
 # texture-HASH blocks (MODT-equivalents) for each of the 4 gendered models. Two
@@ -3812,6 +3830,8 @@ def generate_modded_body_ube_coverage_patch(
     nude_skipped: list = []    # (arma_abs, why) nude parts not minted: skin/unresolved
     nude_dropped: list = []    # (armo_abs, edid, why) ARMOs left with nothing to mint by that
     twin_slots: list = []      # slots pointed at a hand-made UBE twin
+    accessory_added: list = []  # non-deforming armatures of a body armour (#coverage-body-accessory)
+    _body_accessory = _coverage_body_accessory()
 
     def _conv_exists(model_path: str) -> bool:
         return _converted_model_exists(model_path, crp)
@@ -4082,6 +4102,20 @@ def generate_modded_body_ube_coverage_patch(
                         nude_dropped.append((armo_abs, edid,
                                              "skin" if _skin else "unresolved"))
                         continue
+        # #coverage-body-accessory: a non-deforming armature of this armour (a
+        # robe's hood) rides along with the deforming ones minted above -- the
+        # non-body pass skips the armour for having a deforming slot, so nothing
+        # else ever covers it. Its own BOD2 must name slots, none deforming.
+        if _body_accessory and to_mint:
+            _acc = [x for x, v in winning
+                    if x not in to_mint and v[3] == DEFAULT_RACE
+                    and _arma_bod2_slots(v[0])
+                    and not (_arma_bod2_slots(v[0]) & _DEFORMING_SLOTS_MASK)]
+            if _acc:
+                to_mint = to_mint + _acc
+                for x in _acc:
+                    if x not in accessory_added:
+                        accessory_added.append(x)
         targets.append((armo_abs, plugin_case.get(armo_abs[0], armo_abs[0]),
                         to_mint))
         for x in to_mint:
@@ -4285,6 +4319,7 @@ def generate_modded_body_ube_coverage_patch(
                          for a, why in nude_skipped if a not in mint_set],
         "nude_dropped": nude_dropped,
         "ube_twin": twin_slots,
+        "body_accessory": [f"{a[0]}|{a[1]:X}" for a in accessory_added],
     }
 
 

@@ -1138,6 +1138,17 @@ reported through `_report_coverage_holds`:
   the twin admission also minted a second nude suit on a softbody pack's own UBE
   one (+2 links) -- that commit is why it does not.
   `CBBE2UBE_NO_SKIP_BUILT_UBE_PATH=1`.
+- **A body armour's hood rides with it** (`#coverage-body-accessory`). The body
+  pass kept only armatures with a converted mesh or a hands/feet slot; the
+  non-body pass skips any armour with a deforming slot. A robe's hood armature
+  (31/41/43) was covered by neither, so the hood was missing on UBE. Now a
+  DefaultRace armature of the armour whose own BOD2 names slots, none deforming,
+  is minted with the deforming ones (UBE-primary, own mesh -- what the non-body
+  pass does for the same hood worn alone); it never mints alone, so an armour
+  the world-mesh or female rules leave out stays out. Live replay: 111 links on
+  110 armours added, 0 removed, 0 re-pointed, 27 armatures (17 hoods and hats, plus helmets,
+  capes and costume heads built into body armour).
+  `CBBE2UBE_NO_COVERAGE_BODY_ACCESSORY=1`.
 - **A claim path written with `meshes\` in front** (`#claim-meshes-prefix`). The
   engine reads `meshes\!UBE\x_1.nif` and `!UBE\x_1.nif` as one file; the
   SkyPatcher half of the claim test stripped the folder, the plugin half did not.

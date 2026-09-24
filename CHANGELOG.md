@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Fixed — hooded robes show their hood on UBE actors
+
+A robe with a hood drew the robe on a UBE-race actor but not the hood (the
+Thalmor, Arch-Mage, necromancer, warlock and monk robes, among others). The
+hood's armature covers only head slots, so neither coverage step took it. It is
+now drawn with the robe, using its own mesh, as the same hood already is when
+worn on its own. The same goes for a helmet, cape or mask built into a body
+armour. Measured on the reported modlist: 110 armours gain their hood or other
+accessory, from 27 armatures; nothing else changes. An armour that gets no UBE
+body piece (for example because its mesh was not converted) gets no hood
+either. `CBBE2UBE_NO_COVERAGE_BODY_ACCESSORY=1` (set to 1) leaves them off.
+
 ### Fixed — hand-made UBE versions are recognised however their paths are written
 
 - A mesh another mod already ships built for UBE, at the very path this tool
