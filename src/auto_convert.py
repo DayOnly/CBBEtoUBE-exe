@@ -2951,12 +2951,18 @@ def _third_party_ube_covered_armos(mods_root, enabled_names=None,
     if mods_root is None:       # no modlist: no other mods to have patched it
         return set()            # #convert-needs-a-modlist
     recognise = not _flag("CBBE2UBE_NO_SKYPATCHER_PATCH_RECOGNITION", False)
+    # #claim-meshes-prefix (2026-09-24): an ARMA may spell its model path with
+    # the `meshes\` folder in front -- the engine reads it either way. The
+    # SkyPatcher half stripped it; the plugin half did not, so a softbody pack's
+    # own UBE nude suit (`meshes\!UBE\SexLab\...`) never read as a UBE claim.
+    # CBBE2UBE_NO_CLAIM_MESHES_PREFIX=1 compares the path as written again.
+    strip_meshes = not _flag("CBBE2UBE_NO_CLAIM_MESHES_PREFIX", False)
     # enabled_names belongs in the key: it changes the result, and in the
-    # long-lived GUI process the modlist can change between two scans. So does
-    # the recognition switch.
+    # long-lived GUI process the modlist can change between two scans. So do
+    # the two switches.
     key = (str(mods_root), tuple(sorted(skip_mods)),
            None if enabled_names is None else tuple(sorted(enabled_names)),
-           recognise)
+           recognise, strip_meshes)
     if key in _UBE_COVERED_CACHE:
         return _UBE_COVERED_CACHE[key]
     covered: set = set()
@@ -3013,8 +3019,10 @@ def _third_party_ube_covered_armos(mods_root, enabled_names=None,
             except Exception:
                 pass            # an unreadable tree must not fail the scan
             _ube_mesh_index = idx
-        return (model_rel.lower().replace("\\", "/").lstrip("/")
-                in _ube_mesh_index)
+        rel = model_rel.lower().replace("\\", "/").lstrip("/")
+        if strip_meshes and rel.startswith("meshes/"):
+            rel = rel[len("meshes/"):]          # #claim-meshes-prefix
+        return rel in _ube_mesh_index
     try:
         mod_dirs = [d for d in root.iterdir() if d.is_dir()]
     except OSError:

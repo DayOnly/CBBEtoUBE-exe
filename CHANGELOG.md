@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Fixed — hand-made UBE versions are recognised however their paths are written
+
+- A UBE patch whose armatures write the model path with the `meshes\` folder in
+  front (a softbody pack's own UBE nude suits) was not recognised as a UBE patch,
+  although the game reads the path either way. It is now: 10 armours on the
+  reported modlist, none of which this tool was covering yet, and the pack's
+  nude suit (2 meshes) is no longer converted -- the game already loads a UBE
+  build of it.
+  `CBBE2UBE_NO_CLAIM_MESHES_PREFIX=1` (set to 1) turns it off.
+
 ### Fixed — no unconverted CBBE bodies, hands or feet drawn on a UBE actor by the coverage step
 
 The coverage step, which gives every armour in your load order a UBE armature,

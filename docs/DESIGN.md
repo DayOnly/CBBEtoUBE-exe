@@ -1120,6 +1120,13 @@ reported through `_report_coverage_holds`:
   armour's armatures) plus 4 dismembered-body addons and 2 links of one choker
   from the user's UBE BodySlide build -- every one a UBE version of the same
   mesh. `CBBE2UBE_NO_COVERAGE_UBE_TWIN=1` turns it off.
+- **A claim path written with `meshes\` in front** (`#claim-meshes-prefix`). The
+  engine reads `meshes\!UBE\x_1.nif` and `!UBE\x_1.nif` as one file; the
+  SkyPatcher half of the claim test stripped the folder, the plugin half did not.
+  Live: 10 more armours claimed, all a softbody pack's own UBE nude suits, none
+  of them linked by us, 0 claims lost; #skip-already-ube then drops the suit's 2
+  meshes from conversion (the user's UBE BodySlide build of it wins the path in
+  game). `CBBE2UBE_NO_CLAIM_MESHES_PREFIX=1`.
 
 ---
 

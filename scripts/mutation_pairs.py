@@ -3316,4 +3316,36 @@ PAIRS = (
          tests=('tests/test_npc_worn_nonplayable.py',),
          expect=('test_a_direct_convert_asks_the_vfs_for_the_worn_piece',),
     ),
+    # #claim-meshes-prefix (2026-09-24): the plugin half of the third-party UBE
+    # claim compared `meshes\!UBE\...` as written, so a softbody pack's own UBE
+    # nude suits never read as covered.
+    Pair('CMP-a', 'the meshes folder is compared as written again',
+         edits=(
+             ('src/auto_convert.py',
+              '        if strip_meshes and rel.startswith("meshes/"):',
+              '        if False and rel.startswith("meshes/"):  # MUTATED', 1),
+         ),
+         tests=('tests/test_claim_meshes_prefix.py',),
+         expect=('test_the_folder_spelled_out_is_the_same_file',
+                 'test_the_switch_is_part_of_the_cache_key'),
+    ),
+    Pair('CMP-b', 'the off-switch no longer switches anything off',
+         edits=(
+             ('src/auto_convert.py',
+              '    strip_meshes = not _flag("CBBE2UBE_NO_CLAIM_MESHES_PREFIX", False)',
+              '    strip_meshes = True  # MUTATED', 1),
+         ),
+         tests=('tests/test_claim_meshes_prefix.py',),
+         expect=('test_switched_off_the_path_is_compared_as_written',
+                 'test_the_switch_is_part_of_the_cache_key'),
+    ),
+    Pair('CMP-c', 'a scan cached under one switch answers for the other',
+         edits=(
+             ('src/auto_convert.py',
+              '           recognise, strip_meshes)',
+              '           recognise)  # MUTATED', 1),
+         ),
+         tests=('tests/test_claim_meshes_prefix.py',),
+         expect=('test_the_switch_is_part_of_the_cache_key',),
+    ),
 )
