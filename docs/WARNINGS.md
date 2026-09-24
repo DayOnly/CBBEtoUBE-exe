@@ -6,7 +6,7 @@ current. A `!!` line is a problem; a `NOTE:` line is information. Each entry
 gives the line as it appears in the run log (`…` stands for the value printed
 at run time), what it means for the run, and what to do next.
 
-**67** problem warnings and **2** notes.
+**73** problem warnings and **3** notes.
 
 ## src/auto_convert.py
 
@@ -42,8 +42,27 @@ at run time), what it means for the run, and what to do next.
   - fix: check that mod before trusting this run
 - `!! … coverage validator: … warning(s)`
   - means: the lines below name what it found in the generated race coverage; read them before trusting this run's coverage
+- `!! [unified] … armour(s) of an excluded mod have no UBE armature from any mod -- --exclude-mods`
+  - means: they are not drawn on UBE-race actors
+  - fix: take the mod off the exclusion list to have them covered, or install a UBE patch for it
+- `!! [unified] … female model slot(s) kept their own unconverted mesh, and … body armature(s) were not minted (… armour(s) left without one), rather than take a converted MALE mesh`
+  - means: those pieces wear their unconverted mesh on UBE, or are not drawn on UBE-race actors, until their female mesh is converted
+  - fix: convert the mod that ships the female mesh
+- `NOTE: [unified] … female model slot(s) name a mesh that exists nowhere, so they keep the converted MALE mesh`
+  - means: the piece is drawn with the male mesh on UBE; with its own path it would not be drawn at all
+- `!! [unified] … body armature(s) were not minted because their female world mesh was not converted (… armour(s) left without one)`
+  - means: those body pieces are not drawn on UBE-race actors, rather than draw their unconverted CBBE mesh on the UBE body
+  - fix: convert the mod that ships the female mesh
+- `!! [unified] … hand/foot armature(s) draw the nude CBBE hands or feet, and the UBE body's own hands/feet were not found, so they were not minted (… armour(s) left without one)`
+  - means: those pieces are not drawn on UBE-race actors
+  - fix: build the UBE body's hands and feet in BodySlide
 - `!! [unified] could not scan for existing UBE patches (…)`
   - means: not excluding any
+- `!! [unified] … excluded mod name(s) match no mod folder: …`
+  - means: their armour is covered as if they were not excluded
+  - fix: use the mod's folder name exactly as MO2 shows it
+- `!! [unified] could not list the excluded mods' armour (…)`
+  - means: coverage may give an excluded mod's armour an armature
 - `!! unified coverage emission failed: …`
   - means: continuing with per-source coverage
 - `!! could not sweep orphaned temp files: … -- under …`

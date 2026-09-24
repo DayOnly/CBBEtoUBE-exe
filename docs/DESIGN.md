@@ -986,6 +986,82 @@ accumulates duplicate lines for one armor or takes the last is unverified, and t
 the only delivery path. The cost is that an armature shared across a chunk boundary is
 minted twice — measured at ~2%.
 
+### What the coverage passes leave alone
+
+The winner scan is the sole generator over every armour in the load order, so it
+also decides what it must NOT touch. Three rules, each reported in game on one
+follower (converted male Ebony boots on her UBE body):
+
+- **Armour an excluded mod defines** (`#exclude-owned-coverage`). `--exclude-mods`
+  used to remove a mod from the sources and nothing else. Owned means the ARMO's
+  DEFINING plugin ships in that mod's folder — of four readings, the only one that
+  caught all 14 of her minted armours (an overhaul patch wins 11 of their
+  overrides, and a BodySlide output supplies most of her meshes). Armour withheld
+  this way that no mod covers is named in a warning. The window's Select-mods run
+  passes its exclusion list as `--coverage-exclude-mods`, because coverage covers
+  the whole load order on every run. `CBBE2UBE_NO_EXCLUDE_OWNED_COVERAGE=1` covers
+  it again.
+- **Armour a SkyPatcher-delivered UBE patch already covers**
+  (`#skypatcher-patch-recognition`). SkyPatcher reads INIs nested inside its type
+  folders and recommends a subfolder for a plugin-named INI; the check read
+  `armor/*.ini` only. A UBE patch may also add an armature that keeps the source
+  mesh on the UBE races (a helmet, a wig): an added armature whose primary race is
+  a UBE_AllRace race counts when its mesh is a loose file and the patch's UBE
+  addons cover every biped slot of the armour. The ESP half keeps the `!UBE\` path
+  test. `CBBE2UBE_NO_SKYPATCHER_PATCH_RECOGNITION=1` restores the flat, path-only
+  read.
+- **A female slot is never filled from a converted MALE mesh when it names a mesh
+  of its own** (`#coverage-female-guard`). It keeps its source path (hands, feet,
+  accessories), or the armature is not minted (slot-32 body, like an unconverted
+  vest). A source with no female model, or a female path that exists nowhere
+  (loose or in any archive), keeps the male mesh — what the engine draws, and the
+  female-only selection's own rule for a dead path. Kept, not-minted and dead-path
+  slots are counted and warned; the no-female-model case is not.
+  `CBBE2UBE_NO_COVERAGE_FEMALE_GUARD=1` restores the fallback.
+
+### What a coverage armature may draw
+
+The body pass mints an armature per winning DefaultRace armature, and until
+09-24 three kinds of minted slot still drew a CBBE mesh on the UBE body. Each
+rule is judged per ARMATURE (its own BOD2, else the armour's), counted, and
+reported through `_report_coverage_holds`:
+
+- **A body armature needs a converted WORLD mesh** (`#coverage-world-mesh`).
+  Admission was "any of MOD2..MOD5 converted", so a converted first-person mesh
+  admitted a torso whose MOD3 was CBBE. Now a slot-32 armature is minted when
+  MOD3 was converted, or MOD3 is absent, empty or dead (exists nowhere) and MOD2
+  was converted — the same male-for-absent-female rule the female guard keeps.
+  It runs after the female guard, so the guard's counts are unchanged. Live: 87
+  armatures on 89 links, all with only first-person meshes converted (62 links
+  through one shared vanilla first-person torso); 88 armours lose their only
+  armature, 62 of them children's clothing (the user skips children entirely).
+  Hands/feet and slots 34/38 keep their source mesh by design and are not
+  touched. `CBBE2UBE_NO_COVERAGE_WORLD_MESH=1`.
+- **Nude hands and feet draw the UBE body's own** (`#coverage-nude-skin`). A
+  slot-33/37 armature whose MOD3 is `femalehands`/`femalefeet` under
+  `actors\character\character assets\` (folder AND exact basename: a basename
+  test alone catches real armour named after the body) is pointed at
+  `!UBE\Hands\femalehands_tangent_<w>.nif` / `!UBE\Feet\femalefeet_tangent_<w>.nif`,
+  the paths UBE's own naked armatures use, with MO3T dropped — only when that
+  mesh resolves (loose, overwrite or archive); otherwise it is not minted. An
+  armour that also lists a nude torso is a race skin: its nude parts are not
+  minted, since a UBE actor wears UBE's own skin. The validator's `missing-nif`
+  check looked only in our output and would have called these a startup-crash
+  risk; `validate_patch(mesh_resolves=...)` now accepts a path the coverage step
+  pointed outside on purpose and checked. Live: 4 armatures, 2 redirected (an
+  NPC costume's bare-feet boots and bare-hand gloves), 2 on a skin. The report
+  counts emptied armours per reason (skin or unresolved), and an armature a
+  skin skips but an item mints is not listed as left out.
+  `CBBE2UBE_NO_COVERAGE_NUDE_SKIN=1`.
+- **A hand-made UBE twin** (`#coverage-ube-twin`). Where our output has no
+  `!UBE\<path>` but a third-party mod ships one loose (never our output, never
+  an excluded mod, never MO2's overwrite), the minted slot points there. It only
+  moves where a slot points; it never admits an armature. The census moved 8
+  links: the 2 it was written for (boots and gloves reusing a UBE-patched
+  armour's armatures) plus 4 dismembered-body addons and 2 links of one choker
+  from the user's UBE BodySlide build -- every one a UBE version of the same
+  mesh. `CBBE2UBE_NO_COVERAGE_UBE_TWIN=1` turns it off.
+
 ---
 
 ## Effect-shader glow overlays

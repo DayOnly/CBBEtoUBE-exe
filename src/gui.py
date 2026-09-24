@@ -158,6 +158,31 @@ def preflight_scope(want_overlays: bool, overlay_copy_opt: bool) -> tuple:
     return (on, on and bool(overlay_copy_opt))
 
 
+def _armor_selection_argv(selected_mode: bool, picked, excluded) -> list:
+    """The armour-selection arguments for an `auto` run. Module level and pure so
+    it can be tested; `_build_argv` is a closure.
+
+    All mods: every excluded mod is `--exclude-mods` (not converted, and its
+    armour gets no coverage armature). Select mode is an explicit pick, so
+    exclusions do not gate conversion there -- but the coverage step rebuilds
+    armatures for the WHOLE load order on every run, so an excluded mod the user
+    did not pick is still passed, as `--coverage-exclude-mods`. Without it one
+    Select-mode reconvert covered the excluded mods' armour again.
+    #exclude-owned-coverage"""
+    a: list = []
+    if selected_mode:
+        for name in picked:
+            a += ["--only-mods", name]
+        chosen = {str(n).lower() for n in picked}
+        for name in excluded:
+            if str(name).lower() not in chosen:
+                a += ["--coverage-exclude-mods", name]
+    else:
+        for name in excluded:
+            a += ["--exclude-mods", name]
+    return a
+
+
 def _fmt_eta(seconds: float) -> str:
     """Human 'time left' string from a seconds estimate."""
     s = int(max(0, round(seconds)))
@@ -2639,16 +2664,12 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
             a.append("--overlays-only")
         elif do_overlay and do_armor:
             a.append("--convert-overlays")
-        # Armor selection. Exclusions apply to All-mods runs (Select mode is
-        # already an explicit pick, so exclusions don't gate it).
+        # Armor selection (see _armor_selection_argv).
         if do_armor:
-            if mode.get() == "selected":
-                for name, v in mod_vars.items():
-                    if v.get():
-                        a += ["--only-mods", name]
-            else:
-                for name in excl.excluded_names(state["exclusions"], "armor"):
-                    a += ["--exclude-mods", name]
+            a += _armor_selection_argv(
+                mode.get() == "selected",
+                [name for name, v in mod_vars.items() if v.get()],
+                excl.excluded_names(state["exclusions"], "armor"))
         # Overlay options + selection.
         if do_overlay:
             if overlay_copy.get():
