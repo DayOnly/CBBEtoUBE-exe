@@ -94,7 +94,15 @@ def test_no_lookup_converts_everything():
     assert ac._built_ube_twins(_pairs("armor/set/cuirass_1.nif"), None) == {}
 
 
-def test_an_earlier_copy_moves_out_of_meshes(tmp_path):
+@pytest.mark.parametrize("planned_only", [False, True],
+                         ids=["whole-base", "planned-only"])
+def test_an_earlier_copy_moves_out_of_meshes(tmp_path, monkeypatch, planned_only):
+    """Both ways of moving (#supersede-whole-base, and it switched off) take
+    the planned pair's `.tri` and `.xml` along."""
+    if planned_only:
+        monkeypatch.setenv("CBBE2UBE_NO_SUPERSEDE_WHOLE_BASE", "1")
+    else:
+        monkeypatch.delenv("CBBE2UBE_NO_SUPERSEDE_WHOLE_BASE", raising=False)
     out = tmp_path / "Out"
     root = out / "meshes" / "!UBE"
     d = root / "armor" / "set"

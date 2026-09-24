@@ -3380,6 +3380,7 @@ PAIRS = (
          tests=('tests/test_skip_built_ube_path.py',),
          expect=('test_the_planner_leaves_the_built_piece_and_converts_the_rest',),
     ),
+    # Since #supersede-whole-base this loop is the switched-off path.
     Pair('SBP-d', "the stale copy's morphs and physics stay behind",
          edits=(
              ('src/auto_convert.py',
@@ -3387,7 +3388,7 @@ PAIRS = (
               '        for f in (dst,):  # MUTATED', 1),
          ),
          tests=('tests/test_skip_built_ube_path.py',),
-         expect=('test_an_earlier_copy_moves_out_of_meshes',),
+         expect=('test_an_earlier_copy_moves_out_of_meshes[planned-only]',),
     ),
     Pair('SBP-e', 'a built twin never admits a body armature',
          edits=(
@@ -4121,5 +4122,15 @@ PAIRS = (
          ),
          tests=('tests/test_supersede_whole_base.py',),
          expect=('test_the_planner_records_the_base_it_left',),
+    ),
+    Pair('SWB-m', "the whole base's morphs and physics stay behind",
+         edits=(
+             ('src/auto_convert.py',
+              '        cand += [dst.with_name(stem + ".tri"), dst.with_name(stem + ".xml")]',
+              '        cand += []  # MUTATED', 1),
+         ),
+         tests=('tests/test_skip_built_ube_path.py', 'tests/test_supersede_whole_base.py'),
+         expect=('test_an_earlier_copy_moves_out_of_meshes[whole-base]',
+                 'test_a_filled_partner_moves_with_its_base'),
     ),
 )
