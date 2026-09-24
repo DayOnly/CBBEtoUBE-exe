@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+### Fixed — excluded mods and hand-made UBE patches are left alone, and female slots no longer get male meshes
+
+A follower wore converted male Ebony boots on her UBE body. Three causes:
+
+- `--exclude-mods` (the window's exclusion list) only stopped a mod being
+  converted; the coverage step still gave its armour UBE armatures. Armour an
+  excluded mod defines now gets none, on a Select-mods run too (unless you
+  picked that mod). Pieces of an excluded mod that no mod
+  covers for UBE are named in a warning, because they are not drawn on UBE-race
+  actors.
+- A hand-made UBE refit delivered by SkyPatcher from a subfolder of
+  `SKSE\Plugins\SkyPatcher\armor\` was not seen, so its armour was covered twice.
+  Subfolders are read now, and an added armature on the UBE races counts even
+  when it reuses the original mesh (a helmet, a wig), provided the patch covers
+  every slot of the armour. Measured on the reported modlist: all 11 pieces of
+  that refit recognised, no other armour affected.
+- When a female mesh had not been converted, the coverage step put the converted
+  MALE mesh in its place. A female slot now keeps its own mesh, or a body piece
+  is left out; the male mesh is used only where the armour has no female mesh or
+  names one that exists nowhere. Kept, left-out and dead-path slots are counted
+  and named in the log.
+
+For troubleshooting, `CBBE2UBE_NO_EXCLUDE_OWNED_COVERAGE`,
+`CBBE2UBE_NO_SKYPATCHER_PATCH_RECOGNITION` and
+`CBBE2UBE_NO_COVERAGE_FEMALE_GUARD` (set to 1) turn the three off.
+
 ### Fixed — leg cloth on BodySlide-built armour follows the legs, and a layered skirt follows the butt
 
 Armour converted from a BodySlide build ships a morph file for every shape, and

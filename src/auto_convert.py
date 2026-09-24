@@ -2294,6 +2294,13 @@ def _build_parser():
     # records at all, so there is nothing to rebase. The flag had decayed into a
     # no-op that was never read, while still advertising behaviour the tool no
     # longer has.
+    convert.add_argument("--exclude-mods", action="append", default=None,
+                         metavar="NAME",
+                         help="Mods whose armour the coverage step must leave "
+                              "alone (repeat the flag or comma-separate). `auto` "
+                              "passes its own --exclude-mods here; with "
+                              "`convert` the sources are named, so this only "
+                              "affects coverage.")
     convert.add_argument("--plugins-only", action="store_true",
                          dest="plugins_only",
                          help="ESP-only refresh: regenerate patch ESPs + merge "
@@ -2479,7 +2486,16 @@ def _build_parser():
                         help="Never convert these armor mods on an All-mods run "
                              "(repeat the flag or comma-separate). Use for mods "
                              "already built for UBE -- converting them would "
-                             "double-convert and break them.")
+                             "double-convert and break them. The armour they "
+                             "define gets no coverage armature either.")
+    auto_p.add_argument("--coverage-exclude-mods", action="append", default=None,
+                        metavar="NAME",
+                        help="Give the armour these mods define no coverage "
+                             "armature, without changing which mods are "
+                             "converted (repeat or comma-separate). The window "
+                             "passes its exclusion list here on a Select-mods "
+                             "run, because coverage covers the whole load order "
+                             "on every run.")
     auto_p.add_argument("--overlay-exclude-mods", action="append", default=None,
                         metavar="MOD",
                         help="Never convert overlays from these mods (repeat or "
@@ -2896,6 +2912,23 @@ def _third_party_ube_covered_armos(mods_root, enabled_names=None,
       * SkyPatcher: another mod's `armorAddonsToAdd` INI lines, which name their
         targets directly -- the same mechanism this tool uses.
 
+    #skypatcher-patch-recognition (2026-09-23). The SkyPatcher half read only
+    `armor/*.ini`, but SkyPatcher nests freely inside its type folders and
+    recommends a subfolder for a plugin-named INI. A follower's hand-made UBE
+    refit lives in `armor/<plugin>/<plugin>.esp.ini`: 11 lines, 0 read, and every
+    piece was double-covered in game (the report: male boots on her). Two of
+    its addons reuse the source mesh on the UBE races (a helmet and a wig need
+    no refit), so no `!UBE\` path could ever name them. Now the INIs are read
+    recursively, and an added addon also counts when its PRIMARY race is a
+    UBE_AllRace race and its mesh is a loose file -- but only when the UBE
+    addons a target receives cover every biped slot of that armour, because a
+    cape added to a cuirass must not stop the cuirass being covered. Measured
+    on the live modlist: 11 of 11 of that patch's targets, 0 other armours.
+    The ESP half keeps the path test (the same race test there moves 37 other
+    armours, most of one body mod's plugin, unverified).
+    CBBE2UBE_NO_SKYPATCHER_PATCH_RECOGNITION=1 restores `armor/*.ini` and the
+    path test alone.
+
     Best-effort and CACHED per (root, skip) -- an unreadable plugin is skipped,
     never fatal: failing to detect coverage costs a double-render, while a
     crash here would cost the whole run."""
@@ -2903,10 +2936,13 @@ def _third_party_ube_covered_armos(mods_root, enabled_names=None,
     from . import esp as _esp   # module scope has no esp import
     if mods_root is None:       # no modlist: no other mods to have patched it
         return set()            # #convert-needs-a-modlist
+    recognise = not _flag("CBBE2UBE_NO_SKYPATCHER_PATCH_RECOGNITION", False)
     # enabled_names belongs in the key: it changes the result, and in the
-    # long-lived GUI process the modlist can change between two scans.
+    # long-lived GUI process the modlist can change between two scans. So does
+    # the recognition switch.
     key = (str(mods_root), tuple(sorted(skip_mods)),
-           None if enabled_names is None else tuple(sorted(enabled_names)))
+           None if enabled_names is None else tuple(sorted(enabled_names)),
+           recognise)
     if key in _UBE_COVERED_CACHE:
         return _UBE_COVERED_CACHE[key]
     covered: set = set()
@@ -2970,23 +3006,41 @@ def _third_party_ube_covered_armos(mods_root, enabled_names=None,
     except OSError:
         _UBE_COVERED_CACHE[key] = covered
         return covered
+    mod_dirs = [md for md in mod_dirs
+                if md.name.lower() not in skip
+                and (enabled_names is None or md.name in enabled_names)
+                and not _is_our_own_output(md)]   # our own output, any folder name
+    # (a) SkyPatcher INIs -- DEFERRED. A line's targets only count if the
+    # armature it adds is itself UBE, and that armature can live in any mod, so
+    # the INIs cannot be judged until every plugin has been read. Read first so
+    # the plugin pass knows which armours' slots the race test needs.
+    _ini_glob = ("SKSE/Plugins/SkyPatcher/armor/**/*.ini" if recognise
+                 else "SKSE/Plugins/SkyPatcher/armor/*.ini")
     for md in mod_dirs:
-        if md.name.lower() in skip:
-            continue
-        if enabled_names is not None and md.name not in enabled_names:
-            continue
-        if _is_our_own_output(md):
-            continue        # our own output, under whatever folder name
-        # (a) SkyPatcher INIs -- DEFERRED. A line's targets only count if the
-        # armature it adds is itself UBE, and that armature can live in any
-        # mod, so the INIs cannot be judged until every plugin has been read.
-        for ini in md.glob("SKSE/Plugins/SkyPatcher/armor/*.ini"):
+        try:
+            inis = sorted(md.glob(_ini_glob))
+        except OSError:
+            # A recursive walk can meet an unreadable or over-long folder. That
+            # costs this mod's INIs, never the whole scan: an exception here
+            # empties EVERY exclusion and double-covers all third-party patches.
+            inis = []
+        for ini in inis:
             try:
                 pending_ini.append((md.name,
                                     ini.read_text(encoding="utf-8",
                                                   errors="replace")))
             except OSError:
                 continue
+    ini_targets: set = set()     # armours an INI line names (race test only)
+    race_armas: dict = {}        # abs -> (BOD2 slots, MOD3): UBE_AllRace-primary
+    armo_slots: dict = {}        # abs -> union of BOD2 slots over its records
+    if recognise:
+        for _mn, _txt in pending_ini:
+            for _ln in _txt.splitlines():
+                _f = _skypatcher_fields(_ln)
+                if _f.get("armorAddonsToAdd") and _f.get("filterByArmors"):
+                    ini_targets.update(_skypatcher_forms(_f["filterByArmors"]))
+    for md in mod_dirs:
         # (b) plugins that define a UBE ARMA and an ARMO pointing at it
         for pl in list(md.glob("*.esp")) + list(md.glob("*.esm")) + list(md.glob("*.esl")):
             try:
@@ -3039,6 +3093,33 @@ def _third_party_ube_covered_armos(mods_root, enabled_names=None,
                                 ube_fids.add(r.formid)
                                 ube_armas.add(_abs(r.formid))
                                 break
+                    if recognise:
+                        # #skypatcher-patch-recognition: an armature whose
+                        # PRIMARY race is a UBE_AllRace race, whatever its mesh
+                        # path. Judged only where an INI line adds it.
+                        _rn, _bod, _m3 = None, 0, ""
+                        for sig, dd in _esp.iter_subrecords(r.payload):
+                            if sig == b"RNAM" and len(dd) >= 4:
+                                _rn = _abs(_struct.unpack_from("<I", dd)[0])
+                            elif sig in (b"BOD2", b"BODT") and len(dd) >= 4:
+                                _bod = _struct.unpack_from("<I", dd)[0]
+                            elif sig == b"MOD3":
+                                _m3 = dd.rstrip(bytes(1)).decode("cp1252", "replace")
+                        if _rn is not None and _rn[0] == "ube_allrace.esp":
+                            race_armas[_abs(r.formid)] = (_bod, _m3)
+            if ini_targets:
+                for g in e.groups:
+                    if g.label != b"ARMO":
+                        continue
+                    for r in g.records:
+                        _a = _abs(r.formid)
+                        if _a not in ini_targets:
+                            continue
+                        for sig, dd in _esp.iter_subrecords(r.payload):
+                            if sig in (b"BOD2", b"BODT") and len(dd) >= 4:
+                                armo_slots[_a] = (armo_slots.get(_a, 0)
+                                                  | _struct.unpack_from("<I", dd)[0])
+                                break
             if not ube_fids:
                 continue
             for g in e.groups:
@@ -3055,7 +3136,31 @@ def _third_party_ube_covered_armos(mods_root, enabled_names=None,
                         continue
                     _add(_abs(r.formid), md.name)
 
+    # The race test's mesh gate: the same loose-files-only rule as
+    # `_ube_mesh_resolves`, for a path outside `!UBE\`. Asked only for the
+    # addons an INI line names, so a per-path probe beats indexing every mesh.
+    _loose_seen: dict = {}
+
+    def _race_mesh_resolves(model: str) -> bool:
+        rel = model.replace("\\", "/").lstrip("/")
+        if rel.lower().startswith("meshes/"):
+            rel = rel[7:]
+        if not rel:
+            return False
+        if _is_already_ube_model(rel):
+            return _ube_mesh_resolves(rel)
+        if rel.lower() not in _loose_seen:
+            def _is_file(p):
+                try:
+                    return p.is_file()
+                except OSError:
+                    return False      # unreadable: not proof the mesh exists
+            _loose_seen[rel.lower()] = any(
+                _is_file(md / "meshes" / rel) for md in mod_dirs)
+        return _loose_seen[rel.lower()]
+
     # (a, second pass) Now that every UBE armature is known, judge the INIs.
+    race_cover: dict = {}        # target -> [slots its race addons cover, mod]
     for mod_name, txt in pending_ini:
         for line in txt.splitlines():
             fields = _skypatcher_fields(line)
@@ -3070,9 +3175,31 @@ def _third_party_ube_covered_armos(mods_root, enabled_names=None,
             # addon, another body's compat patch -- would permanently remove
             # its targets from the only delivery path there is.
             if not any(a in ube_armas for a in _skypatcher_forms(addons)):
+                if not recognise:
+                    continue
+                # #skypatcher-patch-recognition: a UBE-race addon counts toward
+                # the slots it covers; the target is judged once every line
+                # has been read (a patch may add its pieces on several lines).
+                _slots, _hit = 0, False
+                for a in _skypatcher_forms(addons):
+                    _ra = race_armas.get(a)
+                    if _ra is not None and _race_mesh_resolves(_ra[1]):
+                        _slots |= _ra[0]
+                        _hit = True
+                if _hit:
+                    for t in _skypatcher_forms(targets):
+                        _rc = race_cover.setdefault(t, [0, mod_name])
+                        _rc[0] |= _slots
                 continue
             for t in _skypatcher_forms(targets):
                 _add(t, mod_name)
+    # A target counts only when its UBE addons cover EVERY slot the armour
+    # claims. An armour no enabled plugin defines cannot be checked, and is left
+    # to be covered (double-covering is the safe direction).
+    for t, (_slots, mod_name) in race_cover.items():
+        _need = armo_slots.get(t)
+        if _need is not None and not (_need & ~_slots):
+            _add(t, mod_name)
 
     # Per-mod attribution, kept for diagnostics. The exclusion set alone answers
     # "how many armors are already UBE-covered" but not "BY WHAT" -- and that is
@@ -3126,8 +3253,186 @@ def _print_coverage_warnings(label: str, stats: dict) -> None:
         print(f"       ... and {len(ws) - 5} more")
 
 
+def _armos_defined_by_mods(mods_root, mod_names, ordered_plugin_paths,
+                           missing: "list | None" = None) -> "tuple[set, dict]":
+    r"""#exclude-owned-coverage: the ARMOs an `--exclude-mods` mod OWNS, i.e. those
+    whose DEFINING plugin ships in that mod's folder.
+
+    Returned as {(plugin lowercase, formid low24)} -- the identity both coverage
+    generators key armours by -- plus {mod folder: count}.
+
+    WHY. `--exclude-mods` only ever removed a mod from the SOURCES; the winner
+    scan still minted armatures for its armour. Reported in game: a follower
+    excluded because a hand-made UBE refit exists wore converted male Ebony
+    boots, minted for her boots over a mesh another mod's conversion left behind.
+
+    Ownership is the DEFINING plugin, the user's call (2026-09-23) after a census
+    of four readings over that follower's 14 minted armours: defining plugin 14;
+    the load-order WINNING override 3 (an overhaul patch wins the rest, as it wins
+    78% of all coverage links in that modlist); the mesh the game loads 2 (a 3BA
+    BodySlide output supplies her meshes); the converter's loose source index 11.
+    A game master never sits in a mod folder here, so vanilla and DLC armour are
+    never withheld, and the `vanilla` pseudo-name (the vanilla-sweep switch) is
+    ignored. Only ACTIVE plugins count, read from the copy the game loads.
+
+    A folder whose name holds a comma arrives split by `_split_mod_arg` (the
+    CLI's comma separator); it matches when every piece of its name was given.
+    Names that match no folder are appended to `missing`, for a warning."""
+    from . import esp as _esp   # module scope has no esp import
+    owned: set = set()
+    per_mod: dict = {}
+    wanted = {str(n).strip().lower() for n in (mod_names or ()) if str(n).strip()}
+    wanted.discard("vanilla")
+    if mods_root is None or not wanted:
+        return owned, per_mod
+
+    def _named(d: Path) -> bool:
+        n = d.name.lower()
+        if n in wanted:
+            return True
+        parts = {p.strip() for p in n.split(",") if p.strip()}
+        return len(parts) > 1 and parts <= wanted
+    loaded = {Path(p).name.lower(): Path(p) for p in ordered_plugin_paths}
+    try:
+        folders = sorted(d for d in Path(mods_root).iterdir()
+                         if d.is_dir() and _named(d))
+    except OSError:
+        return owned, per_mod
+    if missing is not None:
+        found = set()
+        for d in folders:
+            found.add(d.name.lower())
+            found.update(p.strip() for p in d.name.lower().split(","))
+        missing.extend(sorted(wanted - found))
+    for md in folders:
+        for pl in sorted(list(md.glob("*.esp")) + list(md.glob("*.esm"))
+                         + list(md.glob("*.esl"))):
+            src = loaded.get(pl.name.lower())
+            if src is None:
+                continue          # not active: its armour is not in the game
+            try:
+                e = _esp.ESP.load(src)
+            except Exception:
+                continue
+            own_byte = len(e.header.masters)
+            name = src.name.lower()
+            for g in e.groups:
+                if g.label != b"ARMO":
+                    continue
+                for r in g.records:
+                    if (r.formid >> 24) < own_byte:
+                        continue      # an override of a master's armour
+                    ident = (name, r.formid & 0xFFFFFF)
+                    if ident not in owned:
+                        owned.add(ident)
+                        per_mod[md.name] = per_mod.get(md.name, 0) + 1
+    return owned, per_mod
+
+
+def _mesh_exists_anywhere(output) -> "callable[[str], bool] | None":
+    r"""#coverage-female-guard: does a source mesh exist ANYWHERE the game reads
+    it -- loose in an enabled mod or the game Data, or in any archive? A mesh in a
+    texture-named BSA still loads, so only the voice/sound/facegen archives are
+    skipped (the batch index skips texture BSAs too: one real female mesh in the
+    reported modlist lives in one).
+
+    Asked only where a female slot would otherwise take the male mesh, so both
+    lookups are lazy: a per-path probe for loose files, and one table scan of the
+    archives on the first path not found loose. None when the modlist cannot be
+    read -- the guard then treats every named path as present."""
+    try:
+        lay = paths.discover_layout()
+        mr = paths.mods_root()
+        order = paths.enabled_mods_ordered(lay)
+    except Exception:
+        return None
+    if mr is None or not order:
+        return None
+    out_name = Path(output).name.lower()
+    dirs = [Path(mr) / n for n in order if n.lower() != out_name]
+    # MO2's overwrite holds whatever BodySlide built through MO2.
+    try:
+        _ow = paths.overwrite_dir(lay)
+    except Exception:
+        _ow = None
+    loose_dirs = ([Path(_ow)] if _ow is not None else []) + dirs
+    dirs += [Path(d) for d in (lay.game_data_dirs or []) if Path(d) not in dirs]
+    loose_dirs += [d for d in dirs if d not in loose_dirs]
+    bsa = _BsaMeshIndex(dirs, None,
+                        skip_bsa=("voice", " sound", "sounds", "- snd", "facegen"))
+    seen: dict = {}
+
+    def _is_file(p: Path) -> bool:
+        try:
+            return p.is_file()
+        except OSError:
+            return False      # an unreadable folder costs itself, not the pass
+
+    def exists(model: str) -> bool:
+        rel = str(model or "").replace("\\", "/").lstrip("/").lower()
+        if rel.startswith("meshes/"):
+            rel = rel[7:]
+        if not rel:
+            return False
+        if rel not in seen:
+            seen[rel] = (any(_is_file(d / "meshes" / rel) for d in loose_dirs)
+                         or bsa.contains(rel))
+        return seen[rel]
+    return exists
+
+
+def _report_coverage_holds(stats: "list[dict]") -> None:
+    """Say what the two coverage passes held back, in counts and a few names:
+    armour of an excluded mod left without an armature (#exclude-owned-coverage)
+    and female slots that did not take a converted MALE mesh
+    (#coverage-female-guard). Silent when there is nothing to say."""
+    withheld = [w for s in stats for w in (s.get("withheld") or [])]
+    kept = [k for s in stats for k in (s.get("female_kept") or [])]
+    dead = [k for s in stats for k in (s.get("female_dead_male") or [])]
+    skipped = [k for s in stats for k in (s.get("female_guard_skipped") or [])]
+    dropped = [d for s in stats for d in (s.get("female_guard_dropped") or [])]
+    if withheld:
+        warn(f"[unified] {len(withheld)} armour(s) of an excluded mod have no UBE "
+             "armature from any mod",
+             where="--exclude-mods",
+             consequence="they are not drawn on UBE-race actors",
+             fix="take the mod off the exclusion list to have them covered, or "
+                 "install a UBE patch for it")
+        for (pl, fid), edid in withheld[:5]:
+            print(f"       {edid or '?'}  ({pl}|{fid:06X})")
+        if len(withheld) > 5:
+            print(f"       ... and {len(withheld) - 5} more")
+    if kept or skipped:
+        warn(f"[unified] {len(kept)} female model slot(s) kept their own unconverted "
+             f"mesh, and {len(skipped)} body armature(s) were not minted "
+             f"({len(dropped)} armour(s) left without one), rather than take a "
+             "converted MALE mesh",
+             consequence="those pieces wear their unconverted mesh on UBE, or are "
+                         "not drawn on UBE-race actors, until their female mesh "
+                         "is converted",
+             fix="convert the mod that ships the female mesh")
+        for k in kept[:5]:
+            print(f"       {k['slot']} {k['kept']}  (not {k['male']})")
+        if len(kept) > 5:
+            print(f"       ... and {len(kept) - 5} more")
+        for (pl, fid), edid in dropped[:5]:
+            print(f"       not covered: {edid or '?'}  ({pl}|{fid:06X})")
+    if dead:
+        # A NOTE: this is the behaviour from before the guard, kept on purpose.
+        warn(f"[unified] {len(dead)} female model slot(s) name a mesh that exists "
+             "nowhere, so they keep the converted MALE mesh",
+             consequence="the piece is drawn with the male mesh on UBE; with its "
+                         "own path it would not be drawn at all",
+             level=NOTE)
+        for k in dead[:5]:
+            print(f"       {k['slot']} {k['dead']}  (-> {k['male']})")
+        if len(dead) > 5:
+            print(f"       ... and {len(dead) - 5} more")
+
+
 def _emit_unified_coverage_patches(output, patches_dir, master_data_dirs,
-                                   merged_name) -> "tuple[bool, int, bool]":
+                                   merged_name,
+                                   exclude_mods=()) -> "tuple[bool, int, bool]":
     r"""Step 3b: run the winner-scan coverage passes as the PRIMARY generator and
     drop their patch ESPs + `.skypatcher.json` sidecars into the patches dir, so
     the auto-merge folds them straight into the Combined family (the merge dedups
@@ -3145,7 +3450,11 @@ def _emit_unified_coverage_patches(output, patches_dir, master_data_dirs,
     converted `!UBE\` meshes. That is legitimate on a fresh output, but it makes
     the coverage PARTIAL -- it carries no body links at all -- so the caller must
     not then treat it as the sole generator and discard the per-source patches,
-    which in that state are the only thing carrying body coverage."""
+    which in that state are the only thing carrying body coverage.
+
+    `exclude_mods`: the run's --exclude-mods. Armour those mods define gets no
+    armature from either pass (#exclude-owned-coverage, `_armos_defined_by_mods`);
+    CBBE2UBE_NO_EXCLUDE_OWNED_COVERAGE=1 covers it again, as before."""
     total_targets = 0
     try:
         # Leave armors alone that ANOTHER mod already patched for UBE --
@@ -3206,21 +3515,48 @@ def _emit_unified_coverage_patches(output, patches_dir, master_data_dirs,
         excl |= _combined_output_names(merged_name, ordered)
         print("\n--- unified coverage: winner-scan patches -> merge "
               "(folding into Combined) ---")
+        # #exclude-owned-coverage: armour an excluded mod defines is left alone.
+        _withheld_abs: set = set()
+        if exclude_mods and not _flag("CBBE2UBE_NO_EXCLUDE_OWNED_COVERAGE", False):
+            try:
+                _unfound: list = []
+                _withheld_abs, _per_mod = _armos_defined_by_mods(
+                    paths.mods_root(), exclude_mods, ordered, missing=_unfound)
+                print(f"  [unified] --exclude-mods: {len(_withheld_abs)} armour(s) "
+                      f"defined by {len(_per_mod)} excluded mod(s) get no "
+                      "armature from this run")
+                if _unfound:
+                    warn(f"[unified] {len(_unfound)} excluded mod name(s) match no "
+                         f"mod folder: {', '.join(_unfound[:5])}",
+                         consequence="their armour is covered as if they were not "
+                                     "excluded",
+                         fix="use the mod's folder name exactly as MO2 shows it")
+            except Exception as _e:
+                _withheld_abs = set()
+                warn(f"[unified] could not list the excluded mods' armour "
+                     f"({plain_error(_e)})",
+                     consequence="coverage may give an excluded mod's armour an "
+                                 "armature")
         # Converted-mesh set FIRST: both coverage passes need it so a piece whose
         # OWN mesh was converted points at the !UBE\ mesh, not source. #mnb-converted-redirect
         ube_root = Path(output) / "meshes" / "!UBE"
         conv_rel = {n.relative_to(ube_root).as_posix().lower()
                     for n in ube_root.rglob("*.nif")} if ube_root.is_dir() else set()
+        # #coverage-female-guard: which female paths are dead (exist nowhere).
+        _fexists = (_mesh_exists_anywhere(output)
+                    if ube_patcher._coverage_female_guard() else None)
         nb_out = patches_dir / "UBE_ModNonBody_Coverage UBE patch.esp"
         nb = ube_patcher.generate_modded_nonbody_ube_coverage_patch(
             nb_out, ordered, converted_rel_paths=conv_rel,
             exclude_armo_abs=_ube_excl, exclude_names=excl,
             master_data_dirs=master_data_dirs, cover_all=True,
-            preserve_textures=True, emit_sidecar=True)
+            preserve_textures=True, emit_sidecar=True,
+            withheld_armo_abs=_withheld_abs, female_mesh_exists=_fexists)
         total_targets += int(nb.get("armo_targets") or 0)
         print(f"  non-body: minted {nb.get('minted_armas')} | "
               f"targets {nb.get('armo_targets')}")
         _print_coverage_warnings("non-body", nb)
+        _held = [nb]
         if conv_rel:
             bd_out = patches_dir / "UBE_ModBody_Coverage UBE patch.esp"
             bd = ube_patcher.generate_modded_body_ube_coverage_patch(
@@ -3228,13 +3564,16 @@ def _emit_unified_coverage_patches(output, patches_dir, master_data_dirs,
                 exclude_armo_abs=_ube_excl, exclude_names=excl,
                 master_data_dirs=master_data_dirs,
                 cover_all=True, cover_hands_feet=True, preserve_textures=True,
-                emit_sidecar=True)
+                emit_sidecar=True, withheld_armo_abs=_withheld_abs,
+                female_mesh_exists=_fexists)
             total_targets += int(bd.get("armo_targets") or 0)
             print(f"  body+hands/feet: minted {bd.get('minted_armas')} | "
                   f"targets {bd.get('armo_targets')} | "
                   f"src-primary HF via preserved-race mint")
             _print_coverage_warnings("body", bd)
-        else:
+            _held.append(bd)
+        _report_coverage_holds(_held)
+        if not conv_rel:
             print("  body+hands/feet: SKIPPED -- no converted !UBE meshes "
                   "found, so this coverage carries NO body links")
         return (True, total_targets, bool(conv_rel))
@@ -3948,7 +4287,9 @@ def _cmd_convert(args):
                 _cov_ok, _cov_targets, _cov_body = \
                     _emit_unified_coverage_patches(
                         output, patches_dir, batch_master_data_dirs,
-                        args.merged_name)
+                        args.merged_name,
+                        exclude_mods=_split_mod_arg(
+                            getattr(args, "exclude_mods", None)) or ())
                 _coverage_ran = True
                 if not _cov_ok:
                     # Record it. Coverage failing silently is the worst outcome
@@ -4809,8 +5150,12 @@ class _BsaMeshIndex:
     _SKIP_BSA = ("texture", "voice", " sound", "sounds", "- snd", "facegen")
 
     def __init__(self, enabled_mod_dirs, staging_dir,
-                 bsa_name_prefixes=None):
+                 bsa_name_prefixes=None, skip_bsa=None):
         self._dirs = list(enabled_mod_dirs)   # MO2 priority order (highest first)
+        # A caller asking "does this mesh exist AT ALL" passes its own skip list:
+        # a mesh shipped in a texture-named archive still exists in game.
+        if skip_bsa is not None:
+            self._SKIP_BSA = tuple(skip_bsa)
         # None = lookup-only: extract() refuses, so the index can never write a
         # file (the setup check builds one this way). #tool-folder-only
         self._staging = Path(staging_dir) if staging_dir is not None else None
@@ -6347,6 +6692,11 @@ def _cmd_auto(args):
         render_previews=False, mods_root=mr,
         incremental=getattr(args, "incremental", False),
         plugins_only=getattr(args, "plugins_only", False),
+        # The coverage winner scan must leave the excluded mods' armour alone
+        # too, not only skip their meshes -- on a Select-mods run as well, where
+        # the window passes them as --coverage-exclude-mods. #exclude-owned-coverage
+        exclude_mods=(_user_excl + (_split_mod_arg(
+            getattr(args, "coverage_exclude_mods", None)) or [])) or None,
     )
     rc = _cmd_convert(conv)
     # Failures of anything that runs AFTER `rc` was fixed by the convert above,

@@ -447,6 +447,32 @@ def _arma_dedup_identity(arma_payload: bytes):
 MERGE_DEDUP_ARMAS = not _flag("CBBE2UBE_NO_MERGE_DEDUP", False)
 
 
+def _coverage_female_guard() -> bool:
+    r"""#coverage-female-guard (2026-09-23): may a coverage armature fill a female
+    slot that names its OWN mesh with the converted MALE mesh? No, by default.
+
+    `rebuild_arma_payload` redirects an unconverted MOD3/MOD5 to the converted
+    MOD2/MOD4. In the coverage generators nothing logged it and nothing undid it
+    (`restore_female_models` reads only the per-source sidecars, and runs before
+    coverage). Reported in game: a follower wore converted male Ebony boots on
+    her UBE body; her own female boots were never converted because her mod was
+    excluded. Measured over the live pack: 9 world + 4 first-person female slots
+    took a male mesh, on 17 armours -- a ranger cuirass, a toolbelt given a whole
+    male studded body.
+
+    With the guard, a female slot takes a converted female mesh or its own
+    source path. A slot-32 body armature whose world female mesh would have
+    needed the male one is not minted, as the body pass already does for an
+    unconverted vest. A source with NO female model keeps the male one there --
+    that is what the engine draws for a female anyway, and is not reported. So
+    does a female path whose mesh exists NOWHERE, loose or in any archive (user,
+    09-24): a dead path draws nothing, the case the female-only selection (#174)
+    already keeps the male mesh for; 8 of the live slots are dead. Kept, dead
+    and not-minted slots are counted and warned.
+    CBBE2UBE_NO_COVERAGE_FEMALE_GUARD=1 restores the fallback."""
+    return not _flag("CBBE2UBE_NO_COVERAGE_FEMALE_GUARD", False)
+
+
 # Subrecords that do NOT affect how the addon RENDERS, so they're excluded from
 # the merge record-dedup key: the editor id, and the CK-generated model
 # texture-HASH blocks (MODT-equivalents) for each of the 4 gendered models. Two
@@ -875,7 +901,11 @@ def rebuild_arma_payload(source_payload: bytes, *,
                          alt_texture_fid_remap: "callable[[int], int] | None" = None,
                          converted_nif_exists: "callable[[str], bool] | None" = None,
                          ensure_female: bool = True,
-                         male_fallback_log: "list | None" = None) -> bytes:
+                         male_fallback_log: "list | None" = None,
+                         keep_named_female: bool = False,
+                         declined_log: "list | None" = None,
+                         female_mesh_exists: "callable[[str], bool] | None" = None,
+                         ) -> bytes:
     """Take a source ARMA payload and produce the UBE-targeted variant.
 
     Modifications:
@@ -894,6 +924,13 @@ def rebuild_arma_payload(source_payload: bytes, *,
     `converted_nif_exists(model_path)`: predicate returning True if a converted
     NIF exists at `<output>/meshes/<path_prefix><model_path>`. None => always
     prefix (legacy behavior, for callers without output context).
+
+    `keep_named_female` (#coverage-female-guard): a MOD3/MOD5 that names a mesh
+    of its own keeps that path when it was not converted, instead of taking the
+    converted male mesh. An absent or empty female slot is still filled from the
+    male one, and so is one whose mesh `female_mesh_exists` says exists nowhere
+    (None = assume it exists). Each slot kept is appended to `declined_log` as
+    {"slot", "kept", "male"}, each dead one as {"slot", "dead", "male"}.
 
     EDID is left untouched here (the caller can post-process).
     """
@@ -934,8 +971,24 @@ def rebuild_arma_payload(source_payload: bytes, *,
             # nothing. Redirect MOD3/MOD5 to the converted male mesh and drop the
             # now-mismatched texture-hash. Non-body (helmets) are unaffected
             # because their MOD2 isn't converted either, so conv_mod2 stays None.
-            if (sig == b"MOD3" and not converted and ensure_female
-                    and conv_mod2):
+            _male = (conv_mod2 if sig == b"MOD3" else
+                     conv_mod4 if sig == b"MOD5" else None)
+            _fallback = bool(_male) and not converted and ensure_female
+            # keep_named_female: a female slot naming its OWN mesh keeps it --
+            # unless that mesh exists nowhere (a dead path draws nothing, so the
+            # male mesh stays, as the female-only selection decided). Asked only
+            # where the male mesh would be used.
+            _keep = _named_dead = False
+            if _fallback and keep_named_female and path:
+                # The lookup gets the path as the game reads it (cp1252); the
+                # utf-8 decode above drops non-ASCII bytes. #coverage-female-guard
+                _probe = data.rstrip(b"\x00").decode("cp1252", "replace")
+                _keep = female_mesh_exists is None or female_mesh_exists(_probe)
+                _named_dead = not _keep
+            if _named_dead and declined_log is not None:
+                declined_log.append({"slot": sig.decode(), "dead": path,
+                                     "male": _male})
+            if sig == b"MOD3" and _fallback and not _keep:
                 out += esp.encode_subrecord(b"MOD3", esp.encode_zstring(conv_mod2))
                 saw_mod3 = True
                 skip_mo3t = True
@@ -945,8 +998,7 @@ def rebuild_arma_payload(source_payload: bytes, *,
                     # original female mesh is later found in the output.
                     male_fallback_log.append(
                         {"slot": "MOD3", "orig": path, "to": conv_mod2})
-            elif (sig == b"MOD5" and not converted and ensure_female
-                    and conv_mod4):
+            elif sig == b"MOD5" and _fallback and not _keep:
                 out += esp.encode_subrecord(b"MOD5", esp.encode_zstring(conv_mod4))
                 saw_mod5 = True
                 skip_mo5t = True
@@ -955,6 +1007,9 @@ def rebuild_arma_payload(source_payload: bytes, *,
                         {"slot": "MOD5", "orig": path, "to": conv_mod4})
             else:
                 out += esp.encode_subrecord(sig, esp.encode_zstring(new_path))
+                if _keep and declined_log is not None:
+                    declined_log.append({"slot": sig.decode(), "kept": path,
+                                         "male": _male})
                 if sig == b"MOD3":
                     saw_mod3 = True
                 elif sig == b"MOD5":
@@ -3215,6 +3270,8 @@ def generate_modded_nonbody_ube_coverage_patch(
     cover_all: bool = False,
     emit_sidecar: bool = False,
     preserve_textures: bool = False,
+    withheld_armo_abs: "set[tuple[str, int]] | None" = None,
+    female_mesh_exists: "callable[[str], bool] | None" = None,
     author: str = "cbbe-to-ube modded non-body UBE coverage",
     description: str = "UBE race coverage for mod-defined non-body armor",
 ) -> dict:
@@ -3228,10 +3285,18 @@ def generate_modded_nonbody_ube_coverage_patch(
     items too, mirroring the body pass's cover_all: NPC-only helmets/jewelry on a
     UBE-race NPC go invisible without it. The armature-level DefaultRace filter
     (below) is still the beast-race guard, so this stays crash-safe. Default False
-    keeps today's playable-only fallback behavior. Returns a stats dict."""
+    keeps today's playable-only fallback behavior. Returns a stats dict.
+
+    `withheld_armo_abs` (#exclude-owned-coverage): ARMOs to leave alone although
+    they pass every filter -- armour the user excluded. Tested last, so the
+    `withheld` stat counts exactly the armours this left without our armature."""
     out_path = Path(output_esp_path)
     exclude = {n.lower() for n in (exclude_names or set())}
     DEFAULT_RACE = ("skyrim.esm", _DEFAULT_RACE_LOW24)
+    _female_guard = _coverage_female_guard()
+    withheld: list = []        # (armo_abs, edid) left alone for --exclude-mods
+    female_kept: list = []     # female slots that kept their own mesh (guard)
+    female_dead: list = []     # dead female paths: the male mesh stays (guard)
 
     # ---- Pass 1: load-order winners for ARMA + ARMO (last wins) ----
     arma_win: dict = {}   # abs -> (payload, masters, plugin, rnam_abs, is_ube)
@@ -3303,6 +3368,9 @@ def generate_modded_nonbody_ube_coverage_patch(
         to_mint = [x for x, v in winning if v[3] == DEFAULT_RACE]
         if not to_mint:
             continue
+        if withheld_armo_abs and armo_abs in withheld_armo_abs:
+            withheld.append((armo_abs, edid))     # #exclude-owned-coverage
+            continue
         targets.append((armo_abs, plugin_case.get(armo_abs[0], armo_abs[0]),
                         to_mint))
         for x in to_mint:
@@ -3363,6 +3431,7 @@ def generate_modded_nonbody_ube_coverage_patch(
     for arma_abs in mint_set:
         payload, m2, n2, _rn, _u = arma_win[arma_abs]
         minted_payload = None
+        _declined: list = []     # per attempt: a failed preserve must not count
         if preserve_textures:
             # Keep the alt-texture set (MO?S) + skin swaps (NAM0-3), remapping their
             # TXST FormIDs into this ESP's master space so a texture variant renders
@@ -3380,10 +3449,13 @@ def generate_modded_nonbody_ube_coverage_patch(
                     new_additional_race_fids=ube_races_patch,
                     alt_texture_fid_remap=_remap,                # MO?S -> patch space
                     converted_nif_exists=_conv_exists,
+                    keep_named_female=_female_guard, declined_log=_declined,
+                    female_mesh_exists=female_mesh_exists,
                 )
                 preserved_count += 1
             except Exception as _e:      # unresolvable master -> strip fallback
                 minted_payload = None
+                _declined = []
                 preserve_fallbacks.append((arma_abs[0], arma_abs[1], repr(_e)))
         if minted_payload is None:
             stripped = b"".join(
@@ -3394,7 +3466,12 @@ def generate_modded_nonbody_ube_coverage_patch(
                 new_primary_rnam=ube_primary_patch,
                 new_additional_race_fids=ube_races_patch,
                 converted_nif_exists=_conv_exists,  # redirect to !UBE\ where converted
+                keep_named_female=_female_guard, declined_log=_declined,
+                female_mesh_exists=female_mesh_exists,
             )
+        for d in _declined:
+            (female_dead if "dead" in d else female_kept).append(
+                {"arma": f"{arma_abs[0]}|{arma_abs[1]:X}", **d})
         new_fid = (own_byte << 24) | next_id
         next_id += 1
         new_edid = "UBE_MNB_{:X}".format(arma_abs[1])
@@ -3433,6 +3510,9 @@ def generate_modded_nonbody_ube_coverage_patch(
         "validation_warnings": warnings,
         "textures_preserved": preserved_count,
         "texture_fallbacks": len(preserve_fallbacks),
+        "withheld": withheld,
+        "female_kept": female_kept,
+        "female_dead_male": female_dead,
     }
 
 
@@ -3449,6 +3529,8 @@ def generate_modded_body_ube_coverage_patch(
     cover_hands_feet: bool = False,
     preserve_textures: bool = False,
     emit_sidecar: bool = False,
+    withheld_armo_abs: "set[tuple[str, int]] | None" = None,
+    female_mesh_exists: "callable[[str], bool] | None" = None,
     author: str = "cbbe-to-ube modded body UBE coverage",
     description: str = "UBE race coverage for mod-defined body armor variants",
 ) -> dict:
@@ -3467,14 +3549,38 @@ def generate_modded_body_ube_coverage_patch(
     never patched. Mints a UBE-primary ARMA per source armature with the model
     redirected to the !UBE mesh; adds it via SkyPatcher. Only armatures with an
     actual !UBE conversion are minted (unconverted CBBE mesh on UBE would clip).
-    Returns stats."""
+    Returns stats.
+
+    `withheld_armo_abs`: as in the non-body pass (#exclude-owned-coverage)."""
     out_path = Path(output_esp_path)
     exclude = {n.lower() for n in (exclude_names or set())}
     DEFAULT_RACE = ("skyrim.esm", _DEFAULT_RACE_LOW24)
     crp = converted_rel_paths or set()
+    _female_guard = _coverage_female_guard()
+    withheld: list = []        # (armo_abs, edid) left alone for --exclude-mods
+    female_kept: list = []     # female slots that kept their own mesh (guard)
+    female_dead: list = []     # dead female paths: the male mesh stays (guard)
+    guard_skipped: list = []   # body armatures not minted: only the male was converted
+    guard_dropped: list = []   # ARMOs left with nothing to mint by that
 
     def _conv_exists(model_path: str) -> bool:
         return _converted_model_exists(model_path, crp)
+
+    def _female_world_needs_male(payload: bytes) -> bool:
+        """Would `rebuild_arma_payload` fill this armature's female WORLD slot
+        from its converted male mesh although the female mesh exists? MOD3 names
+        a mesh that was not converted, MOD2 (before it in the record) was, and
+        the MOD3 mesh exists somewhere. Same test, same order."""
+        conv2 = False
+        for sig, d in esp.iter_subrecords(payload):
+            if sig == b"MOD2":
+                conv2 = _conv_exists(d.rstrip(b"\x00").decode("utf-8", "ignore"))
+            elif sig == b"MOD3":
+                p = d.rstrip(b"\x00").decode("utf-8", "ignore")
+                return (bool(p) and not _conv_exists(p) and conv2
+                        and (female_mesh_exists is None or female_mesh_exists(
+                            d.rstrip(b"\x00").decode("cp1252", "replace"))))
+        return False
 
     def _arma_models(payload: bytes) -> "list[str]":
         return [d.rstrip(b"\x00").decode("utf-8", "ignore")
@@ -3606,6 +3712,31 @@ def generate_modded_body_ube_coverage_patch(
                                      & _BIPED_SLOT_HANDS_FEET_BITS)))]
         if not to_mint:
             continue
+        # Withheld BEFORE the guard below, so an excluded armour the guard would
+        # also have emptied is still named as withheld. #exclude-owned-coverage
+        _withhold = bool(withheld_armo_abs) and armo_abs in withheld_armo_abs
+        if _withhold:
+            withheld.append((armo_abs, edid))
+            continue
+        # #coverage-female-guard: a converted MALE mesh does not qualify a TORSO
+        # armature whose own female mesh was not converted -- minting it would put
+        # the male mesh on the female body. Judged per ARMATURE (its own BOD2, else
+        # the armour's): the gauntlets armature of a cuirass-and-gauntlets armour
+        # is hands, and like slot 33/34/37/38 it stays minted with its female slot
+        # on its source path (rebuild_arma_payload).
+        if _female_guard and _is_body and to_mint:
+            _male_only = [x for x in to_mint
+                          if ((_arma_bod2_slots(arma_win[x][0]) or slots)
+                              & _BIPED_SLOT_BODY_BIT)
+                          and _female_world_needs_male(arma_win[x][0])]
+            if _male_only:
+                to_mint = [x for x in to_mint if x not in _male_only]
+                for x in _male_only:              # distinct armatures: one is
+                    if x not in guard_skipped:    # often shared by many variants
+                        guard_skipped.append(x)
+                if not to_mint:
+                    guard_dropped.append((armo_abs, edid))
+                    continue
         targets.append((armo_abs, plugin_case.get(armo_abs[0], armo_abs[0]),
                         to_mint))
         for x in to_mint:
@@ -3704,6 +3835,7 @@ def generate_modded_body_ube_coverage_patch(
                     remap_src_fid=_remap_race, src_to_patch_byte=_s2p,
                     ube_primary=ube_primary_patch, ube_additional=ube_races_patch)
         minted_payload = None
+        _declined: list = []     # per attempt: a failed preserve must not count
         if preserve_textures:
             def _remap(fid: int, _sm=m2, _sn=n2) -> int:
                 return remap_fid(fid, _sm, _sn, patch_masters)
@@ -3718,10 +3850,13 @@ def generate_modded_body_ube_coverage_patch(
                     new_additional_race_fids=_addl,
                     alt_texture_fid_remap=_remap,             # MO?S -> patch space
                     converted_nif_exists=_conv_exists,
+                    keep_named_female=_female_guard, declined_log=_declined,
+                    female_mesh_exists=female_mesh_exists,
                 )
                 preserved_count += 1
             except Exception as _e:      # unresolvable master -> strip fallback
                 minted_payload = None
+                _declined = []
                 preserve_fallbacks.append((arma_abs[0], arma_abs[1], repr(_e)))
         if minted_payload is None:
             stripped = b"".join(
@@ -3732,7 +3867,12 @@ def generate_modded_body_ube_coverage_patch(
                 new_primary_rnam=_prim,
                 new_additional_race_fids=_addl,
                 converted_nif_exists=_conv_exists,   # redirect model -> !UBE\ where converted
+                keep_named_female=_female_guard, declined_log=_declined,
+                female_mesh_exists=female_mesh_exists,
             )
+        for d in _declined:
+            (female_dead if "dead" in d else female_kept).append(
+                {"arma": f"{arma_abs[0]}|{arma_abs[1]:X}", **d})
         new_fid = (own_byte << 24) | next_id
         next_id += 1
         new_edid = "UBE_MBD_{:X}".format(arma_abs[1])
@@ -3772,6 +3912,11 @@ def generate_modded_body_ube_coverage_patch(
         "validation_warnings": warnings,
         "textures_preserved": preserved_count,
         "texture_fallbacks": len(preserve_fallbacks),
+        "withheld": withheld,
+        "female_kept": female_kept,
+        "female_dead_male": female_dead,
+        "female_guard_skipped": [f"{a[0]}|{a[1]:X}" for a in guard_skipped],
+        "female_guard_dropped": guard_dropped,
     }
 
 

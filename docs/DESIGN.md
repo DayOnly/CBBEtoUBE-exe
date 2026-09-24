@@ -986,6 +986,39 @@ accumulates duplicate lines for one armor or takes the last is unverified, and t
 the only delivery path. The cost is that an armature shared across a chunk boundary is
 minted twice — measured at ~2%.
 
+### What the coverage passes leave alone
+
+The winner scan is the sole generator over every armour in the load order, so it
+also decides what it must NOT touch. Three rules, each reported in game on one
+follower (converted male Ebony boots on her UBE body):
+
+- **Armour an excluded mod defines** (`#exclude-owned-coverage`). `--exclude-mods`
+  used to remove a mod from the sources and nothing else. Owned means the ARMO's
+  DEFINING plugin ships in that mod's folder — of four readings, the only one that
+  caught all 14 of her minted armours (an overhaul patch wins 11 of their
+  overrides, and a BodySlide output supplies most of her meshes). Armour withheld
+  this way that no mod covers is named in a warning. The window's Select-mods run
+  passes its exclusion list as `--coverage-exclude-mods`, because coverage covers
+  the whole load order on every run. `CBBE2UBE_NO_EXCLUDE_OWNED_COVERAGE=1` covers
+  it again.
+- **Armour a SkyPatcher-delivered UBE patch already covers**
+  (`#skypatcher-patch-recognition`). SkyPatcher reads INIs nested inside its type
+  folders and recommends a subfolder for a plugin-named INI; the check read
+  `armor/*.ini` only. A UBE patch may also add an armature that keeps the source
+  mesh on the UBE races (a helmet, a wig): an added armature whose primary race is
+  a UBE_AllRace race counts when its mesh is a loose file and the patch's UBE
+  addons cover every biped slot of the armour. The ESP half keeps the `!UBE\` path
+  test. `CBBE2UBE_NO_SKYPATCHER_PATCH_RECOGNITION=1` restores the flat, path-only
+  read.
+- **A female slot is never filled from a converted MALE mesh when it names a mesh
+  of its own** (`#coverage-female-guard`). It keeps its source path (hands, feet,
+  accessories), or the armature is not minted (slot-32 body, like an unconverted
+  vest). A source with no female model, or a female path that exists nowhere
+  (loose or in any archive), keeps the male mesh — what the engine draws, and the
+  female-only selection's own rule for a dead path. Kept, not-minted and dead-path
+  slots are counted and warned; the no-female-model case is not.
+  `CBBE2UBE_NO_COVERAGE_FEMALE_GUARD=1` restores the fallback.
+
 ---
 
 ## Effect-shader glow overlays
