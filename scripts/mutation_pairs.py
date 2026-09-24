@@ -3641,11 +3641,13 @@ PAIRS = (
          tests=('tests/test_coverage_human_race_list.py',),
          expect=('test_an_effect_mesh_is_not_taken[empty]',),
     ),
+    # HRL-l first cut its anchor mid-line and commented out the rest: a syntax
+    # error, so the gate read a collection failure, not the expected test.
     Pair('HRL-l', 'the male world mesh is not read when MOD3 is absent',
          edits=(
              ('src/ube_patcher.py',
-              '    p = (mod3.strip() or mod2.strip()).replace(',
-              '    p = (mod3.strip()).replace(  # MUTATED', 1),
+              '    p = (mod3.strip() or mod2.strip()).replace("/", "\\\\").lstrip("\\\\").lower()\n',
+              '    p = mod3.strip().replace("/", "\\\\").lstrip("\\\\").lower()  # MUTATED\n', 1),
          ),
          tests=('tests/test_coverage_human_race_list.py',),
          expect=('test_a_male_world_mesh_alone_is_drawn',),
@@ -3710,14 +3712,18 @@ PAIRS = (
          tests=('tests/test_coverage_human_race_list.py',),
          expect=('test_boots_with_a_defaultrace_armature_are_unchanged',),
     ),
-    Pair('HRL-r', 'a body armature is taken without a converted mesh',
+    # HRL-r first read MISSED: its test used a slot-32 cuirass, which the
+    # world-mesh rule drops later anyway. A slot-38 piece has no later rule, and
+    # the cuirass is judged with that rule off.
+    Pair('HRL-r', 'a deforming armature is taken without a converted mesh',
          edits=(
              ('src/ube_patcher.py',
               '                arma_ok=lambda v, _hf=_cover_hf: _mesh_admits(v, _hf))\n',
               '                arma_ok=lambda v: True)  # MUTATED\n', 1),
          ),
          tests=('tests/test_coverage_human_race_list.py',),
-         expect=('test_a_body_armature_still_needs_a_converted_mesh',),
+         expect=('test_a_body_armature_still_needs_a_converted_mesh[off]',
+                 'test_a_calf_slot_piece_still_needs_a_converted_mesh'),
     ),
     Pair('HRL-s', 'the non-body mint ignores the mapped races',
          edits=(

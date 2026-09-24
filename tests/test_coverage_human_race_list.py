@@ -309,9 +309,40 @@ def _cuirass():
                  models={b"MOD3": CUIRASS})
 
 
-def test_a_body_armature_still_needs_a_converted_mesh(tmp_path):
+@pytest.mark.parametrize("world_mesh", ["on", "off"])
+def test_a_body_armature_still_needs_a_converted_mesh(tmp_path, monkeypatch, world_mesh):
+    """With #coverage-world-mesh on it would also drop the armature later; off,
+    only the rule's own mesh test keeps the unconverted body out."""
+    if world_mesh == "off":
+        monkeypatch.setenv("CBBE2UBE_NO_COVERAGE_WORLD_MESH", "1")
+    else:
+        monkeypatch.delenv("CBBE2UBE_NO_COVERAGE_WORLD_MESH", raising=False)
     st, minted = _body(tmp_path, _world(tmp_path, [_cuirass()], slots=BODY))
     assert minted == [] and st["race_listed"] == []
+
+
+WIG = r"actors\character\wig\wig_1.nif"
+HAIR_CALF = (1 << 1) | (1 << 8)              # slots 31 and 38
+
+
+def _wig():
+    return _arma(0x01000800, HAIR_CALF, WOODELF, extra=(WOODELF,),
+                 models={b"MOD3": WIG})
+
+
+def test_a_calf_slot_piece_still_needs_a_converted_mesh(tmp_path):
+    """Slot 38 deforms but is not a torso: no later rule would drop it, so the
+    mesh test is all that keeps its unconverted mesh off the UBE body."""
+    st, minted = _body(tmp_path, _world(tmp_path, [_wig()], slots=HAIR_CALF))
+    assert minted == [] and st["race_listed"] == []
+
+
+def test_a_converted_calf_slot_piece_stays_wood_elf_only(tmp_path):
+    st, minted = _body(tmp_path, _world(tmp_path, [_wig()], slots=HAIR_CALF),
+                       conv={WIG.replace("\\", "/")})
+    assert len(minted) == 1
+    assert minted[0]["races"] == _ube(UBE_WOODELF)
+    assert minted[0]["primary"] == _ube(UBE_WOODELF)[0]
 
 
 def test_a_converted_body_armature_is_taken_with_its_races_mapped(tmp_path):
