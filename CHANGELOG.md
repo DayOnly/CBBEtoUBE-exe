@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### Fixed — an old copy set aside for a hand-made UBE version no longer comes back
+
+When another mod ships an armour piece already built for UBE, this tool leaves
+it to that mod and moves its own copy from an earlier run to `_superseded\`. It
+moved only the weight version it was about to convert. For a piece whose source
+ships only one weight, the other weight -- a copy this tool had made to complete
+the pair -- stayed behind, and at the end of the run it was copied back over the
+moved one. So our old copy replaced the hand-made version again, on every run.
+The whole piece now moves together, and the pair completion leaves it alone. If
+a file cannot be moved because another program has it open, the run now names
+the piece in a warning and leaves all of its files in place, instead of moving
+half of them. Measured on the reported modlist: none of the 27 pieces set aside
+today had a copy left behind, so nothing changes there yet.
+`CBBE2UBE_NO_SUPERSEDE_WHOLE_BASE=1` (set to 1) turns it off.
+
 ### Added — wigs are drawn on UBE actors
 
 A wig -- hair you equip as an item -- was invisible on UBE-race actors: only

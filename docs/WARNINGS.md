@@ -6,7 +6,7 @@ current. A `!!` line is a problem; a `NOTE:` line is information. Each entry
 gives the line as it appears in the run log (`…` stands for the value printed
 at run time), what it means for the run, and what to do next.
 
-**74** problem warnings and **3** notes.
+**76** problem warnings and **3** notes.
 
 ## src/auto_convert.py
 
@@ -27,6 +27,12 @@ at run time), what it means for the run, and what to do next.
   - fix: … (Converting anyway: the output stays valid, no reconvert needed once SkyPatcher is in place.)
 - `!! refusing traversal output path for "…"`
   - means: the source names a path outside the output mod; the file was skipped
+- `!! … piece(s) from an earlier run could not be moved out of meshes\ (a file is in use): …`
+  - means: each was left whole, with its .tri and physics, so our old conversion still replaces the hand-made UBE version in game
+  - fix: close the program holding the file (the game, NifSkope, Outfit Studio) and run again
+- `!! … piece(s) from an earlier run were only partly moved out of meshes\ and could not be put back: …`
+  - means: the named files are in _superseded\ while the rest of the piece is still in meshes\, so the piece can draw with the wrong morphs
+  - fix: close the program holding the files and run again, or move the named files back from _superseded\
 - `!! post-conversion load check skipped -- pynifly unavailable (…)`
   - means: output was NOT re-loaded or verified
 - `!! could not write the conversion_report.json checkpoint -- under …`

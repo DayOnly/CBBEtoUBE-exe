@@ -1138,6 +1138,28 @@ reported through `_report_coverage_holds`:
   the twin admission also minted a second nude suit on a softbody pack's own UBE
   one (+2 links) -- that commit is why it does not.
   `CBBE2UBE_NO_SKIP_BUILT_UBE_PATH=1`.
+- **A superseded base leaves `meshes\` whole, and the partner fill stays out of
+  it** (`#supersede-whole-base`). The move above took only the variants the run
+  planned. A source shipping only `_1` plans only `x_1`, so the `x_0` an earlier
+  run's partner fill wrote stayed in `meshes\!UBE`, and after the batch
+  `_complete_weight_partners` copied it back to `x_1` -- the builder's path,
+  beating the hand-made mesh again on every run (the `.tri` gone, so it morphed
+  with the builder's). Now `_supersede_whole_bases` moves every `_0`/`_1` of a
+  superseded weighted base in our output with the `.tri` and `.xml` (an
+  unweighted mesh moves alone: it has no partner), the planner records the base
+  on `superseded_weight_bases`, and the batch's fill skips those bases, fill and
+  refresh both. A move that fails (a file held open) is **rolled back**, the base
+  is left whole and a warning names it. Why not leave the moved half: a whole
+  stale base is our old conversion with its own morphs -- the wrong mesh, but a
+  consistent one, exactly the state before #skip-built-ube-path, and the next
+  run moves it; half a base pairs our NIF with the builder's `.tri` (it morphs
+  the wrong vertices) and the fill completes it from our half. A file that cannot
+  go back either is named in a second warning. Live: 27 superseded bases (the
+  54 meshes), every source ships both weights, so both variants were planned and
+  0 bases had a partner left for the fill -- the change moves nothing on the
+  reported modlist today; it bites on the first `_1`-only source whose builder
+  sits below our output. `CBBE2UBE_NO_SUPERSEDE_WHOLE_BASE=1` moves only the
+  planned variants again, silently.
 - **Wigs** (`#coverage-wigs`, the user's call 2026-09-24). The non-body pass
   treats a hair-only (31/41) armour as headgear with a gold value or the
   ArmorHelmet keyword; wigs have neither, so 100+ playable wigs were invisible

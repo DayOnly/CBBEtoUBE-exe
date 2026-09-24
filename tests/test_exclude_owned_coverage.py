@@ -298,7 +298,7 @@ def test_a_picked_mod_is_not_excluded_from_coverage():
     assert got == ["--only-mods", "Follower Mod"]
 
 
-def run_convert(base, monkeypatch, *, exclude=None, built=None):
+def run_convert(base, monkeypatch, *, exclude=None, built=None, on_result=None):
     """Drive the real `_cmd_convert` over one source mod inside a temporary
     modlist, up to and through the coverage step, and record what it hands on:
     returns (the kwargs each `auto_convert_mod` call got, the kwargs of the
@@ -308,7 +308,8 @@ def run_convert(base, monkeypatch, *, exclude=None, built=None):
     flag, each may hold commas). `built` = {mod folder: [rel under
     meshes\\!UBE]} -- enabled mods that ship loose BUILT UBE meshes, highest
     MO2 priority first. The conversion and the merge are stubs; the lookups
-    `_cmd_convert` builds for the batch are real."""
+    `_cmd_convert` builds for the batch are real. `on_result(result, out)`, if
+    given, shapes the stub's result and output before the batch goes on."""
     import argparse
     from src import preflight as pf
     base.mkdir(parents=True, exist_ok=True)
@@ -343,7 +344,10 @@ def run_convert(base, monkeypatch, *, exclude=None, built=None):
         patches = out / "_unmerged_patches"
         patches.mkdir(parents=True, exist_ok=True)
         (patches / "SomeMod UBE patch.esp").write_bytes(b"")
-        return ac.AutoConvertResult(source_dir=Path(source_dir), output_dir=out)
+        res = ac.AutoConvertResult(source_dir=Path(source_dir), output_dir=out)
+        if on_result is not None:
+            on_result(res, out)
+        return res
     monkeypatch.setattr(ac, "auto_convert_mod", _converted)
     monkeypatch.setattr(ac.ube_patcher, "restore_female_models", lambda *a, **k: {})
     coverage = {}

@@ -931,6 +931,9 @@ class AutoConvertResult:
     # from one the converter genuinely produced. Empty = no knowledge, which
     # that function treats as "never refresh". #stale-weight-partner
     source_weight_variants: dict = field(default_factory=dict)
+    # Weight bases (same keys) this run left to a mod that ships them built for
+    # UBE. The partner fill must never write into one. #supersede-whole-base
+    superseded_weight_bases: set = field(default_factory=set)
     # Postflight per-NIF invariant violations on the FINAL output (zero-vertex
     # shapes; over-cap single-partition shapes). Surfaced + counted as warnings.
     nif_invariant_warnings: list = field(default_factory=list)
@@ -2073,8 +2076,15 @@ def auto_convert_mod(
                 f"NIF collisions skipped: {len(skipped_collisions)} "
                 "(earlier source mod won the output path)")
         if skipped_built:
+            _stuck: list = []
             _moved = _supersede_built_ube_outputs(
-                output_dir, nif_dst_root, [r for r, _m in skipped_built])
+                output_dir, nif_dst_root, [r for r, _m in skipped_built],
+                failed=_stuck)
+            if _supersede_whole_base():
+                # The fill after the batch must not put our copy back at the
+                # builder's path, moved or (a move failed) left whole.
+                result.superseded_weight_bases.update(
+                    _weight_base_key(r) for r, _m in skipped_built)
             from collections import Counter as _Counter
             _by_mod = _Counter(m for _r, m in skipped_built)
             print(f"  built UBE version elsewhere: {len(skipped_built)} mesh(es) "
@@ -2086,6 +2096,31 @@ def auto_convert_mod(
             result.notes.append(
                 f"built UBE version elsewhere: {len(skipped_built)} NIF(s) not "
                 f"converted, {_moved} earlier copy(ies) superseded")
+            _left = [s for s in _stuck if not s[2]]
+            _torn = [s for s in _stuck if s[2]]
+            if _left:
+                _names = (", ".join(f"{s[0]} ({s[1]})" for s in _left[:5])
+                          + (f" and {len(_left) - 5} more" if len(_left) > 5 else ""))
+                warn(f"{len(_left)} piece(s) from an earlier run could not be moved "
+                     f"out of meshes\\ (a file is in use): {_names}",
+                     consequence="each was left whole, with its .tri and physics, "
+                                 "so our old conversion still replaces the hand-made "
+                                 "UBE version in game",
+                     fix="close the program holding the file (the game, NifSkope, "
+                         "Outfit Studio) and run again")
+            if _torn:
+                _names = (", ".join(f"{s[0]} ({', '.join(s[2])})" for s in _torn[:5])
+                          + (f" and {len(_torn) - 5} more" if len(_torn) > 5 else ""))
+                warn(f"{len(_torn)} piece(s) from an earlier run were only partly "
+                     f"moved out of meshes\\ and could not be put back: {_names}",
+                     consequence="the named files are in _superseded\\ while the rest "
+                                 "of the piece is still in meshes\\, so the piece can "
+                                 "draw with the wrong morphs",
+                     fix="close the program holding the files and run again, or "
+                         "move the named files back from _superseded\\")
+            for s in _stuck:
+                result.notes.append(f"built UBE version elsewhere: {s[0]} not moved "
+                                    f"out of meshes\\ ({s[1]})")
 
         planned_output_nifs = {it[1] for it in work_items}
 
@@ -3519,14 +3554,21 @@ def _built_ube_twins(resolved_pairs, built_ube_twin) -> "dict[str, str]":
     return out
 
 
-def _supersede_built_ube_outputs(output_dir, nif_dst_root, rels) -> int:
+def _supersede_built_ube_outputs(output_dir, nif_dst_root, rels,
+                                 failed=None) -> int:
     r"""#skip-built-ube-path: move an earlier run's copy of each mesh left to its
     builder -- with its base's `.tri` morphs and `.xml` physics -- out of
     `meshes\` to `_superseded\meshes\!UBE\...` in the output mod. The output
     folder is never cleaned and our mod sits above the builder in MO2, so a
     stale copy would still win the path in game, and a stale `.tri` beside the
     builder's NIF would morph the wrong vertices. Moved, not deleted: the folder
-    is inert to the game and undoing it is a copy back. Returns files moved."""
+    is inert to the game and undoing it is a copy back. Returns files moved.
+
+    #supersede-whole-base: the whole base moves or none of it -- see
+    `_supersede_whole_bases`; `failed` collects the bases that stayed.
+    Switched off, only the planned variants move and a failure is silent."""
+    if _supersede_whole_base():
+        return _supersede_whole_bases(output_dir, nif_dst_root, rels, failed)
     root = Path(output_dir)
     dest_root = root / "_superseded"
     moved = 0
@@ -3549,7 +3591,76 @@ def _supersede_built_ube_outputs(output_dir, nif_dst_root, rels) -> int:
                 os.replace(f, to)
                 moved += 1
             except (OSError, ValueError):
-                continue    # a file that cannot move stays; the log names the mesh
+                continue    # a file that cannot move stays, unreported
+    return moved
+
+
+def _supersede_whole_base() -> bool:
+    r"""#supersede-whole-base (2026-09-24): does superseding a base move EVERY
+    weight variant of it in our output (not only the ones this run planned),
+    all or nothing, and keep the partner fill out of it? Yes, by default.
+
+    A source that ships only `_1` plans only `x_1`, so the old move left the
+    `x_0` an earlier run's partner fill had written in `meshes\`; after the
+    batch the fill copied that stale `x_0` back to `x_1` -- the builder's path,
+    beating the hand-made mesh again on every run. A move that failed (a file in
+    use) was silent and left half a base behind, which the fill then completed.
+    CBBE2UBE_NO_SUPERSEDE_WHOLE_BASE=1 moves only the planned variants again."""
+    return not _flag("CBBE2UBE_NO_SUPERSEDE_WHOLE_BASE", False)
+
+
+def _supersede_whole_bases(output_dir, nif_dst_root, rels, failed=None) -> int:
+    r"""#supersede-whole-base: move each weight base `rels` names out of
+    `meshes\` WHOLE -- the planned files, the `_0`/`_1` partner of a weighted
+    one (a copy the partner fill made is one), and the base's `.tri` and `.xml`.
+
+    All or nothing per base: when one file cannot move, the ones already moved
+    go back, and the base is appended to `failed` as (base rel, error, [files
+    that could not be put back]). A whole stale base is our old conversion with
+    its own morphs -- still the wrong mesh, but a consistent one the next run
+    moves; half a base pairs our NIF with the builder's `.tri` (it morphs the
+    wrong vertices) and the fill completes it. Returns files moved."""
+    root = Path(output_dir)
+    dest_root = root / "_superseded"
+    groups: dict = {}       # (folder, stem) -> [files, planned first]
+    for rel in rels:
+        dst = Path(nif_dst_root) / Path(rel)
+        stem = dst.stem
+        weighted = stem.endswith(("_0", "_1"))
+        if weighted:
+            stem = stem[:-2]
+        key = (str(dst.parent).lower(), stem.lower())
+        g = groups.setdefault(key, {"rel": rel, "files": []})
+        cand = [dst]
+        if weighted:
+            cand += [dst.with_name(stem + "_0.nif"), dst.with_name(stem + "_1.nif")]
+        cand += [dst.with_name(stem + ".tri"), dst.with_name(stem + ".xml")]
+        for f in cand:
+            if all(str(f).lower() != str(h).lower() for h in g["files"]):
+                g["files"].append(f)
+    moved = 0
+    for g in groups.values():
+        done: list = []
+        try:
+            for f in g["files"]:
+                if not f.is_file():
+                    continue
+                to = dest_root / f.relative_to(root)
+                to.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(f, to)
+                done.append((f, to))
+        except (OSError, ValueError) as e:
+            torn = []
+            for f, to in reversed(done):
+                try:
+                    os.replace(to, f)
+                except OSError:
+                    torn.append(f.name)
+            if failed is not None:
+                failed.append((_weight_base_key(g["rel"]),
+                               plain_error(e), sorted(torn)))
+            continue
+        moved += len(done)
     return moved
 
 
@@ -4298,11 +4409,13 @@ def _cmd_convert(args):
         # function, and an unused loop variable of that name collides with them
         # -- which is why pyflakes reported the "unused _e" against one of the
         # HANDLERS (whose `_e` is used) instead of against this line.
+        _left_to_builder: set = set()
         for _s, _r, _errs in results:
             for _b, _sufs in getattr(_r, "source_weight_variants", {}).items():
                 _src_variants.setdefault(_b, set()).update(_sufs)
+            _left_to_builder |= getattr(_r, "superseded_weight_bases", set())
         _filled, _refreshed = _complete_weight_partners(
-            output, source_variants=_src_variants)
+            output, source_variants=_src_variants, skip_bases=_left_to_builder)
         if _filled:
             print(f"  weight-partner completion: filled {_filled} missing "
                   "_0/_1 partner mesh(es) (would otherwise break at one weight)")
@@ -5194,7 +5307,8 @@ def _meshes_rel(p: Path) -> str:
 
 
 def _complete_weight_partners(output_dir: "str | Path",
-                              source_variants: "dict | None" = None):
+                              source_variants: "dict | None" = None,
+                              skip_bases=()):
     """Safety net (#180): Skyrim needs BOTH ``_0`` and ``_1`` on disk for a
     weighted body mesh -- it derives the absent weight from the present one's
     PATH, so a missing partner makes the piece break / vanish at that body
@@ -5229,6 +5343,10 @@ def _complete_weight_partners(output_dir: "str | Path",
     `source_variants` nothing is ever refreshed and the behaviour is exactly
     as before.
 
+    `skip_bases` (same keys) are bases the run left to a mod that ships them
+    built for UBE: nothing is filled or refreshed there, or our stale copy would
+    land at the builder's path again. #supersede-whole-base
+
     Returns ``(filled, refreshed)``."""
     import re as _re
     ube_root = Path(output_dir) / "meshes" / "!UBE"
@@ -5249,6 +5367,8 @@ def _complete_weight_partners(output_dir: "str | Path",
             base = _weight_base_key(anchor.relative_to(ube_root).as_posix())
         except ValueError:
             base = None
+        if base is not None and base in skip_bases:
+            continue              # left to its builder
         src_sufs = (source_variants or {}).get(base)
         if both:
             # Refresh a partner this function FILLED. Only the source can say
