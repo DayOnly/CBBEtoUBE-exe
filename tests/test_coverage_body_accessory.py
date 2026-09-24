@@ -143,7 +143,8 @@ def test_a_deforming_second_armature_is_not_an_accessory(tmp_path):
 def test_a_body_candidate_slot_is_not_an_accessory(tmp_path):
     """Slot 46 is a conversion slot: an unconverted armature there is body-fitted
     cloth the planner meant to convert, not a hood."""
-    cape = _arma(0x01000801, 1 << 16, {b"MOD3": r"clothes\robes\mantle46_1.nif"})
+    # Not cloak-named: the slot alone must keep it out.
+    cape = _arma(0x01000801, 1 << 16, {b"MOD3": r"clothes\robes\sash46_1.nif"})
     st, minted = _pass(tmp_path, _robe(tmp_path, {b"MOD3": ROBE}, cape),
                        {ROBE.replace("\\", "/")})
     assert [m[b"MOD3"] for m in minted] == ["!UBE\\" + ROBE]
