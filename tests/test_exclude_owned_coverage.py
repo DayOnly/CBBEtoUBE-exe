@@ -298,13 +298,91 @@ def test_a_picked_mod_is_not_excluded_from_coverage():
     assert got == ["--only-mods", "Follower Mod"]
 
 
-def test_convert_takes_the_flag_and_passes_it_on(tmp_path):
+def run_convert(base, monkeypatch, *, exclude=None, built=None):
+    """Drive the real `_cmd_convert` over one source mod inside a temporary
+    modlist, up to and through the coverage step, and record what it hands on:
+    returns (the kwargs each `auto_convert_mod` call got, the kwargs of the
+    coverage call or None when it never ran).
+
+    `exclude` is the `--exclude-mods` list as argparse builds it (one entry per
+    flag, each may hold commas). `built` = {mod folder: [rel under
+    meshes\\!UBE]} -- enabled mods that ship loose BUILT UBE meshes, highest
+    MO2 priority first. The conversion and the merge are stubs; the lookups
+    `_cmd_convert` builds for the batch are real."""
+    import argparse
+    from src import preflight as pf
+    base.mkdir(parents=True, exist_ok=True)
+    mods = base / "mods"
+    mods.mkdir(exist_ok=True)
+    for name, rels in (built or {}).items():
+        for rel in rels:
+            f = mods / name / "meshes" / "!UBE" / rel
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_bytes(b"x")
+    mod = base / "SomeMod"
+    mod.mkdir(exist_ok=True)
+    out = base / "out"
+    settings = base / "CBBEtoUBE_settings.json"
+    settings.write_text("{}", encoding="utf-8")
+    for var in ("CBBE2UBE_MO2_INI", "CBBE2UBE_GAME_DATA"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("CBBE2UBE_MODS_ROOT", str(mods))
+    monkeypatch.setenv("CBBE2UBE_CONFIG", str(settings))
+    monkeypatch.setenv("CBBE2UBE_RUN_LOG", str(base / "run.log"))
+    monkeypatch.setattr(ac.paths, "enabled_mods", lambda lay: set())
+    monkeypatch.setattr(ac.paths, "enabled_mods_ordered",
+                        lambda lay: list(built or ()))
+    monkeypatch.setattr(ac, "_third_party_ube_covered_armos", lambda *a, **k: set())
+    monkeypatch.setattr(pf, "_locate_in_mods_or_data",
+                        lambda *a, **k: base / "SkyPatcher.dll")
+    monkeypatch.setattr(pf, "_skypatcher_armor_patching", lambda p: True)
+    converted = []
+
+    def _converted(source_dir, *a, **k):
+        converted.append(k)
+        patches = out / "_unmerged_patches"
+        patches.mkdir(parents=True, exist_ok=True)
+        (patches / "SomeMod UBE patch.esp").write_bytes(b"")
+        return ac.AutoConvertResult(source_dir=Path(source_dir), output_dir=out)
+    monkeypatch.setattr(ac, "auto_convert_mod", _converted)
+    monkeypatch.setattr(ac.ube_patcher, "restore_female_models", lambda *a, **k: {})
+    coverage = {}
+
+    def _emit(*a, **k):
+        coverage.update(k)
+        return True, 1, False
+    monkeypatch.setattr(ac, "_emit_unified_coverage_patches", _emit)
+    monkeypatch.setattr(ac.ube_patcher, "merge_patches_split", lambda *a, **k: {})
+    ns = argparse.Namespace(
+        sources=[mod], output=out, esp_name=None,
+        no_textures=True, copy_textures=False, ube_body_ref=None, workers=1,
+        unmerged_patch_subdir="_unmerged_patches", auto_merge=True,
+        merged_name="CBBE_to_UBE_Combined.esp", render_previews=False,
+        mods_root=None, no_winner_rebase=True, armo_winner_index=None,
+        incremental=False, plugins_only=False, exclude_mods=exclude)
+    ac._cmd_convert(ns)
+    return converted, (coverage or None)
+
+
+def test_convert_takes_the_flag_and_passes_it_on(tmp_path, monkeypatch):
+    """Behavioural: `convert --exclude-mods` reaches the coverage winner scan.
+    Dropping it there is the original defect -- the excluded follower's armour
+    was covered again and she wore converted male boots."""
     args = ac._build_parser().parse_args(
         ["convert", str(tmp_path), "-o", str(tmp_path / "o"),
          "--exclude-mods", "A Mod,B Mod", "--exclude-mods", "C Mod"])
     assert ac._split_mod_arg(args.exclude_mods) == ["A Mod", "B Mod", "C Mod"]
-    src = inspect.getsource(ac._cmd_convert)
-    assert 'getattr(args, "exclude_mods", None)) or ())' in src
+    _, coverage = run_convert(tmp_path / "run", monkeypatch,
+                              exclude=args.exclude_mods)
+    assert coverage is not None, "the coverage step never ran"
+    assert list(coverage["exclude_mods"]) == ["A Mod", "B Mod", "C Mod"]
+
+
+def test_convert_without_the_flag_excludes_nothing(tmp_path, monkeypatch):
+    """Control: no flag, an empty exclusion list -- the recorder above sees
+    what `_cmd_convert` passes, not a constant."""
+    _, coverage = run_convert(tmp_path, monkeypatch, exclude=None)
+    assert coverage is not None and list(coverage["exclude_mods"]) == []
 
 
 def test_the_holds_are_reported(capsys):

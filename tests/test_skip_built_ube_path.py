@@ -171,11 +171,76 @@ def test_without_the_lookup_the_planner_converts_the_built_piece(
     assert seen and "dress_1" in seen[0].name
 
 
-def test_the_batch_builds_the_lookup_once_and_hands_it_over():
-    import inspect
-    src = inspect.getsource(ac._cmd_convert)
-    assert "built_ube_twin=batch_built_ube," in src
-    assert "or not ube_patcher._skip_built_ube_path())" in src
+def test_another_output_prefix_converts_the_built_piece(
+        load_order, tmp_path, monkeypatch):
+    r"""The rule is about `meshes\!UBE\<rel>`, the path the builder ships. A
+    plan that writes under another prefix collides with nothing it ships, so a
+    built twin must not make the planner skip: the dress is converted first,
+    exactly as with no lookup."""
+    class _First(BaseException):
+        pass
+    dress = ["armor/outfit/dress_1.nif", "armor/outfit/dress_0.nif"]
+    boots = ["armor/outfit/boots_1.nif", "armor/outfit/boots_0.nif"]
+    src = tmp_path / "src.nif"
+    src.write_bytes(b"x")
+    monkeypatch.setattr(ac, "_resolve_armor_meshes",
+                        lambda *a, **k: [(src, r) for r in dress + boots])
+    seen = []
+
+    def _worker(item):
+        seen.append(item[1])
+        raise _First()
+    monkeypatch.setattr(ac, "_nif_convert_worker", _worker)
+    ref = tmp_path / "ube_ref.nif"
+    ref.write_bytes(b"x")
+    with pytest.raises(_First):
+        ac.auto_convert_mod(load_order, tmp_path / "out", ube_body_ref_path=ref,
+                            master_data_dirs=[], nif_workers=1,
+                            ube_path_prefix="!UBE_Other",
+                            built_ube_twin=_twin_of(*dress, mod="Outfit UBE"))
+    assert seen and "dress" in seen[0].name
+    assert "!UBE_Other" in seen[0].parts
+
+
+# ------------------------------------------------ the batch hands the lookup over
+
+CUIRASS = ["armor/set/cuirass_1.nif", "armor/set/cuirass_0.nif"]
+BOOTS = ["armor/set/boots_1.nif", "armor/set/boots_0.nif"]
+
+
+def _handed_to_planner(tmp_path, monkeypatch, **kw):
+    """Run the real `convert` step and return the lookup it handed the planner
+    of its one source (None = no lookup)."""
+    from tests.test_exclude_owned_coverage import run_convert
+    converted, _ = run_convert(tmp_path, monkeypatch, **kw)
+    assert len(converted) == 1, "the source was never planned"
+    return converted[0]["built_ube_twin"]
+
+
+def test_the_batch_hands_its_lookup_to_the_planner(tmp_path, monkeypatch):
+    """Behavioural: `convert` builds the lookup over the modlist and the
+    planner gets it, so a base another mod ships built is left to that mod."""
+    lookup = _handed_to_planner(tmp_path / "on", monkeypatch,
+                                built={"Set UBE": CUIRASS})
+    assert lookup is not None, "the planner got no lookup"
+    assert ac._built_ube_twins(_pairs(*CUIRASS, *BOOTS), lookup) == {
+        r: "Set UBE" for r in CUIRASS}
+    monkeypatch.setenv(SWITCH, "1")
+    assert _handed_to_planner(tmp_path / "off", monkeypatch,
+                              built={"Set UBE": CUIRASS}) is None, \
+        "switched off, the planner must get no lookup"
+
+
+def test_an_excluded_mods_build_never_makes_the_planner_skip(tmp_path, monkeypatch):
+    """Behavioural: `--exclude-mods` reaches the planner's lookup. A build
+    shipped by a mod the user excluded is not relied on -- coverage never
+    points at it -- so the planner converts that base; another mod's build
+    is still left to it."""
+    lookup = _handed_to_planner(
+        tmp_path, monkeypatch, exclude=["Set UBE"],
+        built={"Set UBE": CUIRASS, "Boots UBE": BOOTS})
+    assert ac._built_ube_twins(_pairs(*CUIRASS, *BOOTS), lookup) == {
+        r: "Boots UBE" for r in BOOTS}
 
 
 # ---------------------------------------------------------------- coverage
