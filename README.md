@@ -28,8 +28,9 @@ Given a Mod Organizer 2 setup, the full pipeline (`auto`):
 1. **Discovers** candidate CBBE/3BA armor mods by walking the MO2 mod tree, and
    resolves every armor mesh through the full virtual file system (BodySlide
    output, BSAs, and loose files all count). Only **player-equippable** armor on
-   body slots is selected — non-equippable items (gore / dismemberment effect
-   "armor" flagged non-playable) are skipped. Because UBE is a female body, only
+   body slots is selected, plus non-playable outfits a female NPC of a
+   UBE-capable race actually wears or carries; other non-equippable items (gore /
+   dismemberment effect "armor" flagged non-playable) are skipped. Because UBE is a female body, only
    the **female** mesh of each piece is converted; the male mesh is skipped unless
    the piece is male-only (a female actor falls back to the male mesh, so it still
    needs the refit).

@@ -387,6 +387,63 @@ single pass runs. Three rules encode this:
    Off with `CBBE2UBE_NO_ZEROED_OUTPUT_SOURCE=1` (settings: "Take armour from the
    zeroed BodySlide build").
 
+### Which mods and pieces are sources at all (2026-09-24)
+
+The rules above pick a PROVIDER for a mesh the converter already plans. Four gates
+before them decided whether a piece was planned at all, and each dropped real
+armour in silence while the unified coverage step still minted a UBE armature for
+it -- so a UBE actor drew the unconverted CBBE mesh. Census of one modlist: 279
+such armatures. Each gate has its own off-switch; with all four set, selection on
+that modlist is identical to before (138 sources, 2,059 pieces, 3,290 meshes, every
+provider the same). With all four on: 153 sources, +78/-2 pieces, +139/-2 meshes,
+100 of the 279 armatures now draw a converted mesh; no child piece, no skin and no
+already-UBE path among the additions.
+
+- **Archive-only mods** (`#bsa-only-sources`, `CBBE2UBE_NO_BSA_ONLY_SOURCES`). The
+  source gate counted a mod's armour meshes in loose files only; the convert step
+  resolves from archives too. A mod with nothing loose now also asks a lookup-only
+  `_BsaMeshIndex` (it can never write) over the same folders the convert step
+  lists; the convert step adopts that listing instead of reading ~260 archive
+  tables again. Every mod still dropped here is named in the log (uncapped: it is
+  in no report). +9 mods, 37 pieces,
+  49 meshes, 66 armatures.
+- **Texture archives** (`#texture-archive-meshes`,
+  `CBBE2UBE_NO_TEXTURE_ARCHIVE_MESHES`). The index skipped every archive with
+  "texture" in its name; a large content mod keeps all its meshes in its
+  "- Textures" archive, and the substring also caught "Retexture" armour archives.
+  +143 archives listed (0.1 s), +21 meshes, 2 male stand-ins no longer needed, 16
+  armatures; 21 pieces of one set move to the higher-priority retexture archive,
+  the copy the game loads. Voice, sound and facegen archives stay skipped; the
+  setup check still reads only the vanilla archives.
+- **Skin-named armour** (`#nude-basename-path`, `CBBE2UBE_NO_NUDE_BASENAME_PATH`).
+  A model named like the nude body (`femalebody`, ...) was skin wherever it sat; a
+  pair of pants is named that. The path alone is not the fix: of 114 armatures with
+  such a model outside `actors\character\`, 108 are follower, race or unused body
+  variants, and a path-only rule admitted three of those bodies as armour. So
+  outside that folder the model is armour only when a PLAYABLE armour record WITH
+  A NAME in its plugin uses it -- exactly the other 6 (the pants and five
+  first-person robe and cuirass models). +5 pieces, 10 meshes, 1 armature.
+- **Outfits only NPCs wear** (`#npc-worn-nonplayable`,
+  `CBBE2UBE_NO_NPC_WORN_NONPLAYABLE`). An armature only non-playable armour used was
+  skipped as gore. Follower and quest outfits are non-playable too, and coverage
+  deliberately covers non-playable body and hands/feet armour. It is kept now when
+  the WINNING record of a female NPC of a vanilla playable, vampire or `UBE_*` race
+  reaches one of its armour records through her default or sleep outfit or her
+  inventory, via outfits and leveled lists (`_npc_worn_armos`: four groups of every
+  active plugin, read by seeking past the rest, 8-11 s, built once per batch and
+  passed to every planning call like `ube_covered_armos`, including the VFS index a
+  direct `convert` builds). Not followed: the worn skin (WNAM). An NPC whose traits
+  come from a template takes its sex and race from the template chain, through NPC
+  records; a leveled-NPC-list template has no single answer and does not count. The
+  first cut counted every templated NPC as a possible wearer: 48 of its 125 new
+  meshes came only that way (creature-cavity bodies, animal costumes, male bosses'
+  gear), and that route also reached 23 creature skins -- so every form any NPC_ or
+  RACE record names as its skin is removed from the set as well, however it was
+  reached. Script-applied gore is reached by no outfit, so it stays out.
+  +7 mods, 43 armatures kept in 14 sources, 37 pieces, 60 meshes, 17 of the census
+  armatures. Known edges: wound meshes in a victim's inventory are converted;
+  anything handed out by a script or a distributor at run time is still not seen.
+
 ---
 
 ## Fitting: warp + re-skin

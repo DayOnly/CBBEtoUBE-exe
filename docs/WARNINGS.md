@@ -6,7 +6,7 @@ current. A `!!` line is a problem; a `NOTE:` line is information. Each entry
 gives the line as it appears in the run log (`…` stands for the value printed
 at run time), what it means for the run, and what to do next.
 
-**67** problem warnings and **2** notes.
+**68** problem warnings and **2** notes.
 
 ## src/auto_convert.py
 
@@ -141,6 +141,8 @@ at run time), what it means for the run, and what to do next.
   - means: those pieces will not follow body sliders; listed below
 - `!! BSA extract: refusing traversal path "…"`
   - means: the archive entry points outside the extraction folder and was skipped
+- `!! could not read which armour NPCs wear (…)`
+  - means: non-playable armour that female NPCs wear is not converted this run
 - `!! vanilla sweep DISABLED this run: …`
   - means: vanilla armour that no mod overrides stays unlinked, so it is invisible on UBE actors until a run with the sweep
 - `!! overlay transfer FAILED: …`

@@ -1605,6 +1605,12 @@ def auto_convert_mod(
     # armor are skipped before conversion instead of being converted and then
     # suppressed at the coverage stage. None => convert everything. #skip-already-ube
     ube_covered_armos: "set[tuple[str, int]] | None" = None,
+    # Forms a female NPC of a UBE-capable race wears or carries, as
+    # {(defining plugin lowercase, formid low24)} from `_npc_worn_armos`. Built
+    # ONCE by the caller (it reads every active plugin). A non-playable armour in
+    # it is converted like playable armour. None => non-playable armour is never
+    # converted (the old rule). #npc-worn-nonplayable
+    npc_worn_armos: "frozenset[tuple[str, int]] | None" = None,
 ) -> AutoConvertResult:
     """Run the full M2 + M3 phase 1 pipeline on a single CBBE armor mod.
 
@@ -1709,10 +1715,18 @@ def auto_convert_mod(
     # slots (44/47/...). The crash guard below drops any non-body-skinned ones.
     # mesh_resolves enables the female-only policy (skip the male mesh when a female
     # mesh exists; keep male for male-only or dead-female-path pieces).
+    _worn_admitted: "set[tuple[str, int]]" = set()
     armor_bases = _player_armor_mesh_bases(
         source_dir, include_candidate_slots=True,
         mesh_resolves=_female_mesh_resolves,
-        ube_covered_armos=ube_covered_armos)
+        ube_covered_armos=ube_covered_armos,
+        npc_worn_armos=npc_worn_armos, worn_admitted=_worn_admitted)
+    if _worn_admitted:
+        # Say so: these pieces used to be skipped in silence. #npc-worn-nonplayable
+        _worn_msg = (f"{len(_worn_admitted)} non-playable armature(s) converted "
+                     "because a female NPC wears or carries their armour")
+        print(f"  {_worn_msg}")
+        result.notes.append(_worn_msg)
     # Resolve through the full MO2 VFS so meshes in BodySlide-output / replacer /
     # patch mods are found. Falls back to source-local when no VFS index is given.
     #
@@ -3403,6 +3417,14 @@ def _cmd_convert(args):
         print(f"  master/Data search: {len(batch_master_data_dirs)} dir(s) "
               "(resolved once for the batch)")
 
+    # Non-playable armour a female NPC of a UBE-capable race wears or carries is
+    # converted like playable armour. Built once for the batch -- `auto` built it
+    # during source selection in this same process, so this is a cache hit
+    # there. None when switched off, without a load order, or on an ESP-only
+    # refresh (which plans no meshes). #npc-worn-nonplayable
+    batch_npc_worn = (None if getattr(args, "plugins_only", False)
+                      else _batch_npc_worn_armos())
+
     # Full-VFS mesh index built once for the batch. Maps each armour mesh to the
     # MO2-priority winner across all enabled mods so BodySlide-built / replacer /
     # patch meshes in OTHER mods are found and converted.
@@ -3424,7 +3446,8 @@ def _cmd_convert(args):
             for _src in sources:
                 try:
                     for _b in _player_armor_mesh_bases(
-                            _src, include_candidate_slots=True):
+                            _src, include_candidate_slots=True,
+                            npc_worn_armos=batch_npc_worn):
                         _target_keys.update(
                             (f"{_b}_0.nif", f"{_b}_1.nif", f"{_b}.nif"))
                 except Exception:
@@ -3454,11 +3477,17 @@ def _cmd_convert(args):
             # Game Data dir(s) LAST: the vanilla mesh archives back the sweep,
             # but any mod BSA shipping the same path wins (first hit in _scan),
             # matching MO2 priority.
-            _bsa_dirs = [Path(_bmr) / n for n in _bord]
-            _bsa_dirs += [Path(d) for d in (_blay.game_data_dirs or [])
-                          if Path(d) not in _bsa_dirs]
+            _bsa_dirs = _load_order_bsa_dirs(_bmr, _bord, _blay.game_data_dirs)
             _BATCH_BSA_INDEX = _BsaMeshIndex(
                 _bsa_dirs, Path(output) / "_bsa_staging")
+            # Source selection may already have listed these archives to find
+            # mods whose armour lives only in them; take that listing rather
+            # than read ~260 archive tables a second time. #bsa-only-sources
+            _sel_bsa = _SELECTION_BSA_INDEX.pop(str(Path(_bmr)).lower(), None)
+            if _BATCH_BSA_INDEX.adopt_listing(_sel_bsa):
+                print(f"  BSA fallback index: reusing {len(_BATCH_BSA_INDEX._index)} "
+                      "mesh path(s) listed during source selection "
+                      "(no second archive scan)")
     except Exception:
         _BATCH_BSA_INDEX = None
 
@@ -3564,6 +3593,7 @@ def _cmd_convert(args):
                     mesh_vfs_index=mesh_vfs_index,
                     incremental_floor=incremental_floor,
                     ube_covered_armos=batch_ube_covered,
+                    npc_worn_armos=batch_npc_worn,
                 )
 
             try:
@@ -4412,13 +4442,52 @@ _BODY_CANDIDATE_SLOT_BITS = sum(1 << (s - 30) for s in (44, 45, 47, 48, 59, 61))
 _CLOAK_MESH_KEYWORDS = ("cape", "cloak", "mantle", "shroud", "cloth_cloak")
 
 # Nude body skin basenames. A mod whose only DefaultRace ARMAs are these IS the
-# body mod; don't convert it. Real armour pieces are never named femalebody etc.
+# body mod; don't convert it. The name alone does not make a model skin: real
+# armour is sometimes named femalebody etc. (a pair of pants ships as
+# femalebody_1.nif), so `_is_nude_body_skin_model` also reads where the model
+# sits and what record uses it. #nude-basename-path
 _BODY_SKIN_BASENAMES = frozenset({
     "femalebody", "malebody", "femalehands", "malehands",
     "femalefeet", "malefeet",
     "1stpersonfemalebody", "1stpersonmalebody",
     "1stpersonfemalehands", "1stpersonmalehands",
 })
+
+# Where the body skin lives: the game's character assets and every body or race
+# mod that replaces them. #nude-basename-path
+_BODY_SKIN_HOME = "actors/character/"
+
+
+def _is_nude_body_skin_model(base: str, by_name_alone: bool = False,
+                             named_item: bool = False) -> bool:
+    """True if the weight-agnostic model key `base` is the nude body skin.
+
+    #nude-basename-path (2026-09-24): the basename alone was the test, and "real
+    armour pieces are never named femalebody" is false -- a pair of playable
+    pants ships as `armor\\<set>\\pants\\femalebody_1.nif` and was never
+    converted, while the coverage step gave it a UBE armature anyway, so the
+    CBBE pants drew on the UBE body.
+
+    The PATH alone is not the answer either. Measured over a real load order:
+    114 armatures carry a skin-named model outside `actors\\character\\`, and
+    108 of them are bodies -- 40 an NPC or race wears as its skin, 59 only
+    nameless records use (a follower's unused body variants), 3 a named but
+    non-playable record, 6 nothing. Taking the path alone admitted three such
+    follower and race bodies as new "armour" (10 of the 15 bases it added were
+    a live skin). The other 6 are armour: the pants and five robes and
+    cuirasses whose first-person model is `1stpersonfemalebody`, each used by
+    a PLAYABLE, NAMED armour record -- something a player can pick up and see
+    by name, which a skin record never is.
+
+    So a skin basename is skin under `actors\\character\\` (where the game and
+    every body mod keep it), and anywhere else unless `named_item`: the
+    armature is used by a playable armour record with a name (FULL) in its own
+    plugin. `by_name_alone` is the old rule (CBBE2UBE_NO_NUDE_BASENAME_PATH=1)."""
+    if base.rsplit("/", 1)[-1] not in _BODY_SKIN_BASENAMES:
+        return False
+    if by_name_alone or base.startswith(_BODY_SKIN_HOME):
+        return True
+    return not named_item
 
 
 def _weight_agnostic_slot_map(nif_slot_map: "dict[str, int]") -> "dict[str, int]":
@@ -4799,14 +4868,41 @@ def _postflight_sync_weight_partner_jiggle(output_dir) -> int:
 _BATCH_BSA_INDEX = None   # set per-batch by _cmd_convert; lazy BSA mesh resolver
 
 
+def _load_order_bsa_dirs(mods_root, enabled_ordered, game_data_dirs) -> "list[Path]":
+    """The folders whose archives `_BsaMeshIndex` lists, in the order the first
+    hit wins: every enabled mod by MO2 priority, then the game Data dir(s) LAST.
+    The vanilla mesh archives back the sweep, but any mod BSA shipping the same
+    path wins (first hit in _scan), matching MO2 priority. ONE definition, so
+    source selection and the convert step index the same archives.
+    #bsa-only-sources"""
+    dirs = [Path(mods_root) / n for n in (enabled_ordered or ())]
+    dirs += [Path(d) for d in (game_data_dirs or []) if Path(d) not in dirs]
+    return dirs
+
+
 class _BsaMeshIndex:
     """Load-order-wide fallback resolver: extracts armour meshes from mod BSAs
     (bespoke-armor mods, quest mods, ...) when they aren't loose anywhere. Consulted only
     after the VFS + source-local lookups miss. Lazy: BSA scan on first miss only.
-    Texture/voice/sound BSAs are skipped. Archive data buffers are released after
+    Voice/sound/facegen BSAs are skipped. Archive data buffers are released after
     listing; only BSAs with needed meshes are re-opened for extraction."""
 
-    _SKIP_BSA = ("texture", "voice", " sound", "sounds", "- snd", "facegen")
+    # #texture-archive-meshes (2026-09-24): "texture" used to lead this list, and
+    # it hid real armour. A large content mod keeps ALL its meshes in
+    # "<name> - Textures.bsa" (3,224 + 1,411 .nif in its two archives; the plain
+    # "<name>.bsa" holds scripts and sound), and the substring also caught two
+    # "... Retexture SE.bsa" armour archives. Measured on a real modlist: 143 more
+    # archives listed (406, +4,506 mesh paths, 0.6 -> 0.7 s warm); 21 NIFs added
+    # -- three suffixless world meshes the game draws (iron boots, two leather
+    # pieces) and 18 first-person models -- 2 male fallbacks dropped because the
+    # female mesh in such an archive now resolves, 16 armatures the coverage step
+    # had been minting over an unconverted mesh now get a converted one, and 21
+    # already-converted pieces of one armour set now come from the higher-priority
+    # retexture archive -- the copy the game loads. No decision behind the old
+    # entry was ever recorded; it looked like a cost shortcut.
+    # CBBE2UBE_NO_TEXTURE_ARCHIVE_MESHES=1 skips them again.
+    _SKIP_BSA = ("voice", " sound", "sounds", "- snd", "facegen")
+    _SKIP_BSA_TEXTURE = ("texture",)
 
     def __init__(self, enabled_mod_dirs, staging_dir,
                  bsa_name_prefixes=None):
@@ -4822,6 +4918,30 @@ class _BsaMeshIndex:
         # the game Data dir lists EVERY enabled mod's BSAs (330 vs 6 observed).
         self._name_prefixes = ([p.lower() for p in bsa_name_prefixes]
                                if bsa_name_prefixes else None)
+        # Read once, here: an index lists its archives under ONE rule for its
+        # whole life. #texture-archive-meshes
+        self._skip = (self._SKIP_BSA_TEXTURE + self._SKIP_BSA
+                      if _flag("CBBE2UBE_NO_TEXTURE_ARCHIVE_MESHES", False)
+                      else self._SKIP_BSA)
+
+    def listing_key(self) -> tuple:
+        """What this index's listing depends on: the archive folders in order and
+        the two name filters. Two indexes with the same key list the same paths
+        from the same archives. #bsa-only-sources"""
+        return (tuple(str(d).lower() for d in self._dirs), self._skip,
+                tuple(self._name_prefixes or ()))
+
+    def adopt_listing(self, other) -> bool:
+        """Take `other`'s archive listing instead of scanning again, when `other`
+        has scanned and lists exactly what this index would. Extraction state is
+        not shared: `other` may be lookup-only. Returns True if adopted.
+        #bsa-only-sources"""
+        if (other is None or other is self or other._index is None
+                or self._index is not None
+                or other.listing_key() != self.listing_key()):
+            return False
+        self._index = other._index
+        return True
 
     def _scan(self) -> None:
         from .bsa_strings import BSAArchive
@@ -4834,7 +4954,7 @@ class _BsaMeshIndex:
             except Exception:
                 continue
             for bsa in bsas:
-                if any(k in bsa.name.lower() for k in self._SKIP_BSA):
+                if any(k in bsa.name.lower() for k in self._skip):
                     continue
                 if (self._name_prefixes is not None
                         and not any(bsa.name.lower().startswith(p)
@@ -5371,10 +5491,254 @@ def _skip_esp_less_fallback(armor_bases, src_esps) -> bool:
     return False                        # nothing parsed -> treat as plugin-less
 
 
+# ---------- #npc-worn-nonplayable: which armour NPCs actually wear ----------
+#
+# The vanilla playable races and their vampire variants (Skyrim.esm, low 24
+# bits) -- the races a UBE body covers with no race mod. A race a UBE plugin adds
+# is recognised by its editor ID prefix instead.
+_UBE_CAPABLE_VANILLA_RACES = frozenset({
+    0x013740, 0x013741, 0x013742, 0x013743, 0x013744,   # Argonian .. Imperial
+    0x013745, 0x013746, 0x013747, 0x013748, 0x013749,   # Khajiit .. Wood Elf
+    0x08883A, 0x08883C, 0x08883D, 0x088840, 0x088844,   # their vampire variants
+    0x088845, 0x088846, 0x088884, 0x088794, 0x0A82B9,
+})
+_UBE_RACE_EDID_PREFIX = "ube_"
+_ACBS_FEMALE = 0x00000001        # NPC_ ACBS flags, bit 0
+_TPLT_USE_TRAITS = 0x0001        # NPC_ ACBS template-data flags (offset 18)
+_RECORD_DELETED = 0x00000020
+# {load-order key -> worn set}; one load order at a time. #npc-worn-nonplayable
+_NPC_WORN_CACHE: "dict[tuple, frozenset]" = {}
+
+
+def _read_plugin_groups(path, labels) -> "tuple[list[str], dict[bytes, list]]":
+    """(masters, {label: [Record, ...]}) for the top-level groups named in
+    `labels`, SEEKING past every other group unread. The NPC scan needs four
+    small groups of every active plugin; cells and worldspaces are most of each
+    file's bytes, and `ESP.load` would read and parse all of them. Raises on a
+    file that is not a plugin; stops at a corrupt group size rather than spin."""
+    from . import esp as _esp
+    import struct as _struct
+    out: "dict[bytes, list]" = {}
+    with open(path, "rb") as fh:
+        head = fh.read(24)
+        if len(head) < 24 or head[:4] != b"TES4":
+            raise ValueError(f"{Path(path).name}: no TES4 header")
+        size = _struct.unpack_from("<I", head, 4)[0]
+        tes4, _ = _esp.Record.parse(head + fh.read(size), 0)
+        masters = list(_esp.TES4Header.parse_from_record(tes4).masters)
+        while True:
+            gh = fh.read(24)
+            if len(gh) < 24 or gh[:4] != b"GRUP":
+                break
+            gsize = _struct.unpack_from("<I", gh, 4)[0]
+            if gsize < 24:
+                break
+            label = gh[8:12]
+            if label in labels:
+                grp, _ = _esp.Group.parse(gh + fh.read(gsize - 24), 0)
+                out.setdefault(label, []).extend(grp.records)
+            else:
+                fh.seek(gsize - 24, 1)
+    return masters, out
+
+
+def _npc_worn_armos(plugin_paths) -> "frozenset[tuple[str, int]]":
+    """Every form a female NPC of a UBE-capable race wears or carries, as
+    {(defining plugin lowercase, formid low24)} -- the identity
+    `_player_armor_mesh_bases` checks a non-playable ARMO against.
+    #npc-worn-nonplayable
+
+    `plugin_paths` is the active load order (last = conflict winner). Only the
+    WINNING record of each NPC_, outfit (OTFT) and leveled item list (LVLI)
+    counts: a replacer that re-dresses an NPC takes the old outfit out of the
+    game. From each qualifying NPC the walk follows its default outfit (DOFT),
+    sleep outfit (SOFT) and inventory (CNTO), through outfits and leveled lists
+    to any depth. The worn skin (WNAM) is NOT followed -- that is the NPC's
+    body, not something it wears over it.
+
+    Qualifying = female (ACBS flag 0x1) and of a vanilla playable race, its
+    vampire variant, or a race whose editor ID starts with "UBE_". An NPC whose
+    traits come from a template (TPLT with the Use Traits flag) takes its sex
+    and race from that template, followed through NPC records to the first one
+    with its own traits. A leveled-NPC-list template has no single answer, so
+    that NPC does NOT count: the user's rule is armour a FEMALE NPC wears. The
+    first cut counted every templated NPC as a possible wearer; on a real load
+    order 48 of its 125 new meshes came only that way -- creature-cavity
+    bodies, animal costumes, and male bosses' and orders' gear -- and none of
+    them through a known female.
+
+    A SKIN is never worn, however it is reached: every form that any NPC_ or
+    RACE record -- winning or not -- names as its skin (WNAM) is taken out of
+    the set at the end (review, 2026-09-24). Not following WNAM was not enough:
+    the walk still reached 23 skins, every one only through the template rule
+    -- templated NPCs carry skeleton, dragon, wraith and other creature skins
+    in their own outfits and inventories -- and a skeleton skin's DefaultRace
+    armature passed every later gate and was planned as armour. 1,387 skin
+    forms on that load order; the 23 are the only change to the set.
+
+    Measured on a real load order (3,254 active plugins): 8-11 s including the
+    plugin-file lookup, 15,763 forms reached, 15,740 once the skins are out.
+    With WNAM followed and race-less NPCs counted -- the 2026-09-24 report's two
+    differences -- the walk reproduces that report's 3,783 worn ARMOs exactly;
+    236 of them were reachable only that way. An unreadable plugin is skipped.
+    The set holds every reached form but the skins, not only armour -- callers
+    test armour identities against it."""
+    from . import esp as _esp
+    import struct as _struct
+    _wanted = (b"NPC_", b"OTFT", b"LVLI", b"RACE")
+    npcs: "dict[tuple, tuple | None]" = {}   # winner: (female, race, traits-template, items)
+    lists: "dict[tuple, tuple]" = {}         # OTFT/LVLI winner -> its entries
+    race_edid: "dict[tuple, str]" = {}
+    skins: "set[tuple[str, int]]" = set()    # any NPC_/RACE WNAM, any record
+    for p in plugin_paths:
+        try:
+            masters, groups = _read_plugin_groups(p, _wanted)
+        except Exception:
+            continue
+        lc = [m.lower() for m in masters]
+        own = Path(p).name.lower()
+
+        def _abs(fid, _lc=lc, _own=own):
+            mi = fid >> 24
+            return (_lc[mi] if mi < len(_lc) else _own, fid & 0xFFFFFF)
+
+        for r in groups.get(b"NPC_", ()):
+            rid = _abs(r.formid)
+            if r.flags & _RECORD_DELETED:
+                npcs[rid] = None
+                continue
+            female, race, tpl, tflags, items = False, None, None, 0, []
+            for sig, d in _esp.iter_subrecords(r.payload):
+                if sig == b"ACBS" and len(d) >= 20:
+                    female = bool(_struct.unpack_from("<I", d, 0)[0] & _ACBS_FEMALE)
+                    tflags = _struct.unpack_from("<H", d, 18)[0]
+                elif sig == b"RNAM" and len(d) == 4:
+                    race = _abs(_struct.unpack("<I", d)[0])
+                elif sig in (b"DOFT", b"SOFT") and len(d) == 4:
+                    items.append(_abs(_struct.unpack("<I", d)[0]))
+                elif sig == b"CNTO" and len(d) >= 4:
+                    items.append(_abs(_struct.unpack_from("<I", d, 0)[0]))
+                elif sig == b"TPLT" and len(d) == 4:
+                    _t = _struct.unpack("<I", d)[0]
+                    tpl = _abs(_t) if _t else None
+                elif sig == b"WNAM" and len(d) == 4:     # the NPC's own skin
+                    skins.add(_abs(_struct.unpack("<I", d)[0]))
+            npcs[rid] = (female, race,
+                         tpl if tflags & _TPLT_USE_TRAITS else None,
+                         tuple(items))
+        for r in groups.get(b"OTFT", ()):
+            ents: list = []
+            if not r.flags & _RECORD_DELETED:
+                for sig, d in _esp.iter_subrecords(r.payload):
+                    if sig == b"INAM":
+                        ents += [_abs(_struct.unpack_from("<I", d, i)[0])
+                                 for i in range(0, len(d) - 3, 4)]
+            lists[_abs(r.formid)] = tuple(ents)
+        for r in groups.get(b"LVLI", ()):
+            ents = []
+            if not r.flags & _RECORD_DELETED:
+                for sig, d in _esp.iter_subrecords(r.payload):
+                    if sig == b"LVLO" and len(d) >= 8:
+                        ents.append(_abs(_struct.unpack_from("<I", d, 4)[0]))
+            lists[_abs(r.formid)] = tuple(ents)
+        for r in groups.get(b"RACE", ()):
+            for sig, d in _esp.iter_subrecords(r.payload):
+                if sig == b"EDID":
+                    race_edid[_abs(r.formid)] = d.rstrip(b"\x00").decode(
+                        "cp1252", errors="replace")
+                elif sig == b"WNAM" and len(d) == 4:     # the race's skin
+                    skins.add(_abs(_struct.unpack("<I", d)[0]))
+
+    def _ube_capable(race) -> bool:
+        if race is None:
+            return False
+        if race[0] == "skyrim.esm" and race[1] in _UBE_CAPABLE_VANILLA_RACES:
+            return True
+        return race_edid.get(race, "").lower().startswith(_UBE_RACE_EDID_PREFIX)
+
+    known: "dict[tuple, bool]" = {}
+
+    def _female_wearer(rid, depth=0) -> bool:
+        """Sex and race of `rid`, through its traits template chain. A leveled-
+        NPC template, an unknown or deleted record and a cycle are not female."""
+        if rid in known:
+            return known[rid]
+        npc = npcs.get(rid)
+        if npc is None or depth > 16:
+            return False
+        female, race, tpl, _items = npc
+        if tpl is not None:
+            got = _female_wearer(tpl, depth + 1)
+        else:
+            got = female and _ube_capable(race)
+        known[rid] = got
+        return got
+
+    worn: "set[tuple[str, int]]" = set()
+    stack: list = []
+    for rid, npc in npcs.items():
+        if npc is not None and _female_wearer(rid):
+            stack.extend(npc[3])
+    while stack:                      # outfits and lists may nest or cycle
+        it = stack.pop()
+        if it in worn:
+            continue
+        worn.add(it)
+        stack.extend(lists.get(it, ()))
+    return frozenset(worn - skins)    # a skin is the body, never worn over it
+
+
+def _batch_npc_worn_armos() -> "frozenset[tuple[str, int]] | None":
+    """`_npc_worn_armos` over the active load order, built once per load order
+    per process: source selection and the convert step of one `auto` run share
+    it, and a GUI refresh does not re-read every plugin while the mod and plugin
+    order stay the same.
+
+    None -- the old rule, every non-playable armour skipped -- when switched off
+    (CBBE2UBE_NO_NPC_WORN_NONPLAYABLE=1) or when there is no load order to read.
+    Never raises: a failed read is a warning and the old rule. #npc-worn-nonplayable"""
+    if _flag("CBBE2UBE_NO_NPC_WORN_NONPLAYABLE", False):
+        return None
+    try:
+        lay = paths.discover_layout()
+        names = paths.active_plugins_ordered(lay)
+        if not names:
+            return None
+        # Keyed on what decides which plugin files load -- the mods folder, the
+        # mod priority order and the plugin load order -- the way
+        # `_third_party_ube_covered_armos` keys its scan. NOT on the files' own
+        # stat: resolving the names to files walks every mod folder (~5 s of the
+        # ~10 s on a 3,254-plugin order), which would make a hit cost half a miss.
+        key = (str(lay.mods_root), tuple(paths.enabled_mods_ordered(lay) or ()),
+               tuple(n.lower() for n in names))
+        hit = _NPC_WORN_CACHE.get(key)
+        if hit is not None:
+            return hit
+        t0 = time.time()
+        fidx = paths.plugin_file_index(lay)
+        ordered = [Path(fidx[n.lower()]) for n in names if n.lower() in fidx]
+        if not ordered:
+            return None
+        worn = _npc_worn_armos(ordered)
+        _NPC_WORN_CACHE.clear()
+        _NPC_WORN_CACHE[key] = worn
+        print(f"  NPC outfits: read {len(ordered)} active plugin(s) in "
+              f"{time.time() - t0:.0f}s -- {len(worn)} form(s) worn or carried "
+              "by female NPCs of UBE-capable races")
+        return worn
+    except Exception as e:
+        warn(f"could not read which armour NPCs wear ({plain_error(e)})",
+             consequence="non-playable armour that female NPCs wear is not "
+                         "converted this run")
+        return None
+
+
 def _player_armor_mesh_bases(mod_dir: Path,
                              include_candidate_slots: bool = False,
                              mesh_resolves=None,
-                             ube_covered_armos=None) -> "set[str]":
+                             ube_covered_armos=None,
+                             npc_worn_armos=None,
+                             worn_admitted=None) -> "set[str]":
     """Weight-agnostic rel-path keys of every mesh a DefaultRace ARMA in this mod
     points at as an armor piece (biped slot is not hair-only).
 
@@ -5394,6 +5758,14 @@ def _player_armor_mesh_bases(mod_dir: Path,
     time and leaving orphan meshes in the output with no SkyPatcher link.
     #skip-already-ube
 
+    `npc_worn_armos`: optional set, same identity, of forms a female NPC of a
+    UBE-capable race wears or carries (`_npc_worn_armos`). A NON-PLAYABLE ARMO in
+    it counts as worn, so an ARMA only non-playable armour references is kept
+    when one of those ARMOs is in the set. None keeps the old rule (every such
+    ARMA skipped). `worn_admitted`: optional set the caller passes to learn which
+    armatures, as (plugin lowercase, ARMA formid), were kept ONLY for that
+    reason and planned at least one mesh. #npc-worn-nonplayable
+
     `include_candidate_slots`: also admit ambiguous modder slots (44/45/47/48/59/61)
     used for body cloth. The crash guard in auto_convert_mod drops any non-body-skinned
     mesh on these slots. Default False = strict body-slot allowlist (for selection;
@@ -5405,6 +5777,9 @@ def _player_armor_mesh_bases(mod_dir: Path,
     from . import esp as _esp
     import struct as _struct
     bases: "set[str]" = set()
+    # #nude-basename-path: the nude-skin basenames mean body skin only at the
+    # body's own home (see `_is_nude_body_skin_model`). Read once per call.
+    _skin_by_name_alone = _flag("CBBE2UBE_NO_NUDE_BASENAME_PATH", False)
     # Vanilla sweep: the game Data dir enumerates the vanilla/DLC masters
     # (_find_source_esps skips those by design for normal mod folders).
     for ep in (_vanilla_sweep_esps(mod_dir) or _find_source_esps(mod_dir)):
@@ -5422,8 +5797,26 @@ def _player_armor_mesh_bases(mod_dir: Path,
         # aren't converted. An ARMA referenced by NO same-plugin ARMO (e.g. a
         # vanilla replacer whose ARMO lives in Skyrim.esm) is left in -- we can't
         # see the master ARMO's flag here, and those are real armour.
+        #
+        # #npc-worn-nonplayable (2026-09-24): "non-playable" is not "never worn".
+        # Follower and quest outfits are flagged non-playable too, and the unified
+        # coverage step deliberately gives non-playable body and hands/feet armour
+        # a UBE armature -- so the skip here left that armature drawing the
+        # unconverted CBBE mesh on a UBE actor. A non-playable ARMO that a female
+        # NPC of a UBE-capable race WEARS or CARRIES (`npc_worn_armos`: a winning
+        # NPC_'s default/sleep outfit or inventory, through outfits and leveled
+        # lists) now counts as worn. Script-applied gore is reached by no outfit
+        # or inventory, so it stays skipped, and no skin is ever in the set (a
+        # skeleton skin got through before that rule). Measured on a real
+        # modlist, with templated NPCs counted only through their template
+        # chain: 43 armatures in 14 sources (7 of them new sources), 37 pieces,
+        # 60 NIFs planned, 17 armatures the coverage step had minted over an
+        # unconverted mesh; 0 child pieces. Accepted edge: wound meshes that sit
+        # in a victim's inventory are converted too.
         _ARMO_NONPLAYABLE = 0x00000004
         playable_ref: "set[int]" = set()
+        worn_ref: "set[int]" = set()      # non-playable, but an NPC wears it
+        named_item_ref: "set[int]" = set()   # playable AND named (FULL)
         any_ref: "set[int]" = set()
         # #skip-already-ube: same shape as the playable/non-playable split above,
         # for armors a third-party mod has ALREADY UBE-patched. An ARMA is only
@@ -5437,31 +5830,46 @@ def _player_armor_mesh_bases(mod_dir: Path,
                 continue
             for arec in g.records:
                 _play = not (arec.flags & _ARMO_NONPLAYABLE)
-                if ube_covered_armos:
+                _ident = None
+                if ube_covered_armos or (npc_worn_armos and not _play):
                     # Identity as `_third_party_ube_covered_armos` returns it: the
                     # DEFINING plugin (a master when this record is an override,
                     # else this plugin) + the low-24 formid.
                     _mi = arec.formid >> 24
                     _def = (_lc_masters[_mi] if _mi < len(_lc_masters)
                             else ep.name.lower())
-                    _is_cov = (_def, arec.formid & 0xFFFFFF) in ube_covered_armos
-                else:
-                    _is_cov = False
+                    _ident = (_def, arec.formid & 0xFFFFFF)
+                _is_cov = bool(ube_covered_armos) and _ident in ube_covered_armos
+                _worn = (not _play and bool(npc_worn_armos)
+                         and _ident in npc_worn_armos)
+                _refs: "list[int]" = []
+                _named = False
                 for s, d in _esp.iter_subrecords(arec.payload):
                     if s == b"MODL" and len(d) == 4:
-                        rf = _struct.unpack("<I", d)[0]
-                        any_ref.add(rf)
-                        if _play:
-                            playable_ref.add(rf)
-                        (covered_ref if _is_cov else uncovered_ref).add(rf)
+                        _refs.append(_struct.unpack("<I", d)[0])
+                    elif s == b"FULL" and d.strip(b"\x00"):
+                        _named = True      # an item a player sees by name
+                for rf in _refs:
+                    any_ref.add(rf)
+                    if _play:
+                        playable_ref.add(rf)
+                        if _named:
+                            named_item_ref.add(rf)   # #nude-basename-path
+                    elif _worn:
+                        worn_ref.add(rf)
+                    (covered_ref if _is_cov else uncovered_ref).add(rf)
         for g in e.groups:
             if g.label != b"ARMA":
                 continue
             for rec in g.records:
                 # Gore/effect: this ARMA is referenced ONLY by non-playable
-                # ARMO(s) in this plugin -> not player-equippable -> don't convert.
-                if rec.formid in any_ref and rec.formid not in playable_ref:
+                # ARMO(s) in this plugin -> not player-equippable -> don't convert
+                # -- unless an NPC wears one of them. #npc-worn-nonplayable
+                if (rec.formid in any_ref and rec.formid not in playable_ref
+                        and rec.formid not in worn_ref):
                     continue
+                _only_worn = (rec.formid in worn_ref
+                              and rec.formid not in playable_ref)
                 # #skip-already-ube: referenced ONLY by armors another mod has
                 # already UBE-patched -> that mod owns this piece; converting it
                 # would ship a mesh we then suppress at the coverage stage.
@@ -5530,13 +5938,16 @@ def _player_armor_mesh_bases(mod_dir: Path,
                     if not m:
                         continue
                     base = _weight_base_key(m)
-                    if base.rsplit("/", 1)[-1] in _BODY_SKIN_BASENAMES:
+                    if _is_nude_body_skin_model(base, _skin_by_name_alone,
+                                                rec.formid in named_item_ref):
                         continue  # nude body skin — not an armour piece
                     if _is_child_content_asset(m):
                         continue  # child clothing reached via an adult-named ARMA
                     if _is_already_ube_model(m):
                         continue  # already UBE-shaped — refitting would break it
                     bases.add(base)
+                    if _only_worn and base and worn_admitted is not None:
+                        worn_admitted.add((ep.name.lower(), rec.formid))
     bases.discard("")
     return bases
 
@@ -5568,6 +5979,12 @@ def _nif_has_bodyfit_skin(nif_path: Path) -> bool:
 # Full-VFS mesh index built once during source selection; reused by the convert
 # step to avoid a second modlist walk. Keyed by lowercased mods_root.
 _BATCH_MESH_INDEX: "dict[str, dict]" = {}
+
+# The lookup-only archive index source selection built to find mods whose
+# armour lives only in archives; the convert step adopts (and pops) its listing
+# when it would list the same archives. Keyed by lowercased mods_root.
+# #bsa-only-sources
+_SELECTION_BSA_INDEX: "dict[str, _BsaMeshIndex]" = {}
 
 # Memo of _find_armor_mod_dirs results so the GUI Refresh and the subsequent
 # Convert (same process) share one discovery pass. _BATCH_MESH_INDEX side-effect
@@ -5612,7 +6029,16 @@ def _find_armor_mod_dirs(mods_root: Path,
             # the returned candidate set (see the union_all sweep branch), so it
             # must be part of the memo key or a mid-process toggle returns a
             # stale list.
-            _flag("CBBE2UBE_NO_VANILLA_SWEEP", False))
+            _flag("CBBE2UBE_NO_VANILLA_SWEEP", False),
+            # Each of these four changes which mods are sources (or, for the
+            # archive rule, which archives decide that), so a toggle between a
+            # GUI refresh and the convert must not return the other list.
+            # #bsa-only-sources #texture-archive-meshes #nude-basename-path
+            # #npc-worn-nonplayable
+            _flag("CBBE2UBE_NO_BSA_ONLY_SOURCES", False),
+            _flag("CBBE2UBE_NO_TEXTURE_ARCHIVE_MESHES", False),
+            _flag("CBBE2UBE_NO_NUDE_BASENAME_PATH", False),
+            _flag("CBBE2UBE_NO_NPC_WORN_NONPLAYABLE", False))
     _cached = _ARMOR_MOD_DIRS_CACHE.get(_key)
     if _cached is not None:
         return list(_cached)
@@ -5720,6 +6146,15 @@ def _find_armor_mod_dirs_uncached(mods_root: Path,
         except Exception:
             pass
 
+    # Non-playable armour a female NPC wears counts as armour for every test
+    # below: eligibility, coverage keys and the vanilla sweep's keys, so the mesh
+    # the game loads for it is located like any other. #npc-worn-nonplayable
+    if not _flag("CBBE2UBE_NO_NPC_WORN_NONPLAYABLE", False):
+        _prog("reading which armour NPCs wear…")     # ~11 s on a large order
+    _npc_worn = _batch_npc_worn_armos()
+    _worn_admitted: "set[tuple[str, int]]" = set()
+    _worn_mods = 0
+
     # require_arma: a mod is a source if a DefaultRace ARMA equips an armour-slot
     # mesh. Count own-folder NIFs first (fast); mods whose meshes are BodySlide-
     # built or in another mod resolve via the VFS instead of being dropped.
@@ -5730,12 +6165,19 @@ def _find_armor_mod_dirs_uncached(mods_root: Path,
             _prog(f"checking mod folders… {_mi}/{len(mod_dirs)}")
         if not _name_ok(mod_dir):
             continue
-        armor_bases = _player_armor_mesh_bases(mod_dir)  # STRICT = eligibility
+        armor_bases = _player_armor_mesh_bases(  # STRICT = eligibility
+            mod_dir, npc_worn_armos=_npc_worn)
         if not armor_bases:
             continue  # no player-equippable armour piece -> not a source
         # Broaden to ambiguous modder slots for VFS coverage on mods already
         # eligible via a standard body slot. The crash guard drops non-body-skinned.
-        cov_bases = _player_armor_mesh_bases(mod_dir, include_candidate_slots=True)
+        _mod_worn: "set[tuple[str, int]]" = set()
+        cov_bases = _player_armor_mesh_bases(
+            mod_dir, include_candidate_slots=True,
+            npc_worn_armos=_npc_worn, worn_admitted=_mod_worn)
+        if _mod_worn:
+            _worn_admitted |= _mod_worn
+            _worn_mods += 1
         for b in cov_bases:
             union_all.update((f"{b}_0.nif", f"{b}_1.nif", f"{b}.nif"))
         own = 0
@@ -5760,7 +6202,8 @@ def _find_armor_mod_dirs_uncached(mods_root: Path,
             _swlay = paths.discover_layout()
             for _dd in (_swlay.game_data_dirs or [])[:1]:
                 for b in _player_armor_mesh_bases(
-                        Path(_dd), include_candidate_slots=True):
+                        Path(_dd), include_candidate_slots=True,
+                        npc_worn_armos=_npc_worn):
                     union_all.update((f"{b}_0.nif", f"{b}_1.nif", f"{b}.nif"))
         except Exception:
             pass
@@ -5782,14 +6225,60 @@ def _find_armor_mod_dirs_uncached(mods_root: Path,
             vfs = {}
         _BATCH_MESH_INDEX[str(mods_root).lower()] = vfs
 
+    # #bsa-only-sources (2026-09-24): a mod whose armour meshes are in no loose
+    # file anywhere may still ship them in an ARCHIVE, and the convert step
+    # resolves from archives (`_BsaMeshIndex`) -- but this gate only ever looked
+    # at loose files, so such a mod was dropped here before conversion could
+    # run, in silence: it appeared in no log and no report. Measured on a real
+    # modlist: 9 mods (a fur armour set's update, a clothing set, a quest
+    # overhaul and its hotfix, a scarf, cloaks, robes), 37 pieces, 49 NIFs
+    # planned after the female-only rule, 66 armatures the coverage step had
+    # been minting over an unconverted mesh; 0 child and 0 creature pieces
+    # (DefaultRace only, and the child and non-playable gates still apply);
+    # the other 138 sources plan exactly what they did. The index is lookup-only
+    # (staging None: it can never write) over the SAME folders the convert step
+    # lists, and lazy: it is read only when some mod finds nothing loose. The
+    # convert step adopts its listing. CBBE2UBE_NO_BSA_ONLY_SOURCES=1 turns this
+    # off, and with it the log of mods still dropped.
+    _bsa_only = not _flag("CBBE2UBE_NO_BSA_ONLY_SOURCES", False)
+    _sel_bsa = None
+    if _bsa_only and pending_vfs:
+        try:
+            _sel_bsa = _BsaMeshIndex(
+                _load_order_bsa_dirs(mods_root, enabled_ordered,
+                                     paths.discover_layout().game_data_dirs),
+                None)
+            _SELECTION_BSA_INDEX[str(mods_root).lower()] = _sel_bsa
+        except Exception:
+            _sel_bsa = None
+    _found_nowhere: "list[str]" = []
     for mod_dir, armor_bases in pending_vfs:
         c = sum(1 for b in armor_bases
                 if any(f"{b}{suf}.nif" in vfs for suf in ("_1", "_0", "")))
+        if c == 0 and _sel_bsa is not None:
+            c = sum(1 for b in armor_bases
+                    if any(_sel_bsa.contains(f"{b}{suf}.nif")
+                           for suf in ("_1", "_0", "")))
         if c == 0:
+            if _bsa_only:
+                _found_nowhere.append(mod_dir.name)
             continue  # armour meshes genuinely don't exist anywhere
         candidates.append({
             "name": mod_dir.name, "path": mod_dir, "armor_nifs": c,
             "esps": sum(1 for _ in mod_dir.rglob("*.esp"))})
+    if _found_nowhere:
+        print(f"  armour meshes found nowhere: {len(_found_nowhere)} mod(s) equip "
+              "armour whose meshes are in no enabled mod's loose files or "
+              "archives, so they are not converted:")
+        # EVERY name, uncapped: this line is the only place such a mod is ever
+        # named -- it is in no report -- so a "... and N more" would leave the
+        # ones past the cut as silent as before. 2 on a 3,254-plugin modlist.
+        for n in _found_nowhere:
+            print(f"    - {n}")
+    if _worn_admitted:
+        print(f"  non-playable armour a female NPC wears: {len(_worn_admitted)} "
+              f"armature(s) in {_worn_mods} mod(s) kept for conversion "
+              "(these were skipped before)")
 
     # Duplicate-plugin dedup: when the same filename ships in multiple mods, the
     # game loads only the highest-MO2-priority copy. Patching a lower-priority
@@ -5874,6 +6363,10 @@ def list_convertible_mods(output_dir: "Path | None" = None,
         # whole session. #esp-cache-release
         from . import esp as _esp
         _esp.clear_load_cache()
+        # Same for the archive listing selection may have read: only a convert
+        # in THIS process could reuse it, and the GUI never converts in-process.
+        # #bsa-only-sources
+        _SELECTION_BSA_INDEX.pop(str(mr).lower(), None)
     prio = paths.enabled_mods_ordered(lay)
     if prio:
         rank = {name: i for i, name in enumerate(prio)}
