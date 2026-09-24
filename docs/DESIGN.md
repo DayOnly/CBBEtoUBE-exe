@@ -1120,6 +1120,29 @@ reported through `_report_coverage_holds`:
   armour's armatures) plus 4 dismembered-body addons and 2 links of one choker
   from the user's UBE BodySlide build -- every one a UBE version of the same
   mesh. `CBBE2UBE_NO_COVERAGE_UBE_TWIN=1` turns it off.
+- **A `meshes\` model path is written `!UBE\X`** (`#twin-path-strip-meshes`).
+  An armature may spell its model `meshes\X.nif`; the engine reads it as X, so
+  the twin lookup takes the folder off and finds `meshes\!UBE\X.nif`. The
+  rebuild put `!UBE\` in front of the RAW path -- `!UBE\meshes\X.nif`, read as
+  `meshes\!UBE\meshes\X.nif`, a minted path that exists nowhere (the missing-nif
+  rule's load-crash cause). `_ube_twin_slots` recorded the same string, so the
+  piece validator whitelisted it, and the postflight resolver took the folder off
+  again and called it resolved. Now `_strip_meshes_prefix` runs wherever a
+  `!UBE\` path is composed from a source path: `rebuild_arma_payload`
+  (`strip_meshes_prefix`, passed by both coverage passes), `_ube_twin_slots`,
+  `_converted_model_exists` (so it asks what the lookup asks) and
+  `restore_female_models` (it checked the stripped file, wrote the raw path). The
+  postflight judges the string written: a `!UBE\meshes\...` path is looked up
+  as written (`twin(..., as_written=True)`). The per-source patch is not touched:
+  its converted check keeps the raw path, so it never prefixes one (live: 12
+  such slots in the deployed plugins, 0 with a converted mesh). Live coverage
+  replay: 0 slots at default settings (byte-identical to the parent), because
+  #claim-meshes-prefix claims the one case; with
+  `CBBE2UBE_NO_CLAIM_MESHES_PREFIX=1`, 1 armature / 2 slots (a softbody pack's
+  nude suit, MOD3 + MOD5) move from `!UBE\meshes\...` to `!UBE\...`, where the
+  user's UBE BodySlide build ships it; nothing else changes. Switch set:
+  byte-identical to the parent in both settings. Female re-check sidecars: 0 of
+  29 entries prefixed. `CBBE2UBE_NO_TWIN_PATH_STRIP_MESHES=1`.
 - **A mesh another mod already built for UBE is not converted**
   (`#skip-built-ube-path`). #skip-already-ube judges "already UBE" by the armour
   records of the SAME plugin; a refit plugin overriding only armatures sends its

@@ -564,6 +564,31 @@ def _coverage_ube_twin() -> bool:
     return not _flag("CBBE2UBE_NO_COVERAGE_UBE_TWIN", False)
 
 
+def _twin_path_strip_meshes() -> bool:
+    r"""#twin-path-strip-meshes (2026-09-24): is a leading `meshes\` taken off a
+    source model path before `!UBE\` is put in front of it? Yes, by default.
+
+    An armature may spell its model `meshes\X.nif`; the engine reads that as
+    `meshes\X.nif`, so its UBE version sits at `meshes\!UBE\X.nif`. The twin
+    lookup already found it there, but the rebuild wrote `!UBE\meshes\X.nif`
+    -- read by the engine as `meshes\!UBE\meshes\X.nif`, which exists nowhere --
+    and both validators passed that string. With this on the prefix goes in the
+    writer, the twin record the validator whitelists, the converted-mesh check
+    and the female-model re-check alike, and the postflight judges the string
+    as written. CBBE2UBE_NO_TWIN_PATH_STRIP_MESHES=1 turns it off."""
+    return not _flag("CBBE2UBE_NO_TWIN_PATH_STRIP_MESHES", False)
+
+
+def _strip_meshes_prefix(path: str) -> str:
+    r"""`meshes\X` (either slash, any case, leading separators too) -> `X`, the
+    path under `meshes\` the engine reads; any other path comes back as is.
+    #twin-path-strip-meshes"""
+    s = path.lstrip("\\/")
+    if s[:7].lower() in ("meshes\\", "meshes/"):
+        return s[7:]
+    return path
+
+
 def _skip_built_ube_path() -> bool:
     r"""#skip-built-ube-path (2026-09-24): is a source mesh left unconverted
     when another mod already ships a BUILT UBE mesh at the very path the
@@ -1064,6 +1089,7 @@ def rebuild_arma_payload(source_payload: bytes, *,
                          keep_named_female: bool = False,
                          declined_log: "list | None" = None,
                          female_mesh_exists: "callable[[str], bool] | None" = None,
+                         strip_meshes_prefix: bool = False,
                          ) -> bytes:
     """Take a source ARMA payload and produce the UBE-targeted variant.
 
@@ -1090,6 +1116,10 @@ def rebuild_arma_payload(source_payload: bytes, *,
     male one, and so is one whose mesh `female_mesh_exists` says exists nowhere
     (None = assume it exists). Each slot kept is appended to `declined_log` as
     {"slot", "kept", "male"}, each dead one as {"slot", "dead", "male"}.
+
+    `strip_meshes_prefix` (#twin-path-strip-meshes): a model spelt `meshes\\X`
+    is written `<path_prefix>X`, not `<path_prefix>meshes\\X` (a path the engine
+    reads as `meshes\\!UBE\\meshes\\X`). False writes the path as it was.
 
     EDID is left untouched here (the caller can post-process).
     """
@@ -1124,7 +1154,10 @@ def rebuild_arma_payload(source_payload: bytes, *,
             path = data.rstrip(b"\x00").decode("utf-8", errors="ignore")
             converted = bool(path) and (converted_nif_exists is None
                                         or converted_nif_exists(path))
-            new_path = (path_prefix + path) if converted else path
+            if converted and strip_meshes_prefix:
+                new_path = path_prefix + _strip_meshes_prefix(path)
+            else:
+                new_path = (path_prefix + path) if converted else path
             # UBE is female-only. If the male model was converted but the female
             # model was NOT (wrong name, not shipped), the female UBE actor renders
             # nothing. Redirect MOD3/MOD5 to the converted male mesh and drop the
@@ -1455,6 +1488,7 @@ def restore_female_models(patches_dir: "str | Path",
     import json as _json
     patches_dir = Path(patches_dir)
     meshes_root = Path(output_mod_dir) / "meshes" / path_prefix.strip("\\/")
+    _strip = _twin_path_strip_meshes()
     checked = restored = patches_changed = 0
     for sidecar in sorted(patches_dir.glob("*.male_fallbacks.json")):
         patch_path = Path(str(sidecar)[:-len(".male_fallbacks.json")])
@@ -1477,8 +1511,11 @@ def restore_female_models(patches_dir: "str | Path",
                 rel = rel[len("meshes/"):]
             if not (meshes_root / rel).is_file():
                 continue  # still no converted female mesh -> fallback stands
+            # Write the path that was checked: `meshes\X` found at
+            # <meshes_root>/X is `!UBE\X`. #twin-path-strip-meshes
             todo.setdefault(int(fid), {})[slot] = (
-                e.get("to") or "", path_prefix + orig)
+                e.get("to") or "",
+                path_prefix + (_strip_meshes_prefix(orig) if _strip else orig))
         if not todo:
             continue
         try:
@@ -3462,7 +3499,8 @@ def _summarize_armo(payload, masters, own_name):
     return arms, rnam, slots, edid
 
 
-def _converted_model_exists(model_path: str, crp: "set[str]") -> bool:
+def _converted_model_exists(model_path: str, crp: "set[str]",
+                            strip_meshes: bool = False) -> bool:
     """Does a CONVERTED `!UBE\\` mesh exist for this model path?
 
     Decides whether a coverage ARMA points at the converted mesh or keeps the source
@@ -3473,28 +3511,40 @@ def _converted_model_exists(model_path: str, crp: "set[str]") -> bool:
     Was defined identically inside both `generate_modded_nonbody_ube_coverage_patch`
     and `generate_modded_body_ube_coverage_patch`, each closing over its own `crp`.
     The two coverage generators must normalise a path the same way or they disagree
-    about which pieces got converted -- so the normalisation lives in one place."""
+    about which pieces got converted -- so the normalisation lives in one place.
+
+    `strip_meshes` (#twin-path-strip-meshes): a model spelt `meshes\\X` is asked
+    as `X`, the same path the twin lookup asks and the writer then writes."""
     if not model_path:
         return False
+    if strip_meshes:
+        model_path = _strip_meshes_prefix(model_path)
     return model_path.replace("\\", "/").lstrip("/").lower() in crp
 
 
-def _ube_twin_slots(payload: bytes, crp: "set[str]", ube_twin_exists) -> list:
+def _ube_twin_slots(payload: bytes, crp: "set[str]", ube_twin_exists,
+                    strip_meshes: bool = False) -> list:
     r"""#coverage-ube-twin: the model slots of a SOURCE armature that the rebuild
     points at a hand-made `!UBE\` mesh another mod ships -- no converted twin in
     our output, one loose in a third-party mod. Read from the source, so a path
     that already starts `!UBE\` is never mistaken for one. Each is
-    {"slot", "path", "mod"}; `ube_twin_exists` returns the supplying mod."""
+    {"slot", "path", "mod"}; `ube_twin_exists` returns the supplying mod.
+
+    "path" is the string the rebuild writes -- the piece validator whitelists
+    exactly it -- so with `strip_meshes` a `meshes\` source is recorded as
+    `rebuild_arma_payload(strip_meshes_prefix=True)` writes it: `!UBE\X`, not
+    `!UBE\meshes\X`. #twin-path-strip-meshes"""
     out = []
     for sig, d in esp.iter_subrecords(payload):
         if sig not in ARMA_MODEL_SIGS:
             continue
         p = d.rstrip(b"\x00").decode("utf-8", "ignore")
-        if not p or _converted_model_exists(p, crp):
+        if not p or _converted_model_exists(p, crp, strip_meshes=strip_meshes):
             continue
         mod = ube_twin_exists(p)
         if mod:
-            out.append({"slot": sig.decode(), "path": "!UBE\\" + p,
+            _rel = _strip_meshes_prefix(p) if strip_meshes else p
+            out.append({"slot": sig.decode(), "path": "!UBE\\" + _rel,
                         "mod": mod if isinstance(mod, str) else ""})
     return out
 
@@ -3738,6 +3788,7 @@ def generate_modded_nonbody_ube_coverage_patch(
     DEFAULT_RACE = ("skyrim.esm", _DEFAULT_RACE_LOW24)
     _female_guard = _coverage_female_guard()
     _twin = _coverage_ube_twin() and ube_twin_exists is not None
+    _strip = _twin_path_strip_meshes()   # #twin-path-strip-meshes
     _race_list = _coverage_human_race_list()
     withheld: list = []        # (armo_abs, edid) left alone for --exclude-mods
     female_kept: list = []     # female slots that kept their own mesh (guard)
@@ -3900,7 +3951,7 @@ def generate_modded_nonbody_ube_coverage_patch(
     crp = converted_rel_paths or set()
 
     def _conv_exists(model_path: str) -> bool:
-        return _converted_model_exists(model_path, crp)
+        return _converted_model_exists(model_path, crp, strip_meshes=_strip)
 
     def _ube_exists(model_path: str) -> bool:
         # What a minted slot may point at: our converted mesh or, opted in, a
@@ -3943,7 +3994,7 @@ def generate_modded_nonbody_ube_coverage_patch(
                     new_primary_rnam=_prim,
                     new_additional_race_fids=_addl,
                     alt_texture_fid_remap=_remap,                # MO?S -> patch space
-                    converted_nif_exists=_ube_exists,
+                    converted_nif_exists=_ube_exists, strip_meshes_prefix=_strip,
                     keep_named_female=_female_guard, declined_log=_declined,
                     female_mesh_exists=female_mesh_exists,
                 )
@@ -3961,6 +4012,7 @@ def generate_modded_nonbody_ube_coverage_patch(
                 new_primary_rnam=_prim,
                 new_additional_race_fids=_addl,
                 converted_nif_exists=_ube_exists,  # redirect to !UBE\ where converted
+                strip_meshes_prefix=_strip,
                 keep_named_female=_female_guard, declined_log=_declined,
                 female_mesh_exists=female_mesh_exists,
             )
@@ -3968,7 +4020,8 @@ def generate_modded_nonbody_ube_coverage_patch(
             (female_dead if "dead" in d else female_kept).append(
                 {"arma": f"{arma_abs[0]}|{arma_abs[1]:X}", **d})
         if _twin:
-            for d in _ube_twin_slots(payload, crp, ube_twin_exists):
+            for d in _ube_twin_slots(payload, crp, ube_twin_exists,
+                                     strip_meshes=_strip):
                 twin_slots.append({"arma": f"{arma_abs[0]}|{arma_abs[1]:X}", **d})
         new_fid = (own_byte << 24) | next_id
         next_id += 1
@@ -4084,6 +4137,7 @@ def generate_modded_body_ube_coverage_patch(
     _world_mesh = _coverage_world_mesh()
     _nude_skin = _coverage_nude_skin()
     _twin = _coverage_ube_twin() and ube_twin_exists is not None
+    _strip = _twin_path_strip_meshes()   # #twin-path-strip-meshes
     if mesh_exists is None:
         mesh_exists = female_mesh_exists
     withheld: list = []        # (armo_abs, edid) left alone for --exclude-mods
@@ -4122,7 +4176,7 @@ def generate_modded_body_ube_coverage_patch(
         return False
 
     def _conv_exists(model_path: str) -> bool:
-        return _converted_model_exists(model_path, crp)
+        return _converted_model_exists(model_path, crp, strip_meshes=_strip)
 
     def _ube_exists(model_path: str) -> bool:
         # What a minted slot may point at: our converted mesh or, opted in, a
@@ -4566,7 +4620,7 @@ def generate_modded_body_ube_coverage_patch(
                     new_primary_rnam=_prim,
                     new_additional_race_fids=_addl,
                     alt_texture_fid_remap=_remap,             # MO?S -> patch space
-                    converted_nif_exists=_ube_exists,
+                    converted_nif_exists=_ube_exists, strip_meshes_prefix=_strip,
                     keep_named_female=_female_guard, declined_log=_declined,
                     female_mesh_exists=female_mesh_exists,
                 )
@@ -4584,6 +4638,7 @@ def generate_modded_body_ube_coverage_patch(
                 new_primary_rnam=_prim,
                 new_additional_race_fids=_addl,
                 converted_nif_exists=_ube_exists,   # redirect model -> !UBE\ where converted
+                strip_meshes_prefix=_strip,
                 keep_named_female=_female_guard, declined_log=_declined,
                 female_mesh_exists=female_mesh_exists,
             )
@@ -4595,7 +4650,8 @@ def generate_modded_body_ube_coverage_patch(
             # #coverage-nude-skin: the UBE body's own hand/foot, checked to resolve.
             minted_payload = _redirect_mod3(minted_payload, _part)
         if _twin:
-            for d in _ube_twin_slots(payload, crp, ube_twin_exists):
+            for d in _ube_twin_slots(payload, crp, ube_twin_exists,
+                                     strip_meshes=_strip):
                 if not (_part and d["slot"] == "MOD3"):
                     twin_slots.append({"arma": f"{arma_abs[0]}|{arma_abs[1]:X}", **d})
         new_fid = (own_byte << 24) | next_id

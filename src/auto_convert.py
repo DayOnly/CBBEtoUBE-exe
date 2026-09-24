@@ -3521,10 +3521,14 @@ def _third_party_ube_twin_lookup(output, exclude_mods=()) \
                 idx.setdefault(f.relative_to(ube).as_posix().lower(), name)
         return idx
 
-    def twin(model: str) -> "str | None":
+    def twin(model: str, as_written: bool = False) -> "str | None":
+        # `model` is a SOURCE model path: `meshes\X` is read by the engine as
+        # `X`, so its twin is `meshes\!UBE\X`. `as_written` asks for the path
+        # after `!UBE\` exactly as a minted slot spells it -- the postflight
+        # judges `!UBE\meshes\X` as `meshes\!UBE\meshes\X`. #twin-path-strip-meshes
         nonlocal index
         rel = str(model or "").replace("\\", "/").lstrip("/").lower()
-        if rel.startswith("meshes/"):
+        if rel.startswith("meshes/") and not as_written:
             rel = rel[7:]
         if not rel:
             return None
@@ -3677,6 +3681,7 @@ def _outside_ube_mesh_resolver(output) -> "callable[[str], bool] | None":
     twin_on = ube_patcher._coverage_ube_twin()
     if not (nude or twin_on):
         return None
+    strip = ube_patcher._twin_path_strip_meshes()
     built: dict = {}
 
     def resolves(path: str) -> bool:
@@ -3688,6 +3693,11 @@ def _outside_ube_mesh_resolver(output) -> "callable[[str], bool] | None":
         if twin_on and p[:5].lower() == "!ube\\":
             if "twin" not in built:
                 built["twin"] = _third_party_ube_twin_lookup(output)
+            rest = p[5:]
+            if strip and ube_patcher._strip_meshes_prefix(rest) != rest:
+                # Judged as written: `!UBE\meshes\X` loads meshes\!UBE\meshes\X,
+                # not the twin at meshes\!UBE\X. #twin-path-strip-meshes
+                return bool(built["twin"] and built["twin"](rest, as_written=True))
             return bool(built["twin"] and built["twin"](p[5:]))
         return False
     return resolves

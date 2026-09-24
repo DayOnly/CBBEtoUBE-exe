@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### Fixed — a hand-made UBE mesh is linked at the path where the game finds it
+
+Some mods write an armour's model path with the `meshes\` folder at the front.
+When this tool pointed such a piece at a UBE version that another mod ships, it
+kept that folder in the path. The game then looked in `meshes\!UBE\meshes\...`,
+where no file exists. A missing `!UBE` mesh can crash the game when an actor
+wearing the piece loads, and neither of this tool's checks reported it. The
+folder is now taken off first, and the checks test the exact path that was
+written. Measured on the reported modlist: nothing changes at default settings.
+The one case there only appears when `CBBE2UBE_NO_CLAIM_MESHES_PREFIX=1` is set
+(one nude suit, whose two links now point at the UBE version the user built).
+`CBBE2UBE_NO_TWIN_PATH_STRIP_MESHES=1` (set to 1) turns it off.
+
 ### Fixed — an old copy set aside for a hand-made UBE version no longer comes back
 
 When another mod ships an armour piece already built for UBE, this tool leaves
