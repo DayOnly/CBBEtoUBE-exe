@@ -539,6 +539,29 @@ def _coverage_ube_twin() -> bool:
     return not _flag("CBBE2UBE_NO_COVERAGE_UBE_TWIN", False)
 
 
+def _skip_built_ube_path() -> bool:
+    r"""#skip-built-ube-path (2026-09-24): is a source mesh left unconverted
+    when another mod already ships a BUILT UBE mesh at the very path the
+    converter would write (`meshes\!UBE\<source path>`, every weight variant)?
+    Yes, by default -- while #coverage-ube-twin is on, since the twin rule is
+    what then points coverage at that mesh.
+
+    The user's rule: armour that already has a built UBE version is not
+    converted. #skip-already-ube judges that by the armour records of the SAME
+    plugin, so a refit plugin that overrides only the armatures of a mage set
+    sent its 24 meshes to conversion, and our copies -- at a higher MO2 priority
+    than the hand-made UBE set -- replaced it in game. Measured on the live
+    pack: 54 of our meshes sit at a path another mod ships; ours win at 14 (12
+    of that mage set, a witch's hat), the user's own UBE BodySlide build wins
+    the other 40 (converted for nothing). With this on, the planner skips them
+    and moves an earlier run's copy out of `meshes\` (a stale copy still wins
+    the path), and a BODY armature whose mesh is such a twin is admitted like a
+    converted one -- otherwise leaving the mesh to its builder would uncover the
+    armour records the builder's own patch does not reach.
+    CBBE2UBE_NO_SKIP_BUILT_UBE_PATH=1 converts them again."""
+    return _coverage_ube_twin() and not _flag("CBBE2UBE_NO_SKIP_BUILT_UBE_PATH", False)
+
+
 # Subrecords that do NOT affect how the addon RENDERS, so they're excluded from
 # the merge record-dedup key: the editor id, and the CK-generated model
 # texture-HASH blocks (MODT-equivalents) for each of the 4 gendered models. Two
@@ -3799,6 +3822,10 @@ def generate_modded_body_ube_coverage_patch(
         return _conv_exists(model_path) or (
             _twin and bool(model_path) and bool(ube_twin_exists(model_path)))
 
+    # What admits a body armature: a converted mesh, or -- when the planner
+    # leaves built UBE twins to their builders -- such a twin. #skip-built-ube-path
+    _admits = _ube_exists if (_twin and _skip_built_ube_path()) else _conv_exists
+
     def _female_world_needs_male(payload: bytes) -> bool:
         """Would `rebuild_arma_payload` fill this armature's female WORLD slot
         from its converted male mesh although the female mesh exists? MOD3 names
@@ -3969,9 +3996,11 @@ def generate_modded_body_ube_coverage_patch(
         # CBBE body on UBE clips); pure hands/feet (unified) are covered whether or
         # not converted -- they keep the original mesh where unconverted, exactly
         # like the per-source path, so a modded gauntlet is never left invisible.
+        # A built UBE twin another mod ships counts as converted: the planner
+        # leaves such a mesh to its builder. #skip-built-ube-path
         to_mint = [x for x, v in winning
                    if v[3] == DEFAULT_RACE
-                   and (any(_conv_exists(mp) for mp in _arma_models(v[0]))
+                   and (any(_admits(mp) for mp in _arma_models(v[0]))
                         or (_cover_hf
                             and bool(_arma_bod2_slots(v[0])
                                      & _BIPED_SLOT_HANDS_FEET_BITS)))]

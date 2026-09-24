@@ -4,6 +4,19 @@
 
 ### Fixed — hand-made UBE versions are recognised however their paths are written
 
+- A mesh another mod already ships built for UBE, at the very path this tool
+  would write, is no longer converted. Armour that already has a UBE version was
+  meant to be left alone, but the check looked only at armour records in the
+  same plugin, so a refit plugin that changes only the armatures slipped through.
+  Measured on the reported modlist: 54 meshes. At 14 of them our conversion sat
+  above the hand-made UBE version in MO2 and replaced it in game (one mage armour
+  set, a witch's hat). The other 40 duplicated your own UBE BodySlide build. A
+  copy from an earlier run is moved to `_superseded\` in the output mod, where
+  the game does not read it. Armour the builder's own patch does not reach still
+  gets a UBE armature that draws the built mesh -- one more armour covered (an
+  enchanted outfit that was invisible on UBE). A weight pair is left alone only
+  when both halves are built. `CBBE2UBE_NO_SKIP_BUILT_UBE_PATH=1` (set to 1)
+  converts them again.
 - A UBE patch whose armatures write the model path with the `meshes\` folder in
   front (a softbody pack's own UBE nude suits) was not recognised as a UBE patch,
   although the game reads the path either way. It is now: 10 armours on the

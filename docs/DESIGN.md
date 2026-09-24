@@ -1120,6 +1120,24 @@ reported through `_report_coverage_holds`:
   armour's armatures) plus 4 dismembered-body addons and 2 links of one choker
   from the user's UBE BodySlide build -- every one a UBE version of the same
   mesh. `CBBE2UBE_NO_COVERAGE_UBE_TWIN=1` turns it off.
+- **A mesh another mod already built for UBE is not converted**
+  (`#skip-built-ube-path`). #skip-already-ube judges "already UBE" by the armour
+  records of the SAME plugin; a refit plugin overriding only armatures sends its
+  meshes to conversion, and our output (above the builder in MO2) then replaces
+  the hand-made UBE mesh in game. Now the planner leaves a weight base to its
+  builder when EVERY variant planned for it has a built twin
+  (`_third_party_ube_twin_lookup`, the twin rule's own lookup, so it runs only
+  with #coverage-ube-twin on), and moves an earlier run's copy with its `.tri`
+  and `.xml` to `_superseded\` -- the output folder is never cleaned and a stale
+  copy would still win the path. The body pass admits an armature whose mesh is
+  such a twin (`_admits`), or the armour records the builder's patch does not
+  reach would lose coverage. Live: 54 meshes left to builders (14 where ours had
+  won the path, 40 where the user's UBE BodySlide build already did); coverage
+  replay 9381 -> 9382 links, 0 removed, 0 re-pointed, +1 armour newly drawn (an
+  enchanted outfit reusing a UBE-patched armature). Without #claim-meshes-prefix
+  the twin admission also minted a second nude suit on a softbody pack's own UBE
+  one (+2 links) -- that commit is why it does not.
+  `CBBE2UBE_NO_SKIP_BUILT_UBE_PATH=1`.
 - **A claim path written with `meshes\` in front** (`#claim-meshes-prefix`). The
   engine reads `meshes\!UBE\x_1.nif` and `!UBE\x_1.nif` as one file; the
   SkyPatcher half of the claim test stripped the folder, the plugin half did not.

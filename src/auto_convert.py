@@ -1611,6 +1611,11 @@ def auto_convert_mod(
     # it is converted like playable armour. None => non-playable armour is never
     # converted (the old rule). #npc-worn-nonplayable
     npc_worn_armos: "frozenset[tuple[str, int]] | None" = None,
+    # Which THIRD-PARTY mod ships a built UBE mesh at `meshes\!UBE\<path>`
+    # (`_third_party_ube_twin_lookup`, built once by the caller). A mesh another
+    # mod already built for UBE is left to it, and an earlier run's copy is moved
+    # out of meshes\. None => convert it anyway (the old rule). #skip-built-ube-path
+    built_ube_twin: "callable[[str], str | None] | None" = None,
 ) -> AutoConvertResult:
     """Run the full M2 + M3 phase 1 pipeline on a single CBBE armor mod.
 
@@ -1997,6 +2002,13 @@ def auto_convert_mod(
         work_items: list[tuple] = []
         skipped_collisions: list[tuple[Path, Path]] = []
         skipped_incremental = 0
+        # #skip-built-ube-path: a mesh another mod already ships BUILT for UBE at
+        # the very path we would write is left to that mod -- every weight
+        # variant of it or none, since their `_1` beside our `_0` would be a
+        # mismatched pair. {rel: the mod that ships it}.
+        built_elsewhere = (_built_ube_twins(resolved_pairs, built_ube_twin)
+                           if ube_path_prefix == "!UBE" else {})
+        skipped_built: list[tuple[str, str]] = []
         for src, rel in resolved_pairs:
             slot_bits = slot_bits_for(rel)
             # Last line of defence against double-conversion. The real gate is in
@@ -2006,6 +2018,9 @@ def auto_convert_mod(
             # mesh writes it to `!UBE\!UBE\...` and refits a UBE mesh onto the UBE
             # body a second time. Cheap to assert, so assert it.
             if _is_already_ube_model(rel):
+                continue
+            if rel in built_elsewhere:
+                skipped_built.append((rel, built_elsewhere[rel]))
                 continue
             dst = nif_dst_root / Path(rel)
             # SECURITY: `rel` can derive from a mod-controlled ARMA model path /
@@ -2057,6 +2072,20 @@ def auto_convert_mod(
             result.notes.append(
                 f"NIF collisions skipped: {len(skipped_collisions)} "
                 "(earlier source mod won the output path)")
+        if skipped_built:
+            _moved = _supersede_built_ube_outputs(
+                output_dir, nif_dst_root, [r for r, _m in skipped_built])
+            from collections import Counter as _Counter
+            _by_mod = _Counter(m for _r, m in skipped_built)
+            print(f"  built UBE version elsewhere: {len(skipped_built)} mesh(es) "
+                  "left to the mod that already ships them built for UBE"
+                  + (f"; {_moved} copy(ies) from an earlier run moved out of meshes\\"
+                     if _moved else ""))
+            for _m, _k in _by_mod.most_common(5):
+                print(f"    {_k:4d}  {_m}")
+            result.notes.append(
+                f"built UBE version elsewhere: {len(skipped_built)} NIF(s) not "
+                f"converted, {_moved} earlier copy(ies) superseded")
 
         planned_output_nifs = {it[1] for it in work_items}
 
@@ -3470,6 +3499,60 @@ def _third_party_ube_twin_lookup(output, exclude_mods=()) \
     return twin
 
 
+def _built_ube_twins(resolved_pairs, built_ube_twin) -> "dict[str, str]":
+    r"""#skip-built-ube-path: {rel: mod} for the planned meshes another mod
+    already ships BUILT at `meshes\!UBE\<rel>` (`built_ube_twin` is
+    `_third_party_ube_twin_lookup`, the same lookup coverage points at them
+    with). Judged per weight base: a base is left to that mod only when EVERY
+    variant planned for it has a built twin -- their `_1` beside our `_0` would
+    pair two different meshes. No lookup (switched off, no modlist) -> {}."""
+    if built_ube_twin is None:
+        return {}
+    by_base: dict = {}
+    for _src, rel in resolved_pairs:
+        by_base.setdefault(_weight_base_key(rel), []).append(rel)
+    out: dict = {}
+    for rels in by_base.values():
+        who = [built_ube_twin(r) for r in rels]
+        if all(who):
+            out.update(zip(rels, who))
+    return out
+
+
+def _supersede_built_ube_outputs(output_dir, nif_dst_root, rels) -> int:
+    r"""#skip-built-ube-path: move an earlier run's copy of each mesh left to its
+    builder -- with its base's `.tri` morphs and `.xml` physics -- out of
+    `meshes\` to `_superseded\meshes\!UBE\...` in the output mod. The output
+    folder is never cleaned and our mod sits above the builder in MO2, so a
+    stale copy would still win the path in game, and a stale `.tri` beside the
+    builder's NIF would morph the wrong vertices. Moved, not deleted: the folder
+    is inert to the game and undoing it is a copy back. Returns files moved."""
+    root = Path(output_dir)
+    dest_root = root / "_superseded"
+    moved = 0
+    seen: set = set()
+    for rel in rels:
+        dst = Path(nif_dst_root) / Path(rel)
+        stem = dst.stem
+        if stem.endswith(("_0", "_1")):
+            stem = stem[:-2]
+        for f in (dst, dst.with_name(stem + ".tri"), dst.with_name(stem + ".xml")):
+            key = str(f).lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            try:
+                if not f.is_file():
+                    continue
+                to = dest_root / f.relative_to(root)
+                to.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(f, to)
+                moved += 1
+            except (OSError, ValueError):
+                continue    # a file that cannot move stays; the log names the mesh
+    return moved
+
+
 def _outside_ube_mesh_resolver(output) -> "callable[[str], bool] | None":
     r"""The post-merge validator's `mesh_resolves`: does a `!UBE\` path the
     coverage step pointed OUTSIDE our output load from another mod? Only the two
@@ -3934,6 +4017,16 @@ def _cmd_convert(args):
     batch_npc_worn = (None if getattr(args, "plugins_only", False)
                       else _batch_npc_worn_armos())
 
+    # Meshes another mod already ships BUILT for UBE at the path we would write
+    # are left to it. The same lookup coverage points at them with, so an
+    # excluded mod's build is never relied on. None when switched off or on an
+    # ESP-only refresh. #skip-built-ube-path
+    batch_built_ube = (
+        None if (getattr(args, "plugins_only", False)
+                 or not ube_patcher._skip_built_ube_path())
+        else _third_party_ube_twin_lookup(
+            output, _split_mod_arg(getattr(args, "exclude_mods", None)) or ()))
+
     # Full-VFS mesh index built once for the batch. Maps each armour mesh to the
     # MO2-priority winner across all enabled mods so BodySlide-built / replacer /
     # patch meshes in OTHER mods are found and converted.
@@ -4103,6 +4196,7 @@ def _cmd_convert(args):
                     incremental_floor=incremental_floor,
                     ube_covered_armos=batch_ube_covered,
                     npc_worn_armos=batch_npc_worn,
+                    built_ube_twin=batch_built_ube,
                 )
 
             try:

@@ -139,8 +139,10 @@ def test_no_twin_keeps_the_source_mesh(tmp_path, monkeypatch):
 
 def test_a_twin_never_admits_an_armature(tmp_path, monkeypatch):
     """A torso nothing of ours was converted for stays out: the twin moves where
-    a minted slot points, it does not mint."""
+    a minted slot points, it does not mint. (#skip-built-ube-path admits it when
+    the planner leaves the mesh to its builder; its own tests cover that.)"""
     _on(monkeypatch)
+    monkeypatch.setenv("CBBE2UBE_NO_SKIP_BUILT_UBE_PATH", "1")
     st, minted = _body(tmp_path, {b"MOD3": r"patrol\armor\cuirass_1.nif"}, BODY,
                        set(), _twin_of(r"patrol\armor\cuirass_1.nif"))
     assert minted == [] and st["armo_targets"] == 0
