@@ -1151,6 +1151,41 @@ reported through `_report_coverage_holds`:
   109 armours added, 0 removed, 0 re-pointed, 26 armatures (hoods and hats, plus
   helmets and costume heads built into body armour; a body-fitted cape stays out).
   `CBBE2UBE_NO_COVERAGE_BODY_ACCESSORY=1`.
+- **An armature whose primary race is not DefaultRace** (`#coverage-human-race-list`).
+  Both passes minted only DefaultRace-primary armatures. An armature re-authored
+  with an Argonian or a custom primary that lists the human and mer races as
+  additional races (re-made rings and amulets, a custom race's shields and
+  knight's boots) draws on a vanilla human woman and on nothing of a UBE race.
+  Where the old rule admitted NO armature of an armour, `_race_list_admits` now
+  takes an armature with another primary when: the WINNING armour record is
+  playable or in the NPC-worn set (`_batch_npc_worn_armos`, handed to both passes
+  as `npc_worn_armo_abs`); the armour is no RACE's or NPC_'s WNAM (read in the
+  passes' own plugin read, `_collect_skins`); the female world mesh (MOD3, else
+  MOD2) is neither absent nor an effect (`effects\` or a file named `fx*`); and
+  it names DefaultRace or a vanilla human/mer race or vampire variant. The minted
+  armature targets the UBE counterpart of each vanilla race it names
+  (`UBE_RACE_FOR_VANILLA_24`: `<X>Race` -> `00UBE_<X>Race`, checked against
+  UBE_AllRace.esp's EditorIDs and UBE's own race-compatibility pairing), all 16
+  only when DefaultRace is among them -- a Wood-Elf-only piece stays Wood-Elf-only.
+  In the body pass the rule asks the DefaultRace rule's own mesh test
+  (`_mesh_admits`): a hands/feet armature keeps its source primary and races
+  through `coverage_arma_race_targeting`, with only the mapped UBE races added (a
+  custom primary whose plugin the patch cannot master falls back to the mapped
+  UBE primary rather than dangle); a body armature still needs a converted mesh.
+  Those body meshes are never converted -- source selection keeps DefaultRace
+  armatures only (`_player_armor_mesh_bases`), and nothing shows these
+  archive-shipped meshes are CBBE-shaped -- so the body pieces stay uncovered, as
+  before; widening that is the conversion side's call. Live replay: 9492 -> 9773
+  links, +281 on 281 armours (275 accessories, 6 hands/feet), 154 armatures (151
+  to all 16 UBE races, 3 to 15 -- their source lists no Nord vampire), 0 removed,
+  0 re-pointed; the non-body coverage now fills two ESL pieces. 6 of the
+  accessories are slot-35 cloaks drawn with their own mesh, as the pass already
+  draws 18 DefaultRace cloaks. The filters kept out 46 armours a bare race-list
+  rule would take (43 non-playable that no NPC wears -- severed heads, a
+  creature's weapon dummy, props -- 2 with no world mesh, 1 skin); the mesh test
+  holds 30 more (naked skins no record links, a custom race's cuirasses, a
+  slot-38 wig, an effect veil). Switch set: byte-identical to the parent.
+  `CBBE2UBE_NO_COVERAGE_HUMAN_RACE_LIST=1`.
 - **A claim path written with `meshes\` in front** (`#claim-meshes-prefix`). The
   engine reads `meshes\!UBE\x_1.nif` and `!UBE\x_1.nif` as one file; the
   SkyPatcher half of the claim test stripped the folder, the plugin half did not.

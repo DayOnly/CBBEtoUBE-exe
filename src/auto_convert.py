@@ -3589,8 +3589,10 @@ def _report_coverage_holds(stats: "list[dict]") -> None:
     (#coverage-female-guard), body armatures whose world mesh was not converted
     (#coverage-world-mesh), nude hands/feet swapped for the UBE body's own or
     left out (#coverage-nude-skin), slots pointed at a hand-made UBE twin
-    (#coverage-ube-twin), and hoods drawn with their body armour
-    (#coverage-body-accessory). Silent when there is nothing to say."""
+    (#coverage-ube-twin), hoods drawn with their body armour
+    (#coverage-body-accessory), and armour drawn through an armature whose
+    primary race is not DefaultRace (#coverage-human-race-list). Silent when
+    there is nothing to say."""
     withheld = [w for s in stats for w in (s.get("withheld") or [])]
     kept = [k for s in stats for k in (s.get("female_kept") or [])]
     dead = [k for s in stats for k in (s.get("female_dead_male") or [])]
@@ -3603,6 +3605,7 @@ def _report_coverage_holds(stats: "list[dict]") -> None:
     ndrop = [d for s in stats for d in (s.get("nude_dropped") or [])]
     twins = [k for s in stats for k in (s.get("ube_twin") or [])]
     accs = [k for s in stats for k in (s.get("body_accessory") or [])]
+    listed = [k for s in stats for k in (s.get("race_listed") or [])]
     if withheld:
         warn(f"[unified] {len(withheld)} armour(s) of an excluded mod have no UBE "
              "armature from any mod",
@@ -3686,6 +3689,14 @@ def _report_coverage_holds(stats: "list[dict]") -> None:
     if accs:
         print(f"  [unified] {len(accs)} hood/accessory armature(s) of body armour "
               "drawn on UBE with the body (their own mesh)")
+    if listed:
+        print(f"  [unified] {len(listed)} armour(s) whose only human-drawing "
+              "armature has another primary race are now drawn on UBE (race "
+              "list mapped)")
+        for (pl, fid), edid in listed[:5]:
+            print(f"       {edid or '?'}  ({pl}|{fid:06X})")
+        if len(listed) > 5:
+            print(f"       ... and {len(listed) - 5} more")
 
 
 def _emit_unified_coverage_patches(output, patches_dir, master_data_dirs,
@@ -3815,6 +3826,11 @@ def _emit_unified_coverage_patches(output, patches_dir, master_data_dirs,
         # we converted none -- never our output, never an excluded mod.
         _twin = (_third_party_ube_twin_lookup(output, exclude_mods)
                  if ube_patcher._coverage_ube_twin() else None)
+        # #coverage-human-race-list: the armour female NPCs wear -- a
+        # non-playable piece of it the race-list rule may take. Built once per
+        # load order (an `auto` run's source selection already has).
+        _worn = (_batch_npc_worn_armos()
+                 if ube_patcher._coverage_human_race_list() else None)
         nb_out = patches_dir / "UBE_ModNonBody_Coverage UBE patch.esp"
         nb = ube_patcher.generate_modded_nonbody_ube_coverage_patch(
             nb_out, ordered, converted_rel_paths=conv_rel,
@@ -3822,7 +3838,7 @@ def _emit_unified_coverage_patches(output, patches_dir, master_data_dirs,
             master_data_dirs=master_data_dirs, cover_all=True,
             preserve_textures=True, emit_sidecar=True,
             withheld_armo_abs=_withheld_abs, female_mesh_exists=_fexists,
-            ube_twin_exists=_twin)
+            ube_twin_exists=_twin, npc_worn_armo_abs=_worn)
         total_targets += int(nb.get("armo_targets") or 0)
         print(f"  non-body: minted {nb.get('minted_armas')} | "
               f"targets {nb.get('armo_targets')}")
@@ -3837,7 +3853,7 @@ def _emit_unified_coverage_patches(output, patches_dir, master_data_dirs,
                 cover_all=True, cover_hands_feet=True, preserve_textures=True,
                 emit_sidecar=True, withheld_armo_abs=_withheld_abs,
                 female_mesh_exists=_fexists, mesh_exists=_mexists,
-                ube_twin_exists=_twin)
+                ube_twin_exists=_twin, npc_worn_armo_abs=_worn)
             total_targets += int(bd.get("armo_targets") or 0)
             print(f"  body+hands/feet: minted {bd.get('minted_armas')} | "
                   f"targets {bd.get('armo_targets')} | "
