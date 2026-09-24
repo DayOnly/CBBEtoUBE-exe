@@ -110,6 +110,31 @@ UBE_RACE_FIDS_24 = [
 ]
 UBE_PRIMARY_BRETON_FID_24 = 0x005734
 
+# Each vanilla human/mer race and its vampire variant (Skyrim.esm, low 24 bits)
+# -> its UBE counterpart above: UBE_AllRace.esp names the UBE race of <X>Race
+# `00UBE_<X>Race`, and UBE's own race-compatibility config pairs them the same
+# way. Checked against both on the live load order (2026-09-24). The keys are
+# the human races a coverage armature may list (#coverage-human-race-list); the
+# beast races have no UBE counterpart.
+UBE_RACE_FOR_VANILLA_24 = {
+    0x013741: 0x005734,  # BretonRace            -> 00UBE_BretonRace
+    0x08883C: 0x005735,  # BretonRaceVampire     -> 00UBE_BretonRaceVampire
+    0x013744: 0x05A179,  # ImperialRace          -> 00UBE_ImperialRace
+    0x088844: 0x05A17A,  # ImperialRaceVampire   -> 00UBE_ImperialRaceVampire
+    0x013746: 0x05A184,  # NordRace              -> 00UBE_NordRace
+    0x088794: 0x05A185,  # NordRaceVampire       -> 00UBE_NordRaceVampire
+    0x013748: 0x05A18E,  # RedguardRace          -> 00UBE_RedguardRace
+    0x088846: 0x05A18F,  # RedguardRaceVampire   -> 00UBE_RedguardRaceVampire
+    0x013742: 0x05A198,  # DarkElfRace           -> 00UBE_DarkElfRace
+    0x08883D: 0x05A199,  # DarkElfRaceVampire    -> 00UBE_DarkElfRaceVampire
+    0x013743: 0x05A1A2,  # HighElfRace           -> 00UBE_HighElfRace
+    0x088840: 0x05A1A3,  # HighElfRaceVampire    -> 00UBE_HighElfRaceVampire
+    0x013749: 0x05A1AC,  # WoodElfRace           -> 00UBE_WoodElfRace
+    0x088884: 0x05A1AD,  # WoodElfRaceVampire    -> 00UBE_WoodElfRaceVampire
+    0x013747: 0x05A1B0,  # OrcRace               -> 00UBE_OrcRace
+    0x0A82B9: 0x05A1B1,  # OrcRaceVampire        -> 00UBE_OrcRaceVampire
+}
+
 
 # ARMA model-path subrecord signatures (the ones to prefix with "!UBE\")
 ARMA_MODEL_SIGS = (b"MOD2", b"MOD3", b"MOD4", b"MOD5")
@@ -578,6 +603,33 @@ def _coverage_body_accessory() -> bool:
     stays out whole. CBBE2UBE_NO_COVERAGE_BODY_ACCESSORY=1 leaves the hood off
     again."""
     return not _flag("CBBE2UBE_NO_COVERAGE_BODY_ACCESSORY", False)
+
+
+def _coverage_human_race_list() -> bool:
+    r"""#coverage-human-race-list (2026-09-24): does an armour whose only
+    human-drawing armature has a primary race other than DefaultRace get a UBE
+    armature? Yes, by default.
+
+    Both coverage passes minted only armatures whose primary race (RNAM) is
+    DefaultRace. An armature re-authored with an Argonian or a custom primary
+    that lists the human and mer races (and their vampires) as additional races
+    draws on a vanilla human woman and on nothing of a UBE race. Live census:
+    291 adult armours a female UBE actor can wear -- 275 accessories (rings,
+    amulets, circlets, shields), 9 body, 6 hands/feet, 1 calf.
+
+    Admitted only where the armour has no DefaultRace armature the old rule
+    admits, and only when the armour is playable or an NPC wears it, is no
+    race's or NPC's skin, and the armature's female world mesh is not an effect
+    (`_race_list_admits`). The armature must list DefaultRace or a vanilla
+    human/mer race, and its UBE armature targets the UBE counterpart of each
+    one it lists (`_ube_races_for_race_list`) -- every UBE race only when
+    DefaultRace is among them. A body armature still needs a converted mesh,
+    and the converter converts none of these, so the body and slot-38 pieces
+    stay uncovered. Live replay: +281 links on 281 armours (the 275 accessories
+    and 6 hands/feet), 154 armatures, 0 removed, 0 re-pointed.
+    CBBE2UBE_NO_COVERAGE_HUMAN_RACE_LIST=1 mints DefaultRace armatures only,
+    as before."""
+    return not _flag("CBBE2UBE_NO_COVERAGE_HUMAN_RACE_LIST", False)
 
 
 # Subrecords that do NOT affect how the addon RENDERS, so they're excluded from
@@ -3296,6 +3348,103 @@ def _summarize_arma(payload, masters, own_name):
     return rnam, is_ube
 
 
+# ----- #coverage-human-race-list ---------------------------------------------
+_DEFAULT_RACE_ABS = ("skyrim.esm", _DEFAULT_RACE_LOW24)
+_ARMO_NONPLAYABLE_FLAG = 0x00000004     # ARMO record flag: not playable
+
+
+def _arma_race_list(payload, masters, own_name) -> "list[tuple[str, int]]":
+    """Every race an armature names -- its primary (RNAM) and its additional
+    races (MODL) -- as (defining plugin lowercase, low 24 bits)."""
+    out = []
+    for s, d in esp.iter_subrecords(payload):
+        if (s == b"RNAM" and len(d) >= 4) or (
+                s == ARMA_ADDITIONAL_RACE_SIG and len(d) == 4):
+            out.append(_record_abs_fid(struct.unpack_from("<I", d, 0)[0],
+                                       masters, own_name))
+    return out
+
+
+def _ube_races_for_race_list(races) -> "list[int]":
+    """The UBE races (UBE_AllRace.esp, low 24 bits, UBE_RACE_FIDS_24 order) a
+    coverage armature made from an armature with these races targets: every
+    one when DefaultRace is among them -- what any coverage armature gets --
+    else the UBE counterpart of each vanilla human/mer race listed, so an
+    armature drawn only for Wood Elves stays Wood-Elf-only on UBE. Empty when
+    it names no human race (a beast or custom race alone): not minted."""
+    if _DEFAULT_RACE_ABS in races:
+        return list(UBE_RACE_FIDS_24)
+    got = {UBE_RACE_FOR_VANILLA_24[low] for pl, low in races
+           if pl == "skyrim.esm" and low in UBE_RACE_FOR_VANILLA_24}
+    return [f for f in UBE_RACE_FIDS_24 if f in got]
+
+
+def _effect_world_mesh(payload: bytes) -> bool:
+    r"""Is the female WORLD mesh an armature draws (MOD3, else MOD2) an effect,
+    or none at all? Under `effects\`, or a file whose name starts `fx` -- a
+    glow, a veil, a ball of light -- is an effect, not something worn."""
+    mod2 = mod3 = ""
+    for s, d in esp.iter_subrecords(payload):
+        if s == b"MOD2":
+            mod2 = d.rstrip(b"\x00").decode("cp1252", "replace")
+        elif s == b"MOD3":
+            mod3 = d.rstrip(b"\x00").decode("cp1252", "replace")
+    p = (mod3.strip() or mod2.strip()).replace("/", "\\").lstrip("\\").lower()
+    if p.startswith("meshes\\"):
+        p = p[len("meshes\\"):]
+    if not p:
+        return True
+    return p.startswith("effects\\") or p.rsplit("\\", 1)[-1].startswith("fx")
+
+
+def _collect_skins(pe, masters, own_name, into: set) -> None:
+    """Add every form a RACE or NPC_ record of this plugin names as its skin
+    (WNAM) -- winning or not, the way `_npc_worn_armos` counts them -- to
+    `into`, as (defining plugin lowercase, low 24 bits). A skin is the body,
+    never an armour worn over it."""
+    for label in (b"RACE", b"NPC_"):
+        g = pe.group(label)
+        if not g:
+            continue
+        for r in g.records:
+            if b"WNAM" not in r.payload:
+                continue                 # cheap skip: most NPCs name none
+            for s, d in esp.iter_subrecords(r.payload):
+                if s == b"WNAM" and len(d) == 4:
+                    into.add(_record_abs_fid(struct.unpack("<I", d)[0],
+                                             masters, own_name))
+
+
+def _race_list_admits(armo_abs, aflags, winning, *, worn, skins,
+                      arma_ok) -> dict:
+    """#coverage-human-race-list: for an armour the DefaultRace rule admitted
+    no armature of, the armatures the race-list rule admits -> the UBE races
+    each one targets (`_ube_races_for_race_list`), in `winning` order.
+
+    Nothing when the WINNING armour record is not playable and no NPC wears it
+    (`worn`: the identities `_npc_worn_armos` returns; None = none known), or
+    when it is a race's or an NPC's skin (`skins`). An armature with another
+    primary race is taken when `arma_ok(v)` passes it (the pass's own test --
+    the body pass's converted mesh), its world mesh is no effect, and it names
+    DefaultRace or a vanilla human/mer race."""
+    if (aflags & _ARMO_NONPLAYABLE_FLAG) and not (worn and armo_abs in worn):
+        return {}
+    if armo_abs in skins:
+        return {}
+    out: dict = {}
+    for x, v in winning:
+        # An armature that already names a UBE race is someone's UBE version:
+        # never mint a second one over it (review 2026-09-24).
+        if v[4] or v[3] == _DEFAULT_RACE_ABS or not arma_ok(v):
+            continue
+        if _effect_world_mesh(v[0]):
+            continue
+        ube = _ube_races_for_race_list(_arma_race_list(v[0], v[1], v[2]))
+        if ube:
+            out[x] = ube
+    return out
+
+
 def _summarize_armo(payload, masters, own_name):
     arms = []
     rnam = None
@@ -3557,6 +3706,7 @@ def generate_modded_nonbody_ube_coverage_patch(
     withheld_armo_abs: "set[tuple[str, int]] | None" = None,
     female_mesh_exists: "callable[[str], bool] | None" = None,
     ube_twin_exists: "callable[[str], str | None] | None" = None,
+    npc_worn_armo_abs: "set[tuple[str, int]] | frozenset | None" = None,
     author: str = "cbbe-to-ube modded non-body UBE coverage",
     description: str = "UBE race coverage for mod-defined non-body armor",
 ) -> dict:
@@ -3578,12 +3728,17 @@ def generate_modded_nonbody_ube_coverage_patch(
 
     `ube_twin_exists` (#coverage-ube-twin, opt-in): the third-party mod that
     ships a loose `!UBE\\<path>` for a model we did not convert, else None. A
-    minted slot points there instead of at the source mesh."""
+    minted slot points there instead of at the source mesh.
+
+    `npc_worn_armo_abs` (#coverage-human-race-list): the armour female NPCs
+    wear or carry (`auto_convert._batch_npc_worn_armos`); a non-playable armour
+    in it may be taken by the race-list rule. None = none is known to be worn."""
     out_path = Path(output_esp_path)
     exclude = {n.lower() for n in (exclude_names or set())}
     DEFAULT_RACE = ("skyrim.esm", _DEFAULT_RACE_LOW24)
     _female_guard = _coverage_female_guard()
     _twin = _coverage_ube_twin() and ube_twin_exists is not None
+    _race_list = _coverage_human_race_list()
     withheld: list = []        # (armo_abs, edid) left alone for --exclude-mods
     female_kept: list = []     # female slots that kept their own mesh (guard)
     female_dead: list = []     # dead female paths: the male mesh stays (guard)
@@ -3592,6 +3747,9 @@ def generate_modded_nonbody_ube_coverage_patch(
     _beast = _coverage_beast_variant()
     wigs_added: list = []      # (armo_abs, edid) wigs covered as headgear (#coverage-wigs)
     _wigs = _coverage_wigs()
+    skins: set = set()         # any RACE/NPC_ WNAM (#coverage-human-race-list)
+    race_list_ube: dict = {}   # arma_abs -> UBE races it targets (same)
+    race_listed: list = []     # (armo_abs, edid) taken by the race-list rule
 
     # ---- Pass 1: load-order winners for ARMA + ARMO (last wins) ----
     arma_win: dict = {}   # abs -> (payload, masters, plugin, rnam_abs, is_ube)
@@ -3618,6 +3776,8 @@ def generate_modded_nonbody_ube_coverage_patch(
                 a = _record_abs_fid(r.formid, m, nm)
                 arms, rnam, slots, edid = _summarize_armo(r.payload, m, nm)
                 armo_win[a] = (r.payload, m, nm, arms, rnam, slots, edid, r.flags)
+        if _race_list:
+            _collect_skins(pe, m, nm, skins)
 
     plugin_case = {Path(p).name.lower(): Path(p).name
                    for p in ordered_plugin_paths}
@@ -3672,11 +3832,24 @@ def generate_modded_nonbody_ube_coverage_patch(
             if x not in beast_skipped:
                 beast_skipped.append(x)
         to_mint = [x for x, v in winning if v[3] == DEFAULT_RACE and x not in _bv]
+        # #coverage-human-race-list: none -- an armature with another primary
+        # that lists the human races (an Argonian-primary amulet) is taken
+        # instead, targeting the UBE counterparts of the races it lists. A beast
+        # variant is DefaultRace-primary, so this rule never takes one.
+        _listed: dict = {}
+        if not to_mint and _race_list:
+            _listed = _race_list_admits(
+                armo_abs, aflags, winning, worn=npc_worn_armo_abs,
+                skins=skins, arma_ok=lambda v: True)
+            to_mint = list(_listed)
         if not to_mint:
             continue
         if withheld_armo_abs and armo_abs in withheld_armo_abs:
             withheld.append((armo_abs, edid))     # #exclude-owned-coverage
             continue
+        if _listed:
+            race_list_ube.update(_listed)
+            race_listed.append((armo_abs, edid))
         targets.append((armo_abs, plugin_case.get(armo_abs[0], armo_abs[0]),
                         to_mint))
         for x in to_mint:
@@ -3744,6 +3917,14 @@ def generate_modded_nonbody_ube_coverage_patch(
     preserve_fallbacks: list = []
     for arma_abs in mint_set:
         payload, m2, n2, _rn, _u = arma_win[arma_abs]
+        # UBE-primary + every UBE race; an armature the race-list rule took
+        # targets the UBE counterparts of the races it lists, the first of
+        # them primary. #coverage-human-race-list
+        _prim, _addl = ube_primary_patch, ube_races_patch
+        _listed_ube = race_list_ube.get(arma_abs)
+        if _listed_ube:
+            _addl = [(ube_byte << 24) | f for f in _listed_ube]
+            _prim = _addl[0]
         minted_payload = None
         _declined: list = []     # per attempt: a failed preserve must not count
         if preserve_textures:
@@ -3759,8 +3940,8 @@ def generate_modded_nonbody_ube_coverage_patch(
                 kept = _remap_arma_skin_txsts(kept, _remap)      # NAM0-3 -> patch space
                 minted_payload = rebuild_arma_payload(
                     kept,
-                    new_primary_rnam=ube_primary_patch,
-                    new_additional_race_fids=ube_races_patch,
+                    new_primary_rnam=_prim,
+                    new_additional_race_fids=_addl,
                     alt_texture_fid_remap=_remap,                # MO?S -> patch space
                     converted_nif_exists=_ube_exists,
                     keep_named_female=_female_guard, declined_log=_declined,
@@ -3777,8 +3958,8 @@ def generate_modded_nonbody_ube_coverage_patch(
                 for s, d in esp.iter_subrecords(payload) if s not in STRIP)
             minted_payload = rebuild_arma_payload(
                 stripped,
-                new_primary_rnam=ube_primary_patch,
-                new_additional_race_fids=ube_races_patch,
+                new_primary_rnam=_prim,
+                new_additional_race_fids=_addl,
                 converted_nif_exists=_ube_exists,  # redirect to !UBE\ where converted
                 keep_named_female=_female_guard, declined_log=_declined,
                 female_mesh_exists=female_mesh_exists,
@@ -3835,6 +4016,8 @@ def generate_modded_nonbody_ube_coverage_patch(
         "ube_twin": twin_slots,
         "beast_variant_skipped": [f"{a[0]}|{a[1]:X}" for a in beast_skipped],
         "wigs": wigs_added,
+        # #coverage-human-race-list: armours taken by the race-list rule.
+        "race_listed": race_listed,
     }
 
 
@@ -3855,6 +4038,7 @@ def generate_modded_body_ube_coverage_patch(
     female_mesh_exists: "callable[[str], bool] | None" = None,
     mesh_exists: "callable[[str], bool] | None" = None,
     ube_twin_exists: "callable[[str], str | None] | None" = None,
+    npc_worn_armo_abs: "set[tuple[str, int]] | frozenset | None" = None,
     author: str = "cbbe-to-ube modded body UBE coverage",
     description: str = "UBE race coverage for mod-defined body armor variants",
 ) -> dict:
@@ -3886,7 +4070,12 @@ def generate_modded_body_ube_coverage_patch(
 
     `ube_twin_exists`: as in the non-body pass (#coverage-ube-twin, opt-in). It
     moves where a minted slot points, and so what the world-mesh and female
-    guard tests see, but never admits an armature on its own."""
+    guard tests see, but never admits an armature on its own.
+
+    `npc_worn_armo_abs`: as in the non-body pass (#coverage-human-race-list).
+    The race-list rule admits a body armature only with a converted mesh, as
+    the DefaultRace rule does; a hands/feet one keeps its source races, the UBE
+    counterparts of the human ones added."""
     out_path = Path(output_esp_path)
     exclude = {n.lower() for n in (exclude_names or set())}
     DEFAULT_RACE = ("skyrim.esm", _DEFAULT_RACE_LOW24)
@@ -3912,6 +4101,10 @@ def generate_modded_body_ube_coverage_patch(
     _beast = _coverage_beast_variant()
     accessory_added: list = []  # non-deforming armatures of a body armour (#coverage-body-accessory)
     _body_accessory = _coverage_body_accessory()
+    _race_list = _coverage_human_race_list()
+    skins: set = set()         # any RACE/NPC_ WNAM (#coverage-human-race-list)
+    race_list_ube: dict = {}   # arma_abs -> UBE races it targets (same)
+    race_listed: list = []     # (armo_abs, edid) taken by the race-list rule
     # What would have made an armature a CONVERSION candidate -- the selection's
     # own slot sets and cloak names, read from it so the two cannot drift.
     from .auto_convert import (_BODY_SLOT_BITS, _BODY_CANDIDATE_SLOT_BITS,
@@ -4000,6 +4193,15 @@ def generate_modded_body_ube_coverage_patch(
                 return struct.unpack_from("<I", d, 0)[0]
         return 0
 
+    def _mesh_admits(v, cover_hf: bool) -> bool:
+        """May this armature be minted, as far as its meshes go? A converted
+        mesh, or -- pure hands/feet in unified mode -- a hands/feet slot. The
+        DefaultRace and the race-list rules both ask it."""
+        return (any(_admits(mp) for mp in _arma_models(v[0]))
+                or (cover_hf
+                    and bool(_arma_bod2_slots(v[0])
+                             & _BIPED_SLOT_HANDS_FEET_BITS)))
+
     # ---- Pass 1: load-order winners for ARMA + ARMO (last wins) ----
     arma_win: dict = {}
     armo_win: dict = {}
@@ -4025,6 +4227,8 @@ def generate_modded_body_ube_coverage_patch(
                 a = _record_abs_fid(r.formid, m, nm)
                 arms, rnam, slots, edid = _summarize_armo(r.payload, m, nm)
                 armo_win[a] = (r.payload, m, nm, arms, rnam, slots, edid, r.flags)
+        if _race_list:
+            _collect_skins(pe, m, nm, skins)
 
     plugin_case = {Path(p).name.lower(): Path(p).name
                    for p in ordered_plugin_paths}
@@ -4122,10 +4326,16 @@ def generate_modded_body_ube_coverage_patch(
                 beast_skipped.append(x)
         to_mint = [x for x, v in winning
                    if v[3] == DEFAULT_RACE and x not in _bv
-                   and (any(_admits(mp) for mp in _arma_models(v[0]))
-                        or (_cover_hf
-                            and bool(_arma_bod2_slots(v[0])
-                                     & _BIPED_SLOT_HANDS_FEET_BITS)))]
+                   and _mesh_admits(v, _cover_hf)]
+        # #coverage-human-race-list: none -- an armature with another primary
+        # that lists the human races is taken instead, on the same mesh test:
+        # a body armature still needs a converted mesh.
+        _listed: dict = {}
+        if not to_mint and _race_list:
+            _listed = _race_list_admits(
+                armo_abs, aflags, winning, worn=npc_worn_armo_abs, skins=skins,
+                arma_ok=lambda v, _hf=_cover_hf: _mesh_admits(v, _hf))
+            to_mint = list(_listed)
         if not to_mint:
             continue
         # Withheld BEFORE the guard below, so an excluded armour the guard would
@@ -4221,6 +4431,10 @@ def generate_modded_body_ube_coverage_patch(
                 for x in _acc:
                     if x not in accessory_added:
                         accessory_added.append(x)
+        if _listed:
+            # What the guards above left of it (a hood riding along is not).
+            race_list_ube.update({x: _listed[x] for x in to_mint if x in _listed})
+            race_listed.append((armo_abs, edid))
         targets.append((armo_abs, plugin_case.get(armo_abs[0], armo_abs[0]),
                         to_mint))
         for x in to_mint:
@@ -4281,7 +4495,15 @@ def generate_modded_body_ube_coverage_patch(
         # races + UBE, via the shared helper, so a UBE actor's vanilla-resolving
         # hand/foot slot still matches (else invisible gauntlet). Same decision the
         # per-source path makes; the helper is golden-locked to it.
-        _prim, _addl = ube_primary_patch, ube_races_patch
+        # An armature the race-list rule took targets the UBE counterparts of the
+        # races it lists instead of every UBE race, the first of them primary --
+        # and a hands/feet one adds just those. #coverage-human-race-list
+        _ube_prim, _ube_addl = ube_primary_patch, ube_races_patch
+        _listed_ube = race_list_ube.get(arma_abs)
+        if _listed_ube:
+            _ube_addl = [(ube_byte << 24) | f for f in _listed_ube]
+            _ube_prim = _ube_addl[0]
+        _prim, _addl = _ube_prim, _ube_addl
         if cover_hands_feet and (_arma_bod2_slots(payload)
                                  & _BIPED_SLOT_HANDS_FEET_BITS):
             _src_rnam = None
@@ -4314,10 +4536,21 @@ def generate_modded_body_ube_coverage_patch(
                         return (_map[top] << 24) | (fid & 0xFFFFFF)
                     return fid
 
+                _remap_prim = _remap_race
+                if _listed_ube:
+                    # Its primary is another race -- a custom one may live in a
+                    # plugin past the master cap. Unheld, it falls back to the
+                    # UBE primary rather than dangle. (A DefaultRace primary is
+                    # Skyrim.esm's, always held.)
+                    def _remap_prim(fid: int, _map=_s2p) -> int:
+                        top = (fid >> 24) & 0xFF
+                        return ((_map[top] << 24) | (fid & 0xFFFFFF)
+                                if top in _map else 0)
+
                 _prim, _addl = coverage_arma_race_targeting(
                     _arma_bod2_slots(payload), _src_rnam, _src_addl,
-                    remap_src_fid=_remap_race, src_to_patch_byte=_s2p,
-                    ube_primary=ube_primary_patch, ube_additional=ube_races_patch)
+                    remap_src_fid=_remap_prim, src_to_patch_byte=_s2p,
+                    ube_primary=_ube_prim, ube_additional=_ube_addl)
         minted_payload = None
         _declined: list = []     # per attempt: a failed preserve must not count
         if preserve_textures:
@@ -4426,6 +4659,8 @@ def generate_modded_body_ube_coverage_patch(
         "ube_twin": twin_slots,
         "beast_variant_skipped": [f"{a[0]}|{a[1]:X}" for a in beast_skipped],
         "body_accessory": [f"{a[0]}|{a[1]:X}" for a in accessory_added],
+        # #coverage-human-race-list: armours taken by the race-list rule.
+        "race_listed": race_listed,
     }
 
 

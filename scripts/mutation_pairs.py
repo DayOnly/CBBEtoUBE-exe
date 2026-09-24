@@ -3633,4 +3633,349 @@ PAIRS = (
          tests=('tests/test_coverage_wigs.py',),
          expect=('test_the_wigs_are_reported',),
     ),
+    # #coverage-human-race-list (2026-09-24): an armour whose only human-drawing
+    # armature has another primary race (an Argonian-primary amulet listing the
+    # human races) is drawn on UBE, its races mapped.
+    Pair('HRL-a', 'the non-body pass takes no race-listed armature',
+         edits=(
+             ('src/ube_patcher.py',
+              '                skins=skins, arma_ok=lambda v: True)\n'
+              '            to_mint = list(_listed)\n',
+              '                skins=skins, arma_ok=lambda v: True)\n'
+              '            to_mint = []  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_coverage_human_race_list.py',),
+         expect=('test_an_argonian_primary_amulet_listing_the_human_races_is_drawn',
+                 'test_a_wood_elf_only_armature_stays_wood_elf_only',
+                 'test_defaultrace_among_the_races_means_every_ube_race'),
+    ),
+    Pair('HRL-b', 'the body pass takes no race-listed armature',
+         edits=(
+             ('src/ube_patcher.py',
+              '                arma_ok=lambda v, _hf=_cover_hf: _mesh_admits(v, _hf))\n'
+              '            to_mint = list(_listed)\n',
+              '                arma_ok=lambda v, _hf=_cover_hf: _mesh_admits(v, _hf))\n'
+              '            to_mint = []  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_coverage_human_race_list.py',),
+         expect=('test_a_converted_body_armature_is_taken_with_its_races_mapped',
+                 'test_boots_keep_their_source_races_and_add_the_mapped_ube_ones'),
+    ),
+    Pair('HRL-c', 'the off-switch no longer switches anything off',
+         edits=(
+             ('src/ube_patcher.py',
+              '    return not _flag("CBBE2UBE_NO_COVERAGE_HUMAN_RACE_LIST", False)',
+              '    return True  # MUTATED', 1),
+         ),
+         tests=('tests/test_coverage_human_race_list.py',),
+         expect=('test_it_is_on_unless_switched_off',
+                 'test_switched_off_only_defaultrace_armatures_are_minted'),
+    ),
+    Pair('HRL-d', 'non-playable armour no one wears is taken',
+         edits=(
+             ('src/ube_patcher.py',
+              '    if (aflags & _ARMO_NONPLAYABLE_FLAG) and not (worn and armo_abs in worn):\n'
+              '        return {}\n',
+              '    if False:  # MUTATED\n'
+              '        return {}\n', 1),
+         ),
+         tests=('tests/test_coverage_human_race_list.py',),
+         expect=('test_a_non_playable_armour_no_one_wears_is_not_taken',
+                 'test_non_playable_boots_no_one_wears_are_not_taken'),
+    ),
+    Pair('HRL-e', 'the worn set is ignored',
+         edits=(
+             ('src/ube_patcher.py',
+              '    if (aflags & _ARMO_NONPLAYABLE_FLAG) and not (worn and armo_abs in worn):\n',
+              '    if (aflags & _ARMO_NONPLAYABLE_FLAG):  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_coverage_human_race_list.py',),
+         expect=('test_a_non_playable_armour_an_npc_wears_is_taken',
+                 'test_non_playable_boots_no_one_wears_are_not_taken'),
+    ),
+    Pair('HRL-f', 'a skin is taken',
+         edits=(
+             ('src/ube_patcher.py',
+              '    if armo_abs in skins:\n'
+              '        return {}\n',
+              '    if False:  # MUTATED\n'
+              '        return {}\n', 1),
+         ),
+         tests=('tests/test_coverage_human_race_list.py',),
+         expect=('test_a_skin_is_not_taken[race]', 'test_a_skin_is_not_taken[npc]',
+                 'test_a_skin_body_is_not_taken'),
+    ),
+    Pair('HRL-g', "an NPC's skin is not read",
+         edits=(
+             ('src/ube_patcher.py',
+              '    for label in (b"RACE", b"NPC_"):',
+              '    for label in (b"RACE",):  # MUTATED', 1),
+         ),
+         tests=('tests/test_coverage_human_race_list.py',),
+         expect=('test_a_skin_is_not_taken[npc]',),
+    ),
+    Pair('HRL-h', 'neither pass reads the skins',
+         edits=(
+             ('src/ube_patcher.py',
+              '        if _race_list:\n'
+              '            _collect_skins(pe, m, nm, skins)\n',
+              '        if False:  # MUTATED\n'
+              '            _collect_skins(pe, m, nm, skins)\n', 2),
+         ),
+         tests=('tests/test_coverage_human_race_list.py',),
+         expect=('test_a_skin_is_not_taken[race]', 'test_a_skin_is_not_taken[npc]',
+                 'test_a_skin_body_is_not_taken'),
+    ),
+    Pair('HRL-i', 'an effect mesh is taken',
+         edits=(
+             ('src/ube_patcher.py',
+              '        if _effect_world_mesh(v[0]):\n'
+              '            continue\n',
+              '        if False:  # MUTATED\n'
+              '            continue\n', 1),
+         ),
+         tests=('tests/test_coverage_human_race_list.py',),
+         expect=('test_an_effect_mesh_is_not_taken[effects-dir]',
+                 'test_an_effect_mesh_is_not_taken[fx-name]',
+                 'test_an_effect_mesh_is_not_taken[male-only]',
+                 'test_an_effect_mesh_is_not_taken[empty]'),
+    ),
+    Pair('HRL-j', 'an fx-named mesh outside effects\\ is taken',
+         edits=(
+             ('src/ube_patcher.py',
+              '    return p.startswith("effects\\\\") or p.rsplit("\\\\", 1)[-1].startswith("fx")',
+              '    return p.startswith("effects\\\\")  # MUTATED', 1),
+         ),
+         tests=('tests/test_coverage_human_race_list.py',),
+         expect=('test_an_effect_mesh_is_not_taken[fx-name]',),
+    ),
+    Pair('HRL-k', 'an armature drawing nothing is taken',
+         edits=(
+             ('src/ube_patcher.py',
+              '    if not p:\n'
+              '        return True\n'
+              '    return p.startswith(',
+              '    if not p:\n'
+              '        return False  # MUTATED\n'
+              '    return p.startswith(', 1),
+         ),
+         tests=('tests/test_coverage_human_race_list.py',),
+         expect=('test_an_effect_mesh_is_not_taken[empty]',),
+    ),
+    # HRL-l first cut its anchor mid-line and commented out the rest: a syntax
+    # error, so the gate read a collection failure, not the expected test.
+    Pair('HRL-l', 'the male world mesh is not read when MOD3 is absent',
+         edits=(
+             ('src/ube_patcher.py',
+              '    p = (mod3.strip() or mod2.strip()).replace("/", "\\\\").lstrip("\\\\").lower()\n',
+              '    p = mod3.strip().replace("/", "\\\\").lstrip("\\\\").lower()  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_coverage_human_race_list.py',),
+         expect=('test_a_male_world_mesh_alone_is_drawn',),
+    ),
+    Pair('HRL-m', 'an armature naming no human race is taken',
+         edits=(
+             ('src/ube_patcher.py',
+              '        if ube:\n'
+              '            out[x] = ube\n',
+              '        out[x] = ube or list(UBE_RACE_FIDS_24)  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_coverage_human_race_list.py',),
+         expect=('test_a_beast_only_armature_is_not_taken',),
+    ),
+    Pair('HRL-n', 'a restricted race list is broadened to every UBE race',
+         edits=(
+             ('src/ube_patcher.py',
+              '    return [f for f in UBE_RACE_FIDS_24 if f in got]',
+              '    return list(UBE_RACE_FIDS_24) if got else []  # MUTATED', 1),
+         ),
+         tests=('tests/test_coverage_human_race_list.py',),
+         expect=('test_a_wood_elf_only_armature_stays_wood_elf_only',
+                 'test_a_converted_body_armature_is_taken_with_its_races_mapped',
+                 'test_boots_keep_their_source_races_and_add_the_mapped_ube_ones'),
+    ),
+    Pair('HRL-o', 'DefaultRace in the list no longer means every UBE race',
+         edits=(
+             ('src/ube_patcher.py',
+              '    if _DEFAULT_RACE_ABS in races:\n'
+              '        return list(UBE_RACE_FIDS_24)\n',
+              '    if False:  # MUTATED\n'
+              '        return list(UBE_RACE_FIDS_24)\n', 1),
+         ),
+         tests=('tests/test_coverage_human_race_list.py',),
+         expect=('test_defaultrace_among_the_races_means_every_ube_race',),
+    ),
+    Pair('HRL-p', 'the non-body rule replaces the DefaultRace armature',
+         edits=(
+             ('src/ube_patcher.py',
+              '        if not to_mint and _race_list:\n'
+              '            _listed = _race_list_admits(\n'
+              '                armo_abs, aflags, winning, worn=npc_worn_armo_abs,\n'
+              '                skins=skins,',
+              '        if _race_list:  # MUTATED\n'
+              '            _listed = _race_list_admits(\n'
+              '                armo_abs, aflags, winning, worn=npc_worn_armo_abs,\n'
+              '                skins=skins,', 1),
+         ),
+         tests=('tests/test_coverage_human_race_list.py',),
+         expect=('test_an_armour_with_a_defaultrace_armature_is_unchanged',),
+    ),
+    Pair('HRL-q', 'the body rule replaces the DefaultRace armature',
+         edits=(
+             ('src/ube_patcher.py',
+              '        if not to_mint and _race_list:\n'
+              '            _listed = _race_list_admits(\n'
+              '                armo_abs, aflags, winning, worn=npc_worn_armo_abs, skins=skins,\n',
+              '        if _race_list:  # MUTATED\n'
+              '            _listed = _race_list_admits(\n'
+              '                armo_abs, aflags, winning, worn=npc_worn_armo_abs, skins=skins,\n', 1),
+         ),
+         tests=('tests/test_coverage_human_race_list.py',),
+         expect=('test_boots_with_a_defaultrace_armature_are_unchanged',),
+    ),
+    # HRL-r first read MISSED: its test used a slot-32 cuirass, which the
+    # world-mesh rule drops later anyway. A slot-38 piece has no later rule, and
+    # the cuirass is judged with that rule off.
+    Pair('HRL-r', 'a deforming armature is taken without a converted mesh',
+         edits=(
+             ('src/ube_patcher.py',
+              '                arma_ok=lambda v, _hf=_cover_hf: _mesh_admits(v, _hf))\n',
+              '                arma_ok=lambda v: True)  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_coverage_human_race_list.py',),
+         expect=('test_a_body_armature_still_needs_a_converted_mesh[off]',
+                 'test_a_calf_slot_piece_still_needs_a_converted_mesh'),
+    ),
+    Pair('HRL-s', 'the non-body mint ignores the mapped races',
+         edits=(
+             ('src/ube_patcher.py',
+              '        _listed_ube = race_list_ube.get(arma_abs)\n'
+              '        if _listed_ube:\n'
+              '            _addl = [(ube_byte << 24) | f for f in _listed_ube]\n',
+              '        _listed_ube = None  # MUTATED\n'
+              '        if _listed_ube:\n'
+              '            _addl = [(ube_byte << 24) | f for f in _listed_ube]\n', 1),
+         ),
+         tests=('tests/test_coverage_human_race_list.py',),
+         expect=('test_a_wood_elf_only_armature_stays_wood_elf_only',),
+    ),
+    Pair('HRL-t', 'the body mint ignores the mapped races',
+         edits=(
+             ('src/ube_patcher.py',
+              '            _ube_addl = [(ube_byte << 24) | f for f in _listed_ube]\n'
+              '            _ube_prim = _ube_addl[0]\n',
+              '            pass  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_coverage_human_race_list.py',),
+         expect=('test_a_converted_body_armature_is_taken_with_its_races_mapped',
+                 'test_boots_keep_their_source_races_and_add_the_mapped_ube_ones'),
+    ),
+    Pair('HRL-u', 'hands/feet add every UBE race again',
+         edits=(
+             ('src/ube_patcher.py',
+              '                    ube_primary=_ube_prim, ube_additional=_ube_addl)',
+              '                    ube_primary=ube_primary_patch, ube_additional=ube_races_patch)  # MUTATED', 1),
+         ),
+         tests=('tests/test_coverage_human_race_list.py',),
+         expect=('test_boots_keep_their_source_races_and_add_the_mapped_ube_ones',
+                 'test_boots_whose_primary_the_patch_cannot_name_fall_back_to_ube'),
+    ),
+    Pair('HRL-v', 'a primary the patch cannot name is left dangling',
+         edits=(
+             ('src/ube_patcher.py',
+              '                _remap_prim = _remap_race\n'
+              '                if _listed_ube:\n',
+              '                _remap_prim = _remap_race\n'
+              '                if False:  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_coverage_human_race_list.py',),
+         expect=('test_boots_whose_primary_the_patch_cannot_name_fall_back_to_ube',),
+    ),
+    Pair('HRL-w', 'the non-body pass does not count what it took',
+         edits=(
+             ('src/ube_patcher.py',
+              '            race_list_ube.update(_listed)\n'
+              '            race_listed.append((armo_abs, edid))\n',
+              '            race_list_ube.update(_listed)  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_coverage_human_race_list.py',),
+         expect=('test_an_argonian_primary_amulet_listing_the_human_races_is_drawn',),
+    ),
+    Pair('HRL-x', 'the body pass does not count what it took',
+         edits=(
+             ('src/ube_patcher.py',
+              '            race_list_ube.update({x: _listed[x] for x in to_mint if x in _listed})\n'
+              '            race_listed.append((armo_abs, edid))\n',
+              '            race_list_ube.update({x: _listed[x] for x in to_mint if x in _listed})  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_coverage_human_race_list.py',),
+         expect=('test_a_converted_body_armature_is_taken_with_its_races_mapped',
+                 'test_boots_keep_their_source_races_and_add_the_mapped_ube_ones'),
+    ),
+    Pair('HRL-y', 'the armours taken are not reported',
+         edits=(
+             ('src/auto_convert.py',
+              '    if listed:\n',
+              '    if False:  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_coverage_human_race_list.py',),
+         expect=('test_the_armours_are_reported',),
+    ),
+    Pair('HRL-z', 'the batch never hands the worn set to the passes',
+         edits=(
+             ('src/auto_convert.py',
+              'ube_twin_exists=_twin, npc_worn_armo_abs=_worn)',
+              'ube_twin_exists=_twin)  # MUTATED', 2),
+         ),
+         tests=('tests/test_coverage_human_race_list.py',),
+         expect=('test_the_batch_hands_the_worn_set_to_both_passes',),
+    ),
+    # Review follow-ups (2026-09-24): mutants the first test set let survive.
+    Pair('HRL-za', 'the worn set is built only when the rule is off',
+         edits=(
+             ('src/auto_convert.py',
+              'if ube_patcher._coverage_human_race_list() else None)',
+              'if not ube_patcher._coverage_human_race_list() else None)  # MUTATED', 1),
+         ),
+         tests=('tests/test_coverage_human_race_list.py',),
+         expect=('test_both_passes_get_the_same_worn_set_when_on',
+                 'test_the_worn_set_is_not_built_when_switched_off'),
+    ),
+    Pair('HRL-zb', 'the male world mesh decides the effect test',
+         edits=(
+             ('src/ube_patcher.py',
+              '    p = (mod3.strip() or mod2.strip())',
+              '    p = (mod2.strip() or mod3.strip())', 1),
+         ),
+         tests=('tests/test_coverage_human_race_list.py',),
+         expect=('test_the_female_world_mesh_decides_the_effect_test[female-effect-male-normal]',
+                 'test_the_female_world_mesh_decides_the_effect_test[female-normal-male-effect]'),
+    ),
+    Pair('HRL-zc', "the primary race does not count toward the list",
+         edits=(
+             ('src/ube_patcher.py',
+              '        if (s == b"RNAM" and len(d) >= 4) or (',
+              '        if (False) or (  # MUTATED', 1),
+         ),
+         tests=('tests/test_coverage_human_race_list.py',),
+         expect=('test_a_human_primary_counts_toward_the_race_list',),
+    ),
+    Pair('HRL-zd', "a plugin's race with a vanilla low id is mapped",
+         edits=(
+             ('src/ube_patcher.py',
+              '           if pl == "skyrim.esm" and low in UBE_RACE_FOR_VANILLA_24}',
+              '           if low in UBE_RACE_FOR_VANILLA_24}  # MUTATED', 1),
+         ),
+         tests=('tests/test_coverage_human_race_list.py',),
+         expect=('test_only_skyrim_races_are_mapped',),
+    ),
+    Pair('HRL-ze', "someone's UBE armature is minted again",
+         edits=(
+             ('src/ube_patcher.py',
+              '        if v[4] or v[3] == _DEFAULT_RACE_ABS or not arma_ok(v):',
+              '        if v[3] == _DEFAULT_RACE_ABS or not arma_ok(v):  # MUTATED', 1),
+         ),
+         tests=('tests/test_coverage_human_race_list.py',),
+         expect=('test_an_armature_that_already_names_a_ube_race_is_not_minted_again',),
+    ),
 )
