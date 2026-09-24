@@ -1138,6 +1138,18 @@ reported through `_report_coverage_holds`:
   the twin admission also minted a second nude suit on a softbody pack's own UBE
   one (+2 links) -- that commit is why it does not.
   `CBBE2UBE_NO_SKIP_BUILT_UBE_PATH=1`.
+- **Wigs** (`#coverage-wigs`, the user's call 2026-09-24). The non-body pass
+  treats a hair-only (31/41) armour as headgear with a gold value or the
+  ArmorHelmet keyword; wigs have neither, so 100+ playable wigs were invisible
+  on UBE. Playable in the winning record with a non-empty FULL now counts too
+  (`_is_playable_named`), and every DefaultRace armature is minted as for a
+  helmet -- including the hidden `_CollisionbodyX` SMP collider most wigs carry,
+  which is a BodySlide build of the 3BA body: 0.38u median / 1.05u p95 from the
+  UBE body surface (0.27 / 0.68 on 3BA), and `convert_nif` only copies it (its
+  physics link is not rebuilt), so it is minted with its own mesh. Live: 101
+  wigs, 196 links (95 hair + collider, 6 hair only), 0 removed; depends on
+  #coverage-beast-variant, without which 6 wigs also drew their Khajiit
+  variant. `CBBE2UBE_NO_COVERAGE_WIGS=1`.
 - **A beast-only variant is not minted** (`#coverage-beast-variant`). Both
   passes minted every DefaultRace-primary armature for all UBE races. A beast
   patch often adds its variant as primary DefaultRace with only Khajiit/Argonian

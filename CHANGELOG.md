@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Added — wigs are drawn on UBE actors
+
+A wig -- hair you equip as an item -- was invisible on UBE-race actors: only
+hair items with a gold value or the helmet keyword counted as headgear, and
+wigs have neither. A wig the player can equip and that has a name now counts,
+and is drawn with its own mesh, like a helmet. SMP wigs carry a hidden body
+collider built for the 3BA body; it comes along unchanged (measured within
+about 1 unit of the UBE body surface; the converter cannot rebuild it). Measured
+on the reported modlist: 101 wigs from two HDT-SMP hair packs, none doubled.
+`CBBE2UBE_NO_COVERAGE_WIGS=1` (set to 1) leaves them uncovered.
+
 ### Fixed — Khajiit and Argonian versions of an item are no longer drawn on UBE actors too
 
 Some items carry a separate version for Khajiit or Argonian characters (a wig

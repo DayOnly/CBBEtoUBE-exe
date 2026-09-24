@@ -3217,6 +3217,35 @@ def _hair_only_armo_is_equippable_headgear(payload, masters) -> bool:
                         mi < len(masters) and masters[mi].lower() == "skyrim.esm":
                     return True        # ArmorHelmet keyword -> headgear armor
     return False
+
+
+def _coverage_wigs() -> bool:
+    r"""#coverage-wigs (2026-09-24): does a WIG -- a hair-slot-only armour the
+    player can equip and that has a name -- get a UBE armature? Yes, by default
+    (the user's call).
+
+    A hair-only armour counted as headgear only with a gold value or the
+    ArmorHelmet keyword, so a hair ARMO an NPC wears as a hairstyle was not
+    extended to UBE. Wigs have neither, so 100 playable, named wigs (HDT-SMP hair
+    packs) were invisible on UBE actors. Playable in the WINNING record and
+    named now counts too. Each wig armature is minted UBE-primary with its own
+    mesh, as a helmet's is -- including the hidden body collider SMP wigs carry
+    (a BodySlide build of the 3BA body: measured 0.38u median / 1.05u p95 from
+    the UBE body surface, against 0.27 / 0.68 on 3BA; the converter only copies
+    it). CBBE2UBE_NO_COVERAGE_WIGS=1 leaves them uncovered again."""
+    return not _flag("CBBE2UBE_NO_COVERAGE_WIGS", False)
+
+
+def _is_playable_named(aflags: int, payload: bytes) -> bool:
+    """#coverage-wigs: the armour record the game loads is playable (no 0x4
+    record flag) and carries a non-empty name (FULL: a string, or a lstring id
+    in a localized plugin)."""
+    if aflags & 0x4:
+        return False
+    for sig, d in esp.iter_subrecords(payload):
+        if sig == b"FULL":
+            return any(d)
+    return False
 # Slots that deform with the UBE body and need mesh conversion, not just race
 # coverage: 32 body, 33 hands, 34 forearms, 37 feet, 38 calves.
 _DEFORMING_SLOTS_MASK = (1 << 2) | (1 << 3) | (1 << 4) | (1 << 7) | (1 << 8)
@@ -3561,6 +3590,8 @@ def generate_modded_nonbody_ube_coverage_patch(
     twin_slots: list = []      # slots pointed at a hand-made UBE twin (#coverage-ube-twin)
     beast_skipped: list = []   # DefaultRace armatures listing only beast races (#coverage-beast-variant)
     _beast = _coverage_beast_variant()
+    wigs_added: list = []      # (armo_abs, edid) wigs covered as headgear (#coverage-wigs)
+    _wigs = _coverage_wigs()
 
     # ---- Pass 1: load-order winners for ARMA + ARMO (last wins) ----
     arma_win: dict = {}   # abs -> (payload, masters, plugin, rnam_abs, is_ube)
@@ -3617,9 +3648,13 @@ def generate_modded_nonbody_ube_coverage_patch(
             continue
         if slots & _DEFORMING_SLOTS_MASK:
             continue
+        _wig = False
         if slots and (slots & _HAIR_ONLY_SLOTS) == slots and \
                 not _hair_only_armo_is_equippable_headgear(apayload, am):
-            continue
+            # #coverage-wigs: a wig the player can equip counts as headgear.
+            if not (_wigs and _is_playable_named(aflags, apayload)):
+                continue
+            _wig = True
         if not arms:
             continue
         winning = [(x, arma_win.get(x)) for x in arms]
@@ -3646,6 +3681,8 @@ def generate_modded_nonbody_ube_coverage_patch(
                         to_mint))
         for x in to_mint:
             mint_set.setdefault(x, None)
+        if _wig:
+            wigs_added.append((armo_abs, edid))   # #coverage-wigs
 
     # ---- Pass 3: mint ESP (UBE-primary ARMAs only; masters = vanilla + UBE) ----
     patch_masters = list(VANILLA_DLC_MASTERS)
@@ -3797,6 +3834,7 @@ def generate_modded_nonbody_ube_coverage_patch(
         "female_dead_male": female_dead,
         "ube_twin": twin_slots,
         "beast_variant_skipped": [f"{a[0]}|{a[1]:X}" for a in beast_skipped],
+        "wigs": wigs_added,
     }
 
 
