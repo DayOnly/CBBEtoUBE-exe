@@ -101,6 +101,21 @@ def test_the_off_switch_skips_texture_archives_again(tmp_path, archives, monkeyp
     assert not idx.contains("armor/set/cuirass_1.nif")
 
 
+def test_the_off_switch_leaves_a_callers_own_skip_list_alone(
+        tmp_path, archives, monkeypatch):
+    """The switch restores the OLD DEFAULT; a caller that names its own list
+    (the coverage step's existence lookup) keeps it, switch or not."""
+    monkeypatch.setenv(OFF, "1")
+    mod = tmp_path / "Big Content"
+    _archive(mod, "Big Content - Textures.bsa", BOOTS)
+    _archive(mod, "Big Content - Voices.bsa", "a/voice_1.nif")
+    own = ac._BsaMeshIndex([mod], None, skip_bsa=("voice",))
+    assert own.contains(BOOTS)
+    assert not own.contains("a/voice_1.nif")
+    assert not ac._BsaMeshIndex([mod], None).contains(BOOTS), \
+        "control: the default list still skips it under the switch"
+
+
 def test_the_higher_priority_archive_wins_a_shared_path(tmp_path, archives):
     """A retexture mod above its base mod ships the same mesh path; the index
     takes the higher-priority copy -- the one the game loads."""

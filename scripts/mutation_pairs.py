@@ -2426,7 +2426,9 @@ PAIRS = (
               '                        skip_bsa=None)  # MUTATED', 1),
          ),
          tests=('tests/test_coverage_female_guard.py',),
-         expect=('test_the_lookup_finds_loose_and_texture_archive_meshes',),
+         # Merged with #texture-archive-meshes the default list keeps texture
+         # archives too, so only the texture switch tells the two lists apart.
+         expect=('test_the_texture_archive_switch_does_not_blind_the_lookup',),
     ),
     Pair('CFG-i', 'the coverage step never builds the lookup',
          edits=(
@@ -3018,8 +3020,8 @@ PAIRS = (
     Pair('TAM-c', 'the off-switch no longer switches anything off',
          edits=(
              ('src/auto_convert.py',
-              '                      if _flag("CBBE2UBE_NO_TEXTURE_ARCHIVE_MESHES", False)',
-              '                      if False  # MUTATED', 1),
+              '                      and _flag("CBBE2UBE_NO_TEXTURE_ARCHIVE_MESHES", False)\n',
+              '                      and False  # MUTATED\n', 1),
          ),
          tests=('tests/test_texture_archive_meshes.py',),
          expect=('test_the_off_switch_skips_texture_archives_again',
@@ -3042,6 +3044,20 @@ PAIRS = (
          ),
          tests=('tests/test_texture_archive_meshes.py',),
          expect=('test_the_setup_check_still_reads_only_the_vanilla_archives',),
+    ),
+    # Where the two 09-24 lanes met: the texture-archive switch restores the old
+    # DEFAULT skip list only; the coverage step's own list keeps texture archives.
+    Pair('TAM-f', "the texture switch overrides a caller's own skip list",
+         edits=(
+             ('src/auto_convert.py',
+              '                      if skip_bsa is None\n'
+              '                      and _flag("CBBE2UBE_NO_TEXTURE_ARCHIVE_MESHES", False)\n',
+              '                      if True  # MUTATED\n'
+              '                      and _flag("CBBE2UBE_NO_TEXTURE_ARCHIVE_MESHES", False)\n', 1),
+         ),
+         tests=('tests/test_texture_archive_meshes.py', 'tests/test_coverage_female_guard.py'),
+         expect=('test_the_off_switch_leaves_a_callers_own_skip_list_alone',
+                 'test_the_texture_archive_switch_does_not_blind_the_lookup'),
     ),
     # #nude-basename-path (2026-09-24): a pair of pants named femalebody_1.nif under
     # an armour folder was taken for the nude skin and never converted; the path

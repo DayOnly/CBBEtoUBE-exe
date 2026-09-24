@@ -336,6 +336,16 @@ def test_the_lookup_finds_loose_and_texture_archive_meshes(tmp_path, monkeypatch
     assert not exists("")
 
 
+def test_the_texture_archive_switch_does_not_blind_the_lookup(tmp_path, monkeypatch):
+    """CBBE2UBE_NO_TEXTURE_ARCHIVE_MESHES restores the converter's old SOURCE
+    listing; whether a mesh exists in game is a different question, and a mesh
+    in a texture-named archive still loads."""
+    monkeypatch.setenv("CBBE2UBE_NO_TEXTURE_ARCHIVE_MESHES", "1")
+    exists = _lookup_modlist(tmp_path, monkeypatch)
+    assert exists(r"follower\f\packed_1.nif")
+    assert not exists(r"follower\f\voiced_1.nif")
+
+
 def test_the_lookup_finds_a_mesh_built_into_overwrite(tmp_path, monkeypatch):
     """BodySlide run through MO2 writes to overwrite; a mesh there exists."""
     from src import auto_convert as ac

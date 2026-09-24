@@ -414,7 +414,9 @@ already-UBE path among the additions.
   +143 archives listed (0.1 s), +21 meshes, 2 male stand-ins no longer needed, 16
   armatures; 21 pieces of one set move to the higher-priority retexture archive,
   the copy the game loads. Voice, sound and facegen archives stay skipped; the
-  setup check still reads only the vanilla archives.
+  setup check still reads only the vanilla archives. The switch restores the old
+  DEFAULT list only: the coverage step's existence lookup names its own list, and
+  a mesh in a texture archive still loads in game, switch or not.
 - **Skin-named armour** (`#nude-basename-path`, `CBBE2UBE_NO_NUDE_BASENAME_PATH`).
   A model named like the nude body (`femalebody`, ...) was skin wherever it sat; a
   pair of pants is named that. The path alone is not the fix: of 114 armatures with

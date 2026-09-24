@@ -5430,9 +5430,13 @@ class _BsaMeshIndex:
         self._name_prefixes = ([p.lower() for p in bsa_name_prefixes]
                                if bsa_name_prefixes else None)
         # Read once, here: an index lists its archives under ONE rule for its
-        # whole life. #texture-archive-meshes
+        # whole life. #texture-archive-meshes. The switch governs the DEFAULT
+        # list only: a caller's own list is its whole rule, so the switch cannot
+        # make the coverage step's "does this mesh exist in game" lookup stop
+        # seeing texture archives (the two lanes met there, 2026-09-24).
         self._skip = (self._SKIP_BSA_TEXTURE + self._SKIP_BSA
-                      if _flag("CBBE2UBE_NO_TEXTURE_ARCHIVE_MESHES", False)
+                      if skip_bsa is None
+                      and _flag("CBBE2UBE_NO_TEXTURE_ARCHIVE_MESHES", False)
                       else self._SKIP_BSA)
 
     def listing_key(self) -> tuple:
