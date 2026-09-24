@@ -1138,6 +1138,15 @@ reported through `_report_coverage_holds`:
   the twin admission also minted a second nude suit on a softbody pack's own UBE
   one (+2 links) -- that commit is why it does not.
   `CBBE2UBE_NO_SKIP_BUILT_UBE_PATH=1`.
+- **A beast-only variant is not minted** (`#coverage-beast-variant`). Both
+  passes minted every DefaultRace-primary armature for all UBE races. A beast
+  patch often adds its variant as primary DefaultRace with only Khajiit/Argonian
+  (+ vampire) additional races; the playable races carry no armor race, so no
+  human draws it, but a UBE actor drew it over the human armature. Such an
+  armature (additional races non-empty, every one a Skyrim.esm beast race) is
+  skipped in both passes; one with no additional races is unchanged. Live: 37
+  armatures, 58 links removed, 0 added; 3 Argonian-only items lose their only
+  link (invisible on UBE, as on every human race). `CBBE2UBE_NO_COVERAGE_BEAST_VARIANT=1`.
 - **A body armour's hood rides with it** (`#coverage-body-accessory`). The body
   pass kept only armatures with a converted mesh or a hands/feet slot; the
   non-body pass skips any armour with a deforming slot. A robe's hood armature

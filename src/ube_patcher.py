@@ -3221,6 +3221,36 @@ def _hair_only_armo_is_equippable_headgear(payload, masters) -> bool:
 # coverage: 32 body, 33 hands, 34 forearms, 37 feet, 38 calves.
 _DEFORMING_SLOTS_MASK = (1 << 2) | (1 << 3) | (1 << 4) | (1 << 7) | (1 << 8)
 
+# Skyrim.esm ArgonianRace, KhajiitRace and their vampire variants (low 24).
+_BEAST_RACES_24 = frozenset({0x013740, 0x013745, 0x08883A, 0x088845})
+
+
+def _coverage_beast_variant() -> bool:
+    r"""#coverage-beast-variant (2026-09-24): is an armature whose primary race
+    is DefaultRace but whose additional races are ONLY beast races left out of
+    coverage? Yes, by default.
+
+    Both coverage passes mint every DefaultRace-primary armature of an armour
+    for all UBE races. A beast patch often adds its variant that way -- primary
+    DefaultRace, additional Khajiit (+ vampire) only -- and no human draws it:
+    the playable races carry no armor race, so an actor matches an armature only
+    by a race it lists. Minted for UBE, the variant drew ON TOP of the human
+    armature (two hairstyles on a wig, a beast-shaped gauntlet over the human
+    one). An armature with no additional races is unchanged.
+    CBBE2UBE_NO_COVERAGE_BEAST_VARIANT=1 mints them again."""
+    return not _flag("CBBE2UBE_NO_COVERAGE_BEAST_VARIANT", False)
+
+
+def _is_beast_variant(v) -> bool:
+    """#coverage-beast-variant: a winner-scan armature `v` (payload, masters,
+    plugin, ...) lists additional races, and every one is a vanilla beast race."""
+    payload, masters, own = v[0], v[1], v[2]
+    races = [_record_abs_fid(struct.unpack_from("<I", d, 0)[0], masters, own)
+             for s, d in esp.iter_subrecords(payload)
+             if s == ARMA_ADDITIONAL_RACE_SIG and len(d) == 4]
+    return bool(races) and all(p == "skyrim.esm" and lo in _BEAST_RACES_24
+                               for p, lo in races)
+
 
 def _summarize_arma(payload, masters, own_name):
     rnam = None
@@ -3529,6 +3559,8 @@ def generate_modded_nonbody_ube_coverage_patch(
     female_kept: list = []     # female slots that kept their own mesh (guard)
     female_dead: list = []     # dead female paths: the male mesh stays (guard)
     twin_slots: list = []      # slots pointed at a hand-made UBE twin (#coverage-ube-twin)
+    beast_skipped: list = []   # DefaultRace armatures listing only beast races (#coverage-beast-variant)
+    _beast = _coverage_beast_variant()
 
     # ---- Pass 1: load-order winners for ARMA + ARMO (last wins) ----
     arma_win: dict = {}   # abs -> (payload, masters, plugin, rnam_abs, is_ube)
@@ -3597,7 +3629,14 @@ def generate_modded_nonbody_ube_coverage_patch(
         if any(v[4] for _x, v in winning):
             continue  # already has a UBE armature
         # Mint only DefaultRace armatures (human/mer); beast armatures crash.
-        to_mint = [x for x, v in winning if v[3] == DEFAULT_RACE]
+        # A DefaultRace one that lists only beast races is a beast variant: no
+        # human draws it, so no UBE actor may. #coverage-beast-variant
+        _bv = [x for x, v in winning
+               if v[3] == DEFAULT_RACE and _beast and _is_beast_variant(v)]
+        for x in _bv:
+            if x not in beast_skipped:
+                beast_skipped.append(x)
+        to_mint = [x for x, v in winning if v[3] == DEFAULT_RACE and x not in _bv]
         if not to_mint:
             continue
         if withheld_armo_abs and armo_abs in withheld_armo_abs:
@@ -3757,6 +3796,7 @@ def generate_modded_nonbody_ube_coverage_patch(
         "female_kept": female_kept,
         "female_dead_male": female_dead,
         "ube_twin": twin_slots,
+        "beast_variant_skipped": [f"{a[0]}|{a[1]:X}" for a in beast_skipped],
     }
 
 
@@ -3830,6 +3870,8 @@ def generate_modded_body_ube_coverage_patch(
     nude_skipped: list = []    # (arma_abs, why) nude parts not minted: skin/unresolved
     nude_dropped: list = []    # (armo_abs, edid, why) ARMOs left with nothing to mint by that
     twin_slots: list = []      # slots pointed at a hand-made UBE twin
+    beast_skipped: list = []   # DefaultRace armatures listing only beast races (#coverage-beast-variant)
+    _beast = _coverage_beast_variant()
     accessory_added: list = []  # non-deforming armatures of a body armour (#coverage-body-accessory)
     _body_accessory = _coverage_body_accessory()
     # What would have made an armature a CONVERSION candidate -- the selection's
@@ -4033,8 +4075,15 @@ def generate_modded_body_ube_coverage_patch(
         # like the per-source path, so a modded gauntlet is never left invisible.
         # A built UBE twin another mod ships counts as converted: the planner
         # leaves such a mesh to its builder. #skip-built-ube-path
+        # A beast variant (DefaultRace, beast races only) is no human's armature.
+        # #coverage-beast-variant
+        _bv = [x for x, v in winning
+               if v[3] == DEFAULT_RACE and _beast and _is_beast_variant(v)]
+        for x in _bv:
+            if x not in beast_skipped:
+                beast_skipped.append(x)
         to_mint = [x for x, v in winning
-                   if v[3] == DEFAULT_RACE
+                   if v[3] == DEFAULT_RACE and x not in _bv
                    and (any(_admits(mp) for mp in _arma_models(v[0]))
                         or (_cover_hf
                             and bool(_arma_bod2_slots(v[0])
@@ -4337,6 +4386,7 @@ def generate_modded_body_ube_coverage_patch(
                          for a, why in nude_skipped if a not in mint_set],
         "nude_dropped": nude_dropped,
         "ube_twin": twin_slots,
+        "beast_variant_skipped": [f"{a[0]}|{a[1]:X}" for a in beast_skipped],
         "body_accessory": [f"{a[0]}|{a[1]:X}" for a in accessory_added],
     }
 

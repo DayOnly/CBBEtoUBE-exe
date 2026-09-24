@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Fixed — Khajiit and Argonian versions of an item are no longer drawn on UBE actors too
+
+Some items carry a separate version for Khajiit or Argonian characters (a wig
+reshaped around the ears, a helmet with room for horns). No human-race character
+draws that version, but this tool gave it to UBE actors as well, so they drew
+both at once. Such a beast-only version is now left out. Measured on the
+reported modlist: 37 of them, removing 58 doubled links. Three items that exist
+only in a beast version (from an Argonian armour set and an Argonian follower's
+gear) are now invisible on UBE actors, as they are on every human race in the
+base game. `CBBE2UBE_NO_COVERAGE_BEAST_VARIANT=1` (set to 1) turns it off.
+
 ### Fixed — hooded robes show their hood on UBE actors
 
 A robe with a hood drew the robe on a UBE-race actor but not the hood (the

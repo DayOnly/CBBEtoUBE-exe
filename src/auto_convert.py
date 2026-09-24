@@ -3603,6 +3603,7 @@ def _report_coverage_holds(stats: "list[dict]") -> None:
     ndrop = [d for s in stats for d in (s.get("nude_dropped") or [])]
     twins = [k for s in stats for k in (s.get("ube_twin") or [])]
     accs = [k for s in stats for k in (s.get("body_accessory") or [])]
+    beasts = sorted({k for s in stats for k in (s.get("beast_variant_skipped") or [])})
     if withheld:
         warn(f"[unified] {len(withheld)} armour(s) of an excluded mod have no UBE "
              "armature from any mod",
@@ -3686,6 +3687,9 @@ def _report_coverage_holds(stats: "list[dict]") -> None:
     if accs:
         print(f"  [unified] {len(accs)} hood/accessory armature(s) of body armour "
               "drawn on UBE with the body (their own mesh)")
+    if beasts:
+        print(f"  [unified] {len(beasts)} beast-race variant armature(s) left off UBE "
+              "actors (they list only Argonian/Khajiit races; no human draws them)")
 
 
 def _emit_unified_coverage_patches(output, patches_dir, master_data_dirs,
