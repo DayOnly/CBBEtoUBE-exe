@@ -55,6 +55,46 @@ For troubleshooting, `CBBE2UBE_NO_EXCLUDE_OWNED_COVERAGE`,
 `CBBE2UBE_NO_SKYPATCHER_PATCH_RECOGNITION` and
 `CBBE2UBE_NO_COVERAGE_FEMALE_GUARD` (set to 1) turn the three off.
 
+### Fixed — armour that was never converted: packed in archives, named like the body, or worn only by NPCs
+
+Some armour never reached the converter, while the step that dresses UBE actors
+still gave it a UBE slot, so those actors wore the unconverted CBBE mesh --
+clipping, or floating off the body. Four causes, each fixed:
+
+- **Armour kept only in an archive.** A mod whose armour meshes are packed in a
+  .bsa was never picked, although the converter reads meshes from archives. On
+  one modlist that was 9 mods (a fur armour set, a clothing set, a quest
+  overhaul's gear, a scarf, cloaks and robes) and 49 meshes. The run log now also
+  names every mod whose armour meshes could not be found anywhere; those used to
+  vanish without a word.
+- **Archives named "Textures" or "Retexture".** These were never searched for
+  meshes, but a large content mod keeps all of its meshes in its "- Textures"
+  archive, and some armour retextures ship theirs in one. 21 more meshes on that
+  modlist (among them boots the game draws), 2 male meshes no longer needed as a
+  stand-in, and 21 pieces of one armour set now come from the retexture archive
+  the game actually loads.
+- **Armour named like the body.** A piece whose file is named like the nude body
+  (a pair of pants called femalebody_1.nif) was taken for the body and skipped. It
+  now counts as armour when it sits outside the body's own folder and a named item
+  you can pick up uses it; follower and race bodies stay out.
+- **Outfits only NPCs wear.** Clothing the game marks as not for the player
+  (follower and quest outfits) was skipped along with gore and effect pieces. It
+  is converted now when a female NPC of a race UBE covers actually wears or carries
+  it -- her outfit or her inventory. An NPC that takes her looks from a template
+  counts only when that template is a known female; a random pick from a list of
+  NPCs does not. Gore and effects that scripts apply stay out, and so does anything
+  an NPC or a race uses as its skin (a skeleton's, for one). Known edge: wound
+  meshes that sit in a victim's inventory are converted too. Reading who wears what
+  adds about 10 seconds to a run on a 3,000-plugin modlist.
+
+Together on that modlist: 15 more mods converted, 139 more meshes, and 100 of the
+279 armour slots that drew an unconverted mesh now draw a converted one. Children's
+clothing is still never converted. For troubleshooting,
+`CBBE2UBE_NO_BSA_ONLY_SOURCES`, `CBBE2UBE_NO_TEXTURE_ARCHIVE_MESHES`,
+`CBBE2UBE_NO_NUDE_BASENAME_PATH` and `CBBE2UBE_NO_NPC_WORN_NONPLAYABLE` (set to 1)
+turn the four off; with all four set the converter picks exactly the mods and
+meshes it picked before.
+
 ### Fixed — leg cloth on BodySlide-built armour follows the legs, and a layered skirt follows the butt
 
 Armour converted from a BodySlide build ships a morph file for every shape, and
