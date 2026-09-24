@@ -140,6 +140,25 @@ def test_a_deforming_second_armature_is_not_an_accessory(tmp_path):
     assert st["body_accessory"] == []
 
 
+def test_a_body_candidate_slot_is_not_an_accessory(tmp_path):
+    """Slot 46 is a conversion slot: an unconverted armature there is body-fitted
+    cloth the planner meant to convert, not a hood."""
+    cape = _arma(0x01000801, 1 << 16, {b"MOD3": r"clothes\robes\mantle46_1.nif"})
+    st, minted = _pass(tmp_path, _robe(tmp_path, {b"MOD3": ROBE}, cape),
+                       {ROBE.replace("\\", "/")})
+    assert [m[b"MOD3"] for m in minted] == ["!UBE\\" + ROBE]
+
+
+def test_a_cape_on_a_free_slot_is_not_an_accessory(tmp_path):
+    """Slot 35 is free, but a cape-named mesh is a cloak the planner admits for
+    conversion by name; left unconverted it would draw its CBBE fit."""
+    cape = _arma(0x01000801, 1 << 5, {b"MOD3": r"armor\witch\ShamanCapeF_1.nif"})
+    st, minted = _pass(tmp_path, _robe(tmp_path, {b"MOD3": ROBE}, cape),
+                       {ROBE.replace("\\", "/")})
+    assert [m[b"MOD3"] for m in minted] == ["!UBE\\" + ROBE]
+    assert st["body_accessory"] == []
+
+
 def test_the_hoods_are_reported(capsys):
     ac._report_coverage_holds([{"body_accessory": ["skyrim.esm|65BB5"]}])
     assert "1 hood/accessory armature(s) of body armour drawn on UBE" in (

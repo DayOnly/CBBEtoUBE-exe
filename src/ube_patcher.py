@@ -3832,6 +3832,21 @@ def generate_modded_body_ube_coverage_patch(
     twin_slots: list = []      # slots pointed at a hand-made UBE twin
     accessory_added: list = []  # non-deforming armatures of a body armour (#coverage-body-accessory)
     _body_accessory = _coverage_body_accessory()
+    # What would have made an armature a CONVERSION candidate -- the selection's
+    # own slot sets and cloak names, read from it so the two cannot drift.
+    from .auto_convert import (_BODY_SLOT_BITS, _BODY_CANDIDATE_SLOT_BITS,
+                               _CLOAK_MESH_KEYWORDS)
+    _accessory_excluded_bits = (_DEFORMING_SLOTS_MASK | _BODY_SLOT_BITS
+                                | _BODY_CANDIDATE_SLOT_BITS)
+
+    def _cloak_named(payload: bytes) -> bool:
+        for sig, d in esp.iter_subrecords(payload):
+            if sig in (b"MOD2", b"MOD3"):
+                base = d.rstrip(b"\x00").decode("cp1252", "replace")
+                base = base.replace("/", "\\").rsplit("\\", 1)[-1].lower()
+                if any(k in base for k in _CLOAK_MESH_KEYWORDS):
+                    return True
+        return False
 
     def _conv_exists(model_path: str) -> bool:
         return _converted_model_exists(model_path, crp)
@@ -4105,12 +4120,15 @@ def generate_modded_body_ube_coverage_patch(
         # #coverage-body-accessory: a non-deforming armature of this armour (a
         # robe's hood) rides along with the deforming ones minted above -- the
         # non-body pass skips the armour for having a deforming slot, so nothing
-        # else ever covers it. Its own BOD2 must name slots, none deforming.
+        # else ever covers it. Its own BOD2 must name slots, none deforming, and
+        # it must never have been a conversion candidate (a body-fitted cape that
+        # was not converted would draw its CBBE fit on the UBE body).
         if _body_accessory and to_mint:
             _acc = [x for x, v in winning
                     if x not in to_mint and v[3] == DEFAULT_RACE
                     and _arma_bod2_slots(v[0])
-                    and not (_arma_bod2_slots(v[0]) & _DEFORMING_SLOTS_MASK)]
+                    and not (_arma_bod2_slots(v[0]) & _accessory_excluded_bits)
+                    and not _cloak_named(v[0])]
             if _acc:
                 to_mint = to_mint + _acc
                 for x in _acc:

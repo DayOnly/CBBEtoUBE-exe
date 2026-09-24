@@ -1142,12 +1142,14 @@ reported through `_report_coverage_holds`:
   pass kept only armatures with a converted mesh or a hands/feet slot; the
   non-body pass skips any armour with a deforming slot. A robe's hood armature
   (31/41/43) was covered by neither, so the hood was missing on UBE. Now a
-  DefaultRace armature of the armour whose own BOD2 names slots, none deforming,
-  is minted with the deforming ones (UBE-primary, own mesh -- what the non-body
+  DefaultRace armature of the armour whose own BOD2 names slots, none of them a
+  deforming, body or candidate conversion slot, and whose mesh is not cloak-named
+  (it was never a conversion candidate, so its own mesh is what it draws), is
+  minted with the deforming ones (UBE-primary, own mesh -- what the non-body
   pass does for the same hood worn alone); it never mints alone, so an armour
-  the world-mesh or female rules leave out stays out. Live replay: 111 links on
-  110 armours added, 0 removed, 0 re-pointed, 27 armatures (17 hoods and hats, plus helmets,
-  capes and costume heads built into body armour).
+  the world-mesh or female rules leave out stays out. Live replay: 110 links on
+  109 armours added, 0 removed, 0 re-pointed, 26 armatures (hoods and hats, plus
+  helmets and costume heads built into body armour; a body-fitted cape stays out).
   `CBBE2UBE_NO_COVERAGE_BODY_ACCESSORY=1`.
 - **A claim path written with `meshes\` in front** (`#claim-meshes-prefix`). The
   engine reads `meshes\!UBE\x_1.nif` and `!UBE\x_1.nif` as one file; the

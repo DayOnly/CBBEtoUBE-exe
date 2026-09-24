@@ -3459,8 +3459,8 @@ PAIRS = (
          edits=(
              ('src/ube_patcher.py',
               '                    and _arma_bod2_slots(v[0])\n'
-              '                    and not (_arma_bod2_slots(v[0]) & _DEFORMING_SLOTS_MASK)]',
-              '                    and not (_arma_bod2_slots(v[0]) & _DEFORMING_SLOTS_MASK)]  # MUTATED', 1),
+              '                    and not (_arma_bod2_slots(v[0]) & _accessory_excluded_bits)\n',
+              '                    and not (_arma_bod2_slots(v[0]) & _accessory_excluded_bits)  # MUTATED\n', 1),
          ),
          tests=('tests/test_coverage_body_accessory.py',),
          expect=('test_an_armature_without_its_own_slots_is_not_taken',),
@@ -3468,12 +3468,12 @@ PAIRS = (
     Pair('CBA-e', 'a deforming armature passes as an accessory',
          edits=(
              ('src/ube_patcher.py',
-              '                    and _arma_bod2_slots(v[0])\n'
-              '                    and not (_arma_bod2_slots(v[0]) & _DEFORMING_SLOTS_MASK)]',
-              '                    and _arma_bod2_slots(v[0])]  # MUTATED', 1),
+              '                    and not (_arma_bod2_slots(v[0]) & _accessory_excluded_bits)\n',
+              '                    and True  # MUTATED\n', 1),
          ),
          tests=('tests/test_coverage_body_accessory.py',),
-         expect=('test_a_deforming_second_armature_is_not_an_accessory',),
+         expect=('test_a_deforming_second_armature_is_not_an_accessory',
+                 'test_a_body_candidate_slot_is_not_an_accessory'),
     ),
     Pair('CBA-f', 'the hoods are not counted',
          edits=(
@@ -3492,5 +3492,24 @@ PAIRS = (
          ),
          tests=('tests/test_coverage_body_accessory.py',),
          expect=('test_the_hoods_are_reported',),
+    ),
+    Pair('CBA-h', 'a cape the planner meant to convert passes as an accessory',
+         edits=(
+             ('src/ube_patcher.py',
+              '                    and not _cloak_named(v[0])]',
+              '                    ]  # MUTATED', 1),
+         ),
+         tests=('tests/test_coverage_body_accessory.py',),
+         expect=('test_a_cape_on_a_free_slot_is_not_an_accessory',),
+    ),
+    Pair('CBA-i', 'a body conversion slot passes as an accessory',
+         edits=(
+             ('src/ube_patcher.py',
+              '    _accessory_excluded_bits = (_DEFORMING_SLOTS_MASK | _BODY_SLOT_BITS\n'
+              '                                | _BODY_CANDIDATE_SLOT_BITS)',
+              '    _accessory_excluded_bits = _DEFORMING_SLOTS_MASK  # MUTATED', 1),
+         ),
+         tests=('tests/test_coverage_body_accessory.py',),
+         expect=('test_a_body_candidate_slot_is_not_an_accessory',),
     ),
 )
