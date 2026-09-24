@@ -3381,16 +3381,121 @@ def _mesh_exists_anywhere(output) -> "callable[[str], bool] | None":
     return exists
 
 
+def _mod_name_excluded(name: str, wanted: "set[str]") -> bool:
+    """Is this mod folder one of the run's exclusions? The folder name, or --
+    for a name with a comma, which the CLI splits -- every piece of it. Same
+    matching as `_armos_defined_by_mods`."""
+    n = name.lower()
+    if n in wanted:
+        return True
+    parts = {p.strip() for p in n.split(",") if p.strip()}
+    return len(parts) > 1 and parts <= wanted
+
+
+def _third_party_ube_twin_lookup(output, exclude_mods=()) \
+        -> "callable[[str], str | None] | None":
+    r"""#coverage-ube-twin: which THIRD-PARTY mod ships a loose
+    `meshes\!UBE\<path>` -- the hand-made UBE version of a source mesh the
+    converter did not convert? Returns that mod's folder name (MO2's highest
+    priority first) or None; None as a whole when the modlist cannot be read.
+
+    Third party: an enabled mod that is neither our output (its folder name, or
+    `_is_our_own_output` for an old output under any name) nor one the run
+    excludes -- an excluded mod is one the user took out of this tool's hands.
+    Loose files only, and not MO2's overwrite: a hand-made patch ships in its
+    own folder, and a stray converter output in overwrite must never read as
+    one. Measured on the live pack: 579 such meshes in a handful of mods, so the
+    index is built once, on the first question, over those mods' `!UBE` folders
+    alone."""
+    try:
+        lay = paths.discover_layout()
+        mr = paths.mods_root()
+        order = paths.enabled_mods_ordered(lay)
+    except Exception:
+        return None
+    if mr is None or not order:
+        return None
+    out_name = Path(output).name.lower()
+    wanted = {str(n).strip().lower() for n in (exclude_mods or ()) if str(n).strip()}
+    index: "dict[str, str] | None" = None
+
+    def _build() -> "dict[str, str]":
+        idx: dict = {}
+        for name in order:              # highest priority first: first one wins
+            if name.lower() == out_name or _mod_name_excluded(name, wanted):
+                continue
+            ube = Path(mr) / name / "meshes" / "!UBE"
+            try:
+                if not ube.is_dir() or _is_our_own_output(Path(mr) / name):
+                    continue
+                files = list(ube.rglob("*.nif"))
+            except OSError:
+                continue                # an unreadable folder costs itself only
+            for f in files:
+                idx.setdefault(f.relative_to(ube).as_posix().lower(), name)
+        return idx
+
+    def twin(model: str) -> "str | None":
+        nonlocal index
+        rel = str(model or "").replace("\\", "/").lstrip("/").lower()
+        if rel.startswith("meshes/"):
+            rel = rel[7:]
+        if not rel:
+            return None
+        if index is None:
+            index = _build()
+        return index.get(rel)
+    return twin
+
+
+def _outside_ube_mesh_resolver(output) -> "callable[[str], bool] | None":
+    r"""The post-merge validator's `mesh_resolves`: does a `!UBE\` path the
+    coverage step pointed OUTSIDE our output load from another mod? Only the two
+    kinds it writes on purpose -- the UBE body's own hands/feet
+    (#coverage-nude-skin, resolved like `_mesh_exists_anywhere`) and, opted in,
+    a hand-made twin (#coverage-ube-twin). Anything else under `!UBE\` that our
+    output lacks is still a missing mesh. The question is only "does it load",
+    so an excluded mod's copy counts here. None when both are off; the lookups
+    are built on the first question, which a clean Combined never asks."""
+    nude = ube_patcher._coverage_nude_skin()
+    twin_on = ube_patcher._coverage_ube_twin()
+    if not (nude or twin_on):
+        return None
+    built: dict = {}
+
+    def resolves(path: str) -> bool:
+        p = str(path or "")
+        if nude and ube_patcher.is_ube_body_part_path(p):
+            if "any" not in built:
+                built["any"] = _mesh_exists_anywhere(output)
+            return bool(built["any"] and built["any"](p))
+        if twin_on and p[:5].lower() == "!ube\\":
+            if "twin" not in built:
+                built["twin"] = _third_party_ube_twin_lookup(output)
+            return bool(built["twin"] and built["twin"](p[5:]))
+        return False
+    return resolves
+
+
 def _report_coverage_holds(stats: "list[dict]") -> None:
     """Say what the two coverage passes held back, in counts and a few names:
-    armour of an excluded mod left without an armature (#exclude-owned-coverage)
-    and female slots that did not take a converted MALE mesh
-    (#coverage-female-guard). Silent when there is nothing to say."""
+    armour of an excluded mod left without an armature (#exclude-owned-coverage),
+    female slots that did not take a converted MALE mesh
+    (#coverage-female-guard), body armatures whose world mesh was not converted
+    (#coverage-world-mesh), nude hands/feet swapped for the UBE body's own or
+    left out (#coverage-nude-skin), and slots pointed at a hand-made UBE twin
+    (#coverage-ube-twin). Silent when there is nothing to say."""
     withheld = [w for s in stats for w in (s.get("withheld") or [])]
     kept = [k for s in stats for k in (s.get("female_kept") or [])]
     dead = [k for s in stats for k in (s.get("female_dead_male") or [])]
     skipped = [k for s in stats for k in (s.get("female_guard_skipped") or [])]
     dropped = [d for s in stats for d in (s.get("female_guard_dropped") or [])]
+    wskip = [k for s in stats for k in (s.get("world_mesh_skipped") or [])]
+    wdrop = [d for s in stats for d in (s.get("world_mesh_dropped") or [])]
+    nred = [k for s in stats for k in (s.get("nude_redirected") or [])]
+    nskip = [k for s in stats for k in (s.get("nude_skipped") or [])]
+    ndrop = [d for s in stats for d in (s.get("nude_dropped") or [])]
+    twins = [k for s in stats for k in (s.get("ube_twin") or [])]
     if withheld:
         warn(f"[unified] {len(withheld)} armour(s) of an excluded mod have no UBE "
              "armature from any mod",
@@ -3428,6 +3533,49 @@ def _report_coverage_holds(stats: "list[dict]") -> None:
             print(f"       {k['slot']} {k['dead']}  (-> {k['male']})")
         if len(dead) > 5:
             print(f"       ... and {len(dead) - 5} more")
+    if wskip:
+        warn(f"[unified] {len(wskip)} body armature(s) were not minted because their "
+             f"female world mesh was not converted ({len(wdrop)} armour(s) left "
+             "without one)",
+             consequence="those body pieces are not drawn on UBE-race actors, rather "
+                         "than draw their unconverted CBBE mesh on the UBE body",
+             fix="convert the mod that ships the female mesh")
+        for (pl, fid), edid in wdrop[:5]:
+            print(f"       not covered: {edid or '?'}  ({pl}|{fid:06X})")
+        if len(wdrop) > 5:
+            print(f"       ... and {len(wdrop) - 5} more")
+    if nred:
+        print(f"  [unified] {len(nred)} hand/foot armature(s) that drew the nude CBBE "
+              "hands or feet now draw the UBE body's own")
+    # Armours are counted per reason (a dropped entry is (armo, edid, why)):
+    # one count for both overstated the skins by every unresolved item.
+    unres = [k for k in nskip if k.get("why") == "unresolved"]
+    unres_drop = [d for d in ndrop if d[2] == "unresolved"]
+    if unres:
+        warn(f"[unified] {len(unres)} hand/foot armature(s) draw the nude CBBE hands "
+             "or feet, and the UBE body's own hands/feet were not found, so they were "
+             f"not minted ({len(unres_drop)} armour(s) left without one)",
+             consequence="those pieces are not drawn on UBE-race actors",
+             fix="build the UBE body's hands and feet in BodySlide")
+        for k in unres[:5]:
+            print(f"       {k['arma']}")
+        for (pl, fid), edid, _why in unres_drop[:5]:
+            print(f"       not covered: {edid or '?'}  ({pl}|{fid:06X})")
+    skins = [k for k in nskip if k.get("why") == "skin"]
+    skin_drop = [d for d in ndrop if d[2] == "skin"]
+    if skins or skin_drop:
+        # A skin's armature minted for a costume item is not in `skins`, but the
+        # skin itself is still left without one -- so either count prints.
+        print(f"  [unified] {len(skins)} nude hand/foot armature(s) of a race skin "
+              f"were not minted ({len(skin_drop)} armour(s) left without one): a UBE "
+              "actor wears UBE's own skin")
+    if twins:
+        print(f"  [unified] {len(twins)} model slot(s) point at a hand-made UBE mesh "
+              "another mod ships")
+        for k in twins[:5]:
+            print(f"       {k['slot']} {k['path']}  ({k.get('mod') or '?'})")
+        if len(twins) > 5:
+            print(f"       ... and {len(twins) - 5} more")
 
 
 def _emit_unified_coverage_patches(output, patches_dir, master_data_dirs,
@@ -3454,7 +3602,8 @@ def _emit_unified_coverage_patches(output, patches_dir, master_data_dirs,
 
     `exclude_mods`: the run's --exclude-mods. Armour those mods define gets no
     armature from either pass (#exclude-owned-coverage, `_armos_defined_by_mods`);
-    CBBE2UBE_NO_EXCLUDE_OWNED_COVERAGE=1 covers it again, as before."""
+    CBBE2UBE_NO_EXCLUDE_OWNED_COVERAGE=1 covers it again, as before. They are
+    never a source of a hand-made UBE twin either (#coverage-ube-twin)."""
     total_targets = 0
     try:
         # Leave armors alone that ANOTHER mod already patched for UBE --
@@ -3545,13 +3694,25 @@ def _emit_unified_coverage_patches(output, patches_dir, master_data_dirs,
         # #coverage-female-guard: which female paths are dead (exist nowhere).
         _fexists = (_mesh_exists_anywhere(output)
                     if ube_patcher._coverage_female_guard() else None)
+        # #coverage-world-mesh (is an unconverted female path dead?) and
+        # #coverage-nude-skin (do the UBE body's own hands/feet resolve?) ask the
+        # same lookup; built once, and only when one of them is on.
+        _mexists = None
+        if ube_patcher._coverage_world_mesh() or ube_patcher._coverage_nude_skin():
+            _mexists = (_fexists if ube_patcher._coverage_female_guard()
+                        else _mesh_exists_anywhere(output))
+        # #coverage-ube-twin: a hand-made UBE mesh a third-party mod ships where
+        # we converted none -- never our output, never an excluded mod.
+        _twin = (_third_party_ube_twin_lookup(output, exclude_mods)
+                 if ube_patcher._coverage_ube_twin() else None)
         nb_out = patches_dir / "UBE_ModNonBody_Coverage UBE patch.esp"
         nb = ube_patcher.generate_modded_nonbody_ube_coverage_patch(
             nb_out, ordered, converted_rel_paths=conv_rel,
             exclude_armo_abs=_ube_excl, exclude_names=excl,
             master_data_dirs=master_data_dirs, cover_all=True,
             preserve_textures=True, emit_sidecar=True,
-            withheld_armo_abs=_withheld_abs, female_mesh_exists=_fexists)
+            withheld_armo_abs=_withheld_abs, female_mesh_exists=_fexists,
+            ube_twin_exists=_twin)
         total_targets += int(nb.get("armo_targets") or 0)
         print(f"  non-body: minted {nb.get('minted_armas')} | "
               f"targets {nb.get('armo_targets')}")
@@ -3565,7 +3726,8 @@ def _emit_unified_coverage_patches(output, patches_dir, master_data_dirs,
                 master_data_dirs=master_data_dirs,
                 cover_all=True, cover_hands_feet=True, preserve_textures=True,
                 emit_sidecar=True, withheld_armo_abs=_withheld_abs,
-                female_mesh_exists=_fexists)
+                female_mesh_exists=_fexists, mesh_exists=_mexists,
+                ube_twin_exists=_twin)
             total_targets += int(bd.get("armo_targets") or 0)
             print(f"  body+hands/feet: minted {bd.get('minted_armas')} | "
                   f"targets {bd.get('armo_targets')} | "
@@ -4493,7 +4655,11 @@ def _cmd_convert(args):
                     try:
                         _pf = ube_patcher.postflight_validate_combined(
                             merged_out, output / "meshes",
-                            master_data_dirs=batch_master_data_dirs)
+                            master_data_dirs=batch_master_data_dirs,
+                            # the UBE body's own hands/feet and hand-made twins
+                            # load from other mods (an excluded mod's mesh loads
+                            # too, so no exclusions here). #coverage-nude-skin
+                            mesh_resolves=_outside_ube_mesh_resolver(output))
                         if _pf["ctd"] or _pf["soft"]:
                             warn(f"POSTFLIGHT: {len(_pf['ctd'])} load-breaking + {len(_pf['soft'])} "
                                  "other issue(s) on the FINAL Combined",
@@ -6865,8 +7031,10 @@ def _cmd_merge(args):
     # / malformed-MODT CTD class). The integrated auto/convert path already does
     # this; the standalone `merge` subcommand must not skip it.
     try:
+        _merged = Path(stats.get('output', args.output))
         _pf = ube_patcher.postflight_validate_combined(
-            Path(stats.get('output', args.output)), master_data_dirs=_mdd)
+            _merged, master_data_dirs=_mdd,
+            mesh_resolves=_outside_ube_mesh_resolver(_merged.parent))
         if _pf["ctd"]:
             warn(f"POSTFLIGHT CTD on merged output: {len(_pf['ctd'])} load-breaking issue(s)",
                  consequence="NOT safe to load; listed below")
@@ -6932,10 +7100,13 @@ def _cmd_validate(args):
 
     total_warnings = 0
     failing = 0
+    # The coverage step points some `!UBE\` slots at other mods' meshes on purpose
+    # (the UBE body's own hands/feet; opted in, hand-made twins). #coverage-nude-skin
+    _outside = _outside_ube_mesh_resolver(mod_dir) if meshes_root else None
     for esp_path in esps:
         warnings = ube_patcher.validate_patch(
             esp_path, meshes_root=meshes_root, check_nifs=check_nifs,
-            master_data_dirs=_mdd)
+            master_data_dirs=_mdd, mesh_resolves=_outside)
         if warnings:
             failing += 1
             total_warnings += len(warnings)

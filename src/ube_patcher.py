@@ -473,6 +473,72 @@ def _coverage_female_guard() -> bool:
     return not _flag("CBBE2UBE_NO_COVERAGE_FEMALE_GUARD", False)
 
 
+def _coverage_world_mesh() -> bool:
+    r"""#coverage-world-mesh (2026-09-24): does a slot-32 body armature need its
+    WORLD female mesh converted to be minted? Yes, by default.
+
+    The body pass admitted a DefaultRace armature when ANY of MOD2..MOD5 was
+    converted -- although its own comment says "BODY needs a converted mesh (an
+    unconverted CBBE body on UBE clips)". A converted FIRST-PERSON mesh was
+    enough, and the minted armature then drew the unconverted CBBE world mesh on
+    the UBE body. Measured on the live pack: 89 links, 87 armatures -- every one
+    with only a first-person mesh converted, 62 of the links let in by one
+    shared vanilla first-person torso; 88 armours are left with no armature,
+    62 of them children's clothing, 26 adult (mostly NPC outfits).
+
+    Now a body armature (its own BOD2, else the armour's -- the female guard's
+    test) is minted only when MOD3 was converted, or MOD3 is absent, empty or
+    dead (exists nowhere, loose or in any archive) and MOD2 was converted -- the
+    male mesh is then what the engine draws for a female. Hands/feet and slot
+    34/38 armatures are not affected: they keep their source mesh where it was
+    not converted, by design. Children's clothing is dropped with the rest (user,
+    09-24: children are skipped entirely). Not-minted armatures are counted and
+    warned. CBBE2UBE_NO_COVERAGE_WORLD_MESH=1 admits them again."""
+    return not _flag("CBBE2UBE_NO_COVERAGE_WORLD_MESH", False)
+
+
+def _coverage_nude_skin() -> bool:
+    r"""#coverage-nude-skin (2026-09-24): may a coverage armature draw the CBBE
+    NUDE hands or feet on a UBE actor? No, by default.
+
+    The per-source and slot-33 passes never extend a nude-skin armature to the
+    UBE races (`_is_nude_skin_model`), but the body winner scan had no such
+    check. An equippable "boots" or "gloves" item that draws bare feet or hands
+    (an NPC costume) reuses `Actors\Character\Character Assets\FemaleFeet_1.nif`,
+    so its UBE armature drew the CBBE feet on the UBE body. Measured on the live
+    pack: 4 armatures -- 2 on such an item pair, 2 on a custom race's skin.
+
+    Now a slot-33/37 armature whose MOD3 is a nude hand or foot under
+    `actors\character\character assets\` draws the UBE body's own part instead
+    (`ube_body_part_for`), with MO3T dropped, but only when that mesh resolves
+    (loose, overwrite or any archive); otherwise it is not minted. On a race
+    skin -- an armour that also lists a nude torso -- it is not minted at all:
+    a UBE actor wears UBE's own skin. CBBE2UBE_NO_COVERAGE_NUDE_SKIN=1 mints the
+    CBBE part again."""
+    return not _flag("CBBE2UBE_NO_COVERAGE_NUDE_SKIN", False)
+
+
+def _coverage_ube_twin() -> bool:
+    r"""#coverage-ube-twin (2026-09-24): may a coverage armature point at a
+    HAND-MADE UBE mesh another mod ships at `!UBE\<source path>`, where the
+    converter produced none? Yes, by default.
+
+    Two boots/gloves records of a clothing overhaul reuse armatures whose own
+    armour is covered by a hand-made UBE patch; the converter skips that mod
+    (#skip-already-ube), so the two are minted drawing the CBBE mesh while the
+    UBE version sits loose in the patch's folder. With this on, a model with no
+    converted twin in OUR output points at a loose `meshes\!UBE\<path>` from a
+    third-party mod (never our own output, never an excluded mod). It only
+    changes where a minted slot points; it never admits an armature.
+
+    The live census moved 8 links, not the 2 expected, and every one points at
+    a UBE version of the SAME mesh already installed: the two reused boots and
+    gloves at their hand-made patch, a choker's two links and a gore pack's
+    four dismembered-body addons at the user's own UBE BodySlide build.
+    CBBE2UBE_NO_COVERAGE_UBE_TWIN=1 turns it off."""
+    return not _flag("CBBE2UBE_NO_COVERAGE_UBE_TWIN", False)
+
+
 # Subrecords that do NOT affect how the addon RENDERS, so they're excluded from
 # the merge record-dedup key: the editor id, and the CK-generated model
 # texture-HASH blocks (MODT-equivalents) for each of the 4 gendered models. Two
@@ -2182,7 +2248,8 @@ _POSTFLIGHT_CTD_PREFIXES = (
 
 
 def postflight_validate_combined(combined_path, meshes_root=None, *,
-                                 master_data_dirs=None) -> dict:
+                                 master_data_dirs=None,
+                                 mesh_resolves=None) -> dict:
     """Re-validate the FINAL merged Combined ESP (and any ESL split pieces) AFTER
     the merge + winner-rebase + alt-texture reconcile + hands-slot fix have run.
 
@@ -2194,7 +2261,8 @@ def postflight_validate_combined(combined_path, meshes_root=None, *,
 
     Returns {"ctd": [(piece, warn)], "soft": [(piece, warn)], "pieces": [name,...]}.
     CTD = load-breaking (caller should fail the build); soft = invisible/cosmetic
-    (warn only). Globs `<stem>*.esp` so ESL split pieces are all covered."""
+    (warn only). Globs `<stem>*.esp` so ESL split pieces are all covered.
+    `mesh_resolves`: as in `validate_patch` (#coverage-nude-skin)."""
     combined_path = Path(combined_path)
     pieces = sorted(combined_path.parent.glob(combined_path.stem + "*.esp"))
     if combined_path.is_file() and combined_path not in pieces:
@@ -2204,7 +2272,8 @@ def postflight_validate_combined(combined_path, meshes_root=None, *,
     for piece in pieces:
         try:
             warns = validate_patch(piece, meshes_root,
-                                   master_data_dirs=master_data_dirs)
+                                   master_data_dirs=master_data_dirs,
+                                   mesh_resolves=mesh_resolves)
         except Exception as e:
             soft.append((piece.name, f"postflight-load-error: {e!r}"))
             continue
@@ -2219,7 +2288,9 @@ def validate_patch(esp_path: str | Path,
                    meshes_root: str | Path | None = None,
                    *,
                    check_nifs: bool = True,
-                   master_data_dirs: list[Path] | None = None) -> list[str]:
+                   master_data_dirs: list[Path] | None = None,
+                   mesh_resolves: "callable[[str], bool] | None" = None,
+                   ) -> list[str]:
     """Walk a generated patch ESP and return a list of warning strings
     for structural problems. Empty list = clean.
 
@@ -2253,6 +2324,12 @@ def validate_patch(esp_path: str | Path,
       esp_path: the patch ESP to validate.
       meshes_root: optional path to the mod's `meshes/` directory for
         NIF-existence checking. Skipped if the directory can't be found.
+      mesh_resolves: for a `!UBE\\` path NOT under `meshes_root`, does the game
+        load it from another mod? The coverage step points a slot outside our
+        output on purpose in two cases -- the UBE body's own hands/feet
+        (#coverage-nude-skin) and a hand-made UBE twin (#coverage-ube-twin) --
+        and only after checking that it resolves; such a path is not missing.
+        None = only our own output counts, as before.
     """
     warnings: list[str] = []
     esp_path = Path(esp_path)
@@ -2453,6 +2530,11 @@ def validate_patch(esp_path: str | Path,
                         continue
                     disk = meshes_root / path.replace("\\", "/")
                     if not disk.is_file():
+                        # A path the coverage step aimed at another mod's mesh
+                        # (UBE body part, hand-made twin) loads from there: no
+                        # garbage model string, so no crash. #coverage-nude-skin
+                        if mesh_resolves is not None and mesh_resolves(path):
+                            continue
                         missing += 1
                         if len(missing_examples) < 5:
                             missing_examples.append(
@@ -2876,6 +2958,75 @@ def _is_nude_skin_model(path: str) -> bool:
     ))
 
 
+# #coverage-nude-skin: the UBE body's own hands and feet, as UBE_AllRace's
+# 00UBE_NakedHands / 00UBE_NakedFeet name them and the NIF-level extremity
+# injector (`_inject_ube_extremity_replacement`) reads them; `{}` is the weight
+# suffix. Keyed by the weight-stripped CBBE basename, EXACT: a per-race variant
+# (FemaleHandsKhajiit) is not a UBE part.
+_UBE_BODY_PART_MESH = {
+    "femalehands": "!UBE\\Hands\\femalehands_tangent{}.nif",
+    "femalefeet": "!UBE\\Feet\\femalefeet_tangent{}.nif",
+}
+_NUDE_SKIN_DIR = "actors\\character\\character assets\\"
+
+
+def _nude_skin_parts(model_path: str) -> "tuple[str, str] | None":
+    """(weight-stripped basename, weight suffix) of a mesh under the character
+    assets skin folder, else None. The suffix defaults to `_1`, as
+    `nif_convert_bodyrefs.weight_suffix_of` does for a path with neither."""
+    p = (model_path or "").replace("/", "\\").lstrip("\\").lower()
+    if p.startswith("meshes\\"):
+        p = p[len("meshes\\"):]
+    if not p.startswith(_NUDE_SKIN_DIR) or not p.endswith(".nif"):
+        return None
+    base = p.rsplit("\\", 1)[-1][:-4]
+    if base.endswith(("_0", "_1")):
+        return base[:-2], base[-2:]
+    return base, "_1"
+
+
+def ube_body_part_for(model_path: str) -> "str | None":
+    r"""#coverage-nude-skin: the UBE body's own hand or foot mesh for a CBBE NUDE
+    hand/foot path, keeping its `_0`/`_1` weight -- or None when the path is not
+    one. The path test is the folder AND the basename: a basename test alone
+    also catches real armour named after the body (a pair of pants shipped as
+    `Armor\...\femalebody_1.nif`)."""
+    parts = _nude_skin_parts(model_path)
+    if parts is None:
+        return None
+    tmpl = _UBE_BODY_PART_MESH.get(parts[0])
+    return tmpl.format(parts[1]) if tmpl else None
+
+
+def is_ube_body_part_path(path: str) -> bool:
+    r"""True for exactly the UBE body-part paths `ube_body_part_for` returns --
+    what the post-merge validator may resolve outside our output."""
+    p = (path or "").replace("/", "\\").lower()
+    return p in {t.format(s).lower() for t in _UBE_BODY_PART_MESH.values()
+                 for s in ("_0", "_1")}
+
+
+def _is_nude_torso_model(model_path: str) -> bool:
+    """A nude body torso under the character assets skin folder (any race's
+    `femalebody...`). An armour listing one is a race SKIN, not an item."""
+    parts = _nude_skin_parts(model_path)
+    return parts is not None and parts[0].startswith("femalebody")
+
+
+def _redirect_mod3(payload: bytes, new_path: str) -> bytes:
+    """Point an armature's MOD3 at `new_path` and drop its MO3T: the texture
+    hash belongs to the mesh it replaced. #coverage-nude-skin"""
+    out = b""
+    for sig, data in esp.iter_subrecords(payload):
+        if sig == b"MOD3":
+            out += esp.encode_subrecord(b"MOD3", esp.encode_zstring(new_path))
+        elif sig == b"MO3T":
+            continue
+        else:
+            out += esp.encode_subrecord(sig, data)
+    return out
+
+
 # Subrecords stripped when minting a UBE ARMA from a vanilla master body ARMA:
 # alt-texture TXST refs + texture hashes (stale master-space FormIDs) + the
 # footstep-sound FormID. Same set the per-mod master-scan uses.
@@ -3079,6 +3230,37 @@ def _converted_model_exists(model_path: str, crp: "set[str]") -> bool:
     return model_path.replace("\\", "/").lstrip("/").lower() in crp
 
 
+def _ube_twin_slots(payload: bytes, crp: "set[str]", ube_twin_exists) -> list:
+    r"""#coverage-ube-twin: the model slots of a SOURCE armature that the rebuild
+    points at a hand-made `!UBE\` mesh another mod ships -- no converted twin in
+    our output, one loose in a third-party mod. Read from the source, so a path
+    that already starts `!UBE\` is never mistaken for one. Each is
+    {"slot", "path", "mod"}; `ube_twin_exists` returns the supplying mod."""
+    out = []
+    for sig, d in esp.iter_subrecords(payload):
+        if sig not in ARMA_MODEL_SIGS:
+            continue
+        p = d.rstrip(b"\x00").decode("utf-8", "ignore")
+        if not p or _converted_model_exists(p, crp):
+            continue
+        mod = ube_twin_exists(p)
+        if mod:
+            out.append({"slot": sig.decode(), "path": "!UBE\\" + p,
+                        "mod": mod if isinstance(mod, str) else ""})
+    return out
+
+
+def _outside_paths_predicate(paths) -> "callable[[str], bool] | None":
+    r"""The piece validator's `mesh_resolves` for the `!UBE\` paths a coverage
+    pass pointed OUTSIDE our output after checking they resolve (a UBE body
+    part, a hand-made twin). None when there are none -- the validator then
+    behaves exactly as before."""
+    known = frozenset(p.replace("/", "\\").lower() for p in paths if p)
+    if not known:
+        return None
+    return lambda p: (p or "").replace("/", "\\").lower() in known
+
+
 def _chunk_targets_for_esl(targets, mint_rec, cap: int) -> "list[list]":
     """Group coverage targets into chunks, each minting <= `cap` DISTINCT armatures.
 
@@ -3126,6 +3308,7 @@ def _emit_coverage_pieces(
     master_data_dirs=None,
     emit_sidecar: bool = False,
     cap: int = ESL_MAX_OWN_RECORDS,
+    mesh_resolves: "callable[[str], bool] | None" = None,
 ) -> dict:
     """Write a coverage patch as ONE OR MORE ESL-sized pieces.
 
@@ -3214,7 +3397,8 @@ def _emit_coverage_pieces(
         if preserve_textures:
             resort_masters(piece, master_data_dirs=master_data_dirs)
         piece.save(piece_path)
-        warnings.extend(validate_patch(piece_path, master_data_dirs=master_data_dirs))
+        warnings.extend(validate_patch(piece_path, master_data_dirs=master_data_dirs,
+                                       mesh_resolves=mesh_resolves))
         pieces.append(piece_name)
         masters_count = max(masters_count, len(piece.header.masters))
 
@@ -3272,6 +3456,7 @@ def generate_modded_nonbody_ube_coverage_patch(
     preserve_textures: bool = False,
     withheld_armo_abs: "set[tuple[str, int]] | None" = None,
     female_mesh_exists: "callable[[str], bool] | None" = None,
+    ube_twin_exists: "callable[[str], str | None] | None" = None,
     author: str = "cbbe-to-ube modded non-body UBE coverage",
     description: str = "UBE race coverage for mod-defined non-body armor",
 ) -> dict:
@@ -3289,14 +3474,20 @@ def generate_modded_nonbody_ube_coverage_patch(
 
     `withheld_armo_abs` (#exclude-owned-coverage): ARMOs to leave alone although
     they pass every filter -- armour the user excluded. Tested last, so the
-    `withheld` stat counts exactly the armours this left without our armature."""
+    `withheld` stat counts exactly the armours this left without our armature.
+
+    `ube_twin_exists` (#coverage-ube-twin, opt-in): the third-party mod that
+    ships a loose `!UBE\\<path>` for a model we did not convert, else None. A
+    minted slot points there instead of at the source mesh."""
     out_path = Path(output_esp_path)
     exclude = {n.lower() for n in (exclude_names or set())}
     DEFAULT_RACE = ("skyrim.esm", _DEFAULT_RACE_LOW24)
     _female_guard = _coverage_female_guard()
+    _twin = _coverage_ube_twin() and ube_twin_exists is not None
     withheld: list = []        # (armo_abs, edid) left alone for --exclude-mods
     female_kept: list = []     # female slots that kept their own mesh (guard)
     female_dead: list = []     # dead female paths: the male mesh stays (guard)
+    twin_slots: list = []      # slots pointed at a hand-made UBE twin (#coverage-ube-twin)
 
     # ---- Pass 1: load-order winners for ARMA + ARMO (last wins) ----
     arma_win: dict = {}   # abs -> (payload, masters, plugin, rnam_abs, is_ube)
@@ -3421,6 +3612,12 @@ def generate_modded_nonbody_ube_coverage_patch(
     def _conv_exists(model_path: str) -> bool:
         return _converted_model_exists(model_path, crp)
 
+    def _ube_exists(model_path: str) -> bool:
+        # What a minted slot may point at: our converted mesh or, opted in, a
+        # hand-made UBE twin another mod ships. #coverage-ube-twin
+        return _conv_exists(model_path) or (
+            _twin and bool(model_path) and bool(ube_twin_exists(model_path)))
+
     new_arma_records: list[esp.Record] = []
     _mint_rec: dict = {}   # arma_abs -> minted Record (for post-prune sidecar fids)
     next_id = ESL_OWN_FORMID_MIN
@@ -3448,7 +3645,7 @@ def generate_modded_nonbody_ube_coverage_patch(
                     new_primary_rnam=ube_primary_patch,
                     new_additional_race_fids=ube_races_patch,
                     alt_texture_fid_remap=_remap,                # MO?S -> patch space
-                    converted_nif_exists=_conv_exists,
+                    converted_nif_exists=_ube_exists,
                     keep_named_female=_female_guard, declined_log=_declined,
                     female_mesh_exists=female_mesh_exists,
                 )
@@ -3465,13 +3662,16 @@ def generate_modded_nonbody_ube_coverage_patch(
                 stripped,
                 new_primary_rnam=ube_primary_patch,
                 new_additional_race_fids=ube_races_patch,
-                converted_nif_exists=_conv_exists,  # redirect to !UBE\ where converted
+                converted_nif_exists=_ube_exists,  # redirect to !UBE\ where converted
                 keep_named_female=_female_guard, declined_log=_declined,
                 female_mesh_exists=female_mesh_exists,
             )
         for d in _declined:
             (female_dead if "dead" in d else female_kept).append(
                 {"arma": f"{arma_abs[0]}|{arma_abs[1]:X}", **d})
+        if _twin:
+            for d in _ube_twin_slots(payload, crp, ube_twin_exists):
+                twin_slots.append({"arma": f"{arma_abs[0]}|{arma_abs[1]:X}", **d})
         new_fid = (own_byte << 24) | next_id
         next_id += 1
         new_edid = "UBE_MNB_{:X}".format(arma_abs[1])
@@ -3493,7 +3693,9 @@ def generate_modded_nonbody_ube_coverage_patch(
         "; armature lacked UBE races (overhauls re-armature vanilla gear).",
         ],
         preserve_textures=preserve_textures, master_data_dirs=master_data_dirs,
-        emit_sidecar=emit_sidecar)
+        emit_sidecar=emit_sidecar,
+        # A twin path is outside our output but was checked to exist.
+        mesh_resolves=_outside_paths_predicate(d["path"] for d in twin_slots))
     ini_lines = _res["ini_lines"]
     warnings = _res["validation_warnings"]
 
@@ -3513,6 +3715,7 @@ def generate_modded_nonbody_ube_coverage_patch(
         "withheld": withheld,
         "female_kept": female_kept,
         "female_dead_male": female_dead,
+        "ube_twin": twin_slots,
     }
 
 
@@ -3531,6 +3734,8 @@ def generate_modded_body_ube_coverage_patch(
     emit_sidecar: bool = False,
     withheld_armo_abs: "set[tuple[str, int]] | None" = None,
     female_mesh_exists: "callable[[str], bool] | None" = None,
+    mesh_exists: "callable[[str], bool] | None" = None,
+    ube_twin_exists: "callable[[str], str | None] | None" = None,
     author: str = "cbbe-to-ube modded body UBE coverage",
     description: str = "UBE race coverage for mod-defined body armor variants",
 ) -> dict:
@@ -3551,36 +3756,96 @@ def generate_modded_body_ube_coverage_patch(
     actual !UBE conversion are minted (unconverted CBBE mesh on UBE would clip).
     Returns stats.
 
-    `withheld_armo_abs`: as in the non-body pass (#exclude-owned-coverage)."""
+    `withheld_armo_abs`: as in the non-body pass (#exclude-owned-coverage).
+
+    `mesh_exists`: does a mesh exist anywhere the game reads it (loose, MO2's
+    overwrite, any archive)? #coverage-world-mesh asks it whether an unconverted
+    female path is dead (None = assume it exists); #coverage-nude-skin asks it
+    whether the UBE body's own hand/foot resolves (None = it cannot be shown to,
+    so the part is not minted). Unset, it is `female_mesh_exists` -- the same
+    lookup, so a caller passing only that sees one answer from every test.
+
+    `ube_twin_exists`: as in the non-body pass (#coverage-ube-twin, opt-in). It
+    moves where a minted slot points, and so what the world-mesh and female
+    guard tests see, but never admits an armature on its own."""
     out_path = Path(output_esp_path)
     exclude = {n.lower() for n in (exclude_names or set())}
     DEFAULT_RACE = ("skyrim.esm", _DEFAULT_RACE_LOW24)
     crp = converted_rel_paths or set()
     _female_guard = _coverage_female_guard()
+    _world_mesh = _coverage_world_mesh()
+    _nude_skin = _coverage_nude_skin()
+    _twin = _coverage_ube_twin() and ube_twin_exists is not None
+    if mesh_exists is None:
+        mesh_exists = female_mesh_exists
     withheld: list = []        # (armo_abs, edid) left alone for --exclude-mods
     female_kept: list = []     # female slots that kept their own mesh (guard)
     female_dead: list = []     # dead female paths: the male mesh stays (guard)
     guard_skipped: list = []   # body armatures not minted: only the male was converted
     guard_dropped: list = []   # ARMOs left with nothing to mint by that
+    world_skipped: list = []   # body armatures not minted: world mesh unconverted
+    world_dropped: list = []   # ARMOs left with nothing to mint by that
+    nude_redirect: dict = {}   # arma_abs -> the UBE body part its MOD3 draws
+    nude_skipped: list = []    # (arma_abs, why) nude parts not minted: skin/unresolved
+    nude_dropped: list = []    # (armo_abs, edid, why) ARMOs left with nothing to mint by that
+    twin_slots: list = []      # slots pointed at a hand-made UBE twin
 
     def _conv_exists(model_path: str) -> bool:
         return _converted_model_exists(model_path, crp)
+
+    def _ube_exists(model_path: str) -> bool:
+        # What a minted slot may point at: our converted mesh or, opted in, a
+        # hand-made UBE twin another mod ships. #coverage-ube-twin
+        return _conv_exists(model_path) or (
+            _twin and bool(model_path) and bool(ube_twin_exists(model_path)))
 
     def _female_world_needs_male(payload: bytes) -> bool:
         """Would `rebuild_arma_payload` fill this armature's female WORLD slot
         from its converted male mesh although the female mesh exists? MOD3 names
         a mesh that was not converted, MOD2 (before it in the record) was, and
-        the MOD3 mesh exists somewhere. Same test, same order."""
+        the MOD3 mesh exists somewhere. Same test, same order -- and the same
+        idea of "converted" the rebuild is handed (a twin counts)."""
         conv2 = False
         for sig, d in esp.iter_subrecords(payload):
             if sig == b"MOD2":
-                conv2 = _conv_exists(d.rstrip(b"\x00").decode("utf-8", "ignore"))
+                conv2 = _ube_exists(d.rstrip(b"\x00").decode("utf-8", "ignore"))
             elif sig == b"MOD3":
                 p = d.rstrip(b"\x00").decode("utf-8", "ignore")
-                return (bool(p) and not _conv_exists(p) and conv2
+                return (bool(p) and not _ube_exists(p) and conv2
                         and (female_mesh_exists is None or female_mesh_exists(
                             d.rstrip(b"\x00").decode("cp1252", "replace"))))
         return False
+
+    def _world_mesh_converted(payload: bytes) -> bool:
+        """#coverage-world-mesh: is the female WORLD mesh a minted body armature
+        would draw a converted one? MOD3 converted; or MOD3 absent, empty or
+        dead with MOD2 (before it in the record) converted -- the rebuild then
+        draws the male mesh, which is what the engine draws for a female. A
+        converted first-person mesh alone does not count."""
+        conv2 = False
+        for sig, d in esp.iter_subrecords(payload):
+            if sig == b"MOD2":
+                conv2 = _ube_exists(d.rstrip(b"\x00").decode("utf-8", "ignore"))
+            elif sig == b"MOD3":
+                p = d.rstrip(b"\x00").decode("utf-8", "ignore")
+                if p and _ube_exists(p):
+                    return True
+                if not (conv2 and p):
+                    return conv2       # empty MOD3: the male fills it
+                # Named, unconverted: admitted only when it exists nowhere
+                # (None = cannot tell, so it is taken to exist).
+                return mesh_exists is not None and not mesh_exists(
+                    d.rstrip(b"\x00").decode("cp1252", "replace"))
+        # No MOD3: the rebuild synthesises it from the converted MOD2, wherever
+        # MOD2 sits in the record.
+        return any(_ube_exists(d.rstrip(b"\x00").decode("utf-8", "ignore"))
+                   for sig, d in esp.iter_subrecords(payload) if sig == b"MOD2")
+
+    def _mod3(payload: bytes) -> str:
+        for sig, d in esp.iter_subrecords(payload):
+            if sig == b"MOD3":
+                return d.rstrip(b"\x00").decode("cp1252", "replace")
+        return ""
 
     def _arma_models(payload: bytes) -> "list[str]":
         return [d.rstrip(b"\x00").decode("utf-8", "ignore")
@@ -3737,6 +4002,57 @@ def generate_modded_body_ube_coverage_patch(
                 if not to_mint:
                     guard_dropped.append((armo_abs, edid))
                     continue
+        # #coverage-world-mesh: a TORSO armature is admitted above when ANY of its
+        # models was converted -- a first-person mesh alone let 87 through (live),
+        # each drawing its unconverted CBBE world mesh on the UBE body. It must draw a
+        # converted female world mesh (or the male one where the female is
+        # absent or dead). Same per-armature test as the guard above; after it,
+        # so the guard's own count is unchanged.
+        if _world_mesh and _is_body and to_mint:
+            _unworld = [x for x in to_mint
+                        if ((_arma_bod2_slots(arma_win[x][0]) or slots)
+                            & _BIPED_SLOT_BODY_BIT)
+                        and not _world_mesh_converted(arma_win[x][0])]
+            if _unworld:
+                to_mint = [x for x in to_mint if x not in _unworld]
+                for x in _unworld:
+                    if x not in world_skipped:
+                        world_skipped.append(x)
+                if not to_mint:
+                    world_dropped.append((armo_abs, edid))
+                    continue
+        # #coverage-nude-skin: a hand/foot armature drawing the CBBE NUDE hands or
+        # feet (an NPC costume's "boots" that are bare feet) draws the UBE body's
+        # own part, or is not minted. On a race skin -- an armour that also lists
+        # a nude torso -- it is not minted: a UBE actor wears UBE's own skin.
+        if _nude_skin and to_mint:
+            _parts = {x: ube_body_part_for(_mod3(arma_win[x][0])) for x in to_mint
+                      if (_arma_bod2_slots(arma_win[x][0]) or slots)
+                      & _BIPED_SLOT_HANDS_FEET_BITS}
+            _parts = {x: t for x, t in _parts.items() if t}
+            if _parts:
+                _skin = any(_is_nude_torso_model(_mod3(v[0]))
+                            for _x, v in winning)
+                _drop = []
+                for x, t in _parts.items():
+                    why = ("skin" if _skin else
+                           None if (mesh_exists is not None and mesh_exists(t))
+                           else "unresolved")
+                    if why is None:
+                        nude_redirect[x] = t
+                    else:
+                        _drop.append(x)
+                        if (x, why) not in nude_skipped:
+                            nude_skipped.append((x, why))
+                if _drop:
+                    to_mint = [x for x in to_mint if x not in _drop]
+                    if not to_mint:
+                        # One armour, one reason: `_skin` decides every part of
+                        # it, and a part that is not skin is dropped only when
+                        # unresolved. The report counts armours per reason.
+                        nude_dropped.append((armo_abs, edid,
+                                             "skin" if _skin else "unresolved"))
+                        continue
         targets.append((armo_abs, plugin_case.get(armo_abs[0], armo_abs[0]),
                         to_mint))
         for x in to_mint:
@@ -3849,7 +4165,7 @@ def generate_modded_body_ube_coverage_patch(
                     new_primary_rnam=_prim,
                     new_additional_race_fids=_addl,
                     alt_texture_fid_remap=_remap,             # MO?S -> patch space
-                    converted_nif_exists=_conv_exists,
+                    converted_nif_exists=_ube_exists,
                     keep_named_female=_female_guard, declined_log=_declined,
                     female_mesh_exists=female_mesh_exists,
                 )
@@ -3866,13 +4182,21 @@ def generate_modded_body_ube_coverage_patch(
                 stripped,
                 new_primary_rnam=_prim,
                 new_additional_race_fids=_addl,
-                converted_nif_exists=_conv_exists,   # redirect model -> !UBE\ where converted
+                converted_nif_exists=_ube_exists,   # redirect model -> !UBE\ where converted
                 keep_named_female=_female_guard, declined_log=_declined,
                 female_mesh_exists=female_mesh_exists,
             )
         for d in _declined:
             (female_dead if "dead" in d else female_kept).append(
                 {"arma": f"{arma_abs[0]}|{arma_abs[1]:X}", **d})
+        _part = nude_redirect.get(arma_abs)
+        if _part:
+            # #coverage-nude-skin: the UBE body's own hand/foot, checked to resolve.
+            minted_payload = _redirect_mod3(minted_payload, _part)
+        if _twin:
+            for d in _ube_twin_slots(payload, crp, ube_twin_exists):
+                if not (_part and d["slot"] == "MOD3"):
+                    twin_slots.append({"arma": f"{arma_abs[0]}|{arma_abs[1]:X}", **d})
         new_fid = (own_byte << 24) | next_id
         next_id += 1
         new_edid = "UBE_MBD_{:X}".format(arma_abs[1])
@@ -3895,7 +4219,11 @@ def generate_modded_body_ube_coverage_patch(
         "; (e.g. an overhaul's mod-defined armor variant reusing a vanilla armature).",
         ],
         preserve_textures=preserve_textures, master_data_dirs=master_data_dirs,
-        emit_sidecar=emit_sidecar)
+        emit_sidecar=emit_sidecar,
+        # UBE body parts and twins are outside our output, checked to resolve.
+        mesh_resolves=_outside_paths_predicate(
+            [nude_redirect[a] for a in mint_set if a in nude_redirect]
+            + [d["path"] for d in twin_slots]))
     ini_lines = _res["ini_lines"]
     warnings = _res["validation_warnings"]
 
@@ -3917,6 +4245,17 @@ def generate_modded_body_ube_coverage_patch(
         "female_dead_male": female_dead,
         "female_guard_skipped": [f"{a[0]}|{a[1]:X}" for a in guard_skipped],
         "female_guard_dropped": guard_dropped,
+        "world_mesh_skipped": [f"{a[0]}|{a[1]:X}" for a in world_skipped],
+        "world_mesh_dropped": world_dropped,
+        "nude_redirected": [{"arma": f"{a[0]}|{a[1]:X}", "to": nude_redirect[a]}
+                            for a in mint_set if a in nude_redirect],
+        # Only armatures NO armour minted: one skipped for a race skin is still
+        # minted when a costume's boots list it too (then it is redirected, the
+        # line above), so it was not left out.
+        "nude_skipped": [{"arma": f"{a[0]}|{a[1]:X}", "why": why}
+                         for a, why in nude_skipped if a not in mint_set],
+        "nude_dropped": nude_dropped,
+        "ube_twin": twin_slots,
     }
 
 

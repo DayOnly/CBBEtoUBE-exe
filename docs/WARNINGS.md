@@ -6,7 +6,7 @@ current. A `!!` line is a problem; a `NOTE:` line is information. Each entry
 gives the line as it appears in the run log (`…` stands for the value printed
 at run time), what it means for the run, and what to do next.
 
-**71** problem warnings and **3** notes.
+**73** problem warnings and **3** notes.
 
 ## src/auto_convert.py
 
@@ -50,6 +50,12 @@ at run time), what it means for the run, and what to do next.
   - fix: convert the mod that ships the female mesh
 - `NOTE: [unified] … female model slot(s) name a mesh that exists nowhere, so they keep the converted MALE mesh`
   - means: the piece is drawn with the male mesh on UBE; with its own path it would not be drawn at all
+- `!! [unified] … body armature(s) were not minted because their female world mesh was not converted (… armour(s) left without one)`
+  - means: those body pieces are not drawn on UBE-race actors, rather than draw their unconverted CBBE mesh on the UBE body
+  - fix: convert the mod that ships the female mesh
+- `!! [unified] … hand/foot armature(s) draw the nude CBBE hands or feet, and the UBE body's own hands/feet were not found, so they were not minted (… armour(s) left without one)`
+  - means: those pieces are not drawn on UBE-race actors
+  - fix: build the UBE body's hands and feet in BodySlide
 - `!! [unified] could not scan for existing UBE patches (…)`
   - means: not excluding any
 - `!! [unified] … excluded mod name(s) match no mod folder: …`

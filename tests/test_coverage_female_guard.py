@@ -197,7 +197,10 @@ def test_a_body_piece_with_only_its_male_mesh_converted_is_not_minted(tmp_path):
 
 
 def test_the_off_switch_mints_the_male_body_again(tmp_path, monkeypatch):
+    """#coverage-world-mesh (09-24) also refuses this torso -- its female world
+    mesh exists and was not converted -- so the old mint needs both switches."""
     monkeypatch.setenv(OFF, "1")
+    monkeypatch.setenv("CBBE2UBE_NO_COVERAGE_WORLD_MESH", "1")
     st, out = _body(tmp_path, BODY, {b"MOD2": r"armor\m\cuirass_1.nif",
                                      b"MOD3": r"follower\f\vest_1.nif"},
                     {"armor/m/cuirass_1.nif"})
