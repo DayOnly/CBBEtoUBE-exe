@@ -7,13 +7,14 @@
 A piece whose armature was re-made to list every race -- the human and elf
 races added to an Argonian or a custom race -- drew on a vanilla human woman but
 on nothing of a UBE race: the coverage step only extended armatures made for
-the human default race. Such a piece is now drawn on UBE, with its own mesh, for
-the UBE version of each race its armature names; a piece made only for Wood
+the human default race. Such a piece is now drawn on UBE, with its own mesh (or
+a hand-made UBE version another mod ships), for the UBE version of each race its
+armature names; a piece made only for Wood
 Elves stays Wood-Elf-only on UBE. It is not done for armour that is not playable
 unless an NPC wears it, for a race's or an NPC's skin, or for a glow or other
 effect. Measured on the reported modlist: 281 armours gain a UBE armature --
 275 rings, amulets, circlets, shields, cloaks and other accessories, and 6 boots
-and gauntlets -- and nothing else changes. Body pieces made this way still are
+and gauntlets -- and no other armour's coverage changes. Body pieces made this way still are
 not drawn on UBE actors: their meshes are not converted, and an unconverted
 body would clip. `CBBE2UBE_NO_COVERAGE_HUMAN_RACE_LIST=1` (set to 1) turns it
 off.

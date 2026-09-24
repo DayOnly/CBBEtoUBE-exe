@@ -423,3 +423,93 @@ def test_the_batch_hands_the_worn_set_to_both_passes():
     src = inspect.getsource(ac._emit_unified_coverage_patches)
     assert "_worn = (_batch_npc_worn_armos()" in src
     assert src.count("npc_worn_armo_abs=_worn)") == 2
+
+
+# ------------------------------------------------ review follow-ups (09-24)
+
+def _emit_worn(tmp_path, monkeypatch):
+    """Drive the real coverage step with both passes stubbed; return the worn
+    set each pass was handed and how often the batch set was built."""
+    (tmp_path / "mods" / "A Mod").mkdir(parents=True)
+    fol = _save(tmp_path / "mods" / "A Mod" / "A.esp", ["Skyrim.esm"], [])
+    out = tmp_path / "out"
+    (out / "meshes" / "!UBE").mkdir(parents=True)
+    (out / "meshes" / "!UBE" / "x_1.nif").write_bytes(b"x")
+    patches = out / "_unmerged_patches"
+    patches.mkdir()
+    monkeypatch.setattr(ac.paths, "discover_layout", lambda *a, **k: None)
+    monkeypatch.setattr(ac.paths, "mods_root", lambda: tmp_path / "mods")
+    monkeypatch.setattr(ac.paths, "enabled_mods", lambda lay: None)
+    monkeypatch.setattr(ac.paths, "active_plugins_ordered", lambda lay: ["A.esp"])
+    monkeypatch.setattr(ac.paths, "plugin_file_index", lambda lay: {"a.esp": str(fol)})
+    monkeypatch.setattr(ac, "_third_party_ube_covered_armos", lambda *a, **k: set())
+    monkeypatch.setattr(ac, "_mesh_exists_anywhere", lambda output: None)
+    monkeypatch.setattr(ac, "_third_party_ube_twin_lookup", lambda *a, **k: None)
+    worn = frozenset({("a.esp", 0x801)})
+    built = []
+    monkeypatch.setattr(ac, "_batch_npc_worn_armos",
+                        lambda: built.append(1) or worn)
+    seen = {}
+
+    def _fake(name):
+        def run(*a, **k):
+            seen[name] = k.get("npc_worn_armo_abs")
+            return {"armo_targets": 1, "minted_armas": 1}
+        return run
+    monkeypatch.setattr(ac.ube_patcher, "generate_modded_nonbody_ube_coverage_patch",
+                        _fake("nb"))
+    monkeypatch.setattr(ac.ube_patcher, "generate_modded_body_ube_coverage_patch",
+                        _fake("bd"))
+    ac._emit_unified_coverage_patches(out, patches, [], "CBBE_to_UBE_Combined.esp")
+    return seen, built, worn
+
+
+def test_both_passes_get_the_same_worn_set_when_on(tmp_path, monkeypatch):
+    """Behavioural: a regression that never builds the set would silently stop
+    drawing the worn non-playable armour, and switch-off parity would not see it."""
+    seen, built, worn = _emit_worn(tmp_path, monkeypatch)
+    assert seen == {"nb": worn, "bd": worn} and built == [1]
+
+
+def test_the_worn_set_is_not_built_when_switched_off(tmp_path, monkeypatch):
+    monkeypatch.setenv(OFF, "1")
+    seen, built, _worn = _emit_worn(tmp_path, monkeypatch)
+    assert seen == {"nb": None, "bd": None} and built == []
+
+
+@pytest.mark.parametrize("models,effect", [
+    ({b"MOD3": r"effects\glow.nif", b"MOD2": r"armor\ring_1.nif"}, True),
+    ({b"MOD3": r"armor\ring_1.nif", b"MOD2": r"effects\fxglow.nif"}, False),
+    ({b"MOD2": r"effects\fxglow.nif"}, True),
+], ids=["female-effect-male-normal", "female-normal-male-effect", "male-only-effect"])
+def test_the_female_world_mesh_decides_the_effect_test(models, effect):
+    """MOD3 is what a UBE woman draws; MOD2 counts only when MOD3 is absent."""
+    arma = _arma(0x01000800, AMULET, ARGONIAN, extra=HUMANS, models=models)
+    assert up._effect_world_mesh(arma.payload) is effect
+
+
+def test_a_human_primary_counts_toward_the_race_list():
+    """The live wraith neck piece: its only human race is its primary."""
+    arma = _arma(0x01000800, AMULET, NORD, extra=(KHAJIIT,))
+    races = up._arma_race_list(arma.payload, ["Skyrim.esm"], "Mod.esp")
+    assert ("skyrim.esm", NORD) in races
+    assert up._ube_races_for_race_list(races) == [UBE_NORD]
+
+
+def test_only_skyrim_races_are_mapped():
+    """A race Mod.esp defines with a vanilla low id is not a vanilla race."""
+    assert up._ube_races_for_race_list([("mod.esp", WOODELF)]) == []
+    assert up._ube_races_for_race_list([("skyrim.esm", WOODELF)]) == [UBE_WOODELF]
+
+
+def test_an_armature_that_already_names_a_ube_race_is_not_minted_again():
+    """Hardening: someone's UBE version is never duplicated by this rule."""
+    arma = _arma(0x01000800, AMULET, ARGONIAN, extra=HUMANS)
+    v = (arma.payload, ["Skyrim.esm"], "Mod.esp", ("skyrim.esm", ARGONIAN), True)
+    got = up._race_list_admits(("mod.esp", 0x801), 0, [(("mod.esp", 0x800), v)],
+                               worn=None, skins=set(), arma_ok=lambda v: True)
+    assert got == {}
+    v2 = v[:4] + (False,)
+    got2 = up._race_list_admits(("mod.esp", 0x801), 0, [(("mod.esp", 0x800), v2)],
+                                worn=None, skins=set(), arma_ok=lambda v: True)
+    assert list(got2) == [("mod.esp", 0x800)], "control: the same armature, not UBE"

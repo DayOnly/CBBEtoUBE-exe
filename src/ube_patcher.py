@@ -3374,7 +3374,9 @@ def _race_list_admits(armo_abs, aflags, winning, *, worn, skins,
         return {}
     out: dict = {}
     for x, v in winning:
-        if v[3] == _DEFAULT_RACE_ABS or not arma_ok(v):
+        # An armature that already names a UBE race is someone's UBE version:
+        # never mint a second one over it (review 2026-09-24).
+        if v[4] or v[3] == _DEFAULT_RACE_ABS or not arma_ok(v):
             continue
         if _effect_world_mesh(v[0]):
             continue
