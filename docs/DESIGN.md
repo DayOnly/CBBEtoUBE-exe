@@ -407,6 +407,30 @@ single pass runs. Three rules encode this:
    entries, 244 re-pointed) and so is the verdict line (122 moved / 179 kept).
    `CBBE2UBE_NO_ZEROED_PROBE_MEMO=1` probes every folder per question again.
 
+**A mesh index that cannot be built is said, never cached as empty**
+(`#vfs-index-fail-loud`, 2026-09-25). Source selection built the index above inside
+`except Exception: vfs = {}`, printed nothing, and cached `{}` for the convert step,
+which reused it ("reusing 0 located armour mesh path(s)"). Every rule above was then
+undone at once and in silence: a mod whose meshes are in another mod was dropped as
+"found nowhere", and every other source converted its own or an archive copy (the
+122 pieces rule 3 moves among them). One error was enough: `Path.rglob` let any error
+but a permission error escape from the middle of its walk, so one over-long path or
+dead junction in one mod aborted the index for every mod. Now:
+- `build_mesh_index` walks each mod's `meshes` folder with `os.walk(onerror=...)`
+  (`discovery._walk_nifs`, same files, same order, same paths as `rglob`): an
+  unreadable folder is skipped alone and handed back through `unreadable` as
+  (mod, error); both steps print one warning naming each such folder.
+- If the index still raises, selection caches `None`, not `{}`, so the convert step
+  builds its own; the warning names the failure, and the mods it could not search
+  are listed as "not searched for", not "found nowhere". The convert step's own
+  failure is a warning too, where it used to be a parenthesis.
+- The vanilla sweep's mesh-path read warns instead of `pass`.
+- Selection's warnings are kept in `_SELECTION_RUN_WARNINGS`; the convert step
+  records them after it clears the run's record, and counts them with its own in
+  the end-of-run tally. A selection that recorded one is not memoized, so the next
+  refresh or convert tries again.
+No switch: when the index builds -- every run seen -- the output is byte-identical.
+
 ### Which mods and pieces are sources at all (2026-09-24)
 
 The rules above pick a PROVIDER for a mesh the converter already plans. Four gates

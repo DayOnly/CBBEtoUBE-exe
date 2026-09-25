@@ -5074,14 +5074,22 @@ def _cmd_convert(args):
     # MO2-priority winner across all enabled mods so BodySlide-built / replacer /
     # patch meshes in OTHER mods are found and converted.
     mesh_vfs_index = None
+    # Problems locating meshes: selection's (printed there, recorded here, after
+    # the clear above) and this step's own. Counted with the run's warnings.
+    # #vfs-index-fail-loud
+    _mesh_index_warnings = 0
     try:
         _lay = paths.discover_layout()
         _enabled_ordered = paths.enabled_mods_ordered(_lay)
         _mr = paths.mods_root()
         # Reuse the index built during source selection (superset of selected sources).
-        # Falls back to building one when `convert` is invoked directly.
+        # Falls back to building one when `convert` is invoked directly, or when
+        # selection could not build it (None is cached then, never {}).
         if _mr is not None:
             mesh_vfs_index = _BATCH_MESH_INDEX.get(str(Path(_mr)).lower())
+            for _w in _SELECTION_RUN_WARNINGS.get(str(Path(_mr)).lower(), ()):
+                _record_failure(*_w, severity="warning")
+                _mesh_index_warnings += 1
         if mesh_vfs_index is not None:
             print(f"  VFS mesh index: reusing {len(mesh_vfs_index)} located "
                   "armour mesh path(s) from source selection "
@@ -5099,16 +5107,32 @@ def _cmd_convert(args):
                 except Exception:
                     pass
             if _target_keys:
+                _unreadable: "list[tuple[str, str]]" = []
                 mesh_vfs_index = discovery.build_mesh_index(
                     Path(_mr), _enabled_ordered,
                     target_keys=_target_keys,
-                    skip_mods={Path(output).name})
+                    skip_mods={Path(output).name},
+                    unreadable=_unreadable)
                 print(f"  VFS mesh index: located {len(mesh_vfs_index)} of "
                       f"{len(_target_keys)} referenced armour mesh path(s) "
                       f"across {len(_enabled_ordered)} enabled mods")
+                for _w in _mesh_index_unreadable_warnings(_unreadable):
+                    _record_failure(*_w, severity="warning")
+                    _mesh_index_warnings += 1
     except Exception as _e:
-        print(f"  (VFS mesh index unavailable -> source-local meshes only: "
-              f"{plain_error(_e)})")
+        # Said like any other run warning, and counted: each source now converts
+        # its own or an archive copy, not the mesh the game loads.
+        warn(f"could not locate armour meshes across the enabled mods "
+             f"({plain_error(_e)})",
+             consequence="each mod converts its own copy of a mesh (or the one in "
+                         "its archive), not a replacer's or BodySlide build's copy "
+                         "the game loads",
+             fix="look for an over-long path or a broken link in the mods folder, "
+                 "then run again")
+        _record_failure("armour mesh index failed", "convert step", "every source",
+                        f"{plain_error(_e)}; each mod converted its own copy of a "
+                        "mesh, not the one the game loads", severity="warning")
+        _mesh_index_warnings += 1
         mesh_vfs_index = None
 
     # BSA fallback: when an armour mesh isn't loose anywhere, extract it from
@@ -5342,6 +5366,8 @@ def _cmd_convert(args):
                         + int(_settings_malformed)
                         # recorded at the start AND counted here. #orphan-temps
                         + int(bool(_orphans_removed))
+                        # meshes not located: recorded above. #vfs-index-fail-loud
+                        + _mesh_index_warnings
                         # one per per-source patch left under its old name.
                         # #source-patch-rename
                         + _rename_failures)
@@ -8051,7 +8077,35 @@ def _nif_bytes_unfitted_skin(data: bytes) -> "bool | None":
 
 # Full-VFS mesh index built once during source selection; reused by the convert
 # step to avoid a second modlist walk. Keyed by lowercased mods_root.
-_BATCH_MESH_INDEX: "dict[str, dict]" = {}
+_BATCH_MESH_INDEX: "dict[str, dict | None]" = {}
+
+# Run warnings source selection found (the mesh index failed, a mod folder was
+# unreadable, the vanilla sweep's mesh keys could not be read), as
+# `_record_failure` arguments. Selection prints them where they happen; the
+# convert step clears the run's record first, so IT records them. Keyed by
+# lowercased mods_root; each uncached selection replaces its entry.
+# #vfs-index-fail-loud
+_SELECTION_RUN_WARNINGS: "dict[str, list[tuple[str, str, str, str]]]" = {}
+
+
+def _mesh_index_unreadable_warnings(
+        unreadable: "list[tuple[str, str]]") -> "list[tuple[str, str, str, str]]":
+    """Print ONE warning naming every mod folder the mesh index could not fully
+    read (`discovery.build_mesh_index`'s `unreadable`), and return one
+    `_record_failure` record per folder. Only the unreadable part of each was
+    skipped; every other mod was located as normal. #vfs-index-fail-loud"""
+    if not unreadable:
+        return []
+    warn(f"{len(unreadable)} mod folder(s) could not be fully read while "
+         "locating armour meshes",
+         consequence="a mesh in the unreadable part of each folder named below "
+                     "was not located; every other mod was located as normal",
+         fix="look for an over-long path or a broken link in each folder, then "
+             "run again")
+    for name, why in unreadable:
+        print(f"    - {name}: {why}")
+    return [("mod folder unreadable", name, "its meshes folder",
+             f"{why}; a mesh there was not located") for name, why in unreadable]
 
 # The lookup-only archive index source selection built to find mods whose
 # armour lives only in archives; the convert step adopts (and pops) its listing
@@ -8117,13 +8171,21 @@ def _find_armor_mod_dirs(mods_root: Path,
             _selection_winner_playable())
     _cached = _ARMOR_MOD_DIRS_CACHE.get(_key)
     if _cached is not None:
+        # Only a selection that found no problem is kept (below), so this one
+        # carries none. #vfs-index-fail-loud
+        if require_arma:
+            _SELECTION_RUN_WARNINGS[_key[0]] = []
         return list(_cached)
     _result = _find_armor_mod_dirs_uncached(
         mods_root, extra_exclude_names=extra_exclude_names,
         enabled_names=enabled_names, require_arma=require_arma,
         enabled_ordered=enabled_ordered, index_skip_mods=index_skip_mods,
         progress=progress)
-    _ARMOR_MOD_DIRS_CACHE[_key] = list(_result)
+    # A selection that could not read everything is not kept: the next refresh
+    # or convert tries again instead of reusing a list short of mods.
+    # #vfs-index-fail-loud
+    if not (require_arma and _SELECTION_RUN_WARNINGS.get(_key[0])):
+        _ARMOR_MOD_DIRS_CACHE[_key] = list(_result)
     return _result
 
 
@@ -8214,6 +8276,11 @@ def _find_armor_mod_dirs_uncached(mods_root: Path,
         candidates.sort(key=lambda c: c["armor_nifs"], reverse=True)
         return candidates
 
+    # This selection's run warnings, for the convert step to record.
+    # #vfs-index-fail-loud
+    _sel_warns: "list[tuple[str, str, str, str]]" = []
+    _SELECTION_RUN_WARNINGS[str(mods_root).lower()] = _sel_warns
+
     def _prog(text: str) -> None:
         if progress is None:
             return
@@ -8289,25 +8356,53 @@ def _find_armor_mod_dirs_uncached(mods_root: Path,
                         armo_winner_nonplayable=_winner_np,
                         npc_worn_armos=_npc_worn):
                     union_all.update((f"{b}_0.nif", f"{b}_1.nif", f"{b}.nif"))
-        except Exception:
-            pass
+        except Exception as _e:
+            # Said, not passed over: without these keys every vanilla piece
+            # converts from the game's archives. #vfs-index-fail-loud
+            _why = plain_error(_e)
+            warn(f"could not read which vanilla armour meshes to locate ({_why})",
+                 where="the game Data folder",
+                 consequence="vanilla armour converts from the game's archives this "
+                             "run, even where a mod replaces its mesh with a loose file",
+                 fix="check that the game Data folder and its plugins are readable, "
+                     "then run again")
+            _sel_warns.append(("vanilla mesh paths unread",
+                               "Vanilla sweep (base game + DLC)", "vanilla armour",
+                               f"{_why}; vanilla armour converted from the game's "
+                               "archives, even where a loose replacer ships its mesh"))
 
     # Build the VFS mesh index over ALL candidates so the convert step can reuse
     # it. Skip only the output mod, NOT body/BodySlide mods — those host most
     # armours' built female meshes and must be visible for mesh resolution.
     # Body-mod exclusion is a selection concern handled by `_name_ok`.
     _index_skip = {n.lower() for n in (index_skip_mods or set())}
-    vfs: "dict" = {}
+    vfs: "dict | None" = {}
+    _index_failed = ""
     if enabled_ordered and union_all:
         _prog(f"locating {len(union_all)} armour mesh path(s) across "
               f"{len(enabled_ordered)} enabled mods…")
+        _unreadable: "list[tuple[str, str]]" = []
         try:
             vfs = discovery.build_mesh_index(
                 mods_root, enabled_ordered, target_keys=union_all,
-                skip_mods=_index_skip)
-        except Exception:
-            vfs = {}
+                skip_mods=_index_skip, unreadable=_unreadable)
+        except Exception as _e:
+            # NOT an empty index: {} reads as "no mod ships these meshes", and
+            # the convert step reused it, so every source converted its own or
+            # an archive copy, not the mesh the game loads, in silence. None
+            # makes the convert step build its own. #vfs-index-fail-loud
+            vfs = None
+            _index_failed = plain_error(_e)
+            warn(f"could not locate armour meshes across the enabled mods "
+                 f"({_index_failed})",
+                 where=str(mods_root),
+                 consequence="a mod whose armour meshes are in another mod (a "
+                             "BodySlide build, a replacer, a patch) is not converted "
+                             "this run; the convert step tries again for the rest",
+                 fix="look for an over-long path or a broken link in the mods "
+                     "folder, then run again")
         _BATCH_MESH_INDEX[str(mods_root).lower()] = vfs
+        _sel_warns.extend(_mesh_index_unreadable_warnings(_unreadable))
 
     # #bsa-only-sources (2026-09-24): a mod whose armour meshes are in no loose
     # file anywhere may still ship them in an ARCHIVE, and the convert step
@@ -8336,21 +8431,37 @@ def _find_armor_mod_dirs_uncached(mods_root: Path,
         except Exception:
             _sel_bsa = None
     _found_nowhere: "list[str]" = []
+    _located = vfs or {}
     for mod_dir, armor_bases in pending_vfs:
         c = sum(1 for b in armor_bases
-                if any(f"{b}{suf}.nif" in vfs for suf in ("_1", "_0", "")))
+                if any(f"{b}{suf}.nif" in _located for suf in ("_1", "_0", "")))
         if c == 0 and _sel_bsa is not None:
             c = sum(1 for b in armor_bases
                     if any(_sel_bsa.contains(f"{b}{suf}.nif")
                            for suf in ("_1", "_0", "")))
         if c == 0:
-            if _bsa_only:
+            if _bsa_only or _index_failed:
                 _found_nowhere.append(mod_dir.name)
             continue  # armour meshes genuinely don't exist anywhere
         candidates.append({
             "name": mod_dir.name, "path": mod_dir, "armor_nifs": c,
             "esps": sum(1 for _ in mod_dir.rglob("*.esp"))})
-    if _found_nowhere:
+    if _index_failed:
+        # Not "found nowhere": the other mods' loose files were never searched.
+        # #vfs-index-fail-loud
+        _sel_warns.append((
+            "armour mesh index failed", "source selection", str(mods_root),
+            f"{_index_failed}; {len(_found_nowhere)} mod(s) whose armour meshes "
+            "are in another mod were not converted"
+            + (": " + ", ".join(_found_nowhere) if _found_nowhere else "")))
+        if _found_nowhere:
+            print(f"  armour meshes not searched for: {len(_found_nowhere)} mod(s) "
+                  "equip armour whose meshes are not in their own folder or an "
+                  "archive, and the other mods' loose files could not be searched "
+                  "(see the warning above), so they are not converted this run:")
+            for _unsearched in _found_nowhere:
+                print(f"    - {_unsearched}")
+    elif _found_nowhere:
         print(f"  armour meshes found nowhere: {len(_found_nowhere)} mod(s) equip "
               "armour whose meshes are in no enabled mod's loose files or "
               "archives, so they are not converted:")

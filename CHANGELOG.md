@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Fixed — a failed search for armour meshes is reported instead of hidden
+
+Before converting, the tool searches every enabled mod for the armour meshes the
+game actually loads (a BodySlide build, a replacer, a patch). If that search hit
+an error -- one folder with an over-long path or a broken link was enough -- the
+tool acted as if no mod had those meshes, said nothing, and converted each armour
+from its own copy instead of the one the game loads; armour whose meshes live in
+another mod was left out and listed as "found nowhere". Now an unreadable folder
+costs only its own meshes, the run names it in a warning, and a search that fails
+outright is a named warning in the end-of-run count and the failures list; the
+convert step then searches again rather than reusing the empty result. A failure
+to read which vanilla armour meshes to search for is a warning too. On a modlist
+where the search works, the output is unchanged.
+
 ### Fixed — a garment whose layers share one name keeps every layer
 
 Some garments are built from several layers the author gave the same name, for
