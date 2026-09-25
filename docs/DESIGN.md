@@ -1341,6 +1341,18 @@ snapshot and skips every source, and a coverage failure leaves the fallback merg
 empty. A full run regenerates the old-named set; the next run without the switch then
 deletes the old set wherever the renamed one exists.
 
+### The vanilla-coverage warning reads what ships (`#vanilla-links-delivered`)
+
+After the merge the run warns when a vanilla sweep ran and nothing vanilla got
+linked (`_vanilla_links_check`). It summed the sweep source's own patch links, but
+with the winner-scan coverage as the sole generator those per-source patches stay
+unmerged: a coverage change that dropped every vanilla armour still passed, and the
+run printed "vanilla coverage: 0" as a plain line. There the count of vanilla/DLC
+targets in the delivered INI now decides. The fallback merge ships the per-source
+patches and keeps the sweep source's own count (a mod's link to a vanilla record
+would mask a dead sweep in the delivered one). Output-neutral: only the warning
+changes, so it has no switch.
+
 ### What the coverage passes leave alone
 
 The winner scan is the sole generator over every armour in the load order, so it
@@ -1394,6 +1406,17 @@ follower (converted male Ebony boots on her UBE body):
   addons cover every biped slot of the armour. The ESP half keeps the `!UBE\` path
   test. `CBBE2UBE_NO_SKYPATCHER_PATCH_RECOGNITION=1` restores the flat, path-only
   read.
+  **The `!UBE\` addons pass the same test** (`#third-party-ini-slot-check`,
+  2026-09-25). A line adding a `!UBE\` armature excluded its targets outright, so a
+  cape-only UBE addon on a cuirass hid the cuirass, and an addon whose plugin is
+  unchecked in the load order hid its targets although SkyPatcher adds nothing
+  for it. Now an addon counts only when its plugin is in the active load order
+  (`active_plugins`, from `paths.active_plugins_ordered`; unknown = no check), and
+  a target is excluded only when the slots of all its counted UBE addons, of
+  either kind, cover every slot of the armour. An armour no enabled mod's plugin
+  defines (vanilla, not overridden) cannot be checked and stays covered, as in the
+  race test. Live: 11 lines, all loaded and slot-complete, 0 armours move.
+  `CBBE2UBE_NO_THIRD_PARTY_INI_SLOT_CHECK=1` excludes on any `!UBE\` addon again.
 - **What another mod's UBE armature on the winning record already draws**
   (`#coverage-third-party-drawn`, with `#root-plugin-index` and
   `#coverage-keep-better-first-person`, 2026-09-25). Both passes used to skip an

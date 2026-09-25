@@ -6,7 +6,7 @@ current. A `!!` line is a problem; a `NOTE:` line is information. Each entry
 gives the line as it appears in the run log (`…` stands for the value printed
 at run time), what it means for the run, and what to do next.
 
-**80** problem warnings and **6** notes.
+**81** problem warnings and **6** notes.
 
 ## src/auto_convert.py
 
@@ -146,6 +146,9 @@ at run time), what it means for the run, and what to do next.
 - `!! could not remove stale …: …`
   - means: an old SkyPatcher ini may still apply beside the new one
   - fix: delete it by hand
+- `!! the VANILLA SWEEP ran but the delivered coverage links 0 vanilla/DLC records`
+  - means: vanilla armor will be invisible on UBE actors
+  - fix: check the unified coverage step above for errors, or rerun just the sweep (Select mods -> 'vanilla')
 - `!! the VANILLA SWEEP ran but linked 0 records`
   - means: vanilla armor no mod overrides will be invisible on UBE actors
   - fix: check the VANILLA SWEEP pass above for errors, or rerun just the sweep (Select mods -> 'vanilla')

@@ -712,10 +712,11 @@ def _emit(tmp_path, monkeypatch, *, real_index=False):
     if not real_index:
         monkeypatch.setattr(ac.paths, "plugin_file_index",
                             lambda l: {"x ube patch.esp": theirs})
-    seen = {"covered": []}
+    seen = {"covered": [], "active": []}
 
     def _covered(*a, **k):
         seen["covered"].append(k.get("halves", ("ini", "esp")))
+        seen["active"].append(k.get("active_plugins"))  # #third-party-ini-slot-check
         return set()
     monkeypatch.setattr(ac, "_third_party_ube_covered_armos", _covered)
     monkeypatch.setattr(ac, "_mesh_exists_anywhere", lambda output: None)
