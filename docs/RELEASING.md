@@ -109,9 +109,14 @@ another) to convert the pieces in N worker processes. Each worker inherits the
 shell's environment and refuses to convert if its hash seed, BLAS thread caps or
 `CBBE2UBE_*` set differ from the parent's; `--jobs` with no pinned
 `PYTHONHASHSEED` is refused. The parent records and compares in piece order,
-so the baseline and the verdict are the sequential run's; a piece whose worker
-raised or died reads `FAIL  worker failed` under its own name, and a `capture`
-with such a piece writes nothing. N is capped at the piece count and at the
+so the baseline and the verdict are the sequential run's. A piece whose worker
+raised reads `FAIL  worker failed: <error>` under its own name. A worker that
+dies takes the whole pool down with it, and every unfinished piece fails with
+the same error that names nobody, so those pieces are converted again one at a
+time in a single-worker pool: the piece that kills its worker there reads
+`FAIL  worker died: <piece>` and every other gets its real verdict. The check
+fails whenever a worker died, even if no piece reproduces the death alone, and a
+`capture` with any failed piece writes nothing. N is capped at the piece count and at the
 batch's own worker count for the machine (each converter process peaks near
 2 GB of commit). MEASURED 2026-09-25 on 94340ee plus this change, 15 pieces,
 on a shared machine: `capture` 187 s at `--jobs 1`, 65 s at `--jobs 5`, with

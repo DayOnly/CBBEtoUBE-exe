@@ -956,8 +956,8 @@ PAIRS = (
     Pair('GJ-a', 'parallel results are taken in completion order, not piece order',
          edits=(
              ('scripts/golden_output.py',
-              '        for piece, fut in zip(pieces, futs):',
-              '        for piece, fut in reversed(list(zip(pieces, futs))):  # MUTATED', 1),
+              '            for piece, fut in zip(pieces, futs):',
+              '            for piece, fut in reversed(list(zip(pieces, futs))):  # MUTATED', 1),
          ),
          tests=('tests/test_golden_jobs.py',),
          expect=('test_results_come_back_in_piece_order_not_completion_order',
@@ -966,10 +966,9 @@ PAIRS = (
     Pair('GJ-b', 'the pieces run in threads of the parent instead of worker processes',
          edits=(
              ('scripts/golden_output.py',
-              '    with ProcessPoolExecutor(max_workers=jobs,\n'
-              '                             mp_context=multiprocessing.get_context("spawn")) as ex:',
-              '    from concurrent.futures import ThreadPoolExecutor  # MUTATED\n'
-              '    with ThreadPoolExecutor(max_workers=jobs) as ex:', 1),
+              '        with ProcessPoolExecutor(max_workers=jobs, mp_context=ctx) as ex:',
+              '        from concurrent.futures import ThreadPoolExecutor  # MUTATED\n'
+              '        with ThreadPoolExecutor(max_workers=jobs) as ex:', 1),
          ),
          tests=('tests/test_golden_jobs.py',),
          expect=('test_pieces_run_in_worker_processes_not_threads',),
@@ -977,9 +976,9 @@ PAIRS = (
     Pair('GJ-c', 'a piece that failed in a worker is printed but not counted',
          edits=(
              ('scripts/golden_output.py',
-              '            print(f"  {label:<20} FAIL  worker failed: {err}")\n'
+              '            print(f"  {label:<20} FAIL  {err}")\n'
               '            bad += 1\n',
-              '            print(f"  {label:<20} FAIL  worker failed: {err}")  # MUTATED: not counted\n', 1),
+              '            print(f"  {label:<20} FAIL  {err}")  # MUTATED: not counted\n', 1),
          ),
          tests=('tests/test_golden_jobs.py',),
          expect=('test_a_piece_that_fails_in_a_worker_fails_the_check_by_name',
@@ -1030,6 +1029,52 @@ PAIRS = (
          ),
          tests=('tests/test_golden_jobs.py',),
          expect=('test_numpy_is_imported_under_the_blas_cap',),
+    ),
+    # #golden-jobs-name-the-crash (2026-09-25): a worker that DIES breaks the
+    # whole pool, and every unfinished piece failed with the same
+    # BrokenProcessPool line -- the culprit unnamed, pieces never judged counted
+    # as regressed. The unfinished pieces are re-run one at a time in a
+    # single-worker pool so the death lands on the piece that causes it.
+    Pair('GJ-i', 'a broken pool fails every unfinished piece instead of re-running them',
+         edits=(
+             ('scripts/golden_output.py',
+              '                    row = _alone(piece)\n',
+              '                    row = (piece, None, "worker failed: BrokenProcessPool")  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_golden_jobs.py',),
+         expect=('test_a_worker_that_dies_fails_the_check_by_name',
+                 'test_a_second_death_is_named_too',
+                 'test_a_capture_with_a_dead_worker_names_it_and_writes_nothing'),
+    ),
+    Pair('GJ-j', 'the re-run pool is reused after a death instead of replaced',
+         edits=(
+             ('scripts/golden_output.py',
+              '            solo = None                 # the next re-run gets a fresh pool\n',
+              '            pass  # MUTATED: the dead pool is reused\n', 1),
+         ),
+         tests=('tests/test_golden_jobs.py',),
+         expect=('test_a_second_death_is_named_too',
+                 'test_a_worker_that_dies_fails_the_check_by_name'),
+    ),
+    Pair('GJ-k', 'a worker death that no single piece reproduces is dropped',
+         edits=(
+             ('scripts/golden_output.py',
+              '    if broke and not died:\n',
+              '    if False:  # MUTATED: an unattributed death passes\n', 1),
+         ),
+         tests=('tests/test_golden_jobs.py',),
+         expect=('test_a_death_no_piece_reproduces_still_fails_the_check',),
+    ),
+    Pair('GJ-l', 'a re-run converts without the environment check',
+         edits=(
+             ('scripts/golden_output.py',
+              '            return (piece, solo.submit(_worker_measure, piece, work_root,\n'
+              '                                       expect, measure).result(), None)\n',
+              '            return (piece, solo.submit(measure, piece, work_root).result(),\n'
+              '                    None)  # MUTATED: no environment check\n', 1),
+         ),
+         tests=('tests/test_golden_jobs.py',),
+         expect=('test_a_re_run_is_held_to_the_environment_the_run_started_under',),
     ),
     # #glow-diagnostic-path (2026-09-20): the diagnostic wrote nothing for an
     # unknown length of time, because its configured directory did not exist

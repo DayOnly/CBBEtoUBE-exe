@@ -38,6 +38,11 @@ CBBE2UBE_* set differ. Results are recorded and compared by the parent in piece
 order, so the baseline and the verdict are the same as a sequential run's. N is
 capped at the piece count and at the batch's own memory-bounded worker count
 (`auto_convert.default_worker_count`, 2 GB of commit per converter process).
+A piece whose worker raises reads `FAIL  worker failed: <error>`. A worker that
+DIES breaks the whole pool, so every piece not yet finished is converted again
+one at a time in a single-worker pool: the piece that kills its worker there
+reads `FAIL  worker died: <piece>` and every other gets its real verdict. The
+check fails whenever a worker died, even if no single piece reproduces it.
 
 WHAT IT COMPARES, per shape: vertex positions (max/mean displacement, not just a
 hash -- a 1e-7 float wobble must read differently from a 0.2u shift), the bone list,
@@ -380,8 +385,20 @@ def _measured(pieces, work_root: Path, jobs: int):
     jobs 1 is the sequential run as it always was: `error` is always None and
     an exception propagates. With more, the pieces go to that many SPAWNED
     worker processes (the converter is not thread-safe; pynifly keeps process
-    state) and a piece whose worker raised -- or died -- comes back with the
-    error text, so the caller can fail it BY NAME instead of losing the run."""
+    state) and a piece that fails comes back with error text instead of losing
+    the run, so the caller fails it BY NAME:
+
+      * a piece whose worker RAISED: "worker failed: <exception>".
+      * a piece whose worker DIED: "worker died: <piece>". A death breaks the
+        whole pool -- every piece not yet finished, in any worker, fails with
+        the same BrokenProcessPool, which names nobody. So each of those is
+        converted again ALONE in a single-worker pool, under the same
+        environment check: the piece that kills its worker there is the one
+        named, and every other gets its real result. A second death is named
+        the same way, and the re-runs after it get a fresh pool.
+      * the pool broke but every unfinished piece converted alone: one last
+        row with piece None, so the run still fails -- a worker died and no
+        single piece reproduces it."""
     measure = _measure                  # looked up per call, not bound at def
     if jobs <= 1:
         for piece in pieces:
@@ -389,17 +406,52 @@ def _measured(pieces, work_root: Path, jobs: int):
         return
     import multiprocessing
     from concurrent.futures import ProcessPoolExecutor
+    from concurrent.futures.process import BrokenProcessPool
+    ctx = multiprocessing.get_context("spawn")
     expect = _env_signature()
-    with ProcessPoolExecutor(max_workers=jobs,
-                             mp_context=multiprocessing.get_context("spawn")) as ex:
-        futs = [ex.submit(_worker_measure, piece, work_root, expect, measure)
-                for piece in pieces]
-        for piece, fut in zip(pieces, futs):
-            try:
-                row = (piece, fut.result(), None)
-            except Exception as exc:          # BrokenProcessPool included
-                row = (piece, None, f"{type(exc).__name__}: {exc}")
-            yield row
+    solo = None                         # the single-worker pool for re-runs
+    broke = died = 0
+
+    def _failed(exc):
+        return f"worker failed: {type(exc).__name__}: {exc}"
+
+    def _alone(piece):
+        nonlocal solo, died
+        if solo is None:
+            solo = ProcessPoolExecutor(max_workers=1, mp_context=ctx)
+        try:
+            return (piece, solo.submit(_worker_measure, piece, work_root,
+                                       expect, measure).result(), None)
+        except BrokenProcessPool:
+            solo.shutdown()
+            solo = None                 # the next re-run gets a fresh pool
+            died += 1
+            return (piece, None, f"worker died: {piece[0]} -- converted alone, "
+                                 f"it killed its worker process")
+        except Exception as exc:
+            return (piece, None, _failed(exc))
+
+    try:
+        with ProcessPoolExecutor(max_workers=jobs, mp_context=ctx) as ex:
+            futs = [ex.submit(_worker_measure, piece, work_root, expect, measure)
+                    for piece in pieces]
+            for piece, fut in zip(pieces, futs):
+                try:
+                    row = (piece, fut.result(), None)
+                except BrokenProcessPool:
+                    broke += 1
+                    row = _alone(piece)
+                except Exception as exc:
+                    row = (piece, None, _failed(exc))
+                yield row
+    finally:
+        if solo is not None:
+            solo.shutdown()
+    if broke and not died:
+        yield (None, None,
+               f"worker died: a worker process exited under --jobs {jobs}, but "
+               f"each of the {broke} unfinished piece(s) converted alone -- "
+               f"no single piece reproduces it")
 
 
 def _jobs_refusal(jobs: int):
@@ -425,6 +477,12 @@ def _plan_jobs(requested: int, n_pieces: int):
     return jobs, None
 
 
+def _row_label(piece) -> str:
+    """The label a `_measured` row prints under; its last row, a worker death
+    no single piece reproduces, belongs to no piece."""
+    return piece[0] if piece is not None else "(pool)"
+
+
 def capture(jobs: int = 1) -> int:
     jobs, refusal = _plan_jobs(jobs, len(PIECES))
     if refusal:
@@ -447,10 +505,10 @@ def capture(jobs: int = 1) -> int:
         # `check` would pass without looking at that class), nor a manifest
         # paired with some freshly written .npz files and some stale ones.
         rows = list(rows)
-        failed = [(piece[0], err) for piece, _r, err in rows if err]
+        failed = [(_row_label(piece), err) for piece, _r, err in rows if err]
         if failed:
             for label, err in failed:
-                print(f"  FAIL {label:<20} worker failed: {err}")
+                print(f"  FAIL {label:<20} {err}")
             shutil.rmtree(work, ignore_errors=True)
             print(f"\nbaseline NOT written: {len(failed)} piece(s) failed in a "
                   f"worker -- {GOLDEN} is unchanged.")
@@ -525,13 +583,14 @@ def check(tol: float, jobs: int = 1) -> int:
     todo = [p for p in PIECES if p[0] in man["pieces"]
             and (GOLDEN / f"{p[0]}.npz").is_file()]
     jobs, _ = _plan_jobs(jobs, len(todo))        # refusal already handled above
-    for (label, _sub, _stem, _slots, _why), r, err in _measured(todo, work, jobs):
-        rec = man["pieces"][label]
-        gold = GOLDEN / f"{label}.npz"
+    for piece, r, err in _measured(todo, work, jobs):
+        label = _row_label(piece)
         if err is not None:
-            print(f"  {label:<20} FAIL  worker failed: {err}")
+            print(f"  {label:<20} FAIL  {err}")
             bad += 1
             continue
+        rec = man["pieces"][label]
+        gold = GOLDEN / f"{label}.npz"
         if r["fp"] is None:
             print(f"  {label:<20} FAIL  conversion produced nothing")
             bad += 1

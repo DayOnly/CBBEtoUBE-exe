@@ -32,6 +32,7 @@ user's mod list.
 """
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -44,6 +45,7 @@ from scripts import golden_output as go
 
 _REPO = Path(__file__).resolve().parent.parent
 _PLANT = "GOLDEN_JOBS_TEST_PLANT"
+_ONCE = "GOLDEN_JOBS_TEST_ONCE"         # marker file for a death that happens once
 
 
 def _piece(label):
@@ -61,9 +63,16 @@ def _fake_measure(piece, work_root):
         raise RuntimeError(f"planted failure in {label}")
     if f"die:{label}" in plant:
         os._exit(3)
+    if f"dieonce:{label}" in plant:
+        marker = Path(os.environ[_ONCE])
+        if not marker.exists():
+            marker.touch()
+            os._exit(3)
     if label.startswith("missing"):
         return {"src": None, "fp": None}
     k = float(sum(map(ord, label)))
+    if f"shift:{label}" in plant:
+        k += 0.5                        # the output moved: a REGRESSION
     fp = {"body": {"verts": np.arange(12, dtype=np.float32).reshape(4, 3) + k,
                    "bones": ["NPC Pelvis [Pelv]", "NPC Spine [Spn0]"],
                    "wsum": np.array([1.5, k])},
@@ -151,13 +160,55 @@ def check_verdicts():
         del os.environ[t._PLANT]
     return {"capture": rc0, "ok": rc_ok, "bad": rc_bad}
 
-def check_worker_dies():
-    rc0 = baseline("die", ["a-first", "dies"], 1)
-    os.environ[t._PLANT] = "die:dies"
+def planted(plant, fn, once=None):
+    os.environ[t._PLANT] = plant
+    if once:
+        os.environ[t._ONCE] = str(tmp / once)
     try:
-        return {"capture": rc0, "rc": go.check(1e-4, 2)}
+        return fn()
     finally:
         del os.environ[t._PLANT]
+        os.environ.pop(t._ONCE, None)
+
+def check_worker_dies():
+    # 7 pieces, 3 workers: `dies` kills its worker while `a-first` is still
+    # converting and the tail has not started, which breaks the whole pool.
+    rc0 = baseline("die", ["a-first", "b", "c", "dies", "e", "f", "g"], 1)
+    return {"capture": rc0,
+            "rc": planted("die:dies,shift:f", lambda: go.check(1e-4, 3))}
+
+def check_two_deaths():
+    rc0 = baseline("die2", ["a-first", "d1", "c", "d2", "e"], 1)
+    return {"capture": rc0,
+            "rc": planted("die:d1,die:d2", lambda: go.check(1e-4, 2))}
+
+def check_unreproduced_death():
+    # The worker dies in the pool, but the piece converts fine alone.
+    rc0 = baseline("die1", ["a-first", "flaky", "c"], 1)
+    return {"capture": rc0,
+            "rc": planted("dieonce:flaky", lambda: go.check(1e-4, 2),
+                          once="flaky.died")}
+
+def rerun_env():
+    # The re-run pool is spawned AFTER the parent's environment changed: it
+    # must still be held to the environment the run started under.
+    def go_rows():
+        rows = []
+        for p, r, err in go._measured(
+                [t._piece(x) for x in ("b", "c-first", "dies")],
+                tmp / "rerun_env", 2):
+            rows.append([p[0] if p else None, err])
+            os.environ["CBBE2UBE_LATE_TEST_FLAG"] = "1"
+        return rows
+    try:
+        return planted("die:dies", go_rows)
+    finally:
+        os.environ.pop("CBBE2UBE_LATE_TEST_FLAG", None)
+
+def capture_worker_dies():
+    rc = planted("die:dies", lambda: baseline("capdie", ["a-first", "b", "dies",
+                                                         "d", "e"], 3))
+    return {"rc": rc, "baseline": read_baseline("capdie")}
 
 def capture_fails():
     os.environ[t._PLANT] = "raise:bad"
@@ -172,6 +223,10 @@ run("capture_same", capture_same)
 run("check_verdicts", check_verdicts)
 run("capture_fails", capture_fails)
 run("check_worker_dies", check_worker_dies)
+run("check_two_deaths", check_two_deaths)
+run("check_unreproduced_death", check_unreproduced_death)
+run("rerun_env", rerun_env)
+run("capture_worker_dies", capture_worker_dies)
 '''
 
 
@@ -179,7 +234,7 @@ run("check_worker_dies", check_worker_dies)
 def pool(tmp_path_factory):
     tmp = tmp_path_factory.mktemp("golden_jobs")
     env = {k: v for k, v in os.environ.items()
-           if not k.startswith("CBBE2UBE_") and k != _PLANT}
+           if not k.startswith("CBBE2UBE_") and k not in (_PLANT, _ONCE)}
     env["PYTHONHASHSEED"] = "7"
     r = subprocess.run([sys.executable, "-B", "-c", _DRIVER, str(_REPO), str(tmp)],
                        cwd=str(_REPO), env=env, capture_output=True, text=True,
@@ -275,11 +330,74 @@ def test_a_piece_that_fails_in_a_worker_fails_the_check_by_name(pool):
     assert judged == ["a-first", "bad", "c"], second
 
 
+def _verdicts(text):
+    """{label: verdict} of a check's per-piece lines, in the order printed."""
+    out = {}
+    for ln in text.splitlines():
+        m = re.match(r"^  (\S+)\s+(ok|REGRESSION|FAIL  .*)$", ln)
+        if m:
+            assert m.group(1) not in out, f"{m.group(1)} judged twice:\n{text}"
+            out[m.group(1)] = m.group(2)
+    return out
+
+
 def test_a_worker_that_dies_fails_the_check_by_name(pool):
+    """A death breaks the whole pool, and every unfinished piece used to read
+    the same BrokenProcessPool line: the culprit was not named and pieces
+    never judged were counted as regressed. Only the piece that kills its
+    worker may fail for it; the other six keep their real verdicts."""
     s = _scenario(pool, "check_worker_dies")
     assert s["res"]["capture"] == 0 and s["res"]["rc"] == 1
-    assert any(ln.strip().startswith("dies ") and "FAIL  worker failed" in ln
-               for ln in s["text"].splitlines()), s["text"]
+    v = _verdicts(s["text"])
+    assert list(v) == ["a-first", "b", "c", "dies", "e", "f", "g"], s["text"]
+    assert v["dies"].startswith("FAIL  worker died: dies"), v
+    assert v["f"] == "REGRESSION", v
+    assert {k: x for k, x in v.items() if k not in ("dies", "f")} == \
+        {k: "ok" for k in ("a-first", "b", "c", "e", "g")}, v
+    assert "BrokenProcessPool" not in s["text"]
+    assert "FAIL: 2 piece(s) regressed" in s["text"]
+
+
+def test_a_second_death_is_named_too(pool):
+    s = _scenario(pool, "check_two_deaths")
+    assert s["res"]["capture"] == 0 and s["res"]["rc"] == 1
+    v = _verdicts(s["text"])
+    assert v == {"a-first": "ok", "d1": v["d1"], "c": "ok", "d2": v["d2"],
+                 "e": "ok"}, s["text"]
+    assert v["d1"].startswith("FAIL  worker died: d1"), v
+    assert v["d2"].startswith("FAIL  worker died: d2"), v
+    assert "FAIL: 2 piece(s) regressed" in s["text"]
+
+
+def test_a_death_no_piece_reproduces_still_fails_the_check(pool):
+    """Every piece converts fine alone, so every piece is judged ok -- but a
+    worker DID die under --jobs, and a verdict must not pass over that."""
+    s = _scenario(pool, "check_unreproduced_death")
+    assert s["res"]["capture"] == 0 and s["res"]["rc"] == 1
+    v = _verdicts(s["text"])
+    assert v["a-first"] == v["flaky"] == v["c"] == "ok", s["text"]
+    assert v["(pool)"].startswith("FAIL  worker died:"), v
+    assert "no single piece reproduces it" in v["(pool)"]
+    assert "PASS" not in s["text"]
+
+
+def test_a_re_run_is_held_to_the_environment_the_run_started_under(pool):
+    rows = _scenario(pool, "rerun_env")["res"]
+    by = {label: err for label, err in rows}
+    assert by["b"] is None, rows
+    assert by["c-first"] and "worker environment differs" in by["c-first"] \
+        and "CBBE2UBE_LATE_TEST_FLAG" in by["c-first"], rows
+
+
+def test_a_capture_with_a_dead_worker_names_it_and_writes_nothing(pool):
+    s = _scenario(pool, "capture_worker_dies")
+    assert s["res"]["rc"] == 1
+    fails = [ln.split()[1] for ln in s["text"].splitlines()
+             if ln.startswith("  FAIL ")]
+    assert fails == ["dies"], s["text"]
+    assert "worker died: dies" in s["text"]
+    assert "baseline NOT written: 1 piece(s)" in s["text"]
+    assert "manifest.json" not in s["res"]["baseline"]["files"]
 
 
 # --------------------------------------------------- in-process decisions
