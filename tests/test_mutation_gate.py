@@ -481,6 +481,52 @@ def test_the_shard_command_refuses_a_tree_it_did_not_make(tiny, tmp_path, capsys
     assert (tiny / "thing.py").read_text(encoding="utf-8") == _THING
 
 
+def test_the_shard_command_refuses_a_clean_detached_worktree_it_did_not_make(
+        tiny, tmp_path, capsys):
+    """Any other clean detached worktree of the repo (another session's, say)
+    is refused too: a shard runs only in <temp>/mutation-gate-jobs-*/shard<k>."""
+    spec = tmp_path / "pairs.json"
+    spec.write_text(json.dumps([mg._pair_to_json(_pair())]), encoding="utf-8")
+    out = tmp_path / "out.json"
+    other = tmp_path / "elsewhere"
+    _g(tiny, "worktree", "add", "-q", "--detach", str(other))
+    assert mg.main(["shard", "--tree", str(other), "--pairs", str(spec),
+                    "--json", str(out)]) == 2
+    assert "is not a shard worktree" in capsys.readouterr().err
+    assert not out.exists()
+    assert (other / "thing.py").read_text(encoding="utf-8") == _THING
+
+
+def test_a_worktree_that_cannot_be_removed_is_named_in_the_report(
+        tiny, tmp_path, monkeypatch):
+    """--jobs 1 exits 2 when its worktree cannot be removed; --jobs N records
+    every tree it left behind (and keeps the run folder so they are found)."""
+    made = []
+
+    def launch(k, shard, tree, run_dir):
+        made.append(tree)
+        return _Proc(rc=0)
+
+    def stuck(repo, tree):
+        raise mg.GateError("in use")
+
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    monkeypatch.setattr(mg, "drop_worktree", stuck)
+    monkeypatch.setattr(mg.time, "sleep", lambda s: None)
+    rep = mg.run_gate_jobs(tiny, _ids(2), jobs=2, launch=launch, log=_QUIET, poll=0.01)
+    assert rep["left_behind"] == [str(t) for t in made] and len(made) == 2
+    assert made[0].parent.exists(), "the run folder holding them was removed"
+
+
+def test_a_run_that_left_worktrees_behind_exits_2(monkeypatch, capsys):
+    monkeypatch.setattr(mg, "_seeded_pairs", lambda: [])
+    monkeypatch.setattr(mg, "run_gate_jobs", lambda *a, **k: {
+        "pairs": [], "verdict": "PASS", "seconds": 0, "jobs": 2,
+        "left_behind": ["T:/mutation-gate-jobs-x/shard0"]})
+    assert mg.main(["run", "--jobs", "2"]) == 2
+    assert "left behind: T:/mutation-gate-jobs-x/shard0" in capsys.readouterr().err
+
+
 def test_a_pair_survives_the_trip_to_a_shard_unchanged():
     planted = mg.Pair("P3", "planted", (("tests/t.py", None, "x\n", 0), ("a.py", "b", "c", 2)),
                       ("tests",), ("test_x[a-b]",), ("display",))

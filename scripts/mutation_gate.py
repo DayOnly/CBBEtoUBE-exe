@@ -488,9 +488,11 @@ def aggregate(pairs, shard_ids, results) -> dict:
     return report
 
 
-def _drop_all(repo: Path, trees, log) -> None:
-    """Remove every shard worktree. A just-killed process can hold a file for a
-    moment on Windows, so a tree that is still there is tried again."""
+def _drop_all(repo: Path, trees, log) -> list:
+    """Remove every shard worktree and return the ones that could not be
+    removed. A just-killed process can hold a file for a moment on Windows,
+    so a tree that is still there is tried again."""
+    left: list = []
     for tree in trees:
         for attempt in range(5):
             try:
@@ -503,6 +505,8 @@ def _drop_all(repo: Path, trees, log) -> None:
             time.sleep(1.0)
         else:
             log(f"LEFT BEHIND: {tree} -- remove it with git worktree remove --force")
+            left.append(str(tree))
+    return left
 
 
 def run_gate_jobs(repo=REPO, pairs=None, *, jobs: int, only=None, keep=False, log=print,
@@ -518,6 +522,7 @@ def run_gate_jobs(repo=REPO, pairs=None, *, jobs: int, only=None, keep=False, lo
     trees: list = []
     procs: dict = {}
     results: list = []
+    left_behind: list = []
     t_all = time.perf_counter()
     try:
         for k in range(len(shards)):
@@ -549,10 +554,15 @@ def run_gate_jobs(repo=REPO, pairs=None, *, jobs: int, only=None, keep=False, lo
         if keep:
             log(f"worktrees and shard logs kept in {run_dir}")
         else:
-            _drop_all(repo, trees, log)
-            shutil.rmtree(run_dir, ignore_errors=True)
+            left_behind = _drop_all(repo, trees, log)
+            if not left_behind:
+                shutil.rmtree(run_dir, ignore_errors=True)
     report = aggregate(pairs, [[p.id for p in s] for s in shards], results)
     report["seconds"] = round(time.perf_counter() - t_all, 1)
+    # A worktree the run could not remove is a run that did not clean up, as
+    # in --jobs 1 (its cleanup failure exits 2): `main` exits 2 on it, and the
+    # JSON names the trees (the run folder is kept so they stay findable).
+    report["left_behind"] = left_behind
     for s in report["shards"]:
         b, a = s.get("baseline") or {}, s.get("control_after") or {}
         log(f"shard {s['shard']}: {len(s['ids'])} pair(s), rc={s['rc']}; "
@@ -567,7 +577,8 @@ def run_gate_jobs(repo=REPO, pairs=None, *, jobs: int, only=None, keep=False, lo
 
 def _check_shard_tree(tree: Path) -> None:
     """A shard mutates files, so it runs only in what `run --jobs` made: a
-    linked worktree, detached, clean, and not this checkout."""
+    `shard<k>` folder inside a mutation-gate-jobs-* run folder, a linked
+    worktree, detached, clean, and not this checkout."""
     tree = Path(tree).resolve()
     top = Path(_git(REPO, "rev-parse", "--show-toplevel").stdout.strip()).resolve()
     if tree == top or top in tree.parents:
@@ -579,6 +590,10 @@ def _check_shard_tree(tree: Path) -> None:
         raise GateError(f"{tree} has a branch checked out; the gate's worktrees are detached")
     if _git(tree, "status", "--porcelain").stdout.strip():
         raise GateError(f"{tree} is not clean")
+    if not (tree.name.startswith("shard")
+            and tree.parent.name.startswith("mutation-gate-jobs-")):
+        raise GateError(f"{tree} is not a shard worktree `run --jobs` made "
+                        "(<temp>/mutation-gate-jobs-*/shard<k>)")
 
 
 def _run_shard(tree: Path, spec: Path, out: Path) -> int:
@@ -646,6 +661,10 @@ def main(argv=None) -> int:
     print(f"VERDICT: {report['verdict']} -- {counts.get(CAUGHT, 0)} caught, "
           f"{counts.get(MISSED, 0)} missed, {counts.get(NOT_APPLIED, 0)} not applied, "
           f"{counts.get(NOT_JUDGED, 0)} not judged here; {report.get('seconds', 0)} s{shards}")
+    if report.get("left_behind"):
+        print(f"mutation gate could not clean up: {len(report['left_behind'])} worktree(s) "
+              f"left behind: {', '.join(report['left_behind'])}", file=sys.stderr)
+        return 2
     return 0 if report["verdict"] == "PASS" else 1
 
 
