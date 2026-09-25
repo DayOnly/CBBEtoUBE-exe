@@ -1091,6 +1091,52 @@ follower (converted male Ebony boots on her UBE body):
   addons cover every biped slot of the armour. The ESP half keeps the `!UBE\` path
   test. `CBBE2UBE_NO_SKYPATCHER_PATCH_RECOGNITION=1` restores the flat, path-only
   read.
+- **What another mod's UBE armature on the winning record already draws**
+  (`#coverage-third-party-drawn`, with `#root-plugin-index` and
+  `#coverage-keep-better-first-person`, 2026-09-25). Both passes used to skip an
+  armour when ANY armature named a UBE race, except the body pass, which minted
+  over every slot-32 armour anyway; and the exclusion scan's plugin half excluded
+  any armour whose plugin (winning or not, active or not) listed a `!UBE\`
+  armature. So a body armour whose hand-made patch draws the file we convert drew
+  it twice, and an armour whose patch names a mesh that exists nowhere drew
+  nothing. Now, in both passes, an armature T on the WINNING armour record
+  qualifies when (a) it names a UBE_AllRace race of `UBE_RACE_FIDS_24` (primary or
+  additional), (b) its female world mesh (MOD3, else MOD2) is live in the GAME
+  view (`_game_view_mesh_resolver`: loose in overwrite, an enabled mod -- our own
+  output included, the game loads it -- or Data; or in an archive the profile's
+  Skyrim.ini lists or an ACTIVE plugin loads by name; a mesh this run converted
+  counts too; not `_mesh_exists_anywhere`, which leaves our output out and reads
+  unloaded archives; with no game view only this run's meshes count, so ours is
+  minted -- a double draw, never an armour left with nothing), and (c) when the ARMOUR has slot 32, 34 or 38, that mesh is
+  under `!UBE\`. (c) is judged per ARMOUR, not per armature, as the census
+  measured it: the gloves armature of a cuirass-and-gloves patch on the original
+  path does not draw our gloves. Each armature S we would mint is drawn by a
+  qualifier of the same file (compared without `!UBE\`, `meshes\`, `.nif` and a
+  `_0`/`_1` suffix, whatever its slots), else by BOD2 overlap with a qualifier no
+  file match used -- one S per qualifier. The qualifiers' races come off S's: S
+  is minted only for the UBE races no qualifier draws (the first of them
+  primary), and not at all when none is left; one minted record serves every
+  armour that lists it, so it targets the union, all races as soon as one armour
+  needs them all. The first-person guard (`#coverage-keep-better-first-person`)
+  does not let T draw S when S's MOD5 was converted and T's MOD5 is not under
+  `!UBE\` -- empty included, the worse first person
+  (`CBBE2UBE_NO_COVERAGE_KEEP_BETTER_FIRST_PERSON=1`). The coverage step asks the
+  exclusion scan for its SkyPatcher half only (`halves=("ini",)`): an armature an
+  INI adds is on no armour record; the conversion planner keeps both halves. The
+  plugin index (`paths.plugin_file_index`) holds ROOT plugin files only --
+  overwrite > enabled mods by MO2 priority > Data, every mod root in name order
+  with no modlist -- because the recursive walk read our own un-loaded
+  per-source copies in `_unmerged_patches` for 22 third-party plugin names; the
+  two only work together (root-only alone left a helmet whose UBE mesh exists
+  nowhere with no armature; the rule on the old index read our old mints as
+  third-party armatures, +308 links). The NPC-worn cache keys on the index mode
+  and `validate` looks masters up in the index's priority order. Live replay:
+  -2 links (one dress drawn twice from the same file), +2 (two pouches whose UBE
+  and source meshes exist nowhere, a no-op in game); 375 armours drawn by
+  another mod's armature, 2 kept by the first-person guard; the same with one
+  mod excluded. One switch, `CBBE2UBE_NO_COVERAGE_THIRD_PARTY_DRAWN=1`, restores
+  the blanket skip, the slot-32 exemption, both exclusion halves and the
+  recursive index -- byte-identical to before.
 - **A female slot is never filled from a converted MALE mesh when it names a mesh
   of its own** (`#coverage-female-guard`). It keeps its source path (hands, feet,
   accessories), or the armature is not minted (slot-32 body, like an unconverted

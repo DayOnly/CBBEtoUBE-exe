@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+### Fixed — an item another mod already makes for UBE is no longer drawn twice, and one it only claims to cover is drawn
+
+When another mod ships its own UBE version of an item, this tool used to go by
+a rough sign: any UBE version on the item meant "leave it alone", except for
+body armour, which got this tool's version as well. So a dress whose UBE patch
+draws the very mesh this tool converts was drawn twice, and an item whose UBE
+patch names a mesh that is not installed drew nothing. The tool also read its
+own unused copies of some patches in place of the other mod's plugin of the
+same name. Now it reads only the plugins the game loads and looks at what the
+other mod's version actually draws: the same mesh, or the same body slot, with
+a mesh the game can find. Only what it leaves out is added, and only for the
+UBE races it does not cover. Where the other mod's version has no converted
+first-person mesh and this tool's has, this tool's version is kept as well, so
+your own arms still look right. Measured on the reported modlist: one dress is
+no longer drawn twice, and two pouches whose meshes exist nowhere get this
+tool's version (nothing changes in game for them); nothing else changes, with
+or without a mod excluded. A new log line counts the items another mod already
+draws. `CBBE2UBE_NO_COVERAGE_THIRD_PARTY_DRAWN=1` (set to 1) turns it off,
+and `CBBE2UBE_NO_COVERAGE_KEEP_BETTER_FIRST_PERSON=1` drops only the
+first-person rule.
+
 ### Fixed — an excluded mod's helmets, glasses and other non-body pieces are drawn on UBE actors again
 
 Excluding a mod keeps this tool's converted meshes off that mod's armour. It

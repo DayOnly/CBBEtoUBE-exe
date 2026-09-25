@@ -2971,7 +2971,7 @@ def _skypatcher_forms(value: str):
 
 
 def _third_party_ube_covered_armos(mods_root, enabled_names=None,
-                                   skip_mods=()) -> set:
+                                   skip_mods=(), halves=("ini", "esp")) -> set:
     r"""ARMOs that ANOTHER mod already gives a UBE armature.
 
     Returned as {(defining plugin lowercase, formid low24)} -- the same
@@ -3007,6 +3007,16 @@ def _third_party_ube_covered_armos(mods_root, enabled_names=None,
     CBBE2UBE_NO_SKYPATCHER_PATCH_RECOGNITION=1 restores `armor/*.ini` and the
     path test alone.
 
+    `halves` (#coverage-third-party-drawn, 2026-09-25): which delivery
+    mechanisms add their targets -- "ini" (SkyPatcher lines) and/or "esp"
+    (plugin ARMOs). The coverage step asks for the INI half alone while that
+    rule is on: it judges the armatures on each WINNING armour record itself,
+    with the mesh they draw, which the plugin half cannot (it reads every root
+    plugin's ARMOs, winning or not, and excludes on a `!UBE\` path alone). The
+    INI half stays: an armature an INI adds is on no armour record. The
+    conversion planner keeps both. The plugin files are read either way -- the
+    INI half needs their UBE armatures.
+
     Best-effort and CACHED per (root, skip) -- an unreadable plugin is skipped,
     never fatal: failing to detect coverage costs a double-render, while a
     crash here would cost the whole run."""
@@ -3024,9 +3034,12 @@ def _third_party_ube_covered_armos(mods_root, enabled_names=None,
     # enabled_names belongs in the key: it changes the result, and in the
     # long-lived GUI process the modlist can change between two scans. So do
     # the two switches.
+    want_ini = "ini" in halves
+    want_esp = "esp" in halves
     key = (str(mods_root), tuple(sorted(skip_mods)),
            None if enabled_names is None else tuple(sorted(enabled_names)),
            recognise, strip_meshes)
+    key += (want_ini, want_esp)     # the halves change the result too
     if key in _UBE_COVERED_CACHE:
         return _UBE_COVERED_CACHE[key]
     covered: set = set()
@@ -3220,7 +3233,8 @@ def _third_party_ube_covered_armos(mods_root, enabled_names=None,
                                 break
                     if not hit:
                         continue
-                    _add(_abs(r.formid), md.name)
+                    if want_esp:        # #coverage-third-party-drawn: halves
+                        _add(_abs(r.formid), md.name)
 
     # The race test's mesh gate: the same loose-files-only rule as
     # `_ube_mesh_resolves`, for a path outside `!UBE\`. Asked only for the
@@ -3247,7 +3261,7 @@ def _third_party_ube_covered_armos(mods_root, enabled_names=None,
 
     # (a, second pass) Now that every UBE armature is known, judge the INIs.
     race_cover: dict = {}        # target -> [slots its race addons cover, mod]
-    for mod_name, txt in pending_ini:
+    for mod_name, txt in (pending_ini if want_ini else ()):
         for line in txt.splitlines():
             fields = _skypatcher_fields(line)
             if not fields:
@@ -3649,6 +3663,130 @@ def _mesh_exists_anywhere(output) -> "callable[[str], bool] | None":
     return exists
 
 
+# The game's own archive lists when the profile's Skyrim.ini names none: the
+# Skyrim SE defaults, read from a stock profile INI.
+_DEFAULT_RESOURCE_ARCHIVES = (
+    "Skyrim - Misc.bsa", "Skyrim - Shaders.bsa", "Skyrim - Interface.bsa",
+    "Skyrim - Animations.bsa", "Skyrim - Meshes0.bsa", "Skyrim - Meshes1.bsa",
+    "Skyrim - Sounds.bsa", "Skyrim - Voices_en0.bsa", "Skyrim - Textures0.bsa",
+    "Skyrim - Textures1.bsa", "Skyrim - Textures2.bsa", "Skyrim - Textures3.bsa",
+    "Skyrim - Textures4.bsa", "Skyrim - Textures5.bsa", "Skyrim - Textures6.bsa",
+    "Skyrim - Textures7.bsa", "Skyrim - Textures8.bsa", "Skyrim - Patch.bsa")
+
+
+def _profile_resource_archives(lay) -> "list[str]":
+    """The archives the game's INI tells it to load (`sResourceArchiveList` and
+    `...List2` under [Archive] of the MO2 profile's Skyrim.ini), else the SE
+    defaults. Lowercased names."""
+    import configparser
+    names: "list[str]" = []
+    try:
+        ini_path = (Path(lay.instance_dir) / "profiles" / lay.selected_profile
+                    / "Skyrim.ini")
+        cp = configparser.ConfigParser(strict=False, interpolation=None)
+        cp.optionxform = str.lower
+        cp.read(ini_path, encoding="utf-8-sig")
+        for k in ("sresourcearchivelist", "sresourcearchivelist2"):
+            if cp.has_option("Archive", k):
+                names += [x.strip() for x in cp.get("Archive", k).split(",")
+                          if x.strip()]
+    except Exception:
+        names = []
+    return [n.lower() for n in (names or _DEFAULT_RESOURCE_ARCHIVES)]
+
+
+def _game_view_mesh_resolver(output=None) -> "callable[[str], bool] | None":
+    r"""#coverage-third-party-drawn: is a mesh LIVE in the game view -- what the
+    game loads once this run is done? A loose file in MO2's overwrite, an
+    ENABLED mod (our own output folder included: the game loads it too), the
+    game Data folder, or a file in an archive the game LOADS: one the profile's
+    Skyrim.ini lists, or `<plugin>.bsa` / `<plugin> - Textures.bsa` of an
+    ACTIVE plugin, found at the root of overwrite, an enabled mod (MO2 priority)
+    or Data. An archive no active plugin loads does not count, and nor does a
+    disabled mod. Voice, sound and facegen archives are not read: they hold no
+    armour.
+
+    Not `_mesh_exists_anywhere`: that one leaves our output out and reads every
+    archive at a mod's root, loaded or not -- the right question for a female
+    slot's source mesh, the wrong one for "does this armature draw anything".
+    Both lookups are lazy: a per-path probe of the loose folders, and one table
+    scan of the loaded archives on the first path not found loose. None when
+    the modlist cannot be read."""
+    try:
+        lay = paths.discover_layout()
+        mr = paths.mods_root()
+        order = paths.enabled_mods_ordered(lay)
+        plugins = paths.active_plugins_ordered(lay) or []
+    except Exception:
+        return None
+    if mr is None or not order:
+        return None
+    try:
+        _ow = paths.overwrite_dir(lay)
+    except Exception:
+        _ow = None
+    roots: "list[Path]" = [Path(_ow)] if _ow is not None else []
+    roots += [Path(mr) / n for n in order]
+    if output is not None and all(str(Path(output)).lower() != str(r).lower()
+                                  for r in roots):
+        roots.append(Path(output))
+    roots += [Path(d) for d in (lay.game_data_dirs or [])]
+    seen: dict = {}
+    archived: "list[set[str] | None]" = [None]
+
+    def _is_file(p: Path) -> bool:
+        try:
+            return p.is_file()
+        except OSError:
+            return False      # an unreadable folder costs itself, not the pass
+
+    def _archive_meshes() -> "set[str]":
+        from .bsa_strings import BSAArchive
+        want = dict.fromkeys(_profile_resource_archives(lay))
+        for n in plugins:
+            stem = str(n).rsplit(".", 1)[0].lower()
+            want[stem + ".bsa"] = None
+            want[stem + " - textures.bsa"] = None
+        skip = ("voice", " sound", "sounds", "- snd", "facegen")
+        found: dict = {}          # archive name -> the copy the game loads
+        for r in roots:
+            try:
+                ents = os.listdir(r)
+            except OSError:
+                continue
+            for e in ents:
+                el = e.lower()
+                if el in want and el not in found and not any(k in el for k in skip):
+                    found[el] = r / e
+        out: "set[str]" = set()
+        for f in found.values():
+            try:
+                names = BSAArchive(f, eager=False).list_files("meshes/")
+            except Exception:
+                continue          # an unreadable archive costs itself only
+            out.update(n[len("meshes/"):] for n in names if n.endswith(".nif"))
+        return out
+
+    def live(model: str) -> bool:
+        rel = str(model or "").replace("\\", "/").strip().lstrip("/").lower()
+        if rel.startswith("meshes/"):
+            rel = rel[7:]
+        if not rel:
+            return False
+        if rel not in seen:
+            hit = any(_is_file(r / "meshes" / rel) for r in roots)
+            if not hit:
+                if archived[0] is None:
+                    try:
+                        archived[0] = _archive_meshes()
+                    except Exception:
+                        archived[0] = set()
+                hit = rel in archived[0]
+            seen[rel] = hit
+        return seen[rel]
+    return live
+
+
 def _mod_name_excluded(name: str, wanted: "set[str]") -> bool:
     """Is this mod folder one of the run's exclusions? The folder name, or --
     for a name with a comma, which the CLI splits -- every piece of it. Same
@@ -3926,6 +4064,11 @@ def _report_coverage_holds(stats: "list[dict]") -> None:
     nonactor = sorted({k for s in stats for k in (s.get("beast_variant_non_actor") or [])})
     wigs = [w for s in stats for w in (s.get("wigs") or [])]
     listed = [k for s in stats for k in (s.get("race_listed") or [])]
+    # #coverage-third-party-drawn
+    tp_drawn = [k for s in stats for k in (s.get("third_party_drawn") or [])]
+    tp_part = [k for s in stats for k in (s.get("third_party_partial") or [])]
+    tp_kept = [k for s in stats
+               for k in (s.get("third_party_kept_first_person") or [])]
     if withheld:
         warn(f"[unified] {len(withheld)} armour(s) of an excluded mod have no UBE "
              "armature from any mod",
@@ -4076,6 +4219,25 @@ def _report_coverage_holds(stats: "list[dict]") -> None:
             print(f"       {edid or '?'}  ({pl}|{fid:06X})")
         if len(listed) > 5:
             print(f"       ... and {len(listed) - 5} more")
+    if tp_drawn:
+        print(f"  [unified] {len(tp_drawn)} armour(s) already drawn on UBE by another "
+              "mod's armature -- ours not minted")
+        for (pl, fid), edid in tp_drawn[:5]:
+            print(f"       {edid or '?'}  ({pl}|{fid:06X})")
+        if len(tp_drawn) > 5:
+            print(f"       ... and {len(tp_drawn) - 5} more")
+    if tp_part:
+        print(f"  [unified] {len(tp_part)} armour(s) partly drawn on UBE by another "
+              "mod's armature -- ours minted only for the pieces or races it leaves out")
+        for (pl, fid), edid in tp_part[:5]:
+            print(f"       {edid or '?'}  ({pl}|{fid:06X})")
+        if len(tp_part) > 5:
+            print(f"       ... and {len(tp_part) - 5} more")
+    for (pl, fid), edid, arma in tp_kept:
+        # #coverage-keep-better-first-person: one line each (2 on a real order).
+        print(f"  [unified] note: {edid or '?'} ({pl}|{fid:06X}) keeps our armature "
+              f"{arma} beside another mod's UBE one -- theirs has no converted "
+              "first-person mesh, ours does")
 
 
 def _emit_unified_coverage_patches(output, patches_dir, master_data_dirs,
@@ -4109,12 +4271,18 @@ def _emit_unified_coverage_patches(output, patches_dir, master_data_dirs,
         # Leave armors alone that ANOTHER mod already patched for UBE --
         # adding a second armature renders two bodies, and a hand-made UBE
         # patch beats an automatic conversion anyway. Coexist, do not compete.
+        # #coverage-third-party-drawn: the passes judge the armatures on each
+        # winning armour record themselves, so only the SkyPatcher half is
+        # asked for here -- what an INI adds is on no armour record. Tied to
+        # the same switch, so no half-and-half combination can be selected.
+        _tpd = ube_patcher._coverage_third_party_drawn()
         try:
             _uba_lay = paths.discover_layout()
             _ube_excl = _third_party_ube_covered_armos(
                 paths.mods_root(),
                 enabled_names=paths.enabled_mods(_uba_lay),
-                skip_mods={Path(output).name})
+                skip_mods={Path(output).name},
+                halves=("ini",) if _tpd else ("ini", "esp"))
         except Exception as _e:
             # Detection failure must never stop coverage -- but say so, or a
             # silently-empty exclusion set looks exactly like "nothing to skip".
@@ -4212,6 +4380,9 @@ def _emit_unified_coverage_patches(output, patches_dir, master_data_dirs,
         # CBBE2UBE_NO_NPC_WORN_NONPLAYABLE turns off only the conversion.
         _worn = (_batch_npc_worn_armos(for_coverage=True)
                  if ube_patcher._coverage_human_race_list() else None)
+        # #coverage-third-party-drawn: does another mod's UBE armature draw
+        # anything? Its mesh must be live in the game view.
+        _live = _game_view_mesh_resolver(output) if _tpd else None
         nb_out = patches_dir / "UBE_ModNonBody_Coverage UBE patch.esp"
         nb = ube_patcher.generate_modded_nonbody_ube_coverage_patch(
             nb_out, ordered, converted_rel_paths=conv_rel,
@@ -4219,6 +4390,7 @@ def _emit_unified_coverage_patches(output, patches_dir, master_data_dirs,
             master_data_dirs=master_data_dirs, cover_all=True,
             preserve_textures=True, emit_sidecar=True,
             withheld_armo_abs=_withheld_abs, female_mesh_exists=_fexists,
+            mesh_live=_live,
             ube_twin_exists=_twin, npc_worn_armo_abs=_worn)
         total_targets += int(nb.get("armo_targets") or 0)
         print(f"  non-body: minted {nb.get('minted_armas')} | "
@@ -4234,6 +4406,7 @@ def _emit_unified_coverage_patches(output, patches_dir, master_data_dirs,
                 cover_all=True, cover_hands_feet=True, preserve_textures=True,
                 emit_sidecar=True, withheld_armo_abs=_withheld_abs,
                 female_mesh_exists=_fexists, mesh_exists=_mexists,
+                mesh_live=_live,
                 ube_twin_exists=_twin, npc_worn_armo_abs=_worn)
             total_targets += int(bd.get("armo_targets") or 0)
             print(f"  body+hands/feet: minted {bd.get('minted_armas')} | "
@@ -6768,6 +6941,10 @@ def _batch_npc_worn_armos(for_coverage: bool = False
         # ~10 s on a 3,254-plugin order), which would make a hit cost half a miss.
         key = (str(lay.mods_root), tuple(paths.enabled_mods_ordered(lay) or ()),
                tuple(n.lower() for n in names))
+        # And on the index mode (#root-plugin-index): its switch can flip in a
+        # long-lived GUI process, and the two indexes can resolve a name to
+        # different files.
+        key += (paths.root_plugin_index_on(),)
         hit = _NPC_WORN_CACHE.get(key)
         if hit is not None:
             return hit
@@ -8169,7 +8346,13 @@ def _cmd_validate(args):
     try:
         _vlay = paths.discover_layout()
         _vidx = paths.plugin_file_index(_vlay)
-        _mdd = sorted({Path(p).parent for p in _vidx.values()}) or None
+        if paths.root_plugin_index_on():
+            # #root-plugin-index: in the index's priority order (highest first),
+            # so a master name two folders ship resolves to the copy the game
+            # loads.
+            _mdd = list(dict.fromkeys(Path(p).parent for p in _vidx.values())) or None
+        else:
+            _mdd = sorted({Path(p).parent for p in _vidx.values()}) or None
     except Exception as _e:
         print(f"  note: no plugin index ({type(_e).__name__}); ESL-flagged .esp "
               "masters may be misreported as ordering errors")

@@ -3604,6 +3604,210 @@ def _is_beast_variant(v) -> bool:
                                for p, lo in actor)
 
 
+def _coverage_third_party_drawn() -> bool:
+    r"""#coverage-third-party-drawn (2026-09-25): do both coverage passes judge
+    another mod's UBE armature on the WINNING armour record by what it draws,
+    instead of skipping the whole armour when any armature names a UBE race?
+    Yes, by default.
+
+    The blanket skip, and the body pass's slot-32 exemption from it, drew the
+    same mesh twice (their UBE patch and our armature over one file) and left
+    an armour with nothing when the third-party mesh exists nowhere; the plugin
+    half of `_third_party_ube_covered_armos` read our own un-loaded copies as
+    third-party patches. Now an armature T counts as drawing when it names UBE
+    races, its female world mesh is live in the game view, and -- for an
+    ARMOUR with slot 32, 34 or 38, judged per armour -- that mesh is under
+    `!UBE\`. Each armature S we would mint is drawn when such a T draws the
+    same file (`!UBE\`, `.nif`, `_0/_1` aside), else when an unused T's slots
+    overlap S's; T's races are subtracted, so S is minted for the UBE races no
+    T draws. Shares its switch with #root-plugin-index (`paths`).
+    CBBE2UBE_NO_COVERAGE_THIRD_PARTY_DRAWN=1 restores the blanket skip, the
+    slot-32 exemption, both exclusion halves and the recursive plugin index."""
+    return not _flag("CBBE2UBE_NO_COVERAGE_THIRD_PARTY_DRAWN", False)
+
+
+def _coverage_keep_better_first_person() -> bool:
+    r"""#coverage-keep-better-first-person (2026-09-25): under
+    #coverage-third-party-drawn, is our armature S still minted when its female
+    first-person mesh (MOD5) was converted but the third-party armature that
+    draws its world mesh has a first-person mesh that is not under `!UBE\` --
+    an unconverted CBBE one, or none at all? Yes, by default: skipping ours
+    would leave the player's own arms with only the CBBE mesh or nothing. Live:
+    2 armours (both draw one world file twice, as before).
+    CBBE2UBE_NO_COVERAGE_KEEP_BETTER_FIRST_PERSON=1 skips ours there too."""
+    return not _flag("CBBE2UBE_NO_COVERAGE_KEEP_BETTER_FIRST_PERSON", False)
+
+
+_TPD_UBE_RACES = frozenset(UBE_RACE_FIDS_24)
+_TPD_BODYLIKE = (1 << 2) | (1 << 4) | (1 << 8)      # slots 32, 34, 38
+
+
+def _tpd_facts(v) -> tuple:
+    r"""#coverage-third-party-drawn: (UBE races it names, female world mesh
+    key -- MOD3, else MOD2 --, BOD2 slots, female first-person mesh key) of a
+    winner-scan armature `v`. Races are UBE_AllRace.esp races of
+    `UBE_RACE_FIDS_24`, primary or additional; keys are `_model_key`s."""
+    payload, masters, own = v[0], v[1], v[2]
+    ube, mods, slots = set(), {}, 0
+    for s, d in esp.iter_subrecords(payload):
+        if (s == ARMA_ADDITIONAL_RACE_SIG and len(d) == 4) or (
+                s == b"RNAM" and len(d) >= 4):
+            a = _record_abs_fid(struct.unpack_from("<I", d, 0)[0], masters, own)
+            if a[0] == "ube_allrace.esp" and a[1] in _TPD_UBE_RACES:
+                ube.add(a[1])
+        elif s in (b"MOD2", b"MOD3", b"MOD5"):
+            mods[s] = _model_key(d.rstrip(b"\x00").decode("cp1252", "replace"))
+        elif s in (b"BOD2", b"BODT") and len(d) >= 4:
+            slots = struct.unpack_from("<I", d, 0)[0]
+    return (ube, mods.get(b"MOD3") or mods.get(b"MOD2") or "", slots,
+            mods.get(b"MOD5", ""))
+
+
+def _tpd_mesh_base(key: str) -> str:
+    r"""A model key with `!ube\`, `.nif` and a `_0`/`_1` weight suffix taken
+    off: their UBE file and our source of it compare equal."""
+    b = key[5:] if key.startswith("!ube\\") else key
+    if b.endswith(".nif"):
+        b = b[:-4]
+    if b.endswith(("_0", "_1")):
+        b = b[:-2]
+    return b
+
+
+def _third_party_drawn(armo_slots: int, winning, cand, arma_win, base_races,
+                       *, mesh_live, conv_exists, keep_first_person: bool):
+    r"""#coverage-third-party-drawn: which UBE races each armature of `cand`
+    (the ones a pass would mint) still needs, given the third-party UBE
+    armatures of the winning armour record `winning`.
+
+    Returns (need, quals, kept): need = {S: [UBE races left, UBE_RACE_FIDS_24
+    order]} -- empty = drawn by theirs; quals = the qualifying armatures;
+    kept = [(S, T)] the first-person guard kept S against.
+
+    A qualifier T names a UBE race, its female world mesh is live
+    (`mesh_live`; None = cannot tell, so NOT shown live -- skipping ours is the
+    dangerous direction, a double draw the safe one; `!UBE\` + a mesh this run
+    converted is live either way) and, when the ARMOUR has slot 32/34/38, sits
+    under `!UBE\`. S is drawn by T when they draw the same file; the rest by
+    BOD2 overlap with a T no match used -- a T that draws one S is used then.
+    T's races come off S's `base_races(S)`.
+    #coverage-keep-better-first-person: T does not draw S when S's MOD5 was
+    converted and T's MOD5 is not under `!UBE\` (empty included)."""
+    def _live(world: str) -> bool:
+        if world.startswith("!ube\\") and conv_exists(world[5:]):
+            return True
+        return mesh_live is not None and bool(mesh_live(world))
+
+    quals = []
+    for x, v in winning:
+        if not v[4]:
+            continue
+        ube, world, sl, mod5 = _tpd_facts(v)
+        if not ube or not world or not _live(world):
+            continue
+        if (armo_slots & _TPD_BODYLIKE) and not world.startswith("!ube\\"):
+            continue
+        quals.append((x, world, sl or armo_slots, mod5, ube))
+    need = {x: list(base_races(x)) for x in cand}
+    if not quals:
+        return need, quals, []
+    facts = {x: _tpd_facts(arma_win[x]) for x in cand}
+    got: dict = {x: set() for x in cand}
+    used: set = set()
+    kept: list = []
+
+    def _blocked(x, q) -> bool:
+        s5 = facts[x][3]
+        return (keep_first_person and bool(s5) and not s5.startswith("!ube\\")
+                and conv_exists(s5) and not q[3].startswith("!ube\\"))
+
+    for x in cand:
+        sw = facts[x][1]
+        for q in quals:
+            if q[0] == x or (sw and _tpd_mesh_base(q[1]) == _tpd_mesh_base(sw)):
+                used.add(q[0])
+                if _blocked(x, q):
+                    kept.append((x, q[0]))
+                    continue
+                got[x] |= q[4]
+    for x in cand:
+        left = [r for r in need[x] if r not in got[x]]
+        if left and got[x] == set():
+            s_sl = facts[x][2] or armo_slots
+            for q in quals:
+                if q[0] in used or not (q[2] & s_sl) or _blocked(x, q):
+                    continue
+                used.add(q[0])
+                got[x] |= q[4]
+                left = [r for r in need[x] if r not in got[x]]
+                if not left:
+                    break
+        need[x] = left
+    return need, quals, kept
+
+
+class _ThirdPartyDrawn:
+    """#coverage-third-party-drawn: one pass's use of `_third_party_drawn` --
+    what it leaves to mint, and the report and race-subset bookkeeping."""
+
+    def __init__(self, arma_win, mesh_live, conv_exists):
+        self.arma_win = arma_win
+        self.mesh_live = mesh_live
+        self.conv_exists = conv_exists
+        self.keep_fp = _coverage_keep_better_first_person()
+        self.drawn: list = []      # (armo_abs, edid): every armature drawn by theirs
+        self.partial: list = []    # (armo_abs, edid): some armatures or races left
+        self.kept: list = []       # (armo_abs, edid, S) kept by the first-person guard
+        self._races: dict = {}     # S -> UBE races some target needs it for
+        self._full: set = set()    # S some target needs for all its races
+
+    def split(self, armo_abs, edid, slots, winning, to_mint, listed,
+              record: bool = True):
+        """-> (the armatures of `to_mint` still to mint, {S: UBE races} for
+        those minted for fewer races than they would target). `record`: name
+        the armour in the report (an armour withheld for --exclude-mods is
+        named only when theirs draws all of it)."""
+        def base(x):
+            return listed.get(x) or UBE_RACE_FIDS_24
+        need, _quals, kept = _third_party_drawn(
+            slots, winning, to_mint, self.arma_win, base,
+            mesh_live=self.mesh_live, conv_exists=self.conv_exists,
+            keep_first_person=self.keep_fp)
+        left = [x for x in to_mint if need[x]]
+        fewer = {x: need[x] for x in left if len(need[x]) < len(base(x))}
+        if not left:
+            self.drawn.append((armo_abs, edid))
+        elif record:
+            for x in dict.fromkeys(x for x, _q in kept if x in left):
+                self.kept.append((armo_abs, edid, f"{x[0]}|{x[1]:X}"))
+            if len(left) < len(to_mint) or fewer:
+                self.partial.append((armo_abs, edid))
+        return left, fewer
+
+    def targeted(self, to_mint, fewer) -> None:
+        """An armour is targeted with `to_mint`: remember which races each
+        armature is needed for. A minted armature is one record shared by every
+        armour that lists it, so it targets the union -- all races as soon as
+        one armour needs them all (a double draw there beats a missing one)."""
+        for x in to_mint:
+            if x in fewer:
+                self._races.setdefault(x, set()).update(fewer[x])
+            else:
+                self._full.add(x)
+
+    def races_for(self, x) -> "list[int] | None":
+        """The UBE races minted armature `x` targets when fewer than usual,
+        in UBE_RACE_FIDS_24 order; None = unchanged."""
+        if x in self._full or x not in self._races:
+            return None
+        return [f for f in UBE_RACE_FIDS_24 if f in self._races[x]]
+
+    def stats(self) -> dict:
+        return {"third_party_drawn": self.drawn,
+                "third_party_partial": self.partial,
+                "third_party_kept_first_person": self.kept}
+
+
 def _summarize_arma(payload, masters, own_name):
     rnam = None
     is_ube = False
@@ -4087,6 +4291,7 @@ def generate_modded_nonbody_ube_coverage_patch(
     ube_twin_exists: "callable[[str], str | None] | None" = None,
     npc_worn_armo_abs: "set[tuple[str, int]] | frozenset | None" = None,
     exclusion_probe=None,
+    mesh_live: "callable[[str], bool] | None" = None,
     author: str = "cbbe-to-ube modded non-body UBE coverage",
     description: str = "UBE race coverage for mod-defined non-body armor",
 ) -> dict:
@@ -4116,7 +4321,12 @@ def generate_modded_nonbody_ube_coverage_patch(
 
     `npc_worn_armo_abs` (#coverage-human-race-list): the armour female NPCs
     wear or carry (`auto_convert._batch_npc_worn_armos`); a non-playable armour
-    in it may be taken by the race-list rule. None = none is known to be worn."""
+    in it may be taken by the race-list rule. None = none is known to be worn.
+
+    `mesh_live` (#coverage-third-party-drawn): is a mesh live in the game view
+    (`auto_convert._game_view_mesh_resolver`)? Another mod's UBE armature draws
+    only when its female world mesh is. None = cannot tell: only a mesh this
+    run converted counts as live, so ours is minted rather than skipped."""
     out_path = Path(output_esp_path)
     exclude = {n.lower() for n in (exclude_names or set())}
     DEFAULT_RACE = ("skyrim.esm", _DEFAULT_RACE_LOW24)
@@ -4204,6 +4414,11 @@ def generate_modded_nonbody_ube_coverage_patch(
         return _conv_exists(model_path) or (
             _twin and bool(model_path) and bool(ube_twin_exists(model_path)))
 
+    # #coverage-third-party-drawn: another mod's UBE armature on the winning
+    # record, judged by what it draws (`mesh_live`: the game view).
+    _tpd = _coverage_third_party_drawn()
+    _tpd_state = _ThirdPartyDrawn(arma_win, mesh_live, _conv_exists)
+
     # ---- Pass 2: find target ARMOs + the ARMAs to mint ----
     # Targets: playable, non-body, non-hair-only ARMOs whose winning armatures
     # all lack UBE coverage and have >=1 DefaultRace armature to mint.
@@ -4244,8 +4459,8 @@ def generate_modded_nonbody_ube_coverage_patch(
         winning = [(x, v) for x, v in winning if v is not None]
         if not winning:
             continue
-        if any(v[4] for _x, v in winning):
-            continue  # already has a UBE armature
+        if any(v[4] for _x, v in winning) and not _tpd:
+            continue  # already has a UBE armature (#coverage-third-party-drawn off)
         # Mint only DefaultRace armatures (human/mer); beast armatures crash.
         # A DefaultRace one that lists only beast races is a beast variant: no
         # human draws it, so no UBE actor may. #coverage-beast-variant
@@ -4267,6 +4482,14 @@ def generate_modded_nonbody_ube_coverage_patch(
                 armo_abs, aflags, winning, worn=npc_worn_armo_abs,
                 skins=skins, arma_ok=lambda v: True)
             to_mint = list(_listed)
+        # #coverage-third-party-drawn: what another mod's UBE armature on this
+        # winning record already draws is not minted again; the rest is minted
+        # for the UBE races it leaves out.
+        _fewer: dict = {}
+        if _tpd and to_mint and any(v[4] for _x, v in winning):
+            to_mint, _fewer = _tpd_state.split(armo_abs, edid, slots, winning,
+                                               to_mint, _listed)
+            _listed = {k: w for k, w in _listed.items() if k in to_mint}
         if not to_mint:
             continue
         if withheld_armo_abs and armo_abs in withheld_armo_abs:
@@ -4290,6 +4513,7 @@ def generate_modded_nonbody_ube_coverage_patch(
             race_listed.append((armo_abs, edid))
         targets.append((armo_abs, plugin_case.get(armo_abs[0], armo_abs[0]),
                         to_mint))
+        _tpd_state.targeted(to_mint, _fewer)   # #coverage-third-party-drawn
         for x in to_mint:
             mint_set.setdefault(x, None)
             armo_slots[x] = armo_slots.get(x, 0) | slots   # #coverage-female-standin
@@ -4356,6 +4580,12 @@ def generate_modded_nonbody_ube_coverage_patch(
         _listed_ube = race_list_ube.get(arma_abs)
         if _listed_ube:
             _addl = [(ube_byte << 24) | f for f in _listed_ube]
+            _prim = _addl[0]
+        # #coverage-third-party-drawn: only the UBE races another mod's
+        # armature does not draw, the first of them primary.
+        _fewer_ube = _tpd_state.races_for(arma_abs)
+        if _fewer_ube:
+            _addl = [(ube_byte << 24) | f for f in _fewer_ube]
             _prim = _addl[0]
         minted_payload = None
         _declined: list = []     # per attempt: a failed preserve must not count
@@ -4463,6 +4693,8 @@ def generate_modded_nonbody_ube_coverage_patch(
         # and why each withheld one was held.
         "exclusion_nonbody_kept": nonbody_kept,
         "exclusion_nonbody_held": nonbody_held,
+        # #coverage-third-party-drawn
+        **_tpd_state.stats(),
     }
 
 
@@ -4484,6 +4716,7 @@ def generate_modded_body_ube_coverage_patch(
     mesh_exists: "callable[[str], bool] | None" = None,
     ube_twin_exists: "callable[[str], str | None] | None" = None,
     npc_worn_armo_abs: "set[tuple[str, int]] | frozenset | None" = None,
+    mesh_live: "callable[[str], bool] | None" = None,
     author: str = "cbbe-to-ube modded body UBE coverage",
     description: str = "UBE race coverage for mod-defined body armor variants",
 ) -> dict:
@@ -4522,7 +4755,11 @@ def generate_modded_body_ube_coverage_patch(
     `npc_worn_armo_abs`: as in the non-body pass (#coverage-human-race-list).
     The race-list rule admits a body armature only with a converted mesh, as
     the DefaultRace rule does; a hands/feet one keeps its source races, the UBE
-    counterparts of the human ones added."""
+    counterparts of the human ones added.
+
+    `mesh_live`: as in the non-body pass (#coverage-third-party-drawn). Here it
+    also replaces the slot-32 exemption from the old blanket skip: a body
+    armour's third-party UBE armature is judged like any other."""
     out_path = Path(output_esp_path)
     exclude = {n.lower() for n in (exclude_names or set())}
     DEFAULT_RACE = ("skyrim.esm", _DEFAULT_RACE_LOW24)
@@ -4592,6 +4829,7 @@ def generate_modded_body_ube_coverage_patch(
     # What admits a body armature: a converted mesh, or -- when the planner
     # leaves built UBE twins to their builders -- such a twin. #skip-built-ube-path
     _admits = _ube_exists if (_twin and _skip_built_ube_path()) else _conv_exists
+    _tpd = _coverage_third_party_drawn()   # #coverage-third-party-drawn
     # #coverage-female-standin: set once the winner scan is read (Pass 1).
     _standin = None
 
@@ -4706,6 +4944,7 @@ def generate_modded_body_ube_coverage_patch(
     # _world_mesh_converted (Pass 2) and the rebuild (Pass 3).
     if _female_standin and female_mesh_exists is not None:
         _standin = _female_standin_resolver(arma_win, _ube_exists)
+    _tpd_state = _ThirdPartyDrawn(arma_win, mesh_live, _conv_exists)
 
     # ---- Pass 2: target body/deforming ARMOs lacking UBE coverage whose mesh
     #      WAS converted ----
@@ -4784,7 +5023,8 @@ def generate_modded_body_ube_coverage_patch(
         winning = [(x, v) for x, v in winning if v is not None]
         if not winning:
             continue
-        if any(v[4] for _x, v in winning) and not _cover_body:
+        _has_ube = any(v[4] for _x, v in winning)
+        if _has_ube and not _cover_body and not _tpd:
             continue                       # already has a UBE armature (vanilla ARMO path)
         # mint DefaultRace armatures: BODY needs a converted mesh (an unconverted
         # CBBE body on UBE clips); pure hands/feet (unified) are covered whether or
@@ -4819,6 +5059,12 @@ def generate_modded_body_ube_coverage_patch(
         # also have emptied is still named as withheld. #exclude-owned-coverage
         _withhold = bool(withheld_armo_abs) and armo_abs in withheld_armo_abs
         if _withhold:
+            # #coverage-third-party-drawn: one another mod's armature draws
+            # whole is not "left without an armature from any mod".
+            if _tpd and _has_ube and not _tpd_state.split(
+                    armo_abs, edid, slots, winning, to_mint, _listed,
+                    record=False)[0]:
+                continue
             withheld.append((armo_abs, edid))
             continue
         # #coverage-female-guard: a converted MALE mesh does not qualify a TORSO
@@ -4920,6 +5166,16 @@ def generate_modded_body_ube_coverage_patch(
                 for x in _acc:
                     if x not in accessory_added:
                         accessory_added.append(x)
+        # #coverage-third-party-drawn: judged on what the guards above left,
+        # hood included -- what another mod's UBE armature on this winning
+        # record already draws is not minted again; the rest is minted for the
+        # UBE races it leaves out.
+        _fewer: dict = {}
+        if _tpd and _has_ube and to_mint:
+            to_mint, _fewer = _tpd_state.split(armo_abs, edid, slots, winning,
+                                               to_mint, _listed)
+            if not to_mint:
+                continue
         if _listed:
             # What the guards above left of it (a hood riding along is not).
             race_list_ube.update({x: _listed[x] for x in to_mint if x in _listed})
@@ -4928,6 +5184,7 @@ def generate_modded_body_ube_coverage_patch(
             world_partial.append((armo_abs, edid))
         targets.append((armo_abs, plugin_case.get(armo_abs[0], armo_abs[0]),
                         to_mint))
+        _tpd_state.targeted(to_mint, _fewer)   # #coverage-third-party-drawn
         for x in to_mint:
             mint_set.setdefault(x, None)
             armo_slots[x] = armo_slots.get(x, 0) | slots   # #coverage-female-standin
@@ -4999,6 +5256,12 @@ def generate_modded_body_ube_coverage_patch(
         _listed_ube = race_list_ube.get(arma_abs)
         if _listed_ube:
             _ube_addl = [(ube_byte << 24) | f for f in _listed_ube]
+            _ube_prim = _ube_addl[0]
+        # #coverage-third-party-drawn: only the UBE races another mod's
+        # armature does not draw, the first of them primary.
+        _fewer_ube = _tpd_state.races_for(arma_abs)
+        if _fewer_ube:
+            _ube_addl = [(ube_byte << 24) | f for f in _fewer_ube]
             _ube_prim = _ube_addl[0]
         _prim, _addl = _ube_prim, _ube_addl
         if cover_hands_feet and (_arma_bod2_slots(payload)
@@ -5169,6 +5432,8 @@ def generate_modded_body_ube_coverage_patch(
         "body_accessory": [f"{a[0]}|{a[1]:X}" for a in accessory_added],
         # #coverage-human-race-list: armours taken by the race-list rule.
         "race_listed": race_listed,
+        # #coverage-third-party-drawn
+        **_tpd_state.stats(),
     }
 
 
