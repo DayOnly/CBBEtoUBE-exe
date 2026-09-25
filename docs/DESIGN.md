@@ -1567,12 +1567,22 @@ reported through `_report_coverage_holds`:
   `_0`, `_1`, suffixless) exists per `_mesh_exists_anywhere` (overwrite, enabled
   mods, game Data, any archive but voice/sound/facegen). An armature naming no
   mesh (a slot placeholder that hides a body part) is never dead, nor is one
-  #coverage-nude-skin points at the UBE body's own hand or foot. It is the LAST
+  #coverage-nude-skin points at the UBE body's own hand or foot, nor one whose
+  minted copy draws a mesh it does not name (`_dead_slot_draws`, only when
+  #coverage-female-standin is in play): a dead female slot the rebuild fills
+  with the vanilla stand-in -- the pass's own `_female_standin_resolver`,
+  keyed on the male path whether or not that exists -- or whose paired male
+  path exists per the lookup the rebuild asks (the "male as it is" branch;
+  asked of a body piece too, the lenient side). A hood the rule drops is not
+  counted in `body_accessory` either, so the report does not call it both
+  "drawn on UBE with the body" and "not minted". It is the LAST
   filter on `to_mint` in both passes -- after DefaultRace, beast, race-list,
   third-party and the exclusion hold in the non-body pass; after the female
   guard, world-mesh, nude-skin, body-accessory and third-party rules in the body
   pass -- so a hood or race-list armature is judged too and every other rule's
-  counts are unchanged; an armour left with nothing is `dead_dropped` and gets
+  counts are unchanged but for the dead ones themselves (the race-list,
+  exclusion-kept, wig and accessory lists name only what is minted); an armour
+  left with nothing is `dead_dropped` and gets
   no link. The verdict is memoised per armature (`_dead_armature_judge`). The
   lookup is its own (`_dead_armature_lookup`): the female guard's or world-mesh
   rule's copy when one was built, else one built for it -- those are None when

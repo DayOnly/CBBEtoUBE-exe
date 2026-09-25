@@ -3658,8 +3658,38 @@ def _weight_siblings(model: str) -> "list[str]":
                                base + "_1.nif"]))
 
 
+def _dead_slot_draws(standin, female_mesh_exists):
+    r"""#coverage-dead-armature with #coverage-female-standin: would the
+    minted copy of an armature still draw something where its own female slot
+    is dead? `draws(payload)` -> True when a named MOD3 (after MOD2) or MOD5
+    (after MOD4) that `female_mesh_exists` calls dead would be filled by
+    `rebuild_arma_payload` with the vanilla stand-in (`standin`: the pass's
+    own `_female_standin_resolver`, keyed on the male path whether or not that
+    exists), or when the male path it pairs with exists (the stand-in rule's
+    "male as it is" branch for a non-body piece; asked of a body piece too --
+    the lenient side, minted as before). None when the stand-in rule is not in
+    play (switched off, or no lookup): the rebuild then draws nothing instead."""
+    if standin is None or female_mesh_exists is None:
+        return None
+
+    def draws(payload: bytes) -> bool:
+        male = {b"MOD3": "", b"MOD5": ""}
+        for sig, d in esp.iter_subrecords(payload):
+            p = d.rstrip(b"\x00").decode("cp1252", "replace")
+            if sig in (b"MOD2", b"MOD4"):
+                male[b"MOD3" if sig == b"MOD2" else b"MOD5"] = p
+            elif sig in male and p and not female_mesh_exists(p):
+                src = male[sig]
+                if standin(sig.decode(), src) is not None:
+                    return True
+                if src and female_mesh_exists(src):
+                    return True
+        return False
+    return draws
+
+
 def _dead_armature_judge(arma_win: dict, crp: "set[str]", *, mesh_exists,
-                         ube_twin_exists):
+                         ube_twin_exists, draws_instead=None):
     r"""#coverage-dead-armature: `dead(x)` -> is winner-scan armature `x` one
     whose meshes exist nowhere? Memoised per armature.
 
@@ -3671,7 +3701,10 @@ def _dead_armature_judge(arma_win: dict, crp: "set[str]", *, mesh_exists,
     Data, any archive but voice/sound/facegen). That lookup lists every archive
     in the folders, not only those the game loads, so a mesh only in an
     inactive plugin's archive counts as alive -- the lenient side: such an
-    armature is minted as before, never dropped for a mesh that may load."""
+    armature is minted as before, never dropped for a mesh that may load.
+    Nor is one dead whose minted copy draws a mesh the armature does not name
+    (`draws_instead(payload)`, `_dead_slot_draws`: a dead female slot filled
+    with the vanilla stand-in; None = nothing is drawn instead)."""
     memo: dict = {}
 
     def alive(p: str) -> bool:
@@ -3688,6 +3721,8 @@ def _dead_armature_judge(arma_win: dict, crp: "set[str]", *, mesh_exists,
                       if s in _ARMA_MODEL_SIGS]
             models = [p for p in models if p]
             memo[x] = bool(models) and not any(alive(p) for p in models)
+            if memo[x] and draws_instead is not None:
+                memo[x] = not draws_instead(arma_win[x][0])
         return memo[x]
     return dead
 
@@ -4581,9 +4616,17 @@ def generate_modded_nonbody_ube_coverage_patch(
     # record, judged by what it draws (`mesh_live`: the game view).
     _tpd = _coverage_third_party_drawn()
     _tpd_state = _ThirdPartyDrawn(arma_win, mesh_live, _conv_exists)
-    # #coverage-dead-armature: None = off, or the modlist cannot be read.
+    # #coverage-female-standin: a dead female slot's stand-in, else (non-body)
+    # its male path as it is. Only where a dead path can be told at all. Asked
+    # by the dead-armature test (Pass 2) and the rebuild (Pass 3).
+    _standin = (_female_standin_resolver(arma_win, _ube_exists)
+                if _female_standin and female_mesh_exists is not None else None)
+    # #coverage-dead-armature: None = off, or the modlist cannot be read. One
+    # whose copy draws the stand-in instead is not dead.
     _dead = (_dead_armature_judge(arma_win, crp, mesh_exists=dead_mesh_exists,
-                                  ube_twin_exists=ube_twin_exists)
+                                  ube_twin_exists=ube_twin_exists,
+                                  draws_instead=_dead_slot_draws(
+                                      _standin, female_mesh_exists))  # non-body
              if _coverage_dead_armature() and dead_mesh_exists is not None
              else None)
 
@@ -4732,12 +4775,7 @@ def generate_modded_nonbody_ube_coverage_patch(
              b"NAM0", b"NAM1", b"NAM2", b"NAM3"}
     STRIP_MIN = {b"SNDD", b"ONAM"}
     # (the converted-mesh lookups `crp`/`_ube_exists` are set before Pass 2:
-    # #exclude-body-only asks them there.)
-
-    # #coverage-female-standin: a dead female slot's stand-in, else (non-body)
-    # its male path as it is. Only where a dead path can be told at all.
-    _standin = (_female_standin_resolver(arma_win, _ube_exists)
-                if _female_standin and female_mesh_exists is not None else None)
+    # #exclude-body-only asks them there; so is the stand-in `_standin`.)
 
     new_arma_records: list[esp.Record] = []
     _mint_rec: dict = {}   # arma_abs -> minted Record (for post-prune sidecar fids)
@@ -5141,9 +5179,12 @@ def generate_modded_body_ube_coverage_patch(
     if _female_standin and female_mesh_exists is not None:
         _standin = _female_standin_resolver(arma_win, _ube_exists)
     _tpd_state = _ThirdPartyDrawn(arma_win, mesh_live, _conv_exists)
-    # #coverage-dead-armature: None = off, or the modlist cannot be read.
+    # #coverage-dead-armature: None = off, or the modlist cannot be read. One
+    # whose copy draws the stand-in instead is not dead.
     _dead = (_dead_armature_judge(arma_win, crp, mesh_exists=dead_mesh_exists,
-                                  ube_twin_exists=ube_twin_exists)
+                                  ube_twin_exists=ube_twin_exists,
+                                  draws_instead=_dead_slot_draws(
+                                      _standin, female_mesh_exists))  # body
              if _coverage_dead_armature() and dead_mesh_exists is not None
              else None)
 
@@ -5406,6 +5447,11 @@ def generate_modded_body_ube_coverage_patch(
         for x in to_mint:
             mint_set.setdefault(x, None)
             armo_slots[x] = armo_slots.get(x, 0) | slots   # #coverage-female-standin
+    # #coverage-body-accessory, counted after #coverage-dead-armature (as the
+    # race-list rule is): a hood that rule dropped was not minted, so it is not
+    # "drawn on UBE with the body". The verdict is per armature, so a dead hood
+    # is minted for no armour.
+    accessory_added = [x for x in accessory_added if x not in dead_skipped]
 
     # ---- Pass 3: mint ESP (UBE-primary ARMAs, models REDIRECTED to !UBE) ----
     patch_masters = list(VANILLA_DLC_MASTERS)

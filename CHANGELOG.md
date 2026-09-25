@@ -31,7 +31,11 @@ shipped). Such an item draws nothing on any character, UBE or not, but this
 tool still gave it a UBE armature, a link that drew nothing. It now leaves
 those out and says so in a NOTE, counted by plugin. An item that has at least
 one of its meshes (the world one or the first-person one, male or female) is
-linked as before. On the reported modlist this left out 41 armatures (city
+linked as before, and so is one this tool already draws on UBE women with a
+stand-in: the matching vanilla female mesh, or its own male mesh where that
+exists. A hand or foot drawn with the UBE body's own hands or feet is linked
+too, and a hood left out this way is no longer also listed as drawn with its
+robe. On the reported modlist this left out 41 armatures (city
 guard boots, gauntlets, helmets and shields of one overhaul, some pouches and
 satchels, amulets and a few single items), 48 links on 47 items that drew
 nothing anyway. Install the missing meshes and run again, and they are linked.

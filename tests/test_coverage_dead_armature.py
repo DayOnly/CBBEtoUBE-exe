@@ -360,17 +360,157 @@ def test_a_live_race_list_armature_is_minted(tmp_path):
 
 
 def test_a_dead_hood_riding_with_a_robe_is_not_minted(tmp_path):
-    """The body-accessory rule adds the hood (and counts it, as before); its
-    mesh is dead, so it is not minted. The robe is."""
+    """The body-accessory rule adds the hood; its mesh is dead, so it is not
+    minted. The robe is. The hood is not also counted as drawn with the body
+    (the report would say both 'drawn on UBE' and 'not minted')."""
     robe = _arma(0x01000800, BODY, {b"MOD3": ROBE})
     hood = _arma(0x01000801, HOOD, {b"MOD3": HOODM})
     armo = _armo(0x01000810, BODY | HOOD, [robe, hood], edid="HoodedRobe")
     st, minted = _body(tmp_path, [robe, hood], [armo], lookup=_have(ROBE),
                        conv={ROBE})
     assert [m[b"MOD3"] for m in minted] == ["!UBE\\" + ROBE]
-    assert st["body_accessory"] == ["mod.esp|801"], "the other rule counts as before"
     assert st["dead_armature_skipped"] == ["mod.esp|801"]
+    assert st["body_accessory"] == [], "a hood not minted is not drawn with the body"
     assert st["dead_dropped"] == []
+
+
+def test_a_live_hood_riding_with_a_robe_is_counted(tmp_path):
+    """Control for the one above: the accessory count is untouched."""
+    robe = _arma(0x01000800, BODY, {b"MOD3": ROBE})
+    hood = _arma(0x01000801, HOOD, {b"MOD3": HOODM})
+    armo = _armo(0x01000810, BODY | HOOD, [robe, hood], edid="HoodedRobe")
+    st, minted = _body(tmp_path, [robe, hood], [armo], lookup=_have(ROBE, HOODM),
+                       conv={ROBE})
+    assert sorted(m[b"MOD3"] for m in minted) == sorted(["!UBE\\" + ROBE, HOODM])
+    assert st["body_accessory"] == ["mod.esp|801"]
+
+
+def test_a_dead_hood_is_reported_only_as_not_minted(tmp_path, capsys):
+    """The run log's two lines agree: the hood is under the NOTE, not under
+    'drawn on UBE with the body'."""
+    robe = _arma(0x01000800, BODY, {b"MOD3": ROBE})
+    hood = _arma(0x01000801, HOOD, {b"MOD3": HOODM})
+    armo = _armo(0x01000810, BODY | HOOD, [robe, hood], edid="HoodedRobe")
+    st, _m = _body(tmp_path, [robe, hood], [armo], lookup=_have(ROBE), conv={ROBE})
+    capsys.readouterr()
+    ac._report_coverage_holds([st])
+    out = capsys.readouterr().out
+    assert "1 armature(s) name only meshes that exist nowhere" in out
+    assert "drawn on UBE with the body" not in out
+
+
+# -------------------- a dead female slot the stand-in rule fills (#coverage-female-standin)
+
+MALE_X = r"modgear\helm_m_1.nif"            # exists nowhere
+FEMALE_Y = r"modgear\helm_f_1.nif"          # exists nowhere
+VANILLA_Z = r"armor\vanilla\f\helm_f_1.nif"  # the vanilla counterpart, converted
+GLOVE_X = r"modgear\glove_m_1.nif"
+GLOVE_Y = r"modgear\glove_f_1.nif"
+GLOVE_Z = r"armor\vanilla\f\glove_f_1.nif"
+
+
+def _paired_world(tmp_path, slots, male, fem, counterpart):
+    """A vanilla (Skyrim.esm) armature pairs `male` with the converted
+    `counterpart`; the mod's armature names `male` and `fem`, both dead."""
+    van = _arma(0x000900, slots, {b"MOD2": male, b"MOD3": counterpart})
+    sky = _save(tmp_path / "Skyrim.esm", [], [Group(label=b"ARMA", records=[van])])
+    ube = _save(tmp_path / "UBE_AllRace.esp", ["Skyrim.esm"], [])
+    mine = _arma(0x01000800, slots, {b"MOD2": male, b"MOD3": fem})
+    armo = _armo(0x01000810, slots, [mine], edid="Piece")
+    mod = _save(tmp_path / "Mod.esp", ["Skyrim.esm"],
+                [Group(label=b"ARMA", records=[mine]),
+                 Group(label=b"ARMO", records=[armo])])
+    return [sky, ube, mod]
+
+
+def _standin_nonbody(tmp_path):
+    order = _paired_world(tmp_path, HEAD, MALE_X, FEMALE_Y, VANILLA_Z)
+    look = _have(VANILLA_Z)
+    out = tmp_path / "UBE_ModNonBody_Coverage UBE patch.esp"
+    st = up.generate_modded_nonbody_ube_coverage_patch(
+        out, order, converted_rel_paths={_key(VANILLA_Z)},
+        exclude_names={out.name.lower()}, master_data_dirs=[tmp_path],
+        cover_all=True, preserve_textures=True,
+        female_mesh_exists=look, dead_mesh_exists=look)
+    return st, _minted(out)
+
+
+def test_a_dead_helmet_drawing_the_vanilla_stand_in_is_minted(tmp_path):
+    """Its own meshes exist nowhere, but its male path pairs with a converted
+    vanilla female mesh: the minted copy draws that stand-in, so UBE women see
+    the helmet. It is not dead."""
+    st, minted = _standin_nonbody(tmp_path)
+    assert [m[b"MOD3"] for m in minted] == ["!UBE\\" + VANILLA_Z]
+    assert [d["arma"] for d in st["female_standin"]] == ["mod.esp|800"]
+    assert st["dead_armature_skipped"] == [] and st["dead_dropped"] == []
+
+
+def test_with_the_stand_in_rule_off_the_same_helmet_is_dropped(tmp_path, monkeypatch):
+    """Nothing draws the stand-in then: the copy would draw nothing."""
+    monkeypatch.setenv("CBBE2UBE_NO_COVERAGE_FEMALE_STANDIN", "1")
+    st, minted = _standin_nonbody(tmp_path)
+    assert minted == []
+    assert st["dead_armature_skipped"] == ["mod.esp|800"]
+
+
+def test_an_unconverted_counterpart_is_no_stand_in(tmp_path):
+    """The resolver gives none when the counterpart was not converted, so the
+    armature is dead as before."""
+    order = _paired_world(tmp_path, HEAD, MALE_X, FEMALE_Y, VANILLA_Z)
+    look = _have(VANILLA_Z)
+    out = tmp_path / "UBE_ModNonBody_Coverage UBE patch.esp"
+    st = up.generate_modded_nonbody_ube_coverage_patch(
+        out, order, converted_rel_paths=set(),
+        exclude_names={out.name.lower()}, master_data_dirs=[tmp_path],
+        cover_all=True, preserve_textures=True,
+        female_mesh_exists=look, dead_mesh_exists=look)
+    assert _minted(out) == []
+    assert st["dead_armature_skipped"] == ["mod.esp|800"]
+
+
+def test_dead_gauntlets_drawing_the_vanilla_stand_in_are_minted_in_the_body_pass(tmp_path):
+    order = _paired_world(tmp_path, HANDS, GLOVE_X, GLOVE_Y, GLOVE_Z)
+    look = _have(GLOVE_Z)
+    out = tmp_path / "UBE_ModBody_Coverage UBE patch.esp"
+    st = up.generate_modded_body_ube_coverage_patch(
+        out, order, converted_rel_paths={_key(GLOVE_Z)},
+        exclude_names={out.name.lower()}, master_data_dirs=[tmp_path],
+        cover_all=True, cover_hands_feet=True, preserve_textures=True,
+        female_mesh_exists=look, dead_mesh_exists=look)
+    minted = _minted(out)
+    assert [m[b"MOD3"] for m in minted] == ["!UBE\\" + GLOVE_Z]
+    assert st["dead_armature_skipped"] == []
+
+
+def test_a_dead_helmet_whose_male_mesh_the_stand_in_lookup_finds_is_minted(tmp_path):
+    """The stand-in rule's "male as it is" branch: a non-body piece whose
+    female slot is dead draws its male path where that mesh exists. Asked with
+    the lookup the rebuild asks, so the two cannot disagree."""
+    fem = _have(MALE_X)
+    fem.body_fit = lambda p: False       # a helmet, not skinned to the body
+    helm = _helm({b"MOD2": MALE_X, b"MOD3": FEMALE_Y})
+    out = tmp_path / "UBE_ModNonBody_Coverage UBE patch.esp"
+    st = up.generate_modded_nonbody_ube_coverage_patch(
+        out, _world(tmp_path, [helm], [_armo(0x01000810, HEAD, [helm])]),
+        converted_rel_paths=set(), exclude_names={out.name.lower()},
+        master_data_dirs=[tmp_path], cover_all=True, preserve_textures=True,
+        female_mesh_exists=fem, dead_mesh_exists=_have())
+    assert [m[b"MOD3"] for m in _minted(out)] == [MALE_X]
+    assert [d["arma"] for d in st["female_male_nonbody"]] == ["mod.esp|800"]
+    assert st["dead_armature_skipped"] == []
+
+
+# ------------------------ a hand/foot the nude-skin rule points at the UBE body
+
+def test_nude_boots_drawing_the_ube_feet_are_not_dead(tmp_path):
+    """A costume's "boots" are the nude CBBE feet; #coverage-nude-skin points
+    them at the UBE body's own feet, which resolve. The copy draws those, so it
+    is minted even where the named nude meshes are found nowhere."""
+    from tests import test_coverage_nude_skin as ns
+    st, minted = ns._run(tmp_path, [ns.FEET_ARMA], [(0x01000801, ns.FEET, [0x01000800])],
+                         mesh_exists=lambda p: True, dead_mesh_exists=_have())
+    assert [ns._mod3(m) for m in minted] == [ns.UBE_FEET]
+    assert st["dead_armature_skipped"] == [] and st["dead_dropped"] == []
 
 
 # ---------------------------------------------------- (j) the switch, parity
