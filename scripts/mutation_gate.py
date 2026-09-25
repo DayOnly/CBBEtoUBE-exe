@@ -387,7 +387,9 @@ def _launch_shard(k: int, shard, tree: Path, run_dir: Path):
     spec.write_text(json.dumps([_pair_to_json(p) for p in shard]), encoding="utf-8")
     cmd = [sys.executable, "-B", str(Path(__file__).resolve()), "shard", "--tree", str(tree),
            "--pairs", str(spec), "--json", str(run_dir / f"shard{k}.json")]
-    env = dict(os.environ, PYTHONIOENCODING="utf-8")
+    # Unbuffered, so the shard's log shows each row as it lands (a full run
+    # is long, and a redirected stdout would otherwise hold it all to the end).
+    env = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1")
     with open(run_dir / f"shard{k}.log", "wb") as fh:
         return subprocess.Popen(cmd, stdout=fh, stderr=subprocess.STDOUT,
                                 stdin=subprocess.DEVNULL, env=env, **own_group())
@@ -520,6 +522,8 @@ def run_gate_jobs(repo=REPO, pairs=None, *, jobs: int, only=None, keep=False, lo
     try:
         for k in range(len(shards)):
             trees.append(make_worktree(repo, run_dir / f"shard{k}"))
+        log(f"{len(shards)} shard(s); each writes its rows as they land to {run_dir}"
+            f"{os.sep}shard<k>.log")
         for k, shard in enumerate(shards):
             procs[k] = launch(k, shard, trees[k], run_dir)
             log(f"shard {k}: {len(shard)} pair(s) in {trees[k]}")
@@ -625,7 +629,8 @@ def main(argv=None) -> int:
         if args.jobs == 1:
             report = run_gate(REPO, pairs, only=args.only, keep=args.keep)
         else:
-            report = run_gate_jobs(REPO, pairs, jobs=args.jobs, only=args.only, keep=args.keep)
+            report = run_gate_jobs(REPO, pairs, jobs=args.jobs, only=args.only, keep=args.keep,
+                                   log=lambda line: print(line, flush=True))
     except GateError as e:
         print(f"mutation gate could not run: {e}", file=sys.stderr)
         return 2

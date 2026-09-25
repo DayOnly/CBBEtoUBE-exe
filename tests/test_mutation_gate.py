@@ -184,12 +184,23 @@ def test_a_red_baseline_judges_nothing(tiny, tmp_path):
     assert rep["verdict"] == "FAIL" and rep["pairs"] == [] and "baseline" in rep["reason"]
 
 
+def _private_temp(tmp_path, monkeypatch):
+    """A temp folder of this test's own for mkdtemp. The machine-wide one is
+    shared: other gate runs -- the shards of a --jobs run among them, running
+    this very file -- make and remove their mutation-gate-* folders there all
+    the time, so a before/after census of it is a race, not a check."""
+    private = tmp_path / "temp"
+    private.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(private))
+    return private
+
+
 def test_the_cli_reports_and_exits_by_verdict(tiny, tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(mg, "REPO", tiny)
     monkeypatch.setattr(mg, "_seeded_pairs", lambda: [_pair()])
-    temp_before = set(Path(tempfile.gettempdir()).glob("mutation-gate-*"))
+    private = _private_temp(tmp_path, monkeypatch)
     assert mg.main(["run", "--json", str(tmp_path / "r.json")]) == 0
-    assert set(Path(tempfile.gettempdir()).glob("mutation-gate-*")) == temp_before, (
+    assert list(private.iterdir()) == [], (
         "the gate left its temp folder behind (the worktree's wrapper, made by mkdtemp)")
     out = capsys.readouterr().out
     assert "VERDICT: PASS" in out and "1 caught" in out
@@ -479,7 +490,9 @@ def test_a_pair_survives_the_trip_to_a_shard_unchanged():
 def test_the_cli_runs_jobs_and_refuses_zero(tiny, tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(mg, "REPO", tiny)
     monkeypatch.setattr(mg, "_seeded_pairs", lambda: [_pair(id="P1"), _pair(id="P2", why="b")])
+    private = _private_temp(tmp_path, monkeypatch)
     assert mg.main(["run", "--jobs", "2", "--json", str(tmp_path / "r.json")]) == 0
+    assert list(private.iterdir()) == [], "the run folder or a shard worktree was left behind"
     assert "VERDICT: PASS -- 2 caught" in capsys.readouterr().out
     rep = json.loads((tmp_path / "r.json").read_text(encoding="utf-8"))
     assert rep["jobs"] == 2 and [r["id"] for r in rep["pairs"]] == ["P1", "P2"]
