@@ -1293,8 +1293,25 @@ to a full ESP. The coverage generators therefore emit **numbered pieces of their
 Chunking is **by target (ARMO), never by armature**, so an ARMO's whole add-set stays
 in one piece and yields exactly **one** `filterByArmors` line. Whether SkyPatcher
 accumulates duplicate lines for one armor or takes the last is unverified, and this is
-the only delivery path. The cost is that an armature shared across a chunk boundary is
-minted twice — measured at ~2%.
+the only delivery path.
+
+**Armours that share an armature share a piece (`#esl-chunk-dedup`).** Filling the
+pieces armour by armour in scan order minted an armature once per piece whenever two
+armours using it fell on either side of a boundary: live, 36 of the non-body coverage's
+2,093 distinct armatures (2,129 records). The two copies were identical, and the
+merge's record dedup cannot fold them: the first piece fills a whole Combined piece by
+itself, and ESL pieces never master each other. Now armours linked by a shared
+armature (directly or through a chain) form one group, each group goes whole into the
+first piece with room, and armours keep scan order inside a piece (a run that fits one
+piece is byte-identical). The alternative, an armour in one piece naming an armature
+minted in another (a SkyPatcher line allows it), was not taken: the merge folds each
+coverage piece into whichever Combined piece has room and resolves links within that
+piece only. Only a group needing more than the cap is still split in scan order; the
+largest live group needs 85. Live: non-body 2,129 -> 2,093 records (2,048 + 45 instead
+of 2,048 + 81), every armour's links identical, the Combined still 2 pieces with 3,878
+own records instead of 3,912. 15 armatures minted by both the body and the non-body pass
+remain (separate patches; out of this rule's reach). `CBBE2UBE_NO_ESL_CHUNK_DEDUP=1`
+restores the scan-order fill.
 
 ### Per-source patch names (`#source-patch-rename`)
 

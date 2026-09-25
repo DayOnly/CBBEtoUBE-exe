@@ -4304,6 +4304,28 @@ def _outside_paths_predicate(paths) -> "callable[[str], bool] | None":
     return lambda p: (p or "").replace("/", "\\").lower() in known
 
 
+def _esl_chunk_dedup() -> bool:
+    r"""#esl-chunk-dedup (2026-09-25): do coverage targets that share a minted
+    armature go into the SAME ESL piece? Yes, by default.
+
+    `_emit_coverage_pieces` mints, in every piece, each armature an armour in
+    that piece adds. Filling the pieces target by target in scan order put two
+    armours that share an armature into different pieces often enough that the
+    armature was minted twice: measured on the live load order, 36 of the
+    non-body coverage's 2,093 distinct armatures were minted in both of its
+    pieces (2,129 records). The two copies carry the same content; the merge's
+    record dedup cannot fold them because the first piece fills a whole
+    Combined piece by itself, and ESL pieces never master each other.
+
+    With this on, targets linked by a shared armature (directly or through a
+    chain) form one group, and each group is placed whole into the first piece
+    with room -- so each armature is minted once and every armour still gets
+    exactly one line in one piece. Only a group needing more than `cap`
+    armatures is split as before (the largest live group needs 85).
+    CBBE2UBE_NO_ESL_CHUNK_DEDUP=1 restores the scan-order fill."""
+    return not _flag("CBBE2UBE_NO_ESL_CHUNK_DEDUP", False)
+
+
 def _chunk_targets_for_esl(targets, mint_rec, cap: int) -> "list[list]":
     """Group coverage targets into chunks, each minting <= `cap` DISTINCT armatures.
 
@@ -4313,13 +4335,85 @@ def _chunk_targets_for_esl(targets, mint_rec, cap: int) -> "list[list]":
     wins is unverified -- the shipped INI currently has exactly one line per armor
     (9,913 lines / 9,913 distinct armors) and that invariant is worth keeping.
 
-    Cost of that choice: an armature shared by ARMOs in different chunks is minted
-    once per chunk. Measured on the live pack this is a handful of records, far
-    cheaper than risking the delivery path.
+    Targets that share a minted armature are kept in one chunk (#esl-chunk-dedup),
+    so the armature is minted once rather than once per chunk. A piece's armour
+    could instead name an armature minted in another piece -- a SkyPatcher line may
+    name several plugins -- but the merge folds each coverage piece into whichever
+    Combined piece has room and resolves links within that piece only; keeping the
+    group together needs no cross-piece reference at all.
 
-    A single target needing more than `cap` armatures becomes its own over-cap chunk
-    -- it cannot be split without breaking the invariant above, and the caller
-    downgrades just that piece."""
+    A group needing more than `cap` armatures is chunked in scan order on its own,
+    and only its armatures can repeat. A single target needing more than `cap`
+    becomes its own over-cap chunk -- it cannot be split without breaking the
+    invariant above, and the caller downgrades just that piece."""
+    if not _esl_chunk_dedup():
+        return _chunk_targets_in_scan_order(targets, mint_rec, cap)
+    # Union targets that mint a common armature. Groups are listed below in the
+    # order their first target was scanned.
+    parent = list(range(len(targets)))
+
+    def _root(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    first_user: dict = {}
+    for i, (_armo, _plugin, to_mint) in enumerate(targets):
+        for a in to_mint:
+            if a not in mint_rec:
+                continue
+            j = first_user.setdefault(a, i)
+            ri, rj = _root(i), _root(j)
+            if ri != rj:
+                parent[max(ri, rj)] = min(ri, rj)
+    groups: dict = {}
+    for i in range(len(targets)):
+        groups.setdefault(_root(i), []).append(i)
+
+    def _keys(idx) -> set:
+        return {a for i in idx for a in targets[i][2] if a in mint_rec}
+
+    chunks: list = []           # target indices per chunk
+    chunk_keys: list = []       # the distinct armatures each chunk mints
+    for members in groups.values():
+        keys = _keys(members)
+        if not keys:
+            # Mints nothing, so it emits no line and costs nothing: ride along.
+            if chunks:
+                chunks[-1].extend(members)
+            else:
+                chunks.append(list(members))
+                chunk_keys.append(set())
+            continue
+        if len(keys) > cap:
+            # Scan order keeps every target, in order: slice the indices to match.
+            pos = 0
+            for sub in _chunk_targets_in_scan_order(
+                    [targets[i] for i in members], mint_rec, cap):
+                idx = members[pos:pos + len(sub)]
+                pos += len(sub)
+                chunks.append(idx)
+                chunk_keys.append(_keys(idx))
+            continue
+        for k, held in enumerate(chunk_keys):
+            if len(held) + len(keys) <= cap:
+                chunks[k].extend(members)
+                held |= keys
+                break
+        else:
+            chunks.append(list(members))
+            chunk_keys.append(keys)
+    # Scan order inside each chunk, so a run that fits one piece mints its records
+    # in exactly the order it always has.
+    return [[targets[i] for i in sorted(c)] for c in chunks]
+
+
+def _chunk_targets_in_scan_order(targets, mint_rec, cap: int) -> "list[list]":
+    """Fill chunks target by target in scan order, starting a new chunk when the
+    next target's new armatures would pass `cap`. An armature shared by targets in
+    two chunks is minted in both. `_chunk_targets_for_esl` uses it for a group too
+    big for one chunk, and for everything under CBBE2UBE_NO_ESL_CHUNK_DEDUP=1."""
     chunks: list = []
     cur: list = []
     cur_keys: set = set()

@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Changed — the patch no longer carries the same armour piece twice
+
+The patch this tool writes for mod armour is cut into parts small enough to load
+as light plugins. When two items used the same armour piece and the cut fell
+between them, that piece was written into both parts. Items that share a piece
+are now kept in the same part, so each piece is written once. What every item
+shows in game is unchanged. Measured on the reported modlist: 36 duplicate
+records removed (2,129 down to 2,093), leaving more room before the combined
+plugin needs another part to enable. `CBBE2UBE_NO_ESL_CHUNK_DEDUP=1` (set to 1)
+turns it off.
+
 ### Fixed — a garment whose layers share one name keeps every layer
 
 Some garments are built from several layers the author gave the same name, for
