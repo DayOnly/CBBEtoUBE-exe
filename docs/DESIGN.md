@@ -839,6 +839,24 @@ is *weight-sensitive* can desync them.
 **The rule.** Any shape drop / inject / classify decision must be reconciled
 across the `_0`/`_1` pair, or verified weight-invariant.
 
+**The end-of-run pair walk is one walk** (`#tail-fold`, 2026-09-25). After the
+last source, the batch parent repairs one-weight jiggle bones
+(`#weight-partner-jiggle-sync`) and then checks every pair for a scale-bone
+divergence (`#slot0-weight-partner`, detect-only). These were two serial walks
+over every pair of the whole output, each loading both files: 150 s and 72 s on
+the reported modlist. `_postflight_weight_partner_fold` does both per pair on
+one load. The check reads the state the sync leaves, so it takes the sync's
+open files only when the sync left them as they are on disk (it changed no
+vert and recorded no failure); a pair the sync wrote, or changed and then failed
+to save, is read from disk again. Grouping, order, skips, failure records and
+the findings are the serial passes'. If the check raises on a pair, the fold
+stops checking and keeps syncing, and the run gives the same "parity scan
+skipped" warning: the serial check died there too, after the sync had
+finished. If the pairs cannot even be listed, the two serial passes run (nothing
+has been touched yet); a fold that raises anyway is reported as a sync that
+raised, and the check then walks the pairs on its own.
+`CBBE2UBE_NO_TAIL_FOLD=1` runs the serial passes.
+
 ---
 
 ## Phase-2 body-swap
