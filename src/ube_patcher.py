@@ -292,7 +292,10 @@ def _alttex_dup_occurrence_on() -> bool:
     allows (`_alttex_family_strict_on`). The authored name bytes are kept (the
     engine binds by index). Our own plugins only: a third-party set binds by
     index and the rename keeps the order. Inert unless the converted NIF
-    carries renamed shapes -- none do on the live pack today.
+    carries renamed shapes or a set names one shape name twice
+    (`_alttex_set_provenance_on`) -- on the live pack today no NIF carries
+    renamed shapes, and only one NIF converted before the rename is named
+    twice by a set (docs/DESIGN.md, #alttex-set-provenance).
 
     Nested: with #dup-shape-names off no shape is renamed, and a 'name:k' next
     to 'name' is then the author's, so this is off too.
@@ -403,12 +406,78 @@ def _alttex_exact_provenance_on() -> bool:
     keeps the match by name. When the source cannot be found or read, or it is
     not the mesh that was converted (`_alttex_binding`), the entries of every
     name that may have been split are DROPPED for that NIF: a colour missed,
-    never one on another shell.
+    not guessed (the two cases that can still bind another shell's colour
+    are listed in docs/DESIGN.md, #alttex-exact-provenance).
 
     CBBE2UBE_NO_ALTTEX_EXACT_PROVENANCE=1 binds by the converted NIF's layout,
     as #alttex-family-strict did (CBBE2UBE_NO_ALTTEX_FAMILY_STRICT then acts
     on that layout path only)."""
     return not _flag("CBBE2UBE_NO_ALTTEX_EXACT_PROVENANCE", False)
+
+
+def _alttex_set_provenance_on() -> bool:
+    r"""#alttex-set-provenance (2026-09-25): does #alttex-exact-provenance also
+    read the source of a converted NIF that a set names one shape name in more
+    than once, and bind a same-named group the rename left as authored through
+    that source? Yes, by default. Read only with #alttex-exact-provenance on.
+
+    Two holes it left, each able to put a colour on the WRONG shell:
+    - The source was read only when the converted NIF showed 'name:k' beside
+      'name'. When every renamed shell of a family was lost (a two-shell 'fur'
+      that lost 'fur:1') the NIF looks unrenamed, and one entry per name put
+      the set's FIRST-LISTED entry -- possibly the lost shell's colour -- on
+      the surviving shell. A set that names one name (case-insensitively) more
+      than once proves the source had same-named shells, so that NIF's source
+      is read too. With no source that matches, the entries of every such
+      name, and of every name the converted NIF carries twice, are dropped.
+    - A group the rename left as authored (named in the physics XML, or a body
+      name) keeps its literal duplicate names, and one entry per name put the
+      first-listed entry on the LAST shape of the name. Now each entry of such
+      a name binds source 3D index -> the converted shape of that name whose
+      `_shape_print` is that source shell's (`_kept_group_shells`), when every
+      converted shape of the name matches exactly one of its source shells and
+      no two match the same one; otherwise that name's entries are dropped.
+    Also: a key the batch's VFS index lacks is looked up over the enabled
+    mods' loose files before the archives (`_alttex_source_paths`), which is
+    where the convert step's source-local tier finds a mod's own mesh.
+
+    CBBE2UBE_NO_ALTTEX_SET_PROVENANCE=1 reads a source only for a NIF showing
+    'name:k' beside 'name' and keeps one entry per name for a group left as
+    authored, as #alttex-exact-provenance first did."""
+    return not _flag("CBBE2UBE_NO_ALTTEX_SET_PROVENANCE", False)
+
+
+def _alttex_entries(data: bytes) -> list:
+    """[(name bytes, TXST FormID, 3D index)] of a raw MO?S payload. Raises on
+    one that does not parse."""
+    n = struct.unpack_from("<I", data, 0)[0]
+    p = 4
+    entries = []
+    for _ in range(n):
+        nl = struct.unpack_from("<I", data, p)[0]; p += 4
+        name = data[p:p + nl]; p += nl
+        txst = struct.unpack_from("<I", data, p)[0]; p += 4
+        src_idx = struct.unpack_from("<I", data, p)[0]; p += 4
+        entries.append((name, txst, src_idx))
+    return entries
+
+
+def _entry_lname(name: bytes) -> str:
+    """An MO?S entry's shape name as the reconcile matches it: to the first
+    NUL, lowercased."""
+    return name.split(b"\x00", 1)[0].decode("latin-1", "ignore").lower()
+
+
+def _repeated_entry_names(data: bytes) -> "frozenset[str]":
+    """#alttex-set-provenance: the lowercased shape names an MO?S set gives
+    more than one entry -- proof its source had same-named shells. Empty for a
+    set that does not parse."""
+    try:
+        entries = _alttex_entries(data)
+    except Exception:
+        return frozenset()
+    count = Counter(_entry_lname(nm) for nm, _t, _s in entries)
+    return frozenset(nm for nm, c in count.items() if nm and c > 1)
 
 
 def _split_name_candidates(names) -> "set[str]":
@@ -463,6 +532,9 @@ class _AltTexBinding(NamedTuple):
     split: frozenset        # lowercased names of the renamed shells, old and new
     index: dict             # shipped name -> converted index, for the renamed
     #                         shells and any shape named once like one of them
+    kept: "dict | None" = None   # #alttex-set-provenance: lowercased name of a
+    #                         group left as authored -> {source 3D index:
+    #                         converted index} ({}: its entries are dropped)
 
 
 def _read_alttex_source(src_path) -> "_AltTexSource | None":
@@ -522,7 +594,41 @@ def _alttex_binding(source: "_AltTexSource | None",
         if count[nm] != 1 or not _same_shell_print(pr, source.prints[i]):
             return None                  # not this source shell's geometry
         index[nm] = ci
-    return _AltTexBinding(source.names, source.renamed, split, index)
+    kept = (_kept_group_shells(source, converted, split)
+            if _alttex_set_provenance_on() else {})
+    return _AltTexBinding(source.names, source.renamed, split, index, kept)
+
+
+def _kept_group_shells(source: "_AltTexSource",
+                       converted: "list[tuple[str, tuple]]",
+                       split: frozenset) -> "dict[str, dict[int, int]]":
+    """#alttex-set-provenance: {lowercased name: {source 3D index: converted
+    index}} for each same-named group the rename left as authored (named in
+    the physics XML, or a body name), whose shells the converted NIF still
+    carries under one name. Each converted shape of the name is matched to
+    the source shape of that exact name with its `_shape_print`. A name maps
+    to {} -- all its entries dropped -- when a converted shape of it matches
+    no source shape or more than one, or two match the same one (e.g. two
+    shells identical in counts and UVs). A source shape nothing matches was
+    lost: its entries find no shell."""
+    out: "dict[str, dict[int, int]]" = {}
+    for g, c in Counter(n for n in source.names if n).items():
+        low = g.lower()
+        if c < 2 or low in split or low in out:
+            continue                     # unique, or renamed (bound by name)
+        members = [i for i, n in enumerate(source.names) if n.lower() == low]
+        shells: "dict[int, int]" = {}
+        for ci, (nm, pr) in enumerate(converted):
+            if nm.lower() != low:
+                continue
+            hits = [i for i in members if source.renamed[i] == nm
+                    and _same_shell_print(pr, source.prints[i])]
+            if len(hits) != 1 or hits[0] in shells:
+                shells = {}
+                break                    # which shell this is is not known
+            shells[hits[0]] = ci
+        out[low] = shells
+    return out
 
 
 def _alttex_source_rel(model_path: str) -> "str | None":
@@ -540,9 +646,12 @@ def _alttex_source_paths(meshes_root, keys) -> "dict[str, Path]":
     as `_alttex_source_rel` gives them), found as the convert step found it,
     read-only: the full-VFS winner (the batch's own index when this process
     built one, else `discovery.build_mesh_index` over the enabled mods, the
-    output mod skipped), then the load-order archives -- the copy the convert
-    step extracted to `<output>\_bsa_staging`, taken only while its bytes are
-    still the archive's. A key found nowhere is left out. Never writes."""
+    output mod skipped; a key the batch's index lacks is looked up the same
+    way, `_alttex_set_provenance_on`), then the load-order archives -- the copy
+    the convert step extracted to `<output>\_bsa_staging`, taken only while
+    its bytes are still the archive's. A key found nowhere is left out. Not
+    searched: a source folder outside the enabled mods (the convert step's
+    source-local tier can read one) -- that NIF falls back. Never writes."""
     from . import auto_convert as _ac, discovery, paths
     out: "dict[str, Path]" = {}
     keys = sorted(set(keys))
@@ -563,6 +672,18 @@ def _alttex_source_paths(meshes_root, keys) -> "dict[str, Path]":
                                              skip_mods={output.name})
         except Exception:
             vfs = {}
+    elif _alttex_set_provenance_on():
+        # #alttex-set-provenance: the batch index holds the keys the plugins
+        # named; one it lacks may still be loose in an enabled mod -- where
+        # the convert step's source-local tier found the mod's own mesh.
+        lacking = {k for k in keys if vfs.get(k) is None}
+        if lacking:
+            try:
+                vfs = {**vfs, **discovery.build_mesh_index(
+                    Path(mr), order, target_keys=lacking,
+                    skip_mods={output.name})}
+            except Exception:
+                pass
     rest = []
     for k in keys:
         if vfs.get(k) is not None:
@@ -588,19 +709,30 @@ def _alttex_source_paths(meshes_root, keys) -> "dict[str, Path]":
 
 def _bind_by_source(entries, lnames: "list[str]",
                     shape_index: "dict[str, int]",
-                    binding: "_AltTexBinding | None"):
+                    binding: "_AltTexBinding | None",
+                    ambiguous: "frozenset[str]" = frozenset()):
     """#alttex-exact-provenance: (lowercased names bound here, {entry position:
-    converted index}). With no binding, every name that may be split is bound
-    to nothing: its entries are dropped. With one, an entry of a renamed name
-    goes to the shell its source 3D index names; an index that is not a shell
-    of the entry's own name, a shell the converted NIF lacks, and a second
-    entry for one shell are dropped."""
+    converted index}). With no binding, every name that may be split -- and
+    each of `ambiguous`, the names #alttex-set-provenance knows were shared --
+    is bound to nothing: its entries are dropped. With one, an entry of a
+    renamed name goes to the shell its source 3D index names, and an entry of
+    a group left as authored to the shell its print found (`binding.kept`);
+    an index that is not a shell of the entry's own name, a shell the
+    converted NIF lacks, and a second entry for one shell are dropped."""
     if binding is None:
-        return _split_name_candidates(shape_index), {}
+        return _split_name_candidates(shape_index) | set(ambiguous), {}
+    kept = binding.kept or {}
     by_pos: "dict[int, int]" = {}
     taken: "set[str]" = set()
+    kept_taken: "set[int]" = set()
     for pos, (_name, _txst, si) in enumerate(entries):
         nm = lnames[pos]
+        if nm in kept:
+            ci = kept[nm].get(si)        # None: not a shell of it / not found
+            if ci is not None and ci not in kept_taken:
+                kept_taken.add(ci)
+                by_pos[pos] = ci
+            continue
         if nm not in binding.split:
             continue
         if not 0 <= si < len(binding.names) or binding.names[si].lower() != nm:
@@ -611,12 +743,13 @@ def _bind_by_source(entries, lnames: "list[str]",
             continue                     # its shell was not converted / a repeat
         taken.add(shipped)
         by_pos[pos] = ci
-    return set(binding.split), by_pos
+    return set(binding.split) | set(kept), by_pos
 
 
 def _reindex_alt_texture_payload(data: bytes,
                                  shape_index: "dict[str, int]",
-                                 source: "_AltTexBinding | None" = None
+                                 source: "_AltTexBinding | None" = None,
+                                 ambiguous: "frozenset[str]" = frozenset()
                                  ) -> "bytes | None":
     """Rewrite an MO?S alt-texture set to match a CONVERTED NIF's shapes.
 
@@ -630,30 +763,22 @@ def _reindex_alt_texture_payload(data: bytes,
       * except a name #dup-shape-names split into 'name', 'name:1', ...: its
         entries bind by occurrence (`_alttex_dup_occurrence_on`), through
         `source` (`_alttex_exact_provenance_on`; None = no source at hand, so
-        those entries are dropped).
+        those entries are dropped, and so are those of `ambiguous`, the names
+        the reconcile knows were shared: `_alttex_set_provenance_on`).
     `shape_index` = {shape_name: index} from the converted NIF.
     Returns rebuilt payload, or None on parse failure (caller keeps original)."""
     try:
-        n = struct.unpack_from("<I", data, 0)[0]
-        p = 4
-        entries = []
-        for _ in range(n):
-            nl = struct.unpack_from("<I", data, p)[0]; p += 4
-            name = data[p:p + nl]; p += nl
-            txst = struct.unpack_from("<I", data, p)[0]; p += 4
-            src_idx = struct.unpack_from("<I", data, p)[0]; p += 4
-            entries.append((name, txst, src_idx))
+        entries = _alttex_entries(data)
     except Exception:
         return None
-    lnames = [name.split(b"\x00", 1)[0].decode("latin-1", "ignore").lower()
-              for name, _t, _s in entries]
+    lnames = [_entry_lname(name) for name, _t, _s in entries]
     # #alttex-dup-occurrence: entry position -> its shell's index in the NIF.
     by_occurrence: "dict[int, int]" = {}
     bound: "set[str]" = set()                   # names bound by occurrence
     exact = _alttex_dup_occurrence_on() and _alttex_exact_provenance_on()
     if exact:
         bound, by_occurrence = _bind_by_source(entries, lnames, shape_index,
-                                               source)
+                                               source, ambiguous)
     # With the source switched off: bind by the converted NIF's layout.
     families = (_renamed_shape_families(shape_index, set(lnames))
                 if _alttex_dup_occurrence_on() and not exact else {})
@@ -719,9 +844,14 @@ def reconcile_alt_texture_indices(esp_path, meshes_root) -> int:
     # absent path (vanilla mesh the converter doesn't own) -- surface only these.
     load_failed: "list[str]" = []
     # #alttex-exact-provenance: model key -> [(name, print)] of a converted NIF
-    # whose shapes look renamed; only those NIFs' sources are read.
+    # whose shapes look renamed (or, below, that a set repeats a name for);
+    # only those NIFs' sources are read.
     exact = _alttex_dup_occurrence_on() and _alttex_exact_provenance_on()
     _prints: "dict[str, list]" = {}
+    # #alttex-set-provenance: model key -> the names a set of it repeats; such a
+    # NIF's source is read too.
+    set_prov = exact and _alttex_set_provenance_on()
+    _repeats: "dict[str, set[str]]" = {}
 
     def shapes_for(model_path: str):
         key = model_path.lower()
@@ -733,7 +863,7 @@ def reconcile_alt_texture_indices(esp_path, meshes_root) -> int:
             if p.is_file():
                 nf = nif_io.load_nif(p)
                 idx = {s.name: i for i, s in enumerate(nf.shapes)}
-                if exact and _split_name_candidates(idx):
+                if exact and (_split_name_candidates(idx) or key in _repeats):
                     _prints[key] = [(s.name, _shape_print(s)) for s in nf.shapes]
         except Exception:
             idx = None
@@ -756,9 +886,16 @@ def reconcile_alt_texture_indices(esp_path, meshes_root) -> int:
                 if sig in (b"MOD2", b"MOD3", b"MOD4", b"MOD5"):
                     models[sig] = data.rstrip(b"\x00").decode("latin-1", "ignore")
             sets.append((r, subs, models))
-            for sig, _data in subs:
-                if sig in SLOT_FOR and models.get(SLOT_FOR[sig]):
-                    shapes_for(models[SLOT_FOR[sig]])
+            for sig, data in subs:
+                if set_prov and sig in SLOT_FOR and models.get(SLOT_FOR[sig]):
+                    rep = _repeated_entry_names(data)
+                    if rep:
+                        _repeats.setdefault(models[SLOT_FOR[sig]].lower(),
+                                            set()).update(rep)
+    for _r, subs, models in sets:
+        for sig, _data in subs:
+            if sig in SLOT_FOR and models.get(SLOT_FOR[sig]):
+                shapes_for(models[SLOT_FOR[sig]])
     # #alttex-exact-provenance: each such NIF's source, read and matched once.
     bindings: "dict[str, _AltTexBinding | None]" = {}
     if _prints:
@@ -769,6 +906,14 @@ def reconcile_alt_texture_indices(esp_path, meshes_root) -> int:
             src = found.get(rels[k]) if rels[k] else None
             bindings[k] = _alttex_binding(
                 _read_alttex_source(src) if src is not None else None, conv)
+    # #alttex-set-provenance: with no source that matches, the names a set
+    # repeats and the names the converted NIF carries twice lose their entries.
+    ambiguous: "dict[str, frozenset[str]]" = {}
+    if set_prov:
+        for k, conv in _prints.items():
+            twice = Counter(nm.lower() for nm, _p in conv)
+            ambiguous[k] = (frozenset(_repeats.get(k, ()))
+                            | frozenset(n for n, c in twice.items() if c > 1))
     fixed = 0
     for r, subs, models in sets:
         changed = False
@@ -779,7 +924,8 @@ def reconcile_alt_texture_indices(esp_path, meshes_root) -> int:
                 idxmap = shapes_for(mdl) if mdl else None
                 if idxmap is not None:
                     rebuilt = _reindex_alt_texture_payload(
-                        data, idxmap, bindings.get(mdl.lower()))
+                        data, idxmap, bindings.get(mdl.lower()),
+                        ambiguous.get(mdl.lower(), frozenset()))
                     if rebuilt is not None and rebuilt != data:
                         new_payload += esp.encode_subrecord(sig, rebuilt)
                         changed = True
@@ -797,11 +943,11 @@ def reconcile_alt_texture_indices(esp_path, meshes_root) -> int:
     if bindings:
         unmatched = sorted(k for k, b in bindings.items() if b is None)
         print(f"  alt-texture reconcile: {len(bindings) - len(unmatched)} "
-              f"converted NIF(s) with renamed layers bound through their "
+              f"converted NIF(s) with same-named layers bound through their "
               f"source mesh", file=_s.stderr)
         if unmatched:
             print(f"  !! alt-texture reconcile: {len(unmatched)} converted "
-                  f"NIF(s) with renamed layers whose source mesh could not be "
+                  f"NIF(s) with same-named layers whose source mesh could not be "
                   f"read or is not the mesh converted -> the colour-variant "
                   f"entries of those layers were dropped (they keep their "
                   f"base colour): {unmatched[:5]}", file=_s.stderr)

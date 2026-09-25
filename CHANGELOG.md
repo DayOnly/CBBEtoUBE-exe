@@ -34,6 +34,12 @@ each entry goes to the layer it names. To know which one that is, the tool
 reads the armour's original mesh again -- the same file it converted, found
 the same way, without changing anything -- and repeats the renaming on it, so
 it knows exactly which original layer became "fur", "fur:1", "fur:2" and so on.
+It does this when the converted mesh shows renamed layers, and also when a
+colour variant lists one layer name more than once, which proves the garment
+had several layers of that name even if every renamed one was lost. Layers the
+previous fix leaves with their shared name (named in the physics file, or a
+body) are told apart by their vertex count, triangle count and texture
+coordinates, and each entry goes to the layer that matches its original one.
 
 A layer can miss its colour in these cases, and keeps its original colour:
 - the layer was lost in conversion (the entry for it is dropped; the other
@@ -44,17 +50,31 @@ A layer can miss its colour in these cases, and keeps its original colour:
   converted (its layer names, vertex and triangle counts or texture
   coordinates differ, for example after the armour mod was updated): then
   every entry for that garment's same-named layers is dropped, and the run
-  says how many garments this happened to.
+  says how many garments this happened to;
+- two layers left with their shared name are identical in vertex count,
+  triangle count and texture coordinates, or one of them matches no original
+  layer: every entry for that name is dropped.
 
-In none of these cases does a layer get another layer's colour: keeping one
-entry "for the name" would put whichever colour the mod lists first on the
-first layer, and that can be another layer's colour. The one limit: two layers
-identical in vertex count, triangle count and texture coordinates whose order
-the armour mod swapped after the conversion cannot be told apart. Layers the
-previous fix leaves with their shared name (named in the physics file, or a
-body) are not renamed, and their variant keeps one entry per name as before.
+Dropping is on purpose: keeping one entry "for the name" would put whichever
+colour the mod lists first on one layer of that name, and that can be another
+layer's colour. A layer can still get another layer's colour in two cases:
+- two renamed layers identical in vertex count, triangle count and texture
+  coordinates whose order the armour mod swapped after the conversion;
+- a variant lists a shared layer name only once and the tool has nothing that
+  says the name is shared: either it did not read the original mesh (the
+  converted mesh shows no renamed layer and no variant of the garment lists a
+  name twice), or it could not use it and the converted mesh has that name
+  once, with no renamed layer of it, and no variant lists it twice. The one
+  entry then goes to a layer of that name, as before. That is another layer's
+  colour only when the entry was written for a layer lost in conversion or,
+  with the original mesh not read, for another of several layers left with
+  their shared name.
 None of the meshes the reported modlist converts has renamed layers, so
-current output does not change.
+current output does not change. One mesh left in the output by an older
+version, a fur coat converted before its layers were renamed, no longer
+matches its original: if its colour variants are merged again against that
+old mesh, the one entry each kept (on one of its six fur layers) is dropped.
+Converting the coat again gives each of its layers its own colour.
 `CBBE2UBE_NO_ALTTEX_DUP_OCCURRENCE=1` (set to 1) turns it off and keeps one
 entry per name as before; it is also off when `CBBE2UBE_NO_DUP_SHAPE_NAMES=1`
 is set. `CBBE2UBE_NO_ALTTEX_EXACT_PROVENANCE=1` stops reading the original mesh
@@ -62,6 +82,11 @@ and guesses from the converted mesh's layout instead, as the previous test
 build did; that guess can put a colour on the wrong layer when a layer at the
 end was lost. `CBBE2UBE_NO_ALTTEX_FAMILY_STRICT=1` matters only together with
 it, and drops the guess's layout and count checks.
+`CBBE2UBE_NO_ALTTEX_SET_PROVENANCE=1` reads the original mesh only when the
+converted mesh shows renamed layers and keeps one entry per name for layers
+left with their shared name, as the previous test build did; that can put a
+lost layer's colour on the layer that survived when every renamed layer of a
+name was lost.
 
 ### Changed — whether you can wear an item is read from the plugin the game uses
 

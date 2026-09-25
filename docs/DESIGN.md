@@ -1133,15 +1133,21 @@ of the SOURCE file (`_dup_shape_rename_plan` over its shape names, plus the
 physics-XML and body keep rules), so the reconcile re-derives it instead of
 guessing from the converted NIF. For each converted NIF a set names that
 carries a `name:k` beside `name` (case-insensitively, k a plain integer from 1:
-`_split_name_candidates`; any other NIF never reads a source):
+`_split_name_candidates`), or that a set names one shape name in more than once
+(case-insensitively: `_repeated_entry_names`, `#alttex-set-provenance` below);
+any other NIF never reads a source:
 1. find its source, read-only, the way the convert step found it
    (`_alttex_source_paths`): our path is `!UBE\` + the source's meshes path;
    the full-VFS winner from the batch's own index (`auto_convert.
    _BATCH_MESH_INDEX`) or, outside a batch, `discovery.build_mesh_index` over
-   the enabled mods with the output mod skipped; else the load-order archives
-   (`_BsaMeshIndex` over `_load_order_bsa_dirs`, lookup-only), read as the
-   copy the convert step extracted to `<output>\_bsa_staging` and taken only
-   while its bytes are the archive's;
+   the enabled mods with the output mod skipped -- a key the batch's index
+   lacks is looked up that second way too, which finds a mod's own loose mesh
+   where the convert step's source-local tier found it; else the load-order
+   archives (`_BsaMeshIndex` over `_load_order_bsa_dirs`, lookup-only), read as
+   the copy the convert step extracted to `<output>\_bsa_staging` and taken
+   only while its bytes are the archive's. Not searched: a source folder that
+   is not an enabled mod (the convert step's local tier can read one) -- that
+   NIF falls back, below;
 2. read it and replay the converter's own rename on it
    (`_read_alttex_source` calls `_uniquify_source_shape_names`: same keep
    rules, same XML reader) -- the exact map source 3D index -> shipped name;
@@ -1157,17 +1163,22 @@ carries a `name:k` beside `name` (case-insensitively, k a plain integer from 1:
 4. bind (`_bind_by_source`): an entry whose name is a renamed shell's (old or
    new name, case-insensitive) goes source 3D index -> shipped name -> that
    name's index in the converted NIF (so does an author's shape named like
-   one in another case, e.g. `Fur` beside the `fur` shells). Dropped: an
-   entry whose index is not a shape of the entry's own name, a shell the
-   converted NIF lacks (a failed copy -- never shifted onto a neighbour), and
-   a second entry for one shell. Every other entry keeps the match by name,
-   one per name.
+   one in another case, e.g. `Fur` beside the `fur` shells). An entry of a
+   group the rename left as authored goes source 3D index -> the converted
+   shape of that name with that source shell's print (`_kept_group_shells`,
+   below). Dropped: an entry whose index is not a shape of the entry's own
+   name, a shell the converted NIF lacks (a failed copy -- never shifted onto
+   a neighbour), and a second entry for one shell. Every other entry keeps the
+   match by name, one per name.
 
 No source, one that cannot be read, or one that fails step 3: every name that
-may be split (both `name` and `name:k`) loses its entries for that NIF, and the
-run prints how many NIFs fell back. Dropping, not the old one-entry-per-name
-rule, because that rule keeps the set's FIRST-LISTED entry on the first shape,
-and the first-listed entry can address any shell: a wrong colour is worse than
+may be split (both `name` and `name:k`), every name a set of that NIF repeats
+and every name the converted NIF carries twice loses its entries for that
+NIF, and the run prints how many NIFs fell back. Dropping, not the old
+one-entry-per-name rule, because that rule keeps the set's FIRST-LISTED entry
+on the one shape the name finds (the first shell of a renamed family, the LAST
+of a literal duplicate), and the first-listed entry can address any shell: a
+wrong colour is worse than
 a base colour, and without the source nothing tells which entry is the first
 shell's. Real case: the six-shell source's 12 colour sets list its shells out
 of index order (1, 2, 0, ... or 2, 1, 0, ...), so one entry per name binds
@@ -1176,16 +1187,62 @@ set for all six shells, so there it only costs five shells their colour; a set
 with a texture set per shell would recolour shell 0 wrongly. The exact binding,
 against the scratch conversion, keeps all six entries of all 12 sets on their
 own shells. So a colour is missed when a shell was lost, when an entry's index
-disagrees with its name, or when the source is missing or changed -- and is
-never put on another shell. The one limit: step 3 cannot tell apart two shells
-identical in vertex count, triangle count and UVs if the source swapped them
-after the conversion. Out of scope: a group the rename left as authored (XML or
-body name) still has literal duplicate names and keeps one entry per name.
+disagrees with its name, when the source is missing or changed, or when a kept
+group's shells cannot be told apart. It can still land on another shell in
+exactly two cases:
+- step 3 cannot tell apart two renamed shells identical in vertex count,
+  triangle count and UVs if the source swapped them after the conversion;
+- an entry of a shared name bound by name, one per name, because nothing the
+  reconcile holds says the name is shared: no source was read (the NIF shows
+  no `name:k` and no set of it names one name twice), or the source read does
+  not match and the name is neither `name`/`name:k`, nor named twice by a set
+  of the NIF, nor carried twice by the NIF. It is wrong only when that entry
+  addresses a shell other than the one the name finds: every renamed shell of
+  the name was lost (the surviving `name` gets the lost shell's colour), or --
+  with no source read -- the group was kept as authored (the LAST shape of the
+  name gets it).
 Precondition: the reconcile runs once, on a freshly merged plugin whose sets
 still carry the source's indices (stale overflow pieces are removed by the
 merge); it is not meant to run again on its own output.
 `CBBE2UBE_NO_ALTTEX_EXACT_PROVENANCE=1` binds by the converted NIF's layout
 (`#alttex-family-strict`, below), byte for byte as before.
+
+**The set's own repeat, and groups kept as authored: `#alttex-set-provenance`.**
+Exact provenance first read a source only when the converted NIF showed
+`name:k` beside `name`. Two holes, each able to put a colour on the WRONG
+shell. (1) A family that lost EVERY renamed shell (a two-shell `fur` that lost
+`fur:1`) looks unrenamed, so no source was read and one entry per name put the
+set's first-listed entry -- possibly the lost shell's colour -- on the
+surviving `fur` (or on the author's `Fur` beside it). A set that names one
+name more than once proves the source had same-named shells, so such a NIF's
+source is now read too, and the lost shell's entry is dropped as in step 4;
+with no source that matches, the repeated names' entries are dropped, and so
+are those of any other set of that NIF for the same names. (2) A group the
+rename left as authored (the physics XML names it, a declared XML cannot be
+read, or a body name) ships its literal duplicate names, and one entry per name
+put the first-listed entry on the LAST shape of the name
+(`{name: index}` keeps the last). With the source read, `_kept_group_shells`
+matches each converted shape of such a name to the source shape of that exact
+name with its `_shape_print`; the name binds only when every converted shape
+of it matches exactly one source shape and no two match the same one, so two
+identical shells, or a converted shape no source shell explains (a body the
+conversion replaced), drop that name's entries instead. A source shell nothing
+matches was lost: its entries are dropped. With no source that matches, a
+name the converted NIF carries twice loses its entries.
+Measured on the reported modlist: the deployed merged plugins' sets are already
+reconciled (one entry per name), name no name twice, and a reconcile of them
+reads no source and changes nothing. The pre-reconcile per-source sets (1,352
+naming 262 of our NIFs) repeat a name in 12 sets, all for the one six-shell
+coat still in the output from before the rename (six literal `fur` shapes).
+Its source now renames them, so it is not the mesh converted: a fresh merge
+against that stale mesh drops the one `fur` entry each of those 12 sets kept
+(the first-listed colour, bound to the last shell) -- a colour missed.
+Converted again, the coat ships `fur` .. `fur:5` and binds all six entries of
+each set (above). Its shells have two prints (two of 2,915 verts, four of 965,
+with identical UVs), so as a kept group its `fur` entries would be dropped.
+`CBBE2UBE_NO_ALTTEX_SET_PROVENANCE=1` (read only with exact provenance on)
+reads a source only for a NIF that shows `name:k` and keeps one entry per name
+for a kept group, byte for byte as `#alttex-exact-provenance` first shipped.
 
 **The layout guess, behind the switch: `#alttex-family-strict`.** Without the
 source the reconcile cannot know which shapes the rename made;
@@ -1214,11 +1271,12 @@ set's first-listed, which can be another shell's colour.
 beside `name:k`, rank in NIF order, entries past the last shell dropped).
 
 The switch is its own, `CBBE2UBE_NO_ALTTEX_DUP_OCCURRENCE=1` (one entry per
-name, the parent of all three), so the rename can be kept while this is ruled
+name, the parent of all four), so the rename can be kept while this is ruled
 out; it is nested under `CBBE2UBE_NO_DUP_SHAPE_NAMES`, because without the
 rename a `name:k` beside `name` can only be the author's. Third-party ESPs keep
 their indices and are unaffected. Live: no converted NIF a set names carries a
-renamed shape today, so no source is read and the pass changes nothing.
+renamed shape today; the one NIF a set reads a source for is the stale coat
+measured under `#alttex-set-provenance`.
 
 ---
 

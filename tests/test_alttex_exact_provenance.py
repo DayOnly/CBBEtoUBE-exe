@@ -419,7 +419,7 @@ def test_the_reconcile_binds_through_the_source(monkeypatch, tmp_path, capsys):
                                                          2: GREEN, 3: BLUE}
     assert seen == [["clothes/coat/coat_1.nif"]]
     err = capsys.readouterr().err
-    assert "1 converted NIF(s) with renamed layers bound through their source" in err
+    assert "1 converted NIF(s) with same-named layers bound through their source" in err
     assert "!!" not in err
 
 
@@ -449,7 +449,7 @@ def test_the_reconcile_falls_back_and_reports_it(monkeypatch, tmp_path, capsys,
                 else {"clothes/coat/coat_1.nif": src})
     assert _parse(_reconciled(plugin, tmp_path)) == [("coat", TAN, 0)]
     err = capsys.readouterr().err
-    assert ("!! alt-texture reconcile: 1 converted NIF(s) with renamed layers "
+    assert ("!! alt-texture reconcile: 1 converted NIF(s) with same-named layers "
             "whose source mesh could not be read or is not the mesh converted"
             in err)
 
