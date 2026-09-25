@@ -6564,6 +6564,25 @@ PAIRS = (
          tests=('tests/test_dup_shape_names.py',),
          expect=('test_a_name_the_physics_xml_uses_is_kept_and_reported',),
     ),
+    Pair('DSN-m', 'a declared but unreadable XML no longer keeps the names',
+         edits=(
+             ('src/nif_convert_writer.py',
+              'xml_unread=bool(declared and not txt),',
+              'xml_unread=False,  # MUTATED', 1),
+         ),
+         tests=('tests/test_dup_shape_names.py',),
+         expect=('test_a_declared_xml_that_cannot_be_read_keeps_the_names',
+                 'test_a_failed_xml_read_counts_as_unreadable'),
+    ),
+    Pair('DSN-n', 'a failed XML read is taken as no physics',
+         edits=(
+             ('src/nif_convert_writer.py',
+              '        declared = True                  # cannot tell -> treat as unreadable',
+              '        declared = False  # MUTATED', 1),
+         ),
+         tests=('tests/test_dup_shape_names.py',),
+         expect=('test_a_failed_xml_read_counts_as_unreadable',),
+    ),
     # #override-contract (2026-09-25): a shape copy takes only geometry that is
     # its own. A wrong-length override was an out-of-bounds read in pynifly.
     Pair('OVC-a', 'a wrong-length vert override is copied',

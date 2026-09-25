@@ -180,6 +180,45 @@ def test_an_xml_that_names_other_shapes_does_not_stop_the_rename(world, monkeypa
     assert [s.name for s in nf.shapes] == ["fur", "fur:1", "coat"]
 
 
+def test_a_declared_xml_that_cannot_be_read_keeps_the_names(world, monkeypatch):
+    """Review 09-25: the piece claims physics (the pointer string is there) but
+    its XML does not read -- FSMP binds by name, so nothing may be renamed."""
+    from src import nif_convert_writer as ncw
+    _ref, coat, _out = world
+    _xml(monkeypatch, None)
+    monkeypatch.setattr(ncw, "_nif_declares_hdt_xml", lambda *_a, **_k: True)
+    tel._begin_piece_pass_log()
+    nf = nc._pynifly().NifFile(filepath=str(coat))
+    assert nc._uniquify_source_shape_names(nf, coat, report=True) == 0
+    assert [s.name for s in nf.shapes] == ["fur", "fur", "coat"]
+    fails = tel._piece_pass_failures()
+    assert any("dup-shape-names/kept" in f and "xml-unread" in f for f in fails), fails
+
+
+def test_a_failed_xml_read_counts_as_unreadable(world, monkeypatch):
+    """A read that raises cannot tell whether the piece has physics: keep."""
+    from src import nif_convert_physics as phys
+    _ref, coat, _out = world
+
+    def _boom(*_a, **_k):
+        raise OSError("locked")
+    monkeypatch.setattr(phys, "_read_source_hdt_xml_text", _boom)
+    nf = nc._pynifly().NifFile(filepath=str(coat))
+    assert nc._uniquify_source_shape_names(nf, coat) == 0
+    assert [s.name for s in nf.shapes] == ["fur", "fur", "coat"]
+
+
+def test_no_declared_xml_still_renames(world, monkeypatch):
+    """Control: no pointer and no XML text -> the rename goes ahead."""
+    from src import nif_convert_writer as ncw
+    _ref, coat, _out = world
+    _xml(monkeypatch, None)
+    monkeypatch.setattr(ncw, "_nif_declares_hdt_xml", lambda *_a, **_k: False)
+    nf = nc._pynifly().NifFile(filepath=str(coat))
+    assert nc._uniquify_source_shape_names(nf, coat) == 1
+    assert [s.name for s in nf.shapes] == ["fur", "fur:1", "coat"]
+
+
 def test_the_plan_skips_a_taken_name_and_keeps_the_order():
     new, renamed, kept = nc._dup_shape_rename_plan(["fur", "fur:1", "fur", "coat", "fur"])
     assert new == ["fur", "fur:1", "fur:2", "coat", "fur:3"]

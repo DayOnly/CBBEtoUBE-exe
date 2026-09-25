@@ -12,8 +12,11 @@ shell's shape, with scrambled texture coordinates that differed from run to run.
 In other runs several fitting steps were skipped for every shell instead, and the
 body-morph file carried a single set of morphs meant for one shell. Now each layer
 of a shared name gets its own name before conversion ("fur", "fur:1", "fur:2" and
-so on) in the author's order, so colour variants still reach the right layer and
-every layer follows body sliders with its own morphs. A name the garment's physics
+so on) in the author's order, so every layer follows body sliders with its own
+morphs, and colour variants in the armour mod's own plugin still reach the right
+layer (they pick layers by position). A colour variant that this tool's merged
+plugin carries for several same-named layers still recolours only the first of
+them -- a known limit. A name the garment's physics
 file uses is left as it is, because the physics finds that layer by its name, and
 so is a body layer's name; the run reports either case. The tool also no longer
 writes one layer's shape onto a layer of a different size (it read memory it
