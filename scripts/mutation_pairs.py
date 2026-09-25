@@ -2894,8 +2894,8 @@ PAIRS = (
     Pair('CFG-h', 'the lookup skips texture archives',
          edits=(
              ('src/auto_convert.py',
-              '                        skip_bsa=("voice", " sound", "sounds", "- snd", "facegen"))',
-              '                        skip_bsa=None)  # MUTATED', 1),
+              '                        skip_bsa=("voice", " sound", "sounds", "- snd", "facegen"),',
+              '                        skip_bsa=None,  # MUTATED', 1),
          ),
          tests=('tests/test_coverage_female_guard.py',),
          # Merged with #texture-archive-meshes the default list keeps texture
@@ -3818,9 +3818,10 @@ PAIRS = (
     Pair('BOS-d', "selection's archive index may write files",
          edits=(
              ('src/auto_convert.py',
-              '                None)\n'
+              '                None, plugin_order=_bsa_plugin_order(_slay))\n'
               '            _SELECTION_BSA_INDEX[str(mods_root).lower()] = _sel_bsa',
-              '                Path(mods_root) / "_stg")  # MUTATED\n'
+              '                Path(mods_root) / "_stg",  # MUTATED\n'
+              '                plugin_order=_bsa_plugin_order(_slay))\n'
               '            _SELECTION_BSA_INDEX[str(mods_root).lower()] = _sel_bsa', 1),
          ),
          tests=('tests/test_bsa_only_sources.py',),
