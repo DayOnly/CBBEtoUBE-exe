@@ -1266,13 +1266,133 @@ def _discover_master_data_dirs(source_dir: Path) -> list[Path]:
     return candidates
 
 
-def _find_source_esps(source_dir: Path) -> list[Path]:
+def _loaded_source_plugins_on() -> bool:
+    r"""#loaded-source-plugins (2026-09-25): are a mod's source plugins only the
+    copies the game loads? Yes, by default.
+
+    `_find_source_esps` read every plugin anywhere in a mod folder. MO2 loads
+    only plugins at a mod's ROOT, and of several root copies of one name only
+    the highest-priority one (`paths._plugin_file_index_root`). A nested copy
+    (a mod packed one folder too deep inside itself) or a losing duplicate (a
+    base mod's plugin that its hotfix or a tweak replaces) was still read: its
+    armatures were planned, and its per-source patch -- named by the plugin
+    stem alone, in one shared folder -- was written by whichever copy ran LAST,
+    the lowest-priority one. Now, for a folder of the modlist's mods root, a
+    plugin in a subfolder and a root plugin whose name the game loads from
+    another folder are not sources. A folder outside the modlist (a plain
+    `convert` of a download), or no readable mod order, keeps every plugin.
+    CBBE2UBE_NO_LOADED_SOURCE_PLUGINS=1 reads every copy again."""
+    return not _flag("CBBE2UBE_NO_LOADED_SOURCE_PLUGINS", False)
+
+
+# {(mods root, mod order, overwrite, game Data): (mods root, root plugin index)}.
+# One entry; cleared when a selection or a convert batch starts, so a GUI
+# session reads the plugin files as they are then. #loaded-source-plugins
+_LOADED_PLUGIN_INDEX: dict = {}
+
+
+def _loaded_plugin_index() -> "tuple[Path, dict[str, Path]] | None":
+    """(mods root, {plugin name lower -> the file the game loads}) for the
+    discovered modlist, or None without a mods root or a readable mod order
+    (then nothing says which copy loads). Built once per key (~0.7 s on a
+    3,254-plugin modlist). #loaded-source-plugins"""
+    lay = paths.discover_layout()
+    if lay.mods_root is None:
+        return None
+    order = paths.enabled_mods_ordered(lay)
+    if order is None:
+        return None
+    key = (str(lay.mods_root), tuple(order), str(paths.overwrite_dir(lay)),
+           tuple(str(d) for d in (lay.game_data_dirs or ())))
+    hit = _LOADED_PLUGIN_INDEX.get(key)
+    if hit is None:
+        hit = (Path(lay.mods_root), paths._plugin_file_index_root(lay))
+        _LOADED_PLUGIN_INDEX.clear()
+        _LOADED_PLUGIN_INDEX[key] = hit
+    return hit
+
+
+def _same_path(a, b) -> bool:
+    return (os.path.normcase(os.path.abspath(str(a)))
+            == os.path.normcase(os.path.abspath(str(b))))
+
+
+def _loaded_copies_only(source_dir: Path, plugins: "list[Path]",
+                        skipped: "list[tuple[Path, str]] | None" = None
+                        ) -> "list[Path]":
+    """`plugins` of the mod folder `source_dir` less the copies the game never
+    loads: one in a subfolder, and a root one whose name loads from another
+    folder. Unchanged for a folder that is not directly in the modlist's mods
+    root. `skipped` receives (plugin, why). #loaded-source-plugins"""
+    loaded = _loaded_plugin_index()
+    if loaded is None:
+        return plugins
+    mods_root, idx = loaded
+    if not _same_path(Path(source_dir).parent, mods_root):
+        return plugins
+    keep: "list[Path]" = []
+    for p in plugins:
+        if not _same_path(p.parent, source_dir):
+            if skipped is not None:
+                skipped.append((p, "in a subfolder, which the game never loads"))
+            continue
+        w = idx.get(p.name.lower())
+        if w is not None and not _same_path(w, p):
+            if skipped is not None:
+                _where = (w.parent.name if _same_path(w.parent.parent, mods_root)
+                          else str(w.parent))
+                skipped.append((p, f"the game loads the copy in '{_where}'"))
+            continue
+        keep.append(p)
+    return keep
+
+
+def _note_unloaded_plugins(result: "AutoConvertResult",
+                           skipped: "list[tuple[Path, str]]") -> None:
+    """Say which plugins of this mod were not read as sources, and why.
+    #loaded-source-plugins"""
+    if not skipped:
+        return
+    line = (f"{len(skipped)} plugin(s) in this mod are not the copy the game "
+            "loads, so they are not converted: "
+            + "; ".join(f"{p.name} ({why})" for p, why in skipped))
+    print(f"  {line}")
+    result.notes.append(line)
+
+
+def _patch_name_taken(out_esp: Path, claimed: "set[str] | None",
+                      src_esp: Path, result: "AutoConvertResult") -> bool:
+    """Has an earlier source written the per-source patch `out_esp` this run?
+    Sources run highest MO2 priority first, so the first writer of a name is
+    the plugin copy the game loads; a later one must not overwrite its patch or
+    sidecars. Claims the name otherwise. None = no batch to share (a single
+    call). #loaded-source-plugins"""
+    if claimed is None or not _loaded_source_plugins_on():
+        return False
+    key = os.path.normcase(os.path.abspath(str(out_esp)))
+    if key in claimed:
+        line = (f"{src_esp.name}: patch {Path(out_esp).name} was already written "
+                "this run from a higher-priority mod's plugin of the same name; "
+                "that one is kept")
+        print(f"  {line}")
+        result.notes.append(line)
+        return True
+    claimed.add(key)
+    return False
+
+
+def _find_source_esps(source_dir: Path,
+                      skipped: "list[tuple[Path, str]] | None" = None
+                      ) -> list[Path]:
     """Find ALL plausible CBBE armor ESPs in a mod folder.
 
     Returns every .esp/.esm/.esl not in a backup/UBE subfolder, sorted by
     (depth, name). Patching ALL of them is necessary: mods that ship multiple
     ESPs with disjoint ARMA/ARMO sets need every one covered, or some armor
     categories have no UBE armature and render invisible on UBE characters.
+    For a mod of the modlist only the copies the game loads count
+    (`_loaded_copies_only`; `skipped` receives the others with the reason).
+    #loaded-source-plugins
     """
     # Facegen dirs are named after the source plugin (facegeom\Plugin.esp\)
     # so rglob("*.esp") can match a directory — skip anything under these paths.
@@ -1321,6 +1441,8 @@ def _find_source_esps(source_dir: Path) -> list[Path]:
                 continue  # a plugin buried under meshes\/textures\ isn't a plugin
             candidates.append(p)
     candidates.sort(key=lambda p: (len(p.parts), p.name.lower()))
+    if _loaded_source_plugins_on():
+        candidates = _loaded_copies_only(source_dir, candidates, skipped)
     return candidates
 
 
@@ -1711,6 +1833,7 @@ def refresh_mod_esp(
     output_esp_name: "str | None" = None,
     unmerged_patch_subdir: str = "_unmerged_patches",
     master_data_dirs: "list[Path] | None" = None,
+    claimed_patch_paths: "set[str] | None" = None,
 ) -> "AutoConvertResult":
     """ESP-only refresh (`--plugins-only`): regenerate this mod's patch ESP(s)
     from the `.espgen.json` snapshots the last full run wrote, skipping ALL
@@ -1732,7 +1855,10 @@ def refresh_mod_esp(
             bsa_mesh_rel_paths = _BATCH_BSA_INDEX._index
         except Exception:
             bsa_mesh_rel_paths = None
-    src_esps = _vanilla_sweep_esps(source_dir) or _find_source_esps(source_dir)
+    _unloaded: "list[tuple[Path, str]]" = []
+    src_esps = (_vanilla_sweep_esps(source_dir)
+                or _find_source_esps(source_dir, skipped=_unloaded))
+    _note_unloaded_plugins(result, _unloaded)
     if not src_esps:
         result.notes.append("no source ESP found — skipping ESP generation")
         return result
@@ -1776,6 +1902,8 @@ def refresh_mod_esp(
                 continue
         except Exception:
             pass
+        if _patch_name_taken(out_esp, claimed_patch_paths, src_esp, result):
+            continue
         try:
             stats = ube_patcher.generate_ube_patch(
                 src_esp, out_esp,
@@ -1817,6 +1945,10 @@ def auto_convert_mod(
     # warning. Pass a SHARED set from `_cmd_convert` so claims persist
     # across mods. None = no protection (legacy single-source behavior).
     claimed_dst_paths: "set[Path] | None" = None,
+    # The same for per-source patch files (normcased absolute paths): a later
+    # source never overwrites a patch an earlier, higher-priority one wrote this
+    # run. None = no protection. #loaded-source-plugins
+    claimed_patch_paths: "set[str] | None" = None,
     # An externally-managed ProcessPoolExecutor to reuse across multiple
     # `auto_convert_mod` calls. Pass one from `_cmd_convert` so workers
     # stay warm across mods — the pynifly DLL, UBE body ref NIF, body
@@ -2004,8 +2136,13 @@ def auto_convert_mod(
     # set and converted its ENTIRE meshes tree instead of nothing -- more orphan
     # output than before the gate existed, with the female-only policy bypassed.
     # So gate on whether a plugin was actually READ. #esp-less-fallback-only
-    _src_esps = _sweep_esps or _find_source_esps(source_dir)
-    if _skip_esp_less_fallback(armor_bases, _src_esps):
+    _unloaded: "list[tuple[Path, str]]" = []
+    _src_esps = _sweep_esps or _find_source_esps(source_dir, skipped=_unloaded)
+    _note_unloaded_plugins(result, _unloaded)
+    # A mod whose every plugin is a copy the game does not load HAS a plugin:
+    # it plans nothing, never the whole folder. #loaded-source-plugins
+    if _skip_esp_less_fallback(armor_bases,
+                               _src_esps + [p for p, _ in _unloaded]):
         resolved_pairs = []
         result.notes.append(
             "vanilla sweep: no DefaultRace armour ARMAs resolved — nothing planned"
@@ -2161,6 +2298,8 @@ def auto_convert_mod(
                     continue
             except Exception:
                 pass  # unreadable -> let generate_ube_patch surface the real error
+            if _patch_name_taken(out_esp, claimed_patch_paths, src_esp, result):
+                continue
             try:
                 stats = ube_patcher.generate_ube_patch(
                     src_esp, out_esp,
@@ -5062,10 +5201,15 @@ def _cmd_convert(args):
 
     # First-writer wins: shared set so later sources can't overwrite earlier outputs.
     claimed_dst_paths: set[Path] = set()
+    # The same for per-source patch files: sources run highest MO2 priority
+    # first, so the first writer of a patch name is the copy the game loads.
+    # #loaded-source-plugins
+    claimed_patch_paths: "set[str]" = set()
 
     # Resolve master/Data dirs once for the batch (result is identical per source).
     # Clearing first ensures the patcher's caches don't carry over from a prior run.
     ube_patcher.clear_batch_caches()
+    _LOADED_PLUGIN_INDEX.clear()     # #loaded-source-plugins
     batch_master_data_dirs = (_discover_master_data_dirs(sources[0])
                               if sources else None)
     if batch_master_data_dirs:
@@ -5284,6 +5428,7 @@ def _cmd_convert(args):
                     nif_pool=_pool,
                     unmerged_patch_subdir=args.unmerged_patch_subdir,
                     claimed_dst_paths=claimed_dst_paths,
+                    claimed_patch_paths=claimed_patch_paths,
                     master_data_dirs=batch_master_data_dirs,
                     mesh_vfs_index=mesh_vfs_index,
                     incremental_floor=incremental_floor,
@@ -5298,7 +5443,8 @@ def _cmd_convert(args):
                     r = refresh_mod_esp(
                         src, output,
                         output_esp_name=(args.esp_name
-                                         if len(sources) == 1 else None))
+                                         if len(sources) == 1 else None),
+                        claimed_patch_paths=claimed_patch_paths)
                     results.append((src, r, None))
                     continue
                 # Sweep self-heal: snapshot output-path claims so a crashed
@@ -5306,6 +5452,7 @@ def _cmd_convert(args):
                 # retry skip its own meshes as "collisions".
                 _claims_before = (set(claimed_dst_paths)
                                   if _is_sweep_src else None)
+                _patch_claims_before = set(claimed_patch_paths)
                 try:
                     r = _convert_one(src, _pool=shared_pool,
                                      _workers=args.workers)
@@ -5322,6 +5469,9 @@ def _cmd_convert(args):
                          indent="")
                     claimed_dst_paths.clear()
                     claimed_dst_paths.update(_claims_before)
+                    # ...and its patch names. #loaded-source-plugins
+                    claimed_patch_paths.clear()
+                    claimed_patch_paths.update(_patch_claims_before)
                     r = _convert_one(src, _pool=None, _workers=1)
                     print("  vanilla sweep serial retry SUCCEEDED")
                 results.append((src, r, None))
@@ -8185,6 +8335,9 @@ def _find_armor_mod_dirs(mods_root: Path,
             # GUI refresh and the convert must not return the other list.
             # #bsa-only-sources #texture-archive-meshes #nude-basename-path
             # #npc-worn-nonplayable
+            # Which plugin copies are read decides sources too.
+            # #loaded-source-plugins
+            _loaded_source_plugins_on(),
             _flag("CBBE2UBE_NO_BSA_ONLY_SOURCES", False),
             _flag("CBBE2UBE_NO_TEXTURE_ARCHIVE_MESHES", False),
             _flag("CBBE2UBE_NO_NUDE_BASENAME_PATH", False),
@@ -8299,6 +8452,9 @@ def _find_armor_mod_dirs_uncached(mods_root: Path,
         candidates.sort(key=lambda c: c["armor_nifs"], reverse=True)
         return candidates
 
+    # Which plugin copies load is read afresh for each selection.
+    # #loaded-source-plugins
+    _LOADED_PLUGIN_INDEX.clear()
     # This selection's run warnings, for the convert step to record.
     # #vfs-index-fail-loud
     _sel_warns: "list[tuple[str, str, str, str]]" = []

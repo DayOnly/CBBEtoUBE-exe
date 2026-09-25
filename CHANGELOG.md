@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### Fixed — only the copy of a plugin the game loads is converted
+
+Mod Organizer loads a plugin only from the top of a mod's folder, and when two
+mods ship a plugin with the same name, only the one higher in the mod list. The
+tool still read every copy: one packed a folder too deep inside its own mod, and
+the base-mod copy a hotfix or tweak replaces. The copy that ran last -- the one
+the game does NOT load -- also wrote the tool's per-plugin patch and its notes.
+Now only the loaded copy is read, the log names every copy it leaves out and why,
+and within one run a later mod never overwrites a patch an earlier one wrote.
+Measured on the reported modlist: 4 unloaded copies (2 with armour) are no longer
+read, and 2 mods whose only armour plugin was such a copy are no longer sources;
+their armour is still converted, from the copy the game loads, so the converted
+armour and the merged plugin are unchanged. `CBBE2UBE_NO_LOADED_SOURCE_PLUGINS=1`
+(set to 1) reads every copy again.
+
 ### Fixed — the run log and the per-mod reports name the right plugin for each patch
 
 A mod with several plugins, some of them without armour, was listed with each

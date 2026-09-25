@@ -560,6 +560,38 @@ already-UBE path among the additions.
   that modlist (winning NPC, outfit, leveled list, quest alias and script
   references checked).
 
+### Which plugin copies are read (2026-09-25)
+
+- **Only the copy the game loads** (`#loaded-source-plugins`,
+  `CBBE2UBE_NO_LOADED_SOURCE_PLUGINS`). `_find_source_esps` rglob'd every plugin in
+  a mod folder. MO2 loads plugins only from a mod's root, and of several root copies
+  of one name only the highest-priority mod's (`paths._plugin_file_index_root`:
+  overwrite > enabled mods in priority order > game Data). A nested copy and a
+  losing duplicate were planned from, and each wrote the per-source patch named by
+  its stem into the one `_unmerged_patches` folder -- sources run highest priority
+  first, so the LOSER wrote last and kept the patch and its sidecars (live: two
+  patches' snapshots named the loser). The duplicate-plugin dedup in
+  selection dropped a mod only when ALL its root plugins were claimed, so a mod with
+  one losing duplicate beside other plugins stayed a source. Now, for a folder whose
+  parent is the modlist's mods root, `_loaded_copies_only` drops a plugin in a
+  subfolder and a root plugin whose name the index maps to another file; the index
+  is built once per selection and per batch (~0.7 s). A folder outside the modlist,
+  or no readable mod order, keeps every plugin (nothing says which copy loads). The
+  convert step and `--plugins-only` name each dropped copy and why. A mod left with
+  no loaded plugin plans NOTHING: the ESP-less fallback ("convert every NIF the
+  folder ships") is gated on the dropped copies too, since the mod has a plugin.
+  Within one batch `_patch_name_taken` keeps the first writer of a per-source patch
+  path (the highest-priority source); a later source with the same stem writes no
+  patch and says so. With the index that can only be two different loaded plugins
+  of one stem (an .esp and an .esm), or a run without a modlist. Live (154 sources +
+  Data, light plan census): 4 copies dropped (1 nested, 3 losing, 2 of them with
+  armatures); 2 sources lose eligibility (a quest overhaul whose hotfix ships the
+  loaded plugin, a bugfix pack whose main plugin a tweak replaces); the planned
+  union is identical (2,008 bases, 3,365 files) -- the loaded copies plan the same
+  pieces; the two per-source patches rebuilt from the loaded copies are record for
+  record the loser's; coverage replay byte-identical. Switch set: census and replay
+  identical to the parent.
+
 ---
 
 ## Fitting: warp + re-skin
