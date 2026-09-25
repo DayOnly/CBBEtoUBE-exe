@@ -1777,11 +1777,23 @@ reported through `_report_coverage_holds`:
   unsplit. Live census (both passes, every armour with two or more minted links):
   19 same-slot groups; 11 layered with full lists (unchanged), 1 near-full plus
   full (unchanged), 6 disjoint per-race splits (circlets split humans/Orc/elves
-  on 4 armours, a helmet split 14 races + Orc, 2 mesh-less FX-slot armatures
-  split humans/Orc+beasts, whose elves stay on both) and 1 robe with a sibling
-  for a mod's own race. Replay: 7 armours, 9835 -> 9834 links (that robe
-  sibling), 15 links narrowed, 0 re-pointed; every (armour, UBE race) that drew
-  before still draws. `CBBE2UBE_NO_COVERAGE_RACE_SUBSET=1`.
+  on 3 armours, a helmet split 14 races + Orc, 2 mesh-less FX-slot armatures
+  split humans/Orc+beasts, whose elves stay on both: 3 + 1 + 2) and 1 robe with
+  a sibling for a mod's own race. Replay: 7 armours, 9835 -> 9834 links (that
+  robe sibling), 15 links narrowed (armour x armature), drawn from 7 source
+  armatures minted as 9 records (the two FX armatures in both passes), 0
+  re-pointed; every (armour, UBE race) that drew before still draws. Re-counted
+  on the grown modlist (replay of 94340ee vs 217e870): a second helmet split 14
+  races + Orc joins, so 8 armours, 9927 -> 9926 links, 17 links narrowed from 9
+  source armatures minted as 11 records. `CBBE2UBE_NO_COVERAGE_RACE_SUBSET=1`.
+  The report and the pass stats (`_RaceSubset.stats`) are read from the FINAL
+  targets, after the union: an armour counts as split per race only when one
+  of its minted armatures draws for fewer than 16 races (a drop alone, or a
+  narrowing another armour's unsplit use widens back, does not), and an
+  armature is "left off" only when neither pass mints it (`race_subset_minted`
+  carries each pass's minted set to `_report_coverage_holds`). The live report
+  line went 8 -> 7 armours (the robe's drop is its own line); output bytes are
+  unchanged.
 - **A body armour's hood rides with it** (`#coverage-body-accessory`). The body
   pass kept only armatures with a converted mesh or a hands/feet slot; the
   non-body pass skips any armour with a deforming slot. A robe's hood armature

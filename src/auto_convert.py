@@ -4865,17 +4865,20 @@ def _report_coverage_holds(stats: "list[dict]") -> None:
                   f"{'lists' if len(nonactor) == 1 else 'list'} the mannequin race "
                   "(Skyrim.esm ManikinRace), ignored when judging: no playable or "
                   "UBE-race actor has it (mannequins still display the item)")
-    # #coverage-race-subset
+    # #coverage-race-subset: both counts are the passes' final targets, so an
+    # armature the other pass mints is not "left off".
     by_race = {tuple(a) for s in stats for a in (s.get("race_subset") or [])}
-    other_race = sorted({k for s in stats for k in (s.get("race_subset_dropped") or [])})
+    minted_any = {k for s in stats for k in (s.get("race_subset_minted") or ())}
+    other_race = sorted({k for s in stats for k in (s.get("race_subset_dropped") or [])}
+                        - minted_any)
     if by_race:
         print(f"  [unified] {len(by_race)} armour(s) with a separate armature per race "
               "(one for humans, one for Orcs, ...): each drawn on UBE only for the "
               "UBE versions of the races it lists")
-        if other_race:
-            print(f"       {len(other_race)} armature(s) made only for other races "
-                  "(a mod's own race), or for none its siblings leave, left off UBE "
-                  "actors: no human draws them")
+    if other_race:
+        print(f"  [unified] {len(other_race)} armature(s) made only for other races "
+              "(a mod's own race), or for none its siblings leave, left off UBE "
+              "actors: no human draws them")
     if wigs:
         print(f"  [unified] {len(wigs)} playable wig(s) drawn on UBE as headgear "
               "(their own mesh and collider)")

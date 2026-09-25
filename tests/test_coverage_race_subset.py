@@ -23,8 +23,9 @@ armature listing the human races, one Orc only, one the three elves, or one only
 a race of their own -- gets one of them per vanilla race (an actor matches an
 armature only by a race it lists), but a UBE actor drew every one at once: two
 identical circlets plus the elf circlet, one helmet twice, a second robe made
-for a mod's own race. Live: 7 armours, 1 link removed, 15 links narrowed; every
-UBE race now draws one armature of each. `CBBE2UBE_NO_COVERAGE_RACE_SUBSET=1`
+for a mod's own race. Live: 7 armours, 1 link removed, 15 links narrowed (on
+the grown modlist 8 armours and 17 links); every UBE race now draws one
+armature of each. The report and the stats are read from the final targets. `CBBE2UBE_NO_COVERAGE_RACE_SUBSET=1`
 mints them for every UBE race again.
 """
 import struct
@@ -156,6 +157,8 @@ def test_an_armature_for_a_mods_own_race_is_left_off(tmp_path):
     st, got = _nonbody(tmp_path, [full, own])
     assert got == {r"robe\robe_1.nif": ALL16}
     assert st["race_subset_dropped"] == ["mod.esp|801"]
+    # The robe itself still draws for every race: no armour was narrowed.
+    assert st["race_subset"] == []
 
 
 def test_overlapping_lists_are_drawn_together_as_before(tmp_path):
@@ -223,6 +226,53 @@ def test_an_armature_another_armour_mints_alone_keeps_every_race(tmp_path):
     assert got == {r"circlet\human_1.nif": ube(HUMANS),
                    r"circlet\orc_1.nif": ALL16,
                    r"circlet\elf_1.nif": ube(ELVES)}
+
+
+def test_an_armature_another_armour_mints_is_not_reported_left_off(tmp_path):
+    """The report names only what the ESP holds: armour X leaves its mod-race
+    robe off beside a human circlet, armour Y mints that robe alone -- it is
+    minted for every race, so it is not "left off", and X (whose circlet keeps
+    every race) is not counted as drawn per race."""
+    crown = CROWN()
+    own = _arma(0x01000801, HEAD, r"robe\own_1.nif", [MOD_RACE])
+    armos = [_armo(0x01000810, HEAD, [crown, own]), _armo(0x01000811, HEAD, [own])]
+    st, got = _nonbody(tmp_path, [crown, own], armos=armos)
+    assert got == {r"circlet\human_1.nif": ALL16, r"robe\own_1.nif": ALL16}
+    assert st["race_subset_dropped"] == []
+    assert st["race_subset"] == []
+
+
+def test_an_armour_whose_narrowing_the_union_widens_back_is_not_counted(tmp_path):
+    """Split by X, but each of X's armatures is minted unsplit for another
+    armour: every minted record draws for every race."""
+    plain = _arma(0x01000800, HEAD, r"helmet\plain_1.nif", [])
+    orc = CROWN_ORC()
+    armos = [_armo(0x01000810, HEAD, [plain, orc]),
+             _armo(0x01000811, HEAD, [plain]), _armo(0x01000812, HEAD, [orc])]
+    st, got = _nonbody(tmp_path, [plain, orc], armos=armos)
+    assert got == {r"helmet\plain_1.nif": ALL16, r"circlet\orc_1.nif": ALL16}
+    assert st["race_subset"] == []
+
+
+def test_a_split_the_union_restores_to_every_race_is_not_counted(tmp_path):
+    """The default armature is left the elves and humans by armour A and the
+    Orcs by armour B: split twice, it still draws for all 16. A's other
+    armature is minted unsplit for C, so only B is drawn per race."""
+    plain = _arma(0x01000803, HEAD, r"helmet\plain_1.nif", [])
+    crown, orc, elf = CROWN(), CROWN_ORC(), CROWN_ELF()
+    armos = [_armo(0x01000810, HEAD, [plain, orc]),
+             _armo(0x01000811, HEAD, [plain, crown, elf]),
+             _armo(0x01000812, HEAD, [orc])]
+    st, got = _nonbody(tmp_path, [plain, crown, orc, elf], armos=armos)
+    assert got == {r"helmet\plain_1.nif": ALL16, r"circlet\orc_1.nif": ALL16,
+                   r"circlet\human_1.nif": ube(HUMANS),
+                   r"circlet\elf_1.nif": ube(ELVES)}
+    assert st["race_subset"] == [(("mod.esp", 0x811), "Piece1000811")]
+
+
+def test_the_stats_list_what_the_pass_mints(tmp_path):
+    st, _got = _nonbody(tmp_path, [CROWN(), CROWN_ORC()])
+    assert st["race_subset_minted"] == {"mod.esp|800", "mod.esp|801"}
 
 
 def test_a_beast_variant_is_left_to_its_own_rule(tmp_path, monkeypatch):
@@ -294,6 +344,25 @@ def test_no_dropped_line_without_a_dropped_armature(capsys):
     out = capsys.readouterr().out
     assert "1 armour(s) with a separate armature per race" in out
     assert "made only for other races" not in out
+
+
+def test_an_armature_left_off_is_reported_without_a_split_armour(capsys):
+    """A drop alone (the mod-race robe beside a full one) is still said."""
+    ac._report_coverage_holds([{"race_subset": [],
+                                "race_subset_dropped": ["mod.esp|801"]}])
+    out = capsys.readouterr().out
+    assert "separate armature per race" not in out
+    assert "1 armature(s) made only for other races" in out
+
+
+def test_an_armature_the_other_pass_mints_is_not_reported_left_off(capsys):
+    ac._report_coverage_holds([
+        {"race_subset": [], "race_subset_dropped": ["mod.esp|801", "mod.esp|802"],
+         "race_subset_minted": frozenset({"mod.esp|800"})},
+        {"race_subset": [], "race_subset_dropped": [],
+         "race_subset_minted": frozenset({"mod.esp|801"})}])
+    out = capsys.readouterr().out
+    assert "1 armature(s) made only for other races" in out
 
 
 def test_nothing_is_reported_without_a_split(capsys):

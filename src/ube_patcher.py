@@ -3743,13 +3743,14 @@ class _RaceSubset:
     each armour leaves to mint, and which UBE races each minted armature
     targets. A minted armature is one record shared by every armour that
     lists it, so it targets the union, and all races as soon as one armour
-    mints it unsplit (a double draw there beats a missing one)."""
+    mints it unsplit (a double draw there beats a missing one). `stats` is
+    read from those final targets, so it names only what the ESP holds."""
 
     def __init__(self, arma_win):
         self.arma_win = arma_win
         self.on = _coverage_race_subset()
-        self.armos: list = []      # (armo_abs, edid) whose armatures were split
-        self.dropped: list = []    # armatures listing only other races, not minted
+        self.armos: list = []      # (armo_abs, edid, armatures kept) split
+        self.dropped: list = []    # armatures some armour left off
         self._races: dict = {}     # armature -> UBE races some armour needs
         self._full: set = set()    # armatures some armour needs for every race
 
@@ -3761,9 +3762,10 @@ class _RaceSubset:
         drop, races = _race_subset_split(to_mint, self.arma_win, armo_slots)
         if not (drop or races):
             return to_mint, {}
-        self.armos.append((armo_abs, edid))
+        kept = [x for x in to_mint if x not in drop]
+        self.armos.append((armo_abs, edid, kept))
         self.dropped.extend(x for x in to_mint if x in drop and x not in self.dropped)
-        return [x for x in to_mint if x not in drop], races
+        return kept, races
 
     def targeted(self, to_mint, races) -> None:
         for x in to_mint:
@@ -3780,8 +3782,24 @@ class _RaceSubset:
         return [f for f in UBE_RACE_FIDS_24 if f in self._races[x]]
 
     def stats(self) -> dict:
-        return {"race_subset": self.armos,
-                "race_subset_dropped": [f"{a[0]}|{a[1]:X}" for a in self.dropped]}
+        """From the FINAL targets, after the union: `race_subset` = the split
+        armours at least one of whose minted armatures draws for fewer than
+        every UBE race; `race_subset_dropped` = armatures some armour left off
+        that no armour of this pass mints; `race_subset_minted` = every
+        armature this pass mints, so the report can drop one the other pass
+        mints."""
+        n_all = len(UBE_RACE_FIDS_24)
+
+        def _narrowed(x) -> bool:
+            r = self.races_for(x)
+            return r is not None and len(r) < n_all
+        minted = self._full | set(self._races)
+        return {"race_subset": [(a, e) for a, e, kept in self.armos
+                                if any(_narrowed(x) for x in kept)],
+                "race_subset_dropped": [f"{a[0]}|{a[1]:X}" for a in self.dropped
+                                        if a not in minted],
+                "race_subset_minted": frozenset(
+                    f"{a[0]}|{a[1]:X}" for a in minted) if self.on else frozenset()}
 
 
 def _coverage_dead_armature() -> bool:

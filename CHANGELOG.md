@@ -36,9 +36,13 @@ circlets plus the elf one, the same helmet twice, or a second robe. Now each
 version is drawn only on the UBE versions of the races it was made for, and a
 version made only for a mod's own race is left off. Pieces the base game draws
 together (two robe layers listed for the same races) are unchanged, and every
-UBE race still draws the item. Measured on the reported modlist: 7 items, one
-extra robe left off and 15 versions narrowed to their own races.
-`CBBE2UBE_NO_COVERAGE_RACE_SUBSET=1` (set to 1) turns it off.
+UBE race still draws the item. Measured on the reported modlist: 8 items change.
+On 7 of them, 9 per-race versions are now drawn only for their own races (17
+item-to-version links, as several items share a version); on the eighth, one
+extra robe version is left off. The run's report counts only what actually
+changed: an item is listed as drawn per race only when one of its versions now
+skips some races, and a version is listed as left off only when no item draws
+it any more. `CBBE2UBE_NO_COVERAGE_RACE_SUBSET=1` (set to 1) turns it off.
 
 ### Fixed — a garment whose layers share one name keeps every layer
 
