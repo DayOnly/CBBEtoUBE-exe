@@ -259,6 +259,98 @@ def test_a_shared_armature_is_counted_once(tmp_path):
     assert len(st["world_mesh_dropped"]) == 2
 
 
+# ------------------------------------------- a partial drop is named, too
+# #world-mesh-partial-report (review 09-24): the torso armature withheld, the
+# gauntlets one minted. The armour stays a target, so it was never in
+# world_mesh_dropped -- yet nothing draws its slot 32 on UBE, as with a full drop.
+
+G_1 = r"armor\f\1stgauntlets_1.nif"   # converted: admits the gauntlets armature
+GLOVES = {b"MOD2": r"armor\m\gauntlets_1.nif", b"MOD3": r"armor\f\gauntlets_1.nif",
+          b"MOD5": G_1}
+
+
+def test_a_body_armour_left_with_only_its_gauntlets_is_recorded(tmp_path):
+    st, out = _body_pass(
+        tmp_path, {0x01000800: (FULL, BODY), 0x01000802: (GLOVES, HANDS)},
+        [(0x01000801, BODY | HANDS, [0x01000800, 0x01000802])], _conv(F_1, G_1))
+    assert st["armo_targets"] == 1 and st["world_mesh_dropped"] == []
+    assert st["world_mesh_partial"] == [(("mod.esp", 0x801), "Piece")]
+    assert [m[b"MOD3"] for m in _minted(out)] == [GLOVES[b"MOD3"]]
+
+
+def test_a_second_converted_torso_armature_is_not_a_partial_drop(tmp_path):
+    """Control: one torso armature withheld, another one minted -- slot 32 is
+    still drawn, so the armour is not named."""
+    other = {b"MOD3": r"armor\f\cuirass_2.nif"}
+    st, _out = _body_pass(
+        tmp_path, {0x01000800: (FULL, BODY), 0x01000803: (other, BODY)},
+        [(0x01000801, BODY, [0x01000800, 0x01000803])],
+        _conv(F_1, r"armor\f\cuirass_2.nif"))
+    assert st["world_mesh_skipped"] == ["mod.esp|800"]
+    assert st["armo_targets"] == 1 and st["world_mesh_partial"] == []
+
+
+def test_a_full_drop_is_not_also_a_partial_one(tmp_path):
+    st, _out = _one_torso(tmp_path, FULL, _conv(F_1))
+    assert len(st["world_mesh_dropped"]) == 1 and st["world_mesh_partial"] == []
+
+
+def test_an_armour_a_later_rule_empties_is_not_named_as_drawn(tmp_path):
+    """Named only while it stays a target: nude hands that do not resolve empty
+    the armour, which the nude-skin line reports instead."""
+    nude = {b"MOD3": r"actors\character\character assets\femalehands_1.nif",
+            b"MOD5": G_1}
+    st, _out = _body_pass(
+        tmp_path, {0x01000800: (FULL, BODY), 0x01000802: (nude, HANDS)},
+        [(0x01000801, BODY | HANDS, [0x01000800, 0x01000802])], _conv(F_1, G_1),
+        mesh_exists=lambda p: False)
+    assert st["armo_targets"] == 0 and st["world_mesh_partial"] == []
+    assert [d[:2] for d in st["nude_dropped"]] == [(("mod.esp", 0x801), "Piece")]
+
+
+def test_the_partial_drops_are_counted_and_named(capsys):
+    ac._report_coverage_holds([{
+        "world_mesh_skipped": ["mod.esp|800", "mod.esp|803"],
+        "world_mesh_dropped": [(("mod.esp", 0x801), "Tunic")],
+        "world_mesh_partial": [(("mod.esp", 0x804), "CuirassAndGloves")]}])
+    text = capsys.readouterr().out
+    assert "(1 armour(s) left without one, 1 drawn without the body piece)" in text
+    assert "not covered: Tunic  (mod.esp|000801)" in text
+    assert "no body piece: CuirassAndGloves  (mod.esp|000804)" in text
+
+
+def test_the_partial_names_are_capped_at_five(capsys):
+    ac._report_coverage_holds([{
+        "world_mesh_skipped": ["mod.esp|800"],
+        "world_mesh_partial": [(("mod.esp", 0x900 + i), f"Set{i}") for i in range(7)]}])
+    text = capsys.readouterr().out
+    assert text.count("no body piece:") == 5
+    assert "... and 2 more" in text
+
+
+def test_adult_outfits_are_named_before_childrens_clothing(capsys):
+    """Live, the first five names were all children's clothing (skipped on
+    purpose) and the adult outfits sat in '... and 75 more'. Child = the name
+    test source selection uses (`_is_child_content_asset`); order is otherwise
+    kept."""
+    kids = [(("skyrim.esm", 0x100 + i), f"Cloth_Child_Body_{i}") for i in range(5)]
+    adults = [(("mod.esp", 0x801), "Tunic"), (("mod.esp", 0x802), "Robe")]
+    ac._report_coverage_holds([{
+        "world_mesh_skipped": ["mod.esp|800"],
+        "world_mesh_dropped": kids + adults,
+        "world_mesh_partial": [(("mod.esp", 0x805), "ChildrenVest"),
+                               (("mod.esp", 0x806), "Cuirass")]}])
+    lines = [ln.strip() for ln in capsys.readouterr().out.splitlines()]
+    named = [ln for ln in lines if ln.startswith("not covered:")]
+    assert named[:2] == ["not covered: Tunic  (mod.esp|000801)",
+                         "not covered: Robe  (mod.esp|000802)"]
+    assert named[2] == "not covered: Cloth_Child_Body_0  (skyrim.esm|000100)"
+    assert "... and 2 more" in lines
+    part = [ln for ln in lines if ln.startswith("no body piece:")]
+    assert part == ["no body piece: Cuirass  (mod.esp|000806)",
+                    "no body piece: ChildrenVest  (mod.esp|000805)"]
+
+
 # ---------------------------------------------------------- report + wiring
 
 def test_the_drops_are_reported(capsys):
@@ -267,8 +359,9 @@ def test_the_drops_are_reported(capsys):
         "world_mesh_dropped": [(("mod.esp", 0x801), "Tunic")]}])
     text = capsys.readouterr().out
     assert "2 body armature(s) were not minted because their female world mesh" in text
-    assert "(1 armour(s) left without one)" in text
+    assert "(1 armour(s) left without one, 0 drawn without the body piece)" in text
     assert "not covered: Tunic  (mod.esp|000801)" in text
+    assert "no body piece:" not in text
 
 
 def test_nothing_dropped_prints_nothing(capsys):

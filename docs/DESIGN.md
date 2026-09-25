@@ -1098,6 +1098,20 @@ reported through `_report_coverage_holds`:
   armature, 62 of them children's clothing (the user skips children entirely).
   Hands/feet and slots 34/38 keep their source mesh by design and are not
   touched. `CBBE2UBE_NO_COVERAGE_WORLD_MESH=1`.
+  *Reporting* (`#world-mesh-partial-report`, review 09-24): an armour whose
+  torso armature is withheld but whose hands/feet armature is minted stays a
+  target, so it was in neither the "left without one" count nor the names, yet
+  nothing draws its slot 32 on UBE. The body pass records it
+  (`world_mesh_partial`) when no minted armature left draws slot 32 and it is
+  still a target at the end (a later rule that empties it reports it instead);
+  the warning counts it ("drawn without the body piece") and names it
+  ("no body piece:"). Both name lists put adults first, a child piece being
+  what source selection already calls one (`_is_child_content_asset`, by
+  EditorID). Live replay: 1 partial armour; of the 80 full drops 19 are
+  children's clothing by that test, and they had filled all five named lines;
+  now the five are adult outfits. The test is by name only, so a child's
+  unique clothes named after the child still sort with the adults.
+  Report only: every plugin and sidecar byte-identical, so no switch.
 - **Nude hands and feet draw the UBE body's own** (`#coverage-nude-skin`). A
   slot-33/37 armature whose MOD3 is `femalehands`/`femalefeet` under
   `actors\character\character assets\` (folder AND exact basename: a basename
@@ -1116,12 +1130,15 @@ reported through `_report_coverage_holds`:
   `CBBE2UBE_NO_COVERAGE_NUDE_SKIN=1`.
 - **A hand-made UBE twin** (`#coverage-ube-twin`). Where our output has no
   `!UBE\<path>` but a third-party mod ships one loose (never our output, never
-  an excluded mod, never MO2's overwrite), the minted slot points there. It only
-  moves where a slot points; it never admits an armature. The census moved 8
+  an excluded mod, never MO2's overwrite), the minted slot points there. As
+  built it only moved where a slot points and never admitted an armature;
+  since #skip-built-ube-path (below, on by default) the body pass also admits
+  an armature whose mesh is such a twin. The census moved 8
   links: the 2 it was written for (boots and gloves reusing a UBE-patched
   armour's armatures) plus 4 dismembered-body addons and 2 links of one choker
   from the user's UBE BodySlide build -- every one a UBE version of the same
-  mesh. `CBBE2UBE_NO_COVERAGE_UBE_TWIN=1` turns it off.
+  mesh. `CBBE2UBE_NO_COVERAGE_UBE_TWIN=1` turns it off, and #skip-built-ube-path
+  with it (the 54 meshes left to builders are converted again).
 - **A `meshes\` model path is written `!UBE\X`** (`#twin-path-strip-meshes`).
   An armature may spell its model `meshes\X.nif`; the engine reads it as X, so
   the twin lookup takes the folder off and finds `meshes\!UBE\X.nif`. The

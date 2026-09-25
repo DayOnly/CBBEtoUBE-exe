@@ -3419,8 +3419,10 @@ def _mesh_exists_anywhere(output) -> "callable[[str], bool] | None":
     r"""#coverage-female-guard: does a source mesh exist ANYWHERE the game reads
     it -- loose in an enabled mod or the game Data, or in any archive? A mesh in a
     texture-named BSA still loads, so only the voice/sound/facegen archives are
-    skipped (the batch index skips texture BSAs too: one real female mesh in the
-    reported modlist lives in one).
+    skipped. The batch index lists texture archives too by default
+    (#texture-archive-meshes); this lookup passes its own skip list, so
+    CBBE2UBE_NO_TEXTURE_ARCHIVE_MESHES does not change what it sees (one real
+    female mesh in the reported modlist lives in a texture archive).
 
     Asked only where a female slot would otherwise take the male mesh, so both
     lookups are lazy: a per-path probe for loose files, and one table scan of the
@@ -3672,8 +3674,8 @@ def _outside_ube_mesh_resolver(output) -> "callable[[str], bool] | None":
     r"""The post-merge validator's `mesh_resolves`: does a `!UBE\` path the
     coverage step pointed OUTSIDE our output load from another mod? Only the two
     kinds it writes on purpose -- the UBE body's own hands/feet
-    (#coverage-nude-skin, resolved like `_mesh_exists_anywhere`) and, opted in,
-    a hand-made twin (#coverage-ube-twin). Anything else under `!UBE\` that our
+    (#coverage-nude-skin, resolved like `_mesh_exists_anywhere`) and, while the
+    twin rule is on (the default), a hand-made twin (#coverage-ube-twin). Anything else under `!UBE\` that our
     output lacks is still a missing mesh. The question is only "does it load",
     so an excluded mod's copy counts here. None when both are off; the lookups
     are built on the first question, which a clean Combined never asks."""
@@ -3720,8 +3722,15 @@ def _report_coverage_holds(stats: "list[dict]") -> None:
     skipped = [k for s in stats for k in (s.get("female_guard_skipped") or [])]
     dropped = [d for s in stats for d in (s.get("female_guard_dropped") or [])]
     wskip = [k for s in stats for k in (s.get("world_mesh_skipped") or [])]
-    wdrop = [d for s in stats for d in (s.get("world_mesh_dropped") or [])]
-    nred = [k for s in stats for k in (s.get("nude_redirected") or [])]
+    # Adults named first: children's clothing (skipped on purpose) filled every
+    # named line live and hid the adult outfits. A child piece is what source
+    # selection already calls one, by name. #world-mesh-partial-report
+    wdrop = sorted((d for s in stats for d in (s.get("world_mesh_dropped") or [])),
+                   key=lambda d: _is_child_content_asset(d[1]))
+    # Still drawn, but with no body piece: the hands/feet armature was minted.
+    wpart = sorted((d for s in stats for d in (s.get("world_mesh_partial") or [])),
+                   key=lambda d: _is_child_content_asset(d[1]))
+    nred =[k for s in stats for k in (s.get("nude_redirected") or [])]
     nskip = [k for s in stats for k in (s.get("nude_skipped") or [])]
     ndrop = [d for s in stats for d in (s.get("nude_dropped") or [])]
     twins = [k for s in stats for k in (s.get("ube_twin") or [])]
@@ -3769,7 +3778,7 @@ def _report_coverage_holds(stats: "list[dict]") -> None:
     if wskip:
         warn(f"[unified] {len(wskip)} body armature(s) were not minted because their "
              f"female world mesh was not converted ({len(wdrop)} armour(s) left "
-             "without one)",
+             f"without one, {len(wpart)} drawn without the body piece)",
              consequence="those body pieces are not drawn on UBE-race actors, rather "
                          "than draw their unconverted CBBE mesh on the UBE body",
              fix="convert the mod that ships the female mesh")
@@ -3777,6 +3786,10 @@ def _report_coverage_holds(stats: "list[dict]") -> None:
             print(f"       not covered: {edid or '?'}  ({pl}|{fid:06X})")
         if len(wdrop) > 5:
             print(f"       ... and {len(wdrop) - 5} more")
+        for (pl, fid), edid in wpart[:5]:
+            print(f"       no body piece: {edid or '?'}  ({pl}|{fid:06X})")
+        if len(wpart) > 5:
+            print(f"       ... and {len(wpart) - 5} more")
     if nred:
         print(f"  [unified] {len(nred)} hand/foot armature(s) that drew the nude CBBE "
               "hands or feet now draw the UBE body's own")
@@ -7875,7 +7888,7 @@ def _cmd_validate(args):
     total_warnings = 0
     failing = 0
     # The coverage step points some `!UBE\` slots at other mods' meshes on purpose
-    # (the UBE body's own hands/feet; opted in, hand-made twins). #coverage-nude-skin
+    # (the UBE body's own hands/feet; by default, hand-made twins). #coverage-nude-skin
     _outside = _outside_ube_mesh_resolver(mod_dir) if meshes_root else None
     for esp_path in esps:
         warnings = ube_patcher.validate_patch(

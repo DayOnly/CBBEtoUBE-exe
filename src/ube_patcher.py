@@ -553,14 +553,17 @@ def _coverage_ube_twin() -> bool:
     (#skip-already-ube), so the two are minted drawing the CBBE mesh while the
     UBE version sits loose in the patch's folder. With this on, a model with no
     converted twin in OUR output points at a loose `meshes\!UBE\<path>` from a
-    third-party mod (never our own output, never an excluded mod). It only
-    changes where a minted slot points; it never admits an armature.
+    third-party mod (never our own output, never an excluded mod). In the
+    non-body pass it only changes where a minted slot points. In the body pass,
+    while #skip-built-ube-path is on (its default), such a twin also ADMITS an
+    armature (`_admits`): its mesh was left to the builder, not converted.
 
     The live census moved 8 links, not the 2 expected, and every one points at
     a UBE version of the SAME mesh already installed: the two reused boots and
     gloves at their hand-made patch, a choker's two links and a gore pack's
     four dismembered-body addons at the user's own UBE BodySlide build.
-    CBBE2UBE_NO_COVERAGE_UBE_TWIN=1 turns it off."""
+    CBBE2UBE_NO_COVERAGE_UBE_TWIN=1 turns it off -- and #skip-built-ube-path
+    with it, so the meshes left to their builders are converted again."""
     return not _flag("CBBE2UBE_NO_COVERAGE_UBE_TWIN", False)
 
 
@@ -3793,7 +3796,7 @@ def generate_modded_nonbody_ube_coverage_patch(
     they pass every filter -- armour the user excluded. Tested last, so the
     `withheld` stat counts exactly the armours this left without our armature.
 
-    `ube_twin_exists` (#coverage-ube-twin, opt-in): the third-party mod that
+    `ube_twin_exists` (#coverage-ube-twin, on by default): the third-party mod that
     ships a loose `!UBE\\<path>` for a model we did not convert, else None. A
     minted slot points there instead of at the source mesh.
 
@@ -3971,8 +3974,8 @@ def generate_modded_nonbody_ube_coverage_patch(
         return _converted_model_exists(model_path, crp, strip_meshes=_strip)
 
     def _ube_exists(model_path: str) -> bool:
-        # What a minted slot may point at: our converted mesh or, opted in, a
-        # hand-made UBE twin another mod ships. #coverage-ube-twin
+        # What a minted slot may point at: our converted mesh or (twin rule on,
+        # the default) a hand-made UBE twin another mod ships. #coverage-ube-twin
         return _conv_exists(model_path) or (
             _twin and bool(model_path) and bool(ube_twin_exists(model_path)))
 
@@ -4138,9 +4141,11 @@ def generate_modded_body_ube_coverage_patch(
     so the part is not minted). Unset, it is `female_mesh_exists` -- the same
     lookup, so a caller passing only that sees one answer from every test.
 
-    `ube_twin_exists`: as in the non-body pass (#coverage-ube-twin, opt-in). It
-    moves where a minted slot points, and so what the world-mesh and female
-    guard tests see, but never admits an armature on its own.
+    `ube_twin_exists`: as in the non-body pass (#coverage-ube-twin, on by
+    default). It moves where a minted slot points, and so what the world-mesh
+    and female guard tests see. While #skip-built-ube-path is on (its default)
+    it also admits an armature whose mesh is such a twin (`_admits`): that mesh
+    was left to its builder, so it is not in `converted_rel_paths`.
 
     `npc_worn_armo_abs`: as in the non-body pass (#coverage-human-race-list).
     The race-list rule admits a body armature only with a converted mesh, as
@@ -4164,6 +4169,7 @@ def generate_modded_body_ube_coverage_patch(
     guard_dropped: list = []   # ARMOs left with nothing to mint by that
     world_skipped: list = []   # body armatures not minted: world mesh unconverted
     world_dropped: list = []   # ARMOs left with nothing to mint by that
+    world_partial: list = []   # ARMOs still minted, but with no slot-32 armature left
     nude_redirect: dict = {}   # arma_abs -> the UBE body part its MOD3 draws
     nude_skipped: list = []    # (arma_abs, why) nude parts not minted: skin/unresolved
     nude_dropped: list = []    # (armo_abs, edid, why) ARMOs left with nothing to mint by that
@@ -4197,8 +4203,8 @@ def generate_modded_body_ube_coverage_patch(
         return _converted_model_exists(model_path, crp, strip_meshes=_strip)
 
     def _ube_exists(model_path: str) -> bool:
-        # What a minted slot may point at: our converted mesh or, opted in, a
-        # hand-made UBE twin another mod ships. #coverage-ube-twin
+        # What a minted slot may point at: our converted mesh or (twin rule on,
+        # the default) a hand-made UBE twin another mod ships. #coverage-ube-twin
         return _conv_exists(model_path) or (
             _twin and bool(model_path) and bool(ube_twin_exists(model_path)))
 
@@ -4441,6 +4447,7 @@ def generate_modded_body_ube_coverage_patch(
         # converted female world mesh (or the male one where the female is
         # absent or dead). Same per-armature test as the guard above; after it,
         # so the guard's own count is unchanged.
+        _no_torso = False
         if _world_mesh and _is_body and to_mint:
             _unworld = [x for x in to_mint
                         if ((_arma_bod2_slots(arma_win[x][0]) or slots)
@@ -4454,6 +4461,13 @@ def generate_modded_body_ube_coverage_patch(
                 if not to_mint:
                     world_dropped.append((armo_abs, edid))
                     continue
+                # A partial drop: its hands/feet armature is still minted, so the
+                # armour is targeted, but nothing left draws slot 32 -- no torso on
+                # UBE, as with a full drop. Named in the report if it stays a
+                # target. #world-mesh-partial-report
+                _no_torso = not any(
+                    (_arma_bod2_slots(arma_win[x][0]) or slots) & _BIPED_SLOT_BODY_BIT
+                    for x in to_mint)
         # #coverage-nude-skin: a hand/foot armature drawing the CBBE NUDE hands or
         # feet (an NPC costume's "boots" that are bare feet) draws the UBE body's
         # own part, or is not minted. On a race skin -- an armour that also lists
@@ -4511,6 +4525,8 @@ def generate_modded_body_ube_coverage_patch(
             # What the guards above left of it (a hood riding along is not).
             race_list_ube.update({x: _listed[x] for x in to_mint if x in _listed})
             race_listed.append((armo_abs, edid))
+        if _no_torso:
+            world_partial.append((armo_abs, edid))
         targets.append((armo_abs, plugin_case.get(armo_abs[0], armo_abs[0]),
                         to_mint))
         for x in to_mint:
@@ -4726,6 +4742,9 @@ def generate_modded_body_ube_coverage_patch(
         "female_guard_dropped": guard_dropped,
         "world_mesh_skipped": [f"{a[0]}|{a[1]:X}" for a in world_skipped],
         "world_mesh_dropped": world_dropped,
+        # Targeted armours drawn with no body piece: their slot-32 armature was
+        # withheld above, a hands/feet one was minted. #world-mesh-partial-report
+        "world_mesh_partial": world_partial,
         "nude_redirected": [{"arma": f"{a[0]}|{a[1]:X}", "to": nude_redirect[a]}
                             for a in mint_set if a in nude_redirect],
         # Only armatures NO armour minted: one skipped for a race skin is still

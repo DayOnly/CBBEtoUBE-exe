@@ -2598,6 +2598,98 @@ PAIRS = (
          expect=('test_the_body_pass_gets_the_lookup_with_the_guard_off',),
     ),
 
+    # #world-mesh-partial-report (2026-09-24 review): an armour whose torso
+    # armature the world-mesh rule withheld but whose hands/feet one was minted
+    # stayed a target, so the warning neither counted nor named it (live: 1).
+    # The named list also put children's clothing first and hid the adults.
+    # Report-only: the written plugins and sidecars are byte-identical.
+    Pair('WMP-a', 'a partial world-mesh drop is not recorded',
+         edits=(
+             ('src/ube_patcher.py',
+              '        if _no_torso:\n'
+              '            world_partial.append((armo_abs, edid))\n',
+              '        if False:  # MUTATED\n'
+              '            world_partial.append((armo_abs, edid))\n', 1),
+         ),
+         tests=('tests/test_coverage_world_mesh.py',),
+         expect=('test_a_body_armour_left_with_only_its_gauntlets_is_recorded',),
+    ),
+    Pair('WMP-b', 'an armour a later rule empties is still named as drawn',
+         edits=(
+             ('src/ube_patcher.py',
+              '                _no_torso = not any(\n',
+              '                world_partial.append((armo_abs, edid))  # MUTATED\n'
+              '                _no_torso = False and not any(\n', 1),
+         ),
+         tests=('tests/test_coverage_world_mesh.py',),
+         expect=('test_an_armour_a_later_rule_empties_is_not_named_as_drawn',),
+    ),
+    Pair('WMP-c', 'a second minted torso armature does not count',
+         edits=(
+             ('src/ube_patcher.py',
+              '                _no_torso = not any(\n',
+              '                _no_torso = True or not any(  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_coverage_world_mesh.py',),
+         expect=('test_a_second_converted_torso_armature_is_not_a_partial_drop',),
+    ),
+    Pair('WMP-d', 'the body pass does not hand the partial drops on',
+         edits=(
+             ('src/ube_patcher.py',
+              '        "world_mesh_partial": world_partial,\n',
+              '        "world_mesh_partial": [],  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_coverage_world_mesh.py',),
+         expect=('test_a_body_armour_left_with_only_its_gauntlets_is_recorded',),
+    ),
+    Pair('WMP-e', 'the partial drops are not named',
+         edits=(
+             ('src/auto_convert.py',
+              '            print(f"       no body piece: {edid or \'?\'}  ({pl}|{fid:06X})")\n',
+              '            pass  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_coverage_world_mesh.py',),
+         expect=('test_the_partial_drops_are_counted_and_named',),
+    ),
+    Pair('WMP-f', 'the partial drops are not counted',
+         edits=(
+             ('src/auto_convert.py',
+              'f"without one, {len(wpart)} drawn without the body piece)",',
+              'f"without one, 0 drawn without the body piece)",  # MUTATED', 1),
+         ),
+         tests=('tests/test_coverage_world_mesh.py',),
+         expect=('test_the_partial_drops_are_counted_and_named',),
+    ),
+    Pair('WMP-g', "children's clothing is named first again",
+         edits=(
+             ('src/auto_convert.py',
+              '    wdrop = sorted((d for s in stats for d in (s.get("world_mesh_dropped") or [])),\n'
+              '                   key=lambda d: _is_child_content_asset(d[1]))\n',
+              '    wdrop = [d for s in stats for d in (s.get("world_mesh_dropped") or [])]  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_coverage_world_mesh.py',),
+         expect=('test_adult_outfits_are_named_before_childrens_clothing',),
+    ),
+    Pair('WMP-h', "a child's partial drop is named first",
+         edits=(
+             ('src/auto_convert.py',
+              '    wpart = sorted((d for s in stats for d in (s.get("world_mesh_partial") or [])),\n'
+              '                   key=lambda d: _is_child_content_asset(d[1]))\n',
+              '    wpart = [d for s in stats for d in (s.get("world_mesh_partial") or [])]  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_coverage_world_mesh.py',),
+         expect=('test_adult_outfits_are_named_before_childrens_clothing',),
+    ),
+    Pair('WMP-i', 'every partial drop is named, however many',
+         edits=(
+             ('src/auto_convert.py',
+              '        for (pl, fid), edid in wpart[:5]:\n',
+              '        for (pl, fid), edid in wpart:  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_coverage_world_mesh.py',),
+         expect=('test_the_partial_names_are_capped_at_five',),
+    ),
+
     # #coverage-nude-skin (2026-09-24): nude-hands/feet armatures (an NPC
     # costume's bare-feet boots) were minted for the UBE races with the CBBE part.
     # Live: 4 armatures -- 2 redirected to the UBE body's own, 2 on a race skin.

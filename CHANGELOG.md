@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### Fixed — the warning about body pieces not drawn on UBE names every piece it means, adults first
+
+When a body piece is not drawn on UBE actors because its mesh was not
+converted, a warning counts and names the armour. It missed an armour that
+also has gloves or boots: the gloves were still drawn, so the armour was not
+counted, although its body was missing just the same. It is now counted
+("drawn without the body piece") and named ("no body piece:"). The names also
+listed children's clothing first, so the five shown were all children's
+clothes and the adult outfits were hidden in "... and 75 more"; adult outfits
+now come first. Measured on the reported modlist: one armour newly named, and
+the five names shown are now adult outfits. Nothing else changes: the
+converted meshes and patches are the same, so this has no switch.
+
 ### Fixed — the switch for armour only NPCs wear no longer changes which items are drawn on UBE actors
 
 `CBBE2UBE_NO_NPC_WORN_NONPLAYABLE` is meant to stop only the conversion of
@@ -157,7 +170,10 @@ could still hand a UBE actor a CBBE mesh:
 
 For troubleshooting, `CBBE2UBE_NO_COVERAGE_WORLD_MESH`,
 `CBBE2UBE_NO_COVERAGE_NUDE_SKIN` and `CBBE2UBE_NO_COVERAGE_UBE_TWIN` (set to 1)
-turn the three off.
+turn the three off. `CBBE2UBE_NO_COVERAGE_UBE_TWIN` also converts again the
+meshes left alone because another mod already ships them built for UBE (54 on
+the reported modlist, see "hand-made UBE versions are recognised" above), so it
+changes the converted meshes too, not only where pieces point.
 
 ### Fixed — excluded mods and hand-made UBE patches are left alone, and female slots no longer get male meshes
 
