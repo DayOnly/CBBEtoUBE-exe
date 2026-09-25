@@ -3961,8 +3961,10 @@ def _emit_unified_coverage_patches(output, patches_dir, master_data_dirs,
                  if ube_patcher._coverage_ube_twin() else None)
         # #coverage-human-race-list: the armour female NPCs wear -- a
         # non-playable piece of it the race-list rule may take. Built once per
-        # load order (an `auto` run's source selection already has).
-        _worn = (_batch_npc_worn_armos()
+        # load order (an `auto` run's source selection already has). Asked
+        # for_coverage: the rule's own switch is read on the line below, and
+        # CBBE2UBE_NO_NPC_WORN_NONPLAYABLE turns off only the conversion.
+        _worn = (_batch_npc_worn_armos(for_coverage=True)
                  if ube_patcher._coverage_human_race_list() else None)
         nb_out = patches_dir / "UBE_ModNonBody_Coverage UBE patch.esp"
         nb = ube_patcher.generate_modded_nonbody_ube_coverage_patch(
@@ -6468,7 +6470,8 @@ def _npc_worn_armos(plugin_paths) -> "frozenset[tuple[str, int]]":
     return frozenset(worn - skins)    # a skin is the body, never worn over it
 
 
-def _batch_npc_worn_armos() -> "frozenset[tuple[str, int]] | None":
+def _batch_npc_worn_armos(for_coverage: bool = False
+                          ) -> "frozenset[tuple[str, int]] | None":
     """`_npc_worn_armos` over the active load order, built once per load order
     per process: source selection and the convert step of one `auto` run share
     it, and a GUI refresh does not re-read every plugin while the mod and plugin
@@ -6476,8 +6479,13 @@ def _batch_npc_worn_armos() -> "frozenset[tuple[str, int]] | None":
 
     None -- the old rule, every non-playable armour skipped -- when switched off
     (CBBE2UBE_NO_NPC_WORN_NONPLAYABLE=1) or when there is no load order to read.
-    Never raises: a failed read is a warning and the old rule. #npc-worn-nonplayable"""
-    if _flag("CBBE2UBE_NO_NPC_WORN_NONPLAYABLE", False):
+    Never raises: a failed read is a warning and the old rule. #npc-worn-nonplayable
+
+    `for_coverage`: the coverage step's race-list rule asks after reading its
+    own switch (CBBE2UBE_NO_COVERAGE_HUMAN_RACE_LIST), so the conversion switch
+    is not read -- each switch turns off only its own feature. Same cache.
+    #coverage-human-race-list"""
+    if not for_coverage and _flag("CBBE2UBE_NO_NPC_WORN_NONPLAYABLE", False):
         return None
     try:
         lay = paths.discover_layout()
@@ -6509,7 +6517,8 @@ def _batch_npc_worn_armos() -> "frozenset[tuple[str, int]] | None":
     except Exception as e:
         warn(f"could not read which armour NPCs wear ({plain_error(e)})",
              consequence="non-playable armour that female NPCs wear is not "
-                         "converted this run")
+                         "converted, and the coverage race-list rule does not "
+                         "link it, this run")
         return None
 
 

@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Fixed — the switch for armour only NPCs wear no longer changes which items are drawn on UBE actors
+
+`CBBE2UBE_NO_NPC_WORN_NONPLAYABLE` is meant to stop only the conversion of
+armour that only NPCs wear. It also stopped the rule for items whose own
+armature names another race first from drawing such armour on UBE actors, and
+that rule has its own switch, `CBBE2UBE_NO_COVERAGE_HUMAN_RACE_LIST`. Now each
+switch turns off only its own change, so an A/B test with one of them points
+at the right one. Nothing changes at default settings or with both switches
+set. Measured on the reported modlist with only the NPC switch set: one more
+item is drawn (a neck piece an NPC wears), the same as at default settings.
+This only separates two switches, so it has no switch of its own. If the tool
+cannot read which armour NPCs wear, its warning now says that both rules miss
+that armour for the run.
+
 ### Fixed — a hooded robe no longer gives UBE actors a second hood
 
 A robe's hood is drawn on UBE actors along with the robe. That rule also took

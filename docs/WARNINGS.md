@@ -167,7 +167,7 @@ at run time), what it means for the run, and what to do next.
 - `!! BSA extract: refusing traversal path "…"`
   - means: the archive entry points outside the extraction folder and was skipped
 - `!! could not read which armour NPCs wear (…)`
-  - means: non-playable armour that female NPCs wear is not converted this run
+  - means: non-playable armour that female NPCs wear is not converted, and the coverage race-list rule does not link it, this run
 - `!! vanilla sweep DISABLED this run: …`
   - means: vanilla armour that no mod overrides stays unlinked, so it is invisible on UBE actors until a run with the sweep
 - `!! overlay transfer FAILED: …`

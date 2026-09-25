@@ -421,15 +421,18 @@ def test_the_armours_are_reported(capsys):
 def test_the_batch_hands_the_worn_set_to_both_passes():
     """WIRING GUARD: every test above calls the passes directly."""
     src = inspect.getsource(ac._emit_unified_coverage_patches)
-    assert "_worn = (_batch_npc_worn_armos()" in src
+    assert "_worn = (_batch_npc_worn_armos(for_coverage=True)" in src
     assert src.count("npc_worn_armo_abs=_worn)") == 2
 
 
 # ------------------------------------------------ review follow-ups (09-24)
 
-def _emit_worn(tmp_path, monkeypatch):
+def _emit_worn(tmp_path, monkeypatch, real_batch=False,
+               worn=frozenset({("a.esp", 0x801)})):
     """Drive the real coverage step with both passes stubbed; return the worn
-    set each pass was handed and how often the batch set was built."""
+    set each pass was handed and how often the batch set was built.
+    `real_batch`: run the real `_batch_npc_worn_armos` (its switch test and its
+    cache) and stub only the plugin read under it."""
     (tmp_path / "mods" / "A Mod").mkdir(parents=True)
     fol = _save(tmp_path / "mods" / "A Mod" / "A.esp", ["Skyrim.esm"], [])
     out = tmp_path / "out"
@@ -445,10 +448,17 @@ def _emit_worn(tmp_path, monkeypatch):
     monkeypatch.setattr(ac, "_third_party_ube_covered_armos", lambda *a, **k: set())
     monkeypatch.setattr(ac, "_mesh_exists_anywhere", lambda output: None)
     monkeypatch.setattr(ac, "_third_party_ube_twin_lookup", lambda *a, **k: None)
-    worn = frozenset({("a.esp", 0x801)})
     built = []
-    monkeypatch.setattr(ac, "_batch_npc_worn_armos",
-                        lambda: built.append(1) or worn)
+    if real_batch:
+        lay = ac.paths.Layout(mods_root=tmp_path / "mods", instance_dir=tmp_path)
+        monkeypatch.setattr(ac.paths, "discover_layout", lambda *a, **k: lay)
+        monkeypatch.setattr(ac.paths, "enabled_mods_ordered", lambda lay: ["A Mod"])
+        monkeypatch.setattr(ac, "_NPC_WORN_CACHE", {})
+        monkeypatch.setattr(ac, "_npc_worn_armos",
+                            lambda ordered: built.append(1) or worn)
+    else:
+        monkeypatch.setattr(ac, "_batch_npc_worn_armos",
+                            lambda **k: built.append(1) or worn)
     seen = {}
 
     def _fake(name):
@@ -475,6 +485,24 @@ def test_the_worn_set_is_not_built_when_switched_off(tmp_path, monkeypatch):
     monkeypatch.setenv(OFF, "1")
     seen, built, _worn = _emit_worn(tmp_path, monkeypatch)
     assert seen == {"nb": None, "bd": None} and built == []
+
+
+def test_the_conversion_switch_leaves_the_race_list_rule_its_worn_set(
+        tmp_path, monkeypatch):
+    """Each switch turns off only its own feature: CBBE2UBE_NO_NPC_WORN_NONPLAYABLE
+    stops converting worn non-playable armour, not the race-list rule drawing it."""
+    monkeypatch.setenv("CBBE2UBE_NO_NPC_WORN_NONPLAYABLE", "1")
+    real_body = up.generate_modded_body_ube_coverage_patch
+    seen, built, worn = _emit_worn(tmp_path, monkeypatch, real_batch=True,
+                                   worn=frozenset({ARMOUR}))
+    assert seen == {"nb": worn, "bd": worn} and built == [1]
+    # ... and the real body pass, handed that set, draws the worn boots.
+    monkeypatch.setattr(up, "generate_modded_body_ube_coverage_patch", real_body)
+    w = tmp_path / "world"
+    w.mkdir()
+    world = _world(w, [_boots()], slots=FEET, flags=NONPLAYABLE)
+    st, minted = _body(w, world, worn=seen["bd"])
+    assert len(minted) == 1 and st["race_listed"] == [(ARMOUR, "Piece")]
 
 
 @pytest.mark.parametrize("models,effect", [

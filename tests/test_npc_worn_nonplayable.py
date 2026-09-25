@@ -309,6 +309,25 @@ def test_the_off_switch_reads_nothing(load_order, monkeypatch):
     assert ac._batch_npc_worn_armos() is None
 
 
+def test_coverage_reads_the_set_with_the_conversion_switch_set(load_order, monkeypatch):
+    """The coverage race-list rule has its own switch: this one turns off only
+    the conversion. #coverage-human-race-list"""
+    monkeypatch.setenv(OFF, "1")
+    assert ac._batch_npc_worn_armos() is None
+    worn = ac._batch_npc_worn_armos(for_coverage=True)
+    assert ("outfit.esp", DRESS & 0xFFFFFF) in worn
+
+
+def test_coverage_shares_the_conversion_cache(load_order, monkeypatch):
+    """Both ask once per load order: coverage must not re-read every plugin."""
+    calls = []
+    real = ac._npc_worn_armos
+    monkeypatch.setattr(ac, "_npc_worn_armos", lambda p: calls.append(1) or real(p))
+    first = ac._batch_npc_worn_armos()
+    assert ac._batch_npc_worn_armos(for_coverage=True) is first
+    assert len(calls) == 1
+
+
 def test_selection_admits_the_outfit_mod(load_order, monkeypatch, capsys):
     mods = load_order.parent
     kw = dict(require_arma=True, enabled_ordered=["Outfit Mod"])

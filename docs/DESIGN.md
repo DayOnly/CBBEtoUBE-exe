@@ -445,6 +445,8 @@ already-UBE path among the additions.
   +7 mods, 43 armatures kept in 14 sources, 37 pieces, 60 meshes, 17 of the census
   armatures. Known edges: wound meshes in a victim's inventory are converted;
   anything handed out by a script or a distributor at run time is still not seen.
+  The switch covers the conversion only; the coverage race-list rule reads the
+  same set under its own switch (`#coverage-human-race-list`).
 
 ---
 
@@ -1262,7 +1264,16 @@ reported through `_report_coverage_holds`:
   creature's weapon dummy, props -- 2 with no world mesh, 1 skin); the mesh test
   holds 30 more (naked skins no record links, a custom race's cuirasses, a
   slot-38 wig, an effect veil). Switch set: byte-identical to the parent.
-  `CBBE2UBE_NO_COVERAGE_HUMAN_RACE_LIST=1`.
+  `CBBE2UBE_NO_COVERAGE_HUMAN_RACE_LIST=1`. The worn set is asked for with
+  `for_coverage=True`, which skips `CBBE2UBE_NO_NPC_WORN_NONPLAYABLE` (same
+  cache): that switch turns off only the conversion of worn non-playable armour.
+  It first emptied this rule's worn set too, so one switch changed two features.
+  Only the "NPC-worn off, race-list on" setting changes: live, 280 -> 281
+  race-listed armours (one worn non-playable neck piece, 1 armature in the
+  second non-body ESL), and that setting's coverage is now byte-identical to
+  the default. Default and both-switches-set: unchanged. A pure decoupling, so it
+  has no switch of its own. A failed read of the worn set now names both
+  consequences in its warning.
 - **A claim path written with `meshes\` in front** (`#claim-meshes-prefix`). The
   engine reads `meshes\!UBE\x_1.nif` and `!UBE\x_1.nif` as one file; the
   SkyPatcher half of the claim test stripped the folder, the plugin half did not.

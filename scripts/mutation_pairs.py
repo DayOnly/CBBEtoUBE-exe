@@ -3222,7 +3222,7 @@ PAIRS = (
     Pair('NWN-h', 'the off-switch no longer switches anything off',
          edits=(
              ('src/auto_convert.py',
-              '    if _flag("CBBE2UBE_NO_NPC_WORN_NONPLAYABLE", False):\n'
+              '    if not for_coverage and _flag("CBBE2UBE_NO_NPC_WORN_NONPLAYABLE", False):\n'
               '        return None',
               '    if False:  # MUTATED\n        return None', 1),
          ),
@@ -3317,6 +3317,28 @@ PAIRS = (
          ),
          tests=('tests/test_npc_worn_nonplayable.py',),
          expect=('test_a_direct_convert_asks_the_vfs_for_the_worn_piece',),
+    ),
+    # worn-set decoupling (2026-09-24 review): the conversion switch emptied the
+    # coverage race-list rule's worn set too. Each switch reverts only its own.
+    Pair('NWN-s', "the conversion switch empties coverage's worn set again",
+         edits=(
+             ('src/auto_convert.py',
+              '    if not for_coverage and _flag("CBBE2UBE_NO_NPC_WORN_NONPLAYABLE", False):\n',
+              '    if _flag("CBBE2UBE_NO_NPC_WORN_NONPLAYABLE", False):  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_npc_worn_nonplayable.py',
+                'tests/test_coverage_human_race_list.py'),
+         expect=('test_coverage_reads_the_set_with_the_conversion_switch_set',
+                 'test_the_conversion_switch_leaves_the_race_list_rule_its_worn_set'),
+    ),
+    Pair('NWN-t', 'coverage and conversion keep two worn caches',
+         edits=(
+             ('src/auto_convert.py',
+              '        hit = _NPC_WORN_CACHE.get(key)',
+              '        hit = _NPC_WORN_CACHE.get((key, for_coverage))  # MUTATED', 1),
+         ),
+         tests=('tests/test_npc_worn_nonplayable.py',),
+         expect=('test_coverage_shares_the_conversion_cache',),
     ),
     # #claim-meshes-prefix (2026-09-24): the plugin half of the third-party UBE
     # claim compared `meshes\!UBE\...` as written, so a softbody pack's own UBE
@@ -4006,6 +4028,15 @@ PAIRS = (
          ),
          tests=('tests/test_coverage_human_race_list.py',),
          expect=('test_an_armature_that_already_names_a_ube_race_is_not_minted_again',),
+    ),
+    Pair('HRL-zf', 'the coverage step asks under the conversion switch',
+         edits=(
+             ('src/auto_convert.py',
+              '        _worn = (_batch_npc_worn_armos(for_coverage=True)\n',
+              '        _worn = (_batch_npc_worn_armos()  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_coverage_human_race_list.py',),
+         expect=('test_the_conversion_switch_leaves_the_race_list_rule_its_worn_set',),
     ),
     # #supersede-whole-base (2026-09-24): a base left to its builder leaves
     # meshes\ whole or not at all, and the partner fill never writes into it.
