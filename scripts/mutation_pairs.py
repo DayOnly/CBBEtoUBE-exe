@@ -6559,7 +6559,7 @@ PAIRS = (
          edits=(
              ('src/nif_convert_writer.py',
               '    xml_names = {m.lower() for m in re.findall(',
-              '    xml_names = {m for m in re.findall(  # MUTATED', 1),
+              '    xml_names = {m for m in re.findall(', 1),
          ),
          tests=('tests/test_dup_shape_names.py',),
          expect=('test_a_name_the_physics_xml_uses_is_kept_and_reported',),
