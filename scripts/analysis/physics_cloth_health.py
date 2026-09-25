@@ -72,7 +72,9 @@ they fail separately, so a single "it clips" report cannot tell you which to fix
      resolves approaching geometry, not existing overlap. The row here reads
      STORED vertices, which is not the rest pose: `#chain-rest-lift` moves chain
      root nodes, not vertices. The rest pose, through the node tree and the
-     skin, is `physics_rest_depth.py`.
+     skin, is `physics_rest_depth.py`. Only the vertices FSMP moves are read
+     (weight > 0 on a dynamic bone): a shape is cloth when ANY skin bone is
+     dynamic, and its vertices on kinematic bones alone are rigid mesh.
 
 And one thing must NOT hold:
 
@@ -89,7 +91,9 @@ another worn piece brings; shape-name physics from defaultBBPs.xml and its
 shape-name remapping; XMLs that exist only in an archive; bone renames;
 per-bone collision filters (can/no-collide-with-bone, weight-threshold);
 disable-tag; and whether a declared bone's node exists in the skeleton.
-<shared> is modelled only as far as it acts inside one file (external). The
+<shared> is modelled only as far as it acts inside one file (external); it
+and the tags are read untrimmed, as FSMP's readText returns them (its
+GetValue is outside the copied source, and no live XML pads either). The
 body-collider test is by name (tags, and name plus body-bone skin for a
 stand-in), not by where the shape lies, and the depth row uses stored
 vertices against the injected body (see 3).
@@ -116,7 +120,8 @@ Numbers from the first 09-25 version took every per-vertex-shape for cloth and
 every per-triangle-shape for a collider: they are not comparable either. Numbers
 from the second left out cloth moved by bones alone and knew a body collider
 only by its tag: its measured set and its no-partner and no-body rows are not
-comparable with these.
+comparable with these. Stored-depth numbers from before the dynamic-weight
+rule read every vertex of a cloth shape, rigid ones included.
 """
 import sys
 import xml.etree.ElementTree as ET
@@ -247,7 +252,9 @@ def parse_xml_bytes(data: bytes):
 
 
 def _tags(el, kind):
-    return {(t.text or "").strip().lower() for t in el.findall(kind)}
+    # FSMP's readText returns the element's value as written, untrimmed;
+    # tags are engine strings, which compare without case.
+    return {(t.text or "").lower() for t in el.findall(kind)}
 
 
 def _shape(el):
@@ -256,8 +263,10 @@ def _shape(el):
             "tags": _tags(el, "tag"),
             "can": _tags(el, "can-collide-with-tag"),
             "no": _tags(el, "no-collide-with-tag"),
-            # FSMP compares the text exactly; the last element read wins.
-            "shared": (shared[-1].text or "").strip() if shared else "public"}
+            # FSMP reads it with readText, which does not trim, and compares
+            # the string exactly (" external " is unknown to it, so public);
+            # the last element read wins.
+            "shared": (shared[-1].text or "") if shared else "public"}
 
 
 def allows(a, b) -> bool:
@@ -503,14 +512,38 @@ def _kinematic_reach(row):
     return out
 
 
-def _penetration(nif, cloth_names):
+def simulated_verts(shape, dynamic_bones):
+    """Boolean mask of the shape's vertices FSMP moves: those with weight > 0
+    on a DYNAMIC bone (`dynamic_bones`, by `_key`). A shape counts as cloth
+    when ANY of its skin bones is dynamic, but a vertex weighted only to
+    kinematic bones is rigid mesh the solver never moves. No weights to read:
+    no vertex is known to move."""
+    n = len(shape.verts)
+    mask = np.zeros(n, bool)
+    try:
+        weights = getattr(shape, "bone_weights", None) or {}
+    except Exception:
+        weights = {}
+    for bone, pairs in weights.items():
+        if _key(bone) not in dynamic_bones:
+            continue
+        for vi, w in pairs:
+            vi = int(vi)
+            if 0 <= vi < n and float(w) > 0:
+                mask[vi] = True
+    return mask
+
+
+def _penetration(nif, cloth_names, dynamic_bones):
     """Worst STORED-vertex depth of each cloth INSIDE the injected body, in
-    units. Not the rest pose -- a lifted chain root moves the drawn cloth and
-    not these vertices; `physics_rest_depth.py` measures that.
+    units, over its SIMULATED vertices only (`simulated_verts`). Not the rest
+    pose -- a lifted chain root moves the drawn cloth and not these vertices;
+    `physics_rest_depth.py` measures that.
 
     Signed along the body's outward normal at the nearest body vertex; positive
-    means the cloth vertex sits inside. Returns {} when the NIF carries no
-    injected body -- reported as UNKNOWN rather than counted clean.
+    means the cloth vertex sits inside. Returns None when the NIF carries no
+    injected body -- reported as UNKNOWN rather than counted clean -- and
+    leaves out a shape with no simulated vertex ({} when no shape has one).
     """
     shapes = {}
     for s in nif.shapes:
@@ -529,7 +562,8 @@ def _penetration(nif, cloth_names):
         s = shapes.get(_key(name))
         if s is None:
             continue
-        v = np.array(s.verts, np.float64)
+        v = np.array(s.verts, np.float64).reshape(-1, 3)
+        v = v[simulated_verts(s, dynamic_bones)]
         if len(v) == 0:
             continue
         if len(v) > PENETRATION_SAMPLE:
@@ -581,7 +615,8 @@ def scan(nifs, root: Path):
         row["path"] = rel
         row["garment"] = garment_of(rel)
         row["pen"] = _penetration(
-            nif, [c["name"] for c in row["cloth"]] or row["moved"])
+            nif, [c["name"] for c in row["cloth"]] or row["moved"],
+            row["dynamic_bones"])
         rows.append(row)
     return rows, skip, skip_garments, notes
 
@@ -664,6 +699,8 @@ def report(rows, skip, skip_garments, walked: int, notes=None) -> int:
                    and any(a for a, _b in reach[r["path"]].values())]
     pen_unknown = [r for r in rows if r["pen"] is None]
     pen_known = [r for r in rows if r["pen"]]
+    # Neither: the body is there, but no cloth vertex has dynamic weight.
+    pen_none = [r for r in rows if r["pen"] is not None and not r["pen"]]
     penetrating = [r for r in pen_known
                    if any(v[1] > 0 for v in r["pen"].values())]
 
@@ -702,9 +739,12 @@ def report(rows, skip, skip_garments, walked: int, notes=None) -> int:
     print(f"\n  STORED CLOTH VERTS INSIDE THE BODY: {len(penetrating):5d}"
           f"   of {len(pen_known)} measurable"
           + (f"   ({len(pen_unknown)} have no injected body -> UNKNOWN, "
-             f"not counted clean)" if pen_unknown else ""))
-    print("  (stored vertices, NOT the rest pose: a lifted chain root moves the "
-          "drawn cloth; physics_rest_depth.py measures that)")
+             f"not counted clean)" if pen_unknown else "")
+          + (f"   ({len(pen_none)} have no vertex weighted to a dynamic "
+             f"bone)" if pen_none else ""))
+    print("  (stored vertices FSMP moves -- weight > 0 on a dynamic bone -- NOT "
+          "the rest pose: a lifted chain root moves the drawn cloth; "
+          "physics_rest_depth.py measures that)")
 
     if penetrating:
         worst = []

@@ -83,6 +83,9 @@ LISTED APART (a FRAME DISAGREEMENT, both depths shown, NOT ranked):
     `nc._chain_frame_ok` and its CHAIN_LIFT_FRAME_TOL on the chain bones' --
     every skin bone but a hard skeleton bone -- node-tree positions, the lift
     read back under them taken off, against the skin in the bind frame F).
+    Like the converter's, it reads every skinned shape of the file, a
+    body-named one included: a source's own body helper keeps its name in
+    the written file, and its skin can refuse the file.
     The converter lifts nothing on such a file, so it carries no lift;
     `checked` 0 (no chain bone with skin) refuses nothing here, as there is
     no chain to lift;
@@ -103,11 +106,15 @@ Usage:
         [--body femalebody_tangent_1.nif] [--skeleton skeleton_female.nif]
         [--lift-log standoff_audit.jsonl] [--json out.json] [--top N] [--limit N]
 
-Exit 0 with the table; 2 on usage, or when no body or skeleton is found or one
-cannot be used (unreadable, no shapes or nodes, a body skin bone the skeleton
-lacks); 3 when nothing was measured or a control failed. `--json` always
-records "status" and the controls, and carries depth rows only with status
-"ok" (exit 0).
+Exit 0 with the table; 2 on usage, or when no body or skeleton is found, a
+named one (--skeleton, CBBE2UBE_SKELETON_NIF, --body) is no file -- never
+replaced by another -- or one cannot be used (unreadable, no shapes or nodes,
+a body with no triangles, a body skin bone the skeleton lacks); 3 when nothing
+was measured or a control failed. `--json` is written on every exit: "status"
+("ok", "controls FAILED", "nothing measured", "input error" with the one-line
+"reason", or "incomplete" -- written first, so a run that crashes leaves that
+and never an earlier run's rows), the controls when they ran, and depth rows
+only with status "ok" (exit 0).
 """
 import argparse
 import json
@@ -251,9 +258,11 @@ def is_lift_root(node):
 
 
 def chain_groups(nodes, offsets, skel):
-    """{root: {"offset", "lift", "spread", "bones", "skeleton_bone",
+    """{key: {"root", "offset", "lift", "spread", "bones", "skeleton_bone",
     "lift_root"}}: the skinned bones grouped by the vector they rest off
-    their bind by.
+    their bind by. The key is the group's root, or `root#n` when several
+    groups share one root (siblings under one node that moved differently):
+    every group is kept.
 
     A lift translates one ROOT node, so every skinned bone below it moves by
     the same vector, and a chain the lift did not touch moves by none. Bones
@@ -287,7 +296,7 @@ def chain_groups(nodes, offsets, skel):
     for key in offsets:
         for a in _armour_ancestry(nodes, key, skel):
             below[a].add(key)
-    out = {}
+    found = []
     for g in groups:
         members = set(g["bones"])
         lift_root = None
@@ -309,12 +318,20 @@ def chain_groups(nodes, offsets, skel):
             root = path[i]
         offs = np.array(g["offs"])
         med = np.median(offs, axis=0)
-        out[root] = {
+        found.append((root, {
+            "root": root,
             "offset": [round(float(x), 4) for x in med],
             "lift": round(float(np.linalg.norm(med)), 4),
             "spread": round(float(np.linalg.norm(offs - med, axis=1).max()), 4),
             "bones": len(members), "skeleton_bone": not g["anc"],
-            "lift_root": lift_root}
+            "lift_root": lift_root}))
+    # Groups interleaved under one node share its root: each keeps its own
+    # key (`root#1`, `root#2`, in bone order), so none replaces another.
+    shared = Counter(root for root, _v in found)
+    out, seen = {}, Counter()
+    for root, v in found:
+        seen[root] += 1
+        out[root if shared[root] == 1 else f"{root}#{seen[root]}"] = v
     return out
 
 
@@ -451,8 +468,12 @@ class Body:
         self.path = path
         # Points known to lie inside the body, independent of its normals.
         self.inside = np.asarray(inside, np.float64).reshape(-1, 3)
-        self.V = np.asarray(verts, np.float64)
+        self.V = np.asarray(verts, np.float64).reshape(-1, 3)
         self.T = np.asarray(tris, np.int64).reshape(-1, 3)
+        # A surface needs triangles: without them there is nothing to
+        # measure against, and the controls would index an empty list.
+        if not len(self.T):
+            raise ValueError(f"body {path}: no triangles")
         # The frame control: the body's rest positions against what it stores.
         self.frame_error = (0.0 if stored is None else float(np.abs(
             self.V - np.asarray(stored, np.float64)).max(initial=0.0)))
@@ -595,11 +616,15 @@ def measure(nif, row, skel, body):
     per_bone = defaultdict(list)
     unresolved = 0
     for s in nif.shapes:
-        if (pch._key(s.name) in BODY_SHAPES or not len(s.verts)
-                or not s.bone_weights):
+        if not len(s.verts) or not s.bone_weights:
             continue
         r = shape_rest(nodes, s, skel, moving, memo)
+        # The converter's frame check reads EVERY shape of the file, a
+        # body-named one too (a source's own body helper keeps its name and
+        # its skin): it is checked, never measured or read back.
         framed.append((s, r["frame"]))
+        if pch._key(s.name) in BODY_SHAPES:
+            continue
         cloth = r["share"] > SIM_EPS
         unresolved += int((cloth & ~r["measurable"]).sum())
         cloth &= r["measurable"]
@@ -706,9 +731,17 @@ def find_skeleton(arg=None):
     the MO2 profile's mods highest priority first, then the game's Data).
     The converter's own lookup takes the first mod ALPHABETICALLY, which on a
     list with two skeleton mods can be the one the game does not load; it is
-    the fallback only when there is no profile."""
-    for cand in (arg, os.environ.get("CBBE2UBE_SKELETON_NIF")):
-        if cand and Path(cand).is_file():
+    the fallback only when there is no profile.
+
+    A skeleton NAMED by `arg` or the variable that is not a file raises
+    FileNotFoundError: measuring against another skeleton than the one asked
+    for would be a silent substitution."""
+    for label, cand in (("--skeleton", arg),
+                        ("CBBE2UBE_SKELETON_NIF",
+                         os.environ.get("CBBE2UBE_SKELETON_NIF"))):
+        if cand:
+            if not Path(cand).is_file():
+                raise FileNotFoundError(f"{label} names no file: {cand}")
             return Path(cand)
     from src import paths as _p
     lay = _p.discover_layout()
@@ -935,6 +968,30 @@ def lift_log_check(rows, lift_log, top):
         print(f"    {p}")
 
 
+class _QuietParser(argparse.ArgumentParser):
+    def error(self, message):
+        raise ValueError(message)
+
+
+def _json_arg(argv):
+    """The --json path alone, read before the full parse so a usage error
+    can still be recorded there; None when it cannot be read."""
+    pre = _QuietParser(add_help=False)
+    pre.add_argument("--json")
+    try:
+        return pre.parse_known_args(argv)[0].json
+    except ValueError:
+        return None
+
+
+def write_status(path, status, reason):
+    """A run that measured nothing: "status", the one-line "reason", and no
+    rows -- written over whatever an earlier run left at `path`."""
+    with open(path, "w", encoding="utf-8", newline="\n") as f:
+        json.dump({"status": status, "reason": reason, "controls": {},
+                   "rows": [], "skip": {}}, f, indent=1)
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("meshes")
@@ -944,17 +1001,36 @@ def main(argv=None):
     ap.add_argument("--json")
     ap.add_argument("--top", type=int, default=30)
     ap.add_argument("--limit", type=int, default=0)
-    a = ap.parse_args(argv)
+    json_p = _json_arg(argv)
+    try:
+        a = ap.parse_args(argv)
+    except SystemExit as e:
+        if e.code == 2 and json_p:
+            write_status(json_p, STATUS_INPUT, "usage: the arguments do not "
+                         "parse")
+        raise
+    if a.json:
+        # Until the run ends, the file says so: a crash leaves this, never
+        # an earlier run's rows.
+        write_status(a.json, STATUS_INCOMPLETE, "the run did not finish")
+
+    def refuse(reason):
+        print(reason)
+        if a.json:
+            write_status(a.json, STATUS_INPUT, reason)
+        return 2
+
     root = Path(a.meshes)
     if not root.is_dir():
-        print(f"not a directory: {root}")
-        return 2
-    skel_p = find_skeleton(a.skeleton)
+        return refuse(f"not a directory: {root}")
+    try:
+        skel_p = find_skeleton(a.skeleton)
+    except FileNotFoundError as e:
+        return refuse(f"cannot use the skeleton: {e}")
     body_p = Path(a.body) if a.body else nc._find_user_preset_body("_1")
     if skel_p is None or body_p is None or not Path(body_p).is_file():
-        print("need a skeleton (--skeleton / CBBE2UBE_SKELETON_NIF) and the "
-              "weight-1 UBE body build (--body)")
-        return 2
+        return refuse("need a skeleton (--skeleton / CBBE2UBE_SKELETON_NIF) "
+                      "and the weight-1 UBE body build (--body)")
     print(f"skeleton: {skel_p}")
     from scripts.analysis.canonical_body import weight_sibling
     try:
@@ -967,9 +1043,8 @@ def main(argv=None):
             w0 = None
         bodies["_0"] = Body.load(w0, skel) if w0 is not None else None
     except Exception as e:           # an unreadable or unusable input file
-        print(f"cannot use the skeleton or body: {type(e).__name__}: "
-              f"{str(e).splitlines()[0] if str(e) else ''}")
-        return 2
+        return refuse(f"cannot use the skeleton or body: {type(e).__name__}: "
+                      f"{str(e).splitlines()[0] if str(e) else ''}")
     controls = {}
     for w, b in bodies.items():
         if b is not None:
@@ -980,23 +1055,32 @@ def main(argv=None):
         nifs = nifs[:a.limit]
     rows, skip = scan(nifs, root, skel, bodies)
     log = read_lift_log(a.lift_log) if a.lift_log else None
-    rc = 3
+    rc = None
     try:
         rc = report(rows, skip, len(nifs), bodies, controls, log, a.top)
+    except SystemExit as e:          # nothing measured exits 3 from inside
+        rc = e.code
+        raise
     finally:
         if a.json:
             write_json(a.json, rows, skip, bodies, controls, skel_p, rc)
     return rc
 
 
+STATUS_INPUT = "input error"
+STATUS_INCOMPLETE = "incomplete"
+
+
 def write_json(path, rows, skip, bodies, controls, skel_p, rc):
     """The run as JSON. Depth rows are written only when every control
     passed and the report ran to its end (exit 0): otherwise "status" says
     why and "rows" is empty, so a reader of the file alone cannot take
-    depths the controls rejected for measurements."""
+    depths the controls rejected for measurements. `rc` None: the report
+    raised, and the run is "incomplete"."""
     failed = any(not c[0] for c in controls.values())
     status = ("controls FAILED" if failed else
-              "ok" if rc == 0 else "nothing measured")
+              "ok" if rc == 0 else
+              STATUS_INCOMPLETE if rc is None else "nothing measured")
     with open(path, "w", encoding="utf-8", newline="\n") as f:
         json.dump({"status": status,
                    "controls": {w: {"ok": bool(ok), "offset_error": err,

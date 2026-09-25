@@ -73,7 +73,7 @@ with goes from 190 pieces (95 outfits) to 134 (67), of which 38 are the new
 pieces, 60 reach an unnamed collider on the body's bones, 10 reach only a
 ground plane and 26 have a shape that reaches no still shape at all. The
 rest-depth tool reads the same population and now measures 281 pieces instead
-of 243 (277 ranked once it lists apart the pieces the converter refuses, see
+of 243 (275 ranked once it lists apart the pieces the converter refuses, see
 below); two of the new outfits rest partly inside the body. Guarded by
 `tests/test_physics_cloth_health.py` and mutation pairs `PCH-ze`..`PCH-zo`
 (`PCH-p` and `PCH-za` re-anchored). No converter behaviour changes.
@@ -119,14 +119,42 @@ marked in the ranking, a body or skeleton file it cannot use stops it with a
 one-line message, and its JSON output says whether the body checks passed and
 carries no depths when they did not.
 
-On the reported pack: 285 pieces with physics cloth, 277 ranked (38 of them
-moved by bones alone) and 8 listed apart, all refused by the converter too. The
+On the reported pack: 285 pieces with physics cloth, 275 ranked (38 of them
+moved by bones alone) and 10 listed apart, all refused by the converter too
+(first published as 277 and 8, see the next entry). The
 fix moved 989 chains on 205 pieces (103 outfits), half of them by more than
 0.94 units and 130 by the full 2 units; the first version reported 1077 chains
 on 193 pieces. The run log agrees chain for chain on all 205. Visible cloth
 more than 0.5 units inside the body at rest: 81 pieces (41 outfits); more than
 1.5 units: 37 (20). Guarded by `tests/test_physics_rest_depth.py` and mutation
 pairs `PRD-s`..`PRD-ze` (`PRD-i` re-anchored). No converter behaviour changes.
+
+### Development only — the two physics tools count only what moves, and never leave a stale result
+
+The census's "cloth resting inside the body" row counted every point of a
+simulated piece, including the rigid parts of it that the physics never moves
+(a skirt's belt, a robe's bodice). It now counts only the points the physics
+moves. On the reported pack that row goes from 76 of 96 measurable pieces to
+47 (26 outfits); it had been published as 66 of 86 and then 76 of 96.
+
+The rest-depth tool dropped some groups of skirt bones when two groups hung
+under the same bone, so a disagreement between the bones and the skin could
+vanish: it now keeps every group (140 such disagreements on 6 pieces, where it
+printed 136). It now checks every shape of a file the way the converter does,
+so a cloak the converter refused because of its own body helper is listed apart
+too, as the run log says (10 pieces listed apart, 275 ranked; no depth or lift
+number moves). A skeleton file named on the command line or in
+`CBBE2UBE_SKELETON_NIF` that does not exist, or a body with no triangles, now
+stops it with a one-line message instead of quietly using another skeleton or
+crashing. Its JSON output is written on every run: a run that stops early says
+why and carries no depths, and one that crashes says it did not finish, so an
+older result is never left looking like this run's.
+
+The census reads the physics file's shape settings exactly as the physics
+engine does, without trimming spaces (no file on the reported pack has any).
+Guarded by `tests/test_physics_cloth_health.py`,
+`tests/test_physics_rest_depth.py` and mutation pairs `PCH-zp`..`PCH-zv`,
+`PRD-zf`..`PRD-zm` (`PCH-j` re-anchored). No converter behaviour changes.
 
 ### Changed — whether you can wear an item is read from the plugin the game uses
 

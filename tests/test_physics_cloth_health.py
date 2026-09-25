@@ -440,6 +440,25 @@ def test_an_external_shape_pairs_with_nothing_in_its_file(
         assert pch.cloth_reach(row) == {"Skirt": want}, value
 
 
+def test_padded_shared_and_tag_text_are_read_as_fsmp_reads_them(
+        tmp_path, monkeypatch):
+    """FSMP's readText does not trim: ' external ' is no value it knows, so
+    the shape stays public and pairs; a ' body ' tag is not 'body', so a
+    can-collide list naming 'body' refuses it."""
+    padded = CLOTH_XML.replace(
+        b"<tag>cloth</tag>", b"<tag>cloth</tag><shared> external </shared>")
+    nif, _xml_path = _mod(tmp_path, monkeypatch, xml_bytes=padded)
+    row, _reason = pch.classify(nif, _Nif(pointer=POINTER))
+    assert pch.cloth_reach(row) == {"Skirt": (True, True)}
+    base = tmp_path / "tag"
+    base.mkdir()
+    nif_convert._VFS_DATA_REL_MEMO.clear()
+    nif, _xml_path = _mod(base, monkeypatch, xml_bytes=CLOTH_XML.replace(
+        b"<tag>body</tag>", b"<tag> body </tag>"))
+    row, _reason = pch.classify(nif, _Nif(pointer=POINTER))
+    assert pch.cloth_reach(row) == {"Skirt": (False, False)}
+
+
 def test_a_per_vertex_partner_counts(tmp_path, monkeypatch):
     """Vertex-vertex is a collision pair: a per-vertex body proxy is a real
     body collider for per-vertex cloth."""
@@ -533,11 +552,65 @@ def test_rest_pose_depth_finds_a_shape_named_in_another_case():
     body.tris = [(0, 1, 2), (0, 2, 3)]
     skirt = _Shape("Skirt")
     skirt.verts = [(0.0, 0.0, 1.0), (0.0, 0.0, -1.0)]   # one each side
+    skirt.bone_weights = {"Skirt 1": [(0, 1.0), (1, 1.0)]}
     nif = _Nif(shapes=())
     nif.shapes = [body, skirt]
-    out = pch._penetration(nif, ["SKIRT"])
+    out = pch._penetration(nif, ["SKIRT"], {"skirt 1"})
     assert list(out) == ["SKIRT"]
     assert out["SKIRT"][1:] == (1, 2)
+
+
+def _plate_nif(weights):
+    """A body plate at z 0 (outward +z) and a Skirt with two vertices 1u
+    INSIDE it, skinned by `weights`."""
+    body = _Shape("BaseShape")
+    body.verts = [(-1.0, -1.0, 0.0), (1.0, -1.0, 0.0), (1.0, 1.0, 0.0),
+                  (-1.0, 1.0, 0.0)]
+    body.tris = [(0, 1, 2), (0, 2, 3)]
+    skirt = _Shape("Skirt")
+    skirt.verts = [(0.0, 0.0, -1.0), (0.5, 0.0, -1.0)]
+    skirt.bone_weights = weights
+    nif = _Nif(shapes=())
+    nif.shapes = [body, skirt]
+    return nif
+
+
+def test_only_vertices_on_a_dynamic_bone_are_stored_cloth_depth():
+    """A shape is cloth when ANY skin bone is dynamic, but FSMP moves only
+    the vertices weighted to one. A rigid vertex (on the pelvis alone) inside
+    the body is fit, not cloth resting inside; a zero weight on the dynamic
+    bone moves nothing either."""
+    nif = _plate_nif({"Skirt 1": [(0, 1.0), (1, 0.0)],
+                      "NPC Pelvis": [(1, 1.0)]})
+    out = pch._penetration(nif, ["Skirt"], {"skirt 1"})
+    assert out["Skirt"][1:] == (1, 1)
+    rigid = _plate_nif({"NPC Pelvis": [(0, 1.0), (1, 1.0)]})
+    assert pch._penetration(rigid, ["Skirt"], {"skirt 1"}) == {}
+
+
+def test_a_piece_with_no_simulated_vertex_is_counted_not_dropped(capsys):
+    """Its injected body is there but nothing it carries moves: neither
+    measurable nor unknown, so it is named, not lost from the row."""
+    rows = [dict(_row("a/skirt_0.nif"), pen={"Skirt": (1.0, 1, 1)}),
+            dict(_row("b/cape_0.nif"), pen={})]
+    pch.report(rows, Counter(), {}, 2)
+    line = next(ln for ln in capsys.readouterr().out.splitlines()
+                if "STORED CLOTH VERTS INSIDE" in ln)
+    assert "1   of 1 measurable" in line
+    assert "(1 have no vertex weighted to a dynamic bone)" in line
+
+
+def test_the_census_measures_stored_depth_on_dynamic_vertices(
+        tmp_path, monkeypatch):
+    """scan() hands the piece's own dynamic bones to the depth: the Skirt's
+    one vertex on the kinematic pelvis alone is left out."""
+    nif_p, _xml = _mod(tmp_path, monkeypatch)
+    nif = _plate_nif({"Skirt 1": [(0, 1.0)], "NPC Pelvis": [(1, 1.0)]})
+    nif.rootNode = _Root([_Ed("HDT Skinned Mesh Physics Object", POINTER)])
+    nif.shapes.append(_Shape("BodyCol"))
+    monkeypatch.setattr(pch, "_open_nif", lambda p: nif)
+    rows, _skip, _g, _n = pch.scan([nif_p], tmp_path)
+    assert rows[0]["pen"]["Skirt"][1:] == (1, 1)
 
 
 # ------------------------------------------------- FSMP's collision rule

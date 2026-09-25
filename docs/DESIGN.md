@@ -1062,7 +1062,13 @@ replays, and the list at the end is what it does not.
   `public`, `internal` (same skeleton) and `private` (same file) all allow an
   in-file pair. The census models exactly that. None of the 154 XMLs the
   09-24 pack's pointers resolve to uses `external` (private 297, public 16,
-  internal 12), so no count moves.
+  internal 12), so no count moves. `<shared>` and the tags are read
+  untrimmed: FSMP reads both with `readText`, which returns the element's
+  value without trimming (only its number and bool readers trim), and compares
+  `<shared>` exactly, so ` external ` is an unknown value and falls back to
+  public. `GetValue` itself is outside the FSMP source this was checked
+  against; none of the 1880 such elements in those XMLs is padded, so no
+  count moves either way.
 - **What is the body.** A body collider is a KINEMATIC shape (a moving one is
   never the body) that either carries a tag in `BODY_TAGS`, or is a body
   STAND-IN: its name or a tag contains a body-part token (`BODY_TOKENS`:
@@ -1104,10 +1110,16 @@ kinematic shapes that are not the body (60 / 30 a collider on body bones named
 for no body part -- `Collision`, `Col`, `Greaves` -- and 10 / 5 only ground
 planes), and 26 / 13 have a simulated shape that reaches no kinematic shape at
 all. Every one is constrained; the unconstrained crash pair stays 0. Stored
-cloth vertices inside the body: 66 of 86 -> 76 of 96 measurable (189 with no
-injected body). `physics_rest_depth.py` reads this population, so it now
-measures the 38 as well (243 -> 281 measured, 277 once its frame gate lists 4
-more apart, below); two of those garments (four NIFs) rest more than 0.5u
+cloth vertices inside the body, counting only the vertices FSMP moves (weight
+> 0 on a dynamic bone): 47 of 96 measurable pieces (26 of 48 garments; 189
+with no injected body) -- 45 of the 86 with a collision shape and 2 of the 10
+bone-moved. A shape is cloth when ANY of its skin bones is dynamic, so the
+first reading here (66 of 86 -> 76 of 96) also counted its vertices on
+kinematic bones alone, rigid mesh the solver never moves: 8 of the 10
+bone-moved pieces got into the row only that way (68 of 96 with the rule on
+those alone). `physics_rest_depth.py` reads this population, so it now
+measures the 38 as well (243 -> 281 measured, 275 ranked once its frame gate
+lists 10 apart, below); two of those garments (four NIFs) rest more than 0.5u
 inside, both past 1.5u on a few vertices, and no earlier row moved.
 
 Numbers from before 2026-09-25 are not comparable with these, and neither are
@@ -1124,9 +1136,11 @@ archive; bone renames; per-bone filters (`can-/no-collide-with-bone`,
 `weight-threshold`); `disable-tag`; whether a declared bone's node exists; and
 a mesh hanging on an undeclared child node of a dynamic bone. The body test is
 by name and skin, not by where a shape lies, so an armour collider named for a
-body part would count as the body. Its depth row reads STORED vertices against
-the injected body, so it cannot see `#chain-rest-lift`; the rest-pose depth
-is the next section's tool.
+body part would count as the body. Its depth row reads the STORED positions
+of the vertices FSMP moves against the injected body, so it cannot see
+`#chain-rest-lift`; the rest-pose depth is the next section's tool. A piece
+whose body is there but whose cloth has no vertex weighted to a dynamic bone
+is counted on that row, neither measurable nor unknown (0 on the 09-24 pack).
 
 ### Rest-pose depth of simulated cloth (`scripts/analysis/physics_rest_depth.py`)
 
@@ -1183,21 +1197,34 @@ position.
   it; the lift read back under a bone taken off again) against the skin. The
   written file's skeleton nodes are flat, so its own global-to-skin is not the
   frame the converter checked in; the skin is read in the bind frame the depth
-  uses. The converter lifts nothing on a file it refuses, so such a file
-  carries no lift. And cloth resting more than the lift cap + 0.5u (2.5u) from
+  uses. Like the converter's check it reads every skinned shape of the file,
+  a body-named one too: a source's own body helper keeps its name in the
+  written file, and its skin can refuse the file (it is never measured or
+  read back for a lift). The converter lifts nothing on a file it refuses,
+  so such a file carries no lift. And cloth resting more than the lift cap + 0.5u (2.5u) from
   where it was skinned: no pass does that (hard skeleton-named cloth bones,
   which the check does not cover), so the model is in question there.
 - **Bone-moved cloth** (the census's rows with no simulated collision shape) is
   measured and ranked like the rest, and marked.
-- **Inputs and output.** An unreadable or unusable body or skeleton exits 2
-  with one line. `--json` always records the status and the controls, and
-  carries depth rows only when every control passed.
+- **Groups.** Bones grouped by the vector they moved are keyed by their root
+  node, and `root#1`, `root#2`... when siblings under one node moved
+  differently and several groups share it: no group is ever dropped.
+- **Inputs and output.** Exit 2 with one line on an unreadable or unusable
+  body or skeleton (no shapes or nodes, a body with no triangles, a body skin
+  bone the skeleton lacks), and on a skeleton or body NAMED (`--skeleton`,
+  `CBBE2UBE_SKELETON_NIF`, `--body`) that is no file: it is never replaced by
+  another. `--json` is written on every exit: "status" ("ok", "controls
+  FAILED", "nothing measured", or "input error" with the one-line "reason"),
+  the controls when they ran, and depth rows only when every control passed.
+  It is first written "incomplete", so a run that crashes leaves that at the
+  path and never an earlier run's rows.
 
-Measured on the 09-24 pack, read-only: 285 pieces with simulated cloth, 277
-(139 garments) ranked and 8 (4 garments) listed apart, all 8 refused by the
-converter's frame check (worst 5.00u, 2.40u and 0.77u: the pieces and worst
-readings the run log records refused), 4 of them also with cloth resting
-4.00u and 4.28u off its skin. 38 / 19 of the ranked are bone-moved cloth.
+Measured on the 09-24 pack, read-only: 285 pieces with simulated cloth, 275
+(138 garments) ranked and 10 (5 garments) listed apart, all 10 refused by the
+converter's frame check (worst 5.00u, 4.15u, 2.40u and 0.77u: exactly the
+pieces and worst readings the run log records refused), 4 of them also with
+cloth resting 4.00u and 4.28u off its skin. 38 / 19 of the ranked are
+bone-moved cloth.
 Visible cloth deeper
 than 0.5u at rest: 81 pieces / 41 garments; deeper than 1.5u: 37 / 20 (the
 bone-moved: 4 / 2, both past 1.5u). Hidden helpers: 29 / 16 and 7 / 4.
@@ -1208,14 +1235,18 @@ that is 187 pieces and 959 chains (126 at the cap). The first reading there
 said 193 pieces, 1077 chains, median 1.04u, 148 at the cap: it took any bone
 off its bind for a lift, which added 136 node-tree disagreements on 6 of the
 refused pieces (every reading past the cap among them), and it missed 18
-lifts on 10 pieces whose lifted chain is kinematic. Log cross-check: the log
-names exactly the lifted chains on all 205 pieces (magnitudes within 0.0001u)
-and has no lift the files lack. It records refused all 8 pieces the tool
-refuses, and 2 more (1 garment) that the written file passes: there the
-converter's check read the source's body-helper shape, whose genital bones sat
-4.15u off its own copies of them; in the written file a shape of that name is
-the body, which the tool leaves out, and the 15 garment bones agree with their
-skin (0.00u). The file carries no lift.
+lifts on 10 pieces whose lifted chain is kinematic. The tool itself counts
+140 disagreement groups on those 6 pieces: keyed by root alone, 8 groups on
+the 4 refused vest pieces (4 of them disagreements) were overwritten by a
+sibling group under the same node, and it printed 136. Log cross-check: the
+log names exactly the lifted chains on all 205 pieces (magnitudes within
+0.0001u) and has no lift the files lack, and it records refused exactly the
+10 pieces the tool refuses. Two of them (1 cloak garment) the converter
+refused on the source's body-helper shape, whose genital bones sat 4.15u off
+where the skeleton puts them; that shape keeps its body name in the written
+file, and the tool's check left it out as the body -- ranking the two -- until
+it read every shape as the converter does. They rest clear (-0.40u) and
+carry no lift, so no depth or lift count moved.
 
 Against the first reading (stored vertices), the depth at the bind position
 reproduces it, so the change is the node tree: of the 7 garments first

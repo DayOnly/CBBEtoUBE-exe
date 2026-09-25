@@ -425,6 +425,29 @@ def test_the_files_own_global_to_skin_is_not_the_frame_checked():
     assert not rec["frame_refused"] and list(rec["lifted"]) == ["skirt_00"]
 
 
+def test_a_body_named_helper_is_in_the_frame_check_not_the_depth():
+    """The converter's frame check reads every shape of the file. A source's
+    own body helper keeps its name (an injected-body name) in the written
+    file; its genital bone skinned 4u off where the skeleton puts it refuses
+    the file, as the converter refused it. It is never measured as cloth."""
+    gen = "NPC Genitals01 [Gen01]"
+    skel = dict(SKEL, **{pch._key(gen): _t(y=4.0, z=55.0)})
+
+    def helper(gen_y):
+        # Framed by the pelvis, which carries most of its weight.
+        return _Shape("VirtualBody", [(0.0, 0.0, 55.0), (0.0, 0.0, 60.0)],
+                      {PELVIS: [(0, 1.0), (1, 1.0)], gen: [(0, 0.5)]},
+                      {PELVIS: _t(z=-60.0), gen: _t(y=gen_y, z=-55.0)})
+    nif, row = _piece(lift=(0.0, -1.0, 0.0), extra=[helper(0.0)])
+    rec, _r = prd.measure(nif, row, skel, _body())
+    assert rec["frame_refused"] and rec["frame_disagrees"]
+    assert rec["frame_check"]["worst"] == pytest.approx(4.0)
+    assert [s["name"] for s in rec["shapes"]] == ["Skirt"]
+    nif, row = _piece(lift=(0.0, -1.0, 0.0), extra=[helper(-4.0)])
+    rec, _r = prd.measure(nif, row, skel, _body())
+    assert not rec["frame_refused"] and list(rec["lifted"]) == ["skirt_00"]
+
+
 def test_a_piece_moved_by_bones_alone_is_measured_and_marked():
     nif, row = _piece()
     rec, _r = prd.measure(nif, dict(row, cloth=[], moved=["skirt"]), SKEL,
@@ -451,6 +474,40 @@ def test_two_sub_chains_lifted_differently_are_two_lifts():
                               SKEL)
     assert sorted(groups) == ["sk_a_00", "sk_b_00"]
     assert groups["sk_b_00"]["lift"] == pytest.approx(0.7)
+
+
+def _fan(offs):
+    """Scene Root > pelvis > Fan_00 (no skin) > four skinned SIBLINGS, each
+    resting offs[k] further back (-y) than its skin binds it."""
+    root = _Node("Scene Root")
+    pelvis = _Node(PELVIS, parent=root)
+    fan = _Node("Fan_00", _t(y=-5.0), parent=pelvis)
+    nodes, stb, weights, verts = [root, pelvis, fan], {}, {}, []
+    for k, d in enumerate(offs):
+        x = 2.0 * k
+        n = _Node(f"Fan_0{k + 1}", _t(x=x, y=-d, z=-10.0), parent=fan)
+        nodes.append(n)
+        stb[n.name] = _t(x=-x, y=5.0, z=-50.0)
+        weights[n.name] = [(k, 1.0)]
+        verts.append((x, -5.0, 50.0))
+    shape = _Shape("Fan", verts, weights, stb)
+    return _Nif(nodes, [shape]), {"dynamic_bones": {"fan_00"},
+                                  "shapes": [{"name": "Fan"}]}
+
+
+@pytest.mark.parametrize("offs, n_disagree", [
+    ((0.3, 0.0, 0.3, 0.0), 1), ((0.0, 0.3, 0.0, 0.3), 1),
+    ((0.3, -0.3, 0.3, -0.3), 2)])
+def test_groups_under_one_node_are_all_kept(offs, n_disagree):
+    """Siblings that moved differently form several groups rooted at the
+    same node. Keyed by root alone, the later one replaced the earlier and
+    a disagreement vanished (or two became one); every group is kept, and
+    every skinned bone is in one."""
+    rec, _r = prd.measure(*_fan(offs), SKEL, _body())
+    assert sum(g["bones"] for g in rec["chains"].values()) == 4
+    assert {g["root"] for g in rec["chains"].values()} == {"fan_00"}
+    assert len(rec["disagree"]) == n_disagree
+    assert rec["lifted"] == {} and not rec["frame_refused"]
 
 
 def test_cloth_moved_further_than_any_lift_is_a_frame_disagreement():
@@ -602,6 +659,117 @@ def test_a_body_the_skeleton_cannot_place_exits_2(tmp_path, monkeypatch,
                      "--skeleton", str(body)]) == 2
     out = capsys.readouterr().out
     assert "ValueError" in out and "Traceback" not in out
+
+
+def _fallback_skeleton(tmp_path, monkeypatch):
+    """A load-order skeleton the lookup COULD fall back to."""
+    from src import paths as _p
+    f = tmp_path / "mods" / "Skel" / prd.SKELETON_PATTERNS[0]
+    f.parent.mkdir(parents=True)
+    f.write_bytes(b"nif")
+
+    class _Lay:
+        game_data_dirs = []
+    monkeypatch.setattr(_p, "discover_layout", lambda: _Lay())
+    monkeypatch.setattr(_p, "enabled_mods_ordered", lambda lay: ["Skel"])
+    monkeypatch.setattr(_p, "mods_root", lambda: tmp_path / "mods")
+    monkeypatch.setattr(_p, "overwrite_dir", lambda lay: None)
+
+
+@pytest.mark.parametrize("by_env", [False, True])
+def test_a_named_skeleton_that_is_no_file_exits_2(tmp_path, monkeypatch,
+                                                  capsys, by_env):
+    """A mistyped --skeleton (or CBBE2UBE_SKELETON_NIF) is never replaced by
+    the load-order skeleton: exit 2, one line, nothing measured."""
+    meshes = _main_inputs(tmp_path)
+    _fallback_skeleton(tmp_path, monkeypatch)
+    body = tmp_path / "body_1.nif"
+    body.write_bytes(b"nif")
+    missing = str(tmp_path / "nowhere" / "skeleton_female.nif")
+    argv = [str(meshes), "--body", str(body)]
+    if by_env:
+        monkeypatch.setenv("CBBE2UBE_SKELETON_NIF", missing)
+    else:
+        monkeypatch.delenv("CBBE2UBE_SKELETON_NIF", raising=False)
+        argv += ["--skeleton", missing]
+    assert prd.main(argv) == 2
+    out = capsys.readouterr().out
+    lines = out.strip().splitlines()
+    assert len(lines) == 1 and "names no file" in lines[0]
+    assert not lines[0].startswith("skeleton:")      # nothing fell back
+
+
+def test_a_body_with_no_triangles_exits_2(tmp_path, monkeypatch, capsys):
+    """Vertices but no surface: the controls would index an empty triangle
+    list. It is refused on load, in one line, never with a traceback."""
+    meshes = _main_inputs(tmp_path)
+    body_p = tmp_path / "body_1.nif"
+    body_p.write_bytes(b"nif")
+    v, _t = _sphere()
+    monkeypatch.setattr(prd, "load_skeleton", lambda p: dict(SKEL))
+    monkeypatch.setattr(prd.Body, "load",
+                        classmethod(lambda cls, p, s: cls(v, [])))
+    assert prd.main([str(meshes), "--body", str(body_p), "--skeleton",
+                     str(body_p)]) == 2
+    out = capsys.readouterr().out
+    assert "no triangles" in out and len(out.strip().splitlines()) == 2
+
+
+def _stale(tmp_path):
+    out = tmp_path / "out.json"
+    out.write_text(json.dumps({"status": "ok", "rows": [{"path": "old.nif"}]}),
+                   encoding="utf-8")
+    return out
+
+
+@pytest.mark.parametrize("case", ["meshes", "skeleton", "body", "usage"])
+def test_every_exit_2_records_its_reason_over_a_stale_json(
+        tmp_path, monkeypatch, case):
+    """An earlier run's rows at the --json path never survive a run that
+    refused its inputs: the file says "input error", why, and no rows."""
+    meshes = _main_inputs(tmp_path)
+    out = _stale(tmp_path)
+    junk = tmp_path / "junk_1.nif"
+    junk.write_bytes(b"garbage")
+    monkeypatch.delenv("CBBE2UBE_SKELETON_NIF", raising=False)
+    argv = {"meshes": [str(tmp_path / "nope")],
+            "skeleton": [str(meshes), "--body", str(junk), "--skeleton",
+                         str(tmp_path / "missing.nif")],
+            "body": [str(meshes), "--body", str(junk), "--skeleton",
+                     str(junk)],
+            "usage": [str(meshes), "--top", "many"]}[case]
+    if case == "usage":
+        with pytest.raises(SystemExit) as ex:
+            prd.main(argv + ["--json", str(out)])
+        assert ex.value.code == 2
+    else:
+        assert prd.main(argv + ["--json", str(out)]) == 2
+    got = json.loads(out.read_text(encoding="utf-8"))
+    assert got["status"] == prd.STATUS_INPUT and got["reason"]
+    assert got["rows"] == []
+
+
+@pytest.mark.parametrize("where", ["scan", "report"])
+def test_a_run_that_crashes_leaves_incomplete_not_an_old_result(
+        tmp_path, monkeypatch, where):
+    meshes = _main_inputs(tmp_path)
+    out = _stale(tmp_path)
+    body_p = tmp_path / "body_1.nif"
+    body_p.write_bytes(b"nif")
+    monkeypatch.setattr(prd, "load_skeleton", lambda p: dict(SKEL))
+    monkeypatch.setattr(prd.Body, "load",
+                        classmethod(lambda cls, p, s: _body()))
+
+    def _boom(*a, **k):
+        raise RuntimeError("crash")
+    monkeypatch.setattr(prd, where, _boom)
+    if where == "report":
+        monkeypatch.setattr(prd, "scan", lambda *a, **k: ([], Counter()))
+    with pytest.raises(RuntimeError):
+        prd.main([str(meshes), "--body", str(body_p), "--skeleton",
+                  str(body_p), "--json", str(out)])
+    got = json.loads(out.read_text(encoding="utf-8"))
+    assert got["status"] == prd.STATUS_INCOMPLETE and got["rows"] == []
 
 
 @pytest.mark.parametrize("sound", [True, False])
