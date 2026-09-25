@@ -103,11 +103,9 @@ def _armo(fid, slots, armas):
     return Record(sig=b"ARMO", flags=0, formid=fid, payload=p)
 
 
-def _world(tmp_path, armas, armos, vanilla=(), other=(),
-           vanilla_name="Skyrim.esm"):
+def _world(tmp_path, armas, armos, vanilla=(), vanilla_name="Skyrim.esm"):
     """`armas` {fid: (models, slots)} and `armos` [(fid, slots, [arma fids])] in
-    Mod.esp; `vanilla` [(models, rnam)] armatures DEFINED by `vanilla_name`;
-    `other` [(models, rnam)] armatures defined by another mod's plugin."""
+    Mod.esp; `vanilla` [(models, rnam)] armatures DEFINED by `vanilla_name`."""
     sky_recs = []
     cc = None
     for i, (models, rnam) in enumerate(vanilla):
@@ -125,12 +123,6 @@ def _world(tmp_path, armas, armos, vanilla=(), other=(),
                               payload=r.payload) for r in sky_recs])])
     ube = _save(tmp_path / "UBE_AllRace.esp", ["Skyrim.esm"], [])
     plugins = [sky] + ([cc] if cc else []) + [ube]
-    if other:
-        plugins.append(_save(tmp_path / "Other.esp", ["Skyrim.esm"], [Group(
-            label=b"ARMA", records=[
-                Record(sig=b"ARMA", flags=0, formid=0x01000D00 + i,
-                       payload=_payload(m, BODY, rnam=r, mo3t=False))
-                for i, (m, r) in enumerate(other)])]))
     mod = _save(tmp_path / "Mod.esp", ["Skyrim.esm"], [
         Group(label=b"ARMA", records=[
             Record(sig=b"ARMA", flags=0, formid=fid, payload=_payload(m, s))
@@ -235,10 +227,23 @@ def test_a_non_default_race_vanilla_armature_is_no_counterpart(tmp_path):
     assert st["female_standin"] == []
 
 
-def test_a_mod_defined_armature_is_no_counterpart(tmp_path):
-    st, out = _boots(tmp_path, (), other=VANILLA_BOOTS)
-    assert _models(_minted(out)[0])[b"MOD3"] == "!UBE\\" + V_BOOTS_M
-    assert st["female_standin"] == []
+def _scan(plugin, models, rnam=("skyrim.esm", DEFAULT)):
+    """One winner-scan entry: abs -> (payload, masters, plugin, rnam_abs, is_ube)."""
+    return {(plugin.lower(), 0xD00): (_payload(models, BODY, mo3t=False), [],
+                                      plugin, rnam, False)}
+
+
+def test_a_mod_defined_armature_is_no_counterpart():
+    """Only an armature a game master or CC master DEFINES maps a male path;
+    a mod's own pairing is its own look, not the vanilla female one."""
+    conv = lambda p: True  # noqa: E731
+    pair = {b"MOD2": V_BOOTS_M, b"MOD3": V_BOOTS_F}
+    assert up._female_standin_resolver(_scan("Skyrim.esm", pair), conv)(
+        "MOD3", V_BOOTS_M) == V_BOOTS_F
+    assert up._female_standin_resolver(_scan("Other.esp", pair), conv)(
+        "MOD3", V_BOOTS_M) is None
+    assert up._female_standin_resolver(_scan("ccOther.esp", pair), conv)(
+        "MOD3", V_BOOTS_M) is None
 
 
 def test_a_creation_club_master_is_vanilla(tmp_path):
