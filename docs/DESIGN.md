@@ -1130,6 +1130,24 @@ follower (converted male Ebony boots on her UBE body):
   in a female slot that is NOT dead (a female slot naming the male path, or no
   female model) is outside the rule and untouched. Nested under the guard.
   `CBBE2UBE_NO_COVERAGE_FEMALE_STANDIN=1`.
+- **The loose half of that lookup is one listing** (`#loose-mesh-index`, 09-25).
+  `_mesh_exists_anywhere` checked `<dir>\meshes\<path>` in every loose folder
+  (overwrite, enabled mods by priority, game Data: ~3,300 live) before it asked
+  the archives, so each archived or dead path cost ~2,000 file checks; the
+  stand-in's dead-path questions made the live coverage replay 128 s instead of
+  ~33 s (94 s inside the lookup, 1,934 questions). Now `_LooseMeshIndex` walks
+  every loose `meshes` subtree once, on the first question, in that order, and
+  maps each file's lower-case path to the FIRST folder that has it (`body_fit`
+  reads that copy). Same answers as the file check: links and junctions are
+  followed (a link back into its own ancestry is not listed again); a missing
+  `meshes` folder is nothing; a folder that cannot be listed, or holds a
+  non-ASCII or near-MAX_PATH name, leaves its paths to the per-folder file check,
+  as does any path Windows resolves beyond a listing (`_listing_can_answer`:
+  `.`/`..`, trailing dot/space, `~` short names, device names, non-ASCII). The
+  archive fallback is unchanged. Live: 143,356 paths (~21 MB) listed in ~1 s;
+  every one of the 1,533 distinct paths the replay asked got the same answer
+  (exists, `body_fit`, first folder) as the per-path probe; output byte-identical.
+  `CBBE2UBE_NO_LOOSE_MESH_INDEX=1` probes per path again.
 
 ### What a coverage armature may draw
 

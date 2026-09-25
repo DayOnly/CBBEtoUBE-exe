@@ -3567,6 +3567,121 @@ def _exclusion_keep_probe() -> "_ExclusionKeepProbe | None":
                                data_dirs=list(getattr(lay, "game_data_dirs", None) or ()))
 
 
+def _loose_mesh_index_on() -> bool:
+    r"""#loose-mesh-index (2026-09-25): does `_mesh_exists_anywhere` answer its
+    loose-file questions from one listing of every loose `meshes` folder? Yes,
+    by default. The per-path probe it replaces checked `<dir>\meshes\<path>` in
+    every loose folder (~3,300 on the reported modlist) before it asked the
+    archives, so each archived or dead path cost ~2,000 file checks; the dead-
+    path questions of #coverage-female-standin made the coverage step ~4x slower.
+    Same answers either way. CBBE2UBE_NO_LOOSE_MESH_INDEX=1 probes per path again."""
+    return not _flag("CBBE2UBE_NO_LOOSE_MESH_INDEX", False)
+
+
+# Windows device names: `nul.nif` may open the device, never a listed file.
+_WIN_DEVICE_NAMES = frozenset(
+    ["con", "prn", "aux", "nul"] + [f"{p}{i}" for p in ("com", "lpt") for i in range(1, 10)])
+
+
+def _listing_can_answer(rel: str) -> bool:
+    r"""#loose-mesh-index: is `rel` (lower-case, `/`-separated) a path a folder
+    listing answers exactly as a file check on disk would? Windows resolves more
+    than a listing shows -- `.`/`..`, a trailing dot or space, an 8.3 short name
+    (`~`), a device name, non-ASCII case folding -- so such a path is checked on
+    disk instead."""
+    if not rel or not rel.isascii():
+        return False
+    for part in rel.split("/"):
+        if (not part or part[-1] in ". " or "~" in part
+                or any(c in ':*?"<>|' or c < " " for c in part)
+                or part.split(".")[0].rstrip(" ") in _WIN_DEVICE_NAMES):
+            return False
+    return True
+
+
+class _LooseMeshIndex:
+    r"""#loose-mesh-index: every file under each loose folder's `meshes`, keyed
+    by its lower-case path below `meshes`, to the FIRST folder (in the order
+    given -- MO2 overwrite, then mods by priority, then the game Data) that has
+    it. Listed once, on the first question. Links and junctions are followed,
+    as a file check follows them. Whatever a listing cannot answer exactly is
+    left to a file check (`first` returns `ASK`): a folder that could not be
+    listed, or listed a non-ASCII or very long name, a link back into its own
+    ancestry, and any path `_listing_can_answer` refuses."""
+
+    ASK = object()
+
+    def __init__(self, loose_dirs):
+        self._dirs = [str(d) for d in loose_dirs]
+        self._first: "dict[str, int] | None" = None
+        self._unlisted: "set[str]" = set()
+
+    def _build(self) -> None:
+        import stat as _stat
+        first: "dict[str, int]" = {}
+        unlisted: "set[str]" = set()
+        for i, d in enumerate(self._dirs):
+            # (folder, its lower-case path below meshes + "/", linked folders above it)
+            stack = [(os.path.join(d, "meshes"), "", frozenset())]
+            top = True
+            while stack:
+                path, pre, links = stack.pop()
+                try:
+                    it = os.scandir(path)
+                except (FileNotFoundError, NotADirectoryError):
+                    if not top:
+                        unlisted.add(pre)
+                    top = False
+                    continue          # no meshes folder: nothing loose here
+                except OSError:
+                    unlisted.add(pre)  # unreadable: a file check answers
+                    top = False
+                    continue
+                top = False
+                try:
+                    with it:
+                        for e in it:
+                            if not e.name.isascii() or len(e.path) >= 250:
+                                unlisted.add(pre)
+                                continue
+                            low = e.name.lower()
+                            if e.is_dir():
+                                sub = links
+                                if e.is_symlink() or (getattr(
+                                        e.stat(follow_symlinks=False),
+                                        "st_file_attributes", 0)
+                                        & _stat.FILE_ATTRIBUTE_REPARSE_POINT):
+                                    st = os.stat(e.path)
+                                    key = (st.st_dev, st.st_ino)
+                                    if key in links:
+                                        unlisted.add(pre + low + "/")
+                                        continue
+                                    sub = links | {key}
+                                stack.append((e.path, pre + low + "/", sub))
+                            elif e.is_file():
+                                first.setdefault(pre + low, i)
+                except OSError:
+                    unlisted.add(pre)
+        self._first, self._unlisted = first, unlisted
+
+    def first(self, rel: str):
+        """Index of the first folder holding `rel` loose, None if none does,
+        or `ASK` when only a file check can tell."""
+        if not _listing_can_answer(rel):
+            return self.ASK
+        if self._first is None:
+            self._build()
+        if self._unlisted:
+            cut = rel.rfind("/")
+            while True:
+                if rel[:cut + 1] in self._unlisted:
+                    return self.ASK
+                if cut < 0:
+                    break
+                cut = rel.rfind("/", 0, cut)
+        return self._first.get(rel)
+
+
 def _mesh_exists_anywhere(output) -> "callable[[str], bool] | None":
     r"""#coverage-female-guard: does a source mesh exist ANYWHERE the game reads
     it -- loose in an enabled mod or the game Data, or in any archive? A mesh in a
@@ -3576,10 +3691,11 @@ def _mesh_exists_anywhere(output) -> "callable[[str], bool] | None":
     CBBE2UBE_NO_TEXTURE_ARCHIVE_MESHES does not change what it sees (one real
     female mesh in the reported modlist lives in a texture archive).
 
-    Asked only where a female slot would otherwise take the male mesh, so both
-    lookups are lazy: a per-path probe for loose files, and one table scan of the
-    archives on the first path not found loose. None when the modlist cannot be
-    read -- the guard then treats every named path as present."""
+    Both lookups are lazy: one listing of the loose `meshes` folders on the
+    first question (#loose-mesh-index; a per-path probe with
+    CBBE2UBE_NO_LOOSE_MESH_INDEX=1), and one table scan of the archives on the
+    first path not found loose. None when the modlist cannot be read -- the
+    guard then treats every named path as present."""
     try:
         lay = paths.discover_layout()
         mr = paths.mods_root()
@@ -3601,12 +3717,24 @@ def _mesh_exists_anywhere(output) -> "callable[[str], bool] | None":
     bsa = _BsaMeshIndex(dirs, None,
                         skip_bsa=("voice", " sound", "sounds", "- snd", "facegen"))
     seen: dict = {}
+    index = _LooseMeshIndex(loose_dirs) if _loose_mesh_index_on() else None
 
     def _is_file(p: Path) -> bool:
         try:
             return p.is_file()
         except OSError:
             return False      # an unreadable folder costs itself, not the pass
+
+    def _loose_first(rel: str) -> "int | None":
+        """Position in `loose_dirs` of the first folder holding `rel` loose."""
+        if index is not None:
+            hit = index.first(rel)
+            if hit is not index.ASK:
+                return hit
+        for i, d in enumerate(loose_dirs):
+            if _is_file(d / "meshes" / rel):
+                return i
+        return None
 
     def exists(model: str) -> bool:
         rel = str(model or "").replace("\\", "/").lstrip("/").lower()
@@ -3615,8 +3743,7 @@ def _mesh_exists_anywhere(output) -> "callable[[str], bool] | None":
         if not rel:
             return False
         if rel not in seen:
-            seen[rel] = (any(_is_file(d / "meshes" / rel) for d in loose_dirs)
-                         or bsa.contains(rel))
+            seen[rel] = _loose_first(rel) is not None or bsa.contains(rel)
         return seen[rel]
 
     fit: dict = {}
@@ -3633,14 +3760,12 @@ def _mesh_exists_anywhere(output) -> "callable[[str], bool] | None":
             return None
         if rel not in fit:
             data = None
-            for d in loose_dirs:
-                f = d / "meshes" / rel
-                if _is_file(f):
-                    try:
-                        data = f.read_bytes()
-                    except OSError:
-                        data = None
-                    break
+            i = _loose_first(rel)
+            if i is not None:
+                try:
+                    data = (loose_dirs[i] / "meshes" / rel).read_bytes()
+                except OSError:
+                    data = None
             if data is None:
                 data = bsa.read_bytes(rel)
             fit[rel] = None if data is None else _nif_bytes_body_fit(data)

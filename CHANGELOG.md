@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Changed — the coverage step checks which meshes exist much faster
+
+To decide what a UBE actor's armour draws, the coverage step asks whether a mesh
+exists anywhere the game can read it. It used to look for each mesh in every
+enabled mod folder one by one, thousands of checks per mesh, which made the step
+about four times slower once it had to ask about more meshes. It now lists the
+mods' mesh folders once and looks each mesh up in that list. The result is the
+same, file for file. Measured on the reported modlist: 128 s down to 33 s.
+`CBBE2UBE_NO_LOOSE_MESH_INDEX=1` (set to 1) checks one by one again.
+
 ### Fixed — an excluded mod's helmets, glasses and other non-body pieces are drawn on UBE actors again
 
 Excluding a mod keeps this tool's converted meshes off that mod's armour. It
