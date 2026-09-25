@@ -4329,6 +4329,33 @@ PAIRS = (
          expect=('test_an_earlier_copy_moves_out_of_meshes[whole-base]',
                  'test_a_filled_partner_moves_with_its_base'),
     ),
+    Pair('SWB-n', 'the planner does not warn about a base it could not put back',
+         edits=(
+             ('src/auto_convert.py',
+              '            if _torn:',
+              '            if False:  # MUTATED', 1),
+         ),
+         tests=('tests/test_supersede_whole_base.py',),
+         expect=('test_the_planner_names_a_base_it_could_not_put_back',),
+    ),
+    Pair('SWB-o', 'a base that did not move is left out of the run notes',
+         edits=(
+             ('src/auto_convert.py',
+              '            for s in _stuck:',
+              '            for s in []:  # MUTATED', 1),
+         ),
+         tests=('tests/test_supersede_whole_base.py',),
+         expect=('test_the_planner_names_a_base_it_could_not_put_back',),
+    ),
+    Pair('SWB-p', 'a torn base is reported as a base left whole',
+         edits=(
+             ('src/auto_convert.py',
+              '            _left = [s for s in _stuck if not s[2]]',
+              '            _left = list(_stuck)  # MUTATED', 1),
+         ),
+         tests=('tests/test_supersede_whole_base.py',),
+         expect=('test_the_planner_names_a_base_it_could_not_put_back',),
+    ),
     # #twin-path-strip-meshes (2026-09-24): a model spelt `meshes\X` is written
     # `!UBE\X`, where its twin is -- not `!UBE\meshes\X`, which exists nowhere.
     Pair('TPM-a', 'the writer puts !UBE in front of the raw meshes path',

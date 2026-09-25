@@ -185,6 +185,59 @@ def test_the_planner_names_a_base_it_could_not_move(
     assert _left(d) == ["dress.tri", "dress_0.nif", "dress_1.nif"]
 
 
+def test_the_planner_names_a_base_it_could_not_put_back(
+        load_order, tmp_path, monkeypatch, capsys):
+    """Behavioural: the `.tri` is in use, so the move stops and the moved
+    NIFs go back -- but `dress_1` cannot go back either. The planner warns that
+    the base is torn and names the stuck file, does not call it a base left
+    whole, and puts the base in the run notes."""
+    class _First(BaseException):
+        pass
+    dress = ["armor/outfit/dress_1.nif"]
+    src = tmp_path / "src.nif"
+    src.write_bytes(b"x")
+    monkeypatch.setattr(ac, "_resolve_armor_meshes",
+                        lambda *a, **k: [(src, r) for r in dress])
+    seen = []
+    real = ac.AutoConvertResult
+
+    def _result(*a, **k):
+        seen.append(real(*a, **k))
+        return seen[-1]
+    monkeypatch.setattr(ac, "AutoConvertResult", _result)
+
+    def _worker(item):
+        raise _First()
+    monkeypatch.setattr(ac, "_nif_convert_worker", _worker)
+    out = tmp_path / "out"
+    folder = "armor/outfit"
+    d = out / "meshes" / "!UBE" / folder
+    d.mkdir(parents=True)
+    for n in ("dress_1.nif", "dress_0.nif", "dress.tri"):
+        (d / n).write_bytes(b"old")
+    _fail_on(monkeypatch, "dress.tri", back=("dress_1.nif",))
+    ref = tmp_path / "ube_ref.nif"
+    ref.write_bytes(b"x")
+    try:
+        ac.auto_convert_mod(load_order, out, ube_body_ref_path=ref,
+                            master_data_dirs=[], nif_workers=1,
+                            built_ube_twin=_twin_of(*dress, mod="Outfit UBE"))
+    except _First:
+        pass
+    log = capsys.readouterr().out
+    assert _left(d) == ["dress.tri", "dress_0.nif"], "dress_0 went back"
+    assert _sup(out, folder) == ["dress_1.nif"], "dress_1 is stuck there"
+    assert "1 piece(s) from an earlier run were only partly moved" in log
+    assert "could not be put back: armor/outfit/dress (dress_1.nif)" in log
+    assert "could not be moved out of meshes" not in log, \
+        "a torn base is not reported as left whole"
+    assert seen, "the planner made its result"
+    notes = [n for n in seen[0].notes if "not moved out of meshes" in n]
+    assert len(notes) == 1
+    assert notes[0].startswith(
+        "built UBE version elsewhere: armor/outfit/dress not moved out of meshes\\ (")
+
+
 # ---------------------------------------------------------------- the fill
 
 def test_the_fill_never_writes_into_a_base_left_to_its_builder(tmp_path):
