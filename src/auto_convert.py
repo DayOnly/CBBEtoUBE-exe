@@ -3415,6 +3415,158 @@ def _armos_defined_by_mods(mods_root, mod_names, ordered_plugin_paths,
     return owned, per_mod
 
 
+# #exclude-body-only: a SkyPatcher `Plugin.esp|FormID` form anywhere on a line --
+# the plugin name runs back to the previous `=`, `,` or `:` (a name may hold
+# spaces), the FormID may carry `0x` and leading zeros.
+_INI_FORM_TOKEN = None
+
+
+class _ExclusionKeepProbe:
+    r"""#exclude-body-only: what the non-body coverage pass asks before it gives
+    an excluded mod's non-body armour its own mesh on UBE actors. Three
+    questions, each answered from the files the game reads, never from our
+    structured patch reader:
+
+    `named(armo_abs, edids)` -- the enabled mod (not our output) with a
+    SkyPatcher armor INI line, at any depth under `SKSE\Plugins\SkyPatcher\armor`,
+    that adds armour addons and names the armour: `plugin|formid` in any
+    spelling the reader accepts (leading zeros, `0x`, a full `FE` ESL form) or
+    one of its EditorIDs. A raw text scan: when our reader misses a hand-made
+    refit, the exclusion still keeps the refit's pieces ours-free. None if none.
+
+    `excluded_source(model, plugin)` -- does `model` ship loose in, or in an
+    archive of, an enabled mod folder that holds `plugin` at its root (the
+    excluded mod that defines the armour)? A converted mesh of that path is
+    the excluded mod's own mesh, converted before it was excluded.
+
+    `body_fit(model)` -- the loose copy the game loads (MO2 overwrite, then mods
+    by priority, then the game's Data), read: True/False, or None when it is not
+    loose (archive-only) or cannot be read. The caller fails closed on None.
+
+    Built by `_exclusion_keep_probe`; every answer is cached for the run."""
+
+    def __init__(self, mods_root, enabled_order, overwrite=None, data_dirs=()):
+        root = Path(mods_root)
+        self._dirs = [root / n for n in (enabled_order or ())]
+        self._loose = (([Path(overwrite)] if overwrite is not None else [])
+                       + self._dirs + [Path(d) for d in (data_dirs or ())])
+        self._forms: "dict[tuple, str] | None" = None
+        self._words: "dict[str, str]" = {}
+        self._owners: dict = {}
+        self._bsa: dict = {}
+        self._fit: dict = {}
+
+    @staticmethod
+    def _is_file(p: Path) -> bool:
+        try:
+            return p.is_file()
+        except OSError:
+            return False
+
+    @staticmethod
+    def _rel(model: str) -> str:
+        rel = str(model or "").replace("\\", "/").lstrip("/").lower()
+        return rel[7:] if rel.startswith("meshes/") else rel
+
+    def _scan(self) -> None:
+        global _INI_FORM_TOKEN
+        import re as _re
+        if _INI_FORM_TOKEN is None:
+            _INI_FORM_TOKEN = _re.compile(
+                r"([^=,:|\r\n]+?\.(?:esp|esm|esl))\s*\|\s*(?:0x)?([0-9a-f]+)",
+                _re.IGNORECASE)
+        self._forms = {}
+        for md in self._dirs:
+            try:
+                inis = sorted(md.glob("SKSE/Plugins/SkyPatcher/armor/**/*.ini"))
+            except OSError:
+                inis = []
+            if not inis or _is_our_own_output(md):
+                continue
+            for ini in inis:
+                try:
+                    txt = ini.read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    continue
+                for line in txt.splitlines():
+                    low = line.lower()
+                    if "armoraddonstoadd" not in low:
+                        continue
+                    for pl, hx in _INI_FORM_TOKEN.findall(low):
+                        pl = pl.strip()
+                        v = int(hx, 16)
+                        self._forms.setdefault((pl, v & 0xFFFFFF), md.name)
+                        if len(hx) >= 8 and (v >> 24) == 0xFE:
+                            self._forms.setdefault((pl, v & 0xFFF), md.name)
+                    for w in _re.split(r"[=,:|;\s]+", low):
+                        if w:
+                            self._words.setdefault(w, md.name)
+
+    def named(self, armo_abs, edids=()) -> "str | None":
+        if self._forms is None:
+            self._scan()
+        hit = self._forms.get((armo_abs[0].lower(), armo_abs[1] & 0xFFFFFF))
+        if hit is not None:
+            return hit
+        for e in edids or ():
+            if e and e.lower() in self._words:
+                return self._words[e.lower()]
+        return None
+
+    def excluded_source(self, model: str, plugin: str) -> bool:
+        rel = self._rel(model)
+        if not rel:
+            return False
+        pl = str(plugin).lower()
+        if pl not in self._owners:
+            self._owners[pl] = [d for d in self._dirs if self._is_file(d / pl)]
+        owners = self._owners[pl]
+        if any(self._is_file(d / "meshes" / rel) for d in owners):
+            return True
+        if pl not in self._bsa:
+            self._bsa[pl] = _BsaMeshIndex(
+                owners, None,
+                skip_bsa=("voice", " sound", "sounds", "- snd", "facegen"))
+        return bool(owners) and self._bsa[pl].contains(rel)
+
+    def body_fit(self, model: str) -> "bool | None":
+        rel = self._rel(model)
+        if not rel:
+            return None
+        if rel not in self._fit:
+            data = None
+            for d in self._loose:
+                f = d / "meshes" / rel
+                if self._is_file(f):
+                    try:
+                        data = f.read_bytes()
+                    except OSError:
+                        data = None
+                    break
+            self._fit[rel] = None if data is None else _nif_bytes_body_fit(data)
+        return self._fit[rel]
+
+
+def _exclusion_keep_probe() -> "_ExclusionKeepProbe | None":
+    """#exclude-body-only: the probe over the active MO2 instance, or None when
+    the modlist cannot be read -- the non-body pass then withholds every owned
+    armour, as without the rule."""
+    try:
+        lay = paths.discover_layout()
+        mr = paths.mods_root()
+        order = paths.enabled_mods_ordered(lay)
+    except Exception:
+        return None
+    if mr is None or not order:
+        return None
+    try:
+        ow = paths.overwrite_dir(lay)
+    except Exception:
+        ow = None
+    return _ExclusionKeepProbe(mr, order, overwrite=ow,
+                               data_dirs=list(getattr(lay, "game_data_dirs", None) or ()))
+
+
 def _mesh_exists_anywhere(output) -> "callable[[str], bool] | None":
     r"""#coverage-female-guard: does a source mesh exist ANYWHERE the game reads
     it -- loose in an enabled mod or the game Data, or in any archive? A mesh in a
@@ -3735,7 +3887,8 @@ def _outside_ube_mesh_resolver(output) -> "callable[[str], bool] | None":
 
 def _report_coverage_holds(stats: "list[dict]") -> None:
     """Say what the two coverage passes held back, in counts and a few names:
-    armour of an excluded mod left without an armature (#exclude-owned-coverage),
+    armour of an excluded mod left without an armature (#exclude-owned-coverage)
+    or kept with its own mesh as a non-body piece (#exclude-body-only),
     female slots that did not take a converted MALE mesh
     (#coverage-female-guard), body armatures whose world mesh was not converted
     (#coverage-world-mesh), nude hands/feet swapped for the UBE body's own or
@@ -3745,6 +3898,7 @@ def _report_coverage_holds(stats: "list[dict]") -> None:
     primary race is not DefaultRace (#coverage-human-race-list). Silent when
     there is nothing to say."""
     withheld = [w for s in stats for w in (s.get("withheld") or [])]
+    excl_kept = [w for s in stats for w in (s.get("exclusion_nonbody_kept") or [])]
     kept = [k for s in stats for k in (s.get("female_kept") or [])]
     dead = [k for s in stats for k in (s.get("female_dead_male") or [])]
     # #coverage-female-standin: dead female slots given the vanilla female
@@ -3783,6 +3937,18 @@ def _report_coverage_holds(stats: "list[dict]") -> None:
             print(f"       {edid or '?'}  ({pl}|{fid:06X})")
         if len(withheld) > 5:
             print(f"       ... and {len(withheld) - 5} more")
+    if excl_kept:
+        # #exclude-body-only: information -- the user's rule, working as meant.
+        warn(f"[unified] {len(excl_kept)} non-body armour(s) of an excluded mod "
+             "keep their own mesh on UBE-race actors",
+             where="--exclude-mods",
+             consequence="no other mod patches them and they are not body pieces, "
+                         "so they are drawn as their mod made them",
+             level=NOTE)
+        for (pl, fid), edid in excl_kept[:5]:
+            print(f"       {edid or '?'}  ({pl}|{fid:06X})")
+        if len(excl_kept) > 5:
+            print(f"       ... and {len(excl_kept) - 5} more")
     if kept or skipped:
         warn(f"[unified] {len(kept)} female model slot(s) kept their own unconverted "
              f"mesh, and {len(skipped)} body armature(s) were not minted "

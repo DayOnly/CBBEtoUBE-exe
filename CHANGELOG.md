@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+### Fixed — an excluded mod's helmets, glasses and other non-body pieces are drawn on UBE actors again
+
+Excluding a mod keeps this tool's converted meshes off that mod's armour. It
+also left every one of the mod's items without a UBE version, so a helmet or a
+pair of glasses that no other mod patches drew nothing on UBE actors. Now only
+the mod's body pieces are left out. A piece that does not fit the body (a
+helmet, glasses, jewellery) is drawn on UBE actors with the mod's own mesh,
+unless another mod already patches it for UBE, it sits on a body slot, it is a
+cape or cloak, its mesh fits the body, or it would draw a converted copy of the
+excluded mod's own mesh. Another mod's patch is found by reading its SkyPatcher
+files and plugins directly, so a hand-made UBE refit this tool does not
+otherwise recognise still keeps its pieces to itself. A new note in the log
+names the pieces drawn this way. Measured on the reported modlist with one
+follower excluded: her eyeglasses and her helmet are drawn again, with their
+own meshes; her body pieces, her refit's pieces and her cloak stay left out.
+Nothing changes when no mod is excluded.
+`CBBE2UBE_NO_EXCLUDE_BODY_ONLY=1` (set to 1) turns it off.
+
 ### Fixed — a piece whose female model is missing draws the base game's female version, else the male one
 
 Some mods name a female model that does not exist anywhere in the load order.

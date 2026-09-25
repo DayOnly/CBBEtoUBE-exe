@@ -143,12 +143,19 @@ def _world(tmp_path, slots):
     return [sky, ube, mod]
 
 
+PELVIS = 1 << 22   # slot 52: a body slot the non-body pass sees
+
+
 def test_the_non_body_pass_withholds_an_owned_armour(tmp_path):
+    """Body territory (#exclude-body-only keeps only non-body pieces): a
+    pelvis piece no other mod patches is still withheld."""
     out = tmp_path / "nb.esp"
     kw = dict(exclude_names={out.name}, master_data_dirs=[tmp_path], cover_all=True)
-    paths = _world(tmp_path, HEAD)
+    paths = _world(tmp_path, PELVIS)
+    nobody = ac._ExclusionKeepProbe(tmp_path / "mods", [])
     st = up.generate_modded_nonbody_ube_coverage_patch(
-        out, paths, withheld_armo_abs={("mod.esp", 0x801)}, **kw)
+        out, paths, withheld_armo_abs={("mod.esp", 0x801)},
+        exclusion_probe=nobody, **kw)
     assert st["armo_targets"] == 0
     assert [a for a, _e in st["withheld"]] == [("mod.esp", 0x801)]
     st = up.generate_modded_nonbody_ube_coverage_patch(out, paths, **kw)

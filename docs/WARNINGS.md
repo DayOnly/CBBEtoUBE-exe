@@ -6,7 +6,7 @@ current. A `!!` line is a problem; a `NOTE:` line is information. Each entry
 gives the line as it appears in the run log (`…` stands for the value printed
 at run time), what it means for the run, and what to do next.
 
-**76** problem warnings and **4** notes.
+**76** problem warnings and **5** notes.
 
 ## src/auto_convert.py
 
@@ -51,6 +51,8 @@ at run time), what it means for the run, and what to do next.
 - `!! [unified] … armour(s) of an excluded mod have no UBE armature from any mod -- --exclude-mods`
   - means: they are not drawn on UBE-race actors
   - fix: take the mod off the exclusion list to have them covered, or install a UBE patch for it
+- `NOTE: [unified] … non-body armour(s) of an excluded mod keep their own mesh on UBE-race actors -- --exclude-mods`
+  - means: no other mod patches them and they are not body pieces, so they are drawn as their mod made them
 - `!! [unified] … female model slot(s) kept their own unconverted mesh, and … body armature(s) were not minted (… armour(s) left without one), rather than take a converted MALE mesh`
   - means: those pieces wear their unconverted mesh on UBE, or are not drawn on UBE-race actors, until their female mesh is converted
   - fix: convert the mod that ships the female mesh

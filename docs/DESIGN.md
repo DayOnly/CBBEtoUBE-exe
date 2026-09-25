@@ -1062,6 +1062,26 @@ follower (converted male Ebony boots on her UBE body):
   passes its exclusion list as `--coverage-exclude-mods`, because coverage covers
   the whole load order on every run. `CBBE2UBE_NO_EXCLUDE_OWNED_COVERAGE=1` covers
   it again.
+  - **Only its body pieces** (`#exclude-body-only`, the user's call 2026-09-24).
+    The body pass withholds everything the mod owns. The non-body pass withholds
+    an owned armour only when (1) another enabled mod (not our output) patches
+    it, read WITHOUT our patch reader: a raw text scan of every SkyPatcher armor
+    INI at any depth for a line adding addons that names it (`plugin|formid` in
+    any spelling, a full `FE` ESL form, or its EditorID), or a loaded plugin's
+    override of it that adds an armature -- so the exclusion stays the fallback
+    for a refit `_third_party_ube_covered_armos` misses; or (2) ANY armature it
+    would mint (race-list ones too) is conversion territory by the planner's own
+    test: BOD2 (else the armour's slots) on `_BODY_SLOT_BITS`, a
+    `_CLOAK_MESH_KEYWORDS` model, a `_BODY_CANDIDATE_SLOT_BITS` slot whose loose
+    world mesh is body-fit or unreadable (archive-only reads as body), or a model
+    redirected to a converted or twin UBE mesh whose source path ships in the
+    excluded mod's folder or its archives (a converted shared path does not hide
+    a piece); or (3) the modlist cannot be read. Otherwise it is minted with its
+    own mesh and named in a NOTE (`exclusion_nonbody_kept`). Live replay with one
+    follower excluded: +2 links (eyeglasses, a helmet), refit recognised or not;
+    with the text scan removed and the reader off it was +5, three of them the
+    refit's own pieces drawn twice. `CBBE2UBE_NO_EXCLUDE_BODY_ONLY=1` withholds
+    all of it again.
 - **Armour a SkyPatcher-delivered UBE patch already covers**
   (`#skypatcher-patch-recognition`). SkyPatcher reads INIs nested inside its type
   folders and recommends a subfolder for a plugin-named INI; the check read

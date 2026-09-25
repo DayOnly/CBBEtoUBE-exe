@@ -3498,6 +3498,78 @@ def _beast_variant_non_actor() -> bool:
     return not _flag("CBBE2UBE_NO_BEAST_VARIANT_NON_ACTOR", False)
 
 
+def _exclude_body_only() -> bool:
+    r"""#exclude-body-only (2026-09-25, the user's call): does an excluded mod
+    lose only its BODY pieces' coverage? Yes, by default.
+
+    #exclude-owned-coverage withheld every armour an excluded mod defines, in
+    both passes. The user excludes a mod to keep our converted meshes off its
+    body pieces; its helmet or eyeglasses, which no other mod patches, then drew
+    nothing on UBE actors. Now the body pass still withholds everything the mod
+    owns, and the non-body pass withholds only what `_excluded_piece_holds`
+    names; the rest is minted with its own mesh.
+    CBBE2UBE_NO_EXCLUDE_BODY_ONLY=1 withholds all of it again. Nested:
+    CBBE2UBE_NO_EXCLUDE_OWNED_COVERAGE=1 withholds nothing at all."""
+    return not (_flag("CBBE2UBE_NO_EXCLUDE_OWNED_COVERAGE", False)
+                or _flag("CBBE2UBE_NO_EXCLUDE_BODY_ONLY", False))
+
+
+def _excluded_piece_holds(armo_abs, records, to_mint, arma_win, armo_slots,
+                          ube_exists, probe) -> "str | None":
+    r"""#exclude-body-only: why an excluded mod's armour stays withheld in the
+    non-body pass, or None to mint it with its own mesh.
+
+    `records`: [(plugin lowercase, armature identities, EditorID)] for every
+    record of the armour in load order (the defining one and its overrides).
+    `to_mint`: the armatures the pass would mint -- DefaultRace ones and those
+    the race-list rule took, all of them. `probe`: an
+    `auto_convert._ExclusionKeepProbe`, None when the modlist cannot be read.
+
+    Withheld, in this order:
+      * no modlist to check against (fail closed);
+      * ANOTHER mod patches it, read without our patch reader: a SkyPatcher
+        armor INI line adding addons names it, or an override of it in a
+        loaded plugin adds an armature. The exclusion stays the fallback for a
+        hand-made refit our reader does not recognise;
+      * any armature to mint is conversion territory, by the planner's own
+        test: a body slot (its BOD2, else the armour's), a cloak-named model,
+        a body-candidate slot whose world mesh is body-fit or not a loose file
+        we can read, or a model that would draw a converted or hand-made UBE
+        mesh of a path the excluded mod itself ships."""
+    from .auto_convert import (_BODY_SLOT_BITS, _BODY_CANDIDATE_SLOT_BITS,
+                               _CLOAK_MESH_KEYWORDS)
+    if probe is None:
+        return "no modlist to check"
+    edids = [e for _p, _a, e in records if e]
+    mod = probe.named(armo_abs, edids)
+    if mod is not None:
+        return f"named by {mod}"
+    base = [set(a) for p, a, _e in records if p == armo_abs[0]]
+    if not base:
+        return "no defining record"
+    for p, a, _e in records:
+        if p != armo_abs[0] and set(a) - base[0]:
+            return f"{p} adds an armature"
+    for x in to_mint:
+        payload = arma_win[x][0]
+        bits = _arma_slot_bits(payload) or armo_slots
+        models = [(s, d.rstrip(b"\x00").decode("cp1252", "replace"))
+                  for s, d in esp.iter_subrecords(payload) if s in ARMA_MODEL_SIGS]
+        if bits & _BODY_SLOT_BITS:
+            return "body slot"
+        if any(k in m.replace("/", "\\").rsplit("\\", 1)[-1].lower()
+               for _s, m in models for k in _CLOAK_MESH_KEYWORDS):
+            return "cloak"
+        if bits & _BODY_CANDIDATE_SLOT_BITS:
+            world = [m for s, m in models if s in (b"MOD2", b"MOD3") and m]
+            if not world or any(probe.body_fit(m) is not False for m in world):
+                return "body-candidate slot, body-fit or unread mesh"
+        if any(m and ube_exists(m) and probe.excluded_source(m, armo_abs[0])
+               for _s, m in models):
+            return "draws a converted mesh of its own"
+    return None
+
+
 def _additional_races(v) -> list:
     """The plugin-qualified additional races (MODL) of winner-scan armature `v`."""
     payload, masters, own = v[0], v[1], v[2]
@@ -4014,6 +4086,7 @@ def generate_modded_nonbody_ube_coverage_patch(
     female_mesh_exists: "callable[[str], bool] | None" = None,
     ube_twin_exists: "callable[[str], str | None] | None" = None,
     npc_worn_armo_abs: "set[tuple[str, int]] | frozenset | None" = None,
+    exclusion_probe=None,
     author: str = "cbbe-to-ube modded non-body UBE coverage",
     description: str = "UBE race coverage for mod-defined non-body armor",
 ) -> dict:
@@ -4032,6 +4105,10 @@ def generate_modded_nonbody_ube_coverage_patch(
     `withheld_armo_abs` (#exclude-owned-coverage): ARMOs to leave alone although
     they pass every filter -- armour the user excluded. Tested last, so the
     `withheld` stat counts exactly the armours this left without our armature.
+    #exclude-body-only: here only those `_excluded_piece_holds` names are left
+    alone; the rest are minted with their own mesh (`exclusion_nonbody_kept`).
+    `exclusion_probe` answers its questions about the modlist; None = built
+    from the active modlist the first time an excluded armour needs it.
 
     `ube_twin_exists` (#coverage-ube-twin, on by default): the third-party mod that
     ships a loose `!UBE\\<path>` for a model we did not convert, else None. A
@@ -4048,6 +4125,13 @@ def generate_modded_nonbody_ube_coverage_patch(
     _strip = _twin_path_strip_meshes()   # #twin-path-strip-meshes
     _race_list = _coverage_human_race_list()
     withheld: list = []        # (armo_abs, edid) left alone for --exclude-mods
+    # #exclude-body-only: an excluded mod's non-body armour minted with its own
+    # mesh, and why each withheld one was held.
+    _body_only = bool(withheld_armo_abs) and _exclude_body_only()
+    nonbody_kept: list = []    # (armo_abs, edid)
+    nonbody_held: list = []    # (armo_abs, edid, why)
+    owned_records: dict = {}   # armo_abs -> [(plugin, armatures, edid)], load order
+    _probe: list = [exclusion_probe, exclusion_probe is not None]  # [probe, built]
     female_kept: list = []     # female slots that kept their own mesh (guard)
     female_dead: list = []     # dead female paths: the male mesh stays (guard)
     # #coverage-female-standin: dead female paths that draw the vanilla female
@@ -4093,11 +4177,32 @@ def generate_modded_nonbody_ube_coverage_patch(
                 a = _record_abs_fid(r.formid, m, nm)
                 arms, rnam, slots, edid = _summarize_armo(r.payload, m, nm)
                 armo_win[a] = (r.payload, m, nm, arms, rnam, slots, edid, r.flags)
+                if _body_only and a in withheld_armo_abs:
+                    owned_records.setdefault(a, []).append(
+                        (nm.lower(), tuple(arms), edid))
         if _race_list:
             _collect_skins(pe, m, nm, skins)
 
     plugin_case = {Path(p).name.lower(): Path(p).name
                    for p in ordered_plugin_paths}
+
+    # A "non-body" item whose OWN mesh WAS converted (e.g. a skin-tight cloth
+    # piece that covers a non-body slot but still got a UBE mesh) must point at
+    # the converted `!UBE\` mesh, NOT the source one. A blanket keep-source
+    # (`lambda: False`) left every such piece wearing the un-converted source
+    # mesh on the UBE body -> distorted/invisible in-game. Genuine non-body items
+    # (helmets/jewelry) aren't in converted_rel_paths, so they still keep source.
+    # #mnb-converted-redirect
+    crp = converted_rel_paths or set()
+
+    def _conv_exists(model_path: str) -> bool:
+        return _converted_model_exists(model_path, crp, strip_meshes=_strip)
+
+    def _ube_exists(model_path: str) -> bool:
+        # What a minted slot may point at: our converted mesh or (twin rule on,
+        # the default) a hand-made UBE twin another mod ships. #coverage-ube-twin
+        return _conv_exists(model_path) or (
+            _twin and bool(model_path) and bool(ube_twin_exists(model_path)))
 
     # ---- Pass 2: find target ARMOs + the ARMAs to mint ----
     # Targets: playable, non-body, non-hair-only ARMOs whose winning armatures
@@ -4165,8 +4270,21 @@ def generate_modded_nonbody_ube_coverage_patch(
         if not to_mint:
             continue
         if withheld_armo_abs and armo_abs in withheld_armo_abs:
-            withheld.append((armo_abs, edid))     # #exclude-owned-coverage
-            continue
+            _why = "excluded"
+            if _body_only:
+                # #exclude-body-only: a non-body piece no other mod patches
+                # keeps its coverage, with its own mesh.
+                if not _probe[1]:
+                    from .auto_convert import _exclusion_keep_probe
+                    _probe[:] = [_exclusion_keep_probe(), True]
+                _why = _excluded_piece_holds(
+                    armo_abs, owned_records.get(armo_abs, []), to_mint,
+                    arma_win, slots, _ube_exists, _probe[0])
+            if _why is not None:
+                withheld.append((armo_abs, edid))     # #exclude-owned-coverage
+                nonbody_held.append((armo_abs, edid, _why))
+                continue
+            nonbody_kept.append((armo_abs, edid))
         if _listed:
             race_list_ube.update(_listed)
             race_listed.append((armo_abs, edid))
@@ -4211,23 +4329,8 @@ def generate_modded_nonbody_ube_coverage_patch(
              b"MO2T", b"MO3T", b"MO4T", b"MO5T",
              b"NAM0", b"NAM1", b"NAM2", b"NAM3"}
     STRIP_MIN = {b"SNDD", b"ONAM"}
-    # A "non-body" item whose OWN mesh WAS converted (e.g. a skin-tight cloth
-    # piece that covers a non-body slot but still got a UBE mesh) must point at
-    # the converted `!UBE\` mesh, NOT the source one. A blanket keep-source
-    # (`lambda: False`) left every such piece wearing the un-converted source
-    # mesh on the UBE body -> distorted/invisible in-game. Genuine non-body items
-    # (helmets/jewelry) aren't in converted_rel_paths, so they still keep source.
-    # #mnb-converted-redirect
-    crp = converted_rel_paths or set()
-
-    def _conv_exists(model_path: str) -> bool:
-        return _converted_model_exists(model_path, crp, strip_meshes=_strip)
-
-    def _ube_exists(model_path: str) -> bool:
-        # What a minted slot may point at: our converted mesh or (twin rule on,
-        # the default) a hand-made UBE twin another mod ships. #coverage-ube-twin
-        return _conv_exists(model_path) or (
-            _twin and bool(model_path) and bool(ube_twin_exists(model_path)))
+    # (the converted-mesh lookups `crp`/`_ube_exists` are set before Pass 2:
+    # #exclude-body-only asks them there.)
 
     # #coverage-female-standin: a dead female slot's stand-in, else (non-body)
     # its male path as it is. Only where a dead path can be told at all.
@@ -4356,6 +4459,10 @@ def generate_modded_nonbody_ube_coverage_patch(
         "wigs": wigs_added,
         # #coverage-human-race-list: armours taken by the race-list rule.
         "race_listed": race_listed,
+        # #exclude-body-only: excluded non-body armour minted with its own mesh,
+        # and why each withheld one was held.
+        "exclusion_nonbody_kept": nonbody_kept,
+        "exclusion_nonbody_held": nonbody_held,
     }
 
 
