@@ -4420,6 +4420,81 @@ PAIRS = (
          tests=('tests/test_wig_body_pass.py',),
          expect=('test_a_race_listed_hood_is_not_a_wig_either',),
     ),
+    # #wig-exclude-keep (2026-09-25): an excluded mod's wig the body pass mints
+    # alone is judged by the non-body pass's keep test (#exclude-body-only).
+    Pair('WEK-a', 'an excluded mod\'s wig is always withheld again',
+         edits=(
+             ('src/ube_patcher.py',
+              '                _kept_excluded = _why is None\n',
+              '                _kept_excluded = False  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_wig_exclude_keep.py',),
+         expect=('test_an_excluded_mods_wig_is_kept_with_its_own_mesh',
+                 'test_the_kept_wig_is_a_note_not_an_unarmatured_warning',
+                 'test_a_race_listed_wig_is_kept_for_its_races'),
+    ),
+    Pair('WEK-b', 'the off-switch no longer withholds the wig',
+         edits=(
+             ('src/ube_patcher.py',
+              '    return not _flag("CBBE2UBE_NO_WIG_EXCLUDE_KEEP", False)',
+              '    return True  # MUTATED', 1),
+         ),
+         tests=('tests/test_wig_exclude_keep.py',),
+         expect=('test_switched_off_the_wig_is_withheld_again',
+                 'test_the_switch_reads_its_flag'),
+    ),
+    Pair('WEK-c', 'the exclusion rule switch no longer reaches the wig',
+         edits=(
+             ('src/ube_patcher.py',
+              '    _wig_keep = _body_only and _wig_body and _wig_exclude_keep()',
+              '    _wig_keep = bool(withheld_armo_abs) and _wig_body and _wig_exclude_keep()  # MUTATED', 1),
+         ),
+         tests=('tests/test_wig_exclude_keep.py',),
+         expect=('test_the_exclusion_rule_switch_turns_it_off_too',),
+    ),
+    Pair('WEK-d', 'the owned armour\'s records are not read for the keep test',
+         edits=(
+             ('src/ube_patcher.py',
+              '                if _wig_keep and a in withheld_armo_abs:   # #wig-exclude-keep',
+              '                if False:  # MUTATED', 1),
+         ),
+         tests=('tests/test_wig_exclude_keep.py',),
+         expect=('test_an_excluded_mods_wig_is_kept_with_its_own_mesh',),
+    ),
+    Pair('WEK-e', 'the kept wig is not reported',
+         edits=(
+             ('src/ube_patcher.py',
+              '        "exclusion_nonbody_kept": body_kept,',
+              '        "exclusion_nonbody_kept": [],  # MUTATED', 1),
+         ),
+         tests=('tests/test_wig_exclude_keep.py',),
+         expect=('test_an_excluded_mods_wig_is_kept_with_its_own_mesh',
+                 'test_the_kept_wig_is_a_note_not_an_unarmatured_warning'),
+    ),
+    Pair('WEK-f', 'a wig another mod patches is called unarmatured',
+         edits=(
+             ('src/ube_patcher.py',
+              '                if _held_for_another_patch(_why) is not None:\n',
+              '                if False:  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_wig_exclude_keep.py',),
+         expect=('test_a_wig_another_mods_patch_names_is_left_to_it',),
+    ),
+    Pair('WEK-g', 'a kept wig the dead-armature rule drops is counted as kept',
+         edits=(
+             ('src/ube_patcher.py',
+              '        if _kept_excluded:\n'
+              '            body_kept.append((armo_abs, edid))    # #wig-exclude-keep\n',
+              '        pass  # MUTATED\n', 1),
+             ('src/ube_patcher.py',
+              '                _kept_excluded = _why is None\n',
+              '                _kept_excluded = _why is None\n'
+              '                if _kept_excluded:  # MUTATED\n'
+              '                    body_kept.append((armo_abs, edid))\n', 1),
+         ),
+         tests=('tests/test_wig_exclude_keep.py',),
+         expect=('test_a_dead_wig_is_not_counted_as_kept',),
+    ),
     # #coverage-human-race-list (2026-09-24): an armour whose only human-drawing
     # armature has another primary race (an Argonian-primary amulet listing the
     # human races) is drawn on UBE, its races mapped.

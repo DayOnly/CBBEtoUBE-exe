@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### Fixed — an excluded mod's wig is kept like its other non-body pieces
+
+When you exclude a mod, only its body pieces lose their UBE coverage: its
+helmets, glasses and wigs that no other mod patches are still drawn. A wig
+whose item also claims a leg slot (see the next entry) was the exception: it
+was always left undrawn, and named in the "no UBE armature from any mod"
+warning. It is now judged like the mod's other non-body pieces -- still drawn
+with its own mesh unless another mod patches it, and listed in the note about
+kept pieces instead of the warning. Measured on the reported modlist with the
+follower mod that owns the one such wig excluded: the wig keeps its armature;
+nothing else changes, and without an exclusion nothing changes at all.
+`CBBE2UBE_NO_WIG_EXCLUDE_KEEP=1` (set to 1) leaves such a wig undrawn again.
+
 ### Fixed — a wig that also claims a leg slot is drawn on UBE actors
 
 Wigs you can equip are drawn on UBE-race actors (see "wigs are drawn on UBE

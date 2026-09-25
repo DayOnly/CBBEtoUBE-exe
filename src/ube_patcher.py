@@ -3507,6 +3507,23 @@ def _is_hair_only_armature(payload: bytes) -> bool:
             s = struct.unpack_from("<I", d, 0)[0]
             return bool(s) and (s & _HAIR_ONLY_SLOTS) == s
     return False
+
+
+def _wig_exclude_keep() -> bool:
+    r"""#wig-exclude-keep (2026-09-25): does an excluded mod's wig that the body
+    pass mints (#wig-body-pass) keep its coverage when the non-body pass would
+    keep it? Yes, by default.
+
+    #exclude-body-only (the user's call) withholds only an excluded mod's BODY
+    pieces; `_excluded_piece_holds` keeps a non-body piece no other mod patches.
+    The body pass withholds everything an excluded mod owns, so a wig whose
+    armour also says a deforming slot was always withheld -- and named in the
+    'no UBE armature from any mod' warning -- while the same wig on a hair-only
+    armour was kept. A wig is a non-body piece: the body pass now asks the same
+    keep test of the wig-only mint (never of an armour a deforming armature
+    was admitted for). Nested under #exclude-body-only and #wig-body-pass.
+    CBBE2UBE_NO_WIG_EXCLUDE_KEEP=1 withholds such a wig again."""
+    return not _flag("CBBE2UBE_NO_WIG_EXCLUDE_KEEP", False)
 # Slots that deform with the UBE body and need mesh conversion, not just race
 # coverage: 32 body, 33 hands, 34 forearms, 37 feet, 38 calves.
 _DEFORMING_SLOTS_MASK = (1 << 2) | (1 << 3) | (1 << 4) | (1 << 7) | (1 << 8)
@@ -3565,7 +3582,8 @@ def _exclude_body_only() -> bool:
     both passes. The user excludes a mod to keep our converted meshes off its
     body pieces; its helmet or eyeglasses, which no other mod patches, then drew
     nothing on UBE actors. Now the body pass still withholds everything the mod
-    owns, and the non-body pass withholds only what `_excluded_piece_holds`
+    owns (bar a wig it mints alone, judged as below: #wig-exclude-keep), and
+    the non-body pass withholds only what `_excluded_piece_holds`
     names; the rest is minted, drawing the model its armature names (no mesh
     is converted for the excluded mod; a shared path another mod's conversion
     covers draws that converted copy).
@@ -5015,6 +5033,9 @@ def generate_modded_body_ube_coverage_patch(
     Returns stats.
 
     `withheld_armo_abs`: as in the non-body pass (#exclude-owned-coverage).
+    Every such armour is withheld here, except one minted for its wig alone
+    (#wig-body-pass): a non-body piece, kept when `_excluded_piece_holds`
+    names no reason (`exclusion_nonbody_kept`). #wig-exclude-keep
 
     `mesh_exists`: does a mesh exist anywhere the game reads it (loose, MO2's
     overwrite, any archive)? #coverage-world-mesh asks it whether an unconverted
@@ -5059,6 +5080,15 @@ def generate_modded_body_ube_coverage_patch(
     _body_only = bool(withheld_armo_abs) and _exclude_body_only()
     body_held: list = []       # (armo_abs, edid, why)
     _bprobe: list = [None, False]   # [probe, built]
+
+    def _body_probe():
+        """The #exclude-body-only modlist probe, built on first use (None when
+        the modlist cannot be read)."""
+        if not _bprobe[1]:
+            from .auto_convert import _exclusion_keep_probe
+            _bprobe[:] = [_exclusion_keep_probe(), True]
+        return _bprobe[0]
+
     female_kept: list = []     # female slots that kept their own mesh (guard)
     female_dead: list = []     # dead female paths: the male mesh stays (guard)
     # #coverage-female-standin: dead female paths that draw the vanilla female
@@ -5094,6 +5124,11 @@ def generate_modded_body_ube_coverage_patch(
     race_listed: list = []     # (armo_abs, edid) taken by the race-list rule
     wigs_added: list = []      # (armo_abs, edid) wigs on a deforming armour (#wig-body-pass)
     _wig_body = _wig_body_pass()
+    # #wig-exclude-keep: an excluded mod's wig minted with its own mesh when
+    # the non-body pass's keep test keeps it; every record of an owned armour.
+    _wig_keep = _body_only and _wig_body and _wig_exclude_keep()
+    body_kept: list = []       # (armo_abs, edid)
+    owned_records: dict = {}   # armo_abs -> [(plugin, armatures, edid)], load order
     # What would have made an armature a CONVERSION candidate -- the selection's
     # own slot sets and cloak names, read from it so the two cannot drift.
     from .auto_convert import (_BODY_SLOT_BITS, _BODY_CANDIDATE_SLOT_BITS,
@@ -5245,6 +5280,9 @@ def generate_modded_body_ube_coverage_patch(
                 a = _record_abs_fid(r.formid, m, nm)
                 arms, rnam, slots, edid = _summarize_armo(r.payload, m, nm)
                 armo_win[a] = (r.payload, m, nm, arms, rnam, slots, edid, r.flags)
+                if _wig_keep and a in withheld_armo_abs:   # #wig-exclude-keep
+                    owned_records.setdefault(a, []).append(
+                        (nm.lower(), tuple(arms), edid))
         if _race_list:
             _collect_skins(pe, m, nm, skins)
 
@@ -5391,6 +5429,8 @@ def generate_modded_body_ube_coverage_patch(
         # Withheld BEFORE the guard below, so an excluded armour the guard would
         # also have emptied is still named as withheld. #exclude-owned-coverage
         _withhold = bool(withheld_armo_abs) and armo_abs in withheld_armo_abs
+        _kept_excluded = False
+        _why = None
         if _withhold:
             # #coverage-third-party-drawn: one another mod's armature draws
             # whole is not "left without an armature from any mod".
@@ -5398,13 +5438,23 @@ def generate_modded_body_ube_coverage_patch(
                     armo_abs, edid, slots, winning, to_mint, _listed,
                     record=False)[0]:
                 continue
+            # #wig-exclude-keep: a wig alone is a non-body piece -- the non-body
+            # pass's keep test decides it, as it decides the same wig there.
+            if _wig_keep and _wig_here:
+                _why = _excluded_piece_holds(
+                    armo_abs, owned_records.get(armo_abs, []), to_mint,
+                    arma_win, slots, _ube_exists, _body_probe())
+                _kept_excluded = _why is None
+        if _withhold and not _kept_excluded:
             withheld.append((armo_abs, edid))
-            if _body_only:
-                if not _bprobe[1]:
-                    from .auto_convert import _exclusion_keep_probe
-                    _bprobe[:] = [_exclusion_keep_probe(), True]
-                _by = (_bprobe[0].named(armo_abs, [edid] if edid else [])
-                       if _bprobe[0] is not None else None)
+            if _why is not None:
+                # The wig's keep test named why; a patch it names takes it.
+                if _held_for_another_patch(_why) is not None:
+                    body_held.append((armo_abs, edid, _why))
+            elif _body_only:
+                _p = _body_probe()
+                _by = (_p.named(armo_abs, [edid] if edid else [])
+                       if _p is not None else None)
                 if _by is not None:
                     body_held.append((armo_abs, edid, f"named by {_by}"))
             continue
@@ -5540,6 +5590,8 @@ def generate_modded_body_ube_coverage_patch(
             world_partial.append((armo_abs, edid))
         if _wig_here:
             wigs_added.append((armo_abs, edid))   # #wig-body-pass
+        if _kept_excluded:
+            body_kept.append((armo_abs, edid))    # #wig-exclude-keep
         targets.append((armo_abs, plugin_case.get(armo_abs[0], armo_abs[0]),
                         to_mint))
         _tpd_state.targeted(to_mint, _fewer)   # #coverage-third-party-drawn
@@ -5807,6 +5859,9 @@ def generate_modded_body_ube_coverage_patch(
         # #exclude-body-only, report only: withheld body pieces another mod's
         # SkyPatcher patch names (left to that patch).
         "exclusion_body_held": body_held,
+        # #wig-exclude-keep: an excluded mod's wig the keep test kept -- a
+        # non-body piece, reported with the non-body pass's kept pieces.
+        "exclusion_nonbody_kept": body_kept,
         # #coverage-dead-armature
         "dead_armature_skipped": [f"{a[0]}|{a[1]:X}" for a in dead_skipped],
         "dead_dropped": dead_dropped,
