@@ -3673,28 +3673,29 @@ def _race_subset_split(to_mint, arma_win, armo_slots) -> "tuple[set, dict]":
     not to mint, {armature: UBE races, UBE_RACE_FIDS_24 order} for the ones
     minted for fewer than every UBE race). Only DefaultRace-primary armatures
     take part, grouped by overlapping slots (their BOD2, else `armo_slots`);
-    a group changes only when it has two or more members and one lists a
-    vanilla human race:
-      * a member listing only other races (a mod's own race, an elder race) is
-        not minted: no human draws it;
+    a group changes only when one member lists a vanilla human race:
+      * a member listing only other races (a mod's own race, an elder race,
+        the mannequin race) is not minted: no human draws it;
       * when the human-listing members' UBE counterparts are disjoint and one
         is fewer than all, each is minted for its own; the races none of them
         claims go to the members listing no race at all (the DefaultRace
         default), else to every human-listing member -- what they draw today.
-    A beast-only member is #coverage-beast-variant's, left as it is; the
-    mannequin race is ignored, as there."""
+        A lone member claims none, so it keeps every race.
+    A beast-only member (the mannequin race ignored, as there) is
+    #coverage-beast-variant's, left as it is."""
     info = {}
     for x in to_mint:
         v = arma_win[x]
         if v[3] != _DEFAULT_RACE_ABS:
             continue
-        races = [r for r in _additional_races(v) if not _is_non_actor_race(r)]
+        races = _additional_races(v)
+        actor = [a for a in races if not _is_non_actor_race(a)]
         human = frozenset(_ube_races_for_race_list(races)) if races else frozenset()
         if human:
             kind = "human"
         elif not races:
             kind = "default"
-        elif all(p == "skyrim.esm" and lo in _BEAST_RACES_24 for p, lo in races):
+        elif actor and all(p == "skyrim.esm" and lo in _BEAST_RACES_24 for p, lo in actor):
             continue
         else:
             kind = "other"
@@ -3714,12 +3715,12 @@ def _race_subset_split(to_mint, arma_win, armo_slots) -> "tuple[set, dict]":
     for x in members:
         comps.setdefault(_root(x), []).append(x)
     drop: set = set()
-    races: dict = {}
+    narrow: dict = {}
     all_ube = frozenset(UBE_RACE_FIDS_24)
     for comp in comps.values():
         hs = [x for x in comp if info[x][0] == "human"]
-        if len(comp) < 2 or not hs:
-            continue
+        if not hs:
+            continue                      # no human sibling to draw instead
         drop.update(x for x in comp if info[x][0] == "other")
         sets = [info[x][1] for x in hs]
         overlap = sum(len(s) for s in sets) != len(frozenset().union(*sets))
@@ -3733,8 +3734,8 @@ def _race_subset_split(to_mint, arma_win, armo_slots) -> "tuple[set, dict]":
             if not s:
                 drop.add(x)
             elif s != all_ube:
-                races[x] = [f for f in UBE_RACE_FIDS_24 if f in s]
-    return drop, races
+                narrow[x] = [f for f in UBE_RACE_FIDS_24 if f in s]
+    return drop, narrow
 
 
 class _RaceSubset:

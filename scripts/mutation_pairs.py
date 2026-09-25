@@ -7337,14 +7337,16 @@ PAIRS = (
          tests=('tests/test_coverage_race_subset.py',),
          expect=('test_a_default_armature_beside_a_full_list_is_unchanged',),
     ),
-    Pair('RSS-f', 'a lone armature is narrowed to its own races',
+    Pair('RSS-f', 'an armature listing no race is not the default one',
          edits=(
              ('src/ube_patcher.py',
-              '        if len(comp) < 2 or not hs:',
-              '        if not hs:  # MUTATED', 1),
+              '        elif not races:\n'
+              '            kind = "default"\n',
+              '        elif False:  # MUTATED\n'
+              '            kind = "default"\n', 1),
          ),
          tests=('tests/test_coverage_race_subset.py',),
-         expect=('test_a_lone_subset_armature_keeps_every_race',),
+         expect=('test_the_default_armature_takes_the_races_no_sibling_lists',),
     ),
     Pair('RSS-g', 'armatures on different slots count as siblings',
          edits=(
@@ -7387,11 +7389,41 @@ PAIRS = (
     Pair('RSS-k', 'a beast-only armature is taken as a mod race and dropped',
          edits=(
              ('src/ube_patcher.py',
-              '        elif all(p == "skyrim.esm" and lo in _BEAST_RACES_24 for p, lo in races):',
+              '        elif actor and all(p == "skyrim.esm" and lo in _BEAST_RACES_24 for p, lo in actor):',
               '        elif False:  # MUTATED', 1),
          ),
          tests=('tests/test_coverage_race_subset.py',),
          expect=('test_a_beast_variant_is_left_to_its_own_rule',),
+    ),
+    Pair('RSS-p', 'the mannequin race makes a beast variant a mod race',
+         edits=(
+             ('src/ube_patcher.py',
+              '        actor = [a for a in races if not _is_non_actor_race(a)]\n'
+              '        human = frozenset(',
+              '        actor = races  # MUTATED\n'
+              '        human = frozenset(', 1),
+         ),
+         tests=('tests/test_coverage_race_subset.py',),
+         expect=('test_a_beast_and_mannequin_variant_is_left_to_its_own_rule',),
+    ),
+    Pair('RSS-q', 'an armature for the mannequins alone is taken as beast-only',
+         edits=(
+             ('src/ube_patcher.py',
+              '        elif actor and all(p == "skyrim.esm" and lo in _BEAST_RACES_24 for p, lo in actor):',
+              '        elif all(p == "skyrim.esm" and lo in _BEAST_RACES_24 for p, lo in actor):  # MUTATED', 1),
+         ),
+         tests=('tests/test_coverage_race_subset.py',),
+         expect=('test_an_armature_for_the_mannequins_alone_is_left_off',),
+    ),
+    Pair('RSS-r', 'a mod race armature is left off with no human sibling',
+         edits=(
+             ('src/ube_patcher.py',
+              '        if not hs:\n'
+              '            continue                      # no human sibling to draw instead\n',
+              '        pass  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_coverage_race_subset.py',),
+         expect=('test_without_a_human_sibling_nothing_is_left_off',),
     ),
     Pair('RSS-l', 'the non-body pass mints the split armatures for every race',
          edits=(

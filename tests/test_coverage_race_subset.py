@@ -48,6 +48,7 @@ DARK, HIGH, WOOD, ORC = 0x013742, 0x013743, 0x013749, 0x013747
 BRETON_V, IMPERIAL_V, NORD_V, REDGUARD_V = 0x08883C, 0x088844, 0x088794, 0x088846
 DARK_V, HIGH_V, WOOD_V, ORC_V = 0x08883D, 0x088840, 0x088884, 0x0A82B9
 KHAJIIT = 0x013745
+MANIKIN = 0x10760A      # the mannequins' race
 HUMANS = [BRETON, IMPERIAL, NORD, REDGUARD, BRETON_V, IMPERIAL_V, NORD_V, REDGUARD_V]
 ELVES = [DARK, HIGH, WOOD, DARK_V, HIGH_V, WOOD_V]
 ORCS = [ORC, ORC_V]
@@ -232,6 +233,34 @@ def test_a_beast_variant_is_left_to_its_own_rule(tmp_path, monkeypatch):
     st, got = _nonbody(tmp_path, [CROWN(), cat])
     assert got == {r"circlet\human_1.nif": ALL16, r"circlet\cat_1.nif": ALL16}
     assert st["race_subset"] == []
+
+
+def test_a_beast_and_mannequin_variant_is_left_to_its_own_rule(tmp_path, monkeypatch):
+    """The mannequin race is ignored when telling a beast-only member, as
+    #coverage-beast-variant ignores it."""
+    monkeypatch.setenv(BEAST_OFF, "1")
+    cat = _arma(0x01000801, HEAD, r"circlet\cat_1.nif", [KHAJIIT, MANIKIN])
+    st, got = _nonbody(tmp_path, [CROWN(), cat])
+    assert got == {r"circlet\human_1.nif": ALL16, r"circlet\cat_1.nif": ALL16}
+    assert st["race_subset"] == []
+
+
+def test_an_armature_for_the_mannequins_alone_is_left_off(tmp_path):
+    """No human draws an armature listing only the mannequin race."""
+    display = _arma(0x01000801, HEAD, r"circlet\display_1.nif", [MANIKIN])
+    st, got = _nonbody(tmp_path, [CROWN(), display])
+    assert got == {r"circlet\human_1.nif": ALL16}
+    assert st["race_subset_dropped"] == ["mod.esp|801"]
+
+
+def test_without_a_human_sibling_nothing_is_left_off(tmp_path):
+    """A mod's own race beside an armature listing no race: no sibling lists a
+    human race to draw instead, so both stay as they are."""
+    plain = _arma(0x01000800, HEAD, r"robe\robe_1.nif", [])
+    own = _arma(0x01000801, HEAD, r"robe\robebone_1.nif", [MOD_RACE])
+    st, got = _nonbody(tmp_path, [plain, own])
+    assert got == {r"robe\robe_1.nif": ALL16, r"robe\robebone_1.nif": ALL16}
+    assert st["race_subset"] == [] and st["race_subset_dropped"] == []
 
 
 def test_gauntlet_siblings_are_split_in_the_body_pass(tmp_path):

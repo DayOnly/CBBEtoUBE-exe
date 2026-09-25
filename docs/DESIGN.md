@@ -1717,17 +1717,19 @@ reported through `_report_coverage_holds`:
   draws one of them, but both passes minted each for all 16 UBE races, so a UBE
   actor drew all of them at once. `_race_subset_split` groups an armour's
   DefaultRace armatures to mint by overlapping slots (their BOD2, else the
-  armour's) and changes a group only when it has two or more members and one
-  lists a vanilla human race. A member listing only non-human races that are not
-  beast races is not minted. When the human-listing members' UBE counterparts
-  (`_ube_races_for_race_list`) are pairwise disjoint and not all 16, each member
-  is minted for its own. The races no member claims go to the members that list
-  no race (the DefaultRace default), else to every human-listing member (what
-  they draw today), so no UBE race loses its draw. Overlapping lists are layered
-  pieces the base game draws together, and are unchanged (a near-full robe list
-  missing one vampire race beside a full one, live). So are a lone armature, a
-  beast-only member (left to #coverage-beast-variant) and an armour where the
-  race-list rule or #coverage-third-party-drawn chose the races. A minted
+  armour's) and changes a group only when a member lists a vanilla human race.
+  A member listing only non-human races (a mod's own race, an elder race, the
+  mannequin race) is not minted; a beast-only one, judged with the mannequin
+  race ignored as #coverage-beast-variant judges it, is left to that rule.
+  When the human-listing members' UBE counterparts (`_ube_races_for_race_list`)
+  are pairwise disjoint and not all 16, each member is minted for its own. The
+  races no member claims go to the members that list no race (the DefaultRace
+  default), else to every human-listing member (what they draw today), so no
+  UBE race loses its draw; a lone armature claims none and keeps all 16.
+  Overlapping lists are layered pieces the base game draws together, and are
+  unchanged (a near-full robe list missing one vampire race beside a full one,
+  live). So is an armour where the race-list rule or
+  #coverage-third-party-drawn chose the races. A minted
   armature is one record shared by every armour that lists it, so
   `_RaceSubset` targets the union, and all 16 as soon as one armour mints it
   unsplit. Live census (both passes, every armour with two or more minted links):
