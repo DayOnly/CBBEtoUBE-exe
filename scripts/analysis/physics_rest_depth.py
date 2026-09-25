@@ -64,21 +64,35 @@ stored one, and the body's own vertices moved CONTROL_U in and out read
 stored, no node tree) is printed beside it, so the node tree's share of any
 change is visible.
 
-WHAT THE LIFT DID, read from the written file. For each moving bone with skin:
-its rest position minus its BIND position (where the skin was bound,
-F . inv(S_b), F the shape's skin frame taken from its heaviest static skeleton
-bone). A lift translates one root node, so every bone below it moves by one
-vector: bones that moved together (within LIFT_MIN_U) are grouped under the
-node that was moved (`chain_groups`), and an armour group that moved counts as
-lifted, by that vector. `--lift-log` adds what the run's standoff_audit.jsonl
-recorded; that sink appends across runs, so it is a cross-check, never the
-number.
+WHAT THE LIFT DID, read from the written file. For each ARMOUR bone with skin,
+moving or kinematic (the lift moves a chain whether or not the XML simulates
+it), and each moving skeleton bone: its rest position minus its BIND position
+(where the skin was bound, F . inv(S_b), F the shape's skin frame taken from
+its heaviest static skeleton bone). Bones that moved together (within
+LIFT_MIN_U) are grouped (`chain_groups`). A LIFT is one rigid translation of a
+node the converter lifts (`is_lift_root`: a garment node hanging off a
+skeleton node): every skinned bone below that node moved by the same vector,
+of LIFT_MIN_U up to the CHAIN_LIFT_MAX cap. Anything else off its bind -- an
+offset growing along a chain, flipping sign, or past the cap -- is the node
+tree disagreeing with the skin, counted apart and never called a lift.
+`--lift-log` adds what the run's standoff_audit.jsonl recorded; that sink
+appends across runs, so it is a cross-check, never the number.
 
-Cloth resting more than FRAME_MAX_U from where it was skinned is nothing a pass
-does -- the lift is a translation capped at CHAIN_LIFT_MAX -- so there the node
-tree or the actor skeleton disagrees with the skin and the MODEL is in
-question: the piece is listed apart as a FRAME DISAGREEMENT with both depths and
-is NOT ranked.
+LISTED APART (a FRAME DISAGREEMENT, both depths shown, NOT ranked):
+  * a file the converter's own frame check refuses (`frame_check`, which runs
+    `nc._chain_frame_ok` and its CHAIN_LIFT_FRAME_TOL on the chain bones' --
+    every skin bone but a hard skeleton bone -- node-tree positions, the lift
+    read back under them taken off, against the skin in the bind frame F).
+    The converter lifts nothing on such a file, so it carries no lift;
+    `checked` 0 (no chain bone with skin) refuses nothing here, as there is
+    no chain to lift;
+  * cloth resting more than FRAME_MAX_U from where it was skinned, which no
+    pass does: the node tree or the actor skeleton disagrees with the skin
+    (hard skeleton-named cloth bones, which the check does not cover) and
+    the MODEL is in question.
+
+Pieces whose cloth is moved by bones alone (the census's bone-driven rows: no
+simulated collision shape) are measured and ranked like the rest, marked B.
 
 Not modelled: runtime body morphs and the garment's own morphs; the body's
 genital slit reads unreliably (the control leaves it out); what the solver does
@@ -89,8 +103,11 @@ Usage:
         [--body femalebody_tangent_1.nif] [--skeleton skeleton_female.nif]
         [--lift-log standoff_audit.jsonl] [--json out.json] [--top N] [--limit N]
 
-Exit 0 with the table; 2 on usage, or when no body or skeleton is found; 3 when
-nothing was measured or a control failed.
+Exit 0 with the table; 2 on usage, or when no body or skeleton is found or one
+cannot be used (unreadable, no shapes or nodes, a body skin bone the skeleton
+lacks); 3 when nothing was measured or a control failed. `--json` always
+records "status" and the controls, and carries depth rows only with status
+"ok" (exit 0).
 """
 import argparse
 import json
@@ -116,6 +133,8 @@ from src import nif_convert as nc                                 # noqa: E402
 SIM_EPS = 0.05          # a vertex is cloth above this share on moving bones
 BANDS = (0.5, 1.5)      # depth thresholds the table counts
 LIFT_MIN_U = nc.CHAIN_LIFT_MIN
+# A lift is capped at CHAIN_LIFT_MAX; the log rounds to 4 places.
+LIFT_MAX_U = nc.CHAIN_LIFT_MAX + 1e-3
 FRAME_MAX_U = nc.CHAIN_LIFT_MAX + nc.CHAIN_LIFT_FRAME_TOL
 CONTROL_U = 0.5
 CONTROL_TOL = 0.05
@@ -140,6 +159,8 @@ SKELETON_PATTERNS = (
     "meshes/actors/character/character assets/skeleton.nif",
 )
 NO_CLOTH_VERTS = "no vertex on a moving bone"
+# The converter's own skip reason when `_chain_frame_ok` refuses a file.
+FRAME_SKIP = "node-tree frame disagrees with the skinning"
 VISIBLE, HIDDEN = "visible", "hidden"
 NO_BODY = "no body at this weight"
 
@@ -220,9 +241,19 @@ def _armour_ancestry(nodes, key, skel):
     return out
 
 
+def is_lift_root(node):
+    """The converter's own root rule (`_chain_root_subtrees(custom_only=True)`,
+    the only nodes `#chain-rest-lift` translates): a garment node -- not
+    `_is_skeleton_bone` -- whose parent is one."""
+    par = node.parent
+    return (par is not None and not nc._is_skeleton_bone(node.name)
+            and nc._is_skeleton_bone(par.name))
+
+
 def chain_groups(nodes, offsets, skel):
-    """{root: {"offset", "lift", "spread", "bones", "skeleton_bone"}}: the
-    moving bones grouped by the vector they rest off their bind by.
+    """{root: {"offset", "lift", "spread", "bones", "skeleton_bone",
+    "lift_root"}}: the skinned bones grouped by the vector they rest off
+    their bind by.
 
     A lift translates one ROOT node, so every skinned bone below it moves by
     the same vector, and a chain the lift did not touch moves by none. Bones
@@ -230,7 +261,14 @@ def chain_groups(nodes, offsets, skel):
     group; its root is their lowest common ancestor, climbed while the node
     above holds no other group's bones -- the node the lift moved, skinned or
     not (a `_00` root carries no weight). A skeleton bone is its own group:
-    in game it is the skeleton's node."""
+    in game it is the skeleton's node.
+
+    "lift_root" is the node a lift would have to have moved for this group to
+    be one: the nearest node from the common ancestor up that the converter
+    lifts (`is_lift_root`) and under which EVERY skinned bone is in the group
+    -- one rigid translation of a whole subtree. None when there is no such
+    node: bones whose offset grows along a chain or flips sign are each their
+    own group, and none of them is a subtree moved as one."""
     groups = []
     for key in sorted(offsets):
         off = offsets[key]
@@ -252,6 +290,7 @@ def chain_groups(nodes, offsets, skel):
     out = {}
     for g in groups:
         members = set(g["bones"])
+        lift_root = None
         if not g["anc"]:
             root = g["bones"][0]
         else:
@@ -259,6 +298,12 @@ def chain_groups(nodes, offsets, skel):
             common = set(chains[0]).intersection(*chains[1:])
             path = chains[0]
             i = next(i for i, a in enumerate(path) if a in common)
+            for a in path[i:]:
+                if below[a] != members:
+                    break             # a bone below it moved otherwise
+                if is_lift_root(nodes[a]):
+                    lift_root = a
+                    break
             while i + 1 < len(path) and below[path[i + 1]] <= members:
                 i += 1
             root = path[i]
@@ -268,8 +313,69 @@ def chain_groups(nodes, offsets, skel):
             "offset": [round(float(x), 4) for x in med],
             "lift": round(float(np.linalg.norm(med)), 4),
             "spread": round(float(np.linalg.norm(offs - med, axis=1).max()), 4),
-            "bones": len(members), "skeleton_bone": not g["anc"]}
+            "bones": len(members), "skeleton_bone": not g["anc"],
+            "lift_root": lift_root}
     return out
+
+
+class _XF:
+    """A 4x4 as the TransformBuf `nc._xf_matrix` reads (scale folded in)."""
+
+    def __init__(self, m):
+        self.rotation = [list(r) for r in m[:3, :3]]
+        self.translation = tuple(float(c) for c in m[:3, 3])
+        self.scale = 1.0
+
+
+class _BindFrameShape:
+    """A shape seen in the bind frame the depth uses: its skin-to-bone
+    transforms as stored, its global-to-skin taken as inv(F). The written
+    file's own global-to-skin is not the frame the converter checked (its
+    skeleton nodes are written flat, the source's were not); F puts the skin
+    in the actor skeleton's frame, the one the node tree is placed in."""
+
+    def __init__(self, shape, F):
+        self._shape = shape
+        self.bone_names = list(shape.bone_names or ())
+        self.global_to_skin = _XF(np.linalg.inv(F))
+
+    def get_shape_skin_to_bone(self, bone):
+        return self._shape.get_shape_skin_to_bone(bone)
+
+
+def frame_check(framed, nodes, skel, memo, lifted):
+    """The converter's own frame check (`nc._chain_frame_ok`, tolerance
+    `CHAIN_LIFT_FRAME_TOL`) on the written file: each chain bone's node-tree
+    position at rest, with the lift read back under it taken off again,
+    against where the skin binds it. `framed` is [(shape, F)]. Returns
+    {"ok", "checked", "worst"}; `checked` 0 means no chain bone has skin.
+
+    The chain bones are the converter's: every skin bone but a HARD skeleton
+    bone (`_is_skeleton_bone` and not a soft-body one) the actor's skeleton
+    has -- so a garment bone the skeleton happens to carry, and a soft-body
+    bone, are checked where the game puts them, at the skeleton's node."""
+    gpos = {}
+    for s, _F in framed:
+        for b in (s.bone_names or ()):
+            k = pch._key(b)
+            if b in gpos or (k in skel and nc._is_skeleton_bone(b)
+                             and not nc._is_soft_body_physics_bone(b)):
+                continue
+            G = bone_rest(nodes, k, skel, memo)
+            if G is None:
+                continue
+            p = G[:3, 3].copy()
+            for a in _armour_ancestry(nodes, k, skel):
+                if a in lifted:
+                    p = p - np.asarray(lifted[a]["offset"], np.float64)
+                    break
+            gpos[b] = p
+
+    class _Nif:
+        shapes = [_BindFrameShape(s, F) for s, F in framed]
+    ok, checked, worst = nc._chain_frame_ok(_Nif, gpos)
+    return {"ok": bool(ok), "checked": int(checked),
+            "worst": round(float(worst), 4)}
 
 
 def shape_rest(nodes, shape, skel, moving, memo):
@@ -278,8 +384,11 @@ def shape_rest(nodes, shape, skel, moving, memo):
     Returns {"rest", "bind", "share" (weight share on moving bones),
     "measurable" (every weighted bone resolves), "frame_from_g2s" (no static
     skeleton bone: the bind frame F is the shape's global-to-skin instead),
-    "offsets" {moving bone: rest position - bind position}}. F is taken from
-    the static skeleton bone carrying the most weight."""
+    "frame" F, "offsets" {bone: rest position - bind position}}. F is taken
+    from the static skeleton bone carrying the most weight. The offsets cover
+    every ARMOUR bone with skin, moving or kinematic -- the lift moves a chain
+    root whether or not the XML simulates the chain -- and every moving
+    skeleton bone."""
     V = np.asarray(shape.verts, np.float64)
     n = len(V)
     rest = np.zeros((n, 3))
@@ -305,8 +414,9 @@ def shape_rest(nodes, shape, skel, moving, memo):
         wsum[idx] += w
         if key in moving:
             wmov[idx] += w
+        if key in moving or key not in skel:
             mats[key] = (G, S)
-        elif key in skel:
+        else:
             frames.append((float(w.sum()), M))
     good = wsum > 1e-9
     rest[good] /= wsum[good][:, None]
@@ -331,7 +441,7 @@ def shape_rest(nodes, shape, skel, moving, memo):
     share = np.divide(wmov, total, out=np.zeros(n), where=total > 1e-9)
     return {"rest": rest, "bind": bind, "share": share,
             "measurable": good & (wmiss <= 1e-9),
-            "frame_from_g2s": from_g2s, "offsets": offsets}
+            "frame_from_g2s": from_g2s, "frame": F, "offsets": offsets}
 
 
 class Body:
@@ -367,6 +477,8 @@ class Body:
     def load(cls, path, skel):
         nif = nc._pynifly().NifFile(str(path))
         shapes = [s for s in nif.shapes if len(s.verts)]
+        if not shapes:
+            raise ValueError(f"body {path}: no shape with vertices")
         body = next((s for s in shapes if pch._key(s.name) in BODY_SHAPES),
                     None) or max(shapes, key=lambda s: len(s.verts))
         r = shape_rest(_nodes(nif), body, skel, set(), {})
@@ -478,7 +590,7 @@ def measure(nif, row, skel, body):
     nodes = _nodes(nif)
     moving = moving_bones(nodes, row["dynamic_bones"], skel)
     xml_names = {pch._key(s["name"]) for s in row.get("shapes", ())}
-    memo, shapes = {}, []
+    memo, shapes, framed = {}, [], []
     rest, bind = defaultdict(list), defaultdict(list)
     per_bone = defaultdict(list)
     unresolved = 0
@@ -487,6 +599,7 @@ def measure(nif, row, skel, body):
                 or not s.bone_weights):
             continue
         r = shape_rest(nodes, s, skel, moving, memo)
+        framed.append((s, r["frame"]))
         cloth = r["share"] > SIM_EPS
         unresolved += int((cloth & ~r["measurable"]).sum())
         cloth &= r["measurable"]
@@ -515,20 +628,40 @@ def measure(nif, row, skel, body):
     def pooled(parts):
         return _stats(np.concatenate(parts)) if parts else None
     max_move = max(s["max_move"] for s in shapes)
+    # The lift's signature: ONE rigid translation of a whole subtree under a
+    # node the converter lifts, no longer than its cap.
+    lifted = {v["lift_root"]: v for v in chain_rows.values()
+              if v["lift_root"] and LIFT_MIN_U <= v["lift"] <= LIFT_MAX_U}
+    check = frame_check(framed, nodes, skel, memo, lifted)
+    if not check["ok"] and lifted:
+        # The converter refuses the whole file or lifts nothing on it, so a
+        # file its check refuses carries no lift: read it as it stands.
+        lifted, check = {}, frame_check(framed, nodes, skel, memo, {})
+    refused = check["checked"] > 0 and not check["ok"]
+    taken = {id(v) for v in lifted.values()}
+    far = bool(max_move > FRAME_MAX_U)
     return {
         "rest": pooled(rest[VISIBLE]), "bind": pooled(bind[VISIBLE]),
         "hidden_rest": pooled(rest[HIDDEN]),
         "hidden_bind": pooled(bind[HIDDEN]),
         "chains": chain_rows,
-        # The lift's signature: an ARMOUR chain moved off its bind as one.
-        "lifted": {k: v for k, v in chain_rows.items()
-                   if not v["skeleton_bone"] and v["lift"] >= LIFT_MIN_U},
+        "lifted": lifted,
+        # Armour bones off their bind in any other shape: the node tree and
+        # the skin disagree there, which is no pass's doing.
+        "disagree": {k: v for k, v in chain_rows.items()
+                     if not v["skeleton_bone"] and id(v) not in taken
+                     and v["lift"] >= LIFT_MIN_U},
+        "frame_check": check,
         "max_move": max_move,
         "shapes": shapes, "unresolved_verts": unresolved,
-        # No pass moves cloth this far: the lift is a translation capped at
-        # CHAIN_LIFT_MAX, so beyond that the node tree or the actor skeleton
-        # disagrees with the skin, and the model is what is in question.
-        "frame_disagrees": bool(max_move > FRAME_MAX_U),
+        "bone_driven": not row.get("cloth") and bool(row.get("moved")),
+        # Listed apart, never ranked: the converter's own frame check refuses
+        # the file (its node tree is in a frame the skin does not share), or
+        # cloth rests further from its bind than a lift can move it (the
+        # model -- skeleton or node tree -- is what is in question).
+        "frame_refused": refused,
+        "far_from_bind": far,
+        "frame_disagrees": refused or far,
     }, None
 
 
@@ -600,8 +733,11 @@ def find_skeleton(arg=None):
 
 def load_skeleton(path):
     nif = nc._pynifly().NifFile(str(path))
-    return {pch._key(name): _mat(node.global_transform)
-            for name, node in nif.nodes.items()}
+    out = {pch._key(name): _mat(node.global_transform)
+           for name, node in (nif.nodes or {}).items()}
+    if not out:
+        raise ValueError(f"skeleton {path}: no nodes")
+    return out
 
 
 def scan(nifs, root, skel, bodies, open_nif=None):
@@ -678,8 +814,15 @@ def report(rows, skip, walked, bodies, controls, lift_log=None, top=30):
     apart = [r for r in rows if r["frame_disagrees"]]
     print(f"  FRAME DISAGREEMENT (listed apart, not ranked)     : "
           f"{len(apart):5d}")
+    print(f"    the converter's frame check refuses the file    : "
+          f"{sum(r['frame_refused'] for r in apart):5d}")
+    print(f"    cloth rests further from its bind than a lift   : "
+          f"{sum(r['far_from_bind'] for r in apart):5d}")
     print(f"  MEASURED                                          : "
           f"{len(ranked):5d} / {len({r['garment'] for r in ranked})} garments")
+    bd = [r for r in ranked if r["bone_driven"]]
+    print(f"    of which moved by bones alone (no collision shape): "
+          f"{len(bd)} / {len({r['garment'] for r in bd})} garments")
     if any(not ok for ok, *_ in controls.values()):
         print("\n!! A CONTROL FAILED: the depths below are not measurements.")
         return 3
@@ -695,14 +838,13 @@ def report(rows, skip, walked, bodies, controls, lift_log=None, top=30):
               f"pieces / {len({r['garment'] for r in inside})} garments; "
               f"deeper than 1.5u: {len(deep)} / "
               f"{len({r['garment'] for r in deep})}")
-    lifted = [r for r in ranked + apart if r["lifted"]]
-    print(f"  pieces with a lifted chain (node-tree offset >= {LIFT_MIN_U}u): "
-          f"{len(lifted)}")
+    lift_summary(ranked + apart)
 
     ranked.sort(key=lambda r: (-_over(r["rest"], 0.5), -_max(r["rest"]),
                                -_over(r["hidden_rest"], 0.5)))
     print(f"\nRANKED by VISIBLE cloth verts deeper than 0.5u at REST (depth u, "
-          f"positive = inside; hidden = collision proxies and helpers)")
+          f"positive = inside; hidden = collision proxies and helpers; "
+          f"B = moved by bones alone)")
     print(f"  {'rest p50':>8} {'p95':>6} {'max':>6} {'>0.5':>5} {'>1.5':>5} |"
           f" {'bind max':>8} {'>0.5':>5} | {'hidden max':>10} {'>0.5':>5} |"
           f" {'lift':>5} {'n':>2} | {'verts':>6}  piece")
@@ -713,42 +855,84 @@ def report(rows, skip, walked, bodies, controls, lift_log=None, top=30):
               f"{_over(r['bind'], 0.5):5d} | {_mx(r['hidden_rest'], 10)} "
               f"{_over(r['hidden_rest'], 0.5):5d} | "
               f"{max(lifts) if lifts else 0.0:5.2f} {len(lifts):2d} | "
-              f"{n:6d}  {r['path']}")
+              f"{n:6d} {'B' if r['bone_driven'] else ' '} {r['path']}")
     if apart:
-        print(f"\nFRAME DISAGREEMENT (not ranked: cloth rests more than "
-              f"{FRAME_MAX_U:.2f}u from where it was skinned, which no pass "
-              f"does)")
+        print(f"\nFRAME DISAGREEMENT (not ranked: the converter's frame check "
+              f"-- node tree against the skin, tolerance "
+              f"{nc.CHAIN_LIFT_FRAME_TOL}u -- refuses the file, or cloth rests "
+              f"more than {FRAME_MAX_U:.2f}u from where it was skinned, which "
+              f"no pass does)")
         for r in sorted(apart, key=lambda r: -r["max_move"]):
-            worst = max(r["chains"].items(), key=lambda kv: kv[1]["lift"],
-                        default=(None, {"lift": 0.0, "spread": 0.0}))
+            fc = r["frame_check"]
+            why = ("refused" if r["frame_refused"] else "far    ")
             shape = max(r["shapes"], key=lambda s: s["max_move"])["name"]
-            print(f"  moved {r['max_move']:6.2f}u on {shape[:18]!r} | rest max "
-                  f"{_mx(r['rest'], 6)} bind max {_mx(r['bind'], 6)} "
-                  f"hidden {_mx(r['hidden_rest'], 6)}"
-                  f" | worst chain {worst[0]} {worst[1]['lift']:.2f}u "
-                  f"(spread {worst[1]['spread']:.2f}u) | {r['path']}")
+            print(f"  {why} | frame check worst {fc['worst']:6.2f}u over "
+                  f"{fc['checked']} bones | cloth moved {r['max_move']:6.2f}u "
+                  f"on {shape[:18]!r} | rest max {_mx(r['rest'], 6)} bind max "
+                  f"{_mx(r['bind'], 6)} hidden {_mx(r['hidden_rest'], 6)} | "
+                  f"{r['path']}")
     if lift_log is not None:
-        agree, differ, unlogged = 0, [], 0
-        for r in rows:
-            ent = lift_log.get(log_key(r["path"]))
-            logged = {pch._key(x) for x in ent["moved"]} if ent else set()
-            seen = set(r["lifted"])
-            if not logged and not seen:
-                continue
-            if not logged:
-                unlogged += 1
-            elif logged == seen:
-                agree += 1
-            else:
-                differ.append((r["path"], sorted(logged - seen),
-                               sorted(seen - logged)))
-        print(f"\nLIFT LOG cross-check (the log appends across runs, so it is "
-              f"not the number): {agree} piece(s) lifted exactly the chains "
-              f"the log names, {len(differ)} differ, {unlogged} lifted with "
-              f"no log record")
-        for path, log_only, file_only in differ[:top]:
-            print(f"  log only {log_only}  file only {file_only}  {path}")
+        lift_log_check(rows, lift_log, top)
     return 0
+
+
+def lift_summary(rows):
+    """What `#chain-rest-lift` did, read from the written files."""
+    lifts = [c["lift"] for r in rows for c in r["lifted"].values()]
+    pieces = [r for r in rows if r["lifted"]]
+    capped = sum(1 for x in lifts if x >= nc.CHAIN_LIFT_MAX - 1e-3)
+    print(f"  pieces with a lifted chain (one rigid translation of a chain "
+          f"root, {LIFT_MIN_U}-{nc.CHAIN_LIFT_MAX}u): {len(pieces)} / "
+          f"{len({r['garment'] for r in pieces})} garments, {len(lifts)} "
+          f"chains, median "
+          f"{float(np.median(lifts)) if lifts else 0.0:.2f}u, {capped} at "
+          f"the {nc.CHAIN_LIFT_MAX}u cap")
+    dis = [r for r in rows if r["disagree"]]
+    print(f"  node tree off the skin in no lift's shape (growing along a "
+          f"chain, flipping sign, or past the cap): "
+          f"{sum(len(r['disagree']) for r in dis)} groups on {len(dis)} "
+          f"pieces")
+
+
+def lift_log_check(rows, lift_log, top):
+    """The run log beside the file: the chains each names as lifted, and the
+    files the converter's frame check refused. The sink appends across runs,
+    so a piece can carry records of several conversions."""
+    agree, differ, unlogged = 0, [], 0
+    for r in rows:
+        ent = lift_log.get(log_key(r["path"]))
+        logged = {pch._key(x) for x in ent["moved"]} if ent else set()
+        seen = set(r["lifted"])
+        if not logged and not seen:
+            continue
+        if not logged:
+            unlogged += 1
+        elif logged == seen:
+            agree += 1
+        else:
+            differ.append((r["path"], sorted(logged - seen),
+                           sorted(seen - logged)))
+    print(f"\nLIFT LOG cross-check (the log appends across runs, so it is "
+          f"not the number): {agree} piece(s) lifted exactly the chains "
+          f"the log names, {len(differ)} differ, {unlogged} lifted with "
+          f"no log record")
+    for path, log_only, file_only in differ[:top]:
+        print(f"  log only {log_only}  file only {file_only}  {path}")
+    refused_log = {log_key(r["path"]) for r in rows
+                   if (lift_log.get(log_key(r["path"])) or {}).get(
+                       "skipped", {}).get(FRAME_SKIP)}
+    both = sum(1 for r in rows
+               if r["frame_refused"] and log_key(r["path"]) in refused_log)
+    tool_only = [r["path"] for r in rows if r["frame_refused"]
+                 and log_key(r["path"]) not in refused_log]
+    log_only = [r["path"] for r in rows if not r["frame_refused"]
+                and log_key(r["path"]) in refused_log
+                and not lift_log[log_key(r["path"])]["moved"]]
+    print(f"  frame check: {both} refused piece(s) the log records refused "
+          f"too, {len(tool_only)} with no refusal record, {len(log_only)} the "
+          f"log records ONLY as refused that the written file passes")
+    for p in (tool_only + log_only)[:top]:
+        print(f"    {p}")
 
 
 def main(argv=None):
@@ -772,14 +956,21 @@ def main(argv=None):
               "weight-1 UBE body build (--body)")
         return 2
     print(f"skeleton: {skel_p}")
-    skel = load_skeleton(skel_p)
     from scripts.analysis.canonical_body import weight_sibling
-    bodies, controls = {"_1": Body.load(body_p, skel)}, {}
     try:
-        bodies["_0"] = Body.load(weight_sibling(body_p, "_0"), skel)
-    except (FileNotFoundError, ValueError) as e:
-        print(f"  no weight-0 body: {e}")
-        bodies["_0"] = None
+        skel = load_skeleton(skel_p)
+        bodies = {"_1": Body.load(body_p, skel)}
+        try:                         # no sibling: weight 0 goes unmeasured
+            w0 = weight_sibling(body_p, "_0")
+        except (FileNotFoundError, ValueError) as e:
+            print(f"  no weight-0 body: {e}")
+            w0 = None
+        bodies["_0"] = Body.load(w0, skel) if w0 is not None else None
+    except Exception as e:           # an unreadable or unusable input file
+        print(f"cannot use the skeleton or body: {type(e).__name__}: "
+              f"{str(e).splitlines()[0] if str(e) else ''}")
+        return 2
+    controls = {}
     for w, b in bodies.items():
         if b is not None:
             ok, err, thin = b.control()
@@ -789,14 +980,36 @@ def main(argv=None):
         nifs = nifs[:a.limit]
     rows, skip = scan(nifs, root, skel, bodies)
     log = read_lift_log(a.lift_log) if a.lift_log else None
-    rc = report(rows, skip, len(nifs), bodies, controls, log, a.top)
-    if a.json:
-        with open(a.json, "w", encoding="utf-8", newline="\n") as f:
-            json.dump({"rows": rows, "skip": dict(skip),
-                       "body": {w: str(b.path) if b else None
-                                for w, b in bodies.items()},
-                       "skeleton": str(skel_p)}, f, indent=1)
+    rc = 3
+    try:
+        rc = report(rows, skip, len(nifs), bodies, controls, log, a.top)
+    finally:
+        if a.json:
+            write_json(a.json, rows, skip, bodies, controls, skel_p, rc)
     return rc
+
+
+def write_json(path, rows, skip, bodies, controls, skel_p, rc):
+    """The run as JSON. Depth rows are written only when every control
+    passed and the report ran to its end (exit 0): otherwise "status" says
+    why and "rows" is empty, so a reader of the file alone cannot take
+    depths the controls rejected for measurements."""
+    failed = any(not c[0] for c in controls.values())
+    status = ("controls FAILED" if failed else
+              "ok" if rc == 0 else "nothing measured")
+    with open(path, "w", encoding="utf-8", newline="\n") as f:
+        json.dump({"status": status,
+                   "controls": {w: {"ok": bool(ok), "offset_error": err,
+                                    "thin_share": thin,
+                                    "skinned_vs_stored": frame,
+                                    "winding_inverted": bool(flipped)}
+                                for w, (ok, err, thin, frame, flipped)
+                                in controls.items()},
+                   "rows": rows if status == "ok" else [],
+                   "skip": dict(skip),
+                   "body": {w: str(b.path) if b else None
+                            for w, b in bodies.items()},
+                   "skeleton": str(skel_p)}, f, indent=1)
 
 
 if __name__ == "__main__":

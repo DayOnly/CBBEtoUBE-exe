@@ -1106,9 +1106,9 @@ planes), and 26 / 13 have a simulated shape that reaches no kinematic shape at
 all. Every one is constrained; the unconstrained crash pair stays 0. Stored
 cloth vertices inside the body: 66 of 86 -> 76 of 96 measurable (189 with no
 injected body). `physics_rest_depth.py` reads this population, so it now
-measures the 38 as well (243 -> 281 measured); two of those garments (four
-NIFs) rest more than 0.5u inside, both past 1.5u on a few vertices, and no
-earlier row moved.
+measures the 38 as well (243 -> 281 measured, 277 once its frame gate lists 4
+more apart, below); two of those garments (four NIFs) rest more than 0.5u
+inside, both past 1.5u on a few vertices, and no earlier row moved.
 
 Numbers from before 2026-09-25 are not comparable with these, and neither are
 the first 09-25 version's, which took every per-vertex shape for cloth and
@@ -1164,24 +1164,65 @@ position.
   read +0.5 / -0.5 (median error 0.0009u). 12.4% of the body's vertices sit in
   features thinner than the push, almost all on the genital midline slit, and
   are left out of that check; cloth there reads unreliably.
-- **The lift, read from the file.** Each moving bone's rest position minus its
-  bind position. A lift translates one root, so bones that moved by one vector
-  are grouped under the node that was moved; that group's vector is the lift.
-  The run's `standoff_audit.jsonl` is a cross-check only: it appends across
-  runs.
-- **Frame disagreement.** Cloth resting more than the lift cap + 0.5u (2.5u)
-  from where it was skinned is nothing a pass does, so the model is in
-  question there: those pieces are listed apart with both depths, not ranked.
+- **The lift, read from the file.** Each ARMOUR bone with skin, moving or
+  kinematic (the converter lifts a chain root whether or not the XML simulates
+  the chain), and each moving skeleton bone: its rest position minus its bind
+  position, bones that moved by one vector grouped. A LIFT is exactly what the
+  pass does: one rigid translation of a node the converter lifts (a garment
+  node hanging off a skeleton-named one, `_chain_root_subtrees`' rule), every
+  skinned bone below it moved by the same vector, of 0.05u up to the 2.0u
+  cap. An offset that grows along a chain, flips sign, or passes the cap is
+  the node tree disagreeing with the skin; it is counted apart and never
+  called a lift. The run's `standoff_audit.jsonl` is a cross-check only: it
+  appends across runs.
+- **Listed apart, not ranked** (both depths shown). A file the converter's own
+  frame check refuses: the tool runs `_chain_frame_ok` itself, with its 0.5u
+  tolerance, on the chain bones' node-tree positions (every skin bone but a
+  hard skeleton bone the actor's skeleton has -- a garment or soft-body bone
+  the skeleton carries is checked at the skeleton's node, where the game puts
+  it; the lift read back under a bone taken off again) against the skin. The
+  written file's skeleton nodes are flat, so its own global-to-skin is not the
+  frame the converter checked in; the skin is read in the bind frame the depth
+  uses. The converter lifts nothing on a file it refuses, so such a file
+  carries no lift. And cloth resting more than the lift cap + 0.5u (2.5u) from
+  where it was skinned: no pass does that (hard skeleton-named cloth bones,
+  which the check does not cover), so the model is in question there.
+- **Bone-moved cloth** (the census's rows with no simulated collision shape) is
+  measured and ranked like the rest, and marked.
+- **Inputs and output.** An unreadable or unusable body or skeleton exits 2
+  with one line. `--json` always records the status and the controls, and
+  carries depth rows only when every control passed.
 
-Measured on the 09-24 pack, read-only: 243 pieces (122 garments) with simulated
-cloth measured, 4 (2 garments) listed apart as frame disagreements. Visible
-cloth deeper than 0.5u at rest: 77 pieces / 39 garments; deeper than 1.5u: 33 /
-18. Hidden helpers: 29 / 16 and 7 / 4. 193 pieces carry a lifted chain (1077
-chains, median 1.04u, 148 at the 2.0u cap); the log names the same chains on
-177 of them. Against the first reading (stored vertices), the depth at the bind
-position reproduces it, so the change is the node tree: of the 7 garments first
-reported deeper than 1.5u, 4 are not at rest (one drops from 2.05u to 0.91u),
-and one of the 14 reported deeper than 0.5u rests clear (1.38u to 0.01u).
+Measured on the 09-24 pack, read-only: 285 pieces with simulated cloth, 277
+(139 garments) ranked and 8 (4 garments) listed apart, all 8 refused by the
+converter's frame check (worst 5.00u, 2.40u and 0.77u: the pieces and worst
+readings the run log records refused), 4 of them also with cloth resting
+4.00u and 4.28u off its skin. 38 / 19 of the ranked are bone-moved cloth.
+Visible cloth deeper
+than 0.5u at rest: 81 pieces / 41 garments; deeper than 1.5u: 37 / 20 (the
+bone-moved: 4 / 2, both past 1.5u). Hidden helpers: 29 / 16 and 7 / 4.
+
+What `#chain-rest-lift` did: 205 pieces (103 garments) carry a lift, 989
+chains, median 0.94u, 130 at the 2.0u cap. On the earlier 243-piece population
+that is 187 pieces and 959 chains (126 at the cap). The first reading there
+said 193 pieces, 1077 chains, median 1.04u, 148 at the cap: it took any bone
+off its bind for a lift, which added 136 node-tree disagreements on 6 of the
+refused pieces (every reading past the cap among them), and it missed 18
+lifts on 10 pieces whose lifted chain is kinematic. Log cross-check: the log
+names exactly the lifted chains on all 205 pieces (magnitudes within 0.0001u)
+and has no lift the files lack. It records refused all 8 pieces the tool
+refuses, and 2 more (1 garment) that the written file passes: there the
+converter's check read the source's body-helper shape, whose genital bones sat
+4.15u off its own copies of them; in the written file a shape of that name is
+the body, which the tool leaves out, and the 15 garment bones agree with their
+skin (0.00u). The file carries no lift.
+
+Against the first reading (stored vertices), the depth at the bind position
+reproduces it, so the change is the node tree: of the 7 garments first
+reported deeper than 1.5u, 4 now read below 1.5u -- two clear it well (2.05u to
+0.91u, 1.50u to 0.86u) and two only drop below the line and still rest 1.30u
+and 1.39u inside -- and one of the 14 reported deeper than 0.5u rests clear
+(1.38u to 0.01u).
 
 ### Custom physics-bone chains
 

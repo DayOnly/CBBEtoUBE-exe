@@ -73,7 +73,8 @@ with goes from 190 pieces (95 outfits) to 134 (67), of which 38 are the new
 pieces, 60 reach an unnamed collider on the body's bones, 10 reach only a
 ground plane and 26 have a shape that reaches no still shape at all. The
 rest-depth tool reads the same population and now measures 281 pieces instead
-of 243; two of the new outfits rest partly inside the body. Guarded by
+of 243 (277 ranked once it lists apart the pieces the converter refuses, see
+below); two of the new outfits rest partly inside the body. Guarded by
 `tests/test_physics_cloth_health.py` and mutation pairs `PCH-ze`..`PCH-zo`
 (`PCH-p` and `PCH-za` re-anchored). No converter behaviour changes.
 
@@ -95,10 +96,37 @@ weight. It says, per piece, how deep the visible cloth sits inside the body
 and by how much, and it refuses to report if its checks on the body fail. On
 the reported pack: 243 pieces with physics cloth, of which 77 (39 outfits) have
 visible cloth more than 0.5 units inside the body at rest and 33 (18 outfits)
-more than 1.5 units; the fix moved chains on 193 pieces. Of the 7 outfits first
-reported more than 1.5 units inside, 4 are not. The census's own depth row now
-says it reads stored positions. Guarded by `tests/test_physics_rest_depth.py`
-and mutation pairs `PRD-a`..`PRD-r`. No converter behaviour changes.
+more than 1.5 units; the fix moved chains on 187 pieces (first published as
+193, see the next entry). Of the 7 outfits first reported more than 1.5 units
+inside, 4 now read below that line, but two of those still rest 1.3 and 1.4
+units inside. The census's own depth row now says it reads stored positions.
+Guarded by `tests/test_physics_rest_depth.py` and mutation pairs
+`PRD-a`..`PRD-r`. No converter behaviour changes.
+
+### Development only — the rest-depth tool reports only real skirt lifts, and on every chain
+
+The rest-depth tool also says which skirt chains the converter's lift fix
+moved. It took any bone resting off where its skin was bound for a moved
+chain, so on pieces whose bone layout simply disagrees with their skin it
+reported lifts the fix never made (and the converter had refused to touch
+those very pieces), some of them larger than the fix is allowed to move
+anything. It also missed lifts on chains the physics file does not animate.
+A lift is now only what the fix does: the whole chain below its top bone moved
+together, by no more than the fix's limit; anything else is reported as the
+bones disagreeing with the skin. A piece the converter's own check would
+refuse is listed apart instead of ranked, the pieces moved by bones alone are
+marked in the ranking, a body or skeleton file it cannot use stops it with a
+one-line message, and its JSON output says whether the body checks passed and
+carries no depths when they did not.
+
+On the reported pack: 285 pieces with physics cloth, 277 ranked (38 of them
+moved by bones alone) and 8 listed apart, all refused by the converter too. The
+fix moved 989 chains on 205 pieces (103 outfits), half of them by more than
+0.94 units and 130 by the full 2 units; the first version reported 1077 chains
+on 193 pieces. The run log agrees chain for chain on all 205. Visible cloth
+more than 0.5 units inside the body at rest: 81 pieces (41 outfits); more than
+1.5 units: 37 (20). Guarded by `tests/test_physics_rest_depth.py` and mutation
+pairs `PRD-s`..`PRD-ze` (`PRD-i` re-anchored). No converter behaviour changes.
 
 ### Changed — whether you can wear an item is read from the plugin the game uses
 

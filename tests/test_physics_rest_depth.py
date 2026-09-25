@@ -279,6 +279,160 @@ def test_the_lift_is_read_back_under_the_node_it_moved():
     # 4u inside at bind, 3u after the lift pulls it 1u back
     assert rec["bind"]["max"] == pytest.approx(4.0, abs=0.05)
     assert rec["rest"]["max"] == pytest.approx(3.0, abs=0.05)
+    # The converter's frame check passes once the lift is taken off again.
+    assert rec["frame_check"]["ok"] and rec["frame_check"]["checked"] == 1
+    assert not rec["frame_refused"] and not rec["disagree"]
+
+
+# ------------------------------------------- what a lift is, and what is not
+
+def _vest(offsets, lift_top=(0.0, 0.0, 0.0), dynamic=("vest_00",)):
+    """Scene Root > pelvis > Vest_00 (no skin) > Vest_01 > ... Each Vest_k is
+    bound 10k u below Vest_00; its node rests `offsets[k-1]` further back
+    (-y) than that, the node tree disagreeing with the skin by a growing or
+    flipping amount. `lift_top` is added to Vest_00, as a lift would be."""
+    root = _Node("Scene Root")
+    pelvis = _Node(PELVIS, parent=root)
+    top = _Node("Vest_00", _t(lift_top[0], -5.0 + lift_top[1], lift_top[2]),
+                parent=pelvis)
+    nodes, stb, weights, verts = [root, pelvis, top], {PELVIS: _t(z=-60.0)}, {}, []
+    prev, parent = 0.0, top
+    for k, d in enumerate(offsets, 1):
+        n = _Node(f"Vest_{k:02d}", _t(y=-(d - prev), z=-10.0), parent=parent)
+        nodes.append(n)
+        stb[n.name] = _t(y=5.0, z=-(60.0 - 10.0 * k))
+        weights[n.name] = [(k - 1, 1.0)]
+        verts.append((0.0, -5.0, 60.0 - 10.0 * k))
+        prev, parent = d, n
+    shape = _Shape("Vest", verts, weights, stb)
+    return _Nif(nodes, [shape]), {"dynamic_bones": set(dynamic),
+                                  "shapes": [{"name": "Vest"}]}
+
+
+def test_an_offset_growing_along_a_chain_is_no_lift():
+    """0.8, 1.4, 2.0, 2.4 down one chain is the node tree disagreeing with
+    the skin more at every link: a lift moves a whole subtree by one vector.
+    The converter's own frame check refuses the file, so it is listed apart."""
+    rec, _r = prd.measure(*_vest((0.8, 1.4, 2.0, 2.4)), SKEL, _body())
+    assert rec["lifted"] == {}
+    assert sorted(rec["disagree"]) == ["vest_01", "vest_02", "vest_03",
+                                       "vest_04"]
+    assert rec["frame_check"]["worst"] == pytest.approx(2.4)
+    assert rec["frame_refused"] and rec["frame_disagrees"]
+    assert not rec["far_from_bind"]          # 2.4u: under FRAME_MAX_U alone
+
+
+def test_a_small_growing_offset_is_disagreement_not_a_lift():
+    """The same shape inside the converter's tolerance: the file is ranked,
+    and still no link of it is a lift -- not even the last, which alone has
+    nothing below it."""
+    rec, _r = prd.measure(*_vest((0.1, 0.25, 0.4)), SKEL, _body())
+    assert not rec["frame_disagrees"]
+    assert rec["lifted"] == {}
+    assert sorted(rec["disagree"]) == ["vest_01", "vest_02", "vest_03"]
+
+
+@pytest.mark.parametrize("amp", [1.0, 0.15])
+def test_an_offset_flipping_sign_along_a_chain_is_no_lift(amp):
+    rec, _r = prd.measure(*_vest((2.5 * amp, 0.0, -2.0 * amp)), SKEL,
+                          _body())
+    assert rec["lifted"] == {}
+    assert sorted(rec["disagree"]) == ["vest_01", "vest_03"]
+    assert rec["frame_refused"] is (amp == 1.0)
+
+
+def test_a_lift_on_a_kinematic_chain_is_read_back():
+    """#chain-rest-lift moves a chain root whether or not the XML simulates
+    the chain: here only the belt has mass, and the lifted skirt is kinematic."""
+    belt = _Shape("Belt", [(0.0, -5.0, 50.0)], {"Belt_01": [(0, 1.0)]}, STB)
+    nif, _row = _piece(lift=(0.0, -0.9, 0.0), extra=[belt])
+    row = {"dynamic_bones": {"belt_01"}, "shapes": [{"name": "Belt"}]}
+    rec, reason = prd.measure(nif, row, SKEL, _body())
+    assert reason is None
+    assert [s["name"] for s in rec["shapes"]] == ["Belt"]
+    assert list(rec["lifted"]) == ["skirt_00"]
+    assert rec["lifted"]["skirt_00"]["lift"] == pytest.approx(0.9)
+    assert not rec["frame_refused"]
+
+
+def test_a_lift_is_one_translation_of_the_whole_chain_at_its_root():
+    """The whole Vest chain moved by one vector from its root: one lift,
+    named at the node the converter lifts, and nothing left disagreeing."""
+    rec, _r = prd.measure(*_vest((0.0, 0.0, 0.0), lift_top=(0.0, -1.5, 0.0)),
+                          SKEL, _body())
+    assert list(rec["lifted"]) == ["vest_00"]
+    assert rec["lifted"]["vest_00"]["bones"] == 3
+    assert rec["lifted"]["vest_00"]["lift"] == pytest.approx(1.5)
+    assert rec["disagree"] == {} and not rec["frame_refused"]
+
+
+def test_the_frame_check_is_the_converters_tolerance():
+    """One link 0.4u off its skin passes the converter's check (0.5u) and is
+    ranked, its offset counted as disagreement; 0.6u is refused."""
+    near, _r = prd.measure(*_vest((0.0, 0.4, 0.4)), SKEL, _body())
+    far, _r = prd.measure(*_vest((0.0, 0.6, 0.6)), SKEL, _body())
+    assert near["frame_check"]["ok"] and not near["frame_disagrees"]
+    assert list(near["disagree"]) == ["vest_02"] and near["lifted"] == {}
+    assert far["frame_refused"] and far["frame_disagrees"]
+
+
+def test_a_garment_bone_the_skeleton_carries_is_still_checked():
+    """A skirt bone that the actor's skeleton happens to carry is placed by
+    the skeleton in game, and the converter's check covers it (its name is no
+    skeleton bone's): 3u off its skin, the file is refused. A hard skeleton
+    bone is not a chain bone and is left to the far-from-bind rule."""
+    for name, refused in (("SkirtBone01", True), ("NPC Cape", False)):
+        skel = dict(SKEL, **{pch._key(name): _t(y=-8.0, z=50.0)})
+        shape = _Shape("Cape", [(0.0, -5.0, 50.0)], {name: [(0, 1.0)]},
+                       {name: _t(y=5.0, z=-50.0)})
+        row = {"dynamic_bones": {pch._key(name)}, "shapes": [{"name": "Cape"}]}
+        rec, _r = prd.measure(_Nif(_rig(), [shape]), row, skel, _body())
+        assert rec["frame_refused"] is refused, name
+        assert rec["frame_check"]["checked"] == int(refused)
+        assert rec["far_from_bind"] and rec["frame_disagrees"]
+
+
+def test_a_file_the_converter_refuses_carries_no_lift():
+    """The converter refuses the whole file or lifts nothing on it: a chain
+    that looks lifted on a file whose other chain disagrees past the
+    tolerance is no lift."""
+    nif, row = _vest((0.0, 0.0, 0.0), lift_top=(0.0, -1.0, 0.0))
+    # A second chain: Tail_00 on its skin, Tail_01 resting 1u off its own.
+    t00 = _Node("Tail_00", _t(y=-5.0), parent=nif.nodes[PELVIS])
+    t01 = _Node("Tail_01", _t(y=-1.0, z=-10.0), parent=t00)
+    nif.nodes.update({n.name: n for n in (t00, t01)})
+    nif.shapes.append(_Shape(
+        "Tail", [(0.0, -5.0, 60.0), (0.0, -5.0, 50.0)],
+        {"Tail_00": [(0, 1.0)], "Tail_01": [(1, 1.0)]},
+        {"Tail_00": _t(y=5.0, z=-60.0), "Tail_01": _t(y=5.0, z=-50.0)}))
+    rec, _r = prd.measure(nif, row, SKEL, _body())
+    assert rec["frame_refused"]
+    assert rec["lifted"] == {}
+    assert {"vest_00", "tail_01"} <= set(rec["disagree"])
+
+
+def test_the_files_own_global_to_skin_is_not_the_frame_checked():
+    """The written file's skeleton nodes are flat, so its global-to-skin is
+    not the frame the converter checked in: the check reads the skin in the
+    bind frame the depth uses (here from the pelvis), and a sound lifted
+    piece passes it."""
+    nodes = _rig(lift=(0.0, -1.0, 0.0))
+    shape = _Shape("Skirt", [V, (0.0, 0.0, 50.0)],
+                   {"Skirt_01": [(0, 1.0)], PELVIS: [(1, 1.0)]}, STB)
+    shape.global_to_skin = _TB(_t(z=-60.0))
+    row = {"dynamic_bones": {"skirt_00"}, "shapes": [{"name": "Skirt"}]}
+    rec, _r = prd.measure(_Nif(nodes, [shape]), row, SKEL, _body())
+    assert not rec["frame_refused"] and list(rec["lifted"]) == ["skirt_00"]
+
+
+def test_a_piece_moved_by_bones_alone_is_measured_and_marked():
+    nif, row = _piece()
+    rec, _r = prd.measure(nif, dict(row, cloth=[], moved=["skirt"]), SKEL,
+                          _body())
+    assert rec["bone_driven"] and rec["rest"]["n"] == 1
+    plain, _r = prd.measure(nif, dict(row, cloth=[{"name": "Skirt"}]), SKEL,
+                            _body())
+    assert not plain["bone_driven"]
 
 
 def test_two_sub_chains_lifted_differently_are_two_lifts():
@@ -300,10 +454,25 @@ def test_two_sub_chains_lifted_differently_are_two_lifts():
 
 
 def test_cloth_moved_further_than_any_lift_is_a_frame_disagreement():
+    """A 2u root translation is a capped lift. 3u is past the cap: no lift,
+    and the converter's check refuses it. A skeleton-named cloth bone the
+    actor's skeleton places 3u off the skin is out of the check's reach
+    (the game takes that node from the skeleton), and is listed apart as
+    cloth resting further from its bind than any lift moves it."""
     ok, _r = prd.measure(*_piece(lift=(0.0, -2.0, 0.0)), SKEL, _body())
-    far, _r = prd.measure(*_piece(lift=(0.0, -3.0, 0.0)), SKEL, _body())
-    assert not ok["frame_disagrees"]
-    assert far["frame_disagrees"]
+    past, _r = prd.measure(*_piece(lift=(0.0, -3.0, 0.0)), SKEL, _body())
+    assert not ok["frame_disagrees"] and list(ok["lifted"]) == ["skirt_00"]
+    assert past["frame_disagrees"] and past["lifted"] == {}
+    assert past["frame_refused"] and list(past["disagree"]) == ["skirt_00"]
+    cape = "NPC Cape"
+    skel = dict(SKEL, **{pch._key(cape): _t(y=-8.0, z=50.0)})
+    shape = _Shape("Cape", [(0.0, -5.0, 50.0)], {cape: [(0, 1.0)]},
+                   {cape: _t(y=5.0, z=-50.0)})
+    row = {"dynamic_bones": {pch._key(cape)}, "shapes": [{"name": "Cape"}]}
+    far, _r = prd.measure(_Nif(_rig(), [shape]), row, skel, _body())
+    assert far["max_move"] == pytest.approx(3.0)
+    assert far["frame_check"]["checked"] == 0 and not far["frame_refused"]
+    assert far["far_from_bind"] and far["frame_disagrees"]
 
 
 def test_each_weight_is_measured_against_its_own_body(tmp_path, monkeypatch):
@@ -386,3 +555,74 @@ def test_the_lift_log_is_read_by_the_sinks_path(tmp_path):
     assert dict(ent["moved"]) == {"Skirt 1_00": {0.9}}
     assert sum(ent["skipped"].values()) == 1
     assert len(got) == 1
+
+
+def test_a_refused_piece_is_listed_apart_not_ranked(capsys):
+    good, _r = prd.measure(*_piece(lift=(0.0, -1.0, 0.0)), SKEL, _body())
+    bad, _r = prd.measure(*_vest((0.8, 1.4, 2.0, 2.4)), SKEL, _body())
+    good.update(path="a/skirt_1.nif", garment="a/skirt", weight="_1")
+    bad.update(path="b/vest_1.nif", garment="b/vest", weight="_1")
+    rc = prd.report([good, bad], Counter(), 2, {"_1": _body()},
+                    {"_1": (True, 0.0, 0.0, 0.0, False)})
+    out = capsys.readouterr().out
+    assert rc == 0
+    ranked, apart = out.split("\nFRAME DISAGREEMENT (not ranked")
+    assert "a/skirt_1.nif" in ranked and "b/vest_1.nif" not in ranked
+    assert "refused" in apart and "b/vest_1.nif" in apart
+
+
+# ------------------------------------------------------------ inputs + json
+
+def _main_inputs(tmp_path):
+    meshes = tmp_path / "meshes"
+    meshes.mkdir()
+    return meshes
+
+
+def test_an_unreadable_skeleton_or_body_exits_2(tmp_path, capsys):
+    meshes = _main_inputs(tmp_path)
+    junk = tmp_path / "junk_1.nif"
+    junk.write_bytes(b"garbage")
+    assert prd.main([str(meshes), "--body", str(junk),
+                     "--skeleton", str(junk)]) == 2
+    assert "cannot use the skeleton or body" in capsys.readouterr().out
+
+
+def test_a_body_the_skeleton_cannot_place_exits_2(tmp_path, monkeypatch,
+                                                  capsys):
+    """A real NIF whose body shape has no skin the skeleton resolves: the
+    loader raises, and the tool says so in one line with exit 2."""
+    from tests.synthetic_nif import build_shape_nif, pynifly_available
+    if not pynifly_available():
+        pytest.skip("pynifly not available")
+    meshes = _main_inputs(tmp_path)
+    body = build_shape_nif(tmp_path / "body_1.nif")
+    monkeypatch.setattr(prd, "load_skeleton", lambda p: dict(SKEL))
+    assert prd.main([str(meshes), "--body", str(body),
+                     "--skeleton", str(body)]) == 2
+    out = capsys.readouterr().out
+    assert "ValueError" in out and "Traceback" not in out
+
+
+@pytest.mark.parametrize("sound", [True, False])
+def test_the_json_carries_depths_only_when_the_controls_pass(
+        tmp_path, monkeypatch, sound):
+    meshes = _main_inputs(tmp_path)
+    body_p = tmp_path / "body_1.nif"
+    body_p.write_bytes(b"nif")
+    rec, _r = prd.measure(*_piece(), SKEL, _body())
+    rec.update(path="a/skirt_1.nif", garment="a/skirt", weight="_1")
+    body = _body() if sound else _body(inside=((0.0, 0.0, 70.0),))
+    monkeypatch.setattr(prd, "load_skeleton", lambda p: dict(SKEL))
+    monkeypatch.setattr(prd.Body, "load", classmethod(lambda cls, p, s: body))
+    monkeypatch.setattr(prd, "scan", lambda *a, **k: ([rec], Counter()))
+    out = tmp_path / "out.json"
+    rc = prd.main([str(meshes), "--body", str(body_p), "--skeleton",
+                   str(body_p), "--json", str(out)])
+    got = json.loads(out.read_text(encoding="utf-8"))
+    assert got["controls"]["_1"]["ok"] is sound
+    if sound:
+        assert rc == 0 and got["status"] == "ok" and len(got["rows"]) == 1
+    else:
+        assert rc == 3 and got["status"] == "controls FAILED"
+        assert got["rows"] == []
