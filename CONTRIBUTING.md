@@ -144,6 +144,15 @@ machine. Run it before you push; CI runs the same command on `windows-latest`.
 Capture the exit code directly -- piping pytest into anything reports the pipe's
 status, not pytest's own.
 
+The mutation gate (`python scripts/mutation_gate.py run`, described in
+[docs/RELEASING.md](docs/RELEASING.md)) is far slower: every seeded pair runs its
+tests once more. `--only ID ...` judges the pairs your change added or moved;
+`--jobs N` splits a full run into N shards judged at once, each in its own
+worktree. Each shard is a pytest process of its own and commits the ~1.5 GB BLAS
+arena, so N shards need about N x 1.5 GB of commit charge on top of everything
+else the machine runs -- a Windows "out of memory" there is the page file, not
+the working set.
+
 Rebuilding the tracked `dist/` bundle and pushing have an order that the release
 gate enforces; [docs/RELEASING.md](docs/RELEASING.md) says what it is and why.
 

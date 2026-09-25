@@ -58,6 +58,26 @@ per release, after the last source commit and before the rebuild, and from the
 mutation-gate workflow on demand. `tests/test_mutation_gate.py`
 keeps every anchor and test id current between releases.
 
+    python scripts/mutation_gate.py run --jobs 6
+
+`--jobs N` runs the same gate as N shards at once: pair i goes to shard i mod N,
+each shard is a child process with its own fresh worktree and its own baseline
+and control-after (a control run in another worktree cannot vouch for this
+one), and the shards' rows come back as one report in the usual order with one
+verdict. The verdict is FAIL when a shard crashed or failed a control (the
+report names the shard and ends with its log), when a pair was judged by no
+shard or by two, or when any pair was MISSED or NOT_APPLIED; `--jobs 1`, the
+default, is the single run above, unchanged. Every worktree is removed on
+success, failure and Ctrl+C. The price is memory: each shard runs pytest, and
+every pytest process that imports the converter commits the ~1.5 GB BLAS arena,
+so six shards commit about 9 GB at once -- check the page file before raising N
+(`CONTRIBUTING.md`). MEASURED 2026-09-24 with the same split made by hand: 674
+pairs in 6 shards took 1098 s, against about 2650 s in one run. MEASURED
+2026-09-25 with `--jobs 6`: 769 pairs, all CAUGHT, in 3549 s on a machine held
+at 100% CPU by other work; the six shards spent about 20,500 s between them, a
+third of it in their own baselines and controls, because round-robin gives
+every shard nearly every test file.
+
 ## The golden check, on the maintainer machine
 
     set CBBE2UBE_MO2_INI=<instance>\ModOrganizer.ini

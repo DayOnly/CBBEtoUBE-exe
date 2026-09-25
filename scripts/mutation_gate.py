@@ -16,7 +16,7 @@
 
 """Mutation gate: prove that the guards can fail. #mutation-gate
 
-    python scripts/mutation_gate.py run [--only ID ...] [--json OUT] [--keep]
+    python scripts/mutation_gate.py run [--only ID ...] [--json OUT] [--keep] [--jobs N]
     python scripts/mutation_gate.py list
 
 Every guard in this repository was proven by hand with a throwaway driver, and
@@ -43,7 +43,21 @@ Exit codes: 0 every judged pair CAUGHT; 1 a pair MISSED or NOT_APPLIED, or a
 control run failed; 2 the gate could not run (no git, no worktree, the target
 is the checkout). Run it before tagging (docs/RELEASING.md) and from the
 mutation-gate workflow on demand; it is not a per-push job. MEASURED on the
-release machine, 2026-09-16: 40 pairs in 879 s, of which the 21-file baseline (449 tests) and its repeat after the last pair took 79 s and 74 s."""
+release machine, 2026-09-16: 40 pairs in 879 s, of which the 21-file baseline (449 tests) and its repeat after the last pair took 79 s and 74 s.
+
+`--jobs N` (default 1, the run above unchanged) splits the pairs into N
+disjoint shards -- pair i to shard i mod N, in seed order -- and judges each in
+its OWN fresh worktree, in a child process of its own, all at once. Each shard
+keeps its own baseline and control-after: those controls say "THIS worktree
+was green before its first pair and after its last", and a control run in some
+other worktree cannot vouch for that. The shards' rows come back as one report
+in the usual order, every selected pair exactly once, and one verdict: FAIL
+when any shard crashed, could not run or failed a control (named), when a pair
+was judged by no shard or by two, or when any pair was MISSED or NOT_APPLIED.
+Every worktree is removed on success, failure and Ctrl+C (the parent kills the
+shards' process trees first). Each shard is a pytest process of its own, with
+the ~1.5 GB BLAS arena every converter test process commits: N shards commit
+about N x 1.5 GB at once. An interrupted run exits 2, with no verdict."""
 from __future__ import annotations
 
 import argparse
@@ -243,12 +257,9 @@ def _row_line(row: dict) -> str:
     return line
 
 
-def run_gate(repo=REPO, pairs=None, *, only=None, worktree_dir=None, keep=False,
-             log=print) -> dict:
-    """Apply every pair in a fresh worktree and judge each. Returns the report;
-    raises GateError when nothing could be judged at all."""
-    repo = Path(repo)
-    pairs = list(_seeded_pairs() if pairs is None else pairs)
+def _select(pairs, only) -> list:
+    """The pairs to run, in seed order; refuses nothing, duplicates, unknown ids."""
+    pairs = list(pairs)
     if only:
         wanted = set(only)
         pairs = [p for p in pairs if p.id in wanted]
@@ -259,44 +270,20 @@ def run_gate(repo=REPO, pairs=None, *, only=None, worktree_dir=None, keep=False,
         raise GateError("pair ids are not unique: " + ", ".join(sorted({i for i in ids if ids.count(i) > 1})))
     if not pairs:
         raise GateError("no pairs to run -- a gate over nothing proves nothing")
+    return pairs
+
+
+def run_gate(repo=REPO, pairs=None, *, only=None, worktree_dir=None, keep=False,
+             log=print) -> dict:
+    """Apply every pair in a fresh worktree and judge each. Returns the report;
+    raises GateError when nothing could be judged at all."""
+    repo = Path(repo)
+    pairs = _select(_seeded_pairs() if pairs is None else pairs, only)
     tree = make_worktree(repo, worktree_dir)
     report: dict = {"worktree": str(tree), "pairs": [], "verdict": None}
     t_all = time.perf_counter()
     try:
-        files = sorted({f for p in pairs for f in p.tests})
-        base = run_tests(tree, files)
-        report["baseline"] = base
-        log(f"baseline: rc={base['rc']} {base['summary']} ({base['seconds']} s, {len(files)} file(s))")
-        if base["rc"] != 0:
-            report["verdict"] = "FAIL"
-            report["reason"] = "the baseline is not green, so nothing can be judged"
-            log("CONTROL FAILED -- " + report["reason"])
-            return report
-        for pair in pairs:
-            row: dict = {"id": pair.id, "why": pair.why}
-            lacking = unmet_needs(pair)
-            reason = check_anchors(tree, pair)
-            if lacking:
-                row.update(status=NOT_JUDGED, needs=lacking, seconds=0.0, failing=[])
-            elif reason:
-                row.update(status=NOT_APPLIED, reason=reason, seconds=0.0, failing=[])
-            else:
-                apply_pair(tree, pair)
-                try:
-                    res = run_tests(tree, pair.tests)
-                finally:
-                    restore(tree, pair)
-                missing = sorted(t for t in pair.expect if t not in res["failing"])
-                caught = res["rc"] != 0 and not missing
-                row.update(status=CAUGHT if caught else MISSED, seconds=res["seconds"],
-                           summary=res["summary"], failing=res["failing"], missing=missing)
-            report["pairs"].append(row)
-            log(_row_line(row))
-        after = run_tests(tree, files)
-        report["control_after"] = after
-        log(f"control after: rc={after['rc']} {after['summary']} ({after['seconds']} s)")
-        bad = [r for r in report["pairs"] if r["status"] in (MISSED, NOT_APPLIED)]
-        report["verdict"] = "PASS" if not bad and after["rc"] == 0 else "FAIL"
+        judge(tree, pairs, report, log)
         return report
     finally:
         report["seconds"] = round(time.perf_counter() - t_all, 1)
@@ -304,6 +291,323 @@ def run_gate(repo=REPO, pairs=None, *, only=None, worktree_dir=None, keep=False,
             log(f"worktree kept at {tree}")
         else:
             drop_worktree(repo, tree)
+
+
+def judge(tree, pairs, report: dict, log=print) -> None:
+    """The controls and every pair, in `tree`, into `report` (its "pairs" list,
+    "baseline", "control_after", "verdict" and, on a red baseline, "reason")."""
+    files = sorted({f for p in pairs for f in p.tests})
+    base = run_tests(tree, files)
+    report["baseline"] = base
+    log(f"baseline: rc={base['rc']} {base['summary']} ({base['seconds']} s, {len(files)} file(s))")
+    if base["rc"] != 0:
+        report["verdict"] = "FAIL"
+        report["reason"] = "the baseline is not green, so nothing can be judged"
+        log("CONTROL FAILED -- " + report["reason"])
+        return
+    for pair in pairs:
+        row: dict = {"id": pair.id, "why": pair.why}
+        lacking = unmet_needs(pair)
+        reason = check_anchors(tree, pair)
+        if lacking:
+            row.update(status=NOT_JUDGED, needs=lacking, seconds=0.0, failing=[])
+        elif reason:
+            row.update(status=NOT_APPLIED, reason=reason, seconds=0.0, failing=[])
+        else:
+            apply_pair(tree, pair)
+            try:
+                res = run_tests(tree, pair.tests)
+            finally:
+                restore(tree, pair)
+            missing = sorted(t for t in pair.expect if t not in res["failing"])
+            caught = res["rc"] != 0 and not missing
+            row.update(status=CAUGHT if caught else MISSED, seconds=res["seconds"],
+                       summary=res["summary"], failing=res["failing"], missing=missing)
+        report["pairs"].append(row)
+        log(_row_line(row))
+    after = run_tests(tree, files)
+    report["control_after"] = after
+    log(f"control after: rc={after['rc']} {after['summary']} ({after['seconds']} s)")
+    bad = [r for r in report["pairs"] if r["status"] in (MISSED, NOT_APPLIED)]
+    report["verdict"] = "PASS" if not bad and after["rc"] == 0 else "FAIL"
+
+
+# --------------------------------------------------------------- --jobs N
+
+def shard_pairs(pairs, jobs: int) -> list:
+    """Pair i to shard i mod `jobs`, in seed order: deterministic, disjoint,
+    complete. The pairs carry no recorded durations, and the seed lists each
+    guard's pairs side by side (one test file, one cost), so round-robin deals
+    every costly family across all the shards. MEASURED 2026-09-24: 674 pairs in
+    6 round-robin shards finished in 945-1087 s each."""
+    if jobs < 1:
+        raise GateError(f"--jobs must be 1 or more, not {jobs}")
+    pairs = list(pairs)
+    jobs = min(jobs, len(pairs))
+    shards = [pairs[k::jobs] for k in range(jobs)]
+    problems = completeness([p.id for p in pairs], [[p.id for p in s] for s in shards])
+    if problems:
+        raise GateError("the shards do not hold every pair once: " + "; ".join(problems))
+    return shards
+
+
+def completeness(ids, judged) -> list:
+    """What is wrong with `judged` (one id list per shard) as a partition of
+    `ids`: a pair no shard holds, one two shards hold, one nobody asked for.
+    Empty when every id is there exactly once."""
+    seen = Counter(i for part in judged for i in part)
+    wanted = set(ids)
+    out = []
+    none = [i for i in ids if seen[i] == 0]
+    twice = [i for i in ids if seen[i] > 1]
+    stray = sorted(i for i in seen if i not in wanted)
+    for label, got in (("judged by no shard", none), ("judged more than once", twice),
+                       ("judged but never selected", stray)):
+        if got:
+            more = f" (+{len(got) - 12} more)" if len(got) > 12 else ""
+            out.append(f"{len(got)} pair(s) {label}: {', '.join(got[:12])}{more}")
+    return out
+
+
+def _pair_to_json(pair: Pair) -> dict:
+    return {"id": pair.id, "why": pair.why, "edits": [list(e) for e in pair.edits],
+            "tests": list(pair.tests), "expect": list(pair.expect), "needs": list(pair.needs)}
+
+
+def _pair_from_json(d: dict) -> Pair:
+    return Pair(d["id"], d["why"], tuple(tuple(e) for e in d["edits"]), tuple(d["tests"]),
+                tuple(d["expect"]), tuple(d["needs"]))
+
+
+def _launch_shard(k: int, shard, tree: Path, run_dir: Path):
+    """One child process judging `shard` in `tree`, its output in run_dir.
+    It gets a process group of its own, so Ctrl+C reaches the parent only and
+    the parent decides: it kills the whole tree and removes the worktree."""
+    spec = run_dir / f"shard{k}.pairs.json"
+    spec.write_text(json.dumps([_pair_to_json(p) for p in shard]), encoding="utf-8")
+    cmd = [sys.executable, "-B", str(Path(__file__).resolve()), "shard", "--tree", str(tree),
+           "--pairs", str(spec), "--json", str(run_dir / f"shard{k}.json")]
+    # Unbuffered, so the shard's log shows each row as it lands (a full run
+    # is long, and a redirected stdout would otherwise hold it all to the end).
+    env = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1")
+    with open(run_dir / f"shard{k}.log", "wb") as fh:
+        return subprocess.Popen(cmd, stdout=fh, stderr=subprocess.STDOUT,
+                                stdin=subprocess.DEVNULL, env=env, **own_group())
+
+
+def own_group() -> dict:
+    """Popen keywords for a process group of its own, which _kill_tree can stop whole."""
+    if os.name == "nt":
+        return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+    return {"start_new_session": True}
+
+
+def _kill_tree(proc) -> None:
+    """Stop a shard and everything it started (its pytest and whatever that runs)."""
+    if proc.poll() is not None:
+        return
+    if os.name == "nt":
+        subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True)
+    else:
+        import signal
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except OSError:
+            proc.kill()
+    try:
+        proc.wait(timeout=30)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+
+
+def _collect(k: int, rc: int, run_dir: Path) -> dict:
+    """A finished shard: its report, or why there is none (with its log's tail)."""
+    out = {"shard": k, "rc": rc, "report": None, "error": None}
+    try:
+        out["report"] = json.loads((run_dir / f"shard{k}.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        out["error"] = f"exited {rc} with no readable report ({type(e).__name__})"
+    if out["error"] is None and rc not in (0, 1):
+        out["error"] = f"exited {rc}"
+    if out["error"]:
+        try:
+            tail = (run_dir / f"shard{k}.log").read_bytes().decode("utf-8", "replace")
+        except OSError:
+            tail = ""
+        tail = "\n".join(tail.strip().splitlines()[-15:])
+        if tail:
+            out["error"] += "; its log ends:\n" + tail
+    return out
+
+
+def aggregate(pairs, shard_ids, results) -> dict:
+    """One report from the shards': every row once, in `pairs` order; one verdict.
+
+    PASS needs every shard to have run and passed its own controls with an exit
+    code that agrees with its verdict, every pair judged by exactly one shard,
+    and no pair MISSED or NOT_APPLIED. NOT_JUDGED passes, as it does in a
+    single run: it is reported, never counted as caught."""
+    order = [p.id for p in pairs]
+    by_k = {r["shard"]: r for r in results}
+    reasons: list = []
+    shards: list = []
+    rows: dict = {}
+    judged: list = []
+    for k, ids in enumerate(shard_ids):
+        res = by_k.get(k) or {"shard": k, "rc": None, "report": None,
+                              "error": "never reported back"}
+        rep = res.get("report") or {}
+        entry = {"shard": k, "ids": list(ids), "rc": res.get("rc"),
+                 "verdict": rep.get("verdict"), "worktree": rep.get("worktree"),
+                 "seconds": rep.get("seconds"), "baseline": rep.get("baseline"),
+                 "control_after": rep.get("control_after")}
+        if res.get("error"):
+            entry["error"] = res["error"]
+            reasons.append(f"shard {k} crashed or could not run: {res['error']}")
+        else:
+            if rep.get("reason"):
+                reasons.append(f"shard {k}: {rep['reason']}")
+            elif (rep.get("control_after") or {}).get("rc", 0) != 0:
+                reasons.append(f"shard {k}: the control after its last pair is not green")
+            if (res.get("rc") == 0) != (rep.get("verdict") == "PASS"):
+                reasons.append(f"shard {k}: exit code {res.get('rc')} disagrees with "
+                               f"its verdict {rep.get('verdict')}")
+        mine = []
+        for row in rep.get("pairs") or []:
+            mine.append(row["id"])
+            rows.setdefault(row["id"], row)
+        judged.append(mine)
+        shards.append(entry)
+    reasons += completeness(order, judged)
+    combined = [rows[i] for i in order if i in rows]
+    bad = [r for r in combined if r["status"] in (MISSED, NOT_APPLIED)]
+    report = {"jobs": len(shard_ids), "shards": shards, "pairs": combined,
+              "verdict": "PASS" if not reasons and not bad else "FAIL"}
+    if reasons:
+        report["reasons"] = reasons
+    return report
+
+
+def _drop_all(repo: Path, trees, log) -> list:
+    """Remove every shard worktree and return the ones that could not be
+    removed. A just-killed process can hold a file for a moment on Windows,
+    so a tree that is still there is tried again."""
+    left: list = []
+    for tree in trees:
+        for attempt in range(5):
+            try:
+                drop_worktree(repo, tree)
+            except GateError as e:
+                if attempt == 4:
+                    log(f"could not remove {tree}: {e}")
+            if not Path(tree).exists():
+                break
+            time.sleep(1.0)
+        else:
+            log(f"LEFT BEHIND: {tree} -- remove it with git worktree remove --force")
+            left.append(str(tree))
+    return left
+
+
+def run_gate_jobs(repo=REPO, pairs=None, *, jobs: int, only=None, keep=False, log=print,
+                  launch=None, poll=0.5) -> dict:
+    """The gate over `jobs` shards at once, each in its own fresh worktree and
+    child process; see the module docstring. `launch(k, shard, tree, run_dir)`
+    starts one shard and returns its process (tests pass a stand-in)."""
+    repo = Path(repo)
+    pairs = _select(_seeded_pairs() if pairs is None else pairs, only)
+    shards = shard_pairs(pairs, jobs)
+    launch = launch or _launch_shard
+    run_dir = Path(tempfile.mkdtemp(prefix="mutation-gate-jobs-"))
+    trees: list = []
+    procs: dict = {}
+    results: list = []
+    left_behind: list = []
+    t_all = time.perf_counter()
+    try:
+        for k in range(len(shards)):
+            trees.append(make_worktree(repo, run_dir / f"shard{k}"))
+        log(f"{len(shards)} shard(s); each writes its rows as they land to {run_dir}"
+            f"{os.sep}shard<k>.log")
+        for k, shard in enumerate(shards):
+            procs[k] = launch(k, shard, trees[k], run_dir)
+            log(f"shard {k}: {len(shard)} pair(s) in {trees[k]}")
+        left = dict(procs)
+        while left:
+            for k, proc in list(left.items()):
+                rc = proc.poll()
+                if rc is None:
+                    continue
+                del left[k]
+                res = _collect(k, rc, run_dir)
+                results.append(res)
+                rep = res["report"] or {}
+                log(f"shard {k} finished: rc={rc} {rep.get('verdict') or 'NO REPORT'} "
+                    f"({rep.get('seconds', '?')} s)")
+            if left:
+                time.sleep(poll)
+    except BaseException:
+        for proc in procs.values():
+            _kill_tree(proc)
+        raise
+    finally:
+        if keep:
+            log(f"worktrees and shard logs kept in {run_dir}")
+        else:
+            left_behind = _drop_all(repo, trees, log)
+            if not left_behind:
+                shutil.rmtree(run_dir, ignore_errors=True)
+    report = aggregate(pairs, [[p.id for p in s] for s in shards], results)
+    report["seconds"] = round(time.perf_counter() - t_all, 1)
+    # A worktree the run could not remove is a run that did not clean up, as
+    # in --jobs 1 (its cleanup failure exits 2): `main` exits 2 on it, and the
+    # JSON names the trees (the run folder is kept so they stay findable).
+    report["left_behind"] = left_behind
+    for s in report["shards"]:
+        b, a = s.get("baseline") or {}, s.get("control_after") or {}
+        log(f"shard {s['shard']}: {len(s['ids'])} pair(s), rc={s['rc']}; "
+            f"baseline rc={b.get('rc')} {b.get('summary')} ({b.get('seconds')} s); "
+            f"control after rc={a.get('rc')} {a.get('summary')} ({a.get('seconds')} s)")
+    for row in report["pairs"]:
+        log(_row_line(row))
+    for reason in report.get("reasons", []):
+        log("FAILED -- " + reason)
+    return report
+
+
+def _check_shard_tree(tree: Path) -> None:
+    """A shard mutates files, so it runs only in what `run --jobs` made: a
+    `shard<k>` folder inside a mutation-gate-jobs-* run folder, a linked
+    worktree, detached, clean, and not this checkout."""
+    tree = Path(tree).resolve()
+    top = Path(_git(REPO, "rev-parse", "--show-toplevel").stdout.strip()).resolve()
+    if tree == top or top in tree.parents:
+        raise GateError(f"refusing to run in the checkout: {tree}")
+    git_dir, common = _git(tree, "rev-parse", "--git-dir", "--git-common-dir").stdout.splitlines()[:2]
+    if (tree / git_dir).resolve() == (tree / common).resolve():
+        raise GateError(f"{tree} is a main checkout, not a worktree the gate made")
+    if _git(tree, "symbolic-ref", "-q", "HEAD", ok=(0, 1)).returncode == 0:
+        raise GateError(f"{tree} has a branch checked out; the gate's worktrees are detached")
+    if _git(tree, "status", "--porcelain").stdout.strip():
+        raise GateError(f"{tree} is not clean")
+    if not (tree.name.startswith("shard")
+            and tree.parent.name.startswith("mutation-gate-jobs-")):
+        raise GateError(f"{tree} is not a shard worktree `run --jobs` made "
+                        "(<temp>/mutation-gate-jobs-*/shard<k>)")
+
+
+def _run_shard(tree: Path, spec: Path, out: Path) -> int:
+    """The child side of --jobs: judge the pairs in `spec` in `tree`, write `out`."""
+    _check_shard_tree(tree)
+    pairs = [_pair_from_json(d) for d in json.loads(spec.read_text(encoding="utf-8"))]
+    report: dict = {"worktree": str(tree), "pairs": [], "verdict": None}
+    t0 = time.perf_counter()
+    try:
+        judge(tree, pairs, report)
+    finally:
+        report["seconds"] = round(time.perf_counter() - t0, 1)
+    out.write_text(json.dumps(report, indent=1), encoding="utf-8")
+    return 0 if report["verdict"] == "PASS" else 1
 
 
 # --------------------------------------------------------------------- CLI
@@ -317,9 +621,18 @@ def main(argv=None) -> int:
     r.add_argument("--only", nargs="+", metavar="ID", help="run these pair ids only")
     r.add_argument("--json", type=Path, help="write the full report here")
     r.add_argument("--keep", action="store_true", help="leave the worktree in place")
+    r.add_argument("--jobs", type=int, default=1, metavar="N",
+                   help="judge N shards at once, each in its own worktree (default 1); "
+                        "every shard commits about 1.5 GB")
     sub.add_parser("list", help="the seeded pairs")
+    s = sub.add_parser("shard", help="(run --jobs starts these) judge a shard in its worktree")
+    s.add_argument("--tree", type=Path, required=True)
+    s.add_argument("--pairs", type=Path, required=True)
+    s.add_argument("--json", type=Path, required=True)
     args = p.parse_args(argv)
     try:
+        if args.cmd == "shard":
+            return _run_shard(args.tree, args.pairs, args.json)
         pairs = _seeded_pairs()
         if args.cmd == "list":
             for pair in pairs:
@@ -328,16 +641,30 @@ def main(argv=None) -> int:
                 print(f"        {', '.join(pair.tests)} -> {', '.join(pair.expect)}")
             print(f"{len(pairs)} pair(s)")
             return 0
-        report = run_gate(REPO, pairs, only=args.only, keep=args.keep)
+        if args.jobs == 1:
+            report = run_gate(REPO, pairs, only=args.only, keep=args.keep)
+        else:
+            report = run_gate_jobs(REPO, pairs, jobs=args.jobs, only=args.only, keep=args.keep,
+                                   log=lambda line: print(line, flush=True))
     except GateError as e:
         print(f"mutation gate could not run: {e}", file=sys.stderr)
+        return 2
+    except KeyboardInterrupt:
+        if args.cmd != "run" or args.jobs == 1:
+            raise
+        print("mutation gate interrupted: every shard stopped, no verdict", file=sys.stderr)
         return 2
     if args.json:
         args.json.write_text(json.dumps(report, indent=1), encoding="utf-8")
     counts = Counter(row["status"] for row in report["pairs"])
+    shards = f" over {report['jobs']} shards" if "jobs" in report else ""
     print(f"VERDICT: {report['verdict']} -- {counts.get(CAUGHT, 0)} caught, "
           f"{counts.get(MISSED, 0)} missed, {counts.get(NOT_APPLIED, 0)} not applied, "
-          f"{counts.get(NOT_JUDGED, 0)} not judged here; {report.get('seconds', 0)} s")
+          f"{counts.get(NOT_JUDGED, 0)} not judged here; {report.get('seconds', 0)} s{shards}")
+    if report.get("left_behind"):
+        print(f"mutation gate could not clean up: {len(report['left_behind'])} worktree(s) "
+              f"left behind: {', '.join(report['left_behind'])}", file=sys.stderr)
+        return 2
     return 0 if report["verdict"] == "PASS" else 1
 
 
