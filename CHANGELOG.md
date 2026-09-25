@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+### Fixed — a piece whose female model is missing draws the base game's female version, else the male one
+
+Some mods name a female model that does not exist anywhere in the load order.
+Such a piece drew the male version of its mesh on UBE actors, drew nothing at
+all, or was left off UBE actors entirely. Now, when the piece's male mesh is a
+base-game mesh whose female version is clear (exactly one) and was converted,
+UBE actors draw that female version. Otherwise they draw the male mesh, as
+before; a helmet, hood or other piece that does not fit the body now draws its
+own male mesh too, where it drew nothing. A body piece with no usable female
+mesh still draws nothing, and a new note in the log counts those pieces.
+Measured on the reported modlist: 5 pieces of follower armour that drew a male
+mesh (8 models) now draw the base game's female version, one cuirass that was
+not drawn on UBE actors now is, its gloves now draw, and two hoods and a helmet
+now draw their male mesh. 43 female models that exist nowhere remain: 42 have
+no male mesh either, and one belongs to a piece that fits the body. Nothing
+else changes.
+`CBBE2UBE_NO_COVERAGE_FEMALE_STANDIN=1` (set to 1) turns it off.
+
 ### Fixed — a Khajiit-only item that a mannequin can also display is no longer drawn on UBE actors
 
 A Khajiit or Argonian version of an item is left off UBE actors, because no

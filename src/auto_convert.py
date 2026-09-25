@@ -3466,6 +3466,34 @@ def _mesh_exists_anywhere(output) -> "callable[[str], bool] | None":
             seen[rel] = (any(_is_file(d / "meshes" / rel) for d in loose_dirs)
                          or bsa.contains(rel))
         return seen[rel]
+
+    fit: dict = {}
+
+    def body_fit(model: str) -> "bool | None":
+        """#coverage-female-standin: is the copy of `model` the game loads (the
+        first loose file in priority order, else the archive that lists it)
+        skinned to a body-fit bone? Read into memory, never extracted. None
+        when it cannot be found or read -- the caller fails closed."""
+        rel = str(model or "").replace("\\", "/").lstrip("/").lower()
+        if rel.startswith("meshes/"):
+            rel = rel[7:]
+        if not rel:
+            return None
+        if rel not in fit:
+            data = None
+            for d in loose_dirs:
+                f = d / "meshes" / rel
+                if _is_file(f):
+                    try:
+                        data = f.read_bytes()
+                    except OSError:
+                        data = None
+                    break
+            if data is None:
+                data = bsa.read_bytes(rel)
+            fit[rel] = None if data is None else _nif_bytes_body_fit(data)
+        return fit[rel]
+    exists.body_fit = body_fit
     return exists
 
 
@@ -3719,6 +3747,11 @@ def _report_coverage_holds(stats: "list[dict]") -> None:
     withheld = [w for s in stats for w in (s.get("withheld") or [])]
     kept = [k for s in stats for k in (s.get("female_kept") or [])]
     dead = [k for s in stats for k in (s.get("female_dead_male") or [])]
+    # #coverage-female-standin: dead female slots given the vanilla female
+    # counterpart, a non-body piece's own male mesh, or left dead.
+    standin = [k for s in stats for k in (s.get("female_standin") or [])]
+    as_is = [k for s in stats for k in (s.get("female_male_nonbody") or [])]
+    dead_kept = [k for s in stats for k in (s.get("female_dead_kept") or [])]
     skipped = [k for s in stats for k in (s.get("female_guard_skipped") or [])]
     dropped = [d for s in stats for d in (s.get("female_guard_dropped") or [])]
     wskip = [k for s in stats for k in (s.get("world_mesh_skipped") or [])]
@@ -3776,6 +3809,35 @@ def _report_coverage_holds(stats: "list[dict]") -> None:
             print(f"       {k['slot']} {k['dead']}  (-> {k['male']})")
         if len(dead) > 5:
             print(f"       ... and {len(dead) - 5} more")
+    if standin:
+        print(f"  [unified] {len(standin)} female model slot(s) name a mesh that "
+              "exists nowhere and draw the vanilla female counterpart of their "
+              "male mesh instead")
+        for k in standin[:5]:
+            print(f"       {k['slot']} {k['orig']}  (-> {k['standin']})")
+        if len(standin) > 5:
+            print(f"       ... and {len(standin) - 5} more")
+    if as_is:
+        print(f"  [unified] {len(as_is)} female model slot(s) of non-body pieces "
+              "name a mesh that exists nowhere and draw their own male mesh")
+        for k in as_is[:5]:
+            print(f"       {k['slot']} {k['orig']}  (-> {k['male_as_is']})")
+        if len(as_is) > 5:
+            print(f"       ... and {len(as_is) - 5} more")
+    no_male = [k for k in dead_kept if not k.get("male_live")]
+    body_male = [k for k in dead_kept if k.get("male_live")]
+    if dead_kept:
+        warn(f"[unified] {len(dead_kept)} female model slot(s) name a mesh that "
+             f"exists nowhere and have nothing to draw instead: {len(no_male)} have "
+             f"no male mesh either, {len(body_male)} are body pieces whose male "
+             "mesh was not converted",
+             consequence="those pieces are not drawn on UBE-race actors, as on "
+                         "any female actor",
+             level=NOTE)
+        for k in (no_male[:3] + body_male[:2]):
+            print(f"       {k['slot']} {k['dead_kept']}  ({k['arma']})")
+        if len(dead_kept) > 5:
+            print(f"       ... and {len(dead_kept) - 5} more")
     if wskip:
         warn(f"[unified] {len(wskip)} body armature(s) were not minted because their "
              f"female world mesh was not converted ({len(wdrop)} armour(s) left "
@@ -5786,6 +5848,26 @@ class _BsaMeshIndex:
         except Exception:
             return False
 
+    def read_bytes(self, key: str) -> "bytes | None":
+        """key = lowercase meshes-rel. The mesh's bytes from the archive that
+        lists it, read into memory -- nothing is written, so a lookup-only index
+        may use it. None if no archive lists it or it cannot be read.
+        #coverage-female-standin"""
+        try:
+            if self._index is None:
+                self._scan()
+            hit = self._index.get(key)
+            if hit is None:
+                return None
+            from .bsa_strings import BSAArchive
+            arch = self._open.get(hit[0])
+            if arch is None:
+                arch = BSAArchive(hit[0], eager=False)   # table-only; seek-read
+                self._open[hit[0]] = arch
+            return arch.read_file(hit[1]) or None
+        except Exception:
+            return None
+
     def extract(self, key: str):
         """key = lowercase meshes-rel (e.g. 'armor/x/cuirass_1.nif').
         Returns (extracted_file, meshes_rel) or None."""
@@ -6784,6 +6866,44 @@ def _nif_has_bodyfit_skin(nif_path: Path) -> bool:
             if any(m in bl for m in _BODYFIT_BONE_MARKERS):
                 return True
     return False
+
+
+_SKIN_INSTANCE_BLOCKS = (b"NiSkinInstance", b"BSDismemberSkinInstance")
+
+
+def _nif_bytes_body_fit(data: bytes) -> "bool | None":
+    """`_nif_has_bodyfit_skin` for NIF bytes held in memory (a mesh read out of
+    an archive is never written to disk): is any skin bound to a body-fit bone?
+    None when the bytes are not an SSE NIF (20.2.0.7) this reader follows, so a
+    caller can fail closed where the pynifly test fails open.
+
+    Reads the header's string table and every skin instance's bone list (each
+    bone's block starts with its name's string index) -- the bones pynifly
+    reports as a shape's bone_names. #coverage-female-standin"""
+    import struct as _st
+    from .hh_offset import _parse
+    try:
+        p = _parse(data)
+        if p["version"] != 0x14020007:
+            return None
+        blocks, strings = p["blocks"], p["strings"]
+        for ti, blk in zip(p["bti"], blocks):
+            if p["block_types"][ti] not in _SKIN_INSTANCE_BLOCKS:
+                continue
+            # Data, Skin Partition, Skeleton Root (refs), then the bone count.
+            n = _st.unpack_from("<I", blk, 12)[0]
+            for ref in _st.unpack_from("<%di" % n, blk, 16):
+                if not 0 <= ref < len(blocks):
+                    return None
+                si = _st.unpack_from("<i", blocks[ref], 0)[0]
+                if not 0 <= si < len(strings):
+                    return None
+                name = strings[si].decode("cp1252", "replace").lower()
+                if any(m in name for m in _BODYFIT_BONE_MARKERS):
+                    return True
+        return False
+    except Exception:
+        return None
 
 
 # Full-VFS mesh index built once during source selection; reused by the convert

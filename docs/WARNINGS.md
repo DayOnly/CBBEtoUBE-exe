@@ -6,7 +6,7 @@ current. A `!!` line is a problem; a `NOTE:` line is information. Each entry
 gives the line as it appears in the run log (`…` stands for the value printed
 at run time), what it means for the run, and what to do next.
 
-**76** problem warnings and **3** notes.
+**76** problem warnings and **4** notes.
 
 ## src/auto_convert.py
 
@@ -56,6 +56,8 @@ at run time), what it means for the run, and what to do next.
   - fix: convert the mod that ships the female mesh
 - `NOTE: [unified] … female model slot(s) name a mesh that exists nowhere, so they keep the converted MALE mesh`
   - means: the piece is drawn with the male mesh on UBE; with its own path it would not be drawn at all
+- `NOTE: [unified] … female model slot(s) name a mesh that exists nowhere and have nothing to draw instead: … have no male mesh either, … are body pieces whose male mesh was not converted`
+  - means: those pieces are not drawn on UBE-race actors, as on any female actor
 - `!! [unified] … body armature(s) were not minted because their female world mesh was not converted (… armour(s) left without one, … drawn without the body piece)`
   - means: those body pieces are not drawn on UBE-race actors, rather than draw their unconverted CBBE mesh on the UBE body
   - fix: convert the mod that ships the female mesh

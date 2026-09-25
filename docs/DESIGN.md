@@ -1079,6 +1079,37 @@ follower (converted male Ebony boots on her UBE body):
   female-only selection's own rule for a dead path. Kept, not-minted and dead-path
   slots are counted and warned; the no-female-model case is not.
   `CBBE2UBE_NO_COVERAGE_FEMALE_GUARD=1` restores the fallback.
+- **A dead female slot draws the vanilla female counterpart, else the male mesh**
+  (`#coverage-female-standin`, the user's rule 09-25). A MOD3 (paired with MOD2)
+  or MOD5 (paired with MOD4) whose path exists nowhere and was not converted
+  looks its paired male SOURCE path up in a counterpart map built once per pass
+  from the winner scan (`_female_standin_resolver`): armatures a game master or a
+  `cc*.esl/.esm` DEFINES, winning record DefaultRace-primary, MOD2 -> MOD3 and
+  MOD4 -> MOD5 kept apart. Exactly one distinct female path (13 MOD3 and 12 MOD5
+  male keys are ambiguous on the live load order), and converted (`_ube_exists`):
+  the slot is written `!UBE\` + it and its MO?T/MO?S are dropped. This outranks
+  the converted male mesh, and it also runs where the male mesh was NOT
+  converted — the planner pools MOD3 and MOD5 (census backlog 7), so a
+  follower cuirass with a dead world mesh and a live first-person one converted
+  only the first-person female; `_world_mesh_converted` therefore counts a dead
+  MOD3 with a stand-in as converted, or that cuirass stays unminted. One
+  resolver is handed to both; `_converted_model_exists` is not hooked.
+  Otherwise the male mesh: converted (the guard's dead path), or — on a
+  NON-BODY armature (`_nonbody_male_as_is`: its BOD2, else its armours' slots,
+  outside `_BODY_SLOT_BITS`, no cloak-named model, the male mesh not skinned to
+  a body-fit bone) — the unconverted male path as it is. The mesh is read
+  where the game loads it, loose or out of an archive, into memory
+  (`_mesh_exists_anywhere(...).body_fit`, a raw SSE header + skin-instance
+  reader, `_nif_bytes_body_fit`; it agreed with the pynifly test on 600/600
+  sampled live meshes); unreadable, no slots, or no lookup keeps the dead path.
+  Neither goes into `male_fallback_log`, so `restore_female_models` never undoes
+  them. Live replay: 10 slots take a stand-in (the 8 former male-mesh slots, a
+  cuirass that was not drawn at all, its gloves' dead path), 3 non-body pieces
+  (two hoods, a helmet) draw their male mesh; 43 dead slots stay, 42 with no
+  male mesh at all and one body-fit underskin — a NOTE counts them. A male mesh
+  in a female slot that is NOT dead (a female slot naming the male path, or no
+  female model) is outside the rule and untouched. Nested under the guard.
+  `CBBE2UBE_NO_COVERAGE_FEMALE_STANDIN=1`.
 
 ### What a coverage armature may draw
 
