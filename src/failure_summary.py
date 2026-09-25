@@ -34,11 +34,25 @@ def severity_of(entry: dict) -> str:
     return WARNING if (entry or {}).get("severity") == WARNING else FAILURE
 
 
+def count_of(entry: dict) -> int:
+    """How many problems one entry stands for: its `count`, else 1. An entry
+    for a whole class (N patch-validator hits) carries N. #one-tally"""
+    try:
+        return max(0, int((entry or {}).get("count", 1)))
+    except (TypeError, ValueError):
+        return 1
+
+
 def counts(entries) -> tuple:
-    """(failures, warnings)."""
-    entries = list(entries or [])
-    warnings = sum(1 for e in entries if severity_of(e) == WARNING)
-    return len(entries) - warnings, warnings
+    """(failures, warnings) -- the same numbers the run log's end-of-run tally
+    prints, because the run counts its tally from these entries. #one-tally"""
+    failures = warnings = 0
+    for e in entries or []:
+        if severity_of(e) == WARNING:
+            warnings += count_of(e)
+        else:
+            failures += count_of(e)
+    return failures, warnings
 
 
 def popup_title(entries) -> str:

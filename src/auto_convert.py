@@ -1152,7 +1152,10 @@ def _echo_active_experiment_flags() -> None:
     environment is what the conversion actually reads, and the whole failure mode was
     the two disagreeing."""
     try:
-        skip = ("MO2_INI", "MODS_ROOT", "GAME_DATA", "CONFIG", "OUT_MOD", "NO_PAUSE")
+        # SETTINGS_APPLIED says who applied the settings; the echo below
+        # prints it in words. #settings-everywhere
+        skip = ("MO2_INI", "MODS_ROOT", "GAME_DATA", "CONFIG", "OUT_MOD", "NO_PAUSE",
+                "SETTINGS_APPLIED")
         act = {k: v for k, v in os.environ.items()
                if k.startswith("CBBE2UBE_") and str(v).strip()
                and not any(s in k for s in skip)}
@@ -1332,14 +1335,42 @@ _RUN_FAILURES: "list[dict]" = []
 
 
 def _record_failure(kind: str, source, item, detail: str = "",
-                    severity: str = "failure") -> None:
+                    severity: str = "failure", count: int = 1) -> None:
     """`severity` is "failure" (it did not convert) or "warning" (it converted,
     but the user must hear about it). The GUI words its end-of-run popup from
-    it (src/failure_summary.py). #run-warnings"""
-    _RUN_FAILURES.append({
-        "kind": str(kind), "source": str(source),
-        "item": str(item), "detail": str(detail)[:400],
-        "severity": str(severity)})
+    it (src/failure_summary.py). #run-warnings
+
+    THE ONLY WAY A RUN COUNTS A PROBLEM. #one-tally
+    `_cmd_convert` kept its end-of-run tally in two integers beside this list,
+    and five classes raised the integers with no entry here: a load-breaking
+    issue on the shipped Combined ESP, a mesh missing its _0/_1 partner, a
+    VirtualBody re-hide, patch-validator hits, and (in `auto`) a failed overlay
+    transfer. The log said "1 failure(s)" while the failures file -- the only
+    thing the GUI reads -- was empty, so no popup opened. The tally is now
+    counted FROM this list (`_run_tally`), so the two cannot disagree. `count`
+    lets one entry stand for a class of N, so N validator hits are one line in
+    the popup, not N; it is written only when it is not 1."""
+    entry = {"kind": str(kind), "source": str(source),
+             "item": str(item), "detail": str(detail)[:400],
+             "severity": str(severity)}
+    if int(count) != 1:
+        entry["count"] = int(count)
+    _RUN_FAILURES.append(entry)
+
+
+def _run_tally() -> "tuple[int, int]":
+    """(failures, warnings) of this run, counted from the record. #one-tally"""
+    from . import failure_summary
+    return failure_summary.counts(_RUN_FAILURES)
+
+
+def _first_few(lines, n: int = 3) -> str:
+    """The first `n` of a class's messages for its one failures-file entry;
+    the log lists them all."""
+    lines = [str(x) for x in (lines or [])]
+    head = "; ".join(lines[:n])
+    return head + (f"; ... and {len(lines) - n} more (see the log)"
+                   if len(lines) > n else "")
 
 
 def _failures_file_path() -> Path:
@@ -4952,10 +4983,10 @@ def _cmd_convert(args):
               "--ube-body-ref to convert a folder outside a modlist.")
         return 2
 
-    # Each returns whether its check came back clean. One that did not is
-    # printed, recorded as a warning and counted in the tally. #run-warnings
-    _skypatcher_ok = _warn_if_skypatcher_missing()
-    _settings_malformed = _warn_if_settings_file_malformed()
+    # A check that did not come back clean is printed and recorded as a
+    # warning, and the record is what the tally counts. #run-warnings #one-tally
+    _warn_if_skypatcher_missing()
+    _warn_if_settings_file_malformed()
 
     sources = list(args.sources)
     output = args.output
@@ -4976,7 +5007,7 @@ def _cmd_convert(args):
     _orphans_removed = _sweep_orphan_temps_at_start(output, _run_started)
     # Before any per-source patch is written or read (a full run, --only-mods
     # and --plugins-only all come through here). #source-patch-rename
-    _rename_failures = _migrate_source_patch_names_at_start(
+    _migrate_source_patch_names_at_start(
         output, getattr(args, "unmerged_patch_subdir", "_unmerged_patches"))
 
     if len(sources) > 1 and args.esp_name:
@@ -5327,24 +5358,21 @@ def _cmd_convert(args):
         print(f"  (weight-partner completion skipped: {plain_error(_e)})")
 
     # merge_blockers: hard ESP-generation failures -> block auto-merge.
-    # overall_failures: merge_blockers + NIF errors + load failures -> non-zero exit.
-    # overall_warnings: validator notes -> surfaced loudly, don't fail exit.
+    # The end-of-run tally (failures -> non-zero exit; warnings -> surfaced
+    # loudly, exit unchanged) is counted from _RUN_FAILURES: every problem below
+    # is recorded, and recording is what counts it. #one-tally
     merge_blockers = 0
-    overall_failures = 0
-    # Run-level warnings found before the batch: printed where they were found,
-    # recorded there or here, counted now. #run-warnings
+    # Run-level warnings found before the batch were recorded where they were
+    # found (settings file, SkyPatcher, orphan temps, renames); this one is
+    # recorded here. #run-warnings
     if _ube_scan_skipped:
         _record_failure("check skipped", "existing UBE patches", "already-UBE scan",
                         "other mods could not be checked for UBE patches, so armor "
                         "one of them already patched may have been converted again",
                         severity="warning")
-    overall_warnings = (int(_ube_scan_skipped) + int(not _skypatcher_ok)
-                        + int(_settings_malformed)
-                        # recorded at the start AND counted here. #orphan-temps
-                        + int(bool(_orphans_removed))
-                        # one per per-source patch left under its old name.
-                        # #source-patch-rename
-                        + _rename_failures)
+    # Patch-validator hits of the whole batch: ONE entry for the class, so a
+    # batch of N does not put N lines in the popup. #one-tally
+    _validator_all: "list[str]" = []
     for src, r, err in results:
         _is_sweep_src = bool(_vanilla_sweep_esps(src))
         print("\n  " + ("Vanilla sweep (base game + DLC)" if _is_sweep_src
@@ -5372,7 +5400,6 @@ def _cmd_convert(args):
                 merge_blockers += 1
                 _record_failure("source failed", src.name,
                                 "whole source", plain_error(err))
-            overall_failures += 1
             continue
         if r.source_esps:
             print(f"    source ESPs: {len(r.source_esps)}")
@@ -5394,7 +5421,6 @@ def _cmd_convert(args):
                 print(f"       {er.src_path.name}: {er.reason}")
                 _record_failure("mesh failed", src.name,
                                 er.src_path.name, er.reason)
-            overall_failures += r.nif_errors
         if r.nif_load_failures:
             warn(f"LOAD FAILURES on {len(r.nif_load_failures)} output NIFs",
                  consequence="the files below were written but cannot be read back; "
@@ -5403,7 +5429,6 @@ def _cmd_convert(args):
             for p in r.nif_load_failures:
                 print(f"       {p}")
                 _record_failure("output mesh unreadable", src.name, p)
-            overall_failures += 1
         if r.nif_invariant_warnings:
             # CTD-class, symmetric with the merged-ESP postflight: a zero-vert
             # shape is invisible and an over-cap shape left in <=1 partition
@@ -5417,7 +5442,6 @@ def _cmd_convert(args):
             for w in r.nif_invariant_warnings:
                 print(f"       {w}")
                 _record_failure("CTD-class mesh issue", src.name, w)
-            overall_failures += len(r.nif_invariant_warnings)
         if r.virtualbody_rehide_failures:
             warn(f"VirtualBody re-hide: {len(r.virtualbody_rehide_failures)} NIF(s) "
                  "may show a visible body-double",
@@ -5425,7 +5449,12 @@ def _cmd_convert(args):
                  indent="    ")
             for w in r.virtualbody_rehide_failures:
                 print(f"       {w}")
-            overall_warnings += len(r.virtualbody_rehide_failures)
+            _record_failure("VirtualBody re-hide failed", src.name,
+                            f"{len(r.virtualbody_rehide_failures)} mesh(es) may show "
+                            "a visible body-double",
+                            _first_few(r.virtualbody_rehide_failures),
+                            severity="warning",
+                            count=len(r.virtualbody_rehide_failures))
         # ESP generation failure: that ESP's ARMA/ARMO absent from merge (invisible).
         # Non-zero exit, but NOT a merge_blocker (one bad ESP shouldn't lose the rest).
         if r.esp_gen_failures:
@@ -5438,7 +5467,6 @@ def _cmd_convert(args):
                 _name, _why = (_f if isinstance(_f, (list, tuple)) and
                                len(_f) == 2 else (_f, ""))
                 _record_failure("plugin patch failed", src.name, _name, _why)
-            overall_failures += len(r.esp_gen_failures)
         if r.esp_skipped_no_armor:
             print(f"    {r.esp_skipped_no_armor} source ESP(s) skipped: no armor "
                   f"(landscape/quest/patch ESPs) — not a failure")
@@ -5449,8 +5477,8 @@ def _cmd_convert(args):
                  indent="    ")
             _record_failure("partial mesh (shape dropped)", src.name,
                             f"{r.nif_partial} mesh(es)",
-                            "see conversion report, PARTIAL section")
-            overall_failures += r.nif_partial
+                            "see conversion report, PARTIAL section",
+                            count=r.nif_partial)
         # Validator warnings: surfaced loudly but don't block the merge or fail exit.
         validator_hits = []
         for stats in (r.esp_stats_list or
@@ -5464,7 +5492,7 @@ def _cmd_convert(args):
                  indent="    ")
             for w in validator_hits:
                 print(f"       {w}")
-            overall_warnings += len(validator_hits)
+            _validator_all += [f"{src.name}: {w}" for w in validator_hits]
         print(f"    Textures   : {r.textures_copied} files copied")
         if r.notes:
             for n in r.notes:
@@ -5472,6 +5500,11 @@ def _cmd_convert(args):
                 if n.startswith("!! patch validator"):
                     continue
                 print(f"    note: {n}")
+    if _validator_all:
+        _record_failure("patch validator", "per-source patches",
+                        f"{len(_validator_all)} warning(s); each patch still loads",
+                        _first_few(_validator_all), severity="warning",
+                        count=len(_validator_all))
     print(f"\n  Combined output mod: {output}")
 
     # Postflight: scan the WHOLE output tree for body meshes missing a _0/_1
@@ -5485,7 +5518,10 @@ def _cmd_convert(args):
                  indent="\n")
             for _w in _wp_miss:
                 print(f"     {_w}")
-            overall_warnings += len(_wp_miss)
+            _record_failure("missing _0/_1 partner", "output mod",
+                            f"{len(_wp_miss)} body mesh(es), invisible at one "
+                            "body weight", _first_few(_wp_miss),
+                            severity="warning", count=len(_wp_miss))
     except Exception as _wpe:
         warn(f"postflight weight-partner scan skipped: {plain_error(_wpe)}",
              consequence="missing _0/_1 partners were not checked this run")
@@ -5536,7 +5572,10 @@ def _cmd_convert(args):
                     print(f"     {_d}")
                 if len(_wp_div) > 20:
                     print(f"     ... and {len(_wp_div) - 20} more")
-                overall_warnings += len(_wp_div)
+                _record_failure("_0/_1 parity", "output mod",
+                                f"{len(_wp_div)} shape(s) convert differently at "
+                                "_0 vs _1", _first_few(_wp_div),
+                                severity="warning", count=len(_wp_div))
         except Exception as _wpe2:
             warn(f"postflight weight-partner parity scan skipped: {plain_error(_wpe2)}",
                  consequence="_0/_1 parity was not checked this run")
@@ -5579,14 +5618,13 @@ def _cmd_convert(args):
                   f"fixed {vc['shapes_fixed']} shape(s) in "
                   f"{vc['files_changed']} file(s)")
             if vc.get("pool_error"):
-                # Printed, counted and recorded. Silence here is what made an
-                # out-of-memory death at the end of a multi-hour run look like
-                # a clean finish. #commit-headroom
+                # Printed, and recorded -- which counts it. Silence here is what
+                # made an out-of-memory death at the end of a multi-hour run
+                # look like a clean finish. #commit-headroom #one-tally
                 warn(vc['pool_error'],
                      consequence="the vertex-colour sweep fell back to running one file at "
                                  "a time and finished; nothing was lost",
                      fix="if this repeats, lower the worker count in Settings")
-                overall_warnings += 1
                 # A WARNING, not a failure: the sweep fell back to serial and
                 # finished. Recorded as a failure, the GUI popup titled it
                 # "1 item(s) failed to convert" and told the user the armour
@@ -5660,8 +5698,7 @@ def _cmd_convert(args):
                     # coverage moved inside the merge that accounting was lost.)
                     _record_failure("coverage", output, "unified coverage",
                                     f"winner-scan incomplete (targets={_cov_targets})",
-                                    severity="warning")
-                    overall_warnings += 1      # recorded AND counted #run-warnings
+                                    severity="warning")   # counted #one-tally
                 _cov_only = sorted(
                     patches_dir.glob("UBE_Mod*Coverage* UBE patch.esp"))
                 # Use coverage as the SOLE generator ONLY when it fully ran and
@@ -5867,8 +5904,21 @@ def _cmd_convert(args):
                                 print(f"       CTD  [{_n}] {_w}")
                             for _n, _w in _pf["soft"]:
                                 print(f"       warn [{_n}] {_w}")
-                            overall_failures += len(_pf["ctd"])
-                            overall_warnings += len(_pf["soft"])
+                            # The SHIPPED plugin: the popup must name it, not
+                            # only the log. #one-tally
+                            if _pf["ctd"]:
+                                _record_failure(
+                                    "load-breaking plugin issue", "Combined ESP",
+                                    f"{len(_pf['ctd'])} issue(s): the plugin is NOT "
+                                    "safe to load",
+                                    _first_few(f"[{_n}] {_w}" for _n, _w in _pf["ctd"]),
+                                    count=len(_pf["ctd"]))
+                            if _pf["soft"]:
+                                _record_failure(
+                                    "plugin postflight", "Combined ESP",
+                                    f"{len(_pf['soft'])} other issue(s)",
+                                    _first_few(f"[{_n}] {_w}" for _n, _w in _pf["soft"]),
+                                    severity="warning", count=len(_pf["soft"]))
                         else:
                             print(f"  postflight: Combined "
                                   f"({len(_pf['pieces'])} piece(s)) validated clean")
@@ -5881,7 +5931,6 @@ def _cmd_convert(args):
                                      "are still in the output", indent="")
                     _record_failure("merge failed", "Combined ESP",
                                     args.merged_name, plain_error(e))
-                    overall_failures += 1
             else:
                 print(f"\n  (no patches found in {patches_dir} — "
                       "skipping auto-merge)")
@@ -5909,9 +5958,9 @@ def _cmd_convert(args):
         _record_failure("coverage", output, "unified coverage",
                         "merge did not run, so no coverage was generated",
                         severity="warning")
-        # Counted too: measured 2026-09-15, this printed NO RACE COVERAGE
-        # GENERATED and the run still ended "=== all clear ===". #run-warnings
-        overall_warnings += 1
+        # Counted too (the record is the count): measured 2026-09-15, this
+        # printed NO RACE COVERAGE GENERATED and the run still ended
+        # "=== all clear ===". #run-warnings #one-tally
 
     if args.render_previews:
         from . import preview
@@ -5962,6 +6011,8 @@ def _cmd_convert(args):
         workers=(args.workers if args.workers is not None
                  else default_worker_count()))
 
+    # Counted from the record the failures file is written from. #one-tally
+    overall_failures, overall_warnings = _run_tally()
     if overall_failures or overall_warnings:
         print(f"\n=== {overall_failures} failure(s), "
               f"{overall_warnings} warning(s) ===")
@@ -8736,6 +8787,31 @@ def _split_mod_arg(vals):
     return out or None
 
 
+def _list_overlays_only(args, output, lay, overlay_transfer) -> int:
+    """`auto --overlays-only --list-only`: name the overlays a transfer would
+    remap, per region and per mod, and write nothing. #dry-run-writes-nothing"""
+    print("\n--- OVERLAYS-ONLY (--list-only): overlays that WOULD be remapped "
+          "to UBE UV ---")
+    plan = overlay_transfer.plan_overlays(
+        output, lay,
+        skip_male=getattr(args, "overlay_skip_male", False),
+        only_mods=_split_mod_arg(getattr(args, "overlay_mods", None)),
+        exclude_mods=_split_mod_arg(getattr(args, "overlay_exclude_mods", None)))
+    total = 0
+    mods: "dict[str, int]" = {}
+    for region, items in plan.items():
+        print(f"  {region}: {len(items)} overlay(s)")
+        total += len(items)
+        for src in items.values():
+            mod = (src[-1] if isinstance(src, (tuple, list)) and len(src) >= 3
+                   else "?")
+            mods[mod] = mods.get(mod, 0) + 1
+    for mod, n in mods.items():
+        print(f"    {mod}  ({n})")
+    print(f"\n--list-only: {total} overlay(s) listed; nothing was written.")
+    return 0
+
+
 def _cmd_auto(args):
     """One-click full pipeline (no args required): auto-discover the modpack,
     find ALL CBBE/3BA armor mods, convert them into one output mod, merge into
@@ -8768,6 +8844,13 @@ def _cmd_auto(args):
     # (slow) armor reconvert. Returns right after.
     if getattr(args, "overlays_only", False):
         from . import overlay_transfer
+        if getattr(args, "list_only", False):
+            # --list-only IS "convert nothing" -- the GUI's Dry run -- and this
+            # branch returned before the list-only check below, so a dry run
+            # with only overlays ticked rebaked every overlay into the output
+            # mod. List what WOULD be remapped; write nothing.
+            # #dry-run-writes-nothing
+            return _list_overlays_only(args, output, lay, overlay_transfer)
         print("\n--- OVERLAYS-ONLY: body overlay (tattoo) -> UBE UV transfer ---")
         ovl = overlay_transfer.convert_overlays(
             output, lay,
@@ -8946,8 +9029,10 @@ def _cmd_auto(args):
     #
     # The one post-convert step that CAN still fail is the opt-in overlay
     # transfer, which caught its own exception and let the run exit 0. It now
-    # counts, so `--convert-overlays` failing is visible in the exit code.
-    post_merge_failures = 0
+    # counts, so `--convert-overlays` failing is visible in the exit code:
+    # counted from the failures recorded after this point, so the exit code
+    # and the GUI's popup read one record. #one-tally
+    _failures_at_convert_end = _run_tally()[0]
 
     # Vanilla race coverage (Vanilla_UBE_Race_Compat.esp) REMOVED 2026-07-03:
     # RaceCompatibility SKSE / RaceDispatcher does this race + nude-skin dispatch
@@ -8984,10 +9069,12 @@ def _cmd_auto(args):
         except Exception as e:
             # Counted: the user explicitly asked for this with
             # --convert-overlays, so exiting 0 hides that the textures they
-            # expect were never written.
-            post_merge_failures += 1
+            # expect were never written. Recorded, which is what counts it,
+            # so the GUI's popup names it too. #one-tally
             warn(f"overlay transfer FAILED: {plain_error(e)}",
                  consequence="overlays were not transferred this run")
+            _record_failure("overlay transfer failed", "body overlays",
+                            "every selected overlay", plain_error(e))
 
     # Pre-flight: missing hands/feet .tri makes them stay CBBE-shaped while the
     # body morphs UBE (built without 'Build Morphs'). Surface the warning loudly.
@@ -9005,6 +9092,7 @@ def _cmd_auto(args):
         pass
 
     _enable = f"'{output.name}' + its Combined ESP(s)"
+    post_merge_failures = _run_tally()[0] - _failures_at_convert_end
     if post_merge_failures:
         warn(f"{post_merge_failures} post-convert phase(s) FAILED",
              consequence="see the errors above; the run is reported as failed",

@@ -1865,6 +1865,52 @@ reported through `_report_coverage_holds`:
 
 ---
 
+## What a run reports, and which settings it runs with
+
+- **The tally is the record** (`#one-tally`). `_cmd_convert` counted its
+  end-of-run `N failure(s), M warning(s)` in two integers beside
+  `_RUN_FAILURES`, and five classes raised the integers without an entry: a
+  load-breaking issue on the final Combined ESP (and its other postflight
+  issues, incl. missing-nif), a mesh missing its `_0`/`_1` partner, a
+  VirtualBody re-hide, patch-validator hits, and in `auto` a failed overlay
+  transfer. The GUI reads only the failures file, so a Combined CTD ended
+  "exit code 2 - check the log" with no list. Every counted class now goes
+  through `_record_failure`, and the tally is counted from the record
+  (`_run_tally`, `failure_summary.counts`), so the two cannot disagree. A class
+  of N is one entry carrying `count: N` (40 validator hits are one popup line);
+  `count` is written only when it is not 1, so single entries keep their old
+  format. The exit code is unchanged in every case (a failure was already
+  counted wherever one is now recorded); only the log's numbers and the file
+  change: an unreadable output mesh counts per file, and "merge skipped" counts.
+  `auto`'s post-convert failures are the failures recorded after `_cmd_convert`.
+- **Dry run writes nothing** (`#dry-run-writes-nothing`). `auto
+  --overlays-only --list-only` ran the overlay transfer: the overlays-only branch
+  returned before the list-only check. It now lists what would be remapped
+  (`overlay_transfer.plan_overlays`, the same source rules as the transfer) and
+  returns. The window's Dry run with both toggles drops `--convert-overlays`.
+- **A bad settings import changes nothing** (`#settings-import-guard`).
+  `load_values` turns an absent, torn or foreign file into pure defaults by
+  design; Import used it and saved the defaults over the recipe.
+  `load_for_import` refuses a file that is not a JSON object holding at least one
+  registered key (or `_known_settings`, so an all-defaults export still imports).
+  Export and Reset/Import now read `save_values`' False. `_coerce` reads a
+  hand-edited bool string with the environment's words (`"false"`, `"0"` are OFF).
+- **The saved settings reach every run** (`#settings-everywhere`). A headless
+  `CBBEtoUBE.exe auto` / `convert` now applies `CBBEtoUBE_settings.json` (the one
+  beside the exe) at the entry point, before the converter is imported; a variable
+  already set in the environment wins; the log says `effective settings: from
+  <file> -- set ...` and `conversion_settings.json` records it
+  (`settings_applied`). The window's child and the two parity harnesses carry
+  `CBBE2UBE_SETTINGS_APPLIED` and are not re-applied. The window's own helpers
+  (Check setup, the mod lists, the UBE-mesh scan) run under
+  `gui_settings.SettingsOverlay`: the child's environment for the duration of the
+  call, then the window's restored (shared by overlapping helpers; the last one
+  out restores). `CBBE2UBE_NO_HEADLESS_SETTINGS=1` makes a headless run ignore
+  the file, as before. `python -m src.auto_convert` does not go through the entry
+  point and still reads only the environment.
+
+---
+
 ## Effect-shader glow overlays
 
 Some armor (e.g. Daedric) carries additive glow decals as separate shapes with a

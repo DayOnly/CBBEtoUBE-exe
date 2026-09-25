@@ -166,6 +166,7 @@ def run_config(workers: "int | None" = None) -> dict:
     return {
         "build": stamp(),
         "settings_file": settings_file_status(),
+        "settings_applied": settings_applied(),
         "mods_root": str(mr) if mr else None,
         "machine": machine,
         "non_default": nd,
@@ -193,7 +194,29 @@ def echo_lines() -> list[str]:
             out.append("  effective settings: all registry defaults")
     except Exception as e:
         out.append(f"  effective settings: unavailable ({type(e).__name__})")
+    # Where they came from: the settings file (a headless run applies it), the
+    # window, or nowhere -- and what exactly was applied. #settings-everywhere
+    try:
+        from .gui_settings import settings_source_line
+        out.append(settings_source_line())
+    except Exception as e:
+        out.append(f"  effective settings: source unknown ({type(e).__name__})")
     return out
+
+
+def settings_applied() -> dict:
+    """What put the saved settings into this run's environment, for
+    conversion_settings.json: the headless apply's record, or the parent that
+    applied them. #settings-everywhere"""
+    try:
+        from .gui_settings import APPLIED_MARKER, headless_report
+        rep = headless_report()
+        if rep is not None:
+            return dict(rep)
+        by = os.environ.get(APPLIED_MARKER, "").strip()
+        return {"by": by} if by else {"by": None}
+    except Exception as e:
+        return {"_error": f"{type(e).__name__}: {e}"}
 
 
 def write_run_config(output_dir, name: str = "conversion_settings.json", *,

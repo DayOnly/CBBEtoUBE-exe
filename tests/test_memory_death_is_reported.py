@@ -139,9 +139,8 @@ def test_the_call_site_surfaces_it(monkeypatch):
         "a dead worker must be printed to the run log (print, or the warn helper)")
     assert "_record_failure" in body, (
         "it must reach the failures file too -- that is the artefact the bug "
-        "report asks for")
-    assert "overall_warnings" in body, (
-        "it must count as a warning, or the end-of-run tally still reads clean")
+        "report asks for; the record is also what the end-of-run tally counts "
+        "(#one-tally, tests/test_run_warnings_reach_the_tally.py)")
 
 
 def test_a_failures_file_that_cannot_be_written_is_said_out_loud(

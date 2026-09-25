@@ -2,6 +2,39 @@
 
 ## Unreleased
 
+### Fixed — the end-of-run list shows every problem the log counts
+
+Some problems were counted in the log's last line but never reached the list the
+window opens after a run: a problem that stops the combined plugin loading, a
+mesh missing its other body-weight version, a VirtualBody that could not be
+hidden again, patch-checker notes, and a failed tattoo/overlay transfer. A run
+could end "exit code 2 - check the log" with no list at all. The log's count is
+now made from the same list the window reads, so the two always agree; a group
+of similar notes is one line in the list, with its count.
+
+### Fixed — "Dry run" with only overlays ticked no longer converts overlays
+
+"Dry run (list mods, convert nothing)" with Convert overlays on and Convert armor
+off still converted every overlay into the output mod. It now lists the overlays
+it would convert and writes nothing.
+
+### Fixed — importing a wrong or damaged settings file no longer resets your settings
+
+Picking a damaged preset, or another JSON file by mistake, reset every setting to
+its default, saved that, and said "Settings imported". Such a file is now refused
+with a message and nothing changes. Export now says so when the file could not be
+written. A setting typed by hand as "false" or "0" now reads as off.
+
+### Changed — your saved settings apply everywhere, not only to the Convert button
+
+Check setup, the mod lists and the already-UBE mesh scan in the window now use the
+settings you saved (a UBE body picked on the Paths tab no longer shows as
+missing). Running `CBBEtoUBE.exe auto` or `convert` without the window now uses
+`CBBEtoUBE_settings.json` beside the exe too, as the Convert button does; a
+variable you set yourself still wins, and the log's top says which settings came
+from the file. `CBBE2UBE_NO_HEADLESS_SETTINGS=1` (set to 1) makes a run without
+the window ignore the file, as before.
+
 ### Fixed — a garment whose layers share one name keeps every layer
 
 Some garments are built from several layers the author gave the same name, for

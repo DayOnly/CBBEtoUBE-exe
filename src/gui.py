@@ -158,6 +158,67 @@ def preflight_scope(want_overlays: bool, overlay_copy_opt: bool) -> tuple:
     return (on, on and bool(overlay_copy_opt))
 
 
+_NOT_SAVED = (" -- but the settings file could NOT be saved beside the "
+              "tool, so they last only until you close this window.")
+
+
+def import_settings_file(path, apply_values) -> "tuple[bool, str]":
+    """The Import button, without the dialogs: `(imported, message)`.
+
+    A torn or foreign file used to load as ALL DEFAULTS, be saved over the
+    user's recipe by `apply_values` and be reported "Settings imported". It is
+    now refused and `apply_values` is never called. `apply_values(values)`
+    returns whether the settings file was saved. Module level and pure so it
+    can be tested. #settings-import-guard"""
+    from . import gui_settings
+    vals, why = gui_settings.load_for_import(path)
+    if vals is None:
+        return False, (f"{Path(path).name}: {why}.\n\nNothing was changed; your "
+                       "current settings are as they were.")
+    saved = apply_values(vals)
+    return True, f"Settings imported: {Path(path).name}" + ("" if saved else _NOT_SAVED)
+
+
+def export_settings_file(values, path) -> "tuple[bool, str]":
+    """The Export button, without the dialog: `(written, message)`.
+    `save_values` reports a failed write by RETURNING False, never by raising,
+    so checking only for an exception said "exported" over a file that was
+    never written. #settings-import-guard"""
+    from . import gui_settings
+    try:
+        ok = bool(gui_settings.save_values(values, path))
+    except Exception:
+        ok = False
+    if ok:
+        return True, f"Settings exported: {Path(path).name}"
+    return False, (f"Could not write {path}.\n\nCheck that the folder exists and "
+                   "can be written, then export again.")
+
+
+def _run_mode_argv(dry_run: bool, do_armor: bool, do_overlay: bool) -> list:
+    """The Dry-run and armor/overlay flags of an `auto` run. Module level and
+    pure so it can be tested; `_build_argv` is a closure.
+
+      overlays only  -> --overlays-only (early-returns before armor work)
+      both           -> --convert-overlays (armor + overlays)
+      armor only     -> neither flag (the default `auto` behaviour)
+
+    A DRY RUN NEVER CARRIES A FLAG THAT WRITES. "Dry run (list mods, convert
+    nothing)" with only overlays ticked ran the overlay transfer: the child
+    handled --overlays-only before --list-only. The child now lists overlays
+    under --list-only; and a dry run with both ticked drops --convert-overlays,
+    so it lists the armour mods and nothing can reach the transfer.
+    #dry-run-writes-nothing"""
+    a: list = []
+    if dry_run:
+        a.append("--list-only")
+    if do_overlay and not do_armor:
+        a.append("--overlays-only")
+    elif do_overlay and do_armor and not dry_run:
+        a.append("--convert-overlays")
+    return a
+
+
 def _armor_selection_argv(selected_mode: bool, picked, excluded) -> list:
     """The armour-selection arguments for an `auto` run. Module level and pure so
     it can be tested; `_build_argv` is a closure.
@@ -496,6 +557,9 @@ def child_env(settings: dict, body_env, log_path: str, base_env=None) -> dict:
         settings or {}, base_env=dict(os.environ if base_env is None else base_env))
     env["CBBE2UBE_NO_PAUSE"] = "1"       # child must not block on a keypress
     env["CBBE2UBE_RUN_LOG"] = log_path
+    # Applied above: the child must not re-read the file, which may be older
+    # than what this window holds (a failed save). #settings-everywhere
+    env[gui_settings.APPLIED_MARKER] = "the settings window"
     env.update(body_env or {})
     return env
 
@@ -897,8 +961,12 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
         def work():
             try:
                 od = out_var.get().strip()
-                items = auto_convert.list_convertible_mods(
-                    Path(od) if od else None)
+                # Under the saved settings, as the run will be (the vanilla
+                # sweep switch decides whether 'vanilla' is listed).
+                # #settings-everywhere
+                with gui_settings.SettingsOverlay(state["settings"]):
+                    items = auto_convert.list_convertible_mods(
+                        Path(od) if od else None)
             except Exception as e:
                 items = []
                 q.put(f"\n[mod scan failed: {e}]\n")
@@ -959,7 +1027,8 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
 
         def work():
             try:
-                items = auto_convert.list_overlay_mods()
+                with gui_settings.SettingsOverlay(state["settings"]):
+                    items = auto_convert.list_overlay_mods()
             except Exception as e:
                 items = []
                 q.put(f"\n[overlay mod scan failed: {e}]\n")
@@ -1244,16 +1313,17 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
         happened to be open, while the button said "Reset ALL" -- silently, and
         differently depending on what you had clicked earlier.
 
-        Used by reset-to-defaults and import.
+        Used by reset-to-defaults and import. Returns whether the settings
+        file was saved.
         """
         scope = gui_settings.displayed_keys()
         for k, v in vals.items():
             if k in scope:
                 state["settings"][k] = v
         try:
-            gui_settings.save_values(state["settings"])
+            saved = bool(gui_settings.save_values(state["settings"]))
         except Exception:
-            pass
+            saved = False
         # Any control that IS built gets the new value straight away; the
         # repaint rebuilds the rest from `state["settings"]`.
         for k, var in state["_setting_var_by_key"].items():
@@ -1263,14 +1333,15 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
                 except Exception:
                     pass
         _repaint_settings_tabs()
+        return saved
 
     def _reset_settings():
         if not messagebox.askokcancel(
                 "Reset settings",
                 "Reset ALL conversion settings to their defaults?"):
             return
-        _apply_setting_values(gui_settings.defaults())
-        status.set("Settings reset to defaults.")
+        saved = _apply_setting_values(gui_settings.defaults())
+        status.set("Settings reset to defaults." + ("" if saved else _NOT_SAVED))
 
     def _export_settings():
         p = filedialog.asksaveasfilename(
@@ -1279,24 +1350,22 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
             initialfile="CBBEtoUBE_settings.json")
         if not p:
             return
-        try:
-            gui_settings.save_values(state["settings"], p)
-            status.set(f"Settings exported: {Path(p).name}")
-        except Exception as e:
-            messagebox.showerror("Export failed", str(e))
+        ok, msg = export_settings_file(state["settings"], p)
+        if ok:
+            status.set(msg)
+        else:
+            messagebox.showerror("Export failed", msg)
 
     def _import_settings():
         p = filedialog.askopenfilename(
             title="Import settings preset", filetypes=[("JSON", "*.json")])
         if not p:
             return
-        try:
-            vals = gui_settings.load_values(p)
-        except Exception as e:
-            messagebox.showerror("Import failed", str(e))
-            return
-        _apply_setting_values(vals)
-        status.set(f"Settings imported: {Path(p).name}")
+        ok, msg = import_settings_file(p, _apply_setting_values)
+        if ok:
+            status.set(msg)
+        else:
+            messagebox.showerror("Import failed", msg)
 
     def _build_settings_tab(container, tab, prefix=None):
         """Populate one notebook tab from the registry: a scrollable body of
@@ -2040,8 +2109,11 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
                         root.after(0, lambda d=done, t=total: _cfg(
                             note, text=f"Scanning meshes… {d}/{t}"))
                     try:
-                        res = auto_convert.scan_ube_native("armor",
-                                                           progress=_prog)
+                        # The Paths-tab UBE body, as the run uses it.
+                        # #settings-everywhere
+                        with gui_settings.SettingsOverlay(state["settings"]):
+                            res = auto_convert.scan_ube_native("armor",
+                                                               progress=_prog)
                     except Exception as e:
                         res = []
                         q.put(f"\n[UBE mesh scan failed: {e}]\n")
@@ -2194,13 +2266,16 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
 
         def work():
             try:
-                if domain == "armor":
-                    # Live progress into the status line (first scan walks the
-                    # whole modlist; without this the dialog looks hung).
-                    items = lister(progress=lambda t: root.after(
-                        0, lambda s=t: _cfg(status_lbl, text=s)))
-                else:
-                    items = lister()
+                # Under the saved settings, as the run will be.
+                # #settings-everywhere
+                with gui_settings.SettingsOverlay(state["settings"]):
+                    if domain == "armor":
+                        # Live progress into the status line (first scan walks
+                        # the whole modlist; without this the dialog looks hung).
+                        items = lister(progress=lambda t: root.after(
+                            0, lambda s=t: _cfg(status_lbl, text=s)))
+                    else:
+                        items = lister()
             except Exception as e:
                 items = []
                 q.put(f"\n[exclusion scan failed: {e}]\n")
@@ -2223,8 +2298,12 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
 
         def work():
             try:
-                checks = pf.run_checks(want_overlays=scope[0],
-                                       want_overlay_copy=scope[1])
+                # Check the setup the RUN will have: a UBE body or texconv set
+                # on the Paths tab reaches the run's environment only, and was
+                # reported missing here. #settings-everywhere
+                with gui_settings.SettingsOverlay(state["settings"]):
+                    checks = pf.run_checks(want_overlays=scope[0],
+                                           want_overlay_copy=scope[1])
             except Exception as e:
                 checks = None
                 q.put(f"\n[setup check failed: {e}]\n")
@@ -2435,8 +2514,9 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
                     except Exception:
                         pass
                     try:
-                        z.writestr("preflight.txt",
-                                   "\n".join(pf.format_checks(pf.run_checks())))
+                        with gui_settings.SettingsOverlay(state["settings"]):
+                            _pf_text = "\n".join(pf.format_checks(pf.run_checks()))
+                        z.writestr("preflight.txt", _pf_text)
                     except Exception:
                         pass
                     # The files REPORTING.md asks for, which the zip never held:
@@ -2652,18 +2732,10 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
             a.append("--copy-textures")
         if not merge_armors.get():
             a.append("--no-auto-merge")
-        if dry.get():
-            a.append("--list-only")
         do_armor = convert_armor.get()
         do_overlay = convert_overlays.get()
-        # Armor + overlay combination -> the pipeline's mode flag.
-        #   overlays only  -> --overlays-only (early-returns before armor work)
-        #   both           -> --convert-overlays (armor + overlays)
-        #   armor only     -> neither flag (the default `auto` behaviour)
-        if do_overlay and not do_armor:
-            a.append("--overlays-only")
-        elif do_overlay and do_armor:
-            a.append("--convert-overlays")
+        # Dry run + the armor/overlay combination (see _run_mode_argv).
+        a += _run_mode_argv(dry.get(), do_armor, do_overlay)
         # Armor selection (see _armor_selection_argv).
         if do_armor:
             a += _armor_selection_argv(

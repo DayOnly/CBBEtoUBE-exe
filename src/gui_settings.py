@@ -37,8 +37,11 @@ import json
 import os
 import re
 import sys
+import threading
 from dataclasses import dataclass
 from pathlib import Path
+
+from .envflags import _ON as _ON_WORDS
 
 
 @dataclass(frozen=True)
@@ -1781,6 +1784,12 @@ def config_path() -> Path:
 def _coerce(s: Setting, v):
     try:
         if s.kind == "bool":
+            if isinstance(v, str):
+                # A hand-edited "false" / "0" / "off" is OFF: bool("false") is
+                # True, which turned it ON. The same words the environment
+                # reads (envflags.flag); blank keeps the default.
+                t = v.strip().lower()
+                return s.default if not t else t in _ON_WORDS
             return bool(v)
         if s.kind == "int":
             return int(v)
@@ -1828,6 +1837,32 @@ def load_status(path=None) -> str:
     except Exception:
         return "malformed"
     return "ok" if isinstance(raw, dict) else "malformed"
+
+
+def load_for_import(path) -> "tuple[dict | None, str]":
+    """`(values, "")` for a settings file worth importing, else `(None, why)`.
+
+    `load_values` turns an absent, torn or foreign file into pure DEFAULTS, by
+    design -- the GUI must still open. Import used it as is: picking a torn
+    preset, or the exclusions file by mistake, reset every setting, saved the
+    defaults over the user's recipe and said "Settings imported". An import
+    now needs a JSON object holding at least one registered setting (or the
+    `_known_settings` record every save writes, so an all-defaults export
+    still imports); anything else changes nothing. #settings-import-guard"""
+    p = Path(path)
+    status = load_status(p)
+    if status == "absent":
+        return None, "the file does not exist"
+    if status == "malformed":
+        return None, "the file is not a readable settings file"
+    try:
+        raw = json.loads(p.read_text(encoding="utf-8"))
+    except Exception as e:       # vanished or locked since load_status
+        return None, f"the file could not be read ({type(e).__name__})"
+    reg = by_key()
+    if not any(k in reg or k == KNOWN_KEYS_FIELD for k in raw):
+        return None, "the file holds no CBBEtoUBE settings"
+    return load_values(p), ""
 
 
 def unseen_settings(path=None) -> "tuple[bool, list]":
@@ -1892,4 +1927,142 @@ def save_values(values: "dict[str, object]", path=None) -> bool:
         atomic_write_bytes(p, data)
         return True
     except Exception:
+        return False
+
+
+# ---- the saved settings outside the conversion child ----------------------
+#
+# #settings-everywhere. The window applied CBBEtoUBE_settings.json to exactly
+# one place: the conversion child's environment. Its own helpers (Check setup,
+# Refresh mod list, the UBE-mesh scan) read the bare environment, so a UBE body
+# set on the Paths tab still failed Check setup, and the vanilla sweep turned
+# off still showed "vanilla" in the mod list. A headless `CBBEtoUBE.exe auto`
+# ignored the file entirely, while USING.md calls the Convert button "the same
+# pipeline as CBBEtoUBE.exe auto".
+
+# Set in a child's environment by whoever already applied the settings (the
+# window, a parity harness), so the child does not read the file a second time.
+APPLIED_MARKER = "CBBE2UBE_SETTINGS_APPLIED"
+HEADLESS_SWITCH = "CBBE2UBE_NO_HEADLESS_SETTINGS"
+
+# What `apply_saved_settings` did in THIS process (None: it never ran here).
+_HEADLESS_REPORT: "dict | None" = None
+
+
+def _headless_settings_enabled(environ) -> bool:
+    """False under CBBE2UBE_NO_HEADLESS_SETTINGS=1: a headless run then ignores
+    the settings file, as every build before this one did."""
+    return str(environ.get(HEADLESS_SWITCH, "")).strip().lower() not in _ON_WORDS
+
+
+def apply_saved_settings(environ=None, path=None) -> dict:
+    """A headless `auto` / `convert`: apply the saved settings to `environ`
+    (default: this process's), as the window does for its conversion child --
+    except that a variable ALREADY SET in the environment wins over the file,
+    so a scripted override still overrides. Must run before the converter's
+    modules are imported (some read their flags at import time); the entry
+    point calls it first.
+
+    Returns (and keeps, for the run's echo and conversion_settings.json) what
+    it did: {"path", "status", "applied": {var: value}, "kept": {var: value},
+    "skipped": why-not or ""}."""
+    global _HEADLESS_REPORT
+    env = os.environ if environ is None else environ
+    p = Path(path) if path is not None else config_path()
+    rep = {"path": str(p), "status": load_status(p), "applied": {}, "kept": {},
+           "skipped": ""}
+    if env.get(APPLIED_MARKER, "").strip():
+        rep["skipped"] = f"already applied by {env[APPLIED_MARKER].strip()}"
+    elif not _headless_settings_enabled(env):
+        rep["skipped"] = f"{HEADLESS_SWITCH}=1"
+    elif rep["status"] != "ok":
+        rep["skipped"] = f"settings file {rep['status']}"
+    else:
+        wanted = apply_env(load_values(p), base_env={})
+        for var, val in sorted(wanted.items()):
+            if var in env:
+                rep["kept"][var] = env[var]
+            else:
+                env[var] = val
+                rep["applied"][var] = val
+    _HEADLESS_REPORT = rep
+    return rep
+
+
+def headless_report() -> "dict | None":
+    return _HEADLESS_REPORT
+
+
+def settings_source_line(environ=None) -> str:
+    """One log line: where this run's settings came from. #settings-everywhere"""
+    env = os.environ if environ is None else environ
+    rep = _HEADLESS_REPORT
+    if rep is None:
+        by = env.get(APPLIED_MARKER, "").strip()
+        if by:
+            return f"  effective settings: from {by}"
+        return ("  effective settings: settings file NOT read by this process "
+                "(the window and CBBEtoUBE.exe auto/convert apply it)")
+    if rep["skipped"]:
+        return (f"  effective settings: settings file NOT applied "
+                f"({rep['skipped']}): {rep['path']}")
+    line = f"  effective settings: from {rep['path']}"
+    if rep["applied"]:
+        line += " -- set " + ", ".join(f"{k[9:]}={v}" for k, v in rep["applied"].items())
+    else:
+        line += " -- nothing to set (every saved value is a default or already set)"
+    if rep["kept"]:
+        line += ("; the environment already set, and wins: "
+                 + ", ".join(f"{k[9:]}={v}" for k, v in rep["kept"].items()))
+    return line
+
+
+_OVERLAY_LOCK = threading.Lock()
+_OVERLAY_STATE = {"depth": 0, "saved": {}}
+
+
+class SettingsOverlay:
+    """`with SettingsOverlay(values): helper()` -- run a helper in the WINDOW
+    process under the environment its conversion child would get
+    (`apply_env`: registry settings win), then put the window's environment
+    back. Scoped, not a permanent change: the window's own environment stays
+    what it was launched with. Overlapping helpers on worker threads share one
+    overlay; the last one out restores. Flags a module reads only at import
+    time cannot follow it -- the conversion itself runs in a child for that
+    reason. #settings-everywhere"""
+
+    def __init__(self, values, environ=None):
+        self._values = values or {}
+        self._env = os.environ if environ is None else environ
+
+    def __enter__(self):
+        target = apply_env(self._values, base_env=dict(self._env))
+        managed = {s.env for s in SETTINGS if s.env}
+        with _OVERLAY_LOCK:
+            st = _OVERLAY_STATE
+            if st["depth"] == 0:
+                st["saved"] = {}
+            for var in managed:
+                new, old = target.get(var), self._env.get(var)
+                if new == old:
+                    continue
+                st["saved"].setdefault(var, old)
+                if new is None:
+                    self._env.pop(var, None)
+                else:
+                    self._env[var] = new
+            st["depth"] += 1
+        return self
+
+    def __exit__(self, *exc):
+        with _OVERLAY_LOCK:
+            st = _OVERLAY_STATE
+            st["depth"] -= 1
+            if st["depth"] == 0:
+                for var, old in st["saved"].items():
+                    if old is None:
+                        self._env.pop(var, None)
+                    else:
+                        self._env[var] = old
+                st["saved"] = {}
         return False

@@ -309,7 +309,34 @@ def _log_dir_candidates():
         return []
 
 
+# The runs that convert, and so read the saved settings. `merge` builds no mesh.
+_SETTINGS_SUBCOMMANDS = frozenset({"auto", "convert"})
+
+
+def _apply_saved_settings(argv):
+    """A headless `auto` / `convert` runs with CBBEtoUBE_settings.json, as the
+    window's Convert button does. #settings-everywhere
+
+    It used to ignore the file: settings tuned in the window, then
+    `CBBEtoUBE.exe auto` from MO2 or a shell, ran a whole conversion at the
+    defaults, while USING.md called the two the same pipeline. A variable
+    already set in the environment wins over the file; the window's own child
+    (and a parity harness) carries CBBE2UBE_SETTINGS_APPLIED and is left alone;
+    CBBE2UBE_NO_HEADLESS_SETTINGS=1 ignores the file as before. BEFORE the
+    converter is imported: some modules read their flags at import time. The
+    run's echo says what was applied. Never raises."""
+    if not argv or argv[0] not in _SETTINGS_SUBCOMMANDS or _asks_for_help(argv[1:]):
+        return None
+    try:
+        from src import gui_settings
+        return gui_settings.apply_saved_settings()
+    except Exception as e:
+        print(f"note: the saved settings were not applied ({type(e).__name__}: {e})")
+        return None
+
+
 def _run() -> int:
+    _apply_saved_settings(sys.argv[1:])
     # Imported lazily so freeze_support() runs first in worker processes.
     from src.auto_convert import main
     return main()

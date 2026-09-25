@@ -779,6 +779,42 @@ def list_overlay_mods(layout, regions=("body", "hands", "feet"),
     return list(seen)
 
 
+def _source_skip_set(output_dir, exclude_mods) -> set:
+    """Mods never read as an overlay source: the user's exclusions, and our OWN
+    output mod -- it is the highest-priority mod, so a previous run's
+    already-converted UBE-UV overlays would otherwise win as the "source" and
+    be transferred a SECOND time -> double-warped."""
+    skip = set(exclude_mods or ())          # user exclusions (e.g. UBE-native)
+    _mr = _paths.mods_root()
+    if _mr is not None:
+        try:
+            skip.add(Path(output_dir).resolve().relative_to(_mr.resolve()).parts[0])
+        except Exception:
+            skip.add(Path(output_dir).name)
+    return skip
+
+
+def _planned_overlays(layout, regions, skip, only_mods, skip_male) -> dict:
+    """{region: {rel: source}} -- what a transfer would read. Reads only."""
+    by_region = discover_overlays(layout, regions, skip_mods=skip,
+                                  only_mods=only_mods)
+    if skip_male:
+        for _r in by_region:
+            by_region[_r] = {rel: s for rel, s in by_region[_r].items()
+                             if not _is_male_overlay(rel)}
+    return by_region
+
+
+def plan_overlays(output_dir, layout, *, regions=("body", "hands", "feet"),
+                  skip_male=False, only_mods=None, exclude_mods=None) -> dict:
+    """The overlays `convert_overlays` would remap, WITHOUT writing anything --
+    for `auto --overlays-only --list-only` (the GUI's Dry run). Same source
+    rules as the transfer: {region: {rel_path: source}}. #dry-run-writes-nothing"""
+    return _planned_overlays(layout, regions,
+                             _source_skip_set(output_dir, exclude_mods),
+                             only_mods, skip_male)
+
+
 def convert_overlays(output_dir, layout, *, regions=("body", "hands", "feet"),
                      texconv=None, log=print, limit: int = 0,
                      overlay_mode="replace", skip_male=False,
@@ -798,16 +834,7 @@ def convert_overlays(output_dir, layout, *, regions=("body", "hands", "feet"),
         log("  !! overlay transfer SKIPPED: texconv not found (set "
             "CBBE2UBE_TEXCONV or install it under the MO2 tools/ folder)")
         return {"converted": 0, "reason": "no-texconv"}
-    # Exclude our OWN output mod from the source scan: it's the highest-priority
-    # mod, so a previous run's already-converted UBE-UV overlays would otherwise
-    # win as the "source" and be transferred a SECOND time -> double-warped.
-    skip = set(exclude_mods or ())          # user exclusions (e.g. UBE-native)
-    _mr = _paths.mods_root()
-    if _mr is not None:
-        try:
-            skip.add(Path(output_dir).resolve().relative_to(_mr.resolve()).parts[0])
-        except Exception:
-            skip.add(Path(output_dir).name)
+    skip = _source_skip_set(output_dir, exclude_mods)
     # "Add UBE copy" mode: keep every original overlay and add a `UBE <name>`
     # variant per registered overlay (needs the Papyrus toolchain). Distinct code
     # path -- returns its own stats.
@@ -815,12 +842,7 @@ def convert_overlays(output_dir, layout, *, regions=("body", "hands", "feet"),
         return add_ube_overlay_copies(
             layout, output_dir, texconv, regions=regions, skip_mods=skip,
             only_mods=only_mods, skip_male=skip_male, limit=limit, log=log)
-    by_region = discover_overlays(layout, regions, skip_mods=skip,
-                                  only_mods=only_mods)
-    if skip_male:
-        for _r in by_region:
-            by_region[_r] = {rel: s for rel, s in by_region[_r].items()
-                             if not _is_male_overlay(rel)}
+    by_region = _planned_overlays(layout, regions, skip, only_mods, skip_male)
     total = sum(len(v) for v in by_region.values())
     if total == 0:
         log("  overlay transfer: no body/hands/feet overlays found")
