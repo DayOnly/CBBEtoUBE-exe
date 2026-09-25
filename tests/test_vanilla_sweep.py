@@ -282,6 +282,9 @@ def test_sweep_pool_failure_self_heals_serially(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("CBBE2UBE_RUN_LOG", str(tmp_path / "run.log"))
     # Inside a modlist: `convert` refuses to run without a mods folder.
     monkeypatch.setenv("CBBE2UBE_MODS_ROOT", str(tmp_path))
+    # One source at a time: this pins that loop's self-heal. The batch-wide
+    # schedule's own is pinned in test_global_schedule.py. #global-schedule
+    monkeypatch.setenv("CBBE2UBE_NO_GLOBAL_SCHEDULE", "1")
 
     class _FakePool:
         def __init__(self, *a, **k): pass

@@ -51,6 +51,7 @@ import os
 import sys
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from functools import update_wrapper as _update_wrapper
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -472,6 +473,387 @@ def _memory_hint() -> str:
                 f'"Worker processes" on the Run tab and try again]')
     except Exception:
         return ""
+
+
+# --- #global-schedule: one NIF schedule for the whole batch ------------------
+#
+# One source at a time, every source's units went to the shared pool and the run
+# WAITED for that source's slowest unit before planning the next. Measured on the
+# 09-24 All-mods run (154 sources, 3312 NIFs, 15 workers): the NIF phase was 71.3
+# of 87 minutes and the workers were busy 24.7% of it -- 89 sources of under 15
+# NIFs took 38 minutes, and each 7-14 MB piece (125-222 s) held 12-14 workers
+# idle behind it. Nothing a source plans depends on another source's NIFs (the
+# claims and the patch ESP are decided before them), so every source is planned
+# first, all their units run on one largest-first schedule, and each source's
+# post-conversion steps run once its own units are in, in source order.
+
+def _global_schedule() -> bool:
+    """#global-schedule (2026-09-25): convert every source's NIFs on one
+    batch-wide schedule instead of one source at a time? Yes, by default.
+    CBBE2UBE_NO_GLOBAL_SCHEDULE=1 waits for each source's slowest piece again,
+    and superseding moves a base an earlier source converted this run again."""
+    return not _flag("CBBE2UBE_NO_GLOBAL_SCHEDULE", False)
+
+
+# A worker's peak commit tracks the size of the mesh it converts: about 0.36 GB
+# of floor plus about 236 MB per source MB (measured 2026-09-11 against the full
+# pack: the largest source, 14 MB, peaked at 3.79 GB). The pool is sized so each
+# worker has WORKER_MEM_BUDGET_GB; a unit whose predicted peak fits that budget
+# is admitted whenever a worker is free. A HEAVIER unit is admitted only when no
+# other heavy unit is running, or when the live free RAM and free commit, less a
+# reserve, cover its peak plus the peaks of the heavy units already running. That
+# double-counts what those have already taken -- it errs toward waiting, and
+# lighter units fill the free workers meanwhile.
+SCHED_WORKER_FLOOR_GB = 0.36
+SCHED_PEAK_GB_PER_SOURCE_MB = 0.236
+SCHED_RESERVE_GB = 2.0
+
+
+def _source_mb(path) -> float:
+    """Size of a work item's source NIF in MB; 0 when it cannot be read (the
+    unit is then treated as light and ordered last)."""
+    try:
+        return os.stat(path).st_size / 2.0 ** 20
+    except (OSError, TypeError, ValueError):
+        return 0.0
+
+
+class _SchedUnit:
+    """One unit of the batch-wide schedule: the weight variants of one base
+    that ONE source planned, in list order (`_global_units`)."""
+    __slots__ = ("items", "source", "after", "seq", "mb", "peak_gb")
+
+    def __init__(self, items, source, after, seq, size_of):
+        self.items = list(items)
+        self.source = source      # index of the source whose items these are
+        self.after = after        # index of a source that must FINISH first
+        self.seq = seq
+        sizes = [size_of(it[0]) for it in self.items]
+        self.mb = sum(sizes)
+        self.peak_gb = (SCHED_WORKER_FLOOR_GB
+                        + SCHED_PEAK_GB_PER_SOURCE_MB * max(sizes, default=0.0))
+
+
+def _global_units(per_source, size_of=None) -> "list[_SchedUnit]":
+    """The units of the batch-wide schedule. `per_source` is [(source index,
+    work items)] in source order. #global-schedule
+
+    Keyed like `_pair_units` -- the weight base of the DESTINATION -- but over
+    the WHOLE batch, not one call. A base one source plans is one unit. A base
+    two sources plan (one ships the `_1`, a later one the `_0`) shares one
+    physics XML and one `.tri` at the destination, so it must never be on two
+    workers at once (#pair-unit-dispatch): it becomes one unit per source, and
+    the later one is not started until the earlier SOURCE has finished, its
+    post-conversion steps included -- the order one source at a time gives
+    those files."""
+    size_of = size_of or _source_mb
+    groups: "dict[str, dict[int, list]]" = {}
+    order: "list[str]" = []
+    for si, items in per_source:
+        for it in items:
+            key = _weight_base_key(str(it[1]))
+            if key not in groups:
+                groups[key] = {}
+                order.append(key)
+            groups[key].setdefault(si, []).append(it)
+    units: "list[_SchedUnit]" = []
+    for key in order:
+        prev = None
+        for si in sorted(groups[key]):
+            units.append(_SchedUnit(groups[key][si], si, prev, len(units), size_of))
+            prev = si
+    return units
+
+
+def _ran_out_of_memory(result) -> bool:
+    """Did this piece meet a MemoryError -- raised out of the conversion (an
+    error result) or caught inside a fit pass (the piece shipped without that
+    fit)? Both ride home in `reason`. #global-schedule"""
+    return "MemoryError" in (getattr(result, "reason", "") or "")
+
+
+def _worker_budget_gb() -> float:
+    """The per-worker RAM budget the pool was sized with (`default_worker_count`)."""
+    try:
+        return float(_knob("CBBE2UBE_WORKER_MEM_GB", float(WORKER_MEM_BUDGET_GB)))
+    except ValueError:
+        return float(WORKER_MEM_BUDGET_GB)
+
+
+class _GlobalNifSchedule:
+    """Run every unit of the batch on the shared `_NifPool`, largest first, and
+    finish each source once all of its units are in -- in source order.
+    #global-schedule
+
+    `deliver(source, ConvertResult)` receives every result exactly once.
+    `finish(source)` is called exactly once per source index, in index order,
+    only after every unit of that source (and of every source before it) has
+    delivered. Survives worker death like `_NifPool.run_batch`: the units in
+    flight when the pool broke are re-run in isolation, one item at a time, once
+    nothing else is in flight. A unit whose result shows a MemoryError is not
+    delivered but re-run the same way -- memory other units were holding is the
+    likeliest cause, and a piece shipped without its fit (or an error result
+    whose patch ESP already points at the missing NIF) is not an answer.
+    `memory()` is `_memory_status` (injectable for tests)."""
+
+    def __init__(self, nif_pool, units, n_sources, deliver, finish, *,
+                 fn=None, memory=None, budget_gb=None):
+        self.nif_pool = nif_pool
+        self.units = list(units)
+        self.n_sources = int(n_sources)
+        self.deliver = deliver
+        self.finish = finish
+        self.fn = fn or _nif_convert_worker
+        self.memory = memory or _memory_status
+        self.budget_gb = _worker_budget_gb() if budget_gb is None else budget_gb
+        self.left = [0] * self.n_sources
+        for u in self.units:
+            self.left[u.source] += 1
+        self.next_finish = 0
+        self.memory_retries = 0
+        self.crash_retries = 0
+        self.peak_heavy = 0          # most heavy units ever in flight at once
+
+    def _heavy(self, u) -> bool:
+        return u.peak_gb > self.budget_gb
+
+    def _headroom_gb(self):
+        st = self.memory()
+        if not st:
+            return None
+        vals = [v for v in (st.get("avail_gb"), st.get("commit_free_gb"))
+                if v is not None]
+        return (min(vals) - SCHED_RESERVE_GB) if vals else None
+
+    def _pick(self, pending, in_flight):
+        """The first unit of `pending` (largest first) that may start now."""
+        heavy_now = [v for v in in_flight if self._heavy(v)]
+        headroom = None
+        looked = False
+        for u in pending:
+            if u.after is not None and u.after >= self.next_finish:
+                continue                  # waits on an earlier source's finish
+            if not self._heavy(u) or not heavy_now:
+                return u
+            if not looked:
+                headroom = self._headroom_gb()
+                looked = True
+            if (headroom is not None
+                    and u.peak_gb + sum(v.peak_gb for v in heavy_now) <= headroom):
+                return u
+        return None
+
+    def _advance(self):
+        while (self.next_finish < self.n_sources
+               and self.left[self.next_finish] == 0):
+            k = self.next_finish
+            self.finish(k)
+            self.next_finish = k + 1
+
+    def _run_isolated(self, units):
+        """Re-run `units` one item at a time on a healthy pool, in their
+        original order; `_NifPool._run_isolated` answers exactly once per item,
+        in item order, which is how each answer finds its source."""
+        units = sorted(units, key=lambda u: u.seq)
+        owners = iter([u.source for u in units for _it in u.items])
+        items = [it for u in units for it in u.items]
+        self.nif_pool._run_isolated(
+            items, lambda r: self.deliver(next(owners), r), self.fn)
+        for u in units:
+            self.left[u.source] -= 1
+
+    def run(self):
+        from concurrent.futures import FIRST_COMPLETED, wait
+        pending = sorted(self.units, key=lambda u: (-u.mb, u.seq))
+        in_flight: dict = {}
+        retry: list = []
+        broken = False
+        self._advance()                   # sources with nothing to convert
+        while pending or in_flight or retry:
+            while not broken and len(in_flight) < self.nif_pool.max_workers:
+                u = self._pick(pending, in_flight.values())
+                if u is None:
+                    break
+                pending.remove(u)
+                try:
+                    self.nif_pool._ensure()
+                    fut = self.nif_pool.pool.submit(_run_unit, self.fn, u.items)
+                except Exception:
+                    retry.append(u)       # pool already broken: nothing ran
+                    self.crash_retries += 1
+                    broken = True
+                    break
+                in_flight[fut] = u
+                self.peak_heavy = max(self.peak_heavy, sum(
+                    1 for v in in_flight.values() if self._heavy(v)))
+            if not in_flight:
+                if broken:
+                    self.nif_pool._rebuild()
+                    broken = False
+                elif retry:
+                    self._run_isolated(retry)
+                    retry = []
+                    self._advance()
+                elif pending:
+                    # Cannot happen (a unit only waits on an EARLIER source,
+                    # and the earliest unfinished source's units never wait);
+                    # run them rather than hang if it ever does.
+                    for u in pending:
+                        u.after = None
+                else:
+                    break
+                continue
+            done, _ = wait(list(in_flight), return_when=FIRST_COMPLETED)
+            for fut in sorted(done, key=lambda f: in_flight[f].seq):
+                u = in_flight.pop(fut)
+                try:
+                    results = fut.result()
+                except Exception:
+                    retry.append(u)       # worker death: nothing here is certain
+                    self.crash_retries += 1
+                    broken = True
+                    continue
+                _echo_worker_output(getattr(results, "output", ""))
+                if any(_ran_out_of_memory(r) for r in results):
+                    self.memory_retries += 1
+                    print(f"  out of memory converting "
+                          f"{', '.join(Path(str(it[1])).name for it in u.items)}"
+                          " -- converting it again on its own once the pool "
+                          "is idle")
+                    retry.append(u)
+                    continue
+                for r in results:
+                    self.deliver(u.source, r)
+                self.left[u.source] -= 1
+            self._advance()
+
+
+def _convert_sources_global(sources, results, nif_pool, claimed_dst_paths, *,
+                            make_steps, convert_serial, checkpoint):
+    """#global-schedule: plan every source, convert all their NIFs on one
+    schedule, then finish each source in source order. Appends
+    (source, result, error) to `results` in source order and calls
+    `checkpoint()` after each, as the one-source-at-a-time loop does.
+
+    `make_steps(src)` -> that source's `_auto_convert_mod_steps` generator;
+    `convert_serial(src)` -> the whole source converted in this process with
+    no pool (the vanilla sweep's self-heal)."""
+    n = len(sources)
+    slots: list = []
+
+    def _failed(err):
+        warn(f"conversion failed: {plain_error(err)}",
+             consequence="the run stopped; the log above says where",
+             fix="fix the cause and run again", indent="")
+
+    def _sweep_serial_retry(src, why, own_claims):
+        warn(f"vanilla sweep failed ({plain_error(why)})",
+             consequence="retrying SERIALLY (no worker pool; slower, but "
+                         "immune to pool-environment failures)...",
+             indent="")
+        claimed_dst_paths.difference_update(own_claims)
+        r = convert_serial(src)
+        print("  vanilla sweep serial retry SUCCEEDED")
+        return r
+
+    for i, src in enumerate(sources, 1):
+        is_sweep = bool(_vanilla_sweep_esps(src))
+        disp = "Vanilla sweep (base game + DLC)" if is_sweep else src.name
+        if is_sweep:
+            print("\n=== VANILLA SWEEP pass: base game + DLC as the "
+                  "lowest-priority source ===")
+        print(f"\n--- [{i}/{n}] planning '{disp}' ---")
+        slot = {"src": src, "disp": disp, "sweep": is_sweep, "steps": None,
+                "phase": None, "result": None, "error": None, "claims": set()}
+        before = set(claimed_dst_paths) if is_sweep else None
+        try:
+            steps = make_steps(src)
+            try:
+                slot["phase"] = next(steps)
+                slot["steps"] = steps
+            except StopIteration as done:
+                slot["result"] = done.value
+        except Exception as e1:
+            if is_sweep:
+                try:
+                    slot["result"] = _sweep_serial_retry(
+                        src, e1, set(claimed_dst_paths) - before)
+                except Exception as e2:
+                    slot["error"] = e2
+            else:
+                slot["error"] = e1
+            if slot["error"] is not None:
+                _failed(slot["error"])
+        if is_sweep and slot["steps"] is not None:
+            slot["claims"] = set(claimed_dst_paths) - before
+        slots.append(slot)
+
+    per_source = [(k, s["phase"].work_items) for k, s in enumerate(slots)
+                  if s["phase"] is not None]
+    units = _global_units(per_source)
+    total = sum(len(items) for _k, items in per_source)
+    workers = nif_pool.max_workers
+    t0 = time.perf_counter()
+    state = {"done": 0, "last": t0}
+    last_done = {}
+    if total:
+        print(f"\n=== NIF conversion: {total} file(s) from {len(per_source)} "
+              f"source(s) on one schedule, {workers} worker(s), largest first ===")
+        # ONE bar for the whole phase: every source's files fill it together.
+        # "[progress] 1 1 <label>" then "[progress-nif] <done> <total>".
+        # #per-file-progress
+        print("[progress] 1 1 NIF conversion (all sources)", flush=True)
+
+    def _deliver(k, r):
+        slots[k]["phase"].result.nif_results.append(r)
+        state["done"] += 1
+        now = time.perf_counter()
+        last_done[k] = now - t0
+        if now - state["last"] >= 5.0 or state["done"] == total:
+            rate = state["done"] / max(now - t0, 1e-9)
+            eta = (total - state["done"]) / max(rate, 1e-9)
+            print(f"    [{state['done']}/{total}] {rate:.1f} NIF/s  ETA {eta:.0f}s")
+            print(f"[progress-nif] {state['done']} {total}", flush=True)
+            state["last"] = now
+
+    def _finish(k):
+        slot = slots[k]
+        r, err = slot["result"], slot["error"]
+        if slot["steps"] is not None:
+            phase = slot["phase"]
+            m = len(phase.work_items)
+            if m:
+                phase.result.notes.append(
+                    f"NIF conversion: {m} files on the batch-wide schedule "
+                    f"(the last done {last_done.get(k, 0.0):.1f}s into it) with "
+                    f"{workers} worker(s)")
+                print(f"  [{k + 1}/{n}] '{slot['disp']}': {m} NIF(s) converted "
+                      f"({last_done.get(k, 0.0):.0f}s into the schedule)")
+            try:
+                r = _resume_source_steps(slot["steps"], run_nifs=False)
+            except Exception as e1:
+                r = None
+                if slot["sweep"]:
+                    try:
+                        r = _sweep_serial_retry(slot["src"], e1, slot["claims"])
+                    except Exception as e2:
+                        err = e2
+                else:
+                    err = e1
+                if err is not None:
+                    _failed(err)
+        results.append((slot["src"], r if err is None else None, err))
+        checkpoint()
+
+    sched = _GlobalNifSchedule(nif_pool, units, n, _deliver, _finish)
+    sched.run()
+    if total:
+        el = time.perf_counter() - t0
+        print(f"\n=== NIF conversion done: {total} file(s) in {el:.1f}s "
+              f"({total / max(el, 1e-9):.2f}/s) on one schedule; heavy units at "
+              f"once: up to {sched.peak_heavy}; re-run alone: "
+              f"{sched.memory_retries} after running out of memory, "
+              f"{sched.crash_retries} after a worker died ===")
 
 
 def _incremental_code_mtime() -> float:
@@ -1772,7 +2154,41 @@ def refresh_mod_esp(
     return result
 
 
-def auto_convert_mod(
+def auto_convert_mod(source_dir, output_dir, **kwargs) -> "AutoConvertResult":
+    """Run the full pipeline on one source mod: plan it, convert its NIFs, then
+    its post-conversion steps. The pipeline itself, and every argument, is
+    `_auto_convert_mod_steps`; this runs its NIF phase here, in this call.
+    #global-schedule"""
+    steps = _auto_convert_mod_steps(source_dir, output_dir, **kwargs)
+    try:
+        next(steps)
+    except StopIteration as done:        # nothing planned: no pause
+        return done.value
+    return _resume_source_steps(steps, run_nifs=True)
+
+
+def _resume_source_steps(steps, *, run_nifs: bool):
+    """Resume one source's `_auto_convert_mod_steps`, paused after planning at
+    its `_NifPhase`, and return its AutoConvertResult. `run_nifs`: the steps
+    convert their NIFs themselves (True, one source at a time) or the
+    batch-wide schedule already has (False). #global-schedule"""
+    try:
+        steps.send(run_nifs)
+    except StopIteration as done:
+        return done.value
+    raise RuntimeError("a source's conversion steps paused twice")
+
+
+@dataclass
+class _NifPhase:
+    """Where a source's steps pause: its planned NIF work and the result it
+    fills. #global-schedule"""
+    result: "AutoConvertResult"
+    work_items: list
+    nif_workers: int
+
+
+def _auto_convert_mod_steps(
     source_dir: str | Path,
     output_dir: str | Path,
     *,
@@ -1845,8 +2261,15 @@ def auto_convert_mod(
     # mod already built for UBE is left to it, and an earlier run's copy is moved
     # out of meshes\. None => convert it anyway (the old rule). #skip-built-ube-path
     built_ube_twin: "callable[[str], str | None] | None" = None,
-) -> AutoConvertResult:
+):
     """Run the full M2 + M3 phase 1 pipeline on a single CBBE armor mod.
+
+    A generator, paused ONCE: after planning (claims, the patch ESP, the work
+    items) it yields a `_NifPhase` and is sent whether to convert those NIFs
+    itself. The batch-wide schedule plans every source to that point, runs all
+    their NIFs together, then resumes each source in order with False. Driven
+    by `_resume_source_steps`; `auto_convert_mod` is the one-call form.
+    Nothing planned (no armour meshes resolved) -> no pause. #global-schedule
 
     Args:
       source_dir: a CBBE armor mod folder (the kind MO2 would install)
@@ -2306,14 +2729,24 @@ def auto_convert_mod(
                 "(earlier source mod won the output path)")
         if skipped_built:
             _stuck: list = []
+            # A base an EARLIER source claimed this run is its conversion, not
+            # an earlier run's copy: it stays. #global-schedule
+            _to_move, _held = _split_claimed_supersedes(
+                [r for r, _m in skipped_built], nif_dst_root, claimed_dst_paths)
             _moved = _supersede_built_ube_outputs(
-                output_dir, nif_dst_root, [r for r, _m in skipped_built],
+                output_dir, nif_dst_root, _to_move,
                 failed=_stuck)
             if _supersede_whole_base():
                 # The fill after the batch must not put our copy back at the
                 # builder's path, moved or (a move failed) left whole.
                 result.superseded_weight_bases.update(
-                    _weight_base_key(r) for r, _m in skipped_built)
+                    _weight_base_key(r) for r in _to_move)
+            if _held:
+                _held_msg = (f"built UBE version elsewhere: {len(_held)} mesh(es) "
+                             "not moved out of meshes\\ -- an earlier source "
+                             "converted them in this run")
+                print(f"  {_held_msg}")
+                result.notes.append(_held_msg)
             from collections import Counter as _Counter
             _by_mod = _Counter(m for _r, m in skipped_built)
             print(f"  built UBE version elsewhere: {len(skipped_built)} mesh(es) "
@@ -2357,13 +2790,21 @@ def auto_convert_mod(
             nif_workers = default_worker_count()
         nif_workers = max(1, min(nif_workers, len(work_items)))
 
+        # THE PAUSE. Everything above decided what this source converts and
+        # where (claims, the patch ESP); everything below the batch only reads
+        # this source's own outputs. The batch-wide schedule converts the work
+        # items itself and resumes with False. #global-schedule
+        run_here = yield _NifPhase(result, work_items, nif_workers)
+
         t_start = time.perf_counter()
         # Serial ONLY when there's no shared pool to isolate crashes: a single-mesh
         # mod (or forced 1 worker) run in-process gives a native pynifly crash the
         # power to abort the WHOLE batch. When a warm shared `nif_pool` exists, route
         # even a single NIF through it so the pool's BrokenProcessPool self-heal
         # contains the crasher to one worker. #single-mesh-isolation
-        if nif_pool is None and (nif_workers == 1 or len(work_items) <= 1):
+        if not run_here:
+            pass    # converted on the batch-wide schedule. #global-schedule
+        elif nif_pool is None and (nif_workers == 1 or len(work_items) <= 1):
             # No shared pool + tiny job -> serial in-process (avoids pool spin-up).
             for item in work_items:
                 r = _nif_convert_worker(item)
@@ -2409,7 +2850,7 @@ def auto_convert_mod(
                 finally:
                     _local_pool.shutdown()
         elapsed = time.perf_counter() - t_start
-        if len(work_items) > 0:
+        if len(work_items) > 0 and run_here:
             rate = len(work_items) / max(elapsed, 1e-9)
             result.notes.append(
                 f"NIF conversion: {len(work_items)} files in "
@@ -2517,6 +2958,12 @@ def auto_convert_mod(
         report_name = report_name.replace(bad, "_")
     result.write_report(output_dir / report_name)
     return result
+
+
+# `auto_convert_mod` takes exactly the steps' arguments: say so to `inspect`
+# (signature, source) -- `__wrapped__` only, its own name and docstring stay.
+# #global-schedule
+_update_wrapper(auto_convert_mod, _auto_convert_mod_steps, assigned=(), updated=())
 
 
 # ---------------------------------------------------------------------------
@@ -4305,6 +4752,30 @@ def _supersede_built_ube_outputs(output_dir, nif_dst_root, rels,
     return moved
 
 
+def _split_claimed_supersedes(rels, nif_dst_root, claimed_dst_paths):
+    r"""#global-schedule: (rels to move out of meshes\, rels held back) for one
+    source's #skip-built-ube-path supersede. A base whose output an EARLIER
+    source of this run claimed is held back whole: those files are that
+    source's conversion from this run, not an earlier run's copy.
+
+    One source at a time, the later source's move ran after the earlier source
+    had written the base, and moved the fresh conversion out; with every source
+    planned first it runs BEFORE, and moves only the old copy -- the result
+    would depend on the schedule. Holding the base makes both schedules keep
+    the earlier source's conversion. Switched off (CBBE2UBE_NO_GLOBAL_SCHEDULE)
+    or without claims, everything moves, as before."""
+    rels = list(rels)
+    if not claimed_dst_paths or not _global_schedule():
+        return rels, []
+    claimed = {_weight_base_key(str(p)) for p in claimed_dst_paths}
+    move: list = []
+    held: list = []
+    for r in rels:
+        key = _weight_base_key(str((Path(nif_dst_root) / Path(r)).resolve()))
+        (held if key in claimed else move).append(r)
+    return move, held
+
+
 def _supersede_whole_base() -> bool:
     r"""#supersede-whole-base (2026-09-24): does superseding a base move EVERY
     weight variant of it in our output (not only the ones this run planned),
@@ -5202,8 +5673,52 @@ def _cmd_convert(args):
     _stamp_run_start(output, planned=len(sources), workers=_planned_workers,
                      orphan_temps_removed=_orphans_removed)
     results = []
+
+    def _source_kwargs(_pool, _workers):
+        return dict(
+            output_esp_name=(args.esp_name if len(sources) == 1 else None),
+            # Default: DON'T copy textures. The converted NIFs keep the
+            # original (Data-relative) texture paths, so the engine
+            # resolves them from the SOURCE mods via the MO2 VFS -- the
+            # same path BSA-archived textures already use successfully.
+            # Copying duplicated ~17 GB AND, because the copy lands at the
+            # output mod's high priority, silently overrode standalone
+            # retexture mods. Opt back in with --copy-textures. #no-tex-copy
+            copy_textures=(bool(getattr(args, "copy_textures", False))
+                           and not bool(getattr(args, "no_textures", False))),
+            ube_body_ref_path=args.ube_body_ref,
+            nif_workers=_workers,
+            nif_pool=_pool,
+            unmerged_patch_subdir=args.unmerged_patch_subdir,
+            claimed_dst_paths=claimed_dst_paths,
+            master_data_dirs=batch_master_data_dirs,
+            mesh_vfs_index=mesh_vfs_index,
+            incremental_floor=incremental_floor,
+            ube_covered_armos=batch_ube_covered,
+            npc_worn_armos=batch_npc_worn,
+            armo_winner_nonplayable=batch_winner_np,
+            built_ube_twin=batch_built_ube,
+        )
+
+    def _convert_one(_src, *, _pool, _workers):
+        return auto_convert_mod(_src, output, **_source_kwargs(_pool, _workers))
+
+    # #global-schedule: with a shared pool, every source is planned first and
+    # all their NIFs run on one schedule; the loop below then has nothing to
+    # do. CBBE2UBE_NO_GLOBAL_SCHEDULE=1 (or no pool) -> one source at a time.
+    _one_schedule = isinstance(shared_pool, _NifPool) and _global_schedule()
     try:
-        for i, src in enumerate(sources, 1):
+        if _one_schedule:
+            _convert_sources_global(
+                sources, results, shared_pool, claimed_dst_paths,
+                make_steps=lambda _s: _auto_convert_mod_steps(
+                    _s, output, **_source_kwargs(shared_pool, args.workers)),
+                convert_serial=lambda _s: _convert_one(_s, _pool=None, _workers=1),
+                checkpoint=lambda: _checkpoint_report(
+                    output, results, planned=len(sources),
+                    workers=_planned_workers,
+                    orphan_temps_removed=_orphans_removed))
+        for i, src in enumerate(() if _one_schedule else sources, 1):
             # Vanilla sweep = its own PASS: distinct header + progress label,
             # and (below) its failure never blocks the merge -- a dead sweep
             # just means no vanilla coverage this run, mod armor unaffected.
@@ -5217,32 +5732,6 @@ def _cmd_convert(args):
                 print("\n=== VANILLA SWEEP pass: base game + DLC as the "
                       "lowest-priority source ===")
             print(f"\n--- [{i}/{len(sources)}] converting '{_disp}' ---")
-            def _convert_one(_src, *, _pool, _workers):
-                return auto_convert_mod(
-                    _src, output,
-                    output_esp_name=(args.esp_name if len(sources) == 1 else None),
-                    # Default: DON'T copy textures. The converted NIFs keep the
-                    # original (Data-relative) texture paths, so the engine
-                    # resolves them from the SOURCE mods via the MO2 VFS -- the
-                    # same path BSA-archived textures already use successfully.
-                    # Copying duplicated ~17 GB AND, because the copy lands at the
-                    # output mod's high priority, silently overrode standalone
-                    # retexture mods. Opt back in with --copy-textures. #no-tex-copy
-                    copy_textures=(bool(getattr(args, "copy_textures", False))
-                                   and not bool(getattr(args, "no_textures", False))),
-                    ube_body_ref_path=args.ube_body_ref,
-                    nif_workers=_workers,
-                    nif_pool=_pool,
-                    unmerged_patch_subdir=args.unmerged_patch_subdir,
-                    claimed_dst_paths=claimed_dst_paths,
-                    master_data_dirs=batch_master_data_dirs,
-                    mesh_vfs_index=mesh_vfs_index,
-                    incremental_floor=incremental_floor,
-                    ube_covered_armos=batch_ube_covered,
-                    npc_worn_armos=batch_npc_worn,
-                    armo_winner_nonplayable=batch_winner_np,
-                    built_ube_twin=batch_built_ube,
-                )
 
             try:
                 if getattr(args, "plugins_only", False):
