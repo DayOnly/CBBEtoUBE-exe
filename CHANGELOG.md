@@ -21,6 +21,45 @@ identical-looking copy from the body patch (they differ only in a texture
 checksum); it looks the same in game. `CBBE2UBE_NO_ESL_CHUNK_DEDUP=1` (set to 1)
 turns it off.
 
+### Fixed — a hair-slot helmet is recognised by its helmet keyword
+
+A helmet that takes only the hair slots counts as real headgear (and gets a
+UBE armature) when it has a gold value or the game's helmet keyword. The tool
+looked for the wrong keyword -- the one that marks elven armour -- so a helmet
+worth nothing with the helmet keyword was treated like a hairstyle. It now
+looks for the right one. Measured on the reported modlist: 7 items are judged
+differently, and none of them draws differently. Six are creature helmets that
+no human-race character can wear, and the seventh (an invisible helmet you can
+equip) was already drawn through the wig rule. `CBBE2UBE_NO_ARMORHELMET_KW_FIX=1`
+(set to 1) looks for the old keyword again.
+
+### Fixed — an excluded mod's wig is kept like its other non-body pieces
+
+When you exclude a mod, only its body pieces lose their UBE coverage: its
+helmets, glasses and wigs that no other mod patches are still drawn. A wig
+whose item also claims a leg slot (see the next entry) was the exception: it
+was always left undrawn, and named in the "no UBE armature from any mod"
+warning. It is now judged like the mod's other non-body pieces -- still drawn
+with its own mesh unless another mod patches it, and listed in the note about
+kept pieces instead of the warning. Measured on the reported modlist with the
+follower mod that owns the one such wig excluded: the wig keeps its armature;
+nothing else changes, and without an exclusion nothing changes at all.
+`CBBE2UBE_NO_WIG_EXCLUDE_KEEP=1` (set to 1) leaves such a wig undrawn again.
+
+### Fixed — a wig that also claims a leg slot is drawn on UBE actors
+
+Wigs you can equip are drawn on UBE-race actors (see "wigs are drawn on UBE
+actors" below), but only when the wig item claimed nothing but hair slots. A wig whose item also claims a
+leg slot (the calves) -- while the wig itself draws only hair -- was still
+drawn on nothing, so a UBE follower wearing it went bald. Such a wig is now
+drawn with its own mesh like any other wig, for the same races it was made for.
+A wig made only for Khajiit or Argonian characters, a wig someone already made
+a UBE version of, and a wig whose mesh is missing are still left alone, and the
+wig does not bring any other part of the item along. Measured on the reported
+modlist: one wig, worn by a follower, gains its armature; nothing else changes.
+`CBBE2UBE_NO_WIG_BODY_PASS=1` (set to 1) leaves such a wig undrawn again;
+`CBBE2UBE_NO_COVERAGE_WIGS=1` turns off wigs as a whole, this case included.
+
 ### Fixed — a garment whose layers share one name keeps every layer
 
 Some garments are built from several layers the author gave the same name, for
