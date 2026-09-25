@@ -5064,7 +5064,7 @@ PAIRS = (
          tests=('tests/test_exclude_body_only.py',),
          expect=('test_the_parent_switch_turns_the_rule_off_too',),
     ),
-    Pair('EXB-v', 'a body piece a refit names is reported as having no armature',
+    Pair('EXB-bh', 'a body piece a refit names is reported as having no armature',
          edits=(
              ('src/ube_patcher.py',
               '                    body_held.append((armo_abs, edid, f"named by {_by}"))\n',
