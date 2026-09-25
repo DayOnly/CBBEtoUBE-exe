@@ -1019,8 +1019,8 @@ it: every physics decision reads constraint bodies with a whole-file
 `body[AB]=` regex, and `_is_unconstrained_collision_pair` is fed the
 generator's own chains. So it explains none of the pieces that ship static
 although their source has SMP. Live: 75 of 137 output XMLs are constrained
-only inside a group; all 26 "NO constraints" report lines (13 XMLs, each at
-both weights) named one, and go to 0. Over the 361 source XMLs of the load
+only inside a group; all 26 "NO constraints" report lines (10 XMLs with 13
+cloth-shape warnings, each at both weights) named one, and go to 0. Over the 361 source XMLs of the load
 order, 1290 such warnings drop to 2 (the two cloths that are really
 unconstrained). No XML in the load order uses the other two kinds, so the
 bone check reports nothing new today.
