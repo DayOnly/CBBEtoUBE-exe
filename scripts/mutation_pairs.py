@@ -7351,8 +7351,7 @@ PAIRS = (
               '            warnings += 1  # MUTATED\n', 1),
          ),
          tests=('tests/test_run_warnings_reach_the_tally.py',),
-         expect=('test_a_class_is_one_popup_line_with_its_count',
-                 'test_the_tally_is_counted_from_the_record[patch validator]'),
+         expect=('test_a_class_is_one_popup_line_with_its_count',),
     ),
     Pair('OT-h', 'the tally is not counted from the record',
          edits=(

@@ -256,7 +256,8 @@ def test_a_class_is_one_popup_line_with_its_count():
 
 def test_a_class_detail_names_the_first_few_and_says_how_many_more():
     d = ac._first_few([f"w{i}" for i in range(7)])
-    assert d.startswith("w0; w1; w2") and "4 more" in d, d
+    assert d.startswith("w0; w1; w2;") and "4 more" in d, d
+    assert "w3" not in d, "the popup line holds the first few, the log holds all"
     assert ac._first_few(["only"]) == "only"
 
 
