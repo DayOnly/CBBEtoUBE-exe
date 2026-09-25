@@ -1150,6 +1150,48 @@ def _remap_arma_skin_txsts(payload: bytes,
     return out
 
 
+def _arma_path_bytes() -> bool:
+    r"""#arma-path-bytes (2026-09-25): are armature model paths read and
+    written in the game's codepage? Yes, by default.
+
+    `rebuild_arma_payload` read every MOD2-5 path as UTF-8 with errors
+    ignored and wrote it back as UTF-8 -- also where the path was left as it
+    was. The game reads these strings as cp1252 (Windows-1252), so an accented
+    byte (0xE9, 'e' with an acute) vanished: the armature named a mesh that
+    exists nowhere, and the converted-mesh lookup was asked about that same
+    wrong path, so the piece was never redirected either. `restore_female_models`
+    compared and rewrote through the same round trip. Now a path is decoded as
+    cp1252 with `surrogateescape`, so its bytes come back EXACTLY: an unchanged
+    path is written as the bytes it had, and a redirected one is the prefix plus
+    those bytes. Live census: 0 of 9,350 model paths the coverage passes hand
+    over, and 0 armature paths in the source plugins, hold a byte >= 0x80.
+    CBBE2UBE_NO_ARMA_PATH_BYTES=1 restores the UTF-8 round trip."""
+    return not _flag("CBBE2UBE_NO_ARMA_PATH_BYTES", False)
+
+
+def _model_path_str(data: bytes, as_bytes: bool) -> str:
+    """A MOD2-5 string as text. `as_bytes` (#arma-path-bytes): cp1252, the
+    game's codepage, lossless -- `_model_path_zstring` gives back the very
+    bytes, the five bytes cp1252 leaves undefined included. Else the old
+    UTF-8 read, which drops every byte that is not valid UTF-8."""
+    s = data.rstrip(b"\x00")
+    if as_bytes:
+        return s.decode("cp1252", "surrogateescape")
+    return s.decode("utf-8", errors="ignore")
+
+
+def _model_path_zstring(path: str, as_bytes: bool) -> bytes:
+    """A model path as the null-terminated string an ARMA stores: cp1252 when
+    `as_bytes` and the text has a cp1252 form (every path `_model_path_str`
+    read, plus ASCII prefixes), else UTF-8 as before. #arma-path-bytes"""
+    if as_bytes:
+        try:
+            return path.encode("cp1252", "surrogateescape") + b"\x00"
+        except UnicodeEncodeError:
+            pass
+    return esp.encode_zstring(path)
+
+
 def rebuild_arma_payload(source_payload: bytes, *,
                          new_primary_rnam: int,
                          new_additional_race_fids: Iterable[int],
@@ -1229,6 +1271,10 @@ def rebuild_arma_payload(source_payload: bytes, *,
     skip_mo3s = skip_mo5s = False
     _ask_dead = keep_named_female and (female_standin is not None
                                        or dead_female_male_as_is is not None)
+    # #arma-path-bytes: model paths in the game's codepage, byte-exact; the male
+    # source paths also as written (the lookups above keep their cp1252 read).
+    _pb = _arma_path_bytes()
+    src_mod2_w = src_mod4_w = ""
     for sig, data in esp.iter_subrecords(source_payload):
         if sig == b"RNAM":
             out += esp.encode_subrecord(b"RNAM", struct.pack("<I", new_primary_rnam))
@@ -1245,7 +1291,7 @@ def rebuild_arma_payload(source_payload: bytes, *,
             # Redirect to the converted !UBE\ mesh only if we produced one.
             # Unconverted meshes keep their original path; pointing at a missing
             # !UBE\ NIF crashes the game on load.
-            path = data.rstrip(b"\x00").decode("utf-8", errors="ignore")
+            path = _model_path_str(data, _pb)
             converted = bool(path) and (converted_nif_exists is None
                                         or converted_nif_exists(path))
             if converted and strip_meshes_prefix:
@@ -1266,8 +1312,9 @@ def rebuild_arma_payload(source_payload: bytes, *,
             # where the male mesh would be used.
             _keep = _named_dead = False
             if _fallback and keep_named_female and path:
-                # The lookup gets the path as the game reads it (cp1252); the
-                # utf-8 decode above drops non-ASCII bytes. #coverage-female-guard
+                # The lookup gets the path as the game reads it (cp1252); with
+                # CBBE2UBE_NO_ARMA_PATH_BYTES the utf-8 decode above drops
+                # non-ASCII bytes. #coverage-female-guard
                 _probe = data.rstrip(b"\x00").decode("cp1252", "replace")
                 _keep = female_mesh_exists is None or female_mesh_exists(_probe)
                 _named_dead = not _keep
@@ -1297,7 +1344,10 @@ def rebuild_arma_payload(source_payload: bytes, *,
                 # it. The female texture hash and alt-textures name the dead
                 # mesh's shapes, so both go. #coverage-female-standin
                 _to = (path_prefix + _standin) if _standin is not None else _as_is
-                out += esp.encode_subrecord(sig, esp.encode_zstring(_to))
+                # The male path as it was written, byte for byte. #arma-path-bytes
+                _to_w = (_to if _standin is not None or not _pb else
+                         src_mod2_w if sig == b"MOD3" else src_mod4_w)
+                out += esp.encode_subrecord(sig, _model_path_zstring(_to_w, _pb))
                 if declined_log is not None:
                     declined_log.append(
                         {"slot": sig.decode(), "standin": _to, "orig": path}
@@ -1308,7 +1358,7 @@ def rebuild_arma_payload(source_payload: bytes, *,
                 else:
                     saw_mod5 = skip_mo5t = skip_mo5s = True
             elif sig == b"MOD3" and _fallback and not _keep:
-                out += esp.encode_subrecord(b"MOD3", esp.encode_zstring(conv_mod2))
+                out += esp.encode_subrecord(b"MOD3", _model_path_zstring(conv_mod2, _pb))
                 saw_mod3 = True
                 skip_mo3t = True
                 if male_fallback_log is not None:
@@ -1318,14 +1368,14 @@ def rebuild_arma_payload(source_payload: bytes, *,
                     male_fallback_log.append(
                         {"slot": "MOD3", "orig": path, "to": conv_mod2})
             elif sig == b"MOD5" and _fallback and not _keep:
-                out += esp.encode_subrecord(b"MOD5", esp.encode_zstring(conv_mod4))
+                out += esp.encode_subrecord(b"MOD5", _model_path_zstring(conv_mod4, _pb))
                 saw_mod5 = True
                 skip_mo5t = True
                 if male_fallback_log is not None:
                     male_fallback_log.append(
                         {"slot": "MOD5", "orig": path, "to": conv_mod4})
             else:
-                out += esp.encode_subrecord(sig, esp.encode_zstring(new_path))
+                out += esp.encode_subrecord(sig, _model_path_zstring(new_path, _pb))
                 if _keep and declined_log is not None:
                     declined_log.append({"slot": sig.decode(), "kept": path,
                                          "male": _male})
@@ -1343,8 +1393,10 @@ def rebuild_arma_payload(source_payload: bytes, *,
                     conv_mod4 = new_path
                 if sig == b"MOD2":
                     src_mod2 = data.rstrip(b"\x00").decode("cp1252", "replace")
+                    src_mod2_w = _model_path_str(data, True)
                 elif sig == b"MOD4":
                     src_mod4 = data.rstrip(b"\x00").decode("cp1252", "replace")
+                    src_mod4_w = _model_path_str(data, True)
         elif sig in (b"MO3S", b"MO5S") and (skip_mo3s if sig == b"MO3S" else skip_mo5s):
             # The dead female mesh's alt-textures, behind a stand-in or an as-is
             # male. #coverage-female-standin
@@ -1372,13 +1424,13 @@ def rebuild_arma_payload(source_payload: bytes, *,
     # MOD3 from the converted male mesh so a female UBE actor renders it.
     # Gated on conv_mod2 existing -- never point at a missing !UBE NIF (CTD).
     if ensure_female and not saw_mod3 and conv_mod2:
-        out += esp.encode_subrecord(b"MOD3", esp.encode_zstring(conv_mod2))
+        out += esp.encode_subrecord(b"MOD3", _model_path_zstring(conv_mod2, _pb))
         if male_fallback_log is not None:
             # orig=None: the armature never had a female model; nothing to restore.
             male_fallback_log.append(
                 {"slot": "MOD3", "orig": None, "to": conv_mod2})
     if ensure_female and not saw_mod5 and conv_mod4:
-        out += esp.encode_subrecord(b"MOD5", esp.encode_zstring(conv_mod4))
+        out += esp.encode_subrecord(b"MOD5", _model_path_zstring(conv_mod4, _pb))
         if male_fallback_log is not None:
             male_fallback_log.append(
                 {"slot": "MOD5", "orig": None, "to": conv_mod4})
@@ -1628,6 +1680,7 @@ def restore_female_models(patches_dir: "str | Path",
     patches_dir = Path(patches_dir)
     meshes_root = Path(output_mod_dir) / "meshes" / path_prefix.strip("\\/")
     _strip = _twin_path_strip_meshes()
+    _pb = _arma_path_bytes()
     checked = restored = patches_changed = 0
     for sidecar in sorted(patches_dir.glob("*.male_fallbacks.json")):
         patch_path = Path(str(sidecar)[:-len(".male_fallbacks.json")])
@@ -1675,10 +1728,12 @@ def restore_female_models(patches_dir: "str | Path",
                     fix = fixes.get(sig.decode("ascii", "ignore"))
                     if fix is not None:
                         male_path, female_path = fix
-                        cur = data.rstrip(b"\x00").decode("utf-8", "ignore")
+                        # Read and written as rebuild_arma_payload wrote them
+                        # (#arma-path-bytes): the sidecar's strings are its.
+                        cur = _model_path_str(data, _pb)
                         if cur == male_path:
                             out += esp.encode_subrecord(
-                                sig, esp.encode_zstring(female_path))
+                                sig, _model_path_zstring(female_path, _pb))
                             rec_changed = True
                             n_swapped += 1
                             continue
@@ -3288,7 +3343,8 @@ def _redirect_mod3(payload: bytes, new_path: str) -> bytes:
     out = b""
     for sig, data in esp.iter_subrecords(payload):
         if sig == b"MOD3":
-            out += esp.encode_subrecord(b"MOD3", esp.encode_zstring(new_path))
+            out += esp.encode_subrecord(
+                b"MOD3", _model_path_zstring(new_path, _arma_path_bytes()))
         elif sig == b"MO3T":
             continue
         else:

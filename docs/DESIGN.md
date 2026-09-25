@@ -1338,6 +1338,21 @@ been removed. (The winner-scan coverage passes still emit ARMO overrides, but
 their output is folded into the Combined family rather than shipped as separate
 plugins — see "Unified coverage" below.)
 
+### A minted armature's model paths keep their bytes (`#arma-path-bytes`)
+
+The game reads an armature's MOD2-5 strings in cp1252. `rebuild_arma_payload`
+read them as UTF-8 with errors ignored and wrote UTF-8 back, even for a path it
+left unchanged, so an accented byte vanished and the armature named a mesh that
+exists nowhere; the converted-mesh lookup was asked about the same wrong path.
+`restore_female_models` compared and rewrote through that round trip, and
+`_redirect_mod3` wrote UTF-8. All three now use one codec: cp1252 with
+`surrogateescape`, so the five bytes cp1252 leaves undefined come back too. An
+unchanged path is written as the bytes it had; a redirected one is `!UBE\` plus
+them. The female-guard and stand-in lookups keep their cp1252 read. Live census:
+0 of 9,350 model paths the coverage passes hand over, 0 armature paths in the
+source plugins (one weapon model has such a byte), 0 in the 29 male-fallback
+sidecars; replay byte-identical. `CBBE2UBE_NO_ARMA_PATH_BYTES=1`.
+
 ### The sidecar FormID invariant
 
 **A sidecar records the FULL, POST-PRUNE FormID of each minted armature.** The merge

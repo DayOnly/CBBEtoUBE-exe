@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Fixed — armour whose mesh folder or file name has an accented letter keeps its path
+
+When a mod's mesh path had an accented letter (an é, for example), the armour
+record this tool writes dropped that letter, so it named a mesh that does not
+exist and the armour was invisible on UBE actors. Paths are now kept exactly as
+the mod wrote them. The reported modlist has no such armour path, so nothing
+changes there. `CBBE2UBE_NO_ARMA_PATH_BYTES=1` (set to 1) turns it off.
+
 ### Fixed — a mesh stored uncompressed in an archive no longer picks up bytes of the next file
 
 Some archives store each file's path in front of its data. For a file stored
