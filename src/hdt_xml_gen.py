@@ -715,11 +715,27 @@ def validate_armor_hdt_xml(xml_path: "Path",
             "HDT XML declares a DOCTYPE/ENTITY (rejected: entity-expansion DoS)")
         return warnings
     try:
-        tree = ET.parse(xml_path)
+        root = ET.fromstring(raw)
     except ET.ParseError as e:
-        warnings.append(f"HDT XML failed to parse: {e}")
-        return warnings
-    root = tree.getroot()
+        # Junk AFTER the root close (`</system>undefined</xml>`) is how most
+        # authored files fail here, and FSMP never reads past `</system>`. So
+        # the declarations are still what ships: validate them, and say what the
+        # tail is, instead of skipping every check on the piece. Damage INSIDE
+        # the root is not repaired by the sanitiser and still fails here.
+        fixed, note = sanitise_hdt_xml_bytes(raw)
+        root = _hdt_xml_parse_check(fixed) if note is not None else None
+        if root is None:
+            warnings.append(f"HDT XML failed to parse: {e}")
+            return warnings
+        warnings.append(
+            f"HDT XML has text after its root element ({note}); FSMP ignores "
+            f"it, strict XML tools reject the file -- "
+            f"CBBE2UBE_HDT_XML_SANITISE=1 trims it")
+    # A default namespace (`<system xmlns="...">`) prefixes every tag with
+    # `{uri}`, which FSMP does not care about and every lookup below misses.
+    for el in root.iter():
+        if isinstance(el.tag, str) and el.tag.startswith("{"):
+            el.tag = el.tag.split("}", 1)[1]
     if root.tag != "system":
         warnings.append(f"HDT XML root tag != 'system' (got {root.tag!r})")
         return warnings
@@ -847,11 +863,13 @@ def sanitise_hdt_xml_bytes(data: bytes) -> "tuple[bytes, str | None]":
     WHY. Ten authored physics XMLs in this modlist end with junk after the
     root close: `</system>undefined</xml>` (6) or `</system></xml>` (4). A
     stray `</xml>` is a close for a wrapper its authoring tool never opened.
-    XML forbids ANY non-whitespace after the root element, so every strict
-    parser rejects the whole file -- and the converter copies these VERBATIM
-    into the pack, so 94 shipped NIFs referenced an XML that nothing can read.
-    Every collider/soft-body protection then runs on an empty set for those
-    pieces, which is the state BUG-00 recorded as disarming every guard.
+    XML forbids ANY non-whitespace after the root element, so every STRICT
+    parser rejects the whole file, and the converter copies these VERBATIM
+    into the pack (20 shipped NIFs point at one). Nothing that matters to the
+    game is blinded by it: FSMP stops reading at the root's close, and the
+    converter's own consumers are regex-based (corrected 2026-09-25; an earlier
+    note here said every collider guard ran on an empty set). The value is
+    hygiene: the shipped file passes strict tools.
 
     ONLY content after the root's closing tag is removed. That content cannot
     carry physics meaning -- it is outside the document element -- so this

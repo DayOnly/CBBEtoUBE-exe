@@ -2,6 +2,40 @@
 
 ## Unreleased
 
+### Fixed — a converted piece loads the physics file the tool fixed up
+
+The tool copies each armour's physics file next to the converted mesh and then
+adjusts that copy: it removes references to parts the converted mesh no longer
+has, and adds or renames the colliders that keep cloth off the body. Some meshes
+already pointed at the ORIGINAL physics file in the armour mod before that step,
+and the tool left the link alone, so the game loaded the original and none of the
+adjustments. Now the mesh is pointed at the adjusted copy. On the reported
+modlist this affects both weights of one skirt, whose copy happens to be identical
+to the original today, so nothing changes in game for it yet. Gloves and boots
+also no longer get a physics link on the body-replacement path, matching the
+other path. `CBBE2UBE_NO_FINALIZE_REPOINT=1` (set to 1) restores the old
+behaviour.
+
+### Fixed — the optional chest collider never builds the equip-crash pattern
+
+The optional chest collider (`CBBE2UBE_BODY_COLLIDER=1`, off by default) now
+refuses a physics file that has no constraints, because a body collider on cloth
+that nothing holds together is the pattern that crashes the game on equip. It says
+so in the log. Default conversions are unchanged.
+
+### Changed — physics files with stray text after the end are checked too
+
+A few armour mods ship a physics file with stray text after the end of the
+document, or with an extra namespace on it. The game reads both fine, but the
+tool's own checks skipped those files entirely. They are now checked like every
+other file, so the conversion report can show new warnings for them (on the
+reported modlist: 34 meshes, mostly bones the physics file drives that the mesh
+does not have). The report also notes the stray text. Only the report changes.
+The "Repair broken physics files" setting is still off by default; its
+description no longer claims it fixes armour that does not move -- it only tidies
+the file. When it does trim a file, the report lists that as a change, not as a
+failure.
+
 ### Fixed — a garment without its own physics file converts the same way every run
 
 A converted garment that has no physics file of its own could borrow one from a

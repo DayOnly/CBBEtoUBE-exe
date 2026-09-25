@@ -18,8 +18,12 @@
 whose only collider is a LOWER-body proxy (a hip-level `Greaves`) lets the larger
 UBE breast poke through at the chest. `_ensure_cloth_body_collider` registers the
 already-present body shape (BaseShape) as a per-triangle `ColBody` collider so the
-cloth rests on the whole UBE body. No new geometry -> no double-body. Off switch:
-CBBE2UBE_NO_BODY_COLLIDER=1. #breast-collider (Ancient Falmer cuirass, 1.0)
+cloth rests on the whole UBE body. No new geometry -> no double-body. OPT-IN:
+CBBE2UBE_BODY_COLLIDER=1. #breast-collider (Ancient Falmer cuirass, 1.0)
+
+It declines an XML that declares no constraint: per-vertex cloth + a per-triangle
+body collider + no constraint is the unconstrained-collision-pair equip CTD.
+#body-collider-constraint-gate (2026-09-25)
 """
 import re
 import pytest
@@ -64,8 +68,12 @@ _XML_GAP = """<?xml version="1.0"?>
 		<can-collide-with-tag>ColBody</can-collide-with-tag>
 		<can-collide-with-tag>ground</can-collide-with-tag>
 	</per-vertex-shape>
+	<generic-constraint bodyA="Cloth 1" bodyB="NPC Pelvis [Pelv]"/>
 </system>
 """
+# The same cloth with NO constraint: a body collider on it is the
+# unconstrained-collision-pair equip CTD. #body-collider-constraint-gate
+_XML_UNCONSTRAINED = re.sub(r"\t<generic-constraint[^\n]*\n", "", _XML_GAP)
 
 
 def _run(tmp_path, xml_text, shapes):
@@ -127,3 +135,24 @@ def test_default_off(tmp_path, monkeypatch):
                         [("Greaves", 30.0, 45.0), ("BaseShape", 95.0, 112.0)])
     assert patched is False
     assert 'per-triangle-shape name="BaseShape"' not in out
+
+
+def test_declines_an_xml_with_no_constraint(tmp_path, capsys):
+    assert "generic-constraint" not in _XML_UNCONSTRAINED
+    patched, out = _run(tmp_path, _XML_UNCONSTRAINED,
+                        [("Greaves", 30.0, 45.0), ("BaseShape", 95.0, 112.0)])
+    assert patched is False
+    assert out == _XML_UNCONSTRAINED
+    assert "DECLINED" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("kind", ["stiffspring-constraint",
+                                  "conetwist-constraint"])
+def test_any_constraint_kind_counts(tmp_path, kind):
+    xml = _XML_UNCONSTRAINED.replace(
+        "</system>", f'\t<{kind} bodyA="Cloth 1" bodyB="NPC Pelvis [Pelv]"/>\n'
+                     "</system>")
+    patched, out = _run(tmp_path, xml,
+                        [("Greaves", 30.0, 45.0), ("BaseShape", 95.0, 112.0)])
+    assert patched is True
+    assert out.count('name="BaseShape"') == 1
