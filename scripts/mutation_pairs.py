@@ -7555,7 +7555,8 @@ PAIRS = (
               '        hdt_xml_path = (None if False  # MUTATED\n', 1),
          ),
          tests=('tests/test_finalize_repoint.py',),
-         expect=('test_phase2_attaches_no_found_pointer_to_a_hand_or_foot_piece',),
+         expect=('test_phase2_attaches_no_found_pointer_to_a_hand_or_foot_piece[8]',
+                 'test_phase2_attaches_no_found_pointer_to_a_hand_or_foot_piece[128]'),
     ),
     Pair('FRP-i', 'phase 2 generates physics for a hand/foot piece',
          edits=(
@@ -7594,7 +7595,8 @@ PAIRS = (
               '    _ctags = (("generic-constraint",) if hdt_xml_gen._constraint_group_scan()  # MUTATED\n', 1),
          ),
          tests=('tests/test_cloth_body_collider.py',),
-         expect=('test_any_constraint_kind_counts',),
+         expect=('test_any_constraint_kind_counts[stiffspring-constraint]',
+                 'test_any_constraint_kind_counts[conetwist-constraint]'),
     ),
     # #hdt-xml-sanitise voice (2026-09-25): a repair is an effect, not a failure.
     Pair('HXS-a', 'a repair on read reads as PASS FAILED again',
