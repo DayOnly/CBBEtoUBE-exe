@@ -148,6 +148,15 @@ def test_the_armour_slots_are_read_with_patch_recognition_off(
     assert TARGET in _covered(tmp_path)
 
 
+def test_a_cape_only_addon_is_judged_with_patch_recognition_off(
+        tmp_path, monkeypatch):
+    """The armour's slots are read with recognition off too: a cape-only UBE
+    addon does not hide the cuirass (unread slots would trust the addon)."""
+    monkeypatch.setenv("CBBE2UBE_NO_SKYPATCHER_PATCH_RECOGNITION", "1")
+    _modlist(tmp_path, addons={0x800: _ube(CAPE, "cape")})
+    assert TARGET not in _covered(tmp_path)
+
+
 @pytest.mark.parametrize("override_mod", ["Override Mod", "Zz Override Mod"],
                          ids=["override_read_first", "override_read_last"])
 def test_an_addon_two_plugins_read_counts_only_the_slots_both_give(

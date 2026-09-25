@@ -7583,11 +7583,14 @@ PAIRS = (
          tests=('tests/test_third_party_ini_slot_check.py',),
          expect=('test_a_cape_only_ube_addon_does_not_hide_the_cuirass',),
     ),
+    # TIS-f re-anchored by #third-party-ini-winner-slots (2026-09-25): the
+    # ordered load order in the key replaced the active set.
     Pair('TIS-f', 'the load order is not in the cache key',
          edits=(
              ('src/auto_convert.py',
-              '    key += (slot_check, None if active is None else tuple(sorted(active)))',
-              '    key += (slot_check,)  # MUTATED', 1),
+              '            None if active_plugins is None else tuple(str(n).lower()\n'
+              '                                                      for n in active_plugins),\n',
+              '            None,  # MUTATED\n', 1),
          ),
          tests=('tests/test_third_party_ini_slot_check.py',),
          expect=('test_the_load_order_keys_the_cache',),
@@ -7619,7 +7622,9 @@ PAIRS = (
               '    if recognise:  # MUTATED', 1),
          ),
          tests=('tests/test_third_party_ini_slot_check.py',),
-         expect=('test_the_armour_slots_are_read_with_patch_recognition_off',),
+         # #third-party-ini-winner-slots (2026-09-25): unread slots now trust a
+         # `!UBE\` addon, so a whole refit is hidden either way; a cape shows it.
+         expect=('test_a_cape_only_addon_is_judged_with_patch_recognition_off',),
     ),
     Pair('TIS-k', "two plugins' slots for one UBE addon are unioned",
          edits=(

@@ -3343,8 +3343,9 @@ def _third_party_ube_covered_armos(mods_root, enabled_names=None,
     slot_check = not _flag("CBBE2UBE_NO_THIRD_PARTY_INI_SLOT_CHECK", False)
     active = (None if active_plugins is None
               else {str(n).lower() for n in active_plugins})
-    key += (slot_check, None if active is None else tuple(sorted(active)))
-    # #third-party-ini-winner-slots: its switch, the order and the files.
+    key += (slot_check,)
+    # #third-party-ini-winner-slots: its switch, the load order (in order: it
+    # holds the active set too) and the files.
     winner_slots = (slot_check
                     and not _flag("CBBE2UBE_NO_THIRD_PARTY_INI_WINNER_SLOTS", False))
     key += (winner_slots,
