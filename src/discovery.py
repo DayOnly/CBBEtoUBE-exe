@@ -214,7 +214,27 @@ def _has_3ba_body(nif_path: Path) -> bool:
 #   d. no shape the XML names, and none that carries a non-skeleton bone it
 #      drives, is a body the converter strips that its collision-proxy re-import
 #      would bring back (nif_convert._is_inline_body_name lets it through): that
-#      re-import is a hidden second body, the equip CTD its own comment names.
+#      re-import is a hidden second body, the equip CTD its own comment names;
+#   e. every SIMULATED collision shape the XML keeps still has a partner to
+#      collide with (#smp-gain-collision-partner). The conversion prunes every
+#      XML shape block whose name, case for case, is not in the converted NIF
+#      (nif_convert_physics._harden_hdt_xml_for_fsmp) -- the stripped bodies
+#      among them, since after d every stripped shape the XML names is one the
+#      re-import skips. A build that names its body 'body' while the XML's only
+#      body collider is 'Body' passes d (the re-import cannot find it), the
+#      prune then removes that collider, and a skirt 'Proxy' that collides only
+#      with the tag 'Body' carried collides with NOTHING -- worse than the
+#      static source it replaced. The survivors are replayed as FSMP reads them:
+#      a shape simulates when any of its skin bones has mass (bone-default and
+#      bone templates in document order; a bone first met undeclared, in a shape
+#      or a constraint, takes the unnamed default as it stands then and keeps
+#      it), and two shapes collide only when each allows the
+#      other's tags (its can-collide-with-tag list, or, when that is empty, no
+#      tag of its no-collide-with-tag list), tags compared without case. The
+#      converter's own later colliders do not count and need not: the butt
+#      collider clones a surviving kinematic block's tags, so it partners no
+#      shape that block does not, and the chest collider is off by default.
+#      CBBE2UBE_NO_SMP_GAIN_COLLISION_PARTNER=1 drops this rule.
 # CBBE2UBE_NO_ZEROED_SMP_GAIN=1 keeps rule 4 as it was.
 _HDT_MARKER = b"HDT Skinned Mesh Physics Object"
 _ZOS_SAID: "set[str]" = set()
@@ -248,6 +268,94 @@ def _zeroed_smp_gain() -> bool:
     return not _flag("CBBE2UBE_NO_ZEROED_SMP_GAIN", False)
 
 
+def _smp_gain_collision_partner() -> bool:
+    """#smp-gain-collision-partner: must a gained XML's simulated shapes keep a
+    partner once the conversion prunes the shapes it drops? Yes, by default.
+    CBBE2UBE_NO_SMP_GAIN_COLLISION_PARTNER=1: no (rules a-d only)."""
+    return not _flag("CBBE2UBE_NO_SMP_GAIN_COLLISION_PARTNER", False)
+
+
+def _smp_partnerless(root, kept: list) -> "str | None":
+    """#zeroed-smp-gain rule e: the name of a simulated collision shape no other
+    shape can collide with once the XML is pruned to `kept` (the build's shapes
+    the converted NIF still carries), else None. See rule e above. Element names
+    are read as rule c reads them (an XML with a default xmlns fails c first)."""
+    def key(name) -> str:
+        return (name or "").lower()               # engine strings fold case
+
+    present = {s.name for s in kept}              # the prune's own test: exact
+    skin: "dict[str, list[str]]" = {}
+    for s in kept:
+        bones = [key(b) for b in (s.bone_names or ())]
+        if bones and len(s.verts):                # FSMP builds a body for it
+            skin.setdefault(key(s.name), bones)
+
+    def mass(el, base: float) -> float:
+        for m in el:
+            if m.tag == "mass":
+                try:
+                    return float((m.text or "").strip())
+                except ValueError:
+                    return base
+        return base
+
+    def tags(el, kind: str) -> set:
+        return {(t.text or "").strip().lower() for t in el if t.tag == kind}
+
+    templates = {"": 0.0}                         # bone-default name -> mass
+    bones: "dict[str, float]" = {}                # bone -> mass; first one wins
+
+    def made(name: str) -> None:
+        if name not in bones:                     # the unnamed default, as it stands
+            bones[name] = templates[""]
+
+    def joined(el) -> None:
+        a, b = key(el.get("bodyA")), key(el.get("bodyB"))
+        if a and b and a != b:                    # FSMP makes its bodies' bones
+            made(a)
+            made(b)
+
+    shapes = []
+    for el in root:
+        tag = el.tag
+        if tag == "bone":
+            name = key(el.get("name"))
+            if name and name not in bones:
+                bones[name] = mass(el, templates.get(key(el.get("template")),
+                                                     templates[""]))
+        elif tag == "bone-default":
+            templates[key(el.get("name"))] = mass(
+                el, templates.get(key(el.get("extends")), templates[""]))
+        elif tag in ("per-vertex-shape", "per-triangle-shape"):
+            name = el.get("name")
+            if name not in present or key(name) not in skin:
+                continue                          # pruned, or no body in FSMP
+            dynamic = False
+            for b in skin[key(name)]:
+                made(b)
+                dynamic = dynamic or bones[b] > 0
+            shapes.append({"name": name, "dynamic": dynamic,
+                           "tags": tags(el, "tag"),
+                           "can": tags(el, "can-collide-with-tag"),
+                           "no": tags(el, "no-collide-with-tag")})
+        elif tag in _SMP_CONSTRAINT_TAGS:
+            joined(el)
+        elif tag == "constraint-group":
+            for sub in el:
+                if sub.tag in _SMP_CONSTRAINT_TAGS:
+                    joined(sub)
+
+    def allows(a, b) -> bool:
+        return bool(b["tags"] & a["can"]) if a["can"] else not (b["tags"] & a["no"])
+
+    for a in shapes:
+        if a["dynamic"] and not any(
+                key(b["name"]) != key(a["name"]) and allows(a, b) and allows(b, a)
+                for b in shapes):
+            return a["name"]
+    return None
+
+
 def _gain_nif(path: Path):
     """The NIF as the converter reads it (nif_io.Nif); release its `_backing`
     with nif_io.release_nif once its shapes are no longer read."""
@@ -272,7 +380,7 @@ def _gain_xml(path: Path) -> "bytes | None":
 
 
 def _smp_gain_verdict(today: list, build: list, xml: "bytes | None") -> "str | None":
-    """#zeroed-smp-gain rules a-d for ONE weight: None when the build's physics
+    """#zeroed-smp-gain rules a-e for ONE weight: None when the build's physics
     may come with it, else why not. `today`/`build` are the shapes of today's
     source and of the build, `xml` the build's resolved physics XML."""
     import xml.etree.ElementTree as ET
@@ -311,6 +419,12 @@ def _smp_gain_verdict(today: list, build: list, xml: "bytes | None") -> "str | N
             continue                      # the re-import never brings it back
         if s.name in named or driven & set(s.bone_names or ()):
             return f"its physics XML would bring back the stripped body {s.name!r}"
+    if _smp_gain_collision_partner():             # e. #smp-gain-collision-partner
+        gone = {id(s) for s in stripped}
+        lone = _smp_partnerless(root, [s for s in build if id(s) not in gone])
+        if lone is not None:
+            return (f"its simulated shape {lone!r} would collide with nothing "
+                    f"once the shapes the conversion drops are pruned")
     return None
 
 

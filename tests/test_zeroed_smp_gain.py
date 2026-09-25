@@ -26,6 +26,12 @@ Now a physics GAIN is taken when both sides go body-swap, the build's XML
 resolves, parses and holds a constraint anywhere in its tree, and nothing the
 XML names is a stripped body its collision-proxy re-import would bring back.
 `CBBE2UBE_NO_ZEROED_SMP_GAIN=1` keeps such pieces on today's source.
+
+#smp-gain-collision-partner (same day): the conversion prunes the XML blocks of
+shapes it drops, and one build's only body collider went that way, leaving its
+simulated skirt proxy nothing to collide with. A gain now also needs every
+simulated shape the pruned XML keeps to have a partner under FSMP's rules.
+`CBBE2UBE_NO_SMP_GAIN_COLLISION_PARTNER=1` drops that rule.
 """
 import sys
 from pathlib import Path
@@ -45,9 +51,13 @@ BODY_TEX = "textures\\actors\\character\\female\\femalebody_1.dds"
 CLOTH_TEX = "textures\\armor\\test\\skirt.dds"
 
 
+PARTNER_OFF = "CBBE2UBE_NO_SMP_GAIN_COLLISION_PARTNER"
+
+
 @pytest.fixture(autouse=True)
 def _on(monkeypatch):
     monkeypatch.delenv(OFF, raising=False)
+    monkeypatch.delenv(PARTNER_OFF, raising=False)
 
 
 class _Shape:
@@ -195,6 +205,146 @@ def test_an_xml_named_skin_decal_is_taken():
                     xml=_xml(shapes=("Skirt", "Hands"))) is None
 
 
+# --- rule e: the simulated shapes keep a partner after the prune ---------------------
+#
+# The case: the XML's only body collider is 'Body', the build names its body
+# 'body'. Rule d lets it through; the conversion prunes the 'Body' block; the
+# skirt proxy, which collides only with the tag that block carried, is left
+# colliding with nothing.
+
+LONE = ("its simulated shape 'Proxy' would collide with nothing once the shapes "
+        "the conversion drops are pruned")
+
+
+def _block(name, tags=("Collision",), can=("Fabric",), no=(), kind="per-triangle-shape"):
+    inner = "".join(f"<tag>{t}</tag>" for t in tags)
+    inner += "".join(f"<can-collide-with-tag>{t}</can-collide-with-tag>" for t in can)
+    inner += "".join(f"<no-collide-with-tag>{t}</no-collide-with-tag>" for t in no)
+    return f'<{kind} name="{name}">{inner}</{kind}>'
+
+
+def _proxy_xml(*blocks, proxy=None, bones='<bone name="Skirt 01"><mass>1</mass></bone>'):
+    proxy = proxy if proxy is not None else _block("Proxy", tags=("Fabric",),
+                                                   can=("Collision",))
+    return (f'<?xml version="1.0" encoding="UTF-8"?><system>{bones}{proxy}'
+            + "".join(blocks)
+            + '<generic-constraint bodyA="Skirt 01" bodyB="NPC Pelvis [Pelv]"/>'
+              '</system>').encode()
+
+
+def _proxy(bones=("Skirt 01",)):
+    return _Shape("Proxy", bones=bones)                  # driven by the chain bone
+
+
+def _butt_col(name="ButtCol"):
+    return _Shape(name)                                  # skeleton bones: kinematic
+
+
+def _partner_verdict(xml, *shapes):
+    return discovery._smp_gain_verdict([_named_body(), _Shape("Cuirass")],
+                                       [_skin_body("body"), _proxy(), *shapes], xml)
+
+
+def test_a_gain_whose_only_collider_is_pruned_is_refused():
+    assert _partner_verdict(_proxy_xml(_block("Body"))) == LONE
+
+
+def test_a_collider_on_the_swapped_body_is_pruned():
+    """A '3BA' block passes rule d (the re-import skips that name), but the body
+    swap removes the shape, so the block goes and cannot catch the proxy."""
+    assert discovery._smp_gain_verdict(
+        [_named_body(), _Shape("Cuirass")], [_named_body(), _proxy()],
+        _proxy_xml(_block("3BA"))) == LONE
+
+
+def test_a_gain_that_keeps_a_butt_collider_is_taken():
+    assert _partner_verdict(_proxy_xml(_block("Body"), _block("ButtCol")),
+                            _butt_col()) is None
+
+
+def test_switched_off_a_partnerless_gain_is_taken(monkeypatch):
+    monkeypatch.setenv(PARTNER_OFF, "1")
+    assert _partner_verdict(_proxy_xml(_block("Body"))) is None
+
+
+def test_the_prune_matches_the_shape_name_case_for_case():
+    """The conversion keeps a block only under the NIF's exact name."""
+    assert _partner_verdict(_proxy_xml(_block("ButtCol")), _butt_col("buttcol")) == LONE
+
+
+def test_a_collider_that_refuses_the_cloth_is_no_partner():
+    """FSMP asks both shapes: this one only collides with hair."""
+    assert _partner_verdict(_proxy_xml(_block("ButtCol", can=("Hair",))),
+                            _butt_col()) == LONE
+
+
+def test_an_empty_can_list_allows_every_tag_but_its_no_collide_tags():
+    assert _partner_verdict(_proxy_xml(_block("ButtCol", can=())), _butt_col()) is None
+    assert _partner_verdict(_proxy_xml(_block("ButtCol", can=(), no=("Fabric",))),
+                            _butt_col()) == LONE
+
+
+def test_tags_compare_without_case():
+    assert _partner_verdict(_proxy_xml(_block("ButtCol", tags=("collision",),
+                                              can=("FABRIC",))),
+                            _butt_col()) is None
+
+
+def test_the_shape_is_not_its_own_partner():
+    own = _block("Proxy", tags=("Fabric",), can=("Fabric",))
+    assert _partner_verdict(_proxy_xml(proxy=own)) == LONE
+
+
+def test_a_shape_the_nif_does_not_skin_is_no_partner():
+    """FSMP builds no collision body for a shape with no skin."""
+    bare = _Shape("ButtCol")
+    bare.bone_names = []
+    assert _partner_verdict(_proxy_xml(_block("ButtCol")), bare) == LONE
+
+
+def test_a_kinematic_shape_needs_no_partner():
+    """Skinned to massless skeleton bones, the proxy does not simulate."""
+    assert discovery._smp_gain_verdict(
+        [_named_body(), _Shape("Cuirass")],
+        [_skin_body("body"), _proxy(bones=("NPC Pelvis [Pelv]",))],
+        _proxy_xml(_block("Body"))) is None
+
+
+def test_the_unnamed_bone_default_gives_an_undeclared_bone_its_mass():
+    """An undeclared skin bone takes the unnamed default as it stands when the
+    shape is read: after a massive default it simulates, before one it does not."""
+    heavy = "<bone-default><mass>1</mass></bone-default>"
+    assert _partner_verdict(_proxy_xml(_block("Body"), bones=heavy)) == LONE
+    late = (f'<?xml version="1.0"?><system>'
+            f'{_block("Proxy", tags=("Fabric",), can=("Collision",))}{heavy}'
+            f'<generic-constraint bodyA="Skirt 01" bodyB="NPC Pelvis [Pelv]"/>'
+            f'</system>').encode()
+    assert _partner_verdict(late) is None
+
+
+@pytest.mark.parametrize("wrap", [lambda c: c,
+                                  lambda c: f"<constraint-group>{c}</constraint-group>"],
+                         ids=["top-level", "in-a-group"])
+def test_a_constraint_makes_its_undeclared_bones_first(wrap):
+    """A constraint met before the bone's declaration creates the bone from the
+    massless default; FSMP keeps the first one, so the later mass never lands."""
+    early = wrap('<generic-constraint bodyA="Skirt 01" bodyB="NPC Pelvis [Pelv]"/>')
+    assert _partner_verdict(_proxy_xml(_block("Body"), bones=early +
+                                       '<bone name="Skirt 01"><mass>1</mass></bone>')) is None
+
+
+def test_bone_names_compare_without_case():
+    """The skin's 'Skirt 01' is the XML's 'skirt 01': the game folds case."""
+    assert _partner_verdict(_proxy_xml(_block("Body"), bones='<bone name="skirt 01">'
+                                       '<mass>1</mass></bone>')) == LONE
+
+
+def test_a_bone_takes_its_named_template_mass():
+    bones = ('<bone-default name="cloth"><mass>2</mass></bone-default>'
+             '<bone name="Skirt 01" template="cloth"/>')
+    assert _partner_verdict(_proxy_xml(_block("Body"), bones=bones)) == LONE
+
+
 # --- the selection -------------------------------------------------------------------
 
 def _gain_world(tmp_path, monkeypatch, *, xml=None, build_marker=(True, True),
@@ -251,6 +401,19 @@ def test_a_refusal_at_one_weight_keeps_the_pair(tmp_path, monkeypatch, capsys):
     sel = _gain_world(tmp_path, monkeypatch, xml={"_0": _xml(body="")})
     assert set(Selection.owners(sel.index()).values()) == {BASE_MOD}
     assert ("it would gain physics, but its physics XML has no constraint: 1"
+            in capsys.readouterr().err)
+
+
+def test_a_partnerless_gain_keeps_todays_source_and_says_why(tmp_path, monkeypatch,
+                                                            capsys):
+    """The build's skirt simulates on its own bone and nothing can catch it."""
+    lone = (b'<?xml version="1.0"?><system><bone name="NPC Bone0"><mass>1</mass></bone>'
+            b'<per-vertex-shape name="Skirt"><tag>Fabric</tag></per-vertex-shape>'
+            b'<generic-constraint bodyA="NPC Bone0" bodyB="NPC Pelvis [Pelv]"/></system>')
+    sel = _gain_world(tmp_path, monkeypatch, xml={"_0": lone, "_1": lone})
+    assert set(Selection.owners(sel.index()).values()) == {BASE_MOD}
+    assert ("it would gain physics, but its simulated shape 'Skirt' would collide "
+            "with nothing once the shapes the conversion drops are pruned: 1"
             in capsys.readouterr().err)
 
 
