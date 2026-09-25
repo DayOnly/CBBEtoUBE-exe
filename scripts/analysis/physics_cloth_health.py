@@ -41,10 +41,13 @@ they fail separately, so a single "it clips" report cannot tell you which to fix
      triangle-triangle.
   2. A BODY COLLIDER EXISTS in the NIF for it to collide against: a KINEMATIC
      shape carrying a body tag (a simulated shape tagged "body" is not the body).
-  3. THE REST POSE IS OUTSIDE THE BODY. This is the one nothing measured, and it
-     is decisive: hdtSMP64's own maintainers call the sphere-triangle penetration
-     path "obviously wrong", so cloth that STARTS inside the body is not reliably
-     pushed out. Collision resolves approaching geometry, not existing overlap.
+  3. THE REST POSE IS OUTSIDE THE BODY. It is decisive: hdtSMP64's own
+     maintainers call the sphere-triangle penetration path "obviously wrong", so
+     cloth that STARTS inside the body is not reliably pushed out. Collision
+     resolves approaching geometry, not existing overlap. The row here reads
+     STORED vertices, which is not the rest pose: `#chain-rest-lift` moves chain
+     root nodes, not vertices. The rest pose, through the node tree and the
+     skin, is `physics_rest_depth.py`.
 
 And one thing must NOT hold:
 
@@ -62,8 +65,8 @@ shape-name remapping; XMLs that exist only in an archive; bone renames;
 <shared> (it limits pairs ACROSS files, and every pair here is inside one);
 per-bone collision filters (can/no-collide-with-bone, weight-threshold);
 disable-tag; and whether a declared bone's node exists in the skeleton. The
-body-collider test is a tag-name list (BODY_TAGS), and the rest-pose depth uses
-raw bind vertices against the injected body.
+body-collider test is a tag-name list (BODY_TAGS), and the depth row uses
+stored vertices against the injected body (see 3).
 
 The population is modelled on what FSMP itself loads, and nothing else:
   * the NIF's OWN pointer -- the first `HDT Skinned Mesh Physics Object` string
@@ -257,7 +260,8 @@ def read_system(root, skin):
 
     Returns {"shapes": the XML shapes the NIF carries, each with "kind" and
     "dynamic"; "named": how many shape elements the XML declares;
-    "constrained": whether any constraint joins at least one dynamic bone}."""
+    "constrained": whether any constraint joins at least one dynamic bone;
+    "dynamic_bones": the `_key` of every bone FSMP creates with mass > 0}."""
     templates = {"": 0.0}             # bone-default name -> mass
     bones = {}                        # bone name -> mass; first one wins
 
@@ -300,7 +304,8 @@ def read_system(root, skin):
             for sub in el:
                 if sub.tag in CONSTRAINT_KINDS:
                     constrained = constraint(sub) or constrained
-    return {"shapes": shapes, "named": named, "constrained": constrained}
+    return {"shapes": shapes, "named": named, "constrained": constrained,
+            "dynamic_bones": {b for b, m in bones.items() if m > 0}}
 
 
 def classify(nif_path: Path, nif, notes=None):
@@ -334,6 +339,7 @@ def classify(nif_path: Path, nif, notes=None):
         return None, NO_DYNAMIC
     return {
         "constrained": info["constrained"],
+        "dynamic_bones": info["dynamic_bones"],
         "cloth": cloth,
         "shapes": info["shapes"],
         "shapes_named": info["named"],
@@ -352,7 +358,9 @@ def cloth_reach(row):
 
 
 def _penetration(nif, cloth_names):
-    """Worst rest-pose depth of each cloth INSIDE the injected body, in units.
+    """Worst STORED-vertex depth of each cloth INSIDE the injected body, in
+    units. Not the rest pose -- a lifted chain root moves the drawn cloth and
+    not these vertices; `physics_rest_depth.py` measures that.
 
     Signed along the body's outward normal at the nearest body vertex; positive
     means the cloth vertex sits inside. Returns {} when the NIF carries no
@@ -502,10 +510,12 @@ def report(rows, skip, skip_garments, walked: int, notes=None) -> int:
     line("shape named but ABSENT from the NIF", absent)
     line("unconstrained collision pair", crash_class,
          "   <- known equip-CTD pattern")
-    print(f"\n  REST POSE INSIDE THE BODY        : {len(penetrating):5d}"
+    print(f"\n  STORED CLOTH VERTS INSIDE THE BODY: {len(penetrating):5d}"
           f"   of {len(pen_known)} measurable"
           + (f"   ({len(pen_unknown)} have no injected body -> UNKNOWN, "
              f"not counted clean)" if pen_unknown else ""))
+    print("  (stored vertices, NOT the rest pose: a lifted chain root moves the "
+          "drawn cloth; physics_rest_depth.py measures that)")
 
     if penetrating:
         worst = []
@@ -514,7 +524,7 @@ def report(rows, skip, skip_garments, walked: int, notes=None) -> int:
                 if cnt:
                     worst.append((mx, cnt, tot, nm, r["path"]))
         worst.sort(reverse=True)
-        print("\n  WORST REST-POSE PENETRATION (this is what collision cannot fix)")
+        print("\n  WORST STORED-VERTEX DEPTH (bind position; not the rest pose)")
         for mx, cnt, tot, nm, path in worst[:20]:
             print(f"     {mx:6.2f}u  {cnt:5d}/{tot:<5d} verts inside  "
                   f"{nm[:18]:<18} {path}")

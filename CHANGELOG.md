@@ -49,6 +49,29 @@ version of this change (117 / 59 simulated, 14 / 7 reaching nothing), are not
 comparable. Guarded by `tests/test_physics_cloth_health.py` and mutation pairs
 `PCH-a`..`PCH-zd`. No converter behaviour changes.
 
+### Development only — where physics cloth rests against the body, as the game draws it
+
+Cloth that starts out inside the body is not reliably pushed back out by the
+physics engine, so how deep simulated cloth rests matters. The first numbers
+for that read each vertex where the file stores it. The game draws it where its
+bones put it, and the tool's fix for skirts sinking into the body works by
+moving a skirt chain's top bone, not the vertices: so those numbers could not
+see the fix at all, and some pieces the fix had already cleared read as still
+inside.
+
+`scripts/analysis/physics_rest_depth.py` measures where each piece of physics
+cloth rests: through the piece's bones as the game attaches them to the
+character's skeleton, against the body you built in BodySlide at the matching
+weight. It says, per piece, how deep the visible cloth sits inside the body
+(and, apart, the hidden collision helpers), which skirt chains the fix moved
+and by how much, and it refuses to report if its checks on the body fail. On
+the reported pack: 243 pieces with physics cloth, of which 77 (39 outfits) have
+visible cloth more than 0.5 units inside the body at rest and 33 (18 outfits)
+more than 1.5 units; the fix moved chains on 193 pieces. Of the 7 outfits first
+reported more than 1.5 units inside, 4 are not. The census's own depth row now
+says it reads stored positions. Guarded by `tests/test_physics_rest_depth.py`
+and mutation pairs `PRD-a`..`PRD-r`. No converter behaviour changes.
+
 ### Changed — whether you can wear an item is read from the plugin the game uses
 
 The tool does not convert an item the player cannot equip (the game's

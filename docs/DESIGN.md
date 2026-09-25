@@ -1067,8 +1067,64 @@ archive; bone renames; `<shared>` (it limits pairs across files, and every
 pair here is inside one); per-bone filters (`can-/no-collide-with-bone`,
 `weight-threshold`); `disable-tag`; and whether a declared bone's node exists.
 The body-collider test is a tag-name list, so cloth whose body collider uses
-another tag counts as reaching no body. The rest-pose depth uses raw bind
-vertices against the injected body and ignores `#chain-rest-lift`.
+another tag counts as reaching no body. Its depth row reads STORED vertices
+against the injected body, so it cannot see `#chain-rest-lift`; the rest-pose
+depth is the next section's tool.
+
+### Rest-pose depth of simulated cloth (`scripts/analysis/physics_rest_depth.py`)
+
+Cloth that STARTS inside the body is not reliably pushed out by FSMP, so where
+simulated cloth rests matters. The census's depth row and the first "cloth at
+rest inside the body" numbers read stored vertices. The engine draws
+`sum_b w_b * G_b * S_b * v`, and `#chain-rest-lift` moves chain ROOT NODES
+(`G_b`) while leaving the skin (`S_b`) and the vertices alone, so a
+stored-vertex depth cannot see the lift at all. This tool measures the drawn
+position.
+
+- **The frame.** FSMP merges the armour's node tree into the actor skeleton by
+  name. A bone the skeleton has is the skeleton's node, never the armour's copy
+  (the converter writes those flat and the game ignores them); any other node
+  hangs from its nearest ancestor the skeleton has, by the armour's local
+  transforms, and a node on the armour root hangs from the skeleton root (the
+  armour root's own transform is not used). The skeleton is the load-order
+  winner of the converter's skeleton paths. Control: the body skinned through
+  the same model equals its stored vertices (measured 0.0000u).
+- **What is cloth.** The census's bone-mass replay: a bone FSMP creates with
+  mass > 0, or any armour node hanging below one. A vertex is cloth above 5%
+  weight on those bones, on every skinned shape (named in the XML or not),
+  except the injected body. Visible cloth is ranked; collision proxies and
+  helpers (the survey's composed proxy rule) are counted apart.
+- **The body.** The user's BodySlide build per weight, weight 0 taken as the
+  weight-1 file's sibling: the body the lift clears. On the measured list that
+  build is the zeroed UBE body (BodySlide's saved preset for it is the zeroed
+  one), the same file the zeroed-body lookup returns. Runtime morphs are not
+  applied.
+- **Depth.** To the closest point on the body's triangles, signed by the
+  interpolated outward normal there (positive = inside); normals from the
+  triangles, turned outward by signed volume. Controls, any failure exits 3:
+  joints deep in the pelvis and limbs read inside and far points outside (these
+  do not use the normals), and the body's own vertices moved 0.5u in and out
+  read +0.5 / -0.5 (median error 0.0009u). 12.4% of the body's vertices sit in
+  features thinner than the push, almost all on the genital midline slit, and
+  are left out of that check; cloth there reads unreliably.
+- **The lift, read from the file.** Each moving bone's rest position minus its
+  bind position. A lift translates one root, so bones that moved by one vector
+  are grouped under the node that was moved; that group's vector is the lift.
+  The run's `standoff_audit.jsonl` is a cross-check only: it appends across
+  runs.
+- **Frame disagreement.** Cloth resting more than the lift cap + 0.5u (2.5u)
+  from where it was skinned is nothing a pass does, so the model is in
+  question there: those pieces are listed apart with both depths, not ranked.
+
+Measured on the 09-24 pack, read-only: 243 pieces (122 garments) with simulated
+cloth measured, 4 (2 garments) listed apart as frame disagreements. Visible
+cloth deeper than 0.5u at rest: 77 pieces / 39 garments; deeper than 1.5u: 33 /
+18. Hidden helpers: 29 / 16 and 7 / 4. 193 pieces carry a lifted chain (1077
+chains, median 1.04u, 148 at the 2.0u cap); the log names the same chains on
+177 of them. Against the first reading (stored vertices), the depth at the bind
+position reproduces it, so the change is the node tree: of the 7 garments first
+reported deeper than 1.5u, 4 are not at rest (one drops from 2.05u to 0.91u),
+and one of the 14 reported deeper than 0.5u rests clear (1.38u to 0.01u).
 
 ### Custom physics-bone chains
 
