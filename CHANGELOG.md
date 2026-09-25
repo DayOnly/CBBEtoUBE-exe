@@ -49,6 +49,34 @@ version of this change (117 / 59 simulated, 14 / 7 reaching nothing), are not
 comparable. Guarded by `tests/test_physics_cloth_health.py` and mutation pairs
 `PCH-a`..`PCH-zd`. No converter behaviour changes.
 
+### Development only — the physics census counts cloth that swings with nothing to hit
+
+The physics engine keeps a piece's physics running as long as its physics file
+declares bones, even when it declares no collision shape, or only still ones:
+the bones with weight swing, and the visible cloth hung on them swings too.
+That cloth has nothing to collide with at all, the worst case for sinking into
+the body, but the census left those pieces out of every count and printed the
+reason as if nothing moved. It also printed "no shape loads: 0" beside 41
+pieces that load no shape. And it knew a body collider only by a short list of
+tag names, so skirts colliding with a body helper named, say, "VirtualLegs"
+counted as having no body to hit.
+
+The census now measures these pieces and lists them in their own row, counts
+apart the ones whose moving bones carry no visible mesh, and says separately
+which pieces load no physics at all and which load it but move nothing visible.
+It recognises a body helper by a body-part name on a shape that rides the
+body's bones, and it knows that a shape marked "external" collides with
+nothing in its own file. On the reported pack: 38 pieces (19 outfits) of cloth
+move with no collision shape, all of it held by constraints; cloth reaching
+nothing to collide with goes from 4 to 42 pieces; cloth with no body to collide
+with goes from 190 pieces (95 outfits) to 134 (67), of which 38 are the new
+pieces, 60 reach an unnamed collider on the body's bones, 10 reach only a
+ground plane and 26 have a shape that reaches no still shape at all. The
+rest-depth tool reads the same population and now measures 281 pieces instead
+of 243; two of the new outfits rest partly inside the body. Guarded by
+`tests/test_physics_cloth_health.py` and mutation pairs `PCH-ze`..`PCH-zo`
+(`PCH-p` and `PCH-za` re-anchored). No converter behaviour changes.
+
 ### Development only — where physics cloth rests against the body, as the game draws it
 
 Cloth that starts out inside the body is not reliably pushed back out by the

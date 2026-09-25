@@ -6677,7 +6677,7 @@ PAIRS = (
               '                skinned = ["?"]  # MUTATED\n', 1),
          ),
          tests=('tests/test_physics_cloth_health.py',),
-         expect=('test_shapes_named_but_absent_from_the_nif_are_dead',),
+         expect=('test_shapes_named_but_absent_from_the_nif_move_nothing',),
     ),
     Pair('PCH-q', 'the pointer name is matched with case',
          edits=(
@@ -6782,8 +6782,10 @@ PAIRS = (
     Pair('PCH-za', 'a simulated shape tagged body counts as the body',
          edits=(
              ('scripts/analysis/physics_cloth_health.py',
-              '            not k["dynamic"] and k["tags"] & BODY_TAGS for k in hits))\n',
-              '            k["tags"] & BODY_TAGS for k in hits))  # MUTATED\n', 1),
+              '    if k["dynamic"]:\n'
+              '        return False\n'
+              '    if k["tags"] & BODY_TAGS:\n',
+              '    if k["tags"] & BODY_TAGS:  # MUTATED\n', 1),
          ),
          tests=('tests/test_physics_cloth_health.py',),
          expect=('test_a_simulated_shape_tagged_body_is_not_the_body',),
@@ -6814,6 +6816,118 @@ PAIRS = (
          ),
          tests=('tests/test_physics_cloth_health.py',),
          expect=('test_rest_pose_depth_finds_a_shape_named_in_another_case',),
+    ),
+    # physics_cloth_health (2026-09-25, bone-driven population): FSMP keeps a
+    # system that has bones and drives its dynamic ones, so a mesh on them
+    # swings with no collision shape; a body stand-in is a body collider;
+    # an `external` shape pairs with nothing in its own file.
+    Pair('PCH-ze', 'cloth moved by bones alone is left out again',
+         edits=(
+             ('scripts/analysis/physics_cloth_health.py',
+              '    if moved:\n'
+              '        row.update(moved=moved, no_collision=why)\n',
+              '    if False:  # MUTATED\n'
+              '        row.update(moved=moved, no_collision=why)\n', 1),
+         ),
+         tests=('tests/test_physics_cloth_health.py',),
+         expect=('test_a_bone_only_xml_moves_its_skinned_shape_and_reaches_nothing',
+                 'test_kinematic_shapes_do_not_stop_dynamic_bones_moving_the_mesh',
+                 'test_an_unconstrained_dynamic_chain_still_moves_the_mesh'),
+    ),
+    Pair('PCH-zf', 'a dynamic chain with no skinned shape reads as no shape',
+         edits=(
+             ('scripts/analysis/physics_cloth_health.py',
+              '    if info["dynamic_bones"]:\n'
+              '        return None, BONES_UNSKINNED\n',
+              '    if False:  # MUTATED\n'
+              '        return None, BONES_UNSKINNED\n', 1),
+         ),
+         tests=('tests/test_physics_cloth_health.py',),
+         expect=('test_a_dynamic_chain_with_no_skinned_shape_is_counted_apart',
+                 'test_the_injected_body_is_not_moved_cloth'),
+    ),
+    Pair('PCH-zg', 'a body stand-in is not a body collider',
+         edits=(
+             ('scripts/analysis/physics_cloth_health.py',
+              '    return named and k.get("body_skin", 0.0) > BODY_SKIN_SHARE\n',
+              '    return False  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_physics_cloth_health.py',),
+         expect=('test_a_body_stand_in_is_a_body_collider',
+                 'test_a_collider_on_body_bones_needs_a_body_part_name'),
+    ),
+    Pair('PCH-zh', 'a body-part name alone makes a body collider',
+         edits=(
+             ('scripts/analysis/physics_cloth_health.py',
+              '    return named and k.get("body_skin", 0.0) > BODY_SKIN_SHARE\n',
+              '    return named  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_physics_cloth_health.py',),
+         expect=('test_a_body_part_name_off_the_body_bones_is_not_the_body',),
+    ),
+    Pair('PCH-zi', 'body-bone skin alone makes a body collider',
+         edits=(
+             ('scripts/analysis/physics_cloth_health.py',
+              '    return named and k.get("body_skin", 0.0) > BODY_SKIN_SHARE\n',
+              '    return k.get("body_skin", 0.0) > BODY_SKIN_SHARE  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_physics_cloth_health.py',),
+         expect=('test_a_collider_on_body_bones_needs_a_body_part_name',),
+    ),
+    Pair('PCH-zj', 'the body-bone share counts bones, not weight',
+         edits=(
+             ('scripts/analysis/physics_cloth_health.py',
+              '    if total > 0:\n',
+              '    if False:  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_physics_cloth_health.py',),
+         expect=('test_the_body_bone_share_is_by_skin_weight',),
+    ),
+    Pair('PCH-zk', 'an external shape pairs inside its own file again',
+         edits=(
+             ('scripts/analysis/physics_cloth_health.py',
+              '    if a.get("shared") == "external":\n',
+              '    if False:  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_physics_cloth_health.py',),
+         expect=('test_an_external_shape_pairs_with_nothing_in_its_file',),
+    ),
+    Pair('PCH-zl', 'cloth moved by bones is missing from the no-partner rows',
+         edits=(
+             ('scripts/analysis/physics_cloth_health.py',
+              '        out[name] = (False, False)\n',
+              '        pass  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_physics_cloth_health.py',),
+         expect=('test_cloth_moved_by_bones_is_in_the_no_partner_rows',
+                 'test_a_bone_only_xml_moves_its_skinned_shape_and_reaches_nothing'),
+    ),
+    Pair('PCH-zm', 'a piece that declares no shape hides behind a zero again',
+         edits=(
+             ('scripts/analysis/physics_cloth_health.py',
+              'STILL = (NO_SHAPES, SHAPES_ABSENT, NO_DYNAMIC, BONES_UNSKINNED)\n',
+              'STILL = (SHAPES_ABSENT, NO_DYNAMIC, BONES_UNSKINNED)  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_physics_cloth_health.py',),
+         expect=('test_a_piece_that_declares_no_shape_is_not_hidden_behind_a_zero',),
+    ),
+    Pair('PCH-zn', 'cloth moved by bones must be constrained to count',
+         edits=(
+             ('scripts/analysis/physics_cloth_health.py',
+              '    if moved:\n',
+              '    if moved and info["constrained"]:  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_physics_cloth_health.py',),
+         expect=('test_an_unconstrained_dynamic_chain_still_moves_the_mesh',),
+    ),
+    Pair('PCH-zo', 'the injected body counts as moved cloth',
+         edits=(
+             ('scripts/analysis/physics_cloth_health.py',
+              '                  if s not in BODY_SHAPE_KEYS and set(bones) & dynamic_bones)\n',
+              '                  if set(bones) & dynamic_bones)  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_physics_cloth_health.py',),
+         expect=('test_the_injected_body_is_not_moved_cloth',),
     ),
     # physics_rest_depth (2026-09-25): cloth depth at the REST pose, through
     # the node tree and the skin, so a lifted chain root is seen.

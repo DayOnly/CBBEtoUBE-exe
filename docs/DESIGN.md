@@ -1020,7 +1020,7 @@ replays, and the list at the end is what it does not.
   FSMP, so namespaces are stripped. A root other than `<system>` loads nothing.
   An XML the run cannot read (locked, denied) is its own bucket, `xml
   unreadable`, and the report says its counts are short; it is not a fact
-  about the piece, so it is not in the "declared but no shape loads" total.
+  about the piece, so it is not in the "declared but no system loads" total.
 - **What simulates: bone mass, not element kind.** A `per-vertex-shape` and a
   `per-triangle-shape` differ only in collision geometry. A shape simulates
   when any of its skin bones is dynamic (mass > 0) and is a kinematic collider
@@ -1033,13 +1033,49 @@ replays, and the list at the end is what it does not.
   shape and template names are engine strings and compare without case (an
   XML's `NPC Pelvis [PElv]` is the skin's `[Pelv]`). A shape that is not a
   skinned NIF shape with vertices builds nothing.
+- **Cloth moved by bones alone.** FSMP keeps a system that has any bone
+  (`SkinnedMeshSystem::valid()` is `!m_bones.empty()`), not only one with a
+  shape, and `writeTransform` drives every bone it created with mass > 0. So
+  an XML of bones and constraints with no simulated shape (none declared, the
+  declared ones absent from the NIF, or every one kinematic) still swings the
+  NIF mesh skinned to those bones, and that mesh has no collision geometry: it
+  reaches no partner, the strongest no-reach case. Such a piece is measured,
+  as cloth "simulated by bones, no dynamic collision shape"; its moved shapes
+  are the NIF shapes skinned directly to a bone the replay creates with mass >
+  0, the injected body excluded (a shape on an undeclared child node of such a
+  bone is not seen; `physics_rest_depth.py` follows the node tree). No
+  constraint is required, because FSMP moves an unconstrained dynamic bone too;
+  the row's constrained flag splits the two, as for any cloth. A piece whose
+  dynamic bones carry no NIF shape is counted apart (`bones simulate, no NIF
+  shape skinned to one`), and so is one where no bone simulates: both are
+  "declared but nothing visible moves", beside "declared but no system loads"
+  (pointer unresolved, XML unparseable, root not `<system>`).
 - **FSMP's collision rule.** `needsCollision` never pairs two kinematic
   shapes. Otherwise `canCollideWith` runs both ways and both must allow it. One
   side allows the other when the other carries a tag in its
   `can-collide-with-tag` list, or, when that list is EMPTY, when the other
   carries none of its `no-collide-with-tag` tags. Every kind pairs with every
-  kind (vertex-vertex, vertex-triangle, triangle-triangle). A body collider is
-  a kinematic shape carrying one of the tags in `BODY_TAGS`.
+  kind (vertex-vertex, vertex-triangle, triangle-triangle). `<shared>` is
+  checked in `SkyrimBody::canCollideWith` before the tags: `external` refuses
+  any partner on the same skeleton, and every shape of one file is on one
+  skeleton, so an `external` shape pairs with NOTHING in its own file;
+  `public`, `internal` (same skeleton) and `private` (same file) all allow an
+  in-file pair. The census models exactly that. None of the 154 XMLs the
+  09-24 pack's pointers resolve to uses `external` (private 297, public 16,
+  internal 12), so no count moves.
+- **What is the body.** A body collider is a KINEMATIC shape (a moving one is
+  never the body) that either carries a tag in `BODY_TAGS`, or is a body
+  STAND-IN: its name or a tag contains a body-part token (`BODY_TOKENS`:
+  body, vbd, leg, feet, foot, butt, thigh, calf, arms, hand, pant, torso,
+  breast, belly) AND more than half its skin WEIGHT is on the actor's body
+  bones (an `NPC ` bone other than the root and COM). Both are needed: a
+  ground plane tagged `legs` rides the root only, and a greaves or belt
+  collider on body bones names no body part. By weight, not bone count: a
+  leg collider can list six skirt bones that carry 6% of its weight. The
+  tokens come from the kinematic partners live cloth reaches: `vbody`, `vbd`,
+  VirtualBody/Legs/Feet/Butt/Arms/Hands, CollisionLegs, ButtCol, LegsCol,
+  PantsC, ColPants. The only body-named partners the skin test turns away
+  there are ground planes on the root.
 - **Every constraint kind.** `generic-constraint`, `stiffspring-constraint` and
   `conetwist-constraint`, at the top level or inside a `constraint-group`, all
   constrain, except one between two kinematic bones, which FSMP skips. The
@@ -1051,25 +1087,46 @@ Measured on the 09-24 pack (3342 NIFs), old reading -> this one: 364 pieces
 same-stem XML); 94 "unparseable" -> 0 (22 byte-order mark, 58 junk after the
 root, 14 namespaced root); pieces with simulated cloth 97 -> 247 (124
 garments); unconstrained crash pair 56 -> 0; named collider absent 6 -> 0.
-Cloth reaching nothing in its own file: 4 pieces (2 garments). Cloth reaching
-no kinematic body-tagged shape: 190 (95), all constrained; on 182 of them (91
-garments) such cloth does reach a kinematic shape whose tag is outside
-`BODY_TAGS`, so that row is mostly the tag list, not missing collision. Rest pose inside the body:
-66 of 86 measurable. Numbers from before 2026-09-25 are not comparable with
-these, and neither are the first 09-25 version's, which took every per-vertex
-shape for cloth and every per-triangle shape for a collider (117 / 59
-simulated, 14 / 7 reaching nothing: 12 of the 14 were only kinematic body
-helpers, and the other 2 had cloth whose partner is a per-vertex shape).
+
+The same pack, the second 09-25 version -> this one (NIFs / garments):
+measured 247 / 124 -> 285 / 143, the 38 / 19 added being cloth simulated by
+bones with no dynamic collision shape (24 / 12 whose XML declares no shape, 14
+/ 7 whose every shape is kinematic), every one constrained. "Declares no
+shape" 41 / 21 and "every shape kinematic" 18 / 9 leave the exclusions: 38
+measured, and 21 / 11 whose dynamic bones carry no NIF shape are counted apart;
+none is left where no bone simulates. Declared but no system loads: 0. Cloth
+reaching no partner in its file: 4 / 2 -> 42 / 21 (the 38 plus the same 4).
+Cloth reaching no kinematic body collider: 190 / 95 -> 134 / 67. On the
+pieces with a collision shape it is 190 / 95 -> 96 / 48: 102 / 51 pieces have
+cloth whose only body collider is a stand-in. Of the 134, 38 / 19 are the
+bone-moved cloth, 70 / 35 have cloth that reaches only
+kinematic shapes that are not the body (60 / 30 a collider on body bones named
+for no body part -- `Collision`, `Col`, `Greaves` -- and 10 / 5 only ground
+planes), and 26 / 13 have a simulated shape that reaches no kinematic shape at
+all. Every one is constrained; the unconstrained crash pair stays 0. Stored
+cloth vertices inside the body: 66 of 86 -> 76 of 96 measurable (189 with no
+injected body). `physics_rest_depth.py` reads this population, so it now
+measures the 38 as well (243 -> 281 measured); two of those garments (four
+NIFs) rest more than 0.5u inside, both past 1.5u on a few vertices, and no
+earlier row moved.
+
+Numbers from before 2026-09-25 are not comparable with these, and neither are
+the first 09-25 version's, which took every per-vertex shape for cloth and
+every per-triangle shape for a collider (117 / 59 simulated, 14 / 7 reaching
+nothing: 12 of the 14 were only kinematic body helpers, and the other 2 had
+cloth whose partner is a per-vertex shape), nor the second's no-partner and
+no-body rows, which left out cloth moved by bones and knew the body only by
+tag.
 
 Not modelled: colliders another worn piece brings; shape-name physics from
 `defaultBBPs.xml` and its shape-name remapping; XMLs that exist only in an
-archive; bone renames; `<shared>` (it limits pairs across files, and every
-pair here is inside one); per-bone filters (`can-/no-collide-with-bone`,
-`weight-threshold`); `disable-tag`; and whether a declared bone's node exists.
-The body-collider test is a tag-name list, so cloth whose body collider uses
-another tag counts as reaching no body. Its depth row reads STORED vertices
-against the injected body, so it cannot see `#chain-rest-lift`; the rest-pose
-depth is the next section's tool.
+archive; bone renames; per-bone filters (`can-/no-collide-with-bone`,
+`weight-threshold`); `disable-tag`; whether a declared bone's node exists; and
+a mesh hanging on an undeclared child node of a dynamic bone. The body test is
+by name and skin, not by where a shape lies, so an armour collider named for a
+body part would count as the body. Its depth row reads STORED vertices against
+the injected body, so it cannot see `#chain-rest-lift`; the rest-pose depth
+is the next section's tool.
 
 ### Rest-pose depth of simulated cloth (`scripts/analysis/physics_rest_depth.py`)
 
