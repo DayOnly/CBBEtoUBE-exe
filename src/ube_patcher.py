@@ -271,6 +271,64 @@ def remap_fid(fid: int, src_masters: list[str], src_filename: str,
 ALT_TEXTURE_SIGS = (b"MO2S", b"MO3S", b"MO4S", b"MO5S")
 
 
+def _alttex_dup_occurrence_on() -> bool:
+    r"""#alttex-dup-occurrence (2026-09-25): does our own plugin's alternate-
+    texture reconcile bind the k-th entry that names a shared shape name to the
+    k-th shape of that name? Yes, by default.
+
+    #dup-shape-names ships a source whose shapes share a name with one name per
+    shape ('fur', 'fur:1' .. 'fur:5', in the author's order). A colour variant
+    in the source plugin addresses those shells by 3D index, each entry still
+    named 'fur'. The reconcile matched entries by name and kept one per name, so
+    the variant kept one entry, bound to the first shell, and the other shells
+    lost their colour.
+
+    Now the entries of such a set that name a split name (case-insensitive) are
+    ordered by their source 3D index and bound in turn to that name's shapes in
+    the converted NIF, in the NIF's order; a repeated source index addresses the
+    same shell and keeps one entry; entries past the last shape are dropped, as a
+    missing name is. A 'name:k' the set itself names is the author's own shape
+    and is matched by name. The authored name bytes are kept (the engine binds by
+    index). Our own plugins only: a third-party set binds by index and the rename
+    keeps the order. Inert unless the converted NIF carries renamed shapes --
+    none do on the live pack today.
+
+    Nested: with #dup-shape-names off no shape is renamed, and a 'name:k' next
+    to 'name' is then the author's, so this is off too.
+    CBBE2UBE_NO_ALTTEX_DUP_OCCURRENCE=1 keeps one entry per name."""
+    from .nif_convert_writer import _dup_shape_names_on
+    if not _dup_shape_names_on():
+        return False
+    return not _flag("CBBE2UBE_NO_ALTTEX_DUP_OCCURRENCE", False)
+
+
+def _renamed_shape_families(shape_index: "dict[str, int]",
+                            set_names: "set[str]") -> "dict[str, list[int]]":
+    """#alttex-dup-occurrence: {lowercased shared name: [index, ...]} for every
+    name the #dup-shape-names rename split in the converted NIF -- the shape
+    that kept `name` plus each 'name:k', in NIF order. `set_names` (lowercased)
+    are the names an alternate-texture set carries: a 'name:k' among them is an
+    authored shape, not a renamed one. A name two shapes of the NIF carry in
+    different case is left out (the case-insensitive entry match could not
+    tell them apart)."""
+    from .nif_convert_writer import _DUP_NAME_SEP
+    split: "dict[str, list[int]]" = {}
+    for nm, i in shape_index.items():
+        base, sep, k = nm.rpartition(_DUP_NAME_SEP)
+        if (not sep or not base or base not in shape_index
+                or not (k.isascii() and k.isdigit()) or str(int(k)) != k
+                or nm.lower() in set_names):
+            continue
+        split.setdefault(base, []).append(i)
+    if not split:
+        return {}
+    lower_count: "dict[str, int]" = {}
+    for nm in shape_index:
+        lower_count[nm.lower()] = lower_count.get(nm.lower(), 0) + 1
+    return {base.lower(): sorted([shape_index[base]] + idxs)
+            for base, idxs in split.items() if lower_count[base.lower()] == 1}
+
+
 def _reindex_alt_texture_payload(data: bytes,
                                  shape_index: "dict[str, int]") -> "bytes | None":
     """Rewrite an MO?S alt-texture set to match a CONVERTED NIF's shapes.
@@ -281,7 +339,9 @@ def _reindex_alt_texture_payload(data: bytes,
       * name still in NIF -> keep, update index to its real position;
       * name merged away -> DROP (its geometry lives in a surviving shape that
         carries the same TXST for that variant);
-      * de-dupe by name (one entry per surviving shape).
+      * de-dupe by name (one entry per surviving shape);
+      * except a name #dup-shape-names split into 'name', 'name:1', ...: its
+        entries bind by occurrence (`_alttex_dup_occurrence_on`).
     `shape_index` = {shape_name: index} from the converted NIF.
     Returns rebuilt payload, or None on parse failure (caller keeps original)."""
     try:
@@ -292,10 +352,26 @@ def _reindex_alt_texture_payload(data: bytes,
             nl = struct.unpack_from("<I", data, p)[0]; p += 4
             name = data[p:p + nl]; p += nl
             txst = struct.unpack_from("<I", data, p)[0]; p += 4
-            p += 4   # skip the (unused here) 3D-index field
-            entries.append((name, txst))
+            src_idx = struct.unpack_from("<I", data, p)[0]; p += 4
+            entries.append((name, txst, src_idx))
     except Exception:
         return None
+    lnames = [name.split(b"\x00", 1)[0].decode("latin-1", "ignore").lower()
+              for name, _t, _s in entries]
+    # #alttex-dup-occurrence: entry position -> its shell's index in the NIF.
+    by_occurrence: "dict[int, int]" = {}
+    families = (_renamed_shape_families(shape_index, set(lnames))
+                if _alttex_dup_occurrence_on() else {})
+    for fam, members in families.items():
+        shell_of: "dict[int, int]" = {}          # source 3D index -> rank
+        for pos in sorted((q for q, nm in enumerate(lnames) if nm == fam),
+                          key=lambda q: entries[q][2]):
+            src_idx = entries[pos][2]
+            if src_idx in shell_of:
+                continue                 # the same shell again: keep the first
+            shell_of[src_idx] = len(shell_of)
+            if shell_of[src_idx] < len(members):
+                by_occurrence[pos] = members[shell_of[src_idx]]
     # Case-INSENSITIVE shape-name match: alt-texture sets are authored by hand and
     # frequently disagree in case with the actual NIF shape name (e.g. an entry
     # named 'hood' for a shape named 'Hood'). The engine applies the recolor by
@@ -309,8 +385,12 @@ def _reindex_alt_texture_payload(data: bytes,
         ci_index.setdefault(_k.lower(), _v)   # first wins on case-dupes (rare)
     seen: set[str] = set()
     kept = []
-    for name, txst in entries:
-        nm = name.split(b"\x00", 1)[0].decode("latin-1", "ignore").lower()
+    for pos, (name, txst, _src) in enumerate(entries):
+        nm = lnames[pos]
+        if nm in families:
+            if pos in by_occurrence:
+                kept.append((name, txst, by_occurrence[pos]))
+            continue                     # past the last shell / a repeat
         new_idx = ci_index.get(nm)
         if new_idx is None or nm in seen:
             continue  # shape merged away / duplicate

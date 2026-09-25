@@ -14,9 +14,8 @@ body-morph file carried a single set of morphs meant for one shell. Now each lay
 of a shared name gets its own name before conversion ("fur", "fur:1", "fur:2" and
 so on) in the author's order, so every layer follows body sliders with its own
 morphs, and colour variants in the armour mod's own plugin still reach the right
-layer (they pick layers by position). A colour variant that this tool's merged
-plugin carries for several same-named layers still recolours only the first of
-them -- a known limit. A name the garment's physics
+layer (they pick layers by position), as do those this tool's merged plugin
+carries (next entry). A name the garment's physics
 file uses is left as it is, because the physics finds that layer by its name, and
 so is a body layer's name; the run reports either case. The tool also no longer
 writes one layer's shape onto a layer of a different size (it read memory it
@@ -24,6 +23,18 @@ should not). None of the meshes the reported modlist converts today has layers
 that share a name, so current output does not change.
 `CBBE2UBE_NO_DUP_SHAPE_NAMES=1` (set to 1) keeps the authored names;
 `CBBE2UBE_NO_OVERRIDE_CONTRACT=1` turns off the size check.
+
+### Fixed — a colour variant recolours every same-named layer
+
+A colour variant lists the layers it recolours, each by name and position. On a
+garment whose layers share a name (the fur coat above), the variant copied into
+this tool's merged plugin kept only one entry for that name, so only the first
+fur shell took the new colour and the others stayed in the original one. Each
+entry now goes to its own layer, in the author's order: the first "fur" entry to
+"fur", the second to "fur:1", and so on. It only acts on layers the previous
+fix renamed, so current output on the reported modlist does not change.
+`CBBE2UBE_NO_ALTTEX_DUP_OCCURRENCE=1` (set to 1) turns it off; it is also off
+when `CBBE2UBE_NO_DUP_SHAPE_NAMES=1` is set.
 
 ### Changed — whether you can wear an item is read from the plugin the game uses
 

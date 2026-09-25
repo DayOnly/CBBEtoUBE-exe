@@ -1117,10 +1117,29 @@ its own shape, no pass failure. Live: 0 of the 3,365 source files the plan
 converts share a name (so no current output changes); 1 of 3,342 files in the
 deployed output does, the coat, which the plan no longer converts.
 
-**Left open.** Our own ESPs' alternate-texture reconcile (`ube_patcher`) matches
-entries by name and keeps one per name, so a set that addresses six same-named
-shells by index keeps one entry either way; third-party ESPs keep their indices
-and are unaffected.
+**Our own ESPs' colour variants: `#alttex-dup-occurrence`.** The alternate-
+texture reconcile (`ube_patcher._reindex_alt_texture_payload`) rebuilds each
+MO?S set of our merged plugin from the converted NIF's {name: index} map and kept
+one entry per case-insensitive name, so a set that addresses six same-named
+shells by source index kept one entry, bound to the first shell. Now a name the
+rename split -- the converted NIF has `name` and `name:k` (k a plain integer) --
+binds by OCCURRENCE: that name's entries, ordered by source 3D index, go in turn
+to its shapes in NIF order (the rename keeps the author's order, so the k-th
+authored shell is the k-th shape). A repeated source index is one shell and keeps one entry; entries past
+the last shell are dropped, as a missing name is. Not split: a `name:k` the set
+itself names (the author's shape, matched by name), and a name two NIF shapes
+carry in different case. Authored name bytes are kept, as `#alttex-case` does:
+the engine binds by index.
+
+The switch is its own, `CBBE2UBE_NO_ALTTEX_DUP_OCCURRENCE=1`, so the rename can
+be kept while this is ruled out; it is nested under `CBBE2UBE_NO_DUP_SHAPE_NAMES`,
+because without the rename a `name:k` beside `name` can only be the author's.
+Third-party ESPs keep their indices and are unaffected. Limits, both because the
+source NIF, which would tell, is not at hand in the reconcile: an entry is placed
+by its RANK among the set's entries for that name, so a set addressing only some
+of the shells binds them to the first ones; and an authored `name:k` the set does
+not name reads as a renamed shell. Live: no converted NIF
+carries a renamed shape today, so the pass changes nothing.
 
 ---
 
