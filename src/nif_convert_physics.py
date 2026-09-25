@@ -2696,13 +2696,66 @@ def _read_xml_roundtrip(xml_path) -> "tuple[str, str] | None":
         raw = Path(xml_path).read_bytes()
     except Exception:
         return None
+    return _decode_xml_roundtrip(raw)
+
+def _decode_xml_roundtrip(raw: bytes) -> "tuple[str, str]":
+    """`_read_xml_roundtrip` on bytes already read: (text, codec), UTF-8 first,
+    else latin-1 (which decodes any byte)."""
     try:
         return raw.decode("utf-8"), "utf-8"
     except UnicodeDecodeError:
-        try:
-            return raw.decode("latin-1"), "latin-1"
-        except Exception:
-            return None
+        return raw.decode("latin-1"), "latin-1"
+
+# The FSMP shape prune's line test (_harden_hdt_xml_for_fsmp): the FIRST shape
+# open tag on a line decides the whole line.
+_HDT_SHAPE_OPEN_RE = re.compile(r'<per-(?:triangle|vertex)-shape\s+name="([^"]+)"')
+_HDT_SHAPE_CLOSE_RE = re.compile(r'</per-(?:triangle|vertex)-shape>')
+
+def _hdt_shape_prune(lines, shape_names):
+    """Walk an HDT-SMP XML's lines as `_harden_hdt_xml_for_fsmp` prunes shape
+    blocks, yielding (line, dropped, opened) for each: `dropped` when the line
+    goes, `opened` = (kind, name) on the line that starts a dropped block.
+
+    LINE-BASED, deliberately the one definition: a line's first
+    `<per-*-shape name=...>` decides it, a block whose name is not in
+    `shape_names` (case for case) is dropped from that line to the line holding
+    a closing tag, and each line is dropped or kept WHOLE -- so a kept block, a
+    bone or a constraint that shares a line with a dropped block goes with it.
+    #zeroed-smp-gain rule e (discovery._smp_gain_verdict) replays the same walk
+    through `_hdt_xml_shape_pruned` so its model and the conversion cannot
+    disagree about what survives."""
+    drop_block = False
+    for line in lines:
+        m = _HDT_SHAPE_OPEN_RE.search(line)
+        opened = None
+        if m:
+            drop_block = m.group(1) not in shape_names
+            if drop_block:
+                opened = ("cloth" if "per-vertex-shape" in line else "collider",
+                          m.group(1))
+        if drop_block:
+            if _HDT_SHAPE_CLOSE_RE.search(line):
+                drop_block = False
+            yield line, True, opened
+        else:
+            yield line, False, None
+
+def _hdt_xml_shape_pruned(raw: bytes, shape_names) -> bytes:
+    """The bytes `_harden_hdt_xml_for_fsmp` leaves of the XML `raw` for a NIF
+    whose shapes are `shape_names`, as far as its shape prune goes (its
+    weight-threshold prune, which needs the actor skeleton, is not replayed):
+    `raw` itself when no block goes, else the kept lines re-joined and encoded
+    exactly as that pass writes them."""
+    text, codec = _decode_xml_roundtrip(raw)
+    kept, dropped = [], False
+    for line, gone, _opened in _hdt_shape_prune(text.splitlines(), shape_names):
+        if gone:
+            dropped = True
+        else:
+            kept.append(line)
+    if not dropped:
+        return raw
+    return ("\n".join(kept) + "\n").encode(codec)
 
 def _make_chains_static(xml_path: Path) -> None:
     """Gated (STATIC_CHAINS). Zero every dynamic chain mass in the XML so the
@@ -2861,21 +2914,14 @@ def _harden_hdt_xml_for_fsmp(xml_path: Path, nif) -> None:
     prune_bones = bool(skel)  # only prune bones if we have a skeleton ref
 
     out: list[str] = []
-    drop_block = False
     changed = False
     dropped_shapes: "list[tuple[str, str]]" = []   # (kind, name)
     dropped_bones = 0
-    for line in text.splitlines():
-        m = re.search(r'<per-(?:triangle|vertex)-shape\s+name="([^"]+)"', line)
-        if m:
-            drop_block = m.group(1) not in nif_shapes
-            if drop_block:
-                kind = ("cloth" if "per-vertex-shape" in line else "collider")
-                dropped_shapes.append((kind, m.group(1)))
-        if drop_block:
+    for line, gone, opened in _hdt_shape_prune(text.splitlines(), nif_shapes):
+        if opened:
+            dropped_shapes.append(opened)
+        if gone:
             changed = True
-            if re.search(r'</per-(?:triangle|vertex)-shape>', line):
-                drop_block = False
             continue
         if prune_bones:
             wt = re.search(r'<weight-threshold\s+bone="([^"]+)"', line)

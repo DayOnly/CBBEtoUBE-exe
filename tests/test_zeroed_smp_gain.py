@@ -31,7 +31,9 @@ XML names is a stripped body its collision-proxy re-import would bring back.
 shapes it drops, and one build's only body collider went that way, leaving its
 simulated skirt proxy nothing to collide with. A gain now also needs every
 simulated shape the pruned XML keeps to have a partner under FSMP's rules.
-`CBBE2UBE_NO_SMP_GAIN_COLLISION_PARTNER=1` drops that rule.
+The prune is the conversion's own, line by line; a prune that breaks the XML,
+or takes every simulated shape while the chain still swings a drawn mesh, is
+refused too. `CBBE2UBE_NO_SMP_GAIN_COLLISION_PARTNER=1` drops that rule.
 """
 import sys
 from pathlib import Path
@@ -68,6 +70,7 @@ class _Shape:
         self.name = name
         self.verts = [(0.0, 0.0, 0.0)] + [(0.0, 0.0, float(zspan))] * (nverts - 1)
         self.bone_names = list(bones) if bones else [f"NPC Bone{i}" for i in range(nbones)]
+        self.tris = [(0, 1, 2)]
         self.textures = {"Diffuse": diffuse}
         self._backing = None
 
@@ -343,6 +346,140 @@ def test_a_bone_takes_its_named_template_mass():
     bones = ('<bone-default name="cloth"><mass>2</mass></bone-default>'
              '<bone name="Skirt 01" template="cloth"/>')
     assert _partner_verdict(_proxy_xml(_block("Body"), bones=bones)) == LONE
+
+
+# --- rule e replays the conversion's OWN prune: line by line ------------------------
+#
+# The conversion's prune reads a line's FIRST shape tag and keeps or drops the
+# whole line, so whatever shares a line with a dropped block goes with it.
+
+BONE = '<bone name="Skirt 01"><mass>1</mass></bone>'
+PROXY = _block("Proxy", tags=("Fabric",), can=("Collision",))
+CHAIN = '<generic-constraint bodyA="Skirt 01" bodyB="NPC Pelvis [Pelv]"/>'
+SWING = ("its cloth would swing with no collision shape once the shapes the "
+         "conversion drops are pruned")
+
+
+def _lines_xml(*lines, tail=CHAIN + "\n</system>"):
+    """An XML laid out one entry per line, as authors mostly write them."""
+    return ('<?xml version="1.0" encoding="UTF-8"?>\n<system>\n'
+            + "\n".join(lines) + "\n" + tail + "\n").encode()
+
+
+def test_a_partner_on_its_own_line_survives_the_prune():
+    assert _partner_verdict(_lines_xml(BONE, PROXY, _block("Body"), _block("ButtCol")),
+                            _butt_col()) is None
+
+
+def test_a_partner_on_a_pruned_blocks_line_goes_with_it():
+    """'Body' opens the line, so the conversion drops the line -- ButtCol too."""
+    assert _partner_verdict(_lines_xml(BONE, PROXY, _block("Body") + _block("ButtCol")),
+                            _butt_col()) == LONE
+
+
+def test_a_pruned_block_after_a_kept_one_on_its_line_stays_and_builds_nothing():
+    """ButtCol opens the line, so the line stays; 'Body' is still no shape."""
+    assert _partner_verdict(_lines_xml(BONE, PROXY, _block("ButtCol") + _block("Body")),
+                            _butt_col()) is None
+    assert _partner_verdict(_lines_xml(BONE, PROXY, _block("ButtCol", can=("Hair",))
+                                       + _block("Body")), _butt_col()) == LONE
+
+
+def test_a_bone_on_a_pruned_blocks_line_goes_with_it():
+    """The chain bone's mass is declared on the dropped line: once pruned, the
+    bone is only made by the proxy, from the massless default -- nothing swings."""
+    assert _partner_verdict(_lines_xml(BONE, PROXY, _block("Body"))) == LONE
+    assert _partner_verdict(_lines_xml(_block("Body") + BONE, PROXY)) is None
+
+
+def test_a_prune_that_breaks_the_xml_is_refused():
+    """The dropped line held the closing tag: FSMP would load no physics at all."""
+    assert (_partner_verdict(_lines_xml(BONE, PROXY, _block("ButtCol"),
+                                        tail=CHAIN + "\n" + _block("Body") + "</system>"),
+                             _butt_col())
+            == "its physics XML would not parse once the shapes the conversion "
+               "drops are pruned")
+
+
+@pytest.mark.parametrize("layout", [
+    _lines_xml(BONE, PROXY, _block("Body"), _block("ButtCol")),
+    _lines_xml(BONE, PROXY, _block("Body") + _block("ButtCol")),
+    _lines_xml(BONE, PROXY, _block("ButtCol") + _block("Body")),
+    b"\xef\xbb\xbf" + _lines_xml(_block("Body") + BONE, PROXY).replace(b"\n", b"\r\n"),
+    _lines_xml(BONE, PROXY, _block("ButtCol")),
+    _lines_xml(BONE, '<per-triangle-shape name="Body">', "<tag>Collision</tag>",
+               "</per-triangle-shape>", PROXY),
+], ids=["own-lines", "shared-line", "kept-first", "bom-crlf", "nothing-pruned",
+        "block-over-lines"])
+def test_the_model_prunes_exactly_what_the_conversion_writes(tmp_path, monkeypatch,
+                                                            layout):
+    from types import SimpleNamespace
+    from src import nif_convert_physics as phys
+    monkeypatch.setattr(phys, "_actor_skeleton_bone_names", lambda: set())
+    p = tmp_path / "skirt.xml"
+    p.write_bytes(layout)
+    nif = SimpleNamespace(shapes=[_proxy(), _butt_col()], nodes={})
+    phys._harden_hdt_xml_for_fsmp(p, nif)
+    assert p.read_bytes() == phys._hdt_xml_shape_pruned(layout, {"Proxy", "ButtCol"})
+
+
+def test_switched_off_the_line_prune_refuses_nothing(monkeypatch):
+    monkeypatch.setenv(PARTNER_OFF, "1")
+    assert _partner_verdict(_lines_xml(BONE, PROXY, _block("Body") + _block("ButtCol")),
+                            _butt_col()) is None
+
+
+# --- rule e: a prune that takes EVERY simulated shape --------------------------------
+
+def _vacuous(proxy, *extra):
+    """The simulated proxy's block shares 'Body''s line and goes with it; the
+    chain bone keeps its mass, and the kept ButtCol is kinematic."""
+    return discovery._smp_gain_verdict(
+        [_named_body(), _Shape("Cuirass")],
+        [_skin_body("body"), proxy, _butt_col(), *extra],
+        _lines_xml(BONE, _block("Body") + PROXY, _block("ButtCol")))
+
+
+def _hidden_proxy():
+    class _Hidden:
+        flags = 0x1                                      # the Hidden bit
+    proxy = _proxy()
+    proxy._backing = _Hidden()
+    return proxy
+
+
+def test_a_prune_that_takes_every_simulated_shape_leaves_the_cloth_swinging():
+    """The proxy mesh itself is drawn and rides the swinging bone."""
+    assert _vacuous(_proxy()) == SWING
+
+
+def test_a_hidden_mesh_on_the_chain_is_no_swinging_cloth():
+    assert _vacuous(_hidden_proxy()) is None
+    assert _vacuous(_hidden_proxy(), _Shape("Skirt", bones=("Skirt 01",))) == SWING
+
+
+def test_a_mesh_without_triangles_is_no_swinging_cloth():
+    bare = _proxy()
+    bare.tris = []
+    assert _vacuous(bare) is None
+
+
+def test_a_mesh_off_the_chain_is_no_swinging_cloth():
+    """What is drawn rides no simulated bone: the chain moves no mesh."""
+    assert _vacuous(_hidden_proxy(),
+                    _Shape("Tassel", bones=("Tassel 01", "NPC Pelvis [Pelv]"))) is None
+    assert _vacuous(_hidden_proxy(), _Shape("Tassel", bones=("skirt 01",))) == SWING
+
+
+def test_switched_off_a_swinging_cloth_is_taken(monkeypatch):
+    monkeypatch.setenv(PARTNER_OFF, "1")
+    assert _vacuous(_proxy()) is None
+
+
+def test_an_xml_the_author_wrote_with_no_simulated_shape_is_not_judged():
+    """No shape simulated before the prune either: the author's own design."""
+    assert _partner_verdict(_lines_xml(BONE, _block("ButtCol")), _butt_col(),
+                            _Shape("Skirt", bones=("Skirt 01",))) is None
 
 
 # --- the selection -------------------------------------------------------------------

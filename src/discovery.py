@@ -234,6 +234,14 @@ def _has_3ba_body(nif_path: Path) -> bool:
 #      converter's own later colliders do not count and need not: the butt
 #      collider clones a surviving kinematic block's tags, so it partners no
 #      shape that block does not, and the chest collider is off by default.
+#      The prune replayed is the conversion's own (nif_convert_physics.
+#      _hdt_shape_prune): LINE-based, so a partner block, a bone or a
+#      constraint that shares a line with a dropped block goes with it; a pruned
+#      text that no longer parses is refused. And when the prune takes EVERY
+#      simulated shape while the XML still makes a drawn shape's skin bone
+#      simulate, the chain swings that cloth with no collision shape at all --
+#      refused too. (An XML the author wrote with no simulated shape is not
+#      this rule's to judge.)
 #      CBBE2UBE_NO_SMP_GAIN_COLLISION_PARTNER=1 drops this rule.
 # CBBE2UBE_NO_ZEROED_SMP_GAIN=1 keeps rule 4 as it was.
 _HDT_MARKER = b"HDT Skinned Mesh Physics Object"
@@ -275,11 +283,24 @@ def _smp_gain_collision_partner() -> bool:
     return not _flag("CBBE2UBE_NO_SMP_GAIN_COLLISION_PARTNER", False)
 
 
-def _smp_partnerless(root, kept: list) -> "str | None":
-    """#zeroed-smp-gain rule e: the name of a simulated collision shape no other
-    shape can collide with once the XML is pruned to `kept` (the build's shapes
-    the converted NIF still carries), else None. See rule e above. Element names
-    are read as rule c reads them (an XML with a default xmlns fails c first)."""
+def _smp_shows(s) -> bool:
+    """Whether the game draws shape `s`: it has triangles and its Hidden flag
+    (0x1, the bit the converter sets) is clear; an unreadable flag counts as
+    drawn."""
+    try:
+        hidden = int(getattr(s._backing, "flags", 0) or 0) & 0x1
+    except (TypeError, ValueError, AttributeError):
+        hidden = 0
+    return bool(len(s.verts) and len(s.tris)) and not hidden
+
+
+def _smp_replay(root, kept: list) -> "tuple[str | None, bool, set]":
+    """#zeroed-smp-gain rule e: replay the XML `root` on a NIF whose shapes are
+    `kept`, as FSMP reads it. Returns (the name of a simulated collision shape no
+    other shape can collide with, else None; whether any collision shape
+    simulates; the bones, case-folded, that simulate). A block whose name is not
+    in `kept`, case for case, builds nothing. See rule e above. Element names are
+    read as rule c reads them (an XML with a default xmlns fails c first)."""
     def key(name) -> str:
         return (name or "").lower()               # engine strings fold case
 
@@ -348,12 +369,15 @@ def _smp_partnerless(root, kept: list) -> "str | None":
     def allows(a, b) -> bool:
         return bool(b["tags"] & a["can"]) if a["can"] else not (b["tags"] & a["no"])
 
+    lone = None
     for a in shapes:
         if a["dynamic"] and not any(
                 key(b["name"]) != key(a["name"]) and allows(a, b) and allows(b, a)
                 for b in shapes):
-            return a["name"]
-    return None
+            lone = a["name"]
+            break
+    return (lone, any(a["dynamic"] for a in shapes),
+            {b for b, m in bones.items() if m > 0})
 
 
 def _gain_nif(path: Path):
@@ -420,11 +444,27 @@ def _smp_gain_verdict(today: list, build: list, xml: "bytes | None") -> "str | N
         if s.name in named or driven & set(s.bone_names or ()):
             return f"its physics XML would bring back the stripped body {s.name!r}"
     if _smp_gain_collision_partner():             # e. #smp-gain-collision-partner
+        from . import nif_convert_physics as _ncp
         gone = {id(s) for s in stripped}
-        lone = _smp_partnerless(root, [s for s in build if id(s) not in gone])
+        kept = [s for s in build if id(s) not in gone]
+        # The conversion's own prune, line for line, on the bytes it is handed.
+        try:
+            pruned = ET.fromstring(
+                _ncp._hdt_xml_shape_pruned(xml, {s.name for s in kept}))
+        except ET.ParseError:
+            return ("its physics XML would not parse once the shapes the "
+                    "conversion drops are pruned")
+        lone, simulated, swinging = _smp_replay(pruned, kept)
         if lone is not None:
             return (f"its simulated shape {lone!r} would collide with nothing "
                     f"once the shapes the conversion drops are pruned")
+        # Vacuous: the prune took EVERY simulated shape, but the chain still
+        # swings a drawn mesh -- a cloth with no collision shape at all.
+        if not simulated and swinging and _smp_replay(root, build)[1]:
+            if any(_smp_shows(s) and swinging & {b.lower() for b in s.bone_names or ()}
+                   for s in kept):
+                return ("its cloth would swing with no collision shape once the "
+                        "shapes the conversion drops are pruned")
     return None
 
 

@@ -2408,8 +2408,8 @@ PAIRS = (
     Pair('SGP-d', 'the stripped bodies are kept as partners',
          edits=(
              ('src/discovery.py',
-              '        lone = _smp_partnerless(root, [s for s in build if id(s) not in gone])',
-              '        lone = _smp_partnerless(root, list(build))  # MUTATED', 1),
+              '        kept = [s for s in build if id(s) not in gone]',
+              '        kept = list(build)  # MUTATED', 1),
          ),
          tests=('tests/test_zeroed_smp_gain.py',),
          expect=('test_a_collider_on_the_swapped_body_is_pruned',),
@@ -2540,6 +2540,97 @@ PAIRS = (
          ),
          tests=('tests/test_zeroed_smp_gain.py',),
          expect=('test_tags_compare_without_case',),
+    ),
+    # #smp-gain-collision-partner, exact prune (2026-09-25): rule e replays the
+    # conversion's OWN line-based prune (_hdt_shape_prune, shared with
+    # _harden_hdt_xml_for_fsmp), and refuses a prune that takes every simulated
+    # shape while the chain still swings a drawn mesh.
+    Pair('SGP-s', 'rule e prunes the parsed tree, not the lines the conversion drops',
+         edits=(
+             ('src/discovery.py',
+              '            pruned = ET.fromstring(\n'
+              '                _ncp._hdt_xml_shape_pruned(xml, {s.name for s in kept}))',
+              '            pruned = root  # MUTATED', 1),
+         ),
+         tests=('tests/test_zeroed_smp_gain.py',),
+         expect=('test_a_partner_on_a_pruned_blocks_line_goes_with_it',
+                 'test_a_prune_that_breaks_the_xml_is_refused',
+                 'test_a_prune_that_takes_every_simulated_shape_leaves_the_cloth_swinging'),
+    ),
+    Pair('SGP-t', 'a pruned XML that no longer parses is taken',
+         edits=(
+             ('src/discovery.py',
+              '            return ("its physics XML would not parse once the shapes the "\n'
+              '                    "conversion drops are pruned")',
+              '            pruned = root  # MUTATED', 1),
+         ),
+         tests=('tests/test_zeroed_smp_gain.py',),
+         expect=('test_a_prune_that_breaks_the_xml_is_refused',),
+    ),
+    Pair('SGP-u', "a line's LAST shape tag decides it",
+         edits=(
+             ('src/nif_convert_physics.py',
+              '        m = _HDT_SHAPE_OPEN_RE.search(line)',
+              '        m = ([None] + list(_HDT_SHAPE_OPEN_RE.finditer(line)))[-1]  # MUTATED', 1),
+         ),
+         tests=('tests/test_zeroed_smp_gain.py',),
+         expect=('test_a_partner_on_a_pruned_blocks_line_goes_with_it',),
+    ),
+    Pair('SGP-v', "the model drops only a pruned block's first line",
+         edits=(
+             ('src/nif_convert_physics.py',
+              '        if gone:\n'
+              '            dropped = True',
+              '        if gone and _opened:  # MUTATED\n'
+              '            dropped = True', 1),
+         ),
+         tests=('tests/test_zeroed_smp_gain.py',),
+         expect=('test_the_model_prunes_exactly_what_the_conversion_writes[block-over-lines]',),
+    ),
+    Pair('SGP-w', 'a prune that takes every simulated shape is taken',
+         edits=(
+             ('src/discovery.py',
+              '        if not simulated and swinging and _smp_replay(root, build)[1]:',
+              '        if False:  # MUTATED', 1),
+         ),
+         tests=('tests/test_zeroed_smp_gain.py',),
+         expect=('test_a_prune_that_takes_every_simulated_shape_leaves_the_cloth_swinging',),
+    ),
+    Pair('SGP-x', "an XML the author wrote with no simulated shape is judged",
+         edits=(
+             ('src/discovery.py',
+              '        if not simulated and swinging and _smp_replay(root, build)[1]:',
+              '        if not simulated and swinging:  # MUTATED', 1),
+         ),
+         tests=('tests/test_zeroed_smp_gain.py',),
+         expect=('test_an_xml_the_author_wrote_with_no_simulated_shape_is_not_judged',),
+    ),
+    Pair('SGP-y', 'a hidden mesh counts as swinging cloth',
+         edits=(
+             ('src/discovery.py',
+              '    return bool(len(s.verts) and len(s.tris)) and not hidden',
+              '    return bool(len(s.verts) and len(s.tris))  # MUTATED', 1),
+         ),
+         tests=('tests/test_zeroed_smp_gain.py',),
+         expect=('test_a_hidden_mesh_on_the_chain_is_no_swinging_cloth',),
+    ),
+    Pair('SGP-z', 'a mesh without triangles counts as swinging cloth',
+         edits=(
+             ('src/discovery.py',
+              '    return bool(len(s.verts) and len(s.tris)) and not hidden',
+              '    return not hidden  # MUTATED', 1),
+         ),
+         tests=('tests/test_zeroed_smp_gain.py',),
+         expect=('test_a_mesh_without_triangles_is_no_swinging_cloth',),
+    ),
+    Pair('SGP-za', 'a drawn mesh off the swinging bones counts as swinging cloth',
+         edits=(
+             ('src/discovery.py',
+              '            if any(_smp_shows(s) and swinging & {b.lower() for b in s.bone_names or ()}',
+              '            if any(_smp_shows(s)  # MUTATED', 1),
+         ),
+         tests=('tests/test_zeroed_smp_gain.py',),
+         expect=('test_a_mesh_off_the_chain_is_no_swinging_cloth',),
     ),
 
     # #exclude-owned-coverage (2026-09-23): --exclude-mods never reached the

@@ -428,7 +428,16 @@ single pass runs. Three rules encode this:
    then), and two shapes collide only when each allows the other's tags (can-collide
    list, or, when empty, not a no-collide tag; tags without case). The converter's own
    later colliders cannot rescue a partnerless shape: the butt collider clones a
-   surviving kinematic block's tags, the chest collider is off by default. The case: the
+   surviving kinematic block's tags, the chest collider is off by default. The prune
+   the gate replays is the conversion's OWN (`_hdt_shape_prune`, which
+   `_harden_hdt_xml_for_fsmp` walks too, so the two cannot disagree): it is line-based
+   -- a line's first shape tag decides it and the line goes whole -- so a partner block,
+   a bone or a constraint that shares a line with a dropped block goes with it, and a
+   pruned text that no longer parses is refused. When the prune takes EVERY simulated
+   shape while the XML still makes a drawn shape's skin bone simulate, the chain would
+   swing that cloth with no collision shape at all: refused too (an XML the author wrote
+   with no simulated shape is not this rule's to judge). Live, these two refinements
+   move nothing: the plan is the same on all 4,562 keys. The case: the
    Imperial light and medium cuirasses name their body `body`, their XML's only body
    collider is `Body`; the prune removed it and the skirt's `Proxy`, which collides
    only with the tag `Body` carried, collided with nothing -- worse than the static
@@ -450,10 +459,11 @@ single pass runs. Three rules encode this:
    `VirtualGround` for their skirt. Every other bone the XML names and the output lacks
    is missing from the build too (the author's XML serves several variants). At bind
    the bust clips no more than before (three pieces 0.1-6.3% -> 0%; median standoff
-   1.28u -> 1.33u, p90 1.52u -> 1.80u over the 17). The butt band clips 0.75-13% on 11
-   pieces, all of it behind SMP-simulated skirt verts, which the static harness cannot
-   place -- the converter lifts their chains off the body and SMP moves them; in game
-   is the verdict.
+   1.28u -> 1.33u, p90 1.52u -> 1.80u over the 17). The butt band clips at bind on 13
+   of the 17 (0.07-13%); it clips MORE than before on 11 of them (0.75-13%) and less
+   on two (bandit body 3, Falmer). All of it is behind SMP-simulated skirt verts, which
+   the static harness cannot place -- the converter lifts their chains off the body
+   and SMP moves them; in game is the verdict.
 
 ### Which mods and pieces are sources at all (2026-09-24)
 

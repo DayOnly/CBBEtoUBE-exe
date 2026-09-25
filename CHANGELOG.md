@@ -21,7 +21,12 @@ These stay as they were: the Imperial heavy cuirass; the Imperial light and
 medium cuirasses, whose physics file names the body `Body` while their build
 calls it `body`, so the conversion drops that collider and their skirt would
 have swung through the legs with nothing to stop it; a piece whose build has no
-body the tool can replace; and a piece whose own mesh has no body.
+body the tool can replace; and a piece whose own mesh has no body. The check
+reads the physics file the way the conversion actually cleans it up, line by
+line, so a collider written on the same line as a removed part counts as removed
+too. A piece is also kept as it was when that cleanup would leave its skirt
+swinging with no collision shape at all, or would leave a physics file the game
+cannot read. On the reported modlist this last refinement changes nothing.
 
 On 6 of the 34 files the conversion summary still reports a physics shape it
 dropped (`hdt_xml_shape_dropped`), and that is expected: the iron light
