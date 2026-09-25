@@ -4106,6 +4106,15 @@ PAIRS = (
          tests=('tests/test_coverage_body_cloak.py',),
          expect=('test_the_capes_are_reported',),
     ),
+    Pair('CBC-i', 'a cape weighted to the pelvis counts as body cloth',
+         edits=(
+             ('src/auto_convert.py',
+              '_BODYFIT_BONE_MARKERS = ("thigh", "calf", "butt", "breast", "belly")\n',
+              '_BODYFIT_BONE_MARKERS = ("thigh", "calf", "butt", "breast", "belly", "pelvis")  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_coverage_body_cloak.py',),
+         expect=('test_a_cape_weighted_to_the_pelvis_and_arms_rides_with_the_robe',),
+    ),
     # #coverage-beast-variant (2026-09-24): a DefaultRace armature listing only
     # beast races is no human's armature, so no UBE actor may draw it.
     Pair('BVA-a', 'a beast variant is minted again (non-body pass)',
@@ -6776,8 +6785,8 @@ PAIRS = (
     Pair('ZPM-d', 'the first part is looked for as a file, not a folder',
          edits=(
              ('src/zeroed_body.py',
-              '                               if _ci_join(d, [head], want_dir=True) is not None]',
-              '                               if _ci_join(d, [head]) is not None]  # MUTATED', 1),
+              '        return _ci_join(base, [head], want_dir=True) is not None\n',
+              '        return _ci_join(base, [head]) is not None  # MUTATED\n', 1),
          ),
          tests=('tests/test_zeroed_probe_memo.py',),
          expect=('test_case_does_not_matter',
@@ -7155,5 +7164,27 @@ PAIRS = (
          ),
          tests=('tests/test_physics_cloth_health.py',),
          expect=('test_the_name_is_matched_without_case',),
+    ),
+    # #zeroed-probe-memo, unreadable folders (2026-09-25 review): the first-folder
+    # filter asks every folder, below the winner too; one it cannot read is kept
+    # in, so only the plain probe (if it gets that far) raises.
+    Pair('ZPM-i', 'an unreadable folder below the winner raises in the filter',
+         edits=(
+             ('src/zeroed_body.py',
+              '    except OSError:\n        return True     # cannot tell: the plain probe decides\n',
+              '    except ValueError:  # MUTATED\n        return True     # cannot tell: the plain probe decides\n', 1),
+         ),
+         tests=('tests/test_zeroed_probe_memo.py',),
+         expect=('test_an_unreadable_folder_below_the_winner_changes_nothing',),
+    ),
+    Pair('ZPM-j', 'an unreadable folder is filtered out instead of left to the probe',
+         edits=(
+             ('src/zeroed_body.py',
+              '        return True     # cannot tell: the plain probe decides\n',
+              '        return False  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_zeroed_probe_memo.py',),
+         expect=('test_an_unreadable_folder_the_probe_reaches_raises_as_before[top]',
+                 'test_an_unreadable_folder_the_probe_reaches_raises_as_before[bottom]'),
     ),
 )

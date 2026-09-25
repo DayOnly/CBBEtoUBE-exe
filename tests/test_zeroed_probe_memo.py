@@ -127,6 +127,56 @@ def test_a_first_part_that_is_a_file_is_not_a_folder(tmp_path):
     assert memo == plain and memo[1] == dirs[2]
 
 
+def _deny(monkeypatch, denied: Path) -> None:
+    """Checking anything in `denied` raises, as for an access-denied folder
+    (`Path.is_dir` re-raises a PermissionError rather than answering False)."""
+    for name in ("is_dir", "is_file"):
+        orig = getattr(Path, name)
+
+        def check(self, _orig=orig):
+            if self == denied or denied in self.parents:
+                raise PermissionError(13, "Access is denied", str(self))
+            return _orig(self)
+        monkeypatch.setattr(Path, name, check)
+
+
+def test_an_unreadable_folder_below_the_winner_changes_nothing(tmp_path, monkeypatch):
+    """The first-folder filter looks in every folder, the ones below the winner
+    too; the plain probe stops at the winner and never touches them. A folder
+    it cannot read must not make the memo raise where the plain probe answers."""
+    dirs = _instance(tmp_path)
+    denied = tmp_path / "denied"
+    _file(denied / "calientetools" / "bodyslide" / "shapedata" / "set" / "base.nif")
+    dirs = [*dirs, denied]
+    _deny(monkeypatch, denied)
+    rels = ("calientetools/bodyslide/shapedata/set/base.nif", "root.txt")
+    plain = {r: zb._Vfs(dirs).winner(r) for r in rels}
+    with zb.probe_memo():
+        memo = {r: zb._Vfs(dirs).winner(r) for r in rels}
+    assert memo == plain
+    assert memo[rels[0]][1] == dirs[1] and memo[rels[1]][1] == dirs[2]
+
+
+@pytest.mark.parametrize("where", ["top", "bottom"])
+def test_an_unreadable_folder_the_probe_reaches_raises_as_before(
+        tmp_path, monkeypatch, where):
+    """Where the plain probe reaches the unreadable folder (above the winner,
+    or no folder has the file) it raises; the memo does the same rather than
+    quietly skipping the folder and answering from a lower one."""
+    dirs = _instance(tmp_path)
+    denied = tmp_path / "denied"
+    (denied / "calientetools").mkdir(parents=True)
+    rel = ("calientetools/bodyslide/shapedata/set/base.nif" if where == "top"
+           else "calientetools/bodyslide/shapedata/set/absent.nif")
+    dirs = [denied, *dirs] if where == "top" else [*dirs, denied]
+    _deny(monkeypatch, denied)
+    with pytest.raises(PermissionError):
+        zb._Vfs(dirs).winner(rel)
+    with zb.probe_memo():
+        with pytest.raises(PermissionError):
+            zb._Vfs(dirs).winner(rel)
+
+
 def test_two_folder_lists_never_share_an_answer(tmp_path):
     dirs = _instance(tmp_path)
     rel = "calientetools/bodyslide/shapedata/set/base.nif"

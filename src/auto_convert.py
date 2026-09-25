@@ -7880,8 +7880,9 @@ def _nif_bytes_body_fit(data: bytes) -> "bool | None":
 
 def _nif_bytes_unfitted_skin(data: bytes) -> "bool | None":
     """#coverage-body-cloak: is this NIF skinned (a skin instance on some
-    shape) with no skin bound to a body-fit bone -- a cape or cloak draped from
-    the spine and shoulders? False for an unskinned mesh and for body-fitted
+    shape) with no skin bound to a body-fit bone (`_BODYFIT_BONE_MARKERS`; any
+    other bone, pelvis and arms included, is allowed) -- a cape or cloak the
+    crash guard left unconverted? False for an unskinned mesh and for body-fitted
     cloth; None when the bytes are not an SSE NIF this reader follows, so the
     caller fails closed."""
     from .hh_offset import _parse
