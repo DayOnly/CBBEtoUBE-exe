@@ -28,9 +28,14 @@ name binds to the shape named 'name:k' in the converted NIF.
 
 #alttex-family-strict: only a family laid out exactly as the rename lays it
 out ('name', 'name:1' .. 'name:n', consecutive, in that NIF order) and a set
-naming each of its shells once bind; anything else keeps one entry per name,
-so a colour can be missed but never lands on another shell.
+naming each of its shells once bind; anything else keeps one entry per name.
 `CBBE2UBE_NO_ALTTEX_FAMILY_STRICT=1` binds any 'name' beside 'name:k' by rank.
+
+Both bind by the converted NIF's LAYOUT, which is not exact (a lost trailing
+shell passes the checks) and since #alttex-exact-provenance runs only with
+`CBBE2UBE_NO_ALTTEX_EXACT_PROVENANCE=1`; the default reads the source mesh
+(tests/test_alttex_exact_provenance.py). This file pins that switched-off
+path, so every test here runs with that switch set.
 """
 import struct
 import sys
@@ -47,6 +52,7 @@ from tests.synthetic_nif import (build_skinned_shapes_nif,      # noqa: E402
 OFF = "CBBE2UBE_NO_ALTTEX_DUP_OCCURRENCE"
 DSN_OFF = "CBBE2UBE_NO_DUP_SHAPE_NAMES"
 STRICT_OFF = "CBBE2UBE_NO_ALTTEX_FAMILY_STRICT"
+EXACT_OFF = "CBBE2UBE_NO_ALTTEX_EXACT_PROVENANCE"
 
 # A coat: shape 0 'coat', then three shells the author all named 'fur'; the
 # converted NIF carries them renamed, in the same order, and our injected body
@@ -60,6 +66,7 @@ def _switches_unset(monkeypatch):
     monkeypatch.delenv(OFF, raising=False)
     monkeypatch.delenv(DSN_OFF, raising=False)
     monkeypatch.delenv(STRICT_OFF, raising=False)
+    monkeypatch.setenv(EXACT_OFF, "1")        # the layout path (see above)
 
 
 def _alt(entries) -> bytes:
