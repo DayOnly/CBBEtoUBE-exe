@@ -14,7 +14,7 @@ did not. It now reads the flag from the last plugin in your load order that
 changes the item, the one the game uses. On the reported modlist that stops
 converting 27 meshes (43 files) of items a later patch made unwearable and no
 female NPC wears: the pieces of one fur armour set, one follower's outfits, a
-clothing set, first-person models of a few robes, and the boots another
+clothing set, first-person models of a few cuirasses and a robe, and the boots another
 follower's outfit borrowed. Three mods had nothing
 else to convert and are no longer converted at all. One more mesh is
 converted, an effect outfit a later plugin made wearable. Items a female NPC

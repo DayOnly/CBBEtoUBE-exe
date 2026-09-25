@@ -497,8 +497,10 @@ already-UBE path among the additions.
   43 files, +1 base / 1 file), worn-kept armatures 43 -> 54 (the worn rule now
   sees winners made non-playable). A repeat census of the parent and the lane
   with the switch set both give the parent's plan exactly. The -27: a fur set's
-  pieces (6), a pirate follower's outfits (8), a clothing set (7), a mod's
-  first-person robe models (6), and the vanilla male boots a follower
+  pieces (6), a pirate follower's outfits (7 -- its source loses 8, but one
+  first-person torso is still planned by another source), a clothing set (7),
+  a mod's first-person models (6: five cuirasses or body armour, one robe),
+  and the vanilla male boots a follower
   replacer's boots fell back to (1) -- every carrier of their armours male or
   none. The +1 is a DLC effect mesh (a whole outfit
   plus a skeleton, slot 61) a skeleton mod makes playable: its skin is bound to
@@ -1581,7 +1583,9 @@ reported through `_report_coverage_holds`:
   guard, world-mesh, nude-skin, body-accessory and third-party rules in the body
   pass -- so a hood or race-list armature is judged too and every other rule's
   counts are unchanged but for the dead ones themselves (the race-list,
-  exclusion-kept, wig and accessory lists name only what is minted); an armour
+  exclusion-kept and wig lists name only what is minted; the accessory list
+  drops a dead hood but, as before this rule, still names a hood another mod's
+  UBE armature already draws); an armour
   left with nothing is `dead_dropped` and gets
   no link. The verdict is memoised per armature (`_dead_armature_judge`). The
   lookup is its own (`_dead_armature_lookup`): the female guard's or world-mesh

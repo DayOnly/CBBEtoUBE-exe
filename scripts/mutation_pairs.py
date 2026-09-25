@@ -6432,4 +6432,22 @@ PAIRS = (
                  'test_an_esl_flagged_override_lands_on_its_masters_armour',
                  'test_an_armour_whose_defining_plugin_is_not_loaded'),
     ),
+    Pair('WPL-s', 'the first loaded record wins instead of the last',
+         edits=(
+             ('src/auto_convert.py',
+              '            out[ident] = bool(r.flags & (_ARMO_NONPLAYABLE_FLAG | _RECORD_DELETED))',
+              '            out.setdefault(ident, bool(r.flags & (_ARMO_NONPLAYABLE_FLAG | _RECORD_DELETED)))  # MUTATED', 1),
+         ),
+         tests=('tests/test_selection_winner_playable.py',),
+         expect=('test_only_the_last_loaded_record_counts',),
+    ),
+    Pair('WPL-t', 'the planner never computes the identity the winner map needs',
+         edits=(
+             ('src/auto_convert.py',
+              '                if (armo_winner_nonplayable or ube_covered_armos\n',
+              '                if (ube_covered_armos  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_selection_winner_playable.py',),
+         expect=('test_a_winner_that_makes_it_non_playable_takes_it_out',),
+    ),
 )
