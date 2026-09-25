@@ -15,7 +15,7 @@ shield-cloth pieces). Physics files that exist nowhere in the load order stay
 missing, as before, and nothing is taken from another mod's archive.
 `CBBE2UBE_NO_PHYSICS_DATA_PREFIX=1` (set to 1) turns it off.
 
-### Development only — the physics census counts what the physics engine loads
+### Development only — the physics census models what the physics engine loads
 
 `scripts/analysis/physics_cloth_health.py` counts which converted pieces have
 HDT-SMP physics and why simulated cloth can clip. It counted a different set
@@ -23,18 +23,31 @@ than the one that plays in game. It gave a piece with no physics link of its
 own the physics file of another garment with the same file name. It read
 physics files as text in the system's code page and more strictly than the
 engine does, so a file that starts with a UTF-8 byte-order mark, declares an
-XML namespace, or has stray text after its end counted as unreadable. It treated one side naming the other as
-enough for cloth to collide, where the engine needs both sides to allow it and
-reads an empty list as "collide with everything". It counted only one of the
-four kinds of constraint. It now follows the piece's own link (a leading
-"Data\" handled as the converter handles it), reads the file's bytes, and
-applies the engine's rules. On the reported pack: pieces with physics 364 ->
-306, unreadable physics files 94 -> 0, simulated-cloth pieces 97 -> 117 (59
-garments), the crash-prone "unconstrained collision" class 56 -> 0, and 14
-pieces (7 garments) have cloth that reaches no collider in its own file. Older
-numbers from this tool are not comparable. Guarded by
-`tests/test_physics_cloth_health.py` and mutation pairs `PCH-a`..`PCH-q`. No
-converter behaviour changes.
+XML namespace, or has stray text after its end counted as unreadable. It
+treated one side naming the other as enough for cloth to collide, where the
+engine needs both sides to allow it and reads an empty list as "collide with
+everything". It counted only one of the four kinds of constraint. And it took
+every shape of one kind for cloth and every shape of the other kind for a
+collider, where the engine simulates a shape only when one of its bones has
+mass: so body helpers counted as cloth, real cloth of the other kind was
+missed, and two helpers could "collide". A physics file it could not open
+stopped the whole run.
+
+It now follows the piece's own link (a leading "Data\" handled as the converter
+handles it), reads the file's bytes, and works out which shapes move from the
+bone masses the file declares, read in order as the engine reads them. A file
+it cannot open is counted as unreadable and the run goes on. These counts come
+from a model of the engine's rules, not from the engine: it does not see
+colliders that another worn piece brings, physics the engine adds by shape
+name, physics files that exist only inside an archive, or per-bone collision
+filters, and it recognises a body collider by its tag name. On the reported
+pack: pieces with physics 364 -> 306, unreadable physics files 94 -> 0, pieces
+with simulated cloth 97 -> 247 (124 garments), the crash-prone "unconstrained
+collision" class 56 -> 0, and 4 pieces (2 garments) have cloth that reaches
+nothing in its own file. Older numbers from this tool, including the first
+version of this change (117 / 59 simulated, 14 / 7 reaching nothing), are not
+comparable. Guarded by `tests/test_physics_cloth_health.py` and mutation pairs
+`PCH-a`..`PCH-zd`. No converter behaviour changes.
 
 ### Changed — whether you can wear an item is read from the plugin the game uses
 

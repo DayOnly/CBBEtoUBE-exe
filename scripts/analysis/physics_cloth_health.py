@@ -13,16 +13,34 @@
 
 """Physics-cloth health across the pack: WHY a simulated garment clips the body.
 
+WHAT IS CLOTH. FSMP does not decide by element kind. A <per-vertex-shape> and a
+<per-triangle-shape> differ only in collision geometry (a sphere per vertex, or
+a triangle); either one SIMULATES when any of its skin bones is dynamic, and is
+a kinematic COLLIDER when every skin bone is kinematic (mass 0). A bone's mass
+is modelled by replaying the XML in document order, as FSMP's reader does:
+  * <bone-default name=N extends=E> copies template E (unknown -> the unnamed
+    default) and overrides it with its own <mass>; with no name it REPLACES the
+    unnamed default for everything after it.
+  * <bone name=B template=T> takes template T (unknown -> the unnamed default)
+    plus its own <mass>. The first declaration of a bone wins.
+  * a skin bone, or a constraint body, not declared before the shape or
+    constraint that first uses it, is created from the unnamed default AS IT
+    STANDS AT THAT POINT, so it can be dynamic.
+Here "cloth" means a simulated shape of either kind.
+
 Three independent things must hold for SMP cloth not to sink into the body, and
 they fail separately, so a single "it clips" report cannot tell you which to fix:
 
-  1. THE CLOTH CAN REACH A COLLIDER. FSMP lets two shapes collide only when
-     BOTH sides allow it (hdtSkinnedMeshBody canCollideWith, called both ways).
-     One side allows the other when the other carries a tag in its
-     can-collide-with-tag list, or, when that list is EMPTY, when the other
-     carries none of its no-collide-with-tag tags. Tags are engine strings,
-     which compare without case.
-  2. A BODY COLLIDER EXISTS in the NIF for it to collide against.
+  1. THE CLOTH CAN REACH A PARTNER. FSMP never pairs two kinematic shapes
+     (needsCollision), and otherwise lets two shapes collide only when BOTH
+     sides allow it (canCollideWith, called both ways). One side allows the
+     other when the other carries a tag in its can-collide-with-tag list, or,
+     when that list is EMPTY, when the other carries none of its
+     no-collide-with-tag tags. Tags are engine strings, which compare without
+     case. Every kind pairs with every kind: vertex-vertex, vertex-triangle and
+     triangle-triangle.
+  2. A BODY COLLIDER EXISTS in the NIF for it to collide against: a KINEMATIC
+     shape carrying a body tag (a simulated shape tagged "body" is not the body).
   3. THE REST POSE IS OUTSIDE THE BODY. This is the one nothing measured, and it
      is decisive: hdtSMP64's own maintainers call the sphere-triangle penetration
      path "obviously wrong", so cloth that STARTS inside the body is not reliably
@@ -30,13 +48,24 @@ they fail separately, so a single "it clips" report cannot tell you which to fix
 
 And one thing must NOT hold:
 
-  4. NOT AN UNCONSTRAINED COLLISION PAIR (cloth that reaches a collider, with
-     no constraint of any kind: generic, stiffspring, conetwist or a constraint
-     group). That combination diverges and takes FSMP's collision SIMD out of
-     bounds -- an equip CTD. It is why (1) cannot simply be auto-fixed
-     everywhere: adding body collision to unconstrained cloth CAUSES the crash.
+  4. NOT AN UNCONSTRAINED COLLISION PAIR (cloth that reaches a partner, with
+     no constraint of any kind: generic, stiffspring, conetwist, at the top
+     level or inside a constraint group). A constraint between two kinematic
+     bones is skipped by FSMP and does not count. That combination diverges and
+     takes FSMP's collision SIMD out of bounds -- an equip CTD. It is why (1)
+     cannot simply be auto-fixed everywhere: adding body collision to
+     unconstrained cloth CAUSES the crash.
 
-The population is what FSMP itself loads, and nothing else:
+These counts are a MODEL of FSMP, not a run of it. Not modelled: colliders
+another worn piece brings; shape-name physics from defaultBBPs.xml and its
+shape-name remapping; XMLs that exist only in an archive; bone renames;
+<shared> (it limits pairs ACROSS files, and every pair here is inside one);
+per-bone collision filters (can/no-collide-with-bone, weight-threshold);
+disable-tag; and whether a declared bone's node exists in the skeleton. The
+body-collider test is a tag-name list (BODY_TAGS), and the rest-pose depth uses
+raw bind vertices against the injected body.
+
+The population is modelled on what FSMP itself loads, and nothing else:
   * the NIF's OWN pointer -- the first `HDT Skinned Mesh Physics Object` string
     on the ROOT node, as FSMP's scanBBP reads it -- resolved with the
     converter's resolver (a leading `Data\\` is handled the way the converter
@@ -54,6 +83,8 @@ Reports the population accounting first. A shrinking denominator is how a census
 flatters itself, so every exclusion is counted and printed. Numbers produced
 before 2026-09-25 used a filename match, a text read, namespaced tags, a
 one-sided tag rule and one constraint kind: they are not comparable with these.
+Numbers from the first 09-25 version took every per-vertex-shape for cloth and
+every per-triangle-shape for a collider: they are not comparable either.
 """
 import sys
 import xml.etree.ElementTree as ET
@@ -74,22 +105,29 @@ from src import nif_convert as nc                      # noqa: E402
 PHYSICS_EXTRA = "HDT Skinned Mesh Physics Object"
 _MARKER = PHYSICS_EXTRA.lower().encode("ascii")
 BODY_TAGS = {"body", "body2", "colbody", "bodycol"}
-# Every constraint element FSMP's system reader accepts at the top level.
+# The constraint elements FSMP's system reader accepts, at the top level and
+# inside a <constraint-group>.
 CONSTRAINT_KINDS = ("generic-constraint", "stiffspring-constraint",
-                    "conetwist-constraint", "constraint-group")
+                    "conetwist-constraint")
+CONSTRAINT_GROUP = "constraint-group"
+SHAPE_KINDS = ("per-vertex-shape", "per-triangle-shape")
 PENETRATION_SAMPLE = 4000      # cap per shape; these meshes reach 30k+ verts
 
 # Population exclusions. The first two are "no physics in game"; the rest are
-# pieces that DECLARE physics but on which FSMP simulates no cloth.
+# pieces that DECLARE physics but on which the model finds no simulated shape.
 NO_POINTER = "no physics pointer (no physics in game)"
 MARKER_ONLY = "physics name in file, no root pointer"
 UNRESOLVED = "pointer resolves to no loose file"
+XML_UNREADABLE = "xml unreadable (read failed)"
 UNPARSEABLE = "xml unparseable"
 NOT_SYSTEM = "xml root is not <system>"
-NO_CLOTH = "xml has no per-vertex cloth"
-CLOTH_ABSENT = "xml cloth names no shape in the NIF"
+NO_SHAPES = "xml declares no collision shape"
+SHAPES_ABSENT = "xml shapes name no skinned NIF shape"
+NO_DYNAMIC = "every shape is kinematic (mass-0 bones)"
 NIF_UNREADABLE = "nif unreadable"
-DEAD = (UNRESOLVED, UNPARSEABLE, NOT_SYSTEM, CLOTH_ABSENT)
+# What the game itself would load no shape from. XML_UNREADABLE is NOT here:
+# a failed read is this run's gap, not a fact about the piece.
+DEAD = (UNRESOLVED, UNPARSEABLE, NOT_SYSTEM, SHAPES_ABSENT)
 REPAIRED = "junk after the root ignored"
 
 
@@ -177,54 +215,139 @@ def collides(a, b) -> bool:
     return allows(a, b) and allows(b, a)
 
 
-def parse_physics(root):
-    return {
-        "cloth": [_shape(el) for el in root.findall("per-vertex-shape")],
-        "colliders": [_shape(el) for el in root.findall("per-triangle-shape")],
-        "constrained": any(root.find(k) is not None for k in CONSTRAINT_KINDS),
-    }
+def pair_collides(a, b) -> bool:
+    """FSMP needsCollision: two kinematic shapes are never paired, whatever
+    their tags; any other pair (of any shape kinds) needs the mutual rule."""
+    if not a["dynamic"] and not b["dynamic"]:
+        return False
+    return collides(a, b)
+
+
+def _mass(el, base: float) -> float:
+    m = el.find("mass")
+    if m is None:
+        return base
+    try:
+        return float((m.text or "").strip())
+    except ValueError:
+        return base
+
+
+def _key(name) -> str:
+    """Node, bone, shape and template names are engine strings: the game's
+    string pool folds case, so `[PElv]` in an XML is the skeleton's `[Pelv]`."""
+    return (name or "").lower()
+
+
+def _skin(nif):
+    """{shape name: skin bone names}, both by `_key`, for the NIF shapes FSMP
+    can build a body from: skinned, with vertices (generateMeshBody skips the
+    rest)."""
+    out = {}
+    for s in nif.shapes:
+        bones = [_key(b) for b in (getattr(s, "bone_names", None) or ())]
+        if bones and len(s.verts):
+            out.setdefault(_key(s.name), bones)
+    return out
+
+
+def read_system(root, skin):
+    """Replay the XML in document order, as FSMP's system reader does, to
+    learn which shapes simulate. `skin` is `_skin(nif)`.
+
+    Returns {"shapes": the XML shapes the NIF carries, each with "kind" and
+    "dynamic"; "named": how many shape elements the XML declares;
+    "constrained": whether any constraint joins at least one dynamic bone}."""
+    templates = {"": 0.0}             # bone-default name -> mass
+    bones = {}                        # bone name -> mass; first one wins
+
+    def template(name):
+        return templates.get(_key(name), templates[""])
+
+    def bone(name):
+        # An undeclared bone is created from the unnamed default as it stands.
+        if name not in bones:
+            bones[name] = templates[""]
+        return bones[name]
+
+    def constraint(el):
+        a, b = _key(el.get("bodyA")), _key(el.get("bodyB"))
+        if not a or not b or a == b:
+            return False
+        ma, mb = bone(a), bone(b)
+        return ma > 0 or mb > 0       # FSMP skips a kinematic-kinematic one
+
+    shapes, named, constrained = [], 0, False
+    for el in root:
+        if el.tag == "bone":
+            name = _key(el.get("name"))
+            if name and name not in bones:
+                bones[name] = _mass(el, template(el.get("template")))
+        elif el.tag == "bone-default":
+            templates[_key(el.get("name"))] = _mass(
+                el, template(el.get("extends")))
+        elif el.tag in SHAPE_KINDS:
+            named += 1
+            skinned = skin.get(_key(el.get("name")))
+            if not skinned:
+                continue              # FSMP builds no body for it
+            masses = [bone(b) for b in skinned]
+            shapes.append(dict(_shape(el), kind=el.tag,
+                               dynamic=any(m > 0 for m in masses)))
+        elif el.tag in CONSTRAINT_KINDS:
+            constrained = constraint(el) or constrained
+        elif el.tag == CONSTRAINT_GROUP:
+            for sub in el:
+                if sub.tag in CONSTRAINT_KINDS:
+                    constrained = constraint(sub) or constrained
+    return {"shapes": shapes, "named": named, "constrained": constrained}
 
 
 def classify(nif_path: Path, nif, notes=None):
-    """(row, None) for a piece FSMP simulates cloth on, else (None, reason).
-    `notes` (a Counter) counts the XMLs read only after dropping junk past the
-    root, measured or not."""
+    """(row, None) for a piece the model finds a simulated shape on, else
+    (None, reason). `notes` (a Counter) counts the XMLs read only after
+    dropping junk past the root, measured or not."""
     ptr = physics_pointer(nif)
     if not ptr:
         return None, NO_POINTER
     xml = resolve_pointer(ptr, nif_path)
     if xml is None:
         return None, UNRESOLVED
-    root, repaired = parse_xml_bytes(xml.read_bytes())
+    try:
+        data = xml.read_bytes()
+    except OSError:
+        return None, XML_UNREADABLE
+    root, repaired = parse_xml_bytes(data)
     if repaired and notes is not None:
         notes[REPAIRED] += 1
     if root is None:
         return None, UNPARSEABLE
     if root.tag != "system":
         return None, NOT_SYSTEM
-    info = parse_physics(root)
-    if not info["cloth"]:
-        return None, NO_CLOTH
-    shape_names = {s.name for s in nif.shapes}
-    cloth = [c for c in info["cloth"] if c["name"] in shape_names]
+    info = read_system(root, _skin(nif))
+    if not info["named"]:
+        return None, NO_SHAPES
+    if not info["shapes"]:
+        return None, SHAPES_ABSENT
+    cloth = [s for s in info["shapes"] if s["dynamic"]]
     if not cloth:
-        return None, CLOTH_ABSENT
-    present = [k for k in info["colliders"] if k["name"] in shape_names]
+        return None, NO_DYNAMIC
     return {
         "constrained": info["constrained"],
         "cloth": cloth,
-        "colliders_named": len(info["colliders"]),
-        "colliders": present,
+        "shapes": info["shapes"],
+        "shapes_named": info["named"],
     }, None
 
 
 def cloth_reach(row):
-    """Per cloth shape: (reaches any in-file collider, reaches a body-tagged
-    one), under FSMP's mutual rule."""
+    """Per cloth shape: (reaches any other in-file shape, reaches a KINEMATIC
+    body-tagged one), under FSMP's pairing rule."""
     out = {}
     for c in row["cloth"]:
-        hits = [k for k in row["colliders"] if collides(c, k)]
-        out[c["name"]] = (bool(hits), any(k["tags"] & BODY_TAGS for k in hits))
+        hits = [k for k in row["shapes"] if k is not c and pair_collides(c, k)]
+        out[c["name"]] = (bool(hits), any(
+            not k["dynamic"] and k["tags"] & BODY_TAGS for k in hits))
     return out
 
 
@@ -235,8 +358,10 @@ def _penetration(nif, cloth_names):
     means the cloth vertex sits inside. Returns {} when the NIF carries no
     injected body -- reported as UNKNOWN rather than counted clean.
     """
-    shapes = {s.name: s for s in nif.shapes}
-    body = shapes.get("BaseShape")
+    shapes = {}
+    for s in nif.shapes:
+        shapes.setdefault(_key(s.name), s)   # XML names match without case
+    body = shapes.get(_key("BaseShape"))
     if body is None:
         return None
     bv = np.array(body.verts, np.float64)
@@ -247,7 +372,7 @@ def _penetration(nif, cloth_names):
     tree = cKDTree(bv)
     out = {}
     for name in cloth_names:
-        s = shapes.get(name)
+        s = shapes.get(_key(name))
         if s is None:
             continue
         v = np.array(s.verts, np.float64)
@@ -334,20 +459,27 @@ def report(rows, skip, skip_garments, walked: int, notes=None) -> int:
     dead_g = set().union(*(skip_garments[r] for r in dead))
     print(f"\n  pieces with a root physics pointer : {declared:5d} / "
           f"{len(declared_g)}")
-    print(f"  DECLARED BUT NO CLOTH SIMULATES    : "
+    print(f"  DECLARED BUT NO SHAPE LOADS        : "
           f"{sum(skip[r] for r in dead):5d} / {len(dead_g)}   "
-          f"(pointer unresolved, xml unreadable, or its cloth absent)")
+          f"(pointer unresolved, xml unparseable, or its shapes absent)")
+    if skip.get(XML_UNREADABLE):
+        print(f"  !! {skip[XML_UNREADABLE]} NIF(s) whose xml could not be READ "
+              f"this run: every count below is short by them")
     if notes and notes.get(REPAIRED):
         print(f"  xml read only after ignoring junk past </system>: "
               f"{notes[REPAIRED]} NIF(s)")
+    n_dyn = sum(len(r["cloth"]) for r in rows)
+    n_all = sum(len(r["shapes"]) for r in rows)
+    print(f"  shapes on measured pieces: {n_dyn} simulated, {n_all - n_dyn} "
+          f"kinematic (colliders); dynamics MODELLED from bone mass")
 
     reach = {r["path"]: cloth_reach(r) for r in rows}
     no_reach = [r for r in rows
                 if any(not a for a, _b in reach[r["path"]].values())]
     no_body = [r for r in rows
                if any(not b for _a, b in reach[r["path"]].values())]
-    none_named = [r for r in rows if not r["colliders_named"]]
-    absent = [r for r in rows if len(r["colliders"]) < r["colliders_named"]]
+    none_named = [r for r in rows if r["shapes_named"] < 2]
+    absent = [r for r in rows if len(r["shapes"]) < r["shapes_named"]]
     crash_class = [r for r in rows if not r["constrained"]
                    and any(a for a, _b in reach[r["path"]].values())]
     pen_unknown = [r for r in rows if r["pen"] is None]
@@ -359,15 +491,15 @@ def report(rows, skip, skip_garments, walked: int, notes=None) -> int:
         print(f"  {label:<44}: {len(rs):5d} / {_g(rs):<4d}{tail}")
 
     print("\nFAULTS, NIFs / garments (a piece can carry more than one)")
-    line("cloth reaching NO collider in its file", no_reach,
+    line("cloth reaching NO partner in its file", no_reach,
          f"   ({100*len(no_reach)/len(rows):.1f}%)")
-    line("cloth reaching no BODY-tagged collider", no_body)
+    line("cloth reaching no kinematic BODY-tagged shape", no_body)
     line("   ...of those, CONSTRAINED (fixable safely)",
          [r for r in no_body if r["constrained"]])
     line("   ...of those, unconstrained (fix = equip CTD)",
          [r for r in no_body if not r["constrained"]])
-    line("xml names no collider", none_named)
-    line("collider named but ABSENT from the NIF", absent)
+    line("xml names no second shape", none_named)
+    line("shape named but ABSENT from the NIF", absent)
     line("unconstrained collision pair", crash_class,
          "   <- known equip-CTD pattern")
     print(f"\n  REST POSE INSIDE THE BODY        : {len(penetrating):5d}"

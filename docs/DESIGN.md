@@ -1002,8 +1002,10 @@ hidden collision shapes (a cloak's `VirtualBody`, which is CBBE-shaped).
 
 ### How the physics census counts (`scripts/analysis/physics_cloth_health.py`)
 
-The census reads a piece's physics the way FSMP loads it, because every other
-reading counts a different population:
+The census MODELS how FSMP loads a piece's physics, because every other
+reading counts a different population. It is a model built from FSMP's reader
+and collision code, not a run of the engine: each rule below is one it
+replays, and the list at the end is what it does not.
 
 - **The NIF's own pointer, and nothing else.** FSMP's `scanBBP` takes the first
   string extra-data named `HDT Skinned Mesh Physics Object` on the ROOT node
@@ -1016,22 +1018,57 @@ reading counts a different population:
   is junk before the root. Junk after `</system>` is ignored (FSMP stops at the
   root's end tag), and a default `xmlns` on `<system>` renames nothing for
   FSMP, so namespaces are stripped. A root other than `<system>` loads nothing.
-- **FSMP's collision rule.** `canCollideWith` runs both ways and both must
-  allow it. One side allows the other when the other carries a tag in its
+  An XML the run cannot read (locked, denied) is its own bucket, `xml
+  unreadable`, and the report says its counts are short; it is not a fact
+  about the piece, so it is not in the "declared but no shape loads" total.
+- **What simulates: bone mass, not element kind.** A `per-vertex-shape` and a
+  `per-triangle-shape` differ only in collision geometry. A shape simulates
+  when any of its skin bones is dynamic (mass > 0) and is a kinematic collider
+  when all are mass 0. Masses are replayed in document order, as the reader
+  does: `<bone-default name extends>` copies a template and overrides its
+  `<mass>` (with no name it replaces the unnamed default for what follows);
+  `<bone template>` takes that template plus its own `<mass>`, first
+  declaration wins; a skin bone or constraint body not declared before its
+  first use is created from the unnamed default in force at that point. Bone,
+  shape and template names are engine strings and compare without case (an
+  XML's `NPC Pelvis [PElv]` is the skin's `[Pelv]`). A shape that is not a
+  skinned NIF shape with vertices builds nothing.
+- **FSMP's collision rule.** `needsCollision` never pairs two kinematic
+  shapes. Otherwise `canCollideWith` runs both ways and both must allow it. One
+  side allows the other when the other carries a tag in its
   `can-collide-with-tag` list, or, when that list is EMPTY, when the other
-  carries none of its `no-collide-with-tag` tags.
-- **Every constraint kind.** `generic-constraint`, `stiffspring-constraint`,
-  `conetwist-constraint` and `constraint-group` all constrain; the unconstrained
-  crash pair is unconstrained cloth that actually reaches a collider.
+  carries none of its `no-collide-with-tag` tags. Every kind pairs with every
+  kind (vertex-vertex, vertex-triangle, triangle-triangle). A body collider is
+  a kinematic shape carrying one of the tags in `BODY_TAGS`.
+- **Every constraint kind.** `generic-constraint`, `stiffspring-constraint` and
+  `conetwist-constraint`, at the top level or inside a `constraint-group`, all
+  constrain, except one between two kinematic bones, which FSMP skips. The
+  unconstrained crash pair is unconstrained cloth that actually reaches a
+  partner.
 
 Measured on the 09-24 pack (3342 NIFs), old reading -> this one: 364 pieces
 "with physics" -> 306 with a pointer (58 NIFs of 29 garments had borrowed a
 same-stem XML); 94 "unparseable" -> 0 (22 byte-order mark, 58 junk after the
-root, 14 namespaced root); simulated-cloth pieces 97 -> 117 (59 garments);
-unconstrained crash pair 56 -> 0; named collider absent 6 -> 0. Numbers from
-before 2026-09-25 are not comparable with these. Not modelled: collisions with
-colliders another worn piece brings, shape-name physics from `defaultBBPs.xml`,
-and XMLs that exist only in an archive.
+root, 14 namespaced root); pieces with simulated cloth 97 -> 247 (124
+garments); unconstrained crash pair 56 -> 0; named collider absent 6 -> 0.
+Cloth reaching nothing in its own file: 4 pieces (2 garments). Cloth reaching
+no kinematic body-tagged shape: 190 (95), all constrained; on 182 of them (91
+garments) such cloth does reach a kinematic shape whose tag is outside
+`BODY_TAGS`, so that row is mostly the tag list, not missing collision. Rest pose inside the body:
+66 of 86 measurable. Numbers from before 2026-09-25 are not comparable with
+these, and neither are the first 09-25 version's, which took every per-vertex
+shape for cloth and every per-triangle shape for a collider (117 / 59
+simulated, 14 / 7 reaching nothing: 12 of the 14 were only kinematic body
+helpers, and the other 2 had cloth whose partner is a per-vertex shape).
+
+Not modelled: colliders another worn piece brings; shape-name physics from
+`defaultBBPs.xml` and its shape-name remapping; XMLs that exist only in an
+archive; bone renames; `<shared>` (it limits pairs across files, and every
+pair here is inside one); per-bone filters (`can-/no-collide-with-bone`,
+`weight-threshold`); `disable-tag`; and whether a declared bone's node exists.
+The body-collider test is a tag-name list, so cloth whose body collider uses
+another tag counts as reaching no body. The rest-pose depth uses raw bind
+vertices against the injected body and ignores `#chain-rest-lift`.
 
 ### Custom physics-bone chains
 
