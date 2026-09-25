@@ -6,7 +6,7 @@ current. A `!!` line is a problem; a `NOTE:` line is information. Each entry
 gives the line as it appears in the run log (`…` stands for the value printed
 at run time), what it means for the run, and what to do next.
 
-**76** problem warnings and **5** notes.
+**77** problem warnings and **5** notes.
 
 ## src/auto_convert.py
 
@@ -25,6 +25,9 @@ at run time), what it means for the run, and what to do next.
 - `!! SkyPatcher: …`
   - means: SkyPatcher delivers ALL converted armor -- there is no ESP fallback. Without it every converted piece is INVISIBLE in-game.
   - fix: … (Converting anyway: the output stays valid, no reconvert needed once SkyPatcher is in place.)
+- `!! could not rename the old-named per-source patch …: … -- in …`
+  - means: it keeps its old name; the merge uses it only while no renamed copy of it exists
+  - fix: close any program holding the file and run again
 - `!! refusing traversal output path for "…"`
   - means: the source names a path outside the output mod; the file was skipped
 - `!! … piece(s) from an earlier run could not be moved out of meshes\ (a file is in use): …`

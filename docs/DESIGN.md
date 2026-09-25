@@ -1047,6 +1047,35 @@ accumulates duplicate lines for one armor or takes the last is unverified, and t
 the only delivery path. The cost is that an armature shared across a chunk boundary is
 minted twice — measured at ~2%.
 
+### Per-source patch names (`#source-patch-rename`)
+
+A per-source patch is `<stem> (CBBEtoUBE src).esp` in `_unmerged_patches`, with its
+`.skypatcher.json`, `.espgen.json` and `.male_fallbacks.json` beside it. It used to be
+`<stem> UBE patch.esp` — the name hand-made UBE patches use: on the live modlist 22 of
+our un-loaded copies shared a name with another mod's active plugin, and the recursive
+plugin index read ours in their place. The new name collides with none of the 3292 root
+plugins there. The coverage pieces keep `UBE_Mod*Coverage* UBE patch.esp` (ours, never
+colliding). No sidecar embeds the patch's file name, so the set renames without loss.
+
+- **Migration** runs at the start of every `_cmd_convert` (full run, `--only-mods`,
+  `--plugins-only`): each old-named set not starting `UBE_Mod` is renamed, sidecars
+  first and the ESP last, a failure putting the moved sidecars back; when the new name
+  already exists the old set is deleted (the folder is ours). Idempotent. A patch it
+  cannot move is a warning, recorded and counted.
+- **The gate.** `'*UBE patch.esp'` gated the whole post-conversion block —
+  female-model restore, coverage and the merge — not only the fallback merge. A fresh
+  output holds no file of that name any more, so the gate
+  (`_merge_gate_patch_paths`) takes per-source patches of either name and coverage
+  pieces. The live folder could not catch this: last run's coverage pieces matched.
+- **The fallback merge** (`_per_source_patch_paths`) never takes an old-named and a
+  renamed file for the same source, and keeps the order the old names sorted in.
+- `--plugins-only` looks for the renamed snapshot and falls back to an old-named one,
+  replaying it in place. `_find_source_esps` skips both names, for the root-write mode
+  (`--unmerged-patch-subdir .`), which also prints that the renamed plugins must be
+  enabled in MO2.
+
+`CBBE2UBE_NO_SOURCE_PATCH_RENAME=1` keeps the old names and migrates nothing.
+
 ### What the coverage passes leave alone
 
 The winner scan is the sole generator over every armour in the load order, so it

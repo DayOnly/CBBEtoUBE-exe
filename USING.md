@@ -95,7 +95,7 @@ CBBEtoUBE Auto/
   SKSE/Plugins/SkyPatcher/armor/*.ini the armature links -- how armor reaches the game
   CBBE_to_UBE_Combined.esp            the merged patch plugin
   CBBE_to_UBE_Combined2.esp           ...and any further pieces (see below)
-  _unmerged_patches/                  per-source patches (not loaded; inputs to the merge)
+  _unmerged_patches/                  per-source patches, '<plugin> (CBBEtoUBE src).esp' (not loaded; inputs to the merge)
   conversion_report_<mod>.txt         per-source detail
   conversion_report.json              the scoreboard the Results tab shows; rewritten after every mod
   conversion_settings.json            the settings this run used, written before the first mod

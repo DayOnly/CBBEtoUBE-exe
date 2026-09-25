@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+### Changed — this tool's per-mod working patches have a name of their own
+
+For each converted plugin this tool writes a working patch into
+`_unmerged_patches`, which the game never loads. It used to be called
+`<plugin> UBE patch.esp`, the same name hand-made UBE patches use, so on the
+reported modlist 22 of them shared a name with another mod's plugin. They are
+now called `<plugin> (CBBEtoUBE src).esp`, a name no other mod there uses. The
+next run renames the old ones by itself (a log line counts them) and removes
+an old copy that already has a renamed twin. **You do not need to change
+anything in MO2**: these files are not in your plugin list, and the plugins you
+enable, `CBBE_to_UBE_Combined.esp` and its numbered pieces, keep their names.
+Only if you keep the working patches at the mod root
+(`--unmerged-patch-subdir .`) are they plugins, and then you have to enable the
+renamed ones; the run says so. `CBBE2UBE_NO_SOURCE_PATCH_RENAME=1` (set to 1)
+keeps the old names.
+
 ### Fixed — an item another mod already makes for UBE is no longer drawn twice, and one it only claims to cover is drawn
 
 When another mod ships its own UBE version of an item, this tool used to go by

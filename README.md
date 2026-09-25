@@ -40,7 +40,8 @@ Given a Mod Organizer 2 setup, the full pipeline (`auto`):
    a **body-swap**: the baked skin slice is dropped and the real UBE body is
    injected, so exposed skin morphs and jiggles like the actual body.
 3. Writes the converted meshes under `meshes/!UBE/...` in a single output mod.
-4. Generates a **per-mod UBE patch ESP** for each source, then merges them into
+4. Generates a **per-mod UBE patch ESP** for each source
+   (`_unmerged_patches/<plugin> (CBBEtoUBE src).esp`, never loaded), then merges them into
    one **ESL-flagged combined plugin** with a correct master order. If the
    merge outgrows the 2048-record ESL cap it **splits** into numbered pieces
    (`CBBE_to_UBE_Combined.esp`, `CBBE_to_UBE_Combined2.esp`, ...) — enable

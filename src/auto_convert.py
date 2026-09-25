@@ -32,7 +32,7 @@ Input layout (a normal CBBE armor mod):
 Output layout (drop into MO2):
 
     OutputMod/
-      MyArmor UBE patch.esp        # new ESP via ube_patcher
+      MyArmor (CBBEtoUBE src).esp  # new ESP via ube_patcher
       meshes/
         !UBE/
           path/to/Armor_0.nif      # M3 phase 1 copy (if no inline body)
@@ -1288,6 +1288,10 @@ def _find_source_esps(source_dir: Path) -> list[Path]:
             # gated precisely by _is_already_ube_model on the model path instead.
             if name_lower.endswith("ube patch.esp"):
                 continue
+            # ...and by the name they carry now, '<source> (CBBEtoUBE src).esp':
+            # at a mod root in the legacy root-write mode. #source-patch-rename
+            if name_lower.endswith(_SRC_PATCH_SUFFIX.lower()):
+                continue
             if any(s in ("ube", "!ube") or "backup" in s for s in parts_lower):
                 continue
             if any(s in _NON_PLUGIN_PARTS for s in parts_lower):
@@ -1469,6 +1473,177 @@ def _preflight_vanilla_sweep(data_dir: Path) -> "tuple[bool, str]":
         return False, f"preflight error: {e!r}"
 
 
+# --- per-source patch names -------------------------------------------------------
+# #source-patch-rename (2026-09-25): our per-source patch was '<stem> UBE patch.esp',
+# the name hand-made UBE patches use too. Measured on a live modlist, 22 of our
+# un-loaded copies shared a name with another mod's active plugin, and a plugin
+# index that walked subfolders read ours in place of theirs. '<stem> (CBBEtoUBE
+# src).esp' collides with none of 3292 root plugins. The coverage pieces keep
+# 'UBE_Mod*Coverage* UBE patch.esp': they are ours and never collided.
+_SRC_PATCH_SUFFIX = " (CBBEtoUBE src).esp"
+_LEGACY_SRC_PATCH_SUFFIX = " UBE patch.esp"
+# Everything written beside a per-source patch ESP. None of them embeds the
+# patch's file name, so the set renames without loss.
+_SRC_PATCH_SIDECARS = (".skypatcher.json", ".espgen.json", ".male_fallbacks.json")
+
+
+def _source_patch_rename_on() -> bool:
+    """#source-patch-rename: name our per-source patches '<stem> (CBBEtoUBE
+    src).esp' and migrate the old names? CBBE2UBE_NO_SOURCE_PATCH_RENAME=1 keeps
+    '<stem> UBE patch.esp' and migrates nothing."""
+    return not _flag("CBBE2UBE_NO_SOURCE_PATCH_RENAME", False)
+
+
+def _source_patch_name(stem: str) -> str:
+    """The file name of the per-source patch made from the plugin `stem`."""
+    if _source_patch_rename_on():
+        return f"{stem}{_SRC_PATCH_SUFFIX}"
+    return f"{stem}{_LEGACY_SRC_PATCH_SUFFIX}"
+
+
+def _legacy_source_patch_stem(name: str) -> "str | None":
+    """The source stem of an OLD-named per-source patch ('<stem> UBE patch.esp'),
+    or None for anything else -- a coverage piece ('UBE_Mod*') included."""
+    if name.lower().startswith("ube_mod"):
+        return None
+    if not name.lower().endswith(_LEGACY_SRC_PATCH_SUFFIX.lower()):
+        return None
+    return name[:-len(_LEGACY_SRC_PATCH_SUFFIX)] or None
+
+
+def _new_source_patch_stem(name: str) -> "str | None":
+    """The source stem of a NEW-named per-source patch, or None."""
+    if not name.lower().endswith(_SRC_PATCH_SUFFIX.lower()):
+        return None
+    return name[:-len(_SRC_PATCH_SUFFIX)] or None
+
+
+def _patches_dir_of(output, unmerged_patch_subdir) -> Path:
+    """Where the per-source patches live: the subfolder, or the output root in
+    the legacy root-write mode ('' or '.')."""
+    if unmerged_patch_subdir and unmerged_patch_subdir not in (".", "/"):
+        return Path(output) / unmerged_patch_subdir
+    return Path(output)
+
+
+def _per_source_patch_paths(patches_dir: Path) -> "list[Path]":
+    """The per-source patches the FALLBACK merge takes (coverage failed or
+    empty). Never an old-named and a new-named file for the same source: a
+    leftover '<stem> UBE patch.esp' (a rename that failed) is taken only when no
+    '<stem> (CBBEtoUBE src).esp' exists, or that source's armatures would be
+    merged twice. Kept in the order the old names sorted in, so the merge
+    numbers the records as it did before the rename."""
+    legacy = [q for q in sorted(patches_dir.glob("*UBE patch.esp"))
+              if not q.name.startswith("UBE_Mod")]
+    if not _source_patch_rename_on():
+        return legacy
+    new = sorted(patches_dir.glob("*" + _SRC_PATCH_SUFFIX))
+    have = {(_new_source_patch_stem(q.name) or "").lower() for q in new}
+    keep = [q for q in legacy
+            if (_legacy_source_patch_stem(q.name) or q.name).lower() not in have]
+
+    def _as_legacy(q: Path) -> Path:
+        stem = _new_source_patch_stem(q.name)
+        return q if stem is None else q.with_name(f"{stem}{_LEGACY_SRC_PATCH_SUFFIX}")
+    return sorted(new + keep, key=_as_legacy)
+
+
+def _merge_gate_patch_paths(patches_dir: Path) -> "list[Path]":
+    """What the post-conversion block (female-model restore, coverage, merge)
+    needs on disk to run at all. It used to be '*UBE patch.esp', which every
+    per-source patch matched; the renamed ones do not, so on a fresh output that
+    glob found nothing and the whole block -- coverage and the Combined -- was
+    skipped. A per-source patch of either name, or a coverage piece, counts."""
+    old = sorted(patches_dir.glob("*UBE patch.esp"))
+    if not _source_patch_rename_on():
+        return old
+    return sorted(set(old) | set(patches_dir.glob("*" + _SRC_PATCH_SUFFIX)))
+
+
+def _migrate_source_patch_names(patches_dir: Path) -> dict:
+    """Rename every old-named per-source patch ('<stem> UBE patch.esp', not a
+    'UBE_Mod*' coverage piece) and its sidecars to '<stem> (CBBEtoUBE src).esp'.
+    When the new name already exists the old set is stale and is deleted (the
+    output folder is ours). Idempotent: a second call finds nothing. A file that
+    cannot be moved or deleted is returned in `failed` as (name, error); the
+    ESP moves LAST and a sidecar that fails puts back the ones already moved, so
+    a source's set is never split across two names.
+
+    Returns {'renamed': n, 'removed': n, 'failed': [(name, error), ...]}."""
+    out = {"renamed": 0, "removed": 0, "failed": []}
+    if not _source_patch_rename_on():
+        return out
+    try:
+        if not Path(patches_dir).is_dir():
+            return out
+        olds = sorted(Path(patches_dir).glob("*UBE patch.esp"))
+    except OSError as e:
+        out["failed"].append((str(patches_dir), plain_error(e)))
+        return out
+    for esp in olds:
+        stem = _legacy_source_patch_stem(esp.name)
+        if stem is None or not esp.is_file():
+            continue
+        new = esp.with_name(f"{stem}{_SRC_PATCH_SUFFIX}")
+        if new.is_file():
+            try:
+                for f in [esp] + [Path(str(esp) + s) for s in _SRC_PATCH_SIDECARS]:
+                    if f.is_file():
+                        f.unlink()
+                out["removed"] += 1
+            except OSError as e:
+                out["failed"].append((esp.name, plain_error(e)))
+            continue
+        moved: "list[tuple[Path, Path]]" = []
+        try:
+            for s in _SRC_PATCH_SIDECARS:
+                src = Path(str(esp) + s)
+                if src.is_file():
+                    dst = Path(str(new) + s)
+                    os.replace(src, dst)
+                    moved.append((src, dst))
+            os.replace(esp, new)
+            out["renamed"] += 1
+        except OSError as e:
+            for src, dst in reversed(moved):
+                try:
+                    os.replace(dst, src)
+                except OSError:
+                    pass
+            out["failed"].append((esp.name, plain_error(e)))
+    return out
+
+
+def _migrate_source_patch_names_at_start(output, unmerged_patch_subdir) -> int:
+    """Run the per-source patch migration at the start of a run, print what it
+    did, and record each patch it could not move as a warning. Returns the
+    number of warnings. #source-patch-rename"""
+    if not _source_patch_rename_on():
+        return 0
+    pdir = _patches_dir_of(output, unmerged_patch_subdir)
+    res = _migrate_source_patch_names(pdir)
+    if res["renamed"] or res["removed"]:
+        print(f"  [migrate] renamed {res['renamed']} per-source patch(es) to "
+              f"'<plugin>{_SRC_PATCH_SUFFIX}'"
+              + (f"; removed {res['removed']} old copy(ies) already renamed"
+                 if res["removed"] else ""))
+        if pdir == Path(output):
+            # Root-write mode: these files ARE plugins MO2 loads, so the old
+            # names drop out of its plugin list.
+            print("  [migrate] the per-source patches sit at the mod root "
+                  "(--unmerged-patch-subdir '.'): enable the renamed plugins "
+                  "in MO2; the old names are gone")
+    for name, err in res["failed"]:
+        warn(f"could not rename the old-named per-source patch {name}: {err}",
+             where=f"in {pdir}",
+             consequence="it keeps its old name; the merge uses it only while "
+                         "no renamed copy of it exists",
+             fix="close any program holding the file and run again")
+        _record_failure("rename failed", "per-source patch", name, err,
+                        severity="warning")
+    return len(res["failed"])
+
+
 def refresh_mod_esp(
     source_dir: str | Path,
     output_dir: str | Path,
@@ -1511,9 +1686,18 @@ def refresh_mod_esp(
     for src_esp in src_esps:
         cur_out_name = (output_esp_name
                         if output_esp_name is not None and len(src_esps) == 1
-                        else f"{src_esp.stem} UBE patch.esp")
+                        else _source_patch_name(src_esp.stem))
         out_esp = esp_out_dir / cur_out_name
         snap_p = Path(str(out_esp) + ".espgen.json")
+        if (not snap_p.is_file() and _source_patch_rename_on()
+                and (output_esp_name is None or len(src_esps) != 1)):
+            # #source-patch-rename: a snapshot still under the old name (its
+            # migration failed) is replayed in place, so the patch stays beside
+            # its own sidecars.
+            _legacy = esp_out_dir / f"{src_esp.stem}{_LEGACY_SRC_PATCH_SUFFIX}"
+            if Path(str(_legacy) + ".espgen.json").is_file():
+                out_esp = _legacy
+                snap_p = Path(str(out_esp) + ".espgen.json")
         if not snap_p.is_file():
             result.notes.append(
                 f"plugins-only: no espgen snapshot for {src_esp.name} -> "
@@ -1626,7 +1810,8 @@ def auto_convert_mod(
       source_dir: a CBBE armor mod folder (the kind MO2 would install)
       output_dir: where to write the UBE conversion mod folder
       output_esp_name: filename for the patch ESP (default:
-        `<source_esp_stem> UBE patch.esp`)
+        `<source_esp_stem> (CBBEtoUBE src).esp`; `<stem> UBE patch.esp`
+        with CBBE2UBE_NO_SOURCE_PATCH_RENAME=1)
       ube_path_prefix: top-level folder under meshes/ for the converted NIFs
         (the UBE convention is `!UBE`; flagged as a config in case it changes)
       copy_textures: copy the source mod's textures/ tree verbatim into the
@@ -1893,7 +2078,8 @@ def auto_convert_mod(
             if output_esp_name is not None and len(src_esps) == 1:
                 cur_out_name = output_esp_name
             else:
-                cur_out_name = f"{src_esp.stem} UBE patch.esp"
+                # '<stem> (CBBEtoUBE src).esp'. #source-patch-rename
+                cur_out_name = _source_patch_name(src_esp.stem)
             out_esp = esp_out_dir / cur_out_name
             # Skip ESPs with no armor addons (no ARMA group) entirely. Big bundle
             # mods (merged xEdit output, overhaul patch packs) carry many
@@ -2333,7 +2519,7 @@ def _build_parser():
              "one source is given; otherwise inferred from the last "
              "positional, mirroring the legacy `source output` form).")
     convert.add_argument("--esp-name", default=None,
-                         help="filename for the patch ESP (default: '<stem> UBE patch.esp'). "
+                         help="filename for the patch ESP (default: '<stem> (CBBEtoUBE src).esp'). "
                               "Ignored when converting multiple sources — each gets its own ESP.")
     convert.add_argument("--no-textures", action="store_true",
                          help="(Default behavior now.) Don't copy source textures.")
@@ -4515,6 +4701,10 @@ def _cmd_convert(args):
                   "explicitly to silence this.")
 
     _orphans_removed = _sweep_orphan_temps_at_start(output, _run_started)
+    # Before any per-source patch is written or read (a full run, --only-mods
+    # and --plugins-only all come through here). #source-patch-rename
+    _rename_failures = _migrate_source_patch_names_at_start(
+        output, getattr(args, "unmerged_patch_subdir", "_unmerged_patches"))
 
     if len(sources) > 1 and args.esp_name:
         print("warning: --esp-name is ignored when converting multiple "
@@ -4871,7 +5061,10 @@ def _cmd_convert(args):
     overall_warnings = (int(_ube_scan_skipped) + int(not _skypatcher_ok)
                         + int(_settings_malformed)
                         # recorded at the start AND counted here. #orphan-temps
-                        + int(bool(_orphans_removed)))
+                        + int(bool(_orphans_removed))
+                        # one per per-source patch left under its old name.
+                        # #source-patch-rename
+                        + _rename_failures)
     for src, r, err in results:
         _is_sweep_src = bool(_vanilla_sweep_esps(src))
         print("\n  " + ("Vanilla sweep (base game + DLC)" if _is_sweep_src
@@ -5127,7 +5320,10 @@ def _cmd_convert(args):
         else:
             patches_dir = output
         if patches_dir.is_dir():
-            patch_paths = sorted(patches_dir.glob("*UBE patch.esp"))
+            # This gates the WHOLE block -- female-model restore, coverage and
+            # the merge -- so it must see the renamed per-source patches too.
+            # #source-patch-rename
+            patch_paths = _merge_gate_patch_paths(patches_dir)
             if patch_paths:
                 # Female-model re-check before merge: per-mod patches may have
                 # fallen back to a male model at patch time; re-point any ARMA
@@ -5197,10 +5393,10 @@ def _cmd_convert(args):
                     # non-body pass wrote its patch, body pass threw -- would
                     # merge per-source AND coverage links for the same armors,
                     # doubling the armature (body renders twice). The unified
-                    # path is all-or-nothing; the fallback is per-source ONLY.
-                    patch_paths = [q for q in
-                                   sorted(patches_dir.glob("*UBE patch.esp"))
-                                   if not q.name.startswith("UBE_Mod")]
+                    # path is all-or-nothing; the fallback is per-source ONLY,
+                    # and one file per source (never an old-named and a renamed
+                    # copy of the same one). #source-patch-rename
+                    patch_paths = _per_source_patch_paths(patches_dir)
                 merged_out = output / args.merged_name
                 print(f"\n--- auto-merging {len(patch_paths)} patch(es) "
                       f"into {merged_out.name} ---")
