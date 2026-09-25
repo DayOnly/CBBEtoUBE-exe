@@ -32,6 +32,7 @@ Mode of operation:
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -185,14 +186,42 @@ def _has_3ba_body(nif_path: Path) -> bool:
 #      shape checked vertex for vertex (zeroed_body.zeroed_garment);
 #   3. today's source is a mod's own meshes (tier 0) and is NOT already that build;
 #   4. today's source and the output agree on whether the piece declares HDT
-#      physics -- a physics change is not this fix's to make;
+#      physics -- a physics change is not this fix's to make -- except the
+#      physics GAIN below (#zeroed-smp-gain);
 #   5. the build has the same shapes, with the same vertex counts, as today's
 #      source at both weights -- only the geometry changes, never the pass chain
 #      (a build that bundles the 3BA body would switch the piece to body-swap).
+#      A physics gain waives this one: its build is another design by nature.
 # CBBE2UBE_NO_ZEROED_OUTPUT_SOURCE=1 (settings window: "Take armour from the
 # zeroed BodySlide build") leaves the tiers alone -- the off-switch control.
+#
+# #zeroed-smp-gain (2026-09-25, user decision). Rules 4 and 5 held back every
+# vanilla-armour piece whose SMP loose mesh the within-tier body match had
+# swapped for a static prebuilt one (its loose mesh bundles a bespoke body):
+# the user's zeroed BodySlide build of the SMP design was verified, carries the
+# zeroed body, and was refused only for its physics. CBBE wearers load that
+# build; UBE wearers got a static skirt. A piece whose SOURCE declares no
+# physics and whose verified build declares it at both weights now takes the
+# build, physics and all, when every one of these holds (else rule 4 stands):
+#   a. today's source and the build both carry a body the converter swaps out
+#      (nif_convert._looks_like_inline_body), at both weights -- so the pass
+#      chain is body-swap on both sides, the path the rule-5 regression was not;
+#   b. every sizeable body-skin shape of the build is such a body -- else a body
+#      would ship as cloth;
+#   c. the build's own physics XML pointer resolves, parses, and holds a
+#      generic, stiffspring or conetwist constraint ANYWHERE in the tree (they
+#      often sit inside a <constraint-group>);
+#   d. no shape the XML names, and none that carries a non-skeleton bone it
+#      drives, is a body the converter strips that its collision-proxy re-import
+#      would bring back (nif_convert._is_inline_body_name lets it through): that
+#      re-import is a hidden second body, the equip CTD its own comment names.
+# CBBE2UBE_NO_ZEROED_SMP_GAIN=1 keeps rule 4 as it was.
 _HDT_MARKER = b"HDT Skinned Mesh Physics Object"
 _ZOS_SAID: "set[str]" = set()
+_SMP_CONSTRAINT_TAGS = frozenset({"generic-constraint", "stiffspring-constraint",
+                                  "conetwist-constraint"})
+_SMP_SHAPE_NAME_RE = re.compile(r'<per-(?:triangle|vertex)-shape\s+name="([^"]+)"')
+_SMP_BONE_RE = re.compile(r'<bone\s+name="([^"]+)"|\bbody[AB]="([^"]+)"')
 
 
 def _zos_say(msg: str) -> None:
@@ -211,6 +240,102 @@ def _declares_physics(path: Path) -> "bool | None":
         return _HDT_MARKER in Path(path).read_bytes()
     except OSError:
         return None
+
+
+def _zeroed_smp_gain() -> bool:
+    """#zeroed-smp-gain: may a verified zeroed build bring SMP physics to a piece
+    whose source has none? Yes, by default. CBBE2UBE_NO_ZEROED_SMP_GAIN=1: no."""
+    return not _flag("CBBE2UBE_NO_ZEROED_SMP_GAIN", False)
+
+
+def _gain_nif(path: Path):
+    """The NIF as the converter reads it (nif_io.Nif); release its `_backing`
+    with nif_io.release_nif once its shapes are no longer read."""
+    return nif_io.load_nif(path)
+
+
+def _gain_xml(path: Path) -> "bytes | None":
+    """The bytes of the physics XML the NIF's own pointer names, resolved as the
+    converter resolves it; None when it does not resolve or cannot be read."""
+    from . import nif_convert as _nc
+    from . import nif_convert_physics as _ncp
+    disk = _ncp._read_source_hdt_xml_disk(Path(path))
+    if disk is None:
+        return None
+    try:
+        raw = Path(disk).read_bytes()
+    except OSError:
+        return None
+    if _nc.HDT_XML_SANITISE:
+        raw, _note = _ncp._hdt_sanitise(raw)
+    return raw
+
+
+def _smp_gain_verdict(today: list, build: list, xml: "bytes | None") -> "str | None":
+    """#zeroed-smp-gain rules a-d for ONE weight: None when the build's physics
+    may come with it, else why not. `today`/`build` are the shapes of today's
+    source and of the build, `xml` the build's resolved physics XML."""
+    import xml.etree.ElementTree as ET
+    from . import nif_convert as _nc
+    if not any(_nc._looks_like_inline_body(s) for s in today):
+        return "today's source has no body the converter swaps"
+    bodies = {id(s) for s in build if _nc._looks_like_inline_body(s)}
+    if not bodies:
+        return "the build has no body the converter swaps"
+    for s in build:
+        if id(s) in bodies or not _nc._shape_diffuse_is_body_skin(s):
+            continue
+        z = [float(v[2]) for v in s.verts]
+        if (len(z) >= _BESPOKE_BODY_MIN_VERTS
+                and max(z) - min(z) >= _BESPOKE_BODY_MIN_Z_RANGE):
+            return f"the build's body {s.name!r} would ship as cloth"
+    if xml is None:
+        return "its physics XML does not resolve"
+    try:
+        root = ET.fromstring(xml)
+    except ET.ParseError:
+        return "its physics XML does not parse"
+    if not any(el.tag in _SMP_CONSTRAINT_TAGS for el in root.iter()):
+        return "its physics XML has no constraint"
+    text = xml.decode("utf-8", errors="ignore")
+    named = set(_SMP_SHAPE_NAME_RE.findall(text))
+    driven = {b for pair in _SMP_BONE_RE.findall(text) for b in pair
+              if b and not b.lower().startswith("npc ")}
+    # What the body swap strips: the detected bodies, and -- as it may also swap
+    # an exposed body-skin slice -- any other body-skin shape of that size.
+    stripped = [s for s in build
+                if id(s) in bodies or (_nc._shape_diffuse_is_body_skin(s) and
+                                       len(s.verts) >= _nc._EXPOSED_BODY_SKIN_MIN_VERTS)]
+    for s in stripped:
+        if _nc._is_inline_body_name(s.name):
+            continue                      # the re-import never brings it back
+        if s.name in named or driven & set(s.bone_names or ()):
+            return f"its physics XML would bring back the stripped body {s.name!r}"
+    return None
+
+
+def _smp_gain_refusal(cur: "dict[str, Path]", built: "dict[str, Path]") -> "str | None":
+    """None when the verified build may bring its SMP physics to this piece
+    (#zeroed-smp-gain), else the reason it keeps today's source."""
+    if not _zeroed_smp_gain():
+        return "its physics would change"
+    if ({_declares_physics(p) for p in cur.values()} != {False}
+            or {_declares_physics(p) for p in built.values()} != {True}):
+        return "its physics would change"
+    for w in sorted(built):
+        nifs = []
+        try:
+            nifs = [_gain_nif(cur[w])]
+            nifs.append(_gain_nif(built[w]))
+            why = _smp_gain_verdict(nifs[0].shapes, nifs[1].shapes, _gain_xml(built[w]))
+        except Exception:
+            why = "a mesh cannot be read"
+        finally:
+            for n in nifs:
+                nif_io.release_nif(getattr(n, "_backing", None))
+        if why is not None:
+            return f"it would gain physics, but {why}"
+    return None
 
 
 def _zeroed_output_provider(mods_root: Path, enabled_mods: "list[str]",
@@ -280,6 +405,7 @@ def _prefer_zeroed_outputs_in(index: "dict[str, Path]", win_tier: "dict[str, int
         return
     out_root = Path(mods_root) / provider
     moved: "list[str]" = []
+    gained: "list[str]" = []
     kept: "dict[str, int]" = {}
 
     def keep(reason: str) -> None:
@@ -301,9 +427,13 @@ def _prefer_zeroed_outputs_in(index: "dict[str, Path]", win_tier: "dict[str, int
             keep("the output is not a verified zeroed build")
             continue
         physics = {_declares_physics(p) for p in (*cur.values(), *built.values())}
+        gain = False
         if physics != {True} and physics != {False}:
-            keep("its physics would change")
-            continue
+            why = _smp_gain_refusal(cur, built)       # #zeroed-smp-gain
+            if why is not None:
+                keep(why)
+                continue
+            gain = True
         try:
             today = {w: _zb._nif_shapes(cur[w]) for w in keys}
         except Exception:
@@ -314,9 +444,10 @@ def _prefer_zeroed_outputs_in(index: "dict[str, Path]", win_tier: "dict[str, int
         # piece down the body-swap path instead of the copy path -- a different
         # pass chain, measured 2026-09-22 on four pieces of one armour overhaul:
         # up to 4.2u moved at a weight whose source geometry barely differed, and
-        # 2-10% more of the body exposed in poses. Not this fix's to make.
-        if any({n: len(v) for n, v in today[w].items()}
-               != {n: len(v) for n, v in zg.build[w].items()} for w in keys):
+        # 2-10% more of the body exposed in poses. Not this fix's to make. A
+        # physics gain is another design by nature, body-swap on both sides.
+        if not gain and any({n: len(v) for n, v in today[w].items()}
+                            != {n: len(v) for n, v in zg.build[w].items()} for w in keys):
             keep("the build's shapes differ from today's source")
             continue
         if all(_zb.matches_build(today[w], zg.build[w]) is not None for w in keys):
@@ -325,9 +456,12 @@ def _prefer_zeroed_outputs_in(index: "dict[str, Path]", win_tier: "dict[str, int
         for w, k in keys.items():
             index[k] = built[w]
         moved.append(stem)
+        if gain:
+            gained.append(stem)
     held = ", ".join(f"{r}: {n}" for r, n in sorted(kept.items()))
+    smp = f" ({len(gained)} with its SMP physics)" if gained else ""
     _zos_say(f"[zeroed-output-source] {provider}: {len(moved)} piece(s) now "
-             f"converted from its verified zeroed BodySlide build; "
+             f"converted from its verified zeroed BodySlide build{smp}; "
              f"{sum(kept.values())} kept today's source" + (f" ({held})" if held else ""))
 
 

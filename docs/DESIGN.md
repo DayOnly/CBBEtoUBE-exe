@@ -401,6 +401,36 @@ single pass runs. Three rules encode this:
    processes: 264.8 s -> 69.6 s; the mesh index is identical key for key (4,562
    entries, 244 re-pointed) and so is the verdict line (122 moved / 179 kept).
    `CBBE2UBE_NO_ZEROED_PROBE_MEMO=1` probes every folder per question again.
+   **A physics GAIN is taken** (`#zeroed-smp-gain`, 2026-09-25, user decision). The
+   physics rule and the same-shapes rule held back every vanilla-armour piece whose SMP
+   loose mesh rule 2 had swapped for a static prebuilt one: the user's zeroed build of
+   the SMP design was verified and refused for its physics alone, so CBBE wearers got a
+   skirt with physics and UBE wearers a static one. When today's source declares no
+   physics and the verified build declares it at both weights, the build is taken and
+   the same-shapes rule is waived, if at each weight: both sides carry a body the
+   converter swaps (`_looks_like_inline_body`), so both go body-swap and the path change
+   the same-shapes rule guards cannot happen; every sizeable body-skin shape of the
+   build is such a body (else a body ships as cloth); the build's own XML pointer
+   resolves (the converter's resolver), parses, and holds a generic, stiffspring or
+   conetwist constraint anywhere in the tree -- nested in a `<constraint-group>`
+   counts; a census that read it with `find` called five constrained XMLs
+   unconstrained; and no shape the XML names, nor one carrying a non-skeleton bone it
+   drives, is a stripped body the collision-proxy re-import would bring back
+   (`_is_inline_body_name` lets it through) -- a hidden second body, the equip CTD the
+   re-import's own comment names. A physics loss or a one-weight change still keeps
+   today's source. Live, read-only: 19 pieces / 38 index keys move (141 moved, 160
+   kept), nothing else in the plan changes; with `CBBE2UBE_NO_ZEROED_SMP_GAIN=1` the
+   index and the verdict line are the old ones on all 4,562 keys. Refused: the
+   Imperial heavy cuirass (its XML registers the body as `Body`), a build whose body
+   the detector misses, a source with no body (copy path). Converted into scratch,
+   all 38 files carry a constrained XML (54-150 constraints) with every named shape
+   present, no unresolved pointer and no re-imported body; every bone the XML names
+   and the output lacks is missing from the build too (the author's XML serves several
+   variants). At bind the bust clips no more than before (three pieces 0.1-6.3% -> 0%;
+   median standoff 1.27u -> 1.33u, p90 1.51u -> 1.82u). The butt band clips 0.8-13%
+   on 13 pieces, all of it behind SMP-simulated skirt verts, which the static harness
+   cannot place -- the converter lifts their chains off the body and SMP moves them;
+   in game is the verdict.
 
 ### Which mods and pieces are sources at all (2026-09-24)
 

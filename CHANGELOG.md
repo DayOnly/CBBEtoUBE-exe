@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+### Changed — skirts and capes of the vanilla armours keep their physics on UBE actors
+
+Some vanilla armours (bandit, draugr, hide, iron, studded, Imperial light and
+medium, Forsworn, Falmer, two officers' outfits and two farm clothes) have
+physics skirts, tassets or capes in your BodySlide build, and
+CBBE characters wear them that way. The tool took a static version of those
+pieces instead, so on UBE characters the same skirts hung stiff. It now takes
+your zeroed BodySlide build with its physics, but only when the tool has
+checked that build against its BodySlide project, both versions carry the body
+the tool replaces, the physics file is found and holds constraints, and
+nothing in that file would bring a second, hidden body back. Measured on the
+reported modlist: 19 armour pieces (38 files) change; everything else is
+converted exactly as before. The Imperial heavy cuirass, a piece whose build
+has no body the tool can replace, and a piece whose own mesh has no body stay
+as they were. `CBBE2UBE_NO_ZEROED_SMP_GAIN=1` (set to 1) keeps them static.
+
 ### Changed — checking your zeroed BodySlide build is about four times faster
 
 Before converting, the tool checks which armour your zeroed BodySlide build
