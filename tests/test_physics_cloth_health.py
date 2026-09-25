@@ -379,7 +379,7 @@ def test_a_constraint_between_two_kinematic_bones_does_not_count(
 
 
 def test_rest_pose_depth_finds_a_shape_named_in_another_case():
-    """The XML's `skirt` is the NIF's `Skirt` to FSMP. A case-exact lookup
+    """The XML's `SKIRT` is the NIF's `Skirt` to FSMP. A case-exact lookup
     dropped it from the depth check, so a sunk skirt read as clean."""
     body = _Shape("BaseShape")
     body.verts = [(-1.0, -1.0, 0.0), (1.0, -1.0, 0.0), (1.0, 1.0, 0.0),
@@ -389,9 +389,9 @@ def test_rest_pose_depth_finds_a_shape_named_in_another_case():
     skirt.verts = [(0.0, 0.0, 1.0), (0.0, 0.0, -1.0)]   # one each side
     nif = _Nif(shapes=())
     nif.shapes = [body, skirt]
-    out = pch._penetration(nif, ["skirt"])
-    assert list(out) == ["skirt"]
-    assert out["skirt"][1:] == (1, 2)
+    out = pch._penetration(nif, ["SKIRT"])
+    assert list(out) == ["SKIRT"]
+    assert out["SKIRT"][1:] == (1, 2)
 
 
 # ------------------------------------------------- FSMP's collision rule
