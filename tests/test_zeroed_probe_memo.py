@@ -139,16 +139,18 @@ def test_two_folder_lists_never_share_an_answer(tmp_path):
 
 def test_the_memo_lasts_only_as_long_as_its_scope(tmp_path):
     dirs = _instance(tmp_path)
-    rel = "meshes/armor/piece_1.nif"
-    with zb.probe_memo():
-        assert zb._Vfs(dirs).winner(rel) is None
-        _file(dirs[3] / "meshes" / "armor" / "piece_1.nif")
-        assert zb._Vfs(dirs).winner(rel) is None     # remembered inside the scope
-    assert zb._PROBE_MEMO is None
-    hit = zb._Vfs(dirs).winner(rel)
-    assert hit is not None and hit[1] == dirs[3]
-    with zb.probe_memo():                            # a new scope asks again
-        assert zb._Vfs(dirs).winner(rel)[1] == dirs[3]
+    # A new top folder, and a new file in a folder whose top folder is known.
+    for rel, where in (("meshes/armor/piece_1.nif", dirs[3]),
+                       ("calientetools/bodyslide/shapedata/set/new.nif", dirs[2])):
+        with zb.probe_memo():
+            assert zb._Vfs(dirs).winner(rel) is None
+            _file(where / rel)
+            assert zb._Vfs(dirs).winner(rel) is None     # remembered inside the scope
+        assert zb._PROBE_MEMO is None
+        hit = zb._Vfs(dirs).winner(rel)
+        assert hit is not None and hit[1] == where
+        with zb.probe_memo():                            # a new scope asks again
+            assert zb._Vfs(dirs).winner(rel)[1] == where
 
 
 def test_switched_off_nothing_is_remembered(tmp_path, monkeypatch):
