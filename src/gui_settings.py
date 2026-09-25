@@ -1965,15 +1965,26 @@ def apply_saved_settings(environ=None, path=None) -> dict:
 
     Returns (and keeps, for the run's echo and conversion_settings.json) what
     it did: {"path", "status", "applied": {var: value}, "kept": {var: value},
-    "skipped": why-not or ""}."""
+    "skipped": why-not or ""} -- or {"by": who} when the parent that launched
+    this process (the window, a parity harness) already applied them.
+
+    THE WINDOW'S CHILD IS NOT A SKIPPED FILE. #settings-source-line
+    It carries CBBE2UBE_SETTINGS_APPLIED and is left alone -- its environment
+    already holds the settings. That was recorded as a skip, so every run from
+    the window logged "settings file NOT applied (already applied by the
+    settings window)" on the line people read to check that their settings
+    reached the run. It is recorded as who applied them; "NOT applied" is
+    kept for a file that genuinely was not (switched off, absent, torn)."""
     global _HEADLESS_REPORT
     env = os.environ if environ is None else environ
+    by = env.get(APPLIED_MARKER, "").strip()
+    if by:
+        _HEADLESS_REPORT = {"by": by}
+        return dict(_HEADLESS_REPORT)
     p = Path(path) if path is not None else config_path()
     rep = {"path": str(p), "status": load_status(p), "applied": {}, "kept": {},
            "skipped": ""}
-    if env.get(APPLIED_MARKER, "").strip():
-        rep["skipped"] = f"already applied by {env[APPLIED_MARKER].strip()}"
-    elif not _headless_settings_enabled(env):
+    if not _headless_settings_enabled(env):
         rep["skipped"] = f"{HEADLESS_SWITCH}=1"
     elif rep["status"] != "ok":
         rep["skipped"] = f"settings file {rep['status']}"
@@ -2003,6 +2014,8 @@ def settings_source_line(environ=None) -> str:
             return f"  effective settings: from {by}"
         return ("  effective settings: settings file NOT read by this process "
                 "(the window and CBBEtoUBE.exe auto/convert apply it)")
+    if rep.get("by"):                   # the window's child #settings-source-line
+        return f"  effective settings: from {rep['by']}"
     if rep["skipped"]:
         return (f"  effective settings: settings file NOT applied "
                 f"({rep['skipped']}): {rep['path']}")

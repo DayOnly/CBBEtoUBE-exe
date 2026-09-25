@@ -221,6 +221,15 @@ def test_the_select_list_leaves_out_what_the_run_drops(tmp_path, monkeypatch):
         "Already UBE", "CBBE Mod"}
 
 
+def test_the_select_list_says_which_bodies_it_judged_with():
+    """#select-list-bodies: the list judges with the bodies the converter
+    finds on its own; the run with the ones confirmed in Reference bodies."""
+    note = gui.select_list_hidden_note(["Already UBE"])
+    assert "1 mod(s) not listed" in note and "Already UBE" in note, note
+    assert "Reference bodies" in note, note
+    assert "Reference bodies" in gui.SELECT_LIST_BODIES_NOTE
+
+
 def test_only_mods_on_a_dropped_mod_says_why(tmp_path, monkeypatch, capsys):
     mods = _modlist(tmp_path, monkeypatch, ["Already UBE", "CBBE Mod"])
     cands = [{"name": n, "path": mods / n, "armor_nifs": 2}
@@ -362,8 +371,27 @@ def test_a_launch_detail_does_not_invalidate_the_cache(monkeypatch, var, val):
     assert ac._nif_config_fingerprint(_ARGS) == base
 
 
+@pytest.mark.parametrize("var", ["CBBE2UBE_GLOW_LOG", "CBBE2UBE_STANDOFF_LOG",
+                                 "CBBE2UBE_WORKER_MEM_GB",
+                                 "CBBE2UBE_OVERLAY_WORKERS"])
+def test_a_log_path_or_worker_count_does_not_invalidate_the_cache(monkeypatch, var):
+    """The rest of the survey's plumbing (#fingerprint-skips-plumbing): a
+    re-run with fewer workers after a memory error, or the glow log pointed
+    elsewhere, reconverted every NIF."""
+    _clean_env(monkeypatch)
+    base = ac._nif_config_fingerprint(_ARGS)
+    monkeypatch.setenv(var, "3")
+    assert ac._nif_config_fingerprint(_ARGS) == base
+
+
+def test_every_left_out_variable_says_why():
+    assert ac._FINGERPRINT_PLUMBING == set(ac._FINGERPRINT_PLUMBING_WHY)
+    assert all(str(why).strip() for why in ac._FINGERPRINT_PLUMBING_WHY.values())
+
+
 @pytest.mark.parametrize("var", ["CBBE2UBE_NO_VANILLA_SWEEP", "CBBE2UBE_MODS_ROOT",
-                                 "CBBE2UBE_GAME_DATA"])
+                                 "CBBE2UBE_GAME_DATA", "CBBE2UBE_PASS_TRACE",
+                                 "CBBE2UBE_RAY_CHUNK", "CBBE2UBE_TEXCONV"])
 def test_a_setting_or_layout_still_invalidates_it(monkeypatch, var):
     _clean_env(monkeypatch)
     base = ac._nif_config_fingerprint(_ARGS)
@@ -377,6 +405,9 @@ def test_the_switch_hashes_every_variable_again(monkeypatch):
     base = ac._nif_config_fingerprint(_ARGS)
     monkeypatch.setenv("CBBE2UBE_NO_PAUSE", "1")
     assert ac._nif_config_fingerprint(_ARGS) != base
+    moved = ac._nif_config_fingerprint(_ARGS)
+    monkeypatch.setenv("CBBE2UBE_WORKER_MEM_GB", "3")
+    assert ac._nif_config_fingerprint(_ARGS) != moved
 
 
 # --- #whole-mod-names ---------------------------------------------------------

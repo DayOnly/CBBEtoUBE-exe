@@ -1888,6 +1888,15 @@ reported through `_report_coverage_holds`:
   returned before the list-only check. It now lists what would be remapped
   (`overlay_transfer.plan_overlays`, the same source rules as the transfer) and
   returns. The window's Dry run with both toggles drops `--convert-overlays`.
+- **The overlay Dry run lists for the mode the run would use**
+  (`#dry-run-copy-mode`). Under `--overlay-copy` ("Add UBE copy") the real pass
+  bakes only overlays a RaceMenu paint script registers whose texture is found,
+  and skips everything without texconv, PapyrusCompiler or the Papyrus base
+  (`Scripts.zip`); the list showed the replace mode's set either way. The list
+  now names its mode, uses `plan_overlay_copies` under copy mode (the same
+  filter as the pass, `_copy_call_wanted`, and a test that the pass bakes what
+  the plan lists), and says when a missing tool would make the real run skip
+  every overlay (`copy_mode_tool_gap` / `replace_mode_tool_gap`, read-only).
 - **A bad settings import changes nothing** (`#settings-import-guard`).
   `load_values` turns an absent, torn or foreign file into pure defaults by
   design; Import used it and saved the defaults over the recipe.
@@ -1908,6 +1917,14 @@ reported through `_report_coverage_holds`:
   out restores). `CBBE2UBE_NO_HEADLESS_SETTINGS=1` makes a headless run ignore
   the file, as before. `python -m src.auto_convert` does not go through the entry
   point and still reads only the environment.
+- **The window's child says who applied its settings** (`#settings-source-line`).
+  The child goes through the entry point like every `auto`, and the marker was
+  recorded as a skip, so every window run logged `settings file NOT applied
+  (already applied by the settings window)` -- the line people read to see
+  that their settings reached the run. The marker case is now recorded as
+  `{"by": "the settings window"}` (log: `effective settings: from the settings
+  window`); `NOT applied` is kept for a file that really was not (switched off,
+  absent, torn).
 - **A bad Worker processes value cannot strand the window**
   (`#workers-box-guard`). The box is free text; `_launch` locked the window
   (running, Convert off, selection locked, bar spinning) and only then read
@@ -1934,6 +1951,15 @@ reported through `_report_coverage_holds`:
   find these). `--only-mods` on a dropped mod now says it was dropped and names
   `--no-ube-native-scan`. The window has no setting for that switch, on
   purpose: the scan guards against double-converting.
+  WHICH BODIES (`#select-list-bodies`): the list judges in the window, before
+  any run, with the reference bodies the converter finds on its own -- what the
+  Reference bodies dialog starts on. The run judges again in its child with
+  the bodies confirmed in that dialog, which exist only once Convert is
+  pressed, and `_body_trees` caches the window's pair for the session. With the
+  dialog's starting pick the two agree; with another pick they can differ (a
+  listed mod skipped, or a left-out mod the run would convert). Not unified on
+  purpose -- the list cannot know a pick not yet made -- so the Refresh button's
+  tooltip and the log line naming the left-out mods say it.
 - **Refresh rescans** (`#mod-scan-rescan`). `_ARMOR_MOD_DIRS_CACHE` is keyed on
   the mods root, the enabled set and some switches, never on mod contents, and
   nothing cleared it; it was built for an in-process Convert that no longer
@@ -1957,6 +1983,26 @@ reported through `_report_coverage_holds`:
   nowhere. It no longer releases, and the Tk root's
   `report_callback_exception` (`tk_error_reporter`) writes a callback's
   traceback to the session log and the log panel.
+- **The window's wiring is tested through the window** (`#gui-wiring`). Every
+  fix above was tested through a module-level helper and none through the Tk
+  closure that calls it: reverting Refresh's `rescan`/`mark_ube_native`, the
+  run worker's `dry_run` and its dropped `release_log_tee`, and the
+  `report_callback_exception` hook left every GUI test green, and so did
+  dropping the saved settings from Refresh, the overlay list, the exclusions
+  lister, the UBE-mesh scan and the diagnostics zip. `tests/test_gui_wiring.py`
+  builds the real window in a child interpreter, presses those buttons and
+  menu entries and Convert (dry and real) with recorders in place of the
+  helpers and a stand-in conversion child, and checks what each closure passed
+  and under which settings. Pair LOW-s now puts `release_log_tee` back in the
+  worker, where the bug was.
+- **The end-of-run popup words each kind** (`#popup-per-kind`). Every FAILED
+  entry read "did NOT convert -- their armor keeps its previous state", which
+  #one-tally made wrong for the Combined ESP's load-breaking issues: the plugin
+  was built and is unsafe to load. `failure_summary.WRITTEN_BUT_BROKEN` names
+  the failure kinds whose output WAS written (the load-breaking plugin, a
+  CTD-class or unreadable mesh, a partial mesh, a merge that failed or was
+  skipped) with a sentence each; the title counts them as problems in what was
+  written, and every other failure keeps the old wording.
 - **The --incremental fingerprint skips launch plumbing**
   (`#fingerprint-skips-plumbing`). It hashed every `CBBE2UBE_*` variable,
   including ones that cannot change a mesh, so a scripted re-run
@@ -1968,6 +2014,24 @@ reported through `_report_coverage_holds`:
   in: a different game Data or mods folder can change a mesh. This changes when
   an incremental run reconverts, never what a NIF becomes.
   `CBBE2UBE_NO_FINGERPRINT_SKIPS_PLUMBING=1` hashes every variable again.
+  THE SURVEY (2026-09-25): every `CBBE2UBE_*` name read under `src/` and the
+  entry point (~530) is either plumbing -- a launch or UI detail, a log or sink
+  path, a worker count or memory budget, a thread count -- or treated as
+  output. The plumbing, each with its reason in `_FINGERPRINT_PLUMBING_WHY`:
+  NO_PAUSE, RUN_LOG, GLOW_LOG, STANDOFF_LOG, CONFIG, EXCLUSIONS,
+  SETTINGS_APPLIED, NO_HEADLESS_SETTINGS, WORKER_MEM_GB, OVERLAY_WORKERS.
+  Worker counts qualify because output does not depend on the pool size since
+  `#pair-unit-dispatch` (a weight pair is one unit on one worker;
+  `tests/test_pair_unit_dispatch.py` pins it; a 16-worker run matched
+  `--workers 1` on 296 files); WORKER_MEM_GB only picks that count, and
+  OVERLAY_WORKERS is the overlay pass's thread count, one texture per thread.
+  Treated as output and hashed: every tuning knob and `NO_*` switch; the layout
+  and the body and tool paths (UBE_BODY*, CBBE_BODY*, UBE_TEMPLATE, UBE_OSD,
+  TEXCONV, PAPYRUS_COMPILER); and the diagnostics switches (DEBUG_*, *_DEBUG,
+  *_TRACE, *_AUDIT, STAGE_DUMP, FIELD_STATS, NIPPLE_PROBE, BACK_DUMP_DISP,
+  NO_STANDOFF_AUDIT) with RAY_CHUNK and NO_ZEROED_PROBE_MEMO, which run code
+  inside the conversion that no test proves byte-neutral. Hashing too much
+  costs a reconvert; leaving out too much reuses a stale mesh.
 - **A mod folder name with a comma is one name** (`#whole-mod-names`). The
   window passes every name as its own `--exclude-mods` / `--only-mods` /
   `--coverage-exclude-mods` / `--overlay-*-mods` flag, and `_split_mod_arg`

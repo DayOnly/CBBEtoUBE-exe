@@ -815,6 +815,63 @@ def plan_overlays(output_dir, layout, *, regions=("body", "hands", "feet"),
                              only_mods, skip_male)
 
 
+# THE DRY RUN LISTS WHAT THE CHOSEN MODE WOULD DO. #dry-run-copy-mode
+# The Dry run listed the replace mode's overlays for both modes. 'Add UBE copy'
+# reads a different set -- only overlays a RaceMenu paint script registers --
+# and skips the whole run without texconv, PapyrusCompiler or the Papyrus base,
+# so under it the list named overlays the real run would never bake.
+
+def replace_mode_tool_gap() -> str:
+    """Why a real replace-mode transfer would skip every overlay ('' when it
+    would not): the check `convert_overlays` makes first. Reads only."""
+    if find_texconv() is None:
+        return ("texconv not found (set CBBE2UBE_TEXCONV or install it under "
+                "the MO2 tools/ folder)")
+    return ""
+
+
+def copy_mode_tool_gap() -> str:
+    """Why a real 'Add UBE copy' run would skip every copy ('' when it would
+    not): the checks `add_ube_overlay_copies` makes before any work, without
+    extracting anything. Reads only. #dry-run-copy-mode"""
+    if find_texconv() is None:
+        return "texconv not found (set CBBE2UBE_TEXCONV)"
+    compiler = find_papyrus_compiler()
+    if compiler is None:
+        return "PapyrusCompiler.exe not found (set CBBE2UBE_PAPYRUS_COMPILER)"
+    if not (Path(compiler).parent.parent / "Data" / "Scripts.zip").is_file():
+        return "Papyrus base (Scripts.zip) not found"
+    return ""
+
+
+def _copy_call_wanted(slot, rel, regions, skip_male) -> bool:
+    """One AddXPaint call a copy is baked for: a remapped region, and not a
+    male overlay under --overlay-skip-male. Shared by the copy pass and its
+    dry-run plan, so the two cannot drift. #dry-run-copy-mode"""
+    if slot not in regions:                 # head/warpaint -> never remapped
+        return False
+    return not (skip_male and _is_male_overlay(rel))
+
+
+def plan_overlay_copies(output_dir, layout, *, regions=("body", "hands", "feet"),
+                        skip_male=False, only_mods=None,
+                        exclude_mods=None) -> dict:
+    """The overlays 'Add UBE copy' would bake a UBE copy of, WITHOUT writing
+    anything: those a RaceMenu paint script registers whose texture is found,
+    by the same rules as `add_ube_overlay_copies`. {region: {rel_path:
+    registering mod}}. #dry-run-copy-mode"""
+    from . import overlay_slots as _osl
+    skip = _source_skip_set(output_dir, exclude_mods)
+    srcmap = _build_overlay_source_map(layout, skip_mods=skip)
+    plan: dict = {r: {} for r in regions}
+    for mod_name, _name, text in _iter_paint_scripts(
+            layout, skip_mods=skip, only_mods=only_mods):
+        for slot, rel in _osl.iter_paint_calls(text):
+            if _copy_call_wanted(slot, rel, regions, skip_male) and srcmap.get(rel):
+                plan[slot].setdefault(rel, mod_name)
+    return plan
+
+
 def convert_overlays(output_dir, layout, *, regions=("body", "hands", "feet"),
                      texconv=None, log=print, limit: int = 0,
                      overlay_mode="replace", skip_male=False,
@@ -1513,9 +1570,7 @@ def add_ube_overlay_copies(layout, out_root, texconv, *,
                 layout, skip_mods=skip_mods, only_mods=only_mods):
             baked: set = set()      # normalized rels a UBE variant was written for
             for slot, rel in _osl.iter_paint_calls(text):
-                if slot not in regions:         # head/warpaint -> never remapped
-                    continue
-                if skip_male and _is_male_overlay(rel):
+                if not _copy_call_wanted(slot, rel, regions, skip_male):
                     continue
                 if limit and remaining <= 0:
                     break

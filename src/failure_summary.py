@@ -55,22 +55,70 @@ def counts(entries) -> tuple:
     return failures, warnings
 
 
+# FAILED entries whose output WAS written: what went wrong is what the run
+# wrote, not a conversion that did not happen. #popup-per-kind
+# The popup said every FAILED item "did NOT convert -- their armor keeps its
+# previous state", which was wrong for a Combined ESP the run built and then
+# found NOT safe to load, and for a mesh written with a crash defect: the user
+# was told nothing had changed about a file that had. Each such kind has its
+# own sentence; every other failure is a conversion that did not happen.
+WRITTEN_BUT_BROKEN = {
+    "load-breaking plugin issue": (
+        "the Combined ESP was built, but it is NOT safe to load; keep it "
+        "disabled until the issues listed are fixed"),
+    "CTD-class mesh issue": (
+        "the mesh was written, but it can crash the game when equipped"),
+    "output mesh unreadable": (
+        "the mesh was written, but it cannot be read back"),
+    "partial mesh (shape dropped)": (
+        "the mesh was written with a part of it left out"),
+    "merge failed": (
+        "the meshes converted, but no Combined ESP was built this run"),
+    "merge skipped": (
+        "the meshes converted, but no Combined ESP was built this run"),
+}
+
+
+def _failure_split(entries) -> "tuple[int, dict]":
+    """(count of failures that did not convert, {written-but-broken kind:
+    count} in first-seen order). #popup-per-kind"""
+    not_converted, broken = 0, {}
+    for e in entries or []:
+        if severity_of(e) == WARNING:
+            continue
+        kind = (e or {}).get("kind", "")
+        if kind in WRITTEN_BUT_BROKEN:
+            broken[kind] = broken.get(kind, 0) + count_of(e)
+        else:
+            not_converted += count_of(e)
+    return not_converted, broken
+
+
 def popup_title(entries) -> str:
-    failures, warnings = counts(entries)
-    if failures and warnings:
-        return f"{failures} item(s) failed to convert, {warnings} warning(s)"
-    if failures:
-        return f"{failures} item(s) failed to convert"
-    return f"{warnings} warning(s) from this run"
+    _failures, warnings = counts(entries)
+    not_converted, broken = _failure_split(entries)
+    parts = []
+    if not_converted:
+        parts.append(f"{not_converted} item(s) failed to convert")
+    if broken:
+        parts.append(f"{sum(broken.values())} problem(s) in what was written")
+    if not parts:
+        return f"{warnings} warning(s) from this run"
+    if warnings:
+        parts.append(f"{warnings} warning(s)")
+    return ", ".join(parts)
 
 
 def popup_intro(entries) -> str:
     failures, warnings = counts(entries)
+    not_converted, broken = _failure_split(entries)
     parts = []
-    if failures:
+    if not_converted:
         parts.append("Items marked FAILED did NOT convert this run — their armor "
-                     "keeps its previous state (or is invisible on UBE actors). "
-                     "Everything else converted normally.")
+                     "keeps its previous state (or is invisible on UBE actors)."
+                     + ("" if broken else " Everything else converted normally."))
+    for kind in broken:
+        parts.append(f"Items marked FAILED: {kind} — {WRITTEN_BUT_BROKEN[kind]}.")
     if warnings:
         parts.append(("Items marked WARNING converted" if failures
                       else "Everything converted")
@@ -108,9 +156,13 @@ def status_line(rc: int, entries, cancelled: bool = False) -> str:
     failures, warnings = counts(entries)
     if rc != 0:
         return f"Finished with exit code {rc} - check the log for errors/warnings."
-    if failures:
-        return (f"Done (exit 0), but {failures} item(s) did not convert - see the "
-                "list that opened and the log.")
+    not_converted, _broken = _failure_split(entries)
+    if not_converted:
+        return (f"Done (exit 0), but {not_converted} item(s) did not convert - "
+                "see the list that opened and the log.")
+    if failures:                                    # #popup-per-kind
+        return (f"Done (exit 0), but {failures} problem(s) in what was written "
+                "- see the list that opened and the log.")
     if warnings:
         return (f"Done with {warnings} warning(s) (exit 0) - see the list that "
                 "opened and the log before you play.")

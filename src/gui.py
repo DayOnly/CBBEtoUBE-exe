@@ -812,6 +812,31 @@ def select_list_split(items) -> "tuple[list, list]":
     return shown, hidden
 
 
+# WHICH BODIES THE SELECT LIST JUDGES WITH. #select-list-bodies
+# The list asks the UBE-native question in this window, before any run, with
+# the reference bodies the converter finds on its own -- the pick the Reference
+# bodies dialog starts on. The run asks it again in its child with the bodies
+# confirmed in that dialog, which exist only once Convert is pressed. With the
+# dialog's starting pick the two agree; pick other bodies there and they can
+# differ. Said on the button and beside every mod the list leaves out.
+SELECT_LIST_BODIES_NOTE = (
+    "Mods whose armour already fits the UBE body are left out of this list: "
+    "the run's UBE-native scan skips them. The list judges with the reference "
+    "bodies the converter finds on its own (what the Reference bodies dialog "
+    "starts on); the run judges again with the bodies you confirm there, so "
+    "picking other bodies can change which mods it skips.")
+
+
+def select_list_hidden_note(hidden) -> str:
+    """The log line naming the mods the Select list leaves out, and with which
+    bodies that was judged. #select-list-ube-native #select-list-bodies"""
+    return (f"\n{len(hidden)} mod(s) not listed: their armour already fits the "
+            "UBE body, so a run skips them (UBE-native scan): "
+            + ", ".join(hidden) + "\n  (judged with the reference bodies the "
+            "converter finds on its own; a run judges again with the bodies "
+            "you confirm in Reference bodies)\n")
+
+
 def build_body_dialog(root, *, base_env, resolve, on_ok, on_cancel=None,
                       theme_popup=None, heading_font=None, confirm=None,
                       show_error=None, run_async=True):
@@ -1228,9 +1253,7 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
                 q.put(f"\n[mod scan failed: {e}]\n")
             items, hidden = select_list_split(items)
             if hidden:
-                q.put(f"\n{len(hidden)} mod(s) not listed: their armour already "
-                      "fits the UBE body, so a run skips them (UBE-native "
-                      "scan): " + ", ".join(hidden) + "\n")
+                q.put(select_list_hidden_note(hidden))
             root.after(0, lambda: _populate_mods(items))
 
         threading.Thread(target=work, daemon=True).start()
@@ -2115,6 +2138,7 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
     _topbar.pack(fill="x")
     refresh_btn = ttk.Button(_topbar, text="Refresh mod list", command=_refresh_mods)
     refresh_btn.pack(side="left", padx=4, pady=4)
+    _Tooltip(refresh_btn, SELECT_LIST_BODIES_NOTE)      # #select-list-bodies
     all_btn = ttk.Button(_topbar, text="All", width=4, command=lambda: _set_all(True))
     all_btn.pack(side="left")
     none_btn = ttk.Button(_topbar, text="None", width=5, command=lambda: _set_all(False))

@@ -7507,8 +7507,8 @@ PAIRS = (
     Pair('SEV-d', "the window's child reads the file again",
          edits=(
              ('src/gui_settings.py',
-              '    if env.get(APPLIED_MARKER, "").strip():\n',
-              '    if False:  # MUTATED\n', 1),
+              '    if by:\n        _HEADLESS_REPORT = {"by": by}\n',
+              '    if False:  # MUTATED\n        _HEADLESS_REPORT = {"by": by}\n', 1),
          ),
          tests=('tests/test_settings_everywhere.py',),
          expect=('test_the_windows_child_does_not_read_the_file_again',),
@@ -7740,16 +7740,18 @@ PAIRS = (
          tests=('tests/test_cli_gui_lows.py',),
          expect=('test_a_folder_that_cannot_take_a_file_says_why',),
     ),
+    # Re-pointed 2026-09-25 (#gui-wiring): the bug lived in the window's run
+    # worker, which released the tee before each run; the Pair used to put the
+    # call into prepare_child_log, where it never was.
     Pair('LOW-s', "the window's session log is released before a run",
          edits=(
              ('src/gui.py',
-              '    log_dir = Path(log_dir)\n    name, rotate = run_log_plan(dry_run)\n',
-              '    log_dir = Path(log_dir)\n'
-              '    getattr(sys.modules.get("__main__"), "release_log_tee", lambda: None)()  # MUTATED\n'
-              '    name, rotate = run_log_plan(dry_run)\n', 1),
+              '            log_path, fail_path = prepare_child_log(tool_folder(), dry_run)\n',
+              '            getattr(sys.modules.get("__main__"), "release_log_tee", lambda: None)()  # MUTATED\n'
+              '            log_path, fail_path = prepare_child_log(tool_folder(), dry_run)\n', 1),
          ),
-         tests=('tests/test_cli_gui_lows.py',),
-         expect=('test_the_windows_session_log_survives_a_run',),
+         tests=('tests/test_gui_wiring.py',),
+         expect=('test_a_run_from_the_window_leaves_the_session_log_open',),
     ),
     Pair('LOW-t', 'a window callback error goes nowhere',
          edits=(
@@ -7817,5 +7819,262 @@ PAIRS = (
          ),
          tests=('tests/test_cli_gui_lows.py',),
          expect=('test_a_comma_list_on_the_command_line_still_splits',),
+    ),
+    # 2026-09-25, review of the GUI mediums and lows: #gui-wiring -- the Tk
+    # closures themselves, driven through the real window
+    # (tests/test_gui_wiring.py). GRW-a..c are the three reverts the review
+    # made at once with every GUI test still green.
+    Pair('GRW-a', 'Refresh lists without rescan or the UBE-native mark',
+         edits=(
+             ('src/gui.py',
+              'Path(od) if od else None, rescan=True,\n'
+              '                        mark_ube_native=True)',
+              'Path(od) if od else None)  # MUTATED', 1),
+         ),
+         tests=('tests/test_gui_wiring.py',),
+         expect=('test_refresh_reads_the_mods_again',
+                 'test_refresh_leaves_out_what_the_run_drops'),
+    ),
+    Pair('GRW-b', "the window's run worker treats a dry run as a run",
+         edits=(
+             ('src/gui.py',
+              '            log_path, fail_path = prepare_child_log(tool_folder(), dry_run)\n',
+              '            log_path, fail_path = prepare_child_log(tool_folder(), False)  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_gui_wiring.py',),
+         expect=('test_a_dry_run_from_the_window_keeps_the_last_run_log',),
+    ),
+    Pair('GRW-c', "the window's callback error hook is not installed",
+         edits=(
+             ('src/gui.py',
+              '    root.report_callback_exception = tk_error_reporter(q.put)\n',
+              '    pass  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_gui_wiring.py',),
+         expect=('test_a_window_callback_error_reaches_the_log_panel',),
+    ),
+    Pair('GRW-d', 'Refresh mod list runs without the saved settings',
+         edits=(
+             ('src/gui.py',
+              '                with gui_settings.SettingsOverlay(state["settings"]):\n'
+              '                    items = auto_convert.list_convertible_mods(\n',
+              '                with gui_settings.SettingsOverlay({}):  # MUTATED\n'
+              '                    items = auto_convert.list_convertible_mods(\n', 1),
+         ),
+         tests=('tests/test_gui_wiring.py',),
+         expect=('test_refresh_mod_list_runs_under_the_saved_settings',),
+    ),
+    Pair('GRW-e', 'the overlay list runs without the saved settings',
+         edits=(
+             ('src/gui.py',
+              '                with gui_settings.SettingsOverlay(state["settings"]):\n'
+              '                    items = auto_convert.list_overlay_mods()\n',
+              '                with gui_settings.SettingsOverlay({}):  # MUTATED\n'
+              '                    items = auto_convert.list_overlay_mods()\n', 1),
+         ),
+         tests=('tests/test_gui_wiring.py',),
+         expect=('test_the_overlay_list_runs_under_the_saved_settings',),
+    ),
+    Pair('GRW-f', 'the UBE-mesh scan runs without the saved settings',
+         edits=(
+             ('src/gui.py',
+              '                        with gui_settings.SettingsOverlay(state["settings"]):\n'
+              '                            res = auto_convert.scan_ube_native(',
+              '                        with gui_settings.SettingsOverlay({}):  # MUTATED\n'
+              '                            res = auto_convert.scan_ube_native(', 1),
+         ),
+         tests=('tests/test_gui_wiring.py',),
+         expect=('test_the_ube_mesh_scan_runs_under_the_saved_settings',),
+    ),
+    Pair('GRW-g', 'the exclusions lister runs without the saved settings',
+         edits=(
+             ('src/gui.py',
+              '                with gui_settings.SettingsOverlay(state["settings"]):\n'
+              '                    if domain == "armor":\n',
+              '                with gui_settings.SettingsOverlay({}):  # MUTATED\n'
+              '                    if domain == "armor":\n', 1),
+         ),
+         tests=('tests/test_gui_wiring.py',),
+         expect=('test_the_exclusions_listers_run_under_the_saved_settings',),
+    ),
+    Pair('GRW-h', "the diagnostics zip's setup check runs without the saved settings",
+         edits=(
+             ('src/gui.py',
+              '                        with gui_settings.SettingsOverlay(state["settings"]):\n'
+              '                            _pf_text = ',
+              '                        with gui_settings.SettingsOverlay({}):  # MUTATED\n'
+              '                            _pf_text = ', 1),
+         ),
+         tests=('tests/test_gui_wiring.py',),
+         expect=('test_the_diagnostics_zip_checks_the_setup_under_the_saved_settings',),
+    ),
+    Pair('GRW-i', 'the Exclusions list returns the first scan of the session',
+         edits=(
+             ('src/gui.py',
+              '                            rescan=True)          # #mod-scan-rescan\n',
+              '                            )  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_gui_wiring.py',),
+         expect=('test_the_exclusions_list_rescans_too',),
+    ),
+    Pair('GRW-j', 'the Select list leaves mods out without saying so',
+         edits=(
+             ('src/gui.py',
+              '                q.put(select_list_hidden_note(hidden))\n',
+              '                pass  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_gui_wiring.py',),
+         expect=('test_refresh_leaves_out_what_the_run_drops',),
+    ),
+    # #settings-source-line: the window's child is who applied the settings,
+    # not a skipped settings file.
+    Pair('GRF-a', "the window's child is recorded as a skipped settings file",
+         edits=(
+             ('src/gui_settings.py',
+              '        _HEADLESS_REPORT = {"by": by}\n',
+              '        _HEADLESS_REPORT = {"path": "", "status": "ok", "applied": {},  # MUTATED\n'
+              '                            "kept": {}, "skipped": f"already applied by {by}"}\n', 1),
+         ),
+         tests=('tests/test_settings_everywhere.py',),
+         expect=('test_the_run_config_names_the_window_when_the_window_applied_them',
+                 'test_the_windows_child_does_not_read_the_file_again'),
+    ),
+    Pair('GRF-b', 'the log line ignores who applied the settings',
+         edits=(
+             ('src/gui_settings.py',
+              '    if rep.get("by"):                   # the window\'s child #settings-source-line\n',
+              '    if False:  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_settings_everywhere.py',),
+         expect=('test_the_run_config_names_the_window_when_the_window_applied_them',),
+    ),
+    # #fingerprint-skips-plumbing, the rest of the survey.
+    Pair('GRF-c', 'the glow log path invalidates the --incremental cache',
+         edits=(
+             ('src/auto_convert.py',
+              '    "CBBE2UBE_GLOW_LOG": "where the glow diagnostic appends its lines",\n',
+              '    # MUTATED\n', 1),
+         ),
+         tests=('tests/test_cli_gui_lows.py',),
+         expect=('test_a_log_path_or_worker_count_does_not_invalidate_the_cache[CBBE2UBE_GLOW_LOG]',),
+    ),
+    Pair('GRF-d', 'the standoff log path invalidates the --incremental cache',
+         edits=(
+             ('src/auto_convert.py',
+              '    "CBBE2UBE_STANDOFF_LOG": "where the standoff audit\'s JSONL goes",\n',
+              '    # MUTATED\n', 1),
+         ),
+         tests=('tests/test_cli_gui_lows.py',),
+         expect=('test_a_log_path_or_worker_count_does_not_invalidate_the_cache[CBBE2UBE_STANDOFF_LOG]',),
+    ),
+    Pair('GRF-e', 'the worker memory budget invalidates the --incremental cache',
+         edits=(
+             ('src/auto_convert.py',
+              '    "CBBE2UBE_WORKER_MEM_GB": "the memory budget that picks the worker count",\n',
+              '    # MUTATED\n', 1),
+         ),
+         tests=('tests/test_cli_gui_lows.py',),
+         expect=('test_a_log_path_or_worker_count_does_not_invalidate_the_cache[CBBE2UBE_WORKER_MEM_GB]',),
+    ),
+    Pair('GRF-f', 'the overlay thread count invalidates the --incremental cache',
+         edits=(
+             ('src/auto_convert.py',
+              '    "CBBE2UBE_OVERLAY_WORKERS": "the overlay transfer\'s thread count",\n',
+              '    # MUTATED\n', 1),
+         ),
+         tests=('tests/test_cli_gui_lows.py',),
+         expect=('test_a_log_path_or_worker_count_does_not_invalidate_the_cache[CBBE2UBE_OVERLAY_WORKERS]',),
+    ),
+    # #popup-per-kind: a FAILED item worded by what failed.
+    Pair('GRF-g', 'an unsafe plugin is called an unconverted item again',
+         edits=(
+             ('src/failure_summary.py',
+              '        if kind in WRITTEN_BUT_BROKEN:\n',
+              '        if False:  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_popup_per_kind.py',),
+         expect=('test_a_plugin_that_is_unsafe_to_load_is_not_called_unconverted',
+                 'test_each_kind_is_worded_by_itself_beside_a_real_conversion_failure'),
+    ),
+    Pair('GRF-h', 'a written-but-broken kind loses its sentence',
+         edits=(
+             ('src/failure_summary.py',
+              '        parts.append(f"Items marked FAILED: {kind} — {WRITTEN_BUT_BROKEN[kind]}.")\n',
+              '        pass  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_popup_per_kind.py',),
+         expect=('test_a_plugin_that_is_unsafe_to_load_is_not_called_unconverted',
+                 'test_each_kind_is_worded_by_itself_beside_a_real_conversion_failure'),
+    ),
+    Pair('GRF-i', '"everything else converted normally" beside a broken file',
+         edits=(
+             ('src/failure_summary.py',
+              '+ ("" if broken else " Everything else converted normally."))',
+              '+ " Everything else converted normally.")  # MUTATED', 1),
+         ),
+         tests=('tests/test_popup_per_kind.py',),
+         expect=('test_each_kind_is_worded_by_itself_beside_a_real_conversion_failure',),
+    ),
+    Pair('GRF-j', 'the status line says an unsafe plugin did not convert',
+         edits=(
+             ('src/failure_summary.py',
+              '    if not_converted:\n        return (f"Done (exit 0), but {not_converted}',
+              '    if failures:  # MUTATED\n        return (f"Done (exit 0), but {not_converted}', 1),
+         ),
+         tests=('tests/test_popup_per_kind.py',),
+         expect=('test_a_plugin_that_is_unsafe_to_load_is_not_called_unconverted',),
+    ),
+    # #dry-run-copy-mode: the overlays-only Dry run lists for the real mode.
+    Pair('GRF-k', 'the Dry run lists the replace set under Add UBE copy',
+         edits=(
+             ('src/auto_convert.py',
+              '    if getattr(args, "overlay_copy", False):\n',
+              '    if False:  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_dry_run_writes_nothing.py',),
+         expect=('test_a_copy_mode_dry_run_says_what_it_lists_and_what_would_stop_it[no-compiler]',
+                 'test_a_copy_mode_dry_run_says_what_it_lists_and_what_would_stop_it[tools-present]'),
+    ),
+    Pair('GRF-l', 'the copy plan lists a registration whose texture is missing',
+         edits=(
+             ('src/overlay_transfer.py',
+              '            if _copy_call_wanted(slot, rel, regions, skip_male) and srcmap.get(rel):\n',
+              '            if _copy_call_wanted(slot, rel, regions, skip_male):  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_dry_run_writes_nothing.py',),
+         expect=('test_copy_mode_lists_only_the_overlays_a_script_registers',
+                 'test_the_copy_plan_is_what_the_copy_pass_bakes'),
+    ),
+    Pair('GRF-m', 'the Dry run hides a missing tool',
+         edits=(
+             ('src/auto_convert.py',
+              '    if gap:\n        print(f"  !! the real run would SKIP',
+              '    if False:  # MUTATED\n        print(f"  !! the real run would SKIP', 1),
+         ),
+         tests=('tests/test_dry_run_writes_nothing.py',),
+         expect=('test_a_copy_mode_dry_run_says_what_it_lists_and_what_would_stop_it[no-compiler]',
+                 'test_a_replace_mode_dry_run_says_its_mode_and_a_missing_texconv'),
+    ),
+    Pair('GRF-n', 'a missing Papyrus base reads as ready',
+         edits=(
+             ('src/overlay_transfer.py',
+              '    if not (Path(compiler).parent.parent / "Data" / "Scripts.zip").is_file():\n'
+              '        return "Papyrus base',
+              '    if False:  # MUTATED\n'
+              '        return "Papyrus base', 1),
+         ),
+         tests=('tests/test_dry_run_writes_nothing.py',),
+         expect=('test_a_copy_mode_dry_run_says_what_it_lists_and_what_would_stop_it[no-base]',),
+    ),
+    # #select-list-bodies: the list says which bodies it judged with.
+    Pair('GRF-o', 'the Select list note no longer names the body pick',
+         edits=(
+             ('src/gui.py',
+              '            "converter finds on its own; a run judges again with the bodies "\n'
+              '            "you confirm in Reference bodies)\\n")\n',
+              '            "converter finds on its own)\\n")  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_cli_gui_lows.py',),
+         expect=('test_the_select_list_says_which_bodies_it_judged_with',),
     ),
 )

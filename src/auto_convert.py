@@ -527,19 +527,48 @@ _NIF_RELEVANT_ARGS = (
 
 # `CBBE2UBE_*` variables that say HOW the tool is launched, never what a mesh
 # becomes, so the fingerprint leaves them out. #fingerprint-skips-plumbing
-# NO_PAUSE: the exit keypress. RUN_LOG: where the log goes. CONFIG and
-# EXCLUSIONS: where the settings and exclusion files live -- the settings reach
-# a run as their own variables, and exclusions choose mods, which this
-# fingerprint already leaves out (see above). SETTINGS_APPLIED and
-# NO_HEADLESS_SETTINGS: who applied the settings file; the applied values are
-# hashed themselves. A scripted re-run (NO_PAUSE=1) or a pinned log used to
-# reconvert every NIF. The layout overrides (MO2_INI, MODS_ROOT, GAME_DATA,
-# OUT_MOD) stay IN: a different game Data or mods folder can change a mesh.
-_FINGERPRINT_PLUMBING = frozenset((
-    "CBBE2UBE_NO_PAUSE", "CBBE2UBE_RUN_LOG", "CBBE2UBE_CONFIG",
-    "CBBE2UBE_EXCLUSIONS", "CBBE2UBE_SETTINGS_APPLIED",
-    "CBBE2UBE_NO_HEADLESS_SETTINGS",
-))
+# A scripted re-run (NO_PAUSE=1) or a pinned log used to reconvert every NIF.
+#
+# THE SURVEY (2026-09-25, every `CBBE2UBE_*` name read under src/ and the entry
+# point, ~530): each one is PLUMBING -- a launch or UI detail, a log or sink
+# path, a worker count or memory budget, a thread count -- or it is treated as
+# OUTPUT. Only the plumbing below is left out; the reason for each is beside it.
+# Everything else stays hashed, and hashing too much is the safe direction (a
+# needless reconvert, never a stale reuse):
+#   * every tuning knob and NO_* switch: they are the mesh maths.
+#   * the layout (MO2_INI, MODS_ROOT, GAME_DATA, OUT_MOD) and the body and tool
+#     paths (UBE_BODY*, CBBE_BODY*, UBE_TEMPLATE, UBE_OSD, TEXCONV,
+#     PAPYRUS_COMPILER): a different game Data, mods folder or body changes a
+#     mesh.
+#   * the diagnostics switches (DEBUG_*, *_DEBUG, *_TRACE, *_AUDIT, STAGE_DUMP,
+#     FIELD_STATS, NIPPLE_PROBE, BACK_DUMP_DISP, NO_STANDOFF_AUDIT): they run
+#     extra code inside the conversion, and no test proves that code leaves
+#     the NIF bytes alone. RAY_CHUNK (how many rays one numpy batch casts) and
+#     NO_ZEROED_PROBE_MEMO likewise: not proven byte-neutral.
+# WORKER COUNTS: `--workers` was already left out (see above). Output does not
+# depend on the pool size since #pair-unit-dispatch put a weight pair on ONE
+# worker as a unit (the race that made 16 workers differ from 1 on 5 collider
+# shapes); tests/test_pair_unit_dispatch.py pins that contract, and a 16-worker
+# run matched a --workers 1 run byte for byte (296 files, 0 differ; measured
+# 2026-09-06, #pair-unit-dispatch in the testing worklog). WORKER_MEM_GB only
+# changes that count. OVERLAY_WORKERS is the overlay transfer's thread count;
+# each thread writes its own texture and never a NIF.
+_FINGERPRINT_PLUMBING_WHY = {
+    "CBBE2UBE_NO_PAUSE": "the keypress at exit",
+    "CBBE2UBE_RUN_LOG": "where the run log goes",
+    "CBBE2UBE_GLOW_LOG": "where the glow diagnostic appends its lines",
+    "CBBE2UBE_STANDOFF_LOG": "where the standoff audit's JSONL goes",
+    "CBBE2UBE_CONFIG": "where the settings file lives; its values arrive as "
+                       "their own variables, which are hashed",
+    "CBBE2UBE_EXCLUSIONS": "where the exclusions file lives; exclusions choose "
+                           "mods, which this fingerprint leaves out",
+    "CBBE2UBE_SETTINGS_APPLIED": "who applied the settings file",
+    "CBBE2UBE_NO_HEADLESS_SETTINGS": "whether a headless run reads the settings "
+                                     "file; the values it sets are hashed",
+    "CBBE2UBE_WORKER_MEM_GB": "the memory budget that picks the worker count",
+    "CBBE2UBE_OVERLAY_WORKERS": "the overlay transfer's thread count",
+}
+_FINGERPRINT_PLUMBING = frozenset(_FINGERPRINT_PLUMBING_WHY)
 
 
 def _fingerprint_skips_plumbing() -> bool:
@@ -8880,25 +8909,43 @@ def _split_mod_arg(vals, mods_root=None):
 
 def _list_overlays_only(args, output, lay, overlay_transfer) -> int:
     """`auto --overlays-only --list-only`: name the overlays a transfer would
-    remap, per region and per mod, and write nothing. #dry-run-writes-nothing"""
-    print("\n--- OVERLAYS-ONLY (--list-only): overlays that WOULD be remapped "
-          "to UBE UV ---")
-    plan = overlay_transfer.plan_overlays(
-        output, lay,
-        skip_male=getattr(args, "overlay_skip_male", False),
-        only_mods=_split_mod_arg(getattr(args, "overlay_mods", None)),
-        exclude_mods=_split_mod_arg(getattr(args, "overlay_exclude_mods", None)))
+    remap, per region and per mod, and write nothing. #dry-run-writes-nothing
+
+    For the mode the real run would use, and saying so (#dry-run-copy-mode):
+    under --overlay-copy only the overlays a RaceMenu paint script registers
+    get a copy, and a missing tool skips the whole real run -- the list used
+    to show the replace mode's set either way."""
+    kw = dict(skip_male=getattr(args, "overlay_skip_male", False),
+              only_mods=_split_mod_arg(getattr(args, "overlay_mods", None)),
+              exclude_mods=_split_mod_arg(getattr(args, "overlay_exclude_mods", None)))
+    if getattr(args, "overlay_copy", False):
+        print("\n--- OVERLAYS-ONLY (--list-only, 'Add UBE copy' mode): overlays "
+              "that WOULD get a UBE copy ---")
+        print("  copy mode bakes only overlays a RaceMenu paint script "
+              "registers; every original stays as it is")
+        plan = overlay_transfer.plan_overlay_copies(output, lay, **kw)
+        gap = overlay_transfer.copy_mode_tool_gap()
+    else:
+        print("\n--- OVERLAYS-ONLY (--list-only, replace mode): overlays that "
+              "WOULD be remapped to UBE UV ---")
+        plan = overlay_transfer.plan_overlays(output, lay, **kw)
+        gap = overlay_transfer.replace_mode_tool_gap()
     total = 0
     mods: "dict[str, int]" = {}
     for region, items in plan.items():
         print(f"  {region}: {len(items)} overlay(s)")
         total += len(items)
         for src in items.values():
-            mod = (src[-1] if isinstance(src, (tuple, list)) and len(src) >= 3
-                   else "?")
+            if isinstance(src, str):                 # copy plan: the mod itself
+                mod = src
+            else:
+                mod = (src[-1] if isinstance(src, (tuple, list)) and len(src) >= 3
+                       else "?")
             mods[mod] = mods.get(mod, 0) + 1
     for mod, n in mods.items():
         print(f"    {mod}  ({n})")
+    if gap:
+        print(f"  !! the real run would SKIP every overlay above: {gap}")
     print(f"\n--list-only: {total} overlay(s) listed; nothing was written.")
     return 0
 

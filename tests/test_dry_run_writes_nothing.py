@@ -110,3 +110,106 @@ def test_the_planner_skips_our_own_output_mod(tmp_path, monkeypatch):
                         seen.update(skip=set(skip_mods)) or {})
     ot.plan_overlays(mods / "CBBEtoUBE Auto", None, exclude_mods=["Gone"])
     assert seen["skip"] == {"CBBEtoUBE Auto", "Gone"}, seen
+
+
+# --- #dry-run-copy-mode: the list is for the mode the real run would use ----------
+
+_OV = "textures/actors/character/overlays/inkset"
+
+
+def _paint_modlist(tmp_path, monkeypatch, *, compiler=False, base=False,
+                   texconv=True):
+    """One overlay mod on disk: a texture a RaceMenu script registers, one it
+    does not, and a registration whose texture is missing. The tools the copy
+    mode needs are present or not as asked."""
+    mods = tmp_path / "mods"
+    ink = mods / "InkMod"
+    (ink / _OV).mkdir(parents=True)
+    for name in ("registered.dds", "unregistered.dds"):
+        (ink / _OV / name).write_bytes(b"DDS ")
+    (ink / "Scripts" / "Source").mkdir(parents=True)
+    (ink / "Scripts" / "Source" / "InkSetMenu.psc").write_text(
+        'Event OnInit()\n'
+        '  AddBodyPaint("Ink", "Actors\\\\Character\\\\Overlays\\\\inkset\\\\registered.dds")\n'
+        '  AddBodyPaint("Gone", "Actors\\\\Character\\\\Overlays\\\\inkset\\\\missing.dds")\n'
+        'EndEvent\n', encoding="utf-8")
+    for var in ("CBBE2UBE_MO2_INI", "CBBE2UBE_GAME_DATA"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("CBBE2UBE_MODS_ROOT", str(mods))
+    monkeypatch.setattr(ac.paths, "enabled_mods", lambda lay: None)
+    monkeypatch.setattr(ac.paths, "enabled_mods_ordered", lambda lay: None)
+    tool = tmp_path / "tools" / "texconv.exe"
+    tool.parent.mkdir()
+    tool.write_bytes(b"")
+    pc = tmp_path / "game" / "Papyrus Compiler" / "PapyrusCompiler.exe"
+    pc.parent.mkdir(parents=True)
+    pc.write_bytes(b"")
+    if base:
+        (tmp_path / "game" / "Data").mkdir()
+        (tmp_path / "game" / "Data" / "Scripts.zip").write_bytes(b"")
+    monkeypatch.setattr(ot, "find_texconv", lambda: tool if texconv else None)
+    monkeypatch.setattr(ot, "find_papyrus_compiler", lambda: pc if compiler else None)
+    writes = []
+    monkeypatch.setattr(ot, "convert_overlays",
+                        lambda *a, **k: writes.append("overlays") or {"converted": 1})
+    return mods, writes
+
+
+def test_copy_mode_lists_only_the_overlays_a_script_registers(tmp_path, monkeypatch):
+    mods, _w = _paint_modlist(tmp_path, monkeypatch)
+    plan = ot.plan_overlay_copies(mods / "CBBEtoUBE Auto", None)
+    assert plan["body"] == {f"{_OV}/registered.dds": "InkMod"}, plan
+    assert plan["hands"] == {} and plan["feet"] == {}, plan
+
+
+def test_the_copy_plan_is_what_the_copy_pass_bakes(tmp_path, monkeypatch):
+    """The drift guard: the real 'Add UBE copy' pass, with its tools stubbed
+    present, bakes exactly the set the dry run lists."""
+    import numpy as np
+    mods, _w = _paint_modlist(tmp_path, monkeypatch, compiler=True, base=True)
+    baked = []
+    work = tmp_path / "work"
+    work.mkdir()
+    monkeypatch.setattr(ot, "_assemble_papyrus_imports", lambda c, w: (work, work))
+    monkeypatch.setattr(ot, "build_region_correspondence", lambda region: object())
+    monkeypatch.setattr(ot, "dds_to_rgba", lambda *a: np.zeros((1, 1, 4), np.uint8))
+    monkeypatch.setattr(ot, "transfer_overlay", lambda rgba, corr: rgba)
+    monkeypatch.setattr(ot, "rgba_to_dds", lambda rgba, outp, *a: baked.append(outp))
+    monkeypatch.setattr(ot, "_compile_psc", lambda *a: (None, ""))
+    out = mods / "CBBEtoUBE Auto"
+    ot.add_ube_overlay_copies(None, out, tmp_path / "tools" / "texconv.exe",
+                              log=lambda *_a: None)
+    plan = ot.plan_overlay_copies(out, None)
+    assert len(baked) == sum(len(v) for v in plan.values()) == 1, (baked, plan)
+
+
+@pytest.mark.parametrize("compiler,base,gap", [
+    (False, False, "PapyrusCompiler.exe not found"),
+    (True, False, "Papyrus base (Scripts.zip) not found"),
+    (True, True, None),
+], ids=["no-compiler", "no-base", "tools-present"])
+def test_a_copy_mode_dry_run_says_what_it_lists_and_what_would_stop_it(
+        tmp_path, monkeypatch, capsys, compiler, base, gap):
+    mods, writes = _paint_modlist(tmp_path, monkeypatch, compiler=compiler, base=base)
+    rc = ac.main(["auto", "-o", str(mods / "CBBEtoUBE Auto"), "--overlays-only",
+                  "--list-only", "--overlay-copy"])
+    log = capsys.readouterr().out
+    assert rc == 0 and writes == [], log
+    assert "'Add UBE copy' mode" in log, log
+    assert "body: 1 overlay(s)" in log and "InkMod  (1)" in log, log
+    assert "1 overlay(s) listed; nothing was written" in log, log
+    if gap:
+        assert f"the real run would SKIP every overlay above: {gap}" in log, log
+    else:
+        assert "would SKIP" not in log, log
+
+
+def test_a_replace_mode_dry_run_says_its_mode_and_a_missing_texconv(
+        tmp_path, monkeypatch, capsys):
+    mods, writes = _paint_modlist(tmp_path, monkeypatch, texconv=False)
+    rc = ac.main(["auto", "-o", str(mods / "CBBEtoUBE Auto"), "--overlays-only",
+                  "--list-only"])
+    log = capsys.readouterr().out
+    assert rc == 0 and writes == [], log
+    assert "replace mode" in log, log
+    assert "would SKIP every overlay above: texconv not found" in log, log

@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+### Fixed — a run from the window no longer says your settings were "NOT applied"
+
+Every conversion started from the window logged "effective settings: settings
+file NOT applied (already applied by the settings window)", although your
+settings had reached the run. It now says "effective settings: from the
+settings window". "NOT applied" still appears when the settings file really was
+not used (switched off, missing or damaged).
+
+### Fixed — the list after a run says what is wrong with a file that was written
+
+The list that opens after a run called every failed item "did NOT convert —
+keeps its previous state". For a combined plugin that was built but is not safe
+to load, or a mesh that was written but can crash the game, that was wrong. Such
+items now say what was written and what is wrong with it, and the title counts
+them as problems in what was written.
+
+### Fixed — "Dry run" with "Add UBE copy" lists the overlays that would get a copy
+
+With overlays only and "Add UBE copy" chosen, the Dry run listed every overlay,
+including ones copy mode never touches (only overlays a RaceMenu script
+registers get a copy). It now lists those, says which mode the list is for, and
+says when a missing tool (texconv, the Papyrus compiler or its Scripts.zip)
+would make the real run skip every overlay.
+
 ### Fixed — a mistyped "Worker processes" no longer freezes the window
 
 Clearing the Worker processes box (or typing letters) and pressing Convert left
@@ -19,7 +43,9 @@ writes `CBBEtoUBE_cli.log` and leaves the run log and its list of problems alone
 A mod whose armour already fits UBE is skipped by every run, but the Select list
 still offered it, and ticking it ended the run with "NOT FOUND". The list now
 leaves such mods out and names them in the log below it; if you ask for one
-with `--only-mods`, the log says why it was skipped.
+with `--only-mods`, the log says why it was skipped. The list judges with the
+bodies the Reference bodies dialog starts on; if you pick other bodies there,
+the run judges again with those, and the button's tooltip says so.
 
 ### Fixed — "Refresh mod list" sees mods you changed while the window was open
 
@@ -43,8 +69,9 @@ error in the window is shown in the log panel too.
 ### Fixed — `--incremental` no longer reconverts everything over how it was launched
 
 Re-running with `--incremental` from a script instead of a console (or with the
-log pinned elsewhere) reconverted every mesh, because launch details counted as
-settings. They no longer do; a real setting change still reconverts.
+log pinned elsewhere, or with fewer workers after a memory error) reconverted
+every mesh, because launch details counted as settings. They no longer do; a
+real setting change still reconverts.
 `CBBE2UBE_NO_FINGERPRINT_SKIPS_PLUMBING=1` (set to 1) counts them again.
 
 ### Fixed — a mod whose folder name has a comma can be excluded or picked

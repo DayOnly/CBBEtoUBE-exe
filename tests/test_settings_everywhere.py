@@ -140,9 +140,10 @@ def test_the_windows_child_does_not_read_the_file_again(env):
     newer than the file; the child must not lay the file over it."""
     child = gui.child_env({**gs.defaults()}, {}, "run.log", base_env=dict(env))
     assert not any(k in child for k in _recipe_env()), "the window holds defaults"
+    before = dict(child)
     rep = gs.apply_saved_settings(environ=child)
-    assert rep["applied"] == {} and rep["skipped"].startswith("already applied by")
-    assert not any(k in child for k in _recipe_env())
+    assert rep == {"by": "the settings window"}, rep
+    assert child == before, "the child laid the file over what the window applied"
 
 
 # --- helpers in the window --------------------------------------------------------------
@@ -201,8 +202,27 @@ def test_overlapping_helpers_keep_the_overlay_until_the_last_one_leaves(env):
     assert "CBBE2UBE_NO_VANILLA_SWEEP" not in env
 
 
-def test_the_run_config_names_the_window_when_the_window_applied_them(env):
-    env[gs.APPLIED_MARKER] = "the settings window"
+def test_the_run_config_names_the_window_when_the_window_applied_them(env, monkeypatch):
+    """#settings-source-line. The REAL path of a window run: the child's
+    environment is what `child_env` builds, and the child goes through the
+    entry point's `_apply_saved_settings` like every `auto`. It logged
+    "settings file NOT applied (already applied by the settings window)" on
+    every window run; the old version of this test hid that by forcing the
+    report back to None after the apply."""
+    child = gui.child_env({**gs.defaults(), **RECIPE}, {}, "run.log",
+                          base_env=dict(env))
+    monkeypatch.setattr(os, "environ", child)
+    _entry_module()._apply_saved_settings(["auto", "--workers", "2"])
+    line = gs.settings_source_line()
+    assert line == "  effective settings: from the settings window", line
     assert bi.run_config()["settings_applied"] == {"by": "the settings window"}
-    assert gs.settings_source_line() == "  effective settings: from the settings window"
     json.dumps(bi.run_config(), default=str)
+
+
+def test_a_file_that_was_really_skipped_still_says_not_applied(env):
+    """The control: 'NOT applied' stays for a file that genuinely was not."""
+    Path(env["CBBE2UBE_CONFIG"]).write_text('{"conform_to_body": fa', encoding="utf-8")
+    _entry_module()._apply_saved_settings(["auto"])
+    line = gs.settings_source_line()
+    assert "settings file NOT applied (settings file malformed)" in line, line
+    assert bi.run_config()["settings_applied"]["skipped"] == "settings file malformed"
