@@ -1320,7 +1320,16 @@ two in scan order (one repeated record). One more plugin to enable is a worse co
 a few duplicate records, so both fills are computed and the grouped one is kept only
 when it needs no more pieces than the scan-order fill; otherwise the scan-order fill is
 used unchanged, duplicates and all. Duplicates are dropped only when that costs no
-extra piece. A tie keeps the grouping (same pieces, fewer records). A finer rule --
+extra piece. At the same number of pieces the fill that mints fewer records wins: a
+group over the cap is split in scan order inside the grouped fill, and that split can
+repeat MORE armatures than the plain scan-order fill does (cap 4: [2,11], [10], [1,6],
+[3,6,11] mints 8 records grouped against 7 in scan order, 2 pieces each). A full tie
+(same pieces, same records) keeps the grouping. The guarantee covers the COVERAGE
+pieces only: the merge's own first-fit-decreasing packing of those pieces with the
+other patches into Combined pieces is a separate step and can, near the limit, need a
+Combined piece more than it did with the scan-order fill (review probe: cap 5, a
+3-record patch plus [2,8,10], [4,11], [1,11] packs into 3 Combined pieces against 2).
+Live the Combined stays 2 pieces either way. A finer rule --
 split only the group that straddles the boundary -- was not taken: it would keep some
 of the savings only in the case where whole groups lose, it is more code with its own
 piece-count proof to carry, and the live load order never reaches that case (2 non-body

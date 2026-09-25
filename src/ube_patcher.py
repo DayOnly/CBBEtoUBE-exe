@@ -4354,17 +4354,28 @@ def _chunk_targets_for_esl(targets, mint_rec, cap: int) -> "list[list]":
     becomes its own over-cap chunk -- it cannot be split without breaking the
     invariant above, and the caller downgrades just that piece.
 
-    The grouped fill never costs a piece: when it needs more chunks than the
-    scan-order fill (whole groups leave a piece short that the scan-order fill
-    tops up across a group), the scan-order fill is returned instead. A tie keeps
-    the grouped fill -- same pieces, fewer records."""
+    The grouped fill never costs a piece or a record: when it needs more chunks
+    than the scan-order fill (whole groups leave a piece short that the
+    scan-order fill tops up across a group), the scan-order fill is returned
+    instead. At the same number of chunks the fill minting fewer records wins;
+    a group over `cap` can make the grouped fill mint MORE, and then the
+    scan-order fill is kept. A full tie keeps the grouped fill."""
     scan = _chunk_targets_in_scan_order(targets, mint_rec, cap)
     if not _esl_chunk_dedup():
         return scan
     grouped = _chunk_targets_grouped(targets, mint_rec, cap)
-    if len(grouped) > len(scan):
+    if (len(grouped), _chunk_record_count(grouped, mint_rec)) > (
+            len(scan), _chunk_record_count(scan, mint_rec)):
         return scan
     return grouped
+
+
+def _chunk_record_count(chunks, mint_rec) -> int:
+    """Armature records a chunking mints: each chunk mints every distinct
+    armature its targets add, so an armature shared across chunks counts once
+    per chunk."""
+    return sum(len({a for _armo, _plugin, to_mint in chunk
+                    for a in to_mint if a in mint_rec}) for chunk in chunks)
 
 
 def _chunk_targets_grouped(targets, mint_rec, cap: int) -> "list[list]":

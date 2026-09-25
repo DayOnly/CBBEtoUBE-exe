@@ -160,6 +160,33 @@ def test_same_pieces_as_the_scan_order_fill_keep_the_grouping(monkeypatch):
     assert _repeats(chunks, mint) == 0
 
 
+def test_same_pieces_but_more_records_keep_the_scan_order_fill(monkeypatch):
+    """cap 4: armours 1 and 3 share armature 11, and 2 and 3 share 6, so 1, 2 and
+    3 form one group of 6 armatures -- over the cap, so it is split in scan order
+    anyway. Both fills need the same number of pieces, but the grouped one mints
+    more records than the scan-order one. Fewer records wins the tie."""
+    targets = [_t(0, [2, 11]), _t(1, [10]), _t(2, [1, 6]), _t(3, [3, 6, 11])]
+    mint = _mint(targets)
+    scan = _scan_order(monkeypatch, targets, mint, 4)
+    grouped = up._chunk_targets_grouped(targets, mint, 4)
+    assert len(grouped) == len(scan)
+    assert (up._chunk_record_count(grouped, mint)
+            > up._chunk_record_count(scan, mint))
+    assert _chunk_targets_for_esl(targets, mint, cap=4) == scan
+
+
+def test_a_full_tie_keeps_the_grouping(monkeypatch):
+    """cap 5, nothing shared: armours mint 3, 3 and 2 armatures. The scan-order
+    fill puts the third with the second; first-fit puts it with the first. Same
+    pieces, same records: the grouped fill is kept."""
+    targets = [_t(0, [1, 2, 3]), _t(1, [4, 5, 6]), _t(2, [7, 8])]
+    mint = _mint(targets)
+    scan = _scan_order(monkeypatch, targets, mint, 5)
+    assert [[a[1] for a, _p, _tm in c] for c in scan] == [[0x1000], [0x1001, 0x1002]]
+    chunks = _chunk_targets_for_esl(targets, mint, cap=5)
+    assert [[a[1] for a, _p, _tm in c] for c in chunks] == [[0x1000, 0x1002], [0x1001]]
+
+
 def test_armours_keep_scan_order_inside_a_piece():
     """A run that fits one piece mints its records in the order it always has."""
     targets = [_t(0, [1]), _t(1, [2]), _t(2, [1]), _t(3, [3]), _t(4, [2])]
