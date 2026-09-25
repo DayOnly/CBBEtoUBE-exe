@@ -72,7 +72,11 @@ success, failure and Ctrl+C. The price is memory: each shard runs pytest, and
 every pytest process that imports the converter commits the ~1.5 GB BLAS arena,
 so six shards commit about 9 GB at once -- check the page file before raising N
 (`CONTRIBUTING.md`). MEASURED 2026-09-24 with the same split made by hand: 674
-pairs in 6 shards took 1098 s, against about 2650 s in one run.
+pairs in 6 shards took 1098 s, against about 2650 s in one run. MEASURED
+2026-09-25 with `--jobs 6`: 769 pairs, all CAUGHT, in 3549 s on a machine held
+at 100% CPU by other work; the six shards spent about 20,500 s between them, a
+third of it in their own baselines and controls, because round-robin gives
+every shard nearly every test file.
 
 ## The golden check, on the maintainer machine
 
