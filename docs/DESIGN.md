@@ -1709,6 +1709,35 @@ reported through `_report_coverage_holds`:
   listed the mannequin race. Nested, with its own switch:
   `CBBE2UBE_NO_COVERAGE_BEAST_VARIANT=1` turns the whole rule off, which is not
   the parent's output. `CBBE2UBE_NO_BEAST_VARIANT_NON_ACTOR=1`.
+- **Per-race siblings draw only for their own races** (`#coverage-race-subset`).
+  The generalisation of the beast rule to human races. Authors split one piece
+  into DefaultRace-primary armatures on the same slots by race: the human races,
+  Orc only, the three elves, or a mod's own race only. By the same model (an
+  actor matches an armature only through a race it lists) each vanilla race
+  draws one of them, but both passes minted each for all 16 UBE races, so a UBE
+  actor drew all of them at once. `_race_subset_split` groups an armour's
+  DefaultRace armatures to mint by overlapping slots (their BOD2, else the
+  armour's) and changes a group only when it has two or more members and one
+  lists a vanilla human race. A member listing only non-human races that are not
+  beast races is not minted. When the human-listing members' UBE counterparts
+  (`_ube_races_for_race_list`) are pairwise disjoint and not all 16, each member
+  is minted for its own. The races no member claims go to the members that list
+  no race (the DefaultRace default), else to every human-listing member (what
+  they draw today), so no UBE race loses its draw. Overlapping lists are layered
+  pieces the base game draws together, and are unchanged (a near-full robe list
+  missing one vampire race beside a full one, live). So are a lone armature, a
+  beast-only member (left to #coverage-beast-variant) and an armour where the
+  race-list rule or #coverage-third-party-drawn chose the races. A minted
+  armature is one record shared by every armour that lists it, so
+  `_RaceSubset` targets the union, and all 16 as soon as one armour mints it
+  unsplit. Live census (both passes, every armour with two or more minted links):
+  19 same-slot groups; 11 layered with full lists (unchanged), 1 near-full plus
+  full (unchanged), 6 disjoint per-race splits (circlets split humans/Orc/elves
+  on 4 armours, a helmet split 14 races + Orc, 2 mesh-less FX-slot armatures
+  split humans/Orc+beasts, whose elves stay on both) and 1 robe with a sibling
+  for a mod's own race. Replay: 7 armours, 9835 -> 9834 links (that robe
+  sibling), 15 links narrowed, 0 re-pointed; every (armour, UBE race) that drew
+  before still draws. `CBBE2UBE_NO_COVERAGE_RACE_SUBSET=1`.
 - **A body armour's hood rides with it** (`#coverage-body-accessory`). The body
   pass kept only armatures with a converted mesh or a hands/feet slot; the
   non-body pass skips any armour with a deforming slot. A robe's hood armature

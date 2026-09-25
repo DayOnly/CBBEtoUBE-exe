@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Fixed — an item with a separate version per race no longer draws every version at once on UBE actors
+
+Some items carry one version for humans, another for Orcs and another for elves
+(a circlet reshaped around elf ears), or an extra version made only for a mod's
+own race. Each character in the base game wears only the version for their race,
+but this tool gave every version to every UBE actor, so they drew two identical
+circlets plus the elf one, the same helmet twice, or a second robe. Now each
+version is drawn only on the UBE versions of the races it was made for, and a
+version made only for a mod's own race is left off. Pieces the base game draws
+together (two robe layers listed for the same races) are unchanged, and every
+UBE race still draws the item. Measured on the reported modlist: 7 items, one
+extra robe left off and 15 versions narrowed to their own races.
+`CBBE2UBE_NO_COVERAGE_RACE_SUBSET=1` (set to 1) turns it off.
+
 ### Fixed — a garment whose layers share one name keeps every layer
 
 Some garments are built from several layers the author gave the same name, for
