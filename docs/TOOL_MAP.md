@@ -309,6 +309,7 @@ Only tools whose docstring carries a `python ...` line. A tool missing from this
   - `python scripts/golden_output.py capture      # record the baseline`
   - `python scripts/golden_output.py check        # re-convert and diff`
   - `python scripts/golden_output.py check --tol 0.001`
+  - `python scripts/golden_output.py check --jobs 5   # pieces in 5 worker processes`
 - `scripts/mutation_gate.py`
   - `python scripts/mutation_gate.py run [--only ID ...] [--json OUT] [--keep]`
   - `python scripts/mutation_gate.py list`
