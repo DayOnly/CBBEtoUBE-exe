@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### Fixed — a hooded robe no longer gives UBE actors a second hood
+
+A robe's hood is drawn on UBE actors along with the robe. That rule also took
+two kinds of hood it should have left alone. The first is a Khajiit or Argonian
+version of the hood: UBE actors drew it on top of the human hood.
+`CBBE2UBE_NO_COVERAGE_BEAST_VARIANT` did not turn this off, although it does for
+every other item. The second is a hood already made for UBE: the tool added its
+own UBE copy over it. Both are now left out of the hood rule, and
+`CBBE2UBE_NO_COVERAGE_BEAST_VARIANT` works for hoods too. Measured on the
+reported modlist: none of the 26 hoods and hats this rule adds there is either
+kind, so nothing changes there today.
+`CBBE2UBE_NO_ACCESSORY_RACE_GUARD=1` (set to 1) turns it off.
+
 ### Fixed — a hand-made UBE mesh is linked at the path where the game finds it
 
 Some mods write an armour's model path with the `meshes\` folder at the front.

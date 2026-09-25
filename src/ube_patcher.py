@@ -630,6 +630,23 @@ def _coverage_body_accessory() -> bool:
     return not _flag("CBBE2UBE_NO_COVERAGE_BODY_ACCESSORY", False)
 
 
+def _accessory_race_guard() -> bool:
+    r"""#accessory-race-guard (2026-09-24): does #coverage-body-accessory leave
+    out the armatures the other race rules leave out? Yes, by default.
+
+    The accessory list was built after #coverage-beast-variant took a beast-only
+    variant out of the body pass, and asked only for DefaultRace and its own
+    non-deforming slots. So a Khajiit hood variant on a hooded robe came back as
+    an accessory and a UBE actor drew both hoods -- the double draw the beast
+    rule exists to stop, and CBBE2UBE_NO_COVERAGE_BEAST_VARIANT had no effect on
+    it. An armature that already names a UBE race (someone's UBE hood) got a
+    second UBE copy drawn over it; the race-list rule and the non-body pass both
+    refuse that. With this on, the accessory list skips both; the beast half
+    still follows the beast switch. CBBE2UBE_NO_ACCESSORY_RACE_GUARD=1 takes
+    them again."""
+    return not _flag("CBBE2UBE_NO_ACCESSORY_RACE_GUARD", False)
+
+
 def _coverage_human_race_list() -> bool:
     r"""#coverage-human-race-list (2026-09-24): does an armour whose only
     human-drawing armature has a primary race other than DefaultRace get a UBE
@@ -4155,6 +4172,7 @@ def generate_modded_body_ube_coverage_patch(
     _beast = _coverage_beast_variant()
     accessory_added: list = []  # non-deforming armatures of a body armour (#coverage-body-accessory)
     _body_accessory = _coverage_body_accessory()
+    _acc_guard = _accessory_race_guard()
     _race_list = _coverage_human_race_list()
     skins: set = set()         # any RACE/NPC_ WNAM (#coverage-human-race-list)
     race_list_ube: dict = {}   # arma_abs -> UBE races it targets (same)
@@ -4474,12 +4492,16 @@ def generate_modded_body_ube_coverage_patch(
         # else ever covers it. Its own BOD2 must name slots, none deforming, and
         # it must never have been a conversion candidate (a body-fitted cape that
         # was not converted would draw its CBBE fit on the UBE body).
+        # #accessory-race-guard: never a beast variant the rule above skipped,
+        # nor an armature that already names a UBE race -- a second UBE copy
+        # would draw over it. The non-body pass takes neither.
         if _body_accessory and to_mint:
             _acc = [x for x, v in winning
                     if x not in to_mint and v[3] == DEFAULT_RACE
                     and _arma_bod2_slots(v[0])
                     and not (_arma_bod2_slots(v[0]) & _accessory_excluded_bits)
-                    and not _cloak_named(v[0])]
+                    and not _cloak_named(v[0])
+                    and not (_acc_guard and (x in _bv or v[4]))]
             if _acc:
                 to_mint = to_mint + _acc
                 for x in _acc:

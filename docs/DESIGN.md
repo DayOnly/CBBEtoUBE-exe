@@ -1217,6 +1217,17 @@ reported through `_report_coverage_holds`:
   109 armours added, 0 removed, 0 re-pointed, 26 armatures (hoods and hats, plus
   helmets and costume heads built into body armour; a body-fitted cape stays out).
   `CBBE2UBE_NO_COVERAGE_BODY_ACCESSORY=1`.
+- **A riding hood obeys the race rules** (`#accessory-race-guard`). The
+  accessory list above was built after the beast rule took its variants out of
+  `to_mint`, and tested only DefaultRace and slots, so a beast-only hood variant
+  came back as an accessory (two hoods on a UBE actor; the beast switch had no
+  effect on it) and a hood already naming a UBE race got a second UBE copy over
+  it. The list now skips the pass's own `_bv` (so
+  `CBBE2UBE_NO_COVERAGE_BEAST_VARIANT=1` still brings the variant back) and any
+  armature with a UBE race (`v[4]`), as the non-body pass and the race-list rule
+  already do. The non-body pass had neither gap: it drops `_bv` and skips an
+  armour with any UBE armature. Live: 0 of the 26 accessory armatures is either,
+  so the output is unchanged today. `CBBE2UBE_NO_ACCESSORY_RACE_GUARD=1`.
 - **An armature whose primary race is not DefaultRace** (`#coverage-human-race-list`).
   Both passes minted only DefaultRace-primary armatures. An armature re-authored
   with an Argonian or a custom primary that lists the human and mer races as
