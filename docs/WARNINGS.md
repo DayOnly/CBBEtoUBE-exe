@@ -6,7 +6,7 @@ current. A `!!` line is a problem; a `NOTE:` line is information. Each entry
 gives the line as it appears in the run log (`…` stands for the value printed
 at run time), what it means for the run, and what to do next.
 
-**78** problem warnings and **6** notes.
+**80** problem warnings and **6** notes.
 
 ## src/auto_convert.py
 
@@ -179,6 +179,10 @@ at run time), what it means for the run, and what to do next.
   - means: the archive entry points outside the extraction folder and was skipped
 - `!! could not read which armour NPCs wear (…)`
   - means: non-playable armour that female NPCs wear is not converted, and the coverage race-list rule does not link it, this run
+- `!! … active plugin(s) could not be read for armour playability: …`
+  - means: an armour those plugins override keeps the playable flag of the record before them
+- `!! could not read which armour the load order makes playable (…)`
+  - means: each plugin's own record decides whether its armour is playable, as before this rule, this run
 - `!! vanilla sweep DISABLED this run: …`
   - means: vanilla armour that no mod overrides stays unlinked, so it is invisible on UBE actors until a run with the sweep
 - `!! overlay transfer FAILED: …`

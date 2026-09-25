@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+### Changed — whether you can wear an item is read from the plugin the game uses
+
+The tool does not convert an item the player cannot equip (the game's
+"non-playable" flag), unless a female NPC wears it: those are mostly effects
+and gore that the game applies, not outfits. It read that flag from each mod's
+own plugin. When a later plugin in your load order changes it, such as a
+balance or overhaul patch that takes a set out of the game or a patch that
+makes a hidden item wearable, the game follows the later plugin and the tool
+did not. It now reads the flag from the last plugin in your load order that
+changes the item, the one the game uses. On the reported modlist that stops
+converting 27 meshes (43 files) of items a later patch made unwearable and no
+female NPC wears: the pieces of one fur armour set, one follower's outfits, a
+clothing set, first-person models of a few robes, and the boots another
+follower's outfit borrowed. Three mods had nothing
+else to convert and are no longer converted at all. One more mesh is
+converted, an effect outfit a later plugin made wearable. Items a female NPC
+wears are still converted either way. Meshes an earlier run already converted
+stay in the output folder and are still used. If the tool cannot read your
+load order, each mod's own plugin decides, as before, and the run warns.
+`CBBE2UBE_NO_SELECTION_WINNER_PLAYABLE=1` (set to 1) turns it off.
+
 ### Changed — items whose meshes are not installed get no UBE link
 
 Some items name meshes that exist nowhere in the modlist (a mod whose mesh

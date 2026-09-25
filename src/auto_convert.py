@@ -1835,6 +1835,11 @@ def auto_convert_mod(
     # it is converted like playable armour. None => non-playable armour is never
     # converted (the old rule). #npc-worn-nonplayable
     npc_worn_armos: "frozenset[tuple[str, int]] | None" = None,
+    # Is an armour's WINNING record non-playable (or deleted)? Same identity,
+    # from `_batch_armo_winner_nonplayable`, built ONCE by the caller. Replaces
+    # each scanned record's own playable flag. None => the record's own flag
+    # (the old rule). #selection-winner-playable
+    armo_winner_nonplayable: "dict[tuple[str, int], bool] | None" = None,
     # Which THIRD-PARTY mod ships a built UBE mesh at `meshes\!UBE\<path>`
     # (`_third_party_ube_twin_lookup`, built once by the caller). A mesh another
     # mod already built for UBE is left to it, and an earlier run's copy is moved
@@ -1950,6 +1955,7 @@ def auto_convert_mod(
         source_dir, include_candidate_slots=True,
         mesh_resolves=_female_mesh_resolves,
         ube_covered_armos=ube_covered_armos,
+        armo_winner_nonplayable=armo_winner_nonplayable,
         npc_worn_armos=npc_worn_armos, worn_admitted=_worn_admitted)
     if _worn_admitted:
         # Say so: these pieces used to be skipped in silence. #npc-worn-nonplayable
@@ -5031,6 +5037,11 @@ def _cmd_convert(args):
     # refresh (which plans no meshes). #npc-worn-nonplayable
     batch_npc_worn = (None if getattr(args, "plugins_only", False)
                       else _batch_npc_worn_armos())
+    # An armour's playable flag is its WINNING record's; same cache as source
+    # selection. None when switched off, without a load order, or on an
+    # ESP-only refresh. #selection-winner-playable
+    batch_winner_np = (None if getattr(args, "plugins_only", False)
+                       else _batch_armo_winner_nonplayable())
 
     # Meshes another mod already ships BUILT for UBE at the path we would write
     # are left to it. The same lookup coverage points at them with, so an
@@ -5064,6 +5075,7 @@ def _cmd_convert(args):
                 try:
                     for _b in _player_armor_mesh_bases(
                             _src, include_candidate_slots=True,
+                            armo_winner_nonplayable=batch_winner_np,
                             npc_worn_armos=batch_npc_worn):
                         _target_keys.update(
                             (f"{_b}_0.nif", f"{_b}_1.nif", f"{_b}.nif"))
@@ -5211,6 +5223,7 @@ def _cmd_convert(args):
                     incremental_floor=incremental_floor,
                     ube_covered_armos=batch_ube_covered,
                     npc_worn_armos=batch_npc_worn,
+                    armo_winner_nonplayable=batch_winner_np,
                     built_ube_twin=batch_built_ube,
                 )
 
@@ -7442,12 +7455,121 @@ def _batch_npc_worn_armos(for_coverage: bool = False
         return None
 
 
+# ---------- #selection-winner-playable: the playable flag the game uses ----------
+#
+# {load-order key -> {(defining plugin lowercase, formid low24) -> not playable}};
+# one load order at a time. A failed build is cached as None so it warns once.
+_ARMO_WINNER_CACHE: "dict[tuple, dict | None]" = {}
+_ARMO_NONPLAYABLE_FLAG = 0x00000004   # ARMO record header flag
+
+
+def _selection_winner_playable() -> bool:
+    r"""#selection-winner-playable (2026-09-25): does source selection read an
+    armour's playable flag from its WINNING record -- the one the game uses --
+    instead of from the scanned plugin's own record? Yes, by default.
+    CBBE2UBE_NO_SELECTION_WINNER_PLAYABLE=1 reads each plugin's own record
+    again. Its own switch: CBBE2UBE_NO_NPC_WORN_NONPLAYABLE does not touch it."""
+    return not _flag("CBBE2UBE_NO_SELECTION_WINNER_PLAYABLE", False)
+
+
+def _armo_winner_nonplayable(plugin_paths) -> "tuple[dict, list[str]]":
+    """({(defining plugin lowercase, formid low24) -> True when the WINNING
+    record is non-playable or deleted}, [unreadable plugin names]) over
+    `plugin_paths`, the active load order (last = winner). #selection-winner-playable
+
+    Only the ARMO group of each plugin is read (`_read_plugin_groups`). The
+    identity is the DEFINING plugin through the record's master list -- the
+    same key `_player_armor_mesh_bases` and `_npc_worn_armos` use -- so an
+    override in an ESL- or ESM-flagged plugin lands on its master's armour, and
+    a record whose defining plugin holds no record of it is still keyed on that
+    name: the last loaded record carrying it wins. Each record's own header
+    flag decides; a template (TNAM) is not followed, since every variant keeps
+    its own flag and models. The legacy BODT non-playable bit (0x10) is not
+    read -- on the measured load order only creature skins carried it. An
+    unreadable plugin is skipped and named, so its overrides do not count."""
+    out: "dict[tuple[str, int], bool]" = {}
+    bad: "list[str]" = []
+    for path in plugin_paths:
+        try:
+            masters, groups = _read_plugin_groups(path, (b"ARMO",))
+        except Exception:
+            bad.append(Path(path).name)
+            continue
+        lc = [m.lower() for m in masters]
+        own = Path(path).name.lower()
+        for r in groups.get(b"ARMO", ()):
+            mi = r.formid >> 24
+            ident = (lc[mi] if mi < len(lc) else own, r.formid & 0xFFFFFF)
+            out[ident] = bool(r.flags & (_ARMO_NONPLAYABLE_FLAG | _RECORD_DELETED))
+    return out, bad
+
+
+def _batch_armo_winner_nonplayable() -> "dict[tuple[str, int], bool] | None":
+    r"""`_armo_winner_nonplayable` over the active load order as the GAME sees
+    it -- plugin files at the root of overwrite, of an enabled mod and of the
+    game Data folder (`paths._plugin_file_index_root`), whatever the index
+    switch says: a recursive walk can hand back our own un-loaded copy of a
+    plugin in place of the one the game loads. Built once per load order per
+    process, like `_batch_npc_worn_armos`, but not inside it: that set's switch
+    and failures must not turn this rule off.
+
+    None -- every plugin's own record decides, as before -- when switched off
+    (CBBE2UBE_NO_SELECTION_WINNER_PLAYABLE=1). FAILS OPEN with a warning: a
+    modlist whose plugin order cannot be read, a load order no plugin file
+    resolves for, or a read error gives None too, once per load order. With no
+    modlist at all (a plain `convert` of a folder) there is no load order to
+    read, so it is None without a warning. Never raises. #selection-winner-playable"""
+    if not _selection_winner_playable():
+        return None
+    key = None
+    try:
+        lay = paths.discover_layout()
+        if lay.mods_root is None:
+            return None               # no modlist: nothing to read, nothing lost
+        names = paths.active_plugins_ordered(lay) or []
+        # Keyed on what decides which plugin files load -- the mods folder, the
+        # mod priority order and the plugin load order -- and on the switch.
+        key = (str(lay.mods_root), tuple(paths.enabled_mods_ordered(lay) or ()),
+               tuple(n.lower() for n in names), _selection_winner_playable())
+        if key in _ARMO_WINNER_CACHE:
+            return _ARMO_WINNER_CACHE[key]
+        t0 = time.time()
+        fidx = paths._plugin_file_index_root(lay)
+        ordered = [Path(fidx[n.lower()]) for n in names if n.lower() in fidx]
+        if not ordered:
+            raise ValueError("no active plugin file found" if names
+                             else "the plugin load order could not be read")
+        flags, bad = _armo_winner_nonplayable(ordered)
+        _ARMO_WINNER_CACHE.clear()
+        _ARMO_WINNER_CACHE[key] = flags
+        print(f"  Armour playability: read the winning record of {len(flags)} "
+              f"armour(s) in {len(ordered)} active plugin(s) in "
+              f"{time.time() - t0:.1f}s")
+        if bad:
+            _names = ", ".join(bad[:5]) + (" ..." if len(bad) > 5 else "")
+            warn(f"{len(bad)} active plugin(s) could not be read for armour "
+                 f"playability: {_names}",
+                 consequence="an armour those plugins override keeps the "
+                             "playable flag of the record before them")
+        return flags
+    except Exception as e:
+        warn(f"could not read which armour the load order makes playable "
+             f"({plain_error(e)})",
+             consequence="each plugin's own record decides whether its armour "
+                         "is playable, as before this rule, this run")
+        if key is not None:
+            _ARMO_WINNER_CACHE.clear()
+            _ARMO_WINNER_CACHE[key] = None
+        return None
+
+
 def _player_armor_mesh_bases(mod_dir: Path,
                              include_candidate_slots: bool = False,
                              mesh_resolves=None,
                              ube_covered_armos=None,
                              npc_worn_armos=None,
-                             worn_admitted=None) -> "set[str]":
+                             worn_admitted=None,
+                             armo_winner_nonplayable=None) -> "set[str]":
     """Weight-agnostic rel-path keys of every mesh a DefaultRace ARMA in this mod
     points at as an armor piece (biped slot is not hair-only).
 
@@ -7474,6 +7596,14 @@ def _player_armor_mesh_bases(mod_dir: Path,
     ARMA skipped). `worn_admitted`: optional set the caller passes to learn which
     armatures, as (plugin lowercase, ARMA formid), were kept ONLY for that
     reason and planned at least one mesh. #npc-worn-nonplayable
+
+    `armo_winner_nonplayable`: optional map, same identity, from
+    `_batch_armo_winner_nonplayable`: is the armour's WINNING record in the load
+    order non-playable (or deleted)? When it knows an ARMO, its answer replaces
+    the scanned record's own flag for every test here, the worn test included;
+    an identity it does not know keeps the record's flag. None = each plugin's
+    own record decides (the old rule). Which armatures a plugin's ARMOs admit is
+    still judged per plugin. #selection-winner-playable
 
     `include_candidate_slots`: also admit ambiguous modder slots (44/45/47/48/59/61)
     used for body cloth. The crash guard in auto_convert_mod drops any non-body-skinned
@@ -7540,7 +7670,8 @@ def _player_armor_mesh_bases(mod_dir: Path,
             for arec in g.records:
                 _play = not (arec.flags & _ARMO_NONPLAYABLE)
                 _ident = None
-                if ube_covered_armos or (npc_worn_armos and not _play):
+                if (armo_winner_nonplayable or ube_covered_armos
+                        or (npc_worn_armos and not _play)):
                     # Identity as `_third_party_ube_covered_armos` returns it: the
                     # DEFINING plugin (a master when this record is an override,
                     # else this plugin) + the low-24 formid.
@@ -7548,6 +7679,13 @@ def _player_armor_mesh_bases(mod_dir: Path,
                     _def = (_lc_masters[_mi] if _mi < len(_lc_masters)
                             else ep.name.lower())
                     _ident = (_def, arec.formid & 0xFFFFFF)
+                # #selection-winner-playable: the flag the game uses is the
+                # WINNING record's, not this plugin's (an override or a record
+                # a later plugin overrides). An identity the map does not know
+                # keeps this record's own flag. The worn test below is judged
+                # against the same flag.
+                if armo_winner_nonplayable and _ident in armo_winner_nonplayable:
+                    _play = not armo_winner_nonplayable[_ident]
                 _is_cov = bool(ube_covered_armos) and _ident in ube_covered_armos
                 _worn = (not _play and bool(npc_worn_armos)
                          and _ident in npc_worn_armos)
@@ -7785,7 +7923,10 @@ def _find_armor_mod_dirs(mods_root: Path,
             _flag("CBBE2UBE_NO_BSA_ONLY_SOURCES", False),
             _flag("CBBE2UBE_NO_TEXTURE_ARCHIVE_MESHES", False),
             _flag("CBBE2UBE_NO_NUDE_BASENAME_PATH", False),
-            _flag("CBBE2UBE_NO_NPC_WORN_NONPLAYABLE", False))
+            _flag("CBBE2UBE_NO_NPC_WORN_NONPLAYABLE", False),
+            # Whose playable flag counts -- the winning record's or the scanned
+            # plugin's -- decides sources too. #selection-winner-playable
+            _selection_winner_playable())
     _cached = _ARMOR_MOD_DIRS_CACHE.get(_key)
     if _cached is not None:
         return list(_cached)
@@ -7901,6 +8042,11 @@ def _find_armor_mod_dirs_uncached(mods_root: Path,
     _npc_worn = _batch_npc_worn_armos()
     _worn_admitted: "set[tuple[str, int]]" = set()
     _worn_mods = 0
+    # An armour's playable flag is its WINNING record's, for every test below.
+    # #selection-winner-playable
+    if _selection_winner_playable():
+        _prog("reading which armour the load order makes playable…")
+    _winner_np = _batch_armo_winner_nonplayable()
 
     # require_arma: a mod is a source if a DefaultRace ARMA equips an armour-slot
     # mesh. Count own-folder NIFs first (fast); mods whose meshes are BodySlide-
@@ -7913,7 +8059,8 @@ def _find_armor_mod_dirs_uncached(mods_root: Path,
         if not _name_ok(mod_dir):
             continue
         armor_bases = _player_armor_mesh_bases(  # STRICT = eligibility
-            mod_dir, npc_worn_armos=_npc_worn)
+            mod_dir, npc_worn_armos=_npc_worn,
+            armo_winner_nonplayable=_winner_np)
         if not armor_bases:
             continue  # no player-equippable armour piece -> not a source
         # Broaden to ambiguous modder slots for VFS coverage on mods already
@@ -7921,6 +8068,7 @@ def _find_armor_mod_dirs_uncached(mods_root: Path,
         _mod_worn: "set[tuple[str, int]]" = set()
         cov_bases = _player_armor_mesh_bases(
             mod_dir, include_candidate_slots=True,
+            armo_winner_nonplayable=_winner_np,
             npc_worn_armos=_npc_worn, worn_admitted=_mod_worn)
         if _mod_worn:
             _worn_admitted |= _mod_worn
@@ -7950,6 +8098,7 @@ def _find_armor_mod_dirs_uncached(mods_root: Path,
             for _dd in (_swlay.game_data_dirs or [])[:1]:
                 for b in _player_armor_mesh_bases(
                         Path(_dd), include_candidate_slots=True,
+                        armo_winner_nonplayable=_winner_np,
                         npc_worn_armos=_npc_worn):
                     union_all.update((f"{b}_0.nif", f"{b}_1.nif", f"{b}.nif"))
         except Exception:

@@ -461,6 +461,58 @@ already-UBE path among the additions.
   (+11, -0): 8 armours whose every record is playable, 2 outfits, 1 weapon -- no
   non-playable armour, so selection and coverage are unchanged (coverage replay
   byte-identical; switch set: worn set and replay identical to the parent).
+- **Playable is the WINNING record's flag** (`#selection-winner-playable`,
+  `CBBE2UBE_NO_SELECTION_WINNER_PLAYABLE`). Every test above read an armour's
+  non-playable flag from the scanned plugin's own ARMO record; the game uses the
+  last loaded one, and the coverage passes already judge that. On one modlist
+  338 of 13,303 armours flip between the defining and the winning record (313
+  to non-playable, mostly balance patches taking a set out of the game; 25 to
+  playable). `_batch_armo_winner_nonplayable` builds
+  {(defining plugin, low id) -> winner non-playable or deleted} once per load
+  order: the ARMO group of every active plugin (`_read_plugin_groups`, 0.6 s),
+  resolved through the ROOT-only index (`paths._plugin_file_index_root`, the
+  files the game loads) whatever the index switch says -- the recursive walk
+  hands back our own un-loaded copies for 22 names. `_player_armor_mesh_bases`
+  takes it as `armo_winner_nonplayable` at every planning call (selection
+  strict + candidate slots, the vanilla-sweep keys, a direct `convert`'s VFS
+  keys, the convert step) and replaces the record's flag with it; an identity
+  the map does not know keeps the record's flag. The worn test and the named
+  playable item test (`#nude-basename-path`) read the same flag. Admission is
+  still per plugin: an armature no same-plugin armour references is admitted as
+  before, and a playable winner in another plugin does not admit one here.
+  Edges: a deleted winner is not playable; an override in an ESL/ESM-flagged
+  plugin keys on its master through the master list; a TNAM variant keeps its
+  own flag (all 4,106 live variants carry their own models); an armour whose
+  defining plugin is not loaded is keyed on that name and the last loaded record
+  wins; the legacy BODT non-playable bit (0x10) is NOT read -- on that modlist
+  only 10 creature skins carry it, and the skin rules drop those. Its own switch
+  and cache, NOT inside `_batch_npc_worn_armos`: the NPC-worn switch or a failed
+  worn read does not turn it off. Cache key: mods folder, mod order, plugin
+  order, the switch -- not the files' stat, so a regenerated patch plugin in one
+  GUI session is read on the next load-order change or restart. Fails open: no
+  readable load order, no plugin file found or a read error gives the old rule
+  and one warning per load order; an unreadable plugin is skipped and named. The
+  switch is in the `_find_armor_mod_dirs` memo key. Live (plan census, 153
+  sources + Data): sources 153 -> 150, weight bases 2,034 -> 2,008 (-27 bases /
+  43 files, +1 base / 1 file), worn-kept armatures 43 -> 54 (the worn rule now
+  sees winners made non-playable). A repeat census of the parent and the lane
+  with the switch set both give the parent's plan exactly. The -27: a fur set's
+  pieces (6), a pirate follower's outfits (8), a clothing set (7), a mod's
+  first-person robe models (6), and the vanilla male boots a follower
+  replacer's boots fell back to (1) -- every carrier of their armours male or
+  none. The +1 is a DLC effect mesh (a whole outfit
+  plus a skeleton, slot 61) a skeleton mod makes playable: its skin is bound to
+  thigh and calf bones, so the candidate-slot crash guard keeps it and it is
+  converted like body cloth; coverage already mints a UBE armature for that
+  armour and points it at the converted mesh once it exists. Coverage itself is
+  unchanged (it judges winners and reads the output folder): replay
+  byte-identical. But 59 minted coverage armatures (88 model slots: 67 body
+  pass, 21 non-body) point at a converted mesh the plan no longer makes; they
+  keep the copy an earlier run left (the output is never swept); on a fresh
+  output the coverage rules treat them as unconverted (their source mesh, or no
+  body armature under the world-mesh rule). No female wearer of any of them on
+  that modlist (winning NPC, outfit, leveled list, quest alias and script
+  references checked).
 
 ---
 
