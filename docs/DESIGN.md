@@ -592,6 +592,35 @@ already-UBE path among the additions.
   record the loser's; coverage replay byte-identical. Switch set: census and replay
   identical to the parent.
 
+### The female-only rule, per slot pair (2026-09-25)
+
+- **The dead-path exception per pair** (`#female-slot-pairs`,
+  `CBBE2UBE_NO_FEMALE_SLOT_PAIRS`). `_player_armor_mesh_bases` skips an armature's
+  male models when a female model resolves, and keeps them when the female path is
+  dead (#174: the armature is then pointed at the converted male; the user confirmed
+  "dead female path keeps male" again on 09-24). It judged MOD3 and MOD5 together, so
+  a dead female WORLD mesh beside a live female first-person mesh (or the reverse)
+  never converted the male of the dead pair. Now the old answer stands and, in
+  addition, a pair (MOD3 over MOD2, MOD5 over MOD4) whose female model is set and
+  resolves nowhere keeps its male. Only ever adds: an armature whose every female
+  model is dead keeps every male as before. Live (light plan census, 154 sources +
+  Data): +6 bases / +12 files, all one clothing replacer's colour and outfit
+  variants whose female world mesh it never shipped (8 world pairs, 1 first-person
+  pair); its winning records point elsewhere, so today they are converted without
+  being drawn -- the same as its first-person female meshes already were. The
+  follower armatures that found this (dead world path, male a vanilla mesh) are not
+  planned at all today (their mod plans nothing under the other gates). Coverage
+  replay byte-identical (it reads the output folder). Switch set: census identical.
+- **A pair with no female model** (`#female-slot-absent`, OFF, opt-in
+  `CBBE2UBE_FEMALE_SLOT_ABSENT_KEEPS_MALE=1`). The engine draws a pair's male model
+  when its female model is not set, so an armature with MOD3 but no MOD5 shows MOD4
+  in first person on a female actor; the rule skips that male. Converting it is the
+  male-only-piece exception applied per slot -- a policy call, not the dead-path fix,
+  so it is prepared and left off. Live with it on: +7 bases / +14 files, all
+  first-person (a court outfit's three torso variants, a museum mod's cuirass torso,
+  a bandit glove used by a shoulder piece, a vampire robe used by cloaks, and the
+  base game's hide bracers).
+
 ---
 
 ## Fitting: warp + re-skin

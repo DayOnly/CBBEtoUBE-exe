@@ -7930,6 +7930,37 @@ def _batch_armo_winner_nonplayable() -> "dict[tuple[str, int], bool] | None":
         return None
 
 
+def _female_slot_pairs_on() -> bool:
+    r"""#female-slot-pairs (2026-09-25): does the female-only rule judge the
+    world pair (female MOD3 over male MOD2) and the first-person pair (MOD5 over
+    MOD4) each on its own for the dead-path exception? Yes, by default.
+
+    The rule skipped the male models when ANY female model resolved, MOD3 and
+    MOD5 together. An armature whose female world mesh is a dead path but whose
+    first-person female mesh ships (or the reverse) therefore never converted
+    the male of the dead pair, against the rule's own exception: a dead female
+    path keeps the male, so the armature can point at a converted male. Now a
+    pair whose female model is set and resolves nowhere keeps its male as well;
+    nothing the old rule kept is dropped. CBBE2UBE_NO_FEMALE_SLOT_PAIRS=1 judges
+    the two together again."""
+    return not _flag("CBBE2UBE_NO_FEMALE_SLOT_PAIRS", False)
+
+
+def _female_slot_absent_on() -> bool:
+    r"""#female-slot-absent (2026-09-25, OFF -- a policy call): does a slot pair
+    with NO female model keep its male when the other pair has a live female
+    model? Only with CBBE2UBE_FEMALE_SLOT_ABSENT_KEEPS_MALE=1 (and
+    #female-slot-pairs on).
+
+    The engine draws the male model of a pair whose female model is not set,
+    so a female actor in first person wears MOD4 when an armature has MOD3 but
+    no MOD5. The female-only rule skips that male today. Converting it follows
+    the rule's own male-only-piece exception per slot, but it is a new class of
+    converted mesh (mostly first-person male arms and torsos, one of them a
+    base-game gauntlet), not the dead-path fix, so it is left to the user."""
+    return _flag("CBBE2UBE_FEMALE_SLOT_ABSENT_KEEPS_MALE", False)
+
+
 def _player_armor_mesh_bases(mod_dir: Path,
                              include_candidate_slots: bool = False,
                              mesh_resolves=None,
@@ -7986,6 +8017,8 @@ def _player_armor_mesh_bases(mod_dir: Path,
     # #nude-basename-path: the nude-skin basenames mean body skin only at the
     # body's own home (see `_is_nude_body_skin_model`). Read once per call.
     _skin_by_name_alone = _flag("CBBE2UBE_NO_NUDE_BASENAME_PATH", False)
+    _slot_pairs = _female_slot_pairs_on()       # #female-slot-pairs
+    _absent_keeps_male = _female_slot_absent_on()   # #female-slot-absent
     # Vanilla sweep: the game Data dir enumerates the vanilla/DLC masters
     # (_find_source_esps skips those by design for normal mod folders).
     for ep in (_vanilla_sweep_esps(mod_dir) or _find_source_esps(mod_dir)):
@@ -8094,6 +8127,8 @@ def _player_armor_mesh_bases(mod_dir: Path,
                 edid = ""
                 female_models: "list[str]" = []   # MOD3 (world) + MOD5 (1st-person)
                 male_models: "list[str]" = []      # MOD2 (world) + MOD4 (1st-person)
+                # The same models by slot: {sig: [paths]}. #female-slot-pairs
+                by_sig: "dict[bytes, list[str]]" = {}
                 for sig, sd in _esp.iter_subrecords(rec.payload):
                     if sig == b"EDID":
                         edid = sd.rstrip(b"\x00").decode("utf-8", errors="ignore")
@@ -8104,9 +8139,11 @@ def _player_armor_mesh_bases(mod_dir: Path,
                     elif sig in (b"MOD3", b"MOD5"):
                         female_models.append(sd.rstrip(b"\x00").decode(
                             "utf-8", errors="ignore"))
+                        by_sig.setdefault(sig, []).append(female_models[-1])
                     elif sig in (b"MOD2", b"MOD4"):
                         male_models.append(sd.rstrip(b"\x00").decode(
                             "utf-8", errors="ignore"))
+                        by_sig.setdefault(sig, []).append(male_models[-1])
                 # FEMALE-ONLY conversion: UBE is a female body, so convert the FEMALE
                 # model(s) and skip the male mesh (a female actor never renders it, and
                 # refitting it to the female body would be wrong). Two exceptions keep
@@ -8116,10 +8153,27 @@ def _player_armor_mesh_bases(mod_dir: Path,
                 # path) -- then the male mesh is the real one the female
                 # ARMA gets redirected to, so it must convert. mesh_resolves==None
                 # (callers without VFS context) keeps the legacy "convert both".
+                # The dead-path exception is judged per SLOT PAIR too -- world
+                # (MOD3 over MOD2) and first-person (MOD5 over MOD4) apart: a live
+                # first-person female mesh says nothing about a dead female world
+                # mesh. It only ever ADDS a male model to the old answer. A pair
+                # with NO female model keeps its male only under the opt-in
+                # #female-slot-absent rule (a policy call, off). #female-slot-pairs
                 if not female_models:
                     models = male_models
                 elif mesh_resolves is None:
                     models = female_models + male_models
+                elif _slot_pairs:
+                    _live = {m: mesh_resolves(_weight_base_key(m))
+                             for m in female_models}
+                    _all_dead = not any(_live.values())
+                    models = list(female_models)
+                    for _fs, _ms in ((b"MOD3", b"MOD2"), (b"MOD5", b"MOD4")):
+                        _fem = by_sig.get(_fs, [])
+                        if (_all_dead
+                                or (_fem and not any(_live[m] for m in _fem))
+                                or (not _fem and _absent_keeps_male)):
+                            models += by_sig.get(_ms, [])
                 elif any(mesh_resolves(_weight_base_key(m)) for m in female_models):
                     models = female_models
                 else:
@@ -8338,6 +8392,9 @@ def _find_armor_mod_dirs(mods_root: Path,
             # Which plugin copies are read decides sources too.
             # #loaded-source-plugins
             _loaded_source_plugins_on(),
+            # The female-only rule's pairs change the mesh keys indexed.
+            # #female-slot-pairs #female-slot-absent
+            _female_slot_pairs_on(), _female_slot_absent_on(),
             _flag("CBBE2UBE_NO_BSA_ONLY_SOURCES", False),
             _flag("CBBE2UBE_NO_TEXTURE_ARCHIVE_MESHES", False),
             _flag("CBBE2UBE_NO_NUDE_BASENAME_PATH", False),

@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+### Fixed — a missing female mesh for the third-person view keeps the male one, even when the first-person one exists
+
+The tool converts only the female version of a piece, unless the female mesh
+is missing: then it converts the male version, so the piece has something to
+show on a UBE body. It checked the third-person and first-person female meshes
+together, so a piece whose third-person female mesh is missing but whose
+first-person one exists never converted the male third-person mesh. Each view
+is now checked on its own; nothing converted before is dropped. Measured on the
+reported modlist: 6 more pieces (12 mesh files) of one clothing replacer.
+`CBBE2UBE_NO_FEMALE_SLOT_PAIRS=1` (set to 1) turns it off.
+Not changed (left for you to decide): a piece with no first-person female
+mesh at all still skips the male first-person mesh the game shows in its place;
+`CBBE2UBE_FEMALE_SLOT_ABSENT_KEEPS_MALE=1` converts it too (7 more pieces on the
+reported modlist, mostly first-person arms and torsos, one of them a base-game
+gauntlet).
+
 ### Fixed — only the copy of a plugin the game loads is converted
 
 Mod Organizer loads a plugin only from the top of a mod's folder, and when two
