@@ -429,7 +429,7 @@ already-UBE path among the additions.
   `CBBE2UBE_NO_NPC_WORN_NONPLAYABLE`). An armature only non-playable armour used was
   skipped as gore. Follower and quest outfits are non-playable too, and coverage
   deliberately covers non-playable body and hands/feet armour. It is kept now when
-  the WINNING record of a female NPC of a vanilla playable, vampire or `UBE_*` race
+  the WINNING record of a female NPC of a vanilla playable, vampire or UBE race
   reaches one of its armour records through her default or sleep outfit or her
   inventory, via outfits and leveled lists (`_npc_worn_armos`: four groups of every
   active plugin, read by seeking past the rest, 8-11 s, built once per batch and
@@ -447,6 +447,20 @@ already-UBE path among the additions.
   anything handed out by a script or a distributor at run time is still not seen.
   The switch covers the conversion only; the coverage race-list rule reads the
   same set under its own switch (`#coverage-human-race-list`).
+- **A UBE race is one UBE_AllRace defines** (`#ube-race-by-plugin`,
+  `CBBE2UBE_NO_UBE_RACE_BY_PLUGIN`). The worn walk above first recognised a UBE
+  race by an editor ID starting `ube_`; UBE_AllRace.esp's 18 races are all
+  `00UBE_...`, so it matched none, and the 13 winning NPC records on them (12
+  female) were not wearers. The test is the race's identity the walk already
+  carries -- its DEFINING plugin is `ube_allrace.esp` -- the identity the coverage
+  passes and the loose-mesh index use; a patch that overrides the race last does
+  not change it. No editor-ID fallback is kept for a renamed or merged UBE
+  master: the coverage passes mint UBE armatures by that plugin name, so such an
+  order is not served anyway, and a name test would let in any plugin's race
+  that is merely named like one. The worn-set cache key carries the switch. Live: 9,675 -> 9,686 forms
+  (+11, -0): 8 armours whose every record is playable, 2 outfits, 1 weapon -- no
+  non-playable armour, so selection and coverage are unchanged (coverage replay
+  byte-identical; switch set: worn set and replay identical to the parent).
 
 ---
 

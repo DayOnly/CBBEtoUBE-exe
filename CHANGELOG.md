@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Fixed — characters of a UBE race count when the tool looks at what NPCs wear
+
+To decide which outfits only NPCs wear are worth converting, the tool looks at
+what female characters of the races a UBE body covers are dressed in. It
+recognised UBE's own races by a name they do not actually have, so characters
+already set to a UBE race were left out of that look. They are now recognised
+by the UBE plugin that adds those races. On the reported modlist this added 11
+items to that list, all of them ordinary wearable gear the tool already
+handled, so nothing it converts or links changed there. On a modlist where a
+UBE-race character wears an outfit the player cannot equip, that outfit is now
+converted too. `CBBE2UBE_NO_UBE_RACE_BY_PLUGIN=1` (set to 1) turns it off.
+
 ### Changed — this tool's per-mod working patches have a name of their own
 
 For each converted plugin this tool writes a working patch into

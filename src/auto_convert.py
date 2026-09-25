@@ -7116,14 +7116,20 @@ def _skip_esp_less_fallback(armor_bases, src_esps) -> bool:
 # ---------- #npc-worn-nonplayable: which armour NPCs actually wear ----------
 #
 # The vanilla playable races and their vampire variants (Skyrim.esm, low 24
-# bits) -- the races a UBE body covers with no race mod. A race a UBE plugin adds
-# is recognised by its editor ID prefix instead.
+# bits) -- the races a UBE body covers with no race mod. A UBE race is recognised
+# by the plugin that DEFINES it (#ube-race-by-plugin); switched off, by the old
+# editor ID prefix.
 _UBE_CAPABLE_VANILLA_RACES = frozenset({
     0x013740, 0x013741, 0x013742, 0x013743, 0x013744,   # Argonian .. Imperial
     0x013745, 0x013746, 0x013747, 0x013748, 0x013749,   # Khajiit .. Wood Elf
     0x08883A, 0x08883C, 0x08883D, 0x088840, 0x088844,   # their vampire variants
     0x088845, 0x088846, 0x088884, 0x088794, 0x0A82B9,
 })
+# #ube-race-by-plugin: the UBE races are the RACE records UBE_AllRace.esp
+# defines (their editor IDs begin "00UBE_", so the old "ube_" prefix test below
+# never matched one). The same identity the coverage passes and the loose-mesh
+# index use. The prefix is kept only for the off-switch.
+_UBE_RACE_PLUGIN = "ube_allrace.esp"
 _UBE_RACE_EDID_PREFIX = "ube_"
 _ACBS_FEMALE = 0x00000001        # NPC_ ACBS flags, bit 0
 _TPLT_USE_TRAITS = 0x0001        # NPC_ ACBS template-data flags (offset 18)
@@ -7164,6 +7170,13 @@ def _read_plugin_groups(path, labels) -> "tuple[list[str], dict[bytes, list]]":
     return masters, out
 
 
+def _ube_race_by_plugin() -> bool:
+    """#ube-race-by-plugin: a UBE race is one UBE_AllRace.esp defines, not one
+    whose editor ID starts with "ube_". CBBE2UBE_NO_UBE_RACE_BY_PLUGIN=1 turns
+    it off."""
+    return not _flag("CBBE2UBE_NO_UBE_RACE_BY_PLUGIN", False)
+
+
 def _npc_worn_armos(plugin_paths) -> "frozenset[tuple[str, int]]":
     """Every form a female NPC of a UBE-capable race wears or carries, as
     {(defining plugin lowercase, formid low24)} -- the identity
@@ -7179,7 +7192,15 @@ def _npc_worn_armos(plugin_paths) -> "frozenset[tuple[str, int]]":
     body, not something it wears over it.
 
     Qualifying = female (ACBS flag 0x1) and of a vanilla playable race, its
-    vampire variant, or a race whose editor ID starts with "UBE_". An NPC whose
+    vampire variant, or a UBE race: one DEFINED by UBE_AllRace.esp, whatever
+    plugin overrides it last (#ube-race-by-plugin). The first cut tested the
+    editor ID for "ube_", but UBE_AllRace's races are all "00UBE_..." -- on a
+    real load order it matched none of its 18, and 13 winning NPC records on
+    those races (12 female) were not read as wearers. Counting them took that
+    set from 9,675 to 9,686 forms (2026-09-25): 8 armours, every record of each
+    playable, 2 outfits and a weapon -- no non-playable armour, so what is
+    converted and linked there did not change. With the switch
+    CBBE2UBE_NO_UBE_RACE_BY_PLUGIN=1 that prefix test is back. An NPC whose
     traits come from a template (TPLT with the Use Traits flag) takes its sex
     and race from that template, followed through NPC records to the first one
     with its own traits. A leveled-NPC-list template has no single answer, so
@@ -7274,11 +7295,15 @@ def _npc_worn_armos(plugin_paths) -> "frozenset[tuple[str, int]]":
                 elif sig == b"WNAM" and len(d) == 4:     # the race's skin
                     skins.add(_abs(_struct.unpack("<I", d)[0]))
 
+    by_plugin = _ube_race_by_plugin()
+
     def _ube_capable(race) -> bool:
         if race is None:
             return False
         if race[0] == "skyrim.esm" and race[1] in _UBE_CAPABLE_VANILLA_RACES:
             return True
+        if by_plugin:                 # the race's identity: its DEFINING plugin
+            return race[0] == _UBE_RACE_PLUGIN
         return race_edid.get(race, "").lower().startswith(_UBE_RACE_EDID_PREFIX)
 
     known: "dict[tuple, bool]" = {}
@@ -7346,6 +7371,9 @@ def _batch_npc_worn_armos(for_coverage: bool = False
         # long-lived GUI process, and the two indexes can resolve a name to
         # different files.
         key += (paths.root_plugin_index_on(),)
+        # And on the UBE-race rule (#ube-race-by-plugin): its switch decides
+        # who counts as a wearer.
+        key += (_ube_race_by_plugin(),)
         hit = _NPC_WORN_CACHE.get(key)
         if hit is not None:
             return hit

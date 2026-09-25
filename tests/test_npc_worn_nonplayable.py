@@ -241,20 +241,114 @@ def test_a_skin_is_never_worn_however_it_is_reached(tmp_path, wearer, skin_user)
         "armor/outfit/boots"}
 
 
-@pytest.mark.parametrize("edid, counts", [("UBE_NordRace", True),
-                                           ("SkeeverRace", False)],
-                         ids=["ube-race", "other-race"])
-def test_a_race_a_ube_plugin_adds_counts_by_its_editor_id(tmp_path, edid, counts):
-    """The wearer is in a third plugin whose master 1 defines the race and whose
-    master 2 is the outfit mod; the same race under another editor ID is the
-    negative control."""
-    races = _plugin(tmp_path / "Races.esp", masters=(), RACE=[_race(0x00000D62, edid)])
+# --- #ube-race-by-plugin: a UBE race is one UBE_AllRace.esp DEFINES ---
+#
+# The first cut tested the race's editor ID for "ube_". UBE_AllRace.esp's races
+# are all named "00UBE_...", so it matched none of them: on a real load order 13
+# winning NPC records sat on those races (12 female) and none counted as a
+# wearer. The race identity the walk already carries -- (defining plugin, low
+# id) -- is the test now, the one the coverage passes use.
+URP_OFF = "CBBE2UBE_NO_UBE_RACE_BY_PLUGIN"
+UBE_RACE = 0x00000D62                 # in the race plugin's own master space
+
+
+def _race_world(tmp_path, race_plugin="UBE_AllRace.esp", edid="00UBE_NordRace",
+                wearer=None, patch=False):
+    """A race plugin defining one race; the outfit mod (its NPC male, so it
+    wears nothing); and a third plugin -- masters Skyrim.esm, the race plugin,
+    Outfit.esp -- holding the wearer on that race. `patch` adds a race patch
+    loaded after the race plugin that overrides the race (same formid)."""
+    races = _plugin(tmp_path / race_plugin, masters=(),
+                    RACE=[_race(UBE_RACE, edid)])
     mod = _outfit_mod(tmp_path, npc=_npc(WEARER, female=False, doft=OUTFIT))
     wearer = _plugin(tmp_path / "Wearer.esp",
-                     masters=("Skyrim.esm", "Races.esp", "Outfit.esp"),
-                     NPC_=[_npc(0x03000800, race=0x01000D62, doft=0x02000A00)])
-    worn = _worn(races, mod / "Outfit.esp", wearer)
+                     masters=("Skyrim.esm", race_plugin, "Outfit.esp"),
+                     NPC_=wearer or [_npc(0x03000800, race=0x01000D62,
+                                          doft=0x02000A00)])
+    order = [races]
+    if patch:                         # master 0 = the race plugin: same formid
+        order.append(_plugin(tmp_path / "RacePatch.esp", masters=(race_plugin,),
+                             RACE=[_race(UBE_RACE, edid)]))
+    return order + [mod / "Outfit.esp", wearer], mod
+
+
+@pytest.mark.parametrize("race_plugin, edid, counts", [
+    ("UBE_AllRace.esp", "00UBE_NordRace", True),
+    ("Races.esp", "UBE_NordRace", False),
+    ("Races.esp", "00UBE_NordRace", False),
+    ("Races.esp", "SkeeverRace", False),
+], ids=["ube-allrace", "other-plugin-ube-prefix", "other-plugin-00ube",
+        "other-race"])
+def test_a_ube_race_is_one_ube_allrace_defines(tmp_path, monkeypatch,
+                                               race_plugin, edid, counts):
+    """The live UBE races ("00UBE_...") count, and the wearer's non-playable
+    dress is planned; an editor ID alone, in another plugin, makes no race a
+    UBE race -- not the old "ube_" prefix, and not UBE_AllRace's own names."""
+    monkeypatch.delenv(URP_OFF, raising=False)
+    order, mod = _race_world(tmp_path, race_plugin, edid)
+    worn = _worn(*order)
     assert (("outfit.esp", DRESS & 0xFFFFFF) in worn) is counts
+    want = {"armor/outfit/boots"} | ({"armor/outfit/dress"} if counts else set())
+    assert ac._player_armor_mesh_bases(mod, npc_worn_armos=worn) == want
+
+
+def test_a_patch_that_overrides_the_ube_race_keeps_it_a_ube_race(tmp_path,
+                                                                 monkeypatch):
+    """A race-compatibility patch re-states the race last. The DEFINING plugin
+    decides, not the plugin whose record wins."""
+    monkeypatch.delenv(URP_OFF, raising=False)
+    order, _mod = _race_world(tmp_path, patch=True)
+    assert ("outfit.esp", DRESS & 0xFFFFFF) in _worn(*order)
+
+
+def test_a_templated_npc_of_a_ube_race_template_counts(tmp_path, monkeypatch):
+    """The wearer's own record says male, no UBE race; its traits template is a
+    female on the UBE race."""
+    monkeypatch.delenv(URP_OFF, raising=False)
+    order, _mod = _race_world(tmp_path, wearer=[
+        _npc(0x03000800, female=False, race=0x02000D00, template=0x03000801,
+             use_traits=True, doft=0x02000A00),
+        _npc(0x03000801, race=0x01000D62)])
+    assert ("outfit.esp", DRESS & 0xFFFFFF) in _worn(*order)
+
+
+@pytest.mark.parametrize("race_plugin, edid, counts", [
+    ("UBE_AllRace.esp", "00UBE_NordRace", False),
+    ("Races.esp", "UBE_NordRace", True),
+], ids=["ube-allrace", "other-plugin-ube-prefix"])
+def test_switched_off_the_editor_id_prefix_decides(tmp_path, monkeypatch,
+                                                   race_plugin, edid, counts):
+    """CBBE2UBE_NO_UBE_RACE_BY_PLUGIN=1: the old rule, a race whose editor ID
+    starts with "ube_", whatever plugin defines it."""
+    monkeypatch.setenv(URP_OFF, "1")
+    order, _mod = _race_world(tmp_path, race_plugin, edid)
+    assert (("outfit.esp", DRESS & 0xFFFFFF) in _worn(*order)) is counts
+
+
+def test_the_switch_flipped_in_the_same_process_rebuilds_the_set(tmp_path,
+                                                                 monkeypatch):
+    """The worn cache lives as long as the process (a GUI); flipping the switch
+    between two runs must not hand back the other rule's set."""
+    order, _mod = _race_world(tmp_path)
+    lay = paths.Layout(mods_root=tmp_path / "mods", instance_dir=tmp_path)
+    monkeypatch.setattr(paths, "discover_layout", lambda *a, **k: lay)
+    monkeypatch.setattr(paths, "active_plugins_ordered",
+                        lambda l: [p.name for p in order])
+    monkeypatch.setattr(paths, "enabled_mods_ordered", lambda l: ["Outfit Mod"])
+    monkeypatch.setattr(paths, "plugin_file_index",
+                        lambda l: {p.name.lower(): p for p in order})
+    monkeypatch.delenv(OFF, raising=False)
+    monkeypatch.delenv(URP_OFF, raising=False)
+    dress = ("outfit.esp", DRESS & 0xFFFFFF)
+    ac._NPC_WORN_CACHE.clear()
+    try:
+        assert dress in ac._batch_npc_worn_armos()
+        monkeypatch.setenv(URP_OFF, "1")
+        assert dress not in ac._batch_npc_worn_armos(), "stale set after the flip"
+        monkeypatch.delenv(URP_OFF)
+        assert dress in ac._batch_npc_worn_armos()
+    finally:
+        ac._NPC_WORN_CACHE.clear()
 
 
 def test_only_the_winning_npc_record_counts(tmp_path):

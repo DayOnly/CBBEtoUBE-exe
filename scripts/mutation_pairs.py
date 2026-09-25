@@ -3552,17 +3552,19 @@ PAIRS = (
          tests=('tests/test_npc_worn_nonplayable.py',),
          expect=('test_what_does_not_count_as_worn[male]',
                  'test_what_does_not_count_as_worn[other-race]',
-                 'test_a_race_a_ube_plugin_adds_counts_by_its_editor_id[other-race]'),
+                 'test_a_ube_race_is_one_ube_allrace_defines[other-race]'),
     ),
+    # Re-anchored by #ube-race-by-plugin (2026-09-25): a plugin-added race is a
+    # UBE race by its defining plugin now; the prefix line is the off-switch.
     Pair('NWN-d', 'any race a plugin adds counts as UBE-capable',
          edits=(
              ('src/auto_convert.py',
-              '        return race_edid.get(race, "").lower().startswith(_UBE_RACE_EDID_PREFIX)',
-              '        return True  # MUTATED', 1),
+              '            return race[0] == _UBE_RACE_PLUGIN',
+              '            return True  # MUTATED', 1),
          ),
          tests=('tests/test_npc_worn_nonplayable.py',),
          expect=('test_what_does_not_count_as_worn[other-race]',
-                 'test_a_race_a_ube_plugin_adds_counts_by_its_editor_id[other-race]'),
+                 'test_a_ube_race_is_one_ube_allrace_defines[other-race]'),
     ),
     Pair('NWN-e', 'the first NPC record wins instead of the load-order winner',
          edits=(
@@ -5981,5 +5983,76 @@ PAIRS = (
          ),
          tests=('tests/test_loose_mesh_index.py',),
          expect=('test_a_very_long_name_is_checked_on_disk',),
+    ),
+    # #ube-race-by-plugin (2026-09-25): the worn walk's UBE-race test read the
+    # editor ID for "ube_", but UBE_AllRace's races are "00UBE_..."; a UBE race
+    # is one UBE_AllRace.esp defines.
+    Pair('URP-a', 'the editor-ID prefix decides again',
+         edits=(
+             ('src/auto_convert.py',
+              '            return race[0] == _UBE_RACE_PLUGIN',
+              '            return race_edid.get(race, "").lower().startswith('
+              '_UBE_RACE_EDID_PREFIX)  # MUTATED', 1),
+         ),
+         tests=('tests/test_npc_worn_nonplayable.py',),
+         expect=('test_a_ube_race_is_one_ube_allrace_defines[ube-allrace]',
+                 'test_a_patch_that_overrides_the_ube_race_keeps_it_a_ube_race',
+                 'test_a_templated_npc_of_a_ube_race_template_counts'),
+    ),
+    Pair('URP-b', "the race's winning plugin decides, not its defining one",
+         edits=(
+             ('src/auto_convert.py',
+              '    race_edid: "dict[tuple, str]" = {}\n',
+              '    race_edid: "dict[tuple, str]" = {}\n'
+              '    race_home: "dict[tuple, str]" = {}  # MUTATED\n', 1),
+             ('src/auto_convert.py',
+              '        for r in groups.get(b"RACE", ()):\n',
+              '        for r in groups.get(b"RACE", ()):\n'
+              '            race_home[_abs(r.formid)] = own  # MUTATED\n', 1),
+             ('src/auto_convert.py',
+              '            return race[0] == _UBE_RACE_PLUGIN',
+              '            return race_home.get(race) == _UBE_RACE_PLUGIN  # MUTATED', 1),
+         ),
+         tests=('tests/test_npc_worn_nonplayable.py',),
+         expect=('test_a_patch_that_overrides_the_ube_race_keeps_it_a_ube_race',),
+    ),
+    Pair('URP-c', 'a templated NPC is judged by its own record',
+         edits=(
+             ('src/auto_convert.py',
+              '        if tpl is not None:\n            got = _female_wearer(tpl, depth + 1)\n',
+              '        if False:  # MUTATED\n            got = _female_wearer(tpl, depth + 1)\n', 1),
+         ),
+         tests=('tests/test_npc_worn_nonplayable.py',),
+         expect=('test_a_templated_npc_of_a_ube_race_template_counts',),
+    ),
+    Pair('URP-d', 'the off-switch no longer switches anything off',
+         edits=(
+             ('src/auto_convert.py',
+              '    return not _flag("CBBE2UBE_NO_UBE_RACE_BY_PLUGIN", False)',
+              '    return True  # MUTATED', 1),
+         ),
+         tests=('tests/test_npc_worn_nonplayable.py',),
+         expect=('test_switched_off_the_editor_id_prefix_decides[ube-allrace]',
+                 'test_switched_off_the_editor_id_prefix_decides[other-plugin-ube-prefix]',
+                 'test_the_switch_flipped_in_the_same_process_rebuilds_the_set'),
+    ),
+    Pair('URP-e', 'the worn cache key leaves out the UBE-race switch',
+         edits=(
+             ('src/auto_convert.py',
+              '        key += (_ube_race_by_plugin(),)',
+              '        key += ()  # MUTATED', 1),
+         ),
+         tests=('tests/test_npc_worn_nonplayable.py',),
+         expect=('test_the_switch_flipped_in_the_same_process_rebuilds_the_set',),
+    ),
+    Pair('URP-f', 'the editor-ID prefix still counts beside the plugin',
+         edits=(
+             ('src/auto_convert.py',
+              '            return race[0] == _UBE_RACE_PLUGIN',
+              '            return race[0] == _UBE_RACE_PLUGIN or race_edid.get(race, "")'
+              '.lower().startswith(_UBE_RACE_EDID_PREFIX)  # MUTATED', 1),
+         ),
+         tests=('tests/test_npc_worn_nonplayable.py',),
+         expect=('test_a_ube_race_is_one_ube_allrace_defines[other-plugin-ube-prefix]',),
     ),
 )
