@@ -25,6 +25,30 @@ that share a name, so current output does not change.
 `CBBE2UBE_NO_DUP_SHAPE_NAMES=1` (set to 1) keeps the authored names;
 `CBBE2UBE_NO_OVERRIDE_CONTRACT=1` turns off the size check.
 
+### Changed — checking your zeroed BodySlide build is about four times faster
+
+Before converting, the tool checks which armour your zeroed BodySlide build
+already provides. For every file it needed it looked through each of your
+thousands of mod folders, and it asked about the same files again and again.
+It now remembers each answer while that check runs, and only looks in folders
+that have the right top folder. The result is the same, piece for piece.
+Measured on the reported modlist: about 265 s down to 70 s.
+`CBBE2UBE_NO_ZEROED_PROBE_MEMO=1` (set to 1) checks the old way.
+
+### Fixed — a robe's cape shows on UBE actors
+
+A robe that comes with a separate cape drew the robe on a UBE-race actor but
+not the cape. The cape was not converted, because it hangs from the shoulders
+and back and has nothing shaped to the body, and the step that draws a body
+armour's hood or helmet on UBE left out anything named like a cloak. Such a
+cape is now drawn with the robe on its own mesh, as the same kind of cloak
+already is when worn on its own, but only when the tool can read its mesh and
+it is weighted to the back and shoulders alone. A cape weighted to the legs,
+hips or chest, one with no weights at all, and Khajiit or Argonian versions
+stay out. Measured on the reported modlist: one robe gains its cape; nothing
+else changes.
+`CBBE2UBE_NO_COVERAGE_BODY_CLOAK=1` (set to 1) leaves the cape off again.
+
 ### Changed — whether you can wear an item is read from the plugin the game uses
 
 The tool does not convert an item the player cannot equip (the game's

@@ -3990,18 +3990,19 @@ def _mesh_exists_anywhere(output) -> "callable[[str], bool] | None":
         return seen[rel]
 
     fit: dict = {}
+    unfitted: dict = {}
 
-    def body_fit(model: str) -> "bool | None":
-        """#coverage-female-standin: is the copy of `model` the game loads (the
-        first loose file in priority order, else the archive that lists it)
-        skinned to a body-fit bone? Read into memory, never extracted. None
-        when it cannot be found or read -- the caller fails closed."""
+    def _read_meshes(model: str, cache: dict, judge) -> "bool | None":
+        """`judge` of the copy of `model` the game loads (the first loose file
+        in priority order, else the archive that lists it), read into memory,
+        never extracted; cached in `cache` by path. None when it cannot be
+        found or read -- the caller fails closed."""
         rel = str(model or "").replace("\\", "/").lstrip("/").lower()
         if rel.startswith("meshes/"):
             rel = rel[7:]
         if not rel:
             return None
-        if rel not in fit:
+        if rel not in cache:
             data = None
             i = _loose_first(rel)
             if i is not None:
@@ -4011,9 +4012,20 @@ def _mesh_exists_anywhere(output) -> "callable[[str], bool] | None":
                     data = None
             if data is None:
                 data = bsa.read_bytes(rel)
-            fit[rel] = None if data is None else _nif_bytes_body_fit(data)
-        return fit[rel]
+            cache[rel] = None if data is None else judge(data)
+        return cache[rel]
+
+    def body_fit(model: str) -> "bool | None":
+        """#coverage-female-standin: is that copy of `model` skinned to a
+        body-fit bone?"""
+        return _read_meshes(model, fit, _nif_bytes_body_fit)
+
+    def unfitted_skin(model: str) -> "bool | None":
+        """#coverage-body-cloak: is that copy of `model` skinned, with no skin
+        bound to a body-fit bone (a cape draped from the spine)?"""
+        return _read_meshes(model, unfitted, _nif_bytes_unfitted_skin)
     exists.body_fit = body_fit
+    exists.unfitted_skin = unfitted_skin
     return exists
 
 
@@ -4611,6 +4623,11 @@ def _report_coverage_holds(stats: "list[dict]") -> None:
     if accs:
         print(f"  [unified] {len(accs)} hood/accessory armature(s) of body armour "
               "drawn on UBE with the body (their own mesh)")
+    # #coverage-body-cloak: the capes among them, which conversion skipped.
+    capes = [k for s in stats for k in (s.get("body_cloak") or [])]
+    if capes:
+        print(f"  [unified]   {len(capes)} of them a cape draped from the spine "
+              "(no body-fit bones, so it was not converted)")
     if beasts:
         print(f"  [unified] {len(beasts)} beast-race variant armature(s) left off UBE "
               "actors (they list only Argonian/Khajiit races; no human draws them)")
@@ -7859,6 +7876,25 @@ def _nif_bytes_body_fit(data: bytes) -> "bool | None":
         return False
     except Exception:
         return None
+
+
+def _nif_bytes_unfitted_skin(data: bytes) -> "bool | None":
+    """#coverage-body-cloak: is this NIF skinned (a skin instance on some
+    shape) with no skin bound to a body-fit bone -- a cape or cloak draped from
+    the spine and shoulders? False for an unskinned mesh and for body-fitted
+    cloth; None when the bytes are not an SSE NIF this reader follows, so the
+    caller fails closed."""
+    from .hh_offset import _parse
+    fit = _nif_bytes_body_fit(data)
+    if fit is None:
+        return None
+    try:
+        p = _parse(data)
+        skinned = any(p["block_types"][ti] in _SKIN_INSTANCE_BLOCKS
+                      for ti in p["bti"])
+    except Exception:
+        return None
+    return skinned and not fit
 
 
 # Full-VFS mesh index built once during source selection; reused by the convert

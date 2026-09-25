@@ -386,6 +386,21 @@ single pass runs. Three rules encode this:
    builds sat 1.0-1.4e-4 off; every preset or stale build seen was 0.25u or more off.
    Off with `CBBE2UBE_NO_ZEROED_OUTPUT_SOURCE=1` (settings: "Take armour from the
    zeroed BodySlide build").
+   **The check remembers its loose-file answers for one call** (`#zeroed-probe-memo`,
+   2026-09-25). The garment check asked `_Vfs.winner` ~3,100 times (~930 distinct
+   paths), and each question stat'ed every one of ~3,300 overwrite/mod/Data folders:
+   5.4M stats, 72% of the step. `_prefer_zeroed_outputs` now opens a
+   `zeroed_body.probe_memo()` scope; inside it an answer is kept per (folder list,
+   exact path), and a path of more than one part is probed only in the folders that
+   have its first part as a folder (one `_ci_join` per folder per first part, in
+   priority order). A one-part path is a file at the root, so it is never filtered.
+   The answers are the plain probe's -- same `_ci_join`, same order, same case rules --
+   as long as the folders do not change while the scope is open, so the scope is one
+   call and is dropped on return: the GUI's long-lived process never answers from a
+   memo taken before the user re-ran BodySlide. Live, read-only, in separate
+   processes: 264.8 s -> 69.6 s; the mesh index is identical key for key (4,562
+   entries, 244 re-pointed) and so is the verdict line (122 moved / 179 kept).
+   `CBBE2UBE_NO_ZEROED_PROBE_MEMO=1` probes every folder per question again.
 
 ### Which mods and pieces are sources at all (2026-09-24)
 
@@ -1610,6 +1625,29 @@ reported through `_report_coverage_holds`:
   per-armature "already drawn" test of the R9 double-draw rule, still open.
   Live: 0 of the 26 accessory armatures is either, so the output is unchanged
   today. `CBBE2UBE_NO_ACCESSORY_RACE_GUARD=1`.
+- **A robe's draped cape rides with it** (`#coverage-body-cloak`). The
+  accessory list above skipped every cloak-named armature, on the worry that an
+  unconverted cloak is body-fitted cloth drawing its CBBE fit. But the
+  conversion's crash guard drops a cloak on a free slot (35) whose mesh has no
+  body-fit bone, so a worn robe with such a cape drew the robe on UBE and
+  nothing for the cape -- the one cloak-named piece of the modlist a UBE actor
+  drew nothing for (the other unconverted cloaks are drawn on their own mesh by
+  the non-body pass, or covered by another mod). A cloak-named DefaultRace
+  armature is now admitted as an accessory when every world model it names
+  (MOD2, MOD3) is, in the copy the game loads, skinned and bound to no
+  thigh/calf/butt/breast/belly bone (`_nif_bytes_unfitted_skin`, read through
+  `_mesh_exists_anywhere(...).unfitted_skin`); an unskinned, body-fitted,
+  missing or unreadable mesh, or a lookup with no reader, keeps it out (fail
+  closed), so the worry above still holds for body-fitted cloth. It is minted
+  UBE-primary on its own mesh, as the non-body pass mints the same class of
+  cloak worn alone. Beast variants and armatures already naming a UBE race stay
+  out even with `CBBE2UBE_NO_ACCESSORY_RACE_GUARD=1`: no parent output drew a
+  cape here, so that switch has nothing to restore. The dead-armature rule
+  still judges it; the report counts it among the accessories. Live replay:
+  9834 -> 9835 links, +1 (the robe -> its slot-35 cape armature, own mesh,
+  UBE-primary), 0 removed, 0 re-pointed; the non-body pass is byte-identical.
+  `CBBE2UBE_NO_COVERAGE_BODY_CLOAK=1` (nested under
+  `CBBE2UBE_NO_COVERAGE_BODY_ACCESSORY=1`).
 - **An armature whose meshes exist nowhere is not minted**
   (`#coverage-dead-armature`). The body pass admits a hands/feet armature by
   its slot alone and the non-body pass keeps a piece's source mesh, so an
