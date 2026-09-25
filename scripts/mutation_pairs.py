@@ -3340,6 +3340,79 @@ PAIRS = (
          tests=('tests/test_npc_worn_nonplayable.py',),
          expect=('test_coverage_shares_the_conversion_cache',),
     ),
+    # Review 2026-09-24: the deleted-record checks and the parts of the worn
+    # cache key were pinned by no test -- each of these survived the file.
+    Pair('NWN-u', 'a deleted winning NPC falls back to the earlier record',
+         edits=(
+             ('src/auto_convert.py',
+              '                npcs[rid] = None\n                continue\n',
+              '                continue  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_npc_worn_nonplayable.py',),
+         expect=('test_a_deleted_winning_override_takes_its_record_out[npc]',),
+    ),
+    Pair('NWN-v', "a deleted NPC record's flag is not read",
+         edits=(
+             ('src/auto_convert.py',
+              '            if r.flags & _RECORD_DELETED:\n                npcs[rid] = None\n',
+              '            if False:  # MUTATED\n                npcs[rid] = None\n', 1),
+         ),
+         tests=('tests/test_npc_worn_nonplayable.py',),
+         expect=('test_a_deleted_winning_override_takes_its_record_out[npc]',),
+    ),
+    Pair('NWN-w', 'a deleted outfit keeps its entries',
+         edits=(
+             ('src/auto_convert.py',
+              '            if not r.flags & _RECORD_DELETED:\n'
+              '                for sig, d in _esp.iter_subrecords(r.payload):\n'
+              '                    if sig == b"INAM":\n',
+              '            if True:  # MUTATED\n'
+              '                for sig, d in _esp.iter_subrecords(r.payload):\n'
+              '                    if sig == b"INAM":\n', 1),
+         ),
+         tests=('tests/test_npc_worn_nonplayable.py',),
+         expect=('test_a_deleted_winning_override_takes_its_record_out[outfit]',),
+    ),
+    Pair('NWN-x', 'a deleted leveled list keeps its entries',
+         edits=(
+             ('src/auto_convert.py',
+              '            if not r.flags & _RECORD_DELETED:\n'
+              '                for sig, d in _esp.iter_subrecords(r.payload):\n'
+              '                    if sig == b"LVLO" and len(d) >= 8:\n',
+              '            if True:  # MUTATED\n'
+              '                for sig, d in _esp.iter_subrecords(r.payload):\n'
+              '                    if sig == b"LVLO" and len(d) >= 8:\n', 1),
+         ),
+         tests=('tests/test_npc_worn_nonplayable.py',),
+         expect=('test_a_deleted_winning_override_takes_its_record_out[leveled-list]',),
+    ),
+    Pair('NWN-y', 'the worn cache key leaves out the plugin load order',
+         edits=(
+             ('src/auto_convert.py',
+              '               tuple(n.lower() for n in names))',
+              '               ())  # MUTATED', 1),
+         ),
+         tests=('tests/test_npc_worn_nonplayable.py',),
+         expect=('test_a_load_order_change_in_the_same_process_rebuilds_the_set[plugin-order]',),
+    ),
+    Pair('NWN-z', 'the worn cache key leaves out the mod priority order',
+         edits=(
+             ('src/auto_convert.py',
+              'key = (str(lay.mods_root), tuple(paths.enabled_mods_ordered(lay) or ()),',
+              'key = (str(lay.mods_root), (),  # MUTATED', 1),
+         ),
+         tests=('tests/test_npc_worn_nonplayable.py',),
+         expect=('test_a_load_order_change_in_the_same_process_rebuilds_the_set[mod-order]',),
+    ),
+    Pair('NWN-za', 'the worn cache key leaves out the mods folder',
+         edits=(
+             ('src/auto_convert.py',
+              'key = (str(lay.mods_root), tuple(paths.enabled_mods_ordered(lay) or ()),',
+              'key = ("", tuple(paths.enabled_mods_ordered(lay) or ()),  # MUTATED', 1),
+         ),
+         tests=('tests/test_npc_worn_nonplayable.py',),
+         expect=('test_a_load_order_change_in_the_same_process_rebuilds_the_set[mods-folder]',),
+    ),
     # #claim-meshes-prefix (2026-09-24): the plugin half of the third-party UBE
     # claim compared `meshes\!UBE\...` as written, so a softbody pack's own UBE
     # nude suits never read as covered.

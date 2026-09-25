@@ -6352,19 +6352,22 @@ def _npc_worn_armos(plugin_paths) -> "frozenset[tuple[str, int]]":
     A SKIN is never worn, however it is reached: every form that any NPC_ or
     RACE record -- winning or not -- names as its skin (WNAM) is taken out of
     the set at the end (review, 2026-09-24). Not following WNAM was not enough:
-    the walk still reached 23 skins, every one only through the template rule
+    the first cut, which counted every templated NPC, still reached 23 skins
     -- templated NPCs carry skeleton, dragon, wraith and other creature skins
     in their own outfits and inventories -- and a skeleton skin's DefaultRace
-    armature passed every later gate and was planned as armour. 1,387 skin
-    forms on that load order; the 23 are the only change to the set.
+    armature passed every later gate and was planned as armour. The template
+    rule above reaches none of that load order's 1,387 skin forms, so today
+    the subtraction is a guard and changes nothing.
 
-    Measured on a real load order (3,254 active plugins): 8-11 s including the
-    plugin-file lookup, 15,763 forms reached, 15,740 once the skins are out.
-    With WNAM followed and race-less NPCs counted -- the 2026-09-24 report's two
-    differences -- the walk reproduces that report's 3,783 worn ARMOs exactly;
-    236 of them were reachable only that way. An unreadable plugin is skipped.
-    The set holds every reached form but the skins, not only armour -- callers
-    test armour identities against it."""
+    Measured on a real load order (3,254 active plugins, 2026-09-24): 9,675
+    forms reached, 1,584 of them ARMOs; about 10 s including the plugin-file
+    lookup with the plugins in the disk cache (7.6 s for the walk alone), 103 s
+    in one cold full run. The first cut reached 15,763 forms, 15,740 once the
+    skins were out; with WNAM followed and race-less NPCs counted -- the
+    2026-09-24 report's two differences -- it reproduced that report's 3,783
+    worn ARMOs exactly, 236 of them reachable only that way. An unreadable
+    plugin is skipped. The set holds every reached form but the skins, not only
+    armour -- callers test armour identities against it."""
     from . import esp as _esp
     import struct as _struct
     _wanted = (b"NPC_", b"OTFT", b"LVLI", b"RACE")

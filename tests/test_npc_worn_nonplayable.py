@@ -274,6 +274,39 @@ def test_an_unreadable_plugin_is_skipped(tmp_path):
     assert ("outfit.esp", DRESS & 0xFFFFFF) in _worn(junk, mod / "Outfit.esp")
 
 
+# A deleted record is out of the game. Review 2026-09-24: nothing tested it, and
+# dropping any of the three deleted-flag checks left this file green.
+DELETED = 0x20                        # record header flag
+
+
+@pytest.mark.parametrize("group, record", [
+    ("NPC_", _npc(WEARER, doft=OUTFIT)),
+    ("OTFT", _otft(OUTFIT, LIST)),
+    ("LVLI", _lvli(LIST, DRESS)),
+], ids=["npc", "outfit", "leveled-list"])
+def test_a_deleted_winning_override_takes_its_record_out(tmp_path, group, record):
+    """An override that re-states the wearer, her outfit or its leveled list,
+    flagged deleted. It KEEPS its fields -- a deleted override may still carry
+    them -- so only the flag can take the record out. A deleted winning NPC must
+    not fall back to the earlier plugin's record, and a deleted outfit or list
+    names nothing."""
+    outfit = _outfit_mod(tmp_path) / "Outfit.esp"
+    dress = ("outfit.esp", DRESS & 0xFFFFFF)
+
+    def _override(flags):
+        # Master 1 is Outfit.esp, so the record keeps its formid.
+        return _plugin(tmp_path / f"Override{flags:02X}.esp",
+                       masters=("Skyrim.esm", "Outfit.esp"),
+                       **{group: [_rec(record.sig, record.formid, record.payload,
+                                       flags=flags)]})
+    # Control: the same override NOT deleted re-states the original, so the
+    # dress stays worn and the flag is the only difference below.
+    assert dress in _worn(outfit, _override(0))
+    assert dress not in _worn(outfit, _override(DELETED)), "the winner is deleted"
+    # Loaded first, the deleted record is not the winner: the original counts.
+    assert dress in _worn(_override(DELETED), outfit)
+
+
 # --- the batch: built once, switched off by the flag, threaded into selection ---
 
 @pytest.fixture
@@ -326,6 +359,52 @@ def test_coverage_shares_the_conversion_cache(load_order, monkeypatch):
     first = ac._batch_npc_worn_armos()
     assert ac._batch_npc_worn_armos(for_coverage=True) is first
     assert len(calls) == 1
+
+
+@pytest.mark.parametrize("change", ["plugin-order", "mod-order", "mods-folder"])
+def test_a_load_order_change_in_the_same_process_rebuilds_the_set(
+        load_order, tmp_path, monkeypatch, change):
+    """The cache lives as long as the process, so a GUI refresh after the user
+    changes the load order must not get the old set back. Each case changes
+    ONE part of what decides which plugin files load -- the plugin load order,
+    the mod priority order, the mods folder -- and the new files take the dress
+    off the wearer, so a stale hit reads as still worn. Review 2026-09-24:
+    leaving any part out of the key left this file green."""
+    dress = ("outfit.esp", DRESS & 0xFFFFFF)
+    # The same NPC with no outfit: in its own plugin, in a second copy of
+    # Outfit.esp in another mod, and in Outfit.esp under another mods folder.
+    _plugin(tmp_path / "mods" / "Redress" / "Redress.esp",
+            masters=("Skyrim.esm", "Outfit.esp"), NPC_=[_npc(WEARER)])
+    _outfit_mod(tmp_path, npc=_npc(WEARER), name="Bare")
+    other_root = _outfit_mod(tmp_path / "other", npc=_npc(WEARER)).parent
+    start, then = {
+        "plugin-order": (dict(mods=["Outfit Mod", "Redress"]),
+                         dict(plugins=["Outfit.esp", "Redress.esp"])),
+        "mod-order": (dict(mods=["Bare", "Outfit Mod"]),
+                      dict(mods=["Outfit Mod", "Bare"])),
+        "mods-folder": ({}, dict(root=other_root)),
+    }[change]
+    state = dict(root=tmp_path / "mods", mods=["Outfit Mod"], plugins=["Outfit.esp"])
+    state.update(start)
+
+    def _index(lay):                  # a later mod's copy of a plugin wins
+        return {p.name.lower(): p for m in state["mods"]
+                for p in sorted((lay.mods_root / m).glob("*.esp"))}
+    monkeypatch.setattr(paths, "discover_layout", lambda *a, **k: paths.Layout(
+        mods_root=state["root"], instance_dir=tmp_path))
+    monkeypatch.setattr(paths, "enabled_mods_ordered", lambda l: list(state["mods"]))
+    monkeypatch.setattr(paths, "active_plugins_ordered",
+                        lambda l: list(state["plugins"]))
+    monkeypatch.setattr(paths, "plugin_file_index", _index)
+    calls = []
+    real = ac._npc_worn_armos
+    monkeypatch.setattr(ac, "_npc_worn_armos", lambda p: calls.append(1) or real(p))
+
+    assert dress in ac._batch_npc_worn_armos()
+    assert dress in ac._batch_npc_worn_armos() and len(calls) == 1   # a hit
+    state.update(then)
+    assert dress not in ac._batch_npc_worn_armos(), f"stale set after a {change} change"
+    assert len(calls) == 2
 
 
 def test_selection_admits_the_outfit_mod(load_order, monkeypatch, capsys):
