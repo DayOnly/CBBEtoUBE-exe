@@ -599,6 +599,18 @@ already-UBE path among the additions.
   that modlist (winning NPC, outfit, leveled list, quest alias and script
   references checked).
 
+### Reading an archive entry (2026-09-25)
+
+- **An embedded name is inside the entry's size** (`#bsa-embed-name-end`). An
+  archive with flag 0x100 starts every file block with its path (a length byte
+  and the name), and the file record's size covers the whole block. The
+  compressed branch of `BSAArchive.read_file` ended there; the uncompressed one
+  read `size` bytes from after the name, returning 1 + len(name) bytes of the
+  next file. Checked on the vanilla Textures0 (0x107): each LZ4 frame fits
+  [after the name, offset + size) exactly and no shorter slice decodes. Live
+  census: 444 archives, 26 with embedded names, 0 uncompressed entries in them,
+  so nothing the converter reads changes and there is no switch.
+
 ---
 
 ## Fitting: warp + re-skin

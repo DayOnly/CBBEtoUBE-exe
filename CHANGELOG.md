@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Fixed — a mesh stored uncompressed in an archive no longer picks up bytes of the next file
+
+Some archives store each file's path in front of its data. For a file stored
+uncompressed in such an archive, this tool read a little too far and handed the
+converter the mesh with the start of the next file stuck on its end. The
+reported modlist has no such file (26 archives store paths, and every file in
+them is compressed), so nothing changes there.
+
 ### Removed — the old single-file `refit` command-line tool
 
 A source checkout carried a second, older command-line tool (`src/cli.py`, with

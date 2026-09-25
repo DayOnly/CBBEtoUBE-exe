@@ -8751,4 +8751,18 @@ PAIRS = (
          tests=('tests/test_user_warnings.py',),
          expect=('test_the_warning_surface_is_current_and_actionable',),
     ),
+    # #bsa-embed-name-end (2026-09-25): an uncompressed entry of an embed-names
+    # archive was read to `start of data + size`, but the size counts the name
+    # prefix: 1 + len(name) bytes of the next file came back on its end.
+    Pair('BEN-a', 'an uncompressed embedded-name entry runs past its own end again',
+         edits=(
+             ('src/bsa_strings.py',
+              '        return d[p:off - base + size]\n',
+              '        return d[p:p + size]  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_bsa_seek_read.py',),
+         expect=('test_an_uncompressed_entry_with_an_embedded_name_ends_at_its_own_end[True]',
+                 'test_an_uncompressed_entry_with_an_embedded_name_ends_at_its_own_end[False]',
+                 'test_a_table_only_archive_reads_each_entry_by_seek[False-True]'),
+    ),
 )
