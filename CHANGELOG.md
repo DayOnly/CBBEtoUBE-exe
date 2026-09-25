@@ -17,20 +17,29 @@ deleted: to undo, move the files back. It moves only what it is sure about. The
 tool now keeps a record of which mod each converted mesh came from
 (`_conversion_manifest.json` in the output folder), and a mesh moves only when
 that mod is gone, or when the tool knows exactly why it no longer converts it.
-A mod that was read but produced nothing keeps its meshes. A run in which
-something could not be read or went wrong, a run of selected mods only, or a run
-that would move an unusually large share of the output only lists what it would
-move. If the plugin merge after it does not complete, every moved file is put
-back, because the old plugin still points at them. The list is printed in the
-log and written to `_superseded\stale_output_report.json`.
+A mod that was read but produced nothing keeps its meshes, and so does a mod
+whose old plugin patch stays in the output: a mesh stays whenever a plugin patch
+left in place still points at it. A run in which something could not be read or
+went wrong, or that would move an unusually large share of the output, only
+lists what it would move; the list is printed in the log and written to
+`_superseded\stale_output_report.json`. A run of selected mods does not look for
+old meshes at all -- it only updates the record -- so run all mods to see the
+list. If the plugin merge after it does not complete, or has to fall back to the
+per-mod patches, every moved file is put back first, because those plugins
+still point at them; the same happens if the step itself fails, and the rest of
+the run goes on as if it had not run. A file you placed in `meshes\!UBE`
+yourself is treated like the tool's own: it moves only if it sits exactly where
+a mod the tool reads puts a piece it no longer converts, and then only from the
+second full run on.
 
 **The first run after this update only lists.** There is no record yet of which
 mod made which mesh, so it writes that record and moves nothing; a later full
 run moves what is still unused. Measured on the reported modlist: 37 old meshes
-(103 files, 128 MB) are no longer made. The first run records 24 of them; the
-other 13 come from mods the tool no longer selects at all, so no run can record
-them and they stay listed until you move them by hand. With a full record, all
-37 would move. No piece a woman can wear changes for her: what is drawn changes
+(103 files, 128 MB) are no longer made. The first run records 24 of them and the
+next full run moves 23; the last one stays because an old plugin patch of a mod
+the tool no longer selects still points at it. The other 13 come from mods the
+tool no longer selects at all, so no run can record them and they stay listed
+until you move them by hand. With a full record, all 37 would move. No piece a woman can wear changes for her: what is drawn changes
 only on items no one can equip and no woman wears, and on the male mesh of two
 pieces (a man of a UBE race wearing them).
 `CBBE2UBE_NO_STALE_OUTPUT_SWEEP=1` (set to 1) turns all of it off, the record

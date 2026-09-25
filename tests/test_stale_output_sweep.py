@@ -847,6 +847,11 @@ def _drive_convert(tmp_path, monkeypatch, *, coverage_ok=True):
                         lambda *a, **k: order.append("sweep") or 0)
     monkeypatch.setattr(ac, "_stale_output_sweep_finish",
                         lambda *a, merged, **k: order.append(("finish", merged)) or 0)
+    monkeypatch.setattr(ac, "_stale_output_sweep_failover",
+                        lambda *a, **k: order.append("failover") or 0)
+    real_list = ac._per_source_patch_paths
+    monkeypatch.setattr(ac, "_per_source_patch_paths",
+                        lambda d: order.append("list") or real_list(d))
     ac._cmd_convert(_ns([src], out))
     return order
 
@@ -861,6 +866,17 @@ def test_a_merge_from_the_per_source_fallback_does_not_confirm_the_moves(
         tmp_path, monkeypatch):
     order = _drive_convert(tmp_path, monkeypatch, coverage_ok=False)
     assert order[-1] == ("finish", False)
+
+
+def test_the_fallback_puts_the_moves_back_before_it_lists_the_patches(
+        tmp_path, monkeypatch):
+    """Coverage failed: the per-source patches are listed only after every moved
+    file is back; a merge from coverage never fails over."""
+    order = _drive_convert(tmp_path, monkeypatch, coverage_ok=False)
+    assert order[order.index("coverage"):] == [
+        "coverage", "failover", "list", "merge", ("finish", False)]
+    (tmp_path / "ok").mkdir()
+    assert "failover" not in _drive_convert(tmp_path / "ok", monkeypatch)
 
 
 def _auto(tmp_path, monkeypatch, fake_convert, **kw):
@@ -911,3 +927,309 @@ def test_auto_puts_back_what_a_crashed_convert_moved(tmp_path, monkeypatch):
     with pytest.raises(_Stop):
         _auto(tmp_path, monkeypatch, _conv, only_mods=None)
     assert w.has(OLD) and ss.pending() is None
+
+
+# ============================================================ the fallback merge
+
+OLD_PATCH, CUR_PATCH = "Old (CBBEtoUBE src).esp", "Iron (CBBEtoUBE src).esp"
+IRON_M = "!UBE\\armor\\iron\\cuirass_1.nif"
+OLD_M = "!UBE\\armor\\old\\cuirass_1.nif"
+
+
+def _patch_esp(w, name, *models, fallbacks=None, where=None):
+    """A per-source patch set whose armatures name `models`, one each."""
+    folder = where if where is not None else w.patches
+    folder.mkdir(parents=True, exist_ok=True)
+    recs = [_rec(b"ARMA", 0x01000800 + i, encode_subrecord(b"MOD3", encode_zstring(m)))
+            for i, m in enumerate(models)]
+    _plugin(folder / name, ARMA=recs)
+    (folder / (name + ".espgen.json")).write_bytes(b"{}")
+    if fallbacks is not None:
+        (folder / (name + ".male_fallbacks.json")).write_bytes(
+            json.dumps(fallbacks).encode())
+    return folder / name
+
+
+def _snapshot(w) -> dict:
+    """Every file of the output a run without the sweep has too, by content."""
+    out = {}
+    for p in sorted(w.out.rglob("*")):
+        rel = p.relative_to(w.out).as_posix()
+        if p.is_file() and not rel.startswith("_superseded/") and rel != ss.MANIFEST_NAME:
+            out[rel] = p.read_bytes()
+    return out
+
+
+def _missing_meshes(w, patch_paths) -> list:
+    """The `!UBE` meshes the armatures of `patch_paths` name that are not on disk:
+    each one a missing-mesh crash in a Combined merged from them."""
+    return [m for p in patch_paths for m, _b in ss._ube_models(p)
+            if not (w.out / "meshes" / m.replace("\\", "/")).is_file()]
+
+
+def _fallback_world(w):
+    """A removed source's base and its patch set (which names it) beside the
+    patch set of a source that ran: the sweep moves the first two."""
+    _patch_esp(w, OLD_PATCH, OLD_M)
+    _patch_esp(w, CUR_PATCH, IRON_M)
+    w.record({OLD: "Old Mod"}, {OLD_PATCH: "Old Mod"})
+    return [(w.data, _result(w.data, (IRON,), esps=[w.patches / CUR_PATCH]), None)]
+
+
+def test_a_fallback_merge_takes_what_a_run_without_the_sweep_takes(w, capsys):
+    """Coverage failed: every moved file is back before the per-source patches
+    are listed, so the fallback merges the moved patch set, as a run without
+    the sweep does, and says so."""
+    results = _fallback_world(w)
+    without, before = ac._per_source_patch_paths(w.patches), _snapshot(w)
+    _sweep(w, results)
+    assert not w.has(OLD) and not (w.patches / OLD_PATCH).exists(), "the control: moved"
+    assert ac._stale_output_sweep_failover(w.out, w.patches) >= 1
+    assert ss.pending() is None
+    assert ac._per_source_patch_paths(w.patches) == without and _snapshot(w) == before
+    assert "falls back to the per-source patches" in capsys.readouterr().out
+    assert w.report()["moved_to"] is None
+    assert _finish(w, results, merged=False) == 0, "nothing is left to put back"
+    assert w.manifest()["bases"][OLD] == "Old Mod", "still recorded: a later run moves it"
+
+
+def test_a_fallback_without_moves_changes_nothing(w):
+    results = _fallback_world(w)
+    before = _snapshot(w)
+    assert ac._stale_output_sweep_failover(w.out, w.patches) == 0
+    assert _snapshot(w) == before
+
+
+def test_the_fallback_restore_ends_where_one_pass_over_the_whole_folder_does(
+        tmp_path, monkeypatch):
+    """The female-model restore ran while a moved female mesh was away; after
+    the put-back it runs again, and the patch is byte for byte the one a run
+    without the sweep leaves."""
+    fem = "armor/old/f/cuirass"
+    fb = [{"orig": "armor\\old\\f\\cuirass_1.nif", "slot": "MOD3", "fid": 0x01000800,
+           "to": IRON_M}]
+    snaps = {}
+    for sweep in (False, True):
+        world = World(tmp_path / str(sweep))
+        world.mesh(IRON, "_0.nif", "_1.nif")
+        world.mesh(fem, "_0.nif", "_1.nif")
+        _patch_esp(world, CUR_PATCH, IRON_M, fallbacks=fb)
+        world.record({fem: "Old Mod"})
+        results = [(world.data, _result(world.data, (IRON,),
+                                        esps=[world.patches / CUR_PATCH]), None)]
+        if sweep:
+            monkeypatch.delenv(OFF, raising=False)
+        else:
+            monkeypatch.setenv(OFF, "1")
+        _sweep(world, results)
+        ac.ube_patcher.restore_female_models(world.patches, world.out)
+        if sweep:
+            assert not world.has(fem) and [b for _m, b in ss._ube_models(
+                world.patches / CUR_PATCH)] == [IRON], "the control: restored nothing"
+        ac._stale_output_sweep_failover(world.out, world.patches)
+        snaps[sweep] = _snapshot(world)
+    assert snaps[True] == snaps[False]
+    assert [b for _m, b in ss._ube_models(tmp_path / "True" / "mods" / "Output" /
+                                          "_unmerged_patches" / CUR_PATCH)] == [fem]
+
+
+# ============================================================ patches left in place
+
+S_PATCH = "S (CBBEtoUBE src).esp"
+B1, B2 = "armor/smod/cuirass", "armor/smod/boots"
+
+
+def _not_selected_world(w, monkeypatch, reasons):
+    """A source selection no longer picks: two recorded bases and its old patch
+    set, which names both. Its planner, asked, gives `reasons`."""
+    w.mod("S Mod")
+    w.mesh(B1, "_0.nif", "_1.nif")
+    w.mesh(B2, "_0.nif", "_1.nif")
+    _patch_esp(w, S_PATCH, "!UBE\\armor\\smod\\cuirass_1.nif",
+               "!UBE\\armor\\smod\\boots_1.nif")
+    _patch_esp(w, CUR_PATCH, IRON_M)
+    w.record({B1: "S Mod", B2: "S Mod"}, {S_PATCH: "S Mod"})
+
+    def _plan(mod_dir, **k):
+        k["drop_reasons"].update(reasons)
+        return set()
+    monkeypatch.setattr(ac, "_player_armor_mesh_bases", _plan)
+    return [(w.data, _result(w.data, (IRON,), esps=[w.patches / CUR_PATCH]), None)]
+
+
+def test_a_source_whose_old_patch_stays_keeps_its_meshes_across_runs(w, monkeypatch):
+    """Run N: the source drops one of its two bases, so its patch set stays --
+    and the base stays with it. Run N+1's coverage fails: the fallback merges
+    that patch, and every mesh it names is on disk."""
+    results = _not_selected_world(w, monkeypatch, {B1: "non-playable"})
+    _sweep(w, results)                                  # run N, merged from coverage
+    _combined(w, IRON_M)
+    _finish(w, results, merged=True)
+    assert w.has(B1) and w.has(B2) and (w.patches / S_PATCH).is_file()
+    row = next(d for d in w.report()["bases"] if d["key"] == B1)
+    assert row["action"] == "hold" and S_PATCH in row["reason"]
+    _sweep(w, results)                                  # run N+1, coverage fails
+    ac._stale_output_sweep_failover(w.out, w.patches)
+    fallback = ac._per_source_patch_paths(w.patches)
+    assert w.patches / S_PATCH in fallback
+    assert _missing_meshes(w, fallback) == []
+
+
+def test_a_source_whose_every_base_goes_moves_with_its_patch_set(w, monkeypatch):
+    """All or nothing, the other half: every base has a reason, so the patch
+    set moves too, and no patch left in place names a moved mesh."""
+    results = _not_selected_world(w, monkeypatch, {B1: "non-playable", B2: "non-playable"})
+    _sweep(w, results)
+    _combined(w, IRON_M)
+    assert _finish(w, results, merged=True) == 0
+    assert not w.has(B1) and not w.has(B2) and not (w.patches / S_PATCH).exists()
+    assert _missing_meshes(w, ac._per_source_patch_paths(w.patches)) == []
+
+
+@pytest.mark.parametrize("names_it", [True, False])
+def test_a_patch_left_in_place_holds_every_base_it_names(w, names_it):
+    """An old patch set no run recorded stays; a base one of its armatures
+    names stays with it. The control names another mesh: the base moves."""
+    _patch_esp(w, "Stray (CBBEtoUBE src).esp", OLD_M if names_it else IRON_M)
+    w.record({OLD: "Old Mod"})
+    _sweep(w, [_vanilla(w)])
+    assert w.has(OLD) is names_it
+
+
+def test_a_base_held_by_another_patch_keeps_its_whole_source(w, monkeypatch):
+    """Every base of the source has a reason, but a stray patch left in place
+    names one of them: that base stays, so the source's patch set stays, and so
+    does its other base -- decided again until nothing changes."""
+    results = _not_selected_world(w, monkeypatch, {B1: "non-playable", B2: "non-playable"})
+    _patch_esp(w, "Stray (CBBEtoUBE src).esp", "!UBE\\armor\\smod\\boots_1.nif")
+    _sweep(w, results)
+    assert w.has(B1) and w.has(B2) and (w.patches / S_PATCH).is_file()
+    assert ss.pending() is None
+
+
+def test_a_patch_left_in_place_that_cannot_be_read_holds_every_move(w):
+    w.patches.mkdir(parents=True)
+    (w.patches / "Stray (CBBEtoUBE src).esp").write_bytes(b"not a plugin")
+    w.record({OLD: "Old Mod"})
+    _sweep(w, [_vanilla(w)])
+    assert w.has(OLD)
+    row = next(d for d in w.report()["bases"] if d["key"] == OLD)
+    assert row["action"] == "hold" and "could not be read" in row["reason"]
+
+
+def test_a_patch_set_that_cannot_move_keeps_its_sources_meshes(w, monkeypatch):
+    results = _fallback_world(w)
+    real = os.replace
+
+    def _replace(a, b):
+        if str(a).endswith(OLD_PATCH) and "_superseded" not in str(a):
+            raise PermissionError(13, "in use")
+        return real(a, b)
+    monkeypatch.setattr(ss.os, "replace", _replace)
+    assert _sweep(w, results) >= 1
+    assert w.has(OLD) and (w.patches / OLD_PATCH).is_file() and ss.pending() is None
+    row = next(d for d in w.report()["bases"] if d["key"] == OLD)
+    assert row["action"] == "hold" and OLD_PATCH in row["reason"]
+
+
+@pytest.mark.parametrize("recorded", [True, False])
+def test_patches_at_the_mod_root_keep_their_sources_meshes(w, recorded):
+    """Root-write mode never moves a patch, so a source whose patch sits there
+    keeps its meshes; the control, a patch no run recorded naming nothing."""
+    _patch_esp(w, OLD_PATCH, where=w.out)
+    w.record({OLD: "Old Mod"}, {OLD_PATCH: "Old Mod"} if recorded else {})
+    results = [_vanilla(w)]
+    ac._stale_output_sweep(_args(w, results), w.out, w.out, results, set(), _state())
+    assert w.has(OLD) is recorded
+
+
+# ============================================================ isolation
+
+@pytest.mark.parametrize("bases, patches", [
+    ({OLD: ["Old Mod"]}, {}), ({OLD: {"a": 1}}, {}), ({OLD: None}, {}),
+    ({OLD: "Old Mod"}, {OLD_PATCH: ["Old Mod"]})])
+def test_a_manifest_holding_other_than_names_is_no_manifest(w, capsys, bases, patches):
+    """A hand edit or a foreign write: nothing it records moves, a named warning
+    says so, and the finish writes the record anew."""
+    w.out.mkdir(parents=True, exist_ok=True)
+    (w.out / ss.MANIFEST_NAME).write_bytes(json.dumps(
+        {"format": 1, "bases": bases, "patches": patches}).encode())
+    results = [_vanilla(w)]
+    assert _sweep(w, results) >= 1
+    assert w.has(OLD) and ss.pending() is None
+    assert ("!! stale-output sweep: the conversion manifest has an entry that is not "
+            "a mod name") in capsys.readouterr().out
+    assert _finish(w, results) == 0
+    m, problem = ss.read_manifest(w.out)
+    assert problem == "" and m["bases"] == {IRON: "vanilla"}
+
+
+def test_an_error_mid_move_puts_back_everything_and_the_run_goes_on(w, monkeypatch, capsys):
+    """The patch set moved, then a file of the base raised an error no one
+    expected, and its own roll-back failed too: every file still comes back
+    (the journal lists them), and the finish finds nothing to settle."""
+    results = _fallback_world(w)
+    before = _snapshot(w)
+    real = os.replace
+    seen = {"fwd": 0, "back": 0}
+
+    def _replace(a, b):
+        mine = "cuirass" in Path(a).name
+        if mine and "_superseded" not in str(a):
+            seen["fwd"] += 1
+            if seen["fwd"] == 2:
+                raise RuntimeError("boom")
+        elif mine and seen["fwd"] == 2 and not seen["back"]:
+            seen["back"] = 1
+            raise RuntimeError("roll-back failed")
+        return real(a, b)
+    monkeypatch.setattr(ss.os, "replace", _replace)
+    assert _sweep(w, results) >= 1
+    assert seen == {"fwd": 2, "back": 1}, "the control: the error hit mid-base"
+    assert ss.pending() is None and _snapshot(w) == before
+    assert "stopped by an error (RuntimeError: boom)" in capsys.readouterr().out
+    assert _finish(w, results, merged=True) == 0
+
+
+def test_a_group_that_raises_puts_its_own_files_back_first(w, monkeypatch):
+    """An error that is not a file error still leaves the base whole before it
+    propagates."""
+    real = os.replace
+    seen = {"n": 0}
+
+    def _replace(a, b):
+        if "_superseded" not in str(a):
+            seen["n"] += 1
+            if seen["n"] == 3:
+                raise RuntimeError("boom")
+        return real(a, b)
+    monkeypatch.setattr(ss.os, "replace", _replace)
+    files = sorted(w.ube.glob("armor/old/*"))
+    with pytest.raises(RuntimeError):
+        ss.move_group(files, w.out, w.out / "_superseded" / "x")
+    assert seen["n"] == 3 and all(f.is_file() for f in files)
+
+
+def test_an_error_after_the_moves_puts_them_back(w, monkeypatch):
+    results = _fallback_world(w)
+    before = _snapshot(w)
+
+    def _boom(*a, **k):
+        raise KeyError("listing")
+    monkeypatch.setattr(ac, "_stale_print_list", _boom)
+    assert _sweep(w, results) == 1
+    assert ss.pending() is None and _snapshot(w) == before
+
+
+def test_an_error_while_deciding_moves_nothing_and_records_no_adoption(w, monkeypatch):
+    w.mod("Set Mod")
+    results = [_vanilla(w), (w.mods / "Set Mod",
+                             _result(w.mods / "Set Mod", reasons={OLD: "female-only"}), None)]
+    real = ss.decide_patches
+
+    def _boom(*a, **k):
+        raise TypeError("x")
+    monkeypatch.setattr(ss, "decide_patches", _boom)
+    assert _sweep(w, results) == 1
+    monkeypatch.setattr(ss, "decide_patches", real)
+    assert w.has(OLD) and ss.pending() is None and ac._STALE_ADOPTED == {}

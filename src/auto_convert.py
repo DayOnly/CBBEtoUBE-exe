@@ -4542,7 +4542,11 @@ def _stale_output_sweep(args, output, patches_dir, results, claimed_dst_paths,
     on a full run whose plan is complete, under the brake -- move the ones with
     a reason to `_superseded\<run stamp>\`, leaving them PENDING until the merge
     confirms them (`_stale_output_sweep_finish`). Always reports. Returns the
-    number of warnings printed (recorded as warnings too)."""
+    number of warnings printed (recorded as warnings too).
+
+    ISOLATED: any error in the decisions or the moves puts back every file this
+    run moved, warns, and returns -- the restore, coverage and merge then run
+    exactly as without the sweep."""
     global _STALE_ADOPTED
     _STALE_ADOPTED = {}
     ctx = getattr(args, "stale_sweep", None)
@@ -4552,7 +4556,41 @@ def _stale_output_sweep(args, output, patches_dir, results, claimed_dst_paths,
         print(f"\n  stale-output sweep: {NOTE} not run -- only a run of all mods "
               "can tell which old conversions no source makes any more")
         return 0
-    output = Path(output)
+    try:
+        return _stale_output_sweep_run(args, Path(output), patches_dir, results,
+                                       claimed_dst_paths, state, ctx)
+    except Exception as e:
+        return _stale_output_sweep_failed(Path(output), e)
+
+
+def _stale_output_sweep_failed(output, e) -> int:
+    """The sweep raised: put back everything its journal lists, forget what it
+    would have recorded, and say so. Returns warnings. #stale-output-sweep"""
+    global _STALE_ADOPTED
+    _STALE_ADOPTED = {}
+    h = stale_sweep.pending()
+    stale_sweep._set_pending(None)
+    failed: list = []
+    if h is not None:
+        failed = stale_sweep.put_back(h.pairs() + h.planned)
+        stale_sweep.update_journal(h.journal,
+                                   status="partly put back" if failed else "put back",
+                                   put_back_because=f"the sweep stopped: {plain_error(e)}")
+    warn(f"stale-output sweep: stopped by an error ({plain_error(e)}); every file "
+         "it moved this run was put back",
+         consequence="no old conversion moves this run; the restore, coverage and "
+                     "merge run as they would without the sweep",
+         fix="send the run log; CBBE2UBE_NO_STALE_OUTPUT_SWEEP=1 turns the sweep off")
+    _record_failure("stale sweep error", output, "stale-output sweep",
+                    plain_error(e), severity="warning")
+    return 1 + (_stale_put_back_failed(h, failed) if failed else 0)
+
+
+def _stale_output_sweep_run(args, output, patches_dir, results, claimed_dst_paths,
+                            state, ctx) -> int:
+    """The decisions, the moves and the report of `_stale_output_sweep`.
+    #stale-output-sweep"""
+    global _STALE_ADOPTED
     warns = 0
     for stamp, failed in stale_sweep.recover_interrupted(output):
         print(f"  stale-output sweep: {NOTE} put back the files an interrupted "
@@ -4560,6 +4598,16 @@ def _stale_output_sweep(args, output, patches_dir, results, claimed_dst_paths,
               + (f" ({len(failed)} could not go back)" if failed else ""))
     inv = stale_sweep.inventory(output)
     manifest, problem = stale_sweep.read_manifest(output)
+    if problem:
+        warn(f"stale-output sweep: the conversion manifest {problem}, so no old "
+             "conversion an earlier run recorded can move this run",
+             where=str(output / stale_sweep.MANIFEST_NAME),
+             consequence="they are only listed; the record is written anew at the "
+                         "end of this run, and a later full run can move them again",
+             fix="nothing to do, unless the file was edited by hand")
+        _record_failure("stale sweep manifest unreadable", output,
+                        stale_sweep.MANIFEST_NAME, problem, severity="warning")
+        warns += 1
     claimed: set = set()
     superseded: set = set()
     ran: "dict[str, dict]" = {}
@@ -4595,14 +4643,26 @@ def _stale_output_sweep(args, output, patches_dir, results, claimed_dst_paths,
             d.action, d.reason = "hold", "a file of it lies outside the output folder"
     _STALE_ADOPTED = {d.key: d.source for d in dec if d.action == "adopt"}
     sets = _stale_patch_sets(patches_dir, written)
-    pdec = stale_sweep.decide_patches(
-        set(sets), dict((manifest or {}).get("patches", {})), ran, status, dec,
-        claims_by_source, recorded)
     root_write = Path(patches_dir) == output
-    for d in pdec:
-        if d.action == "move" and (root_write or sets.get(d.key) is None):
-            d.action, d.reason = "hold", ("the per-source patches sit at the mod root"
-                                          if root_write else "a file of it is a link")
+    named: dict = {}
+
+    def _names_of(n: str):
+        if n not in named:
+            named[n] = stale_sweep.patch_bases(Path(patches_dir) / n)
+        return named[n]
+    # A per-source patch left in place can be merged by a later run's fallback:
+    # hold every base it could name, then decide the patches again (one that
+    # moved because all its source's bases moved may have to stay now).
+    while True:
+        pdec = stale_sweep.decide_patches(
+            set(sets), dict((manifest or {}).get("patches", {})), ran, status, dec,
+            claims_by_source, recorded)
+        for d in pdec:
+            if d.action == "move" and (root_write or sets.get(d.key) is None):
+                d.action, d.reason = "hold", ("the per-source patches sit at the mod root"
+                                              if root_write else "a file of it is a link")
+        if not stale_sweep.hold_for_staying_patches(dec, pdec, _names_of):
+            break
     moves = [d for d in dec if d.action == "move"]
     pmoves = [d for d in pdec if d.action == "move"]
 
@@ -4624,7 +4684,7 @@ def _stale_output_sweep(args, output, patches_dir, results, claimed_dst_paths,
           f"meshes\\!UBE no source claimed this run ---")
     if gaps and (moves or pmoves):
         warn(f"stale-output sweep: {len(moves)} old conversion(s) NOT moved -- "
-             "the plan is incomplete: " + "; ".join(gaps),
+             f"the plan is incomplete: {'; '.join(gaps)}",
              consequence="a mesh this run may have lost is not told apart from one it "
                          "dropped, so nothing moves; they are listed below",
              fix="fix what the warnings above name and run all mods again")
@@ -4713,15 +4773,21 @@ def _stale_move(output, inv, sets, moves, pmoves, stamp):
     """Move each decided base and patch set whole into a new stamp folder; the
     journal (written first) lists them, so an interrupted run's moves can be
     put back. Returns (handle or None, left [(key, error, [])], torn [(key,
-    error, [names])]). #stale-output-sweep"""
+    error, [names])]).
+
+    The patch sets move first: a base whose source's patch set, or a patch set
+    naming it, could not move stays too (`hold_for_staying_patches`). The handle
+    is pending from the first move on, so an error anywhere after it puts back
+    what moved. #stale-output-sweep"""
     sdir = stale_sweep.new_stamp_dir(output, stamp)
     h = stale_sweep.Handle(output=output, stamp_dir=sdir,
                            journal=sdir / stale_sweep.JOURNAL_NAME)
     planned = []
-    for d in moves:
-        planned += [p.relative_to(output).as_posix() for p in inv.bases[d.key]]
     for d in pmoves:
         planned += [p.relative_to(output).as_posix() for p in sets[d.key]]
+    for d in moves:
+        planned += [p.relative_to(output).as_posix() for p in inv.bases[d.key]]
+    h.planned = [(output / rel, sdir / rel) for rel in planned]
     journal = {"status": "moving", "run_stamp": stamp, "planned": planned,
                "moves": []}
     left: list = []
@@ -4730,13 +4796,22 @@ def _stale_move(output, inv, sets, moves, pmoves, stamp):
         stale_sweep.write_json(h.journal, journal)
     except OSError as e:
         return None, [(d.key, plain_error(e), []) for d in moves + pmoves], []
-    for kind, rows, files_of in (("mesh", moves, lambda d: sorted(inv.bases[d.key])),
-                                 ("patch", pmoves, lambda d: sets[d.key])):
+    stale_sweep._set_pending(h)
+    stayed: list = []
+    for kind, rows, files_of in (("patch", pmoves, lambda d: sets[d.key]),
+                                 ("mesh", moves, lambda d: sorted(inv.bases[d.key]))):
+        if kind == "mesh" and stayed:
+            stale_sweep.hold_for_staying_patches(
+                moves, stayed, lambda n: stale_sweep.patch_bases(sets[n][-1]))
         for d in rows:
+            if d.action != "move":
+                continue
             pairs, err, t = stale_sweep.move_group(files_of(d), output, sdir)
             if err:
                 (torn if t else left).append((d.key, err, t))
                 d.action, d.reason = "hold", f"could not be moved ({err})"
+                if kind == "patch":
+                    stayed.append(d)
                 continue
             h.moved.append((d.key, kind, pairs))
             journal["moves"].append({"key": d.key, "kind": kind, "source": d.source,
@@ -4749,8 +4824,8 @@ def _stale_move(output, inv, sets, moves, pmoves, stamp):
     except OSError:
         pass            # the first journal still lists every planned file
     if not h.moved:
+        stale_sweep._set_pending(None)
         return None, left, torn
-    stale_sweep._set_pending(h)
     return h, left, torn
 
 
@@ -4766,6 +4841,9 @@ def _stale_settle(h, why: str) -> int:
     stale_sweep.update_journal(h.journal,
                                status="partly put back" if failed else "put back",
                                put_back_because=why)
+    report = h.output / stale_sweep.SUPERSEDED_DIR / stale_sweep.REPORT_NAME
+    if report.is_file():
+        stale_sweep.update_journal(report, moved_to=None, put_back_because=why)
     warn(f"stale-output sweep: the {len(h.moved)} old conversion(s) moved this run "
          f"were put back: {why}",
          consequence="an old Combined plugin may still name them, and a plugin that "
@@ -4774,17 +4852,48 @@ def _stale_settle(h, why: str) -> int:
          fix="fix the merge problem above and run all mods again")
     _record_failure("stale sweep put back", h.output, "moved files", why,
                     severity="warning")
-    n = 1
-    if failed:
-        warn(f"stale-output sweep: {len(failed)} moved file(s) could not be put back: "
-             + ", ".join(Path(f).name for f in failed[:5]),
-             consequence="a plugin that still names one of them crashes the game "
-                         "when an actor wearing it loads",
-             fix=f"move them back by hand from {h.stamp_dir}")
-        _record_failure("stale sweep put back failed", h.output,
-                        f"{len(failed)} file(s)", ", ".join(failed[:5]))
-        n += 1
-    return n
+    return 1 + (_stale_put_back_failed(h, failed) if failed else 0)
+
+
+def _stale_put_back_failed(h, failed) -> int:
+    """Name the moved files that could not go back. #stale-output-sweep"""
+    names = ", ".join(Path(f).name for f in failed[:5])
+    warn(f"stale-output sweep: {len(failed)} moved file(s) could not be put back: "
+         f"{names}",
+         consequence="a plugin that still names one of them crashes the game "
+                     "when an actor wearing it loads",
+         fix=f"move them back by hand from {h.stamp_dir}")
+    _record_failure("stale sweep put back failed", h.output,
+                    f"{len(failed)} file(s)", ", ".join(failed[:5]))
+    return 1
+
+
+def _stale_output_sweep_failover(output, patches_dir) -> int:
+    r"""The merge falls back to the per-source patches (coverage failed or came
+    back empty): put back every file this run moved BEFORE the fallback lists
+    the patches, so it merges what a run without the sweep would -- the moved
+    patch sets, and patches whose armatures name a moved mesh. Then run the
+    female-model restore again: it ran while those meshes were away, and it
+    re-points only to a mesh on disk (idempotent), so a second pass ends where
+    one pass over the whole folder would. Returns warnings. #stale-output-sweep"""
+    h = stale_sweep.pending()
+    if h is None:
+        return 0
+    stale_sweep._set_pending(None)
+    warns = _stale_settle(h, "the merge falls back to the per-source patches, "
+                             "which may name them")
+    try:
+        _fmr = ube_patcher.restore_female_models(patches_dir, output)
+        if _fmr.get("models_restored"):
+            print(f"  female-model restore (after the put-back): re-pointed "
+                  f"{_fmr['models_restored']} ARMA model(s) in "
+                  f"{_fmr['patches_changed']} patch(es)")
+    except Exception as e:
+        warn(f"female-model restore after the stale-output put-back failed: "
+             f"{plain_error(e)}",
+             consequence="a patch may keep a male fallback for a mesh that is back")
+        warns += 1
+    return warns
 
 
 def _stale_output_sweep_finish(args, output, results, *, merged) -> int:
@@ -6189,6 +6298,10 @@ def _cmd_convert(args):
                     # path is all-or-nothing; the fallback is per-source ONLY,
                     # and one file per source (never an old-named and a renamed
                     # copy of the same one). #source-patch-rename
+                    # #stale-output-sweep: the fallback merges what a run
+                    # without the sweep would -- every moved file goes back
+                    # before the patches are listed.
+                    overall_warnings += _stale_output_sweep_failover(output, patches_dir)
                     patch_paths = _per_source_patch_paths(patches_dir)
                 merged_out = output / args.merged_name
                 print(f"\n--- auto-merging {len(patch_paths)} patch(es) "

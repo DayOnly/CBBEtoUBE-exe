@@ -1192,8 +1192,21 @@ lost piece from a dropped one. What ships (`src/stale_sweep.py`, glue in
   source mod for every claim (`AutoConvertResult.claimed_weight_bases`, recorded where
   `claimed_dst_paths` takes the path), per-source patch -> source, run stamp, build. An
   earlier entry is carried while its file is on disk and no claim of this run takes
-  it. A base no run recorded never moves -- the first run after shipping is
-  report-only by construction, and a file placed by hand is safe.
+  it. A base no run recorded never moves in the run that finds it -- the first run
+  after shipping is report-only by construction. A manifest that is not valid JSON,
+  has another layout, or holds a key or value that is not a string is no manifest
+  (named warning; the finish writes it anew).
+- **Hand-placed files: no provenance signal.** Adoption (below) records an unrecorded
+  base on a positive reason alone, and the next full run can move it. Nothing tells a
+  file a user placed by hand from one an earlier run wrote: the converter writes no
+  marker of its own into a NIF (its extra data is BODYTRI and the HDT-SMP path, which
+  hand-made meshes carry too), a per-source `.espgen.json` snapshot and
+  `conversion_report_<mod>.txt` are rewritten from the current plan each time the
+  source runs (the dropped base is the one they stop listing), and coverage points
+  the old Combined at any `!UBE` mesh on disk. So a hand-placed file moves exactly
+  when it sits at the weight base of an armature a source this run drops for a
+  positive reason, and then only from the second full run on; every other
+  hand-placed file never moves (it is listed).
 - **Positive reasons only.** `_player_armor_mesh_bases(drop_reasons=)` names, for a
   base an armature names but the plan leaves out, the rule that did it:
   `non-playable`, `third-party covered` (the `#claim-meshes-prefix` case is one),
@@ -1229,13 +1242,39 @@ lost piece from a dropped one. What ships (`src/stale_sweep.py`, glue in
   moves only when its recorded source is gone, or was not selected, claims nothing and
   all its recorded bases move; never in the root-write mode. The brake: more than
   max(10, 2.5% of the output's bases) is report-only (live: 37 of 1,973, limit 49).
+- **No per-source patch left in place names a moved mesh**
+  (`stale_sweep.hold_for_staying_patches`). A patch set this run did not write and
+  does not move is merged by any later run whose coverage fails, in a run that has no
+  record of this one's moves -- a missing-mesh crash if one of its armatures names a
+  moved base. So a base move is held when a staying set is recorded for its source
+  (all or nothing per source: the old set was written from an older plan, and a
+  `--plugins-only` run that selects the source regenerates it from its old snapshot),
+  when one of a staying set's armatures names the base (covers unrecorded sets and
+  another source's patch), or, when a staying set cannot be read, for every base. The
+  patch decisions then run again (a set that moved because all its source's bases
+  moved may have to stay) until nothing changes. Patch sets move before bases; a set
+  that fails to move holds its source's bases and the ones it names. A patch written
+  this run names only what this run planned (`converted_rel_paths`), never a stale
+  base. Chosen over "move the source's bases and patch set together" alone because
+  that leaves unrecorded sets unguarded. Live: with a full record it holds nothing
+  (the three stale sets move with their bases); on the second real run, when those
+  three sets are still unrecorded, it holds 1 of the 24 adopted bases -- a male mesh
+  one of them names, which 772ccf1 moved into a latent missing-mesh crash.
 - **Transactional.** The moves are PENDING until the merge: kept only when the new
-  Combined was written from coverage alone (not the per-source fallback) and none of
-  its pieces names a moved base; otherwise every file goes back, since an old Combined
-  pointing at a moved `!UBE` mesh is a missing-mesh crash. An exception out of
-  `_cmd_convert` puts them back from `_cmd_auto`; a journal a killed run left unsettled
-  is put back at the start of the next full run's sweep. Report:
-  `_superseded\stale_output_report.json` and the log.
+  Combined was written from coverage alone and none of its pieces names a moved base;
+  otherwise every file goes back, since an old Combined pointing at a moved `!UBE`
+  mesh is a missing-mesh crash. When coverage fails or comes back empty, every file
+  goes back BEFORE the per-source fallback lists the patches
+  (`_stale_output_sweep_failover`), and the female-model restore runs again (it
+  re-points only to a mesh on disk, so the second pass ends where one pass over the
+  whole folder does): the fallback Combined is the one a run without the sweep writes.
+  An exception out of `_cmd_convert` puts them back from `_cmd_auto`; a journal a
+  killed run left unsettled is put back at the start of the next full run's sweep.
+  Report: `_superseded\stale_output_report.json` and the log.
+- **Isolated.** Any exception in the decisions, the moves or the report puts back
+  every file the journal lists (the stamp folder is new, so a file there is one this
+  run moved -- including one whose own roll-back failed), forgets the adoptions, warns,
+  and returns: restore, coverage and merge run as without the sweep.
 
 Coverage replay with the 37 bases gone (repro8): 9,835 -> 9,826 links, 9 removed, 0
 added, 189 re-pointed, 198 armours; 0 a woman can wear changes visibly. Switched off

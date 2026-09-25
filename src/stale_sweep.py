@@ -34,9 +34,15 @@ resolved nothing). Moving on absence would make those pieces invisible. So:
 1. A MANIFEST (`_conversion_manifest.json`) is written every `auto` run: each
    weight base this run claimed and the source mod that claimed it, each
    per-source patch and its source, the run stamp and the build. A base the
-   manifest does not record is never moved (a first run after this shipped has
-   no manifest, so it only reports), and neither is a file a user placed by
-   hand.
+   manifest does not record is never moved in the run that finds it (a first
+   run after this shipped has no manifest, so it only reports). It is recorded
+   ("adopted") only when a source of that run gives a positive reason for
+   exactly its weight base; a later full run then moves it if that source still
+   gives the reason or is gone. Nothing tells a file a user placed by hand from
+   one an earlier run wrote -- the converter marks neither its meshes nor
+   keeps a list that survives the next run of the same source -- so a
+   hand-placed file at such a path is adopted too; any other hand-placed file
+   never moves.
 2. PLAN_COMPLETE: the caller lists every shrink-direction fallback that fired
    (`plan_gaps`); any one makes the run REPORT-ONLY.
 3. A stale base moves only when its recorded source is gone (removed, disabled,
@@ -48,7 +54,14 @@ resolved nothing). Moving on absence would make those pieces invisible. So:
    keeping relative paths; a brake refuses a large share; and the move is
    TRANSACTIONAL with the merge -- if the new Combined is not written (or names
    a moved mesh) every file goes back, because an old Combined pointing at a
-   moved `!UBE` mesh is a missing-mesh crash.
+   moved `!UBE` mesh is a missing-mesh crash. A merge that falls back to the
+   per-source patches puts every file back BEFORE it lists them.
+5. A per-source patch that stays on disk can be merged by a later run's
+   fallback: a base moves only when no per-source patch this run leaves in
+   place names it, or is recorded for its source (`hold_for_staying_patches`).
+   A source's bases and its old patch set move together or not at all.
+6. ISOLATED: an unreadable or malformed manifest is no manifest; any error in
+   the sweep puts back what it moved and the run goes on as without it.
 
 Nothing is ever deleted. CBBE2UBE_NO_STALE_OUTPUT_SWEEP=1: no manifest, no
 report, no move. CBBE2UBE_STALE_OUTPUT_SWEEP_REPORT_ONLY=1: report, never move.
@@ -150,10 +163,17 @@ def inventory(output) -> Inventory:
 
 # ---------------------------------------------------------------- manifest
 
+def _name_map(v) -> bool:
+    """{str: str}: every key a path or file name, every value a source name."""
+    return isinstance(v, dict) and all(
+        isinstance(k, str) and isinstance(s, str) for k, s in v.items())
+
+
 def read_manifest(output) -> "tuple[dict | None, str]":
     """(manifest, problem). None and "" when there is none yet; None and the
-    reason when it cannot be read -- either way nothing it would have recorded
-    can move."""
+    reason when it cannot be read or holds a value that is not a name (a hand
+    edit, a foreign write) -- either way nothing it would have recorded can
+    move, and the run's finish writes it anew."""
     p = Path(output) / MANIFEST_NAME
     try:
         raw = p.read_bytes()
@@ -169,6 +189,8 @@ def read_manifest(output) -> "tuple[dict | None, str]":
             or not isinstance(d.get("bases"), dict)
             or not isinstance(d.get("patches", {}), dict)):
         return None, "has an unknown layout"
+    if not _name_map(d["bases"]) or not _name_map(d.get("patches", {})):
+        return None, "has an entry that is not a mod name"
     return d, ""
 
 
@@ -306,6 +328,63 @@ def decide_patches(stale, recorded, ran, status, base_moves, claims_by_source,
     return out
 
 
+def hold_for_staying_patches(base_dec, patch_dec, names_of) -> bool:
+    r"""Hold every base move a per-source patch this run leaves in place could
+    still reach. Such a patch is merged by a later run whose coverage fails
+    (the per-source fallback), so an armature of it naming a moved `!UBE` mesh
+    would be a missing-mesh crash then -- in a run that has no record of the
+    move to put back. A base move is held when a staying patch set:
+
+    - is recorded for the base's source (a source's bases and its old patch set
+      move together or not at all -- the patch was written from an older plan
+      and may name any base of its source), or
+    - names the base in an armature (`names_of(patch name)` -> the weight bases
+      its armatures name, or None when it cannot be read: then every move is
+      held, since an unread patch may name any of them).
+
+    Mutates the decisions; returns whether any changed (a patch that moved
+    because all its source's bases move may have to stay now -- decide again
+    until nothing changes). #stale-output-sweep"""
+    staying = [d for d in patch_dec if d.action != "move"]
+    if not staying:
+        return False
+    by_source = {d.source: d.key for d in staying if d.source}
+    named: dict = {}
+    unread = ""
+    for d in staying:
+        got = names_of(d.key)
+        if got is None:
+            unread = unread or d.key
+            continue
+        for b in got:
+            named.setdefault(b, d.key)
+    changed = False
+    for d in base_dec:
+        if d.action != "move":
+            continue
+        if d.source in by_source:
+            why = (f"the per-source patch {by_source[d.source]} of its source stays, "
+                   "so its meshes stay with it")
+        elif d.key in named:
+            why = f"the per-source patch {named[d.key]} left in place names it"
+        elif unread:
+            why = f"the per-source patch {unread} left in place could not be read"
+        else:
+            continue
+        d.action, d.reason = "hold", why
+        changed = True
+    return changed
+
+
+def patch_bases(esp_path) -> "set[str] | None":
+    r"""The weight bases the armatures of one plugin name below `!UBE`; None
+    when it cannot be read."""
+    try:
+        return {b for _m, b in _ube_models(esp_path)}
+    except Exception:
+        return None
+
+
 def brake_limit(total_bases: int) -> int:
     """The most bases one run may move."""
     return max(BRAKE_FLOOR, int(total_bases * BRAKE_SHARE))
@@ -320,6 +399,10 @@ class Handle:
     stamp_dir: Path
     journal: Path
     moved: list = field(default_factory=list)   # [(key, kind, [(src, dst), ...])]
+    #: Every (src, dst) the journal lists, moved or not: the stamp folder is new
+    #: this run, so a file at a dst is one this run moved -- the put-back after
+    #: an error mid-move finds it even when `moved` does not list it yet.
+    planned: list = field(default_factory=list)
 
     @property
     def moved_bases(self) -> "set[str]":
@@ -361,7 +444,8 @@ def move_group(files, output, stamp_dir) -> "tuple[list, str, list]":
     """Move `files` (under `output`) to the same relative paths under
     `stamp_dir`, all or nothing: on the first failure the files already moved
     go back. Returns (moved pairs, error or "", names that could not go back).
-    A destination that exists is a failure, never overwritten."""
+    A destination that exists is a failure, never overwritten. Any other error
+    also puts back what moved, then propagates."""
     root = Path(output)
     done: list = []
     try:
@@ -375,13 +459,15 @@ def move_group(files, output, stamp_dir) -> "tuple[list, str, list]":
             to.parent.mkdir(parents=True, exist_ok=True)
             os.replace(f, to)
             done.append((f, to))
-    except (OSError, ValueError) as e:
+    except Exception as e:
         torn = []
         for f, to in reversed(done):
             try:
                 os.replace(to, f)
-            except OSError:
+            except Exception:
                 torn.append(f.name)
+        if not isinstance(e, (OSError, ValueError)):
+            raise
         msg = str(e).strip()
         return [], (f"{type(e).__name__}: {msg}" if msg else type(e).__name__), sorted(torn)
     return done, "", []
@@ -400,7 +486,7 @@ def put_back(pairs) -> "list[str]":
                 raise FileExistsError(f.name)
             f.parent.mkdir(parents=True, exist_ok=True)
             os.replace(to, f)
-        except OSError:
+        except Exception:
             failed.append(str(f))
     return failed
 
@@ -460,25 +546,34 @@ def combined_references(combined_path, bases) -> "list[str]":
     r"""The `!UBE` model paths in the written Combined (and its split pieces)
     whose weight base is in `bases` -- a moved mesh the plugin still names.
     Raises when a piece cannot be read: an unread plugin is not a clean one."""
-    from . import esp
     combined_path = Path(combined_path)
     pieces = sorted(combined_path.parent.glob(combined_path.stem + "*.esp"))
     hits: list = []
     for piece in pieces:
-        e = esp.ESP.load(piece)
-        for g in e.groups:
-            if g.label != b"ARMA":
-                continue
-            for r in g.records:
-                for sig, d in esp.iter_subrecords(r.payload):
-                    if sig not in (b"MOD2", b"MOD3", b"MOD4", b"MOD5"):
-                        continue
-                    m = d.rstrip(b"\x00").decode("cp1252", "replace")
-                    s = m.replace("\\", "/").lstrip("/")
-                    if s.lower().startswith("meshes/"):
-                        s = s[len("meshes/"):]
-                    if not s.lower().startswith("!ube/"):
-                        continue
-                    if base_key(s[len("!ube/"):]) in bases:
-                        hits.append(f"{piece.name}: {m}")
+        for m, b in _ube_models(piece):
+            if b in bases:
+                hits.append(f"{piece.name}: {m}")
     return hits
+
+
+def _ube_models(esp_path) -> "list[tuple[str, str]]":
+    r"""[(model path, weight base)] for every `!UBE` model an armature of the
+    plugin names (MOD2-MOD5). Raises when the plugin cannot be read."""
+    from . import esp
+    out: list = []
+    e = esp.ESP.load(Path(esp_path))
+    for g in e.groups:
+        if g.label != b"ARMA":
+            continue
+        for r in g.records:
+            for sig, d in esp.iter_subrecords(r.payload):
+                if sig not in (b"MOD2", b"MOD3", b"MOD4", b"MOD5"):
+                    continue
+                m = d.rstrip(b"\x00").decode("cp1252", "replace")
+                s = m.replace("\\", "/").lstrip("/")
+                if s.lower().startswith("meshes/"):
+                    s = s[len("meshes/"):]
+                if not s.lower().startswith("!ube/"):
+                    continue
+                out.append((m, base_key(s[len("!ube/"):])))
+    return out
