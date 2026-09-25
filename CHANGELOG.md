@@ -25,6 +25,17 @@ that share a name, so current output does not change.
 `CBBE2UBE_NO_DUP_SHAPE_NAMES=1` (set to 1) keeps the authored names;
 `CBBE2UBE_NO_OVERRIDE_CONTRACT=1` turns off the size check.
 
+### Changed — the last step of a conversion is quicker
+
+At the end of a run the tool goes over every armour that has a thin and a
+heavy version. First it makes sure both versions jiggle on the same bones,
+then it checks that the two versions still match. Each of those steps opened
+every file on its own. Both are now done while each file is open once. The
+files written and the warnings shown are the same. Measured on a copy of the
+reported modlist's output (2700 files): this step took 257 seconds and now
+takes 182 (293 and 252 in a second, busier run).
+`CBBE2UBE_NO_TAIL_FOLD=1` (set to 1) does the two steps separately again.
+
 ### Changed — checking your zeroed BodySlide build is about four times faster
 
 Before converting, the tool checks which armour your zeroed BodySlide build

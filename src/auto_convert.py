@@ -5496,8 +5496,16 @@ def _cmd_convert(args):
     # the threshold and end up with belly or butt jiggle at one body weight
     # only. This gives the deficient weight its partner's bone.
     # #weight-partner-jiggle-sync
+    # #tail-fold: the sync and the parity check below share one walk, each
+    # pair loaded once; None -> the two serial passes run, as before. A fold
+    # that raises is a sync that raised: warned below, and the check then
+    # walks the pairs on its own.
+    _wp_fold = None
     try:
-        _wp_sync = _postflight_sync_weight_partner_jiggle(output)
+        _wp_fold = _postflight_weight_partner_fold(
+            output, check=not _flag("CBBE2UBE_NO_WEIGHT_PARITY_CHECK", False))
+        _wp_sync = (_wp_fold[0] if _wp_fold is not None
+                    else _postflight_sync_weight_partner_jiggle(output))
         if _wp_sync:
             print(f"\n  weight-partner jiggle sync: {_wp_sync} vert(s) given "
                   f"their partner's scale bone")
@@ -5512,7 +5520,12 @@ def _cmd_convert(args):
     _wp_div: "list" = []          # reused by the JSON health report below
     if not _flag("CBBE2UBE_NO_WEIGHT_PARITY_CHECK", False):
         try:
-            _wp_div = _postflight_weight_partner_divergence(output)
+            _wp_div = (_wp_fold[1] if _wp_fold is not None
+                       else _postflight_weight_partner_divergence(output))
+            if isinstance(_wp_div, Exception):
+                # The fold's check died on a pair, as the serial one would.
+                _wp_err, _wp_div = _wp_div, []
+                raise _wp_err
             if _wp_div:
                 warn(f"POSTFLIGHT weight-partner parity: {len(_wp_div)} shape(s) convert "
                      "differently at _0 vs _1",
@@ -6532,6 +6545,144 @@ def _postflight_sync_weight_partner_jiggle(output_dir) -> int:
         except Exception:
             continue
     return total
+
+
+def _tail_fold() -> bool:
+    """#tail-fold (2026-09-25): does the end of the run sync the `_0`/`_1`
+    jiggle bones and check the pairs for divergence in ONE walk, loading each
+    pair once? Yes, by default.
+
+    The two were serial walks over every pair of the whole output, each loading
+    both files: 150 s for the sync and 72 s for the check on the reported
+    modlist (3342 NIFs, read-only replay), in the batch parent after the last
+    source. The check is detect-only and reads the state the sync leaves, so it
+    can run on the files the sync already holds whenever the sync left them as
+    they are on disk. CBBE2UBE_NO_TAIL_FOLD=1 runs the two serial walks again."""
+    return not _flag("CBBE2UBE_NO_TAIL_FOLD", False)
+
+
+def _pass_failures_noted() -> int:
+    """How many pass failures this process has recorded so far. #tail-fold"""
+    return sum(nif_convert.pass_failure_summary().values())
+
+
+def _postflight_weight_partner_fold(output_dir, check: bool):
+    """`_postflight_sync_weight_partner_jiggle`, then (when `check`)
+    `_postflight_weight_partner_divergence`, in one walk. #tail-fold
+
+    Returns (verts synced, divergence findings) -- the two serial passes'
+    results, in their order -- or None when switched off or when the pairs
+    cannot even be listed; the caller then runs the two serial passes, as
+    before, and nothing has been touched yet. When the CHECK raises on a pair,
+    the findings are that exception instead of a list: the serial check
+    raised it too and reported nothing, while the sync had already walked every
+    pair -- so the fold stops checking and goes on syncing.
+
+    THE PAIR IS LOADED ONCE. The check reads the files the sync opened when
+    the sync left them exactly as they are on disk: it changed no vert and
+    recorded no failure. Otherwise (it wrote the pair, or saved one side and
+    failed on the other) the pair is read from disk again, so the check
+    always sees what ships, as the serial check did. The open copy cannot
+    stand in for the disk after an edit: its shapes still read the bones and
+    weights from before the graft (measured on a synthetic pair), so it would
+    report the very divergence the sync just repaired. Pairs are
+    grouped, ordered and skipped exactly as both serial passes do it, and a
+    pair whose sync raises is skipped, as the serial sync skips it."""
+    if not _tail_fold():
+        return None
+    import re as _re
+    meshes = Path(output_dir) / "meshes"
+    sync = bool(nif_convert.WEIGHT_PARTNER_JIGGLE_SYNC)
+    try:
+        if not meshes.is_dir() or not (sync or check):
+            return 0, []
+        # Grouped exactly as both serial passes group them.
+        groups: "dict[tuple, dict]" = {}
+        for p in meshes.glob("**/*.nif"):
+            m = _re.match(r"(.*)_([01])\.nif$", p.name, _re.IGNORECASE)
+            if m:
+                groups.setdefault((str(p.parent), m.group(1)), {})[m.group(2)] = p
+    except Exception:
+        return None
+    return _weight_partner_fold_walk(meshes, sorted(groups.items()), sync, check)
+
+
+def _weight_partner_fold_walk(meshes, pairs, sync: bool, check: bool):
+    """The walk behind `_postflight_weight_partner_fold`. #tail-fold"""
+    from .nif_convert_weights import _sync_weight_partner_jiggle_loaded
+    try:
+        pyn, open_err = nif_convert._pynifly(), None
+    except Exception as _pe:
+        pyn, open_err = None, _pe
+    total = 0
+    out: "list[str]" = []
+    check_err = None
+
+    def _open(byw):
+        nf: dict = {}
+        try:
+            if pyn is None:
+                raise open_err
+            nf["0"] = pyn.NifFile(filepath=str(byw["0"]))
+            nf["1"] = pyn.NifFile(filepath=str(byw["1"]))
+        except Exception:
+            for _f in nf.values():
+                nif_io.release_nif(_f)
+            raise
+        return nf
+
+    for (_parent, base), byw in pairs:
+        if "0" not in byw or "1" not in byw:
+            continue
+        try:
+            nf = _open(byw)
+        except Exception as _oe:
+            if sync:
+                # What the serial sync records for a pair it cannot open; the
+                # serial check skipped such a pair silently.
+                nif_convert._note_pass_failure(
+                    "_sync_weight_partner_jiggle/open", _oe)
+            continue
+        try:
+            reread = False
+            if sync:
+                failed_before = _pass_failures_noted()
+                try:
+                    n = _sync_weight_partner_jiggle_loaded(
+                        byw["0"], byw["1"], nf)
+                except Exception:
+                    n, reread = 0, True
+                total += n
+                if n > 0 or _pass_failures_noted() != failed_before:
+                    reread = True
+            if not check:
+                continue
+            if reread:
+                for _f in nf.values():
+                    nif_io.release_nif(_f)
+                nf = {}
+                try:
+                    nf = _open(byw)
+                except Exception:
+                    continue
+            try:
+                label = byw["1"].relative_to(meshes).as_posix()
+            except Exception:
+                label = f"{base}_1.nif"
+            try:
+                out.extend(_weight_partner_scale_divergence(
+                    list(nf["0"].shapes), list(nf["1"].shapes), label))
+            except Exception as _ce:
+                # The serial check died here, reporting nothing; the serial
+                # sync had finished. Check no more pairs; sync the rest.
+                check_err, check = _ce, False
+                if not sync:
+                    break
+        finally:
+            # Released by reference counting per pair. #postflight-release
+            for _f in nf.values():
+                nif_io.release_nif(_f)
+    return total, (check_err if check_err is not None else out)
 
 
 _BATCH_BSA_INDEX = None   # set per-batch by _cmd_convert; lazy BSA mesh resolver
