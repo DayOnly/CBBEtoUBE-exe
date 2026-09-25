@@ -59,6 +59,10 @@ def _fake_measure(piece, work_root):
     plant = os.environ.get(_PLANT, "").split(",")
     if label.endswith("-first"):
         time.sleep(1.5)
+    if label.endswith("-slow"):
+        # Still converting when a death breaks the pool, however slowly the
+        # workers start on a loaded machine; the broken pool terminates it.
+        time.sleep(20)
     if f"raise:{label}" in plant:
         raise RuntimeError(f"planted failure in {label}")
     if f"die:{label}" in plant:
@@ -195,7 +199,7 @@ def rerun_env():
     def go_rows():
         rows = []
         for p, r, err in go._measured(
-                [t._piece(x) for x in ("b", "c-first", "dies")],
+                [t._piece(x) for x in ("b", "c-slow", "dies")],
                 tmp / "rerun_env", 2):
             rows.append([p[0] if p else None, err])
             os.environ["CBBE2UBE_LATE_TEST_FLAG"] = "1"
@@ -385,8 +389,8 @@ def test_a_re_run_is_held_to_the_environment_the_run_started_under(pool):
     rows = _scenario(pool, "rerun_env")["res"]
     by = {label: err for label, err in rows}
     assert by["b"] is None, rows
-    assert by["c-first"] and "worker environment differs" in by["c-first"] \
-        and "CBBE2UBE_LATE_TEST_FLAG" in by["c-first"], rows
+    assert by["c-slow"] and "worker environment differs" in by["c-slow"] \
+        and "CBBE2UBE_LATE_TEST_FLAG" in by["c-slow"], rows
 
 
 def test_a_capture_with_a_dead_worker_names_it_and_writes_nothing(pool):
