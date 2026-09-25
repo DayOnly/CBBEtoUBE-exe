@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Fixed — the run log and the per-mod reports name the right plugin for each patch
+
+A mod with several plugins, some of them without armour, was listed with each
+patch next to the wrong plugin ("a quest plugin -> an armour set's patch"), and the
+per-mod report printed one plugin's numbers under another plugin's name. Each patch
+is now listed with the plugin it was made from, and the report says how many of the
+plugins found were patched. Only the log and report text change; the converted
+armour and plugins are the same.
+
 ### Fixed — a failed search for armour meshes is reported instead of hidden
 
 Before converting, the tool searches every enabled mod for the armour meshes the

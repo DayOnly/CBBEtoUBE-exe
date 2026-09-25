@@ -908,10 +908,16 @@ class AutoConvertResult:
     source_esp: Path | None = None
     output_esp: Path | None = None
     esp_stats: dict = field(default_factory=dict)
-    # All source ESPs + corresponding output patches (same length, same order).
+    # Every source plugin FOUND, and the patches actually written with their
+    # stats. NOT the same length: a plugin with no armour or a failed one gets
+    # no patch, so zipping source_esps with output_esps pairs a plugin with a
+    # later plugin's patch. `esp_patched` holds (source plugin, patch, stats),
+    # one per patch written -- read that to say which plugin made which patch.
+    # #esp-report-pairing
     source_esps: list[Path] = field(default_factory=list)
     output_esps: list[Path] = field(default_factory=list)
     esp_stats_list: list[dict] = field(default_factory=list)
+    esp_patched: "list[tuple[Path, Path, dict]]" = field(default_factory=list)
     nif_results: list[nif_convert.ConvertResult] = field(default_factory=list)
     textures_copied: int = 0
     notes: list[str] = field(default_factory=list)
@@ -1005,10 +1011,14 @@ class AutoConvertResult:
             f"source : {self.source_dir}",
             f"output : {self.output_dir}",
             "",
-            f"ESP ({len(self.source_esps)} patched)",
+            (f"ESP ({len(self.esp_patched)} patched of "
+             f"{len(self.source_esps)} plugin(s) found)"
+             if self.source_esps else
+             f"ESP ({1 if self.source_esp is not None else 0} patched)"),
         ]
+        # Each patch with the plugin that made it. #esp-report-pairing
         esps_to_report = (
-            list(zip(self.source_esps, self.output_esps, self.esp_stats_list))
+            list(self.esp_patched)
             if self.source_esps else (
                 [(self.source_esp, self.output_esp, self.esp_stats)]
                 if self.source_esp is not None else []
@@ -1110,6 +1120,19 @@ class AutoConvertResult:
                 lines.append(f"  - {rel}   dropped={r.dropped_shapes}")
 
         path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def _esp_patch_log_lines(r: "AutoConvertResult") -> "list[str]":
+    """The run log's per-source plugin lines: how many plugins were found, and
+    each patch written with the plugin that made it. A plugin with no armour
+    (238 in one bundle mod) or a failed one writes no patch, so the old zip of
+    every plugin found with every patch written shifted each later pair onto
+    the wrong plugin. #esp-report-pairing"""
+    lines = [f"    source ESPs: {len(r.source_esps)} "
+             f"({len(r.esp_patched)} patched)"]
+    for i, (src_e, out_e, _stats) in enumerate(r.esp_patched):
+        lines.append(f"      [{i}] {Path(src_e).name} -> {Path(out_e).name}")
+    return lines
 
 
 def _find_meshes_root(source_dir: Path) -> Path | None:
@@ -1764,6 +1787,7 @@ def refresh_mod_esp(
             out_path = Path(stats.get("output", out_esp))
             result.output_esps.append(out_path)
             result.esp_stats_list.append(stats)
+            result.esp_patched.append((src_esp, out_path, stats))
             if result.output_esp is None:
                 result.output_esp = out_path
                 result.esp_stats = stats
@@ -2148,6 +2172,7 @@ def auto_convert_mod(
                 out_path = Path(stats.get("output", out_esp))
                 result.output_esps.append(out_path)
                 result.esp_stats_list.append(stats)
+                result.esp_patched.append((src_esp, out_path, stats))
                 # ESP-refresh snapshot: the per-mod inputs generate_ube_patch
                 # needs besides live master dirs. `--plugins-only` replays the
                 # ESP phase from these in minutes (no NIF work) -- safe under
@@ -5401,10 +5426,8 @@ def _cmd_convert(args):
             overall_failures += 1
             continue
         if r.source_esps:
-            print(f"    source ESPs: {len(r.source_esps)}")
-            for i, (src_e, out_e) in enumerate(
-                    zip(r.source_esps, r.output_esps)):
-                print(f"      [{i}] {src_e.name} -> {out_e.name}")
+            for _ln in _esp_patch_log_lines(r):
+                print(_ln)
         else:
             print(f"    source ESP : {r.source_esp}")
             print(f"    output ESP : {r.output_esp}")

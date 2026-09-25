@@ -7429,4 +7429,43 @@ PAIRS = (
          tests=('tests/test_vfs_index_fail_loud.py',),
          expect=('test_an_unreadable_folder_in_the_convert_step_is_counted',),
     ),
+    # #esp-report-pairing (2026-09-25): the log and the per-mod report pair each
+    # patch with the plugin that made it, not by position.
+    Pair('ERP-a', 'the report zips every plugin found with every patch written',
+         edits=(
+             ('src/auto_convert.py',
+              '            list(self.esp_patched)\n',
+              '            list(zip(self.source_esps, self.output_esps, self.esp_stats_list))  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_esp_report_pairing.py',),
+         expect=('test_the_report_gives_each_patch_its_own_plugin_and_stats',),
+    ),
+    Pair('ERP-b', 'the log zips every plugin found with every patch written',
+         edits=(
+             ('src/auto_convert.py',
+              '    for i, (src_e, out_e, _stats) in enumerate(r.esp_patched):',
+              '    for i, (src_e, out_e, _stats) in enumerate(zip(r.source_esps, r.output_esps, r.esp_stats_list)):  # MUTATED', 1),
+         ),
+         tests=('tests/test_esp_report_pairing.py',),
+         expect=('test_the_log_names_the_plugin_that_made_the_patch',),
+    ),
+    Pair('ERP-c', 'a converted patch is not recorded with its plugin',
+         edits=(
+             ('src/auto_convert.py',
+              '                result.esp_patched.append((src_esp, out_path, stats))\n',
+              '                pass  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_esp_report_pairing.py',),
+         expect=('test_the_log_names_the_plugin_that_made_the_patch',
+                 'test_the_report_gives_each_patch_its_own_plugin_and_stats'),
+    ),
+    Pair('ERP-d', 'a replayed patch is not recorded with its plugin',
+         edits=(
+             ('src/auto_convert.py',
+              '\n            result.esp_patched.append((src_esp, out_path, stats))\n',
+              '\n            pass  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_esp_report_pairing.py',),
+         expect=('test_the_plugins_only_replay_pairs_by_plugin_too',),
+    ),
 )

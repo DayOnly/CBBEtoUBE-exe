@@ -1365,6 +1365,16 @@ snapshot and skips every source, and a coverage failure leaves the fallback merg
 empty. A full run regenerates the old-named set; the next run without the switch then
 deletes the old set wherever the renamed one exists.
 
+**Which plugin made which patch** (`#esp-report-pairing`, 2026-09-25). A source's
+`source_esps` lists every plugin FOUND; `output_esps` and `esp_stats_list` only the
+patches WRITTEN -- a plugin with no ARMA group or a failed one writes none. The run
+log and `write_report` zipped the two, so every later pair shifted onto the wrong
+plugin (one bundle mod skips 238 armourless plugins). Both sites that write a patch
+(the full run and `--plugins-only`) now record `(plugin, patch, stats)` in
+`esp_patched`, and the log (`_esp_patch_log_lines`) and the report read that; the
+report header says "N patched of M plugin(s) found". Text only, no switch: no patch,
+sidecar or mesh changes.
+
 ### What the coverage passes leave alone
 
 The winner scan is the sole generator over every armour in the load order, so it
