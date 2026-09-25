@@ -399,17 +399,61 @@ def reconcile_alt_texture_indices(esp_path, meshes_root) -> int:
     return fixed
 
 
+def _piece_family_match() -> bool:
+    r"""#piece-family-match (2026-09-25): do the post-merge passes rewrite only
+    the Combined and its numbered split pieces? Yes, by default.
+
+    `reconcile_alt_texture_indices_all`, `dedup_armo_armature_refs_all`,
+    `fix_spurious_hand_slot`, `resort_masters_all` and
+    `postflight_validate_combined` globbed `<stem>*<suffix>`: a user's
+    `<stem> - Copy.esp` or `<stem>_backup.esp` in the output folder was loaded,
+    rewritten (ESP.save drops what the reader does not model) and reported
+    "validated clean" on every run. `_drop_stale_pieces` had already narrowed the
+    same family to `<stem><digits><suffix>` for its deletes; all six now share
+    `_combined_piece_tail`. Live: the output folder holds the Combined and one
+    piece, nothing else of that stem. CBBE2UBE_NO_PIECE_FAMILY_MATCH=1 makes the
+    five passes glob the broad family again (the deletes stay narrow)."""
+    return not _flag("CBBE2UBE_NO_PIECE_FAMILY_MATCH", False)
+
+
+def _combined_piece_tail(name: str, stem: str, suffix: str) -> "str | None":
+    """The part of `name` between the Combined's `stem` and `suffix`: "" for the
+    Combined itself, the digits of a split piece (`<stem>2.esp` -> "2"), None
+    for any other file that merely starts with the stem (`<stem> - Copy.esp`,
+    `<stem>_backup.esp`). Case-blind, as the folder is. The ONE matcher of the
+    merge's file family. #piece-family-match"""
+    n, s, x = name.lower(), stem.lower(), suffix.lower()
+    if not (n.startswith(s) and n.endswith(x)) or len(n) < len(s) + len(x):
+        return None
+    tail = n[len(s):len(n) - len(x)]
+    return tail if tail == "" or tail.isdigit() else None
+
+
+def _combined_piece_family(primary, suffix: "str | None" = None) -> "list[Path]":
+    """The merge's own files beside `primary` (the Combined and its numbered
+    split pieces), sorted -- the files the post-merge passes may rewrite.
+    `suffix` defaults to `primary`'s. With CBBE2UBE_NO_PIECE_FAMILY_MATCH, every
+    `<stem>*<suffix>` as before. #piece-family-match"""
+    p = Path(primary)
+    x = suffix if suffix is not None else p.suffix
+    found = sorted(p.parent.glob(f"{p.stem}*{x}"))
+    if not _piece_family_match():
+        return found
+    return [f for f in found if _combined_piece_tail(f.name, p.stem, x) is not None]
+
+
 def reconcile_alt_texture_indices_all(primary_esp_path, meshes_root) -> int:
     """Reconcile alt-texture indices across the primary merged ESP AND every
     ESL-split overflow piece (`<stem>.esp`, `<stem>2.esp`, ...).
 
     merge_patches_split may spill records into sibling pieces; those pieces
-    carry alt-texture sets that also need reconciliation. Globs the same
-    `<stem>*<suffix>` family the split writer uses. Returns total records fixed."""
+    carry alt-texture sets that also need reconciliation. Walks the merge's own
+    file family (`_combined_piece_family`, #piece-family-match). Returns total
+    records fixed."""
     from pathlib import Path as _Path
     p = _Path(primary_esp_path)
     total = 0
-    for piece in sorted(p.parent.glob(f"{p.stem}*{p.suffix}")):
+    for piece in _combined_piece_family(p):
         total += reconcile_alt_texture_indices(piece, meshes_root)
     return total
 
@@ -820,7 +864,7 @@ def dedup_armo_armature_refs_all(primary_esp_path) -> int:
     from pathlib import Path as _Path
     p = _Path(primary_esp_path)
     total = 0
-    for piece in sorted(p.parent.glob(f"{p.stem}*{p.suffix}")):
+    for piece in _combined_piece_family(p):
         total += dedup_armo_armature_refs(piece)
     return total
 
@@ -908,7 +952,7 @@ def fix_spurious_hand_slot(primary_esp_path, meshes_root, *,
             saw_handless = True
         return "handless" if saw_handless else "unknown"
 
-    for piece in sorted(p.parent.glob(f"{p.stem}*{p.suffix}")):
+    for piece in _combined_piece_family(p):
         try:
             e = esp.ESP.load(piece)
         except Exception:
@@ -2588,7 +2632,7 @@ def postflight_validate_combined(combined_path, meshes_root=None, *,
     (warn only). Globs `<stem>*.esp` so ESL split pieces are all covered.
     `mesh_resolves`: as in `validate_patch` (#coverage-nude-skin)."""
     combined_path = Path(combined_path)
-    pieces = sorted(combined_path.parent.glob(combined_path.stem + "*.esp"))
+    pieces = _combined_piece_family(combined_path, ".esp")
     if combined_path.is_file() and combined_path not in pieces:
         pieces.append(combined_path)
     ctd: list = []
@@ -3096,7 +3140,7 @@ def resort_masters_all(primary_esp_path, master_data_dirs=None) -> int:
     clear_master_path_cache()
     p = _Path(primary_esp_path)
     changed = 0
-    for piece in sorted(p.parent.glob(f"{p.stem}*{p.suffix}")):
+    for piece in _combined_piece_family(p):
         try:
             e = esp.ESP.load(piece)
         except Exception as _le:
@@ -6661,8 +6705,10 @@ def merge_patches_split(
         for f in out_path.parent.glob(f"{stem}*{suffix}"):
             if f.name in keep:
                 continue
-            tail = f.name[len(stem):len(f.name) - len(suffix)]
-            if not tail.isdigit():
+            # The Combined itself ("") and anything not of the family (None)
+            # stay. The matcher is shared with the post-merge passes.
+            # #piece-family-match
+            if not _combined_piece_tail(f.name, stem, suffix):
                 continue          # not one of our numbered pieces -- leave it
             try:
                 f.unlink()

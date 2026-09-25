@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Fixed — a copy of the combined plugin in the output folder is left alone
+
+If you kept a copy of `CBBE_to_UBE_Combined.esp` in the output folder (for
+example `CBBE_to_UBE_Combined - Copy.esp` or `..._backup.esp`), every run
+opened it, rewrote it and listed it as checked, as if it were part of the
+output. Only the combined plugin and its numbered parts (`...Combined2.esp`,
+and so on) are touched now. The reported modlist has no such copy, so nothing
+changes there. `CBBE2UBE_NO_PIECE_FAMILY_MATCH=1` (set to 1) turns it off.
+
 ### Changed — when two archives hold the same mesh, the tool takes the copy the game uses
 
 When two mods' archives contain the same mesh, the game uses the one belonging

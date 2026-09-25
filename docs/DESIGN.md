@@ -1390,6 +1390,21 @@ comma, and no armour of it is in the INI (9,211 lines, 192 plugins named, none
 with a separator), so the INI is unchanged. `CBBE2UBE_NO_SKYPATCHER_NAME_GUARD=1`
 writes such lines again.
 
+### The post-merge passes touch only the merge's own files (`#piece-family-match`)
+
+`reconcile_alt_texture_indices_all`, `dedup_armo_armature_refs_all`,
+`fix_spurious_hand_slot`, `resort_masters_all` and `postflight_validate_combined`
+globbed `<stem>*<suffix>`: a `<stem> - Copy.esp` or `<stem>_backup.esp` the user
+kept in the output folder was loaded, rewritten through `ESP.save` and reported
+"validated clean" on every run. `_drop_stale_pieces` already matched only
+`<stem><digits><suffix>` for its deletes. All six now share
+`_combined_piece_tail` ("" for the Combined, the digits of a split piece, None
+for anything else; case-blind, as the folder is): the passes walk
+`_combined_piece_family`, and the delete still spares the Combined itself. Live:
+the output folder holds the Combined and one piece and nothing else of that stem;
+merge replay byte-identical. `CBBE2UBE_NO_PIECE_FAMILY_MATCH=1` makes the five
+passes glob the broad family again; the delete stays narrow either way.
+
 ### The sidecar FormID invariant
 
 **A sidecar records the FULL, POST-PRUNE FormID of each minted armature.** The merge
