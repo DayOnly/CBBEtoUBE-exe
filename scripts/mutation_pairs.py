@@ -949,6 +949,88 @@ PAIRS = (
          tests=('tests/test_golden_flag_scope.py',),
          expect=('test_a_flag_that_changes_output_is_still_recorded',),
     ),
+    # #golden-jobs (2026-09-25): `golden_output.py capture|check --jobs N`
+    # converts the pieces in N spawned worker processes. The verdict and the
+    # baseline must stay the sequential run's, and a piece lost in a worker
+    # must fail by name instead of vanishing from the run.
+    Pair('GJ-a', 'parallel results are taken in completion order, not piece order',
+         edits=(
+             ('scripts/golden_output.py',
+              '        for piece, fut in zip(pieces, futs):',
+              '        for piece, fut in reversed(list(zip(pieces, futs))):  # MUTATED', 1),
+         ),
+         tests=('tests/test_golden_jobs.py',),
+         expect=('test_results_come_back_in_piece_order_not_completion_order',
+                 'test_a_parallel_capture_records_what_a_sequential_one_does'),
+    ),
+    Pair('GJ-b', 'the pieces run in threads of the parent instead of worker processes',
+         edits=(
+             ('scripts/golden_output.py',
+              '    with ProcessPoolExecutor(max_workers=jobs,\n'
+              '                             mp_context=multiprocessing.get_context("spawn")) as ex:',
+              '    from concurrent.futures import ThreadPoolExecutor  # MUTATED\n'
+              '    with ThreadPoolExecutor(max_workers=jobs) as ex:', 1),
+         ),
+         tests=('tests/test_golden_jobs.py',),
+         expect=('test_pieces_run_in_worker_processes_not_threads',),
+    ),
+    Pair('GJ-c', 'a piece that failed in a worker is printed but not counted',
+         edits=(
+             ('scripts/golden_output.py',
+              '            print(f"  {label:<20} FAIL  worker failed: {err}")\n'
+              '            bad += 1\n',
+              '            print(f"  {label:<20} FAIL  worker failed: {err}")  # MUTATED: not counted\n', 1),
+         ),
+         tests=('tests/test_golden_jobs.py',),
+         expect=('test_a_piece_that_fails_in_a_worker_fails_the_check_by_name',
+                 'test_a_worker_that_dies_fails_the_check_by_name'),
+    ),
+    Pair('GJ-d', 'a capture with a failed worker is recorded anyway',
+         edits=(
+             ('scripts/golden_output.py',
+              '        if failed:\n',
+              '        if False:  # MUTATED: partial baseline written\n', 1),
+         ),
+         tests=('tests/test_golden_jobs.py',),
+         expect=('test_a_piece_that_fails_in_a_worker_leaves_the_baseline_unwritten',),
+    ),
+    Pair('GJ-e', 'a worker converts under an environment its parent does not share',
+         edits=(
+             ('scripts/golden_output.py',
+              '    if got != expect:\n',
+              '    if False:  # MUTATED: environment never compared\n', 1),
+         ),
+         tests=('tests/test_golden_jobs.py',),
+         expect=('test_a_worker_with_a_different_environment_refuses',),
+    ),
+    Pair('GJ-f', '--jobs is not capped by the batch memory-bounded worker count',
+         edits=(
+             ('scripts/golden_output.py',
+              '        n = min(n, max(1, ac.default_worker_count()))\n',
+              '        pass  # MUTATED: no memory cap\n', 1),
+         ),
+         tests=('tests/test_golden_jobs.py',),
+         expect=('test_jobs_are_capped_by_pieces_and_by_the_batch_worker_count',),
+    ),
+    Pair('GJ-g', '--jobs runs with an unpinned hash seed',
+         edits=(
+             ('scripts/golden_output.py',
+              '    if jobs > 1 and not str(os.environ.get("PYTHONHASHSEED", "")).isdigit():\n',
+              '    if False:  # MUTATED: any seed accepted\n', 1),
+         ),
+         tests=('tests/test_golden_jobs.py',),
+         expect=('test_jobs_refuse_an_unpinned_hash_seed',),
+    ),
+    Pair('GJ-h', 'the harness imports numpy before the BLAS cap again',
+         edits=(
+             ('scripts/golden_output.py',
+              'from src.blas_env import cap_blas_threads as _cap_blas     # noqa: E402\n'
+              '_cap_blas()\n',
+              '# MUTATED: BLAS cap removed ahead of numpy\n', 1),
+         ),
+         tests=('tests/test_golden_jobs.py',),
+         expect=('test_numpy_is_imported_under_the_blas_cap',),
+    ),
     # #glow-diagnostic-path (2026-09-20): the diagnostic wrote nothing for an
     # unknown length of time, because its configured directory did not exist
     # and the caller swallows every exception. Both halves are armed: creating

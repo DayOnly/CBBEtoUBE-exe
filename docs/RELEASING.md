@@ -104,6 +104,21 @@ The synthetic counterpart, one conversion per convert path through the batch
 door on a sphere, runs in the suite and in CI:
 `tests/test_convert_paths_through_the_batch_door.py`.
 
+Both `capture` and `check` take `--jobs N` (default 1, one piece after
+another) to convert the pieces in N worker processes. Each worker inherits the
+shell's environment and refuses to convert if its hash seed, BLAS thread caps or
+`CBBE2UBE_*` set differ from the parent's; `--jobs` with no pinned
+`PYTHONHASHSEED` is refused. The parent records and compares in piece order,
+so the baseline and the verdict are the sequential run's; a piece whose worker
+raised or died reads `FAIL  worker failed` under its own name, and a `capture`
+with such a piece writes nothing. N is capped at the piece count and at the
+batch's own worker count for the machine (each converter process peaks near
+2 GB of commit). MEASURED 2026-09-25 on 94340ee plus this change, 15 pieces,
+on a shared machine: `capture` 187 s at `--jobs 1`, 65 s at `--jobs 5`, with
+every array and the manifest the same (and the same as a `capture` on 94340ee
+itself); `check --jobs 5` read 15 of 15 ok in 57 s against the `--jobs 1`
+baseline, where `check --jobs 1` took 176 s.
+
 ## Rebuilding
 
     powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build_exe.ps1
