@@ -4032,8 +4032,7 @@ def _profile_resource_archives(lay) -> "list[str]":
         ini_path = (Path(lay.instance_dir) / "profiles" / lay.selected_profile
                     / "Skyrim.ini")
         cp = configparser.ConfigParser(strict=False, interpolation=None)
-        cp.optionxform = str.lower
-        cp.read(ini_path, encoding="utf-8-sig")
+        cp.read(ini_path, encoding="utf-8-sig")   # option names come back lower-case
         for k in ("sresourcearchivelist", "sresourcearchivelist2"):
             if cp.has_option("Archive", k):
                 names += [x.strip() for x in cp.get("Archive", k).split(",")
