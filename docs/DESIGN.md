@@ -992,6 +992,94 @@ conform/graft passes as a fallback — grafting UBE scale bones onto them crashe
 SMP update on equip (skin-data OOB, the "robes" CTD). "skirt" is deliberately
 excluded: metal tassets are rigid plates that legitimately want the conform.
 
+### A "Data\" physics pointer resolves (`#physics-data-prefix`, default ON)
+
+The NIF's `HDT Skinned Mesh Physics Object` string names the authored XML
+relative to Data (`meshes\...\x.xml`). Some authors write it relative to the
+game folder, `Data\meshes\...`. No mod folder holds a `data` folder, so
+`_resolve_data_rel_in_vfs` missed it, the piece failed CLOSED
+(`hdt_xml_unresolved`, every shape protected) and shipped with no pointer.
+
+The resolver tries the raw rel first (a mod packaged as `<mod>/data/meshes/...`
+keeps its file), then the rel with ONE leading `data` segment removed (any
+case). The strip lives in `_resolve_data_rel_in_vfs`, not in the security
+helper `_safe_data_rel`, and the stripped rel passes `_safe_data_rel` again:
+removing the head can expose a drive letter (`Data\C:\...`), which pathlib
+would otherwise join as an absolute path. No archive is read, so a pointer into
+another mod's tree that exists only in a BSA stays unresolved.
+
+Live, measured on the run's own counter: `hdt_xml_unresolved` 30 -> 12, and 18
+output NIFs (loose and archive-staged, two armour sets and two cloaks) gain an
+authored XML. Restoring the XML also re-engages the ordinary physics handling
+on them: registered-shape protection, collider split clones, and re-imported
+hidden collision shapes (a cloak's `VirtualBody`, which is CBBE-shaped).
+`CBBE2UBE_NO_PHYSICS_DATA_PREFIX=1` restores the old miss.
+
+### A constraint counts wherever it sits (`#constraint-group-scan`, default ON)
+
+FSMP has three constraint elements (`generic-constraint`,
+`stiffspring-constraint`, `conetwist-constraint`), and an XML may put any of
+them at the top level or inside a `<constraint-group>`; this converter's own
+generator writes every chain constraint inside one. `validate_armor_hdt_xml`
+asked `root.find("generic-constraint")` (direct children, one kind), so a
+grouped chain read as unconstrained, and its constraint-body resolution check
+read `generic-constraint` bodies only. Now both walk the whole tree for all
+three kinds. An empty `<constraint-group>` is not a constraint (it holds no
+spring), and neither is `<generic-constraint-default>`.
+
+What the old read decided: only the wording of the report warning for a cloth
+that names no body collide tag ("IS constrained, body collision can be added"
+vs "NO constraints, needs a rigged chain first"). No converter decision uses
+it: every physics decision reads constraint bodies with a whole-file
+`body[AB]=` regex, and `_is_unconstrained_collision_pair` is fed the
+generator's own chains. So it explains none of the pieces that ship static
+although their source has SMP. Live: 75 of 137 output XMLs are constrained
+only inside a group; all 26 "NO constraints" report lines (10 XMLs with 13
+cloth-shape warnings, each at both weights) named one, and go to 0. Over the 361 source XMLs of the load
+order, 1290 such warnings drop to 2 (the two cloths that are really
+unconstrained). No XML in the load order uses the other two kinds, so the
+bone check reports nothing new today.
+
+`scripts/disable_unconstrained_smp.py` used a text test (`"<generic-constraint"`
+anywhere). It saw nested constraints, but it took a `-default` block for a
+constraint and missed the other two kinds, which would rename away the physics
+of a stiffspring or conetwist chain. It now matches the three element names
+exactly; on all 498 XMLs above its verdict is unchanged.
+`CBBE2UBE_NO_CONSTRAINT_GROUP_SCAN=1` restores both old reads.
+
+### How the physics census counts (`scripts/analysis/physics_cloth_health.py`)
+
+The census reads a piece's physics the way FSMP loads it, because every other
+reading counts a different population:
+
+- **The NIF's own pointer, and nothing else.** FSMP's `scanBBP` takes the first
+  string extra-data named `HDT Skinned Mesh Physics Object` on the ROOT node
+  (engine strings: no case). A NIF without one has no physics in game. The
+  census resolves the pointer with `_resolve_data_rel_in_vfs`, so it follows
+  `#physics-data-prefix`. It never uses `_read_source_hdt_xml_text`: that
+  helper falls back to a same-stem XML by filename, which is right for
+  choosing a source config and wrong for counting what ships.
+- **The XML's bytes.** A UTF-8 byte-order mark parses; read as locale text it
+  is junk before the root. Junk after `</system>` is ignored (FSMP stops at the
+  root's end tag), and a default `xmlns` on `<system>` renames nothing for
+  FSMP, so namespaces are stripped. A root other than `<system>` loads nothing.
+- **FSMP's collision rule.** `canCollideWith` runs both ways and both must
+  allow it. One side allows the other when the other carries a tag in its
+  `can-collide-with-tag` list, or, when that list is EMPTY, when the other
+  carries none of its `no-collide-with-tag` tags.
+- **Every constraint kind.** `generic-constraint`, `stiffspring-constraint`,
+  `conetwist-constraint` and `constraint-group` all constrain; the unconstrained
+  crash pair is unconstrained cloth that actually reaches a collider.
+
+Measured on the 09-24 pack (3342 NIFs), old reading -> this one: 364 pieces
+"with physics" -> 306 with a pointer (58 NIFs of 29 garments had borrowed a
+same-stem XML); 94 "unparseable" -> 0 (22 byte-order mark, 58 junk after the
+root, 14 namespaced root); simulated-cloth pieces 97 -> 117 (59 garments);
+unconstrained crash pair 56 -> 0; named collider absent 6 -> 0. Numbers from
+before 2026-09-25 are not comparable with these. Not modelled: collisions with
+colliders another worn piece brings, shape-name physics from `defaultBBPs.xml`,
+and XMLs that exist only in an archive.
+
 ### Custom physics-bone chains
 
 When a NIF is rebuilt, pynifly re-adds each skinned bone flat under the root with an

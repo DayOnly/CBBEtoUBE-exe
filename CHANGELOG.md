@@ -49,6 +49,54 @@ stay out. Measured on the reported modlist: one robe gains its cape; nothing
 else changes.
 `CBBE2UBE_NO_COVERAGE_BODY_CLOAK=1` (set to 1) leaves the cape off again.
 
+### Fixed — the report no longer says a rigged physics cloth has "NO constraints"
+
+When a physics cloth cannot collide with the body, the conversion report says
+whether the piece can be fixed, and that depends on whether its cloth is
+rigged (held together by constraints). Most physics files keep those
+constraints in groups, and the tool looked only outside the groups, so it
+told you a rigged skirt or cape had none and needed a rig first. It now looks
+everywhere. Measured on the reported modlist: all 26 such lines were wrong and
+are gone; the converted meshes themselves do not change. The optional
+`disable_unconstrained_smp.py` script also recognises all three kinds of
+constraint now, so it can no longer switch off a rigged cloth that uses the
+less common kinds (none in the reported modlist).
+`CBBE2UBE_NO_CONSTRAINT_GROUP_SCAN=1` (set to 1) turns it off.
+
+### Fixed — physics that some armours and cloaks point to with a "Data\" path now carries over
+
+An armour with HDT-SMP physics names its physics file inside the mesh. A few
+authors write that name starting with "Data\" (the game folder) instead of
+starting at "meshes\". The tool could not find the file then, so the converted
+piece shipped with no physics at all: the cloth hung stiff. The tool now also
+looks for the file without that leading "Data\", after first trying the name as
+written. Measured on the reported modlist: 18 converted meshes of two armour
+sets and two cloaks get their physics back (body, skirt, first-person and
+shield-cloth pieces). Physics files that exist nowhere in the load order stay
+missing, as before, and nothing is taken from another mod's archive.
+`CBBE2UBE_NO_PHYSICS_DATA_PREFIX=1` (set to 1) turns it off.
+
+### Development only — the physics census counts what the physics engine loads
+
+`scripts/analysis/physics_cloth_health.py` counts which converted pieces have
+HDT-SMP physics and why simulated cloth can clip. It counted a different set
+than the one that plays in game. It gave a piece with no physics link of its
+own the physics file of another garment with the same file name. It read
+physics files as text in the system's code page and more strictly than the
+engine does, so a file that starts with a UTF-8 byte-order mark, declares an
+XML namespace, or has stray text after its end counted as unreadable. It treated one side naming the other as
+enough for cloth to collide, where the engine needs both sides to allow it and
+reads an empty list as "collide with everything". It counted only one of the
+four kinds of constraint. It now follows the piece's own link (a leading
+"Data\" handled as the converter handles it), reads the file's bytes, and
+applies the engine's rules. On the reported pack: pieces with physics 364 ->
+306, unreadable physics files 94 -> 0, simulated-cloth pieces 97 -> 117 (59
+garments), the crash-prone "unconstrained collision" class 56 -> 0, and 14
+pieces (7 garments) have cloth that reaches no collider in its own file. Older
+numbers from this tool are not comparable. Guarded by
+`tests/test_physics_cloth_health.py` and mutation pairs `PCH-a`..`PCH-q`. No
+converter behaviour changes.
+
 ### Changed — whether you can wear an item is read from the plugin the game uses
 
 The tool does not convert an item the player cannot equip (the game's

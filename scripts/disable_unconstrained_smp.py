@@ -30,9 +30,25 @@ skirts the source author rigged), which are stable.
 Dry-run by default (lists what it would do); pass --apply to rename.
 """
 import argparse
+import os
+import re
 from pathlib import Path
 
 SUFFIX = ".nosmp"
+
+# #constraint-group-scan: any of FSMP's three constraint elements counts, nested
+# in a <constraint-group> or not. `<generic-constraint-default>` is NOT one: it
+# sets parameters for constraints that follow and adds no spring by itself.
+# CBBE2UBE_NO_CONSTRAINT_GROUP_SCAN=1 restores the old substring test.
+_CONSTRAINT_RE = re.compile(
+    r"<(?:generic|stiffspring|conetwist)-constraint[\s/>]")
+
+
+def _has_constraint(text: str) -> bool:
+    if os.environ.get("CBBE2UBE_NO_CONSTRAINT_GROUP_SCAN", "").strip().lower() in (
+            "1", "true", "yes", "on"):
+        return "<generic-constraint" in text
+    return _CONSTRAINT_RE.search(text) is not None
 
 
 def is_broken_collision_pair(text: str) -> bool:
@@ -42,7 +58,7 @@ def is_broken_collision_pair(text: str) -> bool:
     per-vertex-only cloth (no collider to diverge against) or any constrained
     chain is NOT this pattern and is left alone."""
     return ("<per-vertex-shape" in text and "<per-triangle-shape" in text
-            and "<generic-constraint" not in text)
+            and not _has_constraint(text))
 
 
 def main():
