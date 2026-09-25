@@ -5025,16 +5025,33 @@ def _outside_ube_mesh_resolver(output) -> "callable[[str], bool] | None":
 def _report_skypatcher_unsafe_names(stats: dict) -> int:
     """#skypatcher-name-guard: name each plugin whose armour the merge wrote no
     SkyPatcher line for, because SkyPatcher would split its file name. One
-    warning per plugin, in the run log and the failures file. Returns how many
-    plugins were named."""
+    warning per plugin, in the run log and the failures file. When the merged
+    plugin's OWN name is the one SkyPatcher would split, that file is named
+    instead, and an armour plugin is named only when its own name splits too.
+    Returns how many files were named."""
+    outs = sorted(set(stats.get("sp_unsafe_output_names") or []))
+    for o in outs:
+        warn(f'the merged plugin "{o}" gets no SkyPatcher lines',
+             consequence="its file name holds a comma or semicolon, which "
+                         "SkyPatcher reads as a separator; every line names it, "
+                         "so none is written and the converted pieces are "
+                         "invisible on UBE actors",
+             fix="choose a merged plugin name without that character "
+                 "(--merged-name) and run the converter again")
+        _record_failure("armour not delivered", o, "every armour line",
+                        "the merged plugin's file name holds a character "
+                        "SkyPatcher splits on (, ;); rename it and run again",
+                        severity="warning")
     by_plugin: "dict[str, int]" = {}
     for t in stats.get("sp_unsafe_name_targets") or []:
         pl = str(t).rsplit("|", 1)[0]
+        if outs and not ube_patcher._skypatcher_name_splits(pl):
+            continue                    # dropped for the output's name alone
         by_plugin[pl] = by_plugin.get(pl, 0) + 1
     for pl, n in sorted(by_plugin.items()):
         warn(f'{n} armour record(s) of the plugin "{pl}" get no UBE armature',
-             consequence="its file name holds a comma, semicolon or equals sign, "
-                         "which SkyPatcher reads as a separator; a line naming it "
+             consequence="its file name holds a comma or semicolon, which "
+                         "SkyPatcher reads as a separator; a line naming it "
                          "would silently match nothing, so none is written and "
                          "these pieces are invisible on UBE actors",
              fix="rename the plugin file without that character (a plugin that "
@@ -5042,9 +5059,9 @@ def _report_skypatcher_unsafe_names(stats: dict) -> int:
                  "run the converter again")
         _record_failure("armour not delivered", pl, f"{n} armour record(s)",
                         "the plugin's file name holds a character SkyPatcher "
-                        "splits on (, ; =); rename it and run again",
+                        "splits on (, ;); rename it and run again",
                         severity="warning")
-    return len(by_plugin)
+    return len(outs) + len(by_plugin)
 
 
 def _report_coverage_holds(stats: "list[dict]") -> None:

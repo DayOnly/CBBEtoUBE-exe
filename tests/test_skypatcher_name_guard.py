@@ -52,15 +52,24 @@ def _targets(stats):
                   for l in stats["skypatcher_ini_lines"])
 
 
-@pytest.mark.parametrize("odd", ["Armors, Extra.esp", "Armors; Extra.esp",
-                                 "Armors=Extra.esp"],
-                         ids=["comma", "semicolon", "equals"])
+@pytest.mark.parametrize("odd", ["Armors, Extra.esp", "Armors; Extra.esp"],
+                         ids=["comma", "semicolon"])
 def test_a_plugin_name_skypatcher_splits_gets_no_line(tmp_path, odd):
     st = _merge(tmp_path, odd)
     low = odd.lower()
     assert _targets(st) == ["moda.esp|000801", "moda.esp|000803"]
     assert st["sp_unsafe_name_targets"] == [f"{low}|000801", f"{low}|000803"]
     assert st["sp_dropped_unsafe_name"] == 2 and st["skypatcher_targets"] == 2
+
+
+def test_an_equals_sign_in_a_plugin_name_keeps_its_line(tmp_path):
+    """A pair splits once, at its first `=`: the INI reader reads the name
+    back whole, so the line is written and resolves."""
+    st = _merge(tmp_path, "Armors=Extra.esp")
+    assert "armors=extra.esp|000801" in _targets(st) and len(_targets(st)) == 4
+    assert st["sp_unsafe_name_targets"] == []
+    line = next(l for l in st["skypatcher_ini_lines"] if "armors=extra" in l)
+    assert ac._skypatcher_fields(line)["filterByArmors"] == "armors=extra.esp|000801"
 
 
 def test_the_dropped_links_balance_the_reconciliation(tmp_path):
@@ -85,6 +94,25 @@ def test_an_output_name_skypatcher_splits_writes_no_line(tmp_path):
                                 master_data_dirs=[tmp_path])
     assert st["skypatcher_ini_lines"] == []
     assert st["sp_unsafe_name_targets"] == ["moda.esp|000801", "moda.esp|000803"]
+    assert st["sp_unsafe_output_names"] == ["Combined, Mine.esp"]
+
+
+def test_an_output_name_that_splits_is_named_not_the_armour_plugins(
+        monkeypatch, capsys):
+    """The armour plugins are fine: the run names the merged plugin and tells
+    the user to choose another --merged-name."""
+    monkeypatch.setattr(ac, "_RUN_FAILURES", [])
+    n = ac._report_skypatcher_unsafe_names(
+        {"sp_unsafe_name_targets": ["moda.esp|000801", "moda.esp|000803",
+                                    "odd, one.esp|000801"],
+         "sp_unsafe_output_names": ["Combined, Mine.esp"]})
+    out = capsys.readouterr().out
+    assert n == 2
+    assert 'the merged plugin "Combined, Mine.esp" gets no SkyPatcher lines' in out
+    assert "--merged-name" in out and '"moda.esp"' not in out
+    assert '1 armour record(s) of the plugin "odd, one.esp"' in out
+    assert [f["source"] for f in ac._RUN_FAILURES] == ["Combined, Mine.esp",
+                                                     "odd, one.esp"]
 
 
 def test_a_plain_name_is_untouched(tmp_path):

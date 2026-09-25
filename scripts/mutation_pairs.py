@@ -8828,38 +8828,55 @@ PAIRS = (
          expect=('test_the_female_model_is_restored_with_its_bytes',),
     ),
     # #skypatcher-name-guard (2026-09-25): a plugin name SkyPatcher splits (`,`
-    # `;` `=`) wrote a line that silently matched nothing. Now no line, the
-    # links counted, and the plugin named in a run warning.
+    # `;`) wrote a line that silently matched nothing. Now no line, the links
+    # counted, and the plugin named in a run warning. `=` is not a separator
+    # (a pair splits once, at its first `=`).
     Pair('SPG-a', 'a plugin name SkyPatcher splits is written into the INI again',
          edits=(
              ('src/ube_patcher.py',
-              '        if _name_guard and (_skypatcher_name_splits(d)\n',
-              '        if False and (_skypatcher_name_splits(d)  # MUTATED\n', 1),
+              '        if _name_guard and (_skypatcher_name_splits(d) or _out_unsafe):\n',
+              '        if False:  # MUTATED\n', 1),
          ),
          tests=('tests/test_skypatcher_name_guard.py',),
          expect=('test_a_plugin_name_skypatcher_splits_gets_no_line[comma]',
                  'test_a_plugin_name_skypatcher_splits_gets_no_line[semicolon]',
-                 'test_a_plugin_name_skypatcher_splits_gets_no_line[equals]',
                  'test_an_output_name_skypatcher_splits_writes_no_line'),
     ),
     Pair('SPG-b', 'only a comma counts as a separator',
          edits=(
              ('src/ube_patcher.py',
-              '_SKYPATCHER_DELIMITERS = ",;=:|"',
+              '_SKYPATCHER_DELIMITERS = ",;:|"',
               '_SKYPATCHER_DELIMITERS = ","  # MUTATED', 1),
          ),
          tests=('tests/test_skypatcher_name_guard.py',),
-         expect=('test_a_plugin_name_skypatcher_splits_gets_no_line[semicolon]',
-                 'test_a_plugin_name_skypatcher_splits_gets_no_line[equals]'),
+         expect=('test_a_plugin_name_skypatcher_splits_gets_no_line[semicolon]',),
     ),
     Pair('SPG-c', 'the Combined\'s own name is not checked',
          edits=(
              ('src/ube_patcher.py',
-              '                            or _skypatcher_name_splits(out_path.name)):\n',
-              '                            or False):  # MUTATED\n', 1),
+              '    _out_unsafe = _name_guard and _skypatcher_name_splits(out_path.name)\n',
+              '    _out_unsafe = False  # MUTATED\n', 1),
          ),
          tests=('tests/test_skypatcher_name_guard.py',),
          expect=('test_an_output_name_skypatcher_splits_writes_no_line',),
+    ),
+    Pair('SPG-h', 'an equals sign in a plugin name drops its working line',
+         edits=(
+             ('src/ube_patcher.py',
+              '_SKYPATCHER_DELIMITERS = ",;:|"',
+              '_SKYPATCHER_DELIMITERS = ",;=:|"  # MUTATED', 1),
+         ),
+         tests=('tests/test_skypatcher_name_guard.py',),
+         expect=('test_an_equals_sign_in_a_plugin_name_keeps_its_line',),
+    ),
+    Pair('SPG-i', 'an output name that splits blames every armour plugin',
+         edits=(
+             ('src/auto_convert.py',
+              '        if outs and not ube_patcher._skypatcher_name_splits(pl):\n',
+              '        if False:  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_skypatcher_name_guard.py',),
+         expect=('test_an_output_name_that_splits_is_named_not_the_armour_plugins',),
     ),
     Pair('SPG-d', 'the dropped links still count as emitted',
          edits=(

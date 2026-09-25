@@ -6122,10 +6122,12 @@ def generate_modded_body_ube_coverage_patch(
 
 # What SkyPatcher splits a line on, as the INI reader in auto_convert
 # (_skypatcher_fields / _skypatcher_forms) models it: `;` starts a comment, `:`
-# separates `key=value` pairs, `=` a key from its value, `,` the forms of a
-# list, and `|` a plugin from its FormID. Windows allows `,` `;` `=` in a file
-# name (not `:` or `|`; they are listed for a name that is not a file name).
-_SKYPATCHER_DELIMITERS = ",;=:|"
+# separates `key=value` pairs, `,` the forms of a list, and `|` a plugin from
+# its FormID. Windows allows `,` and `;` in a file name (not `:` or `|`; they
+# are listed for a name that is not a file name). `=` is NOT one: the reader
+# splits a pair once at its first `=` (seg.split("=", 1)), so an `=` inside a
+# plugin name reads back whole, and guarding it would drop a working line.
+_SKYPATCHER_DELIMITERS = ",;:|"
 
 
 def _skypatcher_name_guard() -> bool:
@@ -6136,7 +6138,10 @@ def _skypatcher_name_guard() -> bool:
     plugin's file name as it is. A comma in it (`Armors, Extra.esp`) splits the
     filter into two forms, neither resolves, and the armour's links are lost
     in silence -- invisible on UBE actors, with a line in the INI that looks
-    fine. A semicolon comments out the rest of the line, and `=` splits a pair.
+    fine. A semicolon comments out the rest of the line. (An `=` in a name is
+    harmless: a pair splits once, at its first `=`.) When it is the merged
+    plugin's OWN name (--merged-name) that splits, every line names it, so no
+    line is written and the run names that file, not the armour plugins.
     No other name can deliver the link: SkyPatcher addresses a form by plugin
     name and FormID (an EditorID needs a runtime EditorID cache, and a
     load-order-indexed FormID goes stale when the order changes). So such an
@@ -6496,11 +6501,11 @@ def merge_patches(
     # A name SkyPatcher would split is no line at all: its links are counted,
     # and the caller names the plugin. #skypatcher-name-guard
     _name_guard = _skypatcher_name_guard()
+    _out_unsafe = _name_guard and _skypatcher_name_splits(out_path.name)
     sp_unsafe: "list[str]" = []
     sp_drop_unsafe = 0
     for (d, l), recs in sorted(sp_by_armo.items()):
-        if _name_guard and (_skypatcher_name_splits(d)
-                            or _skypatcher_name_splits(out_path.name)):
+        if _name_guard and (_skypatcher_name_splits(d) or _out_unsafe):
             sp_unsafe.append(f"{d}|{l:06X}")
             sp_drop_unsafe += len(recs)
             continue
@@ -6523,6 +6528,7 @@ def merge_patches(
         "sp_dropped_render_identical": sp_dropped,
         "sp_dropped_unsafe_name": sp_drop_unsafe,
         "sp_unsafe_name_targets": sp_unsafe,
+        "sp_unsafe_output_names": [out_path.name] if _out_unsafe and sp_unsafe else [],
         "sp_unreadable_sidecars": sp_bad_sidecar,
         "merged_patch_count": len(patches),
         "total_arma_records": len(new_arma_records),
@@ -6808,6 +6814,8 @@ def merge_patches_split(
                                       for s in piece_stats),
         "sp_unsafe_name_targets": [x for s in piece_stats
                                    for x in s.get("sp_unsafe_name_targets", [])],
+        "sp_unsafe_output_names": [x for s in piece_stats
+                                   for x in s.get("sp_unsafe_output_names", [])],
         "sp_unreadable_sidecars": [x for s in piece_stats
                                    for x in s.get("sp_unreadable_sidecars", [])],
         "piece_stats": piece_stats,

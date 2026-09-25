@@ -1375,8 +1375,10 @@ The merge is the only writer of the INI (the coverage generators' own `ini_lines
 are never written; their links reach it through the sidecars). It wrote
 `filterByArmors=<plugin>|<id>:armorAddonsToAdd=<Combined>|<id>,...` with both
 file names as they are. SkyPatcher splits a line as `_skypatcher_fields` /
-`_skypatcher_forms` model it: `;` starts a comment, `:` separates pairs, `=` a
-key from its value, `,` the forms of a list, `|` a plugin from its FormID. A
+`_skypatcher_forms` model it: `;` starts a comment, `:` separates pairs, `,` the
+forms of a list, `|` a plugin from its FormID. (`=` splits a pair ONCE, at its
+first `=`, so an `=` inside a plugin name reads back whole and is not guarded;
+guarding it dropped working lines.) A
 plugin named `Armors, Extra.esp` became two forms that resolve to nothing, and
 the armour lost its UBE armature behind a line that looks fine. There is no
 other name to deliver it by: an EditorID target needs a runtime EditorID cache,
@@ -1385,7 +1387,9 @@ link with no merged record, such an armour gets no line: its links are counted
 in the reconciliation (`sp_dropped_unsafe_name`, part of the balance), and
 `_report_skypatcher_unsafe_names` names each plugin once in a run warning and
 the failures file, with the fix (rename the plugin). A Combined name with such a
-character drops every line the same way. Live: 1 of 3,254 active plugins has a
+character drops every line the same way; then the run names the Combined
+(`sp_unsafe_output_names`, fix: another `--merged-name`) and names an armour
+plugin only when its own name splits too. Live: 1 of 3,254 active plugins has a
 comma, and no armour of it is in the INI (9,211 lines, 192 plugins named, none
 with a separator), so the INI is unchanged. `CBBE2UBE_NO_SKYPATCHER_NAME_GUARD=1`
 writes such lines again.
