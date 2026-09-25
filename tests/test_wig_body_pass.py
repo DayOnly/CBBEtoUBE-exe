@@ -152,7 +152,11 @@ def test_without_the_race_list_rule_a_wood_elf_wig_stays_out(tmp_path, monkeypat
 # ------------------------------------------------------ what is not a wig
 
 def test_a_non_playable_hairstyle_is_not_a_wig(tmp_path):
-    st, minted = _body(tmp_path, _world(tmp_path, [_wig()], playable=False))
+    """An NPC costume's hair: the body pass reads a non-playable armour only
+    when it has slot 32 (or hands/feet), so the costume says 31+32 -- and its
+    hair is no wig."""
+    world = _world(tmp_path, [_wig()], slots=HAIR | BODY, playable=False)
+    st, minted = _body(tmp_path, world)
     assert minted == [] and st["wigs"] == []
 
 
