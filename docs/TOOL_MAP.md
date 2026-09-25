@@ -123,6 +123,7 @@ Two more tracked scripts are excluded as doc GENERATORS rather than measurements
 | `scripts/analysis/change_attribution.py` | 2 | yes | WHICH CHANGE TOUCHED WHICH PIECE -- read after a run, used after a verdict |
 | `scripts/analysis/inflate_census_report.py` | 1 | yes | Read `inflate_census.py`'s JSON and answer: does removing inflate pay? |
 | `scripts/analysis/survival_report.py` | 1, 2 | yes | Read the `survival` records out of a run's audit sink and table them |
+| `scripts/mutation_gate.py` | 2 | — | Mutation gate: prove that the guards can fail. |
 
 ## Reads nothing on disk (pure helpers and drivers)
 
@@ -140,7 +141,6 @@ Two more tracked scripts are excluded as doc GENERATORS rather than measurements
 | `scripts/augment_nude_tri.py` | 3 | yes | Augment UBE nude hands/feet .tri morph tables so they follow EVERY body slider that moves the shared wrist/ankle seam |
 | `scripts/disable_unconstrained_smp.py` | 1, 2, 3 | yes | Live-patch: disable the converter's UNCONSTRAINED HDT-SMP XMLs (a per-vertex / per-triangle collision setup with NO <generic-constraint> = no spring forces). |
 | `scripts/inspect_archives.py` | — | — | Peek inside the new UBE-related archives to see what they ship |
-| `scripts/mutation_gate.py` | 2 | — | Mutation gate: prove that the guards can fail. |
 | `scripts/strip_nude_handfeet.py` | 2, 3 | — | Surgically remove nude/actor-skin hand/feet (and any body-skin) ARMAs from a deployed ESP, plus any ARMO armature (MODL) refs to them. |
 
 ## Invocations, as each tool documents itself
@@ -307,7 +307,7 @@ Only tools whose docstring carries a `python ...` line. A tool missing from this
   - `python scripts/golden_output.py check        # re-convert and diff`
   - `python scripts/golden_output.py check --tol 0.001`
 - `scripts/mutation_gate.py`
-  - `python scripts/mutation_gate.py run [--only ID ...] [--json OUT] [--keep]`
+  - `python scripts/mutation_gate.py run [--only ID ...] [--json OUT] [--keep] [--jobs N]`
   - `python scripts/mutation_gate.py list`
 - `scripts/postflight_1_2.py`
   - `python scripts/postflight_1_2.py [--limit N] [--workers N]`

@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Development only — the mutation gate can run its pairs in parallel
+
+`python scripts/mutation_gate.py run --jobs N` splits the seeded pairs into N
+shards and judges them at once, each in a fresh worktree of its own with its
+own before-and-after test controls, then reports every pair once, in the usual
+order, with one verdict. A shard that crashes, a pair no shard judged and a
+failed control each fail the gate by name, and every worktree is removed when
+the run ends, fails or is interrupted. Each shard costs about 1.5 GB of commit
+charge. Without `--jobs` the gate runs exactly as before.
+
 ### Fixed — a garment whose layers share one name keeps every layer
 
 Some garments are built from several layers the author gave the same name, for
