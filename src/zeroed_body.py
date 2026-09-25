@@ -110,7 +110,9 @@ def _shape_sizes(nif_path: Path) -> "dict[str, int]":
 # of a ~6.5 min preamble step. Inside a `probe_memo()` scope a winner is asked
 # of the disk once per (folder list, exact path), and a path of more than one
 # part is only probed in the folders that HAVE its first component as a folder
-# (checked once per folder per component). The answers are the ones the plain
+# (checked once per folder per component; a folder that cannot be checked is
+# kept in, `_may_have_dir`, so an unreadable folder the plain probe never
+# reaches cannot raise here either). The answers are the ones the plain
 # probe gives -- same order, same case rules, same `_ci_join` -- as long as the
 # folders do not change while the scope is open. So the scope is short: the
 # caller opens it for one check and it is dropped on return, and a long-lived
@@ -167,7 +169,7 @@ class _Vfs:
             head = parts[0]
             if head not in first:
                 first[head] = [d for d in self.dirs
-                               if _ci_join(d, [head], want_dir=True) is not None]
+                               if _may_have_dir(d, head)]
             dirs = first[head]
         for d in dirs:
             p = _ci_join(d, parts)
@@ -192,6 +194,19 @@ class _Vfs:
             except OSError:
                 continue
         return out
+
+
+def _may_have_dir(base: Path, head: str) -> bool:
+    """#zeroed-probe-memo's first-folder filter: may `base` hold `head` as a
+    folder? The filter asks every folder, including the ones below the winner
+    that the plain probe never reaches, so a folder it cannot read (the check
+    raises, e.g. PermissionError on an access-denied folder) is kept in: the
+    plain per-folder probe then decides, and raises only if it gets that far,
+    as it would without the filter."""
+    try:
+        return _ci_join(base, [head], want_dir=True) is not None
+    except OSError:
+        return True     # cannot tell: the plain probe decides
 
 
 def _ci_join(base: Path, parts: "list[str]", want_dir: bool = False) -> "Path | None":

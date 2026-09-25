@@ -8,7 +8,8 @@ Before converting, the tool checks which armour your zeroed BodySlide build
 already provides. For every file it needed it looked through each of your
 thousands of mod folders, and it asked about the same files again and again.
 It now remembers each answer while that check runs, and only looks in folders
-that have the right top folder. The result is the same, piece for piece.
+that have the right top folder. The result is the same, piece for piece, also
+when Windows will not let the tool look inside one of your mod folders.
 Measured on the reported modlist: about 265 s down to 70 s.
 `CBBE2UBE_NO_ZEROED_PROBE_MEMO=1` (set to 1) checks the old way.
 

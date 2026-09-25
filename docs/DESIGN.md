@@ -394,6 +394,11 @@ single pass runs. Three rules encode this:
    exact path), and a path of more than one part is probed only in the folders that
    have its first part as a folder (one `_ci_join` per folder per first part, in
    priority order). A one-part path is a file at the root, so it is never filtered.
+   The filter asks EVERY folder, including those below the winner the plain probe
+   never reaches, and `Path.is_dir` re-raises a PermissionError rather than answering
+   False; so a folder whose check raises is kept in (`_may_have_dir`), and the plain
+   per-folder probe decides -- it raises only if it gets that far, exactly as it
+   would with no filter (ZPM-i, ZPM-j).
    The answers are the plain probe's -- same `_ci_join`, same order, same case rules --
    as long as the folders do not change while the scope is open, so the scope is one
    call and is dropped on return: the GUI's long-lived process never answers from a

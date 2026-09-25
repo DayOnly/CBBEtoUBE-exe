@@ -6572,8 +6572,8 @@ PAIRS = (
     Pair('ZPM-d', 'the first part is looked for as a file, not a folder',
          edits=(
              ('src/zeroed_body.py',
-              '                               if _ci_join(d, [head], want_dir=True) is not None]',
-              '                               if _ci_join(d, [head]) is not None]  # MUTATED', 1),
+              '        return _ci_join(base, [head], want_dir=True) is not None\n',
+              '        return _ci_join(base, [head]) is not None  # MUTATED\n', 1),
          ),
          tests=('tests/test_zeroed_probe_memo.py',),
          expect=('test_case_does_not_matter',
@@ -6615,5 +6615,27 @@ PAIRS = (
          ),
          tests=('tests/test_zeroed_probe_memo.py',),
          expect=('test_the_memo_lasts_only_as_long_as_its_scope',),
+    ),
+    # #zeroed-probe-memo, unreadable folders (2026-09-25 review): the first-folder
+    # filter asks every folder, below the winner too; one it cannot read is kept
+    # in, so only the plain probe (if it gets that far) raises.
+    Pair('ZPM-i', 'an unreadable folder below the winner raises in the filter',
+         edits=(
+             ('src/zeroed_body.py',
+              '    except OSError:\n        return True     # cannot tell: the plain probe decides\n',
+              '    except ValueError:  # MUTATED\n        return True     # cannot tell: the plain probe decides\n', 1),
+         ),
+         tests=('tests/test_zeroed_probe_memo.py',),
+         expect=('test_an_unreadable_folder_below_the_winner_changes_nothing',),
+    ),
+    Pair('ZPM-j', 'an unreadable folder is filtered out instead of left to the probe',
+         edits=(
+             ('src/zeroed_body.py',
+              '        return True     # cannot tell: the plain probe decides\n',
+              '        return False  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_zeroed_probe_memo.py',),
+         expect=('test_an_unreadable_folder_the_probe_reaches_raises_as_before[top]',
+                 'test_an_unreadable_folder_the_probe_reaches_raises_as_before[bottom]'),
     ),
 )
