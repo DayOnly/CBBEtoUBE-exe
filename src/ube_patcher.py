@@ -3717,10 +3717,12 @@ def _third_party_drawn(armo_slots: int, winning, cand, arma_win, base_races,
     if not quals:
         return need, quals, []
     # Every armature a qualifier may be the UBE version of: ours to mint, and
-    # every DefaultRace armature of the armour that names no UBE race -- one a
-    # guard dropped before the split included, so its twin is used up by it.
+    # every armature of the armour that names no UBE race, whatever its primary
+    # (a race-list one too) -- one a guard dropped before the split included,
+    # so its twin is used up by it. A wider pool can only mint more.
+    _qids = {q[0] for q in quals}
     pool = list(dict.fromkeys(list(cand) + [
-        x for x, v in winning if v[3] == _DEFAULT_RACE_ABS and not v[4]]))
+        x for x, v in winning if not v[4] and x not in _qids]))
     facts = {x: _tpd_facts(arma_win[x]) for x in pool}
     got: dict = {x: set() for x in cand}
     used: set = set()

@@ -5415,6 +5415,15 @@ PAIRS = (
          tests=('tests/test_coverage_third_party_drawn.py',),
          expect=('test_slots_that_only_overlap_or_contain_do_not_draw',),
     ),
+    Pair('TPF-h', 'a guard-dropped race-list armature does not use up its twin',
+         edits=(
+             ('src/ube_patcher.py',
+              '        x for x, v in winning if not v[4] and x not in _qids]))\n',
+              '        x for x, v in winning if v[3] == _DEFAULT_RACE_ABS and not v[4]]))  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_coverage_third_party_drawn.py',),
+         expect=('test_the_twin_of_a_guard_dropped_race_list_cuirass_does_not_draw_our_gloves',),
+    ),
     Pair('TPF-c', 'a guard-dropped armature does not use up its twin',
          edits=(
              ('src/ube_patcher.py',

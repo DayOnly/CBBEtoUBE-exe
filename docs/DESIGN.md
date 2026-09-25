@@ -1191,8 +1191,9 @@ follower (converted male Ebony boots on her UBE body):
   cuirass whose BOD2 also lists slot 33 "drew" our gloves, and the twin of a
   cuirass a guard had dropped did the same: the gloves were not minted and had
   no armature at all on UBE actors -- the one outcome this project forbids. Now
-  (1) the file match runs over every DefaultRace armature of the armour that
-  names no UBE race, not only the ones left to mint, so a qualifier that is the
+  (1) the file match runs over every armature of the armour that
+  names no UBE race, whatever its primary race (a race-list one too), not only
+  the ones left to mint, so a qualifier that is the
   UBE version of a dropped piece is used up by it; and (2) an unused qualifier
   draws S only when its BOD2 slot set EQUALS S's (the armature's own, else the
   armour's), it is the only such qualifier for S, and no other armature without

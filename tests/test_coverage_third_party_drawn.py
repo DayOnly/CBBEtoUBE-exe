@@ -475,6 +475,43 @@ def test_a_guard_dropped_armature_ties_for_its_slots(tmp_path):
     assert st["third_party_drawn"] == []
 
 
+def _race_list_world(root, their_slots):
+    """Only race-list armatures (Argonian primary listing Nord): a cuirass whose
+    world mesh was not converted (#coverage-world-mesh drops it) and gloves;
+    their UBE twin of the cuirass's file sits on the armour with `their_slots`."""
+    argonian = 0x00013740
+    sky = _save(root / "Skyrim.esm", [], [])
+    ube = _save(root / "UBE_AllRace.esp", ["Skyrim.esm"], [])
+    src = [_arma(0x010008A0, BODY, argonian, (NORD,),
+                 models={b"MOD3": DRESS, b"MOD5": r"Armor\Dress\Dress1st_1.nif"}),
+           _arma(0x010008A1, HANDS, argonian, (NORD,), models={b"MOD3": GLOVES})]
+    mod = _save(root / "Mod.esp", ["Skyrim.esm"],
+                [Group(label=b"ARMA", records=src),
+                 Group(label=b"ARMO", records=[_armo(0x01000801, BODY | HANDS,
+                                                     [a.formid for a in src])])])
+    races = [(1 << 24) | r for r in UBE]
+    tp = [_arma(0x03000900, their_slots, races[0], races[1:],
+                models={b"MOD3": "!UBE\\" + DRESS})]
+    patch = _save(root / "Patch.esp", ["Skyrim.esm", "UBE_AllRace.esp", "Mod.esp"],
+                  [Group(label=b"ARMA", records=tp),
+                   Group(label=b"ARMO", records=[_armo(
+                       0x02000801, BODY | HANDS, [0x020008A0, 0x020008A1, tp[0].formid])])])
+    return [sky, ube, mod, patch]
+
+
+def test_the_twin_of_a_guard_dropped_race_list_cuirass_does_not_draw_our_gloves(tmp_path):
+    """Review 09-25: the same guard-dropped twin, with armatures the race-list
+    rule admits (their primary is not DefaultRace). The twin re-slotted to the
+    hands must be used up by the dropped cuirass, not draw our gloves -- else
+    nothing draws the gloves on a UBE actor."""
+    for tag, slots in (("hands", HANDS), ("both", BODY | HANDS)):
+        world = _race_list_world(tmp_path / tag, slots)
+        st, minted = _run(tmp_path / tag, world, body=True,
+                          conv=DROPPED_CONV | GLOVES_CONV)
+        assert [m["mod3"] for m in minted] == ["!UBE\\" + GLOVES], tag
+        assert st["third_party_drawn"] == [], tag
+
+
 def test_a_winning_override_that_drops_their_armature_mints_ours(tmp_path):
     """TPD-l: only the WINNING armour record's armatures draw."""
     world = _world(tmp_path, HEAD, [_ours(0x8A0, HEAD, HELMET)],
