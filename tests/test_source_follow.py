@@ -196,7 +196,8 @@ def test_the_measurement_reads_the_SOURCE_not_the_converted_state():
         "the source weighting must be preferred over the converted state")
     # and the source map must come from the SOURCE nif, by name + vert count
     smap = inspect.getsource(nc._source_bust_weight_map)
-    assert "NifFile(filepath=str(src_nif_path))" in smap
+    # (#dup-shape-names: the source is opened with the names conversion gives it)
+    assert "_open_source_nif(src_nif_path)" in smap
     assert "len(ss.verts) != n_verts" in smap, (
         "a topology mismatch must fall back, not mis-map weights")
     # Wired from both pipeline sites. Checked against THIS pass's own call sites,

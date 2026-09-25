@@ -7,13 +7,16 @@ import, tests' monkeypatches on `nc` and `importlib.reload(nc)` all still
 apply."""
 from __future__ import annotations
 
+from collections import Counter
 from pathlib import Path
 import numpy as np
 import os
+import re
 import sys
 
 from . import nif_io
 from .atomic_io import atomic_nif_save
+from .envflags import flag as _flag
 from .nif_convert_fitgeom import (  # noqa: E402
     _uniformise_local_scale,
     _cap_short_edge_stretch,
@@ -22,6 +25,7 @@ from .nif_convert_layers import _layered_cloth_shape_names  # noqa: E402
 from .nif_convert_physics import (  # noqa: E402
     _hdt_collider_shape_names,
     _hdt_softbody_shape_names,
+    _nif_declares_hdt_xml,
     _precreate_custom_bone_chains,
     _seed_flat_chain_anchors,
 )
@@ -29,7 +33,7 @@ from .nif_convert_skinframe import (  # noqa: E402
     _g2s_is_identity,
     _shape_global_to_skin,
 )
-from .nif_convert_telemetry import _note_pass_failure  # noqa: E402
+from .nif_convert_telemetry import _note_pass_effect, _note_pass_failure  # noqa: E402
 from .user_warnings import plain_error, warn  # noqa: E402
 from .nif_convert_weights import (  # noqa: E402
     SKIN_PARTITION_BONE_CAP,
@@ -277,7 +281,7 @@ def validate_dst_nif(dst_path: "Path",
         src_overlap: dict[tuple[str, str], int] = {}
         if src_path is not None:
             try:
-                src_nif = _nc()._pynifly().NifFile(filepath=str(src_path))
+                src_nif = _open_source_nif(src_path)   # #dup-shape-names
                 src_overlap = _pairwise_overlap_counts(src_nif)
             except Exception:
                 src_overlap = {}  # fall through to absolute counts
@@ -492,7 +496,7 @@ def _restore_authored_shape_order(dst_path, src_nif_path) -> int:
     if len(dst_names) < 2:
         return 0                      # nothing to permute
     try:
-        sn = pyn.NifFile(filepath=str(src_nif_path))
+        sn = _open_source_nif(src_nif_path)    # #dup-shape-names
         src_names = [s.name for s in sn.shapes]
     except Exception:
         return 0                      # no source to be faithful TO -> leave it
@@ -1744,6 +1748,209 @@ def _transplant_effect_controller(src_shader, dst_nif, pyn):
     except Exception:
         return none_id
 
+def _override_contract_on() -> bool:
+    r"""#override-contract (2026-09-25): does a shape copy refuse geometry that
+    is not the source shape's own? Yes, by default.
+
+    `_copy_shape` documented that `override_verts` "must have the same length
+    as src_shape.verts" and never checked it. A layered fur coat (six shells
+    all named 'fur', 2915 and 965 verts) showed what happens: a name-keyed pass
+    handed one shell's 2915 positions to every 'fur', and pynifly's
+    createShapeFromData sized the shape from the override while allocating the
+    UVs from the source's 965 -- an out-of-bounds heap read. Measured on the
+    written coat: the four small shells shipped 2915 verts, 1687 triangles
+    indexing the wrong mesh and non-finite UVs past 965, the garbage differing
+    run to run; in another run the same read raised instead.
+
+    The contract: `override_verts` and `override_normals` have one row per
+    source vert; every `override_tris` index is a vert of this shape and fits
+    the uint16 a NIF stores. The triangle COUNT is free -- closing the UBE
+    body's pubic holes legitimately appends ~366 triangles. A copy that
+    breaks it raises ValueError; every caller already treats a raising copy as
+    a failed shape (the re-author keeps the prior file, the fit path retries a
+    plain copy). `_reauthor_nif_fresh` also declines an override whose name
+    matches more than one shape -- the same-size duplicate case the length test
+    cannot see. CBBE2UBE_NO_OVERRIDE_CONTRACT=1 turns both off."""
+    return not _flag("CBBE2UBE_NO_OVERRIDE_CONTRACT", False)
+
+
+def _check_override_contract(src_shape, override_verts=None,
+                             override_normals=None, override_tris=None) -> None:
+    """#override-contract: raise ValueError unless every override describes
+    THIS shape (see `_override_contract_on`). Only what was passed is read."""
+    if override_verts is None and override_normals is None and override_tris is None:
+        return
+    n = len(src_shape.verts)
+    who = f"{src_shape.name!r} ({n} verts)"
+    if override_verts is not None and len(override_verts) != n:
+        raise ValueError(f"override_verts has {len(override_verts)} rows for "
+                         f"shape {who}")
+    if override_normals is not None and len(override_normals) != n:
+        raise ValueError(f"override_normals has {len(override_normals)} rows "
+                         f"for shape {who}")
+    if override_tris is not None:
+        ot = np.asarray(override_tris, dtype=np.int64)
+        if ot.size and (int(ot.min()) < 0 or int(ot.max()) >= min(n, 0x10000)):
+            raise ValueError(f"override_tris indexes {int(ot.min())}..{int(ot.max())}"
+                             f" outside shape {who}")
+
+
+# #dup-shape-names: the separator of a duplicate's new name ('fur' -> 'fur:1').
+# A colon is printable ASCII, so a TRI shape block (length-prefixed ASCII name)
+# and an HDT XML attribute both carry it; pynifly writes any UTF-8 name.
+_DUP_NAME_SEP = ":"
+
+
+def _dup_shape_names_on() -> bool:
+    r"""#dup-shape-names (2026-09-25): does a source NIF whose shapes SHARE a
+    name get a unique name per shape before conversion? Yes, by default.
+
+    Dozens of passes key per-shape data by shape name -- the self-intersection
+    repair and the re-author that commits it, the stacked-layer motion plan,
+    the coincident-skin and roughness passes, the authored-order restore, the
+    TRI generator -- so the LAST shape of a shared name won and its data landed
+    on the others. On a fur coat with six 'fur' shells that corrupted the mesh
+    (see `_override_contract_on`) or, with the length contract, dropped the
+    passes for every shell, and the TRI carried ONE 'fur' block indexed for a
+    965-vert shell that the body-morph code then applied by name to the
+    2915-vert ones.
+
+    The first shape keeps its name; the k-th same-named one becomes
+    'name:k' (skipping any name already taken), in the author's shape order,
+    and the ORDER never changes: an ARMA alternate texture binds by index
+    (BUG-09), so every colour variant still lands on its shell. The new names
+    ship: a TRI block is matched to its shape by name, so unique names are the
+    only way each shell gets its own morphs.
+
+    Left as authored (and reported): a name the source's physics XML uses, as
+    FSMP binds a shape by name (also when a declared XML cannot be read); a
+    name the converter itself treats as a body (the inline-body names, the
+    3BA family, BaseShape / VirtualBody). CBBE2UBE_NO_DUP_SHAPE_NAMES=1 keeps
+    every name as authored."""
+    return not _flag("CBBE2UBE_NO_DUP_SHAPE_NAMES", False)
+
+
+def _dup_shape_rename_plan(names, xml_names=frozenset(), xml_unread=False,
+                           reserved=lambda n: False):
+    """#dup-shape-names: the per-shape names that make `names` unique.
+
+    Returns None when no non-empty name repeats, else (new_names, renamed,
+    kept): `new_names` is parallel to `names`; `renamed` maps each renamed
+    group to its size; `kept` maps each group left as authored to why ('xml':
+    the physics XML names it; 'xml-unread': a declared XML could not be read;
+    'body': `reserved(name)`). Pure: no NIF, no file."""
+    counts = Counter(n for n in names if n)
+    groups = [n for n, c in counts.items() if c > 1]
+    if not groups:
+        return None
+    taken = set(names)
+    new_names = list(names)
+    renamed: dict = {}
+    kept: dict = {}
+    for g in groups:
+        if reserved(g):
+            kept[g] = "body"
+            continue
+        if xml_unread:
+            kept[g] = "xml-unread"
+            continue
+        if g.lower() in xml_names:
+            kept[g] = "xml"
+            continue
+        k = 0
+        seen = 0
+        for i, n in enumerate(names):
+            if n != g:
+                continue
+            seen += 1
+            if seen == 1:
+                continue                 # the first keeps the authored name
+            k += 1
+            while f"{g}{_DUP_NAME_SEP}{k}" in taken:
+                k += 1
+            new_names[i] = f"{g}{_DUP_NAME_SEP}{k}"
+            taken.add(new_names[i])
+        renamed[g] = counts[g]
+    return new_names, renamed, kept
+
+
+def _uniquify_source_shape_names(nif, src_path, report: bool = False) -> int:
+    """#dup-shape-names: rename a loaded SOURCE nif's duplicate shape names in
+    place (see `_dup_shape_names_on`). `nif` is a pynifly NifFile or an
+    `nif_io.Nif`. Deterministic from the file, so every re-read of the same
+    source gets the same names -- each pass that opens the source calls this.
+    Returns how many shapes were renamed. `report` (the one call at the top of
+    a conversion) records the rename and anything left as authored."""
+    if not _dup_shape_names_on():
+        return 0
+    shapes = list(nif.shapes)
+    names = [s.name for s in shapes]
+    if len(set(names)) == len(names):
+        return 0                         # the common case: nothing is read
+    pyn_nif = getattr(nif, "_backing", None) if isinstance(nif, nif_io.Nif) else nif
+    txt = None
+    declared = False
+    try:
+        from . import nif_convert_physics as _phys
+        txt = _phys._read_source_hdt_xml_text(Path(src_path), nif=pyn_nif)
+        declared = _nif_declares_hdt_xml(Path(src_path), nif=pyn_nif)
+    except Exception:
+        declared = True                  # cannot tell -> treat as unreadable
+    xml_names = {m.lower() for m in re.findall(r'name\s*=\s*"([^"]*)"', txt or "")}
+    plan = _dup_shape_rename_plan(
+        names, xml_names=xml_names, xml_unread=bool(declared and not txt),
+        reserved=lambda n: (_nc()._is_inline_body_name(n)
+                            or _nc()._is_3ba_body_family_name(n)
+                            or n in _nc().UBE_BODY_INJECT_NAMES))
+    if plan is None:
+        return 0
+    new_names, renamed, kept = plan
+    n_done = 0
+    for s, old, new in zip(shapes, names, new_names):
+        if new == old:
+            continue
+        if isinstance(s, nif_io.Shape):
+            s.name = new
+            s = s._backing
+        if s is not None:
+            # The name pynifly CACHES, not the block: a source is never saved,
+            # and NiflyDLL cannot SET every shape block type (it raised "NYI
+            # Unimplemented function SET" on a loaded BSTriShape). Every read of
+            # `.name` and every copy (createShapeFromData) takes the cache.
+            s._name = new
+        n_done += 1
+    # pynifly's by-name lookups held ONE of the same-named shapes (the last
+    # registered); point every name at its own shape again.
+    for s in (list(pyn_nif.shapes) if pyn_nif is not None else []):
+        try:
+            pyn_nif._shape_dict[s.name] = s
+            if getattr(pyn_nif, "_nodes", None) is not None:
+                pyn_nif._nodes[s.name] = s
+        except Exception:
+            pass
+    if report:
+        if renamed:
+            _note_pass_effect(
+                "#dup-shape-names",
+                "gave each shape of a shared name its own: "
+                + ", ".join(f"{g} x{c}" for g, c in renamed.items()), src_path)
+        if kept:
+            _note_pass_failure(
+                "dup-shape-names/kept", RuntimeError(
+                    f"{Path(src_path).name}: shapes share a name left as "
+                    f"authored ({', '.join(f'{g}: {w}' for g, w in kept.items())}"
+                    f") -- per-shape passes may treat them as one"), src_path)
+    return n_done
+
+
+def _open_source_nif(src_path):
+    """A SOURCE nif opened the way every pass must open it: pynifly, then the
+    #dup-shape-names rename, so its shape names match the written NIF's."""
+    nf = _nc()._pynifly().NifFile(filepath=str(src_path))
+    _uniquify_source_shape_names(nf, src_path)
+    return nf
+
+
 def _copy_shape(src_shape, dst_nif, parent=None, override_verts=None,
                 override_skin=None, skip_alpha=False, override_tris=None,
                 preserve_authored_skin=False, override_normals=None,
@@ -1765,10 +1972,17 @@ def _copy_shape(src_shape, dst_nif, parent=None, override_verts=None,
     triangles to the source tri list). Must reference only valid vert
     indices (i.e. all in [0, n_verts)).
 
+    Both are ENFORCED (ValueError), as is one `override_normals` row per vert:
+    a wrong-length override was an out-of-bounds read in pynifly.
+    #override-contract
+
     Known limitation: pynifly's API doesn't expose enough to faithfully
     copy every controller or extra-data block. For typical armor shapes
     that's fine.
     """
+    if _override_contract_on():
+        _check_override_contract(src_shape, override_verts, override_normals,
+                                 override_tris)
     # createShapeFromData requires tuple sequences; numpy rows trigger a
     # "expected c_float_Array_3 instance, got numpy.ndarray" error.
     if override_verts is not None:
@@ -2313,6 +2527,20 @@ def _reauthor_nif_fresh(dst_path: Path, override_verts_by_name=None,
             _note_pass_failure("_seed_flat_chain_anchors", _se)
         copy_failed = []
         _ov = override_verts_by_name or {}
+        if _ov and _override_contract_on():
+            # A name two shapes share cannot say WHICH shape the verts are for;
+            # handing them to every such shape wrote one shell's geometry over
+            # its same-sized twin. Drop just that entry and commit the rest.
+            # #override-contract
+            _cnt = Counter(s.name for s in shapes)
+            _amb = sorted(n for n in _ov if _cnt.get(n, 0) > 1)
+            if _amb:
+                _note_pass_failure(
+                    "reauthor/ambiguous-shape-name", RuntimeError(
+                        f"{dst_path.name}: new geometry for {_amb} matches more "
+                        f"than one shape each; those shapes keep their current "
+                        f"geometry"), dst_path)
+                _ov = {n: v for n, v in _ov.items() if n not in _amb}
         _excl = exclude_shapes or set()
         for s in shapes:
             if s.name in _excl:

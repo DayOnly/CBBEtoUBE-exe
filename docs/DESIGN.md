@@ -1069,6 +1069,59 @@ finding `meshes` in the *destination* path. Converting to a scratch folder with
 no `meshes` segment silently produces the fallback body-tri — an artifact of the
 test setup, not a real conversion bug.
 
+### Shapes that share a name (`#dup-shape-names`, `#override-contract`)
+
+**Why.** A NIF's shape names need not be unique, and a layered fur coat ships six
+shells all named `fur` (2915 and 965 verts). Most per-shape passes key their data
+by name -- the self-intersection repair and the re-author that commits it, the
+stacked-layer motion plan, the coincident-skin, roughness and SMP-boundary passes,
+the authored-order restore, the TRI generator -- so the last `fur` won. Converted
+alone at 80f78c7 the coat came out CORRUPT: one shell's 2915 positions went to all
+six, the four small shells kept 1687 triangles indexing that foreign mesh, and
+their UVs past 965 were non-finite and differed run to run. That last part is
+memory: `_copy_shape` never checked its documented "same length" contract, and
+pynifly's `createShapeFromData` sizes the shape from the verts but copies UVs from
+the source, so it read past the 965-entry buffer (in another run the same read
+raised, and the passes were skipped for every shell instead). The TRI carried ONE
+`fur` block, indexed up to 964, for shells the body-morph code matches BY NAME.
+
+**How -- two layers.**
+- `#override-contract` (`_copy_shape`): `override_verts` and `override_normals`
+  must have one row per source vert and every `override_tris` index must be a vert
+  of the shape (and fit uint16), else ValueError -- every caller already treats a
+  raising copy as a failed shape. The triangle COUNT is free: the phase-2
+  injection APPENDS ~366 pubic-fill triangles to BaseShape. `_reauthor_nif_fresh`
+  also declines an override whose name matches several shapes and commits the
+  rest; that is the only guard for two SAME-size shells (the length test cannot
+  see them). `CBBE2UBE_NO_OVERRIDE_CONTRACT=1`.
+- `#dup-shape-names` (`_uniquify_source_shape_names`): when a source is loaded,
+  the k-th shape of a shared name becomes `name:k` (skipping a name already
+  taken; the first keeps its name). Shape ORDER never changes, since an ARMA
+  alternate texture binds by index (BUG-09). The rename is a pure function of the
+  file, so every pass that re-opens the source (`_open_source_nif`) gets the same
+  names; it touches only pynifly's cached name, never the block (NiflyDLL cannot
+  SET a loaded BSTriShape), and re-points pynifly's by-name dict.
+  `CBBE2UBE_NO_DUP_SHAPE_NAMES=1`.
+
+**The new names ship.** A TRI block is applied to the shape of the same name, so
+unique names are the only way each shell gets morphs indexed for its own verts.
+Left as authored and reported (`dup-shape-names/kept`): a name the source's
+physics XML uses, matched case-insensitively (FSMP binds shapes by name), and
+every group when a declared XML cannot be read; and a name the converter reads as
+a body (the inline-body names, the 3BA family, BaseShape / VirtualBody), whose
+meaning is the name.
+
+**Measured.** The coat converted in scratch: 7 shapes `fur, fur:1 .. fur:5,
+coat` at the source's vert counts, finite UVs, 7 TRI blocks each indexed within
+its own shape, no pass failure. Live: 0 of the 3,365 source files the plan
+converts share a name (so no current output changes); 1 of 3,342 files in the
+deployed output does, the coat, which the plan no longer converts.
+
+**Left open.** Our own ESPs' alternate-texture reconcile (`ube_patcher`) matches
+entries by name and keeps one per name, so a set that addresses six same-named
+shells by index keeps one entry either way; third-party ESPs keep their indices
+and are unaffected.
+
 ---
 
 ## Delivery: SkyPatcher-only

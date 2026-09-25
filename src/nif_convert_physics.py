@@ -105,7 +105,7 @@ def _audit_registered_shape_declared_bones(dst_path, src_path) -> int:
             return 0
         if not registered:
             return 0
-        sn = pyn.NifFile(filepath=str(src_path))
+        sn = _nc()._open_source_nif(src_path)      # #dup-shape-names
         author = {s.name: set((getattr(s, "bone_weights", None) or {}).keys())
                   for s in sn.shapes}
         bad = {}
@@ -3092,7 +3092,7 @@ def _finalize_hdt_physics(dst_path: Path, src_nif_path: Path) -> bool:
             for _ps in nf.shapes:
                 present_bones |= set(_ps.bone_names or [])
             if missing or (xml_bones - present_bones):
-                snf = pyn.NifFile(filepath=str(src_nif_path))
+                snf = _nc()._open_source_nif(src_nif_path)  # #dup-shape-names
                 src_by_name = {s.name: s for s in snf.shapes}
                 # Re-import shapes that uniquely carry a CUSTOM physics bone the
                 # XML drives. Skeleton bones resolve via the actor skeleton; a

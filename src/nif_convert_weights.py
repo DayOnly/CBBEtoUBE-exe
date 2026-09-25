@@ -1196,8 +1196,7 @@ def _source_bust_weight_map(src_nif_path, shape_name, n_verts):
     if src_nif_path is None:
         return None
     try:
-        pyn = _nc()._pynifly()
-        snf = pyn.NifFile(filepath=str(src_nif_path))
+        snf = _nc()._open_source_nif(src_nif_path)   # #dup-shape-names
         ss = next((x for x in snf.shapes if x.name == shape_name), None)
         if ss is None or len(ss.verts) != n_verts:
             return None
@@ -2895,7 +2894,7 @@ def _match_coincident_cross_shape_skin(dst_path, src_nif_path=None) -> int:
     # rows nothing can use is pure cost.
     src_rows: dict = {}
     try:
-        snf = pyn.NifFile(filepath=str(src_nif_path))
+        snf = _nc()._open_source_nif(src_nif_path)   # #dup-shape-names
         for ss in snf.shapes:
             nm = ss.name or ""
             if (want.get(nm) == len(ss.verts)
@@ -3545,7 +3544,7 @@ def _cap_weight_roughness_to_author(dst_path, src_nif_path=None) -> int:
     try:
         pyn = _nc()._pynifly()
         nf = pyn.NifFile(filepath=str(dst_path))
-        snf = pyn.NifFile(filepath=str(src_nif_path))
+        snf = _nc()._open_source_nif(src_nif_path)   # #dup-shape-names
     except Exception as _oe:
         _note_pass_failure("_cap_weight_roughness_to_author/open", _oe)
         return 0
@@ -3830,7 +3829,7 @@ def _hold_weights_at_smp_boundary(dst_path, src_nif_path=None) -> int:
     try:
         pyn = _nc()._pynifly()
         nf = pyn.NifFile(filepath=str(dst_path))
-        snf = pyn.NifFile(filepath=str(src_nif_path))
+        snf = _nc()._open_source_nif(src_nif_path)   # #dup-shape-names
     except Exception as _oe:
         _note_pass_failure("_hold_weights_at_smp_boundary/open", _oe)
         return 0

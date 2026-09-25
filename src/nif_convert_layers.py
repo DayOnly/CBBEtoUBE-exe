@@ -718,11 +718,12 @@ def _canonical_stack_name_groups(src_nif_path, exclude) -> "list | None":
         if not cand.is_file():
             return None
         st = cand.stat()
-        key = (str(cand).lower(), st.st_mtime_ns, st.st_size, tuple(sorted(exclude)))
+        key = (str(cand).lower(), st.st_mtime_ns, st.st_size, tuple(sorted(exclude)),
+               _nc()._dup_shape_names_on())   # the names depend on it
         hit = _nc()._STACK_NAME_GROUP_CACHE.get(key)
         if hit is not None:
             return [set(g) for g in hit]
-        snif = _nc()._pynifly().NifFile(filepath=str(cand))
+        snif = _nc()._open_source_nif(cand)          # #dup-shape-names
         groups = _stacked_layer_groups(snif.shapes, exclude=exclude)
         names = [{m[0] for m in g} for g in groups]
         _nc()._STACK_NAME_GROUP_CACHE[key] = [set(g) for g in names]

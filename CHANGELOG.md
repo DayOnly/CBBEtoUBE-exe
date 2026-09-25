@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+### Fixed — a garment whose layers share one name keeps every layer
+
+Some garments are built from several layers the author gave the same name, for
+example a fur coat made of six fur shells all called "fur". The tool did part of
+its work per layer name, so the last layer's data landed on the others. Converted
+on its own, such a coat came out broken: its smaller fur shells took a bigger
+shell's shape, with scrambled texture coordinates that differed from run to run.
+In other runs several fitting steps were skipped for every shell instead, and the
+body-morph file carried a single set of morphs meant for one shell. Now each layer
+of a shared name gets its own name before conversion ("fur", "fur:1", "fur:2" and
+so on) in the author's order, so colour variants still reach the right layer and
+every layer follows body sliders with its own morphs. A name the garment's physics
+file uses is left as it is, because the physics finds that layer by its name, and
+so is a body layer's name; the run reports either case. The tool also no longer
+writes one layer's shape onto a layer of a different size (it read memory it
+should not). None of the meshes the reported modlist converts today has layers
+that share a name, so current output does not change.
+`CBBE2UBE_NO_DUP_SHAPE_NAMES=1` (set to 1) keeps the authored names;
+`CBBE2UBE_NO_OVERRIDE_CONTRACT=1` turns off the size check.
+
 ### Changed — whether you can wear an item is read from the plugin the game uses
 
 The tool does not convert an item the player cannot equip (the game's

@@ -2255,6 +2255,10 @@ def _shape_bake_translation(shape):
 # since 2026-09-01. Imported BY NAME so `nc.<name>` keeps working everywhere.
 from .nif_convert_writer import (  # noqa: E402
     _copy_shape,
+    _dup_shape_names_on,
+    _dup_shape_rename_plan,
+    _open_source_nif,
+    _uniquify_source_shape_names,
     _install_skin,
     _reauthor_nif_fresh,
     validate_dst_nif,
@@ -4515,6 +4519,11 @@ def convert_nif(
     # (BUG-00). Must stay AFTER the load so the already-parsed nif is reused,
     # and BEFORE any pass that reads a collider/soft-body set.
     _hdt_xml_bind_piece_source(src_path, nif=nif)
+    # #dup-shape-names: shapes that share a name each get their own, before
+    # anything keys per-shape data by name. AFTER the bind: the rename asks the
+    # piece's physics XML which names FSMP binds, and before the bind that
+    # lookup could still fall back to the PREVIOUS piece's XML.
+    _uniquify_source_shape_names(nif, src_path, report=True)
     body_names, armor_names = classify_shapes(nif)
 
     # HH_OFFSET is a NiFloatExtraData that pynifly silently drops on load.
@@ -4575,7 +4584,9 @@ def convert_nif(
                         _stem[: -len(_a)] + _b + src_path.suffix)
                     if _sib.exists():
                         try:
-                            _pair.append((_sib, nif_io.load_nif(_sib)))
+                            _snif_pair = nif_io.load_nif(_sib)
+                            _uniquify_source_shape_names(_snif_pair, _sib)
+                            _pair.append((_sib, _snif_pair))
                         except Exception:
                             pass
                     break
@@ -4693,6 +4704,7 @@ def convert_nif(
             # ordinary skinning.  [DESIGN: Fitting]
             pyn_lib = _pynifly()
             src_nif_for_fit = nif_io.open_nif_retry(str(src_path))  # transient-IO resilient
+            _uniquify_source_shape_names(src_nif_for_fit, src_path)
             dst_nif_for_fit = pyn_lib.NifFile()
             dst_nif_for_fit.initialize("SKYRIMSE", str(dst_path))
 
@@ -8480,7 +8492,7 @@ def _selfint_overrides(nf, dst_path, src_path) -> dict:
     collider_names = _hdt_collider_shape_names(dst_path, nif=nf)
     src_shapes: dict = {}
     try:
-        snf = _pynifly().NifFile(filepath=str(src_path))
+        snf = _open_source_nif(src_path)   # #dup-shape-names
         for s in snf.shapes:
             src_shapes[s.name] = (np.asarray(s.verts, np.float64),
                                   np.asarray(s.tris, np.int64))
@@ -14302,6 +14314,9 @@ def convert_nif_phase2(
 
     # Determine body vs armor shapes in src
     src_wrapped = nif_io.load_nif(src_path)
+    # #dup-shape-names: the same names `convert_nif` gave this source.
+    _uniquify_source_shape_names(src_nif, src_path)
+    _uniquify_source_shape_names(src_wrapped, src_path)
     body_names, armor_names = classify_shapes(src_wrapped)
 
     # Fold in any caller-supplied exposed-skin slices: treat them as body
@@ -15473,6 +15488,8 @@ __all__ = [
     "_conform_weights_core",
     "_damp_to_avoid_inversion",
     "_drop_scale_bones_from_skin",
+    "_dup_shape_names_on",
+    "_dup_shape_rename_plan",
     "_ensure_cloth_body_collider",
     "_fill_zero_weight_verts",
     "_find_ube_shapedata",
