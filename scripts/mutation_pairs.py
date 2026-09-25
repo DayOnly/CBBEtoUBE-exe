@@ -6748,14 +6748,20 @@ PAIRS = (
          tests=('tests/test_stale_output_sweep.py',),
          expect=('test_an_incomplete_plan_moves_nothing_and_says_so[winner-unreadable]',),
     ),
-    Pair('SOS-o', "a run without the vanilla sweep is complete",
+    # One rule, two wordings: with only the first line gone, an absent sweep
+    # still reads as one that claimed nothing (the gate MISSED that arm).
+    Pair('SOS-o', "a run without the vanilla sweep, or one it gave nothing, is complete",
          edits=(
              ('src/auto_convert.py',
-              '    if not sweep:\n        gaps.append("the vanilla sweep did not run")',
-              '    if False:  # MUTATED\n        gaps.append("the vanilla sweep did not run")', 1),
+              '    if not sweep:\n'
+              '        gaps.append("the vanilla sweep did not run")\n'
+              '    elif not any(r is not None and r.claimed_weight_bases for r in sweep):\n'
+              '        gaps.append("the vanilla sweep claimed no mesh")\n',
+              '    pass  # MUTATED\n', 1),
          ),
          tests=('tests/test_stale_output_sweep.py',),
-         expect=('test_an_incomplete_plan_moves_nothing_and_says_so[no-vanilla]',),
+         expect=('test_an_incomplete_plan_moves_nothing_and_says_so[no-vanilla]',
+                 'test_an_incomplete_plan_moves_nothing_and_says_so[vanilla-claims-nothing]'),
     ),
     Pair('SOS-p', "a warning printed before or during the batch is no gap",
          edits=(
