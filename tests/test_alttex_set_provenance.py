@@ -46,7 +46,8 @@ from tests.test_alttex_exact_provenance import (                # noqa: E402
 SET_OFF = "CBBE2UBE_NO_ALTTEX_SET_PROVENANCE"
 SWITCHES = (SET_OFF, "CBBE2UBE_NO_ALTTEX_EXACT_PROVENANCE",
             "CBBE2UBE_NO_ALTTEX_DUP_OCCURRENCE", "CBBE2UBE_NO_DUP_SHAPE_NAMES",
-            "CBBE2UBE_NO_ALTTEX_FAMILY_STRICT")
+            "CBBE2UBE_NO_ALTTEX_FAMILY_STRICT",
+            "CBBE2UBE_NO_ALTTEX_CASE_PROVENANCE")
 needs_pynifly = pytest.mark.skipif(not pynifly_available(),
                                    reason="pynifly native lib not available")
 
@@ -150,6 +151,39 @@ def test_another_sets_repeat_makes_a_single_entry_ambiguous(
     got = _reconciled(plugin, tmp_path)
     assert got[1] == [("coat", TAN, 0)]
     assert got[0] == ([("fur", BLUE, 1)] if found else [])
+
+
+@needs_pynifly
+def test_a_repeat_in_a_later_armature_still_reads_the_source(monkeypatch,
+                                                             tmp_path):
+    # Two armatures on one NIF. The FIRST names 'fur' once; only the SECOND's
+    # set repeats it. Every set is scanned for repeats before any NIF is
+    # loaded, so the NIF is still read with its source: loaded while only the
+    # first armature was seen, it would be cached without, and one entry per
+    # name would put the lost shell's RED on the surviving 'fur' in both.
+    src = build_skinned_shapes_nif(tmp_path / "src" / "coat_1.nif", LOST_SRC)
+    build_skinned_shapes_nif(tmp_path / "out" / "meshes" / "!UBE" / REL,
+                             LOST_CONV)
+    model = b"!UBE\\" + REL.encode() + b"\x00"
+    recs = []
+    for fid, entries in ((0x01000800, [("fur", RED, 2), ("coat", TAN, 0)]),
+                         (0x01000801, [("fur", RED, 2), ("fur", GREEN, 1)])):
+        payload = (esp.encode_subrecord(b"EDID", b"CoatAA\x00")
+                   + esp.encode_subrecord(b"MOD2", model)
+                   + esp.encode_subrecord(b"MO2S", _alt(entries)))
+        recs.append(esp.Record(sig=b"ARMA", flags=0, formid=fid,
+                               timestamp_vc=0, version_unk=0x002C,
+                               payload=payload))
+    plugin = tmp_path / "out" / "Combined.esp"
+    esp.ESP(header=esp.TES4Header(masters=["Skyrim.esm"]),
+            groups=[esp.Group(label=b"ARMA", records=recs)]).save(plugin)
+    seen = _resolve_to(monkeypatch, {KEY: src})
+    up.reconcile_alt_texture_indices(plugin, tmp_path / "out" / "meshes")
+    got = [[_parse(d) for s, d in esp.iter_subrecords(r.payload) if s == b"MO2S"]
+           for r in esp.ESP.load(plugin).groups[0].records]
+    assert got == [[[("coat", TAN, 0)]], [[("fur", GREEN, 1)]]], (
+        "the lost shell's RED must not land on the surviving 'fur'")
+    assert seen == [[KEY]]
 
 
 @needs_pynifly

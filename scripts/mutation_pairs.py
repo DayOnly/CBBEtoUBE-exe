@@ -6960,12 +6960,14 @@ PAIRS = (
     Pair('ASP-b', "a set's repeated name does not read the source",
          edits=(
              ('src/ube_patcher.py',
-              '                if exact and (_split_name_candidates(idx) or key in _repeats):',
-              '                if exact and _split_name_candidates(idx):  # MUTATED', 1),
+              '                if exact and (_split_name_candidates(idx) or key in _repeats\n',
+              '                if exact and (_split_name_candidates(idx)  # MUTATED\n', 1),
          ),
+         # Not '..._beside_an_authored_case_variant' since #alttex-case-provenance:
+         # its NIF carries 'Fur' and 'fur', which reads the source on its own.
          tests=('tests/test_alttex_set_provenance.py',),
          expect=('test_every_renamed_shell_lost_drops_the_lost_shells_colour',
-                 'test_every_renamed_shell_lost_beside_an_authored_case_variant',
+                 'test_a_repeat_in_a_later_armature_still_reads_the_source',
                  'test_a_repeated_name_without_a_source_loses_its_entries',
                  'test_another_sets_repeat_makes_a_single_entry_ambiguous[True]',
                  'test_another_sets_repeat_makes_a_single_entry_ambiguous[False]',
@@ -7009,7 +7011,7 @@ PAIRS = (
     Pair('ASP-f', 'a group kept as authored keeps one entry per name',
          edits=(
              ('src/ube_patcher.py',
-              '    kept = (_kept_group_shells(source, converted, split)\n'
+              '    kept = (_kept_group_shells(source, converted, split, ambiguous)\n'
               '            if _alttex_set_provenance_on() else {})',
               '    kept = {}  # MUTATED', 1),
          ),
@@ -7082,5 +7084,97 @@ PAIRS = (
          expect=('test_a_repeated_name_without_a_source_loses_its_entries',
                  'test_another_sets_repeat_makes_a_single_entry_ambiguous[False]',
                  'test_without_a_source_a_name_the_nif_carries_twice_is_dropped'),
+    ),
+    # A repeat in a LATER armature must still read the source: every set is
+    # scanned for repeats before any NIF is loaded (a NIF loaded earlier is
+    # cached without its prints). The mutation loads each record's NIFs in the
+    # first loop, right after that record's repeats are collected.
+    Pair('ASP-m', "a NIF is loaded before a later armature's repeat is seen",
+         edits=(
+             ('src/ube_patcher.py',
+              '                                            set()).update(rep)\n'
+              '    for _r, subs, models in sets:\n'
+              '        for sig, _data in subs:\n'
+              '            if sig in SLOT_FOR and models.get(SLOT_FOR[sig]):\n'
+              '                shapes_for(models[SLOT_FOR[sig]])\n',
+              '                                            set()).update(rep)\n'
+              '            for sig, _data in subs:  # MUTATED: loads in loop 1\n'
+              '                if sig in SLOT_FOR and models.get(SLOT_FOR[sig]):\n'
+              '                    shapes_for(models[SLOT_FOR[sig]])\n', 1),
+         ),
+         tests=('tests/test_alttex_set_provenance.py',),
+         expect=('test_a_repeat_in_a_later_armature_still_reads_the_source',),
+    ),
+    # #alttex-case-provenance (2026-09-25): a name shared only up to case
+    # ('Fur' beside 'fur') binds through the source by print, or is dropped;
+    # so does every name the reconcile knows was shared.
+    Pair('ACP-a', 'the case-provenance off-switch no longer switches anything off',
+         edits=(
+             ('src/ube_patcher.py',
+              '    return not _flag("CBBE2UBE_NO_ALTTEX_CASE_PROVENANCE", False)',
+              '    return True  # MUTATED', 1),
+         ),
+         tests=('tests/test_alttex_case_provenance.py',),
+         expect=('test_switched_off_a_case_pair_binds_as_the_parent',),
+    ),
+    Pair('ACP-b', 'a NIF carrying two spellings of a name reads no source',
+         edits=(
+             ('src/ube_patcher.py',
+              '                              or (case_prov and _case_variant_names(idx))):',
+              '                              ):  # MUTATED', 1),
+         ),
+         tests=('tests/test_alttex_case_provenance.py',),
+         expect=('test_a_case_pair_named_once_reads_the_source[True]',
+                 'test_a_case_pair_named_once_reads_the_source[False]'),
+    ),
+    Pair('ACP-c', 'two spellings of a name are not taken as a case variant',
+         edits=(
+             ('src/ube_patcher.py',
+              '    return frozenset(low for low, s in spellings.items() if len(s) > 1)',
+              '    return frozenset(low for low, s in spellings.items() '
+              'if len(s) > 2)  # MUTATED', 1),
+         ),
+         tests=('tests/test_alttex_case_provenance.py',),
+         expect=('test_case_variant_names_are_the_names_carried_under_two_spellings',
+                 'test_a_case_pair_named_once_reads_the_source[True]',
+                 'test_a_case_pair_named_once_reads_the_source[False]'),
+    ),
+    Pair('ACP-d', "the source's shells are grouped by exact name",
+         edits=(
+             ('src/ube_patcher.py',
+              '    groups = Counter((n.lower() if fold else n) for n in source.names if n)',
+              '    groups = Counter(n for n in source.names if n)  # MUTATED', 1),
+         ),
+         tests=('tests/test_alttex_case_provenance.py',),
+         expect=('test_a_lost_case_variant_drops_its_colour_when_another_name_reads_the_source',),
+    ),
+    Pair('ACP-e', 'a shared name the source has once is bound by name',
+         edits=(
+             ('src/ube_patcher.py',
+              '        shared += sorted(nm for nm in ambiguous if nm and groups[nm] < 2)',
+              '        pass  # MUTATED', 1),
+         ),
+         tests=('tests/test_alttex_case_provenance.py',),
+         expect=('test_a_repeated_name_the_source_has_once_binds_by_its_index',
+                 'test_a_name_the_nif_carries_twice_but_the_source_once_is_dropped'),
+    ),
+    Pair('ACP-f', 'the reconcile builds the binding without the shared names',
+         edits=(
+             ('src/ube_patcher.py',
+              '                ambiguous.get(k, frozenset()))',
+              '                frozenset())  # MUTATED', 1),
+         ),
+         tests=('tests/test_alttex_case_provenance.py',),
+         expect=('test_a_repeated_name_the_source_has_once_binds_by_its_index',
+                 'test_a_name_the_nif_carries_twice_but_the_source_once_is_dropped'),
+    ),
+    Pair('ACP-g', "a renamed shell's case variant is bound without its print",
+         edits=(
+             ('src/ube_patcher.py',
+              '                if case and (len(own) != 1 or not _same_shell_print(',
+              '                if False and (len(own) != 1 or not _same_shell_print(  # MUTATED', 1),
+         ),
+         tests=('tests/test_alttex_case_provenance.py',),
+         expect=('test_a_case_variant_of_a_renamed_shell_must_keep_its_print',),
     ),
 )
