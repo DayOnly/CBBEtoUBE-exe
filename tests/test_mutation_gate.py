@@ -355,23 +355,42 @@ def _alive(pid):
     return True
 
 
-def test_kill_tree_stops_a_shard_and_what_it_started():
+def _stop(pid):
+    if os.name == "nt":
+        subprocess.run(["taskkill", "/F", "/PID", str(pid)], capture_output=True)
+    else:
+        try:
+            os.kill(pid, 9)
+        except OSError:
+            pass
+
+
+def test_kill_tree_stops_a_shard_and_what_it_started(tmp_path):
     """A shard's pytest is the shard's child: stopping the shard alone would
-    leave it running, holding files in a worktree the parent is removing."""
+    leave it running, holding files in a worktree the parent is removing.
+    Both processes sit in tmp_path, and whatever survives is stopped after,
+    so a failing run holds no folder of the gate's own worktree."""
     code = ("import subprocess, sys, time\n"
-            "c = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)'])\n"
-            "print(c.pid, flush=True)\ntime.sleep(120)\n")
+            "c = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+            "print(c.pid, flush=True)\ntime.sleep(60)\n")
     proc = subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE, text=True,
-                            **mg.own_group())
-    grandchild = int(proc.stdout.readline())
-    assert _alive(grandchild)
-    mg._kill_tree(proc)
-    proc.stdout.close()
-    assert proc.poll() is not None
-    deadline = time.monotonic() + 15
-    while _alive(grandchild) and time.monotonic() < deadline:
-        time.sleep(0.2)
-    assert not _alive(grandchild), "the shard's own child survived"
+                            cwd=str(tmp_path), **mg.own_group())
+    grandchild = None
+    try:
+        grandchild = int(proc.stdout.readline())
+        assert _alive(grandchild)
+        mg._kill_tree(proc)
+        assert proc.poll() is not None
+        deadline = time.monotonic() + 15
+        while _alive(grandchild) and time.monotonic() < deadline:
+            time.sleep(0.2)
+        assert not _alive(grandchild), "the shard's own child survived"
+    finally:
+        proc.stdout.close()
+        for pid in (grandchild, proc.pid):
+            if pid is not None:
+                _stop(pid)
+        proc.wait(timeout=30)
 
 
 class _Proc:
