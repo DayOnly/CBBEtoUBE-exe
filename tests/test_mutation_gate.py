@@ -184,6 +184,12 @@ def test_a_red_baseline_judges_nothing(tiny, tmp_path):
 def test_the_cli_reports_and_exits_by_verdict(tiny, tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(mg, "REPO", tiny)
     monkeypatch.setattr(mg, "_seeded_pairs", lambda: [_pair()])
+    # A temp folder of this test's own: other gates running at the same time
+    # (parallel lanes, or the sharded full gate) make and remove their own
+    # mutation-gate-* folders in the shared one, and would move the count.
+    own_temp = tmp_path / "temp"
+    own_temp.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(own_temp))
     temp_before = set(Path(tempfile.gettempdir()).glob("mutation-gate-*"))
     assert mg.main(["run", "--json", str(tmp_path / "r.json")]) == 0
     assert set(Path(tempfile.gettempdir()).glob("mutation-gate-*")) == temp_before, (
