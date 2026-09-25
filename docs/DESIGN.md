@@ -1225,6 +1225,24 @@ reported through `_report_coverage_holds`:
   skipped in both passes; one with no additional races is unchanged. Live: 37
   armatures, 58 links removed, 0 added; 3 Argonian-only items lose their only
   link (invisible on UBE, as on every human race). `CBBE2UBE_NO_COVERAGE_BEAST_VARIANT=1`.
+- **The mannequin race does not make a beast variant human**
+  (`#beast-variant-non-actor`). A beast patch's variant often lists the Khajiit
+  races AND Skyrim.esm ManikinRace (so a mannequin can display it); the beast
+  test read the mannequin race as a non-beast race, so the variant was minted
+  and a UBE actor drew an armature no human draws. `_is_beast_variant` now
+  drops the races in `_NON_ACTOR_RACES_24` (plugin-qualified: Skyrim.esm
+  `0x10760A` only) before judging, and needs at least one race left
+  (`bool(actor)`), so an armature listing ONLY the mannequin race is not a
+  variant and is minted as before. A FIXED list, not the RACE Immobile flag:
+  stationary enemy races and turret or totem races carry that flag too and can
+  wear armour. A mod's own display race is not covered unless added. Live
+  replay: 30 armatures, 30 links removed (wig and earring variants, all
+  non-body; each armour's only link, and none has an armature a human draws,
+  so they are invisible on UBE as on every human race), 0 added, 0 re-pointed;
+  the body pass is byte-identical. The beast report line says how many also
+  listed the mannequin race. Nested, with its own switch:
+  `CBBE2UBE_NO_COVERAGE_BEAST_VARIANT=1` turns the whole rule off, which is not
+  the parent's output. `CBBE2UBE_NO_BEAST_VARIANT_NON_ACTOR=1`.
 - **A body armour's hood rides with it** (`#coverage-body-accessory`). The body
   pass kept only armatures with a converted mesh or a hands/feet slot; the
   non-body pass skips any armour with a deforming slot. A robe's hood armature

@@ -3736,6 +3736,7 @@ def _report_coverage_holds(stats: "list[dict]") -> None:
     twins = [k for s in stats for k in (s.get("ube_twin") or [])]
     accs = [k for s in stats for k in (s.get("body_accessory") or [])]
     beasts = sorted({k for s in stats for k in (s.get("beast_variant_skipped") or [])})
+    nonactor = sorted({k for s in stats for k in (s.get("beast_variant_non_actor") or [])})
     wigs = [w for s in stats for w in (s.get("wigs") or [])]
     listed = [k for s in stats for k in (s.get("race_listed") or [])]
     if withheld:
@@ -3828,6 +3829,10 @@ def _report_coverage_holds(stats: "list[dict]") -> None:
     if beasts:
         print(f"  [unified] {len(beasts)} beast-race variant armature(s) left off UBE "
               "actors (they list only Argonian/Khajiit races; no human draws them)")
+        # #beast-variant-non-actor: say when the mannequin race was ignored.
+        if nonactor:
+            print(f"       {len(nonactor)} of them also list the mannequin race "
+                  "(Skyrim.esm ManikinRace), ignored when judging: no actor has it")
     if wigs:
         print(f"  [unified] {len(wigs)} playable wig(s) drawn on UBE as headgear "
               "(their own mesh and collider)")

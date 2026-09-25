@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Fixed — a Khajiit-only item that a mannequin can also display is no longer drawn on UBE actors
+
+A Khajiit or Argonian version of an item is left off UBE actors, because no
+human-race character draws it. Some mods also let the mannequins in player
+homes display that version, and this tool took that as a sign that a human
+could wear it, so UBE actors drew it. The mannequins are now ignored when the
+tool decides whether a version is Khajiit or Argonian only. An item version
+that only a mannequin can display is still drawn on UBE actors, as before.
+Measured on the reported modlist: 30 wigs and earrings made for Khajiit
+characters are no longer drawn on UBE actors. None of them has a version a
+human-race character draws, so they are invisible on UBE actors, as on every
+human race in the base game. Nothing else changes.
+`CBBE2UBE_NO_BEAST_VARIANT_NON_ACTOR=1` (set to 1) turns it off.
+
 ### Fixed — the warning about body pieces not drawn on UBE names every piece it means, adults first
 
 When a body piece is not drawn on UBE actors because its mesh was not
