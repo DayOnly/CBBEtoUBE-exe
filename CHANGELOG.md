@@ -137,6 +137,41 @@ pieces (a man of a UBE race wearing them).
 `CBBE2UBE_NO_STALE_OUTPUT_SWEEP=1` (set to 1) turns all of it off, the record
 included; `CBBE2UBE_STALE_OUTPUT_SWEEP_REPORT_ONLY=1` lists without moving.
 
+### Changed — skirts and capes of the vanilla armours keep their physics on UBE actors
+
+Some vanilla armours (bandit, draugr, hide, iron, studded, Forsworn, Falmer,
+General Tullius's outfit, the Sons of Talos outfit and two farm clothes) have
+physics skirts, tassets or capes in your BodySlide build, and
+CBBE characters wear them that way. The tool took a static version of those
+pieces instead, so on UBE characters the same skirts hung stiff. It now takes
+your zeroed BodySlide build with its physics, but only when the tool has
+checked that build against its BodySlide project, both versions carry the body
+the tool replaces, the physics file is found and holds constraints, nothing in
+that file would bring a second, hidden body back, and every part that swings
+still has something to collide with once the conversion has removed what it
+drops. Measured on the reported modlist: 17 armour pieces (34 files) change;
+everything else is converted exactly as before.
+
+These stay as they were: the Imperial heavy cuirass; the Imperial light and
+medium cuirasses, whose physics file names the body `Body` while their build
+calls it `body`, so the conversion drops that collider and their skirt would
+have swung through the legs with nothing to stop it; a piece whose build has no
+body the tool can replace; and a piece whose own mesh has no body. The check
+reads the physics file the way the conversion actually cleans it up, line by
+line, so a collider written on the same line as a removed part counts as removed
+too. A piece is also kept as it was when that cleanup would leave its skirt
+swinging with no collision shape at all, or would leave a physics file the game
+cannot read. On the reported modlist this last refinement changes nothing.
+
+On 6 of the 34 files the conversion summary still reports a physics shape it
+dropped (`hdt_xml_shape_dropped`), and that is expected: the iron light
+cuirass shares its physics file with the heavy one, which names a pauldron belt
+and its collider that the light cuirass does not have; both farm clothes name
+the body the tool replaces. Each of these pieces keeps a collider for
+everything that swings. `CBBE2UBE_NO_ZEROED_SMP_GAIN=1` (set to 1) keeps all of
+them static; `CBBE2UBE_NO_SMP_GAIN_COLLISION_PARTNER=1` lets the two Imperial
+cuirasses through again.
+
 ### Changed — checking your zeroed BodySlide build is about four times faster
 
 Before converting, the tool checks which armour your zeroed BodySlide build

@@ -406,6 +406,69 @@ single pass runs. Three rules encode this:
    processes: 264.8 s -> 69.6 s; the mesh index is identical key for key (4,562
    entries, 244 re-pointed) and so is the verdict line (122 moved / 179 kept).
    `CBBE2UBE_NO_ZEROED_PROBE_MEMO=1` probes every folder per question again.
+   **A physics GAIN is taken** (`#zeroed-smp-gain`, 2026-09-25, user decision). The
+   physics rule and the same-shapes rule held back every vanilla-armour piece whose SMP
+   loose mesh rule 2 had swapped for a static prebuilt one: the user's zeroed build of
+   the SMP design was verified and refused for its physics alone, so CBBE wearers got a
+   skirt with physics and UBE wearers a static one. When today's source declares no
+   physics and the verified build declares it at both weights, the build is taken and
+   the same-shapes rule is waived, if at each weight: both sides carry a body the
+   converter swaps (`_looks_like_inline_body`), so both go body-swap and the path change
+   the same-shapes rule guards cannot happen; every sizeable body-skin shape of the
+   build is such a body (else a body ships as cloth); the build's own XML pointer
+   resolves (the converter's resolver), parses, and holds a generic, stiffspring or
+   conetwist constraint anywhere in the tree -- nested in a `<constraint-group>`
+   counts; a census that read it with `find` called five constrained XMLs
+   unconstrained; and no shape the XML names, nor one carrying a non-skeleton bone it
+   drives, is a stripped body the collision-proxy re-import would bring back
+   (`_is_inline_body_name` lets it through) -- a hidden second body, the equip CTD the
+   re-import's own comment names. And every SIMULATED collision shape must still have
+   a partner once the conversion has pruned the XML (`#smp-gain-collision-partner`,
+   same day): `_harden_hdt_xml_for_fsmp` drops every shape block whose name, case for
+   case, is not in the converted NIF, and after the rule above every stripped body the
+   XML names is one the re-import skips, so the gate prunes the XML to the build's
+   shapes minus the stripped ones and replays the rest as FSMP reads them -- a shape
+   simulates when a skin bone has mass (bone templates in document order; a bone first
+   met undeclared, in a shape or a constraint, takes the unnamed default as it stands
+   then), and two shapes collide only when each allows the other's tags (can-collide
+   list, or, when empty, not a no-collide tag; tags without case). The converter's own
+   later colliders cannot rescue a partnerless shape: the butt collider clones a
+   surviving kinematic block's tags, the chest collider is off by default. The prune
+   the gate replays is the conversion's OWN (`_hdt_shape_prune`, which
+   `_harden_hdt_xml_for_fsmp` walks too, so the two cannot disagree): it is line-based
+   -- a line's first shape tag decides it and the line goes whole -- so a partner block,
+   a bone or a constraint that shares a line with a dropped block goes with it, and a
+   pruned text that no longer parses is refused. When the prune takes EVERY simulated
+   shape while the XML still makes a drawn shape's skin bone simulate, the chain would
+   swing that cloth with no collision shape at all: refused too (an XML the author wrote
+   with no simulated shape is not this rule's to judge). Live, these two refinements
+   move nothing: the plan is the same on all 4,562 keys. The case: the
+   Imperial light and medium cuirasses name their body `body`, their XML's only body
+   collider is `Body`; the prune removed it and the skirt's `Proxy`, which collides
+   only with the tag `Body` carried, collided with nothing -- worse than the static
+   source. A physics loss or a one-weight change still keeps today's source. Live,
+   read-only: 17 pieces / 34 index keys move (139 moved, 162 kept), nothing else in
+   the plan changes; with `CBBE2UBE_NO_ZEROED_SMP_GAIN=1` the index and the verdict
+   line are the old ones on all 4,562 keys, and with
+   `CBBE2UBE_NO_SMP_GAIN_COLLISION_PARTNER=1` they are the 19-piece set before the
+   partner rule. Refused: the Imperial heavy cuirass (its XML registers the body as
+   `Body`), the Imperial light and medium cuirasses (no partner left), a build whose
+   body the detector misses, a source with no body (copy path). Converted into scratch,
+   every admitted file carries a constrained XML (54-150 constraints), no unresolved
+   pointer and no re-imported body, and every simulated shape keeps a partner. The
+   prune still removes XML shapes on 6 of the 34 files and reports each as
+   `hdt_xml_shape_dropped`: the iron light cuirass (both weights) loses cloth `Pauldron
+   Belt`, collider `PBelt Col` and 6 weight-threshold bones -- none of them in its build,
+   the XML is shared with the heavy cuirass; the two farm robes (both weights) lose the
+   per-vertex `3BA`, the body the swap replaces, and keep `Colision` and
+   `VirtualGround` for their skirt. Every other bone the XML names and the output lacks
+   is missing from the build too (the author's XML serves several variants). At bind
+   the bust clips no more than before (three pieces 0.1-6.3% -> 0%; median standoff
+   1.28u -> 1.33u, p90 1.52u -> 1.80u over the 17). The butt band clips at bind on 13
+   of the 17 (0.07-13%); it clips MORE than before on 11 of them (0.75-13%) and less
+   on two (bandit body 3, Falmer). All of it is behind SMP-simulated skirt verts, which
+   the static harness cannot place -- the converter lifts their chains off the body
+   and SMP moves them; in game is the verdict.
 
 ### Which mods and pieces are sources at all (2026-09-24)
 

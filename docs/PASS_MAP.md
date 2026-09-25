@@ -4,6 +4,8 @@
 
 `src/nif_convert.py` defines **402** module-level functions and binds **341** flag/knob constants. The two entry points below are the whole conversion surface; `convert_nif` dispatches to `convert_nif_phase2` for a body-swap piece and otherwise runs the copy path itself.
 
+`src/nif_convert.py` defines **397** module-level functions and binds **341** flag/knob constants. The two entry points below are the whole conversion surface; `convert_nif` dispatches to `convert_nif_phase2` for a body-swap piece and otherwise runs the copy path itself.
+
 Read the **Stage** column first: those are the checkpoints the survival trace measures (`CBBE2UBE_SURVIVAL_TRACE=1`), so they are the passes whose effect on the shipped mesh has actually been quantified. Everything else runs but is not per-shape traced. See `docs/PIPELINE.md` for what the labels mean.
 
 **Guards** are the flag/knob constants in the `if` tests wrapping the call. A pass with a guard does not necessarily run.
