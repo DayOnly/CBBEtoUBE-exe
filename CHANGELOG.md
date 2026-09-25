@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### Fixed — physics that some armours and cloaks point to with a "Data\" path now carries over
+
+An armour with HDT-SMP physics names its physics file inside the mesh. A few
+authors write that name starting with "Data\" (the game folder) instead of
+starting at "meshes\". The tool could not find the file then, so the converted
+piece shipped with no physics at all: the cloth hung stiff. The tool now also
+looks for the file without that leading "Data\", after first trying the name as
+written. Measured on the reported modlist: 18 converted meshes of two armour
+sets and two cloaks get their physics back (body, skirt, first-person and
+shield-cloth pieces). Physics files that exist nowhere in the load order stay
+missing, as before, and nothing is taken from another mod's archive.
+`CBBE2UBE_NO_PHYSICS_DATA_PREFIX=1` (set to 1) turns it off.
+
 ### Changed — whether you can wear an item is read from the plugin the game uses
 
 The tool does not convert an item the player cannot equip (the game's

@@ -11761,6 +11761,43 @@ def _resolve_data_rel_in_vfs(rel: str, src_nif_path: Path) -> "Path | None":
         print(f"  !! physics XML path rejected (escapes the mods tree): {rel!r}"
               " -- collider/soft-body detection may fail open for this armor")
         return None
+    hit = _resolve_safe_rel_in_vfs(norm, src_nif_path)
+    if hit is not None or not _physics_data_prefix():
+        return hit
+    # #physics-data-prefix: the raw rel missed. An author who wrote the pointer
+    # as "Data\meshes\..." meant the game's Data folder, which no mod folder
+    # contains, so try once more with that ONE leading segment removed. The raw
+    # rel went first so a mod packaged as <mod>/data/meshes/... still wins.
+    head, _sep, tail = norm.partition("/")
+    if head.lower() != "data" or not tail:
+        return None
+    stripped = _safe_data_rel(tail)     # re-check: the strip exposes a new head
+    if stripped is None:
+        print(f"  !! physics XML path rejected (escapes the mods tree): {rel!r}"
+              " -- collider/soft-body detection may fail open for this armor")
+        return None
+    return _resolve_safe_rel_in_vfs(stripped, src_nif_path)
+
+
+def _physics_data_prefix() -> bool:
+    r"""#physics-data-prefix (2026-09-25): may a physics-XML pointer written as
+    "Data\meshes\...\x.xml" resolve with its leading "Data" segment removed?
+    Yes, by default.
+
+    The pointer is the NIF's `HDT Skinned Mesh Physics Object` string. Some
+    authors write it relative to the game folder, "Data\meshes\...", instead of
+    relative to Data. No mod folder contains a "data" folder, so the resolver
+    missed every such pointer, the piece failed CLOSED (`hdt_xml_unresolved`)
+    and shipped with no physics at all. The raw rel is still tried FIRST; only
+    a miss falls back to the stripped one, and the stripped rel passes the same
+    escape checks. Nothing is fetched from an archive.
+    CBBE2UBE_NO_PHYSICS_DATA_PREFIX=1 restores the old miss."""
+    return not _flag("CBBE2UBE_NO_PHYSICS_DATA_PREFIX", False)
+
+
+def _resolve_safe_rel_in_vfs(norm: str, src_nif_path: Path) -> "Path | None":
+    """The lookup half of `_resolve_data_rel_in_vfs`: `norm` has ALREADY
+    passed `_safe_data_rel`. Never call it with an unchecked path."""
     # 1) Local: the source NIF's own mod root (dir that contains 'meshes').
     local_root = None
     for parent in [src_nif_path, *src_nif_path.parents]:

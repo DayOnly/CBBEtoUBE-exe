@@ -977,6 +977,29 @@ conform/graft passes as a fallback — grafting UBE scale bones onto them crashe
 SMP update on equip (skin-data OOB, the "robes" CTD). "skirt" is deliberately
 excluded: metal tassets are rigid plates that legitimately want the conform.
 
+### A "Data\" physics pointer resolves (`#physics-data-prefix`, default ON)
+
+The NIF's `HDT Skinned Mesh Physics Object` string names the authored XML
+relative to Data (`meshes\...\x.xml`). Some authors write it relative to the
+game folder, `Data\meshes\...`. No mod folder holds a `data` folder, so
+`_resolve_data_rel_in_vfs` missed it, the piece failed CLOSED
+(`hdt_xml_unresolved`, every shape protected) and shipped with no pointer.
+
+The resolver tries the raw rel first (a mod packaged as `<mod>/data/meshes/...`
+keeps its file), then the rel with ONE leading `data` segment removed (any
+case). The strip lives in `_resolve_data_rel_in_vfs`, not in the security
+helper `_safe_data_rel`, and the stripped rel passes `_safe_data_rel` again:
+removing the head can expose a drive letter (`Data\C:\...`), which pathlib
+would otherwise join as an absolute path. No archive is read, so a pointer into
+another mod's tree that exists only in a BSA stays unresolved.
+
+Live, measured on the run's own counter: `hdt_xml_unresolved` 30 -> 12, and 18
+output NIFs (loose and archive-staged, two armour sets and two cloaks) gain an
+authored XML. Restoring the XML also re-engages the ordinary physics handling
+on them: registered-shape protection, collider split clones, and re-imported
+hidden collision shapes (a cloak's `VirtualBody`, which is CBBE-shaped).
+`CBBE2UBE_NO_PHYSICS_DATA_PREFIX=1` restores the old miss.
+
 ### Custom physics-bone chains
 
 When a NIF is rebuilt, pynifly re-adds each skinned bone flat under the root with an
