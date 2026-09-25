@@ -7230,6 +7230,27 @@ PAIRS = (
          tests=('tests/test_stale_output_sweep.py',),
          expect=('test_a_put_back_also_brings_back_a_torn_base',),
     ),
+    Pair('SRF-t', 'a pair listed twice (moved and planned) is named twice when it '
+         'cannot go back',
+         edits=(
+             ('src/stale_sweep.py',
+              '    for f, to in reversed(list(dict.fromkeys((str(f), str(t)) for f, t in pairs))):\n',
+              '    for f, to in reversed(list(pairs)):  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_stale_output_sweep.py',),
+         expect=('test_a_file_that_cannot_go_back_is_named_once',),
+    ),
+    Pair('SRF-u', 'an empty or path-like source name in the manifest counts as a mod name',
+         edits=(
+             ('src/stale_sweep.py',
+              '        isinstance(k, str) and k.strip() and isinstance(s, str) and _mod_name(s)\n',
+              '        isinstance(k, str) and isinstance(s, str)  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_stale_output_sweep.py',),
+         expect=('test_a_manifest_holding_other_than_names_is_no_manifest[bases4-patches4]',
+                 'test_a_manifest_holding_other_than_names_is_no_manifest[bases6-patches6]',
+                 'test_a_manifest_holding_other_than_names_is_no_manifest[bases7-patches7]'),
+    ),
     Pair('SRF-q', "the plan-incomplete warning renders as a bare marker",
          edits=(
              ('src/auto_convert.py',

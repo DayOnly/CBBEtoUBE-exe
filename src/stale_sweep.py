@@ -164,9 +164,17 @@ def inventory(output) -> Inventory:
 # ---------------------------------------------------------------- manifest
 
 def _name_map(v) -> bool:
-    """{str: str}: every key a path or file name, every value a source name."""
+    """{str: str}: every key a path or file name, every value a source name --
+    a mod folder name: not empty, and one folder, never a path (an empty name
+    joined to the mods root is the mods root itself, which reads as a present
+    folder of a disabled mod)."""
     return isinstance(v, dict) and all(
-        isinstance(k, str) and isinstance(s, str) for k, s in v.items())
+        isinstance(k, str) and k.strip() and isinstance(s, str) and _mod_name(s)
+        for k, s in v.items())
+
+
+def _mod_name(s: str) -> bool:
+    return bool(s.strip()) and s not in (".", "..") and not any(c in s for c in "/\\:")
 
 
 def read_manifest(output) -> "tuple[dict | None, str]":
@@ -475,9 +483,10 @@ def move_group(files, output, stamp_dir) -> "tuple[list, str, list]":
 
 def put_back(pairs) -> "list[str]":
     """Move each (original, moved) pair back. A file whose original path is
-    taken again, or that cannot move, stays where it is and is named."""
+    taken again, or that cannot move, stays where it is and is named -- once,
+    though the same pair may be listed twice (moved and planned)."""
     failed: list = []
-    for f, to in reversed(list(pairs)):
+    for f, to in reversed(list(dict.fromkeys((str(f), str(t)) for f, t in pairs))):
         f, to = Path(f), Path(to)
         try:
             if not to.is_file():

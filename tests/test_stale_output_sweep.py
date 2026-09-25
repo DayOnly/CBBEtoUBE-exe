@@ -1147,7 +1147,9 @@ def test_patches_at_the_mod_root_keep_their_sources_meshes(w, recorded):
 
 @pytest.mark.parametrize("bases, patches", [
     ({OLD: ["Old Mod"]}, {}), ({OLD: {"a": 1}}, {}), ({OLD: None}, {}),
-    ({OLD: "Old Mod"}, {OLD_PATCH: ["Old Mod"]})])
+    ({OLD: "Old Mod"}, {OLD_PATCH: ["Old Mod"]}),
+    ({OLD: ""}, {}), ({OLD: "  "}, {}), ({OLD: "..\\Old Mod"}, {}),
+    ({OLD: "Old Mod"}, {OLD_PATCH: ""})])
 def test_a_manifest_holding_other_than_names_is_no_manifest(w, capsys, bases, patches):
     """A hand edit or a foreign write: nothing it records moves, a named warning
     says so, and the finish writes the record anew."""
@@ -1216,6 +1218,19 @@ def test_a_put_back_also_brings_back_a_torn_base(w, monkeypatch):
     assert ss.pending() is not None, "the patch set moved"
     _finish(w, results, merged=False)
     assert _snapshot(w) == before
+
+
+def test_a_file_that_cannot_go_back_is_named_once(tmp_path):
+    """The settle passes the moved pairs AND the planned ones, so a pair that
+    moved is listed twice; a file that cannot go back is still one file."""
+    orig, moved = tmp_path / "a" / "x_1.nif", tmp_path / "s" / "x_1.nif"
+    other, other_to = tmp_path / "a" / "y_1.nif", tmp_path / "s" / "y_1.nif"
+    for p in (orig, moved, other_to):
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(b"nif")
+    pairs = [(orig, moved), (other, other_to)]
+    assert ss.put_back(pairs + pairs) == [str(orig)], "taken again: named once"
+    assert other.is_file() and not other_to.exists()
 
 
 def test_a_group_that_raises_puts_its_own_files_back_first(w, monkeypatch):
