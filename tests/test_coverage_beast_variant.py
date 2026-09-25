@@ -137,8 +137,9 @@ def test_the_variants_are_reported(capsys):
     assert "1 beast-race variant armature(s) left off UBE" in capsys.readouterr().out
 
 
-# #beast-variant-non-actor (2026-09-24): the mannequin race is no actor's race,
-# so a variant listing Khajiit AND the mannequin race is still a beast variant.
+# #beast-variant-non-actor (2026-09-24): no playable or UBE-race actor has the
+# mannequin race (only the mannequins do), so a variant listing Khajiit AND the
+# mannequin race is still a beast variant.
 # Live: 30 wig and earring variants no human draws were drawn on UBE actors.
 CATMAN = lambda: _arma(0x01000802, HEAD, r"wig\khajiitman_1.nif",
                        [KHAJIIT, KHAJIIT_V, MANIKIN])
@@ -230,8 +231,21 @@ def test_the_ignored_mannequin_race_is_reported(capsys):
          "beast_variant_non_actor": ["mod.esp|802"]}])
     out = capsys.readouterr().out
     assert "2 beast-race variant armature(s) left off UBE" in out
-    assert "1 of them also list the mannequin race" in out
+    assert "1 of them also lists the mannequin race" in out
     assert "ignored when judging" in out
+
+
+def test_the_mannequin_line_gives_the_true_reason(capsys):
+    """Mannequins ARE actors, and they wear armour (25 live). What the race
+    lacks is a playable or UBE-race member -- the line must not say no actor
+    has it."""
+    ac._report_coverage_holds([
+        {"beast_variant_skipped": ["mod.esp|801", "mod.esp|802"],
+         "beast_variant_non_actor": ["mod.esp|801", "mod.esp|802"]}])
+    line = next(l for l in capsys.readouterr().out.splitlines() if "mannequin" in l)
+    assert "2 of them also list the mannequin race" in line
+    assert "no playable or UBE-race actor has it" in line
+    assert "no actor has it" not in line
 
 
 def test_no_mannequin_line_without_one(capsys):

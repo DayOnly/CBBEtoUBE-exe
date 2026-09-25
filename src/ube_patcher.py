@@ -3476,20 +3476,24 @@ def _coverage_beast_variant() -> bool:
     return not _flag("CBBE2UBE_NO_COVERAGE_BEAST_VARIANT", False)
 
 
-# Skyrim.esm ManikinRace (low 24): the mannequins' race, which no actor that
-# wears armour belongs to. A FIXED list, not the RACE Immobile flag: stationary
-# enemy races (and one vanilla empty race) carry that flag too.
+# Skyrim.esm ManikinRace (low 24): the mannequins' race. Mannequins are actors
+# and wear armour (25 NPC_ records live), but no playable or UBE-race actor has
+# this race, so listing it beside a beast race cannot make a human draw the
+# armature. A FIXED list, not the RACE Immobile flag: stationary enemy races
+# (and one vanilla empty race) carry that flag too.
 _NON_ACTOR_RACES_24 = frozenset({0x10760A})
 
 
 def _beast_variant_non_actor() -> bool:
     r"""#beast-variant-non-actor (2026-09-24): does #coverage-beast-variant
-    ignore a non-actor race (the mannequin race) when it judges "every
+    ignore the mannequin race (no playable or UBE-race actor has it) when it judges "every
     additional race is a beast race"? Yes, by default.
 
     A beast patch's variant often lists the Khajiit race AND the mannequin race,
-    so a mannequin can display it. The mannequin race is no actor's race, but
-    the rule counted it as a non-beast race, so the variant was minted for UBE
+    so a mannequin can display it. No playable or UBE-race actor has the
+    mannequin race (the mannequins themselves do, and still display the item
+    through the untouched source armature), but the rule counted it as a
+    non-beast race, so the variant was minted for UBE
     and a UBE actor drew an armature no human draws. Live replay: 30 armatures
     (wig and earring variants), 30 links, none with a human armature. Only
     Skyrim.esm races in `_NON_ACTOR_RACES_24` are ignored; an armature listing
@@ -3507,7 +3511,9 @@ def _exclude_body_only() -> bool:
     body pieces; its helmet or eyeglasses, which no other mod patches, then drew
     nothing on UBE actors. Now the body pass still withholds everything the mod
     owns, and the non-body pass withholds only what `_excluded_piece_holds`
-    names; the rest is minted with its own mesh.
+    names; the rest is minted, drawing the model its armature names (no mesh
+    is converted for the excluded mod; a shared path another mod's conversion
+    covers draws that converted copy).
     CBBE2UBE_NO_EXCLUDE_BODY_ONLY=1 withholds all of it again. Nested:
     CBBE2UBE_NO_EXCLUDE_OWNED_COVERAGE=1 withholds nothing at all."""
     return not (_flag("CBBE2UBE_NO_EXCLUDE_OWNED_COVERAGE", False)
@@ -3517,7 +3523,8 @@ def _exclude_body_only() -> bool:
 def _excluded_piece_holds(armo_abs, records, to_mint, arma_win, armo_slots,
                           ube_exists, probe) -> "str | None":
     r"""#exclude-body-only: why an excluded mod's armour stays withheld in the
-    non-body pass, or None to mint it with its own mesh.
+    non-body pass, or None to mint it like any other armour (never drawing a
+    converted copy of a mesh the excluded mod ships).
 
     `records`: [(plugin lowercase, armature identities, EditorID)] for every
     record of the armour in load order (the defining one and its overrides).
@@ -3570,6 +3577,19 @@ def _excluded_piece_holds(armo_abs, records, to_mint, arma_win, armo_slots,
     return None
 
 
+def _held_for_another_patch(why) -> "str | None":
+    """#exclude-body-only, for the report: the mod or plugin that an
+    `_excluded_piece_holds` reason says patches the piece ("named by <mod>",
+    "<plugin> adds an armature") -- the piece is left to that mod's patch, not
+    left with no armature from any mod -- else None."""
+    why = str(why or "")
+    if why.startswith("named by "):
+        return why[len("named by "):]
+    if why.endswith(" adds an armature"):
+        return why[:-len(" adds an armature")]
+    return None
+
+
 def _additional_races(v) -> list:
     """The plugin-qualified additional races (MODL) of winner-scan armature `v`."""
     payload, masters, own = v[0], v[1], v[2]
@@ -3579,13 +3599,14 @@ def _additional_races(v) -> list:
 
 
 def _is_non_actor_race(r) -> bool:
-    """#beast-variant-non-actor: `r` (plugin, low 24) is a vanilla non-actor race."""
+    """#beast-variant-non-actor: `r` (plugin, low 24) is a vanilla race no
+    playable or UBE-race actor has (the mannequin race)."""
     p, lo = r
     return p == "skyrim.esm" and lo in _NON_ACTOR_RACES_24
 
 
 def _lists_non_actor_race(v) -> bool:
-    """#beast-variant-non-actor: does `v` list a non-actor race the beast test
+    """#beast-variant-non-actor: does `v` list the mannequin race, which the beast test
     ignores (switch on)? For the report only."""
     return _beast_variant_non_actor() and any(
         _is_non_actor_race(r) for r in _additional_races(v))
@@ -3594,7 +3615,7 @@ def _lists_non_actor_race(v) -> bool:
 def _is_beast_variant(v) -> bool:
     """#coverage-beast-variant: a winner-scan armature `v` (payload, masters,
     plugin, ...) lists additional races, and every one is a vanilla beast race.
-    A non-actor race (the mannequin race) is ignored when judging, and an
+    The mannequin race (no playable or UBE-race actor has it) is ignored when judging, and an
     armature listing only such races is not a variant. #beast-variant-non-actor"""
     races = _additional_races(v)
     actor = races
@@ -4028,10 +4049,13 @@ def _female_standin_resolver(arma_win: dict, ube_exists):
     return standin
 
 
-def _file_declined(declined: list, arma_abs, logs: dict, mesh_exists) -> None:
+def _file_declined(declined: list, arma_abs, logs: dict, mesh_exists,
+                   payload: "bytes | None" = None, armo_slots: int = 0) -> None:
     """Sort one armature's `rebuild_arma_payload` declined_log into a coverage
     pass's lists (#coverage-female-guard, #coverage-female-standin). A dead slot
-    left on its path is tagged with whether its male mesh exists at all."""
+    left on its path is tagged with whether its male mesh exists at all, and --
+    when it does and the source `payload` is given -- with why that male mesh
+    was not drawn instead (`_dead_kept_why`, for the report)."""
     arma = f"{arma_abs[0]}|{arma_abs[1]:X}"
     for d in declined:
         e = {"arma": arma, **d}
@@ -4042,6 +4066,8 @@ def _file_declined(declined: list, arma_abs, logs: dict, mesh_exists) -> None:
         elif "dead_kept" in d:
             e["male_live"] = bool(d.get("male")) and bool(
                 mesh_exists is not None and mesh_exists(d["male"]))
+            if e["male_live"] and payload is not None:
+                e["why"] = _dead_kept_why(payload, armo_slots, mesh_exists, d["male"])
             logs["dead_kept"].append(e)
         else:
             (logs["dead"] if "dead" in d else logs["kept"]).append(e)
@@ -4074,6 +4100,35 @@ def _nonbody_male_as_is(payload: bytes, armo_slots: int, ube_exists,
         return (bool(male_path) and not ube_exists(male_path)
                 and mesh_exists(male_path) and body_fit(male_path) is False)
     return as_is
+
+
+def _dead_kept_why(payload: bytes, armo_slots: int, mesh_exists,
+                   male_path: str) -> str:
+    r"""#coverage-female-standin, for the report only: why a dead female slot
+    whose male mesh EXISTS was left dead instead of drawing it -- the
+    `_nonbody_male_as_is` test that refused, in its order:
+      "body"   its slots (its BOD2, else its armour's) name one of the
+               conversion's body slots (hands and feet included), or the male
+               mesh is skinned to a body-fit bone;
+      "cloak"  a model is cloak-named;
+      "unread" no slots to judge, a lookup that cannot read meshes, or a male
+               mesh that could not be read -- anything the test failed closed on.
+    Kept apart from the test itself so the rule's lines stay as they were; the
+    tests pin each reason to the case the rule refuses."""
+    from .auto_convert import _BODY_SLOT_BITS, _CLOAK_MESH_KEYWORDS
+    bits = _arma_slot_bits(payload) or armo_slots
+    reader = getattr(mesh_exists, "body_fit", None)
+    if bits & _BODY_SLOT_BITS:
+        return "body"
+    if not bits or reader is None:
+        return "unread"
+    names = [d.rstrip(b"\x00").decode("cp1252", "replace").replace("/", "\\")
+             .rsplit("\\", 1)[-1].lower()
+             for sig, d in esp.iter_subrecords(payload) if sig in ARMA_MODEL_SIGS]
+    if any(k in n for n in names for k in _CLOAK_MESH_KEYWORDS):
+        return "cloak"
+    fit = reader(male_path)
+    return "body" if fit is True else "unread"
 
 
 def _ube_twin_slots(payload: bytes, crp: "set[str]", ube_twin_exists,
@@ -4332,7 +4387,8 @@ def generate_modded_nonbody_ube_coverage_patch(
     they pass every filter -- armour the user excluded. Tested last, so the
     `withheld` stat counts exactly the armours this left without our armature.
     #exclude-body-only: here only those `_excluded_piece_holds` names are left
-    alone; the rest are minted with their own mesh (`exclusion_nonbody_kept`).
+    alone; the rest are minted (`exclusion_nonbody_kept`), with no mesh
+    converted for the excluded mod.
     `exclusion_probe` answers its questions about the modlist; None = built
     from the active modlist the first time an excluded armour needs it.
 
@@ -4517,7 +4573,7 @@ def generate_modded_nonbody_ube_coverage_patch(
             _why = "excluded"
             if _body_only:
                 # #exclude-body-only: a non-body piece no other mod patches
-                # keeps its coverage, with its own mesh.
+                # keeps its coverage, with no mesh converted for its mod.
                 if not _probe[1]:
                     from .auto_convert import _exclusion_keep_probe
                     _probe[:] = [_exclusion_keep_probe(), True]
@@ -4650,7 +4706,8 @@ def generate_modded_nonbody_ube_coverage_patch(
                 female_mesh_exists=female_mesh_exists,
                 female_standin=_standin, dead_female_male_as_is=_as_is,
             )
-        _file_declined(_declined, arma_abs, _flogs, female_mesh_exists)
+        _file_declined(_declined, arma_abs, _flogs, female_mesh_exists,
+                       payload, armo_slots.get(arma_abs, 0))
         if _twin:
             for d in _ube_twin_slots(payload, crp, ube_twin_exists,
                                      strip_meshes=_strip):
@@ -4710,8 +4767,8 @@ def generate_modded_nonbody_ube_coverage_patch(
         "wigs": wigs_added,
         # #coverage-human-race-list: armours taken by the race-list rule.
         "race_listed": race_listed,
-        # #exclude-body-only: excluded non-body armour minted with its own mesh,
-        # and why each withheld one was held.
+        # #exclude-body-only: excluded non-body armour still minted, and why
+        # each withheld one was held.
         "exclusion_nonbody_kept": nonbody_kept,
         "exclusion_nonbody_held": nonbody_held,
         # #coverage-third-party-drawn
@@ -4793,6 +4850,11 @@ def generate_modded_body_ube_coverage_patch(
     if mesh_exists is None:
         mesh_exists = female_mesh_exists
     withheld: list = []        # (armo_abs, edid) left alone for --exclude-mods
+    # #exclude-body-only, report only: a withheld body piece that another mod's
+    # SkyPatcher patch names is left to that patch (why, as the non-body pass).
+    _body_only = bool(withheld_armo_abs) and _exclude_body_only()
+    body_held: list = []       # (armo_abs, edid, why)
+    _bprobe: list = [None, False]   # [probe, built]
     female_kept: list = []     # female slots that kept their own mesh (guard)
     female_dead: list = []     # dead female paths: the male mesh stays (guard)
     # #coverage-female-standin: dead female paths that draw the vanilla female
@@ -5087,6 +5149,14 @@ def generate_modded_body_ube_coverage_patch(
                     record=False)[0]:
                 continue
             withheld.append((armo_abs, edid))
+            if _body_only:
+                if not _bprobe[1]:
+                    from .auto_convert import _exclusion_keep_probe
+                    _bprobe[:] = [_exclusion_keep_probe(), True]
+                _by = (_bprobe[0].named(armo_abs, [edid] if edid else [])
+                       if _bprobe[0] is not None else None)
+                if _by is not None:
+                    body_held.append((armo_abs, edid, f"named by {_by}"))
             continue
         # #coverage-female-guard: a converted MALE mesh does not qualify a TORSO
         # armature whose own female mesh was not converted -- minting it would put
@@ -5371,7 +5441,8 @@ def generate_modded_body_ube_coverage_patch(
                 female_mesh_exists=female_mesh_exists,
                 female_standin=_standin, dead_female_male_as_is=_as_is,
             )
-        _file_declined(_declined, arma_abs, _flogs, female_mesh_exists)
+        _file_declined(_declined, arma_abs, _flogs, female_mesh_exists,
+                       payload, armo_slots.get(arma_abs, 0))
         _part = nude_redirect.get(arma_abs)
         if _part:
             # #coverage-nude-skin: the UBE body's own hand/foot, checked to resolve.
@@ -5455,6 +5526,9 @@ def generate_modded_body_ube_coverage_patch(
         "race_listed": race_listed,
         # #coverage-third-party-drawn
         **_tpd_state.stats(),
+        # #exclude-body-only, report only: withheld body pieces another mod's
+        # SkyPatcher patch names (left to that patch).
+        "exclusion_body_held": body_held,
     }
 
 

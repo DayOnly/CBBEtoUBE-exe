@@ -3804,6 +3804,121 @@ def _exclusion_keep_probe() -> "_ExclusionKeepProbe | None":
                                data_dirs=list(getattr(lay, "game_data_dirs", None) or ()))
 
 
+def _loose_mesh_index_on() -> bool:
+    r"""#loose-mesh-index (2026-09-25): does `_mesh_exists_anywhere` answer its
+    loose-file questions from one listing of every loose `meshes` folder? Yes,
+    by default. The per-path probe it replaces checked `<dir>\meshes\<path>` in
+    every loose folder (~3,300 on the reported modlist) before it asked the
+    archives, so each archived or dead path cost ~3,300 file checks; the dead-
+    path questions of #coverage-female-standin made the coverage step ~4x slower.
+    Same answers either way. CBBE2UBE_NO_LOOSE_MESH_INDEX=1 probes per path again."""
+    return not _flag("CBBE2UBE_NO_LOOSE_MESH_INDEX", False)
+
+
+# Windows device names: `nul.nif` may open the device, never a listed file.
+_WIN_DEVICE_NAMES = frozenset(
+    ["con", "prn", "aux", "nul"] + [f"{p}{i}" for p in ("com", "lpt") for i in range(1, 10)])
+
+
+def _listing_can_answer(rel: str) -> bool:
+    r"""#loose-mesh-index: is `rel` (lower-case, `/`-separated) a path a folder
+    listing answers exactly as a file check on disk would? Windows resolves more
+    than a listing shows -- `.`/`..`, a trailing dot or space, an 8.3 short name
+    (`~`), a device name, non-ASCII case folding -- so such a path is checked on
+    disk instead."""
+    if not rel or not rel.isascii():
+        return False
+    for part in rel.split("/"):
+        if (not part or part[-1] in ". " or "~" in part
+                or any(c in ':*?"<>|' or c < " " for c in part)
+                or part.split(".")[0].rstrip(" ") in _WIN_DEVICE_NAMES):
+            return False
+    return True
+
+
+class _LooseMeshIndex:
+    r"""#loose-mesh-index: every file under each loose folder's `meshes`, keyed
+    by its lower-case path below `meshes`, to the FIRST folder (in the order
+    given -- MO2 overwrite, then mods by priority, then the game Data) that has
+    it. Listed once, on the first question. Links and junctions are followed,
+    as a file check follows them. Whatever a listing cannot answer exactly is
+    left to a file check (`first` returns `ASK`): a folder that could not be
+    listed, or listed a non-ASCII or very long name, a link back into its own
+    ancestry, and any path `_listing_can_answer` refuses."""
+
+    ASK = object()
+
+    def __init__(self, loose_dirs):
+        self._dirs = [str(d) for d in loose_dirs]
+        self._first: "dict[str, int] | None" = None
+        self._unlisted: "set[str]" = set()
+
+    def _build(self) -> None:
+        import stat as _stat
+        first: "dict[str, int]" = {}
+        unlisted: "set[str]" = set()
+        for i, d in enumerate(self._dirs):
+            # (folder, its lower-case path below meshes + "/", linked folders above it)
+            stack = [(os.path.join(d, "meshes"), "", frozenset())]
+            top = True
+            while stack:
+                path, pre, links = stack.pop()
+                try:
+                    it = os.scandir(path)
+                except (FileNotFoundError, NotADirectoryError):
+                    if not top:
+                        unlisted.add(pre)
+                    top = False
+                    continue          # no meshes folder: nothing loose here
+                except OSError:
+                    unlisted.add(pre)  # unreadable: a file check answers
+                    top = False
+                    continue
+                top = False
+                try:
+                    with it:
+                        for e in it:
+                            if not e.name.isascii() or len(e.path) >= 250:
+                                unlisted.add(pre)
+                                continue
+                            low = e.name.lower()
+                            if e.is_dir():
+                                sub = links
+                                if e.is_symlink() or (getattr(
+                                        e.stat(follow_symlinks=False),
+                                        "st_file_attributes", 0)
+                                        & _stat.FILE_ATTRIBUTE_REPARSE_POINT):
+                                    st = os.stat(e.path)
+                                    key = (st.st_dev, st.st_ino)
+                                    if key in links:
+                                        unlisted.add(pre + low + "/")
+                                        continue
+                                    sub = links | {key}
+                                stack.append((e.path, pre + low + "/", sub))
+                            elif e.is_file():
+                                first.setdefault(pre + low, i)
+                except OSError:
+                    unlisted.add(pre)
+        self._first, self._unlisted = first, unlisted
+
+    def first(self, rel: str):
+        """Index of the first folder holding `rel` loose, None if none does,
+        or `ASK` when only a file check can tell."""
+        if not _listing_can_answer(rel):
+            return self.ASK
+        if self._first is None:
+            self._build()
+        if self._unlisted:
+            cut = rel.rfind("/")
+            while True:
+                if rel[:cut + 1] in self._unlisted:
+                    return self.ASK
+                if cut < 0:
+                    break
+                cut = rel.rfind("/", 0, cut)
+        return self._first.get(rel)
+
+
 def _mesh_exists_anywhere(output) -> "callable[[str], bool] | None":
     r"""#coverage-female-guard: does a source mesh exist ANYWHERE the game reads
     it -- loose in an enabled mod or the game Data, or in any archive? A mesh in a
@@ -3813,10 +3928,11 @@ def _mesh_exists_anywhere(output) -> "callable[[str], bool] | None":
     CBBE2UBE_NO_TEXTURE_ARCHIVE_MESHES does not change what it sees (one real
     female mesh in the reported modlist lives in a texture archive).
 
-    Asked only where a female slot would otherwise take the male mesh, so both
-    lookups are lazy: a per-path probe for loose files, and one table scan of the
-    archives on the first path not found loose. None when the modlist cannot be
-    read -- the guard then treats every named path as present."""
+    Both lookups are lazy: one listing of the loose `meshes` folders on the
+    first question (#loose-mesh-index; a per-path probe with
+    CBBE2UBE_NO_LOOSE_MESH_INDEX=1), and one table scan of the archives on the
+    first path not found loose. None when the modlist cannot be read -- the
+    guard then treats every named path as present."""
     try:
         lay = paths.discover_layout()
         mr = paths.mods_root()
@@ -3838,12 +3954,24 @@ def _mesh_exists_anywhere(output) -> "callable[[str], bool] | None":
     bsa = _BsaMeshIndex(dirs, None,
                         skip_bsa=("voice", " sound", "sounds", "- snd", "facegen"))
     seen: dict = {}
+    index = _LooseMeshIndex(loose_dirs) if _loose_mesh_index_on() else None
 
     def _is_file(p: Path) -> bool:
         try:
             return p.is_file()
         except OSError:
             return False      # an unreadable folder costs itself, not the pass
+
+    def _loose_first(rel: str) -> "int | None":
+        """Position in `loose_dirs` of the first folder holding `rel` loose."""
+        if index is not None:
+            hit = index.first(rel)
+            if hit is not index.ASK:
+                return hit
+        for i, d in enumerate(loose_dirs):
+            if _is_file(d / "meshes" / rel):
+                return i
+        return None
 
     def exists(model: str) -> bool:
         rel = str(model or "").replace("\\", "/").lstrip("/").lower()
@@ -3852,8 +3980,7 @@ def _mesh_exists_anywhere(output) -> "callable[[str], bool] | None":
         if not rel:
             return False
         if rel not in seen:
-            seen[rel] = (any(_is_file(d / "meshes" / rel) for d in loose_dirs)
-                         or bsa.contains(rel))
+            seen[rel] = _loose_first(rel) is not None or bsa.contains(rel)
         return seen[rel]
 
     fit: dict = {}
@@ -3870,14 +3997,12 @@ def _mesh_exists_anywhere(output) -> "callable[[str], bool] | None":
             return None
         if rel not in fit:
             data = None
-            for d in loose_dirs:
-                f = d / "meshes" / rel
-                if _is_file(f):
-                    try:
-                        data = f.read_bytes()
-                    except OSError:
-                        data = None
-                    break
+            i = _loose_first(rel)
+            if i is not None:
+                try:
+                    data = (loose_dirs[i] / "meshes" / rel).read_bytes()
+                except OSError:
+                    data = None
             if data is None:
                 data = bsa.read_bytes(rel)
             fit[rel] = None if data is None else _nif_bytes_body_fit(data)
@@ -4248,8 +4373,9 @@ def _outside_ube_mesh_resolver(output) -> "callable[[str], bool] | None":
 
 def _report_coverage_holds(stats: "list[dict]") -> None:
     """Say what the two coverage passes held back, in counts and a few names:
-    armour of an excluded mod left without an armature (#exclude-owned-coverage)
-    or kept with its own mesh as a non-body piece (#exclude-body-only),
+    armour of an excluded mod left without an armature (#exclude-owned-coverage),
+    left to another mod that patches it, or still drawn as a non-body piece
+    with no mesh converted for that mod (#exclude-body-only),
     female slots that did not take a converted MALE mesh
     (#coverage-female-guard), body armatures whose world mesh was not converted
     (#coverage-world-mesh), nude hands/feet swapped for the UBE body's own or
@@ -4292,6 +4418,18 @@ def _report_coverage_holds(stats: "list[dict]") -> None:
     tp_part = [k for s in stats for k in (s.get("third_party_partial") or [])]
     tp_kept = [k for s in stats
                for k in (s.get("third_party_kept_first_person") or [])]
+    # #exclude-body-only: a piece held because another mod patches it (adds
+    # armatures to it) is left to that mod's patch -- named on its own line,
+    # not among the pieces with no UBE armature from any mod. Body pieces too:
+    # the body pass records the ones a SkyPatcher patch names.
+    left_to: dict = {}
+    for s in stats:
+        for armo_abs, edid, why in ((s.get("exclusion_nonbody_held") or [])
+                                    + (s.get("exclusion_body_held") or [])):
+            mod = ube_patcher._held_for_another_patch(why)
+            if mod is not None:
+                left_to[tuple(armo_abs)] = (edid, mod)
+    withheld = [w for w in withheld if tuple(w[0]) not in left_to]
     if withheld:
         warn(f"[unified] {len(withheld)} armour(s) of an excluded mod have no UBE "
              "armature from any mod",
@@ -4303,13 +4441,26 @@ def _report_coverage_holds(stats: "list[dict]") -> None:
             print(f"       {edid or '?'}  ({pl}|{fid:06X})")
         if len(withheld) > 5:
             print(f"       ... and {len(withheld) - 5} more")
+    if left_to:
+        print(f"  [unified] {len(left_to)} armour(s) of an excluded mod are left to "
+              "the other mod that patches them (it adds armatures to them; this "
+              "tool does not check that those draw on UBE-race actors)")
+        for ((pl, fid), (edid, mod)) in list(left_to.items())[:5]:
+            print(f"       {edid or '?'}  ({pl}|{fid:06X})  patched by {mod}")
+        if len(left_to) > 5:
+            print(f"       ... and {len(left_to) - 5} more")
     if excl_kept:
         # #exclude-body-only: information -- the user's rule, working as meant.
+        # A kept piece draws the model its armature names: never a converted
+        # copy of the excluded mod's own mesh, but a shared path another mod's
+        # conversion covers does draw that converted copy.
         warn(f"[unified] {len(excl_kept)} non-body armour(s) of an excluded mod "
-             "keep their own mesh on UBE-race actors",
+             "are still drawn on UBE-race actors, with no mesh converted for "
+             "that mod",
              where="--exclude-mods",
              consequence="no other mod patches them and they are not body pieces, "
-                         "so they are drawn as their mod made them",
+                         "so each draws the mesh its armature names (converted "
+                         "only where another mod's conversion shares the path)",
              level=NOTE)
         for (pl, fid), edid in excl_kept[:5]:
             print(f"       {edid or '?'}  ({pl}|{fid:06X})")
@@ -4356,20 +4507,33 @@ def _report_coverage_holds(stats: "list[dict]") -> None:
             print(f"       {k['slot']} {k['orig']}  (-> {k['male_as_is']})")
         if len(as_is) > 5:
             print(f"       ... and {len(as_is) - 5} more")
-    no_male = [k for k in dead_kept if not k.get("male_live")]
-    body_male = [k for k in dead_kept if k.get("male_live")]
     if dead_kept:
         warn(f"[unified] {len(dead_kept)} female model slot(s) name a mesh that "
-             f"exists nowhere and have nothing to draw instead: {len(no_male)} have "
-             f"no male mesh either, {len(body_male)} are body pieces whose male "
-             "mesh was not converted",
+             "exists nowhere and have nothing to draw instead",
              consequence="those pieces are not drawn on UBE-race actors, as on "
                          "any female actor",
              level=NOTE)
-        for k in (no_male[:3] + body_male[:2]):
-            print(f"       {k['slot']} {k['dead_kept']}  ({k['arma']})")
-        if len(dead_kept) > 5:
-            print(f"       ... and {len(dead_kept) - 5} more")
+        # One group per reason the male mesh was not drawn instead (the pass
+        # tags each slot, `_dead_kept_why`), each with a few slots; a group's
+        # "more" is what that group did not print. #coverage-female-standin
+        live = [k for k in dead_kept if k.get("male_live")]
+        for group, what in (
+                ([k for k in dead_kept if not k.get("male_live")],
+                 "have no male mesh either"),
+                ([k for k in live if k.get("why") == "body"],
+                 "are body pieces whose male mesh was not converted"),
+                ([k for k in live if k.get("why") == "cloak"],
+                 "are capes or cloaks whose male mesh was not converted"),
+                ([k for k in live if k.get("why") not in ("body", "cloak")],
+                 "have a male mesh that was not converted and could not be read "
+                 "or judged")):
+            if not group:
+                continue
+            print(f"       {len(group)} {what}:")
+            for k in group[:3]:
+                print(f"         {k['slot']} {k['dead_kept']}  ({k['arma']})")
+            if len(group) > 3:
+                print(f"         ... and {len(group) - 3} more")
     if wskip:
         warn(f"[unified] {len(wskip)} body armature(s) were not minted because their "
              f"female world mesh was not converted ({len(wdrop)} armour(s) left "
@@ -4424,9 +4588,13 @@ def _report_coverage_holds(stats: "list[dict]") -> None:
         print(f"  [unified] {len(beasts)} beast-race variant armature(s) left off UBE "
               "actors (they list only Argonian/Khajiit races; no human draws them)")
         # #beast-variant-non-actor: say when the mannequin race was ignored.
+        # Mannequins are actors that wear armour; what the race lacks is a
+        # playable or UBE-race member, so it cannot make a human draw these.
         if nonactor:
-            print(f"       {len(nonactor)} of them also list the mannequin race "
-                  "(Skyrim.esm ManikinRace), ignored when judging: no actor has it")
+            print(f"       {len(nonactor)} of them also "
+                  f"{'lists' if len(nonactor) == 1 else 'list'} the mannequin race "
+                  "(Skyrim.esm ManikinRace), ignored when judging: no playable or "
+                  "UBE-race actor has it (mannequins still display the item)")
     if wigs:
         print(f"  [unified] {len(wigs)} playable wig(s) drawn on UBE as headgear "
               "(their own mesh and collider)")

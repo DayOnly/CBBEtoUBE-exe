@@ -496,7 +496,7 @@ def test_the_dead_slots_are_reported(capsys):
             {"arma": "mod.esp|804", "slot": "MOD5", "dead_kept": DEAD_1ST,
              "male": "", "male_live": False},
             {"arma": "mod.esp|805", "slot": "MOD3", "dead_kept": DEAD,
-             "male": HOOD_M, "male_live": True}]}])
+             "male": HOOD_M, "male_live": True, "why": "body"}]}])
     text = capsys.readouterr().out
     assert "1 female model slot(s) name a mesh that exists nowhere and draw the " \
            "vanilla female counterpart" in text
@@ -505,8 +505,97 @@ def test_the_dead_slots_are_reported(capsys):
            "nowhere and draw their own male mesh" in text
     assert "NOTE" in text
     assert "3 female model slot(s) name a mesh that exists nowhere and have " \
-           "nothing to draw instead: 2 have no male mesh either, 1 are body " \
-           "pieces whose male mesh was not converted" in text
+           "nothing to draw instead" in text
+    assert "2 have no male mesh either:" in text
+    assert "1 are body pieces whose male mesh was not converted:" in text
+
+
+# ------------------------------------------ the NOTE: why each dead slot stays
+# Review 09-25: the NOTE called every dead slot with a live male mesh a body
+# piece, though a cloak, an unreadable mesh or a lookup with no reader lands
+# there too; and its "and N more" subtracted a fixed 5 from a list that printed
+# up to 3 + 2, so a short sublist left slots neither printed nor counted.
+
+CAPE = r"follower\m\travel_cape_1.nif"
+
+
+@pytest.mark.parametrize("case,why", [
+    ("body-fit male mesh", "body"),
+    ("strict body slot", "body"),
+    ("cloak", "cloak"),
+    ("unreadable male mesh", "unread"),
+    ("lookup cannot read meshes", "unread"),
+])
+def test_each_dead_slot_says_why_its_male_mesh_was_not_drawn(tmp_path, case, why):
+    st, out = {
+        "body-fit male mesh": lambda: _hood(
+            tmp_path, _lookup(live=[HOOD_M], fit={HOOD_M: True}),
+            slots=1 << 31, armo_slots=1 << 31),
+        "strict body slot": lambda: _hood(
+            tmp_path, _lookup(live=[HOOD_M], fit={HOOD_M: False}),
+            slots=SLOT52, armo_slots=SLOT52),
+        "cloak": lambda: _hood(
+            tmp_path, _lookup(live=[CAPE], fit={CAPE: False}), male=CAPE),
+        "unreadable male mesh": lambda: _hood(
+            tmp_path, _lookup(live=[HOOD_M], fit={HOOD_M: None})),
+        "lookup cannot read meshes": lambda: _hood(
+            tmp_path, _lookup(live=[HOOD_M])),
+    }[case]()
+    assert _models(_minted(out)[0])[b"MOD3"] == DEAD
+    assert [(d["male_live"], d["why"]) for d in st["female_dead_kept"]] == [(True, why)]
+
+
+def test_a_dead_male_mesh_carries_no_reason(tmp_path):
+    st, _out = _hood(tmp_path, _lookup(fit={HOOD_M: False}))
+    (d,) = st["female_dead_kept"]
+    assert d["male_live"] is False and "why" not in d
+
+
+def test_a_cloak_is_reported_as_a_cloak_not_a_body_piece(tmp_path, capsys):
+    st, _out = _hood(tmp_path, _lookup(live=[CAPE], fit={CAPE: False}), male=CAPE)
+    ac._report_coverage_holds([st])
+    text = capsys.readouterr().out
+    assert "1 are capes or cloaks whose male mesh was not converted:" in text
+    assert "body pieces" not in text
+
+
+def test_an_unreadable_male_mesh_is_not_called_a_body_piece(tmp_path, capsys):
+    st, _out = _hood(tmp_path, _lookup(live=[HOOD_M], fit={HOOD_M: None}))
+    ac._report_coverage_holds([st])
+    text = capsys.readouterr().out
+    assert "1 have a male mesh that was not converted and could not be read" in text
+    assert "body pieces" not in text
+
+
+def _dead(n, live, why=None):
+    return [{"arma": f"mod.esp|{0x900 + i:X}", "slot": "MOD3",
+             "dead_kept": f"follower\\f\\gone{i}_1.nif", "male": "m" if live else "",
+             "male_live": live, **({"why": why} if why else {})} for i in range(n)]
+
+
+@pytest.mark.parametrize("n_none,n_body", [(42, 1), (1, 10), (4, 0), (3, 2), (10, 10)])
+def test_every_dead_slot_is_printed_or_counted(capsys, n_none, n_body):
+    """Live the NOTE listed 4 slots and said '... and 38 more' for 43. Per
+    group, the slots printed plus its 'more' must be the group's size."""
+    ac._report_coverage_holds([{"female_dead_kept":
+                                _dead(n_none, False) + _dead(n_body, True, "body")}])
+    lines = capsys.readouterr().out.splitlines()
+    heads = [i for i, l in enumerate(lines) if l.rstrip().endswith(":")
+             and l.startswith("       ") and not l.startswith("         ")]
+    seen = 0
+    for i in heads:
+        size = int(lines[i].split()[0])
+        body = []
+        for l in lines[i + 1:]:
+            if not l.startswith("         "):
+                break
+            body.append(l)
+        more = [l for l in body if "... and" in l]
+        shown = len(body) - len(more)
+        hidden = int(more[0].split()[2]) if more else 0
+        assert shown + hidden == size, lines[i]
+        seen += size
+    assert seen == n_none + n_body
 
 
 def test_no_dead_slots_print_nothing(capsys):

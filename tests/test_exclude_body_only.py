@@ -31,7 +31,8 @@ non-body pass withholds an owned armour only when
     conversion territory by the planner's own test: a body slot, a cloak name,
     a body-candidate slot whose loose world mesh is body-fit or cannot be read,
     or a converted/hand-made UBE mesh of a path the excluded mod ships.
-Otherwise it is minted with its own mesh. No modlist to check: withheld.
+Otherwise it is minted like any other armour, with no mesh converted for the
+excluded mod. No modlist to check: withheld.
 `CBBE2UBE_NO_EXCLUDE_BODY_ONLY=1` withholds all of it again.
 """
 import struct
@@ -449,6 +450,57 @@ def test_the_body_pass_still_withholds_an_owned_piece(tmp_path):
     assert st["armo_targets"] == 0 and _held(st) == [OWNED]
 
 
+def _body_pass(tmp_path, mods, plugins, monkeypatch):
+    monkeypatch.setattr(ac, "_exclusion_keep_probe", lambda: _probe(mods, "Refit Mod"))
+    out = tmp_path / "UBE_ModBody_Coverage UBE patch.esp"
+    return up.generate_modded_body_ube_coverage_patch(
+        out, plugins, converted_rel_paths={"follower/f/boots_1.nif"},
+        exclude_names={out.name.lower()}, master_data_dirs=[tmp_path],
+        cover_all=True, cover_hands_feet=True, withheld_armo_abs={OWNED})
+
+
+def test_a_body_piece_a_refit_names_is_left_to_it_in_the_report(tmp_path, monkeypatch, capsys):
+    """Review 09-25: the body pass withholds every owned piece, and a body piece
+    a refit's SkyPatcher line names was still reported as having no UBE armature
+    from any mod. It is withheld as before, and reported as left to the refit."""
+    mods, plugins = _modlist(tmp_path, slots=FEET,
+                             models={b"MOD3": r"follower\f\boots_1.nif"})
+    _ini(mods, "Refit Mod",
+         "filterByArmors=Follower.esp|801:armorAddonsToAdd=Refit.esp|800\n")
+    st = _body_pass(tmp_path, mods, plugins, monkeypatch)
+    assert st["armo_targets"] == 0 and _held(st) == [OWNED], "still withheld"
+    assert st["exclusion_body_held"] == [(OWNED, "FollowerGlasses", "named by Refit Mod")]
+    ac._report_coverage_holds([st])
+    text = capsys.readouterr().out
+    assert "have no UBE armature from any mod" not in text
+    assert "patched by Refit Mod" in text
+
+
+def test_a_body_piece_no_one_patches_stays_in_the_warning(tmp_path, monkeypatch, capsys):
+    mods, plugins = _modlist(tmp_path, slots=FEET,
+                             models={b"MOD3": r"follower\f\boots_1.nif"})
+    st = _body_pass(tmp_path, mods, plugins, monkeypatch)
+    assert st["exclusion_body_held"] == []
+    ac._report_coverage_holds([st])
+    assert "have no UBE armature from any mod" in capsys.readouterr().out
+
+
+def test_switched_off_the_body_pass_does_not_read_the_modlist(tmp_path, monkeypatch):
+    monkeypatch.setenv("CBBE2UBE_NO_EXCLUDE_BODY_ONLY", "1")
+    mods, plugins = _modlist(tmp_path, slots=FEET,
+                             models={b"MOD3": r"follower\f\boots_1.nif"})
+
+    def _refuse():
+        raise AssertionError("the modlist was read")
+    monkeypatch.setattr(ac, "_exclusion_keep_probe", _refuse)
+    out = tmp_path / "UBE_ModBody_Coverage UBE patch.esp"
+    st = up.generate_modded_body_ube_coverage_patch(
+        out, plugins, converted_rel_paths={"follower/f/boots_1.nif"},
+        exclude_names={out.name.lower()}, master_data_dirs=[tmp_path],
+        cover_all=True, cover_hands_feet=True, withheld_armo_abs={OWNED})
+    assert _held(st) == [OWNED] and st["exclusion_body_held"] == []
+
+
 # ------------------------------------------------------------------ report
 
 def test_the_kept_pieces_are_reported(capsys):
@@ -456,8 +508,70 @@ def test_the_kept_pieces_are_reported(capsys):
         "exclusion_nonbody_kept": [(("follower.esp", 0x801), "FollowerGlasses")],
         "withheld": [(("follower.esp", 0x802), "FollowerBoots")]}])
     text = capsys.readouterr().out
-    line = next(l for l in text.splitlines() if "keep their own mesh" in l)
+    line = next(l for l in text.splitlines() if "are still drawn on UBE" in l)
     assert line.lstrip().startswith("NOTE:")
     assert "1 non-body armour(s) of an excluded mod" in line
     assert "FollowerGlasses" in text and "follower.esp|000801" in text
     assert "FollowerBoots" in text, "the withheld ones are still listed"
+
+
+def test_the_kept_note_does_not_promise_the_mods_own_mesh(tmp_path, capsys):
+    """Review 09-25: a kept piece whose model is a shared path another mod's
+    conversion covers draws that converted `!UBE` mesh, so the NOTE may not
+    say the piece keeps its own mesh or is drawn as its mod made it."""
+    shared = r"armor\iron\f\helmet_1.nif"
+    mods, plugins = _modlist(tmp_path, models={b"MOD3": shared})
+    other = mods / "Other Mod" / "meshes" / "armor" / "iron" / "f" / "helmet_1.nif"
+    other.parent.mkdir(parents=True)
+    other.write_bytes(b"x")
+    st, out = _nonbody(tmp_path, plugins, _probe(mods, "Other Mod"),
+                       conv={"armor/iron/f/helmet_1.nif"})
+    assert _kept(st) == [OWNED] and _mod3(out) == ["!UBE\\" + shared]
+    ac._report_coverage_holds([st])
+    text = capsys.readouterr().out
+    assert "no mesh converted for that mod" in text
+    assert "own mesh" not in text and "as their mod made them" not in text
+
+
+def _held_by_refit(tmp_path, how):
+    """The pass itself holds the piece because another mod patches it: a
+    SkyPatcher line naming it, or a plugin override adding an armature."""
+    if how == "ini":
+        mods, plugins = _modlist(tmp_path)
+        _ini(mods, "Refit Mod",
+             "filterByArmors=Follower.esp|801:armorAddonsToAdd=Refit.esp|800\n")
+    else:
+        extra = _arma(0x02000800, HEAD, primary=0x01005734, races=())
+        refit = _override(tmp_path, [0x01000800, 0x02000800], extra_arma=extra)
+        mods, plugins = _modlist(tmp_path, extra=[refit])
+    st, _out = _nonbody(tmp_path, plugins, _probe(mods, "Refit Mod"), covered=set())
+    assert _held(st) == [OWNED]
+    return st
+
+
+@pytest.mark.parametrize("how,who", [("ini", "Refit Mod"), ("plugin", "refit.esp")])
+def test_a_piece_another_mod_patches_is_left_to_it_not_called_unarmatured(
+        tmp_path, capsys, how, who):
+    """Review 09-25: a piece held because a refit names it was listed under
+    '!! ... have no UBE armature from any mod', with advice to un-exclude the
+    mod -- yet the refit is what adds its armatures. It gets its own line."""
+    st = _held_by_refit(tmp_path, how)
+    ac._report_coverage_holds([st])
+    text = capsys.readouterr().out
+    assert "have no UBE armature from any mod" not in text
+    line = next(l for l in text.splitlines() if "left to" in l)
+    assert "1 armour(s) of an excluded mod are left to the other mod" in line
+    assert f"FollowerGlasses  (follower.esp|000801)  patched by {who}" in text
+
+
+def test_only_the_patched_piece_leaves_the_unarmatured_warning(tmp_path, capsys):
+    st = _held_by_refit(tmp_path, "ini")
+    st["withheld"] = st["withheld"] + [(("follower.esp", 0x802), "FollowerBoots")]
+    ac._report_coverage_holds(
+        [st, {"withheld": [(("follower.esp", 0x803), "BodyPiece")]}])
+    text = capsys.readouterr().out
+    head = next(l for l in text.splitlines() if "no UBE armature from any mod" in l)
+    assert "2 armour(s) of an excluded mod" in head
+    listed = text.split("no UBE armature from any mod", 1)[1].split("left to", 1)[0]
+    assert "FollowerBoots" in listed and "BodyPiece" in listed
+    assert "FollowerGlasses" not in listed
