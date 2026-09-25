@@ -4012,8 +4012,9 @@ def _outside_ube_mesh_resolver(output) -> "callable[[str], bool] | None":
 
 def _report_coverage_holds(stats: "list[dict]") -> None:
     """Say what the two coverage passes held back, in counts and a few names:
-    armour of an excluded mod left without an armature (#exclude-owned-coverage)
-    or kept with its own mesh as a non-body piece (#exclude-body-only),
+    armour of an excluded mod left without an armature (#exclude-owned-coverage),
+    left to another mod that patches it, or still drawn as a non-body piece
+    with no mesh converted for that mod (#exclude-body-only),
     female slots that did not take a converted MALE mesh
     (#coverage-female-guard), body armatures whose world mesh was not converted
     (#coverage-world-mesh), nude hands/feet swapped for the UBE body's own or
@@ -4051,6 +4052,16 @@ def _report_coverage_holds(stats: "list[dict]") -> None:
     nonactor = sorted({k for s in stats for k in (s.get("beast_variant_non_actor") or [])})
     wigs = [w for s in stats for w in (s.get("wigs") or [])]
     listed = [k for s in stats for k in (s.get("race_listed") or [])]
+    # #exclude-body-only: a piece held because another mod patches it (adds
+    # armatures to it) is left to that mod's patch -- named on its own line,
+    # not among the pieces with no UBE armature from any mod.
+    left_to: dict = {}
+    for s in stats:
+        for armo_abs, edid, why in (s.get("exclusion_nonbody_held") or []):
+            mod = ube_patcher._held_for_another_patch(why)
+            if mod is not None:
+                left_to[tuple(armo_abs)] = (edid, mod)
+    withheld = [w for w in withheld if tuple(w[0]) not in left_to]
     if withheld:
         warn(f"[unified] {len(withheld)} armour(s) of an excluded mod have no UBE "
              "armature from any mod",
@@ -4062,13 +4073,25 @@ def _report_coverage_holds(stats: "list[dict]") -> None:
             print(f"       {edid or '?'}  ({pl}|{fid:06X})")
         if len(withheld) > 5:
             print(f"       ... and {len(withheld) - 5} more")
+    if left_to:
+        print(f"  [unified] {len(left_to)} armour(s) of an excluded mod are left to "
+              "the other mod that patches them (it adds armatures to them)")
+        for ((pl, fid), (edid, mod)) in list(left_to.items())[:5]:
+            print(f"       {edid or '?'}  ({pl}|{fid:06X})  patched by {mod}")
+        if len(left_to) > 5:
+            print(f"       ... and {len(left_to) - 5} more")
     if excl_kept:
         # #exclude-body-only: information -- the user's rule, working as meant.
+        # A kept piece draws the model its armature names: never a converted
+        # copy of the excluded mod's own mesh, but a shared path another mod's
+        # conversion covers does draw that converted copy.
         warn(f"[unified] {len(excl_kept)} non-body armour(s) of an excluded mod "
-             "keep their own mesh on UBE-race actors",
+             "are still drawn on UBE-race actors, with no mesh converted for "
+             "that mod",
              where="--exclude-mods",
              consequence="no other mod patches them and they are not body pieces, "
-                         "so they are drawn as their mod made them",
+                         "so each draws the mesh its armature names (converted "
+                         "only where another mod's conversion shares the path)",
              level=NOTE)
         for (pl, fid), edid in excl_kept[:5]:
             print(f"       {edid or '?'}  ({pl}|{fid:06X})")
@@ -4115,20 +4138,33 @@ def _report_coverage_holds(stats: "list[dict]") -> None:
             print(f"       {k['slot']} {k['orig']}  (-> {k['male_as_is']})")
         if len(as_is) > 5:
             print(f"       ... and {len(as_is) - 5} more")
-    no_male = [k for k in dead_kept if not k.get("male_live")]
-    body_male = [k for k in dead_kept if k.get("male_live")]
     if dead_kept:
         warn(f"[unified] {len(dead_kept)} female model slot(s) name a mesh that "
-             f"exists nowhere and have nothing to draw instead: {len(no_male)} have "
-             f"no male mesh either, {len(body_male)} are body pieces whose male "
-             "mesh was not converted",
+             "exists nowhere and have nothing to draw instead",
              consequence="those pieces are not drawn on UBE-race actors, as on "
                          "any female actor",
              level=NOTE)
-        for k in (no_male[:3] + body_male[:2]):
-            print(f"       {k['slot']} {k['dead_kept']}  ({k['arma']})")
-        if len(dead_kept) > 5:
-            print(f"       ... and {len(dead_kept) - 5} more")
+        # One group per reason the male mesh was not drawn instead (the pass
+        # tags each slot, `_dead_kept_why`), each with a few slots; a group's
+        # "more" is what that group did not print. #coverage-female-standin
+        live = [k for k in dead_kept if k.get("male_live")]
+        for group, what in (
+                ([k for k in dead_kept if not k.get("male_live")],
+                 "have no male mesh either"),
+                ([k for k in live if k.get("why") == "body"],
+                 "are body pieces whose male mesh was not converted"),
+                ([k for k in live if k.get("why") == "cloak"],
+                 "are capes or cloaks whose male mesh was not converted"),
+                ([k for k in live if k.get("why") not in ("body", "cloak")],
+                 "have a male mesh that was not converted and could not be read "
+                 "or judged")):
+            if not group:
+                continue
+            print(f"       {len(group)} {what}:")
+            for k in group[:3]:
+                print(f"         {k['slot']} {k['dead_kept']}  ({k['arma']})")
+            if len(group) > 3:
+                print(f"         ... and {len(group) - 3} more")
     if wskip:
         warn(f"[unified] {len(wskip)} body armature(s) were not minted because their "
              f"female world mesh was not converted ({len(wdrop)} armour(s) left "
@@ -4183,9 +4219,13 @@ def _report_coverage_holds(stats: "list[dict]") -> None:
         print(f"  [unified] {len(beasts)} beast-race variant armature(s) left off UBE "
               "actors (they list only Argonian/Khajiit races; no human draws them)")
         # #beast-variant-non-actor: say when the mannequin race was ignored.
+        # Mannequins are actors that wear armour; what the race lacks is a
+        # playable or UBE-race member, so it cannot make a human draw these.
         if nonactor:
-            print(f"       {len(nonactor)} of them also list the mannequin race "
-                  "(Skyrim.esm ManikinRace), ignored when judging: no actor has it")
+            print(f"       {len(nonactor)} of them also "
+                  f"{'lists' if len(nonactor) == 1 else 'list'} the mannequin race "
+                  "(Skyrim.esm ManikinRace), ignored when judging: no playable or "
+                  "UBE-race actor has it (mannequins still display the item)")
     if wigs:
         print(f"  [unified] {len(wigs)} playable wig(s) drawn on UBE as headgear "
               "(their own mesh and collider)")

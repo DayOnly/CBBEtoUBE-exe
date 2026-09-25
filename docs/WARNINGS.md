@@ -51,14 +51,14 @@ at run time), what it means for the run, and what to do next.
 - `!! [unified] … armour(s) of an excluded mod have no UBE armature from any mod -- --exclude-mods`
   - means: they are not drawn on UBE-race actors
   - fix: take the mod off the exclusion list to have them covered, or install a UBE patch for it
-- `NOTE: [unified] … non-body armour(s) of an excluded mod keep their own mesh on UBE-race actors -- --exclude-mods`
-  - means: no other mod patches them and they are not body pieces, so they are drawn as their mod made them
+- `NOTE: [unified] … non-body armour(s) of an excluded mod are still drawn on UBE-race actors, with no mesh converted for that mod -- --exclude-mods`
+  - means: no other mod patches them and they are not body pieces, so each draws the mesh its armature names (converted only where another mod's conversion shares the path)
 - `!! [unified] … female model slot(s) kept their own unconverted mesh, and … body armature(s) were not minted (… armour(s) left without one), rather than take a converted MALE mesh`
   - means: those pieces wear their unconverted mesh on UBE, or are not drawn on UBE-race actors, until their female mesh is converted
   - fix: convert the mod that ships the female mesh
 - `NOTE: [unified] … female model slot(s) name a mesh that exists nowhere, so they keep the converted MALE mesh`
   - means: the piece is drawn with the male mesh on UBE; with its own path it would not be drawn at all
-- `NOTE: [unified] … female model slot(s) name a mesh that exists nowhere and have nothing to draw instead: … have no male mesh either, … are body pieces whose male mesh was not converted`
+- `NOTE: [unified] … female model slot(s) name a mesh that exists nowhere and have nothing to draw instead`
   - means: those pieces are not drawn on UBE-race actors, as on any female actor
 - `!! [unified] … body armature(s) were not minted because their female world mesh was not converted (… armour(s) left without one, … drawn without the body piece)`
   - means: those body pieces are not drawn on UBE-race actors, rather than draw their unconverted CBBE mesh on the UBE body

@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+### Changed — clearer log notes about excluded mods, missing female models and mannequins
+
+Three notes in the run log said the wrong thing in some cases; the files the
+tool writes are unchanged.
+
+- An excluded mod's piece that another mod patches is now named on its own
+  line, as left to that mod's patch. It used to be listed with the pieces that
+  have no UBE version from any mod, with advice to take the mod off the
+  exclusion list.
+- The note about an excluded mod's pieces that are still drawn no longer says
+  they use the mod's own mesh. None of the excluded mod's meshes is converted
+  for them, but a piece that shares a base-game mesh another mod's conversion
+  covers draws that converted mesh.
+- The note about female models that exist nowhere now sorts each piece by why
+  its male mesh could not stand in: no male mesh at all, a body piece, a cape
+  or cloak, or a male mesh that could not be read. It used to call every piece
+  with a male mesh a body piece, and its "and N more" count could come out
+  short.
+- The line about the mannequin race no longer says no actor has it.
+  Mannequins wear armour; what no playable or UBE-race character has is their
+  race.
+
 ### Changed — the coverage step checks which meshes exist much faster
 
 To decide what a UBE actor's armour draws, the coverage step asks whether a mesh
@@ -18,8 +40,8 @@ Excluding a mod keeps this tool's converted meshes off that mod's armour. It
 also left every one of the mod's items without a UBE version, so a helmet or a
 pair of glasses that no other mod patches drew nothing on UBE actors. Now only
 the mod's body pieces are left out. A piece that does not fit the body (a
-helmet, glasses, jewellery) is drawn on UBE actors with the mod's own mesh,
-unless another mod already patches it for UBE, it sits on a body slot, it is a
+helmet, glasses, jewellery) is drawn on UBE actors, with none of the mod's
+meshes converted for it, unless another mod already patches it for UBE, it sits on a body slot, it is a
 cape or cloak, its mesh fits the body, or it would draw a converted copy of the
 excluded mod's own mesh. Another mod's patch is found by reading its SkyPatcher
 files and plugins directly, so a hand-made UBE refit this tool does not
@@ -53,8 +75,9 @@ else changes.
 A Khajiit or Argonian version of an item is left off UBE actors, because no
 human-race character draws it. Some mods also let the mannequins in player
 homes display that version, and this tool took that as a sign that a human
-could wear it, so UBE actors drew it. The mannequins are now ignored when the
-tool decides whether a version is Khajiit or Argonian only. An item version
+could wear it, so UBE actors drew it. No playable or UBE-race character is a
+mannequin, so the mannequins are now ignored when the tool decides whether a
+version is Khajiit or Argonian only; they still display the item. An item version
 that only a mannequin can display is still drawn on UBE actors, as before.
 Measured on the reported modlist: 30 wigs and earrings made for Khajiit
 characters are no longer drawn on UBE actors. None of them has a version a

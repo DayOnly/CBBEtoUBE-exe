@@ -1076,12 +1076,21 @@ follower (converted male Ebony boots on her UBE body):
     world mesh is body-fit or unreadable (archive-only reads as body), or a model
     redirected to a converted or twin UBE mesh whose source path ships in the
     excluded mod's folder or its archives (a converted shared path does not hide
-    a piece); or (3) the modlist cannot be read. Otherwise it is minted with its
-    own mesh and named in a NOTE (`exclusion_nonbody_kept`). Live replay with one
+    a piece); or (3) the modlist cannot be read. Otherwise it is minted like any
+    other armour and named in a NOTE (`exclusion_nonbody_kept`): it draws the
+    model its armature names, which is never a converted copy of a mesh the
+    excluded mod ships, but IS the `!UBE\` copy of a shared path another mod's
+    conversion covers -- so the NOTE says "no mesh converted for that mod", not
+    "its own mesh". Live replay with one
     follower excluded: +2 links (eyeglasses, a helmet), refit recognised or not;
     with the text scan removed and the reader off it was +5, three of them the
     refit's own pieces drawn twice. `CBBE2UBE_NO_EXCLUDE_BODY_ONLY=1` withholds
-    all of it again.
+    all of it again. The report (`_report_coverage_holds`) reads
+    `exclusion_nonbody_held`: a piece held because another mod patches it
+    (`named by <mod>`, `<plugin> adds an armature`; `_held_for_another_patch`)
+    is listed on its own line as left to that mod's patch and taken out of the
+    "no UBE armature from any mod" warning, which told the user to un-exclude
+    the mod (norec replay: the refit's helmet, pouch and wig were listed there).
 - **Armour a SkyPatcher-delivered UBE patch already covers**
   (`#skypatcher-patch-recognition`). SkyPatcher reads INIs nested inside its type
   folders and recommends a subfolder for a plugin-named INI; the check read
@@ -1126,7 +1135,25 @@ follower (converted male Ebony boots on her UBE body):
   them. Live replay: 10 slots take a stand-in (the 8 former male-mesh slots, a
   cuirass that was not drawn at all, its gloves' dead path), 3 non-body pieces
   (two hoods, a helmet) draw their male mesh; 43 dead slots stay, 42 with no
-  male mesh at all and one body-fit underskin — a NOTE counts them. A male mesh
+  male mesh at all and one body-fit underskin — a NOTE counts them, grouped by
+  why the male mesh was not drawn instead: `_file_declined` tags each slot whose
+  male mesh exists with `_dead_kept_why` (`body`: a body slot or a body-fit male
+  mesh; `cloak`; `unread`: no slots, no reader, or an unreadable mesh), a
+  report-only mirror of `_nonbody_male_as_is`'s refusals kept apart so the rule's
+  lines stay put. Each group prints three slots and its own "more".
+  **Known limitation: non-ASCII model paths** (review 09-25, measured). The
+  game reads a model path as cp1252 bytes; `esp.encode_zstring` writes UTF-8
+  for every string we mint. `rebuild_arma_payload`'s main branch decodes the
+  source path as UTF-8 with errors ignored (a cp1252 `é` is dropped, so the
+  written path names another file), and the stand-in and as-is branches decode
+  cp1252 -- what their lookups check -- and write UTF-8 (`é` becomes two bytes).
+  So no minted model path round-trips a non-ASCII byte: the new branches differ
+  in HOW the path breaks, not whether, and the as-is slot is then counted as
+  drawing a mesh it will not find. It is the old class, one fix for all of it
+  (write the source bytes verbatim, cp1252 for paths we compose). Live: 0 of
+  the 3,945 armature rebuilds of a coverage replay carry a non-ASCII model byte;
+  1 of 8,914 winning armatures in the load order does (a creature's, never
+  minted). A male mesh
   in a female slot that is NOT dead (a female slot naming the male path, or no
   female model) is outside the rule and untouched. Nested under the guard.
   `CBBE2UBE_NO_COVERAGE_FEMALE_STANDIN=1`.
@@ -1296,7 +1323,10 @@ reported through `_report_coverage_holds`:
   link (invisible on UBE, as on every human race). `CBBE2UBE_NO_COVERAGE_BEAST_VARIANT=1`.
 - **The mannequin race does not make a beast variant human**
   (`#beast-variant-non-actor`). A beast patch's variant often lists the Khajiit
-  races AND Skyrim.esm ManikinRace (so a mannequin can display it); the beast
+  races AND Skyrim.esm ManikinRace (so a mannequin can display it). Mannequins
+  ARE actors that wear armour (25 NPC_ records live); what makes the race safe
+  to ignore is that no playable or UBE-race actor has it, and the source
+  armature is untouched, so mannequins still display the item. The beast
   test read the mannequin race as a non-beast race, so the variant was minted
   and a UBE actor drew an armature no human draws. `_is_beast_variant` now
   drops the races in `_NON_ACTOR_RACES_24` (plugin-qualified: Skyrim.esm

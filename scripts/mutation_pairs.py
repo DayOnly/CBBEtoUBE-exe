@@ -2713,6 +2713,90 @@ PAIRS = (
          tests=('tests/test_coverage_female_standin.py',),
          expect=('test_the_lookup_reads_a_loose_mesh_and_an_archived_one',),
     ),
+    # The NOTE for dead slots left dead (review 09-25): each slot says why its
+    # live male mesh was not drawn instead, and each group counts what it did
+    # not print. It called every such slot a body piece, and its "more" count
+    # came out short when a sublist was short (live: 4 shown + 38 more of 43).
+    Pair('FSE-l', 'a cloak is not told apart in the dead-slot reason',
+         edits=(
+             ('src/ube_patcher.py',
+              '    if any(k in n for n in names for k in _CLOAK_MESH_KEYWORDS):\n'
+              '        return "cloak"\n',
+              '    if False:  # MUTATED\n'
+              '        return "cloak"\n', 1),
+         ),
+         tests=('tests/test_coverage_female_standin.py',),
+         expect=('test_each_dead_slot_says_why_its_male_mesh_was_not_drawn[cloak-cloak]',
+                 'test_a_cloak_is_reported_as_a_cloak_not_a_body_piece'),
+    ),
+    Pair('FSE-m', 'a body-fit male mesh is not called a body piece',
+         edits=(
+             ('src/ube_patcher.py',
+              '    return "body" if fit is True else "unread"',
+              '    return "unread"  # MUTATED', 1),
+         ),
+         tests=('tests/test_coverage_female_standin.py',),
+         expect=('test_each_dead_slot_says_why_its_male_mesh_was_not_drawn[body-fit male mesh-body]',),
+    ),
+    Pair('FSE-n', 'a body slot is not called a body piece',
+         edits=(
+             ('src/ube_patcher.py',
+              '    if bits & _BODY_SLOT_BITS:\n        return "body"\n',
+              '    if False:  # MUTATED\n        return "body"\n', 1),
+         ),
+         tests=('tests/test_coverage_female_standin.py',),
+         expect=('test_each_dead_slot_says_why_its_male_mesh_was_not_drawn[strict body slot-body]',),
+    ),
+    Pair('FSE-o', 'an unreadable male mesh is called a body piece',
+         edits=(
+             ('src/ube_patcher.py',
+              '    return "body" if fit is True else "unread"',
+              '    return "body" if fit is not False else "unread"  # MUTATED', 1),
+         ),
+         tests=('tests/test_coverage_female_standin.py',),
+         expect=('test_each_dead_slot_says_why_its_male_mesh_was_not_drawn[unreadable male mesh-unread]',
+                 'test_an_unreadable_male_mesh_is_not_called_a_body_piece'),
+    ),
+    Pair('FSE-p', 'the dead slots are never tagged with a reason',
+         edits=(
+             ('src/ube_patcher.py',
+              '            if e["male_live"] and payload is not None:\n',
+              '            if False:  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_coverage_female_standin.py',),
+         expect=('test_a_cloak_is_reported_as_a_cloak_not_a_body_piece',
+                 'test_each_dead_slot_says_why_its_male_mesh_was_not_drawn[cloak-cloak]'),
+    ),
+    Pair('FSE-q', 'the passes never hand the source armature over for the reason',
+         edits=(
+             ('src/ube_patcher.py',
+              '                       payload, armo_slots.get(arma_abs, 0))\n',
+              '                       None, 0)  # MUTATED\n', 2),
+         ),
+         tests=('tests/test_coverage_female_standin.py',),
+         expect=('test_a_cloak_is_reported_as_a_cloak_not_a_body_piece',
+                 'test_each_dead_slot_says_why_its_male_mesh_was_not_drawn[cloak-cloak]'),
+    ),
+    Pair('FSE-r', 'every live male mesh is reported as a body piece again',
+         edits=(
+             ('src/auto_convert.py',
+              '                ([k for k in live if k.get("why") == "body"],\n',
+              '                (live,  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_coverage_female_standin.py',),
+         expect=('test_a_cloak_is_reported_as_a_cloak_not_a_body_piece',
+                 'test_an_unreadable_male_mesh_is_not_called_a_body_piece'),
+    ),
+    Pair('FSE-s', "the dead slots' 'more' count is a fixed subtraction again",
+         edits=(
+             ('src/auto_convert.py',
+              '                print(f"         ... and {len(group) - 3} more")\n',
+              '                print(f"         ... and {len(dead_kept) - 5} more")  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_coverage_female_standin.py',),
+         expect=('test_every_dead_slot_is_printed_or_counted[42-1]',
+                 'test_every_dead_slot_is_printed_or_counted[10-10]'),
+    ),
 
     # #coverage-world-mesh (2026-09-24): a body armature was admitted when ANY of
     # MOD2..MOD5 was converted, so a first-person mesh let 87 armatures (89 links)
@@ -4002,8 +4086,9 @@ PAIRS = (
          tests=('tests/test_coverage_beast_variant.py',),
          expect=('test_the_variants_are_reported',),
     ),
-    # #beast-variant-non-actor (2026-09-24): the mannequin race is no actor's
-    # race, so the beast test ignores it; a mannequin-only armature is minted.
+    # #beast-variant-non-actor (2026-09-24): no playable or UBE-race actor has
+    # the mannequin race, so the beast test ignores it; a mannequin-only
+    # armature is minted.
     Pair('BVA-h', 'the mannequin race counts as a non-beast race again',
          edits=(
              ('src/ube_patcher.py',
@@ -4046,6 +4131,27 @@ PAIRS = (
              ('src/auto_convert.py',
               '        if nonactor:',
               '        if False:  # MUTATED', 1),
+         ),
+         tests=('tests/test_coverage_beast_variant.py',),
+         expect=('test_the_ignored_mannequin_race_is_reported',),
+    ),
+    # Review 09-25: the line gave the wrong reason -- mannequins are actors and
+    # wear armour; no playable or UBE-race actor has their race.
+    Pair('BVA-m', 'the mannequin line says no actor has the race again',
+         edits=(
+             ('src/auto_convert.py',
+              '"(Skyrim.esm ManikinRace), ignored when judging: no playable or "\n'
+              '                  "UBE-race actor has it (mannequins still display the item)")',
+              '"(Skyrim.esm ManikinRace), ignored when judging: no actor has it")  # MUTATED', 1),
+         ),
+         tests=('tests/test_coverage_beast_variant.py',),
+         expect=('test_the_mannequin_line_gives_the_true_reason',),
+    ),
+    Pair('BVA-n', 'one mannequin variant reads "1 of them also list"',
+         edits=(
+             ('src/auto_convert.py',
+              "{'lists' if len(nonactor) == 1 else 'list'}",
+              "list", 1),
          ),
          tests=('tests/test_coverage_beast_variant.py',),
          expect=('test_the_ignored_mannequin_race_is_reported',),
@@ -4957,6 +5063,61 @@ PAIRS = (
          ),
          tests=('tests/test_exclude_body_only.py',),
          expect=('test_the_parent_switch_turns_the_rule_off_too',),
+    ),
+    # The report (review 09-25): a piece held because another mod patches it is
+    # left to that mod, not listed as having no UBE armature (norec replay: the
+    # refit's helmet, pouch and wig were); a kept piece is not promised its own
+    # mesh (a shared converted path draws the `!UBE` copy).
+    Pair('EXB-v', 'a piece another mod patches is called unarmatured again',
+         edits=(
+             ('src/auto_convert.py',
+              '    withheld = [w for w in withheld if tuple(w[0]) not in left_to]\n',
+              '    pass  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_exclude_body_only.py',),
+         expect=('test_a_piece_another_mod_patches_is_left_to_it_not_called_unarmatured[ini-Refit Mod]',
+                 'test_a_piece_another_mod_patches_is_left_to_it_not_called_unarmatured[plugin-refit.esp]',
+                 'test_only_the_patched_piece_leaves_the_unarmatured_warning'),
+    ),
+    Pair('EXB-w', 'a SkyPatcher refit naming the piece is not read as its patch',
+         edits=(
+             ('src/ube_patcher.py',
+              '    if why.startswith("named by "):\n',
+              '    if False:  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_exclude_body_only.py',),
+         expect=('test_a_piece_another_mod_patches_is_left_to_it_not_called_unarmatured[ini-Refit Mod]',
+                 'test_only_the_patched_piece_leaves_the_unarmatured_warning'),
+    ),
+    Pair('EXB-x', 'a plugin override adding an armature is not read as its patch',
+         edits=(
+             ('src/ube_patcher.py',
+              '    if why.endswith(" adds an armature"):\n',
+              '    if False:  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_exclude_body_only.py',),
+         expect=('test_a_piece_another_mod_patches_is_left_to_it_not_called_unarmatured[plugin-refit.esp]',),
+    ),
+    Pair('EXB-y', 'the pieces left to another mod are not listed',
+         edits=(
+             ('src/auto_convert.py',
+              '    if left_to:\n',
+              '    if False:  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_exclude_body_only.py',),
+         expect=('test_a_piece_another_mod_patches_is_left_to_it_not_called_unarmatured[ini-Refit Mod]',
+                 'test_a_piece_another_mod_patches_is_left_to_it_not_called_unarmatured[plugin-refit.esp]'),
+    ),
+    Pair('EXB-z', 'the kept NOTE promises the mod\'s own mesh again',
+         edits=(
+             ('src/auto_convert.py',
+              '             "are still drawn on UBE-race actors, with no mesh converted for "\n'
+              '             "that mod",\n',
+              '             "keep their own mesh on UBE-race actors",  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_exclude_body_only.py',),
+         expect=('test_the_kept_note_does_not_promise_the_mods_own_mesh',
+                 'test_the_kept_pieces_are_reported'),
     ),
     # #loose-mesh-index (2026-09-25): one listing of the loose meshes folders
     # answers exactly what the per-path probe answered, without its file checks.
