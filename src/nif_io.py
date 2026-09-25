@@ -63,8 +63,9 @@ def _require_pynifly() -> None:
 
 @dataclass
 class Shape:
-    """A single NiShape's data as numpy arrays. Backed by the underlying
-    pynifly object so writes round-trip through save_nif().
+    """A single NiShape's data as numpy arrays, read-only: nothing here writes
+    a NIF (the converter writes through its own re-author path and
+    atomic_nif_save). `_backing` keeps the underlying pynifly object.
     """
     name: str
     verts: np.ndarray            # (N, 3) float32
@@ -136,42 +137,6 @@ def load_nif(path: str | os.PathLike) -> Nif:
             _backing=raw,
         ))
     return Nif(path=path, shapes=shapes, _backing=nf)
-
-
-def save_nif(nif: Nif, out_path: str | os.PathLike) -> None:
-    """Push numpy state back into the backing pynifly objects and write."""
-    _require_pynifly()
-    out_path = Path(out_path)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    if nif._backing is None:
-        raise RuntimeError("Nif has no backing pynifly object; was it constructed via load_nif()?")
-
-    for s in nif.shapes:
-        raw = s._backing
-        if raw is None:
-            continue
-        raw.set_verts([tuple(v) for v in s.verts.tolist()])
-        if s.normals.size:
-            raw.set_normals([tuple(n) for n in s.normals.tolist()])
-        # Bone weight write-back: clear+set per bone.
-        if hasattr(raw, "set_bone_weights"):
-            for bn, pairs in s.bone_weights.items():
-                raw.set_bone_weights(bn, [(int(i), float(w)) for i, w in pairs.tolist()])
-
-    # Atomic write: save to a temp in the same dir then os.replace, so a crash /
-    # kill / locked destination during pynifly's native write never leaves a
-    # truncated NIF (CTD on load). Matches atomic_nif_save; used by the CLI refit
-    # path (the batch converter already routes through atomic_nif_save).
-    tmp = out_path.with_name(out_path.name + ".nifsave.tmp")
-    try:
-        nif._backing.save(str(tmp))
-    except BaseException:
-        try:
-            os.unlink(str(tmp))
-        except OSError:
-            pass
-        raise
-    os.replace(str(tmp), str(out_path))
 
 
 def release_nif(nf) -> None:

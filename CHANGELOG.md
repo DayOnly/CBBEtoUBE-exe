@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Removed — the old single-file `refit` command-line tool
+
+A source checkout carried a second, older command-line tool (`src/cli.py`, with
+`refit`, `refit-pair` and `refit-batch`) that refit one mesh file at a time. It
+could not save a Skyrim SE mesh at all: every run stopped with an error before
+writing anything. It was never part of the program you download or of the
+window, which convert through a different path, so nothing a user runs changes.
+It has been removed, with the code only it used.
+
 ### Changed — the patch no longer carries the same armour piece twice
 
 The patch this tool writes for mod armour is cut into parts small enough to load
