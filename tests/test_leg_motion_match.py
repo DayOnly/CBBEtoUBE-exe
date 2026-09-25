@@ -488,14 +488,14 @@ def test_a_draping_morph_tri_shape_stays_skipped():
         _cs.patch(mp, "_source_morph_tri_shape_names", lambda p: set(tri_owned))
         mp.setattr(nc, "MORPHTRI_NO_LEG_GRAFT", True)
         mp.setattr(nc, "DRAPE_SKIP_XML_GATED", True)
-        mp.setattr(nc, "_piece_has_hdt_xml", lambda p, nif=None: False)
+        mp.setattr(nc, "_piece_has_hdt_xml", lambda p, nif=None, stem_scan=True: False)
         skip = ncw._limb_morph_tri_skip("x_1.nif", None, "src_1.nif", True, True)
         assert skip == {"RobesLower", "Cloak_1"}
         # the gate as it always was, for an instance that does not ignore it
         assert ncw._limb_morph_tri_skip("x_1.nif", None, "src_1.nif", False, True) == tri_owned
         # an instance that ignores it without the draping retention: nothing
         assert ncw._limb_morph_tri_skip("x_1.nif", None, "src_1.nif", True, False) == set()
-        mp.setattr(nc, "_piece_has_hdt_xml", lambda p, nif=None: True)
+        mp.setattr(nc, "_piece_has_hdt_xml", lambda p, nif=None, stem_scan=True: True)
         assert ncw._limb_morph_tri_skip("x_1.nif", None, "src_1.nif", True, True) == set()
 
 

@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+### Fixed — a garment without its own physics file converts the same way every run
+
+A converted garment that has no physics file of its own could borrow one from a
+different garment whose physics file had the same name in the output folder. If
+that other file named one of this garment's parts, the tool treated that part as
+physics-driven and handled its body-following differently. Whether that
+happened depended on the order the run wrote its files in and on what an
+earlier run had left in the output folder, so the same garment could come out
+differently from one run to the next. Now only a garment's own physics link
+counts. Measured on the reported modlist: 58 of 3,342 converted meshes could
+borrow such a file; re-converting 44 of them (the rest have no loose source),
+only 2 come out different -- both weights of one skirt whose panties part had
+borrowed another skirt's physics. Their shapes are unchanged; the panties now follow the butt about half
+as much as in the last release, and the skirt layers' weights shift slightly
+where they meet the panties -- the same result a run into an empty output folder
+already gave. `CBBE2UBE_NO_DST_XML_NO_STEM_SCAN=1` (set to 1) restores the old
+behaviour.
+
 ### Fixed — a garment whose layers share one name keeps every layer
 
 Some garments are built from several layers the author gave the same name, for

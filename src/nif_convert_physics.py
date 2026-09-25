@@ -90,6 +90,10 @@ def _audit_registered_shape_declared_bones(dst_path, src_path) -> int:
         # wrong-but-active guard and an inactive guard are both wrong, and
         # swapping one for the other is not a fix. #hdt-xml-race, second
         # instance -- it needs its own decision, with that number attached.
+        # Since #dst-xml-no-stem-scan (2026-09-25) every OTHER destination
+        # query refuses the fallback, so on a pointer-less piece this guard's
+        # `registered` can name a shape the weight passes no longer protect.
+        # It still only reports; the decision above stands until re-measured.
         txt = _read_source_hdt_xml_text(dst_path, nif=dn)
         declared = set(re.findall(r'<bone\s+name="([^"]+)"', txt or ""))
         if not declared:
@@ -1551,7 +1555,7 @@ def _lift_chain_roots_off_body(chain: dict, src_nif, dst_path=None) -> int:
         moved += 1
     return moved
 
-def _seed_flat_chain_anchors(dst_nif, src_nif) -> int:
+def _seed_flat_chain_anchors(dst_nif, src_nif, stem_scan: bool = True) -> int:
     """Pre-create physics-chain ANCHOR bones (and their source ancestors) at their
     SOURCE GLOBAL transform, flat-parented, into a still-EMPTY dst NIF.
     #anchor-global-fix
@@ -1596,7 +1600,8 @@ def _seed_flat_chain_anchors(dst_nif, src_nif) -> int:
         try:
             sp = getattr(src_nif, "filepath", None)
             if sp:
-                xt = _read_source_hdt_xml_text(Path(sp), nif=src_nif)
+                xt = _read_source_hdt_xml_text(Path(sp), nif=src_nif,
+                                               stem_scan=stem_scan)
                 if xt:
                     allb |= {b for b in _xml_referenced_bone_names(xt)
                              if b in src_nodes}
@@ -1685,7 +1690,8 @@ def _seed_flat_chain_anchors(dst_nif, src_nif) -> int:
         _note_pass_failure("_seed_flat_chain_anchors", _e)
         return 0
 
-def _precreate_custom_bone_chains(dst_nif, src_nif, bone_names) -> int:
+def _precreate_custom_bone_chains(dst_nif, src_nif, bone_names,
+                                  stem_scan: bool = True) -> int:
     """Recreate, in `dst_nif`, the node sub-trees for any armor-specific
     (non-skeleton) physics bones a shape is skinned to — INCLUDING their
     unweighted parent-chain bones up to the standard skeleton bone they
@@ -1733,7 +1739,8 @@ def _precreate_custom_bone_chains(dst_nif, src_nif, bone_names) -> int:
         try:
             _sp = getattr(src_nif, "filepath", None)
             if _sp:
-                _xt = _read_source_hdt_xml_text(Path(_sp), nif=src_nif)
+                _xt = _read_source_hdt_xml_text(Path(_sp), nif=src_nif,
+                                                stem_scan=stem_scan)
                 if _xt:
                     for _xb in _xml_referenced_bone_names(_xt):
                         if _xb in src_nodes and not _actor_can_resolve_bone(_xb):
@@ -3220,7 +3227,8 @@ def _finalize_hdt_physics(dst_path: Path, src_nif_path: Path) -> bool:
             _tb.print_exc()
         return False
 
-def _hdt_softbody_shape_names(src_nif_path: Path, nif=None) -> set:
+def _hdt_softbody_shape_names(src_nif_path: Path, nif=None,
+                              stem_scan: bool = True) -> set:
     """Shape names the armor's HDT-SMP XML drives as PER-VERTEX soft-bodies
     (free-swinging cloth, e.g. a hand-authored UBE armor's `soft-body cloth shape`). These must KEEP
     their authored skin weighting: the converter's body-fit reskin (AND the
@@ -3231,7 +3239,7 @@ def _hdt_softbody_shape_names(src_nif_path: Path, nif=None) -> set:
     (reskin proceeds as normal). `nif` reuses an already-loaded NifFile."""
     if _nc().CHAIN_TO_SOFTBODY:
         return set()  # soft-body mode: nothing is preserved; reskin all cloth
-    txt = _read_source_hdt_xml_text(src_nif_path, nif=nif)
+    txt = _read_source_hdt_xml_text(src_nif_path, nif=nif, stem_scan=stem_scan)
     if not txt:
         return _hdt_protect_all_or_none(src_nif_path, nif=nif)
     return set(re.findall(r'<per-vertex-shape\s+name="([^"]+)"', txt))
@@ -3332,6 +3340,30 @@ def _hdt_sanitise(data: bytes) -> "tuple[bytes, str | None]":
         return sanitise_hdt_xml_bytes(data)
     except Exception:
         return data, None
+
+def _dst_xml_stem_scan() -> bool:
+    """#dst-xml-no-stem-scan (2026-09-25): may a query about a DESTINATION NIF
+    take the filename fallback? No, by default -- this returns the `stem_scan`
+    every destination-side caller passes.
+
+    The bust-split callers stopped taking it on 2026-09-09 (#hdt-xml-race); every
+    other destination query still did: the collider / soft-body sets read by the
+    body-follow weight passes, the drape-skip XML gate, the re-author's
+    authored-skin set, the collider conform, the bust-plate sync, the self-
+    intersection overrides and the chain-anchor seeding of a re-authored or
+    split NIF. For a destination with no physics pointer, the fallback globs the
+    OUTPUT mod -- a tree the run is still writing, never cleaned between runs,
+    and memoised per worker -- and takes another garment's same-stem or
+    keyword-matched XML. Any shape of the piece that XML happens to name was then
+    exempt from every body-follow pass, or not, depending on write order and on
+    what an earlier run left behind.
+
+    A destination that declares a pointer is unaffected: the pointer is read
+    first, and an unresolved one still recovers from the source-bound copy or
+    fails closed. The declared-bone guard (`_audit_registered_shape_declared_bones`)
+    keeps its own recorded decision and still scans; it only reports.
+    CBBE2UBE_NO_DST_XML_NO_STEM_SCAN=1 restores the fallback everywhere."""
+    return _flag("CBBE2UBE_NO_DST_XML_NO_STEM_SCAN", False)
 
 def _read_source_hdt_xml_text(src_nif_path: Path, nif=None,
                               stem_scan: bool = True) -> "str | None":
@@ -3453,7 +3485,8 @@ def _read_source_hdt_xml_text_uncached(src_nif_path: Path, nif=None,
     except Exception:
         return None
 
-def _hdt_collider_shape_names(src_nif_path: Path, nif=None) -> set:
+def _hdt_collider_shape_names(src_nif_path: Path, nif=None,
+                              stem_scan: bool = True) -> set:
     """Shape names the armor's HDT-SMP XML uses as PER-TRIANGLE colliders -- the
     body/ground collision proxies the soft-body cloth bounces off (e.g. a source
     outfit's own `...Col...` body). Like the soft-bodies, these must KEEP their
@@ -3462,8 +3495,11 @@ def _hdt_collider_shape_names(src_nif_path: Path, nif=None) -> set:
     one outfit's skirt collider), so on UBE the collider deforms violently with
     the body physics and destabilises the cloth it is meant to be a STABLE
     collider for (skirt implodes / cloth sinks through the floor). Leave colliders
-    exactly as the source authored them. #smp-collider-graft"""
-    txt = _read_source_hdt_xml_text(src_nif_path, nif=nif)
+    exactly as the source authored them. #smp-collider-graft
+
+    `stem_scan`: see `_read_source_hdt_xml_text`. A caller holding a
+    DESTINATION path passes `_dst_xml_stem_scan()`."""
+    txt = _read_source_hdt_xml_text(src_nif_path, nif=nif, stem_scan=stem_scan)
     if not txt:
         return _hdt_protect_all_or_none(src_nif_path, nif=nif)
     return set(re.findall(r'<per-triangle-shape\s+name="([^"]+)"', txt))

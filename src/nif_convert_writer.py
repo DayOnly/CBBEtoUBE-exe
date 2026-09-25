@@ -23,6 +23,7 @@ from .nif_convert_fitgeom import (  # noqa: E402
 )
 from .nif_convert_layers import _layered_cloth_shape_names  # noqa: E402
 from .nif_convert_physics import (  # noqa: E402
+    _dst_xml_stem_scan,
     _hdt_collider_shape_names,
     _hdt_softbody_shape_names,
     _nif_declares_hdt_xml,
@@ -54,10 +55,15 @@ def _nc():
 
 
 def _install_skin(new_shape, dst_nif, src_shape, bone_names, xforms_map,
-                  weights_map, use_verts, bake_T, preserve_authored_skin=False):
+                  weights_map, use_verts, bake_T, preserve_authored_skin=False,
+                  xml_stem_scan=True):
     """Install the skin onto a freshly-created shape: bones, skin-to-bone xforms,
     global-to-skin, per-bone weights, and partitions. Shared by both _copy_shape
     skin paths (the M6 override-skin reskin and the verbatim source copy).
+
+    `xml_stem_scan` is the physics-XML `stem_scan` for the chain-bone read of
+    `src_shape.file`: False when that file is a DESTINATION NIF (a re-author,
+    a bust split). #dst-xml-no-stem-scan
 
     `preserve_authored_skin` keeps the source weighting VERBATIM -- no genital or
     jiggle strip. Set for HDT-SMP per-triangle COLLIDERS / framework carriers
@@ -75,7 +81,8 @@ def _install_skin(new_shape, dst_nif, src_shape, bone_names, xforms_map,
     new_shape.skin()
     # Preserve physics-bone chains BEFORE add_bone (source transforms+parents).
     try:
-        _precreate_custom_bone_chains(dst_nif, src_shape.file, bone_names)
+        _precreate_custom_bone_chains(dst_nif, src_shape.file, bone_names,
+                                      stem_scan=xml_stem_scan)
     except Exception as _pe:
         _note_pass_failure("_precreate_custom_bone_chains", _pe)
     # Fix scale-bone STB space mismatch: bake g2s^-1 into scale-bone STBs.
@@ -1954,8 +1961,11 @@ def _open_source_nif(src_path):
 def _copy_shape(src_shape, dst_nif, parent=None, override_verts=None,
                 override_skin=None, skip_alpha=False, override_tris=None,
                 preserve_authored_skin=False, override_normals=None,
-                skip_geometry_repair=False):
+                skip_geometry_repair=False, xml_stem_scan=True):
     """Deep-copy a single shape from src NIF to dst NIF via pynifly.
+
+    `xml_stem_scan`: pass `_dst_xml_stem_scan()` when `src_shape` lives in a
+    DESTINATION NIF (see `_install_skin`). #dst-xml-no-stem-scan
 
     Carries through: geometry (verts/tris/uvs/normals), shape properties
     (from BSTriShapeBuf), full shader (NiShaderBuf memcpy — preserves all
@@ -2306,7 +2316,8 @@ def _copy_shape(src_shape, dst_nif, parent=None, override_verts=None,
                 bone_names, xforms_map, weights_map)
         _install_skin(new_shape, dst_nif, src_shape, bone_names,
                       xforms_map, weights_map, use_verts, _bake_T,
-                      preserve_authored_skin=preserve_authored_skin)
+                      preserve_authored_skin=preserve_authored_skin,
+                      xml_stem_scan=xml_stem_scan)
     elif src_shape.bone_names:
         # Source shapes can exceed the GPU bone cap (dense skirts ship 79-81).
         # Keep all bones and let _split_oversize_partition split into partitions
@@ -2340,7 +2351,8 @@ def _copy_shape(src_shape, dst_nif, parent=None, override_verts=None,
                 bone_names, xforms_map, weights_map)
         _install_skin(new_shape, dst_nif, src_shape, bone_names,
                       xforms_map, weights_map, use_verts, _bake_T,
-                      preserve_authored_skin=preserve_authored_skin)
+                      preserve_authored_skin=preserve_authored_skin,
+                      xml_stem_scan=xml_stem_scan)
 
     # Alpha: set has_alpha_property=True first (creates dst NiAlphaProperty),
     # then copy flags/threshold. Don't memcpy the whole buf (contains source
@@ -2498,10 +2510,15 @@ def _reauthor_nif_fresh(dst_path: Path, override_verts_by_name=None,
         # the seam weld on every soft-body and layered-cloth garment this path
         # re-authors -- which is most of the seam splits left in the pack.
         _colliders: set = set()
+        # `old` IS the destination, so every physics read of it below refuses
+        # the filename fallback. #dst-xml-no-stem-scan
+        _dss = _dst_xml_stem_scan()
         try:
-            _colliders = set(_hdt_collider_shape_names(dst_path, nif=old))
+            _colliders = set(_hdt_collider_shape_names(dst_path, nif=old,
+                                                       stem_scan=_dss))
             _preserve |= _colliders
-            _preserve |= _hdt_softbody_shape_names(dst_path, nif=old)
+            _preserve |= _hdt_softbody_shape_names(dst_path, nif=old,
+                                                   stem_scan=_dss)
             _preserve |= _layered_cloth_shape_names(shapes)
         except Exception:
             pass
@@ -2519,7 +2536,7 @@ def _reauthor_nif_fresh(dst_path: Path, override_verts_by_name=None,
         # precisely the two seeded ancestor nodes. Seeded from `old`, which still
         # holds the correct globals at this point. #anchor-global-fix
         try:
-            _seed_flat_chain_anchors(new, old)
+            _seed_flat_chain_anchors(new, old, stem_scan=_dss)
         except Exception as _se:
             # The other two call sites report via _note_pass_failure; this one
             # swallowed. A dropped seed here is what left `_1` 68.91u low, so a
@@ -2548,7 +2565,8 @@ def _reauthor_nif_fresh(dst_path: Path, override_verts_by_name=None,
             try:
                 _copy_shape(s, new, override_verts=_ov.get(s.name),
                             preserve_authored_skin=(s.name in _preserve),
-                            skip_geometry_repair=(s.name in _colliders))
+                            skip_geometry_repair=(s.name in _colliders),
+                            xml_stem_scan=_dss)
             except Exception as _ce:
                 copy_failed.append((s.name, repr(_ce)))
         if copy_failed:

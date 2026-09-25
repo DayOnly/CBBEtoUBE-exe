@@ -1040,6 +1040,39 @@ on them: registered-shape protection, collider split clones, and re-imported
 hidden collision shapes (a cloak's `VirtualBody`, which is CBBE-shaped).
 `CBBE2UBE_NO_PHYSICS_DATA_PREFIX=1` restores the old miss.
 
+### A destination query never takes the filename fallback (`#dst-xml-no-stem-scan`, default ON)
+
+`_read_source_hdt_xml_text` falls back, when a NIF has no pointer, to a same-stem
+or keyword-matched XML anywhere in the mod tree the NIF lives in
+(`_find_hdt_xml_for_armor`). Against a SOURCE mod that is useful and static.
+Against the OUTPUT mod it is a race (`#hdt-xml-race`): the run is still writing
+XMLs there, the folder is never cleaned between runs, and `_mod_xml_index`
+memoises whatever each worker saw first. The bust-split callers stopped taking it
+on 2026-09-09; every other destination query still did, so a pointer-less piece
+could take another garment's XML as its collider / soft-body sets and the
+body-follow passes skipped whichever of its shapes that XML named -- or not,
+depending on write order.
+
+Every destination-side query now passes `stem_scan=_dst_xml_stem_scan()`: the
+collider / soft-body sets of the five body-follow weight passes, the drape-skip
+XML gate and the layered-cloth jiggle gate (`_piece_has_hdt_xml`), the
+re-author's authored-skin set and its chain-anchor seed and chain precreate
+(threaded through `_copy_shape` -> `_install_skin` as `xml_stem_scan`), the
+bust-split clone's chain read, `_sync_bust_plate_follow_postwrite`,
+`_conform_collider_to_body` and `_selfint_overrides`. The destination's own
+pointer is still read first; an unresolved one still recovers from the
+source-bound copy (`#xml-source-of-truth`) or fails closed. The declared-bone
+guard (`_audit_registered_shape_declared_bones`) keeps its recorded decision and
+still scans; it only reports.
+
+Live (read-only census of the 3,342 output NIFs): 58 pointer-less NIFs answered
+differently, 2 of them in their collider / soft-body sets (one skirt pair, whose
+`panties` another skirt's XML registered) and 56 only in the drape / layered-cloth
+XML question. Converted into an empty output tree and into one seeded with the
+live XMLs, the parent differed between the two on the skirt pair only; the lane
+gave identical bytes in both, equal to the parent's empty-tree output, across
+all converted pieces. `CBBE2UBE_NO_DST_XML_NO_STEM_SCAN=1` restores the fallback.
+
 ### A constraint counts wherever it sits (`#constraint-group-scan`, default ON)
 
 FSMP has three constraint elements (`generic-constraint`,

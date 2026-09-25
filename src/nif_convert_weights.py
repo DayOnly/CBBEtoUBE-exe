@@ -849,12 +849,15 @@ def _conform_weights_core(nf, dst_path, weight,
     # is careful to avoid (the collider over-jiggles -> the cloth it stabilises
     # implodes / sinks). Read the collider set straight from the already-open nf so
     # there is NO second disk parse per armor. #smp-collider-graft
-    collider_names = _nc()._hdt_collider_shape_names(dst_path, nif=nf)
-    softbody_names = _nc()._hdt_softbody_shape_names(dst_path, nif=nf)
+    collider_names = _nc()._hdt_collider_shape_names(
+        dst_path, nif=nf, stem_scan=_nc()._dst_xml_stem_scan())
+    softbody_names = _nc()._hdt_softbody_shape_names(
+        dst_path, nif=nf, stem_scan=_nc()._dst_xml_stem_scan())
     layered_cloth_names = _layered_cloth_shape_names(nf.shapes)  # keep source skin
     # Lazy: with the gate OFF this pass must do NO extra work at all.
     _skip_keys = _nc()._conform_skip_keys(
-        _nc()._piece_has_hdt_xml(dst_path, nif=nf) if _nc().DRAPE_SKIP_XML_GATED else None)
+        _nc()._piece_has_hdt_xml(dst_path, nif=nf,
+                                 stem_scan=_nc()._dst_xml_stem_scan()) if _nc().DRAPE_SKIP_XML_GATED else None)
     total = 0
     dirty = False
     for s in nf.shapes:
@@ -1325,8 +1328,10 @@ def _match_rigid_leg_bend_to_body(dst_path, biped_slots: int = 0,
     if _nc()._nif_has_fx_shape(nf):
         return 0  # effect-shader/glow NIF: a reload+re-save corrupts its controller -> CTD.
                   # Leave it exactly as the main conversion wrote it (see _nif_has_fx_shape).
-    collider_names = _nc()._hdt_collider_shape_names(dst_path, nif=nf)
-    softbody_names = _nc()._hdt_softbody_shape_names(dst_path, nif=nf)
+    collider_names = _nc()._hdt_collider_shape_names(
+        dst_path, nif=nf, stem_scan=_nc()._dst_xml_stem_scan())
+    softbody_names = _nc()._hdt_softbody_shape_names(
+        dst_path, nif=nf, stem_scan=_nc()._dst_xml_stem_scan())
     layered_cloth_names = _layered_cloth_shape_names(nf.shapes)  # keep source skin
     # A shape with its OWN source BodySlide morph TRI already tracks body sliders
     # at runtime, keyed to its ORIGINAL skin -- which is exactly why the reskin
@@ -1361,7 +1366,8 @@ def _match_rigid_leg_bend_to_body(dst_path, biped_slots: int = 0,
     # defect) stays gated; the thigh pair anchors to the thigh and is let through.
     _LEG_DETAIL_BONE_NAME_SET = _morphtri_gated_detail_bones()
     # Lazy: with the gate OFF this pass must do NO extra work at all.
-    _has_xml = _nc()._piece_has_hdt_xml(dst_path, nif=nf) if _nc().DRAPE_SKIP_XML_GATED else None
+    _has_xml = _nc()._piece_has_hdt_xml(dst_path, nif=nf,
+                                 stem_scan=_nc()._dst_xml_stem_scan()) if _nc().DRAPE_SKIP_XML_GATED else None
     _skip_keys = _nc()._conform_skip_keys(_has_xml)
     total = 0
     dirty = False
@@ -1833,7 +1839,8 @@ def _limb_morph_tri_skip(dst_path, nf, src_nif_path, ignore_morph_tri: bool,
     if not ignore_morph_tri:
         return names
     keys = _nc()._conform_skip_keys(
-        _nc()._piece_has_hdt_xml(dst_path, nif=nf)
+        _nc()._piece_has_hdt_xml(dst_path, nif=nf,
+                                 stem_scan=_nc()._dst_xml_stem_scan())
         if _nc().DRAPE_SKIP_XML_GATED else None)
     return {n for n in names if any(k in (n or "").lower() for k in keys)}
 
@@ -2044,8 +2051,10 @@ def _match_limb_motion_to_body(dst_path, biped_slots: int = 0, *,
         return 0
     if _nc()._nif_has_fx_shape(nf):
         return 0  # effect-shader NIF: a reload+re-save corrupts its controller -> CTD
-    collider_names = _nc()._hdt_collider_shape_names(dst_path, nif=nf)
-    softbody_names = _nc()._hdt_softbody_shape_names(dst_path, nif=nf)
+    collider_names = _nc()._hdt_collider_shape_names(
+        dst_path, nif=nf, stem_scan=_nc()._dst_xml_stem_scan())
+    softbody_names = _nc()._hdt_softbody_shape_names(
+        dst_path, nif=nf, stem_scan=_nc()._dst_xml_stem_scan())
     # A shape driven by its OWN source morph TRI keeps its authored skin: the TRI
     # morphs it at runtime keyed to that skin, and re-sharing its limb mass makes
     # it respond differently to limb/spine rotation. Reported in game as a crease
@@ -2874,8 +2883,10 @@ def _match_coincident_cross_shape_skin(dst_path, src_nif_path=None) -> int:
         return out
 
     # Authored physics geometry is off limits to every skin pass here.
-    collider_names = _nc()._hdt_collider_shape_names(dst_path, nif=nf)
-    softbody_names = _nc()._hdt_softbody_shape_names(dst_path, nif=nf)
+    collider_names = _nc()._hdt_collider_shape_names(
+        dst_path, nif=nf, stem_scan=_nc()._dst_xml_stem_scan())
+    softbody_names = _nc()._hdt_softbody_shape_names(
+        dst_path, nif=nf, stem_scan=_nc()._dst_xml_stem_scan())
 
     cand = [s for s in nf.shapes
             if (s.name or "") not in _nc().RESKIN_SKIP_NAMES
@@ -4271,7 +4282,8 @@ def _layered_cloth_jiggle_regions(dst_path, nf, layered_cloth_names) -> frozense
     the piece has layered cloth and the flag is on."""
     if not (layered_cloth_names and _nc().LAYERED_CLOTH_BUTT_JIGGLE):
         return frozenset()
-    if _nc()._piece_has_hdt_xml(dst_path, nif=nf):
+    if _nc()._piece_has_hdt_xml(dst_path, nif=nf,
+                                 stem_scan=_nc()._dst_xml_stem_scan()):
         return frozenset()
     return frozenset(_nc()._LAYERED_CLOTH_JIGGLE_REGIONS)
 
@@ -4333,8 +4345,10 @@ def _transfer_body_jiggle_to_fitted(dst_path, biped_slots: int = 0,
     if _nc()._nif_has_fx_shape(nf):
         return 0  # effect-shader/glow NIF: a reload+re-save corrupts its controller -> CTD.
                   # Leave it exactly as the main conversion wrote it (see _nif_has_fx_shape).
-    collider_names = _nc()._hdt_collider_shape_names(dst_path, nif=nf)
-    softbody_names = _nc()._hdt_softbody_shape_names(dst_path, nif=nf)
+    collider_names = _nc()._hdt_collider_shape_names(
+        dst_path, nif=nf, stem_scan=_nc()._dst_xml_stem_scan())
+    softbody_names = _nc()._hdt_softbody_shape_names(
+        dst_path, nif=nf, stem_scan=_nc()._dst_xml_stem_scan())
     # Same rule as the reskin and the leg-bend graft: a shape driven by its OWN
     # source morph TRI already tracks the body at runtime on its ORIGINAL skin.
     #
@@ -4356,7 +4370,8 @@ def _transfer_body_jiggle_to_fitted(dst_path, biped_slots: int = 0,
     layered_regions = _layered_cloth_jiggle_regions(dst_path, nf, layered_cloth_names)
     # Lazy: with the gate OFF this pass must do NO extra work at all.
     _skip_keys = _nc()._conform_skip_keys(
-        _nc()._piece_has_hdt_xml(dst_path, nif=nf) if _nc().DRAPE_SKIP_XML_GATED else None)
+        _nc()._piece_has_hdt_xml(dst_path, nif=nf,
+                                 stem_scan=_nc()._dst_xml_stem_scan()) if _nc().DRAPE_SKIP_XML_GATED else None)
     total = 0
     dirty = False
     for s in nf.shapes:

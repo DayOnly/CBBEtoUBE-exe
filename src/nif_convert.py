@@ -6154,6 +6154,7 @@ from .nif_convert_physics import (  # noqa: E402
     _add_skirt_collider_proxy,
     _audit_registered_shape_declared_bones,
     _cluster_decimate,
+    _dst_xml_stem_scan,
     _finalize_hdt_physics,
     _find_hdt_xml_for_armor,
     _generate_hdt_xml_for_dst,
@@ -6926,13 +6927,16 @@ def _conform_skip_keys(piece_has_hdt_xml=None) -> tuple:
     return _CONFORM_SKIP_NAMES
 
 
-def _piece_has_hdt_xml(path, nif=None) -> bool:
+def _piece_has_hdt_xml(path, nif=None, stem_scan: bool = True) -> bool:
     """Does this piece declare an HDT-SMP physics XML that actually resolves?
 
     False for a piece driven by a runtime-global config (nothing to read) -- which is
-    precisely the population the draping-name skip exists to protect. #drape-xml-gate"""
+    precisely the population the draping-name skip exists to protect. #drape-xml-gate
+    A caller holding a DESTINATION path passes `stem_scan=_dst_xml_stem_scan()`
+    (#dst-xml-no-stem-scan)."""
     try:
-        return bool(_read_source_hdt_xml_text(Path(path), nif=nif))
+        return bool(_read_source_hdt_xml_text(Path(path), nif=nif,
+                                              stem_scan=stem_scan))
     except Exception:
         return False        # unreadable -> treat as "no XML" -> keep the guard
 
@@ -8489,7 +8493,8 @@ def _selfint_overrides(nf, dst_path, src_path) -> dict:
     if body is None:
         return {}
     Vb, Nb, tree = body
-    collider_names = _hdt_collider_shape_names(dst_path, nif=nf)
+    collider_names = _hdt_collider_shape_names(
+        dst_path, nif=nf, stem_scan=_dst_xml_stem_scan())
     src_shapes: dict = {}
     try:
         snf = _open_source_nif(src_path)   # #dup-shape-names
@@ -9090,7 +9095,8 @@ def _conform_collider_to_body(dst_path) -> int:
         nf = pyn.NifFile(filepath=str(p))
     except Exception:
         return 0
-    collider_names = _hdt_collider_shape_names(p, nif=nf)
+    collider_names = _hdt_collider_shape_names(
+        p, nif=nf, stem_scan=_dst_xml_stem_scan())
     if not collider_names:
         return 0
     base = ube_body_shape(nf)
