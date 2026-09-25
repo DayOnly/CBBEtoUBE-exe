@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### Changed — items whose meshes are not installed get no UBE link
+
+Some items name meshes that exist nowhere in the modlist (a mod whose mesh
+files are not installed, or an item that points at files its mod never
+shipped). Such an item draws nothing on any character, UBE or not, but this
+tool still gave it a UBE armature, a link that drew nothing. It now leaves
+those out and says so in a NOTE, counted by plugin. An item that has at least
+one of its meshes (the world one or the first-person one, male or female) is
+linked as before. On the reported modlist this left out 41 armatures (city
+guard boots, gauntlets, helmets and shields of one overhaul, some pouches and
+satchels, amulets and a few single items), 48 links on 47 items that drew
+nothing anyway. Install the missing meshes and run again, and they are linked.
+If the tool cannot read the modlist to check, it links everything as before
+and warns. `CBBE2UBE_NO_COVERAGE_DEAD_ARMATURE=1` (set to 1) turns it off.
+
 ### Fixed — characters of a UBE race count when the tool looks at what NPCs wear
 
 To decide which outfits only NPCs wear are worth converting, the tool looks at

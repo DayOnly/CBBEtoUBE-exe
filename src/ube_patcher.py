@@ -3625,6 +3625,84 @@ def _is_beast_variant(v) -> bool:
                                for p, lo in actor)
 
 
+def _coverage_dead_armature() -> bool:
+    r"""#coverage-dead-armature (2026-09-25): is an armature none of whose
+    meshes exists anywhere left unminted? Yes, by default.
+
+    Both passes minted every armature the other rules admitted, whether or not
+    its meshes exist. A hands/feet armature is admitted by its slot alone, and
+    a non-body one keeps its source mesh; one whose every named mesh is missing
+    from the whole modlist draws nothing for anyone -- the source armature
+    included -- so ours only added a link that draws nothing. Live: about 40
+    source armatures (city-guard boots and gauntlets, shields, amulets and
+    accessories of mods whose meshes are not installed). Judged last, after
+    every other rule, so their counts are unchanged; an armature naming no mesh
+    at all (a slot placeholder that hides a body part) is never dead.
+    CBBE2UBE_NO_COVERAGE_DEAD_ARMATURE=1 mints them again."""
+    return not _flag("CBBE2UBE_NO_COVERAGE_DEAD_ARMATURE", False)
+
+
+_ARMA_MODEL_SIGS = (b"MOD2", b"MOD3", b"MOD4", b"MOD5")
+
+
+def _weight_siblings(model: str) -> "list[str]":
+    r"""`model` and its weight siblings: `X.nif` -> `X.nif`, `X_0.nif`,
+    `X_1.nif`; `X_0.nif` or `X_1.nif` -> itself, the other one and `X.nif`.
+    A path not ending `.nif` comes back alone."""
+    if not model.lower().endswith(".nif"):
+        return [model]
+    base = model[:-4]
+    if base.endswith(("_0", "_1")):
+        base = base[:-2]
+    return list(dict.fromkeys([model, base + ".nif", base + "_0.nif",
+                               base + "_1.nif"]))
+
+
+def _dead_armature_judge(arma_win: dict, crp: "set[str]", *, mesh_exists,
+                         ube_twin_exists):
+    r"""#coverage-dead-armature: `dead(x)` -> is winner-scan armature `x` one
+    whose meshes exist nowhere? Memoised per armature.
+
+    Dead: it names at least one non-empty MOD2..MOD5 path and none is alive.
+    A path is alive when this run converted it (`crp`, a `meshes\` prefix
+    taken off), a third-party mod ships its `!UBE\` twin (`ube_twin_exists`,
+    None = no twin is known), or it or a weight sibling (`_weight_siblings`)
+    exists where the game reads meshes (`mesh_exists`: loose, overwrite, game
+    Data, any archive but voice/sound/facegen). That lookup lists every archive
+    in the folders, not only those the game loads, so a mesh only in an
+    inactive plugin's archive counts as alive -- the lenient side: such an
+    armature is minted as before, never dropped for a mesh that may load."""
+    memo: dict = {}
+
+    def alive(p: str) -> bool:
+        if _converted_model_exists(p, crp, strip_meshes=True):
+            return True
+        if ube_twin_exists is not None and ube_twin_exists(p):
+            return True
+        return any(mesh_exists(s) for s in _weight_siblings(p))
+
+    def dead(x) -> bool:
+        if x not in memo:
+            models = [d.rstrip(b"\x00").decode("cp1252", "replace").strip()
+                      for s, d in esp.iter_subrecords(arma_win[x][0])
+                      if s in _ARMA_MODEL_SIGS]
+            models = [p for p in models if p]
+            memo[x] = bool(models) and not any(alive(p) for p in models)
+        return memo[x]
+    return dead
+
+
+def _drop_dead(to_mint: list, dead, skipped: list) -> list:
+    """#coverage-dead-armature: `to_mint` without the armatures `dead` calls
+    dead; each is recorded once in `skipped` (one is often shared by many
+    armours)."""
+    gone = [x for x in to_mint if dead(x)]
+    for x in gone:
+        if x not in skipped:
+            skipped.append(x)
+    return [x for x in to_mint if x not in gone]
+
+
 def _coverage_third_party_drawn() -> bool:
     r"""#coverage-third-party-drawn (2026-09-25): do both coverage passes judge
     another mod's UBE armature on the WINNING armour record by what it draws,
@@ -4368,6 +4446,7 @@ def generate_modded_nonbody_ube_coverage_patch(
     npc_worn_armo_abs: "set[tuple[str, int]] | frozenset | None" = None,
     exclusion_probe=None,
     mesh_live: "callable[[str], bool] | None" = None,
+    dead_mesh_exists: "callable[[str], bool] | None" = None,
     author: str = "cbbe-to-ube modded non-body UBE coverage",
     description: str = "UBE race coverage for mod-defined non-body armor",
 ) -> dict:
@@ -4403,7 +4482,12 @@ def generate_modded_nonbody_ube_coverage_patch(
     `mesh_live` (#coverage-third-party-drawn): is a mesh live in the game view
     (`auto_convert._game_view_mesh_resolver`)? Another mod's UBE armature draws
     only when its female world mesh is. None = cannot tell: only a mesh this
-    run converted counts as live, so ours is minted rather than skipped."""
+    run converted counts as live, so ours is minted rather than skipped.
+
+    `dead_mesh_exists` (#coverage-dead-armature): does a mesh exist anywhere
+    the game reads it (`auto_convert._mesh_exists_anywhere`)? An armature
+    whose every named mesh is dead is not minted, judged after every other
+    rule. None = cannot tell: every armature is minted, as before."""
     out_path = Path(output_esp_path)
     exclude = {n.lower() for n in (exclude_names or set())}
     DEFAULT_RACE = ("skyrim.esm", _DEFAULT_RACE_LOW24)
@@ -4438,6 +4522,8 @@ def generate_modded_nonbody_ube_coverage_patch(
     skins: set = set()         # any RACE/NPC_ WNAM (#coverage-human-race-list)
     race_list_ube: dict = {}   # arma_abs -> UBE races it targets (same)
     race_listed: list = []     # (armo_abs, edid) taken by the race-list rule
+    dead_skipped: list = []    # armatures whose every mesh is dead (#coverage-dead-armature)
+    dead_dropped: list = []    # (armo_abs, edid) left with nothing to mint by that
 
     # ---- Pass 1: load-order winners for ARMA + ARMO (last wins) ----
     arma_win: dict = {}   # abs -> (payload, masters, plugin, rnam_abs, is_ube)
@@ -4495,6 +4581,11 @@ def generate_modded_nonbody_ube_coverage_patch(
     # record, judged by what it draws (`mesh_live`: the game view).
     _tpd = _coverage_third_party_drawn()
     _tpd_state = _ThirdPartyDrawn(arma_win, mesh_live, _conv_exists)
+    # #coverage-dead-armature: None = off, or the modlist cannot be read.
+    _dead = (_dead_armature_judge(arma_win, crp, mesh_exists=dead_mesh_exists,
+                                  ube_twin_exists=ube_twin_exists)
+             if _coverage_dead_armature() and dead_mesh_exists is not None
+             else None)
 
     # ---- Pass 2: find target ARMOs + the ARMAs to mint ----
     # Targets: playable, non-body, non-hair-only ARMOs whose winning armatures
@@ -4569,6 +4660,7 @@ def generate_modded_nonbody_ube_coverage_patch(
             _listed = {k: w for k, w in _listed.items() if k in to_mint}
         if not to_mint:
             continue
+        _kept_excluded = False
         if withheld_armo_abs and armo_abs in withheld_armo_abs:
             _why = "excluded"
             if _body_only:
@@ -4584,6 +4676,15 @@ def generate_modded_nonbody_ube_coverage_patch(
                 withheld.append((armo_abs, edid))     # #exclude-owned-coverage
                 nonbody_held.append((armo_abs, edid, _why))
                 continue
+            _kept_excluded = True
+        # #coverage-dead-armature: last, so every rule above counts as before.
+        if _dead is not None:
+            to_mint = _drop_dead(to_mint, _dead, dead_skipped)
+            if not to_mint:
+                dead_dropped.append((armo_abs, edid))
+                continue
+            _listed = {k: w for k, w in _listed.items() if k in to_mint}
+        if _kept_excluded:
             nonbody_kept.append((armo_abs, edid))
         if _listed:
             race_list_ube.update(_listed)
@@ -4773,6 +4874,10 @@ def generate_modded_nonbody_ube_coverage_patch(
         "exclusion_nonbody_held": nonbody_held,
         # #coverage-third-party-drawn
         **_tpd_state.stats(),
+        # #coverage-dead-armature: armatures not minted, and the armours left
+        # with none.
+        "dead_armature_skipped": [f"{a[0]}|{a[1]:X}" for a in dead_skipped],
+        "dead_dropped": dead_dropped,
     }
 
 
@@ -4795,6 +4900,7 @@ def generate_modded_body_ube_coverage_patch(
     ube_twin_exists: "callable[[str], str | None] | None" = None,
     npc_worn_armo_abs: "set[tuple[str, int]] | frozenset | None" = None,
     mesh_live: "callable[[str], bool] | None" = None,
+    dead_mesh_exists: "callable[[str], bool] | None" = None,
     author: str = "cbbe-to-ube modded body UBE coverage",
     description: str = "UBE race coverage for mod-defined body armor variants",
 ) -> dict:
@@ -4837,7 +4943,12 @@ def generate_modded_body_ube_coverage_patch(
 
     `mesh_live`: as in the non-body pass (#coverage-third-party-drawn). Here it
     also replaces the slot-32 exemption from the old blanket skip: a body
-    armour's third-party UBE armature is judged like any other."""
+    armour's third-party UBE armature is judged like any other.
+
+    `dead_mesh_exists`: as in the non-body pass (#coverage-dead-armature),
+    judged after the female guard, the world-mesh, nude-skin, body-accessory
+    and third-party rules, so a hood or a race-list armature is judged too. An
+    armature that draws the UBE body's own hand or foot is never dead."""
     out_path = Path(output_esp_path)
     exclude = {n.lower() for n in (exclude_names or set())}
     DEFAULT_RACE = ("skyrim.esm", _DEFAULT_RACE_LOW24)
@@ -4877,6 +4988,8 @@ def generate_modded_body_ube_coverage_patch(
     beast_skipped: list = []   # DefaultRace armatures listing only beast races (#coverage-beast-variant)
     beast_non_actor: list = []  # ... of which also list the mannequin race (#beast-variant-non-actor)
     _beast = _coverage_beast_variant()
+    dead_skipped: list = []    # armatures whose every mesh is dead (#coverage-dead-armature)
+    dead_dropped: list = []    # (armo_abs, edid) left with nothing to mint by that
     accessory_added: list = []  # non-deforming armatures of a body armour (#coverage-body-accessory)
     _body_accessory = _coverage_body_accessory()
     _acc_guard = _accessory_race_guard()
@@ -5028,6 +5141,11 @@ def generate_modded_body_ube_coverage_patch(
     if _female_standin and female_mesh_exists is not None:
         _standin = _female_standin_resolver(arma_win, _ube_exists)
     _tpd_state = _ThirdPartyDrawn(arma_win, mesh_live, _conv_exists)
+    # #coverage-dead-armature: None = off, or the modlist cannot be read.
+    _dead = (_dead_armature_judge(arma_win, crp, mesh_exists=dead_mesh_exists,
+                                  ube_twin_exists=ube_twin_exists)
+             if _coverage_dead_armature() and dead_mesh_exists is not None
+             else None)
 
     # ---- Pass 2: target body/deforming ARMOs lacking UBE coverage whose mesh
     #      WAS converted ----
@@ -5266,6 +5384,15 @@ def generate_modded_body_ube_coverage_patch(
             to_mint, _fewer = _tpd_state.split(armo_abs, edid, slots, winning,
                                                to_mint, _listed)
             if not to_mint:
+                continue
+        # #coverage-dead-armature: last, so every rule above counts as before.
+        # One drawing the UBE body's own hand/foot draws a mesh that resolves.
+        if _dead is not None:
+            to_mint = _drop_dead(
+                to_mint, lambda x: x not in nude_redirect and _dead(x),
+                dead_skipped)
+            if not to_mint:
+                dead_dropped.append((armo_abs, edid))
                 continue
         if _listed:
             # What the guards above left of it (a hood riding along is not).
@@ -5529,6 +5656,9 @@ def generate_modded_body_ube_coverage_patch(
         # #exclude-body-only, report only: withheld body pieces another mod's
         # SkyPatcher patch names (left to that patch).
         "exclusion_body_held": body_held,
+        # #coverage-dead-armature
+        "dead_armature_skipped": [f"{a[0]}|{a[1]:X}" for a in dead_skipped],
+        "dead_dropped": dead_dropped,
     }
 
 

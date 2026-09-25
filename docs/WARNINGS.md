@@ -6,7 +6,7 @@ current. A `!!` line is a problem; a `NOTE:` line is information. Each entry
 gives the line as it appears in the run log (`…` stands for the value printed
 at run time), what it means for the run, and what to do next.
 
-**77** problem warnings and **5** notes.
+**78** problem warnings and **6** notes.
 
 ## src/auto_convert.py
 
@@ -51,6 +51,8 @@ at run time), what it means for the run, and what to do next.
   - fix: check that mod before trusting this run
 - `!! … coverage validator: … warning(s)`
   - means: the lines below name what it found in the generated race coverage; read them before trusting this run's coverage
+- `!! [unified] could not list the meshes the modlist has, so armour whose meshes exist nowhere could not be told apart`
+  - means: every armature is given a UBE armature, as before, including ones that draw nothing
 - `!! [unified] … armour(s) of an excluded mod have no UBE armature from any mod -- --exclude-mods`
   - means: they are not drawn on UBE-race actors
   - fix: take the mod off the exclusion list to have them covered, or install a UBE patch for it
@@ -69,6 +71,8 @@ at run time), what it means for the run, and what to do next.
 - `!! [unified] … hand/foot armature(s) draw the nude CBBE hands or feet, and the UBE body's own hands/feet were not found, so they were not minted (… armour(s) left without one)`
   - means: those pieces are not drawn on UBE-race actors
   - fix: build the UBE body's hands and feet in BodySlide
+- `NOTE: [unified] … armature(s) name only meshes that exist nowhere (drawn by nobody, the source included) -- not minted (… armour(s) left without one)`
+  - means: those pieces draw nothing on any actor, UBE or not; installing the mod that ships their meshes and running again covers them
 - `!! [unified] could not scan for existing UBE patches (…)`
   - means: not excluding any
 - `!! [unified] … excluded mod name(s) match no mod folder: …`

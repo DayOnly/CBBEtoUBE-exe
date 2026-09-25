@@ -4011,6 +4011,27 @@ def _mesh_exists_anywhere(output) -> "callable[[str], bool] | None":
     return exists
 
 
+def _dead_armature_lookup(output, *built) -> "callable[[str], bool] | None":
+    r"""#coverage-dead-armature: the lookup both coverage passes judge a dead
+    armature with -- `_mesh_exists_anywhere(output)`. The first of `built`
+    that is not None is that same lookup already built for another rule (the
+    female guard's, the world-mesh one's), so the modlist is listed once; one
+    is built when none is. None when the rule is off, or when the modlist
+    cannot be read: then every armature is minted, as before, and a warning
+    says so."""
+    if not ube_patcher._coverage_dead_armature():
+        return None
+    look = next((b for b in built if b is not None), None)
+    if look is None:
+        look = _mesh_exists_anywhere(output)
+    if look is None:
+        warn("[unified] could not list the meshes the modlist has, so armour "
+             "whose meshes exist nowhere could not be told apart",
+             consequence="every armature is given a UBE armature, as before, "
+                         "including ones that draw nothing")
+    return look
+
+
 # The game's own archive lists when the profile's Skyrim.ini names none: the
 # Skyrim SE defaults, read from a stock profile INI.
 _DEFAULT_RESOURCE_ARCHIVES = (
@@ -4380,9 +4401,10 @@ def _report_coverage_holds(stats: "list[dict]") -> None:
     (#coverage-world-mesh), nude hands/feet swapped for the UBE body's own or
     left out (#coverage-nude-skin), slots pointed at a hand-made UBE twin
     (#coverage-ube-twin), hoods drawn with their body armour
-    (#coverage-body-accessory), and armour drawn through an armature whose
-    primary race is not DefaultRace (#coverage-human-race-list). Silent when
-    there is nothing to say."""
+    (#coverage-body-accessory), armour drawn through an armature whose
+    primary race is not DefaultRace (#coverage-human-race-list), and
+    armatures whose meshes exist nowhere (#coverage-dead-armature). Silent
+    when there is nothing to say."""
     withheld = [w for s in stats for w in (s.get("withheld") or [])]
     excl_kept = [w for s in stats for w in (s.get("exclusion_nonbody_kept") or [])]
     kept = [k for s in stats for k in (s.get("female_kept") or [])]
@@ -4623,6 +4645,26 @@ def _report_coverage_holds(stats: "list[dict]") -> None:
             print(f"       {edid or '?'}  ({pl}|{fid:06X})")
         if len(tp_part) > 5:
             print(f"       ... and {len(tp_part) - 5} more")
+    # #coverage-dead-armature: distinct armatures (one can serve both passes),
+    # counted by the plugin that defines them.
+    dead_arm = sorted({k for s in stats for k in (s.get("dead_armature_skipped") or [])})
+    dead_drop = [d for s in stats for d in (s.get("dead_dropped") or [])]
+    if dead_arm:
+        warn(f"[unified] {len(dead_arm)} armature(s) name only meshes that exist "
+             "nowhere (drawn by nobody, the source included) -- not minted "
+             f"({len(dead_drop)} armour(s) left without one)",
+             consequence="those pieces draw nothing on any actor, UBE or not; "
+                         "installing the mod that ships their meshes and running "
+                         "again covers them",
+             level=NOTE)
+        per: dict = {}
+        for k in dead_arm:
+            pl = k.rsplit("|", 1)[0]
+            per[pl] = per.get(pl, 0) + 1
+        for pl, n in sorted(per.items(), key=lambda t: (-t[1], t[0]))[:8]:
+            print(f"       {n:>4}  {pl}")
+        if len(per) > 8:
+            print(f"       ... and {len(per) - 8} more plugin(s)")
     for (pl, fid), edid, arma in tp_kept:
         # #coverage-keep-better-first-person: one line each (2 on a real order).
         print(f"  [unified] note: {edid or '?'} ({pl}|{fid:06X}) keeps our armature "
@@ -4773,6 +4815,8 @@ def _emit_unified_coverage_patches(output, patches_dir, master_data_dirs,
         # #coverage-third-party-drawn: does another mod's UBE armature draw
         # anything? Its mesh must be live in the game view.
         _live = _game_view_mesh_resolver(output) if _tpd else None
+        # #coverage-dead-armature: its own lookup, whatever the rules above use.
+        _dead = _dead_armature_lookup(output, _fexists, _mexists)
         nb_out = patches_dir / "UBE_ModNonBody_Coverage UBE patch.esp"
         nb = ube_patcher.generate_modded_nonbody_ube_coverage_patch(
             nb_out, ordered, converted_rel_paths=conv_rel,
@@ -4781,6 +4825,7 @@ def _emit_unified_coverage_patches(output, patches_dir, master_data_dirs,
             preserve_textures=True, emit_sidecar=True,
             withheld_armo_abs=_withheld_abs, female_mesh_exists=_fexists,
             mesh_live=_live,
+            dead_mesh_exists=_dead,
             ube_twin_exists=_twin, npc_worn_armo_abs=_worn)
         total_targets += int(nb.get("armo_targets") or 0)
         print(f"  non-body: minted {nb.get('minted_armas')} | "
@@ -4797,6 +4842,7 @@ def _emit_unified_coverage_patches(output, patches_dir, master_data_dirs,
                 emit_sidecar=True, withheld_armo_abs=_withheld_abs,
                 female_mesh_exists=_fexists, mesh_exists=_mexists,
                 mesh_live=_live,
+                dead_mesh_exists=_dead,
                 ube_twin_exists=_twin, npc_worn_armo_abs=_worn)
             total_targets += int(bd.get("armo_targets") or 0)
             print(f"  body+hands/feet: minted {bd.get('minted_armas')} | "

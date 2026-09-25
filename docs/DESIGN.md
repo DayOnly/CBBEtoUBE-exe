@@ -1503,6 +1503,36 @@ reported through `_report_coverage_holds`:
   per-armature "already drawn" test of the R9 double-draw rule, still open.
   Live: 0 of the 26 accessory armatures is either, so the output is unchanged
   today. `CBBE2UBE_NO_ACCESSORY_RACE_GUARD=1`.
+- **An armature whose meshes exist nowhere is not minted**
+  (`#coverage-dead-armature`). The body pass admits a hands/feet armature by
+  its slot alone and the non-body pass keeps a piece's source mesh, so an
+  armature whose every named mesh is missing from the whole modlist was minted
+  too: a link that draws nothing for anyone (its source armature draws nothing
+  either). Now an armature that names at least one non-empty MOD2..MOD5 path,
+  none of them alive, is not minted. A path is alive when this run converted it
+  (`_converted_model_exists`, `meshes\` stripped), a third-party mod ships its
+  `!UBE\` twin (the twin lookup), or it or a weight sibling (`_weight_siblings`:
+  `_0`, `_1`, suffixless) exists per `_mesh_exists_anywhere` (overwrite, enabled
+  mods, game Data, any archive but voice/sound/facegen). An armature naming no
+  mesh (a slot placeholder that hides a body part) is never dead, nor is one
+  #coverage-nude-skin points at the UBE body's own hand or foot. It is the LAST
+  filter on `to_mint` in both passes -- after DefaultRace, beast, race-list,
+  third-party and the exclusion hold in the non-body pass; after the female
+  guard, world-mesh, nude-skin, body-accessory and third-party rules in the body
+  pass -- so a hood or race-list armature is judged too and every other rule's
+  counts are unchanged; an armour left with nothing is `dead_dropped` and gets
+  no link. The verdict is memoised per armature (`_dead_armature_judge`). The
+  lookup is its own (`_dead_armature_lookup`): the female guard's or world-mesh
+  rule's copy when one was built, else one built for it -- those are None when
+  their switches are off. No lookup (the modlist cannot be read) fails OPEN:
+  every armature is minted as before, with a warning. The lookup lists every
+  archive in the folders, loaded by an active plugin or not, so a mesh only in
+  an unloaded archive reads as alive: the lenient side (minted as before). Live
+  replay: 41 source armatures (city-guard boots, gauntlets, helmets and shields
+  of one overhaul, a mod's decal armatures, satchels and pouches, divine
+  amulets, horns, an eyepatch), 9882 -> 9834 links (48 removed, 0 added, 0
+  re-pointed, 0 from an armature with a live path); 47 armours lose their only
+  link. `CBBE2UBE_NO_COVERAGE_DEAD_ARMATURE=1`.
 - **An armature whose primary race is not DefaultRace** (`#coverage-human-race-list`).
   Both passes minted only DefaultRace-primary armatures. An armature re-authored
   with an Argonian or a custom primary that lists the human and mer races as
