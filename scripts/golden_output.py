@@ -28,6 +28,22 @@ mesh. This is that safety net.
 
 `check` exits non-zero on any regression, so it can gate a refactor.
 
+    python scripts/golden_output.py check --jobs 5   # pieces in 5 worker processes
+
+`--jobs N` (capture and check; default 1, the sequential run) converts the pieces
+in N spawned worker PROCESSES -- never threads: the converter is not thread-safe
+and pynifly holds per-process state. Each worker inherits the parent's
+environment and refuses to convert if its PYTHONHASHSEED, BLAS thread caps or
+CBBE2UBE_* set differ. Results are recorded and compared by the parent in piece
+order, so the baseline and the verdict are the same as a sequential run's. N is
+capped at the piece count and at the batch's own memory-bounded worker count
+(`auto_convert.default_worker_count`, 2 GB of commit per converter process).
+A piece whose worker raises reads `FAIL  worker failed: <error>`. A worker that
+DIES breaks the whole pool, so every piece not yet finished is converted again
+one at a time in a single-worker pool: the piece that kills its worker there
+reads `FAIL  worker died: <piece>` and every other gets its real verdict. The
+check fails whenever a worker died, even if no single piece reproduces it.
+
 WHAT IT COMPARES, per shape: vertex positions (max/mean displacement, not just a
 hash -- a 1e-7 float wobble must read differently from a 0.2u shift), the bone list,
 and per-bone weight totals.
@@ -65,6 +81,12 @@ _REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_REPO))
 sys.path.insert(0, str(_REPO / ".pynifly"))
 
+# #blas-thread-cap BEFORE numpy. numpy was imported here ahead of `src`, so this
+# process ran numpy with the machine's full OpenBLAS pool while every `--jobs`
+# worker -- spawned after `src` had set the cap -- ran with one thread. The
+# sequential run and the parallel one must convert under the same limits.
+from src.blas_env import cap_blas_threads as _cap_blas     # noqa: E402
+_cap_blas()
 import numpy as np                                          # noqa: E402
 from pyn import pynifly                                     # noqa: E402
 from src import nif_convert as nc, paths, auto_convert as ac  # noqa: E402
@@ -303,7 +325,169 @@ def _fingerprint(nif_path: Path) -> dict:
     return shapes
 
 
-def capture() -> int:
+def _measure(piece, work_root: Path) -> dict:
+    """Convert one piece and read back everything `capture` / `check` record.
+
+    The one unit of work, run in this process (`--jobs 1`) or in a worker
+    process. It returns data, never writes the baseline: recording and
+    comparing stay in the parent, in piece order, so the two modes cannot
+    drift apart. `fp` is None when the conversion produced nothing (`src` is
+    then None too if no enabled mod provides the piece)."""
+    label, sub, stem, slots, _why = piece
+    src, dst = _convert(sub, stem, slots, work_root / label)
+    if dst is None or not dst.is_file():
+        return {"src": src, "fp": None}
+    return {"src": src, "source_sig": _file_sig(src), "fp": _fingerprint(dst),
+            "sidecars": _sidecar_digests(dst)}
+
+
+_HASH_PROBE = "golden_output hash-seed probe"
+
+
+def _env_signature() -> dict:
+    """What a worker must share with the parent for its output to be comparable:
+    the hash seed as it took EFFECT (a hash of a fixed string, not just the
+    variable), the BLAS thread caps, and every CBBE2UBE_* variable."""
+    from src.blas_env import BLAS_THREAD_VARS
+    env = {k: os.environ.get(k) for k in ("PYTHONHASHSEED", *BLAS_THREAD_VARS)}
+    env.update((k, v) for k, v in os.environ.items() if k.startswith("CBBE2UBE_"))
+    return {"env": dict(sorted(env.items())), "hash": hash(_HASH_PROBE)}
+
+
+def _worker_measure(piece, work_root: Path, expect: dict, measure):
+    """Worker-process entry: refuse to convert under a different environment."""
+    got = _env_signature()
+    if got != expect:
+        keys = sorted(k for k in set(got["env"]) | set(expect["env"])
+                      if got["env"].get(k) != expect["env"].get(k))
+        raise RuntimeError(
+            "worker environment differs from the parent ("
+            + (", ".join(keys) or "effective hash seed")
+            + ") -- its output would not be comparable")
+    return measure(piece, work_root)
+
+
+def _effective_jobs(requested: int, n_pieces: int) -> int:
+    """Worker processes to run: never more than the pieces, and never more than
+    the batch itself would start on this machine. Every converter process
+    carries its own interpreter, numpy/scipy and pass-chain working set --
+    `auto_convert.WORKER_COMMIT_GB` (2.0 GB) of commit at peak -- so the batch's
+    RAM- and commit-bounded count is the ceiling here too."""
+    n = max(1, min(int(requested), max(1, n_pieces)))
+    if n > 1:
+        n = min(n, max(1, ac.default_worker_count()))
+    return n
+
+
+def _measured(pieces, work_root: Path, jobs: int):
+    """Yield (piece, result, error) for every piece, IN PIECE ORDER.
+
+    jobs 1 is the sequential run as it always was: `error` is always None and
+    an exception propagates. With more, the pieces go to that many SPAWNED
+    worker processes (the converter is not thread-safe; pynifly keeps process
+    state) and a piece that fails comes back with error text instead of losing
+    the run, so the caller fails it BY NAME:
+
+      * a piece whose worker RAISED: "worker failed: <exception>".
+      * a piece whose worker DIED: "worker died: <piece>". A death breaks the
+        whole pool -- every piece not yet finished, in any worker, fails with
+        the same BrokenProcessPool, which names nobody. So each of those is
+        converted again ALONE in a single-worker pool, under the same
+        environment check: the piece that kills its worker there is the one
+        named, and every other gets its real result. A second death is named
+        the same way, and the re-runs after it get a fresh pool.
+      * the pool broke but every unfinished piece converted alone: one last
+        row with piece None, so the run still fails -- a worker died and no
+        single piece reproduces it."""
+    measure = _measure                  # looked up per call, not bound at def
+    if jobs <= 1:
+        for piece in pieces:
+            yield piece, measure(piece, work_root), None
+        return
+    import multiprocessing
+    from concurrent.futures import ProcessPoolExecutor
+    from concurrent.futures.process import BrokenProcessPool
+    ctx = multiprocessing.get_context("spawn")
+    expect = _env_signature()
+    solo = None                         # the single-worker pool for re-runs
+    broke = died = 0
+
+    def _failed(exc):
+        return f"worker failed: {type(exc).__name__}: {exc}"
+
+    def _alone(piece):
+        nonlocal solo, died
+        if solo is None:
+            solo = ProcessPoolExecutor(max_workers=1, mp_context=ctx)
+        try:
+            return (piece, solo.submit(_worker_measure, piece, work_root,
+                                       expect, measure).result(), None)
+        except BrokenProcessPool:
+            solo.shutdown()
+            solo = None                 # the next re-run gets a fresh pool
+            died += 1
+            return (piece, None, f"worker died: {piece[0]} -- converted alone, "
+                                 f"it killed its worker process")
+        except Exception as exc:
+            return (piece, None, _failed(exc))
+
+    try:
+        with ProcessPoolExecutor(max_workers=jobs, mp_context=ctx) as ex:
+            futs = [ex.submit(_worker_measure, piece, work_root, expect, measure)
+                    for piece in pieces]
+            for piece, fut in zip(pieces, futs):
+                try:
+                    row = (piece, fut.result(), None)
+                except BrokenProcessPool:
+                    broke += 1
+                    row = _alone(piece)
+                except Exception as exc:
+                    row = (piece, None, _failed(exc))
+                yield row
+    finally:
+        if solo is not None:
+            solo.shutdown()
+    if broke and not died:
+        yield (None, None,
+               f"worker died: a worker process exited under --jobs {jobs}, but "
+               f"each of the {broke} unfinished piece(s) converted alone -- "
+               f"no single piece reproduces it")
+
+
+def _jobs_refusal(jobs: int):
+    """Why `--jobs` cannot run here, or None. Workers are separate interpreters:
+    without a pinned seed each one hashes differently, which is exactly the
+    run-to-run wobble `_pin_hash_seed` exists to remove."""
+    if jobs > 1 and not str(os.environ.get("PYTHONHASHSEED", "")).isdigit():
+        return ("--jobs needs PYTHONHASHSEED pinned to a number: each worker is "
+                "its own interpreter and would otherwise hash differently. "
+                "Unset CBBE2UBE_GOLDEN_NO_PIN or run with --jobs 1.")
+    return None
+
+
+def _plan_jobs(requested: int, n_pieces: int):
+    """(jobs to run, refusal text or None), printing a note when capped."""
+    refusal = _jobs_refusal(requested)
+    if refusal:
+        return requested, refusal
+    jobs = _effective_jobs(requested, n_pieces)
+    if jobs != requested:
+        print(f"NOTE: --jobs {requested} capped to {jobs} (piece count and the "
+              f"batch's memory-bounded worker count).")
+    return jobs, None
+
+
+def _row_label(piece) -> str:
+    """The label a `_measured` row prints under; its last row, a worker death
+    no single piece reproduces, belongs to no piece."""
+    return piece[0] if piece is not None else "(pool)"
+
+
+def capture(jobs: int = 1) -> int:
+    jobs, refusal = _plan_jobs(jobs, len(PIECES))
+    if refusal:
+        print(refusal)
+        return 2
     GOLDEN.mkdir(exist_ok=True)
     man = {"flags": _flags(), "git_head": _git_head(), "pieces": {}}
     try:
@@ -314,12 +498,26 @@ def capture() -> int:
         man["converter_version"] = "?"
     work = GOLDEN / "_work"
     ok = 0
-    for label, sub, stem, slots, why in PIECES:
-        src, dst = _convert(sub, stem, slots, work / label)
-        if dst is None or not dst.is_file():
+    rows = _measured(PIECES, work, jobs)
+    if jobs > 1:
+        # ALL OR NOTHING. A piece lost in a worker must not become a baseline
+        # that quietly lacks it (it would read as a SKIP, and every later
+        # `check` would pass without looking at that class), nor a manifest
+        # paired with some freshly written .npz files and some stale ones.
+        rows = list(rows)
+        failed = [(_row_label(piece), err) for piece, _r, err in rows if err]
+        if failed:
+            for label, err in failed:
+                print(f"  FAIL {label:<20} {err}")
+            shutil.rmtree(work, ignore_errors=True)
+            print(f"\nbaseline NOT written: {len(failed)} piece(s) failed in a "
+                  f"worker -- {GOLDEN} is unchanged.")
+            return 1
+    for (label, sub, stem, slots, why), r, _err in rows:
+        src, fp = r["src"], r["fp"]
+        if fp is None:
             print(f"  SKIP {label:<20} (source not found: {sub}/{stem})")
             continue
-        fp = _fingerprint(dst)
         np.savez_compressed(
             GOLDEN / f"{label}.npz",
             **{f"{n}::verts": d["verts"] for n, d in fp.items()},
@@ -330,9 +528,9 @@ def capture() -> int:
             "subdir": sub, "stem": stem, "slots": slots, "why": why,
             "source_mod": src.parts[src.parts.index("mods") + 1]
             if "mods" in src.parts else "?",
-            "source_sig": _file_sig(src),
+            "source_sig": r["source_sig"],
             "shapes": {n: int(len(d["verts"])) for n, d in fp.items()},
-            "sidecars": _sidecar_digests(dst),
+            "sidecars": r["sidecars"],
         }
         ok += 1
         print(f"  captured {label:<20} {len(fp)} shape(s), "
@@ -346,7 +544,11 @@ def capture() -> int:
     return 0 if ok else 1
 
 
-def check(tol: float) -> int:
+def check(tol: float, jobs: int = 1) -> int:
+    refusal = _jobs_refusal(jobs)
+    if refusal:
+        print(refusal)
+        return 2
     if not (GOLDEN / "manifest.json").is_file():
         print("no baseline -- run `capture` first")
         return 2
@@ -378,23 +580,28 @@ def check(tol: float) -> int:
               "measuring the working tree, not a commit.")
     work = GOLDEN / "_check"
     bad = src_changed = 0
-    for label, sub, stem, slots, _why in PIECES:
-        rec = man["pieces"].get(label)
-        gold = GOLDEN / f"{label}.npz"
-        if rec is None or not gold.is_file():
+    todo = [p for p in PIECES if p[0] in man["pieces"]
+            and (GOLDEN / f"{p[0]}.npz").is_file()]
+    jobs, _ = _plan_jobs(jobs, len(todo))        # refusal already handled above
+    for piece, r, err in _measured(todo, work, jobs):
+        label = _row_label(piece)
+        if err is not None:
+            print(f"  {label:<20} FAIL  {err}")
+            bad += 1
             continue
-        src, dst = _convert(sub, stem, slots, work / label)
-        if dst is None or not dst.is_file():
+        rec = man["pieces"][label]
+        gold = GOLDEN / f"{label}.npz"
+        if r["fp"] is None:
             print(f"  {label:<20} FAIL  conversion produced nothing")
             bad += 1
             continue
-        if _file_sig(src) != rec["source_sig"]:
+        if r["source_sig"] != rec["source_sig"]:
             print(f"  {label:<20} SOURCE CHANGED -- the input mesh differs, "
                   f"not the converter. Re-capture to re-baseline.")
             src_changed += 1
             continue
         g = np.load(gold, allow_pickle=True)
-        cur = _fingerprint(dst)
+        cur = r["fp"]
         names = sorted({k.split("::")[0] for k in g.files})
         worst = []
         # SIDECARS (.tri, .xml) -- byte-compared. Golden used to look at NIF
@@ -404,7 +611,7 @@ def check(tol: float) -> int:
         # so treat a missing key as "not covered yet" rather than a regression.
         _base_side = rec.get("sidecars")
         if _base_side is not None:
-            _now_side = _sidecar_digests(dst)
+            _now_side = r["sidecars"]
             for fn in sorted(set(_base_side) | set(_now_side)):
                 was, now = _base_side.get(fn), _now_side.get(fn)
                 if was is None:
@@ -461,10 +668,17 @@ def main() -> int:
     argv = sys.argv[1:]
     mode = argv[0] if argv else ""
     tol = float(argv[argv.index("--tol") + 1]) if "--tol" in argv else 1e-4
+    try:
+        jobs = int(argv[argv.index("--jobs") + 1]) if "--jobs" in argv else 1
+    except (IndexError, ValueError):
+        jobs = 0
+    if jobs < 1:
+        print("--jobs takes a whole number of worker processes, 1 or more")
+        return 2
     if mode == "capture":
-        return capture()
+        return capture(jobs)
     if mode == "check":
-        return check(tol)
+        return check(tol, jobs)
     print(__doc__)
     return 2
 
