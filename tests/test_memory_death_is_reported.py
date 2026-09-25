@@ -39,6 +39,7 @@ rather than by reading the conversion code:
 import importlib.util
 import os
 import tempfile
+from pathlib import Path
 
 import pytest
 
@@ -243,17 +244,23 @@ def test_rotation_is_a_no_op_when_there_is_nothing_to_rotate():
     assert os.listdir(d) == []
 
 
-def test_the_gui_renames_the_log_instead_of_deleting_it():
-    """The GUI is the path MO2 uses, and it deleted BOTH artefacts up front."""
-    import inspect
+def test_the_gui_renames_the_log_instead_of_deleting_it(tmp_path):
+    """The GUI is the path MO2 uses, and it deleted BOTH artefacts up front.
+    Driven through the helper its worker calls before each run (by value
+    since 2026-09-25; it read the source before)."""
     from src import gui
-    src = inspect.getsource(gui)
-    i = src.find('state["fail_path"] = fail_path')
-    assert i != -1, "the GUI's failure-file bookkeeping moved"
-    around = src[max(0, i - 1200):i + 700]
-    assert "os.remove(log_path)" not in around, (
-        "the GUI still deletes the previous run's log before spawning the "
-        "child -- the one artefact that survives an out-of-memory death")
-    assert "os.remove(fail_path)" not in around, (
-        "the GUI still deletes the previous run's failure summary")
-    assert "CBBEtoUBE_previous_run.log" in around
+    (tmp_path / "CBBEtoUBE_last_run.log").write_text("the run that died",
+                                                     encoding="utf-8")
+    (tmp_path / "CBBEtoUBE_last_failures.json").write_text('{"failures": []}',
+                                                           encoding="utf-8")
+    log_path, fail_path = gui.prepare_child_log(tmp_path, dry_run=False)
+    assert Path(log_path).name == "CBBEtoUBE_last_run.log"
+    assert not Path(log_path).exists(), "the child gets a clean path"
+    assert (tmp_path / "CBBEtoUBE_previous_run.log").read_text(
+        encoding="utf-8") == "the run that died", (
+        "the GUI deletes the previous run's log before spawning the child -- "
+        "the one artefact that survives an out-of-memory death")
+    assert (tmp_path / "CBBEtoUBE_previous_failures.json").is_file(), (
+        "the GUI deletes the previous run's failure summary")
+    assert fail_path and not Path(fail_path).exists(), (
+        "the popup must not find a PREVIOUS run's failures")

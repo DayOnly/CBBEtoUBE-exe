@@ -166,7 +166,8 @@ A normal run also leaves these behind, useful if the GUI won't start:
   converted, but something needs your attention first, such as SkyPatcher
   missing, an unreadable settings file or no race coverage).
 - `CBBEtoUBE_cli.log` — the output of anything that is not a run: `--help`, a
-  mistyped command, `validate`, `scan`. It never touches the run files above,
+  mistyped command, `validate`, `scan`, and a dry run (the window's Dry run,
+  `--list-only`). It never touches the run files above,
   so checking something after a failure cannot erase the evidence.
 - `conversion_report.json`, `conversion_summary.txt`,
   `conversion_report_<mod>.txt` — at the output mod root.

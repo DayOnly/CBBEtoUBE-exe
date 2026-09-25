@@ -156,6 +156,18 @@ def _asks_for_help(args) -> bool:
     return False
 
 
+def _asks_for_dry_run(args) -> bool:
+    """True if these `auto` arguments ask for `--list-only` / `--dry-run` (or an
+    abbreviation argparse accepts). Nothing after `--` is an option."""
+    for a in args:
+        if a == "--":
+            return False
+        if len(a) > 2 and (("--list-only".startswith(a) and a.startswith("--l"))
+                           or ("--dry-run".startswith(a) and a.startswith("--d"))):
+            return True
+    return False
+
+
 def _log_target(argv, override=""):
     """Which log this invocation writes, and whether it may rotate the last one.
 
@@ -169,13 +181,21 @@ def _log_target(argv, override=""):
         never to the pinned path -- opening that with "w" would erase the run
         log exactly as rotating it would.
 
+    A DRY RUN IS NOT A RUN. #dry-run-keeps-the-run-log
+    `auto --list-only` / `--dry-run` converts nothing, so it writes
+    CBBEtoUBE_cli.log like `validate`. It used to rotate: after a run died, the
+    user checked the mod list with the window's Dry run twice, and the second
+    one rotated the first one's output over CBBEtoUBE_previous_run.log -- the
+    dead run's log, the one REPORTING.md asks for, was gone.
+
     A real subcommand with a mistyped OPTION (`auto --wrokers 4`) still counts
     as a run: telling it apart needs the full parser, which sits behind the
     numpy import this must run before. It costs one rotation, so the dead run's
     log survives as CBBEtoUBE_previous_run.log until a second such mistake."""
     if not override and (not argv or argv[0] == "gui"):
         return "CBBEtoUBE_gui_session.log", False, False
-    if argv and argv[0] in _RUN_SUBCOMMANDS and not _asks_for_help(argv[1:]):
+    if (argv and argv[0] in _RUN_SUBCOMMANDS and not _asks_for_help(argv[1:])
+            and not (argv[0] == "auto" and _asks_for_dry_run(argv[1:]))):
         return "CBBEtoUBE_last_run.log", True, True
     return "CBBEtoUBE_cli.log", False, False
 
@@ -273,9 +293,13 @@ def release_log_tee() -> bool:
     set. With the echo unreadable, the 08-23 run's configuration had to be
     established by arithmetic.
 
-    The child does the run, so the child keeps the log; the GUI calls this
-    before spawning it. Never raises -- losing the parent's tee must not be able
-    to stop a run from starting.
+    The child does the run, so the child keeps the log. The GUI called this
+    before spawning it until the window got its own CBBEtoUBE_gui_session.log
+    (see `_log_target`): the two files differ now, so there is no clash, and
+    releasing closed the window's session log after the first run -- every
+    later window-side traceback went nowhere. #gui-session-log-kept
+    The window no longer calls it; a test that installs a tee drops it with
+    this. Never raises.
     """
     global _LOG_FILE, _LOG_PATH
     if _LOG_FILE is None:

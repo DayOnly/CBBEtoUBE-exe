@@ -525,6 +525,29 @@ _NIF_RELEVANT_ARGS = (
     "no_ube_native_scan",  # changes which meshes are treated as already-UBE
 )
 
+# `CBBE2UBE_*` variables that say HOW the tool is launched, never what a mesh
+# becomes, so the fingerprint leaves them out. #fingerprint-skips-plumbing
+# NO_PAUSE: the exit keypress. RUN_LOG: where the log goes. CONFIG and
+# EXCLUSIONS: where the settings and exclusion files live -- the settings reach
+# a run as their own variables, and exclusions choose mods, which this
+# fingerprint already leaves out (see above). SETTINGS_APPLIED and
+# NO_HEADLESS_SETTINGS: who applied the settings file; the applied values are
+# hashed themselves. A scripted re-run (NO_PAUSE=1) or a pinned log used to
+# reconvert every NIF. The layout overrides (MO2_INI, MODS_ROOT, GAME_DATA,
+# OUT_MOD) stay IN: a different game Data or mods folder can change a mesh.
+_FINGERPRINT_PLUMBING = frozenset((
+    "CBBE2UBE_NO_PAUSE", "CBBE2UBE_RUN_LOG", "CBBE2UBE_CONFIG",
+    "CBBE2UBE_EXCLUSIONS", "CBBE2UBE_SETTINGS_APPLIED",
+    "CBBE2UBE_NO_HEADLESS_SETTINGS",
+))
+
+
+def _fingerprint_skips_plumbing() -> bool:
+    """#fingerprint-skips-plumbing (2026-09-25): does the --incremental
+    fingerprint leave out the launch-plumbing variables? Yes, by default.
+    CBBE2UBE_NO_FINGERPRINT_SKIPS_PLUMBING=1 hashes every `CBBE2UBE_*` again."""
+    return not _flag("CBBE2UBE_NO_FINGERPRINT_SKIPS_PLUMBING", False)
+
 
 def _nif_config_fingerprint(args) -> str:
     """Stable hash of every setting that can change a converted NIF's bytes.
@@ -550,8 +573,9 @@ def _nif_config_fingerprint(args) -> str:
     import hashlib
 
     parts = []
+    _skip = _FINGERPRINT_PLUMBING if _fingerprint_skips_plumbing() else frozenset()
     for k in sorted(os.environ):
-        if k.startswith("CBBE2UBE_"):
+        if k.startswith("CBBE2UBE_") and k.upper() not in _skip:
             parts.append(f"env:{k}={os.environ[k]}")
     for name in _NIF_RELEVANT_ARGS:
         if hasattr(args, name):
@@ -8110,9 +8134,12 @@ _BATCH_MESH_INDEX: "dict[str, dict]" = {}
 # #bsa-only-sources
 _SELECTION_BSA_INDEX: "dict[str, _BsaMeshIndex]" = {}
 
-# Memo of _find_armor_mod_dirs results so the GUI Refresh and the subsequent
-# Convert (same process) share one discovery pass. _BATCH_MESH_INDEX side-effect
-# is set on the first call and persists through cache hits.
+# Memo of _find_armor_mod_dirs results so repeated discovery in one process
+# (the UBE-mesh scan right after the Exclusions list) shares one pass.
+# _BATCH_MESH_INDEX side-effect is set on the first call and persists through
+# cache hits. The key holds no mod contents, so the window's Refresh and
+# Exclusions lists pass rescan=True and forget it: a mod updated in MO2 while
+# the window is open is read again. #mod-scan-rescan
 _ARMOR_MOD_DIRS_CACHE: "dict[tuple, list[dict]]" = {}
 
 
@@ -8472,12 +8499,24 @@ def _cmd_scan(args):
 
 
 def list_convertible_mods(output_dir: "Path | None" = None,
-                          progress=None) -> list:
+                          progress=None, *, rescan: bool = False,
+                          mark_ube_native: bool = False) -> list:
     """Discover the armor mods the `auto` pipeline would convert, WITHOUT
     converting — for the GUI selection list. Mirrors `_cmd_auto`'s discovery
     EXACTLY so the names match what `--only-mods` filters against. Returns
     [{'name': str, 'nifs': int}] in load-priority order. Returns [] if the
-    modpack layout can't be located."""
+    modpack layout can't be located.
+
+    `rescan` forgets the memoised folder scan first, so a mod updated in MO2
+    since the last scan is read again (the window's Refresh and Exclusions
+    lists). #mod-scan-rescan
+
+    `mark_ube_native` adds 'ube_native': True to each mod the run's UBE-native
+    scan drops before --only-mods is applied (the same `_ube_native_hits`), so
+    the Select list can leave it out instead of offering a mod the run then
+    refuses as "NOT FOUND". #select-list-ube-native"""
+    if rescan:
+        _ARMOR_MOD_DIRS_CACHE.clear()
     lay = paths.discover_layout()
     paths.export_to_env(lay)
     mr = paths.mods_root()
@@ -8511,6 +8550,10 @@ def list_convertible_mods(output_dir: "Path | None" = None,
         v = c.get("armor_nifs", 0)
         return len(v) if isinstance(v, (list, tuple, set)) else int(v or 0)
     out = [{"name": c["name"], "nifs": _n(c)} for c in cands]
+    if mark_ube_native:
+        native = {n for n, _s in _ube_native_hits(cands)}
+        for it in out:
+            it["ube_native"] = it["name"] in native
     # Vanilla sweep pseudo-source, LAST (mirrors its lowest-priority position
     # in _cmd_auto). The name must be exactly "vanilla" — that's the token
     # --only-mods special-cases — so Select-mods runs can rerun just the sweep.
@@ -8703,6 +8746,29 @@ def _ube_native_verdict(mod_dir, ube_tree, cbbe_tree, sample_per_mod=6):
     return "unknown", "low", [f"shape fit: dUBE={du:.2f}, dCBBE={dc:.2f}"]
 
 
+def _ube_native_hits(candidates: list) -> "list[tuple[str, str]]":
+    """(name, first signal) of each candidate the UBE-native scan would drop:
+    a HIGH-confidence "ube" verdict. One decision for the run's drop and the
+    window's Select list (#select-list-ube-native). Fails open: no reference
+    bodies or an unreadable mod is no hit."""
+    try:
+        ube_tree, cbbe_tree = _body_trees()
+    except Exception:
+        return []
+    if ube_tree is None or cbbe_tree is None:
+        return []
+    native = []
+    for c in candidates:
+        try:
+            verdict, conf, signals = _ube_native_verdict(
+                c["path"], ube_tree, cbbe_tree)
+        except Exception:
+            continue            # unreadable -> convert as normal
+        if verdict == "ube" and conf == "high":
+            native.append((c["name"], signals[0] if signals else ""))
+    return native
+
+
 def _drop_ube_native_candidates(candidates: list) -> list:
     """Drop candidates whose armor is ALREADY shaped for UBE.
 
@@ -8715,21 +8781,7 @@ def _drop_ube_native_candidates(candidates: list) -> list:
     Fails OPEN at every step -- no reference bodies, an unreadable mod, or any
     other error converts as normal. Wrongly skipping a real CBBE mod leaves its
     armor unfitted in game, which is far worse than double-converting one."""
-    try:
-        ube_tree, cbbe_tree = _body_trees()
-    except Exception:
-        return candidates
-    if ube_tree is None or cbbe_tree is None:
-        return candidates
-    native = []
-    for c in candidates:
-        try:
-            verdict, conf, signals = _ube_native_verdict(
-                c["path"], ube_tree, cbbe_tree)
-        except Exception:
-            continue            # unreadable -> convert as normal
-        if verdict == "ube" and conf == "high":
-            native.append((c["name"], signals[0] if signals else ""))
+    native = _ube_native_hits(candidates)
     if not native:
         return candidates
     skip = {n for n, _s in native}
@@ -8778,12 +8830,51 @@ def scan_ube_native(domain: str = "armor", sample_per_mod: int = 6,
     return out
 
 
-def _split_mod_arg(vals):
+def _whole_mod_names() -> bool:
+    """#whole-mod-names (2026-09-25): is a --*-mods value that names an
+    existing mod folder kept whole, commas and all? Yes, by default.
+    CBBE2UBE_NO_WHOLE_MOD_NAMES=1 splits every value on commas again."""
+    return not _flag("CBBE2UBE_NO_WHOLE_MOD_NAMES", False)
+
+
+def _is_mod_folder(name: str, mods_root) -> bool:
+    """True when `name` is exactly one folder in the mods root."""
+    if not name or "/" in name or "\\" in name or mods_root is None:
+        return False
+    try:
+        return (Path(mods_root) / name).is_dir()
+    except (OSError, ValueError):
+        return False
+
+
+def _split_mod_arg(vals, mods_root=None):
     """Parse a repeatable + comma-separated --*-mods CLI arg into a list of mod
-    names, or None when unset/empty."""
+    names, or None when unset/empty.
+
+    THE RULE (#whole-mod-names): a value that is exactly the name of a folder in
+    the mods root is ONE name, commas included; any other value is split on
+    commas, so `--exclude-mods "a,b"` still means two mods. The window passes
+    every name as its own flag and every name it passes is a folder it listed,
+    so a folder called "Armor, Clothing Pack" used to arrive as two names that
+    matched nothing -- the mod was converted and covered although excluded.
+    The mods root is looked up only when a value holds a comma."""
     if not vals:
         return None
-    out = [n.strip() for chunk in vals for n in chunk.split(",") if n.strip()]
+    whole = _whole_mod_names()
+    root = mods_root
+    out = []
+    for chunk in vals:
+        v = str(chunk).strip()
+        if whole and "," in v:
+            if root is None:
+                try:
+                    root = paths.mods_root()
+                except Exception:
+                    root = None
+            if _is_mod_folder(v, root):
+                out.append(v)
+                continue
+        out.extend(n.strip() for n in str(chunk).split(",") if n.strip())
     return out or None
 
 
@@ -8901,16 +8992,18 @@ def _cmd_auto(args):
     # as normal, because wrongly skipping a real CBBE mod leaves its armor
     # unfitted in game. Needs both reference bodies; without them the scan
     # returns nothing and the pipeline is unchanged.
+    _ube_native_dropped: "set[str]" = set()
     if not getattr(args, "no_ube_native_scan", False):
+        _before_scan = {c["name"].lower() for c in candidates}
         candidates = _drop_ube_native_candidates(candidates)
+        _ube_native_dropped = _before_scan - {c["name"].lower() for c in candidates}
 
     # --only-mods: reconvert a subset. The merge still re-globs ALL patches in
     # _unmerged_patches/ so unselected mods keep their existing patch + meshes.
     only = getattr(args, "only_mods", None)
     _sweep_only_requested = False
     if only:
-        wanted = {n.strip().lower()
-                  for chunk in only for n in chunk.split(",") if n.strip()}
+        wanted = {n.lower() for n in (_split_mod_arg(only, mr) or ())}
         # "vanilla" selects the vanilla sweep (a pseudo-source, not a mod dir).
         _sweep_only_requested = "vanilla" in wanted
         wanted.discard("vanilla")
@@ -8928,6 +9021,14 @@ def _cmd_auto(args):
             # be absent here -- that cost three arms on 2026-09-07 -- so name
             # the right list and show the near misses instead of a bare refusal.
             for miss in missing:
+                if miss in _ube_native_dropped:
+                    # Dropped above, before this filter: say so, rather than
+                    # send the reader to a list that offered it.
+                    # #select-list-ube-native
+                    print(f"    '{miss}' -- skipped by the UBE-native scan (its "
+                          "armour already fits the UBE body); add "
+                          "--no-ube-native-scan to convert it anyway")
+                    continue
                 real = _near_mod_names(miss, all_names)
                 if real:
                     print(f"    '{miss}' -- did you mean: "

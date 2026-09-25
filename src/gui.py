@@ -564,6 +564,254 @@ def child_env(settings: dict, body_env, log_path: str, base_env=None) -> dict:
     return env
 
 
+def parse_workers(raw) -> "int | None":
+    """The Worker processes box as a count: a whole number of at least 1, or
+    None. The box is free text; `IntVar.get()` raised on '' or 'abc', and it
+    was read AFTER Convert had locked the window, so the window stayed on
+    'Converting...' for good. #workers-box-guard"""
+    s = str(raw if raw is not None else "").strip()
+    if not re.fullmatch(r"[0-9]+", s):
+        return None
+    n = int(s)
+    return n if n >= 1 else None
+
+
+def start_run(build_argv, lock, start, unlock) -> "tuple[bool, str]":
+    """Launch a run in the only order that cannot strand the window.
+    #workers-box-guard
+
+    `build_argv()` first, while nothing is locked: if it raises, nothing
+    changed and the error is returned. Then `lock()`, then `start(argv)`; if
+    either raises, `unlock(error_text)` puts the window back. Returns
+    (started, error_text)."""
+    try:
+        argv = build_argv()
+    except Exception as e:
+        return False, f"{type(e).__name__}: {e}"
+    try:
+        lock()
+        start(argv)
+    except Exception:
+        import traceback
+        err = traceback.format_exc()
+        try:
+            unlock(err)
+        except Exception:
+            pass
+        return False, err
+    return True, ""
+
+
+# The log the conversion child writes: the dry run is not a run and must not
+# rotate the last run's log or failure summary aside -- the same rule as
+# cbbe_to_ube_main._log_target, which the child applies. #dry-run-keeps-the-run-log
+RUN_LOG_NAME = "CBBEtoUBE_last_run.log"
+DRY_LOG_NAME = "CBBEtoUBE_cli.log"
+
+
+def run_log_plan(dry_run: bool) -> "tuple[str, bool]":
+    """(log file the child writes, whether the window rotates the previous
+    run's log + failures aside first). #dry-run-keeps-the-run-log"""
+    return (DRY_LOG_NAME, False) if dry_run else (RUN_LOG_NAME, True)
+
+
+def discard_dry_log(path) -> bool:
+    """Remove the previous CBBEtoUBE_cli.log before a dry run, so the window's
+    tail cannot stream the previous command's text (the child truncates it
+    anyway; it is no run's evidence). Refuses any other file name -- the run
+    log is renamed, never removed (#commit-headroom). True if removed."""
+    p = Path(path)
+    if p.name != DRY_LOG_NAME:
+        return False
+    try:
+        p.unlink()
+        return True
+    except OSError:
+        return False
+
+
+def prepare_child_log(log_dir, dry_run: bool) -> "tuple[str, str | None]":
+    """Get the log files ready for a conversion child. Returns (the log the
+    child writes, which the window tails; the failures file the end-of-run
+    popup reads, or None for a dry run, which writes none).
+
+    RENAME, do not remove. The GUI deleted the previous run's log before
+    spawning the child, so the tool's own "re-run with fewer workers" advice
+    destroyed the only artefact that survives an out-of-memory death --
+    everything else is written at end of batch. The failure summary is renamed
+    too, so a crash-before-write can never make the popup show a PREVIOUS
+    run's failures. #commit-headroom
+
+    A DRY RUN ROTATES NOTHING: it writes CBBEtoUBE_cli.log, like every other
+    invocation that converts nothing (cbbe_to_ube_main._log_target), so two dry
+    runs after a dead run no longer push its log out of
+    CBBEtoUBE_previous_run.log. #dry-run-keeps-the-run-log
+
+    Nothing here touches this window's own tee: it writes
+    CBBEtoUBE_gui_session.log, a different file, and releasing it before each
+    run (as when both wrote CBBEtoUBE_last_run.log) closed the session log
+    after the first run. #gui-session-log-kept"""
+    log_dir = Path(log_dir)
+    name, rotate = run_log_plan(dry_run)
+    log_path = str(log_dir / name)
+    if not rotate:
+        discard_dry_log(log_path)
+        return log_path, None
+    try:
+        if os.path.exists(log_path):
+            os.replace(log_path, str(log_dir / "CBBEtoUBE_previous_run.log"))
+    except Exception:
+        pass
+    fail_path = str(log_dir / "CBBEtoUBE_last_failures.json")
+    try:
+        if os.path.exists(fail_path):
+            os.replace(fail_path, str(log_dir / "CBBEtoUBE_previous_failures.json"))
+    except Exception:
+        pass
+    return log_path, fail_path
+
+
+def tool_folder() -> Path:
+    """Where the tool keeps its logs and settings (paths.tool_dir).
+    #tool-folder-only"""
+    from .paths import tool_dir
+    return tool_dir()
+
+
+def folder_write_error(folder) -> "str | None":
+    """None when a file can be created in `folder`, else why not. Creates and
+    deletes one empty probe file there -- os.access says yes to a protected
+    Windows folder. #read-only-tool-folder"""
+    import tempfile
+    try:
+        with tempfile.NamedTemporaryFile(dir=str(folder),
+                                         prefix=".cbbetoube_write_probe_"):
+            pass
+        return None
+    except Exception as e:
+        return f"{type(e).__name__}: {e}"
+
+
+def read_only_folder_note(folder, err: str) -> str:
+    """The window's warning when the tool folder cannot be written."""
+    return (f"\n*** The tool folder cannot be written ({err}):\n    {folder}\n"
+            "    A run will keep NO log, so this window will show no progress, "
+            "and settings and exclusions will not be saved. Move the tool to a "
+            "folder you can write to (not Program Files). ***\n")
+
+
+def no_log_message(log_path) -> str:
+    """Said when the child finished without its log ever appearing: the
+    window shows a run only by reading that file. #read-only-tool-folder"""
+    return (f"\n*** The run wrote no log at {log_path}. Its messages are lost; "
+            "the usual cause is a tool folder that cannot be written. ***\n")
+
+
+def tail_child_log(proc, log_path, put, *, wait_s: float = 10.0,
+                   poll_s: float = 0.15, sleep=time.sleep) -> bool:
+    """Stream the child's log file to `put` until the child exits. True when
+    the log was read, False (after saying so through `put`) when it never
+    appeared. The windowed frozen exe's stdout is a null sink, but its `_Tee`
+    always writes the run log, so tailing the file captures output for both
+    frozen and source runs; a log that never appeared used to leave only
+    '=== finished (exit N) ===' with nothing to explain it."""
+    f = None
+    try:
+        waited = 0.0
+        while waited < wait_s:                  # wait for the child to start
+            if os.path.isfile(log_path) or proc.poll() is not None:
+                break
+            sleep(0.05)
+            waited += 0.05
+        while True:
+            if f is None and os.path.isfile(log_path):
+                try:
+                    f = open(log_path, "r", encoding="utf-8", errors="replace")
+                except Exception:
+                    f = None
+            if f is not None:
+                chunk = f.read()
+                if chunk:
+                    put(chunk)
+            if proc.poll() is not None:
+                if f is not None:               # final drain after exit
+                    chunk = f.read()
+                    if chunk:
+                        put(chunk)
+                break
+            sleep(poll_s)
+    finally:
+        if f is not None:
+            try:
+                f.close()
+            except Exception:
+                pass
+    if f is None:
+        put(no_log_message(log_path))
+        return False
+    return True
+
+
+def tk_error_reporter(put, stream=None):
+    """A `report_callback_exception` for the Tk root: the traceback goes to
+    the window's session log (stderr is teed there) and to the log panel.
+    Tk's default printed to stderr only, which the windowed exe does not
+    have. #gui-session-log-kept"""
+    def report(exc, val, tb):
+        import traceback
+        text = "".join(traceback.format_exception(exc, val, tb))
+        s = stream if stream is not None else sys.stderr
+        try:
+            s.write("Exception in a window callback:\n" + text)
+            s.flush()
+        except Exception:
+            pass
+        try:
+            put("\n*** window error (also in CBBEtoUBE_gui_session.log) ***\n"
+                + text)
+        except Exception:
+            pass
+    return report
+
+
+class SaveNotice:
+    """What to tell the user when a settings or exclusions save failed: a
+    popup the FIRST time per kind in a session, the status line every time.
+    The saves returned False and nothing read it, so a read-only tool folder
+    looked saved until the next launch lost everything. #read-only-tool-folder"""
+
+    def __init__(self):
+        self._popped: set = set()
+
+    def check(self, ok, what: str) -> "tuple[str | None, str | None]":
+        """(status text, popup text) for one save of `what`; (None, None)
+        when it saved."""
+        if ok:
+            return None, None
+        status = (f"Your {what} could NOT be saved beside the tool - they apply "
+                  "to this session only.")
+        popup = None
+        if what not in self._popped:
+            self._popped.add(what)
+            popup = (f"Your {what} could not be saved to the tool folder:\n"
+                     f"{tool_folder()}\n\nThey apply until you close this "
+                     "window, and are gone next time. Move the tool to a "
+                     "folder you can write to (not Program Files).")
+        return status, popup
+
+
+def select_list_split(items) -> "tuple[list, list]":
+    """(items the Select list offers, names it leaves out because the run's
+    UBE-native scan drops them before --only-mods). #select-list-ube-native"""
+    shown, hidden = [], []
+    for it in items or ():
+        if it.get("ube_native"):
+            hidden.append(it["name"])
+        else:
+            shown.append(it)
+    return shown, hidden
+
+
 def build_body_dialog(root, *, base_env, resolve, on_ok, on_cancel=None,
                       theme_popup=None, heading_font=None, confirm=None,
                       show_error=None, run_async=True):
@@ -770,6 +1018,9 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
     root.minsize(680, 520)
 
     q: "queue.Queue" = queue.Queue()
+    # A callback that raises is written to the session log and the log panel;
+    # Tk's default wrote to stderr only. #gui-session-log-kept
+    root.report_callback_exception = tk_error_reporter(q.put)
     state = {"running": False, "result": None, "output_dir": None,
              "_eta": {"last_t": None, "rate": None},   # per-mod EWMA ETA state
              "_mod": None,          # the mod being converted: index, count, name, start
@@ -964,12 +1215,22 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
                 # Under the saved settings, as the run will be (the vanilla
                 # sweep switch decides whether 'vanilla' is listed).
                 # #settings-everywhere
+                # rescan: a mod updated in MO2 since the last list is read
+                # again (#mod-scan-rescan). mark_ube_native: the run drops
+                # those before --only-mods, so the list must not offer them
+                # (#select-list-ube-native).
                 with gui_settings.SettingsOverlay(state["settings"]):
                     items = auto_convert.list_convertible_mods(
-                        Path(od) if od else None)
+                        Path(od) if od else None, rescan=True,
+                        mark_ube_native=True)
             except Exception as e:
                 items = []
                 q.put(f"\n[mod scan failed: {e}]\n")
+            items, hidden = select_list_split(items)
+            if hidden:
+                q.put(f"\n{len(hidden)} mod(s) not listed: their armour already "
+                      "fits the UBE body, so a run skips them (UBE-native "
+                      "scan): " + ", ".join(hidden) + "\n")
             root.after(0, lambda: _populate_mods(items))
 
         threading.Thread(target=work, daemon=True).start()
@@ -1140,12 +1401,31 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
         except Exception:
             state["_settings_repaint"] = None
 
-    def _settings_set(key, value):
+    _save_notice = SaveNotice()
+
+    def _report_save(ok, what):
+        """Say a failed save out loud (#read-only-tool-folder); returns ok."""
+        st, popup = _save_notice.check(ok, what)
+        if st:
+            try:
+                status.set(st)
+            except Exception:
+                pass
+        if popup:
+            try:
+                messagebox.showwarning("Not saved", popup)
+            except Exception:
+                pass
+        return ok
+
+    def _settings_set(key, value, report=True):
         state["settings"][key] = value
         try:
-            gui_settings.save_values(state["settings"])
+            ok = bool(gui_settings.save_values(state["settings"]))
         except Exception:
-            pass
+            ok = False
+        if report:
+            _report_save(ok, "settings")
         _repaint_settings_tabs()
 
     def _numset(key, var, kind):
@@ -1733,9 +2013,10 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
         m = theme_var.get().strip().lower()
         state["settings"]["theme"] = m
         try:
-            gui_settings.save_values(state["settings"])
+            _ok = bool(gui_settings.save_values(state["settings"]))
         except Exception:
-            pass
+            _ok = False
+        _report_save(_ok, "settings")
         _apply_theme(m)
         try:
             _paint_swatch()          # keep the preview chip in sync with the theme
@@ -2251,7 +2532,13 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
             for name, meta in detected.items():
                 if name in chosen_shown:
                     state["exclusions"][domain][name] = dict(meta)
-            excl.save(state["exclusions"])
+            # Kept for this session either way; a failed save is said out loud
+            # rather than lost at the next launch. #read-only-tool-folder
+            try:
+                _ok = bool(excl.save(state["exclusions"]))
+            except Exception:
+                _ok = False
+            _report_save(_ok, "exclusions")
             state["reviewed"][domain] = True     # clears the Run-tab gate
             _sync_run()
             win.destroy()
@@ -2273,7 +2560,8 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
                         # Live progress into the status line (first scan walks
                         # the whole modlist; without this the dialog looks hung).
                         items = lister(progress=lambda t: root.after(
-                            0, lambda s=t: _cfg(status_lbl, text=s)))
+                            0, lambda s=t: _cfg(status_lbl, text=s)),
+                            rescan=True)          # #mod-scan-rescan
                     else:
                         items = lister()
             except Exception as e:
@@ -2723,11 +3011,22 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
 
     _render_results()          # paint whatever the last run left on disk
 
+    def _workers_raw():
+        """The box's text as typed (IntVar.get() raises on '' or 'abc')."""
+        try:
+            return root.getvar(str(workers_var))
+        except Exception:
+            return ""
+
     def _build_argv():
         a = ["auto"]
         if out_var.get().strip():
             a += ["-o", out_var.get().strip()]
-        a += ["--workers", str(int(workers_var.get()))]
+        _nw = parse_workers(_workers_raw())
+        if _nw is None:
+            raise ValueError("Worker processes must be a whole number of at "
+                             "least 1")
+        a += ["--workers", str(_nw)]
         if copy_tex.get():
             a.append("--copy-textures")
         if not merge_armors.get():
@@ -2769,94 +3068,21 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
         return [sys.executable, str(main_py)] + list(argv_run)
 
     def _tail_log_into_queue(proc, log_path):
-        """Stream the child's log file into the output queue until it exits.
-        The windowed frozen exe's stdout is a null sink, but its `_Tee` always
-        writes the run log (path pinned via CBBE2UBE_RUN_LOG), so tailing the
-        file captures output reliably for both frozen and source runs."""
-        f = None
-        try:
-            for _ in range(200):                 # wait up to ~10s for the child
-                if os.path.isfile(log_path) or proc.poll() is not None:
-                    break
-                time.sleep(0.05)
-            while True:
-                if f is None and os.path.isfile(log_path):
-                    try:
-                        f = open(log_path, "r", encoding="utf-8", errors="replace")
-                    except Exception:
-                        f = None
-                if f is not None:
-                    chunk = f.read()
-                    if chunk:
-                        q.put(chunk)
-                if proc.poll() is not None:
-                    if f is not None:                # final drain after exit
-                        chunk = f.read()
-                        if chunk:
-                            q.put(chunk)
-                    break
-                time.sleep(0.15)
-        finally:
-            if f is not None:
-                try:
-                    f.close()
-                except Exception:
-                    pass
+        """Stream the child's log file into the output queue until it exits
+        (see tail_child_log)."""
+        tail_child_log(proc, log_path, q.put)
 
-    def _worker(argv_run, body_env=None):
+    def _worker(argv_run, body_env=None, dry_run=False):
         rc = 1
         proc = None
         try:
             # Pin the child's log to its NORMAL location (next to the exe when
             # frozen, else the repo root) so GUI runs still write the same
             # CBBEtoUBE_last_run.log everyone reads -- and the GUI tails it.
-            if getattr(sys, "frozen", False):
-                _log_dir = Path(sys.executable).resolve().parent
-            else:
-                _log_dir = Path(__file__).resolve().parent.parent
-            log_path = str(_log_dir / "CBBEtoUBE_last_run.log")
-            # HAND THE LOG TO THE CHILD BEFORE TOUCHING IT. This process
-            # installed its own tee on the same path at startup, so without this
-            # there are TWO `"w"` handles on one file with independent offsets,
-            # and the parent's later writes land mid-line over the child's. On
-            # 2026-08-23 that cut the startup flag echo in half and left the
-            # unseen-settings NOTE as a fragment. It also makes the delete below
-            # actually work: on Windows the open handle is why it was failing
-            # silently. See `release_log_tee` for the full account.
-            try:
-                _rel = getattr(sys.modules.get("__main__"),
-                               "release_log_tee", None)
-                if callable(_rel):
-                    _rel()
-            except Exception:
-                pass          # logging bookkeeping must never stop a run
-            # RENAME, do not remove. The GUI deleted the previous run's log
-            # before spawning the child, so the tool's own "re-run with fewer
-            # workers" advice destroyed the only artefact that survives an
-            # out-of-memory death -- everything else is written at end of batch.
-            # Renaming keeps the old run's evidence and still hands the child a
-            # clean path. #commit-headroom
-            try:
-                if os.path.exists(log_path):
-                    os.replace(log_path, str(_log_dir /
-                                             "CBBEtoUBE_previous_run.log"))
-            except Exception:
-                pass
-            # Failure summary the child writes at end of run (empty on a clean
-            # run). Delete up front so a crash-before-write can never make the
-            # end-of-run popup show a PREVIOUS run's failures.
-            fail_path = str(_log_dir / "CBBEtoUBE_last_failures.json")
+            # The run log is renamed aside, never removed; a dry run rotates
+            # nothing (see prepare_child_log). No popup when fail_path is None.
+            log_path, fail_path = prepare_child_log(tool_folder(), dry_run)
             state["fail_path"] = fail_path
-            # Also renamed rather than removed, for the same reason. The
-            # popup still keys on `fail_path`, which no longer exists, so a
-            # crash-before-write cannot show a previous run's failures -- the
-            # behaviour the deletion was there for is unchanged.
-            try:
-                if os.path.exists(fail_path):
-                    os.replace(fail_path, str(
-                        _log_dir / "CBBEtoUBE_previous_failures.json"))
-            except Exception:
-                pass
             # Registry settings, then this run's Reference bodies -- see child_env.
             env = child_env(state.get("settings") or {}, body_env, log_path)
             kw = {"stdin": subprocess.DEVNULL,
@@ -2907,6 +3133,11 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
                 "Tick at least one overlay mod, or set Convert overlays to "
                 "'All mods'.\n(Use 'Refresh mod list' if the list is empty.)")
             return
+        if parse_workers(_workers_raw()) is None:     # #workers-box-guard
+            messagebox.showinfo(
+                "Worker processes",
+                "Worker processes must be a whole number of at least 1.")
+            return
         # Confirm the reference bodies first (see body_dialog_wanted). Nothing
         # is locked yet, so a Cancel has nothing to undo.
         if body_dialog_wanted(state.get("settings") or {}, dry.get()):
@@ -2936,6 +3167,36 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
                           theme_popup=_theme_popup, heading_font=_SEMI)
 
     def _launch(body_env, body_lines=()):
+        """Build the arguments BEFORE locking anything; if the build or the
+        start fails, put the window back. It used to lock first, so a bad
+        Worker processes value left 'Converting...' up for good.
+        #workers-box-guard"""
+        dry_run = bool(dry.get())
+
+        def _start_worker(argv_run):
+            _append("> CBBEtoUBE " + " ".join(argv_run) + "\n\n")
+            if body_lines:
+                _append("Reference bodies:\n" + "\n".join(body_lines) + "\n\n")
+            # Don't let the frozen entry pause for a keypress after the GUI closes.
+            os.environ["CBBE2UBE_NO_PAUSE"] = "1"
+            threading.Thread(target=_worker, args=(argv_run, body_env, dry_run),
+                             daemon=True).start()
+
+        unlocked = []
+
+        def _unlock(err):
+            unlocked.append(True)
+            state["fail_path"] = None     # no popup of the LAST run's failures
+            state["proc"] = None
+            _append("\n*** conversion failed to launch ***\n" + err)
+            _finish(1)
+            status.set("The conversion did not start - see the log below.")
+
+        ok, err = start_run(_build_argv, _lock_for_run, _start_worker, _unlock)
+        if not ok and not unlocked:       # nothing was locked: just say why
+            messagebox.showerror("Conversion not started", err)
+
+    def _lock_for_run():
         state["running"] = True
         state["output_dir"] = out_var.get().strip() or default_out
         run_btn.configure(state="disabled")
@@ -2966,14 +3227,6 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
         prog.configure(mode="indeterminate", value=0)
         prog.start(12)
         status.set("Converting... this can take many minutes; the window stays responsive.")
-        argv_run = _build_argv()
-        _append("> CBBEtoUBE " + " ".join(argv_run) + "\n\n")
-        if body_lines:
-            _append("Reference bodies:\n" + "\n".join(body_lines) + "\n\n")
-        # Don't let the frozen entry pause for a keypress after the GUI closes.
-        os.environ["CBBE2UBE_NO_PAUSE"] = "1"
-        threading.Thread(target=_worker, args=(argv_run, body_env),
-                         daemon=True).start()
 
     run_btn.configure(command=_start)
 
@@ -3133,7 +3386,8 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
             return
         try:                       # remember the size for next launch
             _settings_set("window_geometry",
-                          f"{root.winfo_width()}x{root.winfo_height()}")
+                          f"{root.winfo_width()}x{root.winfo_height()}",
+                          report=False)   # no popup while quitting
         except Exception:
             pass                   # never block a quit on a cosmetic preference
         # Child-process launch means we can actually stop the run on quit
@@ -3145,6 +3399,12 @@ def launch_gui(argv=None, auto_close_ms=None, _smoke_settings=False) -> int:
     _apply_theme(state["settings"].get("theme", "standard"))  # after all widgets exist
     _sync_run()  # initial checklist visibility + Convert-button gating
     _run_preflight(_pf_auto)  # background setup check on launch
+    # A tool folder that cannot be written keeps no run log (the only way this
+    # window sees a run) and no settings: say so now, not after a silent run.
+    # #read-only-tool-folder
+    _wr_err = folder_write_error(tool_folder())
+    if _wr_err:
+        _append(read_only_folder_note(tool_folder(), _wr_err))
     root.protocol("WM_DELETE_WINDOW", _on_close)
     root.after(120, _poll)
     if _smoke_settings:

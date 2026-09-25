@@ -2,6 +2,59 @@
 
 ## Unreleased
 
+### Fixed — a mistyped "Worker processes" no longer freezes the window
+
+Clearing the Worker processes box (or typing letters) and pressing Convert left
+the window stuck on "Converting..." until you restarted it. Convert now says the
+value must be a whole number and changes nothing.
+
+### Fixed — a dry run no longer pushes the last run's log away
+
+After a run failed, two Dry runs in a row moved its log out of
+`CBBEtoUBE_previous_run.log`, the file a bug report asks for. A dry run now
+writes `CBBEtoUBE_cli.log` and leaves the run log and its list of problems alone.
+
+### Fixed — the Select list no longer offers mods a run skips as already UBE
+
+A mod whose armour already fits UBE is skipped by every run, but the Select list
+still offered it, and ticking it ended the run with "NOT FOUND". The list now
+leaves such mods out and names them in the log below it; if you ask for one
+with `--only-mods`, the log says why it was skipped.
+
+### Fixed — "Refresh mod list" sees mods you changed while the window was open
+
+Refresh and the exclusions list showed the first scan of the session, so a mod
+updated in MO2 meanwhile kept its old contents in the list until a restart.
+
+### Fixed — a tool folder that cannot be written is no longer silent
+
+Installed in a protected folder (such as Program Files), the tool could keep no
+log, so the window showed no progress at all, and your settings and exclusions
+looked saved but were gone the next time. The window now says at start that the
+folder cannot be written, says when a run left no log, and says when settings or
+exclusions could not be saved (they still apply until you close the window).
+
+### Fixed — window errors are kept in the window's own log
+
+After the first conversion the window stopped writing `CBBEtoUBE_gui_session.log`,
+so a later error in the window left no trace. It keeps writing it now, and an
+error in the window is shown in the log panel too.
+
+### Fixed — `--incremental` no longer reconverts everything over how it was launched
+
+Re-running with `--incremental` from a script instead of a console (or with the
+log pinned elsewhere) reconverted every mesh, because launch details counted as
+settings. They no longer do; a real setting change still reconverts.
+`CBBE2UBE_NO_FINGERPRINT_SKIPS_PLUMBING=1` (set to 1) counts them again.
+
+### Fixed — a mod whose folder name has a comma can be excluded or picked
+
+A mod folder named with a comma (for example "Armor, Clothing Pack") was read as
+two names, so excluding it did nothing and picking it found nothing. A name that
+matches a mod folder is now kept whole; on the command line `--exclude-mods "a,b"`
+still means two mods. `CBBE2UBE_NO_WHOLE_MOD_NAMES=1` (set to 1) splits every name
+on commas again.
+
 ### Fixed — the end-of-run list shows every problem the log counts
 
 Some problems were counted in the log's last line but never reached the list the

@@ -62,6 +62,7 @@ _.targetID          # NIF controller field -- assignment writes into the NIF str
 _._weights          # pynifly shape weight cache -- set to None so the next read sees the written buffer
 _.dwLength          # ctypes MEMORYSTATUSEX field -- GlobalMemoryStatusEx reads it
 _.LimitFlags        # ctypes job-object field -- SetInformationJobObject reads it
+_.report_callback_exception  # Tk root hook -- tkinter calls it when a window callback raises
 
 # ---- Read only by the suite: a contract table or counter the tests pin ----
 FIT_STAGES          # fit-chain contract table; tests/test_fit_stage_table.py holds both chains to it

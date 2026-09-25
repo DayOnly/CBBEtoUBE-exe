@@ -64,7 +64,7 @@ def test_the_pick_travels_from_ok_to_the_worker():
     """Each hop only passes the value along; dropping it at any one silently
     converted with the resolver's body while the pane still listed the pick."""
     assert "on_ok(env, lines)" in _body(SRC, "def _accepted(")
-    assert "args=(argv_run, body_env)" in _body(SRC, "def _launch(")
+    assert "args=(argv_run, body_env, dry_run)" in _body(SRC, "def _launch(")
     assert "_open_body_dialog(_launch)" in _body(SRC, "def _start(")
 
 
@@ -81,7 +81,10 @@ def test_the_choice_never_goes_through_os_environ():
 def test_nothing_is_locked_before_the_bodies_are_confirmed():
     start = _body(SRC, "def _start(")
     assert 'state["running"] = True' not in start
-    assert 'state["running"] = True' in _body(SRC, "def _launch(")
+    # _launch locks through _lock_for_run, after the arguments are built
+    # (#workers-box-guard; gui.start_run is tested by value).
+    assert "_lock_for_run" in _body(SRC, "def _launch(")
+    assert 'state["running"] = True' in _body(SRC, "def _lock_for_run(")
 
 
 def test_cancel_and_ok_both_rearm_convert():

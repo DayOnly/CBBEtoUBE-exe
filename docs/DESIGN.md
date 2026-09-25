@@ -1908,6 +1908,78 @@ reported through `_report_coverage_holds`:
   out restores). `CBBE2UBE_NO_HEADLESS_SETTINGS=1` makes a headless run ignore
   the file, as before. `python -m src.auto_convert` does not go through the entry
   point and still reads only the environment.
+- **A bad Worker processes value cannot strand the window**
+  (`#workers-box-guard`). The box is free text; `_launch` locked the window
+  (running, Convert off, selection locked, bar spinning) and only then read
+  `int(workers_var.get())`, which raised on `''` or `abc`: no worker thread, no
+  `_DONE`, and 'Converting...' until a restart. Convert now refuses a value that
+  is not a whole number of at least 1 (`parse_workers`), and `start_run` builds
+  the arguments before anything is locked and puts the window back if the
+  lock or the start raises.
+- **A dry run keeps the run log** (`#dry-run-keeps-the-run-log`). `auto
+  --list-only` / `--dry-run` (or an abbreviation argparse accepts) converts
+  nothing, so `_log_target` sends it to `CBBEtoUBE_cli.log` with no rotation,
+  like `validate` (`#run-log-only-for-runs`). The window follows the same rule
+  (`run_log_plan`, `prepare_child_log`): it tails the cli log, removes the old
+  one first so the tail cannot stream the previous command, rotates nothing and
+  opens no failures popup. Two dry runs after a dead run used to rotate the
+  dead run's log out of `CBBEtoUBE_previous_run.log`.
+- **The Select list offers only what a run converts**
+  (`#select-list-ube-native`). `_cmd_auto` drops high-confidence UBE-native
+  mods before `--only-mods`; the Select list did not, so a ticked one ended
+  "NOT FOUND" and exit 2, pointing back at the list. `_ube_native_hits` is the
+  one decision: `list_convertible_mods(mark_ube_native=True)` marks those mods
+  and the Select list leaves them out, naming them in the log panel. The
+  Exclusions list and the UBE-mesh scan still list every mod (they exist to
+  find these). `--only-mods` on a dropped mod now says it was dropped and names
+  `--no-ube-native-scan`. The window has no setting for that switch, on
+  purpose: the scan guards against double-converting.
+- **Refresh rescans** (`#mod-scan-rescan`). `_ARMOR_MOD_DIRS_CACHE` is keyed on
+  the mods root, the enabled set and some switches, never on mod contents, and
+  nothing cleared it; it was built for an in-process Convert that no longer
+  exists. The window's Refresh and Exclusions lists pass `rescan=True`, so a mod
+  updated in MO2 while the window is open is read again; the UBE-mesh scan right
+  after the Exclusions list still reuses that scan.
+- **A tool folder that cannot be written is said out loud**
+  (`#read-only-tool-folder`). The window shows a run only by tailing its log,
+  and the child's "could not write the log" note went to a DEVNULL stderr, so a
+  run in a protected folder showed nothing but "finished (exit N)". The window
+  probes the folder at start (`folder_write_error`: one probe file, created and
+  deleted, since `os.access` says yes to a protected folder) and warns in the
+  log panel; a run whose log never appears says so (`tail_child_log`); a failed
+  settings or exclusions save (the saves' False was never read) says so in the
+  status line every time and in a popup once per kind (`SaveNotice`). Choices
+  still apply for the session.
+- **The window keeps its own log** (`#gui-session-log-kept`). The window tees to
+  `CBBEtoUBE_gui_session.log`, a different file from the run log, but `_worker`
+  still called `release_log_tee` before each run, for a shared-handle clash
+  that no longer exists; after the first run every window-side traceback went
+  nowhere. It no longer releases, and the Tk root's
+  `report_callback_exception` (`tk_error_reporter`) writes a callback's
+  traceback to the session log and the log panel.
+- **The --incremental fingerprint skips launch plumbing**
+  (`#fingerprint-skips-plumbing`). It hashed every `CBBE2UBE_*` variable,
+  including ones that cannot change a mesh, so a scripted re-run
+  (`CBBE2UBE_NO_PAUSE=1`) or a pinned log reconverted everything.
+  `_FINGERPRINT_PLUMBING` leaves out NO_PAUSE, RUN_LOG, CONFIG, EXCLUSIONS,
+  SETTINGS_APPLIED and NO_HEADLESS_SETTINGS (the applied settings are hashed as
+  their own variables; exclusions choose mods, which the fingerprint already
+  leaves out). The layout overrides (MO2_INI, MODS_ROOT, GAME_DATA, OUT_MOD) stay
+  in: a different game Data or mods folder can change a mesh. This changes when
+  an incremental run reconverts, never what a NIF becomes.
+  `CBBE2UBE_NO_FINGERPRINT_SKIPS_PLUMBING=1` hashes every variable again.
+- **A mod folder name with a comma is one name** (`#whole-mod-names`). The
+  window passes every name as its own `--exclude-mods` / `--only-mods` /
+  `--coverage-exclude-mods` / `--overlay-*-mods` flag, and `_split_mod_arg`
+  split every value on commas, so "Armor, Clothing Pack" became two names that
+  matched nothing: excluded, it was still converted and covered. The rule: a
+  value that is exactly the name of a folder in the mods root is one name; any
+  other value is split on commas, so `--exclude-mods "a,b"` from a shell still
+  means two mods, and a flag repeated with comma lists still works. (Splitting
+  only when a flag is given once would have broken that mixed form, and still
+  split a single comma folder the window passes.) The mods root is read only
+  when a value holds a comma. `CBBE2UBE_NO_WHOLE_MOD_NAMES=1` splits every value
+  again.
 
 ---
 
