@@ -21,7 +21,9 @@ scan order. Two armours sharing an armature landed in different pieces often eno
 that the armature was minted in both: live, 36 of the non-body coverage's 2,093
 distinct armatures (2,129 records in two pieces). Grouping the armours that share
 armatures and placing each group whole removes every duplicate while each armour keeps
-its one line in one piece. CBBE2UBE_NO_ESL_CHUNK_DEDUP=1 restores the scan-order fill.
+its one line in one piece. Grouping never costs a piece: when whole groups would need
+more pieces than the scan-order fill, the scan-order fill is used.
+CBBE2UBE_NO_ESL_CHUNK_DEDUP=1 restores the scan-order fill.
 """
 import json
 
@@ -107,9 +109,55 @@ def test_a_later_group_fills_room_left_in_an_earlier_piece():
 
 
 def test_a_piece_may_fill_exactly_to_the_cap():
-    targets = [_t(0, range(0, 6)), _t(1, range(10, 14))]
+    """cap 5. Groups {0,2} (3 armatures), {1} (3) and {3} (2): the last group tops
+    the first piece up to exactly 5, so two pieces and no repeat. Were a full
+    piece refused, grouping would need a third piece and lose to the scan-order
+    fill, which repeats armature 2."""
+    targets = [_t(0, [1, 2]), _t(1, [4, 5, 6]), _t(2, [2, 3]), _t(3, [7, 8])]
     mint = _mint(targets)
-    assert len(_chunk_targets_for_esl(targets, mint, cap=10)) == 1
+    chunks = _chunk_targets_for_esl(targets, mint, cap=5)
+    assert len(chunks) == 2
+    assert _repeats(chunks, mint) == 0
+    assert [len(_minted_in(c, mint)) for c in chunks] == [5, 3]
+
+
+# --- pieces never increase ---------------------------------------------------------
+
+def _scan_order(monkeypatch, targets, mint, cap):
+    monkeypatch.setenv(OFF, "1")
+    try:
+        return _chunk_targets_for_esl(targets, mint, cap=cap)
+    finally:
+        monkeypatch.delenv(OFF, raising=False)
+
+
+def test_grouping_never_needs_more_pieces_than_the_scan_order_fill(monkeypatch):
+    """cap 5, three groups of three armatures (armour a mints x1,x2; armour b
+    mints x2,x3). Whole groups need three pieces (9 records); the scan-order fill
+    needs two (10 records, one repeat). One more plugin to enable is not worth one
+    record, so the scan-order fill is used -- exactly as the switch gives it."""
+    targets = []
+    for g in range(3):
+        b = 10 * g
+        targets += [_t(2 * g, [b + 1, b + 2]), _t(2 * g + 1, [b + 2, b + 3])]
+    mint = _mint(targets)
+    scan = _scan_order(monkeypatch, targets, mint, 5)
+    assert len(scan) == 2 and _repeats(scan, mint) == 1
+    chunks = _chunk_targets_for_esl(targets, mint, cap=5)
+    assert chunks == scan
+
+
+def test_same_pieces_as_the_scan_order_fill_keep_the_grouping(monkeypatch):
+    """cap 5: armour 0 mints 1,2,3; armour 1 mints 4,5; armour 2 mints 3,6. Both
+    fills need two pieces; the scan-order one mints armature 3 twice. A tie keeps
+    the grouping: same pieces, one record fewer."""
+    targets = [_t(0, [1, 2, 3]), _t(1, [4, 5]), _t(2, [3, 6])]
+    mint = _mint(targets)
+    scan = _scan_order(monkeypatch, targets, mint, 5)
+    assert len(scan) == 2 and _repeats(scan, mint) == 1
+    chunks = _chunk_targets_for_esl(targets, mint, cap=5)
+    assert len(chunks) == 2
+    assert _repeats(chunks, mint) == 0
 
 
 def test_armours_keep_scan_order_inside_a_piece():

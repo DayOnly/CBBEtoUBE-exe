@@ -7354,4 +7354,26 @@ PAIRS = (
          tests=('tests/test_esl_chunk_dedup.py',),
          expect=('test_switched_off_the_scan_order_fill_returns',),
     ),
+    # Pieces never increase: whole groups can need more ESL pieces than the
+    # scan-order fill (one more plugin to enable, to save a few records); then
+    # the scan-order fill is used. Live the two tie and the grouping is kept.
+    Pair('ECD-h', 'grouping may open more pieces than the scan-order fill',
+         edits=(
+             ('src/ube_patcher.py',
+              '    if len(grouped) > len(scan):\n',
+              '    if False:  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_esl_chunk_dedup.py',),
+         expect=('test_grouping_never_needs_more_pieces_than_the_scan_order_fill',),
+    ),
+    Pair('ECD-i', 'a piece-count tie drops the grouping',
+         edits=(
+             ('src/ube_patcher.py',
+              '    if len(grouped) > len(scan):\n',
+              '    if len(grouped) >= len(scan):  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_esl_chunk_dedup.py',),
+         expect=('test_same_pieces_as_the_scan_order_fill_keep_the_grouping',
+                 'test_a_piece_may_fill_exactly_to_the_cap'),
+    ),
 )

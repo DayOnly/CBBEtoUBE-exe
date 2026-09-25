@@ -10,7 +10,12 @@ between them, that piece was written into both parts. Items that share a piece
 are now kept in the same part, so each piece is written once. What every item
 shows in game is unchanged. Measured on the reported modlist: 36 duplicate
 records removed (2,129 down to 2,093), leaving more room before the combined
-plugin needs another part to enable. `CBBE2UBE_NO_ESL_CHUNK_DEDUP=1` (set to 1)
+plugin needs another part to enable. This never costs you an extra plugin: if
+keeping items together would need more parts than before, the patch is cut the
+old way instead, so duplicates are only dropped when that needs no extra part.
+One circlet now points at its own copy of its armour piece instead of an
+identical-looking copy from the body patch (they differ only in a texture
+checksum); it looks the same in game. `CBBE2UBE_NO_ESL_CHUNK_DEDUP=1` (set to 1)
 turns it off.
 
 ### Fixed — a garment whose layers share one name keeps every layer

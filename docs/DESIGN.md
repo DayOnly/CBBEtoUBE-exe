@@ -1313,6 +1313,26 @@ own records instead of 3,912. 15 armatures minted by both the body and the non-b
 remain (separate patches; out of this rule's reach). `CBBE2UBE_NO_ESL_CHUNK_DEDUP=1`
 restores the scan-order fill.
 
+**Pieces never increase.** Placing whole groups is bin packing with items that cannot
+be split, so it can leave a piece short that the scan-order fill would top up across a
+group boundary: cap 5 and three groups of three armatures need three pieces whole, but
+two in scan order (one repeated record). One more plugin to enable is a worse cost than
+a few duplicate records, so both fills are computed and the grouped one is kept only
+when it needs no more pieces than the scan-order fill; otherwise the scan-order fill is
+used unchanged, duplicates and all. Duplicates are dropped only when that costs no
+extra piece. A tie keeps the grouping (same pieces, fewer records). A finer rule --
+split only the group that straddles the boundary -- was not taken: it would keep some
+of the savings only in the case where whole groups lose, it is more code with its own
+piece-count proof to carry, and the live load order never reaches that case (2 non-body
+pieces either way, so today's output is the grouped fill, byte-identical to before the
+rule).
+
+After the merge one armour (a circlet) links to its own non-body record where the
+scan-order fill had it collapse onto a body-pass record: its copy used to sit in the
+same Combined piece as the body patch, and the merge's dedup key ignores the MO2T
+texture-hash block, the only thing that differs. Mesh, races, slots and alternate
+textures are identical, so nothing changes in game.
+
 ### Per-source patch names (`#source-patch-rename`)
 
 A per-source patch is `<stem> (CBBEtoUBE src).esp` in `_unmerged_patches`, with its

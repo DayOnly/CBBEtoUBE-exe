@@ -4322,6 +4322,13 @@ def _esl_chunk_dedup() -> bool:
     with room -- so each armature is minted once and every armour still gets
     exactly one line in one piece. Only a group needing more than `cap`
     armatures is split as before (the largest live group needs 85).
+
+    Pieces never increase: whole groups cannot be split to top a piece up, so
+    in some runs they need more pieces than the scan-order fill -- one more
+    plugin to enable, to save a few duplicate records. The grouped fill is kept
+    only when it needs no more pieces than the scan-order fill; otherwise the
+    scan-order fill is used, duplicates and all. Live the two tie (2 non-body
+    pieces either way) and the grouped fill is kept.
     CBBE2UBE_NO_ESL_CHUNK_DEDUP=1 restores the scan-order fill."""
     return not _flag("CBBE2UBE_NO_ESL_CHUNK_DEDUP", False)
 
@@ -4345,9 +4352,26 @@ def _chunk_targets_for_esl(targets, mint_rec, cap: int) -> "list[list]":
     A group needing more than `cap` armatures is chunked in scan order on its own,
     and only its armatures can repeat. A single target needing more than `cap`
     becomes its own over-cap chunk -- it cannot be split without breaking the
-    invariant above, and the caller downgrades just that piece."""
+    invariant above, and the caller downgrades just that piece.
+
+    The grouped fill never costs a piece: when it needs more chunks than the
+    scan-order fill (whole groups leave a piece short that the scan-order fill
+    tops up across a group), the scan-order fill is returned instead. A tie keeps
+    the grouped fill -- same pieces, fewer records."""
+    scan = _chunk_targets_in_scan_order(targets, mint_rec, cap)
     if not _esl_chunk_dedup():
-        return _chunk_targets_in_scan_order(targets, mint_rec, cap)
+        return scan
+    grouped = _chunk_targets_grouped(targets, mint_rec, cap)
+    if len(grouped) > len(scan):
+        return scan
+    return grouped
+
+
+def _chunk_targets_grouped(targets, mint_rec, cap: int) -> "list[list]":
+    """The #esl-chunk-dedup fill: targets that share a minted armature (directly
+    or through a chain) form one group, and each group goes whole into the first
+    chunk with room. `_chunk_targets_for_esl` keeps it only when it needs no more
+    chunks than the scan-order fill."""
     # Union targets that mint a common armature. Groups are listed below in the
     # order their first target was scanned.
     parent = list(range(len(targets)))
@@ -4412,8 +4436,9 @@ def _chunk_targets_for_esl(targets, mint_rec, cap: int) -> "list[list]":
 def _chunk_targets_in_scan_order(targets, mint_rec, cap: int) -> "list[list]":
     """Fill chunks target by target in scan order, starting a new chunk when the
     next target's new armatures would pass `cap`. An armature shared by targets in
-    two chunks is minted in both. `_chunk_targets_for_esl` uses it for a group too
-    big for one chunk, and for everything under CBBE2UBE_NO_ESL_CHUNK_DEDUP=1."""
+    two chunks is minted in both. The grouped fill uses it for a group too big
+    for one chunk; `_chunk_targets_for_esl` returns it under
+    CBBE2UBE_NO_ESL_CHUNK_DEDUP=1, and whenever grouping would need more chunks."""
     chunks: list = []
     cur: list = []
     cur_keys: set = set()
