@@ -6,7 +6,7 @@ current. A `!!` line is a problem; a `NOTE:` line is information. Each entry
 gives the line as it appears in the run log (`…` stands for the value printed
 at run time), what it means for the run, and what to do next.
 
-**80** problem warnings and **6** notes.
+**90** problem warnings and **6** notes.
 
 ## src/auto_convert.py
 
@@ -53,6 +53,35 @@ at run time), what it means for the run, and what to do next.
   - means: the lines below name what it found in the generated race coverage; read them before trusting this run's coverage
 - `!! [unified] could not list the meshes the modlist has, so armour whose meshes exist nowhere could not be told apart`
   - means: every armature is given a UBE armature, as before, including ones that draw nothing
+- `!! stale-output sweep: stopped by an error (…); every file it moved this run was put back`
+  - means: no old conversion moves this run; the restore, coverage and merge run as they would without the sweep
+  - fix: send the run log; CBBE2UBE_NO_STALE_OUTPUT_SWEEP=1 turns the sweep off
+- `!! stale-output sweep: the conversion manifest …, so no old conversion an earlier run recorded can move this run -- …`
+  - means: they are only listed; the record is written anew at the end of this run, and a later full run can move them again
+  - fix: nothing to do, unless the file was edited by hand
+- `!! stale-output sweep: … old conversion(s) NOT moved -- the plan is incomplete: …`
+  - means: a mesh this run may have lost is not told apart from one it dropped, so nothing moves; they are listed below
+  - fix: fix what the warnings above name and run all mods again
+- `!! stale-output sweep: … old conversion(s) NOT moved -- more than the … one run may move`
+  - means: a share this large is more likely a fault in this run than pieces that went away; they are listed below
+  - fix: read the list; if it is right, move the files by hand or run again after the cause is fixed
+- `!! stale-output sweep: … old conversion(s) could not be moved (a file is in use): …`
+  - means: each was left whole in meshes\!UBE, so it still draws in game
+  - fix: close the program holding the file (the game, NifSkope, Outfit Studio) and run again
+- `!! stale-output sweep: … old conversion(s) were only partly moved and could not be put back: …`
+  - means: the named files are in _superseded\ while the rest of the piece is still in meshes\!UBE
+  - fix: move the named files back from _superseded\ by hand
+- `!! stale-output sweep: the … old conversion(s) moved this run were put back: …`
+  - means: an old Combined plugin may still name them, and a plugin that names a missing mesh crashes the game; they stay in meshes\!UBE until a run completes the merge
+  - fix: fix the merge problem above and run all mods again
+- `!! stale-output sweep: … moved file(s) could not be put back: …`
+  - means: a plugin that still names one of them crashes the game when an actor wearing it loads
+  - fix: move them back by hand from …
+- `!! female-model restore after the stale-output put-back failed: …`
+  - means: a patch may keep a male fallback for a mesh that is back
+- `!! could not write the conversion manifest (…) -- …`
+  - means: the next run cannot tell which old conversions are ours, so it moves none of this run's
+  - fix: check that the output folder is writable and run again
 - `!! [unified] … armour(s) of an excluded mod have no UBE armature from any mod -- --exclude-mods`
   - means: they are not drawn on UBE-race actors
   - fix: take the mod off the exclusion list to have them covered, or install a UBE patch for it

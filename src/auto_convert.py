@@ -64,7 +64,8 @@ cap_blas_threads()
 
 from . import ube_patcher, nif_convert, paths, discovery, nif_io  # noqa: E402
 from . import child_lifetime  # noqa: E402
-from .user_warnings import NOTE, plain_error, warn  # noqa: E402
+from .user_warnings import NOTE, plain_error, problem_count, warn  # noqa: E402
+from . import stale_sweep  # noqa: E402
 from .envflags import flag as _flag, knob as _knob  # noqa: E402
 
 
@@ -934,6 +935,11 @@ class AutoConvertResult:
     # Weight bases (same keys) this run left to a mod that ships them built for
     # UBE. The partner fill must never write into one. #supersede-whole-base
     superseded_weight_bases: set = field(default_factory=set)
+    # Weight bases (same keys) whose output path this source claimed, and
+    # {weight base -> the planner's POSITIVE reason for not planning it}: what
+    # the stale-output sweep and its manifest read. #stale-output-sweep
+    claimed_weight_bases: set = field(default_factory=set)
+    dropped_base_reasons: dict = field(default_factory=dict)
     # Postflight per-NIF invariant violations on the FINAL output (zero-vertex
     # shapes; over-cap single-partition shapes). Surfaced + counted as warnings.
     nif_invariant_warnings: list = field(default_factory=list)
@@ -1956,7 +1962,8 @@ def auto_convert_mod(
         mesh_resolves=_female_mesh_resolves,
         ube_covered_armos=ube_covered_armos,
         armo_winner_nonplayable=armo_winner_nonplayable,
-        npc_worn_armos=npc_worn_armos, worn_admitted=_worn_admitted)
+        npc_worn_armos=npc_worn_armos, worn_admitted=_worn_admitted,
+        drop_reasons=result.dropped_base_reasons)
     if _worn_admitted:
         # Say so: these pieces used to be skipped in silence. #npc-worn-nonplayable
         _worn_msg = (f"{len(_worn_admitted)} non-playable armature(s) converted "
@@ -2270,6 +2277,7 @@ def auto_convert_mod(
                     skipped_collisions.append((src, dst))
                     continue
                 claimed_dst_paths.add(key)
+            result.claimed_weight_bases.add(_weight_base_key(rel))  # #stale-output-sweep
             # Incremental: reuse an up-to-date NIF. The floor includes converter-code
             # + body-ref mtime, so any logic/body change forces a full re-convert.
             if incremental_floor is not None:
@@ -2314,6 +2322,8 @@ def auto_convert_mod(
                 # builder's path, moved or (a move failed) left whole.
                 result.superseded_weight_bases.update(
                     _weight_base_key(r) for r, _m in skipped_built)
+            for r, _m in skipped_built:   # #stale-output-sweep
+                result.dropped_base_reasons.setdefault(_weight_base_key(r), "built twin")
             from collections import Counter as _Counter
             _by_mod = _Counter(m for _r, m in skipped_built)
             print(f"  built UBE version elsewhere: {len(skipped_built)} mesh(es) "
@@ -4374,6 +4384,608 @@ def _supersede_whole_bases(output_dir, nif_dst_root, rels, failed=None) -> int:
     return moved
 
 
+# ---------- #stale-output-sweep: our old conversions no source makes any more ----------
+#
+# The decisions and the file moves live in src/stale_sweep.py; this is the part
+# that reads a run's results and speaks to the user.
+
+# {base: source} a source of this run gave a positive reason to drop although no
+# earlier run recorded it: the finish records it, so a later run can move it.
+_STALE_ADOPTED: "dict[str, str]" = {}
+
+
+def _stale_bsa_state(index) -> "tuple[bool, list]":
+    """(was the batch's archive index built, what it could not list), taken
+    before the batch: the list outlives the index. #stale-output-sweep"""
+    if index is None:
+        return False, []
+    return True, getattr(index, "skipped", [])
+
+
+def _stale_source_name(src) -> str:
+    """How the manifest names a source: its mod folder, or 'vanilla'."""
+    return (stale_sweep.VANILLA if _vanilla_sweep_esps(Path(src))
+            else Path(src).name)
+
+
+def _stale_plan_gaps(args, results, state) -> "list[str]":
+    """PLAN_COMPLETE, as the list of what made this run's plan smaller than the
+    load order's (empty = complete): each fallback that fails OPEN to fewer
+    planned pieces, and each failure the merge gate counts. After any of them a
+    base no claim owns may be one the run LOST, not one it dropped, so the sweep
+    only reports. #stale-output-sweep"""
+    gaps: "list[str]" = []
+    if state.get("mesh_index") is None:
+        gaps.append("the mesh index of the modlist was not built")
+    bsa_ok, bsa_skipped = state.get("bsa") or (False, [])
+    if not bsa_ok:
+        gaps.append("the archive index was not built")
+    elif bsa_skipped:
+        gaps.append(f"{len(bsa_skipped)} archive(s) or folder(s) could not be listed")
+    if (state.get("npc_worn") is None
+            and not _flag("CBBE2UBE_NO_NPC_WORN_NONPLAYABLE", False)):
+        gaps.append("the armour female NPCs wear could not be read")
+    if _selection_winner_playable():
+        if state.get("winner_np") is None:
+            gaps.append("which armour the load order makes playable could not be read")
+        elif _armo_winner_unreadable():
+            gaps.append(f"{len(_armo_winner_unreadable())} plugin(s) could not be "
+                        "read for playability")
+    sweep = [r for s, r, _e in results
+             if _stale_source_name(s) == stale_sweep.VANILLA]
+    if not sweep:
+        gaps.append("the vanilla sweep did not run")
+    elif not any(r is not None and r.claimed_weight_bases for r in sweep):
+        gaps.append("the vanilla sweep claimed no mesh")
+    missing = len(getattr(args, "sources", None) or ()) - len(results)
+    if missing > 0:
+        gaps.append(f"{missing} source(s) did not run")
+    ctx = getattr(args, "stale_sweep", None) or {}
+    printed = int(state.get("warns") or 0) - int(ctx.get("warn_base") or 0)
+    if printed > 0:
+        gaps.append(f"{printed} warning(s) were printed before or during the conversion")
+    # The merge gate, from each result's own fields: the tally the merge blocks
+    # on is counted only after this point.
+    failed = sum(1 for _s, _r, e in results if e is not None)
+    if failed:
+        gaps.append(f"{failed} source(s) failed")
+    ok = [r for _s, r, e in results if e is None and r is not None]
+    for n, what in (
+            (sum(r.nif_errors for r in ok), "mesh(es) failed to convert"),
+            (sum(len(r.esp_gen_failures) for r in ok), "plugin patch(es) failed"),
+            (sum(len(r.nif_load_failures) for r in ok),
+             "converted mesh(es) cannot be read back"),
+            (sum(len(r.nif_invariant_warnings) for r in ok),
+             "mesh issue(s) of the crash class")):
+        if n:
+            gaps.append(f"{n} {what}")
+    return gaps
+
+
+def _stale_source_probes(ctx, state):
+    """(status, classify) for a recorded source that did not run this time:
+    where it went, and -- present and enabled but not selected -- the planner's
+    positive reasons for the bases it no longer plans, from the same inputs the
+    batch used. #stale-output-sweep"""
+    mr = ctx.get("mods_root")
+    enabled = ctx.get("enabled")
+    en = None if enabled is None else {n.lower() for n in enabled}
+    excl = {n.lower() for n in (ctx.get("excluded") or ())}
+
+    def status(s: str) -> str:
+        if s == stale_sweep.VANILLA:
+            return "vanilla"
+        if s.lower() in excl:
+            return "excluded"
+        if not mr or not Path(mr).is_dir():
+            return "unknown"
+        if not (Path(mr) / s).is_dir():
+            return "removed"
+        if en is not None and s.lower() not in en:
+            return "disabled"
+        return "not selected"
+
+    vfs = state.get("mesh_index")
+
+    def _resolves(b: str) -> bool:
+        return any(f"{b}{suf}.nif" in vfs for suf in ("_1", "_0", ""))
+
+    def classify(s: str) -> dict:
+        why: dict = {}
+        _player_armor_mesh_bases(
+            Path(mr) / s, include_candidate_slots=True,
+            mesh_resolves=_resolves if vfs is not None else None,
+            ube_covered_armos=state.get("covered"),
+            npc_worn_armos=state.get("npc_worn"),
+            armo_winner_nonplayable=state.get("winner_np"), drop_reasons=why)
+        return why
+    return status, classify
+
+
+def _stale_patch_sets(patches_dir, written) -> "dict[str, list | None]":
+    """Per-source patches this run did not write: {ESP name: [its sidecars...,
+    the ESP last]}, None for a set with a linked file (never moved). Coverage
+    pieces and any other plugin are not ours to move. #stale-output-sweep"""
+    out: dict = {}
+    pdir = Path(patches_dir)
+    try:
+        esps = sorted(pdir.glob("*.esp")) if pdir.is_dir() else []
+    except OSError:
+        return out
+    for q in esps:
+        if q.name.lower() in written:
+            continue
+        if (_new_source_patch_stem(q.name) is None
+                and _legacy_source_patch_stem(q.name) is None):
+            continue
+        files = [Path(str(q) + s) for s in _SRC_PATCH_SIDECARS
+                 if Path(str(q) + s).is_file()] + [q]
+        out[q.name] = (None if any(os.path.islink(f) for f in files) else files)
+    return out
+
+
+def _stale_print_list(title, rows, limit=25) -> None:
+    if not rows:
+        return
+    print(f"  {title}: {len(rows)}")
+    for d in rows[:limit]:
+        src = f" ({d.source})" if d.source else ""
+        print(f"    {d.key}{src} -- {d.reason}")
+    if len(rows) > limit:
+        print(f"    ... and {len(rows) - limit} more")
+
+
+def _stale_output_sweep(args, output, patches_dir, results, claimed_dst_paths,
+                        state) -> int:
+    r"""#stale-output-sweep: find the weight bases in `meshes\!UBE` no claim of
+    this run owns, decide each on the manifest and the planner's reasons, and --
+    on a full run whose plan is complete, under the brake -- move the ones with
+    a reason to `_superseded\<run stamp>\`, leaving them PENDING until the merge
+    confirms them (`_stale_output_sweep_finish`). Always reports. Returns the
+    number of warnings printed (recorded as warnings too).
+
+    ISOLATED: any error in the decisions or the moves puts back every file this
+    run moved, warns, and returns -- the restore, coverage and merge then run
+    exactly as without the sweep."""
+    global _STALE_ADOPTED
+    _STALE_ADOPTED = {}
+    ctx = getattr(args, "stale_sweep", None)
+    if not ctx or not stale_sweep.sweep_on():
+        return 0
+    if not ctx.get("all_mods") or getattr(args, "plugins_only", False):
+        print(f"\n  stale-output sweep: {NOTE} not run -- only a run of all mods "
+              "can tell which old conversions no source makes any more")
+        return 0
+    try:
+        return _stale_output_sweep_run(args, Path(output), patches_dir, results,
+                                       claimed_dst_paths, state, ctx)
+    except Exception as e:
+        return _stale_output_sweep_failed(Path(output), e)
+
+
+def _stale_output_sweep_failed(output, e) -> int:
+    """The sweep raised: put back everything its journal lists, forget what it
+    would have recorded, and say so. Returns warnings. #stale-output-sweep"""
+    global _STALE_ADOPTED
+    _STALE_ADOPTED = {}
+    h = stale_sweep.pending()
+    stale_sweep._set_pending(None)
+    failed: list = []
+    if h is not None:
+        failed = stale_sweep.put_back(h.pairs() + h.planned)
+        stale_sweep.update_journal(h.journal,
+                                   status="partly put back" if failed else "put back",
+                                   put_back_because=f"the sweep stopped: {plain_error(e)}")
+    warn(f"stale-output sweep: stopped by an error ({plain_error(e)}); every file "
+         "it moved this run was put back",
+         consequence="no old conversion moves this run; the restore, coverage and "
+                     "merge run as they would without the sweep",
+         fix="send the run log; CBBE2UBE_NO_STALE_OUTPUT_SWEEP=1 turns the sweep off")
+    _record_failure("stale sweep error", output, "stale-output sweep",
+                    plain_error(e), severity="warning")
+    return 1 + (_stale_put_back_failed(h, failed) if failed else 0)
+
+
+def _stale_output_sweep_run(args, output, patches_dir, results, claimed_dst_paths,
+                            state, ctx) -> int:
+    """The decisions, the moves and the report of `_stale_output_sweep`.
+    #stale-output-sweep"""
+    global _STALE_ADOPTED
+    warns = 0
+    for stamp, failed in stale_sweep.recover_interrupted(output):
+        print(f"  stale-output sweep: {NOTE} put back the files an interrupted "
+              f"run had moved to {stale_sweep.SUPERSEDED_DIR}\\{stamp}"
+              + (f" ({len(failed)} could not go back)" if failed else ""))
+    inv = stale_sweep.inventory(output)
+    manifest, problem = stale_sweep.read_manifest(output)
+    if problem:
+        warn(f"stale-output sweep: the conversion manifest {problem}, so no old "
+             "conversion an earlier run recorded can move this run",
+             where=str(output / stale_sweep.MANIFEST_NAME),
+             consequence="they are only listed; the record is written anew at the "
+                         "end of this run, and a later full run can move them again",
+             fix="nothing to do, unless the file was edited by hand")
+        _record_failure("stale sweep manifest unreadable", output,
+                        stale_sweep.MANIFEST_NAME, problem, severity="warning")
+        warns += 1
+    claimed: set = set()
+    superseded: set = set()
+    ran: "dict[str, dict]" = {}
+    claims_by_source: "dict[str, bool]" = {}
+    written: set = set()
+    for src, r, _err in results:
+        name = _stale_source_name(src)
+        why = ran.setdefault(name, {})
+        if r is None:
+            continue
+        claimed |= set(r.claimed_weight_bases)
+        superseded |= set(r.superseded_weight_bases)
+        why.update(r.dropped_base_reasons)
+        claims_by_source[name] = (claims_by_source.get(name, False)
+                                  or bool(r.claimed_weight_bases))
+        written |= {Path(p).name.lower() for p in r.output_esps}
+    ube = output / "meshes" / "!UBE"
+    try:
+        ube_r = ube.resolve()
+    except OSError:
+        ube_r = ube
+    for p in claimed_dst_paths or ():
+        try:
+            claimed.add(_weight_base_key(Path(p).relative_to(ube_r).as_posix()))
+        except ValueError:
+            pass
+    stale = set(inv.bases) - claimed - superseded
+    recorded = dict((manifest or {}).get("bases", {}))
+    status, classify = _stale_source_probes(ctx, state)
+    dec = stale_sweep.decide_bases(stale, recorded, ran, status, classify)
+    for d in dec:
+        if d.action == "move" and d.key in inv.unsafe:
+            d.action, d.reason = "hold", "a file of it lies outside the output folder"
+    _STALE_ADOPTED = {d.key: d.source for d in dec if d.action == "adopt"}
+    sets = _stale_patch_sets(patches_dir, written)
+    root_write = Path(patches_dir) == output
+    named: dict = {}
+
+    def _names_of(n: str):
+        if n not in named:
+            named[n] = stale_sweep.patch_bases(Path(patches_dir) / n)
+        return named[n]
+    # A per-source patch left in place can be merged by a later run's fallback:
+    # hold every base it could name, then decide the patches again (one that
+    # moved because all its source's bases moved may have to stay now).
+    while True:
+        pdec = stale_sweep.decide_patches(
+            set(sets), dict((manifest or {}).get("patches", {})), ran, status, dec,
+            claims_by_source, recorded)
+        for d in pdec:
+            if d.action == "move" and (root_write or sets.get(d.key) is None):
+                d.action, d.reason = "hold", ("the per-source patches sit at the mod root"
+                                              if root_write else "a file of it is a link")
+        if not stale_sweep.hold_for_staying_patches(dec, pdec, _names_of):
+            break
+    moves = [d for d in dec if d.action == "move"]
+    pmoves = [d for d in pdec if d.action == "move"]
+
+    gaps = _stale_plan_gaps(args, results, state)
+    limit = stale_sweep.brake_limit(len(inv.bases))
+    report_why: "list[str]" = []
+    if manifest is None:
+        report_why.append(f"the conversion manifest {problem}" if problem else
+                          "no earlier run recorded what it converted yet")
+    if gaps:
+        report_why.append("the plan is incomplete: " + "; ".join(gaps))
+    if len(moves) > limit:
+        report_why.append(f"the brake: {len(moves)} bases is more than the "
+                          f"{limit} one run may move")
+    if stale_sweep.report_only_forced():
+        report_why.append("CBBE2UBE_STALE_OUTPUT_SWEEP_REPORT_ONLY=1")
+
+    print(f"\n--- stale-output sweep: {len(stale)} old conversion(s) in "
+          f"meshes\\!UBE no source claimed this run ---")
+    if gaps and (moves or pmoves):
+        warn(f"stale-output sweep: {len(moves)} old conversion(s) NOT moved -- "
+             f"the plan is incomplete: {'; '.join(gaps)}",
+             consequence="a mesh this run may have lost is not told apart from one it "
+                         "dropped, so nothing moves; they are listed below",
+             fix="fix what the warnings above name and run all mods again")
+        _record_failure("stale sweep report-only", output, "plan incomplete",
+                        "; ".join(gaps), severity="warning")
+        warns += 1
+    if len(moves) > limit:
+        warn(f"stale-output sweep: {len(moves)} old conversion(s) NOT moved -- more "
+             f"than the {limit} one run may move",
+             consequence="a share this large is more likely a fault in this run than "
+                         "pieces that went away; they are listed below",
+             fix="read the list; if it is right, move the files by hand or run again "
+                 "after the cause is fixed")
+        _record_failure("stale sweep report-only", output, "brake",
+                        f"{len(moves)} > {limit}", severity="warning")
+        warns += 1
+
+    handle = None
+    if not report_why and (moves or pmoves):
+        handle, left, torn = _stale_move(output, inv, sets, moves, pmoves,
+                                         stale_sweep.run_stamp(ctx.get("started")
+                                                               or time.time()))
+        if left:
+            names = ", ".join(f"{k} ({e})" for k, e, _t in left[:5])
+            warn(f"stale-output sweep: {len(left)} old conversion(s) could not be "
+                 f"moved (a file is in use): {names}",
+                 consequence="each was left whole in meshes\\!UBE, so it still draws "
+                             "in game",
+                 fix="close the program holding the file (the game, NifSkope, "
+                     "Outfit Studio) and run again")
+            _record_failure("stale sweep move failed", output,
+                            f"{len(left)} base(s)", names, severity="warning")
+            warns += 1
+        if torn:
+            names = ", ".join(f"{k} ({', '.join(t)})" for k, _e, t in torn[:5])
+            warn(f"stale-output sweep: {len(torn)} old conversion(s) were only partly "
+                 f"moved and could not be put back: {names}",
+                 consequence="the named files are in _superseded\\ while the rest "
+                             "of the piece is still in meshes\\!UBE",
+                 fix="move the named files back from _superseded\\ by hand")
+            _record_failure("stale sweep move torn", output,
+                            f"{len(torn)} base(s)", names, severity="warning")
+            warns += 1
+
+    kept_moves = [d for d in dec if d.action == "move"]
+    if handle is not None:
+        n_files = len(handle.pairs())
+        print(f"  moved {len(handle.moved_bases)} base(s) and "
+              f"{len(handle.moved) - len(handle.moved_bases)} per-source patch set(s) "
+              f"({n_files} file(s)) to {handle.stamp_dir.relative_to(output)}\\ "
+              "-- kept only if the merge below succeeds")
+    elif moves or pmoves:
+        print(f"  REPORT ONLY: {'; '.join(report_why)}")
+    _stale_print_list("moved" if handle is not None else "would move", kept_moves)
+    _stale_print_list("left in place", [d for d in dec if d.action == "hold"])
+    _stale_print_list("recorded now (a later run moves them if they are still "
+                      "dropped then)", [d for d in dec if d.action == "adopt"])
+    _stale_print_list("per-source patches " + ("moved" if handle is not None
+                                               else "that would move"),
+                      [d for d in pdec if d.action == "move"])
+    _stale_print_list("per-source patches left in place",
+                      [d for d in pdec if d.action == "hold"])
+    if inv.unknown:
+        print(f"  {len(inv.unknown)} other file(s) in meshes\\!UBE left alone: "
+              + ", ".join(inv.unknown[:5]))
+    from dataclasses import asdict as _asdict
+    try:
+        stale_sweep.write_json(
+            output / stale_sweep.SUPERSEDED_DIR / stale_sweep.REPORT_NAME,
+            {"run_stamp": stale_sweep.run_stamp(ctx.get("started") or time.time()),
+             "moved_to": (str(handle.stamp_dir.relative_to(output))
+                          if handle is not None else None),
+             "report_only": report_why, "plan_complete": not gaps,
+             "plan_gaps": gaps, "brake_limit": limit,
+             "bases_on_disk": len(inv.bases), "stale_bases": len(stale),
+             "bases": [_asdict(d) for d in dec],
+             "patches": [_asdict(d) for d in pdec],
+             "other_files": inv.unknown})
+        print(f"  full list: {stale_sweep.SUPERSEDED_DIR}\\{stale_sweep.REPORT_NAME}")
+    except OSError as e:
+        print(f"  (stale-output report not written: {plain_error(e)})")
+    return warns
+
+
+def _stale_move(output, inv, sets, moves, pmoves, stamp):
+    """Move each decided base and patch set whole into a new stamp folder; the
+    journal (written first) lists them, so an interrupted run's moves can be
+    put back. Returns (handle or None, left [(key, error, [])], torn [(key,
+    error, [names])]).
+
+    The patch sets move first: a base whose source's patch set, or a patch set
+    naming it, could not move stays too (`hold_for_staying_patches`). The handle
+    is pending from the first move on, so an error anywhere after it puts back
+    what moved. #stale-output-sweep"""
+    sdir = stale_sweep.new_stamp_dir(output, stamp)
+    h = stale_sweep.Handle(output=output, stamp_dir=sdir,
+                           journal=sdir / stale_sweep.JOURNAL_NAME)
+    planned = []
+    for d in pmoves:
+        planned += [p.relative_to(output).as_posix() for p in sets[d.key]]
+    for d in moves:
+        planned += [p.relative_to(output).as_posix() for p in inv.bases[d.key]]
+    h.planned = [(output / rel, sdir / rel) for rel in planned]
+    journal = {"status": "moving", "run_stamp": stamp, "planned": planned,
+               "moves": []}
+    left: list = []
+    torn: list = []
+    try:
+        stale_sweep.write_json(h.journal, journal)
+    except OSError as e:
+        return None, [(d.key, plain_error(e), []) for d in moves + pmoves], []
+    stale_sweep._set_pending(h)
+    stayed: list = []
+    for kind, rows, files_of in (("patch", pmoves, lambda d: sets[d.key]),
+                                 ("mesh", moves, lambda d: sorted(inv.bases[d.key]))):
+        if kind == "mesh" and stayed:
+            stale_sweep.hold_for_staying_patches(
+                moves, stayed, lambda n: stale_sweep.patch_bases(sets[n][-1]))
+        for d in rows:
+            if d.action != "move":
+                continue
+            pairs, err, t = stale_sweep.move_group(files_of(d), output, sdir)
+            if err:
+                (torn if t else left).append((d.key, err, t))
+                d.action, d.reason = "hold", f"could not be moved ({err})"
+                if kind == "patch":
+                    stayed.append(d)
+                continue
+            h.moved.append((d.key, kind, pairs))
+            journal["moves"].append({"key": d.key, "kind": kind, "source": d.source,
+                                     "reason": d.reason,
+                                     "files": [a.relative_to(output).as_posix()
+                                               for a, _b in pairs]})
+    journal["status"] = "waiting for the merge" if h.moved else "nothing moved"
+    try:
+        stale_sweep.write_json(h.journal, journal)
+    except OSError:
+        pass            # the first journal still lists every planned file
+    if not h.moved:
+        stale_sweep._set_pending(None)
+        return None, left, torn
+    return h, left, torn
+
+
+def _stale_settle(h, why: str) -> int:
+    """Keep `h`'s moves, or -- `why` says the merge did not confirm them --
+    put every file back. Returns warnings printed. #stale-output-sweep"""
+    if not why:
+        stale_sweep.update_journal(h.journal, status="kept")
+        print(f"  stale-output sweep: kept {len(h.moved)} move(s) in "
+              f"{h.stamp_dir.relative_to(h.output)}\\ (the new Combined names none)")
+        return 0
+    # Every file the journal lists, not only the whole groups: a file of a base
+    # whose move was torn is in the stamp folder too. #stale-output-sweep
+    failed = stale_sweep.put_back(h.pairs() + h.planned)
+    stale_sweep.update_journal(h.journal,
+                               status="partly put back" if failed else "put back",
+                               put_back_because=why)
+    report = h.output / stale_sweep.SUPERSEDED_DIR / stale_sweep.REPORT_NAME
+    if report.is_file():
+        stale_sweep.update_journal(report, moved_to=None, put_back_because=why)
+    warn(f"stale-output sweep: the {len(h.moved)} old conversion(s) moved this run "
+         f"were put back: {why}",
+         consequence="an old Combined plugin may still name them, and a plugin that "
+                     "names a missing mesh crashes the game; they stay in "
+                     "meshes\\!UBE until a run completes the merge",
+         fix="fix the merge problem above and run all mods again")
+    _record_failure("stale sweep put back", h.output, "moved files", why,
+                    severity="warning")
+    return 1 + (_stale_put_back_failed(h, failed) if failed else 0)
+
+
+def _stale_put_back_failed(h, failed) -> int:
+    """Name the moved files that could not go back. #stale-output-sweep"""
+    names = ", ".join(Path(f).name for f in failed[:5])
+    warn(f"stale-output sweep: {len(failed)} moved file(s) could not be put back: "
+         f"{names}",
+         consequence="a plugin that still names one of them crashes the game "
+                     "when an actor wearing it loads",
+         fix=f"move them back by hand from {h.stamp_dir}")
+    _record_failure("stale sweep put back failed", h.output,
+                    f"{len(failed)} file(s)", ", ".join(failed[:5]))
+    return 1
+
+
+def _stale_output_sweep_failover(output, patches_dir) -> int:
+    r"""The merge falls back to the per-source patches (coverage failed or came
+    back empty): put back every file this run moved BEFORE the fallback lists
+    the patches, so it merges what a run without the sweep would -- the moved
+    patch sets, and patches whose armatures name a moved mesh. Then run the
+    female-model restore again: it ran while those meshes were away, and it
+    re-points only to a mesh on disk (idempotent), so a second pass ends where
+    one pass over the whole folder would. Returns warnings. #stale-output-sweep"""
+    h = stale_sweep.pending()
+    if h is None:
+        return 0
+    stale_sweep._set_pending(None)
+    warns = _stale_settle(h, "the merge falls back to the per-source patches, "
+                             "which may name them")
+    try:
+        _fmr = ube_patcher.restore_female_models(patches_dir, output)
+        if _fmr.get("models_restored"):
+            print(f"  female-model restore (after the put-back): re-pointed "
+                  f"{_fmr['models_restored']} ARMA model(s) in "
+                  f"{_fmr['patches_changed']} patch(es)")
+    except Exception as e:
+        warn(f"female-model restore after the stale-output put-back failed: "
+             f"{plain_error(e)}",
+             consequence="a patch may keep a male fallback for a mesh that is back")
+        warns += 1
+    return warns
+
+
+def _stale_output_sweep_finish(args, output, results, *, merged) -> int:
+    r"""#stale-output-sweep, after the merge: keep this run's moves only when
+    the merge wrote a new Combined from coverage alone and none of its pieces
+    names a moved base -- otherwise every moved file goes back, because an old
+    Combined pointing at a moved `!UBE` mesh is a missing-mesh crash. Then write
+    the manifest (every `auto` run, a Select run too). Returns warnings."""
+    global _STALE_ADOPTED
+    ctx = getattr(args, "stale_sweep", None)
+    if not ctx or not stale_sweep.sweep_on():
+        return 0
+    output = Path(output)
+    warns = 0
+    h = stale_sweep.pending()
+    if h is not None:
+        stale_sweep._set_pending(None)
+        why = ""
+        if not merged:
+            why = "the new Combined plugin was not written from coverage this run"
+        else:
+            try:
+                refs = stale_sweep.combined_references(
+                    output / args.merged_name, h.moved_bases)
+            except Exception as e:
+                refs = []
+                why = f"the new Combined plugin could not be read back ({plain_error(e)})"
+            if refs:
+                why = (f"the new Combined plugin still names {len(refs)} of them: "
+                       + ", ".join(refs[:3]))
+        warns += _stale_settle(h, why)
+    adopted, _STALE_ADOPTED = _STALE_ADOPTED, {}
+    try:
+        _stale_write_manifest(args, output, results, adopted)
+    except Exception as e:
+        warn(f"could not write the conversion manifest ({plain_error(e)})",
+             where=str(output / stale_sweep.MANIFEST_NAME),
+             consequence="the next run cannot tell which old conversions are ours, so "
+                         "it moves none of this run's",
+             fix="check that the output folder is writable and run again")
+        _record_failure("manifest not written", output, stale_sweep.MANIFEST_NAME,
+                        plain_error(e), severity="warning")
+        warns += 1
+    return warns
+
+
+def _stale_write_manifest(args, output, results, adopted) -> None:
+    """Record every base this run claimed and every per-source patch it wrote,
+    with the source that made it; carry what an earlier run recorded while its
+    file is still on disk. #stale-output-sweep"""
+    claims: dict = {}
+    patches: dict = {}
+    for src, r, _err in results:
+        if r is None:
+            continue
+        name = _stale_source_name(src)
+        for b in sorted(getattr(r, "claimed_weight_bases", ()) or ()):
+            claims.setdefault(b, name)
+        for p in getattr(r, "output_esps", ()) or ():
+            patches.setdefault(Path(p).name, name)
+    inv = stale_sweep.inventory(output)
+    pdir = _patches_dir_of(output, getattr(args, "unmerged_patch_subdir",
+                                           "_unmerged_patches"))
+    try:
+        pfiles = ({q.name.lower() for q in pdir.glob("*.esp")}
+                  if pdir.is_dir() else set())
+    except OSError:
+        pfiles = set()
+    prev, _problem = stale_sweep.read_manifest(output)
+    try:
+        from .build_info import stamp_line as _stamp_line
+        build = _stamp_line()
+    except Exception:
+        build = ""
+    ctx = getattr(args, "stale_sweep", None) or {}
+    stale_sweep.write_manifest(output, stale_sweep.build_manifest(
+        prev, claims, patches, set(inv.bases), pfiles, adopted,
+        stale_sweep.run_stamp(ctx.get("started") or time.time()), build))
+
+
+def _stale_output_sweep_abandoned() -> int:
+    """The run stopped between the sweep and the merge (an exception left
+    `_cmd_convert`): put back whatever the sweep moved. #stale-output-sweep"""
+    h = stale_sweep.pending()
+    if h is None:
+        return 0
+    stale_sweep._set_pending(None)
+    return _stale_settle(h, "the run stopped before the merge confirmed them")
+
+
 def _outside_ube_mesh_resolver(output) -> "callable[[str], bool] | None":
     r"""The post-merge validator's `mesh_resolves`: does a `!UBE\` path the
     coverage step pointed OUTSIDE our output load from another mod? Only the two
@@ -5136,6 +5748,7 @@ def _cmd_convert(args):
                       "(no second archive scan)")
     except Exception:
         _BATCH_BSA_INDEX = None
+    _sos_bsa = _stale_bsa_state(_BATCH_BSA_INDEX)   # outlives the index #stale-output-sweep
 
     # Incremental floor = newest of (converter source code, UBE body ref,
     # CONFIG FINGERPRINT). The fingerprint closes the gap that kept this
@@ -5299,6 +5912,7 @@ def _cmd_convert(args):
         gc.collect()
 
     print(f"\n=== batch auto-conversion done ({len(results)} mod(s)) ===")
+    _sos_warns = problem_count()   # warnings up to the end of the batch #stale-output-sweep
 
     # Guarantee both _0 and _1 exist: a missing weight partner breaks the piece
     # at that body weight. Fill any single-weight base from its present partner.
@@ -5603,6 +6217,7 @@ def _cmd_convert(args):
     # silently not happening is invisible until armor turns up missing
     # in game. Tracked so the tail can say so out loud.
     _coverage_ran = False
+    _sos_merged = False   # a new Combined from coverage alone #stale-output-sweep
     # --- Auto-merge into Combined ESP ---
     # Merge all per-source UBE patch ESPs into one ESL-flagged ESP at the mod root.
     # Only the merged ESP should be visible to MO2's scanner; per-source patches in
@@ -5618,6 +6233,15 @@ def _cmd_convert(args):
             # #source-patch-rename
             patch_paths = _merge_gate_patch_paths(patches_dir)
             if patch_paths:
+                # #stale-output-sweep: move our old conversions no source makes
+                # any more -- on a recorded source and a positive reason -- out
+                # of meshes\!UBE before the restore and coverage read it. The
+                # merge below confirms the moves or they all go back.
+                overall_warnings += _stale_output_sweep(
+                    args, output, patches_dir, results, claimed_dst_paths,
+                    {"mesh_index": mesh_vfs_index, "bsa": _sos_bsa,
+                     "npc_worn": batch_npc_worn, "winner_np": batch_winner_np,
+                     "covered": batch_ube_covered, "warns": _sos_warns})
                 # Female-model re-check before merge: per-mod patches may have
                 # fallen back to a male model at patch time; re-point any ARMA
                 # whose female mesh is now on disk. Must run before the merge.
@@ -5689,6 +6313,10 @@ def _cmd_convert(args):
                     # path is all-or-nothing; the fallback is per-source ONLY,
                     # and one file per source (never an old-named and a renamed
                     # copy of the same one). #source-patch-rename
+                    # #stale-output-sweep: the fallback merges what a run
+                    # without the sweep would -- every moved file goes back
+                    # before the patches are listed.
+                    overall_warnings += _stale_output_sweep_failover(output, patches_dir)
                     patch_paths = _per_source_patch_paths(patches_dir)
                 merged_out = output / args.merged_name
                 print(f"\n--- auto-merging {len(patch_paths)} patch(es) "
@@ -5794,6 +6422,7 @@ def _cmd_convert(args):
                                              "invisible on UBE actors",
                                  fix="check the VANILLA SWEEP pass above for errors, or "
                                      "rerun just the sweep (Select mods -> 'vanilla')")
+                    _sos_merged = patch_paths is _cov_only   # #stale-output-sweep
                     # Reconcile alt-texture 3D indices against the converted NIFs.
                     # Shape reordering during the NIF merge shifts MO2S/MO3S indices;
                     # reconcile ALL split pieces (overflow also carries alt-texture sets).
@@ -5892,6 +6521,12 @@ def _cmd_convert(args):
              indent="\n")
         _record_failure("merge skipped", "Combined ESP", args.merged_name,
                         f"{merge_blockers} source(s) failed ESP generation")
+
+    # #stale-output-sweep: keep this run's moves only when the new Combined was
+    # written from coverage and names none of them, else put every file back;
+    # then record what this run converted, and from which source.
+    overall_warnings += _stale_output_sweep_finish(args, output, results,
+                                                   merged=_sos_merged)
 
     if not _coverage_ran:
         # Unified coverage is the ONLY coverage model and it is emitted as part
@@ -6735,6 +7370,10 @@ class _BsaMeshIndex:
         # file (the setup check builds one this way). #tool-folder-only
         self._staging = Path(staging_dir) if staging_dir is not None else None
         self._index = None                    # rel_lower -> (bsa_path, internal_name)
+        # Folders and archives the listing could not read: the index is then
+        # SMALLER than the load order, and the stale-output sweep must not read
+        # a mesh it lost as one no source makes. #stale-output-sweep
+        self.skipped: "list[str]" = []
         self._open: dict = {}                 # bsa_path -> BSAArchive (extract cache)
         self._out: dict = {}                  # rel_lower -> (Path, rel) | None
         # Optional archive-name allowlist (lowercase prefixes). The setup-check
@@ -6769,6 +7408,7 @@ class _BsaMeshIndex:
                 or other.listing_key() != self.listing_key()):
             return False
         self._index = other._index
+        self.skipped.extend(getattr(other, "skipped", ()))   # #stale-output-sweep
         return True
 
     def _scan(self) -> None:
@@ -6780,6 +7420,7 @@ class _BsaMeshIndex:
             try:
                 bsas = sorted(d.glob("*.bsa"))
             except Exception:
+                self.skipped.append(str(d))
                 continue
             for bsa in bsas:
                 if any(k in bsa.name.lower() for k in self._skip):
@@ -6792,6 +7433,7 @@ class _BsaMeshIndex:
                     arch = BSAArchive(bsa, eager=False)   # table-only: cheap list
                     files = arch.list_files()
                 except Exception:
+                    self.skipped.append(bsa.name)
                     continue
                 for f in files:
                     fl = f.lower().replace("\\", "/")
@@ -6811,7 +7453,8 @@ class _BsaMeshIndex:
             if self._index is None:
                 self._scan()
             return key in self._index
-        except Exception:
+        except Exception as e:
+            self.skipped.append(f"(the listing stopped: {plain_error(e)})")
             return False
 
     def read_bytes(self, key: str) -> "bytes | None":
@@ -7628,7 +8271,18 @@ def _batch_npc_worn_armos(for_coverage: bool = False
 # {load-order key -> {(defining plugin lowercase, formid low24) -> not playable}};
 # one load order at a time. A failed build is cached as None so it warns once.
 _ARMO_WINNER_CACHE: "dict[tuple, dict | None]" = {}
+# The plugins that build could not read, same key: the map is then missing their
+# overrides, and the stale-output sweep treats the plan as incomplete.
+# #stale-output-sweep
+_ARMO_WINNER_UNREADABLE: "dict[tuple, list[str]]" = {}
 _ARMO_NONPLAYABLE_FLAG = 0x00000004   # ARMO record header flag
+
+
+def _armo_winner_unreadable() -> "list[str]":
+    """The plugins the cached playability map could not read (one load order is
+    cached at a time). #stale-output-sweep"""
+    return [n for k, v in _ARMO_WINNER_UNREADABLE.items()
+            if k in _ARMO_WINNER_CACHE for n in v]
 
 
 def _selection_winner_playable() -> bool:
@@ -7710,6 +8364,8 @@ def _batch_armo_winner_nonplayable() -> "dict[tuple[str, int], bool] | None":
         flags, bad = _armo_winner_nonplayable(ordered)
         _ARMO_WINNER_CACHE.clear()
         _ARMO_WINNER_CACHE[key] = flags
+        _ARMO_WINNER_UNREADABLE.clear()
+        _ARMO_WINNER_UNREADABLE[key] = list(bad)
         print(f"  Armour playability: read the winning record of {len(flags)} "
               f"armour(s) in {len(ordered)} active plugin(s) in "
               f"{time.time() - t0:.1f}s")
@@ -7737,7 +8393,8 @@ def _player_armor_mesh_bases(mod_dir: Path,
                              ube_covered_armos=None,
                              npc_worn_armos=None,
                              worn_admitted=None,
-                             armo_winner_nonplayable=None) -> "set[str]":
+                             armo_winner_nonplayable=None,
+                             drop_reasons=None) -> "set[str]":
     """Weight-agnostic rel-path keys of every mesh a DefaultRace ARMA in this mod
     points at as an armor piece (biped slot is not hair-only).
 
@@ -7772,6 +8429,13 @@ def _player_armor_mesh_bases(mod_dir: Path,
     an identity it does not know keeps the record's flag. None = each plugin's
     own record decides (the old rule). Which armatures a plugin's ARMOs admit is
     still judged per plugin. #selection-winner-playable
+
+    `drop_reasons`: optional dict the caller passes to learn, for a mesh base
+    this plugin's armatures name but the result does not plan, the POSITIVE
+    reason a rule gave: "non-playable", "third-party covered" or "female-only"
+    -- only for an armature that passes every other test, so the reason is the
+    one that took it out. The stale-output sweep moves our old conversion of a
+    base only on such a reason, never on absence. #stale-output-sweep
 
     `include_candidate_slots`: also admit ambiguous modder slots (44/45/47/48/59/61)
     used for body cloth. The crash guard in auto_convert_mod drops any non-body-skinned
@@ -7880,15 +8544,18 @@ def _player_armor_mesh_bases(mod_dir: Path,
                 # Gore/effect: this ARMA is referenced ONLY by non-playable
                 # ARMO(s) in this plugin -> not player-equippable -> don't convert
                 # -- unless an NPC wears one of them. #npc-worn-nonplayable
-                if (rec.formid in any_ref and rec.formid not in playable_ref
-                        and rec.formid not in worn_ref):
-                    continue
+                _np_skip = (rec.formid in any_ref and rec.formid not in playable_ref
+                            and rec.formid not in worn_ref)
                 _only_worn = (rec.formid in worn_ref
                               and rec.formid not in playable_ref)
                 # #skip-already-ube: referenced ONLY by armors another mod has
                 # already UBE-patched -> that mod owns this piece; converting it
                 # would ship a mesh we then suppress at the coverage stage.
-                if rec.formid in covered_ref and rec.formid not in uncovered_ref:
+                _cov_skip = (rec.formid in covered_ref
+                             and rec.formid not in uncovered_ref)
+                # Asked for reasons, a skipped armature is read on through the
+                # tests below and dropped after them. #stale-output-sweep
+                if (_np_skip or _cov_skip) and drop_reasons is None:
                     continue
                 rnam = None
                 slot = 0
@@ -7917,12 +8584,14 @@ def _player_armor_mesh_bases(mod_dir: Path,
                 # path) -- then the male mesh is the real one the female
                 # ARMA gets redirected to, so it must convert. mesh_resolves==None
                 # (callers without VFS context) keeps the legacy "convert both".
+                _female_only: "list[str]" = []   # male models the rule leaves out
                 if not female_models:
                     models = male_models
                 elif mesh_resolves is None:
                     models = female_models + male_models
                 elif any(mesh_resolves(_weight_base_key(m)) for m in female_models):
                     models = female_models
+                    _female_only = male_models
                 else:
                     models = female_models + male_models
                 if rnam is None:
@@ -7949,6 +8618,17 @@ def _player_armor_mesh_bases(mod_dir: Path,
                                   # circlet/amulet/ring/ears) — don't convert
                 if _is_child_content_asset(edid):
                     continue  # child clothing — not armour "for the player"
+                if drop_reasons is not None:
+                    # #stale-output-sweep: the rule that took these meshes out.
+                    _why = ("non-playable" if _np_skip else
+                            "third-party covered" if _cov_skip else None)
+                    for m in (female_models + male_models if _why
+                              else _female_only):
+                        if _weight_base_key(m):
+                            drop_reasons.setdefault(_weight_base_key(m),
+                                                    _why or "female-only")
+                    if _why:
+                        continue
                 for m in models:
                     if not m:
                         continue
@@ -7964,6 +8644,9 @@ def _player_armor_mesh_bases(mod_dir: Path,
                     if _only_worn and base and worn_admitted is not None:
                         worn_admitted.add((ep.name.lower(), rec.formid))
     bases.discard("")
+    if drop_reasons is not None:
+        for b in bases:           # planned after all, by another armature
+            drop_reasons.pop(b, None)
     return bases
 
 
@@ -8742,6 +9425,9 @@ def _cmd_auto(args):
     the Combined ESP, and emit vanilla race coverage. This is what the MO2
     executable button runs."""
     import argparse as _ap
+    # Warnings from here on make the stale-output sweep report only.
+    # #stale-output-sweep
+    _sos_warn_base, _sos_started = problem_count(), time.time()
     # FIRST thing in the log, before discovery and before anything can abort: a run
     # that dies early still has to say what flags it was carrying. #settings-did-not-apply
     _echo_active_experiment_flags()
@@ -8929,8 +9615,19 @@ def _cmd_auto(args):
         # the window passes them as --coverage-exclude-mods. #exclude-owned-coverage
         exclude_mods=(_user_excl + (_split_mod_arg(
             getattr(args, "coverage_exclude_mods", None)) or [])) or None,
+        # What the stale-output sweep needs to know about this run: only a run
+        # of all mods may move anything, and a recorded source that did not run
+        # is judged by where it went. #stale-output-sweep
+        stale_sweep={"all_mods": not only, "warn_base": _sos_warn_base,
+                     "started": _sos_started, "mods_root": str(mr),
+                     "enabled": None if enabled is None else sorted(enabled),
+                     "excluded": sorted(exclude)},
     )
-    rc = _cmd_convert(conv)
+    try:
+        rc = _cmd_convert(conv)
+    finally:
+        # Moves the merge never confirmed go back. #stale-output-sweep
+        _stale_output_sweep_abandoned()
     # Failures of anything that runs AFTER `rc` was fixed by the convert above,
     # so an exception down here still fails the run instead of exiting 0.
     #

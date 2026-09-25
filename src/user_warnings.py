@@ -46,6 +46,14 @@ import sys
 PROBLEM = "!!"
 #: For information that needs no action.
 NOTE = "NOTE:"
+#: Problem-level warnings this process has printed. The stale-output sweep
+#: moves nothing after a run that printed one. #stale-output-sweep
+_PROBLEMS = 0
+
+
+def problem_count() -> int:
+    """How many problem-level warnings `warn` has printed in this process."""
+    return _PROBLEMS
 
 
 def plain_error(exc: BaseException) -> str:
@@ -66,6 +74,9 @@ def warn(what: str, *, where: str = "", consequence: str = "", fix: str = "",
     marker line's prefix (a leading newline separates a block from the log
     above it); the other lines sit three columns in from the marker so the
     block reads as one warning."""
+    global _PROBLEMS
+    if level == PROBLEM:
+        _PROBLEMS += 1
     head = f"{indent}{level} {what}"
     if where:
         head += f" -- {where}"
