@@ -1245,8 +1245,13 @@ log names exactly the lifted chains on all 205 pieces (magnitudes within
 refused on the source's body-helper shape, whose genital bones sat 4.15u off
 where the skeleton puts them; that shape keeps its body name in the written
 file, and the tool's check left it out as the body -- ranking the two -- until
-it read every shape as the converter does. They rest clear (-0.40u) and
-carry no lift, so no depth or lift count moved.
+it also put body-named shapes into the frame check. That is not exactly the
+converter's view: the converter checks each SOURCE file on its own, so the
+UBE body it injects later never joins a garment's check, while the tool,
+reading the written file, now checks the injected body too. The refusal
+verdicts still match the log on all 285 pieces, but the printed 'over N
+bones' count can run higher than the log's (e.g. 137 against 120). They rest
+clear (-0.40u) and carry no lift, so no depth or lift count moved.
 
 Against the first reading (stored vertices), the depth at the bind position
 reproduces it, so the change is the node tree: of the 7 garments first

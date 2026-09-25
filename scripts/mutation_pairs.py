@@ -7371,4 +7371,24 @@ PAIRS = (
          tests=('tests/test_physics_rest_depth.py',),
          expect=('test_a_run_that_crashes_leaves_incomplete_not_an_old_result[report]',),
     ),
+    Pair('PRD-zn', 'a --json path that cannot be written crashes the run',
+         edits=(
+             ('scripts/analysis/physics_rest_depth.py',
+              '        except OSError as e:\n'
+              '            print(f"cannot write --json {a.json}: {type(e).__name__}: "\n',
+              '        except KeyError as e:  # MUTATED\n'
+              '            print(f"cannot write --json {a.json}: {type(e).__name__}: "\n', 1),
+         ),
+         tests=('tests/test_physics_rest_depth.py',),
+         expect=('test_a_json_path_that_cannot_be_written_exits_2_with_one_line[False]',),
+    ),
+    Pair('PRD-zo', 'a usage error with an unwritable --json crashes instead of exiting 2',
+         edits=(
+             ('scripts/analysis/physics_rest_depth.py',
+              '            except OSError:          # argparse has said what is wrong\n',
+              '            except KeyError:  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_physics_rest_depth.py',),
+         expect=('test_a_json_path_that_cannot_be_written_exits_2_with_one_line[True]',),
+    ),
 )

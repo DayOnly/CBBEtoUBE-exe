@@ -749,6 +749,24 @@ def test_every_exit_2_records_its_reason_over_a_stale_json(
     assert got["rows"] == []
 
 
+@pytest.mark.parametrize("usage", [False, True])
+def test_a_json_path_that_cannot_be_written_exits_2_with_one_line(
+        tmp_path, capsys, usage):
+    """A --json in a folder that does not exist is an input error like any
+    other: one line and exit 2 (argparse's own exit 2 for a usage error),
+    never a traceback."""
+    meshes = _main_inputs(tmp_path)
+    out = tmp_path / "no_such_dir" / "out.json"
+    if usage:
+        with pytest.raises(SystemExit) as ex:
+            prd.main([str(meshes), "--top", "many", "--json", str(out)])
+        assert ex.value.code == 2
+    else:
+        assert prd.main([str(tmp_path / "nope"), "--json", str(out)]) == 2
+        assert "cannot write --json" in capsys.readouterr().out
+    assert not out.exists()
+
+
 @pytest.mark.parametrize("where", ["scan", "report"])
 def test_a_run_that_crashes_leaves_incomplete_not_an_old_result(
         tmp_path, monkeypatch, where):

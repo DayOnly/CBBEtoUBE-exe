@@ -83,9 +83,11 @@ LISTED APART (a FRAME DISAGREEMENT, both depths shown, NOT ranked):
     `nc._chain_frame_ok` and its CHAIN_LIFT_FRAME_TOL on the chain bones' --
     every skin bone but a hard skeleton bone -- node-tree positions, the lift
     read back under them taken off, against the skin in the bind frame F).
-    Like the converter's, it reads every skinned shape of the file, a
-    body-named one included: a source's own body helper keeps its name in
-    the written file, and its skin can refuse the file.
+    It reads every skinned shape of the written file, a body-named one
+    included: a source's own body helper keeps its name there, and its skin
+    can refuse the file. (The converter checks the SOURCE file, so the UBE
+    body it injects later is never in its check; here it is, which can raise
+    the printed bone count above the log's -- the verdicts match.)
     The converter lifts nothing on such a file, so it carries no lift;
     `checked` 0 (no chain bone with skin) refuses nothing here, as there is
     no chain to lift;
@@ -619,9 +621,10 @@ def measure(nif, row, skel, body):
         if not len(s.verts) or not s.bone_weights:
             continue
         r = shape_rest(nodes, s, skel, moving, memo)
-        # The converter's frame check reads EVERY shape of the file, a
-        # body-named one too (a source's own body helper keeps its name and
-        # its skin): it is checked, never measured or read back.
+        # The frame check reads EVERY shape of the written file, a body-named
+        # one too (a source's own body helper keeps its name and its skin; the
+        # injected UBE body, which the converter never checks, adds bones but
+        # no refusal): it is checked, never measured or read back.
         framed.append((s, r["frame"]))
         if pch._key(s.name) in BODY_SHAPES:
             continue
@@ -1006,13 +1009,22 @@ def main(argv=None):
         a = ap.parse_args(argv)
     except SystemExit as e:
         if e.code == 2 and json_p:
-            write_status(json_p, STATUS_INPUT, "usage: the arguments do not "
-                         "parse")
+            try:
+                write_status(json_p, STATUS_INPUT, "usage: the arguments do "
+                             "not parse")
+            except OSError:          # argparse has said what is wrong
+                pass
         raise
     if a.json:
         # Until the run ends, the file says so: a crash leaves this, never
-        # an earlier run's rows.
-        write_status(a.json, STATUS_INCOMPLETE, "the run did not finish")
+        # an earlier run's rows. A path that cannot be written is an input
+        # error like any other: one line, exit 2.
+        try:
+            write_status(a.json, STATUS_INCOMPLETE, "the run did not finish")
+        except OSError as e:
+            print(f"cannot write --json {a.json}: {type(e).__name__}: "
+                  f"{e.strerror or e}")
+            return 2
 
     def refuse(reason):
         print(reason)
