@@ -286,10 +286,9 @@ def test_no_message_in_src_names_a_control_that_is_gone():
     assert not hits, "these messages name a control that does not exist: " + repr(hits)
 
 
-# Every argparse surface a doc may describe: the converter's CLI, the
-# single-NIF CLI (README attributes --cbbe-dir / --ube-dir to it) and the exe's
-# entry point.
-_ARGPARSE_SOURCES = ("src/auto_convert.py", "src/cli.py", "cbbe_to_ube_main.py")
+# Every argparse surface a doc may describe: the converter's CLI and the exe's
+# entry point. (The single-NIF refit CLI was removed 2026-09-25.)
+_ARGPARSE_SOURCES = ("src/auto_convert.py", "cbbe_to_ube_main.py")
 _FLAG_DOCS = ("README.md", "USING.md", "REPORTING.md")
 
 

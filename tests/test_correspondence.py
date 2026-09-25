@@ -31,7 +31,6 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from src.correspondence import MeshIndex, compute_deformation, project_to_mesh
-from src.weights import transfer_weights
 
 
 def _icosphere(radius=1.0, subdivisions=2):
@@ -116,35 +115,7 @@ def test_deformation_sphere_to_scaled_sphere():
     assert np.allclose(r, 1.6, atol=0.05), f"radii off: mean={r.mean():.3f}, std={r.std():.3f}"
 
 
-def test_weight_transfer_renormalizes():
-    """Transferred weights for each vertex must sum to ~1."""
-    # 50 ref body verts on a small grid, with two fake bones
-    rng = np.random.default_rng(1)
-    ref = rng.standard_normal((50, 3))
-    bone_weights = {
-        "Bone.A": np.column_stack([np.arange(50, dtype=np.float64), rng.random(50)]),
-        "Bone.B": np.column_stack([np.arange(50, dtype=np.float64), rng.random(50)]),
-    }
-    # Renormalize ref weights so they sum to 1 per vertex
-    a = bone_weights["Bone.A"][:, 1]
-    b = bone_weights["Bone.B"][:, 1]
-    s = a + b
-    bone_weights["Bone.A"][:, 1] = a / s
-    bone_weights["Bone.B"][:, 1] = b / s
-
-    armor_verts = rng.standard_normal((20, 3))
-    out = transfer_weights(armor_verts, ref, bone_weights, k=4)
-
-    # Reconstruct per-vertex sum
-    sums = np.zeros(20)
-    for bn, pairs in out.items():
-        idx = pairs[:, 0].astype(int)
-        sums[idx] += pairs[:, 1]
-    assert np.allclose(sums, 1.0, atol=1e-9), sums
-
-
 if __name__ == "__main__":
     test_projection_on_sphere()
     test_deformation_sphere_to_scaled_sphere()
-    test_weight_transfer_renormalizes()
     print("OK")

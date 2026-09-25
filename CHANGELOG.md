@@ -2,6 +2,63 @@
 
 ## Unreleased
 
+### Fixed — a copy of the combined plugin in the output folder is left alone
+
+If you kept a copy of `CBBE_to_UBE_Combined.esp` in the output folder (for
+example `CBBE_to_UBE_Combined - Copy.esp` or `..._backup.esp`), every run
+opened it, rewrote it and listed it as checked, as if it were part of the
+output. Only the combined plugin and its numbered parts (`...Combined2.esp`,
+and so on) are touched now. The reported modlist has no such copy, so nothing
+changes there. `CBBE2UBE_NO_PIECE_FAMILY_MATCH=1` (set to 1) turns it off.
+
+### Changed — when two archives hold the same mesh, the tool takes the copy the game uses
+
+When two mods' archives contain the same mesh, the game uses the one belonging
+to the plugin lower in your load order. This tool used the one from the mod
+higher in MO2's left pane instead, so it could convert a different version of a
+mesh than the one you see in game. It now follows the load order, as the game
+does. On the reported modlist this picks a different copy for 436 meshes, none
+of them armour this tool converts, so the output does not change there.
+`CBBE2UBE_NO_BSA_LOAD_ORDER_WINNER=1` (set to 1) turns it off.
+
+### Fixed — a plugin whose file name has a comma is now reported instead of silently not working
+
+SkyPatcher reads a comma or semicolon as a separator. When armour came from a
+plugin with one of those in its file name, the line this tool wrote for it
+matched nothing, so that armour was invisible on UBE actors with nothing in the
+log to say why. Such a line is no longer written; the run now warns, names the
+plugin, and says to rename it. If it is the merged plugin's own name
+(`--merged-name`) that has one, the run names that file instead. An equals sign
+in a name is fine and keeps its line. The reported modlist has one plugin
+with a comma in its name, and none of its records are armour this tool links,
+so nothing changes there. `CBBE2UBE_NO_SKYPATCHER_NAME_GUARD=1` (set to 1) turns
+it off.
+
+### Fixed — armour whose mesh folder or file name has an accented letter keeps its path
+
+When a mod's mesh path had an accented letter (an é, for example), the armour
+record this tool writes dropped that letter, so it named a mesh that does not
+exist and the armour was invisible on UBE actors. Paths are now kept exactly as
+the mod wrote them. The reported modlist has no such armour path, so nothing
+changes there. `CBBE2UBE_NO_ARMA_PATH_BYTES=1` (set to 1) turns it off.
+
+### Fixed — a mesh stored uncompressed in an archive no longer picks up bytes of the next file
+
+Some archives store each file's path in front of its data. For a file stored
+uncompressed in such an archive, this tool read a little too far and handed the
+converter the mesh with the start of the next file stuck on its end. The
+reported modlist has no such file (26 archives store paths, and every file in
+them is compressed), so nothing changes there.
+
+### Removed — the old single-file `refit` command-line tool
+
+A source checkout carried a second, older command-line tool (`src/cli.py`, with
+`refit`, `refit-pair` and `refit-batch`) that refit one mesh file at a time. It
+could not save a Skyrim SE mesh at all: every run stopped with an error before
+writing anything. It was never part of the program you download or of the
+window, which convert through a different path, so nothing a user runs changes.
+It has been removed, with the code only it used.
+
 ### Changed — the patch no longer carries the same armour piece twice
 
 The patch this tool writes for mod armour is cut into parts small enough to load

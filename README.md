@@ -472,9 +472,7 @@ using another body. `CBBE2UBE_NO_ZEROED_BODY_REFS=1` (Paths tab, advanced:
 *Fit against the zeroed BodySlide bodies*) turns the zeroed lookup off and
 restores discovery by name.
 
-`convert` takes `--ube-body-ref` to pin the UBE reference explicitly. The
-low-level single-NIF CLI (`src/cli.py`) takes the parent folders via
-`--cbbe-dir` / `--ube-dir`, defaulting to the same lookup.
+`convert` takes `--ube-body-ref` to pin the UBE reference explicitly.
 
 An **All mods** run skips body mods — any mod folder that ships either body
 file above — because they are the body, not armour.
@@ -525,8 +523,9 @@ cbbe-to-ube/
     preview.py              # headless morph-preview renderer
     gui.py / gui_settings.py             # Tkinter GUI, and the settings registry behind it
     build_mod.py            # output-mod assembly helpers
-    cli.py / refit.py / correspondence.py / weights.py / nif_io.py
-                            # low-level single-armor refit interface
+    correspondence.py / weights.py / nif_io.py
+                            # closest-point deformation, the skin-weight write
+                            # rule, a read-only numpy view of a NIF
     preflight.py / diagnostics.py / report_template.py / failure_summary.py
                             # Check setup, the diagnostics zip, the problem report, the
                             # failures file in words

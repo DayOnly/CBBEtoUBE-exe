@@ -399,17 +399,61 @@ def reconcile_alt_texture_indices(esp_path, meshes_root) -> int:
     return fixed
 
 
+def _piece_family_match() -> bool:
+    r"""#piece-family-match (2026-09-25): do the post-merge passes rewrite only
+    the Combined and its numbered split pieces? Yes, by default.
+
+    `reconcile_alt_texture_indices_all`, `dedup_armo_armature_refs_all`,
+    `fix_spurious_hand_slot`, `resort_masters_all` and
+    `postflight_validate_combined` globbed `<stem>*<suffix>`: a user's
+    `<stem> - Copy.esp` or `<stem>_backup.esp` in the output folder was loaded,
+    rewritten (ESP.save drops what the reader does not model) and reported
+    "validated clean" on every run. `_drop_stale_pieces` had already narrowed the
+    same family to `<stem><digits><suffix>` for its deletes; all six now share
+    `_combined_piece_tail`. Live: the output folder holds the Combined and one
+    piece, nothing else of that stem. CBBE2UBE_NO_PIECE_FAMILY_MATCH=1 makes the
+    five passes glob the broad family again (the deletes stay narrow)."""
+    return not _flag("CBBE2UBE_NO_PIECE_FAMILY_MATCH", False)
+
+
+def _combined_piece_tail(name: str, stem: str, suffix: str) -> "str | None":
+    """The part of `name` between the Combined's `stem` and `suffix`: "" for the
+    Combined itself, the digits of a split piece (`<stem>2.esp` -> "2"), None
+    for any other file that merely starts with the stem (`<stem> - Copy.esp`,
+    `<stem>_backup.esp`). Case-blind, as the folder is. The ONE matcher of the
+    merge's file family. #piece-family-match"""
+    n, s, x = name.lower(), stem.lower(), suffix.lower()
+    if not (n.startswith(s) and n.endswith(x)) or len(n) < len(s) + len(x):
+        return None
+    tail = n[len(s):len(n) - len(x)]
+    return tail if tail == "" or tail.isdigit() else None
+
+
+def _combined_piece_family(primary, suffix: "str | None" = None) -> "list[Path]":
+    """The merge's own files beside `primary` (the Combined and its numbered
+    split pieces), sorted -- the files the post-merge passes may rewrite.
+    `suffix` defaults to `primary`'s. With CBBE2UBE_NO_PIECE_FAMILY_MATCH, every
+    `<stem>*<suffix>` as before. #piece-family-match"""
+    p = Path(primary)
+    x = suffix if suffix is not None else p.suffix
+    found = sorted(p.parent.glob(f"{p.stem}*{x}"))
+    if not _piece_family_match():
+        return found
+    return [f for f in found if _combined_piece_tail(f.name, p.stem, x) is not None]
+
+
 def reconcile_alt_texture_indices_all(primary_esp_path, meshes_root) -> int:
     """Reconcile alt-texture indices across the primary merged ESP AND every
     ESL-split overflow piece (`<stem>.esp`, `<stem>2.esp`, ...).
 
     merge_patches_split may spill records into sibling pieces; those pieces
-    carry alt-texture sets that also need reconciliation. Globs the same
-    `<stem>*<suffix>` family the split writer uses. Returns total records fixed."""
+    carry alt-texture sets that also need reconciliation. Walks the merge's own
+    file family (`_combined_piece_family`, #piece-family-match). Returns total
+    records fixed."""
     from pathlib import Path as _Path
     p = _Path(primary_esp_path)
     total = 0
-    for piece in sorted(p.parent.glob(f"{p.stem}*{p.suffix}")):
+    for piece in _combined_piece_family(p):
         total += reconcile_alt_texture_indices(piece, meshes_root)
     return total
 
@@ -820,7 +864,7 @@ def dedup_armo_armature_refs_all(primary_esp_path) -> int:
     from pathlib import Path as _Path
     p = _Path(primary_esp_path)
     total = 0
-    for piece in sorted(p.parent.glob(f"{p.stem}*{p.suffix}")):
+    for piece in _combined_piece_family(p):
         total += dedup_armo_armature_refs(piece)
     return total
 
@@ -908,7 +952,7 @@ def fix_spurious_hand_slot(primary_esp_path, meshes_root, *,
             saw_handless = True
         return "handless" if saw_handless else "unknown"
 
-    for piece in sorted(p.parent.glob(f"{p.stem}*{p.suffix}")):
+    for piece in _combined_piece_family(p):
         try:
             e = esp.ESP.load(piece)
         except Exception:
@@ -1150,6 +1194,48 @@ def _remap_arma_skin_txsts(payload: bytes,
     return out
 
 
+def _arma_path_bytes() -> bool:
+    r"""#arma-path-bytes (2026-09-25): are armature model paths read and
+    written in the game's codepage? Yes, by default.
+
+    `rebuild_arma_payload` read every MOD2-5 path as UTF-8 with errors
+    ignored and wrote it back as UTF-8 -- also where the path was left as it
+    was. The game reads these strings as cp1252 (Windows-1252), so an accented
+    byte (0xE9, 'e' with an acute) vanished: the armature named a mesh that
+    exists nowhere, and the converted-mesh lookup was asked about that same
+    wrong path, so the piece was never redirected either. `restore_female_models`
+    compared and rewrote through the same round trip. Now a path is decoded as
+    cp1252 with `surrogateescape`, so its bytes come back EXACTLY: an unchanged
+    path is written as the bytes it had, and a redirected one is the prefix plus
+    those bytes. Live census: 0 of 9,350 model paths the coverage passes hand
+    over, and 0 armature paths in the source plugins, hold a byte >= 0x80.
+    CBBE2UBE_NO_ARMA_PATH_BYTES=1 restores the UTF-8 round trip."""
+    return not _flag("CBBE2UBE_NO_ARMA_PATH_BYTES", False)
+
+
+def _model_path_str(data: bytes, as_bytes: bool) -> str:
+    """A MOD2-5 string as text. `as_bytes` (#arma-path-bytes): cp1252, the
+    game's codepage, lossless -- `_model_path_zstring` gives back the very
+    bytes, the five bytes cp1252 leaves undefined included. Else the old
+    UTF-8 read, which drops every byte that is not valid UTF-8."""
+    s = data.rstrip(b"\x00")
+    if as_bytes:
+        return s.decode("cp1252", "surrogateescape")
+    return s.decode("utf-8", errors="ignore")
+
+
+def _model_path_zstring(path: str, as_bytes: bool) -> bytes:
+    """A model path as the null-terminated string an ARMA stores: cp1252 when
+    `as_bytes` and the text has a cp1252 form (every path `_model_path_str`
+    read, plus ASCII prefixes), else UTF-8 as before. #arma-path-bytes"""
+    if as_bytes:
+        try:
+            return path.encode("cp1252", "surrogateescape") + b"\x00"
+        except UnicodeEncodeError:
+            pass
+    return esp.encode_zstring(path)
+
+
 def rebuild_arma_payload(source_payload: bytes, *,
                          new_primary_rnam: int,
                          new_additional_race_fids: Iterable[int],
@@ -1229,6 +1315,10 @@ def rebuild_arma_payload(source_payload: bytes, *,
     skip_mo3s = skip_mo5s = False
     _ask_dead = keep_named_female and (female_standin is not None
                                        or dead_female_male_as_is is not None)
+    # #arma-path-bytes: model paths in the game's codepage, byte-exact; the male
+    # source paths also as written (the lookups above keep their cp1252 read).
+    _pb = _arma_path_bytes()
+    src_mod2_w = src_mod4_w = ""
     for sig, data in esp.iter_subrecords(source_payload):
         if sig == b"RNAM":
             out += esp.encode_subrecord(b"RNAM", struct.pack("<I", new_primary_rnam))
@@ -1245,7 +1335,7 @@ def rebuild_arma_payload(source_payload: bytes, *,
             # Redirect to the converted !UBE\ mesh only if we produced one.
             # Unconverted meshes keep their original path; pointing at a missing
             # !UBE\ NIF crashes the game on load.
-            path = data.rstrip(b"\x00").decode("utf-8", errors="ignore")
+            path = _model_path_str(data, _pb)
             converted = bool(path) and (converted_nif_exists is None
                                         or converted_nif_exists(path))
             if converted and strip_meshes_prefix:
@@ -1266,8 +1356,9 @@ def rebuild_arma_payload(source_payload: bytes, *,
             # where the male mesh would be used.
             _keep = _named_dead = False
             if _fallback and keep_named_female and path:
-                # The lookup gets the path as the game reads it (cp1252); the
-                # utf-8 decode above drops non-ASCII bytes. #coverage-female-guard
+                # The lookup gets the path as the game reads it (cp1252); with
+                # CBBE2UBE_NO_ARMA_PATH_BYTES the utf-8 decode above drops
+                # non-ASCII bytes. #coverage-female-guard
                 _probe = data.rstrip(b"\x00").decode("cp1252", "replace")
                 _keep = female_mesh_exists is None or female_mesh_exists(_probe)
                 _named_dead = not _keep
@@ -1297,7 +1388,10 @@ def rebuild_arma_payload(source_payload: bytes, *,
                 # it. The female texture hash and alt-textures name the dead
                 # mesh's shapes, so both go. #coverage-female-standin
                 _to = (path_prefix + _standin) if _standin is not None else _as_is
-                out += esp.encode_subrecord(sig, esp.encode_zstring(_to))
+                # The male path as it was written, byte for byte. #arma-path-bytes
+                _to_w = (_to if _standin is not None or not _pb else
+                         src_mod2_w if sig == b"MOD3" else src_mod4_w)
+                out += esp.encode_subrecord(sig, _model_path_zstring(_to_w, _pb))
                 if declined_log is not None:
                     declined_log.append(
                         {"slot": sig.decode(), "standin": _to, "orig": path}
@@ -1308,7 +1402,7 @@ def rebuild_arma_payload(source_payload: bytes, *,
                 else:
                     saw_mod5 = skip_mo5t = skip_mo5s = True
             elif sig == b"MOD3" and _fallback and not _keep:
-                out += esp.encode_subrecord(b"MOD3", esp.encode_zstring(conv_mod2))
+                out += esp.encode_subrecord(b"MOD3", _model_path_zstring(conv_mod2, _pb))
                 saw_mod3 = True
                 skip_mo3t = True
                 if male_fallback_log is not None:
@@ -1318,14 +1412,14 @@ def rebuild_arma_payload(source_payload: bytes, *,
                     male_fallback_log.append(
                         {"slot": "MOD3", "orig": path, "to": conv_mod2})
             elif sig == b"MOD5" and _fallback and not _keep:
-                out += esp.encode_subrecord(b"MOD5", esp.encode_zstring(conv_mod4))
+                out += esp.encode_subrecord(b"MOD5", _model_path_zstring(conv_mod4, _pb))
                 saw_mod5 = True
                 skip_mo5t = True
                 if male_fallback_log is not None:
                     male_fallback_log.append(
                         {"slot": "MOD5", "orig": path, "to": conv_mod4})
             else:
-                out += esp.encode_subrecord(sig, esp.encode_zstring(new_path))
+                out += esp.encode_subrecord(sig, _model_path_zstring(new_path, _pb))
                 if _keep and declined_log is not None:
                     declined_log.append({"slot": sig.decode(), "kept": path,
                                          "male": _male})
@@ -1343,8 +1437,10 @@ def rebuild_arma_payload(source_payload: bytes, *,
                     conv_mod4 = new_path
                 if sig == b"MOD2":
                     src_mod2 = data.rstrip(b"\x00").decode("cp1252", "replace")
+                    src_mod2_w = _model_path_str(data, True)
                 elif sig == b"MOD4":
                     src_mod4 = data.rstrip(b"\x00").decode("cp1252", "replace")
+                    src_mod4_w = _model_path_str(data, True)
         elif sig in (b"MO3S", b"MO5S") and (skip_mo3s if sig == b"MO3S" else skip_mo5s):
             # The dead female mesh's alt-textures, behind a stand-in or an as-is
             # male. #coverage-female-standin
@@ -1372,13 +1468,13 @@ def rebuild_arma_payload(source_payload: bytes, *,
     # MOD3 from the converted male mesh so a female UBE actor renders it.
     # Gated on conv_mod2 existing -- never point at a missing !UBE NIF (CTD).
     if ensure_female and not saw_mod3 and conv_mod2:
-        out += esp.encode_subrecord(b"MOD3", esp.encode_zstring(conv_mod2))
+        out += esp.encode_subrecord(b"MOD3", _model_path_zstring(conv_mod2, _pb))
         if male_fallback_log is not None:
             # orig=None: the armature never had a female model; nothing to restore.
             male_fallback_log.append(
                 {"slot": "MOD3", "orig": None, "to": conv_mod2})
     if ensure_female and not saw_mod5 and conv_mod4:
-        out += esp.encode_subrecord(b"MOD5", esp.encode_zstring(conv_mod4))
+        out += esp.encode_subrecord(b"MOD5", _model_path_zstring(conv_mod4, _pb))
         if male_fallback_log is not None:
             male_fallback_log.append(
                 {"slot": "MOD5", "orig": None, "to": conv_mod4})
@@ -1628,6 +1724,7 @@ def restore_female_models(patches_dir: "str | Path",
     patches_dir = Path(patches_dir)
     meshes_root = Path(output_mod_dir) / "meshes" / path_prefix.strip("\\/")
     _strip = _twin_path_strip_meshes()
+    _pb = _arma_path_bytes()
     checked = restored = patches_changed = 0
     for sidecar in sorted(patches_dir.glob("*.male_fallbacks.json")):
         patch_path = Path(str(sidecar)[:-len(".male_fallbacks.json")])
@@ -1675,10 +1772,12 @@ def restore_female_models(patches_dir: "str | Path",
                     fix = fixes.get(sig.decode("ascii", "ignore"))
                     if fix is not None:
                         male_path, female_path = fix
-                        cur = data.rstrip(b"\x00").decode("utf-8", "ignore")
+                        # Read and written as rebuild_arma_payload wrote them
+                        # (#arma-path-bytes): the sidecar's strings are its.
+                        cur = _model_path_str(data, _pb)
                         if cur == male_path:
                             out += esp.encode_subrecord(
-                                sig, esp.encode_zstring(female_path))
+                                sig, _model_path_zstring(female_path, _pb))
                             rec_changed = True
                             n_swapped += 1
                             continue
@@ -2533,7 +2632,7 @@ def postflight_validate_combined(combined_path, meshes_root=None, *,
     (warn only). Globs `<stem>*.esp` so ESL split pieces are all covered.
     `mesh_resolves`: as in `validate_patch` (#coverage-nude-skin)."""
     combined_path = Path(combined_path)
-    pieces = sorted(combined_path.parent.glob(combined_path.stem + "*.esp"))
+    pieces = _combined_piece_family(combined_path, ".esp")
     if combined_path.is_file() and combined_path not in pieces:
         pieces.append(combined_path)
     ctd: list = []
@@ -3041,7 +3140,7 @@ def resort_masters_all(primary_esp_path, master_data_dirs=None) -> int:
     clear_master_path_cache()
     p = _Path(primary_esp_path)
     changed = 0
-    for piece in sorted(p.parent.glob(f"{p.stem}*{p.suffix}")):
+    for piece in _combined_piece_family(p):
         try:
             e = esp.ESP.load(piece)
         except Exception as _le:
@@ -3288,7 +3387,8 @@ def _redirect_mod3(payload: bytes, new_path: str) -> bytes:
     out = b""
     for sig, data in esp.iter_subrecords(payload):
         if sig == b"MOD3":
-            out += esp.encode_subrecord(b"MOD3", esp.encode_zstring(new_path))
+            out += esp.encode_subrecord(
+                b"MOD3", _model_path_zstring(new_path, _arma_path_bytes()))
         elif sig == b"MO3T":
             continue
         else:
@@ -6020,6 +6120,44 @@ def generate_modded_body_ube_coverage_patch(
     }
 
 
+# What SkyPatcher splits a line on, as the INI reader in auto_convert
+# (_skypatcher_fields / _skypatcher_forms) models it: `;` starts a comment, `:`
+# separates `key=value` pairs, `,` the forms of a list, and `|` a plugin from
+# its FormID. Windows allows `,` and `;` in a file name (not `:` or `|`; they
+# are listed for a name that is not a file name). `=` is NOT one: the reader
+# splits a pair once at its first `=` (seg.split("=", 1)), so an `=` inside a
+# plugin name reads back whole, and guarding it would drop a working line.
+_SKYPATCHER_DELIMITERS = ",;:|"
+
+
+def _skypatcher_name_guard() -> bool:
+    r"""#skypatcher-name-guard (2026-09-25): is a plugin name SkyPatcher would
+    split kept out of the INI? Yes, by default.
+
+    The merge wrote `filterByArmors=<plugin>|<id>:armorAddonsToAdd=...` with the
+    plugin's file name as it is. A comma in it (`Armors, Extra.esp`) splits the
+    filter into two forms, neither resolves, and the armour's links are lost
+    in silence -- invisible on UBE actors, with a line in the INI that looks
+    fine. A semicolon comments out the rest of the line. (An `=` in a name is
+    harmless: a pair splits once, at its first `=`.) When it is the merged
+    plugin's OWN name (--merged-name) that splits, every line names it, so no
+    line is written and the run names that file, not the armour plugins.
+    No other name can deliver the link: SkyPatcher addresses a form by plugin
+    name and FormID (an EditorID needs a runtime EditorID cache, and a
+    load-order-indexed FormID goes stale when the order changes). So such an
+    armour gets no line, the same outcome as a link with no merged record, and
+    it is counted in the link reconciliation and named in a run warning with
+    the fix (rename the plugin). Live: 1 of 3,254 active plugins has a comma;
+    it defines no armour the INI names, so the INI is unchanged.
+    CBBE2UBE_NO_SKYPATCHER_NAME_GUARD=1 writes such lines again."""
+    return not _flag("CBBE2UBE_NO_SKYPATCHER_NAME_GUARD", False)
+
+
+def _skypatcher_name_splits(name: str) -> bool:
+    """Would SkyPatcher split a line at `name`? #skypatcher-name-guard"""
+    return any(c in str(name) for c in _SKYPATCHER_DELIMITERS)
+
+
 def merge_patches(
     patch_paths: list[Path],
     output_path: str | Path,
@@ -6360,7 +6498,17 @@ def merge_patches(
         # preserve the original link order (stable output/INI diffs)
         order = {id(r): i for i, r in enumerate(recs)}
         sp_by_armo[key] = sorted(kept, key=lambda r: order.get(id(r), 0))
+    # A name SkyPatcher would split is no line at all: its links are counted,
+    # and the caller names the plugin. #skypatcher-name-guard
+    _name_guard = _skypatcher_name_guard()
+    _out_unsafe = _name_guard and _skypatcher_name_splits(out_path.name)
+    sp_unsafe: "list[str]" = []
+    sp_drop_unsafe = 0
     for (d, l), recs in sorted(sp_by_armo.items()):
+        if _name_guard and (_skypatcher_name_splits(d) or _out_unsafe):
+            sp_unsafe.append(f"{d}|{l:06X}")
+            sp_drop_unsafe += len(recs)
+            continue
         adds = ",".join("{}|{:06X}".format(out_path.name, r.formid & 0xFFFFFF)
                         for r in recs)
         sp_ini.append("filterByArmors={}|{:06X}:armorAddonsToAdd={}".format(
@@ -6370,14 +6518,17 @@ def merge_patches(
         "output": str(out_path),
         "masters": out_esp.header.masters,
         "skypatcher_ini_lines": sp_ini,
-        "skypatcher_targets": len(sp_by_armo),
-        # Link reconciliation. `seen` must equal emitted + the three drop
-        # reasons; a mismatch means a fourth path is losing links silently.
+        "skypatcher_targets": len(sp_by_armo) - len(sp_unsafe),
+        # Link reconciliation. `seen` must equal emitted + the four drop
+        # reasons; a mismatch means a fifth path is losing links silently.
         "sp_links_seen": sp_seen_links,
-        "sp_links_emitted": sum(len(v) for v in sp_by_armo.values()),
+        "sp_links_emitted": sum(len(v) for v in sp_by_armo.values()) - sp_drop_unsafe,
         "sp_dropped_no_record": sp_drop_norec,
         "sp_dropped_duplicate_pair": sp_drop_dup,
         "sp_dropped_render_identical": sp_dropped,
+        "sp_dropped_unsafe_name": sp_drop_unsafe,
+        "sp_unsafe_name_targets": sp_unsafe,
+        "sp_unsafe_output_names": [out_path.name] if _out_unsafe and sp_unsafe else [],
         "sp_unreadable_sidecars": sp_bad_sidecar,
         "merged_patch_count": len(patches),
         "total_arma_records": len(new_arma_records),
@@ -6467,6 +6618,8 @@ def report_link_reconciliation(stats: dict) -> "list[str]":
     The other two drops are by design -- `duplicate_pair` is first-writer-wins
     across patches, `render_identical` stops one armour rendering the same mesh
     twice -- so they are reported as plain counts, not warnings.
+    `unsafe_name` (#skypatcher-name-guard) is counted here; the caller warns,
+    naming each plugin.
     """
     seen = int(stats.get("sp_links_seen", 0) or 0)
     if not seen:
@@ -6475,9 +6628,12 @@ def report_link_reconciliation(stats: dict) -> "list[str]":
     norec = int(stats.get("sp_dropped_no_record", 0) or 0)
     dup = int(stats.get("sp_dropped_duplicate_pair", 0) or 0)
     ident = int(stats.get("sp_dropped_render_identical", 0) or 0)
+    unsafe = int(stats.get("sp_dropped_unsafe_name", 0) or 0)
     bad = list(stats.get("sp_unreadable_sidecars") or [])
     out = [f"  armature links: {seen} recorded -> {emitted} emitted "
-           f"({dup} duplicate, {ident} render-identical, {norec} unresolved)"]
+           f"({dup} duplicate, {ident} render-identical, {norec} unresolved"
+           + (f", {unsafe} on a plugin name SkyPatcher cannot read" if unsafe else "")
+           + ")"]
     if norec:
         out.append(f"  !! {norec} armature link(s) had NO merged record -- "
                    f"those armor pieces get no UBE armature and will be "
@@ -6487,9 +6643,10 @@ def report_link_reconciliation(stats: dict) -> "list[str]":
                    f"recorded is lost")
     # The identity that makes the count trustworthy: if these do not agree, a
     # path is losing links that none of the three reasons above describes.
-    if emitted + dup + ident + norec != seen:
+    if emitted + dup + ident + norec + unsafe != seen:
         out.append(f"  !! link accounting does not balance "
-                   f"({emitted}+{dup}+{ident}+{norec} != {seen}) -- a drop "
+                   f"({emitted}+{dup}+{ident}+{norec}"
+                   + (f"+{unsafe}" if unsafe else "") + f" != {seen}) -- a drop "
                    f"path is unaccounted for")
     return out
 
@@ -6554,8 +6711,10 @@ def merge_patches_split(
         for f in out_path.parent.glob(f"{stem}*{suffix}"):
             if f.name in keep:
                 continue
-            tail = f.name[len(stem):len(f.name) - len(suffix)]
-            if not tail.isdigit():
+            # The Combined itself ("") and anything not of the family (None)
+            # stay. The matcher is shared with the post-merge passes.
+            # #piece-family-match
+            if not _combined_piece_tail(f.name, stem, suffix):
                 continue          # not one of our numbered pieces -- leave it
             try:
                 f.unlink()
@@ -6651,6 +6810,12 @@ def merge_patches_split(
                                          for s in piece_stats),
         "sp_dropped_render_identical": sum(
             s.get("sp_dropped_render_identical", 0) for s in piece_stats),
+        "sp_dropped_unsafe_name": sum(s.get("sp_dropped_unsafe_name", 0)
+                                      for s in piece_stats),
+        "sp_unsafe_name_targets": [x for s in piece_stats
+                                   for x in s.get("sp_unsafe_name_targets", [])],
+        "sp_unsafe_output_names": [x for s in piece_stats
+                                   for x in s.get("sp_unsafe_output_names", [])],
         "sp_unreadable_sidecars": [x for s in piece_stats
                                    for x in s.get("sp_unreadable_sidecars", [])],
         "piece_stats": piece_stats,

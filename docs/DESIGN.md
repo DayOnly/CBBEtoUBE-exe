@@ -599,6 +599,34 @@ already-UBE path among the additions.
   that modlist (winning NPC, outfit, leveled list, quest alias and script
   references checked).
 
+### Reading an archive entry (2026-09-25)
+
+- **An embedded name is inside the entry's size** (`#bsa-embed-name-end`). An
+  archive with flag 0x100 starts every file block with its path (a length byte
+  and the name), and the file record's size covers the whole block. The
+  compressed branch of `BSAArchive.read_file` ended there; the uncompressed one
+  read `size` bytes from after the name, returning 1 + len(name) bytes of the
+  next file. Checked on the vanilla Textures0 (0x107): each LZ4 frame fits
+  [after the name, offset + size) exactly and no shorter slice decodes. Live
+  census: 444 archives, 26 with embedded names, 0 uncompressed entries in them,
+  so nothing the converter reads changes and there is no switch.
+- **Two archives, one mesh: the game's copy** (`#bsa-load-order-winner`,
+  `CBBE2UBE_NO_BSA_LOAD_ORDER_WINNER`). `_BsaMeshIndex` took the first archive
+  in MO2 priority. The game loads `<plugin>.bsa` and `<plugin> - Textures.bsa`
+  with their plugin, and an archive loaded later overrides; MO2's priority
+  decides only between loose files and between two archive files of the same
+  name. So the archive whose plugin loads LATER now wins (`plugin_order=` from
+  `_bsa_plugin_order`, the active plugins in load order). An archive no plugin
+  loads -- the INI-listed base-game archives, which load before any plugin's,
+  or a stray the game never opens -- ranks below every plugin-loaded one and
+  keeps the MO2 order among its kind. The batch index, the source-selection
+  index (whose listing the batch adopts only under the same plugin order) and
+  the coverage step's existence lookup take it; the per-plugin owner lookup and
+  the setup check ask only whether a mesh exists. Live: 406 archives (390
+  plugin-loaded), 4,221 mesh paths in more than one, 436 change winner (405 of
+  them a particle patch against a weather plugin), none extracted by the last
+  run, converted into `!UBE` or armour; replays byte-identical.
+
 ---
 
 ## Fitting: warp + re-skin
@@ -1552,6 +1580,61 @@ sidecar; no ESP ARMO override is emitted. The legacy ARMO-override machinery has
 been removed. (The winner-scan coverage passes still emit ARMO overrides, but
 their output is folded into the Combined family rather than shipped as separate
 plugins — see "Unified coverage" below.)
+
+### A minted armature's model paths keep their bytes (`#arma-path-bytes`)
+
+The game reads an armature's MOD2-5 strings in cp1252. `rebuild_arma_payload`
+read them as UTF-8 with errors ignored and wrote UTF-8 back, even for a path it
+left unchanged, so an accented byte vanished and the armature named a mesh that
+exists nowhere; the converted-mesh lookup was asked about the same wrong path.
+`restore_female_models` compared and rewrote through that round trip, and
+`_redirect_mod3` wrote UTF-8. All three now use one codec: cp1252 with
+`surrogateescape`, so the five bytes cp1252 leaves undefined come back too. An
+unchanged path is written as the bytes it had; a redirected one is `!UBE\` plus
+them. The female-guard and stand-in lookups keep their cp1252 read. Live census:
+0 of 9,350 model paths the coverage passes hand over, 0 armature paths in the
+source plugins (one weapon model has such a byte), 0 in the 29 male-fallback
+sidecars; replay byte-identical. `CBBE2UBE_NO_ARMA_PATH_BYTES=1`.
+
+### A plugin name SkyPatcher would split gets no line (`#skypatcher-name-guard`)
+
+The merge is the only writer of the INI (the coverage generators' own `ini_lines`
+are never written; their links reach it through the sidecars). It wrote
+`filterByArmors=<plugin>|<id>:armorAddonsToAdd=<Combined>|<id>,...` with both
+file names as they are. SkyPatcher splits a line as `_skypatcher_fields` /
+`_skypatcher_forms` model it: `;` starts a comment, `:` separates pairs, `,` the
+forms of a list, `|` a plugin from its FormID. (`=` splits a pair ONCE, at its
+first `=`, so an `=` inside a plugin name reads back whole and is not guarded;
+guarding it dropped working lines.) A
+plugin named `Armors, Extra.esp` became two forms that resolve to nothing, and
+the armour lost its UBE armature behind a line that looks fine. There is no
+other name to deliver it by: an EditorID target needs a runtime EditorID cache,
+and a load-order-indexed FormID goes stale when the order changes. So, like a
+link with no merged record, such an armour gets no line: its links are counted
+in the reconciliation (`sp_dropped_unsafe_name`, part of the balance), and
+`_report_skypatcher_unsafe_names` names each plugin once in a run warning and
+the failures file, with the fix (rename the plugin). A Combined name with such a
+character drops every line the same way; then the run names the Combined
+(`sp_unsafe_output_names`, fix: another `--merged-name`) and names an armour
+plugin only when its own name splits too. Live: 1 of 3,254 active plugins has a
+comma, and no armour of it is in the INI (9,211 lines, 192 plugins named, none
+with a separator), so the INI is unchanged. `CBBE2UBE_NO_SKYPATCHER_NAME_GUARD=1`
+writes such lines again.
+
+### The post-merge passes touch only the merge's own files (`#piece-family-match`)
+
+`reconcile_alt_texture_indices_all`, `dedup_armo_armature_refs_all`,
+`fix_spurious_hand_slot`, `resort_masters_all` and `postflight_validate_combined`
+globbed `<stem>*<suffix>`: a `<stem> - Copy.esp` or `<stem>_backup.esp` the user
+kept in the output folder was loaded, rewritten through `ESP.save` and reported
+"validated clean" on every run. `_drop_stale_pieces` already matched only
+`<stem><digits><suffix>` for its deletes. All six now share
+`_combined_piece_tail` ("" for the Combined, the digits of a split piece, None
+for anything else; case-blind, as the folder is): the passes walk
+`_combined_piece_family`, and the delete still spares the Combined itself. Live:
+the output folder holds the Combined and one piece and nothing else of that stem;
+merge replay byte-identical. `CBBE2UBE_NO_PIECE_FAMILY_MATCH=1` makes the five
+passes glob the broad family again; the delete stays narrow either way.
 
 ### The sidecar FormID invariant
 

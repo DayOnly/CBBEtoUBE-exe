@@ -6,7 +6,7 @@ current. A `!!` line is a problem; a `NOTE:` line is information. Each entry
 gives the line as it appears in the run log (`…` stands for the value printed
 at run time), what it means for the run, and what to do next.
 
-**90** problem warnings and **6** notes.
+**92** problem warnings and **6** notes.
 
 ## src/auto_convert.py
 
@@ -82,6 +82,12 @@ at run time), what it means for the run, and what to do next.
 - `!! could not write the conversion manifest (…) -- …`
   - means: the next run cannot tell which old conversions are ours, so it moves none of this run's
   - fix: check that the output folder is writable and run again
+- `!! the merged plugin "…" gets no SkyPatcher lines`
+  - means: its file name holds a comma or semicolon, which SkyPatcher reads as a separator; every line names it, so none is written and the converted pieces are invisible on UBE actors
+  - fix: choose a merged plugin name without that character (--merged-name) and run the converter again
+- `!! … armour record(s) of the plugin "…" get no UBE armature`
+  - means: its file name holds a comma or semicolon, which SkyPatcher reads as a separator; a line naming it would silently match nothing, so none is written and these pieces are invisible on UBE actors
+  - fix: rename the plugin file without that character (a plugin that has it as a master needs that master entry renamed too), then run the converter again
 - `!! [unified] … armour(s) of an excluded mod have no UBE armature from any mod -- --exclude-mods`
   - means: they are not drawn on UBE-race actors
   - fix: take the mod off the exclusion list to have them covered, or install a UBE patch for it

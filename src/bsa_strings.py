@@ -293,7 +293,13 @@ class BSAArchive:
                     return lz4.block.decompress(comp, uncompressed_size=orig_size)
                 except Exception:
                     return None
-        return d[p:p + size]
+        # The entry ends where the compressed branch's does: `size` is the
+        # whole file block, INCLUDING an embedded name's prefix. `d[p:p + size]`
+        # returned 1 + len(name) bytes of the NEXT file on the end of an
+        # uncompressed entry in an embed-names archive. Checked on the vanilla
+        # Textures0 (flags 0x107): an LZ4 frame fits [prefix, off + size)
+        # exactly. #bsa-embed-name-end
+        return d[p:off - base + size]
 
 
 # --------------------------------------------------------------------------

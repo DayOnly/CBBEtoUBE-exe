@@ -52,8 +52,7 @@ _.by_name           # OsdFile name-index accessor -- public parser API
 # can only ever hide a FUTURE real finding under the same name.
 
 # ---- False positives: written but not read back (schema fields / struct writes) ----
-cli                 # Setting dataclass field, set via constructor kwargs
-advanced            # Setting dataclass field, set via constructor kwargs
+advanced           # Setting dataclass field, set via constructor kwargs
 shape_locations     # result-dataclass field, populated for downstream/debug use
 _.interpolatorID    # NIF controller field -- assignment writes into the NIF structure
 _.nextControllerID  # NIF controller field -- assignment writes into the NIF structure
