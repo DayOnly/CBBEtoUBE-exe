@@ -1191,6 +1191,33 @@ def test_an_error_mid_move_puts_back_everything_and_the_run_goes_on(w, monkeypat
     assert _finish(w, results, merged=True) == 0
 
 
+def test_a_put_back_also_brings_back_a_torn_base(w, monkeypatch):
+    """A base whose move and roll-back both failed left one file in the stamp
+    folder; when the merge does not confirm the run's moves, that file comes
+    back with the rest."""
+    results = _fallback_world(w)
+    before = _snapshot(w)
+    real = os.replace
+    seen = {"fwd": 0, "back": 0}
+
+    def _replace(a, b):
+        mine = "cuirass" in Path(a).name
+        if mine and "_superseded" not in str(a):
+            seen["fwd"] += 1
+            if seen["fwd"] == 2:
+                raise PermissionError(13, "in use")
+        elif mine and seen["fwd"] == 2 and not seen["back"]:
+            seen["back"] = 1
+            raise PermissionError(13, "in use")
+        return real(a, b)
+    monkeypatch.setattr(ss.os, "replace", _replace)
+    _sweep(w, results)
+    assert seen == {"fwd": 2, "back": 1} and not w.has(OLD, ".nif"), "the control: torn"
+    assert ss.pending() is not None, "the patch set moved"
+    _finish(w, results, merged=False)
+    assert _snapshot(w) == before
+
+
 def test_a_group_that_raises_puts_its_own_files_back_first(w, monkeypatch):
     """An error that is not a file error still leaves the base whole before it
     propagates."""

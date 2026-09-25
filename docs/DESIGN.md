@@ -1262,8 +1262,9 @@ lost piece from a dropped one. What ships (`src/stale_sweep.py`, glue in
   one of them names, which 772ccf1 moved into a latent missing-mesh crash.
 - **Transactional.** The moves are PENDING until the merge: kept only when the new
   Combined was written from coverage alone and none of its pieces names a moved base;
-  otherwise every file goes back, since an old Combined pointing at a moved `!UBE`
-  mesh is a missing-mesh crash. When coverage fails or comes back empty, every file
+  otherwise every file the journal lists goes back (a torn base's stray file too),
+  since an old Combined pointing at a moved `!UBE` mesh is a missing-mesh crash. When
+  coverage fails or comes back empty, every file
   goes back BEFORE the per-source fallback lists the patches
   (`_stale_output_sweep_failover`), and the female-model restore runs again (it
   re-points only to a mesh on disk, so the second pass ends where one pass over the

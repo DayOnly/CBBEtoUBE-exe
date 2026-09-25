@@ -7219,6 +7219,17 @@ PAIRS = (
          tests=('tests/test_stale_output_sweep.py',),
          expect=('test_a_group_that_raises_puts_its_own_files_back_first',),
     ),
+    Pair('SRF-s', "a put-back leaves a torn base's moved file in the stamp folder",
+         edits=(
+             ('src/auto_convert.py',
+              '    failed = stale_sweep.put_back(h.pairs() + h.planned)\n'
+              '    stale_sweep.update_journal(h.journal,',
+              '    failed = stale_sweep.put_back(h.pairs())  # MUTATED\n'
+              '    stale_sweep.update_journal(h.journal,', 1),
+         ),
+         tests=('tests/test_stale_output_sweep.py',),
+         expect=('test_a_put_back_also_brings_back_a_torn_base',),
+    ),
     Pair('SRF-q', "the plan-incomplete warning renders as a bare marker",
          edits=(
              ('src/auto_convert.py',

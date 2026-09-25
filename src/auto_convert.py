@@ -4837,7 +4837,9 @@ def _stale_settle(h, why: str) -> int:
         print(f"  stale-output sweep: kept {len(h.moved)} move(s) in "
               f"{h.stamp_dir.relative_to(h.output)}\\ (the new Combined names none)")
         return 0
-    failed = stale_sweep.put_back(h.pairs())
+    # Every file the journal lists, not only the whole groups: a file of a base
+    # whose move was torn is in the stamp folder too. #stale-output-sweep
+    failed = stale_sweep.put_back(h.pairs() + h.planned)
     stale_sweep.update_journal(h.journal,
                                status="partly put back" if failed else "put back",
                                put_back_because=why)
