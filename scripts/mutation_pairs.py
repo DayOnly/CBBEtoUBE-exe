@@ -6636,7 +6636,8 @@ PAIRS = (
               'if False:  # MUTATED', 1),
          ),
          tests=('tests/test_global_schedule.py',),
-         expect=('test_a_memory_error_unit_is_rerun_alone_and_only_the_rerun_is_delivered',),
+         expect=('test_a_memory_error_unit_is_rerun_alone_and_only_the_rerun_is_delivered[raised]',
+                 'test_a_memory_error_unit_is_rerun_alone_and_only_the_rerun_is_delivered[caught-in-a-pass]'),
     ),
     Pair('GSC-d', 'a MemoryError caught inside a fit pass is not seen',
          edits=(
@@ -6645,7 +6646,7 @@ PAIRS = (
               'return (getattr(result, "reason", "") or "").startswith("error: MemoryError")  # MUTATED', 1),
          ),
          tests=('tests/test_global_schedule.py',),
-         expect=('test_a_memory_error_unit_is_rerun_alone_and_only_the_rerun_is_delivered',),
+         expect=('test_a_memory_error_unit_is_rerun_alone_and_only_the_rerun_is_delivered[caught-in-a-pass]',),
     ),
     Pair('GSC-e', 'smallest units start first',
          edits=(
@@ -6726,7 +6727,7 @@ PAIRS = (
               'output_dir, nif_dst_root, [r for r, _m in skipped_built],  # MUTATED', 1),
          ),
          tests=('tests/test_global_schedule.py',),
-         expect=('test_the_planner_keeps_an_earlier_sources_conversion',),
+         expect=('test_the_planner_keeps_an_earlier_sources_conversion[default]',),
     ),
     Pair('GSC-n', 'the window bar counts a file too many',
          edits=(
