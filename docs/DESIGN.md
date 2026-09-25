@@ -1073,8 +1073,24 @@ colliding). No sidecar embeds the patch's file name, so the set renames without 
   replaying it in place. `_find_source_esps` skips both names, for the root-write mode
   (`--unmerged-patch-subdir .`), which also prints that the renamed plugins must be
   enabled in MO2.
+- **Root-write guards** (`#rename-guards`). In the root-write mode (`''` or `.`) the
+  patches sit beside whatever else the folder holds, and a `<x> UBE patch.esp` there
+  can be another mod's plugin; renaming it drops it out of MO2's plugin list. The
+  parent only ever read such files. So the root is migrated only when
+  `_is_our_own_output(output)` holds (a conversion report, or an INI with our header),
+  and then only an ESP with our `.espgen.json` beside it is renamed or, beside its
+  renamed twin, deleted. Anything else keeps its name and is listed in a NOTE (an
+  older build of ours that wrote no snapshot is named there too, to delete by hand).
+  The `_unmerged_patches` subfolder is ours by name and is migrated as before. No
+  switch of its own: the feature is unmerged and the rename's switch turns it off.
 
-`CBBE2UBE_NO_SOURCE_PATCH_RENAME=1` keeps the old names and migrates nothing.
+`CBBE2UBE_NO_SOURCE_PATCH_RENAME=1` makes new runs write and read the old names and
+migrates nothing. **The migration is one-way**: the switch does not rename files back.
+On a folder a run already migrated, the switch (and an older exe) sees no per-source
+patches — the gate still opens on the coverage pieces, but `--plugins-only` finds no
+snapshot and skips every source, and a coverage failure leaves the fallback merge
+empty. A full run regenerates the old-named set; the next run without the switch then
+deletes the old set wherever the renamed one exists.
 
 ### What the coverage passes leave alone
 

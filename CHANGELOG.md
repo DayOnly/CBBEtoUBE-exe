@@ -15,8 +15,19 @@ anything in MO2**: these files are not in your plugin list, and the plugins you
 enable, `CBBE_to_UBE_Combined.esp` and its numbered pieces, keep their names.
 Only if you keep the working patches at the mod root
 (`--unmerged-patch-subdir .`) are they plugins, and then you have to enable the
-renamed ones; the run says so. `CBBE2UBE_NO_SOURCE_PATCH_RENAME=1` (set to 1)
-keeps the old names.
+renamed ones; the run says so. At the mod root the tool renames only in a
+folder it wrote before (one with its conversion report), and only the patches
+it wrote itself (the ones with its `.espgen.json` file beside them). Any other
+`<name> UBE patch.esp` there, such as a hand-made patch you keep in the same
+folder, keeps its name, and the run lists it in a NOTE.
+
+`CBBE2UBE_NO_SOURCE_PATCH_RENAME=1` (set to 1) makes new runs use the old
+names. It does not rename files back. On a folder a run has already renamed,
+that setting (or going back to an older version of the tool) finds no working
+patches under the old names: `--plugins-only` skips every mod, and if coverage
+fails there is nothing to fall back on for the Combined plugin. A full run
+writes the old names again. If you later run this version without the setting,
+it removes the old copies that already have a renamed twin.
 
 ### Fixed — an item another mod already makes for UBE is no longer drawn twice, and one it only claims to cover is drawn
 

@@ -184,15 +184,76 @@ def test_the_run_start_logs_the_count(tmp_path, capsys):
     assert "enable the renamed plugins" not in log, "they are not plugins here"
 
 
+def _ours(out: Path):
+    """Mark `out` as this tool's output the way a finished run does."""
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "conversion_report.json").write_text("{}", encoding="utf-8")
+
+
 def test_root_write_mode_says_to_enable_the_renamed_plugins(tmp_path, capsys):
     """--unmerged-patch-subdir '.': the patches are plugins MO2 loads."""
     out = tmp_path / "out"
+    _ours(out)
     _set(out, "A" + OLD)
     ac._migrate_source_patch_names_at_start(out, ".")
     log = capsys.readouterr().out
     assert "[migrate] renamed 1 per-source patch(es)" in log
     assert "enable the renamed plugins" in log
     assert (out / ("A" + NEW)).is_file()
+
+
+# ---------------------------------------------------------------- RG root-write guards
+
+@pytest.mark.parametrize("subdir", [".", ""], ids=["dot", "empty"])
+def test_root_write_leaves_a_plugin_without_our_snapshot_alone(tmp_path, capsys, subdir):
+    """RG-a: in our own output folder, a '<x> UBE patch.esp' with no
+    .espgen.json beside it is another mod's plugin: it keeps its name (and a
+    renamed file of that name beside it is no licence to delete it); ours
+    beside it is renamed."""
+    out = tmp_path / "out"
+    _ours(out)
+    _set(out, "Ours" + OLD)
+    _set(out, "HandMade" + OLD, tag=b"theirs", sidecars=())
+    _set(out, "Twin" + OLD, tag=b"theirs", sidecars=(".skypatcher.json",))
+    _set(out, "Twin" + NEW, tag=b"ours", sidecars=(".espgen.json",))
+    assert ac._migrate_source_patch_names_at_start(out, subdir) == 0
+    log = capsys.readouterr().out
+    assert (out / ("HandMade" + OLD)).read_bytes() == b"theirs"
+    assert not (out / ("HandMade" + NEW)).exists()
+    assert (out / ("Twin" + OLD)).read_bytes() == b"theirs"
+    assert (out / ("Twin" + OLD + ".skypatcher.json")).is_file()
+    assert (out / ("Twin" + NEW)).read_bytes() == b"ours"
+    assert (out / ("Ours" + NEW)).read_bytes() == b"old"
+    assert not (out / ("Ours" + OLD)).exists()
+    assert "[migrate] renamed 1 per-source patch(es)" in log
+    assert "NOTE: left 2" in log
+    assert "HandMade" + OLD in log and "Twin" + OLD in log
+
+
+def test_root_write_in_a_folder_that_is_not_ours_renames_nothing(tmp_path, capsys):
+    """RG-b: no conversion report, no marked INI: not our output. Even a file
+    with an .espgen.json beside it stays where it is."""
+    out = tmp_path / "shared"
+    _set(out, "HandMade" + OLD, tag=b"theirs", sidecars=())
+    _set(out, "Looks Like Ours" + OLD)
+    before = {n: (out / n).read_bytes() for n in _names(out)}
+    assert ac._migrate_source_patch_names_at_start(out, ".") == 0
+    log = capsys.readouterr().out
+    assert {n: (out / n).read_bytes() for n in _names(out)} == before
+    assert "renamed" not in log
+    assert "holds no conversion report of this tool" in log
+    assert "2 '<plugin> UBE patch.esp' file(s)" in log
+
+
+def test_a_subfolder_is_still_migrated_without_a_snapshot(tmp_path, capsys):
+    """RG-c: the guards are for the root only; _unmerged_patches is ours by
+    name and a set without .espgen.json there is renamed as before."""
+    out = tmp_path / "out"
+    pdir = out / "_unmerged_patches"
+    _set(pdir, "Bare" + OLD, sidecars=())
+    assert ac._migrate_source_patch_names_at_start(out, "_unmerged_patches") == 0
+    assert _names(pdir) == ["Bare" + NEW]
+    assert "NOTE" not in capsys.readouterr().out
 
 
 # ---------------------------------------------------------------- SPN-h a failed rename

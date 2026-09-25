@@ -1560,7 +1560,8 @@ def _merge_gate_patch_paths(patches_dir: Path) -> "list[Path]":
     return sorted(set(old) | set(patches_dir.glob("*" + _SRC_PATCH_SUFFIX)))
 
 
-def _migrate_source_patch_names(patches_dir: Path) -> dict:
+def _migrate_source_patch_names(patches_dir: Path, *,
+                                require_sidecar: bool = False) -> dict:
     """Rename every old-named per-source patch ('<stem> UBE patch.esp', not a
     'UBE_Mod*' coverage piece) and its sidecars to '<stem> (CBBEtoUBE src).esp'.
     When the new name already exists the old set is stale and is deleted (the
@@ -1569,8 +1570,14 @@ def _migrate_source_patch_names(patches_dir: Path) -> dict:
     ESP moves LAST and a sidecar that fails puts back the ones already moved, so
     a source's set is never split across two names.
 
-    Returns {'renamed': n, 'removed': n, 'failed': [(name, error), ...]}."""
-    out = {"renamed": 0, "removed": 0, "failed": []}
+    `require_sidecar` (the root-write mode, where the folder can hold other
+    plugins): only an ESP with our '.espgen.json' snapshot beside it is ours to
+    rename or delete; any other is left under its own name and listed in `left`.
+    #rename-guards
+
+    Returns {'renamed': n, 'removed': n, 'failed': [(name, error), ...],
+    'left': [name, ...]}."""
+    out = {"renamed": 0, "removed": 0, "failed": [], "left": []}
     if not _source_patch_rename_on():
         return out
     try:
@@ -1583,6 +1590,9 @@ def _migrate_source_patch_names(patches_dir: Path) -> dict:
     for esp in olds:
         stem = _legacy_source_patch_stem(esp.name)
         if stem is None or not esp.is_file():
+            continue
+        if require_sidecar and not Path(str(esp) + ".espgen.json").is_file():
+            out["left"].append(esp.name)
             continue
         new = esp.with_name(f"{stem}{_SRC_PATCH_SUFFIX}")
         if new.is_file():
@@ -1617,11 +1627,38 @@ def _migrate_source_patch_names(patches_dir: Path) -> dict:
 def _migrate_source_patch_names_at_start(output, unmerged_patch_subdir) -> int:
     """Run the per-source patch migration at the start of a run, print what it
     did, and record each patch it could not move as a warning. Returns the
-    number of warnings. #source-patch-rename"""
+    number of warnings. #source-patch-rename
+
+    In the root-write mode (--unmerged-patch-subdir '' or '.') the patches sit
+    beside whatever else the output folder holds, and a '<x> UBE patch.esp'
+    there may be another mod's plugin: renaming it would drop it out of MO2's
+    plugin list. So the root is migrated only when the folder is this tool's
+    output (`_is_our_own_output`), and even then only a patch with our
+    '.espgen.json' snapshot beside it; anything else is left alone with a NOTE.
+    #rename-guards"""
     if not _source_patch_rename_on():
         return 0
     pdir = _patches_dir_of(output, unmerged_patch_subdir)
-    res = _migrate_source_patch_names(pdir)
+    root_write = pdir == Path(output)
+    if root_write and not _is_our_own_output(output):
+        try:
+            olds = [q.name for q in sorted(pdir.glob("*UBE patch.esp"))
+                    if _legacy_source_patch_stem(q.name) is not None]
+        except OSError:
+            olds = []
+        if olds:
+            print(f"  [migrate] NOTE: {pdir} holds no conversion report of this "
+                  f"tool, so its {len(olds)} '<plugin>{_LEGACY_SRC_PATCH_SUFFIX}' "
+                  "file(s) are left under their own names")
+        return 0
+    res = _migrate_source_patch_names(pdir, require_sidecar=root_write)
+    if res["left"]:
+        shown = ", ".join(res["left"][:5]) + (", ..." if len(res["left"]) > 5 else "")
+        print(f"  [migrate] NOTE: left {len(res['left'])} "
+              f"'<plugin>{_LEGACY_SRC_PATCH_SUFFIX}' file(s) at the mod root "
+              "under their own names: no .espgen.json beside them, so this tool "
+              f"did not write them ({shown}). If an older version of this tool "
+              "did, delete them by hand.")
     if res["renamed"] or res["removed"]:
         print(f"  [migrate] renamed {res['renamed']} per-source patch(es) to "
               f"'<plugin>{_SRC_PATCH_SUFFIX}'"
