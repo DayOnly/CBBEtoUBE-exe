@@ -31,10 +31,19 @@ garment whose layers share a name (the fur coat above), the variant copied into
 this tool's merged plugin kept only one entry for that name, so only the first
 fur shell took the new colour and the others stayed in the original one. Each
 entry now goes to its own layer, in the author's order: the first "fur" entry to
-"fur", the second to "fur:1", and so on. It only acts on layers the previous
-fix renamed, so current output on the reported modlist does not change.
+"fur", the second to "fur:1", and so on. The tool only sees the converted mesh,
+so it does this only when that mesh's layers look exactly as the previous fix
+names them -- "fur" first, then "fur:1", "fur:2" and so on with none missing, in
+that order -- and the variant lists every one of them once. Otherwise, for
+example when a layer was lost in conversion, when the author already named a
+layer "fur:1", or when the variant recolours only some of the layers, that name
+keeps one entry as before: a layer may miss its colour, but no layer gets
+another layer's colour. None of the meshes the reported modlist converts has
+such layers, so current output does not change.
 `CBBE2UBE_NO_ALTTEX_DUP_OCCURRENCE=1` (set to 1) turns it off; it is also off
-when `CBBE2UBE_NO_DUP_SHAPE_NAMES=1` is set.
+when `CBBE2UBE_NO_DUP_SHAPE_NAMES=1` is set. `CBBE2UBE_NO_ALTTEX_FAMILY_STRICT=1`
+drops the layout and count checks and hands the entries out in turn to any
+"fur" and "fur:N" layers.
 
 ### Changed — whether you can wear an item is read from the plugin the game uses
 

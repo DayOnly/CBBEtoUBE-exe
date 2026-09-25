@@ -284,14 +284,14 @@ def _alttex_dup_occurrence_on() -> bool:
     lost their colour.
 
     Now the entries of such a set that name a split name (case-insensitive) are
-    ordered by their source 3D index and bound in turn to that name's shapes in
-    the converted NIF, in the NIF's order; a repeated source index addresses the
-    same shell and keeps one entry; entries past the last shape are dropped, as a
-    missing name is. A 'name:k' the set itself names is the author's own shape
-    and is matched by name. The authored name bytes are kept (the engine binds by
-    index). Our own plugins only: a third-party set binds by index and the rename
-    keeps the order. Inert unless the converted NIF carries renamed shapes --
-    none do on the live pack today.
+    ordered by their source 3D index and the k-th binds to the shape named
+    'name:k' (k=0: 'name'); a repeated source index addresses the same shell and
+    keeps one entry. Which layouts count as split, and when a set falls back to
+    one entry per name, is `_alttex_family_strict_on`. A 'name:k' the set itself
+    names is the author's own shape and is matched by name. The authored name
+    bytes are kept (the engine binds by index). Our own plugins only: a
+    third-party set binds by index and the rename keeps the order. Inert unless
+    the converted NIF carries renamed shapes -- none do on the live pack today.
 
     Nested: with #dup-shape-names off no shape is renamed, and a 'name:k' next
     to 'name' is then the author's, so this is off too.
@@ -302,31 +302,75 @@ def _alttex_dup_occurrence_on() -> bool:
     return not _flag("CBBE2UBE_NO_ALTTEX_DUP_OCCURRENCE", False)
 
 
+def _alttex_family_strict_on() -> bool:
+    r"""#alttex-family-strict (2026-09-25): does #alttex-dup-occurrence bind
+    only a family laid out EXACTLY as the rename lays it out, and only a set
+    that names each of its shells? Yes, by default.
+
+    The reconcile sees the converted NIF, not the source, so it cannot know
+    which shapes the rename made. It took any 'name' beside a 'name:k' for a
+    family and bound entries by rank in NIF order. Two ways that put a colour on
+    the WRONG shell: a middle shell lost to a failed copy (the partial NIF still
+    ships) moved every later shell's colour one shell down, and an authored
+    'x:1' before 'x' took the only 'x' entry.
+
+    The rename keeps the first shape's name and calls the k-th of the rest
+    'name:k', skipping a name the author already used, in the author's order.
+    So a family is kept only when its shapes are 'name', 'name:1' ..
+    'name:n' with no suffix missing, in that NIF order ('name' first). And the
+    set's entries for the name must address exactly n+1 distinct source
+    shells: a set naming only some shells cannot say which, and a shell count
+    the NIF does not match is an authored 'name:k' among them or a lost shell.
+    Then the entry of rank k (source 3D index) binds to the shape named
+    'name:k'. Any other layout or count falls back, for that name, to one entry
+    per name as before -- a colour missed, never a colour on a wrong shell.
+
+    CBBE2UBE_NO_ALTTEX_FAMILY_STRICT=1 takes any 'name' beside a 'name:k' as a
+    family and binds by rank in NIF order, dropping entries past the last."""
+    return not _flag("CBBE2UBE_NO_ALTTEX_FAMILY_STRICT", False)
+
+
 def _renamed_shape_families(shape_index: "dict[str, int]",
                             set_names: "set[str]") -> "dict[str, list[int]]":
     """#alttex-dup-occurrence: {lowercased shared name: [index, ...]} for every
-    name the #dup-shape-names rename split in the converted NIF -- the shape
-    that kept `name` plus each 'name:k', in NIF order. `set_names` (lowercased)
-    are the names an alternate-texture set carries: a 'name:k' among them is an
-    authored shape, not a renamed one. A name two shapes of the NIF carry in
-    different case is left out (the case-insensitive entry match could not
-    tell them apart)."""
+    name the #dup-shape-names rename split in the converted NIF: item k is the
+    index of the shape named 'name:k' (item 0 the shape that kept `name`).
+    `set_names` (lowercased) are the names an alternate-texture set carries: a
+    'name:k' among them is an authored shape, not a renamed one. A name two
+    shapes of the NIF carry in different case is left out (the case-insensitive
+    entry match could not tell them apart), and so is any layout the rename
+    cannot produce (`_alttex_family_strict_on`)."""
     from .nif_convert_writer import _DUP_NAME_SEP
-    split: "dict[str, list[int]]" = {}
+    split: "dict[str, dict[int, int]]" = {}      # name -> {k: index of 'name:k'}
     for nm, i in shape_index.items():
         base, sep, k = nm.rpartition(_DUP_NAME_SEP)
         if (not sep or not base or base not in shape_index
                 or not (k.isascii() and k.isdigit()) or str(int(k)) != k
                 or nm.lower() in set_names):
             continue
-        split.setdefault(base, []).append(i)
+        split.setdefault(base, {})[int(k)] = i
     if not split:
         return {}
     lower_count: "dict[str, int]" = {}
     for nm in shape_index:
         lower_count[nm.lower()] = lower_count.get(nm.lower(), 0) + 1
-    return {base.lower(): sorted([shape_index[base]] + idxs)
-            for base, idxs in split.items() if lower_count[base.lower()] == 1}
+    strict = _alttex_family_strict_on()
+    families: "dict[str, list[int]]" = {}
+    for base, by_k in split.items():
+        if lower_count[base.lower()] != 1:
+            continue
+        if not strict:
+            families[base.lower()] = sorted([shape_index[base]]
+                                            + list(by_k.values()))
+            continue
+        ks = sorted(by_k)
+        if ks != list(range(1, len(ks) + 1)):
+            continue                     # a gap ('name:2' lost) or a 'name:0'
+        members = [shape_index[base]] + [by_k[k] for k in ks]
+        if any(a >= b for a, b in zip(members, members[1:])):
+            continue                     # not 'name', 'name:1', ... in NIF order
+        families[base.lower()] = members
+    return families
 
 
 def _reindex_alt_texture_payload(data: bytes,
@@ -362,16 +406,19 @@ def _reindex_alt_texture_payload(data: bytes,
     by_occurrence: "dict[int, int]" = {}
     families = (_renamed_shape_families(shape_index, set(lnames))
                 if _alttex_dup_occurrence_on() else {})
+    strict = bool(families) and _alttex_family_strict_on()
+    bound: "set[str]" = set()                   # names bound by occurrence
     for fam, members in families.items():
-        shell_of: "dict[int, int]" = {}          # source 3D index -> rank
+        first: "dict[int, int]" = {}   # source 3D index -> its first entry
         for pos in sorted((q for q, nm in enumerate(lnames) if nm == fam),
                           key=lambda q: entries[q][2]):
-            src_idx = entries[pos][2]
-            if src_idx in shell_of:
-                continue                 # the same shell again: keep the first
-            shell_of[src_idx] = len(shell_of)
-            if shell_of[src_idx] < len(members):
-                by_occurrence[pos] = members[shell_of[src_idx]]
+            first.setdefault(entries[pos][2], pos)   # a repeat: keep the first
+        if strict and len(first) != len(members):
+            continue       # #alttex-family-strict: not every shell once -> by name
+        bound.add(fam)
+        for rank, pos in enumerate(first.values()):  # rank k -> 'name:k'
+            if rank < len(members):
+                by_occurrence[pos] = members[rank]
     # Case-INSENSITIVE shape-name match: alt-texture sets are authored by hand and
     # frequently disagree in case with the actual NIF shape name (e.g. an entry
     # named 'hood' for a shape named 'Hood'). The engine applies the recolor by
@@ -387,7 +434,7 @@ def _reindex_alt_texture_payload(data: bytes,
     kept = []
     for pos, (name, txst, _src) in enumerate(entries):
         nm = lnames[pos]
-        if nm in families:
+        if nm in bound:
             if pos in by_occurrence:
                 kept.append((name, txst, by_occurrence[pos]))
             continue                     # past the last shell / a repeat

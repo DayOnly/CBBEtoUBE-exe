@@ -1122,24 +1122,46 @@ texture reconcile (`ube_patcher._reindex_alt_texture_payload`) rebuilds each
 MO?S set of our merged plugin from the converted NIF's {name: index} map and kept
 one entry per case-insensitive name, so a set that addresses six same-named
 shells by source index kept one entry, bound to the first shell. Now a name the
-rename split -- the converted NIF has `name` and `name:k` (k a plain integer) --
-binds by OCCURRENCE: that name's entries, ordered by source 3D index, go in turn
-to its shapes in NIF order (the rename keeps the author's order, so the k-th
-authored shell is the k-th shape). A repeated source index is one shell and keeps one entry; entries past
-the last shell are dropped, as a missing name is. Not split: a `name:k` the set
-itself names (the author's shape, matched by name), and a name two NIF shapes
-carry in different case. Authored name bytes are kept, as `#alttex-case` does:
-the engine binds by index.
+rename split binds by OCCURRENCE: that name's entries, ordered by source 3D
+index, are ranked 0..n and the entry of rank k binds to the shape named exactly
+`name:k` (rank 0 to `name`). A repeated source index is one shell and keeps one
+entry. Not split: a `name:k` the set itself names (the author's shape, matched
+by name), and a name two NIF shapes carry in different case. Authored name bytes
+are kept, as `#alttex-case` does: the engine binds by index.
+
+**Which names count as split: `#alttex-family-strict`.** The reconcile sees the
+converted NIF, not the source, so it cannot know which shapes the rename made;
+the first cut took any `name` beside a `name:k` and bound by rank in NIF order.
+That put colours on the WRONG shell twice over: a middle shell lost to a failed
+copy (the partial NIF ships, `dropped_shapes`) moved every later shell's colour
+one shell down, and an authored `x:1` before `x` took the only `x` entry. The
+rename (`_dup_shape_rename_plan`) keeps the first shape's name and calls the
+k-th of the rest `name:k` in the author's order, skipping a name already
+taken. So a name binds by occurrence only when BOTH hold:
+- layout: its shapes are `name`, `name:1` .. `name:n`, no suffix missing (no
+  `name:0`), in that NIF order with `name` first;
+- count: the set's entries for the name address exactly n+1 distinct source
+  shells.
+Otherwise that name falls back to one entry per name, as before -- a colour
+missed, never a colour on another shell. The count check is what catches an
+authored `name:k` the set does not name: with the author's `fur:1` and two
+`fur` shells the NIF reads `fur, fur:1, fur:2` (the rename's layout), but the
+set names two shells for three shapes. A set that recolours only some shells
+falls back too, since which ones it means is unknown. Accuracy over reach: the
+checks give up a colour in every such case rather than guess.
+`CBBE2UBE_NO_ALTTEX_FAMILY_STRICT=1` restores the first cut (any `name` beside
+`name:k`, rank in NIF order, entries past the last shell dropped).
 
 The switch is its own, `CBBE2UBE_NO_ALTTEX_DUP_OCCURRENCE=1`, so the rename can
 be kept while this is ruled out; it is nested under `CBBE2UBE_NO_DUP_SHAPE_NAMES`,
 because without the rename a `name:k` beside `name` can only be the author's.
 Third-party ESPs keep their indices and are unaffected. Limits, both because the
-source NIF, which would tell, is not at hand in the reconcile: an entry is placed
-by its RANK among the set's entries for that name, so a set addressing only some
-of the shells binds them to the first ones; and an authored `name:k` the set does
-not name reads as a renamed shell. Live: no converted NIF
-carries a renamed shape today, so the pass changes nothing.
+source NIF, which would tell, is not at hand in the reconcile: a partial set, a
+shell lost in conversion or an authored `name:k` the set does not name loses the
+per-shell colours (one entry, on `name`); and an authored `name`, `name:1` ..
+set out exactly like a rename, with a set naming `name` once per shape, still
+binds by occurrence. Live: no converted NIF carries a renamed shape today, so
+the pass changes nothing.
 
 ---
 
