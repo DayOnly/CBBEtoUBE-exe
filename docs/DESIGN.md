@@ -1000,6 +1000,38 @@ on them: registered-shape protection, collider split clones, and re-imported
 hidden collision shapes (a cloak's `VirtualBody`, which is CBBE-shaped).
 `CBBE2UBE_NO_PHYSICS_DATA_PREFIX=1` restores the old miss.
 
+### A constraint counts wherever it sits (`#constraint-group-scan`, default ON)
+
+FSMP has three constraint elements (`generic-constraint`,
+`stiffspring-constraint`, `conetwist-constraint`), and an XML may put any of
+them at the top level or inside a `<constraint-group>`; this converter's own
+generator writes every chain constraint inside one. `validate_armor_hdt_xml`
+asked `root.find("generic-constraint")` (direct children, one kind), so a
+grouped chain read as unconstrained, and its constraint-body resolution check
+read `generic-constraint` bodies only. Now both walk the whole tree for all
+three kinds. An empty `<constraint-group>` is not a constraint (it holds no
+spring), and neither is `<generic-constraint-default>`.
+
+What the old read decided: only the wording of the report warning for a cloth
+that names no body collide tag ("IS constrained, body collision can be added"
+vs "NO constraints, needs a rigged chain first"). No converter decision uses
+it: every physics decision reads constraint bodies with a whole-file
+`body[AB]=` regex, and `_is_unconstrained_collision_pair` is fed the
+generator's own chains. So it explains none of the pieces that ship static
+although their source has SMP. Live: 75 of 137 output XMLs are constrained
+only inside a group; all 26 "NO constraints" report lines (13 XMLs, each at
+both weights) named one, and go to 0. Over the 361 source XMLs of the load
+order, 1290 such warnings drop to 2 (the two cloths that are really
+unconstrained). No XML in the load order uses the other two kinds, so the
+bone check reports nothing new today.
+
+`scripts/disable_unconstrained_smp.py` used a text test (`"<generic-constraint"`
+anywhere). It saw nested constraints, but it took a `-default` block for a
+constraint and missed the other two kinds, which would rename away the physics
+of a stiffspring or conetwist chain. It now matches the three element names
+exactly; on all 498 XMLs above its verdict is unchanged.
+`CBBE2UBE_NO_CONSTRAINT_GROUP_SCAN=1` restores both old reads.
+
 ### How the physics census counts (`scripts/analysis/physics_cloth_health.py`)
 
 The census reads a piece's physics the way FSMP loads it, because every other

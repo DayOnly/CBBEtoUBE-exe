@@ -47,6 +47,7 @@ from pathlib import Path
 from typing import Iterable
 
 from .atomic_io import atomic_write_bytes
+from .envflags import flag as _flag
 
 
 # -- Bone classification ----------------------------------------------------
@@ -649,6 +650,32 @@ def pick_body_collision_shape_name(nif_shape_names: Iterable[str]) -> "str | Non
 
 # -- Validation -------------------------------------------------------------
 
+# #constraint-group-scan. FSMP has three constraint elements, and an XML may
+# place any of them at the top level OR inside a <constraint-group> (the
+# generator above writes every chain constraint inside one). The validator
+# used to ask `root.find("generic-constraint")` -- DIRECT children, one kind --
+# so a grouped chain read as "NO constraints". Measured on the live output:
+# 75 of 137 physics XMLs are constrained only inside a group, and all 26
+# "the piece has NO constraints" lines in the conversion reports named such a
+# piece. A <constraint-group> with nothing in it is NOT a constraint: an empty
+# group has no springs, and calling it constrained would tell the reader body
+# collision can be added safely to the crash pattern.
+_CONSTRAINT_TAGS = ("generic-constraint", "stiffspring-constraint",
+                    "conetwist-constraint")
+
+
+def _constraint_group_scan() -> bool:
+    return not _flag("CBBE2UBE_NO_CONSTRAINT_GROUP_SCAN", False)
+
+
+def _constraint_elements(root) -> list:
+    """Every constraint the XML declares, wherever it sits (off: the old
+    generic-only read)."""
+    if not _constraint_group_scan():
+        return list(root.iter("generic-constraint"))
+    return [el for el in root.iter() if el.tag in _CONSTRAINT_TAGS]
+
+
 def validate_armor_hdt_xml(xml_path: "Path",
                            nif_bone_names: Iterable[str]) -> "list[str]":
     """Inspect a generated HDT XML for the kind of issues that cause
@@ -720,7 +747,7 @@ def validate_armor_hdt_xml(xml_path: "Path",
     except Exception:
         actor = set()
     referenced = set(xml_bones)
-    for c in root.iter("generic-constraint"):
+    for c in _constraint_elements(root):
         for attr in ("bodyA", "bodyB"):
             v = c.get(attr)
             if v:
@@ -767,7 +794,8 @@ def validate_armor_hdt_xml(xml_path: "Path",
     # whether the piece is constrained, because that is what decides whether it
     # is fixable at all.
     body_tags = {"body", "body2", "colbody", "bodycol"}
-    constrained = root.find("generic-constraint") is not None
+    constrained = (bool(_constraint_elements(root)) if _constraint_group_scan()
+                   else root.find("generic-constraint") is not None)
     for sh in root.findall("per-vertex-shape"):
         sh_name = sh.get("name") or "?"
         can = {(t.text or "").strip().lower()

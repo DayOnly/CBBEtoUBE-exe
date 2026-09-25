@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Fixed — the report no longer says a rigged physics cloth has "NO constraints"
+
+When a physics cloth cannot collide with the body, the conversion report says
+whether the piece can be fixed, and that depends on whether its cloth is
+rigged (held together by constraints). Most physics files keep those
+constraints in groups, and the tool looked only outside the groups, so it
+told you a rigged skirt or cape had none and needed a rig first. It now looks
+everywhere. Measured on the reported modlist: all 26 such lines were wrong and
+are gone; the converted meshes themselves do not change. The optional
+`disable_unconstrained_smp.py` script also recognises all three kinds of
+constraint now, so it can no longer switch off a rigged cloth that uses the
+less common kinds (none in the reported modlist).
+`CBBE2UBE_NO_CONSTRAINT_GROUP_SCAN=1` (set to 1) turns it off.
+
 ### Fixed — physics that some armours and cloaks point to with a "Data\" path now carries over
 
 An armour with HDT-SMP physics names its physics file inside the mesh. A few
