@@ -386,6 +386,21 @@ single pass runs. Three rules encode this:
    builds sat 1.0-1.4e-4 off; every preset or stale build seen was 0.25u or more off.
    Off with `CBBE2UBE_NO_ZEROED_OUTPUT_SOURCE=1` (settings: "Take armour from the
    zeroed BodySlide build").
+   **The check remembers its loose-file answers for one call** (`#zeroed-probe-memo`,
+   2026-09-25). The garment check asked `_Vfs.winner` ~3,100 times (~930 distinct
+   paths), and each question stat'ed every one of ~3,300 overwrite/mod/Data folders:
+   5.4M stats, 72% of the step. `_prefer_zeroed_outputs` now opens a
+   `zeroed_body.probe_memo()` scope; inside it an answer is kept per (folder list,
+   exact path), and a path of more than one part is probed only in the folders that
+   have its first part as a folder (one `_ci_join` per folder per first part, in
+   priority order). A one-part path is a file at the root, so it is never filtered.
+   The answers are the plain probe's -- same `_ci_join`, same order, same case rules --
+   as long as the folders do not change while the scope is open, so the scope is one
+   call and is dropped on return: the GUI's long-lived process never answers from a
+   memo taken before the user re-ran BodySlide. Live, read-only, in separate
+   processes: 264.8 s -> 69.6 s; the mesh index is identical key for key (4,562
+   entries, 244 re-pointed) and so is the verdict line (122 moved / 179 kept).
+   `CBBE2UBE_NO_ZEROED_PROBE_MEMO=1` probes every folder per question again.
 
 ### Which mods and pieces are sources at all (2026-09-24)
 

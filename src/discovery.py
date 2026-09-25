@@ -252,7 +252,16 @@ def _prefer_zeroed_outputs(index: "dict[str, Path]", win_tier: "dict[str, int]",
                            mods_root: Path, enabled_mods: "list[str]",
                            skip: "set[str]") -> None:
     """Re-point pieces at the verified zeroed BodySlide build, in place.
-    See the #zeroed-output-source block above for the rules."""
+    See the #zeroed-output-source block above for the rules. The loose-file
+    answers it needs are remembered for this call only (#zeroed-probe-memo)."""
+    from . import zeroed_body as _zb
+    with _zb.probe_memo():
+        _prefer_zeroed_outputs_in(index, win_tier, mods_root, enabled_mods, skip)
+
+
+def _prefer_zeroed_outputs_in(index: "dict[str, Path]", win_tier: "dict[str, int]",
+                              mods_root: Path, enabled_mods: "list[str]",
+                              skip: "set[str]") -> None:
     if _flag("CBBE2UBE_NO_ZEROED_OUTPUT_SOURCE", False):
         return
     stems = sorted({k[:-len("_0.nif")] for k, t in win_tier.items()
