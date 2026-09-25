@@ -14,7 +14,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-"""The physics census reads exactly what FSMP reads.
+"""The physics census models what FSMP reads; these pin the modelled rules.
 
 Five differences made its numbers unquotable: it borrowed another garment's XML
 by filename when the NIF had no pointer of its own; it read the XML as locale
@@ -22,7 +22,18 @@ text, so a UTF-8 byte-order mark made the file "unparseable"; a default
 `xmlns` on <system> did the same; it treated one side naming a body tag as
 enough to collide, where FSMP needs both sides to allow it and reads an empty
 can-collide list as "everything"; and only a generic constraint counted as a
-constraint. Each is pinned here on a small fixture."""
+constraint. Each is pinned here on a small fixture.
+
+What simulates is decided the way FSMP decides it, by bone mass and not by
+element kind: a kinematic helper is a collider whatever its kind, a dynamic
+per-triangle shape is cloth, a per-vertex partner counts, two kinematic shapes
+never pair, and an XML the run cannot read is counted, not fatal.
+
+A system of bones with no simulated shape still swings the NIF mesh on its
+dynamic bones (FSMP keeps a system that has bones): that cloth is measured and
+reaches nothing; a dynamic chain with no NIF shape on it is counted apart. A
+body stand-in (a body-part name on body-bone skin) is a body collider, and an
+`external` shape pairs with nothing in its own file."""
 from __future__ import annotations
 
 import sys
@@ -41,6 +52,8 @@ MARK = b"HDT Skinned Mesh Physics Object"
 
 CLOTH_XML = b"""<?xml version="1.0" encoding="UTF-8"?>
 <system>
+  <bone name="NPC Pelvis"/>
+  <bone name="Skirt 1"><mass>1.5</mass></bone>
   <per-vertex-shape name="Skirt">
     <tag>cloth</tag>
     <can-collide-with-tag>body</can-collide-with-tag>
@@ -48,9 +61,17 @@ CLOTH_XML = b"""<?xml version="1.0" encoding="UTF-8"?>
   <per-triangle-shape name="BodyCol">
     <tag>body</tag>
   </per-triangle-shape>
-  <generic-constraint bodyA="a" bodyB="b"/>
+  <generic-constraint bodyA="Skirt 1" bodyB="NPC Pelvis"/>
 </system>
 """
+
+# Skin bones of each fixture shape: the skirt hangs off a dynamic chain bone,
+# every helper sits on body bones only.
+SKIN = {"Skirt": ("Skirt 1", "NPC Pelvis"), "Cape": ("Skirt 1",),
+        "BodyCol": ("NPC Pelvis",), "VirtualBody": ("NPC Pelvis",),
+        "Ground": ("NPC Pelvis",), "Scarf": ("Scarf 1", "Scarf 2"),
+        "BaseShape": ("NPC L Breast",), "VirtualGround": ("NPC Root [Root]",),
+        "Greaves": ("NPC L Calf",)}
 
 
 class _Ed:
@@ -70,7 +91,8 @@ class _Root:
 class _Shape:
     def __init__(self, name):
         self.name = name
-        self.verts = []
+        self.bone_names = list(SKIN.get(name, ("NPC Pelvis",)))
+        self.verts = [(0.0, 0.0, 0.0)]
         self.tris = []
 
 
@@ -193,7 +215,7 @@ def test_a_default_namespace_is_invisible_to_fsmp(tmp_path, monkeypatch):
     row, reason = pch.classify(nif, _Nif(pointer=POINTER))
     assert reason is None
     assert [c["name"] for c in row["cloth"]] == ["Skirt"]
-    assert [k["name"] for k in row["colliders"]] == ["BodyCol"]
+    assert [k["name"] for k in row["shapes"]] == ["Skirt", "BodyCol"]
 
 
 def test_a_root_other_than_system_loads_nothing(tmp_path, monkeypatch):
@@ -204,11 +226,391 @@ def test_a_root_other_than_system_loads_nothing(tmp_path, monkeypatch):
     assert reason == pch.NOT_SYSTEM
 
 
-def test_cloth_named_but_absent_from_the_nif_is_dead(tmp_path, monkeypatch):
-    nif, _xml = _mod(tmp_path, monkeypatch)
-    row, reason = pch.classify(nif, _Nif(pointer=POINTER, shapes=("BodyCol",)))
+def test_shapes_named_but_absent_from_the_nif_move_nothing(
+        tmp_path, monkeypatch):
+    """No XML shape is in the NIF and no bone has mass: nothing moves."""
+    nif, _xml = _mod(tmp_path, monkeypatch, xml_bytes=CLOTH_XML.replace(
+        b"<mass>1.5</mass>", b"<mass>0</mass>"))
+    row, reason = pch.classify(nif, _Nif(pointer=POINTER, shapes=("Other",)))
     assert row is None
-    assert reason == pch.CLOTH_ABSENT
+    assert reason == pch.SHAPES_ABSENT
+
+
+def test_an_unreadable_xml_is_counted_not_fatal(tmp_path, monkeypatch):
+    """A locked or denied XML: the read fails after the pointer resolved. The
+    run counts it in its own bucket and goes on to the next NIF."""
+    nif, _xml = _mod(tmp_path, monkeypatch)
+    other = nif.parent / "cuirass_1.nif"
+    other.write_bytes(nif.read_bytes())
+    monkeypatch.setattr(pch, "_open_nif", lambda p: _Nif(pointer=POINTER))
+    real = pch.resolve_pointer
+
+    def _locked(ptr, nif_path):
+        # A directory passes for the resolved path and fails on read, the way
+        # a file held open with no sharing does.
+        return tmp_path if nif_path.name == "cuirass_0.nif" else real(
+            ptr, nif_path)
+    monkeypatch.setattr(pch, "resolve_pointer", _locked)
+    rows, skip, _g, _n = pch.scan([nif, other], tmp_path)
+    assert skip == Counter({pch.XML_UNREADABLE: 1})
+    assert [r["path"] for r in rows] == [
+        str(other.relative_to(tmp_path)).replace("\\", "/")]
+
+
+# ------------------------------------------ what simulates: bone mass, not kind
+
+def _xml(shapes, bones=b'  <bone name="NPC Pelvis"/>\n'
+                        b'  <bone name="Skirt 1"><mass>1.5</mass></bone>\n',
+         tail=b""):
+    return (b"<system>\n" + bones + shapes + tail + b"</system>\n")
+
+
+def _classify(tmp_path, monkeypatch, xml, shapes):
+    nif, _x = _mod(tmp_path, monkeypatch, xml_bytes=xml)
+    return pch.classify(nif, _Nif(pointer=POINTER, shapes=shapes))
+
+
+def test_a_kinematic_per_vertex_helper_is_a_collider_not_cloth(
+        tmp_path, monkeypatch):
+    """A per-vertex body proxy on mass-0 body bones is what the skirt collides
+    WITH. The first 09-25 census took it for the cloth and the per-triangle
+    skirt for its collider."""
+    row, reason = _classify(tmp_path, monkeypatch, _xml(
+        b'  <per-vertex-shape name="VirtualBody"><tag>body</tag>'
+        b'</per-vertex-shape>\n'
+        b'  <per-triangle-shape name="Skirt"><tag>cloth</tag>'
+        b'</per-triangle-shape>\n'), ("VirtualBody", "Skirt"))
+    assert reason is None
+    assert [c["name"] for c in row["cloth"]] == ["Skirt"]
+    assert pch.cloth_reach(row) == {"Skirt": (True, True)}
+
+
+def test_a_dynamic_per_triangle_shape_is_cloth(tmp_path, monkeypatch):
+    """An XML with no per-vertex shape at all still simulates its skirt."""
+    row, reason = _classify(tmp_path, monkeypatch, _xml(
+        b'  <per-triangle-shape name="Skirt"><tag>cloth</tag>'
+        b'</per-triangle-shape>\n'
+        b'  <per-triangle-shape name="BodyCol"><tag>body</tag>'
+        b'</per-triangle-shape>\n'), ("Skirt", "BodyCol"))
+    assert reason is None
+    assert [c["name"] for c in row["cloth"]] == ["Skirt"]
+
+
+def test_an_xml_whose_shapes_and_bones_are_all_kinematic_moves_nothing(
+        tmp_path, monkeypatch):
+    row, reason = _classify(tmp_path, monkeypatch, _xml(
+        b'  <per-vertex-shape name="VirtualBody"><tag>body</tag>'
+        b'</per-vertex-shape>\n', bones=b'  <bone name="NPC Pelvis"/>\n'),
+        ("VirtualBody",))
+    assert row is None
+    assert reason == pch.NO_DYNAMIC
+
+
+# ------------------------------- cloth moved by bones, with no collision shape
+
+SCARF_BONES = (b'  <bone name="NPC Pelvis"/>\n'
+               b'  <bone-default><mass>1</mass></bone-default>\n'
+               b'  <bone name="Scarf 1"/>\n  <bone name="Scarf 2"/>\n')
+SCARF_JOINTS = (b'  <generic-constraint bodyA="Scarf 1" bodyB="NPC Pelvis"/>\n'
+                b'  <generic-constraint bodyA="Scarf 2" bodyB="Scarf 1"/>\n')
+
+
+def test_a_bone_only_xml_moves_its_skinned_shape_and_reaches_nothing(
+        tmp_path, monkeypatch):
+    """FSMP keeps a system that has only bones (valid() = bones not empty)
+    and drives its dynamic ones, so the scarf swings -- with no collision
+    shape at all. It is measured, and it reaches no partner."""
+    row, reason = _classify(tmp_path, monkeypatch, _xml(
+        b"", bones=SCARF_BONES, tail=SCARF_JOINTS), ("Scarf", "BodyCol"))
+    assert reason is None
+    assert row["cloth"] == [] and row["moved"] == ["scarf"]
+    assert row["no_collision"] == pch.WHY_NONE
+    assert row["constrained"] is True
+    assert pch.cloth_reach(row) == {"scarf": (False, False)}
+
+
+def test_kinematic_shapes_do_not_stop_dynamic_bones_moving_the_mesh(
+        tmp_path, monkeypatch):
+    """Every XML shape is a kinematic helper, but the skirt bone has mass:
+    the skirt swings with nothing to collide with. The old reason text read
+    'every shape is kinematic' as if nothing moved."""
+    row, reason = _classify(tmp_path, monkeypatch, _xml(
+        b'  <per-triangle-shape name="BodyCol"><tag>body</tag>'
+        b'</per-triangle-shape>\n',
+        tail=b'  <generic-constraint bodyA="Skirt 1" bodyB="NPC Pelvis"/>\n'),
+        ("BodyCol", "Skirt"))
+    assert reason is None
+    assert row["moved"] == ["skirt"]
+    assert row["no_collision"] == pch.WHY_KINEMATIC
+    assert pch.cloth_reach(row) == {"skirt": (False, False)}
+
+
+def test_an_unconstrained_dynamic_chain_still_moves_the_mesh(
+        tmp_path, monkeypatch):
+    """No constraint is required: FSMP moves an unconstrained dynamic bone
+    too. The row says it is unconstrained."""
+    row, reason = _classify(tmp_path, monkeypatch, _xml(
+        b"", bones=SCARF_BONES), ("Scarf",))
+    assert reason is None and row["moved"] == ["scarf"]
+    assert row["constrained"] is False
+
+
+def test_a_dynamic_chain_with_no_skinned_shape_is_counted_apart(
+        tmp_path, monkeypatch):
+    """The bones simulate but no NIF shape hangs on them: nothing visible
+    moves, and the piece is its own bucket, not 'declares no shape'."""
+    nif, _x = _mod(tmp_path, monkeypatch, xml_bytes=_xml(
+        b"", bones=SCARF_BONES, tail=SCARF_JOINTS))
+    monkeypatch.setattr(pch, "_open_nif",
+                        lambda p: _Nif(pointer=POINTER, shapes=("BodyCol",)))
+    rows, skip, _g, _n = pch.scan([nif], tmp_path)
+    assert rows == []
+    assert skip == Counter({pch.BONES_UNSKINNED: 1})
+
+
+def test_the_injected_body_is_not_moved_cloth(tmp_path, monkeypatch):
+    """Breast bones with mass move the injected body; the body is not the
+    garment's cloth, so nothing of the garment moves."""
+    row, reason = _classify(tmp_path, monkeypatch, _xml(
+        b"", bones=b'  <bone-default><mass>1</mass></bone-default>\n'
+                   b'  <bone name="NPC L Breast"/>\n'), ("BaseShape",))
+    assert row is None
+    assert reason == pch.BONES_UNSKINNED
+
+
+# ------------------------------------------------ what counts as the body
+
+def test_a_body_stand_in_is_a_body_collider(tmp_path, monkeypatch):
+    """A kinematic 'VirtualBody' tagged 'vbody' on body bones is the body to
+    the skirt, though 'vbody' is no body tag."""
+    nif, _xml_path = _mod(tmp_path, monkeypatch, xml_bytes=CLOTH_XML.replace(
+        b"<tag>body</tag>", b"<tag>vbody</tag>").replace(
+        b'name="BodyCol"', b'name="VirtualBody"').replace(
+        b"<can-collide-with-tag>body<", b"<can-collide-with-tag>vbody<"))
+    row, _reason = pch.classify(nif, _Nif(pointer=POINTER,
+                                          shapes=("Skirt", "VirtualBody")))
+    assert pch.cloth_reach(row) == {"Skirt": (True, True)}
+
+
+def test_a_body_part_name_off_the_body_bones_is_not_the_body():
+    """A ground plane tagged 'legs' rides the root, not the body."""
+    ground = _k("VirtualGround", False, ("legs",))
+    ground["body_skin"] = pch.body_skin_share(_Shape("VirtualGround"))
+    assert ground["body_skin"] == 0.0
+    assert not pch.is_body_collider(ground)
+
+
+def test_a_collider_on_body_bones_needs_a_body_part_name():
+    """A greaves collider rides the calf but is armour, not the body."""
+    greaves = _k("Greaves", False, ("collision",))
+    greaves["body_skin"] = pch.body_skin_share(_Shape("Greaves"))
+    assert greaves["body_skin"] == 1.0
+    assert not pch.is_body_collider(greaves)
+    legs = _k("CollisionLegs", False, ("collision",))
+    legs["body_skin"] = 1.0
+    assert pch.is_body_collider(legs)
+
+
+def test_the_body_bone_share_is_by_skin_weight():
+    """A leg collider lists six skirt bones that carry a sliver of its
+    weight: by bone count it is not on the body, by weight it is."""
+    s = _Shape("CollisionLegs")
+    body = ["NPC L Thigh", "NPC R Thigh", "NPC Pelvis", "NPC L Calf",
+            "NPC R Calf"]
+    skirt = [f"SkirtBone{i}" for i in range(6)]
+    s.bone_names = body + skirt
+    s.bone_weights = {**{b: [(0, 1.0), (1, 1.0)] for b in body},
+                      **{b: [(2, 0.1)] for b in skirt}}
+    assert pch.body_skin_share(s) > 0.9
+
+
+def test_an_external_shape_pairs_with_nothing_in_its_file(
+        tmp_path, monkeypatch):
+    """FSMP's SHARED_EXTERNAL refuses a partner on the same skeleton, and
+    every shape in one file shares it; 'private' allows the in-file pair."""
+    for i, (value, want) in enumerate(((b"external", (False, False)),
+                                       (b"private", (True, True)))):
+        base = tmp_path / str(i)
+        base.mkdir()
+        nif_convert._VFS_DATA_REL_MEMO.clear()
+        nif, _xml_path = _mod(base, monkeypatch, xml_bytes=CLOTH_XML.replace(
+            b"<tag>cloth</tag>",
+            b"<tag>cloth</tag><shared>" + value + b"</shared>"))
+        row, _reason = pch.classify(nif, _Nif(pointer=POINTER))
+        assert pch.cloth_reach(row) == {"Skirt": want}, value
+
+
+def test_padded_shared_and_tag_text_are_read_as_fsmp_reads_them(
+        tmp_path, monkeypatch):
+    """FSMP's readText does not trim: ' external ' is no value it knows, so
+    the shape stays public and pairs; a ' body ' tag is not 'body', so a
+    can-collide list naming 'body' refuses it."""
+    padded = CLOTH_XML.replace(
+        b"<tag>cloth</tag>", b"<tag>cloth</tag><shared> external </shared>")
+    nif, _xml_path = _mod(tmp_path, monkeypatch, xml_bytes=padded)
+    row, _reason = pch.classify(nif, _Nif(pointer=POINTER))
+    assert pch.cloth_reach(row) == {"Skirt": (True, True)}
+    base = tmp_path / "tag"
+    base.mkdir()
+    nif_convert._VFS_DATA_REL_MEMO.clear()
+    nif, _xml_path = _mod(base, monkeypatch, xml_bytes=CLOTH_XML.replace(
+        b"<tag>body</tag>", b"<tag> body </tag>"))
+    row, _reason = pch.classify(nif, _Nif(pointer=POINTER))
+    assert pch.cloth_reach(row) == {"Skirt": (False, False)}
+
+
+def test_a_per_vertex_partner_counts(tmp_path, monkeypatch):
+    """Vertex-vertex is a collision pair: a per-vertex body proxy is a real
+    body collider for per-vertex cloth."""
+    row, _reason = _classify(tmp_path, monkeypatch, _xml(
+        b'  <per-vertex-shape name="Skirt"><tag>cloth</tag>'
+        b'</per-vertex-shape>\n'
+        b'  <per-vertex-shape name="VirtualBody"><tag>body</tag>'
+        b'</per-vertex-shape>\n'), ("Skirt", "VirtualBody"))
+    assert pch.cloth_reach(row) == {"Skirt": (True, True)}
+
+
+def _k(name, dynamic, tags=("body",)):
+    return {"name": name, "tags": set(tags), "can": set(), "no": set(),
+            "dynamic": dynamic}
+
+
+def test_two_kinematic_shapes_never_pair():
+    """FSMP needsCollision drops a kinematic-kinematic pair before any tag
+    test; a dynamic shape with the same tags does pair."""
+    assert not pch.pair_collides(_k("a", False), _k("b", False))
+    assert pch.pair_collides(_k("a", True), _k("b", False))
+
+
+def test_a_simulated_shape_tagged_body_is_not_the_body():
+    """Two simulated shapes may collide, but a moving shape is not the body:
+    the body-collider row wants a kinematic body-tagged partner."""
+    row = {"cloth": [_k("Skirt", True, ("cloth",)), _k("Cape", True)]}
+    row["shapes"] = row["cloth"]
+    assert pch.cloth_reach(row)["Skirt"] == (True, False)
+
+
+def test_bone_names_compare_without_case(tmp_path, monkeypatch):
+    """The XML declares the pelvis `[PElv]`, the skin says `[Pelv]`: one
+    engine string, so the declared mass-0 bone is the skin bone and the
+    later mass-1 default does not reach it."""
+    xml = _xml(b'  <per-triangle-shape name="Ground"><tag>ground</tag>'
+               b'</per-triangle-shape>\n',
+               bones=b'  <bone name="NPC PELVIS"/>\n'
+                     b'  <bone-default><mass>1</mass></bone-default>\n')
+    row, reason = _classify(tmp_path, monkeypatch, xml, ("Ground",))
+    assert reason == pch.NO_DYNAMIC
+
+
+def test_an_undeclared_skin_bone_takes_the_default_in_force(
+        tmp_path, monkeypatch):
+    """FSMP creates a skin bone it has not seen from the unnamed bone-default
+    as it stands when the shape is read: after a mass-1 default the shape
+    simulates, before it the shape is kinematic."""
+    shape = (b'  <per-triangle-shape name="Cape"><tag>cloth</tag>'
+             b'</per-triangle-shape>\n')
+    default = b'  <bone-default><mass>1</mass></bone-default>\n'
+    row, reason = _classify(tmp_path, monkeypatch,
+                            _xml(default + shape, bones=b""), ("Cape",))
+    assert reason is None and [c["name"] for c in row["cloth"]] == ["Cape"]
+    nif2 = tmp_path / "second"
+    nif2.mkdir()
+    nif_convert._VFS_DATA_REL_MEMO.clear()
+    row, reason = _classify(nif2, monkeypatch,
+                            _xml(shape + default, bones=b""), ("Cape",))
+    assert reason == pch.NO_DYNAMIC
+
+
+def test_a_bone_template_carries_its_mass(tmp_path, monkeypatch):
+    """`<bone template=T>` takes T's mass; `extends` copies the base first."""
+    xml = _xml(b'  <per-triangle-shape name="Cape"><tag>cloth</tag>'
+               b'</per-triangle-shape>\n',
+               bones=b'  <bone-default name="base"><mass>2</mass>'
+                     b'</bone-default>\n'
+                     b'  <bone-default name="chain" extends="base">'
+                     b'<linearDamping>0.5</linearDamping></bone-default>\n'
+                     b'  <bone name="Skirt 1" template="chain"/>\n')
+    row, reason = _classify(tmp_path, monkeypatch, xml, ("Cape",))
+    assert reason is None and [c["name"] for c in row["cloth"]] == ["Cape"]
+
+
+def test_a_constraint_between_two_kinematic_bones_does_not_count(
+        tmp_path, monkeypatch):
+    """FSMP skips it with a warning, so the cloth is still unconstrained."""
+    nif, _xml_path = _mod(tmp_path, monkeypatch, xml_bytes=CLOTH_XML.replace(
+        b'bodyA="Skirt 1"', b'bodyA="NPC Spine"'))
+    row, _reason = pch.classify(nif, _Nif(pointer=POINTER))
+    assert row["constrained"] is False
+
+
+def test_rest_pose_depth_finds_a_shape_named_in_another_case():
+    """The XML's `SKIRT` is the NIF's `Skirt` to FSMP. A case-exact lookup
+    dropped it from the depth check, so a sunk skirt read as clean."""
+    body = _Shape("BaseShape")
+    body.verts = [(-1.0, -1.0, 0.0), (1.0, -1.0, 0.0), (1.0, 1.0, 0.0),
+                  (-1.0, 1.0, 0.0)]
+    body.tris = [(0, 1, 2), (0, 2, 3)]
+    skirt = _Shape("Skirt")
+    skirt.verts = [(0.0, 0.0, 1.0), (0.0, 0.0, -1.0)]   # one each side
+    skirt.bone_weights = {"Skirt 1": [(0, 1.0), (1, 1.0)]}
+    nif = _Nif(shapes=())
+    nif.shapes = [body, skirt]
+    out = pch._penetration(nif, ["SKIRT"], {"skirt 1"})
+    assert list(out) == ["SKIRT"]
+    assert out["SKIRT"][1:] == (1, 2)
+
+
+def _plate_nif(weights):
+    """A body plate at z 0 (outward +z) and a Skirt with two vertices 1u
+    INSIDE it, skinned by `weights`."""
+    body = _Shape("BaseShape")
+    body.verts = [(-1.0, -1.0, 0.0), (1.0, -1.0, 0.0), (1.0, 1.0, 0.0),
+                  (-1.0, 1.0, 0.0)]
+    body.tris = [(0, 1, 2), (0, 2, 3)]
+    skirt = _Shape("Skirt")
+    skirt.verts = [(0.0, 0.0, -1.0), (0.5, 0.0, -1.0)]
+    skirt.bone_weights = weights
+    nif = _Nif(shapes=())
+    nif.shapes = [body, skirt]
+    return nif
+
+
+def test_only_vertices_on_a_dynamic_bone_are_stored_cloth_depth():
+    """A shape is cloth when ANY skin bone is dynamic, but FSMP moves only
+    the vertices weighted to one. A rigid vertex (on the pelvis alone) inside
+    the body is fit, not cloth resting inside; a zero weight on the dynamic
+    bone moves nothing either."""
+    nif = _plate_nif({"Skirt 1": [(0, 1.0), (1, 0.0)],
+                      "NPC Pelvis": [(1, 1.0)]})
+    out = pch._penetration(nif, ["Skirt"], {"skirt 1"})
+    assert out["Skirt"][1:] == (1, 1)
+    rigid = _plate_nif({"NPC Pelvis": [(0, 1.0), (1, 1.0)]})
+    assert pch._penetration(rigid, ["Skirt"], {"skirt 1"}) == {}
+
+
+def test_a_piece_with_no_simulated_vertex_is_counted_not_dropped(capsys):
+    """Its injected body is there but nothing it carries moves: neither
+    measurable nor unknown, so it is named, not lost from the row."""
+    rows = [dict(_row("a/skirt_0.nif"), pen={"Skirt": (1.0, 1, 1)}),
+            dict(_row("b/cape_0.nif"), pen={})]
+    pch.report(rows, Counter(), {}, 2)
+    line = next(ln for ln in capsys.readouterr().out.splitlines()
+                if "STORED CLOTH VERTS INSIDE" in ln)
+    assert "1   of 1 measurable" in line
+    assert "(1 have no vertex weighted to a dynamic bone)" in line
+
+
+def test_the_census_measures_stored_depth_on_dynamic_vertices(
+        tmp_path, monkeypatch):
+    """scan() hands the piece's own dynamic bones to the depth: the Skirt's
+    one vertex on the kinematic pelvis alone is left out."""
+    nif_p, _xml = _mod(tmp_path, monkeypatch)
+    nif = _plate_nif({"Skirt 1": [(0, 1.0)], "NPC Pelvis": [(1, 1.0)]})
+    nif.rootNode = _Root([_Ed("HDT Skinned Mesh Physics Object", POINTER)])
+    nif.shapes.append(_Shape("BodyCol"))
+    monkeypatch.setattr(pch, "_open_nif", lambda p: nif)
+    rows, _skip, _g, _n = pch.scan([nif_p], tmp_path)
+    assert rows[0]["pen"]["Skirt"][1:] == (1, 1)
 
 
 # ------------------------------------------------- FSMP's collision rule
@@ -251,9 +653,26 @@ def test_every_constraint_kind_counts(tmp_path, monkeypatch):
     assert row["constrained"] is True
 
 
+def test_a_constraint_inside_a_group_counts(tmp_path, monkeypatch):
+    """A <constraint-group> is a container: its member constraints join the
+    bones, so the cloth is constrained; an EMPTY group joins nothing."""
+    line = b'  <generic-constraint bodyA="Skirt 1" bodyB="NPC Pelvis"/>\n'
+    nif, _xml = _mod(tmp_path, monkeypatch, xml_bytes=CLOTH_XML.replace(
+        line, b"  <constraint-group>\n  " + line + b"  </constraint-group>\n"))
+    row, _reason = pch.classify(nif, _Nif(pointer=POINTER))
+    assert row["constrained"] is True
+    nif2 = tmp_path / "second"
+    nif2.mkdir()
+    nif_convert._VFS_DATA_REL_MEMO.clear()
+    nif, _xml = _mod(nif2, monkeypatch, xml_bytes=CLOTH_XML.replace(
+        line, b"  <constraint-group/>\n"))
+    row, _reason = pch.classify(nif, _Nif(pointer=POINTER))
+    assert row["constrained"] is False
+
+
 def test_no_constraint_of_any_kind_is_unconstrained(tmp_path, monkeypatch):
     nif, _xml = _mod(tmp_path, monkeypatch, xml_bytes=CLOTH_XML.replace(
-        b'  <generic-constraint bodyA="a" bodyB="b"/>\n', b""))
+        b'  <generic-constraint bodyA="Skirt 1" bodyB="NPC Pelvis"/>\n', b""))
     row, _reason = pch.classify(nif, _Nif(pointer=POINTER))
     assert row["constrained"] is False
 
@@ -261,13 +680,14 @@ def test_no_constraint_of_any_kind_is_unconstrained(tmp_path, monkeypatch):
 # ---------------------------------------------------------------- report
 
 def _row(path, *, constrained=True, cloth_can=("body",), col_tags=("body",),
-         named=1):
+         named=2):
     cloth = {"name": "Skirt", "tags": {"cloth"}, "can": set(cloth_can),
-             "no": set()}
-    cols = [{"name": "Col", "tags": set(col_tags), "can": set(), "no": set()}]
+             "no": set(), "dynamic": True}
+    col = {"name": "Col", "tags": set(col_tags), "can": set(), "no": set(),
+           "dynamic": False}
     return {"path": path, "garment": pch.garment_of(path),
             "constrained": constrained, "cloth": [cloth],
-            "colliders_named": named, "colliders": cols, "pen": None}
+            "shapes_named": named, "shapes": [cloth, col], "pen": None}
 
 
 def _fault(out, label):
@@ -287,11 +707,18 @@ def test_unconstrained_cloth_that_reaches_a_collider_is(capsys):
     assert _fault(capsys.readouterr().out, "unconstrained collision pair") == "1"
 
 
-def test_a_collider_named_but_missing_is_counted(capsys):
-    rows = [_row("a/skirt_0.nif", named=2)]
+def test_a_shape_named_but_missing_is_counted(capsys):
+    rows = [_row("a/skirt_0.nif", named=3)]
     pch.report(rows, Counter(), {}, 1)
     assert _fault(capsys.readouterr().out,
-                  "collider named but ABSENT") == "1"
+                  "shape named but ABSENT") == "1"
+
+
+def test_an_unreadable_xml_is_announced(capsys):
+    """No-data must look different: the run says its counts are short."""
+    pch.report([_row("a/skirt_0.nif")], Counter({pch.XML_UNREADABLE: 1}),
+               {pch.XML_UNREADABLE: {"b/cape"}}, 2)
+    assert "could not be READ" in capsys.readouterr().out
 
 
 def test_both_weight_halves_are_one_garment(capsys):
@@ -299,8 +726,37 @@ def test_both_weight_halves_are_one_garment(capsys):
             _row("a/skirt_1.nif", cloth_can=("ground",))]
     pch.report(rows, Counter(), {}, 2)
     line = next(ln for ln in capsys.readouterr().out.splitlines()
-                if "reaching NO collider" in ln)
+                if "reaching NO partner" in ln)
     assert line.split(":", 1)[1].split()[:3] == ["2", "/", "1"]
+
+
+def _bone_row(path):
+    return {"path": path, "garment": pch.garment_of(path), "constrained": True,
+            "cloth": [], "moved": ["scarf"], "no_collision": pch.WHY_NONE,
+            "shapes_named": 0, "shapes": [], "pen": None}
+
+
+def test_cloth_moved_by_bones_is_in_the_no_partner_rows(capsys):
+    """Cloth with no collision shape is the strongest no-reach case: it is
+    in the no-partner and no-body totals and in a row of its own."""
+    rows = [_row("a/skirt_0.nif"), _bone_row("b/scarf_0.nif")]
+    pch.report(rows, Counter(), {}, 2)
+    out = capsys.readouterr().out
+    assert _fault(out, "cloth reaching NO partner") == "1"
+    assert _fault(out, "simulated by bones, no dynamic collision shape") == "1"
+    assert _fault(out, "cloth reaching no kinematic BODY collider") == "1"
+
+
+def test_a_piece_that_declares_no_shape_is_not_hidden_behind_a_zero(capsys):
+    """'Declares no shape' used to sit outside the 'no shape loads' total,
+    which printed 0 beside 41 such pieces. It is counted where nothing
+    visible moves; 'no system loads' is only what FSMP cannot build."""
+    skip = Counter({pch.NO_SHAPES: 3, pch.BONES_UNSKINNED: 2})
+    garments = {pch.NO_SHAPES: {"a", "b"}, pch.BONES_UNSKINNED: {"c"}}
+    pch.report([_row("a/skirt_0.nif")], skip, garments, 6)
+    out = capsys.readouterr().out
+    assert _fault(out, "DECLARED BUT NOTHING VISIBLE MOVES") == "5"
+    assert _fault(out, "DECLARED BUT NO SYSTEM LOADS") == "0"
 
 
 def test_an_empty_population_exits_3():

@@ -1137,8 +1137,10 @@ exactly; on all 498 XMLs above its verdict is unchanged.
 
 ### How the physics census counts (`scripts/analysis/physics_cloth_health.py`)
 
-The census reads a piece's physics the way FSMP loads it, because every other
-reading counts a different population:
+The census MODELS how FSMP loads a piece's physics, because every other
+reading counts a different population. It is a model built from FSMP's reader
+and collision code, not a run of the engine: each rule below is one it
+replays, and the list at the end is what it does not.
 
 - **The NIF's own pointer, and nothing else.** FSMP's `scanBBP` takes the first
   string extra-data named `HDT Skinned Mesh Physics Object` on the ROOT node
@@ -1151,22 +1153,247 @@ reading counts a different population:
   is junk before the root. Junk after `</system>` is ignored (FSMP stops at the
   root's end tag), and a default `xmlns` on `<system>` renames nothing for
   FSMP, so namespaces are stripped. A root other than `<system>` loads nothing.
-- **FSMP's collision rule.** `canCollideWith` runs both ways and both must
-  allow it. One side allows the other when the other carries a tag in its
+  An XML the run cannot read (locked, denied) is its own bucket, `xml
+  unreadable`, and the report says its counts are short; it is not a fact
+  about the piece, so it is not in the "declared but no system loads" total.
+- **What simulates: bone mass, not element kind.** A `per-vertex-shape` and a
+  `per-triangle-shape` differ only in collision geometry. A shape simulates
+  when any of its skin bones is dynamic (mass > 0) and is a kinematic collider
+  when all are mass 0. Masses are replayed in document order, as the reader
+  does: `<bone-default name extends>` copies a template and overrides its
+  `<mass>` (with no name it replaces the unnamed default for what follows);
+  `<bone template>` takes that template plus its own `<mass>`, first
+  declaration wins; a skin bone or constraint body not declared before its
+  first use is created from the unnamed default in force at that point. Bone,
+  shape and template names are engine strings and compare without case (an
+  XML's `NPC Pelvis [PElv]` is the skin's `[Pelv]`). A shape that is not a
+  skinned NIF shape with vertices builds nothing.
+- **Cloth moved by bones alone.** FSMP keeps a system that has any bone
+  (`SkinnedMeshSystem::valid()` is `!m_bones.empty()`), not only one with a
+  shape, and `writeTransform` drives every bone it created with mass > 0. So
+  an XML of bones and constraints with no simulated shape (none declared, the
+  declared ones absent from the NIF, or every one kinematic) still swings the
+  NIF mesh skinned to those bones, and that mesh has no collision geometry: it
+  reaches no partner, the strongest no-reach case. Such a piece is measured,
+  as cloth "simulated by bones, no dynamic collision shape"; its moved shapes
+  are the NIF shapes skinned directly to a bone the replay creates with mass >
+  0, the injected body excluded (a shape on an undeclared child node of such a
+  bone is not seen; `physics_rest_depth.py` follows the node tree). No
+  constraint is required, because FSMP moves an unconstrained dynamic bone too;
+  the row's constrained flag splits the two, as for any cloth. A piece whose
+  dynamic bones carry no NIF shape is counted apart (`bones simulate, no NIF
+  shape skinned to one`), and so is one where no bone simulates: both are
+  "declared but nothing visible moves", beside "declared but no system loads"
+  (pointer unresolved, XML unparseable, root not `<system>`).
+- **FSMP's collision rule.** `needsCollision` never pairs two kinematic
+  shapes. Otherwise `canCollideWith` runs both ways and both must allow it. One
+  side allows the other when the other carries a tag in its
   `can-collide-with-tag` list, or, when that list is EMPTY, when the other
-  carries none of its `no-collide-with-tag` tags.
-- **Every constraint kind.** `generic-constraint`, `stiffspring-constraint`,
-  `conetwist-constraint` and `constraint-group` all constrain; the unconstrained
-  crash pair is unconstrained cloth that actually reaches a collider.
+  carries none of its `no-collide-with-tag` tags. Every kind pairs with every
+  kind (vertex-vertex, vertex-triangle, triangle-triangle). `<shared>` is
+  checked in `SkyrimBody::canCollideWith` before the tags: `external` refuses
+  any partner on the same skeleton, and every shape of one file is on one
+  skeleton, so an `external` shape pairs with NOTHING in its own file;
+  `public`, `internal` (same skeleton) and `private` (same file) all allow an
+  in-file pair. The census models exactly that. None of the 154 XMLs the
+  09-24 pack's pointers resolve to uses `external` (private 297, public 16,
+  internal 12), so no count moves. `<shared>` and the tags are read
+  untrimmed: FSMP reads both with `readText`, which returns the element's
+  value without trimming (only its number and bool readers trim), and compares
+  `<shared>` exactly, so ` external ` is an unknown value and falls back to
+  public. `GetValue` itself is outside the FSMP source this was checked
+  against; none of the 1880 such elements in those XMLs is padded, so no
+  count moves either way.
+- **What is the body.** A body collider is a KINEMATIC shape (a moving one is
+  never the body) that either carries a tag in `BODY_TAGS`, or is a body
+  STAND-IN: its name or a tag contains a body-part token (`BODY_TOKENS`:
+  body, vbd, leg, feet, foot, butt, thigh, calf, arms, hand, pant, torso,
+  breast, belly) AND more than half its skin WEIGHT is on the actor's body
+  bones (an `NPC ` bone other than the root and COM). Both are needed: a
+  ground plane tagged `legs` rides the root only, and a greaves or belt
+  collider on body bones names no body part. By weight, not bone count: a
+  leg collider can list six skirt bones that carry 6% of its weight. The
+  tokens come from the kinematic partners live cloth reaches: `vbody`, `vbd`,
+  VirtualBody/Legs/Feet/Butt/Arms/Hands, CollisionLegs, ButtCol, LegsCol,
+  PantsC, ColPants. The only body-named partners the skin test turns away
+  there are ground planes on the root.
+- **Every constraint kind.** `generic-constraint`, `stiffspring-constraint` and
+  `conetwist-constraint`, at the top level or inside a `constraint-group`, all
+  constrain, except one between two kinematic bones, which FSMP skips. The
+  unconstrained crash pair is unconstrained cloth that actually reaches a
+  partner.
 
 Measured on the 09-24 pack (3342 NIFs), old reading -> this one: 364 pieces
 "with physics" -> 306 with a pointer (58 NIFs of 29 garments had borrowed a
 same-stem XML); 94 "unparseable" -> 0 (22 byte-order mark, 58 junk after the
-root, 14 namespaced root); simulated-cloth pieces 97 -> 117 (59 garments);
-unconstrained crash pair 56 -> 0; named collider absent 6 -> 0. Numbers from
-before 2026-09-25 are not comparable with these. Not modelled: collisions with
-colliders another worn piece brings, shape-name physics from `defaultBBPs.xml`,
-and XMLs that exist only in an archive.
+root, 14 namespaced root); pieces with simulated cloth 97 -> 247 (124
+garments); unconstrained crash pair 56 -> 0; named collider absent 6 -> 0.
+
+The same pack, the second 09-25 version -> this one (NIFs / garments):
+measured 247 / 124 -> 285 / 143, the 38 / 19 added being cloth simulated by
+bones with no dynamic collision shape (24 / 12 whose XML declares no shape, 14
+/ 7 whose every shape is kinematic), every one constrained. "Declares no
+shape" 41 / 21 and "every shape kinematic" 18 / 9 leave the exclusions: 38
+measured, and 21 / 11 whose dynamic bones carry no NIF shape are counted apart;
+none is left where no bone simulates. Declared but no system loads: 0. Cloth
+reaching no partner in its file: 4 / 2 -> 42 / 21 (the 38 plus the same 4).
+Cloth reaching no kinematic body collider: 190 / 95 -> 134 / 67. On the
+pieces with a collision shape it is 190 / 95 -> 96 / 48: 102 / 51 pieces have
+cloth whose only body collider is a stand-in. Of the 134, 38 / 19 are the
+bone-moved cloth, 70 / 35 have cloth that reaches only
+kinematic shapes that are not the body (60 / 30 a collider on body bones named
+for no body part -- `Collision`, `Col`, `Greaves` -- and 10 / 5 only ground
+planes), and 26 / 13 have a simulated shape that reaches no kinematic shape at
+all. Every one is constrained; the unconstrained crash pair stays 0. Stored
+cloth vertices inside the body, counting only the vertices FSMP moves (weight
+> 0 on a dynamic bone): 47 of 96 measurable pieces (26 of 48 garments; 189
+with no injected body) -- 45 of the 86 with a collision shape and 2 of the 10
+bone-moved. A shape is cloth when ANY of its skin bones is dynamic, so the
+first reading here (66 of 86 -> 76 of 96) also counted its vertices on
+kinematic bones alone, rigid mesh the solver never moves: 8 of the 10
+bone-moved pieces got into the row only that way (68 of 96 with the rule on
+those alone). `physics_rest_depth.py` reads this population, so it now
+measures the 38 as well (243 -> 281 measured, 275 ranked once its frame gate
+lists 10 apart, below); two of those garments (four NIFs) rest more than 0.5u
+inside, both past 1.5u on a few vertices, and no earlier row moved.
+
+Numbers from before 2026-09-25 are not comparable with these, and neither are
+the first 09-25 version's, which took every per-vertex shape for cloth and
+every per-triangle shape for a collider (117 / 59 simulated, 14 / 7 reaching
+nothing: 12 of the 14 were only kinematic body helpers, and the other 2 had
+cloth whose partner is a per-vertex shape), nor the second's no-partner and
+no-body rows, which left out cloth moved by bones and knew the body only by
+tag.
+
+Not modelled: colliders another worn piece brings; shape-name physics from
+`defaultBBPs.xml` and its shape-name remapping; XMLs that exist only in an
+archive; bone renames; per-bone filters (`can-/no-collide-with-bone`,
+`weight-threshold`); `disable-tag`; whether a declared bone's node exists; and
+a mesh hanging on an undeclared child node of a dynamic bone. The body test is
+by name and skin, not by where a shape lies, so an armour collider named for a
+body part would count as the body. Its depth row reads the STORED positions
+of the vertices FSMP moves against the injected body, so it cannot see
+`#chain-rest-lift`; the rest-pose depth is the next section's tool. A piece
+whose body is there but whose cloth has no vertex weighted to a dynamic bone
+is counted on that row, neither measurable nor unknown (0 on the 09-24 pack).
+
+### Rest-pose depth of simulated cloth (`scripts/analysis/physics_rest_depth.py`)
+
+Cloth that STARTS inside the body is not reliably pushed out by FSMP, so where
+simulated cloth rests matters. The census's depth row and the first "cloth at
+rest inside the body" numbers read stored vertices. The engine draws
+`sum_b w_b * G_b * S_b * v`, and `#chain-rest-lift` moves chain ROOT NODES
+(`G_b`) while leaving the skin (`S_b`) and the vertices alone, so a
+stored-vertex depth cannot see the lift at all. This tool measures the drawn
+position.
+
+- **The frame.** FSMP merges the armour's node tree into the actor skeleton by
+  name. A bone the skeleton has is the skeleton's node, never the armour's copy
+  (the converter writes those flat and the game ignores them); any other node
+  hangs from its nearest ancestor the skeleton has, by the armour's local
+  transforms, and a node on the armour root hangs from the skeleton root (the
+  armour root's own transform is not used). The skeleton is the load-order
+  winner of the converter's skeleton paths. Control: the body skinned through
+  the same model equals its stored vertices (measured 0.0000u).
+- **What is cloth.** The census's bone-mass replay: a bone FSMP creates with
+  mass > 0, or any armour node hanging below one. A vertex is cloth above 5%
+  weight on those bones, on every skinned shape (named in the XML or not),
+  except the injected body. Visible cloth is ranked; collision proxies and
+  helpers (the survey's composed proxy rule) are counted apart.
+- **The body.** The user's BodySlide build per weight, weight 0 taken as the
+  weight-1 file's sibling: the body the lift clears. On the measured list that
+  build is the zeroed UBE body (BodySlide's saved preset for it is the zeroed
+  one), the same file the zeroed-body lookup returns. Runtime morphs are not
+  applied.
+- **Depth.** To the closest point on the body's triangles, signed by the
+  interpolated outward normal there (positive = inside); normals from the
+  triangles, turned outward by signed volume. Controls, any failure exits 3:
+  joints deep in the pelvis and limbs read inside and far points outside (these
+  do not use the normals), and the body's own vertices moved 0.5u in and out
+  read +0.5 / -0.5 (median error 0.0009u). 12.4% of the body's vertices sit in
+  features thinner than the push, almost all on the genital midline slit, and
+  are left out of that check; cloth there reads unreliably.
+- **The lift, read from the file.** Each ARMOUR bone with skin, moving or
+  kinematic (the converter lifts a chain root whether or not the XML simulates
+  the chain), and each moving skeleton bone: its rest position minus its bind
+  position, bones that moved by one vector grouped. A LIFT is exactly what the
+  pass does: one rigid translation of a node the converter lifts (a garment
+  node hanging off a skeleton-named one, `_chain_root_subtrees`' rule), every
+  skinned bone below it moved by the same vector, of 0.05u up to the 2.0u
+  cap. An offset that grows along a chain, flips sign, or passes the cap is
+  the node tree disagreeing with the skin; it is counted apart and never
+  called a lift. The run's `standoff_audit.jsonl` is a cross-check only: it
+  appends across runs.
+- **Listed apart, not ranked** (both depths shown). A file the converter's own
+  frame check refuses: the tool runs `_chain_frame_ok` itself, with its 0.5u
+  tolerance, on the chain bones' node-tree positions (every skin bone but a
+  hard skeleton bone the actor's skeleton has -- a garment or soft-body bone
+  the skeleton carries is checked at the skeleton's node, where the game puts
+  it; the lift read back under a bone taken off again) against the skin. The
+  written file's skeleton nodes are flat, so its own global-to-skin is not the
+  frame the converter checked in; the skin is read in the bind frame the depth
+  uses. Like the converter's check it reads every skinned shape of the file,
+  a body-named one too: a source's own body helper keeps its name in the
+  written file, and its skin can refuse the file (it is never measured or
+  read back for a lift). The converter lifts nothing on a file it refuses,
+  so such a file carries no lift. And cloth resting more than the lift cap + 0.5u (2.5u) from
+  where it was skinned: no pass does that (hard skeleton-named cloth bones,
+  which the check does not cover), so the model is in question there.
+- **Bone-moved cloth** (the census's rows with no simulated collision shape) is
+  measured and ranked like the rest, and marked.
+- **Groups.** Bones grouped by the vector they moved are keyed by their root
+  node, and `root#1`, `root#2`... when siblings under one node moved
+  differently and several groups share it: no group is ever dropped.
+- **Inputs and output.** Exit 2 with one line on an unreadable or unusable
+  body or skeleton (no shapes or nodes, a body with no triangles, a body skin
+  bone the skeleton lacks), and on a skeleton or body NAMED (`--skeleton`,
+  `CBBE2UBE_SKELETON_NIF`, `--body`) that is no file: it is never replaced by
+  another. `--json` is written on every exit: "status" ("ok", "controls
+  FAILED", "nothing measured", or "input error" with the one-line "reason"),
+  the controls when they ran, and depth rows only when every control passed.
+  It is first written "incomplete", so a run that crashes leaves that at the
+  path and never an earlier run's rows.
+
+Measured on the 09-24 pack, read-only: 285 pieces with simulated cloth, 275
+(138 garments) ranked and 10 (5 garments) listed apart, all 10 refused by the
+converter's frame check (worst 5.00u, 4.15u, 2.40u and 0.77u: exactly the
+pieces and worst readings the run log records refused), 4 of them also with
+cloth resting 4.00u and 4.28u off its skin. 38 / 19 of the ranked are
+bone-moved cloth.
+Visible cloth deeper
+than 0.5u at rest: 81 pieces / 41 garments; deeper than 1.5u: 37 / 20 (the
+bone-moved: 4 / 2, both past 1.5u). Hidden helpers: 29 / 16 and 7 / 4.
+
+What `#chain-rest-lift` did: 205 pieces (103 garments) carry a lift, 989
+chains, median 0.94u, 130 at the 2.0u cap. On the earlier 243-piece population
+that is 187 pieces and 959 chains (126 at the cap). The first reading there
+said 193 pieces, 1077 chains, median 1.04u, 148 at the cap: it took any bone
+off its bind for a lift, which added 136 node-tree disagreements on 6 of the
+refused pieces (every reading past the cap among them), and it missed 18
+lifts on 10 pieces whose lifted chain is kinematic. The tool itself counts
+140 disagreement groups on those 6 pieces: keyed by root alone, 8 groups on
+the 4 refused vest pieces (4 of them disagreements) were overwritten by a
+sibling group under the same node, and it printed 136. Log cross-check: the
+log names exactly the lifted chains on all 205 pieces (magnitudes within
+0.0001u) and has no lift the files lack, and it records refused exactly the
+10 pieces the tool refuses. Two of them (1 cloak garment) the converter
+refused on the source's body-helper shape, whose genital bones sat 4.15u off
+where the skeleton puts them; that shape keeps its body name in the written
+file, and the tool's check left it out as the body -- ranking the two -- until
+it also put body-named shapes into the frame check. That is not exactly the
+converter's view: the converter checks each SOURCE file on its own, so the
+UBE body it injects later never joins a garment's check, while the tool,
+reading the written file, now checks the injected body too. The refusal
+verdicts still match the log on all 285 pieces, but the printed 'over N
+bones' count can run higher than the log's (e.g. 137 against 120). They rest
+clear (-0.40u) and carry no lift, so no depth or lift count moved.
+
+Against the first reading (stored vertices), the depth at the bind position
+reproduces it, so the change is the node tree: of the 7 garments first
+reported deeper than 1.5u, 4 now read below 1.5u -- two clear it well (2.05u to
+0.91u, 1.50u to 0.86u) and two only drop below the line and still rest 1.30u
+and 1.39u inside -- and one of the 14 reported deeper than 0.5u rests clear
+(1.38u to 0.01u).
 
 ### Custom physics-bone chains
 

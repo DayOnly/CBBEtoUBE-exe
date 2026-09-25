@@ -228,7 +228,7 @@ shield-cloth pieces). Physics files that exist nowhere in the load order stay
 missing, as before, and nothing is taken from another mod's archive.
 `CBBE2UBE_NO_PHYSICS_DATA_PREFIX=1` (set to 1) turns it off.
 
-### Development only — the physics census counts what the physics engine loads
+### Development only — the physics census models what the physics engine loads
 
 `scripts/analysis/physics_cloth_health.py` counts which converted pieces have
 HDT-SMP physics and why simulated cloth can clip. It counted a different set
@@ -236,18 +236,138 @@ than the one that plays in game. It gave a piece with no physics link of its
 own the physics file of another garment with the same file name. It read
 physics files as text in the system's code page and more strictly than the
 engine does, so a file that starts with a UTF-8 byte-order mark, declares an
-XML namespace, or has stray text after its end counted as unreadable. It treated one side naming the other as
-enough for cloth to collide, where the engine needs both sides to allow it and
-reads an empty list as "collide with everything". It counted only one of the
-four kinds of constraint. It now follows the piece's own link (a leading
-"Data\" handled as the converter handles it), reads the file's bytes, and
-applies the engine's rules. On the reported pack: pieces with physics 364 ->
-306, unreadable physics files 94 -> 0, simulated-cloth pieces 97 -> 117 (59
-garments), the crash-prone "unconstrained collision" class 56 -> 0, and 14
-pieces (7 garments) have cloth that reaches no collider in its own file. Older
-numbers from this tool are not comparable. Guarded by
-`tests/test_physics_cloth_health.py` and mutation pairs `PCH-a`..`PCH-q`. No
-converter behaviour changes.
+XML namespace, or has stray text after its end counted as unreadable. It
+treated one side naming the other as enough for cloth to collide, where the
+engine needs both sides to allow it and reads an empty list as "collide with
+everything". It counted only one of the four kinds of constraint. And it took
+every shape of one kind for cloth and every shape of the other kind for a
+collider, where the engine simulates a shape only when one of its bones has
+mass: so body helpers counted as cloth, real cloth of the other kind was
+missed, and two helpers could "collide". A physics file it could not open
+stopped the whole run.
+
+It now follows the piece's own link (a leading "Data\" handled as the converter
+handles it), reads the file's bytes, and works out which shapes move from the
+bone masses the file declares, read in order as the engine reads them. A file
+it cannot open is counted as unreadable and the run goes on. These counts come
+from a model of the engine's rules, not from the engine: it does not see
+colliders that another worn piece brings, physics the engine adds by shape
+name, physics files that exist only inside an archive, or per-bone collision
+filters, and it recognises a body collider by its tag name. On the reported
+pack: pieces with physics 364 -> 306, unreadable physics files 94 -> 0, pieces
+with simulated cloth 97 -> 247 (124 garments), the crash-prone "unconstrained
+collision" class 56 -> 0, and 4 pieces (2 garments) have cloth that reaches
+nothing in its own file. Older numbers from this tool, including the first
+version of this change (117 / 59 simulated, 14 / 7 reaching nothing), are not
+comparable. Guarded by `tests/test_physics_cloth_health.py` and mutation pairs
+`PCH-a`..`PCH-zd`. No converter behaviour changes.
+
+### Development only — the physics census counts cloth that swings with nothing to hit
+
+The physics engine keeps a piece's physics running as long as its physics file
+declares bones, even when it declares no collision shape, or only still ones:
+the bones with weight swing, and the visible cloth hung on them swings too.
+That cloth has nothing to collide with at all, the worst case for sinking into
+the body, but the census left those pieces out of every count and printed the
+reason as if nothing moved. It also printed "no shape loads: 0" beside 41
+pieces that load no shape. And it knew a body collider only by a short list of
+tag names, so skirts colliding with a body helper named, say, "VirtualLegs"
+counted as having no body to hit.
+
+The census now measures these pieces and lists them in their own row, counts
+apart the ones whose moving bones carry no visible mesh, and says separately
+which pieces load no physics at all and which load it but move nothing visible.
+It recognises a body helper by a body-part name on a shape that rides the
+body's bones, and it knows that a shape marked "external" collides with
+nothing in its own file. On the reported pack: 38 pieces (19 outfits) of cloth
+move with no collision shape, all of it held by constraints; cloth reaching
+nothing to collide with goes from 4 to 42 pieces; cloth with no body to collide
+with goes from 190 pieces (95 outfits) to 134 (67), of which 38 are the new
+pieces, 60 reach an unnamed collider on the body's bones, 10 reach only a
+ground plane and 26 have a shape that reaches no still shape at all. The
+rest-depth tool reads the same population and now measures 281 pieces instead
+of 243 (275 ranked once it lists apart the pieces the converter refuses, see
+below); two of the new outfits rest partly inside the body. Guarded by
+`tests/test_physics_cloth_health.py` and mutation pairs `PCH-ze`..`PCH-zo`
+(`PCH-p` and `PCH-za` re-anchored). No converter behaviour changes.
+
+### Development only — where physics cloth rests against the body, as the game draws it
+
+Cloth that starts out inside the body is not reliably pushed back out by the
+physics engine, so how deep simulated cloth rests matters. The first numbers
+for that read each vertex where the file stores it. The game draws it where its
+bones put it, and the tool's fix for skirts sinking into the body works by
+moving a skirt chain's top bone, not the vertices: so those numbers could not
+see the fix at all, and some pieces the fix had already cleared read as still
+inside.
+
+`scripts/analysis/physics_rest_depth.py` measures where each piece of physics
+cloth rests: through the piece's bones as the game attaches them to the
+character's skeleton, against the body you built in BodySlide at the matching
+weight. It says, per piece, how deep the visible cloth sits inside the body
+(and, apart, the hidden collision helpers), which skirt chains the fix moved
+and by how much, and it refuses to report if its checks on the body fail. On
+the reported pack: 243 pieces with physics cloth, of which 77 (39 outfits) have
+visible cloth more than 0.5 units inside the body at rest and 33 (18 outfits)
+more than 1.5 units; the fix moved chains on 187 pieces (first published as
+193, see the next entry). Of the 7 outfits first reported more than 1.5 units
+inside, 4 now read below that line, but two of those still rest 1.3 and 1.4
+units inside. The census's own depth row now says it reads stored positions.
+Guarded by `tests/test_physics_rest_depth.py` and mutation pairs
+`PRD-a`..`PRD-r`. No converter behaviour changes.
+
+### Development only — the rest-depth tool reports only real skirt lifts, and on every chain
+
+The rest-depth tool also says which skirt chains the converter's lift fix
+moved. It took any bone resting off where its skin was bound for a moved
+chain, so on pieces whose bone layout simply disagrees with their skin it
+reported lifts the fix never made (and the converter had refused to touch
+those very pieces), some of them larger than the fix is allowed to move
+anything. It also missed lifts on chains the physics file does not animate.
+A lift is now only what the fix does: the whole chain below its top bone moved
+together, by no more than the fix's limit; anything else is reported as the
+bones disagreeing with the skin. A piece the converter's own check would
+refuse is listed apart instead of ranked, the pieces moved by bones alone are
+marked in the ranking, a body or skeleton file it cannot use stops it with a
+one-line message, and its JSON output says whether the body checks passed and
+carries no depths when they did not.
+
+On the reported pack: 285 pieces with physics cloth, 275 ranked (38 of them
+moved by bones alone) and 10 listed apart, all refused by the converter too
+(first published as 277 and 8, see the next entry). The
+fix moved 989 chains on 205 pieces (103 outfits), half of them by more than
+0.94 units and 130 by the full 2 units; the first version reported 1077 chains
+on 193 pieces. The run log agrees chain for chain on all 205. Visible cloth
+more than 0.5 units inside the body at rest: 81 pieces (41 outfits); more than
+1.5 units: 37 (20). Guarded by `tests/test_physics_rest_depth.py` and mutation
+pairs `PRD-s`..`PRD-ze` (`PRD-i` re-anchored). No converter behaviour changes.
+
+### Development only — the two physics tools count only what moves, and never leave a stale result
+
+The census's "cloth resting inside the body" row counted every point of a
+simulated piece, including the rigid parts of it that the physics never moves
+(a skirt's belt, a robe's bodice). It now counts only the points the physics
+moves. On the reported pack that row goes from 76 of 96 measurable pieces to
+47 (26 outfits); it had been published as 66 of 86 and then 76 of 96.
+
+The rest-depth tool dropped some groups of skirt bones when two groups hung
+under the same bone, so a disagreement between the bones and the skin could
+vanish: it now keeps every group (140 such disagreements on 6 pieces, where it
+printed 136). It now checks every shape of a file the way the converter does,
+so a cloak the converter refused because of its own body helper is listed apart
+too, as the run log says (10 pieces listed apart, 275 ranked; no depth or lift
+number moves). A skeleton file named on the command line or in
+`CBBE2UBE_SKELETON_NIF` that does not exist, or a body with no triangles, now
+stops it with a one-line message instead of quietly using another skeleton or
+crashing. Its JSON output is written on every run: a run that stops early says
+why and carries no depths, and one that crashes says it did not finish, so an
+older result is never left looking like this run's.
+
+The census reads the physics file's shape settings exactly as the physics
+engine does, without trimming spaces (no file on the reported pack has any).
+Guarded by `tests/test_physics_cloth_health.py`,
+`tests/test_physics_rest_depth.py` and mutation pairs `PCH-zp`..`PCH-zv`,
+`PRD-zf`..`PRD-zm` (`PCH-j` re-anchored). No converter behaviour changes.
 
 ### Changed — whether you can wear an item is read from the plugin the game uses
 
