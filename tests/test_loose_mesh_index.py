@@ -19,7 +19,7 @@ from one listing of every loose `meshes` folder, built on the first question.
 
 The per-path probe it replaces checked `<dir>/meshes/<path>` in every loose
 folder (overwrite, then mods by priority, then the game Data) before it asked
-the archives; on the reported modlist each archived or dead path cost ~2,000
+the archives; on the reported modlist each archived or dead path cost ~3,300
 file checks. The answers must not change: case-insensitive, the FIRST folder
 wins for `body_fit`, an unreadable folder costs only itself, a missing meshes
 folder is nothing, files only, the archive fallback as before.
@@ -193,6 +193,81 @@ def test_a_linked_folder_is_followed_and_a_loop_listed_once(tmp_path, monkeypatc
     assert exists(r"loop\again\belt_1.nif")
     assert exists(r"loop\again\again\again\belt_1.nif"), "as a file check sees it"
     assert len([c for c in calls if "loop" in c]) <= 3, "the loop is listed once"
+
+
+class _Listing:
+    """A folder listing a test controls: fixed entries, or a failure."""
+    def __init__(self, entries=(), fail=False):
+        self._e, self._fail = list(entries), fail
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def __iter__(self):
+        if self._fail:
+            raise OSError("the listing failed partway")
+        return iter(self._e)
+
+
+class _Entry:
+    def __init__(self, name, path):
+        self.name, self.path = name, path
+
+    def is_dir(self):
+        return False
+
+    def is_file(self):
+        return True
+
+    def is_symlink(self):
+        return False
+
+
+def test_a_listing_that_fails_partway_is_checked_on_disk(tmp_path, monkeypatch):
+    """A folder that opened but could not be listed to the end (a vanished or
+    locked folder): what it holds is checked on disk, so the higher-priority
+    copy the listing missed still wins."""
+    mods = _modlist(tmp_path, monkeypatch)
+    torn = mods / "High Mod" / "meshes" / "follower" / "m"
+    _put(torn / "hood_1.nif", b"HIGH")
+    _put(mods / "Low Mod" / "meshes" / "follower" / "m" / "hood_1.nif", b"LOW")
+    real = os.scandir
+
+    def scandir(p="."):
+        return _Listing(fail=True) if pathlib.Path(p) == torn else real(p)
+    monkeypatch.setattr(ac.os, "scandir", scandir)
+    assert _lookup(tmp_path).body_fit(REL) is True
+
+
+def test_a_short_name_is_checked_on_disk(tmp_path, monkeypatch):
+    """An 8.3 short name reaches a folder the listing names only by its long
+    name; a file check resolves it, as the game does."""
+    mods = _modlist(tmp_path, monkeypatch)
+    _put(mods / "Low Mod" / "meshes" / "follower" / "long folder" / "hood_1.nif", b"HIGH")
+    short = mods / "Low Mod" / "meshes" / "follower" / "longfo~1" / "hood_1.nif"
+    real = pathlib.Path.is_file
+    monkeypatch.setattr(pathlib.Path, "is_file",
+                        lambda self: True if self == short else real(self))
+    assert _lookup(tmp_path)(r"follower\longfo~1\hood_1.nif")
+
+
+def test_a_very_long_name_is_checked_on_disk(tmp_path, monkeypatch):
+    """Past MAX_PATH a listing can name a file a plain file check cannot
+    open: that folder's paths are checked on disk, and here none opens."""
+    mods = _modlist(tmp_path, monkeypatch)
+    folder = mods / "Low Mod" / "meshes" / "follower" / "m"
+    folder.mkdir(parents=True)
+    real = os.scandir
+
+    def scandir(p="."):
+        if pathlib.Path(p) == folder:
+            return _Listing([_Entry("hood_1.nif", "x" * 260)])
+        return real(p)
+    monkeypatch.setattr(ac.os, "scandir", scandir)
+    assert not _lookup(tmp_path)(REL)
 
 
 # ------------------------------------------------------------ the speed-up

@@ -8,9 +8,10 @@ Three notes in the run log said the wrong thing in some cases; the files the
 tool writes are unchanged.
 
 - An excluded mod's piece that another mod patches is now named on its own
-  line, as left to that mod's patch. It used to be listed with the pieces that
-  have no UBE version from any mod, with advice to take the mod off the
-  exclusion list.
+  line, as left to that mod's patch -- body pieces too, when another mod's
+  SkyPatcher patch names them. It used to be listed with the pieces that have
+  no UBE version from any mod, with advice to take the mod off the exclusion
+  list. The tool does not check that the other mod's patch draws on UBE actors.
 - The note about an excluded mod's pieces that are still drawn no longer says
   they use the mod's own mesh. None of the excluded mod's meshes is converted
   for them, but a piece that shares a base-game mesh another mod's conversion

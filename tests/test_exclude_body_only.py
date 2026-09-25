@@ -450,6 +450,57 @@ def test_the_body_pass_still_withholds_an_owned_piece(tmp_path):
     assert st["armo_targets"] == 0 and _held(st) == [OWNED]
 
 
+def _body_pass(tmp_path, mods, plugins, monkeypatch):
+    monkeypatch.setattr(ac, "_exclusion_keep_probe", lambda: _probe(mods, "Refit Mod"))
+    out = tmp_path / "UBE_ModBody_Coverage UBE patch.esp"
+    return up.generate_modded_body_ube_coverage_patch(
+        out, plugins, converted_rel_paths={"follower/f/boots_1.nif"},
+        exclude_names={out.name.lower()}, master_data_dirs=[tmp_path],
+        cover_all=True, cover_hands_feet=True, withheld_armo_abs={OWNED})
+
+
+def test_a_body_piece_a_refit_names_is_left_to_it_in_the_report(tmp_path, monkeypatch, capsys):
+    """Review 09-25: the body pass withholds every owned piece, and a body piece
+    a refit's SkyPatcher line names was still reported as having no UBE armature
+    from any mod. It is withheld as before, and reported as left to the refit."""
+    mods, plugins = _modlist(tmp_path, slots=FEET,
+                             models={b"MOD3": r"follower\f\boots_1.nif"})
+    _ini(mods, "Refit Mod",
+         "filterByArmors=Follower.esp|801:armorAddonsToAdd=Refit.esp|800\n")
+    st = _body_pass(tmp_path, mods, plugins, monkeypatch)
+    assert st["armo_targets"] == 0 and _held(st) == [OWNED], "still withheld"
+    assert st["exclusion_body_held"] == [(OWNED, "FollowerGlasses", "named by Refit Mod")]
+    ac._report_coverage_holds([st])
+    text = capsys.readouterr().out
+    assert "have no UBE armature from any mod" not in text
+    assert "patched by Refit Mod" in text
+
+
+def test_a_body_piece_no_one_patches_stays_in_the_warning(tmp_path, monkeypatch, capsys):
+    mods, plugins = _modlist(tmp_path, slots=FEET,
+                             models={b"MOD3": r"follower\f\boots_1.nif"})
+    st = _body_pass(tmp_path, mods, plugins, monkeypatch)
+    assert st["exclusion_body_held"] == []
+    ac._report_coverage_holds([st])
+    assert "have no UBE armature from any mod" in capsys.readouterr().out
+
+
+def test_switched_off_the_body_pass_does_not_read_the_modlist(tmp_path, monkeypatch):
+    monkeypatch.setenv("CBBE2UBE_NO_EXCLUDE_BODY_ONLY", "1")
+    mods, plugins = _modlist(tmp_path, slots=FEET,
+                             models={b"MOD3": r"follower\f\boots_1.nif"})
+
+    def _refuse():
+        raise AssertionError("the modlist was read")
+    monkeypatch.setattr(ac, "_exclusion_keep_probe", _refuse)
+    out = tmp_path / "UBE_ModBody_Coverage UBE patch.esp"
+    st = up.generate_modded_body_ube_coverage_patch(
+        out, plugins, converted_rel_paths={"follower/f/boots_1.nif"},
+        exclude_names={out.name.lower()}, master_data_dirs=[tmp_path],
+        cover_all=True, cover_hands_feet=True, withheld_armo_abs={OWNED})
+    assert _held(st) == [OWNED] and st["exclusion_body_held"] == []
+
+
 # ------------------------------------------------------------------ report
 
 def test_the_kept_pieces_are_reported(capsys):

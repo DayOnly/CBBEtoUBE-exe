@@ -1160,7 +1160,7 @@ follower (converted male Ebony boots on her UBE body):
 - **The loose half of that lookup is one listing** (`#loose-mesh-index`, 09-25).
   `_mesh_exists_anywhere` checked `<dir>\meshes\<path>` in every loose folder
   (overwrite, enabled mods by priority, game Data: ~3,300 live) before it asked
-  the archives, so each archived or dead path cost ~2,000 file checks; the
+  the archives, so each archived or dead path cost ~3,300 file checks; the
   stand-in's dead-path questions made the live coverage replay 128 s instead of
   ~33 s (94 s inside the lookup, 1,934 questions). Now `_LooseMeshIndex` walks
   every loose `meshes` subtree once, on the first question, in that order, and

@@ -3572,7 +3572,7 @@ def _loose_mesh_index_on() -> bool:
     loose-file questions from one listing of every loose `meshes` folder? Yes,
     by default. The per-path probe it replaces checked `<dir>\meshes\<path>` in
     every loose folder (~3,300 on the reported modlist) before it asked the
-    archives, so each archived or dead path cost ~2,000 file checks; the dead-
+    archives, so each archived or dead path cost ~3,300 file checks; the dead-
     path questions of #coverage-female-standin made the coverage step ~4x slower.
     Same answers either way. CBBE2UBE_NO_LOOSE_MESH_INDEX=1 probes per path again."""
     return not _flag("CBBE2UBE_NO_LOOSE_MESH_INDEX", False)
@@ -4054,10 +4054,12 @@ def _report_coverage_holds(stats: "list[dict]") -> None:
     listed = [k for s in stats for k in (s.get("race_listed") or [])]
     # #exclude-body-only: a piece held because another mod patches it (adds
     # armatures to it) is left to that mod's patch -- named on its own line,
-    # not among the pieces with no UBE armature from any mod.
+    # not among the pieces with no UBE armature from any mod. Body pieces too:
+    # the body pass records the ones a SkyPatcher patch names.
     left_to: dict = {}
     for s in stats:
-        for armo_abs, edid, why in (s.get("exclusion_nonbody_held") or []):
+        for armo_abs, edid, why in ((s.get("exclusion_nonbody_held") or [])
+                                    + (s.get("exclusion_body_held") or [])):
             mod = ube_patcher._held_for_another_patch(why)
             if mod is not None:
                 left_to[tuple(armo_abs)] = (edid, mod)
@@ -4075,7 +4077,8 @@ def _report_coverage_holds(stats: "list[dict]") -> None:
             print(f"       ... and {len(withheld) - 5} more")
     if left_to:
         print(f"  [unified] {len(left_to)} armour(s) of an excluded mod are left to "
-              "the other mod that patches them (it adds armatures to them)")
+              "the other mod that patches them (it adds armatures to them; this "
+              "tool does not check that those draw on UBE-race actors)")
         for ((pl, fid), (edid, mod)) in list(left_to.items())[:5]:
             print(f"       {edid or '?'}  ({pl}|{fid:06X})  patched by {mod}")
         if len(left_to) > 5:

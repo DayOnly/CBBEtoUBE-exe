@@ -5064,6 +5064,15 @@ PAIRS = (
          tests=('tests/test_exclude_body_only.py',),
          expect=('test_the_parent_switch_turns_the_rule_off_too',),
     ),
+    Pair('EXB-v', 'a body piece a refit names is reported as having no armature',
+         edits=(
+             ('src/ube_patcher.py',
+              '                    body_held.append((armo_abs, edid, f"named by {_by}"))\n',
+              '                    pass  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_exclude_body_only.py',),
+         expect=('test_a_body_piece_a_refit_names_is_left_to_it_in_the_report',),
+    ),
     # The report (review 09-25): a piece held because another mod patches it is
     # left to that mod, not listed as having no UBE armature (norec replay: the
     # refit's helmet, pouch and wig were); a kept piece is not promised its own
@@ -5202,5 +5211,34 @@ PAIRS = (
          ),
          tests=('tests/test_loose_mesh_index.py',),
          expect=('test_the_folders_are_listed_once_and_no_path_is_probed',),
+    ),
+    # #loose-mesh-index exactness guards (review 2026-09-25): each keeps an
+    # answer the listing cannot give exactly on a file check.
+    Pair('LMI-j', 'a listing that fails partway is trusted',
+         edits=(
+             ('src/auto_convert.py',
+              '                    unlisted.add(pre)\n        self._first, self._unlisted = first, unlisted\n',
+              '                    pass  # MUTATED\n        self._first, self._unlisted = first, unlisted\n', 1),
+         ),
+         tests=('tests/test_loose_mesh_index.py',),
+         expect=('test_a_listing_that_fails_partway_is_checked_on_disk',),
+    ),
+    Pair('LMI-k', 'an 8.3 short name is answered from the listing',
+         edits=(
+             ('src/auto_convert.py',
+              'part[-1] in ". " or "~" in part\n',
+              'part[-1] in ". "  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_loose_mesh_index.py',),
+         expect=('test_a_short_name_is_checked_on_disk',),
+    ),
+    Pair('LMI-l', 'a very long listed path is trusted',
+         edits=(
+             ('src/auto_convert.py',
+              'if not e.name.isascii() or len(e.path) >= 250:',
+              'if not e.name.isascii():  # MUTATED', 1),
+         ),
+         tests=('tests/test_loose_mesh_index.py',),
+         expect=('test_a_very_long_name_is_checked_on_disk',),
     ),
 )

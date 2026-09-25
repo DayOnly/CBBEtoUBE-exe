@@ -3486,7 +3486,7 @@ _NON_ACTOR_RACES_24 = frozenset({0x10760A})
 
 def _beast_variant_non_actor() -> bool:
     r"""#beast-variant-non-actor (2026-09-24): does #coverage-beast-variant
-    ignore a non-actor race (the mannequin race) when it judges "every
+    ignore the mannequin race (no playable or UBE-race actor has it) when it judges "every
     additional race is a beast race"? Yes, by default.
 
     A beast patch's variant often lists the Khajiit race AND the mannequin race,
@@ -3606,7 +3606,7 @@ def _is_non_actor_race(r) -> bool:
 
 
 def _lists_non_actor_race(v) -> bool:
-    """#beast-variant-non-actor: does `v` list a non-actor race the beast test
+    """#beast-variant-non-actor: does `v` list the mannequin race, which the beast test
     ignores (switch on)? For the report only."""
     return _beast_variant_non_actor() and any(
         _is_non_actor_race(r) for r in _additional_races(v))
@@ -3615,7 +3615,7 @@ def _lists_non_actor_race(v) -> bool:
 def _is_beast_variant(v) -> bool:
     """#coverage-beast-variant: a winner-scan armature `v` (payload, masters,
     plugin, ...) lists additional races, and every one is a vanilla beast race.
-    A non-actor race (the mannequin race) is ignored when judging, and an
+    The mannequin race (no playable or UBE-race actor has it) is ignored when judging, and an
     armature listing only such races is not a variant. #beast-variant-non-actor"""
     races = _additional_races(v)
     actor = races
@@ -4592,6 +4592,11 @@ def generate_modded_body_ube_coverage_patch(
     if mesh_exists is None:
         mesh_exists = female_mesh_exists
     withheld: list = []        # (armo_abs, edid) left alone for --exclude-mods
+    # #exclude-body-only, report only: a withheld body piece that another mod's
+    # SkyPatcher patch names is left to that patch (why, as the non-body pass).
+    _body_only = bool(withheld_armo_abs) and _exclude_body_only()
+    body_held: list = []       # (armo_abs, edid, why)
+    _bprobe: list = [None, False]   # [probe, built]
     female_kept: list = []     # female slots that kept their own mesh (guard)
     female_dead: list = []     # dead female paths: the male mesh stays (guard)
     # #coverage-female-standin: dead female paths that draw the vanilla female
@@ -4877,6 +4882,14 @@ def generate_modded_body_ube_coverage_patch(
         _withhold = bool(withheld_armo_abs) and armo_abs in withheld_armo_abs
         if _withhold:
             withheld.append((armo_abs, edid))
+            if _body_only:
+                if not _bprobe[1]:
+                    from .auto_convert import _exclusion_keep_probe
+                    _bprobe[:] = [_exclusion_keep_probe(), True]
+                _by = (_bprobe[0].named(armo_abs, [edid] if edid else [])
+                       if _bprobe[0] is not None else None)
+                if _by is not None:
+                    body_held.append((armo_abs, edid, f"named by {_by}"))
             continue
         # #coverage-female-guard: a converted MALE mesh does not qualify a TORSO
         # armature whose own female mesh was not converted -- minting it would put
@@ -5227,6 +5240,9 @@ def generate_modded_body_ube_coverage_patch(
         "body_accessory": [f"{a[0]}|{a[1]:X}" for a in accessory_added],
         # #coverage-human-race-list: armours taken by the race-list rule.
         "race_listed": race_listed,
+        # #exclude-body-only, report only: withheld body pieces another mod's
+        # SkyPatcher patch names (left to that patch).
+        "exclusion_body_held": body_held,
     }
 
 
