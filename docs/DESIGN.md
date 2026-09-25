@@ -1413,10 +1413,29 @@ follower (converted male Ebony boots on her UBE body):
   for it. Now an addon counts only when its plugin is in the active load order
   (`active_plugins`, from `paths.active_plugins_ordered`; unknown = no check), and
   a target is excluded only when the slots of all its counted UBE addons, of
-  either kind, cover every slot of the armour. An armour no enabled mod's plugin
-  defines (vanilla, not overridden) cannot be checked and stays covered, as in the
-  race test. Live: 11 lines, all loaded and slot-complete, 0 armours move.
-  `CBBE2UBE_NO_THIRD_PARTY_INI_SLOT_CHECK=1` excludes on any `!UBE\` addon again.
+  either kind, cover every slot of the armour. Live: 11 lines, all loaded and
+  slot-complete, 0 armours move. `CBBE2UBE_NO_THIRD_PARTY_INI_SLOT_CHECK=1`
+  excludes on any `!UBE\` addon again.
+  **The armour's slots are its winner's** (`#third-party-ini-winner-slots`,
+  2026-09-25). The slots came from plugins in enabled mod folders only (a union
+  over every record, loaded or not), so a complete `!UBE\` refit of an armour no
+  mod overrides (vanilla or DLC in the game's Data folder) read as unknown and
+  was covered again: two bodies, the harm this exclusion exists to prevent. Now
+  the slots are the BOD2 of the load-order winner: `active_plugins` walked from
+  the last, each name resolved to the file the game loads through
+  `plugin_index` (`paths.plugin_file_index`, the #root-plugin-index: overwrite >
+  enabled mods > game Data). Mod-folder plugins reuse the records read for the
+  addons; a plugin outside the mods folder is read only when its TES4 names the
+  armour's plugin as a master (or is it); a plugin in our own output or a
+  skipped folder is passed over. When the winner cannot be read (no load order
+  or index, the record in no loaded plugin, no BOD2, or an unreadable plugin
+  above it that may hold it), a target a `!UBE\` addon names is excluded as
+  before the slot check -- never newly covered on unknown slots -- and both
+  callers print how many (`_print_unchecked_ube`); one only a UBE-race addon
+  names stays covered, as that test always did. Live: all 11 targets read from
+  their winner, 0 unchecked, 0 armours move.
+  `CBBE2UBE_NO_THIRD_PARTY_INI_WINNER_SLOTS=1` restores the mod-folder union and
+  covers a target whose slots are unknown.
 - **What another mod's UBE armature on the winning record already draws**
   (`#coverage-third-party-drawn`, with `#root-plugin-index` and
   `#coverage-keep-better-first-person`, 2026-09-25). Both passes used to skip an

@@ -8,10 +8,16 @@ When another mod's SkyPatcher file adds a UBE armature to an item, this tool
 leaves that item alone. It did so even when the added piece covered only part of
 the item (a UBE cape added to a cuirass left the cuirass with no body on UBE
 actors), and even when the plugin holding that piece was unchecked in the load
-order, so nothing was added at all. Now the item is left alone only when the
-other mod's plugin is loaded and its UBE pieces cover every slot of the item;
-otherwise this tool covers it as usual. Measured on the reported modlist: no item
-changes. `CBBE2UBE_NO_THIRD_PARTY_INI_SLOT_CHECK=1` (set to 1) turns it off.
+order, so nothing was added at all. Now this tool also covers such an item in
+exactly two cases: the plugin holding the other mod's UBE piece is not loaded,
+or that mod's UBE pieces leave one of the item's slots uncovered. The item's
+slots are read from the version of it the game uses (the last loaded plugin that
+changes it, the game's own files included, so base-game armour is checked the
+same way). When that version cannot be read, the item is left alone as before,
+and the run says how many items that was. Measured on the reported modlist: no
+item changes. `CBBE2UBE_NO_THIRD_PARTY_INI_SLOT_CHECK=1` (set to 1) turns the
+whole check off; `CBBE2UBE_NO_THIRD_PARTY_INI_WINNER_SLOTS=1` reads the slots
+from mods' own plugins only and covers an item whose slots are unknown.
 
 ### Fixed — the warning for missing vanilla armour now checks what the game loads
 

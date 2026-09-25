@@ -690,9 +690,10 @@ def test_drawn_armours_are_reported(capsys):
 
 # ------------------------------------------------------------ the coverage step
 
-def _emit(tmp_path, monkeypatch, *, real_index=False):
+def _emit(tmp_path, monkeypatch, *, real_index=False, unchecked=()):
     """Drive the real coverage step with both passes stubbed; return what the
-    exclusion scan and each pass were handed."""
+    exclusion scan and each pass were handed. `unchecked`: what the stubbed
+    scan reports as excluded without a slot check."""
     inst = tmp_path / "inst"
     mods = inst / "mods"
     prof = inst / "profiles" / "P"
@@ -712,12 +713,15 @@ def _emit(tmp_path, monkeypatch, *, real_index=False):
     if not real_index:
         monkeypatch.setattr(ac.paths, "plugin_file_index",
                             lambda l: {"x ube patch.esp": theirs})
-    seen = {"covered": [], "active": []}
+    seen = {"covered": [], "active": [], "index": []}
 
     def _covered(*a, **k):
         seen["covered"].append(k.get("halves", ("ini", "esp")))
         seen["active"].append(k.get("active_plugins"))  # #third-party-ini-slot-check
-        return set()
+        seen["index"].append(k.get("plugin_index"))  # #third-party-ini-winner-slots
+        if k.get("unchecked") is not None:
+            k["unchecked"].extend(unchecked)
+        return set(unchecked)
     monkeypatch.setattr(ac, "_third_party_ube_covered_armos", _covered)
     monkeypatch.setattr(ac, "_mesh_exists_anywhere", lambda output: None)
     monkeypatch.setattr(ac, "_third_party_ube_twin_lookup", lambda *a, **k: None)

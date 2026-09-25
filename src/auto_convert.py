@@ -3149,6 +3149,9 @@ _UBE_COVERED_CACHE: dict = {}
 # {same cache key -> {mod name: how many ARMOs it already covers for UBE}}.
 # Diagnostics only -- nothing in the convert path reads it.
 _UBE_COVERED_BY_MOD: dict = {}
+# {same cache key -> sorted targets excluded without a slot check, because
+# their winning record could not be read}. #third-party-ini-winner-slots
+_UBE_UNCHECKED: dict = {}
 
 # Written as a comment into every SkyPatcher INI we emit, and read back by
 # `_is_our_own_output`.
@@ -3239,7 +3242,8 @@ def _skypatcher_forms(value: str):
 
 def _third_party_ube_covered_armos(mods_root, enabled_names=None,
                                    skip_mods=(), halves=("ini", "esp"),
-                                   active_plugins=None) -> set:
+                                   active_plugins=None, plugin_index=None,
+                                   unchecked=None) -> set:
     r"""ARMOs that ANOTHER mod already gives a UBE armature.
 
     Returned as {(defining plugin lowercase, formid low24)} -- the same
@@ -3298,6 +3302,20 @@ def _third_party_ube_covered_armos(mods_root, enabled_names=None,
     slot-complete -- 0 armours move. CBBE2UBE_NO_THIRD_PARTY_INI_SLOT_CHECK=1
     excludes on any `!UBE\` addon again, loaded or not.
 
+    #third-party-ini-winner-slots (2026-09-25): the armour's slots came only
+    from plugins in enabled mod folders, so a complete UBE refit of an armour
+    no mod overrides (vanilla or DLC, in the game's Data folder) read as
+    "slots unknown" and was covered again -- two bodies on UBE actors. Now the
+    slots are the load-order WINNER's: `active_plugins` in order, each name
+    resolved to its file through `plugin_index` (`paths.plugin_file_index`:
+    overwrite > enabled mods > game Data), our own output skipped. When the
+    winning record still cannot be read (no load order or index, the record
+    in no loaded plugin, an unreadable plugin that may hold it, no BOD2), a
+    target a `!UBE\` addon names is excluded as before the slot check and
+    listed in `unchecked`; one only a UBE-race addon names stays covered, as
+    it always was. CBBE2UBE_NO_THIRD_PARTY_INI_WINNER_SLOTS=1 reads enabled
+    mods' plugins only, and covers a target whose slots are unknown.
+
     Best-effort and CACHED per (root, skip) -- an unreadable plugin is skipped,
     never fatal: failing to detect coverage costs a double-render, while a
     crash here would cost the whole run."""
@@ -3326,7 +3344,17 @@ def _third_party_ube_covered_armos(mods_root, enabled_names=None,
     active = (None if active_plugins is None
               else {str(n).lower() for n in active_plugins})
     key += (slot_check, None if active is None else tuple(sorted(active)))
+    # #third-party-ini-winner-slots: its switch, the order and the files.
+    winner_slots = (slot_check
+                    and not _flag("CBBE2UBE_NO_THIRD_PARTY_INI_WINNER_SLOTS", False))
+    key += (winner_slots,
+            None if active_plugins is None else tuple(str(n).lower()
+                                                      for n in active_plugins),
+            None if plugin_index is None else tuple(sorted(
+                (str(k).lower(), str(v)) for k, v in plugin_index.items())))
     if key in _UBE_COVERED_CACHE:
+        if unchecked is not None:
+            unchecked.extend(_UBE_UNCHECKED.get(key, ()))
         return _UBE_COVERED_CACHE[key]
     covered: set = set()
     ube_armas: set = set()      # abs identity of every UBE armature found
@@ -3426,13 +3454,41 @@ def _third_party_ube_covered_armos(mods_root, enabled_names=None,
                 _f = _skypatcher_fields(_ln)
                 if _f.get("armorAddonsToAdd") and _f.get("filterByArmors"):
                     ini_targets.update(_skypatcher_forms(_f["filterByArmors"]))
+
+    def _pkey(p) -> str:
+        return os.path.normcase(os.path.abspath(str(p)))
+
+    def _target_records(e, own) -> dict:
+        """#third-party-ini-winner-slots: {target: BOD2 slots, or None when
+        the record has none} for the INI targets plugin `e` holds a record of."""
+        _ms = [m.lower() for m in e.header.masters]
+        got: dict = {}
+        for g in e.groups:
+            if g.label != b"ARMO":
+                continue
+            for r in g.records:
+                _mi = r.formid >> 24
+                _t = ((_ms[_mi] if _mi < len(_ms) else own), r.formid & 0xFFFFFF)
+                if _t not in ini_targets:
+                    continue
+                got[_t] = None
+                for sig, dd in _esp.iter_subrecords(r.payload):
+                    if sig in (b"BOD2", b"BODT") and len(dd) >= 4:
+                        got[_t] = _struct.unpack_from("<I", dd)[0]
+                        break
+        return got
+    _plugin_recs: dict = {}      # plugin file key -> _target_records, or None
     for md in mod_dirs:
         # (b) plugins that define a UBE ARMA and an ARMO pointing at it
         for pl in list(md.glob("*.esp")) + list(md.glob("*.esm")) + list(md.glob("*.esl")):
             try:
                 e = _esp.ESP.load(pl)
             except Exception:
+                if winner_slots:
+                    _plugin_recs[_pkey(pl)] = None      # unreadable
                 continue
+            if winner_slots and ini_targets:
+                _plugin_recs[_pkey(pl)] = _target_records(e, pl.name.lower())
             masters = [m.lower() for m in e.header.masters]
             own = pl.name.lower()
 
@@ -3599,15 +3655,92 @@ def _third_party_ube_covered_armos(mods_root, enabled_names=None,
                         _hit = True
             if _hit:
                 for t in _skypatcher_forms(targets):
-                    _rc = race_cover.setdefault(t, [0, mod_name])
+                    _rc = race_cover.setdefault(t, [0, mod_name, False])
                     _rc[0] |= _slots
+                    _rc[2] = _rc[2] or _ube_hit     # a `!UBE\` addon counted
+    # #third-party-ini-winner-slots: the slots of the record the game uses.
+    _root_key = _pkey(root) + os.sep
+    _order = ([str(n).lower() for n in active_plugins]
+              if winner_slots and active_plugins is not None
+              and plugin_index is not None else None)
+    _index = ({str(k).lower(): v for k, v in plugin_index.items()}
+              if _order is not None else {})
+
+    _masters_seen: dict = {}
+
+    def _masters_of(p) -> "set | None":
+        """Plugin `p`'s masters from its TES4 record alone; None if unreadable."""
+        k = _pkey(p)
+        if k not in _masters_seen:
+            try:
+                with open(p, "rb") as f:
+                    head = f.read(24)
+                    if head[:4] != b"TES4" or len(head) < 24:
+                        raise ValueError("no TES4 record")
+                    rec = _esp.Record(sig=b"TES4", payload=f.read(
+                        _struct.unpack_from("<I", head, 4)[0]))
+                _masters_seen[k] = {m.lower() for m in
+                                    _esp.TES4Header.parse_from_record(rec).masters}
+            except Exception:
+                _masters_seen[k] = None
+        return _masters_seen[k]
+
+    def _records_of(p) -> "dict | None":
+        """The INI targets' records in plugin file `p`: {} when it can hold
+        none of them (or is not third-party), None when it cannot be read."""
+        k = _pkey(p)
+        if k in _plugin_recs:
+            return _plugin_recs[k]
+        if k.startswith(_root_key):
+            got: "dict | None" = {}    # a mod folder not read above: ours,
+        else:                           # skipped or disabled -- not theirs
+            # Overwrite or the game's Data folder: read only a plugin that can
+            # hold a target (defines it, or has its plugin as a master).
+            own = Path(p).name.lower()
+            _ms = _masters_of(p)
+            got = {} if _ms is not None else None
+            if _ms is not None and any(t[0] == own or t[0] in _ms
+                                       for t in race_cover):
+                try:
+                    got = _target_records(_esp.ESP.load(p), own)
+                except Exception:
+                    got = None
+        _plugin_recs[k] = got
+        return got
+
+    def _winner_slots(t) -> "int | None":
+        """The winning record's slots, or None when they cannot be read."""
+        for name in reversed(_order):
+            p = _index.get(name)
+            if p is None:
+                continue            # not on disk: the game loads nothing
+            recs = _records_of(p)
+            if recs is None:
+                # Unreadable: unknown only if it may hold the record.
+                _ms = _masters_of(p)
+                if _ms is None or t[0] == Path(p).name.lower() or t[0] in _ms:
+                    return None
+                continue
+            if t in recs:
+                return recs[t]
+        return None                 # in no loaded plugin
     # A target counts only when its UBE addons cover EVERY slot the armour
-    # claims. An armour no enabled plugin defines cannot be checked, and is left
-    # to be covered (double-covering is the safe direction).
-    for t, (_slots, mod_name) in race_cover.items():
-        _need = armo_slots.get(t)
-        if _need is not None and not (_need & ~_slots):
+    # claims. When those slots cannot be read, a `!UBE\` addon is trusted
+    # whole, as before the slot check (a UBE-race addon never was).
+    _unchecked: list = []
+    for t, (_slots, mod_name, _ube) in race_cover.items():
+        _need = (_winner_slots(t) if _order is not None
+                 else armo_slots.get(t))
+        if _need is None:
+            if winner_slots and _ube:
+                _add(t, mod_name)
+                _unchecked.append(t)
+            continue
+        if not (_need & ~_slots):
             _add(t, mod_name)
+    _UBE_UNCHECKED[key] = sorted(_unchecked)
+    if unchecked is not None:
+        unchecked.extend(_UBE_UNCHECKED[key])
 
     # Per-mod attribution, kept for diagnostics. The exclusion set alone answers
     # "how many armors are already UBE-covered" but not "BY WHAT" -- and that is
@@ -3628,6 +3761,20 @@ def _third_party_ube_covered_armos(mods_root, enabled_names=None,
                  fix="check that mod before trusting this run")
     _UBE_COVERED_CACHE[key] = covered
     return covered
+
+
+def _print_unchecked_ube(unchecked) -> None:
+    """#third-party-ini-winner-slots: say how many of the armours left to
+    another mod's UBE patch were left without the slot check, and name a few."""
+    if not unchecked:
+        return
+    print(f"      {len(unchecked)} of them not slot-checked: the armour's own "
+          "record could not be read, so the other mod's UBE piece is trusted to "
+          "cover all of it")
+    for pl, fid in list(unchecked)[:3]:
+        print(f"        {pl}|{fid:06X}")
+    if len(unchecked) > 3:
+        print(f"        ... and {len(unchecked) - 3} more")
 
 
 def _print_coverage_warnings(label: str, stats: dict) -> None:
@@ -4821,6 +4968,7 @@ def _emit_unified_coverage_patches(output, patches_dir, master_data_dirs,
         # asked for here -- what an INI adds is on no armour record. Tied to
         # the same switch, so no half-and-half combination can be selected.
         _tpd = ube_patcher._coverage_third_party_drawn()
+        _uba_unchecked: list = []
         try:
             _uba_lay = paths.discover_layout()
             _ube_excl = _third_party_ube_covered_armos(
@@ -4830,7 +4978,10 @@ def _emit_unified_coverage_patches(output, patches_dir, master_data_dirs,
                 halves=("ini",) if _tpd else ("ini", "esp"),
                 # #third-party-ini-slot-check: an INI addon counts only
                 # when its plugin is loaded
-                active_plugins=paths.active_plugins_ordered(_uba_lay))
+                active_plugins=paths.active_plugins_ordered(_uba_lay),
+                # #third-party-ini-winner-slots: the files the game loads
+                plugin_index=paths.plugin_file_index(_uba_lay),
+                unchecked=_uba_unchecked)
         except Exception as _e:
             # Detection failure must never stop coverage -- but say so, or a
             # silently-empty exclusion set looks exactly like "nothing to skip".
@@ -4840,6 +4991,7 @@ def _emit_unified_coverage_patches(output, patches_dir, master_data_dirs,
         if _ube_excl:
             print(f"  [unified] {len(_ube_excl)} armor(s) already have a UBE "
                   "patch from another mod -- leaving those alone")
+            _print_unchecked_ube(_uba_unchecked)
         # Remove any STALE coverage from a prior run BEFORE regenerating: the
         # standalone ESP+INI (SkyPatcher applies every INI in the folder even if
         # the ESP is disabled -> double-cover) AND the prior coverage PATCHES in
@@ -5275,12 +5427,15 @@ def _cmd_convert(args):
     else:
         try:
             _skip_ube_lay = paths.discover_layout()
+            _skip_unchecked: list = []    # #third-party-ini-winner-slots
             batch_ube_covered = _third_party_ube_covered_armos(
                 paths.mods_root(),
                 enabled_names=paths.enabled_mods(_skip_ube_lay),
                 skip_mods={Path(output).name},
                 # #third-party-ini-slot-check
-                active_plugins=paths.active_plugins_ordered(_skip_ube_lay))
+                active_plugins=paths.active_plugins_ordered(_skip_ube_lay),
+                plugin_index=paths.plugin_file_index(_skip_ube_lay),
+                unchecked=_skip_unchecked)
             if batch_ube_covered:
                 print(f"  {len(batch_ube_covered)} armor(s) already UBE-patched "
                       "by another mod -- those pieces will NOT be converted")
@@ -5290,6 +5445,9 @@ def _cmd_convert(args):
             warn(f"could not scan for existing UBE patches ({plain_error(_e)})",
                  consequence="converting everything, including armour another mod "
                              "already patched")
+        else:
+            if batch_ube_covered:       # #third-party-ini-winner-slots
+                _print_unchecked_ube(_skip_unchecked)
 
     # THE RECIPE AND AN EMPTY SCOREBOARD BEFORE THE FIRST SOURCE, then the
     # scoreboard again after every source (the `finally` below), so a run that
