@@ -72,6 +72,18 @@ def _fake_measure(piece, work_root):
         if not marker.exists():
             marker.touch()
             os._exit(3)
+    here = Path(work_root) / label
+    if f"dieleaving:{label}" in plant:
+        # Killed between an atomic writer's mkstemp and its os.replace: the
+        # temp file stays in the piece's folder.
+        marker = Path(os.environ[_ONCE])
+        if not marker.exists():
+            marker.touch()
+            here.mkdir(parents=True, exist_ok=True)
+            (here / f"{label}_1.xml.orphan.tmp").write_bytes(b"x")
+            os._exit(3)
+    # What `_sidecar_digests` would pick up from the folder besides the TRI.
+    left = sorted(p.name for p in here.glob("*.tmp")) if here.is_dir() else []
     if label.startswith("missing"):
         return {"src": None, "fp": None}
     k = float(sum(map(ord, label)))
@@ -84,7 +96,7 @@ def _fake_measure(piece, work_root):
                    "bones": ["NPC Pelvis [Pelv]"], "wsum": np.array([2.0])}}
     return {"src": Path(work_root) / "mods" / "SomeMod" / f"{label}_1.nif",
             "source_sig": f"sig-{label}", "fp": fp,
-            "sidecars": {f"{label}.tri": "d" * 32},
+            "sidecars": {f"{label}.tri": "d" * 32, **{n: "t" * 32 for n in left}},
             "pid": os.getpid(), "hash": hash(go._HASH_PROBE),
             "blas": os.environ.get("OPENBLAS_NUM_THREADS")}
 
@@ -193,6 +205,14 @@ def check_unreproduced_death():
             "rc": planted("dieonce:flaky", lambda: go.check(1e-4, 2),
                           once="flaky.died")}
 
+def check_orphan_after_death():
+    # The worker dies once, leaving a temp file in the piece's folder; the
+    # piece's re-run alone must not read that file as an ADDED sidecar.
+    rc0 = baseline("orph", ["a-first", "leaver", "c"], 1)
+    return {"capture": rc0,
+            "rc": planted("dieleaving:leaver", lambda: go.check(1e-4, 2),
+                          once="leaver.died")}
+
 def rerun_env():
     # The re-run pool is spawned AFTER the parent's environment changed: it
     # must still be held to the environment the run started under.
@@ -229,6 +249,7 @@ run("capture_fails", capture_fails)
 run("check_worker_dies", check_worker_dies)
 run("check_two_deaths", check_two_deaths)
 run("check_unreproduced_death", check_unreproduced_death)
+run("check_orphan_after_death", check_orphan_after_death)
 run("rerun_env", rerun_env)
 run("capture_worker_dies", capture_worker_dies)
 '''
@@ -383,6 +404,17 @@ def test_a_death_no_piece_reproduces_still_fails_the_check(pool):
     assert v["(pool)"].startswith("FAIL  worker died:"), v
     assert "no single piece reproduces it" in v["(pool)"]
     assert "PASS" not in s["text"]
+
+
+def test_a_re_run_starts_in_a_clean_folder(pool):
+    """The broken pool killed the piece's first run mid-write; the temp file it
+    left must not make the innocent re-run read REGRESSION ('sidecar ADDED')."""
+    s = _scenario(pool, "check_orphan_after_death")
+    assert s["res"]["capture"] == 0 and s["res"]["rc"] == 1
+    v = _verdicts(s["text"])
+    assert v["leaver"] == "ok", s["text"]
+    assert v["a-first"] == v["c"] == "ok", s["text"]
+    assert v["(pool)"].startswith("FAIL  worker died:"), v
 
 
 def test_a_re_run_is_held_to_the_environment_the_run_started_under(pool):
