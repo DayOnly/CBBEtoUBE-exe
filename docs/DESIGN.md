@@ -1175,6 +1175,73 @@ snapshot and skips every source, and a coverage failure leaves the fallback merg
 empty. A full run regenerates the old-named set; the next run without the switch then
 deletes the old set wherever the renamed one exists.
 
+### Old conversions leave the output (`#stale-output-sweep`)
+
+The output folder is never cleaned, so a base an earlier run converted stays in
+`meshes\!UBE` after the planner stops making it, wins its path in game (our mod sits
+high in MO2), and counts as converted for coverage. Live (2026-09-25): 37 bases, 103
+files, 128 MB -- third-party covered (9), made non-playable by the winning record (27,
+14 of them from sources selection no longer picks), the male mesh the female-only
+rule drops (1). The census's first design, "every file no claim of this run owns", was
+refuted: the planner fails OPEN to a smaller plan (a failed NPC-outfit read drops 6
+sources and 48 bases female NPCs wear, under any size brake), so absence cannot tell a
+lost piece from a dropped one. What ships (`src/stale_sweep.py`, glue in
+`auto_convert._stale_output_sweep*`):
+
+- **A manifest, every `auto` run** (`_conversion_manifest.json`): weight base ->
+  source mod for every claim (`AutoConvertResult.claimed_weight_bases`, recorded where
+  `claimed_dst_paths` takes the path), per-source patch -> source, run stamp, build. An
+  earlier entry is carried while its file is on disk and no claim of this run takes
+  it. A base no run recorded never moves -- the first run after shipping is
+  report-only by construction, and a file placed by hand is safe.
+- **Positive reasons only.** `_player_armor_mesh_bases(drop_reasons=)` names, for a
+  base an armature names but the plan leaves out, the rule that did it:
+  `non-playable`, `third-party covered` (the `#claim-meshes-prefix` case is one),
+  `female-only`; `auto_convert_mod` adds `built twin`. A skipped armature is read on
+  through every other test and dropped after them, so the reason is the one that took
+  it out; asking for reasons never changes the plan (live: the 151 sources plan the
+  census plan exactly). A recorded base moves when its source is removed, disabled or
+  excluded, or its source gave one of those reasons -- this run, or, for a source
+  present and enabled that selection no longer picks, its planner asked at sweep time
+  with the batch's inputs. A source that ran and resolved nothing HOLDS. An unrecorded
+  base a source of this run gives a reason for is recorded ("adopted") and can move on
+  a later run: live, the first run records 24 of the 37; the 13 of the two sources
+  selection dropped whole stay listed (nothing names their source).
+- **PLAN_COMPLETE** (`_stale_plan_gaps`): report-only, with a named warning, when the
+  batch mesh index was not built, the archive index was not built or skipped an
+  archive or folder (`_BsaMeshIndex.skipped`), the NPC-worn set is None while its
+  switch is on, the playability map is None or could not read a plugin
+  (`_armo_winner_unreadable`), the vanilla sweep did not run or claimed nothing, a
+  source did not run or failed, the per-result merge-gate fields show a mesh error,
+  plugin-patch failure, unreadable output or crash-class issue, or any problem-level
+  warning was printed from the start of `auto` to the end of the batch
+  (`user_warnings.problem_count`; a worker process's own warnings are not counted).
+- **Where and when.** Full `auto` run of all mods only (never `--only-mods`,
+  `--plugins-only`, the bare `convert`), inside `auto_merge and merge_blockers == 0`,
+  after the partner fill (a whole-base move takes the fill copies along) and before
+  the female-model restore and coverage, which read `meshes\!UBE`. Claimed bases and
+  `superseded_weight_bases` are never candidates.
+- **Moves.** The whole base -- bare, `_0`, `_1` `.nif`, and the `.tri`/`.xml` named
+  after the stem (`x.nif.tri` goes with `x.nif_1.nif`) -- to
+  `_superseded\<run stamp>\` at its relative path, all or nothing with rollback; a
+  stamp folder is never reused; a file whose real path leaves the output holds its
+  base; other file types are listed, never touched. A per-source patch set (ESP last)
+  moves only when its recorded source is gone, or was not selected, claims nothing and
+  all its recorded bases move; never in the root-write mode. The brake: more than
+  max(10, 2.5% of the output's bases) is report-only (live: 37 of 1,973, limit 49).
+- **Transactional.** The moves are PENDING until the merge: kept only when the new
+  Combined was written from coverage alone (not the per-source fallback) and none of
+  its pieces names a moved base; otherwise every file goes back, since an old Combined
+  pointing at a moved `!UBE` mesh is a missing-mesh crash. An exception out of
+  `_cmd_convert` puts them back from `_cmd_auto`; a journal a killed run left unsettled
+  is put back at the start of the next full run's sweep. Report:
+  `_superseded\stale_output_report.json` and the log.
+
+Coverage replay with the 37 bases gone (repro8): 9,835 -> 9,826 links, 9 removed, 0
+added, 189 re-pointed, 198 armours; 0 a woman can wear changes visibly. Switched off
+(`CBBE2UBE_NO_STALE_OUTPUT_SWEEP=1`) nothing is read, written, moved or reported;
+`CBBE2UBE_STALE_OUTPUT_SWEEP_REPORT_ONLY=1` lists and records but never moves.
+
 ### What the coverage passes leave alone
 
 The winner scan is the sole generator over every armour in the load order, so it
