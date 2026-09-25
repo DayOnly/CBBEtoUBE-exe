@@ -3474,6 +3474,39 @@ def _is_playable_named(aflags: int, payload: bytes) -> bool:
         if sig == b"FULL":
             return any(d)
     return False
+
+
+def _wig_body_pass() -> bool:
+    r"""#wig-body-pass (2026-09-25): does #coverage-wigs also reach a wig whose
+    ARMOUR record carries a deforming slot (a stray calves slot beside the hair
+    slots)? Yes, by default, while #coverage-wigs is on.
+
+    An armour with any of slots 32/33/34/37/38 goes to the body pass, and the
+    wig rule lived only in the non-body pass; the body pass mints an armature
+    only with a converted mesh, which a wig never has. So a playable, named wig
+    the author also flagged for the calves drew nothing on a UBE actor: the
+    wearer went bald. Live: 1 armour, a follower's wig whose armour says
+    31+38 while its one armature says 31/41 -- nothing draws slot 38.
+
+    Judged per ARMATURE by its own BOD2, as the other body-pass rules are: an
+    armature whose slots are hair slots only (31, 41), on a playable, named
+    armour, when no other rule admitted any armature of that armour. It is
+    minted as the non-body pass mints a wig -- its own mesh; a DefaultRace one
+    for every UBE race, else (the race-list rule on) the UBE counterparts of
+    the races it lists. A beast variant or an armature that already names a UBE
+    race is never taken, and the third-party and dead-armature rules still
+    apply. It pulls no other accessory of the armour along.
+    CBBE2UBE_NO_WIG_BODY_PASS=1 leaves such a wig uncovered again."""
+    return _coverage_wigs() and not _flag("CBBE2UBE_NO_WIG_BODY_PASS", False)
+
+
+def _is_hair_only_armature(payload: bytes) -> bool:
+    """#wig-body-pass: the armature's own BOD2 names slots, hair slots only."""
+    for sig, d in esp.iter_subrecords(payload):
+        if sig in (b"BOD2", b"BODT") and len(d) >= 4:
+            s = struct.unpack_from("<I", d, 0)[0]
+            return bool(s) and (s & _HAIR_ONLY_SLOTS) == s
+    return False
 # Slots that deform with the UBE body and need mesh conversion, not just race
 # coverage: 32 body, 33 hands, 34 forearms, 37 feet, 38 calves.
 _DEFORMING_SLOTS_MASK = (1 << 2) | (1 << 3) | (1 << 4) | (1 << 7) | (1 << 8)
@@ -5059,6 +5092,8 @@ def generate_modded_body_ube_coverage_patch(
     skins: set = set()         # any RACE/NPC_ WNAM (#coverage-human-race-list)
     race_list_ube: dict = {}   # arma_abs -> UBE races it targets (same)
     race_listed: list = []     # (armo_abs, edid) taken by the race-list rule
+    wigs_added: list = []      # (armo_abs, edid) wigs on a deforming armour (#wig-body-pass)
+    _wig_body = _wig_body_pass()
     # What would have made an armature a CONVERSION candidate -- the selection's
     # own slot sets and cloak names, read from it so the two cannot drift.
     from .auto_convert import (_BODY_SLOT_BITS, _BODY_CANDIDATE_SLOT_BITS,
@@ -5336,6 +5371,21 @@ def generate_modded_body_ube_coverage_patch(
                 armo_abs, aflags, winning, worn=npc_worn_armo_abs, skins=skins,
                 arma_ok=lambda v, _hf=_cover_hf: _mesh_admits(v, _hf))
             to_mint = list(_listed)
+        # #wig-body-pass: nothing admitted -- a hair-only armature of a
+        # playable, named armour is a wig, minted with its own mesh as the
+        # non-body pass mints one: DefaultRace first, else by its race list.
+        _wig_here: list = []
+        if not to_mint and _wig_body and _is_playable_named(aflags, apayload):
+            _wig_here = [x for x, v in winning
+                         if x not in _bv and v[3] == DEFAULT_RACE
+                         and _is_hair_only_armature(v[0])
+                         and not (_acc_guard and v[4])]
+            if not _wig_here and _race_list:
+                _listed = _race_list_admits(
+                    armo_abs, aflags, winning, worn=npc_worn_armo_abs,
+                    skins=skins, arma_ok=lambda v: _is_hair_only_armature(v[0]))
+                _wig_here = list(_listed)
+            to_mint = list(_wig_here)
         if not to_mint:
             continue
         # Withheld BEFORE the guard below, so an excluded armour the guard would
@@ -5448,7 +5498,8 @@ def generate_modded_body_ube_coverage_patch(
         # #coverage-body-cloak: a cloak-named one only when its world meshes
         # are skinned drapes with no body-fit bone (the conversion's crash
         # guard dropped them, so nothing else draws them).
-        if _body_accessory and to_mint:
+        # #wig-body-pass: a wig alone is no deforming armature to ride along with.
+        if _body_accessory and to_mint and not _wig_here:
             _acc = [x for x, v in winning
                     if x not in to_mint and v[3] == DEFAULT_RACE
                     and _arma_bod2_slots(v[0])
@@ -5487,6 +5538,8 @@ def generate_modded_body_ube_coverage_patch(
             race_listed.append((armo_abs, edid))
         if _no_torso:
             world_partial.append((armo_abs, edid))
+        if _wig_here:
+            wigs_added.append((armo_abs, edid))   # #wig-body-pass
         targets.append((armo_abs, plugin_case.get(armo_abs[0], armo_abs[0]),
                         to_mint))
         _tpd_state.targeted(to_mint, _fewer)   # #coverage-third-party-drawn
@@ -5746,6 +5799,9 @@ def generate_modded_body_ube_coverage_patch(
         "body_cloak": [f"{a[0]}|{a[1]:X}" for a in cloak_added],
         # #coverage-human-race-list: armours taken by the race-list rule.
         "race_listed": race_listed,
+        # #wig-body-pass: wigs on an armour with a deforming slot, reported
+        # with the non-body pass's wigs.
+        "wigs": wigs_added,
         # #coverage-third-party-drawn
         **_tpd_state.stats(),
         # #exclude-body-only, report only: withheld body pieces another mod's

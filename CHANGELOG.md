@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Fixed — a wig that also claims a leg slot is drawn on UBE actors
+
+Wigs you can equip are drawn on UBE-race actors (see "wigs are drawn on UBE
+actors" below), but only when the wig item claimed nothing but hair slots. A wig whose item also claims a
+leg slot (the calves) -- while the wig itself draws only hair -- was still
+drawn on nothing, so a UBE follower wearing it went bald. Such a wig is now
+drawn with its own mesh like any other wig, for the same races it was made for.
+A wig made only for Khajiit or Argonian characters, a wig someone already made
+a UBE version of, and a wig whose mesh is missing are still left alone, and the
+wig does not bring any other part of the item along. Measured on the reported
+modlist: one wig, worn by a follower, gains its armature; nothing else changes.
+`CBBE2UBE_NO_WIG_BODY_PASS=1` (set to 1) leaves such a wig undrawn again;
+`CBBE2UBE_NO_COVERAGE_WIGS=1` turns off wigs as a whole, this case included.
+
 ### Fixed — a garment whose layers share one name keeps every layer
 
 Some garments are built from several layers the author gave the same name, for

@@ -1679,6 +1679,40 @@ reported through `_report_coverage_holds`:
   wigs, 196 links (95 hair + collider, 6 hair only), 0 removed; depends on
   #coverage-beast-variant, without which 6 wigs also drew their Khajiit
   variant. `CBBE2UBE_NO_COVERAGE_WIGS=1`.
+- **A wig on a deforming armour** (`#wig-body-pass`, under the same user
+  call). An armour with any of slots 32/33/34/37/38 goes to the body pass,
+  which mints an armature only with a converted mesh; the wig rule lived in
+  the non-body pass alone. So a playable, named wig whose ARMOUR also says
+  slot 38 (its one armature says 31/41; nothing draws 38 -- an authoring slip,
+  and on vanilla it only unequips calf items) drew nothing on UBE. Now, when
+  the DefaultRace, race-list and mesh rules admitted no armature of such an
+  armour, an armature whose OWN BOD2 is hair slots only is taken: DefaultRace
+  first (every UBE race), else through `_race_list_admits` with the hair test
+  as `arma_ok` (the race-list rule's own switch applies), own mesh, never a
+  beast variant (`_bv`) or an armature naming a UBE race. The third-party and
+  dead-armature rules apply as to any armature; the accessory rule does not
+  fire on a wig alone (a wig is no deforming armature to ride with). When a
+  deforming armature IS admitted the old rules already take a DefaultRace hair
+  armature as an accessory, so the wig step runs only on an empty `to_mint`
+  and nothing admitted before moves. Census at the parent (every hair-only
+  armature of an armour in the body pass): 26 rows -- 10 Argonian hood or hat
+  variants of hooded robes (Argonian primary, no human race: never taken; the
+  human hood rides as an accessory), 2 non-playable armours whose DefaultRace
+  helmet already rides along, 13 unnamed race or creature skins (creature
+  parts, a unicorn horn, follower skins with their SMP hair -- one already
+  UBE), and exactly 1 wig: playable, named, Wood Elf primary (+ vampire),
+  armour 31+38, worn by a follower. Live replay: 9835 -> 9836 links, +1
+  (UBE Wood Elf + vampire, own mesh), 0 removed, 0 re-pointed, 0 full-record
+  changes. `CBBE2UBE_NO_WIG_BODY_PASS=1`; `CBBE2UBE_NO_COVERAGE_WIGS=1` turns
+  it off too. NOT done: a nude-torso item that is no race's skin (one named
+  ring swaps in the vanilla naked torsos, slots 32+36). #coverage-nude-skin
+  treats any armour listing a nude torso as a skin and mints nothing, and the
+  UBE body has no torso part mapping (`_UBE_BODY_PART_MESH` holds hands and
+  feet), so a UBE actor wearing it has slot 32 taken and no armature of hers:
+  no torso and no ring, unless a runtime race patcher extends the vanilla
+  torsos. A fix needs a UBE torso redirect and an own-mesh rule for a
+  non-deforming race-list armature on a body armour -- a new policy, left to
+  the user; population 1.
 - **A beast-only variant is not minted** (`#coverage-beast-variant`). Both
   passes minted every DefaultRace-primary armature for all UBE races. A beast
   patch often adds its variant as primary DefaultRace with only Khajiit/Argonian
