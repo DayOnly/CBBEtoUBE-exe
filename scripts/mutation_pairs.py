@@ -8972,8 +8972,8 @@ PAIRS = (
               '    return tail  # MUTATED\n', 1),
          ),
          tests=('tests/test_piece_family_match.py', 'tests/test_stale_piece_cleanup.py'),
-         expect=('test_the_one_matcher[Combined - Copy.esp-None]',
-                 'test_the_one_matcher[Combined_backup.esp-None]',
+         expect=('test_the_one_matcher[copy]',
+                 'test_the_one_matcher[backup]',
                  'test_the_re_sort_does_not_rewrite_or_count_a_copy',
                  'test_cleanup_never_touches_non_numbered_siblings'),
     ),
@@ -9002,6 +9002,6 @@ PAIRS = (
               '    n, s, x = name, stem, suffix  # MUTATED\n', 1),
          ),
          tests=('tests/test_piece_family_match.py',),
-         expect=('test_the_one_matcher[combined12.ESP-12]',),
+         expect=('test_the_one_matcher[piece_case]',),
     ),
 )

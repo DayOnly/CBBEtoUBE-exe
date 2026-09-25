@@ -109,6 +109,9 @@ def test_switched_off_a_copy_is_rewritten_as_before(tmp_path, monkeypatch):
 @pytest.mark.parametrize("name, tail", [
     ("Combined.esp", ""), ("Combined2.esp", "2"), ("combined12.ESP", "12"),
     ("Combined - Copy.esp", None), ("Combined_backup.esp", None),
-    ("CombinedNotes.esp", None), ("Other.esp", None), ("Combined.esm", None)])
+    ("CombinedNotes.esp", None), ("Other.esp", None), ("Combined.esm", None)],
+    # ids without spaces: the mutation gate reads failing test ids off a line
+    ids=["combined", "piece", "piece_case", "copy", "backup", "notes", "other",
+         "esm"])
 def test_the_one_matcher(name, tail):
     assert up._combined_piece_tail(name, "Combined", ".esp") == tail
