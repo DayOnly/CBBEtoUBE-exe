@@ -1076,6 +1076,15 @@ PAIRS = (
          tests=('tests/test_golden_jobs.py',),
          expect=('test_a_re_run_is_held_to_the_environment_the_run_started_under',),
     ),
+    Pair('GJ-m', "a re-run reuses the killed first run's folder, temp files and all",
+         edits=(
+             ('scripts/golden_output.py',
+              '        shutil.rmtree(work_root / piece[0], ignore_errors=True)\n',
+              '        pass  # MUTATED: re-run in the dirty folder\n', 1),
+         ),
+         tests=('tests/test_golden_jobs.py',),
+         expect=('test_a_re_run_starts_in_a_clean_folder',),
+    ),
     # #glow-diagnostic-path (2026-09-20): the diagnostic wrote nothing for an
     # unknown length of time, because its configured directory did not exist
     # and the caller swallows every exception. Both halves are armed: creating

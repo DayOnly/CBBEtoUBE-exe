@@ -419,6 +419,10 @@ def _measured(pieces, work_root: Path, jobs: int):
         nonlocal solo, died
         if solo is None:
             solo = ProcessPoolExecutor(max_workers=1, mp_context=ctx)
+        # The broken pool killed this piece's first run mid-conversion: an
+        # atomic writer's temp file (<stem>_1.xml.<rand>.tmp) may be left in its
+        # folder and would read as an ADDED sidecar. Start the re-run clean.
+        shutil.rmtree(work_root / piece[0], ignore_errors=True)
         try:
             return (piece, solo.submit(_worker_measure, piece, work_root,
                                        expect, measure).result(), None)
