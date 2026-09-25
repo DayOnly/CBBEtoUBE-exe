@@ -10,9 +10,9 @@ also has gloves or boots: the gloves were still drawn, so the armour was not
 counted, although its body was missing just the same. It is now counted
 ("drawn without the body piece") and named ("no body piece:"). The names also
 listed children's clothing first, so the five shown were all children's
-clothes and the adult outfits were hidden in "... and 75 more"; adult outfits
+clothes and the adults' pieces were hidden in "... and 75 more"; adults' pieces
 now come first. Measured on the reported modlist: one armour newly named, and
-the five names shown are now adult outfits. Nothing else changes: the
+the five names shown are now adults' pieces. Nothing else changes: the
 converted meshes and patches are the same, so this has no switch.
 
 ### Fixed — the switch for armour only NPCs wear no longer changes which items are drawn on UBE actors
@@ -35,11 +35,13 @@ A robe's hood is drawn on UBE actors along with the robe. That rule also took
 two kinds of hood it should have left alone. The first is a Khajiit or Argonian
 version of the hood: UBE actors drew it on top of the human hood.
 `CBBE2UBE_NO_COVERAGE_BEAST_VARIANT` did not turn this off, although it does for
-every other item. The second is a hood already made for UBE: the tool added its
-own UBE copy over it. Both are now left out of the hood rule, and
-`CBBE2UBE_NO_COVERAGE_BEAST_VARIANT` works for hoods too. Measured on the
-reported modlist: none of the 26 hoods and hats this rule adds there is either
-kind, so nothing changes there today.
+every other item. The second is a hood whose own armature already lists the
+UBE races: the tool added its own UBE copy over it. Both are now left out of the
+hood rule, and `CBBE2UBE_NO_COVERAGE_BEAST_VARIANT` works for hoods too. (A UBE
+hood that a mod ships as a separate armature next to the human one is not
+recognised by this rule yet.) Measured on the reported modlist: none of the 26
+hoods and hats this rule adds there is either kind, so nothing changes there
+today.
 `CBBE2UBE_NO_ACCESSORY_RACE_GUARD=1` (set to 1) turns it off.
 
 ### Fixed — a hand-made UBE mesh is linked at the path where the game finds it
@@ -50,7 +52,9 @@ kept that folder in the path. The game then looked in `meshes\!UBE\meshes\...`,
 where no file exists. A missing `!UBE` mesh can crash the game when an actor
 wearing the piece loads, and neither of this tool's checks reported it. The
 folder is now taken off first, and the checks test the exact path that was
-written. Measured on the reported modlist: nothing changes at default settings.
+written. The same applies when such a piece's mesh was converted by this tool:
+it is now found and linked, where before it was not drawn on UBE actors at all.
+Measured on the reported modlist: nothing changes at default settings.
 The one case there only appears when `CBBE2UBE_NO_CLAIM_MESHES_PREFIX=1` is set
 (one nude suit, whose two links now point at the UBE version the user built).
 `CBBE2UBE_NO_TWIN_PATH_STRIP_MESHES=1` (set to 1) turns it off.

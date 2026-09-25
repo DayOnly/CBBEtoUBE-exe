@@ -3730,7 +3730,7 @@ def _report_coverage_holds(stats: "list[dict]") -> None:
     # Still drawn, but with no body piece: the hands/feet armature was minted.
     wpart = sorted((d for s in stats for d in (s.get("world_mesh_partial") or [])),
                    key=lambda d: _is_child_content_asset(d[1]))
-    nred =[k for s in stats for k in (s.get("nude_redirected") or [])]
+    nred = [k for s in stats for k in (s.get("nude_redirected") or [])]
     nskip = [k for s in stats for k in (s.get("nude_skipped") or [])]
     ndrop = [d for s in stats for d in (s.get("nude_dropped") or [])]
     twins = [k for s in stats for k in (s.get("ube_twin") or [])]

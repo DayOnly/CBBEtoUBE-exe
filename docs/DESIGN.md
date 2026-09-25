@@ -1109,8 +1109,8 @@ reported through `_report_coverage_holds`:
   what source selection already calls one (`_is_child_content_asset`, by
   EditorID). Live replay: 1 partial armour; of the 80 full drops 19 are
   children's clothing by that test, and they had filled all five named lines;
-  now the five are adult outfits. The test is by name only, so a child's
-  unique clothes named after the child still sort with the adults.
+  now the five are adults' pieces (not all outfits). The test is by name only,
+  so a child's unique clothes named after the child still sort with the adults.
   Report only: every plugin and sidecar byte-identical, so no switch.
 - **Nude hands and feet draw the UBE body's own** (`#coverage-nude-skin`). A
   slot-33/37 armature whose MOD3 is `femalehands`/`femalefeet` under
@@ -1149,7 +1149,9 @@ reported through `_report_coverage_holds`:
   again and called it resolved. Now `_strip_meshes_prefix` runs wherever a
   `!UBE\` path is composed from a source path: `rebuild_arma_payload`
   (`strip_meshes_prefix`, passed by both coverage passes), `_ube_twin_slots`,
-  `_converted_model_exists` (so it asks what the lookup asks) and
+  `_converted_model_exists` (so it asks what the lookup asks -- which also means a
+  body armature spelt `meshes\X` whose mesh WE converted is now admitted and
+  minted `!UBE\X`; before, it was not admitted at all; live: 0) and
   `restore_female_models` (it checked the stripped file, wrote the raw path). The
   postflight judges the string written: a `!UBE\meshes\...` path is looked up
   as written (`twin(..., as_written=True)`). The per-source patch is not touched:
@@ -1243,10 +1245,15 @@ reported through `_report_coverage_holds`:
   effect on it) and a hood already naming a UBE race got a second UBE copy over
   it. The list now skips the pass's own `_bv` (so
   `CBBE2UBE_NO_COVERAGE_BEAST_VARIANT=1` still brings the variant back) and any
-  armature with a UBE race (`v[4]`), as the non-body pass and the race-list rule
-  already do. The non-body pass had neither gap: it drops `_bv` and skips an
-  armour with any UBE armature. Live: 0 of the 26 accessory armatures is either,
-  so the output is unchanged today. `CBBE2UBE_NO_ACCESSORY_RACE_GUARD=1`.
+  armature with a UBE race (`v[4]`), as the race-list rule already does (HRL-ze).
+  The non-body pass had neither gap: it drops `_bv` and skips the whole armour
+  when any armature carries a UBE race. The guard here is per ARMATURE, so it
+  does not catch a hand-made UBE hood shipped as a separate UBE-primary armature
+  next to the DefaultRace human hood (`v[3]` is not DefaultRace, so it is never an
+  accessory candidate, and the human hood still rides along): that is the
+  per-armature "already drawn" test of the R9 double-draw rule, still open.
+  Live: 0 of the 26 accessory armatures is either, so the output is unchanged
+  today. `CBBE2UBE_NO_ACCESSORY_RACE_GUARD=1`.
 - **An armature whose primary race is not DefaultRace** (`#coverage-human-race-list`).
   Both passes minted only DefaultRace-primary armatures. An armature re-authored
   with an Argonian or a custom primary that lists the human and mer races as

@@ -4444,6 +4444,15 @@ PAIRS = (
          tests=('tests/test_twin_path_strip_meshes.py',),
          expect=('test_the_prefix_is_taken_off_either_slash_any_case',),
     ),
+    Pair('TPM-j', 'the fallback rebuild writes the raw path again',
+         edits=(
+             ('src/ube_patcher.py',
+              '                strip_meshes_prefix=_strip,\n',
+              '                # MUTATED\n', 2),
+         ),
+         tests=('tests/test_twin_path_strip_meshes.py',),
+         expect=('test_the_fallback_rebuild_writes_the_path_the_twin_is_at',),
+    ),
     # #accessory-race-guard (review 2026-09-24): a hood rides along with the
     # robe only when a human draws it and it has no UBE armature already.
     Pair('ARG-a', 'a beast hood variant rides along again',

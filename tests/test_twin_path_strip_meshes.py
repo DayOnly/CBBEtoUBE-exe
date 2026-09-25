@@ -62,24 +62,24 @@ def _missing(warns):
     return [w for w in warns if w.startswith("missing-nif")]
 
 
-def _body(tmp_path, models, slots, conv, twin):
+def _body(tmp_path, models, slots, conv, twin, preserve=True):
     (tmp_path / "meshes").mkdir(parents=True, exist_ok=True)   # the validator checks our output
     out = tmp_path / "UBE_ModBody_Coverage UBE patch.esp"
     st = up.generate_modded_body_ube_coverage_patch(
         out, _world(tmp_path, models, slots), converted_rel_paths=conv,
         exclude_names={out.name.lower()}, master_data_dirs=[tmp_path],
-        cover_all=True, cover_hands_feet=True, preserve_textures=True,
+        cover_all=True, cover_hands_feet=True, preserve_textures=preserve,
         ube_twin_exists=twin)
     return st, _minted(out)
 
 
-def _nonbody(tmp_path, models, twin):
+def _nonbody(tmp_path, models, twin, preserve=True):
     (tmp_path / "meshes").mkdir(exist_ok=True)
     out = tmp_path / "UBE_ModNonBody_Coverage UBE patch.esp"
     st = up.generate_modded_nonbody_ube_coverage_patch(
         out, _world(tmp_path, models, HEAD), converted_rel_paths=set(),
         exclude_names={out.name.lower()}, master_data_dirs=[tmp_path],
-        cover_all=True, preserve_textures=True, ube_twin_exists=twin)
+        cover_all=True, preserve_textures=preserve, ube_twin_exists=twin)
     return st, _minted(out)
 
 
@@ -118,6 +118,20 @@ def test_the_non_body_pass_writes_the_path_the_twin_is_at(tmp_path, monkeypatch)
     st, minted = _nonbody(tmp_path, {b"MOD3": r"meshes\armor\x\helm_1.nif"}, twin)
     assert minted[0][b"MOD3"] == r"!UBE\armor\x\helm_1.nif"
     assert [d["path"] for d in st["ube_twin"]] == [r"!UBE\armor\x\helm_1.nif"]
+    assert _missing(st["validation_warnings"]) == []
+
+
+def test_the_fallback_rebuild_writes_the_path_the_twin_is_at(tmp_path, monkeypatch):
+    """Both passes rebuild a second way when textures are not preserved (or a
+    master cannot be remapped); that call must strip the prefix too."""
+    mods, twin = _twin(tmp_path / "b", monkeypatch)
+    st, minted = _body(tmp_path / "b", {b"MOD3": SRC}, FEET, set(), twin, preserve=False)
+    assert minted[0][b"MOD3"] == GOOD
+    assert _missing(st["validation_warnings"]) == []
+    _mods, twin = _twin(tmp_path / "n", monkeypatch, ("armor/x/helm_1.nif",))
+    st, minted = _nonbody(tmp_path / "n", {b"MOD3": r"meshes\armor\x\helm_1.nif"},
+                          twin, preserve=False)
+    assert minted[0][b"MOD3"] == r"!UBE\armor\x\helm_1.nif"
     assert _missing(st["validation_warnings"]) == []
 
 
