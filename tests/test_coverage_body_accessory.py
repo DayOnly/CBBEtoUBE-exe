@@ -152,7 +152,9 @@ def test_a_body_candidate_slot_is_not_an_accessory(tmp_path):
 
 def test_a_cape_on_a_free_slot_is_not_an_accessory(tmp_path):
     """Slot 35 is free, but a cape-named mesh is a cloak the planner admits for
-    conversion by name; left unconverted it would draw its CBBE fit."""
+    conversion by name; left unconverted it might draw its CBBE fit. With no
+    mesh reader nothing shows it is a drape (#coverage-body-cloak), so it
+    stays out."""
     cape = _arma(0x01000801, 1 << 5, {b"MOD3": r"armor\witch\ShamanCapeF_1.nif"})
     st, minted = _pass(tmp_path, _robe(tmp_path, {b"MOD3": ROBE}, cape),
                        {ROBE.replace("\\", "/")})

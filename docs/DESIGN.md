@@ -1557,6 +1557,29 @@ reported through `_report_coverage_holds`:
   per-armature "already drawn" test of the R9 double-draw rule, still open.
   Live: 0 of the 26 accessory armatures is either, so the output is unchanged
   today. `CBBE2UBE_NO_ACCESSORY_RACE_GUARD=1`.
+- **A robe's draped cape rides with it** (`#coverage-body-cloak`). The
+  accessory list above skipped every cloak-named armature, on the worry that an
+  unconverted cloak is body-fitted cloth drawing its CBBE fit. But the
+  conversion's crash guard drops a cloak on a free slot (35) whose mesh has no
+  body-fit bone, so a worn robe with such a cape drew the robe on UBE and
+  nothing for the cape -- the one cloak-named piece of the modlist a UBE actor
+  drew nothing for (the other unconverted cloaks are drawn on their own mesh by
+  the non-body pass, or covered by another mod). A cloak-named DefaultRace
+  armature is now admitted as an accessory when every world model it names
+  (MOD2, MOD3) is, in the copy the game loads, skinned and bound to no
+  thigh/calf/butt/breast/belly bone (`_nif_bytes_unfitted_skin`, read through
+  `_mesh_exists_anywhere(...).unfitted_skin`); an unskinned, body-fitted,
+  missing or unreadable mesh, or a lookup with no reader, keeps it out (fail
+  closed), so the worry above still holds for body-fitted cloth. It is minted
+  UBE-primary on its own mesh, as the non-body pass mints the same class of
+  cloak worn alone. Beast variants and armatures already naming a UBE race stay
+  out even with `CBBE2UBE_NO_ACCESSORY_RACE_GUARD=1`: no parent output drew a
+  cape here, so that switch has nothing to restore. The dead-armature rule
+  still judges it; the report counts it among the accessories. Live replay:
+  9834 -> 9835 links, +1 (the robe -> its slot-35 cape armature, own mesh,
+  UBE-primary), 0 removed, 0 re-pointed; the non-body pass is byte-identical.
+  `CBBE2UBE_NO_COVERAGE_BODY_CLOAK=1` (nested under
+  `CBBE2UBE_NO_COVERAGE_BODY_ACCESSORY=1`).
 - **An armature whose meshes exist nowhere is not minted**
   (`#coverage-dead-armature`). The body pass admits a hands/feet armature by
   its slot alone and the non-body pass keeps a piece's source mesh, so an

@@ -680,6 +680,28 @@ def _accessory_race_guard() -> bool:
     return not _flag("CBBE2UBE_NO_ACCESSORY_RACE_GUARD", False)
 
 
+def _coverage_body_cloak() -> bool:
+    r"""#coverage-body-cloak (2026-09-25): may a cloak-named armature ride along
+    with a body armour under #coverage-body-accessory? Only when the mesh it
+    draws is a drape; yes, by default, while that rule is on.
+
+    The accessory rule skips every cloak-named armature: the planner admits a
+    cloak for conversion by name, so one left unconverted might be body-fitted
+    cloth drawing its CBBE fit on the UBE body. But the conversion's crash guard
+    drops a cloak on a free slot (35) whose mesh has no body-fit bone, so a
+    worn robe with such a cape drew the robe on a UBE actor and no cape at all.
+    Such a cape is now minted like a hood -- UBE-primary, its own mesh, as the
+    non-body pass draws the same kind of cloak worn alone -- when every world
+    mesh it names (MOD2, MOD3), the copy the game loads, is skinned and bound to
+    no thigh/calf/butt/breast/belly bone. An unskinned mesh, a body-fitted one,
+    or one that cannot be read stays out, and so does a beast variant or an
+    armature that already names a UBE race, whatever
+    CBBE2UBE_NO_ACCESSORY_RACE_GUARD says. CBBE2UBE_NO_COVERAGE_BODY_CLOAK=1
+    leaves every cloak-named armature out again."""
+    return _coverage_body_accessory() and not _flag(
+        "CBBE2UBE_NO_COVERAGE_BODY_CLOAK", False)
+
+
 def _coverage_human_race_list() -> bool:
     r"""#coverage-human-race-list (2026-09-24): does an armour whose only
     human-drawing armature has a primary race other than DefaultRace get a UBE
@@ -5031,6 +5053,8 @@ def generate_modded_body_ube_coverage_patch(
     accessory_added: list = []  # non-deforming armatures of a body armour (#coverage-body-accessory)
     _body_accessory = _coverage_body_accessory()
     _acc_guard = _accessory_race_guard()
+    cloak_added: list = []     # ... of which cloak-named drapes (#coverage-body-cloak)
+    _body_cloak = _coverage_body_cloak()
     _race_list = _coverage_human_race_list()
     skins: set = set()         # any RACE/NPC_ WNAM (#coverage-human-race-list)
     race_list_ube: dict = {}   # arma_abs -> UBE races it targets (same)
@@ -5050,6 +5074,23 @@ def generate_modded_body_ube_coverage_patch(
                 if any(k in base for k in _CLOAK_MESH_KEYWORDS):
                     return True
         return False
+
+    # #coverage-body-cloak: the mesh reader (`auto_convert._mesh_exists_anywhere`)
+    # of whichever lookup the caller passed; none -> no cloak is admitted.
+    _unfitted = (getattr(mesh_exists, "unfitted_skin", None)
+                 or getattr(dead_mesh_exists, "unfitted_skin", None))
+
+    def _cloak_drapes(x, v, beast) -> bool:
+        """#coverage-body-cloak: may this cloak-named armature ride along? A
+        human's armature (not in `beast`, the armour's beast variants; no UBE
+        race already), and every world mesh it names is a skinned drape with
+        no body-fit bone."""
+        if not (_body_cloak and _unfitted is not None) or x in beast or v[4]:
+            return False
+        world = [d.rstrip(b"\x00").decode("cp1252", "replace")
+                 for sig, d in esp.iter_subrecords(v[0]) if sig in (b"MOD2", b"MOD3")]
+        world = [w for w in world if w]
+        return bool(world) and all(_unfitted(w) is True for w in world)
 
     def _conv_exists(model_path: str) -> bool:
         return _converted_model_exists(model_path, crp, strip_meshes=_strip)
@@ -5404,18 +5445,23 @@ def generate_modded_body_ube_coverage_patch(
         # #accessory-race-guard: never a beast variant the rule above skipped,
         # nor an armature that already names a UBE race -- a second UBE copy
         # would draw over it. The non-body pass takes neither.
+        # #coverage-body-cloak: a cloak-named one only when its world meshes
+        # are skinned drapes with no body-fit bone (the conversion's crash
+        # guard dropped them, so nothing else draws them).
         if _body_accessory and to_mint:
             _acc = [x for x, v in winning
                     if x not in to_mint and v[3] == DEFAULT_RACE
                     and _arma_bod2_slots(v[0])
                     and not (_arma_bod2_slots(v[0]) & _accessory_excluded_bits)
-                    and not _cloak_named(v[0])
+                    and (not _cloak_named(v[0]) or _cloak_drapes(x, v, _bv))
                     and not (_acc_guard and (x in _bv or v[4]))]
             if _acc:
                 to_mint = to_mint + _acc
                 for x in _acc:
                     if x not in accessory_added:
                         accessory_added.append(x)
+                    if _cloak_named(arma_win[x][0]) and x not in cloak_added:
+                        cloak_added.append(x)
         # #coverage-third-party-drawn: judged on what the guards above left,
         # hood included -- what another mod's UBE armature on this winning
         # record already draws is not minted again; the rest is minted for the
@@ -5452,6 +5498,7 @@ def generate_modded_body_ube_coverage_patch(
     # "drawn on UBE with the body". The verdict is per armature, so a dead hood
     # is minted for no armour.
     accessory_added = [x for x in accessory_added if x not in dead_skipped]
+    cloak_added = [x for x in cloak_added if x not in dead_skipped]
 
     # ---- Pass 3: mint ESP (UBE-primary ARMAs, models REDIRECTED to !UBE) ----
     patch_masters = list(VANILLA_DLC_MASTERS)
@@ -5695,6 +5742,8 @@ def generate_modded_body_ube_coverage_patch(
         "beast_variant_skipped": [f"{a[0]}|{a[1]:X}" for a in beast_skipped],
         "beast_variant_non_actor": [f"{a[0]}|{a[1]:X}" for a in beast_non_actor],
         "body_accessory": [f"{a[0]}|{a[1]:X}" for a in accessory_added],
+        # #coverage-body-cloak: the cloak-named ones among them.
+        "body_cloak": [f"{a[0]}|{a[1]:X}" for a in cloak_added],
         # #coverage-human-race-list: armours taken by the race-list rule.
         "race_listed": race_listed,
         # #coverage-third-party-drawn
