@@ -1293,8 +1293,54 @@ to a full ESP. The coverage generators therefore emit **numbered pieces of their
 Chunking is **by target (ARMO), never by armature**, so an ARMO's whole add-set stays
 in one piece and yields exactly **one** `filterByArmors` line. Whether SkyPatcher
 accumulates duplicate lines for one armor or takes the last is unverified, and this is
-the only delivery path. The cost is that an armature shared across a chunk boundary is
-minted twice — measured at ~2%.
+the only delivery path.
+
+**Armours that share an armature share a piece (`#esl-chunk-dedup`).** Filling the
+pieces armour by armour in scan order minted an armature once per piece whenever two
+armours using it fell on either side of a boundary: live, 36 of the non-body coverage's
+2,093 distinct armatures (2,129 records). The two copies were identical, and the
+merge's record dedup cannot fold them: the first piece fills a whole Combined piece by
+itself, and ESL pieces never master each other. Now armours linked by a shared
+armature (directly or through a chain) form one group, each group goes whole into the
+first piece with room, and armours keep scan order inside a piece (a run that fits one
+piece is byte-identical). The alternative, an armour in one piece naming an armature
+minted in another (a SkyPatcher line allows it), was not taken: the merge folds each
+coverage piece into whichever Combined piece has room and resolves links within that
+piece only. Only a group needing more than the cap is still split in scan order; the
+largest live group needs 85. Live: non-body 2,129 -> 2,093 records (2,048 + 45 instead
+of 2,048 + 81), every armour's links identical, the Combined still 2 pieces with 3,878
+own records instead of 3,912. 15 armatures minted by both the body and the non-body pass
+remain (separate patches; out of this rule's reach). `CBBE2UBE_NO_ESL_CHUNK_DEDUP=1`
+restores the scan-order fill.
+
+**Pieces never increase.** Placing whole groups is bin packing with items that cannot
+be split, so it can leave a piece short that the scan-order fill would top up across a
+group boundary: cap 5 and three groups of three armatures need three pieces whole, but
+two in scan order (one repeated record). One more plugin to enable is a worse cost than
+a few duplicate records, so both fills are computed and the grouped one is kept only
+when it needs no more pieces than the scan-order fill; otherwise the scan-order fill is
+used unchanged, duplicates and all. Duplicates are dropped only when that costs no
+extra piece. At the same number of pieces the fill that mints fewer records wins: a
+group over the cap is split in scan order inside the grouped fill, and that split can
+repeat MORE armatures than the plain scan-order fill does (cap 4: [2,11], [10], [1,6],
+[3,6,11] mints 8 records grouped against 7 in scan order, 2 pieces each). A full tie
+(same pieces, same records) keeps the grouping. The guarantee covers the COVERAGE
+pieces only: the merge's own first-fit-decreasing packing of those pieces with the
+other patches into Combined pieces is a separate step and can, near the limit, need a
+Combined piece more than it did with the scan-order fill (review probe: cap 5, a
+3-record patch plus [2,8,10], [4,11], [1,11] packs into 3 Combined pieces against 2).
+Live the Combined stays 2 pieces either way. A finer rule --
+split only the group that straddles the boundary -- was not taken: it would keep some
+of the savings only in the case where whole groups lose, it is more code with its own
+piece-count proof to carry, and the live load order never reaches that case (2 non-body
+pieces either way, so today's output is the grouped fill, byte-identical to before the
+rule).
+
+After the merge one armour (a circlet) links to its own non-body record where the
+scan-order fill had it collapse onto a body-pass record: its copy used to sit in the
+same Combined piece as the body patch, and the merge's dedup key ignores the MO2T
+texture-hash block, the only thing that differs. Mesh, races, slots and alternate
+textures are identical, so nothing changes in game.
 
 ### Per-source patch names (`#source-patch-rename`)
 

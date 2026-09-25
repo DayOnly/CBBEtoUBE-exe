@@ -7285,4 +7285,106 @@ PAIRS = (
          tests=('tests/test_tail_fold.py',),
          expect=('test_a_check_that_raises_stops_the_check_and_not_the_sync',),
     ),
+    # #esl-chunk-dedup (2026-09-25): coverage targets that share a minted
+    # armature go into one ESL piece, so the armature is minted once. Live:
+    # 36 duplicate non-body records gone, every armour's links unchanged.
+    Pair('ECD-a', 'targets sharing an armature are not grouped',
+         edits=(
+             ('src/ube_patcher.py',
+              '                parent[max(ri, rj)] = min(ri, rj)\n',
+              '                pass  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_esl_chunk_dedup.py',),
+         expect=('test_an_armature_two_armours_share_is_minted_in_one_piece_only',
+                 'test_a_chain_of_shared_armatures_stays_together'),
+    ),
+    Pair('ECD-b', 'a group never fills room left in an earlier piece',
+         edits=(
+             ('src/ube_patcher.py',
+              '            if len(held) + len(keys) <= cap:\n',
+              '            if False:  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_esl_chunk_dedup.py',),
+         expect=('test_a_later_group_fills_room_left_in_an_earlier_piece',),
+    ),
+    Pair('ECD-c', 'a piece may not fill to exactly the cap',
+         edits=(
+             ('src/ube_patcher.py',
+              '            if len(held) + len(keys) <= cap:\n',
+              '            if len(held) + len(keys) < cap:  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_esl_chunk_dedup.py',),
+         expect=('test_a_piece_may_fill_exactly_to_the_cap',),
+    ),
+    Pair('ECD-d', 'targets inside a piece leave scan order',
+         edits=(
+             ('src/ube_patcher.py',
+              '    return [[targets[i] for i in sorted(c)] for c in chunks]',
+              '    return [[targets[i] for i in c] for c in chunks]  # MUTATED', 1),
+         ),
+         tests=('tests/test_esl_chunk_dedup.py',),
+         expect=('test_armours_keep_scan_order_inside_a_piece',),
+    ),
+    Pair('ECD-e', 'a group bigger than a piece is placed whole',
+         edits=(
+             ('src/ube_patcher.py',
+              '        if len(keys) > cap:\n',
+              '        if False:  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_esl_chunk_dedup.py',),
+         expect=('test_a_group_bigger_than_a_piece_is_split_and_every_piece_keeps_the_cap',),
+    ),
+    Pair('ECD-f', 'a target minting nothing opens a piece of its own',
+         edits=(
+             ('src/ube_patcher.py',
+              '            # Mints nothing, so it emits no line and costs nothing: ride along.\n'
+              '            if chunks:\n',
+              '            # Mints nothing, so it emits no line and costs nothing: ride along.\n'
+              '            if False:  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_esl_chunk_dedup.py',),
+         expect=('test_an_armour_minting_nothing_opens_no_extra_piece',),
+    ),
+    Pair('ECD-g', 'the off-switch no longer switches anything off',
+         edits=(
+             ('src/ube_patcher.py',
+              '    return not _flag("CBBE2UBE_NO_ESL_CHUNK_DEDUP", False)',
+              '    return True  # MUTATED', 1),
+         ),
+         tests=('tests/test_esl_chunk_dedup.py',),
+         expect=('test_switched_off_the_scan_order_fill_returns',),
+    ),
+    # Pieces never increase: whole groups can need more ESL pieces than the
+    # scan-order fill (one more plugin to enable, to save a few records); then
+    # the scan-order fill is used. At equal pieces the fill with fewer records
+    # wins (a group over the cap can make the grouping mint more); a full tie
+    # keeps the grouping. Live the grouping wins on records at 2 pieces.
+    Pair('ECD-h', 'grouping may open more pieces than the scan-order fill',
+         edits=(
+             ('src/ube_patcher.py',
+              '    if (len(grouped), _chunk_record_count(grouped, mint_rec)) > (\n',
+              '    if False and (  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_esl_chunk_dedup.py',),
+         expect=('test_grouping_never_needs_more_pieces_than_the_scan_order_fill',
+                 'test_same_pieces_but_more_records_keep_the_scan_order_fill'),
+    ),
+    Pair('ECD-i', 'a full tie drops the grouping',
+         edits=(
+             ('src/ube_patcher.py',
+              '    if (len(grouped), _chunk_record_count(grouped, mint_rec)) > (\n',
+              '    if (len(grouped), _chunk_record_count(grouped, mint_rec)) >= (  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_esl_chunk_dedup.py',),
+         expect=('test_a_full_tie_keeps_the_grouping',),
+    ),
+    Pair('ECD-j', 'a piece-count tie ignores the record count',
+         edits=(
+             ('src/ube_patcher.py',
+              '    if (len(grouped), _chunk_record_count(grouped, mint_rec)) > (\n',
+              '    if (len(grouped), 0) > (  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_esl_chunk_dedup.py',),
+         expect=('test_same_pieces_but_more_records_keep_the_scan_order_fill',),
+    ),
 )
