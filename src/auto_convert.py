@@ -6580,9 +6580,12 @@ def _postflight_weight_partner_fold(output_dir, check: bool):
 
     THE PAIR IS LOADED ONCE. The check reads the files the sync opened when
     the sync left them exactly as they are on disk: it changed no vert and
-    recorded no failure. Otherwise (it wrote the pair, or failed part-way with
-    its copy changed and the file not) the pair is read from disk again, so
-    the check always sees what ships, as the serial check did. Pairs are
+    recorded no failure. Otherwise (it wrote the pair, or saved one side and
+    failed on the other) the pair is read from disk again, so the check
+    always sees what ships, as the serial check did. The open copy cannot
+    stand in for the disk after an edit: its shapes still read the bones and
+    weights from before the graft (measured on a synthetic pair), so it would
+    report the very divergence the sync just repaired. Pairs are
     grouped, ordered and skipped exactly as both serial passes do it, and a
     pair whose sync raises is skipped, as the serial sync skips it."""
     if not _tail_fold():

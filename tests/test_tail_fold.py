@@ -22,7 +22,8 @@ output, each loading both files: 150 s for the sync and 72 s for the check on
 the reported modlist. The check is detect-only and reads the state the sync
 leaves, so the fold hands it the files the sync already holds -- but only when
 the sync left them exactly as they are on disk. When the sync wrote the pair,
-or failed with its copy changed and the file not, the pair is read again.
+or saved one side and failed on the other, the pair is read again: the open
+copy still reads as before the graft.
 
 Every test here compares the fold against the two serial passes on REAL
 files (synthetic NIFs through pynifly), never against a number written down.
@@ -48,6 +49,7 @@ OFF = "CBBE2UBE_NO_TAIL_FOLD"
 SPINE = "NPC Spine [Spn0]"
 THIGH = "NPC L Thigh [LThg]"
 BELLY = "NPC Belly"
+BUTT = "NPC L Butt"
 
 
 @pytest.fixture(autouse=True)
@@ -135,9 +137,8 @@ def test_the_fold_still_reports_a_divergent_pair(tmp_path):
 
 def test_the_check_reads_the_disk_after_the_sync_changed_the_pair(tmp_path, monkeypatch):
     """The sync changes its copy of the pair and the save puts nothing on disk:
-    the file still diverges, so the check must still say so. A fold that let
-    the check read the sync's changed copy would report a clean pair that is
-    not clean on disk."""
+    the file still diverges, so the check must still say so, as the serial
+    check does."""
     _cs.patch(monkeypatch, "atomic_nif_save", lambda nf, p: None)
     out = _tree(tmp_path)
     got = ac._postflight_weight_partner_fold(out, check=True)
@@ -149,7 +150,8 @@ def test_the_check_reads_the_disk_after_the_sync_changed_the_pair(tmp_path, monk
 
 def test_the_check_reads_the_disk_after_the_sync_failed_part_way(tmp_path, monkeypatch):
     """The save RAISES: the sync reports 0 verts with its copy already changed
-    and the failure recorded. The check must read the file, not that copy."""
+    and the failure recorded. The fold records the same failures and reports
+    the same findings as the serial passes."""
     def _boom(nf, p):
         raise OSError("locked")
     _cs.patch(monkeypatch, "atomic_nif_save", _boom)
@@ -165,6 +167,41 @@ def test_the_check_reads_the_disk_after_the_sync_failed_part_way(tmp_path, monke
     assert any(noted.values()), "control: the failed save recorded nothing"
     assert noted == {k: f2.get(k, 0) - f1.get(k, 0) for k in f2}, \
         "the fold recorded different failures from the serial passes"
+
+
+def test_the_check_reads_the_disk_after_one_side_saved_and_the_other_failed(
+        tmp_path, monkeypatch):
+    """Both weights lack a bone the other has, so the sync grafts and saves
+    `_0`, then fails to save `_1`: it reports 0 verts with `_0` changed on
+    disk. The open copy of `_0` still reads as before the graft (pynifly's
+    shapes do not show the edit), so a check on it would report a divergence
+    `_0` no longer has. The recorded failure sends the check to the disk."""
+    src = tmp_path / "src"
+    d = src / "meshes" / "!UBE" / "armor" / "test"
+    v1, t1, n1 = uv_sphere(10.0)
+    v0, t0, n0 = uv_sphere(9.5)
+    build_skinned_shapes_nif(d / "both_0.nif", [("Body", v0, t0, n0)],
+                             bones=(SPINE, BELLY))
+    build_skinned_shapes_nif(d / "both_1.nif", [("Body", v1, t1, n1)],
+                             bones=(SPINE, BUTT))
+    real = nc.atomic_nif_save
+
+    def _fail_1(nf, p):
+        if str(p).endswith("_1.nif"):
+            raise OSError("locked")
+        return real(nf, p)
+    _cs.patch(monkeypatch, "atomic_nif_save", _fail_1)
+    a, b = tmp_path / "serial", tmp_path / "fold"
+    shutil.copytree(src, a)
+    shutil.copytree(src, b)
+    want = _serial(a)
+    got = ac._postflight_weight_partner_fold(b, check=True)
+    assert want[0] == 0, "control: the failed save still counted verts"
+    assert _files(a) != _files(src), "control: the sync never saved `_0`"
+    assert ac._postflight_weight_partner_divergence(src) != want[1], \
+        "fixture is inert: the pair reads the same before and after the graft"
+    assert got == want
+    assert _files(b) == _files(a)
 
 
 def test_a_check_that_raises_stops_the_check_and_not_the_sync(tmp_path, monkeypatch):

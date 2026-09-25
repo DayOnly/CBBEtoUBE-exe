@@ -847,9 +847,11 @@ over every pair of the whole output, each loading both files: 150 s and 72 s on
 the reported modlist. `_postflight_weight_partner_fold` does both per pair on
 one load. The check reads the state the sync leaves, so it takes the sync's
 open files only when the sync left them as they are on disk (it changed no
-vert and recorded no failure); a pair the sync wrote, or changed and then failed
-to save, is read from disk again. Grouping, order, skips, failure records and
-the findings are the serial passes'. If the check raises on a pair, the fold
+vert and recorded no failure); a pair the sync wrote, or saved on one side and
+failed on the other, is read from disk again. That reread is load-bearing: the
+open copy still reads the bones and weights from before the graft, so it would
+report the divergence the sync had just repaired. Grouping, order, skips,
+failure records and the findings are the serial passes'. If the check raises on a pair, the fold
 stops checking and keeps syncing, and the run gives the same "parity scan
 skipped" warning: the serial check died there too, after the sync had
 finished. If the pairs cannot even be listed, the two serial passes run (nothing

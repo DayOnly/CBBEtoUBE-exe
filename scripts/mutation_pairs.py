@@ -6609,24 +6609,26 @@ PAIRS = (
     ),
     # #tail-fold (2026-09-25): the weight-pair jiggle sync and the divergence
     # check share one walk; the check reads the sync's copy only when that copy
-    # is still what is on disk.
-    Pair('TFD-a', 'the check reads the sync\'s changed copy after a sync that changed verts',
+    # is still what is on disk. The open copy does NOT show the sync's edits
+    # (it reads as before the graft), so after a write it is stale.
+    Pair('TFD-a', 'the check reads the stale open copy of a pair the sync wrote',
          edits=(
              ('src/auto_convert.py',
               '                if n > 0 or _pass_failures_noted() != failed_before:',
               '                if _pass_failures_noted() != failed_before:  # MUTATED', 1),
          ),
          tests=('tests/test_tail_fold.py',),
-         expect=('test_the_check_reads_the_disk_after_the_sync_changed_the_pair',),
+         expect=('test_the_fold_leaves_the_same_files_and_findings_as_the_two_walks',
+                 'test_a_pair_the_sync_wrote_is_read_again'),
     ),
-    Pair('TFD-b', 'the check reads the sync\'s changed copy after a failed save',
+    Pair('TFD-b', 'the check reads the stale open copy after one side saved and the other failed',
          edits=(
              ('src/auto_convert.py',
               '                if n > 0 or _pass_failures_noted() != failed_before:',
               '                if n > 0:  # MUTATED', 1),
          ),
          tests=('tests/test_tail_fold.py',),
-         expect=('test_the_check_reads_the_disk_after_the_sync_failed_part_way',),
+         expect=('test_the_check_reads_the_disk_after_one_side_saved_and_the_other_failed',),
     ),
     Pair('TFD-c', 'every pair is read twice again',
          edits=(
