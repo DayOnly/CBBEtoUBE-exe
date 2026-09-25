@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### Fixed — plugins this tool's patches build on are read from the copy the game loads
+
+To build its patches, the tool reads the plugins they depend on. It looked for
+them in the base game folder first and then in every mod folder in alphabetical
+order -- disabled mods included, and the first mod it converts left out. So it
+could read an old or disabled copy of a plugin instead of the one the game loads,
+miss a plugin only that first mod ships, and (had one been present) add a
+disabled mod's UBE race plugin to the merged plugin as a requirement the game
+cannot meet. It now looks in the order the game does: Mod Organizer's overwrite
+folder, the enabled mods from highest priority down, then the game folder.
+Measured on the reported modlist: 32 of the 637 plugins involved now come from
+the copy the game loads (31 were read from another copy, 1 was not found); the
+merged plugin comes out byte for byte the same. `CBBE2UBE_NO_MASTER_SEARCH_LOAD_ORDER=1`
+(set to 1) restores the old search.
+
 ### Fixed — a missing female mesh for the third-person view keeps the male one, even when the first-person one exists
 
 The tool converts only the female version of a piece, unless the female mesh

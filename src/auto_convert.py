@@ -1231,6 +1231,63 @@ def _warn_unseen_settings() -> None:
         pass          # never let a diagnostic line break a run
 
 
+def _master_search_load_order_on() -> bool:
+    r"""#master-search-load-order (2026-09-25): are masters and UBE race plugins
+    looked up in the game's order -- overwrite, ENABLED mods highest priority
+    first, then the game Data folder? Yes, by default.
+
+    `_discover_master_data_dirs` returned the game Data folder, then every
+    folder in the mods root in directory order: alphabetical, disabled mods
+    included, and the source folder it was asked about left out. The master
+    lookup is first-folder-wins, so a master resolved to the base game's copy
+    or an alphabetically first, possibly losing or disabled copy -- the copy
+    whose records and ESM/ESL flag the patches then read -- and one that only
+    the first source ships was not found. The UBE race scan read every plugin
+    there, so a disabled mod's UBE race plugin would have become a master of
+    the patches (a merged plugin with a master the game never loads fails to
+    load). CBBE2UBE_NO_MASTER_SEARCH_LOAD_ORDER=1 restores the old list."""
+    return not _flag("CBBE2UBE_NO_MASTER_SEARCH_LOAD_ORDER", False)
+
+
+def _load_order_master_dirs(source_dir: Path,
+                            data_dirs: "list[Path]") -> "list[Path] | None":
+    """The master search folders in the game's order for `source_dir` -- a mod
+    folder (or a made-up name) in the discovered modlist's mods root, or its
+    game Data folder: overwrite, the enabled mods highest priority first (the
+    source's own folder included), then the game Data folder(s) -- the
+    layout's, then `data_dirs` found by walking up. Existing folders only.
+    None when `source_dir` is not in that modlist or its mod order cannot be
+    read (the caller keeps the old list). #master-search-load-order"""
+    lay = paths.discover_layout()
+    if lay.mods_root is None:
+        return None
+    order = paths.enabled_mods_ordered(lay)
+    if order is None:
+        return None
+    mods_root = Path(lay.mods_root)
+    game = [Path(d) for d in (lay.game_data_dirs or [])]
+    sd = Path(source_dir)
+    if not (_same_path(sd.parent, mods_root)
+            or any(_same_path(sd, d) for d in game)):
+        return None
+    ow = paths.overwrite_dir(lay)
+    out: "list[Path]" = []
+    seen: "set[str]" = set()
+    for d in (([Path(ow)] if ow is not None else [])
+              + [mods_root / n for n in order] + game + list(data_dirs)):
+        k = os.path.normcase(os.path.abspath(str(d)))
+        if k in seen:
+            continue
+        try:
+            if not d.is_dir():
+                continue
+        except OSError:
+            continue
+        seen.add(k)
+        out.append(d)
+    return out
+
+
 def _discover_master_data_dirs(source_dir: Path) -> list[Path]:
     """Auto-discover directories that may contain master ESMs and UBE race plugins.
 
@@ -1239,6 +1296,8 @@ def _discover_master_data_dirs(source_dir: Path) -> list[Path]:
     UBE race plugins (KhajiitUBE.esp, etc.) are found.
 
     Returns existing directories in priority order; empty list if none found.
+    For a folder of the discovered modlist (or its game Data folder) that order
+    is the game's: `_load_order_master_dirs`. #master-search-load-order
     """
     candidates: list[Path] = []
     for parent_depth in range(1, 4):
@@ -1253,6 +1312,10 @@ def _discover_master_data_dirs(source_dir: Path) -> list[Path]:
             if d.is_dir() and (d / "Skyrim.esm").is_file():
                 if d not in candidates:
                     candidates.append(d)
+    if _master_search_load_order_on():
+        _lo = _load_order_master_dirs(source_dir, candidates)
+        if _lo is not None:
+            return _lo
     # Sibling mod folders so UBE race discovery sees KhajiitUBE.esp etc.
     try:
         mods_root = source_dir.parent

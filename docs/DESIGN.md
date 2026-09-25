@@ -591,6 +591,33 @@ already-UBE path among the additions.
   pieces; the two per-source patches rebuilt from the loaded copies are record for
   record the loser's; coverage replay byte-identical. Switch set: census and replay
   identical to the parent.
+- **Masters are read from the copy the game loads** (`#master-search-load-order`,
+  `CBBE2UBE_NO_MASTER_SEARCH_LOAD_ORDER`). `_discover_master_data_dirs(sources[0])`
+  -- the batch's one master search list, also the merge's, the coverage passes'
+  and the `merge` command's -- was the game Data folder, then every folder of the
+  mods root in directory order: alphabetical, disabled mods included, the first
+  source's own folder left out. `ube_patcher._find_master_path` is first folder
+  wins, so a master's records (the Master-ESM ARMO scan, `_xesp_master_arma`) and
+  its ESM/ESL tier came from the base game's copy or an alphabetically first --
+  losing or disabled -- copy; `_discover_ube_races` read every plugin there, so a
+  disabled mod's UBE race plugin would have become a required master. Now, for a
+  folder of the modlist's mods root or its game Data folder,
+  `_load_order_master_dirs` gives overwrite, the ENABLED mods highest priority
+  first (the source's own folder included), then the game Data folder(s); a folder
+  outside the modlist keeps the old list. Live (637 master names of the sources'
+  plugins and the Combined): 32 resolve differently, and every new answer is the
+  copy the root plugin index says the game loads (31 were another copy -- the base
+  masters from the untouched game folder instead of the cleaned copies, pre-update
+  and pre-hotfix plugins, the base UBE mod's UBE_AllRace.esp instead of the
+  overhaul-patched one the game loads -- and 1, which only the
+  first source ships, was not found); ESM tier changes for that 1 (not found ->
+  ESL/ESM); UBE races found: none either way. Coverage replay byte-identical, and
+  the Combined merged from it with each list (merge + master re-sort) is byte for
+  byte the same. The 133 per-source patches whose plugin has a re-resolved master,
+  rebuilt with each list from the live snapshots: all 133 ESPs byte-identical; 6
+  `.skypatcher.json` sidecars list the same entries in another order (the cleaned
+  base masters hold their records in another order). Switch set: replay
+  byte-identical.
 
 ### The female-only rule, per slot pair (2026-09-25)
 
