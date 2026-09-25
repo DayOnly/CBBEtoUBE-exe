@@ -5021,6 +5021,31 @@ def _outside_ube_mesh_resolver(output) -> "callable[[str], bool] | None":
     return resolves
 
 
+def _report_skypatcher_unsafe_names(stats: dict) -> int:
+    """#skypatcher-name-guard: name each plugin whose armour the merge wrote no
+    SkyPatcher line for, because SkyPatcher would split its file name. One
+    warning per plugin, in the run log and the failures file. Returns how many
+    plugins were named."""
+    by_plugin: "dict[str, int]" = {}
+    for t in stats.get("sp_unsafe_name_targets") or []:
+        pl = str(t).rsplit("|", 1)[0]
+        by_plugin[pl] = by_plugin.get(pl, 0) + 1
+    for pl, n in sorted(by_plugin.items()):
+        warn(f'{n} armour record(s) of the plugin "{pl}" get no UBE armature',
+             consequence="its file name holds a comma, semicolon or equals sign, "
+                         "which SkyPatcher reads as a separator; a line naming it "
+                         "would silently match nothing, so none is written and "
+                         "these pieces are invisible on UBE actors",
+             fix="rename the plugin file without that character (a plugin that "
+                 "has it as a master needs that master entry renamed too), then "
+                 "run the converter again")
+        _record_failure("armour not delivered", pl, f"{n} armour record(s)",
+                        "the plugin's file name holds a character SkyPatcher "
+                        "splits on (, ; =); rename it and run again",
+                        severity="warning")
+    return len(by_plugin)
+
+
 def _report_coverage_holds(stats: "list[dict]") -> None:
     """Say what the two coverage passes held back, in counts and a few names:
     armour of an excluded mod left without an armature (#exclude-owned-coverage),
@@ -6354,6 +6379,7 @@ def _cmd_convert(args):
                     # Combined FormIDs -- write the runtime INI. The Combined
                     # then carries NO third-party overrides.
                     _sp_lines = stats.get("skypatcher_ini_lines") or []
+                    _report_skypatcher_unsafe_names(stats)
                     _sp_ini_path = (output / "SKSE" / "Plugins"
                                     / "SkyPatcher" / "armor"
                                     / (merged_out.stem + ".ini"))
@@ -9767,6 +9793,7 @@ def _cmd_merge(args):
     # FULL SKYPATCHER: write the armorAddonsToAdd INI next to the output
     # (same layout as the integrated path: <modroot>/SKSE/Plugins/SkyPatcher).
     _sp_lines = stats.get("skypatcher_ini_lines") or []
+    _report_skypatcher_unsafe_names(stats)
     if _sp_lines:
         _outp = Path(stats.get('output', args.output))
         _sp_ini_path = (_outp.parent / "SKSE" / "Plugins" / "SkyPatcher"

@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Fixed — a plugin whose file name has a comma is now reported instead of silently not working
+
+SkyPatcher reads a comma, semicolon or equals sign as a separator. When armour
+came from a plugin with one of those in its file name, the line this tool wrote
+for it matched nothing, so that armour was invisible on UBE actors with nothing
+in the log to say why. Such a line is no longer written; the run now warns,
+names the plugin, and says to rename it. The reported modlist has one plugin
+with a comma in its name, and none of its records are armour this tool links,
+so nothing changes there. `CBBE2UBE_NO_SKYPATCHER_NAME_GUARD=1` (set to 1) turns
+it off.
+
 ### Fixed — armour whose mesh folder or file name has an accented letter keeps its path
 
 When a mod's mesh path had an accented letter (an é, for example), the armour

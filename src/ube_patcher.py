@@ -6076,6 +6076,39 @@ def generate_modded_body_ube_coverage_patch(
     }
 
 
+# What SkyPatcher splits a line on, as the INI reader in auto_convert
+# (_skypatcher_fields / _skypatcher_forms) models it: `;` starts a comment, `:`
+# separates `key=value` pairs, `=` a key from its value, `,` the forms of a
+# list, and `|` a plugin from its FormID. Windows allows `,` `;` `=` in a file
+# name (not `:` or `|`; they are listed for a name that is not a file name).
+_SKYPATCHER_DELIMITERS = ",;=:|"
+
+
+def _skypatcher_name_guard() -> bool:
+    r"""#skypatcher-name-guard (2026-09-25): is a plugin name SkyPatcher would
+    split kept out of the INI? Yes, by default.
+
+    The merge wrote `filterByArmors=<plugin>|<id>:armorAddonsToAdd=...` with the
+    plugin's file name as it is. A comma in it (`Armors, Extra.esp`) splits the
+    filter into two forms, neither resolves, and the armour's links are lost
+    in silence -- invisible on UBE actors, with a line in the INI that looks
+    fine. A semicolon comments out the rest of the line, and `=` splits a pair.
+    No other name can deliver the link: SkyPatcher addresses a form by plugin
+    name and FormID (an EditorID needs a runtime EditorID cache, and a
+    load-order-indexed FormID goes stale when the order changes). So such an
+    armour gets no line, the same outcome as a link with no merged record, and
+    it is counted in the link reconciliation and named in a run warning with
+    the fix (rename the plugin). Live: 1 of 3,254 active plugins has a comma;
+    it defines no armour the INI names, so the INI is unchanged.
+    CBBE2UBE_NO_SKYPATCHER_NAME_GUARD=1 writes such lines again."""
+    return not _flag("CBBE2UBE_NO_SKYPATCHER_NAME_GUARD", False)
+
+
+def _skypatcher_name_splits(name: str) -> bool:
+    """Would SkyPatcher split a line at `name`? #skypatcher-name-guard"""
+    return any(c in str(name) for c in _SKYPATCHER_DELIMITERS)
+
+
 def merge_patches(
     patch_paths: list[Path],
     output_path: str | Path,
@@ -6416,7 +6449,17 @@ def merge_patches(
         # preserve the original link order (stable output/INI diffs)
         order = {id(r): i for i, r in enumerate(recs)}
         sp_by_armo[key] = sorted(kept, key=lambda r: order.get(id(r), 0))
+    # A name SkyPatcher would split is no line at all: its links are counted,
+    # and the caller names the plugin. #skypatcher-name-guard
+    _name_guard = _skypatcher_name_guard()
+    sp_unsafe: "list[str]" = []
+    sp_drop_unsafe = 0
     for (d, l), recs in sorted(sp_by_armo.items()):
+        if _name_guard and (_skypatcher_name_splits(d)
+                            or _skypatcher_name_splits(out_path.name)):
+            sp_unsafe.append(f"{d}|{l:06X}")
+            sp_drop_unsafe += len(recs)
+            continue
         adds = ",".join("{}|{:06X}".format(out_path.name, r.formid & 0xFFFFFF)
                         for r in recs)
         sp_ini.append("filterByArmors={}|{:06X}:armorAddonsToAdd={}".format(
@@ -6426,14 +6469,16 @@ def merge_patches(
         "output": str(out_path),
         "masters": out_esp.header.masters,
         "skypatcher_ini_lines": sp_ini,
-        "skypatcher_targets": len(sp_by_armo),
-        # Link reconciliation. `seen` must equal emitted + the three drop
-        # reasons; a mismatch means a fourth path is losing links silently.
+        "skypatcher_targets": len(sp_by_armo) - len(sp_unsafe),
+        # Link reconciliation. `seen` must equal emitted + the four drop
+        # reasons; a mismatch means a fifth path is losing links silently.
         "sp_links_seen": sp_seen_links,
-        "sp_links_emitted": sum(len(v) for v in sp_by_armo.values()),
+        "sp_links_emitted": sum(len(v) for v in sp_by_armo.values()) - sp_drop_unsafe,
         "sp_dropped_no_record": sp_drop_norec,
         "sp_dropped_duplicate_pair": sp_drop_dup,
         "sp_dropped_render_identical": sp_dropped,
+        "sp_dropped_unsafe_name": sp_drop_unsafe,
+        "sp_unsafe_name_targets": sp_unsafe,
         "sp_unreadable_sidecars": sp_bad_sidecar,
         "merged_patch_count": len(patches),
         "total_arma_records": len(new_arma_records),
@@ -6523,6 +6568,8 @@ def report_link_reconciliation(stats: dict) -> "list[str]":
     The other two drops are by design -- `duplicate_pair` is first-writer-wins
     across patches, `render_identical` stops one armour rendering the same mesh
     twice -- so they are reported as plain counts, not warnings.
+    `unsafe_name` (#skypatcher-name-guard) is counted here; the caller warns,
+    naming each plugin.
     """
     seen = int(stats.get("sp_links_seen", 0) or 0)
     if not seen:
@@ -6531,9 +6578,12 @@ def report_link_reconciliation(stats: dict) -> "list[str]":
     norec = int(stats.get("sp_dropped_no_record", 0) or 0)
     dup = int(stats.get("sp_dropped_duplicate_pair", 0) or 0)
     ident = int(stats.get("sp_dropped_render_identical", 0) or 0)
+    unsafe = int(stats.get("sp_dropped_unsafe_name", 0) or 0)
     bad = list(stats.get("sp_unreadable_sidecars") or [])
     out = [f"  armature links: {seen} recorded -> {emitted} emitted "
-           f"({dup} duplicate, {ident} render-identical, {norec} unresolved)"]
+           f"({dup} duplicate, {ident} render-identical, {norec} unresolved"
+           + (f", {unsafe} on a plugin name SkyPatcher cannot read" if unsafe else "")
+           + ")"]
     if norec:
         out.append(f"  !! {norec} armature link(s) had NO merged record -- "
                    f"those armor pieces get no UBE armature and will be "
@@ -6543,9 +6593,10 @@ def report_link_reconciliation(stats: dict) -> "list[str]":
                    f"recorded is lost")
     # The identity that makes the count trustworthy: if these do not agree, a
     # path is losing links that none of the three reasons above describes.
-    if emitted + dup + ident + norec != seen:
+    if emitted + dup + ident + norec + unsafe != seen:
         out.append(f"  !! link accounting does not balance "
-                   f"({emitted}+{dup}+{ident}+{norec} != {seen}) -- a drop "
+                   f"({emitted}+{dup}+{ident}+{norec}"
+                   + (f"+{unsafe}" if unsafe else "") + f" != {seen}) -- a drop "
                    f"path is unaccounted for")
     return out
 
@@ -6707,6 +6758,10 @@ def merge_patches_split(
                                          for s in piece_stats),
         "sp_dropped_render_identical": sum(
             s.get("sp_dropped_render_identical", 0) for s in piece_stats),
+        "sp_dropped_unsafe_name": sum(s.get("sp_dropped_unsafe_name", 0)
+                                      for s in piece_stats),
+        "sp_unsafe_name_targets": [x for s in piece_stats
+                                   for x in s.get("sp_unsafe_name_targets", [])],
         "sp_unreadable_sidecars": [x for s in piece_stats
                                    for x in s.get("sp_unreadable_sidecars", [])],
         "piece_stats": piece_stats,
