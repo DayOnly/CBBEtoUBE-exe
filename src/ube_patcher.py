@@ -3618,9 +3618,10 @@ def _coverage_third_party_drawn() -> bool:
     races, its female world mesh is live in the game view, and -- for an
     ARMOUR with slot 32, 34 or 38, judged per armour -- that mesh is under
     `!UBE\`. Each armature S we would mint is drawn when such a T draws the
-    same file (`!UBE\`, `.nif`, `_0/_1` aside), else when an unused T's slots
-    overlap S's; T's races are subtracted, so S is minted for the UBE races no
-    T draws. Shares its switch with #root-plugin-index (`paths`).
+    same file (`!UBE\`, `.nif`, `_0/_1` aside), else when the one unused T
+    whose slots equal S's is claimed by no other armature (#r9-fallback-safe);
+    T's races are subtracted, so S is minted for the UBE races no T draws.
+    Shares its switch with #root-plugin-index (`paths`).
     CBBE2UBE_NO_COVERAGE_THIRD_PARTY_DRAWN=1 restores the blanket skip, the
     slot-32 exemption, both exclusion halves and the recursive plugin index."""
     return not _flag("CBBE2UBE_NO_COVERAGE_THIRD_PARTY_DRAWN", False)
@@ -3688,8 +3689,12 @@ def _third_party_drawn(armo_slots: int, winning, cand, arma_win, base_races,
     (`mesh_live`; None = cannot tell, so NOT shown live -- skipping ours is the
     dangerous direction, a double draw the safe one; `!UBE\` + a mesh this run
     converted is live either way) and, when the ARMOUR has slot 32/34/38, sits
-    under `!UBE\`. S is drawn by T when they draw the same file; the rest by
-    BOD2 overlap with a T no match used -- a T that draws one S is used then.
+    under `!UBE\`. S is drawn by T when they draw the same file; a T that draws
+    the file of any other DefaultRace armature of the armour (one a guard
+    dropped) is used up by it. The rest: by the one unused T whose BOD2 slots
+    EQUAL S's, when no other armature without a twin has those slots -- any tie
+    leaves S minted, so the rule errs toward a double draw, never toward an
+    armour left with nothing; the result is the same in any list order.
     T's races come off S's `base_races(S)`.
     #coverage-keep-better-first-person: T does not draw S when S's MOD5 was
     converted and T's MOD5 is not under `!UBE\` (empty included)."""
@@ -3711,9 +3716,15 @@ def _third_party_drawn(armo_slots: int, winning, cand, arma_win, base_races,
     need = {x: list(base_races(x)) for x in cand}
     if not quals:
         return need, quals, []
-    facts = {x: _tpd_facts(arma_win[x]) for x in cand}
+    # Every armature a qualifier may be the UBE version of: ours to mint, and
+    # every DefaultRace armature of the armour that names no UBE race -- one a
+    # guard dropped before the split included, so its twin is used up by it.
+    pool = list(dict.fromkeys(list(cand) + [
+        x for x, v in winning if v[3] == _DEFAULT_RACE_ABS and not v[4]]))
+    facts = {x: _tpd_facts(arma_win[x]) for x in pool}
     got: dict = {x: set() for x in cand}
     used: set = set()
+    matched: set = set()
     kept: list = []
 
     def _blocked(x, q) -> bool:
@@ -3721,27 +3732,35 @@ def _third_party_drawn(armo_slots: int, winning, cand, arma_win, base_races,
         return (keep_first_person and bool(s5) and not s5.startswith("!ube\\")
                 and conv_exists(s5) and not q[3].startswith("!ube\\"))
 
-    for x in cand:
+    for x in pool:
         sw = facts[x][1]
         for q in quals:
             if q[0] == x or (sw and _tpd_mesh_base(q[1]) == _tpd_mesh_base(sw)):
                 used.add(q[0])
+                matched.add(x)
+                if x not in got:
+                    continue               # not ours to mint: only used up
                 if _blocked(x, q):
                     kept.append((x, q[0]))
                     continue
                 got[x] |= q[4]
+
+    def _same(q, y) -> bool:
+        return q[2] == (facts[y][2] or armo_slots)
+
+    # The rest: S is drawn by the one unused qualifier with EXACTLY S's slots,
+    # when no other armature of the pool without a twin has those slots too --
+    # a tie either way is no answer, so S is minted (a double draw at worst).
+    free = [q for q in quals if q[0] not in used]
+    open_ = [y for y in pool if (not got[y] if y in got else y not in matched)]
     for x in cand:
         left = [r for r in need[x] if r not in got[x]]
-        if left and got[x] == set():
-            s_sl = facts[x][2] or armo_slots
-            for q in quals:
-                if q[0] in used or not (q[2] & s_sl) or _blocked(x, q):
-                    continue
-                used.add(q[0])
-                got[x] |= q[4]
+        if left and not got[x]:
+            mine = [q for q in free if _same(q, x)]
+            if (len(mine) == 1 and not _blocked(x, mine[0])
+                    and [y for y in open_ if _same(mine[0], y)] == [x]):
+                got[x] |= mine[0][4]
                 left = [r for r in need[x] if r not in got[x]]
-                if not left:
-                    break
         need[x] = left
     return need, quals, kept
 

@@ -1141,8 +1141,8 @@ follower (converted male Ebony boots on her UBE body):
   measured it: the gloves armature of a cuirass-and-gloves patch on the original
   path does not draw our gloves. Each armature S we would mint is drawn by a
   qualifier of the same file (compared without `!UBE\`, `meshes\`, `.nif` and a
-  `_0`/`_1` suffix, whatever its slots), else by BOD2 overlap with a qualifier no
-  file match used -- one S per qualifier. The qualifiers' races come off S's: S
+  `_0`/`_1` suffix, whatever its slots), else by slots (`#r9-fallback-safe`,
+  below). The qualifiers' races come off S's: S
   is minted only for the UBE races no qualifier draws (the first of them
   primary), and not at all when none is left; one minted record serves every
   armour that lists it, so it targets the union, all races as soon as one armour
@@ -1166,6 +1166,32 @@ follower (converted male Ebony boots on her UBE body):
   mod excluded. One switch, `CBBE2UBE_NO_COVERAGE_THIRD_PARTY_DRAWN=1`, restores
   the blanket skip, the slot-32 exemption, both exclusion halves and the
   recursive index -- byte-identical to before.
+- **Past the file match, a qualifier draws an armature of ours only when its
+  slots are the SAME, and only when nothing ties** (`#r9-fallback-safe`,
+  2026-09-25, inside `#coverage-third-party-drawn` and behind its switch). The
+  first cut handed an unused qualifier to the first S, in the armour's list
+  order, whose BOD2 merely OVERLAPPED it, and the body pass judged only what the
+  female-guard, world-mesh and nude-skin rules had left. So another mod's UBE
+  cuirass whose BOD2 also lists slot 33 "drew" our gloves, and the twin of a
+  cuirass a guard had dropped did the same: the gloves were not minted and had
+  no armature at all on UBE actors -- the one outcome this project forbids. Now
+  (1) the file match runs over every DefaultRace armature of the armour that
+  names no UBE race, not only the ones left to mint, so a qualifier that is the
+  UBE version of a dropped piece is used up by it; and (2) an unused qualifier
+  draws S only when its BOD2 slot set EQUALS S's (the armature's own, else the
+  armour's), it is the only such qualifier for S, and no other armature without
+  a twin (ours to mint or dropped) has that slot set. Why equality: overlap and
+  containment both let a multi-slot piece (a cuirass that also claims the hands
+  slot) stand for a single-slot one it does not draw, and a subset qualifier
+  (gloves) cannot stand for a cuirass-and-gloves armature either; only the same
+  slots say the two pieces occupy the same place on the body. Why ties mint: a
+  wrong guess skips a piece, the right guess saves only a double draw, so an
+  undecidable pairing is minted -- and the answer no longer depends on list
+  order. Two qualifiers that split S's races by slot are minted over too (a
+  double draw). The file match, the race subtraction and the first-person guard
+  are unchanged. Live replay: of 377 armours with a qualifier none reaches the
+  slot rule and none has a qualifier used up only by a dropped armature; output
+  byte-identical with the rule on and with the switch set.
 - **A female slot is never filled from a converted MALE mesh when it names a mesh
   of its own** (`#coverage-female-guard`). It keeps its source path (hands, feet,
   accessories), or the armature is not minted (slot-32 body, like an unconverted

@@ -27,8 +27,9 @@ exclusion scan read our own un-loaded copies as that patch and hid it too).
 Now an armature T counts as drawing when it names UBE races, its female world
 mesh is live in the game view, and -- for an armour with slot 32/34/38 -- that
 mesh is under `!UBE\`. Our armature S is drawn by a T of the same file, else by
-an unused T whose slots overlap; T's races are subtracted, so S is minted for
-the UBE races no T draws. The first-person guard keeps S when our converted
+the one unused T whose slots equal S's when nothing else ties for it (a T that
+draws a guard-dropped armature's file is used up by it); T's races are
+subtracted, so S is minted for the UBE races no T draws. The first-person guard keeps S when our converted
 first-person mesh would otherwise give way to a CBBE one or none.
 `CBBE2UBE_NO_COVERAGE_THIRD_PARTY_DRAWN=1` restores the old rules (and the
 recursive plugin index, tests/test_plugin_file_index_priority.py);
@@ -356,15 +357,122 @@ def test_a_matched_qualifier_is_not_reused_by_slot_overlap(tmp_path):
     assert [m["mod3"] for m in minted] == [r"Armor\Hood_1.nif"]
 
 
-def test_one_qualifier_draws_one_armature_by_slot_overlap(tmp_path):
-    """Review of the prototype: a UBE armature on another file draws ONE of
-    two overlapping armatures, not both."""
+def test_a_qualifier_two_armatures_tie_for_draws_neither(tmp_path):
+    """#r9-fallback-safe: a UBE armature on another file with the slots of two
+    of ours cannot say which one it replaces, so both are minted (the
+    prototype handed it to the first one listed)."""
     world = _world(tmp_path, HEAD,
                    [_ours(0x8A0, HEAD, r"Armor\A_1.nif"), _ours(0x8A1, HEAD, r"Armor\B_1.nif")],
                    [_theirs(0x900, HEAD, r"!UBE\Armor\Other_1.nif")])
     st, minted = _run(tmp_path, world)
-    assert [m["mod3"] for m in minted] == [r"Armor\B_1.nif"]
-    assert st["third_party_partial"] == [(ARMOUR, "Piece")]
+    assert [m["mod3"] for m in minted] == [r"Armor\A_1.nif", r"Armor\B_1.nif"]
+    assert st["third_party_drawn"] == [] and st["third_party_partial"] == []
+
+
+# ------------------------------------------------ #r9-fallback-safe
+
+GLOVES = r"Armor\Dress\Gloves_1.nif"
+GLOVES_CONV = {"armor/dress/gloves_1.nif"}
+
+
+def test_their_cuirass_on_the_gloves_slot_too_does_not_draw_our_gloves(tmp_path):
+    """The review's case: their UBE cuirass (another file) lists slots 32 and
+    33. It overlaps our cuirass and our gloves but equals neither, so both are
+    minted -- the prototype handed it to whichever was listed first, and the
+    gloves had no armature on UBE actors when that was the gloves."""
+    for order in (0, 1):
+        ours = [_ours(0x8A0, BODY, DRESS), _ours(0x8A1, HANDS, GLOVES)]
+        world = _world(tmp_path / str(order), BODY | HANDS, ours[::1 - 2 * order],
+                       [_theirs(0x900, BODY | HANDS, r"!UBE\Armor\Theirs\Top_1.nif")])
+        st, minted = _run(tmp_path / str(order), world, body=True,
+                          conv=DRESS_CONV | GLOVES_CONV)
+        assert [m["mod3"] for m in minted] == ["!UBE\\" + DRESS, "!UBE\\" + GLOVES]
+        assert st["third_party_drawn"] == []
+
+
+def test_slots_that_only_overlap_or_contain_do_not_draw(tmp_path):
+    """Equality, not overlap or containment: a lone pair of gloves beside their
+    armature on slots 32+33 (a superset), and a cuirass-and-gloves armature of
+    ours beside their gloves (a subset), are both minted."""
+    world = _world(tmp_path / "sup", HANDS, [_ours(0x8A0, HANDS, GLOVES)],
+                   [_theirs(0x900, BODY | HANDS, r"!UBE\Armor\Theirs\Top_1.nif")])
+    st, minted = _run(tmp_path / "sup", world, body=True, conv=GLOVES_CONV)
+    assert [m["mod3"] for m in minted] == ["!UBE\\" + GLOVES]
+    world = _world(tmp_path / "sub", BODY | HANDS, [_ours(0x8A0, BODY | HANDS, DRESS)],
+                   [_theirs(0x900, HANDS, r"!UBE\Armor\Theirs\Gloves_1.nif")])
+    st, minted = _run(tmp_path / "sub", world, body=True, conv=DRESS_CONV)
+    assert [m["mod3"] for m in minted] == ["!UBE\\" + DRESS]
+
+
+def test_the_exact_slots_still_draw(tmp_path):
+    """One of ours, one unused qualifier of exactly its slots on another file:
+    drawn, as before."""
+    world = _world(tmp_path, HEAD, [_ours(0x8A0, HEAD, HELMET)],
+                   [_theirs(0x900, HEAD, r"!UBE\Armor\Other_1.nif")])
+    st, minted = _run(tmp_path, world)
+    assert minted == [] and st["third_party_drawn"] == [(ARMOUR, "Piece")]
+
+
+def test_two_qualifiers_for_one_armature_draw_nothing(tmp_path):
+    """Two unused UBE armatures of ours's exact slots on other files: which one
+    is its version is no answer either, so ours is minted."""
+    world = _world(tmp_path, HEAD, [_ours(0x8A0, HEAD, HELMET)],
+                   [_theirs(0x900, HEAD, r"!UBE\Armor\Other_1.nif"),
+                    _theirs(0x901, HEAD, r"!UBE\Armor\Other2_1.nif")])
+    st, minted = _run(tmp_path, world)
+    assert [m["mod3"] for m in minted] == [HELMET]
+    assert minted[0]["races"] == UBE
+
+
+def test_the_list_order_does_not_decide(tmp_path):
+    """The same armour with its armatures listed the other way round mints the
+    same pieces (a tie, a lone match and a piece with no match)."""
+    got = []
+    for order in (0, 1):
+        ours = [_ours(0x8A0, HEAD, r"Armor\A_1.nif"), _ours(0x8A1, HEAD, r"Armor\B_1.nif"),
+                _ours(0x8A2, AMULET, r"Armor\Amulet_1.nif"),
+                _ours(0x8A3, 1 << 19, r"Armor\Belt_1.nif")]
+        world = _world(tmp_path / str(order), HEAD | AMULET | (1 << 19),
+                       ours[::1 - 2 * order],
+                       [_theirs(0x900, HEAD, r"!UBE\Armor\Other_1.nif"),
+                        _theirs(0x901, AMULET, r"!UBE\Armor\Other_2.nif")])
+        st, minted = _run(tmp_path / str(order), world)
+        got.append([m["mod3"] for m in minted])
+    assert got[0] == got[1] == [r"Armor\A_1.nif", r"Armor\B_1.nif",
+                                r"Armor\Belt_1.nif"]
+
+
+# A cuirass whose female world mesh was not converted (only its first person
+# was): #coverage-world-mesh drops it before the split.
+DROPPED = [_ours(0x8A0, BODY, DRESS, r"Armor\Dress\Dress1st_1.nif")]
+DROPPED_CONV = {"armor/dress/dress1st_1.nif"}
+
+
+def test_the_twin_of_a_guard_dropped_cuirass_does_not_draw_our_gloves(tmp_path):
+    """Their UBE version of the dropped cuirass (its file) is used up by it,
+    whatever slots it lists: our gloves stay minted -- the prototype left the
+    armour with no armature and called it drawn by theirs."""
+    for tag, slots in (("both", BODY | HANDS), ("hands", HANDS)):
+        world = _world(tmp_path / tag, BODY | HANDS,
+                       DROPPED + [_ours(0x8A1, HANDS, GLOVES)],
+                       [_theirs(0x900, slots, "!UBE\\" + DRESS)])
+        st, minted = _run(tmp_path / tag, world, body=True,
+                          conv=DROPPED_CONV | GLOVES_CONV)
+        assert [m["mod3"] for m in minted] == ["!UBE\\" + GLOVES], tag
+        assert minted[0]["races"] == UBE
+        assert st["third_party_drawn"] == []
+
+
+def test_a_guard_dropped_armature_ties_for_its_slots(tmp_path):
+    """Their UBE armature on another file with the slots of the dropped
+    cuirass AND of our other cuirass may be the dropped one's: ours is minted."""
+    world = _world(tmp_path, BODY,
+                   DROPPED + [_ours(0x8A1, BODY, r"Armor\Dress\Under_1.nif")],
+                   [_theirs(0x900, BODY, r"!UBE\Armor\Theirs\Top_1.nif")])
+    st, minted = _run(tmp_path, world, body=True,
+                      conv=DROPPED_CONV | {"armor/dress/under_1.nif"})
+    assert [m["mod3"] for m in minted] == [r"!UBE\Armor\Dress\Under_1.nif"]
+    assert st["third_party_drawn"] == []
 
 
 def test_a_winning_override_that_drops_their_armature_mints_ours(tmp_path):

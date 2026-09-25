@@ -27,8 +27,11 @@ draws the very mesh this tool converts was drawn twice, and an item whose UBE
 patch names a mesh that is not installed drew nothing. The tool also read its
 own unused copies of some patches in place of the other mod's plugin of the
 same name. Now it reads only the plugins the game loads and looks at what the
-other mod's version actually draws: the same mesh, or the same body slot, with
-a mesh the game can find. Only what it leaves out is added, and only for the
+other mod's version actually draws: the same mesh, or exactly the same body
+slots, with a mesh the game can find. When it cannot tell which of this tool's
+pieces the other version replaces (say, a cuirass that also claims the gloves
+slot), it adds this tool's pieces anyway: at worst a piece is drawn twice,
+never left out. Only what it leaves out is added, and only for the
 UBE races it does not cover. Where the other mod's version has no converted
 first-person mesh and this tool's has, this tool's version is kept as well, so
 your own arms still look right. Measured on the reported modlist: one dress is
