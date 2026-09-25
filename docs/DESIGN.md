@@ -1752,6 +1752,24 @@ reported through `_report_coverage_holds`:
   unchecked. A fix needs a UBE torso redirect for the naked torso and an
   own-mesh rule for a non-deforming race-list armature on a body armour -- a
   new policy, left to the user; population 1.
+- **The headgear test's keyword id** (`#armorhelmet-kw-fix`, 2026-09-25). The
+  hair-only headgear test (`_hair_only_armo_is_equippable_headgear`) compared
+  keywords with 0x06BBD9, which in Skyrim.esm is the KYWD `ArmorMaterialElven`;
+  `ArmorHelmet` is 0x06C0EE (both read from Skyrim.esm). It now reads 0x06C0EE,
+  still only from Skyrim.esm. The other hard-coded form ids in `src/` were
+  checked against their defining plugins and are right: DefaultRace 0x19, the
+  ten playable races and their vampire variants, the four beast races,
+  ManakinRace 0x10760A (Skyrim.esm), the 16 `00UBE_` races (UBE_AllRace.esp).
+  Census at the parent (every armour the non-body pass asks the test about):
+  417 asked, 229 carry ArmorHelmet, 2 carry the elven keyword (both have a gold
+  value and ArmorHelmet: no flip). 7 flip, all to headgear: 6 non-playable,
+  unnamed helmets nobody wears whose armatures are creature-race primary with
+  only creature races (no DefaultRace or race-list rule takes them: 0 links),
+  and 1 playable named invisible helmet the wig rule already covered, now
+  counted as headgear instead of a wig. Live replay: all 3 ESPs and sidecars
+  byte-identical to the parent, with and without an exclusion; with
+  `CBBE2UBE_NO_COVERAGE_WIGS=1` the fix adds exactly that helmet (+1 link).
+  `CBBE2UBE_NO_ARMORHELMET_KW_FIX=1` reads the old id.
 - **A beast-only variant is not minted** (`#coverage-beast-variant`). Both
   passes minted every DefaultRace-primary armature for all UBE races. A beast
   patch often adds its variant as primary DefaultRace with only Khajiit/Argonian

@@ -7474,4 +7474,45 @@ PAIRS = (
          tests=('tests/test_tail_fold.py',),
          expect=('test_a_check_that_raises_stops_the_check_and_not_the_sync',),
     ),
+    # #armorhelmet-kw-fix (2026-09-25): the hair-only headgear test reads the
+    # Skyrim.esm ArmorHelmet keyword by its real id (0x06C0EE), not the
+    # ArmorMaterialElven id (0x06BBD9) it read before.
+    Pair('AHK-a', 'the constant is the elven material keyword again',
+         edits=(
+             ('src/ube_patcher.py',
+              '_ARMORHELMET_KW_LOW24 = 0x06C0EE  # Skyrim.esm KYWD ArmorHelmet',
+              '_ARMORHELMET_KW_LOW24 = 0x06BBD9  # MUTATED', 1),
+         ),
+         tests=('tests/test_armorhelmet_kw_fix.py',),
+         expect=('test_a_helmet_keyword_hair_armour_is_covered',
+                 'test_an_elven_material_hair_armour_is_not_headgear',
+                 'test_a_playable_named_helmet_counts_as_headgear_not_a_wig'),
+    ),
+    Pair('AHK-b', 'the off-switch no longer switches anything off',
+         edits=(
+             ('src/ube_patcher.py',
+              '    return not _flag("CBBE2UBE_NO_ARMORHELMET_KW_FIX", False)',
+              '    return True  # MUTATED', 1),
+         ),
+         tests=('tests/test_armorhelmet_kw_fix.py',),
+         expect=('test_switched_off_the_old_id_is_read',),
+    ),
+    Pair('AHK-c', 'switched off, the new id is read anyway',
+         edits=(
+             ('src/ube_patcher.py',
+              '                 else _ARMORMATERIALELVEN_KW_LOW24)',
+              '                 else _ARMORHELMET_KW_LOW24)  # MUTATED', 1),
+         ),
+         tests=('tests/test_armorhelmet_kw_fix.py',),
+         expect=('test_switched_off_the_old_id_is_read',),
+    ),
+    Pair('AHK-d', 'the keyword counts from any master',
+         edits=(
+             ('src/ube_patcher.py',
+              '                        mi < len(masters) and masters[mi].lower() == "skyrim.esm":',
+              '                        mi < len(masters):  # MUTATED', 1),
+         ),
+         tests=('tests/test_armorhelmet_kw_fix.py',),
+         expect=('test_the_keyword_counts_only_from_skyrim_esm',),
+    ),
 )

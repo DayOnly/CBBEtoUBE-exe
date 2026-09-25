@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Fixed — a hair-slot helmet is recognised by its helmet keyword
+
+A helmet that takes only the hair slots counts as real headgear (and gets a
+UBE armature) when it has a gold value or the game's helmet keyword. The tool
+looked for the wrong keyword -- the one that marks elven armour -- so a helmet
+worth nothing with the helmet keyword was treated like a hairstyle. It now
+looks for the right one. Measured on the reported modlist: 7 items are judged
+differently, and none of them draws differently. Six are creature helmets that
+no human-race character can wear, and the seventh (an invisible helmet you can
+equip) was already drawn through the wig rule. `CBBE2UBE_NO_ARMORHELMET_KW_FIX=1`
+(set to 1) looks for the old keyword again.
+
 ### Fixed — an excluded mod's wig is kept like its other non-body pieces
 
 When you exclude a mod, only its body pieces lose their UBE coverage: its

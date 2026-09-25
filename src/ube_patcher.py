@@ -3426,13 +3426,35 @@ def _record_abs_fid(formid: int, plugin_masters: list[str],
 # the winning ARMO to include it.
 
 _HAIR_ONLY_SLOTS = 0x802          # biped slots 31 (Hair) | 41 (LongHair)
-_ARMORHELMET_KW_LOW24 = 0x06BBD9  # Skyrim.esm ArmorHelmet keyword
+_ARMORHELMET_KW_LOW24 = 0x06C0EE  # Skyrim.esm KYWD ArmorHelmet
+# Skyrim.esm KYWD ArmorMaterialElven: the id the headgear test read before
+# #armorhelmet-kw-fix (its off-switch reads it again).
+_ARMORMATERIALELVEN_KW_LOW24 = 0x06BBD9
+
+
+def _armorhelmet_kw_fix() -> bool:
+    r"""#armorhelmet-kw-fix (2026-09-25): does the hair-only headgear test read
+    the ArmorHelmet keyword by its real id? Yes, by default.
+
+    The test's keyword constant was 0x06BBD9, which in Skyrim.esm is the KYWD
+    ArmorMaterialElven; ArmorHelmet is 0x06C0EE (both checked in Skyrim.esm).
+    So a zero-value hair-slot helmet carrying ArmorHelmet was taken for a
+    hairstyle and left off UBE actors, and a zero-value hair-only armour with
+    the elven material keyword would have been taken for a helmet. Live: 7
+    armours flip, all to headgear, none elven -- 6 non-playable creature-race
+    helmets no rule mints anyway and 1 playable named helmet the wig rule
+    already drew -- so the output is unchanged; with #coverage-wigs off it
+    adds that one helmet. CBBE2UBE_NO_ARMORHELMET_KW_FIX=1 reads the old id
+    again."""
+    return not _flag("CBBE2UBE_NO_ARMORHELMET_KW_FIX", False)
 
 
 def _hair_only_armo_is_equippable_headgear(payload, masters) -> bool:
     """True if a hair-slot-only ARMO is real headgear (hides hair, has gold
     value or ArmorHelmet keyword) rather than a cosmetic hairstyle ARMO
     (value 0, no armor keyword)."""
+    helmet_kw = (_ARMORHELMET_KW_LOW24 if _armorhelmet_kw_fix()
+                 else _ARMORMATERIALELVEN_KW_LOW24)
     for sig, d in esp.iter_subrecords(payload):
         if sig == b"DATA" and len(d) >= 4:
             if struct.unpack_from("<I", d, 0)[0] > 0:
@@ -3441,7 +3463,7 @@ def _hair_only_armo_is_equippable_headgear(payload, masters) -> bool:
             for i in range(len(d) // 4):
                 fid = struct.unpack_from("<I", d, i * 4)[0]
                 mi = fid >> 24
-                if (fid & 0xFFFFFF) == _ARMORHELMET_KW_LOW24 and \
+                if (fid & 0xFFFFFF) == helmet_kw and \
                         mi < len(masters) and masters[mi].lower() == "skyrim.esm":
                     return True        # ArmorHelmet keyword -> headgear armor
     return False
