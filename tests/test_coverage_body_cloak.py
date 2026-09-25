@@ -50,8 +50,14 @@ DRAPE = r"clothes\robes\capef_1.nif"            # skinned to the spine only
 FITTED = r"clothes\robes\capethigh_1.nif"       # skinned to a thigh too
 STATIC = r"clothes\robes\capestatic_1.nif"      # no skin at all
 BEAST = r"clothes\robes\capekhajiit_1.nif"      # a drape, beast races only
+HIPS = r"clothes\robes\capehips_1.nif"          # pelvis, spine and upper arms
 SPINE = ("NPC Spine2 [Spn2]", "NPC R Clavicle [RClv]")
 THIGH = ("NPC Spine [Spn0]", "NPC L Thigh [LThg]")
+# The bones the one cape of the reported modlist this rule draws is bound to
+# (a subset): the rule tests for thigh/calf/butt/breast/belly bones only, the
+# same list the conversion's crash guard used when it left the cape unconverted.
+PELVIS_ARMS = ("NPC Pelvis [Pelv]", "NPC Spine [Spn0]", "NPC Spine2 [Spn2]",
+               "NPC L UpperArm [LUar]", "NPC R UpperarmTwist1 [RUt1]")
 
 needs_pynifly = pytest.mark.skipif(
     not __import__("tests.synthetic_nif", fromlist=["x"]).pynifly_available(),
@@ -83,7 +89,8 @@ def lookup(tmp_path, monkeypatch):
     files = {DRAPE: _skinned(nifs, "d.nif", SPINE),
              FITTED: _skinned(nifs, "f.nif", THIGH),
              STATIC: _unskinned(nifs, "s.nif"),
-             BEAST: _skinned(nifs, "b.nif", SPINE)}
+             BEAST: _skinned(nifs, "b.nif", SPINE),
+             HIPS: _skinned(nifs, "h.nif", PELVIS_ARMS)}
     mods = tmp_path / "mods"
     for rel, data in files.items():
         f = mods / "Cape Mod" / "meshes" / rel.replace("\\", "/")
@@ -157,6 +164,16 @@ def test_a_cape_with_thigh_weights_stays_out(tmp_path, lookup):
     st, out = _pass(tmp_path, [_arma(0x02000801, CLOAK, FITTED)], lookup)
     assert _mod3(out) == ["!UBE\\" + ROBE], "an unconverted body fit is not drawn"
     assert st["body_accessory"] == [] and st["body_cloak"] == []
+
+
+@needs_pynifly
+def test_a_cape_weighted_to_the_pelvis_and_arms_rides_with_the_robe(tmp_path, lookup):
+    """Only thigh/calf/butt/breast/belly bones keep a cape out: one bound to
+    the pelvis, spine and upper arms is what the crash guard left unconverted,
+    so nothing else draws it on UBE."""
+    st, out = _pass(tmp_path, [_arma(0x02000801, CLOAK, HIPS)], lookup)
+    assert _mod3(out) == sorted(["!UBE\\" + ROBE, HIPS])
+    assert st["body_cloak"] == ["mod.esp|801"]
 
 
 @needs_pynifly

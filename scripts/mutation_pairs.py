@@ -4106,6 +4106,15 @@ PAIRS = (
          tests=('tests/test_coverage_body_cloak.py',),
          expect=('test_the_capes_are_reported',),
     ),
+    Pair('CBC-i', 'a cape weighted to the pelvis counts as body cloth',
+         edits=(
+             ('src/auto_convert.py',
+              '_BODYFIT_BONE_MARKERS = ("thigh", "calf", "butt", "breast", "belly")\n',
+              '_BODYFIT_BONE_MARKERS = ("thigh", "calf", "butt", "breast", "belly", "pelvis")  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_coverage_body_cloak.py',),
+         expect=('test_a_cape_weighted_to_the_pelvis_and_arms_rides_with_the_robe',),
+    ),
     # #coverage-beast-variant (2026-09-24): a DefaultRace armature listing only
     # beast races is no human's armature, so no UBE actor may draw it.
     Pair('BVA-a', 'a beast variant is minted again (non-body pass)',

@@ -15,13 +15,17 @@ Measured on the reported modlist: about 265 s down to 70 s.
 ### Fixed — a robe's cape shows on UBE actors
 
 A robe that comes with a separate cape drew the robe on a UBE-race actor but
-not the cape. The cape was not converted, because it hangs from the shoulders
-and back and has nothing shaped to the body, and the step that draws a body
-armour's hood or helmet on UBE left out anything named like a cloak. Such a
-cape is now drawn with the robe on its own mesh, as the same kind of cloak
-already is when worn on its own, but only when the tool can read its mesh and
-it is weighted to the back and shoulders alone. A cape weighted to the legs,
-hips or chest, one with no weights at all, and Khajiit or Argonian versions
+not the cape. The cape was not converted, because none of it is weighted to a
+thigh, calf, buttock, breast or belly bone (the bones that shape clothing to
+the body), and the step that draws a body armour's hood or helmet on UBE left
+out anything named like a cloak. Such a cape is now drawn with the robe on its
+own mesh, as the same kind of cloak already is when worn on its own, but only
+when the tool can read its mesh, the mesh is weighted, and none of it is
+weighted to a thigh, calf, buttock, breast or belly bone. It may be weighted
+to any other bone -- the pelvis, spine, neck, head, shoulders, arms or feet,
+or bones of its own; the cape on the reported modlist hangs from the pelvis,
+spine, shoulders and upper arms. A cape with any thigh, calf, buttock, breast
+or belly weights, one with no weights at all, and Khajiit or Argonian versions
 stay out. Measured on the reported modlist: one robe gains its cape; nothing
 else changes.
 `CBBE2UBE_NO_COVERAGE_BODY_CLOAK=1` (set to 1) leaves the cape off again.

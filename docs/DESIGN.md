@@ -1583,7 +1583,15 @@ reported through `_report_coverage_holds`:
   armature is now admitted as an accessory when every world model it names
   (MOD2, MOD3) is, in the copy the game loads, skinned and bound to no
   thigh/calf/butt/breast/belly bone (`_nif_bytes_unfitted_skin`, read through
-  `_mesh_exists_anywhere(...).unfitted_skin`); an unskinned, body-fitted,
+  `_mesh_exists_anywhere(...).unfitted_skin`). That is the whole bone test: a
+  skin bone whose name contains one of `_BODYFIT_BONE_MARKERS` (case-insensitive
+  substring) keeps the cape out, and every other bone -- pelvis, spine, neck,
+  head, clavicles, arms, feet, a cape's own bones -- is allowed. It is not a
+  "back and shoulders only" test, on purpose: it is the crash guard's own list,
+  so it admits exactly the cloaks the guard left unconverted, and the one live
+  cape is bound to the pelvis, all three spine bones, the clavicles, the
+  pauldrons and the upper arms (adding `pelvis` to the list would drop it and
+  bring the defect back; pinned by CBC-i). An unskinned, body-fitted,
   missing or unreadable mesh, or a lookup with no reader, keeps it out (fail
   closed), so the worry above still holds for body-fitted cloth. It is minted
   UBE-primary on its own mesh, as the non-body pass mints the same class of
