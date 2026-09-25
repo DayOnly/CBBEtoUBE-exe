@@ -15,6 +15,27 @@ shield-cloth pieces). Physics files that exist nowhere in the load order stay
 missing, as before, and nothing is taken from another mod's archive.
 `CBBE2UBE_NO_PHYSICS_DATA_PREFIX=1` (set to 1) turns it off.
 
+### Development only — the physics census counts what the physics engine loads
+
+`scripts/analysis/physics_cloth_health.py` counts which converted pieces have
+HDT-SMP physics and why simulated cloth can clip. It counted a different set
+than the one that plays in game. It gave a piece with no physics link of its
+own the physics file of another garment with the same file name. It read
+physics files as text in the system's code page and more strictly than the
+engine does, so a file that starts with a UTF-8 byte-order mark, declares an
+XML namespace, or has stray text after its end counted as unreadable. It treated one side naming the other as
+enough for cloth to collide, where the engine needs both sides to allow it and
+reads an empty list as "collide with everything". It counted only one of the
+four kinds of constraint. It now follows the piece's own link (a leading
+"Data\" handled as the converter handles it), reads the file's bytes, and
+applies the engine's rules. On the reported pack: pieces with physics 364 ->
+306, unreadable physics files 94 -> 0, simulated-cloth pieces 97 -> 117 (59
+garments), the crash-prone "unconstrained collision" class 56 -> 0, and 14
+pieces (7 garments) have cloth that reaches no collider in its own file. Older
+numbers from this tool are not comparable. Guarded by
+`tests/test_physics_cloth_health.py` and mutation pairs `PCH-a`..`PCH-q`. No
+converter behaviour changes.
+
 ### Changed — whether you can wear an item is read from the plugin the game uses
 
 The tool does not convert an item the player cannot equip (the game's

@@ -1000,6 +1000,39 @@ on them: registered-shape protection, collider split clones, and re-imported
 hidden collision shapes (a cloak's `VirtualBody`, which is CBBE-shaped).
 `CBBE2UBE_NO_PHYSICS_DATA_PREFIX=1` restores the old miss.
 
+### How the physics census counts (`scripts/analysis/physics_cloth_health.py`)
+
+The census reads a piece's physics the way FSMP loads it, because every other
+reading counts a different population:
+
+- **The NIF's own pointer, and nothing else.** FSMP's `scanBBP` takes the first
+  string extra-data named `HDT Skinned Mesh Physics Object` on the ROOT node
+  (engine strings: no case). A NIF without one has no physics in game. The
+  census resolves the pointer with `_resolve_data_rel_in_vfs`, so it follows
+  `#physics-data-prefix`. It never uses `_read_source_hdt_xml_text`: that
+  helper falls back to a same-stem XML by filename, which is right for
+  choosing a source config and wrong for counting what ships.
+- **The XML's bytes.** A UTF-8 byte-order mark parses; read as locale text it
+  is junk before the root. Junk after `</system>` is ignored (FSMP stops at the
+  root's end tag), and a default `xmlns` on `<system>` renames nothing for
+  FSMP, so namespaces are stripped. A root other than `<system>` loads nothing.
+- **FSMP's collision rule.** `canCollideWith` runs both ways and both must
+  allow it. One side allows the other when the other carries a tag in its
+  `can-collide-with-tag` list, or, when that list is EMPTY, when the other
+  carries none of its `no-collide-with-tag` tags.
+- **Every constraint kind.** `generic-constraint`, `stiffspring-constraint`,
+  `conetwist-constraint` and `constraint-group` all constrain; the unconstrained
+  crash pair is unconstrained cloth that actually reaches a collider.
+
+Measured on the 09-24 pack (3342 NIFs), old reading -> this one: 364 pieces
+"with physics" -> 306 with a pointer (58 NIFs of 29 garments had borrowed a
+same-stem XML); 94 "unparseable" -> 0 (22 byte-order mark, 58 junk after the
+root, 14 namespaced root); simulated-cloth pieces 97 -> 117 (59 garments);
+unconstrained crash pair 56 -> 0; named collider absent 6 -> 0. Numbers from
+before 2026-09-25 are not comparable with these. Not modelled: collisions with
+colliders another worn piece brings, shape-name physics from `defaultBBPs.xml`,
+and XMLs that exist only in an archive.
+
 ### Custom physics-bone chains
 
 When a NIF is rebuilt, pynifly re-adds each skinned bone flat under the root with an
