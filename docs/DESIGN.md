@@ -610,6 +610,22 @@ already-UBE path among the additions.
   [after the name, offset + size) exactly and no shorter slice decodes. Live
   census: 444 archives, 26 with embedded names, 0 uncompressed entries in them,
   so nothing the converter reads changes and there is no switch.
+- **Two archives, one mesh: the game's copy** (`#bsa-load-order-winner`,
+  `CBBE2UBE_NO_BSA_LOAD_ORDER_WINNER`). `_BsaMeshIndex` took the first archive
+  in MO2 priority. The game loads `<plugin>.bsa` and `<plugin> - Textures.bsa`
+  with their plugin, and an archive loaded later overrides; MO2's priority
+  decides only between loose files and between two archive files of the same
+  name. So the archive whose plugin loads LATER now wins (`plugin_order=` from
+  `_bsa_plugin_order`, the active plugins in load order). An archive no plugin
+  loads -- the INI-listed base-game archives, which load before any plugin's,
+  or a stray the game never opens -- ranks below every plugin-loaded one and
+  keeps the MO2 order among its kind. The batch index, the source-selection
+  index (whose listing the batch adopts only under the same plugin order) and
+  the coverage step's existence lookup take it; the per-plugin owner lookup and
+  the setup check ask only whether a mesh exists. Live: 406 archives (390
+  plugin-loaded), 4,221 mesh paths in more than one, 436 change winner (405 of
+  them a particle patch against a weather plugin), none extracted by the last
+  run, converted into `!UBE` or armour; replays byte-identical.
 
 ---
 

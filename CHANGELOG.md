@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Changed — when two archives hold the same mesh, the tool takes the copy the game uses
+
+When two mods' archives contain the same mesh, the game uses the one belonging
+to the plugin lower in your load order. This tool used the one from the mod
+higher in MO2's left pane instead, so it could convert a different version of a
+mesh than the one you see in game. It now follows the load order, as the game
+does. On the reported modlist this picks a different copy for 436 meshes, none
+of them armour this tool converts, so the output does not change there.
+`CBBE2UBE_NO_BSA_LOAD_ORDER_WINNER=1` (set to 1) turns it off.
+
 ### Fixed — a plugin whose file name has a comma is now reported instead of silently not working
 
 SkyPatcher reads a comma, semicolon or equals sign as a separator. When armour

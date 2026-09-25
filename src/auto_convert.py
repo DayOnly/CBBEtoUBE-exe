@@ -3968,7 +3968,8 @@ def _mesh_exists_anywhere(output) -> "callable[[str], bool] | None":
     dirs += [Path(d) for d in (lay.game_data_dirs or []) if Path(d) not in dirs]
     loose_dirs += [d for d in dirs if d not in loose_dirs]
     bsa = _BsaMeshIndex(dirs, None,
-                        skip_bsa=("voice", " sound", "sounds", "- snd", "facegen"))
+                        skip_bsa=("voice", " sound", "sounds", "- snd", "facegen"),
+                        plugin_order=_bsa_plugin_order(lay))   # #bsa-load-order-winner
     seen: dict = {}
     index = _LooseMeshIndex(loose_dirs) if _loose_mesh_index_on() else None
 
@@ -5758,11 +5759,12 @@ def _cmd_convert(args):
         _bmr = paths.mods_root()
         if _bmr is not None and _bord:
             # Game Data dir(s) LAST: the vanilla mesh archives back the sweep,
-            # but any mod BSA shipping the same path wins (first hit in _scan),
-            # matching MO2 priority.
+            # but any mod BSA shipping the same path wins -- the archive whose
+            # plugin loads later, as in game. #bsa-load-order-winner
             _bsa_dirs = _load_order_bsa_dirs(_bmr, _bord, _blay.game_data_dirs)
             _BATCH_BSA_INDEX = _BsaMeshIndex(
-                _bsa_dirs, Path(output) / "_bsa_staging")
+                _bsa_dirs, Path(output) / "_bsa_staging",
+                plugin_order=_bsa_plugin_order(_blay))
             # Source selection may already have listed these archives to find
             # mods whose armour lives only in them; take that listing rather
             # than read ~260 archive tables a second time. #bsa-only-sources
@@ -7350,15 +7352,60 @@ _BATCH_BSA_INDEX = None   # set per-batch by _cmd_convert; lazy BSA mesh resolve
 
 
 def _load_order_bsa_dirs(mods_root, enabled_ordered, game_data_dirs) -> "list[Path]":
-    """The folders whose archives `_BsaMeshIndex` lists, in the order the first
-    hit wins: every enabled mod by MO2 priority, then the game Data dir(s) LAST.
-    The vanilla mesh archives back the sweep, but any mod BSA shipping the same
-    path wins (first hit in _scan), matching MO2 priority. ONE definition, so
-    source selection and the convert step index the same archives.
-    #bsa-only-sources"""
+    """The folders whose archives `_BsaMeshIndex` lists: every enabled mod by MO2
+    priority, then the game Data dir(s) LAST. Between two archives shipping the
+    same path, the one whose PLUGIN loads later wins (#bsa-load-order-winner);
+    this order decides only among archives no plugin loads, and with that rule
+    switched off. ONE definition, so source selection and the convert step
+    index the same archives. #bsa-only-sources"""
     dirs = [Path(mods_root) / n for n in (enabled_ordered or ())]
     dirs += [Path(d) for d in (game_data_dirs or []) if Path(d) not in dirs]
     return dirs
+
+
+def _bsa_load_order_winner() -> bool:
+    r"""#bsa-load-order-winner (2026-09-25): when two archives hold the same
+    mesh, does the index take the one the game loads? Yes, by default.
+
+    `_BsaMeshIndex` took the first archive in MO2 priority order. The game does
+    not: a plugin loads `<plugin>.bsa` and `<plugin> - Textures.bsa`, and an
+    archive loaded later overrides one loaded earlier, so the archive of the
+    plugin that loads LATER wins. MO2's priority decides only between loose
+    files, and between two archive FILES of the same name. The archives the
+    game INI lists (the base game's `Skyrim - *.bsa`) load before every
+    plugin's, and an archive no plugin loads is not loaded at all -- both rank
+    below every plugin-loaded archive and keep the MO2 order among themselves.
+    Live census: 406 archives (390 plugin-loaded), 4,221 mesh paths in more
+    than one, 436 winners change -- none extracted by the last run, converted
+    into !UBE or armour (a particle patch's archive against a weather plugin's
+    is 405 of them). CBBE2UBE_NO_BSA_LOAD_ORDER_WINNER=1 takes the MO2 order."""
+    return not _flag("CBBE2UBE_NO_BSA_LOAD_ORDER_WINNER", False)
+
+
+def _bsa_plugin_order(lay) -> "list[str] | None":
+    """The active plugins in load order for `_BsaMeshIndex(plugin_order=)`, or
+    None when #bsa-load-order-winner is off or the profile cannot be read (the
+    index then keeps the MO2 order). #bsa-load-order-winner"""
+    if not _bsa_load_order_winner():
+        return None
+    try:
+        return paths.active_plugins_ordered(lay)
+    except Exception:
+        return None
+
+
+def _bsa_loading_ranks(plugin_order) -> "dict[str, int] | None":
+    """{archive stem lowercase: load index of the plugin that loads it}: a
+    plugin loads `<stem>.bsa` and `<stem> - Textures.bsa`. The first plugin of
+    a stem opens the archive, so its index counts. #bsa-load-order-winner"""
+    if not plugin_order:
+        return None
+    ranks: "dict[str, int]" = {}
+    for i, name in enumerate(plugin_order):
+        st = Path(str(name)).stem.lower()
+        ranks.setdefault(st, i)
+        ranks.setdefault(st + " - textures", i)
+    return ranks
 
 
 class _BsaMeshIndex:
@@ -7386,8 +7433,14 @@ class _BsaMeshIndex:
     _SKIP_BSA_TEXTURE = ("texture",)
 
     def __init__(self, enabled_mod_dirs, staging_dir,
-                 bsa_name_prefixes=None, skip_bsa=None):
+                 bsa_name_prefixes=None, skip_bsa=None, plugin_order=None):
         self._dirs = list(enabled_mod_dirs)   # MO2 priority order (highest first)
+        # The active plugins in load order: between two archives listing the
+        # same mesh, the one whose plugin loads later wins, as in game. None
+        # keeps the MO2 order (the caller passes `_bsa_plugin_order`, None when
+        # CBBE2UBE_NO_BSA_LOAD_ORDER_WINNER is set). #bsa-load-order-winner
+        self._plugin_order = tuple(plugin_order) if plugin_order else None
+        self._ranks = _bsa_loading_ranks(self._plugin_order)
         # A caller asking "does this mesh exist AT ALL" passes its own skip list:
         # a mesh shipped in a texture-named archive still exists in game.
         if skip_bsa is not None:
@@ -7418,11 +7471,13 @@ class _BsaMeshIndex:
                       else self._SKIP_BSA)
 
     def listing_key(self) -> tuple:
-        """What this index's listing depends on: the archive folders in order and
-        the two name filters. Two indexes with the same key list the same paths
-        from the same archives. #bsa-only-sources"""
+        """What this index's listing depends on: the archive folders in order,
+        the two name filters and the plugin order that picks between archives.
+        Two indexes with the same key list the same paths from the same
+        archives. #bsa-only-sources #bsa-load-order-winner"""
         return (tuple(str(d).lower() for d in self._dirs), self._skip,
-                tuple(self._name_prefixes or ()))
+                tuple(self._name_prefixes or ()),
+                tuple(str(p).lower() for p in (self._plugin_order or ())))
 
     def adopt_listing(self, other) -> bool:
         """Take `other`'s archive listing instead of scanning again, when `other`
@@ -7442,6 +7497,8 @@ class _BsaMeshIndex:
         import sys as _s
         self._index = {}
         n = 0
+        ranks = self._ranks
+        won: "dict[str, int | None]" = {}     # rel -> the listed archive's rank
         for d in self._dirs:
             try:
                 bsas = sorted(d.glob("*.bsa"))
@@ -7461,12 +7518,26 @@ class _BsaMeshIndex:
                 except Exception:
                     self.skipped.append(bsa.name)
                     continue
+                # The load index of the plugin that loads this archive; None
+                # for one no plugin loads (the INI-listed base-game archives,
+                # a stray), which ranks below every plugin-loaded archive.
+                rank = ranks.get(bsa.stem.lower()) if ranks is not None else None
                 for f in files:
                     fl = f.lower().replace("\\", "/")
                     if not fl.endswith(".nif"):
                         continue
                     rel = fl[7:] if fl.startswith("meshes/") else fl
-                    self._index.setdefault(rel, (bsa, f))
+                    if ranks is None:
+                        self._index.setdefault(rel, (bsa, f))
+                        continue
+                    # First in MO2 order, until an archive whose plugin loads
+                    # LATER lists it: that copy is the one the game draws.
+                    # #bsa-load-order-winner
+                    if rel not in self._index or (
+                            rank is not None
+                            and (won[rel] is None or rank > won[rel])):
+                        self._index[rel] = (bsa, f)
+                        won[rel] = rank
                 arch._data = b""              # release the (table) buffer
                 n += 1
         print(f"  BSA fallback index: scanned {n} mesh archive(s) -> "
@@ -9037,10 +9108,11 @@ def _find_armor_mod_dirs_uncached(mods_root: Path,
     _sel_bsa = None
     if _bsa_only and pending_vfs:
         try:
+            _slay = paths.discover_layout()
             _sel_bsa = _BsaMeshIndex(
                 _load_order_bsa_dirs(mods_root, enabled_ordered,
-                                     paths.discover_layout().game_data_dirs),
-                None)
+                                     _slay.game_data_dirs),
+                None, plugin_order=_bsa_plugin_order(_slay))
             _SELECTION_BSA_INDEX[str(mods_root).lower()] = _sel_bsa
         except Exception:
             _sel_bsa = None
