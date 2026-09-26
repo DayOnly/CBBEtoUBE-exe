@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+### Fixed — colour variants of a piece left to your own UBE build recolour the right layer
+
+Since this tool leaves a piece alone when your own UBE BodySlide build (or
+another mod) already ships it built for UBE (see "hand-made UBE versions are
+recognised" below), the game loads that build instead of our conversion. The
+step that fixes each colour variant's layer positions looked only at our own
+converted meshes, found none for such a piece, and kept the positions the
+armour mod wrote for its CBBE mesh -- so a colour could land on the wrong layer
+of the build the game loads. It now reads the copy of the mesh the game loads
+(the same way the tool already finds it elsewhere, without changing anything
+there) and matches each colour to its layer by name. A layer name that mesh
+has twice, or that a colour variant lists twice, has no single right layer: its
+colour is left off rather than guessed. Pieces the tool converted itself are
+fixed exactly as before, and a piece whose mesh is found nowhere keeps its
+variants as written (the run log counts them). Measured on the reported
+modlist: 11 colour variants sit on such pieces; 3 of them (the three colours
+of one travel outfit's top) now recolour the skirt instead of the build's
+physics collision shape; the other 8 were already right and do not change.
+`CBBE2UBE_NO_RECONCILE_LOADED_MESH=1` (set to 1) turns it off.
+
 ### Fixed — the measurement log no longer loses or garbles lines
 
 During a conversion every worker process writes its measurements to one file,
@@ -79,17 +99,22 @@ as light plugins. When two items used the same armour piece and the cut fell
 between them, that piece was written into both parts. Items that share a piece
 are now kept in the same part, so each piece is written once. What every item
 shows in game is unchanged. Measured on the reported modlist: 36 duplicate
-records removed (2,129 down to 2,093), leaving more room before the combined
-plugin needs another part to enable. The armour patch never gets an extra part
+records removed from the armour patch (2,129 down to 2,093). The combined
+plugin saves 34 records (3,912 down to 3,878), not 36: the merge had already
+folded 2 of the duplicates into an identical record. That leaves more room
+before the combined plugin needs another part to enable. The armour patch never gets an extra part
 from this, nor more records: if keeping items together would need more parts,
 or as many parts but more records, the patch is cut the old way instead. (The
 combined plugin packs those parts together with the other patches in its own
 step, which can still need a part more or less than before on a load order
 close to the limit.)
-One circlet now points at its own copy of its armour piece instead of an
-identical-looking copy from the body patch (they differ only in a texture
-checksum); it looks the same in game. `CBBE2UBE_NO_ESL_CHUNK_DEDUP=1` (set to 1)
-turns it off.
+Those 2 are why two items now point at a different, identical-looking record
+in the combined plugin; both look the same in game. A circlet points at its own
+copy of its armour piece instead of this patch's copy of another circlet's
+piece (same mesh, races and slots; they differ only in a texture checksum), and
+a shield points at this patch's copy of its piece instead of the body patch's
+copy (they differ only in the record's editor name).
+`CBBE2UBE_NO_ESL_CHUNK_DEDUP=1` (set to 1) turns it off.
 
 ### Fixed — a hair-slot helmet is recognised by its helmet keyword
 
@@ -450,7 +475,13 @@ the tool replaces, the physics file is found and holds constraints, nothing in
 that file would bring a second, hidden body back, and every part that swings
 still has something to collide with once the conversion has removed what it
 drops. Measured on the reported modlist: 17 armour pieces (34 files) change;
-everything else is converted exactly as before.
+everything else is converted exactly as before. One record in the combined
+plugin changes with them: a retexture of the Forsworn armour gives it an
+alternate texture set naming four layers (armour, bottom, feather cape,
+underwear). The static version had none of those layer names, so the set was
+emptied and UBE women saw the mesh's own textures; the zeroed build has all
+four, so its 4 entries are kept and UBE women now see the retexture's
+textures, as CBBE characters do.
 
 These stay as they were: the Imperial heavy cuirass; the Imperial light and
 medium cuirasses, whose physics file names the body `Body` while their build
@@ -1119,8 +1150,14 @@ either. `CBBE2UBE_NO_COVERAGE_BODY_ACCESSORY=1` (set to 1) leaves them off.
   the game does not read it. Armour the builder's own patch does not reach still
   gets a UBE armature that draws the built mesh -- one more armour covered (an
   enchanted outfit that was invisible on UBE). A weight pair is left alone only
-  when both halves are built. `CBBE2UBE_NO_SKIP_BUILT_UBE_PATH=1` (set to 1)
-  converts them again.
+  when both halves are built. Leaving a piece to its build also affected its
+  colour variants: the step that fixes their layer positions looked only at
+  our converted meshes, so it kept the positions written for the CBBE mesh --
+  on the reported modlist 3 of the 11 variants on such pieces (one travel
+  outfit's top) recoloured the build's physics collision shape instead of the
+  skirt. "Colour variants of a piece left to your own UBE build recolour the
+  right layer" (above) fixes this. `CBBE2UBE_NO_SKIP_BUILT_UBE_PATH=1` (set to
+  1) converts them again.
 - A UBE patch whose armatures write the model path with the `meshes\` folder in
   front (a softbody pack's own UBE nude suits) was not recognised as a UBE patch,
   although the game reads the path either way. It is now: 10 armours on the

@@ -566,7 +566,16 @@ single pass runs. Three rules encode this:
    only with the tag `Body` carried, collided with nothing -- worse than the static
    source. A physics loss or a one-weight change still keeps today's source. Live,
    read-only: 17 pieces / 34 index keys move (139 moved, 162 kept), nothing else in
-   the plan changes; with `CBBE2UBE_NO_ZEROED_SMP_GAIN=1` the index and the verdict
+   the plan changes. One plugin record changes with them, through the unchanged
+   post-merge alt-texture reconcile (full run, the only alt-texture difference
+   across the Combined's ARMAs): a Forsworn-armour retexture's per-source ARMA
+   carries an MO3S of 4 entries (`armor`, `bottom`, `Feather Cape`,
+   `ForswornUnderwear`); the static prebuilt mesh (`BaseUndies`, `BaseArmor`) has
+   none of those names, so the set was emptied, while the zeroed SMP build has all
+   four and keeps them at 1, 6, 0, 7 (same order at `_0` and `_1`) -- UBE wearers
+   now get the retexture's textures, as CBBE wearers do. The replay ESPs and
+   sidecars the commit measured are byte-identical; the Combined is where it
+   shows. With `CBBE2UBE_NO_ZEROED_SMP_GAIN=1` the index and the verdict
    line are the old ones on all 4,562 keys, and with
    `CBBE2UBE_NO_SMP_GAIN_COLLISION_PARTNER=1` they are the 19-piece set before the
    partner rule. Refused: the Imperial heavy cuirass (its XML registers the body as
@@ -2091,6 +2100,40 @@ reconciles each piece on its own, reads no source for a literal duplicate
 alone and binds an entry with no name by name, byte for byte as
 `#alttex-case-provenance` first shipped.
 
+**A path our output does not carry: `#reconcile-loaded-mesh`.** The reconcile
+looked each model up only under our output's `meshes`. Since
+`#skip-built-ube-path` and `#supersede-whole-base` a base another mod ships
+built for UBE (usually the user's own UBE BodySlide build) is left to it and
+our earlier copy moves to `_superseded\`, so the reconcile found no NIF and
+kept the source plugin's CBBE-era indices -- recolouring whatever shape of the
+build sits at that index. Now a model under `!UBE\` with no NIF in our output
+is indexed against the copy the game loads, found by the coverage step's own
+read-only lookup (`_mesh_exists_anywhere(output).loaded_copy`: the first loose
+file by MO2 priority with overwrite first and our output left out, then the
+archive by plugin load order, `#bsa-load-order-winner`); an archived copy is
+read from a temporary file in `_bsa_staging` that is deleted at once. That
+mesh is another mod's, not our conversion, so the provenance chain above is
+not used for it: none of its names is our rename, and our source is never
+read to bind it (a `fur` beside a `fur:1` in it is that author's naming, not a
+split, so nothing is dropped as "may be split"). Its entries bind by name
+(case-insensitive, as always); the entries of a name it carries twice or in two
+spellings, and of a name any set on that model repeats (`_repeated_entry_names`,
+the empty name included), are dropped -- the same "a colour missed, not
+guessed" rule as a no-source provenance NIF. Our own NIF, when present, is
+used exactly as before, and a path that is not ours (a male or vanilla mesh:
+its set was authored for the mesh the game loads) is never looked up. A path
+found nowhere keeps its set as authored, as before, and the run log counts it.
+Census on the reported modlist's full run (b5c8113 output, read-only): 1,496
+alt-texture subrecords name a model, 606 of them in our output; of the 890
+that are not, 879 are not `!UBE\` paths (left alone) and 11 are `!UBE\` paths,
+all loose in another mod, none archived, none found nowhere: 8 already right
+for that mesh (5 on a witch hat, 3 first-person sets of a travel outfit), 3
+wrong (the outfit's torso: `Skirt` 13, the build's `collision body`, instead
+of 12). Replayed on a copy of that run's Combined pieces with its meshes: the
+3 sets become `Skirt` 12 and no other subrecord changes (3 more ARMA records
+fixed than the parent's replay); with `CBBE2UBE_NO_RECONCILE_LOADED_MESH=1`
+the pieces are byte-identical to the parent's (76a9b3c) replay.
+
 **The layout guess, behind the switch: `#alttex-family-strict`.** Without the
 source the reconcile cannot know which shapes the rename made;
 the first cut took any `name` beside a `name:k` and bound by rank in NIF order.
@@ -2238,8 +2281,10 @@ minted in another (a SkyPatcher line allows it), was not taken: the merge folds 
 coverage piece into whichever Combined piece has room and resolves links within that
 piece only. Only a group needing more than the cap is still split in scan order; the
 largest live group needs 85. Live: non-body 2,129 -> 2,093 records (2,048 + 45 instead
-of 2,048 + 81), every armour's links identical, the Combined still 2 pieces with 3,878
-own records instead of 3,912. 15 armatures minted by both the body and the non-body pass
+of 2,048 + 81), every armour's links in the coverage sidecars identical, the Combined
+still 2 pieces with 3,878 own records instead of 3,912 -- 34, not 36: 2 of the 36
+duplicates already sat in the second non-body piece, where the merge's record dedup had
+folded them (Combined2 merge collapses 16 -> 14). 15 armatures minted by both the body and the non-body pass
 remain (separate patches; out of this rule's reach). `CBBE2UBE_NO_ESL_CHUNK_DEDUP=1`
 restores the scan-order fill.
 
@@ -2266,11 +2311,20 @@ piece-count proof to carry, and the live load order never reaches that case (2 n
 pieces either way, so today's output is the grouped fill, byte-identical to before the
 rule).
 
-After the merge one armour (a circlet) links to its own non-body record where the
-scan-order fill had it collapse onto a body-pass record: its copy used to sit in the
-same Combined piece as the body patch, and the merge's dedup key ignores the MO2T
-texture-hash block, the only thing that differs. Mesh, races, slots and alternate
-textures are identical, so nothing changes in game.
+After the merge TWO armours link to a different record, the two duplicates the merge
+had folded (its dedup key, `_ARMA_DEDUP_SKIP_SIGS`, ignores EDID and MO2T..MO5T); with
+the grouping both move into the first non-body piece beside their armature's own copy:
+- a circlet (the item of one mod, on a vanilla circlet armature) links to its own
+  non-body record (`UBE_MNB_<armature>`) where it had collapsed onto another NON-body
+  record -- the copy of that mod's own circlet armature, minted in the same second
+  non-body piece, identical but for the MO2T/MO3T texture hashes. No body-pass circlet
+  record exists; an earlier version of this paragraph said body-pass, because the A/B
+  tool that found it compared records with EDID dropped;
+- a shield (one mod's item on a vanilla shield armature) links to the non-body record
+  where it had collapsed onto the body pass's copy of the same armature
+  (`UBE_MBD_<armature>`), identical but for the EDID -- invisible to that A/B tool.
+Mesh, races, slots, race-model list and alternate textures are identical in both
+pairs, so nothing changes in game.
 
 ### Per-source patch names (`#source-patch-rename`)
 
@@ -2809,7 +2863,12 @@ reported through `_report_coverage_holds`:
   replay 9381 -> 9382 links, 0 removed, 0 re-pointed, +1 armour newly drawn (an
   enchanted outfit reusing a UBE-patched armature). Without #claim-meshes-prefix
   the twin admission also minted a second nude suit on a softbody pack's own UBE
-  one (+2 links) -- that commit is why it does not.
+  one (+2 links) -- that commit is why it does not. Its effect on colour
+  variants was missed: the post-merge alt-texture reconcile looked only in our
+  output, so a set on a left-to-its-builder path kept its CBBE-era indices
+  (full run: 3 of 11 such sets wrong, a torso's `Skirt` on the build's
+  `collision body`); `#reconcile-loaded-mesh` (alt-texture section) indexes
+  them against the copy the game loads.
   `CBBE2UBE_NO_SKIP_BUILT_UBE_PATH=1`.
 - **A superseded base leaves `meshes\` whole, and the partner fill stays out of
   it** (`#supersede-whole-base`). The move above took only the variants the run

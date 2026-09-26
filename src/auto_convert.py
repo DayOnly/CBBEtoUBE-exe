@@ -4961,8 +4961,25 @@ def _mesh_exists_anywhere(output) -> "callable[[str], bool] | None":
         """#coverage-body-cloak: is that copy of `model` skinned, with no skin
         bound to a body-fit bone (a cape draped from the spine)?"""
         return _read_meshes(model, unfitted, _nif_bytes_unfitted_skin)
+
+    def loaded_copy(model: str) -> "tuple[Path | None, bytes | None] | None":
+        """#reconcile-loaded-mesh: the copy of `model` the game loads, found
+        the way `body_fit` finds it -- (its path, None) for the first loose
+        file in priority order, else (None, its bytes) from the archive the
+        game loads it from. None when it is nowhere. Never extracts."""
+        rel = str(model or "").replace("\\", "/").lstrip("/").lower()
+        if rel.startswith("meshes/"):
+            rel = rel[7:]
+        if not rel:
+            return None
+        i = _loose_first(rel)
+        if i is not None:
+            return loose_dirs[i] / "meshes" / rel, None
+        data = bsa.read_bytes(rel)
+        return (None, data) if data else None
     exists.body_fit = body_fit
     exists.unfitted_skin = unfitted_skin
+    exists.loaded_copy = loaded_copy
     return exists
 
 
