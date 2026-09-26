@@ -263,10 +263,12 @@ class _Shape:
 def test_the_layers_are_the_visible_garment_surfaces_only():
     """A collider, a proxy or the body is not a layer a plate can cover: a row
     standing over one of those alone is still the only visible layer."""
+    # "HipGuard" is a collider only because the piece's physics XML says so: no
+    # name key can catch it, so only the XML-derived skip list keeps it out.
     shapes = [_Shape("Armor", -3.0), _Shape("Leggings", -1.0), _Shape("Proxy", -2.0),
               _Shape("Collision", -2.0), _Shape("BaseShape", 0.0),
-              _Shape("SkirtStabilizer", -2.0), _Shape("XmlCollider", -2.0)]
-    V, T = ncw._layer_soup(shapes, {"XmlCollider", "BaseShape"})
+              _Shape("SkirtStabilizer", -2.0), _Shape("HipGuard", -2.0)]
+    V, T = ncw._layer_soup(shapes, {"HipGuard", "BaseShape"})
     assert sorted(set(np.round(V[:, 1], 3))) == [-3.0, -1.0]
     assert len(T) == 2 * len(shapes[0].tris)
     assert ncw._layer_soup([_Shape("Proxy", -2.0)], set()) == (None, None)
