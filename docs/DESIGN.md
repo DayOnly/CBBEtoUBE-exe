@@ -646,7 +646,9 @@ already-UBE path among the additions.
   folder is directly in the mods root and passes `_source_gate_ok` -- the name
   gate selection applies before reading plugins, factored out of `_name_ok` --
   with the run's exclusions, remembered per mods root by each `require_arma`
-  selection (`_SOURCE_GATE`, set on a memo hit too; without one, no exclusions).
+  selection (`_SOURCE_GATE`, set on a memo hit too; without one, no exclusions;
+  by default the exclusions no longer take part: `#excluded-copy-left-alone`
+  below).
   The GATE, not the final candidate list, decides, on purpose: a gated winner
   whose loaded copy plans no armour means the game loads none (nothing to
   convert); `--only-mods` and the UBE-native drop narrow the batch AFTER
@@ -662,6 +664,43 @@ already-UBE path among the additions.
   winner a mod folder the gate admits, so 0 change: per-mod plugins, skips and
   strict/planned bases identical to the parent, coverage replay byte-identical.
   Switch set: identical to the parent.
+- **A user-excluded winner is handled** (`#excluded-copy-left-alone`,
+  `CBBE2UBE_NO_EXCLUDED_COPY_LEFT_ALONE`, 2026-09-25). Judged by the gate WITH
+  the run's exclusions, a winner in a mod the user excluded read as "no source",
+  so a lower mod's copy of the plugin became a source again: excluding the mod
+  the game loads Quest.esp from (a hand-made UBE refit) planned and patched
+  Quest's armour from the losing CBBE copy, while `_armos_defined_by_mods` in the
+  same run named the refit the owner and withheld its coverage (probe: sources
+  ['Quest.esp'], planned {armor/q/body}; parent 30b78a3: nothing). And the gate saw
+  exclusions only through `auto --exclude-mods`: Select mode passes them as
+  `--coverage-exclude-mods` and standalone `convert --exclude-mods` runs no
+  selection, so one exclusion list read the copy in one mode and dropped it in
+  another. Now `_read_by_a_source` asks, in order: (1) winner not directly in the
+  mods root (overwrite, game Data) -> not handled, the mod's copy is read: no
+  source reads it and no exclusion names it, and `_armos_defined_by_mods` owns
+  nothing there; (2) winner folder in `_RUN_USER_EXCLUSIONS` (matched by
+  `_mod_name_excluded`, as ownership is) -> handled, the mod's copy is dropped:
+  the 09-23 decision, an excluded mod's armour is left alone, and ownership is
+  the defining plugin read from this very loaded copy; decision (b) is untouched,
+  the excluded mod's non-body pieces keep their coverage from the winner scan,
+  which never depended on a source reading them; (3) a body mod (`_body_mod_names`,
+  cached per selection in `_BODY_MODS_SEEN`) -> not handled: skipped by what it
+  ships, not by the user, and coverage does not withhold it -- the parent's
+  answer; (4) otherwise `_source_gate_ok` with NO exclusion list -- child content,
+  a hard non-source name hint (`cbbetoube` covers our output) -> not handled,
+  those are the tool's guesses about the folder, not a user's choice, and coverage
+  does not withhold them; else handled. `_RUN_USER_EXCLUSIONS` is exactly the set
+  coverage withholds: `auto` sets `--exclude-mods` + `--coverage-exclude-mods`
+  before its selection, `_cmd_convert` sets its `--exclude-mods` (the same union
+  from `auto`, its own when standalone); both are in the selection memo key.
+  With no exclusion list in steps (2)-(4), only the user set changes the answer,
+  and only for a winner that step (3) or (4) would refuse. The switch restores
+  f057ba9 (the selection's gate with its exclusions). Live: deployed exclusions
+  empty, 0 body-mod winners (the 85 winners all pass the gate), so 0 change:
+  loaded-copy census identical, coverage replay byte-identical (9927 links).
+  Latent (all 77 winning mods excluded, as `auto` would): f057ba9 reads all 85
+  losing copies, 36 of them plugins coverage withholds as the excluded owner's;
+  this rule reads 0. Switch set: identical to f057ba9.
 - **Masters are read from the copy the game loads** (`#master-search-load-order`,
   `CBBE2UBE_NO_MASTER_SEARCH_LOAD_ORDER`). `_discover_master_data_dirs(sources[0])`
   -- the batch's one master search list, also the merge's, the coverage passes'

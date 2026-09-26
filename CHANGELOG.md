@@ -61,16 +61,27 @@ their armour is still converted, from the copy the game loads, so the converted
 armour and the merged plugin are unchanged. `CBBE2UBE_NO_LOADED_SOURCE_PLUGINS=1`
 (set to 1) reads every copy again.
 
-A copy is left out only when the mod the game loads it from is itself converted
-this run, so that mod reads the game's copy. When the loaded copy sits where the
-tool never converts from -- Mod Organizer's overwrite folder (a plugin cleaned or
-edited and saved there), a mod you excluded, or a mod the tool skips by its name
--- the mod's own copy is read as before; otherwise no mod read that plugin and
-its armour was not converted at all. If the two copies' armour differs, the log
-says so. Measured on the reported modlist: its overwrite folder holds no plugins,
-and in each of the 85 cases where a mod's plugin loses to another mod's copy that
-other mod can be converted, so nothing changes. `CBBE2UBE_NO_LOADED_COPY_READER=1`
-(set to 1) leaves the mod's copy out in every case.
+A mod's copy is left out when the mod the game loads the plugin from is one the
+tool reads plugins from (not a body mod, and not a mod it skips by its name, such
+as child clothing or BodySlide output), even if this run does not convert that
+mod (you did not pick it in Select mods, or its armour is already built for UBE):
+its copy is the one that counts, and a patch made from another copy would
+override the plugin the game loads. It is also left out when you excluded the
+mod the game loads the plugin from: an exclusion means "leave this plugin's
+armour alone", so no other mod's copy is converted in its place, just as the
+excluded mod's armour gets no coverage. This holds in All mods and Select mods
+runs alike, and for `convert --exclude-mods`. When the loaded copy sits where the
+tool never reads plugins and you did not exclude it -- Mod Organizer's overwrite
+folder (a plugin cleaned or edited and saved there), a body mod, or a mod the
+tool skips by its name -- the mod's own copy is read as before; otherwise no mod
+read that plugin and its armour was not converted at all. If the two copies'
+armour differs, the log says so. Measured on the reported modlist: its overwrite
+folder holds no plugins, nothing is excluded, and in each of the 85 cases where a
+mod's plugin loses to another mod's copy that other mod is one the tool reads, so
+nothing changes. `CBBE2UBE_NO_LOADED_COPY_READER=1` (set to 1) leaves the mod's
+copy out in every case; `CBBE2UBE_NO_EXCLUDED_COPY_LEFT_ALONE=1` (set to 1) goes
+back to reading the mod's own copy when an All mods run excludes the mod the
+game loads the plugin from.
 
 ### Fixed — the run log and the per-mod reports name the right plugin for each patch
 

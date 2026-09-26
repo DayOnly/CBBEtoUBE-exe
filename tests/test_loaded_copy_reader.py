@@ -28,6 +28,11 @@ THE RULE. The mod's copy is left out only when the game's copy is in a mod folde
 the selection's gate admits (so that source reads it); otherwise the mod's own
 copy is read, and the convert step notes when the two copies' armatures differ.
 `CBBE2UBE_NO_LOADED_COPY_READER=1` leaves it out in every case again.
+
+A winning copy in a mod the user excluded counts as handled since
+#excluded-copy-left-alone (tests/test_excluded_copy_left_alone.py); the tests
+here that judge by the selection's exclusions set its switch,
+`CBBE2UBE_NO_EXCLUDED_COPY_LEFT_ALONE=1`.
 """
 import pytest
 
@@ -35,6 +40,7 @@ from src import auto_convert as ac
 from tests.test_loaded_source_plugins import _convert, _modlist, _plugin
 
 OFF = "CBBE2UBE_NO_LOADED_COPY_READER"
+GATE_EXCL = "CBBE2UBE_NO_EXCLUDED_COPY_LEFT_ALONE"
 
 
 class _NoArchives:
@@ -47,12 +53,13 @@ class _NoArchives:
 
 @pytest.fixture(autouse=True)
 def _clean(monkeypatch):
-    for v in (OFF, "CBBE2UBE_NO_LOADED_SOURCE_PLUGINS"):
+    for v in (OFF, GATE_EXCL, "CBBE2UBE_NO_LOADED_SOURCE_PLUGINS"):
         monkeypatch.delenv(v, raising=False)
     monkeypatch.setattr(ac, "_BsaMeshIndex", _NoArchives)
     stores = (ac._LOADED_PLUGIN_INDEX, ac._SOURCE_GATE, ac._ARMOR_MOD_DIRS_CACHE,
               ac._ARMOR_MOD_DIRS_UNREADABLE, ac._BATCH_MESH_INDEX,
-              ac._SELECTION_RUN_WARNINGS, ac._SELECTION_BSA_INDEX)
+              ac._SELECTION_RUN_WARNINGS, ac._SELECTION_BSA_INDEX,
+              ac._RUN_USER_EXCLUSIONS, ac._BODY_MODS_SEEN)
     for d in stores:
         d.clear()
     yield
@@ -102,9 +109,13 @@ def test_switched_off_a_copy_in_overwrite_drops_the_mods_copy(tmp_path, monkeypa
 
 # ---------------------------------------------------------------- the run's gate
 
-def test_a_copy_in_an_excluded_mod_keeps_the_mods_own_copy(tmp_path, monkeypatch):
-    """The user excluded the mod the game loads the plugin from: the base mod
-    is still a source, and the convert step that follows reads its copy."""
+def test_by_the_gates_exclusions_an_excluded_mods_copy_keeps_the_mods_own_copy(
+        tmp_path, monkeypatch):
+    """Judged by the selection's gate with its exclusions (the switch of
+    #excluded-copy-left-alone): the user excluded the mod the game loads the
+    plugin from, so the base mod is still a source, and the convert step that
+    follows reads its copy."""
+    monkeypatch.setenv(GATE_EXCL, "1")
     order = ["Hotfix", "Base"]
     mods = _modlist(tmp_path, monkeypatch, order)
     _plugin(mods / "Hotfix" / "Quest.esp", "armor/q/body_1.nif")
@@ -145,6 +156,7 @@ def test_a_copy_in_a_mod_the_name_gate_refuses_keeps_the_mods_own_copy(
 
 
 def test_switched_off_an_excluded_mods_copy_drops_the_mods_copy(tmp_path, monkeypatch):
+    monkeypatch.setenv(GATE_EXCL, "1")      # else the exclusion drops it anyway
     monkeypatch.setenv(OFF, "1")
     order = ["Hotfix", "Base"]
     mods = _modlist(tmp_path, monkeypatch, order)
@@ -190,7 +202,9 @@ def test_the_plugins_only_replay_says_it_too(tmp_path, monkeypatch):
 
 def test_a_reused_selection_sets_its_gate_again(tmp_path, monkeypatch):
     """A GUI refresh without the exclusion, then the convert's selection with
-    it again (a memo hit): the convert step must judge by the exclusion."""
+    it again (a memo hit): the convert step must judge by the exclusion (by the
+    selection's gate: the switch of #excluded-copy-left-alone)."""
+    monkeypatch.setenv(GATE_EXCL, "1")
     order = ["Hotfix", "Base"]
     mods = _modlist(tmp_path, monkeypatch, order)
     _plugin(mods / "Hotfix" / "Quest.esp", "armor/q/body_1.nif")
@@ -203,11 +217,10 @@ def test_a_reused_selection_sets_its_gate_again(tmp_path, monkeypatch):
 
 
 def test_the_switch_is_part_of_the_selection_memo(tmp_path, monkeypatch):
-    order = ["Hotfix", "Base"]
-    mods = _modlist(tmp_path, monkeypatch, order)
-    _plugin(mods / "Hotfix" / "Quest.esp", "armor/q/body_1.nif")
+    mods = _modlist(tmp_path, monkeypatch, ["Base"])
     _plugin(mods / "Base" / "Quest.esp", "armor/q/body_1.nif")
+    _plugin(tmp_path / "inst" / "overwrite" / "Quest.esp", "armor/q/body_1.nif")
     _mesh(mods / "Base")
-    assert _select(mods, order, exclude={"Hotfix"}) == ["Base"]
+    assert _select(mods, ["Base"]) == ["Base"]
     monkeypatch.setenv(OFF, "1")
-    assert _select(mods, order, exclude={"Hotfix"}) == []
+    assert _select(mods, ["Base"]) == []

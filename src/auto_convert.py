@@ -1396,7 +1396,9 @@ def _loaded_copy_reader_on() -> bool:
     gate admits (`_source_gate_ok`, the run's exclusions included), so that
     source reads the game's copy; else the mod's own copy is read, as before
     #loaded-source-plugins, and a note says when the two copies' armatures
-    differ. CBBE2UBE_NO_LOADED_COPY_READER=1 leaves it out in every case."""
+    differ. (A winning copy in a mod the user excluded counts as handled since
+    #excluded-copy-left-alone.) CBBE2UBE_NO_LOADED_COPY_READER=1 leaves it out
+    in every case."""
     return not _flag("CBBE2UBE_NO_LOADED_COPY_READER", False)
 
 
@@ -1419,17 +1421,76 @@ def _set_source_gate(mods_root: Path, extra_exclude_names, enabled_names) -> Non
         None if enabled_names is None else frozenset(enabled_names))
 
 
+def _excluded_copy_left_alone_on() -> bool:
+    r"""#excluded-copy-left-alone (2026-09-25): does a plugin the game loads from
+    a mod the user excluded count as handled, so another mod's losing copy of it
+    is left out too? Yes, by default.
+
+    #loaded-copy-reader read a mod's losing copy whenever the winning copy's
+    folder failed the selection's gate, and that gate refuses the run's
+    exclusions. Excluding the mod the game loads a plugin from therefore made a
+    lower mod's copy a source again: its armour was converted and patched from
+    a copy the game does not load, while #exclude-owned-coverage in the same
+    run named the excluded mod the owner and withheld its coverage. An
+    exclusion means "leave this plugin's armour alone", so the exclusions the
+    coverage step withholds (`_RUN_USER_EXCLUSIONS`) now count as handled, and
+    any other winning copy is judged by the rest of the gate without an
+    exclusion list, the same in every entry point. A body mod (skipped by what
+    it ships, not by the user's choice) is still no source, so the mod's own
+    copy is read, as for overwrite, child content and a non-source name.
+    CBBE2UBE_NO_EXCLUDED_COPY_LEFT_ALONE=1 judges by the selection's gate with
+    its exclusions again."""
+    return not _flag("CBBE2UBE_NO_EXCLUDED_COPY_LEFT_ALONE", False)
+
+
+# The mods the user excluded for the run this process is doing, lowercased: the
+# ones the coverage step withholds (#exclude-owned-coverage). Set by each entry
+# point before it reads a plugin: `auto` (--exclude-mods and
+# --coverage-exclude-mods) and `convert` (--exclude-mods, which `auto` hands it
+# as that same union). #excluded-copy-left-alone
+_RUN_USER_EXCLUSIONS: "set[str]" = set()
+
+# {mods root key: body mod folder names lowercased}, read when a loaded copy is
+# first judged and dropped by each selection. #excluded-copy-left-alone
+_BODY_MODS_SEEN: "dict[str, frozenset]" = {}
+
+
+def _set_run_user_exclusions(names) -> None:
+    """Record the run's user exclusions, as `_armos_defined_by_mods` reads them
+    (the `vanilla` pseudo-name names no folder). #excluded-copy-left-alone"""
+    _RUN_USER_EXCLUSIONS.clear()
+    _RUN_USER_EXCLUSIONS.update(
+        n for n in (str(x).strip().lower() for x in (names or ())) if n)
+    _RUN_USER_EXCLUSIONS.discard("vanilla")
+
+
+def _body_mods_seen(mods_root: Path) -> frozenset:
+    k = _path_key(mods_root)
+    hit = _BODY_MODS_SEEN.get(k)
+    if hit is None:
+        hit = frozenset(n.lower() for n in _body_mod_names(Path(mods_root)))
+        _BODY_MODS_SEEN[k] = hit
+    return hit
+
+
 def _read_by_a_source(loaded: Path, mods_root: Path) -> bool:
-    """Does a conversion source of this run read `loaded`, the copy of a plugin
-    the game loads? Only a folder directly in the mods root that the
-    selection's gate admits is ever a source; MO2's overwrite folder and the
-    game Data folder never are. #loaded-copy-reader"""
+    """Is `loaded`, the copy of a plugin the game loads, handled by this run:
+    read by a conversion source, or left alone because the user excluded its
+    mod? Only a folder directly in the mods root that the selection's gate
+    admits is ever a source; MO2's overwrite folder and the game Data folder
+    never are. #loaded-copy-reader #excluded-copy-left-alone"""
     if not _loaded_copy_reader_on():
         return True
     folder = Path(loaded).parent
     if not _same_path(folder.parent, mods_root):
         return False
     excl, enabled = _SOURCE_GATE.get(_path_key(mods_root), (frozenset(), None))
+    if _excluded_copy_left_alone_on():
+        if _mod_name_excluded(folder.name, _RUN_USER_EXCLUSIONS):
+            return True     # the user's exclusion: its armour is left alone
+        if folder.name.lower() in _body_mods_seen(mods_root):
+            return False    # the body: skipped by the run, not by the user
+        excl = frozenset()  # no exclusion list: the same in every entry point
     return _source_gate_ok(folder, excl, enabled, True)
 
 
@@ -1478,7 +1539,8 @@ def _loaded_copies_only(source_dir: Path, plugins: "list[Path]",
                         ) -> "list[Path]":
     """`plugins` of the mod folder `source_dir` less the copies the game never
     loads: one in a subfolder, and a root one whose name loads from another
-    folder that a conversion source reads (#loaded-copy-reader: a copy loaded
+    folder that a conversion source reads or that the user excluded
+    (#excluded-copy-left-alone; #loaded-copy-reader: a copy loaded
     from a folder no source reads keeps this mod's copy, and `differs` receives
     (plugin, where) when the two copies' armatures differ). Unchanged for a
     folder that is not directly in the modlist's mods root. `skipped` receives
@@ -2957,9 +3019,11 @@ def _build_parser():
                          metavar="NAME",
                          help="Mods whose armour the coverage step must leave "
                               "alone (repeat the flag or comma-separate). `auto` "
-                              "passes its own --exclude-mods here; with "
-                              "`convert` the sources are named, so this only "
-                              "affects coverage.")
+                              "passes its own --exclude-mods and "
+                              "--coverage-exclude-mods here; with `convert` the "
+                              "sources are named, so this affects coverage, and "
+                              "a plugin the game loads from one of these mods is "
+                              "not read from another mod's copy either.")
     convert.add_argument("--plugins-only", action="store_true",
                          dest="plugins_only",
                          help="ESP-only refresh: regenerate patch ESPs + merge "
@@ -5270,6 +5334,9 @@ def _sweep_orphan_temps_at_start(output, run_started: float) -> int:
 
 def _cmd_convert(args):
     _RUN_FAILURES.clear()   # fresh failure record for this run
+    # The mods whose armour coverage leaves alone: a plugin the game loads from
+    # one of them is left alone by the sources too. #excluded-copy-left-alone
+    _set_run_user_exclusions(_split_mod_arg(getattr(args, "exclude_mods", None)))
     _run_started = time.time()   # temps older than this are orphans. #orphan-temps
     # Same echo `auto` prints: the verdict harnesses run THIS subcommand, and
     # a run has to say what it was carrying before anything can abort.
@@ -8645,6 +8712,9 @@ def _find_armor_mod_dirs(mods_root: Path,
             # Which plugin copies are read decides sources too.
             # #loaded-source-plugins
             _loaded_source_plugins_on(), _loaded_copy_reader_on(),
+            # ...and so do the user's exclusions, through the copies they
+            # leave alone. #excluded-copy-left-alone
+            _excluded_copy_left_alone_on(), frozenset(_RUN_USER_EXCLUSIONS),
             # The female-only rule's pairs change the mesh keys indexed.
             # #female-slot-pairs #female-slot-absent
             _female_slot_pairs_on(), _female_slot_absent_on(),
@@ -8766,6 +8836,8 @@ def _find_armor_mod_dirs_uncached(mods_root: Path,
     # Which plugin copies load is read afresh for each selection.
     # #loaded-source-plugins
     _LOADED_PLUGIN_INDEX.clear()
+    # ...and which mods ship a body. #excluded-copy-left-alone
+    _BODY_MODS_SEEN.clear()
     # A loaded copy counts as read only in a folder this gate admits.
     # #loaded-copy-reader
     _set_source_gate(mods_root, extra_exclude_names, enabled_names)
@@ -9402,6 +9474,11 @@ def _cmd_auto(args):
         exclude |= set(_user_excl)
         print(f"  --exclude-mods: skipping {len(_user_excl)} mod(s): "
               + ", ".join(sorted(_user_excl)))
+    # Every exclusion the coverage step withholds, the Select-mods ones too: a
+    # plugin the game loads from one of them is left alone by the sources, in
+    # this selection and in the convert step alike. #excluded-copy-left-alone
+    _set_run_user_exclusions(_user_excl + (_split_mod_arg(
+        getattr(args, "coverage_exclude_mods", None)) or []))
 
     print("  scanning mods for player-equippable armor...")
     candidates = _find_armor_mod_dirs(
