@@ -208,6 +208,13 @@ Settings persist to `CBBEtoUBE_settings.json` next to the exe (only your
 overrides are stored, so defaults keep tracking the build), and it survives a
 redeploy.
 
+The same file applies when you run `CBBEtoUBE.exe auto` or `convert` without the
+window (from an MO2 executable entry or a shell), so those runs match the Convert
+button. A variable already set in the environment wins over the file. The top of
+the log says where the settings came from, in a line starting `effective
+settings: from`, and lists what the file set. To run without the file, set
+`CBBE2UBE_NO_HEADLESS_SETTINGS=1`.
+
 Several settings are worth calling out, because they target the hardest symptom
 to fix — chest or butt clipping that only shows up **in motion**. Most of them
 are **on by default** now; the column says so per row, because which ones ship on

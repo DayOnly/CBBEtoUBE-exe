@@ -2738,6 +2738,230 @@ reported through `_report_coverage_holds`:
 
 ---
 
+## What a run reports, and which settings it runs with
+
+- **The tally is the record** (`#one-tally`). `_cmd_convert` counted its
+  end-of-run `N failure(s), M warning(s)` in two integers beside
+  `_RUN_FAILURES`, and five classes raised the integers without an entry: a
+  load-breaking issue on the final Combined ESP (and its other postflight
+  issues, incl. missing-nif), a mesh missing its `_0`/`_1` partner, a
+  VirtualBody re-hide, patch-validator hits, and in `auto` a failed overlay
+  transfer. The GUI reads only the failures file, so a Combined CTD ended
+  "exit code 2 - check the log" with no list. Every counted class now goes
+  through `_record_failure`, and the tally is counted from the record
+  (`_run_tally`, `failure_summary.counts`), so the two cannot disagree. A class
+  of N is one entry carrying `count: N` (40 validator hits are one popup line);
+  `count` is written only when it is not 1, so single entries keep their old
+  format. The exit code is unchanged in every case (a failure was already
+  counted wherever one is now recorded); only the log's numbers and the file
+  change: an unreadable output mesh counts per file, and "merge skipped" counts.
+  `auto`'s post-convert failures are the failures recorded after `_cmd_convert`.
+- **Dry run writes nothing** (`#dry-run-writes-nothing`). `auto
+  --overlays-only --list-only` ran the overlay transfer: the overlays-only branch
+  returned before the list-only check. It now lists what would be remapped
+  (`overlay_transfer.plan_overlays`, the same source rules as the transfer) and
+  returns. The window's Dry run with both toggles drops `--convert-overlays`.
+- **The overlay Dry run lists for the mode the run would use**
+  (`#dry-run-copy-mode`). Under `--overlay-copy` ("Add UBE copy") the real pass
+  bakes only overlays a RaceMenu paint script registers whose texture is found,
+  and skips everything without texconv, PapyrusCompiler or the Papyrus base
+  (`Scripts.zip`); the list showed the replace mode's set either way. The list
+  now names its mode, uses `plan_overlay_copies` under copy mode (the same
+  filter as the pass, `_copy_call_wanted`, and a test that the pass bakes what
+  the plan lists), and says when a missing tool would make the real run skip
+  every overlay (`copy_mode_tool_gap` / `replace_mode_tool_gap`, read-only).
+  Reviewed on 0081b20, the list still named overlays the pass skips: a region
+  whose CBBE/UBE reference mesh is missing or unreadable (the copy pass skipped
+  it with a bare `continue`, replace mode logged it), and every overlay when
+  Scripts.zip holds no `TESV_Papyrus_Flags.flg`. Each check is now one
+  function both sides call. `_load_ref_meshes` is the region decision:
+  `build_region_correspondence` builds from it, and `region_ref_gap` asks it
+  without the projection, so `plan_region_gaps` (both modes) prints "!! the
+  real run would SKIP this region: ..." under the region. `papyrus_base_gap`
+  reads the zip's name list for the flags file; `_assemble_papyrus_imports`
+  and `copy_mode_tool_gap` both call it (a zip that cannot be opened raises in
+  the pass as extracting it did, and the Dry run says it cannot be opened). The
+  copy pass now logs "!! overlay copy: SKIP region '<r>' (<why>) -- N
+  overlay(s)" and names the missing flags file. The drift-guard test runs the
+  real correspondence (a stub mesh reader over a small grid) and the real
+  Papyrus-base assembly on a real zip, with a missing and an unreadable
+  reference mesh and a zip without the flags file.
+- **A bad settings import changes nothing** (`#settings-import-guard`).
+  `load_values` turns an absent, torn or foreign file into pure defaults by
+  design; Import used it and saved the defaults over the recipe.
+  `load_for_import` refuses a file that is not a JSON object holding at least one
+  registered key (or `_known_settings`, so an all-defaults export still imports).
+  Export and Reset/Import now read `save_values`' False. `_coerce` reads a
+  hand-edited bool string with the environment's words (`"false"`, `"0"` are OFF).
+- **The saved settings reach every run** (`#settings-everywhere`). A headless
+  `CBBEtoUBE.exe auto` / `convert` now applies `CBBEtoUBE_settings.json` (the one
+  beside the exe) at the entry point, before the converter is imported; a variable
+  already set in the environment wins; the log says `effective settings: from
+  <file> -- set ...` and `conversion_settings.json` records it
+  (`settings_applied`). The window's child and the two parity harnesses carry
+  `CBBE2UBE_SETTINGS_APPLIED` and are not re-applied. The window's own helpers
+  (Check setup, the mod lists, the UBE-mesh scan) run under
+  `gui_settings.SettingsOverlay`: the child's environment for the duration of the
+  call, then the window's restored (shared by overlapping helpers; the last one
+  out restores). `CBBE2UBE_NO_HEADLESS_SETTINGS=1` makes a headless run ignore
+  the file, as before. `python -m src.auto_convert` does not go through the entry
+  point and still reads only the environment.
+- **The window's child says who applied its settings** (`#settings-source-line`).
+  The child goes through the entry point like every `auto`, and the marker was
+  recorded as a skip, so every window run logged `settings file NOT applied
+  (already applied by the settings window)` -- the line people read to see
+  that their settings reached the run. The marker case is now recorded as
+  `{"by": "the settings window"}` (log: `effective settings: from the settings
+  window`); `NOT applied` is kept for a file that really was not (switched off,
+  absent, torn).
+- **A bad Worker processes value cannot strand the window**
+  (`#workers-box-guard`). The box is free text; `_launch` locked the window
+  (running, Convert off, selection locked, bar spinning) and only then read
+  `int(workers_var.get())`, which raised on `''` or `abc`: no worker thread, no
+  `_DONE`, and 'Converting...' until a restart. Convert now refuses a value that
+  is not a whole number of at least 1 (`parse_workers`), and `start_run` builds
+  the arguments before anything is locked and puts the window back if the
+  lock or the start raises.
+- **A dry run keeps the run log** (`#dry-run-keeps-the-run-log`). `auto
+  --list-only` / `--dry-run` (or an abbreviation argparse accepts) converts
+  nothing, so `_log_target` sends it to `CBBEtoUBE_cli.log` with no rotation,
+  like `validate` (`#run-log-only-for-runs`). The window follows the same rule
+  (`run_log_plan`, `prepare_child_log`): it tails the cli log, removes the old
+  one first so the tail cannot stream the previous command, rotates nothing and
+  opens no failures popup. Two dry runs after a dead run used to rotate the
+  dead run's log out of `CBBEtoUBE_previous_run.log`.
+- **The Select list offers only what a run converts**
+  (`#select-list-ube-native`). `_cmd_auto` drops high-confidence UBE-native
+  mods before `--only-mods`; the Select list did not, so a ticked one ended
+  "NOT FOUND" and exit 2, pointing back at the list. `_ube_native_hits` is the
+  one decision: `list_convertible_mods(mark_ube_native=True)` marks those mods
+  and the Select list leaves them out, naming them in the log panel. The
+  Exclusions list and the UBE-mesh scan still list every mod (they exist to
+  find these). `--only-mods` on a dropped mod now says it was dropped and names
+  `--no-ube-native-scan`. The window has no setting for that switch, on
+  purpose: the scan guards against double-converting.
+  WHICH BODIES (`#select-list-bodies`): the list judges in the window, before
+  any run, with the reference bodies the converter finds on its own -- what the
+  Reference bodies dialog starts on. The run judges again in its child with
+  the bodies confirmed in that dialog, which exist only once Convert is
+  pressed, and `_body_trees` caches the window's pair for the session. With the
+  dialog's starting pick the two agree; with another pick they can differ (a
+  listed mod skipped, or a left-out mod the run would convert). Not unified on
+  purpose -- the list cannot know a pick not yet made -- so the Refresh button's
+  tooltip and the log line naming the left-out mods say it.
+- **Refresh rescans** (`#mod-scan-rescan`). `_ARMOR_MOD_DIRS_CACHE` is keyed on
+  the mods root, the enabled set and some switches, never on mod contents, and
+  nothing cleared it; it was built for an in-process Convert that no longer
+  exists. The window's Refresh and Exclusions lists pass `rescan=True`, so a mod
+  updated in MO2 while the window is open is read again; the UBE-mesh scan right
+  after the Exclusions list still reuses that scan.
+- **A tool folder that cannot be written is said out loud**
+  (`#read-only-tool-folder`). The window shows a run only by tailing its log,
+  and the child's "could not write the log" note went to a DEVNULL stderr, so a
+  run in a protected folder showed nothing but "finished (exit N)". The window
+  probes the folder at start (`folder_write_error`: one probe file, created and
+  deleted, since `os.access` says yes to a protected folder) and warns in the
+  log panel; a run whose log never appears says so (`tail_child_log`); a failed
+  settings or exclusions save (the saves' False was never read) says so in the
+  status line every time and in a popup once per kind (`SaveNotice`). Choices
+  still apply for the session.
+- **The window keeps its own log** (`#gui-session-log-kept`). The window tees to
+  `CBBEtoUBE_gui_session.log`, a different file from the run log, but `_worker`
+  still called `release_log_tee` before each run, for a shared-handle clash
+  that no longer exists; after the first run every window-side traceback went
+  nowhere. It no longer releases, and the Tk root's
+  `report_callback_exception` (`tk_error_reporter`) writes a callback's
+  traceback to the session log and the log panel.
+- **The window's wiring is tested through the window** (`#gui-wiring`). Every
+  fix above was tested through a module-level helper and none through the Tk
+  closure that calls it: reverting Refresh's `rescan`/`mark_ube_native`, the
+  run worker's `dry_run` and its dropped `release_log_tee`, and the
+  `report_callback_exception` hook left every GUI test green, and so did
+  dropping the saved settings from Refresh, the overlay list, the exclusions
+  lister, the UBE-mesh scan and the diagnostics zip. `tests/test_gui_wiring.py`
+  builds the real window in a child interpreter, presses those buttons and
+  menu entries and Convert (dry and real) with recorders in place of the
+  helpers and a stand-in conversion child, and checks what each closure passed
+  and under which settings. Pair LOW-s now puts `release_log_tee` back in the
+  worker, where the bug was.
+- **The end-of-run popup words each kind** (`#popup-per-kind`). Every FAILED
+  entry read "did NOT convert -- their armor keeps its previous state", which
+  #one-tally made wrong for the Combined ESP's load-breaking issues: the plugin
+  was built and is unsafe to load. `failure_summary.WRITTEN_BUT_BROKEN` names
+  the failure kinds whose output WAS written (the load-breaking plugin, a
+  CTD-class or unreadable mesh, a partial mesh, a merge that failed or was
+  skipped) with a sentence each; the title counts them as problems in what was
+  written, and every other failure keeps the old wording. Reviewed on 0081b20:
+  a merge that failed or was skipped wrote NO Combined ESP, so counting it as
+  a problem in what was written was wrong too. Those two kinds moved to
+  `failure_summary.NOT_WRITTEN` (same sentence); the title and the status line
+  say "no Combined ESP was built" for them and count only the written-but-broken
+  kinds as problems in what was written (`_own_sentence_parts`).
+- **The --incremental fingerprint skips launch plumbing**
+  (`#fingerprint-skips-plumbing`). It hashed every `CBBE2UBE_*` variable,
+  including ones that cannot change a mesh, so a scripted re-run
+  (`CBBE2UBE_NO_PAUSE=1`) or a pinned log reconverted everything.
+  `_FINGERPRINT_PLUMBING` leaves out NO_PAUSE, RUN_LOG, CONFIG, EXCLUSIONS,
+  SETTINGS_APPLIED and NO_HEADLESS_SETTINGS (the applied settings are hashed as
+  their own variables; exclusions choose mods, which the fingerprint already
+  leaves out). The layout overrides (MO2_INI, MODS_ROOT, GAME_DATA, OUT_MOD) stay
+  in: a different game Data or mods folder can change a mesh. This changes when
+  an incremental run reconverts, never what a NIF becomes.
+  `CBBE2UBE_NO_FINGERPRINT_SKIPS_PLUMBING=1` hashes every variable again.
+  THE SURVEY (2026-09-25): every `CBBE2UBE_*` name read under `src/` and the
+  entry point (~530) is either plumbing -- a launch or UI detail, a log or sink
+  path, a worker count or memory budget, a thread count -- or treated as
+  output. The plumbing, each with its reason in `_FINGERPRINT_PLUMBING_WHY`:
+  NO_PAUSE, RUN_LOG, GLOW_LOG, STANDOFF_LOG, CONFIG, EXCLUSIONS,
+  SETTINGS_APPLIED, NO_HEADLESS_SETTINGS, WORKER_MEM_GB, OVERLAY_WORKERS.
+  Worker counts qualify because output does not depend on the pool size since
+  `#pair-unit-dispatch` (a weight pair is one unit on one worker;
+  `tests/test_pair_unit_dispatch.py` pins it; a 16-worker run matched
+  `--workers 1` on 296 files); WORKER_MEM_GB only picks that count, and
+  OVERLAY_WORKERS is the overlay pass's thread count, one texture per thread.
+  Treated as output and hashed: every tuning knob and `NO_*` switch; the layout
+  and the body and tool paths (UBE_BODY*, CBBE_BODY*, UBE_TEMPLATE, UBE_OSD,
+  TEXCONV, PAPYRUS_COMPILER); and the diagnostics switches (DEBUG_*, *_DEBUG,
+  *_TRACE, *_AUDIT, STAGE_DUMP, FIELD_STATS, NIPPLE_PROBE, BACK_DUMP_DISP,
+  NO_STANDOFF_AUDIT) with RAY_CHUNK and NO_ZEROED_PROBE_MEMO, which run code
+  inside the conversion that no test proves byte-neutral. Hashing too much
+  costs a reconvert; leaving out too much reuses a stale mesh.
+  THE SURVEY IS MACHINE-CHECKED (reviewed on 0081b20: the hand survey missed
+  `CBBE2UBE_ANTIPOKE_SURFACE_QUIET`, which only silences two trace lines of the
+  opt-in #antipoke-surface-req pass, and fit none of the documented groups).
+  QUIET is now plumbing; `tests/test_fingerprint_survey.py` runs that pass with
+  the trace on and off and gets the same garment. The groups became data:
+  `_FINGERPRINT_HASHED_GROUPS` in `auto_convert` -- `switch` (every name read
+  through `_flag`), `knob` (through `_knob`), and three listed groups: `layout
+  and paths`, `diagnostic` and `not proven neutral`, each with its reason. The
+  test parses every string constant and f-string under `src/` and the entry
+  point (504 names on 2026-09-25: 255 knobs, 205 switches, 16 diagnostics, 15
+  layout and paths, 11 plumbing, 2 not proven neutral) and fails on a name in
+  neither the plumbing table nor a group, on a listed name nothing reads any
+  more, and on a name both left out and hashed. A name holding a word from
+  `_FINGERPRINT_LISTED_ONLY` (QUIET, LOG, TRACE, DEBUG, WORKER, MEMO, ...)
+  never joins `switch` or `knob` by how it is read: it must be listed, so a new
+  verbosity switch is judged rather than hashed by default. Planted reads in a
+  copy of a module are the negative control. The diagnostics that ADD printed
+  lines (DEBUG, TRACE, PROBE, STATS ...) stay hashed on purpose: someone who
+  turns one on wants the conversion to run, and left out, an --incremental run
+  would reuse every NIF and print nothing. Only a switch that silences lines
+  can be plumbing.
+- **A mod folder name with a comma is one name** (`#whole-mod-names`). The
+  window passes every name as its own `--exclude-mods` / `--only-mods` /
+  `--coverage-exclude-mods` / `--overlay-*-mods` flag, and `_split_mod_arg`
+  split every value on commas, so "Armor, Clothing Pack" became two names that
+  matched nothing: excluded, it was still converted and covered. The rule: a
+  value that is exactly the name of a folder in the mods root is one name; any
+  other value is split on commas, so `--exclude-mods "a,b"` from a shell still
+  means two mods, and a flag repeated with comma lists still works. (Splitting
+  only when a flag is given once would have broken that mixed form, and still
+  split a single comma folder the window passes.) The mods root is read only
+  when a value holds a comma. `CBBE2UBE_NO_WHOLE_MOD_NAMES=1` splits every value
+  again.
+
+---
+
 ## Effect-shader glow overlays
 
 Some armor (e.g. Daedric) carries additive glow decals as separate shapes with a

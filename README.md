@@ -374,7 +374,8 @@ Useful `auto` flags:
 - `--merged-name NAME` — filename of the merged Combined ESP
 - `--exclude-mods NAME …` — never convert the named mod folders. Use this for
   armor **already built for UBE**: converting it again would double-convert and
-  break it.
+  break it. Repeat the flag or comma-separate the names; a name that is exactly
+  a mod folder's name is kept whole, even when it contains a comma.
 - `--no-ube-native-scan` — turn off the geometry check that skips mods whose
   armor **already fits the UBE body**. Meshes under `meshes/!UBE/` are skipped
   by path regardless; this check is the backstop for UBE-native armor shipped

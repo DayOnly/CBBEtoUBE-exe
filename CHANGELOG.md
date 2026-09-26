@@ -240,6 +240,127 @@ changed: an item is listed as drawn per race only when one of its versions now
 skips some races, and a version is listed as left off only when no item draws
 it any more. `CBBE2UBE_NO_COVERAGE_RACE_SUBSET=1` (set to 1) turns it off.
 
+### Fixed — a run from the window no longer says your settings were "NOT applied"
+
+Every conversion started from the window logged "effective settings: settings
+file NOT applied (already applied by the settings window)", although your
+settings had reached the run. It now says "effective settings: from the
+settings window". "NOT applied" still appears when the settings file really was
+not used (switched off, missing or damaged).
+
+### Fixed — the list after a run says what is wrong with a file that was written
+
+The list that opens after a run called every failed item "did NOT convert —
+keeps its previous state". For a combined plugin that was built but is not safe
+to load, or a mesh that was written but can crash the game, that was wrong. Such
+items now say what was written and what is wrong with it, and the title counts
+them as problems in what was written. When the combined plugin could not be
+built at all, the title and the status line say "no Combined ESP was built"
+instead of counting it as a problem in something written.
+
+### Fixed — "Dry run" with "Add UBE copy" lists the overlays that would get a copy
+
+With overlays only and "Add UBE copy" chosen, the Dry run listed every overlay,
+including ones copy mode never touches (only overlays a RaceMenu script
+registers get a copy). It now lists those, says which mode the list is for, and
+says when a missing tool (texconv, the Papyrus compiler, its Scripts.zip, or the
+flags file inside that zip) would make the real run skip every overlay. In
+either mode it also says when the real run would skip a body, hands or feet
+region because the CBBE or UBE reference mesh for it is missing or cannot be
+read, and the real "Add UBE copy" run now says so in the log too (it used to
+skip that region without a word).
+
+### Fixed — a mistyped "Worker processes" no longer freezes the window
+
+Clearing the Worker processes box (or typing letters) and pressing Convert left
+the window stuck on "Converting..." until you restarted it. Convert now says the
+value must be a whole number and changes nothing.
+
+### Fixed — a dry run no longer pushes the last run's log away
+
+After a run failed, two Dry runs in a row moved its log out of
+`CBBEtoUBE_previous_run.log`, the file a bug report asks for. A dry run now
+writes `CBBEtoUBE_cli.log` and leaves the run log and its list of problems alone.
+
+### Fixed — the Select list no longer offers mods a run skips as already UBE
+
+A mod whose armour already fits UBE is skipped by every run, but the Select list
+still offered it, and ticking it ended the run with "NOT FOUND". The list now
+leaves such mods out and names them in the log below it; if you ask for one
+with `--only-mods`, the log says why it was skipped. The list judges with the
+bodies the Reference bodies dialog starts on; if you pick other bodies there,
+the run judges again with those, and the button's tooltip says so.
+
+### Fixed — "Refresh mod list" sees mods you changed while the window was open
+
+Refresh and the exclusions list showed the first scan of the session, so a mod
+updated in MO2 meanwhile kept its old contents in the list until a restart.
+
+### Fixed — a tool folder that cannot be written is no longer silent
+
+Installed in a protected folder (such as Program Files), the tool could keep no
+log, so the window showed no progress at all, and your settings and exclusions
+looked saved but were gone the next time. The window now says at start that the
+folder cannot be written, says when a run left no log, and says when settings or
+exclusions could not be saved (they still apply until you close the window).
+
+### Fixed — window errors are kept in the window's own log
+
+After the first conversion the window stopped writing `CBBEtoUBE_gui_session.log`,
+so a later error in the window left no trace. It keeps writing it now, and an
+error in the window is shown in the log panel too.
+
+### Fixed — `--incremental` no longer reconverts everything over how it was launched
+
+Re-running with `--incremental` from a script instead of a console (or with the
+log pinned elsewhere, or with fewer workers after a memory error) reconverted
+every mesh, because launch details counted as settings. They no longer do; a
+real setting change still reconverts. The switch that only silences the
+surface anti-poke trace lines no longer counts either, and a new variable the
+tool reads can no longer join the settings list without being checked.
+`CBBE2UBE_NO_FINGERPRINT_SKIPS_PLUMBING=1` (set to 1) counts them again.
+
+### Fixed — a mod whose folder name has a comma can be excluded or picked
+
+A mod folder named with a comma (for example "Armor, Clothing Pack") was read as
+two names, so excluding it did nothing and picking it found nothing. A name that
+matches a mod folder is now kept whole; on the command line `--exclude-mods "a,b"`
+still means two mods. `CBBE2UBE_NO_WHOLE_MOD_NAMES=1` (set to 1) splits every name
+on commas again.
+
+### Fixed — the end-of-run list shows every problem the log counts
+
+Some problems were counted in the log's last line but never reached the list the
+window opens after a run: a problem that stops the combined plugin loading, a
+mesh missing its other body-weight version, a VirtualBody that could not be
+hidden again, patch-checker notes, and a failed tattoo/overlay transfer. A run
+could end "exit code 2 - check the log" with no list at all. The log's count is
+now made from the same list the window reads, so the two always agree; a group
+of similar notes is one line in the list, with its count.
+
+### Fixed — "Dry run" with only overlays ticked no longer converts overlays
+
+"Dry run (list mods, convert nothing)" with Convert overlays on and Convert armor
+off still converted every overlay into the output mod. It now lists the overlays
+it would convert and writes nothing.
+
+### Fixed — importing a wrong or damaged settings file no longer resets your settings
+
+Picking a damaged preset, or another JSON file by mistake, reset every setting to
+its default, saved that, and said "Settings imported". Such a file is now refused
+with a message and nothing changes. Export now says so when the file could not be
+written. A setting typed by hand as "false" or "0" now reads as off.
+
+### Changed — your saved settings apply everywhere, not only to the Convert button
+
+Check setup, the mod lists and the already-UBE mesh scan in the window now use the
+settings you saved (a UBE body picked on the Paths tab no longer shows as
+missing). Running `CBBEtoUBE.exe auto` or `convert` without the window now uses
+`CBBEtoUBE_settings.json` beside the exe too, as the Convert button does; a
+variable you set yourself still wins, and the log's top says which settings came
+from the file. `CBBE2UBE_NO_HEADLESS_SETTINGS=1` (set to 1) makes a run without
+the window ignore the file, as before.
+
 ### Fixed — a garment whose layers share one name keeps every layer
 
 Some garments are built from several layers the author gave the same name, for

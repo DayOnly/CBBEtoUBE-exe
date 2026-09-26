@@ -526,6 +526,116 @@ _NIF_RELEVANT_ARGS = (
     "no_ube_native_scan",  # changes which meshes are treated as already-UBE
 )
 
+# `CBBE2UBE_*` variables that say HOW the tool is launched, never what a mesh
+# becomes, so the fingerprint leaves them out. #fingerprint-skips-plumbing
+# A scripted re-run (NO_PAUSE=1) or a pinned log used to reconvert every NIF.
+#
+# THE SURVEY (2026-09-25, every `CBBE2UBE_*` name read under src/ and the entry
+# point, ~500): each one is PLUMBING -- a launch or UI detail, a log or sink
+# path, a worker count or memory budget, a thread count, a switch that only
+# silences printed lines -- or it is treated as OUTPUT. Only the plumbing below
+# is left out; the reason for each is beside it. Everything else stays hashed,
+# in one of `_FINGERPRINT_HASHED_GROUPS` below, and hashing too much is the
+# safe direction (a needless reconvert, never a stale reuse).
+# THE SURVEY IS MACHINE-CHECKED. Reviewed on 0081b20, the hand survey had missed
+# CBBE2UBE_ANTIPOKE_SURFACE_QUIET, which only silences two trace lines.
+# tests/test_fingerprint_survey.py parses every name under src/ and the entry
+# point and fails on one that is in neither this table nor a group, so the
+# survey cannot go stale unseen. A name joins a group by HOW it is read
+# (`_flag`, `_knob`) or by being listed there -- but a name holding a word from
+# `_FINGERPRINT_LISTED_ONLY` (a log, a trace, a worker count, a memo...) never
+# joins by how it is read: it is listed, here or in a group, with its reason.
+# WORKER COUNTS: `--workers` was already left out (see above). Output does not
+# depend on the pool size since #pair-unit-dispatch put a weight pair on ONE
+# worker as a unit (the race that made 16 workers differ from 1 on 5 collider
+# shapes); tests/test_pair_unit_dispatch.py pins that contract, and a 16-worker
+# run matched a --workers 1 run byte for byte (296 files, 0 differ; measured
+# 2026-09-06, #pair-unit-dispatch in the testing worklog). WORKER_MEM_GB only
+# changes that count. OVERLAY_WORKERS is the overlay transfer's thread count;
+# each thread writes its own texture and never a NIF.
+_FINGERPRINT_PLUMBING_WHY = {
+    "CBBE2UBE_NO_PAUSE": "the keypress at exit",
+    "CBBE2UBE_RUN_LOG": "where the run log goes",
+    "CBBE2UBE_GLOW_LOG": "where the glow diagnostic appends its lines",
+    "CBBE2UBE_STANDOFF_LOG": "where the standoff audit's JSONL goes",
+    "CBBE2UBE_CONFIG": "where the settings file lives; its values arrive as "
+                       "their own variables, which are hashed",
+    "CBBE2UBE_EXCLUSIONS": "where the exclusions file lives; exclusions choose "
+                           "mods, which this fingerprint leaves out",
+    "CBBE2UBE_SETTINGS_APPLIED": "who applied the settings file",
+    "CBBE2UBE_NO_HEADLESS_SETTINGS": "whether a headless run reads the settings "
+                                     "file; the values it sets are hashed",
+    "CBBE2UBE_WORKER_MEM_GB": "the memory budget that picks the worker count",
+    "CBBE2UBE_OVERLAY_WORKERS": "the overlay transfer's thread count",
+    "CBBE2UBE_ANTIPOKE_SURFACE_QUIET": "only silences the #antipoke-surface-req "
+                                       "trace lines; the push they report is "
+                                       "applied either way",
+    "CBBE2UBE_NO_ATOMIC_AUDIT_APPEND": "how the standoff audit's JSONL lines are "
+                                       "appended (#atomic-audit-append); no mesh "
+                                       "reads that file",
+    "CBBE2UBE_NO_ESL_CHUNK_DEDUP": "how the coverage plugin is cut into ESL "
+                                   "pieces (#esl-chunk-dedup); the plugins are "
+                                   "rebuilt every run and no NIF depends on it",
+}
+_FINGERPRINT_PLUMBING = frozenset(_FINGERPRINT_PLUMBING_WHY)
+
+# Words that keep a name out of the read-based groups below: plumbing-shaped
+# names must be judged one by one. Matched against the start of each word of
+# the name ("WORKER" catches OVERLAY_WORKERS).
+_FINGERPRINT_LISTED_ONLY = (
+    "QUIET", "VERBOSE", "SILENT", "LOG", "PRINT", "PAUSE", "PROGRESS",
+    "WORKER", "THREAD", "DEBUG", "TRACE", "AUDIT", "DUMP", "PROBE", "STATS",
+    "MEMO", "CACHE", "CHUNK", "TIMING", "PROFILE", "SETTINGS", "CONFIG",
+)
+
+# Every hashed `CBBE2UBE_*` name is in one of these, and why it is hashed.
+# `read`: every name read through that helper joins; `names`: listed ones.
+# A `{}` in a name is an f-string read (one per body weight).
+_FINGERPRINT_HASHED_GROUPS = {
+    "switch": {
+        "read": "_flag",
+        "why": "turns a pass, a variant or a guard on or off: the mesh maths"},
+    "knob": {
+        "read": "_knob",
+        "why": "a number the mesh maths uses"},
+    "layout and paths": {
+        "names": (
+            "CBBE2UBE_MO2_INI", "CBBE2UBE_MODS_ROOT", "CBBE2UBE_GAME_DATA",
+            "CBBE2UBE_OVERLAY_SLOTS", "CBBE2UBE_UBE_BODY",
+            "CBBE2UBE_UBE_BODY_0", "CBBE2UBE_UBE_BODY_1",
+            "CBBE2UBE_UBE_BODY{}", "CBBE2UBE_CBBE_BODY_0",
+            "CBBE2UBE_CBBE_BODY_1", "CBBE2UBE_CBBE_BODY{}",
+            "CBBE2UBE_UBE_TEMPLATE", "CBBE2UBE_UBE_OSD", "CBBE2UBE_TEXCONV",
+            "CBBE2UBE_PAPYRUS_COMPILER"),
+        "why": "a different game Data, mods folder, body, overlay slot file "
+               "or tool changes what a mesh or texture becomes"},
+    "diagnostic": {
+        "names": (
+            "CBBE2UBE_CLEARANCE_TERM_AUDIT", "CBBE2UBE_COINCIDENT_SKIN_DEBUG",
+            "CBBE2UBE_DEBUG_FINALIZE", "CBBE2UBE_DEBUG_GLOW_CTRL",
+            "CBBE2UBE_FIELD_STATS", "CBBE2UBE_GLOW_RIDE_DEBUG",
+            "CBBE2UBE_LAYER_DEBUG", "CBBE2UBE_NIPPLE_PROBE",
+            "CBBE2UBE_PASS_TRACE", "CBBE2UBE_SEAM_DEBUG",
+            "CBBE2UBE_STANDOFF_BAND_AUDIT", "CBBE2UBE_STANDOFF_TRACE",
+            "CBBE2UBE_SURVIVAL_TRACE", "CBBE2UBE_NO_STANDOFF_AUDIT",
+            "CBBE2UBE_STAGE_DUMP", "CBBE2UBE_BACK_DUMP_DISP"),
+        "why": "turned on to watch a conversion, so the conversion must RUN: "
+               "left out, an --incremental run would reuse every NIF and "
+               "print or write nothing; several also run extra code inside the "
+               "fit that no test proves byte-neutral"},
+    "not proven neutral": {
+        "names": ("CBBE2UBE_RAY_CHUNK", "CBBE2UBE_NO_ZEROED_PROBE_MEMO"),
+        "why": "how the ray casts are batched and whether a body probe is "
+               "remembered: no test proves the NIF bytes the same"},
+}
+
+
+def _fingerprint_skips_plumbing() -> bool:
+    """#fingerprint-skips-plumbing (2026-09-25): does the --incremental
+    fingerprint leave out the launch-plumbing variables? Yes, by default.
+    CBBE2UBE_NO_FINGERPRINT_SKIPS_PLUMBING=1 hashes every `CBBE2UBE_*` again."""
+    return not _flag("CBBE2UBE_NO_FINGERPRINT_SKIPS_PLUMBING", False)
+
 
 def _nif_config_fingerprint(args) -> str:
     """Stable hash of every setting that can change a converted NIF's bytes.
@@ -551,8 +661,9 @@ def _nif_config_fingerprint(args) -> str:
     import hashlib
 
     parts = []
+    _skip = _FINGERPRINT_PLUMBING if _fingerprint_skips_plumbing() else frozenset()
     for k in sorted(os.environ):
-        if k.startswith("CBBE2UBE_"):
+        if k.startswith("CBBE2UBE_") and k.upper() not in _skip:
             parts.append(f"env:{k}={os.environ[k]}")
     for name in _NIF_RELEVANT_ARGS:
         if hasattr(args, name):
@@ -1158,7 +1269,10 @@ def _echo_active_experiment_flags() -> None:
     environment is what the conversion actually reads, and the whole failure mode was
     the two disagreeing."""
     try:
-        skip = ("MO2_INI", "MODS_ROOT", "GAME_DATA", "CONFIG", "OUT_MOD", "NO_PAUSE")
+        # SETTINGS_APPLIED says who applied the settings; the echo below
+        # prints it in words. #settings-everywhere
+        skip = ("MO2_INI", "MODS_ROOT", "GAME_DATA", "CONFIG", "OUT_MOD", "NO_PAUSE",
+                "SETTINGS_APPLIED")
         act = {k: v for k, v in os.environ.items()
                if k.startswith("CBBE2UBE_") and str(v).strip()
                and not any(s in k for s in skip)}
@@ -1376,14 +1490,42 @@ _RUN_FAILURES: "list[dict]" = []
 
 
 def _record_failure(kind: str, source, item, detail: str = "",
-                    severity: str = "failure") -> None:
+                    severity: str = "failure", count: int = 1) -> None:
     """`severity` is "failure" (it did not convert) or "warning" (it converted,
     but the user must hear about it). The GUI words its end-of-run popup from
-    it (src/failure_summary.py). #run-warnings"""
-    _RUN_FAILURES.append({
-        "kind": str(kind), "source": str(source),
-        "item": str(item), "detail": str(detail)[:400],
-        "severity": str(severity)})
+    it (src/failure_summary.py). #run-warnings
+
+    THE ONLY WAY A RUN COUNTS A PROBLEM. #one-tally
+    `_cmd_convert` kept its end-of-run tally in two integers beside this list,
+    and five classes raised the integers with no entry here: a load-breaking
+    issue on the shipped Combined ESP, a mesh missing its _0/_1 partner, a
+    VirtualBody re-hide, patch-validator hits, and (in `auto`) a failed overlay
+    transfer. The log said "1 failure(s)" while the failures file -- the only
+    thing the GUI reads -- was empty, so no popup opened. The tally is now
+    counted FROM this list (`_run_tally`), so the two cannot disagree. `count`
+    lets one entry stand for a class of N, so N validator hits are one line in
+    the popup, not N; it is written only when it is not 1."""
+    entry = {"kind": str(kind), "source": str(source),
+             "item": str(item), "detail": str(detail)[:400],
+             "severity": str(severity)}
+    if int(count) != 1:
+        entry["count"] = int(count)
+    _RUN_FAILURES.append(entry)
+
+
+def _run_tally() -> "tuple[int, int]":
+    """(failures, warnings) of this run, counted from the record. #one-tally"""
+    from . import failure_summary
+    return failure_summary.counts(_RUN_FAILURES)
+
+
+def _first_few(lines, n: int = 3) -> str:
+    """The first `n` of a class's messages for its one failures-file entry;
+    the log lists them all."""
+    lines = [str(x) for x in (lines or [])]
+    head = "; ".join(lines[:n])
+    return head + (f"; ... and {len(lines) - n} more (see the log)"
+                   if len(lines) > n else "")
 
 
 def _failures_file_path() -> Path:
@@ -5144,6 +5286,8 @@ def _stale_output_sweep_failover(output, patches_dir) -> int:
         warn(f"female-model restore after the stale-output put-back failed: "
              f"{plain_error(e)}",
              consequence="a patch may keep a male fallback for a mesh that is back")
+        _record_failure("female-model restore failed", output, "after the "
+                        "stale-output put-back", plain_error(e), severity="warning")
         warns += 1
     return warns
 
@@ -5879,10 +6023,10 @@ def _cmd_convert(args):
               "--ube-body-ref to convert a folder outside a modlist.")
         return 2
 
-    # Each returns whether its check came back clean. One that did not is
-    # printed, recorded as a warning and counted in the tally. #run-warnings
-    _skypatcher_ok = _warn_if_skypatcher_missing()
-    _settings_malformed = _warn_if_settings_file_malformed()
+    # A check that did not come back clean is printed and recorded as a
+    # warning, and the record is what the tally counts. #run-warnings #one-tally
+    _warn_if_skypatcher_missing()
+    _warn_if_settings_file_malformed()
 
     sources = list(args.sources)
     output = args.output
@@ -5903,7 +6047,7 @@ def _cmd_convert(args):
     _orphans_removed = _sweep_orphan_temps_at_start(output, _run_started)
     # Before any per-source patch is written or read (a full run, --only-mods
     # and --plugins-only all come through here). #source-patch-rename
-    _rename_failures = _migrate_source_patch_names_at_start(
+    _migrate_source_patch_names_at_start(
         output, getattr(args, "unmerged_patch_subdir", "_unmerged_patches"))
 
     if len(sources) > 1 and args.esp_name:
@@ -6265,24 +6409,21 @@ def _cmd_convert(args):
         print(f"  (weight-partner completion skipped: {plain_error(_e)})")
 
     # merge_blockers: hard ESP-generation failures -> block auto-merge.
-    # overall_failures: merge_blockers + NIF errors + load failures -> non-zero exit.
-    # overall_warnings: validator notes -> surfaced loudly, don't fail exit.
+    # The end-of-run tally (failures -> non-zero exit; warnings -> surfaced
+    # loudly, exit unchanged) is counted from _RUN_FAILURES: every problem below
+    # is recorded, and recording is what counts it. #one-tally
     merge_blockers = 0
-    overall_failures = 0
-    # Run-level warnings found before the batch: printed where they were found,
-    # recorded there or here, counted now. #run-warnings
+    # Run-level warnings found before the batch were recorded where they were
+    # found (settings file, SkyPatcher, orphan temps, renames); this one is
+    # recorded here. #run-warnings
     if _ube_scan_skipped:
         _record_failure("check skipped", "existing UBE patches", "already-UBE scan",
                         "other mods could not be checked for UBE patches, so armor "
                         "one of them already patched may have been converted again",
                         severity="warning")
-    overall_warnings = (int(_ube_scan_skipped) + int(not _skypatcher_ok)
-                        + int(_settings_malformed)
-                        # recorded at the start AND counted here. #orphan-temps
-                        + int(bool(_orphans_removed))
-                        # one per per-source patch left under its old name.
-                        # #source-patch-rename
-                        + _rename_failures)
+    # Patch-validator hits of the whole batch: ONE entry for the class, so a
+    # batch of N does not put N lines in the popup. #one-tally
+    _validator_all: "list[str]" = []
     for src, r, err in results:
         _is_sweep_src = bool(_vanilla_sweep_esps(src))
         print("\n  " + ("Vanilla sweep (base game + DLC)" if _is_sweep_src
@@ -6310,7 +6451,6 @@ def _cmd_convert(args):
                 merge_blockers += 1
                 _record_failure("source failed", src.name,
                                 "whole source", plain_error(err))
-            overall_failures += 1
             continue
         if r.source_esps:
             print(f"    source ESPs: {len(r.source_esps)}")
@@ -6332,7 +6472,6 @@ def _cmd_convert(args):
                 print(f"       {er.src_path.name}: {er.reason}")
                 _record_failure("mesh failed", src.name,
                                 er.src_path.name, er.reason)
-            overall_failures += r.nif_errors
         if r.nif_load_failures:
             warn(f"LOAD FAILURES on {len(r.nif_load_failures)} output NIFs",
                  consequence="the files below were written but cannot be read back; "
@@ -6341,7 +6480,6 @@ def _cmd_convert(args):
             for p in r.nif_load_failures:
                 print(f"       {p}")
                 _record_failure("output mesh unreadable", src.name, p)
-            overall_failures += 1
         if r.nif_invariant_warnings:
             # CTD-class, symmetric with the merged-ESP postflight: a zero-vert
             # shape is invisible and an over-cap shape left in <=1 partition
@@ -6355,7 +6493,6 @@ def _cmd_convert(args):
             for w in r.nif_invariant_warnings:
                 print(f"       {w}")
                 _record_failure("CTD-class mesh issue", src.name, w)
-            overall_failures += len(r.nif_invariant_warnings)
         if r.virtualbody_rehide_failures:
             warn(f"VirtualBody re-hide: {len(r.virtualbody_rehide_failures)} NIF(s) "
                  "may show a visible body-double",
@@ -6363,7 +6500,12 @@ def _cmd_convert(args):
                  indent="    ")
             for w in r.virtualbody_rehide_failures:
                 print(f"       {w}")
-            overall_warnings += len(r.virtualbody_rehide_failures)
+            _record_failure("VirtualBody re-hide failed", src.name,
+                            f"{len(r.virtualbody_rehide_failures)} mesh(es) may show "
+                            "a visible body-double",
+                            _first_few(r.virtualbody_rehide_failures),
+                            severity="warning",
+                            count=len(r.virtualbody_rehide_failures))
         # ESP generation failure: that ESP's ARMA/ARMO absent from merge (invisible).
         # Non-zero exit, but NOT a merge_blocker (one bad ESP shouldn't lose the rest).
         if r.esp_gen_failures:
@@ -6376,7 +6518,6 @@ def _cmd_convert(args):
                 _name, _why = (_f if isinstance(_f, (list, tuple)) and
                                len(_f) == 2 else (_f, ""))
                 _record_failure("plugin patch failed", src.name, _name, _why)
-            overall_failures += len(r.esp_gen_failures)
         if r.esp_skipped_no_armor:
             print(f"    {r.esp_skipped_no_armor} source ESP(s) skipped: no armor "
                   f"(landscape/quest/patch ESPs) — not a failure")
@@ -6387,8 +6528,8 @@ def _cmd_convert(args):
                  indent="    ")
             _record_failure("partial mesh (shape dropped)", src.name,
                             f"{r.nif_partial} mesh(es)",
-                            "see conversion report, PARTIAL section")
-            overall_failures += r.nif_partial
+                            "see conversion report, PARTIAL section",
+                            count=r.nif_partial)
         # Validator warnings: surfaced loudly but don't block the merge or fail exit.
         validator_hits = []
         for stats in (r.esp_stats_list or
@@ -6402,7 +6543,7 @@ def _cmd_convert(args):
                  indent="    ")
             for w in validator_hits:
                 print(f"       {w}")
-            overall_warnings += len(validator_hits)
+            _validator_all += [f"{src.name}: {w}" for w in validator_hits]
         print(f"    Textures   : {r.textures_copied} files copied")
         if r.notes:
             for n in r.notes:
@@ -6410,6 +6551,11 @@ def _cmd_convert(args):
                 if n.startswith("!! patch validator"):
                     continue
                 print(f"    note: {n}")
+    if _validator_all:
+        _record_failure("patch validator", "per-source patches",
+                        f"{len(_validator_all)} warning(s); each patch still loads",
+                        _first_few(_validator_all), severity="warning",
+                        count=len(_validator_all))
     print(f"\n  Combined output mod: {output}")
 
     # Postflight: scan the WHOLE output tree for body meshes missing a _0/_1
@@ -6423,7 +6569,10 @@ def _cmd_convert(args):
                  indent="\n")
             for _w in _wp_miss:
                 print(f"     {_w}")
-            overall_warnings += len(_wp_miss)
+            _record_failure("missing _0/_1 partner", "output mod",
+                            f"{len(_wp_miss)} body mesh(es), invisible at one "
+                            "body weight", _first_few(_wp_miss),
+                            severity="warning", count=len(_wp_miss))
     except Exception as _wpe:
         warn(f"postflight weight-partner scan skipped: {plain_error(_wpe)}",
              consequence="missing _0/_1 partners were not checked this run")
@@ -6474,7 +6623,10 @@ def _cmd_convert(args):
                     print(f"     {_d}")
                 if len(_wp_div) > 20:
                     print(f"     ... and {len(_wp_div) - 20} more")
-                overall_warnings += len(_wp_div)
+                _record_failure("_0/_1 parity", "output mod",
+                                f"{len(_wp_div)} shape(s) convert differently at "
+                                "_0 vs _1", _first_few(_wp_div),
+                                severity="warning", count=len(_wp_div))
         except Exception as _wpe2:
             warn(f"postflight weight-partner parity scan skipped: {plain_error(_wpe2)}",
                  consequence="_0/_1 parity was not checked this run")
@@ -6517,14 +6669,13 @@ def _cmd_convert(args):
                   f"fixed {vc['shapes_fixed']} shape(s) in "
                   f"{vc['files_changed']} file(s)")
             if vc.get("pool_error"):
-                # Printed, counted and recorded. Silence here is what made an
-                # out-of-memory death at the end of a multi-hour run look like
-                # a clean finish. #commit-headroom
+                # Printed, and recorded -- which counts it. Silence here is what
+                # made an out-of-memory death at the end of a multi-hour run
+                # look like a clean finish. #commit-headroom #one-tally
                 warn(vc['pool_error'],
                      consequence="the vertex-colour sweep fell back to running one file at "
                                  "a time and finished; nothing was lost",
                      fix="if this repeats, lower the worker count in Settings")
-                overall_warnings += 1
                 # A WARNING, not a failure: the sweep fell back to serial and
                 # finished. Recorded as a failure, the GUI popup titled it
                 # "1 item(s) failed to convert" and told the user the armour
@@ -6560,8 +6711,9 @@ def _cmd_convert(args):
                 # #stale-output-sweep: move our old conversions no source makes
                 # any more -- on a recorded source and a positive reason -- out
                 # of meshes\!UBE before the restore and coverage read it. The
-                # merge below confirms the moves or they all go back.
-                overall_warnings += _stale_output_sweep(
+                # merge below confirms the moves or they all go back. Its
+                # warnings are recorded, so the tally counts them. #one-tally
+                _stale_output_sweep(
                     args, output, patches_dir, results, claimed_dst_paths,
                     {"mesh_index": mesh_vfs_index, "bsa": _sos_bsa,
                      "npc_worn": batch_npc_worn, "winner_np": batch_winner_np,
@@ -6608,8 +6760,7 @@ def _cmd_convert(args):
                     # coverage moved inside the merge that accounting was lost.)
                     _record_failure("coverage", output, "unified coverage",
                                     f"winner-scan incomplete (targets={_cov_targets})",
-                                    severity="warning")
-                    overall_warnings += 1      # recorded AND counted #run-warnings
+                                    severity="warning")   # counted #one-tally
                 _cov_only = sorted(
                     patches_dir.glob("UBE_Mod*Coverage* UBE patch.esp"))
                 # Use coverage as the SOLE generator ONLY when it fully ran and
@@ -6642,7 +6793,7 @@ def _cmd_convert(args):
                     # #stale-output-sweep: the fallback merges what a run
                     # without the sweep would -- every moved file goes back
                     # before the patches are listed.
-                    overall_warnings += _stale_output_sweep_failover(output, patches_dir)
+                    _stale_output_sweep_failover(output, patches_dir)
                     patch_paths = _per_source_patch_paths(patches_dir)
                 merged_out = output / args.merged_name
                 print(f"\n--- auto-merging {len(patch_paths)} patch(es) "
@@ -6728,12 +6879,20 @@ def _cmd_convert(args):
                                  fix="check the unified coverage step above for "
                                      "errors, or rerun just the sweep (Select mods "
                                      "-> 'vanilla')")
+                            # Counted and in the failures file. #one-tally
+                            _record_failure("vanilla coverage missing", "vanilla",
+                                            "the delivered coverage",
+                                            "links 0 vanilla/DLC records",
+                                            severity="warning")
                         elif _sweep_dead:
                             warn("the VANILLA SWEEP ran but linked 0 records",
                                  consequence="vanilla armor no mod overrides will be "
                                              "invisible on UBE actors",
                                  fix="check the VANILLA SWEEP pass above for errors, or "
                                      "rerun just the sweep (Select mods -> 'vanilla')")
+                            _record_failure("vanilla coverage missing", "vanilla",
+                                            "the vanilla sweep", "linked 0 records",
+                                            severity="warning")
                     _sos_merged = patch_paths is _cov_only   # #stale-output-sweep
                     # Reconcile alt-texture 3D indices against the converted NIFs.
                     # Shape reordering during the NIF merge shifts MO2S/MO3S indices;
@@ -6808,8 +6967,21 @@ def _cmd_convert(args):
                                 print(f"       CTD  [{_n}] {_w}")
                             for _n, _w in _pf["soft"]:
                                 print(f"       warn [{_n}] {_w}")
-                            overall_failures += len(_pf["ctd"])
-                            overall_warnings += len(_pf["soft"])
+                            # The SHIPPED plugin: the popup must name it, not
+                            # only the log. #one-tally
+                            if _pf["ctd"]:
+                                _record_failure(
+                                    "load-breaking plugin issue", "Combined ESP",
+                                    f"{len(_pf['ctd'])} issue(s): the plugin is NOT "
+                                    "safe to load",
+                                    _first_few(f"[{_n}] {_w}" for _n, _w in _pf["ctd"]),
+                                    count=len(_pf["ctd"]))
+                            if _pf["soft"]:
+                                _record_failure(
+                                    "plugin postflight", "Combined ESP",
+                                    f"{len(_pf['soft'])} other issue(s)",
+                                    _first_few(f"[{_n}] {_w}" for _n, _w in _pf["soft"]),
+                                    severity="warning", count=len(_pf["soft"]))
                         else:
                             print(f"  postflight: Combined "
                                   f"({len(_pf['pieces'])} piece(s)) validated clean")
@@ -6822,7 +6994,6 @@ def _cmd_convert(args):
                                      "are still in the output", indent="")
                     _record_failure("merge failed", "Combined ESP",
                                     args.merged_name, plain_error(e))
-                    overall_failures += 1
             else:
                 print(f"\n  (no patches found in {patches_dir} — "
                       "skipping auto-merge)")
@@ -6837,8 +7008,7 @@ def _cmd_convert(args):
     # #stale-output-sweep: keep this run's moves only when the new Combined was
     # written from coverage and names none of them, else put every file back;
     # then record what this run converted, and from which source.
-    overall_warnings += _stale_output_sweep_finish(args, output, results,
-                                                   merged=_sos_merged)
+    _stale_output_sweep_finish(args, output, results, merged=_sos_merged)
 
     if not _coverage_ran:
         # Unified coverage is the ONLY coverage model and it is emitted as part
@@ -6856,9 +7026,9 @@ def _cmd_convert(args):
         _record_failure("coverage", output, "unified coverage",
                         "merge did not run, so no coverage was generated",
                         severity="warning")
-        # Counted too: measured 2026-09-15, this printed NO RACE COVERAGE
-        # GENERATED and the run still ended "=== all clear ===". #run-warnings
-        overall_warnings += 1
+        # Counted too (the record is the count): measured 2026-09-15, this
+        # printed NO RACE COVERAGE GENERATED and the run still ended
+        # "=== all clear ===". #run-warnings #one-tally
 
     if args.render_previews:
         from . import preview
@@ -6909,6 +7079,8 @@ def _cmd_convert(args):
         workers=(args.workers if args.workers is not None
                  else default_worker_count()))
 
+    # Counted from the record the failures file is written from. #one-tally
+    overall_failures, overall_warnings = _run_tally()
     if overall_failures or overall_warnings:
         print(f"\n=== {overall_failures} failure(s), "
               f"{overall_warnings} warning(s) ===")
@@ -9123,9 +9295,12 @@ _BATCH_MESH_INDEX: "dict[str, dict]" = {}
 # #bsa-only-sources
 _SELECTION_BSA_INDEX: "dict[str, _BsaMeshIndex]" = {}
 
-# Memo of _find_armor_mod_dirs results so the GUI Refresh and the subsequent
-# Convert (same process) share one discovery pass. _BATCH_MESH_INDEX side-effect
-# is set on the first call and persists through cache hits.
+# Memo of _find_armor_mod_dirs results so repeated discovery in one process
+# (the UBE-mesh scan right after the Exclusions list) shares one pass.
+# _BATCH_MESH_INDEX side-effect is set on the first call and persists through
+# cache hits. The key holds no mod contents, so the window's Refresh and
+# Exclusions lists pass rescan=True and forget it: a mod updated in MO2 while
+# the window is open is read again. #mod-scan-rescan
 _ARMOR_MOD_DIRS_CACHE: "dict[tuple, list[dict]]" = {}
 
 
@@ -9486,12 +9661,24 @@ def _cmd_scan(args):
 
 
 def list_convertible_mods(output_dir: "Path | None" = None,
-                          progress=None) -> list:
+                          progress=None, *, rescan: bool = False,
+                          mark_ube_native: bool = False) -> list:
     """Discover the armor mods the `auto` pipeline would convert, WITHOUT
     converting — for the GUI selection list. Mirrors `_cmd_auto`'s discovery
     EXACTLY so the names match what `--only-mods` filters against. Returns
     [{'name': str, 'nifs': int}] in load-priority order. Returns [] if the
-    modpack layout can't be located."""
+    modpack layout can't be located.
+
+    `rescan` forgets the memoised folder scan first, so a mod updated in MO2
+    since the last scan is read again (the window's Refresh and Exclusions
+    lists). #mod-scan-rescan
+
+    `mark_ube_native` adds 'ube_native': True to each mod the run's UBE-native
+    scan drops before --only-mods is applied (the same `_ube_native_hits`), so
+    the Select list can leave it out instead of offering a mod the run then
+    refuses as "NOT FOUND". #select-list-ube-native"""
+    if rescan:
+        _ARMOR_MOD_DIRS_CACHE.clear()
     lay = paths.discover_layout()
     paths.export_to_env(lay)
     mr = paths.mods_root()
@@ -9525,6 +9712,10 @@ def list_convertible_mods(output_dir: "Path | None" = None,
         v = c.get("armor_nifs", 0)
         return len(v) if isinstance(v, (list, tuple, set)) else int(v or 0)
     out = [{"name": c["name"], "nifs": _n(c)} for c in cands]
+    if mark_ube_native:
+        native = {n for n, _s in _ube_native_hits(cands)}
+        for it in out:
+            it["ube_native"] = it["name"] in native
     # Vanilla sweep pseudo-source, LAST (mirrors its lowest-priority position
     # in _cmd_auto). The name must be exactly "vanilla" — that's the token
     # --only-mods special-cases — so Select-mods runs can rerun just the sweep.
@@ -9717,6 +9908,29 @@ def _ube_native_verdict(mod_dir, ube_tree, cbbe_tree, sample_per_mod=6):
     return "unknown", "low", [f"shape fit: dUBE={du:.2f}, dCBBE={dc:.2f}"]
 
 
+def _ube_native_hits(candidates: list) -> "list[tuple[str, str]]":
+    """(name, first signal) of each candidate the UBE-native scan would drop:
+    a HIGH-confidence "ube" verdict. One decision for the run's drop and the
+    window's Select list (#select-list-ube-native). Fails open: no reference
+    bodies or an unreadable mod is no hit."""
+    try:
+        ube_tree, cbbe_tree = _body_trees()
+    except Exception:
+        return []
+    if ube_tree is None or cbbe_tree is None:
+        return []
+    native = []
+    for c in candidates:
+        try:
+            verdict, conf, signals = _ube_native_verdict(
+                c["path"], ube_tree, cbbe_tree)
+        except Exception:
+            continue            # unreadable -> convert as normal
+        if verdict == "ube" and conf == "high":
+            native.append((c["name"], signals[0] if signals else ""))
+    return native
+
+
 def _drop_ube_native_candidates(candidates: list) -> list:
     """Drop candidates whose armor is ALREADY shaped for UBE.
 
@@ -9729,21 +9943,7 @@ def _drop_ube_native_candidates(candidates: list) -> list:
     Fails OPEN at every step -- no reference bodies, an unreadable mod, or any
     other error converts as normal. Wrongly skipping a real CBBE mod leaves its
     armor unfitted in game, which is far worse than double-converting one."""
-    try:
-        ube_tree, cbbe_tree = _body_trees()
-    except Exception:
-        return candidates
-    if ube_tree is None or cbbe_tree is None:
-        return candidates
-    native = []
-    for c in candidates:
-        try:
-            verdict, conf, signals = _ube_native_verdict(
-                c["path"], ube_tree, cbbe_tree)
-        except Exception:
-            continue            # unreadable -> convert as normal
-        if verdict == "ube" and conf == "high":
-            native.append((c["name"], signals[0] if signals else ""))
+    native = _ube_native_hits(candidates)
     if not native:
         return candidates
     skip = {n for n, _s in native}
@@ -9792,13 +9992,101 @@ def scan_ube_native(domain: str = "armor", sample_per_mod: int = 6,
     return out
 
 
-def _split_mod_arg(vals):
+def _whole_mod_names() -> bool:
+    """#whole-mod-names (2026-09-25): is a --*-mods value that names an
+    existing mod folder kept whole, commas and all? Yes, by default.
+    CBBE2UBE_NO_WHOLE_MOD_NAMES=1 splits every value on commas again."""
+    return not _flag("CBBE2UBE_NO_WHOLE_MOD_NAMES", False)
+
+
+def _is_mod_folder(name: str, mods_root) -> bool:
+    """True when `name` is exactly one folder in the mods root."""
+    if not name or "/" in name or "\\" in name or mods_root is None:
+        return False
+    try:
+        return (Path(mods_root) / name).is_dir()
+    except (OSError, ValueError):
+        return False
+
+
+def _split_mod_arg(vals, mods_root=None):
     """Parse a repeatable + comma-separated --*-mods CLI arg into a list of mod
-    names, or None when unset/empty."""
+    names, or None when unset/empty.
+
+    THE RULE (#whole-mod-names): a value that is exactly the name of a folder in
+    the mods root is ONE name, commas included; any other value is split on
+    commas, so `--exclude-mods "a,b"` still means two mods. The window passes
+    every name as its own flag and every name it passes is a folder it listed,
+    so a folder called "Armor, Clothing Pack" used to arrive as two names that
+    matched nothing -- the mod was converted and covered although excluded.
+    The mods root is looked up only when a value holds a comma."""
     if not vals:
         return None
-    out = [n.strip() for chunk in vals for n in chunk.split(",") if n.strip()]
+    whole = _whole_mod_names()
+    root = mods_root
+    out = []
+    for chunk in vals:
+        v = str(chunk).strip()
+        if whole and "," in v:
+            if root is None:
+                try:
+                    root = paths.mods_root()
+                except Exception:
+                    root = None
+            if _is_mod_folder(v, root):
+                out.append(v)
+                continue
+        out.extend(n.strip() for n in str(chunk).split(",") if n.strip())
     return out or None
+
+
+def _list_overlays_only(args, output, lay, overlay_transfer) -> int:
+    """`auto --overlays-only --list-only`: name the overlays a transfer would
+    remap, per region and per mod, and write nothing. #dry-run-writes-nothing
+
+    For the mode the real run would use, and saying so (#dry-run-copy-mode):
+    under --overlay-copy only the overlays a RaceMenu paint script registers
+    get a copy, and a missing tool skips the whole real run -- the list used
+    to show the replace mode's set either way. A region whose CBBE/UBE
+    reference mesh is missing or unreadable is skipped by either pass, and
+    the list says so under that region (`plan_region_gaps`, the pass's own
+    check)."""
+    kw = dict(skip_male=getattr(args, "overlay_skip_male", False),
+              only_mods=_split_mod_arg(getattr(args, "overlay_mods", None)),
+              exclude_mods=_split_mod_arg(getattr(args, "overlay_exclude_mods", None)))
+    if getattr(args, "overlay_copy", False):
+        print("\n--- OVERLAYS-ONLY (--list-only, 'Add UBE copy' mode): overlays "
+              "that WOULD get a UBE copy ---")
+        print("  copy mode bakes only overlays a RaceMenu paint script "
+              "registers; every original stays as it is")
+        plan = overlay_transfer.plan_overlay_copies(output, lay, **kw)
+        gap = overlay_transfer.copy_mode_tool_gap()
+    else:
+        print("\n--- OVERLAYS-ONLY (--list-only, replace mode): overlays that "
+              "WOULD be remapped to UBE UV ---")
+        plan = overlay_transfer.plan_overlays(output, lay, **kw)
+        gap = overlay_transfer.replace_mode_tool_gap()
+    region_gaps = overlay_transfer.plan_region_gaps(plan)
+    total = 0
+    mods: "dict[str, int]" = {}
+    for region, items in plan.items():
+        print(f"  {region}: {len(items)} overlay(s)")
+        if region in region_gaps:
+            print(f"    !! the real run would SKIP this region: {region_gaps[region]}")
+        total += len(items)
+        for src in items.values():
+            if isinstance(src, str):                 # copy plan: the mod itself
+                mod = src
+            else:
+                mod = (src[-1] if isinstance(src, (tuple, list)) and len(src) >= 3
+                       else "?")
+            mods[mod] = mods.get(mod, 0) + 1
+    for mod, n in mods.items():
+        print(f"    {mod}  ({n})")
+    if gap:
+        print(f"  !! the real run would SKIP every overlay above: {gap}")
+    print(f"\n--list-only: {total} overlay(s) listed; nothing was written.")
+    return 0
 
 
 def _cmd_auto(args):
@@ -9836,6 +10124,13 @@ def _cmd_auto(args):
     # (slow) armor reconvert. Returns right after.
     if getattr(args, "overlays_only", False):
         from . import overlay_transfer
+        if getattr(args, "list_only", False):
+            # --list-only IS "convert nothing" -- the GUI's Dry run -- and this
+            # branch returned before the list-only check below, so a dry run
+            # with only overlays ticked rebaked every overlay into the output
+            # mod. List what WOULD be remapped; write nothing.
+            # #dry-run-writes-nothing
+            return _list_overlays_only(args, output, lay, overlay_transfer)
         print("\n--- OVERLAYS-ONLY: body overlay (tattoo) -> UBE UV transfer ---")
         ovl = overlay_transfer.convert_overlays(
             output, lay,
@@ -9886,16 +10181,18 @@ def _cmd_auto(args):
     # as normal, because wrongly skipping a real CBBE mod leaves its armor
     # unfitted in game. Needs both reference bodies; without them the scan
     # returns nothing and the pipeline is unchanged.
+    _ube_native_dropped: "set[str]" = set()
     if not getattr(args, "no_ube_native_scan", False):
+        _before_scan = {c["name"].lower() for c in candidates}
         candidates = _drop_ube_native_candidates(candidates)
+        _ube_native_dropped = _before_scan - {c["name"].lower() for c in candidates}
 
     # --only-mods: reconvert a subset. The merge still re-globs ALL patches in
     # _unmerged_patches/ so unselected mods keep their existing patch + meshes.
     only = getattr(args, "only_mods", None)
     _sweep_only_requested = False
     if only:
-        wanted = {n.strip().lower()
-                  for chunk in only for n in chunk.split(",") if n.strip()}
+        wanted = {n.lower() for n in (_split_mod_arg(only, mr) or ())}
         # "vanilla" selects the vanilla sweep (a pseudo-source, not a mod dir).
         _sweep_only_requested = "vanilla" in wanted
         wanted.discard("vanilla")
@@ -9913,6 +10210,14 @@ def _cmd_auto(args):
             # be absent here -- that cost three arms on 2026-09-07 -- so name
             # the right list and show the near misses instead of a bare refusal.
             for miss in missing:
+                if miss in _ube_native_dropped:
+                    # Dropped above, before this filter: say so, rather than
+                    # send the reader to a list that offered it.
+                    # #select-list-ube-native
+                    print(f"    '{miss}' -- skipped by the UBE-native scan (its "
+                          "armour already fits the UBE body); add "
+                          "--no-ube-native-scan to convert it anyway")
+                    continue
                 real = _near_mod_names(miss, all_names)
                 if real:
                     print(f"    '{miss}' -- did you mean: "
@@ -10025,8 +10330,10 @@ def _cmd_auto(args):
     #
     # The one post-convert step that CAN still fail is the opt-in overlay
     # transfer, which caught its own exception and let the run exit 0. It now
-    # counts, so `--convert-overlays` failing is visible in the exit code.
-    post_merge_failures = 0
+    # counts, so `--convert-overlays` failing is visible in the exit code:
+    # counted from the failures recorded after this point, so the exit code
+    # and the GUI's popup read one record. #one-tally
+    _failures_at_convert_end = _run_tally()[0]
 
     # Vanilla race coverage (Vanilla_UBE_Race_Compat.esp) REMOVED 2026-07-03:
     # RaceCompatibility SKSE / RaceDispatcher does this race + nude-skin dispatch
@@ -10063,10 +10370,12 @@ def _cmd_auto(args):
         except Exception as e:
             # Counted: the user explicitly asked for this with
             # --convert-overlays, so exiting 0 hides that the textures they
-            # expect were never written.
-            post_merge_failures += 1
+            # expect were never written. Recorded, which is what counts it,
+            # so the GUI's popup names it too. #one-tally
             warn(f"overlay transfer FAILED: {plain_error(e)}",
                  consequence="overlays were not transferred this run")
+            _record_failure("overlay transfer failed", "body overlays",
+                            "every selected overlay", plain_error(e))
 
     # Pre-flight: missing hands/feet .tri makes them stay CBBE-shaped while the
     # body morphs UBE (built without 'Build Morphs'). Surface the warning loudly.
@@ -10084,6 +10393,7 @@ def _cmd_auto(args):
         pass
 
     _enable = f"'{output.name}' + its Combined ESP(s)"
+    post_merge_failures = _run_tally()[0] - _failures_at_convert_end
     if post_merge_failures:
         warn(f"{post_merge_failures} post-convert phase(s) FAILED",
              consequence="see the errors above; the run is reported as failed",
