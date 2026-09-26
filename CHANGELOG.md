@@ -6,8 +6,11 @@
 
 `CBBEtoUBE.exe check-setup` (the setup check for when the window will not
 start) ignored your saved settings, so a UBE body you picked on the Paths tab
-showed as OK in the window but as a failure there. It now checks with the same
-settings as the window, and its first line says where they came from.
+showed as OK in the window but as a failure there. It now checks with your
+saved settings, as the window does, and says where they came from before its
+checks. One difference remains: a `CBBE2UBE_` setting you set yourself in the
+environment (or in an MO2 executable entry) wins over the saved file here, as
+it does for a run without the window, while the window uses the saved file.
 
 Running `CBBEtoUBE.exe auto` without the window now also skips the mods on your
 Exclusions list, as the Convert button does. Before, only the settings reached

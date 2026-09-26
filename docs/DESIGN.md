@@ -3342,8 +3342,11 @@ reported through `_report_coverage_holds`:
   `apply_saved_settings` like `auto`: same marker, same switch, and a variable
   already set in the environment wins, as it does for the headless run it
   checks (the window's overlay lays the file over its own environment instead;
-  the two differ only when the shell sets a `CBBE2UBE_*` path itself). Through
-  the entry point its first line is the `effective settings:` line; a direct
+  the two differ whenever the environment carries any setting the window
+  manages -- a body path, or a switch such as `CBBE2UBE_NO_ZEROED_BODY_REFS`,
+  even one the file leaves at its default). Through the entry point it prints
+  the `effective settings:` line before its checks (after whatever the
+  converter prints while it loads); a direct
   `_cmd_check_setup` call (`python -m src.auto_convert`) prints the checks alone,
   as before. `scan` and `discover-body-ref` still read the environment only.
   `CBBE2UBE_NO_HEADLESS_SETTINGS=1`.
