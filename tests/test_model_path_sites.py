@@ -272,17 +272,35 @@ def _dead_female_as_is(mod2: bytes, mod3: bytes, standin=None) -> dict:
     return got
 
 
-@pytest.mark.parametrize("mod2", [M2, b"armor\\elf\x92s\\m_0.nif"],
-                         ids=["undefined-0x81", "apostrophe-0x92"])
-def test_the_male_path_as_it_is_keeps_its_bytes_with_arma_path_bytes_off(
-        monkeypatch, mod2):
+@pytest.mark.parametrize("mod2,written", [
+    (M2, M2),                                                 # 0x81 back as itself
+    (b"armor\\elf\x92s\\m_0.nif", b"armor\\elf\xe2\x80\x99s\\m_0.nif")],  # UTF-8
+    ids=["undefined-0x81", "apostrophe-0x92"])
+def test_the_male_path_as_it_is_is_written_utf8_with_arma_path_bytes_off(
+        monkeypatch, mod2, written):
     """The exact failing input: MOD2 = MOD3, the female slot dead, the male path
     drawn as it is, only CBBE2UBE_NO_ARMA_PATH_BYTES=1 set. It raised
-    UnicodeEncodeError on 0x81; the male path is now the source's bytes."""
+    UnicodeEncodeError on 0x81. With #arma-path-bytes off the record is
+    written UTF-8 like the parent (0x92's text as E2 80 99); a byte cp1252
+    leaves undefined comes back as itself instead of raising."""
     monkeypatch.setenv(PB_OFF, "1")
     got = _dead_female_as_is(mod2, mod2)
-    assert got[b"MOD3"] == mod2 + b"\x00"
+    assert got[b"MOD3"] == written + b"\x00"
     assert got["log"] == [["male_as_is", "orig", "slot"]]
+
+
+@pytest.mark.parametrize("standin", ["armor\\x\udc81y\\elf’s_0.nif",
+                                     "armor\\plain\\elf_0.nif"],
+                         ids=["undefined-and-apostrophe", "ascii"])
+def test_what_the_rebuild_writes_the_read_back_finds_with_arma_path_bytes_off(
+        monkeypatch, standin):
+    """Review of 56be72a: the rebuild wrote a stand-in cp1252 while the
+    postflight's `_model_path_read` read UTF-8 with the byte dropped, so it
+    named a NIF that does not exist (a false missing-nif). Written and read
+    back one way, the read-back is the very text the lookup was asked about."""
+    monkeypatch.setenv(PB_OFF, "1")
+    got = _dead_female_as_is(M2, M2, standin=standin)
+    assert up._model_path_read(got[b"MOD3"]) == "!UBE\\" + standin
 
 
 def test_at_defaults_the_male_path_as_it_is_keeps_its_bytes():
@@ -310,12 +328,13 @@ def test_with_both_switches_set_the_male_path_is_written_as_before(monkeypatch):
     assert got[b"MOD3"] == b"armor\\elf\xe2\x80\x99s\\m_0.nif\x00"
 
 
-def test_a_stand_in_read_by_the_one_decoder_is_written_back(monkeypatch):
-    """A stand-in comes from the vanilla armatures, read by the one decoder; it
-    is written through the same codec with #arma-path-bytes off too."""
+def test_a_stand_in_is_written_utf8_with_arma_path_bytes_off(monkeypatch):
+    """A stand-in comes from the vanilla armatures, read by the one decoder;
+    with #arma-path-bytes off it is written UTF-8 like every other path of the
+    record, its undefined byte given back as itself."""
     monkeypatch.setenv(PB_OFF, "1")
     got = _dead_female_as_is(M2, M2, standin="armor\\x\udc81y\\elf’s_0.nif")
-    assert got[b"MOD3"] == b"!UBE\\armor\\x\x81y\\elf\x92s_0.nif\x00"
+    assert got[b"MOD3"] == b"!UBE\\armor\\x\x81y\\elf\xe2\x80\x99s_0.nif\x00"
     assert got["log"] == [["orig", "slot", "standin"]]
 
 
@@ -324,3 +343,33 @@ def test_the_utf8_writer_gives_an_undefined_byte_back_and_nothing_else_moves():
     assert up._model_path_zstring("a\\elf’s.nif", False) == \
         b"a\\elf\xe2\x80\x99s.nif\x00", "any other text as before"
     assert up._model_path_zstring("a\\elf’s.nif", True) == b"a\\elf\x92s.nif\x00"
+
+
+def test_a_hand_made_ube_path_with_such_a_byte_is_a_claim(tmp_path):
+    """Review of 56be72a: the UBE-refit reader in `_third_party_ube_covered_armos`
+    (a hand-made UBE armature covers an armour, so ours is withheld) had no
+    row. Its MOD3 holds 0x92; the mesh exists under that name, so the armour
+    is covered. A revert to the old UTF-8 `ignore` read drops the byte, finds
+    no mesh and double-covers the armour."""
+    from src.esp import Group, Record, encode_subrecord as enc, encode_zstring
+    from tests.test_skypatcher_patch_recognition import (UBE_RACE, HEAD,
+                                                         _armo, _save)
+    ac._UBE_COVERED_CACHE.clear()
+    try:
+        pack = tmp_path / "Softbody Pack"
+        p = (enc(b"EDID", encode_zstring("RefitAA"))
+             + enc(b"BOD2", struct.pack("<II", HEAD, 0))
+             + enc(b"RNAM", struct.pack("<I", (1 << 24) | UBE_RACE))
+             + enc(b"MOD3", b"!UBE\\Pack\\elf\x92s_1.nif\x00"))
+        arma = Record(sig=b"ARMA", flags=0, formid=0x02000800, payload=p)
+        armo = _armo(0x02000801, HEAD)
+        armo.payload += enc(b"MODL", struct.pack("<I", 0x02000800))
+        _save(pack / "Pack.esp", ["Skyrim.esm", "UBE_AllRace.esp"],
+              [Group(label=b"ARMA", records=[arma]),
+               Group(label=b"ARMO", records=[armo])])
+        mesh = pack / "meshes" / "!UBE" / "Pack" / "elf\u2019s_1.nif"
+        mesh.parent.mkdir(parents=True)
+        mesh.write_bytes(b"presence is all the check reads")
+        assert ("pack.esp", 0x801) in ac._third_party_ube_covered_armos(tmp_path)
+    finally:
+        ac._UBE_COVERED_CACHE.clear()

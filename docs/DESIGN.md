@@ -2366,11 +2366,15 @@ male path "as it is", or a stand-in, from text the one decoder read. With only
 `CBBE2UBE_NO_ARMA_PATH_BYTES=1` set it wrote that text through the UTF-8
 branch of `_model_path_zstring` (strict `esp.encode_zstring`), which raises on
 the lone surrogate `game_codepage_text` keeps for 0x81, 0x8D, 0x8F, 0x90 or
-0x9D. Now both are written through the decoder's own codec (cp1252 +
-`surrogateescape`, i.e. the source's bytes) whenever they came from it --
-`#arma-path-bytes` on, or `#model-path-codepage` on -- and the UTF-8 branch
-writes with `surrogateescape`, which gives such a surrogate back as its byte
-and writes every other text exactly as before, so no model-path write raises.
+0x9D. The UTF-8 branch now writes with `surrogateescape`, which gives such a
+surrogate back as its byte and writes every other text exactly as before, so
+no model-path write raises. With `#arma-path-bytes` off every path of the
+record stays UTF-8 (the male path and a stand-in too, as the parent wrote
+them), and `_model_path_read` reads that setting back as UTF-8 with
+`surrogateescape`, so what the rebuild writes is exactly what the postflight
+and the reconcile look up. (A first version wrote those two through the
+cp1252 codec with `#arma-path-bytes` off; the read-back still read UTF-8 with
+the byte dropped and named a NIF that does not exist -- a false missing-nif.)
 No new switch: the only setting that changes is `#arma-path-bytes` off with
 `#model-path-codepage` on, which round 2 introduced; with
 `CBBE2UBE_NO_MODEL_PATH_CODEPAGE=1` (with or without
