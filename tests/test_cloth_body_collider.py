@@ -146,6 +146,28 @@ def test_declines_an_xml_with_no_constraint(tmp_path, capsys):
     assert "DECLINED" in capsys.readouterr().err
 
 
+def test_the_decline_reaches_the_conversion_report(tmp_path):
+    """The user opted in and gets no chest collider: the per-piece record that
+    rides into the conversion report says so (stderr alone is not the report)."""
+    from src import nif_convert_telemetry as tel
+    tel._begin_piece_pass_log()
+    try:
+        _run(tmp_path, _XML_UNCONSTRAINED,
+             [("Greaves", 30.0, 45.0), ("BaseShape", 95.0, 112.0)])
+        declined = [e for e in tel._piece_pass_effects()
+                    if "#body-collider-constraint-gate" in e]
+        assert len(declined) == 1 and "DECLINED c.xml" in declined[0]
+        assert tel._piece_pass_failures() == []
+        # An accepted collider records no decline.
+        tel._begin_piece_pass_log()
+        patched, _out = _run(tmp_path, _XML_GAP,
+                             [("Greaves", 30.0, 45.0), ("BaseShape", 95.0, 112.0)])
+        assert patched is True
+        assert tel._piece_pass_effects() == []
+    finally:
+        tel._begin_piece_pass_log()
+
+
 @pytest.mark.parametrize("kind", ["stiffspring-constraint",
                                   "conetwist-constraint"])
 def test_any_constraint_kind_counts(tmp_path, kind):

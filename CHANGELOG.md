@@ -13,15 +13,17 @@ adjustments. Now the mesh is pointed at the adjusted copy. On the reported
 modlist this affects both weights of one skirt, whose copy happens to be identical
 to the original today, so nothing changes in game for it yet. Gloves and boots
 also no longer get a physics link on the body-replacement path, matching the
-other path. `CBBE2UBE_NO_FINALIZE_REPOINT=1` (set to 1) restores the old
-behaviour.
+other path. Before changing the link, the tool checks that no other part of the
+mesh uses the same text; if one does, the mesh is left exactly as it was and the
+conversion report says why (no mesh on the reported modlist is like that).
+`CBBE2UBE_NO_FINALIZE_REPOINT=1` (set to 1) restores the old behaviour.
 
 ### Fixed — the optional chest collider never builds the equip-crash pattern
 
 The optional chest collider (`CBBE2UBE_BODY_COLLIDER=1`, off by default) now
 refuses a physics file that has no constraints, because a body collider on cloth
 that nothing holds together is the pattern that crashes the game on equip. It says
-so in the log. Default conversions are unchanged.
+so in the log and in the conversion report. Default conversions are unchanged.
 
 ### Changed — physics files with stray text after the end are checked too
 

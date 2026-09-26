@@ -2824,6 +2824,11 @@ def _ensure_cloth_body_collider(xml_path: Path, nif) -> bool:
         print(f"    [body-collider] {Path(xml_path).name}: DECLINED -- the XML "
               f"has no constraint, and a body collider on unconstrained cloth "
               f"is the equip-CTD pattern", file=sys.stderr)
+        # The user opted in and gets no chest collider: the conversion report
+        # must say why, as the bust-split decline does. #change-attribution
+        _note_pass_effect("#body-collider-constraint-gate",
+                          f"DECLINED {Path(xml_path).name} (no constraint)",
+                          getattr(nif, "filepath", None) or xml_path)
         return False
     tag = sorted(need)[0]
     block = (f'\t<per-triangle-shape name="{body_name}">\n'
@@ -2986,12 +2991,15 @@ def _select_framework_bone_carriers(xml_bones, present_bones, source_shapes, *,
             work -= hit
     return carriers
 
-def _nif_header_string_table(data: bytes):
-    """(max-length offset, [(entry offset, bytes)]) of a Skyrim NIF's header
-    string table, or None when the header is not the 20.2.0.7 layout read here.
+def _nif_header_layout(data: bytes):
+    """Where a Skyrim NIF's header string table and blocks lie, or None when the
+    header is not the 20.2.0.7 layout read here: a dict with `nstr_at` (Num
+    Strings; Max String Length follows it), `maxlen_at`, `entries` [(entry
+    offset, bytes)], `table_end` and `blocks` [(type name, offset, size)].
     Layout per nif.xml: after the Bethesda header come the block types (sized
     strings), the per-block type index (u16) and size (u32), then Num Strings,
-    Max String Length and the strings (u32 length + bytes). Blocks refer to a
+    Max String Length and the strings (u32 length + bytes), then Num Groups and
+    the groups (u32 each), then the blocks back to back. Blocks refer to a
     string by its INDEX, so an entry can be rewritten without touching them."""
     import struct
     try:
@@ -3015,12 +3023,17 @@ def _nif_header_string_table(data: bytes):
             i = _export_string(i)                      # max filepath
         ntypes, = struct.unpack_from("<H", data, i)
         i += 2
+        types = []
         for _ in range(ntypes):
             n, = struct.unpack_from("<I", data, i)
+            types.append(data[i + 4:i + 4 + n])
             i += 4 + n
-        i += 2 * nblocks + 4 * nblocks
+        type_of = struct.unpack_from("<%dH" % nblocks, data, i)
+        i += 2 * nblocks
+        sizes = struct.unpack_from("<%dI" % nblocks, data, i)
+        i += 4 * nblocks
+        nstr_at = i
         nstr, = struct.unpack_from("<I", data, i)
-        maxlen_at = i + 4
         i += 8
         entries = []
         for _ in range(nstr):
@@ -3029,57 +3042,104 @@ def _nif_header_string_table(data: bytes):
                 return None
             entries.append((i, data[i + 4:i + 4 + n]))
             i += 4 + n
-        return maxlen_at, entries
+        table_end = i
+        ngroups, = struct.unpack_from("<I", data, i)
+        i += 4 + 4 * ngroups
+        blocks = []
+        for t, size in zip(type_of, sizes):
+            blocks.append((types[t & 0x7FFF], i, size))
+            i += size
+        if i > len(data):
+            return None
+        return {"nstr_at": nstr_at, "maxlen_at": nstr_at + 4,
+                "entries": entries, "table_end": table_end, "blocks": blocks}
     except Exception:
         return None
 
-def _root_physics_snapshot(path):
-    """What a pointer rewrite must leave alone, plus the pointer: shape names
-    in order and every root extra-data (name, string)."""
-    nf = _nc()._pynifly().NifFile(filepath=str(path))
-    return ([s.name for s in nf.shapes],
-            [(getattr(e, "name", None), getattr(e, "string_data", None))
-             for e in nf.rootNode.extra_data()])
+_PHYSICS_POINTER_NAME = "HDT Skinned Mesh Physics Object"
+
+def _pointer_only_variant(data: bytes, lay, k: int, new_b: bytes):
+    """The NIF with ONLY its pointer block changed: `new_b` appended to the
+    header string table and the pointer block's string index moved to it, so
+    every other block still refers to entry `k`. None unless exactly one
+    NiStringExtraData block is the pointer (its name the pointer name, its
+    string entry `k`); in 20.2.0.7 that block is two u32 string indices."""
+    import struct
+    entries = lay["entries"]
+    names = [j for j, (_o, s) in enumerate(entries)
+             if s == _PHYSICS_POINTER_NAME.encode("utf-8")]
+    ptr = [off for t, off, size in lay["blocks"]
+           if t == b"NiStringExtraData" and size == 8 and len(names) == 1
+           and struct.unpack_from("<II", data, off) == (names[0], k)]
+    if len(ptr) != 1:
+        return None
+    out = bytearray(data)
+    struct.pack_into("<I", out, ptr[0] + 4, len(entries))
+    struct.pack_into("<II", out, lay["nstr_at"], len(entries) + 1,
+                     max([len(new_b)] + [len(s) for _o, s in entries]))
+    at = lay["table_end"]
+    return bytes(out[:at]) + struct.pack("<I", len(new_b)) + new_b + bytes(out[at:])
+
+def _nifly_resave(data: bytes, beside: Path) -> bytes:
+    """`data` as nifly reads it back: loaded and saved by pynifly through a
+    temp file beside `beside` (the orphan-temp sweep's name pattern). nifly
+    rebuilds the header string table from what the blocks it knows refer to,
+    so two NIFs whose blocks carry the same strings re-save to the same bytes."""
+    import tempfile
+    fd, tmp = tempfile.mkstemp(dir=str(beside.parent),
+                               prefix=beside.name + ".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        nf = _nc()._pynifly().NifFile(filepath=tmp)
+        nf.save()
+        del nf
+        return Path(tmp).read_bytes()
+    finally:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
 
 def _repoint_physics_pointer(dst_path, old: str, new: str) -> bool:
     """#finalize-repoint: rewrite the NIF's physics pointer string `old` -> `new`
     in place. pynifly cannot set an existing string extra-data block (nifly's
     setBlock is unimplemented for it), so the header string-table entry the
-    block refers to is rewritten instead. Refused unless that entry is the ONLY
-    one spelling `old`; afterwards the NIF is re-read and must differ from before
-    in the pointer alone, or the original bytes go back. Returns True when
-    repointed; every refusal or rollback is recorded."""
+    block refers to is rewritten instead. nifly writes a string once however
+    many blocks use it, so that entry can also be another block's name or
+    string (a shape's extra-data, a node): rewriting it would change those too.
+    The guard: build the NIF with ONLY the pointer block moved to the new string
+    (`_pointer_only_variant`), and write the in-place rewrite only when nifly
+    reads the two back identically -- no other block it knows refers to the
+    entry. Refused otherwise, and when the entry or the pointer block is not
+    found exactly once; a refusal leaves the file untouched. Returns True when
+    repointed; every refusal is recorded as a pass failure."""
     import struct
     p = Path(dst_path)
     try:
         data = p.read_bytes()
-        table = _nif_header_string_table(data)
+        lay = _nif_header_layout(data)
+        entries = lay["entries"] if lay else []
         old_b, new_b = old.encode("utf-8"), new.encode("utf-8")
-        hits = ([k for k, (_o, s) in enumerate(table[1]) if s == old_b]
-                if table else [])
+        hits = [k for k, (_o, s) in enumerate(entries) if s == old_b]
         if len(hits) != 1:
             raise RuntimeError(f"{p.name}: the pointer {old!r} is not one "
                                f"header string ({len(hits)} found); left as is")
-        maxlen_at, entries = table
+        maxlen_at = lay["maxlen_at"]
         off, s = entries[hits[0]]
-        before = _root_physics_snapshot(p)
         out = (data[:off] + struct.pack("<I", len(new_b)) + new_b
                + data[off + 4 + len(s):])
         longest = max([len(new_b)] + [len(x) for k, (_o, x) in enumerate(entries)
                                       if k != hits[0]])
         out = out[:maxlen_at] + struct.pack("<I", longest) + out[maxlen_at + 4:]
+        alone = _pointer_only_variant(data, lay, hits[0], new_b)
+        if alone is None:
+            raise RuntimeError(f"{p.name}: no single pointer block refers to "
+                               f"{old!r}; left as is")
+        if _nifly_resave(out, p) != _nifly_resave(alone, p):
+            raise RuntimeError(f"{p.name}: another block shares the pointer's "
+                               f"string {old!r}; left as is")
         atomic_write_bytes(p, out)
-        want = (before[0], [(n, new if (n == "HDT Skinned Mesh Physics Object"
-                                        and v == old) else v)
-                            for n, v in before[1]])
-        try:
-            got = _root_physics_snapshot(p)
-        except Exception:
-            got = None
-        if got != want:
-            atomic_write_bytes(p, data)
-            raise RuntimeError(f"{p.name}: the re-read NIF changed beyond the "
-                               f"pointer; original restored")
         _note_pass_effect("#finalize-repoint", f"{old} -> {new}", p)
         return True
     except Exception as _re:

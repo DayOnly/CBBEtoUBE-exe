@@ -1068,10 +1068,16 @@ still scans; it only reports.
 Live (read-only census of the 3,342 output NIFs): 58 pointer-less NIFs answered
 differently, 2 of them in their collider / soft-body sets (one skirt pair, whose
 `panties` another skirt's XML registered) and 56 only in the drape / layered-cloth
-XML question. Converted into an empty output tree and into one seeded with the
-live XMLs, the parent differed between the two on the skirt pair only; the lane
-gave identical bytes in both, equal to the parent's empty-tree output, across
-all converted pieces. `CBBE2UBE_NO_DST_XML_NO_STEM_SCAN=1` restores the fallback.
+XML question. 22 of those garments have a loose source (the other 7 are
+archive-only) and were converted into an empty output tree and into one seeded
+with the live XMLs: the parent differed between the two on the skirt pair only,
+and the lane gave identical bytes in both on 22 of 22. The lane also equals the
+parent's empty-tree output on 22 of 22, measured in two steps: 9 when the change
+was made (the parent's empty-tree arm ran on those 9 only, although the commit
+message says all), and the other 13 in a later same-day session (parent empty
+and seeded trees plus the lane's empty tree, all byte-identical, and equal to
+the lane's earlier runs of both trees).
+`CBBE2UBE_NO_DST_XML_NO_STEM_SCAN=1` restores the fallback.
 
 ### The finalize owns the physics pointer (`#finalize-repoint`, default ON)
 
@@ -1092,10 +1098,27 @@ captures the pointer. pynifly cannot set an existing string extra-data block
 (nifly's `setBlock` is unimplemented for it), and FSMP reads only the FIRST
 pointer, so adding a second one is no answer either: the header string-table
 entry the block refers to is rewritten in place (`_repoint_physics_pointer`).
-It is refused unless exactly one entry spells the old pointer, the table's
-max-length field is updated, and the NIF is re-read afterwards: if anything but
-the pointer differs (another block sharing the string, say), the original bytes
-go back and the refusal is recorded.
+It is refused unless exactly one entry spells the old pointer, and the table's
+max-length field is updated.
+
+nifly writes each string once however many blocks use it, so that entry can also
+be another block's string: a shape's extra-data, a node's name, a second root
+extra-data. Rewriting it would change those blocks too. The first guard re-read
+only shape names and root extra-data after the write, so a shape-level string
+sharing the entry was rewritten and reported as a success. pynifly offers no way
+to list every string field of every block type, so the guard asks nifly instead:
+`_pointer_only_variant` builds the same NIF with ONLY the pointer block moved to
+a new, appended string (in 20.2.0.7 a `NiStringExtraData` is two u32 string
+indices, and the header's block-size table locates it), and `_nifly_resave`
+loads and saves both through nifly, which rebuilds the string table from what its
+blocks refer to. The in-place rewrite is written only when the two re-save to the
+same bytes, i.e. no other block nifly knows refers to the entry. Otherwise, or
+when the pointer block is not found exactly once, the NIF is left untouched and
+the refusal is recorded as a pass failure. The re-save temps sit beside the NIF
+under the orphan-temp sweep's name pattern and are removed. Live (read-only, the
+306 pointer NIFs of the 3,342): the check passes on all 306, and an independent
+pynifly walk of every node / shape name and extra-data string finds no other use
+of any pointer string, so default output is unchanged.
 
 The same switch gates phase 2's physics pointer on hand/foot pieces. Phase 1 never
 gives a slot-33/37 piece a pointer, found or generated, and the shared tail skips
@@ -1119,7 +1142,10 @@ with none it built exactly the unconstrained-collision-pair equip CTD
 (`_is_unconstrained_collision_pair`; `validate_armor_hdt_xml` says the same of
 adding body collision). It now declines an XML that declares no
 `generic-constraint` / `stiffspring-constraint` / `conetwist-constraint` (the
-`#constraint-group-scan` set), and says so on stderr. Default output is
+`#constraint-group-scan` set), and says so: on stderr, and as a
+`#body-collider-constraint-gate` DECLINED line in the piece's conversion record
+(`_note_pass_effect`), the way the bust-split decline is recorded -- a user who
+opted in gets no chest collider and the report says why. Default output is
 unchanged: the collider is off by default.
 
 ### The validator reads past a junk tail and a default xmlns

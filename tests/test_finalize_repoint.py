@@ -142,28 +142,59 @@ def test_the_rewritten_header_stays_consistent(tmp_path, monkeypatch):
     dst, src, _sibling = _piece(tmp_path, monkeypatch, pointer="Meshes\\x.xml")
     ph._finalize_hdt_physics(dst, src)
     data = dst.read_bytes()
-    maxlen_at, entries = ph._nif_header_string_table(data)
+    lay = ph._nif_header_layout(data)
+    maxlen_at, entries = lay["maxlen_at"], lay["entries"]
     assert SIBLING_PTR.encode() in [s for _o, s in entries]
     assert struct.unpack_from("<I", data, maxlen_at)[0] == max(
         len(s) for _o, s in entries)
     assert _pointer(dst) == SIBLING_PTR
 
 
-def test_a_string_another_block_shares_is_never_rewritten(tmp_path, monkeypatch):
-    """If the pointer's header entry is also some other block's string, the
-    rewrite would change that block too: the re-read catches it, the original
-    bytes go back, and the refusal is recorded."""
-    dst, src, _sibling = _piece(tmp_path, monkeypatch, pointer=SOURCE_PTR)
+def _share_the_pointer_string(dst, where: str) -> None:
+    """Give another block of `dst` the pointer's own string. nifly writes a
+    string once, so that block and the pointer then refer to ONE header entry."""
     pyn = nc._pynifly()
     nf = pyn.NifFile(filepath=str(dst))
     from pyn.pynifly import NiStringExtraData  # type: ignore
-    NiStringExtraData.New(nf, name="Other", string_value=SOURCE_PTR,
-                          parent=nf.rootNode)
+    if where == "root":
+        NiStringExtraData.New(nf, name="Other", string_value=SOURCE_PTR,
+                              parent=nf.rootNode)
+    elif where == "shape":
+        NiStringExtraData.New(nf, name="Note", string_value=SOURCE_PTR,
+                              parent=nf.shapes[0])
+    else:                                   # a node NAMED the pointer string
+        xf = pyn.TransformBuf()
+        xf.set_identity()
+        nf.add_node(SOURCE_PTR, xf, parent=nf.rootNode)
     nf.save()
+    entries = ph._nif_header_layout(dst.read_bytes())["entries"]
+    assert [s for _o, s in entries].count(SOURCE_PTR.encode()) == 1
+
+
+@pytest.mark.parametrize("where", ["root", "shape", "node"])
+def test_a_string_another_block_shares_is_never_rewritten(
+        tmp_path, monkeypatch, where):
+    """If the pointer's header entry is also some other block's string -- a
+    root or shape extra-data, a node's name -- the rewrite would change that
+    block too: it is refused, the NIF keeps its original bytes, and the refusal
+    is recorded as a pass failure, not reported as a repoint."""
+    dst, src, _sibling = _piece(tmp_path, monkeypatch, pointer=SOURCE_PTR)
+    _share_the_pointer_string(dst, where)
+    before = dst.read_bytes()
     ph._finalize_hdt_physics(dst, src)
+    assert dst.read_bytes() == before
     assert _pointer(dst) == SOURCE_PTR
-    assert any("repoint" in f for f in tel._piece_pass_failures())
+    assert any("repoint" in f and "shares" in f
+               for f in tel._piece_pass_failures())
     assert not any("#finalize-repoint" in e for e in tel._piece_pass_effects())
+
+
+def test_the_repoint_check_leaves_no_file_behind(tmp_path, monkeypatch):
+    dst, src, _sibling = _piece(tmp_path, monkeypatch, pointer=SOURCE_PTR)
+    assert ph._finalize_hdt_physics(dst, src) is True
+    assert _pointer(dst) == SIBLING_PTR
+    assert sorted(p.name for p in dst.parent.iterdir()) == [
+        "skirt.xml", "skirt_1.nif"]
 
 
 def test_a_pointer_already_naming_the_sibling_is_left_byte_identical(
