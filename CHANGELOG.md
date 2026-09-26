@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Fixed — Check setup sees a UBE body you pick while the window is open
+
+The window looked up the reference bodies once and kept that answer until it
+was closed. A UBE body picked on the Paths tab (or brought in with Import
+settings) after the window opened was not seen by Check setup, which went on
+naming the body it found at launch, or saying none was found; the already-UBE
+mesh scan and the Select list also kept measuring against the launch body.
+Closing and reopening the window was the only way round it. They now look
+again when the pick changes, and only then. Conversions were never affected:
+each one starts fresh and always used the body you picked.
+`CBBE2UBE_NO_BODY_CACHE_BY_INPUTS=1` (set to 1) turns it off.
+
 ### Fixed — colour variants of a piece left to your own UBE build recolour the right layer
 
 Since this tool leaves a piece alone when your own UBE BodySlide build (or

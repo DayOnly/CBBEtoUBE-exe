@@ -1099,6 +1099,11 @@ _FINGERPRINT_PLUMBING_WHY = {
                                       "notes are listed in the reports "
                                       "(#plan-order-results); no NIF's bytes "
                                       "depend on it",
+    "CBBE2UBE_NO_BODY_CACHE_BY_INPUTS": "whether a body lookup is cached per "
+                                        "input or once per process "
+                                        "(#body-cache-by-inputs); a run's "
+                                        "bodies are fixed, so no NIF's bytes "
+                                        "depend on it",
 }
 _FINGERPRINT_PLUMBING = frozenset(_FINGERPRINT_PLUMBING_WHY)
 
@@ -10550,8 +10555,20 @@ def _largest_shape_verts(path):
 
 def _body_trees():
     """(ube_tree, cbbe_tree) KD-trees over the UBE and CBBE reference body verts,
-    cached. (None, None) if either body can't be located/read."""
-    if not _BODY_TREE_CACHE:
+    cached. (None, None) if either body can't be located/read.
+
+    #body-cache-by-inputs: cached for the bodies the finders name NOW, so the
+    window's scan follows a changed Paths-tab pick; built once while they stay
+    the same. Switched off, the first pair is kept for the process, as before."""
+    from .nif_convert_bodyrefs import _body_cache_by_inputs
+    key = None
+    if _body_cache_by_inputs():
+        try:
+            key = (nif_convert._find_ube_femalebody("_1"),
+                   nif_convert._find_cbbe_base_body("_1"))
+        except Exception:
+            key = (None, None)
+    if not _BODY_TREE_CACHE or _BODY_TREE_CACHE.get("key") != key:
         res = (None, None)
         try:
             from scipy.spatial import cKDTree
@@ -10566,6 +10583,7 @@ def _body_trees():
         except Exception:
             res = (None, None)
         _BODY_TREE_CACHE["t"] = res
+        _BODY_TREE_CACHE["key"] = key
     return _BODY_TREE_CACHE["t"]
 
 
