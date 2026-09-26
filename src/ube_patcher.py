@@ -1037,7 +1037,7 @@ def _reindex_alt_texture_payload(data: bytes,
     return out
 
 
-def reconcile_alt_texture_indices(esp_path, meshes_root) -> int:
+def reconcile_alt_texture_indices(esp_path, meshes_root, problems=None) -> int:
     """Post-conversion pass: fix stale alt-texture (MO2S/MO3S/MO4S/MO5S) 3D
     names+indices in an output ESP so color variants apply to the right shapes.
 
@@ -1047,17 +1047,32 @@ def reconcile_alt_texture_indices(esp_path, meshes_root) -> int:
     converted NIF and rewrites the alt-texture set to the surviving shapes'
     real names+indices. Returns number of ARMA records fixed.
     Run AFTER NIF conversion + merge, once, on a freshly merged plugin: an
-    entry's index is read as the SOURCE mesh's 3D index."""
-    return _reconcile_alt_texture_pieces([esp_path], meshes_root)
+    entry's index is read as the SOURCE mesh's 3D index.
+
+    `problems`: see `_reconcile_alt_texture_pieces`."""
+    return _reconcile_alt_texture_pieces([esp_path], meshes_root,
+                                         problems=problems)
 
 
-def _reconcile_alt_texture_pieces(esp_paths, meshes_root) -> int:
+#: The reconcile's problem classes, as a `problems` list names them. #one-tally
+ALTTEX_LOAD_FAILED = "converted NIF unreadable"
+ALTTEX_ENTRIES_DROPPED = "entries dropped"
+ALTTEX_GAME_COPY_UNREADABLE = "game copy unreadable"
+
+
+def _reconcile_alt_texture_pieces(esp_paths, meshes_root, problems=None) -> int:
     """`reconcile_alt_texture_indices` over one or more plugins taken as ONE
     view (#alttex-batch-ambiguity): every plugin's sets are scanned before
     any NIF is loaded, and the repeats, the converted NIFs, the shared names
     and the source bindings are shared by all of them. Each plugin that
     changed is saved. A plugin that does not load raises -- after the others
-    are reconciled and saved. Returns the ARMA records fixed, summed."""
+    are reconciled and saved. Returns the ARMA records fixed, summed.
+
+    `problems` (#one-tally): None prints each problem class as its own `!!`
+    line, as a standalone call always has. A list takes them instead, as
+    `(class, models)` pairs (an `ALTTEX_*` class, its sorted model paths),
+    added before anything is saved or raised; the converter warns and records
+    each, so the run's tally and failures file carry them."""
     from pathlib import Path as _Path
     from . import nif_io
     meshes_root = _Path(meshes_root)
@@ -1227,34 +1242,42 @@ def _reconcile_alt_texture_pieces(esp_paths, meshes_root) -> int:
             r.payload = new_payload
             fixed[pi] += 1
     import sys as _s
+    _say = problems is None              # else the converter warns. #one-tally
     if load_failed:
-        print(f"  !! alt-texture reconcile: {len(load_failed)} converted NIF(s) "
-              f"failed to load -> stale color-variant indices kept (variant "
-              f"textures may misalign): {sorted(set(load_failed))[:5]}",
-              file=_s.stderr)
+        if _say:
+            print(f"  !! alt-texture reconcile: {len(load_failed)} converted NIF(s) "
+                  f"failed to load -> stale color-variant indices kept (variant "
+                  f"textures may misalign): {sorted(set(load_failed))[:5]}",
+                  file=_s.stderr)
+        else:
+            problems.append((ALTTEX_LOAD_FAILED, sorted(set(load_failed))))
     if bindings:
         unmatched = sorted(k for k, b in bindings.items() if b is None)
         print(f"  alt-texture reconcile: {len(bindings) - len(unmatched)} "
               f"converted NIF(s) with same-named layers bound through their "
               f"source mesh", file=_s.stderr)
-        if unmatched:
+        if unmatched and _say:
             print(f"  !! alt-texture reconcile: {len(unmatched)} converted "
                   f"NIF(s) with same-named layers whose source mesh could not be "
                   f"read or is not the mesh converted -> the colour-variant "
                   f"entries of those layers were dropped (they keep their "
                   f"base colour): {unmatched[:5]}", file=_s.stderr)
+        elif unmatched:
+            problems.append((ALTTEX_ENTRIES_DROPPED, unmatched))
     if _game_copy or nowhere or unreadable:
         print(f"  alt-texture reconcile: {len(_game_copy)} model(s) not in "
               f"this output indexed against the copy the game loads (another "
               f"mod's); {len(set(nowhere))} found nowhere -> kept as authored"
               + (f": {sorted(set(nowhere))[:5]}" if nowhere else ""),
               file=_s.stderr)
-    if unreadable:
+    if unreadable and _say:
         print(f"  !! alt-texture reconcile: {len(set(unreadable))} model(s) not "
               f"in this output: the copy the game loads (another mod's) could not "
               f"be read -> its colour-variant indices kept as authored (variant "
               f"textures may misalign): {sorted(set(unreadable))[:5]}",
               file=_s.stderr)
+    elif unreadable:
+        problems.append((ALTTEX_GAME_COPY_UNREADABLE, sorted(set(unreadable))))
     for (piece, e), n in zip(loaded, fixed):
         if n:
             e.save(piece)
@@ -1306,7 +1329,8 @@ def _combined_piece_family(primary, suffix: "str | None" = None) -> "list[Path]"
     return [f for f in found if _combined_piece_tail(f.name, p.stem, x) is not None]
 
 
-def reconcile_alt_texture_indices_all(primary_esp_path, meshes_root) -> int:
+def reconcile_alt_texture_indices_all(primary_esp_path, meshes_root,
+                                      problems=None) -> int:
     """Reconcile alt-texture indices across the primary merged ESP AND every
     ESL-split overflow piece (`<stem>.esp`, `<stem>2.esp`, ...).
 
@@ -1320,17 +1344,19 @@ def reconcile_alt_texture_indices_all(primary_esp_path, meshes_root) -> int:
     set in one piece that repeats a name makes that NIF's name shared in
     every piece. With CBBE2UBE_NO_ALTTEX_BATCH_AMBIGUITY=1 (or any earlier
     alt-texture switch set) each piece is reconciled on its own. Both paths
-    walk the same family."""
+    walk the same family. `problems`: see `_reconcile_alt_texture_pieces`."""
     from pathlib import Path as _Path
     p = _Path(primary_esp_path)
     pieces = _combined_piece_family(p)
     if (_alttex_dup_occurrence_on() and _alttex_exact_provenance_on()
             and _alttex_set_provenance_on() and _alttex_case_provenance_on()
             and _alttex_batch_ambiguity_on()):
-        return _reconcile_alt_texture_pieces(pieces, meshes_root)
+        return _reconcile_alt_texture_pieces(pieces, meshes_root,
+                                             problems=problems)
     total = 0
     for piece in pieces:
-        total += reconcile_alt_texture_indices(piece, meshes_root)
+        total += reconcile_alt_texture_indices(piece, meshes_root,
+                                               problems=problems)
     return total
 
 

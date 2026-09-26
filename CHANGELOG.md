@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+### Fixed — six more warnings now reach the end-of-run count and list
+
+Six warnings were printed in the log but left out of the warning count at the
+end of the run and out of the list the window shows after it, so a run could
+still say "all clear":
+
+- the base game and DLC pass could not run on your game folder, so vanilla
+  armour no mod changes stays invisible on UBE characters;
+- a piece from an earlier run could not be moved out of the way of a
+  hand-made UBE version because a file was in use, or was only partly moved;
+- the colour-variant step could not read one of our converted meshes, could
+  not match a layer to the mesh it came from (so that layer keeps its base
+  colour), or could not read the copy of a mesh another mod supplies.
+
+All six are now counted and listed as warnings, and the last three are now
+written in the same shape as every other warning and listed in
+`docs/WARNINGS.md`. Nothing that is converted changes.
+
 ### Fixed — colour variants of a piece left to your own UBE build recolour the right layer
 
 Since this tool leaves a piece alone when your own UBE BodySlide build (or

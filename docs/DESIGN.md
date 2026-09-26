@@ -3274,6 +3274,20 @@ reported through `_report_coverage_holds`:
   counted wherever one is now recorded); only the log's numbers and the file
   change: an unreadable output mesh counts per file, and "merge skipped" counts.
   `auto`'s post-convert failures are the failures recorded after `_cmd_convert`.
+  Three more gaps closed later (found 2026-09-26), all warnings. `auto` prints
+  "vanilla sweep DISABLED" before `_cmd_convert` clears the record, so it hands
+  the entry over as `carried_failures` on the convert namespace and
+  `_cmd_convert` records it right after the clear. The built-UBE supersede's
+  stuck and torn pieces (#skip-built-ube-path) are recorded where they are
+  printed, in the parent, as the stale sweep's own move-failed and torn lines
+  are. The alt-texture reconcile printed its three problem classes (a converted
+  NIF that fails to load, colour-variant entries dropped, another mod's copy
+  unreadable) as bare `!!` lines on stderr; given a `problems` list it now
+  leaves them there as `(ALTTEX_* class, models)` pairs, and
+  `_warn_alttex_problems` warns (so docs/WARNINGS.md lists them) and records
+  each -- also when the reconcile raises after finding one. A standalone call
+  (no list) prints as before. One entry per printed line, so the tally still
+  counts each.
 - **Dry run writes nothing** (`#dry-run-writes-nothing`). `auto
   --overlays-only --list-only` ran the overlay transfer: the overlays-only branch
   returned before the list-only check. It now lists what would be remapped

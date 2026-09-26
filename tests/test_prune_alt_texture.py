@@ -56,9 +56,9 @@ def test_reconcile_runs_on_all_esl_split_pieces(tmp_path, monkeypatch,
         monkeypatch.setenv("CBBE2UBE_NO_ALTTEX_BATCH_AMBIGUITY", "1")
     visited = []
     monkeypatch.setattr(up, "reconcile_alt_texture_indices",
-                        lambda p, m: (visited.append(Path(p).name), 1)[1])
+                        lambda p, m, **k: (visited.append(Path(p).name), 1)[1])
     monkeypatch.setattr(up, "_reconcile_alt_texture_pieces",
-                        lambda ps, m: (visited.extend(Path(p).name for p in ps),
+                        lambda ps, m, **k: (visited.extend(Path(p).name for p in ps),
                                        len(ps))[1])
     n = up.reconcile_alt_texture_indices_all(tmp_path / f"{stem}.esp",
                                              tmp_path / "meshes")

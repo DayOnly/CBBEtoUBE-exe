@@ -2084,6 +2084,47 @@ def _first_few(lines, n: int = 3) -> str:
                    if len(lines) > n else "")
 
 
+def _warn_alttex_problems(problems, source) -> None:
+    """The alt-texture reconcile's problem classes (`(class, models)` pairs
+    from `ube_patcher.reconcile_alt_texture_indices_all(problems=...)`), each
+    warned and recorded once. The reconcile used to print them itself as bare
+    `!!` lines, which the tally, the failures file and docs/WARNINGS.md never
+    saw. #one-tally"""
+    for cls, models in problems or ():
+        models = [str(m) for m in models]
+        n = len(models)
+        names = ", ".join(models[:5]) + (f" and {n - 5} more" if n > 5 else "")
+        if cls == ube_patcher.ALTTEX_ENTRIES_DROPPED:
+            warn(f"alt-texture reconcile: {n} converted NIF(s) with same-named "
+                 f"layers could not be matched to their source mesh: {names}",
+                 consequence="the colour-variant entries of those layers were "
+                             "dropped, so the layers keep their base colour in "
+                             "every colour variant",
+                 fix="check that the mod each mesh came from is installed and "
+                     "enabled, then run again")
+            kind = "alt-texture entries dropped"
+        elif cls == ube_patcher.ALTTEX_GAME_COPY_UNREADABLE:
+            warn(f"alt-texture reconcile: {n} model(s) not in this output could "
+                 f"not be read from the mod the game loads them from: {names}",
+                 consequence="their colour-variant entries are kept as the author "
+                             "wrote them, so variant textures may land on the "
+                             "wrong part",
+                 fix="check that the named mesh opens (NifSkope, Outfit Studio) "
+                     "or reinstall the mod that ships it, then run again")
+            kind = "alt-texture game copy unreadable"
+        else:
+            warn(f"alt-texture reconcile: {n} converted NIF(s) failed to load: "
+                 f"{names}",
+                 consequence="their colour-variant entries keep the source mesh's "
+                             "indices, so variant textures may land on the "
+                             "wrong part",
+                 fix="close any program holding the files and run again; if it "
+                     "repeats, report the named meshes")
+            kind = "alt-texture mesh unreadable"
+        _record_failure(kind, source, f"{n} model(s)", _first_few(models),
+                        severity="warning")
+
+
 def _failures_file_path() -> Path:
     """Next to the run log: the one location the GUI and the frozen exe agree
     on (CBBE2UBE_RUN_LOG's dir when a parent pinned it, else exe/repo dir)."""
@@ -3185,6 +3226,10 @@ def _auto_convert_mod_steps(
                                  "UBE version in game",
                      fix="close the program holding the file (the game, NifSkope, "
                          "Outfit Studio) and run again")
+                # Recorded here, in the parent, as the stale sweep's own
+                # move-failed line is. #one-tally
+                _record_failure("built UBE supersede move failed", source_dir.name,
+                                f"{len(_left)} piece(s)", _names, severity="warning")
             if _torn:
                 _names = (", ".join(f"{s[0]} ({', '.join(s[2])})" for s in _torn[:5])
                           + (f" and {len(_torn) - 5} more" if len(_torn) > 5 else ""))
@@ -3195,6 +3240,8 @@ def _auto_convert_mod_steps(
                                  "draw with the wrong morphs",
                      fix="close the program holding the files and run again, or "
                          "move the named files back from _superseded\\")
+                _record_failure("built UBE supersede move torn", source_dir.name,
+                                f"{len(_torn)} piece(s)", _names, severity="warning")
             for s in _stuck:
                 result.notes.append(f"built UBE version elsewhere: {s[0]} not moved "
                                     f"out of meshes\\ ({s[1]})")
@@ -6739,6 +6786,10 @@ def _sweep_orphan_temps_at_start(output, run_started: float) -> int:
 
 def _cmd_convert(args):
     _RUN_FAILURES.clear()   # fresh failure record for this run
+    # What `auto` found before this record began (a disabled vanilla sweep):
+    # printed there, recorded here, so the clear above cannot lose it. #one-tally
+    for _cf in (getattr(args, "carried_failures", None) or ()):
+        _record_failure(**_cf)
     _run_started = time.time()   # temps older than this are orphans. #orphan-temps
     # Same echo `auto` prints: the verdict harnesses run THIS subcommand, and
     # a run has to say what it was carrying before anything can abort.
@@ -7674,14 +7725,17 @@ def _cmd_convert(args):
                     # Reconcile alt-texture 3D indices against the converted NIFs.
                     # Shape reordering during the NIF merge shifts MO2S/MO3S indices;
                     # reconcile ALL split pieces (overflow also carries alt-texture sets).
+                    _alttex_problems: list = []   # #one-tally
                     try:
                         nfix = ube_patcher.reconcile_alt_texture_indices_all(
-                            merged_out, output / "meshes")
+                            merged_out, output / "meshes",
+                            problems=_alttex_problems)
                         print(f"  alt-texture reconcile: fixed {nfix} ARMA(s)")
                     except Exception as e:
                         warn(f"alt-texture reconcile failed: {plain_error(e)}",
                              consequence="colour variants may bind to the wrong shape",
                              fix="check the affected armour's variants in game")
+                    _warn_alttex_problems(_alttex_problems, merged_out.name)
                     # Clear slot 33 (Hands) from forearm bracers that claim it but have
                     # no hand geometry — else they hide nude hands and draw nothing.
                     # Mesh-driven: real gloves/gauntlets are never touched.
@@ -11027,6 +11081,9 @@ def _cmd_auto(args):
     # keeps mod-source links wherever both cover the same armor.
     # CBBE2UBE_NO_VANILLA_SWEEP=1 disables. Under --only-mods, the sweep runs
     # only when named explicitly ('vanilla').
+    # Problems found here, before `_cmd_convert` starts the run's record (and
+    # clears it): it records them first thing. #one-tally
+    _carried: "list[dict]" = []
     if (not _flag("CBBE2UBE_NO_VANILLA_SWEEP", False)
             and lay.game_data_dirs
             and (not only or _sweep_only_requested)
@@ -11046,6 +11103,10 @@ def _cmd_auto(args):
             warn(f"vanilla sweep DISABLED this run: {_sw_why}",
                  consequence="vanilla armour that no mod overrides stays unlinked, so it "
                              "is invisible on UBE actors until a run with the sweep")
+            _carried.append({"kind": "vanilla sweep disabled",
+                             "source": "Vanilla sweep (base game + DLC)",
+                             "item": "whole source", "detail": str(_sw_why),
+                             "severity": "warning"})
             print("     (mod armor converts normally; vanilla armor no mod "
                   "overrides stays unconverted. Fix the game-Data path or "
                   "report this if the path looks right.)")
@@ -11086,6 +11147,7 @@ def _cmd_auto(args):
                      "started": _sos_started, "mods_root": str(mr),
                      "enabled": None if enabled is None else sorted(enabled),
                      "excluded": sorted(exclude)},
+        carried_failures=_carried,   # #one-tally
     )
     try:
         rc = _cmd_convert(conv)

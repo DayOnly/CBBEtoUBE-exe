@@ -6,7 +6,7 @@ current. A `!!` line is a problem; a `NOTE:` line is information. Each entry
 gives the line as it appears in the run log (`…` stands for the value printed
 at run time), what it means for the run, and what to do next.
 
-**95** problem warnings and **6** notes.
+**98** problem warnings and **6** notes.
 
 ## src/auto_convert.py
 
@@ -24,6 +24,15 @@ at run time), what it means for the run, and what to do next.
   - fix: set the UBE body reference explicitly if the wrong body is picked
 - `NOTE: … option(s) were added to this build since your settings were last saved.`
 - `NOTE: your saved settings predate new-option tracking, so an option added later`
+- `!! alt-texture reconcile: … converted NIF(s) with same-named layers could not be matched to their source mesh: …`
+  - means: the colour-variant entries of those layers were dropped, so the layers keep their base colour in every colour variant
+  - fix: check that the mod each mesh came from is installed and enabled, then run again
+- `!! alt-texture reconcile: … model(s) not in this output could not be read from the mod the game loads them from: …`
+  - means: their colour-variant entries are kept as the author wrote them, so variant textures may land on the wrong part
+  - fix: check that the named mesh opens (NifSkope, Outfit Studio) or reinstall the mod that ships it, then run again
+- `!! alt-texture reconcile: … converted NIF(s) failed to load: …`
+  - means: their colour-variant entries keep the source mesh's indices, so variant textures may land on the wrong part
+  - fix: close any program holding the files and run again; if it repeats, report the named meshes
 - `!! could not write the failures file (…)`
   - means: … recorded failure(s) will not appear there
   - fix: check that the folder beside the exe is writable
