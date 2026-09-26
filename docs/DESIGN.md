@@ -1897,6 +1897,22 @@ reported through `_report_coverage_holds`:
   filter as the pass, `_copy_call_wanted`, and a test that the pass bakes what
   the plan lists), and says when a missing tool would make the real run skip
   every overlay (`copy_mode_tool_gap` / `replace_mode_tool_gap`, read-only).
+  Reviewed on 0081b20, the list still named overlays the pass skips: a region
+  whose CBBE/UBE reference mesh is missing or unreadable (the copy pass skipped
+  it with a bare `continue`, replace mode logged it), and every overlay when
+  Scripts.zip holds no `TESV_Papyrus_Flags.flg`. Each check is now one
+  function both sides call. `_load_ref_meshes` is the region decision:
+  `build_region_correspondence` builds from it, and `region_ref_gap` asks it
+  without the projection, so `plan_region_gaps` (both modes) prints "!! the
+  real run would SKIP this region: ..." under the region. `papyrus_base_gap`
+  reads the zip's name list for the flags file; `_assemble_papyrus_imports`
+  and `copy_mode_tool_gap` both call it (a zip that cannot be opened raises in
+  the pass as extracting it did, and the Dry run says it cannot be opened). The
+  copy pass now logs "!! overlay copy: SKIP region '<r>' (<why>) -- N
+  overlay(s)" and names the missing flags file. The drift-guard test runs the
+  real correspondence (a stub mesh reader over a small grid) and the real
+  Papyrus-base assembly on a real zip, with a missing and an unreadable
+  reference mesh and a zip without the flags file.
 - **A bad settings import changes nothing** (`#settings-import-guard`).
   `load_values` turns an absent, torn or foreign file into pure defaults by
   design; Import used it and saved the defaults over the recipe.
@@ -2002,7 +2018,12 @@ reported through `_report_coverage_holds`:
   the failure kinds whose output WAS written (the load-breaking plugin, a
   CTD-class or unreadable mesh, a partial mesh, a merge that failed or was
   skipped) with a sentence each; the title counts them as problems in what was
-  written, and every other failure keeps the old wording.
+  written, and every other failure keeps the old wording. Reviewed on 0081b20:
+  a merge that failed or was skipped wrote NO Combined ESP, so counting it as
+  a problem in what was written was wrong too. Those two kinds moved to
+  `failure_summary.NOT_WRITTEN` (same sentence); the title and the status line
+  say "no Combined ESP was built" for them and count only the written-but-broken
+  kinds as problems in what was written (`_own_sentence_parts`).
 - **The --incremental fingerprint skips launch plumbing**
   (`#fingerprint-skips-plumbing`). It hashed every `CBBE2UBE_*` variable,
   including ones that cannot change a mesh, so a scripted re-run
@@ -2032,6 +2053,27 @@ reported through `_report_coverage_holds`:
   NO_STANDOFF_AUDIT) with RAY_CHUNK and NO_ZEROED_PROBE_MEMO, which run code
   inside the conversion that no test proves byte-neutral. Hashing too much
   costs a reconvert; leaving out too much reuses a stale mesh.
+  THE SURVEY IS MACHINE-CHECKED (reviewed on 0081b20: the hand survey missed
+  `CBBE2UBE_ANTIPOKE_SURFACE_QUIET`, which only silences two trace lines of the
+  opt-in #antipoke-surface-req pass, and fit none of the documented groups).
+  QUIET is now plumbing; `tests/test_fingerprint_survey.py` runs that pass with
+  the trace on and off and gets the same garment. The groups became data:
+  `_FINGERPRINT_HASHED_GROUPS` in `auto_convert` -- `switch` (every name read
+  through `_flag`), `knob` (through `_knob`), and three listed groups: `layout
+  and paths`, `diagnostic` and `not proven neutral`, each with its reason. The
+  test parses every string constant and f-string under `src/` and the entry
+  point (504 names on 2026-09-25: 255 knobs, 205 switches, 16 diagnostics, 15
+  layout and paths, 11 plumbing, 2 not proven neutral) and fails on a name in
+  neither the plumbing table nor a group, on a listed name nothing reads any
+  more, and on a name both left out and hashed. A name holding a word from
+  `_FINGERPRINT_LISTED_ONLY` (QUIET, LOG, TRACE, DEBUG, WORKER, MEMO, ...)
+  never joins `switch` or `knob` by how it is read: it must be listed, so a new
+  verbosity switch is judged rather than hashed by default. Planted reads in a
+  copy of a module are the negative control. The diagnostics that ADD printed
+  lines (DEBUG, TRACE, PROBE, STATS ...) stay hashed on purpose: someone who
+  turns one on wants the conversion to run, and left out, an --incremental run
+  would reuse every NIF and print nothing. Only a switch that silences lines
+  can be plumbing.
 - **A mod folder name with a comma is one name** (`#whole-mod-names`). The
   window passes every name as its own `--exclude-mods` / `--only-mods` /
   `--coverage-exclude-mods` / `--overlay-*-mods` flag, and `_split_mod_arg`

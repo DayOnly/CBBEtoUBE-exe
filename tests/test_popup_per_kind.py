@@ -67,11 +67,45 @@ def test_each_kind_is_worded_by_itself_beside_a_real_conversion_failure():
     assert "1 item(s) did not convert" in fs.status_line(0, entries)
 
 
-@pytest.mark.parametrize("kind", sorted(fs.WRITTEN_BUT_BROKEN))
+_OWN = {**fs.WRITTEN_BUT_BROKEN, **fs.NOT_WRITTEN}
+
+
+@pytest.mark.parametrize("kind", sorted(_OWN))
 def test_every_written_but_broken_kind_has_its_own_sentence(kind):
     entries = [{"kind": kind, "source": "s", "item": "i", "severity": "failure"}]
     intro = fs.popup_intro(entries)
-    assert fs.WRITTEN_BUT_BROKEN[kind] in intro and "did NOT convert" not in intro
+    assert _OWN[kind] in intro and "did NOT convert" not in intro
+
+
+# --- a merge that wrote nothing is not a problem in what was written ------------
+# Reviewed on 0081b20: "merge failed" / "merge skipped" were counted as
+# "problem(s) in what was written" although no Combined ESP was written.
+
+_MERGE_FAILED = (("merge failed", "Combined ESP", "Combined.esp", "boom"), {})
+_MERGE_SKIPPED = (("merge skipped", "Combined ESP", "Combined.esp",
+                   "1 source(s) failed ESP generation"), {})
+
+
+@pytest.mark.parametrize("call", [_MERGE_FAILED, _MERGE_SKIPPED],
+                         ids=["merge-failed", "merge-skipped"])
+def test_a_merge_that_wrote_nothing_is_said_as_such(call):
+    entries = _recorded(call)
+    title, status = fs.popup_title(entries), fs.status_line(0, entries)
+    assert title == "no Combined ESP was built", title
+    assert "what was written" not in title + status, (title, status)
+    assert status.startswith("Done (exit 0), but no Combined ESP was built - "), status
+    assert "no Combined ESP was built this run" in fs.popup_intro(entries)
+
+
+def test_a_merge_beside_other_failures_keeps_each_count():
+    entries = _recorded(_MESH, _CTD, _MERGE_FAILED, _WARN)
+    assert fs.popup_title(entries) == (
+        "1 item(s) failed to convert, 3 problem(s) in what was written, "
+        "no Combined ESP was built, 2 warning(s)")
+    both = _recorded(_CTD, _MERGE_SKIPPED)
+    assert fs.status_line(0, both).startswith(
+        "Done (exit 0), but 3 problem(s) in what was written and no Combined "
+        "ESP was built - "), fs.status_line(0, both)
 
 
 def test_a_conversion_failure_reads_as_it_always_did():

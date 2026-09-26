@@ -530,21 +530,20 @@ _NIF_RELEVANT_ARGS = (
 # A scripted re-run (NO_PAUSE=1) or a pinned log used to reconvert every NIF.
 #
 # THE SURVEY (2026-09-25, every `CBBE2UBE_*` name read under src/ and the entry
-# point, ~530): each one is PLUMBING -- a launch or UI detail, a log or sink
-# path, a worker count or memory budget, a thread count -- or it is treated as
-# OUTPUT. Only the plumbing below is left out; the reason for each is beside it.
-# Everything else stays hashed, and hashing too much is the safe direction (a
-# needless reconvert, never a stale reuse):
-#   * every tuning knob and NO_* switch: they are the mesh maths.
-#   * the layout (MO2_INI, MODS_ROOT, GAME_DATA, OUT_MOD) and the body and tool
-#     paths (UBE_BODY*, CBBE_BODY*, UBE_TEMPLATE, UBE_OSD, TEXCONV,
-#     PAPYRUS_COMPILER): a different game Data, mods folder or body changes a
-#     mesh.
-#   * the diagnostics switches (DEBUG_*, *_DEBUG, *_TRACE, *_AUDIT, STAGE_DUMP,
-#     FIELD_STATS, NIPPLE_PROBE, BACK_DUMP_DISP, NO_STANDOFF_AUDIT): they run
-#     extra code inside the conversion, and no test proves that code leaves
-#     the NIF bytes alone. RAY_CHUNK (how many rays one numpy batch casts) and
-#     NO_ZEROED_PROBE_MEMO likewise: not proven byte-neutral.
+# point, ~500): each one is PLUMBING -- a launch or UI detail, a log or sink
+# path, a worker count or memory budget, a thread count, a switch that only
+# silences printed lines -- or it is treated as OUTPUT. Only the plumbing below
+# is left out; the reason for each is beside it. Everything else stays hashed,
+# in one of `_FINGERPRINT_HASHED_GROUPS` below, and hashing too much is the
+# safe direction (a needless reconvert, never a stale reuse).
+# THE SURVEY IS MACHINE-CHECKED. Reviewed on 0081b20, the hand survey had missed
+# CBBE2UBE_ANTIPOKE_SURFACE_QUIET, which only silences two trace lines.
+# tests/test_fingerprint_survey.py parses every name under src/ and the entry
+# point and fails on one that is in neither this table nor a group, so the
+# survey cannot go stale unseen. A name joins a group by HOW it is read
+# (`_flag`, `_knob`) or by being listed there -- but a name holding a word from
+# `_FINGERPRINT_LISTED_ONLY` (a log, a trace, a worker count, a memo...) never
+# joins by how it is read: it is listed, here or in a group, with its reason.
 # WORKER COUNTS: `--workers` was already left out (see above). Output does not
 # depend on the pool size since #pair-unit-dispatch put a weight pair on ONE
 # worker as a unit (the race that made 16 workers differ from 1 on 5 collider
@@ -567,8 +566,61 @@ _FINGERPRINT_PLUMBING_WHY = {
                                      "file; the values it sets are hashed",
     "CBBE2UBE_WORKER_MEM_GB": "the memory budget that picks the worker count",
     "CBBE2UBE_OVERLAY_WORKERS": "the overlay transfer's thread count",
+    "CBBE2UBE_ANTIPOKE_SURFACE_QUIET": "only silences the #antipoke-surface-req "
+                                       "trace lines; the push they report is "
+                                       "applied either way",
 }
 _FINGERPRINT_PLUMBING = frozenset(_FINGERPRINT_PLUMBING_WHY)
+
+# Words that keep a name out of the read-based groups below: plumbing-shaped
+# names must be judged one by one. Matched against the start of each word of
+# the name ("WORKER" catches OVERLAY_WORKERS).
+_FINGERPRINT_LISTED_ONLY = (
+    "QUIET", "VERBOSE", "SILENT", "LOG", "PRINT", "PAUSE", "PROGRESS",
+    "WORKER", "THREAD", "DEBUG", "TRACE", "AUDIT", "DUMP", "PROBE", "STATS",
+    "MEMO", "CACHE", "CHUNK", "TIMING", "PROFILE", "SETTINGS", "CONFIG",
+)
+
+# Every hashed `CBBE2UBE_*` name is in one of these, and why it is hashed.
+# `read`: every name read through that helper joins; `names`: listed ones.
+# A `{}` in a name is an f-string read (one per body weight).
+_FINGERPRINT_HASHED_GROUPS = {
+    "switch": {
+        "read": "_flag",
+        "why": "turns a pass, a variant or a guard on or off: the mesh maths"},
+    "knob": {
+        "read": "_knob",
+        "why": "a number the mesh maths uses"},
+    "layout and paths": {
+        "names": (
+            "CBBE2UBE_MO2_INI", "CBBE2UBE_MODS_ROOT", "CBBE2UBE_GAME_DATA",
+            "CBBE2UBE_OVERLAY_SLOTS", "CBBE2UBE_UBE_BODY",
+            "CBBE2UBE_UBE_BODY_0", "CBBE2UBE_UBE_BODY_1",
+            "CBBE2UBE_UBE_BODY{}", "CBBE2UBE_CBBE_BODY_0",
+            "CBBE2UBE_CBBE_BODY_1", "CBBE2UBE_CBBE_BODY{}",
+            "CBBE2UBE_UBE_TEMPLATE", "CBBE2UBE_UBE_OSD", "CBBE2UBE_TEXCONV",
+            "CBBE2UBE_PAPYRUS_COMPILER"),
+        "why": "a different game Data, mods folder, body, overlay slot file "
+               "or tool changes what a mesh or texture becomes"},
+    "diagnostic": {
+        "names": (
+            "CBBE2UBE_CLEARANCE_TERM_AUDIT", "CBBE2UBE_COINCIDENT_SKIN_DEBUG",
+            "CBBE2UBE_DEBUG_FINALIZE", "CBBE2UBE_DEBUG_GLOW_CTRL",
+            "CBBE2UBE_FIELD_STATS", "CBBE2UBE_GLOW_RIDE_DEBUG",
+            "CBBE2UBE_LAYER_DEBUG", "CBBE2UBE_NIPPLE_PROBE",
+            "CBBE2UBE_PASS_TRACE", "CBBE2UBE_SEAM_DEBUG",
+            "CBBE2UBE_STANDOFF_BAND_AUDIT", "CBBE2UBE_STANDOFF_TRACE",
+            "CBBE2UBE_SURVIVAL_TRACE", "CBBE2UBE_NO_STANDOFF_AUDIT",
+            "CBBE2UBE_STAGE_DUMP", "CBBE2UBE_BACK_DUMP_DISP"),
+        "why": "turned on to watch a conversion, so the conversion must RUN: "
+               "left out, an --incremental run would reuse every NIF and "
+               "print or write nothing; several also run extra code inside the "
+               "fit that no test proves byte-neutral"},
+    "not proven neutral": {
+        "names": ("CBBE2UBE_RAY_CHUNK", "CBBE2UBE_NO_ZEROED_PROBE_MEMO"),
+        "why": "how the ray casts are batched and whether a body probe is "
+               "remembered: no test proves the NIF bytes the same"},
+}
 
 
 def _fingerprint_skips_plumbing() -> bool:
@@ -8914,7 +8966,10 @@ def _list_overlays_only(args, output, lay, overlay_transfer) -> int:
     For the mode the real run would use, and saying so (#dry-run-copy-mode):
     under --overlay-copy only the overlays a RaceMenu paint script registers
     get a copy, and a missing tool skips the whole real run -- the list used
-    to show the replace mode's set either way."""
+    to show the replace mode's set either way. A region whose CBBE/UBE
+    reference mesh is missing or unreadable is skipped by either pass, and
+    the list says so under that region (`plan_region_gaps`, the pass's own
+    check)."""
     kw = dict(skip_male=getattr(args, "overlay_skip_male", False),
               only_mods=_split_mod_arg(getattr(args, "overlay_mods", None)),
               exclude_mods=_split_mod_arg(getattr(args, "overlay_exclude_mods", None)))
@@ -8930,10 +8985,13 @@ def _list_overlays_only(args, output, lay, overlay_transfer) -> int:
               "WOULD be remapped to UBE UV ---")
         plan = overlay_transfer.plan_overlays(output, lay, **kw)
         gap = overlay_transfer.replace_mode_tool_gap()
+    region_gaps = overlay_transfer.plan_region_gaps(plan)
     total = 0
     mods: "dict[str, int]" = {}
     for region, items in plan.items():
         print(f"  {region}: {len(items)} overlay(s)")
+        if region in region_gaps:
+            print(f"    !! the real run would SKIP this region: {region_gaps[region]}")
         total += len(items)
         for src in items.values():
             if isinstance(src, str):                 # copy plan: the mod itself

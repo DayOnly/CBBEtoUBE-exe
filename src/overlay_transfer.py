@@ -408,15 +408,18 @@ def _find_region_meshes(region: str, weight: str = "_1"):
     return cbbe, ube
 
 
-def build_overlay_correspondence(cbbe_path, ube_path,
-                                 prefer_shapes=("BaseShape", "3BA")
-                                 ) -> "OverlayCorrespondence | None":
-    """Generic CBBE<->UBE correspondence for one region from explicit meshes.
-    Returns None if a mesh is missing/unreadable."""
-    if cbbe_path is None or ube_path is None:
-        return None
+def _load_ref_meshes(cbbe_path, ube_path, prefer_shapes):
+    """((verts, uvs, tris) of the CBBE mesh, the same of the UBE mesh, "") --
+    or (None, None, why) when either is missing or cannot be read.
+
+    THE ONE DECISION whether a region can be remapped: the correspondence is
+    built from what this returns, and the Dry run asks it (`region_ref_gap`)
+    without building one, so the list cannot name a region the real run
+    skips. #dry-run-copy-mode"""
+    missing = [n for n, p in (("CBBE", cbbe_path), ("UBE", ube_path)) if p is None]
+    if missing:
+        return None, None, " and ".join(missing) + " mesh not found"
     from . import nif_convert as nc
-    from .correspondence import MeshIndex, project_to_mesh
     pyn = nc._pynifly()
 
     def _load(path):
@@ -426,10 +429,24 @@ def build_overlay_correspondence(cbbe_path, ube_path,
         return (np.asarray(s.verts, np.float64), np.asarray(s.uvs, np.float64),
                 np.asarray(s.tris, np.int64))
     try:
-        cbv, cbuv, cbt = _load(cbbe_path)
-        ubv, ubuv, ubt = _load(ube_path)
-    except Exception:
+        cb = _load(cbbe_path)
+        ub = _load(ube_path)
+    except Exception as e:
+        return None, None, f"a mesh could not be read: {e!r}"
+    return cb, ub, ""
+
+
+def build_overlay_correspondence(cbbe_path, ube_path,
+                                 prefer_shapes=("BaseShape", "3BA")
+                                 ) -> "OverlayCorrespondence | None":
+    """Generic CBBE<->UBE correspondence for one region from explicit meshes.
+    Returns None if a mesh is missing/unreadable (`_load_ref_meshes`)."""
+    cb, ub, why = _load_ref_meshes(cbbe_path, ube_path, prefer_shapes)
+    if why:
         return None
+    from .correspondence import MeshIndex, project_to_mesh
+    cbv, cbuv, cbt = cb
+    ubv, ubuv, ubt = ub
     # Warp CBBE into UBE space by projecting each CBBE vert onto the UBE
     # SURFACE (a continuous closest-point), NOT snapping to the nearest UBE
     # vertex. Vert-snapping collapsed ~35% of body triangles (a third of CBBE
@@ -445,11 +462,23 @@ def build_overlay_correspondence(cbbe_path, ube_path,
         cbbe_in_ube_mesh=MeshIndex.build(cbbe_in_ube, cbt))
 
 
+def _region_prefer(region: str) -> tuple:
+    return ("BaseShape", "3BA") if region == "body" else ("BaseShape",)
+
+
 def build_region_correspondence(region: str, weight: str = "_1"
                                 ) -> "OverlayCorrespondence | None":
     cbbe, ube = _find_region_meshes(region, weight)
-    prefer = ("BaseShape", "3BA") if region == "body" else ("BaseShape",)
-    return build_overlay_correspondence(cbbe, ube, prefer)
+    return build_overlay_correspondence(cbbe, ube, _region_prefer(region))
+
+
+def region_ref_gap(region: str, weight: str = "_1") -> str:
+    """Why `build_region_correspondence(region)` would be None ('' when it
+    would not): the same meshes, found and read the same way, without the
+    projection. Reads only. #dry-run-copy-mode"""
+    cbbe, ube = _find_region_meshes(region, weight)
+    why = _load_ref_meshes(cbbe, ube, _region_prefer(region))[2]
+    return f"CBBE/UBE {region} ref: {why}" if why else ""
 
 
 def convert_overlay(src_dds, out_dds, corr, texconv, workdir):
@@ -820,6 +849,12 @@ def plan_overlays(output_dir, layout, *, regions=("body", "hands", "feet"),
 # reads a different set -- only overlays a RaceMenu paint script registers --
 # and skips the whole run without texconv, PapyrusCompiler or the Papyrus base,
 # so under it the list named overlays the real run would never bake.
+# Reviewed on 0081b20: the list still named overlays the real run skips -- a
+# region whose CBBE/UBE reference mesh is missing or unreadable, and every
+# overlay when Scripts.zip holds no TESV_Papyrus_Flags.flg. Each check is now
+# ONE function the pass and the list both call (`region_ref_gap` over
+# `_load_ref_meshes`; `papyrus_base_gap`), and the list says when either would
+# skip.
 
 def replace_mode_tool_gap() -> str:
     """Why a real replace-mode transfer would skip every overlay ('' when it
@@ -839,9 +874,24 @@ def copy_mode_tool_gap() -> str:
     compiler = find_papyrus_compiler()
     if compiler is None:
         return "PapyrusCompiler.exe not found (set CBBE2UBE_PAPYRUS_COMPILER)"
-    if not (Path(compiler).parent.parent / "Data" / "Scripts.zip").is_file():
-        return "Papyrus base (Scripts.zip) not found"
-    return ""
+    try:
+        return papyrus_base_gap(compiler)
+    except Exception as e:                  # the real run raises the same
+        return f"Papyrus base (Scripts.zip) cannot be opened: {e!r}"
+
+
+def plan_region_gaps(plan) -> dict:
+    """{region: why} for each region of a Dry run's plan that the real run
+    would skip (its CBBE/UBE reference mesh is missing or unreadable), asked
+    the way both passes ask it (`region_ref_gap`). Reads only; a region with
+    nothing planned is not asked. #dry-run-copy-mode"""
+    gaps = {}
+    for region, items in (plan or {}).items():
+        if items:
+            why = region_ref_gap(region)
+            if why:
+                gaps[region] = why
+    return gaps
 
 
 def _copy_call_wanted(slot, rel, regions, skip_male) -> bool:
@@ -1171,6 +1221,35 @@ def _find_racemenu_bsas() -> "list":
     return list(cands[0].glob("*.bsa")) if cands else []
 
 
+_PAPYRUS_FLAGS = "TESV_Papyrus_Flags.flg"
+
+
+def _scripts_zip(compiler) -> Path:
+    """The game's Scripts.zip: `<game>/Data/Scripts.zip` beside the compiler's
+    `<game>/Papyrus Compiler/`."""
+    return Path(compiler).parent.parent / "Data" / "Scripts.zip"
+
+
+def papyrus_base_gap(compiler) -> str:
+    """Why the vanilla Papyrus base cannot be assembled ('' when it can): no
+    Scripts.zip, or one holding no flags file, which the compiler needs.
+    `_assemble_papyrus_imports` and the Dry run both ask this, so they cannot
+    disagree. Reads the zip's list of names only; a zip that cannot be opened
+    raises, as extracting it did. #dry-run-copy-mode"""
+    import zipfile
+    scripts_zip = _scripts_zip(compiler)
+    if not scripts_zip.is_file():
+        return "Papyrus base (Scripts.zip) not found"
+    with zipfile.ZipFile(scripts_zip) as z:
+        names = z.namelist()
+    # Any path part, case-blind: what `rglob` finds once the zip is extracted.
+    flag = _PAPYRUS_FLAGS.lower()
+    if not any(part.lower() == flag
+               for n in names for part in n.replace("\\", "/").split("/")):
+        return f"Papyrus base (Scripts.zip) holds no {_PAPYRUS_FLAGS}"
+    return ""
+
+
 def _assemble_papyrus_imports(compiler, work):
     """Build the Papyrus -import dir: SKSE-extended base (FIRST so it wins over
     vanilla Utility/Math) + RaceMenu's racemenubase/nioverride, plus the vanilla
@@ -1183,12 +1262,11 @@ def _assemble_papyrus_imports(compiler, work):
     src = work / "src"
     base.mkdir(parents=True, exist_ok=True)
     src.mkdir(parents=True, exist_ok=True)
-    scripts_zip = Path(compiler).parent.parent / "Data" / "Scripts.zip"
-    if not scripts_zip.is_file():
+    if papyrus_base_gap(compiler):          # shared with the Dry run
         return None, None
-    with zipfile.ZipFile(scripts_zip) as z:
+    with zipfile.ZipFile(_scripts_zip(compiler)) as z:
         z.extractall(base)
-    flg = next(base.rglob("TESV_Papyrus_Flags.flg"), None)
+    flg = next(base.rglob(_PAPYRUS_FLAGS), None)
     if flg is None:
         return None, None
     skse_src = _find_skse_source()
@@ -1547,6 +1625,7 @@ def add_ube_overlay_copies(layout, out_root, texconv, *,
             "(set CBBE2UBE_PAPYRUS_COMPILER)")
         return {"copies": 0, "reason": "no-compiler"}
     corr_cache: dict = {}
+    region_skipped: dict = {}       # region -> rels skipped for its missing ref
 
     def _corr(region):
         if region not in corr_cache:
@@ -1557,7 +1636,9 @@ def add_ube_overlay_copies(layout, out_root, texconv, *,
     try:
         src, basesrc = _assemble_papyrus_imports(compiler, work)
         if src is None:
-            log("  overlay UBE-copy SKIPPED: Papyrus base (Scripts.zip) not found")
+            log("  overlay UBE-copy SKIPPED: "
+                + (papyrus_base_gap(compiler)
+                   or "Papyrus base (Scripts.zip) not found"))
             return {"copies": 0, "reason": "no-papyrus-base"}
         srcmap = _build_overlay_source_map(layout, skip_mods=skip_mods)
         twork = work / "tw"
@@ -1578,7 +1659,8 @@ def add_ube_overlay_copies(layout, out_root, texconv, *,
                 if not srcrec:
                     continue
                 corr = _corr(slot)
-                if corr is None:
+                if corr is None:            # said below, as replace mode does
+                    region_skipped.setdefault(slot, set()).add(rel)
                     continue
                 if srcrec[0] == "loose":
                     src_dds = srcrec[1]
@@ -1615,6 +1697,10 @@ def add_ube_overlay_copies(layout, out_root, texconv, *,
             else:
                 log(f"  !! overlay UBE-copy: compile FAILED for {name}: "
                     f"{(clog or '')[-300:]}")
+        for region, rels in region_skipped.items():     # #dry-run-copy-mode
+            why = region_ref_gap(region) or f"CBBE/UBE {region} ref not found"
+            log(f"  !! overlay copy: SKIP region '{region}' ({why}) -- "
+                f"{len(rels)} overlay(s)")
         log(f"  overlay UBE-copy: {n_tex} UBE texture(s) added from "
             f"{n_compiled}/{n_scripts} recompiled script(s)")
         return {"copies": n_tex, "scripts": n_scripts, "compiled": n_compiled}

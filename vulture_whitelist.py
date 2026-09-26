@@ -71,6 +71,8 @@ _.rebuilds          # worker-pool rebuild counter; test_pair_unit_dispatch and t
 BREAST_APEX_Z       # body-zone landmark (z of the breast apex); pinned by tests/test_body_zones.py
 UPPER_CHEST_Z       # named so nobody reaches for it as the breast band; pinned by tests/test_body_zones.py
 plan_weight_writes  # pure model of the weight-write rule nif_convert_weights applies; tests pin it
+_FINGERPRINT_HASHED_GROUPS  # the fingerprint survey's hashed groups; tests/test_fingerprint_survey.py puts every CBBE2UBE_* name in one
+_FINGERPRINT_LISTED_ONLY    # words that keep a name out of those groups; tests/test_fingerprint_survey.py applies them
 
 # ---- Test scaffolding (pytest / synthetic-NIF fixtures use these by framework) ----
 pytestmark          # module-level pytest marker, read by pytest not by our code

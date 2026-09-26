@@ -72,26 +72,51 @@ WRITTEN_BUT_BROKEN = {
         "the mesh was written, but it cannot be read back"),
     "partial mesh (shape dropped)": (
         "the mesh was written with a part of it left out"),
+}
+
+# A merge that failed or was skipped wrote NO Combined ESP: the meshes did
+# convert, and nothing broken was written either. Reviewed on 0081b20: these two
+# sat in WRITTEN_BUT_BROKEN, so a run whose only failure was the merge was
+# titled "1 problem(s) in what was written" over a plugin that does not exist.
+# Their own sentence, and their own words in the title and the status line.
+NOT_WRITTEN = {
     "merge failed": (
         "the meshes converted, but no Combined ESP was built this run"),
     "merge skipped": (
         "the meshes converted, but no Combined ESP was built this run"),
 }
 
+# Every FAILED kind worded by itself rather than as "did NOT convert".
+_OWN_SENTENCE = {**WRITTEN_BUT_BROKEN, **NOT_WRITTEN}
+
 
 def _failure_split(entries) -> "tuple[int, dict]":
-    """(count of failures that did not convert, {written-but-broken kind:
+    """(count of failures that did not convert, {kind with its own sentence:
     count} in first-seen order). #popup-per-kind"""
     not_converted, broken = 0, {}
     for e in entries or []:
         if severity_of(e) == WARNING:
             continue
         kind = (e or {}).get("kind", "")
-        if kind in WRITTEN_BUT_BROKEN:
+        if kind in _OWN_SENTENCE:
             broken[kind] = broken.get(kind, 0) + count_of(e)
         else:
             not_converted += count_of(e)
     return not_converted, broken
+
+
+def _own_sentence_parts(broken) -> list:
+    """The title's and the status line's words for the kinds worded by
+    themselves: a broken written file counts as a problem in what was
+    written; a merge that failed or was skipped says no plugin was built.
+    #popup-per-kind"""
+    parts = []
+    written = sum(n for k, n in broken.items() if k in WRITTEN_BUT_BROKEN)
+    if written:
+        parts.append(f"{written} problem(s) in what was written")
+    if any(k in NOT_WRITTEN for k in broken):
+        parts.append("no Combined ESP was built")
+    return parts
 
 
 def popup_title(entries) -> str:
@@ -100,8 +125,7 @@ def popup_title(entries) -> str:
     parts = []
     if not_converted:
         parts.append(f"{not_converted} item(s) failed to convert")
-    if broken:
-        parts.append(f"{sum(broken.values())} problem(s) in what was written")
+    parts.extend(_own_sentence_parts(broken))
     if not parts:
         return f"{warnings} warning(s) from this run"
     if warnings:
@@ -118,7 +142,7 @@ def popup_intro(entries) -> str:
                      "keeps its previous state (or is invisible on UBE actors)."
                      + ("" if broken else " Everything else converted normally."))
     for kind in broken:
-        parts.append(f"Items marked FAILED: {kind} — {WRITTEN_BUT_BROKEN[kind]}.")
+        parts.append(f"Items marked FAILED: {kind} — {_OWN_SENTENCE[kind]}.")
     if warnings:
         parts.append(("Items marked WARNING converted" if failures
                       else "Everything converted")
@@ -156,12 +180,12 @@ def status_line(rc: int, entries, cancelled: bool = False) -> str:
     failures, warnings = counts(entries)
     if rc != 0:
         return f"Finished with exit code {rc} - check the log for errors/warnings."
-    not_converted, _broken = _failure_split(entries)
+    not_converted, broken = _failure_split(entries)
     if not_converted:
         return (f"Done (exit 0), but {not_converted} item(s) did not convert - "
                 "see the list that opened and the log.")
     if failures:                                    # #popup-per-kind
-        return (f"Done (exit 0), but {failures} problem(s) in what was written "
+        return (f"Done (exit 0), but {' and '.join(_own_sentence_parts(broken))} "
                 "- see the list that opened and the log.")
     if warnings:
         return (f"Done with {warnings} warning(s) (exit 0) - see the list that "

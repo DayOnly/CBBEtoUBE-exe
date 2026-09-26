@@ -16,15 +16,21 @@ The list that opens after a run called every failed item "did NOT convert —
 keeps its previous state". For a combined plugin that was built but is not safe
 to load, or a mesh that was written but can crash the game, that was wrong. Such
 items now say what was written and what is wrong with it, and the title counts
-them as problems in what was written.
+them as problems in what was written. When the combined plugin could not be
+built at all, the title and the status line say "no Combined ESP was built"
+instead of counting it as a problem in something written.
 
 ### Fixed — "Dry run" with "Add UBE copy" lists the overlays that would get a copy
 
 With overlays only and "Add UBE copy" chosen, the Dry run listed every overlay,
 including ones copy mode never touches (only overlays a RaceMenu script
 registers get a copy). It now lists those, says which mode the list is for, and
-says when a missing tool (texconv, the Papyrus compiler or its Scripts.zip)
-would make the real run skip every overlay.
+says when a missing tool (texconv, the Papyrus compiler, its Scripts.zip, or the
+flags file inside that zip) would make the real run skip every overlay. In
+either mode it also says when the real run would skip a body, hands or feet
+region because the CBBE or UBE reference mesh for it is missing or cannot be
+read, and the real "Add UBE copy" run now says so in the log too (it used to
+skip that region without a word).
 
 ### Fixed — a mistyped "Worker processes" no longer freezes the window
 
@@ -71,7 +77,9 @@ error in the window is shown in the log panel too.
 Re-running with `--incremental` from a script instead of a console (or with the
 log pinned elsewhere, or with fewer workers after a memory error) reconverted
 every mesh, because launch details counted as settings. They no longer do; a
-real setting change still reconverts.
+real setting change still reconverts. The switch that only silences the
+surface anti-poke trace lines no longer counts either, and a new variable the
+tool reads can no longer join the settings list without being checked.
 `CBBE2UBE_NO_FINGERPRINT_SKIPS_PLUMBING=1` (set to 1) counts them again.
 
 ### Fixed — a mod whose folder name has a comma can be excluded or picked

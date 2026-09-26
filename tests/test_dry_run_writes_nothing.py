@@ -23,11 +23,48 @@ transfer ran, rebaked every overlay into the output mod and reported success.
 
 Every combination the window can build under Dry run is run here through the
 real `auto` entry, with the writers replaced by recorders."""
+import types
+import zipfile
+
+import numpy as np
 import pytest
 
 from src import auto_convert as ac
 from src import gui
+from src import nif_convert
 from src import overlay_transfer as ot
+
+
+def _grid_shape(n=4):
+    """A small flat body patch (32 triangles) with UVs: enough for the real
+    correspondence to be built from it."""
+    xs, zs = np.linspace(-10.0, 10.0, n + 1), np.linspace(80.0, 110.0, n + 1)
+    verts = [(x, 0.0, z) for z in zs for x in xs]
+    uvs = [((x + 10.0) / 20.0, (z - 80.0) / 30.0) for z in zs for x in xs]
+    tris = []
+    for r in range(n):
+        for c in range(n):
+            a = r * (n + 1) + c
+            tris += [(a, a + 1, a + n + 2), (a, a + n + 2, a + n + 1)]
+    return types.SimpleNamespace(name="BaseShape", verts=verts, uvs=uvs, tris=tris)
+
+
+def _reference_meshes(monkeypatch, tmp_path, state="present"):
+    """The region reference meshes the transfer and the Dry run look for:
+    found and readable, one not found, or one that cannot be read. Stubbed at
+    the finder and the NIF reader, so the shared check in between is real."""
+    cbbe = tmp_path / ("unreadable_cbbe.nif" if state == "unreadable" else "cbbe.nif")
+
+    class _Nif:
+        def __init__(self, filepath):
+            if "unreadable" in filepath:
+                raise OSError("not a NIF")
+            self.shapes = [_grid_shape()]
+
+    monkeypatch.setattr(nif_convert, "_pynifly",
+                        lambda: types.SimpleNamespace(NifFile=_Nif))
+    monkeypatch.setattr(ot, "_find_region_meshes", lambda region, weight="_1": (
+        None if state == "missing" else cbbe, tmp_path / "ube.nif"))
 
 
 def _modlist(tmp_path, monkeypatch):
@@ -50,6 +87,7 @@ def _modlist(tmp_path, monkeypatch):
                         lambda *a, **k: writes.append("overlays") or {"converted": 1})
     monkeypatch.setattr(ac, "_cmd_convert",
                         lambda conv: writes.append("armor") or 0)
+    _reference_meshes(monkeypatch, tmp_path)
     return writes
 
 
@@ -118,10 +156,12 @@ _OV = "textures/actors/character/overlays/inkset"
 
 
 def _paint_modlist(tmp_path, monkeypatch, *, compiler=False, base=False,
-                   texconv=True):
+                   texconv=True, flags=True, refs="present"):
     """One overlay mod on disk: a texture a RaceMenu script registers, one it
     does not, and a registration whose texture is missing. The tools the copy
-    mode needs are present or not as asked."""
+    mode needs are present or not as asked; `base` is a real Scripts.zip,
+    holding the compiler's flags file when `flags`; `refs` is the state of
+    the region reference meshes (`_reference_meshes`)."""
     mods = tmp_path / "mods"
     ink = mods / "InkMod"
     (ink / _OV).mkdir(parents=True)
@@ -146,12 +186,16 @@ def _paint_modlist(tmp_path, monkeypatch, *, compiler=False, base=False,
     pc.write_bytes(b"")
     if base:
         (tmp_path / "game" / "Data").mkdir()
-        (tmp_path / "game" / "Data" / "Scripts.zip").write_bytes(b"")
+        with zipfile.ZipFile(tmp_path / "game" / "Data" / "Scripts.zip", "w") as z:
+            z.writestr("Source/Scripts/Actor.psc", "Scriptname Actor\n")
+            if flags:
+                z.writestr("Source/Scripts/TESV_Papyrus_Flags.flg", "Flag x 0\n")
     monkeypatch.setattr(ot, "find_texconv", lambda: tool if texconv else None)
     monkeypatch.setattr(ot, "find_papyrus_compiler", lambda: pc if compiler else None)
     writes = []
     monkeypatch.setattr(ot, "convert_overlays",
                         lambda *a, **k: writes.append("overlays") or {"converted": 1})
+    _reference_meshes(monkeypatch, tmp_path, refs)
     return mods, writes
 
 
@@ -162,35 +206,55 @@ def test_copy_mode_lists_only_the_overlays_a_script_registers(tmp_path, monkeypa
     assert plan["hands"] == {} and plan["feet"] == {}, plan
 
 
-def test_the_copy_plan_is_what_the_copy_pass_bakes(tmp_path, monkeypatch):
-    """The drift guard: the real 'Add UBE copy' pass, with its tools stubbed
-    present, bakes exactly the set the dry run lists."""
-    import numpy as np
-    mods, _w = _paint_modlist(tmp_path, monkeypatch, compiler=True, base=True)
-    baked = []
-    work = tmp_path / "work"
-    work.mkdir()
-    monkeypatch.setattr(ot, "_assemble_papyrus_imports", lambda c, w: (work, work))
-    monkeypatch.setattr(ot, "build_region_correspondence", lambda region: object())
+@pytest.mark.parametrize("flags,refs,said", [
+    (True, "present", None),
+    (True, "missing", "!! overlay copy: SKIP region 'body' (CBBE/UBE body ref: "
+                      "CBBE mesh not found) -- 1 overlay(s)"),
+    (True, "unreadable", "!! overlay copy: SKIP region 'body' (CBBE/UBE body "
+                         "ref: a mesh could not be read: OSError('not a NIF'))"),
+    (False, "present", "overlay UBE-copy SKIPPED: Papyrus base (Scripts.zip) "
+                       "holds no TESV_Papyrus_Flags.flg"),
+], ids=["ready", "region-ref-missing", "region-ref-unreadable", "no-flags-file"])
+def test_the_copy_plan_is_what_the_copy_pass_bakes(tmp_path, monkeypatch,
+                                                   flags, refs, said):
+    """The drift guard: the real 'Add UBE copy' pass -- its own Papyrus-base
+    assembly and region correspondence, only the texture codec, the transfer
+    and the compiler stubbed -- bakes exactly what the Dry run says it would,
+    including when a region's reference mesh or the flags file is missing.
+    Reviewed on 0081b20: this stubbed the correspondence to always present
+    and the Papyrus base to always assembled, and could see neither."""
+    mods, _w = _paint_modlist(tmp_path, monkeypatch, compiler=True, base=True,
+                              flags=flags, refs=refs)
+    baked, log = [], []
     monkeypatch.setattr(ot, "dds_to_rgba", lambda *a: np.zeros((1, 1, 4), np.uint8))
     monkeypatch.setattr(ot, "transfer_overlay", lambda rgba, corr: rgba)
     monkeypatch.setattr(ot, "rgba_to_dds", lambda rgba, outp, *a: baked.append(outp))
     monkeypatch.setattr(ot, "_compile_psc", lambda *a: (None, ""))
     out = mods / "CBBEtoUBE Auto"
     ot.add_ube_overlay_copies(None, out, tmp_path / "tools" / "texconv.exe",
-                              log=lambda *_a: None)
+                              log=log.append)
     plan = ot.plan_overlay_copies(out, None)
-    assert len(baked) == sum(len(v) for v in plan.values()) == 1, (baked, plan)
+    assert sum(len(v) for v in plan.values()) == 1, plan
+    gaps = ot.plan_region_gaps(plan)
+    would = (0 if ot.copy_mode_tool_gap()
+             else sum(len(v) for r, v in plan.items() if r not in gaps))
+    assert len(baked) == would == (1 if said is None else 0), (baked, plan, gaps, log)
+    if said is None:
+        assert not any("SKIP" in line for line in log), log
+    else:
+        assert any(said in line for line in log), log
 
 
-@pytest.mark.parametrize("compiler,base,gap", [
-    (False, False, "PapyrusCompiler.exe not found"),
-    (True, False, "Papyrus base (Scripts.zip) not found"),
-    (True, True, None),
-], ids=["no-compiler", "no-base", "tools-present"])
+@pytest.mark.parametrize("compiler,base,flags,gap", [
+    (False, False, True, "PapyrusCompiler.exe not found"),
+    (True, False, True, "Papyrus base (Scripts.zip) not found"),
+    (True, True, False, "Papyrus base (Scripts.zip) holds no TESV_Papyrus_Flags.flg"),
+    (True, True, True, None),
+], ids=["no-compiler", "no-base", "no-flags-file", "tools-present"])
 def test_a_copy_mode_dry_run_says_what_it_lists_and_what_would_stop_it(
-        tmp_path, monkeypatch, capsys, compiler, base, gap):
-    mods, writes = _paint_modlist(tmp_path, monkeypatch, compiler=compiler, base=base)
+        tmp_path, monkeypatch, capsys, compiler, base, flags, gap):
+    mods, writes = _paint_modlist(tmp_path, monkeypatch, compiler=compiler,
+                                  base=base, flags=flags)
     rc = ac.main(["auto", "-o", str(mods / "CBBEtoUBE Auto"), "--overlays-only",
                   "--list-only", "--overlay-copy"])
     log = capsys.readouterr().out
@@ -202,6 +266,22 @@ def test_a_copy_mode_dry_run_says_what_it_lists_and_what_would_stop_it(
         assert f"the real run would SKIP every overlay above: {gap}" in log, log
     else:
         assert "would SKIP" not in log, log
+
+
+@pytest.mark.parametrize("copy", [True, False], ids=["copy-mode", "replace-mode"])
+def test_a_dry_run_says_which_region_the_real_run_would_skip(
+        tmp_path, monkeypatch, capsys, copy):
+    """A region whose CBBE/UBE reference mesh is missing is skipped by either
+    pass; the list says so under that region, in the words the pass logs."""
+    mods, writes = _paint_modlist(tmp_path, monkeypatch, compiler=True, base=True,
+                                  refs="missing")
+    rc = ac.main(["auto", "-o", str(mods / "CBBEtoUBE Auto"), "--overlays-only",
+                  "--list-only"] + (["--overlay-copy"] if copy else []))
+    log = capsys.readouterr().out
+    assert rc == 0 and writes == [], log
+    assert ("body: 1 overlay(s)\n    !! the real run would SKIP this region: "
+            "CBBE/UBE body ref: CBBE mesh not found") in log, log
+    assert "SKIP every overlay above" not in log, log
 
 
 def test_a_replace_mode_dry_run_says_its_mode_and_a_missing_texconv(
