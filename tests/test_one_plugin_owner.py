@@ -23,8 +23,8 @@ exclusion withholds were decided apart, and disagreed:
     its armour as the excluded mod's, while a lower mod's copy was converted;
 (b) an excluded mod whose copy LOSES to mod A: coverage withheld A's armour as
     the excluded mod's, while A was converted as usual;
-(c) a body mod's plugin: `auto` converted it from a lower mod's copy, a
-    standalone `convert` did not.
+(c) a body mod's plugin: converted from a lower mod's copy, in `auto` and in
+    a standalone `convert` alike (f057ba9's standalone `convert` had dropped it).
 
 THE RULE. `_plugin_owner(name)` is the highest-priority enabled mod with a root
 copy of the plugin (the mod the game loads it from; under an overwrite copy,

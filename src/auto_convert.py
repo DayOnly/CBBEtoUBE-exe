@@ -1553,8 +1553,9 @@ def _one_plugin_owner_on() -> bool:
     overwrite copy had its armour withheld by coverage and converted from a
     lower mod's copy in the same run; an excluded mod whose copy LOST to mod A
     had A's armour withheld while A was converted; and a body mod's plugin was
-    converted from another mod's copy in `auto` but not in a standalone
-    `convert`. Now a mod's root plugin is read only when that mod owns it, never
+    converted from another mod's copy (in `auto` and a standalone `convert`
+    alike -- f057ba9's standalone `convert` had dropped it). Now a mod's root
+    plugin is read only when that mod owns it, never
     another mod's losing copy; coverage withholds a plugin's armour only when
     its owner is excluded. When the owner is no source (a body mod, child
     clothing, a skipped name), the plugin's armour is not converted from

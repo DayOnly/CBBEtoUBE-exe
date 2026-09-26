@@ -711,8 +711,9 @@ already-UBE path among the additions.
   ownership withheld the armour (probe: read ['Quest.esp'], owned
   [('quest.esp', 0x801)]); (b) an excluded mod's copy that LOSES to mod A --
   ownership read A's loaded copy and withheld A's armour while A converted;
-  (c) a body-mod winner -- `auto` read the lower copy, a standalone `convert`
-  did not. Now ONE function, `_plugin_owner(name)`, answers for both: the
+  (c) a body-mod winner -- the lower copy was read, in `auto` and a standalone
+  `convert` alike (f057ba9's standalone `convert` had dropped it). Now ONE
+  function, `_plugin_owner(name)`, answers for both: the
   highest-priority ENABLED mod folder with a root copy of the name
   (`paths._plugin_file_index_root(lay, copies)` lists every mod's root copy in
   priority order in the same walk that builds the loaded index). That is the mod
