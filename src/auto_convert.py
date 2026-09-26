@@ -68,6 +68,7 @@ from . import child_lifetime  # noqa: E402
 from .user_warnings import NOTE, plain_error, problem_count, warn  # noqa: E402
 from . import stale_sweep  # noqa: E402
 from .envflags import flag as _flag, knob as _knob  # noqa: E402
+from .bsa_strings import model_path_text as _model_path_text  # noqa: E402
 
 
 # ---------- Multiprocessing worker -------------------------------------
@@ -4471,7 +4472,7 @@ def _third_party_ube_covered_armos(mods_root, enabled_names=None,
                         # real third-party female coverage -- which is why 226
                         # of our meshes still shadow a hand-made UBE conversion.
                         if sig == b"MOD3":
-                            s = dd.rstrip(bytes(1)).decode("cp1252", "replace")
+                            s = _model_path_text(dd, "cp1252")
                             if _is_already_ube_model(s) and _ube_mesh_resolves(s):
                                 ube_fids.add(r.formid)
                                 ube_armas.add(_abs(r.formid))
@@ -4497,7 +4498,7 @@ def _third_party_ube_covered_armos(mods_root, enabled_names=None,
                             elif sig in (b"BOD2", b"BODT") and len(dd) >= 4:
                                 _bod = _struct.unpack_from("<I", dd)[0]
                             elif sig == b"MOD3":
-                                _m3 = dd.rstrip(bytes(1)).decode("cp1252", "replace")
+                                _m3 = _model_path_text(dd, "cp1252")
                         if _rn is not None and _rn[0] == "ube_allrace.esp":
                             race_armas[_abs(r.formid)] = (_bod, _m3)
             if ini_targets:
@@ -9987,12 +9988,11 @@ def _player_armor_mesh_bases(mod_dir: Path,
                         rnam = _struct.unpack("<I", sd)[0]
                     elif sig in (b"BOD2", b"BODT") and len(sd) >= 4:
                         slot = _struct.unpack_from("<I", sd, 0)[0]
+                    # The paths as the game reads them. #model-path-codepage
                     elif sig in (b"MOD3", b"MOD5"):
-                        female_models.append(sd.rstrip(b"\x00").decode(
-                            "utf-8", errors="ignore"))
+                        female_models.append(_model_path_text(sd, "utf-8"))
                     elif sig in (b"MOD2", b"MOD4"):
-                        male_models.append(sd.rstrip(b"\x00").decode(
-                            "utf-8", errors="ignore"))
+                        male_models.append(_model_path_text(sd, "utf-8"))
                 # FEMALE-ONLY conversion: UBE is a female body, so convert the FEMALE
                 # model(s) and skip the male mesh (a female actor never renders it, and
                 # refitting it to the female body would be wrong). Two exceptions keep

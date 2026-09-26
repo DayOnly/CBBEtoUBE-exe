@@ -44,6 +44,8 @@ from pathlib import Path
 from typing import Iterable, NamedTuple
 
 from . import esp
+from .bsa_strings import game_codepage_text as _game_codepage_text
+from .bsa_strings import model_path_text as _model_path_text
 from .envflags import flag as _flag
 
 
@@ -1953,7 +1955,7 @@ def fix_spurious_hand_slot(primary_esp_path, meshes_root, *,
                 for r in g.records:
                     arma_by_fid[r.formid] = r
                     arma_models[r.formid] = [
-                        d.rstrip(b"\x00").decode("utf-8", "ignore")
+                        _model_path_text(d, "utf-8")
                         for sig, d in esp.iter_subrecords(r.payload)
                         if sig in (b"MOD3", b"MOD2", b"MOD4", b"MOD5")]
         changed = False
@@ -2209,20 +2211,21 @@ def _model_path_str(data: bytes, as_bytes: bool) -> str:
     UTF-8 read, which drops every byte that is not valid UTF-8."""
     s = data.rstrip(b"\x00")
     if as_bytes:
-        return s.decode("cp1252", "surrogateescape")
+        return _game_codepage_text(s)
     return s.decode("utf-8", errors="ignore")
 
 
 def _model_path_read(data: bytes) -> str:
     """A MOD2-5 string of a plugin this tool WROTE, read back as it was
-    written: `_model_path_str` under #arma-path-bytes' own rule, so our
+    written: `_model_path_text` (the game's codepage, as #arma-path-bytes
+    writes), or UTF-8 when #arma-path-bytes is off and wrote UTF-8 -- so our
     converted NIF at a path with a byte in 0x80-0x9F is found. The alt-texture
     reconcile and the postflight read through it. #model-path-codepage; with
     CBBE2UBE_NO_MODEL_PATH_CODEPAGE=1 the old latin-1 read."""
     from .bsa_strings import model_path_codepage
-    if model_path_codepage():
-        return _model_path_str(data, _arma_path_bytes())
-    return data.rstrip(b"\x00").decode("latin-1", "ignore")
+    if model_path_codepage() and not _arma_path_bytes():
+        return _model_path_str(data, False)
+    return _model_path_text(data, "latin-1")
 
 
 def _model_path_zstring(path: str, as_bytes: bool) -> bytes:
@@ -2360,7 +2363,7 @@ def rebuild_arma_payload(source_payload: bytes, *,
                 # The lookup gets the path as the game reads it (cp1252); with
                 # CBBE2UBE_NO_ARMA_PATH_BYTES the utf-8 decode above drops
                 # non-ASCII bytes. #coverage-female-guard
-                _probe = data.rstrip(b"\x00").decode("cp1252", "replace")
+                _probe = _model_path_text(data, "cp1252")
                 _keep = female_mesh_exists is None or female_mesh_exists(_probe)
                 _named_dead = not _keep
             # #coverage-female-standin: a named female slot whose male mesh was
@@ -2370,7 +2373,7 @@ def rebuild_arma_payload(source_payload: bytes, *,
             if (not _fallback and _ask_dead and path and not converted
                     and ensure_female and sig in (b"MOD3", b"MOD5")):
                 _dead = female_mesh_exists is not None and not female_mesh_exists(
-                    data.rstrip(b"\x00").decode("cp1252", "replace"))
+                    _model_path_text(data, "cp1252"))
             _src_male = src_mod2 if sig == b"MOD3" else src_mod4
             _standin = _as_is = None
             if _dead and female_standin is not None:
@@ -2437,10 +2440,10 @@ def rebuild_arma_payload(source_payload: bytes, *,
                 elif sig == b"MOD4" and converted:
                     conv_mod4 = new_path
                 if sig == b"MOD2":
-                    src_mod2 = data.rstrip(b"\x00").decode("cp1252", "replace")
+                    src_mod2 = _model_path_text(data, "cp1252")
                     src_mod2_w = _model_path_str(data, True)
                 elif sig == b"MOD4":
-                    src_mod4 = data.rstrip(b"\x00").decode("cp1252", "replace")
+                    src_mod4 = _model_path_text(data, "cp1252")
                     src_mod4_w = _model_path_str(data, True)
         elif sig in (b"MO3S", b"MO5S") and (skip_mo3s if sig == b"MO3S" else skip_mo5s):
             # The dead female mesh's alt-textures, behind a stand-in or an as-is
@@ -3073,8 +3076,7 @@ def generate_ube_patch(
             if sig == b"EDID":
                 edid = data.rstrip(b"\x00").decode("utf-8", errors="ignore")
             elif sig in ARMA_MODEL_SIGS:
-                model_paths.append(data.rstrip(b"\x00").decode(
-                    "utf-8", errors="ignore"))
+                model_paths.append(_model_path_text(data, "utf-8"))
             elif sig == b"RNAM" and len(data) == 4:
                 src_rnam = struct.unpack("<I", data)[0]
             elif sig == ARMA_ADDITIONAL_RACE_SIG and len(data) == 4:
@@ -3221,9 +3223,9 @@ def generate_ube_patch(
         m_slots = 0
         for sig, d in esp.iter_subrecords(marec.payload):
             if sig == b"MOD3":
-                mod3 = d.rstrip(b"\x00").decode("utf-8", "ignore")
+                mod3 = _model_path_text(d, "utf-8")
             elif sig == b"MOD2":
-                mod2 = d.rstrip(b"\x00").decode("utf-8", "ignore")
+                mod2 = _model_path_text(d, "utf-8")
             elif sig == b"EDID":
                 m_edid = d.rstrip(b"\x00").decode("utf-8", "ignore")
             elif sig == b"RNAM" and len(d) == 4:
@@ -3403,7 +3405,7 @@ def generate_ube_patch(
                     if sig in (b"BOD2", b"BODT") and len(d) >= 4:
                         slots = struct.unpack_from("<I", d, 0)[0]
                     elif sig == b"MOD3":
-                        mod3 = d.rstrip(b"\x00").decode("utf-8", "ignore")
+                        mod3 = _model_path_text(d, "utf-8")
                     elif sig == b"EDID":
                         m_edid = d.rstrip(b"\x00").decode("utf-8", "ignore")
                 if mod3 is None or not (slots & _BIPED_SLOT_BODY_BIT):
@@ -4186,7 +4188,7 @@ def _arma_model_paths(payload: bytes) -> list[str]:
     paths: list[str] = []
     for sig, data in esp.iter_subrecords(payload):
         if sig in ARMA_MODEL_SIGS:
-            paths.append(data.rstrip(b"\x00").decode("utf-8", errors="ignore"))
+            paths.append(_model_path_text(data, "utf-8"))
     return paths
 
 
@@ -4756,7 +4758,7 @@ def _excluded_piece_holds(armo_abs, records, to_mint, arma_win, armo_slots,
     for x in to_mint:
         payload = arma_win[x][0]
         bits = _arma_slot_bits(payload) or armo_slots
-        models = [(s, d.rstrip(b"\x00").decode("cp1252", "replace"))
+        models = [(s, _model_path_text(d, "cp1252"))
                   for s, d in esp.iter_subrecords(payload) if s in ARMA_MODEL_SIGS]
         if bits & _BODY_SLOT_BITS:
             return "body slot"
@@ -5026,7 +5028,7 @@ def _dead_slot_draws(standin, female_mesh_exists):
     def draws(payload: bytes) -> bool:
         male = {b"MOD3": "", b"MOD5": ""}
         for sig, d in esp.iter_subrecords(payload):
-            p = d.rstrip(b"\x00").decode("cp1252", "replace")
+            p = _model_path_text(d, "cp1252")
             if sig in (b"MOD2", b"MOD4"):
                 male[b"MOD3" if sig == b"MOD2" else b"MOD5"] = p
             elif sig in male and p and not female_mesh_exists(p):
@@ -5067,7 +5069,7 @@ def _dead_armature_judge(arma_win: dict, crp: "set[str]", *, mesh_exists,
 
     def dead(x) -> bool:
         if x not in memo:
-            models = [d.rstrip(b"\x00").decode("cp1252", "replace").strip()
+            models = [_model_path_text(d, "cp1252").strip()
                       for s, d in esp.iter_subrecords(arma_win[x][0])
                       if s in _ARMA_MODEL_SIGS]
             models = [p for p in models if p]
@@ -5142,7 +5144,7 @@ def _tpd_facts(v) -> tuple:
             if a[0] == "ube_allrace.esp" and a[1] in _TPD_UBE_RACES:
                 ube.add(a[1])
         elif s in (b"MOD2", b"MOD3", b"MOD5"):
-            mods[s] = _model_key(d.rstrip(b"\x00").decode("cp1252", "replace"))
+            mods[s] = _model_key(_model_path_text(d, "cp1252"))
         elif s in (b"BOD2", b"BODT") and len(d) >= 4:
             slots = struct.unpack_from("<I", d, 0)[0]
     return (ube, mods.get(b"MOD3") or mods.get(b"MOD2") or "", slots,
@@ -5367,9 +5369,9 @@ def _effect_world_mesh(payload: bytes) -> bool:
     mod2 = mod3 = ""
     for s, d in esp.iter_subrecords(payload):
         if s == b"MOD2":
-            mod2 = d.rstrip(b"\x00").decode("cp1252", "replace")
+            mod2 = _model_path_text(d, "cp1252")
         elif s == b"MOD3":
-            mod3 = d.rstrip(b"\x00").decode("cp1252", "replace")
+            mod3 = _model_path_text(d, "cp1252")
     p = (mod3.strip() or mod2.strip()).replace("/", "\\").lstrip("\\").lower()
     if p.startswith("meshes\\"):
         p = p[len("meshes\\"):]
@@ -5496,7 +5498,7 @@ def _female_standin_resolver(arma_win: dict, ube_exists):
     for a, v in arma_win.items():
         if not _is_vanilla_plugin(a[0]) or v[3] != default:
             continue
-        md = {s: d.rstrip(b"\x00").decode("cp1252", "replace").strip()
+        md = {s: _model_path_text(d, "cp1252").strip()
               for s, d in esp.iter_subrecords(v[0]) if s in ARMA_MODEL_SIGS}
         for male, fem in ((b"MOD2", b"MOD3"), (b"MOD4", b"MOD5")):
             if md.get(male) and md.get(fem):
@@ -5555,7 +5557,7 @@ def _nonbody_male_as_is(payload: bytes, armo_slots: int, ube_exists,
         return None
     for sig, d in esp.iter_subrecords(payload):
         if sig in ARMA_MODEL_SIGS:
-            base = d.rstrip(b"\x00").decode("cp1252", "replace")
+            base = _model_path_text(d, "cp1252")
             base = base.replace("/", "\\").rsplit("\\", 1)[-1].lower()
             if any(k in base for k in _CLOAK_MESH_KEYWORDS):
                 return None
@@ -5586,7 +5588,7 @@ def _dead_kept_why(payload: bytes, armo_slots: int, mesh_exists,
         return "body"
     if not bits or reader is None:
         return "unread"
-    names = [d.rstrip(b"\x00").decode("cp1252", "replace").replace("/", "\\")
+    names = [_model_path_text(d, "cp1252").replace("/", "\\")
              .rsplit("\\", 1)[-1].lower()
              for sig, d in esp.iter_subrecords(payload) if sig in ARMA_MODEL_SIGS]
     if any(k in n for n in names for k in _CLOAK_MESH_KEYWORDS):
@@ -5611,7 +5613,7 @@ def _ube_twin_slots(payload: bytes, crp: "set[str]", ube_twin_exists,
     for sig, d in esp.iter_subrecords(payload):
         if sig not in ARMA_MODEL_SIGS:
             continue
-        p = d.rstrip(b"\x00").decode("utf-8", "ignore")
+        p = _model_path_text(d, "utf-8")
         if not p or _converted_model_exists(p, crp, strip_meshes=strip_meshes):
             continue
         mod = ube_twin_exists(p)
@@ -6563,7 +6565,7 @@ def generate_modded_body_ube_coverage_patch(
     def _cloak_named(payload: bytes) -> bool:
         for sig, d in esp.iter_subrecords(payload):
             if sig in (b"MOD2", b"MOD3"):
-                base = d.rstrip(b"\x00").decode("cp1252", "replace")
+                base = _model_path_text(d, "cp1252")
                 base = base.replace("/", "\\").rsplit("\\", 1)[-1].lower()
                 if any(k in base for k in _CLOAK_MESH_KEYWORDS):
                     return True
@@ -6581,7 +6583,7 @@ def generate_modded_body_ube_coverage_patch(
         no body-fit bone."""
         if not (_body_cloak and _unfitted is not None) or x in beast or v[4]:
             return False
-        world = [d.rstrip(b"\x00").decode("cp1252", "replace")
+        world = [_model_path_text(d, "cp1252")
                  for sig, d in esp.iter_subrecords(v[0]) if sig in (b"MOD2", b"MOD3")]
         world = [w for w in world if w]
         return bool(world) and all(_unfitted(w) is True for w in world)
@@ -6611,12 +6613,12 @@ def generate_modded_body_ube_coverage_patch(
         conv2 = False
         for sig, d in esp.iter_subrecords(payload):
             if sig == b"MOD2":
-                conv2 = _ube_exists(d.rstrip(b"\x00").decode("utf-8", "ignore"))
+                conv2 = _ube_exists(_model_path_text(d, "utf-8"))
             elif sig == b"MOD3":
-                p = d.rstrip(b"\x00").decode("utf-8", "ignore")
+                p = _model_path_text(d, "utf-8")
                 return (bool(p) and not _ube_exists(p) and conv2
                         and (female_mesh_exists is None or female_mesh_exists(
-                            d.rstrip(b"\x00").decode("cp1252", "replace"))))
+                            _model_path_text(d, "cp1252"))))
         return False
 
     def _world_mesh_converted(payload: bytes) -> bool:
@@ -6631,15 +6633,15 @@ def generate_modded_body_ube_coverage_patch(
         male2 = ""
         for sig, d in esp.iter_subrecords(payload):
             if sig == b"MOD2":
-                conv2 = _ube_exists(d.rstrip(b"\x00").decode("utf-8", "ignore"))
-                male2 = d.rstrip(b"\x00").decode("cp1252", "replace")
+                conv2 = _ube_exists(_model_path_text(d, "utf-8"))
+                male2 = _model_path_text(d, "cp1252")
             elif sig == b"MOD3":
-                p = d.rstrip(b"\x00").decode("utf-8", "ignore")
+                p = _model_path_text(d, "utf-8")
                 if p and _ube_exists(p):
                     return True
                 if (p and _standin is not None and female_mesh_exists is not None
                         and not female_mesh_exists(
-                            d.rstrip(b"\x00").decode("cp1252", "replace"))
+                            _model_path_text(d, "cp1252"))
                         and _standin("MOD3", male2) is not None):
                     return True
                 if not (conv2 and p):
@@ -6647,20 +6649,20 @@ def generate_modded_body_ube_coverage_patch(
                 # Named, unconverted: admitted only when it exists nowhere
                 # (None = cannot tell, so it is taken to exist).
                 return mesh_exists is not None and not mesh_exists(
-                    d.rstrip(b"\x00").decode("cp1252", "replace"))
+                    _model_path_text(d, "cp1252"))
         # No MOD3: the rebuild synthesises it from the converted MOD2, wherever
         # MOD2 sits in the record.
-        return any(_ube_exists(d.rstrip(b"\x00").decode("utf-8", "ignore"))
+        return any(_ube_exists(_model_path_text(d, "utf-8"))
                    for sig, d in esp.iter_subrecords(payload) if sig == b"MOD2")
 
     def _mod3(payload: bytes) -> str:
         for sig, d in esp.iter_subrecords(payload):
             if sig == b"MOD3":
-                return d.rstrip(b"\x00").decode("cp1252", "replace")
+                return _model_path_text(d, "cp1252")
         return ""
 
     def _arma_models(payload: bytes) -> "list[str]":
-        return [d.rstrip(b"\x00").decode("utf-8", "ignore")
+        return [_model_path_text(d, "utf-8")
                 for sig, d in esp.iter_subrecords(payload)
                 if sig in (b"MOD2", b"MOD3", b"MOD4", b"MOD5")]
 

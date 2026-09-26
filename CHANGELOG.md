@@ -31,20 +31,28 @@ the tool took from archives is shipped differently by two archives, so nothing
 changes there today. `CBBE2UBE_NO_ALTTEX_SOURCE_WINNER=1` (set to 1) turns it
 off.
 
-### Fixed — a mesh whose file name has a curly apostrophe or a dash is found in a mod's archive
+### Fixed — a mesh whose file name has an accented letter, a curly apostrophe or a dash is converted
 
-A few characters (a curly apostrophe, an en or em dash, a trademark sign, some
-accented letters such as s with a caron) are stored as one byte that the tool
-read two different ways: one way for the mesh paths an armour names, another
-for the file names inside a mod's `.bsa` archive. A mesh named with one of them
-and shipped only in an archive was treated as missing, so the armour could be
-given a stand-in or left without its UBE version. Two later checks read the
-paths this tool wrote the old way too, so for such a path the colour-variant
-fix could not find our own converted mesh and the final check could report it
-as missing. All of them now read these names the way the game does. Measured on
-the reported modlist: no archive file name and no path in the output uses such
-a character, so nothing changes there today.
-`CBBE2UBE_NO_MODEL_PATH_CODEPAGE=1` (set to 1) turns it off.
+Accented letters (such as é or ó), a curly apostrophe, an en or em dash and a
+trademark sign are each stored as one byte, and the tool read that byte in
+different ways in different places. The step that picks which meshes to
+convert, and most of the steps that give armour its UBE version, dropped it,
+so such an armour was planned under a file name that exists nowhere: its mesh
+was never converted, and the armour could be given a stand-in or left without
+its UBE version. The file names inside a mod's `.bsa` archive were read yet
+another way, so a mesh shipped only in an archive was missed even under the
+right name. Two later checks read the paths this tool wrote the old way too,
+so the colour-variant fix could not find our own converted mesh and the final
+check could report it as missing. Every place that reads an armour's mesh path
+or an archive's file names now reads it the way the game does. Because the
+final check now reads these paths correctly, it can also stop a run with
+"unconverted-mesh-linked" when an armour named this way still points at its
+original mesh although our converted mesh exists -- in game that armour would
+wear the unconverted mesh. Measured on the reported modlist: of 31,108 armour
+mesh paths in the load order one holds such a byte (a creature's, not converted
+either way); no archive file name and no path in the output changes, so nothing
+changes there today. `CBBE2UBE_NO_MODEL_PATH_CODEPAGE=1` (set to 1) turns it
+off.
 
 ### Fixed — six more warnings now reach the end-of-run count and list
 

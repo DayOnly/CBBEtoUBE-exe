@@ -64,15 +64,55 @@ def model_path_codepage() -> bool:
     postflight. Names are now decoded as cp1252 with `surrogateescape` -- the
     codec `ube_patcher._model_path_str` reads model paths with, lossless for
     the five bytes cp1252 leaves undefined -- and both ARMA readers read
-    through `_model_path_str`. CBBE2UBE_NO_MODEL_PATH_CODEPAGE=1 reads them
-    all as latin-1 again."""
+    through `_model_path_str`.
+
+    Round 2 (2026-09-26): the planner (`auto_convert._player_armor_mesh_bases`)
+    and the coverage and patch readers decoded MOD2-5 as UTF-8 with errors
+    ignored (a byte >= 0x80 that is not UTF-8 dropped before any lookup) or as
+    cp1252 with `replace`. Every ARMA model-path reader now reads through
+    `model_path_text`, one codec (`game_codepage_text`) for all of them.
+    CBBE2UBE_NO_MODEL_PATH_CODEPAGE=1 gives each reader its old decode back
+    (archive names and our own plugins' paths latin-1)."""
     return not _flag("CBBE2UBE_NO_MODEL_PATH_CODEPAGE", False)
+
+
+def game_codepage_text(raw: bytes) -> str:
+    """Bytes the game reads as a path (a model path, an archive's folder or
+    file name) as text: cp1252, the game's codepage, with `surrogateescape`,
+    so `text.encode("cp1252", "surrogateescape")` gives back the very bytes --
+    the five bytes cp1252 leaves undefined included. THE one codec of
+    #model-path-codepage and #arma-path-bytes."""
+    return raw.decode("cp1252", "surrogateescape")
+
+
+#: Each reader's decode before #model-path-codepage, by the name its call
+#: site passes; CBBE2UBE_NO_MODEL_PATH_CODEPAGE=1 restores it.
+_LEGACY_MODEL_PATH_CODECS = {
+    "utf-8": ("utf-8", "ignore"),        # the planner, coverage, patch readers
+    "cp1252": ("cp1252", "replace"),     # the existence lookups, stand-ins
+    "latin-1": ("latin-1", "ignore"),    # the reconcile, the postflight
+}
+
+
+def model_path_text(data: bytes, legacy: str) -> str:
+    """An ARMA's MOD2-5 model path (a NUL-terminated string) as text, as the
+    game reads it: `game_codepage_text`. EVERY reader of a model path in a
+    plugin reads through here (#model-path-codepage), so the planner, the
+    coverage step, the rebuild's lookups and the post-merge checks all see
+    one path, the one the archive index and the loose files are named by.
+    `legacy` names the decode the reader had before ("utf-8", "cp1252",
+    "latin-1"), used only with CBBE2UBE_NO_MODEL_PATH_CODEPAGE=1."""
+    s = data.rstrip(b"\x00")
+    if model_path_codepage():
+        return game_codepage_text(s)
+    codec, errors = _LEGACY_MODEL_PATH_CODECS[legacy]
+    return s.decode(codec, errors)
 
 
 def _decode_name(raw: bytes, codepage: bool) -> str:
     """An archive folder or file name as text. #model-path-codepage"""
     if codepage:
-        return raw.decode("cp1252", "surrogateescape")
+        return game_codepage_text(raw)
     return raw.decode("latin-1", "ignore")
 
 

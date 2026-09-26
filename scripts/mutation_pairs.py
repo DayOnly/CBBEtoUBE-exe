@@ -3020,7 +3020,7 @@ PAIRS = (
          edits=(
              ('src/ube_patcher.py',
               '                        and (female_mesh_exists is None or female_mesh_exists(\n'
-              '                            d.rstrip(b"\\x00").decode("cp1252", "replace"))))',
+              '                            _model_path_text(d, "cp1252"))))',
               '                        and True)  # MUTATED', 1),
          ),
          tests=('tests/test_coverage_female_guard.py',),
@@ -3087,7 +3087,7 @@ PAIRS = (
     Pair('CFG-n', 'the lookup is handed the utf-8-mangled path',
          edits=(
              ('src/ube_patcher.py',
-              '                _probe = data.rstrip(b"\\x00").decode("cp1252", "replace")\n',
+              '                _probe = _model_path_text(data, "cp1252")\n',
               '                _probe = path  # MUTATED\n', 1),
          ),
          tests=('tests/test_coverage_female_guard.py',),
@@ -3442,7 +3442,7 @@ PAIRS = (
          edits=(
              ('src/ube_patcher.py',
               '                return mesh_exists is not None and not mesh_exists(\n'
-              '                    d.rstrip(b"\\x00").decode("cp1252", "replace"))\n',
+              '                    _model_path_text(d, "cp1252"))\n',
               '                return False  # MUTATED\n', 1),
          ),
          tests=('tests/test_coverage_world_mesh.py',),
@@ -3471,7 +3471,7 @@ PAIRS = (
     Pair('CWM-f', 'an absent female world mesh never takes the converted male',
          edits=(
              ('src/ube_patcher.py',
-              '        return any(_ube_exists(d.rstrip(b"\\x00").decode("utf-8", "ignore"))\n'
+              '        return any(_ube_exists(_model_path_text(d, "utf-8"))\n'
               '                   for sig, d in esp.iter_subrecords(payload) if sig == b"MOD2")\n',
               '        return False  # MUTATED\n', 1),
          ),
@@ -9756,7 +9756,7 @@ PAIRS = (
     Pair('APB-a', 'model paths are read as UTF-8 with errors ignored again',
          edits=(
              ('src/ube_patcher.py',
-              '        return s.decode("cp1252", "surrogateescape")\n',
+              '        return _game_codepage_text(s)\n',
               '        return s.decode("utf-8", errors="ignore")  # MUTATED\n', 1),
          ),
          tests=('tests/test_arma_path_bytes.py',),
@@ -13338,7 +13338,7 @@ PAIRS = (
     Pair('MPC-a', 'archive names are read as latin-1 again',
          edits=(
              ('src/bsa_strings.py',
-              '        return raw.decode("cp1252", "surrogateescape")',
+              '        return game_codepage_text(raw)',
               '        return raw.decode("latin-1", "ignore")  # MUTATED', 1),
          ),
          tests=('tests/test_model_path_codepage.py',),
@@ -13348,11 +13348,14 @@ PAIRS = (
     Pair('MPC-b', 'a byte cp1252 leaves undefined is replaced, not kept',
          edits=(
              ('src/bsa_strings.py',
-              '        return raw.decode("cp1252", "surrogateescape")',
-              '        return raw.decode("cp1252", "replace")  # MUTATED', 1),
+              '    return raw.decode("cp1252", "surrogateescape")',
+              '    return raw.decode("cp1252", "replace")  # MUTATED', 1),
          ),
-         tests=('tests/test_model_path_codepage.py',),
-         expect=('test_a_byte_cp1252_leaves_undefined_still_matches',),
+         # Round 2: the codec is shared, so both sides of the archive lookup
+         # would lose the byte alike; the codec's own round trip catches it.
+         tests=('tests/test_model_path_readers.py',),
+         expect=('test_the_one_codec_gives_back_the_very_bytes',
+                 'test_the_sweep_reads_our_ube_paths_losslessly'),
     ),
     Pair('MPC-c', 'the off-switch no longer switches anything off',
          edits=(
@@ -13394,8 +13397,8 @@ PAIRS = (
     Pair('MPC-g', 'a path written UTF-8 is read back as cp1252',
          edits=(
              ('src/ube_patcher.py',
-              '        return _model_path_str(data, _arma_path_bytes())',
-              '        return _model_path_str(data, True)  # MUTATED', 1),
+              '    if model_path_codepage() and not _arma_path_bytes():',
+              '    if False:  # MUTATED', 1),
          ),
          tests=('tests/test_model_path_codepage.py',),
          expect=('test_a_path_is_read_back_as_arma_path_bytes_wrote_it',),
@@ -13536,5 +13539,74 @@ PAIRS = (
          ),
          tests=('tests/test_one_tally_gaps.py',),
          expect=('test_each_reconcile_problem_is_warned_and_recorded[outranking-copy]',),
+    ),
+    # #model-path-codepage, round 2 (2026-09-26): EVERY armature model-path
+    # reader reads through bsa_strings.model_path_text, one codec.
+    Pair('MPC-h', 'the planner drops a byte that is not UTF-8 again',
+         edits=(
+             ('src/auto_convert.py',
+              '                        female_models.append(_model_path_text(sd, "utf-8"))\n',
+              '                        female_models.append(sd.rstrip(b"\\x00").decode("utf-8", errors="ignore"))  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_model_path_readers.py',),
+         expect=('test_a_path_with_such_a_byte_is_planned_extracted_and_slotted',),
+    ),
+    Pair('MPC-i', 'the one decoder never reads the game codepage',
+         edits=(
+             ('src/bsa_strings.py',
+              '    if model_path_codepage():\n        return game_codepage_text(s)\n',
+              '    if False:  # MUTATED\n        return game_codepage_text(s)\n', 1),
+         ),
+         tests=('tests/test_model_path_readers.py',),
+         expect=('test_every_old_decode_reads_the_game_s_text',
+                 'test_a_path_with_such_a_byte_is_planned_extracted_and_slotted',
+                 'test_the_coverage_readers_see_the_game_s_path'),
+    ),
+    Pair('MPC-j', "switched off, the planner's readers do not get their old decode back",
+         edits=(
+             ('src/bsa_strings.py',
+              '    "utf-8": ("utf-8", "ignore"),',
+              '    "utf-8": ("cp1252", "surrogateescape"),  # MUTATED', 1),
+         ),
+         tests=('tests/test_model_path_readers.py',),
+         expect=('test_switched_off_each_reader_gets_its_old_decode[utf-8]',
+                 'test_switched_off_the_planner_drops_the_byte_and_finds_nothing'),
+    ),
+    Pair('MPC-k', 'the slot map reads the armature paths as UTF-8 again',
+         edits=(
+             ('src/ube_patcher.py',
+              '            paths.append(_model_path_text(data, "utf-8"))\n',
+              '            paths.append(data.rstrip(b"\\x00").decode("utf-8", errors="ignore"))  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_model_path_readers.py',),
+         expect=('test_a_path_with_such_a_byte_is_planned_extracted_and_slotted',
+                 'test_the_coverage_readers_see_the_game_s_path'),
+    ),
+    Pair('MPC-l', 'the stale sweep replaces a byte cp1252 leaves undefined again',
+         edits=(
+             ('src/stale_sweep.py',
+              '                m = _model_path_text(d, "cp1252")\n',
+              '                m = d.rstrip(b"\\x00").decode("cp1252", "replace")  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_model_path_readers.py',),
+         expect=('test_the_sweep_reads_our_ube_paths_losslessly',),
+    ),
+    Pair('MPC-m', 'a source path left beside our converted NIF no longer fails the build',
+         edits=(
+             ('src/ube_patcher.py',
+              '    "unconverted-mesh-linked",\n)',
+              '    # MUTATED\n)', 1),
+         ),
+         tests=('tests/test_model_path_readers.py',),
+         expect=('test_a_source_path_beside_our_converted_nif_fails_the_postflight',),
+    ),
+    Pair('MPC-n', "the unconverted-mesh row looks our NIF up under the path's latin-1 reading",
+         edits=(
+             ('src/ube_patcher.py',
+              '                        if (meshes_root / "!UBE" / path.replace("\\\\", "/")).is_file():\n',
+              '                        if (meshes_root / "!UBE" / path.encode("cp1252", "surrogateescape").decode("latin-1").replace("\\\\", "/")).is_file():  # MUTATED\n', 1),
+         ),
+         tests=('tests/test_model_path_readers.py',),
+         expect=('test_a_source_path_beside_our_converted_nif_fails_the_postflight',),
     ),
 )

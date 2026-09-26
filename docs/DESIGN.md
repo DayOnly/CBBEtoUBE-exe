@@ -2303,20 +2303,62 @@ cp1252. `BSAArchive` decoded the names as latin-1, and the alt-texture
 reconcile and the postflight missing-mesh check (`validate_patch`) read MOD2-5
 as latin-1. latin-1 and cp1252 differ only on 0x80-0x9F, where cp1252 has a
 character (0x92 is a curly apostrophe) and latin-1 a control code; for such a
-path the coverage step's existence lookup (`_mesh_exists_anywhere`, the batch
-extraction) missed an archive-only mesh, the reconcile missed our converted
-NIF (stale indices, or a lookup of another mod's copy under the wrong name
-with `#reconcile-loaded-mesh`), and the postflight counted a false
-`missing-nif`. `BSAArchive` now decodes names as cp1252 with `surrogateescape`
-(`_decode_name`, the codec `_model_path_str` uses, so a byte cp1252 leaves
-undefined matches too), and both ARMA readers read through `_model_path_read`
--- `_model_path_str` under `#arma-path-bytes`' own rule, so a path is read back
+path the coverage step's existence lookup (`_mesh_exists_anywhere`) missed an
+archive-only mesh, the reconcile missed our converted NIF (stale indices, or a
+lookup of another mod's copy under the wrong name with
+`#reconcile-loaded-mesh`), and the postflight counted a false `missing-nif`.
+`BSAArchive` now decodes names as cp1252 with `surrogateescape` (`_decode_name`),
+and both ARMA readers read through `_model_path_read`, so a path is read back
 as it was written. Every `BSAArchive` user takes the one decoding; a listing
-and a `read_file` of a listed name always agree. Not covered: the planner and
-several coverage readers decode MOD2-5 as UTF-8 (a byte >= 0x80 that is not
-UTF-8 is dropped there); that is a separate class. Live census: 408 archives,
+and a `read_file` of a listed name always agree. Live census: 408 archives,
 512,578 names, 0 listings change; 8,880 model paths in the output plugins, 0
 with a byte >= 0x80.
+
+*Round 2: one decoder for every reader.* The first round left the planner
+(`_player_armor_mesh_bases`) and about a dozen coverage and patch readers
+decoding MOD2-5 as UTF-8 with errors ignored -- every byte >= 0x80 that is
+not UTF-8 (0x92, but also 0xE9 'e' with an acute) was dropped before any
+lookup, so the planner keyed such a piece under a path that exists nowhere and
+the batch extraction (`_BsaMeshIndex.extract`, asked with the planner's keys)
+never saw it -- and others decoding cp1252 with `replace` (the five bytes
+cp1252 leaves undefined became U+FFFD). Now every ARMA model-path reader in
+`src/` reads through `bsa_strings.model_path_text(data, legacy)`, whose one
+codec is `game_codepage_text` (cp1252 + `surrogateescape`; `_decode_name` and
+`_model_path_str`'s `#arma-path-bytes` branch use it too). `legacy` names the
+reader's old decode ("utf-8", "cp1252", "latin-1"), which
+`CBBE2UBE_NO_MODEL_PATH_CODEPAGE=1` restores reader by reader. The routed
+readers: `_player_armor_mesh_bases` (the planner, MOD2-5);
+`_third_party_ube_covered_armos` (its UBE-path MOD3 test and its race-test
+MOD3); `fix_spurious_hand_slot`; `rebuild_arma_payload`'s female-guard probes
+and male source paths; `generate_ube_patch`'s source scan, its
+`_mint_xesp_ube_arma` master reads and its master body scan;
+`_arma_model_paths` (`build_nif_slot_map`, the crash guard's slot lookup);
+`_excluded_piece_holds`, `_dead_slot_draws`, `_dead_armature_judge`,
+`_tpd_facts`, `_effect_world_mesh`, `_female_standin_resolver`,
+`_nonbody_male_as_is`, `_dead_kept_why`, `_ube_twin_slots`; the body coverage
+step's `_cloak_named`, `_cloak_drapes`, `_female_world_needs_male`,
+`_world_mesh_converted`, `_mod3` and `_arma_models`; and the stale sweep's
+`_ube_models`. `_model_path_read` (reconcile, postflight) reads through it as
+well. Not model paths, left alone: EDIDs, alt-texture shape
+names (MO?S entries), NIF string tables. Live census (every active plugin, 3,254,
+plus the output): 31,108 ARMA MOD2-5 strings in the load order, 1 with a byte
+>= 0x80 (0xF3 in a creature's mesh, not planned either way), so 1 string reads
+differently from the old UTF-8 decode and 0 from the old cp1252 and latin-1
+decodes; the output's 8,880 paths hold none.
+Replays on the live modlist: planner over 1,707 plugin folders (7,512 bases),
+coverage (repro6 skipbuilt), reconcile + postflight -- all byte-identical to
+the parent, default and switched off.
+
+*The postflight row that can now fire.* `validate_patch`'s
+`unconverted-mesh-linked` row (in `_POSTFLIGHT_CTD_PREFIXES`: it fails the
+build) asks whether our output holds `!UBE\<path>` for an ARMA MOD3/MOD5 that
+still names a SOURCE path. Read as latin-1, a source path with a byte in
+0x80-0x9F named a file that never exists (`!UBE\armor\elf\x92s\...`), so the
+row could not fire for it; read as the game reads it, it finds our converted
+NIF and fires. That is correct -- the armour does wear the unconverted mesh in
+game -- and with every reader on one decoding the rebuild redirects such a
+path whenever our NIF exists, so the row fires only where the redirect really
+failed. Test: `test_a_source_path_beside_our_converted_nif_fails_the_postflight`.
 
 ### A plugin name SkyPatcher would split gets no line (`#skypatcher-name-guard`)
 
