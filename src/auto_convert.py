@@ -4240,8 +4240,8 @@ def _armos_defined_by_mods(mods_root, mod_names, ordered_plugin_paths,
         for pl in sorted(list(md.glob("*.esp")) + list(md.glob("*.esm"))
                          + list(md.glob("*.esl"))):
             if owners is not None:
-                own = owners.get(pl.name.lower())
-                if not own or not _same_path(own[0].parent, md):
+                own = _plugin_owner(pl.name, mods_root)
+                if own is None or not _same_path(own, md):
                     continue      # another mod owns it, or none does
             src = loaded.get(pl.name.lower())
             if src is None:

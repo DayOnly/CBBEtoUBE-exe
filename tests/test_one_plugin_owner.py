@@ -132,7 +132,8 @@ def test_an_excluded_owner_under_overwrite_is_left_alone_by_both(tmp_path,
     assert ac._find_source_esps(mods / "Base", skipped=skipped) == []
     assert ac._player_armor_mesh_bases(mods / "Base") == set()
     assert len(skipped) == 1 and f"'{REFIT}'" in skipped[0][1]
-    assert "overwrite" in skipped[0][1] and "you excluded" in skipped[0][1]
+    assert "overwrite" in skipped[0][1]
+    assert "which you excluded, so its armour is left alone" in skipped[0][1]
 
 
 def test_switched_off_the_lower_copy_is_converted_while_coverage_withholds(

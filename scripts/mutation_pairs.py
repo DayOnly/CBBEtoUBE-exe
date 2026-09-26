@@ -5176,7 +5176,11 @@ PAIRS = (
          edits=(
              ('src/paths.py',
               # Re-anchored by #one-plugin-owner: the walk now also lists every
-              # mod's copy, and this guard alone keeps the first (highest) tier.
+              # mod's copy, so the first (highest) tier is kept by two guards,
+              # the entry test and the write; both go.
+              '.esl")) and (every or fl not in index):\n',
+              '.esl")):  # MUTATED\n', 1),
+             ('src/paths.py',
               '                if fl not in index:\n                    index[fl] = f\n',
               '                if True:  # MUTATED\n                    index[fl] = f\n', 1),
          ),
@@ -7975,8 +7979,8 @@ PAIRS = (
     Pair('OPO-g', 'coverage takes any copy for the owner\'s',
          edits=(
              ('src/auto_convert.py',
-              '                if not own or not _same_path(own[0].parent, md):\n',
-              '                if not own:  # MUTATED\n', 1),
+              '                if own is None or not _same_path(own, md):\n',
+              '                if own is None:  # MUTATED\n', 1),
          ),
          tests=('tests/test_one_plugin_owner.py',),
          expect=('test_an_excluded_losing_copy_does_not_take_the_winners_armour',),
