@@ -1103,6 +1103,9 @@ def reconcile_alt_texture_indices(esp_path, meshes_root, problems=None) -> int:
 ALTTEX_LOAD_FAILED = "converted NIF unreadable"
 ALTTEX_ENTRIES_DROPPED = "entries dropped"
 ALTTEX_GAME_COPY_UNREADABLE = "game copy unreadable"
+#: Our output ships the NIF, another mod's copy outranks it, and that copy
+#: could not be read: indexed against ours. #reconcile-loaded-winner
+ALTTEX_OUTRANKING_COPY_UNREADABLE = "outranking copy unreadable"
 
 
 def _reconcile_alt_texture_pieces(esp_paths, meshes_root, problems=None) -> int:
@@ -1166,6 +1169,9 @@ def _reconcile_alt_texture_pieces(esp_paths, meshes_root, problems=None) -> int:
     # Asked only under `loaded_on` (`shapes_for`).
     winner_on = _reconcile_loaded_winner_on()
     shadowed: "set[str]" = set()
+    # ... of which the outranking copy could not be found or read: indexed
+    # against our own NIF, as with the rule off, and said so on its own.
+    shadow_unread: "list[str]" = []
 
     def outranked(model_path: str) -> bool:
         if not winner_on:
@@ -1175,19 +1181,20 @@ def _reconcile_alt_texture_pieces(esp_paths, meshes_root, problems=None) -> int:
         test = getattr(_look[0], "outranks_output", None)
         return bool(test is not None and test(model_path))
 
-    def loaded_shapes(model_path: str, key: str):
+    def loaded_shapes(model_path: str, key: str, ours: bool = False):
         if not _look:
             _look.append(_loaded_mesh_lookup(meshes_root))
         hit = _look[0](model_path) if _look[0] is not None else None
         if hit is None:
-            nowhere.append(model_path)
+            (shadow_unread if ours else nowhere).append(model_path)
             return None
         try:
             names = _loaded_mesh_names(hit, meshes_root.parent / "_bsa_staging")
         except Exception:
             # Not our conversion: said on its own line below, never as one of
-            # ours that failed to load. The set stays as authored.
-            unreadable.append(model_path)
+            # ours that failed to load. The set stays as authored -- or, when
+            # our output ships the NIF, is indexed against ours.
+            (shadow_unread if ours else unreadable).append(model_path)
             return None
         twice = Counter(str(n or "").lower() for n in names)
         _game_copy[key] = frozenset(n for n, c in twice.items() if c > 1)
@@ -1205,8 +1212,11 @@ def _reconcile_alt_texture_pieces(esp_paths, meshes_root, problems=None) -> int:
                     and (not ours or outranked(model_path))):
                 if ours:
                     shadowed.add(key)
-                idx = loaded_shapes(model_path, key)
-            elif ours:
+                idx = loaded_shapes(model_path, key, ours)
+            if idx is None and ours:
+                # Our own NIF: not outranked, or the copy that outranks it
+                # could not be read (#reconcile-loaded-winner) -- then ours is
+                # the best index there is, as with the rule off.
                 nf = nif_io.load_nif(p)
                 idx = {s.name: i for i, s in enumerate(nf.shapes)}
                 if exact and (_split_name_candidates(idx) or key in _repeats
@@ -1325,13 +1335,16 @@ def _reconcile_alt_texture_pieces(esp_paths, meshes_root, problems=None) -> int:
                   f"base colour): {unmatched[:5]}", file=_s.stderr)
         elif unmatched:
             problems.append((ALTTEX_ENTRIES_DROPPED, unmatched))
-    if _game_copy or nowhere or unreadable:
+    if _game_copy or nowhere or unreadable or shadow_unread:
         _over = len(shadowed & set(_game_copy))    # #reconcile-loaded-winner
+        _unr = len(set(shadow_unread))
         print(f"  alt-texture reconcile: {len(_game_copy) - _over} model(s) not "
               f"in this output indexed against the copy the game loads (another "
               f"mod's); "
               + (f"{_over} model(s) this output ships but another mod's copy "
                  f"outranks in MO2, indexed against that copy; " if _over else "")
+              + (f"{_unr} model(s) where another mod's copy outranks ours but "
+                 f"could not be read, indexed against ours; " if _unr else "")
               + f"{len(set(nowhere))} found nowhere -> kept as authored"
               + (f": {sorted(set(nowhere))[:5]}" if nowhere else ""),
               file=_s.stderr)
@@ -1343,6 +1356,15 @@ def _reconcile_alt_texture_pieces(esp_paths, meshes_root, problems=None) -> int:
               file=_s.stderr)
     elif unreadable:
         problems.append((ALTTEX_GAME_COPY_UNREADABLE, sorted(set(unreadable))))
+    if shadow_unread and _say:                   # #reconcile-loaded-winner
+        print(f"  !! alt-texture reconcile: {len(set(shadow_unread))} model(s) "
+              f"where another mod's copy outranks ours but could not be read -> "
+              f"indexed against ours (the game draws that copy; variant "
+              f"textures may misalign): {sorted(set(shadow_unread))[:5]}",
+              file=_s.stderr)
+    elif shadow_unread:
+        problems.append((ALTTEX_OUTRANKING_COPY_UNREADABLE,
+                         sorted(set(shadow_unread))))
     for (piece, e), n in zip(loaded, fixed):
         if n:
             e.save(piece)

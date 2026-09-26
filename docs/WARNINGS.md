@@ -6,7 +6,7 @@ current. A `!!` line is a problem; a `NOTE:` line is information. Each entry
 gives the line as it appears in the run log (`…` stands for the value printed
 at run time), what it means for the run, and what to do next.
 
-**98** problem warnings and **6** notes.
+**99** problem warnings and **6** notes.
 
 ## src/auto_convert.py
 
@@ -30,6 +30,9 @@ at run time), what it means for the run, and what to do next.
 - `!! alt-texture reconcile: … model(s) not in this output could not be read from the mod the game loads them from: …`
   - means: their colour-variant entries are kept as the author wrote them, so variant textures may land on the wrong part
   - fix: check that the named mesh opens (NifSkope, Outfit Studio) or reinstall the mod that ships it, then run again
+- `!! alt-texture reconcile: … model(s) where another mod's copy outranks ours but could not be read; indexed against ours: …`
+  - means: the game draws that other copy; if its layers are in a different order than ours, variant textures may land on the wrong part
+  - fix: check that the named mesh in the mod above this tool's output in MO2 opens (NifSkope, Outfit Studio) or rebuild it, then run again
 - `!! alt-texture reconcile: … converted NIF(s) failed to load: …`
   - means: their colour-variant entries keep the source mesh's indices, so variant textures may land on the wrong part
   - fix: close any program holding the files and run again; if it repeats, report the named meshes

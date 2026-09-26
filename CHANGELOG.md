@@ -14,6 +14,9 @@ game loads and matches the colour variants to that one. Measured on the
 reported modlist: 2 meshes of one travel outfit are in this situation today;
 their layers happen to be in the same order in both copies, so the result is
 unchanged, and the run takes about 4 seconds longer to look the order up.
+If that other copy cannot be read, the colour variants are matched to our own
+copy, as before, and the run warns that another mod's copy outranks ours but
+could not be read.
 `CBBE2UBE_NO_RECONCILE_LOADED_WINNER=1` (set to 1) turns it off.
 
 ### Fixed — colour variants of a piece whose mesh two mods' archives both ship

@@ -2223,6 +2223,17 @@ the build; the build's shape order equals ours today, so both pieces are
 byte-identical to the parent's replay, default and switched off. Cost: one
 listing of the loose `meshes` folders, about 4 s on that modlist.
 
+An outranking copy the lookup cannot find or read is NOT a model "not in this
+output": our NIF is on disk, so the set is indexed against ours -- exactly what
+the rule switched off does -- never left in the source's shape order. The
+reconcile keeps such models apart (`shadow_unread`), counts them in the info
+line ("N model(s) where another mod's copy outranks ours but could not be read,
+indexed against ours") and reports them as their own problem class,
+`ALTTEX_OUTRANKING_COPY_UNREADABLE` (warning kind "alt-texture outranking copy
+unreadable"), not as `ALTTEX_GAME_COPY_UNREADABLE`, whose wording is about a
+model our output does not ship. So the rule's failure case equals its off
+state, and needs no switch of its own.
+
 **The layout guess, behind the switch: `#alttex-family-strict`.** Without the
 source the reconcile cannot know which shapes the rename made;
 the first cut took any `name` beside a `name:k` and bound by rank in NIF order.

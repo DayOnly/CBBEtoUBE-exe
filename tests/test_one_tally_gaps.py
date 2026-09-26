@@ -244,7 +244,11 @@ def test_dropped_colour_entries_are_a_problem(monkeypatch, tmp_path, capsys):
     (up.ALTTEX_GAME_COPY_UNREADABLE, "alt-texture game copy unreadable",
      "could not be read from the mod the game loads them from"),
     (up.ALTTEX_LOAD_FAILED, "alt-texture mesh unreadable", "failed to load"),
-], ids=["dropped", "game-copy", "load-failed"])
+    (up.ALTTEX_OUTRANKING_COPY_UNREADABLE,
+     "alt-texture outranking copy unreadable",
+     "another mod's copy outranks ours but could not be read; indexed "
+     "against ours"),
+], ids=["dropped", "game-copy", "load-failed", "outranking-copy"])
 def test_each_reconcile_problem_is_warned_and_recorded(cls, kind, words, capsys):
     models = [f"!UBE\\armor\\m{i}_1.nif" for i in range(7)]
     ac._warn_alttex_problems([(cls, models)], "Combined.esp")

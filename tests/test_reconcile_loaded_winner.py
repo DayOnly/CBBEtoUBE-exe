@@ -128,6 +128,55 @@ def test_with_the_loaded_mesh_rule_off_nothing_is_asked(monkeypatch, tmp_path):
     assert asked == [] and ranked == []
 
 
+def _junk_build(tmp_path) -> Path:
+    """Another mod's copy that is no NIF at all; ours is a good one."""
+    build_skinned_shapes_nif(tmp_path / "out" / "meshes" / "!UBE" / REL,
+                             _shapes(OURS))
+    junk = tmp_path / "builder" / REL
+    junk.parent.mkdir(parents=True, exist_ok=True)
+    junk.write_bytes(b"not a nif")
+    return junk
+
+
+OURS_INDEXED = [("Skirt", RED, 1), ("Outer", GREEN, 2), ("hood", TAN, 0)]
+
+
+@needs_pynifly
+@pytest.mark.parametrize("not_found", [False, True],
+                         ids=["unreadable", "not-found"])
+def test_an_outranking_copy_that_cannot_be_read_falls_back_to_ours(
+        monkeypatch, tmp_path, capsys, not_found):
+    """The set is indexed against our own NIF, as with the rule off -- never
+    left in the source's order -- and the problem is its own class, not
+    another mod's copy of a model 'not in this output'."""
+    junk = _junk_build(tmp_path)
+    _game_loads(monkeypatch, None if not_found else (junk, None), True)
+    plugin = _plugin(tmp_path / "out", SET)
+    problems = []
+    assert up.reconcile_alt_texture_indices(
+        plugin, tmp_path / "out" / "meshes", problems=problems) == 1
+    assert _mo3s(plugin) == OURS_INDEXED
+    assert problems == [(up.ALTTEX_OUTRANKING_COPY_UNREADABLE, [MODEL])]
+    err = capsys.readouterr().err
+    assert ("1 model(s) where another mod's copy outranks ours but could not "
+            "be read, indexed against ours") in err
+    assert "this output ships but another mod's copy outranks" not in err
+    assert "0 found nowhere" in err
+
+
+@needs_pynifly
+def test_standalone_the_outranking_copy_is_said_on_its_own_line(
+        monkeypatch, tmp_path, capsys):
+    junk = _junk_build(tmp_path)
+    _game_loads(monkeypatch, (junk, None), True)
+    plugin = _plugin(tmp_path / "out", SET)
+    up.reconcile_alt_texture_indices(plugin, tmp_path / "out" / "meshes")
+    err = capsys.readouterr().err
+    assert ("!! alt-texture reconcile: 1 model(s) where another mod's copy "
+            "outranks ours but could not be read -> indexed against ours") in err
+    assert "not in this output" not in err.split("!!", 1)[1]
+
+
 def test_a_path_that_is_not_ours_is_never_ranked(monkeypatch, tmp_path):
     asked, ranked = _game_loads(monkeypatch, None, True)
     _put(tmp_path / "out" / "meshes" / REL)

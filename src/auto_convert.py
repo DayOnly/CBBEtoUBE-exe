@@ -2112,6 +2112,18 @@ def _warn_alttex_problems(problems, source) -> None:
                  fix="check that the named mesh opens (NifSkope, Outfit Studio) "
                      "or reinstall the mod that ships it, then run again")
             kind = "alt-texture game copy unreadable"
+        elif cls == ube_patcher.ALTTEX_OUTRANKING_COPY_UNREADABLE:
+            # #reconcile-loaded-winner: ours is on disk, another mod's is drawn.
+            warn(f"alt-texture reconcile: {n} model(s) where another mod's copy "
+                 f"outranks ours but could not be read; indexed against ours: "
+                 f"{names}",
+                 consequence="the game draws that other copy; if its layers are "
+                             "in a different order than ours, variant textures "
+                             "may land on the wrong part",
+                 fix="check that the named mesh in the mod above this tool's "
+                     "output in MO2 opens (NifSkope, Outfit Studio) or rebuild "
+                     "it, then run again")
+            kind = "alt-texture outranking copy unreadable"
         else:
             warn(f"alt-texture reconcile: {n} converted NIF(s) failed to load: "
                  f"{names}",
