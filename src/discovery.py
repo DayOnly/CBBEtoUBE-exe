@@ -188,8 +188,8 @@ def _has_3ba_body(nif_path: Path) -> bool:
 #      shape checked vertex for vertex (zeroed_body.zeroed_garment);
 #   3. today's source is a mod's own meshes (tier 0) and is NOT already that build;
 #   4. today's source and the output agree on whether the piece declares HDT
-#      physics -- a physics change is not this fix's to make -- except the
-#      physics GAIN below (#zeroed-smp-gain);
+#      physics -- a physics change is not this fix's to make -- except, when
+#      opted in, the physics GAIN below (#zeroed-smp-gain);
 #   5. the build has the same shapes, with the same vertex counts, as today's
 #      source at both weights -- only the geometry changes, never the pass chain
 #      (a build that bundles the 3BA body would switch the piece to body-swap).
@@ -197,14 +197,21 @@ def _has_3ba_body(nif_path: Path) -> bool:
 # CBBE2UBE_NO_ZEROED_OUTPUT_SOURCE=1 (settings window: "Take armour from the
 # zeroed BodySlide build") leaves the tiers alone -- the off-switch control.
 #
-# #zeroed-smp-gain (2026-09-25, user decision). Rules 4 and 5 held back every
-# vanilla-armour piece whose SMP loose mesh the within-tier body match had
-# swapped for a static prebuilt one (its loose mesh bundles a bespoke body):
-# the user's zeroed BodySlide build of the SMP design was verified, carries the
-# zeroed body, and was refused only for its physics. CBBE wearers load that
-# build; UBE wearers got a static skirt. A piece whose SOURCE declares no
-# physics and whose verified build declares it at both weights now takes the
-# build, physics and all, when every one of these holds (else rule 4 stands):
+# #zeroed-smp-gain (2026-09-25, user decision; OPT-IN since 2026-09-26). Rules
+# 4 and 5 held back every vanilla-armour piece whose SMP loose mesh the
+# within-tier body match had swapped for a static prebuilt one (its loose mesh
+# bundles a bespoke body): the user's zeroed BodySlide build of the SMP design
+# was verified, carries the zeroed body, and was refused only for its physics.
+# CBBE wearers load that build; UBE wearers got a static skirt.
+# OFF BY DEFAULT (2026-09-26, user decision after seeing it in game): the SMP
+# builds are authored looser than the static pieces -- measured on the 17 bases
+# the gain took, one cuirass's rear-hip gap p50 1.19 -> 2.50u and p90 3.64 ->
+# 6.31u, an outfit's rear p90 1.67 -> 6.26u, another's torso p90 3.75 -> 6.34u
+# -- and the user saw a large gap between the body's rear and the armour.
+# CBBE2UBE_ZEROED_SMP_GAIN=1 turns it on. With it set, a piece whose SOURCE
+# declares no physics and whose verified build declares it at both weights
+# takes the build, physics and all, when every one of these holds (else rule 4
+# stands):
 #   a. today's source and the build both carry a body the converter swaps out
 #      (nif_convert._looks_like_inline_body), at both weights -- so the pass
 #      chain is body-swap on both sides, the path the rule-5 regression was not;
@@ -245,7 +252,10 @@ def _has_3ba_body(nif_path: Path) -> bool:
 #      refused too. (An XML the author wrote with no simulated shape is not
 #      this rule's to judge.)
 #      CBBE2UBE_NO_SMP_GAIN_COLLISION_PARTNER=1 drops this rule.
-# CBBE2UBE_NO_ZEROED_SMP_GAIN=1 keeps rule 4 as it was.
+# Unset, rule 4 stands as it was. The old off-switch CBBE2UBE_NO_ZEROED_SMP_GAIN
+# is no longer read: all it ever asked for, rule 4 as it was, is now the
+# default, so a recipe that still sets it gets exactly that; read as a veto it
+# would be a second switch that could silently defeat the opt-in.
 _HDT_MARKER = b"HDT Skinned Mesh Physics Object"
 _ZOS_SAID: "set[str]" = set()
 _SMP_CONSTRAINT_TAGS = frozenset({"generic-constraint", "stiffspring-constraint",
@@ -274,8 +284,9 @@ def _declares_physics(path: Path) -> "bool | None":
 
 def _zeroed_smp_gain() -> bool:
     """#zeroed-smp-gain: may a verified zeroed build bring SMP physics to a piece
-    whose source has none? Yes, by default. CBBE2UBE_NO_ZEROED_SMP_GAIN=1: no."""
-    return not _flag("CBBE2UBE_NO_ZEROED_SMP_GAIN", False)
+    whose source has none? Only when asked: CBBE2UBE_ZEROED_SMP_GAIN=1. Off by
+    default since 2026-09-26 -- those builds sit looser on the body."""
+    return _flag("CBBE2UBE_ZEROED_SMP_GAIN", False)
 
 
 def _smp_gain_collision_partner() -> bool:

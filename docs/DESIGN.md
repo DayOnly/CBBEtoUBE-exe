@@ -582,7 +582,9 @@ single pass runs. Three rules encode this:
    processes: 264.8 s -> 69.6 s; the mesh index is identical key for key (4,562
    entries, 244 re-pointed) and so is the verdict line (122 moved / 179 kept).
    `CBBE2UBE_NO_ZEROED_PROBE_MEMO=1` probes every folder per question again.
-   **A physics GAIN is taken** (`#zeroed-smp-gain`, 2026-09-25, user decision). The
+   **A physics GAIN, OPT-IN** (`#zeroed-smp-gain`, 2026-09-25, user decision; off by
+   default since 2026-09-26, `CBBE2UBE_ZEROED_SMP_GAIN=1` -- see the verdict at the end
+   of this paragraph; everything between describes the gain with the opt-in set). The
    physics rule and the same-shapes rule held back every vanilla-armour piece whose SMP
    loose mesh rule 2 had swapped for a static prebuilt one: the user's zeroed build of
    the SMP design was verified and refused for its physics alone, so CBBE wearers got a
@@ -633,7 +635,7 @@ single pass runs. Three rules encode this:
    four and keeps them at 1, 6, 0, 7 (same order at `_0` and `_1`) -- UBE wearers
    now get the retexture's textures, as CBBE wearers do. The replay ESPs and
    sidecars the commit measured are byte-identical; the Combined is where it
-   shows. With `CBBE2UBE_NO_ZEROED_SMP_GAIN=1` the index and the verdict
+   shows. Without the opt-in the index and the verdict
    line are the old ones on all 4,562 keys, and with
    `CBBE2UBE_NO_SMP_GAIN_COLLISION_PARTNER=1` they are the 19-piece set before the
    partner rule. Refused: the Imperial heavy cuirass (its XML registers the body as
@@ -654,6 +656,24 @@ single pass runs. Three rules encode this:
    on two (bandit body 3, Falmer). All of it is behind SMP-simulated skirt verts, which
    the static harness cannot place -- the converter lifts their chains off the body
    and SMP moves them; in game is the verdict.
+   **The verdict (2026-09-26): OFF by default.** In game the user saw a large gap
+   between the body's rear and the leather armour. The SMP builds are authored looser
+   than the static pieces they replaced, and the conversion keeps that: leather
+   rear-hip gap p50 1.19u -> 2.50u, p90 3.64u -> 6.31u; one outfit's rear p90
+   1.67u -> 6.26u; another outfit's torso p90 3.75u -> 6.34u. So
+   `_zeroed_smp_gain` reads the opt-in `CBBE2UBE_ZEROED_SMP_GAIN=1`, like the other
+   default-off features (`CBBE2UBE_PHASE1_CONFORM`, `CBBE2UBE_SURFACE_WARP_FIELD`).
+   The old off-switch `CBBE2UBE_NO_ZEROED_SMP_GAIN` is not read at all: all it asked
+   for is now the default, and read as a veto it would be a second switch able to
+   defeat the opt-in without a word (ZSG-za). Rule e (`#smp-gain-collision-partner`)
+   and its own off-switch sit under the opt-in and are unchanged. Measured, on archives
+   against the parent: the coverage replay is byte-identical (3 ESPs, 3 sidecars,
+   stats.json; 0 links changed); a subset run of the vanilla-outfits source and the
+   vanilla sweep (deployed settings, 3 workers) writes the 17 bases at defaults
+   byte-identical to the non-physics conversions the output held before the gain
+   (68 of 68 rows: 51 files equal, 17 physics XMLs absent), and with the opt-in set
+   its whole output is byte-identical to the parent's; the golden set is unchanged
+   (the converter proper is untouched).
 
 **A mesh index that cannot be built is said, never cached as empty**
 (`#vfs-index-fail-loud`, 2026-09-25). Source selection built the index above inside

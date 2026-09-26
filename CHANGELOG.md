@@ -965,29 +965,39 @@ pieces (a man of a UBE race wearing them).
 `CBBE2UBE_NO_STALE_OUTPUT_SWEEP=1` (set to 1) turns all of it off, the record
 included; `CBBE2UBE_STALE_OUTPUT_SWEEP_REPORT_ONLY=1` lists without moving.
 
-### Changed — skirts and capes of the vanilla armours keep their physics on UBE actors
+### Added (off by default) — skirts and capes of the vanilla armours can keep their physics on UBE actors
 
 Some vanilla armours (bandit, draugr, hide, iron, studded, Forsworn, Falmer,
 General Tullius's outfit, the Sons of Talos outfit and two farm clothes) have
 physics skirts, tassets or capes in your BodySlide build, and
-CBBE characters wear them that way. The tool took a static version of those
-pieces instead, so on UBE characters the same skirts hung stiff. It now takes
-your zeroed BodySlide build with its physics, but only when the tool has
-checked that build against its BodySlide project, both versions carry the body
-the tool replaces, the physics file is found and holds constraints, nothing in
-that file would bring a second, hidden body back, and every part that swings
-still has something to collide with once the conversion has removed what it
-drops. Measured on the reported modlist: 17 armour pieces (34 files) change;
-everything else is converted exactly as before. One record in the combined
-plugin changes with them: a retexture of the Forsworn armour gives it an
-alternate texture set naming four layers (armour, bottom, feather cape,
-underwear). The static version had none of those layer names, so the set was
-emptied and UBE women saw the mesh's own textures; the zeroed build has all
-four, so its 4 entries are kept and UBE women now see the retexture's
-textures, as CBBE characters do.
+CBBE characters wear them that way. The tool takes a static version of those
+pieces instead, so on UBE characters the same skirts hang stiff.
 
-These stay as they were: the Imperial heavy cuirass; the Imperial light and
-medium cuirasses, whose physics file names the body `Body` while their build
+**This is off by default.** It first shipped on, and in game the physics
+versions of these armours turned out to sit looser on the body than the static
+ones: on the leather armour a large gap opened between the back of the hips
+and the armour (typically 1.2 units, now 2.5; the widest tenth 3.6, now 6.3),
+and on two of the outfits the widest tenth of the gap grew to about 6.3
+units too.
+So the tool keeps the static pieces, as it always did. To take the physics
+versions anyway, set `CBBE2UBE_ZEROED_SMP_GAIN=1` (set to 1).
+
+With it on, the tool takes your zeroed BodySlide build with its physics, but
+only when it has checked that build against its BodySlide project, both
+versions carry the body the tool replaces, the physics file is found and holds
+constraints, nothing in that file would bring a second, hidden body back, and
+every part that swings still has something to collide with once the conversion
+has removed what it drops. Measured on the reported modlist: 17 armour pieces
+(34 files) change; everything else is converted exactly as before. One record
+in the combined plugin changes with them: a retexture of the Forsworn armour
+gives it an alternate texture set naming four layers (armour, bottom, feather
+cape, underwear). The static version has none of those layer names, so the set
+is emptied and UBE women see the mesh's own textures; the zeroed build has all
+four, so with the option on its 4 entries are kept and UBE women see the
+retexture's textures, as CBBE characters do.
+
+With the option on, these stay as they were: the Imperial heavy cuirass; the
+Imperial light and medium cuirasses, whose physics file names the body `Body` while their build
 calls it `body`, so the conversion drops that collider and their skirt would
 have swung through the legs with nothing to stop it; a piece whose build has no
 body the tool can replace; and a piece whose own mesh has no body. The check
@@ -1002,9 +1012,10 @@ dropped (`hdt_xml_shape_dropped`), and that is expected: the iron light
 cuirass shares its physics file with the heavy one, which names a pauldron belt
 and its collider that the light cuirass does not have; both farm clothes name
 the body the tool replaces. Each of these pieces keeps a collider for
-everything that swings. `CBBE2UBE_NO_ZEROED_SMP_GAIN=1` (set to 1) keeps all of
-them static; `CBBE2UBE_NO_SMP_GAIN_COLLISION_PARTNER=1` lets the two Imperial
-cuirasses through again.
+everything that swings. With the option on,
+`CBBE2UBE_NO_SMP_GAIN_COLLISION_PARTNER=1` also lets the Imperial light and
+medium cuirasses take their physics versions. The earlier off-switch `CBBE2UBE_NO_ZEROED_SMP_GAIN` is no longer
+read: what it asked for, the static pieces, is now what you get without it.
 
 ### Changed — converting all your mods is much faster
 

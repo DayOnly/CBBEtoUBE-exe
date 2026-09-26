@@ -2423,15 +2423,16 @@ PAIRS = (
     ),
     # #zeroed-smp-gain (2026-09-25): a verified zeroed build brings its SMP
     # physics to a static source only on the body-swap path, with a resolved,
-    # constrained XML that cannot bring a stripped body back.
-    Pair('ZSG-a', 'the off-switch no longer switches anything off',
+    # constrained XML that cannot bring a stripped body back. OPT-IN since
+    # 2026-09-26 (CBBE2UBE_ZEROED_SMP_GAIN=1): the SMP builds sit looser.
+    Pair('ZSG-a', 'the gain is taken without the opt-in',
          edits=(
              ('src/discovery.py',
-              '    return not _flag("CBBE2UBE_NO_ZEROED_SMP_GAIN", False)',
+              '    return _flag("CBBE2UBE_ZEROED_SMP_GAIN", False)',
               '    return True  # MUTATED', 1),
          ),
          tests=('tests/test_zeroed_smp_gain.py',),
-         expect=('test_switched_off_the_piece_keeps_todays_source',),
+         expect=('test_by_default_the_piece_keeps_todays_source',),
     ),
     Pair('ZSG-b', 'a physics gain is refused as before',
          edits=(
@@ -2440,7 +2441,7 @@ PAIRS = (
               '            why = "its physics would change"  # MUTATED', 1),
          ),
          tests=('tests/test_zeroed_smp_gain.py',),
-         expect=('test_the_build_with_physics_is_taken_by_default',),
+         expect=('test_opted_in_the_build_with_physics_is_taken',),
     ),
     Pair('ZSG-c', 'a physics gain still needs the same shapes',
          edits=(
@@ -2449,7 +2450,46 @@ PAIRS = (
               '        if any({n: len(v) for n, v in today[w].items()}  # MUTATED', 1),
          ),
          tests=('tests/test_zeroed_smp_gain.py',),
-         expect=('test_the_build_with_physics_is_taken_by_default',),
+         expect=('test_opted_in_the_build_with_physics_is_taken',),
+    ),
+    Pair('ZSG-x', 'the opt-in no longer switches the gain on',
+         edits=(
+             ('src/discovery.py',
+              '    return _flag("CBBE2UBE_ZEROED_SMP_GAIN", False)',
+              '    return False  # MUTATED', 1),
+         ),
+         tests=('tests/test_zeroed_smp_gain.py',),
+         expect=('test_opted_in_the_build_with_physics_is_taken',),
+    ),
+    Pair('ZSG-y', 'the gain is on by default again',
+         edits=(
+             ('src/discovery.py',
+              '    return _flag("CBBE2UBE_ZEROED_SMP_GAIN", False)',
+              '    return _flag("CBBE2UBE_ZEROED_SMP_GAIN", True)  # MUTATED', 1),
+         ),
+         tests=('tests/test_zeroed_smp_gain.py',),
+         expect=('test_by_default_the_piece_keeps_todays_source',),
+    ),
+    Pair('ZSG-z', 'any value of the opt-in switches the gain on',
+         edits=(
+             ('src/discovery.py',
+              '    return _flag("CBBE2UBE_ZEROED_SMP_GAIN", False)',
+              '    return bool(os.environ.get("CBBE2UBE_ZEROED_SMP_GAIN"))  # MUTATED', 1),
+         ),
+         tests=('tests/test_zeroed_smp_gain.py',),
+         expect=('test_the_opt_in_set_to_no_keeps_todays_source[0]',
+                 'test_the_opt_in_set_to_no_keeps_todays_source[no]',
+                 'test_the_opt_in_set_to_no_keeps_todays_source[off]'),
+    ),
+    Pair('ZSG-za', 'the old off-switch still vetoes the opt-in',
+         edits=(
+             ('src/discovery.py',
+              '    return _flag("CBBE2UBE_ZEROED_SMP_GAIN", False)',
+              '    return (_flag("CBBE2UBE_ZEROED_SMP_GAIN", False)  # MUTATED\n'
+              '            and not _flag("CBBE2UBE_NO_ZEROED_SMP_GAIN", False))', 1),
+         ),
+         tests=('tests/test_zeroed_smp_gain.py',),
+         expect=('test_the_old_off_switch_does_not_veto_the_opt_in',),
     ),
     Pair('ZSG-d', 'a source with physics at one weight counts as static',
          edits=(
