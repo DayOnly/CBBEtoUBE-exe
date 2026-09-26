@@ -97,8 +97,12 @@ maintainer machine and not in CI: the runner has no game and no pieces.
 An unintended diff is a regression. An intended one must be explainable shape
 by shape, and then `capture` re-baselines. `check` refuses across a different
 `CBBE2UBE_*` flag set and says so when the baseline was captured on another
-commit; keep the shell free of converter flags for both runs. What it cannot
-see: a class the piece list does not cover (the base-game set unless
+commit; keep the shell free of converter flags for both runs. The verdict
+line counts the pieces it compared: `PASS (PARTIAL)` names how many it did not
+look at (source changed, not in the baseline), and a check that compared none
+exits 3 with `NOTHING COMPARED` instead of passing. Each run empties its work
+folder first, so nothing a killed run left there is read as new output. What
+it cannot see: a class the piece list does not cover (the base-game set unless
 `golden/pieces.json` points it at more), and anything a float on another
 machine would round differently -- it is a same-machine, same-toolchain check.
 
