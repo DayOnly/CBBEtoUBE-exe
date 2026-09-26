@@ -2093,9 +2093,11 @@ CBBE and UBE.** Use the visible band below, or a CLOSED warped-shell control.
   0.5u off the source crotch region (its 2 genital holes capped with a fan) is
   pushed through the converter's own warp (`_cached_cbbe_to_ube_delta` +
   `warp_armor_by_body_delta`) and scored on UBE. It must read ours - author
-  within 0.15u at p05 and p50 on visible skin, and 0.5u deeper at p50 when the
-  warped shell is pushed 0.5u into UBE. Otherwise the tool exits 4 and prints
-  nothing else. `--self-check` runs it alone.
+  within 0.15u at p05 and p50 on visible skin, and at least 0.3u deeper at p50
+  (`SELF_CHECK_MUST_FAIL`; it reads 0.511) when the warped shell is pushed 0.5u
+  into UBE. Otherwise the tool exits 4 and prints nothing else. `--self-check`
+  runs it alone. (As first landed it checked the BIND rows only; the posed rows
+  and a paired band were added the same day -- see the next section.)
 
       perfect warped shell, visible band     p05 -0.057  p50 -0.026   PASS
       same shell buried 0.5u                 p05 -0.280  p50 -0.511   (must be <= -0.3)
@@ -2129,6 +2131,9 @@ Single 45-degree thigh swing, converted, loss p90 on the worse side (n=229):
 The posed loss is NOT inflated on UBE by the slit the way the bind was: the
 class size barely moves. The source side grows on visible skin because the
 closed source body adds the vulva, exactly where a one-thigh gusset swings.
+**The "src vs conv" columns above are NOT like-for-like** (withdrawn; see the
+next section): each arm is scored on its own visible skin, and the source arm's
+includes companion vulva skin UBE has no counterpart for. Read the paired band.
 
 ## Does "single-swing class exhausted, 1 clean residual" (09-19) still hold?
 
@@ -2147,8 +2152,149 @@ pieces whose band-covering shape is draping-exempt and pieces negative at bind:
 The legacy split reproduces the recorded 1 on this pack. On visible skin the 2
 bind-negative pieces (and one draping one) drop under 1u, and 4 pieces surface:
 three variants of one steel cuirass (1.19-1.21u, asym 0.44-0.46, bind
-p05 +0.29..+0.49; their source loses 0.90-0.93u, so ~0.3u introduced) and one
-body piece with no matched source (1.02u). The old residual (a dress, 1.49u) is
-inherited (source 1.55u). So the count moves 1 -> 5 pieces from 3 meshes, all
-within 0.2u of the 1u line and none bind-negative: no new mechanism, the class
-verdict (closed; no single-piece fixes) stands.
+p05 +0.29..+0.49) and one body piece with no matched source (1.02u). Only TWO of
+the three cuirass variants have a matched source (1.19u vs source 0.90u, 1.21u
+vs 0.93u); the third (1.21u) has none. The old residual (a dress, 1.49u) is
+inherited (source 1.55u). So the count moves 1 -> 5 pieces from 3 meshes,
+1.02-1.49u (the dress 0.49u over the 1u line, the other four within 0.21u) and
+none bind-negative.
+
+**Corrected the same day.** This section first read "~0.3u introduced over three
+cuirass variants" and "no new mechanism". Both were unsupported: the ~0.3u came
+from the visible band, where the two sourced variants' source arm is scored on
+different skin from ours (its bind p05 -0.51 / -0.45 against our +0.31 / +0.29),
+and "no new mechanism" was asserted, not shown. The next section re-derives
+both on skin the two arms share.
+
+# 2026-09-26 (round 2) — the crotch census: posed self-check, and source vs converted on shared skin
+
+Review of the section above found the self-check guarded the BIND rows only: it
+scored the shell with empty weights and no skeleton, so the L45/R45 swing-loss
+rows -- and the source-vs-converted swing lines the section reasoned from -- were
+unguarded. And the visible band scores each arm on its OWN visible skin, so
+"source vs converted" there compares different skin. Tool-only; src/ untouched.
+
+## The posed self-check
+
+The warped shell is now skinned and posed with the real skeleton. A perfect
+conversion rides the body it sits on, so each arm's shell carries its own body's
+weights: the author's those of the source body vertex it was made from, ours
+those of the UBE vertex that source vertex corresponds to (the nearest-vertex
+correspondence `_cached_cbbe_to_ube_delta` warps by). The single 45-degree swing
+loss p90 must read ours - author within 0.1u on each side
+(`SELF_CHECK_POSED_TOL`), and the shell with its midline (|x| < 2 over the band)
+riding the left thigh on OUR arm only must read at least 0.3u worse
+(`SELF_CHECK_POSED_MUST_SEE`, the census's own "worse after conversion" line),
+on the visible band and on the paired band below. Otherwise exit 4.
+
+                               author L / R     ours L / R      ours - author    one-thigh plant
+    visible band, perfect      0.037 / 0.038    0.028 / 0.031   -0.009 / -0.007      +1.651
+    paired band,  perfect      0.044 / 0.043    0.033 / 0.033   -0.011 / -0.010      +1.643
+    paired, our shell KEEPING the source weights                +0.073 / +0.075      (information)
+
+The last row is what the two bodies' weight painting alone costs a garment the
+converter does not re-weight: 0.07u at p90, a quarter of the 0.3u line.
+
+Planted, live, through `main` -- every one exits 4:
+
+    the author's shell with its midline on the left thigh   swing L -1.248 (visible), -1.132 (paired)
+    the author arm without its companion shapes             bind p05 -0.184 (visible); the posed
+                                                            rows read -0.017 and do not see it
+    bodies read with no thigh bones                         one-thigh plant +0.000 on both bands
+
+Guarded by `tests/test_single_swing_census_visibility.py` (synthetic bodies:
+a shell weighted to the wrong bone on one arm and bodies that cannot swing both
+exit 4) and mutation pairs SSV-m..SSV-w.
+
+## The paired band: skin visible on BOTH bodies
+
+A source main-shape vertex is paired when it is visible on the closed source body
+and its nearest UBE vertex is visible on UBE; a UBE vertex when it is visible on
+UBE and its nearest source vertex is PAIRED (the round trip). Companion vertices
+are never paired. The first rule tried ("its nearest source vertex is visible")
+let 90 UBE vertices on the slit mouth (x ~ 0, z 65-72) through, and a perfect
+warped shell read p05 -0.146 there, at the edge of the 0.15u tolerance; the
+round trip reads +0.000. Zeroed weight-1 bodies: 1521 source and 1615 UBE
+vertices paired (of 2365 / 2305 visible).
+
+    self-check, paired band: bind perfect p05 +0.000 p50 -0.014, buried 0.5u
+    p05 -0.309 p50 -0.509 (both must hold, as on the visible band)
+
+The census now writes a `pair` block per arm and prints the source-vs-converted
+lines as like-for-like ONLY on this band; on the full and visible bands they
+carry a NOT LIKE-FOR-LIKE warning. An injected body that is not the reference
+UBE body vertex for vertex gets no paired block (3 converted arms on this pack:
+partial bodies). `_census_common.visible_skin`'s triangle pre-filter now grows
+its box by the rays' 0.01u lift as well, so it really never changes a result;
+on this pack it changed nothing.
+
+## Re-measured (read-only, `_1`, 1030 NIFs)
+
+Control: every legacy and `vis` key of all 433 scored arms is identical to the
+previous tool's rows (b6c4892); only the `pair` block is new.
+
+Bind, ours - author, both arms >= 90% full-band cover:
+
+                            n     p05    deeper/shallower 0.1u    p50    closer/looser
+    VISIBLE (not l-f-l)    102  +0.145        12 / 55            +0.101     16 / 51
+    PAIRED                 100  +0.279         3 / 68            +0.175      4 / 67
+
+Single swing, loss p90 worse side:
+
+                n     p50    p90    max   over 1u  over 0.5u   src vs conv, like-for-like
+    PAIRED     226    0.43   1.12   3.04     31       98       n=201: src p50 0.64 / conv 0.44;
+                                                               src>1u 63, conv 29; worse 12 / better 61
+
+On shared skin the converted pack loses LESS than its sources in the swing, not
+more: 61 pieces better by 0.3u, 12 worse.
+
+## The 09-19 residual on the paired band
+
+                                     FULL (legacy)   VISIBLE   PAIRED
+    over 1u                                37            34        31
+    every shape skipped                    14            13        12
+    reachable, asym > 0.3                  10            11        12
+      covering shape draping-exempt         7             6         7
+      bind-negative                         2             0         0
+      CLEAN RESIDUAL                        1             5         5
+
+The paired residual, against its source on the same skin:
+
+    one dress                  1.50u   source 1.52u   inherited
+    one heavy cuirass          2.20u   source 1.85u   +0.35, BOTH legs (L 2.13 R 2.20; source
+                                                      L 1.81 R 1.85): not a one-thigh swing
+    steel cuirass, variant 1   1.20u   source 1.17u   +0.03
+    steel cuirass, variant 2   1.24u   source 1.17u   +0.07
+    steel cuirass, variant 3   1.25u   no matched source
+
+The ~0.3u "introduced" on the two sourced cuirass variants was the visible band
+comparing different skin: on shared skin they read +0.03 / +0.07, inside the
+0.07u the self-check measures for body painting alone. Their source cloth sits
+INSIDE the source main shape at bind (p05 -0.61 / -0.54 on paired skin; ours
++0.53 / +0.57). The body piece that surfaced on the visible band (1.02u) reads
+0.91u here. No piece in the residual shows a conversion-introduced one-thigh
+swing; the class verdict (closed; no single-piece fixes) stands on this evidence.
+
+## The 12 pieces worse after conversion (+0.3u, paired): mechanism
+
+Two decompositions per piece, each re-scored on the paired band: (a) the
+converted geometry with the SOURCE garment's weights carried by vertex index
+(same topology only) -- if the loss falls back, the converter's re-weighting did
+it; (b) the converted piece with the UBE body posed on the SOURCE body's weights
+(each UBE vertex those of its nearest source vertex) -- if it falls back, the two
+bodies' weight painting under an un-reweighted garment did it.
+
+    converter re-weighting                 1   a light iron armour: 0.21 -> 0.52; source
+                                               weights on the converted geometry 0.24
+    body weight painting, in part          2   the heavy cuirass 1.85 -> 2.20, body on source
+                                               weights 1.96; a long dress 1.81 -> 2.20, 1.92
+    UNEXPLAINED (neither)                  8   four skirt/wrap pieces, weights unchanged by the
+                                               converter, body on source weights reads WORSE
+                                               (e.g. 1.22 -> 3.04 -> 3.21); four other pieces
+                                               re-weighted, source weights read the same or worse
+                                               (e.g. 0.47 -> 0.85 -> 0.98)
+    not decomposable                       1   topology changed by the converter (0.14 -> 0.45)
+
+Eight of the twelve have no mechanism this census can show. The four skirt/wrap
+pieces lose on both legs (asym <= 0.11) and are not the single-swing class. This
+is an open lead, not a finding: nothing here says which pass moves them.

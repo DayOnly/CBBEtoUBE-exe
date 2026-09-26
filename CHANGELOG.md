@@ -8,20 +8,22 @@ The census that measures how far crotch cloth sinks into the body when one leg
 swings compared our conversion with the original armour by subtracting their
 clearances over the crotch. The two bodies are not the same surface there: UBE
 models a narrow slit that CBBE does not, and the original body leaves an opening
-that it fills with separate pieces. Measured by nearest point, any armour shaped
-for CBBE reads about 0.9 units "deeper" on UBE even when it was converted
-perfectly, and that difference was being reported as armour we bury deeper than
-its author did.
+that it fills with separate pieces. Measured by nearest point, a garment
+converted perfectly reads about 0.5 units "deeper" on UBE at its tightest 5%
+(across the reported pack the gap was 0.86 units), and that difference was being
+reported as armour we bury deeper than its author did.
 
-The census now also scores only skin that can be seen from outside the body, on
-an original body with its separate pieces put back, beside the old numbers under
-a label that says not to compare them across bodies. Each run first pushes a
-perfect test garment through the converter's own warp and refuses to report if
-that garment does not read close to zero. On the reported pack the conversion is
-slightly looser than the original there (0.15 units at the tightest 5%), not
-deeper; the leg-swing numbers barely move (34 pieces over 1 unit instead of 37).
-Guarded by `tests/test_single_swing_census_visibility.py` and mutation pairs
-`SSV-a`..`SSV-l`. No converter behaviour changes.
+The census now also compares the two only on skin that can be seen from outside
+on BOTH bodies, beside the old numbers under a label that says not to compare
+them across bodies. Each run first pushes a perfect test garment through the
+converter's own warp, standing still and with one leg swung, and refuses to
+report if that garment does not read close to zero or if a garment planted to
+drag with one leg does not read clearly worse. On the reported pack the
+conversion sits slightly looser than the original there (0.28 units at the
+tightest 5%), not deeper, and in the leg swing 61 pieces lose less than their
+original and 12 lose more. Guarded by
+`tests/test_single_swing_census_visibility.py` and mutation pairs
+`SSV-a`..`SSV-w`. No converter behaviour changes.
 
 ### Fixed — Check setup sees a UBE body you pick while the window is open
 

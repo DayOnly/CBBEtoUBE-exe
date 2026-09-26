@@ -211,8 +211,8 @@ def visible_skin(V, T, N, sel, reach: float = 6.0):
     WHY IT EXISTS. A body->nearest-garment-vertex clearance compared across two
     bodies is only as fair as the two surfaces are alike. UBE models a dense
     midline slit at the crotch (16% of the covered band vertices on 1.3% of the
-    area, normals pointing sideways, self-contact); CBBE does not. Any
-    CBBE-shaped cloth carried onto UBE reads -0.5..-0.9u there with no
+    area, normals pointing sideways, self-contact); CBBE does not. A perfect
+    CBBE-shaped shell carried onto UBE reads p05 -0.50u there with no
     conversion error at all. The slit walls see each other, not the outside,
     so this mask drops them on UBE and the matching occluded skin on CBBE.
 
@@ -220,8 +220,10 @@ def visible_skin(V, T, N, sel, reach: float = 6.0):
     reads 0.3% exposed here, a must-fail inward copy 85%.
 
     Triangles are pre-filtered to those whose bounding box meets the selected
-    vertices' box grown by `reach`; nothing outside it can be hit by a ray of
-    that length, so the filter changes cost, never a result.
+    vertices' box grown by `reach` plus twice the 0.01u lift the rays start at.
+    Every ray point lies within reach + 0.01 of its vertex, so nothing outside
+    that box can be hit and the filter changes cost, never a result. (Grown by
+    `reach` alone, as first written, it could drop a hit 6.00-6.01u out.)
     """
     from scripts.analysis.mesh_penetration import ray_exposure
     V = np.asarray(V, float)
@@ -232,8 +234,9 @@ def visible_skin(V, T, N, sel, reach: float = 6.0):
     idx = np.flatnonzero(sel)
     if not len(idx) or not len(T):
         return out
-    lo = V[idx].min(0) - reach
-    hi = V[idx].max(0) + reach
+    pad = reach + 0.02
+    lo = V[idx].min(0) - pad
+    hi = V[idx].max(0) + pad
     tv = V[T]
     near = np.all((tv.max(1) >= lo) & (tv.min(1) <= hi), axis=1)
     out[idx] = ray_exposure(V[idx] + 0.01 * N[idx], N[idx], V, T[near], tmax=reach)

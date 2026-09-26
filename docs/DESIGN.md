@@ -3962,11 +3962,15 @@ The two bodies are not the same surface there. UBE models a dense midline slit
 (16% of the covered crotch-band vertices on 1.3% of the area, sideways normals,
 self-contact); the 3BA body ships its vulva and anus as separate companion shapes
 and is open there without them. A body -> nearest-garment-vertex clearance reads
-any CBBE-shaped cloth 0.5-0.9u "deeper" on UBE with no conversion error: a perfect
-warped shell reads ours - author p05 -0.50u. A number that subtracts the author's
-crotch clearance from ours is only meaningful on skin both bodies can show --
-`single_swing_census` scores band skin whose normal ray leaves the body, on a
-source body closed with its companion shapes, and refuses to report unless a
-closed shell pushed through the converter's own warp reads ~0 there (see
-METRICS.md, 2026-09-26). On that skin the shipped pack is slightly looser than the
-author (p05 +0.15u), not deeper.
+CBBE-shaped cloth "deeper" on UBE with no conversion error: a perfect warped shell
+reads ours - author p05 -0.50u (the shipped pack's median was -0.86u). A number
+that subtracts the author's crotch clearance from ours is only meaningful on skin
+BOTH bodies can show -- `single_swing_census` pairs band skin visible on the
+closed source body with skin visible on UBE through the warp's own
+nearest-vertex correspondence, and refuses to report unless a closed shell pushed
+through the converter's own warp reads ~0 there at bind AND in a one-leg swing,
+with each arm's shell riding its own body's weights (see METRICS.md, 2026-09-26
+and its round 2). Scoring each arm on its own visible skin is not enough: the
+closed 3BA body adds vulva skin a source garment can lie inside, which UBE has no
+counterpart for. On shared skin the shipped pack is slightly looser than the
+author (p05 +0.28u), not deeper.
