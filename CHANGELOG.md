@@ -473,6 +473,37 @@ everything that swings. `CBBE2UBE_NO_ZEROED_SMP_GAIN=1` (set to 1) keeps all of
 them static; `CBBE2UBE_NO_SMP_GAIN_COLLISION_PARTNER=1` lets the two Imperial
 cuirasses through again.
 
+### Changed — converting all your mods is much faster
+
+The conversion went through your mods one at a time and waited at each mod for
+its slowest armour piece before starting the next, so most of the worker
+processes sat idle: on the reported modlist they were busy only a quarter of
+the time. The tool now reads every mod first, then converts the armour pieces
+of all of them together, biggest first, and finishes each mod, in the usual
+order, once its own pieces are done. A very large piece starts only when
+there is enough free memory for it, and a piece that runs out of memory is
+converted again on its own. The converted files are the same, byte for byte.
+The progress bar now shows one bar for converting the pieces of all your mods,
+and the text beside it shows the time left for all of them.
+Measured on the reported modlist, all mods: 92.5 minutes one mod at a time,
+37.7 minutes now (converting the armour pieces: 83 minutes down to 29), and
+all 7,125 output files but one diagnostics log the same byte for byte. The
+tool uses about 3.4 GB more memory at its peak (20.3 GB against 16.9 GB).
+
+One thing works differently. When an earlier mod converts an armour piece and
+a later mod leaves its own copy of that piece to a third mod that already
+ships it built for UBE, the earlier mod's conversion from this run now stays
+in `meshes\` instead of being moved to `_superseded\`. This did not happen on
+the reported modlist. With `--workers 1` it is still moved, as before.
+
+If you cancel a run, or it stops, while the armour pieces are converting, each
+mod's patch is written only once that mod's pieces are done, so no patch points
+at a piece that was never converted, and a following plugins-only refresh uses
+the patches from your last complete run. The run's report says how far it
+got. With `--copy-textures`, when two mods ship the same texture, the later
+mod's file wins, as it always did.
+`CBBE2UBE_NO_GLOBAL_SCHEDULE=1` (set to 1) converts one mod at a time again.
+
 ### Changed — checking your zeroed BodySlide build is about four times faster
 
 Before converting, the tool checks which armour your zeroed BodySlide build

@@ -6,7 +6,7 @@ current. A `!!` line is a problem; a `NOTE:` line is information. Each entry
 gives the line as it appears in the run log (`…` stands for the value printed
 at run time), what it means for the run, and what to do next.
 
-**93** problem warnings and **6** notes.
+**95** problem warnings and **6** notes.
 
 ## src/auto_convert.py
 
@@ -14,6 +14,11 @@ at run time), what it means for the run, and what to do next.
   - means: the traceback follows; the piece is counted as an error
 - `!! warm-up task failed: …`
   - means: the first real piece on that worker pays the cold start
+- `!! conversion failed: …`
+  - means: the run stopped; the log above says where
+  - fix: fix the cause and run again
+- `!! vanilla sweep failed (…)`
+  - means: retrying SERIALLY (no worker pool; slower, but immune to pool-environment failures)...
 - `!! … body-ref candidates -- under …`
   - means: scanning only the first 1500 by priority -- a UBE body in a deeply-nested non-'ube' path could be missed
   - fix: set the UBE body reference explicitly if the wrong body is picked
