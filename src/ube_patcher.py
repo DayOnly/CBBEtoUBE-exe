@@ -4764,6 +4764,35 @@ def _arma_race_set(arma_payload: bytes) -> frozenset:
                      if s in (b"RNAM", b"MODL") and len(d) >= 4)
 
 
+def _guard_ube_races() -> bool:
+    r"""#guard-ube-races (2026-09-26): does the merge guard of
+    #race-subset-dedup-agree compare only the UBE races two render-identical
+    links list? Yes, by default.
+
+    The guard keeps a render-identical link that lists a race no kept link of
+    its group lists, so no race loses the armour. It compared every race, and
+    the per-source patches mint each of an author's armatures with the 16 UBE
+    races BESIDE the author's own vanilla races: an author's Khajiit copy and
+    Argonian copy of one glove, same meshes and slots, differ only in vanilla
+    races. Both were kept, and every UBE race drew the glove twice (live on the
+    full merge: 4 armours). Only UBE actors draw these links, so only a UBE
+    race one copy has and the kept one lacks can go missing; the vanilla races
+    draw the author's own armatures. Now the guard compares the UBE races
+    (every race UBE_AllRace.esp defines) and folds copies that differ only
+    in other races, as before the guard.
+    CBBE2UBE_NO_GUARD_UBE_RACES=1 compares every race again."""
+    return not _flag("CBBE2UBE_NO_GUARD_UBE_RACES", False)
+
+
+def _arma_ube_race_set(arma_payload: bytes, masters, own_name) -> frozenset:
+    """#guard-ube-races: the UBE races an armature lists, primary or
+    additional, as low 24 bits: every race UBE_AllRace.esp defines -- the 16
+    of `UBE_RACE_FIDS_24` and the plugin's custom races, whose actors draw the
+    links too."""
+    return frozenset(lo for pl, lo in _arma_race_list(arma_payload, masters, own_name)
+                     if pl == "ube_allrace.esp")
+
+
 def _race_subset_split(to_mint, arma_win, armo_slots) -> "tuple[set, dict, set]":
     """#coverage-race-subset: for one armour's armatures to mint -> (the ones
     not to mint, {armature: UBE races, UBE_RACE_FIDS_24 order} for the ones
@@ -7605,8 +7634,17 @@ def merge_patches(
     # carrying the most data.
     # #race-subset-dedup-agree: the key holds the primary race only, so a
     # member listing a race no kept member lists is kept too -- dropping it
-    # would leave that race with nothing for the armour.
+    # would leave that race with nothing for the armour. Only UBE races
+    # count (#guard-ube-races).
     _agree = _race_subset_dedup_agree()
+    # #guard-ube-races: only a UBE race can go missing on a UBE actor.
+    _ube_only = _guard_ube_races()
+    _om = list(out_esp.header.masters)
+
+    def _guard_races(rec) -> frozenset:
+        if _ube_only:
+            return _arma_ube_race_set(rec.payload, _om, out_path.name)
+        return _arma_race_set(rec.payload)
     sp_dropped = 0
     sp_kept_races = 0
     for key, recs in sp_by_armo.items():
@@ -7632,11 +7670,11 @@ def merge_patches(
             if not _agree:
                 sp_dropped += len(members) - 1
                 continue
-            drawn = set(_arma_race_set(best.payload))
+            drawn = set(_guard_races(best))
             for i, (rec, _n) in enumerate(members):
                 if i == bi:
                     continue
-                races = _arma_race_set(rec.payload)
+                races = _guard_races(rec)
                 if races <= drawn:
                     sp_dropped += 1
                 else:

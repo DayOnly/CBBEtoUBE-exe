@@ -12,12 +12,24 @@ happened to start with the same race, the final merge step took them for
 duplicates and kept only one, so the races only the other one listed would
 have drawn nothing for that item. Now copies that draw the same mesh are
 treated as one version, drawn once for all of their races, and the merge never
-drops a copy that lists a race the kept one does not (the run log counts any it
-keeps). Measured on the reported modlist: 2 items (a transformation effect and
-an effect on one set of NPCs' skin) drew their effect twice on the six UBE elf
-races; they now draw it once, as before that fix. No item loses a draw and no
-other item changes. `CBBE2UBE_NO_RACE_SUBSET_DEDUP_AGREE=1` (set to 1) turns it
-off.
+drops a copy that lists a UBE race the kept one does not (the run log counts any
+it keeps). Copies that differ only in the other races they list (an author's
+Khajiit and Argonian copies of one glove, say) are still merged into one, as
+before: UBE characters draw only the UBE races, so keeping both would draw the
+glove twice on every UBE race. Measured on the reported modlist, both coverage
+passes plus the final merge with every per-armour patch: 2 items (a
+transformation effect and an effect on one set of NPCs' skin) drew their effect
+twice on the six UBE elf races; they now draw it once, as before that fix. No
+item draws a mesh twice that did not before, and every item still draws on
+every UBE race. Because the merge now writes two fewer records, it packs its
+split plugin pieces differently, and where two per-armour patches each add a
+version of the same armature, the one packed first is used: 16 other items (9
+from one mage-armour mod, 4 robes' hoods, a hood, a hat and a cuirass from the
+base game) now use the other patch's version. That packing order is an existing
+weakness of the merge that any change in record counts can trigger; this fix
+does not choose it. `CBBE2UBE_NO_RACE_SUBSET_DEDUP_AGREE=1` (set to 1) turns
+the whole fix off; `CBBE2UBE_NO_GUARD_UBE_RACES=1` (set to 1) makes the merge
+keep copies that differ only in non-UBE races again.
 
 ### Fixed — colour variants of a piece left to your own UBE build recolour the right layer
 

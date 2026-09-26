@@ -3121,15 +3121,34 @@ reported through `_report_coverage_holds`:
   (`race_subset_twins`, reported unless some armour mints them). The overlap
   test still runs on the unfolded lists, so no group that was left whole is
   split now. (2) Guard: within a render-identical group the merge keeps its
-  choice as before, then keeps any other member whose race set (RNAM + MODL)
-  has a race no kept member has, instead of dropping it
-  (`sp_kept_other_races`, emitted, so the link balance is unchanged; the
-  reconciliation says how many). A double draw beats a missing one. Live
-  replay + merge (c0367ee vs this change): links 9927 -> 9925 (the two twins
-  no longer minted), same-mesh double draws per (armour, slot, UBE race) 12 ->
-  0 on 2 armours, 0 lost draws, 0 added, no other count changes; the guard
-  keeps 0 links live. Switch set: byte-identical to the parent.
-  `CBBE2UBE_NO_RACE_SUBSET_DEDUP_AGREE=1`.
+  choice as before, then keeps any other member whose UBE race set has a UBE
+  race no kept member has, instead of dropping it (`sp_kept_other_races`,
+  emitted, so the link balance is unchanged; the reconciliation says how
+  many). A double draw beats a missing one. The UBE race set
+  (`_arma_ube_race_set`, `#guard-ube-races`) is every RNAM/MODL race that
+  UBE_AllRace.esp defines -- the 16 of `UBE_RACE_FIDS_24` and its custom
+  races -- resolved through the piece's masters. Comparing every race was
+  wrong: the per-source patches mint each author armature with the 16 UBE
+  races beside the author's vanilla races, so an author's Khajiit and
+  Argonian copies of one glove differ only in vanilla races; only UBE actors
+  draw these links, so keeping both drew the glove twice on every UBE race
+  (full merge: 4 armours, 96 (armour, slot, UBE race) keys) and saved no race.
+  Live, coverage passes + merge (c0367ee vs this change): links 9927 -> 9925
+  (the two twins no longer minted), same-mesh double draws per (armour, slot,
+  UBE race) 12 -> 0 on 2 armours, 0 lost draws, 0 added, no other count
+  changes; the guard keeps 0 links. Full merge (the deployed per-source
+  patches + the replayed coverage patches through `merge_patches_split`):
+  links 17130 -> 17128, `sp_dropped_render_identical` 8 -> 8,
+  `sp_kept_other_races` 0; the effect pair is de-doubled (12 keys, 3 -> 2 on
+  one armour whose per-source patch also draws it) and no key gains a
+  same-mesh double. Two fewer coverage ARMAs re-pack `_partition_patches_for_esl`
+  (9 patches change piece), and the cross-piece (armo, source armature)
+  first-writer-wins then takes the other of two per-source mints for 16
+  armours (9 of one mod whose override patch carried the converted mesh, 7
+  vanilla); one of them now claims slots 34/38 instead of 35. That packing
+  dependence predates this change. Switches set: byte-identical to the parent
+  (both) and to the unguarded version (`CBBE2UBE_NO_GUARD_UBE_RACES=1`).
+  `CBBE2UBE_NO_RACE_SUBSET_DEDUP_AGREE=1`, `CBBE2UBE_NO_GUARD_UBE_RACES=1`.
 - **A body armour's hood rides with it** (`#coverage-body-accessory`). The body
   pass kept only armatures with a converted mesh or a hands/feet slot; the
   non-body pass skips any armour with a deforming slot. A robe's hood armature

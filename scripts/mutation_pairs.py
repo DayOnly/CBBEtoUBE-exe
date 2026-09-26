@@ -10886,6 +10886,47 @@ PAIRS = (
          tests=('tests/test_race_subset_dedup_agree.py',),
          expect=('test_a_copy_another_armour_mints_is_not_reported',),
     ),
+    # #guard-ube-races (2026-09-26): the merge guard keeps a render-identical
+    # copy only for a UBE race the kept copy lacks, not for a vanilla race.
+    Pair('GUR-a', 'the guard off-switch no longer switches anything off',
+         edits=(
+             ('src/ube_patcher.py',
+              '    return not _flag("CBBE2UBE_NO_GUARD_UBE_RACES", False)',
+              '    return True  # MUTATED', 1),
+         ),
+         tests=('tests/test_race_subset_dedup_agree.py',),
+         expect=('test_switched_off_copies_differing_in_vanilla_races_draw_twice',),
+    ),
+    Pair('GUR-b', 'the guard compares vanilla races again',
+         edits=(
+             ('src/ube_patcher.py',
+              '    return not _flag("CBBE2UBE_NO_GUARD_UBE_RACES", False)',
+              '    return False  # MUTATED', 1),
+         ),
+         tests=('tests/test_race_subset_dedup_agree.py',),
+         expect=('test_copies_differing_only_in_vanilla_races_draw_once',),
+    ),
+    Pair('GUR-c', "the guard reads races through the wrong plugin's masters",
+         edits=(
+             ('src/ube_patcher.py',
+              '    _om = list(out_esp.header.masters)',
+              '    _om = []  # MUTATED', 1),
+         ),
+         tests=('tests/test_race_subset_dedup_agree.py',),
+         expect=('test_the_merge_keeps_a_copy_that_lists_a_race_the_other_does_not',
+                 'test_a_copy_with_another_ube_race_is_kept_beside_vanilla_races',
+                 'test_a_third_copy_covered_by_the_two_kept_is_dropped'),
+    ),
+    Pair('GUR-d', "UBE_AllRace.esp's custom races are not UBE races",
+         edits=(
+             ('src/ube_patcher.py',
+              '                     if pl == "ube_allrace.esp")',
+              '                     if pl == "ube_allrace.esp" and lo in UBE_RACE_FIDS_24)'
+              '  # MUTATED', 1),
+         ),
+         tests=('tests/test_race_subset_dedup_agree.py',),
+         expect=('test_a_copy_with_a_ube_custom_race_is_kept',),
+    ),
     # #third-party-ini-slot-check (2026-09-25): another mod's SkyPatcher line
     # adding a UBE armature hides its target only when the addon's plugin is
     # loaded and the addons cover every slot of the armour.

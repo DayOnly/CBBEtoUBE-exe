@@ -53,6 +53,7 @@ NORDS = [NORD, NORD_V]
 @pytest.fixture(autouse=True)
 def _on(monkeypatch):
     monkeypatch.delenv(OFF, raising=False)
+    monkeypatch.delenv("CBBE2UBE_NO_GUARD_UBE_RACES", raising=False)
     monkeypatch.delenv("CBBE2UBE_NO_COVERAGE_RACE_SUBSET", raising=False)
     monkeypatch.delenv("CBBE2UBE_NO_COVERAGE_BEAST_VARIANT", raising=False)
 
@@ -244,13 +245,17 @@ UBE_BYTE = 1          # masters: Skyrim.esm, UBE_AllRace.esp
 OWN = 2 << 24
 
 
-def _minted(local, rnam, modl):
+def _minted(local, rnam, modl, vanilla=()):
+    """A minted armature: UBE primary race, UBE additional races `modl`, and
+    Skyrim.esm additional races `vanilla` (an author's own race list)."""
     p = encode_subrecord(b"EDID", encode_zstring(f"UBE_{local:X}"))
     p += encode_subrecord(b"BOD2", struct.pack("<II", HEAD, 0))
     p += encode_subrecord(b"RNAM", struct.pack("<I", (UBE_BYTE << 24) | rnam))
     p += encode_subrecord(b"MOD3", encode_zstring(r"circlet\one_1.nif"))
     for r in modl:
         p += encode_subrecord(b"MODL", struct.pack("<I", (UBE_BYTE << 24) | r))
+    for r in vanilla:
+        p += encode_subrecord(b"MODL", struct.pack("<I", r))
     return Record(sig=b"ARMA", flags=0, formid=OWN | local, payload=p)
 
 
@@ -303,6 +308,45 @@ def test_a_third_copy_covered_by_the_two_kept_is_dropped(tmp_path):
     assert len(drawn["Mod.esp|000810"]) == 2
     assert ms["sp_kept_other_races"] == 1
     assert ms["sp_dropped_render_identical"] == 1
+
+
+# #guard-ube-races: an author's per-race copies, minted for every UBE race
+# beside the author's own vanilla race, differ only in the vanilla race.
+KHAJIIT, ARGONIAN = 0x013745, 0x013740
+GUARD_OFF = "CBBE2UBE_NO_GUARD_UBE_RACES"
+
+
+def test_copies_differing_only_in_vanilla_races_draw_once(tmp_path):
+    ms, drawn = _patch_with_links(tmp_path, [_minted(0x800, B, ALL16, [KHAJIIT]),
+                                             _minted(0x801, B, ALL16, [ARGONIAN])])
+    assert drawn == {"Mod.esp|000810": [ALL16]}
+    assert ms["sp_dropped_render_identical"] == 1
+    assert ms["sp_kept_other_races"] == 0
+
+
+def test_a_copy_with_another_ube_race_is_kept_beside_vanilla_races(tmp_path):
+    ms, drawn = _patch_with_links(tmp_path, [_minted(0x800, B, [B, N], [KHAJIIT]),
+                                             _minted(0x801, B, [B, O], [KHAJIIT])])
+    assert _per_race(drawn["Mod.esp|000810"]) == {B: 2, N: 1, O: 1}
+    assert ms["sp_kept_other_races"] == 1
+
+
+def test_a_copy_with_a_ube_custom_race_is_kept(tmp_path):
+    """UBE_AllRace.esp also defines custom races; their actors draw the links
+    too, so a copy listing one the kept copy lacks is kept."""
+    custom = 0x07A4D5
+    ms, drawn = _patch_with_links(tmp_path, [_minted(0x800, B, ALL16, [KHAJIIT, ARGONIAN]),
+                                             _minted(0x801, B, ALL16 + [custom])])
+    assert len(drawn["Mod.esp|000810"]) == 2
+    assert ms["sp_kept_other_races"] == 1
+
+
+def test_switched_off_copies_differing_in_vanilla_races_draw_twice(tmp_path, monkeypatch):
+    monkeypatch.setenv(GUARD_OFF, "1")
+    ms, drawn = _patch_with_links(tmp_path, [_minted(0x800, B, ALL16, [KHAJIIT]),
+                                             _minted(0x801, B, ALL16, [ARGONIAN])])
+    assert _per_race(drawn["Mod.esp|000810"]) == {r: 2 for r in ALL16}
+    assert ms["sp_kept_other_races"] == 1
 
 
 # ----- the report ------------------------------------------------------------
